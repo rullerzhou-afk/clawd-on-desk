@@ -140,6 +140,7 @@ let stateChangedAt = Date.now();
 let pendingTimer = null;
 let autoReturnTimer = null;
 let mainTickTimer = null;
+let moveTopTimer = null;
 let mouseOverPet = false;
 let dragLocked = false;
 let idlePaused = false;
@@ -157,7 +158,6 @@ const CRABWALK_SPEED = 0.12;  // px/ms
 
 let miniMode = false;
 let miniTransitioning = false;
-let miniPeeking = false;
 let preMiniX = 0, preMiniY = 0;
 let currentMiniX = 0;
 let miniTransitionTimer = null;
@@ -289,7 +289,6 @@ function applyState(state, svgOverride) {
       autoReturnTimer = null;
       if (miniMode) {
         if (mouseOverPet) {
-          miniPeeking = true;
           applyState("mini-peek");
         } else {
           applyState("mini-idle");
@@ -346,12 +345,10 @@ function startMainTick() {
     if (miniMode && !miniTransitioning && !dragLocked) {
       const canPeek = currentState === "mini-idle" || currentState === "mini-peek";
       if (!isAnimating && canPeek) {
-        if (mouseOverPet && !miniPeeking) {
-          miniPeeking = true;
+        if (mouseOverPet && currentState !== "mini-peek") {
           miniPeekIn();
           applyState("mini-peek");
-        } else if (!mouseOverPet && miniPeeking) {
-          miniPeeking = false;
+        } else if (!mouseOverPet && currentState === "mini-peek") {
           miniPeekOut();
           applyState("mini-idle");
         }
@@ -872,7 +869,6 @@ function createWindow() {
     dragLocked = false;
     idlePaused = false;
     mouseOverPet = false;
-    miniPeeking = false;
     win.setIgnoreMouseEvents(true);
     win.webContents.reload();
   });
@@ -881,7 +877,7 @@ function createWindow() {
   // Use moveTop() instead of setAlwaysOnTop(false→true) to avoid a brief
   // gap where the window loses TOPMOST status — that gap lets other windows
   // slip above Clawd during window switches.
-  setInterval(() => {
+  moveTopTimer = setInterval(() => {
     if (win && !win.isDestroyed()) {
       win.moveTop();
     }
@@ -956,7 +952,7 @@ function animateWindowX(targetX, durationMs) {
     const t = Math.min(1, (Date.now() - startTime) / durationMs);
     const eased = t * (2 - t);
     const x = Math.round(startX + (targetX - startX) * eased);
-    win.setBounds({ x, y: startY, width: size.width, height: size.height });
+    win.setPosition(x, startY);
     if (t < 1) {
       peekAnimTimer = setTimeout(step, 16);
     } else {
@@ -986,7 +982,7 @@ function animateWindowParabola(targetX, targetY, durationMs, onDone) {
     const x = Math.round(startX + (targetX - startX) * eased);
     const arc = -4 * JUMP_PEAK_HEIGHT * t * (t - 1);
     const y = Math.round(startY + (targetY - startY) * eased - arc);
-    win.setBounds({ x, y, width: size.width, height: size.height });
+    win.setPosition(x, y);
     if (t < 1) {
       peekAnimTimer = setTimeout(step, 16);
     } else {
@@ -1017,10 +1013,12 @@ function checkMiniModeSnap() {
   const bounds = win.getBounds();
   const size = SIZES[currentSize];
   const mRight = Math.round(size.width * 0.25);
-  // Check against ALL monitors' right edges (not just nearest)
+  // Check against ALL monitors' right edges, but only if window center is on that monitor
+  const centerX = bounds.x + size.width / 2;
   const displays = screen.getAllDisplays();
   for (const d of displays) {
     const wa = d.workArea;
+    if (centerX < wa.x || centerX > wa.x + wa.width) continue;
     const rightLimit = wa.x + wa.width - size.width + mRight;
     if (bounds.x >= rightLimit - SNAP_TOLERANCE) {
       enterMiniMode(wa);
@@ -1037,7 +1035,6 @@ function enterMiniMode(wa, viaMenu) {
     preMiniY = bounds.y;
   }
   miniMode = true;
-  miniPeeking = false;
   const size = SIZES[currentSize];
   currentMiniX = wa.x + wa.width - Math.round(size.width * (1 - MINI_OFFSET_RATIO));
 
@@ -1083,7 +1080,6 @@ function exitMiniMode() {
   if (!miniMode) return;
   cancelMiniTransition();
   miniMode = false;
-  miniPeeking = false;
   sendToRenderer("mini-mode-change", false);
   buildContextMenu();
   buildTrayMenu();
@@ -1194,6 +1190,9 @@ if (!gotTheLock) {
     if (wakePollTimer) clearInterval(wakePollTimer);
     if (miniTransitionTimer) clearTimeout(miniTransitionTimer);
     if (peekAnimTimer) clearTimeout(peekAnimTimer);
+    if (moveTopTimer) clearInterval(moveTopTimer);
+    if (yawnDelayTimer) clearTimeout(yawnDelayTimer);
+    if (idleLookReturnTimer) clearTimeout(idleLookReturnTimer);
     stopStaleCleanup();
     if (httpServer) httpServer.close();
   });
