@@ -799,7 +799,8 @@ function startHttpServer() {
 
 // ── System tray ──
 function createTray() {
-  const icon = nativeImage.createFromPath(path.join(__dirname, "../assets/tray-icon.png")).resize({ width: 32, height: 32 });
+  const iconSize = process.platform === "darwin" ? 20 : 32;
+  const icon = nativeImage.createFromPath(path.join(__dirname, "../assets/tray-icon.png")).resize({ width: iconSize, height: iconSize });
   tray = new Tray(icon);
   tray.setToolTip("Clawd Desktop Pet");
   buildTrayMenu();
@@ -950,6 +951,9 @@ function createWindow() {
   });
 
   win.setFocusable(false);
+  if (process.platform === "darwin") {
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  }
   win.loadFile(path.join(__dirname, "index.html"));
   win.showInactive();
 
@@ -1035,11 +1039,13 @@ function createWindow() {
   // Use moveTop() instead of setAlwaysOnTop(false→true) to avoid a brief
   // gap where the window loses TOPMOST status — that gap lets other windows
   // slip above Clawd during window switches.
-  moveTopTimer = setInterval(() => {
-    if (win && !win.isDestroyed()) {
-      win.moveTop();
-    }
-  }, 30000); // every 30s
+  if (process.platform === "win32") {
+    moveTopTimer = setInterval(() => {
+      if (win && !win.isDestroyed()) {
+        win.moveTop();
+      }
+    }, 30000); // every 30s — Windows DWM workaround
+  }
 
   // ── Display change: re-clamp window to prevent off-screen ──
   screen.on("display-metrics-changed", () => {
@@ -1377,7 +1383,10 @@ if (!gotTheLock) {
     if (win) win.showInactive();
   });
 
-  app.whenReady().then(createWindow);
+  app.whenReady().then(() => {
+    if (process.platform === "darwin") app.dock.hide();
+    createWindow();
+  });
 
   app.on("before-quit", () => {
     isQuitting = true;

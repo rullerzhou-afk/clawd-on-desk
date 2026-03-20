@@ -5,7 +5,9 @@
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder --win",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": ["clawd", "desktop-pet", "electron", "claude-code"],
@@ -36,12 +38,26 @@
       "src/**/*",
       "assets/svg/**/*",
       "assets/tray-icon.png",
+      "assets/tray-icon-mac.png",
       "hooks/**/*"
     ],
+    "mac": {
+      "icon": "assets/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        }
+      ]
+    },
     "extraResources": [
       {
         "from": "assets/icon.ico",
         "to": "icon.ico"
+      },
+      {
+        "from": "assets/icon.icns",
+        "to": "icon.icns"
       }
     ]
   },

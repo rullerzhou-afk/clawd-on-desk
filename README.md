@@ -8,7 +8,7 @@
 
 A desktop pet that reacts to your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions in real-time. Clawd lives on your screen — thinking when you prompt, typing when tools run, juggling subagents, celebrating when tasks complete, and sleeping when you're away.
 
-> Windows 11 only. Requires Node.js and Claude Code.
+> Windows 11 / macOS. Requires Node.js and Claude Code.
 
 ## Features
 

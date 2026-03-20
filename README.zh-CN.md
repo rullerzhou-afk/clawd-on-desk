@@ -8,7 +8,7 @@
 
 一个能实时感知 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 工作状态的桌面宠物。Clawd 住在你的屏幕上——你提问时它思考，工具运行时它打字，子代理工作时它杂耍，任务完成时它庆祝，你离开时它睡觉。
 
-> 仅支持 Windows 11。需要 Node.js 和 Claude Code。
+> 支持 Windows 11 / macOS。需要 Node.js 和 Claude Code。
 
 ## 功能特性
 
