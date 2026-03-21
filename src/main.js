@@ -736,8 +736,24 @@ function disableDoNotDisturb() {
 let httpServer = null;
 
 function startHttpServer() {
+  // CLAWD_BIND: set to "0.0.0.0" for remote access (Tailscale, LAN). Default: localhost.
+  const bindHost = process.env.CLAWD_BIND || "127.0.0.1";
+  // CLAWD_TOKEN: optional bearer token auth for remote connections.
+  const authToken = process.env.CLAWD_TOKEN || "";
+
   httpServer = http.createServer((req, res) => {
     if (req.method === "POST" && req.url === "/state") {
+      // Token auth: skip for localhost, enforce for remote when token is set
+      if (authToken) {
+        const remote = req.socket.remoteAddress;
+        const isLocal = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+        if (!isLocal && (req.headers.authorization || "") !== `Bearer ${authToken}`) {
+          res.writeHead(403);
+          res.end("forbidden");
+          return;
+        }
+      }
+
       let body = "";
       let bodySize = 0;
       let destroyed = false;
@@ -784,8 +800,8 @@ function startHttpServer() {
     }
   });
 
-  httpServer.listen(23333, "127.0.0.1", () => {
-    console.log("Clawd state server listening on 127.0.0.1:23333");
+  httpServer.listen(23333, bindHost, () => {
+    console.log(`Clawd state server listening on ${bindHost}:23333`);
   });
 
   httpServer.on("error", (err) => {

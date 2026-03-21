@@ -5,7 +5,9 @@
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder --win",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": ["clawd", "desktop-pet", "electron", "claude-code"],
