@@ -799,7 +799,11 @@ function startHttpServer() {
 
 // ── System tray ──
 function createTray() {
-  const icon = nativeImage.createFromPath(path.join(__dirname, "../assets/tray-icon.png")).resize({ width: 32, height: 32 });
+  const traySize = process.platform === "darwin" ? 22 : 32;
+  const icon = nativeImage.createFromPath(path.join(__dirname, "../assets/tray-icon.png")).resize({ width: traySize, height: traySize });
+  if (process.platform === "darwin") {
+    icon.setTemplateImage(true);
+  }
   tray = new Tray(icon);
   tray.setToolTip("Clawd Desktop Pet");
   buildTrayMenu();
@@ -1032,14 +1036,14 @@ function createWindow() {
   });
 
   // ── Periodic alwaysOnTop refresh (Windows DWM can drop z-order) ──
-  // Use moveTop() instead of setAlwaysOnTop(false→true) to avoid a brief
-  // gap where the window loses TOPMOST status — that gap lets other windows
-  // slip above Clawd during window switches.
-  moveTopTimer = setInterval(() => {
-    if (win && !win.isDestroyed()) {
-      win.moveTop();
-    }
-  }, 30000); // every 30s
+  // macOS does not have this issue, so only enable on Windows.
+  if (process.platform === "win32") {
+    moveTopTimer = setInterval(() => {
+      if (win && !win.isDestroyed()) {
+        win.moveTop();
+      }
+    }, 30000); // every 30s
+  }
 
   // ── Display change: re-clamp window to prevent off-screen ──
   screen.on("display-metrics-changed", () => {
@@ -1377,7 +1381,13 @@ if (!gotTheLock) {
     if (win) win.showInactive();
   });
 
-  app.whenReady().then(createWindow);
+  app.whenReady().then(() => {
+    // macOS: hide dock icon so the pet doesn't appear in Cmd+Tab / Dock
+    if (process.platform === "darwin") {
+      app.dock.hide();
+    }
+    createWindow();
+  });
 
   app.on("before-quit", () => {
     isQuitting = true;
