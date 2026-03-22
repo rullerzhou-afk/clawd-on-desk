@@ -8,7 +8,7 @@
 
 一个能实时感知 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 工作状态的桌面宠物。Clawd 住在你的屏幕上——你提问时它思考，工具运行时它打字，子代理工作时它杂耍，任务完成时它庆祝，你离开时它睡觉。
 
-> 仅支持 Windows 11。需要 Node.js 和 Claude Code。
+> 支持 macOS（Apple Silicon 和 Intel）及 Windows 11。需要 Node.js 和 Claude Code。
 
 ## 功能特性
 
@@ -59,7 +59,7 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/rullerzhou-afk/clawd-on-desk.git
+git clone https://github.com/PixelCookie-zyf/clawd-on-desk.git
 cd clawd-on-desk
 
 # 安装依赖
@@ -111,7 +111,7 @@ hooks/
   clawd-hook.js  # Claude Code hook 脚本（零依赖，1 秒超时）
   install.js     # 安全注册 hook 到 ~/.claude/settings.json
 assets/
-  svg/           # 39 个像素风 SVG 动画（含 8 个极简模式，CSS 关键帧驱动）
+  svg/           # 54 个像素风 SVG 动画（含 8 个极简模式，CSS 关键帧驱动）
   gif/           # 录制的 GIF（用于文档展示）
 ```
 

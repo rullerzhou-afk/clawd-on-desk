@@ -123,7 +123,7 @@ function handleClick(clientX) {
     return;
   }
   if (isReacting || isDragReacting) return;
-  if (currentIdleSvg !== "clawd-idle-follow.svg") return;
+  if (currentIdleSvg !== "clawd-idle-follow.svg" && currentIdleSvg !== "clawd-idle-living.svg") return;
 
   clickCount++;
   if (clickCount === 1) {

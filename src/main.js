@@ -84,7 +84,7 @@ const SVG_IDLE_LOOK = "clawd-idle-look.svg";
 
 // ── State → SVG mapping ──
 const STATE_SVGS = {
-  idle: [SVG_IDLE_FOLLOW],
+  idle: [SVG_IDLE_FOLLOW, "clawd-idle-living.svg"],
   yawning: ["clawd-idle-yawn.svg"],
   dozing: ["clawd-idle-doze.svg"],
   collapsing: ["clawd-collapse-sleep.svg"],
@@ -145,7 +145,6 @@ const SLEEP_SEQUENCE = new Set(["yawning", "dozing", "collapsing", "sleeping", "
 // ── Session tracking ──
 const sessions = new Map(); // session_id → { state, updatedAt }
 const SESSION_STALE_MS = 300000; // 5 min cleanup
-const WORKING_STALE_MS = 30000;  // 30s: working/thinking with no new event → decay to idle
 const STATE_PRIORITY = {
   error: 8, notification: 7, sweeping: 6, attention: 5,
   carrying: 4, juggling: 4, working: 3, thinking: 2, idle: 1, sleeping: 0,
@@ -172,7 +171,7 @@ const HIT_BOXES = {
   sleeping: { x: -2, y: 9, w: 19, h: 7 },     // 趴姿：更宽更矮
   wide:     { x: -3, y: 3, w: 21, h: 14 },    // 带特效（error/building/notification）
 };
-const WIDE_SVGS = new Set(["clawd-error.svg", "clawd-working-building.svg", "clawd-notification.svg"]);
+const WIDE_SVGS = new Set(["clawd-error.svg", "clawd-working-building.svg", "clawd-notification.svg", "clawd-working-conducting.svg"]);
 let currentHitBox = HIT_BOXES.default;
 
 let win;
@@ -607,8 +606,8 @@ const ONESHOT_STATES = new Set(["attention", "error", "sweeping", "notification"
 function updateSession(sessionId, state, event) {
   if (event === "SessionEnd") {
     sessions.delete(sessionId);
-  } else if (state === "attention" || state === "notification" || SLEEP_SEQUENCE.has(state)) {
-    // Stop/notification/sleep: session goes idle — if work continues, new hooks will re-set
+  } else if (state === "attention" || SLEEP_SEQUENCE.has(state)) {
+    // Stop/sleep: response complete → session goes idle
     sessions.set(sessionId, { state: "idle", updatedAt: Date.now() });
   } else if (ONESHOT_STATES.has(state)) {
     // Other oneshots (error/sweeping/notification/carrying):
@@ -653,17 +652,7 @@ function cleanStaleSessions() {
   const now = Date.now();
   let changed = false;
   for (const [id, s] of sessions) {
-    if (now - s.updatedAt > SESSION_STALE_MS) {
-      sessions.delete(id); changed = true;
-    } else if (
-      (s.state === "working" || s.state === "juggling") &&
-      now - s.updatedAt > WORKING_STALE_MS
-    ) {
-      // No hook event for 30s while "working" → session likely interrupted (Esc)
-      // thinking excluded: legitimate thinking can exceed 30s, and Esc during thinking
-      // is almost always followed by a new prompt (UserPromptSubmit resets state)
-      s.state = "idle"; s.updatedAt = now; changed = true;
-    }
+    if (now - s.updatedAt > SESSION_STALE_MS) { sessions.delete(id); changed = true; }
   }
   // If stale sessions were cleaned, re-resolve display state
   if (changed && sessions.size === 0) {
@@ -676,7 +665,7 @@ function cleanStaleSessions() {
 
 function startStaleCleanup() {
   if (staleCleanupTimer) return;
-  staleCleanupTimer = setInterval(cleanStaleSessions, 10000); // every 10s (supports 30s working timeout)
+  staleCleanupTimer = setInterval(cleanStaleSessions, 60000); // every 60s
 }
 
 function stopStaleCleanup() {

@@ -1,6 +1,6 @@
 {
   "name": "clawd-on-desk",
-  "version": "0.3.1",
+  "version": "0.3.0",
   "description": "A desktop pet that reacts to your Claude Code sessions in real-time.",
   "main": "src/main.js",
   "scripts": {
@@ -38,6 +38,12 @@
           "target": "nsis",
           "arch": ["x64"]
         }
+      ],
+      "extraResources": [
+        {
+          "from": "assets/icon.ico",
+          "to": "icon.ico"
+        }
       ]
     },
     "nsis": {
@@ -55,12 +61,6 @@
     ],
     "asarUnpack": [
       "hooks/**/*"
-    ],
-    "extraResources": [
-      {
-        "from": "assets/icon.ico",
-        "to": "icon.ico"
-      }
     ]
   },
   "devDependencies": {

@@ -8,7 +8,7 @@
 
 A desktop pet that reacts to your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions in real-time. Clawd lives on your screen — thinking when you prompt, typing when tools run, juggling subagents, celebrating when tasks complete, and sleeping when you're away.
 
-> Windows 11 only. Requires Node.js and Claude Code.
+> macOS (Apple Silicon & Intel) and Windows 11. Requires Node.js and Claude Code.
 
 ## Features
 
@@ -59,7 +59,7 @@ Drag Clawd to the right screen edge (or right-click → "极简模式") to enter
 
 ```bash
 # Clone the repo
-git clone https://github.com/rullerzhou-afk/clawd-on-desk.git
+git clone https://github.com/PixelCookie-zyf/clawd-on-desk.git
 cd clawd-on-desk
 
 # Install dependencies
@@ -111,7 +111,7 @@ hooks/
   clawd-hook.js  # Claude Code hook script (zero deps, 1s timeout)
   install.js     # Safe hook registration into ~/.claude/settings.json
 assets/
-  svg/           # 39 pixel-art SVG animations with CSS keyframes (incl. 8 mini mode)
+  svg/           # 54 pixel-art SVG animations with CSS keyframes (incl. 8 mini mode)
   gif/           # Recorded GIFs for documentation
 ```
 
