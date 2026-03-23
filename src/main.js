@@ -1026,6 +1026,11 @@ function startHttpServer() {
               res.end("mini states require svg override");
               return;
             }
+            // If a new hook event arrives for the same session that has a pending
+            // permission bubble, the user must have answered in the terminal — dismiss.
+            if (pendingPermission && pendingPermission.sessionId === sid) {
+              resolvePermission("deny", "User answered in terminal");
+            }
             if (svg) {
               // Direct SVG override (test-demo.sh, manual curl) — bypass session logic
               // Sanitize: strip path separators to prevent directory traversal
@@ -1084,11 +1089,14 @@ function startHttpServer() {
           const sessionId = data.session_id || "default";
           const suggestions = Array.isArray(data.permission_suggestions) ? data.permission_suggestions : [];
 
-          // Detect client disconnect (e.g. Claude Code timeout or user cancel).
-          // Listen on res "close" — fires when the connection drops.
-          // If we already sent the response (writableFinished), ignore.
+          // Detect client disconnect (e.g. Claude Code timeout or user answered in terminal).
+          // Listen on res "close" — fires when the TCP connection drops.
+          // Skip if we already sent our response (writableFinished).
+          // NOTE: do NOT listen on req "close" — it fires as soon as the request body is
+          // fully consumed (req.on("end")), which is immediately, not on client disconnect.
           const abortHandler = () => {
             if (res.writableFinished) return;
+            fs.appendFileSync(permDebugLog, `[${new Date().toISOString()}] abortHandler fired: pending=${!!pendingPermission} match=${pendingPermission?.res === res}\n`);
             if (pendingPermission && pendingPermission.res === res) {
               pendingPermission = null;
               hideBubble();
@@ -1096,7 +1104,7 @@ function startHttpServer() {
           };
           res.on("close", abortHandler);
 
-          pendingPermission = { res, abortHandler, suggestions };
+          pendingPermission = { res, abortHandler, suggestions, sessionId };
 
           // Show or reuse bubble window
           fs.appendFileSync(permDebugLog, `[${new Date().toISOString()}] showing bubble: tool=${toolName} session=${sessionId} suggestions=${suggestions.length}\n`);
@@ -1156,8 +1164,11 @@ function stopTopmostWatchdog() {
 
 // ── Permission bubble window ──
 
-function getBubblePosition() {
-  const bw = 340, bh = 260;
+function getBubblePosition(suggestionCount) {
+  const bw = 340;
+  // Base height covers header + command block + Allow/Deny buttons + padding
+  // Each suggestion button adds ~37px (7px padding*2 + 12px font + 1px border + 6px gap)
+  const bh = 200 + (suggestionCount || 0) * 37;
   const margin = 4;
 
   // Fixed position: bottom-right corner of the nearest display
@@ -1173,7 +1184,8 @@ function getBubblePosition() {
 }
 
 function showPermissionBubble(toolName, toolInput) {
-  const pos = getBubblePosition();
+  const sugCount = pendingPermission ? (pendingPermission.suggestions || []).length : 0;
+  const pos = getBubblePosition(sugCount);
 
   // Cancel any pending hide animation from a previous request
   if (bubbleHideTimer) { clearTimeout(bubbleHideTimer); bubbleHideTimer = null; }
