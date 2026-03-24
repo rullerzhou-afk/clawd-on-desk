@@ -26,6 +26,8 @@ const HOOK_EVENTS = [
 ];
 
 const MARKER = "clawd-hook.js";
+const AUTO_START_MARKER = "auto-start.js";
+const LEGACY_AUTO_START_MARKER = "auto-start.sh";
 const HTTP_MARKER = "23333/permission";
 
 // HTTP hooks: PermissionRequest uses bidirectional HTTP hook for permission decisions.
@@ -47,6 +49,7 @@ const HTTP_HOOKS = {
  * Safe to call multiple times — skips already-registered hooks.
  * @param {object} [options]
  * @param {boolean} [options.silent] - suppress console output (for auto-registration)
+ * @param {boolean} [options.autoStart] - register auto-start hook for SessionStart
  * @returns {{ added: number, skipped: number }}
  */
 function registerHooks(options = {}) {
@@ -110,6 +113,49 @@ function registerHooks(options = {}) {
     added++;
   }
 
+  // Register auto-start hook for SessionStart (launches app if not running)
+  if (options.autoStart) {
+    let autoStartScript = path.resolve(__dirname, "auto-start.js").replace(/\\/g, "/");
+    autoStartScript = autoStartScript.replace("app.asar/", "app.asar.unpacked/");
+
+    if (!Array.isArray(settings.hooks.SessionStart)) {
+      settings.hooks.SessionStart = [];
+      changed = true;
+    }
+
+    const autoStartExists = settings.hooks.SessionStart.some((entry) => {
+      if (!entry || typeof entry !== "object") return false;
+      if (typeof entry.command === "string" && entry.command.includes(AUTO_START_MARKER)) return true;
+      if (Array.isArray(entry.hooks)) {
+        return entry.hooks.some((h) => h && typeof h.command === "string" && h.command.includes(AUTO_START_MARKER));
+      }
+      return false;
+    });
+
+    if (!autoStartExists) {
+      // Insert at index 0 — must run BEFORE clawd-hook.js so the app is starting
+      settings.hooks.SessionStart.unshift({
+        matcher: "",
+        hooks: [{ type: "command", command: `node "${autoStartScript}"` }],
+      });
+      added++;
+    } else {
+      skipped++;
+    }
+
+    // Remove all legacy auto-start.sh entries if present
+    const beforeLen = settings.hooks.SessionStart.length;
+    settings.hooks.SessionStart = settings.hooks.SessionStart.filter((entry) => {
+      if (!entry || typeof entry !== "object") return true;
+      if (typeof entry.command === "string" && entry.command.includes(LEGACY_AUTO_START_MARKER)) return false;
+      if (Array.isArray(entry.hooks)) {
+        if (entry.hooks.some((h) => h && typeof h.command === "string" && h.command.includes(LEGACY_AUTO_START_MARKER))) return false;
+      }
+      return true;
+    });
+    if (settings.hooks.SessionStart.length < beforeLen) changed = true;
+  }
+
   // Register HTTP hooks (permission decision collection)
   for (const [event, { matcher, hook }] of Object.entries(HTTP_HOOKS)) {
     if (!Array.isArray(settings.hooks[event])) {
@@ -160,8 +206,71 @@ function registerHooks(options = {}) {
   return { added, skipped };
 }
 
+/**
+ * Remove the auto-start hook from SessionStart in ~/.claude/settings.json.
+ * Also removes legacy auto-start.sh entries.
+ * @returns {boolean} true if a hook was removed
+ */
+function unregisterAutoStart() {
+  const settingsPath = path.join(os.homedir(), ".claude", "settings.json");
+  let settings;
+  try {
+    settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+  } catch {
+    return false;
+  }
+
+  const arr = settings.hooks && settings.hooks.SessionStart;
+  if (!Array.isArray(arr)) return false;
+
+  const before = arr.length;
+  settings.hooks.SessionStart = arr.filter((entry) => {
+    if (!entry || typeof entry !== "object") return true;
+    // Remove auto-start.js entries
+    if (typeof entry.command === "string" && entry.command.includes(AUTO_START_MARKER)) return false;
+    if (Array.isArray(entry.hooks)) {
+      if (entry.hooks.some((h) => h && typeof h.command === "string" && h.command.includes(AUTO_START_MARKER))) return false;
+    }
+    // Remove legacy auto-start.sh entries
+    if (typeof entry.command === "string" && entry.command.includes(LEGACY_AUTO_START_MARKER)) return false;
+    if (Array.isArray(entry.hooks)) {
+      if (entry.hooks.some((h) => h && typeof h.command === "string" && h.command.includes(LEGACY_AUTO_START_MARKER))) return false;
+    }
+    return true;
+  });
+
+  if (settings.hooks.SessionStart.length < before) {
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Check if the auto-start hook is currently registered in settings.json.
+ * @returns {boolean}
+ */
+function isAutoStartRegistered() {
+  const settingsPath = path.join(os.homedir(), ".claude", "settings.json");
+  try {
+    const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+    const arr = settings.hooks && settings.hooks.SessionStart;
+    if (!Array.isArray(arr)) return false;
+    return arr.some((entry) => {
+      if (!entry || typeof entry !== "object") return false;
+      if (typeof entry.command === "string" && entry.command.includes(AUTO_START_MARKER)) return true;
+      if (Array.isArray(entry.hooks)) {
+        return entry.hooks.some((h) => h && typeof h.command === "string" && h.command.includes(AUTO_START_MARKER));
+      }
+      return false;
+    });
+  } catch {
+    return false;
+  }
+}
+
 // Export for use by main.js
-module.exports = { registerHooks };
+module.exports = { registerHooks, unregisterAutoStart, isAutoStartRegistered };
 
 // CLI: run directly with `node hooks/install.js`
 if (require.main === module) {

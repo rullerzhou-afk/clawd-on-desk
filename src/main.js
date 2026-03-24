@@ -24,6 +24,7 @@ const i18n = {
     sleep: "Sleep (Do Not Disturb)",
     wake: "Wake Clawd",
     startOnLogin: "Start on Login",
+    startWithClaude: "Start with Claude Code",
     showInMenuBar: "Show in Menu Bar",
     showInDock: "Show in Dock",
     language: "Language",
@@ -64,6 +65,7 @@ const i18n = {
     sleep: "休眠（免打扰）",
     wake: "唤醒 Clawd",
     startOnLogin: "开机自启",
+    startWithClaude: "随 Claude Code 启动",
     showInMenuBar: "在菜单栏显示",
     showInDock: "在 Dock 显示",
     language: "语言",
@@ -124,6 +126,7 @@ function savePrefs() {
     x, y, size: currentSize,
     miniMode, preMiniX, preMiniY, lang,
     showTray, showDock,
+    autoStartWithClaude,
   };
   try { fs.writeFileSync(PREFS_PATH, JSON.stringify(data)); } catch {}
 }
@@ -235,6 +238,7 @@ let doNotDisturb = false;
 let isQuitting = false;
 let showTray = true;
 let showDock = true;
+let autoStartWithClaude = false;
 
 function sendToRenderer(channel, ...args) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, ...args);
@@ -1418,6 +1422,25 @@ function buildTrayMenu() {
         app.setLoginItemSettings({ openAtLogin: menuItem.checked });
       },
     },
+    {
+      label: t("startWithClaude"),
+      type: "checkbox",
+      checked: autoStartWithClaude,
+      click: (menuItem) => {
+        autoStartWithClaude = menuItem.checked;
+        try {
+          const { registerHooks, unregisterAutoStart } = require("../hooks/install.js");
+          if (autoStartWithClaude) {
+            registerHooks({ silent: true, autoStart: true });
+          } else {
+            unregisterAutoStart();
+          }
+        } catch (err) {
+          console.warn("Clawd: failed to toggle auto-start hook:", err.message);
+        }
+        savePrefs();
+      },
+    },
   ];
   // macOS: Dock and Menu Bar visibility toggles
   if (isMac) {
@@ -1697,6 +1720,7 @@ function createWindow() {
     if (typeof prefs.showTray === "boolean") showTray = prefs.showTray;
     if (typeof prefs.showDock === "boolean") showDock = prefs.showDock;
   }
+  if (prefs && typeof prefs.autoStartWithClaude === "boolean") autoStartWithClaude = prefs.autoStartWithClaude;
   // macOS: apply dock visibility (default hidden)
   if (isMac && app.dock) {
     if (showDock) app.dock.show(); else app.dock.hide();
@@ -2276,7 +2300,7 @@ if (!gotTheLock) {
     // Auto-register Claude Code hooks on every launch (dedup-safe)
     try {
       const { registerHooks } = require("../hooks/install.js");
-      const { added } = registerHooks({ silent: true });
+      const { added } = registerHooks({ silent: true, autoStart: autoStartWithClaude });
       if (added > 0) console.log(`Clawd: auto-registered ${added} Claude Code hooks`);
     } catch (err) {
       console.warn("Clawd: failed to auto-register hooks:", err.message);
