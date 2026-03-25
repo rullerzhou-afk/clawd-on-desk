@@ -1,0 +1,35 @@
+// Claude Code agent configuration
+// Extracted from hardcoded constants in main.js and clawd-hook.js
+
+module.exports = {
+  id: "claude-code",
+  name: "Claude Code",
+  processNames: { win: ["claude.exe"], mac: ["claude"] },
+  // node.exe running claude-code (npm install, not native binary)
+  nodeCommandPatterns: ["claude-code", "@anthropic-ai"],
+  eventSource: "hook",
+  // PascalCase event names — matches Claude Code hook system
+  eventMap: {
+    SessionStart: "idle",
+    SessionEnd: "sleeping",
+    UserPromptSubmit: "thinking",
+    PreToolUse: "working",
+    PostToolUse: "working",
+    PostToolUseFailure: "error",
+    Stop: "attention",
+    SubagentStart: "juggling",
+    SubagentStop: "working",
+    PreCompact: "sweeping",
+    PostCompact: "attention",
+    Notification: "notification",
+    Elicitation: "notification",
+    WorktreeCreate: "carrying",
+  },
+  capabilities: {
+    httpHook: true,
+    permissionApproval: true,
+    sessionEnd: true,
+    subagent: true,
+  },
+  pidField: "claude_pid",
+};

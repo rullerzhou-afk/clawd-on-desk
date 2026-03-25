@@ -6,14 +6,20 @@
   <a href="README.md">English</a>
 </p>
 
-一个能实时感知 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 工作状态的桌面宠物。Clawd 住在你的屏幕上——你提问时它思考，工具运行时它打字，子代理工作时它杂耍，审批权限时它弹卡片，任务完成时它庆祝，你离开时它睡觉。
+一个能实时感知 AI 编程助手工作状态的桌面宠物。Clawd 住在你的屏幕上——你提问时它思考，工具运行时它打字，子代理工作时它杂耍，审批权限时它弹卡片，任务完成时它庆祝，你离开时它睡觉。
 
-> 支持 Windows 11 和 macOS。需要 Node.js 和 Claude Code。
+> 支持 Windows 11 和 macOS。需要 Node.js。支持 **Claude Code**、**Codex CLI** 和 **Copilot CLI**。
 
 ## 功能特性
 
+### 多 Agent 支持
+- **Claude Code** — 通过 command hook + HTTP 权限 hook 完整集成
+- **Codex CLI** — 自动轮询 JSONL 日志（`~/.codex/sessions/`），无需配置
+- **Copilot CLI** — 通过 `~/.copilot/hooks/hooks.json` 配置 command hook
+- **多 Agent 共存** — 三个 Agent 可同时运行，Clawd 独立追踪每个会话
+
 ### 动画与交互
-- **实时状态感知** — 通过 Claude Code hook 系统自动驱动动画
+- **实时状态感知** — 通过 Agent hook 和日志轮询自动驱动动画
 - **12 种动画状态** — 待机、思考、打字、建造、杂耍、指挥、报错、开心、通知、扫地、搬运、睡觉
 - **眼球追踪** — 待机状态下 Clawd 跟随鼠标，身体微倾，影子拉伸
 - **睡眠序列** — 60 秒无活动 → 打哈欠 → 打盹 → 倒下 → 睡觉；移动鼠标触发惊醒弹起动画
@@ -157,6 +163,40 @@ assets/
   svg/               # 40 个像素风 SVG 动画（含 8 个极简模式，CSS 关键帧驱动）
   gif/               # 录制的 GIF（用于文档展示）
 ```
+
+## 已知限制
+
+| 限制 | 说明 |
+|------|------|
+| **Codex CLI：无法跳转终端** | Codex 通过 JSONL 日志轮询，日志中不含终端 PID，点击桌宠无法跳转到 Codex 终端。Claude Code 和 Copilot CLI 正常。 |
+| **Codex CLI：Windows hooks 禁用** | Codex 在 Windows 上硬编码禁用了 hooks，因此走日志轮询，延迟约 1.5 秒（hook 方式几乎无延迟）。 |
+| **Copilot CLI：需手动配置 hooks** | Copilot 需要手动创建 `~/.copilot/hooks/hooks.json`。Claude Code 和 Codex 开箱即用。 |
+| **Copilot CLI：无权限气泡** | Copilot 的 `preToolUse` 只支持拒绝，无法做完整的允许/拒绝审批流。权限气泡仅支持 Claude Code。 |
+| **macOS 自动更新** | 无 Apple 代码签名，macOS 用户需从 GitHub Releases 手动下载更新。 |
+| **Electron 主进程无自动化测试** | 单元测试覆盖了 agent 配置和日志轮询，但状态机、窗口管理、托盘等 Electron 逻辑暂无自动化测试。 |
+
+### 未来计划
+
+一些我们想探索的方向：
+
+- Codex 终端聚焦（通过 `codex.exe` PID 反查进程树）
+- Copilot CLI hooks 自动注册（像 Claude Code 那样开箱即用）
+- 状态切换音效（目前被 Electron autoplay policy 阻塞）
+- 自定义角色皮肤 / 动画
+- Hook 卸载脚本（干净移除应用）
+
+## 参与贡献
+
+Clawd on Desk 是一个社区驱动的项目。欢迎提 Bug、提需求、提 PR —— 在 [Issues](https://github.com/rullerzhou-afk/clawd-on-desk/issues) 里聊或直接提交 PR。
+
+### 贡献者
+
+感谢每一位让 Clawd 变得更好的贡献者：
+
+- [@PixelCookie-zyf](https://github.com/PixelCookie-zyf) — macOS 适配、终端聚焦、权限气泡验证
+- [@yujiachen-y](https://github.com/yujiachen-y) — 随 Claude Code 自动启动
+- [@AooooooZzzz](https://github.com/AooooooZzzz) — ELECTRON_RUN_AS_NODE 启动修复、Windows 10 兼容
+- [@purefkh](https://github.com/purefkh) — macOS Dock 可见性修复
 
 ## 致谢
 

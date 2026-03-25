@@ -226,12 +226,16 @@ function send(sessionId, cwd, transcriptPath) {
   sent = true;
 
   const body = { state, session_id: sessionId, event };
+  body.agent_id = "claude-code";
   if (cwd) body.cwd = cwd;
   // Always walk to stable terminal PID — process.ppid is an ephemeral shell
   // that dies when the hook exits, so it's useless for later focus calls
   body.source_pid = getStablePid();
   if (_detectedEditor) body.editor = _detectedEditor;
-  if (_claudePid) body.claude_pid = _claudePid;
+  if (_claudePid) {
+    body.agent_pid = _claudePid;
+    body.claude_pid = _claudePid; // backward compat with older Clawd versions
+  }
   if (_pidChain.length) body.pid_chain = _pidChain;
 
   const data = JSON.stringify(body);

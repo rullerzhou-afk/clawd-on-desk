@@ -8,8 +8,8 @@
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-const SESSION_STALE_MS = 120000; // 2 minutes: max session lifetime without update
-const WORKING_STALE_MS = 30000;  // 30s: working/juggling with no update → decay to idle
+const SESSION_STALE_MS = 300000; // 5 minutes: max session lifetime without update
+const WORKING_STALE_MS = 300000; // 5 min: working/juggling/thinking with no update → decay to idle
 
 const STATE_PRIORITY = {
   error: 8,
@@ -45,13 +45,14 @@ function isProcessAlive(pid) {
 class BaseSession {
   constructor(sessionId, pid, metadata = {}) {
     this.sessionId = sessionId;
-    this.pid = pid || null;
+    this.pid = pid || null; // sourcePid (terminal process)
     this.state = metadata.state || "idle";
     this.updatedAt = Date.now();
     this.cwd = metadata.cwd || "";
     this.editor = metadata.editor || null;
     this.pidChain = metadata.pidChain || null;
-    this.claudePid = metadata.claudePid || null;
+    this.agentPid = metadata.agentPid || null; // agent process PID (claude/codex/copilot)
+    this.agentId = metadata.agentId || "claude-code"; // agent identifier
     this.usage = null;
   }
 
@@ -64,7 +65,8 @@ class BaseSession {
     if (metadata.cwd) this.cwd = metadata.cwd;
     if (metadata.editor) this.editor = metadata.editor;
     if (metadata.pidChain) this.pidChain = metadata.pidChain;
-    if (metadata.claudePid) this.claudePid = metadata.claudePid;
+    if (metadata.agentPid) this.agentPid = metadata.agentPid;
+    if (metadata.agentId) this.agentId = metadata.agentId;
   }
 
   /**
@@ -83,12 +85,12 @@ class BaseSession {
   }
 
   /**
-   * Check and apply state decay (working → idle after 30s)
+   * Check and apply state decay (working/juggling/thinking → idle after timeout)
    * @returns {boolean} true if state was changed
    */
   decayState() {
     if (this.age > WORKING_STALE_MS) {
-      if (this.state === "working" || this.state === "juggling") {
+      if (this.state === "working" || this.state === "juggling" || this.state === "thinking") {
         this.state = "idle";
         return true;
       }
@@ -105,8 +107,8 @@ class LocalSession extends BaseSession {
    * Uses PID detection for faster cleanup when process dies.
    */
   alive() {
-    // 1. Check if Claude Code process is dead → orphan session, delete immediately
-    if (this.claudePid && !isProcessAlive(this.claudePid)) {
+    // 1. Check if agent process is dead → orphan session, delete immediately
+    if (this.agentPid && !isProcessAlive(this.agentPid)) {
       return false;
     }
 
@@ -200,7 +202,7 @@ function getSession(sessionId) {
  * Update or create a session based on incoming event.
  */
 function updateSession(sessionId, state, event, metadata = {}) {
-  const { sourcePid, cwd, editor, pidChain, claudePid } = metadata;
+  const { sourcePid, cwd, editor, pidChain, agentPid, agentId } = metadata;
 
   // SessionEnd: delete the session
   if (event === "SessionEnd") {
@@ -218,12 +220,13 @@ function updateSession(sessionId, state, event, metadata = {}) {
       cwd,
       editor,
       pidChain,
-      claudePid,
+      agentPid,
+      agentId,
     });
     sessions.set(sessionId, session);
   } else {
     // Update existing session
-    session.touch({ sourcePid, cwd, editor, pidChain, claudePid });
+    session.touch({ sourcePid, cwd, editor, pidChain, agentPid, agentId });
   }
 
   // PermissionRequest: don't mutate session state

@@ -221,6 +221,7 @@ const SLEEP_SEQUENCE = new Set(["yawning", "dozing", "collapsing", "sleeping", "
 // Keep startup recovery logic here (UI concern)
 let startupRecoveryActive = false; // suppress sleep sequence while waiting for hooks after restart
 let startupRecoveryTimer = null;   // hard timeout to clear startupRecoveryActive
+let _codexMonitor = null;          // Codex CLI JSONL log polling instance
 const STARTUP_RECOVERY_MAX_MS = 300000; // 5 min: give up waiting for hooks
 
 // ── CSS <object> sizing (mirrors styles.css #clawd) ──
@@ -701,8 +702,8 @@ const ONESHOT_STATES = sessionManager.ONESHOT_STATES;
  * Handle session update from hook events.
  * Delegates to session-manager and triggers UI state changes.
  */
-function handleSessionUpdate(sessionId, state, event, sourcePid, cwd, editor, pidChain, claudePid) {
-  // Claude Code is communicating — no need for startup recovery
+function handleSessionUpdate(sessionId, state, event, sourcePid, cwd, editor, pidChain, agentPid, agentId) {
+  // Agent is communicating — no need for startup recovery
   if (startupRecoveryActive) {
     startupRecoveryActive = false;
     if (startupRecoveryTimer) {
@@ -712,7 +713,7 @@ function handleSessionUpdate(sessionId, state, event, sourcePid, cwd, editor, pi
   }
 
   // PermissionRequest: show notification animation, let session-manager handle the rest
-  const metadata = { sourcePid, cwd, editor, pidChain, claudePid };
+  const metadata = { sourcePid, cwd, editor, pidChain, agentPid, agentId };
   const result = sessionManager.updateSession(sessionId, state, event, metadata);
 
   // Session was deleted by SessionEnd
@@ -757,9 +758,9 @@ function cleanStaleSessions() {
     setState(resolved, getSvgOverride(resolved));
   }
 
-  // Startup recovery: recheck if Claude Code is still running
+  // Startup recovery: recheck if agent processes are still running
   if (startupRecoveryActive && sessionCount === 0) {
-    detectRunningClaudeProcesses((found) => {
+    detectRunningAgentProcesses((found) => {
       if (!found) {
         startupRecoveryActive = false;
         if (startupRecoveryTimer) {
@@ -771,24 +772,22 @@ function cleanStaleSessions() {
   }
 }
 
-// Detect running Claude Code processes (async, for startup recovery).
-// Matches both native claude binary and node.exe running claude-code.
+// Detect running agent processes (async, for startup recovery).
+// Matches Claude Code (native + node), Codex CLI, and Copilot CLI.
 let _detectInFlight = false;
-function detectRunningClaudeProcesses(callback) {
+function detectRunningAgentProcesses(callback) {
   if (_detectInFlight) return;
   _detectInFlight = true;
   const done = (result) => { _detectInFlight = false; callback(result); };
   const { exec } = require("child_process");
   if (process.platform === "win32") {
-    // Restrict to node.exe/claude.exe to avoid matching wmic's own command line
     exec(
-      'wmic process where "(Name=\'node.exe\' and CommandLine like \'%claude-code%\') or Name=\'claude.exe\'" get ProcessId /format:csv',
+      'wmic process where "(Name=\'node.exe\' and CommandLine like \'%claude-code%\') or Name=\'claude.exe\' or Name=\'codex.exe\' or Name=\'copilot.exe\'" get ProcessId /format:csv',
       { encoding: "utf8", timeout: 5000, windowsHide: true },
       (err, stdout) => done(!err && /\d+/.test(stdout))
     );
   } else {
-    // pgrep -f matches full command line (catches node /path/to/claude-code)
-    exec("pgrep -f claude-code", { timeout: 3000 },
+    exec("pgrep -f 'claude-code|codex|copilot'", { timeout: 3000 },
       (err) => done(!err)
     );
   }
@@ -1148,7 +1147,10 @@ function startHttpServer() {
           const cwd = typeof data.cwd === "string" ? data.cwd : "";
           const editor = (data.editor === "code" || data.editor === "cursor") ? data.editor : null;
           const pidChain = Array.isArray(data.pid_chain) ? data.pid_chain.filter(n => Number.isFinite(n) && n > 0) : null;
-          const claudePid = Number.isFinite(data.claude_pid) && data.claude_pid > 0 ? Math.floor(data.claude_pid) : null;
+          // agent_pid (new) takes precedence over claude_pid (backward compat)
+          const rawAgentPid = data.agent_pid ?? data.claude_pid;
+          const agentPid = Number.isFinite(rawAgentPid) && rawAgentPid > 0 ? Math.floor(rawAgentPid) : null;
+          const agentId = typeof data.agent_id === "string" ? data.agent_id : "claude-code";
           if (STATE_SVGS[state]) {
             const sid = session_id || "default";
             // mini-* states are internal — only allow via direct SVG override (test scripts)
@@ -1174,7 +1176,7 @@ function startHttpServer() {
               const safeSvg = path.basename(svg);
               setState(state, safeSvg);
             } else {
-              handleSessionUpdate(sid, state, event, source_pid, cwd, editor, pidChain, claudePid);
+              handleSessionUpdate(sid, state, event, source_pid, cwd, editor, pidChain, agentPid, agentId);
             }
             res.writeHead(200);
             res.end("ok");
@@ -1540,16 +1542,23 @@ function setShowTray(val) {
   savePrefs();
 }
 
+function applyDockVisibility() {
+  if (!isMac) return;
+  if (showDock) {
+    app.setActivationPolicy("regular");
+    if (app.dock) app.dock.show();
+  } else {
+    app.setActivationPolicy("accessory");
+    if (app.dock) app.dock.hide();
+  }
+}
+
 function setShowDock(val) {
   if (!isMac || !app.dock) return;
   // Prevent disabling both Dock and Menu Bar — app would become unquittable
   if (!val && !showTray) return;
   showDock = val;
-  if (showDock) {
-    app.dock.show();
-  } else {
-    app.dock.hide();
-  }
+  applyDockVisibility();
   buildTrayMenu();
   buildContextMenu();
   savePrefs();
@@ -1881,8 +1890,8 @@ function createWindow() {
   if (prefs && typeof prefs.autoStartWithClaude === "boolean") autoStartWithClaude = prefs.autoStartWithClaude;
   if (prefs && typeof prefs.debugMode === "boolean") debugMode = prefs.debugMode;
   // macOS: apply dock visibility (default hidden)
-  if (isMac && app.dock) {
-    if (showDock) app.dock.show(); else app.dock.hide();
+  if (isMac) {
+    applyDockVisibility();
   }
   const size = SIZES[currentSize];
 
@@ -1936,6 +1945,15 @@ function createWindow() {
   }
   win.loadFile(path.join(__dirname, "index.html"));
   win.showInactive();
+
+  // macOS: startup-time dock state can be overridden during app/window activation.
+  // Re-apply once on next tick so persisted showDock reliably takes effect.
+  if (isMac) {
+    setTimeout(() => {
+      if (!win || win.isDestroyed()) return;
+      applyDockVisibility();
+    }, 0);
+  }
 
   buildContextMenu();
   if (!isMac || showTray) createTray();
@@ -2065,10 +2083,10 @@ function createWindow() {
     } else {
       applyState("idle", SVG_IDLE_FOLLOW);
       // Startup recovery: delay 5s to let HWND/z-order/drag systems stabilize,
-      // then detect running Claude Code processes → suppress sleep sequence
+      // then detect running agent processes → suppress sleep sequence
       setTimeout(() => {
         if (sessionManager.getSessionCount() > 0 || doNotDisturb) return; // hook arrived during wait
-        detectRunningClaudeProcesses((found) => {
+        detectRunningAgentProcesses((found) => {
           if (found && sessionManager.getSessionCount() === 0 && !doNotDisturb) {
             startupRecoveryActive = true;
             mouseStillSince = Date.now();
@@ -2528,6 +2546,18 @@ if (!gotTheLock) {
       console.warn("Clawd: failed to auto-register hooks:", err.message);
     }
 
+    // Start Codex CLI JSONL log monitor
+    try {
+      const CodexLogMonitor = require("../agents/codex-log-monitor");
+      const codexAgent = require("../agents/codex");
+      _codexMonitor = new CodexLogMonitor(codexAgent, (sid, state, event, extra) => {
+        updateSession(sid, state, event, extra.sourcePid, extra.cwd, null, null, extra.agentPid, "codex");
+      });
+      _codexMonitor.start();
+    } catch (err) {
+      console.warn("Clawd: Codex log monitor not started:", err.message);
+    }
+
     // Auto-install VS Code/Cursor terminal-focus extension
     try { installTerminalFocusExtension(); } catch (err) {
       console.warn("Clawd: failed to auto-install terminal-focus extension:", err.message);
@@ -2550,6 +2580,7 @@ if (!gotTheLock) {
     if (yawnDelayTimer) clearTimeout(yawnDelayTimer);
     if (idleLookReturnTimer) clearTimeout(idleLookReturnTimer);
     if (startupRecoveryTimer) clearTimeout(startupRecoveryTimer);
+    if (_codexMonitor) _codexMonitor.stop();
     stopStaleCleanup();
     stopTopmostWatchdog();
     killFocusHelper();
