@@ -3,6 +3,10 @@ const http = require("http");
 const path = require("path");
 const fs = require("fs");
 
+// Session manager module
+const sessionManager = require("./session-manager");
+const STATE_PRIORITY = sessionManager.STATE_PRIORITY;
+
 const isMac = process.platform === "darwin";
 
 // ── Windows: AllowSetForegroundWindow via FFI ──
@@ -68,6 +72,7 @@ const i18n = {
     sessionMinAgo: "{n}m ago",
     sessionHrAgo: "{n}h ago",
     quit: "Quit",
+    debugMode: "Debug Logging",
   },
   zh: {
     size: "大小",
@@ -109,6 +114,7 @@ const i18n = {
     sessionMinAgo: "{n}分钟前",
     sessionHrAgo: "{n}小时前",
     quit: "退出",
+    debugMode: "调试日志",
   },
 };
 let lang = "en";
@@ -141,6 +147,7 @@ function savePrefs() {
     miniMode, preMiniX, preMiniY, lang,
     showTray, showDock,
     autoStartWithClaude,
+    debugMode,
   };
   try { fs.writeFileSync(PREFS_PATH, JSON.stringify(data)); } catch {}
 }
@@ -210,17 +217,11 @@ const WAKE_DURATION = 1500;
 const IDLE_LOOK_DURATION = 10000;  // idle-look CSS loop is 10s
 const SLEEP_SEQUENCE = new Set(["yawning", "dozing", "collapsing", "sleeping", "waking"]);
 
-// ── Session tracking ──
-const sessions = new Map(); // session_id → { state, updatedAt, sourcePid, cwd, editor, pidChain, claudePid }
-const SESSION_STALE_MS = 300000; // 5 min cleanup
-const WORKING_STALE_MS = 30000;  // 30s: working/thinking with no new event → decay to idle
+// ── Session tracking (delegated to session-manager.js) ──
+// Keep startup recovery logic here (UI concern)
 let startupRecoveryActive = false; // suppress sleep sequence while waiting for hooks after restart
 let startupRecoveryTimer = null;   // hard timeout to clear startupRecoveryActive
 const STARTUP_RECOVERY_MAX_MS = 300000; // 5 min: give up waiting for hooks
-const STATE_PRIORITY = {
-  error: 8, notification: 7, sweeping: 6, attention: 5,
-  carrying: 4, juggling: 4, working: 3, thinking: 2, idle: 1, sleeping: 0,
-};
 
 // ── CSS <object> sizing (mirrors styles.css #clawd) ──
 const OBJ_SCALE_W = 1.9;   // width: 190%
@@ -256,6 +257,7 @@ let isQuitting = false;
 let showTray = true;
 let showDock = true;
 let autoStartWithClaude = false;
+let debugMode = false;
 
 function sendToRenderer(channel, ...args) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, ...args);
@@ -690,66 +692,40 @@ function wakeFromDoze() {
   }, 350);
 }
 
-// ── Session management ──
-const ONESHOT_STATES = new Set(["attention", "error", "sweeping", "notification", "carrying"]);
+// ── Session management (delegated to session-manager.js) ──
+const ONESHOT_STATES = sessionManager.ONESHOT_STATES;
+// SLEEP_SEQUENCE is used from sessionManager, but we keep a local reference for the state machine
+// const SLEEP_SEQUENCE = sessionManager.SLEEP_SEQUENCE; // Already defined above
 
-function updateSession(sessionId, state, event, sourcePid, cwd, editor, pidChain, claudePid) {
+/**
+ * Handle session update from hook events.
+ * Delegates to session-manager and triggers UI state changes.
+ */
+function handleSessionUpdate(sessionId, state, event, sourcePid, cwd, editor, pidChain, claudePid) {
   // Claude Code is communicating — no need for startup recovery
   if (startupRecoveryActive) {
     startupRecoveryActive = false;
-    if (startupRecoveryTimer) { clearTimeout(startupRecoveryTimer); startupRecoveryTimer = null; }
+    if (startupRecoveryTimer) {
+      clearTimeout(startupRecoveryTimer);
+      startupRecoveryTimer = null;
+    }
   }
 
-  // PermissionRequest command hook: show notification animation only, don't mutate session.
-  // The HTTP hook runs in parallel and handles the actual decision. If we set session to idle
-  // here, it can overwrite a newer "working" state after the user approves.
-  if (event === "PermissionRequest") {
-    setState("notification");
+  // PermissionRequest: show notification animation, let session-manager handle the rest
+  const metadata = { sourcePid, cwd, editor, pidChain, claudePid };
+  const result = sessionManager.updateSession(sessionId, state, event, metadata);
+
+  // Session was deleted by SessionEnd
+  if (result.deleted) {
+    // All sessions ended → sleep immediately
+    if (sessionManager.getSessionCount() === 0) {
+      setState("sleeping");
+    }
     return;
   }
 
-  // Preserve existing fields — only SessionStart sends them all, other events reuse cached
-  const existing = sessions.get(sessionId);
-  const srcPid = sourcePid || (existing && existing.sourcePid) || null;
-  const srcCwd = cwd || (existing && existing.cwd) || "";
-  const srcEditor = editor || (existing && existing.editor) || null;
-  const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
-  const srcClaudePid = claudePid || (existing && existing.claudePid) || null;
-
-  const base = { sourcePid: srcPid, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, claudePid: srcClaudePid };
-
-  if (event === "SessionEnd") {
-    sessions.delete(sessionId);
-  } else if (state === "attention" || state === "notification" || SLEEP_SEQUENCE.has(state)) {
-    // Stop/notification/sleep: session goes idle — if work continues, new hooks will re-set
-    sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), ...base });
-  } else if (ONESHOT_STATES.has(state)) {
-    // Other oneshots (error/sweeping/notification/carrying):
-    // preserve session's previous state so auto-return resolves correctly
-    if (existing) {
-      existing.updatedAt = Date.now();
-      if (sourcePid) existing.sourcePid = sourcePid;
-      if (cwd) existing.cwd = cwd;
-      if (editor) existing.editor = editor;
-      if (pidChain && pidChain.length) existing.pidChain = pidChain;
-      if (claudePid) existing.claudePid = claudePid;
-    } else {
-      sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), ...base });
-    }
-  } else {
-    // Preserve juggling: subagent's own tool use (PreToolUse/PostToolUse)
-    // shouldn't override juggling — only SubagentStop should end it.
-    if (existing && existing.state === "juggling" && state === "working" && event !== "SubagentStop") {
-      existing.updatedAt = Date.now();
-    } else {
-      sessions.set(sessionId, { state, updatedAt: Date.now(), ...base });
-    }
-  }
-  cleanStaleSessions();
-
-  // All sessions ended → sleep immediately
-  if (sessions.size === 0 && event === "SessionEnd") {
-    setState("sleeping");
+  if (event === "PermissionRequest") {
+    setState("notification");
     return;
   }
 
@@ -759,64 +735,37 @@ function updateSession(sessionId, state, event, sourcePid, cwd, editor, pidChain
     return;
   }
 
-  const displayState = resolveDisplayState();
+  // Resolve display state from active sessions
+  const displayState = sessionManager.resolveDisplayState();
   setState(displayState, getSvgOverride(displayState));
 }
 
 let staleCleanupTimer = null;
 
-function isProcessAlive(pid) {
-  try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; }
-}
-
+/**
+ * Cleanup stale sessions based on timestamp.
+ * Delegates to session-manager, then triggers UI updates if needed.
+ */
 function cleanStaleSessions() {
-  const now = Date.now();
-  let changed = false;
-  for (const [id, s] of sessions) {
-    const age = now - s.updatedAt;
+  const { changed, sessionCount } = sessionManager.cleanStaleSessions();
 
-    // Claude Code process dead → orphan session, delete immediately regardless of age
-    if (s.claudePid && !isProcessAlive(s.claudePid)) {
-      sessions.delete(id); changed = true;
-      continue;
-    }
-
-    if (age > SESSION_STALE_MS) {
-      // Very stale (5 min): PID check or delete
-      if (s.sourcePid) {
-        if (!isProcessAlive(s.sourcePid)) {
-          sessions.delete(id); changed = true;
-        } else if (s.state !== "idle") {
-          s.state = "idle"; changed = true;
-        }
-      } else {
-        sessions.delete(id); changed = true;
-      }
-    } else if (age > WORKING_STALE_MS) {
-      // Moderately stale (30s): check if terminal was closed
-      if (s.sourcePid && !isProcessAlive(s.sourcePid)) {
-        sessions.delete(id); changed = true;
-      } else if (s.state === "working" || s.state === "juggling") {
-        // No hook event for 30s while working → likely interrupted (Esc)
-        s.state = "idle"; s.updatedAt = now; changed = true;
-      }
-    }
-    // Sessions updated <30s ago: skip — recent hook events prove liveness
-  }
   // If stale sessions were cleaned, re-resolve display state
-  if (changed && sessions.size === 0) {
+  if (changed && sessionCount === 0) {
     setState("yawning");
   } else if (changed) {
-    const resolved = resolveDisplayState();
+    const resolved = sessionManager.resolveDisplayState();
     setState(resolved, getSvgOverride(resolved));
   }
 
   // Startup recovery: recheck if Claude Code is still running
-  if (startupRecoveryActive && sessions.size === 0) {
+  if (startupRecoveryActive && sessionCount === 0) {
     detectRunningClaudeProcesses((found) => {
       if (!found) {
         startupRecoveryActive = false;
-        if (startupRecoveryTimer) { clearTimeout(startupRecoveryTimer); startupRecoveryTimer = null; }
+        if (startupRecoveryTimer) {
+          clearTimeout(startupRecoveryTimer);
+          startupRecoveryTimer = null;
+        }
       }
     });
   }
@@ -847,28 +796,24 @@ function detectRunningClaudeProcesses(callback) {
 
 function startStaleCleanup() {
   if (staleCleanupTimer) return;
-  staleCleanupTimer = setInterval(cleanStaleSessions, 10000); // every 10s (supports 30s working timeout)
+  staleCleanupTimer = setInterval(cleanStaleSessions, 10000); // every 10s
 }
 
 function stopStaleCleanup() {
-  if (staleCleanupTimer) { clearInterval(staleCleanupTimer); staleCleanupTimer = null; }
+  if (staleCleanupTimer) {
+    clearInterval(staleCleanupTimer);
+    staleCleanupTimer = null;
+  }
+}
+
+// ── State resolution helpers (delegated to session-manager) ──
+
+function getActiveWorkingCount() {
+  return sessionManager.getActiveWorkingCount();
 }
 
 function resolveDisplayState() {
-  if (sessions.size === 0) return "idle";
-  let best = "sleeping";
-  for (const [, s] of sessions) {
-    if ((STATE_PRIORITY[s.state] || 0) > (STATE_PRIORITY[best] || 0)) best = s.state;
-  }
-  return best;
-}
-
-function getActiveWorkingCount() {
-  let n = 0;
-  for (const [, s] of sessions) {
-    if (s.state === "working" || s.state === "thinking" || s.state === "juggling") n++;
-  }
-  return n;
+  return sessionManager.resolveDisplayState();
 }
 
 function getWorkingSvg() {
@@ -886,11 +831,7 @@ function getSvgOverride(state) {
 }
 
 function getJugglingSvg() {
-  let n = 0;
-  for (const [, s] of sessions) {
-    if (s.state === "juggling") n++;
-  }
-  return n >= 2 ? "clawd-working-conducting.svg" : "clawd-working-juggling.svg";
+  return sessionManager.getJugglingSvg();
 }
 
 // ── Session Dashboard (submenu for context menu + hotkey) ──
@@ -913,32 +854,17 @@ function formatElapsed(ms) {
 }
 
 function buildSessionSubmenu() {
-  // Collect sessions, sorted by priority desc then updatedAt desc
-  const entries = [];
-  for (const [id, s] of sessions) {
-    entries.push({ id, state: s.state, updatedAt: s.updatedAt, sourcePid: s.sourcePid, cwd: s.cwd, editor: s.editor, pidChain: s.pidChain });
-  }
-  if (entries.length === 0) {
-    return [{ label: t("noSessions"), enabled: false }];
-  }
-  entries.sort((a, b) => {
-    const pa = STATE_PRIORITY[a.state] || 0;
-    const pb = STATE_PRIORITY[b.state] || 0;
-    if (pb !== pa) return pb - pa;
-    return b.updatedAt - a.updatedAt;
-  });
+  const entries = sessionManager.buildSessionEntries(lang, t);
 
-  const now = Date.now();
   return entries.map((e) => {
-    const emoji = STATE_EMOJI[e.state] || "";
-    const stateText = t(STATE_LABEL_KEY[e.state] || "sessionIdle");
-    const name = e.cwd ? path.basename(e.cwd) : (e.id.length > 6 ? e.id.slice(0, 6) + ".." : e.id);
-    const elapsed = formatElapsed(now - e.updatedAt);
-    const hasPid = !!e.sourcePid;
+    if (e.enabled === false) return e; // "No sessions" entry
+
     return {
-      label: `${emoji} ${name}  ${stateText}  ${elapsed}`,
-      enabled: hasPid,
-      click: hasPid ? () => focusTerminalWindow(e.sourcePid, e.cwd, e.editor, e.pidChain) : undefined,
+      label: e.label,
+      enabled: e.enabled,
+      click: e.enabled
+        ? () => focusTerminalWindow(e.sourcePid, e.cwd, e.editor, e.pidChain)
+        : undefined,
     };
   });
 }
@@ -1214,6 +1140,7 @@ function startHttpServer() {
       });
       req.on("end", () => {
         if (destroyed) return;
+        permLog(`/state hit: ${body}`);
         try {
           const data = JSON.parse(body);
           const { state, svg, session_id, event } = data;
@@ -1247,7 +1174,7 @@ function startHttpServer() {
               const safeSvg = path.basename(svg);
               setState(state, safeSvg);
             } else {
-              updateSession(sid, state, event, source_pid, cwd, editor, pidChain, claudePid);
+              handleSessionUpdate(sid, state, event, source_pid, cwd, editor, pidChain, claudePid);
             }
             res.writeHead(200);
             res.end("ok");
@@ -1527,7 +1454,7 @@ function resolvePermissionEntry(permEntry, behavior, message) {
 }
 
 function permLog(msg) {
-  if (!permDebugLog) return;
+  if (!debugMode || !permDebugLog) return;
   fs.appendFileSync(permDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
 }
 
@@ -1656,6 +1583,15 @@ function buildTrayMenu() {
     { type: "separator" },
     getUpdateMenuItem(),
     { type: "separator" },
+    {
+      label: t("debugMode"),
+      type: "checkbox",
+      checked: debugMode,
+      click: (menuItem) => {
+        debugMode = menuItem.checked;
+        savePrefs();
+      },
+    },
     {
       label: t("language"),
       submenu: [
@@ -1911,6 +1847,7 @@ function createWindow() {
     if (typeof prefs.showDock === "boolean") showDock = prefs.showDock;
   }
   if (prefs && typeof prefs.autoStartWithClaude === "boolean") autoStartWithClaude = prefs.autoStartWithClaude;
+  if (prefs && typeof prefs.debugMode === "boolean") debugMode = prefs.debugMode;
   // macOS: apply dock visibility (default hidden)
   if (isMac && app.dock) {
     if (showDock) app.dock.show(); else app.dock.hide();
@@ -2012,7 +1949,7 @@ function createWindow() {
   ipcMain.on("focus-terminal", () => {
     // Find the best session to focus: prefer highest priority (non-idle), then most recent
     let best = null, bestTime = 0, bestPriority = -1;
-    for (const [, s] of sessions) {
+    for (const [, s] of sessionManager.getSessions()) {
       if (!s.sourcePid) continue;
       const pri = STATE_PRIORITY[s.state] || 0;
       if (pri > bestPriority || (pri === bestPriority && s.updatedAt > bestTime)) {
@@ -2090,7 +2027,7 @@ function createWindow() {
       }
     } else if (miniMode) {
       applyState("mini-idle");
-    } else if (sessions.size > 0) {
+    } else if (sessionManager.getSessionCount() > 0) {
       const resolved = resolveDisplayState();
       applyState(resolved, getSvgOverride(resolved));
     } else {
@@ -2098,9 +2035,9 @@ function createWindow() {
       // Startup recovery: delay 5s to let HWND/z-order/drag systems stabilize,
       // then detect running Claude Code processes → suppress sleep sequence
       setTimeout(() => {
-        if (sessions.size > 0 || doNotDisturb) return; // hook arrived during wait
+        if (sessionManager.getSessionCount() > 0 || doNotDisturb) return; // hook arrived during wait
         detectRunningClaudeProcesses((found) => {
-          if (found && sessions.size === 0 && !doNotDisturb) {
+          if (found && sessionManager.getSessionCount() === 0 && !doNotDisturb) {
             startupRecoveryActive = true;
             mouseStillSince = Date.now();
             // Hard timeout: give up if no hooks arrive within 5 min
@@ -2415,7 +2352,7 @@ function buildContextMenu() {
     },
     { type: "separator" },
     {
-      label: `${t("sessions")} (${sessions.size})`,
+      label: `${t("sessions")} (${sessionManager.getSessionCount()})`,
       submenu: buildSessionSubmenu(),
     },
   ];
