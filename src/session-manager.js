@@ -105,15 +105,20 @@ class LocalSession extends BaseSession {
    * Uses PID detection for faster cleanup when process dies.
    */
   alive() {
-    // 1. Check if process is still running
-    if (this.pid && !isProcessAlive(this.pid)) {
-      return false; // Process died → session dead
+    // 1. Check if Claude Code process is dead → orphan session, delete immediately
+    if (this.claudePid && !isProcessAlive(this.claudePid)) {
+      return false;
     }
 
-    // 2. Apply state decay
+    // 2. Check if terminal process is dead
+    if (this.pid && !isProcessAlive(this.pid)) {
+      return false;
+    }
+
+    // 3. Apply state decay (working → idle after 30s)
     this.decayState();
 
-    // 3. Check timeout
+    // 4. Check timeout
     if (this.age > SESSION_STALE_MS) {
       return false;
     }
