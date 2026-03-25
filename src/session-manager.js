@@ -5,11 +5,13 @@
  * No dependency on PID detection - relies purely on updatedAt timestamps.
  */
 
-// Session storage: session_id → { state, updatedAt, cwd, editor, pidChain }
+// Session storage: session_id → { state, updatedAt, cwd, editor, pidChain, usage }
 const sessions = new Map();
 
 // Session stale timeout: 2 minutes without update = dead session
 const SESSION_STALE_MS = 120000; // 2 minutes
+
+// Usage info structure: { input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens }
 
 // State priority for display resolution
 const STATE_PRIORITY = {
@@ -143,6 +145,19 @@ function deleteSession(sessionId) {
 }
 
 /**
+ * Update usage info for a session
+ */
+function updateUsage(sessionId, usage) {
+  const existing = sessions.get(sessionId);
+  if (existing) {
+    existing.usage = usage;
+    existing.updatedAt = Date.now();
+    return true;
+  }
+  return false;
+}
+
+/**
  * Clean up stale sessions based on timestamp.
  * No PID detection - pure timestamp-based cleanup.
  *
@@ -228,6 +243,7 @@ function buildSessionEntries(lang, t) {
       cwd: s.cwd,
       editor: s.editor,
       pidChain: s.pidChain,
+      usage: s.usage,
     });
   }
 
@@ -273,8 +289,18 @@ function buildSessionEntries(lang, t) {
     const elapsed = formatElapsed(now - e.updatedAt, t);
     const hasPid = !!e.sourcePid;
 
+    // Format usage info
+    let usageText = "";
+    if (e.usage) {
+      const inputK = Math.round((e.usage.input_tokens || 0) / 1000);
+      const outputK = Math.round((e.usage.output_tokens || 0) / 1000);
+      if (inputK > 0 || outputK > 0) {
+        usageText = `  ${inputK}k in, ${outputK}k out`;
+      }
+    }
+
     return {
-      label: `${emoji} ${name}  ${stateText}  ${elapsed}`,
+      label: `${emoji} ${name}  ${stateText}${usageText}  ${elapsed}`,
       enabled: hasPid,
       sourcePid: e.sourcePid,
       cwd: e.cwd,
@@ -309,6 +335,7 @@ module.exports = {
   hasSession,
   getSession,
   updateSession,
+  updateUsage,
   deleteSession,
   cleanStaleSessions,
   resolveDisplayState,

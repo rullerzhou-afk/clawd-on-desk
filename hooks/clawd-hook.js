@@ -4,6 +4,72 @@
 // Usage: node clawd-hook.js <event_name>
 // Reads stdin JSON from Claude Code for session_id
 
+// ── Usage extraction mode (spawned asynchronously) ──
+if (process.argv[2] === "--usage") {
+  const transcriptPath = process.argv[3];
+  if (!transcriptPath) process.exit(0);
+
+  const fs = require("fs");
+  const readline = require("readline");
+
+  // Read last ~50 lines to find the most recent assistant message with usage
+  async function extractUsage() {
+    try {
+      const fileStream = fs.createReadStream(transcriptPath, { encoding: "utf8" });
+      const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+
+      let lastUsage = null;
+      let lastSessionId = null;
+
+      for await (const line of rl) {
+        if (!line.trim()) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (entry.sessionId) lastSessionId = entry.sessionId;
+          // Look for assistant messages with usage info
+          if (entry.type === "assistant" && entry.message?.usage) {
+            lastUsage = entry.message.usage;
+          }
+        } catch {}
+      }
+
+      if (lastUsage && lastSessionId) {
+        const body = JSON.stringify({
+          session_id: lastSessionId,
+          usage: {
+            input_tokens: lastUsage.input_tokens || 0,
+            output_tokens: lastUsage.output_tokens || 0,
+            cache_read_input_tokens: lastUsage.cache_read_input_tokens || 0,
+            cache_creation_input_tokens: lastUsage.cache_creation_input_tokens || 0,
+          }
+        });
+
+        const req = require("http").request({
+          hostname: "127.0.0.1",
+          port: 23333,
+          path: "/usage",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(body),
+          },
+          timeout: 2000,
+        }, () => process.exit(0));
+        req.on("error", () => process.exit(0));
+        req.on("timeout", () => { req.destroy(); process.exit(0); });
+        req.end(body);
+      } else {
+        process.exit(0);
+      }
+    } catch {
+      process.exit(0);
+    }
+  }
+
+  extractUsage();
+  return; // Don't fall through to normal hook logic
+}
+
 const EVENT_TO_STATE = {
   SessionStart: "idle",
   SessionEnd: "sleeping",
@@ -24,6 +90,7 @@ const EVENT_TO_STATE = {
 
 const event = process.argv[2];
 const state = EVENT_TO_STATE[event];
+
 if (!state) process.exit(0);
 
 // Walk the process tree to find the terminal app PID.
@@ -140,19 +207,21 @@ process.stdin.on("data", (c) => chunks.push(c));
 process.stdin.on("end", () => {
   let sessionId = "default";
   let cwd = "";
+  let transcriptPath = null;
   try {
     const payload = JSON.parse(Buffer.concat(chunks).toString());
     sessionId = payload.session_id || "default";
     cwd = payload.cwd || "";
+    transcriptPath = payload.transcript_path || null;
   } catch {}
-  send(sessionId, cwd);
+  send(sessionId, cwd, transcriptPath);
 });
 
 // Safety: if stdin doesn't end in 400ms, send with default session
 // (200ms was too aggressive on slow machines / AV scanning)
 setTimeout(() => send("default", ""), 400);
 
-function send(sessionId, cwd) {
+function send(sessionId, cwd, transcriptPath) {
   if (sent) return;
   sent = true;
 
@@ -166,6 +235,7 @@ function send(sessionId, cwd) {
   if (_pidChain.length) body.pid_chain = _pidChain;
 
   const data = JSON.stringify(body);
+
   const req = require("http").request(
     {
       hostname: "127.0.0.1",
@@ -178,9 +248,24 @@ function send(sessionId, cwd) {
       },
       timeout: 500,  // 400ms stdin + 500ms HTTP = 900ms < 1000ms Claude Code budget
     },
-    () => process.exit(0)
+    (res) => {
+      // Spawn async process to extract usage from transcript
+      if (transcriptPath) {
+        const { spawn } = require("child_process");
+        spawn(process.execPath, [__filename, "--usage", transcriptPath], {
+          detached: true,
+          stdio: "ignore"
+        }).unref();
+      }
+      process.exit(0);
+    }
   );
-  req.on("error", () => process.exit(0));
-  req.on("timeout", () => { req.destroy(); process.exit(0); });
+  req.on("error", (e) => {
+    process.exit(0);
+  });
+  req.on("timeout", () => {
+    req.destroy();
+    process.exit(0);
+  });
   req.end(data);
 }

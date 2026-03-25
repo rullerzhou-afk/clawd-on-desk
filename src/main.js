@@ -1187,6 +1187,38 @@ function startHttpServer() {
           res.end("bad json");
         }
       });
+    } else if (req.method === "POST" && req.url === "/usage") {
+      // ── Usage endpoint — async hook extracts token usage from transcript ──
+      let body = "";
+      let bodySize = 0;
+      let destroyed = false;
+      req.on("data", (chunk) => {
+        bodySize += chunk.length;
+        if (bodySize > 1024) { destroyed = true; req.destroy(); return; }
+        body += chunk;
+      });
+      req.on("end", () => {
+        if (destroyed) return;
+        try {
+          const data = JSON.parse(body);
+          const sessionId = data.session_id || "default";
+          const usage = data.usage;
+          if (usage && typeof usage === "object") {
+            sessionManager.updateUsage(sessionId, {
+              input_tokens: usage.input_tokens || 0,
+              output_tokens: usage.output_tokens || 0,
+              cache_read_input_tokens: usage.cache_read_input_tokens || 0,
+              cache_creation_input_tokens: usage.cache_creation_input_tokens || 0,
+            });
+            permLog(`/usage hit: session=${sessionId} in=${usage.input_tokens} out=${usage.output_tokens}`);
+          }
+          res.writeHead(200);
+          res.end("ok");
+        } catch {
+          res.writeHead(400);
+          res.end("bad json");
+        }
+      });
     } else if (req.method === "POST" && req.url === "/permission") {
       // ── Permission HTTP hook — Claude Code sends PermissionRequest here ──
       permLog(`/permission hit | DND=${doNotDisturb} pending=${pendingPermissions.length}`);
