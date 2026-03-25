@@ -1,19 +1,16 @@
 /**
  * Session Manager for Clawd Desktop Pet
  *
- * Manages Claude Code session tracking with timestamp-based cleanup.
- * No dependency on PID detection - relies purely on updatedAt timestamps.
+ * Manages Claude Code session tracking with type-based alive detection.
+ * - LocalSession: PID is reachable locally, uses PID detection + timeout
+ * - RemoteSession: PID is not reachable (WSL2/remote), uses timeout only
  */
 
-// Session storage: session_id → { state, updatedAt, cwd, editor, pidChain, usage }
-const sessions = new Map();
+// ── Constants ───────────────────────────────────────────────────────────────
 
-// Session stale timeout: 2 minutes without update = dead session
-const SESSION_STALE_MS = 120000; // 2 minutes
+const SESSION_STALE_MS = 120000; // 2 minutes: max session lifetime without update
+const WORKING_STALE_MS = 30000;  // 30s: working/juggling with no update → decay to idle
 
-// Usage info structure: { input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens }
-
-// State priority for display resolution
 const STATE_PRIORITY = {
   error: 8,
   notification: 7,
@@ -27,66 +24,178 @@ const STATE_PRIORITY = {
   sleeping: 0,
 };
 
-// Oneshot states that should preserve previous session state
 const ONESHOT_STATES = new Set(["attention", "error", "sweeping", "notification", "carrying"]);
-
-// Sleep sequence states
 const SLEEP_SEQUENCE = new Set(["yawning", "dozing", "collapsing", "sleeping", "waking"]);
 
-/**
- * Get all sessions (read-only access for external code)
- */
+// ── PID Detection ────────────────────────────────────────────────────────────
+
+function isProcessAlive(pid) {
+  if (!pid || typeof pid !== "number" || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM: process exists but we don't have permission to signal it
+    return e.code === "EPERM";
+  }
+}
+
+// ── Base Session Class ───────────────────────────────────────────────────────
+
+class BaseSession {
+  constructor(sessionId, pid, metadata = {}) {
+    this.sessionId = sessionId;
+    this.pid = pid || null;
+    this.state = metadata.state || "idle";
+    this.updatedAt = Date.now();
+    this.cwd = metadata.cwd || "";
+    this.editor = metadata.editor || null;
+    this.pidChain = metadata.pidChain || null;
+    this.claudePid = metadata.claudePid || null;
+    this.usage = null;
+  }
+
+  /**
+   * Update timestamp and optional fields
+   */
+  touch(metadata = {}) {
+    this.updatedAt = Date.now();
+    if (metadata.sourcePid) this.pid = metadata.sourcePid;
+    if (metadata.cwd) this.cwd = metadata.cwd;
+    if (metadata.editor) this.editor = metadata.editor;
+    if (metadata.pidChain) this.pidChain = metadata.pidChain;
+    if (metadata.claudePid) this.claudePid = metadata.claudePid;
+  }
+
+  /**
+   * Get age in milliseconds
+   */
+  get age() {
+    return Date.now() - this.updatedAt;
+  }
+
+  /**
+   * Check if session is still alive. Must be implemented by subclasses.
+   * @returns {boolean} true if session should be kept, false if it should be deleted
+   */
+  alive() {
+    throw new Error("alive() must be implemented by subclass");
+  }
+
+  /**
+   * Check and apply state decay (working → idle after 30s)
+   * @returns {boolean} true if state was changed
+   */
+  decayState() {
+    if (this.age > WORKING_STALE_MS) {
+      if (this.state === "working" || this.state === "juggling") {
+        this.state = "idle";
+        return true;
+      }
+    }
+    return false;
+  }
+}
+
+// ── Local Session ────────────────────────────────────────────────────────────
+
+class LocalSession extends BaseSession {
+  /**
+   * Session with locally reachable PID.
+   * Uses PID detection for faster cleanup when process dies.
+   */
+  alive() {
+    // 1. Check if process is still running
+    if (this.pid && !isProcessAlive(this.pid)) {
+      return false; // Process died → session dead
+    }
+
+    // 2. Apply state decay
+    this.decayState();
+
+    // 3. Check timeout
+    if (this.age > SESSION_STALE_MS) {
+      return false;
+    }
+
+    return true;
+  }
+
+  get type() {
+    return "local";
+  }
+}
+
+// ── Remote Session ───────────────────────────────────────────────────────────
+
+class RemoteSession extends BaseSession {
+  /**
+   * Session with remote PID (WSL2, SSH, etc).
+   * PID is stored for reference but not used for alive detection.
+   * Relies purely on timeout.
+   */
+  alive() {
+    // 1. Apply state decay
+    this.decayState();
+
+    // 2. Check timeout only
+    if (this.age > SESSION_STALE_MS) {
+      return false;
+    }
+
+    return true;
+  }
+
+  get type() {
+    return "remote";
+  }
+}
+
+// ── Session Factory ──────────────────────────────────────────────────────────
+
+const SessionFactory = {
+  /**
+   * Create appropriate session type based on PID reachability.
+   * @param {string} sessionId
+   * @param {number|null} pid
+   * @param {object} metadata
+   * @returns {BaseSession}
+   */
+  create(sessionId, pid, metadata = {}) {
+    // Check if PID is reachable locally
+    if (pid && isProcessAlive(pid)) {
+      return new LocalSession(sessionId, pid, metadata);
+    } else {
+      return new RemoteSession(sessionId, pid, metadata);
+    }
+  }
+};
+
+// ── Session Manager ──────────────────────────────────────────────────────────
+
+const sessions = new Map();
+
 function getSessions() {
   return sessions;
 }
 
-/**
- * Get session count
- */
 function getSessionCount() {
   return sessions.size;
 }
 
-/**
- * Check if a session exists
- */
 function hasSession(sessionId) {
   return sessions.has(sessionId);
 }
 
-/**
- * Get a specific session
- */
 function getSession(sessionId) {
   return sessions.get(sessionId);
 }
 
 /**
  * Update or create a session based on incoming event.
- *
- * Key behavior:
- * - Any event with a session_id ensures that session exists
- * - SessionEnd deletes the session
- * - Updates updatedAt timestamp on every call
  */
 function updateSession(sessionId, state, event, metadata = {}) {
   const { sourcePid, cwd, editor, pidChain, claudePid } = metadata;
-
-  // Preserve existing fields — only SessionStart sends them all
-  const existing = sessions.get(sessionId);
-  const srcPid = sourcePid ?? existing?.sourcePid ?? null;
-  const srcCwd = cwd ?? existing?.cwd ?? "";
-  const srcEditor = editor ?? existing?.editor ?? null;
-  const srcPidChain = (pidChain && pidChain.length) ? pidChain : existing?.pidChain ?? null;
-  const srcClaudePid = claudePid ?? existing?.claudePid ?? null;
-
-  const base = {
-    sourcePid: srcPid,
-    cwd: srcCwd,
-    editor: srcEditor,
-    pidChain: srcPidChain,
-    claudePid: srcClaudePid
-  };
 
   // SessionEnd: delete the session
   if (event === "SessionEnd") {
@@ -94,46 +203,48 @@ function updateSession(sessionId, state, event, metadata = {}) {
     return { deleted: true };
   }
 
-  // PermissionRequest: don't mutate session state (handled separately by HTTP hook)
+  // Get or create session
+  let session = sessions.get(sessionId);
+
+  if (!session) {
+    // Create new session using factory
+    session = SessionFactory.create(sessionId, sourcePid, {
+      state,
+      cwd,
+      editor,
+      pidChain,
+      claudePid,
+    });
+    sessions.set(sessionId, session);
+  } else {
+    // Update existing session
+    session.touch({ sourcePid, cwd, editor, pidChain, claudePid });
+  }
+
+  // PermissionRequest: don't mutate session state
   if (event === "PermissionRequest") {
-    // Still ensure session exists and update timestamp
-    if (existing) {
-      existing.updatedAt = Date.now();
-    } else {
-      sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), ...base });
-    }
     return { permissionRequest: true };
   }
 
   // Attention/notification/sleep: session goes idle
   if (state === "attention" || state === "notification" || SLEEP_SEQUENCE.has(state)) {
-    sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), ...base });
+    session.state = "idle";
     return { updated: true };
   }
 
-  // Oneshot states: preserve previous state but update timestamp
+  // Oneshot states: preserve session's previous state
   if (ONESHOT_STATES.has(state)) {
-    if (existing) {
-      existing.updatedAt = Date.now();
-      if (sourcePid) existing.sourcePid = sourcePid;
-      if (cwd) existing.cwd = cwd;
-      if (editor) existing.editor = editor;
-      if (pidChain && pidChain.length) existing.pidChain = pidChain;
-      if (claudePid) existing.claudePid = claudePid;
-    } else {
-      sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), ...base });
-    }
+    // Don't change session.state, just update timestamp (already done in touch)
     return { updated: true, oneshot: true };
   }
 
   // Preserve juggling: subagent's own tool use shouldn't override juggling
-  if (existing && existing.state === "juggling" && state === "working" && event !== "SubagentStop") {
-    existing.updatedAt = Date.now();
+  if (session.state === "juggling" && state === "working" && event !== "SubagentStop") {
     return { updated: true };
   }
 
   // Normal state update
-  sessions.set(sessionId, { state, updatedAt: Date.now(), ...base });
+  session.state = state;
   return { updated: true };
 }
 
@@ -148,29 +259,25 @@ function deleteSession(sessionId) {
  * Update usage info for a session
  */
 function updateUsage(sessionId, usage) {
-  const existing = sessions.get(sessionId);
-  if (existing) {
-    existing.usage = usage;
-    existing.updatedAt = Date.now();
+  const session = sessions.get(sessionId);
+  if (session) {
+    session.usage = usage;
+    session.updatedAt = Date.now();
     return true;
   }
   return false;
 }
 
 /**
- * Clean up stale sessions based on timestamp.
- * No PID detection - pure timestamp-based cleanup.
- *
+ * Clean up stale sessions.
+ * Each session's alive() method determines if it should be deleted.
  * @returns {object} { changed: boolean, sessionCount: number }
  */
 function cleanStaleSessions() {
-  const now = Date.now();
   let changed = false;
 
-  for (const [id, s] of sessions) {
-    const age = now - s.updatedAt;
-
-    if (age > SESSION_STALE_MS) {
+  for (const [id, session] of sessions) {
+    if (!session.alive()) {
       sessions.delete(id);
       changed = true;
     }
@@ -181,27 +288,26 @@ function cleanStaleSessions() {
 
 /**
  * Resolve the display state from all active sessions.
- * Returns the highest priority state among all sessions.
  */
 function resolveDisplayState() {
   if (sessions.size === 0) return "idle";
 
   let best = "sleeping";
-  for (const [, s] of sessions) {
-    if ((STATE_PRIORITY[s.state] || 0) > (STATE_PRIORITY[best] || 0)) {
-      best = s.state;
+  for (const [, session] of sessions) {
+    if ((STATE_PRIORITY[session.state] || 0) > (STATE_PRIORITY[best] || 0)) {
+      best = session.state;
     }
   }
   return best;
 }
 
 /**
- * Get count of active working sessions (working/thinking/juggling)
+ * Get count of active working sessions
  */
 function getActiveWorkingCount() {
   let n = 0;
-  for (const [, s] of sessions) {
-    if (s.state === "working" || s.state === "thinking" || s.state === "juggling") {
+  for (const [, session] of sessions) {
+    if (session.state === "working" || session.state === "thinking" || session.state === "juggling") {
       n++;
     }
   }
@@ -223,8 +329,8 @@ function getWorkingSvg() {
  */
 function getJugglingSvg() {
   let n = 0;
-  for (const [, s] of sessions) {
-    if (s.state === "juggling") n++;
+  for (const [, session] of sessions) {
+    if (session.state === "juggling") n++;
   }
   return n >= 2 ? "clawd-working-conducting.svg" : "clawd-working-juggling.svg";
 }
@@ -234,16 +340,17 @@ function getJugglingSvg() {
  */
 function buildSessionEntries(lang, t) {
   const entries = [];
-  for (const [id, s] of sessions) {
+  for (const [id, session] of sessions) {
     entries.push({
       id,
-      state: s.state,
-      updatedAt: s.updatedAt,
-      sourcePid: s.sourcePid,
-      cwd: s.cwd,
-      editor: s.editor,
-      pidChain: s.pidChain,
-      usage: s.usage,
+      state: session.state,
+      updatedAt: session.updatedAt,
+      sourcePid: session.pid,
+      cwd: session.cwd,
+      editor: session.editor,
+      pidChain: session.pidChain,
+      usage: session.usage,
+      type: session.type,
     });
   }
 
@@ -325,9 +432,16 @@ function formatElapsed(ms, t) {
 module.exports = {
   // Constants
   SESSION_STALE_MS,
+  WORKING_STALE_MS,
   STATE_PRIORITY,
   ONESHOT_STATES,
   SLEEP_SEQUENCE,
+
+  // Classes
+  BaseSession,
+  LocalSession,
+  RemoteSession,
+  SessionFactory,
 
   // Core functions
   getSessions,
@@ -345,4 +459,7 @@ module.exports = {
   getWorkingSvg,
   getJugglingSvg,
   buildSessionEntries,
+
+  // Utility
+  isProcessAlive,
 };
