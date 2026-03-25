@@ -2551,7 +2551,7 @@ if (!gotTheLock) {
       const CodexLogMonitor = require("../agents/codex-log-monitor");
       const codexAgent = require("../agents/codex");
       _codexMonitor = new CodexLogMonitor(codexAgent, (sid, state, event, extra) => {
-        updateSession(sid, state, event, extra.sourcePid, extra.cwd, null, null, extra.agentPid, "codex");
+        handleSessionUpdate(sid, state, event, extra.sourcePid, extra.cwd, null, null, extra.agentPid, "codex");
       });
       _codexMonitor.start();
     } catch (err) {

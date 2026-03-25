@@ -247,7 +247,7 @@ function updateSession(sessionId, state, event, metadata = {}) {
   }
 
   // Preserve juggling: subagent's own tool use shouldn't override juggling
-  if (session.state === "juggling" && state === "working" && event !== "SubagentStop") {
+  if (session.state === "juggling" && state === "working" && event !== "SubagentStop" && event !== "subagentStop") {
     return { updated: true };
   }
 
