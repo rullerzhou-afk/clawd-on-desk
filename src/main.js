@@ -1,5 +1,6 @@
 const { app, BrowserWindow, screen, Menu, Tray, ipcMain, nativeImage, dialog, shell } = require("electron");
 const http = require("http");
+const https = require("https");
 const path = require("path");
 const fs = require("fs");
 
@@ -344,6 +345,7 @@ const PASSTHROUGH_TOOLS = new Set([
   "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
 ]);
 let permDebugLog = null; // set after app.whenReady()
+let updateDebugLog = null; // set after app.whenReady()
 
 function setState(newState, svgOverride) {
   if (doNotDisturb) return;
@@ -1569,6 +1571,11 @@ function permLog(msg) {
   fs.appendFileSync(permDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
 }
 
+function updateLog(msg) {
+  if (!updateDebugLog) return;
+  fs.appendFileSync(updateDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
+}
+
 function sendPermissionResponse(res, decisionOrBehavior, message) {
   let decision;
   if (typeof decisionOrBehavior === "string") {
@@ -1722,8 +1729,12 @@ function getAutoUpdater() {
       _autoUpdater = require("electron-updater").autoUpdater;
       _autoUpdater.autoDownload = false;
       _autoUpdater.autoInstallOnAppQuit = true;
-    } catch {
-      console.warn("Clawd: electron-updater not available, auto-update disabled");
+      updateLog("Auto-updater initialized successfully");
+    } catch (err) {
+      const errMsg = `electron-updater load failed: ${err.message}`;
+      console.warn("Clawd:", errMsg);
+      updateLog(`ERROR: ${errMsg}`);
+      updateLog(`Stack: ${err.stack}`);
       return null;
     }
   }
@@ -1734,16 +1745,26 @@ let updateStatus = "idle"; // idle | checking | available | downloading | ready 
 
 function setupAutoUpdater() {
   const autoUpdater = getAutoUpdater();
-  if (!autoUpdater) return;
+  if (!autoUpdater) {
+    updateLog("setupAutoUpdater: autoUpdater is null, skipping event setup");
+    return;
+  }
+  updateLog("Setting up auto-updater event handlers");
+
   autoUpdater.on("update-available", (info) => {
+    updateLog(`Update available: v${info.version} (current: v${app.getVersion()})`);
     const wasManual = manualUpdateCheck;
     manualUpdateCheck = false;
     // Silent check during DND/mini: skip dialog, stay idle so user can check later
-    if (!wasManual && (doNotDisturb || miniMode)) return;
+    if (!wasManual && (doNotDisturb || miniMode)) {
+      updateLog("Silent mode (DND/mini), skipping dialog");
+      return;
+    }
     updateStatus = "available";
     rebuildAllMenus();
     if (isMac) {
       // macOS: no code signing → can't auto-update, open GitHub Releases page instead
+      updateLog("macOS detected: will open GitHub Releases page");
       dialog.showMessageBox({
         type: "info",
         title: t("updateAvailable"),
@@ -1753,13 +1774,17 @@ function setupAutoUpdater() {
         noLink: true,
       }).then(({ response }) => {
         if (response === 0) {
+          updateLog("User chose to download, opening GitHub Releases");
           shell.openExternal("https://github.com/rullerzhou-afk/clawd-on-desk/releases/latest");
+        } else {
+          updateLog("User chose to download later");
         }
         updateStatus = "idle";
         rebuildAllMenus();
       });
     } else {
       // Windows: auto-download
+      updateLog("Windows detected: will offer auto-download");
       dialog.showMessageBox({
         type: "info",
         title: t("updateAvailable"),
@@ -1769,10 +1794,12 @@ function setupAutoUpdater() {
         noLink: true,
       }).then(({ response }) => {
         if (response === 0) {
+          updateLog("User chose to download, starting download");
           updateStatus = "downloading";
           rebuildAllMenus();
           autoUpdater.downloadUpdate();
         } else {
+          updateLog("User chose to download later");
           updateStatus = "idle";
           rebuildAllMenus();
         }
@@ -1780,11 +1807,13 @@ function setupAutoUpdater() {
     }
   });
 
-  autoUpdater.on("update-not-available", () => {
+  autoUpdater.on("update-not-available", (info) => {
+    updateLog(`No update available: current v${app.getVersion()} is latest`);
     updateStatus = "idle";
     rebuildAllMenus();
     if (manualUpdateCheck) {
       manualUpdateCheck = false;
+      updateLog("Showing 'up to date' dialog");
       dialog.showMessageBox({
         type: "info",
         title: t("updateNotAvailable"),
@@ -1795,6 +1824,7 @@ function setupAutoUpdater() {
   });
 
   autoUpdater.on("update-downloaded", (info) => {
+    updateLog(`Update downloaded: v${info.version}`);
     updateStatus = "ready";
     rebuildAllMenus();
     dialog.showMessageBox({
@@ -1806,16 +1836,51 @@ function setupAutoUpdater() {
       noLink: true,
     }).then(({ response }) => {
       if (response === 0) {
+        updateLog("User chose to restart now");
         autoUpdater.quitAndInstall(false, true);
+      } else {
+        updateLog("User chose to restart later");
       }
     });
   });
 
-  autoUpdater.on("error", () => {
+  autoUpdater.on("error", (err) => {
+    updateLog(`ERROR: AutoUpdater error: ${err.message}`);
+    updateLog(`Error code: ${err.code || 'none'}`);
+    updateLog(`Error stack: ${err.stack}`);
+
+    // Note: 404 errors during download might mean:
+    // 1. Release files not uploaded yet (check GitHub first)
+    // 2. Real network error
+    // Since we now check GitHub API first, 404 here likely means
+    // the release exists but files aren't ready
     updateStatus = "error";
     rebuildAllMenus();
-    if (manualUpdateCheck) {
-      manualUpdateCheck = false;
+
+    // For auto-checks (not manual), just log silently
+    if (!manualUpdateCheck) {
+      updateLog("Auto-check error, not showing dialog");
+      return;
+    }
+
+    // For manual checks, show user-friendly error
+    manualUpdateCheck = false;
+    const is404Error = err.code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND' ||
+                       err.message?.includes('404') ||
+                       err.message?.includes('Cannot find latest.yml');
+
+    if (is404Error) {
+      // 404 after GitHub API check = release exists but files missing
+      updateLog("404 error: release files not ready, showing 'up to date'");
+      dialog.showMessageBox({
+        type: "info",
+        title: t("updateNotAvailable"),
+        message: t("updateNotAvailableMsg").replace("{version}", app.getVersion()),
+        noLink: true,
+      });
+    } else {
+      // Real error: network, permissions, corrupted download, etc.
+      updateLog("Real error: showing error dialog");
       dialog.showMessageBox({
         type: "error",
         title: t("updateError"),
@@ -1828,24 +1893,184 @@ function setupAutoUpdater() {
 
 let manualUpdateCheck = false;
 
-function checkForUpdates(manual = false) {
-  if (updateStatus === "checking" || updateStatus === "downloading") return;
+// ── Version comparison utilities ──
+// Compare two version strings (e.g., "0.5.0" vs "0.5.1")
+// Returns: -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2
+function compareVersions(v1, v2) {
+  const parts1 = v1.replace('v', '').split('.').map(Number);
+  const parts2 = v2.replace('v', '').split('.').map(Number);
+  const maxLength = Math.max(parts1.length, parts2.length);
+
+  for (let i = 0; i < maxLength; i++) {
+    const p1 = parts1[i] || 0;
+    const p2 = parts2[i] || 0;
+    if (p1 < p2) return -1;
+    if (p1 > p2) return 1;
+  }
+  return 0;
+}
+
+// Fetch latest release version from GitHub API
+function fetchLatestVersion() {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'api.github.com',
+      path: '/repos/rullerzhou-afk/clawd-on-desk/releases/latest',
+      headers: {
+        'User-Agent': 'Clawd-on-Desk'
+      }
+    };
+
+    https.get(options, (res) => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        if (res.statusCode === 200) {
+          try {
+            const release = JSON.parse(data);
+            resolve(release.tag_name || release.name);
+          } catch (err) {
+            reject(new Error(`Failed to parse GitHub response: ${err.message}`));
+          }
+        } else if (res.statusCode === 404) {
+          reject(new Error('No releases found'));
+        } else {
+          reject(new Error(`GitHub API returned ${res.statusCode}`));
+        }
+      });
+    }).on('error', reject);
+  });
+}
+
+async function checkForUpdates(manual = false) {
+  if (updateStatus === "checking" || updateStatus === "downloading") {
+    updateLog(`Check skipped: already ${updateStatus}`);
+    return;
+  }
+
+  const currentVersion = app.getVersion();
+  updateLog(`Starting update check (manual: ${manual}, current version: v${currentVersion})`);
   manualUpdateCheck = manual;
   updateStatus = "checking";
   rebuildAllMenus();
-  const au = getAutoUpdater();
-  if (!au) return;
-  au.checkForUpdates().then((result) => {
-    // Dev mode: electron-updater resolves null without emitting events
-    if (!result) {
-      updateStatus = "idle";
-      manualUpdateCheck = false;
-      rebuildAllMenus();
-    }
-  }).catch(() => {
+
+  // Step 1: Check GitHub API for latest version
+  updateLog("Fetching latest version from GitHub API...");
+  let latestVersion;
+  try {
+    latestVersion = await fetchLatestVersion();
+    updateLog(`Latest version on GitHub: ${latestVersion}`);
+  } catch (err) {
+    updateLog(`ERROR: Failed to fetch latest version: ${err.message}`);
+
+    // Network error or GitHub API issue
     updateStatus = "error";
     manualUpdateCheck = false;
     rebuildAllMenus();
+    if (manual) {
+      updateLog("Showing error dialog (GitHub API failed)");
+      dialog.showMessageBox({
+        type: "error",
+        title: t("updateError"),
+        message: t("updateErrorMsg"),
+        noLink: true,
+      });
+    }
+    return;
+  }
+
+  // Step 2: Compare versions
+  const versionCompare = compareVersions(currentVersion, latestVersion);
+  updateLog(`Version comparison: ${currentVersion} vs ${latestVersion} = ${versionCompare}`);
+
+  if (versionCompare >= 0) {
+    // Current version is up-to-date or newer
+    updateLog("Current version is up-to-date or newer");
+    updateStatus = "idle";
+    manualUpdateCheck = false;
+    rebuildAllMenus();
+    if (manual) {
+      updateLog("Showing 'up to date' dialog");
+      dialog.showMessageBox({
+        type: "info",
+        title: t("updateNotAvailable"),
+        message: t("updateNotAvailableMsg").replace("{version}", currentVersion),
+        noLink: true,
+      });
+    }
+    return;
+  }
+
+  // Step 3: Newer version available, use electron-updater to download
+  updateLog(`Newer version available: ${latestVersion}, proceeding with electron-updater`);
+  const au = getAutoUpdater();
+  if (!au) {
+    updateLog("ERROR: AutoUpdater not available");
+    updateStatus = "error";
+    manualUpdateCheck = false;
+    rebuildAllMenus();
+    if (manual) {
+      updateLog("Showing error dialog (auto-updater not available)");
+      dialog.showMessageBox({
+        type: "error",
+        title: t("updateError"),
+        message: t("updateErrorMsg"),
+        noLink: true,
+      });
+    }
+    return;
+  }
+
+  // Let electron-updater handle the download
+  au.checkForUpdates().then((result) => {
+    if (!result) {
+      updateLog("Update check returned null (likely dev mode)");
+      updateStatus = "idle";
+      manualUpdateCheck = false;
+      rebuildAllMenus();
+    } else {
+      updateLog(`Update check result: ${JSON.stringify(result)}`);
+    }
+  }).catch((err) => {
+    updateLog(`ERROR: checkForUpdates promise rejected: ${err.message}`);
+    updateLog(`Stack: ${err.stack}`);
+
+    // Distinguish between real errors and "no newer version"
+    const is404Error = err.code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND' ||
+                       err.message?.includes('404') ||
+                       err.message?.includes('Cannot find latest.yml');
+
+    if (is404Error) {
+      // This might mean the release files aren't ready yet
+      updateLog("404 error: release files may not be uploaded yet");
+      updateStatus = "idle";
+      manualUpdateCheck = false;
+      rebuildAllMenus();
+      if (manual) {
+        updateLog("Showing 'up to date' dialog (release files not found)");
+        dialog.showMessageBox({
+          type: "info",
+          title: t("updateNotAvailable"),
+          message: t("updateNotAvailableMsg").replace("{version}", currentVersion),
+          noLink: true,
+        });
+      }
+    } else {
+      // Real error: network, permissions, etc.
+      updateLog("Real error in promise: showing error dialog");
+      updateStatus = "error";
+      manualUpdateCheck = false;
+      rebuildAllMenus();
+      if (manual) {
+        updateLog("Showing error dialog (check failed)");
+        dialog.showMessageBox({
+          type: "error",
+          title: t("updateError"),
+          message: t("updateErrorMsg"),
+          noLink: true,
+        });
+      }
+    }
   });
 }
 
@@ -2670,6 +2895,7 @@ if (!gotTheLock) {
 
   app.whenReady().then(() => {
     permDebugLog = path.join(app.getPath("userData"), "permission-debug.log");
+    updateDebugLog = path.join(app.getPath("userData"), "update-debug.log");
     createWindow();
 
     // Auto-register Claude Code hooks on every launch (dedup-safe)
