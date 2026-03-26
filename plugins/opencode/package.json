@@ -18,7 +18,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/anthropics/clawd-on-desk",
+    "url": "https://github.com/rullerzhou-afk/clawd-on-desk",
     "directory": "plugins/opencode"
   },
   "peerDependencies": {

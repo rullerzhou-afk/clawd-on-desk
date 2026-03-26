@@ -88,9 +88,22 @@ function getOpenCodeVersion() {
  * @param {object} [options]
  * @param {boolean} [options.silent] - suppress console output
  * @param {string} [options.configPath] - specific config file path
- * @returns {{ added: boolean, configPath: string }}
+ * @param {boolean} [options.checkInstalled] - check if OpenCode is installed first (default: true)
+ * @returns {{ added: boolean, configPath: string|null, skipped: boolean }}
  */
 function registerPlugin(options = {}) {
+  const { checkInstalled = true } = options;
+
+  // Check if OpenCode/Crush is installed before touching anything
+  if (checkInstalled) {
+    const versionInfo = getOpenCodeVersion();
+    const existingConfig = findConfigFile();
+    if (!versionInfo && !existingConfig) {
+      // OpenCode not installed and no config exists — skip silently
+      return { added: false, configPath: null, skipped: true };
+    }
+  }
+
   // Find plugin script path
   let pluginPath = path.resolve(__dirname, "clawd-opencode-plugin.js").replace(/\\/g, "/");
   // In packaged builds, __dirname points to app.asar (virtual); the actual
@@ -112,12 +125,12 @@ function registerPlugin(options = {}) {
     fileUrl = `file://${pluginPath}`;
   }
 
-  // Determine config file
+  // Determine config file - only use existing config, don't create new one
   let configPath = options.configPath || findConfigFile();
 
-  // If no config exists, create one in current directory
+  // If no config exists, don't create one (OpenCode not set up)
   if (!configPath) {
-    configPath = path.join(process.cwd(), "opencode.json");
+    return { added: false, configPath: null, skipped: true };
   }
 
   // Read existing config
@@ -154,7 +167,7 @@ function registerPlugin(options = {}) {
     if (!options.silent) {
       console.log(`Clawd plugin already registered in ${configPath}`);
     }
-    return { added: false, configPath };
+    return { added: false, configPath, skipped: false };
   }
 
   // Add plugin
@@ -179,7 +192,7 @@ function registerPlugin(options = {}) {
     console.log(`\nRestart OpenCode/Crush to activate the plugin.`);
   }
 
-  return { added: true, configPath };
+  return { added: true, configPath, skipped: false };
 }
 
 /**

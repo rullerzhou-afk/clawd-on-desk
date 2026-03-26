@@ -2609,9 +2609,10 @@ if (!gotTheLock) {
     }
 
     // Auto-register OpenCode/Crush plugin on every launch (dedup-safe)
+    // Only runs if OpenCode is actually installed or has existing config
     try {
       const { registerPlugin } = require("../plugins/opencode/install.cjs");
-      const { added } = registerPlugin({ silent: true });
+      const { added, skipped } = registerPlugin({ silent: true, checkInstalled: true });
       if (added) console.log("Clawd: auto-registered OpenCode/Crush plugin");
     } catch (err) {
       // Silently ignore - OpenCode may not be installed
