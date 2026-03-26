@@ -62,11 +62,13 @@
       "assets/svg/**/*",
       "assets/tray-icon*.png",
       "hooks/**/*",
+      "plugins/**/*",
       "extensions/**/*",
       "agents/**/*"
     ],
     "asarUnpack": [
       "hooks/**/*",
+      "plugins/**/*",
       "extensions/**/*"
     ],
     "extraResources": [

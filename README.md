@@ -8,7 +8,7 @@
 
 A desktop pet that reacts to your AI coding agent sessions in real-time. Clawd lives on your screen — thinking when you prompt, typing when tools run, juggling subagents, reviewing permissions, celebrating when tasks complete, and sleeping when you're away.
 
-> Supports Windows 11 and macOS. Requires Node.js. Works with **Claude Code**, **Codex CLI**, and **Copilot CLI**.
+> Supports Windows 11 and macOS. Requires Node.js. Works with **Claude Code**, **Codex CLI**, **Copilot CLI**, and **OpenCode/Crush**.
 
 ## Features
 
@@ -16,7 +16,8 @@ A desktop pet that reacts to your AI coding agent sessions in real-time. Clawd l
 - **Claude Code** — full integration via command hooks + HTTP permission hooks
 - **Codex CLI** — automatic JSONL log polling (`~/.codex/sessions/`), no configuration needed
 - **Copilot CLI** — command hooks via `~/.copilot/hooks/hooks.json`
-- **Multi-agent coexistence** — run all three simultaneously; Clawd tracks each session independently
+- **OpenCode/Crush** — plugin-based integration via `opencode.json` configuration
+- **Multi-agent coexistence** — run all agents simultaneously; Clawd tracks each session independently
 
 ### Animations & Interaction
 - **Real-time state awareness** — agent hooks and log polling drive Clawd's animations automatically
@@ -122,6 +123,14 @@ npm start
 ```
 Replace `/path/to/clawd-on-desk` with your actual install path.
 
+**OpenCode/Crush** — works out of the box. The plugin is auto-registered on launch. Clawd detects your OpenCode config file and appends the plugin path. If you prefer manual setup, add to your `opencode.json`:
+```json
+{
+  "plugin": ["file:///path/to/clawd-on-desk/plugins/opencode/clawd-opencode-plugin.js"]
+}
+```
+Replace `/path/to/clawd-on-desk` with your actual install path. Restart OpenCode/Crush after the plugin is registered.
+
 ### macOS Notes
 
 - **From source** (`npm start`): works out of the box on Intel and Apple Silicon.
@@ -138,6 +147,11 @@ Claude Code / Copilot CLI (command hooks, non-blocking):
     → 127.0.0.1:23333/state
     → State machine in main.js (multi-session + priority + min display time)
     → IPC to renderer.js (SVG preload + crossfade swap)
+
+OpenCode/Crush (plugin-based, non-blocking):
+  OpenCode event
+    → plugins/opencode/clawd-opencode-plugin.js (event → state → HTTP POST)
+    → Same state machine → same animations
 
 Codex CLI (JSONL log polling):
   Codex writes to ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
@@ -189,6 +203,9 @@ hooks/
   copilot-hook.js    # Copilot CLI command hook (camelCase events, same architecture)
   install.js         # Safe hook registration into ~/.claude/settings.json (append, never overwrite)
   auto-start.js      # SessionStart hook: launches Clawd if not running (<500ms)
+plugins/
+  opencode/          # OpenCode/Crush plugin for Clawd integration
+    clawd-opencode-plugin.js  # Sends state updates via OpenCode plugin hooks
 extensions/
   vscode/            # VS Code extension for terminal tab focus via URI protocol
 assets/
@@ -204,6 +221,8 @@ assets/
 | **Codex CLI: Windows hooks disabled** | Codex hardcodes hooks off on Windows, so we poll log files instead. This means ~1.5s latency vs near-instant for hook-based agents. |
 | **Copilot CLI: manual hook setup** | Copilot hooks require manually creating `~/.copilot/hooks/hooks.json`. Claude Code and Codex work out of the box. |
 | **Copilot CLI: no permission bubble** | Copilot's `preToolUse` hook only supports deny, not the full allow/deny flow. Permission bubbles only work with Claude Code. |
+| **OpenCode/Crush: requires restart** | After the plugin is auto-registered, you need to restart OpenCode/Crush for it to take effect. |
+| **OpenCode/Crush: no permission bubble** | OpenCode handles permissions internally. Permission bubbles only work with Claude Code. |
 | **macOS auto-update** | No Apple code signing — macOS users must download updates manually from GitHub Releases. |
 | **No test framework for Electron** | Unit tests cover agents and log polling, but the Electron main process (state machine, windows, tray) has no automated tests. |
 
@@ -212,7 +231,7 @@ assets/
 Some things we'd like to explore in the future:
 
 - Codex terminal focus via process tree lookup from `codex.exe` PID
-- Auto-registration of Copilot CLI hooks (like we do for Claude Code)
+- Auto-registration of Copilot CLI hooks (like we do for Claude Code and OpenCode)
 - Sound effects for state transitions (blocked by Electron autoplay policy)
 - Custom character skins / animations
 - Hook uninstall script for clean app removal

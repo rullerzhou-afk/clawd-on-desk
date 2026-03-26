@@ -2608,6 +2608,15 @@ if (!gotTheLock) {
       console.warn("Clawd: failed to auto-register hooks:", err.message);
     }
 
+    // Auto-register OpenCode/Crush plugin on every launch (dedup-safe)
+    try {
+      const { registerPlugin } = require("../plugins/opencode/install.cjs");
+      const { added } = registerPlugin({ silent: true });
+      if (added) console.log("Clawd: auto-registered OpenCode/Crush plugin");
+    } catch (err) {
+      // Silently ignore - OpenCode may not be installed
+    }
+
     // Start Codex CLI JSONL log monitor
     try {
       const CodexLogMonitor = require("../agents/codex-log-monitor");

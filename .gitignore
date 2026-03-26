@@ -29,3 +29,4 @@ logs/
 
 # GIF recording tool (not part of main project)
 scripts/
+local/

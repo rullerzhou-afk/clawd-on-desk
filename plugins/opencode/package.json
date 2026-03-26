@@ -1,0 +1,34 @@
+{
+  "name": "@clawd/opencode-plugin",
+  "version": "0.1.0",
+  "description": "Clawd Desktop Pet plugin for OpenCode/Crush coding agents",
+  "type": "module",
+  "main": "clawd-opencode-plugin.js",
+  "exports": {
+    ".": "./clawd-opencode-plugin.js"
+  },
+  "keywords": [
+    "opencode",
+    "crush",
+    "clawd",
+    "coding-agent",
+    "desktop-pet"
+  ],
+  "author": "Clawd Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anthropics/clawd-on-desk",
+    "directory": "plugins/opencode"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=0.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "clawd-opencode-plugin.js",
+    "README.md"
+  ]
+}
