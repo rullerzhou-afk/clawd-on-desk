@@ -67,6 +67,7 @@ const i18n = {
     restartNow: "Restart Now",
     restartLater: "Later",
     download: "Download",
+    bubbleFollow: "Bubble Follow Pet",
     sessions: "Sessions",
     noSessions: "No active sessions",
     sessionWorking: "Working",
@@ -108,6 +109,7 @@ const i18n = {
     restartNow: "立即重启",
     restartLater: "稍后",
     download: "下载",
+    bubbleFollow: "气泡跟随宠物",
     sessions: "会话",
     noSessions: "无活跃会话",
     sessionWorking: "工作中",
@@ -150,7 +152,7 @@ function savePrefs() {
     x, y, size: currentSize,
     miniMode, preMiniX, preMiniY, lang,
     showTray, showDock,
-    autoStartWithClaude,
+    autoStartWithClaude, bubbleFollowPet,
   };
   try { fs.writeFileSync(PREFS_PATH, JSON.stringify(data)); } catch {}
 }
@@ -268,6 +270,7 @@ let isQuitting = false;
 let showTray = true;
 let showDock = true;
 let autoStartWithClaude = false;
+let bubbleFollowPet = false;
 
 function sendToRenderer(channel, ...args) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, ...args);
@@ -1601,7 +1604,7 @@ function estimateBubbleHeight(sugCount) {
 }
 
 function repositionBubbles() {
-  // Stack bubbles from bottom-right upward. Newest (last in array) at bottom.
+  if (!win || win.isDestroyed()) return;
   const margin = 8;
   const gap = 6;
   const bw = 340;
@@ -1609,9 +1612,53 @@ function repositionBubbles() {
   const cx = petBounds.x + petBounds.width / 2;
   const cy = petBounds.y + petBounds.height / 2;
   const wa = getNearestWorkArea(cx, cy);
-  const x = wa.x + wa.width - bw - margin;
 
-  let yBottom = wa.y + wa.height - margin;
+  let x, yBottom;
+  if (bubbleFollowPet) {
+    // Use hitbox bottom for tight positioning against actual pet body
+    const hit = getHitRectScreen(petBounds);
+    const hitBottom = Math.round(hit.bottom);
+    const hitCx = Math.round((hit.left + hit.right) / 2);
+
+    // Calculate total bubble stack height
+    let totalH = 0;
+    for (const perm of pendingPermissions) {
+      totalH += (perm.measuredHeight || estimateBubbleHeight((perm.suggestions || []).length)) + gap;
+    }
+
+    const spaceBelow = wa.y + wa.height - hitBottom;
+    if (spaceBelow >= totalH) {
+      // Enough room below — place bubbles under the pet body
+      x = Math.max(wa.x, Math.min(hitCx - Math.round(bw / 2), wa.x + wa.width - bw));
+      let yTop = hitBottom;
+      for (let i = pendingPermissions.length - 1; i >= 0; i--) {
+        const perm = pendingPermissions[i];
+        const bh = perm.measuredHeight || estimateBubbleHeight((perm.suggestions || []).length);
+        if (perm.bubble && !perm.bubble.isDestroyed()) {
+          perm.bubble.setBounds({ x, y: yTop, width: bw, height: bh });
+        }
+        yTop += bh + gap;
+      }
+      return;
+    }
+    // Not enough room below — place to the side with more space
+    const hitRight = Math.round(hit.right);
+    const hitLeft = Math.round(hit.left);
+    const spaceRight = wa.x + wa.width - hitRight;
+    const spaceLeft = hitLeft - wa.x;
+    if (spaceRight >= bw || spaceRight >= spaceLeft) {
+      x = Math.min(hitRight, wa.x + wa.width - bw);
+    } else {
+      x = Math.max(wa.x, hitLeft - bw);
+    }
+    yBottom = hitBottom;
+    // Fall through to upward stacking loop below
+  } else {
+    // Default: bottom-right corner of nearest work area
+    x = wa.x + wa.width - bw - margin;
+    yBottom = wa.y + wa.height - margin;
+  }
+
   // Iterate in reverse: newest bubble (end of array) gets the bottom slot
   for (let i = pendingPermissions.length - 1; i >= 0; i--) {
     const perm = pendingPermissions[i];
@@ -2353,6 +2400,7 @@ function createWindow() {
     if (typeof prefs.showDock === "boolean") showDock = prefs.showDock;
   }
   if (prefs && typeof prefs.autoStartWithClaude === "boolean") autoStartWithClaude = prefs.autoStartWithClaude;
+  if (prefs && typeof prefs.bubbleFollowPet === "boolean") bubbleFollowPet = prefs.bubbleFollowPet;
   // macOS: apply dock visibility (default hidden)
   if (isMac) {
     applyDockVisibility();
@@ -2489,6 +2537,7 @@ function createWindow() {
     const clamped = clampToScreen(x + dx, y + dy, size.width, size.height);
     win.setBounds({ ...clamped, width: size.width, height: size.height });
     syncHitWin();
+    if (bubbleFollowPet && pendingPermissions.length) repositionBubbles();
   });
 
   ipcMain.on("pause-cursor-polling", () => { idlePaused = true; });
@@ -2715,6 +2764,7 @@ function animateWindowX(targetX, durationMs) {
     const x = Math.round(startX + (targetX - startX) * eased);
     win.setBounds({ x, y: snapY, width: snapW, height: snapH });
     syncHitWin();
+    if (bubbleFollowPet && pendingPermissions.length) repositionBubbles();
     if (t < 1) {
       peekAnimTimer = setTimeout(step, 16);
     } else {
@@ -2746,6 +2796,7 @@ function animateWindowParabola(targetX, targetY, durationMs, onDone) {
     const y = Math.round(startY + (targetY - startY) * eased - arc);
     win.setPosition(x, y);
     syncHitWin();
+    if (bubbleFollowPet && pendingPermissions.length) repositionBubbles();
     if (t < 1) {
       peekAnimTimer = setTimeout(step, 16);
     } else {
@@ -2931,6 +2982,17 @@ function buildContextMenu() {
       label: doNotDisturb ? t("wake") : t("sleep"),
       click: () => doNotDisturb ? disableDoNotDisturb() : enableDoNotDisturb(),
     },
+    {
+      label: t("bubbleFollow"),
+      type: "checkbox",
+      checked: bubbleFollowPet,
+      click: (menuItem) => {
+        bubbleFollowPet = menuItem.checked;
+        if (pendingPermissions.length) repositionBubbles();
+        buildContextMenu();
+        savePrefs();
+      },
+    },
     { type: "separator" },
     {
       label: `${t("sessions")} (${sessions.size})`,
@@ -2995,6 +3057,7 @@ function resizeWindow(sizeKey) {
     const clamped = clampToScreen(x, y, size.width, size.height);
     win.setBounds({ ...clamped, width: size.width, height: size.height });
   }
+  if (bubbleFollowPet && pendingPermissions.length) repositionBubbles();
   buildContextMenu();
   savePrefs();
 }
