@@ -97,7 +97,20 @@ function registerPlugin(options = {}) {
   // unpacked file lives under app.asar.unpacked (see package.json asarUnpack).
   pluginPath = pluginPath.replace("app.asar/", "app.asar.unpacked/");
 
-  const fileUrl = `file://${pluginPath}`;
+  // Build file URL - need to handle WSL path correctly
+  // In WSL, path is /mnt/d/... but OpenCode running in WSL expects /home/... style
+  // file:// URL should use the actual path without conversion
+  let fileUrl;
+  if (pluginPath.startsWith("/mnt/")) {
+    // WSL path - use as-is, OpenCode in WSL can read it directly
+    fileUrl = `file://${pluginPath}`;
+  } else if (process.platform === "win32") {
+    // Native Windows path - add leading slash
+    fileUrl = `file:///${pluginPath}`;
+  } else {
+    // Unix path (macOS, Linux)
+    fileUrl = `file://${pluginPath}`;
+  }
 
   // Determine config file
   let configPath = options.configPath || findConfigFile();

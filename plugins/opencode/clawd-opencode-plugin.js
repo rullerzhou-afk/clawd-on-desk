@@ -4,26 +4,15 @@
  *
  * This plugin sends state updates to Clawd when OpenCode/Crush events occur.
  * Reuses logic from hooks/clawd-hook.js for process tree walking and terminal detection.
- *
- * Installation:
- * 1. Add to your opencode.json:
- *    {
- *      "plugin": ["file:///path/to/clawd-on-desk/plugins/opencode/clawd-opencode-plugin.js"]
- *    }
- *
- * 2. Or install as npm package (if published):
- *    {
- *      "plugin": ["@clawd/opencode-plugin"]
- *    }
  */
 
-import { Plugin } from "@opencode-ai/plugin";
 import { execSync } from "child_process";
 import { basename } from "path";
 
 const CLAWD_HOST = process.env.CLAWD_HOST || "127.0.0.1";
 const CLAWD_PORT = parseInt(process.env.CLAWD_PORT || "23333", 10);
 const CLAWD_TIMEOUT = parseInt(process.env.CLAWD_TIMEOUT || "500", 10);
+const CLAWD_DEBUG = process.env.CLAWD_DEBUG === "1";
 
 // Map OpenCode events to Clawd states
 const EVENT_TO_STATE = {
@@ -36,8 +25,8 @@ const EVENT_TO_STATE = {
   "chat.message": "thinking",
 
   // Tool events (state determined by tool name)
-  "tool.execute.before": null, // dynamic
-  "tool.execute.after": null,  // dynamic
+  "tool.execute.before": null,
+  "tool.execute.after": null,
 
   // Command events
   "command.execute.before": "working",
@@ -49,7 +38,7 @@ const EVENT_TO_STATE = {
   "permission.ask": "attention",
 };
 
-// Terminal app detection (same as clawd-hook.js)
+// Terminal app detection
 const TERMINAL_NAMES_WIN = new Set([
   "windowsterminal.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
   "code.exe", "alacritty.exe", "wezterm-gui.exe", "mintty.exe",
@@ -64,11 +53,9 @@ const TERMINAL_NAMES_MAC = new Set([
 const SYSTEM_BOUNDARY_WIN = new Set(["explorer.exe", "services.exe", "winlogon.exe", "svchost.exe"]);
 const SYSTEM_BOUNDARY_MAC = new Set(["launchd", "init", "systemd"]);
 
-// Editor detection
 const EDITOR_MAP_WIN = { "code.exe": "code", "cursor.exe": "cursor" };
 const EDITOR_MAP_MAC = { "code": "code", "cursor": "cursor" };
 
-// OpenCode/Crush process detection
 const OPENCODE_NAMES_WIN = new Set(["opencode.exe", "crush.exe"]);
 const OPENCODE_NAMES_MAC = new Set(["opencode", "crush"]);
 
@@ -78,10 +65,10 @@ let _detectedEditor = null;
 let _opencodePid = null;
 let _pidChain = [];
 
-/**
- * Walk process tree to find stable terminal PID
- * Same logic as clawd-hook.js for terminal focus support
- */
+function debug(...args) {
+  if (CLAWD_DEBUG) console.log("[Clawd]", ...args);
+}
+
 function getStablePid() {
   if (_stablePid) return _stablePid;
 
@@ -115,7 +102,6 @@ function getStablePid() {
         const ppidOut = execSync(`ps -o ppid= -p ${pid}`, { encoding: "utf8", timeout: 1000 }).trim();
         const commOut = execSync(`ps -o comm= -p ${pid}`, { encoding: "utf8", timeout: 1000 }).trim();
         name = basename(commOut).toLowerCase();
-        // macOS: VS Code binary is "Electron" — check full comm path for editor detection
         if (!_detectedEditor) {
           const fullLower = commOut.toLowerCase();
           if (fullLower.includes("visual studio code")) _detectedEditor = "code";
@@ -129,7 +115,6 @@ function getStablePid() {
 
     if (!_detectedEditor && editorMap[name]) _detectedEditor = editorMap[name];
 
-    // OpenCode/Crush detection
     if (!_opencodePid) {
       if (opencodeNames.has(name)) {
         _opencodePid = pid;
@@ -155,40 +140,25 @@ function getStablePid() {
   return _stablePid;
 }
 
-/**
- * Determine tool state based on tool name
- * Reading/searching tools = thinking, modifying tools = working
- */
 function getToolState(tool) {
   const thinkingTools = ["read", "glob", "grep", "lsp", "webfetch", "websearch"];
-  const workingTools = ["bash", "edit", "write", "notebookedit"];
-
   const toolLower = (tool || "").toLowerCase();
   if (thinkingTools.some(t => toolLower.includes(t))) return "thinking";
-  if (workingTools.some(t => toolLower.includes(t))) return "working";
   return "working";
 }
 
-/**
- * Determine command state based on command name
- */
 function getCommandState(command) {
   const thinkingCommands = ["help", "clear", "config", "doctor", "init"];
-  const workingCommands = ["commit", "pr", "review", "mcp"];
-
   const cmdLower = (command || "").toLowerCase();
   if (thinkingCommands.some(c => cmdLower.includes(c))) return "thinking";
-  if (workingCommands.some(c => cmdLower.includes(c))) return "working";
   return "working";
 }
 
-/**
- * Send state to Clawd HTTP server
- * Uses same HTTP request pattern as clawd-hook.js
- */
 async function sendToClawd(payload) {
   const data = JSON.stringify(payload);
   const url = `http://${CLAWD_HOST}:${CLAWD_PORT}/state`;
+
+  debug("Sending:", payload);
 
   try {
     const controller = new AbortController();
@@ -206,55 +176,67 @@ async function sendToClawd(payload) {
 
     clearTimeout(timeoutId);
   } catch {
-    // Silently ignore errors (Clawd may not be running)
+    // Silently ignore (Clawd may not be running)
   }
 }
 
-/**
- * Build Clawd payload from event context
- * Includes process tree info for terminal focus support
- */
 function buildPayload(ctx, event, state, extra = {}) {
+  // Build a unique session_id that includes the directory
+  // OpenCode can run multiple sessions in different directories
+  // We need to distinguish them by combining sessionID with directory
+
+  // Try multiple sources for sessionID:
+  // 1. extra.sessionID (direct from hook input)
+  // 2. extra.session_id (alternative naming)
+  // 3. extra.info?.id (from session.created event: { sessionID, info })
+  let sessionId = extra.sessionID || extra.session_id || extra.info?.id;
+
+  // Combine sessionID with directory for uniqueness across directories
+  if (sessionId && ctx.directory) {
+    sessionId = `${sessionId}:${ctx.directory}`;
+  } else if (!sessionId) {
+    sessionId = ctx.directory || "default";
+  }
+
   const payload = {
     state,
     event,
     agent_id: "opencode",
     cwd: ctx.directory,
     source_pid: getStablePid(),
-    ...extra,
+    session_id: sessionId,
   };
 
-  // Add editor detection
+  // Remove sessionID/session_id/info from extra to avoid duplication
+  const { sessionID, session_id, info, ...restExtra } = extra;
+  Object.assign(payload, restExtra);
+
   if (_detectedEditor) payload.editor = _detectedEditor;
-
-  // Add OpenCode PID for liveness detection
-  if (_opencodePid) {
-    payload.agent_pid = _opencodePid;
-  }
-
-  // Add PID chain for debugging
+  if (_opencodePid) payload.agent_pid = _opencodePid;
   if (_pidChain.length) payload.pid_chain = _pidChain;
 
   return payload;
 }
 
 // Plugin export
-export const ClawdPlugin = async (ctx) => {
-  // Pre-resolve stable PID on plugin init
+const ClawdPlugin = async (ctx) => {
   getStablePid();
+  debug("Plugin loaded, ctx.directory:", ctx.directory);
 
   return {
     // Handle all bus events
     async event({ event }) {
-      let state = EVENT_TO_STATE[event.type];
+      const state = EVENT_TO_STATE[event.type];
       if (!state) return;
 
-      const payload = buildPayload(ctx, event.type, state, event.properties);
+      debug("Event:", event.type, "full event:", JSON.stringify(event));
+      const payload = buildPayload(ctx, event.type, state, event.properties || event);
       await sendToClawd(payload);
     },
 
     // Handle new chat messages
     async "chat.message"(input, output) {
+      debug("chat.message:", input.sessionID);
       const payload = buildPayload(ctx, "chat.message", "thinking", {
         sessionID: input.sessionID,
         messageID: input.messageID,
@@ -265,6 +247,7 @@ export const ClawdPlugin = async (ctx) => {
     // Handle tool execution before
     async "tool.execute.before"(input, output) {
       const state = getToolState(input.tool);
+      debug("tool.execute.before:", input.tool, "->", state);
       const payload = buildPayload(ctx, "tool.execute.before", state, {
         sessionID: input.sessionID,
         callID: input.callID,
@@ -277,6 +260,7 @@ export const ClawdPlugin = async (ctx) => {
     async "tool.execute.after"(input, output) {
       const hasError = output.metadata?.error || output.output?.includes("error");
       const state = hasError ? "error" : "working";
+      debug("tool.execute.after:", input.tool, "->", state);
       const payload = buildPayload(ctx, "tool.execute.after", state, {
         sessionID: input.sessionID,
         callID: input.callID,
@@ -289,6 +273,7 @@ export const ClawdPlugin = async (ctx) => {
     // Handle command execution
     async "command.execute.before"(input, output) {
       const state = getCommandState(input.command);
+      debug("command.execute.before:", input.command, "->", state);
       const payload = buildPayload(ctx, "command.execute.before", state, {
         sessionID: input.sessionID,
         command: input.command,
@@ -298,6 +283,7 @@ export const ClawdPlugin = async (ctx) => {
 
     // Handle session compaction
     async "experimental.session.compacting"(input, output) {
+      debug("session.compacting:", input.sessionID);
       const payload = buildPayload(ctx, "experimental.session.compacting", "sweeping", {
         sessionID: input.sessionID,
       });
@@ -306,6 +292,7 @@ export const ClawdPlugin = async (ctx) => {
 
     // Handle permission requests
     async "permission.ask"(input, output) {
+      debug("permission.ask");
       const payload = buildPayload(ctx, "permission.ask", "attention", {
         permission: input,
       });
@@ -314,12 +301,12 @@ export const ClawdPlugin = async (ctx) => {
 
     // Handle config changes
     async config(input) {
-      // Refresh stable PID when config changes
+      debug("config hook called");
       _stablePid = null;
       getStablePid();
     },
   };
 };
 
-// Default export
 export default ClawdPlugin;
+export { ClawdPlugin };
