@@ -80,16 +80,9 @@ async function sendToClawd(payload) {
 }
 
 function buildPayload(ctx, event, state, extra = {}) {
-  // Build a unique session_id that includes the directory
-  // OpenCode can run multiple sessions in different directories
-  let sessionId = extra.sessionID || extra.session_id || extra.info?.id;
-
-  // Combine sessionID with directory for uniqueness across directories
-  if (sessionId && ctx.directory) {
-    sessionId = `${sessionId}:${ctx.directory}`;
-  } else if (!sessionId) {
-    sessionId = ctx.directory || "default";
-  }
+  // Use sessionID from event - OpenCode sessionID is already unique
+  // Don't combine with directory as ctx.directory may not be available on session.created
+  let sessionId = extra.sessionID || extra.session_id || extra.info?.id || ctx.directory || "default";
 
   const procInfo = getProcessInfo();
 
