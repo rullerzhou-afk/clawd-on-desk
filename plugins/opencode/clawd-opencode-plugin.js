@@ -3,11 +3,9 @@
  * Clawd Desktop Pet — OpenCode/Crush Plugin
  *
  * This plugin sends state updates to Clawd when OpenCode/Crush events occur.
- * Reuses logic from hooks/clawd-hook.js for process tree walking and terminal detection.
  */
 
-import { execSync } from "child_process";
-import { basename } from "path";
+import { walkProcessTree } from "../../lib/process-tree.mjs";
 
 const CLAWD_HOST = process.env.CLAWD_HOST || "127.0.0.1";
 const CLAWD_PORT = parseInt(process.env.CLAWD_PORT || "23333", 10);
@@ -16,128 +14,29 @@ const CLAWD_DEBUG = process.env.CLAWD_DEBUG === "1";
 
 // Map OpenCode events to Clawd states
 const EVENT_TO_STATE = {
-  // Session events
   "session.created": "idle",
   "session.deleted": "sleeping",
   "session.error": "error",
-
-  // Chat events
   "chat.message": "thinking",
-
-  // Tool events (state determined by tool name)
   "tool.execute.before": null,
   "tool.execute.after": null,
-
-  // Command events
   "command.execute.before": "working",
-
-  // Experimental
   "experimental.session.compacting": "sweeping",
-
-  // Permission
   "permission.ask": "attention",
 };
 
-// Terminal app detection
-const TERMINAL_NAMES_WIN = new Set([
-  "windowsterminal.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
-  "code.exe", "alacritty.exe", "wezterm-gui.exe", "mintty.exe",
-  "conemu64.exe", "conemu.exe", "hyper.exe", "tabby.exe",
-  "antigravity.exe", "warp.exe", "iterm.exe", "ghostty.exe",
-]);
-const TERMINAL_NAMES_MAC = new Set([
-  "terminal", "iterm2", "alacritty", "wezterm-gui", "kitty",
-  "hyper", "tabby", "warp", "ghostty",
-]);
-
-const SYSTEM_BOUNDARY_WIN = new Set(["explorer.exe", "services.exe", "winlogon.exe", "svchost.exe"]);
-const SYSTEM_BOUNDARY_MAC = new Set(["launchd", "init", "systemd"]);
-
-const EDITOR_MAP_WIN = { "code.exe": "code", "cursor.exe": "cursor" };
-const EDITOR_MAP_MAC = { "code": "code", "cursor": "cursor" };
-
-const OPENCODE_NAMES_WIN = new Set(["opencode.exe", "crush.exe"]);
-const OPENCODE_NAMES_MAC = new Set(["opencode", "crush"]);
-
 // Cached process info
-let _stablePid = null;
-let _detectedEditor = null;
-let _opencodePid = null;
-let _pidChain = [];
+let _result = null;
 
 function debug(...args) {
   if (CLAWD_DEBUG) console.log("[Clawd]", ...args);
 }
 
-function getStablePid() {
-  if (_stablePid) return _stablePid;
-
-  const isWin = process.platform === "win32";
-  const terminalNames = isWin ? TERMINAL_NAMES_WIN : TERMINAL_NAMES_MAC;
-  const systemBoundary = isWin ? SYSTEM_BOUNDARY_WIN : SYSTEM_BOUNDARY_MAC;
-  const editorMap = isWin ? EDITOR_MAP_WIN : EDITOR_MAP_MAC;
-  const opencodeNames = isWin ? OPENCODE_NAMES_WIN : OPENCODE_NAMES_MAC;
-
-  let pid = process.ppid;
-  let lastGoodPid = pid;
-  let terminalPid = null;
-  _pidChain = [];
-  _detectedEditor = null;
-  _opencodePid = null;
-
-  for (let i = 0; i < 8; i++) {
-    let name, parentPid;
-    try {
-      if (isWin) {
-        const out = execSync(
-          `wmic process where "ProcessId=${pid}" get Name,ParentProcessId /format:csv`,
-          { encoding: "utf8", timeout: 1500, windowsHide: true }
-        );
-        const lines = out.trim().split("\n").filter(l => l.includes(","));
-        if (!lines.length) break;
-        const parts = lines[lines.length - 1].split(",");
-        name = (parts[1] || "").trim().toLowerCase();
-        parentPid = parseInt(parts[2], 10);
-      } else {
-        const ppidOut = execSync(`ps -o ppid= -p ${pid}`, { encoding: "utf8", timeout: 1000 }).trim();
-        const commOut = execSync(`ps -o comm= -p ${pid}`, { encoding: "utf8", timeout: 1000 }).trim();
-        name = basename(commOut).toLowerCase();
-        if (!_detectedEditor) {
-          const fullLower = commOut.toLowerCase();
-          if (fullLower.includes("visual studio code")) _detectedEditor = "code";
-          else if (fullLower.includes("cursor.app")) _detectedEditor = "cursor";
-        }
-        parentPid = parseInt(ppidOut, 10);
-      }
-    } catch { break; }
-
-    _pidChain.push(pid);
-
-    if (!_detectedEditor && editorMap[name]) _detectedEditor = editorMap[name];
-
-    if (!_opencodePid) {
-      if (opencodeNames.has(name)) {
-        _opencodePid = pid;
-      } else if (name === "node.exe" || name === "node" || name === "bun") {
-        try {
-          const cmdOut = isWin
-            ? execSync(`wmic process where "ProcessId=${pid}" get CommandLine /format:csv`,
-                { encoding: "utf8", timeout: 500, windowsHide: true })
-            : execSync(`ps -o command= -p ${pid}`, { encoding: "utf8", timeout: 500 });
-          if (cmdOut.includes("opencode") || cmdOut.includes("crush")) _opencodePid = pid;
-        } catch {}
-      }
-    }
-
-    if (systemBoundary.has(name)) break;
-    if (terminalNames.has(name)) terminalPid = pid;
-    lastGoodPid = pid;
-    if (!parentPid || parentPid === pid || parentPid <= 1) break;
-    pid = parentPid;
+function getProcessInfo() {
+  if (!_result) {
+    _result = walkProcessTree();
   }
-
-  _stablePid = terminalPid || lastGoodPid;
-  return _stablePid;
+  return _result;
 }
 
 function getToolState(tool) {
@@ -183,12 +82,6 @@ async function sendToClawd(payload) {
 function buildPayload(ctx, event, state, extra = {}) {
   // Build a unique session_id that includes the directory
   // OpenCode can run multiple sessions in different directories
-  // We need to distinguish them by combining sessionID with directory
-
-  // Try multiple sources for sessionID:
-  // 1. extra.sessionID (direct from hook input)
-  // 2. extra.session_id (alternative naming)
-  // 3. extra.info?.id (from session.created event: { sessionID, info })
   let sessionId = extra.sessionID || extra.session_id || extra.info?.id;
 
   // Combine sessionID with directory for uniqueness across directories
@@ -198,12 +91,14 @@ function buildPayload(ctx, event, state, extra = {}) {
     sessionId = ctx.directory || "default";
   }
 
+  const procInfo = getProcessInfo();
+
   const payload = {
     state,
     event,
     agent_id: "opencode",
     cwd: ctx.directory,
-    source_pid: getStablePid(),
+    source_pid: procInfo.stablePid,
     session_id: sessionId,
   };
 
@@ -211,16 +106,16 @@ function buildPayload(ctx, event, state, extra = {}) {
   const { sessionID, session_id, info, ...restExtra } = extra;
   Object.assign(payload, restExtra);
 
-  if (_detectedEditor) payload.editor = _detectedEditor;
-  if (_opencodePid) payload.agent_pid = _opencodePid;
-  if (_pidChain.length) payload.pid_chain = _pidChain;
+  if (procInfo.detectedEditor) payload.editor = procInfo.detectedEditor;
+  if (procInfo.agentPid) payload.agent_pid = procInfo.agentPid;
+  if (procInfo.pidChain.length) payload.pid_chain = procInfo.pidChain;
 
   return payload;
 }
 
 // Plugin export
 const ClawdPlugin = async (ctx) => {
-  getStablePid();
+  getProcessInfo(); // Pre-resolve
   debug("Plugin loaded, ctx.directory:", ctx.directory);
 
   return {
@@ -302,8 +197,8 @@ const ClawdPlugin = async (ctx) => {
     // Handle config changes
     async config(input) {
       debug("config hook called");
-      _stablePid = null;
-      getStablePid();
+      _result = null; // Reset cache
+      getProcessInfo();
     },
   };
 };
