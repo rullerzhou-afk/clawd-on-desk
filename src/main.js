@@ -1604,6 +1604,7 @@ function estimateBubbleHeight(sugCount) {
 }
 
 function repositionBubbles() {
+  // Stack bubbles from bottom-right upward. Newest (last in array) at bottom.
   if (!win || win.isDestroyed()) return;
   const margin = 8;
   const gap = 6;
@@ -1626,8 +1627,13 @@ function repositionBubbles() {
       totalH += (perm.measuredHeight || estimateBubbleHeight((perm.suggestions || []).length)) + gap;
     }
 
-    const spaceBelow = wa.y + wa.height - hitBottom;
-    if (spaceBelow >= totalH) {
+    // Degradation: if total bubble height exceeds half the workspace, fall back to
+    // default bottom-right stacking so bubbles don't crowd the pet or overflow
+    if (totalH > wa.height / 2) {
+      x = wa.x + wa.width - bw - margin;
+      yBottom = wa.y + wa.height - margin;
+      // Fall through to upward stacking loop below
+    } else if (wa.y + wa.height - hitBottom >= totalH) {
       // Enough room below — place bubbles under the pet body
       x = Math.max(wa.x, Math.min(hitCx - Math.round(bw / 2), wa.x + wa.width - bw));
       let yTop = hitBottom;
@@ -1640,19 +1646,20 @@ function repositionBubbles() {
         yTop += bh + gap;
       }
       return;
-    }
-    // Not enough room below — place to the side with more space
-    const hitRight = Math.round(hit.right);
-    const hitLeft = Math.round(hit.left);
-    const spaceRight = wa.x + wa.width - hitRight;
-    const spaceLeft = hitLeft - wa.x;
-    if (spaceRight >= bw || spaceRight >= spaceLeft) {
-      x = Math.min(hitRight, wa.x + wa.width - bw);
     } else {
-      x = Math.max(wa.x, hitLeft - bw);
+      // Not enough room below — place to the side with more space
+      const hitRight = Math.round(hit.right);
+      const hitLeft = Math.round(hit.left);
+      const spaceRight = wa.x + wa.width - hitRight;
+      const spaceLeft = hitLeft - wa.x;
+      if (spaceRight >= bw || spaceRight >= spaceLeft) {
+        x = Math.min(hitRight, wa.x + wa.width - bw);
+      } else {
+        x = Math.max(wa.x, hitLeft - bw);
+      }
+      // Side fallback: stack from workspace bottom upward (not pet bottom, which would occlude pet)
+      yBottom = wa.y + wa.height - margin;
     }
-    yBottom = hitBottom;
-    // Fall through to upward stacking loop below
   } else {
     // Default: bottom-right corner of nearest work area
     x = wa.x + wa.width - bw - margin;
@@ -1854,6 +1861,18 @@ function buildTrayMenu() {
     {
       label: doNotDisturb ? t("wake") : t("sleep"),
       click: () => doNotDisturb ? disableDoNotDisturb() : enableDoNotDisturb(),
+    },
+    {
+      label: t("bubbleFollow"),
+      type: "checkbox",
+      checked: bubbleFollowPet,
+      click: (menuItem) => {
+        bubbleFollowPet = menuItem.checked;
+        if (pendingPermissions.length) repositionBubbles();
+        buildContextMenu();
+        buildTrayMenu();
+        savePrefs();
+      },
     },
     { type: "separator" },
     {
@@ -2757,6 +2776,7 @@ function animateWindowX(targetX, durationMs) {
   const snapY = miniSnap ? miniSnap.y : bounds.y;
   const snapW = miniSnap ? miniSnap.width : bounds.width;
   const snapH = miniSnap ? miniSnap.height : bounds.height;
+  let frameCount = 0;
   const step = () => {
     if (!win || win.isDestroyed()) { peekAnimTimer = null; isAnimating = false; return; }
     const t = Math.min(1, (Date.now() - startTime) / durationMs);
@@ -2764,7 +2784,8 @@ function animateWindowX(targetX, durationMs) {
     const x = Math.round(startX + (targetX - startX) * eased);
     win.setBounds({ x, y: snapY, width: snapW, height: snapH });
     syncHitWin();
-    if (bubbleFollowPet && pendingPermissions.length) repositionBubbles();
+    // Throttle bubble reposition to every 3rd frame (~20fps) — visually identical, less overhead
+    if (bubbleFollowPet && pendingPermissions.length && (++frameCount % 3 === 0 || t >= 1)) repositionBubbles();
     if (t < 1) {
       peekAnimTimer = setTimeout(step, 16);
     } else {
@@ -2779,7 +2800,6 @@ function animateWindowParabola(targetX, targetY, durationMs, onDone) {
   if (peekAnimTimer) { clearTimeout(peekAnimTimer); peekAnimTimer = null; }
   const bounds = win.getBounds();
   const startX = bounds.x, startY = bounds.y;
-  const size = SIZES[currentSize];
   if (startX === targetX && startY === targetY) {
     isAnimating = false;
     if (onDone) onDone();
@@ -2787,6 +2807,7 @@ function animateWindowParabola(targetX, targetY, durationMs, onDone) {
   }
   isAnimating = true;
   const startTime = Date.now();
+  let frameCount = 0;
   const step = () => {
     if (!win || win.isDestroyed()) { peekAnimTimer = null; isAnimating = false; return; }
     const t = Math.min(1, (Date.now() - startTime) / durationMs);
@@ -2796,7 +2817,8 @@ function animateWindowParabola(targetX, targetY, durationMs, onDone) {
     const y = Math.round(startY + (targetY - startY) * eased - arc);
     win.setPosition(x, y);
     syncHitWin();
-    if (bubbleFollowPet && pendingPermissions.length) repositionBubbles();
+    // Throttle bubble reposition to every 3rd frame (~20fps) — visually identical, less overhead
+    if (bubbleFollowPet && pendingPermissions.length && (++frameCount % 3 === 0 || t >= 1)) repositionBubbles();
     if (t < 1) {
       peekAnimTimer = setTimeout(step, 16);
     } else {
@@ -2990,6 +3012,7 @@ function buildContextMenu() {
         bubbleFollowPet = menuItem.checked;
         if (pendingPermissions.length) repositionBubbles();
         buildContextMenu();
+        buildTrayMenu();
         savePrefs();
       },
     },
