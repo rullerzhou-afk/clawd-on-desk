@@ -1,64 +1,42 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
     <style>
-      .breathe-anim {
-        transform-origin: 7.5px 13px;
-        animation: breathe 3.2s infinite ease-in-out;
+      :root { --duration: 0.72s; }
+      .frame {
+        opacity: 0;
+        animation-name: frame-step;
+        animation-duration: var(--duration);
+        animation-timing-function: steps(1, end);
+        animation-iteration-count: infinite;
+        image-rendering: pixelated;
       }
-
-      .eyes-blink {
-        transform-origin: 7.5px 9px;
-        animation: eye-blink 4s infinite ease-in-out;
+      .f0 { animation-delay: calc(var(--duration) * 0 / -6); }
+      .f1 { animation-delay: calc(var(--duration) * 1 / -6); }
+      .f2 { animation-delay: calc(var(--duration) * 2 / -6); }
+      .f3 { animation-delay: calc(var(--duration) * 3 / -6); }
+      .f4 { animation-delay: calc(var(--duration) * 4 / -6); }
+      .f5 { animation-delay: calc(var(--duration) * 5 / -6); }
+      @keyframes frame-step {
+        0%, 16.666% { opacity: 1; }
+        16.667%, 100% { opacity: 0; }
       }
-
       #eyes-js, #body-js, #shadow-js {
-        transition: transform 0.2s ease-out;
-      }
-      #shadow-js {
-        transform-origin: 7.5px 15px;
-      }
-
-      @keyframes breathe {
-        0%, 100% { transform: scale(1, 1) translate(0, 0); }
-        50% { transform: scale(1.02, 0.98) translate(0, 0.5px); }
-      }
-
-      @keyframes eye-blink {
-        0%, 10%, 100% { transform: scaleY(1); }
-        5% { transform: scaleY(0.1); }
+        transform-box: fill-box;
+        transform-origin: center;
       }
     </style>
   </defs>
 
-  <!-- Ground Shadow (JS-controlled horizontal shift) -->
-  <g id="shadow-js">
-    <rect x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
-  </g>
+  <g id="shadow-js" opacity="0"></g>
 
-  <!-- Static Legs (slightly taller for upward body shift) -->
-  <g id="legs" fill="#DE886D">
-    <rect x="3" y="11" width="1" height="4"/>
-    <rect x="5" y="11" width="1" height="4"/>
-    <rect x="9" y="11" width="1" height="4"/>
-    <rect x="11" y="11" width="1" height="4"/>
-  </g>
-
-  <!-- Upper Body (JS body-shift + CSS breathe) -->
   <g id="body-js">
-    <g class="breathe-anim">
-      <!-- Torso -->
-      <rect id="torso" x="2" y="6" width="11" height="7" fill="#DE886D"/>
-      <!-- Left Arm -->
-      <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>
-      <!-- Right Arm -->
-      <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
-      <!-- Eyes: JS translate wrapper + CSS blink -->
-      <g id="eyes-js" fill="#000000">
-        <g class="eyes-blink">
-          <rect x="4" y="8" width="1" height="2"/>
-          <rect x="10" y="8" width="1" height="2"/>
-        </g>
-      </g>
-    </g>
+    <image class="frame f0" href="../png/clawd-idle-follow/dree_idle_0.png" x="0" y="0" width="256" height="256" />
+    <image class="frame f1" href="../png/clawd-idle-follow/dree_idle_1.png" x="0" y="0" width="256" height="256" />
+    <image class="frame f2" href="../png/clawd-idle-follow/dree_idle_2.png" x="0" y="0" width="256" height="256" />
+    <image class="frame f3" href="../png/clawd-idle-follow/dree_idle_3.png" x="0" y="0" width="256" height="256" />
+    <image class="frame f4" href="../png/clawd-idle-follow/dree_idle_4.png" x="0" y="0" width="256" height="256" />
+    <image class="frame f5" href="../png/clawd-idle-follow/dree_idle_5.png" x="0" y="0" width="256" height="256" />
   </g>
+
+  <image id="eyes-js" href="../png/clawd-idle-follow/dree_idle_eye.png" x="0" y="0" width="256" height="256" style="image-rendering: pixelated;"/>
 </svg>

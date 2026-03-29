@@ -1,247 +1,31 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="crispEdges">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
     <style>
-      /* Collapse (0-1s) → Sleep breathing + Zzz (1s onwards, infinite) */
-      /* Start pose matches yawn end: body scale(1.05,0.95) translate(0,1px), eyes shut, arms down */
-
-      .rest-shadow-breathe {
-        transform-origin: 7.5px 15.5px;
-        animation: sleep-shadow 4.5s infinite ease-in-out 1s;
+      :root { --duration: 0.72s; }
+      .frame {
+        opacity: 0;
+        animation-name: frame-step;
+        animation-duration: var(--duration);
+        animation-timing-function: steps(1, end);
+        animation-iteration-count: infinite;
+        image-rendering: pixelated;
       }
-
-      .rest-shadow-form {
-        transform-origin: 7.5px 15.5px;
-        animation: rest-shadow-form 1s linear forwards;
-      }
-
-      .rest-breathe {
-        transform-origin: 7.5px 15px;
-        animation: sleep-breathe 4.5s infinite ease-in-out 1s;
-      }
-
-      .rest-body-frame {
-        transform-origin: 7.5px 13px;
-        animation: rest-body-frame 1s linear forwards;
-      }
-
-      .rest-torso {
-        transform-origin: 2px 6px;
-        animation: rest-torso 1s linear forwards;
-      }
-
-      .rest-arm-l {
-        transform-origin: 1px 10px;
-        animation: rest-arm-l 1s linear forwards;
-      }
-
-      .rest-arm-r {
-        transform-origin: 14px 10px;
-        animation: rest-arm-r 1s linear forwards;
-      }
-
-      .rest-eye-l {
-        transform-origin: 4px 8px;
-        animation: rest-eye-l 1s linear forwards;
-      }
-
-      .rest-eye-r {
-        transform-origin: 10px 8px;
-        animation: rest-eye-r 1s linear forwards;
-      }
-
-      .rest-leg {
-        animation: rest-leg 1s linear forwards;
-      }
-
-      .rest-leg.left-outer { transform-origin: 3px 12px; }
-      .rest-leg.left-inner { transform-origin: 5px 12px; }
-      .rest-leg.right-inner { transform-origin: 9px 12px; }
-      .rest-leg.right-outer { transform-origin: 11px 12px; }
-
-      .z-particle { opacity: 0; }
-      .z1 { animation: float-1 6s infinite ease-in-out 1s; }
-      .z2 { animation: float-2 6s infinite ease-in-out 3s; }
-      .z3 { animation: float-3 6s infinite ease-in-out 5s; }
-
-      /* Shadow: narrow (matching yawn end) → wide (sleeping) */
-      @keyframes rest-shadow-form {
-        0% { transform: scaleX(0.556); opacity: 0.55; }
-        4% { transform: scaleX(0.574); opacity: 0.548; }
-        14% { transform: scaleX(0.61); opacity: 0.54; }
-        28% { transform: scaleX(0.665); opacity: 0.522; }
-        42% { transform: scaleX(0.74); opacity: 0.5; }
-        68% { transform: scaleX(0.9); opacity: 0.45; }
-        86% { transform: scaleX(1.02); opacity: 0.41; }
-        100% { transform: scaleX(1); opacity: 0.4; }
-      }
-
-      /* Body frame: yawn-end squash → neutral (sleeping base) */
-      @keyframes rest-body-frame {
-        0% { transform: scale(1.05, 0.95) translate(0, 1px); }
-        4% { transform: scale(1.058, 0.94) translate(0, 1.1px); }
-        14% { transform: scale(1.072, 0.915) translate(0, 1.32px); }
-        28% { transform: scale(1.09, 0.875) translate(0, 1.68px); }
-        40% { transform: scale(1.1, 0.84) translate(0, 1.95px); }
-        66% { transform: scale(1.05, 0.9) translate(0, 1.05px); }
-        84% { transform: scale(1.01, 0.98) translate(0, 0.22px); }
-        100% { transform: scale(1, 1) translate(0, 0); }
-      }
-
-      /* Torso: standing → splooted flat */
-      @keyframes rest-torso {
-        0% { transform: translate(0, 0) scale(1, 1); }
-        4% { transform: translate(-0.02px, 0.08px) scale(1.004, 0.998); }
-        14% { transform: translate(-0.1px, 0.34px) scale(1.018, 0.985); }
-        28% { transform: translate(-0.26px, 1.02px) scale(1.045, 0.94); }
-        44% { transform: translate(-0.4px, 1.75px) scale(1.08, 0.9); }
-        68% { transform: translate(-0.8px, 3.1px) scale(1.14, 0.8); }
-        86% { transform: translate(-1.05px, 3.95px) scale(1.19, 0.72); }
-        100% { transform: translate(-1px, 4px) scale(1.1818, 0.7143); }
-      }
-
-      /* Arms: relaxed down → flat on ground */
-      @keyframes rest-arm-l {
-        0% { transform: translate(0, 1px) rotate(-15deg); }
-        4% { transform: translate(-0.03px, 1.08px) rotate(-14.5deg); }
-        14% { transform: translate(-0.11px, 1.34px) rotate(-13deg); }
-        28% { transform: translate(-0.27px, 1.98px) rotate(-9deg); }
-        44% { transform: translate(-0.45px, 2.45px) rotate(-7deg); }
-        68% { transform: translate(-0.8px, 3.35px) rotate(-2deg); }
-        86% { transform: translate(-1.05px, 4.05px) rotate(0deg); }
-        100% { transform: translate(-1px, 4px) rotate(0deg); }
-      }
-
-      @keyframes rest-arm-r {
-        0% { transform: translate(0, 1px) rotate(15deg); }
-        4% { transform: translate(0.03px, 1.08px) rotate(14.5deg); }
-        14% { transform: translate(0.11px, 1.34px) rotate(13deg); }
-        28% { transform: translate(0.27px, 1.98px) rotate(9deg); }
-        44% { transform: translate(0.45px, 2.45px) rotate(7deg); }
-        68% { transform: translate(0.8px, 3.35px) rotate(2deg); }
-        86% { transform: translate(1.05px, 4.05px) rotate(0deg); }
-        100% { transform: translate(1px, 4px) rotate(0deg); }
-      }
-
-      /* Eyes: shut (scaleY 0.1) → sleeping dashes */
-      @keyframes rest-eye-l {
-        0% { transform: scale(1, 0.1); }
-        4% { transform: translate(0, 0.06px) scale(1.015, 0.1); }
-        14% { transform: translate(0, 0.28px) scale(1.06, 0.1); }
-        24% { transform: translate(0, 0.6px) scale(1.12, 0.1); }
-        52% { transform: translate(-0.15px, 2.1px) scale(1.45, 0.12); }
-        78% { transform: translate(-0.35px, 3.8px) scale(1.82, 0.17); }
-        100% { transform: translate(-0.5px, 4.5px) scale(2, 0.2); }
-      }
-
-      @keyframes rest-eye-r {
-        0% { transform: scale(1, 0.1); }
-        4% { transform: translate(0, 0.06px) scale(1.015, 0.1); }
-        14% { transform: translate(0, 0.28px) scale(1.06, 0.1); }
-        24% { transform: translate(0, 0.6px) scale(1.12, 0.1); }
-        52% { transform: translate(-0.15px, 2.1px) scale(1.45, 0.12); }
-        78% { transform: translate(-0.35px, 3.8px) scale(1.82, 0.17); }
-        100% { transform: translate(-0.5px, 4.5px) scale(2, 0.2); }
-      }
-
-      /* Legs: standing → short stubs */
-      @keyframes rest-leg {
-        0% { transform: translate(0, 0) scale(1, 1); }
-        4% { transform: translate(0, -0.03px) scale(1, 0.985); }
-        14% { transform: translate(0, -0.14px) scale(1, 0.93); }
-        44% { transform: translate(0, -0.4px) scale(1, 0.82); }
-        68% { transform: translate(0, -1.4px) scale(1, 0.6); }
-        84% { transform: translate(0, -2.4px) scale(1, 0.42); }
-        100% { transform: translate(0, -3px) scale(1, 0.3333); }
-      }
-
-      /* Sleep breathing loop */
-      @keyframes sleep-breathe {
-        0%, 80%, 100% { transform: scale(1, 1); }
-        30%, 40% { transform: scale(1.02, 1.25); }
-      }
-
-      @keyframes sleep-shadow {
-        0%, 80%, 100% { transform: scaleX(1); opacity: 0.4; }
-        30%, 40% { transform: scaleX(1.05); opacity: 0.5; }
-      }
-
-      /* Zzz particle floats */
-      @keyframes float-1 {
-        0% { transform: translate(5px, 8px) scale(0.4); opacity: 0; }
-        10% { opacity: 1; }
-        30% { transform: translate(9px, 4px) scale(0.6); }
-        50% { transform: translate(4px, 0px) scale(0.8); }
-        70% { transform: translate(8px, -4px) scale(1); }
-        90% { opacity: 0.8; }
-        100% { transform: translate(6px, -8px) scale(1.1); opacity: 0; }
-      }
-
-      @keyframes float-2 {
-        0% { transform: translate(8px, 9px) scale(0.3); opacity: 0; }
-        10% { opacity: 1; }
-        30% { transform: translate(5px, 5px) scale(0.5); }
-        50% { transform: translate(9px, 1px) scale(0.7); }
-        70% { transform: translate(6px, -3px) scale(0.9); }
-        90% { opacity: 0.8; }
-        100% { transform: translate(8px, -7px) scale(1); opacity: 0; }
-      }
-
-      @keyframes float-3 {
-        0% { transform: translate(6px, 7px) scale(0.5); opacity: 0; }
-        10% { opacity: 1; }
-        30% { transform: translate(9px, 3px) scale(0.7); }
-        50% { transform: translate(4px, -1px) scale(0.9); }
-        70% { transform: translate(8px, -5px) scale(1.1); }
-        90% { opacity: 0.8; }
-        100% { transform: translate(5px, -9px) scale(1.2); opacity: 0; }
+      .f0 { animation-delay: calc(var(--duration) * 0 / -6); }
+      .f1 { animation-delay: calc(var(--duration) * 1 / -6); }
+      .f2 { animation-delay: calc(var(--duration) * 2 / -6); }
+      .f3 { animation-delay: calc(var(--duration) * 3 / -6); }
+      .f4 { animation-delay: calc(var(--duration) * 4 / -6); }
+      .f5 { animation-delay: calc(var(--duration) * 5 / -6); }
+      @keyframes frame-step {
+        0%, 16.666% { opacity: 1; }
+        16.667%, 100% { opacity: 0; }
       }
     </style>
-
-    <g id="pixel-z">
-      <rect x="0" y="0" width="4" height="1"/>
-      <rect x="2" y="1" width="1" height="1"/>
-      <rect x="1" y="2" width="1" height="1"/>
-      <rect x="0" y="3" width="4" height="1"/>
-    </g>
-
-    <g id="pixel-z-small">
-      <rect x="0" y="0" width="3" height="1"/>
-      <rect x="1" y="1" width="1" height="1"/>
-      <rect x="0" y="2" width="3" height="1"/>
-    </g>
   </defs>
-
-  <!-- Shadow -->
-  <g class="rest-shadow-breathe">
-    <rect class="rest-shadow-form" x="-1" y="15" width="17" height="1" fill="#000000" opacity="0.4"/>
-  </g>
-
-  <!-- Zzz particles -->
-  <use href="#pixel-z" class="z-particle z1" fill="#90A4AE"/>
-  <use href="#pixel-z-small" class="z-particle z2" fill="#B0BEC5"/>
-  <use href="#pixel-z" class="z-particle z3" fill="#CFD8DC"/>
-
-  <!-- Body -->
-  <g class="rest-breathe">
-    <g fill="#DE886D">
-      <rect class="rest-leg left-outer" x="3" y="12" width="1" height="3"/>
-      <rect class="rest-leg left-inner" x="5" y="12" width="1" height="3"/>
-      <rect class="rest-leg right-inner" x="9" y="12" width="1" height="3"/>
-      <rect class="rest-leg right-outer" x="11" y="12" width="1" height="3"/>
-    </g>
-
-    <g class="rest-body-frame">
-      <rect class="rest-torso" x="2" y="6" width="11" height="7" fill="#DE886D"/>
-      <g class="rest-arm-l">
-        <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>
-      </g>
-      <g class="rest-arm-r">
-        <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
-      </g>
-      <g fill="#000000">
-        <rect class="rest-eye-l" x="4" y="8" width="1" height="2"/>
-        <rect class="rest-eye-r" x="10" y="8" width="1" height="2"/>
-      </g>
-    </g>
-  </g>
+  <image class="frame f0" href="../png/clawd-collapse-sleep/dree_collapse_sleep_0.png" x="0" y="0" width="256" height="256" />
+  <image class="frame f1" href="../png/clawd-collapse-sleep/dree_collapse_sleep_1.png" x="0" y="0" width="256" height="256" />
+  <image class="frame f2" href="../png/clawd-collapse-sleep/dree_collapse_sleep_2.png" x="0" y="0" width="256" height="256" />
+  <image class="frame f3" href="../png/clawd-collapse-sleep/dree_collapse_sleep_3.png" x="0" y="0" width="256" height="256" />
+  <image class="frame f4" href="../png/clawd-collapse-sleep/dree_collapse_sleep_4.png" x="0" y="0" width="256" height="256" />
+  <image class="frame f5" href="../png/clawd-collapse-sleep/dree_collapse_sleep_5.png" x="0" y="0" width="256" height="256" />
 </svg>
