@@ -2,11 +2,143 @@
 // Extracted from main.js L1877-2271
 
 const https = require("https");
+const { exec } = require("child_process");
+const path = require("path");
+const fs = require("fs");
 const { app, dialog, shell, Notification } = require("electron");
 
 const isMac = process.platform === "darwin";
 
 module.exports = function initUpdater(ctx) {
+
+// ── Git-based update (for non-packaged installs: cloned repo on mac/linux) ──
+
+let isGitRepo = false;
+
+function getRepoRoot() {
+  if (app.isPackaged) return null;
+  const root = path.join(__dirname, "..");
+  try {
+    if (fs.statSync(path.join(root, ".git")).isDirectory()) {
+      isGitRepo = true;
+      return root;
+    }
+  } catch {}
+  return null;
+}
+
+function gitCmd(cmd, cwd, timeout = 30000) {
+  return new Promise((resolve, reject) => {
+    exec(cmd, { cwd, timeout }, (err, stdout) => {
+      if (err) reject(err);
+      else resolve(stdout.trim());
+    });
+  });
+}
+
+async function _gitCheckForUpdates(repoRoot, manual) {
+  updateStatus = "checking";
+  ctx.rebuildAllMenus();
+  ctx.updateLog("Git-based update check starting...");
+
+  try {
+    const branch = await gitCmd("git rev-parse --abbrev-ref HEAD", repoRoot);
+    ctx.updateLog(`Current branch: ${branch}`);
+
+    await gitCmd(`git fetch origin ${branch}`, repoRoot);
+
+    const localHead = await gitCmd("git rev-parse HEAD", repoRoot);
+    const remoteHead = await gitCmd(`git rev-parse origin/${branch}`, repoRoot);
+    ctx.updateLog(`Local: ${localHead.slice(0, 8)}, Remote: ${remoteHead.slice(0, 8)}`);
+
+    if (localHead === remoteHead) {
+      ctx.updateLog("Already up to date");
+      updateStatus = "idle";
+      manualUpdateCheck = false;
+      ctx.rebuildAllMenus();
+      if (manual) {
+        new Notification({
+          title: ctx.t("updateNotAvailable"),
+          body: ctx.t("updateNotAvailableMsg").replace("{version}", app.getVersion()),
+        }).show();
+      }
+      return;
+    }
+
+    // Get remote version from package.json
+    let remoteVersion;
+    try {
+      const remotePkg = await gitCmd(`git show origin/${branch}:package.json`, repoRoot);
+      remoteVersion = JSON.parse(remotePkg).version;
+    } catch {
+      remoteVersion = remoteHead.slice(0, 8);
+    }
+    ctx.updateLog(`Remote version: v${remoteVersion}`);
+
+    updateStatus = "available";
+    ctx.rebuildAllMenus();
+
+    // Silent mode: skip dialog
+    if (!manual && (ctx.doNotDisturb || ctx.miniMode)) {
+      ctx.updateLog("Silent mode, skipping dialog");
+      updateStatus = "idle";
+      ctx.rebuildAllMenus();
+      return;
+    }
+
+    const { response } = await dialog.showMessageBox({
+      type: "info",
+      title: ctx.t("updateAvailable"),
+      message: ctx.t("updateAvailableMsg").replace("{version}", remoteVersion),
+      buttons: [ctx.t("updateNow"), ctx.t("restartLater")],
+      defaultId: 0,
+      noLink: true,
+    });
+
+    if (response !== 0) {
+      ctx.updateLog("User chose to update later");
+      updateStatus = "idle";
+      ctx.rebuildAllMenus();
+      return;
+    }
+
+    // Pull and restart
+    ctx.updateLog("Starting git pull...");
+    updateStatus = "downloading";
+    ctx.rebuildAllMenus();
+
+    await gitCmd(`git pull origin ${branch}`, repoRoot, 60000);
+    ctx.updateLog("Git pull complete");
+
+    // Run npm install if dependencies changed
+    const diff = await gitCmd(`git diff --name-only ${localHead} HEAD`, repoRoot);
+    if (diff.includes("package.json") || diff.includes("package-lock.json")) {
+      ctx.updateLog("Dependencies changed, running npm install...");
+      await gitCmd("npm install --no-fund --no-audit", repoRoot, 120000);
+      ctx.updateLog("npm install complete");
+    }
+
+    ctx.updateLog("Relaunching app...");
+    app.relaunch();
+    app.exit(0);
+
+  } catch (err) {
+    ctx.updateLog(`ERROR: git update failed: ${err.message}`);
+    updateStatus = "error";
+    manualUpdateCheck = false;
+    ctx.rebuildAllMenus();
+    if (manual) {
+      dialog.showMessageBox({
+        type: "error",
+        title: ctx.t("updateError"),
+        message: ctx.t("updateErrorMsg"),
+        noLink: true,
+      });
+    }
+  }
+}
+
+// ── electron-updater (for packaged installs: Windows NSIS) ──
 
 let _autoUpdater = null;
 function getAutoUpdater() {
@@ -256,6 +388,12 @@ async function _checkForUpdatesInner(manual) {
     return;
   }
 
+  // Non-packaged git clone → use git-based updates
+  const repoRoot = getRepoRoot();
+  if (repoRoot) {
+    return _gitCheckForUpdates(repoRoot, manual);
+  }
+
   const currentVersion = app.getVersion();
   ctx.updateLog(`Starting update check (manual: ${manual}, current version: v${currentVersion})`);
   manualUpdateCheck = manual;
@@ -390,7 +528,7 @@ function getUpdateMenuItem() {
 function getUpdateMenuLabel() {
   switch (updateStatus) {
     case "checking": return ctx.t("checkingForUpdates");
-    case "downloading": return ctx.t("updateDownloading");
+    case "downloading": return isGitRepo ? ctx.t("updating") : ctx.t("updateDownloading");
     case "ready": return ctx.t("updateReady");
     default: return ctx.t("checkForUpdates");
   }

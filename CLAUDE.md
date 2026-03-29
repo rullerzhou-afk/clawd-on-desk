@@ -158,8 +158,9 @@ Codex CLI 状态同步（JSONL 日志轮询，~1.5s 延迟）：
 
 ### 自动更新
 
-- 使用 `electron-updater`，Windows 下载安装 NSIS 更新包，macOS 打开 GitHub release 页面
-- 托盘菜单"Check for Updates"手动触发，`autoInstallOnAppQuit = true`
+- **Git 模式**（非打包，macOS/Linux 源码运行）：`git fetch` 比较 HEAD → 有更新时 `git pull` + `npm install`（依赖变化时）→ `app.relaunch()`；通过 `getRepoRoot()` 检测 `.git` 目录自动启用
+- **electron-updater 模式**（打包，Windows NSIS）：下载安装 NSIS 更新包，`autoInstallOnAppQuit = true`
+- 托盘菜单"Check for Updates"手动触发
 
 ### 眼球追踪系统（tick.js 计算 → renderer.js 渲染）
 
