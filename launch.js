@@ -15,7 +15,8 @@ const electron = require("electron");
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
 
-const child = spawn(electron, ["."], {
+const args = process.platform === "linux" ? [".", "--no-sandbox"] : ["."];
+const child = spawn(electron, args, {
   stdio: "inherit",
   env,
   cwd: __dirname,

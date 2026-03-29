@@ -6,6 +6,8 @@ const path = require("path");
 const { execFile, spawn } = require("child_process");
 
 const isMac = process.platform === "darwin";
+const isWin = process.platform === "win32";
+const isLinux = process.platform === "linux";
 
 module.exports = function initFocus(ctx) {
 
@@ -126,7 +128,7 @@ let macQueuedFocusRequest = null;
 let macFocusCooldownTimer = null;
 
 function initFocusHelper() {
-  if (isMac || psProc) return;
+  if (!isWin || psProc) return;
   psProc = spawn("powershell.exe", ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", "-"], {
     windowsHide: true,
     stdio: ["pipe", "ignore", "ignore"],
@@ -236,6 +238,12 @@ function focusTerminalWindow(sourcePid, cwd, editor, pidChain) {
     return;
   }
 
+  if (isLinux) {
+    focusTerminalWindowLegacy(sourcePid, cwd);
+    scheduleTerminalTabFocus(editor, pidChain);
+    return;
+  }
+
   // Grant PowerShell helper permission to call SetForegroundWindow.
   // This must happen HERE — Electron just received user input (click/hotkey),
   // so it has foreground privilege to delegate.
@@ -276,6 +284,34 @@ function focusTerminalWindowLegacy(sourcePid, cwd, onDone, pidChain) {
     execFile("osascript", ["-e", script], { timeout: MAC_FOCUS_TIMEOUT_MS }, (err) => {
       if (err) console.warn("focusTerminal macOS failed:", err.message);
       if (onDone) onDone();
+    });
+    return;
+  }
+
+  if (isLinux) {
+    // Linux: try wmctrl (lookup by PID), then xdotool.
+    // Missing tools fail quietly so hooks never block the app.
+    const tryXdoTool = () => {
+      execFile("xdotool", ["search", "--pid", String(sourcePid), "windowactivate", "--sync"], {
+        timeout: 1200,
+      }, () => {
+        if (onDone) onDone();
+      });
+    };
+    execFile("wmctrl", ["-lp"], { timeout: 1000 }, (err, stdout) => {
+      if (err || !stdout) return tryXdoTool();
+      const lines = String(stdout).split(/\r?\n/);
+      const match = lines.find((line) => {
+        const parts = line.trim().split(/\s+/);
+        return parts.length >= 3 && Number(parts[2]) === Number(sourcePid);
+      });
+      if (!match) return tryXdoTool();
+      const winId = match.trim().split(/\s+/)[0];
+      if (!winId) return tryXdoTool();
+      execFile("wmctrl", ["-i", "-a", winId], { timeout: 1000 }, (activateErr) => {
+        if (activateErr) return tryXdoTool();
+        if (onDone) onDone();
+      });
     });
     return;
   }

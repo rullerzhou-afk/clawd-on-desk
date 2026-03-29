@@ -16,6 +16,8 @@ PLAN-*.md
 codex-*.md
 CHANGELOG-draft.md
 docs/
+!docs/copilot-setup.md
+!docs/release-v0.5.5.md
 
 # Temp files from testing
 .tmp_*

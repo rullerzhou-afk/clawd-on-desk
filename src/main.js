@@ -3,11 +3,12 @@ const path = require("path");
 const fs = require("fs");
 
 const isMac = process.platform === "darwin";
+const isWin = process.platform === "win32";
 
 
 // ── Windows: AllowSetForegroundWindow via FFI ──
 let _allowSetForeground = null;
-if (!isMac) {
+if (isWin) {
   try {
     const koffi = require("koffi");
     const user32 = koffi.load("user32.dll");
@@ -285,7 +286,7 @@ let hwndRecoveryTimer = null;
 // the right-click context menu restore drag capability — it forces Windows to
 // fully recalculate the transparent window's input target region.
 function scheduleHwndRecovery() {
-  if (isMac) return;
+  if (!isWin) return;
   if (hwndRecoveryTimer) clearTimeout(hwndRecoveryTimer);
   hwndRecoveryTimer = setTimeout(() => {
     hwndRecoveryTimer = null;
@@ -298,7 +299,7 @@ function scheduleHwndRecovery() {
 }
 
 function guardAlwaysOnTop(w) {
-  if (isMac) return;
+  if (!isWin) return;
   w.on("always-on-top-changed", (_, isOnTop) => {
     if (!isOnTop && w && !w.isDestroyed()) {
       w.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
@@ -315,7 +316,7 @@ function guardAlwaysOnTop(w) {
 }
 
 function startTopmostWatchdog() {
-  if (isMac || topmostWatchdog) return;
+  if (!isWin || topmostWatchdog) return;
   topmostWatchdog = setInterval(() => {
     if (win && !win.isDestroyed()) {
       win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
@@ -452,7 +453,25 @@ function createWindow() {
   });
 
   win.setFocusable(false);
-  if (!isMac) {
+
+  // Watchdog (Linux only): prevent accidental window close.
+  // render-process-gone is handled by the global crash-recovery handler below.
+  // On macOS/Windows the WM handles window lifecycle differently.
+  if (process.platform === "linux") {
+    win.on("close", (event) => {
+      if (!isQuitting) {
+        event.preventDefault();
+        if (!win.isVisible()) win.showInactive();
+      }
+    });
+    win.on("unresponsive", () => {
+      if (isQuitting) return;
+      console.warn("Clawd: renderer unresponsive — reloading");
+      win.webContents.reload();
+    });
+  }
+
+  if (isWin) {
     // Windows: use pop-up-menu level to stay above taskbar/shell UI
     win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
   }
@@ -492,7 +511,7 @@ function createWindow() {
       resizable: false,
       skipTaskbar: true,
       hasShadow: false,
-      focusable: true,  // KEY EXPERIMENT: allow activation to avoid WS_EX_NOACTIVATE input routing bugs
+      focusable: process.platform !== "linux",  // KEY EXPERIMENT: allow activation to avoid WS_EX_NOACTIVATE input routing bugs (Windows-only issue)
       webPreferences: {
         preload: path.join(__dirname, "preload-hit.js"),
         backgroundThrottling: false,
@@ -503,13 +522,15 @@ function createWindow() {
     hitWin.setShape([{ x: 0, y: 0, width: hw, height: hh }]);
     hitWin.setIgnoreMouseEvents(false);  // PERMANENT — never toggle
     hitWin.showInactive();
-    if (!isMac) {
+    // Linux WMs may reset skipTaskbar after showInactive — re-apply explicitly
+    if (process.platform === "linux") hitWin.setSkipTaskbar(true);
+    if (isWin) {
       hitWin.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
     }
     // macOS: apply after showInactive() — it resets NSWindowCollectionBehavior
     reapplyMacVisibility();
     hitWin.loadFile(path.join(__dirname, "hit.html"));
-    if (!isMac) guardAlwaysOnTop(hitWin);
+    if (isWin) guardAlwaysOnTop(hitWin);
 
     // Event-level safety net for position sync
     win.on("move", syncHitWin);

@@ -32,6 +32,17 @@ describe("Agent Registry", () => {
     assert.deepStrictEqual(copilot.processNames.win, ["copilot.exe"]);
   });
 
+  it("should include explicit Linux process names", () => {
+    const cc = registry.getAgent("claude-code");
+    assert.deepStrictEqual(cc.processNames.linux, ["claude"]);
+
+    const codex = registry.getAgent("codex");
+    assert.deepStrictEqual(codex.processNames.linux, ["codex"]);
+
+    const copilot = registry.getAgent("copilot-cli");
+    assert.deepStrictEqual(copilot.processNames.linux, ["copilot"]);
+  });
+
   it("should aggregate all process names", () => {
     const all = registry.getAllProcessNames();
     assert.ok(all.length >= 3);

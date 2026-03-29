@@ -8,7 +8,7 @@
 
 A desktop pet that reacts to your AI coding agent sessions in real-time. Clawd lives on your screen — thinking when you prompt, typing when tools run, juggling subagents, reviewing permissions, celebrating when tasks complete, and sleeping when you're away.
 
-> Supports Windows 11 and macOS. Requires Node.js. Works with **Claude Code**, **Codex CLI**, and **Copilot CLI**.
+> Supports Windows 11, macOS, and Ubuntu/Linux. Requires Node.js. Works with **Claude Code**, **Codex CLI**, and **Copilot CLI**.
 
 ## Features
 
@@ -28,18 +28,12 @@ A desktop pet that reacts to your AI coding agent sessions in real-time. Clawd l
 - **Mini mode** — drag to right edge or right-click "Mini Mode"; Clawd hides at screen edge with peek-on-hover, mini alerts/celebrations, and parabolic jump transitions
 
 ### Permission Bubble
-
-<img src="assets/screenshot-permission-bubble.png" width="320" alt="Permission bubble">
-
 - **In-app permission review** — when Claude Code requests tool permissions, Clawd pops a floating bubble card instead of waiting in the terminal
 - **Allow / Deny / Suggestions** — one-click approve, reject, or apply permission rules (e.g. "Always allow Read")
 - **Stacking layout** — multiple permission requests stack upward from the bottom-right corner
 - **Auto-dismiss** — if you answer in the terminal first, the bubble disappears automatically
 
 ### Session Intelligence
-
-<img src="assets/screenshot-context-menu.png" width="420" alt="Context menu with Sessions">
-
 - **Multi-session tracking** — sessions across all agents resolve to the highest-priority state
 - **Subagent awareness** — juggling for 1 subagent, conducting for 2+
 - **Terminal focus** — right-click Clawd → Sessions menu to jump to a specific session's terminal window; notification/attention states auto-focus the relevant terminal
@@ -54,7 +48,7 @@ A desktop pet that reacts to your AI coding agent sessions in real-time. Clawd l
 - **Do Not Disturb** — right-click or tray menu to enter sleep mode; all hook events are silenced until you wake Clawd
 - **System tray** — resize (S/M/L), DND mode, language switch, auto-start, check for updates
 - **i18n** — English and Chinese UI; switch via right-click menu or tray
-- **Auto-update** — checks GitHub releases; Windows installs NSIS updates on quit, macOS opens the release page
+- **Auto-update** — checks GitHub releases; Windows installs NSIS updates on quit, macOS opens the release page, Linux requires manual download
 
 ## State Mapping
 
@@ -107,20 +101,7 @@ npm start
 
 **Codex CLI** — works out of the box. Clawd polls `~/.codex/sessions/` for JSONL logs automatically.
 
-**Copilot CLI** — create `~/.copilot/hooks/hooks.json`:
-```json
-{
-  "version": 1,
-  "hooks": {
-    "sessionStart": [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js sessionStart", "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js sessionStart", "timeoutSec": 5 }],
-    "userPromptSubmitted": [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js userPromptSubmitted", "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js userPromptSubmitted", "timeoutSec": 5 }],
-    "preToolUse": [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js preToolUse", "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js preToolUse", "timeoutSec": 5 }],
-    "postToolUse": [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js postToolUse", "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js postToolUse", "timeoutSec": 5 }],
-    "sessionEnd": [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js sessionEnd", "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js sessionEnd", "timeoutSec": 5 }]
-  }
-}
-```
-Replace `/path/to/clawd-on-desk` with your actual install path.
+**Copilot CLI** — requires manual hook setup. See [docs/copilot-setup.md](docs/copilot-setup.md) for instructions.
 
 ### Remote SSH (Claude Code & Codex CLI)
 
@@ -162,76 +143,12 @@ Remote hooks run in `CLAWD_REMOTE` mode which skips PID collection (remote PIDs 
   - Right-click the app → **Open** → click **Open** in the dialog, or
   - Run `xattr -cr /Applications/Clawd\ on\ Desk.app` in Terminal.
 
-## How It Works
+### Linux Notes
 
-```
-Claude Code / Copilot CLI (command hooks, non-blocking):
-  Agent event
-    → hooks/clawd-hook.js or copilot-hook.js (event → state → HTTP POST)
-    → 127.0.0.1:23333/state
-    → State machine in main.js (multi-session + priority + min display time)
-    → IPC to renderer.js (SVG preload + crossfade swap)
-
-Codex CLI (JSONL log polling):
-  Codex writes to ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
-    → agents/codex-log-monitor.js (incremental read, event mapping)
-    → Same state machine → same animations
-
-Permission review (Claude Code HTTP hook, blocking):
-  Claude Code PermissionRequest
-    → HTTP POST to 127.0.0.1:23333/permission
-    → Bubble window (bubble.html) with Allow / Deny / suggestion buttons
-    → User clicks → HTTP response → Claude Code proceeds
-```
-
-Clawd runs as a transparent, always-on-top, unfocusable Electron window with per-region click-through. It never steals focus or blocks your workflow — clicks on transparent areas pass straight through to the window below.
-
-## Manual Testing
-
-```bash
-# Trigger a specific state
-curl -X POST http://127.0.0.1:23333/state \
-  -H "Content-Type: application/json" \
-  -d '{"state":"working","session_id":"test"}'
-
-# Cycle through all animations (8s each)
-bash test-demo.sh
-
-# Cycle through mini mode animations
-bash test-mini.sh
-```
-
-## Project Structure
-
-```
-src/
-  main.js            # Electron main: state machine, HTTP server, window, tray, cursor polling
-  renderer.js        # Renderer: drag, click reactions, SVG switching, eye tracking
-  preload.js         # IPC bridge (contextBridge)
-  bubble.html        # Permission bubble UI (tool name, command preview, Allow/Deny/suggestions)
-  preload-bubble.js  # Bubble window IPC bridge
-  index.html         # Main window page structure
-agents/
-  claude-code.js     # Claude Code agent config (event map, process names, capabilities)
-  codex.js           # Codex CLI agent config (JSONL log event map, poll settings)
-  copilot-cli.js     # Copilot CLI agent config (camelCase event map)
-  registry.js        # Agent registry (lookup by ID or process name)
-  codex-log-monitor.js # Codex JSONL incremental log polling
-hooks/
-  clawd-hook.js      # Claude Code command hook (zero deps, <1s, event → state → HTTP POST)
-  copilot-hook.js    # Copilot CLI command hook (camelCase events, same architecture)
-  install.js         # Safe hook registration into ~/.claude/settings.json (append, never overwrite)
-  auto-start.js      # SessionStart hook: launches Clawd if not running (<500ms)
-  codex-remote-monitor.js  # Standalone Codex JSONL poller for remote servers (HTTP POST via SSH tunnel)
-  server-config.js   # Shared port discovery + HTTP helpers (used by all hooks)
-scripts/
-  remote-deploy.sh   # One-click remote hook deployment via SSH
-extensions/
-  vscode/            # VS Code extension for terminal tab focus via URI protocol
-assets/
-  svg/               # 40 pixel-art SVG animations with CSS keyframes (incl. 8 mini mode)
-  gif/               # Recorded GIFs for documentation
-```
+- **From source** (`npm start`): `--no-sandbox` is passed automatically to work around chrome-sandbox SUID requirements in dev mode.
+- **Packages**: AppImage and `.deb` are available from [GitHub Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases). After deb install, the app icon appears in GNOME's app menu.
+- **Terminal focus**: uses `wmctrl` or `xdotool` (whichever is available). Install one for session terminal jumping to work: `sudo apt install wmctrl` or `sudo apt install xdotool`.
+- **Auto-update**: not available on Linux — download new versions manually from GitHub Releases.
 
 ## Known Limitations
 
@@ -241,7 +158,7 @@ assets/
 | **Codex CLI: Windows hooks disabled** | Codex hardcodes hooks off on Windows, so we poll log files instead. This means ~1.5s latency vs near-instant for hook-based agents. |
 | **Copilot CLI: manual hook setup** | Copilot hooks require manually creating `~/.copilot/hooks/hooks.json`. Claude Code and Codex work out of the box. |
 | **Copilot CLI: no permission bubble** | Copilot's `preToolUse` hook only supports deny, not the full allow/deny flow. Permission bubbles only work with Claude Code. |
-| **macOS auto-update** | No Apple code signing — macOS users must download updates manually from GitHub Releases. |
+| **macOS/Linux auto-update** | No Apple code signing on macOS, no auto-update on Linux — download updates manually from GitHub Releases. |
 | **No test framework for Electron** | Unit tests cover agents and log polling, but the Electron main process (state machine, windows, tray) has no automated tests. |
 
 ### Roadmap
@@ -269,7 +186,9 @@ Thanks to everyone who has helped make Clawd better:
 <a href="https://github.com/Tobeabellwether"><img src="https://github.com/Tobeabellwether.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/Jasonhonghh"><img src="https://github.com/Jasonhonghh.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/crashchen"><img src="https://github.com/crashchen.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/hongbigtou"><img src="https://github.com/hongbigtou.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/InTimmyDate"><img src="https://github.com/InTimmyDate.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/NeizhiTouhu"><img src="https://github.com/NeizhiTouhu.png" width="50" style="border-radius:50%" /></a>
 
 ## Acknowledgments
 

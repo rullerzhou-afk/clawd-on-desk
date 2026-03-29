@@ -4,7 +4,7 @@
 module.exports = {
   id: "claude-code",
   name: "Claude Code",
-  processNames: { win: ["claude.exe"], mac: ["claude"] },
+  processNames: { win: ["claude.exe"], mac: ["claude"], linux: ["claude"] },
   // node.exe running claude-code (npm install, not native binary)
   nodeCommandPatterns: ["claude-code", "@anthropic-ai"],
   eventSource: "hook",

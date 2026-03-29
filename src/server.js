@@ -2,7 +2,9 @@
 // Extracted from main.js L1337-1528
 
 const http = require("http");
+const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
@@ -45,6 +47,58 @@ function sendStateHealthResponse(res) {
     [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID,
   });
   res.end(body);
+}
+
+// Truncate large string values in objects (recursive) — bubble only needs a preview
+const PREVIEW_MAX = 500;
+function truncateDeep(obj, depth) {
+  if ((depth || 0) > 10) return obj;
+  if (Array.isArray(obj)) return obj.map(v => truncateDeep(v, (depth || 0) + 1));
+  if (obj && typeof obj === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) out[k] = truncateDeep(v, (depth || 0) + 1);
+    return out;
+  }
+  return typeof obj === "string" && obj.length > PREVIEW_MAX
+    ? obj.slice(0, PREVIEW_MAX) + "\u2026" : obj;
+}
+
+// Watch ~/.claude/ directory for settings.json overwrites (e.g. CC-Switch)
+// that wipe our hooks. Re-register when hooks disappear.
+// Watch the directory (not the file) because atomic rename replaces the inode
+// and fs.watch on the old file silently stops firing on Windows.
+let settingsWatcher = null;
+const HOOK_MARKER = "clawd-hook.js";
+const SETTINGS_FILENAME = "settings.json";
+function watchSettingsForHookLoss() {
+  const settingsDir = path.join(os.homedir(), ".claude");
+  const settingsPath = path.join(settingsDir, SETTINGS_FILENAME);
+  let debounceTimer = null;
+  let lastSyncTime = 0;
+  try {
+    settingsWatcher = fs.watch(settingsDir, (_event, filename) => {
+      if (filename && filename !== SETTINGS_FILENAME) return;
+      if (debounceTimer) return;
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        // Rate-limit: don't re-sync within 5s to avoid write wars with CC-Switch
+        if (Date.now() - lastSyncTime < 5000) return;
+        try {
+          const raw = fs.readFileSync(settingsPath, "utf-8");
+          if (!raw.includes(HOOK_MARKER)) {
+            console.log("Clawd: hooks wiped from settings.json — re-registering");
+            lastSyncTime = Date.now();
+            syncClawdHooks();
+          }
+        } catch {}
+      }, 1000);
+    });
+    settingsWatcher.on("error", (err) => {
+      console.warn("Clawd: settings watcher error:", err.message);
+    });
+  } catch (err) {
+    console.warn("Clawd: failed to watch settings directory:", err.message);
+  }
 }
 
 function startHttpServer() {
@@ -116,7 +170,7 @@ function startHttpServer() {
       req.on("data", (chunk) => {
         if (tooLarge) return;
         bodySize += chunk.length;
-        if (bodySize > 65536) { tooLarge = true; return; }
+        if (bodySize > 524288) { tooLarge = true; return; }
         body += chunk;
       });
       req.on("end", () => {
@@ -135,7 +189,8 @@ function startHttpServer() {
         try {
           const data = JSON.parse(body);
           const toolName = typeof data.tool_name === "string" ? data.tool_name : "Unknown";
-          const toolInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
+          const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
+          const toolInput = truncateDeep(rawInput);
           const sessionId = data.session_id || "default";
           const suggestions = Array.isArray(data.permission_suggestions) ? data.permission_suggestions : [];
 
@@ -210,6 +265,7 @@ function startHttpServer() {
     writeRuntimeConfig(activeServerPort);
     console.log(`Clawd state server listening on 127.0.0.1:${activeServerPort}`);
     syncClawdHooks();
+    watchSettingsForHookLoss();
   });
 
   httpServer.listen(listenPorts[listenIndex], "127.0.0.1");
@@ -217,6 +273,7 @@ function startHttpServer() {
 
 function cleanup() {
   clearRuntimeConfig();
+  if (settingsWatcher) settingsWatcher.close();
   if (httpServer) httpServer.close();
 }
 

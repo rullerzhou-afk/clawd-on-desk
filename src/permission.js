@@ -10,6 +10,7 @@ const {
 } = require("../hooks/server-config");
 
 const isMac = process.platform === "darwin";
+const isWin = process.platform === "win32";
 const WIN_TOPMOST_LEVEL = "pop-up-menu";
 
 module.exports = function initPermission(ctx) {
@@ -128,7 +129,7 @@ function showPermissionBubble(permEntry) {
 
   permEntry.bubble = bub;
 
-  if (!isMac) {
+  if (isWin) {
     bub.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
   }
 
