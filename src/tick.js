@@ -22,6 +22,7 @@ const MOUSE_SLEEP_TIMEOUT = 60000;  // 60s → yawning → dozing
 const IDLE_LOOK_DURATION = 10000;  // idle-look CSS loop is 10s
 const SVG_IDLE_FOLLOW = "clawd-idle-follow.svg";
 const SVG_IDLE_LOOK = "clawd-idle-look.svg";
+const SVG_IDLE_LIVING = "clawd-idle-living.svg";
 
 // ── Unified main tick (cursor polling for eye tracking + sleep + mini peek) ──
 // Input routing is handled by hitWin — no setIgnoreMouseEvents toggling here.
@@ -144,9 +145,7 @@ function startMainTick() {
         idleLookReturnTimer = setTimeout(() => {
           idleLookReturnTimer = null;
           if (isMouseIdle && ctx.currentState === "idle") {
-            isMouseIdle = false;
-            ctx.sendToRenderer("state-change", "idle", SVG_IDLE_FOLLOW);
-            setTimeout(() => { ctx.forceEyeResend = true; }, 200);
+            ctx.sendToRenderer("state-change", "idle", SVG_IDLE_LIVING);
           }
         }, 250 + IDLE_LOOK_DURATION);
         return;

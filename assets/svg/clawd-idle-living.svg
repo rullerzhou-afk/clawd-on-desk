@@ -1,31 +1,62 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
     <style>
-      :root { --duration: 0.72s; }
+      :root {
+        --frame-count: 14;
+        --duration: 1.4s; /* 5 FPS */
+      }
+
       .frame {
         opacity: 0;
         animation-name: frame-step;
         animation-duration: var(--duration);
-        animation-timing-function: steps(1, end);
+        animation-timing-function: linear;
         animation-iteration-count: infinite;
         image-rendering: pixelated;
       }
-      .f0 { animation-delay: calc(var(--duration) * 0 / -6); }
-      .f1 { animation-delay: calc(var(--duration) * 1 / -6); }
-      .f2 { animation-delay: calc(var(--duration) * 2 / -6); }
-      .f3 { animation-delay: calc(var(--duration) * 3 / -6); }
-      .f4 { animation-delay: calc(var(--duration) * 4 / -6); }
-      .f5 { animation-delay: calc(var(--duration) * 5 / -6); }
+
       @keyframes frame-step {
-        0%, 16.666% { opacity: 1; }
-        16.667%, 100% { opacity: 0; }
+        0%, 7.142857% { opacity: 1; }
+        7.142858%, 100% { opacity: 0; }
       }
+
+      .f0  { animation-delay: calc(var(--duration) * (0  - 14) / 14); }
+      .f1  { animation-delay: calc(var(--duration) * (1  - 14) / 14); }
+      .f2  { animation-delay: calc(var(--duration) * (2  - 14) / 14); }
+      .f3  { animation-delay: calc(var(--duration) * (3  - 14) / 14); }
+      .f4  { animation-delay: calc(var(--duration) * (4  - 14) / 14); }
+      .f5  { animation-delay: calc(var(--duration) * (5  - 14) / 14); }
+      .f6  { animation-delay: calc(var(--duration) * (6  - 14) / 14); }
+      .f7  { animation-delay: calc(var(--duration) * (7  - 14) / 14); }
+      .f8  { animation-delay: calc(var(--duration) * (8  - 14) / 14); }
+      .f9  { animation-delay: calc(var(--duration) * (9  - 14) / 14); }
+      .f10 { animation-delay: calc(var(--duration) * (10 - 14) / 14); }
+      .f11 { animation-delay: calc(var(--duration) * (11 - 14) / 14); }
+      .f12 { animation-delay: calc(var(--duration) * (12 - 14) / 14); }
+      .f13 { animation-delay: calc(var(--duration) * (13 - 14) / 14); }
     </style>
   </defs>
-  <image class="frame f0" href="../png/clawd-idle-living/dree_idle_l_0.png" x="0" y="0" width="256" height="256" />
-  <image class="frame f1" href="../png/clawd-idle-living/dree_idle_l_1.png" x="0" y="0" width="256" height="256" />
-  <image class="frame f2" href="../png/clawd-idle-living/dree_idle_l_2.png" x="0" y="0" width="256" height="256" />
-  <image class="frame f3" href="../png/clawd-idle-living/dree_idle_l_3.png" x="0" y="0" width="256" height="256" />
-  <image class="frame f4" href="../png/clawd-idle-living/dree_idle_l_4.png" x="0" y="0" width="256" height="256" />
-  <image class="frame f5" href="../png/clawd-idle-living/dree_idle_l_5.png" x="0" y="0" width="256" height="256" />
+
+  <!--
+    PNG sequence wrapper template.
+    Keep PNG files under: assets/png/clawd-idle-living/
+    Expected names: draka_idle_0.png ... draka_idle_13.png
+    Adjust scale(X) below to resize — translate offsets center the image: (256*(1-X)/2)/X
+  -->
+  <g transform="scale(0.75) translate(43, 43)">
+    <image class="frame f0"  href="../png/clawd-idle-living/draka_idle_0.png"  x="0" y="0" width="256" height="256"/>
+    <image class="frame f1"  href="../png/clawd-idle-living/draka_idle_1.png"  x="0" y="0" width="256" height="256"/>
+    <image class="frame f2"  href="../png/clawd-idle-living/draka_idle_2.png"  x="0" y="0" width="256" height="256"/>
+    <image class="frame f3"  href="../png/clawd-idle-living/draka_idle_3.png"  x="0" y="0" width="256" height="256"/>
+    <image class="frame f4"  href="../png/clawd-idle-living/draka_idle_4.png"  x="0" y="0" width="256" height="256"/>
+    <image class="frame f5"  href="../png/clawd-idle-living/draka_idle_5.png"  x="0" y="0" width="256" height="256"/>
+    <image class="frame f6"  href="../png/clawd-idle-living/draka_idle_6.png"  x="0" y="0" width="256" height="256"/>
+    <image class="frame f7"  href="../png/clawd-idle-living/draka_idle_7.png"  x="0" y="0" width="256" height="256"/>
+    <image class="frame f8"  href="../png/clawd-idle-living/draka_idle_8.png"  x="0" y="0" width="256" height="256"/>
+    <image class="frame f9"  href="../png/clawd-idle-living/draka_idle_9.png"  x="0" y="0" width="256" height="256"/>
+    <image class="frame f10" href="../png/clawd-idle-living/draka_idle_10.png" x="0" y="0" width="256" height="256"/>
+    <image class="frame f11" href="../png/clawd-idle-living/draka_idle_11.png" x="0" y="0" width="256" height="256"/>
+    <image class="frame f12" href="../png/clawd-idle-living/draka_idle_12.png" x="0" y="0" width="256" height="256"/>
+    <image class="frame f13" href="../png/clawd-idle-living/draka_idle_13.png" x="0" y="0" width="256" height="256"/>
+  </g>
 </svg>

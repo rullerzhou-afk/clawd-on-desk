@@ -61,6 +61,7 @@ function getClaudeVersion(options = {}) {
   const platform = options.platform || process.platform;
   const homeDir = options.homeDir || os.homedir();
   const execFileSync = options.execFileSync || require("child_process").execFileSync;
+  const execSync = options.execSync || require("child_process").execSync;
   const candidates = [];
 
   if (platform === "darwin") {
@@ -71,6 +72,11 @@ function getClaudeVersion(options = {}) {
       "/usr/local/bin/claude"
     );
   }
+  if (platform === "win32") {
+    // npm-installed CLIs on Windows create .cmd wrappers; execFileSync won't
+    // find them without shell:true, so try the explicit extension first.
+    candidates.push("claude.cmd");
+  }
   candidates.push("claude");
 
   const seen = new Set();
@@ -78,16 +84,27 @@ function getClaudeVersion(options = {}) {
     if (seen.has(candidate)) continue;
     seen.add(candidate);
     try {
-      const out = execFileSync(candidate, ["--version"], {
-        encoding: "utf8",
-        timeout: 5000,
-        windowsHide: true,
-      });
+      let out;
+      if (candidate.endsWith(".cmd")) {
+        // .cmd files are not EXEs — they must run through cmd.exe.
+        // Use execSync (string command) to avoid the shell+args deprecation warning.
+        out = execSync(`"${candidate}" --version`, {
+          encoding: "utf8",
+          timeout: 5000,
+          windowsHide: true,
+        });
+      } else {
+        out = execFileSync(candidate, ["--version"], {
+          encoding: "utf8",
+          timeout: 5000,
+          windowsHide: true,
+        });
+      }
       const match = out.match(CLAUDE_VERSION_PATTERN);
       if (!match) continue;
       return {
         version: match[1],
-        source: candidate === "claude" ? "PATH:claude" : candidate,
+        source: candidate === "claude" || candidate === "claude.cmd" ? "PATH:claude" : candidate,
         status: "known",
       };
     } catch {}
