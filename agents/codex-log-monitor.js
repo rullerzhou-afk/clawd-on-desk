@@ -77,11 +77,11 @@ class CodexLogMonitor {
     this._cleanStaleFiles();
   }
 
-  // Scan today's and yesterday's directories (handles midnight rollover)
+  // Scan recent directories (supports codex resume of older sessions)
   _getSessionDirs() {
     const dirs = [];
     const now = new Date();
-    for (let daysAgo = 0; daysAgo <= 1; daysAgo++) {
+    for (let daysAgo = 0; daysAgo <= 7; daysAgo++) {
       const d = new Date(now);
       d.setDate(d.getDate() - daysAgo);
       const yyyy = d.getFullYear();
