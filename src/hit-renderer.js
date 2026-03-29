@@ -119,9 +119,9 @@ window.addEventListener("blur", stopDrag);
 
 // --- Click reaction logic (2-click = poke, 4-click = flail) ---
 const CLICK_WINDOW_MS = 400;
-const REACT_LEFT_SVG = "clawd-react-left.svg";
-const REACT_RIGHT_SVG = "clawd-react-right.svg";
-const REACT_DOUBLE_SVG = "clawd-react-double.svg";
+const REACT_LEFT_SVG = "clawd-react-drag.svg";
+const REACT_RIGHT_SVG = "clawd-react-drag.svg";
+const REACT_DOUBLE_SVG = "clawd-react-drag.svg";
 const REACT_SINGLE_DURATION = 2500;
 const REACT_DOUBLE_DURATION = 3500;
 

@@ -1,196 +1,31 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
     <style>
-      /* 16-Second Master Sequence for Idle Actions */
-      .action-body {
-        transform-origin: 7.5px 13px; /* Pivot at the base of the torso */
-        animation: action-body 16s infinite ease-in-out;
-      }
-      
-      /* Continuous Subtle Breathing (Syncs exactly 5 times per 16s loop) */
-      .breathe-anim {
-        transform-origin: 7.5px 13px;
-        animation: breathe 3.2s infinite ease-in-out;
-      }
-
-      /* Shadow shrinking and shifting matching actions */
-      .shadow-anim {
-        transform-origin: 7.5px 15.5px;
-        animation: shadow-action 16s infinite ease-in-out;
-      }
-
-      /* Left Arm (Scratching and Yawn Stretching) */
-      .arm-l {
-        transform-origin: 1px 10px;
-        animation: arm-l-idle 16s infinite ease-in-out;
-      }
-
-      /* Right Arm (Yawn Stretching) */
-      .arm-r {
-        transform-origin: 14px 10px;
-        animation: arm-r-idle 16s infinite ease-in-out;
-      }
-
-      /* Eye Tracking (Looking around) */
-      .eyes-look {
-        animation: eye-track 16s infinite ease-in-out;
-      }
-
-      /* Occasional Blinks and shutting during Yawn */
-      .eyes-blink {
-        transform-origin: 7.5px 9px;
-        animation: eye-blink 16s infinite linear;
-      }
-
-      /* Yawn Mouth Appearance */
-      .yawn-mouth {
-        transform-origin: 7.5px 11px;
-        animation: yawn-mouth-anim 16s infinite ease-in-out;
+      :root { --duration: 0.72s; }
+      .frame {
         opacity: 0;
+        animation-name: frame-step;
+        animation-duration: var(--duration);
+        animation-timing-function: steps(1, end);
+        animation-iteration-count: infinite;
+        image-rendering: pixelated;
       }
-
-      /* Tiny tear that appears during the big yawn */
-      .yawn-tear {
-        animation: tear-fall 16s infinite ease-in-out;
-        opacity: 0;
-      }
-
-      /* --- Keyframes --- */
-
-      @keyframes breathe {
-        0%, 100% { transform: scale(1, 1) translate(0, 0); }
-        50% { transform: scale(1.02, 0.98) translate(0, 0.5px); }
-      }
-
-      @keyframes action-body {
-        0%, 8%, 26%, 38%, 55%, 80%, 100% { transform: scale(1, 1) translate(0, 0); }
-        /* Look Right Tilt */
-        12%, 22% { transform: scale(1, 1) translate(1px, 0); }
-        /* Look Left Tilt */
-        42%, 50% { transform: scale(1, 1) translate(-1px, 0); }
-        /* Scratching Lean */
-        30%, 36% { transform: scale(1, 1) translate(0.5px, 0); } 
-        /* Deep Yawn Stretch */
-        60% { transform: scale(0.95, 1.05) translate(0px, -1px); } /* Stretch up */
-        65% { transform: scale(0.9, 1.1) translate(0px, -2px); }   /* Peak stretch */
-        72% { transform: scale(1.05, 0.95) translate(0px, 1px); }  /* Heavy sigh / squash down */
-        76% { transform: scale(1, 1) translate(0px, 0px); }        /* Recover */
-      }
-
-      @keyframes shadow-action {
-        0%, 8%, 26%, 38%, 55%, 80%, 100% { transform: scaleX(1) translate(0, 0); opacity: 0.5; }
-        12%, 22% { transform: scaleX(1) translate(1px, 0); opacity: 0.5; }
-        42%, 50% { transform: scaleX(1) translate(-1px, 0); opacity: 0.5; }
-        30%, 36% { transform: scaleX(1) translate(0.5px, 0); opacity: 0.5; }
-        60% { transform: scaleX(0.95) translate(0, 0); opacity: 0.45; }
-        65% { transform: scaleX(0.9) translate(0, 0); opacity: 0.4; }
-        72% { transform: scaleX(1.05) translate(0, 0); opacity: 0.55; }
-        76% { transform: scaleX(1) translate(0, 0); opacity: 0.5; }
-      }
-
-      @keyframes eye-track {
-        0%, 10%, 25%, 38%, 52%, 58%, 80%, 100% { transform: translate(0px, 0px); }
-        12%, 22% { transform: translate(3px, 0px); } /* Look Right */
-        42%, 50% { transform: translate(-3px, 0px); } /* Look Left */
-        60%, 75% { transform: translate(0px, -1px); } /* Look slightly up during yawn */
-      }
-
-      @keyframes eye-blink {
-        0%, 3%, 7%, 18%, 22%, 43%, 47%, 56%, 83%, 87%, 100% { transform: scaleY(1); }
-        5%, 20%, 45%, 85% { transform: scaleY(0.1); } /* Quick Blinks */
-        /* Yawn Closed Eyes */
-        60% { transform: scaleY(1); }
-        62%, 72% { transform: scaleY(0.1); } /* Eyes completely shut */
-        75% { transform: scaleY(1); }
-      }
-
-      @keyframes arm-l-idle {
-        0%, 28% { transform: translate(0, 0) rotate(0deg); }
-        
-        /* Occasional Scratching Sequence (Left Arm) */
-        30% { transform: translate(1px, -3px) rotate(15deg); }
-        31% { transform: translate(1.5px, -4px) rotate(35deg); } /* Up */
-        32% { transform: translate(0.5px, -2.5px) rotate(0deg); } /* Down */
-        33% { transform: translate(1.5px, -4px) rotate(35deg); }
-        34% { transform: translate(0.5px, -2.5px) rotate(0deg); }
-        35% { transform: translate(1.5px, -4px) rotate(35deg); }
-        36% { transform: translate(0.5px, -2.5px) rotate(0deg); }
-        
-        38%, 58% { transform: translate(0, 0) rotate(0deg); }
-        
-        /* Yawn Stretch */
-        62% { transform: translate(-1px, -2px) rotate(45deg); }
-        65% { transform: translate(-2px, -3px) rotate(80deg); } /* Full outward stretch */
-        72% { transform: translate(0px, 1px) rotate(-15deg); } /* Relax down */
-        76%, 100% { transform: translate(0, 0) rotate(0deg); }
-      }
-
-      @keyframes arm-r-idle {
-        0%, 58% { transform: translate(0, 0) rotate(0deg); }
-        /* Yawn Stretch */
-        62% { transform: translate(1px, -2px) rotate(-45deg); }
-        65% { transform: translate(2px, -3px) rotate(-80deg); } /* Full outward stretch */
-        72% { transform: translate(0px, 1px) rotate(15deg); } /* Relax down */
-        76%, 100% { transform: translate(0, 0) rotate(0deg); }
-      }
-
-      @keyframes yawn-mouth-anim {
-        0%, 58%, 76%, 100% { opacity: 0; transform: scale(0.1); }
-        60% { opacity: 1; transform: scale(0.5, 0.2); }
-        65% { opacity: 1; transform: scale(1.1, 1.4); } /* Wide Open */
-        72% { opacity: 1; transform: scale(0.6, 0.4); } /* Shrinking */
-        75% { opacity: 0; transform: scale(0.1); }
-      }
-
-      @keyframes tear-fall {
-        0%, 64%, 80%, 100% { opacity: 0; transform: translateY(0); }
-        66% { opacity: 1; transform: translateY(0); } /* Appears at corner of eye */
-        72% { opacity: 1; transform: translateY(2.5px); } /* Slides down cheek */
-        75% { opacity: 0; transform: translateY(3px); } /* Fades out */
+      .f0 { animation-delay: calc(var(--duration) * 0 / -6); }
+      .f1 { animation-delay: calc(var(--duration) * 1 / -6); }
+      .f2 { animation-delay: calc(var(--duration) * 2 / -6); }
+      .f3 { animation-delay: calc(var(--duration) * 3 / -6); }
+      .f4 { animation-delay: calc(var(--duration) * 4 / -6); }
+      .f5 { animation-delay: calc(var(--duration) * 5 / -6); }
+      @keyframes frame-step {
+        0%, 16.666% { opacity: 1; }
+        16.667%, 100% { opacity: 0; }
       }
     </style>
   </defs>
-
-  <!-- Ground Shadow -->
-  <rect id="ground-shadow" class="shadow-anim" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
-
-  <!-- Static Character Legs (extended up to stay connected during yawn stretch) -->
-  <g id="legs" fill="#DE886D">
-    <rect id="outer-left-leg" x="3" y="12" width="1" height="3"/>
-    <rect id="inner-left-leg" x="5" y="12" width="1" height="3"/>
-    <rect id="inner-right-leg" x="9" y="12" width="1" height="3"/>
-    <rect id="outer-right-leg" x="11" y="12" width="1" height="3"/>
-  </g>
-
-  <!-- Animated Upper Body (Combines occasional actions + continuous breathing) -->
-  <g class="action-body">
-    <g class="breathe-anim">
-      
-      <!-- Torso -->
-      <rect id="torso" x="2" y="6" width="11" height="7" fill="#DE886D"/>
-      
-      <!-- Arms -->
-      <g class="arm-l">
-        <rect id="left-arm" x="0" y="9" width="2" height="2" fill="#DE886D"/>
-      </g>
-      <g class="arm-r">
-        <rect id="right-arm" x="13" y="9" width="2" height="2" fill="#DE886D"/>
-      </g>
-
-      <!-- Yawning Mouth (Hidden usually) -->
-      <rect class="yawn-mouth" x="6" y="10" width="3" height="2" fill="#000000"/>
-
-      <!-- Eyes Group -->
-      <g class="eyes-look" fill="#000000">
-        <g class="eyes-blink">
-          <rect id="left-eye" x="4" y="8" width="1" height="2"/>
-          <rect id="right-eye" x="10" y="8" width="1" height="2"/>
-        </g>
-      </g>
-
-      <!-- Yawn Tear Drop (A tiny detail for the big stretch) -->
-      <rect class="yawn-tear" x="3.5" y="10" width="1" height="1" fill="#40C4FF"/>
-      
-    </g>
-  </g>
+  <image class="frame f0" href="../png/clawd-idle-living/dree_idle_l_0.png" x="0" y="0" width="256" height="256" />
+  <image class="frame f1" href="../png/clawd-idle-living/dree_idle_l_1.png" x="0" y="0" width="256" height="256" />
+  <image class="frame f2" href="../png/clawd-idle-living/dree_idle_l_2.png" x="0" y="0" width="256" height="256" />
+  <image class="frame f3" href="../png/clawd-idle-living/dree_idle_l_3.png" x="0" y="0" width="256" height="256" />
+  <image class="frame f4" href="../png/clawd-idle-living/dree_idle_l_4.png" x="0" y="0" width="256" height="256" />
+  <image class="frame f5" href="../png/clawd-idle-living/dree_idle_l_5.png" x="0" y="0" width="256" height="256" />
 </svg>

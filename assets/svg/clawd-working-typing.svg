@@ -1,153 +1,31 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
     <style>
-      /* High-speed body jitter */
-      .body-jitter {
-        transform-origin: 7.5px 15px;
-        animation: jitter 0.08s infinite alternate ease-in-out;
-      }
-
-      /* Furious typing arms (rotating out and tapping) */
-      .arm-l-type {
-        transform-origin: 2px 10px; /* Shoulder joint */
-        animation: type-l 0.15s infinite ease-in-out;
-      }
-      .arm-r-type {
-        transform-origin: 13px 10px; /* Shoulder joint */
-        animation: type-r 0.12s infinite ease-in-out;
-      }
-
-      /* Eye tracking (reading lines of code quickly) */
-      .eyes-read {
-        animation: read-code 1.2s infinite;
-      }
-
-      /* Floating data packets */
-      .data-bit {
+      :root { --duration: 0.72s; }
+      .frame {
         opacity: 0;
-        animation: float-data 1s infinite linear;
+        animation-name: frame-step;
+        animation-duration: var(--duration);
+        animation-timing-function: steps(1, end);
+        animation-iteration-count: infinite;
+        image-rendering: pixelated;
       }
-      .d1 { animation-delay: 0.0s; transform-origin: -2px 10px; }
-      .d2 { animation-delay: 0.3s; transform-origin: 5px 12px; }
-      .d3 { animation-delay: 0.6s; transform-origin: 12px 11px; }
-      .d4 { animation-delay: 0.8s; transform-origin: 17px 9px; }
-      .d5 { animation-delay: 0.1s; transform-origin: 8px 10px; }
-      .d6 { animation-delay: 0.4s; transform-origin: 0px 11px; }
-      .d7 { animation-delay: 0.7s; transform-origin: 15px 12px; }
-
-      /* Laptop Logo Glow */
-      .logo-glow {
-        animation: logo-pulse 1.5s infinite alternate ease-in-out;
-      }
-
-      /* Keyframes */
-      @keyframes jitter {
-        0% { transform: translateY(0); }
-        100% { transform: translateY(0.5px); }
-      }
-
-      /* Arms point forward and tap rapidly */
-      @keyframes type-l {
-        0% { transform: rotate(70deg); }
-        25% { transform: rotate(110deg); }
-        50% { transform: rotate(80deg); }
-        75% { transform: rotate(100deg); }
-        100% { transform: rotate(70deg); }
-      }
-
-      @keyframes type-r {
-        0% { transform: rotate(-80deg); }
-        25% { transform: rotate(-100deg); }
-        50% { transform: rotate(-70deg); }
-        75% { transform: rotate(-110deg); }
-        100% { transform: rotate(-80deg); }
-      }
-
-      /* Discrete steps to look like reading text */
-      @keyframes read-code {
-        0%, 14% { transform: translate(-2px, 0); }
-        15%, 29% { transform: translate(-1px, 0); }
-        30%, 44% { transform: translate(0px, 0); }
-        45%, 59% { transform: translate(1px, 0); }
-        60%, 84% { transform: translate(2px, 0); }
-        85%, 100% { transform: translate(-2px, 0); } /* Carriage return snap back */
-      }
-
-      /* Packets float up and fade */
-      @keyframes float-data {
-        0% { transform: translateY(0) scale(0.5); opacity: 0; }
-        20% { opacity: 0.8; }
-        100% { transform: translateY(-15px) scale(1.2); opacity: 0; }
-      }
-
-      @keyframes logo-pulse {
-        0% { opacity: 0.4; }
-        100% { opacity: 1; }
+      .f0 { animation-delay: calc(var(--duration) * 0 / -6); }
+      .f1 { animation-delay: calc(var(--duration) * 1 / -6); }
+      .f2 { animation-delay: calc(var(--duration) * 2 / -6); }
+      .f3 { animation-delay: calc(var(--duration) * 3 / -6); }
+      .f4 { animation-delay: calc(var(--duration) * 4 / -6); }
+      .f5 { animation-delay: calc(var(--duration) * 5 / -6); }
+      @keyframes frame-step {
+        0%, 16.666% { opacity: 1; }
+        16.667%, 100% { opacity: 0; }
       }
     </style>
-    
-    <!-- A small square to represent data/code -->
-    <g id="pixel-packet">
-      <rect x="0" y="0" width="1.5" height="1.5" />
-    </g>
   </defs>
-
-  <!-- Ground Shadow -->
-  <rect id="ground-shadow" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
-
-  <!-- Data Particles floating up from behind the laptop -->
-  <g class="data-particles" fill="#40C4FF">
-    <use href="#pixel-packet" class="data-bit d1" x="-2" y="12" />
-    <use href="#pixel-packet" class="data-bit d2" x="5" y="11" />
-    <use href="#pixel-packet" class="data-bit d3" x="12" y="13" />
-    <use href="#pixel-packet" class="data-bit d4" x="17" y="11" />
-    <use href="#pixel-packet" class="data-bit d5" x="8" y="10" />
-    <use href="#pixel-packet" class="data-bit d6" x="1" y="11" />
-    <use href="#pixel-packet" class="data-bit d7" x="15" y="12" />
-  </g>
-
-  <!-- Animated Character Body -->
-  <g class="body-jitter">
-    
-    <!-- Body Base Color Group -->
-    <g id="body-color-group" fill="#DE886D">
-      <!-- Static Legs -->
-      <rect id="outer-left-leg" x="3" y="13" width="1" height="2"/>
-      <rect id="inner-left-leg" x="5" y="13" width="1" height="2"/>
-      <rect id="inner-right-leg" x="9" y="13" width="1" height="2"/>
-      <rect id="outer-right-leg" x="11" y="13" width="1" height="2"/>
-
-      <!-- Main Torso -->
-      <rect id="torso" x="2" y="6" width="11" height="7"/>
-      
-      <!-- Typing Arms -->
-      <g class="arm-l-type">
-        <rect id="left-arm" x="0" y="9" width="2" height="2"/>
-      </g>
-      <g class="arm-r-type">
-        <rect id="right-arm" x="13" y="9" width="2" height="2"/>
-      </g>
-    </g>
-    
-    <!-- Eyes Color Group (Squinting) -->
-    <g fill="#000000">
-      <g class="eyes-read">
-        <rect id="left-eye-squint" x="4" y="8.5" width="1" height="1"/>
-        <rect id="right-eye-squint" x="10" y="8.5" width="1" height="1"/>
-      </g>
-    </g>
-    
-  </g>
-
-  <!-- Pixel Laptop (facing Clawd, so we see the back of the screen) -->
-  <g id="laptop" transform="translate(3, 9.5)">
-    <!-- Laptop Base -->
-    <rect x="-0.5" y="5" width="10" height="1" fill="#546E7A" rx="0.5"/>
-    <!-- Screen Back -->
-    <rect x="0" y="0" width="9" height="5.5" fill="#78909C" rx="0.5"/>
-    <!-- Glowing Logo (Pixel) -->
-    <circle cx="4.5" cy="2.5" r="1.5" fill="#40C4FF" opacity="0.2" class="logo-glow"/>
-    <rect x="4" y="2" width="1" height="1" fill="#FFFFFF" class="logo-glow"/>
-  </g>
-
+  <image class="frame f0" href="../png/clawd-working-typing/dree_typing_0.png" x="0" y="0" width="256" height="256" />
+  <image class="frame f1" href="../png/clawd-working-typing/dree_typing_1.png" x="0" y="0" width="256" height="256" />
+  <image class="frame f2" href="../png/clawd-working-typing/dree_typing_2.png" x="0" y="0" width="256" height="256" />
+  <image class="frame f3" href="../png/clawd-working-typing/dree_typing_3.png" x="0" y="0" width="256" height="256" />
+  <image class="frame f4" href="../png/clawd-working-typing/dree_typing_4.png" x="0" y="0" width="256" height="256" />
+  <image class="frame f5" href="../png/clawd-working-typing/dree_typing_5.png" x="0" y="0" width="256" height="256" />
 </svg>
