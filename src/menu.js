@@ -94,6 +94,9 @@ const i18n = {
     sessionJustNow: "just now",
     sessionMinAgo: "{n}m ago",
     sessionHrAgo: "{n}h ago",
+    showPet: "Show Clawd",
+    hidePet: "Hide Clawd",
+    toggleShortcut: "Toggle Shortcut: {shortcut}",
     quit: "Quit",
   },
   zh: {
@@ -136,6 +139,9 @@ const i18n = {
     sessionJustNow: "刚刚",
     sessionMinAgo: "{n}分钟前",
     sessionHrAgo: "{n}小时前",
+    showPet: "显示 Clawd",
+    hidePet: "隐藏 Clawd",
+    toggleShortcut: "切换快捷键: {shortcut}",
     quit: "退出",
   },
 };
@@ -292,6 +298,15 @@ module.exports = function initMenu(ctx) {
         ],
       },
       { type: "separator" },
+      {
+        label: ctx.petHidden ? t("showPet") : t("hidePet"),
+        click: () => ctx.togglePetVisibility(),
+      },
+      {
+        label: t("toggleShortcut").replace("{shortcut}", isMac ? "⌘⇧C" : "Ctrl+Shift+C"),
+        enabled: false,
+      },
+      { type: "separator" },
       { label: t("quit"), click: () => requestAppQuit() },
     );
     ctx.tray.setContextMenu(Menu.buildFromTemplate(items));
@@ -423,6 +438,11 @@ module.exports = function initMenu(ctx) {
       );
     }
     template.push(
+      { type: "separator" },
+      {
+        label: t("toggleShortcut").replace("{shortcut}", isMac ? "⌘⇧C" : "Ctrl+Shift+C"),
+        enabled: false,
+      },
       { type: "separator" },
       { label: t("quit"), click: () => requestAppQuit() },
     );
