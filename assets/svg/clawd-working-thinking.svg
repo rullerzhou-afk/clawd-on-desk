@@ -22,10 +22,10 @@
       }
     </style>
   </defs>
-  <image class="frame f0" href="../png/clawd-working-thinking/dree_thinking_0.png" x="0" y="0" width="256" height="256" />
-  <image class="frame f1" href="../png/clawd-working-thinking/dree_thinking_1.png" x="0" y="0" width="256" height="256" />
-  <image class="frame f2" href="../png/clawd-working-thinking/dree_thinking_2.png" x="0" y="0" width="256" height="256" />
-  <image class="frame f3" href="../png/clawd-working-thinking/dree_thinking_3.png" x="0" y="0" width="256" height="256" />
-  <image class="frame f4" href="../png/clawd-working-thinking/dree_thinking_4.png" x="0" y="0" width="256" height="256" />
-  <image class="frame f5" href="../png/clawd-working-thinking/dree_thinking_5.png" x="0" y="0" width="256" height="256" />
+  <image class="frame f0" href="../png/clawd-working-thinking/dree_thinking_0.png" x="64" y="64" width="128" height="128" />
+  <image class="frame f1" href="../png/clawd-working-thinking/dree_thinking_1.png" x="64" y="64" width="128" height="128" />
+  <image class="frame f2" href="../png/clawd-working-thinking/dree_thinking_2.png" x="64" y="64" width="128" height="128" />
+  <image class="frame f3" href="../png/clawd-working-thinking/dree_thinking_3.png" x="64" y="64" width="128" height="128" />
+  <image class="frame f4" href="../png/clawd-working-thinking/dree_thinking_4.png" x="64" y="64" width="128" height="128" />
+  <image class="frame f5" href="../png/clawd-working-thinking/dree_thinking_5.png" x="64" y="64" width="128" height="128" />
 </svg>
