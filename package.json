@@ -5,10 +5,10 @@
   "main": "src/main.js",
   "scripts": {
     "start": "node launch.js",
-    "build": "electron-builder --win",
-    "build:mac": "electron-builder --mac",
-    "build:linux": "electron-builder --linux",
-    "build:all": "electron-builder --win --mac --linux",
+    "build": "electron-builder --win --publish never",
+    "build:mac": "electron-builder --mac --publish never",
+    "build:linux": "electron-builder --linux --publish never",
+    "build:all": "electron-builder --win --mac --linux --publish never",
     "test": "node --test test/*.test.js",
     "install:cursor-hooks": "node hooks/cursor-install.js"
   },
