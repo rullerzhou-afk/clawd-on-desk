@@ -186,9 +186,15 @@ module.exports = function initMenu(ctx) {
       {
         label: t("startOnLogin"),
         type: "checkbox",
-        checked: app.getLoginItemSettings().openAtLogin,
+        checked: !!ctx.getOpenAtLoginEnabled(),
         click: (menuItem) => {
-          app.setLoginItemSettings({ openAtLogin: menuItem.checked });
+          try {
+            ctx.setOpenAtLogin(menuItem.checked);
+          } catch (err) {
+            console.warn("Clawd: failed to toggle start on login:", err.message);
+          }
+          buildContextMenu();
+          buildTrayMenu();
         },
       },
       {
