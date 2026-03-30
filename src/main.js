@@ -3,11 +3,12 @@ const path = require("path");
 const fs = require("fs");
 
 const isMac = process.platform === "darwin";
+const isWindows = process.platform === "win32";
 
 
 // ── Windows: AllowSetForegroundWindow via FFI ──
 let _allowSetForeground = null;
-if (!isMac) {
+if (isWindows) {
   try {
     const koffi = require("koffi");
     const user32 = koffi.load("user32.dll");
