@@ -73,6 +73,17 @@ const STATE_PRIORITY = {
 
 const ONESHOT_STATES = new Set(["attention", "error", "sweeping", "notification", "carrying"]);
 
+// Session display hints (e.g. Cursor tool_name → svg); basename only, allowlisted
+const DISPLAY_HINT_SVGS = new Set([
+  "clawd-working-typing.svg",
+  "clawd-working-building.svg",
+  "clawd-working-juggling.svg",
+  "clawd-working-conducting.svg",
+  "clawd-idle-reading.svg",
+  "clawd-working-debugger.svg",
+  "clawd-working-thinking.svg",
+]);
+
 // ── Session tracking ──
 const sessions = new Map();
 const SESSION_STALE_MS = 600000;
@@ -287,8 +298,20 @@ function wakeFromDoze() {
   }, 350);
 }
 
+function pickDisplaySvg(state, existing, incoming) {
+  if (state !== "working" && state !== "thinking" && state !== "juggling") {
+    return null;
+  }
+  if (incoming !== undefined) {
+    if (incoming === null || incoming === "") return null;
+    if (DISPLAY_HINT_SVGS.has(incoming)) return incoming;
+    return existing && existing.displaySvg != null ? existing.displaySvg : null;
+  }
+  return existing && existing.displaySvg != null ? existing.displaySvg : null;
+}
+
 // ── Session management ──
-function updateSession(sessionId, state, event, sourcePid, cwd, editor, pidChain, agentPid, agentId, host, headless) {
+function updateSession(sessionId, state, event, sourcePid, cwd, editor, pidChain, agentPid, agentId, host, headless, displaySvg) {
   if (startupRecoveryActive) {
     startupRecoveryActive = false;
     if (startupRecoveryTimer) { clearTimeout(startupRecoveryTimer); startupRecoveryTimer = null; }
@@ -332,23 +355,26 @@ function updateSession(sessionId, state, event, sourcePid, cwd, editor, pidChain
     setState(displayState, getSvgOverride(displayState));
     return;
   } else if (state === "attention" || state === "notification" || SLEEP_SEQUENCE.has(state)) {
-    sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), ...base });
+    sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), displaySvg: null, ...base });
   } else if (ONESHOT_STATES.has(state)) {
     if (existing) {
       existing.updatedAt = Date.now();
+      existing.displaySvg = null;
       if (sourcePid) existing.sourcePid = sourcePid;
       if (cwd) existing.cwd = cwd;
       if (editor) existing.editor = editor;
       if (pidChain && pidChain.length) existing.pidChain = pidChain;
       if (agentPid) existing.agentPid = agentPid;
     } else {
-      sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), ...base });
+      sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), displaySvg: null, ...base });
     }
   } else {
     if (existing && existing.state === "juggling" && state === "working" && event !== "SubagentStop" && event !== "subagentStop") {
       existing.updatedAt = Date.now();
+      existing.displaySvg = pickDisplaySvg("juggling", existing, displaySvg);
     } else {
-      sessions.set(sessionId, { state, updatedAt: Date.now(), ...base });
+      const ds = pickDisplaySvg(state, existing, displaySvg);
+      sessions.set(sessionId, { state, updatedAt: Date.now(), displaySvg: ds, ...base });
     }
   }
   cleanStaleSessions();
@@ -385,7 +411,7 @@ function cleanStaleSessions() {
           if (!s.headless) removedNonHeadless = true;
           sessions.delete(id); changed = true;
         } else if (s.state !== "idle") {
-          s.state = "idle"; changed = true;
+          s.state = "idle"; s.displaySvg = null; changed = true;
         }
       } else if (!s.pidReachable) {
         if (!s.headless) removedNonHeadless = true;
@@ -399,7 +425,7 @@ function cleanStaleSessions() {
         if (!s.headless) removedNonHeadless = true;
         sessions.delete(id); changed = true;
       } else if (s.state === "working" || s.state === "juggling" || s.state === "thinking") {
-        s.state = "idle"; s.updatedAt = now; changed = true;
+        s.state = "idle"; s.displaySvg = null; s.updatedAt = now; changed = true;
       }
     }
   }
@@ -479,10 +505,38 @@ function getWorkingSvg() {
   return "clawd-working-typing.svg";
 }
 
+function getWinningSessionDisplaySvg(targetState) {
+  let best = null;
+  let bestAt = -1;
+  for (const [, s] of sessions) {
+    if (s.headless || s.state !== targetState) continue;
+    if (s.updatedAt >= bestAt) {
+      bestAt = s.updatedAt;
+      best = s;
+    }
+  }
+  if (!best || !best.displaySvg) return null;
+  if (!DISPLAY_HINT_SVGS.has(best.displaySvg)) return null;
+  return best.displaySvg;
+}
+
 function getSvgOverride(state) {
   if (state === "idle") return SVG_IDLE_FOLLOW;
-  if (state === "working") return getWorkingSvg();
-  if (state === "juggling") return getJugglingSvg();
+  if (state === "working") {
+    const hinted = getWinningSessionDisplaySvg("working");
+    if (hinted) return hinted;
+    return getWorkingSvg();
+  }
+  if (state === "juggling") {
+    const hinted = getWinningSessionDisplaySvg("juggling");
+    if (hinted) return hinted;
+    return getJugglingSvg();
+  }
+  if (state === "thinking") {
+    const hinted = getWinningSessionDisplaySvg("thinking");
+    if (hinted) return hinted;
+    return STATE_SVGS.thinking[0];
+  }
   return null;
 }
 

@@ -16,6 +16,7 @@ const CURSOR_HOOK_EVENTS = [
   "subagentStart",
   "subagentStop",
   "preCompact",
+  "afterAgentThought",
   "stop",
 ];
 

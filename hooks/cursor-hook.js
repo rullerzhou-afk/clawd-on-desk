@@ -14,6 +14,7 @@ const HOOK_TO_STATE = {
   subagentStart: { state: "juggling", event: "SubagentStart" },
   subagentStop: { state: "working", event: "SubagentStop" },
   preCompact: { state: "sweeping", event: "PreCompact" },
+  afterAgentThought: { state: "thinking", event: "AfterAgentThought" },
 };
 
 const TERMINAL_NAMES_WIN = new Set([
@@ -117,6 +118,18 @@ function stdoutForCursorHook(hookName) {
   return "{}";
 }
 
+/** Maps Cursor preToolUse/postToolUse tool_name to assets/svg basenames (see state.js DISPLAY_HINT_SVGS). */
+function displaySvgFromToolHook(hookName, payload) {
+  if (hookName !== "preToolUse" && hookName !== "postToolUse") return undefined;
+  const name = payload && payload.tool_name;
+  if (!name || typeof name !== "string") return undefined;
+  if (name === "Shell" || name.startsWith("MCP:")) return "clawd-working-building.svg";
+  if (name === "Task") return "clawd-working-juggling.svg";
+  if (name === "Write" || name === "Delete") return "clawd-working-typing.svg";
+  if (name === "Read" || name === "Grep") return "clawd-idle-reading.svg";
+  return undefined;
+}
+
 function resolveStateAndEvent(payload, hookName) {
   if (!hookName) return null;
   if (hookName === "stop") {
@@ -149,6 +162,8 @@ function runWithPayload(payload) {
 
   const body = { state, session_id: sessionId, event };
   body.agent_id = "cursor-agent";
+  const hint = displaySvgFromToolHook(hookNameResolved, payload);
+  if (hint !== undefined) body.display_svg = hint;
   if (cwd) body.cwd = cwd;
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();
