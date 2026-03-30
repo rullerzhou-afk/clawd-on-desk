@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <defs>
+    <style>
+      /* Smooth, graceful body bobbing */
+      .body-bob {
+        transform-origin: 7.5px 15px; /* Pivot at the base of the feet */
+        animation: bob 2s infinite ease-in-out;
+      }
+
+      /* Ground shadow pulsing softly */
+      .shadow-bob {
+        transform-origin: 7.5px 15.5px;
+        animation: shadow-soft 2s infinite ease-in-out;
+      }
+
+      /* Conductor arms waving smoothly */
+      .arm-l-conduct {
+        transform-origin: 1px 10px; /* Shoulder joint */
+        animation: conduct-l 2s infinite ease-in-out;
+      }
+      .arm-r-conduct {
+        transform-origin: 14px 10px; /* Shoulder joint */
+        animation: conduct-r 2s infinite ease-in-out;
+      }
+
+      /* Flowing data stream */
+      .pixel-stream {
+        opacity: 0;
+        animation: stream-flow 2s infinite linear;
+      }
+      .p1 { animation-delay: 0s; color: #0082FC; }
+      .p2 { animation-delay: 0.4s; color: #FFC107; }
+      .p3 { animation-delay: 0.8s; color: #FF5252; }
+      .p4 { animation-delay: 1.2s; color: #4CAF50; }
+      .p5 { animation-delay: 1.6s; color: #9C27B0; }
+
+      /* Keyframes */
+      @keyframes bob {
+        0%, 100% { transform: translateY(0) scale(1, 1); }
+        50% { transform: translateY(1.5px) scale(1.02, 0.98); } /* Gentle squash */
+      }
+
+      @keyframes shadow-soft {
+        0%, 100% { transform: scale(1); opacity: 0.4; }
+        50% { transform: scale(1.05); opacity: 0.5; }
+      }
+
+      /* Left arm swoops up, then down */
+      @keyframes conduct-l {
+        0%, 100% { transform: rotate(15deg); }
+        50% { transform: rotate(85deg); }
+      }
+
+      /* Right arm swoops down, then up (out of phase) */
+      @keyframes conduct-r {
+        0%, 100% { transform: rotate(-85deg); }
+        50% { transform: rotate(-15deg); }
+      }
+
+      /* Data pixels flow in an arc over the head */
+      @keyframes stream-flow {
+        0% { transform: translate(-2px, 6px) scale(0); opacity: 0; }
+        15% { transform: translate(0px, 1px) scale(1); opacity: 1; }
+        50% { transform: translate(7.5px, -3px) scale(1.5); opacity: 1; } /* Peak of arc */
+        85% { transform: translate(15px, 1px) scale(1); opacity: 1; }
+        100% { transform: translate(17px, 6px) scale(0); opacity: 0; }
+      }
+    </style>
+
+    <!-- Data Pixel -->
+    <g id="data-pixel">
+      <rect x="0" y="0" width="1.5" height="1.5" fill="currentColor"/>
+    </g>
+  </defs>
+
+  <!-- Ground Shadow -->
+  <rect id="ground-shadow" class="shadow-bob" x="3" y="15" width="9" height="1" fill="#000000"/>
+
+  <!-- Data Stream Arc -->
+  <g>
+    <use href="#data-pixel" class="pixel-stream p1" />
+    <use href="#data-pixel" class="pixel-stream p2" />
+    <use href="#data-pixel" class="pixel-stream p3" />
+    <use href="#data-pixel" class="pixel-stream p4" />
+    <use href="#data-pixel" class="pixel-stream p5" />
+  </g>
+
+  <!-- Animated Character Body -->
+  <g class="body-bob">
+    
+    <!-- Body Base Color Group -->
+    <g id="body-color-group" fill="#DE886D">
+      <!-- Static Legs -->
+      <rect id="outer-left-leg" x="3" y="13" width="1" height="2"/>
+      <rect id="inner-left-leg" x="5" y="13" width="1" height="2"/>
+      <rect id="inner-right-leg" x="9" y="13" width="1" height="2"/>
+      <rect id="outer-right-leg" x="11" y="13" width="1" height="2"/>
+
+      <!-- Main Torso -->
+      <rect id="torso" x="2" y="6" width="11" height="7"/>
+      
+      <!-- Waving Arms -->
+      <g class="arm-l-conduct">
+        <rect id="left-arm" x="0" y="9" width="2" height="2"/>
+      </g>
+      <g class="arm-r-conduct">
+        <rect id="right-arm" x="13" y="9" width="2" height="2"/>
+      </g>
+    </g>
+    
+    <!-- Eyes Color Group (Happily closed / smiling) -->
+    <g fill="#000000">
+      <rect id="left-eye-happy" x="3.5" y="8.5" width="2" height="0.5"/>
+      <rect id="right-eye-happy" x="9.5" y="8.5" width="2" height="0.5"/>
+    </g>
+    
+  </g>
+</svg>

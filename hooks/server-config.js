@@ -17,6 +17,14 @@ function normalizePort(value) {
   return Number.isInteger(port) && SERVER_PORTS.includes(port) ? port : null;
 }
 
+const HOST_PREFIX_PATH = path.join(os.homedir(), ".claude", "hooks", "clawd-host-prefix");
+
+function readHostPrefix() {
+  let prefix = null;
+  try { prefix = fs.readFileSync(HOST_PREFIX_PATH, "utf8").trim(); } catch {}
+  return prefix || os.hostname().split(".")[0];
+}
+
 function readRuntimeConfig() {
   try {
     const raw = JSON.parse(fs.readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
@@ -280,6 +288,7 @@ module.exports = {
   getPortCandidates,
   postStateToRunningServer,
   probePort,
+  readHostPrefix,
   readRuntimePort,
   splitPortCandidates,
   postStateToPort,

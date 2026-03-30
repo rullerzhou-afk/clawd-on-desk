@@ -2,7 +2,7 @@
 // Extracted from main.js L1877-2271
 
 const https = require("https");
-const { app, dialog, shell } = require("electron");
+const { app, dialog, shell, Notification } = require("electron");
 
 const isMac = process.platform === "darwin";
 
@@ -298,13 +298,11 @@ async function _checkForUpdatesInner(manual) {
     manualUpdateCheck = false;
     ctx.rebuildAllMenus();
     if (manual) {
-      ctx.updateLog("Showing 'up to date' dialog");
-      dialog.showMessageBox({
-        type: "info",
+      ctx.updateLog("Showing 'up to date' notification");
+      new Notification({
         title: ctx.t("updateNotAvailable"),
-        message: ctx.t("updateNotAvailableMsg").replace("{version}", currentVersion),
-        noLink: true,
-      });
+        body: ctx.t("updateNotAvailableMsg").replace("{version}", currentVersion),
+      }).show();
     }
     return;
   }

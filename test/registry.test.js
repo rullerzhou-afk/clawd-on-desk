@@ -3,19 +3,21 @@ const assert = require("node:assert");
 const registry = require("../agents/registry");
 
 describe("Agent Registry", () => {
-  it("should return all three agents", () => {
+  it("should return all four agents", () => {
     const agents = registry.getAllAgents();
-    assert.strictEqual(agents.length, 3);
+    assert.strictEqual(agents.length, 4);
     const ids = agents.map((a) => a.id);
     assert.ok(ids.includes("claude-code"));
     assert.ok(ids.includes("codex"));
     assert.ok(ids.includes("copilot-cli"));
+    assert.ok(ids.includes("gemini-cli"));
   });
 
   it("should look up agents by ID", () => {
     assert.strictEqual(registry.getAgent("claude-code").name, "Claude Code");
     assert.strictEqual(registry.getAgent("codex").name, "Codex CLI");
     assert.strictEqual(registry.getAgent("copilot-cli").name, "Copilot CLI");
+    assert.strictEqual(registry.getAgent("gemini-cli").name, "Gemini CLI");
     assert.strictEqual(registry.getAgent("nonexistent"), undefined);
   });
 
@@ -30,17 +32,35 @@ describe("Agent Registry", () => {
 
     const copilot = registry.getAgent("copilot-cli");
     assert.deepStrictEqual(copilot.processNames.win, ["copilot.exe"]);
+
+    const gemini = registry.getAgent("gemini-cli");
+    assert.deepStrictEqual(gemini.processNames.win, ["gemini.exe"]);
+  });
+
+  it("should include explicit Linux process names", () => {
+    const cc = registry.getAgent("claude-code");
+    assert.deepStrictEqual(cc.processNames.linux, ["claude"]);
+
+    const codex = registry.getAgent("codex");
+    assert.deepStrictEqual(codex.processNames.linux, ["codex"]);
+
+    const copilot = registry.getAgent("copilot-cli");
+    assert.deepStrictEqual(copilot.processNames.linux, ["copilot"]);
+
+    const gemini = registry.getAgent("gemini-cli");
+    assert.deepStrictEqual(gemini.processNames.linux, ["gemini"]);
   });
 
   it("should aggregate all process names", () => {
     const all = registry.getAllProcessNames();
-    assert.ok(all.length >= 3);
+    assert.ok(all.length >= 4);
     const names = all.map((p) => p.name);
     // Should contain at least one entry per agent (platform-dependent)
     const agentIds = [...new Set(all.map((p) => p.agentId))];
     assert.ok(agentIds.includes("claude-code"));
     assert.ok(agentIds.includes("codex"));
     assert.ok(agentIds.includes("copilot-cli"));
+    assert.ok(agentIds.includes("gemini-cli"));
   });
 
   it("should have correct capabilities", () => {
@@ -61,6 +81,12 @@ describe("Agent Registry", () => {
     assert.strictEqual(copilot.capabilities.permissionApproval, false);
     assert.strictEqual(copilot.capabilities.sessionEnd, true);
     assert.strictEqual(copilot.capabilities.subagent, true);
+
+    const gemini = registry.getAgent("gemini-cli");
+    assert.strictEqual(gemini.capabilities.httpHook, false);
+    assert.strictEqual(gemini.capabilities.permissionApproval, false);
+    assert.strictEqual(gemini.capabilities.sessionEnd, true);
+    assert.strictEqual(gemini.capabilities.subagent, false);
   });
 
   it("should have eventMap for hook-based agents", () => {
@@ -73,15 +99,18 @@ describe("Agent Registry", () => {
     assert.strictEqual(copilot.eventMap.sessionStart, "idle");
     assert.strictEqual(copilot.eventMap.preToolUse, "working");
     assert.strictEqual(copilot.eventMap.agentStop, "attention");
+
+    const gemini = registry.getAgent("gemini-cli");
+    assert.strictEqual(gemini.eventMap.SessionStart, "idle");
+    assert.strictEqual(gemini.eventMap.BeforeTool, "working");
+    assert.strictEqual(gemini.eventMap.AfterAgent, "attention");
   });
 
   it("should have logEventMap for poll-based agents", () => {
     const codex = registry.getAgent("codex");
     assert.strictEqual(codex.logEventMap["session_meta"], "idle");
     assert.strictEqual(codex.logEventMap["event_msg:task_started"], "thinking");
-    assert.strictEqual(codex.logEventMap["event_msg:agent_message"], "working");
-    assert.strictEqual(codex.logEventMap["event_msg:exec_command_end"], "working");
-    assert.strictEqual(codex.logEventMap["event_msg:task_complete"], "attention");
+    assert.strictEqual(codex.logEventMap["event_msg:task_complete"], "codex-turn-end");
     assert.strictEqual(codex.logEventMap["event_msg:turn_aborted"], "idle");
   });
 });

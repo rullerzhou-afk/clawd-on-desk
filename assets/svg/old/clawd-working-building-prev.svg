@@ -1,0 +1,231 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <defs>
+    <style>
+      /* Heavy bouncing animation for the body */
+      .body-bounce {
+        transform-origin: 7.5px 15px;
+        animation: hammer-bounce 1s infinite;
+      }
+
+      /* Ground shadow pulsing on impact */
+      .shadow-pulse {
+        transform-origin: 7.5px 15.5px;
+        animation: shadow-impact 1s infinite;
+      }
+
+      /* Left arm resting with slight movement */
+      .arm-l-rest {
+        transform-origin: 2px 10px;
+        animation: arm-rest 1s infinite;
+      }
+
+      /* Right arm swinging the hammer */
+      .arm-hammer {
+        transform-origin: 14px 10px; /* Shoulder joint */
+        animation: hammer-swing 1s infinite;
+      }
+
+      /* Eyes squinting on impact */
+      .eyes-blink {
+        transform-origin: 7.5px 9px;
+        animation: hammer-eyes 1s infinite;
+      }
+
+      /* Spark particles */
+      .spark {
+        opacity: 0;
+      }
+      .s1 { animation: spark-1 1s infinite; }
+      .s2 { animation: spark-2 1s infinite; }
+      .s3 { animation: spark-3 1s infinite; }
+      
+      /* Sweat drop flying off */
+      .sweat {
+        opacity: 0;
+        animation: sweat-fly 1s infinite cubic-bezier(.25,.1,.25,1);
+      }
+      
+      /* Glowing hot metal cooling and heating up */
+      .hot-metal {
+        animation: metal-glow 1s infinite;
+      }
+
+      /* Keyframes */
+      @keyframes hammer-bounce {
+        0%, 100% { transform: scale(1, 1) translateY(0); } /* Base */
+        30% { transform: scale(0.95, 1.05) translateY(-2px); } /* Peak raise (anticipation) */
+        45% { transform: scale(1, 1) translateY(0); } /* Falling */
+        50% { transform: scale(1.15, 0.85) translateY(2px); } /* Hard impact squash */
+        70% { transform: scale(1, 1) translateY(0); } /* Recover */
+      }
+
+      @keyframes shadow-impact {
+        0%, 45%, 70%, 100% { transform: scale(1); opacity: 0.5; }
+        30% { transform: scale(0.8); opacity: 0.3; } /* Lighter when raised */
+        50% { transform: scale(1.3); opacity: 0.8; } /* Heavy and wide on impact */
+      }
+
+      @keyframes arm-rest {
+        0%, 100% { transform: rotate(0deg); }
+        30% { transform: rotate(15deg); }
+        50% { transform: rotate(-5deg); }
+      }
+
+      @keyframes hammer-swing {
+        0%, 100% { transform: rotate(15deg); }
+        30% { transform: rotate(-45deg); } /* Arm raised back */
+        45% { transform: rotate(40deg); } /* Swinging down fast */
+        50% { transform: rotate(125deg); } /* Striking the anvil */
+        70% { transform: rotate(15deg); }
+      }
+
+      @keyframes hammer-eyes {
+        0%, 40% { transform: scaleY(1); } /* Open */
+        48%, 60% { transform: scaleY(0.1); } /* Squeezed shut on impact */
+        65%, 100% { transform: scaleY(1); } /* Open again */
+      }
+      
+      @keyframes metal-glow {
+        0%, 49% { fill: #FF5252; }
+        50%, 60% { fill: #FFF59D; } /* Flashes white/yellow hot on hit */
+        100% { fill: #FF5252; }
+      }
+
+      /* Sweat drop flies back and fades */
+      @keyframes sweat-fly {
+        0% { transform: translate(0, 0) scale(0); opacity: 0; }
+        30% { transform: translate(0, 0) scale(1); opacity: 1; }
+        80% { transform: translate(-6px, -6px) scale(0.8); opacity: 0; }
+        100% { opacity: 0; }
+      }
+
+      /* Sparks flying outwards from the impact zone */
+      @keyframes spark-1 {
+        0%, 49% { transform: translate(0, 0) scale(0); opacity: 0; }
+        50% { transform: translate(0, 0) scale(1); opacity: 1; }
+        70% { transform: translate(4px, -6px) scale(0); opacity: 0; }
+        100% { opacity: 0; }
+      }
+      @keyframes spark-2 {
+        0%, 49% { transform: translate(0, 0) scale(0); opacity: 0; }
+        50% { transform: translate(0, 0) scale(1); opacity: 1; }
+        70% { transform: translate(7px, -1px) scale(0); opacity: 0; }
+        100% { opacity: 0; }
+      }
+      @keyframes spark-3 {
+        0%, 49% { transform: translate(0, 0) scale(0); opacity: 0; }
+        50% { transform: translate(0, 0) scale(1); opacity: 1; }
+        70% { transform: translate(3px, 3px) scale(0); opacity: 0; }
+        100% { opacity: 0; }
+      }
+    </style>
+
+    <!-- Pixel Spark -->
+    <g id="pixel-spark">
+      <rect x="0" y="0" width="1" height="1" />
+    </g>
+  </defs>
+
+  <!-- Ground Shadows -->
+  <rect id="ground-shadow" class="shadow-pulse" x="3" y="15" width="9" height="1" fill="#000000"/>
+  <rect id="work-shadow" x="16" y="15" width="7" height="1" fill="#000000" opacity="0.4"/>
+
+  <!-- Metal Block / Anvil being hit -->
+  <g id="work-piece" transform="translate(17, 13)">
+    <!-- Base -->
+    <rect x="0" y="2" width="5" height="1" fill="#546E7A" />
+    <!-- Main block -->
+    <rect x="1" y="0" width="3" height="2" fill="#78909C" />
+    <!-- Glowing hot piece on top -->
+    <rect x="1.5" y="-0.5" width="2" height="1" class="hot-metal" />
+  </g>
+
+  <!-- Impact Sparks (Positioned near the hammer's strike point) -->
+  <g fill="#FFC107" transform="translate(19, 12.5)">
+    <use href="#pixel-spark" class="spark s1" />
+    <use href="#pixel-spark" class="spark s2" />
+    <use href="#pixel-spark" class="spark s3" />
+  </g>
+
+  <!-- Animated Character Body -->
+  <g class="body-bounce">
+    
+    <!-- Sweat Drop (Positioned near the side of the head) -->
+    <g transform="translate(1, 8)">
+      <g class="sweat" fill="#40C4FF">
+        <rect x="0" y="1" width="1.5" height="1.5"/>
+        <rect x="0.25" y="0" width="1" height="1"/>
+      </g>
+    </g>
+
+    <!-- Hard Hat -->
+    <g id="hard-hat">
+      <!-- Ridges top (y=1) -->
+      <rect x="4" y="1" width="2" height="1" fill="#FBC02D"/>
+      <rect x="9" y="1" width="2" height="1" fill="#FBC02D"/>
+
+      <!-- Upper Dome (y=2) -->
+      <rect x="3" y="2" width="1" height="1" fill="#F9A825"/>
+      <rect x="4" y="2" width="2" height="1" fill="#FBC02D"/>
+      <rect x="6" y="2" width="1" height="1" fill="#F9A825"/>
+      <rect x="7" y="2" width="1" height="1" fill="#FBC02D"/>
+      <rect x="8" y="2" width="1" height="1" fill="#F9A825"/>
+      <rect x="9" y="2" width="2" height="1" fill="#FBC02D"/>
+      <rect x="11" y="2" width="1" height="1" fill="#F9A825"/>
+      
+      <!-- Mid Dome (y=3) -->
+      <rect x="2" y="3" width="1" height="1" fill="#F9A825"/>
+      <rect x="3" y="3" width="3" height="1" fill="#FBC02D"/>
+      <rect x="6" y="3" width="1" height="1" fill="#F9A825"/>
+      <rect x="7" y="3" width="1" height="1" fill="#FBC02D"/>
+      <rect x="8" y="3" width="1" height="1" fill="#F9A825"/>
+      <rect x="9" y="3" width="3" height="1" fill="#FBC02D"/>
+      <rect x="12" y="3" width="1" height="1" fill="#F9A825"/>
+
+      <!-- Lower Dome / Brim top (y=4) -->
+      <rect x="1" y="4" width="2" height="1" fill="#F9A825"/>
+      <rect x="3" y="4" width="9" height="1" fill="#FBC02D"/>
+      <rect x="12" y="4" width="2" height="1" fill="#F9A825"/>
+
+      <!-- Bottom Band (y=5) -->
+      <rect x="0" y="5" width="15" height="1" fill="#F9A825"/>
+    </g>
+
+    <!-- Body Base Color Group -->
+    <g id="body-color-group" fill="#DE886D">
+      <!-- Static Legs -->
+      <rect id="outer-left-leg" x="3" y="13" width="1" height="2"/>
+      <rect id="inner-left-leg" x="5" y="13" width="1" height="2"/>
+      <rect id="inner-right-leg" x="9" y="13" width="1" height="2"/>
+      <rect id="outer-right-leg" x="11" y="13" width="1" height="2"/>
+
+      <!-- Main Torso -->
+      <rect id="torso" x="2" y="6" width="11" height="7"/>
+      
+      <!-- Resting Left Arm -->
+      <g class="arm-l-rest">
+        <rect id="left-arm" x="0" y="9" width="2" height="2"/>
+      </g>
+
+      <!-- Hammer-Swinging Right Arm -->
+      <g class="arm-hammer">
+        <rect id="right-arm" x="13" y="9" width="2" height="2"/>
+        
+        <!-- Tiny Pixel Hammer -->
+        <g id="hammer">
+          <!-- Handle -->
+          <rect x="13.5" y="4" width="1" height="6" fill="#795548" />
+          <!-- Head -->
+          <rect x="12.5" y="3" width="3" height="2" fill="#9E9E9E" />
+        </g>
+      </g>
+    </g>
+    
+    <!-- Eyes Color Group (Determined / Straining) -->
+    <g class="eyes-blink" fill="#000000">
+      <rect id="left-eye" x="4" y="8.5" width="1.5" height="1.5"/>
+      <rect id="right-eye" x="9.5" y="8.5" width="1.5" height="1.5"/>
+    </g>
+    
+  </g>
+</svg>

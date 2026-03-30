@@ -1,90 +1,164 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
   <defs>
     <style>
-      /* Slow, contemplative swaying */
-      .body-sway {
-        transform-origin: 7.5px 15px; /* Pivot at the base of the feet */
-        animation: sway 4s infinite ease-in-out;
+      /* === 12s master timeline: mostly still, one gentle "thinking moment" === */
+
+      /* Body: one subtle lean at the thinking moment */
+      .body-master {
+        transform-origin: 7.5px 15px;
+        animation: body-think 12s infinite ease-in-out;
       }
 
-      /* Ground shadow shifting with the sway */
-      .shadow-sway {
-        transform-origin: 7.5px 15.5px;
-        animation: shadow-shift 4s infinite ease-in-out;
+      /* Breathing: the ONLY constant cycle (3.2s) */
+      .breathe {
+        transform-origin: 7.5px 13px;
+        animation: breathe 3.2s infinite ease-in-out;
       }
 
-      /* Right arm raised and tapping the "chin" */
-      .arm-tap {
-        transform-origin: 14px 10px; /* Shoulder joint */
-        animation: tap-chin 0.8s infinite alternate ease-in-out;
+      /* Shadow follows body */
+      .shadow-think {
+        animation: shadow-think 12s infinite ease-in-out;
       }
 
-      /* Slow, thoughtful blinking */
+      /* Right arm: resting on chin, one gentle press per cycle */
+      .arm-r {
+        transform-origin: 14px 10px;
+        animation: arm-r-think 12s infinite ease-in-out;
+      }
+
+      /* Left arm: one tiny shift with body lean */
+      .arm-l {
+        transform-origin: 1px 10px;
+        animation: arm-l-think 12s infinite ease-in-out;
+      }
+
+      /* Eyes: combined movement + blink on same timeline
+         Blinks are intentionally placed before/after eye drift */
       .eyes-think {
-        transform-origin: 7.5px 7px;
-        animation: blink-think 4s infinite;
+        transform-origin: 7.5px 8px;
+        animation: eyes-think 12s infinite ease-in-out;
       }
 
-      /* Loading dots appearing sequentially */
+      /* === Bubble edge morph === */
+      .bubble-h {
+        animation: morph-h 5s infinite ease-in-out;
+      }
+      .bubble-v {
+        animation: morph-v 4s infinite ease-in-out;
+      }
+      .bubble-main {
+        animation: morph-main 6s infinite ease-in-out;
+      }
+
+      /* === Loading dots (2s) === */
       .dot { opacity: 0; }
       .d1 { animation: load-dot-1 2s infinite; }
       .d2 { animation: load-dot-2 2s infinite; }
       .d3 { animation: load-dot-3 2s infinite; }
 
-      /* Keyframes */
-      @keyframes sway {
-        0%, 100% { transform: rotate(0deg) translate(0, 0); }
-        25% { transform: rotate(-3deg) translate(-1px, 0); }
-        75% { transform: rotate(3deg) translate(1px, 0); }
+      /* ==================== Keyframes ==================== */
+
+      /* Body: neutral → gentle lean at 50% → return
+         Only 1.5deg, barely perceptible, but gives "weight shift" */
+      @keyframes body-think {
+        0%, 35%, 80%, 100% { transform: rotate(0deg) translate(0, 0); }
+        50%                { transform: rotate(1.5deg) translate(0.3px, 0); }
       }
 
-      @keyframes shadow-shift {
+      /* Shadow: subtle horizontal shift with body */
+      @keyframes shadow-think {
+        0%, 35%, 80%, 100% { transform: translate(0, 0); }
+        50%                { transform: translate(0.3px, 0); }
+      }
+
+      /* Breathing: standard template, always running */
+      @keyframes breathe {
+        0%, 100% { transform: scale(1, 1) translate(0, 0); }
+        50%      { transform: scale(1.02, 0.98) translate(0, 0.5px); }
+      }
+
+      /* Right arm: resting at -130deg (on chin), one slow press to -138deg
+         Arm is mostly STILL — the press is the "thinking moment" */
+      @keyframes arm-r-think {
+        0%, 38%, 75%, 100% { transform: rotate(-130deg); }
+        52%                { transform: rotate(-138deg); }
+        62%                { transform: rotate(-127deg); }
+      }
+
+      /* Left arm: resting at 22deg, tiny 4deg shift with body lean */
+      @keyframes arm-l-think {
+        0%, 40%, 78%, 100% { transform: rotate(22deg); }
+        55%                { transform: rotate(26deg); }
+      }
+
+      /* Eyes: combined translate (gaze) + scaleY (blink)
+         3 blinks in 12s ≈ natural rate
+         Blinks gate the eye drift transitions (intentional)
+
+         Mirror note: translate(+x) = screen LEFT toward bubble
+         Gaze amplitude: max 0.5px (tiny, dreamy) */
+      @keyframes eyes-think {
+        /* --- quiet phase: gazing vaguely at bubble --- */
+        0%   { transform: translate(0.5px, -0.3px) scaleY(1); }
+        14%  { transform: translate(0.5px, -0.3px) scaleY(1); }
+        16%  { transform: translate(0.5px, -0.3px) scaleY(0.1); }
+        18%  { transform: translate(0.5px, -0.3px) scaleY(1); }
+        /* --- still quiet, holding gaze --- */
+        42%  { transform: translate(0.5px, -0.3px) scaleY(1); }
+        44%  { transform: translate(0.5px, -0.3px) scaleY(0.1); }
+        46%  { transform: translate(0.5px, -0.3px) scaleY(1); }
+        /* --- slow drift to the side (the "hmm" moment) --- */
+        56%  { transform: translate(-0.5px, 0) scaleY(1); }
+        70%  { transform: translate(-0.5px, 0) scaleY(1); }
+        /* --- blink, then drift back --- */
+        74%  { transform: translate(-0.5px, 0) scaleY(1); }
+        76%  { transform: translate(-0.5px, 0) scaleY(0.1); }
+        78%  { transform: translate(-0.5px, 0) scaleY(1); }
+        /* --- return to bubble --- */
+        88%  { transform: translate(0.5px, -0.3px) scaleY(1); }
+        100% { transform: translate(0.5px, -0.3px) scaleY(1); }
+      }
+
+      /* Bubble edge morphing */
+      @keyframes morph-main {
         0%, 100% { transform: translate(0, 0); }
-        25% { transform: translate(-1px, 0); }
-        75% { transform: translate(1px, 0); }
+        50%      { transform: translate(0, -0.3px); }
+      }
+      @keyframes morph-h {
+        0%, 100% { transform: translate(0, 0); }
+        50%      { transform: translate(0.3px, 0); }
+      }
+      @keyframes morph-v {
+        0%, 100% { transform: translate(0, 0); }
+        50%      { transform: translate(0, 0.3px); }
       }
 
-      @keyframes tap-chin {
-        0% { transform: rotate(-125deg); }
-        100% { transform: rotate(-145deg); }
-      }
-
-      @keyframes blink-think {
-        0%, 46%, 54%, 100% { transform: scaleY(1); }
-        50% { transform: scaleY(0.1); } /* Single slow blink */
-      }
-
-      /* Sequential dot loading (0-20% empty, then dots appear one by one) */
+      /* Loading dots */
       @keyframes load-dot-1 {
-        0%, 20% { opacity: 0; }
+        0%, 20%  { opacity: 0; }
         21%, 100% { opacity: 1; }
       }
       @keyframes load-dot-2 {
-        0%, 40% { opacity: 0; }
+        0%, 40%  { opacity: 0; }
         41%, 100% { opacity: 1; }
       }
       @keyframes load-dot-3 {
-        0%, 60% { opacity: 0; }
+        0%, 60%  { opacity: 0; }
         61%, 100% { opacity: 1; }
       }
     </style>
   </defs>
 
-  <!-- Pixel-Art Thinking Bubble (upper-left, tail points down-right toward Clawd) -->
+  <!-- Thinking Bubble (upper-left) -->
   <g transform="translate(-3, -7)">
     <g class="think-bubble">
-      <!-- Bubble Cloud Base -->
       <g fill="#FFFFFF" opacity="0.9">
-        <rect x="2" y="1" width="8" height="7"/>
-        <rect x="1" y="2" width="10" height="5"/>
-        <rect x="3" y="0" width="6" height="9"/>
-
-        <!-- Tail pointing down-right toward Clawd -->
+        <rect class="bubble-main" x="2" y="1" width="8" height="7"/>
+        <rect class="bubble-h" x="1" y="2" width="10" height="5"/>
+        <rect class="bubble-v" x="3" y="0" width="6" height="9"/>
         <rect x="8" y="7" width="2" height="2"/>
         <rect x="10" y="9" width="1" height="1"/>
       </g>
-
-      <!-- Animated Loading Dots (left-to-right order preserved) -->
       <g fill="#0082FC">
         <rect class="dot d1" x="2.5" y="4" width="1" height="1"/>
         <rect class="dot d2" x="5.5" y="4" width="1" height="1"/>
@@ -93,26 +167,29 @@
     </g>
   </g>
 
-  <!-- Mirrored Character Body (SVG transform flips all body parts + shadow) -->
+  <!-- Mirrored Character -->
   <g transform="translate(15, 0) scale(-1, 1)">
-    <!-- Ground Shadow -->
-    <rect id="ground-shadow" class="shadow-sway" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
+    <rect class="shadow-think" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
 
-    <g class="body-sway">
-      <g id="body-color-group" fill="#DE886D">
-        <rect id="outer-left-leg" x="3" y="13" width="1" height="2"/>
-        <rect id="inner-left-leg" x="5" y="13" width="1" height="2"/>
-        <rect id="inner-right-leg" x="9" y="13" width="1" height="2"/>
-        <rect id="outer-right-leg" x="11" y="13" width="1" height="2"/>
-        <rect id="torso" x="2" y="6" width="11" height="7"/>
-        <rect id="left-arm" x="0" y="9" width="3" height="2" transform="rotate(25 1 10)"/>
-        <g class="arm-tap">
-          <rect id="right-arm" x="13" y="9" width="2" height="2"/>
+    <g class="body-master">
+      <g class="breathe">
+        <g fill="#DE886D">
+          <rect x="3" y="13" width="1" height="2"/>
+          <rect x="5" y="13" width="1" height="2"/>
+          <rect x="9" y="13" width="1" height="2"/>
+          <rect x="11" y="13" width="1" height="2"/>
+          <rect id="torso" x="2" y="6" width="11" height="7"/>
+          <g class="arm-l">
+            <rect x="0" y="9" width="3" height="2"/>
+          </g>
+          <g class="arm-r">
+            <rect x="13" y="9" width="2" height="2"/>
+          </g>
         </g>
-      </g>
-      <g class="eyes-think" fill="#000000">
-        <rect id="left-eye" x="5" y="7" width="1" height="2"/>
-        <rect id="right-eye" x="11" y="7" width="1" height="2"/>
+        <g class="eyes-think" fill="#000000">
+          <rect x="5" y="7" width="1" height="2"/>
+          <rect x="11" y="7" width="1" height="2"/>
+        </g>
       </g>
     </g>
   </g>

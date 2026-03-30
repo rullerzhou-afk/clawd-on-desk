@@ -3,14 +3,16 @@
 
 const { BrowserWindow } = require("electron");
 const path = require("path");
-const fs = require("fs");
 const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
 } = require("../hooks/server-config");
 
 const isMac = process.platform === "darwin";
+const isLinux = process.platform === "linux";
+const isWin = process.platform === "win32";
 const WIN_TOPMOST_LEVEL = "pop-up-menu";
+const LINUX_WINDOW_TYPE = "toolbar";
 
 module.exports = function initPermission(ctx) {
 
@@ -118,6 +120,7 @@ function showPermissionBubble(permEntry) {
     resizable: false,
     skipTaskbar: true,
     hasShadow: false,
+    ...(isLinux ? { type: LINUX_WINDOW_TYPE } : {}),
     focusable: false,
     webPreferences: {
       preload: path.join(__dirname, "preload-bubble.js"),
@@ -128,10 +131,7 @@ function showPermissionBubble(permEntry) {
 
   permEntry.bubble = bub;
 
-  if (isMac) {
-    bub.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: false });
-    bub.setAlwaysOnTop(true, "floating");
-  } else {
+  if (isWin) {
     bub.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
   }
 
@@ -143,6 +143,7 @@ function showPermissionBubble(permEntry) {
       toolInput: permEntry.toolInput,
       suggestions: permEntry.suggestions || [],
       lang: ctx.lang,
+      isElicitation: permEntry.isElicitation || false,
     });
     // Don't call bub.focus() — it steals focus from terminal and can trigger
     // false "User answered in terminal" denials in Claude Code, wasting tokens.
@@ -150,6 +151,10 @@ function showPermissionBubble(permEntry) {
 
   repositionBubbles();
   bub.showInactive();
+  // Linux WMs may reset skipTaskbar after showInactive — re-apply explicitly
+  if (isLinux) bub.setSkipTaskbar(true);
+  // macOS: apply after showInactive() — it resets NSWindowCollectionBehavior
+  ctx.reapplyMacVisibility();
 
   bub.on("closed", () => {
     const idx = pendingPermissions.indexOf(permEntry);
@@ -162,8 +167,25 @@ function showPermissionBubble(permEntry) {
 }
 
 function resolvePermissionEntry(permEntry, behavior, message) {
+  // Codex notify bubbles have no HTTP connection — route to dedicated cleanup
+  if (permEntry.isCodexNotify) {
+    dismissCodexNotify(permEntry);
+    return;
+  }
   const idx = pendingPermissions.indexOf(permEntry);
   if (idx === -1) return;
+
+  // Minimum display time: if bubble just appeared and dismiss is automatic
+  // (client disconnect / terminal answer), delay so user can see it briefly
+  const MIN_BUBBLE_DISPLAY_MS = 2000;
+  const age = Date.now() - (permEntry.createdAt || 0);
+  const isAutoResolve = message === "Client disconnected";
+  if (isAutoResolve && age < MIN_BUBBLE_DISPLAY_MS && !permEntry._delayedResolve) {
+    permEntry._delayedResolve = true;
+    permEntry._delayTimer = setTimeout(() => resolvePermissionEntry(permEntry, behavior, message), MIN_BUBBLE_DISPLAY_MS - age);
+    return;
+  }
+
   pendingPermissions.splice(idx, 1);
 
   const { res, abortHandler, bubble: bub } = permEntry;
@@ -184,6 +206,12 @@ function resolvePermissionEntry(permEntry, behavior, message) {
   // Guard: client may have disconnected
   if (res.writableEnded || res.destroyed) return;
 
+  if (permEntry.isElicitation) {
+    sendPermissionResponse(res, "deny", null, "Elicitation");
+    ctx.focusTerminalForSession(permEntry.sessionId);
+    return;
+  }
+
   const decision = { behavior: behavior === "deny" ? "deny" : "allow" };
   if (behavior === "deny" && message) decision.message = message;
   if (permEntry.resolvedSuggestion) {
@@ -195,10 +223,11 @@ function resolvePermissionEntry(permEntry, behavior, message) {
 
 function permLog(msg) {
   if (!ctx.permDebugLog) return;
-  fs.appendFileSync(ctx.permDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
+  const { rotatedAppend } = require("./log-rotate");
+  rotatedAppend(ctx.permDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
 }
 
-function sendPermissionResponse(res, decisionOrBehavior, message) {
+function sendPermissionResponse(res, decisionOrBehavior, message, hookEventName = "PermissionRequest") {
   let decision;
   if (typeof decisionOrBehavior === "string") {
     decision = { behavior: decisionOrBehavior };
@@ -207,7 +236,7 @@ function sendPermissionResponse(res, decisionOrBehavior, message) {
     decision = decisionOrBehavior;
   }
   const responseBody = JSON.stringify({
-    hookSpecificOutput: { hookEventName: "PermissionRequest", decision },
+    hookSpecificOutput: { hookEventName, decision },
   });
   permLog(`response: ${responseBody}`);
   res.writeHead(200, {
@@ -232,6 +261,10 @@ function handleDecide(event, behavior) {
   const perm = pendingPermissions.find(p => p.bubble === senderWin);
   permLog(`IPC permission-decide: behavior=${behavior} matched=${!!perm}`);
   if (!perm) return;
+  if (perm.isCodexNotify) {
+    dismissCodexNotify(perm);
+    return;
+  }
   // "suggestion:N" — user picked a permission suggestion
   if (typeof behavior === "string" && behavior.startsWith("suggestion:")) {
     const idx = parseInt(behavior.split(":")[1], 10);
@@ -255,14 +288,71 @@ function handleDecide(event, behavior) {
       };
     }
     resolvePermissionEntry(perm, "allow");
+  } else if (behavior === "deny-and-focus") {
+    // Dismiss bubble without responding — let user decide in terminal.
+    // Keep abortHandler registered so socket cleanup happens when Claude Code disconnects.
+    const idx = pendingPermissions.indexOf(perm);
+    if (idx !== -1) pendingPermissions.splice(idx, 1);
+    if (perm.bubble && !perm.bubble.isDestroyed()) {
+      perm.bubble.webContents.send("permission-hide");
+      if (perm.hideTimer) clearTimeout(perm.hideTimer);
+      const bub = perm.bubble;
+      perm.hideTimer = setTimeout(() => { if (!bub.isDestroyed()) bub.destroy(); }, 250);
+    }
+    repositionBubbles();
+    ctx.focusTerminalForSession(perm.sessionId);
   } else {
     resolvePermissionEntry(perm, behavior === "allow" ? "allow" : "deny");
   }
 }
 
+const CODEX_NOTIFY_EXPIRE_MS = 30000;
+
+function showCodexNotifyBubble({ sessionId, command }) {
+  if (ctx.doNotDisturb) return;
+  const permEntry = {
+    res: null,
+    abortHandler: null, suggestions: [],
+    sessionId, bubble: null, hideTimer: null,
+    toolName: "CodexExec",
+    toolInput: { command: command || "(unknown)" },
+    resolvedSuggestion: null, createdAt: Date.now(),
+    isElicitation: false, isCodexNotify: true,
+    autoExpireTimer: null,
+  };
+  pendingPermissions.push(permEntry);
+  showPermissionBubble(permEntry);
+  permEntry.autoExpireTimer = setTimeout(() => {
+    dismissCodexNotify(permEntry);
+  }, CODEX_NOTIFY_EXPIRE_MS);
+}
+
+function dismissCodexNotify(permEntry) {
+  const idx = pendingPermissions.indexOf(permEntry);
+  if (idx === -1) return;
+  pendingPermissions.splice(idx, 1);
+  if (permEntry.autoExpireTimer) clearTimeout(permEntry.autoExpireTimer);
+  if (permEntry.hideTimer) clearTimeout(permEntry.hideTimer);
+  if (permEntry.bubble && !permEntry.bubble.isDestroyed()) {
+    permEntry.bubble.webContents.send("permission-hide");
+    const bub = permEntry.bubble;
+    setTimeout(() => { if (!bub.isDestroyed()) bub.destroy(); }, 250);
+  }
+  repositionBubbles();
+}
+
+function clearCodexNotifyBubbles(sessionId) {
+  if (!pendingPermissions.some(p => p.isCodexNotify)) return;
+  const toRemove = pendingPermissions.filter(
+    p => p.isCodexNotify && p.sessionId === sessionId
+  );
+  for (const perm of toRemove) dismissCodexNotify(perm);
+}
+
 function cleanup() {
   // Clean up all pending permission requests — send explicit deny so Claude Code doesn't hang
   for (const perm of [...pendingPermissions]) {
+    if (perm._delayTimer) clearTimeout(perm._delayTimer);
     resolvePermissionEntry(perm, "deny", "Clawd is quitting");
   }
 }
@@ -272,6 +362,7 @@ return {
   sendPermissionResponse, repositionBubbles, permLog,
   pendingPermissions, PASSTHROUGH_TOOLS,
   handleBubbleHeight, handleDecide, cleanup,
+  showCodexNotifyBubble, clearCodexNotifyBubbles,
 };
 
 };

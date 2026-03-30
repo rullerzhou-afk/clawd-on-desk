@@ -1,79 +1,248 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
   <defs>
     <style>
-      .body-sweep {
+      /* ===== Independent sub-animations ===== */
+      .breathe {
+        transform-origin: 7.5px 13px;
+        animation: breathe 3.2s infinite ease-in-out;
+      }
+      .blink {
+        transform-origin: 7.5px 9px;
+        animation: blink 4s infinite;
+      }
+
+      /* ===== Main 10s story arc ===== */
+      .body-lean {
         transform-origin: 7.5px 15px;
-        animation: sweep-lean 1.5s infinite ease-in-out;
+        animation: body-lean 10s infinite ease-in-out;
       }
-      .arm-sweep {
+      .shadow-anim {
+        transform-origin: 7.5px 15.5px;
+        animation: shadow-anim 10s infinite ease-in-out;
+      }
+      .arm-r {
         transform-origin: 14px 10px;
-        animation: sweep-arm 1.5s infinite ease-in-out;
+        animation: arm-right 10s infinite ease-in-out;
       }
-      .broom {
-        transform-origin: 13.5px 14px;
-        animation: sweep-broom 1.5s infinite ease-in-out;
+      .arm-l {
+        transform-origin: 1px 10px;
+        animation: arm-left 10s infinite ease-in-out;
       }
-      .dust {
-        opacity: 0;
-        animation: sweep-dust 1.5s infinite ease-out;
+      .eyes-dir {
+        animation: eye-dir 10s infinite ease-in-out;
       }
-      .d1 { animation-delay: 0.2s; }
-      .d2 { animation-delay: 0.4s; }
-      
-      @keyframes sweep-lean {
-        0%, 100% { transform: rotate(5deg) translate(1px, 0); }
-        50% { transform: rotate(15deg) translate(3px, 1px); }
+
+      /* Dust particles */
+      .dust { opacity: 0; }
+      .dust-1 { animation: dust1 10s infinite; }
+      .dust-2 { animation: dust2 10s infinite; }
+      .dust-3 { animation: dust3 10s infinite; }
+
+      /* Sweat drops */
+      .sweat { opacity: 0; }
+      .sweat-1 { animation: sweat1 10s infinite; }
+      .sweat-2 { animation: sweat2 10s infinite; }
+
+      /* ===== Keyframes ===== */
+      @keyframes breathe {
+        0%, 100% { transform: scale(1, 1) translate(0, 0); }
+        50% { transform: scale(1.02, 0.98) translate(0, 0.5px); }
       }
-      @keyframes sweep-arm {
-        0%, 100% { transform: rotate(0deg); }
-        50% { transform: rotate(-20deg); }
+
+      @keyframes blink {
+        0%, 10%, 100% { transform: scaleY(1); }
+        5% { transform: scaleY(0.1); }
       }
-      @keyframes sweep-broom {
-        0%, 100% { transform: rotate(10deg); }
-        50% { transform: rotate(30deg) translate(2px, -1px); }
+
+      /* Body: idle → lean → straighten → lean → return to idle */
+      @keyframes body-lean {
+        0%, 1%   { transform: translate(0, 0) rotate(0deg); }
+        5%, 38%  { transform: translate(1px, 0) rotate(6deg); }
+        43%, 57% { transform: translate(0, 0) rotate(2deg); }
+        62%, 85% { transform: translate(1px, 0) rotate(6deg); }
+        90%      { transform: translate(0.5px, 0) rotate(3deg); }
+        100%     { transform: translate(0, 0) rotate(0deg); }
       }
-      @keyframes sweep-dust {
-        0%, 40% { transform: translate(17px, 14px) scale(0); opacity: 0; }
-        50% { transform: translate(19px, 14px) scale(1); opacity: 1; }
-        100% { transform: translate(25px, 14px) scale(0.5); opacity: 0; }
+
+      @keyframes shadow-anim {
+        0%, 1%   { transform: scaleX(1); opacity: 0.5; }
+        5%, 38%  { transform: scaleX(1.08); opacity: 0.55; }
+        43%, 57% { transform: scaleX(1); opacity: 0.5; }
+        62%, 85% { transform: scaleX(1.08); opacity: 0.55; }
+        90%      { transform: scaleX(1.03); opacity: 0.52; }
+        100%     { transform: scaleX(1); opacity: 0.5; }
+      }
+
+      /* Right arm + broom: idle → 3 sweeps → relax → 3 sweeps → hold
+         Forward stroke (35 to -15) is faster than return (-15 to 35) */
+      @keyframes arm-right {
+        0%, 1%   { transform: rotate(0deg); }
+        4%       { transform: rotate(35deg); }
+        /* Phase A: stroke 1 */
+        7%       { transform: rotate(35deg); }
+        10%      { transform: rotate(-15deg); }
+        /* return */
+        15%      { transform: rotate(35deg); }
+        /* stroke 2 */
+        18%      { transform: rotate(-15deg); }
+        /* return */
+        23%      { transform: rotate(35deg); }
+        /* stroke 3 */
+        26%      { transform: rotate(-15deg); }
+        30%      { transform: rotate(10deg); }
+        /* Pause: arm relaxed */
+        36%, 57% { transform: rotate(0deg); }
+        /* Phase B: stroke 1 */
+        61%      { transform: rotate(35deg); }
+        64%      { transform: rotate(-15deg); }
+        /* stroke 2 */
+        69%      { transform: rotate(35deg); }
+        72%      { transform: rotate(-15deg); }
+        /* stroke 3 */
+        77%      { transform: rotate(35deg); }
+        80%      { transform: rotate(-15deg); }
+        85%      { transform: rotate(10deg); }
+        90%      { transform: rotate(5deg); }
+        100%     { transform: rotate(0deg); }
+      }
+
+      /* Left arm: idle → scratch head during pause → idle */
+      @keyframes arm-left {
+        0%, 41%  { transform: translate(0, 0) rotate(0deg); }
+        44%      { transform: translate(2px, -4px) rotate(35deg); }
+        46%      { transform: translate(2.5px, -5px) rotate(50deg); }
+        48%      { transform: translate(2px, -4px) rotate(35deg); }
+        50%      { transform: translate(2.5px, -5px) rotate(50deg); }
+        52%      { transform: translate(2px, -4px) rotate(35deg); }
+        55%, 100%{ transform: translate(0, 0) rotate(0deg); }
+      }
+
+      /* Eyes: ahead → look down → ahead (pause) → down → return to ahead */
+      @keyframes eye-dir {
+        0%, 2%   { transform: translate(0, 0); }
+        5%, 38%  { transform: translate(1px, 1px); }
+        43%, 57% { transform: translate(0, 0); }
+        62%, 85% { transform: translate(1px, 1px); }
+        90%      { transform: translate(0.5px, 0.5px); }
+        100%     { transform: translate(0, 0); }
+      }
+
+      /* Dust puffs at end of forward strokes */
+      @keyframes dust1 {
+        0%, 8%   { opacity: 0; transform: translate(17px, 15px) scale(0); }
+        10%      { opacity: 0.6; transform: translate(17px, 15px) scale(1); }
+        16%      { opacity: 0; transform: translate(20px, 13.5px) scale(0.3); }
+        17%, 62% { opacity: 0; }
+        64%      { opacity: 0.6; transform: translate(17px, 15px) scale(1); }
+        70%      { opacity: 0; transform: translate(20px, 13.5px) scale(0.3); }
+        71%, 100%{ opacity: 0; }
+      }
+      @keyframes dust2 {
+        0%, 16%  { opacity: 0; transform: translate(16px, 16px) scale(0); }
+        18%      { opacity: 0.5; transform: translate(16px, 16px) scale(1); }
+        24%      { opacity: 0; transform: translate(19px, 14.5px) scale(0.3); }
+        25%, 70% { opacity: 0; }
+        72%      { opacity: 0.5; transform: translate(16px, 16px) scale(1); }
+        78%      { opacity: 0; transform: translate(19px, 14.5px) scale(0.3); }
+        79%, 100%{ opacity: 0; }
+      }
+      @keyframes dust3 {
+        0%, 24%  { opacity: 0; transform: translate(18px, 15.5px) scale(0); }
+        26%      { opacity: 0.5; transform: translate(18px, 15.5px) scale(1); }
+        32%      { opacity: 0; transform: translate(21px, 14px) scale(0.3); }
+        33%, 78% { opacity: 0; }
+        80%      { opacity: 0.5; transform: translate(18px, 15.5px) scale(1); }
+        86%      { opacity: 0; transform: translate(21px, 14px) scale(0.3); }
+        87%, 100%{ opacity: 0; }
+      }
+
+      /* Sweat during Phase A sweeping */
+      @keyframes sweat1 {
+        0%, 8%   { opacity: 0; transform: translate(0, 0) scale(0); }
+        10%      { opacity: 1; transform: translate(0, 0) scale(1); }
+        20%      { opacity: 0; transform: translate(-5px, -5px) scale(0.5); }
+        21%, 100%{ opacity: 0; }
+      }
+      @keyframes sweat2 {
+        0%, 16%  { opacity: 0; transform: translate(0, 0) scale(0); }
+        18%      { opacity: 1; transform: translate(0, 0) scale(1); }
+        28%      { opacity: 0; transform: translate(-4px, -6px) scale(0.4); }
+        29%, 100%{ opacity: 0; }
       }
     </style>
   </defs>
 
-  <!-- Mirrored: entire scene flipped so Clawd sweeps leftward -->
+  <!-- Mirrored: character faces left for visible broom -->
   <g transform="translate(15, 0) scale(-1, 1)">
-    <rect id="ground-shadow" x="3" y="15" width="13" height="1" fill="#000000" opacity="0.5"/>
 
-    <g class="body-sweep">
-      <g id="legs" fill="#DE886D">
-        <rect x="3" y="13" width="1" height="2"/>
-        <rect x="5" y="13" width="1" height="2"/>
-        <rect x="9" y="13" width="1" height="2"/>
-        <rect x="11" y="13" width="1" height="2"/>
+    <!-- Ground Shadow -->
+    <rect class="shadow-anim" x="3" y="15" width="9" height="1" fill="#000" opacity="0.5"/>
+
+    <!-- Dust particles (ground level, outside body group) -->
+    <rect class="dust dust-1" x="0" y="0" width="1.5" height="1.5" fill="#9E9E9E"/>
+    <rect class="dust dust-2" x="0" y="0" width="1" height="1" fill="#B0BEC5"/>
+    <rect class="dust dust-3" x="0" y="0" width="1.2" height="1.2" fill="#9E9E9E"/>
+
+    <!-- Static Legs -->
+    <g fill="#DE886D">
+      <rect x="3" y="13" width="1" height="2"/>
+      <rect x="5" y="13" width="1" height="2"/>
+      <rect x="9" y="13" width="1" height="2"/>
+      <rect x="11" y="13" width="1" height="2"/>
+    </g>
+
+    <!-- Upper Body -->
+    <g class="body-lean">
+
+      <!-- Sweat drops (inside body group, move with lean) -->
+      <g transform="translate(1, 5)">
+        <g class="sweat sweat-1" fill="#40C4FF">
+          <rect x="0" y="1" width="1.5" height="1.5"/>
+          <rect x="0.25" y="0" width="1" height="1"/>
+        </g>
+      </g>
+      <g transform="translate(-0.5, 7)">
+        <g class="sweat sweat-2" fill="#40C4FF">
+          <rect x="0" y="0.5" width="1" height="1"/>
+          <rect x="0.15" y="0" width="0.7" height="0.7"/>
+        </g>
       </g>
 
-      <g id="body-color-group" fill="#DE886D">
-        <rect x="2" y="6" width="11" height="7"/>
-        <rect x="0" y="9" width="2" height="2" transform="translate(6, 1) rotate(-15 1 10)"/>
-        <g class="arm-sweep"><rect x="13" y="9" width="2" height="2"/></g>
+      <!-- Breathing -->
+      <g class="breathe">
+
+        <!-- Torso -->
+        <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
+
+        <!-- Left Arm (scratch head during pause) -->
+        <g class="arm-l">
+          <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>
+        </g>
+
+        <!-- Right Arm + Broom (attached, sweeps together) -->
+        <g class="arm-r">
+          <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+          <!-- Broom Handle -->
+          <rect x="13.5" y="11" width="1" height="3.5" fill="#795548"/>
+          <!-- Broom Bristles -->
+          <rect x="12" y="14.5" width="4" height="1.5" fill="#FFC107"/>
+          <!-- Bristle texture (vertical lines, bottom up, faint, gap at edges) -->
+          <rect x="12.5" y="14.85" width="0.35" height="0.8" fill="#C99700" opacity="0.3"/>
+          <rect x="13.2" y="14.8"  width="0.3"  height="0.9" fill="#C99700" opacity="0.35"/>
+          <rect x="13.8" y="14.85" width="0.35" height="0.8" fill="#C99700" opacity="0.3"/>
+          <rect x="14.5" y="14.8"  width="0.3"  height="0.85" fill="#C99700" opacity="0.35"/>
+        </g>
+
+        <!-- Eyes -->
+        <g class="eyes-dir" fill="#000">
+          <g class="blink">
+            <rect x="4" y="8" width="1" height="2"/>
+            <rect x="10" y="8" width="1" height="2"/>
+          </g>
+        </g>
+
       </g>
-
-      <g fill="#000000">
-        <rect x="5" y="8" width="1" height="2"/>
-        <rect x="11" y="8" width="1" height="2"/>
-      </g>
     </g>
 
-    <g class="broom">
-      <rect x="13.5" y="4" width="1" height="10" fill="#795548"/>
-      <rect x="12" y="14" width="4" height="2" fill="#FFC107"/>
-    </g>
-
-    <g class="dust" fill="#9E9E9E">
-      <rect x="0" y="0" width="1.5" height="1.5"/>
-    </g>
-    <g class="dust d1" fill="#B0BEC5">
-      <rect x="0" y="0" width="1" height="1"/>
-    </g>
   </g>
 </svg>

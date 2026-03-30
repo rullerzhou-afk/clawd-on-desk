@@ -22,6 +22,7 @@ discoverClawdPort({ timeoutMs: TIMEOUT_MS }, (port) => {
 function launchApp() {
   const isPackaged = __dirname.includes("app.asar");
   const isWin = process.platform === "win32";
+  const isMac = process.platform === "darwin";
 
   try {
     if (isPackaged) {
@@ -31,7 +32,7 @@ function launchApp() {
         const installDir = path.resolve(__dirname, "..", "..", "..");
         const exe = path.join(installDir, "Clawd on Desk.exe");
         spawn(exe, [], { detached: true, stdio: "ignore" }).unref();
-      } else {
+      } else if (isMac) {
         // __dirname: <name>.app/Contents/Resources/app.asar.unpacked/hooks
         // .app bundle: 4 levels up
         const appBundle = path.resolve(__dirname, "..", "..", "..", "..");
@@ -39,6 +40,20 @@ function launchApp() {
           detached: true,
           stdio: "ignore",
         }).unref();
+      } else {
+        // Linux packaged app:
+        // AppImage: process.env.APPIMAGE holds the .AppImage file path.
+        // deb/dir:  executable is <install>/clawd-on-desk, same depth as Windows.
+        //   __dirname: <install>/resources/app.asar.unpacked/hooks
+        //   install:   3 levels up
+        const appImage = process.env.APPIMAGE;
+        if (appImage) {
+          spawn(appImage, [], { detached: true, stdio: "ignore" }).unref();
+        } else {
+          const installDir = path.resolve(__dirname, "..", "..", "..");
+          const exe = path.join(installDir, "clawd-on-desk");
+          spawn(exe, [], { detached: true, stdio: "ignore" }).unref();
+        }
       }
     } else {
       // Source / development mode

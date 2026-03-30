@@ -35,12 +35,19 @@ const TERMINAL_NAMES_MAC = new Set([
   "terminal", "iterm2", "alacritty", "wezterm-gui", "kitty",
   "hyper", "tabby", "warp", "ghostty",
 ]);
+const TERMINAL_NAMES_LINUX = new Set([
+  "gnome-terminal", "kgx", "konsole", "xfce4-terminal", "tilix",
+  "alacritty", "wezterm", "wezterm-gui", "kitty", "ghostty",
+  "xterm", "lxterminal", "terminator", "tabby", "hyper", "warp",
+]);
 
 const SYSTEM_BOUNDARY_WIN = new Set(["explorer.exe", "services.exe", "winlogon.exe", "svchost.exe"]);
 const SYSTEM_BOUNDARY_MAC = new Set(["launchd", "init", "systemd"]);
+const SYSTEM_BOUNDARY_LINUX = new Set(["systemd", "init"]);
 
 const EDITOR_MAP_WIN = { "code.exe": "code", "cursor.exe": "cursor" };
 const EDITOR_MAP_MAC = { "code": "code", "cursor": "cursor" };
+const EDITOR_MAP_LINUX = { "code": "code", "cursor": "cursor", "code-insiders": "code" };
 
 // Copilot CLI process detection
 const COPILOT_NAMES_WIN = new Set(["copilot.exe"]);
@@ -55,9 +62,9 @@ function getStablePid() {
   if (_stablePid) return _stablePid;
   const { execSync } = require("child_process");
   const isWin = process.platform === "win32";
-  const terminalNames = isWin ? TERMINAL_NAMES_WIN : TERMINAL_NAMES_MAC;
-  const systemBoundary = isWin ? SYSTEM_BOUNDARY_WIN : SYSTEM_BOUNDARY_MAC;
-  const editorMap = isWin ? EDITOR_MAP_WIN : EDITOR_MAP_MAC;
+  const terminalNames = isWin ? TERMINAL_NAMES_WIN : (process.platform === "linux" ? TERMINAL_NAMES_LINUX : TERMINAL_NAMES_MAC);
+  const systemBoundary = isWin ? SYSTEM_BOUNDARY_WIN : (process.platform === "linux" ? SYSTEM_BOUNDARY_LINUX : SYSTEM_BOUNDARY_MAC);
+  const editorMap = isWin ? EDITOR_MAP_WIN : (process.platform === "linux" ? EDITOR_MAP_LINUX : EDITOR_MAP_MAC);
   let pid = process.ppid;
   let lastGoodPid = pid;
   let terminalPid = null;

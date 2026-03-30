@@ -351,7 +351,10 @@ function registerHooks(options = {}) {
     }
 
     // Check if our hook is already registered (search nested hooks arrays too)
-    const desiredCommand = `node "${hookScript}" ${event}`;
+    // Remote mode: prepend CLAWD_REMOTE=1 so the hook skips PID collection
+    const desiredCommand = options.remote
+      ? `CLAWD_REMOTE=1 node "${hookScript}" ${event}`
+      : `node "${hookScript}" ${event}`;
     const commandSync = syncCommandHook(settings.hooks[event], MARKER, desiredCommand);
     if (commandSync.found) {
       if (commandSync.changed) {
@@ -413,6 +416,22 @@ function registerHooks(options = {}) {
       return true;
     });
     if (settings.hooks.SessionStart.length < beforeLen) changed = true;
+  }
+
+  // Clean up stale command hooks for HTTP-only events (e.g. PermissionRequest).
+  // Old versions or manual edits may have registered a command hook alongside the
+  // HTTP hook, causing Claude Code to fire both and produce duplicate bubbles.
+  for (const event of Object.keys(HTTP_HOOKS)) {
+    if (!Array.isArray(settings.hooks[event])) continue;
+    const result = removeMatchingCommandHooks(
+      settings.hooks[event],
+      (command) => command.includes(MARKER)
+    );
+    if (result.changed) {
+      settings.hooks[event] = result.entries;
+      removed += result.removed;
+      changed = true;
+    }
   }
 
   // Register HTTP hooks (permission decision collection)
@@ -559,10 +578,11 @@ module.exports = {
   },
 };
 
-// CLI: run directly with `node hooks/install.js`
+// CLI: run directly with `node hooks/install.js [--remote]`
 if (require.main === module) {
   try {
-    registerHooks();
+    const remote = process.argv.includes("--remote");
+    registerHooks({ remote });
   } catch (err) {
     console.error(err.message);
     process.exit(1);

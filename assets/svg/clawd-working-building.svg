@@ -1,231 +1,284 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
   <defs>
     <style>
-      /* Heavy bouncing animation for the body */
+      /* ===== Independent sub-animations ===== */
+
+      /* Breathe 3.2s */
+      .breathe {
+        transform-origin: 7.5px 13px;
+        animation: breathe 3.2s infinite ease-in-out;
+      }
+
+      /* Blink 4s */
+      .blink {
+        transform-origin: 7.5px 9px;
+        animation: blink 4s infinite;
+      }
+
+      /* ===== Hammer cycle 1.2s ===== */
+
+      /* Body bounce: up-down motion (shared by body + arms) */
       .body-bounce {
         transform-origin: 7.5px 15px;
-        animation: hammer-bounce 1s infinite;
+        animation: body-bounce 1.2s infinite;
       }
 
-      /* Ground shadow pulsing on impact */
-      .shadow-pulse {
-        transform-origin: 7.5px 15.5px;
-        animation: shadow-impact 1s infinite;
+      /* Body squash: scale only (torso + hat + eyes, arms excluded) */
+      .body-squash {
+        transform-origin: 7.5px 15px;
+        animation: body-squash 1.2s infinite;
       }
 
-      /* Left arm resting with slight movement */
+      /* Right arm hammer swing */
+      .arm-hammer {
+        transform-origin: 14px 10px;
+        animation: hammer-swing 1.2s infinite;
+      }
+
+      /* Left arm counter-motion */
       .arm-l-rest {
         transform-origin: 2px 10px;
-        animation: arm-rest 1s infinite;
+        animation: arm-l-rest 1.2s infinite;
       }
 
-      /* Right arm swinging the hammer */
-      .arm-hammer {
-        transform-origin: 14px 10px; /* Shoulder joint */
-        animation: hammer-swing 1s infinite;
+      /* Shadow synced with bounce */
+      .shadow-anim {
+        transform-origin: 7.5px 15.5px;
+        animation: shadow-bounce 1.2s infinite;
       }
 
-      /* Eyes squinting on impact */
-      .eyes-blink {
-        transform-origin: 7.5px 9px;
-        animation: hammer-eyes 1s infinite;
+      /* Hot metal flash */
+      .hot-metal {
+        animation: metal-glow 1.2s infinite;
       }
 
-      /* Spark particles */
-      .spark {
-        opacity: 0;
+      /* Sparks */
+      .spark { opacity: 0; }
+      .s1 { animation: spark-1 1.2s infinite; }
+      .s2 { animation: spark-2 1.2s infinite; }
+      .s3 { animation: spark-3 1.2s infinite; }
+
+      /* ===== Eyes 5s ===== */
+      .eyes-look {
+        animation: eyes-look 5s infinite ease-in-out;
       }
-      .s1 { animation: spark-1 1s infinite; }
-      .s2 { animation: spark-2 1s infinite; }
-      .s3 { animation: spark-3 1s infinite; }
-      
-      /* Sweat drop flying off */
+
+      /* ===== Sweat 6s ===== */
       .sweat {
         opacity: 0;
-        animation: sweat-fly 1s infinite cubic-bezier(.25,.1,.25,1);
-      }
-      
-      /* Glowing hot metal cooling and heating up */
-      .hot-metal {
-        animation: metal-glow 1s infinite;
+        animation: sweat-fly 6s infinite;
       }
 
-      /* Keyframes */
-      @keyframes hammer-bounce {
-        0%, 100% { transform: scale(1, 1) translateY(0); } /* Base */
-        30% { transform: scale(0.95, 1.05) translateY(-2px); } /* Peak raise (anticipation) */
-        45% { transform: scale(1, 1) translateY(0); } /* Falling */
-        50% { transform: scale(1.15, 0.85) translateY(2px); } /* Hard impact squash */
-        70% { transform: scale(1, 1) translateY(0); } /* Recover */
+      /* ==================== Keyframes ==================== */
+
+      @keyframes breathe {
+        0%, 100% { transform: scale(1, 1) translate(0, 0); }
+        50% { transform: scale(1.02, 0.98) translate(0, 0.5px); }
       }
 
-      @keyframes shadow-impact {
-        0%, 45%, 70%, 100% { transform: scale(1); opacity: 0.5; }
-        30% { transform: scale(0.8); opacity: 0.3; } /* Lighter when raised */
-        50% { transform: scale(1.3); opacity: 0.8; } /* Heavy and wide on impact */
+      @keyframes blink {
+        0%, 10%, 100% { transform: scaleY(1); }
+        5% { transform: scaleY(0.1); }
       }
 
-      @keyframes arm-rest {
-        0%, 100% { transform: rotate(0deg); }
-        30% { transform: rotate(15deg); }
-        50% { transform: rotate(-5deg); }
+      /* Body bounce: translateY only (arms share this, stay clean) */
+      @keyframes body-bounce {
+        0%, 100% { transform: translateY(0); }
+        30%      { transform: translateY(-2px); }
+        45%      { transform: translateY(0); }
+        50%      { transform: translateY(2px); }
+        70%      { transform: translateY(0); }
       }
 
+      /* Body squash: scale only (torso+hat+eyes, not arms) */
+      @keyframes body-squash {
+        0%, 100% { transform: scale(1, 1); }
+        30%      { transform: scale(0.95, 1.05); }
+        45%      { transform: scale(1, 1); }
+        50%      { transform: scale(1.15, 0.85); }
+        70%      { transform: scale(1, 1); }
+      }
+
+      /* Shadow: lighter on rise, heavier on impact */
+      @keyframes shadow-bounce {
+        0%, 45%, 70%, 100% { transform: scaleX(1); opacity: 0.5; }
+        30%      { transform: scaleX(0.92); opacity: 0.42; }
+        50%      { transform: scaleX(1.08); opacity: 0.58; }
+      }
+
+      /* Hammer swing: original angles preserved */
       @keyframes hammer-swing {
         0%, 100% { transform: rotate(15deg); }
-        30% { transform: rotate(-45deg); } /* Arm raised back */
-        45% { transform: rotate(40deg); } /* Swinging down fast */
-        50% { transform: rotate(125deg); } /* Striking the anvil */
-        70% { transform: rotate(15deg); }
+        30%      { transform: rotate(-45deg); }
+        45%      { transform: rotate(40deg); }
+        50%      { transform: rotate(125deg); }
+        70%      { transform: rotate(15deg); }
       }
 
-      @keyframes hammer-eyes {
-        0%, 40% { transform: scaleY(1); } /* Open */
-        48%, 60% { transform: scaleY(0.1); } /* Squeezed shut on impact */
-        65%, 100% { transform: scaleY(1); } /* Open again */
+      /* Left arm: reacts to hammer rhythm */
+      @keyframes arm-l-rest {
+        0%, 100% { transform: rotate(0deg); }
+        30%      { transform: rotate(15deg); }
+        50%      { transform: rotate(-5deg); }
       }
-      
+
+      /* Hot metal glow on impact */
       @keyframes metal-glow {
-        0%, 49% { fill: #FF5252; }
-        50%, 60% { fill: #FFF59D; } /* Flashes white/yellow hot on hit */
-        100% { fill: #FF5252; }
+        0%, 49%  { fill: #FF5252; }
+        50%, 60% { fill: #FFF59D; }
+        100%     { fill: #FF5252; }
       }
 
-      /* Sweat drop flies back and fades */
-      @keyframes sweat-fly {
-        0% { transform: translate(0, 0) scale(0); opacity: 0; }
-        30% { transform: translate(0, 0) scale(1); opacity: 1; }
-        80% { transform: translate(-6px, -6px) scale(0.8); opacity: 0; }
-        100% { opacity: 0; }
+      /* Eyes: mostly watch anvil, occasional glance at hammer */
+      @keyframes eyes-look {
+        0%, 100% { transform: translate(1.5px, 0.5px); }
+        20%      { transform: translate(1.5px, 0.5px); }
+        25%      { transform: translate(1px, -0.5px); }
+        35%      { transform: translate(1px, -0.5px); }
+        40%      { transform: translate(1.5px, 0.5px); }
+        70%      { transform: translate(0.3px, 0); }
+        80%      { transform: translate(1.5px, 0.5px); }
       }
 
-      /* Sparks flying outwards from the impact zone */
+      /* Sparks: appear at impact, scatter outward */
       @keyframes spark-1 {
-        0%, 49% { transform: translate(0, 0) scale(0); opacity: 0; }
-        50% { transform: translate(0, 0) scale(1); opacity: 1; }
-        70% { transform: translate(4px, -6px) scale(0); opacity: 0; }
-        100% { opacity: 0; }
+        0%, 49%   { opacity: 0; transform: translate(0, 0) scale(0); }
+        50%       { opacity: 1; transform: translate(0, 0) scale(1); }
+        70%       { opacity: 0; transform: translate(4px, -6px) scale(0); }
+        71%, 100% { opacity: 0; transform: translate(0, 0) scale(0); }
       }
       @keyframes spark-2 {
-        0%, 49% { transform: translate(0, 0) scale(0); opacity: 0; }
-        50% { transform: translate(0, 0) scale(1); opacity: 1; }
-        70% { transform: translate(7px, -1px) scale(0); opacity: 0; }
-        100% { opacity: 0; }
+        0%, 49%   { opacity: 0; transform: translate(0, 0) scale(0); }
+        50%       { opacity: 1; transform: translate(0, 0) scale(1); }
+        70%       { opacity: 0; transform: translate(7px, -1px) scale(0); }
+        71%, 100% { opacity: 0; transform: translate(0, 0) scale(0); }
       }
       @keyframes spark-3 {
-        0%, 49% { transform: translate(0, 0) scale(0); opacity: 0; }
-        50% { transform: translate(0, 0) scale(1); opacity: 1; }
-        70% { transform: translate(3px, 3px) scale(0); opacity: 0; }
-        100% { opacity: 0; }
+        0%, 49%   { opacity: 0; transform: translate(0, 0) scale(0); }
+        50%       { opacity: 1; transform: translate(0, 0) scale(1); }
+        70%       { opacity: 0; transform: translate(3px, 3px) scale(0); }
+        71%, 100% { opacity: 0; transform: translate(0, 0) scale(0); }
+      }
+
+      /* Sweat: one drop every 6s */
+      @keyframes sweat-fly {
+        0%, 55%  { opacity: 0; transform: translate(0, 0) scale(0); }
+        60%      { opacity: 1; transform: translate(0, 0) scale(1); }
+        80%      { opacity: 0; transform: translate(-6px, -6px) scale(0.5); }
+        100%     { opacity: 0; }
       }
     </style>
 
     <!-- Pixel Spark -->
     <g id="pixel-spark">
-      <rect x="0" y="0" width="1" height="1" />
+      <rect x="0" y="0" width="1" height="1"/>
     </g>
   </defs>
 
   <!-- Ground Shadows -->
-  <rect id="ground-shadow" class="shadow-pulse" x="3" y="15" width="9" height="1" fill="#000000"/>
-  <rect id="work-shadow" x="16" y="15" width="7" height="1" fill="#000000" opacity="0.4"/>
+  <rect class="shadow-anim" x="3" y="15" width="9" height="1" fill="#000000"/>
+  <rect x="16" y="15" width="7" height="1" fill="#000000" opacity="0.4"/>
 
-  <!-- Metal Block / Anvil being hit -->
-  <g id="work-piece" transform="translate(17, 13)">
-    <!-- Base -->
-    <rect x="0" y="2" width="5" height="1" fill="#546E7A" />
-    <!-- Main block -->
-    <rect x="1" y="0" width="3" height="2" fill="#78909C" />
-    <!-- Glowing hot piece on top -->
-    <rect x="1.5" y="-0.5" width="2" height="1" class="hot-metal" />
+  <!-- Metal Block / Anvil -->
+  <g transform="translate(17, 13)">
+    <rect x="0" y="2" width="5" height="1" fill="#546E7A"/>
+    <rect x="1" y="0" width="3" height="2" fill="#78909C"/>
+    <rect x="1.5" y="-0.5" width="2" height="1" class="hot-metal"/>
   </g>
 
-  <!-- Impact Sparks (Positioned near the hammer's strike point) -->
+  <!-- Impact Sparks -->
   <g fill="#FFC107" transform="translate(19, 12.5)">
-    <use href="#pixel-spark" class="spark s1" />
-    <use href="#pixel-spark" class="spark s2" />
-    <use href="#pixel-spark" class="spark s3" />
+    <use href="#pixel-spark" class="spark s1"/>
+    <use href="#pixel-spark" class="spark s2"/>
+    <use href="#pixel-spark" class="spark s3"/>
   </g>
 
-  <!-- Animated Character Body -->
+  <!-- Legs (bounce with body, no squash) -->
+  <g class="body-bounce" fill="#DE886D">
+    <rect x="3" y="13" width="1" height="2"/>
+    <rect x="5" y="13" width="1" height="2"/>
+    <rect x="9" y="13" width="1" height="2"/>
+    <rect x="11" y="13" width="1" height="2"/>
+  </g>
+
+  <!-- Body group [bounce > breathe] -->
   <g class="body-bounce">
-    
-    <!-- Sweat Drop (Positioned near the side of the head) -->
-    <g transform="translate(1, 8)">
-      <g class="sweat" fill="#40C4FF">
-        <rect x="0" y="1" width="1.5" height="1.5"/>
-        <rect x="0.25" y="0" width="1" height="1"/>
+    <g class="breathe">
+
+      <!-- Sweat (bounces + breathes, outside squash) -->
+      <g transform="translate(1, 8)">
+        <g class="sweat" fill="#40C4FF">
+          <rect x="0" y="1" width="1.5" height="1.5"/>
+          <rect x="0.25" y="0" width="1" height="1"/>
+        </g>
       </g>
-    </g>
 
-    <!-- Hard Hat -->
-    <g id="hard-hat">
-      <!-- Ridges top (y=1) -->
-      <rect x="4" y="1" width="2" height="1" fill="#FBC02D"/>
-      <rect x="9" y="1" width="2" height="1" fill="#FBC02D"/>
+      <!-- Body core [squash] — only torso + hat + eyes get squashed -->
+      <g class="body-squash">
 
-      <!-- Upper Dome (y=2) -->
-      <rect x="3" y="2" width="1" height="1" fill="#F9A825"/>
-      <rect x="4" y="2" width="2" height="1" fill="#FBC02D"/>
-      <rect x="6" y="2" width="1" height="1" fill="#F9A825"/>
-      <rect x="7" y="2" width="1" height="1" fill="#FBC02D"/>
-      <rect x="8" y="2" width="1" height="1" fill="#F9A825"/>
-      <rect x="9" y="2" width="2" height="1" fill="#FBC02D"/>
-      <rect x="11" y="2" width="1" height="1" fill="#F9A825"/>
-      
-      <!-- Mid Dome (y=3) -->
-      <rect x="2" y="3" width="1" height="1" fill="#F9A825"/>
-      <rect x="3" y="3" width="3" height="1" fill="#FBC02D"/>
-      <rect x="6" y="3" width="1" height="1" fill="#F9A825"/>
-      <rect x="7" y="3" width="1" height="1" fill="#FBC02D"/>
-      <rect x="8" y="3" width="1" height="1" fill="#F9A825"/>
-      <rect x="9" y="3" width="3" height="1" fill="#FBC02D"/>
-      <rect x="12" y="3" width="1" height="1" fill="#F9A825"/>
+        <!-- Torso -->
+        <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
 
-      <!-- Lower Dome / Brim top (y=4) -->
-      <rect x="1" y="4" width="2" height="1" fill="#F9A825"/>
-      <rect x="3" y="4" width="9" height="1" fill="#FBC02D"/>
-      <rect x="12" y="4" width="2" height="1" fill="#F9A825"/>
+        <!-- Hard Hat (all pixel detail preserved) -->
+        <g>
+          <!-- Ridges top (y=1) -->
+          <rect x="4" y="1" width="2" height="1" fill="#FBC02D"/>
+          <rect x="9" y="1" width="2" height="1" fill="#FBC02D"/>
+          <!-- Upper Dome (y=2) -->
+          <rect x="3" y="2" width="1" height="1" fill="#F9A825"/>
+          <rect x="4" y="2" width="2" height="1" fill="#FBC02D"/>
+          <rect x="6" y="2" width="1" height="1" fill="#F9A825"/>
+          <rect x="7" y="2" width="1" height="1" fill="#FBC02D"/>
+          <rect x="8" y="2" width="1" height="1" fill="#F9A825"/>
+          <rect x="9" y="2" width="2" height="1" fill="#FBC02D"/>
+          <rect x="11" y="2" width="1" height="1" fill="#F9A825"/>
+          <!-- Mid Dome (y=3) -->
+          <rect x="2" y="3" width="1" height="1" fill="#F9A825"/>
+          <rect x="3" y="3" width="3" height="1" fill="#FBC02D"/>
+          <rect x="6" y="3" width="1" height="1" fill="#F9A825"/>
+          <rect x="7" y="3" width="1" height="1" fill="#FBC02D"/>
+          <rect x="8" y="3" width="1" height="1" fill="#F9A825"/>
+          <rect x="9" y="3" width="3" height="1" fill="#FBC02D"/>
+          <rect x="12" y="3" width="1" height="1" fill="#F9A825"/>
+          <!-- Lower Dome / Brim (y=4) -->
+          <rect x="1" y="4" width="2" height="1" fill="#F9A825"/>
+          <rect x="3" y="4" width="9" height="1" fill="#FBC02D"/>
+          <rect x="12" y="4" width="2" height="1" fill="#F9A825"/>
+          <!-- Bottom Band (y=5) -->
+          <rect x="0" y="5" width="15" height="1" fill="#F9A825"/>
+        </g>
 
-      <!-- Bottom Band (y=5) -->
-      <rect x="0" y="5" width="15" height="1" fill="#F9A825"/>
-    </g>
+        <!-- Eyes [look 5s > blink 4s] — standard 1x2 at (4,8)/(10,8) -->
+        <g class="eyes-look">
+          <g class="blink" fill="#000">
+            <rect x="4" y="8" width="1" height="2"/>
+            <rect x="10" y="8" width="1" height="2"/>
+          </g>
+        </g>
 
-    <!-- Body Base Color Group -->
-    <g id="body-color-group" fill="#DE886D">
-      <!-- Static Legs -->
-      <rect id="outer-left-leg" x="3" y="13" width="1" height="2"/>
-      <rect id="inner-left-leg" x="5" y="13" width="1" height="2"/>
-      <rect id="inner-right-leg" x="9" y="13" width="1" height="2"/>
-      <rect id="outer-right-leg" x="11" y="13" width="1" height="2"/>
+      </g>
 
-      <!-- Main Torso -->
-      <rect id="torso" x="2" y="6" width="11" height="7"/>
-      
-      <!-- Resting Left Arm -->
+      <!-- Left arm (bounces + breathes, NO squash) -->
       <g class="arm-l-rest">
-        <rect id="left-arm" x="0" y="9" width="2" height="2"/>
+        <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>
       </g>
 
-      <!-- Hammer-Swinging Right Arm -->
+    </g>
+  </g>
+
+  <!-- Right arm + hammer [bounce > breathe] (separate group, same classes = auto sync) -->
+  <g class="body-bounce">
+    <g class="breathe">
       <g class="arm-hammer">
-        <rect id="right-arm" x="13" y="9" width="2" height="2"/>
-        
-        <!-- Tiny Pixel Hammer -->
-        <g id="hammer">
+        <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+        <!-- Hammer -->
+        <g>
           <!-- Handle -->
-          <rect x="13.5" y="4" width="1" height="6" fill="#795548" />
+          <rect x="13.5" y="4" width="1" height="6" fill="#795548"/>
           <!-- Head -->
-          <rect x="12.5" y="3" width="3" height="2" fill="#9E9E9E" />
+          <rect x="12.5" y="3" width="3" height="2" fill="#9E9E9E"/>
         </g>
       </g>
     </g>
-    
-    <!-- Eyes Color Group (Determined / Straining) -->
-    <g class="eyes-blink" fill="#000000">
-      <rect id="left-eye" x="4" y="8.5" width="1.5" height="1.5"/>
-      <rect id="right-eye" x="9.5" y="8.5" width="1.5" height="1.5"/>
-    </g>
-    
   </g>
 </svg>

@@ -1,90 +1,244 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
   <defs>
     <style>
-      .body-hunch {
+      /* ═══ Independent animations (always running) ═══ */
+
+      .breathe {
+        transform-origin: 7.5px 13px;
+        animation: breathe 3.2s infinite ease-in-out;
+      }
+
+      .blink {
+        transform-origin: 7.5px 9px;
+        animation: blink 4s infinite linear;
+      }
+
+      .leg-a {
+        animation: sneak-a 0.5s infinite linear;
+        transform-origin: top center;
+        transform-box: fill-box;
+      }
+      .leg-b {
+        animation: sneak-b 0.5s infinite linear;
+        transform-origin: top center;
+        transform-box: fill-box;
+      }
+
+      .glass-wobble {
+        transform-origin: 14px 10px;
+        animation: glass-wobble 3s infinite ease-in-out;
+      }
+
+      /* ═══ Main 14s timeline ═══ */
+
+      .body-main {
         transform-origin: 7.5px 15px;
-        animation: hunch-walk 2s infinite alternate ease-in-out;
+        animation: body-main 14s infinite ease-in-out;
       }
-      .magnifying-glass {
-        transform-origin: 14px 10px; /* Pivot at the right shoulder */
-        animation: search-glass 3s infinite ease-in-out;
-      }
-      .leg-1 { animation: sneak-1 0.5s infinite linear; transform-origin: top center; transform-box: fill-box; }
-      .leg-2 { animation: sneak-2 0.5s infinite linear; transform-origin: top center; transform-box: fill-box; }
-      .shadow-sneak {
+
+      .shadow-main {
         transform-origin: 7.5px 15.5px;
-        animation: shadow-shift 2s infinite alternate ease-in-out;
+        animation: shadow-main 14s infinite ease-in-out;
       }
-      
-      /* Sneaking forward and backward */
-      @keyframes hunch-walk {
-        0% { transform: translate(-2px, 1px) rotate(2deg); }
-        100% { transform: translate(3px, 1px) rotate(2deg); }
+
+      .arm-l {
+        transform-origin: 1px 10px;
+        animation: arm-l 14s infinite ease-in-out;
       }
-      @keyframes shadow-shift {
-        0% { transform: translateX(-2px) scale(0.9); opacity: 0.4; }
-        100% { transform: translateX(3px) scale(0.9); opacity: 0.4; }
+
+      .arm-r {
+        transform-origin: 14px 10px;
+        animation: arm-r 14s infinite ease-in-out;
       }
-      
-      /* Hovering the magnifying glass over the eye */
-      @keyframes search-glass {
-        0%, 100% { transform: rotate(0deg) scale(1); }
-        50% { transform: rotate(-3deg) scale(1.05); }
+
+      .glass-vis {
+        animation: glass-vis 14s infinite linear;
       }
-      
-      /* Fast tiptoe / sneak leg movement */
-      @keyframes sneak-1 {
+
+      .eye-squint {
+        transform-origin: 4.5px 9px;
+        animation: eye-squint 14s infinite ease-in-out;
+      }
+
+      .legs-idle {
+        animation: legs-idle 14s infinite linear;
+      }
+
+      .legs-sneak {
+        animation: legs-sneak 14s infinite linear;
+      }
+
+      /* ═══ Independent keyframes ═══ */
+
+      @keyframes breathe {
+        0%, 100% { transform: scale(1, 1) translate(0, 0); }
+        50% { transform: scale(1.02, 0.98) translate(0, 0.5px); }
+      }
+
+      @keyframes blink {
+        0%, 10%, 100% { transform: scaleY(1); }
+        5% { transform: scaleY(0.1); }
+      }
+
+      @keyframes sneak-a {
         0%, 100% { transform: rotate(0deg) scaleY(1); }
         50% { transform: rotate(-25deg) scaleY(0.7); }
       }
-      @keyframes sneak-2 {
+      @keyframes sneak-b {
         0%, 100% { transform: rotate(-25deg) scaleY(0.7); }
         50% { transform: rotate(0deg) scaleY(1); }
+      }
+
+      @keyframes glass-wobble {
+        0%, 100% { transform: rotate(0deg) scale(1); }
+        50% { transform: rotate(-3deg) scale(1.05); }
+      }
+
+      /* ═══ Main timeline keyframes (14s) ═══ */
+
+      /* Body: idle → hunch + patrol → idle (both idle phases trimmed) */
+      @keyframes body-main {
+        0%, 3%    { transform: translate(0, 0) rotate(0deg); }
+        15%       { transform: translate(0, 1px) rotate(2deg); }
+        22%       { transform: translate(-2px, 1px) rotate(2deg); }
+        35%       { transform: translate(3px, 1px) rotate(2deg); }
+        48%       { transform: translate(-2px, 1px) rotate(2deg); }
+        61%       { transform: translate(2px, 1px) rotate(2deg); }
+        78%       { transform: translate(0, 1px) rotate(2deg); }
+        90%       { transform: translate(0, 0) rotate(0deg); }
+        96%, 100% { transform: translate(0, 0) rotate(0deg); }
+      }
+
+      /* Shadow: follows body X, shrinks during detective */
+      @keyframes shadow-main {
+        0%, 3%    { transform: scaleX(1) translate(0, 0); opacity: 0.5; }
+        15%       { transform: scale(0.9) translate(0, 0); opacity: 0.4; }
+        22%       { transform: scale(0.9) translate(-2px, 0); opacity: 0.4; }
+        35%       { transform: scale(0.9) translate(3px, 0); opacity: 0.4; }
+        48%       { transform: scale(0.9) translate(-2px, 0); opacity: 0.4; }
+        61%       { transform: scale(0.9) translate(2px, 0); opacity: 0.4; }
+        78%       { transform: scale(0.9) translate(0, 0); opacity: 0.4; }
+        90%       { transform: scaleX(1) translate(0, 0); opacity: 0.5; }
+        96%, 100% { transform: scaleX(1) translate(0, 0); opacity: 0.5; }
+      }
+
+      /* Left arm: normal → tucked behind → normal */
+      @keyframes arm-l {
+        0%, 5%    { transform: translate(0, 0) rotate(0deg); }
+        15%, 78%  { transform: translate(1px, -1px) rotate(15deg); }
+        90%, 100% { transform: translate(0, 0) rotate(0deg); }
+      }
+
+      /* Right arm: lifts briefly when glass appears/disappears */
+      @keyframes arm-r {
+        0%, 4%    { transform: translate(0, 0); }
+        7%, 10%   { transform: translate(0, -2px); }
+        13%, 80%  { transform: translate(0, 0); }
+        83%, 86%  { transform: translate(0, -2px); }
+        90%, 100% { transform: translate(0, 0); }
+      }
+
+      /* Magnifying glass: appears while arm is up, vanishes while arm is up */
+      @keyframes glass-vis {
+        0%, 8.9%  { opacity: 0; }
+        9%        { opacity: 1; }
+        83.9%     { opacity: 1; }
+        84%       { opacity: 0; }
+        100%      { opacity: 0; }
+      }
+
+      /* Left eye: normal → squint → normal */
+      @keyframes eye-squint {
+        0%, 10%   { transform: scaleY(1); }
+        15%, 78%  { transform: scaleY(0.5); }
+        86%, 100% { transform: scaleY(1); }
+      }
+
+      /* Idle legs: visible in idle, hidden in detective */
+      @keyframes legs-idle {
+        0%, 13.9% { opacity: 1; }
+        14%       { opacity: 0; }
+        85.9%     { opacity: 0; }
+        86%       { opacity: 1; }
+        100%      { opacity: 1; }
+      }
+
+      /* Sneak legs: hidden in idle, visible in detective */
+      @keyframes legs-sneak {
+        0%, 13.9% { opacity: 0; }
+        14%       { opacity: 1; }
+        85.9%     { opacity: 1; }
+        86%       { opacity: 0; }
+        100%      { opacity: 0; }
       }
     </style>
   </defs>
 
-  <rect id="ground-shadow" class="shadow-sneak" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
-  
-  <g class="body-hunch">
-    <g id="legs" fill="#DE886D">
-      <rect id="outer-left-leg" class="leg-1" x="3" y="13" width="1" height="2"/>
-      <rect id="inner-left-leg" class="leg-2" x="5" y="13" width="1" height="2"/>
-      <rect id="inner-right-leg" class="leg-1" x="9" y="13" width="1" height="2"/>
-      <rect id="outer-right-leg" class="leg-2" x="11" y="13" width="1" height="2"/>
+  <!-- Ground Shadow -->
+  <g class="shadow-main">
+    <rect x="3" y="15" width="9" height="1" fill="#000000"/>
+  </g>
+
+  <!-- Static Legs (idle phases) -->
+  <g class="legs-idle" fill="#DE886D">
+    <rect x="3" y="12" width="1" height="3"/>
+    <rect x="5" y="12" width="1" height="3"/>
+    <rect x="9" y="12" width="1" height="3"/>
+    <rect x="11" y="12" width="1" height="3"/>
+  </g>
+
+  <!-- Body Group (main timeline: hunch + walk) -->
+  <g class="body-main">
+
+    <!-- Sneaking Legs (detective phase, inside body so they walk with it) -->
+    <g class="legs-sneak" fill="#DE886D" opacity="0">
+      <rect class="leg-a" x="3" y="13" width="1" height="2"/>
+      <rect class="leg-b" x="5" y="13" width="1" height="2"/>
+      <rect class="leg-a" x="9" y="13" width="1" height="2"/>
+      <rect class="leg-b" x="11" y="13" width="1" height="2"/>
     </g>
 
-    <g id="body-color-group" fill="#DE886D">
-      <rect id="torso" x="2" y="6" width="11" height="7"/>
-      <!-- Left arm tucked back slightly -->
-      <rect id="left-arm" x="0" y="9" width="2" height="2" transform="translate(1, -1) rotate(15 1 10)"/>
-    </g>
-    
-    <!-- Left Eye (squinting) -->
-    <g fill="#000000">
-      <rect id="left-eye" x="4" y="8.5" width="1" height="1"/>
-    </g>
-    
-    <!-- Right Arm & Magnifying Glass -->
-    <g class="magnifying-glass">
-      <rect id="right-arm" x="13" y="9" width="2" height="2" fill="#DE886D"/>
-      
-      <!-- The Magnifying Glass -->
-      <g id="glass" transform="translate(13.5, 9.5)">
-        <!-- Angled Handle from hand to rim -->
-        <polygon points="0.5,1.5 1.5,0.5 -1,-2 -2,-1" fill="#795548"/>
-        
-        <!-- Large circular-ish Rim -->
-        <rect x="-6" y="-5" width="6" height="6" fill="#546E7A" rx="2"/>
-        
-        <!-- Magnified Right Eye (Huge!) - Drawn behind the lens -->
-        <rect x="-4" y="-3.5" width="2" height="3" fill="#000000"/>
-        
-        <!-- Glass Lens (semi-transparent so eye shows through) -->
-        <rect x="-5.5" y="-4.5" width="5" height="5" fill="#E0F7FA" rx="1.5" opacity="0.6"/>
-        
-        <!-- Glare / Reflection on the glass -->
-        <rect x="-4.5" y="-3.5" width="1.5" height="1.5" fill="#FFFFFF" opacity="0.8"/>
+    <!-- Upper Body (breathing) -->
+    <g class="breathe">
+      <!-- Torso -->
+      <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
+
+      <!-- Left Arm -->
+      <g class="arm-l">
+        <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>
+      </g>
+
+      <!-- Eyes -->
+      <g class="blink" fill="#000000">
+        <!-- Left Eye (squints during detective phase) -->
+        <g class="eye-squint">
+          <rect x="4" y="8" width="1" height="2"/>
+        </g>
+        <!-- Right Eye -->
+        <rect x="10" y="8" width="1" height="2"/>
+      </g>
+
+      <!-- Right Arm + Magnifying Glass (on top of eyes in z-order) -->
+      <g class="arm-r">
+        <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+
+        <!-- Magnifying Glass -->
+        <g class="glass-vis" opacity="0">
+          <g class="glass-wobble">
+            <g transform="translate(13.5, 9.5)">
+              <!-- Handle -->
+              <polygon points="0.5,1.5 1.5,0.5 -1,-2 -2,-1" fill="#795548"/>
+              <!-- Rim -->
+              <rect x="-6" y="-5" width="6" height="6" fill="#546E7A" rx="2"/>
+              <!-- Magnified Eye -->
+              <rect x="-4" y="-3.5" width="2" height="3" fill="#000000"/>
+              <!-- Lens -->
+              <rect x="-5.5" y="-4.5" width="5" height="5" fill="#E0F7FA" rx="1.5" opacity="0.6"/>
+              <!-- Glare -->
+              <rect x="-4.5" y="-3.5" width="1.5" height="1.5" fill="#FFFFFF" opacity="0.8"/>
+            </g>
+          </g>
+        </g>
       </g>
     </g>
   </g>

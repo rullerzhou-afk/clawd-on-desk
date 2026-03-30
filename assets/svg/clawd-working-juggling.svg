@@ -1,82 +1,183 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
   <defs>
     <style>
+      /* ===== Independent sub-animations ===== */
+      .breathe {
+        transform-origin: 7.5px 13px;
+        animation: breathe 3.2s infinite ease-in-out;
+      }
+      .blink {
+        transform-origin: 7.5px 9px;
+        animation: blink 4s infinite;
+      }
+
+      /* ===== Body rock: left-right sway + micro-dip ===== */
       .body-rock {
         transform-origin: 7.5px 15px;
-        animation: rock 0.6s infinite alternate ease-in-out;
+        animation: rock 1.2s infinite ease-in-out;
       }
+
+      /* ===== Shadow ===== */
+      .shadow-anim {
+        transform-origin: 7.5px 15.5px;
+        animation: shadow-rock 1.2s infinite ease-in-out;
+      }
+
+      /* ===== Arms: alternate catch/throw, synced with rock ===== */
       .arm-juggle-l {
         transform-origin: 1px 10px;
-        animation: arm-jl 0.6s infinite alternate ease-in-out;
+        animation: arm-jl 1.2s infinite ease-in-out;
       }
       .arm-juggle-r {
         transform-origin: 14px 10px;
-        animation: arm-jr 0.6s infinite alternate ease-in-out;
+        animation: arm-jr 1.2s infinite ease-in-out;
       }
-      .eyes-dart {
-        animation: dart 1.2s infinite;
+
+      /* ===== Eyes: track balls ===== */
+      .eye-track {
+        animation: eye-track 2.4s infinite ease-in-out;
       }
+
+      /* ===== Juggling packets: parabolic arc ===== */
       .packet {
-        animation: juggle 1.2s infinite linear;
+        animation: juggle 1.2s infinite;
       }
       .p1 { animation-delay: 0s; fill: #FF5252; }
       .p2 { animation-delay: -0.4s; fill: #FFC107; }
       .p3 { animation-delay: -0.8s; fill: #4CAF50; }
-      
+
+      /* (no sweat — juggling is a steady state, not emergency) */
+
+      /* ===== Keyframes ===== */
+
+      @keyframes breathe {
+        0%, 100% { transform: scale(1, 1) translate(0, 0); }
+        50% { transform: scale(1.02, 0.98) translate(0, 0.5px); }
+      }
+
+      @keyframes blink {
+        0%, 10%, 100% { transform: scaleY(1); }
+        5% { transform: scaleY(0.1); }
+      }
+
+      /* Body: center → left-dip → center → right-dip → center */
       @keyframes rock {
-        0% { transform: rotate(-5deg); }
-        100% { transform: rotate(5deg); }
+        0%, 50%, 100% { transform: rotate(0deg) translateY(0); }
+        25% { transform: rotate(-3deg) translateY(0.3px); }
+        75% { transform: rotate(3deg) translateY(0.3px); }
       }
+
+      /* Shadow: sway with body */
+      @keyframes shadow-rock {
+        0%, 50%, 100% { transform: scaleX(1); opacity: 0.5; }
+        25% { transform: scaleX(1.03) translateX(-0.3px); opacity: 0.52; }
+        75% { transform: scaleX(1.03) translateX(0.3px); opacity: 0.52; }
+      }
+
+      /* Left arm: up at 25% (catch left), down at 75% */
       @keyframes arm-jl {
-        0% { transform: rotate(60deg); }
-        100% { transform: rotate(10deg); }
+        0%, 50%, 100% { transform: rotate(20deg); }
+        25% { transform: rotate(35deg); }
+        75% { transform: rotate(5deg); }
       }
+
+      /* Right arm: down at 25%, up at 75% (catch right) */
       @keyframes arm-jr {
-        0% { transform: rotate(-10deg); }
-        100% { transform: rotate(-60deg); }
+        0%, 50%, 100% { transform: rotate(-20deg); }
+        25% { transform: rotate(-5deg); }
+        75% { transform: rotate(-35deg); }
       }
-      @keyframes dart {
-        0%, 100% { transform: translate(-2px, -2px); }
-        25% { transform: translate(0, -3px); }
-        50% { transform: translate(2px, -2px); }
-        75% { transform: translate(0, 0); }
+
+      /* Eyes: track ball arc left-right */
+      @keyframes eye-track {
+        0%, 100% { transform: translate(-1px, -1px); }
+        15% { transform: translate(0, -1.5px); }
+        30% { transform: translate(1px, -1px); }
+        45% { transform: translate(1px, 0.5px); }
+        50% { transform: translate(1px, -1px); }
+        65% { transform: translate(0, -1.5px); }
+        80% { transform: translate(-1px, -1px); }
+        90% { transform: translate(-1px, 0.5px); }
       }
+
+      /* Juggle: parabolic arc between hands, hang at top
+         Packet origin is x=-1 y=-1 (2x2 rect center ~0,0)
+         Left hand: x~1, y~10  → translate(2, 10)
+         Right hand: x~14, y~10 → translate(14, 10)
+         Arc peak: y ~ -1 (well above head) */
       @keyframes juggle {
-        0% { transform: translate(0px, 9px) rotate(0deg); }
-        25% { transform: translate(8px, 0px) rotate(90deg); }
-        50% { transform: translate(15px, 9px) rotate(180deg); }
-        75% { transform: translate(8px, 4px) rotate(270deg); }
-        100% { transform: translate(0px, 9px) rotate(360deg); }
+        0%   { transform: translate(2px, 10px); }
+        8%   { transform: translate(4px, 4px); }
+        18%  { transform: translate(6px, 0px); }
+        30%  { transform: translate(8px, -1px); }
+        42%  { transform: translate(10px, 0px); }
+        50%  { transform: translate(14px, 10px); }
+        58%  { transform: translate(12px, 4px); }
+        68%  { transform: translate(10px, 0px); }
+        80%  { transform: translate(8px, -1px); }
+        92%  { transform: translate(4px, 4px); }
+        100% { transform: translate(2px, 10px); }
       }
     </style>
   </defs>
 
-  <rect id="ground-shadow" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
+  <!-- Ground Shadow -->
+  <rect class="shadow-anim" x="3" y="15" width="9" height="1" fill="#000" opacity="0.5"/>
 
   <!-- Juggling Packets -->
-  <g class="packets">
-    <rect class="packet p1" x="-1" y="-1" width="2" height="2" />
-    <rect class="packet p2" x="-1" y="-1" width="2" height="2" />
-    <rect class="packet p3" x="-1" y="-1" width="2" height="2" />
+  <g>
+    <!-- Red ball -->
+    <g class="packet p1">
+      <circle cx="0" cy="0" r="1.2" fill="#FF5252"/>
+      <circle cx="-0.35" cy="-0.35" r="0.45" fill="#FF8A80" opacity="0.7"/>
+      <circle cx="0.3" cy="0.4" r="0.6" fill="#D32F2F" opacity="0.3"/>
+    </g>
+    <!-- Yellow ball -->
+    <g class="packet p2">
+      <circle cx="0" cy="0" r="1.2" fill="#FFC107"/>
+      <circle cx="-0.35" cy="-0.35" r="0.45" fill="#FFE082" opacity="0.7"/>
+      <circle cx="0.3" cy="0.4" r="0.6" fill="#FFA000" opacity="0.3"/>
+    </g>
+    <!-- Green ball -->
+    <g class="packet p3">
+      <circle cx="0" cy="0" r="1.2" fill="#4CAF50"/>
+      <circle cx="-0.35" cy="-0.35" r="0.45" fill="#81C784" opacity="0.7"/>
+      <circle cx="0.3" cy="0.4" r="0.6" fill="#388E3C" opacity="0.3"/>
+    </g>
   </g>
 
-  <g class="body-rock">
-    <g id="legs" fill="#DE886D">
-      <rect x="3" y="13" width="1" height="2"/>
-      <rect x="5" y="13" width="1" height="2"/>
-      <rect x="9" y="13" width="1" height="2"/>
-      <rect x="11" y="13" width="1" height="2"/>
-    </g>
+  <!-- Static Legs -->
+  <g fill="#DE886D">
+    <rect x="3" y="13" width="1" height="2"/>
+    <rect x="5" y="13" width="1" height="2"/>
+    <rect x="9" y="13" width="1" height="2"/>
+    <rect x="11" y="13" width="1" height="2"/>
+  </g>
 
-    <g id="body-color-group" fill="#DE886D">
-      <rect x="2" y="6" width="11" height="7"/>
-      <g class="arm-juggle-l"><rect x="0" y="9" width="2" height="2"/></g>
-      <g class="arm-juggle-r"><rect x="13" y="9" width="2" height="2"/></g>
-    </g>
-    
-    <g class="eyes-dart" fill="#000000">
-      <rect x="4" y="8" width="1" height="2"/>
-      <rect x="10" y="8" width="1" height="2"/>
+  <!-- Upper Body -->
+  <g class="body-rock">
+    <g class="breathe">
+      <!-- Torso -->
+      <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
+
+      <!-- Left Arm -->
+      <g class="arm-juggle-l">
+        <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>
+      </g>
+
+      <!-- Right Arm -->
+      <g class="arm-juggle-r">
+        <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+      </g>
+
+      <!-- Eyes -->
+      <g class="eye-track" fill="#000">
+        <g class="blink">
+          <rect x="4" y="8" width="1" height="2"/>
+          <rect x="10" y="8" width="1" height="2"/>
+        </g>
+      </g>
+
     </g>
   </g>
 </svg>

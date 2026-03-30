@@ -1,107 +1,178 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
   <defs>
     <style>
-      /* Straining body trembling and squashing under weight */
-      .body-carry {
-        transform-origin: 7.5px 15px; /* Pivot at the base of the feet */
-        animation: carry-strain 0.15s infinite alternate ease-in-out;
+      .body-walk {
+        transform-origin: 7.5px 15px;
+        animation: walk-bounce 0.4s infinite ease-in-out;
       }
-
-      /* Heavy Data Block shaking */
-      .data-block {
-        animation: block-shake 0.15s infinite alternate ease-in-out;
+      .step-a { animation: step 0.4s infinite ease-in-out; }
+      .step-b { animation: step 0.4s infinite ease-in-out; animation-delay: -0.2s; }
+      .pack-swing {
+        transform-origin: 13px 8px;
+        animation: pack-swing 0.4s infinite alternate ease-in-out;
       }
-
-      /* Trembling legs */
-      .leg {
-        transform-box: fill-box;
-        transform-origin: top center;
+      .arm-swing-l {
+        transform-origin: 2px 9px;
+        animation: arm-swing 0.4s infinite alternate ease-in-out;
       }
-      .leg-1 { animation: tremble-1 0.1s infinite linear; }
-      .leg-2 { animation: tremble-2 0.1s infinite linear; }
-
-      /* Sweat drop flying off */
-      .sweat {
-        opacity: 0;
-        animation: sweat-fly 2s infinite cubic-bezier(.25,.1,.25,1);
+      .cap-sway {
+        transform-origin: 6px 6.5px;
+        animation: cap-sway 0.8s infinite alternate ease-in-out;
       }
-
-      /* Ground shadow shifting */
-      .shadow-carry {
+      .shadow-walk {
         transform-origin: 7.5px 15.5px;
-        animation: shadow-strain 0.15s infinite alternate ease-in-out;
+        animation: shadow-walk 0.4s infinite ease-in-out;
       }
 
-      /* Keyframes */
-      @keyframes carry-strain {
-        0% { transform: translateY(1px) scale(1.05, 0.95); }
-        100% { transform: translateY(2px) scale(1.08, 0.92); } /* Heavy squash */
+      /* Eyes three-layer */
+      .eyes-gaze { animation: eyes-gaze 2.5s infinite; }
+      .eyes-rect {
+        transform-origin: 7.5px 9px;
+        animation: eyes-blink-rush 2.5s infinite, rect-vis 2.5s infinite step-end;
+      }
+      .eyes-xmark {
+        visibility: hidden;
+        animation: xmark-vis 2.5s infinite step-end;
       }
 
-      @keyframes shadow-strain {
-        0% { transform: scale(1.1); opacity: 0.6; }
-        100% { transform: scale(1.15); opacity: 0.7; }
+      /* Sweat: only during xmark period */
+      .sweat-1 { animation: sweat1-fly 2.5s infinite; }
+      .sweat-2 { animation: sweat2-fly 2.5s infinite; }
+
+      @keyframes walk-bounce {
+        0%, 50%, 100% { transform: translateY(1px); }
+        25%, 75%       { transform: translateY(0); }
+      }
+      @keyframes step {
+        0%, 100% { transform: translateY(0); }
+        50%      { transform: translateY(-1px); }
+      }
+      @keyframes pack-swing {
+        0%   { transform: rotate(3deg); }
+        100% { transform: rotate(-3deg); }
+      }
+      @keyframes arm-swing {
+        0%   { transform: rotate(-8deg); }
+        100% { transform: rotate(8deg); }
+      }
+      @keyframes cap-sway {
+        0%   { transform: rotate(-3deg); }
+        100% { transform: rotate(3deg); }
+      }
+      @keyframes shadow-walk {
+        0%, 50%, 100% { transform: scale(1.03); opacity: 0.55; }
+        25%, 75%       { transform: scale(1); opacity: 0.5; }
       }
 
-      @keyframes block-shake {
-        0% { transform: translate(0, 0) rotate(-0.5deg); }
-        100% { transform: translate(0, 1px) rotate(0.5deg); }
+      /* Gaze: left while rushing, center during xmark */
+      @keyframes eyes-gaze {
+        0%, 15%, 88%, 100% { transform: translate(-1px, 0); }
+        25%, 80%           { transform: translate(0, 0); }
+      }
+      /* Rect blink + gate at 28% and 78% */
+      @keyframes eyes-blink-rush {
+        0%, 4%, 100%  { transform: scaleY(1); }
+        6%            { transform: scaleY(0.1); }
+        8%            { transform: scaleY(1); }
+        28%           { transform: scaleY(0.1); }
+        31%, 76%      { transform: scaleY(1); }
+        78%           { transform: scaleY(0.1); }
+        83%           { transform: scaleY(1); }
+      }
+      /* Rect hidden during xmark */
+      @keyframes rect-vis {
+        0%  { visibility: visible; }
+        29% { visibility: hidden; }
+        79% { visibility: visible; }
+      }
+      /* Xmark shown during xmark */
+      @keyframes xmark-vis {
+        0%  { visibility: hidden; }
+        29% { visibility: visible; }
+        79% { visibility: hidden; }
       }
 
-      /* Trembling legs under weight */
-      @keyframes tremble-1 {
-        0%, 100% { transform: translateX(0); }
-        50% { transform: translateX(-0.5px); }
+      /* Sweat only during xmark (synced to 2.5s) */
+      @keyframes sweat1-fly {
+        0%, 27%  { transform: translate(0, 0); opacity: 0; }
+        31%      { transform: translate(0, 0); opacity: 1; }
+        55%      { transform: translate(4px, -3px); opacity: 0; }
+        100%     { opacity: 0; }
       }
-      @keyframes tremble-2 {
-        0%, 100% { transform: translateX(0); }
-        50% { transform: translateX(0.5px); }
-      }
-
-      /* Sweat drop flies back and fades */
-      @keyframes sweat-fly {
-        0% { transform: translate(0, 0) scale(0); opacity: 0; }
-        10% { transform: translate(0, 0) scale(1); opacity: 1; }
-        40% { transform: translate(-8px, -4px) scale(0.8); opacity: 0; }
-        100% { opacity: 0; }
+      @keyframes sweat2-fly {
+        0%, 37%  { transform: translate(0, 0); opacity: 0; }
+        41%      { transform: translate(0, 0); opacity: 1; }
+        65%      { transform: translate(2px, -5px); opacity: 0; }
+        100%     { opacity: 0; }
       }
     </style>
   </defs>
 
-  <!-- Mirrored: entire scene flipped -->
-  <g transform="translate(15, 0) scale(-1, 1)">
-    <rect id="ground-shadow" class="shadow-carry" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
+  <rect class="shadow-walk" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
 
-    <g class="body-carry">
-      <g class="data-block" transform="translate(1, -5)">
-        <rect x="0" y="0" width="13" height="9" fill="#90A4AE"/>
-        <rect x="1" y="1" width="11" height="7" fill="#CFD8DC"/>
-        <rect x="2" y="2" width="2" height="2" fill="#0082FC"/>
-        <rect x="9" y="2" width="2" height="2" fill="#FFC107"/>
-        <rect x="3" y="5" width="7" height="2" fill="#B0BEC5"/>
+  <g transform="rotate(-2, 7.5, 15)">
+  <g class="body-walk">
+    <!-- Backpack -->
+    <g class="pack-swing">
+      <rect x="13" y="7" width="4" height="6" fill="#5C9CE6"/>
+      <rect x="12" y="8" width="5" height="4" fill="#5C9CE6"/>
+      <rect x="13" y="7" width="4" height="2" fill="#3D7AC7"/>
+      <rect x="13" y="10" width="4" height="1" fill="#3D7AC7"/>
+      <rect x="13" y="12" width="4" height="1" fill="#2D5FA5"/>
+      <rect x="15" y="9" width="1" height="1" fill="#FFD54F"/>
+    </g>
+
+    <!-- Legs -->
+    <g fill="#DE886D">
+      <rect class="step-a" x="3" y="13" width="1" height="2"/>
+      <rect class="step-b" x="5" y="13" width="1" height="2"/>
+      <rect class="step-b" x="9" y="13" width="1" height="2"/>
+      <rect class="step-a" x="11" y="13" width="1" height="2"/>
+    </g>
+
+    <!-- Body -->
+    <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
+
+    <!-- Arms -->
+    <g class="arm-swing-l" fill="#DE886D">
+      <rect x="0" y="9" width="3" height="2"/>
+    </g>
+    <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+
+    <!-- Right strap -->
+    <rect x="13" y="7" width="1" height="4" fill="#3D7AC7"/>
+
+    <!-- Eyes: gaze + rect/xmark toggle -->
+    <g class="eyes-gaze">
+      <g class="eyes-rect" fill="#000000">
+        <rect x="4" y="8" width="1" height="2"/>
+        <rect x="10" y="8" width="1" height="2"/>
       </g>
-
-      <g transform="translate(-1, 5)">
-        <g class="sweat" fill="#40C4FF">
-          <rect x="0" y="1" width="1.5" height="1.5"/>
-          <rect x="0.25" y="0" width="1" height="1"/>
-        </g>
-      </g>
-
-      <g id="body-color-group" fill="#DE886D">
-        <rect id="outer-left-leg" class="leg leg-1" x="3" y="13" width="1" height="2"/>
-        <rect id="inner-left-leg" class="leg leg-2" x="5" y="13" width="1" height="2"/>
-        <rect id="inner-right-leg" class="leg leg-1" x="9" y="13" width="1" height="2"/>
-        <rect id="outer-right-leg" class="leg leg-2" x="11" y="13" width="1" height="2"/>
-        <rect id="torso" x="2" y="6" width="11" height="7"/>
-        <rect id="left-arm" x="0" y="4" width="2" height="4" />
-        <rect id="right-arm" x="13" y="4" width="2" height="4" />
-      </g>
-
-      <g fill="#000000">
-        <rect id="left-eye" x="4" y="6.5" width="1" height="1"/>
-        <rect id="right-eye" x="10" y="6" width="1" height="2"/>
+      <g class="eyes-xmark" fill="none" stroke="#000000"
+         stroke-width="0.7" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="4,8 5.5,9 4,10"/>
+        <polyline points="11,8 9.5,9 11,10"/>
       </g>
     </g>
+
+    <!-- Sweat: 2 drops only during xmark -->
+    <g class="sweat-1" fill="#40C4FF">
+      <rect x="14" y="5" width="1" height="1.5"/>
+      <rect x="14.25" y="4.5" width="0.5" height="0.5"/>
+    </g>
+    <g class="sweat-2" fill="#40C4FF">
+      <rect x="16" y="4" width="1" height="1.5"/>
+      <rect x="16.25" y="3.5" width="0.5" height="0.5"/>
+    </g>
+
+    <!-- Tilted cap -->
+    <g class="cap-sway">
+      <g transform="rotate(-15, 6, 6.5)">
+        <rect x="1" y="4.5" width="7" height="2" fill="#5C9CE6"/>
+        <rect x="-1" y="5.5" width="4" height="1" fill="#3D7AC7"/>
+        <rect x="4" y="4.5" width="1" height="1" fill="#FFD54F"/>
+      </g>
+    </g>
+  </g>
   </g>
 </svg>

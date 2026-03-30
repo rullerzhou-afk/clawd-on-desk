@@ -1,118 +1,220 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
   <defs>
     <style>
-      /* Smooth, graceful body bobbing */
-      .body-bob {
-        transform-origin: 7.5px 15px; /* Pivot at the base of the feet */
-        animation: bob 2s infinite ease-in-out;
+      /* === Standard cycles === */
+      .breathe { transform-origin: 7.5px 13px; animation: breathe 3.2s infinite ease-in-out; }
+      @keyframes breathe {
+        0%, 100% { transform: scale(1, 1) translate(0, 0); }
+        50% { transform: scale(1.02, 0.98) translate(0, 0.5px); }
+      }
+      .shadow-pulse { transform-origin: 7.5px 15.5px; animation: shadow-pulse 3.2s infinite ease-in-out; }
+      @keyframes shadow-pulse {
+        0%, 100% { transform: scale(1); opacity: 0.5; }
+        50% { transform: scale(1.05); opacity: 0.4; }
+      }
+      .eyes-blink { transform-origin: 7.5px 9px; animation: blink 4s infinite; }
+      @keyframes blink {
+        0%, 10%, 100% { transform: scaleY(1); }
+        5% { transform: scaleY(0.1); }
       }
 
-      /* Ground shadow pulsing softly */
-      .shadow-bob {
-        transform-origin: 7.5px 15.5px;
-        animation: shadow-soft 2s infinite ease-in-out;
+      /* === Arc flow: 8s, 4 traversals, speed unchanged === */
+      @keyframes flow-normal {
+        0%     { transform: translate(-2px, 6px); opacity: 0; }
+        6.25%  { transform: translate(0px, 1px); opacity: 1; }
+        12.5%  { transform: translate(7.5px, -3px); opacity: 1; }
+        18.75% { transform: translate(15px, 1px); opacity: 1; }
+        24.5%  { transform: translate(17px, 6px); opacity: 0; }
+        25%    { transform: translate(-2px, 6px); opacity: 0; }
+        31.25% { transform: translate(0px, 1px); opacity: 1; }
+        37.5%  { transform: translate(7.5px, -3px); opacity: 1; }
+        43.75% { transform: translate(15px, 1px); opacity: 1; }
+        49.5%  { transform: translate(17px, 6px); opacity: 0; }
+        50%    { transform: translate(-2px, 6px); opacity: 0; }
+        56.25% { transform: translate(0px, 1px); opacity: 1; }
+        62.5%  { transform: translate(7.5px, -3px); opacity: 1; }
+        68.75% { transform: translate(15px, 1px); opacity: 1; }
+        74.5%  { transform: translate(17px, 6px); opacity: 0; }
+        75%    { transform: translate(-2px, 6px); opacity: 0; }
+        81.25% { transform: translate(0px, 1px); opacity: 1; }
+        87.5%  { transform: translate(7.5px, -3px); opacity: 1; }
+        93.75% { transform: translate(15px, 1px); opacity: 1; }
+        99.5%  { transform: translate(17px, 6px); opacity: 0; }
+        100%   { transform: translate(-2px, 6px); opacity: 0; }
+      }
+      .f1, .f2, .f3, .f4, .f5 {
+        animation-name: flow-normal;
+        animation-duration: 8s;
+        animation-iteration-count: infinite;
+        animation-timing-function: linear;
+      }
+      .f1 { animation-delay: 0s; }
+      .f2 { animation-delay: -0.4s; }
+      .f3 { animation-delay: -0.8s; }
+      .f4 { animation-delay: -1.2s; }
+      .f5 { animation-delay: -1.6s; }
+
+      /*
+       * Catch cycle: 4s (half of flow 8s, fires 2x per flow cycle)
+       *   12.5% = Block 1 at LEFT
+       *   45%   = Block 3 at PEAK
+       *   67.5% = Block 4 at RIGHT
+       */
+
+      /* === Catch scale (4s cycle) === */
+      .cs1 { transform-origin: 1px 1px; animation: cs1 4s infinite; }
+      @keyframes cs1 {
+        0%, 10%     { transform: scale(1); }
+        12.5%       { transform: scale(2.2); }
+        18%         { transform: scale(2.2); }
+        20%, 100%   { transform: scale(1); }
+      }
+      .cs3 { transform-origin: 1px 1px; animation: cs3 4s infinite; }
+      @keyframes cs3 {
+        0%, 43%     { transform: scale(1); }
+        45%         { transform: scale(2.2); }
+        51%         { transform: scale(2.2); }
+        53%, 100%   { transform: scale(1); }
+      }
+      .cs4 { transform-origin: 1px 1px; animation: cs4 4s infinite; }
+      @keyframes cs4 {
+        0%, 65.5%   { transform: scale(1); }
+        67.5%       { transform: scale(2.2); }
+        73.5%       { transform: scale(2.2); }
+        75.5%, 100% { transform: scale(1); }
       }
 
-      /* Conductor arms waving smoothly */
-      .arm-l-conduct {
-        transform-origin: 1px 10px; /* Shoulder joint */
-        animation: conduct-l 2s infinite ease-in-out;
+      /* === Dim layers (4s cycle) === */
+      .dim-all { animation: dim-all 4s infinite; }
+      @keyframes dim-all {
+        0%, 8%       { opacity: 1; }
+        10%, 20%     { opacity: 0.12; }
+        22%, 41%     { opacity: 1; }
+        43%, 53%     { opacity: 0.12; }
+        55%, 63.5%   { opacity: 1; }
+        65.5%, 75.5% { opacity: 0.12; }
+        77.5%, 100%  { opacity: 1; }
       }
-      .arm-r-conduct {
-        transform-origin: 14px 10px; /* Shoulder joint */
-        animation: conduct-r 2s infinite ease-in-out;
+      .dim-23 { animation: dim-23 4s infinite; }
+      @keyframes dim-23 {
+        0%, 41%      { opacity: 1; }
+        43%, 53%     { opacity: 0.12; }
+        55%, 63.5%   { opacity: 1; }
+        65.5%, 75.5% { opacity: 0.12; }
+        77.5%, 100%  { opacity: 1; }
       }
-
-      /* Flowing data stream */
-      .pixel-stream {
-        opacity: 0;
-        animation: stream-flow 2s infinite linear;
+      .dim-13 { animation: dim-13 4s infinite; }
+      @keyframes dim-13 {
+        0%, 8%       { opacity: 1; }
+        10%, 20%     { opacity: 0.12; }
+        22%, 63.5%   { opacity: 1; }
+        65.5%, 75.5% { opacity: 0.12; }
+        77.5%, 100%  { opacity: 1; }
       }
-      .p1 { animation-delay: 0s; color: #0082FC; }
-      .p2 { animation-delay: 0.4s; color: #FFC107; }
-      .p3 { animation-delay: 0.8s; color: #FF5252; }
-      .p4 { animation-delay: 1.2s; color: #4CAF50; }
-      .p5 { animation-delay: 1.6s; color: #9C27B0; }
-
-      /* Keyframes */
-      @keyframes bob {
-        0%, 100% { transform: translateY(0) scale(1, 1); }
-        50% { transform: translateY(1.5px) scale(1.02, 0.98); } /* Gentle squash */
-      }
-
-      @keyframes shadow-soft {
-        0%, 100% { transform: scale(1); opacity: 0.4; }
-        50% { transform: scale(1.05); opacity: 0.5; }
-      }
-
-      /* Left arm swoops up, then down */
-      @keyframes conduct-l {
-        0%, 100% { transform: rotate(15deg); }
-        50% { transform: rotate(85deg); }
+      .dim-12 { animation: dim-12 4s infinite; }
+      @keyframes dim-12 {
+        0%, 8%       { opacity: 1; }
+        10%, 20%     { opacity: 0.12; }
+        22%, 41%     { opacity: 1; }
+        43%, 53%     { opacity: 0.12; }
+        55%, 100%    { opacity: 1; }
       }
 
-      /* Right arm swoops down, then up (out of phase) */
-      @keyframes conduct-r {
-        0%, 100% { transform: rotate(-85deg); }
-        50% { transform: rotate(-15deg); }
+      /* === Dispatch: eyes + arms (4s cycle) === */
+      .eyes-dispatch { animation: eyes-dispatch 4s infinite; }
+      @keyframes eyes-dispatch {
+        0%, 8%       { transform: translate(0, 0); }
+        10%, 20%     { transform: translate(-1.5px, 0); }
+        23%, 41%     { transform: translate(0, 0); }
+        43%, 53%     { transform: translate(0, -1.5px); }
+        56%, 63%     { transform: translate(0, 0); }
+        65.5%, 75.5% { transform: translate(1.5px, 0); }
+        78%, 100%    { transform: translate(0, 0); }
+      }
+      .arm-l-dispatch { transform-origin: 2px 10px; animation: arm-l-dispatch 4s infinite; }
+      @keyframes arm-l-dispatch {
+        0%, 10%     { transform: rotate(10deg); }
+        12.5%       { transform: rotate(24deg); }
+        18%, 100%   { transform: rotate(10deg); }
+      }
+      .arm-r-dispatch { transform-origin: 13px 10px; animation: arm-r-dispatch 4s infinite; }
+      @keyframes arm-r-dispatch {
+        0%, 43%     { transform: rotate(-10deg); }
+        45%         { transform: rotate(-18deg); }
+        51%, 65.5%  { transform: rotate(-10deg); }
+        67.5%       { transform: rotate(-24deg); }
+        73.5%, 100% { transform: rotate(-10deg); }
       }
 
-      /* Data pixels flow in an arc over the head */
-      @keyframes stream-flow {
-        0% { transform: translate(-2px, 6px) scale(0); opacity: 0; }
-        15% { transform: translate(0px, 1px) scale(1); opacity: 1; }
-        50% { transform: translate(7.5px, -3px) scale(1.5); opacity: 1; } /* Peak of arc */
-        85% { transform: translate(15px, 1px) scale(1); opacity: 1; }
-        100% { transform: translate(17px, 6px) scale(0); opacity: 0; }
+      /* Catch sparks (4s cycle) */
+      .spark-l { animation: spark-l 4s infinite; }
+      @keyframes spark-l {
+        0%, 10%, 21%, 100% { opacity: 0; }
+        12.5%, 18% { opacity: 1; }
+      }
+      .spark-p { animation: spark-p 4s infinite; }
+      @keyframes spark-p {
+        0%, 43%, 54%, 100% { opacity: 0; }
+        45%, 51% { opacity: 1; }
+      }
+      .spark-r { animation: spark-r 4s infinite; }
+      @keyframes spark-r {
+        0%, 65%, 76%, 100% { opacity: 0; }
+        67.5%, 73.5% { opacity: 1; }
       }
     </style>
-
-    <!-- Data Pixel -->
-    <g id="data-pixel">
-      <rect x="0" y="0" width="1.5" height="1.5" fill="currentColor"/>
-    </g>
   </defs>
 
   <!-- Ground Shadow -->
-  <rect id="ground-shadow" class="shadow-bob" x="3" y="15" width="9" height="1" fill="#000000"/>
+  <rect class="shadow-pulse" x="3" y="15" width="9" height="1" fill="#000000"/>
 
-  <!-- Data Stream Arc -->
-  <g>
-    <use href="#data-pixel" class="pixel-stream p1" />
-    <use href="#data-pixel" class="pixel-stream p2" />
-    <use href="#data-pixel" class="pixel-stream p3" />
-    <use href="#data-pixel" class="pixel-stream p4" />
-    <use href="#data-pixel" class="pixel-stream p5" />
-  </g>
+  <!-- 5 data blocks: dim(outer) > flow(middle) > scale(inner) > rect -->
 
-  <!-- Animated Character Body -->
-  <g class="body-bob">
-    
-    <!-- Body Base Color Group -->
-    <g id="body-color-group" fill="#DE886D">
-      <!-- Static Legs -->
-      <rect id="outer-left-leg" x="3" y="13" width="1" height="2"/>
-      <rect id="inner-left-leg" x="5" y="13" width="1" height="2"/>
-      <rect id="inner-right-leg" x="9" y="13" width="1" height="2"/>
-      <rect id="outer-right-leg" x="11" y="13" width="1" height="2"/>
+  <g class="dim-23"><g class="f1"><g class="cs1">
+    <rect x="0" y="0" width="2" height="2" fill="#FF5252"/>
+  </g></g></g>
 
-      <!-- Main Torso -->
-      <rect id="torso" x="2" y="6" width="11" height="7"/>
-      
-      <!-- Waving Arms -->
-      <g class="arm-l-conduct">
-        <rect id="left-arm" x="0" y="9" width="2" height="2"/>
-      </g>
-      <g class="arm-r-conduct">
-        <rect id="right-arm" x="13" y="9" width="2" height="2"/>
+  <g class="dim-all"><g class="f2">
+    <rect x="0" y="0" width="2" height="2" fill="#FFC107"/>
+  </g></g>
+
+  <g class="dim-13"><g class="f3"><g class="cs3">
+    <rect x="0" y="0" width="2" height="2" fill="#0082FC"/>
+  </g></g></g>
+
+  <g class="dim-12"><g class="f4"><g class="cs4">
+    <rect x="0" y="0" width="2" height="2" fill="#4CAF50"/>
+  </g></g></g>
+
+  <g class="dim-all"><g class="f5">
+    <rect x="0" y="0" width="2" height="2" fill="#9C27B0"/>
+  </g></g>
+
+  <!-- Catch sparks -->
+  <rect class="spark-l" x="-1.5" y="-0.5" width="1" height="1" fill="#FFF" opacity="0"/>
+  <rect class="spark-p" x="9.5" y="-5" width="1" height="1" fill="#FFF" opacity="0"/>
+  <rect class="spark-r" x="17" y="-0.5" width="1" height="1" fill="#FFF" opacity="0"/>
+
+  <!-- Character Body -->
+  <g class="breathe">
+    <g fill="#DE886D">
+      <rect x="3" y="13" width="1" height="2"/>
+      <rect x="5" y="13" width="1" height="2"/>
+      <rect x="9" y="13" width="1" height="2"/>
+      <rect x="11" y="13" width="1" height="2"/>
+    </g>
+    <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
+    <g class="eyes-dispatch">
+      <g class="eyes-blink">
+        <rect x="4" y="8" width="1" height="2" fill="#000000"/>
+        <rect x="10" y="8" width="1" height="2" fill="#000000"/>
       </g>
     </g>
-    
-    <!-- Eyes Color Group (Happily closed / smiling) -->
-    <g fill="#000000">
-      <rect id="left-eye-happy" x="3.5" y="8.5" width="2" height="0.5"/>
-      <rect id="right-eye-happy" x="9.5" y="8.5" width="2" height="0.5"/>
+    <g class="arm-l-dispatch">
+      <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>
     </g>
-    
+    <g class="arm-r-dispatch">
+      <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+    </g>
   </g>
 </svg>

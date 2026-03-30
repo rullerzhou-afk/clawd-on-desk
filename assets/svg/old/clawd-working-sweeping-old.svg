@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <defs>
+    <style>
+      .body-sweep {
+        transform-origin: 7.5px 15px;
+        animation: sweep-lean 1.5s infinite ease-in-out;
+      }
+      .arm-sweep {
+        transform-origin: 14px 10px;
+        animation: sweep-arm 1.5s infinite ease-in-out;
+      }
+      .broom {
+        transform-origin: 13.5px 14px;
+        animation: sweep-broom 1.5s infinite ease-in-out;
+      }
+      .dust {
+        opacity: 0;
+        animation: sweep-dust 1.5s infinite ease-out;
+      }
+      .d1 { animation-delay: 0.2s; }
+      .d2 { animation-delay: 0.4s; }
+      
+      @keyframes sweep-lean {
+        0%, 100% { transform: rotate(5deg) translate(1px, 0); }
+        50% { transform: rotate(15deg) translate(3px, 1px); }
+      }
+      @keyframes sweep-arm {
+        0%, 100% { transform: rotate(0deg); }
+        50% { transform: rotate(-20deg); }
+      }
+      @keyframes sweep-broom {
+        0%, 100% { transform: rotate(10deg); }
+        50% { transform: rotate(30deg) translate(2px, -1px); }
+      }
+      @keyframes sweep-dust {
+        0%, 40% { transform: translate(17px, 14px) scale(0); opacity: 0; }
+        50% { transform: translate(19px, 14px) scale(1); opacity: 1; }
+        100% { transform: translate(25px, 14px) scale(0.5); opacity: 0; }
+      }
+    </style>
+  </defs>
+
+  <!-- Mirrored: entire scene flipped so Clawd sweeps leftward -->
+  <g transform="translate(15, 0) scale(-1, 1)">
+    <rect id="ground-shadow" x="3" y="15" width="13" height="1" fill="#000000" opacity="0.5"/>
+
+    <g class="body-sweep">
+      <g id="legs" fill="#DE886D">
+        <rect x="3" y="13" width="1" height="2"/>
+        <rect x="5" y="13" width="1" height="2"/>
+        <rect x="9" y="13" width="1" height="2"/>
+        <rect x="11" y="13" width="1" height="2"/>
+      </g>
+
+      <g id="body-color-group" fill="#DE886D">
+        <rect x="2" y="6" width="11" height="7"/>
+        <rect x="0" y="9" width="2" height="2" transform="translate(6, 1) rotate(-15 1 10)"/>
+        <g class="arm-sweep"><rect x="13" y="9" width="2" height="2"/></g>
+      </g>
+
+      <g fill="#000000">
+        <rect x="5" y="8" width="1" height="2"/>
+        <rect x="11" y="8" width="1" height="2"/>
+      </g>
+    </g>
+
+    <g class="broom">
+      <rect x="13.5" y="4" width="1" height="10" fill="#795548"/>
+      <rect x="12" y="14" width="4" height="2" fill="#FFC107"/>
+    </g>
+
+    <g class="dust" fill="#9E9E9E">
+      <rect x="0" y="0" width="1.5" height="1.5"/>
+    </g>
+    <g class="dust d1" fill="#B0BEC5">
+      <rect x="0" y="0" width="1" height="1"/>
+    </g>
+  </g>
+</svg>

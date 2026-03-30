@@ -121,8 +121,10 @@ window.addEventListener("blur", stopDrag);
 const CLICK_WINDOW_MS = 400;
 const REACT_LEFT_SVG = "clawd-react-left.svg";
 const REACT_RIGHT_SVG = "clawd-react-right.svg";
-const REACT_DOUBLE_SVG = "clawd-react-double.svg";
+const REACT_ANNOYED_SVG = "clawd-react-annoyed.svg";
+const REACT_DOUBLE_SVGS = ["clawd-react-double.svg", "clawd-react-double-jump.svg"];
 const REACT_SINGLE_DURATION = 2500;
+const REACT_ANNOYED_DURATION = 3500;
 const REACT_DOUBLE_DURATION = 3500;
 
 let clickCount = 0;
@@ -153,14 +155,20 @@ function handleClick(clientX) {
   if (clickCount >= 4) {
     clickCount = 0;
     firstClickDir = null;
-    playReaction(REACT_DOUBLE_SVG, REACT_DOUBLE_DURATION);
+    const doubleSvg = REACT_DOUBLE_SVGS[Math.floor(Math.random() * REACT_DOUBLE_SVGS.length)];
+    playReaction(doubleSvg, REACT_DOUBLE_DURATION);
   } else if (clickCount >= 2) {
     clickTimer = setTimeout(() => {
       clickTimer = null;
-      const svg = firstClickDir === "left" ? REACT_LEFT_SVG : REACT_RIGHT_SVG;
       clickCount = 0;
-      firstClickDir = null;
-      playReaction(svg, REACT_SINGLE_DURATION);
+      if (Math.random() < 0.5) {
+        firstClickDir = null;
+        playReaction(REACT_ANNOYED_SVG, REACT_ANNOYED_DURATION);
+      } else {
+        const svg = firstClickDir === "left" ? REACT_LEFT_SVG : REACT_RIGHT_SVG;
+        firstClickDir = null;
+        playReaction(svg, REACT_SINGLE_DURATION);
+      }
     }, CLICK_WINDOW_MS);
   } else {
     clickTimer = setTimeout(() => {

@@ -4,7 +4,7 @@
 // Usage: node clawd-hook.js <event_name>
 // Reads stdin JSON from Claude Code for session_id
 
-const { postStateToRunningServer } = require("./server-config");
+const { postStateToRunningServer, readHostPrefix } = require("./server-config");
 
 const EVENT_TO_STATE = {
   SessionStart: "idle",
@@ -47,13 +47,20 @@ const TERMINAL_NAMES_MAC = new Set([
   "terminal", "iterm2", "alacritty", "wezterm-gui", "kitty",
   "hyper", "tabby", "warp", "ghostty",
 ]);
+const TERMINAL_NAMES_LINUX = new Set([
+  "gnome-terminal", "kgx", "konsole", "xfce4-terminal", "tilix",
+  "alacritty", "wezterm", "wezterm-gui", "kitty", "ghostty",
+  "xterm", "lxterminal", "terminator", "tabby", "hyper", "warp",
+]);
 
 const SYSTEM_BOUNDARY_WIN = new Set(["explorer.exe", "services.exe", "winlogon.exe", "svchost.exe"]);
 const SYSTEM_BOUNDARY_MAC = new Set(["launchd", "init", "systemd"]);
+const SYSTEM_BOUNDARY_LINUX = new Set(["systemd", "init"]);
 
 // Editor detection — process name → URI scheme name (for VS Code/Cursor tab focus)
 const EDITOR_MAP_WIN = { "code.exe": "code", "cursor.exe": "cursor" };
 const EDITOR_MAP_MAC = { "code": "code", "cursor": "cursor" };
+const EDITOR_MAP_LINUX = { "code": "code", "cursor": "cursor", "code-insiders": "code" };
 
 // Claude Code process detection — for liveness check in main.js
 const CLAUDE_NAMES_WIN = new Set(["claude.exe"]);
@@ -63,14 +70,15 @@ let _stablePid = null;
 let _detectedEditor = null; // "code" or "cursor" — for URI scheme terminal tab focus
 let _claudePid = null;       // Claude Code process PID — for crash/orphan detection
 let _pidChain = [];          // all PIDs visited during tree walk
+let _isHeadless = false;     // true if claude process has -p/--print flag
 
 function getStablePid() {
   if (_stablePid) return _stablePid;
   const { execSync } = require("child_process");
   const isWin = process.platform === "win32";
-  const terminalNames = isWin ? TERMINAL_NAMES_WIN : TERMINAL_NAMES_MAC;
-  const systemBoundary = isWin ? SYSTEM_BOUNDARY_WIN : SYSTEM_BOUNDARY_MAC;
-  const editorMap = isWin ? EDITOR_MAP_WIN : EDITOR_MAP_MAC;
+  const terminalNames = isWin ? TERMINAL_NAMES_WIN : (process.platform === "linux" ? TERMINAL_NAMES_LINUX : TERMINAL_NAMES_MAC);
+  const systemBoundary = isWin ? SYSTEM_BOUNDARY_WIN : (process.platform === "linux" ? SYSTEM_BOUNDARY_LINUX : SYSTEM_BOUNDARY_MAC);
+  const editorMap = isWin ? EDITOR_MAP_WIN : (process.platform === "linux" ? EDITOR_MAP_LINUX : EDITOR_MAP_MAC);
   let pid = process.ppid;
   let lastGoodPid = pid;
   let terminalPid = null;
@@ -127,13 +135,27 @@ function getStablePid() {
     if (!parentPid || parentPid === pid || parentPid <= 1) break;
     pid = parentPid;
   }
+  // Check if claude process is running in non-interactive (-p/--print) mode
+  if (_claudePid && !_isHeadless) {
+    try {
+      const cmdOut = isWin
+        ? execSync(
+            `wmic process where "ProcessId=${_claudePid}" get CommandLine /format:csv`,
+            { encoding: "utf8", timeout: 500, windowsHide: true }
+          )
+        : execSync(`ps -o command= -p ${_claudePid}`, { encoding: "utf8", timeout: 500 });
+      if (/\s(-p|--print)(\s|$)/.test(cmdOut)) _isHeadless = true;
+    } catch {}
+  }
   // Prefer outermost known terminal; fall back to highest non-system PID
   _stablePid = terminalPid || lastGoodPid;
   return _stablePid;
 }
 
 // Pre-resolve on SessionStart (runs during stdin buffering, not after)
-if (event === "SessionStart") getStablePid();
+// Remote mode: skip PID collection — remote PIDs are meaningless on the local machine
+// and could collide with local PIDs, confusing the process-alive checks in state.js.
+if (event === "SessionStart" && !process.env.CLAWD_REMOTE) getStablePid();
 
 // Read stdin for session_id (Claude Code pipes JSON with session metadata)
 const chunks = [];
@@ -162,15 +184,20 @@ function send(sessionId, cwd) {
   const body = { state, session_id: sessionId, event };
   body.agent_id = "claude-code";
   if (cwd) body.cwd = cwd;
-  // Always walk to stable terminal PID — process.ppid is an ephemeral shell
-  // that dies when the hook exits, so it's useless for later focus calls
-  body.source_pid = getStablePid();
-  if (_detectedEditor) body.editor = _detectedEditor;
-  if (_claudePid) {
-    body.agent_pid = _claudePid;
-    body.claude_pid = _claudePid; // backward compat with older Clawd versions
+  if (process.env.CLAWD_REMOTE) {
+    body.host = readHostPrefix();
+  } else {
+    // Walk to stable terminal PID — process.ppid is an ephemeral shell
+    // that dies when the hook exits, so it's useless for later focus calls
+    body.source_pid = getStablePid();
+    if (_detectedEditor) body.editor = _detectedEditor;
+    if (_claudePid) {
+      body.agent_pid = _claudePid;
+      body.claude_pid = _claudePid; // backward compat with older Clawd versions
+    }
+    if (_pidChain.length) body.pid_chain = _pidChain;
+    if (_isHeadless) body.headless = true;
   }
-  if (_pidChain.length) body.pid_chain = _pidChain;
 
   const data = JSON.stringify(body);
   postStateToRunningServer(

@@ -13,7 +13,7 @@ const SVG_IDLE_LIVING = "clawd-idle-living.svg";
 
 // ── State → SVG mapping ──
 const STATE_SVGS = {
-  idle: [SVG_IDLE_FOLLOW, SVG_IDLE_LIVING],
+  idle: [SVG_IDLE_FOLLOW, "clawd-working-debugger.svg", "clawd-idle-reading.svg"],
   yawning: ["clawd-idle-yawn.svg"],
   dozing: ["clawd-idle-doze.svg"],
   collapsing: ["clawd-collapse-sleep.svg"],
@@ -43,7 +43,7 @@ const MIN_DISPLAY_MS = {
   attention: 4000,
   error: 5000,
   sweeping: 2000,
-  notification: 4000,
+  notification: 3500,
   carrying: 3000,
   working: 1000,
   thinking: 1000,
@@ -55,7 +55,7 @@ const AUTO_RETURN_MS = {
   attention: 4000,
   error: 5000,
   sweeping: 300000,
-  notification: 4000,
+  notification: 3500,
   carrying: 3000,
   "mini-alert": 4000,
   "mini-happy": 4000,
@@ -87,7 +87,7 @@ const HIT_BOXES = {
   sleeping: { x: -2, y: 9, w: 19, h: 7 },
   wide:     { x: -3, y: 3, w: 21, h: 14 },
 };
-const WIDE_SVGS = new Set(["clawd-error.svg", "clawd-working-building.svg", "clawd-notification.svg", "clawd-working-conducting.svg"]);
+const WIDE_SVGS = new Set(["clawd-error.svg", "clawd-notification.svg", "clawd-working-conducting.svg"]);
 let currentHitBox = HIT_BOXES.default;
 
 // ── State machine internal ──
@@ -288,7 +288,7 @@ function wakeFromDoze() {
 }
 
 // ── Session management ──
-function updateSession(sessionId, state, event, sourcePid, cwd, editor, pidChain, agentPid, agentId) {
+function updateSession(sessionId, state, event, sourcePid, cwd, editor, pidChain, agentPid, agentId, host, headless) {
   if (startupRecoveryActive) {
     startupRecoveryActive = false;
     if (startupRecoveryTimer) { clearTimeout(startupRecoveryTimer); startupRecoveryTimer = null; }
@@ -306,14 +306,31 @@ function updateSession(sessionId, state, event, sourcePid, cwd, editor, pidChain
   const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
   const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
   const srcAgentId = agentId || (existing && existing.agentId) || null;
+  const srcHost = host || (existing && existing.host) || null;
+  const srcHeadless = headless || (existing && existing.headless) || false;
 
   const pidReachable = existing ? existing.pidReachable :
     (srcAgentPid ? isProcessAlive(srcAgentPid) : (srcPid ? isProcessAlive(srcPid) : false));
 
-  const base = { sourcePid: srcPid, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, pidReachable };
+  const base = { sourcePid: srcPid, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, pidReachable };
 
   if (event === "SessionEnd") {
+    const endingSession = sessions.get(sessionId);
     sessions.delete(sessionId);
+    cleanStaleSessions();
+    if (!endingSession || !endingSession.headless) {
+      let hasLiveInteractive = false;
+      for (const s of sessions.values()) {
+        if (!s.headless) { hasLiveInteractive = true; break; }
+      }
+      if (!hasLiveInteractive) {
+        setState("sleeping");
+        return;
+      }
+    }
+    const displayState = resolveDisplayState();
+    setState(displayState, getSvgOverride(displayState));
+    return;
   } else if (state === "attention" || state === "notification" || SLEEP_SEQUENCE.has(state)) {
     sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), ...base });
   } else if (ONESHOT_STATES.has(state)) {
@@ -336,11 +353,6 @@ function updateSession(sessionId, state, event, sourcePid, cwd, editor, pidChain
   }
   cleanStaleSessions();
 
-  if (sessions.size === 0 && event === "SessionEnd") {
-    setState("sleeping");
-    return;
-  }
-
   if (ONESHOT_STATES.has(state)) {
     setState(state);
     return;
@@ -357,10 +369,12 @@ function isProcessAlive(pid) {
 function cleanStaleSessions() {
   const now = Date.now();
   let changed = false;
+  let removedNonHeadless = false;
   for (const [id, s] of sessions) {
     const age = now - s.updatedAt;
 
     if (s.pidReachable && s.agentPid && !isProcessAlive(s.agentPid)) {
+      if (!s.headless) removedNonHeadless = true;
       sessions.delete(id); changed = true;
       continue;
     }
@@ -368,17 +382,21 @@ function cleanStaleSessions() {
     if (age > SESSION_STALE_MS) {
       if (s.pidReachable && s.sourcePid) {
         if (!isProcessAlive(s.sourcePid)) {
+          if (!s.headless) removedNonHeadless = true;
           sessions.delete(id); changed = true;
         } else if (s.state !== "idle") {
           s.state = "idle"; changed = true;
         }
       } else if (!s.pidReachable) {
+        if (!s.headless) removedNonHeadless = true;
         sessions.delete(id); changed = true;
       } else {
+        if (!s.headless) removedNonHeadless = true;
         sessions.delete(id); changed = true;
       }
     } else if (age > WORKING_STALE_MS) {
       if (s.pidReachable && s.sourcePid && !isProcessAlive(s.sourcePid)) {
+        if (!s.headless) removedNonHeadless = true;
         sessions.delete(id); changed = true;
       } else if (s.state === "working" || s.state === "juggling" || s.state === "thinking") {
         s.state = "idle"; s.updatedAt = now; changed = true;
@@ -386,7 +404,11 @@ function cleanStaleSessions() {
     }
   }
   if (changed && sessions.size === 0) {
-    setState("yawning");
+    if (removedNonHeadless) {
+      setState("yawning");
+    } else {
+      setState("idle", SVG_IDLE_FOLLOW);
+    }
   } else if (changed) {
     const resolved = resolveDisplayState();
     setState(resolved, getSvgOverride(resolved));
@@ -409,12 +431,12 @@ function detectRunningAgentProcesses(callback) {
   const { exec } = require("child_process");
   if (process.platform === "win32") {
     exec(
-      'wmic process where "(Name=\'node.exe\' and CommandLine like \'%claude-code%\') or Name=\'claude.exe\' or Name=\'codex.exe\' or Name=\'copilot.exe\'" get ProcessId /format:csv',
+      'wmic process where "(Name=\'node.exe\' and CommandLine like \'%claude-code%\') or Name=\'claude.exe\' or Name=\'codex.exe\' or Name=\'copilot.exe\' or Name=\'gemini.exe\'" get ProcessId /format:csv',
       { encoding: "utf8", timeout: 5000, windowsHide: true },
       (err, stdout) => done(!err && /\d+/.test(stdout))
     );
   } else {
-    exec("pgrep -f 'claude-code|codex|copilot'", { timeout: 3000 },
+    exec("pgrep -f 'claude-code|codex|copilot' || pgrep -x 'gemini'", { timeout: 3000 },
       (err) => done(!err)
     );
   }
@@ -432,16 +454,20 @@ function stopStaleCleanup() {
 function resolveDisplayState() {
   if (sessions.size === 0) return "idle";
   let best = "sleeping";
+  let hasNonHeadless = false;
   for (const [, s] of sessions) {
+    if (s.headless) continue;
+    hasNonHeadless = true;
     if ((STATE_PRIORITY[s.state] || 0) > (STATE_PRIORITY[best] || 0)) best = s.state;
   }
+  if (!hasNonHeadless) return "idle";
   return best;
 }
 
 function getActiveWorkingCount() {
   let n = 0;
   for (const [, s] of sessions) {
-    if (s.state === "working" || s.state === "thinking" || s.state === "juggling") n++;
+    if (!s.headless && (s.state === "working" || s.state === "thinking" || s.state === "juggling")) n++;
   }
   return n;
 }
@@ -463,7 +489,7 @@ function getSvgOverride(state) {
 function getJugglingSvg() {
   let n = 0;
   for (const [, s] of sessions) {
-    if (s.state === "juggling") n++;
+    if (!s.headless && s.state === "juggling") n++;
   }
   return n >= 2 ? "clawd-working-conducting.svg" : "clawd-working-juggling.svg";
 }
@@ -481,7 +507,7 @@ function formatElapsed(ms) {
 function buildSessionSubmenu() {
   const entries = [];
   for (const [id, s] of sessions) {
-    entries.push({ id, state: s.state, updatedAt: s.updatedAt, sourcePid: s.sourcePid, cwd: s.cwd, editor: s.editor, pidChain: s.pidChain });
+    entries.push({ id, state: s.state, updatedAt: s.updatedAt, sourcePid: s.sourcePid, cwd: s.cwd, editor: s.editor, pidChain: s.pidChain, host: s.host, headless: s.headless });
   }
   if (entries.length === 0) {
     return [{ label: ctx.t("noSessions"), enabled: false }];
@@ -494,18 +520,45 @@ function buildSessionSubmenu() {
   });
 
   const now = Date.now();
-  return entries.map((e) => {
+
+  function buildItem(e) {
     const emoji = STATE_EMOJI[e.state] || "";
     const stateText = ctx.t(STATE_LABEL_KEY[e.state] || "sessionIdle");
-    const name = e.cwd ? path.basename(e.cwd) : (e.id.length > 6 ? e.id.slice(0, 6) + ".." : e.id);
+    const folder = e.cwd ? path.basename(e.cwd) : (e.id.length > 6 ? e.id.slice(0, 6) + ".." : e.id);
+    const name = ctx.showSessionId ? `${folder} #${e.id.slice(-3)}` : folder;
     const elapsed = formatElapsed(now - e.updatedAt);
     const hasPid = !!e.sourcePid;
     return {
-      label: `${emoji} ${name}  ${stateText}  ${elapsed}`,
+      label: `${e.headless ? "🤖 " : ""}${emoji} ${name}  ${stateText}  ${elapsed}`,
       enabled: hasPid,
       click: hasPid ? () => ctx.focusTerminalWindow(e.sourcePid, e.cwd, e.editor, e.pidChain) : undefined,
     };
-  });
+  }
+
+  // Single-pass grouping by host
+  const groups = new Map(); // key: host || "" for local
+  for (const e of entries) {
+    const key = e.host || "";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(e);
+  }
+
+  if (groups.size === 1 && groups.has("")) return entries.map(buildItem);
+
+  // Build grouped menu: local first, then each remote host
+  const items = [];
+  const local = groups.get("");
+  if (local) {
+    items.push({ label: `📍 ${ctx.t("sessionLocal")}`, enabled: false });
+    items.push(...local.map(buildItem));
+  }
+  for (const [h, group] of groups) {
+    if (!h) continue;
+    if (items.length) items.push({ type: "separator" });
+    items.push({ label: `🖥 ${h}`, enabled: false });
+    items.push(...group.map(buildItem));
+  }
+  return items;
 }
 
 // ── Do Not Disturb ──

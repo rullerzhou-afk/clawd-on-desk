@@ -39,6 +39,7 @@ function animateWindowX(targetX, durationMs) {
     const t = Math.min(1, (Date.now() - startTime) / durationMs);
     const eased = t * (2 - t);
     const x = Math.round(startX + (targetX - startX) * eased);
+    if (!Number.isFinite(x) || !Number.isFinite(snapY)) { peekAnimTimer = null; isAnimating = false; return; }
     ctx.win.setBounds({ x, y: snapY, width: snapW, height: snapH });
     ctx.syncHitWin();
     // Throttle bubble reposition to every 3rd frame (~20fps) — visually identical, less overhead
@@ -72,6 +73,7 @@ function animateWindowParabola(targetX, targetY, durationMs, onDone) {
     const x = Math.round(startX + (targetX - startX) * eased);
     const arc = -4 * JUMP_PEAK_HEIGHT * t * (t - 1);
     const y = Math.round(startY + (targetY - startY) * eased - arc);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) { peekAnimTimer = null; isAnimating = false; if (onDone) onDone(); return; }
     ctx.win.setPosition(x, y);
     ctx.syncHitWin();
     // Throttle bubble reposition to every 3rd frame (~20fps) — visually identical, less overhead
@@ -98,6 +100,8 @@ function miniPeekOut() {
 function cancelMiniTransition() {
   miniTransitioning = false;
   if (miniTransitionTimer) { clearTimeout(miniTransitionTimer); miniTransitionTimer = null; }
+  if (peekAnimTimer) { clearTimeout(peekAnimTimer); peekAnimTimer = null; }
+  isAnimating = false;
 }
 
 function checkMiniModeSnap() {
@@ -171,13 +175,13 @@ function enterMiniMode(wa, viaMenu) {
 function exitMiniMode() {
   if (!miniMode) return;
   cancelMiniTransition();
-  miniMode = false;
+  // Keep miniMode = true and miniTransitioning = true during exit parabola.
+  // This blocks ALL paths that check miniMode (always-on-top-changed,
+  // display-metrics-changed, move-window-by, checkMiniModeSnap, etc.)
+  // from interfering with the animation. Both flags clear in onDone.
+  miniTransitioning = true;
   miniSnap = null;
   miniSleepPeeked = false;
-  ctx.sendToRenderer("mini-mode-change", false);
-  ctx.sendToHitWin("hit-state-sync", { miniMode: false });
-  ctx.buildContextMenu();
-  ctx.buildTrayMenu();
 
   const size = ctx.SIZES[ctx.currentSize];
   const clamped = ctx.clampToScreen(preMiniX, preMiniY, size.width, size.height);
@@ -188,6 +192,12 @@ function exitMiniMode() {
   }
 
   animateWindowParabola(clamped.x, clamped.y, JUMP_DURATION, () => {
+    miniMode = false;
+    miniTransitioning = false;
+    ctx.sendToRenderer("mini-mode-change", false);
+    ctx.sendToHitWin("hit-state-sync", { miniMode: false });
+    ctx.buildContextMenu();
+    ctx.buildTrayMenu();
     if (ctx.doNotDisturb) {
       ctx.doNotDisturb = false;
       ctx.sendToRenderer("dnd-change", false);

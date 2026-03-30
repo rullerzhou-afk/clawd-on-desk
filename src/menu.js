@@ -4,6 +4,45 @@ const { app, BrowserWindow, screen, Menu, Tray, nativeImage } = require("electro
 const path = require("path");
 
 const isMac = process.platform === "darwin";
+const isWin = process.platform === "win32";
+const isLinux = process.platform === "linux";
+
+// ── Linux XDG autostart helpers ──
+const fs = require("fs");
+const os = require("os");
+const AUTOSTART_DIR = path.join(os.homedir(), ".config", "autostart");
+const AUTOSTART_FILE = path.join(AUTOSTART_DIR, "clawd-on-desk.desktop");
+
+function linuxGetOpenAtLogin() {
+  try { return fs.existsSync(AUTOSTART_FILE); } catch { return false; }
+}
+
+function linuxSetOpenAtLogin(enable) {
+  if (enable) {
+    const projectDir = path.resolve(__dirname, "..");
+    const launchScript = path.join(projectDir, "launch.js");
+    const execCmd = app.isPackaged
+      ? `"${process.env.APPIMAGE || app.getPath("exe")}"`
+      : `node "${launchScript}"`;
+    const desktop = [
+      "[Desktop Entry]",
+      "Type=Application",
+      "Name=Clawd on Desk",
+      `Exec=${execCmd}`,
+      "Hidden=false",
+      "NoDisplay=false",
+      "X-GNOME-Autostart-enabled=true",
+    ].join("\n") + "\n";
+    try {
+      fs.mkdirSync(AUTOSTART_DIR, { recursive: true });
+      fs.writeFileSync(AUTOSTART_FILE, desktop);
+    } catch (err) {
+      console.warn("Clawd: failed to write autostart entry:", err.message);
+    }
+  } else {
+    try { fs.unlinkSync(AUTOSTART_FILE); } catch {}
+  }
+}
 const WIN_TOPMOST_LEVEL = "pop-up-menu"; // above taskbar-level UI
 
 // ── Window size presets (mirrored from main.js for resizeWindow) ──
@@ -45,8 +84,10 @@ const i18n = {
     restartLater: "Later",
     download: "Download",
     bubbleFollow: "Bubble Follow Pet",
+    showSessionId: "Show Session ID",
     sessions: "Sessions",
     noSessions: "No active sessions",
+    sessionLocal: "Local",
     sessionWorking: "Working",
     sessionThinking: "Thinking",
     sessionJuggling: "Juggling",
@@ -55,6 +96,9 @@ const i18n = {
     sessionJustNow: "just now",
     sessionMinAgo: "{n}m ago",
     sessionHrAgo: "{n}h ago",
+    showPet: "Show Clawd",
+    hidePet: "Hide Clawd",
+    toggleShortcut: "Toggle Shortcut: {shortcut}",
     quit: "Quit",
   },
   zh: {
@@ -87,8 +131,10 @@ const i18n = {
     restartLater: "稍后",
     download: "下载",
     bubbleFollow: "气泡跟随宠物",
+    showSessionId: "显示会话编号",
     sessions: "会话",
     noSessions: "无活跃会话",
+    sessionLocal: "本机",
     sessionWorking: "工作中",
     sessionThinking: "思考中",
     sessionJuggling: "多任务",
@@ -97,6 +143,9 @@ const i18n = {
     sessionJustNow: "刚刚",
     sessionMinAgo: "{n}分钟前",
     sessionHrAgo: "{n}小时前",
+    showPet: "显示 Clawd",
+    hidePet: "隐藏 Clawd",
+    toggleShortcut: "切换快捷键: {shortcut}",
     quit: "退出",
   },
 };
@@ -150,6 +199,8 @@ module.exports = function initMenu(ctx) {
       app.setActivationPolicy("accessory");
       if (app.dock) app.dock.hide();
     }
+    // dock.hide()/show() resets NSWindowCollectionBehavior — re-apply fullscreen visibility
+    ctx.reapplyMacVisibility();
   }
 
   function setShowDock(val) {
@@ -182,19 +233,30 @@ module.exports = function initMenu(ctx) {
           ctx.savePrefs();
         },
       },
+      {
+        label: t("showSessionId"),
+        type: "checkbox",
+        checked: ctx.showSessionId,
+        click: (menuItem) => {
+          ctx.showSessionId = menuItem.checked;
+          buildContextMenu();
+          buildTrayMenu();
+          ctx.savePrefs();
+        },
+      },
       { type: "separator" },
       {
         label: t("startOnLogin"),
         type: "checkbox",
-        checked: !!ctx.getOpenAtLoginEnabled(),
+        checked: isLinux ? linuxGetOpenAtLogin() : app.getLoginItemSettings().openAtLogin,
         click: (menuItem) => {
-          try {
-            ctx.setOpenAtLogin(menuItem.checked);
-          } catch (err) {
-            console.warn("Clawd: failed to toggle start on login:", err.message);
+          if (isLinux) {
+            linuxSetOpenAtLogin(menuItem.checked);
+          } else {
+            app.setLoginItemSettings({ openAtLogin: menuItem.checked });
           }
-          buildContextMenu();
           buildTrayMenu();
+          buildContextMenu();
         },
       },
       {
@@ -214,6 +276,8 @@ module.exports = function initMenu(ctx) {
             console.warn("Clawd: failed to toggle auto-start hook:", err.message);
           }
           ctx.savePrefs();
+          buildTrayMenu();
+          buildContextMenu();
         },
       },
     ];
@@ -247,6 +311,15 @@ module.exports = function initMenu(ctx) {
           { label: "English", type: "radio", checked: ctx.lang === "en", click: () => setLanguage("en") },
           { label: "中文", type: "radio", checked: ctx.lang === "zh", click: () => setLanguage("zh") },
         ],
+      },
+      { type: "separator" },
+      {
+        label: ctx.petHidden ? t("showPet") : t("hidePet"),
+        click: () => ctx.togglePetVisibility(),
+      },
+      {
+        label: t("toggleShortcut").replace("{shortcut}", isMac ? "⌘⇧⌥C" : "Ctrl+Shift+Alt+C"),
+        enabled: false,
       },
       { type: "separator" },
       { label: t("quit"), click: () => requestAppQuit() },
@@ -287,6 +360,9 @@ module.exports = function initMenu(ctx) {
       hasShadow: false,
     });
 
+    // macOS: ensure owner can appear on fullscreen Spaces
+    ctx.reapplyMacVisibility();
+
     ctx.contextMenuOwner.on("close", (event) => {
       if (!ctx.isQuitting) {
         event.preventDefault();
@@ -319,7 +395,11 @@ module.exports = function initMenu(ctx) {
         if (owner && !owner.isDestroyed()) owner.hide();
         if (ctx.win && !ctx.win.isDestroyed()) {
           ctx.win.showInactive();
-          ctx.win.setAlwaysOnTop(true, isMac ? "floating" : WIN_TOPMOST_LEVEL);
+          if (isMac) {
+            ctx.reapplyMacVisibility();
+          } else if (isWin) {
+            ctx.win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+          }
         }
       },
     });
@@ -345,18 +425,6 @@ module.exports = function initMenu(ctx) {
       {
         label: ctx.doNotDisturb ? t("wake") : t("sleep"),
         click: () => ctx.doNotDisturb ? ctx.disableDoNotDisturb() : ctx.enableDoNotDisturb(),
-      },
-      {
-        label: t("bubbleFollow"),
-        type: "checkbox",
-        checked: ctx.bubbleFollowPet,
-        click: (menuItem) => {
-          ctx.bubbleFollowPet = menuItem.checked;
-          if (ctx.pendingPermissions.length) ctx.repositionBubbles();
-          buildContextMenu();
-          buildTrayMenu();
-          ctx.savePrefs();
-        },
       },
       { type: "separator" },
       {
@@ -386,14 +454,9 @@ module.exports = function initMenu(ctx) {
     }
     template.push(
       { type: "separator" },
-      ctx.getUpdateMenuItem(),
-      { type: "separator" },
       {
-        label: t("language"),
-        submenu: [
-          { label: "English", type: "radio", checked: ctx.lang === "en", click: () => setLanguage("en") },
-          { label: "中文", type: "radio", checked: ctx.lang === "zh", click: () => setLanguage("zh") },
-        ],
+        label: t("toggleShortcut").replace("{shortcut}", isMac ? "⌘⇧⌥C" : "Ctrl+Shift+Alt+C"),
+        enabled: false,
       },
       { type: "separator" },
       { label: t("quit"), click: () => requestAppQuit() },
