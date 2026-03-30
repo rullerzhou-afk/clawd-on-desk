@@ -89,13 +89,17 @@ let showDock = true;
 let autoStartWithClaude = false;
 let bubbleFollowPet = false;
 let petHidden = false;
-const DEFAULT_TOGGLE_SHORTCUT = isMac ? "CommandOrControl+Shift+C" : "CommandOrControl+Shift+C";
+const DEFAULT_TOGGLE_SHORTCUT = "CommandOrControl+Shift+Alt+C";
 
 function togglePetVisibility() {
   if (!win || win.isDestroyed()) return;
   if (petHidden) {
     win.showInactive();
     if (hitWin && !hitWin.isDestroyed()) hitWin.showInactive();
+    // Restore any permission bubbles that were hidden
+    for (const perm of pendingPermissions) {
+      if (perm.bubble && !perm.bubble.isDestroyed()) perm.bubble.showInactive();
+    }
     reapplyMacVisibility();
     petHidden = false;
   } else {

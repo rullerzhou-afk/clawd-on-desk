@@ -303,7 +303,7 @@ module.exports = function initMenu(ctx) {
         click: () => ctx.togglePetVisibility(),
       },
       {
-        label: t("toggleShortcut").replace("{shortcut}", isMac ? "⌘⇧C" : "Ctrl+Shift+C"),
+        label: t("toggleShortcut").replace("{shortcut}", isMac ? "⌘⇧⌥C" : "Ctrl+Shift+Alt+C"),
         enabled: false,
       },
       { type: "separator" },
@@ -440,7 +440,7 @@ module.exports = function initMenu(ctx) {
     template.push(
       { type: "separator" },
       {
-        label: t("toggleShortcut").replace("{shortcut}", isMac ? "⌘⇧C" : "Ctrl+Shift+C"),
+        label: t("toggleShortcut").replace("{shortcut}", isMac ? "⌘⇧⌥C" : "Ctrl+Shift+Alt+C"),
         enabled: false,
       },
       { type: "separator" },
