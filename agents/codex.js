@@ -13,7 +13,11 @@ module.exports = {
     "session_meta": "idle",
     "event_msg:task_started": "thinking",
     "event_msg:user_message": "thinking",
-    "event_msg:agent_message": null, // text output only — working is reserved for function_call
+    // Newer Codex builds emit work progress primarily as event_msg records.
+    "event_msg:agent_message": "working",
+    "event_msg:exec_command_end": "working",
+    "event_msg:patch_apply_end": "working",
+    "event_msg:custom_tool_call_output": "working",
     "response_item:function_call": "working",
     "response_item:custom_tool_call": "working",
     "response_item:web_search_call": "working",

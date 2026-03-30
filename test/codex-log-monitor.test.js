@@ -110,6 +110,25 @@ describe("CodexLogMonitor", () => {
     monitor.start();
   });
 
+  it("should map agent_message event to working", (_, done) => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      '{"type":"event_msg","payload":{"type":"agent_message"}}',
+    ].join("\n") + "\n");
+
+    const config = makeConfig(tmpDir);
+    const states = [];
+    monitor = new CodexLogMonitor(config, (sid, state) => {
+      states.push(state);
+      if (states.length === 2) {
+        assert.strictEqual(states[1], "working");
+        done();
+      }
+    });
+    monitor.start();
+  });
+
   it("should map task_complete to idle when no tools were used", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [
@@ -275,6 +294,21 @@ describe("CodexLogMonitor", () => {
         assert.deepStrictEqual(states, ["idle", "thinking"]);
         done();
       }
+    });
+    monitor.start();
+  });
+
+  it("should process recent existing day dirs even if not today/yesterday", (_, done) => {
+    const oldDateDir = path.join(tmpDir, "2024", "01", "02");
+    fs.mkdirSync(oldDateDir, { recursive: true });
+    const testFile = path.join(oldDateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, '{"type":"session_meta","payload":{"cwd":"/tmp"}}\n');
+
+    const config = makeConfig(tmpDir);
+    monitor = new CodexLogMonitor(config, (sid, state) => {
+      assert.strictEqual(sid, EXPECTED_SID);
+      assert.strictEqual(state, "idle");
+      done();
     });
     monitor.start();
   });

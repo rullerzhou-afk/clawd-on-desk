@@ -143,6 +143,10 @@ describe("Agent Registry", () => {
     const codex = registry.getAgent("codex");
     assert.strictEqual(codex.logEventMap["session_meta"], "idle");
     assert.strictEqual(codex.logEventMap["event_msg:task_started"], "thinking");
+    assert.strictEqual(codex.logEventMap["event_msg:agent_message"], "working");
+    assert.strictEqual(codex.logEventMap["event_msg:exec_command_end"], "working");
+    assert.strictEqual(codex.logEventMap["event_msg:patch_apply_end"], "working");
+    assert.strictEqual(codex.logEventMap["event_msg:custom_tool_call_output"], "working");
     assert.strictEqual(codex.logEventMap["event_msg:task_complete"], "codex-turn-end");
     assert.strictEqual(codex.logEventMap["event_msg:turn_aborted"], "idle");
   });
