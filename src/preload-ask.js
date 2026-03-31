@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld("askAPI", {
   onStreamChunk: (cb) => ipcRenderer.on("ask-stream-chunk", (_, c) => cb(c)),
   onStreamDone: (cb) => ipcRenderer.on("ask-stream-done", (_, code) => cb(code)),
   onStreamError: (cb) => ipcRenderer.on("ask-stream-error", (_, e) => cb(e)),
+  cancelRequest: () => ipcRenderer.send("cancel-ask-request"),
   close: () => ipcRenderer.send("close-ask-panel"),
   // Session management
   switchWorkspace: (cwd) => ipcRenderer.invoke("switch-workspace", cwd),

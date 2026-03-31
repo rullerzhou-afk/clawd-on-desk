@@ -725,7 +725,7 @@ function createWindow() {
     askWin.webContents.on("did-finish-load", () => {
       askWin.webContents.send("ask-init", {
         session,
-        theme: lang
+        lang
       });
     });
     askWin.on("closed", () => {
@@ -811,21 +811,11 @@ function createWindow() {
       console.warn('Failed to read Claude Code settings:', err);
     }
 
-    // 3. Clawd 配置
-    try {
-      const prefs = loadPrefs();
-      if (prefs && prefs.anthropicApiKey) {
-        return {
-          apiKey: prefs.anthropicApiKey,
-          baseURL: prefs.anthropicBaseURL || undefined
-        };
-      }
-    } catch (err) {
-      console.warn('Failed to read Clawd prefs:', err);
-    }
-
     return null;
   }
+
+  let currentAskStream = null;
+  let currentAskTimeout = null;
 
   ipcMain.on("ask-claude", async (_, { prompt, messages }) => {
     if (!askWin || askWin.isDestroyed()) return;
@@ -834,8 +824,8 @@ function createWindow() {
     const config = getAnthropicApiKey();
     if (!config) {
       const errorMsg = lang === 'zh'
-        ? "未找到 API Key。请设置环境变量 ANTHROPIC_API_KEY 或在 ~/.claude/settings.json 中配置 apiKey"
-        : "API Key not found. Please set ANTHROPIC_API_KEY environment variable or configure apiKey in ~/.claude/settings.json";
+        ? "未找到 API Key。请设置环境变量 ANTHROPIC_API_KEY 或在 ~/.claude/settings.json 中配置"
+        : "API Key not found. Please set ANTHROPIC_API_KEY environment variable or configure in ~/.claude/settings.json";
       askWin.webContents.send("ask-stream-error", errorMsg);
       askWin.webContents.send("ask-stream-done", 1);
       return;
@@ -857,6 +847,23 @@ function createWindow() {
         messages: apiMessages,
       });
 
+      currentAskStream = stream;
+
+      // 60 秒超时
+      currentAskTimeout = setTimeout(() => {
+        if (currentAskStream) {
+          currentAskStream.controller?.abort();
+          const timeoutMsg = lang === 'zh'
+            ? "请求超时（60秒）"
+            : "Request timeout (60s)";
+          if (askWin && !askWin.isDestroyed()) {
+            askWin.webContents.send("ask-stream-error", timeoutMsg);
+            askWin.webContents.send("ask-stream-done", 1);
+          }
+          currentAskStream = null;
+        }
+      }, 60000);
+
       stream.on("text", (text) => {
         if (askWin && !askWin.isDestroyed()) {
           askWin.webContents.send("ask-stream-chunk", text);
@@ -864,12 +871,22 @@ function createWindow() {
       });
 
       stream.on("end", () => {
+        if (currentAskTimeout) {
+          clearTimeout(currentAskTimeout);
+          currentAskTimeout = null;
+        }
+        currentAskStream = null;
         if (askWin && !askWin.isDestroyed()) {
           askWin.webContents.send("ask-stream-done", 0);
         }
       });
 
       stream.on("error", (err) => {
+        if (currentAskTimeout) {
+          clearTimeout(currentAskTimeout);
+          currentAskTimeout = null;
+        }
+        currentAskStream = null;
         if (askWin && !askWin.isDestroyed()) {
           askWin.webContents.send("ask-stream-error", err.message || String(err));
           askWin.webContents.send("ask-stream-done", 1);
@@ -877,10 +894,32 @@ function createWindow() {
       });
 
     } catch (err) {
+      if (currentAskTimeout) {
+        clearTimeout(currentAskTimeout);
+        currentAskTimeout = null;
+      }
+      currentAskStream = null;
       if (askWin && !askWin.isDestroyed()) {
         askWin.webContents.send("ask-stream-error", err.message || String(err));
         askWin.webContents.send("ask-stream-done", 1);
       }
+    }
+  });
+
+  // 取消请求
+  ipcMain.on("cancel-ask-request", () => {
+    if (currentAskStream) {
+      currentAskStream.controller?.abort();
+      if (currentAskTimeout) {
+        clearTimeout(currentAskTimeout);
+        currentAskTimeout = null;
+      }
+      const cancelMsg = lang === 'zh' ? "已取消" : "Cancelled";
+      if (askWin && !askWin.isDestroyed()) {
+        askWin.webContents.send("ask-stream-error", cancelMsg);
+        askWin.webContents.send("ask-stream-done", 1);
+      }
+      currentAskStream = null;
     }
   });
 

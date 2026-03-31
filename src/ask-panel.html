@@ -296,6 +296,8 @@ textarea::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radi
 .btn-send:hover:not(:disabled) { background: var(--btn-hover); }
 .btn-send:active:not(:disabled) { transform: scale(0.93); }
 .btn-send:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-send.cancel { background: #ef4444; }
+.btn-send.cancel:hover { background: #dc2626; }
 </style>
 </head>
 <body>
@@ -336,8 +338,11 @@ textarea::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radi
       <textarea id="input" placeholder="Type your question..." rows="1"></textarea>
     </div>
     <button class="btn-send" id="btnSend" title="Send (Enter)">
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+      <svg class="icon-send" width="14" height="14" viewBox="0 0 14 14" fill="none">
         <path d="M1 7h12M8 2l5 5-5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <svg class="icon-cancel" width="10" height="10" viewBox="0 0 10 10" fill="none" style="display:none">
+        <path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
       </svg>
     </button>
   </div>
@@ -352,12 +357,15 @@ const btnSend = document.getElementById("btnSend");
 const btnClose = document.getElementById("btnClose");
 const workspaceInput = document.getElementById("workspaceInput");
 const btnFolder = document.getElementById("btnFolder");
+const iconSend = btnSend.querySelector(".icon-send");
+const iconCancel = btnSend.querySelector(".icon-cancel");
 
 let messages = [];   // [{role: "user"|"assistant", content: "..."}]
 let currentCwd = "";
 let streaming = false;
 let currentClaudeBubble = null;
 let currentClaudeText = "";
+let currentLang = "en";
 
 // Init: receive session data and theme
 window.askAPI.onInit((data) => {
@@ -376,6 +384,9 @@ window.askAPI.onInit((data) => {
     }
   }
 
+  // Store language preference
+  currentLang = data.lang || "en";
+
   requestAnimationFrame(() => panel.classList.add("visible"));
   inputEl.focus();
 });
@@ -392,6 +403,10 @@ window.askAPI.onStreamChunk((chunk) => {
 window.askAPI.onStreamDone((code) => {
   streaming = false;
   btnSend.disabled = false;
+  btnSend.classList.remove("cancel");
+  iconSend.style.display = "";
+  iconCancel.style.display = "none";
+  btnSend.title = "Send (Enter)";
   if (currentClaudeBubble) {
     currentClaudeBubble.classList.remove("streaming");
     if (currentClaudeText) {
@@ -459,7 +474,11 @@ function sendPrompt() {
   if (!prompt || streaming) return;
 
   streaming = true;
-  btnSend.disabled = true;
+  btnSend.disabled = false;
+  btnSend.classList.add("cancel");
+  iconSend.style.display = "none";
+  iconCancel.style.display = "";
+  btnSend.title = currentLang === "zh" ? "取消" : "Cancel";
   inputEl.value = "";
   autoResize();
 
@@ -476,7 +495,13 @@ function sendPrompt() {
   window.askAPI.sendPrompt(prompt, messages);
 }
 
-btnSend.addEventListener("click", sendPrompt);
+btnSend.addEventListener("click", () => {
+  if (streaming) {
+    window.askAPI.cancelRequest();
+  } else {
+    sendPrompt();
+  }
+});
 
 inputEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
