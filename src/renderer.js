@@ -18,7 +18,41 @@ window.electronAPI.onDndChange((enabled) => { dndEnabled = enabled; });
 window.electronAPI.onMiniModeChange((enabled, edge) => {
   miniLeftFlip = enabled && edge === "left";
   container.classList.toggle("mini-left", miniLeftFlip);
+  if (miniLeftFlip) {
+    applyGlyphFlipCompensation(clawdEl);
+  } else {
+    removeGlyphFlipCompensation(clawdEl);
+  }
 });
+
+// Counter-flip asymmetric pixel-art glyphs (Zzz) inside SVG defs so they
+// render correctly when the container has scaleX(-1). Only the glyph shape
+// is flipped — CSS animation transforms (float direction) are unaffected.
+const GLYPH_FLIP_DEFS = { "pixel-z": 4, "pixel-z-small": 3 };
+
+function applyGlyphFlipCompensation(objectEl) {
+  if (!objectEl) return;
+  try {
+    const doc = objectEl.contentDocument;
+    if (!doc) return;
+    for (const [id, w] of Object.entries(GLYPH_FLIP_DEFS)) {
+      const el = doc.getElementById(id);
+      if (el) el.setAttribute("transform", `translate(${w}, 0) scale(-1, 1)`);
+    }
+  } catch {}
+}
+
+function removeGlyphFlipCompensation(objectEl) {
+  if (!objectEl) return;
+  try {
+    const doc = objectEl.contentDocument;
+    if (!doc) return;
+    for (const id of Object.keys(GLYPH_FLIP_DEFS)) {
+      const el = doc.getElementById(id);
+      if (el) el.removeAttribute("transform");
+    }
+  } catch {}
+}
 
 function getObjectSvgName(objectEl) {
   if (!objectEl) return null;
@@ -195,6 +229,7 @@ window.electronAPI.onStateChange((state, svg) => {
     if (shouldTrackEyes(state, svg)) {
       attachEyeTracking(next);
     }
+    if (miniLeftFlip) applyGlyphFlipCompensation(next);
 
     // Track current SVG for click reaction gating
     currentIdleSvg = svg;
