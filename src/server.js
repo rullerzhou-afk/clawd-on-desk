@@ -52,6 +52,18 @@ function syncGeminiHooks() {
   }
 }
 
+function syncCursorHooks() {
+  try {
+    const { registerCursorHooks } = require("../hooks/cursor-install.js");
+    const { added, updated } = registerCursorHooks({ silent: true });
+    if (added > 0 || updated > 0) {
+      console.log(`Clawd: synced Cursor hooks (added ${added}, updated ${updated})`);
+    }
+  } catch (err) {
+    console.warn("Clawd: failed to sync Cursor hooks:", err.message);
+  }
+}
+
 function sendStateHealthResponse(res) {
   const body = JSON.stringify({ ok: true, app: CLAWD_SERVER_ID, port: getHookServerPort() });
   res.writeHead(200, {
@@ -302,6 +314,7 @@ function startHttpServer() {
     console.log(`Clawd state server listening on 127.0.0.1:${activeServerPort}`);
     syncClawdHooks();
     syncGeminiHooks();
+    syncCursorHooks();
     watchSettingsForHookLoss();
   });
 

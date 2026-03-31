@@ -8,12 +8,13 @@
 
 一个能实时感知 AI 编程助手工作状态的桌面宠物。Clawd 住在你的屏幕上——你提问时它思考，工具运行时它打字，子代理工作时它杂耍，审批权限时它弹卡片，任务完成时它庆祝，你离开时它睡觉。
 
-> 支持 Windows 11、macOS 和 Ubuntu/Linux。需要 Node.js。支持 **Claude Code**、**Codex CLI**、**Copilot CLI** 与 **Gemini CLI**。
+> 支持 Windows 11、macOS 和 Ubuntu/Linux。需要 Node.js。支持 **Claude Code**、**Cursor**、**Codex CLI**、**Copilot CLI** 与 **Gemini CLI**。
 
 ## 功能特性
 
 ### 多 Agent 支持
 - **Claude Code** — 通过 command hook + HTTP 权限 hook 完整集成
+- **Cursor** — 通过 `~/.cursor/hooks.json` native hook 集成（Clawd 启动时自动注册，或执行 `npm run install:cursor-hooks`）
 - **Codex CLI** — 自动轮询 JSONL 日志（`~/.codex/sessions/`），无需配置
 - **Copilot CLI** — 通过 `~/.copilot/hooks/hooks.json` 配置 command hook
 - **Gemini CLI** — 通过 `~/.gemini/settings.json` 配置 command hook（Clawd 启动时自动注册，或执行 `npm run install:gemini-hooks`）
@@ -157,6 +158,8 @@ Host my-server
 | **Codex CLI：无法跳转终端** | Codex 通过 JSONL 日志轮询，日志中不含终端 PID，点击桌宠无法跳转到 Codex 终端。Claude Code 和 Copilot CLI 正常。 |
 | **Codex CLI：Windows hooks 禁用** | Codex 在 Windows 上硬编码禁用了 hooks，因此走日志轮询，延迟约 1.5 秒（hook 方式几乎无延迟）。 |
 | **Copilot CLI：需手动配置 hooks** | Copilot 需要手动创建 `~/.copilot/hooks/hooks.json`。Claude Code 和 Codex 开箱即用。 |
+| **Cursor：无权限气泡** | Cursor 不对第三方 hook 暴露 `PermissionRequest`。权限气泡仅支持 Claude Code。 |
+| **Cursor：无进程存活检测** | Cursor 作为 IDE 始终运行，无法通过进程检测判断 AI 会话是否活跃。孤儿会话通过 `sessionEnd` hook 和超时机制清理。 |
 | **Copilot CLI：无权限气泡** | Copilot 的 `preToolUse` 只支持拒绝，无法做完整的允许/拒绝审批流。权限气泡仅支持 Claude Code。 |
 | **macOS/Linux 自动更新** | macOS 无 Apple 代码签名，Linux 不支持自动更新，均需从 GitHub Releases 手动下载。 |
 | **Electron 主进程无自动化测试** | 单元测试覆盖了 agent 配置和日志轮询，但状态机、窗口管理、托盘等 Electron 逻辑暂无自动化测试。 |

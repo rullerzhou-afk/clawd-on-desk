@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-Clawd 桌宠 — 一个 Electron 桌面宠物，通过 hook 系统和日志轮询实时感知 AI coding agent 的工作状态并播放对应的像素风 SVG 动画。支持 **Claude Code**（command + HTTP hook）、**Codex CLI**（JSONL 日志轮询）、**Copilot CLI**（command hook）三个 agent 同时运行。支持 Windows、macOS 和 Linux。
+Clawd 桌宠 — 一个 Electron 桌面宠物，通过 hook 系统和日志轮询实时感知 AI coding agent 的工作状态并播放对应的像素风 SVG 动画。支持 **Claude Code**（command + HTTP hook）、**Cursor**（native command hook）、**Codex CLI**（JSONL 日志轮询）、**Copilot CLI**（command hook）四个 agent 同时运行。支持 Windows、macOS 和 Linux。
 
 ## 常用命令
 
@@ -48,6 +48,11 @@ Claude Code 状态同步（command hook，非阻塞）：
     → IPC state-change 事件
     → src/renderer.js（<object> SVG 预加载 + 淡入切换 + 眼球追踪）
 
+Cursor 状态同步（native command hook，非阻塞）：
+  Cursor Agent 触发事件
+    → hooks/cursor-hook.js（stdin JSON 读 hook_event_name + conversation_id → HTTP POST）
+    → 同上状态机
+
 Copilot CLI 状态同步（command hook，非阻塞）：
   Copilot 触发事件
     → hooks/copilot-hook.js（camelCase 事件名 → agents/copilot-cli.js 映射 → HTTP POST）
@@ -85,6 +90,7 @@ Codex CLI 状态同步（JSONL 日志轮询，~1.5s 延迟）：
 
 每个 agent 定义为一个配置模块，导出事件映射、进程名、能力声明：
 - `agents/claude-code.js` — Claude Code 事件映射 + 能力（hooks、permission、terminal focus）
+- `agents/cursor.js` — Cursor native hook 事件映射（camelCase，从 stdin JSON 的 hook_event_name 获取事件名）
 - `agents/codex.js` — Codex CLI JSONL 事件映射 + 轮询配置
 - `agents/copilot-cli.js` — Copilot CLI camelCase 事件映射
 - `agents/registry.js` — agent 注册表：按 ID 或进程名查找 agent 配置
@@ -111,8 +117,10 @@ Codex CLI 状态同步（JSONL 日志轮询，~1.5s 延迟）：
 | `src/bubble.html` | 权限气泡 UI：工具名 pill + 命令预览 + Allow/Deny 按钮 + suggestion 按钮，支持 light/dark 主题 |
 | `src/preload-bubble.js` | bubble 窗口的 contextBridge（permission-show、permission-decide、bubble-height） |
 | `hooks/clawd-hook.js` | Claude Code command hook：事件名 → 状态映射 → HTTP POST，零依赖 |
+| `hooks/cursor-hook.js` | Cursor native hook：stdin JSON 读 hook_event_name + conversation_id → HTTP POST，零依赖 |
 | `hooks/copilot-hook.js` | Copilot CLI command hook：camelCase 事件名，与 clawd-hook.js 相同架构 |
-| `hooks/install.js` | 安全注册 hooks 到 settings.json（command + HTTP），逐事件追加不覆盖，导出 `registerHooks()` 供 main.js 启动时自动注册 |
+| `hooks/install.js` | 安全注册 Claude Code hooks 到 ~/.claude/settings.json（command + HTTP），逐事件追加不覆盖 |
+| `hooks/cursor-install.js` | 安全注册 Cursor hooks 到 ~/.cursor/hooks.json（native format），逐事件追加不覆盖 |
 | `hooks/auto-start.js` | SessionStart hook：检测 Electron 是否在运行，未运行则 detached 启动，<500ms 退出 |
 | `hooks/server-config.js` | 共享工具：端口常量、运行时配置读写、HTTP helper、服务发现 |
 | `hooks/codex-remote-monitor.js` | 远程 Codex 监控：独立守护进程，通过 SSH 隧道轮询 JSONL 日志并 POST 状态变更 |
@@ -269,8 +277,9 @@ Codex CLI 状态同步（JSONL 日志轮询，~1.5s 延迟）：
 - hook 脚本依赖 Node.js 可用
 - Windows 终端聚焦依赖 `koffi`（FFI 调用 `user32.dll AllowSetForegroundWindow`），koffi 加载失败时降级为纯 ALT trick；macOS 用 `osascript`
 - Codex CLI：JSONL 轮询有 ~1.5s 延迟；无终端聚焦（日志不含终端 PID）；Windows 下 hooks 被 Codex 硬编码禁用
+- Cursor：无权限气泡（Cursor 的 PermissionRequest 不支持第三方 HTTP hook）；无进程存活检测（Cursor 作为 IDE 始终运行，session 清理依赖 sessionEnd hook 和超时机制）；background agent（`is_background_agent: true`）映射为 headless 模式
 - Copilot CLI：需手动创建 `~/.copilot/hooks/hooks.json`；无权限气泡（仅支持 deny）
-- 进程存活检测：main.js 定期检查 agent 进程是否存活，清理孤儿会话；但依赖进程名匹配，非标准进程名可能漏检
+- 进程存活检测：main.js 定期检查 agent 进程是否存活，清理孤儿会话；但依赖进程名匹配，非标准进程名可能漏检；Cursor 不参与进程检测（IDE 始终运行）
 
 ## ⚠️ 不要再修 Language 子菜单截断 bug
 

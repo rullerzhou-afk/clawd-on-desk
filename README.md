@@ -8,12 +8,13 @@
 
 A desktop pet that reacts to your AI coding agent sessions in real-time. Clawd lives on your screen — thinking when you prompt, typing when tools run, juggling subagents, reviewing permissions, celebrating when tasks complete, and sleeping when you're away.
 
-> Supports Windows 11, macOS, and Ubuntu/Linux. Requires Node.js. Works with **Claude Code**, **Codex CLI**, and **Copilot CLI**.
+> Supports Windows 11, macOS, and Ubuntu/Linux. Requires Node.js. Works with **Claude Code**, **Cursor**, **Codex CLI**, and **Copilot CLI**.
 
 ## Features
 
 ### Multi-Agent Support
 - **Claude Code** — full integration via command hooks + HTTP permission hooks
+- **Cursor** — native hooks via `~/.cursor/hooks.json` (registered automatically when Clawd starts, or run `npm run install:cursor-hooks`)
 - **Codex CLI** — automatic JSONL log polling (`~/.codex/sessions/`), no configuration needed
 - **Copilot CLI** — command hooks via `~/.copilot/hooks/hooks.json`
 - **Gemini CLI** — command hooks via `~/.gemini/settings.json` (registered automatically when Clawd starts, or run `npm run install:gemini-hooks`)
@@ -38,7 +39,7 @@ A desktop pet that reacts to your AI coding agent sessions in real-time. Clawd l
 - **Multi-session tracking** — sessions across all agents resolve to the highest-priority state
 - **Subagent awareness** — juggling for 1 subagent, conducting for 2+
 - **Terminal focus** — right-click Clawd → Sessions menu to jump to a specific session's terminal window; notification/attention states auto-focus the relevant terminal
-- **Process liveness detection** — detects crashed/exited agent processes (Claude Code, Codex, Copilot) and cleans up orphan sessions
+- **Process liveness detection** — detects crashed/exited agent processes (Claude Code, Codex, Copilot, Gemini) and cleans up orphan sessions; Cursor sessions are cleaned up via sessionEnd hooks and timeout
 - **Startup recovery** — if Clawd restarts while any agent is running, it stays awake instead of falling asleep
 
 ### System
@@ -53,7 +54,7 @@ A desktop pet that reacts to your AI coding agent sessions in real-time. Clawd l
 
 ## State Mapping
 
-Events from all agents (Claude Code hooks, Codex JSONL, Copilot hooks) map to the same animation states:
+Events from all agents (Claude Code hooks, Cursor hooks, Codex JSONL, Copilot hooks) map to the same animation states:
 
 | Agent Event | Clawd State | Animation | |
 |---|---|---|---|
@@ -105,6 +106,8 @@ npm start
 ### Agent Setup
 
 **Claude Code** — works out of the box. Hooks are auto-registered on launch. Versioned hooks (`PreCompact`, `PostCompact`, `StopFailure`) are registered only when Clawd can positively detect a compatible Claude Code version; if detection fails (common for packaged macOS launches), Clawd falls back to core hooks and removes stale incompatible versioned hooks automatically.
+
+**Cursor** — works out of the box. Native Cursor hooks are auto-registered to `~/.cursor/hooks.json` when Clawd starts. Supports Agent mode sessions (Cmd+K / Agent Chat) including subagent tracking. Permission bubbles are not available (Cursor does not expose PermissionRequest to third-party hooks). Background agent sessions are tracked as headless.
 
 **Codex CLI** — works out of the box. Clawd polls `~/.codex/sessions/` for JSONL logs automatically.
 
@@ -164,6 +167,8 @@ Remote hooks run in `CLAWD_REMOTE` mode which skips PID collection (remote PIDs 
 | **Codex CLI: no terminal focus** | Codex sessions use JSONL log polling which doesn't carry terminal PID info. Clicking Clawd won't jump to the Codex terminal. Claude Code and Copilot CLI work fine. |
 | **Codex CLI: Windows hooks disabled** | Codex hardcodes hooks off on Windows, so we poll log files instead. This means ~1.5s latency vs near-instant for hook-based agents. |
 | **Copilot CLI: manual hook setup** | Copilot hooks require manually creating `~/.copilot/hooks/hooks.json`. Claude Code and Codex work out of the box. |
+| **Cursor: no permission bubble** | Cursor does not expose `PermissionRequest` to third-party hooks. Permission bubbles only work with Claude Code. |
+| **Cursor: no process liveness detection** | Cursor is always running as an IDE, so process detection can't determine if an AI session is active. Orphan sessions are cleaned up by `sessionEnd` hooks and timeout. |
 | **Copilot CLI: no permission bubble** | Copilot's `preToolUse` hook only supports deny, not the full allow/deny flow. Permission bubbles only work with Claude Code. |
 | **macOS/Linux auto-update** | No Apple code signing on macOS, no auto-update on Linux — download updates manually from GitHub Releases. |
 | **No test framework for Electron** | Unit tests cover agents and log polling, but the Electron main process (state machine, windows, tray) has no automated tests. |
