@@ -291,6 +291,7 @@ const _tickCtx = {
   set forceEyeResend(v) { forceEyeResend = v; },
   get startupRecoveryActive() { return _state.getStartupRecoveryActive(); },
   sendToRenderer,
+  sendToHitWin,
   setState,
   applyState,
   miniPeekIn: () => miniPeekIn(),

@@ -146,6 +146,7 @@ function startMainTick() {
         setTimeout(() => {
           if (isMouseIdle && ctx.currentState === "idle") {
             ctx.sendToRenderer("state-change", "idle", pick.svg);
+            ctx.sendToHitWin("hit-state-sync", { currentSvg: pick.svg });
           }
         }, 250);
         idleLookReturnTimer = setTimeout(() => {
@@ -153,6 +154,7 @@ function startMainTick() {
           if (isMouseIdle && ctx.currentState === "idle") {
             isMouseIdle = false;
             ctx.sendToRenderer("state-change", "idle", SVG_IDLE_FOLLOW);
+            ctx.sendToHitWin("hit-state-sync", { currentSvg: SVG_IDLE_FOLLOW });
             setTimeout(() => { ctx.forceEyeResend = true; }, 200);
           }
         }, 250 + pick.duration);
