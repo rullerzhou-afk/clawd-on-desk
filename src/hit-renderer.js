@@ -117,7 +117,7 @@ area.addEventListener("pointercancel", () => stopDrag());
 area.addEventListener("lostpointercapture", () => { if (isDragging) stopDrag(); });
 window.addEventListener("blur", stopDrag);
 
-// --- Click reaction logic (2-click = poke, 4-click = flail) ---
+// --- Click reaction logic (2-click = Ask Claude panel, 4-click = flail) ---
 const CLICK_WINDOW_MS = 400;
 const REACT_LEFT_SVG = "clawd-react-left.svg";
 const REACT_RIGHT_SVG = "clawd-react-right.svg";
@@ -160,14 +160,14 @@ function handleClick(clientX) {
   } else if (clickCount >= 2) {
     clickTimer = setTimeout(() => {
       clickTimer = null;
+      const count = clickCount;
       clickCount = 0;
-      if (Math.random() < 0.5) {
-        firstClickDir = null;
-        playReaction(REACT_ANNOYED_SVG, REACT_ANNOYED_DURATION);
+      firstClickDir = null;
+      if (count >= 4) {
+        const doubleSvg = REACT_DOUBLE_SVGS[Math.floor(Math.random() * REACT_DOUBLE_SVGS.length)];
+        playReaction(doubleSvg, REACT_DOUBLE_DURATION);
       } else {
-        const svg = firstClickDir === "left" ? REACT_LEFT_SVG : REACT_RIGHT_SVG;
-        firstClickDir = null;
-        playReaction(svg, REACT_SINGLE_DURATION);
+        window.hitAPI.openAskPanel();
       }
     }, CLICK_WINDOW_MS);
   } else {
