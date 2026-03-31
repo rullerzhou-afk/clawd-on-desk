@@ -1,6 +1,7 @@
-const { app, BrowserWindow, screen, Menu, ipcMain, globalShortcut } = require("electron");
+const { app, BrowserWindow, screen, Menu, ipcMain, globalShortcut, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const sessionManager = require("./session-manager");
 
 const isMac = process.platform === "darwin";
 const isLinux = process.platform === "linux";
@@ -80,6 +81,7 @@ function getObjRect(bounds) {
 
 let win;
 let hitWin;  // input window — small opaque rect over hitbox, receives all pointer events
+let askWin = null;  // Ask Claude floating panel
 let tray = null;
 let contextMenuOwner = null;
 let currentSize = "S";
@@ -682,6 +684,203 @@ function createWindow() {
 
   ipcMain.on("bubble-height", (event, height) => _perm.handleBubbleHeight(event, height));
   ipcMain.on("permission-decide", (event, behavior) => _perm.handleDecide(event, behavior));
+
+  // ── Ask Claude panel ──
+  let currentSessionCwd = null;
+
+  function createAskPanel() {
+    if (askWin && !askWin.isDestroyed()) {
+      askWin.focus();
+      return;
+    }
+    const petBounds = win.getBounds();
+    const panelW = 400, panelH = 520;
+    const display = screen.getDisplayNearestPoint({ x: petBounds.x, y: petBounds.y });
+    const wa = display.workArea;
+    let px = petBounds.x + petBounds.width + 12;
+    if (px + panelW > wa.x + wa.width) px = petBounds.x - panelW - 12;
+    let py = petBounds.y + petBounds.height / 2 - panelH / 2;
+    py = Math.max(wa.y, Math.min(py, wa.y + wa.height - panelH));
+
+    const cwd = sessionManager.getLastCwd();
+    const session = sessionManager.getSession(cwd);
+    currentSessionCwd = cwd;
+    console.log("[Ask Panel] Loading session:", { cwd, messageCount: session.messages?.length || 0 });
+
+    askWin = new BrowserWindow({
+      width: panelW, height: panelH, x: px, y: py,
+      frame: false, transparent: false,
+      alwaysOnTop: true, resizable: true,
+      skipTaskbar: true,
+      minWidth: 320, minHeight: 400,
+      ...(isMac ? { type: "panel" } : {}),
+      webPreferences: {
+        preload: path.join(__dirname, "preload-ask.js"),
+        backgroundThrottling: false,
+      },
+    });
+    askWin.loadFile(path.join(__dirname, "ask-panel.html"));
+    askWin.webContents.on("did-finish-load", () => {
+      askWin.webContents.send("ask-init", {
+        session,
+        theme: lang
+      });
+    });
+    askWin.on("closed", () => {
+      askWin = null;
+      currentSessionCwd = null;
+    });
+    if (isMac) reapplyMacVisibility();
+  }
+
+  ipcMain.on("open-ask-panel", () => {
+    createAskPanel();
+  });
+
+  ipcMain.on("close-ask-panel", () => {
+    if (askWin && !askWin.isDestroyed()) askWin.close();
+  });
+
+  ipcMain.on("save-session", (_, { cwd, messages }) => {
+    sessionManager.saveSession(cwd, messages);
+  });
+
+  ipcMain.handle("switch-workspace", async (_, cwd) => {
+    if (!sessionManager.isValidWorkspace(cwd)) {
+      return { success: false, session: null };
+    }
+
+    const session = sessionManager.getSession(cwd);
+    currentSessionCwd = cwd;
+    return { success: true, session };
+  });
+
+  ipcMain.handle("select-folder", async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ["openDirectory"]
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return null;
+    }
+    return result.filePaths[0];
+  });
+
+  /**
+   * 按优先级读取 Anthropic API Key 和 Base URL：
+   * 1. 环境变量 ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL
+   * 2. Claude Code 配置 ~/.claude/settings.json (支持 env.ANTHROPIC_AUTH_TOKEN 和 env.ANTHROPIC_BASE_URL)
+   * 3. Clawd 配置 clawd-prefs.json
+   * @returns {{ apiKey: string, baseURL?: string } | null}
+   */
+  function getAnthropicApiKey() {
+    const os = require("os");
+
+    // 1. 环境变量
+    if (process.env.ANTHROPIC_API_KEY) {
+      return {
+        apiKey: process.env.ANTHROPIC_API_KEY,
+        baseURL: process.env.ANTHROPIC_BASE_URL || undefined
+      };
+    }
+
+    // 2. Claude Code 配置
+    try {
+      const claudeSettings = path.join(os.homedir(), '.claude', 'settings.json');
+      if (fs.existsSync(claudeSettings)) {
+        const settings = JSON.parse(fs.readFileSync(claudeSettings, 'utf8'));
+
+        // 支持第三方代理的 ANTHROPIC_AUTH_TOKEN（优先）
+        if (settings.env && settings.env.ANTHROPIC_AUTH_TOKEN) {
+          return {
+            apiKey: settings.env.ANTHROPIC_AUTH_TOKEN,
+            baseURL: settings.env.ANTHROPIC_BASE_URL || undefined
+          };
+        }
+
+        // 支持标准的 apiKey
+        if (settings.apiKey) {
+          return {
+            apiKey: settings.apiKey,
+            baseURL: undefined
+          };
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to read Claude Code settings:', err);
+    }
+
+    // 3. Clawd 配置
+    try {
+      const prefs = loadPrefs();
+      if (prefs && prefs.anthropicApiKey) {
+        return {
+          apiKey: prefs.anthropicApiKey,
+          baseURL: prefs.anthropicBaseURL || undefined
+        };
+      }
+    } catch (err) {
+      console.warn('Failed to read Clawd prefs:', err);
+    }
+
+    return null;
+  }
+
+  ipcMain.on("ask-claude", async (_, { prompt, messages }) => {
+    if (!askWin || askWin.isDestroyed()) return;
+
+    // 检查 API Key 和 Base URL
+    const config = getAnthropicApiKey();
+    if (!config) {
+      const errorMsg = lang === 'zh'
+        ? "未找到 API Key。请设置环境变量 ANTHROPIC_API_KEY 或在 ~/.claude/settings.json 中配置 apiKey"
+        : "API Key not found. Please set ANTHROPIC_API_KEY environment variable or configure apiKey in ~/.claude/settings.json";
+      askWin.webContents.send("ask-stream-error", errorMsg);
+      askWin.webContents.send("ask-stream-done", 1);
+      return;
+    }
+
+    try {
+      const Anthropic = require("@anthropic-ai/sdk");
+      const client = new Anthropic({
+        apiKey: config.apiKey,
+        baseURL: config.baseURL  // 支持自定义 API 地址（第三方代理）
+      });
+
+      // 构建 API messages（排除最后一个空的 assistant 消息）
+      const apiMessages = messages.slice(0, -1);
+
+      const stream = await client.messages.stream({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 8192,
+        messages: apiMessages,
+      });
+
+      stream.on("text", (text) => {
+        if (askWin && !askWin.isDestroyed()) {
+          askWin.webContents.send("ask-stream-chunk", text);
+        }
+      });
+
+      stream.on("end", () => {
+        if (askWin && !askWin.isDestroyed()) {
+          askWin.webContents.send("ask-stream-done", 0);
+        }
+      });
+
+      stream.on("error", (err) => {
+        if (askWin && !askWin.isDestroyed()) {
+          askWin.webContents.send("ask-stream-error", err.message || String(err));
+          askWin.webContents.send("ask-stream-done", 1);
+        }
+      });
+
+    } catch (err) {
+      if (askWin && !askWin.isDestroyed()) {
+        askWin.webContents.send("ask-stream-error", err.message || String(err));
+        askWin.webContents.send("ask-stream-done", 1);
+      }
+    }
+  });
 
   initFocusHelper();
   startMainTick();

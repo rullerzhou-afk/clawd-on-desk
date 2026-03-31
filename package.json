@@ -111,6 +111,7 @@
     "electron-builder": "^26.8.1"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
     "electron-updater": "^6.8.3",
     "koffi": "^2.15.2"
   }
