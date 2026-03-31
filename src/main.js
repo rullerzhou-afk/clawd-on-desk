@@ -183,6 +183,7 @@ const _permCtx = {
   get win() { return win; },
   get lang() { return lang; },
   get bubbleFollowPet() { return bubbleFollowPet; },
+  get petHidden() { return petHidden; },
   get permDebugLog() { return permDebugLog; },
   get doNotDisturb() { return doNotDisturb; },
   getNearestWorkArea,

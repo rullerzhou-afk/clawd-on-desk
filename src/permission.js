@@ -114,6 +114,7 @@ function showPermissionBubble(permEntry) {
     height: pos.height,
     x: pos.x,
     y: pos.y,
+    show: false,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -150,6 +151,7 @@ function showPermissionBubble(permEntry) {
   });
 
   repositionBubbles();
+  if (ctx.petHidden) return;
   bub.showInactive();
   // Linux WMs may reset skipTaskbar after showInactive — re-apply explicitly
   if (isLinux) bub.setSkipTaskbar(true);
