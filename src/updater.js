@@ -2,7 +2,7 @@
 // Extracted from main.js L1877-2271
 
 const https = require("https");
-const { exec } = require("child_process");
+const { execFile } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const { app, dialog, shell, Notification } = require("electron");
@@ -13,23 +13,25 @@ module.exports = function initUpdater(ctx) {
 
 // ── Git-based update (for non-packaged installs: cloned repo on mac/linux) ──
 
-let isGitRepo = false;
+let _repoRoot;  // undefined = not checked yet, null = not a git repo
 
 function getRepoRoot() {
-  if (app.isPackaged) return null;
+  if (_repoRoot !== undefined) return _repoRoot;
+  if (app.isPackaged) { _repoRoot = null; return null; }
   const root = path.join(__dirname, "..");
   try {
     if (fs.statSync(path.join(root, ".git")).isDirectory()) {
-      isGitRepo = true;
+      _repoRoot = root;
       return root;
     }
   } catch {}
+  _repoRoot = null;
   return null;
 }
 
-function gitCmd(cmd, cwd, timeout = 30000) {
+function gitCmd(args, cwd, timeout = 30000) {
   return new Promise((resolve, reject) => {
-    exec(cmd, { cwd, timeout }, (err, stdout) => {
+    execFile("git", args, { cwd, timeout }, (err, stdout) => {
       if (err) reject(err);
       else resolve(stdout.trim());
     });
@@ -42,13 +44,13 @@ async function _gitCheckForUpdates(repoRoot, manual) {
   ctx.updateLog("Git-based update check starting...");
 
   try {
-    const branch = await gitCmd("git rev-parse --abbrev-ref HEAD", repoRoot);
+    const branch = await gitCmd(["rev-parse", "--abbrev-ref", "HEAD"], repoRoot);
     ctx.updateLog(`Current branch: ${branch}`);
 
-    await gitCmd(`git fetch origin ${branch}`, repoRoot);
+    await gitCmd(["fetch", "origin", branch], repoRoot);
 
-    const localHead = await gitCmd("git rev-parse HEAD", repoRoot);
-    const remoteHead = await gitCmd(`git rev-parse origin/${branch}`, repoRoot);
+    const localHead = await gitCmd(["rev-parse", "HEAD"], repoRoot);
+    const remoteHead = await gitCmd(["rev-parse", `origin/${branch}`], repoRoot);
     ctx.updateLog(`Local: ${localHead.slice(0, 8)}, Remote: ${remoteHead.slice(0, 8)}`);
 
     if (localHead === remoteHead) {
@@ -68,7 +70,7 @@ async function _gitCheckForUpdates(repoRoot, manual) {
     // Get remote version from package.json
     let remoteVersion;
     try {
-      const remotePkg = await gitCmd(`git show origin/${branch}:package.json`, repoRoot);
+      const remotePkg = await gitCmd(["show", `origin/${branch}:package.json`], repoRoot);
       remoteVersion = JSON.parse(remotePkg).version;
     } catch {
       remoteVersion = remoteHead.slice(0, 8);
@@ -102,19 +104,38 @@ async function _gitCheckForUpdates(repoRoot, manual) {
       return;
     }
 
+    // Check for uncommitted changes before pulling
+    const dirty = await gitCmd(["status", "--porcelain"], repoRoot);
+    if (dirty) {
+      ctx.updateLog(`Working directory is dirty:\n${dirty}`);
+      updateStatus = "idle";
+      ctx.rebuildAllMenus();
+      dialog.showMessageBox({
+        type: "warning",
+        title: ctx.t("updateError"),
+        message: ctx.t("updateDirtyMsg"),
+        noLink: true,
+      });
+      return;
+    }
+
     // Pull and restart
     ctx.updateLog("Starting git pull...");
     updateStatus = "downloading";
     ctx.rebuildAllMenus();
 
-    await gitCmd(`git pull origin ${branch}`, repoRoot, 60000);
+    await gitCmd(["pull", "origin", branch], repoRoot, 60000);
     ctx.updateLog("Git pull complete");
 
     // Run npm install if dependencies changed
-    const diff = await gitCmd(`git diff --name-only ${localHead} HEAD`, repoRoot);
+    const diff = await gitCmd(["diff", "--name-only", localHead, "HEAD"], repoRoot);
     if (diff.includes("package.json") || diff.includes("package-lock.json")) {
       ctx.updateLog("Dependencies changed, running npm install...");
-      await gitCmd("npm install --no-fund --no-audit", repoRoot, 120000);
+      await new Promise((resolve, reject) => {
+        execFile("npm", ["install", "--no-fund", "--no-audit"], { cwd: repoRoot, timeout: 120000 }, (err) => {
+          if (err) reject(err); else resolve();
+        });
+      });
       ctx.updateLog("npm install complete");
     }
 
@@ -528,7 +549,7 @@ function getUpdateMenuItem() {
 function getUpdateMenuLabel() {
   switch (updateStatus) {
     case "checking": return ctx.t("checkingForUpdates");
-    case "downloading": return isGitRepo ? ctx.t("updating") : ctx.t("updateDownloading");
+    case "downloading": return getRepoRoot() ? ctx.t("updating") : ctx.t("updateDownloading");
     case "ready": return ctx.t("updateReady");
     default: return ctx.t("checkForUpdates");
   }
