@@ -7,6 +7,8 @@ const path = require("path");
 const os = require("os");
 
 const APPROVAL_HEURISTIC_MS = 2000;
+const MAX_TRACKED_FILES = 50;
+const MAX_PARTIAL_BYTES = 65536;
 
 class CodexLogMonitor {
   /**
@@ -77,11 +79,10 @@ class CodexLogMonitor {
     this._cleanStaleFiles();
   }
 
-  // Scan recent directories (supports codex resume of older sessions)
   _getSessionDirs() {
     const dirs = [];
     const now = new Date();
-    for (let daysAgo = 0; daysAgo <= 7; daysAgo++) {
+    for (let daysAgo = 0; daysAgo <= 1; daysAgo++) {
       const d = new Date(now);
       d.setDate(d.getDate() - daysAgo);
       const yyyy = d.getFullYear();
@@ -106,13 +107,18 @@ class CodexLogMonitor {
       // Format: rollout-YYYY-MM-DDTHH-MM-SS-<uuid>.jsonl
       const sessionId = this._extractSessionId(fileName);
       if (!sessionId) return;
+      // Cap tracked files to prevent unbounded Map growth
+      if (this._tracked.size >= MAX_TRACKED_FILES) {
+        this._cleanStaleFiles();
+        if (this._tracked.size >= MAX_TRACKED_FILES) return;
+      }
       tracked = {
         offset: 0,
         sessionId: "codex:" + sessionId,
         cwd: "",
         lastEventTime: Date.now(),
         lastState: null,
-        partial: "", // incomplete line buffer
+        partial: "",
         hadToolUse: false,
       };
       this._tracked.set(filePath, tracked);
@@ -137,8 +143,9 @@ class CodexLogMonitor {
     // Split into lines, handle partial last line
     const text = tracked.partial + buf.toString("utf8");
     const lines = text.split("\n");
-    // Last element might be incomplete — save for next poll
-    tracked.partial = lines.pop() || "";
+    // Last element might be incomplete — save for next poll (cap to prevent unbounded growth)
+    const remainder = lines.pop() || "";
+    tracked.partial = remainder.length > MAX_PARTIAL_BYTES ? "" : remainder;
 
     for (const line of lines) {
       if (!line.trim()) continue;

@@ -39,6 +39,35 @@ function startMainTick() {
 
   mainTickTimer = setInterval(() => {
     if (!ctx.win || ctx.win.isDestroyed()) return;
+
+    // ── Idle state edge detection (must run every tick for timer cleanup) ──
+    const idleNow = ctx.currentState === "idle" && !ctx.idlePaused;
+    const miniIdleNow = ctx.currentState === "mini-idle" && !ctx.idlePaused && !ctx.miniTransitioning;
+
+    if (idleNow && !idleWasActive) {
+      isMouseIdle = false;
+      hasTriggeredYawn = false;
+      idleLookPlayed = false;
+      lastCursorX = null;
+      lastCursorY = null;
+      mouseStillSince = Date.now();
+      lastEyeDx = 0;
+      lastEyeDy = 0;
+      if (idleLookReturnTimer) { clearTimeout(idleLookReturnTimer); idleLookReturnTimer = null; }
+      if (yawnDelayTimer) { clearTimeout(yawnDelayTimer); yawnDelayTimer = null; }
+    }
+
+    if (!idleNow && idleWasActive) {
+      if (idleLookReturnTimer) { clearTimeout(idleLookReturnTimer); idleLookReturnTimer = null; }
+      if (yawnDelayTimer) { clearTimeout(yawnDelayTimer); yawnDelayTimer = null; }
+    }
+    idleWasActive = idleNow;
+
+    // Skip expensive native IPC calls (getCursorScreenPoint, getBounds) when
+    // cursor tracking is not needed — saves ~20 calls/sec to the OS layer.
+    const needsCursorPoll = idleNow || miniIdleNow || ctx.miniMode;
+    if (!needsCursorPoll) return;
+
     const cursor = screen.getCursorScreenPoint();
 
     // ── Cursor-over-pet tracking (for mini peek + eye tracking, NOT for input routing) ──
@@ -70,32 +99,6 @@ function startMainTick() {
         }
       }
     }
-
-    // ── Eye tracking + sleep detection (idle only, not during reactions) ──
-    const idleNow = ctx.currentState === "idle" && !ctx.idlePaused;
-    const miniIdleNow = ctx.currentState === "mini-idle" && !ctx.idlePaused && !ctx.miniTransitioning;
-
-    // Edge detection: idle entry → reset state variables
-    if (idleNow && !idleWasActive) {
-      isMouseIdle = false;
-      hasTriggeredYawn = false;
-      idleLookPlayed = false;
-      lastCursorX = null;
-      lastCursorY = null;
-      mouseStillSince = Date.now();
-      lastEyeDx = 0;
-      lastEyeDy = 0;
-      if (idleLookReturnTimer) { clearTimeout(idleLookReturnTimer); idleLookReturnTimer = null; }
-      if (yawnDelayTimer) { clearTimeout(yawnDelayTimer); yawnDelayTimer = null; }
-    }
-
-    // Edge detection: idle exit → clear pending timers
-    // (variable resets not needed here — idle entry will overwrite them all)
-    if (!idleNow && idleWasActive) {
-      if (idleLookReturnTimer) { clearTimeout(idleLookReturnTimer); idleLookReturnTimer = null; }
-      if (yawnDelayTimer) { clearTimeout(yawnDelayTimer); yawnDelayTimer = null; }
-    }
-    idleWasActive = idleNow;
 
     if (!idleNow && !miniIdleNow) return;
 

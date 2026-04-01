@@ -86,6 +86,7 @@ const DISPLAY_HINT_SVGS = new Set([
 
 // ── Session tracking ──
 const sessions = new Map();
+const MAX_SESSIONS = 20;
 const SESSION_STALE_MS = 600000;
 const WORKING_STALE_MS = 300000;
 let startupRecoveryActive = false;
@@ -342,6 +343,15 @@ function updateSession(sessionId, state, event, sourcePid, cwd, editor, pidChain
     (srcAgentPid ? isProcessAlive(srcAgentPid) : (srcPid ? isProcessAlive(srcPid) : false));
 
   const base = { sourcePid: srcPid, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, pidReachable };
+
+  // Evict oldest session if at capacity and this is a new session
+  if (!existing && sessions.size >= MAX_SESSIONS) {
+    let oldestId = null, oldestTime = Infinity;
+    for (const [id, s] of sessions) {
+      if (s.updatedAt < oldestTime) { oldestTime = s.updatedAt; oldestId = id; }
+    }
+    if (oldestId) sessions.delete(oldestId);
+  }
 
   if (event === "SessionEnd") {
     const endingSession = sessions.get(sessionId);

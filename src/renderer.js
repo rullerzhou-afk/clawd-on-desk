@@ -4,6 +4,14 @@
 
 const container = document.getElementById("pet-container");
 
+// Release an <object> SVG element: navigate away to unload the SVG document
+// (stops CSS animations and frees the internal frame), then remove from DOM.
+function releaseObject(el) {
+  if (!el) return;
+  try { el.data = ""; } catch {}
+  el.remove();
+}
+
 // --- Reaction state (visual side) ---
 const REACT_DRAG_SVG = "clawd-react-drag.svg";
 let isReacting = false;
@@ -81,7 +89,7 @@ function playReaction(svgFile, durationMs) {
 
   // Reuse existing swap pattern
   if (pendingNext) {
-    pendingNext.remove();
+    releaseObject(pendingNext);
     pendingNext = null;
   }
 
@@ -95,7 +103,7 @@ function playReaction(svgFile, durationMs) {
     next.style.transition = "none";
     next.style.opacity = "1";
     for (const child of [...container.querySelectorAll("object")]) {
-      if (child !== next) child.remove();
+      if (child !== next) releaseObject(child);
     }
     pendingNext = null;
     clawdEl = next;
@@ -108,8 +116,7 @@ function playReaction(svgFile, durationMs) {
   pendingNext = next;
   setTimeout(() => {
     if (pendingNext !== next) return;
-    // If SVG failed to load, abandon swap and keep current display
-    try { if (!next.contentDocument) { next.remove(); pendingNext = null; return; } } catch {}
+    try { if (!next.contentDocument) { releaseObject(next); pendingNext = null; return; } } catch {}
     swap();
   }, 3000);
 
@@ -136,7 +143,7 @@ function cancelReaction() {
 
 // --- Drag reaction (loops while dragging, idle-follow only) ---
 function swapToSvg(svgFile) {
-  if (pendingNext) { pendingNext.remove(); pendingNext = null; }
+  if (pendingNext) { releaseObject(pendingNext); pendingNext = null; }
   const next = document.createElement("object");
   next.type = "image/svg+xml";
   next.id = "clawd";
@@ -146,7 +153,7 @@ function swapToSvg(svgFile) {
     next.style.transition = "none";
     next.style.opacity = "1";
     for (const child of [...container.querySelectorAll("object")]) {
-      if (child !== next) child.remove();
+      if (child !== next) releaseObject(child);
     }
     pendingNext = null;
     clawdEl = next;
@@ -158,7 +165,7 @@ function swapToSvg(svgFile) {
   pendingNext = next;
   setTimeout(() => {
     if (pendingNext !== next) return;
-    try { if (!next.contentDocument) { next.remove(); pendingNext = null; return; } } catch {}
+    try { if (!next.contentDocument) { releaseObject(next); pendingNext = null; return; } } catch {}
     swap();
   }, 3000);
 }
@@ -196,7 +203,7 @@ window.electronAPI.onStateChange((state, svg) => {
   cancelReaction();
 
   if (pendingNext) {
-    pendingNext.remove();
+    releaseObject(pendingNext);
     pendingNext = null;
   }
   if (clawdEl && clawdEl.isConnected && currentDisplayedSvg === svg) {
@@ -220,7 +227,7 @@ window.electronAPI.onStateChange((state, svg) => {
     next.style.transition = "none";
     next.style.opacity = "1";
     for (const child of [...container.querySelectorAll("object")]) {
-      if (child !== next) child.remove();
+      if (child !== next) releaseObject(child);
     }
     pendingNext = null;
     clawdEl = next;
@@ -241,7 +248,7 @@ window.electronAPI.onStateChange((state, svg) => {
   pendingNext = next;
   setTimeout(() => {
     if (pendingNext !== next) return;
-    try { if (!next.contentDocument) { next.remove(); pendingNext = null; return; } } catch {}
+    try { if (!next.contentDocument) { releaseObject(next); pendingNext = null; return; } } catch {}
     swap();
   }, 3000);
 });
