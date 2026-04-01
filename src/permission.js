@@ -309,7 +309,10 @@ function handleDecide(event, behavior) {
 const CODEX_NOTIFY_EXPIRE_MS = 30000;
 
 function showCodexNotifyBubble({ sessionId, command }) {
-  if (ctx.doNotDisturb || ctx.hideBubbles) return;
+  if (ctx.doNotDisturb || ctx.hideBubbles) {
+    permLog(`codex notify suppressed: session=${sessionId} dnd=${ctx.doNotDisturb} hideBubbles=${ctx.hideBubbles}`);
+    return;
+  }
   const permEntry = {
     res: null,
     abortHandler: null, suggestions: [],
