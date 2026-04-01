@@ -841,11 +841,19 @@ function createWindow() {
       // 构建 API messages（排除最后一个空的 assistant 消息）
       const apiMessages = messages.slice(0, -1);
 
+      console.log('[Ask Claude] Sending request:', {
+        messageCount: apiMessages.length,
+        baseURL: config.baseURL,
+        hasApiKey: !!config.apiKey
+      });
+
       const stream = await client.messages.stream({
         model: "claude-sonnet-4-20250514",
         max_tokens: 8192,
         messages: apiMessages,
       });
+
+      console.log('[Ask Claude] Stream created successfully');
 
       currentAskStream = stream;
 
@@ -864,13 +872,18 @@ function createWindow() {
         }
       }, 60000);
 
+      let receivedChunks = false;
+
       stream.on("text", (text) => {
+        receivedChunks = true;
+        console.log('[Ask Claude] Received text chunk:', text.substring(0, 50));
         if (askWin && !askWin.isDestroyed()) {
           askWin.webContents.send("ask-stream-chunk", text);
         }
       });
 
       stream.on("end", () => {
+        console.log('[Ask Claude] Stream ended, received chunks:', receivedChunks);
         if (currentAskTimeout) {
           clearTimeout(currentAskTimeout);
           currentAskTimeout = null;
@@ -882,11 +895,21 @@ function createWindow() {
       });
 
       stream.on("error", (err) => {
+        console.error('[Ask Claude] Stream error:', err);
         if (currentAskTimeout) {
           clearTimeout(currentAskTimeout);
           currentAskTimeout = null;
         }
         currentAskStream = null;
+        if (askWin && !askWin.isDestroyed()) {
+          askWin.webContents.send("ask-stream-error", err.message || String(err));
+          askWin.webContents.send("ask-stream-done", 1);
+        }
+      });
+
+      // 启动 stream（必须调用 done() 才会开始发送数据）
+      stream.done().catch((err) => {
+        console.error('[Ask Claude] Stream done() error:', err);
         if (askWin && !askWin.isDestroyed()) {
           askWin.webContents.send("ask-stream-error", err.message || String(err));
           askWin.webContents.send("ask-stream-done", 1);
