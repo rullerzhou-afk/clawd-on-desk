@@ -82,7 +82,7 @@ class CodexLogMonitor {
   _getSessionDirs() {
     const dirs = [];
     const now = new Date();
-    for (let daysAgo = 0; daysAgo <= 1; daysAgo++) {
+    for (let daysAgo = 0; daysAgo <= 2; daysAgo++) {
       const d = new Date(now);
       d.setDate(d.getDate() - daysAgo);
       const yyyy = d.getFullYear();
@@ -143,7 +143,10 @@ class CodexLogMonitor {
     // Split into lines, handle partial last line
     const text = tracked.partial + buf.toString("utf8");
     const lines = text.split("\n");
-    // Last element might be incomplete — save for next poll (cap to prevent unbounded growth)
+    // Last element might be incomplete — save for next poll.
+    // Cap at 64KB: lines larger than this (e.g. huge tool output) are discarded —
+    // both halves will fail JSON.parse so one state update is silently lost, which
+    // is harmless for the pet's display state.
     const remainder = lines.pop() || "";
     tracked.partial = remainder.length > MAX_PARTIAL_BYTES ? "" : remainder;
 
