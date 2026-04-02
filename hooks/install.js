@@ -564,9 +564,33 @@ function isAutoStartRegistered() {
   }
 }
 
+// ─── CodeBuddy & CloudBase CLI integration ─────────────────────────────────
+const { registerCodeBuddyHooks } = require("./codebuddy-install");
+const { verifyCloudbaseCli } = require("./cloudbase-install");
+
+function registerAllAgentHooks(options = {}) {
+  // Register Claude Code hooks (original)
+  registerHooks(options);
+  // Register CodeBuddy hooks
+  try {
+    registerCodeBuddyHooks({ silent: options.silent || false });
+  } catch (err) {
+    if (!options.silent) console.error("Clawd: CodeBuddy hook registration failed:", err.message);
+  }
+  // Verify CloudBase CLI (no hooks to register, just check availability)
+  try {
+    verifyCloudbaseCli({ silent: options.silent || false });
+  } catch (err) {
+    if (!options.silent) console.error("Clawd: CloudBase CLI verification failed:", err.message);
+  }
+}
+
 // Export for use by main.js
 module.exports = {
   registerHooks,
+  registerAllAgentHooks,
+  registerCodeBuddyHooks,
+  verifyCloudbaseCli,
   unregisterAutoStart,
   isAutoStartRegistered,
   __test: {

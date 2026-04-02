@@ -68,6 +68,7 @@ function savePrefs() {
 }
 
 let _codexMonitor = null;          // Codex CLI JSONL log polling instance
+let _cloudbaseMonitor = null;      // CloudBase CLI process polling instance
 
 // ── CSS <object> sizing (mirrors styles.css #clawd) ──
 const OBJ_SCALE_W = 1.9;   // width: 190%
@@ -959,6 +960,36 @@ if (!gotTheLock) {
       console.warn("Clawd: Codex log monitor not started:", err.message);
     }
 
+    // Start CloudBase CLI process monitor + inject shell hook
+    try {
+      const CloudbaseCliMonitor = require("../hooks/cloudbase-hook");
+      _cloudbaseMonitor = new CloudbaseCliMonitor((sessionId, state, meta) => {
+        updateSession(sessionId, state, meta.event || "ProcessDetected", null, meta.cwd || "", null, null, meta.agent_pid || null, "cloudbase-cli");
+      });
+      _cloudbaseMonitor.start();
+      console.log("Clawd: CloudBase CLI process monitor started");
+
+      // Auto-inject shell hook into ~/.zshrc / ~/.bashrc for exit code detection
+      const { injectShellHook } = require("../hooks/cloudbase-install");
+      const hookResult = injectShellHook({ silent: true });
+      if (hookResult.injected.length > 0) {
+        console.log(`Clawd: Injected CloudBase shell hook into ${hookResult.injected.join(", ")}`);
+      }
+    } catch (err) {
+      console.warn("Clawd: CloudBase CLI monitor not started:", err.message);
+    }
+
+    // Sync CodeBuddy hooks
+    try {
+      const { registerCodeBuddyHooks } = require("../hooks/codebuddy-install");
+      const result = registerCodeBuddyHooks({ silent: true, port: getHookServerPort() });
+      if (result.added > 0 || result.updated > 0) {
+        console.log(`Clawd: synced CodeBuddy hooks (added ${result.added}, updated ${result.updated})`);
+      }
+    } catch (err) {
+      console.warn("Clawd: CodeBuddy hooks sync failed:", err.message);
+    }
+
     // Auto-install VS Code/Cursor terminal-focus extension
     try { installTerminalFocusExtension(); } catch (err) {
       console.warn("Clawd: failed to auto-install terminal-focus extension:", err.message);
@@ -980,6 +1011,7 @@ if (!gotTheLock) {
     _tick.cleanup();
     _mini.cleanup();
     if (_codexMonitor) _codexMonitor.stop();
+    if (_cloudbaseMonitor) _cloudbaseMonitor.stop();
     stopTopmostWatchdog();
     if (hwndRecoveryTimer) { clearTimeout(hwndRecoveryTimer); hwndRecoveryTimer = null; }
     _focus.cleanup();

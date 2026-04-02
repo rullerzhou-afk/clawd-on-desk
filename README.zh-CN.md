@@ -8,7 +8,7 @@
 
 一个能实时感知 AI 编程助手工作状态的桌面宠物。Clawd 住在你的屏幕上——你提问时它思考，工具运行时它打字，子代理工作时它杂耍，审批权限时它弹卡片，任务完成时它庆祝，你离开时它睡觉。
 
-> 支持 Windows 11、macOS 和 Ubuntu/Linux。需要 Node.js。支持 **Claude Code**、**Codex CLI**、**Copilot CLI**、**Gemini CLI** 与 **Cursor Agent**。
+> 支持 Windows 11、macOS 和 Ubuntu/Linux。需要 Node.js。支持 **Claude Code**、**Codex CLI**、**Copilot CLI**、**Gemini CLI**、**Cursor Agent**、**CodeBuddy** 与 **云开发 CLI**。
 
 ## 功能特性
 
@@ -18,6 +18,8 @@
 - **Copilot CLI** — 通过 `~/.copilot/hooks/hooks.json` 配置 command hook
 - **Gemini CLI** — 通过 `~/.gemini/settings.json` 配置 command hook（Clawd 启动时自动注册，或执行 `npm run install:gemini-hooks`）
 - **Cursor Agent** — [Cursor IDE hooks](https://cursor.com/docs/agent/hooks)，配置在 `~/.cursor/hooks.json`（Clawd 启动时自动注册，或执行 `npm run install:cursor-hooks`）
+- **CodeBuddy** — [腾讯云代码助手 CodeBuddy](https://www.codebuddy.ai/) 通过 command hook 集成，支持会话生命周期、工具调用和子代理事件（Clawd 启动时自动注册）
+- **云开发 CLI** — [腾讯云开发 CLI](https://docs.cloudbase.net/cli-v1/intro)（`tcb`/`cloudbase`）进程监控，77 条命令映射覆盖 9 种桌宠状态；Shell Hook 自动注入 `~/.zshrc`，通过检测输出中的 `✖` 精确识别错误
 - **多 Agent 共存** — 多个 Agent 可同时运行，Clawd 独立追踪每个会话
 
 ### 动画与交互
