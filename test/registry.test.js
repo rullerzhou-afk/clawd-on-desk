@@ -3,15 +3,16 @@ const assert = require("node:assert");
 const registry = require("../agents/registry");
 
 describe("Agent Registry", () => {
-  it("should return all five agents", () => {
+  it("should return all six agents", () => {
     const agents = registry.getAllAgents();
-    assert.strictEqual(agents.length, 5);
+    assert.strictEqual(agents.length, 6);
     const ids = agents.map((a) => a.id);
     assert.ok(ids.includes("claude-code"));
     assert.ok(ids.includes("codex"));
     assert.ok(ids.includes("copilot-cli"));
     assert.ok(ids.includes("gemini-cli"));
     assert.ok(ids.includes("cursor-agent"));
+    assert.ok(ids.includes("qoder"));
   });
 
   it("should look up agents by ID", () => {
@@ -20,6 +21,7 @@ describe("Agent Registry", () => {
     assert.strictEqual(registry.getAgent("copilot-cli").name, "Copilot CLI");
     assert.strictEqual(registry.getAgent("gemini-cli").name, "Gemini CLI");
     assert.strictEqual(registry.getAgent("cursor-agent").name, "Cursor Agent");
+    assert.strictEqual(registry.getAgent("qoder").name, "Qoder IDE");
     assert.strictEqual(registry.getAgent("nonexistent"), undefined);
   });
 
@@ -40,6 +42,9 @@ describe("Agent Registry", () => {
 
     const cursor = registry.getAgent("cursor-agent");
     assert.deepStrictEqual(cursor.processNames.win, ["Cursor.exe"]);
+
+    const qoder = registry.getAgent("qoder");
+    assert.deepStrictEqual(qoder.processNames.win, ["qoder.exe"]);
   });
 
   it("should include explicit Linux process names", () => {
@@ -57,11 +62,14 @@ describe("Agent Registry", () => {
 
     const cursor = registry.getAgent("cursor-agent");
     assert.deepStrictEqual(cursor.processNames.linux, ["cursor", "Cursor"]);
+
+    const qoder = registry.getAgent("qoder");
+    assert.deepStrictEqual(qoder.processNames.linux, ["qoder"]);
   });
 
   it("should aggregate all process names", () => {
     const all = registry.getAllProcessNames();
-    assert.ok(all.length >= 5);
+    assert.ok(all.length >= 6);
     const names = all.map((p) => p.name);
     // Should contain at least one entry per agent (platform-dependent)
     const agentIds = [...new Set(all.map((p) => p.agentId))];
@@ -70,6 +78,7 @@ describe("Agent Registry", () => {
     assert.ok(agentIds.includes("copilot-cli"));
     assert.ok(agentIds.includes("gemini-cli"));
     assert.ok(agentIds.includes("cursor-agent"));
+    assert.ok(agentIds.includes("qoder"));
   });
 
   it("should have correct capabilities", () => {
@@ -102,6 +111,12 @@ describe("Agent Registry", () => {
     assert.strictEqual(cursor.capabilities.permissionApproval, false);
     assert.strictEqual(cursor.capabilities.sessionEnd, true);
     assert.strictEqual(cursor.capabilities.subagent, true);
+
+    const qoder = registry.getAgent("qoder");
+    assert.strictEqual(qoder.capabilities.httpHook, false);
+    assert.strictEqual(qoder.capabilities.permissionApproval, false);
+    assert.strictEqual(qoder.capabilities.sessionEnd, false);
+    assert.strictEqual(qoder.capabilities.subagent, false);
   });
 
   it("should have eventMap for hook-based agents", () => {
@@ -125,6 +140,11 @@ describe("Agent Registry", () => {
     assert.strictEqual(cursor.eventMap.preToolUse, "working");
     assert.strictEqual(cursor.eventMap.afterAgentThought, "thinking");
     assert.strictEqual(cursor.eventMap.stop, "attention");
+
+    const qoder = registry.getAgent("qoder");
+    assert.strictEqual(qoder.eventMap.UserPromptSubmit, "thinking");
+    assert.strictEqual(qoder.eventMap.PreToolUse, "working");
+    assert.strictEqual(qoder.eventMap.Stop, "attention");
   });
 
   it("should have logEventMap for poll-based agents", () => {

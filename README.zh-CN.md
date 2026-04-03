@@ -8,7 +8,7 @@
 
 一个能实时感知 AI 编程助手工作状态的桌面宠物。Clawd 住在你的屏幕上——你提问时它思考，工具运行时它打字，子代理工作时它杂耍，审批权限时它弹卡片，任务完成时它庆祝，你离开时它睡觉。
 
-> 支持 Windows 11、macOS 和 Ubuntu/Linux。需要 Node.js。支持 **Claude Code**、**Codex CLI**、**Copilot CLI**、**Gemini CLI** 与 **Cursor Agent**。
+> 支持 Windows 11、macOS 和 Ubuntu/Linux。需要 Node.js。支持 **Claude Code**、**Codex CLI**、**Copilot CLI**、**Gemini CLI**、**Cursor Agent** 与 **Qoder IDE**。
 
 ## 功能特性
 
@@ -18,6 +18,7 @@
 - **Copilot CLI** — 通过 `~/.copilot/hooks/hooks.json` 配置 command hook
 - **Gemini CLI** — 通过 `~/.gemini/settings.json` 配置 command hook（Clawd 启动时自动注册，或执行 `npm run install:gemini-hooks`）
 - **Cursor Agent** — [Cursor IDE hooks](https://cursor.com/docs/agent/hooks)，配置在 `~/.cursor/hooks.json`（Clawd 启动时自动注册，或执行 `npm run install:cursor-hooks`）
+- **Qoder IDE** — 通过 `~/.qoder/settings.json` 配置 command hook（Clawd 启动时自动注册）
 - **多 Agent 共存** — 多个 Agent 可同时运行，Clawd 独立追踪每个会话
 
 ### 动画与交互

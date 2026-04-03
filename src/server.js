@@ -64,6 +64,18 @@ function syncCursorHooks() {
   }
 }
 
+function syncQoderHooks() {
+  try {
+    const { registerQoderHooks } = require("../hooks/qoder-install.js");
+    const { added, updated } = registerQoderHooks({ silent: true });
+    if (added > 0 || updated > 0) {
+      console.log(`Clawd: synced Qoder hooks (added ${added}, updated ${updated})`);
+    }
+  } catch (err) {
+    console.warn("Clawd: failed to sync Qoder hooks:", err.message);
+  }
+}
+
 function sendStateHealthResponse(res) {
   const body = JSON.stringify({ ok: true, app: CLAWD_SERVER_ID, port: getHookServerPort() });
   res.writeHead(200, {
@@ -323,6 +335,7 @@ function startHttpServer() {
     syncClawdHooks();
     syncGeminiHooks();
     syncCursorHooks();
+    syncQoderHooks();
     watchSettingsForHookLoss();
   });
 
@@ -335,6 +348,6 @@ function cleanup() {
   if (httpServer) httpServer.close();
 }
 
-return { startHttpServer, getHookServerPort, syncClawdHooks, syncGeminiHooks, syncCursorHooks, cleanup };
+return { startHttpServer, getHookServerPort, syncClawdHooks, syncGeminiHooks, syncCursorHooks, syncQoderHooks, cleanup };
 
 };

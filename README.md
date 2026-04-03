@@ -8,7 +8,7 @@
 
 A desktop pet that reacts to your AI coding agent sessions in real-time. Clawd lives on your screen — thinking when you prompt, typing when tools run, juggling subagents, reviewing permissions, celebrating when tasks complete, and sleeping when you're away.
 
-> Supports Windows 11, macOS, and Ubuntu/Linux. Requires Node.js. Works with **Claude Code**, **Codex CLI**, **Copilot CLI**, **Gemini CLI**, and **Cursor Agent**.
+> Supports Windows 11, macOS, and Ubuntu/Linux. Requires Node.js. Works with **Claude Code**, **Codex CLI**, **Copilot CLI**, **Gemini CLI**, **Cursor Agent**, and **Qoder IDE**.
 
 ## Features
 
@@ -18,6 +18,7 @@ A desktop pet that reacts to your AI coding agent sessions in real-time. Clawd l
 - **Copilot CLI** — command hooks via `~/.copilot/hooks/hooks.json`
 - **Gemini CLI** — command hooks via `~/.gemini/settings.json` (registered automatically when Clawd starts, or run `npm run install:gemini-hooks`)
 - **Cursor Agent** — [Cursor IDE hooks](https://cursor.com/docs/agent/hooks) in `~/.cursor/hooks.json` (registered automatically when Clawd starts, or run `npm run install:cursor-hooks`)
+- **Qoder IDE** — command hooks via `~/.qoder/settings.json` (registered automatically when Clawd starts)
 - **Multi-agent coexistence** — run all agents simultaneously; Clawd tracks each session independently
 
 ### Animations & Interaction
@@ -56,7 +57,7 @@ A desktop pet that reacts to your AI coding agent sessions in real-time. Clawd l
 
 ## State Mapping
 
-Events from all agents (Claude Code hooks, Codex JSONL, Copilot hooks) map to the same animation states:
+Events from all agents (Claude Code hooks, Codex JSONL, Copilot hooks, Gemini CLI, Cursor Agent, Qoder IDE) map to the same animation states:
 
 | Agent Event | Clawd State | Animation | |
 |---|---|---|---|
@@ -168,6 +169,7 @@ Remote hooks run in `CLAWD_REMOTE` mode which skips PID collection (remote PIDs 
 | **Codex CLI: Windows hooks disabled** | Codex hardcodes hooks off on Windows, so we poll log files instead. This means ~1.5s latency vs near-instant for hook-based agents. |
 | **Copilot CLI: manual hook setup** | Copilot hooks require manually creating `~/.copilot/hooks/hooks.json`. Claude Code and Codex work out of the box. |
 | **Copilot CLI: no permission bubble** | Copilot's `preToolUse` hook only supports deny, not the full allow/deny flow. Permission bubbles only work with Claude Code. |
+| **Qoder IDE: no session events** | Qoder doesn't emit SessionStart/SessionEnd hooks, so Clawd can't detect when sessions begin or end. |
 | **macOS/Linux auto-update** | No Apple code signing on macOS, no auto-update on Linux — download updates manually from GitHub Releases. |
 | **No test framework for Electron** | Unit tests cover agents and log polling, but the Electron main process (state machine, windows, tray) has no automated tests. |
 
