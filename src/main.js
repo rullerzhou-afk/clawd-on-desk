@@ -420,6 +420,10 @@ function updateLog(msg) {
   rotatedAppend(updateDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
 }
 
+// ── OS startup integration (login/autostart) ──
+const _autoStart = require("./autostart")(app);
+const { getOpenAtLoginEnabled, setOpenAtLogin } = _autoStart;
+
 // ── Menu — delegated to src/menu.js ──
 const _menuCtx = {
   get win() { return win; },
@@ -469,6 +473,8 @@ const _menuCtx = {
   getUpdateMenuItem: () => getUpdateMenuItem(),
   buildSessionSubmenu: () => buildSessionSubmenu(),
   savePrefs,
+  getOpenAtLoginEnabled: () => getOpenAtLoginEnabled(),
+  setOpenAtLogin: (enabled) => setOpenAtLogin(enabled),
   getHookServerPort: () => getHookServerPort(),
   clampToScreen,
   getNearestWorkArea,

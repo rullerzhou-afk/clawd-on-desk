@@ -279,6 +279,21 @@ describe("CodexLogMonitor", () => {
     monitor.start();
   });
 
+  it("should process recent existing day dirs even if not today/yesterday", (_, done) => {
+    const oldDateDir = path.join(tmpDir, "2024", "01", "02");
+    fs.mkdirSync(oldDateDir, { recursive: true });
+    const testFile = path.join(oldDateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, '{"type":"session_meta","payload":{"cwd":"/tmp"}}\n');
+
+    const config = makeConfig(tmpDir);
+    monitor = new CodexLogMonitor(config, (sid, state) => {
+      assert.strictEqual(sid, EXPECTED_SID);
+      assert.strictEqual(state, "idle");
+      done();
+    });
+    monitor.start();
+  });
+
   // ── Approval heuristic tests ──
 
   it("should emit codex-permission after 2s timeout when no exec_command_end arrives", (_, done) => {

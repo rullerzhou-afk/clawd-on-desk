@@ -80,6 +80,12 @@ class CodexLogMonitor {
   // Scan recent directories (supports codex resume of older sessions)
   _getSessionDirs() {
     const dirs = [];
+    const seen = new Set();
+    const addDir = (dir) => {
+      if (!dir || seen.has(dir)) return;
+      seen.add(dir);
+      dirs.push(dir);
+    };
     const now = new Date();
     for (let daysAgo = 0; daysAgo <= 7; daysAgo++) {
       const d = new Date(now);
@@ -87,9 +93,61 @@ class CodexLogMonitor {
       const yyyy = d.getFullYear();
       const mm = String(d.getMonth() + 1).padStart(2, "0");
       const dd = String(d.getDate()).padStart(2, "0");
-      dirs.push(path.join(this._baseDir, String(yyyy), mm, dd));
+      addDir(path.join(this._baseDir, String(yyyy), mm, dd));
     }
+
+    // Fallback: include most recent existing session day dirs.
+    // This handles clock/timezone drift between Codex session paths and local date.
+    const recent = this._getRecentExistingDayDirs(7);
+    for (const dir of recent) addDir(dir);
+
     return dirs;
+  }
+
+  _getRecentExistingDayDirs(limit = 7) {
+    const out = [];
+    let years;
+    try {
+      years = fs.readdirSync(this._baseDir, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && /^\d{4}$/.test(d.name))
+        .map((d) => d.name)
+        .sort((a, b) => b.localeCompare(a));
+    } catch {
+      return out;
+    }
+
+    for (const y of years) {
+      const yPath = path.join(this._baseDir, y);
+      let months;
+      try {
+        months = fs.readdirSync(yPath, { withFileTypes: true })
+          .filter((d) => d.isDirectory() && /^\d{2}$/.test(d.name))
+          .map((d) => d.name)
+          .sort((a, b) => b.localeCompare(a));
+      } catch {
+        continue;
+      }
+
+      for (const m of months) {
+        const mPath = path.join(yPath, m);
+        let days;
+        try {
+          days = fs.readdirSync(mPath, { withFileTypes: true })
+            .filter((d) => d.isDirectory() && /^\d{2}$/.test(d.name))
+            .map((d) => d.name)
+            .sort((a, b) => b.localeCompare(a));
+        } catch {
+          continue;
+        }
+
+        for (const d of days) {
+          out.push(path.join(mPath, d));
+          if (out.length >= limit) return out;
+        }
+      }
+    }
+
+    return out;
   }
 
   _pollFile(filePath, fileName) {
