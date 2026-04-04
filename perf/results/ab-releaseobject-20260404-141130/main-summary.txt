@@ -1,0 +1,9 @@
+samples=292
+duration_min=6.02
+cpu_avg=58.51
+cpu_max=110.40
+rss_start_mb=447.42
+rss_end_mb=427.48
+rss_max_mb=599.20
+rss_delta_mb=-19.94
+rss_slope_mb_per_min=-3.31
