@@ -3,9 +3,9 @@ const assert = require("node:assert");
 const registry = require("../agents/registry");
 
 describe("Agent Registry", () => {
-  it("should return all six agents", () => {
+  it("should return all seven agents", () => {
     const agents = registry.getAllAgents();
-    assert.strictEqual(agents.length, 6);
+    assert.strictEqual(agents.length, 7);
     const ids = agents.map((a) => a.id);
     assert.ok(ids.includes("claude-code"));
     assert.ok(ids.includes("codex"));
@@ -13,6 +13,7 @@ describe("Agent Registry", () => {
     assert.ok(ids.includes("gemini-cli"));
     assert.ok(ids.includes("cursor-agent"));
     assert.ok(ids.includes("codebuddy"));
+    assert.ok(ids.includes("kiro-cli"));
   });
 
   it("should look up agents by ID", () => {
@@ -22,6 +23,7 @@ describe("Agent Registry", () => {
     assert.strictEqual(registry.getAgent("gemini-cli").name, "Gemini CLI");
     assert.strictEqual(registry.getAgent("cursor-agent").name, "Cursor Agent");
     assert.strictEqual(registry.getAgent("codebuddy").name, "CodeBuddy");
+    assert.strictEqual(registry.getAgent("kiro-cli").name, "Kiro CLI");
     assert.strictEqual(registry.getAgent("nonexistent"), undefined);
   });
 
@@ -72,6 +74,7 @@ describe("Agent Registry", () => {
     assert.ok(agentIds.includes("copilot-cli"));
     assert.ok(agentIds.includes("gemini-cli"));
     assert.ok(agentIds.includes("cursor-agent"));
+    assert.ok(agentIds.includes("kiro-cli"));
   });
 
   it("should have correct capabilities", () => {
@@ -104,6 +107,12 @@ describe("Agent Registry", () => {
     assert.strictEqual(cursor.capabilities.permissionApproval, false);
     assert.strictEqual(cursor.capabilities.sessionEnd, true);
     assert.strictEqual(cursor.capabilities.subagent, true);
+
+    const kiro = registry.getAgent("kiro-cli");
+    assert.strictEqual(kiro.capabilities.httpHook, false);
+    assert.strictEqual(kiro.capabilities.permissionApproval, false);
+    assert.strictEqual(kiro.capabilities.sessionEnd, false);
+    assert.strictEqual(kiro.capabilities.subagent, false);
   });
 
   it("should have eventMap for hook-based agents", () => {

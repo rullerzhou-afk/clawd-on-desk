@@ -64,6 +64,18 @@ function syncCodeBuddyHooks() {
   }
 }
 
+function syncKiroHooks() {
+  try {
+    const { registerKiroHooks } = require("../hooks/kiro-install.js");
+    const { added, updated } = registerKiroHooks({ silent: true });
+    if (added > 0 || updated > 0) {
+      console.log(`Clawd: synced Kiro hooks (added ${added}, updated ${updated})`);
+    }
+  } catch (err) {
+    console.warn("Clawd: failed to sync Kiro hooks:", err.message);
+  }
+}
+
 function syncCursorHooks() {
   try {
     const { registerCursorHooks } = require("../hooks/cursor-install.js");
@@ -216,9 +228,14 @@ function startHttpServer() {
         body += chunk;
       });
       req.on("end", () => {
+        let parsedData = null;
+        try {
+          parsedData = JSON.parse(body);
+        } catch {}
+
         if (tooLarge) {
           ctx.permLog("SKIPPED: permission payload too large");
-          ctx.sendPermissionResponse(res, "deny", "Permission request too large for Clawd bubble; answer in terminal");
+          ctx.sendPermissionResponse(res, "deny", "Permission request too large for Clawd bubble");
           return;
         }
 
@@ -229,7 +246,7 @@ function startHttpServer() {
         }
 
         try {
-          const data = JSON.parse(body);
+          const data = parsedData || JSON.parse(body);
           const toolName = typeof data.tool_name === "string" ? data.tool_name : "Unknown";
           const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
           const toolInput = truncateDeep(rawInput);
@@ -336,6 +353,7 @@ function startHttpServer() {
     syncGeminiHooks();
     syncCursorHooks();
     syncCodeBuddyHooks();
+    syncKiroHooks();
     watchSettingsForHookLoss();
   });
 
@@ -348,6 +366,6 @@ function cleanup() {
   if (httpServer) httpServer.close();
 }
 
-return { startHttpServer, getHookServerPort, syncClawdHooks, syncGeminiHooks, syncCursorHooks, syncCodeBuddyHooks, cleanup };
+return { startHttpServer, getHookServerPort, syncClawdHooks, syncGeminiHooks, syncCursorHooks, syncCodeBuddyHooks, syncKiroHooks, cleanup };
 
 };
