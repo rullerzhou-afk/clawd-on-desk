@@ -22,9 +22,10 @@
 //   TCP is visible to any process on the machine.
 
 import { readFileSync, appendFileSync, writeFileSync, mkdirSync } from "fs";
-import { homedir } from "os";
+import { homedir, platform } from "os";
 import { join } from "path";
 import { randomBytes, timingSafeEqual } from "crypto";
+import { execSync } from "child_process";
 
 const CLAWD_DIR = join(homedir(), ".clawd");
 const RUNTIME_CONFIG_PATH = join(CLAWD_DIR, "runtime.json");
@@ -43,11 +44,50 @@ const AGENT_ID = "opencode";
 // suppress the "back to thinking" regression.
 const ACTIVE_STATES_BLOCKING_THINKING = new Set(["working", "sweeping"]);
 
+// Process tree walk config — mirrors hooks/clawd-hook.js exactly, minus the
+// Claude-specific detection. See docs/plan-opencode-integration.md Phase 4.
+// Spike confirmed (2026-04-05): plugin runs in-process with opencode, so walk
+// starts at process.pid. Observed chains on Windows:
+//   WT:         opencode.exe → node.exe → powershell.exe → windowsterminal.exe
+//   Antigravity: opencode.exe → node.exe → pwsh.exe → antigravity.exe(×2) → explorer.exe
+const TERMINAL_NAMES_WIN = new Set([
+  "windowsterminal.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
+  "code.exe", "alacritty.exe", "wezterm-gui.exe", "mintty.exe",
+  "conemu64.exe", "conemu.exe", "hyper.exe", "tabby.exe",
+  "antigravity.exe", "warp.exe", "iterm.exe", "ghostty.exe",
+]);
+const TERMINAL_NAMES_MAC = new Set([
+  "terminal", "iterm2", "alacritty", "wezterm-gui", "kitty",
+  "hyper", "tabby", "warp", "ghostty",
+]);
+const TERMINAL_NAMES_LINUX = new Set([
+  "gnome-terminal", "kgx", "konsole", "xfce4-terminal", "tilix",
+  "alacritty", "wezterm", "wezterm-gui", "kitty", "ghostty",
+  "xterm", "lxterminal", "terminator", "tabby", "hyper", "warp",
+]);
+const SYSTEM_BOUNDARY_WIN = new Set(["explorer.exe", "services.exe", "winlogon.exe", "svchost.exe"]);
+const SYSTEM_BOUNDARY_MAC = new Set(["launchd", "init", "systemd"]);
+const SYSTEM_BOUNDARY_LINUX = new Set(["systemd", "init"]);
+// Editor detection drives URI-scheme tab focus (code://, cursor://) in Clawd.
+// Antigravity is NOT listed here — it's treated as a plain terminal window.
+const EDITOR_MAP_WIN = { "code.exe": "code", "cursor.exe": "cursor" };
+const EDITOR_MAP_MAC = { "code": "code", "cursor": "cursor" };
+const EDITOR_MAP_LINUX = { "code": "code", "cursor": "cursor", "code-insiders": "code" };
+
 // Per plugin-instance state (scoped to one opencode process).
 let _cachedPort = null;
 let _lastState = null;
 let _lastSessionId = null;
 let _reqCounter = 0;
+// Process tree walk results — populated once by getStablePid() at init, then
+// read by every POST to /state and /permission. null until first resolution.
+let _stablePid = null;
+let _pidChain = [];
+let _detectedEditor = null;
+// Project directory — captured from ctx.directory at init, sent with every
+// POST so state.js can display path.basename(cwd) as the session menu label
+// (otherwise it falls back to the session_id prefix, e.g. "ses 2a..").
+let _cwd = "";
 // opencode HTTP server URL, captured at plugin init from ctx.serverUrl. Kept
 // for debug logging only — see Phase 2 Spike: TUI does not actually listen
 // on this URL. Replies go through _bridgeUrl instead.
@@ -104,11 +144,92 @@ function getPortCandidates() {
   return ordered;
 }
 
+// Walk the process tree from process.pid until we hit a terminal app (for
+// window focus) or a system boundary (explorer.exe / launchd / systemd). The
+// walk keeps going past the first terminal match so we can pick the OUTERMOST
+// terminal — matters for Electron terminals like Antigravity where the chain
+// shows renderer→main, and we want the main process so Clawd can activate the
+// right window. Synchronous + cached; runs once at plugin init (~700-950ms on
+// Windows, 4-6 wmic shellouts). Never throws — returns null if the walk
+// completely fails.
+//
+// Mirrors hooks/clawd-hook.js getStablePid() but starts at process.pid (plugin
+// is in-process with opencode, not a child hook script) and skips the
+// Claude-specific binary detection.
+function getStablePid() {
+  if (_stablePid) return _stablePid;
+  const isWin = platform() === "win32";
+  const isMac = platform() === "darwin";
+  const terminalNames = isWin ? TERMINAL_NAMES_WIN : (isMac ? TERMINAL_NAMES_MAC : TERMINAL_NAMES_LINUX);
+  const systemBoundary = isWin ? SYSTEM_BOUNDARY_WIN : (isMac ? SYSTEM_BOUNDARY_MAC : SYSTEM_BOUNDARY_LINUX);
+  const editorMap = isWin ? EDITOR_MAP_WIN : (isMac ? EDITOR_MAP_MAC : EDITOR_MAP_LINUX);
+
+  let pid = process.pid;
+  let lastGoodPid = pid;
+  let terminalPid = null;
+  _pidChain = [];
+  _detectedEditor = null;
+
+  for (let i = 0; i < 10 && pid && pid > 1; i++) {
+    let name = "";
+    let parentPid = 0;
+    try {
+      if (isWin) {
+        const out = execSync(
+          `wmic process where "ProcessId=${pid}" get Name,ParentProcessId /format:csv`,
+          { encoding: "utf8", timeout: 1500, windowsHide: true }
+        );
+        const lines = out.trim().split("\n").filter((l) => l.includes(","));
+        if (!lines.length) break;
+        const parts = lines[lines.length - 1].split(",");
+        name = (parts[1] || "").trim().toLowerCase();
+        parentPid = parseInt(parts[2], 10) || 0;
+      } else {
+        const commOut = execSync(`ps -o comm= -p ${pid}`, { encoding: "utf8", timeout: 1000 }).trim();
+        name = commOut.split("/").pop().toLowerCase();
+        // macOS: VS Code binary is "Electron" — check full comm path for editor detection
+        if (!_detectedEditor) {
+          const fullLower = commOut.toLowerCase();
+          if (fullLower.includes("visual studio code")) _detectedEditor = "code";
+          else if (fullLower.includes("cursor.app")) _detectedEditor = "cursor";
+        }
+        const ppidOut = execSync(`ps -o ppid= -p ${pid}`, { encoding: "utf8", timeout: 1000 }).trim();
+        parentPid = parseInt(ppidOut, 10) || 0;
+      }
+    } catch {
+      break;
+    }
+    _pidChain.push(pid);
+    if (!_detectedEditor && editorMap[name]) _detectedEditor = editorMap[name];
+    // Hit system process — stop before escaping the user's session boundary.
+    if (systemBoundary.has(name)) break;
+    // Record but don't break: outermost terminal wins (handles Electron
+    // terminals like Antigravity where renderer→main are both "antigravity.exe").
+    if (terminalNames.has(name)) terminalPid = pid;
+    lastGoodPid = pid;
+    if (!parentPid || parentPid === pid || parentPid <= 1) break;
+    pid = parentPid;
+  }
+
+  _stablePid = terminalPid || lastGoodPid;
+  debugLog(`PID resolved stable=${_stablePid} editor=${_detectedEditor || "none"} chain=[${_pidChain.join(",")}]`);
+  return _stablePid;
+}
+
 // Fire-and-forget POST to any Clawd endpoint. Shared by /state and /permission
 // so both benefit from port caching + self-healing discovery. Tries cached port
 // first; on failure walks runtime.json + fallback range. Caches the winning
 // port. Never throws.
 function postToClawd(urlPath, body, logTag) {
+  // Enrich every outbound body with process-tree fields. Cached after first
+  // call so this is just a few object assignments per POST.
+  if (_stablePid) {
+    body.source_pid = _stablePid;
+    if (_pidChain.length) body.pid_chain = _pidChain;
+    if (_detectedEditor) body.editor = _detectedEditor;
+  }
+  if (_cwd) body.cwd = _cwd;
+  body.agent_pid = process.pid;
   const payload = JSON.stringify(body);
   const candidates = getPortCandidates();
   const reqId = ++_reqCounter;
@@ -396,7 +517,12 @@ export default async (ctx) => {
   resetDebugLog();
   _serverUrl = normalizeServerUrl(ctx && ctx.serverUrl);
   _ctxClient = ctx && ctx.client ? ctx.client : null;
-  debugLog(`INIT directory=${ctx && ctx.directory} serverUrl=${_serverUrl} pid=${process.pid} hasClient=${!!_ctxClient}`);
+  _cwd = ctx && typeof ctx.directory === "string" ? ctx.directory : "";
+  debugLog(`INIT directory=${_cwd} serverUrl=${_serverUrl} pid=${process.pid} hasClient=${!!_ctxClient}`);
+  // Resolve terminal PID synchronously at init. ~700-950ms wmic walk on
+  // Windows is acceptable because opencode's TUI is still booting — the user
+  // never sees it. After init, every POST reads the cached result.
+  getStablePid();
   startBridge();
 
   return {
