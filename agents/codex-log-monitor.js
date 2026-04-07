@@ -9,6 +9,7 @@ const os = require("os");
 const APPROVAL_HEURISTIC_MS = 2000;
 const MAX_TRACKED_FILES = 50;
 const MAX_PARTIAL_BYTES = 65536;
+const RECENT_DAY_DIR_CACHE_MS = 60 * 60 * 1000; // 1 hour
 
 class CodexLogMonitor {
   /**
@@ -22,6 +23,9 @@ class CodexLogMonitor {
     // Map<filePath, { offset, sessionId, cwd, lastEventTime, lastState, partial }>
     this._tracked = new Map();
     this._baseDir = this._resolveBaseDir();
+    this._recentDayDirsCache = [];
+    this._recentDayDirsCacheAt = 0;
+    this._recentDayDirsDateKey = "";
   }
 
   _resolveBaseDir() {
@@ -99,10 +103,31 @@ class CodexLogMonitor {
 
     // Fallback: include most recent existing session day dirs.
     // This handles clock/timezone drift between Codex session paths and local date.
-    const recent = this._getRecentExistingDayDirs(7);
+    const recent = this._getCachedRecentExistingDayDirs(7);
     for (const dir of recent) addDir(dir);
 
     return dirs;
+  }
+
+  _getCachedRecentExistingDayDirs(limit = 7) {
+    const now = Date.now();
+    const dateKey = this._getLocalDateKey();
+    const cacheStale = now - this._recentDayDirsCacheAt > RECENT_DAY_DIR_CACHE_MS;
+    const dayChanged = dateKey !== this._recentDayDirsDateKey;
+    if (!this._recentDayDirsCache.length || cacheStale || dayChanged) {
+      this._recentDayDirsCache = this._getRecentExistingDayDirs(limit);
+      this._recentDayDirsCacheAt = now;
+      this._recentDayDirsDateKey = dateKey;
+    }
+    return this._recentDayDirsCache.slice(0, limit);
+  }
+
+  _getLocalDateKey() {
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, "0");
+    const dd = String(now.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
   }
 
   _getRecentExistingDayDirs(limit = 7) {
