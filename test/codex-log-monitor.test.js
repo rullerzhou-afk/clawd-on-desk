@@ -336,6 +336,43 @@ describe("CodexLogMonitor", () => {
     monitor.start();
   });
 
+  it("should emit codex-permission for exec_command function calls", (_, done) => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/projects/foo"}}',
+      '{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\\"cmd\\":\\"git status\\"}"}}',
+    ].join("\n") + "\n");
+
+    const config = makeConfig(tmpDir);
+    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+      if (state === "codex-permission") {
+        assert.strictEqual(extra.permissionDetail.command, "git status");
+        done();
+      }
+    });
+    monitor.start();
+  });
+
+  it("should emit codex-permission immediately for explicit escalated requests", (_, done) => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/projects/foo"}}',
+      '{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\\"cmd\\":\\"git push\\",\\"sandbox_permissions\\":\\"require_escalated\\",\\"justification\\":\\"needs network\\"}"}}',
+    ].join("\n") + "\n");
+
+    const config = makeConfig(tmpDir);
+    const startedAt = Date.now();
+    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+      if (state === "codex-permission") {
+        const elapsed = Date.now() - startedAt;
+        assert.ok(elapsed < 1500, `expected immediate permission signal, got ${elapsed}ms`);
+        assert.strictEqual(extra.permissionDetail.command, "git push");
+        done();
+      }
+    });
+    monitor.start();
+  });
+
   it("should NOT emit codex-permission if exec_command_end arrives within 2s", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     // function_call immediately followed by exec_command_end — auto-approved
@@ -394,6 +431,10 @@ describe("CodexLogMonitor", () => {
     assert.strictEqual(
       monitor._extractShellCommand({ name: "shell_command", arguments: { command: "git status" } }),
       "git status"
+    );
+    assert.strictEqual(
+      monitor._extractShellCommand({ name: "exec_command", arguments: '{"cmd":"ls -la"}' }),
+      "ls -la"
     );
     // Non-shell function
     assert.strictEqual(

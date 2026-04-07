@@ -295,10 +295,11 @@ class CodexLogMonitor {
       tracked.hadToolUse = false;
       tracked.lastState = resolved;
       tracked.lastEventTime = Date.now();
+      const agentPid = this._resolveTrackedAgentPid(tracked);
       this._onStateChange(tracked.sessionId, resolved, key, {
         cwd: tracked.cwd,
-        sourcePid: null,
-        agentPid: null,
+        sourcePid: agentPid,
+        agentPid,
       });
       return;
     }
@@ -309,6 +310,17 @@ class CodexLogMonitor {
       if (tracked.approvalTimer) clearTimeout(tracked.approvalTimer);
       const cmd = this._extractShellCommand(payload);
       if (cmd) {
+        if (this._isExplicitApprovalRequest(payload)) {
+          const agentPid = this._resolveTrackedAgentPid(tracked);
+          tracked.lastEventTime = Date.now();
+          this._onStateChange(tracked.sessionId, "codex-permission", key, {
+            cwd: tracked.cwd,
+            sourcePid: agentPid,
+            agentPid,
+            permissionDetail: { command: cmd, rawPayload: payload },
+          });
+          return;
+        }
         tracked.approvalTimer = setTimeout(() => {
           tracked.approvalTimer = null;
           const agentPid = this._resolveTrackedAgentPid(tracked);
@@ -337,16 +349,32 @@ class CodexLogMonitor {
   }
 
   // Extract shell command from function_call payload
-  // payload.arguments is a JSON string: {"command":"...","workdir":"...","timeout_ms":...}
+  // payload.arguments is typically:
+  //   shell_command: {"command":"...","workdir":"..."}
+  //   exec_command:  {"cmd":"...","workdir":"..."}
   _extractShellCommand(payload) {
     if (!payload || typeof payload !== "object") return "";
-    if (payload.name !== "shell_command") return "";
+    if (payload.name !== "shell_command" && payload.name !== "exec_command") return "";
     try {
       const args = typeof payload.arguments === "string"
         ? JSON.parse(payload.arguments) : payload.arguments;
       if (args && args.command) return String(args.command);
+      if (args && args.cmd) return String(args.cmd);
     } catch {}
     return "";
+  }
+
+  _isExplicitApprovalRequest(payload) {
+    if (!payload || typeof payload !== "object") return false;
+    if (payload.name !== "shell_command" && payload.name !== "exec_command") return false;
+    try {
+      const args = typeof payload.arguments === "string"
+        ? JSON.parse(payload.arguments) : payload.arguments;
+      if (!args || typeof args !== "object") return false;
+      if (args.sandbox_permissions === "require_escalated") return true;
+      if (typeof args.justification === "string" && args.justification.trim()) return true;
+    } catch {}
+    return false;
   }
 
   // Extract UUID from rollout filename

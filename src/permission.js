@@ -458,6 +458,7 @@ function handleDecide(event, behavior) {
 const CODEX_NOTIFY_EXPIRE_MS = 30000;
 
 function showCodexNotifyBubble({ sessionId, command, codexPid }) {
+  permLog(`codex notify request: session=${sessionId} pid=${codexPid || "?"} cmd=${(command || "").slice(0, 120)}`);
   if (ctx.doNotDisturb || ctx.hideBubbles) {
     permLog(`codex notify suppressed: session=${sessionId} dnd=${ctx.doNotDisturb} hideBubbles=${ctx.hideBubbles}`);
     return;
@@ -474,6 +475,7 @@ function showCodexNotifyBubble({ sessionId, command, codexPid }) {
     autoExpireTimer: null,
   };
   pendingPermissions.push(permEntry);
+  permLog(`codex notify shown: session=${sessionId} pending=${pendingPermissions.length}`);
   showPermissionBubble(permEntry);
   permEntry.autoExpireTimer = setTimeout(() => {
     dismissCodexNotify(permEntry);
@@ -515,6 +517,9 @@ function clearCodexNotifyBubbles(sessionId) {
   const toRemove = pendingPermissions.filter(
     p => p.isCodexNotify && p.sessionId === sessionId
   );
+  if (toRemove.length) {
+    permLog(`codex notify clear: session=${sessionId} count=${toRemove.length}`);
+  }
   for (const perm of toRemove) dismissCodexNotify(perm);
 }
 

@@ -1089,6 +1089,7 @@ if (!gotTheLock) {
       const codexAgent = require("../agents/codex");
       _codexMonitor = new CodexLogMonitor(codexAgent, (sid, state, event, extra) => {
         if (state === "codex-permission") {
+          permLog(`codex-permission detected: sid=${sid} event=${event} pid=${extra.agentPid || "?"} cmd=${(extra.permissionDetail?.command || "").slice(0, 120)}`);
           updateSession(
             sid,
             "notification",
@@ -1107,8 +1108,12 @@ if (!gotTheLock) {
           });
           return;
         }
-        // Non-permission event — clear any lingering Codex notify bubbles
-        clearCodexNotifyBubbles(sid);
+        // Only clear Codex notify bubbles when a turn has resolved or errored.
+        // Do not clear on normal progress states (e.g. "working"), otherwise
+        // permission popups can disappear immediately after being shown.
+        if (state === "idle" || state === "attention" || state === "error") {
+          clearCodexNotifyBubbles(sid);
+        }
         updateSession(sid, state, event, null, extra.cwd, null, null, null, "codex");
       });
       _codexMonitor.start();
