@@ -100,6 +100,18 @@ function syncOpencodePlugin() {
   }
 }
 
+function syncStatusLineProxy() {
+  try {
+    const { registerStatusLine } = require("../hooks/statusline-install.js");
+    const { added, updated } = registerStatusLine({ silent: true });
+    if (added || updated) {
+      console.log(`Clawd: synced statusLine proxy (added=${added}, updated=${updated})`);
+    }
+  } catch (err) {
+    console.warn("Clawd: failed to sync statusLine proxy:", err.message);
+  }
+}
+
 function sendStateHealthResponse(res) {
   const body = JSON.stringify({ ok: true, app: CLAWD_SERVER_ID, port: getHookServerPort() });
   res.writeHead(200, {
@@ -438,6 +450,37 @@ function startHttpServer() {
           }
         }
       });
+    } else if (req.method === "POST" && req.url === "/usage") {
+      let body = "";
+      let bodySize = 0;
+      let tooLarge = false;
+      req.on("data", (chunk) => {
+        if (tooLarge) return;
+        bodySize += chunk.length;
+        if (bodySize > 4096) { tooLarge = true; return; }
+        body += chunk;
+      });
+      req.on("end", () => {
+        if (tooLarge) {
+          res.writeHead(413);
+          res.end("usage payload too large");
+          return;
+        }
+        let data;
+        try {
+          data = JSON.parse(body);
+        } catch {
+          res.writeHead(400);
+          res.end("bad json");
+          return;
+        }
+        ctx.usageData = { ...data, updatedAt: Date.now() };
+        ctx.sendToRenderer("usage-update", ctx.usageData);
+        ctx.buildContextMenu();
+        ctx.buildTrayMenu();
+        res.writeHead(200, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+        res.end("ok");
+      });
     } else {
       res.writeHead(404);
       res.end();
@@ -476,6 +519,7 @@ function startHttpServer() {
       syncCodeBuddyHooks();
       syncKiroHooks();
       syncOpencodePlugin();
+      syncStatusLineProxy();
       watchSettingsForHookLoss();
     });
   });
@@ -489,6 +533,6 @@ function cleanup() {
   if (httpServer) httpServer.close();
 }
 
-return { startHttpServer, getHookServerPort, syncClawdHooks, syncGeminiHooks, syncCursorHooks, syncCodeBuddyHooks, syncKiroHooks, syncOpencodePlugin, cleanup };
+return { startHttpServer, getHookServerPort, syncClawdHooks, syncGeminiHooks, syncCursorHooks, syncCodeBuddyHooks, syncKiroHooks, syncOpencodePlugin, syncStatusLineProxy, cleanup };
 
 };

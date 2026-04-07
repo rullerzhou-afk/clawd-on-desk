@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   onPlayClickReaction: (cb) => ipcRenderer.on("play-click-reaction", (_, svg, duration) => cb(svg, duration)),
   // Sound playback (from main)
   onPlaySound: (cb) => ipcRenderer.on("play-sound", (_, name) => cb(name)),
+  // Usage badge
+  onUsageUpdate: (cb) => ipcRenderer.on("usage-update", (_, data) => cb(data)),
   // Render window → main (cursor polling control during reactions)
   pauseCursorPolling: () => ipcRenderer.send("pause-cursor-polling"),
   resumeFromReaction: () => ipcRenderer.send("resume-from-reaction"),

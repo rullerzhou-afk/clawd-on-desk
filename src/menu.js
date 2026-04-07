@@ -101,6 +101,13 @@ const i18n = {
     sessionMinAgo: "{n}m ago",
     sessionHrAgo: "{n}h ago",
     soundEffects: "Sound Effects",
+    usage: "Usage",
+    usage5h: "5h Window",
+    usage7d: "Weekly",
+    usageContext: "Context",
+    usageCost: "Session Cost",
+    usageModel: "Model",
+    usageResets: "resets in {time}",
     showPet: "Show Clawd",
     hidePet: "Hide Clawd",
     theme: "Theme",
@@ -155,6 +162,13 @@ const i18n = {
     sessionMinAgo: "{n}分钟前",
     sessionHrAgo: "{n}小时前",
     soundEffects: "音效",
+    usage: "使用量",
+    usage5h: "5 小时窗口",
+    usage7d: "每周",
+    usageContext: "上下文",
+    usageCost: "本次花费",
+    usageModel: "模型",
+    usageResets: "{time}后重置",
     showPet: "显示 Clawd",
     hidePet: "隐藏 Clawd",
     theme: "主题",
@@ -198,6 +212,81 @@ module.exports = function initMenu(ctx) {
     });
 
     return items;
+  }
+
+  // ── Usage submenu builder ──
+  function formatTimeRemaining(resetAt) {
+    if (!resetAt) return null;
+    const now = Date.now();
+    // resets_at can be a Unix timestamp in seconds or an ISO date string
+    let resetMs = typeof resetAt === "number" && resetAt < 1e12
+      ? resetAt * 1000
+      : new Date(resetAt).getTime();
+    if (Number.isNaN(resetMs)) return null;
+    const diff = resetMs - now;
+    if (diff <= 0) return "0m";
+    const days = Math.floor(diff / 86400000);
+    const hours = Math.floor((diff % 86400000) / 3600000);
+    const mins = Math.floor((diff % 3600000) / 60000);
+    if (days > 0) return `${days}d${hours}h`;
+    if (hours > 0) return `${hours}h${mins}m`;
+    return `${mins}m`;
+  }
+
+  function usageBar(pct) {
+    const filled = Math.round((pct / 100) * 10);
+    const empty = 10 - filled;
+    return "█".repeat(filled) + "░".repeat(empty);
+  }
+
+  function buildUsageSubmenu() {
+    const u = ctx.usageData;
+    if (!u) return [{ label: t("usageNoData"), enabled: false }];
+    // Stale check: ignore data older than 10 minutes
+    if (u.updatedAt && Date.now() - u.updatedAt > 600000) {
+      return [{ label: t("usageNoData"), enabled: false }];
+    }
+    const items = [];
+    if (u.model && u.model.display_name) {
+      items.push({ label: `${t("usageModel")}: ${u.model.display_name}`, enabled: false });
+    }
+    if (u.cost && typeof u.cost.total_cost_usd === "number") {
+      items.push({ label: `${t("usageCost")}: $${u.cost.total_cost_usd.toFixed(3)}`, enabled: false });
+    }
+    if (u.rate_limits) {
+      if (u.rate_limits.five_hour) {
+        const pct = Math.round(u.rate_limits.five_hour.used_percentage || 0);
+        const bar = usageBar(pct);
+        let label = `${t("usage5h")}  ${bar}  ${pct}%`;
+        const remaining = formatTimeRemaining(u.rate_limits.five_hour.resets_at);
+        if (remaining) label += `  (${t("usageResets").replace("{time}", remaining)})`;
+        items.push({ label, enabled: false });
+      }
+      if (u.rate_limits.seven_day) {
+        const pct = Math.round(u.rate_limits.seven_day.used_percentage || 0);
+        const bar = usageBar(pct);
+        let label = `${t("usage7d")}  ${bar}  ${pct}%`;
+        const remaining = formatTimeRemaining(u.rate_limits.seven_day.resets_at);
+        if (remaining) label += `  (${t("usageResets").replace("{time}", remaining)})`;
+        items.push({ label, enabled: false });
+      }
+    }
+    if (u.context_window && typeof u.context_window.used_percentage === "number") {
+      const pct = Math.round(u.context_window.used_percentage);
+      const bar = usageBar(pct);
+      items.push({ label: `${t("usageContext")}  ${bar}  ${pct}%`, enabled: false });
+    }
+    return items;
+  }
+
+  function buildUsageMenuItems() {
+    const u = ctx.usageData;
+    if (!u || !u.rate_limits) return [];
+    if (u.updatedAt && Date.now() - u.updatedAt > 600000) return [];
+    return [
+      { label: t("usage"), submenu: buildUsageSubmenu() },
+      { type: "separator" },
+    ];
   }
 
   // ── System tray ──
@@ -311,6 +400,7 @@ module.exports = function initMenu(ctx) {
         },
       },
       { type: "separator" },
+      ...buildUsageMenuItems(),
       {
         label: t("theme"),
         submenu: buildThemeSubmenu(),
@@ -503,6 +593,7 @@ module.exports = function initMenu(ctx) {
         submenu: ctx.buildSessionSubmenu(),
       },
       { type: "separator" },
+      ...buildUsageMenuItems(),
       {
         label: t("theme"),
         submenu: buildThemeSubmenu(),

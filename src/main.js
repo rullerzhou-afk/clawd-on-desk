@@ -106,6 +106,7 @@ let bubbleFollowPet = false;
 let hideBubbles = false;
 let showSessionId = false;
 let soundMuted = false;
+let usageData = null;
 let petHidden = false;
 const DEFAULT_TOGGLE_SHORTCUT = "CommandOrControl+Shift+Alt+C";
 
@@ -356,6 +357,11 @@ const _serverCtx = {
   showPermissionBubble,
   replyOpencodePermission,
   permLog,
+  sendToRenderer,
+  buildContextMenu: () => buildContextMenu(),
+  buildTrayMenu: () => buildTrayMenu(),
+  get usageData() { return usageData; },
+  set usageData(v) { usageData = v; },
 };
 const _server = require("./server")(_serverCtx);
 const { startHttpServer, getHookServerPort } = _server;
@@ -488,6 +494,7 @@ const _menuCtx = {
   discoverThemes: () => themeLoader.discoverThemes(),
   getActiveThemeId: () => activeTheme ? activeTheme._id : "clawd",
   ensureUserThemesDir: () => themeLoader.ensureUserThemesDir(),
+  get usageData() { return usageData; },
 };
 const _menu = require("./menu")(_menuCtx);
 const { t, buildContextMenu, buildTrayMenu, rebuildAllMenus, createTray,

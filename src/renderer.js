@@ -284,8 +284,51 @@ function swapToFile(file, state, useObjectChannel) {
   }
 }
 
+// --- Usage badge (below pet during working/thinking states) ---
+const usageBadge = document.getElementById("usage-badge");
+let usageBadgeData = null;
+const USAGE_BADGE_STATES = new Set(["working", "thinking", "juggling"]);
+
+function pickBarColor(pct) {
+  if (pct >= 80) return "#ff5252";
+  if (pct >= 50) return "#ffab40";
+  return "#69f0ae";
+}
+
+function fmtRemaining(resetAt) {
+  if (!resetAt) return null;
+  const resetMs = typeof resetAt === "number" && resetAt < 1e12 ? resetAt * 1000 : new Date(resetAt).getTime();
+  if (Number.isNaN(resetMs)) return null;
+  const diff = resetMs - Date.now();
+  if (diff <= 0) return "0m";
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  return h > 0 ? `${h}h${m}m` : `${m}m`;
+}
+
+function renderUsageBadge(state) {
+  if (!usageBadge) return;
+  const fh = usageBadgeData && usageBadgeData.rate_limits && usageBadgeData.rate_limits.five_hour;
+  if (!fh || typeof fh.used_percentage !== "number" || !USAGE_BADGE_STATES.has(state)) {
+    usageBadge.classList.remove("visible");
+    return;
+  }
+  const pct = Math.round(fh.used_percentage);
+  const color = pickBarColor(pct);
+  const remaining = fmtRemaining(fh.resets_at);
+  const text = remaining ? `${pct}%/${remaining}` : `${pct}%`;
+  usageBadge.textContent = text;
+  usageBadge.style.color = color;
+  usageBadge.classList.add("visible");
+}
+
+window.electronAPI.onUsageUpdate((data) => {
+  usageBadgeData = data;
+});
+
 // --- State change → switch animation (preload + instant swap) ---
 window.electronAPI.onStateChange((state, svg) => {
+  renderUsageBadge(state);
   // Main process state change → cancel any active click reaction
   cancelReaction();
 
