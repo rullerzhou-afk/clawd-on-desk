@@ -26,6 +26,7 @@ class CodexLogMonitor {
     this._recentDayDirsCache = [];
     this._recentDayDirsCacheAt = 0;
     this._recentDayDirsDateKey = "";
+    this._startedAtMs = Date.now();
   }
 
   _resolveBaseDir() {
@@ -38,6 +39,7 @@ class CodexLogMonitor {
 
   start() {
     if (this._interval) return;
+    this._startedAtMs = Date.now();
     // Initial scan
     this._poll();
     this._interval = setInterval(
@@ -247,6 +249,14 @@ class CodexLogMonitor {
       obj = JSON.parse(line);
     } catch {
       return; // corrupted line, skip
+    }
+
+    // Skip historical timestamped events that predate monitor start.
+    // This prevents replay storms on app restart from driving stale state
+    // transitions (e.g., old permission -> old clear) in live UI.
+    if (obj && typeof obj.timestamp === "string") {
+      const ts = Date.parse(obj.timestamp);
+      if (Number.isFinite(ts) && ts < this._startedAtMs - 1500) return;
     }
 
     const type = obj.type;

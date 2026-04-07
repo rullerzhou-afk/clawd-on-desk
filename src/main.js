@@ -1092,7 +1092,7 @@ if (!gotTheLock) {
           permLog(`codex-permission detected: sid=${sid} event=${event} pid=${extra.agentPid || "?"} cmd=${(extra.permissionDetail?.command || "").slice(0, 120)}`);
           updateSession(
             sid,
-            "notification",
+            "working",
             event,
             extra.sourcePid || null,
             extra.cwd,

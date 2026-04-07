@@ -5,6 +5,7 @@ const { BrowserWindow, globalShortcut } = require("electron");
 const path = require("path");
 const http = require("http");
 const fs = require("fs");
+const { execFileSync } = require("child_process");
 const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
@@ -487,9 +488,58 @@ function replyCodexPermission(permEntry, behavior) {
   const pid = Number(permEntry.codexPid);
   if (!Number.isFinite(pid) || pid <= 1) return false;
   const input = behavior === "allow" ? "y\n" : "n\n";
+  const key = behavior === "allow" ? "y" : "n";
+  let stdinTarget = "";
+  let stdinLooksLikeTty = false;
+  try {
+    stdinTarget = fs.readlinkSync(`/proc/${pid}/fd/0`);
+    stdinLooksLikeTty = /^\/dev\/(pts|tty)\//.test(stdinTarget) || stdinTarget === "/dev/tty";
+  } catch {}
+  // Preferred path: inject keypress into the Codex window via xdotool.
+  // This works for interactive TTY prompts where writing to fd/0 may not.
+  try {
+    const out = execFileSync("xdotool", ["search", "--pid", String(pid)], {
+      encoding: "utf8",
+      timeout: 700,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const wins = String(out).trim().split(/\s+/).filter(Boolean);
+    if (wins.length) {
+      const winId = wins[wins.length - 1];
+      execFileSync("xdotool", ["key", "--window", winId, "--clearmodifiers", key, "Return"], {
+        timeout: 700,
+        stdio: ["ignore", "ignore", "ignore"],
+      });
+      permLog(`codex reply via xdotool: pid=${pid} window=${winId} behavior=${behavior}`);
+      return true;
+    }
+  } catch (err) {
+    permLog(`codex xdotool path failed: pid=${pid} behavior=${behavior} err=${err.message}`);
+  }
+
+  // Fallback: Codex often runs inside a terminal multiplexer and has no own GUI
+  // window. Focus the terminal session window, then send global key events.
+  try {
+    ctx.focusTerminalForSession(permEntry.sessionId);
+    execFileSync("xdotool", ["key", "--clearmodifiers", key, "Return"], {
+      timeout: 900,
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    permLog(`codex reply via focused window: session=${permEntry.sessionId} behavior=${behavior}`);
+    return true;
+  } catch (err) {
+    permLog(`codex focused-window key failed: session=${permEntry.sessionId} behavior=${behavior} err=${err.message}`);
+  }
+
+  if (stdinLooksLikeTty) {
+    permLog(`codex fd0 fallback skipped for tty stdin: pid=${pid} target=${stdinTarget || "unknown"}`);
+    return false;
+  }
+
+  // Fallback: write to stdin fd directly. This can work for non-interactive pipes.
   try {
     fs.writeFileSync(`/proc/${pid}/fd/0`, input, "utf8");
-    permLog(`codex reply: pid=${pid} behavior=${behavior}`);
+    permLog(`codex reply via fd0: pid=${pid} behavior=${behavior}`);
     return true;
   } catch (err) {
     permLog(`codex reply failed: pid=${pid} behavior=${behavior} err=${err.message}`);

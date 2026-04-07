@@ -9,13 +9,20 @@
 // This launcher strips that variable before spawning the real Electron binary.
 
 const { spawn } = require("child_process");
-const path = require("path");
 const electron = require("electron");
 
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
+if (process.platform === "linux") {
+  // Some environments still trip Chromium sandbox initialization even with
+  // argv flags; force-disable via env too for local dev reliability.
+  env.ELECTRON_DISABLE_SANDBOX = "1";
+  env.CHROME_DEVEL_SANDBOX = "";
+}
 
-const args = process.platform === "linux" ? [".", "--no-sandbox"] : ["."];
+const args = process.platform === "linux"
+  ? [".", "--no-sandbox", "--disable-setuid-sandbox"]
+  : ["."];
 const child = spawn(electron, args, {
   stdio: "inherit",
   env,
