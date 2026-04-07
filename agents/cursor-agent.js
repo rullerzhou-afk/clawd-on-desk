@@ -17,7 +17,7 @@ module.exports = {
     beforeSubmitPrompt: "thinking",
     preToolUse: "working",
     postToolUse: "working",
-    postToolUseFailure: "error",
+    postToolUseFailure: "working",
     stop: "attention",
     subagentStart: "juggling",
     subagentStop: "working",

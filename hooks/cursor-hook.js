@@ -11,7 +11,7 @@ const HOOK_TO_STATE = {
   beforeSubmitPrompt: { state: "thinking", event: "UserPromptSubmit" },
   preToolUse: { state: "working", event: "PreToolUse" },
   postToolUse: { state: "working", event: "PostToolUse" },
-  postToolUseFailure: { state: "error", event: "PostToolUseFailure" },
+  postToolUseFailure: { state: "working", event: "PostToolUseFailure" },
   subagentStart: { state: "juggling", event: "SubagentStart" },
   subagentStop: { state: "working", event: "SubagentStop" },
   preCompact: { state: "sweeping", event: "PreCompact" },
