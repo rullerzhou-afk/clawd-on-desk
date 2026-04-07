@@ -198,11 +198,13 @@ class CodexLogMonitor {
       tracked = {
         offset: 0,
         sessionId: "codex:" + sessionId,
+        filePath,
         cwd: "",
         lastEventTime: Date.now(),
         lastState: null,
         partial: "",
         hadToolUse: false,
+        agentPid: null,
       };
       this._tracked.set(filePath, tracked);
     }
@@ -309,11 +311,12 @@ class CodexLogMonitor {
       if (cmd) {
         tracked.approvalTimer = setTimeout(() => {
           tracked.approvalTimer = null;
+          const agentPid = this._resolveTrackedAgentPid(tracked);
           tracked.lastEventTime = Date.now();
           this._onStateChange(tracked.sessionId, "codex-permission", key, {
             cwd: tracked.cwd,
-            sourcePid: null,
-            agentPid: null,
+            sourcePid: agentPid,
+            agentPid,
             permissionDetail: { command: cmd, rawPayload: payload },
           });
         }, APPROVAL_HEURISTIC_MS);
@@ -325,10 +328,11 @@ class CodexLogMonitor {
     tracked.lastState = state;
     tracked.lastEventTime = Date.now();
 
+    const agentPid = this._resolveTrackedAgentPid(tracked);
     this._onStateChange(tracked.sessionId, state, key, {
       cwd: tracked.cwd,
-      sourcePid: null, // JSONL doesn't contain terminal PID
-      agentPid: null, // can't reliably match from log file
+      sourcePid: agentPid,
+      agentPid,
     });
   }
 
@@ -354,6 +358,63 @@ class CodexLogMonitor {
     // UUID: last 5 parts (8-4-4-4-12 hex)
     if (parts.length < 10) return null;
     return parts.slice(-5).join("-");
+  }
+
+  _resolveTrackedAgentPid(tracked) {
+    if (tracked.agentPid && this._isProcessAlive(tracked.agentPid)) {
+      return tracked.agentPid;
+    }
+    const pid = this._findCodexWriterPid(tracked.filePath);
+    tracked.agentPid = pid || null;
+    return tracked.agentPid;
+  }
+
+  _isProcessAlive(pid) {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err) {
+      return err && err.code === "EPERM";
+    }
+  }
+
+  // Linux-only best-effort lookup: find codex process that currently has the
+  // rollout file open in /proc/<pid>/fd/*.
+  _findCodexWriterPid(filePath) {
+    if (process.platform !== "linux" || !filePath) return null;
+    let procEntries;
+    try {
+      procEntries = fs.readdirSync("/proc", { withFileTypes: true });
+    } catch {
+      return null;
+    }
+    for (const ent of procEntries) {
+      if (!ent.isDirectory() || !/^\d+$/.test(ent.name)) continue;
+      const pid = Number(ent.name);
+      if (!Number.isFinite(pid) || pid <= 1) continue;
+
+      // Fast prefilter: skip non-codex processes before scanning fd directory.
+      try {
+        const cmd = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8");
+        if (!cmd.includes("codex")) continue;
+      } catch {
+        continue;
+      }
+
+      let fds;
+      try {
+        fds = fs.readdirSync(`/proc/${pid}/fd`);
+      } catch {
+        continue;
+      }
+      for (const fd of fds) {
+        try {
+          const target = fs.readlinkSync(`/proc/${pid}/fd/${fd}`);
+          if (target === filePath) return pid;
+        } catch {}
+      }
+    }
+    return null;
   }
 
   // Remove files not updated for 5 minutes

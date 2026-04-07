@@ -4,6 +4,7 @@
 const { BrowserWindow, globalShortcut } = require("electron");
 const path = require("path");
 const http = require("http");
+const fs = require("fs");
 const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
@@ -394,6 +395,15 @@ function handleDecide(event, behavior) {
   permLog(`IPC permission-decide: behavior=${behavior} matched=${!!perm}`);
   if (!perm) return;
   if (perm.isCodexNotify) {
+    if (behavior === "allow" || behavior === "deny") {
+      const replied = replyCodexPermission(perm, behavior);
+      if (!replied) {
+        // Best-effort fallback when direct stdin write is unavailable.
+        ctx.focusTerminalForSession(perm.sessionId);
+      }
+    } else if (behavior === "deny-and-focus") {
+      ctx.focusTerminalForSession(perm.sessionId);
+    }
     dismissCodexNotify(perm);
     return;
   }
@@ -447,7 +457,7 @@ function handleDecide(event, behavior) {
 
 const CODEX_NOTIFY_EXPIRE_MS = 30000;
 
-function showCodexNotifyBubble({ sessionId, command }) {
+function showCodexNotifyBubble({ sessionId, command, codexPid }) {
   if (ctx.doNotDisturb || ctx.hideBubbles) {
     permLog(`codex notify suppressed: session=${sessionId} dnd=${ctx.doNotDisturb} hideBubbles=${ctx.hideBubbles}`);
     return;
@@ -460,6 +470,7 @@ function showCodexNotifyBubble({ sessionId, command }) {
     toolInput: { command: command || "(unknown)" },
     resolvedSuggestion: null, createdAt: Date.now(),
     isElicitation: false, isCodexNotify: true,
+    codexPid: Number.isFinite(codexPid) && codexPid > 1 ? Math.floor(codexPid) : null,
     autoExpireTimer: null,
   };
   pendingPermissions.push(permEntry);
@@ -467,6 +478,21 @@ function showCodexNotifyBubble({ sessionId, command }) {
   permEntry.autoExpireTimer = setTimeout(() => {
     dismissCodexNotify(permEntry);
   }, CODEX_NOTIFY_EXPIRE_MS);
+}
+
+function replyCodexPermission(permEntry, behavior) {
+  if (process.platform !== "linux") return false;
+  const pid = Number(permEntry.codexPid);
+  if (!Number.isFinite(pid) || pid <= 1) return false;
+  const input = behavior === "allow" ? "y\n" : "n\n";
+  try {
+    fs.writeFileSync(`/proc/${pid}/fd/0`, input, "utf8");
+    permLog(`codex reply: pid=${pid} behavior=${behavior}`);
+    return true;
+  } catch (err) {
+    permLog(`codex reply failed: pid=${pid} behavior=${behavior} err=${err.message}`);
+    return false;
+  }
 }
 
 function dismissCodexNotify(permEntry) {

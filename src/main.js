@@ -1089,10 +1089,21 @@ if (!gotTheLock) {
       const codexAgent = require("../agents/codex");
       _codexMonitor = new CodexLogMonitor(codexAgent, (sid, state, event, extra) => {
         if (state === "codex-permission") {
-          updateSession(sid, "notification", event, null, extra.cwd, null, null, null, "codex");
+          updateSession(
+            sid,
+            "notification",
+            event,
+            extra.sourcePid || null,
+            extra.cwd,
+            null,
+            null,
+            extra.agentPid || null,
+            "codex"
+          );
           showCodexNotifyBubble({
             sessionId: sid,
             command: extra.permissionDetail?.command || "",
+            codexPid: extra.agentPid || null,
           });
           return;
         }
