@@ -4,8 +4,7 @@
 const { BrowserWindow, globalShortcut } = require("electron");
 const path = require("path");
 const http = require("http");
-const fs = require("fs");
-const { execFileSync } = require("child_process");
+const { execFile } = require("child_process");
 const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
@@ -188,6 +187,7 @@ function showPermissionBubble(permEntry) {
       toolName: permEntry.toolName,
       toolInput: permEntry.toolInput,
       suggestions: permEntry.suggestions || [],
+      platform: process.platform,
       lang: ctx.lang,
       isElicitation: permEntry.isElicitation || false,
       isOpencode: permEntry.isOpencode || false,
@@ -397,13 +397,11 @@ function handleDecide(event, behavior) {
   if (!perm) return;
   if (perm.isCodexNotify) {
     if (behavior === "allow" || behavior === "deny") {
-      const replied = replyCodexPermission(perm, behavior);
-      if (!replied) {
-        // Best-effort fallback when direct stdin write is unavailable.
-        ctx.focusTerminalForSession(perm.sessionId);
-      }
+      replyCodexPermission(perm, behavior);
     } else if (behavior === "deny-and-focus") {
       ctx.focusTerminalForSession(perm.sessionId);
+    } else if (behavior === "dismiss") {
+      // No-op; just close bubble below.
     }
     dismissCodexNotify(perm);
     return;
@@ -484,67 +482,49 @@ function showCodexNotifyBubble({ sessionId, command, codexPid }) {
 }
 
 function replyCodexPermission(permEntry, behavior) {
-  if (process.platform !== "linux") return false;
+  if (process.platform !== "linux") return;
   const pid = Number(permEntry.codexPid);
-  if (!Number.isFinite(pid) || pid <= 1) return false;
-  const input = behavior === "allow" ? "y\n" : "n\n";
-  const key = behavior === "allow" ? "y" : "n";
-  let stdinTarget = "";
-  let stdinLooksLikeTty = false;
-  try {
-    stdinTarget = fs.readlinkSync(`/proc/${pid}/fd/0`);
-    stdinLooksLikeTty = /^\/dev\/(pts|tty)\//.test(stdinTarget) || stdinTarget === "/dev/tty";
-  } catch {}
-  // Preferred path: inject keypress into the Codex window via xdotool.
-  // This works for interactive TTY prompts where writing to fd/0 may not.
-  try {
-    const out = execFileSync("xdotool", ["search", "--pid", String(pid)], {
-      encoding: "utf8",
-      timeout: 700,
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    const wins = String(out).trim().split(/\s+/).filter(Boolean);
-    if (wins.length) {
-      const winId = wins[wins.length - 1];
-      execFileSync("xdotool", ["key", "--window", winId, "--clearmodifiers", key, "Return"], {
-        timeout: 700,
-        stdio: ["ignore", "ignore", "ignore"],
-      });
-      permLog(`codex reply via xdotool: pid=${pid} window=${winId} behavior=${behavior}`);
-      return true;
-    }
-  } catch (err) {
-    permLog(`codex xdotool path failed: pid=${pid} behavior=${behavior} err=${err.message}`);
-  }
-
-  // Fallback: Codex often runs inside a terminal multiplexer and has no own GUI
-  // window. Focus the terminal session window, then send global key events.
-  try {
+  if (!Number.isFinite(pid) || pid <= 1) {
     ctx.focusTerminalForSession(permEntry.sessionId);
-    execFileSync("xdotool", ["key", "--clearmodifiers", key, "Return"], {
-      timeout: 900,
-      stdio: ["ignore", "ignore", "ignore"],
-    });
-    permLog(`codex reply via focused window: session=${permEntry.sessionId} behavior=${behavior}`);
-    return true;
-  } catch (err) {
-    permLog(`codex focused-window key failed: session=${permEntry.sessionId} behavior=${behavior} err=${err.message}`);
+    return;
   }
-
-  if (stdinLooksLikeTty) {
-    permLog(`codex fd0 fallback skipped for tty stdin: pid=${pid} target=${stdinTarget || "unknown"}`);
-    return false;
-  }
-
-  // Fallback: write to stdin fd directly. This can work for non-interactive pipes.
-  try {
-    fs.writeFileSync(`/proc/${pid}/fd/0`, input, "utf8");
-    permLog(`codex reply via fd0: pid=${pid} behavior=${behavior}`);
-    return true;
-  } catch (err) {
-    permLog(`codex reply failed: pid=${pid} behavior=${behavior} err=${err.message}`);
-    return false;
-  }
+  const key = behavior === "allow" ? "y" : "n";
+  execFile(
+    "xdotool",
+    ["search", "--pid", String(pid)],
+    { encoding: "utf8", timeout: 700 },
+    (searchErr, stdout) => {
+      if (searchErr) {
+        if (searchErr.code !== "ENOENT") {
+          permLog(`codex xdotool search failed: pid=${pid} behavior=${behavior} err=${searchErr.message}`);
+        }
+        ctx.focusTerminalForSession(permEntry.sessionId);
+        return;
+      }
+      const wins = String(stdout || "").trim().split(/\s+/).filter(Boolean);
+      if (!wins.length) {
+        permLog(`codex xdotool search found no window: pid=${pid} behavior=${behavior}`);
+        ctx.focusTerminalForSession(permEntry.sessionId);
+        return;
+      }
+      const winId = wins[wins.length - 1];
+      execFile(
+        "xdotool",
+        ["key", "--window", winId, "--clearmodifiers", key, "Return"],
+        { timeout: 700 },
+        (keyErr) => {
+          if (keyErr) {
+            if (keyErr.code !== "ENOENT") {
+              permLog(`codex xdotool key failed: pid=${pid} window=${winId} behavior=${behavior} err=${keyErr.message}`);
+            }
+            ctx.focusTerminalForSession(permEntry.sessionId);
+            return;
+          }
+          permLog(`codex reply via xdotool: pid=${pid} window=${winId} behavior=${behavior}`);
+        }
+      );
+    }
+  );
 }
 
 function dismissCodexNotify(permEntry) {

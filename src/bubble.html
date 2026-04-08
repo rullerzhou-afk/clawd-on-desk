@@ -273,6 +273,8 @@ const btnDeny = document.getElementById("btnDeny");
 const suggestionsContainer = document.getElementById("suggestions");
 const headerTitle = document.querySelector(".header-title");
 let elicitationMode = false;
+let codexNotifyMode = false;
+let codexCanReply = false;
 
 function formatDetail(name, input) {
   if (!input || typeof input !== "object") return "";
@@ -331,6 +333,8 @@ function revealCard() {
 }
 
 function show(data) {
+  codexNotifyMode = false;
+  codexCanReply = false;
   elicitationMode = data.isElicitation || false;
 
   // opencode branch — Phase 2. Three differences from CC:
@@ -424,25 +428,31 @@ function show(data) {
 
   // Codex notify mode — informational bubble with Dismiss button only
   if (data.toolName === "CodexExec") {
+    codexNotifyMode = true;
+    codexCanReply = data.platform === "linux";
     headerTitle.textContent = data.lang === "zh" ? "Codex \u6743\u9650\u8BF7\u6C42" : "Codex Permission";
     toolPill.textContent = "CODEX";
     toolPill.setAttribute("data-tool", "CodexExec");
     toolPill.style.display = "";
     commandBlock.textContent = (data.toolInput && data.toolInput.command) || "(unknown)";
-    btnAllow.textContent = data.lang === "zh" ? "\u6279\u51C6" : "Allow";
+    btnAllow.textContent = codexCanReply
+      ? (data.lang === "zh" ? "\u6279\u51C6" : "Allow")
+      : (data.lang === "zh" ? "\u77E5\u9053\u4E86" : "Got it");
     btnAllow.disabled = false;
-    btnDeny.style.display = "";
+    btnDeny.style.display = codexCanReply ? "" : "none";
     btnDeny.textContent = data.lang === "zh" ? "\u62D2\u7EDD" : "Deny";
-    btnDeny.disabled = false;
+    btnDeny.disabled = !codexCanReply;
     suggestionsContainer.innerHTML = "";
-    const btn = document.createElement("button");
-    btn.className = "btn-suggestion";
-    btn.textContent = data.lang === "zh" ? "\u524D\u5F80\u7EC8\u7AEF" : "Go to Terminal";
-    btn.addEventListener("click", () => {
-      disableAll();
-      window.bubbleAPI.decide("deny-and-focus");
-    });
-    suggestionsContainer.appendChild(btn);
+    if (codexCanReply) {
+      const btn = document.createElement("button");
+      btn.className = "btn-suggestion";
+      btn.textContent = data.lang === "zh" ? "\u524D\u5F80\u7EC8\u7AEF" : "Go to Terminal";
+      btn.addEventListener("click", () => {
+        disableAll();
+        window.bubbleAPI.decide("deny-and-focus");
+      });
+      suggestionsContainer.appendChild(btn);
+    }
     revealCard();
     return;
   }
@@ -511,6 +521,10 @@ function hide() {
 btnAllow.addEventListener("click", () => {
   btnAllow.textContent = "...";
   disableAll();
+  if (codexNotifyMode && !codexCanReply) {
+    window.bubbleAPI.decide("dismiss");
+    return;
+  }
   // Elicitation: "deny" tells Claude Code to fall back to terminal
   window.bubbleAPI.decide(elicitationMode ? "deny" : "allow");
 });
