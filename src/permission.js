@@ -26,7 +26,7 @@ function captureFrontApp(cb) {
 function restoreFrontApp(appName) {
   if (!isMac || !appName) return;
   execFile("osascript", ["-e",
-    `tell application "${appName.replace(/"/g, '\\"')}" to activate`
+    `tell application "${appName.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}" to activate`
   ], { timeout: 1000 }, () => {});
 }
 
@@ -76,10 +76,13 @@ function hotkeyResolve(behavior, message) {
   const perm = targets[targets.length - 1]; // newest
   captureFrontApp((appName) => {
     resolvePermissionEntry(perm, behavior, message);
-    setTimeout(() => {
-      if (appName) restoreFrontApp(appName);
-      else ctx.focusTerminalForSession(perm.sessionId);
-    }, 300);
+    if (appName) {
+      setTimeout(() => restoreFrontApp(appName), 300);
+    } else if (isMac) {
+      // macOS only: osascript failed — fall back to terminal focus
+      setTimeout(() => ctx.focusTerminalForSession(perm.sessionId), 300);
+    }
+    // non-macOS: no focus change (matches pre-PR behavior)
   });
 }
 
