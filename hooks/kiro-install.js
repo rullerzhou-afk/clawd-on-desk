@@ -128,54 +128,7 @@ function getKiroCliCandidates(homeDir = os.homedir()) {
   ];
 }
 
-function generateClawdTemplateFromBuiltin(options = {}) {
-  const homeDir = options.homeDir || os.homedir();
-  const kiroCliCandidates = options.kiroCliCandidates || getKiroCliCandidates(homeDir);
-  let lastError = null;
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-kiro-seed-"));
-  const tempName = `clawd-seed-${process.pid}-${Date.now()}`;
-
-  try {
-    for (const candidate of kiroCliCandidates) {
-      try {
-        execFileSync(
-          candidate,
-          [
-            "agent",
-            "create",
-            tempName,
-            "--directory",
-            tempDir,
-            "--from",
-            BUILTIN_DEFAULT_AGENT,
-          ],
-          {
-            stdio: "ignore",
-            env: { ...process.env, EDITOR: "true" },
-          }
-        );
-        const templatePath = path.join(tempDir, `${tempName}.json`);
-        const template = JSON.parse(fs.readFileSync(templatePath, "utf-8"));
-        template.name = CLAWD_AGENT_NAME;
-        return { template, command: candidate };
-      } catch (err) {
-        lastError = err;
-        if (err && err.code === "ENOENT") continue;
-      }
-    }
-  } finally {
-    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
-  }
-
-  return { template: null, error: lastError };
-}
-
 function syncClawdAgentFromBuiltin(filePath, options = {}) {
-  const result = generateClawdTemplateFromBuiltin(options);
-  if (!result.template) {
-    return { synced: false, changed: false, error: result.error };
-  }
-
   let current = null;
   try {
     current = JSON.parse(fs.readFileSync(filePath, "utf-8"));
@@ -183,18 +136,22 @@ function syncClawdAgentFromBuiltin(filePath, options = {}) {
     if (err.code !== "ENOENT") throw err;
   }
 
-  const desired = { ...result.template };
-  desired.name = CLAWD_AGENT_NAME;
-  desired.hooks = current && current.hooks && typeof current.hooks === "object"
-    ? current.hooks
-    : {};
+  // Minimal config: name + description + hooks only.
+  // The clawd agent is a pure hooks carrier - it doesn't need
+  // prompt, mcpServers, tools, resources, or any other properties
+  // inherited from kiro_default.
+  const desired = {
+    name: CLAWD_AGENT_NAME,
+    description: "Clawd desktop pet hook integration",
+    hooks: current && current.hooks && typeof current.hooks === "object" ? current.hooks : {},
+  };
 
   if (!current || JSON.stringify(current) !== JSON.stringify(desired)) {
     writeJsonAtomic(filePath, desired);
-    return { synced: true, changed: true, command: result.command };
+    return { synced: true, changed: true };
   }
 
-  return { synced: true, changed: false, command: result.command };
+  return { synced: true, changed: false };
 }
 
 /**
@@ -287,7 +244,6 @@ module.exports = {
   registerKiroHooks,
   KIRO_HOOK_EVENTS,
   __test: {
-    generateClawdTemplateFromBuiltin,
     getKiroCliCandidates,
     injectHooksIntoFile,
     syncClawdAgentFromBuiltin,
