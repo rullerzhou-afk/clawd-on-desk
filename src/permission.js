@@ -108,10 +108,14 @@ function repositionBubbles() {
 
   let x, yBottom;
   if (ctx.bubbleFollowPet) {
-    // Use hitbox bottom for tight positioning against actual pet body
+    // Use hitbox edges for tight positioning against actual pet body
     const hit = ctx.getHitRectScreen(petBounds);
     const hitBottom = Math.round(hit.bottom);
+    const hitTop = Math.round(hit.top);
+    const hitLeft = Math.round(hit.left);
+    const hitRight = Math.round(hit.right);
     const hitCx = Math.round((hit.left + hit.right) / 2);
+    const hitCy = Math.round((hit.top + hit.bottom) / 2);
 
     // Calculate total bubble stack height
     let totalH = 0;
@@ -119,17 +123,30 @@ function repositionBubbles() {
       totalH += (perm.measuredHeight || estimateBubbleHeight((perm.suggestions || []).length)) + gap;
     }
 
-    // Degradation: if total bubble height exceeds half the workspace, fall back to
-    // default bottom-right stacking so bubbles don't crowd the pet or overflow
-    if (totalH > wa.height / 2) {
-      x = wa.x + wa.width - bw - margin;
-      yBottom = wa.y + wa.height - margin;
-      // Fall through to upward stacking loop below
-    } else if (wa.y + wa.height - hitBottom >= totalH) {
-      // Enough room below — place bubbles under the pet body
+    // Layout priority (followPet):
+    //   1. below pet (room available)         — stack hangs from pet body
+    //   2. side of pet (with horizontal room) — stack vertically anchored on
+    //                                            pet center, clamped to screen
+    //   3. final fallback: nearest screen corner — only when neither side
+    //                                              has enough horizontal room
+    //                                              for one bubble width.
+    // We deliberately do NOT degrade to the screen corner just because the
+    // stack is tall — that would yank bubbles far away from the pet, which
+    // is the opposite of what "follow pet" promises (especially on multi-
+    // monitor setups where the pet may be on the left of a side display).
+
+    if (wa.y + wa.height - hitBottom >= totalH) {
+      // Enough room below — place bubbles under the pet body.
+      // Iterate oldest→newest (i=0..N-1), placing each downward from
+      // hitBottom, so the newest bubble lands furthest from the pet
+      // (i.e. at the bottom of the visual stack). This keeps "newest at
+      // the growth end of the stack" consistent with the side/corner
+      // upward-stacking loop below — without this alignment, crossing
+      // a layout threshold would flip the visual order of all existing
+      // bubbles.
       x = Math.max(wa.x, Math.min(hitCx - Math.round(bw / 2), wa.x + wa.width - bw));
       let yTop = hitBottom;
-      for (let i = pendingPermissions.length - 1; i >= 0; i--) {
+      for (let i = 0; i < pendingPermissions.length; i++) {
         const perm = pendingPermissions[i];
         const bh = perm.measuredHeight || estimateBubbleHeight((perm.suggestions || []).length);
         if (perm.bubble && !perm.bubble.isDestroyed()) {
@@ -138,19 +155,35 @@ function repositionBubbles() {
         yTop += bh + gap;
       }
       return;
+    }
+
+    // Side placement: pick the side of the pet with more horizontal room.
+    const spaceRight = wa.x + wa.width - hitRight;
+    const spaceLeft = hitLeft - wa.x;
+    if (spaceRight >= bw && spaceRight >= spaceLeft) {
+      x = Math.min(hitRight, wa.x + wa.width - bw);
+    } else if (spaceLeft >= bw) {
+      x = Math.max(wa.x, hitLeft - bw);
     } else {
-      // Not enough room below — place to the side with more space
-      const hitRight = Math.round(hit.right);
-      const hitLeft = Math.round(hit.left);
-      const spaceRight = wa.x + wa.width - hitRight;
-      const spaceLeft = hitLeft - wa.x;
-      if (spaceRight >= bw || spaceRight >= spaceLeft) {
-        x = Math.min(hitRight, wa.x + wa.width - bw);
-      } else {
-        x = Math.max(wa.x, hitLeft - bw);
-      }
-      // Side fallback: stack from workspace bottom upward (not pet bottom, which would occlude pet)
+      // Neither side has bw of clearance — final fallback to the bottom-
+      // right corner of the pet's current work area. Rare in practice
+      // (pet would have to be near horizontal screen center on a
+      // very narrow display).
+      x = wa.x + wa.width - bw - margin;
       yBottom = wa.y + wa.height - margin;
+    }
+
+    if (yBottom === undefined) {
+      // Vertical anchor: center the stack on the pet vertically, then
+      // clamp to the work area so it never overflows the screen edges.
+      // The newest bubble ends up roughly aligned with the pet's lower
+      // body and the oldest with the upper body — visually the stack
+      // "hugs" the pet on its side.
+      yBottom = hitCy + Math.round(totalH / 2);
+      const maxBottom = wa.y + wa.height - margin;
+      const minBottom = wa.y + margin + totalH;
+      if (yBottom > maxBottom) yBottom = maxBottom;
+      if (yBottom < minBottom) yBottom = minBottom;
     }
   } else {
     // Default: bottom-right corner of nearest work area
