@@ -328,7 +328,7 @@ function _sanitizeNode(node) {
           if (textNode.type === "text" && textNode.data) {
             textNode.data = textNode.data
               .replace(/@import\b[^;]*/gi, "/* sanitized */")
-              .replace(/url\s*\([^)]*\)/gi, "url()");
+              .replace(/url\s*\(\s*(?!['"]?#)[^)]*\)/gi, "url()");
           }
         }
       }
@@ -650,7 +650,7 @@ function mergeDefaults(raw, themeId, isBuiltin) {
   theme.idleAnimations = raw.idleAnimations || [];
 
   // ── Filename sanitization: basename all file references to prevent path traversal ──
-  const bn = (f) => typeof f === "string" ? path.basename(f) : f;
+  const bn = (f) => typeof f === "string" ? f.replace(/^.*[\/\\]/, "") : f;
   for (const [s, files] of Object.entries(theme.states || {})) {
     if (Array.isArray(files)) theme.states[s] = files.map(bn);
   }
