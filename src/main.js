@@ -35,40 +35,43 @@ const SIZES = {
   L: { width: 360, height: 360 },
 };
 
-let lang = "en";
-
-// ── Position persistence ──
+// ── Settings (prefs.js + settings-controller.js) ──
+//
+// `prefs.js` handles disk I/O + schema validation + migrations.
+// `settings-controller.js` is the single writer of the in-memory snapshot.
+// Module-level `lang`/`showTray`/etc. below are mirror caches kept in sync via
+// a subscriber wired after menu.js loads. The ctx setters route writes through
+// `_settingsController.applyUpdate()`, which auto-persists.
+const prefsModule = require("./prefs");
+const { createSettingsController } = require("./settings-controller");
 const PREFS_PATH = path.join(app.getPath("userData"), "clawd-prefs.json");
+const _initialPrefsLoad = prefsModule.load(PREFS_PATH);
+const _settingsController = createSettingsController({
+  prefsPath: PREFS_PATH,
+  loadResult: _initialPrefsLoad,
+});
 
-function loadPrefs() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(PREFS_PATH, "utf8"));
-    if (!raw || typeof raw !== "object") return null;
-    // Validate miniEdge allowlist
-    if (raw.miniEdge !== "left" && raw.miniEdge !== "right") raw.miniEdge = "right";
-    // Sanitize numeric fields — corrupted JSON can feed NaN into window positioning
-    for (const key of ["x", "y", "preMiniX", "preMiniY"]) {
-      if (key in raw && (typeof raw[key] !== "number" || !isFinite(raw[key]))) {
-        raw[key] = 0;
-      }
-    }
-    return raw;
-  } catch {
-    return null;
-  }
-}
+// Mirror of `_settingsController.get("lang")` so existing sync read sites in
+// menu.js / state.js / etc. don't have to round-trip through the controller.
+// Updated by the subscriber in `wireSettingsSubscribers()` below — never
+// assign directly.
+let lang = _settingsController.get("lang");
 
-function savePrefs() {
+// Capture window/mini runtime state into the controller and write to disk.
+// Replaces the legacy `savePrefs()` callsites — they used to read fresh
+// `win.getBounds()` and `_mini.*` at save time, so we mirror that here.
+function flushRuntimeStateToPrefs() {
   if (!win || win.isDestroyed()) return;
-  const { x, y } = win.getBounds();
-  const data = {
-    x, y, size: currentSize,
-    miniMode: _mini.getMiniMode(), miniEdge: _mini.getMiniEdge(), preMiniX: _mini.getPreMiniX(), preMiniY: _mini.getPreMiniY(), lang,
-    showTray, showDock,
-    autoStartWithClaude, bubbleFollowPet, hideBubbles, showSessionId, soundMuted,
-    theme: activeTheme ? activeTheme._id : "clawd",
-  };
-  try { fs.writeFileSync(PREFS_PATH, JSON.stringify(data)); } catch {}
+  const bounds = win.getBounds();
+  _settingsController.applyBulk({
+    x: bounds.x,
+    y: bounds.y,
+    size: currentSize,
+    miniMode: _mini.getMiniMode(),
+    miniEdge: _mini.getMiniEdge(),
+    preMiniX: _mini.getPreMiniX(),
+    preMiniY: _mini.getPreMiniY(),
+  });
 }
 
 let _codexMonitor = null;          // Codex CLI JSONL log polling instance
@@ -78,10 +81,7 @@ let _geminiMonitor = null;         // Gemini CLI session JSON polling instance
 const themeLoader = require("./theme-loader");
 themeLoader.init(__dirname, app.getPath("userData"));
 
-function loadThemeFromPrefs(prefs) {
-  return themeLoader.loadTheme((prefs && prefs.theme) || "clawd");
-}
-let activeTheme = loadThemeFromPrefs(loadPrefs());
+let activeTheme = themeLoader.loadTheme(_settingsController.get("theme") || "clawd");
 
 // ── CSS <object> sizing (from theme) ──
 function getObjRect(bounds) {
@@ -95,7 +95,10 @@ let win;
 let hitWin;  // input window — small opaque rect over hitbox, receives all pointer events
 let tray = null;
 let contextMenuOwner = null;
-let currentSize = "P:10"; // "P:<ratio>" — pet occupies <ratio>% of work area width
+// Mirror of _settingsController.get("size") — initialized from disk, kept in
+// sync by the settings subscriber. The legacy S/M/L → P:N migration runs
+// inside createWindow() because it needs the screen API.
+let currentSize = _settingsController.get("size");
 
 // ── Proportional size mode ──
 // currentSize = "P:<ratio>" means the pet occupies <ratio>% of the work area width.
@@ -124,13 +127,16 @@ function getCurrentPixelSize(overrideWa) {
 let contextMenu;
 let doNotDisturb = false;
 let isQuitting = false;
-let showTray = true;
-let showDock = true;
-let autoStartWithClaude = false;
-let bubbleFollowPet = false;
-let hideBubbles = false;
-let showSessionId = false;
-let soundMuted = false;
+// Mirror caches — kept in sync with the settings store via the subscriber
+// in wireSettingsSubscribers() further down. Read freely; never assign
+// directly (writes go through ctx setters → controller.applyUpdate).
+let showTray = _settingsController.get("showTray");
+let showDock = _settingsController.get("showDock");
+let autoStartWithClaude = _settingsController.get("autoStartWithClaude");
+let bubbleFollowPet = _settingsController.get("bubbleFollowPet");
+let hideBubbles = _settingsController.get("hideBubbles");
+let showSessionId = _settingsController.get("showSessionId");
+let soundMuted = _settingsController.get("soundMuted");
 let petHidden = false;
 const DEFAULT_TOGGLE_SHORTCUT = "CommandOrControl+Shift+Alt+C";
 
@@ -555,28 +561,35 @@ function updateLog(msg) {
 }
 
 // ── Menu — delegated to src/menu.js ──
+//
+// Setters that previously assigned to module-level vars now route through
+// `_settingsController.applyUpdate(key, value)`. The mirror cache is updated
+// by the subscriber wired in `wireSettingsSubscribers()` after this ctx is
+// built. Side effects that used to live inside setters (e.g.
+// `syncPermissionShortcuts()` for hideBubbles) are now reactive and live in
+// the subscriber too.
 const _menuCtx = {
   get win() { return win; },
   get sessions() { return sessions; },
   get currentSize() { return currentSize; },
-  set currentSize(v) { currentSize = v; },
+  set currentSize(v) { _settingsController.applyUpdate("size", v); },
   get doNotDisturb() { return doNotDisturb; },
   get lang() { return lang; },
-  set lang(v) { lang = v; },
+  set lang(v) { _settingsController.applyUpdate("lang", v); },
   get showTray() { return showTray; },
-  set showTray(v) { showTray = v; },
+  set showTray(v) { _settingsController.applyUpdate("showTray", v); },
   get showDock() { return showDock; },
-  set showDock(v) { showDock = v; },
+  set showDock(v) { _settingsController.applyUpdate("showDock", v); },
   get autoStartWithClaude() { return autoStartWithClaude; },
-  set autoStartWithClaude(v) { autoStartWithClaude = v; },
+  set autoStartWithClaude(v) { _settingsController.applyUpdate("autoStartWithClaude", v); },
   get bubbleFollowPet() { return bubbleFollowPet; },
-  set bubbleFollowPet(v) { bubbleFollowPet = v; },
+  set bubbleFollowPet(v) { _settingsController.applyUpdate("bubbleFollowPet", v); },
   get hideBubbles() { return hideBubbles; },
-  set hideBubbles(v) { hideBubbles = v; syncPermissionShortcuts(); },
+  set hideBubbles(v) { _settingsController.applyUpdate("hideBubbles", v); },
   get showSessionId() { return showSessionId; },
-  set showSessionId(v) { showSessionId = v; },
+  set showSessionId(v) { _settingsController.applyUpdate("showSessionId", v); },
   get soundMuted() { return soundMuted; },
-  set soundMuted(v) { soundMuted = v; },
+  set soundMuted(v) { _settingsController.applyUpdate("soundMuted", v); },
   get pendingPermissions() { return pendingPermissions; },
   repositionBubbles: () => repositionFloatingBubbles(),
   get petHidden() { return petHidden; },
@@ -602,7 +615,11 @@ const _menuCtx = {
   checkForUpdates: (...args) => checkForUpdates(...args),
   getUpdateMenuItem: () => getUpdateMenuItem(),
   buildSessionSubmenu: () => buildSessionSubmenu(),
-  savePrefs,
+  // The settings controller is the only writer of persisted prefs. Toggle
+  // setters above route through it; resize/sendToDisplay use
+  // flushRuntimeStateToPrefs to capture window bounds after movement.
+  flushRuntimeStateToPrefs,
+  settings: _settingsController,
   syncHitWin,
   getCurrentPixelSize,
   isProportionalMode,
@@ -618,8 +635,109 @@ const _menuCtx = {
 };
 const _menu = require("./menu")(_menuCtx);
 const { t, buildContextMenu, buildTrayMenu, rebuildAllMenus, createTray,
-        showPetContextMenu, popupMenuAt, ensureContextMenuOwner,
-        requestAppQuit, resizeWindow, applyDockVisibility } = _menu;
+        destroyTray, showPetContextMenu, popupMenuAt, ensureContextMenuOwner,
+        requestAppQuit, applyDockVisibility } = _menu;
+
+// ── Settings subscribers ──
+//
+// Single source of truth: any change to `_settingsController` lands here
+// first. We update the mirror caches above (so existing sync read sites
+// still work), then fire reactive side effects (menu rebuild, permission
+// shortcut resync, bubble reposition, etc.). Setters in the ctx above
+// route writes through the controller, so menu clicks and IPC updates
+// from a future settings panel land here identically.
+const MENU_AFFECTING_KEYS = new Set([
+  "lang", "soundMuted", "bubbleFollowPet", "hideBubbles", "showSessionId",
+  "autoStartWithClaude", "showTray", "showDock", "theme", "size",
+]);
+function wireSettingsSubscribers() {
+  _settingsController.subscribe(({ changes }) => {
+    // 1. Update mirror caches first so any side-effect handler reads fresh values.
+    if ("lang" in changes) lang = changes.lang;
+    if ("size" in changes) currentSize = changes.size;
+    if ("showTray" in changes) {
+      showTray = changes.showTray;
+      try { changes.showTray ? createTray() : destroyTray(); } catch (err) {
+        console.warn("Clawd: tray toggle failed:", err && err.message);
+      }
+    }
+    if ("showDock" in changes) {
+      showDock = changes.showDock;
+      try { applyDockVisibility(); } catch (err) {
+        console.warn("Clawd: applyDockVisibility failed:", err && err.message);
+      }
+    }
+    if ("autoStartWithClaude" in changes) {
+      autoStartWithClaude = changes.autoStartWithClaude;
+      try {
+        const { registerHooks, unregisterAutoStart } = require("../hooks/install.js");
+        if (changes.autoStartWithClaude) {
+          registerHooks({ silent: true, autoStart: true, port: getHookServerPort() });
+        } else {
+          unregisterAutoStart();
+        }
+      } catch (err) {
+        console.warn("Clawd: failed to toggle auto-start hook:", err && err.message);
+      }
+    }
+    if ("bubbleFollowPet" in changes) bubbleFollowPet = changes.bubbleFollowPet;
+    if ("hideBubbles" in changes) hideBubbles = changes.hideBubbles;
+    if ("showSessionId" in changes) showSessionId = changes.showSessionId;
+    if ("soundMuted" in changes) soundMuted = changes.soundMuted;
+
+    // 2. Reactive side effects (mirror what the legacy setters / click handlers used to do).
+    if ("hideBubbles" in changes) {
+      try { syncPermissionShortcuts(); } catch (err) {
+        console.warn("Clawd: syncPermissionShortcuts failed:", err && err.message);
+      }
+    }
+    if ("bubbleFollowPet" in changes) {
+      try { repositionFloatingBubbles(); } catch (err) {
+        console.warn("Clawd: repositionFloatingBubbles failed:", err && err.message);
+      }
+    }
+
+    // 3. Menu rebuild — only for menu-affecting keys to avoid thrashing on
+    //    window position / mini state changes.
+    for (const key of Object.keys(changes)) {
+      if (MENU_AFFECTING_KEYS.has(key)) {
+        try { rebuildAllMenus(); } catch (err) {
+          console.warn("Clawd: rebuildAllMenus failed:", err && err.message);
+        }
+        break;
+      }
+    }
+
+    // 4. Broadcast to all renderer windows for the future settings panel.
+    try {
+      for (const bw of BrowserWindow.getAllWindows()) {
+        if (!bw.isDestroyed() && bw.webContents && !bw.webContents.isDestroyed()) {
+          bw.webContents.send("settings-changed", { changes });
+        }
+      }
+    } catch (err) {
+      console.warn("Clawd: settings-changed broadcast failed:", err && err.message);
+    }
+  });
+}
+wireSettingsSubscribers();
+
+// ── IPC: settings panel write entry points ──
+// Renderer-side callers (the future settings panel) use these. Menu/main code
+// in this process calls _settingsController directly — no IPC round-trip.
+ipcMain.handle("settings:get-snapshot", () => _settingsController.getSnapshot());
+ipcMain.handle("settings:update", (_event, payload) => {
+  if (!payload || typeof payload !== "object") {
+    return { status: "error", message: "settings:update payload must be { key, value }" };
+  }
+  return _settingsController.applyUpdate(payload.key, payload.value);
+});
+ipcMain.handle("settings:command", async (_event, payload) => {
+  if (!payload || typeof payload !== "object") {
+    return { status: "error", message: "settings:command payload must be { action, payload }" };
+  }
+  return _settingsController.applyCommand(payload.action, payload.payload);
+});
 
 // ── Auto-updater — delegated to src/updater.js ──
 const _updaterCtx = {
@@ -639,41 +757,36 @@ const _updater = require("./updater")(_updaterCtx);
 const { setupAutoUpdater, checkForUpdates, getUpdateMenuItem, getUpdateMenuLabel } = _updater;
 
 function createWindow() {
-  const prefs = loadPrefs();
-  if (prefs && isProportionalMode(prefs.size)) {
-    currentSize = prefs.size;
-  } else if (prefs && SIZES[prefs.size]) {
-    // Migrate legacy S/M/L to proportional mode
+  // Read everything from the settings controller. The mirror caches above
+  // (lang/showTray/etc.) were already initialized at module-load time, so
+  // here we just need the position/mini fields plus the legacy size migration.
+  const prefs = _settingsController.getSnapshot();
+  // Legacy S/M/L → P:N migration. Only kicks in for prefs files that haven't
+  // been touched since v0; new files always store the proportional form.
+  if (SIZES[prefs.size]) {
     const wa = getPrimaryWorkAreaSafe() || SYNTHETIC_WORK_AREA;
     const px = SIZES[prefs.size].width;
     const ratio = Math.round(px / wa.width * 100);
-    currentSize = `P:${Math.max(1, Math.min(75, ratio))}`;
+    const migrated = `P:${Math.max(1, Math.min(75, ratio))}`;
+    _settingsController.applyUpdate("size", migrated); // subscriber updates currentSize mirror
   }
-  if (prefs && (prefs.lang === "en" || prefs.lang === "zh")) lang = prefs.lang;
-  // macOS: restore tray/dock visibility from prefs
-  if (isMac && prefs) {
-    if (typeof prefs.showTray === "boolean") showTray = prefs.showTray;
-    if (typeof prefs.showDock === "boolean") showDock = prefs.showDock;
-  }
-  if (prefs && typeof prefs.autoStartWithClaude === "boolean") autoStartWithClaude = prefs.autoStartWithClaude;
-  if (prefs && typeof prefs.bubbleFollowPet === "boolean") bubbleFollowPet = prefs.bubbleFollowPet;
-  if (prefs && typeof prefs.hideBubbles === "boolean") hideBubbles = prefs.hideBubbles;
-  if (prefs && typeof prefs.showSessionId === "boolean") showSessionId = prefs.showSessionId;
-  if (prefs && typeof prefs.soundMuted === "boolean") soundMuted = prefs.soundMuted;
-  // macOS: apply dock visibility (default hidden)
+  // macOS: apply dock visibility (default visible — but persisted state wins).
   if (isMac) {
     applyDockVisibility();
   }
   const size = getCurrentPixelSize();
 
-  // Restore saved position, or default to bottom-right of primary display
+  // Restore saved position, or default to bottom-right of primary display.
+  // Prefs file always exists in the new architecture (defaults are hydrated
+  // by prefs.load()), so the "no prefs" branch from the legacy code is gone —
+  // a fresh install gets x=0, y=0 from defaults, and we treat that as "place
+  // bottom-right" via the explicit zero check below.
   let startX, startY;
-  if (prefs && prefs.miniMode) {
-    // Restore mini mode
+  if (prefs.miniMode) {
     const miniPos = _mini.restoreFromPrefs(prefs, size);
     startX = miniPos.x;
     startY = miniPos.y;
-  } else if (prefs) {
+  } else if (prefs.x !== 0 || prefs.y !== 0) {
     const clamped = clampToScreen(prefs.x, prefs.y, size.width, size.height);
     startX = clamped.x;
     startY = clamped.y;
@@ -1072,7 +1185,7 @@ function switchTheme(themeId) {
   win.webContents.once("did-finish-load", onReady);
   hitWin.webContents.once("did-finish-load", onReady);
 
-  savePrefs();
+  flushRuntimeStateToPrefs();
   rebuildAllMenus();
 }
 
@@ -1143,8 +1256,7 @@ if (!gotTheLock) {
 
   // macOS: hide dock icon early if user previously disabled it
   if (isMac && app.dock) {
-    const prefs = loadPrefs();
-    if (prefs && prefs.showDock === false) {
+    if (_settingsController.get("showDock") === false) {
       app.dock.hide();
     }
   }
@@ -1202,7 +1314,7 @@ if (!gotTheLock) {
 
   app.on("before-quit", () => {
     isQuitting = true;
-    savePrefs();
+    flushRuntimeStateToPrefs();
     unregisterToggleShortcut();
     globalShortcut.unregisterAll();
     _perm.cleanup();
