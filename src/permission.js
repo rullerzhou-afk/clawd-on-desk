@@ -265,6 +265,7 @@ function showPermissionBubble(permEntry) {
     skipTaskbar: true,
     hasShadow: false,
     ...(isLinux ? { type: LINUX_WINDOW_TYPE } : {}),
+    ...(isMac ? { type: "panel" } : {}),
     focusable: false,
     webPreferences: {
       preload: path.join(__dirname, "preload-bubble.js"),
