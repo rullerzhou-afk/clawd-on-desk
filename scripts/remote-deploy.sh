@@ -43,6 +43,8 @@ REMOTE_HOOKS_DIR='~/.claude/hooks'
 # Files to deploy
 FILES=(
   "$HOOKS_DIR/server-config.js"
+  "$HOOKS_DIR/json-utils.js"
+  "$HOOKS_DIR/shared-process.js"
   "$HOOKS_DIR/clawd-hook.js"
   "$HOOKS_DIR/install.js"
   "$HOOKS_DIR/codex-remote-monitor.js"
