@@ -146,6 +146,46 @@ Host my-server
 
 > 感谢 [@Magic-Bytes](https://github.com/Magic-Bytes) 提出 SSH 隧道方案（[#9](https://github.com/rullerzhou-afk/clawd-on-desk/issues/9)）。
 
+### WSL（Windows 子系统 for Linux）
+
+Clawd 跑在 Windows 的 Electron 应用里，而你的 AI 编程助手（Claude Code、Kiro CLI 等）可能跑在 WSL 里。WSL 中的 hook 脚本会把 HTTP 请求发到 `127.0.0.1:23333`，所以 WSL 和 Windows 必须共享同一个 localhost。
+
+- **WSL1** — 开箱即用。WSL1 天然与 Windows 共享 localhost，无需额外配置。
+- **WSL2** — 需要镜像网络模式。WSL2 默认拥有独立网络栈，`127.0.0.1` 指向 WSL 自身而不是 Windows。请在 `%USERPROFILE%\.wslconfig` 中启用镜像模式（文件不存在就新建），然后执行 `wsl --shutdown` 重启 WSL：
+
+```ini
+[wsl2]
+networkingMode=mirrored
+```
+
+**在 WSL 中手动注册 hooks：**
+
+Clawd 在 Windows 启动时会自动注册 Claude Code hooks 到 `~/.claude/settings.json`。但如果你的 Agent 跑在 WSL 里，hooks 需要注册到 WSL 自己的 home 目录。请在 WSL 中执行：
+
+```bash
+git clone https://github.com/rullerzhou-afk/clawd-on-desk.git
+cd clawd-on-desk
+
+# Claude Code
+node hooks/install.js
+
+# Kiro CLI - 会将 hooks 注册到 ~/.kiro/agents/ 下所有自定义 agent，
+# 并自动创建一个 clawd agent
+# （仅在已安装 Kiro CLI 时需要执行，未安装时会自动跳过）
+node hooks/kiro-install.js
+
+# Cursor Agent
+node hooks/cursor-install.js
+
+# Gemini CLI
+node hooks/gemini-install.js
+
+# opencode
+node hooks/opencode-install.js
+```
+
+> 提示：如果仓库克隆在 WSL 内（如 `~/clawd-on-desk`），hook 脚本会自动使用 WSL 的 Node.js 路径。如果仓库放在 Windows 盘里（如 `/mnt/c/...`），请确保 WSL 的 PATH 中有 `node`。
+
 ### macOS 说明
 
 - **源码运行**（`npm start`）：Intel 和 Apple Silicon 均可直接使用。

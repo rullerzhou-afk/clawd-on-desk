@@ -148,6 +148,46 @@ Remote hooks run in `CLAWD_REMOTE` mode which skips PID collection (remote PIDs 
 
 > Thanks to [@Magic-Bytes](https://github.com/Magic-Bytes) for the original SSH tunneling idea ([#9](https://github.com/rullerzhou-afk/clawd-on-desk/issues/9)).
 
+### WSL (Windows Subsystem for Linux)
+
+Clawd runs as an Electron app on Windows, while your AI coding agent (Claude Code, Kiro CLI, etc.) may run inside WSL. The hook scripts in WSL send HTTP requests to `127.0.0.1:23333`, so WSL and Windows must share the same localhost.
+
+- **WSL1** — works out of the box. WSL1 natively shares localhost with Windows, so no extra configuration needed.
+- **WSL2** — requires mirrored networking mode. WSL2 has its own network stack by default, so `127.0.0.1` inside WSL won't reach Windows. Enable mirrored mode by adding the following to `%USERPROFILE%\.wslconfig` (create the file if it doesn't exist), then restart WSL with `wsl --shutdown`:
+
+```ini
+[wsl2]
+networkingMode=mirrored
+```
+
+**Manual hook registration in WSL:**
+
+When Clawd starts on Windows, it auto-registers Claude Code hooks into `~/.claude/settings.json`. If you're running agents inside WSL, the hooks need to be registered in WSL's home directory. Run the following inside WSL:
+
+```bash
+git clone https://github.com/rullerzhou-afk/clawd-on-desk.git
+cd clawd-on-desk
+
+# Claude Code
+node hooks/install.js
+
+# Kiro CLI - registers hooks into all custom agents under ~/.kiro/agents/,
+# plus an auto-created clawd agent
+# (only needed if Kiro CLI is installed; will skip if ~/.kiro/ doesn't exist)
+node hooks/kiro-install.js
+
+# Cursor Agent
+node hooks/cursor-install.js
+
+# Gemini CLI
+node hooks/gemini-install.js
+
+# opencode
+node hooks/opencode-install.js
+```
+
+> Tip: If you cloned the repo inside WSL (e.g. `~/clawd-on-desk`), the hook scripts will use WSL's Node.js path automatically. If the repo lives on a Windows drive (e.g. `/mnt/c/...`), make sure `node` is available in WSL's PATH.
+
 ### macOS Notes
 
 - **From source** (`npm start`): works out of the box on Intel and Apple Silicon.

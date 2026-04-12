@@ -128,6 +128,9 @@ function getKiroCliCandidates(homeDir = os.homedir()) {
   ];
 }
 
+// Properties excluded from kiro_default template.
+const EXCLUDED_KEYS = new Set(["model", "includeMcpJson", "description", "hooks", "name"]);
+
 function generateClawdTemplateFromBuiltin(options = {}) {
   const homeDir = options.homeDir || os.homedir();
   const kiroCliCandidates = options.kiroCliCandidates || getKiroCliCandidates(homeDir);
@@ -156,7 +159,6 @@ function generateClawdTemplateFromBuiltin(options = {}) {
         );
         const templatePath = path.join(tempDir, `${tempName}.json`);
         const template = JSON.parse(fs.readFileSync(templatePath, "utf-8"));
-        template.name = CLAWD_AGENT_NAME;
         return { template, command: candidate };
       } catch (err) {
         lastError = err;
@@ -171,11 +173,6 @@ function generateClawdTemplateFromBuiltin(options = {}) {
 }
 
 function syncClawdAgentFromBuiltin(filePath, options = {}) {
-  const result = generateClawdTemplateFromBuiltin(options);
-  if (!result.template) {
-    return { synced: false, changed: false, error: result.error };
-  }
-
   let current = null;
   try {
     current = JSON.parse(fs.readFileSync(filePath, "utf-8"));
@@ -183,18 +180,35 @@ function syncClawdAgentFromBuiltin(filePath, options = {}) {
     if (err.code !== "ENOENT") throw err;
   }
 
-  const desired = { ...result.template };
-  desired.name = CLAWD_AGENT_NAME;
+  const result = generateClawdTemplateFromBuiltin(options);
+  let desired;
+  if (!result.template) {
+    if (!options.silent) {
+      console.warn(`Clawd: kiro-cli template generation failed, falling back to minimal clawd agent (no prompt/tools/resources). Reason: ${result.error?.message || "unknown"}`);
+    }
+    desired = {
+      name: CLAWD_AGENT_NAME,
+      description: "Clawd desktop pet hook integration",
+    };
+  } else {
+    desired = { name: CLAWD_AGENT_NAME };
+    for (const key of Object.keys(result.template)) {
+      if (!EXCLUDED_KEYS.has(key)) {
+        desired[key] = result.template[key];
+      }
+    }
+  }
+
   desired.hooks = current && current.hooks && typeof current.hooks === "object"
     ? current.hooks
     : {};
 
   if (!current || JSON.stringify(current) !== JSON.stringify(desired)) {
     writeJsonAtomic(filePath, desired);
-    return { synced: true, changed: true, command: result.command };
+    return { synced: true, changed: true };
   }
 
-  return { synced: true, changed: false, command: result.command };
+  return { synced: true, changed: false };
 }
 
 /**
