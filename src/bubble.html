@@ -172,6 +172,81 @@ body { padding: 6px; }
 .command-block::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 3px; }
 .command-block::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
 
+/* ── Elicitation form ── */
+.elicitation-form {
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+}
+.elicitation-form.visible { display: flex; }
+
+.question-card {
+  padding: 12px;
+  background: var(--cmd-bg);
+  border: 1px solid var(--cmd-border);
+  border-radius: 10px;
+  box-shadow: var(--cmd-shadow);
+}
+
+.question-header {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--cmd-color);
+  opacity: 0.85;
+}
+
+.question-text {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-primary);
+}
+
+.question-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--cmd-color);
+  opacity: 0.85;
+}
+
+.option-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.option-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--cmd-border);
+  background: rgba(255, 255, 255, 0.28);
+  cursor: pointer;
+}
+
+@media (prefers-color-scheme: dark) {
+  .option-item {
+    background: rgba(255, 255, 255, 0.03);
+  }
+}
+
+.option-item input {
+  margin-top: 2px;
+  accent-color: #d97757;
+}
+
+.option-item-text {
+  flex: 1;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
 /* ── Action buttons ── */
 .actions {
   display: flex;
@@ -272,6 +347,7 @@ body { padding: 6px; }
   <div class="session-tag" id="sessionTag"></div>
 
   <div class="command-block" id="commandBlock"></div>
+  <div class="elicitation-form" id="elicitationForm"></div>
   
   <div class="actions">
     <button class="btn btn-allow" id="btnAllow">Allow</button>
@@ -285,12 +361,15 @@ body { padding: 6px; }
 const card = document.getElementById("card");
 const toolPill = document.getElementById("toolPill");
 const commandBlock = document.getElementById("commandBlock");
+const elicitationForm = document.getElementById("elicitationForm");
 const btnAllow = document.getElementById("btnAllow");
 const btnDeny = document.getElementById("btnDeny");
 const suggestionsContainer = document.getElementById("suggestions");
 const headerTitle = document.querySelector(".header-title");
 const sessionTag = document.getElementById("sessionTag");
 let elicitationMode = false;
+let elicitationQuestions = [];
+let currentLang = "en";
 
 function setSessionTag(data) {
   const parts = [];
@@ -350,6 +429,7 @@ function disableAll() {
   btnAllow.disabled = true;
   btnDeny.disabled = true;
   for (const btn of suggestionsContainer.children) btn.disabled = true;
+  for (const input of elicitationForm.querySelectorAll("input")) input.disabled = true;
 }
 
 function revealCard() {
@@ -361,7 +441,116 @@ function revealCard() {
   });
 }
 
+function resetBubbleContent() {
+  elicitationQuestions = [];
+  elicitationMode = false;
+  commandBlock.style.display = "";
+  commandBlock.textContent = "";
+  elicitationForm.innerHTML = "";
+  elicitationForm.classList.remove("visible");
+  toolPill.style.display = "";
+  btnAllow.style.display = "";
+  btnAllow.disabled = false;
+  btnDeny.style.display = "";
+  btnDeny.disabled = false;
+  suggestionsContainer.innerHTML = "";
+}
+
+function isQuestionAnswered(question, card) {
+  if (!question || !card) return false;
+  const inputs = [...card.querySelectorAll("input")];
+  if (!inputs.length) return false;
+  if (question.multiSelect) return inputs.some(input => input.checked);
+  return inputs.some(input => input.checked);
+}
+
+function collectElicitationAnswers() {
+  const answers = {};
+  const cards = [...elicitationForm.querySelectorAll(".question-card")];
+  for (let i = 0; i < elicitationQuestions.length; i++) {
+    const question = elicitationQuestions[i];
+    const card = cards[i];
+    if (!question || !card || !question.question) return null;
+    const selected = [...card.querySelectorAll("input:checked")]
+      .map(input => input.getAttribute("data-answer") || input.value)
+      .filter(Boolean);
+    if (!selected.length) return null;
+    answers[question.question] = selected.join(", ");
+  }
+  return answers;
+}
+
+function updateElicitationSubmitState() {
+  if (!elicitationMode) return;
+  const cards = [...elicitationForm.querySelectorAll(".question-card")];
+  const complete = elicitationQuestions.length > 0
+    && elicitationQuestions.every((question, index) => isQuestionAnswered(question, cards[index]));
+  btnAllow.disabled = !complete;
+}
+
+function renderElicitationForm(data) {
+  elicitationQuestions = data.toolInput && Array.isArray(data.toolInput.questions)
+    ? data.toolInput.questions
+    : [];
+  elicitationForm.innerHTML = "";
+  elicitationForm.classList.add("visible");
+  commandBlock.style.display = "none";
+
+  elicitationQuestions.forEach((question, index) => {
+    const card = document.createElement("div");
+    card.className = "question-card";
+
+    const header = document.createElement("div");
+    header.className = "question-header";
+    header.textContent = question.header || `Question ${index + 1}`;
+    card.appendChild(header);
+
+    const text = document.createElement("div");
+    text.className = "question-text";
+    text.textContent = question.question || "";
+    card.appendChild(text);
+
+    const hint = document.createElement("div");
+    hint.className = "question-hint";
+    hint.textContent = question.multiSelect
+      ? (data.lang === "zh" ? "可多选，至少选择一项" : "Multi-select, choose at least one")
+      : (data.lang === "zh" ? "请选择一项" : "Choose one option");
+    card.appendChild(hint);
+
+    const list = document.createElement("div");
+    list.className = "option-list";
+
+    const options = Array.isArray(question.options) ? question.options : [];
+    options.forEach((option, optIndex) => {
+      const label = document.createElement("label");
+      label.className = "option-item";
+
+      const input = document.createElement("input");
+      input.type = question.multiSelect ? "checkbox" : "radio";
+      input.name = `elicitation-${index}`;
+      input.value = option.label || "";
+      input.setAttribute("data-answer", option.label || "");
+      input.addEventListener("change", updateElicitationSubmitState);
+
+      const textNode = document.createElement("span");
+      textNode.className = "option-item-text";
+      textNode.textContent = option.label || `${optIndex + 1}`;
+
+      label.appendChild(input);
+      label.appendChild(textNode);
+      list.appendChild(label);
+    });
+
+    card.appendChild(list);
+    elicitationForm.appendChild(card);
+  });
+
+  updateElicitationSubmitState();
+}
+
 function show(data) {
+  resetBubbleContent();
+  currentLang = data.lang || "en";
   elicitationMode = data.isElicitation || false;
   setSessionTag(data);
 
@@ -413,7 +602,6 @@ function show(data) {
     // opencode does not scope "always" to the specific pattern of this request.
     // We keep the button to respect opencode's native UX, but the label + tooltip
     // make the blast radius explicit.
-    suggestionsContainer.innerHTML = "";
     if (Array.isArray(data.opencodeAlways) && data.opencodeAlways.length > 0) {
       const btn = document.createElement("button");
       btn.className = "btn-suggestion";
@@ -435,21 +623,12 @@ function show(data) {
   }
 
   if (elicitationMode) {
-    // Elicitation mode — show question with "Go to Terminal" button
+    // Elicitation mode — answer directly in the bubble, with terminal fallback.
     headerTitle.textContent = data.lang === "zh" ? "\u9700\u8981\u8F93\u5165" : "Needs Input";
     toolPill.style.display = "none";
-
-    // Extract question text from toolInput.questions
-    let questionText = "";
-    if (data.toolInput && Array.isArray(data.toolInput.questions)) {
-      questionText = data.toolInput.questions.map(q => q.question || "").filter(Boolean).join("\n");
-    }
-    commandBlock.textContent = questionText || JSON.stringify(data.toolInput);
-
-    btnAllow.textContent = data.lang === "zh" ? "\u524D\u5F80\u7EC8\u7AEF" : "Go to Terminal";
-    btnAllow.disabled = false;
-    btnDeny.style.display = "none";
-    suggestionsContainer.innerHTML = "";
+    renderElicitationForm(data);
+    btnAllow.textContent = data.lang === "zh" ? "\u63D0\u4EA4\u56DE\u7B54" : "Submit Answer";
+    btnDeny.textContent = data.lang === "zh" ? "\u524D\u5F80\u7EC8\u7AEF" : "Go to Terminal";
     revealCard();
     return;
   }
@@ -464,7 +643,6 @@ function show(data) {
     btnAllow.textContent = data.lang === "zh" ? "\u77E5\u9053\u4E86" : "Got it";
     btnAllow.disabled = false;
     btnDeny.style.display = "none";
-    suggestionsContainer.innerHTML = "";
     revealCard();
     return;
   }
@@ -490,7 +668,6 @@ function show(data) {
   btnDeny.textContent = data.lang === "zh" ? "\u62D2\u7EDD" : (isPlanReview ? "Reject" : "Deny");
 
   // Dynamic suggestion buttons
-  suggestionsContainer.innerHTML = "";
   if (isPlanReview) {
     // "Go to Terminal" button — deny + focus terminal
     const btn = document.createElement("button");
@@ -533,14 +710,25 @@ function hide() {
 btnAllow.addEventListener("click", () => {
   btnAllow.textContent = "...";
   disableAll();
-  // Elicitation: "deny" tells Claude Code to fall back to terminal
-  window.bubbleAPI.decide(elicitationMode ? "deny" : "allow");
+  if (elicitationMode) {
+    const answers = collectElicitationAnswers();
+    if (!answers) {
+      btnAllow.textContent = currentLang === "zh" ? "\u63D0\u4EA4\u56DE\u7B54" : "Submit Answer";
+      updateElicitationSubmitState();
+      btnDeny.disabled = false;
+      for (const input of elicitationForm.querySelectorAll("input")) input.disabled = false;
+      return;
+    }
+    window.bubbleAPI.decide({ type: "elicitation-submit", answers });
+    return;
+  }
+  window.bubbleAPI.decide("allow");
 });
 
 btnDeny.addEventListener("click", () => {
   btnDeny.textContent = "...";
   disableAll();
-  window.bubbleAPI.decide("deny");
+  window.bubbleAPI.decide(elicitationMode ? "elicitation-deny-and-focus" : "deny");
 });
 
 window.bubbleAPI.onPermissionShow(show);

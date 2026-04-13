@@ -150,6 +150,28 @@ function computeBubbleStackLayout({
   return bounds;
 }
 
+function buildElicitationUpdatedInput(toolInput, answers) {
+  const input = toolInput && typeof toolInput === "object" ? toolInput : {};
+  const questions = Array.isArray(input.questions) ? input.questions : [];
+  const normalizedAnswers = {};
+
+  for (const q of questions) {
+    if (!q || typeof q.question !== "string" || !q.question) continue;
+    const answer = answers && Object.prototype.hasOwnProperty.call(answers, q.question)
+      ? answers[q.question]
+      : undefined;
+    if (typeof answer === "string" && answer.trim()) {
+      normalizedAnswers[q.question] = answer.trim();
+    }
+  }
+
+  return {
+    ...input,
+    questions,
+    answers: normalizedAnswers,
+  };
+}
+
 module.exports = function initPermission(ctx) {
 
 // Each entry: { res, abortHandler, suggestions, sessionId, bubble, hideTimer, toolName, toolInput, resolvedSuggestion, createdAt, measuredHeight }
@@ -385,8 +407,15 @@ function resolvePermissionEntry(permEntry, behavior, message) {
   if (!res || res.writableEnded || res.destroyed) return;
 
   if (permEntry.isElicitation) {
-    sendPermissionResponse(res, "deny", null, "Elicitation");
-    ctx.focusTerminalForSession(permEntry.sessionId);
+    if (behavior === "allow" && permEntry.resolvedUpdatedInput) {
+      sendPermissionResponse(res, {
+        behavior: "allow",
+        updatedInput: permEntry.resolvedUpdatedInput,
+      });
+    } else {
+      sendPermissionResponse(res, "deny", message);
+      if (permEntry.focusTerminalOnResolve) ctx.focusTerminalForSession(permEntry.sessionId);
+    }
     return;
   }
 
@@ -507,6 +536,11 @@ function handleDecide(event, behavior) {
     dismissCodexNotify(perm);
     return;
   }
+  if (perm.isElicitation && behavior && typeof behavior === "object" && behavior.type === "elicitation-submit") {
+    perm.resolvedUpdatedInput = buildElicitationUpdatedInput(perm.toolInput, behavior.answers);
+    resolvePermissionEntry(perm, "allow");
+    return;
+  }
   // opencode "Always" button — map to reply="always" via resolvePermissionEntry
   if (behavior === "opencode-always") {
     perm.opencodeAlwaysPicked = true;
@@ -550,6 +584,9 @@ function handleDecide(event, behavior) {
     repositionBubbles();
     syncPermissionShortcuts();
     ctx.focusTerminalForSession(perm.sessionId);
+  } else if (perm.isElicitation && behavior === "elicitation-deny-and-focus") {
+    perm.focusTerminalOnResolve = true;
+    resolvePermissionEntry(perm, "deny", "Answer in terminal");
   } else {
     resolvePermissionEntry(perm, behavior === "allow" ? "allow" : "deny");
   }
@@ -630,4 +667,4 @@ return {
 
 // Test-only exports — bypasses the initPermission factory so unit tests can
 // hit the pure layout function without standing up Electron / ctx mocks.
-module.exports.__test = { computeBubbleStackLayout };
+module.exports.__test = { computeBubbleStackLayout, buildElicitationUpdatedInput };
