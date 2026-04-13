@@ -4,6 +4,7 @@ const fs = require("fs");
 const { applyStationaryCollectionBehavior } = require("./mac-window");
 const hitGeometry = require("./hit-geometry");
 const { findNearestWorkArea, computeLooseClamp, SYNTHETIC_WORK_AREA } = require("./work-area");
+const { getLaunchSizingWorkArea, getProportionalPixelSize } = require("./size-utils");
 
 // ── Autoplay policy: allow sound playback without user gesture ──
 // MUST be set before any BrowserWindow is created (before app.whenReady)
@@ -213,7 +214,8 @@ let contextMenuOwner = null;
 let currentSize = _settingsController.get("size");
 
 // ── Proportional size mode ──
-// currentSize = "P:<ratio>" means the pet occupies <ratio>% of the work area width.
+// currentSize = "P:<ratio>" means the pet occupies <ratio>% of the display long edge,
+// so rotating the same monitor to portrait does not suddenly shrink the pet.
 const PROPORTIONAL_RATIOS = [8, 10, 12, 15];
 
 function isProportionalMode(size) {
@@ -233,8 +235,7 @@ function getCurrentPixelSize(overrideWa) {
     wa = getNearestWorkArea(x + width / 2, y + height / 2);
   }
   if (!wa) wa = getPrimaryWorkAreaSafe() || SYNTHETIC_WORK_AREA;
-  const px = Math.round(wa.width * ratio / 100);
-  return { width: px, height: px };
+  return getProportionalPixelSize(ratio, wa);
 }
 let contextMenu;
 let doNotDisturb = false;
@@ -998,7 +999,12 @@ function createWindow() {
   if (isMac) {
     applyDockVisibility();
   }
-  const size = getCurrentPixelSize();
+  const launchSizingWorkArea = getLaunchSizingWorkArea(
+    prefs,
+    getPrimaryWorkAreaSafe() || SYNTHETIC_WORK_AREA,
+    getNearestWorkArea,
+  );
+  const size = getCurrentPixelSize(launchSizingWorkArea);
 
   // Restore saved position, or default to bottom-right of primary display.
   // Prefs file always exists in the new architecture (defaults are hydrated
