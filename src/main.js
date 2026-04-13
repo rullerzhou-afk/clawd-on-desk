@@ -177,16 +177,19 @@ function flushRuntimeStateToPrefs() {
 
 let _codexMonitor = null;          // Codex CLI JSONL log polling instance
 let _geminiMonitor = null;         // Gemini CLI session JSON polling instance
+let _antigravityMonitor = null;    // Antigravity log polling instance
 
 // Hook-based agents have no module-level monitor — they're gated at the
 // HTTP route layer. Only log-poll agents hit these branches.
 function startMonitorForAgent(agentId) {
   if (agentId === "codex" && _codexMonitor) _codexMonitor.start();
   else if (agentId === "gemini-cli" && _geminiMonitor) _geminiMonitor.start();
+  else if (agentId === "antigravity" && _antigravityMonitor) _antigravityMonitor.start();
 }
 function stopMonitorForAgent(agentId) {
   if (agentId === "codex" && _codexMonitor) _codexMonitor.stop();
   else if (agentId === "gemini-cli" && _geminiMonitor) _geminiMonitor.stop();
+  else if (agentId === "antigravity" && _antigravityMonitor) _antigravityMonitor.stop();
 }
 
 // ── Theme loader ──
@@ -1542,6 +1545,19 @@ if (!gotTheLock) {
       console.warn("Clawd: Gemini log monitor not started:", err.message);
     }
 
+    try {
+      const AntigravityLogMonitor = require("../agents/antigravity-log-monitor");
+      const antigravityAgent = require("../agents/antigravity");
+      _antigravityMonitor = new AntigravityLogMonitor(antigravityAgent, (sid, state, event, extra) => {
+        updateSession(sid, state, event, extra.sourcePid || null, extra.cwd || "", null, null, extra.agentPid || null, "antigravity");
+      });
+      if (_isAgentEnabled(_settingsController.getSnapshot(), "antigravity")) {
+        _antigravityMonitor.start();
+      }
+    } catch (err) {
+      console.warn("Clawd: Antigravity log monitor not started:", err.message);
+    }
+
     // Auto-install VS Code/Cursor terminal-focus extension
     try { installTerminalFocusExtension(); } catch (err) {
       console.warn("Clawd: failed to auto-install terminal-focus extension:", err.message);
@@ -1564,6 +1580,7 @@ if (!gotTheLock) {
     _mini.cleanup();
     if (_codexMonitor) _codexMonitor.stop();
     if (_geminiMonitor) _geminiMonitor.stop();
+    if (_antigravityMonitor) _antigravityMonitor.stop();
     stopTopmostWatchdog();
     if (hwndRecoveryTimer) { clearTimeout(hwndRecoveryTimer); hwndRecoveryTimer = null; }
     _focus.cleanup();

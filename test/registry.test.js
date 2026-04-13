@@ -3,9 +3,9 @@ const assert = require("node:assert");
 const registry = require("../agents/registry");
 
 describe("Agent Registry", () => {
-  it("should return all seven agents", () => {
+  it("should return all supported agents", () => {
     const agents = registry.getAllAgents();
-    assert.strictEqual(agents.length, 8);
+    assert.strictEqual(agents.length, 9);
     const ids = agents.map((a) => a.id);
     assert.ok(ids.includes("claude-code"));
     assert.ok(ids.includes("codex"));
@@ -15,6 +15,7 @@ describe("Agent Registry", () => {
     assert.ok(ids.includes("codebuddy"));
     assert.ok(ids.includes("kiro-cli"));
     assert.ok(ids.includes("opencode"));
+    assert.ok(ids.includes("antigravity"));
   });
 
   it("should look up agents by ID", () => {
@@ -25,6 +26,7 @@ describe("Agent Registry", () => {
     assert.strictEqual(registry.getAgent("cursor-agent").name, "Cursor Agent");
     assert.strictEqual(registry.getAgent("codebuddy").name, "CodeBuddy");
     assert.strictEqual(registry.getAgent("kiro-cli").name, "Kiro CLI");
+    assert.strictEqual(registry.getAgent("antigravity").name, "Antigravity");
     assert.strictEqual(registry.getAgent("nonexistent"), undefined);
   });
 
@@ -45,6 +47,9 @@ describe("Agent Registry", () => {
 
     const cursor = registry.getAgent("cursor-agent");
     assert.deepStrictEqual(cursor.processNames.win, ["Cursor.exe"]);
+
+    const antigravity = registry.getAgent("antigravity");
+    assert.deepStrictEqual(antigravity.processNames.win, ["Antigravity.exe"]);
   });
 
   it("should include explicit Linux process names", () => {
@@ -62,6 +67,9 @@ describe("Agent Registry", () => {
 
     const cursor = registry.getAgent("cursor-agent");
     assert.deepStrictEqual(cursor.processNames.linux, ["cursor", "Cursor"]);
+
+    const antigravity = registry.getAgent("antigravity");
+    assert.deepStrictEqual(antigravity.processNames.linux, ["antigravity", "Antigravity"]);
   });
 
   it("should aggregate all process names", () => {
@@ -76,6 +84,7 @@ describe("Agent Registry", () => {
     assert.ok(agentIds.includes("gemini-cli"));
     assert.ok(agentIds.includes("cursor-agent"));
     assert.ok(agentIds.includes("kiro-cli"));
+    assert.ok(agentIds.includes("antigravity"));
   });
 
   it("should have correct capabilities", () => {
@@ -114,6 +123,12 @@ describe("Agent Registry", () => {
     assert.strictEqual(kiro.capabilities.permissionApproval, false);
     assert.strictEqual(kiro.capabilities.sessionEnd, false);
     assert.strictEqual(kiro.capabilities.subagent, false);
+
+    const antigravity = registry.getAgent("antigravity");
+    assert.strictEqual(antigravity.capabilities.httpHook, false);
+    assert.strictEqual(antigravity.capabilities.permissionApproval, false);
+    assert.strictEqual(antigravity.capabilities.sessionEnd, false);
+    assert.strictEqual(antigravity.capabilities.subagent, false);
   });
 
   it("should have eventMap for hook-based agents", () => {
