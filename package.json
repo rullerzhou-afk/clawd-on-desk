@@ -5,6 +5,7 @@
   "main": "src/main.js",
   "scripts": {
     "start": "node launch.js",
+    "start:daemon": "node scripts/start-detached.js",
     "build": "electron-builder --win",
     "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux",

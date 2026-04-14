@@ -97,9 +97,16 @@ cd clawd-on-desk
 # 安装依赖
 npm install
 
-# 启动 Clawd（启动时会自动注册 Claude Code hooks；如需预先手动注册，可单独执行 `node hooks/install.js`）
+# 前台启动 Clawd（启动时会自动注册 Claude Code hooks；如需预先手动注册，可单独执行 `node hooks/install.js`）
 npm start
+
+# 后台启动 Clawd，并立即释放当前终端
+npm run start:daemon
 ```
+
+如果你不想让终端参与运行流程，可以使用 `npm run build:mac` 构建 macOS
+应用，然后直接启动生成的 `.app`。托盘菜单里的 `Open at Login`
+会写入系统登录项 / 自启动配置。
 
 **Claude Code** 和 **Codex CLI** 开箱即用。其他 Agent（Copilot、Kiro 等）需一次性配置。也涵盖远程 SSH、WSL 及平台说明（macOS / Linux）：**[docs/setup-guide.zh-CN.md](docs/setup-guide.zh-CN.md)**
 

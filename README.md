@@ -97,9 +97,16 @@ cd clawd-on-desk
 # Install dependencies
 npm install
 
-# Start Clawd (auto-registers Claude Code hooks on launch)
+# Start Clawd in foreground (auto-registers Claude Code hooks on launch)
 npm start
+
+# Start Clawd in background and release the terminal
+npm run start:daemon
 ```
+
+If you do not want a terminal window involved at all, build the macOS app with
+`npm run build:mac` and launch the generated `.app` normally. The tray menu
+also exposes `Open at Login`, which writes the OS login item / autostart entry.
 
 **Claude Code** and **Codex CLI** work out of the box. Other agents (Copilot, Kiro, etc.) need one-time setup. Also covers remote SSH, WSL, and platform-specific notes (macOS / Linux): **[docs/setup-guide.md](docs/setup-guide.md)**
 
