@@ -99,4 +99,10 @@ describe("hit geometry", () => {
     approx(rect.w, 261);
     approx(rect.h, 261);
   });
+
+  it("reports visible content padding for clawd drag svg", () => {
+    const content = hitGeometry.getContentRectScreen(clawd, bounds, null, "clawd-react-drag.svg");
+    approx(content.top, 74);
+    approx(content.bottom, 190);
+  });
 });

@@ -27,7 +27,7 @@ function findNearestWorkArea(displays, primaryWa, cx, cy) {
   return nearest;
 }
 
-function computeLooseClamp(displays, primaryWa, x, y, w, h) {
+function computeLooseClamp(displays, primaryWa, x, y, w, h, options = {}) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   if (Array.isArray(displays)) {
     for (const d of displays) {
@@ -48,10 +48,12 @@ function computeLooseClamp(displays, primaryWa, x, y, w, h) {
     maxX = wa.x + wa.width;
     maxY = wa.y + wa.height;
   }
-  const margin = Math.round(w * 0.25);
+  const marginX = options.marginX != null ? options.marginX : Math.round(w * 0.25);
+  const marginTop = options.marginTop != null ? options.marginTop : Math.round(h * 0.25);
+  const marginBottom = options.marginBottom != null ? options.marginBottom : Math.round(h * 0.25);
   return {
-    x: Math.max(minX - margin, Math.min(x, maxX - w + margin)),
-    y: Math.max(minY - margin, Math.min(y, maxY - h + margin)),
+    x: Math.max(minX - marginX, Math.min(x, maxX - w + marginX)),
+    y: Math.max(minY - marginTop, Math.min(y, maxY - h + marginBottom)),
   };
 }
 

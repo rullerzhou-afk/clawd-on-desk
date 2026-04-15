@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   onWakeFromDoze: (callback) => ipcRenderer.on("wake-from-doze", () => callback()),
   onDndChange: (callback) => ipcRenderer.on("dnd-change", (_, enabled) => callback(enabled)),
   onMiniModeChange: (cb) => ipcRenderer.on("mini-mode-change", (_, enabled, edge) => cb(enabled, edge)),
+  onViewportOffset: (cb) => ipcRenderer.on("viewport-offset", (_, offsetY) => cb(offsetY)),
   // Reaction control (from main, relayed from hit window)
   onStartDragReaction: (cb) => ipcRenderer.on("start-drag-reaction", () => cb()),
   onEndDragReaction: (cb) => ipcRenderer.on("end-drag-reaction", () => cb()),

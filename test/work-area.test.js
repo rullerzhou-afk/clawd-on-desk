@@ -79,6 +79,14 @@ describe("computeLooseClamp", () => {
     assert.strictEqual(result.x, -50);
   });
 
+  it("accepts an explicit top margin for windows with invisible padding", () => {
+    const displays = [display(0, 0, 1920, 1080)];
+    const result = computeLooseClamp(displays, null, 100, -120, 200, 200, {
+      marginTop: 110,
+    });
+    assert.strictEqual(result.y, -110);
+  });
+
   // ── issue #93 regression cases ──
 
   it("falls back to primary when displays is empty", () => {
