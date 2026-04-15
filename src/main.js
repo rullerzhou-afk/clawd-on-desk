@@ -1902,7 +1902,7 @@ function looseClampPetToDisplays(x, y, w, h) {
   const margins = getVisibleContentMargins({ x, y, width: w, height: h });
   return computeLooseClamp(screen.getAllDisplays(), getPrimaryWorkAreaSafe(), x, y, w, h, {
     marginTop: Math.max(Math.round(h * 0.25), margins.top),
-    marginBottom: Math.max(Math.round(h * 0.25), margins.bottom),
+    marginBottom: margins.bottom,
   });
 }
 

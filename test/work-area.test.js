@@ -87,6 +87,15 @@ describe("computeLooseClamp", () => {
     assert.strictEqual(result.y, -110);
   });
 
+  it("accepts a tighter explicit bottom margin independently from the top margin", () => {
+    const displays = [display(0, 0, 1920, 1080)];
+    const result = computeLooseClamp(displays, null, 100, 940, 200, 200, {
+      marginTop: 110,
+      marginBottom: 10,
+    });
+    assert.strictEqual(result.y, 890);
+  });
+
   // ── issue #93 regression cases ──
 
   it("falls back to primary when displays is empty", () => {
