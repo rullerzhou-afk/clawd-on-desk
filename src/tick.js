@@ -76,7 +76,9 @@ function startMainTick() {
     const cursor = screen.getCursorScreenPoint();
 
     // ── Cursor-over-pet tracking (for mini peek + eye tracking, NOT for input routing) ──
-    const bounds = ctx.win.getBounds();
+    const bounds = typeof ctx.getPetWindowBounds === "function"
+      ? ctx.getPetWindowBounds()
+      : ctx.win.getBounds();
     if (!ctx.dragLocked) {
       const hit = ctx.getHitRectScreen(bounds);
       const over = cursor.x >= hit.left && cursor.x <= hit.right

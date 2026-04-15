@@ -186,7 +186,7 @@ function hydrateSystemBackedSettings() {
 // `win.getBounds()` and `_mini.*` at save time, so we mirror that here.
 function flushRuntimeStateToPrefs() {
   if (!win || win.isDestroyed()) return;
-  const bounds = win.getBounds();
+  const bounds = getPetWindowBounds();
   _settingsController.applyBulk({
     x: bounds.x,
     y: bounds.y,
@@ -286,7 +286,7 @@ function getCurrentPixelSize(overrideWa) {
   const ratio = getProportionalRatio();
   let wa = overrideWa;
   if (!wa && win && !win.isDestroyed()) {
-    const { x, y, width, height } = win.getBounds();
+    const { x, y, width, height } = getPetWindowBounds();
     wa = getNearestWorkArea(x + width / 2, y + height / 2);
   }
   if (!wa) wa = getPrimaryWorkAreaSafe() || SYNTHETIC_WORK_AREA;
@@ -458,6 +458,10 @@ function getVirtualWindowBounds() {
   return { ...bounds, y: bounds.y - viewportOffsetY };
 }
 
+function getPetWindowBounds() {
+  return getVirtualWindowBounds();
+}
+
 function applyVirtualWindowBounds(virtualBounds) {
   const wa = getNearestWorkArea(
     virtualBounds.x + virtualBounds.width / 2,
@@ -549,6 +553,7 @@ const _permCtx = {
   get petHidden() { return petHidden; },
   getNearestWorkArea,
   getHitRectScreen,
+  getPetWindowBounds,
   guardAlwaysOnTop,
   reapplyMacVisibility,
   isAgentPermissionsEnabled: (agentId) =>
@@ -572,6 +577,7 @@ const _updateBubbleCtx = {
   getPendingPermissions: () => pendingPermissions,
   getNearestWorkArea,
   getHitRectScreen,
+  getPetWindowBounds,
   guardAlwaysOnTop,
   reapplyMacVisibility,
 };
@@ -733,6 +739,7 @@ const _tickCtx = {
   miniPeekOut: () => miniPeekOut(),
   getObjRect,
   getHitRectScreen,
+  getPetWindowBounds,
 };
 const _tick = require("./tick")(_tickCtx);
 const { startMainTick, resetIdleTimer } = _tick;
@@ -909,6 +916,8 @@ const _menuCtx = {
   flushRuntimeStateToPrefs,
   settings: _settingsController,
   syncHitWin,
+  getPetWindowBounds,
+  applyPetWindowBounds: applyVirtualWindowBounds,
   getCurrentPixelSize,
   isProportionalMode,
   PROPORTIONAL_RATIOS,
@@ -1604,6 +1613,9 @@ function createWindow() {
   });
 
   win.setFocusable(false);
+  if (!prefs.miniMode) {
+    applyVirtualWindowBounds({ x: startX, y: startY, width: size.width, height: size.height });
+  }
 
   // Watchdog (Linux only): prevent accidental window close.
   // render-process-gone is handled by the global crash-recovery handler below.
@@ -1650,7 +1662,7 @@ function createWindow() {
 
   // ── Create input window (hitWin) — small rect over hitbox, receives all pointer events ──
   {
-    const initBounds = win.getBounds();
+    const initBounds = getPetWindowBounds();
     const initHit = getHitRectScreen(initBounds);
     const hx = Math.round(initHit.left), hy = Math.round(initHit.top);
     const hw = Math.round(initHit.right - initHit.left);
@@ -1828,10 +1840,10 @@ function createWindow() {
       return;
     }
     const size = getCurrentPixelSize();
-    const { x, y } = win.getBounds();
+    const { x, y } = getPetWindowBounds();
     const clamped = clampToScreen(x, y, size.width, size.height);
     if (isProportionalMode() || clamped.x !== x || clamped.y !== y) {
-      win.setBounds({ ...clamped, width: size.width, height: size.height });
+      applyVirtualWindowBounds({ ...clamped, width: size.width, height: size.height });
       syncHitWin();
       repositionUpdateBubble();
     }
@@ -1844,9 +1856,9 @@ function createWindow() {
       return;
     }
     const size = getCurrentPixelSize();
-    const { x, y } = win.getBounds();
+    const { x, y } = getPetWindowBounds();
     const clamped = clampToScreen(x, y, size.width, size.height);
-    win.setBounds({ ...clamped, width: size.width, height: size.height });
+    applyVirtualWindowBounds({ ...clamped, width: size.width, height: size.height });
     syncHitWin();
     repositionUpdateBubble();
   });

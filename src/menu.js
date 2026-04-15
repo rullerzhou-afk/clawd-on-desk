@@ -368,9 +368,10 @@ module.exports = function initMenu(ctx) {
   function buildDisplaySubmenu() {
     const displays = screen.getAllDisplays();
     if (displays.length <= 1) return [{ label: t("displayLabel").replace("{n}", 1), enabled: false }];
-    const current = ctx.win && !ctx.win.isDestroyed()
-      ? screen.getDisplayNearestPoint(ctx.win.getBounds())
+    const currentBounds = ctx.win && !ctx.win.isDestroyed()
+      ? (typeof ctx.getPetWindowBounds === "function" ? ctx.getPetWindowBounds() : ctx.win.getBounds())
       : null;
+    const current = currentBounds ? screen.getDisplayNearestPoint(currentBounds) : null;
     return displays.map((d, i) => {
       const isPrimary = d.bounds.x === 0 && d.bounds.y === 0;
       const labelKey = isPrimary ? "displayLabelPrimary" : "displayLabel";
@@ -394,12 +395,20 @@ module.exports = function initMenu(ctx) {
       const size = { width: px, height: px };
       const x = Math.round(wa.x + (wa.width - size.width) / 2);
       const y = Math.round(wa.y + (wa.height - size.height) / 2);
-      ctx.win.setBounds({ x, y, width: size.width, height: size.height });
+      if (typeof ctx.applyPetWindowBounds === "function") {
+        ctx.applyPetWindowBounds({ x, y, width: size.width, height: size.height });
+      } else {
+        ctx.win.setBounds({ x, y, width: size.width, height: size.height });
+      }
     } else {
       const size = SIZES[ctx.currentSize] || ctx.getCurrentPixelSize();
       const x = Math.round(wa.x + (wa.width - size.width) / 2);
       const y = Math.round(wa.y + (wa.height - size.height) / 2);
-      ctx.win.setBounds({ x, y, width: size.width, height: size.height });
+      if (typeof ctx.applyPetWindowBounds === "function") {
+        ctx.applyPetWindowBounds({ x, y, width: size.width, height: size.height });
+      } else {
+        ctx.win.setBounds({ x, y, width: size.width, height: size.height });
+      }
     }
     ctx.syncHitWin();
     if (ctx.bubbleFollowPet) ctx.repositionBubbles();
@@ -490,9 +499,15 @@ module.exports = function initMenu(ctx) {
     const size = SIZES[sizeKey] || ctx.getCurrentPixelSize();
     if (!ctx.miniHandleResize(sizeKey)) {
       if (ctx.win && !ctx.win.isDestroyed()) {
-        const { x, y } = ctx.win.getBounds();
+        const { x, y } = typeof ctx.getPetWindowBounds === "function"
+          ? ctx.getPetWindowBounds()
+          : ctx.win.getBounds();
         const clamped = ctx.clampToScreen(x, y, size.width, size.height);
-        ctx.win.setBounds({ ...clamped, width: size.width, height: size.height });
+        if (typeof ctx.applyPetWindowBounds === "function") {
+          ctx.applyPetWindowBounds({ ...clamped, width: size.width, height: size.height });
+        } else {
+          ctx.win.setBounds({ ...clamped, width: size.width, height: size.height });
+        }
         ctx.syncHitWin();
       }
     }
