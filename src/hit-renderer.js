@@ -35,10 +35,8 @@ window.hitAPI.onStateSync((data) => {
 // --- Drag state ---
 let isDragging = false;
 let didDrag = false;
-let lastScreenX, lastScreenY;
 let mouseDownX, mouseDownY;
-let pendingDx = 0, pendingDy = 0;
-let dragRAF = null;
+let dragMoveRAF = null;
 const DRAG_THRESHOLD = 3;
 
 // --- Reaction state (tracked here to gate input) ---
@@ -59,12 +57,8 @@ area.addEventListener("pointerdown", (e) => {
     area.setPointerCapture(e.pointerId);
     isDragging = true;
     didDrag = false;
-    lastScreenX = e.screenX;
-    lastScreenY = e.screenY;
     mouseDownX = e.clientX;
     mouseDownY = e.clientY;
-    pendingDx = 0;
-    pendingDy = 0;
     window.hitAPI.dragLock(true);
     area.classList.add("dragging");
   }
@@ -72,11 +66,6 @@ area.addEventListener("pointerdown", (e) => {
 
 document.addEventListener("pointermove", (e) => {
   if (isDragging) {
-    pendingDx += e.screenX - lastScreenX;
-    pendingDy += e.screenY - lastScreenY;
-    lastScreenX = e.screenX;
-    lastScreenY = e.screenY;
-
     if (!didDrag) {
       const totalDx = e.clientX - mouseDownX;
       const totalDy = e.clientY - mouseDownY;
@@ -86,29 +75,30 @@ document.addEventListener("pointermove", (e) => {
       }
     }
 
-    if (!dragRAF) {
-      dragRAF = setTimeout(() => {
-        window.hitAPI.moveWindowBy(pendingDx, pendingDy);
-        pendingDx = 0;
-        pendingDy = 0;
-        dragRAF = null;
-      }, 0);
-    }
+    if (didDrag) scheduleDragMove();
   }
 });
+
+function scheduleDragMove() {
+  if (dragMoveRAF) return;
+  dragMoveRAF = setTimeout(() => {
+    dragMoveRAF = null;
+    window.hitAPI.dragMove();
+  }, 0);
+}
 
 function stopDrag() {
   if (!isDragging) return;
   isDragging = false;
-  window.hitAPI.dragLock(false);
   area.classList.remove("dragging");
-  if (pendingDx !== 0 || pendingDy !== 0) {
-    if (dragRAF) { clearTimeout(dragRAF); dragRAF = null; }
-    window.hitAPI.moveWindowBy(pendingDx, pendingDy);
-    pendingDx = 0; pendingDy = 0;
-  }
   if (didDrag) {
+    if (dragMoveRAF) { clearTimeout(dragMoveRAF); dragMoveRAF = null; }
+    window.hitAPI.dragMove();
     window.hitAPI.dragEnd();
+    window.hitAPI.dragLock(false);
+  } else {
+    if (dragMoveRAF) { clearTimeout(dragMoveRAF); dragMoveRAF = null; }
+    window.hitAPI.dragLock(false);
   }
   endDragReaction();
 }

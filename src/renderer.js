@@ -68,13 +68,13 @@ function applyObjectScaleStyle(el, file) {
     el.style.height = "auto";
     el.style.left = `calc(${_objectScaleCSS.imgLeft} + ${ox}px)`;
     el.style.top = "auto";
-    el.style.bottom = `calc(${_objectScaleCSS.imgBottom || "5%"} + ${oy}px)`;
+    el.style.bottom = `calc(${_objectScaleCSS.imgBottom || "5%"} + ${oy + _viewportOffsetY}px)`;
   } else {
     el.style.width = _objectScaleCSS.width;
     el.style.height = _objectScaleCSS.height;
     el.style.left = `calc(${_objectScaleCSS.left} + ${ox}px)`;
     el.style.top = "auto";
-    el.style.bottom = `calc(${_objectScaleCSS.objBottom} + ${oy}px)`;
+    el.style.bottom = `calc(${_objectScaleCSS.objBottom} + ${oy + _viewportOffsetY}px)`;
   }
 }
 
@@ -106,14 +106,22 @@ function applyNormalizedLayoutStyle(el, file) {
     el.style.height = "auto";
     el.style.left = `calc(${leftRatio * 100}% + ${ox}px)`;
     el.style.top = "auto";
-    el.style.bottom = `calc(${bottomRatio * 100}% + ${oy}px)`;
+    el.style.bottom = `calc(${bottomRatio * 100}% + ${oy + _viewportOffsetY}px)`;
   } else {
     el.style.width = `${widthRatio * 100}%`;
     el.style.height = `${heightRatio * 100}%`;
     el.style.left = `calc(${leftRatio * 100}% + ${ox}px)`;
     el.style.top = "auto";
-    el.style.bottom = `calc(${bottomRatio * 100}% + ${oy}px)`;
+    el.style.bottom = `calc(${bottomRatio * 100}% + ${oy + _viewportOffsetY}px)`;
   }
+}
+
+function setViewportOffset(offsetY) {
+  const next = Number.isFinite(offsetY) ? Math.max(0, Math.round(offsetY)) : 0;
+  if (next === _viewportOffsetY) return;
+  _viewportOffsetY = next;
+  applyObjectScaleStyle(clawdEl, currentDisplayedSvg);
+  applyObjectScaleStyle(pendingNext, pendingNext && getObjectSvgName(pendingNext));
 }
 
 let _assetsPath;
@@ -134,6 +142,7 @@ let _fileOffsets = {};
 let _transitions = {};  // per-file fade config: { "file.apng": { in: 400, out: 400 } }
 let _miniFlipAssets = false; // theme's mini assets drawn in reverse direction
 let _inMiniMode = false;
+let _viewportOffsetY = 0;
 
 function applyMiniFlip(el) {
   if (!el || el.tagName !== "IMG") return;
@@ -751,6 +760,10 @@ window.electronAPI.onEyeMove((dx, dy) => {
     return;
   }
   applyEyeMove(effectiveDx, dy);
+});
+
+window.electronAPI.onViewportOffset((offsetY) => {
+  setViewportOffset(offsetY);
 });
 
 // --- Sound playback (IPC from main, receives file:// URL from theme) ---
