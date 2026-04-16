@@ -193,6 +193,12 @@ function flushRuntimeStateToPrefs() {
   });
 }
 
+// ── Display-disconnect position backup ──
+// When a display is removed the window gets clamped to a surviving monitor.
+// We stash the pre-clamp position so that when the same display comes back
+// (display-added) we can restore the pet to where it was.
+let _preDisconnectBounds = null;   // { x, y, width, height } or null
+
 let _codexMonitor = null;          // Codex CLI JSONL log polling instance
 let _geminiMonitor = null;         // Gemini CLI session JSON polling instance
 
@@ -1778,12 +1784,36 @@ function createWindow() {
     const size = getCurrentPixelSize();
     const { x, y } = win.getBounds();
     const clamped = clampToScreen(x, y, size.width, size.height);
+    // Only stash when the pet actually had to move — avoids overwriting
+    // a good backup when a second, unrelated display is removed afterwards.
+    if (clamped.x !== x || clamped.y !== y) {
+      _preDisconnectBounds = { x, y, width: size.width, height: size.height };
+    }
     win.setBounds({ ...clamped, width: size.width, height: size.height });
     syncHitWin();
     repositionUpdateBubble();
   });
   screen.on("display-added", () => {
     reapplyMacVisibility();
+    // If we saved a pre-disconnect position, check whether the newly added
+    // display covers that location. If so, restore the pet there.
+    if (_preDisconnectBounds && win && !win.isDestroyed() && !_mini.getMiniMode()) {
+      const b = _preDisconnectBounds;
+      const cx = b.x + b.width / 2;
+      const cy = b.y + b.height / 2;
+      const displays = screen.getAllDisplays();
+      const hit = displays.some((d) => {
+        const wa = d.workArea;
+        return cx >= wa.x && cx < wa.x + wa.width &&
+               cy >= wa.y && cy < wa.y + wa.height;
+      });
+      if (hit) {
+        win.setBounds(b);
+        syncHitWin();
+        flushRuntimeStateToPrefs();
+        _preDisconnectBounds = null;
+      }
+    }
     repositionUpdateBubble();
   });
 }
