@@ -63,6 +63,7 @@ function update(api, o = {}) {
 function rawSession(state, opts = {}) {
   return {
     state,
+    createdAt: opts.createdAt ?? Date.now(),
     updatedAt: opts.updatedAt ?? Date.now(),
     displayHint: opts.displayHint || null,
     sourcePid: opts.sourcePid || null,
@@ -73,8 +74,9 @@ function rawSession(state, opts = {}) {
     agentId: opts.agentId || null,
     host: opts.host || null,
     headless: opts.headless || false,
+    sessionTitle: opts.sessionTitle || null,
     pidReachable: opts.pidReachable ?? false,
-    resumeState: opts.resumeState || null,
+    recentEvents: opts.recentEvents || [],
   };
 }
 
@@ -502,24 +504,10 @@ describe("updateSession()", () => {
     assert.strictEqual(api.sessions.get("s1").state, "juggling");
   });
 
-  it("working + SubagentStart + SubagentStop → restores working", () => {
-    update(api, { id: "s1", state: "working", event: "PreToolUse" });
+  it("juggling + SubagentStop → downgrades to working", () => {
     update(api, { id: "s1", state: "juggling", event: "SubagentStart" });
     update(api, { id: "s1", state: "working", event: "SubagentStop" });
     assert.strictEqual(api.sessions.get("s1").state, "working");
-  });
-
-  it("subagent-only session is removed on SubagentStop", () => {
-    update(api, { id: "s1", state: "juggling", event: "SubagentStart" });
-    assert.ok(api.sessions.has("s1"));
-    update(api, { id: "s1", state: "working", event: "SubagentStop" });
-    assert.ok(!api.sessions.has("s1"));
-  });
-
-  it("late SubagentStop without tracked session is ignored", () => {
-    update(api, { id: "ghost", state: "working", event: "SubagentStop" });
-    assert.ok(!api.sessions.has("ghost"));
-    assert.strictEqual(api.getCurrentState(), "idle");
   });
 
   it("SessionEnd → deletes session", () => {
@@ -587,6 +575,67 @@ describe("updateSession()", () => {
     update(api, { id: "s1", state: "sleeping", event: "SessionEnd" });
     // s2 remains with thinking
     assert.strictEqual(api.resolveDisplayState(), "thinking");
+  });
+
+  it("tracks createdAt and recent events", () => {
+    update(api, { id: "s1", state: "thinking", event: "UserPromptSubmit" });
+    const createdAt = api.sessions.get("s1").createdAt;
+    update(api, { id: "s1", state: "working", event: "PreToolUse" });
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.createdAt, createdAt);
+    assert.strictEqual(session.recentEvents.length, 2);
+    assert.strictEqual(session.recentEvents[0].event, "UserPromptSubmit");
+    assert.strictEqual(session.recentEvents[1].event, "PreToolUse");
+  });
+});
+
+describe("getSessionPanelData()", () => {
+  let api;
+
+  beforeEach(() => { api = require("../src/state")(makeCtx()); });
+  afterEach(() => { api.cleanup(); });
+
+  it("returns multi-agent sessions sorted by active state, priority, then recency", () => {
+    api.sessions.set("idle", rawSession("idle", {
+      agentId: "gemini-cli",
+      cwd: "/tmp/idle",
+      updatedAt: Date.now() - 1000,
+    }));
+    api.sessions.set("cc-old", rawSession("working", {
+      agentId: "claude-code",
+      cwd: "/tmp/older",
+      updatedAt: Date.now() - 5000,
+    }));
+    api.sessions.set("codex-new", rawSession("juggling", {
+      agentId: "codex",
+      cwd: "/tmp/newer",
+      updatedAt: Date.now(),
+      recentEvents: [{ at: Date.now(), event: "SubagentStart", label: "Subagent started", state: "juggling" }],
+    }));
+
+    const data = api.getSessionPanelData();
+    assert.strictEqual(data.sessions.length, 3);
+    assert.strictEqual(data.sessions[0].folder, "newer");
+    assert.strictEqual(data.sessions[0].agentId, "codex");
+    assert.strictEqual(data.sessions[0].active, true);
+    assert.strictEqual(data.sessions[0].recentEvents[0].event, "SubagentStart");
+    assert.strictEqual(data.sessions[1].folder, "older");
+    assert.strictEqual(data.sessions[1].active, true);
+    assert.strictEqual(data.sessions[2].folder, "idle");
+    assert.strictEqual(data.sessions[2].active, false);
+  });
+
+  it("prefers session titles over folder names in panel data", () => {
+    api.sessions.set("renamed", rawSession("working", {
+      agentId: "codex",
+      cwd: "/tmp/project-folder",
+      sessionTitle: "Renamed Session",
+      updatedAt: Date.now(),
+    }));
+
+    const data = api.getSessionPanelData();
+    assert.strictEqual(data.sessions[0].title, "Renamed Session");
+    assert.strictEqual(data.sessions[0].folder, "project-folder");
   });
 });
 

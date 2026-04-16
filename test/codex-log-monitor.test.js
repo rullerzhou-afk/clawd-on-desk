@@ -428,4 +428,20 @@ describe("CodexLogMonitor", () => {
     });
     monitor.start();
   });
+
+  it("should emit metadata-only updates when a session title changes", (_, done) => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      '{"type":"turn_context","payload":{"cwd":"/tmp","summary":"Renamed Session"}}',
+    ].join("\n") + "\n");
+
+    const config = makeConfig(tmpDir);
+    monitor = new CodexLogMonitor(config, (_sid, _state, _event, extra) => {
+      if (!extra || !extra.metaOnly) return;
+      assert.strictEqual(extra.sessionTitle, "Renamed Session");
+      done();
+    });
+    monitor.start();
+  });
 });
