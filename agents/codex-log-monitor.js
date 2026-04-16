@@ -191,6 +191,7 @@ class CodexLogMonitor {
         sessionId: "codex:" + sessionId,
         filePath,
         cwd: "",
+        sessionTitle: null,
         lastEventTime: Date.now(),
         lastState: null,
         partial: "",
@@ -251,6 +252,12 @@ class CodexLogMonitor {
     const payload = obj.payload;
     const subtype =
       payload && typeof payload === "object" ? payload.type || "" : "";
+    const extractedTitle = this._extractSessionTitle(obj);
+    let titleChanged = false;
+    if (extractedTitle && extractedTitle !== tracked.sessionTitle) {
+      tracked.sessionTitle = extractedTitle;
+      titleChanged = true;
+    }
 
     // Build lookup key
     const key = subtype ? type + ":" + subtype : type;
@@ -272,8 +279,10 @@ class CodexLogMonitor {
     // Look up state mapping
     const map = this._config.logEventMap;
     const state = map[key];
-    if (state === undefined) return; // unmapped event, skip
-    if (state === null) return; // explicitly ignored
+    if (state === undefined || state === null) {
+      if (titleChanged) this._emitMetadataUpdate(tracked);
+      return; // unmapped or explicitly ignored event
+    }
 
     // Track tool use per turn — reset on task_started, set on function_call
     if (key === "event_msg:task_started") {
@@ -298,6 +307,7 @@ class CodexLogMonitor {
         cwd: tracked.cwd,
         sourcePid: agentPid,
         agentPid,
+        sessionTitle: tracked.sessionTitle,
       });
       return;
     }
@@ -316,6 +326,7 @@ class CodexLogMonitor {
             cwd: tracked.cwd,
             sourcePid: agentPid,
             agentPid,
+            sessionTitle: tracked.sessionTitle,
             permissionDetail: { command: cmd, rawPayload: payload },
           });
           return;
@@ -328,6 +339,7 @@ class CodexLogMonitor {
             cwd: tracked.cwd,
             sourcePid: agentPid,
             agentPid,
+            sessionTitle: tracked.sessionTitle,
             permissionDetail: { command: cmd, rawPayload: payload },
           });
         }, APPROVAL_HEURISTIC_MS);
@@ -344,6 +356,17 @@ class CodexLogMonitor {
       cwd: tracked.cwd,
       sourcePid: agentPid,
       agentPid,
+      sessionTitle: tracked.sessionTitle,
+    });
+  }
+
+  _emitMetadataUpdate(tracked) {
+    this._onStateChange(tracked.sessionId, tracked.lastState || "idle", null, {
+      cwd: tracked.cwd,
+      sourcePid: tracked.agentPid,
+      agentPid: tracked.agentPid,
+      sessionTitle: tracked.sessionTitle,
+      metaOnly: true,
     });
   }
 
@@ -373,6 +396,33 @@ class CodexLogMonitor {
       if (typeof args.justification === "string" && args.justification.trim()) return true;
     } catch {}
     return false;
+  }
+
+  _extractSessionTitle(obj) {
+    if (!obj || typeof obj !== "object") return null;
+    const payload = obj.payload && typeof obj.payload === "object" ? obj.payload : null;
+    const candidates = [];
+    if (payload) {
+      candidates.push(
+        payload.sessionTitle,
+        payload.session_title,
+        payload.title,
+        payload.conversationTitle,
+        payload.conversation_title,
+        payload.threadTitle,
+        payload.thread_title
+      );
+      if (obj.type === "turn_context" && typeof payload.summary === "string") {
+        const summary = payload.summary.trim();
+        if (summary && summary !== "none" && summary !== "auto") candidates.push(summary);
+      }
+    }
+    for (const candidate of candidates) {
+      if (typeof candidate !== "string") continue;
+      const trimmed = candidate.trim();
+      if (trimmed) return trimmed;
+    }
+    return null;
   }
 
   // Extract UUID from rollout filename
@@ -448,6 +498,7 @@ class CodexLogMonitor {
           cwd: tracked.cwd,
           sourcePid: tracked.agentPid,
           agentPid: tracked.agentPid,
+          sessionTitle: tracked.sessionTitle,
         });
         this._tracked.delete(filePath);
       }

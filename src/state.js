@@ -5,6 +5,7 @@ let screen, nativeImage;
 try { ({ screen, nativeImage } = require("electron")); } catch { screen = null; nativeImage = null; }
 const path = require("path");
 const fs = require("fs");
+const { getAgent } = require("../agents/registry");
 
 // ── Agent icons (official logos from assets/icons/agents/) ──
 const AGENT_ICON_DIR = path.join(__dirname, "..", "assets", "icons", "agents");
@@ -97,6 +98,26 @@ const STATE_LABEL_KEY = {
   idle: "sessionIdle", sleeping: "sessionSleeping",
 };
 
+const RECENT_EVENT_LIMIT = 8;
+const EVENT_LABELS = {
+  SessionStart: "Session started",
+  SessionEnd: "Session ended",
+  UserPromptSubmit: "Prompt submitted",
+  PreToolUse: "Tool started",
+  PostToolUse: "Tool finished",
+  PostToolUseFailure: "Tool failed",
+  Stop: "Response complete",
+  StopFailure: "Response failed",
+  SubagentStart: "Subagent started",
+  SubagentStop: "Subagent finished",
+  PreCompact: "Context compacting",
+  PostCompact: "Context compacted",
+  Notification: "Notification",
+  Elicitation: "Question asked",
+  WorktreeCreate: "Worktree created",
+  "stale-cleanup": "Session cleaned up",
+};
+
 function refreshTheme() {
   theme = ctx.theme;
   SVG_IDLE_FOLLOW = theme.states.idle[0];
@@ -172,30 +193,7 @@ function setState(newState, svgOverride) {
   }
 }
 
-function isOneshotDisabled(logicalState) {
-  if (!ONESHOT_STATES.has(logicalState)) return false;
-  if (typeof ctx.isOneshotDisabled !== "function") return false;
-  try { return ctx.isOneshotDisabled(logicalState) === true; }
-  catch { return false; }
-}
-
 function applyState(state, svgOverride) {
-  // Phase 3b: user-disabled oneshot state — skip visual + sound, fall back to
-  // whatever resolveDisplayState picks (usually working/idle). Gate lives at
-  // applyState() top so it catches all three paths that reach here:
-  //   · oneshot direct setState (state.js:419)
-  //   · PermissionRequest direct setState (state.js:342)
-  //   · pending queued oneshot (state.js:163)
-  // and also runs before the mini-mode remap below, so "disable notification"
-  // silences both normal and mini visuals consistently.
-  if (isOneshotDisabled(state)) {
-    const resolved = resolveDisplayState();
-    if (resolved !== state) {
-      setState(resolved, getSvgOverride(resolved));
-    }
-    return;
-  }
-
   if (ctx.miniTransitioning && !state.startsWith("mini-")) {
     return;
   }
@@ -355,26 +353,28 @@ function pickDisplayHint(state, existing, incoming) {
   return existing && existing.displayHint != null ? existing.displayHint : null;
 }
 
-function debugSession(msg) {
-  if (typeof ctx.debugLog !== "function") return;
-  try { ctx.debugLog(msg); } catch {}
+function pushRecentEvent(existing, state, event) {
+  const previous = existing && Array.isArray(existing.recentEvents)
+    ? existing.recentEvents.slice(-(RECENT_EVENT_LIMIT - 1))
+    : [];
+  const label = EVENT_LABELS[event] || event || state || "Activity";
+  previous.push({
+    at: Date.now(),
+    event: event || null,
+    label,
+    state: state || "idle",
+  });
+  return previous;
 }
 
-function describeSession(sessionId, session) {
-  if (!session) return `sid=${sessionId} <deleted>`;
-  return [
-    `sid=${sessionId}`,
-    `state=${session.state || "-"}`,
-    `resume=${session.resumeState || "-"}`,
-    `agent=${session.agentId || "-"}`,
-    `agentPid=${session.agentPid || "-"}`,
-    `sourcePid=${session.sourcePid || "-"}`,
-    `headless=${session.headless ? 1 : 0}`,
-  ].join(" ");
+function normalizeSessionTitle(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed || null;
 }
 
 // ── Session management ──
-function updateSession(sessionId, state, event, sourcePid, cwd, editor, pidChain, agentPid, agentId, host, headless, displayHint) {
+function updateSession(sessionId, state, event, sourcePid, cwd, editor, pidChain, agentPid, agentId, host, headless, displayHint, sessionTitle) {
   if (startupRecoveryActive) {
     startupRecoveryActive = false;
     if (startupRecoveryTimer) { clearTimeout(startupRecoveryTimer); startupRecoveryTimer = null; }
@@ -394,16 +394,27 @@ function updateSession(sessionId, state, event, sourcePid, cwd, editor, pidChain
   const srcAgentId = agentId || (existing && existing.agentId) || null;
   const srcHost = host || (existing && existing.host) || null;
   const srcHeadless = headless || (existing && existing.headless) || false;
-  const srcResumeState = (existing && existing.resumeState) || null;
-  const isSubagentStart = event === "SubagentStart" || event === "subagentStart";
-  const isSubagentStop = event === "SubagentStop" || event === "subagentStop";
-
-  debugSession(`event ${describeSession(sessionId, existing)} -> incoming=${state}/${event || "-"} hint=${displayHint || "-"}`);
+  const srcSessionTitle = normalizeSessionTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
+  const createdAt = (existing && existing.createdAt) || Date.now();
+  const recentEvents = pushRecentEvent(existing, state, event);
 
   const pidReachable = existing ? existing.pidReachable :
     (srcAgentPid ? isProcessAlive(srcAgentPid) : (srcPid ? isProcessAlive(srcPid) : false));
 
-  const base = { sourcePid: srcPid, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, pidReachable };
+  const base = {
+    sourcePid: srcPid,
+    cwd: srcCwd,
+    editor: srcEditor,
+    pidChain: srcPidChain,
+    agentPid: srcAgentPid,
+    agentId: srcAgentId,
+    host: srcHost,
+    headless: srcHeadless,
+    sessionTitle: srcSessionTitle,
+    pidReachable,
+    createdAt,
+    recentEvents,
+  };
 
   // Evict oldest session if at capacity and this is a new session
   if (!existing && sessions.size >= MAX_SESSIONS) {
@@ -414,41 +425,9 @@ function updateSession(sessionId, state, event, sourcePid, cwd, editor, pidChain
     if (oldestId) sessions.delete(oldestId);
   }
 
-  if (isSubagentStop) {
-    if (!existing) {
-      debugSession(`subagent-stop ignore sid=${sessionId} reason=no-session`);
-      cleanStaleSessions();
-      const displayState = resolveDisplayState();
-      setState(displayState, getSvgOverride(displayState));
-      return;
-    }
-
-    if (existing.state === "juggling") {
-      const resumeState = existing.resumeState || null;
-      if (resumeState) {
-        const dh = pickDisplayHint(resumeState, existing, displayHint);
-        sessions.set(sessionId, { state: resumeState, updatedAt: Date.now(), displayHint: dh, ...base, resumeState: null });
-        debugSession(`subagent-stop restore ${describeSession(sessionId, sessions.get(sessionId))}`);
-      } else {
-        sessions.delete(sessionId);
-        debugSession(`subagent-stop delete sid=${sessionId} reason=no-resume`);
-      }
-    } else {
-      const dh = pickDisplayHint(existing.state, existing, displayHint);
-      sessions.set(sessionId, { state: existing.state, updatedAt: Date.now(), displayHint: dh, ...base, resumeState: null });
-      debugSession(`subagent-stop keep ${describeSession(sessionId, sessions.get(sessionId))}`);
-    }
-
-    cleanStaleSessions();
-    const displayState = resolveDisplayState();
-    setState(displayState, getSvgOverride(displayState));
-    return;
-  }
-
   if (event === "SessionEnd") {
     const endingSession = sessions.get(sessionId);
     sessions.delete(sessionId);
-    debugSession(`session-end delete ${describeSession(sessionId, endingSession)}`);
     cleanStaleSessions();
     if (!endingSession || !endingSession.headless) {
       let hasLiveInteractive = false;
@@ -470,33 +449,27 @@ function updateSession(sessionId, state, event, sourcePid, cwd, editor, pidChain
     setState(displayState, getSvgOverride(displayState));
     return;
   } else if (state === "attention" || state === "notification" || SLEEP_SEQUENCE.has(state)) {
-    sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), displayHint: null, ...base, resumeState: null });
+    sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), displayHint: null, ...base });
   } else if (ONESHOT_STATES.has(state)) {
     if (existing) {
       existing.updatedAt = Date.now();
       existing.displayHint = null;
-      existing.resumeState = null;
+      existing.recentEvents = recentEvents;
       if (sourcePid) existing.sourcePid = sourcePid;
       if (cwd) existing.cwd = cwd;
       if (editor) existing.editor = editor;
       if (pidChain && pidChain.length) existing.pidChain = pidChain;
       if (agentPid) existing.agentPid = agentPid;
     } else {
-      sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), displayHint: null, ...base, resumeState: null });
+      sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), displayHint: null, ...base });
     }
   } else {
-    if (isSubagentStart) {
-      const dh = pickDisplayHint(state, existing, displayHint);
-      const resumeState = existing && existing.state !== "juggling" ? existing.state : srcResumeState;
-      sessions.set(sessionId, { state, updatedAt: Date.now(), displayHint: dh, ...base, resumeState });
-      debugSession(`subagent-start store ${describeSession(sessionId, sessions.get(sessionId))}`);
-    } else if (existing && existing.state === "juggling" && state === "working") {
+    if (existing && existing.state === "juggling" && state === "working" && event !== "SubagentStop" && event !== "subagentStop") {
       existing.updatedAt = Date.now();
       existing.displayHint = pickDisplayHint("juggling", existing, displayHint);
-      debugSession(`juggling-hold ${describeSession(sessionId, existing)} event=${event || "-"}`);
     } else {
       const dh = pickDisplayHint(state, existing, displayHint);
-      sessions.set(sessionId, { state, updatedAt: Date.now(), displayHint: dh, ...base, resumeState: null });
+      sessions.set(sessionId, { state, updatedAt: Date.now(), displayHint: dh, ...base });
     }
   }
   cleanStaleSessions();
@@ -508,6 +481,39 @@ function updateSession(sessionId, state, event, sourcePid, cwd, editor, pidChain
 
   const displayState = resolveDisplayState();
   setState(displayState, getSvgOverride(displayState));
+}
+
+function updateSessionMeta(sessionId, { cwd, editor, agentId, host, headless, sessionTitle } = {}) {
+  if (!sessionId) return;
+  const existing = sessions.get(sessionId);
+  const normalizedTitle = normalizeSessionTitle(sessionTitle);
+  if (existing) {
+    if (cwd) existing.cwd = cwd;
+    if (editor) existing.editor = editor;
+    if (agentId) existing.agentId = agentId;
+    if (host) existing.host = host;
+    if (headless !== undefined) existing.headless = !!headless;
+    if (normalizedTitle) existing.sessionTitle = normalizedTitle;
+    return;
+  }
+
+  sessions.set(sessionId, {
+    state: "idle",
+    updatedAt: Date.now(),
+    displayHint: null,
+    sourcePid: null,
+    cwd: cwd || "",
+    editor: editor || null,
+    pidChain: null,
+    agentPid: null,
+    agentId: agentId || null,
+    host: host || null,
+    headless: !!headless,
+    sessionTitle: normalizedTitle,
+    pidReachable: false,
+    createdAt: Date.now(),
+    recentEvents: [],
+  });
 }
 
 function isProcessAlive(pid) {
@@ -522,7 +528,6 @@ function cleanStaleSessions() {
     const age = now - s.updatedAt;
 
     if (s.pidReachable && s.agentPid && !isProcessAlive(s.agentPid)) {
-      debugSession(`stale-delete agent-exit ${describeSession(id, s)}`);
       if (!s.headless) removedNonHeadless = true;
       sessions.delete(id); changed = true;
       continue;
@@ -531,29 +536,23 @@ function cleanStaleSessions() {
     if (age > SESSION_STALE_MS) {
       if (s.pidReachable && s.sourcePid) {
         if (!isProcessAlive(s.sourcePid)) {
-          debugSession(`stale-delete source-exit ${describeSession(id, s)}`);
           if (!s.headless) removedNonHeadless = true;
           sessions.delete(id); changed = true;
         } else if (s.state !== "idle") {
-          debugSession(`stale-idle session-timeout ${describeSession(id, s)}`);
           s.state = "idle"; s.displayHint = null; changed = true;
         }
       } else if (!s.pidReachable) {
-        debugSession(`stale-delete unreachable ${describeSession(id, s)}`);
         if (!s.headless) removedNonHeadless = true;
         sessions.delete(id); changed = true;
       } else {
-        debugSession(`stale-delete no-source ${describeSession(id, s)}`);
         if (!s.headless) removedNonHeadless = true;
         sessions.delete(id); changed = true;
       }
     } else if (age > WORKING_STALE_MS) {
       if (s.pidReachable && s.sourcePid && !isProcessAlive(s.sourcePid)) {
-        debugSession(`stale-delete working-source-exit ${describeSession(id, s)}`);
         if (!s.headless) removedNonHeadless = true;
         sessions.delete(id); changed = true;
       } else if (s.state === "working" || s.state === "juggling" || s.state === "thinking") {
-        debugSession(`stale-idle working-timeout ${describeSession(id, s)}`);
         s.state = "idle"; s.displayHint = null; s.updatedAt = now; changed = true;
       }
     }
@@ -746,10 +745,69 @@ function formatElapsed(ms) {
   return ctx.t("sessionHrAgo").replace("{n}", hr);
 }
 
+function formatDuration(ms) {
+  const sec = Math.max(0, Math.floor(ms / 1000));
+  const hr = Math.floor(sec / 3600);
+  const min = Math.floor((sec % 3600) / 60);
+  const remSec = sec % 60;
+  if (hr > 0) return `${hr}h ${min}m`;
+  if (min > 0) return `${min}m ${remSec}s`;
+  return `${remSec}s`;
+}
+
+function getSessionPanelData() {
+  const now = Date.now();
+  const items = [];
+  for (const [id, s] of sessions) {
+    if (!s) continue;
+    const agent = s.agentId ? getAgent(s.agentId) : null;
+    const folder = s.cwd ? path.basename(s.cwd) : "Untitled";
+    const sessionTitle = normalizeSessionTitle(s.sessionTitle);
+    items.push({
+      id,
+      shortId: String(id).slice(-6),
+      state: s.state,
+      stateLabel: ctx.t(STATE_LABEL_KEY[s.state] || "sessionIdle"),
+      cwd: s.cwd || "",
+      folder,
+      title: sessionTitle || folder,
+      host: s.host || null,
+      editor: s.editor || null,
+      headless: !!s.headless,
+      active: s.state !== "idle" && s.state !== "sleeping",
+      agentId: s.agentId || null,
+      agentName: agent && agent.name ? agent.name : (s.agentId || "Unknown Agent"),
+      updatedAt: s.updatedAt,
+      updatedLabel: formatElapsed(now - s.updatedAt),
+      createdAt: s.createdAt || s.updatedAt,
+      activeForLabel: formatDuration(now - (s.createdAt || s.updatedAt)),
+      displayHint: s.displayHint || null,
+      context: {
+        project: folder || "Unknown project",
+        cwd: s.cwd || "Not reported",
+        host: s.host || "Local",
+        editor: s.editor || "Terminal",
+        state: s.state,
+      },
+      recentEvents: Array.isArray(s.recentEvents) ? s.recentEvents.slice().reverse() : [],
+    });
+  }
+  items.sort((a, b) => {
+    const pa = STATE_PRIORITY[a.state] || 0;
+    const pb = STATE_PRIORITY[b.state] || 0;
+    if (pb !== pa) return pb - pa;
+    return b.updatedAt - a.updatedAt;
+  });
+  return {
+    generatedAt: now,
+    sessions: items,
+  };
+}
+
 function buildSessionSubmenu() {
   const entries = [];
   for (const [id, s] of sessions) {
-    entries.push({ id, state: s.state, updatedAt: s.updatedAt, sourcePid: s.sourcePid, cwd: s.cwd, editor: s.editor, pidChain: s.pidChain, host: s.host, headless: s.headless, agentId: s.agentId });
+    entries.push({ id, state: s.state, updatedAt: s.updatedAt, sourcePid: s.sourcePid, cwd: s.cwd, editor: s.editor, pidChain: s.pidChain, host: s.host, headless: s.headless, agentId: s.agentId, sessionTitle: s.sessionTitle || null });
   }
   if (entries.length === 0) {
     return [{ label: ctx.t("noSessions"), enabled: false }];
@@ -766,7 +824,9 @@ function buildSessionSubmenu() {
   function buildItem(e) {
     const stateText = ctx.t(STATE_LABEL_KEY[e.state] || "sessionIdle");
     const folder = e.cwd ? path.basename(e.cwd) : (e.id.length > 6 ? e.id.slice(0, 6) + ".." : e.id);
-    const name = ctx.showSessionId ? `${folder} #${e.id.slice(-3)}` : folder;
+    const sessionTitle = normalizeSessionTitle(e.sessionTitle);
+    const baseName = sessionTitle || folder;
+    const name = ctx.showSessionId ? `${baseName} #${e.id.slice(-3)}` : baseName;
     const elapsed = formatElapsed(now - e.updatedAt);
     const hasPid = !!e.sourcePid;
     const icon = getAgentIcon(e.agentId);
@@ -869,7 +929,9 @@ return {
   getSvgOverride, cleanStaleSessions, startStartupRecovery, refreshTheme,
   detectRunningAgentProcesses, buildSessionSubmenu,
   clearSessionsByAgent,
+  updateSessionMeta,
   getCurrentState, getCurrentSvg, getCurrentHitBox, getStartupRecoveryActive,
+  getSessionPanelData,
   sessions, STATE_PRIORITY, ONESHOT_STATES, SLEEP_SEQUENCE,
   get STATE_SVGS() { return STATE_SVGS; },
   get HIT_BOXES() { return HIT_BOXES; },

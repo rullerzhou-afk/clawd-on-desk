@@ -3,6 +3,7 @@
 // Usage: node clawd-hook.js <event_name>
 // Reads stdin JSON from Claude Code for session_id
 
+const fs = require("fs");
 const { postStateToRunningServer, readHostPrefix } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
 
@@ -25,22 +26,62 @@ const EVENT_TO_STATE = {
   WorktreeCreate: "carrying",
 };
 
-const event = process.argv[2];
-const state = EVENT_TO_STATE[event];
-if (!state) process.exit(0);
+const TRANSCRIPT_TAIL_BYTES = 262144;
 
-const config = getPlatformConfig();
-const resolve = createPidResolver({
-  agentNames: { win: new Set(["claude.exe"]), mac: new Set(["claude"]) },
-  agentCmdlineCheck: (cmd) => cmd.includes("claude-code") || cmd.includes("@anthropic-ai"),
-  platformConfig: config,
-});
+function normalizeTitle(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
 
-// Pre-resolve on SessionStart (runs during stdin buffering, not after)
-// Remote mode: skip PID collection — remote PIDs are meaningless on the local machine
-if (event === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
+function extractSessionTitleFromTranscript(transcriptPath) {
+  if (typeof transcriptPath !== "string" || !transcriptPath) return null;
 
-readStdinJson().then((payload) => {
+  let data;
+  let truncated = false;
+  try {
+    const stat = fs.statSync(transcriptPath);
+    const fd = fs.openSync(transcriptPath, "r");
+    const readLen = Math.min(stat.size, TRANSCRIPT_TAIL_BYTES);
+    truncated = stat.size > readLen;
+    const buf = Buffer.alloc(readLen);
+    fs.readSync(fd, buf, 0, readLen, Math.max(0, stat.size - readLen));
+    fs.closeSync(fd);
+    data = buf.toString("utf8");
+  } catch {
+    return null;
+  }
+
+  const lines = data.split("\n");
+  if (truncated && lines.length > 1) lines.shift();
+
+  let latest = null;
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let obj;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!obj || typeof obj !== "object") continue;
+    const type = typeof obj.type === "string" ? obj.type : "";
+    if (type !== "custom-title" && type !== "agent-name") continue;
+    latest =
+      normalizeTitle(obj.customTitle) ||
+      normalizeTitle(obj.title) ||
+      normalizeTitle(obj.custom_title) ||
+      normalizeTitle(obj.agentName) ||
+      normalizeTitle(obj.agent_name) ||
+      latest;
+  }
+  return latest;
+}
+
+function buildStateBody(event, payload, resolve) {
+  const state = EVENT_TO_STATE[event];
+  if (!state) return null;
+
   const sessionId = payload.session_id || "default";
   const cwd = payload.cwd || "";
   const source = payload.source || payload.reason || "";
@@ -49,8 +90,13 @@ readStdinJson().then((payload) => {
   // show sweeping (clearing context) instead of sleeping
   const resolvedState = (event === "SessionEnd" && source === "clear") ? "sweeping" : state;
 
-  const body = { state: resolvedState, session_id: sessionId, event };
-  body.agent_id = "claude-code";
+  const body = { state: resolvedState, session_id: sessionId, event, agent_id: "claude-code" };
+  const sessionTitle =
+    normalizeTitle(payload.session_title) ||
+    normalizeTitle(payload.sessionTitle) ||
+    normalizeTitle(payload.title) ||
+    extractSessionTitleFromTranscript(payload.transcript_path);
+  if (sessionTitle) body.session_title = sessionTitle;
   if (cwd) body.cwd = cwd;
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();
@@ -77,9 +123,41 @@ readStdinJson().then((payload) => {
     if (pidChain.length) body.pid_chain = pidChain;
   }
 
-  postStateToRunningServer(
-    JSON.stringify(body),
-    { timeoutMs: 100 },
-    () => process.exit(0)
-  );
-});
+  return body;
+}
+
+function main() {
+  const event = process.argv[2];
+  const state = EVENT_TO_STATE[event];
+  if (!state) process.exit(0);
+
+  const config = getPlatformConfig();
+  const resolve = createPidResolver({
+    agentNames: { win: new Set(["claude.exe"]), mac: new Set(["claude"]) },
+    agentCmdlineCheck: (cmd) => cmd.includes("claude-code") || cmd.includes("@anthropic-ai"),
+    platformConfig: config,
+  });
+
+  // Pre-resolve on SessionStart (runs during stdin buffering, not after)
+  // Remote mode: skip PID collection — remote PIDs are meaningless on the local machine
+  if (event === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
+
+  readStdinJson().then((payload) => {
+    const body = buildStateBody(event, payload || {}, resolve);
+    if (!body) process.exit(0);
+    postStateToRunningServer(
+      JSON.stringify(body),
+      { timeoutMs: 100 },
+      () => process.exit(0)
+    );
+  });
+}
+
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  buildStateBody,
+  extractSessionTitleFromTranscript,
+};
