@@ -28,19 +28,9 @@ ipcRenderer.on("settings-changed", (_event, payload) => {
 
 contextBridge.exposeInMainWorld("settingsAPI", {
   getSnapshot: () => ipcRenderer.invoke("settings:get-snapshot"),
-  getAnimationOverridesData: () => ipcRenderer.invoke("settings:get-animation-overrides-data"),
-  openThemeAssetsDir: () => ipcRenderer.invoke("settings:open-theme-assets-dir"),
-  previewAnimationOverride: (payload) => ipcRenderer.invoke("settings:preview-animation-override", payload),
   update: (key, value) => ipcRenderer.invoke("settings:update", { key, value }),
   command: (action, payload) => ipcRenderer.invoke("settings:command", { action, payload }),
   listAgents: () => ipcRenderer.invoke("settings:list-agents"),
-  listThemes: () => ipcRenderer.invoke("settings:list-themes"),
-  confirmRemoveTheme: (themeId) =>
-    ipcRenderer.invoke("settings:confirm-remove-theme", themeId),
-  confirmDisableClaudeHooks: () =>
-    ipcRenderer.invoke("settings:confirm-disable-claude-hooks"),
-  confirmDisconnectClaudeHooks: () =>
-    ipcRenderer.invoke("settings:confirm-disconnect-claude-hooks"),
   onChanged: (cb) => {
     if (typeof cb === "function") listeners.add(cb);
   },

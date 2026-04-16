@@ -58,27 +58,6 @@ const DEFAULT_EYE_TRACKING = {
 
 const REQUIRED_STATES = ["idle", "working", "thinking", "sleeping", "waking"];
 
-// ── Variant support (Phase 3b-swap) ──
-// Allow-list of fields a variant may override. Anything else → ignored + warned
-// (see docs/plan-settings-panel-3b-swap.md §6.4 Validator Spec rule 1).
-const VARIANT_ALLOWED_KEYS = new Set([
-  // Metadata (not merged into runtime theme)
-  "name", "description", "preview",
-  // Runtime fields (see §6.1 allow-list table)
-  "workingTiers", "jugglingTiers", "idleAnimations",
-  "wideHitboxFiles", "sleepingHitboxFiles",
-  "hitBoxes", "timings", "transitions",
-  "objectScale", "displayHintMap",
-]);
-// Fields that replace wholesale instead of deep-merge.
-// Arrays always replace; `displayHintMap` is explicitly replace per §6.1
-// (deep-merge can't express "remove a hint").
-const VARIANT_REPLACE_FIELDS = new Set([
-  "workingTiers", "jugglingTiers", "idleAnimations",
-  "wideHitboxFiles", "sleepingHitboxFiles",
-  "displayHintMap",
-]);
-
 // ── SVG sanitization config ──
 const DANGEROUS_TAGS = new Set([
   "script", "foreignobject", "iframe", "embed", "object", "applet",
@@ -158,53 +137,28 @@ function _scanThemesDir(dir, builtin, themes, seen) {
 
 /**
  * Load and activate a theme by ID.
- *
- * Strict mode throws on missing/invalid; lenient falls back to "clawd".
- * Callers detect fallback by comparing the requested id against
- * `returnedTheme._id` / `returnedTheme._variantId` — no synthetic flag needed.
- *
- * Unknown variant ids always fall back to "default" (even in strict mode) —
- * a missing variant is a UX concern, not a theme-breaking condition.
- *
  * @param {string} themeId
- * @param {{ strict?: boolean, variant?: string, overrides?: object|null }} [opts]
  * @returns {object} merged theme config
  */
-function loadTheme(themeId, opts = {}) {
-  const strict = !!opts.strict;
-  const requestedVariant = typeof opts.variant === "string" && opts.variant ? opts.variant : "default";
-  const userOverrides = _isPlainObject(opts.overrides) ? opts.overrides : null;
+function loadTheme(themeId) {
+  // Try built-in first, then user themes dir
   const { raw, isBuiltin, themeDir } = _readThemeJson(themeId);
 
   if (!raw) {
-    const msg = `Theme "${themeId}" not found`;
-    if (strict) throw new Error(msg);
-    console.error(`[theme-loader] ${msg}`);
+    console.error(`[theme-loader] Theme "${themeId}" not found`);
     if (themeId !== "clawd") return loadTheme("clawd");
     throw new Error("Default theme 'clawd' not found");
   }
 
   const errors = validateTheme(raw);
   if (errors.length > 0) {
-    const msg = `Theme "${themeId}" validation errors: ${errors.join("; ")}`;
-    if (strict) throw new Error(msg);
-    console.error(`[theme-loader] ${msg}`);
+    console.error(`[theme-loader] Theme "${themeId}" validation errors:`, errors);
     if (themeId !== "clawd") return loadTheme("clawd");
   }
 
-  // Resolve variant + apply patch BEFORE mergeDefaults so that geometry
-  // derivation (imgWidthRatio/imgOffsetX/imgBottom), tier sorting, and
-  // basename sanitization all run on the patched raw.
-  const { resolvedId, spec: variantSpec } = _resolveVariant(raw, requestedVariant);
-  const afterVariant = variantSpec ? _applyVariantPatch(raw, variantSpec, themeId, resolvedId) : raw;
-  const patchedRaw = userOverrides ? _applyUserOverridesPatch(afterVariant, userOverrides) : afterVariant;
-
   // Merge defaults for optional fields
-  const theme = mergeDefaults(patchedRaw, themeId, isBuiltin);
+  const theme = mergeDefaults(raw, themeId, isBuiltin);
   theme._themeDir = themeDir;
-  theme._variantId = resolvedId;
-  theme._userOverrides = userOverrides;
-  theme._bindingBase = _buildBaseBindingMetadata(afterVariant);
 
   // For external themes: sanitize SVGs + resolve asset paths
   if (!isBuiltin) {
@@ -594,266 +548,6 @@ function validateTheme(cfg) {
 
 // ── Internal helpers ──
 
-function _isPlainObject(v) {
-  return v && typeof v === "object" && !Array.isArray(v);
-}
-
-/**
- * Deep-merge two plain objects. Arrays on the patch side replace wholesale
- * (Clawd's array fields have positional semantics — tier order, random pool —
- * where deep-merge would be ill-defined). Scalars on the patch side win.
- */
-function _deepMergeObject(base, patch) {
-  if (!_isPlainObject(base)) return patch;
-  const out = { ...base };
-  for (const [k, v] of Object.entries(patch)) {
-    if (_isPlainObject(v) && _isPlainObject(out[k])) {
-      out[k] = _deepMergeObject(out[k], v);
-    } else {
-      out[k] = v;
-    }
-  }
-  return out;
-}
-
-function _basenameOnly(value) {
-  return typeof value === "string" ? value.replace(/^.*[\/\\]/, "") : value;
-}
-
-/**
- * Resolve a requested variant id against the theme's declared variants.
- * Synthesises a `default` variant when the author didn't declare one so the
- * UI can always show at least one option.
- * Unknown variant ids lenient-fallback to `default`.
- *
- * @returns {{ resolvedId: string, spec: object|null }}
- *   `spec` is null when the resolved variant is a synthetic default (no patch needed).
- */
-function _resolveVariant(raw, requestedVariant) {
-  const rawVariants = _isPlainObject(raw.variants) ? raw.variants : {};
-  const hasExplicitDefault = _isPlainObject(rawVariants.default);
-  const targetId = requestedVariant || "default";
-
-  if (rawVariants[targetId] && _isPlainObject(rawVariants[targetId])) {
-    return { resolvedId: targetId, spec: rawVariants[targetId] };
-  }
-  // Unknown variant → lenient fallback to default (synthetic or explicit)
-  if (hasExplicitDefault) {
-    return { resolvedId: "default", spec: rawVariants.default };
-  }
-  return { resolvedId: "default", spec: null };
-}
-
-/**
- * Apply a variant spec on top of raw theme config.
- * - allow-list fields are patched per `VARIANT_REPLACE_FIELDS` (replace vs deep-merge)
- * - out-of-list fields are ignored with a warning (author typos surface clearly)
- * - metadata fields (name/description/preview) are stripped — they belong to the
- *   variant metadata layer, not runtime theme config
- *
- * Runs on raw before mergeDefaults so downstream geometry derivation sees
- * the patched values (see §6.1 rationale in plan-settings-panel-3b-swap.md).
- */
-function _applyVariantPatch(raw, variantSpec, themeId, variantId) {
-  const patched = { ...raw };
-  for (const [key, value] of Object.entries(variantSpec)) {
-    // Metadata-only fields — don't copy into runtime config
-    if (key === "name" || key === "description" || key === "preview") continue;
-    if (!VARIANT_ALLOWED_KEYS.has(key)) {
-      console.warn(`[theme-loader] variant "${themeId}:${variantId}" declares ignored field "${key}" (not in allow-list)`);
-      continue;
-    }
-    if (VARIANT_REPLACE_FIELDS.has(key) || Array.isArray(value)) {
-      patched[key] = value;
-    } else if (_isPlainObject(value)) {
-      patched[key] = _isPlainObject(patched[key]) ? _deepMergeObject(patched[key], value) : value;
-    } else {
-      patched[key] = value;
-    }
-  }
-  return patched;
-}
-
-function _normalizeTransitionOverride(transition) {
-  if (!_isPlainObject(transition)) return null;
-  const out = {};
-  if (Number.isFinite(transition.in)) out.in = transition.in;
-  if (Number.isFinite(transition.out)) out.out = transition.out;
-  return Object.keys(out).length > 0 ? out : null;
-}
-
-function _buildBaseBindingMetadata(raw) {
-  const states = {};
-  if (_isPlainObject(raw.states)) {
-    for (const [stateKey, files] of Object.entries(raw.states)) {
-      if (Array.isArray(files) && files[0]) states[stateKey] = _basenameOnly(files[0]);
-    }
-  }
-  const mapTierGroup = (tiers) =>
-    Array.isArray(tiers)
-      ? tiers
-        .filter((tier) => _isPlainObject(tier))
-        .map((tier) => ({
-          minSessions: Number.isFinite(tier.minSessions) ? tier.minSessions : 0,
-          originalFile: _basenameOnly(tier.file),
-        }))
-        .sort((a, b) => b.minSessions - a.minSessions)
-      : [];
-  const displayHintMap = {};
-  if (_isPlainObject(raw.displayHintMap)) {
-    for (const [key, value] of Object.entries(raw.displayHintMap)) {
-      displayHintMap[_basenameOnly(key)] = _basenameOnly(value);
-    }
-  }
-  return {
-    states,
-    workingTiers: mapTierGroup(raw.workingTiers),
-    jugglingTiers: mapTierGroup(raw.jugglingTiers),
-    displayHintMap,
-  };
-}
-
-function _ensureTransitionsPatch(patched) {
-  if (!_isPlainObject(patched.transitions)) patched.transitions = {};
-  return patched.transitions;
-}
-
-function _applyTransitionOverride(patched, targetFile, transition) {
-  const cleanTarget = _basenameOnly(targetFile);
-  const cleanTransition = _normalizeTransitionOverride(transition);
-  if (!cleanTarget || !cleanTransition) return;
-  const nextTransitions = _ensureTransitionsPatch(patched);
-  const prev = _isPlainObject(nextTransitions[cleanTarget]) ? nextTransitions[cleanTarget] : {};
-  nextTransitions[cleanTarget] = { ...prev, ...cleanTransition };
-}
-
-function _applyUserOverridesPatch(raw, overrides) {
-  if (!_isPlainObject(overrides)) return raw;
-  const patched = { ...raw };
-
-  const stateOverrides = _isPlainObject(overrides.states) ? overrides.states : {};
-  if (_isPlainObject(raw.states) && Object.keys(stateOverrides).length > 0) {
-    const nextStates = { ...raw.states };
-    for (const [stateKey, entry] of Object.entries(stateOverrides)) {
-      if (!_isPlainObject(entry)) continue;
-      const currentFiles = Array.isArray(nextStates[stateKey]) ? [...nextStates[stateKey]] : null;
-      if (!currentFiles || currentFiles.length === 0) continue;
-      if (typeof entry.file === "string" && entry.file) {
-        currentFiles[0] = entry.file;
-      }
-      nextStates[stateKey] = currentFiles;
-      const transitionTarget = (typeof entry.file === "string" && entry.file) ? entry.file : currentFiles[0];
-      _applyTransitionOverride(patched, transitionTarget, entry.transition);
-    }
-    patched.states = nextStates;
-  }
-
-  const tierGroups = _isPlainObject(overrides.tiers) ? overrides.tiers : {};
-  for (const tierGroup of ["workingTiers", "jugglingTiers"]) {
-    const tierOverrides = _isPlainObject(tierGroups[tierGroup]) ? tierGroups[tierGroup] : null;
-    const rawTiers = Array.isArray(raw[tierGroup]) ? raw[tierGroup] : null;
-    if (!tierOverrides || !rawTiers) continue;
-    const nextTiers = rawTiers.map((tier) => (_isPlainObject(tier) ? { ...tier } : tier));
-    for (const [originalFile, entry] of Object.entries(tierOverrides)) {
-      if (!_isPlainObject(entry)) continue;
-      const cleanOriginal = _basenameOnly(originalFile);
-      const tier = nextTiers.find((candidate) =>
-        _isPlainObject(candidate) && _basenameOnly(candidate.file) === cleanOriginal
-      );
-      if (!tier) continue;
-      if (typeof entry.file === "string" && entry.file) {
-        tier.file = entry.file;
-      }
-      const transitionTarget = (typeof entry.file === "string" && entry.file) ? entry.file : tier.file;
-      _applyTransitionOverride(patched, transitionTarget, entry.transition);
-    }
-    patched[tierGroup] = nextTiers;
-  }
-
-  const timings = _isPlainObject(overrides.timings) ? overrides.timings : null;
-  const autoReturn = timings && _isPlainObject(timings.autoReturn) ? timings.autoReturn : null;
-  if (autoReturn) {
-    const nextTimings = _isPlainObject(raw.timings) ? _deepMergeObject(raw.timings, {}) : {};
-    nextTimings.autoReturn = _isPlainObject(nextTimings.autoReturn) ? { ...nextTimings.autoReturn } : {};
-    for (const [stateKey, value] of Object.entries(autoReturn)) {
-      if (!Number.isFinite(value)) continue;
-      nextTimings.autoReturn[stateKey] = value;
-    }
-    patched.timings = nextTimings;
-  }
-
-  return patched;
-}
-
-/**
- * Build preview URL for a single variant. Fallback chain:
- *   variant.preview → variant.idleAnimations[0].file → root theme preview
- *
- * Avoids "all variant cards show the same preview" when variants only differ
- * in tiers/timings but not in any visible asset.
- */
-function _buildVariantPreviewUrl(raw, variantSpec, themeDir, isBuiltin) {
-  let previewFile = null;
-  if (variantSpec) {
-    if (typeof variantSpec.preview === "string" && variantSpec.preview) {
-      previewFile = variantSpec.preview;
-    } else if (Array.isArray(variantSpec.idleAnimations)
-               && variantSpec.idleAnimations[0]
-               && typeof variantSpec.idleAnimations[0].file === "string") {
-      previewFile = variantSpec.idleAnimations[0].file;
-    }
-  }
-  if (previewFile) {
-    const filename = path.basename(previewFile);
-    const themeLocal = path.join(themeDir, "assets", filename);
-    if (fs.existsSync(themeLocal)) {
-      try { return pathToFileURL(themeLocal).href; } catch {}
-    }
-    if (isBuiltin && assetsSvgDir) {
-      const central = path.join(assetsSvgDir, filename);
-      if (fs.existsSync(central)) {
-        try { return pathToFileURL(central).href; } catch {}
-      }
-    }
-  }
-  return _buildPreviewUrl(raw, themeDir, isBuiltin);
-}
-
-/**
- * Normalize a theme's variants for metadata consumers (settings panel).
- * - Always includes a `default` entry (synthetic if author didn't declare one)
- * - Each entry: { id, name, description, previewFileUrl }
- * - `name` / `description` preserved as-is (string or {en,zh} — UI handles i18n)
- */
-function _buildVariantMetadata(raw, themeDir, isBuiltin) {
-  const rawVariants = _isPlainObject(raw.variants) ? raw.variants : {};
-  const hasExplicitDefault = _isPlainObject(rawVariants.default);
-  const out = [];
-
-  if (!hasExplicitDefault) {
-    // i18n object — settings-renderer's localizeField() picks the right key.
-    // Don't reuse raw.name here: that would label the synthetic default with
-    // the theme's own name (e.g. "Clawd"), creating a confusing duplicate of
-    // the theme card's title inside its own variant strip.
-    out.push({
-      id: "default",
-      name: { en: "Standard", zh: "标准" },
-      description: null,
-      previewFileUrl: _buildPreviewUrl(raw, themeDir, isBuiltin),
-    });
-  }
-  for (const [id, spec] of Object.entries(rawVariants)) {
-    if (!_isPlainObject(spec)) continue;
-    out.push({
-      id,
-      name: (spec.name != null) ? spec.name : id,
-      description: (spec.description != null) ? spec.description : null,
-      previewFileUrl: _buildVariantPreviewUrl(raw, spec, themeDir, isBuiltin),
-    });
-  }
-  return out;
-}
-
 function mergeDefaults(raw, themeId, isBuiltin) {
   const theme = { ...raw, _id: themeId, _builtin: !!isBuiltin };
 
@@ -956,7 +650,7 @@ function mergeDefaults(raw, themeId, isBuiltin) {
   theme.idleAnimations = raw.idleAnimations || [];
 
   // ── Filename sanitization: basename all file references to prevent path traversal ──
-  const bn = _basenameOnly;
+  const bn = (f) => typeof f === "string" ? f.replace(/^.*[\/\\]/, "") : f;
   for (const [s, files] of Object.entries(theme.states || {})) {
     if (Array.isArray(files)) theme.states[s] = files.map(bn);
   }
@@ -1018,121 +712,11 @@ function getSoundUrl(soundName) {
   return null;
 }
 
-// basename() strips any path segments in theme.json so a malicious
-// `preview: "../../foo"` can't escape the theme dir.
-function _buildPreviewUrl(raw, themeDir, isBuiltin) {
-  const previewFile = (typeof raw.preview === "string" && raw.preview)
-    || (raw.states && Array.isArray(raw.states.idle) && raw.states.idle[0])
-    || null;
-  if (!previewFile) return null;
-  const filename = path.basename(previewFile);
-  // clawd reuses assets/svg/ at repo root; calico + user themes have their own.
-  let absPath = null;
-  const themeLocal = path.join(themeDir, "assets", filename);
-  if (fs.existsSync(themeLocal)) {
-    absPath = themeLocal;
-  } else if (isBuiltin && assetsSvgDir) {
-    const central = path.join(assetsSvgDir, filename);
-    if (fs.existsSync(central)) absPath = central;
-  }
-  if (!absPath) return null;
-  try { return pathToFileURL(absPath).href; } catch { return null; }
-}
-
-/**
- * Read metadata for a single theme WITHOUT activating it.
- * Returns null for missing/malformed themes.
- */
-function getThemeMetadata(themeId) {
-  const { raw, isBuiltin, themeDir } = _readThemeJson(themeId);
-  if (!raw) return null;
-  return {
-    id: themeId,
-    name: raw.name || themeId,
-    builtin: !!isBuiltin,
-    previewFileUrl: _buildPreviewUrl(raw, themeDir, isBuiltin),
-    previewContentRatio: _computePreviewContentRatio(raw),
-    previewContentOffsetPct: _computePreviewContentOffsetPct(raw),
-    variants: _buildVariantMetadata(raw, themeDir, isBuiltin),
-  };
-}
-
-// Ratio of the theme's actual pet content vs the full viewBox. Lets the
-// settings panel normalize preview sizes across themes whose assets have
-// wildly different canvas utilization (pixel pets with lots of transparent
-// margin vs APNG cats that fill the whole frame).
-function _computePreviewContentRatio(raw) {
-  const vb = raw && raw.viewBox;
-  const cb = raw && raw.layout && raw.layout.contentBox;
-  if (!vb || !cb) return null;
-  if (!(vb.width > 0) || !(vb.height > 0)) return null;
-  if (!(cb.width > 0) || !(cb.height > 0)) return null;
-  return Math.max(cb.width / vb.width, cb.height / vb.height);
-}
-
-// How far the contentBox center sits away from the viewBox center, as a
-// percentage of viewBox size. Themes like clawd place the pet near the bottom
-// of the viewBox (baseline-anchored) so the preview thumbnail looks bottom-
-// heavy — the renderer applies a matching transform to recenter it visually.
-function _computePreviewContentOffsetPct(raw) {
-  const vb = raw && raw.viewBox;
-  const cb = raw && raw.layout && raw.layout.contentBox;
-  if (!vb || !cb) return null;
-  if (!(vb.width > 0) || !(vb.height > 0)) return null;
-  const cbCenterX = cb.x + cb.width / 2;
-  const cbCenterY = cb.y + cb.height / 2;
-  const vbCenterX = vb.x + vb.width / 2;
-  const vbCenterY = vb.y + vb.height / 2;
-  return {
-    x: -((cbCenterX - vbCenterX) / vb.width) * 100,
-    y: -((cbCenterY - vbCenterY) / vb.height) * 100,
-  };
-}
-
-/**
- * Single-pass scan + metadata build — used by the settings panel.
- * Avoids the O(2N) read that `discoverThemes() + getThemeMetadata() per id`
- * would incur since this path fires on every theme-tab open and on every
- * `theme` / `themeOverrides` broadcast.
- */
-function listThemesWithMetadata() {
-  const themes = [];
-  const seen = new Set();
-  if (builtinThemesDir) _scanMetadata(builtinThemesDir, true, themes, seen);
-  if (userThemesDir) _scanMetadata(userThemesDir, false, themes, seen);
-  return themes;
-}
-
-function _scanMetadata(dir, builtin, themes, seen) {
-  try {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (!entry.isDirectory() || seen.has(entry.name)) continue;
-      const jsonPath = path.join(dir, entry.name, "theme.json");
-      if (!fs.existsSync(jsonPath)) continue;
-      let raw;
-      try { raw = JSON.parse(fs.readFileSync(jsonPath, "utf8")); } catch { continue; }
-      const themeDir = path.join(dir, entry.name);
-      themes.push({
-        id: entry.name,
-        name: raw.name || entry.name,
-        builtin,
-        previewFileUrl: _buildPreviewUrl(raw, themeDir, builtin),
-        previewContentRatio: _computePreviewContentRatio(raw),
-        previewContentOffsetPct: _computePreviewContentOffsetPct(raw),
-        variants: _buildVariantMetadata(raw, themeDir, builtin),
-      });
-      seen.add(entry.name);
-    }
-  } catch { /* dir missing */ }
-}
-
 module.exports = {
   init,
   discoverThemes,
   loadTheme,
   getActiveTheme,
-  getThemeMetadata,
-  listThemesWithMetadata,
   resolveHint,
   getAssetPath,
   getRendererAssetsPath,

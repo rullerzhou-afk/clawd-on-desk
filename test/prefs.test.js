@@ -39,12 +39,6 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.version, prefs.CURRENT_VERSION);
   });
 
-  it("defaults Claude hook management on and Start with Claude off", () => {
-    const d = prefs.getDefaults();
-    assert.strictEqual(d.manageClaudeHooksAutomatically, true);
-    assert.strictEqual(d.autoStartWithClaude, false);
-  });
-
   it("seeds all known agents as enabled", () => {
     const d = prefs.getDefaults();
     for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "codebuddy", "kiro-cli", "opencode"]) {
@@ -157,32 +151,6 @@ describe("prefs.validate", () => {
     const d = prefs.getDefaults();
     assert.deepStrictEqual(a, d);
     assert.deepStrictEqual(b, d);
-  });
-
-  // Phase 3b-swap: themeVariant field
-  it("themeVariant defaults to empty object (no migration needed)", () => {
-    const d = prefs.getDefaults();
-    assert.deepStrictEqual(d.themeVariant, {});
-  });
-
-  it("themeVariant drops malformed entries but keeps string/string pairs", () => {
-    const v = prefs.validate({
-      themeVariant: {
-        clawd: "chill",
-        calico: "default",
-        bogus: 42,           // wrong value type
-        "": "chill",         // empty themeId
-        nullVal: "",         // empty variantId
-      },
-    });
-    assert.deepStrictEqual(v.themeVariant, { clawd: "chill", calico: "default" });
-  });
-
-  it("themeVariant falls back to defaults when not an object", () => {
-    const v = prefs.validate({ themeVariant: "nope" });
-    assert.deepStrictEqual(v.themeVariant, {});
-    const w = prefs.validate({ themeVariant: [1, 2] });
-    assert.deepStrictEqual(w.themeVariant, {});
   });
 });
 
@@ -317,110 +285,5 @@ describe("prefs.save", () => {
     const written = JSON.parse(fs.readFileSync(p, "utf8"));
     assert.strictEqual(written.lang, "en");
     assert.strictEqual(written.x, 0);
-  });
-
-  it("round-trips themeOverrides with disabled: true", () => {
-    const p = makeTempPath();
-    const snap = prefs.getDefaults();
-    snap.themeOverrides = {
-      clawd: {
-        states: {
-          sweeping: { disabled: true },
-        },
-      },
-    };
-    prefs.save(p, snap);
-    const { snapshot } = prefs.load(p);
-    assert.deepStrictEqual(snapshot.themeOverrides.clawd.states.sweeping, { disabled: true });
-  });
-
-  it("themeOverrides: nested state entry preserves file + transition while keeping disabled", () => {
-    const p = makeTempPath();
-    const snap = prefs.getDefaults();
-    snap.themeOverrides = {
-      clawd: {
-        states: {
-          attention: {
-            disabled: true,
-            sourceThemeId: "clawd",
-            file: "clawd-happy.svg",
-            transition: { in: 100, out: 220 },
-          },
-        },
-      },
-    };
-    prefs.save(p, snap);
-    const { snapshot } = prefs.load(p);
-    assert.deepStrictEqual(snapshot.themeOverrides.clawd.states.attention, {
-      disabled: true,
-      sourceThemeId: "clawd",
-      file: "clawd-happy.svg",
-      transition: { in: 100, out: 220 },
-    });
-  });
-
-  it("themeOverrides: state/tier/timing entries round-trip in Path A schema", () => {
-    const p = makeTempPath();
-    const snap = prefs.getDefaults();
-    snap.themeOverrides = {
-      clawd: {
-        states: {
-          attention: {
-            file: "clawd-happy.svg",
-            transition: { in: 80, out: 140 },
-          },
-        },
-        tiers: {
-          workingTiers: {
-            "clawd-working-typing.svg": {
-              file: "custom-working.svg",
-              transition: { in: 0, out: 90 },
-            },
-          },
-        },
-        timings: {
-          autoReturn: { attention: 2800 },
-        },
-      },
-    };
-    prefs.save(p, snap);
-    const { snapshot } = prefs.load(p);
-    assert.deepStrictEqual(snapshot.themeOverrides.clawd, {
-      states: {
-        attention: {
-          file: "clawd-happy.svg",
-          transition: { in: 80, out: 140 },
-        },
-      },
-      tiers: {
-        workingTiers: {
-          "clawd-working-typing.svg": {
-            file: "custom-working.svg",
-            transition: { in: 0, out: 90 },
-          },
-        },
-      },
-      timings: {
-        autoReturn: { attention: 2800 },
-      },
-    });
-  });
-
-  it("themeOverrides: legacy flat state entries normalize into states map", () => {
-    const validated = prefs.validate({
-      ...prefs.getDefaults(),
-      themeOverrides: {
-        clawd: {
-          attention: { disabled: true },
-        },
-      },
-    });
-    assert.deepStrictEqual(validated.themeOverrides, {
-      clawd: {
-        states: {
-          attention: { disabled: true },
-        },
-      },
-    });
   });
 });

@@ -50,7 +50,6 @@ const SCHEMA = {
   lang: { type: "string", default: "en", enum: ["en", "zh"] },
   showTray: { type: "boolean", default: true },
   showDock: { type: "boolean", default: true },
-  manageClaudeHooksAutomatically: { type: "boolean", default: true },
   autoStartWithClaude: { type: "boolean", default: false },
   // System-backed: actual truth lives in OS login items / autostart files.
   // `openAtLoginHydrated` starts false; main.js's startup hydrate helper imports
@@ -84,14 +83,6 @@ const SCHEMA = {
     type: "object",
     defaultFactory: () => ({}),
     normalize: normalizeThemeOverrides,
-  },
-  // Phase 3b-swap: per-theme variant selection (e.g. {clawd: "chill", calico: "default"}).
-  // Missing key for a theme = use that theme's `default` variant. Unknown variantIds
-  // get lenient-fallback to default at load time (see theme-loader._resolveVariant).
-  themeVariant: {
-    type: "object",
-    defaultFactory: () => ({}),
-    normalize: normalizeThemeVariant,
   },
 };
 
@@ -194,115 +185,30 @@ function normalizeAgents(value, defaultsValue) {
   return out;
 }
 
-function isPlainObject(value) {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function normalizeTransitionOverride(value) {
-  if (!isPlainObject(value)) return null;
-  const out = {};
-  if (typeof value.in === "number" && Number.isFinite(value.in)) out.in = value.in;
-  if (typeof value.out === "number" && Number.isFinite(value.out)) out.out = value.out;
-  return Object.keys(out).length > 0 ? out : null;
-}
-
-function normalizeSlotOverride(entry, { allowDisabled = true } = {}) {
-  if (!isPlainObject(entry)) return null;
-  const out = {};
-  if (allowDisabled && entry.disabled === true) out.disabled = true;
-  if (typeof entry.file === "string" && entry.file) out.file = entry.file;
-  if (typeof entry.sourceThemeId === "string" && entry.sourceThemeId) out.sourceThemeId = entry.sourceThemeId;
-  const transition = normalizeTransitionOverride(entry.transition);
-  if (transition) out.transition = transition;
-  return Object.keys(out).length > 0 ? out : null;
-}
-
-function normalizeStateOverridesMap(value) {
-  if (!isPlainObject(value)) return null;
-  const out = {};
-  for (const [stateKey, entry] of Object.entries(value)) {
-    if (typeof stateKey !== "string" || !stateKey) continue;
-    const cleanEntry = normalizeSlotOverride(entry, { allowDisabled: true });
-    if (cleanEntry) out[stateKey] = cleanEntry;
-  }
-  return Object.keys(out).length > 0 ? out : null;
-}
-
-function normalizeTierOverrideGroup(value) {
-  if (!isPlainObject(value)) return null;
-  const out = {};
-  for (const [originalFile, entry] of Object.entries(value)) {
-    if (typeof originalFile !== "string" || !originalFile) continue;
-    const cleanEntry = normalizeSlotOverride(entry, { allowDisabled: false });
-    if (cleanEntry) out[originalFile] = cleanEntry;
-  }
-  return Object.keys(out).length > 0 ? out : null;
-}
-
-function normalizeAutoReturnOverrides(value) {
-  if (!isPlainObject(value)) return null;
-  const out = {};
-  for (const [stateKey, duration] of Object.entries(value)) {
-    if (typeof stateKey !== "string" || !stateKey) continue;
-    if (typeof duration !== "number" || !Number.isFinite(duration)) continue;
-    out[stateKey] = duration;
-  }
-  return Object.keys(out).length > 0 ? out : null;
-}
-
 function normalizeThemeOverrides(value, defaultsValue) {
-  if (!isPlainObject(value)) return defaultsValue;
+  if (!value || typeof value !== "object") return defaultsValue;
   const out = {};
   for (const themeId of Object.keys(value)) {
     const themeMap = value[themeId];
-    if (!isPlainObject(themeMap)) continue;
+    if (!themeMap || typeof themeMap !== "object") continue;
     const cleanThemeMap = {};
-
-    // Back-compat: older prefs wrote state entries directly under themeId.
-    const legacyStates = {};
-    for (const [key, entry] of Object.entries(themeMap)) {
-      if (key === "states" || key === "tiers" || key === "timings") continue;
-      const cleanEntry = normalizeSlotOverride(entry, { allowDisabled: true });
-      if (cleanEntry) legacyStates[key] = cleanEntry;
-    }
-
-    const explicitStates = normalizeStateOverridesMap(themeMap.states);
-    const states = explicitStates ? { ...legacyStates, ...explicitStates } : legacyStates;
-    if (Object.keys(states).length > 0) cleanThemeMap.states = states;
-
-    const tierGroups = isPlainObject(themeMap.tiers) ? themeMap.tiers : null;
-    const cleanTiers = {};
-    if (tierGroups) {
-      const working = normalizeTierOverrideGroup(tierGroups.workingTiers);
-      const juggling = normalizeTierOverrideGroup(tierGroups.jugglingTiers);
-      if (working) cleanTiers.workingTiers = working;
-      if (juggling) cleanTiers.jugglingTiers = juggling;
-    }
-    if (Object.keys(cleanTiers).length > 0) cleanThemeMap.tiers = cleanTiers;
-
-    const timings = isPlainObject(themeMap.timings) ? themeMap.timings : null;
-    if (timings) {
-      const cleanAutoReturn = normalizeAutoReturnOverrides(timings.autoReturn);
-      if (cleanAutoReturn) {
-        cleanThemeMap.timings = { autoReturn: cleanAutoReturn };
+    for (const stateKey of Object.keys(themeMap)) {
+      const entry = themeMap[stateKey];
+      if (
+        entry &&
+        typeof entry === "object" &&
+        typeof entry.sourceThemeId === "string" &&
+        typeof entry.file === "string"
+      ) {
+        cleanThemeMap[stateKey] = {
+          sourceThemeId: entry.sourceThemeId,
+          file: entry.file,
+        };
       }
     }
-
     if (Object.keys(cleanThemeMap).length > 0) {
       out[themeId] = cleanThemeMap;
     }
-  }
-  return out;
-}
-
-function normalizeThemeVariant(value, defaultsValue) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return defaultsValue;
-  const out = {};
-  for (const themeId of Object.keys(value)) {
-    const variantId = value[themeId];
-    if (typeof themeId !== "string" || !themeId) continue;
-    if (typeof variantId !== "string" || !variantId) continue;
-    out[themeId] = variantId;
   }
   return out;
 }

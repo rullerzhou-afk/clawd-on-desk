@@ -175,24 +175,6 @@ describe("applyUpdate", () => {
     assert.strictEqual(r.status, "error");
     assert.match(r.message, /kaboom/);
   });
-
-  it("does not commit autoStartWithClaude when management-disabled effect returns noop", async () => {
-    const ctrl = createSettingsController({
-      prefsPath: makeTempPath(),
-      loadResult: {
-        snapshot: { ...prefs.getDefaults(), manageClaudeHooksAutomatically: false, autoStartWithClaude: false },
-        locked: false,
-      },
-      injectedDeps: {
-        installAutoStart: () => { throw new Error("should not run"); },
-        uninstallAutoStart: () => { throw new Error("should not run"); },
-      },
-    });
-    const r = await ctrl.applyUpdate("autoStartWithClaude", true);
-    assert.strictEqual(r.status, "ok");
-    assert.strictEqual(r.noop, true);
-    assert.strictEqual(ctrl.get("autoStartWithClaude"), false);
-  });
 });
 
 describe("applyBulk", () => {
@@ -352,23 +334,6 @@ describe("applyCommand", () => {
     const b = ctrl.applyCommand("slow", { tag: "b" });
     await Promise.all([a, b]);
     assert.deepStrictEqual(order, ["start:a", "end:a", "start:b", "end:b"]);
-  });
-
-  it("applies uninstallHooks commit without clearing latent autoStartWithClaude preference", async () => {
-    const ctrl = createSettingsController({
-      prefsPath: makeTempPath(),
-      loadResult: {
-        snapshot: { ...prefs.getDefaults(), manageClaudeHooksAutomatically: true, autoStartWithClaude: true },
-        locked: false,
-      },
-      commands: {
-        uninstallHooks: () => ({ status: "ok", commit: { manageClaudeHooksAutomatically: false } }),
-      },
-    });
-    const r = await ctrl.applyCommand("uninstallHooks", null);
-    assert.strictEqual(r.status, "ok");
-    assert.strictEqual(ctrl.get("manageClaudeHooksAutomatically"), false);
-    assert.strictEqual(ctrl.get("autoStartWithClaude"), true);
   });
 });
 

@@ -40,17 +40,9 @@ module.exports = function initMenu(ctx) {
       type: "radio",
       checked: theme.id === activeId,
       click: () => {
-        if (theme.id === activeId) return;
-        // Shared commit gate with the settings panel. Failure leaves the
-        // store untouched so the radio stays on the previous theme.
-        Promise.resolve(ctx.settings.applyUpdate("theme", theme.id)).then(
-          (r) => {
-            if (r && r.status === "error") {
-              console.warn("Clawd: theme switch failed:", r.message);
-            }
-          },
-          (err) => console.warn("Clawd: theme switch threw:", err && err.message)
-        );
+        if (theme.id !== activeId && ctx.switchTheme) {
+          ctx.switchTheme(theme.id);
+        }
       },
     }));
 
@@ -153,7 +145,6 @@ module.exports = function initMenu(ctx) {
         label: t("startWithClaude"),
         type: "checkbox",
         checked: ctx.autoStartWithClaude,
-        enabled: ctx.manageClaudeHooksAutomatically,
         // Setter triggers controller.applyUpdate; subscriber in main.js
         // installs/uninstalls the SessionStart hook + rebuilds the menu.
         click: (menuItem) => { ctx.autoStartWithClaude = menuItem.checked; },

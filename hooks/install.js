@@ -34,9 +34,6 @@ const VERSIONED_HOOKS = [
 ];
 
 const CLAUDE_VERSION_PATTERN = /(\d+\.\d+\.\d+)/;
-const CLAUDE_PACKAGE_JSON_SEGMENTS = ["node_modules", "@anthropic-ai", "claude-code", "package.json"];
-const CLAUDE_SHIM_CLI_PATTERN = /node_modules[\\/]+@anthropic-ai[\\/]+claude-code[\\/]+cli\.js/i;
-const MAX_CLAUDE_SHIM_BYTES = 64 * 1024;
 const UNKNOWN_CLAUDE_VERSION = Object.freeze({
   version: null,
   source: null,
@@ -54,140 +51,6 @@ function versionLessThan(a, b) {
     if ((pa[i] || 0) > (pb[i] || 0)) return false;
   }
   return false;
-}
-
-function parseClaudeVersion(value) {
-  if (typeof value !== "string") return null;
-  const match = value.match(CLAUDE_VERSION_PATTERN);
-  return match ? match[1] : null;
-}
-
-function getWindowsClaudePathSuffixes(pathExtEnv) {
-  const suffixes = [""];
-  const addSuffix = (value) => {
-    if (typeof value !== "string") return;
-    const trimmed = value.trim();
-    if (!trimmed) return;
-    const normalized = trimmed.startsWith(".") ? trimmed.toLowerCase() : `.${trimmed.toLowerCase()}`;
-    if (!suffixes.includes(normalized)) suffixes.push(normalized);
-  };
-
-  addSuffix(".cmd");
-  addSuffix(".ps1");
-
-  if (typeof pathExtEnv === "string") {
-    for (const entry of pathExtEnv.split(";")) {
-      addSuffix(entry);
-    }
-  }
-
-  return suffixes;
-}
-
-function getClaudePathCandidates(options = {}) {
-  const platform = options.platform || process.platform;
-  const pathEnv = options.pathEnv !== undefined ? options.pathEnv : process.env.PATH;
-  const existsSync = options.existsSync || fs.existsSync;
-
-  if (typeof pathEnv !== "string" || !pathEnv) return [];
-
-  const suffixes = platform === "win32"
-    ? getWindowsClaudePathSuffixes(options.pathExt !== undefined ? options.pathExt : process.env.PATHEXT)
-    : [""];
-  const delimiter = platform === "win32" ? ";" : ":";
-  const candidates = [];
-  const seen = new Set();
-
-  for (const rawDir of pathEnv.split(delimiter)) {
-    if (typeof rawDir !== "string") continue;
-    const dir = rawDir.trim().replace(/^"(.*)"$/, "$1");
-    if (!dir) continue;
-
-    for (const suffix of suffixes) {
-      const candidate = path.join(dir, `claude${suffix}`);
-      const key = platform === "win32" ? candidate.toLowerCase() : candidate;
-      if (seen.has(key)) continue;
-      seen.add(key);
-
-      try {
-        if (existsSync(candidate)) candidates.push(candidate);
-      } catch {}
-    }
-  }
-
-  return candidates;
-}
-
-function getClaudePackageJsonCandidates(candidatePath, options = {}) {
-  const platform = options.platform || process.platform;
-  const existsSync = options.existsSync || fs.existsSync;
-  const readFileSync = options.readFileSync || fs.readFileSync;
-  const realpathSync = options.realpathSync || fs.realpathSync;
-  const statSync = options.statSync || fs.statSync;
-
-  if (!path.isAbsolute(candidatePath)) return [];
-
-  const candidates = [];
-  const seen = new Set();
-  const addCandidate = (packageJsonPath) => {
-    if (typeof packageJsonPath !== "string" || !packageJsonPath) return;
-    const key = platform === "win32" ? packageJsonPath.toLowerCase() : packageJsonPath;
-    if (seen.has(key)) return;
-    seen.add(key);
-
-    try {
-      if (existsSync(packageJsonPath)) candidates.push(packageJsonPath);
-    } catch {}
-  };
-
-  const candidateDir = path.dirname(candidatePath);
-  addCandidate(path.join(candidateDir, ...CLAUDE_PACKAGE_JSON_SEGMENTS));
-
-  try {
-    const resolvedPath = realpathSync(candidatePath);
-    addCandidate(path.join(path.dirname(resolvedPath), "package.json"));
-  } catch {}
-
-  try {
-    const stat = statSync(candidatePath);
-    const isRegularFile = typeof stat.isFile === "function" ? stat.isFile() : true;
-    // npm shims are tiny; skip unusually large files rather than reading arbitrary PATH entries into memory.
-    if (isRegularFile && typeof stat.size === "number" && stat.size <= MAX_CLAUDE_SHIM_BYTES) {
-      const shimSource = readFileSync(candidatePath, "utf8");
-      const shimMatch = shimSource.match(CLAUDE_SHIM_CLI_PATTERN);
-      if (shimMatch) {
-        const cliPath = path.resolve(candidateDir, shimMatch[0].replace(/[\\/]/g, path.sep));
-        addCandidate(path.join(path.dirname(cliPath), "package.json"));
-      }
-    }
-  } catch {}
-
-  return candidates;
-}
-
-function getClaudeVersionFromPackageJson(packageJsonPath, options = {}) {
-  const readFileSync = options.readFileSync || fs.readFileSync;
-
-  try {
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
-    const version = parseClaudeVersion(packageJson.version);
-    if (!version) return null;
-    return {
-      version,
-      source: packageJsonPath,
-      status: "known",
-    };
-  } catch {
-    return null;
-  }
-}
-
-function readClaudeVersionFallback(candidatePath, options = {}) {
-  for (const packageJsonPath of getClaudePackageJsonCandidates(candidatePath, options)) {
-    const versionInfo = getClaudeVersionFromPackageJson(packageJsonPath, options);
-    if (versionInfo) return versionInfo;
-  }
-  return null;
 }
 
 /**
@@ -209,36 +72,28 @@ function getClaudeVersion(options = {}) {
       "/usr/local/bin/claude"
     );
   }
-  candidates.push(...getClaudePathCandidates(options));
   candidates.push("claude");
 
   const seen = new Set();
-  let fallbackInfo = null;
   for (const candidate of candidates) {
-    const key = platform === "win32" ? candidate.toLowerCase() : candidate;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
     try {
       const out = execFileSync(candidate, ["--version"], {
         encoding: "utf8",
         timeout: 5000,
         windowsHide: true,
       });
-      const version = parseClaudeVersion(out);
-      if (!version) continue;
+      const match = out.match(CLAUDE_VERSION_PATTERN);
+      if (!match) continue;
       return {
-        version,
+        version: match[1],
         source: candidate === "claude" ? "PATH:claude" : candidate,
         status: "known",
       };
     } catch {}
-
-    const fallback = readClaudeVersionFallback(candidate, options);
-    // Prefer a candidate that can answer `--version` directly; keep the first metadata
-    // fallback in search order, but continue scanning in case a later executable works.
-    if (fallback && !fallbackInfo) fallbackInfo = fallback;
   }
-  return fallbackInfo || { ...UNKNOWN_CLAUDE_VERSION };
+  return { ...UNKNOWN_CLAUDE_VERSION };
 }
 
 const MARKER = "clawd-hook.js";
@@ -312,26 +167,6 @@ function syncCommandHook(entries, marker, expectedCommand) {
   return { found, changed };
 }
 
-function isClawdPermissionUrl(url) {
-  if (typeof url !== "string" || !url) return false;
-  try {
-    const parsed = new URL(url);
-    return parsed.protocol === "http:"
-      && parsed.hostname === "127.0.0.1"
-      && parsed.pathname === HTTP_MARKER;
-  } catch {
-    return false;
-  }
-}
-
-function isClawdPermissionHook(entry) {
-  return !!entry
-    && typeof entry === "object"
-    && entry.type === "http"
-    && typeof entry.url === "string"
-    && isClawdPermissionUrl(entry.url);
-}
-
 function removeMatchingCommandHooks(entries, predicate) {
   if (!Array.isArray(entries)) return { entries, removed: 0, changed: false };
 
@@ -379,60 +214,13 @@ function removeMatchingCommandHooks(entries, predicate) {
   return { entries: nextEntries, removed, changed };
 }
 
-function removeMatchingHttpHooks(entries, predicate) {
-  if (!Array.isArray(entries)) return { entries, removed: 0, changed: false };
-
-  let removed = 0;
-  let changed = false;
-  const nextEntries = [];
-
-  for (const entry of entries) {
-    if (!entry || typeof entry !== "object") {
-      nextEntries.push(entry);
-      continue;
-    }
-
-    if (isClawdPermissionHook(entry) && predicate(entry)) {
-      removed++;
-      changed = true;
-      continue;
-    }
-
-    if (!Array.isArray(entry.hooks)) {
-      nextEntries.push(entry);
-      continue;
-    }
-
-    const nextHooks = entry.hooks.filter((hook) => {
-      if (!isClawdPermissionHook(hook)) return true;
-      if (!predicate(hook)) return true;
-      removed++;
-      changed = true;
-      return false;
-    });
-
-    if (nextHooks.length === entry.hooks.length) {
-      nextEntries.push(entry);
-      continue;
-    }
-
-    if (nextHooks.length === 0 && typeof entry.command !== "string" && entry.type !== "http") {
-      continue;
-    }
-
-    nextEntries.push({ ...entry, hooks: nextHooks });
-  }
-
-  return { entries: nextEntries, removed, changed };
-}
-
 function syncHttpHook(entries, expectedUrl) {
   let found = false;
   let changed = false;
   if (!Array.isArray(entries)) return { found, changed };
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
-    if (isClawdPermissionHook(entry)) {
+    if (entry.type === "http" && typeof entry.url === "string" && entry.url.includes(HTTP_MARKER)) {
       found = true;
       if (entry.url !== expectedUrl) {
         entry.url = expectedUrl;
@@ -441,7 +229,8 @@ function syncHttpHook(entries, expectedUrl) {
     }
     if (!Array.isArray(entry.hooks)) continue;
     for (const hook of entry.hooks) {
-      if (!isClawdPermissionHook(hook)) continue;
+      if (!hook || typeof hook !== "object" || hook.type !== "http" || typeof hook.url !== "string") continue;
+      if (!hook.url.includes(HTTP_MARKER)) continue;
       found = true;
       if (hook.url !== expectedUrl) {
         hook.url = expectedUrl;
@@ -740,51 +529,6 @@ function registerHooks(options = {}) {
   };
 }
 
-function unregisterHooks(options = {}) {
-  const settingsPath = options.settingsPath || path.join(os.homedir(), ".claude", "settings.json");
-  let settings = {};
-  try {
-    settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
-  } catch (err) {
-    if (err.code === "ENOENT") return { removed: 0, changed: false };
-    throw new Error(`Failed to read settings.json: ${err.message}`);
-  }
-
-  if (!settings.hooks || typeof settings.hooks !== "object") {
-    return { removed: 0, changed: false };
-  }
-
-  let removed = 0;
-  let changed = false;
-  for (const [event, entries] of Object.entries(settings.hooks)) {
-    if (!Array.isArray(entries)) continue;
-
-    const commandResult = removeMatchingCommandHooks(
-      entries,
-      (command) => command.includes(MARKER)
-        || command.includes(AUTO_START_MARKER)
-        || command.includes(LEGACY_AUTO_START_MARKER)
-    );
-    const httpResult = removeMatchingHttpHooks(
-      commandResult.entries,
-      (hook) => isClawdPermissionHook(hook)
-    );
-
-    if (!commandResult.changed && !httpResult.changed) continue;
-
-    removed += commandResult.removed + httpResult.removed;
-    changed = true;
-    if (httpResult.entries.length > 0) settings.hooks[event] = httpResult.entries;
-    else delete settings.hooks[event];
-  }
-
-  if (changed) {
-    writeJsonAtomic(settingsPath, settings);
-  }
-
-  return { removed, changed };
-}
-
 /**
  * Remove the auto-start hook from SessionStart in ~/.claude/settings.json.
  * Also removes legacy auto-start.sh entries.
@@ -851,20 +595,10 @@ function isAutoStartRegistered() {
 // Export for use by main.js
 module.exports = {
   registerHooks,
-  unregisterHooks,
   unregisterAutoStart,
   isAutoStartRegistered,
   __test: {
-    parseClaudeVersion,
-    getWindowsClaudePathSuffixes,
-    getClaudePathCandidates,
-    getClaudePackageJsonCandidates,
-    getClaudeVersionFromPackageJson,
-    readClaudeVersionFallback,
     getClaudeVersion,
-    isClawdPermissionHook,
-    isClawdPermissionUrl,
-    removeMatchingHttpHooks,
     versionLessThan,
     removeMatchingCommandHooks,
     reconcileVersionedHooks,
