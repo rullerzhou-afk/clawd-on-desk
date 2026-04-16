@@ -128,6 +128,7 @@
       "mini-happy":       ["clawd-mini-happy.svg"],
       "mini-enter":       ["clawd-mini-enter.svg"],
       "mini-peek":        ["clawd-mini-peek.svg"],
+      "mini-working":     ["clawd-mini-typing.svg"],
       "mini-crabwalk":    ["clawd-mini-crabwalk.svg"],
       "mini-enter-sleep": ["clawd-mini-enter-sleep.svg"],
       "mini-sleep":       ["clawd-mini-sleep.svg"]

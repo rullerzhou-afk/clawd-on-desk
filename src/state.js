@@ -203,7 +203,10 @@ function applyState(state, svgOverride) {
   if (ctx.miniMode && !state.startsWith("mini-")) {
     if (state === "notification") return applyState("mini-alert");
     if (state === "attention") return applyState("mini-happy");
-    if (AUTO_RETURN_MS[currentState] && !autoReturnTimer) {
+    if (state === "working" || state === "thinking" || state === "juggling") {
+      return applyState("mini-working");
+    }
+    if ((AUTO_RETURN_MS[currentState] || currentState === "mini-working") && !autoReturnTimer) {
       return applyState(ctx.mouseOverPet ? "mini-peek" : "mini-idle");
     }
     return;

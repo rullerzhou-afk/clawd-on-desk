@@ -1,0 +1,151 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <defs>
+    <style>
+      .breathe-anim {
+        transform-origin: 7.5px 13px;
+        animation: breathe 3.2s infinite ease-in-out;
+      }
+
+      .eyes-read {
+        animation: read-code 1.2s infinite;
+      }
+
+      #eyes-js {
+        transition: transform 0.2s ease-out;
+      }
+
+      .arm-l-type {
+        transform-origin: 2px 10px;
+        animation: type-l 0.4s infinite ease-in-out;
+      }
+      .arm-r-type {
+        transform-origin: 13px 10px;
+        animation: type-r 0.35s infinite ease-in-out;
+      }
+
+      /* Floating data packets */
+      .data-bit {
+        opacity: 0;
+        animation: float-data 1s infinite linear;
+      }
+      .d1 { animation-delay: 0.0s; transform-origin: -2px 10px; }
+      .d2 { animation-delay: 0.3s; transform-origin: 5px 12px; }
+      .d3 { animation-delay: 0.6s; transform-origin: 12px 11px; }
+      .d4 { animation-delay: 0.8s; transform-origin: 17px 9px; }
+      .d5 { animation-delay: 0.1s; transform-origin: 8px 10px; }
+      .d6 { animation-delay: 0.4s; transform-origin: 0px 11px; }
+      .d7 { animation-delay: 0.7s; transform-origin: 15px 12px; }
+
+      @keyframes breathe {
+        0%, 100% { transform: scale(1, 1) translate(0, 0); }
+        50% { transform: scale(1.02, 0.98) translate(0, 0.5px); }
+      }
+
+      @keyframes read-code {
+        0%, 24%  { transform: translate(-2px, 0); }
+        25%, 54% { transform: translate(-1px, 0); }
+        55%, 84% { transform: translate(0px, 0); }
+        85%, 100% { transform: translate(-2px, 0); }
+      }
+
+      @keyframes type-l {
+        0%   { transform: rotate(70deg); }
+        25%  { transform: rotate(110deg); }
+        50%  { transform: rotate(80deg); }
+        75%  { transform: rotate(100deg); }
+        100% { transform: rotate(70deg); }
+      }
+
+      @keyframes type-r {
+        0%   { transform: rotate(-80deg); }
+        25%  { transform: rotate(-100deg); }
+        50%  { transform: rotate(-70deg); }
+        75%  { transform: rotate(-110deg); }
+        100% { transform: rotate(-80deg); }
+      }
+
+      .logo-glow {
+        animation: logo-pulse 1.5s infinite alternate ease-in-out;
+      }
+
+      @keyframes logo-pulse {
+        0% { opacity: 0.4; }
+        100% { opacity: 1; }
+      }
+
+      /* Packets float up and fade */
+      @keyframes float-data {
+        0% { transform: translateY(0) scale(0.5); opacity: 0; }
+        20% { opacity: 0.8; }
+        100% { transform: translateY(-15px) scale(1.2); opacity: 0; }
+      }
+    </style>
+
+    <!-- A small square to represent data/code -->
+    <g id="pixel-packet">
+      <rect x="0" y="0" width="1.5" height="1.5" />
+    </g>
+  </defs>
+
+  <!-- No shadow (against screen edge, no ground plane) -->
+
+  <!-- Entire character leaning: rotate -12° around feet base (7.5, 15) -->
+  <!-- Negative = counterclockwise = head tilts left toward screen = peeking pose -->
+  <g transform="rotate(-12, 7.5, 15)">
+
+    <!-- Legs (inside rotation group so they tilt with the body) -->
+    <g fill="#DE886D">
+      <rect x="3" y="11" width="1" height="4"/>
+      <rect x="5" y="11" width="1" height="4"/>
+      <rect x="9" y="11" width="1" height="4"/>
+      <rect x="11" y="11" width="1" height="4"/>
+    </g>
+
+    <!-- Upper Body (JS body-shift preserved for compatibility) -->
+    <g id="body-js">
+      <g class="breathe-anim">
+        <!-- Torso -->
+        <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
+
+        <!-- Left Arm — typing -->
+        <g class="arm-l-type">
+          <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>
+        </g>
+
+        <!-- Right Arm — typing -->
+        <g class="arm-r-type">
+          <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+        </g>
+
+        <!-- Eyes: JS translate wrapper + CSS blink -->
+        <g id="eyes-js" fill="#000000">
+          <g class="eyes-read">
+            <rect x="4" y="8" width="1" height="2"/>
+            <rect x="10" y="8" width="1" height="2"/>
+          </g>
+        </g>
+      </g>
+    </g>
+
+    <!-- Pixel Laptop (inside rotation group so it leans with Clawd) -->
+    <g id="laptop" transform="translate(3, 11)">
+      <!-- Laptop Base --> 
+      <rect x="-0.5" y="4" width="8" height="1" fill="#546E7A" rx="0.5"/>
+      <!-- Screen Back -->
+      <rect x="0" y="0" width="7" height="4.5" fill="#78909C" rx="0.5"/>
+      <!-- Glowing Logo -->
+      <circle cx="3.5" cy="2" r="1.2" fill="#40C4FF" opacity="0.2" class="logo-glow"/>
+      <rect x="3" y="1.5" width="1" height="1" fill="#FFFFFF" class="logo-glow"/>
+    </g>
+  </g>
+  <!-- Data Particles floating up from behind the laptop -->
+  <g class="data-particles" fill="#40C4FF">
+    <use href="#pixel-packet" class="data-bit d1" x="-2" y="12" />
+    <use href="#pixel-packet" class="data-bit d2" x="5" y="11" />
+    <use href="#pixel-packet" class="data-bit d3" x="12" y="13" />
+    <use href="#pixel-packet" class="data-bit d4" x="17" y="11" />
+    <use href="#pixel-packet" class="data-bit d5" x="8" y="10" />
+    <use href="#pixel-packet" class="data-bit d6" x="1" y="11" />
+    <use href="#pixel-packet" class="data-bit d7" x="15" y="12" />
+  </g>
+</svg>
