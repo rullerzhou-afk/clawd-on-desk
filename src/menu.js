@@ -193,6 +193,7 @@ module.exports = function initMenu(ctx) {
         submenu: [
           { label: "English", type: "radio", checked: ctx.lang === "en", click: () => { ctx.lang = "en"; } },
           { label: "中文", type: "radio", checked: ctx.lang === "zh", click: () => { ctx.lang = "zh"; } },
+          { label: "한국어", type: "radio", checked: ctx.lang === "ko", click: () => { ctx.lang = "ko"; } },
         ],
       },
       { type: "separator" },
