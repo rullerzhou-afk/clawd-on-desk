@@ -1,12 +1,9 @@
-const { app, BrowserWindow, screen, Menu, ipcMain, globalShortcut, nativeTheme, dialog, shell } = require("electron");
+const { app, BrowserWindow, screen, Menu, ipcMain, globalShortcut, nativeTheme } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const { pathToFileURL } = require("url");
 const { applyStationaryCollectionBehavior } = require("./mac-window");
 const hitGeometry = require("./hit-geometry");
-const animationCycle = require("./animation-cycle");
 const { findNearestWorkArea, computeLooseClamp, SYNTHETIC_WORK_AREA } = require("./work-area");
-const { getLaunchSizingWorkArea, getProportionalPixelSize } = require("./size-utils");
 
 // ── Autoplay policy: allow sound playback without user gesture ──
 // MUST be set before any BrowserWindow is created (before app.whenReady)
@@ -61,10 +58,6 @@ function _installAutoStartHook() {
 function _uninstallAutoStartHook() {
   const { unregisterAutoStart } = require("../hooks/install.js");
   unregisterAutoStart();
-}
-function _uninstallClaudeHooksNow() {
-  const { unregisterHooks } = require("../hooks/install.js");
-  unregisterHooks();
 }
 
 // Cross-platform "open at login" writer used by both the openAtLogin effect
@@ -122,22 +115,11 @@ const _settingsController = createSettingsController({
   injectedDeps: {
     installAutoStart: _installAutoStartHook,
     uninstallAutoStart: _uninstallAutoStartHook,
-    syncClaudeHooksNow: () => _server.syncClawdHooks(),
-    uninstallClaudeHooksNow: _uninstallClaudeHooksNow,
-    startClaudeSettingsWatcher: () => _server.startClaudeSettingsWatcher(),
-    stopClaudeSettingsWatcher: () => _server.stopClaudeSettingsWatcher(),
     setOpenAtLogin: _writeSystemOpenAtLogin,
     startMonitorForAgent: _deferredStartMonitorForAgent,
     stopMonitorForAgent: _deferredStopMonitorForAgent,
     clearSessionsByAgent: _deferredClearSessionsByAgent,
     dismissPermissionsByAgent: _deferredDismissPermissionsByAgent,
-    // Theme deps — defined much later in the file, wrapped in lazy closures.
-    // activateTheme accepts (themeId, variantId?, overrideMap?) and returns
-    // { themeId, variantId } with the actually-resolved variantId
-    // (lenient fallback on unknown variants).
-    activateTheme: (id, variantId, overrideMap) => _deferredActivateTheme(id, variantId, overrideMap),
-    getThemeInfo: (id) => _deferredGetThemeInfo(id),
-    removeThemeDir: (id) => _deferredRemoveThemeDir(id),
   },
 });
 
@@ -211,39 +193,7 @@ function stopMonitorForAgent(agentId) {
 const themeLoader = require("./theme-loader");
 themeLoader.init(__dirname, app.getPath("userData"));
 
-// Lenient load so a missing/corrupt user-selected theme can't brick boot.
-// If lenient fell back to "clawd" OR the variant fell back to "default",
-// hydrate prefs to match so the store stays truth.
-//
-// Startup runs BEFORE the window is ready, so we call themeLoader.loadTheme
-// directly — not activateTheme (which requires ready windows) and not the
-// setThemeSelection command (which goes through activateTheme). The runtime
-// switch path via UI goes through setThemeSelection post-window-ready.
-const _requestedThemeId = _settingsController.get("theme") || "clawd";
-const _initialVariantMap = _settingsController.get("themeVariant") || {};
-const _requestedVariantId = _initialVariantMap[_requestedThemeId] || "default";
-const _initialThemeOverrides = _settingsController.get("themeOverrides") || {};
-const _requestedThemeOverrides = _initialThemeOverrides[_requestedThemeId] || null;
-let activeTheme = themeLoader.loadTheme(_requestedThemeId, {
-  variant: _requestedVariantId,
-  overrides: _requestedThemeOverrides,
-});
-activeTheme._overrideSignature = JSON.stringify(_requestedThemeOverrides || {});
-if (activeTheme._id !== _requestedThemeId || activeTheme._variantId !== _requestedVariantId) {
-  const nextVariantMap = { ...(_settingsController.get("themeVariant") || {}) };
-  // Self-heal: store the resolved ids so next boot doesn't fall back again.
-  nextVariantMap[activeTheme._id] = activeTheme._variantId;
-  if (activeTheme._id !== _requestedThemeId) {
-    delete nextVariantMap[_requestedThemeId];
-  }
-  const result = _settingsController.hydrate({
-    theme: activeTheme._id,
-    themeVariant: nextVariantMap,
-  });
-  if (result && result.status === "error") {
-    console.warn("Clawd: theme hydrate after fallback failed:", result.message);
-  }
-}
+let activeTheme = themeLoader.loadTheme(_settingsController.get("theme") || "clawd");
 
 // ── CSS <object> sizing (from theme) ──
 function getObjRect(bounds) {
@@ -263,8 +213,7 @@ let contextMenuOwner = null;
 let currentSize = _settingsController.get("size");
 
 // ── Proportional size mode ──
-// currentSize = "P:<ratio>" means the pet occupies <ratio>% of the display long edge,
-// so rotating the same monitor to portrait does not suddenly shrink the pet.
+// currentSize = "P:<ratio>" means the pet occupies <ratio>% of the work area width.
 const PROPORTIONAL_RATIOS = [8, 10, 12, 15];
 
 function isProportionalMode(size) {
@@ -284,7 +233,8 @@ function getCurrentPixelSize(overrideWa) {
     wa = getNearestWorkArea(x + width / 2, y + height / 2);
   }
   if (!wa) wa = getPrimaryWorkAreaSafe() || SYNTHETIC_WORK_AREA;
-  return getProportionalPixelSize(ratio, wa);
+  const px = Math.round(wa.width * ratio / 100);
+  return { width: px, height: px };
 }
 let contextMenu;
 let doNotDisturb = false;
@@ -294,7 +244,6 @@ let isQuitting = false;
 // directly (writes go through ctx setters → controller.applyUpdate).
 let showTray = _settingsController.get("showTray");
 let showDock = _settingsController.get("showDock");
-let manageClaudeHooksAutomatically = _settingsController.get("manageClaudeHooksAutomatically");
 let autoStartWithClaude = _settingsController.get("autoStartWithClaude");
 let openAtLogin = _settingsController.get("openAtLogin");
 let bubbleFollowPet = _settingsController.get("bubbleFollowPet");
@@ -327,6 +276,7 @@ function togglePetVisibility() {
   } else {
     win.hide();
     if (hitWin && !hitWin.isDestroyed()) hitWin.hide();
+    if (sessionPanelWindow && !sessionPanelWindow.isDestroyed()) sessionPanelWindow.hide();
     // Also hide any permission bubbles
     for (const perm of pendingPermissions) {
       if (perm.bubble && !perm.bubble.isDestroyed()) perm.bubble.hide();
@@ -386,18 +336,6 @@ function syncRendererStateAfterLoad({ includeStartupRecovery = true } = {}) {
     applyState("mini-idle");
     return;
   }
-
-  // Theme hot-reload path (override tweak / variant swap): re-render whatever
-  // we were already showing. Going through resolveDisplayState() here flashes
-  // "working/typing" when sessions Map still holds a stale session whose
-  // state hasn't been stale-downgraded yet — currentState already reflects
-  // the user-visible state before reload and stays authoritative.
-  if (!includeStartupRecovery) {
-    const prev = _state.getCurrentState();
-    applyState(prev, getSvgOverride(prev));
-    return;
-  }
-
   if (sessions.size > 0) {
     const resolved = resolveDisplayState();
     applyState(resolved, getSvgOverride(resolved));
@@ -405,6 +343,7 @@ function syncRendererStateAfterLoad({ includeStartupRecovery = true } = {}) {
   }
 
   applyState("idle", getSvgOverride("idle"));
+  if (!includeStartupRecovery) return;
 
   setTimeout(() => {
     if (sessions.size > 0 || doNotDisturb) return;
@@ -494,7 +433,6 @@ const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, re
 const pendingPermissions = _perm.pendingPermissions;
 let permDebugLog = null; // set after app.whenReady()
 let updateDebugLog = null; // set after app.whenReady()
-let sessionDebugLog = null; // set after app.whenReady()
 
 const _updateBubbleCtx = {
   get win() { return win; },
@@ -546,6 +484,7 @@ function reapplyMacVisibility() {
   };
   apply(win);
   apply(hitWin);
+  apply(sessionPanelWindow);
   for (const perm of pendingPermissions) apply(perm.bubble);
   apply(_updateBubble.getBubbleWindow());
   apply(contextMenuOwner);
@@ -583,19 +522,6 @@ const _stateCtx = {
   miniPeekOut: () => miniPeekOut(),
   buildContextMenu: () => buildContextMenu(),
   buildTrayMenu: () => buildTrayMenu(),
-  debugLog: (msg) => sessionLog(msg),
-  // Phase 3b: 读 prefs.themeOverrides 判断某个 oneshot state 是否被用户禁用。
-  // state.js gate 调这个做 early-return。不做白名单校验——settings-actions
-  // 负责写入合法性，这里只读。
-  isOneshotDisabled: (stateKey) => {
-    const themeId = activeTheme && activeTheme._id;
-    if (!themeId || !stateKey) return false;
-    const overrides = _settingsController.get("themeOverrides");
-    const themeMap = overrides && overrides[themeId];
-    const stateMap = themeMap && themeMap.states;
-    const entry = (stateMap && stateMap[stateKey]) || (themeMap && themeMap[stateKey]);
-    return !!(entry && entry.disabled === true);
-  },
   hasAnyEnabledAgent: () => {
     // `get("agents")` returns the live reference (no clone) — we're only
     // reading. Missing agents field falls back to "assume enabled" (the
@@ -677,7 +603,6 @@ const { initFocusHelper, killFocusHelper, focusTerminalWindow, clearMacFocusCool
 
 // ── HTTP server — delegated to src/server.js ──
 const _serverCtx = {
-  get manageClaudeHooksAutomatically() { return manageClaudeHooksAutomatically; },
   get autoStartWithClaude() { return autoStartWithClaude; },
   get doNotDisturb() { return doNotDisturb; },
   get hideBubbles() { return hideBubbles; },
@@ -773,12 +698,6 @@ function updateLog(msg) {
   rotatedAppend(updateDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
 }
 
-function sessionLog(msg) {
-  if (!sessionDebugLog) return;
-  const { rotatedAppend } = require("./log-rotate");
-  rotatedAppend(sessionDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
-}
-
 // ── Menu — delegated to src/menu.js ──
 //
 // Setters that previously assigned to module-level vars now route through
@@ -799,7 +718,6 @@ const _menuCtx = {
   set showTray(v) { _settingsController.applyUpdate("showTray", v); },
   get showDock() { return showDock; },
   set showDock(v) { _settingsController.applyUpdate("showDock", v); },
-  get manageClaudeHooksAutomatically() { return manageClaudeHooksAutomatically; },
   get autoStartWithClaude() { return autoStartWithClaude; },
   set autoStartWithClaude(v) { _settingsController.applyUpdate("autoStartWithClaude", v); },
   get openAtLogin() { return openAtLogin; },
@@ -850,6 +768,7 @@ const _menuCtx = {
   clampToScreen,
   getNearestWorkArea,
   reapplyMacVisibility,
+  switchTheme: (id) => switchTheme(id),
   discoverThemes: () => themeLoader.discoverThemes(),
   getActiveThemeId: () => activeTheme ? activeTheme._id : "clawd",
   ensureUserThemesDir: () => themeLoader.ensureUserThemesDir(),
@@ -870,7 +789,7 @@ const { t, buildContextMenu, buildTrayMenu, rebuildAllMenus, createTray,
 // from a future settings panel land here identically.
 const MENU_AFFECTING_KEYS = new Set([
   "lang", "soundMuted", "bubbleFollowPet", "hideBubbles", "showSessionId",
-  "manageClaudeHooksAutomatically", "autoStartWithClaude", "openAtLogin", "showTray", "showDock", "theme", "size",
+  "autoStartWithClaude", "openAtLogin", "showTray", "showDock", "theme", "size",
 ]);
 function wireSettingsSubscribers() {
   _settingsController.subscribe(({ changes }) => {
@@ -888,9 +807,6 @@ function wireSettingsSubscribers() {
       try { applyDockVisibility(); } catch (err) {
         console.warn("Clawd: applyDockVisibility failed:", err && err.message);
       }
-    }
-    if ("manageClaudeHooksAutomatically" in changes) {
-      manageClaudeHooksAutomatically = changes.manageClaudeHooksAutomatically;
     }
     // autoStartWithClaude / openAtLogin are object-form pre-commit gates in
     // settings-actions.js — by the time we get here the system call already
@@ -945,279 +861,6 @@ function wireSettingsSubscribers() {
 }
 wireSettingsSubscribers();
 
-const ANIMATION_OVERRIDE_ASSET_EXTS = new Set([".svg", ".gif", ".apng", ".png", ".webp"]);
-let animationOverridePreviewTimer = null;
-
-function _buildFileUrl(absPath) {
-  try { return pathToFileURL(absPath).href; }
-  catch { return null; }
-}
-
-function _resolveAnimationAssetAbsPath(filename) {
-  if (!filename || !activeTheme) return null;
-  try {
-    const absPath = themeLoader.getAssetPath(filename);
-    return absPath && fs.existsSync(absPath) ? absPath : null;
-  } catch {
-    return null;
-  }
-}
-
-function _resolveAnimationAssetsDir(theme = activeTheme) {
-  if (!theme) return null;
-  const themeAssetsDir = theme._themeDir ? path.join(theme._themeDir, "assets") : null;
-  if (themeAssetsDir && fs.existsSync(themeAssetsDir)) return themeAssetsDir;
-  const idleFile = theme.states && theme.states.idle && theme.states.idle[0];
-  if (!idleFile) return null;
-  const resolved = themeLoader.getAssetPath(idleFile);
-  return resolved ? path.dirname(resolved) : null;
-}
-
-function _buildAnimationAssetUrl(filename) {
-  const absPath = _resolveAnimationAssetAbsPath(filename);
-  return absPath ? _buildFileUrl(absPath) : null;
-}
-
-function _buildAnimationAssetProbe(file) {
-  const absPath = _resolveAnimationAssetAbsPath(file);
-  if (!absPath) {
-    return {
-      assetCycleMs: null,
-      assetCycleStatus: "unavailable",
-      assetCycleSource: null,
-    };
-  }
-  const probe = animationCycle.probeAssetCycle(absPath);
-  return {
-    assetCycleMs: Number.isFinite(probe && probe.ms) && probe.ms > 0 ? probe.ms : null,
-    assetCycleStatus: (probe && probe.status) || "unavailable",
-    assetCycleSource: (probe && probe.source) || null,
-  };
-}
-
-function _readCurrentThemeOverrideMap() {
-  const themeId = activeTheme && activeTheme._id;
-  if (!themeId || !_settingsController || typeof _settingsController.getSnapshot !== "function") return null;
-  const snapshot = _settingsController.getSnapshot();
-  return snapshot && snapshot.themeOverrides ? snapshot.themeOverrides[themeId] || null : null;
-}
-
-function _hasExplicitAutoReturnOverride(themeOverrideMap, stateKey) {
-  const autoReturn = themeOverrideMap && themeOverrideMap.timings && themeOverrideMap.timings.autoReturn;
-  return !!(autoReturn && Object.prototype.hasOwnProperty.call(autoReturn, stateKey));
-}
-
-function _buildTimingHint(file, fallbackMs = null) {
-  const assetProbe = _buildAnimationAssetProbe(file);
-  const suggestedDurationMs = assetProbe.assetCycleMs != null
-    ? assetProbe.assetCycleMs
-    : (Number.isFinite(fallbackMs) && fallbackMs > 0 ? fallbackMs : null);
-  const suggestedDurationStatus = assetProbe.assetCycleMs != null
-    ? assetProbe.assetCycleStatus
-    : (suggestedDurationMs != null ? "fallback" : "unavailable");
-  return {
-    ...assetProbe,
-    suggestedDurationMs,
-    suggestedDurationStatus,
-    previewDurationMs: suggestedDurationMs,
-  };
-}
-
-function _listAnimationOverrideAssets(theme = activeTheme) {
-  if (!theme) return [];
-  const dirs = [];
-  const primaryDir = _resolveAnimationAssetsDir(theme);
-  const sourceDir = theme._themeDir ? path.join(theme._themeDir, "assets") : null;
-  const cacheDir = theme._assetsDir || null;
-  for (const dir of [primaryDir, sourceDir, cacheDir]) {
-    if (!dir || !fs.existsSync(dir)) continue;
-    if (!dirs.includes(dir)) dirs.push(dir);
-  }
-  const seen = new Set();
-  const assets = [];
-  for (const dir of dirs) {
-    let entries = [];
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { entries = []; }
-    for (const entry of entries) {
-      if (!entry.isFile()) continue;
-      const ext = path.extname(entry.name).toLowerCase();
-      if (!ANIMATION_OVERRIDE_ASSET_EXTS.has(ext)) continue;
-      if (seen.has(entry.name)) continue;
-      const absPath = _resolveAnimationAssetAbsPath(entry.name) || path.join(dir, entry.name);
-      const previewUrl = _buildFileUrl(absPath);
-      const probe = animationCycle.probeAssetCycle(absPath);
-      assets.push({
-        name: entry.name,
-        fileUrl: previewUrl,
-        ext,
-        cycleMs: Number.isFinite(probe && probe.ms) && probe.ms > 0 ? probe.ms : null,
-        cycleStatus: (probe && probe.status) || "unavailable",
-        cycleSource: (probe && probe.source) || null,
-      });
-      seen.add(entry.name);
-    }
-  }
-  assets.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
-  return assets;
-}
-
-function _readResolvedTransition(file) {
-  const entry = activeTheme && activeTheme.transitions && activeTheme.transitions[file];
-  return {
-    in: entry && Number.isFinite(entry.in) ? entry.in : 150,
-    out: entry && Number.isFinite(entry.out) ? entry.out : 150,
-  };
-}
-
-function _buildTierCardGroup(tierGroup, triggerKind, resolvedTiers, baseTiers, baseHintMap) {
-  if (!Array.isArray(resolvedTiers)) return [];
-  return resolvedTiers.map((tier, index) => {
-    const baseTier = Array.isArray(baseTiers) ? baseTiers[index] : null;
-    const originalFile = (baseTier && baseTier.originalFile) || tier.file;
-    const higherTier = index === 0 ? null : resolvedTiers[index - 1];
-    const maxSessions = higherTier ? Math.max(tier.minSessions, higherTier.minSessions - 1) : null;
-    const hintTarget = baseHintMap && baseHintMap[originalFile];
-    const timingHint = _buildTimingHint(tier.file);
-    return {
-      id: `${tierGroup}:${originalFile}`,
-      slotType: "tier",
-      tierGroup,
-      triggerKind,
-      originalFile,
-      baseFile: originalFile,
-      minSessions: tier.minSessions,
-      maxSessions,
-      currentFile: tier.file,
-      currentFileUrl: _buildAnimationAssetUrl(tier.file),
-      bindingLabel: `${tierGroup}[${originalFile}]`,
-      transition: _readResolvedTransition(tier.file),
-      supportsAutoReturn: false,
-      autoReturnMs: null,
-      hasAutoReturnOverride: false,
-      ...timingHint,
-      displayHintWarning: !!(hintTarget && hintTarget !== originalFile),
-      displayHintTarget: hintTarget || null,
-    };
-  });
-}
-
-function _buildStateCard(stateKey, triggerKind, themeOverrideMap) {
-  const files = activeTheme && activeTheme.states && activeTheme.states[stateKey];
-  if (!Array.isArray(files) || !files[0]) return null;
-  const currentFile = files[0];
-  const autoReturnMap = (activeTheme && activeTheme.timings && activeTheme.timings.autoReturn) || {};
-  const supportsAutoReturn = Object.prototype.hasOwnProperty.call(autoReturnMap, stateKey);
-  const resolvedAutoReturnMs = supportsAutoReturn ? autoReturnMap[stateKey] : null;
-  const timingHint = _buildTimingHint(currentFile, resolvedAutoReturnMs);
-  return {
-    id: `state:${stateKey}`,
-    slotType: "state",
-    stateKey,
-    triggerKind,
-    currentFile,
-    baseFile: (activeTheme._bindingBase && activeTheme._bindingBase.states && activeTheme._bindingBase.states[stateKey]) || currentFile,
-    currentFileUrl: _buildAnimationAssetUrl(currentFile),
-    bindingLabel: `states.${stateKey}[0]`,
-    transition: _readResolvedTransition(currentFile),
-    supportsAutoReturn,
-    autoReturnMs: resolvedAutoReturnMs,
-    hasAutoReturnOverride: supportsAutoReturn ? _hasExplicitAutoReturnOverride(themeOverrideMap, stateKey) : false,
-    ...timingHint,
-    displayHintWarning: false,
-    displayHintTarget: null,
-  };
-}
-
-function _buildAnimationOverrideCards() {
-  if (!activeTheme) return [];
-  const cards = [];
-  const themeOverrideMap = _readCurrentThemeOverrideMap();
-  const thinking = _buildStateCard("thinking", "thinking", themeOverrideMap);
-  if (thinking) cards.push(thinking);
-
-  const baseBindings = activeTheme._bindingBase || {};
-  cards.push(..._buildTierCardGroup(
-    "workingTiers",
-    "working",
-    activeTheme.workingTiers || [],
-    baseBindings.workingTiers || [],
-    baseBindings.displayHintMap || {}
-  ));
-  cards.push(..._buildTierCardGroup(
-    "jugglingTiers",
-    "juggling",
-    activeTheme.jugglingTiers || [],
-    baseBindings.jugglingTiers || [],
-    baseBindings.displayHintMap || {}
-  ));
-
-  for (const [stateKey, triggerKind] of [
-    ["error", "error"],
-    ["attention", "attention"],
-    ["notification", "notification"],
-    ["sweeping", "sweeping"],
-    ["carrying", "carrying"],
-    ["sleeping", "sleeping"],
-    ["waking", "waking"],
-  ]) {
-    const card = _buildStateCard(stateKey, triggerKind, themeOverrideMap);
-    if (card) cards.push(card);
-  }
-  return cards;
-}
-
-function _buildAnimationOverrideData() {
-  if (!activeTheme) return null;
-  const meta = themeLoader.getThemeMetadata(activeTheme._id) || {};
-  return {
-    theme: {
-      id: activeTheme._id,
-      name: meta.name || activeTheme._id,
-      variantId: activeTheme._variantId || "default",
-      assetsDir: _resolveAnimationAssetsDir(activeTheme),
-    },
-    assets: _listAnimationOverrideAssets(activeTheme),
-    cards: _buildAnimationOverrideCards(),
-  };
-}
-
-function _previewAnimationOverride(payload) {
-  if (!payload || typeof payload !== "object") {
-    return { status: "error", message: "previewAnimationOverride payload must be an object" };
-  }
-  const { stateKey, file, durationMs } = payload;
-  if (typeof stateKey !== "string" || !stateKey) {
-    return { status: "error", message: "previewAnimationOverride.stateKey must be a non-empty string" };
-  }
-  if (typeof file !== "string" || !file) {
-    return { status: "error", message: "previewAnimationOverride.file must be a non-empty string" };
-  }
-  if (!_state || typeof _state.applyState !== "function" || typeof _state.resolveDisplayState !== "function") {
-    return { status: "error", message: "previewAnimationOverride requires state runtime" };
-  }
-  if (animationOverridePreviewTimer) {
-    clearTimeout(animationOverridePreviewTimer);
-    animationOverridePreviewTimer = null;
-  }
-  try {
-    _state.applyState(stateKey, file);
-  } catch (err) {
-    return { status: "error", message: `previewAnimationOverride: ${err && err.message}` };
-  }
-  const fallbackMs = (activeTheme && activeTheme.timings && activeTheme.timings.autoReturn && activeTheme.timings.autoReturn[stateKey]) || 1800;
-  const holdMs = (typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 300)
-    ? durationMs
-    : fallbackMs;
-  animationOverridePreviewTimer = setTimeout(() => {
-    animationOverridePreviewTimer = null;
-    try {
-      const resolved = _state.resolveDisplayState();
-      _state.applyState(resolved, _state.getSvgOverride(resolved));
-    } catch {}
-  }, holdMs);
-  return { status: "ok" };
-}
-
 // ── IPC: settings panel write entry points ──
 // Renderer-side callers (the future settings panel) use these. Menu/main code
 // in this process calls _settingsController directly — no IPC round-trip.
@@ -1234,17 +877,6 @@ ipcMain.handle("settings:command", async (_event, payload) => {
   }
   return _settingsController.applyCommand(payload.action, payload.payload);
 });
-ipcMain.handle("settings:get-animation-overrides-data", () => _buildAnimationOverrideData());
-ipcMain.handle("settings:open-theme-assets-dir", async () => {
-  const dir = _resolveAnimationAssetsDir(activeTheme);
-  if (!dir || !fs.existsSync(dir)) {
-    return { status: "error", message: "theme assets directory unavailable" };
-  }
-  const result = await shell.openPath(dir);
-  if (result) return { status: "error", message: result };
-  return { status: "ok", path: dir };
-});
-ipcMain.handle("settings:preview-animation-override", (_event, payload) => _previewAnimationOverride(payload));
 
 // Static metadata for the Agents tab: name, eventSource, capabilities.
 // The renderer uses this (alongside the agents snapshot field) to render one
@@ -1382,6 +1014,7 @@ ipcMain.handle("settings:confirm-disconnect-claude-hooks", async (event) => {
   }
 });
 
+
 ipcMain.handle("settings:list-agents", () => {
   try {
     const { getAllAgents } = require("../agents/registry");
@@ -1395,6 +1028,18 @@ ipcMain.handle("settings:list-agents", () => {
     console.warn("Clawd: settings:list-agents failed:", err && err.message);
     return [];
   }
+});
+ipcMain.handle("session-panel:get-data", () => getSessionPanelPayload());
+ipcMain.on("session-panel:resize", (_event, height) => {
+  if (!sessionPanelWindow || sessionPanelWindow.isDestroyed()) return;
+  const nextHeight = Math.max(220, Math.min(520, Math.round(Number(height) || 320)));
+  const bounds = sessionPanelWindow.getBounds();
+  sessionPanelWindow.setBounds({ ...bounds, height: nextHeight });
+  repositionSessionPanel();
+});
+ipcMain.on("session-panel:focus-session", (_event, sessionId) => {
+  const s = sessions.get(sessionId);
+  if (s && s.sourcePid) focusTerminalWindow(s.sourcePid, s.cwd, s.editor, s.pidChain);
 });
 
 // ── Auto-updater — delegated to src/updater.js ──
@@ -1421,6 +1066,74 @@ const { setupAutoUpdater, checkForUpdates, getUpdateMenuItem, getUpdateMenuLabel
 // already wired up for the controller. The renderer subscribes to
 // settings-changed broadcasts so menu changes and panel changes stay in sync.
 let settingsWindow = null;
+let sessionPanelWindow = null;
+
+function getSessionPanelPayload() {
+  return _state.getSessionPanelData();
+}
+
+function repositionSessionPanel() {
+  if (!sessionPanelWindow || sessionPanelWindow.isDestroyed() || !win || win.isDestroyed()) return;
+  const petBounds = win.getBounds();
+  const panelBounds = sessionPanelWindow.getBounds();
+  const width = panelBounds.width || 360;
+  const height = panelBounds.height || 320;
+  const workArea = getNearestWorkArea(
+    petBounds.x + petBounds.width / 2,
+    petBounds.y + petBounds.height / 2
+  );
+  const centeredX = Math.round(petBounds.x + (petBounds.width - width) / 2);
+  const targetY = Math.round(petBounds.y + petBounds.height - 12);
+  const x = Math.max(workArea.x + 8, Math.min(centeredX, workArea.x + workArea.width - width - 8));
+  const y = Math.max(workArea.y + 8, Math.min(targetY, workArea.y + workArea.height - height - 8));
+  sessionPanelWindow.setBounds({ x, y, width, height });
+}
+
+function ensureSessionPanelWindow() {
+  if (sessionPanelWindow && !sessionPanelWindow.isDestroyed()) return sessionPanelWindow;
+  sessionPanelWindow = new BrowserWindow({
+    width: 360,
+    height: 320,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    skipTaskbar: true,
+    hasShadow: true,
+    alwaysOnTop: true,
+    fullscreenable: false,
+    parent: win,
+    webPreferences: {
+      preload: path.join(__dirname, "preload-session-panel.js"),
+      nodeIntegration: false,
+      contextIsolation: true,
+      backgroundThrottling: false,
+    },
+  });
+  if (isWin) sessionPanelWindow.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+  sessionPanelWindow.loadFile(path.join(__dirname, "session-panel.html"));
+  sessionPanelWindow.on("blur", () => {
+    if (sessionPanelWindow && !sessionPanelWindow.isDestroyed()) sessionPanelWindow.hide();
+  });
+  sessionPanelWindow.on("closed", () => {
+    sessionPanelWindow = null;
+  });
+  return sessionPanelWindow;
+}
+
+function toggleSessionPanel() {
+  const panel = ensureSessionPanelWindow();
+  if (panel.isVisible()) {
+    panel.hide();
+    return;
+  }
+  repositionSessionPanel();
+  panel.show();
+  panel.focus();
+  if (isMac) reapplyMacVisibility();
+}
 
 function getSettingsWindowIcon() {
   // Don't pass an icon on macOS — the system uses the .app bundle icon.
@@ -1502,12 +1215,7 @@ function createWindow() {
   if (isMac) {
     applyDockVisibility();
   }
-  const launchSizingWorkArea = getLaunchSizingWorkArea(
-    prefs,
-    getPrimaryWorkAreaSafe() || SYNTHETIC_WORK_AREA,
-    getNearestWorkArea,
-  );
-  const size = getCurrentPixelSize(launchSizingWorkArea);
+  const size = getCurrentPixelSize();
 
   // Restore saved position, or default to bottom-right of primary display.
   // Prefs file always exists in the new architecture (defaults are hydrated
@@ -1648,6 +1356,7 @@ function createWindow() {
       syncHitWin();
       if (bubbleFollowPet) repositionFloatingBubbles();
       else repositionUpdateBubble();
+      repositionSessionPanel();
     };
     win.on("move", syncFloatingWindows);
     win.on("resize", syncFloatingWindows);
@@ -1738,6 +1447,9 @@ function createWindow() {
   ipcMain.on("show-session-menu", () => {
     popupMenuAt(Menu.buildFromTemplate(buildSessionSubmenu()));
   });
+  ipcMain.on("toggle-session-panel", () => {
+    toggleSessionPanel();
+  });
 
   ipcMain.on("bubble-height", (event, height) => _perm.handleBubbleHeight(event, height));
   ipcMain.on("permission-decide", (event, behavior) => _perm.handleDecide(event, behavior));
@@ -1785,6 +1497,7 @@ function createWindow() {
       win.setBounds({ ...clamped, width: size.width, height: size.height });
       syncHitWin();
       repositionUpdateBubble();
+      repositionSessionPanel();
     }
   });
   screen.on("display-removed", () => {
@@ -1800,10 +1513,12 @@ function createWindow() {
     win.setBounds({ ...clamped, width: size.width, height: size.height });
     syncHitWin();
     repositionUpdateBubble();
+    repositionSessionPanel();
   });
   screen.on("display-added", () => {
     reapplyMacVisibility();
     repositionUpdateBubble();
+    repositionSessionPanel();
   });
 }
 
@@ -1875,69 +1590,37 @@ Object.defineProperties(this || {}, {}); // no-op placeholder
 // Mini state is accessed via _mini getters in ctx objects below
 
 // ── Theme switching ──
-//
-// The `theme` settings effect calls this. MUST throw on failure so the
-// controller rejects the commit — otherwise prefs would record a theme id
-// that can't actually render. Does NOT write `theme` back to prefs; the
-// controller commits after this returns (writing here would infinite-loop).
-function activateTheme(themeId, variantId) {
-  if (!win || win.isDestroyed()) {
-    throw new Error("theme switch requires ready windows");
-  }
-  // Resolve variantId: explicit arg wins; else current per-theme preference; else default.
-  // (Unknown variants lenient-fallback inside loadTheme, so we still commit strict on themeId.)
-  const currentVariantMap = _settingsController.get("themeVariant") || {};
-  const targetVariant = (typeof variantId === "string" && variantId) ? variantId
-    : (currentVariantMap[themeId] || "default");
-  const currentOverrides = _settingsController.get("themeOverrides") || {};
-  const targetOverrideMap = arguments.length >= 3 ? arguments[2] : (currentOverrides[themeId] || null);
-  const targetOverrideSignature = JSON.stringify(targetOverrideMap || {});
+function switchTheme(themeId) {
+  if (!win || win.isDestroyed()) return;
+  if (activeTheme && activeTheme._id === themeId) return;
 
-  // Joint dedup: same theme + same variant → skip reload. Different variant
-  // on same theme MUST run the full reload pipeline (can't hot-patch tiers /
-  // displayHint / geometry safely — see plan-settings-panel-3b-swap.md §6.2).
-  if (
-    activeTheme &&
-    activeTheme._id === themeId &&
-    activeTheme._variantId === targetVariant &&
-    (activeTheme._overrideSignature || "{}") === targetOverrideSignature
-  ) {
-    return { themeId, variantId: activeTheme._variantId };
-  }
-
-  // Strict load first: if it throws, nothing downstream has mutated yet.
-  const newTheme = themeLoader.loadTheme(themeId, {
-    strict: true,
-    variant: targetVariant,
-    overrides: targetOverrideMap,
-  });
-  newTheme._overrideSignature = targetOverrideSignature;
-  if (animationOverridePreviewTimer) {
-    clearTimeout(animationOverridePreviewTimer);
-    animationOverridePreviewTimer = null;
-  }
-
+  // 1. Cleanup timers in all modules
   _state.cleanup();
   _tick.cleanup();
   _mini.cleanup();
-  // ⚠️ Don't clear pendingPermissions — bubbles are independent BrowserWindows
-  // ⚠️ Don't clear sessions — keep active session tracking
-  // ⚠️ Don't clear displayHint — semantic tokens resolve through new theme's map
+  // ⚠️ Don't clear pendingPermissions — permission bubbles are independent BrowserWindows
+  // ��️ Don't clear sessions — keep active session tracking
+  // ��️ Don't clear displayHint — semantic tokens resolve through new theme's map
 
+  // 2. If currently in mini mode and new theme doesn't support mini, exit first
+  const newTheme = themeLoader.loadTheme(themeId);
   if (_mini.getMiniMode() && !newTheme.miniMode.supported) {
     _mini.exitMiniMode();
   }
 
+  // 3. Update active theme
   activeTheme = newTheme;
   _mini.refreshTheme();
   _state.refreshTheme();
   _tick.refreshTheme();
   if (_mini.getMiniMode()) _mini.handleDisplayChange();
 
+  // 4. Reload both windows
   themeReloadInProgress = true;
   win.webContents.reload();
   hitWin.webContents.reload();
 
+  // 5. After both reloads complete, re-sync state with the new theme.
   let ready = 0;
   const onReady = () => {
     if (++ready < 2) return;
@@ -1950,43 +1633,12 @@ function activateTheme(themeId, variantId) {
   win.webContents.once("did-finish-load", onReady);
   hitWin.webContents.once("did-finish-load", onReady);
 
+  // Persist theme choice through the controller so it survives restarts.
+  // flushRuntimeStateToPrefs only captures window bounds + mini state;
+  // user-selected prefs like `theme` must be written explicitly.
+  _settingsController.applyBulk({ theme: themeId });
   flushRuntimeStateToPrefs();
-
-  // Return resolved ids so the caller (setThemeSelection command) can commit
-  // the actually-loaded variantId — handles "author deleted variant" dirty state.
-  return { themeId, variantId: newTheme._variantId };
-}
-
-// Inject theme deps into the settings controller now that activateTheme,
-// themeLoader, and activeTheme are all defined. Uses lazy closures because
-// these references are captured at call time (inside an effect or command).
-function _deferredActivateTheme(themeId, variantId, overrideMap) {
-  return activateTheme(themeId, variantId, overrideMap);
-}
-function _deferredGetThemeInfo(themeId) {
-  const all = themeLoader.discoverThemes();
-  const entry = all.find((t) => t.id === themeId);
-  if (!entry) return null;
-  return {
-    builtin: !!entry.builtin,
-    active: activeTheme && activeTheme._id === themeId,
-  };
-}
-function _deferredRemoveThemeDir(themeId) {
-  const userThemesDir = themeLoader.ensureUserThemesDir();
-  if (!userThemesDir) throw new Error("user themes directory unavailable");
-  // Re-verify path containment as a defensive check — settings-actions
-  // already rejects built-in / active themes, and ensureUserThemesDir only
-  // ever returns the userData subtree, but belt + suspenders on an fs.rm
-  // call is worth the two lines.
-  const target = path.resolve(path.join(userThemesDir, themeId));
-  const root = path.resolve(userThemesDir);
-  if (!target.startsWith(root + path.sep)) {
-    throw new Error(`theme path escapes user themes directory: ${themeId}`);
-  }
-  fs.rmSync(target, { recursive: true, force: true });
-  // Rebuild menus so Theme submenu reflects the deleted entry.
-  try { rebuildAllMenus(); } catch { /* best-effort */ }
+  rebuildAllMenus();
 }
 
 // ── Auto-install VS Code / Cursor terminal-focus extension ──
@@ -2069,7 +1721,6 @@ if (!gotTheLock) {
 
     permDebugLog = path.join(app.getPath("userData"), "permission-debug.log");
     updateDebugLog = path.join(app.getPath("userData"), "update-debug.log");
-    sessionDebugLog = path.join(app.getPath("userData"), "session-debug.log");
     createWindow();
 
     // Register global shortcut for toggling pet visibility
@@ -2084,8 +1735,16 @@ if (!gotTheLock) {
       const CodexLogMonitor = require("../agents/codex-log-monitor");
       const codexAgent = require("../agents/codex");
       _codexMonitor = new CodexLogMonitor(codexAgent, (sid, state, event, extra) => {
+        if (extra && extra.metaOnly) {
+          _state.updateSessionMeta(sid, {
+            cwd: extra.cwd,
+            agentId: "codex",
+            sessionTitle: extra.sessionTitle,
+          });
+          return;
+        }
         if (state === "codex-permission") {
-          updateSession(sid, "notification", event, null, extra.cwd, null, null, null, "codex");
+          updateSession(sid, "notification", event, null, extra.cwd, null, null, null, "codex", null, null, null, extra.sessionTitle);
           showCodexNotifyBubble({
             sessionId: sid,
             command: extra.permissionDetail?.command || "",
@@ -2093,7 +1752,7 @@ if (!gotTheLock) {
           return;
         }
         clearCodexNotifyBubbles(sid);
-        updateSession(sid, state, event, null, extra.cwd, null, null, null, "codex");
+        updateSession(sid, state, event, null, extra.cwd, null, null, null, "codex", null, null, null, extra.sessionTitle);
       });
       if (_isAgentEnabled(_settingsController.getSnapshot(), "codex")) {
         _codexMonitor.start();
