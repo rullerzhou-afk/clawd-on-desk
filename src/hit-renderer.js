@@ -149,16 +149,15 @@ function handleClick(clientX) {
   }
   if (isReacting || isDragReacting) return;
 
-  // Non-idle: focus terminal, no reaction
+  // Non-idle: single-click opens the session panel, no reaction
   if (currentState !== "idle") {
-    window.hitAPI.focusTerminal();
+    window.hitAPI.toggleSessionPanel();
     return;
   }
 
   clickCount++;
   if (clickCount === 1) {
     firstClickDir = clientX < area.offsetWidth / 2 ? "left" : "right";
-    window.hitAPI.focusTerminal();
   }
 
   if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
@@ -191,6 +190,7 @@ function handleClick(clientX) {
     }, CLICK_WINDOW_MS);
   } else {
     clickTimer = setTimeout(() => {
+      window.hitAPI.toggleSessionPanel();
       clickTimer = null;
       clickCount = 0;
       firstClickDir = null;
