@@ -11,7 +11,7 @@ contextBridge.exposeInMainWorld("hitAPI", {
   onThemeConfig: (cb) => ipcRenderer.on("theme-config", (_, cfg) => cb(cfg)),
   // Sends → main
   dragLock: (locked) => ipcRenderer.send("drag-lock", locked),
-  moveWindowBy: (dx, dy) => ipcRenderer.send("move-window-by", dx, dy),
+  dragMove: () => ipcRenderer.send("drag-move"),
   dragEnd: () => ipcRenderer.send("drag-end"),
   showContextMenu: () => ipcRenderer.send("show-context-menu"),
   focusTerminal: () => ipcRenderer.send("focus-terminal"),

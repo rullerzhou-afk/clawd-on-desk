@@ -6,6 +6,11 @@ const { applyStationaryCollectionBehavior } = require("./mac-window");
 const hitGeometry = require("./hit-geometry");
 const animationCycle = require("./animation-cycle");
 const { findNearestWorkArea, computeLooseClamp, SYNTHETIC_WORK_AREA } = require("./work-area");
+const {
+  createDragSnapshot,
+  computeAnchoredDragBounds,
+  computeFinalDragBounds,
+} = require("./drag-position");
 const { getLaunchSizingWorkArea, getProportionalPixelSize } = require("./size-utils");
 
 // ── Autoplay policy: allow sound playback without user gesture ──
@@ -457,10 +462,47 @@ function syncHitWin() {
 
 let mouseOverPet = false;
 let dragLocked = false;
+let dragSnapshot = null;
 let menuOpen = false;
 let idlePaused = false;
 let forceEyeResend = false;
 let themeReloadInProgress = false;
+
+// Keep drag math in Electron's main-process DIP coordinate space. Renderer
+// PointerEvent.screenX/Y can be scaled differently on high-DPI displays.
+function beginDragSnapshot() {
+  if (!win || win.isDestroyed()) {
+    dragSnapshot = null;
+    return;
+  }
+  dragSnapshot = createDragSnapshot(
+    screen.getCursorScreenPoint(),
+    win.getBounds(),
+    getCurrentPixelSize()
+  );
+}
+
+function clearDragSnapshot() {
+  dragSnapshot = null;
+}
+
+function moveWindowForDrag() {
+  if (_mini.getMiniMode() || _mini.getMiniTransitioning()) return;
+  if (!win || win.isDestroyed()) return;
+  if (!dragSnapshot) beginDragSnapshot();
+  if (!dragSnapshot) return;
+
+  const bounds = computeAnchoredDragBounds(
+    dragSnapshot,
+    screen.getCursorScreenPoint(),
+    looseClampToDisplays
+  );
+  if (!bounds) return;
+
+  win.setBounds(bounds);
+  syncHitWin();
+  if (bubbleFollowPet) repositionFloatingBubbles();
+}
 
 // ── Mini Mode — delegated to src/mini.js ──
 // Initialized after state module (needs applyState, resolveDisplayState, etc.)
@@ -1649,18 +1691,7 @@ function createWindow() {
 
   ipcMain.on("show-context-menu", showPetContextMenu);
 
-  ipcMain.on("move-window-by", (event, dx, dy) => {
-    if (_mini.getMiniMode() || _mini.getMiniTransitioning()) return;
-    const { x, y } = win.getBounds();
-    const size = getCurrentPixelSize();
-    // During drag: allow free movement across screens, only prevent
-    // the pet from going completely off-screen (keep 25% visible).
-    const newX = x + dx, newY = y + dy;
-    const looseClamped = looseClampToDisplays(newX, newY, size.width, size.height);
-    win.setBounds({ ...looseClamped, width: size.width, height: size.height });
-    syncHitWin();
-    if (bubbleFollowPet) repositionFloatingBubbles();
-  });
+  ipcMain.on("drag-move", () => moveWindowForDrag());
 
   ipcMain.on("pause-cursor-polling", () => { idlePaused = true; });
   ipcMain.on("resume-from-reaction", () => {
@@ -1671,7 +1702,12 @@ function createWindow() {
 
   ipcMain.on("drag-lock", (event, locked) => {
     dragLocked = !!locked;
-    if (locked) mouseOverPet = true;
+    if (locked) {
+      mouseOverPet = true;
+      beginDragSnapshot();
+    } else {
+      clearDragSnapshot();
+    }
   });
 
   // Reaction relay: hitWin → main → renderWin
@@ -1682,18 +1718,23 @@ function createWindow() {
   });
 
   ipcMain.on("drag-end", () => {
-    if (!_mini.getMiniMode() && !_mini.getMiniTransitioning()) {
-      checkMiniModeSnap();
-      // After drag, clamp to the nearest screen (loose clamp during drag allows cross-screen).
-      // In proportional mode, also recalculate size for the landing display.
-      if (win && !win.isDestroyed()) {
-        const size = getCurrentPixelSize();
-        const { x, y } = win.getBounds();
-        const clamped = clampToScreen(x, y, size.width, size.height);
-        win.setBounds({ ...clamped, width: size.width, height: size.height });
-        syncHitWin();
-        repositionUpdateBubble();
+    try {
+      if (!_mini.getMiniMode() && !_mini.getMiniTransitioning()) {
+        checkMiniModeSnap();
+        // After drag, clamp to the nearest screen (loose clamp during drag allows cross-screen).
+        // In proportional mode, also recalculate size for the landing display.
+        if (win && !win.isDestroyed()) {
+          const size = getCurrentPixelSize();
+          const { x, y } = win.getBounds();
+          const clamped = computeFinalDragBounds({ x, y }, size, clampToScreen);
+          if (clamped) win.setBounds(clamped);
+          syncHitWin();
+          repositionUpdateBubble();
+        }
       }
+    } finally {
+      dragLocked = false;
+      clearDragSnapshot();
     }
   });
 
