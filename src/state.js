@@ -301,7 +301,8 @@ function applyState(state, svgOverride) {
     if (state === "notification") return applyState("mini-alert");
     if (state === "attention") return applyState("mini-happy");
     if (state === "working" || state === "thinking" || state === "juggling") {
-      return applyState("mini-working");
+      if (hasOwnVisualFiles("mini-working")) return applyState("mini-working");
+      return;
     }
     if ((AUTO_RETURN_MS[currentState] || currentState === "mini-working") && !autoReturnTimer) {
       return applyState(ctx.mouseOverPet ? "mini-peek" : "mini-idle");

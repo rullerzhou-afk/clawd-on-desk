@@ -314,6 +314,38 @@ describe("visual fallback resolution", () => {
   });
 });
 
+describe("mini mode working routing", () => {
+  let api, ctx;
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  });
+
+  afterEach(() => {
+    if (api) api.cleanup();
+    mock.timers.reset();
+  });
+
+  it("theme defines mini-working → working routes to mini-working", () => {
+    ctx = makeCtx({ miniMode: true });
+    api = require("../src/state")(ctx);
+    api.applyState("mini-idle");
+    api.applyState("working");
+    assert.strictEqual(api.getCurrentState(), "mini-working");
+  });
+
+  it("theme lacks mini-working → working stays on current mini state", () => {
+    const theme = cloneTheme(_defaultTheme);
+    delete theme.miniMode.states["mini-working"];
+    delete theme._stateBindings["mini-working"];
+    ctx = makeCtx({ miniMode: true, theme });
+    api = require("../src/state")(ctx);
+    api.applyState("mini-idle");
+    api.applyState("working");
+    assert.strictEqual(api.getCurrentState(), "mini-idle");
+  });
+});
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Group 4: sleep sequence
 // ═════════════════════════════════════════════════════════════════════════════
