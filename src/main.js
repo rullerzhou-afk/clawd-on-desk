@@ -6,7 +6,7 @@ const { applyStationaryCollectionBehavior } = require("./mac-window");
 const hitGeometry = require("./hit-geometry");
 const animationCycle = require("./animation-cycle");
 const { findNearestWorkArea, computeLooseClamp, SYNTHETIC_WORK_AREA } = require("./work-area");
-const { getThemeMarginBox, computeStableVisibleContentMargins } = require("./visible-margins");
+const { computeRectMargins } = require("./visible-margins");
 const {
   createDragSnapshot,
   computeAnchoredDragBounds,
@@ -268,7 +268,6 @@ function getObjRect(bounds) {
 let win;
 let hitWin;  // input window — small opaque rect over hitbox, receives all pointer events
 let viewportOffsetY = 0;
-const themeMarginEnvelopeCache = new Map();
 let tray = null;
 let contextMenuOwner = null;
 // Mirror of _settingsController.get("size") — initialized from disk, kept in
@@ -740,22 +739,7 @@ function getHitRectScreen(bounds) {
 
 function getVisibleContentMargins(bounds) {
   if (!bounds || !activeTheme) return { top: 0, bottom: 0 };
-  const box = getThemeMarginBox(activeTheme);
-  if (!box) return { top: 0, bottom: 0 };
-
-  const cacheKey = [
-    activeTheme._id || "",
-    activeTheme._variantId || "",
-    bounds.width,
-    bounds.height,
-    JSON.stringify(box),
-  ].join("|");
-  const cached = themeMarginEnvelopeCache.get(cacheKey);
-  if (cached) return cached;
-
-  const margins = computeStableVisibleContentMargins(activeTheme, bounds, { box });
-  themeMarginEnvelopeCache.set(cacheKey, margins);
-  return margins;
+  return computeRectMargins(bounds, getHitRectScreen(bounds));
 }
 
 // ── Main tick — delegated to src/tick.js ──
@@ -2449,7 +2433,7 @@ function looseClampPetToDisplays(x, y, w, h) {
   return computeLooseClamp(screen.getAllDisplays(), getPrimaryWorkAreaSafe(), x, y, w, h, {
     marginX: Math.round(w * 0.25),
     marginTop: Math.max(Math.round(h * 0.25), margins.top),
-    marginBottom: Math.round(h * 0.25),
+    marginBottom: margins.bottom,
   });
 }
 

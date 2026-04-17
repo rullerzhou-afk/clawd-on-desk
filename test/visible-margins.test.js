@@ -5,6 +5,7 @@ const path = require("path");
 const themeLoader = require("../src/theme-loader");
 const hitGeometry = require("../src/hit-geometry");
 const {
+  computeRectMargins,
   getThemeMarginBox,
   collectThemeEnvelopeFiles,
   computeStableVisibleContentMargins,
@@ -66,5 +67,15 @@ describe("visible margin envelopes", () => {
     });
     assert.ok(stable.top < Math.round(idleRect.top - bounds.y));
     assert.ok(stable.bottom <= Math.round(bounds.y + bounds.height - idleRect.bottom));
+  });
+
+  it("can derive margins from the current displayed drag-state hit rect", () => {
+    const clawd = themeLoader.loadTheme("clawd");
+    const dragRect = hitGeometry.getHitRectScreen(clawd, bounds, null, "clawd-react-drag.svg", clawd.hitBoxes.default);
+
+    assert.deepStrictEqual(computeRectMargins(bounds, dragRect), {
+      top: 169,
+      bottom: 14,
+    });
   });
 });

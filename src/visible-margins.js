@@ -7,6 +7,14 @@ function getThemeMarginBox(theme) {
   return theme.layout.marginBox || theme.layout.contentBox || null;
 }
 
+function computeRectMargins(bounds, rect) {
+  if (!bounds || !rect) return { top: 0, bottom: 0 };
+  return {
+    top: Math.max(0, Math.round(rect.top - bounds.y)),
+    bottom: Math.max(0, Math.round(bounds.y + bounds.height - rect.bottom)),
+  };
+}
+
 function collectThemeEnvelopeFiles(theme) {
   if (!theme) return [];
   if (Array.isArray(theme._marginEnvelopeFiles)) return theme._marginEnvelopeFiles;
@@ -56,8 +64,9 @@ function computeStableVisibleContentMargins(theme, bounds, options = {}) {
   for (const file of files) {
     const content = hitGeometry.getContentRectScreen(theme, bounds, null, file, { box });
     if (!content) continue;
-    top = Math.min(top, Math.max(0, Math.round(content.top - bounds.y)));
-    bottom = Math.min(bottom, Math.max(0, Math.round(bounds.y + bounds.height - content.bottom)));
+    const margins = computeRectMargins(bounds, content);
+    top = Math.min(top, margins.top);
+    bottom = Math.min(bottom, margins.bottom);
   }
 
   return {
@@ -67,6 +76,7 @@ function computeStableVisibleContentMargins(theme, bounds, options = {}) {
 }
 
 module.exports = {
+  computeRectMargins,
   getThemeMarginBox,
   collectThemeEnvelopeFiles,
   computeStableVisibleContentMargins,
