@@ -487,9 +487,9 @@ function clearDragSnapshot() {
 }
 
 function moveWindowForDrag() {
+  if (!dragLocked) return;
   if (_mini.getMiniMode() || _mini.getMiniTransitioning()) return;
   if (!win || win.isDestroyed()) return;
-  if (!dragSnapshot) beginDragSnapshot();
   if (!dragSnapshot) return;
 
   const bounds = computeAnchoredDragBounds(

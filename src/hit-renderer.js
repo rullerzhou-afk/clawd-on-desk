@@ -36,6 +36,7 @@ window.hitAPI.onStateSync((data) => {
 let isDragging = false;
 let didDrag = false;
 let mouseDownX, mouseDownY;
+let dragMoveRAF = null;
 const DRAG_THRESHOLD = 3;
 
 // --- Reaction state (tracked here to gate input) ---
@@ -48,6 +49,21 @@ window.hitAPI.onCancelReaction(() => {
   isReacting = false;
   isDragReacting = false;
 });
+
+function queueDragMove() {
+  if (dragMoveRAF !== null) return;
+  dragMoveRAF = requestAnimationFrame(() => {
+    dragMoveRAF = null;
+    if (!isDragging) return;
+    window.hitAPI.dragMove();
+  });
+}
+
+function clearQueuedDragMove() {
+  if (dragMoveRAF === null) return;
+  cancelAnimationFrame(dragMoveRAF);
+  dragMoveRAF = null;
+}
 
 // --- Pointer handlers ---
 area.addEventListener("pointerdown", (e) => {
@@ -73,12 +89,13 @@ document.addEventListener("pointermove", (e) => {
         startDragReaction();
       }
     }
-    window.hitAPI.dragMove();
+    queueDragMove();
   }
 });
 
 function stopDrag() {
   if (!isDragging) return;
+  clearQueuedDragMove();
   isDragging = false;
   window.hitAPI.dragLock(false);
   area.classList.remove("dragging");
