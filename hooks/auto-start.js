@@ -58,12 +58,22 @@ function launchApp() {
     } else {
       // Source / development mode
       const projectDir = path.resolve(__dirname, "..");
-      const npm = isWin ? "npm.cmd" : "npm";
-      spawn(npm, ["start"], {
-        cwd: projectDir,
-        detached: true,
-        stdio: "ignore",
-      }).unref();
+      if (isWin) {
+        // On Windows, .cmd files cannot be spawned directly with detached:true
+        // (EINVAL). Wrap with cmd.exe /c instead.
+        spawn("cmd.exe", ["/c", "npm.cmd", "start"], {
+          cwd: projectDir,
+          detached: true,
+          stdio: "ignore",
+          windowsHide: true,
+        }).unref();
+      } else {
+        spawn("npm", ["start"], {
+          cwd: projectDir,
+          detached: true,
+          stdio: "ignore",
+        }).unref();
+      }
     }
   } catch (err) {
     process.stderr.write(`clawd auto-start: ${err.message}\n`);
