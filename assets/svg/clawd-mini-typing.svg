@@ -15,12 +15,12 @@
       }
 
       .arm-l-type {
-        transform-origin: 2px 10px;
-        animation: type-l 0.4s infinite ease-in-out;
+        transform-origin: 3px 10px;
+        animation: type-l 0.15s infinite ease-in-out;
       }
       .arm-r-type {
-        transform-origin: 13px 10px;
-        animation: type-r 0.35s infinite ease-in-out;
+        transform-origin: 12px 10px;
+        animation: type-r 0.12s infinite ease-in-out;
       }
 
       /* Floating data packets */
@@ -42,26 +42,28 @@
       }
 
       @keyframes read-code {
-        0%, 24%  { transform: translate(-2px, 0); }
-        25%, 54% { transform: translate(-1px, 0); }
-        55%, 84% { transform: translate(0px, 0); }
+        0%, 14%   { transform: translate(-2px, 0); }
+        15%, 29%  { transform: translate(-1.5px, 0); }
+        30%, 44%  { transform: translate(-1px, 0); }
+        45%, 59%  { transform: translate(-0.5px, 0); }
+        60%, 84%  { transform: translate(0px, 0); }
         85%, 100% { transform: translate(-2px, 0); }
       }
 
       @keyframes type-l {
-        0%   { transform: rotate(70deg); }
-        25%  { transform: rotate(110deg); }
-        50%  { transform: rotate(80deg); }
-        75%  { transform: rotate(100deg); }
-        100% { transform: rotate(70deg); }
+        0%   { transform: rotate(-10deg); }
+        25%  { transform: rotate(15deg); }
+        50%  { transform: rotate(-5deg); }
+        75%  { transform: rotate(10deg); }
+        100% { transform: rotate(-10deg); }
       }
 
       @keyframes type-r {
-        0%   { transform: rotate(-80deg); }
-        25%  { transform: rotate(-100deg); }
-        50%  { transform: rotate(-70deg); }
-        75%  { transform: rotate(-110deg); }
-        100% { transform: rotate(-80deg); }
+        0%   { transform: rotate(10deg); }
+        25%  { transform: rotate(-15deg); }
+        50%  { transform: rotate(5deg); }
+        75%  { transform: rotate(-10deg); }
+        100% { transform: rotate(10deg); }
       }
 
       .logo-glow {
@@ -109,12 +111,12 @@
 
         <!-- Left Arm — typing -->
         <g class="arm-l-type">
-          <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>
+          <rect x="0" y="9" width="3" height="2" fill="#DE886D"/>
         </g>
 
         <!-- Right Arm — typing -->
         <g class="arm-r-type">
-          <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+          <rect x="12" y="9" width="3" height="2" fill="#DE886D"/>
         </g>
 
         <!-- Eyes: JS translate wrapper + CSS blink -->
