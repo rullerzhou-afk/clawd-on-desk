@@ -4,6 +4,13 @@ const { describe, it } = require("node:test");
 const pkg = require("../package.json");
 
 describe("package build config", () => {
+  it("ships project window icons in packaged builds", () => {
+    assert.ok(
+      pkg.build.files.includes("assets/icons/**/*"),
+      "build.files should include assets/icons/**/*"
+    );
+  });
+
   it("ships agent session icons in packaged builds", () => {
     assert.ok(
       pkg.build.files.includes("assets/icons/agents/**/*"),

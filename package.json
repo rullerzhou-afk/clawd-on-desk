@@ -86,6 +86,7 @@
     },
     "files": [
       "src/**/*",
+      "assets/icons/**/*",
       "assets/icons/agents/**/*",
       "assets/svg/**/*",
       "assets/sounds/**/*",

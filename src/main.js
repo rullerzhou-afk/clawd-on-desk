@@ -3,6 +3,10 @@ const path = require("path");
 const fs = require("fs");
 const { pathToFileURL } = require("url");
 const { applyStationaryCollectionBehavior } = require("./mac-window");
+const {
+  applyWindowsAppUserModelId,
+  getSettingsWindowIconPath,
+} = require("./settings-window-icon");
 const hitGeometry = require("./hit-geometry");
 const animationCycle = require("./animation-cycle");
 const { findNearestWorkArea, computeLooseClamp, SYNTHETIC_WORK_AREA } = require("./work-area");
@@ -28,6 +32,8 @@ const isMac = process.platform === "darwin";
 const isLinux = process.platform === "linux";
 const isWin = process.platform === "win32";
 const LINUX_WINDOW_TYPE = "toolbar";
+
+applyWindowsAppUserModelId(app, process.platform);
 
 
 // ── Windows: AllowSetForegroundWindow via FFI ──
@@ -2300,20 +2306,13 @@ function startShortcutRecording(actionId) {
 }
 
 function getSettingsWindowIcon() {
-  // Don't pass an icon on macOS — the system uses the .app bundle icon.
-  if (isMac) return undefined;
-  if (isWin) {
-    // Packaged build: extraResources puts icon.ico at process.resourcesPath.
-    // Dev: read it from assets/. The files[] glob in package.json doesn't
-    // include assets/icon.ico, so don't try to load it from __dirname/.. in
-    // a packaged build — that path doesn't exist inside app.asar.
-    return app.isPackaged
-      ? path.join(process.resourcesPath, "icon.ico")
-      : path.join(__dirname, "..", "assets", "icon.ico");
-  }
-  // Linux: build config points at assets/icons/, but those aren't shipped in
-  // files[]. Skip the icon — the .desktop file (deb/AppImage) provides one.
-  return undefined;
+  return getSettingsWindowIconPath({
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    appDir: path.join(__dirname, ".."),
+    existsSync: fs.existsSync,
+  });
 }
 
 function openSettingsWindow() {
