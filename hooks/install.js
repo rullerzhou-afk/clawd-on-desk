@@ -23,8 +23,13 @@ const CORE_HOOKS = [
   "Notification",
   // PermissionRequest: handled by HTTP_HOOKS (blocking), not command hook
   "Elicitation",
-  "WorktreeCreate",
 ];
+
+// Events we used to register but shouldn't anymore. WorktreeCreate is a
+// work-performing hook (must print the new worktree path to stdout) — our
+// notification-only handler broke `claude -w` with "no successful output".
+// Reported by @IsuminI in issue #127.
+const DEPRECATED_CORE_HOOKS = ["WorktreeCreate"];
 
 // Hooks that require a minimum Claude Code version
 const VERSIONED_HOOKS = [
@@ -575,6 +580,21 @@ function registerHooks(options = {}) {
   const reconcileResult = reconcileVersionedHooks(settings, supportedVersionedEvents, versionInfo);
   removed += reconcileResult.removed;
   changed = changed || reconcileResult.changed;
+
+  // Remove deprecated hooks we used to register. Match by MARKER so user-authored
+  // hooks for the same event are preserved untouched. See issue #127.
+  for (const event of DEPRECATED_CORE_HOOKS) {
+    if (!Array.isArray(settings.hooks[event])) continue;
+    const result = removeMatchingCommandHooks(
+      settings.hooks[event],
+      (command) => command.includes(MARKER)
+    );
+    if (!result.changed) continue;
+    removed += result.removed;
+    changed = true;
+    if (result.entries.length > 0) settings.hooks[event] = result.entries;
+    else delete settings.hooks[event];
+  }
 
   // Build the full hook list: core + version-compatible hooks
   const hookEvents = [...CORE_HOOKS];

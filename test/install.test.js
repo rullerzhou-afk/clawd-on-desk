@@ -546,6 +546,78 @@ describe("Hook installer version compatibility", () => {
   });
 });
 
+describe("Hook installer deprecated hook cleanup", () => {
+  it("does not register WorktreeCreate on fresh install (issue #127)", () => {
+    const settingsPath = makeTempSettings({});
+    registerHooks({
+      silent: true,
+      settingsPath,
+      claudeVersionInfo: { version: "2.1.112", source: "test", status: "known" },
+    });
+
+    const settings = readSettings(settingsPath);
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(settings.hooks, "WorktreeCreate"),
+      "WorktreeCreate should not be registered"
+    );
+  });
+
+  it("removes stale Clawd WorktreeCreate hook while preserving user-authored entries", () => {
+    const settingsPath = makeTempSettings({
+      hooks: {
+        WorktreeCreate: [
+          {
+            matcher: "",
+            hooks: [{ type: "command", command: 'node "/tmp/clawd-hook.js" WorktreeCreate' }],
+          },
+          {
+            matcher: "",
+            hooks: [{ type: "command", command: 'node "/tmp/user-worktree.js" WorktreeCreate' }],
+          },
+        ],
+      },
+    });
+
+    const result = registerHooks({
+      silent: true,
+      settingsPath,
+      claudeVersionInfo: { version: "2.1.112", source: "test", status: "known" },
+    });
+
+    const settings = readSettings(settingsPath);
+    assert.ok(Array.isArray(settings.hooks.WorktreeCreate), "user entry should be preserved");
+    assert.strictEqual(settings.hooks.WorktreeCreate.length, 1);
+    assert.strictEqual(
+      settings.hooks.WorktreeCreate[0].hooks[0].command,
+      'node "/tmp/user-worktree.js" WorktreeCreate'
+    );
+    assert.strictEqual(getClawdCommands(settings, "WorktreeCreate").length, 0);
+    assert.ok(result.removed >= 1);
+  });
+
+  it("deletes WorktreeCreate key when the only entry was the Clawd hook", () => {
+    const settingsPath = makeTempSettings({
+      hooks: {
+        WorktreeCreate: [
+          {
+            matcher: "",
+            hooks: [{ type: "command", command: 'node "/tmp/clawd-hook.js" WorktreeCreate' }],
+          },
+        ],
+      },
+    });
+
+    registerHooks({
+      silent: true,
+      settingsPath,
+      claudeVersionInfo: { version: "2.1.112", source: "test", status: "known" },
+    });
+
+    const settings = readSettings(settingsPath);
+    assert.ok(!Object.prototype.hasOwnProperty.call(settings.hooks, "WorktreeCreate"));
+  });
+});
+
 describe("Hook installer unregisterHooks", () => {
   it("removes Clawd command hooks, HTTP hook, and auto-start while preserving third-party hooks", () => {
     const settingsPath = makeTempSettings({
