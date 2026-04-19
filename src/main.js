@@ -7,6 +7,9 @@ const {
   applyWindowsAppUserModelId,
   getSettingsWindowIconPath,
 } = require("./settings-window-icon");
+const {
+  createSettingsSizePreviewSession,
+} = require("./settings-size-preview-session");
 const hitGeometry = require("./hit-geometry");
 const animationCycle = require("./animation-cycle");
 const { findNearestWorkArea, computeLooseClamp, getDisplayInsets, SYNTHETIC_WORK_AREA } = require("./work-area");
@@ -301,6 +304,7 @@ let viewportOffsetY = 0;
 const themeMarginEnvelopeCache = new Map();
 let tray = null;
 let contextMenuOwner = null;
+let settingsSizePreviewSyncFrozen = false;
 // Mirror of _settingsController.get("size") — initialized from disk, kept in
 // sync by the settings subscriber. The legacy S/M/L → P:N migration runs
 // inside createWindow() because it needs the screen API.
@@ -319,9 +323,9 @@ function getProportionalRatio(size) {
   return parseFloat((size || currentSize).slice(2)) || 10;
 }
 
-function getCurrentPixelSize(overrideWa) {
-  if (!isProportionalMode()) return SIZES[currentSize] || SIZES.S;
-  const ratio = getProportionalRatio();
+function getPixelSizeFor(sizeKey, overrideWa) {
+  if (!isProportionalMode(sizeKey)) return SIZES[sizeKey] || SIZES.S;
+  const ratio = getProportionalRatio(sizeKey);
   let wa = overrideWa;
   if (!wa && win && !win.isDestroyed()) {
     const { x, y, width, height } = getPetWindowBounds();
@@ -329,6 +333,11 @@ function getCurrentPixelSize(overrideWa) {
   }
   if (!wa) wa = getPrimaryWorkAreaSafe() || SYNTHETIC_WORK_AREA;
   return getProportionalPixelSize(ratio, wa);
+}
+
+function getCurrentPixelSize(overrideWa) {
+  if (!isProportionalMode()) return SIZES[currentSize] || SIZES.S;
+  return getPixelSizeFor(currentSize, overrideWa);
 }
 let contextMenu;
 let doNotDisturb = false;
@@ -1063,6 +1072,7 @@ const _menuCtx = {
   getPetWindowBounds,
   applyPetWindowBounds,
   getCurrentPixelSize,
+  getPixelSizeFor,
   isProportionalMode,
   PROPORTIONAL_RATIOS,
   getHookServerPort: () => getHookServerPort(),
@@ -1851,6 +1861,19 @@ ipcMain.handle("settings:update", (_event, payload) => {
   }
   return _settingsController.applyUpdate(payload.key, payload.value);
 });
+ipcMain.handle("settings:begin-size-preview", () => settingsSizePreviewSession.begin());
+ipcMain.handle("settings:preview-size", (_event, value) => {
+  if (!isValidSizePreviewKey(value)) {
+    return { status: "error", message: `invalid preview size "${value}"` };
+  }
+  return settingsSizePreviewSession.preview(value).then(() => ({ status: "ok" }));
+});
+ipcMain.handle("settings:end-size-preview", (_event, value) => {
+  if (value !== null && value !== undefined && !isValidSizePreviewKey(value)) {
+    return { status: "error", message: `invalid preview size "${value}"` };
+  }
+  return settingsSizePreviewSession.end(value || null);
+});
 ipcMain.handle("settings:command", async (_event, payload) => {
   if (!payload || typeof payload !== "object") {
     return { status: "error", message: "settings:command payload must be { action, payload }" };
@@ -2217,6 +2240,76 @@ ipcMain.handle("settings:open-external", async (_event, url) => {
 // settings-changed broadcasts so menu changes and panel changes stay in sync.
 let settingsWindow = null;
 let settingsShortcutRecording = null;
+const SIZE_PREVIEW_KEY_RE = /^P:\d+(?:\.\d+)?$/;
+
+function isValidSizePreviewKey(value) {
+  return typeof value === "string" && SIZE_PREVIEW_KEY_RE.test(value);
+}
+
+function beginSettingsSizePreviewProtection() {
+  settingsSizePreviewSyncFrozen = true;
+  if (!isWin) return;
+  if (
+    settingsWindow
+    && !settingsWindow.isDestroyed()
+    && typeof settingsWindow.setAlwaysOnTop === "function"
+  ) {
+    settingsWindow.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+    if (typeof settingsWindow.moveTop === "function") settingsWindow.moveTop();
+  }
+  if (
+    hitWin
+    && !hitWin.isDestroyed()
+    && typeof hitWin.setIgnoreMouseEvents === "function"
+  ) {
+    hitWin.setIgnoreMouseEvents(true);
+  }
+}
+
+function endSettingsSizePreviewProtection() {
+  settingsSizePreviewSyncFrozen = false;
+  if (!isWin) return;
+  if (
+    settingsWindow
+    && !settingsWindow.isDestroyed()
+    && typeof settingsWindow.setAlwaysOnTop === "function"
+  ) {
+    settingsWindow.setAlwaysOnTop(false);
+  }
+  if (
+    hitWin
+    && !hitWin.isDestroyed()
+    && typeof hitWin.setIgnoreMouseEvents === "function"
+  ) {
+    hitWin.setIgnoreMouseEvents(false);
+    hitWin.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+  }
+  reassertWinTopmost();
+  scheduleHwndRecovery();
+}
+
+const settingsSizePreviewSession = createSettingsSizePreviewSession({
+  beginProtection: async () => {
+    beginSettingsSizePreviewProtection();
+  },
+  endProtection: async () => {
+    endSettingsSizePreviewProtection();
+  },
+  applyPreview: async (sizeKey) => {
+    if (!isValidSizePreviewKey(sizeKey)) {
+      throw new Error(`invalid preview size "${sizeKey}"`);
+    }
+    if (_menu && typeof _menu.resizeWindow === "function") {
+      _menu.resizeWindow(sizeKey, { mode: "preview" });
+    }
+  },
+  commitFinal: async (sizeKey) => {
+    if (!isValidSizePreviewKey(sizeKey)) {
+      return { status: "error", message: `invalid preview size "${sizeKey}"` };
+    }
+    return _settingsController.applyCommand("resizePet", sizeKey);
+  },
+});
 
 function stopShortcutRecording() {
   if (!settingsShortcutRecording) return;
@@ -2357,6 +2450,7 @@ function openSettingsWindow() {
   });
   settingsWindow.on("closed", () => {
     stopShortcutRecording();
+    void settingsSizePreviewSession.cleanup();
     settingsWindow = null;
   });
 }
@@ -2529,6 +2623,7 @@ function createWindow() {
 
     // Event-level safety net for position sync
     const syncFloatingWindows = () => {
+      if (settingsSizePreviewSyncFrozen) return;
       syncHitWin();
       repositionFloatingBubbles();
     };
@@ -3098,6 +3193,7 @@ if (!gotTheLock) {
     isQuitting = true;
     flushRuntimeStateToPrefs();
     globalShortcut.unregisterAll();
+    void settingsSizePreviewSession.cleanup();
     _perm.cleanup();
     _server.cleanup();
     _updateBubble.cleanup();

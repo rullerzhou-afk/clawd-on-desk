@@ -12,6 +12,21 @@
 // UI layer so switches can animate immediately and slider drags don't get
 // interrupted by high-frequency size broadcasts.
 
+const {
+  SIZE_UI_MIN,
+  SIZE_UI_MAX,
+  SIZE_TICK_VALUES,
+  uiSizeToPrefs,
+  prefsSizeToUi,
+  clampSizeUi,
+  sizeUiToPct,
+  createSizeSliderController,
+} = globalThis.ClawdSettingsSizeSlider || {};
+
+if (!createSizeSliderController) {
+  throw new Error("settings-size-slider.js failed to load before settings-renderer.js");
+}
+
 // ── i18n (mirror src/i18n.js — bubbles can't require electron modules) ──
 const STRINGS = {
   en: {
@@ -594,11 +609,6 @@ let shortcutRecordingError = "";
 let shortcutRecordingPartial = [];
 let nextTransientUiSeq = 1;
 
-const SIZE_PREFS_MAX = 30;
-const SIZE_UI_MIN = 1;
-const SIZE_UI_MAX = 100;
-const SIZE_TICK_VALUES = [25, 50, 75, 100];
-const SIZE_THROTTLE_MS = 80;
 const GENERAL_IN_PLACE_KEYS = new Set([
   "size",
   "soundMuted",
@@ -628,25 +638,12 @@ const mountedControls = {
 };
 
 function clearMountedControls() {
+  if (mountedControls.size && typeof mountedControls.size.dispose === "function") {
+    Promise.resolve(mountedControls.size.dispose()).catch(() => {});
+  }
   mountedControls.generalSwitches.clear();
   mountedControls.agentSwitches.clear();
   mountedControls.size = null;
-}
-
-function uiSizeToPrefs(ui) {
-  return Math.round((ui * SIZE_PREFS_MAX / SIZE_UI_MAX) * 10) / 10;
-}
-
-function prefsSizeToUi(prefs) {
-  return Math.round(prefs * SIZE_UI_MAX / SIZE_PREFS_MAX);
-}
-
-function clampSizeUi(n) {
-  return Math.max(SIZE_UI_MIN, Math.min(SIZE_UI_MAX, Math.round(n)));
-}
-
-function sizeUiToPct(ui) {
-  return ((ui - SIZE_UI_MIN) / (SIZE_UI_MAX - SIZE_UI_MIN)) * 100;
 }
 
 function readSizeUiFromSnapshot() {
@@ -726,21 +723,7 @@ function attachAnimatedSwitch(sw, { getCommittedVisual, getTransientState, setTr
 function syncMountedSizeControl({ fromBroadcast = false } = {}) {
   const control = mountedControls.size;
   if (!control || !document.body.contains(control.row)) return false;
-  const snapshotUi = readSizeUiFromSnapshot();
-  if (fromBroadcast) {
-    transientUiState.size.pending = false;
-    if (
-      !transientUiState.size.dragging
-      || transientUiState.size.draftUi === null
-      || transientUiState.size.draftUi === snapshotUi
-    ) {
-      transientUiState.size.draftUi = null;
-    }
-  }
-  const displayedUi =
-    transientUiState.size.draftUi === null ? snapshotUi : transientUiState.size.draftUi;
-  control.setDragging(transientUiState.size.dragging, transientUiState.size.pending);
-  control.setValue(displayedUi);
+  control.syncFromSnapshot({ fromBroadcast });
   return true;
 }
 
@@ -2619,81 +2602,42 @@ function buildSizeSliderRow() {
     ticksEl.appendChild(mark);
   }
 
-  let lastSendAt = 0;
-  let pendingTimer = null;
-  let pendingValue = null;
-
-  function commitNow(ui) {
-    if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
-    pendingValue = null;
-    lastSendAt = Date.now();
-    const seq = transientUiState.size.seq + 1;
-    transientUiState.size.seq = seq;
-    transientUiState.size.pending = true;
-    setDragging(transientUiState.size.dragging, true);
-    window.settingsAPI.command("resizePet", `P:${uiSizeToPrefs(ui)}`).then((result) => {
-      if (seq !== transientUiState.size.seq) return;
-      transientUiState.size.pending = false;
-      setDragging(transientUiState.size.dragging, false);
-      if (result && result.status !== "ok") {
-        transientUiState.size.draftUi = null;
-        applyLocalValue(readSizeUiFromSnapshot());
-        if (result.message) showToast(t("toastSaveFailed") + result.message, { error: true });
-      }
-    }).catch((err) => {
-      if (seq !== transientUiState.size.seq) return;
-      transientUiState.size.pending = false;
+  const controller = createSizeSliderController({
+    readSnapshotUi: readSizeUiFromSnapshot,
+    settingsAPI: window.settingsAPI,
+    onLocalValue: (ui) => {
+      transientUiState.size.draftUi = ui;
+      applyLocalValue(ui);
+    },
+    onDraggingChange: (dragging, pending) => {
+      transientUiState.size.dragging = dragging;
+      transientUiState.size.pending = pending;
+      setDragging(dragging, pending);
+    },
+    onError: (message) => {
       transientUiState.size.draftUi = null;
-      setDragging(false, false);
       applyLocalValue(readSizeUiFromSnapshot());
-      showToast(t("toastSaveFailed") + (err && err.message), { error: true });
-    });
-  }
-  function scheduleCommit(ui) {
-    pendingValue = ui;
-    const elapsed = Date.now() - lastSendAt;
-    if (elapsed >= SIZE_THROTTLE_MS) {
-      commitNow(ui);
-      return;
-    }
-    if (pendingTimer) return;
-    pendingTimer = setTimeout(() => {
-      pendingTimer = null;
-      if (pendingValue !== null) commitNow(pendingValue);
-    }, SIZE_THROTTLE_MS - elapsed);
-  }
-
-  function stopDragging() {
-    transientUiState.size.dragging = false;
-    setDragging(false, transientUiState.size.pending);
-  }
-
-  slider.addEventListener("pointerdown", () => {
-    transientUiState.size.dragging = true;
-    setDragging(true, transientUiState.size.pending);
-  });
-  slider.addEventListener("pointerup", stopDragging);
-  slider.addEventListener("pointercancel", stopDragging);
-  slider.addEventListener("blur", stopDragging);
-  slider.addEventListener("input", () => {
-    const ui = Number(slider.value);
-    transientUiState.size.draftUi = ui;
-    applyLocalValue(ui);
-    scheduleCommit(ui);
-  });
-  slider.addEventListener("change", () => {
-    const ui = Number(slider.value);
-    transientUiState.size.draftUi = ui;
-    stopDragging();
-    applyLocalValue(ui);
-    commitNow(ui);
+      if (message) showToast(t("toastSaveFailed") + message, { error: true });
+    },
   });
 
   mountedControls.size = {
     row,
-    setValue: applyLocalValue,
-    setDragging,
+    syncFromSnapshot: (options) => controller.syncFromSnapshot(options),
+    dispose: () => controller.dispose(),
   };
+  controller.syncFromSnapshot();
+
+  slider.addEventListener("pointerdown", () => { void controller.pointerDown(); });
+  slider.addEventListener("pointerup", () => { void controller.pointerUp(); });
+  slider.addEventListener("pointercancel", () => { void controller.pointerCancel(); });
+  slider.addEventListener("blur", () => { void controller.blur(); });
+  slider.addEventListener("input", () => {
+    void controller.input(Number(slider.value));
+  });
+  slider.addEventListener("change", () => {
+    void controller.change(Number(slider.value));
+  });
 
   return row;
 }

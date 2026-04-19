@@ -347,22 +347,28 @@ module.exports = function initMenu(ctx) {
     popupMenuAt(ctx.contextMenu);
   }
 
-  function resizeWindow(sizeKey) {
+  function resizeWindow(sizeKey, options = {}) {
+    const mode = options.mode || (options.persist === false ? "preview" : "commit");
+    const persist = mode !== "preview";
     // Setter routes through controller.applyUpdate("size", ...) — subscriber
     // rebuilds menus on commit. We still need to physically resize the
     // window and capture the new bounds at the end.
-    ctx.currentSize = sizeKey;
-    const size = SIZES[sizeKey] || ctx.getCurrentPixelSize();
+    if (persist) ctx.currentSize = sizeKey;
+    const size = (typeof ctx.getPixelSizeFor === "function")
+      ? ctx.getPixelSizeFor(sizeKey)
+      : (SIZES[sizeKey] || ctx.getCurrentPixelSize());
     if (!ctx.miniHandleResize(sizeKey)) {
       if (ctx.win && !ctx.win.isDestroyed()) {
         const { x, y } = ctx.getPetWindowBounds();
         const clamped = ctx.clampToScreenVisual(x, y, size.width, size.height);
         ctx.applyPetWindowBounds({ ...clamped, width: size.width, height: size.height });
-        ctx.syncHitWin();
       }
     }
-    ctx.repositionBubbles();
-    ctx.flushRuntimeStateToPrefs();
+    if (mode !== "preview") {
+      ctx.syncHitWin();
+      ctx.repositionBubbles();
+      if (persist) ctx.flushRuntimeStateToPrefs();
+    }
   }
 
   return {
