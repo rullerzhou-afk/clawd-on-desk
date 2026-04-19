@@ -6,6 +6,8 @@ const { applyStationaryCollectionBehavior } = require("./mac-window");
 const {
   applyWindowsAppUserModelId,
   getSettingsWindowIconPath,
+  getSettingsWindowTaskbarDetails: getSettingsWindowTaskbarDetailsHelper,
+  SETTINGS_WINDOW_TITLE,
 } = require("./settings-window-icon");
 const hitGeometry = require("./hit-geometry");
 const animationCycle = require("./animation-cycle");
@@ -2315,6 +2317,18 @@ function getSettingsWindowIcon() {
   });
 }
 
+function getSettingsWindowTaskbarDetails() {
+  return getSettingsWindowTaskbarDetailsHelper({
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    appDir: path.join(__dirname, ".."),
+    execPath: process.execPath,
+    appPath: app.getAppPath(),
+    existsSync: fs.existsSync,
+  });
+}
+
 function openSettingsWindow() {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     if (settingsWindow.isMinimized()) settingsWindow.restore();
@@ -2336,7 +2350,7 @@ function openSettingsWindow() {
     maximizable: true,
     skipTaskbar: false,
     alwaysOnTop: false,
-    title: "Clawd Settings",
+    title: SETTINGS_WINDOW_TITLE,
     // Match settings.html's dark-mode palette to avoid a white flash before
     // CSS media query kicks in. Hex values must stay in sync with the
     // `--bg` CSS variable in settings.html for each theme.
@@ -2349,6 +2363,12 @@ function openSettingsWindow() {
   };
   if (iconPath) opts.icon = iconPath;
   settingsWindow = new BrowserWindow(opts);
+  if (isWin && typeof settingsWindow.setAppDetails === "function") {
+    const taskbarDetails = getSettingsWindowTaskbarDetails();
+    if (taskbarDetails && taskbarDetails.appIconPath) {
+      settingsWindow.setAppDetails(taskbarDetails);
+    }
+  }
   settingsWindow.setMenuBarVisibility(false);
   settingsWindow.loadFile(path.join(__dirname, "settings.html"));
   settingsWindow.once("ready-to-show", () => {

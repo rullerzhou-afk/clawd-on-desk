@@ -6,7 +6,10 @@ const path = require("path");
 
 const {
   WINDOWS_APP_USER_MODEL_ID,
+  SETTINGS_WINDOW_TITLE,
   getSettingsWindowIconPath,
+  getWindowsShellIconPath,
+  getSettingsWindowTaskbarDetails,
   applyWindowsAppUserModelId,
 } = require("../src/settings-window-icon");
 
@@ -68,5 +71,57 @@ describe("windows app user model id", () => {
       setAppUserModelId() { called = true; },
     }, "darwin");
     assert.strictEqual(called, false);
+  });
+});
+
+describe("windows shell icon path", () => {
+  it("prefers icon.ico for unpackaged Windows shell surfaces", () => {
+    const appDir = "D:\\clawd-on-desk";
+    const expected = path.join(appDir, "assets", "icon.ico");
+    const actual = getWindowsShellIconPath({
+      isPackaged: false,
+      appDir,
+      existsSync: (candidate) => candidate === expected,
+    });
+    assert.strictEqual(actual, expected);
+  });
+
+  it("prefers the extra resource icon for packaged Windows shell surfaces", () => {
+    const resourcesPath = "C:\\Program Files\\Clawd on Desk\\resources";
+    const expected = path.join(resourcesPath, "icon.ico");
+    const actual = getWindowsShellIconPath({
+      isPackaged: true,
+      resourcesPath,
+      existsSync: (candidate) => candidate === expected,
+    });
+    assert.strictEqual(actual, expected);
+  });
+});
+
+describe("settings window taskbar details", () => {
+  it("builds Windows taskbar metadata for unpackaged runs", () => {
+    const appDir = "D:\\clawd-on-desk";
+    const execPath = "D:\\clawd-on-desk\\node_modules\\electron\\dist\\electron.exe";
+    const appPath = "D:\\clawd-on-desk";
+    const iconPath = path.join(appDir, "assets", "icon.ico");
+    const actual = getSettingsWindowTaskbarDetails({
+      platform: "win32",
+      isPackaged: false,
+      appDir,
+      execPath,
+      appPath,
+      existsSync: (candidate) => candidate === iconPath,
+    });
+    assert.deepStrictEqual(actual, {
+      appId: WINDOWS_APP_USER_MODEL_ID,
+      appIconPath: iconPath,
+      appIconIndex: 0,
+      relaunchCommand: `"${execPath}" "${appPath}"`,
+      relaunchDisplayName: SETTINGS_WINDOW_TITLE,
+    });
+  });
+
+  it("returns null on non-Windows platforms", () => {
+    assert.strictEqual(getSettingsWindowTaskbarDetails({ platform: "darwin" }), null);
   });
 });
