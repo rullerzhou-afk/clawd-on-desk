@@ -235,6 +235,7 @@ const updateRegistry = {
   hideBubbles: requireBoolean("hideBubbles"),
   showSessionId: requireBoolean("showSessionId"),
   allowEdgePinning: requireBoolean("allowEdgePinning"),
+  keepSizeAcrossDisplays: requireBoolean("keepSizeAcrossDisplays"),
 
   // ── System-backed prefs (object-form: validate + effect pre-commit gate) ──
   //

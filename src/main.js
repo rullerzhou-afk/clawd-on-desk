@@ -358,6 +358,7 @@ let hideBubbles = _settingsController.get("hideBubbles");
 let showSessionId = _settingsController.get("showSessionId");
 let soundMuted = _settingsController.get("soundMuted");
 let allowEdgePinningCached = _settingsController.get("allowEdgePinning");
+let keepSizeAcrossDisplaysCached = _settingsController.get("keepSizeAcrossDisplays");
 let petHidden = false;
 const shortcutRegistrationFailures = new Map();
 
@@ -614,10 +615,19 @@ function beginDragSnapshot() {
     dragSnapshot = null;
     return;
   }
+  const bounds = getPetWindowBounds();
+  // When keepSizeAcrossDisplays is on, the pet may currently be sized from
+  // a prior display (e.g. dragged from a small monitor and kept small on a
+  // large one). Snapshotting getCurrentPixelSize() here would snap it to
+  // the large display's proportional size at drag start, which is the
+  // exact behaviour the user disabled.
+  const size = keepSizeAcrossDisplaysCached
+    ? { width: bounds.width, height: bounds.height }
+    : getCurrentPixelSize();
   dragSnapshot = createDragSnapshot(
     screen.getCursorScreenPoint(),
-    getPetWindowBounds(),
-    getCurrentPixelSize()
+    bounds,
+    size
   );
 }
 
@@ -1143,6 +1153,7 @@ function wireSettingsSubscribers() {
     if ("showSessionId" in changes) showSessionId = changes.showSessionId;
     if ("soundMuted" in changes) soundMuted = changes.soundMuted;
     if ("allowEdgePinning" in changes) allowEdgePinningCached = changes.allowEdgePinning;
+    if ("keepSizeAcrossDisplays" in changes) keepSizeAcrossDisplaysCached = changes.keepSizeAcrossDisplays;
 
     // 2. Reactive side effects (mirror what the legacy setters / click handlers used to do).
     if ("hideBubbles" in changes) {
@@ -2708,10 +2719,14 @@ function createWindow() {
         checkMiniModeSnap();
         if (_mini.getMiniMode() || _mini.getMiniTransitioning()) return;
         // After drag, clamp to the nearest screen (loose clamp during drag allows cross-screen).
-        // In proportional mode, also recalculate size for the landing display.
+        // In proportional mode, also recalculate size for the landing display —
+        // unless the user asked to keep the pixel size across displays, in which
+        // case we leave the current window size alone.
         if (win && !win.isDestroyed()) {
-          const size = getCurrentPixelSize();
           const virtualBounds = getPetWindowBounds();
+          const size = keepSizeAcrossDisplaysCached
+            ? { width: virtualBounds.width, height: virtualBounds.height }
+            : getCurrentPixelSize();
           const clamped = computeFinalDragBounds(virtualBounds, size, clampToScreenVisual);
           if (clamped) applyPetWindowBounds(clamped);
           reassertWinTopmost();
@@ -2781,7 +2796,9 @@ function createWindow() {
   startTopmostWatchdog();
 
   // ── Display change: re-clamp window to prevent off-screen ──
-  // In proportional mode, also recalculate size based on the new work area.
+  // In proportional mode, also recalculate size based on the new work area,
+  // unless keepSizeAcrossDisplays is on — then we preserve the current window
+  // size and only re-clamp the position.
   screen.on("display-metrics-changed", () => {
     reapplyMacVisibility();
     if (!win || win.isDestroyed()) return;
@@ -2790,10 +2807,13 @@ function createWindow() {
       _mini.handleDisplayChange();
       return;
     }
-    const size = getCurrentPixelSize();
-    const { x, y } = getPetWindowBounds();
-    const clamped = clampToScreenVisual(x, y, size.width, size.height);
-    if (isProportionalMode() || clamped.x !== x || clamped.y !== y) {
+    const current = getPetWindowBounds();
+    const size = keepSizeAcrossDisplaysCached
+      ? { width: current.width, height: current.height }
+      : getCurrentPixelSize();
+    const clamped = clampToScreenVisual(current.x, current.y, size.width, size.height);
+    const proportionalRecalc = isProportionalMode() && !keepSizeAcrossDisplaysCached;
+    if (proportionalRecalc || clamped.x !== current.x || clamped.y !== current.y) {
       applyPetWindowBounds({ ...clamped, width: size.width, height: size.height });
       syncHitWin();
       repositionFloatingBubbles();
@@ -2807,9 +2827,11 @@ function createWindow() {
       exitMiniMode();
       return;
     }
-    const size = getCurrentPixelSize();
-    const { x, y } = getPetWindowBounds();
-    const clamped = clampToScreenVisual(x, y, size.width, size.height);
+    const current = getPetWindowBounds();
+    const size = keepSizeAcrossDisplaysCached
+      ? { width: current.width, height: current.height }
+      : getCurrentPixelSize();
+    const clamped = clampToScreenVisual(current.x, current.y, size.width, size.height);
     applyPetWindowBounds({ ...clamped, width: size.width, height: size.height });
     syncHitWin();
     repositionFloatingBubbles();
