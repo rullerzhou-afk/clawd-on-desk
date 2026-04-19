@@ -585,7 +585,12 @@ const formatAcceleratorLabel = SHORTCUT_API.formatAcceleratorLabel
   || ((value) => value || "— unassigned —");
 const formatAcceleratorPartial = SHORTCUT_API.formatAcceleratorPartial
   || (() => "");
-const IS_MAC = /\bMac\b/i.test(navigator.platform || "");
+// navigator.platform returns "MacIntel" on macOS (both Intel and Apple
+// Silicon — the latter retains "MacIntel" for web compatibility). The old
+// /\bMac\b/ pattern failed because the trailing \b needs a non-word char
+// after "c", but "I" is a word character. Follow the MDN-recommended check:
+// https://developer.mozilla.org/en-US/docs/Web/API/Navigator/platform
+const IS_MAC = (navigator.platform || "").startsWith("Mac");
 
 let snapshot = null;
 let activeTab = "general";
