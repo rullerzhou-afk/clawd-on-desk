@@ -16,10 +16,12 @@ const {
   SIZE_UI_MIN,
   SIZE_UI_MAX,
   SIZE_TICK_VALUES,
+  SIZE_SLIDER_THUMB_DIAMETER,
   uiSizeToPrefs,
   prefsSizeToUi,
   clampSizeUi,
   sizeUiToPct,
+  getSizeSliderAnchorPx,
   createSizeSliderController,
 } = globalThis.ClawdSettingsSizeSlider || {};
 
@@ -2565,16 +2567,42 @@ function buildSizeSliderRow() {
   row.querySelector(".row-desc").textContent = t("rowSizeDesc");
 
   const control = row.querySelector(".size-control");
+  const sliderWrap = row.querySelector(".size-slider-wrap");
   const slider = row.querySelector(".size-slider");
   const bubble = row.querySelector(".size-bubble");
   const ticksEl = row.querySelector(".size-ticks");
+  const tickMarks = [];
+
+  function readThumbDiameterPx() {
+    const raw = window.getComputedStyle(slider).getPropertyValue("--size-slider-thumb-diameter");
+    const parsed = parseFloat(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : SIZE_SLIDER_THUMB_DIAMETER;
+  }
+
+  function getSliderAnchorPx(ui) {
+    return getSizeSliderAnchorPx({
+      value: ui,
+      min: SIZE_UI_MIN,
+      max: SIZE_UI_MAX,
+      sliderWidth: slider.clientWidth,
+      thumbDiameter: readThumbDiameterPx(),
+    });
+  }
+
+  function repositionScaleGeometry(ui) {
+    const anchorPx = getSliderAnchorPx(ui);
+    bubble.style.left = `${anchorPx}px`;
+    for (const tick of tickMarks) {
+      tick.element.style.left = `${getSliderAnchorPx(tick.value)}px`;
+    }
+  }
 
   function applyLocalValue(ui) {
     const pct = sizeUiToPct(ui);
     slider.value = String(ui);
     slider.style.setProperty("--size-fill", `${pct}%`);
     bubble.textContent = `${ui}%`;
-    bubble.style.left = `${pct}%`;
+    repositionScaleGeometry(ui);
   }
 
   function setDragging(nextDragging, pending = transientUiState.size.pending) {
@@ -2591,7 +2619,6 @@ function buildSizeSliderRow() {
     const mark = document.createElement("span");
     mark.className = "size-tick";
     mark.dataset.value = String(v);
-    mark.style.left = `${sizeUiToPct(v)}%`;
     const dot = document.createElement("span");
     dot.className = "size-tick-dot";
     const label = document.createElement("span");
@@ -2600,6 +2627,7 @@ function buildSizeSliderRow() {
     mark.appendChild(dot);
     mark.appendChild(label);
     ticksEl.appendChild(mark);
+    tickMarks.push({ value: v, element: mark });
   }
 
   const controller = createSizeSliderController({
@@ -2624,9 +2652,29 @@ function buildSizeSliderRow() {
   mountedControls.size = {
     row,
     syncFromSnapshot: (options) => controller.syncFromSnapshot(options),
-    dispose: () => controller.dispose(),
+    dispose: () => {
+      if (resizeObserver) resizeObserver.disconnect();
+      window.removeEventListener("resize", handleGeometryRefresh);
+      return controller.dispose();
+    },
   };
   controller.syncFromSnapshot();
+
+  function handleGeometryRefresh() {
+    const currentUi =
+      transientUiState.size.draftUi === null ? readSizeUiFromSnapshot() : transientUiState.size.draftUi;
+    repositionScaleGeometry(currentUi);
+  }
+
+  let resizeObserver = null;
+  if (typeof ResizeObserver === "function") {
+    resizeObserver = new ResizeObserver(() => {
+      handleGeometryRefresh();
+    });
+    resizeObserver.observe(sliderWrap);
+  }
+  window.addEventListener("resize", handleGeometryRefresh);
+  handleGeometryRefresh();
 
   slider.addEventListener("pointerdown", () => { void controller.pointerDown(); });
   slider.addEventListener("pointerup", () => { void controller.pointerUp(); });

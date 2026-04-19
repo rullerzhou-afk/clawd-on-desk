@@ -5,6 +5,8 @@ const SIZE_PREFS_MAX = 30;
 const SIZE_UI_MIN = 1;
 const SIZE_UI_MAX = 100;
 const SIZE_TICK_VALUES = [25, 50, 75, 100];
+const SIZE_SLIDER_TRACK_HEIGHT = 6;
+const SIZE_SLIDER_THUMB_DIAMETER = 18;
 
 function uiSizeToPrefs(ui) {
   return Math.round((ui * SIZE_PREFS_MAX / SIZE_UI_MAX) * 10) / 10;
@@ -20,6 +22,28 @@ function clampSizeUi(n) {
 
 function sizeUiToPct(ui) {
   return ((ui - SIZE_UI_MIN) / (SIZE_UI_MAX - SIZE_UI_MIN)) * 100;
+}
+
+function clampSliderNormalized(value, min, max) {
+  if (!Number.isFinite(value)) return 0;
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return 0;
+  return Math.max(0, Math.min(1, (value - min) / (max - min)));
+}
+
+function getSizeSliderAnchorPx({
+  value,
+  min = SIZE_UI_MIN,
+  max = SIZE_UI_MAX,
+  sliderWidth,
+  thumbDiameter = SIZE_SLIDER_THUMB_DIAMETER,
+}) {
+  const width = Number.isFinite(sliderWidth) ? Math.max(0, sliderWidth) : 0;
+  const diameter = Number.isFinite(thumbDiameter) ? Math.max(0, thumbDiameter) : 0;
+  const radius = diameter / 2;
+  if (width <= 0) return radius;
+  if (width <= diameter) return width / 2;
+  const normalized = clampSliderNormalized(value, min, max);
+  return radius + (normalized * (width - diameter));
 }
 
 function formatSizeKey(ui) {
@@ -191,10 +215,13 @@ return {
   SIZE_UI_MIN,
   SIZE_UI_MAX,
   SIZE_TICK_VALUES,
+  SIZE_SLIDER_TRACK_HEIGHT,
+  SIZE_SLIDER_THUMB_DIAMETER,
   uiSizeToPrefs,
   prefsSizeToUi,
   clampSizeUi,
   sizeUiToPct,
+  getSizeSliderAnchorPx,
   createSizeSliderController,
 };
 }

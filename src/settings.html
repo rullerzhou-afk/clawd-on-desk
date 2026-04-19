@@ -269,6 +269,8 @@ html, body {
 
 /* ── Size slider ── */
 .size-control {
+  --size-slider-track-height: 6px;
+  --size-slider-thumb-diameter: 18px;
   flex-direction: column;
   align-items: stretch;
   gap: 2px;
@@ -320,7 +322,7 @@ html, body {
   touch-action: pan-y;
 }
 .size-slider::-webkit-slider-runnable-track {
-  height: 6px;
+  height: var(--size-slider-track-height);
   border-radius: 999px;
   background: linear-gradient(
     90deg,
@@ -332,9 +334,9 @@ html, body {
 }
 .size-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 18px;
-  height: 18px;
-  margin-top: -6px;
+  width: var(--size-slider-thumb-diameter);
+  height: var(--size-slider-thumb-diameter);
+  margin-top: calc((var(--size-slider-track-height) - var(--size-slider-thumb-diameter)) / 2);
   border-radius: 50%;
   border: 2px solid var(--accent);
   background: #fff;

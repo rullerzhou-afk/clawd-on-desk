@@ -5,6 +5,8 @@ const assert = require("node:assert");
 
 const {
   createSizeSliderController,
+  getSizeSliderAnchorPx,
+  SIZE_SLIDER_THUMB_DIAMETER,
 } = require("../src/settings-size-slider");
 
 describe("settings size slider controller", () => {
@@ -67,5 +69,66 @@ describe("settings size slider controller", () => {
       ["preview", "P:16.5"],
       ["end", "P:16.5"],
     ]);
+  });
+});
+
+describe("settings size slider geometry", () => {
+  it("anchors bubble/ticks to the actual thumb center instead of raw percent width", () => {
+    assert.strictEqual(
+      getSizeSliderAnchorPx({
+        value: 1,
+        min: 1,
+        max: 100,
+        sliderWidth: 200,
+        thumbDiameter: SIZE_SLIDER_THUMB_DIAMETER,
+      }),
+      SIZE_SLIDER_THUMB_DIAMETER / 2
+    );
+
+    assert.strictEqual(
+      getSizeSliderAnchorPx({
+        value: 100,
+        min: 1,
+        max: 100,
+        sliderWidth: 200,
+        thumbDiameter: SIZE_SLIDER_THUMB_DIAMETER,
+      }),
+      200 - (SIZE_SLIDER_THUMB_DIAMETER / 2)
+    );
+
+    assert.strictEqual(
+      getSizeSliderAnchorPx({
+        value: 50.5,
+        min: 1,
+        max: 100,
+        sliderWidth: 200,
+        thumbDiameter: SIZE_SLIDER_THUMB_DIAMETER,
+      }),
+      100
+    );
+  });
+
+  it("recomputes the same value against a new slider width", () => {
+    assert.strictEqual(
+      getSizeSliderAnchorPx({
+        value: 75,
+        min: 1,
+        max: 100,
+        sliderWidth: 240,
+        thumbDiameter: SIZE_SLIDER_THUMB_DIAMETER,
+      }),
+      174.93939393939394
+    );
+
+    assert.strictEqual(
+      getSizeSliderAnchorPx({
+        value: 75,
+        min: 1,
+        max: 100,
+        sliderWidth: 320,
+        thumbDiameter: SIZE_SLIDER_THUMB_DIAMETER,
+      }),
+      234.73737373737376
+    );
   });
 });
