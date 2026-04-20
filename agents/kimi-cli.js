@@ -13,7 +13,7 @@ module.exports = {
     llm_step: "working",
     tool_shell: "working",
     tool_agent: "juggling",
-    tool_ask_user: "working",
+    tool_ask_user: "attention",
     tool_web_search: "working",
     tool_fetch_url: "working",
     tool_read_file: "working",

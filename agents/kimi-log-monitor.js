@@ -202,14 +202,27 @@ class KimiLogMonitor {
     }
 
     // Tool completion
-    const toolMatch = line.match(/Tool (\w+) completed in/);
+    const toolMatch = line.match(/Tool (\w+) completed in ([\d.]+)s/);
     if (toolMatch) {
       tracked.hadToolUse = true;
       this._clearTurnEndTimer(tracked);
       const toolName = toolMatch[1];
+      const durationSec = parseFloat(toolMatch[2]);
       const eventKey = `tool_${toolName.toLowerCase()}`;
-      const state = toolName === "Agent" ? "juggling" : "working";
-      this._emit(tracked, state, eventKey);
+
+      if (toolName === "Agent") {
+        this._emit(tracked, "juggling", eventKey);
+      } else if (toolName === "AskUserQuestion") {
+        // AskUserQuestion means the user just finished answering a question.
+        // Long duration (>5s) likely means the user was actively thinking;
+        // send a notification nudge so they know Kimi received the answer.
+        this._emit(tracked, "attention", eventKey);
+        if (durationSec > 5) {
+          this._emit(tracked, "notification", `${eventKey}-nudge`);
+        }
+      } else {
+        this._emit(tracked, "working", eventKey);
+      }
       return;
     }
 
