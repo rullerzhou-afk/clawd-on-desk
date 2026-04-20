@@ -40,7 +40,7 @@ module.exports = {
     filePattern: "kimi*.log",
     pollIntervalMs: 1500,
     // How long to wait after the last LLM step before declaring turn end
-    turnEndDeferMs: 3000,
+    turnEndDeferMs: 1500,
     // How long before a tracked file is considered stale
     staleTimeoutMs: 300000,
   },

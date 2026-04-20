@@ -97,6 +97,7 @@ class KimiLogMonitor {
           filePath,
           lastEventTime: now,
           lastState: null,
+          lastEvent: null,
           partial: "",
           hadToolUse: false,
           turnEndTimer: null,
@@ -170,7 +171,16 @@ class KimiLogMonitor {
     // carry the session id after the logger name).
     const lineSessionMatch = line.match(/\s([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\s+-/);
     if (lineSessionMatch) {
-      tracked.sessionId = "kimi-cli:" + lineSessionMatch[1];
+      const newSid = "kimi-cli:" + lineSessionMatch[1];
+      // If the session ID has changed (e.g. from fallback to real UUID),
+      // end the old session so Clawd doesn't leave a stale session stuck
+      // in its previous state forever.
+      if (tracked.sessionId && tracked.sessionId !== newSid) {
+        this._onStateChange(tracked.sessionId, "sleeping", "SessionEnd", {
+          cwd: "", sourcePid: null, agentPid: null, sessionTitle: null,
+        });
+      }
+      tracked.sessionId = newSid;
     }
 
     // Session start / resume
@@ -207,6 +217,20 @@ class KimiLogMonitor {
     if (line.includes("LLM step completed in")) {
       // Cancel any existing turn-end timer
       this._clearTurnEndTimer(tracked);
+
+      // Fast path: if this looks like a pure-text final answer (small output,
+      // no tools used this turn), go straight to attention/idle without
+      // the defer delay so the pet doesn't stay "working" after the user
+      // already sees the answer in the terminal.
+      const outputMatch = line.match(/output=(\d+)/);
+      const outputTokens = outputMatch ? parseInt(outputMatch[1], 10) : 0;
+      const isLikelyFinalAnswer = outputTokens > 0 && outputTokens < 300 && !tracked.hadToolUse;
+
+      if (isLikelyFinalAnswer) {
+        this._emit(tracked, "attention", "turn_end");
+        return;
+      }
+
       // Emit working immediately (LLM finished thinking; either tools are
       // running or the turn is about to end)
       this._emit(tracked, "working", "llm_step");
@@ -239,9 +263,13 @@ class KimiLogMonitor {
   }
 
   _emit(tracked, state, event) {
-    // Avoid spamming the same state repeatedly
-    if (state === tracked.lastState && state === "working") return;
+    // Avoid spamming identical state+event pairs, but still allow refreshing
+    // the same state when the underlying event differs (e.g. consecutive
+    // llm_step events should reset the turn-end timer even if the visible
+    // state doesn't change, so the session updatedAt is refreshed).
+    if (state === tracked.lastState && event === tracked.lastEvent) return;
     tracked.lastState = state;
+    tracked.lastEvent = event;
     tracked.lastEventTime = Date.now();
 
     if (!tracked.sessionId) {
