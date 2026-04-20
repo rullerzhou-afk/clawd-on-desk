@@ -240,7 +240,10 @@ class KimiLogMonitor {
       const isLikelyFinalAnswer = outputTokens > 0 && outputTokens < 300 && !tracked.hadToolUse;
 
       if (isLikelyFinalAnswer) {
-        this._emit(tracked, "attention", "turn_end");
+        // Use notification (priority 7) instead of attention (priority 5) so
+        // it forcefully interrupts any ongoing thinking/working animation
+        // and bypasses the 1s min-display hold.
+        this._emit(tracked, "notification", "turn_end");
         return;
       }
 
