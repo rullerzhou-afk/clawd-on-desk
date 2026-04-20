@@ -47,6 +47,10 @@ class KimiLogMonitor {
       clearInterval(this._interval);
       this._interval = null;
     }
+    for (const [fp, watcher] of this._watchers) {
+      try { watcher.close(); } catch {}
+    }
+    this._watchers.clear();
     for (const tracked of this._tracked.values()) {
       if (tracked.turnEndTimer) {
         clearTimeout(tracked.turnEndTimer);
@@ -159,6 +163,20 @@ class KimiLogMonitor {
     for (const line of lines) {
       if (!line.trim()) continue;
       this._processLine(line, tracked);
+    }
+  }
+
+  _setupWatcher(filePath) {
+    if (this._watchers.has(filePath)) return;
+    try {
+      const watcher = fs.watch(filePath, (eventType) => {
+        if (eventType === "change") {
+          this._pollFile(filePath);
+        }
+      });
+      this._watchers.set(filePath, watcher);
+    } catch {
+      // fs.watch may fail on some filesystems; polling will still work.
     }
   }
 
