@@ -247,16 +247,19 @@ function flushRuntimeStateToPrefs() {
 
 let _codexMonitor = null;          // Codex CLI JSONL log polling instance
 let _geminiMonitor = null;         // Gemini CLI session JSON polling instance
+let _kimiMonitor = null;           // Kimi CLI log polling instance
 
 // Hook-based agents have no module-level monitor — they're gated at the
 // HTTP route layer. Only log-poll agents hit these branches.
 function startMonitorForAgent(agentId) {
   if (agentId === "codex" && _codexMonitor) _codexMonitor.start();
   else if (agentId === "gemini-cli" && _geminiMonitor) _geminiMonitor.start();
+  else if (agentId === "kimi-cli" && _kimiMonitor) _kimiMonitor.start();
 }
 function stopMonitorForAgent(agentId) {
   if (agentId === "codex" && _codexMonitor) _codexMonitor.stop();
   else if (agentId === "gemini-cli" && _geminiMonitor) _geminiMonitor.stop();
+  else if (agentId === "kimi-cli" && _kimiMonitor) _kimiMonitor.stop();
 }
 
 // ── Theme loader ──
@@ -3261,6 +3264,24 @@ if (!gotTheLock) {
       console.warn("Clawd: Gemini log monitor not started:", err.message);
     }
 
+    // Construct Kimi log monitor
+    try {
+      const KimiLogMonitor = require("../agents/kimi-log-monitor");
+      const kimiAgent = require("../agents/kimi-cli");
+      _kimiMonitor = new KimiLogMonitor(kimiAgent, (sid, state, event, extra) => {
+        updateSession(sid, state, event, {
+          cwd: extra.cwd,
+          agentId: "kimi-cli",
+          sessionTitle: extra.sessionTitle,
+        });
+      });
+      if (_isAgentEnabled(_settingsController.getSnapshot(), "kimi-cli")) {
+        _kimiMonitor.start();
+      }
+    } catch (err) {
+      console.warn("Clawd: Kimi log monitor not started:", err.message);
+    }
+
     // Auto-install VS Code/Cursor terminal-focus extension
     try { installTerminalFocusExtension(); } catch (err) {
       console.warn("Clawd: failed to auto-install terminal-focus extension:", err.message);
@@ -3283,6 +3304,7 @@ if (!gotTheLock) {
     _mini.cleanup();
     if (_codexMonitor) _codexMonitor.stop();
     if (_geminiMonitor) _geminiMonitor.stop();
+    if (_kimiMonitor) _kimiMonitor.stop();
     stopTopmostWatchdog();
     if (hwndRecoveryTimer) { clearTimeout(hwndRecoveryTimer); hwndRecoveryTimer = null; }
     _focus.cleanup();

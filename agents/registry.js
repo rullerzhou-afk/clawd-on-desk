@@ -8,9 +8,10 @@ const geminiCli = require("./gemini-cli");
 const cursorAgent = require("./cursor-agent");
 const codebuddy = require("./codebuddy");
 const kiroCli = require("./kiro-cli");
+const kimiCli = require("./kimi-cli");
 const opencode = require("./opencode");
 
-const AGENTS = [claudeCode, codex, copilotCli, geminiCli, cursorAgent, codebuddy, kiroCli, opencode];
+const AGENTS = [claudeCode, codex, copilotCli, geminiCli, cursorAgent, codebuddy, kiroCli, kimiCli, opencode];
 const AGENT_MAP = new Map(AGENTS.map((a) => [a.id, a]));
 
 module.exports = {
