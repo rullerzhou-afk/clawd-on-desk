@@ -227,6 +227,19 @@ function syncKiroHooks() {
   }
 }
 
+function syncKimiHooks() {
+  try {
+    if (typeof ctx.syncKimiHooksImpl === "function") return ctx.syncKimiHooksImpl();
+    const { registerKimiHooks } = require("../hooks/kimi-install.js");
+    const { added, updated } = registerKimiHooks({ silent: true });
+    if (added > 0 || updated > 0) {
+      console.log(`Clawd: synced Kimi hooks (added ${added}, updated ${updated})`);
+    }
+  } catch (err) {
+    console.warn("Clawd: failed to sync Kimi hooks:", err.message);
+  }
+}
+
 function syncCursorHooks() {
   try {
     if (typeof ctx.syncCursorHooksImpl === "function") return ctx.syncCursorHooksImpl();
@@ -361,6 +374,7 @@ function startHttpServer() {
           // "ignore + fall back" pattern used by cwd / agent_id above.
           const rawTitle = typeof data.session_title === "string" ? data.session_title.trim() : "";
           const sessionTitle = rawTitle || null;
+          const permissionSuspect = data.permission_suspect === true;
           // Agent gate: user disabled this agent in the settings panel. Drop
           // with 204 so hook scripts get a quick no-op response instead of
           // hanging on our HTTP connection. Still surfaces as a success code
@@ -399,6 +413,7 @@ function startHttpServer() {
                 headless,
                 displayHint: display_svg,
                 sessionTitle,
+                permissionSuspect,
               });
             }
             res.writeHead(200, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
@@ -697,6 +712,7 @@ function startHttpServer() {
       syncCursorHooks();
       syncCodeBuddyHooks();
       syncKiroHooks();
+      syncKimiHooks();
       syncOpencodePlugin();
     });
   });
@@ -718,6 +734,7 @@ return {
   syncCursorHooks,
   syncCodeBuddyHooks,
   syncKiroHooks,
+  syncKimiHooks,
   syncOpencodePlugin,
   startClaudeSettingsWatcher,
   stopClaudeSettingsWatcher,

@@ -501,6 +501,14 @@ window.electronAPI.onStateChange((state, svg) => {
   currentIdleSvg = svg;
 });
 
+// Kimi CLI permission hold: re-trigger the current animation so it loops
+// while the user is reviewing the permission prompt.
+window.electronAPI.onKimiPermissionPulse(() => {
+  if (clawdEl && clawdEl.isConnected && currentDisplayedSvg) {
+    swapToFile(currentDisplayedSvg, currentState);
+  }
+});
+
 // --- Eye tracking (idle state only) ---
 // Two systems coexist:
 //   1. Single-target (legacy): eyeTarget/bodyTarget/shadowTarget + applyEyeMove

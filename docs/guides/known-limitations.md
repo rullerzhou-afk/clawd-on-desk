@@ -18,6 +18,7 @@
 | **Kiro CLI: no SessionEnd** | Kiro CLI has no session end event, so Clawd can't detect when a Kiro session ends. |
 | **Kiro CLI: no subagent detection** | Kiro CLI has no subagent events, so juggling/conducting animations won't trigger. |
 | **Kiro CLI: terminal permission prompts stay in terminal** | Kiro state hooks are verified on macOS, but when Kiro shows native terminal permission prompts such as `t / y / n`, those still need to be handled in the terminal. Clawd does not currently replace that flow. |
+| **Kimi Code: hook-only runtime path** | Kimi in Clawd is hook-only (`~/.kimi/config.toml`). If a future Kimi release breaks hook delivery, recover by reverting to the historical log-poll implementation from commit `e57679a` (the current `agents/kimi-log-monitor.js` is a compatibility stub). |
 | **opencode: subtask menu clutter** | When opencode delegates to parallel subagents via the `task` tool, the subagent sessions briefly appear in the Sessions submenu while they run (5-8 seconds), then self-clean. Cosmetic only — the building animation fires correctly. |
 | **opencode: terminal focus limited to spawning terminal** | The plugin runs in-process with opencode, so `source_pid` points to the terminal that launched opencode. If you use `opencode attach` from a different window, terminal focus jumps to the original launcher. |
 | **macOS/Linux packaged auto-update** | DMG/AppImage/deb installs cannot auto-update — use `git clone` + `npm start` for auto-update via `git pull`, or download new versions manually from GitHub Releases. |

@@ -20,6 +20,26 @@ Events from all agents (Claude Code hooks, Codex JSONL, Copilot hooks) map to th
 | WorktreeCreate | carrying | Carrying | <img src="../assets/gif/clawd-carrying.gif" width="160"> | <img src="../assets/gif/calico-carrying.gif" width="130"> |
 | 60s no events | sleeping | Sleep | <img src="../assets/gif/clawd-sleeping.gif" width="160"> | <img src="../assets/gif/calico-sleeping.gif" width="130"> |
 
+## Kimi Code Hook Events
+
+Kimi Code now uses hook-only integration (`~/.kimi/config.toml`), and maps these 13 hook events to shared Clawd states:
+
+| Kimi Hook Event | State |
+|---|---|
+| SessionStart | idle |
+| SessionEnd | sleeping |
+| UserPromptSubmit | thinking |
+| PreToolUse | working. For permission-gated tools (`shell`, `write_file`, `str_replace_file`, `background`) the hook sends `permission_suspect: true` and the state machine defers the decision: if a `PostToolUse` arrives within ~800ms (auto-approved / previously granted) the flag is cancelled and no notification animation plays; if the window expires (Kimi is waiting on the approval TUI) the pet promotes to `PermissionRequest` → notification. Env knobs: `CLAWD_KIMI_PERMISSION_SUSPECT_MS=<ms>` tunes the window, `CLAWD_KIMI_PERMISSION_IMMEDIATE=1` restores the legacy instant-flash behavior, `CLAWD_KIMI_DISABLE_PRETOOL_PERMISSION=1` turns the heuristic off entirely (explicit payload signals like `permission_required: true` always flash immediately). |
+| PostToolUse | working |
+| PostToolUseFailure | error |
+| Stop | attention |
+| StopFailure | error |
+| SubagentStart | juggling |
+| SubagentStop | working |
+| PreCompact | sweeping |
+| PostCompact | attention |
+| Notification | notification |
+
 ## Mini Mode
 
 Drag to the right screen edge (or right-click → "Mini Mode") to enter mini mode — half-body visible at screen edge, peeking out on hover.

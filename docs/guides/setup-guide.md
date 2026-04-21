@@ -18,6 +18,8 @@
 
 **Kiro CLI** — run `npm run install:kiro-hooks` if you want hooks registered before launching Clawd. Kiro's built-in `kiro_default` agent is not backed by an editable JSON file, so Clawd creates a custom `clawd` agent and re-syncs it from the latest `kiro_default` each time Clawd starts, then appends hooks. Use `kiro-cli --agent clawd` for a new chat, or `/agent swap clawd` inside an existing Kiro session, when you want hooks enabled. On macOS, state-driven animations have been verified; native terminal permission prompts such as `t / y / n` still need to be answered in the terminal.
 
+**Kimi Code** — hooks live in `~/.kimi/config.toml` (`[[hooks]]` entries). Clawd auto-registers them on launch when Kimi is installed, or you can run `npm run install:kimi-hooks` manually. Kimi is hook-only in Clawd: state updates and permission notifications come from hook events, not log polling.
+
 **opencode** — uses a plugin entry in `~/.config/opencode/opencode.json`. Clawd auto-registers it on launch when opencode is installed, or you can run `node hooks/opencode-install.js` manually.
 
 ## Remote SSH (Claude Code & Codex CLI)
@@ -109,6 +111,9 @@ node hooks/install.js
 # Kiro CLI - registers hooks for all custom agents under ~/.kiro/agents/,
 # and auto-creates a clawd agent
 node hooks/kiro-install.js
+
+# Kimi Code
+node hooks/kimi-install.js
 
 # Cursor Agent
 node hooks/cursor-install.js
