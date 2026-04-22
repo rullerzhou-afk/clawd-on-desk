@@ -136,6 +136,7 @@ body { padding: 6px; }
 .tool-pill[data-tool="Agent"] { background: #c47a9a; }
 .tool-pill[data-tool="Shell"] { background: #d97757; }
 .tool-pill[data-tool="CodexExec"] { background: #2563eb; }
+.tool-pill[data-tool="KimiPermission"] { background: #3b82f6; }
 
 /* ── Session tag (folder + short id, hidden when absent) ── */
 .session-tag {
@@ -433,6 +434,8 @@ const BUBBLE_STRINGS = {
     chooseAtLeastOneOption: "Multi-select, choose at least one",
     questionLabel: "Question {index}",
     codexPermission: "Codex Permission",
+    kimiPermission: "Kimi Permission",
+    checkKimiTerminal: "Approve or reject this request in the Kimi terminal.",
     gotIt: "Got it",
     planReview: "Plan Review",
     approve: "Approve",
@@ -742,6 +745,21 @@ function show(data) {
     toolPill.setAttribute("data-tool", "CodexExec");
     toolPill.style.display = "";
     commandBlock.textContent = (data.toolInput && data.toolInput.command) || "(unknown)";
+    btnAllow.textContent = bubbleText(data.lang, "gotIt");
+    btnAllow.disabled = false;
+    btnDeny.style.display = "none";
+    suggestionsContainer.innerHTML = "";
+    revealCard();
+    return;
+  }
+
+  // Kimi notify mode — informational bubble with Dismiss button only
+  if (data.toolName === "KimiPermission") {
+    headerTitle.textContent = bubbleText(data.lang, "kimiPermission");
+    toolPill.textContent = "KIMI";
+    toolPill.setAttribute("data-tool", "KimiPermission");
+    toolPill.style.display = "";
+    commandBlock.textContent = (data.toolInput && data.toolInput.command) || bubbleText(data.lang, "checkKimiTerminal");
     btnAllow.textContent = bubbleText(data.lang, "gotIt");
     btnAllow.disabled = false;
     btnDeny.style.display = "none";

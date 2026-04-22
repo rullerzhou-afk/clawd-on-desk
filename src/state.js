@@ -1003,14 +1003,16 @@ function startKimiPermissionPoll(sessionId) {
     // cleanStaleSessions when the Kimi PID dies). The timer just prevents
     // permanent stuck state if every other signal is somehow lost.
     timer = setTimeout(() => {
-      kimiPermissionHolds.delete(sessionId);
-      applyResolvedDisplayState();
+      stopKimiPermissionPoll(sessionId);
     }, maxMs);
   }
   kimiPermissionHolds.set(sessionId, {
     timer,
     until: maxMs > 0 ? Date.now() + maxMs : null,
   });
+  if (typeof ctx.showKimiNotifyBubble === "function") {
+    ctx.showKimiNotifyBubble({ sessionId });
+  }
 }
 
 function cancelPermissionSuspect(sessionId) {
@@ -1051,6 +1053,7 @@ function stopKimiPermissionPoll(sessionId) {
     kimiPermissionHolds.clear();
     for (const { timer } of kimiPermissionSuspectTimers.values()) clearTimeout(timer);
     kimiPermissionSuspectTimers.clear();
+    if (typeof ctx.clearKimiNotifyBubbles === "function") ctx.clearKimiNotifyBubbles();
     applyResolvedDisplayState();
     return;
   }
@@ -1059,8 +1062,10 @@ function stopKimiPermissionPoll(sessionId) {
   if (existing) {
     if (existing.timer) clearTimeout(existing.timer);
     kimiPermissionHolds.delete(sessionId);
+    if (typeof ctx.clearKimiNotifyBubbles === "function") ctx.clearKimiNotifyBubbles(sessionId);
     applyResolvedDisplayState();
   } else if (cancelled) {
+    if (typeof ctx.clearKimiNotifyBubbles === "function") ctx.clearKimiNotifyBubbles(sessionId);
     applyResolvedDisplayState();
   }
 }

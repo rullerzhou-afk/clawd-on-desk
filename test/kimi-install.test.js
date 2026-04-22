@@ -3,7 +3,13 @@ const assert = require("node:assert");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { registerKimiHooks, KIMI_HOOK_EVENTS } = require("../hooks/kimi-install");
+const {
+  registerKimiHooks,
+  KIMI_HOOK_EVENTS,
+  normalizePermissionMode,
+  MODE_EXPLICIT,
+  MODE_SUSPECT,
+} = require("../hooks/kimi-install");
 
 const tempDirs = [];
 
@@ -126,5 +132,25 @@ describe("Kimi hook installer", () => {
 
     assert.deepStrictEqual(result, { added: 0, skipped: 0, updated: 0 });
     assert.ok(!fs.existsSync(settingsPath));
+  });
+
+  it("writes CLAWD_KIMI_PERMISSION_MODE into hook command when provided", () => {
+    const { settingsPath } = makeTempKimiHome();
+    registerKimiHooks({
+      silent: true,
+      settingsPath,
+      nodeBin: "/usr/local/bin/node",
+      permissionMode: MODE_SUSPECT,
+    });
+    const content = fs.readFileSync(settingsPath, "utf8");
+    assert.ok(content.includes("CLAWD_KIMI_PERMISSION_MODE=suspect"));
+  });
+
+  it("normalizes permission mode values", () => {
+    assert.strictEqual(normalizePermissionMode("explicit"), MODE_EXPLICIT);
+    assert.strictEqual(normalizePermissionMode("suspect"), MODE_SUSPECT);
+    assert.strictEqual(normalizePermissionMode("SUSPECT"), MODE_SUSPECT);
+    assert.strictEqual(normalizePermissionMode("  explicit  "), MODE_EXPLICIT);
+    assert.strictEqual(normalizePermissionMode("other"), null);
   });
 });

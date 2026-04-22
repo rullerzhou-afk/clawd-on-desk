@@ -7,6 +7,8 @@ const os = require("os");
 const { resolveNodeBin } = require("./server-config");
 const { asarUnpackedPath } = require("./json-utils");
 const MARKER = "kimi-hook.js";
+const MODE_EXPLICIT = "explicit";
+const MODE_SUSPECT = "suspect";
 
 const KIMI_HOOK_EVENTS = [
   "SessionStart",
@@ -23,6 +25,13 @@ const KIMI_HOOK_EVENTS = [
   "PostCompact",
   "Notification",
 ];
+
+function normalizePermissionMode(value) {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === MODE_EXPLICIT || normalized === MODE_SUSPECT) return normalized;
+  return null;
+}
 
 /**
  * Register Clawd hooks into ~/.kimi/config.toml
@@ -45,7 +54,13 @@ function registerKimiHooks(options = {}) {
   const hookScript = asarUnpackedPath(path.resolve(__dirname, "kimi-hook.js").replace(/\\/g, "/"));
   const resolved = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
   const nodeBin = resolved || "node";
-  const desiredCommand = `"${nodeBin}" "${hookScript}"`;
+  const configuredMode = normalizePermissionMode(
+    options.permissionMode !== undefined
+      ? options.permissionMode
+      : process.env.CLAWD_KIMI_PERMISSION_MODE
+  );
+  const modePrefix = configuredMode ? `CLAWD_KIMI_PERMISSION_MODE=${configuredMode} ` : "";
+  const desiredCommand = `${modePrefix}"${nodeBin}" "${hookScript}"`;
 
   let content = "";
   try {
@@ -108,7 +123,13 @@ timeout = 30
   return { added: KIMI_HOOK_EVENTS.length, skipped: 0, updated: 0 };
 }
 
-module.exports = { registerKimiHooks, KIMI_HOOK_EVENTS };
+module.exports = {
+  registerKimiHooks,
+  KIMI_HOOK_EVENTS,
+  normalizePermissionMode,
+  MODE_EXPLICIT,
+  MODE_SUSPECT,
+};
 
 if (require.main === module) {
   try {

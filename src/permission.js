@@ -58,6 +58,13 @@ function shouldSuppressCodexNotifyBubble(ctx) {
   return !!(ctx.doNotDisturb || ctx.hideBubbles || !codexBubblesEnabled);
 }
 
+function shouldSuppressKimiNotifyBubble(ctx) {
+  const kimiBubblesEnabled =
+    typeof ctx.isAgentPermissionsEnabled !== "function" ||
+    ctx.isAgentPermissionsEnabled("kimi-cli");
+  return !!(ctx.doNotDisturb || ctx.hideBubbles || !kimiBubblesEnabled);
+}
+
 // Pure layout calculator for the permission bubble stack. Extracted out of
 // repositionBubbles() so the geometry can be unit-tested without spinning up
 // real Electron BrowserWindows. Returns one bounds object per height in the
@@ -239,7 +246,7 @@ function verifyUnregister(accelerator) {
 
 function getActionablePermissions() {
   return pendingPermissions.filter(
-    p => !p.isElicitation && !p.isCodexNotify && p.toolName !== "ExitPlanMode"
+    p => !p.isElicitation && !p.isCodexNotify && !p.isKimiNotify && p.toolName !== "ExitPlanMode"
   );
 }
 
@@ -442,8 +449,8 @@ function showPermissionBubble(permEntry) {
 
 function resolvePermissionEntry(permEntry, behavior, message) {
   // Codex notify bubbles have no HTTP connection — route to dedicated cleanup
-  if (permEntry.isCodexNotify) {
-    dismissCodexNotify(permEntry);
+  if (permEntry.isCodexNotify || permEntry.isKimiNotify) {
+    dismissPassiveNotify(permEntry);
     return;
   }
   const idx = pendingPermissions.indexOf(permEntry);
@@ -626,8 +633,8 @@ function handleDecide(event, behavior) {
   const perm = pendingPermissions.find(p => p.bubble === senderWin);
   permLog(`IPC permission-decide: behavior=${behavior} matched=${!!perm}`);
   if (!perm) return;
-  if (perm.isCodexNotify) {
-    dismissCodexNotify(perm);
+  if (perm.isCodexNotify || perm.isKimiNotify) {
+    dismissPassiveNotify(perm);
     return;
   }
   if (perm.isElicitation && behavior && typeof behavior === "object" && behavior.type === "elicitation-submit") {
@@ -704,11 +711,31 @@ function showCodexNotifyBubble({ sessionId, command }) {
   pendingPermissions.push(permEntry);
   showPermissionBubble(permEntry);
   permEntry.autoExpireTimer = setTimeout(() => {
-    dismissCodexNotify(permEntry);
+    dismissPassiveNotify(permEntry);
   }, CODEX_NOTIFY_EXPIRE_MS);
 }
 
-function dismissCodexNotify(permEntry) {
+function showKimiNotifyBubble({ sessionId, command }) {
+  if (shouldSuppressKimiNotifyBubble(ctx)) {
+    permLog(`kimi notify suppressed: session=${sessionId} dnd=${ctx.doNotDisturb} hideBubbles=${ctx.hideBubbles}`);
+    return;
+  }
+  const permEntry = {
+    res: null,
+    abortHandler: null, suggestions: [],
+    sessionId, bubble: null, hideTimer: null,
+    toolName: "KimiPermission",
+    toolInput: { command: command || "Approve or reject in Kimi terminal." },
+    resolvedSuggestion: null, createdAt: Date.now(),
+    isElicitation: false, isKimiNotify: true,
+    agentId: "kimi-cli",
+    autoExpireTimer: null,
+  };
+  pendingPermissions.push(permEntry);
+  showPermissionBubble(permEntry);
+}
+
+function dismissPassiveNotify(permEntry) {
   const idx = pendingPermissions.indexOf(permEntry);
   if (idx === -1) return;
   pendingPermissions.splice(idx, 1);
@@ -730,8 +757,8 @@ function dismissPermissionsByAgent(agentId) {
   const toDismiss = pendingPermissions.filter((p) => p && p.agentId === agentId);
   if (toDismiss.length === 0) return 0;
   for (const perm of toDismiss) {
-    if (perm.isCodexNotify) {
-      dismissCodexNotify(perm);
+    if (perm.isCodexNotify || perm.isKimiNotify) {
+      dismissPassiveNotify(perm);
       continue;
     }
     const idx = pendingPermissions.indexOf(perm);
@@ -767,7 +794,16 @@ function clearCodexNotifyBubbles(sessionId) {
   const toRemove = pendingPermissions.filter(
     p => p.isCodexNotify && p.sessionId === sessionId
   );
-  for (const perm of toRemove) dismissCodexNotify(perm);
+  for (const perm of toRemove) dismissPassiveNotify(perm);
+}
+
+function clearKimiNotifyBubbles(sessionId) {
+  const hasKimi = pendingPermissions.some(p => p.isKimiNotify);
+  if (!hasKimi) return;
+  const toRemove = sessionId
+    ? pendingPermissions.filter((p) => p.isKimiNotify && p.sessionId === sessionId)
+    : pendingPermissions.filter((p) => p.isKimiNotify);
+  for (const perm of toRemove) dismissPassiveNotify(perm);
 }
 
 function cleanup() {
@@ -796,6 +832,7 @@ return {
   pendingPermissions, PASSTHROUGH_TOOLS,
   handleBubbleHeight, handleDecide, cleanup,
   showCodexNotifyBubble, clearCodexNotifyBubbles,
+  showKimiNotifyBubble, clearKimiNotifyBubbles,
   dismissPermissionsByAgent,
   syncPermissionShortcuts,
   replyOpencodePermission,

@@ -8,6 +8,8 @@ themeLoader.init(path.join(__dirname, "..", "src"));
 const defaultTheme = themeLoader.loadTheme("clawd");
 
 function makeCtx() {
+  const kimiNotifyShown = [];
+  const kimiNotifyCleared = [];
   const ctx = {
     lang: "en",
     theme: defaultTheme,
@@ -32,9 +34,13 @@ function makeCtx() {
     resolvePermissionEntry: () => {},
     showSessionId: false,
     focusTerminalWindow: () => {},
+    showKimiNotifyBubble: ({ sessionId }) => { kimiNotifyShown.push(sessionId); },
+    clearKimiNotifyBubbles: (sessionId) => { kimiNotifyCleared.push(sessionId || "__all__"); },
     processKill: () => { const e = new Error("ESRCH"); e.code = "ESRCH"; throw e; },
     getCursorScreenPoint: () => ({ x: 100, y: 100 }),
   };
+  ctx._kimiNotifyShown = kimiNotifyShown;
+  ctx._kimiNotifyCleared = kimiNotifyCleared;
   ctx.t = createTranslator(() => ctx.lang);
   return ctx;
 }
@@ -134,6 +140,14 @@ describe("Kimi permission hold by session", () => {
     });
     // Without permission_suspect this is a non-gated tool — no new hold.
     assert.strictEqual(api.resolveDisplayState(), "working");
+  });
+
+  it("shows and clears Kimi notify bubble with hold lifecycle", () => {
+    api.updateSession("kimi-a", "notification", "PermissionRequest", { agentId: "kimi-cli" });
+    assert.deepStrictEqual(ctx._kimiNotifyShown, ["kimi-a"]);
+
+    api.updateSession("kimi-a", "working", "PostToolUse", { agentId: "kimi-cli" });
+    assert.deepStrictEqual(ctx._kimiNotifyCleared, ["kimi-a"]);
   });
 });
 

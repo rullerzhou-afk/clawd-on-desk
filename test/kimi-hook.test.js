@@ -7,6 +7,12 @@ const {
   resolvePermissionTools,
   shouldRemapPreToolToPermission,
   classifyPreTool,
+  isExplicitPermissionSignal,
+  readToolName,
+  hasKeywordPermissionSignal,
+  readPermissionMode,
+  MODE_EXPLICIT,
+  MODE_SUSPECT,
 } = require("../hooks/kimi-hook");
 
 describe("Kimi hook script", () => {
@@ -51,6 +57,61 @@ describe("Kimi hook script", () => {
     );
     assert.strictEqual(body.state, "notification");
     assert.strictEqual(body.event, "PermissionRequest");
+  });
+
+  it("supports camelCase toolName and explicit permission flags", () => {
+    const resolve = () => ({ stablePid: null, agentPid: null, detectedEditor: null, pidChain: [] });
+    const body = buildStateBody(
+      "PreToolUse",
+      {
+        hook_event_name: "PreToolUse",
+        session_id: "test-sid",
+        cwd: "/tmp",
+        toolName: "WriteFile",
+        requiresApproval: true,
+      },
+      resolve
+    );
+    assert.strictEqual(body.state, "notification");
+    assert.strictEqual(body.event, "PermissionRequest");
+  });
+
+  it("treats string-form waiting status as explicit permission signal", () => {
+    assert.strictEqual(
+      isExplicitPermissionSignal({
+        permission_status: "waiting_for_approval",
+      }),
+      true
+    );
+    assert.strictEqual(
+      isExplicitPermissionSignal({
+        approval: { status: "awaiting_approval" },
+      }),
+      true
+    );
+  });
+
+  it("recognizes unknown permission-key payload shapes via keyword fallback", () => {
+    assert.strictEqual(
+      hasKeywordPermissionSignal({
+        check: { approvalFlowState: "pending_user_confirm" },
+      }),
+      true
+    );
+    assert.strictEqual(
+      isExplicitPermissionSignal({
+        check: { approvalFlowState: "pending_user_confirm" },
+      }),
+      true
+    );
+  });
+
+  it("reads tool name from tool_name / toolName / nested tool object", () => {
+    assert.strictEqual(readToolName({ tool_name: "shell" }), "shell");
+    assert.strictEqual(readToolName({ toolName: "WriteFile" }), "WriteFile");
+    assert.strictEqual(readToolName({ tool: "Background" }), "Background");
+    assert.strictEqual(readToolName({ tool: { name: "StrReplaceFile" } }), "StrReplaceFile");
+    assert.strictEqual(readToolName({ tool: { tool_name: "background" } }), "background");
   });
 
   it("maps PreToolUse for non-permission tools to working", () => {
@@ -132,6 +193,28 @@ describe("Kimi hook script", () => {
     } finally {
       if (oldSuspect == null) delete process.env.CLAWD_KIMI_PERMISSION_SUSPECT;
       else process.env.CLAWD_KIMI_PERMISSION_SUSPECT = oldSuspect;
+    }
+  });
+
+  it("CLAWD_KIMI_PERMISSION_MODE controls default classification persistently", () => {
+    const oldMode = process.env.CLAWD_KIMI_PERMISSION_MODE;
+    try {
+      process.env.CLAWD_KIMI_PERMISSION_MODE = MODE_SUSPECT;
+      assert.strictEqual(readPermissionMode(), MODE_SUSPECT);
+      assert.strictEqual(
+        classifyPreTool("PreToolUse", { tool_name: "shell" }),
+        "suspect"
+      );
+
+      process.env.CLAWD_KIMI_PERMISSION_MODE = MODE_EXPLICIT;
+      assert.strictEqual(readPermissionMode(), MODE_EXPLICIT);
+      assert.strictEqual(
+        classifyPreTool("PreToolUse", { tool_name: "shell" }),
+        "none"
+      );
+    } finally {
+      if (oldMode == null) delete process.env.CLAWD_KIMI_PERMISSION_MODE;
+      else process.env.CLAWD_KIMI_PERMISSION_MODE = oldMode;
     }
   });
 

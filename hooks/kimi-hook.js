@@ -6,6 +6,9 @@
 const { postStateToRunningServer, readHostPrefix } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
 const { processNames: kimiProcessNames } = require("../agents/kimi-cli");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
 
 const EVENT_TO_STATE = {
   SessionStart: "idle",
@@ -34,6 +37,8 @@ const DEFAULT_PERMISSION_TOOLS = [
   "strreplacefile",
   "background",
 ];
+const MODE_EXPLICIT = "explicit";
+const MODE_SUSPECT = "suspect";
 
 function normalizeToolName(name) {
   return typeof name === "string"
@@ -56,12 +61,129 @@ function resolvePermissionTools() {
 
 const PERMISSION_TOOLS = resolvePermissionTools();
 
+function readPermissionMode() {
+  const raw = typeof process.env.CLAWD_KIMI_PERMISSION_MODE === "string"
+    ? process.env.CLAWD_KIMI_PERMISSION_MODE.trim().toLowerCase()
+    : "";
+  if (raw === MODE_EXPLICIT || raw === MODE_SUSPECT) return raw;
+  return null;
+}
+
+function isTruthySignal(value) {
+  if (value === true) return true;
+  if (value === 1) return true;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "true" || normalized === "1" || normalized === "yes";
+  }
+  return false;
+}
+
+function isWaitingApprovalStatus(value) {
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, "_");
+  return normalized === "waiting_for_approval"
+    || normalized === "awaiting_approval"
+    || normalized === "requires_approval"
+    || normalized === "approval_required"
+    || normalized === "permission_required"
+    || normalized === "needs_approval";
+}
+
+function isPermissionKeyword(key) {
+  if (typeof key !== "string" || !key) return false;
+  const normalized = key.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+  return normalized.includes("permission")
+    || normalized.includes("approval")
+    || normalized.includes("authorize")
+    || normalized.includes("consent");
+}
+
+function isPermissionPendingLike(value) {
+  if (isTruthySignal(value)) return true;
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, "_");
+  return normalized.includes("wait")
+    || normalized.includes("pend")
+    || normalized.includes("request")
+    || normalized.includes("require")
+    || normalized.includes("need_approval")
+    || normalized === "ask";
+}
+
+function hasKeywordPermissionSignal(payload, depth = 0) {
+  if (!payload || typeof payload !== "object" || depth > 3) return false;
+  for (const [key, value] of Object.entries(payload)) {
+    if (isPermissionKeyword(key) && isPermissionPendingLike(value)) return true;
+    if (value && typeof value === "object") {
+      if (hasKeywordPermissionSignal(value, depth + 1)) return true;
+    }
+  }
+  return false;
+}
+
+function appendHookDebug(entry) {
+  if (process.env.CLAWD_KIMI_HOOK_DEBUG !== "1") return;
+  const debugPath = process.env.CLAWD_KIMI_HOOK_DEBUG_PATH
+    || path.join(os.homedir(), ".clawd", "kimi-hook-debug.jsonl");
+  try {
+    fs.mkdirSync(path.dirname(debugPath), { recursive: true });
+    fs.appendFileSync(debugPath, `${JSON.stringify(entry)}\n`);
+  } catch {}
+}
+
+function readToolName(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  if (typeof payload.tool_name === "string" && payload.tool_name) return payload.tool_name;
+  if (typeof payload.toolName === "string" && payload.toolName) return payload.toolName;
+  if (typeof payload.tool === "string" && payload.tool) return payload.tool;
+  if (payload.tool && typeof payload.tool === "object") {
+    if (typeof payload.tool.name === "string" && payload.tool.name) return payload.tool.name;
+    if (typeof payload.tool.tool_name === "string" && payload.tool.tool_name) return payload.tool.tool_name;
+  }
+  return "";
+}
+
 function isExplicitPermissionSignal(payload) {
   if (!payload || typeof payload !== "object") return false;
-  return payload.permission_required === true
-    || payload.requires_approval === true
-    || payload.waiting_for_approval === true
-    || payload.is_permission_request === true;
+  const topLevelFlags = [
+    payload.permission_required,
+    payload.requires_approval,
+    payload.waiting_for_approval,
+    payload.is_permission_request,
+    payload.permissionRequired,
+    payload.requiresApproval,
+    payload.waitingForApproval,
+    payload.isPermissionRequest,
+    payload.approval_required,
+    payload.needs_approval,
+    payload.needsApproval,
+  ];
+  if (topLevelFlags.some(isTruthySignal)) return true;
+  if (isWaitingApprovalStatus(payload.permission_status) || isWaitingApprovalStatus(payload.approval_status)) return true;
+
+  const nestedObjects = [payload.permission, payload.approval, payload.permission_request];
+  for (const nested of nestedObjects) {
+    if (!nested || typeof nested !== "object") continue;
+    const nestedFlags = [
+      nested.required,
+      nested.requires_approval,
+      nested.requiresApproval,
+      nested.waiting_for_approval,
+      nested.waitingForApproval,
+      nested.is_permission_request,
+      nested.isPermissionRequest,
+      nested.needs_approval,
+      nested.needsApproval,
+    ];
+    if (nestedFlags.some(isTruthySignal)) return true;
+    if (isWaitingApprovalStatus(nested.status) || isWaitingApprovalStatus(nested.state)) return true;
+  }
+  // Compatibility fallback for field-shape drift across Kimi versions.
+  // Keep explicit-only semantics: only promote when payload itself carries
+  // permission/approval semantics (including unknown key names).
+  if (hasKeywordPermissionSignal(payload)) return true;
+  return false;
 }
 
 // Classification of PreToolUse for a permission-gated tool:
@@ -69,11 +191,11 @@ function isExplicitPermissionSignal(payload) {
 //                  or CLAWD_KIMI_PERMISSION_IMMEDIATE=1 legacy behavior).
 //   "suspect"    — keep state=working, ask the state machine to delay-promote
 //                  (cancelled if PostToolUse arrives quickly → auto-approved).
-//                  This is opt-in via CLAWD_KIMI_PERMISSION_SUSPECT=1.
+//                  Optional behavior enabled by env.
 //   "none"       — no permission signal at all; hook emits plain working.
 function classifyPreTool(event, payload) {
   if (event !== "PreToolUse") return "none";
-  const normalizedToolName = normalizeToolName(payload && payload.tool_name);
+  const normalizedToolName = normalizeToolName(readToolName(payload));
   if (!PERMISSION_TOOLS.has(normalizedToolName)) return "none";
   // Explicit payload signal always wins and skips the heuristic delay.
   if (isExplicitPermissionSignal(payload)) return "immediate";
@@ -83,7 +205,11 @@ function classifyPreTool(event, payload) {
   // Legacy behavior: any permission-gated PreToolUse flips notification
   // instantly. Useful for folks who want the visual cue no matter what.
   if (process.env.CLAWD_KIMI_PERMISSION_IMMEDIATE === "1") return "immediate";
-  // Optional heuristic mode: mark as suspect and let state.js defer-promote.
+  // Persistent mode switch (written into ~/.kimi/config.toml hook command).
+  const mode = readPermissionMode();
+  if (mode === MODE_SUSPECT) return "suspect";
+  if (mode === MODE_EXPLICIT) return "none";
+  // Optional suspect mode: manual opt-in.
   if (process.env.CLAWD_KIMI_PERMISSION_SUSPECT === "1") return "suspect";
   // Default: explicit-only mode to avoid false positives for long-running
   // auto-approved tools (sleep/npm/network I/O).
@@ -162,7 +288,19 @@ function main() {
     // Pre-resolve on SessionStart (runs during stdin buffering, not after)
     if (event === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
 
-    const body = buildStateBody(event, payload || {}, resolve);
+    const safePayload = payload || {};
+    const classification = classifyPreTool(event, safePayload);
+    const body = buildStateBody(event, safePayload, resolve);
+    appendHookDebug({
+      at: new Date().toISOString(),
+      event,
+      session_id: safePayload.session_id || null,
+      tool_name: readToolName(safePayload) || null,
+      classification,
+      body_event: body && body.event,
+      body_state: body && body.state,
+      payload: safePayload,
+    });
     if (!body) process.exit(0);
     postStateToRunningServer(
       JSON.stringify(body),
@@ -181,4 +319,9 @@ module.exports = {
   shouldRemapPreToolToPermission,
   classifyPreTool,
   isExplicitPermissionSignal,
+  readToolName,
+  hasKeywordPermissionSignal,
+  readPermissionMode,
+  MODE_EXPLICIT,
+  MODE_SUSPECT,
 };

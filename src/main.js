@@ -708,7 +708,7 @@ const _permCtx = {
   clearShortcutFailure: (actionId) => clearShortcutFailure(actionId),
 };
 const _perm = require("./permission")(_permCtx);
-const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, showCodexNotifyBubble, clearCodexNotifyBubbles, syncPermissionShortcuts, replyOpencodePermission } = _perm;
+const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, showCodexNotifyBubble, clearCodexNotifyBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodePermission } = _perm;
 const pendingPermissions = _perm.pendingPermissions;
 let permDebugLog = null; // set after app.whenReady()
 let updateDebugLog = null; // set after app.whenReady()
@@ -798,6 +798,8 @@ const _stateCtx = {
   t: (key) => t(key),
   focusTerminalWindow: (...args) => focusTerminalWindow(...args),
   resolvePermissionEntry: (...args) => resolvePermissionEntry(...args),
+  showKimiNotifyBubble: (...args) => showKimiNotifyBubble(...args),
+  clearKimiNotifyBubbles: (...args) => clearKimiNotifyBubbles(...args),
   miniPeekIn: () => miniPeekIn(),
   miniPeekOut: () => miniPeekOut(),
   buildContextMenu: () => buildContextMenu(),
