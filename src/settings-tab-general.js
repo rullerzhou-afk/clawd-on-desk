@@ -187,8 +187,6 @@
 
     let previewUrl = null;
     let previewAudio = null;
-    let previewThrottleTimer = null;
-    let previewLastFiredAt = 0;
 
     function applySliderValue(pct) {
       slider.value = String(pct);
@@ -216,41 +214,16 @@
       previewAudio.play().catch(() => {});
     }
 
-    function schedulePreview(vol) {
-      const now = Date.now();
-      if (now - previewLastFiredAt >= 180) {
-        if (previewThrottleTimer !== null) {
-          clearTimeout(previewThrottleTimer);
-          previewThrottleTimer = null;
-        }
-        previewLastFiredAt = now;
-        playPreview(vol);
-      } else {
-        if (previewThrottleTimer !== null) clearTimeout(previewThrottleTimer);
-        previewThrottleTimer = setTimeout(() => {
-          previewThrottleTimer = null;
-          previewLastFiredAt = Date.now();
-          playPreview(vol);
-        }, 180 - (now - previewLastFiredAt));
-      }
-    }
-
     applySliderValue(getSnapshotVolumePct());
     applyDisabledState(!!(state.snapshot && state.snapshot.soundMuted));
 
     slider.addEventListener("input", () => {
-      const pct = Number(slider.value);
-      applySliderValue(pct);
-      schedulePreview(pct / 100);
+      applySliderValue(Number(slider.value));
     });
 
     slider.addEventListener("change", () => {
       const pct = Number(slider.value);
       const vol = pct / 100;
-      if (previewThrottleTimer !== null) {
-        clearTimeout(previewThrottleTimer);
-        previewThrottleTimer = null;
-      }
       playPreview(vol);
       window.settingsAPI.update("soundVolume", vol).then((result) => {
         if (!result || result.status !== "ok") {
@@ -277,10 +250,6 @@
         applySliderValue(getSnapshotVolumePct());
       },
       dispose() {
-        if (previewThrottleTimer !== null) {
-          clearTimeout(previewThrottleTimer);
-          previewThrottleTimer = null;
-        }
         if (previewAudio) {
           previewAudio.pause();
           previewAudio = null;
