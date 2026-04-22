@@ -798,14 +798,25 @@ window.electronAPI.onPlaySound((payload) => {
     ? Math.max(0, Math.min(1, payload.volume))
     : 1;
   if (!url) return;
-  let audio = _audioCache[url];
+  // Preview URLs carry a `_t=` cache-buster so every click is a fresh URL;
+  // caching them would grow the map unboundedly (one entry per preview click)
+  // for no benefit since the URL will never be requested again. Only cache
+  // real playback URLs.
+  const isPreview = url.includes("_t=");
+  let audio = !isPreview ? _audioCache[url] : null;
   if (!audio) {
     audio = new Audio(url);
-    _audioCache[url] = audio;
+    if (!isPreview) _audioCache[url] = audio;
   }
   audio.volume = volume;
   audio.currentTime = 0;
   audio.play().catch(() => {});
+});
+// Same-extension override replacement overwrites the file on disk without
+// changing the URL, so the cached Audio object keeps its old buffered data.
+// Main sends this after a successful pick so the next playback re-loads.
+window.electronAPI.onInvalidateSoundCache((url) => {
+  if (typeof url === "string" && url) delete _audioCache[url];
 });
 
 // --- Wake from doze (smooth eye opening) ---

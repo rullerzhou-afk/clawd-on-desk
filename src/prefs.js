@@ -318,16 +318,22 @@ function normalizeStateOverridesMap(value) {
 
 // Sound overrides are per-sound-name (complete / confirm / theme-author-defined).
 // Structurally simpler than state overrides: only `file` matters (no transition,
-// duration, disabled, or sourceThemeId). We reuse normalizeSlotOverride to get
-// string-basename validation for free, then strip the animation-only fields.
+// duration, disabled, or sourceThemeId). We reuse normalizeSlotOverride to
+// strip the animation-only fields, then enforce path-segment safety on both
+// the key (used as filename stem when copying) and the file (joined into the
+// overrides dir at load time) — defence in depth against malicious themes or
+// hand-edited pref files.
 function normalizeSoundOverridesMap(value) {
   if (!isPlainObject(value)) return null;
   const out = {};
   for (const [soundName, entry] of Object.entries(value)) {
     if (typeof soundName !== "string" || !soundName) continue;
+    if (!/^[a-zA-Z0-9_-]+$/.test(soundName)) continue;
     const cleanEntry = normalizeSlotOverride(entry, { allowDisabled: false });
     if (!cleanEntry || typeof cleanEntry.file !== "string" || !cleanEntry.file) continue;
-    out[soundName] = { file: cleanEntry.file };
+    const safeFile = cleanEntry.file.replace(/^.*[\/\\]/, "");
+    if (!safeFile || safeFile === "." || safeFile === "..") continue;
+    out[soundName] = { file: safeFile };
   }
   return Object.keys(out).length > 0 ? out : null;
 }

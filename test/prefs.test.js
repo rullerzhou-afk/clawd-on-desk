@@ -573,6 +573,31 @@ describe("prefs.save", () => {
     });
   });
 
+  it("themeOverrides.sounds: rejects path-unsafe soundName keys and basename-sanitises file", () => {
+    // soundName becomes a filename stem under sound-overrides/<themeId>/ —
+    // a malicious theme or hand-edited pref must not be able to escape that
+    // directory. File paths with separators get basename-stripped.
+    const validated = prefs.validate({
+      ...prefs.getDefaults(),
+      themeOverrides: {
+        clawd: {
+          sounds: {
+            complete:      { file: "ok.mp3" },
+            "../../evil":  { file: "x.mp3" },           // unsafe key → dropped
+            "foo/bar":     { file: "x.mp3" },           // unsafe key → dropped
+            "spaces bad":  { file: "x.mp3" },           // unsafe key → dropped
+            confirm:       { file: "../../etc/passwd" },// unsafe file → basenamed
+            quiet:         { file: ".." },               // bare `..` → dropped
+          },
+        },
+      },
+    });
+    assert.deepStrictEqual(validated.themeOverrides.clawd.sounds, {
+      complete: { file: "ok.mp3" },
+      confirm:  { file: "passwd" },
+    });
+  });
+
   it("themeOverrides: legacy flat state entries normalize into states map", () => {
     const validated = prefs.validate({
       ...prefs.getDefaults(),

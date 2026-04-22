@@ -397,7 +397,9 @@
 
   function runSoundPreview(slot) {
     return window.settingsAPI.previewSound({ soundName: slot.name }).then((result) => {
-      if (result && result.status && result.status !== "ok") {
+      // "skipped" means DND or mute suppressed playback — the user opted into
+      // that; silently drop rather than popping an error toast.
+      if (result && result.status && result.status !== "ok" && result.status !== "skipped") {
         const dict = i18n.STRINGS[readers.getLang()] || i18n.STRINGS.en;
         ops.showToast(dict.toastSoundOverrideFailed(result.message || ""), { error: true });
       }

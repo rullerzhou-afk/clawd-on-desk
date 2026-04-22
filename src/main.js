@@ -2077,6 +2077,13 @@ ipcMain.handle("settings:pick-sound-file", async (event, payload) => {
   if (typeof soundName !== "string" || !soundName) {
     return { status: "error", message: "pickSoundFile.soundName must be a non-empty string" };
   }
+  // soundName becomes a filename stem under sound-overrides/<themeId>/ — a
+  // third-party theme could ship `sounds: { "../../foo": "x.mp3" }` and
+  // weaponise this IPC as a write-anywhere primitive. Restrict to chars that
+  // are unambiguously safe in a path segment on every supported OS.
+  if (!/^[a-zA-Z0-9_-]+$/.test(soundName)) {
+    return { status: "error", message: `pickSoundFile.soundName "${soundName}" contains invalid characters` };
+  }
   if (!activeTheme) return { status: "error", message: "no active theme" };
   const themeId = activeTheme._id;
   // Only allow replacing sounds the theme actually publishes — overriding a
@@ -2131,6 +2138,14 @@ ipcMain.handle("settings:pick-sound-file", async (event, payload) => {
   if (!cmdResult || cmdResult.status !== "ok") {
     return cmdResult || { status: "error", message: "setSoundOverride failed" };
   }
+  // Same-filename replacements short-circuit setSoundOverride as a noop, so
+  // activateTheme() never runs and the renderer's _audioCache keeps its old
+  // Audio object for this URL — the user would hear the previous file on
+  // every future trigger. Explicitly invalidate the cache entry for the
+  // current sound URL so the next playback reloads from disk. Harmless when
+  // activateTheme did run (renderer was reloaded, cache is already empty).
+  const newUrl = themeLoader.getSoundUrl(soundName);
+  if (newUrl) sendToRenderer("invalidate-sound-cache", newUrl);
   return { status: "ok", file: destFilename };
 });
 
@@ -2142,6 +2157,11 @@ ipcMain.handle("settings:preview-sound", (_event, payload) => {
   if (typeof soundName !== "string" || !soundName) {
     return { status: "error", message: "previewSound.soundName must be a non-empty string" };
   }
+  // Mirror playSound()'s guards: DND / muted users clicking Play in Settings
+  // would otherwise bypass the system they explicitly opted into (meetings,
+  // shared spaces). Return a skipped status so the UI can stay silent.
+  if (doNotDisturb) return { status: "skipped", reason: "dnd" };
+  if (soundMuted) return { status: "skipped", reason: "muted" };
   const url = themeLoader.getSoundUrl(soundName);
   if (!url) return { status: "error", message: "sound unavailable" };
   // Cache-bust so the renderer's `_audioCache[url]` doesn't replay a stale
@@ -2149,7 +2169,7 @@ ipcMain.handle("settings:preview-sound", (_event, payload) => {
   // need this because changing the override triggers activateTheme → renderer
   // reload, which clears the cache naturally; preview runs without reload.
   const bustedUrl = `${url}${url.includes("?") ? "&" : "?"}_t=${Date.now()}`;
-  sendToRenderer("play-sound", bustedUrl);
+  sendToRenderer("play-sound", { url: bustedUrl, volume: soundVolume });
   return { status: "ok" };
 });
 
