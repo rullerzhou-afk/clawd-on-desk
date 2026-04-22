@@ -69,6 +69,7 @@ function isExplicitPermissionSignal(payload) {
 //                  or CLAWD_KIMI_PERMISSION_IMMEDIATE=1 legacy behavior).
 //   "suspect"    — keep state=working, ask the state machine to delay-promote
 //                  (cancelled if PostToolUse arrives quickly → auto-approved).
+//                  This is opt-in via CLAWD_KIMI_PERMISSION_SUSPECT=1.
 //   "none"       — no permission signal at all; hook emits plain working.
 function classifyPreTool(event, payload) {
   if (event !== "PreToolUse") return "none";
@@ -82,11 +83,11 @@ function classifyPreTool(event, payload) {
   // Legacy behavior: any permission-gated PreToolUse flips notification
   // instantly. Useful for folks who want the visual cue no matter what.
   if (process.env.CLAWD_KIMI_PERMISSION_IMMEDIATE === "1") return "immediate";
-  // Default: mark as suspect. The server-side heuristic will defer the
-  // notification switch; if the tool was already auto-approved (previously
-  // granted permission), the follow-up PostToolUse cancels the timer and
-  // the pet never flashes notification.
-  return "suspect";
+  // Optional heuristic mode: mark as suspect and let state.js defer-promote.
+  if (process.env.CLAWD_KIMI_PERMISSION_SUSPECT === "1") return "suspect";
+  // Default: explicit-only mode to avoid false positives for long-running
+  // auto-approved tools (sleep/npm/network I/O).
+  return "none";
 }
 
 function shouldRemapPreToolToPermission(event, payload) {

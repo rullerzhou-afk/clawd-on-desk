@@ -167,8 +167,8 @@ function parseSuspectDelay() {
 }
 
 function hasPermissionAnimationLock() {
-  const pendingCount = Array.isArray(ctx.pendingPermissions) ? ctx.pendingPermissions.length : 0;
-  return pendingCount > 0 || kimiPermissionHolds.size > 0;
+  // Kimi-only lock: do not alter Claude/Codex/opencode permission behavior.
+  return kimiPermissionHolds.size > 0;
 }
 
 // ── Stale cleanup ──

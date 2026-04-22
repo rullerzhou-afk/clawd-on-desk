@@ -69,12 +69,14 @@ describe("Kimi hook script", () => {
     assert.strictEqual(body.state, "working");
   });
 
-  it("defaults to suspect (working + permission_suspect) for permission tools without explicit signal", () => {
+  it("defaults to explicit-only (no suspect) for permission tools without explicit signal", () => {
     const oldDisable = process.env.CLAWD_KIMI_DISABLE_PRETOOL_PERMISSION;
     const oldImmediate = process.env.CLAWD_KIMI_PERMISSION_IMMEDIATE;
+    const oldSuspect = process.env.CLAWD_KIMI_PERMISSION_SUSPECT;
     try {
       delete process.env.CLAWD_KIMI_DISABLE_PRETOOL_PERMISSION;
       delete process.env.CLAWD_KIMI_PERMISSION_IMMEDIATE;
+      delete process.env.CLAWD_KIMI_PERMISSION_SUSPECT;
       const resolve = () => ({
         stablePid: 12345,
         agentPid: null,
@@ -87,7 +89,39 @@ describe("Kimi hook script", () => {
         resolve
       );
       // Default path must NOT flash notification immediately — we let
-      // state.js defer-promote only if no PostToolUse arrives in time.
+      // state.js defer-promote only in opt-in suspect mode.
+      assert.strictEqual(body.state, "working");
+      assert.strictEqual(body.event, "PreToolUse");
+      assert.notStrictEqual(body.permission_suspect, true);
+      assert.strictEqual(
+        classifyPreTool("PreToolUse", { tool_name: "shell" }),
+        "none"
+      );
+    } finally {
+      if (oldDisable == null) delete process.env.CLAWD_KIMI_DISABLE_PRETOOL_PERMISSION;
+      else process.env.CLAWD_KIMI_DISABLE_PRETOOL_PERMISSION = oldDisable;
+      if (oldImmediate == null) delete process.env.CLAWD_KIMI_PERMISSION_IMMEDIATE;
+      else process.env.CLAWD_KIMI_PERMISSION_IMMEDIATE = oldImmediate;
+      if (oldSuspect == null) delete process.env.CLAWD_KIMI_PERMISSION_SUSPECT;
+      else process.env.CLAWD_KIMI_PERMISSION_SUSPECT = oldSuspect;
+    }
+  });
+
+  it("CLAWD_KIMI_PERMISSION_SUSPECT=1 enables deferred suspect mode", () => {
+    const oldSuspect = process.env.CLAWD_KIMI_PERMISSION_SUSPECT;
+    try {
+      process.env.CLAWD_KIMI_PERMISSION_SUSPECT = "1";
+      const resolve = () => ({
+        stablePid: 12345,
+        agentPid: null,
+        detectedEditor: null,
+        pidChain: [],
+      });
+      const body = buildStateBody(
+        "PreToolUse",
+        { session_id: "test-sid", cwd: "/tmp", tool_name: "shell" },
+        resolve
+      );
       assert.strictEqual(body.state, "working");
       assert.strictEqual(body.event, "PreToolUse");
       assert.strictEqual(body.permission_suspect, true);
@@ -96,10 +130,8 @@ describe("Kimi hook script", () => {
         "suspect"
       );
     } finally {
-      if (oldDisable == null) delete process.env.CLAWD_KIMI_DISABLE_PRETOOL_PERMISSION;
-      else process.env.CLAWD_KIMI_DISABLE_PRETOOL_PERMISSION = oldDisable;
-      if (oldImmediate == null) delete process.env.CLAWD_KIMI_PERMISSION_IMMEDIATE;
-      else process.env.CLAWD_KIMI_PERMISSION_IMMEDIATE = oldImmediate;
+      if (oldSuspect == null) delete process.env.CLAWD_KIMI_PERMISSION_SUSPECT;
+      else process.env.CLAWD_KIMI_PERMISSION_SUSPECT = oldSuspect;
     }
   });
 
@@ -299,28 +331,30 @@ describe("Kimi hook script", () => {
   it("classifyPreTool: default / immediate / disable / explicit matrix", () => {
     const oldDisable = process.env.CLAWD_KIMI_DISABLE_PRETOOL_PERMISSION;
     const oldImmediate = process.env.CLAWD_KIMI_PERMISSION_IMMEDIATE;
+    const oldSuspect = process.env.CLAWD_KIMI_PERMISSION_SUSPECT;
     try {
       delete process.env.CLAWD_KIMI_DISABLE_PRETOOL_PERMISSION;
       delete process.env.CLAWD_KIMI_PERMISSION_IMMEDIATE;
+      delete process.env.CLAWD_KIMI_PERMISSION_SUSPECT;
 
       // Non-permission tools are classified as "none" (no signal at all).
       assert.strictEqual(
         classifyPreTool("PreToolUse", { tool_name: "read_file" }),
         "none"
       );
-      // Default: gated tools → suspect (defer notification to state.js).
+      // Default: gated tools -> none (explicit-only mode).
       assert.strictEqual(
         classifyPreTool("PreToolUse", { tool_name: "shell" }),
-        "suspect"
+        "none"
       );
-      // shouldRemapPreToolToPermission() is the "flash notification right
-      // now" predicate — suspect should NOT trigger it.
+      // shouldRemapPreToolToPermission() is the "flash notification right now"
+      // predicate and remains false by default.
       assert.strictEqual(
         shouldRemapPreToolToPermission("PreToolUse", { tool_name: "shell" }),
         false
       );
 
-      // Disable: suspect turns into none (no animation at all unless payload
+      // Disable remains compatible: no animation at all unless payload
       // explicitly says so).
       process.env.CLAWD_KIMI_DISABLE_PRETOOL_PERMISSION = "1";
       assert.strictEqual(
@@ -337,6 +371,14 @@ describe("Kimi hook script", () => {
       );
       delete process.env.CLAWD_KIMI_DISABLE_PRETOOL_PERMISSION;
 
+      // Suspect mode is opt-in.
+      process.env.CLAWD_KIMI_PERMISSION_SUSPECT = "1";
+      assert.strictEqual(
+        classifyPreTool("PreToolUse", { tool_name: "shell" }),
+        "suspect"
+      );
+      delete process.env.CLAWD_KIMI_PERMISSION_SUSPECT;
+
       // Immediate legacy switch: gated tools → immediate unconditionally.
       process.env.CLAWD_KIMI_PERMISSION_IMMEDIATE = "1";
       assert.strictEqual(
@@ -352,6 +394,8 @@ describe("Kimi hook script", () => {
       else process.env.CLAWD_KIMI_DISABLE_PRETOOL_PERMISSION = oldDisable;
       if (oldImmediate == null) delete process.env.CLAWD_KIMI_PERMISSION_IMMEDIATE;
       else process.env.CLAWD_KIMI_PERMISSION_IMMEDIATE = oldImmediate;
+      if (oldSuspect == null) delete process.env.CLAWD_KIMI_PERMISSION_SUSPECT;
+      else process.env.CLAWD_KIMI_PERMISSION_SUSPECT = oldSuspect;
     }
   });
 });

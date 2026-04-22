@@ -227,29 +227,28 @@ describe("Global permission animation lock", () => {
     mock.timers.reset();
   });
 
-  it("forces notification as highest-priority display while permissions are pending", () => {
+  it("forces notification as highest-priority display while Kimi permission hold is pending", () => {
     api.sessions.set("s1", { state: "working", updatedAt: Date.now(), headless: false });
     assert.strictEqual(api.resolveDisplayState(), "working");
 
-    ctx.pendingPermissions.push({ sessionId: "s1", toolName: "Bash" });
+    api.updateSession("k1", "notification", "PermissionRequest", { agentId: "kimi-cli" });
     assert.strictEqual(api.resolveDisplayState(), "notification");
   });
 
-  it("blocks oneshot state transitions while permissions are pending", () => {
-    ctx.pendingPermissions.push({ sessionId: "s1", toolName: "Bash" });
-    api.updateSession("s1", "notification", "PermissionRequest", { agentId: "claude-code" });
+  it("blocks oneshot state transitions while Kimi hold is pending", () => {
+    api.updateSession("k1", "notification", "PermissionRequest", { agentId: "kimi-cli" });
     assert.strictEqual(api.getCurrentState(), "notification");
 
     api.updateSession("s1", "attention", "Stop", { agentId: "claude-code" });
     assert.strictEqual(api.getCurrentState(), "notification");
   });
 
-  it("resumes normal state resolution after permission queue is cleared", () => {
+  it("resumes normal state resolution after Kimi hold is cleared", () => {
     api.sessions.set("s1", { state: "working", updatedAt: Date.now(), headless: false });
-    ctx.pendingPermissions.push({ sessionId: "s1", toolName: "Bash" });
+    api.updateSession("k1", "notification", "PermissionRequest", { agentId: "kimi-cli" });
     assert.strictEqual(api.resolveDisplayState(), "notification");
 
-    ctx.pendingPermissions.length = 0;
+    api.updateSession("k1", "working", "PostToolUse", { agentId: "kimi-cli" });
     assert.strictEqual(api.resolveDisplayState(), "working");
   });
 });

@@ -29,7 +29,7 @@ Kimi Code now uses hook-only integration (`~/.kimi/config.toml`), and maps these
 | SessionStart | idle |
 | SessionEnd | sleeping |
 | UserPromptSubmit | thinking |
-| PreToolUse | working. For permission-gated tools (`shell`, `write_file`, `str_replace_file`, `background`) the hook sends `permission_suspect: true` and the state machine defers the decision: if a `PostToolUse` arrives within ~800ms (auto-approved / previously granted) the flag is cancelled and no notification animation plays; if the window expires (Kimi is waiting on the approval TUI) the pet promotes to `PermissionRequest` → notification. Env knobs: `CLAWD_KIMI_PERMISSION_SUSPECT_MS=<ms>` tunes the window, `CLAWD_KIMI_PERMISSION_IMMEDIATE=1` restores the legacy instant-flash behavior, `CLAWD_KIMI_DISABLE_PRETOOL_PERMISSION=1` turns the heuristic off entirely (explicit payload signals like `permission_required: true` always flash immediately). |
+| PreToolUse | working by default. Permission animation only flips when payload carries explicit approval signals (`permission_required` / `requires_approval` / `waiting_for_approval` / `is_permission_request`). Optional knobs: `CLAWD_KIMI_PERMISSION_IMMEDIATE=1` forces immediate remap for permission-gated tools; `CLAWD_KIMI_PERMISSION_SUSPECT=1` enables deferred `permission_suspect` heuristic mode (with `CLAWD_KIMI_PERMISSION_SUSPECT_MS=<ms>` for the window); `CLAWD_KIMI_DISABLE_PRETOOL_PERMISSION=1` keeps explicit-only behavior even when optional modes are set. |
 | PostToolUse | working |
 | PostToolUseFailure | error |
 | Stop | attention |
