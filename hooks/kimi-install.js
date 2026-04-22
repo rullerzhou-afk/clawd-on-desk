@@ -63,22 +63,39 @@ function extractExistingPermissionMode(content) {
   return null;
 }
 
+// Remove every [[hooks]] block whose command references Clawd's kimi-hook.js.
+// A block ends at the next TOML section header (`[x]` or `[[x]]`) or EOF —
+// NOT only at the next `[[hooks]]`. Using the narrower lookahead would cause
+// a regex-based pass to greedily swallow any trailing `[server]`, `[mcp]`,
+// `[[tools]]`, etc. that the user added after their hooks, silently deleting
+// their own config. Walking line-by-line avoids that entirely.
 function stripClawdKimiHookBlocks(content) {
   if (typeof content !== "string" || !content) return { content: "", removed: 0 };
-  const blockRegex = /\[\[hooks\]\][\s\S]*?(?=\n\[\[hooks\]\]|\s*$)/g;
-  let rebuilt = "";
+  const HEADER_RE = /^\s*\[\[?[^\]]+\]\]?\s*(?:#.*)?$/;
+  const HOOKS_HEADER_RE = /^\s*\[\[hooks\]\]\s*(?:#.*)?$/;
+  const lines = content.split("\n");
+  const output = [];
   let removed = 0;
-  let lastIndex = 0;
-  let match;
-  while ((match = blockRegex.exec(content)) !== null) {
-    const block = match[0];
-    rebuilt += content.slice(lastIndex, match.index);
-    if (COMMAND_WITH_MARKER_REGEX.test(block)) removed++;
-    else rebuilt += block;
-    lastIndex = match.index + block.length;
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (HOOKS_HEADER_RE.test(line)) {
+      const start = i;
+      let j = i + 1;
+      while (j < lines.length && !HEADER_RE.test(lines[j])) j++;
+      const block = lines.slice(start, j).join("\n");
+      if (COMMAND_WITH_MARKER_REGEX.test(block)) {
+        removed++;
+      } else {
+        output.push(block);
+      }
+      i = j;
+    } else {
+      output.push(line);
+      i++;
+    }
   }
-  rebuilt += content.slice(lastIndex);
-  return { content: rebuilt, removed };
+  return { content: output.join("\n"), removed };
 }
 
 /**

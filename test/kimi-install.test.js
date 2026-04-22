@@ -178,6 +178,45 @@ timeout = 30
     assert.ok(result.updated >= 1);
   });
 
+  it("preserves user-authored sections that follow Clawd hook blocks", () => {
+    // Regression: the old lookahead-based strip greedily swallowed anything
+    // between the first Clawd [[hooks]] and EOF, wiping user-added tables
+    // like [server] / [[tools]] / [mcp] on every startup auto-sync.
+    const { settingsPath } = makeTempKimiHome();
+    const legacy = [
+      'default_model = "kimi-for-coding"',
+      "",
+      "[[hooks]]",
+      'event = "PreToolUse"',
+      "command = '\"node\" \"/opt/clawd/hooks/kimi-hook.js\"'",
+      'matcher = ""',
+      "timeout = 30",
+      "",
+      "[server]",
+      "port = 8080",
+      "",
+      "[[tools]]",
+      'name = "example"',
+      "",
+      "[mcp]",
+      'enabled = true',
+      "",
+    ].join("\n");
+    fs.writeFileSync(settingsPath, legacy, "utf8");
+
+    registerKimiHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    const after = fs.readFileSync(settingsPath, "utf8");
+    assert.ok(after.includes("[server]"), "user-added [server] section must survive");
+    assert.ok(after.includes("port = 8080"), "[server] content must survive");
+    assert.ok(after.includes("[[tools]]"), "user-added [[tools]] must survive");
+    assert.ok(after.includes('name = "example"'), "[[tools]] content must survive");
+    assert.ok(after.includes("[mcp]"), "user-added [mcp] section must survive");
+    assert.ok(after.includes("enabled = true"), "[mcp] content must survive");
+    const markerLines = after.match(/command\s*=.*kimi-hook\.js/g) || [];
+    assert.strictEqual(markerLines.length, KIMI_HOOK_EVENTS.length);
+  });
+
   it("skips when ~/.kimi/ does not exist", () => {
     const { root } = makeTempKimiHome();
     const settingsPath = path.join(root, ".kimi-not-exist", "config.toml");
