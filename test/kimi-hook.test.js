@@ -1,5 +1,8 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const {
   buildStateBody,
   PERMISSION_TOOLS,
@@ -13,6 +16,9 @@ const {
   readPermissionMode,
   MODE_EXPLICIT,
   MODE_SUSPECT,
+  readHookDebugMaxBytes,
+  appendHookDebug,
+  DEFAULT_HOOK_DEBUG_MAX_BYTES,
 } = require("../hooks/kimi-hook");
 
 describe("Kimi hook script", () => {
@@ -479,6 +485,49 @@ describe("Kimi hook script", () => {
       else process.env.CLAWD_KIMI_PERMISSION_IMMEDIATE = oldImmediate;
       if (oldSuspect == null) delete process.env.CLAWD_KIMI_PERMISSION_SUSPECT;
       else process.env.CLAWD_KIMI_PERMISSION_SUSPECT = oldSuspect;
+    }
+  });
+
+  it("uses default debug log size cap when env is unset/invalid", () => {
+    const old = process.env.CLAWD_KIMI_HOOK_DEBUG_MAX_BYTES;
+    try {
+      delete process.env.CLAWD_KIMI_HOOK_DEBUG_MAX_BYTES;
+      assert.strictEqual(readHookDebugMaxBytes(), DEFAULT_HOOK_DEBUG_MAX_BYTES);
+
+      process.env.CLAWD_KIMI_HOOK_DEBUG_MAX_BYTES = "not-a-number";
+      assert.strictEqual(readHookDebugMaxBytes(), DEFAULT_HOOK_DEBUG_MAX_BYTES);
+    } finally {
+      if (old == null) delete process.env.CLAWD_KIMI_HOOK_DEBUG_MAX_BYTES;
+      else process.env.CLAWD_KIMI_HOOK_DEBUG_MAX_BYTES = old;
+    }
+  });
+
+  it("stops writing debug log when file reaches max bytes cap", () => {
+    const oldDebug = process.env.CLAWD_KIMI_HOOK_DEBUG;
+    const oldPath = process.env.CLAWD_KIMI_HOOK_DEBUG_PATH;
+    const oldMax = process.env.CLAWD_KIMI_HOOK_DEBUG_MAX_BYTES;
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-kimi-hook-"));
+    const debugFile = path.join(tmpDir, "kimi-hook-debug.jsonl");
+    try {
+      process.env.CLAWD_KIMI_HOOK_DEBUG = "1";
+      process.env.CLAWD_KIMI_HOOK_DEBUG_PATH = debugFile;
+      process.env.CLAWD_KIMI_HOOK_DEBUG_MAX_BYTES = "30";
+
+      appendHookDebug({ a: "1234567890" });
+      const first = fs.readFileSync(debugFile, "utf8");
+      assert.ok(first.length > 0);
+
+      appendHookDebug({ b: "1234567890" });
+      const second = fs.readFileSync(debugFile, "utf8");
+      assert.strictEqual(second, first);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      if (oldDebug == null) delete process.env.CLAWD_KIMI_HOOK_DEBUG;
+      else process.env.CLAWD_KIMI_HOOK_DEBUG = oldDebug;
+      if (oldPath == null) delete process.env.CLAWD_KIMI_HOOK_DEBUG_PATH;
+      else process.env.CLAWD_KIMI_HOOK_DEBUG_PATH = oldPath;
+      if (oldMax == null) delete process.env.CLAWD_KIMI_HOOK_DEBUG_MAX_BYTES;
+      else process.env.CLAWD_KIMI_HOOK_DEBUG_MAX_BYTES = oldMax;
     }
   });
 });

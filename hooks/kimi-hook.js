@@ -39,6 +39,7 @@ const DEFAULT_PERMISSION_TOOLS = [
 ];
 const MODE_EXPLICIT = "explicit";
 const MODE_SUSPECT = "suspect";
+const DEFAULT_HOOK_DEBUG_MAX_BYTES = 5 * 1024 * 1024;
 
 function normalizeToolName(name) {
   return typeof name === "string"
@@ -122,13 +123,30 @@ function hasKeywordPermissionSignal(payload, depth = 0) {
   return false;
 }
 
+function readHookDebugMaxBytes() {
+  const raw = process.env.CLAWD_KIMI_HOOK_DEBUG_MAX_BYTES;
+  if (typeof raw !== "string" || !raw.trim()) return DEFAULT_HOOK_DEBUG_MAX_BYTES;
+  const parsed = Number.parseInt(raw.trim(), 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_HOOK_DEBUG_MAX_BYTES;
+  return parsed;
+}
+
 function appendHookDebug(entry) {
   if (process.env.CLAWD_KIMI_HOOK_DEBUG !== "1") return;
   const debugPath = process.env.CLAWD_KIMI_HOOK_DEBUG_PATH
     || path.join(os.homedir(), ".clawd", "kimi-hook-debug.jsonl");
   try {
+    const line = `${JSON.stringify(entry)}\n`;
+    const maxBytes = readHookDebugMaxBytes();
+    if (maxBytes > 0) {
+      let currentSize = 0;
+      try {
+        currentSize = fs.statSync(debugPath).size || 0;
+      } catch {}
+      if (currentSize + Buffer.byteLength(line) > maxBytes) return;
+    }
     fs.mkdirSync(path.dirname(debugPath), { recursive: true });
-    fs.appendFileSync(debugPath, `${JSON.stringify(entry)}\n`);
+    fs.appendFileSync(debugPath, line);
   } catch {}
 }
 
@@ -324,4 +342,7 @@ module.exports = {
   readPermissionMode,
   MODE_EXPLICIT,
   MODE_SUSPECT,
+  readHookDebugMaxBytes,
+  appendHookDebug,
+  DEFAULT_HOOK_DEBUG_MAX_BYTES,
 };

@@ -1010,7 +1010,9 @@ function startKimiPermissionPoll(sessionId) {
     timer,
     until: maxMs > 0 ? Date.now() + maxMs : null,
   });
-  if (typeof ctx.showKimiNotifyBubble === "function") {
+  // Avoid stacking duplicate passive bubbles for the same pending request.
+  // Refreshing the hold timer should not create extra UI noise.
+  if (!existing && typeof ctx.showKimiNotifyBubble === "function") {
     ctx.showKimiNotifyBubble({ sessionId });
   }
 }

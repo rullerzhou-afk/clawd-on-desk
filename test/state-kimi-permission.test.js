@@ -149,6 +149,12 @@ describe("Kimi permission hold by session", () => {
     api.updateSession("kimi-a", "working", "PostToolUse", { agentId: "kimi-cli" });
     assert.deepStrictEqual(ctx._kimiNotifyCleared, ["kimi-a"]);
   });
+
+  it("does not show duplicate Kimi notify bubble for repeated permission pulses", () => {
+    api.updateSession("kimi-a", "notification", "PermissionRequest", { agentId: "kimi-cli" });
+    api.updateSession("kimi-a", "notification", "PermissionRequest", { agentId: "kimi-cli" });
+    assert.deepStrictEqual(ctx._kimiNotifyShown, ["kimi-a"]);
+  });
 });
 
 describe("Kimi permission suspect heuristic", () => {
