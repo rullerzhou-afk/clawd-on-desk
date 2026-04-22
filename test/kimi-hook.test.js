@@ -383,6 +383,36 @@ describe("Kimi hook script", () => {
     assert.strictEqual(body, null);
   });
 
+  it("coerces non-string session_id instead of throwing", () => {
+    const resolve = () => ({ stablePid: 0, agentPid: 0, detectedEditor: null, pidChain: [] });
+    const body = buildStateBody(
+      "UserPromptSubmit",
+      { session_id: 42, cwd: "/tmp", prompt: "hello" },
+      resolve
+    );
+    assert.strictEqual(body.session_id, "kimi-cli:42");
+  });
+
+  it("falls back to default when session_id is missing", () => {
+    const resolve = () => ({ stablePid: 0, agentPid: 0, detectedEditor: null, pidChain: [] });
+    const body = buildStateBody(
+      "UserPromptSubmit",
+      { cwd: "/tmp", prompt: "hello" },
+      resolve
+    );
+    assert.strictEqual(body.session_id, "kimi-cli:default");
+  });
+
+  it("ignores non-string cwd instead of passing it through", () => {
+    const resolve = () => ({ stablePid: 0, agentPid: 0, detectedEditor: null, pidChain: [] });
+    const body = buildStateBody(
+      "UserPromptSubmit",
+      { session_id: "sid", cwd: { not: "a string" } },
+      resolve
+    );
+    assert.strictEqual(body.cwd, undefined);
+  });
+
   it("includes PID info from resolver", () => {
     const resolve = () => ({
       stablePid: 11111,

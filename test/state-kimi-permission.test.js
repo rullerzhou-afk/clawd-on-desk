@@ -155,6 +155,61 @@ describe("Kimi permission hold by session", () => {
     api.updateSession("kimi-a", "notification", "PermissionRequest", { agentId: "kimi-cli" });
     assert.deepStrictEqual(ctx._kimiNotifyShown, ["kimi-a"]);
   });
+
+  it("clears Kimi notify bubble when clearSessionsByAgent disposes the hold", () => {
+    api.updateSession("kimi-a", "notification", "PermissionRequest", { agentId: "kimi-cli" });
+    assert.deepStrictEqual(ctx._kimiNotifyShown, ["kimi-a"]);
+    // settings-actions normally pairs this with dismissPermissionsByAgent;
+    // we still want the bubble cleared if a direct caller doesn't.
+    const removed = api.clearSessionsByAgent("kimi-cli");
+    assert.ok(removed >= 1);
+    assert.ok(ctx._kimiNotifyCleared.includes("kimi-a"));
+  });
+
+  it("does not create a new Kimi hold while DND is active", () => {
+    api.enableDoNotDisturb();
+    api.updateSession("kimi-a", "notification", "PermissionRequest", { agentId: "kimi-cli" });
+    // Sanity: hold was suppressed, so the lock should NOT be active and the
+    // bubble channel should NOT have been called.
+    assert.deepStrictEqual(ctx._kimiNotifyShown, []);
+
+    // Turn DND off and confirm the pet does not pin notification.
+    api.disableDoNotDisturb();
+    assert.notStrictEqual(api.resolveDisplayState(), "notification");
+  });
+
+  it("clears existing Kimi holds when DND is enabled", () => {
+    api.updateSession("kimi-a", "notification", "PermissionRequest", { agentId: "kimi-cli" });
+    assert.strictEqual(api.resolveDisplayState(), "notification");
+    api.enableDoNotDisturb();
+    // The hold must have been dropped by enableDoNotDisturb. After turning
+    // DND off the pet should not snap back to a permanent notification
+    // animation with no bubble to show.
+    api.disableDoNotDisturb();
+    assert.notStrictEqual(api.resolveDisplayState(), "notification");
+  });
+
+  it("does not create a hold when Kimi permissions are disabled", () => {
+    ctx.isAgentPermissionsEnabled = (id) => id !== "kimi-cli";
+    api.updateSession("kimi-a", "notification", "PermissionRequest", { agentId: "kimi-cli" });
+    // isAgentPermissionsEnabled("kimi-cli") = false → bubble AND hold should
+    // both be skipped, matching the behavior of the DND guard.
+    assert.deepStrictEqual(ctx._kimiNotifyShown, []);
+    assert.notStrictEqual(api.resolveDisplayState(), "notification");
+  });
+
+  it("disposeAllKimiPermissionState clears holds without triggering a state resolve", () => {
+    api.updateSession("kimi-a", "notification", "PermissionRequest", { agentId: "kimi-cli" });
+    assert.strictEqual(api.resolveDisplayState(), "notification");
+    const disposed = api.disposeAllKimiPermissionState();
+    assert.strictEqual(disposed, true);
+    // After disposal the lock must be gone — this is the function main.js
+    // calls from _deferredDismissPermissionsByAgent when the user toggles
+    // permissionsEnabled=false for Kimi.
+    assert.notStrictEqual(api.resolveDisplayState(), "notification");
+    // Idempotent: calling again with nothing to clear returns false.
+    assert.strictEqual(api.disposeAllKimiPermissionState(), false);
+  });
 });
 
 describe("Kimi permission suspect heuristic", () => {

@@ -242,9 +242,14 @@ function buildStateBody(event, payload, resolve) {
   const state = EVENT_TO_STATE[event];
   if (!state) return null;
 
-  const rawSessionId = payload.session_id || "default";
+  // Kimi currently emits string session_ids; we still coerce defensively so a
+  // future payload shape drift (e.g. numeric ids) doesn't throw from
+  // `.startsWith` and get silently swallowed by main()'s .catch.
+  const rawSessionId = payload.session_id != null && payload.session_id !== ""
+    ? String(payload.session_id)
+    : "default";
   const sessionId = rawSessionId.startsWith("kimi-cli:") ? rawSessionId : `kimi-cli:${rawSessionId}`;
-  const cwd = payload.cwd || "";
+  const cwd = typeof payload.cwd === "string" ? payload.cwd : "";
 
   let resolvedState = state;
   let permissionSuspect = false;

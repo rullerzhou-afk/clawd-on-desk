@@ -26,11 +26,59 @@ const KIMI_HOOK_EVENTS = [
   "Notification",
 ];
 
+const COMMAND_WITH_MARKER_REGEX = new RegExp(
+  `command\\s*=\\s*"(?:\\\\.|[^"\\\\])*${MARKER}(?:\\\\.|[^"\\\\])*"|command\\s*=\\s*'[^']*${MARKER}[^']*'`
+);
+
 function normalizePermissionMode(value) {
   if (typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();
   if (normalized === MODE_EXPLICIT || normalized === MODE_SUSPECT) return normalized;
   return null;
+}
+
+// Extract any existing CLAWD_KIMI_PERMISSION_MODE=... prefix from Clawd-owned
+// hook command lines in config.toml. Used as a fallback when the caller did
+// not pass an explicit mode AND no env var is set — without this, the startup
+// auto-sync would silently strip the prefix written by a previous install,
+// breaking the "persistent mode" promise documented in setup-guide.md.
+function extractExistingPermissionMode(content) {
+  if (typeof content !== "string" || !content) return null;
+  // Match both quoting styles. The double-quoted branch must allow `\"` inside
+  // because Clawd installer historically wrote `command = "...\"node\" \"...kimi-hook.js\""`.
+  // A naive `[^"]*` truncates at the first `\"`, drops MARKER, and silently
+  // returns null — which is exactly the regression that erased the user's
+  // suspect-mode prefix on startup auto-sync.
+  const lineRegex = /command\s*=\s*(?:"((?:\\.|[^"\\])*)"|'([^']*)')/g;
+  let match;
+  while ((match = lineRegex.exec(content)) !== null) {
+    const value = match[1] || match[2] || "";
+    if (!value.includes(MARKER)) continue;
+    const modeMatch = value.match(/CLAWD_KIMI_PERMISSION_MODE=([A-Za-z]+)/);
+    if (modeMatch) {
+      const normalized = normalizePermissionMode(modeMatch[1]);
+      if (normalized) return normalized;
+    }
+  }
+  return null;
+}
+
+function stripClawdKimiHookBlocks(content) {
+  if (typeof content !== "string" || !content) return { content: "", removed: 0 };
+  const blockRegex = /\[\[hooks\]\][\s\S]*?(?=\n\[\[hooks\]\]|\s*$)/g;
+  let rebuilt = "";
+  let removed = 0;
+  let lastIndex = 0;
+  let match;
+  while ((match = blockRegex.exec(content)) !== null) {
+    const block = match[0];
+    rebuilt += content.slice(lastIndex, match.index);
+    if (COMMAND_WITH_MARKER_REGEX.test(block)) removed++;
+    else rebuilt += block;
+    lastIndex = match.index + block.length;
+  }
+  rebuilt += content.slice(lastIndex);
+  return { content: rebuilt, removed };
 }
 
 /**
@@ -54,13 +102,6 @@ function registerKimiHooks(options = {}) {
   const hookScript = asarUnpackedPath(path.resolve(__dirname, "kimi-hook.js").replace(/\\/g, "/"));
   const resolved = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
   const nodeBin = resolved || "node";
-  const configuredMode = normalizePermissionMode(
-    options.permissionMode !== undefined
-      ? options.permissionMode
-      : process.env.CLAWD_KIMI_PERMISSION_MODE
-  );
-  const modePrefix = configuredMode ? `CLAWD_KIMI_PERMISSION_MODE=${configuredMode} ` : "";
-  const desiredCommand = `${modePrefix}"${nodeBin}" "${hookScript}"`;
 
   let content = "";
   try {
@@ -73,27 +114,54 @@ function registerKimiHooks(options = {}) {
     content = 'default_model = "kimi-for-coding"\n';
   }
 
+  // Priority: explicit caller option → env var → mode already baked into the
+  // existing config.toml hook command. The fallback is critical for the
+  // startup auto-sync path: Clawd launches without the env var, sees an
+  // existing install that was done with CLAWD_KIMI_PERMISSION_MODE=suspect,
+  // and MUST preserve that prefix so the user's persistent choice survives.
+  const providedMode = normalizePermissionMode(
+    options.permissionMode !== undefined
+      ? options.permissionMode
+      : process.env.CLAWD_KIMI_PERMISSION_MODE
+  );
+  const configuredMode = providedMode || extractExistingPermissionMode(content);
+  const modePrefix = configuredMode ? `CLAWD_KIMI_PERMISSION_MODE=${configuredMode} ` : "";
+  const desiredCommand = `${modePrefix}"${nodeBin}" "${hookScript}"`;
+
   // Check if our hooks are already registered (matches both single and double quotes)
-  const markerRegex = new RegExp(`command\\s*=\\s*"[^"]*${MARKER}[^"]*"|command\\s*=\\s*'[^']*${MARKER}[^']*'`, "g");
+  const markerRegex = new RegExp(COMMAND_WITH_MARKER_REGEX.source, "g");
   const existingMatches = [...content.matchAll(markerRegex)];
 
   if (existingMatches.length > 0) {
-    let updated = 0;
-    for (const match of existingMatches) {
-      const fullMatch = match[0];
-      const expected = `command = '${desiredCommand}'`;
-      if (fullMatch !== expected) {
-        content = content.replace(fullMatch, expected);
-        updated++;
-      }
-    }
+    // Normalize + de-duplicate all Clawd-owned Kimi hook blocks. A stale extra
+    // block can fire duplicate PreToolUse events that cancel suspect timers and
+    // suppress notification animation.
+    const stripped = stripClawdKimiHookBlocks(content);
+    let normalized = stripped.content;
+    normalized = normalized.replace(/^hooks\s*=\s*\[\]\s*$/m, "");
+    const hookBlocks = KIMI_HOOK_EVENTS.map((event) => `[[hooks]]
+event = "${event}"
+command = '${desiredCommand}'
+matcher = ""
+timeout = 30
+`).join("\n");
+    normalized = normalized.trimEnd() + "\n\n" + hookBlocks;
+    const updated = normalized !== content ? 1 : 0;
+    content = normalized;
     if (updated > 0) {
       fs.mkdirSync(kimiDir, { recursive: true });
       fs.writeFileSync(settingsPath, content);
     }
     if (!options.silent) {
       console.log(`Clawd Kimi hooks → ${settingsPath}`);
-      console.log(`  Skipped: already registered${updated > 0 ? `, updated: ${updated}` : ""}`);
+      if (updated > 0) {
+        console.log(`  Updated: normalized ${existingMatches.length} existing hook command(s)`);
+        if (stripped.removed > KIMI_HOOK_EVENTS.length) {
+          console.log(`  Deduped: removed ${stripped.removed - KIMI_HOOK_EVENTS.length} duplicate block(s)`);
+        }
+      } else {
+        console.log("  Skipped: already registered");
+      }
     }
     return { added: 0, skipped: 1, updated };
   }
@@ -127,6 +195,8 @@ module.exports = {
   registerKimiHooks,
   KIMI_HOOK_EVENTS,
   normalizePermissionMode,
+  extractExistingPermissionMode,
+  stripClawdKimiHookBlocks,
   MODE_EXPLICIT,
   MODE_SUSPECT,
 };
