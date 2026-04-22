@@ -54,6 +54,7 @@
       generalSwitches: new Map(),
       agentSwitches: new Map(),
       size: null,
+      soundVolume: null,
     },
     shortcutRecordingActionId: null,
     shortcutRecordingError: "",
@@ -364,9 +365,13 @@
     if (state.mountedControls.size && typeof state.mountedControls.size.dispose === "function") {
       Promise.resolve(state.mountedControls.size.dispose()).catch(() => {});
     }
+    if (state.mountedControls.soundVolume && typeof state.mountedControls.soundVolume.dispose === "function") {
+      state.mountedControls.soundVolume.dispose();
+    }
     state.mountedControls.generalSwitches.clear();
     state.mountedControls.agentSwitches.clear();
     state.mountedControls.size = null;
+    state.mountedControls.soundVolume = null;
   }
 
   function syncMountedSizeControl({ fromBroadcast = false } = {}) {

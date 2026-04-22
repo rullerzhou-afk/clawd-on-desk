@@ -90,6 +90,15 @@ function requireNonNegativeFiniteNumber(key) {
   };
 }
 
+function requireNumberInRange(key, min, max) {
+  return function (value) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) {
+      return { status: "error", message: `${key} must be a finite number between ${min} and ${max}` };
+    }
+    return { status: "ok" };
+  };
+}
+
 function requireEnum(key, allowed) {
   return function (value) {
     if (!allowed.includes(value)) {
@@ -242,6 +251,7 @@ const updateRegistry = {
   // ── Pure data prefs (function-form: validator only) ──
   lang: requireEnum("lang", ["en", "zh", "ko"]),
   soundMuted: requireBoolean("soundMuted"),
+  soundVolume: requireNumberInRange("soundVolume", 0, 1),
   bubbleFollowPet: requireBoolean("bubbleFollowPet"),
   hideBubbles: requireBoolean("hideBubbles"),
   showSessionId: requireBoolean("showSessionId"),

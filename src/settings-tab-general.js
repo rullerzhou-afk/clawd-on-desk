@@ -4,6 +4,7 @@
   const GENERAL_IN_PLACE_KEYS = new Set([
     "size",
     "soundMuted",
+    "soundVolume",
     "allowEdgePinning",
     "keepSizeAcrossDisplays",
     "openAtLogin",
@@ -41,6 +42,7 @@
         descKey: "rowSoundDesc",
         invert: true,
       }),
+      buildVolumeSliderRow(),
       helpers.buildSwitchRow({
         key: "allowEdgePinning",
         labelKey: "rowAllowEdgePinning",
@@ -161,6 +163,132 @@
         });
       });
     }
+    return row;
+  }
+
+  function buildVolumeSliderRow() {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML =
+      `<div class="row-text">` +
+        `<span class="row-label"></span>` +
+        `<span class="row-desc"></span>` +
+      `</div>` +
+      `<div class="row-control volume-control">` +
+        `<input type="range" class="volume-slider" min="0" max="100" step="1" />` +
+        `<span class="volume-readout" aria-hidden="true"></span>` +
+      `</div>`;
+    row.querySelector(".row-label").textContent = t("rowVolume");
+    row.querySelector(".row-desc").textContent = t("rowVolumeDesc");
+
+    const control = row.querySelector(".volume-control");
+    const slider = row.querySelector(".volume-slider");
+    const readout = row.querySelector(".volume-readout");
+
+    let previewUrl = null;
+    let previewAudio = null;
+    let previewThrottleTimer = null;
+    let previewLastFiredAt = 0;
+
+    function applySliderValue(pct) {
+      slider.value = String(pct);
+      slider.style.setProperty("--volume-fill", `${pct}%`);
+      readout.textContent = `${pct}%`;
+    }
+
+    function getSnapshotVolumePct() {
+      const v = state.snapshot && typeof state.snapshot.soundVolume === "number"
+        ? state.snapshot.soundVolume : 1;
+      return Math.round(v * 100);
+    }
+
+    function applyDisabledState(muted) {
+      control.classList.toggle("disabled", !!muted);
+      slider.disabled = !!muted;
+      slider.tabIndex = muted ? -1 : 0;
+    }
+
+    function playPreview(vol) {
+      if (!previewUrl) return;
+      if (!previewAudio) previewAudio = new Audio(previewUrl);
+      previewAudio.volume = Math.max(0, Math.min(1, vol));
+      previewAudio.currentTime = 0;
+      previewAudio.play().catch(() => {});
+    }
+
+    function schedulePreview(vol) {
+      const now = Date.now();
+      if (now - previewLastFiredAt >= 180) {
+        if (previewThrottleTimer !== null) {
+          clearTimeout(previewThrottleTimer);
+          previewThrottleTimer = null;
+        }
+        previewLastFiredAt = now;
+        playPreview(vol);
+      } else {
+        if (previewThrottleTimer !== null) clearTimeout(previewThrottleTimer);
+        previewThrottleTimer = setTimeout(() => {
+          previewThrottleTimer = null;
+          previewLastFiredAt = Date.now();
+          playPreview(vol);
+        }, 180 - (now - previewLastFiredAt));
+      }
+    }
+
+    applySliderValue(getSnapshotVolumePct());
+    applyDisabledState(!!(state.snapshot && state.snapshot.soundMuted));
+
+    slider.addEventListener("input", () => {
+      const pct = Number(slider.value);
+      slider.style.setProperty("--volume-fill", `${pct}%`);
+      readout.textContent = `${pct}%`;
+      schedulePreview(pct / 100);
+    });
+
+    slider.addEventListener("change", () => {
+      const pct = Number(slider.value);
+      const vol = pct / 100;
+      if (previewThrottleTimer !== null) {
+        clearTimeout(previewThrottleTimer);
+        previewThrottleTimer = null;
+      }
+      playPreview(vol);
+      window.settingsAPI.update("soundVolume", vol).then((result) => {
+        if (!result || result.status !== "ok") {
+          const msg = (result && result.message) || "unknown error";
+          ops.showToast(t("toastSaveFailed") + msg, { error: true });
+          applySliderValue(getSnapshotVolumePct());
+        }
+      }).catch((err) => {
+        ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+        applySliderValue(getSnapshotVolumePct());
+      });
+    });
+
+    window.settingsAPI.getPreviewSoundUrl().then((url) => {
+      if (url) previewUrl = url;
+    }).catch(() => {});
+
+    state.mountedControls.soundVolume = {
+      row,
+      syncDisabled() {
+        applyDisabledState(!!(state.snapshot && state.snapshot.soundMuted));
+      },
+      syncValueFromSnapshot() {
+        applySliderValue(getSnapshotVolumePct());
+      },
+      dispose() {
+        if (previewThrottleTimer !== null) {
+          clearTimeout(previewThrottleTimer);
+          previewThrottleTimer = null;
+        }
+        if (previewAudio) {
+          previewAudio.pause();
+          previewAudio = null;
+        }
+      },
+    };
+
     return row;
   }
 
@@ -311,16 +439,27 @@
     if (keys.length === 0) return false;
     if (!keys.every((key) => GENERAL_IN_PLACE_KEYS.has(key))) return false;
     if (keys.includes("size") && !ops.syncMountedSizeControl({ fromBroadcast: true })) return false;
+    if (keys.includes("soundVolume") || keys.includes("soundMuted")) {
+      const vc = state.mountedControls.soundVolume;
+      if (!vc || !document.body.contains(vc.row)) return false;
+    }
     for (const key of keys) {
-      if (key === "size") continue;
+      if (key === "size" || key === "soundVolume" || key === "soundMuted") continue;
       const meta = state.mountedControls.generalSwitches.get(key);
       if (!meta || !document.body.contains(meta.element)) return false;
     }
     for (const key of keys) {
       if (key === "size") continue;
+      if (key === "soundVolume") {
+        state.mountedControls.soundVolume.syncValueFromSnapshot();
+        continue;
+      }
       const meta = state.mountedControls.generalSwitches.get(key);
       state.transientUiState.generalSwitches.delete(key);
       helpers.setSwitchVisual(meta.element, readers.readGeneralSwitchVisual(key, meta.invert), { pending: false });
+      if (key === "soundMuted") {
+        state.mountedControls.soundVolume.syncDisabled();
+      }
     }
     return true;
   }

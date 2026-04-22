@@ -71,6 +71,11 @@ const SCHEMA = {
   hideBubbles: { type: "boolean", default: false },
   showSessionId: { type: "boolean", default: false },
   soundMuted: { type: "boolean", default: false },
+  soundVolume: {
+    type: "number",
+    default: 1,
+    validate: (v) => Number.isFinite(v) && v >= 0 && v <= 1,
+  },
   allowEdgePinning: { type: "boolean", default: false },
   // When true, moving the pet between displays does not trigger a
   // proportional pixel-size recomputation. The pet keeps its current

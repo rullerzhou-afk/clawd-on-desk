@@ -401,6 +401,70 @@ html, body {
   display: block;
 }
 
+/* ── Volume slider ── */
+.volume-control {
+  --volume-track-height: 6px;
+  --volume-thumb-diameter: 18px;
+  align-items: center;
+  gap: 10px;
+  min-width: 240px;
+}
+.volume-slider {
+  flex: 1;
+  margin: 0;
+  height: 28px;
+  background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  --volume-fill: 100%;
+  touch-action: pan-y;
+}
+.volume-slider::-webkit-slider-runnable-track {
+  height: var(--volume-track-height);
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    var(--accent) var(--volume-fill),
+    var(--row-border) var(--volume-fill),
+    var(--row-border) 100%
+  );
+}
+.volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: var(--volume-thumb-diameter);
+  height: var(--volume-thumb-diameter);
+  margin-top: calc((var(--volume-track-height) - var(--volume-thumb-diameter)) / 2);
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  transition: transform 0.12s ease, box-shadow 0.18s ease;
+}
+.volume-slider:focus-visible {
+  outline: none;
+}
+.volume-slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px rgba(217, 119, 87, 0.18), 0 2px 8px rgba(0, 0, 0, 0.18);
+}
+.volume-readout {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  min-width: 36px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.volume-control.disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+.volume-control.disabled .volume-slider {
+  cursor: not-allowed;
+}
+
 /* ── Agent badges ── */
 .agent-badges {
   display: inline-flex;

@@ -376,6 +376,7 @@ let bubbleFollowPet = _settingsController.get("bubbleFollowPet");
 let hideBubbles = _settingsController.get("hideBubbles");
 let showSessionId = _settingsController.get("showSessionId");
 let soundMuted = _settingsController.get("soundMuted");
+let soundVolume = _settingsController.get("soundVolume");
 let allowEdgePinningCached = _settingsController.get("allowEdgePinning");
 let keepSizeAcrossDisplaysCached = _settingsController.get("keepSizeAcrossDisplays");
 let petHidden = false;
@@ -589,7 +590,7 @@ function playSound(name) {
   const url = themeLoader.getSoundUrl(name);
   if (!url) return;
   lastSoundTime = now;
-  sendToRenderer("play-sound", url);
+  sendToRenderer("play-sound", { url, volume: soundVolume });
 }
 
 function resetSoundCooldown() {
@@ -1070,6 +1071,7 @@ const _menuCtx = {
   set showSessionId(v) { _settingsController.applyUpdate("showSessionId", v); },
   get soundMuted() { return soundMuted; },
   set soundMuted(v) { _settingsController.applyUpdate("soundMuted", v); },
+  get soundVolume() { return soundVolume; },
   get pendingPermissions() { return pendingPermissions; },
   repositionBubbles: () => repositionFloatingBubbles(),
   get petHidden() { return petHidden; },
@@ -1172,6 +1174,7 @@ function wireSettingsSubscribers() {
     if ("hideBubbles" in changes) hideBubbles = changes.hideBubbles;
     if ("showSessionId" in changes) showSessionId = changes.showSessionId;
     if ("soundMuted" in changes) soundMuted = changes.soundMuted;
+    if ("soundVolume" in changes) soundVolume = changes.soundVolume;
     if ("allowEdgePinning" in changes) allowEdgePinningCached = changes.allowEdgePinning;
     if ("keepSizeAcrossDisplays" in changes) keepSizeAcrossDisplaysCached = changes.keepSizeAcrossDisplays;
 
@@ -1907,6 +1910,10 @@ ipcMain.handle("settings:end-size-preview", (_event, value) => {
     return { status: "error", message: `invalid preview size "${value}"` };
   }
   return settingsSizePreviewSession.end(value || null);
+});
+ipcMain.handle("settings:get-preview-sound-url", () => {
+  try { return themeLoader.getSoundUrl("confirm") || null; }
+  catch { return null; }
 });
 ipcMain.handle("settings:command", async (_event, payload) => {
   if (!payload || typeof payload !== "object") {

@@ -778,14 +778,20 @@ window.electronAPI.onEyeMove((dx, dy) => {
   applyEyeMove(effectiveDx, dy);
 });
 
-// --- Sound playback (IPC from main, receives file:// URL from theme) ---
+// --- Sound playback (IPC from main, receives { url, volume } from theme) ---
 const _audioCache = {};
-window.electronAPI.onPlaySound((url) => {
+window.electronAPI.onPlaySound((payload) => {
+  const url = typeof payload === "string" ? payload : payload && payload.url;
+  const volume = typeof payload === "object" && payload && typeof payload.volume === "number"
+    ? Math.max(0, Math.min(1, payload.volume))
+    : 1;
+  if (!url) return;
   let audio = _audioCache[url];
   if (!audio) {
     audio = new Audio(url);
     _audioCache[url] = audio;
   }
+  audio.volume = volume;
   audio.currentTime = 0;
   audio.play().catch(() => {});
 });
