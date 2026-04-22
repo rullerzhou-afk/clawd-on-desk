@@ -316,6 +316,22 @@ function normalizeStateOverridesMap(value) {
   return Object.keys(out).length > 0 ? out : null;
 }
 
+// Sound overrides are per-sound-name (complete / confirm / theme-author-defined).
+// Structurally simpler than state overrides: only `file` matters (no transition,
+// duration, disabled, or sourceThemeId). We reuse normalizeSlotOverride to get
+// string-basename validation for free, then strip the animation-only fields.
+function normalizeSoundOverridesMap(value) {
+  if (!isPlainObject(value)) return null;
+  const out = {};
+  for (const [soundName, entry] of Object.entries(value)) {
+    if (typeof soundName !== "string" || !soundName) continue;
+    const cleanEntry = normalizeSlotOverride(entry, { allowDisabled: false });
+    if (!cleanEntry || typeof cleanEntry.file !== "string" || !cleanEntry.file) continue;
+    out[soundName] = { file: cleanEntry.file };
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 function normalizeFileKeyedOverrideMap(value) {
   if (!isPlainObject(value)) return null;
   const out = {};
@@ -349,7 +365,7 @@ function normalizeThemeOverrides(value, defaultsValue) {
     // Back-compat: older prefs wrote state entries directly under themeId.
     const legacyStates = {};
     for (const [key, entry] of Object.entries(themeMap)) {
-      if (key === "states" || key === "tiers" || key === "timings" || key === "idleAnimations" || key === "reactions" || key === "hitbox") continue;
+      if (key === "states" || key === "tiers" || key === "timings" || key === "idleAnimations" || key === "reactions" || key === "hitbox" || key === "sounds") continue;
       const cleanEntry = normalizeSlotOverride(entry, { allowDisabled: true });
       if (cleanEntry) legacyStates[key] = cleanEntry;
     }
@@ -384,6 +400,9 @@ function normalizeThemeOverrides(value, defaultsValue) {
 
     const hitbox = normalizeHitboxOverrides(themeMap.hitbox);
     if (hitbox) cleanThemeMap.hitbox = hitbox;
+
+    const sounds = normalizeSoundOverridesMap(themeMap.sounds);
+    if (sounds) cleanThemeMap.sounds = sounds;
 
     if (Object.keys(cleanThemeMap).length > 0) {
       out[themeId] = cleanThemeMap;

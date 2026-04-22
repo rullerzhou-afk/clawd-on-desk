@@ -132,6 +132,7 @@ let assetsSoundsDir = null;    // assets/sounds/ for built-in theme
 let userDataDir = null;        // app.getPath("userData") — set by init()
 let userThemesDir = null;      // {userData}/themes/
 let themeCacheDir = null;      // {userData}/theme-cache/
+let soundOverridesRoot = null; // {userData}/sound-overrides/ — per-theme copied audio
 
 // ── Public API ──
 
@@ -148,7 +149,16 @@ function init(appDir, userData) {
     userDataDir = userData;
     userThemesDir = path.join(userData, "themes");
     themeCacheDir = path.join(userData, "theme-cache");
+    soundOverridesRoot = path.join(userData, "sound-overrides");
   }
+}
+
+// Directory where sound-override files for `themeId` live. main.js creates /
+// reads files here when the user picks a custom audio file. Returns null when
+// userData hasn't been wired up yet (test harnesses that call init() without it).
+function getSoundOverridesDir(themeId) {
+  if (!soundOverridesRoot || typeof themeId !== "string" || !themeId) return null;
+  return path.join(soundOverridesRoot, themeId);
 }
 
 /**
@@ -251,8 +261,32 @@ function loadTheme(themeId, opts = {}) {
     theme._assetsFileUrl = null; // built-in uses relative path
   }
 
+  theme._soundOverrideFiles = _resolveSoundOverrideFiles(themeId, userOverrides);
+
   activeTheme = theme;
   return theme;
+}
+
+// Turn prefs.themeOverrides[themeId].sounds into an absolute-path map. Missing
+// files are dropped silently so playback falls back to the theme's default
+// without spamming the console every time a user deletes an override file by
+// hand. main.js is responsible for copying picked audio into this directory.
+function _resolveSoundOverrideFiles(themeId, userOverrides) {
+  if (!_isPlainObject(userOverrides)) return null;
+  const soundMap = _isPlainObject(userOverrides.sounds) ? userOverrides.sounds : null;
+  if (!soundMap) return null;
+  const dir = getSoundOverridesDir(themeId);
+  if (!dir) return null;
+  const out = {};
+  for (const [soundName, entry] of Object.entries(soundMap)) {
+    if (!_isPlainObject(entry)) continue;
+    const filename = typeof entry.file === "string" ? _basenameOnly(entry.file) : null;
+    if (!filename) continue;
+    const absPath = path.join(dir, filename);
+    if (!fs.existsSync(absPath)) continue;
+    out[soundName] = absPath;
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 /**
@@ -1398,6 +1432,15 @@ function mergeDefaults(raw, themeId, isBuiltin) {
  */
 function getSoundUrl(soundName) {
   if (!activeTheme || !activeTheme.sounds) return null;
+
+  const overrideMap = activeTheme._soundOverrideFiles;
+  if (overrideMap && Object.prototype.hasOwnProperty.call(overrideMap, soundName)) {
+    const overridePath = overrideMap[soundName];
+    if (overridePath && fs.existsSync(overridePath)) {
+      return pathToFileURL(overridePath).href;
+    }
+  }
+
   const filename = activeTheme.sounds[soundName];
   if (!filename) return null;
 
@@ -1546,6 +1589,7 @@ module.exports = {
   ensureUserThemesDir,
   getSoundUrl,
   getPreviewSoundUrl,
+  getSoundOverridesDir,
   // Schema constants + helpers — shared with scripts/validate-theme.js to
   // keep validator and runtime loader from drifting on the same invariants.
   REQUIRED_STATES,

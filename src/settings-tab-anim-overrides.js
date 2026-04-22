@@ -350,7 +350,161 @@
       if (!section || !Array.isArray(section.cards) || !section.cards.length) continue;
       parent.appendChild(buildAnimOverrideSection(section));
     }
+    parent.appendChild(buildSoundOverridesSection(data));
     if (runtime.assetPicker.state) ops.requestRender({ modal: true });
+  }
+
+  function getSoundOverrideLabel(slot) {
+    if (!slot || !slot.name) return "";
+    if (slot.name === "complete") return t("soundOverridesLabelComplete");
+    if (slot.name === "confirm") return t("soundOverridesLabelConfirm");
+    return slot.name;
+  }
+
+  function refreshSoundOverridesUi() {
+    return ops.fetchAnimationOverridesData().then(() => {
+      if (state.activeTab === "animOverrides") ops.requestRender({ content: true });
+    });
+  }
+
+  function runSoundPickCommand(slot) {
+    return window.settingsAPI.pickSoundFile({ soundName: slot.name }).then((result) => {
+      if (!result || result.status === "cancel") return result;
+      const dict = i18n.STRINGS[readers.getLang()] || i18n.STRINGS.en;
+      if (result.status !== "ok") {
+        ops.showToast(dict.toastSoundOverrideFailed(result.message || ""), { error: true });
+        return result;
+      }
+      ops.showToast(dict.toastSoundOverrideSetOk(slot.name, result.file || ""));
+      return refreshSoundOverridesUi().then(() => result);
+    });
+  }
+
+  function runSoundResetCommand(slot) {
+    const themeId = getCurrentOverrideThemeId();
+    if (!themeId) return Promise.resolve({ status: "error", message: "no theme" });
+    return window.settingsAPI.command("setSoundOverride", {
+      themeId,
+      soundName: slot.name,
+      file: null,
+    }).then((result) => {
+      if (!result || result.status !== "ok" || result.noop) return result;
+      const dict = i18n.STRINGS[readers.getLang()] || i18n.STRINGS.en;
+      ops.showToast(dict.toastSoundOverrideResetOk(slot.name));
+      return refreshSoundOverridesUi().then(() => result);
+    });
+  }
+
+  function runSoundPreview(slot) {
+    return window.settingsAPI.previewSound({ soundName: slot.name }).then((result) => {
+      if (result && result.status && result.status !== "ok") {
+        const dict = i18n.STRINGS[readers.getLang()] || i18n.STRINGS.en;
+        ops.showToast(dict.toastSoundOverrideFailed(result.message || ""), { error: true });
+      }
+      return result;
+    });
+  }
+
+  function buildSoundOverrideRow(slot) {
+    const row = document.createElement("div");
+    row.className = "sound-override-row";
+
+    const text = document.createElement("div");
+    text.className = "anim-override-summary-text";
+
+    const name = document.createElement("div");
+    name.className = "anim-override-trigger";
+    name.textContent = getSoundOverrideLabel(slot);
+    text.appendChild(name);
+
+    const file = document.createElement("div");
+    file.className = "anim-override-file";
+    file.textContent = slot.currentFile || "—";
+    text.appendChild(file);
+    row.appendChild(text);
+
+    const badges = document.createElement("div");
+    badges.className = "anim-override-summary-badges";
+    if (slot.overridden) {
+      const badge = document.createElement("span");
+      badge.className = "anim-override-badge";
+      badge.title = t("soundOverridesOverriddenTooltip");
+      const dot = document.createElement("span");
+      dot.className = "anim-override-badge-dot";
+      badge.appendChild(dot);
+      badges.appendChild(badge);
+    }
+    row.appendChild(badges);
+
+    const actions = document.createElement("div");
+    actions.className = "sound-override-actions";
+
+    const playBtn = document.createElement("button");
+    playBtn.type = "button";
+    playBtn.className = "soft-btn";
+    playBtn.textContent = t("soundOverridesPreview");
+    helpers.attachActivation(playBtn, () => runSoundPreview(slot));
+    actions.appendChild(playBtn);
+
+    const pickBtn = document.createElement("button");
+    pickBtn.type = "button";
+    pickBtn.className = "soft-btn accent";
+    pickBtn.textContent = t("soundOverridesChangeFile");
+    helpers.attachActivation(pickBtn, () => runSoundPickCommand(slot));
+    actions.appendChild(pickBtn);
+
+    const resetBtn = document.createElement("button");
+    resetBtn.type = "button";
+    resetBtn.className = "soft-btn";
+    resetBtn.textContent = t("soundOverridesReset");
+    resetBtn.disabled = !slot.overridden;
+    helpers.attachActivation(resetBtn, () => runSoundResetCommand(slot));
+    actions.appendChild(resetBtn);
+
+    row.appendChild(actions);
+    return row;
+  }
+
+  function buildSoundOverridesSection(data) {
+    const wrapper = document.createElement("section");
+    wrapper.className = "anim-override-section";
+
+    const head = document.createElement("div");
+    head.className = "anim-override-section-head";
+    const title = document.createElement("div");
+    title.className = "section-title";
+    title.textContent = t("soundOverridesSectionTitle");
+    head.appendChild(title);
+    const subtitle = document.createElement("div");
+    subtitle.className = "anim-override-section-subtitle";
+    subtitle.textContent = t("soundOverridesSectionSubtitle");
+    head.appendChild(subtitle);
+    wrapper.appendChild(head);
+
+    const list = document.createElement("div");
+    list.className = "anim-override-list";
+    const slots = Array.isArray(data && data.sounds) ? data.sounds : [];
+    if (!slots.length) {
+      const empty = document.createElement("div");
+      empty.className = "placeholder-desc";
+      empty.textContent = t("soundOverridesEmpty");
+      list.appendChild(empty);
+    } else {
+      for (const slot of slots) list.appendChild(buildSoundOverrideRow(slot));
+    }
+    wrapper.appendChild(list);
+
+    const footer = document.createElement("div");
+    footer.className = "sound-override-footer";
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "soft-btn";
+    openBtn.textContent = t("soundOverridesOpenDir");
+    helpers.attachActivation(openBtn, () => window.settingsAPI.openSoundOverridesDir());
+    footer.appendChild(openBtn);
+    wrapper.appendChild(footer);
+
+    return wrapper;
   }
 
   function triggerPreviewOnce(card) {

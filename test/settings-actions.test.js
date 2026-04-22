@@ -969,6 +969,156 @@ describe("setAnimationOverride reaction slot", () => {
   });
 });
 
+describe("setSoundOverride command", () => {
+  const baseSnapshot = { theme: "clawd", themeOverrides: {} };
+  const noopDeps = { snapshot: baseSnapshot, activateTheme: () => {} };
+
+  it("rejects missing themeId / soundName", () => {
+    let r = commandRegistry.setSoundOverride({ soundName: "complete", file: "a.mp3" }, noopDeps);
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /themeId/);
+    r = commandRegistry.setSoundOverride({ themeId: "clawd", file: "a.mp3" }, noopDeps);
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /soundName/);
+  });
+
+  it("rejects file when it is not null and not a non-empty string", () => {
+    const r = commandRegistry.setSoundOverride(
+      { themeId: "clawd", soundName: "complete", file: "" },
+      noopDeps
+    );
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /file/);
+  });
+
+  it("writes { sounds: { complete: { file } } } on first override", () => {
+    const r = commandRegistry.setSoundOverride(
+      { themeId: "clawd", soundName: "complete", file: "my-complete.mp3" },
+      noopDeps
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(r.commit.themeOverrides.clawd.sounds, {
+      complete: { file: "my-complete.mp3" },
+    });
+  });
+
+  it("null file clears the entry and removes the theme row when nothing else is overridden", () => {
+    const snapshot = {
+      theme: "clawd",
+      themeOverrides: {
+        clawd: { sounds: { complete: { file: "old.mp3" } } },
+      },
+    };
+    const r = commandRegistry.setSoundOverride(
+      { themeId: "clawd", soundName: "complete", file: null },
+      { snapshot, activateTheme: () => {} }
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(r.commit.themeOverrides.clawd, undefined);
+  });
+
+  it("preserves unrelated soundName entries when editing one", () => {
+    const snapshot = {
+      theme: "clawd",
+      themeOverrides: {
+        clawd: {
+          sounds: {
+            complete: { file: "c.mp3" },
+            confirm: { file: "x.wav" },
+          },
+        },
+      },
+    };
+    const r = commandRegistry.setSoundOverride(
+      { themeId: "clawd", soundName: "complete", file: "new-c.mp3" },
+      { snapshot, activateTheme: () => {} }
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(r.commit.themeOverrides.clawd.sounds, {
+      complete: { file: "new-c.mp3" },
+      confirm: { file: "x.wav" },
+    });
+  });
+
+  it("preserves existing animation overrides when editing a sound slot", () => {
+    const snapshot = {
+      theme: "clawd",
+      themeOverrides: {
+        clawd: {
+          states: { attention: { file: "attn.svg" } },
+          hitbox: { wide: { "clawd-error.svg": true } },
+          sounds: { confirm: { file: "c.wav" } },
+        },
+      },
+    };
+    const r = commandRegistry.setSoundOverride(
+      { themeId: "clawd", soundName: "complete", file: "done.mp3" },
+      { snapshot, activateTheme: () => {} }
+    );
+    assert.strictEqual(r.status, "ok");
+    const nextClawd = r.commit.themeOverrides.clawd;
+    assert.deepStrictEqual(nextClawd.states, { attention: { file: "attn.svg" } });
+    assert.deepStrictEqual(nextClawd.hitbox, { wide: { "clawd-error.svg": true } });
+    assert.deepStrictEqual(nextClawd.sounds, {
+      confirm: { file: "c.wav" },
+      complete: { file: "done.mp3" },
+    });
+  });
+
+  it("same value is a noop (no commit)", () => {
+    const snapshot = {
+      theme: "clawd",
+      themeOverrides: {
+        clawd: { sounds: { complete: { file: "same.mp3" } } },
+      },
+    };
+    const r = commandRegistry.setSoundOverride(
+      { themeId: "clawd", soundName: "complete", file: "same.mp3" },
+      { snapshot, activateTheme: () => {} }
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(r.noop, true);
+  });
+
+  it("when active theme changes, calls activateTheme with the new override map", () => {
+    const snapshot = { theme: "clawd", themeOverrides: {} };
+    const calls = [];
+    const r = commandRegistry.setSoundOverride(
+      { themeId: "clawd", soundName: "complete", file: "a.mp3" },
+      {
+        snapshot,
+        activateTheme: (themeId, variantId, overrideMap) => calls.push({ themeId, variantId, overrideMap }),
+      }
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(calls.length, 1);
+    assert.deepStrictEqual(calls[0].overrideMap.sounds, { complete: { file: "a.mp3" } });
+  });
+
+  it("active theme edit without activateTheme dep returns error", () => {
+    const r = commandRegistry.setSoundOverride(
+      { themeId: "clawd", soundName: "complete", file: "a.mp3" },
+      { snapshot: { theme: "clawd", themeOverrides: {} } }
+    );
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /activateTheme/);
+  });
+
+  it("non-active theme skips activateTheme but still commits", () => {
+    const calls = [];
+    const r = commandRegistry.setSoundOverride(
+      { themeId: "other", soundName: "complete", file: "a.mp3" },
+      {
+        snapshot: { theme: "clawd", themeOverrides: {} },
+        activateTheme: () => calls.push("boom"),
+      }
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(calls.length, 0);
+    assert.ok(r.commit.themeOverrides.other.sounds);
+  });
+});
+
 describe("setWideHitboxOverride command", () => {
   it("rejects missing file / themeId", () => {
     const r = commandRegistry.setWideHitboxOverride({ themeId: "clawd", enabled: true }, { snapshot: {} });

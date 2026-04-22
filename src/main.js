@@ -1874,6 +1874,33 @@ function _buildAnimationOverrideSections() {
   return sections;
 }
 
+// Flat list of replaceable sound slots for the current theme. Enumerates every
+// key the theme publishes under `sounds` (default DEFAULT_SOUNDS keys + anything
+// theme authors added), so custom themes that ship extra sound names become
+// replaceable automatically. UI labels the default `complete`/`confirm` pair via
+// i18n and falls back to the raw key for custom names.
+function _buildSoundOverrideSlots() {
+  if (!activeTheme || !_isPlainObject(activeTheme.sounds)) return [];
+  const themeOverrideMap = _readCurrentThemeOverrideMap();
+  const overrideSoundsMap = themeOverrideMap && _isPlainObject(themeOverrideMap.sounds)
+    ? themeOverrideMap.sounds : null;
+  const slots = [];
+  for (const [name, themeDefault] of Object.entries(activeTheme.sounds)) {
+    if (typeof name !== "string" || !name) continue;
+    if (typeof themeDefault !== "string" || !themeDefault) continue;
+    const overrideEntry = overrideSoundsMap ? overrideSoundsMap[name] : null;
+    const overrideFile = overrideEntry && typeof overrideEntry.file === "string" ? overrideEntry.file : null;
+    slots.push({
+      name,
+      currentFile: overrideFile || themeDefault,
+      themeDefaultFile: themeDefault,
+      overridden: !!overrideFile,
+    });
+  }
+  slots.sort((a, b) => a.name.localeCompare(b.name));
+  return slots;
+}
+
 function _buildAnimationOverrideData() {
   if (!activeTheme) return null;
   const meta = themeLoader.getThemeMetadata(activeTheme._id) || {};
@@ -1889,6 +1916,7 @@ function _buildAnimationOverrideData() {
     assets: _listAnimationOverrideAssets(activeTheme),
     sections,
     cards: sections.flatMap((section) => section.cards || []),
+    sounds: _buildSoundOverrideSlots(),
   };
 }
 
@@ -2014,6 +2042,126 @@ ipcMain.handle("settings:open-theme-assets-dir", async () => {
   return { status: "ok", path: dir };
 });
 ipcMain.handle("settings:preview-animation-override", (_event, payload) => _previewAnimationOverride(payload));
+
+// ── Sound override IPC ──
+// Audio extensions we accept for sound overrides. MIME decoding in the renderer
+// is ultimately whatever Chromium supports; we restrict the dialog filter here
+// to the common lossy + lossless formats a user is likely to bring in.
+const SOUND_OVERRIDE_ASSET_EXTS = new Set([".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"]);
+const SOUND_OVERRIDE_DIALOG_STRINGS = {
+  en: { title: "Choose a sound file", filterName: "Audio" },
+  zh: { title: "选择音效文件", filterName: "音频" },
+  ko: { title: "음향 파일 선택", filterName: "오디오" },
+};
+
+function _cleanupSiblingSoundOverrides(overridesDir, soundName, keepExt) {
+  // Replacing a sound with a different extension would otherwise leave the old
+  // file as orphaned junk in the overrides dir (not referenced from prefs, but
+  // still on disk). Strip siblings that share `soundName` but differ in ext so
+  // the folder stays tidy and `Open folder` shows only what's active.
+  let entries;
+  try { entries = fs.readdirSync(overridesDir); }
+  catch { return; }
+  for (const entry of entries) {
+    if (path.parse(entry).name !== soundName) continue;
+    if (path.extname(entry).toLowerCase() === keepExt) continue;
+    try { fs.unlinkSync(path.join(overridesDir, entry)); } catch {}
+  }
+}
+
+ipcMain.handle("settings:pick-sound-file", async (event, payload) => {
+  if (!payload || typeof payload !== "object") {
+    return { status: "error", message: "pickSoundFile payload must be an object" };
+  }
+  const { soundName } = payload;
+  if (typeof soundName !== "string" || !soundName) {
+    return { status: "error", message: "pickSoundFile.soundName must be a non-empty string" };
+  }
+  if (!activeTheme) return { status: "error", message: "no active theme" };
+  const themeId = activeTheme._id;
+  // Only allow replacing sounds the theme actually publishes — overriding a
+  // name state.js never triggers produces a silent override with no effect.
+  if (!_isPlainObject(activeTheme.sounds) || !activeTheme.sounds[soundName]) {
+    return { status: "error", message: `sound "${soundName}" not declared by theme "${themeId}"` };
+  }
+  const overridesDir = themeLoader.getSoundOverridesDir(themeId);
+  if (!overridesDir) return { status: "error", message: "sound-overrides directory unavailable" };
+
+  const parent = _getSettingsDialogParent(event);
+  const s = SOUND_OVERRIDE_DIALOG_STRINGS[lang] || SOUND_OVERRIDE_DIALOG_STRINGS.en;
+  const extList = [...SOUND_OVERRIDE_ASSET_EXTS].map((e) => e.slice(1));
+
+  let result;
+  try {
+    result = await dialog.showOpenDialog(parent, {
+      title: s.title,
+      filters: [{ name: s.filterName, extensions: extList }],
+      properties: ["openFile"],
+    });
+  } catch (err) {
+    return { status: "error", message: `pick dialog failed: ${err && err.message}` };
+  }
+  if (result.canceled || !result.filePaths || !result.filePaths[0]) {
+    return { status: "cancel" };
+  }
+
+  const sourcePath = result.filePaths[0];
+  const ext = path.extname(sourcePath).toLowerCase();
+  if (!SOUND_OVERRIDE_ASSET_EXTS.has(ext)) {
+    return { status: "error", message: `unsupported audio extension: ${ext || "(none)"}` };
+  }
+
+  try { fs.mkdirSync(overridesDir, { recursive: true }); }
+  catch (err) { return { status: "error", message: `mkdir failed: ${err && err.message}` }; }
+
+  const destFilename = `${soundName}${ext}`;
+  const destPath = path.join(overridesDir, destFilename);
+  try {
+    fs.copyFileSync(sourcePath, destPath);
+  } catch (err) {
+    return { status: "error", message: `copy failed: ${err && err.message}` };
+  }
+  _cleanupSiblingSoundOverrides(overridesDir, soundName, ext);
+
+  const cmdResult = await _settingsController.applyCommand("setSoundOverride", {
+    themeId,
+    soundName,
+    file: destFilename,
+  });
+  if (!cmdResult || cmdResult.status !== "ok") {
+    return cmdResult || { status: "error", message: "setSoundOverride failed" };
+  }
+  return { status: "ok", file: destFilename };
+});
+
+ipcMain.handle("settings:preview-sound", (_event, payload) => {
+  if (!payload || typeof payload !== "object") {
+    return { status: "error", message: "previewSound payload must be an object" };
+  }
+  const { soundName } = payload;
+  if (typeof soundName !== "string" || !soundName) {
+    return { status: "error", message: "previewSound.soundName must be a non-empty string" };
+  }
+  const url = themeLoader.getSoundUrl(soundName);
+  if (!url) return { status: "error", message: "sound unavailable" };
+  // Cache-bust so the renderer's `_audioCache[url]` doesn't replay a stale
+  // Audio object after the user swapped the override file. playSound() doesn't
+  // need this because changing the override triggers activateTheme → renderer
+  // reload, which clears the cache naturally; preview runs without reload.
+  const bustedUrl = `${url}${url.includes("?") ? "&" : "?"}_t=${Date.now()}`;
+  sendToRenderer("play-sound", bustedUrl);
+  return { status: "ok" };
+});
+
+ipcMain.handle("settings:open-sound-overrides-dir", async () => {
+  if (!activeTheme) return { status: "error", message: "no active theme" };
+  const dir = themeLoader.getSoundOverridesDir(activeTheme._id);
+  if (!dir) return { status: "error", message: "sound-overrides directory unavailable" };
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  const openResult = await shell.openPath(dir);
+  if (openResult) return { status: "error", message: openResult };
+  return { status: "ok", path: dir };
+});
 
 // Reaction preview goes through the renderer's click-reaction channel
 // (bypasses the state machine entirely — reactions are a renderer-owned

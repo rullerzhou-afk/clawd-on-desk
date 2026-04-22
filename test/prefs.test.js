@@ -519,6 +519,60 @@ describe("prefs.save", () => {
     });
   });
 
+  it("themeOverrides.sounds: round-trips per-soundName file entries", () => {
+    const p = makeTempPath();
+    const snap = prefs.getDefaults();
+    snap.themeOverrides = {
+      clawd: {
+        sounds: {
+          complete: { file: "my-done.mp3" },
+          confirm: { file: "nope.wav" },
+        },
+      },
+    };
+    prefs.save(p, snap);
+    const { snapshot } = prefs.load(p);
+    assert.deepStrictEqual(snapshot.themeOverrides.clawd.sounds, {
+      complete: { file: "my-done.mp3" },
+      confirm: { file: "nope.wav" },
+    });
+  });
+
+  it("themeOverrides.sounds: drops entries with invalid / empty file and non-string keys", () => {
+    const validated = prefs.validate({
+      ...prefs.getDefaults(),
+      themeOverrides: {
+        clawd: {
+          sounds: {
+            complete: { file: "ok.mp3" },
+            confirm: { file: "" },    // empty
+            weird:    { durationMs: 1000 }, // no file → dropped
+            "":       { file: "x.mp3" }, // empty key → dropped
+          },
+        },
+      },
+    });
+    assert.deepStrictEqual(validated.themeOverrides.clawd.sounds, {
+      complete: { file: "ok.mp3" },
+    });
+  });
+
+  it("themeOverrides.sounds: strips ancillary fields (durationMs / transition / sourceThemeId) — sounds only keep file", () => {
+    const validated = prefs.validate({
+      ...prefs.getDefaults(),
+      themeOverrides: {
+        clawd: {
+          sounds: {
+            complete: { file: "ok.mp3", durationMs: 1000, transition: { in: 50 }, sourceThemeId: "x" },
+          },
+        },
+      },
+    });
+    assert.deepStrictEqual(validated.themeOverrides.clawd.sounds, {
+      complete: { file: "ok.mp3" },
+    });
+  });
+
   it("themeOverrides: legacy flat state entries normalize into states map", () => {
     const validated = prefs.validate({
       ...prefs.getDefaults(),

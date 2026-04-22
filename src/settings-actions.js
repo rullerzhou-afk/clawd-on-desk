@@ -130,7 +130,7 @@ function requirePlainObject(key) {
   };
 }
 
-const THEME_OVERRIDE_RESERVED_KEYS = new Set(["states", "tiers", "timings", "idleAnimations", "reactions", "hitbox"]);
+const THEME_OVERRIDE_RESERVED_KEYS = new Set(["states", "tiers", "timings", "idleAnimations", "reactions", "hitbox", "sounds"]);
 const TIER_OVERRIDE_GROUPS = new Set(["workingTiers", "jugglingTiers"]);
 const REACTION_KEYS = new Set(["drag", "clickLeft", "clickRight", "annoyed", "double"]);
 
@@ -197,7 +197,16 @@ function cloneHitboxOverrides(themeMap) {
   return out;
 }
 
-function buildThemeOverrideMap({ states, workingTiers, jugglingTiers, autoReturn, idleAnimations, reactions, hitbox }) {
+function cloneSoundOverrides(themeMap) {
+  const out = {};
+  if (!isPlainObject(themeMap) || !isPlainObject(themeMap.sounds)) return out;
+  for (const [soundName, entry] of Object.entries(themeMap.sounds)) {
+    if (isPlainObject(entry)) out[soundName] = { ...entry };
+  }
+  return out;
+}
+
+function buildThemeOverrideMap({ states, workingTiers, jugglingTiers, autoReturn, idleAnimations, reactions, hitbox, sounds }) {
   const out = {};
   if (states && Object.keys(states).length > 0) out.states = states;
   const tiers = {};
@@ -208,6 +217,7 @@ function buildThemeOverrideMap({ states, workingTiers, jugglingTiers, autoReturn
   if (idleAnimations && Object.keys(idleAnimations).length > 0) out.idleAnimations = idleAnimations;
   if (reactions && Object.keys(reactions).length > 0) out.reactions = reactions;
   if (hitbox && Object.keys(hitbox).length > 0) out.hitbox = hitbox;
+  if (sounds && Object.keys(sounds).length > 0) out.sounds = sounds;
   return out;
 }
 
@@ -971,6 +981,7 @@ function setThemeOverrideDisabled(payload, deps) {
     idleAnimations: cloneIdleAnimationOverrides(currentThemeMap),
     reactions: cloneReactionOverrides(currentThemeMap),
     hitbox: cloneHitboxOverrides(currentThemeMap),
+    sounds: cloneSoundOverrides(currentThemeMap),
   });
   const nextOverrides = { ...currentOverrides };
   if (Object.keys(nextThemeMap).length > 0) {
@@ -1034,6 +1045,7 @@ function setAnimationOverride(payload, deps) {
   const nextIdleAnimations = cloneIdleAnimationOverrides(currentThemeMap);
   const nextReactions = cloneReactionOverrides(currentThemeMap);
   const nextHitbox = cloneHitboxOverrides(currentThemeMap);
+  const nextSounds = cloneSoundOverrides(currentThemeMap);
 
   if (slotType === "state") {
     if (typeof payload.stateKey !== "string" || !payload.stateKey) {
@@ -1163,6 +1175,7 @@ function setAnimationOverride(payload, deps) {
     idleAnimations: nextIdleAnimations,
     reactions: nextReactions,
     hitbox: nextHitbox,
+    sounds: nextSounds,
   });
   const nextOverrides = { ...currentOverrides };
   if (Object.keys(nextThemeMap).length > 0) nextOverrides[themeId] = nextThemeMap;
@@ -1181,6 +1194,69 @@ function setAnimationOverride(payload, deps) {
       deps.activateTheme(themeId, null, nextThemeMap);
     } catch (err) {
       return { status: "error", message: `setAnimationOverride: ${err && err.message}` };
+    }
+  }
+
+  return { status: "ok", commit: { themeOverrides: nextOverrides } };
+}
+
+// Per-sound-name audio replacement. `file` is a basename only; main.js's IPC
+// layer handles copying the user-picked audio into the sound-overrides directory
+// before calling this command, so the action layer stays transport-agnostic.
+// Passing `file: null` clears the override for that sound name.
+function setSoundOverride(payload, deps) {
+  if (!isPlainObject(payload)) {
+    return { status: "error", message: "setSoundOverride: payload must be an object" };
+  }
+  const { themeId, soundName, file } = payload;
+  if (typeof themeId !== "string" || !themeId) {
+    return { status: "error", message: "setSoundOverride.themeId must be a non-empty string" };
+  }
+  if (typeof soundName !== "string" || !soundName) {
+    return { status: "error", message: "setSoundOverride.soundName must be a non-empty string" };
+  }
+  if (file !== null && (typeof file !== "string" || !file)) {
+    return { status: "error", message: "setSoundOverride.file must be null or a non-empty string" };
+  }
+
+  const snapshot = (deps && deps.snapshot) || {};
+  const currentOverrides = snapshot.themeOverrides || {};
+  const currentThemeMap = currentOverrides[themeId] || {};
+  const nextSounds = cloneSoundOverrides(currentThemeMap);
+
+  if (file === null) {
+    delete nextSounds[soundName];
+  } else {
+    nextSounds[soundName] = { file };
+  }
+
+  const nextThemeMap = buildThemeOverrideMap({
+    states: cloneStateOverrides(currentThemeMap),
+    workingTiers: cloneTierOverrides(currentThemeMap, "workingTiers"),
+    jugglingTiers: cloneTierOverrides(currentThemeMap, "jugglingTiers"),
+    autoReturn: cloneAutoReturnOverrides(currentThemeMap),
+    idleAnimations: cloneIdleAnimationOverrides(currentThemeMap),
+    reactions: cloneReactionOverrides(currentThemeMap),
+    hitbox: cloneHitboxOverrides(currentThemeMap),
+    sounds: nextSounds,
+  });
+  const nextOverrides = { ...currentOverrides };
+  if (Object.keys(nextThemeMap).length > 0) nextOverrides[themeId] = nextThemeMap;
+  else delete nextOverrides[themeId];
+
+  if (JSON.stringify(nextOverrides) === JSON.stringify(currentOverrides)) {
+    return { status: "ok", noop: true };
+  }
+
+  const activeThemeId = snapshot.theme;
+  if (themeId === activeThemeId) {
+    if (!deps || typeof deps.activateTheme !== "function") {
+      return { status: "error", message: "setSoundOverride effect requires activateTheme dep for the active theme" };
+    }
+    try {
+      deps.activateTheme(themeId, null, nextThemeMap);
+    } catch (err) {
+      return { status: "error", message: `setSoundOverride: ${err && err.message}` };
     }
   }
 
@@ -1412,6 +1488,7 @@ const commandRegistry = {
   resetAllShortcuts,
   setAgentFlag,
   setAnimationOverride,
+  setSoundOverride,
   setThemeOverrideDisabled,
   resetThemeOverrides,
   importAnimationOverrides,
