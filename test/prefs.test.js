@@ -74,6 +74,7 @@ describe("prefs.validate", () => {
     const v = prefs.validate({
       lang: "klingon",       // not in enum
       soundMuted: "yes",     // wrong type
+      soundVolume: 2,        // out of range → default 1
       x: NaN,                // not finite
       bubbleFollowPet: true, // ok
       hideBubbles: 0,        // wrong type
@@ -84,6 +85,7 @@ describe("prefs.validate", () => {
     const d = prefs.getDefaults();
     assert.strictEqual(v.lang, d.lang);
     assert.strictEqual(v.soundMuted, false);
+    assert.strictEqual(v.soundVolume, 1);
     assert.strictEqual(v.x, 0);
     assert.strictEqual(v.bubbleFollowPet, true);
     assert.strictEqual(v.hideBubbles, false);
@@ -96,6 +98,7 @@ describe("prefs.validate", () => {
     const v = prefs.validate({
       lang: "ko",
       soundMuted: true,
+      soundVolume: 0.4,
       bubbleFollowPet: true,
       allowEdgePinning: true,
       keepSizeAcrossDisplays: true,
@@ -109,6 +112,7 @@ describe("prefs.validate", () => {
     });
     assert.strictEqual(v.lang, "ko");
     assert.strictEqual(v.soundMuted, true);
+    assert.strictEqual(v.soundVolume, 0.4);
     assert.strictEqual(v.bubbleFollowPet, true);
     assert.strictEqual(v.allowEdgePinning, true);
     assert.strictEqual(v.keepSizeAcrossDisplays, true);
@@ -119,6 +123,11 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.size, "P:15");
     assert.strictEqual(v.miniEdge, "left");
     assert.strictEqual(v.theme, "calico");
+  });
+
+  it("accepts soundVolume 0 (silent playback is valid)", () => {
+    const v = prefs.validate({ soundVolume: 0 });
+    assert.strictEqual(v.soundVolume, 0);
   });
 
   it("normalizes agents (drops malformed entries)", () => {

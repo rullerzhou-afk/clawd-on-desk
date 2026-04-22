@@ -240,8 +240,7 @@
 
     slider.addEventListener("input", () => {
       const pct = Number(slider.value);
-      slider.style.setProperty("--volume-fill", `${pct}%`);
-      readout.textContent = `${pct}%`;
+      applySliderValue(pct);
       schedulePreview(pct / 100);
     });
 
@@ -444,7 +443,7 @@
       if (!vc || !document.body.contains(vc.row)) return false;
     }
     for (const key of keys) {
-      if (key === "size" || key === "soundVolume" || key === "soundMuted") continue;
+      if (key === "size" || key === "soundVolume") continue;
       const meta = state.mountedControls.generalSwitches.get(key);
       if (!meta || !document.body.contains(meta.element)) return false;
     }
