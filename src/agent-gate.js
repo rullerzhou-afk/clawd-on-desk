@@ -15,5 +15,6 @@ function readFlag(snapshot, agentId, flag) {
 
 const isAgentEnabled = (snapshot, agentId) => readFlag(snapshot, agentId, "enabled");
 const isAgentPermissionsEnabled = (snapshot, agentId) => readFlag(snapshot, agentId, "permissionsEnabled");
+const isAgentNotificationHookEnabled = (snapshot, agentId) => readFlag(snapshot, agentId, "notificationHookEnabled");
 
-module.exports = { isAgentEnabled, isAgentPermissionsEnabled };
+module.exports = { isAgentEnabled, isAgentPermissionsEnabled, isAgentNotificationHookEnabled };

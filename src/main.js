@@ -753,7 +753,7 @@ function moveWindowForDrag() {
 
 
 // ── Permission bubble — delegated to src/permission.js ──
-const { isAgentEnabled: _isAgentEnabled, isAgentPermissionsEnabled: _isAgentPermissionsEnabled } = require("./agent-gate");
+const { isAgentEnabled: _isAgentEnabled, isAgentPermissionsEnabled: _isAgentPermissionsEnabled, isAgentNotificationHookEnabled: _isAgentNotificationHookEnabled } = require("./agent-gate");
 const _permCtx = {
   get win() { return win; },
   get lang() { return lang; },
@@ -880,6 +880,11 @@ const _stateCtx = {
   // incoming Kimi PermissionRequest.
   isAgentPermissionsEnabled: (agentId) =>
     _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
+  // state.js gates self-issued Notification events (idle / wait-for-input
+  // pings) via this reader. Living in updateSession (not at the HTTP
+  // boundary) keeps the gate consistent for hook / log-poll / plugin paths.
+  isAgentNotificationHookEnabled: (agentId) =>
+    _isAgentNotificationHookEnabled({ agents: _settingsController.get("agents") }, agentId),
   miniPeekIn: () => miniPeekIn(),
   miniPeekOut: () => miniPeekOut(),
   buildContextMenu: () => buildContextMenu(),
@@ -1010,6 +1015,7 @@ const _serverCtx = {
   get sessions() { return sessions; },
   isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
   isAgentPermissionsEnabled: (agentId) => _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
+  isAgentNotificationHookEnabled: (agentId) => _isAgentNotificationHookEnabled({ agents: _settingsController.get("agents") }, agentId),
   setState,
   updateSession,
   resolvePermissionEntry,

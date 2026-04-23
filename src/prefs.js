@@ -103,14 +103,14 @@ const SCHEMA = {
   agents: {
     type: "object",
     defaultFactory: () => ({
-      "claude-code": { enabled: true, permissionsEnabled: true },
-      "codex": { enabled: true, permissionsEnabled: true },
-      "copilot-cli": { enabled: true, permissionsEnabled: true },
-      "cursor-agent": { enabled: true, permissionsEnabled: true },
-      "gemini-cli": { enabled: true, permissionsEnabled: true },
-      "codebuddy": { enabled: true, permissionsEnabled: true },
-      "kiro-cli": { enabled: true, permissionsEnabled: true },
-      "opencode": { enabled: true, permissionsEnabled: true },
+      "claude-code": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
+      "codex": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
+      "copilot-cli": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
+      "cursor-agent": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
+      "gemini-cli": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
+      "codebuddy": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
+      "kiro-cli": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
+      "opencode": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
     }),
     normalize: normalizeAgents,
   },
@@ -206,7 +206,7 @@ function migrate(raw) {
   return out;
 }
 
-const AGENT_FLAGS = ["enabled", "permissionsEnabled"];
+const AGENT_FLAGS = ["enabled", "permissionsEnabled", "notificationHookEnabled"];
 
 function normalizePositionDisplay(value) {
   if (!isValidDisplaySnapshot(value)) return null;
@@ -233,7 +233,8 @@ function normalizeAgents(value, defaultsValue) {
   for (const id of Object.keys(value)) {
     const entry = value[id];
     if (!entry || typeof entry !== "object") continue;
-    const base = (defaultsValue && defaultsValue[id]) || { enabled: true, permissionsEnabled: true };
+    const base = (defaultsValue && defaultsValue[id])
+      || { enabled: true, permissionsEnabled: true, notificationHookEnabled: true };
     const merged = { ...base };
     let touched = false;
     for (const flag of AGENT_FLAGS) {

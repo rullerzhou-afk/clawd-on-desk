@@ -179,6 +179,39 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.agents["claude-code"].permissionsEnabled, true);
   });
 
+  it("normalizes agents: preserves notificationHookEnabled flag", () => {
+    const v = prefs.validate({
+      agents: {
+        "claude-code": { enabled: true, notificationHookEnabled: false },
+      },
+    });
+    assert.strictEqual(v.agents["claude-code"].enabled, true);
+    assert.strictEqual(v.agents["claude-code"].notificationHookEnabled, false);
+  });
+
+  it("normalizes agents: fills missing notificationHookEnabled from defaults", () => {
+    // Pre-flag prefs files don't carry notificationHookEnabled. The default
+    // must be true so an upgrade doesn't silently suppress idle notifications
+    // on users who never opted in.
+    const v = prefs.validate({
+      agents: {
+        "claude-code": { enabled: true, permissionsEnabled: false },
+      },
+    });
+    assert.strictEqual(v.agents["claude-code"].notificationHookEnabled, true);
+  });
+
+  it("seeds all known agents with notificationHookEnabled=true", () => {
+    const d = prefs.getDefaults();
+    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "codebuddy", "kiro-cli", "opencode"]) {
+      assert.strictEqual(
+        d.agents[id].notificationHookEnabled,
+        true,
+        `${id} should default notificationHookEnabled`
+      );
+    }
+  });
+
   it("returns defaults for null/non-object input", () => {
     const a = prefs.validate(null);
     const b = prefs.validate("not an object");

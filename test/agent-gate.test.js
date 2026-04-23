@@ -3,7 +3,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
-const { isAgentEnabled, isAgentPermissionsEnabled } = require("../src/agent-gate");
+const { isAgentEnabled, isAgentPermissionsEnabled, isAgentNotificationHookEnabled } = require("../src/agent-gate");
 const { commandRegistry } = require("../src/settings-actions");
 const prefs = require("../src/prefs");
 
@@ -120,6 +120,53 @@ describe("isAgentPermissionsEnabled", () => {
       isAgentPermissionsEnabled({ agents: { "claude-code": null } }, "claude-code"),
       true
     );
+  });
+});
+
+describe("isAgentNotificationHookEnabled", () => {
+  it("returns true for missing snapshot / agentId / agents field", () => {
+    assert.strictEqual(isAgentNotificationHookEnabled(null, "claude-code"), true);
+    assert.strictEqual(isAgentNotificationHookEnabled({}, "claude-code"), true);
+    assert.strictEqual(isAgentNotificationHookEnabled(prefs.getDefaults(), null), true);
+    assert.strictEqual(isAgentNotificationHookEnabled({ lang: "en" }, "claude-code"), true);
+  });
+
+  it("returns true when the flag is absent (pre-flag prefs file)", () => {
+    // Upgrade path: existing users have {enabled, permissionsEnabled} only —
+    // they must keep hearing idle alerts unless they explicitly turn them off.
+    assert.strictEqual(
+      isAgentNotificationHookEnabled(
+        { agents: { "claude-code": { enabled: true, permissionsEnabled: true } } },
+        "claude-code"
+      ),
+      true
+    );
+  });
+
+  it("returns false only when notificationHookEnabled === false", () => {
+    assert.strictEqual(
+      isAgentNotificationHookEnabled(
+        { agents: { "claude-code": { notificationHookEnabled: false } } },
+        "claude-code"
+      ),
+      false
+    );
+  });
+
+  it("is independent of master enabled / permissionsEnabled flags", () => {
+    // The Agents tab reads each sub-switch's committed state regardless of
+    // master or sibling sub state, so these gates must not short-circuit
+    // into each other.
+    const snap = {
+      agents: {
+        "claude-code": {
+          enabled: false,
+          permissionsEnabled: false,
+          notificationHookEnabled: true,
+        },
+      },
+    };
+    assert.strictEqual(isAgentNotificationHookEnabled(snap, "claude-code"), true);
   });
 });
 
@@ -292,5 +339,31 @@ describe("setAgentFlag command", () => {
     );
     assert.strictEqual(r.status, "ok");
     assert.strictEqual(r.commit.agents["copilot-cli"].enabled, false);
+  });
+
+  it("accepts notificationHookEnabled as a pure data flip — no side effects", () => {
+    // The idle-alert gate runs at the server route layer (shouldDropNotificationHook),
+    // so toggling the flag has no monitor / session / bubble side effects.
+    const { deps, calls } = makeDeps();
+    const r = commandRegistry.setAgentFlag(
+      { agentId: "claude-code", flag: "notificationHookEnabled", value: false },
+      deps
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(calls.stopMonitorForAgent.length, 0);
+    assert.strictEqual(calls.startMonitorForAgent.length, 0);
+    assert.strictEqual(calls.clearSessionsByAgent.length, 0);
+    assert.strictEqual(calls.dismissPermissionsByAgent.length, 0);
+    assert.strictEqual(r.commit.agents["claude-code"].notificationHookEnabled, false);
+    assert.strictEqual(
+      r.commit.agents["claude-code"].enabled,
+      true,
+      "master enabled flag must be preserved"
+    );
+    assert.strictEqual(
+      r.commit.agents["claude-code"].permissionsEnabled,
+      true,
+      "permissionsEnabled sibling must be preserved"
+    );
   });
 });

@@ -27,6 +27,7 @@ module.exports = {
   capabilities: {
     httpHook: true,
     permissionApproval: true,
+    notificationHook: true,
     sessionEnd: true,
     subagent: true,
   },

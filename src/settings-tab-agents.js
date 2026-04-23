@@ -80,6 +80,23 @@
         },
       }));
     }
+    if (caps.notificationHook) {
+      rows.push(buildAgentSwitchRow({
+        agent,
+        flag: "notificationHookEnabled",
+        extraClass: "row-sub",
+        buildText: (text) => {
+          const label = document.createElement("span");
+          label.className = "row-label";
+          label.textContent = t("rowAgentIdleAlerts");
+          text.appendChild(label);
+          const desc = document.createElement("span");
+          desc.className = "row-desc";
+          desc.textContent = t("rowAgentIdleAlertsDesc");
+          text.appendChild(desc);
+        },
+      }));
+    }
     return rows;
   }
 
