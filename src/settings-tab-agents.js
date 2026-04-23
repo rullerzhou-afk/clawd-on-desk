@@ -93,6 +93,7 @@
         agent,
         flag: "notificationHookEnabled",
         extraClass: "row-sub",
+        disabled: !masterOn,
         buildText: (text) => {
           const label = document.createElement("span");
           label.className = "row-label";
