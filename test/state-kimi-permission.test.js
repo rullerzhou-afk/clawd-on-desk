@@ -192,10 +192,13 @@ describe("Kimi permission hold by session", () => {
   it("does not create a hold when Kimi permissions are disabled", () => {
     ctx.isAgentPermissionsEnabled = (id) => id !== "kimi-cli";
     api.updateSession("kimi-a", "notification", "PermissionRequest", { agentId: "kimi-cli" });
-    // isAgentPermissionsEnabled("kimi-cli") = false → bubble AND hold should
-    // both be skipped, matching the behavior of the DND guard.
+    // Pre-fix the setState("notification") ran unconditionally before the
+    // hold gate, so the pet flashed notification with no follow-up bubble
+    // when the user had disabled Kimi permissions in Settings. Asserting
+    // currentState (not just resolveDisplayState) catches that regression.
     assert.deepStrictEqual(ctx._kimiNotifyShown, []);
     assert.notStrictEqual(api.resolveDisplayState(), "notification");
+    assert.notStrictEqual(api.getCurrentState(), "notification");
   });
 
   it("disposeAllKimiPermissionState clears holds without triggering a state resolve", () => {

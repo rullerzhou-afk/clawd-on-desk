@@ -658,6 +658,17 @@ function updateSession(sessionId, state, event, opts = {}) {
   const permAgentId = agentId || (sessionForPerm && sessionForPerm.agentId) || null;
 
   if (event === "PermissionRequest") {
+    // Kimi-only gate: startKimiPermissionPoll suppresses the passive bubble
+    // when the user disabled Kimi permissions in Settings, but the setState
+    // ran first and flashed notification anyway — leaving a silent animation
+    // with no follow-up UI. setState already early-returns under DND so we
+    // don't need a second DND check here. CC / opencode keep the
+    // unconditional setState — their bubble flow gates DND upstream.
+    if (
+      permAgentId === "kimi-cli"
+      && typeof ctx.isAgentPermissionsEnabled === "function"
+      && !ctx.isAgentPermissionsEnabled("kimi-cli")
+    ) return;
     setState("notification");
     if (permAgentId === "kimi-cli") startKimiPermissionPoll(sessionId);
     return;
