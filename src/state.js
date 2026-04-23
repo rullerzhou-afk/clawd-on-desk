@@ -113,13 +113,18 @@ let pendingState = null;
 let eyeResendTimer = null;
 let updateVisualState = null;
 let updateVisualSvgOverride = null;
+let updateVisualPriority = null;
 
 const UPDATE_VISUAL_STATE_MAP = {
-  checking: "sweeping",
+  checking: "thinking",
+  available: "notification",
   downloading: "carrying",
 };
-const UPDATE_VISUAL_SVG_MAP = {
-  checking: "clawd-working-debugger.svg",
+
+const UPDATE_VISUAL_PRIORITY_MAP = {
+  checking: STATE_PRIORITY.notification,
+  available: STATE_PRIORITY.notification,
+  downloading: STATE_PRIORITY.carrying,
 };
 
 // ── Wake poll ──
@@ -1166,7 +1171,7 @@ function resolveDisplayState() {
   }
 
   // Update overlay participates in priority — won't override higher-priority agent states
-  if (updateVisualState && (STATE_PRIORITY[updateVisualState] || 0) >= (STATE_PRIORITY[best] || 0)) {
+  if (updateVisualState && (updateVisualPriority || (STATE_PRIORITY[updateVisualState] || 0)) >= (STATE_PRIORITY[best] || 0)) {
     return updateVisualState;
   }
   return best;
@@ -1176,10 +1181,14 @@ function setUpdateVisualState(kind) {
   if (!kind) {
     updateVisualState = null;
     updateVisualSvgOverride = null;
+    updateVisualPriority = null;
     return null;
   }
   updateVisualState = UPDATE_VISUAL_STATE_MAP[kind] || kind;
-  updateVisualSvgOverride = UPDATE_VISUAL_SVG_MAP[kind] || null;
+  updateVisualPriority = UPDATE_VISUAL_PRIORITY_MAP[kind] || STATE_PRIORITY[updateVisualState] || 0;
+  updateVisualSvgOverride = (kind === "checking" && theme && theme.updateVisuals && theme.updateVisuals.checking)
+    ? theme.updateVisuals.checking
+    : null;
   return updateVisualState;
 }
 

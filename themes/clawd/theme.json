@@ -141,6 +141,9 @@
     "clawd-working-debugger.svg": "clawd-working-debugger.svg",
     "clawd-working-thinking.svg": "clawd-working-thinking.svg"
   },
+  "updateVisuals": {
+    "checking": "clawd-working-debugger.svg"
+  },
   "timings": {
     "minDisplay": {
       "attention": 4000,

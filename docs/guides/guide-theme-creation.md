@@ -135,6 +135,22 @@ These are common optional states you can add when you want distinct visuals for 
 | `carrying` | Worktree creation | |
 | `juggling` | Subagent active | Declare this and/or `jugglingTiers` if you want a distinct juggling visual |
 
+### Optional Update Visuals
+
+Themes may optionally declare updater-specific visuals without introducing new runtime states:
+
+```json
+"updateVisuals": {
+  "checking": "checking-special.svg"
+}
+```
+
+- `updateVisuals.checking` is optional
+- when present, it overrides the visual used during update `checking`
+- when omitted, update checking falls back to the theme's `thinking` state
+- when a new version is found, updater uses the theme's `notification` state
+- download / success / error still use the normal `carrying` / `attention` / `error` state bindings
+
 If `sleepSequence.mode` is `full` (the default), `yawning`, `dozing`, `collapsing`, and `waking` also need real files. If `sleepSequence.mode` is `direct`, those extra sleep-sequence files are optional and the pet can go straight to `sleeping`.
 
 ### Eye Tracking

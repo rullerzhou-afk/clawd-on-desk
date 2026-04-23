@@ -34,20 +34,30 @@ describe("hit geometry", () => {
 
   it("matches bottom-anchored SVG layout for calico idle", () => {
     const rect = hitGeometry.getAssetRectScreen(calico, bounds, "idle", "calico-idle-follow.svg");
-    approx(rect.x, 40.94);
-    approx(rect.y, 114.51);
+    approx(rect.x, 35.94);
+    approx(rect.y, 119.51);
     approx(rect.w, 118.12);
     approx(rect.h, 88.81);
   });
 
-  it("aligns calico idle baseline with clawd without forcing equal body size", () => {
-    const clawdArt = hitGeometry.getAssetRectScreen(clawd, bounds, "idle", "clawd-idle-follow.svg");
+  it("applies calico idle-follow file offsets on top of normalized layout without changing body scale", () => {
+    const shiftedTheme = structuredClone(calico);
+    delete shiftedTheme.objectScale.fileOffsets["calico-idle-follow.svg"];
+
+    const baselineArt = hitGeometry.getAssetRectScreen(
+      shiftedTheme,
+      bounds,
+      "idle",
+      "calico-idle-follow.svg"
+    );
     const calicoArt = hitGeometry.getAssetRectScreen(calico, bounds, "idle", "calico-idle-follow.svg");
-    const clawdVisible = visibleContentRect(clawd, clawdArt);
+    const baselineVisible = visibleContentRect(shiftedTheme, baselineArt);
     const calicoVisible = visibleContentRect(calico, calicoArt);
 
-    approx(calicoVisible.bottom, clawdVisible.bottom, 0.5);
-    assert.ok(calicoVisible.h < clawdVisible.h);
+    approx(calicoArt.x, baselineArt.x - 5, 0.01);
+    approx(calicoArt.y, baselineArt.y + 5, 0.01);
+    approx(calicoVisible.bottom, baselineVisible.bottom + 5, 0.01);
+    approx(calicoVisible.h, baselineVisible.h, 0.01);
   });
 
   it("keeps critical calico non-loop animations inside the window bottom edge", () => {

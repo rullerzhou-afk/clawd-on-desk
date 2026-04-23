@@ -158,33 +158,57 @@ describe("resolveDisplayState()", () => {
     assert.strictEqual(api.resolveDisplayState(), "working");
 
     api.setUpdateVisualState("checking");
-    assert.strictEqual(api.resolveDisplayState(), "sweeping");
-    assert.strictEqual(api.getSvgOverride("sweeping"), "clawd-working-debugger.svg");
+    assert.strictEqual(api.resolveDisplayState(), "thinking");
+    assert.strictEqual(api.getSvgOverride("thinking"), "clawd-working-debugger.svg");
+
+    api.setUpdateVisualState("available");
+    assert.strictEqual(api.resolveDisplayState(), "notification");
+    assert.strictEqual(api.getSvgOverride("notification"), null);
 
     api.setUpdateVisualState(null);
     assert.strictEqual(api.resolveDisplayState(), "working");
   });
 
+  it("checking overlay falls back to the theme thinking visual when no update override is declared", () => {
+    api.cleanup();
+    api = require("../src/state")(makeCtx({ theme: _calicoTheme }));
+
+    api.setUpdateVisualState("checking");
+    assert.strictEqual(api.resolveDisplayState(), "thinking");
+    assert.strictEqual(api.getSvgOverride("thinking"), "calico-thinking.apng");
+
+    api.setUpdateVisualState("available");
+    assert.strictEqual(api.resolveDisplayState(), "notification");
+    assert.strictEqual(api.getSvgOverride("notification"), null);
+
+    api.setUpdateVisualState(null);
+    assert.strictEqual(api.resolveDisplayState(), "idle");
+  });
+
   it("update overlay does not override higher-priority agent states", () => {
-    // error(8) > sweeping(6) — update checking must not stomp agent error
+    // error(8) > thinking(2) — update checking must not stomp agent error
     api.sessions.set("s1", rawSession("error"));
-    api.setUpdateVisualState("checking"); // → sweeping(6)
+    api.setUpdateVisualState("checking"); // → thinking(2)
     assert.strictEqual(api.resolveDisplayState(), "error");
 
-    // notification(7) > sweeping(6)
+    // notification(7) == notification(7)
+    api.setUpdateVisualState("available");
     api.sessions.set("s1", rawSession("notification"));
     assert.strictEqual(api.resolveDisplayState(), "notification");
 
-    // carrying(4) < sweeping(6) — update checking still wins over lower
+    // working(3) < notification(7) — available still wins over lower
     api.sessions.set("s1", rawSession("working"));
-    assert.strictEqual(api.resolveDisplayState(), "sweeping");
+    assert.strictEqual(api.resolveDisplayState(), "notification");
 
     api.setUpdateVisualState(null);
   });
 
   it("update overlay wins when no sessions exist", () => {
     api.setUpdateVisualState("checking");
-    assert.strictEqual(api.resolveDisplayState(), "sweeping");
+    assert.strictEqual(api.resolveDisplayState(), "thinking");
+    assert.strictEqual(api.getSvgOverride("thinking"), "clawd-working-debugger.svg");
+    api.setUpdateVisualState("available");
+    assert.strictEqual(api.resolveDisplayState(), "notification");
     api.setUpdateVisualState(null);
   });
 });

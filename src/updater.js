@@ -417,6 +417,7 @@ function initUpdater(ctx, deps = {}) {
       }
 
       updateStatus = "available";
+      setOverlay("available");
       rebuildMenus();
 
       if (!manual && isSilentMode()) {
@@ -475,6 +476,7 @@ function initUpdater(ctx, deps = {}) {
       const wasManual = manualUpdateCheck;
       manualUpdateCheck = false;
       updateStatus = "available";
+      setOverlay("available");
       rebuildMenus();
 
       if (!wasManual && isSilentMode()) {

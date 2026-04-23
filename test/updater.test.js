@@ -60,7 +60,7 @@ describe("updater visual flow", () => {
     initUpdater = require("../src/updater");
   });
 
-  it("shows sweeping state and up-to-date bubble when latest version matches", async () => {
+  it("shows checking state and up-to-date bubble when latest version matches", async () => {
     const visualStates = [];
     const bubbles = [];
     const applied = [];
@@ -71,8 +71,8 @@ describe("updater visual flow", () => {
         overlayState = state;
       },
       applyState: (state, svgOverride) => applied.push({ state, svgOverride }),
-      resolveDisplayState: () => overlayState ? "sweeping" : "idle",
-      getSvgOverride: (state) => state === "sweeping" ? "clawd-working-debugger.svg" : null,
+      resolveDisplayState: () => overlayState === "checking" ? "thinking" : (overlayState ? "notification" : "idle"),
+      getSvgOverride: (state) => state === "thinking" ? "clawd-working-debugger.svg" : null,
       showUpdateBubble: (payload) => bubbles.push(payload),
     });
     const updater = initUpdater(ctx, makeDeps({
@@ -95,8 +95,104 @@ describe("updater visual flow", () => {
     assert.deepStrictEqual(visualStates, ["checking", null]);
     assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "up-to-date"]);
     assert.ok(
-      applied.some((entry) => entry.state === "sweeping" && entry.svgOverride === "clawd-working-debugger.svg")
+      applied.some((entry) => entry.state === "thinking" && entry.svgOverride === "clawd-working-debugger.svg")
     );
+  });
+
+  it("does not assume a clawd-specific checking override when the current theme has none", async () => {
+    const visualStates = [];
+    const bubbles = [];
+    const applied = [];
+    let overlayState = null;
+    const ctx = makeCtx({
+      setUpdateVisualState: (state) => {
+        visualStates.push(state);
+        overlayState = state;
+      },
+      applyState: (state, svgOverride) => applied.push({ state, svgOverride }),
+      resolveDisplayState: () => overlayState === "checking" ? "thinking" : (overlayState ? "notification" : "idle"),
+      getSvgOverride: () => null,
+      showUpdateBubble: (payload) => bubbles.push(payload),
+    });
+    const updater = initUpdater(ctx, makeDeps({
+      httpsGetImpl: (options, cb) => {
+        const res = {
+          statusCode: 200,
+          on(event, handler) {
+            if (event === "data") handler(Buffer.from(JSON.stringify({ tag_name: "v0.5.10" })));
+            if (event === "end") handler();
+            return this;
+          },
+        };
+        cb(res);
+        return { on() { return this; }, setTimeout() {} };
+      },
+    }));
+
+    await updater.checkForUpdates(true);
+
+    assert.deepStrictEqual(visualStates, ["checking", null]);
+    assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "up-to-date"]);
+    assert.ok(
+      applied.some((entry) => entry.state === "thinking" && entry.svgOverride == null)
+    );
+  });
+
+  it("switches to available -> notification when a newer packaged release is found", async () => {
+    const visualStates = [];
+    const bubbles = [];
+    const applied = [];
+    let overlayState = null;
+    const handlers = {};
+    const ctx = makeCtx({
+      setUpdateVisualState: (state) => {
+        visualStates.push(state);
+        overlayState = state;
+      },
+      applyState: (state, svgOverride) => applied.push({ state, svgOverride }),
+      resolveDisplayState: () => {
+        if (overlayState === "checking") return "thinking";
+        if (overlayState === "available") return "notification";
+        return overlayState || "idle";
+      },
+      getSvgOverride: (state) => state === "thinking" ? "clawd-working-debugger.svg" : null,
+      showUpdateBubble: async (payload) => {
+        bubbles.push(payload);
+        if (payload.mode === "available") return "later";
+        return payload.defaultAction || null;
+      },
+    });
+    const updater = initUpdater(ctx, makeDeps({
+      autoUpdaterFactory: () => ({
+        autoDownload: false,
+        autoInstallOnAppQuit: true,
+        on(event, handler) { handlers[event] = handler; },
+        checkForUpdates: async () => ({ updateInfo: { version: "0.5.11" } }),
+        quitAndInstall() {},
+        downloadUpdate() {},
+      }),
+      httpsGetImpl: (options, cb) => {
+        const res = {
+          statusCode: 200,
+          on(event, handler) {
+            if (event === "data") handler(Buffer.from(JSON.stringify({ tag_name: "v0.5.11" })));
+            if (event === "end") handler();
+            return this;
+          },
+        };
+        cb(res);
+        return { on() { return this; }, setTimeout() {} };
+      },
+    }));
+
+    updater.setupAutoUpdater();
+    await updater.checkForUpdates(true);
+    await handlers["update-available"]({ version: "0.5.11" });
+
+    assert.deepStrictEqual(visualStates, ["checking", "available", null]);
+    assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "available"]);
+    assert.ok(applied.some((entry) => entry.state === "thinking" && entry.svgOverride === "clawd-working-debugger.svg"));
+    assert.ok(applied.some((entry) => entry.state === "notification" && entry.svgOverride == null));
   });
 
   it("shows error state and detail bubble when GitHub API check fails", async () => {
