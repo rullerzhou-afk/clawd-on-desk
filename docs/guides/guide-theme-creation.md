@@ -97,6 +97,16 @@ Skip the template entirely. Author all animations as SVG with CSS `@keyframes`:
 | `viewBox` | object | `{ x, y, width, height }` — logical canvas in SVG units |
 | `states` | object | Maps state names to file arrays or `{ files, fallbackTo }` objects (see below) |
 
+### Common Metadata
+
+These fields are optional, but commonly useful:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `author` | string | Display name for the theme author |
+| `description` | string | Short summary shown to users |
+| `license` | string | Freeform display metadata only. Use it only for assets you own; it does not override the actual rights for bundled artwork by itself. |
+
 ### Required States
 
 Current validator/runtime baseline requires these core states:

@@ -61,6 +61,7 @@ describe("create-theme scaffold", () => {
     const themeJson = fs.readFileSync(path.join(result.targetDir, "theme.json"), "utf8");
     assert.match(themeJson, /"name": "Pixel Cat"/);
     assert.match(themeJson, /"author": "Ruller"/);
+    assert.doesNotMatch(themeJson, /"license"\s*:/);
   });
 
   it("auto-picks a fresh my-theme-N id when no theme id is provided", () => {

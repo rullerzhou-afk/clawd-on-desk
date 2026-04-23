@@ -171,6 +171,76 @@ describe("theme-loader getThemeMetadata", () => {
   });
 });
 
+describe("theme-loader preview sound selection", () => {
+  let fixture;
+  before(() => {
+    fixture = makeFixture([
+      { id: "clawd", builtin: true, json: validThemeJson({ name: "Clawd" }) },
+      {
+        id: "preview-theme",
+        builtin: false,
+        json: validThemeJson({
+          name: "Preview Theme",
+          sounds: {
+            confirm: "preview-confirm.mp3",
+          },
+        }),
+      },
+      {
+        id: "fallback-theme",
+        builtin: false,
+        json: validThemeJson({
+          name: "Fallback Theme",
+          sounds: {
+            confirm: null,
+          },
+        }),
+      },
+      {
+        id: "silent-theme",
+        builtin: false,
+        json: validThemeJson({
+          name: "Silent Theme",
+          sounds: {
+            confirm: null,
+            complete: null,
+          },
+        }),
+      },
+    ]);
+
+    fs.writeFileSync(path.join(fixture.tmp, "assets", "sounds", "complete.mp3"), "complete", "utf8");
+
+    for (const themeId of ["preview-theme", "fallback-theme", "silent-theme"]) {
+      fs.mkdirSync(path.join(fixture.tmp, "userData", "themes", themeId, "assets"), { recursive: true });
+    }
+
+    const previewSoundsDir = path.join(fixture.tmp, "userData", "themes", "preview-theme", "sounds");
+    fs.mkdirSync(previewSoundsDir, { recursive: true });
+    fs.writeFileSync(path.join(previewSoundsDir, "preview-confirm.mp3"), "confirm", "utf8");
+  });
+  after(() => fixture && fixture.cleanup());
+
+  it("prefers confirm for settings preview when available", () => {
+    themeLoader.loadTheme("preview-theme", { strict: true });
+    const previewUrl = themeLoader.getPreviewSoundUrl();
+    assert.ok(previewUrl, "preview URL expected");
+    assert.ok(previewUrl.includes("preview-confirm.mp3"));
+  });
+
+  it("falls back to complete when confirm is unavailable", () => {
+    themeLoader.loadTheme("fallback-theme", { strict: true });
+    const previewUrl = themeLoader.getPreviewSoundUrl();
+    assert.ok(previewUrl, "preview URL expected");
+    assert.ok(previewUrl.includes("complete.mp3"));
+  });
+
+  it("returns null when neither confirm nor complete is available", () => {
+    themeLoader.loadTheme("silent-theme", { strict: true });
+    assert.strictEqual(themeLoader.getPreviewSoundUrl(), null);
+  });
+});
+
 describe("theme-loader discovery", () => {
   let fixture;
   before(() => {

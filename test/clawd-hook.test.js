@@ -15,6 +15,7 @@ const {
   buildStateBody,
   extractSessionTitleFromTranscript,
 } = require("../hooks/clawd-hook.js");
+const { buildToolInputFingerprint } = require("../src/server").__test;
 
 function writeTmpJsonl(entries) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-hook-test-"));
@@ -142,6 +143,29 @@ describe("buildStateBody", () => {
   it("omits pid_chain when empty", () => {
     const body = buildStateBody("PreToolUse", { session_id: "s" }, mockResolve);
     assert.ok(!("pid_chain" in body));
+  });
+
+  it("passes through tool metadata for tool events", () => {
+    const payload = {
+      session_id: "s",
+      tool_name: "Read",
+      tool_use_id: "toolu_123",
+      tool_input: { file_path: "src/server.js" },
+    };
+    const body = buildStateBody("PostToolUse", payload, mockResolve);
+    assert.strictEqual(body.tool_name, "Read");
+    assert.strictEqual(body.tool_use_id, "toolu_123");
+    assert.strictEqual(body.tool_input_fingerprint, buildToolInputFingerprint(payload.tool_input));
+  });
+
+  it("accepts camelCase tool_use_id aliases", () => {
+    const body = buildStateBody("PreToolUse", {
+      session_id: "s",
+      tool_name: "Bash",
+      toolUseId: "toolu_alias",
+      tool_input: { command: "npm test" },
+    }, mockResolve);
+    assert.strictEqual(body.tool_use_id, "toolu_alias");
   });
 
   describe("session_title extraction", () => {

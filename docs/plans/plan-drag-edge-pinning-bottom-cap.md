@@ -286,3 +286,19 @@ Windows 上至少覆盖：
 这次按最小修复做：
 
 > `allowEdgePinning = ON` 时，bottom slack 从固定 `0.25h` 改成 `min(0.25h, displayBottomInset)`，并且 drag / rest 同步套用；其余语义保持不变。
+
+## 10. Scope extension: OFF mode top cap (a90783a)
+
+> 本节为事后追记 —— 原计划 §4.2 明写"不改动 OFF 模式行为"，但紧随 4b07658 之后的 a90783a 在 OFF mode 里**确实**动了 top drag margin。记录决策是为了让 plan 和代码一致。
+
+**背景**：OFF mode 原先的 top drag margin 是 `topMargin + rubberBandY (0.25h)`。对 envelope 有大片 halo 的 theme（`topMargin` 本身就很大），叠上 0.25h 后，user 一拖能把窗口主体顶到只剩很薄一条，看着像 bug。
+
+**改动**：新增 `getCappedOffRubberBandTop(topMargin, heightPx, rubberBandY)`，封顶到 `max(topMargin, 0.5h)`：
+- 如果 `topMargin < 0.5h`：cap 是 `0.5h`，drag 最多允许 `min(topMargin + 0.25h, 0.5h)`，超过半个窗口的部分不再吃进去
+- 如果 `topMargin >= 0.5h`：cap 就是 `topMargin` 本身，drag 和 rest 等量，退化为无 rubber-band
+
+**不是 bug，是设计**：drag margin 比 rest margin 大（rubber-band 的定义），释放回弹是 feature。4-21 review 时一度误判为 asymmetry regression，复核后确认 rest 仍然用 `topMargin`（`src/visible-margins.js:132`），drag/rest 按 rubber-band 语义正确不对称。
+
+**不 break "飞出去"的玩法**：`topMargin` 本身来自 theme envelope，大多数 theme 下 < 0.5h，cap 基本等于 0.5h，比原来 `topMargin + 0.25h` 在绝大多数场景下**更宽松**（原来 0 < topMargin < 0.25h 时 total < 0.5h），所以老用户习惯的"飞出去"手感不变。
+
+**测试**：`test/visible-margins.test.js` 里 3 条 OFF mode cap 用例覆盖 modest headroom / exceed-half-window / rest-unchanged 三种情形。

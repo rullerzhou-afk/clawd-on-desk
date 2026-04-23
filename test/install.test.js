@@ -27,23 +27,27 @@ function readSettings(settingsPath) {
   return JSON.parse(fs.readFileSync(settingsPath, "utf8"));
 }
 
-function getClawdCommands(settings, event) {
+function getCommandHookEntries(settings, event, marker) {
   const entries = settings.hooks?.[event];
   if (!Array.isArray(entries)) return [];
-  const commands = [];
+  const hooks = [];
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
-    if (typeof entry.command === "string" && entry.command.includes("clawd-hook.js")) {
-      commands.push(entry.command);
+    if (typeof entry.command === "string" && entry.command.includes(marker)) {
+      hooks.push(entry);
     }
     if (!Array.isArray(entry.hooks)) continue;
     for (const hook of entry.hooks) {
-      if (hook && typeof hook.command === "string" && hook.command.includes("clawd-hook.js")) {
-        commands.push(hook.command);
+      if (hook && typeof hook.command === "string" && hook.command.includes(marker)) {
+        hooks.push(hook);
       }
     }
   }
-  return commands;
+  return hooks;
+}
+
+function getClawdCommands(settings, event) {
+  return getCommandHookEntries(settings, event, "clawd-hook.js").map((hook) => hook.command);
 }
 
 function getHttpUrls(settings, event) {
@@ -250,6 +254,53 @@ describe("Claude version detection helpers", () => {
 });
 
 describe("Hook installer version compatibility", () => {
+  it("uses PowerShell-safe command hooks on Windows", () => {
+    const settingsPath = makeTempSettings({});
+    registerHooks({
+      silent: true,
+      settingsPath,
+      platform: "win32",
+      nodeBin: "node",
+      claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
+    });
+
+    const settings = readSettings(settingsPath);
+    const stopHooks = getCommandHookEntries(settings, "Stop", "clawd-hook.js");
+    assert.strictEqual(stopHooks.length, 1);
+    assert.strictEqual(stopHooks[0].shell, "powershell");
+    assert.ok(stopHooks[0].command.startsWith('& "node" "'), stopHooks[0].command);
+    assert.ok(stopHooks[0].command.endsWith('" Stop'), stopHooks[0].command);
+  });
+
+  it("keeps remote hooks on the legacy bash-compatible format", () => {
+    const hook = __test.buildCommandHookSpec("node", "/tmp/clawd-hook.js", "Stop", {
+      platform: "win32",
+      remote: true,
+    });
+
+    assert.deepStrictEqual(hook, {
+      type: "command",
+      command: 'CLAWD_REMOTE=1 "node" "/tmp/clawd-hook.js" Stop',
+    });
+  });
+
+  it("does not add a shell field for non-Windows hook registration", () => {
+    const settingsPath = makeTempSettings({});
+    registerHooks({
+      silent: true,
+      settingsPath,
+      platform: "linux",
+      nodeBin: "/usr/bin/node",
+      claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
+    });
+
+    const settings = readSettings(settingsPath);
+    const stopHooks = getCommandHookEntries(settings, "Stop", "clawd-hook.js");
+    assert.strictEqual(stopHooks.length, 1);
+    assert.ok(!Object.prototype.hasOwnProperty.call(stopHooks[0], "shell"));
+    assert.ok(stopHooks[0].command.startsWith('"/usr/bin/node" "'), stopHooks[0].command);
+  });
+
   it("registers StopFailure when Claude Code is >= 2.1.78", () => {
     const settingsPath = makeTempSettings({});
     const result = registerHooks({
@@ -377,6 +428,67 @@ describe("Hook installer version compatibility", () => {
     assert.ok(!commands[0].includes('/old/path/'));
   });
 
+  it("updates stale Windows hook commands to PowerShell format", () => {
+    const settingsPath = makeTempSettings({
+      hooks: {
+        Stop: [
+          {
+            matcher: "",
+            hooks: [{ type: "command", command: '"node" "/old/path/clawd-hook.js" Stop' }],
+          },
+        ],
+      },
+    });
+
+    const result = registerHooks({
+      silent: true,
+      settingsPath,
+      platform: "win32",
+      nodeBin: "node",
+      claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
+    });
+
+    const settings = readSettings(settingsPath);
+    const stopHooks = getCommandHookEntries(settings, "Stop", "clawd-hook.js");
+    assert.strictEqual(result.updated, 1);
+    assert.strictEqual(stopHooks.length, 1);
+    assert.strictEqual(stopHooks[0].shell, "powershell");
+    assert.ok(stopHooks[0].command.startsWith("& "), stopHooks[0].command);
+    assert.ok(!stopHooks[0].command.includes("/old/path/"));
+  });
+
+  it("removes stale powershell shell metadata on non-Windows", () => {
+    const settingsPath = makeTempSettings({
+      hooks: {
+        Stop: [
+          {
+            matcher: "",
+            hooks: [{
+              type: "command",
+              shell: "powershell",
+              command: '& "node" "/old/path/clawd-hook.js" Stop',
+            }],
+          },
+        ],
+      },
+    });
+
+    const result = registerHooks({
+      silent: true,
+      settingsPath,
+      platform: "linux",
+      nodeBin: "/usr/bin/node",
+      claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
+    });
+
+    const settings = readSettings(settingsPath);
+    const stopHooks = getCommandHookEntries(settings, "Stop", "clawd-hook.js");
+    assert.strictEqual(result.updated, 1);
+    assert.strictEqual(stopHooks.length, 1);
+    assert.ok(!Object.prototype.hasOwnProperty.call(stopHooks[0], "shell"));
+    assert.ok(stopHooks[0].command.startsWith('"/usr/bin/node" "'), stopHooks[0].command);
+  });
+
   it("is idempotent on repeated registration", () => {
     const settingsPath = makeTempSettings({});
     registerHooks({
@@ -393,6 +505,34 @@ describe("Hook installer version compatibility", () => {
 
     assert.strictEqual(result.added, 0);
     assert.strictEqual(result.updated, 0);
+  });
+
+  it("is idempotent on repeated Windows registration", () => {
+    const settingsPath = makeTempSettings({});
+    const first = registerHooks({
+      silent: true,
+      settingsPath,
+      platform: "win32",
+      nodeBin: "node",
+      claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
+    });
+    assert.ok(first.added > 0, "first run should add hooks");
+
+    const second = registerHooks({
+      silent: true,
+      settingsPath,
+      platform: "win32",
+      nodeBin: "node",
+      claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
+    });
+    assert.strictEqual(second.added, 0);
+    assert.strictEqual(second.updated, 0);
+
+    const settings = readSettings(settingsPath);
+    const stopHooks = getCommandHookEntries(settings, "Stop", "clawd-hook.js");
+    assert.strictEqual(stopHooks.length, 1);
+    assert.strictEqual(stopHooks[0].shell, "powershell");
+    assert.ok(stopHooks[0].command.startsWith("& "), stopHooks[0].command);
   });
 
   it("preserves existing absolute node path when detection fails", () => {
@@ -422,6 +562,54 @@ describe("Hook installer version compatibility", () => {
     // Must still contain the original absolute nvm path, NOT bare "node"
     assert.ok(commands[0].includes(existingAbsPath), `expected ${existingAbsPath} in: ${commands[0]}`);
     assert.ok(!commands[0].startsWith('"node"'), "should not downgrade to bare node");
+  });
+
+  it("uses PowerShell-safe auto-start hooks on Windows", () => {
+    const settingsPath = makeTempSettings({});
+    registerHooks({
+      silent: true,
+      settingsPath,
+      autoStart: true,
+      platform: "win32",
+      nodeBin: "node",
+      claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
+    });
+
+    const settings = readSettings(settingsPath);
+    const autoStartHooks = getCommandHookEntries(settings, "SessionStart", "auto-start.js");
+    assert.strictEqual(autoStartHooks.length, 1);
+    assert.strictEqual(autoStartHooks[0].shell, "powershell");
+    assert.ok(autoStartHooks[0].command.startsWith('& "node" "'), autoStartHooks[0].command);
+  });
+
+  it("updates stale Windows auto-start hooks to PowerShell format", () => {
+    const settingsPath = makeTempSettings({
+      hooks: {
+        SessionStart: [
+          {
+            matcher: "",
+            hooks: [{ type: "command", command: '"node" "/old/path/auto-start.js"' }],
+          },
+        ],
+      },
+    });
+
+    const result = registerHooks({
+      silent: true,
+      settingsPath,
+      autoStart: true,
+      platform: "win32",
+      nodeBin: "node",
+      claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
+    });
+
+    const settings = readSettings(settingsPath);
+    const autoStartHooks = getCommandHookEntries(settings, "SessionStart", "auto-start.js");
+    assert.ok(result.updated >= 1);
+    assert.strictEqual(autoStartHooks.length, 1);
+    assert.strictEqual(autoStartHooks[0].shell, "powershell");
+    assert.ok(autoStartHooks[0].command.startsWith("& "), autoStartHooks[0].command);
+    assert.ok(!autoStartHooks[0].command.includes("/old/path/"));
   });
 
   it("checks macOS absolute Claude paths before PATH fallback", () => {
@@ -625,11 +813,11 @@ describe("Hook installer unregisterHooks", () => {
         SessionStart: [
           {
             matcher: "",
-            hooks: [{ type: "command", command: 'node "/tmp/auto-start.js"' }],
+            hooks: [{ type: "command", shell: "powershell", command: '& "node" "/tmp/auto-start.js"' }],
           },
           {
             matcher: "",
-            hooks: [{ type: "command", command: 'node "/tmp/clawd-hook.js" SessionStart' }],
+            hooks: [{ type: "command", shell: "powershell", command: '& "node" "/tmp/clawd-hook.js" SessionStart' }],
           },
           {
             matcher: "",
@@ -639,7 +827,7 @@ describe("Hook installer unregisterHooks", () => {
         Stop: [
           {
             matcher: "",
-            hooks: [{ type: "command", command: 'node "/tmp/clawd-hook.js" Stop' }],
+            hooks: [{ type: "command", shell: "powershell", command: '& "node" "/tmp/clawd-hook.js" Stop' }],
           },
         ],
         PermissionRequest: [

@@ -87,6 +87,7 @@
     },
     "files": [
       "src/**/*",
+      "assets/icon.ico",
       "assets/icons/**/*",
       "assets/icons/agents/**/*",
       "assets/svg/**/*",

@@ -68,4 +68,42 @@ describe("extractExistingNodeBin", () => {
     };
     assert.strictEqual(extractExistingNodeBin(settings, "cursor-hook.js"), null);
   });
+
+  it("extracts node path from Windows cmd wrapper format", () => {
+    const settings = {
+      hooks: {
+        stop: [{
+          command: 'cmd /d /s /c ""C:\\Program Files\\nodejs\\node.exe" "D:/animation/hooks/cursor-hook.js""',
+        }],
+      },
+    };
+    assert.strictEqual(
+      extractExistingNodeBin(settings, "cursor-hook.js"),
+      "C:\\Program Files\\nodejs\\node.exe"
+    );
+  });
+
+  it("extracts node path with forward-slash Windows mixed style", () => {
+    const settings = {
+      hooks: {
+        stop: [{ command: '"C:/Program Files/nodejs/node.exe" "D:/animation/hooks/cursor-hook.js"' }],
+      },
+    };
+    assert.strictEqual(
+      extractExistingNodeBin(settings, "cursor-hook.js"),
+      "C:/Program Files/nodejs/node.exe"
+    );
+  });
+
+  it("extracts node path from a UNC share", () => {
+    const settings = {
+      hooks: {
+        stop: [{ command: '"\\\\fileserver\\tools\\nodejs\\node.exe" "C:\\Clawd\\cursor-hook.js"' }],
+      },
+    };
+    assert.strictEqual(
+      extractExistingNodeBin(settings, "cursor-hook.js"),
+      "\\\\fileserver\\tools\\nodejs\\node.exe"
+    );
+  });
 });

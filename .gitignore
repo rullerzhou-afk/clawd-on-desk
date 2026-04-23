@@ -41,6 +41,11 @@ docs/**
 .tmp_*
 *.tmp
 
+# Local manual test / tuning scratch docs (root-level dotfile md)
+.*-test-*.md
+.*-tune-*.md
+.*-tune.md
+
 
 # Calico animation studio (WIP pipeline, not for distribution)
 calico-studio/

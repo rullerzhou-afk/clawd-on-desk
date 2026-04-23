@@ -1,6 +1,7 @@
 // src/server.js — HTTP server + routes (/state, /permission, /health)
 // Extracted from main.js L1337-1528
 
+const crypto = require("crypto");
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
@@ -39,6 +40,10 @@ const MAX_ELICITATION_HEADER = 48;
 const MAX_ELICITATION_PROMPT = 240;
 const MAX_ELICITATION_OPTION_LABEL = 80;
 const MAX_ELICITATION_OPTION_DESCRIPTION = 160;
+const TOOL_MATCH_STRING_MAX = 240;
+const TOOL_MATCH_ARRAY_MAX = 16;
+const TOOL_MATCH_OBJECT_KEYS_MAX = 32;
+const TOOL_MATCH_DEPTH_MAX = 6;
 
 function truncateDeep(obj, depth) {
   if ((depth || 0) > 10) return obj;
@@ -121,6 +126,77 @@ function normalizeElicitationToolInput(toolInput) {
     ...toolInput,
     questions,
   };
+}
+
+function normalizeHookToolUseId(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function normalizeToolMatchValue(value, depth = 0) {
+  if (depth > TOOL_MATCH_DEPTH_MAX) return null;
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, TOOL_MATCH_ARRAY_MAX)
+      .map((entry) => normalizeToolMatchValue(entry, depth + 1));
+  }
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const key of Object.keys(value).sort().slice(0, TOOL_MATCH_OBJECT_KEYS_MAX)) {
+      out[key] = normalizeToolMatchValue(value[key], depth + 1);
+    }
+    return out;
+  }
+  if (typeof value === "string") {
+    return value.length > TOOL_MATCH_STRING_MAX
+      ? `${value.slice(0, TOOL_MATCH_STRING_MAX - 1)}…`
+      : value;
+  }
+  return value;
+}
+
+function buildToolInputFingerprint(toolInput) {
+  if (!toolInput || typeof toolInput !== "object") return null;
+  const normalized = normalizeToolMatchValue(toolInput);
+  return crypto
+    .createHash("sha1")
+    .update(JSON.stringify(normalized))
+    .digest("hex");
+}
+
+function findPendingPermissionForStateEvent(pendingPermissions, options) {
+  const sessionId = typeof options.sessionId === "string" && options.sessionId
+    ? options.sessionId
+    : "default";
+  const sessionPending = pendingPermissions.filter((perm) => (
+    perm && perm.res && perm.sessionId === sessionId
+  ));
+  if (!sessionPending.length) return null;
+
+  const toolUseId = normalizeHookToolUseId(options.toolUseId);
+  if (toolUseId) {
+    const matchByToolUseId = sessionPending.find((perm) => perm.toolUseId === toolUseId);
+    if (matchByToolUseId) return matchByToolUseId;
+  }
+
+  const toolName = typeof options.toolName === "string" && options.toolName
+    ? options.toolName
+    : null;
+  const toolInputFingerprint = typeof options.toolInputFingerprint === "string" && options.toolInputFingerprint
+    ? options.toolInputFingerprint
+    : null;
+  if (toolName && toolInputFingerprint) {
+    const matchesByFingerprint = sessionPending.filter((perm) => (
+      perm.toolName === toolName
+        && perm.toolInputFingerprint === toolInputFingerprint
+        && (!toolUseId || !perm.toolUseId)
+    ));
+    if (matchesByFingerprint.length === 1) return matchesByFingerprint[0];
+  }
+
+  const allowSingletonFallback = options.allowSingletonFallback === true;
+  return allowSingletonFallback && sessionPending.length === 1 ? sessionPending[0] : null;
 }
 
 module.exports = function initServer(ctx) {
@@ -369,6 +445,13 @@ function startHttpServer() {
           const agentId = typeof data.agent_id === "string" ? data.agent_id : "claude-code";
           const host = typeof data.host === "string" ? data.host : null;
           const headless = data.headless === true;
+          const toolName = typeof data.tool_name === "string" && data.tool_name ? data.tool_name : null;
+          const toolUseId = normalizeHookToolUseId(
+            data.tool_use_id ?? data.toolUseId ?? data.toolUseID
+          );
+          const toolInputFingerprint = typeof data.tool_input_fingerprint === "string" && data.tool_input_fingerprint
+            ? data.tool_input_fingerprint
+            : null;
           // Session title (Claude Code /rename or Codex turn_context.summary).
           // Non-string / empty values are silently dropped — matches the
           // "ignore + fall back" pattern used by cwd / agent_id above.
@@ -392,11 +475,14 @@ function startHttpServer() {
               return;
             }
             if (event === "PostToolUse" || event === "PostToolUseFailure" || event === "Stop") {
-              for (const perm of [...ctx.pendingPermissions]) {
-                if (perm.sessionId === sid) {
-                  ctx.resolvePermissionEntry(perm, "deny", "User answered in terminal");
-                }
-              }
+              const perm = findPendingPermissionForStateEvent(ctx.pendingPermissions, {
+                sessionId: sid,
+                toolName,
+                toolUseId,
+                toolInputFingerprint,
+                allowSingletonFallback: event === "Stop",
+              });
+              if (perm) ctx.resolvePermissionEntry(perm, "deny", "User answered in terminal");
             }
             if (svg) {
               const safeSvg = path.basename(svg);
@@ -589,6 +675,10 @@ function startHttpServer() {
           const toolName = typeof data.tool_name === "string" ? data.tool_name : "Unknown";
           const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
           const toolInput = truncateDeep(rawInput);
+          const toolUseId = normalizeHookToolUseId(
+            data.tool_use_id ?? data.toolUseId ?? data.toolUseID
+          );
+          const toolInputFingerprint = buildToolInputFingerprint(rawInput);
           const sessionId = data.session_id || "default";
           // Tag the permEntry with the source agent. Clawd's HTTP permission
           // path is shared between Claude Code and codebuddy (both set
@@ -625,7 +715,22 @@ function startHttpServer() {
             ctx.permLog(`ELICITATION: tool=${toolName} session=${sessionId}`);
             ctx.updateSession(sessionId, "notification", "Elicitation", { agentId: "claude-code" });
 
-            const permEntry = { res, abortHandler: null, suggestions: [], sessionId, bubble: null, hideTimer: null, toolName, toolInput: elicitationInput, resolvedSuggestion: null, createdAt: Date.now(), isElicitation: true, agentId: permAgentId };
+            const permEntry = {
+              res,
+              abortHandler: null,
+              suggestions: [],
+              sessionId,
+              bubble: null,
+              hideTimer: null,
+              toolName,
+              toolInput: elicitationInput,
+              toolUseId,
+              toolInputFingerprint,
+              resolvedSuggestion: null,
+              createdAt: Date.now(),
+              isElicitation: true,
+              agentId: permAgentId,
+            };
             const abortHandler = () => {
               if (res.writableFinished) return;
               ctx.permLog("abortHandler fired (elicitation)");
@@ -638,7 +743,21 @@ function startHttpServer() {
             return;
           }
 
-          const permEntry = { res, abortHandler: null, suggestions, sessionId, bubble: null, hideTimer: null, toolName, toolInput, resolvedSuggestion: null, createdAt: Date.now(), agentId: permAgentId };
+          const permEntry = {
+            res,
+            abortHandler: null,
+            suggestions,
+            sessionId,
+            bubble: null,
+            hideTimer: null,
+            toolName,
+            toolInput,
+            toolUseId,
+            toolInputFingerprint,
+            resolvedSuggestion: null,
+            createdAt: Date.now(),
+            agentId: permAgentId,
+          };
           const abortHandler = () => {
             if (res.writableFinished) return;
             ctx.permLog("abortHandler fired");
@@ -748,4 +867,7 @@ module.exports.__test = {
   shouldBypassOpencodeBubble,
   normalizePermissionSuggestions,
   normalizeElicitationToolInput,
+  normalizeToolMatchValue,
+  buildToolInputFingerprint,
+  findPendingPermissionForStateEvent,
 };

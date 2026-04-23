@@ -22,6 +22,14 @@ const CURSOR_HOOK_EVENTS = [
   "stop",
 ];
 
+function buildCursorHookCommand(nodeBin, hookScript, platform = process.platform) {
+  const baseCommand = `"${nodeBin}" "${hookScript}"`;
+  if (platform !== "win32") return baseCommand;
+  // Cursor's Windows hook launcher is more reliable when the command goes
+  // through cmd.exe explicitly instead of invoking node directly.
+  return `cmd /d /s /c "${baseCommand}"`;
+}
+
 /**
  * Register Clawd hooks into ~/.cursor/hooks.json
  * @param {object} [options]
@@ -58,7 +66,11 @@ function registerCursorHooks(options = {}) {
   const nodeBin = resolved
     || extractExistingNodeBin(settings, MARKER)
     || "node";
-  const desiredCommand = `"${nodeBin}" "${hookScript}"`;
+  const desiredCommand = buildCursorHookCommand(
+    nodeBin,
+    hookScript,
+    options.platform || process.platform
+  );
 
   if (!settings.hooks || typeof settings.hooks !== "object") settings.hooks = {};
   if (typeof settings.version !== "number") settings.version = 1;
@@ -115,7 +127,7 @@ function registerCursorHooks(options = {}) {
   return { added, skipped, updated };
 }
 
-module.exports = { registerCursorHooks, CURSOR_HOOK_EVENTS };
+module.exports = { registerCursorHooks, CURSOR_HOOK_EVENTS, buildCursorHookCommand };
 
 if (require.main === module) {
   try {

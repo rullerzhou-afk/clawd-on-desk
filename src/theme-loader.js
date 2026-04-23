@@ -1416,6 +1416,10 @@ function getSoundUrl(soundName) {
   return null;
 }
 
+function getPreviewSoundUrl() {
+  return getSoundUrl("confirm") || getSoundUrl("complete") || null;
+}
+
 // basename() strips any path segments in theme.json so a malicious
 // `preview: "../../foo"` can't escape the theme dir.
 function _buildPreviewUrl(raw, themeDir, isBuiltin) {
@@ -1541,6 +1545,7 @@ module.exports = {
   getHitRendererConfig,
   ensureUserThemesDir,
   getSoundUrl,
+  getPreviewSoundUrl,
   // Schema constants + helpers — shared with scripts/validate-theme.js to
   // keep validator and runtime loader from drifting on the same invariants.
   REQUIRED_STATES,

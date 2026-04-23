@@ -4,84 +4,153 @@
   "author": "rullerzhou",
   "version": "1.0.0",
   "description": "A calico cat desk pet — AI-generated APNG animations",
-  "license": "MIT",
-
-  "viewBox": { "x": 0, "y": 0, "width": 266, "height": 200 },
-
+  "viewBox": {
+    "x": 0,
+    "y": 0,
+    "width": 266,
+    "height": 200
+  },
   "layout": {
-    "contentBox": { "x": 36, "y": 10, "width": 194, "height": 160 },
+    "contentBox": {
+      "x": 36,
+      "y": 10,
+      "width": 194,
+      "height": 160
+    },
     "centerX": 133,
     "baselineY": 170,
     "visibleHeightRatio": 0.35,
     "baselineBottomRatio": 0.05
   },
-
   "eyeTracking": {
     "enabled": true,
-    "states": ["idle"],
+    "states": [
+      "idle"
+    ],
     "eyeRatioX": 0.48,
     "eyeRatioY": 0.38,
     "maxOffset": 20,
     "trackingLayers": {
       "eyes": {
-        "ids": ["eye-sockets", "eye-pupils", "eye-highlights"],
+        "ids": [
+          "eye-sockets",
+          "eye-pupils",
+          "eye-highlights"
+        ],
         "maxOffset": 20,
         "ease": 0.2
       },
       "head": {
-        "ids": ["outline-head", "base-head", "patch-head-right", "patch-head-left", "cheek-right", "cheek-left", "mouth", "whiskers-right", "ears-inner", "ear-inner-right", "ear-inner-left"],
-        "classes": ["ear-anim"],
+        "ids": [
+          "outline-head",
+          "base-head",
+          "patch-head-right",
+          "patch-head-left",
+          "cheek-right",
+          "cheek-left",
+          "mouth",
+          "whiskers-right",
+          "ears-inner",
+          "ear-inner-right",
+          "ear-inner-left"
+        ],
+        "classes": [
+          "ear-anim"
+        ],
         "maxOffset": 12,
         "ease": 0.12
       },
       "body": {
-        "ids": ["outline-body", "chest-head"],
+        "ids": [
+          "outline-body",
+          "chest-head"
+        ],
         "maxOffset": 3,
         "ease": 0.07
       }
     }
   },
-
   "states": {
-    "idle":         ["calico-idle-follow.svg"],
-    "yawning":      ["calico-yawning.apng"],
-    "dozing":       ["calico-dozing.apng"],
-    "collapsing":   ["calico-collapsing.apng"],
-    "thinking":     ["calico-thinking.apng"],
-    "working":      ["calico-working-typing.apng"],
-    "juggling":     ["calico-working-juggling.apng"],
-    "sweeping":     ["calico-working-sweeping.apng"],
-    "error":        ["calico-error.apng"],
-    "attention":    ["calico-happy.apng"],
-    "notification": ["calico-notification.apng"],
-    "carrying":     ["calico-working-carrying.apng"],
-    "sleeping":     ["calico-sleeping.apng"],
-    "waking":       ["calico-waking.apng"]
+    "idle": [
+      "calico-idle-follow.svg"
+    ],
+    "yawning": [
+      "calico-yawning.apng"
+    ],
+    "dozing": [
+      "calico-dozing.apng"
+    ],
+    "collapsing": [
+      "calico-collapsing.apng"
+    ],
+    "thinking": [
+      "calico-thinking.apng"
+    ],
+    "working": [
+      "calico-working-typing.apng"
+    ],
+    "juggling": [
+      "calico-working-juggling.apng"
+    ],
+    "sweeping": [
+      "calico-working-sweeping.apng"
+    ],
+    "error": [
+      "calico-error.apng"
+    ],
+    "attention": [
+      "calico-happy.apng"
+    ],
+    "notification": [
+      "calico-notification.apng"
+    ],
+    "carrying": [
+      "calico-working-carrying.apng"
+    ],
+    "sleeping": [
+      "calico-sleeping.apng"
+    ],
+    "waking": [
+      "calico-waking.apng"
+    ]
   },
-
   "workingTiers": [
-    { "minSessions": 3, "file": "calico-working-building.apng" },
-    { "minSessions": 2, "file": "calico-working-juggling.apng" },
-    { "minSessions": 1, "file": "calico-working-typing.apng" }
+    {
+      "minSessions": 3,
+      "file": "calico-working-building.apng"
+    },
+    {
+      "minSessions": 2,
+      "file": "calico-working-juggling.apng"
+    },
+    {
+      "minSessions": 1,
+      "file": "calico-working-typing.apng"
+    }
   ],
-
   "jugglingTiers": [
-    { "minSessions": 2, "file": "calico-working-conducting.apng" },
-    { "minSessions": 1, "file": "calico-working-juggling.apng" }
+    {
+      "minSessions": 2,
+      "file": "calico-working-conducting.apng"
+    },
+    {
+      "minSessions": 1,
+      "file": "calico-working-juggling.apng"
+    }
   ],
-
   "idleAnimations": [
-    { "file": "calico-idle.apng", "duration": 5200 }
+    {
+      "file": "calico-idle.apng",
+      "duration": 5200
+    }
   ],
-
   "displayHintMap": {
     "clawd-working-building.svg": "calico-working-building.apng",
-    "clawd-working-typing.svg":   "calico-working-typing.apng",
+    "clawd-working-typing.svg": "calico-working-typing.apng",
     "clawd-working-juggling.svg": "calico-working-juggling.apng",
     "clawd-working-conducting.svg": "calico-working-conducting.apng",
     "clawd-working-thinking.svg": "calico-thinking.apng"
   },
-
   "timings": {
     "minDisplay": {
       "attention": 5000,
@@ -107,64 +176,105 @@
     "mouseIdleTimeout": 20000,
     "mouseSleepTimeout": 60000
   },
-
   "hitBoxes": {
-    "default":  { "x": 80, "y": 30, "w": 106, "h": 140 },
-    "sleeping": { "x": 60, "y": 60, "w": 146, "h": 100 },
-    "wide":     { "x": 50, "y": 20, "w": 166, "h": 160 }
+    "default": {
+      "x": 80,
+      "y": 30,
+      "w": 106,
+      "h": 140
+    },
+    "sleeping": {
+      "x": 60,
+      "y": 60,
+      "w": 146,
+      "h": 100
+    },
+    "wide": {
+      "x": 50,
+      "y": 20,
+      "w": 166,
+      "h": 160
+    }
   },
-  "wideHitboxFiles": ["calico-error.apng", "calico-notification.apng", "calico-working-conducting.apng"],
-  "sleepingHitboxFiles": ["calico-sleeping.apng", "calico-collapsing.apng"],
-
+  "wideHitboxFiles": [
+    "calico-error.apng",
+    "calico-notification.apng",
+    "calico-working-conducting.apng"
+  ],
+  "sleepingHitboxFiles": [
+    "calico-sleeping.apng",
+    "calico-collapsing.apng"
+  ],
   "reactions": {
-    "drag":       { "file": "calico-react-drag.apng" },
-    "clickLeft":  { "file": "calico-react-poke.apng", "duration": 2500 },
-    "clickRight": { "file": "calico-react-poke.apng", "duration": 2500 }
+    "drag": {
+      "file": "calico-react-drag.apng"
+    },
+    "clickLeft": {
+      "file": "calico-react-poke.apng",
+      "duration": 2500
+    },
+    "clickRight": {
+      "file": "calico-react-poke.apng",
+      "duration": 2500
+    }
   },
-
   "miniMode": {
     "supported": true,
     "flipAssets": true,
     "offsetRatio": 0.4,
     "states": {
-      "mini-idle":        ["calico-mini-idle.apng"],
-      "mini-alert":       ["calico-mini-alert.apng"],
-      "mini-happy":       ["calico-mini-happy.apng"],
-      "mini-enter":       ["calico-mini-enter.apng"],
-      "mini-peek":        ["calico-mini-peek.apng"],
-      "mini-crabwalk":    ["calico-mini-crabwalk.apng"],
-      "mini-enter-sleep": ["calico-mini-sleep.apng"],
-      "mini-sleep":       ["calico-mini-sleep.apng"]
+      "mini-idle": [
+        "calico-mini-idle.apng"
+      ],
+      "mini-alert": [
+        "calico-mini-alert.apng"
+      ],
+      "mini-happy": [
+        "calico-mini-happy.apng"
+      ],
+      "mini-enter": [
+        "calico-mini-enter.apng"
+      ],
+      "mini-peek": [
+        "calico-mini-peek.apng"
+      ],
+      "mini-crabwalk": [
+        "calico-mini-crabwalk.apng"
+      ],
+      "mini-enter-sleep": [
+        "calico-mini-sleep.apng"
+      ],
+      "mini-sleep": [
+        "calico-mini-sleep.apng"
+      ]
     },
     "timings": {
-      "minDisplay": { "mini-alert": 4000, "mini-happy": 4000, "mini-peek": 1500 },
-      "autoReturn": { "mini-alert": 4000, "mini-happy": 4000, "mini-peek": 1500 }
+      "minDisplay": {
+        "mini-alert": 4000,
+        "mini-happy": 4000,
+        "mini-peek": 1500
+      },
+      "autoReturn": {
+        "mini-alert": 4000,
+        "mini-happy": 4000,
+        "mini-peek": 1500
+      }
     },
     "glyphFlips": {}
   },
-
-  "transitions": {
-    "calico-idle.apng":         { "out": 800 },
-    "calico-notification.apng": { "in": 300, "out": 1200 },
-    "calico-happy.apng":        { "out": 1500 },
-    "calico-yawning.apng":      { "in": 500 },
-    "calico-waking.apng":       { "out": 300 },
-    "calico-collapsing.apng":   { "in": 600 }
-  },
-
+  "transitions": {},
   "sounds": {
     "complete": "complete.mp3",
-    "confirm":  "confirm.mp3"
+    "confirm": "confirm.mp3"
   },
-
   "objectScale": {
-    "widthRatio":  0.58,
+    "widthRatio": 0.58,
     "heightRatio": 0.44,
     "imgWidthRatio": 0.6,
-    "objBottom":   0.05,
-    "imgBottom":   0.05,
-    "offsetX":     0.21,
-    "offsetY":     0.28,
+    "objBottom": 0.05,
+    "imgBottom": 0.05,
+    "offsetX": 0.21,
+    "offsetY": 0.28,
     "fileScales": {
       "calico-idle-follow.svg": 1.015,
       "calico-idle.apng": 1.05,
@@ -194,32 +304,110 @@
       "calico-mini-sleep.apng": 1.15
     },
     "fileOffsets": {
-      "calico-idle-follow.svg": { "x": 0, "y": 0 },
-      "calico-idle.apng": { "x": 10, "y": 0 },
-      "calico-thinking.apng": { "x": 0, "y": 13 },
-      "calico-working-typing.apng": { "x": -3, "y": -5 },
-      "calico-working-juggling.apng": { "x": 0, "y": -5 },
-      "calico-working-building.apng": { "x": 0, "y": -5 },
-      "calico-working-conducting.apng": { "x": 0, "y": -5 },
-      "calico-working-sweeping.apng": { "x": -16, "y": 6 },
-      "calico-working-carrying.apng": { "x": -24, "y": 10 },
-      "calico-notification.apng": { "x": 9, "y": 0 },
-      "calico-error.apng": { "x": 0, "y": 7 },
-      "calico-happy.apng": { "x": 5, "y": 6 },
-      "calico-yawning.apng": { "x": 8, "y": 8 },
-      "calico-dozing.apng": { "x": 7, "y": 4 },
-      "calico-collapsing.apng": { "x": 10, "y": 0 },
-      "calico-sleeping.apng": { "x": 10, "y": 0 },
-      "calico-waking.apng": { "x": 10, "y": 0 },
-      "calico-react-poke.apng": { "x": 10, "y": 0 },
-      "calico-react-drag.apng": { "x": 0, "y": 6 },
-      "calico-mini-idle.apng":     { "x": 0, "y": 65 },
-      "calico-mini-alert.apng":    { "x": 0, "y": 65 },
-      "calico-mini-happy.apng":    { "x": 0, "y": 65 },
-      "calico-mini-enter.apng":    { "x": 0, "y": 65 },
-      "calico-mini-peek.apng":     { "x": 0, "y": 65 },
-      "calico-mini-crabwalk.apng": { "x": 0, "y": 65 },
-      "calico-mini-sleep.apng":    { "x": 0, "y": 65 }
+      "calico-idle-follow.svg": {
+        "x": -10,
+        "y": -10
+      },
+      "calico-idle.apng": {
+        "x": 10,
+        "y": 0
+      },
+      "calico-thinking.apng": {
+        "x": 0,
+        "y": 13
+      },
+      "calico-working-typing.apng": {
+        "x": -3,
+        "y": -5
+      },
+      "calico-working-juggling.apng": {
+        "x": 0,
+        "y": -5
+      },
+      "calico-working-building.apng": {
+        "x": 0,
+        "y": -5
+      },
+      "calico-working-conducting.apng": {
+        "x": 0,
+        "y": -5
+      },
+      "calico-working-sweeping.apng": {
+        "x": -16,
+        "y": 6
+      },
+      "calico-working-carrying.apng": {
+        "x": -24,
+        "y": 10
+      },
+      "calico-notification.apng": {
+        "x": 9,
+        "y": 0
+      },
+      "calico-error.apng": {
+        "x": 0,
+        "y": 7
+      },
+      "calico-happy.apng": {
+        "x": 5,
+        "y": 6
+      },
+      "calico-yawning.apng": {
+        "x": 8,
+        "y": 8
+      },
+      "calico-dozing.apng": {
+        "x": 7,
+        "y": 4
+      },
+      "calico-collapsing.apng": {
+        "x": 5,
+        "y": -5
+      },
+      "calico-sleeping.apng": {
+        "x": 5,
+        "y": -5
+      },
+      "calico-waking.apng": {
+        "x": 5,
+        "y": -5
+      },
+      "calico-react-poke.apng": {
+        "x": 10,
+        "y": 0
+      },
+      "calico-react-drag.apng": {
+        "x": 0,
+        "y": 6
+      },
+      "calico-mini-idle.apng": {
+        "x": 0,
+        "y": 65
+      },
+      "calico-mini-alert.apng": {
+        "x": 0,
+        "y": 65
+      },
+      "calico-mini-happy.apng": {
+        "x": 0,
+        "y": 65
+      },
+      "calico-mini-enter.apng": {
+        "x": 0,
+        "y": 65
+      },
+      "calico-mini-peek.apng": {
+        "x": 0,
+        "y": 65
+      },
+      "calico-mini-crabwalk.apng": {
+        "x": 0,
+        "y": 65
+      },
+      "calico-mini-sleep.apng": {
+        "x": 0,
+        "y": 65
+      }
     }
   }
 }

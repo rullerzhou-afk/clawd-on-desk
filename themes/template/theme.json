@@ -7,7 +7,7 @@
   "author": "Your Name",
   "version": "1.0.0",
   "description": "A short description of your theme",
-  "license": "MIT",
+  "_comment_license": "Optional: if you add a license field, treat it as descriptive metadata only. It should describe assets you own and does not grant rights by itself.",
 
   "viewBox": {
     "_comment": "Logical canvas in SVG units. All assets should share this aspect ratio.",

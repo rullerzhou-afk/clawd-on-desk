@@ -346,6 +346,123 @@ fi
     assert.strictEqual(Object.prototype.hasOwnProperty.call(agent, "tools"), false);
   });
 
+  it("formatHookCommand wraps Windows commands with PowerShell call operator", () => {
+    const { __test } = require("../hooks/kiro-install");
+    const { formatHookCommand } = __test;
+
+    // mac/linux: bare quoted strings work in /bin/sh -c
+    assert.strictEqual(
+      formatHookCommand("/usr/local/bin/node", "/path/to/kiro-hook.js", "darwin"),
+      `"/usr/local/bin/node" "/path/to/kiro-hook.js"`
+    );
+    assert.strictEqual(
+      formatHookCommand("/usr/bin/node", "/opt/kiro-hook.js", "linux"),
+      `"/usr/bin/node" "/opt/kiro-hook.js"`
+    );
+
+    // Windows: PowerShell parses bare "node" as a string literal — needs `& `
+    assert.strictEqual(
+      formatHookCommand("node", "D:/animation/hooks/kiro-hook.js", "win32"),
+      `& "node" "D:/animation/hooks/kiro-hook.js"`
+    );
+  });
+
+  it("getKiroCliCandidates returns Windows install paths on win32", () => {
+    const { __test } = require("../hooks/kiro-install");
+    const { getKiroCliCandidates } = __test;
+
+    const winCandidates = getKiroCliCandidates(
+      "C:\\Users\\test",
+      "win32",
+      { LOCALAPPDATA: "C:\\Users\\test\\AppData\\Local", ProgramFiles: "C:\\Program Files" }
+    );
+    assert.ok(
+      winCandidates.includes("C:\\Users\\test\\AppData\\Local\\Kiro-Cli\\kiro-cli.exe"),
+      "must include LOCALAPPDATA install path (default install location)"
+    );
+    assert.ok(
+      winCandidates.includes("C:\\Program Files\\Kiro-Cli\\kiro-cli.exe"),
+      "must include ProgramFiles fallback (in case installer location changes)"
+    );
+    assert.ok(winCandidates.includes("kiro-cli.exe"), "must keep PATH lookup");
+
+    // posix candidates unchanged (path.join uses native sep, so reconstruct
+    // the expected ~/.local/bin entry with path.join too)
+    const linuxCandidates = getKiroCliCandidates("/home/test", "linux");
+    assert.ok(linuxCandidates.includes(path.join("/home/test", ".local", "bin", "kiro-cli")));
+    assert.ok(linuxCandidates.includes("/opt/homebrew/bin/kiro-cli"));
+  });
+
+  it("generated hook commands use PowerShell-safe format on Windows", () => {
+    const { agentsDir } = makeTempKiroHome();
+
+    registerKiroHooks({
+      silent: true,
+      agentsDir,
+      nodeBin: "node",
+      platform: "win32",
+      syncClawdAgent(filePath) {
+        fs.writeFileSync(
+          filePath,
+          JSON.stringify({ name: "clawd", description: "x", hooks: {} }, null, 2),
+          "utf8"
+        );
+      },
+    });
+
+    const clawdAgent = readJson(path.join(agentsDir, "clawd.json"));
+    for (const event of KIRO_HOOK_EVENTS) {
+      const cmd = clawdAgent.hooks[event][0].command;
+      assert.ok(cmd.startsWith("& "), `${event} must start with PowerShell call operator: ${cmd}`);
+      assert.ok(cmd.includes("kiro-hook.js"));
+    }
+  });
+
+  it("trusts the template file when EDITOR mis-fires (non-zero spawn exit)", {
+    skip: process.platform === "win32" ? "fake kiro-cli uses POSIX shell" : false,
+  }, () => {
+    const { agentsDir } = makeTempKiroHome();
+    const clawdPath = path.join(agentsDir, "clawd.json");
+
+    // Fake kiro-cli: write the file, then exit 1 (simulates EDITOR mis-fire on Windows)
+    const fakeBin = path.join(agentsDir, "fake-kiro-cli-failexit");
+    const templateData = {
+      name: "kiro_default",
+      description: "Default agent",
+      prompt: "# Survived non-zero exit",
+      tools: ["*"],
+      resources: ["file://README.md"],
+      hooks: {},
+    };
+    fs.writeFileSync(fakeBin, `#!/bin/sh
+if [ "$1" = "agent" ] && [ "$2" = "create" ]; then
+  name="$3"
+  shift 3
+  dir=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --directory) dir="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  cat > "$dir/$name.json" << 'TEMPLATE'
+${JSON.stringify(templateData, null, 2)}
+TEMPLATE
+fi
+exit 1
+`, "utf8");
+    fs.chmodSync(fakeBin, 0o755);
+
+    const { __test } = require("../hooks/kiro-install");
+    const result = __test.generateClawdTemplateFromBuiltin({
+      homeDir: path.dirname(agentsDir),
+      kiroCliCandidates: [fakeBin],
+    });
+
+    assert.ok(result.template, "template should be returned even when fake bin exits 1");
+    assert.strictEqual(result.template.prompt, "# Survived non-zero exit");
+  });
+
   it("fallback preserves existing clawd.json when kiro-cli is unavailable", () => {
     const { agentsDir } = makeTempKiroHome();
     const clawdPath = path.join(agentsDir, "clawd.json");

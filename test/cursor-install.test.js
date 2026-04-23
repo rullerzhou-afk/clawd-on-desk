@@ -3,7 +3,11 @@ const assert = require("node:assert");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { registerCursorHooks, CURSOR_HOOK_EVENTS } = require("../hooks/cursor-install");
+const {
+  registerCursorHooks,
+  CURSOR_HOOK_EVENTS,
+  buildCursorHookCommand,
+} = require("../hooks/cursor-install");
 
 const MARKER = "cursor-hook.js";
 const tempDirs = [];
@@ -33,6 +37,7 @@ describe("Cursor hook installer", () => {
       silent: true,
       hooksPath,
       nodeBin: "/usr/local/bin/node",
+      platform: "linux",
     });
 
     assert.strictEqual(result.added, CURSOR_HOOK_EVENTS.length);
@@ -53,10 +58,20 @@ describe("Cursor hook installer", () => {
 
   it("is idempotent on second run", () => {
     const hooksPath = makeTempHooksFile({});
-    registerCursorHooks({ silent: true, hooksPath, nodeBin: "/usr/local/bin/node" });
+    registerCursorHooks({
+      silent: true,
+      hooksPath,
+      nodeBin: "/usr/local/bin/node",
+      platform: "linux",
+    });
     const contentBefore = fs.readFileSync(hooksPath, "utf8");
 
-    const result = registerCursorHooks({ silent: true, hooksPath, nodeBin: "/usr/local/bin/node" });
+    const result = registerCursorHooks({
+      silent: true,
+      hooksPath,
+      nodeBin: "/usr/local/bin/node",
+      platform: "linux",
+    });
 
     assert.strictEqual(result.added, 0);
     assert.strictEqual(result.updated, 0);
@@ -77,6 +92,7 @@ describe("Cursor hook installer", () => {
       silent: true,
       hooksPath,
       nodeBin: "/usr/local/bin/node",
+      platform: "linux",
     });
 
     assert.ok(result.updated >= 2);
@@ -98,6 +114,7 @@ describe("Cursor hook installer", () => {
       silent: true,
       hooksPath,
       nodeBin: null,
+      platform: "linux",
     });
 
     const settings = readJson(hooksPath);
@@ -113,7 +130,12 @@ describe("Cursor hook installer", () => {
       },
     });
 
-    registerCursorHooks({ silent: true, hooksPath, nodeBin: "/usr/local/bin/node" });
+    registerCursorHooks({
+      silent: true,
+      hooksPath,
+      nodeBin: "/usr/local/bin/node",
+      platform: "linux",
+    });
 
     const settings = readJson(hooksPath);
     assert.strictEqual(settings.hooks.sessionStart.length, 2);
@@ -134,5 +156,46 @@ describe("Cursor hook installer", () => {
     assert.strictEqual(typeof result.added, "number");
     assert.strictEqual(typeof result.skipped, "number");
     assert.strictEqual(typeof result.updated, "number");
+  });
+
+  it("wraps Windows commands in cmd /c", () => {
+    const hooksPath = makeTempHooksFile({});
+    registerCursorHooks({
+      silent: true,
+      hooksPath,
+      nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+      platform: "win32",
+    });
+
+    const settings = readJson(hooksPath);
+    const expected = buildCursorHookCommand(
+      "C:\\Program Files\\nodejs\\node.exe",
+      path.resolve(__dirname, "..", "hooks", "cursor-hook.js").replace(/\\/g, "/"),
+      "win32"
+    );
+    assert.strictEqual(settings.hooks.stop[0].command, expected);
+    assert.ok(settings.hooks.stop[0].command.startsWith("cmd /d /s /c "));
+  });
+
+  it("preserves an existing Windows node path when detection fails", () => {
+    const hooksPath = makeTempHooksFile({
+      version: 1,
+      hooks: {
+        stop: [{
+          command: 'cmd /d /s /c ""C:\\Program Files\\nodejs\\node.exe" "D:/old/cursor-hook.js""',
+        }],
+      },
+    });
+
+    registerCursorHooks({
+      silent: true,
+      hooksPath,
+      nodeBin: null,
+      platform: "win32",
+    });
+
+    const settings = readJson(hooksPath);
+    assert.ok(settings.hooks.stop[0].command.includes("C:\\Program Files\\nodejs\\node.exe"));
+    assert.ok(settings.hooks.stop[0].command.startsWith("cmd /d /s /c "));
   });
 });

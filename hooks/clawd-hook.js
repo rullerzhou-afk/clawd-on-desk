@@ -3,6 +3,7 @@
 // Usage: node clawd-hook.js <event_name>
 // Reads stdin JSON from Claude Code for session_id
 
+const crypto = require("crypto");
 const fs = require("fs");
 const { postStateToRunningServer, readHostPrefix } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
@@ -10,6 +11,10 @@ const { createPidResolver, readStdinJson, getPlatformConfig } = require("./share
 const TRANSCRIPT_TAIL_BYTES = 262144; // 256 KB
 const SESSION_TITLE_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F]+/g;
 const SESSION_TITLE_MAX = 80;
+const TOOL_MATCH_STRING_MAX = 240;
+const TOOL_MATCH_ARRAY_MAX = 16;
+const TOOL_MATCH_OBJECT_KEYS_MAX = 32;
+const TOOL_MATCH_DEPTH_MAX = 6;
 
 function normalizeTitle(value) {
   if (typeof value !== "string") return null;
@@ -72,6 +77,43 @@ function extractSessionTitleFromTranscript(transcriptPath) {
   return latest;
 }
 
+function normalizeToolUseId(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function normalizeToolMatchValue(value, depth = 0) {
+  if (depth > TOOL_MATCH_DEPTH_MAX) return null;
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, TOOL_MATCH_ARRAY_MAX)
+      .map((entry) => normalizeToolMatchValue(entry, depth + 1));
+  }
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const key of Object.keys(value).sort().slice(0, TOOL_MATCH_OBJECT_KEYS_MAX)) {
+      out[key] = normalizeToolMatchValue(value[key], depth + 1);
+    }
+    return out;
+  }
+  if (typeof value === "string") {
+    return value.length > TOOL_MATCH_STRING_MAX
+      ? `${value.slice(0, TOOL_MATCH_STRING_MAX - 1)}…`
+      : value;
+  }
+  return value;
+}
+
+function buildToolInputFingerprint(toolInput) {
+  if (!toolInput || typeof toolInput !== "object") return null;
+  const normalized = normalizeToolMatchValue(toolInput);
+  return crypto
+    .createHash("sha1")
+    .update(JSON.stringify(normalized))
+    .digest("hex");
+}
+
 const EVENT_TO_STATE = {
   SessionStart: "idle",
   SessionEnd: "sleeping",
@@ -106,6 +148,14 @@ function buildStateBody(event, payload, resolve) {
   const body = { state: resolvedState, session_id: sessionId, event };
   body.agent_id = "claude-code";
   if (cwd) body.cwd = cwd;
+  const toolName = typeof payload.tool_name === "string" && payload.tool_name ? payload.tool_name : null;
+  const toolUseId = normalizeToolUseId(payload.tool_use_id ?? payload.toolUseId ?? payload.toolUseID);
+  const toolInputFingerprint = buildToolInputFingerprint(
+    payload.tool_input && typeof payload.tool_input === "object" ? payload.tool_input : null
+  );
+  if (toolName) body.tool_name = toolName;
+  if (toolUseId) body.tool_use_id = toolUseId;
+  if (toolInputFingerprint) body.tool_input_fingerprint = toolInputFingerprint;
   // Session title: prefer payload field, fall back to scanning the transcript
   // tail for user-set custom-title / agent-name events
   const sessionTitle =

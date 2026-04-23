@@ -65,6 +65,16 @@ describe("Agent Registry", () => {
 
     const cursor = registry.getAgent("cursor-agent");
     assert.deepStrictEqual(cursor.processNames.linux, ["cursor", "Cursor"]);
+
+    const kiro = registry.getAgent("kiro-cli");
+    assert.deepStrictEqual(kiro.processNames.linux, ["kiro-cli"]);
+  });
+
+  it("should keep Kiro CLI process names narrowed to kiro-cli only", () => {
+    const kiro = registry.getAgent("kiro-cli");
+    assert.deepStrictEqual(kiro.processNames.win, ["kiro-cli.exe"]);
+    assert.deepStrictEqual(kiro.processNames.mac, ["kiro-cli"]);
+    assert.deepStrictEqual(kiro.processNames.linux, ["kiro-cli"]);
   });
 
   it("should aggregate all process names", () => {

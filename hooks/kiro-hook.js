@@ -16,7 +16,7 @@ const HOOK_MAP = {
 
 const config = getPlatformConfig();
 const resolve = createPidResolver({
-  agentNames: { win: new Set(["kiro.exe"]), mac: new Set(["kiro"]), linux: new Set(["kiro"]) },
+  agentNames: { win: new Set(["kiro-cli.exe"]), mac: new Set(["kiro-cli"]), linux: new Set(["kiro-cli"]) },
   platformConfig: config,
 });
 

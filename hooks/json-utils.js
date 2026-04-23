@@ -5,6 +5,12 @@
 const fs = require("fs");
 const path = require("path");
 
+function isAbsoluteCommandToken(token) {
+  if (typeof token !== "string" || !token) return false;
+  if (path.isAbsolute(token)) return true;
+  return /^[A-Za-z]:[\\/]/.test(token) || token.startsWith("\\\\");
+}
+
 /**
  * Atomically write a JS object as pretty JSON. Writes to a sibling tmp file
  * then renames into place so concurrent readers never see a half-written
@@ -69,12 +75,12 @@ function extractExistingNodeBin(settings, marker, options) {
 
       for (const cmd of cmds) {
         if (!cmd.includes(marker)) continue;
-        const qi = cmd.indexOf('"');
-        if (qi === -1) continue;
-        const qe = cmd.indexOf('"', qi + 1);
-        if (qe === -1) continue;
-        const first = cmd.substring(qi + 1, qe);
-        if (!first.includes(marker) && first.startsWith("/")) return first;
+        const matches = cmd.matchAll(/"([^"]+)"/g);
+        for (const match of matches) {
+          const token = match && match[1];
+          if (!token || token.includes(marker)) continue;
+          if (isAbsoluteCommandToken(token)) return token;
+        }
       }
     }
   }

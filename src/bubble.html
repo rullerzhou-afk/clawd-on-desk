@@ -260,6 +260,31 @@ body { padding: 6px; }
   color: var(--cmd-color);
 }
 
+.option-item-other { align-items: center; }
+
+.option-item-textarea {
+  display: none;
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-primary);
+  background: var(--cmd-bg);
+  border: 1px solid var(--cmd-border);
+  border-radius: 8px;
+  resize: vertical;
+  min-height: 48px;
+  max-height: 120px;
+  outline: none;
+  box-sizing: border-box;
+}
+.option-item-textarea.visible { display: block; }
+.option-item-textarea:focus {
+  border-color: #d97757;
+}
+
 /* ── Action buttons ── */
 .actions {
   display: flex;
@@ -433,6 +458,8 @@ const BUBBLE_STRINGS = {
     chooseOneOption: "Choose one option",
     chooseAtLeastOneOption: "Multi-select, choose at least one",
     questionLabel: "Question {index}",
+    other: "Other",
+    otherPlaceholder: "Type your answer…",
     codexPermission: "Codex Permission",
     kimiPermission: "Kimi Permission",
     checkKimiTerminal: "Approve or reject this request in the Kimi terminal.",
@@ -458,6 +485,8 @@ const BUBBLE_STRINGS = {
     chooseOneOption: "\u8BF7\u9009\u62E9\u4E00\u9879",
     chooseAtLeastOneOption: "\u53EF\u591A\u9009\uFF0C\u81F3\u5C11\u9009\u62E9\u4E00\u9879",
     questionLabel: "\u95EE\u9898 {index}",
+    other: "\u5176\u4ED6",
+    otherPlaceholder: "\u8F93\u5165\u4F60\u7684\u56DE\u7B54\u2026",
     codexPermission: "Codex \u6743\u9650\u8BF7\u6C42",
     kimiPermission: "Kimi \u6743\u9650\u8BF7\u6C42",
     checkKimiTerminal: "\u8BF7\u5728 Kimi \u7EC8\u7AEF\u4E2D\u6279\u51C6\u6216\u62D2\u7EDD\u8BE5\u8BF7\u6C42\u3002",
@@ -483,6 +512,8 @@ const BUBBLE_STRINGS = {
     chooseOneOption: "\uD56D\uBAA9 \uD558\uB098\uB97C \uC120\uD0DD\uD558\uC138\uC694",
     chooseAtLeastOneOption: "\uC5EC\uB7EC \uD56D\uBAA9 \uC120\uD0DD \uAC00\uB2A5, \uCD5C\uC18C \uD558\uB098 \uC120\uD0DD",
     questionLabel: "\uC9C8\uBB38 {index}",
+    other: "\uAE30\uD0C0",
+    otherPlaceholder: "\uC9C1\uC811 \uC785\uB825\u2026",
     codexPermission: "Codex \uAD8C\uD55C \uC694\uCCAD",
     kimiPermission: "Kimi \uAD8C\uD55C \uC694\uCCAD",
     checkKimiTerminal: "Kimi \uD130\uBBF8\uB110\uC5D0\uC11C \uC774 \uC694\uCCAD\uC744 \uD5C8\uC6A9\uD558\uAC70\uB098 \uAC70\uBD80\uD558\uC138\uC694.",
@@ -530,7 +561,7 @@ function disableAll() {
   btnAllow.disabled = true;
   btnDeny.disabled = true;
   for (const btn of suggestionsContainer.children) btn.disabled = true;
-  for (const input of elicitationForm.querySelectorAll("input")) input.disabled = true;
+  for (const el of elicitationForm.querySelectorAll("input, textarea")) el.disabled = true;
 }
 
 function revealCard() {
@@ -559,7 +590,11 @@ function resetBubbleContent() {
 
 function isQuestionAnswered(questionCard) {
   if (!questionCard) return false;
-  return [...questionCard.querySelectorAll("input")].some(input => input.checked);
+  const checked = [...questionCard.querySelectorAll("input:checked")];
+  if (!checked.length) return false;
+  if (!checked.some(input => input.dataset.other === "true")) return true;
+  const textarea = questionCard.querySelector("textarea[data-other-textarea]");
+  return !!(textarea && textarea.value.trim());
 }
 
 function updateElicitationSubmitState() {
@@ -579,11 +614,25 @@ function collectElicitationAnswers() {
     const question = elicitationQuestions[i];
     const questionCard = questionCards[i];
     if (!question || typeof question.question !== "string" || !question.question || !questionCard) return null;
-    const selectedAnswers = [...questionCard.querySelectorAll("input:checked")]
-      .map(input => input.getAttribute("data-answer") || input.value)
-      .filter(Boolean);
-    if (!selectedAnswers.length) return null;
-    answers[question.question] = selectedAnswers.join(", ");
+
+    const checkedInputs = [...questionCard.querySelectorAll("input:checked")];
+    if (!checkedInputs.length) return null;
+
+    const textarea = questionCard.querySelector("textarea[data-other-textarea]");
+    const otherText = textarea ? textarea.value.trim() : "";
+
+    const parts = [];
+    for (const input of checkedInputs) {
+      if (input.dataset.other === "true") {
+        if (!otherText) return null;
+        parts.push(otherText);
+      } else {
+        const answerLabel = input.getAttribute("data-answer") || input.value;
+        if (answerLabel) parts.push(answerLabel);
+      }
+    }
+    if (!parts.length) return null;
+    answers[question.question] = parts.join(", ");
   }
 
   return answers;
@@ -652,6 +701,65 @@ function renderElicitationForm(data) {
       label.appendChild(copy);
       optionList.appendChild(label);
     });
+
+    // CC's AskUserQuestion protocol auto-provides "Other" in terminal UI but
+    // not in question.options — we inject it client-side.
+    const otherLabel = document.createElement("label");
+    otherLabel.className = "option-item option-item-other";
+
+    const otherInput = document.createElement("input");
+    otherInput.type = question.multiSelect ? "checkbox" : "radio";
+    otherInput.name = `elicitation-${questionIndex}`;
+    otherInput.value = "__other__";
+    otherInput.setAttribute("data-other", "true");
+
+    const otherCopy = document.createElement("span");
+    otherCopy.className = "option-item-copy";
+    const otherText = document.createElement("span");
+    otherText.className = "option-item-label";
+    otherText.textContent = bubbleText(data.lang, "other");
+    otherCopy.appendChild(otherText);
+
+    otherLabel.appendChild(otherInput);
+    otherLabel.appendChild(otherCopy);
+    optionList.appendChild(otherLabel);
+
+    const otherTextarea = document.createElement("textarea");
+    otherTextarea.className = "option-item-textarea";
+    otherTextarea.placeholder = bubbleText(data.lang, "otherPlaceholder");
+    otherTextarea.setAttribute("data-other-textarea", "true");
+    otherTextarea.addEventListener("input", updateElicitationSubmitState);
+    // Enter submits (when Submit is enabled), Shift+Enter inserts a newline.
+    otherTextarea.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        if (!btnAllow.disabled) btnAllow.click();
+      }
+    });
+    optionList.appendChild(otherTextarea);
+
+    // Toggle textarea visibility + autofocus when Other is (de)selected.
+    // For radios in the same question, other inputs' change events also
+    // fire when user picks a preset — listen to all siblings and hide
+    // textarea if Other lost its selection.
+    const toggleOtherTextarea = () => {
+      const selected = otherInput.checked;
+      otherTextarea.classList.toggle("visible", selected);
+      updateElicitationSubmitState();
+      if (selected) {
+        requestAnimationFrame(() => otherTextarea.focus());
+      }
+    };
+    otherInput.addEventListener("change", toggleOtherTextarea);
+    if (!question.multiSelect) {
+      optionList.querySelectorAll("input[type=radio]").forEach(r => {
+        if (r !== otherInput) {
+          r.addEventListener("change", () => {
+            otherTextarea.classList.toggle("visible", otherInput.checked);
+          });
+        }
+      });
+    }
 
     questionCard.appendChild(optionList);
     elicitationForm.appendChild(questionCard);
@@ -841,7 +949,7 @@ btnAllow.addEventListener("click", () => {
     if (!answers) {
       btnAllow.textContent = bubbleText(currentLang, "submitAnswer");
       btnDeny.disabled = false;
-      for (const input of elicitationForm.querySelectorAll("input")) input.disabled = false;
+      for (const el of elicitationForm.querySelectorAll("input, textarea")) el.disabled = false;
       updateElicitationSubmitState();
       return;
     }
@@ -855,6 +963,19 @@ btnDeny.addEventListener("click", () => {
   btnDeny.textContent = "...";
   disableAll();
   window.bubbleAPI.decide("deny");
+});
+
+// Elicitation-only Enter-to-submit: selecting a preset radio/checkbox then
+// pressing Enter should send. textarea has its own Enter handler so we skip
+// it here to avoid double-submit. Deliberately gated on elicitationMode so
+// regular permission bubbles never auto-Allow on Enter.
+document.addEventListener("keydown", (e) => {
+  if (!elicitationMode) return;
+  if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+  if (e.target && e.target.tagName === "TEXTAREA") return;
+  if (btnAllow.disabled) return;
+  e.preventDefault();
+  btnAllow.click();
 });
 
 window.bubbleAPI.onPermissionShow(show);

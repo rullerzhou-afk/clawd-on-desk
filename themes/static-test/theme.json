@@ -4,7 +4,6 @@
   "author": "OpenAI",
   "version": "1.0.0",
   "description": "Built-in static JPG theme used to verify raster-only authoring paths.",
-  "license": "MIT",
   "viewBox": { "x": 0, "y": 0, "width": 320, "height": 240 },
   "layout": {
     "contentBox": { "x": 42, "y": 24, "width": 236, "height": 188 },
