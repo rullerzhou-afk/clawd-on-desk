@@ -57,18 +57,24 @@ describe("updateSession: Notification hook gate", () => {
     mock.timers.reset();
   });
 
-  it("drops Notification events when the per-agent flag is off", () => {
+  it("mutes Notification bell + animation when the per-agent flag is off", () => {
+    // Presentation-layer mute: session bookkeeping still runs (so the agent
+    // stays visible in the Sessions menu, stale timers keep refreshing, and
+    // Kimi hold-release cleanup still fires) — only the notification visual
+    // and confirm sound are skipped. Mirrors the Animation Map "events still
+    // fire" contract.
     mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
     ctx = makeCtx({ notificationHookEnabled: false });
     api = require("../src/state")(ctx);
 
     api.updateSession("cc-1", "notification", "Notification", { agentId: "claude-code" });
 
-    // No session entry created, no state broadcast, no bell sound.
-    assert.strictEqual(api.sessions.has("cc-1"), false, "session must not be registered for a dropped event");
+    assert.strictEqual(api.sessions.has("cc-1"), true, "session must still be registered (bookkeeping runs)");
+    assert.strictEqual(api.sessions.get("cc-1").state, "idle", "session state resolves to idle after Notification");
     const stateChanges = ctx._rendererEvents.filter(([ch]) => ch === "state-change");
-    assert.strictEqual(stateChanges.length, 0, "no state-change broadcast");
-    assert.deepStrictEqual(ctx._soundsPlayed, [], "no sound triggered");
+    assert.ok(stateChanges.length >= 1, "pet must still get a state-change (to idle, not notification)");
+    assert.notStrictEqual(stateChanges[0][1], "notification", "must not enter notification state");
+    assert.deepStrictEqual(ctx._soundsPlayed, [], "confirm sound must not play");
   });
 
   it("lets Notification events through when the per-agent flag is on", () => {
@@ -157,11 +163,39 @@ describe("updateSession: Notification hook gate", () => {
     ctx._rendererEvents.length = 0;
     ctx._soundsPlayed.length = 0;
 
-    // Now send Notification without agentId — gate must still fire for CC.
+    // Now send Notification without agentId — gate must still mute for CC.
     api.updateSession("cc-1", "notification", "Notification", {});
 
     const stateChanges = ctx._rendererEvents.filter(([ch]) => ch === "state-change");
-    assert.strictEqual(stateChanges.length, 0, "gate must resolve agentId from session and drop");
-    assert.deepStrictEqual(ctx._soundsPlayed, []);
+    // Pet still gets a broadcast (fall-through to resolveDisplayState), but
+    // never enters notification state and never plays the bell.
+    assert.ok(stateChanges.every(([, s]) => s !== "notification"), "must not enter notification state");
+    assert.deepStrictEqual(ctx._soundsPlayed, [], "no bell when gate resolves agentId from session");
+  });
+
+  it("does not break Kimi hold-release when the flag is off", () => {
+    // Regression guard: Kimi's permission hold is cleared by a subsequent
+    // `Notification` event (KIMI_HOLD_CLEAR_EVENTS in state.js). An earlier
+    // version of this gate early-returned at the top of updateSession, which
+    // skipped the Kimi cleanup and left the pet pinned on notification until
+    // the 10-minute safety timeout. The presentation-layer gate must run
+    // *after* the Kimi cleanup block so hold-release keeps working.
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    ctx = makeCtx({ notificationHookEnabled: false });
+    api = require("../src/state")(ctx);
+
+    // Open a Kimi permission hold — pet pins on notification.
+    api.updateSession("kimi-a", "notification", "PermissionRequest", { agentId: "kimi-cli" });
+    assert.strictEqual(api.resolveDisplayState(), "notification", "hold pins display");
+
+    // Kimi emits Notification with the toggle off. The bell must be muted
+    // *and* the hold must release so the pet returns to idle.
+    api.updateSession("kimi-a", "notification", "Notification", { agentId: "kimi-cli" });
+
+    assert.strictEqual(
+      api.resolveDisplayState(),
+      "idle",
+      "Kimi hold must release even when the Notification bell is muted"
+    );
   });
 });

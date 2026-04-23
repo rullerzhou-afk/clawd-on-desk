@@ -342,8 +342,9 @@ describe("setAgentFlag command", () => {
   });
 
   it("accepts notificationHookEnabled as a pure data flip — no side effects", () => {
-    // The idle-alert gate runs at the server route layer (shouldDropNotificationHook),
-    // so toggling the flag has no monitor / session / bubble side effects.
+    // The idle-alert mute is a presentation-layer check inside state.js
+    // updateSession (gated right before setState("notification")), so
+    // toggling the flag has no monitor / session / bubble side effects.
     const { deps, calls } = makeDeps();
     const r = commandRegistry.setAgentFlag(
       { agentId: "claude-code", flag: "notificationHookEnabled", value: false },

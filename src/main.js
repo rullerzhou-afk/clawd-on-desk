@@ -1015,7 +1015,6 @@ const _serverCtx = {
   get sessions() { return sessions; },
   isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
   isAgentPermissionsEnabled: (agentId) => _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
-  isAgentNotificationHookEnabled: (agentId) => _isAgentNotificationHookEnabled({ agents: _settingsController.get("agents") }, agentId),
   setState,
   updateSession,
   resolvePermissionEntry,

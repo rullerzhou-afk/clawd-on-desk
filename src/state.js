@@ -674,19 +674,6 @@ function updateSession(sessionId, state, event, opts = {}) {
     return;
   }
 
-  // Per-agent Notification-hook gate: silences self-issued "I'm idle /
-  // waiting for input" pings (Claude Code fires these ~60s after Stop; other
-  // agents have similar bells). Sits at the state layer — not the HTTP
-  // boundary — so it applies uniformly across event sources (hook POST,
-  // log poll, plugin push). Permission bubbles are safe: PermissionRequest
-  // is handled by the branch above and never reaches here.
-  if (
-    event === "Notification"
-    && permAgentId
-    && typeof ctx.isAgentNotificationHookEnabled === "function"
-    && !ctx.isAgentNotificationHookEnabled(permAgentId)
-  ) return;
-
   const existing = sessions.get(sessionId);
   const srcPid = sourcePid || (existing && existing.sourcePid) || null;
   const srcCwd = cwd || (existing && existing.cwd) || "";
@@ -855,6 +842,22 @@ function updateSession(sessionId, state, event, opts = {}) {
     // keep the pet on notification and block all other one-shot visuals.
     // (One-shot branch normally bypasses resolveDisplayState()).
     if (hasPermissionAnimationLock() && state !== "notification") {
+      return;
+    }
+    // Per-agent Notification-hook mute: presentation-layer only. By this
+    // point session bookkeeping, recentEvents, and Kimi hold-release cleanup
+    // have already run — matching the Animation Map "events still fire"
+    // contract. We only skip the bell + animation for agents whose
+    // wait-for-input alerts toggle is off.
+    if (
+      event === "Notification"
+      && state === "notification"
+      && srcAgentId
+      && typeof ctx.isAgentNotificationHookEnabled === "function"
+      && !ctx.isAgentNotificationHookEnabled(srcAgentId)
+    ) {
+      const displayState = resolveDisplayState();
+      setState(displayState, getSvgOverride(displayState));
       return;
     }
     setState(state);

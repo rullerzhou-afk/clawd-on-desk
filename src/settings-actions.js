@@ -764,8 +764,11 @@ function resetAllShortcuts(_payload, deps) {
 // Payload `{ agentId, flag, value }` where flag ∈ AGENT_FLAGS.
 //
 // Flags:
-//   enabled             — master: event stream on/off
-//   permissionsEnabled  — sub: bubble UI on/off (events still flow)
+//   enabled                  — master: event stream on/off
+//   permissionsEnabled       — sub: bubble UI on/off (events still flow)
+//   notificationHookEnabled  — sub: wait-for-input bell + animation on/off
+//                              (presentation-layer mute; session bookkeeping
+//                              and Kimi hold-release cleanup still run)
 //
 // Main + sub share one command so rapid toggles serialize under the same
 // controller lockKey — two separate commands would lost-update the
