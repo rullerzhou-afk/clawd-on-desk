@@ -20,7 +20,7 @@ Clawd lives on your desktop and reacts to what your AI coding agent is doing —
 
 Thinking when you prompt, typing when tools run, juggling subagents, reviewing permissions, celebrating when tasks complete, sleeping when you step away. Ships with two built-in themes: **Clawd** (pixel crab) and **Calico** (三花猫), with full support for custom themes.
 
-> Supports Windows 11, macOS, and Ubuntu/Linux. Requires Node.js. Works with **Claude Code**, **Codex CLI**, **Copilot CLI**, **Gemini CLI**, **Cursor Agent**, **CodeBuddy**, **Kiro CLI**, and **opencode**.
+> Supports Windows 11, macOS, and Ubuntu/Linux. Requires Node.js. Works with **Claude Code**, **Codex CLI**, **Copilot CLI**, **Gemini CLI**, **Cursor Agent**, **CodeBuddy**, **Kiro CLI**, **Kimi Code**, and **opencode**.
 
 ## Features
 
@@ -32,6 +32,7 @@ Thinking when you prompt, typing when tools run, juggling subagents, reviewing p
 - **Cursor Agent** — [Cursor IDE hooks](https://cursor.com/docs/agent/hooks) in `~/.cursor/hooks.json` (registered automatically when Clawd starts, or run `npm run install:cursor-hooks`)
 - **CodeBuddy** — Claude Code-compatible command hooks + HTTP permission hooks via `~/.codebuddy/settings.json` (registered automatically when Clawd starts, or run `node hooks/codebuddy-install.js`)
 - **Kiro CLI** — command hooks injected into custom agent configs under `~/.kiro/agents/`, plus an auto-created `clawd` agent that is re-synced from Kiro's built-in `kiro_default` whenever Clawd starts, so you can opt into hooks with minimal behavior drift via `kiro-cli --agent clawd` or `/agent swap clawd` (registered automatically when Clawd starts, or run `npm run install:kiro-hooks`). State hooks are verified on macOS and Windows.
+- **Kimi Code** — command hooks via `~/.kimi/config.toml` (`[[hooks]]` entries) (registered automatically when Clawd starts, or run `npm run install:kimi-hooks`)
 - **opencode** — [plugin integration](https://opencode.ai/docs/plugins) via `~/.config/opencode/opencode.json` (registered automatically when Clawd starts); zero-latency event streaming, permission bubbles with Allow/Always/Deny, and building animations when parallel subagents are spawned via the `task` tool
 - **Multi-agent coexistence** — run all agents simultaneously; Clawd tracks each session independently
 
@@ -115,7 +116,7 @@ npm install
 npm start
 ```
 
-**Claude Code** and **Codex CLI** work out of the box. **Gemini CLI**, **Cursor Agent**, **CodeBuddy**, **Kiro CLI**, and **opencode** auto-register when Clawd launches (if they're installed). **Copilot CLI** still needs one-time hook setup. Also covers remote SSH, WSL, and platform-specific notes (macOS / Linux): **[docs/guides/setup-guide.md](docs/guides/setup-guide.md)**
+**Claude Code** and **Codex CLI** work out of the box. **Gemini CLI**, **Cursor Agent**, **CodeBuddy**, **Kiro CLI**, **Kimi Code**, and **opencode** auto-register when Clawd launches (if they're installed). **Copilot CLI** still needs one-time hook setup. Also covers remote SSH, WSL, and platform-specific notes (macOS / Linux): **[docs/guides/setup-guide.md](docs/guides/setup-guide.md)**
 
 For the official `Codex + WSL` status, Clawd's current implementation boundary, and why this is easy to misread, see: **[docs/guides/codex-wsl-clarification.md](docs/guides/codex-wsl-clarification.md)**
 

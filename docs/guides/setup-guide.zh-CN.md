@@ -55,8 +55,6 @@ Host my-server
 
 > 感谢 [@Magic-Bytes](https://github.com/Magic-Bytes) 提出 SSH 隧道方案（[#9](https://github.com/rullerzhou-afk/clawd-on-desk/issues/9)）。
 
-> 树莓派实战详细教程见 [guide-remote-ssh.md](guide-remote-ssh.md)。
-
 ## WSL（Windows Subsystem for Linux）
 
 > 本节的主线是 Claude Code / 其他 hook 型 agent 的 WSL 配置。关于 `Codex CLI + WSL` 的官方支持现状、Windows hooks 状态、以及 Clawd 当前为什么默认扫不到 WSL Linux home 下的 Codex 日志，见：[codex-wsl-clarification.zh-CN.md](codex-wsl-clarification.zh-CN.md)

@@ -20,7 +20,7 @@ Clawd는 당신의 데스크톱 위에서 살며, AI 코딩 에이전트가 지�
 
 프롬프트를 입력하면 생각하고, 도구가 실행되면 타이핑하고, 서브에이전트가 생기면 저글링하고, 권한 요청이 오면 카드로 알려 주고, 작업이 끝나면 기뻐하고, 자리를 비우면 잠이 듭니다. 기본 테마로 **Clawd**(픽셀 크랩)와 **Calico**(삼색 고양이)가 포함되어 있으며, 커스텀 테마도 완전히 지원합니다.
 
-> Windows 11, macOS, Ubuntu/Linux를 지원합니다. Node.js가 필요합니다. **Claude Code**, **Codex CLI**, **Copilot CLI**, **Gemini CLI**, **Cursor Agent**, **CodeBuddy**, **Kiro CLI**, **opencode**와 함께 동작합니다.
+> Windows 11, macOS, Ubuntu/Linux를 지원합니다. Node.js가 필요합니다. **Claude Code**, **Codex CLI**, **Copilot CLI**, **Gemini CLI**, **Cursor Agent**, **CodeBuddy**, **Kiro CLI**, **Kimi Code**, **opencode**와 함께 동작합니다.
 
 ## 기능
 
@@ -32,6 +32,7 @@ Clawd는 당신의 데스크톱 위에서 살며, AI 코딩 에이전트가 지�
 - **Cursor Agent** — `~/.cursor/hooks.json`의 [Cursor IDE hooks](https://cursor.com/docs/agent/hooks) 지원 (Clawd 시작 시 자동 등록되며, `npm run install:cursor-hooks`로 수동 설치 가능)
 - **CodeBuddy** — Claude Code 호환 command hook + HTTP permission hook을 `~/.codebuddy/settings.json`에 등록합니다 (Clawd 시작 시 자동 등록되며, `node hooks/codebuddy-install.js`로 수동 설치 가능)
 - **Kiro CLI** — `~/.kiro/agents/` 아래 커스텀 agent 설정에 command hook을 주입하고, 추가로 `clawd` agent를 자동 생성합니다. Clawd가 시작될 때마다 Kiro 기본 `kiro_default`에서 다시 동기화되므로 `kiro-cli --agent clawd` 또는 `/agent swap clawd`로 비교적 원본 동작을 유지한 채 hook을 켤 수 있습니다. 상태 hook은 macOS와 Windows에서 검증되었습니다.
+- **Kimi Code** — `~/.kimi/config.toml`의 command hook(`[[hooks]]` 항목)을 사용합니다. Clawd 시작 시 자동 등록되며, `npm run install:kimi-hooks`로 수동 설치할 수도 있습니다.
 - **opencode** — `~/.config/opencode/opencode.json`의 [플러그인 연동](https://opencode.ai/docs/plugins) 지원 (Clawd 시작 시 자동 등록). 지연 없는 이벤트 스트리밍, 허용/항상 허용/거부 권한 말풍선, `task` 도구로 병렬 서브에이전트를 띄울 때의 building 애니메이션까지 포함합니다.
 - **멀티 에이전트 공존** — 여러 에이전트를 동시에 실행할 수 있으며, Clawd는 각 세션을 독립적으로 추적합니다.
 
@@ -115,7 +116,7 @@ npm install
 npm start
 ```
 
-**Claude Code**와 **Codex CLI**는 바로 사용할 수 있습니다. **Gemini CLI**, **Cursor Agent**, **CodeBuddy**, **Kiro CLI**, **opencode**는 설치되어 있다면 Clawd 시작 시 자동 등록되며, **Copilot CLI**만 1회 hook 설정이 필요합니다. 원격 SSH, WSL, 플랫폼별 참고 사항(macOS / Linux)까지 포함된 가이드는 **[docs/guides/setup-guide.md](docs/guides/setup-guide.md)** 를 참고하세요.
+**Claude Code**와 **Codex CLI**는 바로 사용할 수 있습니다. **Gemini CLI**, **Cursor Agent**, **CodeBuddy**, **Kiro CLI**, **Kimi Code**, **opencode**는 설치되어 있다면 Clawd 시작 시 자동 등록되며, **Copilot CLI**만 1회 hook 설정이 필요합니다. 원격 SSH, WSL, 플랫폼별 참고 사항(macOS / Linux)까지 포함된 가이드는 **[docs/guides/setup-guide.md](docs/guides/setup-guide.md)** 를 참고하세요.
 
 `Codex + WSL`의 공식 현황, Clawd의 현재 구현 경계, 그리고 왜 이 부분이 오해되기 쉬운지는 **[docs/guides/codex-wsl-clarification.ko-KR.md](docs/guides/codex-wsl-clarification.ko-KR.md)** 를 참고하세요.
 
