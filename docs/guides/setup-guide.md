@@ -18,7 +18,7 @@
 
 **Kiro CLI** — run `npm run install:kiro-hooks` if you want hooks registered before launching Clawd. Kiro's built-in `kiro_default` agent is not backed by an editable JSON file, so Clawd creates a custom `clawd` agent and re-syncs it from the latest `kiro_default` each time Clawd starts, then appends hooks. Use `kiro-cli --agent clawd` for a new chat, or `/agent swap clawd` inside an existing Kiro session, when you want hooks enabled. On macOS and Windows, state-driven animations have been verified; native terminal permission prompts such as `t / y / n` still need to be answered in the terminal.
 
-**Kimi Code** — hooks live in `~/.kimi/config.toml` (`[[hooks]]` entries). Clawd auto-registers them on launch when Kimi is installed, or you can run `npm run install:kimi-hooks` manually. Kimi is hook-only in Clawd: state updates and permission notifications come from hook events, not log polling. To make a permission-classification choice persist across restarts, set `CLAWD_KIMI_PERMISSION_MODE=explicit` (default) or `CLAWD_KIMI_PERMISSION_MODE=suspect` before running the installer — the value gets written into the `command` field for every Kimi hook so subsequent Clawd auto-syncs preserve it. Heads up: the auto-sync also rewrites the `command` field in-place if it diverges from the expected line, so manual edits to that field will be silently restored on the next launch.
+**Kimi Code CLI (Kimi-CLI)** — hooks live in `~/.kimi/config.toml` (`[[hooks]]` entries). Clawd auto-registers them on launch when Kimi is installed, or you can run `npm run install:kimi-hooks` manually. Kimi is hook-only in Clawd: state updates and permission notifications come from hook events, not log polling. To make a permission-classification choice persist across restarts, set `CLAWD_KIMI_PERMISSION_MODE=explicit` (default) or `CLAWD_KIMI_PERMISSION_MODE=suspect` before running the installer — the value gets written into the `command` field for every Kimi hook so subsequent Clawd auto-syncs preserve it. Heads up: the auto-sync also rewrites the `command` field in-place if it diverges from the expected line, so manual edits to that field will be silently restored on the next launch.
 
 **opencode** — uses a plugin entry in `~/.config/opencode/opencode.json`. Clawd auto-registers it on launch when opencode is installed, or you can run `node hooks/opencode-install.js` manually.
 
@@ -112,7 +112,7 @@ node hooks/install.js
 # and auto-creates a clawd agent
 node hooks/kiro-install.js
 
-# Kimi Code
+# Kimi Code CLI (Kimi-CLI)
 node hooks/kimi-install.js
 
 # Cursor Agent

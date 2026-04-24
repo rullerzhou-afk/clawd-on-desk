@@ -18,9 +18,9 @@
 | WorktreeCreate | 搬运 | 搬箱子 | <img src="../assets/gif/clawd-carrying.gif" width="160"> | <img src="../assets/gif/calico-carrying.gif" width="130"> |
 | 60 秒无事件 | 睡觉 | 睡眠 | <img src="../assets/gif/clawd-sleeping.gif" width="160"> | <img src="../assets/gif/calico-sleeping.gif" width="130"> |
 
-## Kimi Code Hook 事件
+## Kimi Code CLI（Kimi-CLI）Hook 事件
 
-Kimi Code 现已采用 hook-only 集成（`~/.kimi/config.toml`），下面这 13 个 hook 事件会映射到 Clawd 的共享状态：
+Kimi Code CLI（Kimi-CLI）现已采用 hook-only 集成（`~/.kimi/config.toml`），下面这 13 个 hook 事件会映射到 Clawd 的共享状态：
 
 | Kimi Hook Event | 状态 |
 |---|---|

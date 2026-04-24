@@ -48,8 +48,8 @@ CodeBuddy 状态同步（Claude Code 兼容 hook，command）：
     → 同上状态机（agent_id: codebuddy）
   Hook 注册到 ~/.codebuddy/settings.json，格式与 Claude Code 完全兼容。
 
-Kimi Code 状态同步（hook-only，config.toml）：
-  Kimi Code 触发事件
+Kimi Code CLI（Kimi-CLI）状态同步（hook-only，config.toml）：
+  Kimi Code CLI（Kimi-CLI）触发事件
     → hooks/kimi-hook.js（hook 事件 → agents/kimi-cli.js 映射 → HTTP POST）
     → 同上状态机（agent_id: kimi-cli）
   Hook 注册到 ~/.kimi/config.toml 的 [[hooks]] 条目；Clawd 启动时会自动同步这些条目。
@@ -90,7 +90,7 @@ opencode 权限气泡（event hook + 反向 bridge，非阻塞）：
 - `agents/copilot-cli.js` — Copilot CLI camelCase 事件映射
 - `agents/cursor-agent.js` — Cursor Agent（hooks.json）事件映射
 - `agents/gemini-cli.js` — Gemini CLI 事件映射 + JSON 轮询配置
-- `agents/kimi-cli.js` — Kimi Code hook 事件映射 + permission 分类策略
+- `agents/kimi-cli.js` — Kimi Code CLI（Kimi-CLI）hook 事件映射 + permission 分类策略
 - `agents/kiro-cli.js` — Kiro CLI 事件映射（camelCase），无 HTTP hook / 无权限 / 无 subagent
 - `agents/codebuddy.js` — CodeBuddy 事件映射（PascalCase，Claude Code 兼容），支持权限
 - `agents/opencode.js` — opencode 事件映射 + 能力（plugin、permission、terminal focus）

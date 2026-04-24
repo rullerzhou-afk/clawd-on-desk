@@ -20,9 +20,9 @@ Events from all agents (Claude Code hooks, Codex JSONL, Copilot hooks) map to th
 | WorktreeCreate | carrying | Carrying | <img src="../assets/gif/clawd-carrying.gif" width="160"> | <img src="../assets/gif/calico-carrying.gif" width="130"> |
 | 60s no events | sleeping | Sleep | <img src="../assets/gif/clawd-sleeping.gif" width="160"> | <img src="../assets/gif/calico-sleeping.gif" width="130"> |
 
-## Kimi Code Hook Events
+## Kimi Code CLI (Kimi-CLI) Hook Events
 
-Kimi Code now uses hook-only integration (`~/.kimi/config.toml`), and maps these 13 hook events to shared Clawd states:
+Kimi Code CLI (Kimi-CLI) now uses hook-only integration (`~/.kimi/config.toml`), and maps these 13 hook events to shared Clawd states:
 
 | Kimi Hook Event | State |
 |---|---|
