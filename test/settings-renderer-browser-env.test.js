@@ -117,8 +117,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes('input.value.replace(/\\D+/g, "").slice(0, 4)'));
     assert.ok(generalSource.includes("showSettingsConfirmModal"));
     assert.ok(generalSource.includes("updateBubbleDisableConfirmTitle"));
-    assert.ok(/\.bubble-policy-seconds\s*\{[\s\S]*width:\s*48px;/.test(html));
-    assert.ok(/\.bubble-policy-seconds\s*\{[\s\S]*box-sizing:\s*border-box;[\s\S]*padding:\s*0 5px;/.test(html));
+    assert.ok(/\.bubble-policy-seconds\s*\{[\s\S]*width:\s*42px;/.test(html));
+    assert.ok(/\.bubble-policy-seconds\s*\{[\s\S]*box-sizing:\s*border-box;[\s\S]*text-align:\s*center;[\s\S]*padding:\s*0 3px;/.test(html));
     assert.ok(!generalSource.includes("rowHideBubbles"));
     assert.ok(i18nSource.includes("rowBubblePolicy"));
     assert.ok(i18nSource.includes("bubbleUpdateWarning"));
