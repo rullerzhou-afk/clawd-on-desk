@@ -151,6 +151,18 @@ Themes may optionally declare updater-specific visuals without introducing new r
 - when a new version is found, updater uses the theme's `notification` state
 - download / success / error still use the normal `carrying` / `attention` / `error` state bindings
 
+Themes may also declare an optional stable updater anchor if they do not want update bubbles to follow per-state hitboxes:
+
+```json
+"updateBubbleAnchorBox": { "x": -4, "y": -3, "width": 23, "height": 20 }
+```
+
+- `updateBubbleAnchorBox` is optional
+- it uses the same viewBox coordinate system as hitboxes and `layout.contentBox`
+- when present, update bubbles anchor to this box for all updater stages
+- when omitted, updater falls back to `layout.marginBox`, then `layout.contentBox`, then the current hitbox
+- this is mainly useful for third-party themes that do not ship a full `layout` block but still want stable update bubble spacing
+
 If `sleepSequence.mode` is `full` (the default), `yawning`, `dozing`, `collapsing`, and `waking` also need real files. If `sleepSequence.mode` is `direct`, those extra sleep-sequence files are optional and the pet can go straight to `sleeping`.
 
 ### Eye Tracking

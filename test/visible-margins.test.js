@@ -6,6 +6,7 @@ const themeLoader = require("../src/theme-loader");
 const hitGeometry = require("../src/hit-geometry");
 const {
   getThemeMarginBox,
+  computeThemeAnchorRect,
   collectThemeEnvelopeFiles,
   computeStableVisibleContentMargins,
   getLooseDragMargins,
@@ -68,6 +69,73 @@ describe("visible margin envelopes", () => {
     });
     assert.ok(stable.top < Math.round(idleRect.top - bounds.y));
     assert.ok(stable.bottom <= Math.round(bounds.y + bounds.height - idleRect.bottom));
+  });
+
+  it("builds the update anchor from marginBox and the idle file", () => {
+    const clawd = themeLoader.loadTheme("clawd");
+    const expected = hitGeometry.getContentRectScreen(clawd, bounds, "idle", clawd.states.idle[0], {
+      box: clawd.layout.marginBox,
+    });
+
+    assert.deepStrictEqual(computeThemeAnchorRect(clawd, bounds), expected);
+  });
+
+  it("prefers updateBubbleAnchorBox over layout-derived boxes when present", () => {
+    const clawd = structuredClone(themeLoader.loadTheme("clawd"));
+    clawd.updateBubbleAnchorBox = { x: -2, y: -1, width: 12, height: 11 };
+
+    assert.deepStrictEqual(
+      computeThemeAnchorRect(clawd, bounds),
+      hitGeometry.getContentRectScreen(clawd, bounds, "idle", clawd.states.idle[0], {
+        box: clawd.updateBubbleAnchorBox,
+      })
+    );
+  });
+
+  it("keeps a stable update anchor for calico even though per-state hit bottoms differ", () => {
+    const calico = themeLoader.loadTheme("calico");
+    const anchor = computeThemeAnchorRect(calico, bounds);
+    const thinkingHit = hitGeometry.getHitRectScreen(
+      calico,
+      bounds,
+      "thinking",
+      "calico-thinking.apng",
+      calico.hitBoxes.default
+    );
+    const notificationHit = hitGeometry.getHitRectScreen(
+      calico,
+      bounds,
+      "notification",
+      "calico-notification.apng",
+      calico.hitBoxes.wide
+    );
+
+    assert.notStrictEqual(Math.round(thinkingHit.bottom), Math.round(notificationHit.bottom));
+    assert.deepStrictEqual(
+      anchor,
+      hitGeometry.getContentRectScreen(calico, bounds, "idle", calico.states.idle[0], {
+        box: calico.layout.contentBox,
+      })
+    );
+  });
+
+  it("returns null for the update anchor when the theme has no layout", () => {
+    const theme = structuredClone(themeLoader.loadTheme("clawd"));
+    delete theme.layout;
+    assert.strictEqual(computeThemeAnchorRect(theme, bounds), null);
+  });
+
+  it("still returns an anchor without layout when updateBubbleAnchorBox is present", () => {
+    const theme = structuredClone(themeLoader.loadTheme("clawd"));
+    delete theme.layout;
+    theme.updateBubbleAnchorBox = { x: 0, y: 0, width: 20, height: 10 };
+
+    assert.deepStrictEqual(
+      computeThemeAnchorRect(theme, bounds),
+      hitGeometry.getContentRectScreen(theme, bounds, "idle", theme.states.idle[0], {
+        box: theme.updateBubbleAnchorBox,
+      })
+    );
   });
 });
 

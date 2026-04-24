@@ -49,40 +49,43 @@ function computeUpdateBubbleBounds({
   reservedHeight,
   workArea,
   petBounds,
+  anchorRect,
   hitRect,
 }) {
   let x = workArea.x + workArea.width - width - edgeMargin;
   let y = workArea.y + workArea.height - edgeMargin - height - reservedHeight;
 
-  if (bubbleFollowPet && petBounds && hitRect) {
-    const hitTop = Math.round(hitRect.top);
-    const hitBottom = Math.round(hitRect.bottom);
-    const hitCx = Math.round((hitRect.left + hitRect.right) / 2);
-    const underPetY = hitBottom;
-    const abovePetY = hitTop - height;
-    const followBottom = workArea.y + workArea.height - edgeMargin;
-    const maxY = followBottom - height;
+  const followRect = anchorRect || hitRect;
 
-    if (underPetY + height <= followBottom) {
-      x = Math.max(workArea.x, Math.min(hitCx - Math.round(width / 2), workArea.x + workArea.width - width));
+  if (bubbleFollowPet && petBounds && followRect) {
+    const followTop = Math.round(followRect.top);
+    const followRectBottom = Math.round(followRect.bottom);
+    const followCx = Math.round((followRect.left + followRect.right) / 2);
+    const underPetY = followRectBottom + gap;
+    const abovePetY = followTop - gap - height;
+    const workAreaBottom = workArea.y + workArea.height - edgeMargin;
+    const maxY = workAreaBottom - height;
+
+    if (underPetY + height <= workAreaBottom) {
+      x = Math.max(workArea.x, Math.min(followCx - Math.round(width / 2), workArea.x + workArea.width - width));
       y = underPetY;
     } else if (abovePetY >= workArea.y + edgeMargin) {
-      x = Math.max(workArea.x, Math.min(hitCx - Math.round(width / 2), workArea.x + workArea.width - width));
+      x = Math.max(workArea.x, Math.min(followCx - Math.round(width / 2), workArea.x + workArea.width - width));
       y = abovePetY;
     } else {
-      const hitRight = Math.round(hitRect.right);
-      const hitLeft = Math.round(hitRect.left);
-      const hitCy = Math.round((hitRect.top + hitRect.bottom) / 2);
-      const spaceRight = workArea.x + workArea.width - hitRight;
-      const spaceLeft = hitLeft - workArea.x;
+      const followRight = Math.round(followRect.right);
+      const followLeft = Math.round(followRect.left);
+      const followCy = Math.round((followRect.top + followRect.bottom) / 2);
+      const spaceRight = workArea.x + workArea.width - followRight;
+      const spaceLeft = followLeft - workArea.x;
       if (spaceRight >= width || spaceRight >= spaceLeft) {
-        x = Math.min(hitRight + gap, workArea.x + workArea.width - width);
+        x = Math.min(followRight + gap, workArea.x + workArea.width - width);
       } else {
-        x = Math.max(workArea.x, hitLeft - gap - width);
+        x = Math.max(workArea.x, followLeft - gap - width);
       }
       y = Math.max(
         workArea.y + edgeMargin,
-        Math.min(hitCy - Math.round(height / 2), maxY)
+        Math.min(followCy - Math.round(height / 2), maxY)
       );
     }
   }
@@ -162,6 +165,9 @@ module.exports = function initUpdateBubble(ctx) {
     const wa = ctx.getNearestWorkArea(cx, cy);
     const height = measuredHeight || estimateHeight(activePayload);
     const reservedHeight = getPermissionStackHeight();
+    const anchorRect = ctx.bubbleFollowPet && typeof ctx.getUpdateBubbleAnchorRect === "function"
+      ? ctx.getUpdateBubbleAnchorRect(petBounds)
+      : null;
     const hitRect = ctx.bubbleFollowPet ? ctx.getHitRectScreen(petBounds) : null;
 
     return computeUpdateBubbleBounds({
@@ -173,6 +179,7 @@ module.exports = function initUpdateBubble(ctx) {
       reservedHeight,
       workArea: wa,
       petBounds,
+      anchorRect,
       hitRect,
     });
   }

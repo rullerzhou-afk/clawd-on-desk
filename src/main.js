@@ -26,6 +26,7 @@ const {
 } = require("./work-area");
 const {
   getThemeMarginBox,
+  computeThemeAnchorRect,
   computeStableVisibleContentMargins,
   getLooseDragMargins,
   getRestClampMargins,
@@ -795,6 +796,7 @@ const _updateBubbleCtx = {
   getPendingPermissions: () => pendingPermissions,
   getPetWindowBounds,
   getNearestWorkArea,
+  getUpdateBubbleAnchorRect,
   getHitRectScreen,
   guardAlwaysOnTop,
   reapplyMacVisibility,
@@ -943,6 +945,26 @@ function getHitRectScreen(bounds) {
     }
   );
   return hit || { left: bounds.x, top: bounds.y, right: bounds.x + bounds.width, bottom: bounds.y + bounds.height };
+}
+
+function getUpdateBubbleAnchorRect(bounds) {
+  if (!bounds || !activeTheme) return getHitRectScreen(bounds);
+
+  const stableAnchor = computeThemeAnchorRect(activeTheme, bounds);
+  if (stableAnchor) return stableAnchor;
+
+  const box = getThemeMarginBox(activeTheme);
+  const currentFile = _state.getCurrentSvg();
+  if (box && currentFile) {
+    const currentAnchor = computeThemeAnchorRect(activeTheme, bounds, {
+      box,
+      state: _state.getCurrentState(),
+      file: currentFile,
+    });
+    if (currentAnchor) return currentAnchor;
+  }
+
+  return getHitRectScreen(bounds);
 }
 
 function getVisibleContentMargins(bounds) {

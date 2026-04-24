@@ -7,6 +7,19 @@ function getThemeMarginBox(theme) {
   return theme.layout.marginBox || theme.layout.contentBox || null;
 }
 
+function computeThemeAnchorRect(theme, bounds, options = {}) {
+  if (!theme || !bounds) return null;
+  const box = options.box || theme.updateBubbleAnchorBox || getThemeMarginBox(theme);
+  if (!box) return null;
+
+  const file = options.file
+    || (theme.states && Array.isArray(theme.states.idle) ? theme.states.idle[0] : null);
+  if (!file) return null;
+
+  const state = options.state || "idle";
+  return hitGeometry.getContentRectScreen(theme, bounds, state, file, { box });
+}
+
 function collectThemeEnvelopeFiles(theme) {
   if (!theme) return [];
   if (Array.isArray(theme._marginEnvelopeFiles)) return theme._marginEnvelopeFiles;
@@ -134,6 +147,7 @@ function getRestClampMargins({ height, visibleMargins, allowEdgePinning, bottomI
 
 module.exports = {
   getThemeMarginBox,
+  computeThemeAnchorRect,
   collectThemeEnvelopeFiles,
   computeStableVisibleContentMargins,
   getLooseDragMargins,

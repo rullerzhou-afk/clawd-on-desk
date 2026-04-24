@@ -755,6 +755,23 @@ function validateTheme(cfg) {
     }
   }
 
+  if (cfg.updateBubbleAnchorBox !== undefined) {
+    const box = cfg.updateBubbleAnchorBox;
+    if (
+      !_isPlainObject(box)
+      || box.x == null
+      || box.y == null
+      || box.width == null
+      || box.height == null
+      || !Number.isFinite(box.x)
+      || !Number.isFinite(box.y)
+      || !Number.isFinite(box.width)
+      || !Number.isFinite(box.height)
+    ) {
+      errors.push("updateBubbleAnchorBox must include finite x, y, width, height");
+    }
+  }
+
   const fallbackStateKeys = Object.keys(normalizedStates);
   for (const stateKey of fallbackStateKeys) {
     const entry = normalizedStates[stateKey];
@@ -1392,6 +1409,9 @@ function mergeDefaults(raw, themeId, isBuiltin) {
 
   // updater-specific visual bindings
   theme.updateVisuals = _isPlainObject(raw.updateVisuals) ? { ...raw.updateVisuals } : {};
+  theme.updateBubbleAnchorBox = _isPlainObject(raw.updateBubbleAnchorBox)
+    ? { ...raw.updateBubbleAnchorBox }
+    : null;
 
   // ── Filename sanitization: basename all file references to prevent path traversal ──
   const bn = _basenameOnly;
