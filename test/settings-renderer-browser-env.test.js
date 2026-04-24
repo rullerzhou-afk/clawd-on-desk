@@ -10,6 +10,8 @@ const SETTINGS_HTML = path.join(SRC_DIR, "settings.html");
 const SETTINGS_RENDERER = path.join(SRC_DIR, "settings-renderer.js");
 const SETTINGS_UI_CORE = path.join(SRC_DIR, "settings-ui-core.js");
 const SETTINGS_I18N = path.join(SRC_DIR, "settings-i18n.js");
+const PRELOAD_SETTINGS = path.join(SRC_DIR, "preload-settings.js");
+const MAIN_PROCESS = path.join(SRC_DIR, "main.js");
 const TAB_MODULES = [
   path.join(SRC_DIR, "settings-tab-general.js"),
   path.join(SRC_DIR, "settings-tab-agents.js"),
@@ -96,6 +98,42 @@ describe("settings renderer browser environment", () => {
     assert.ok(/\.size-bubble::before\s*\{[\s\S]*top:\s*calc\(100%\s*\+\s*var\(--size-bubble-tail-gap\)\);[\s\S]*border-top:\s*var\(--size-bubble-tail-size\)\s+solid\s+var\(--accent\);[\s\S]*\}/.test(html));
     assert.ok(/\.size-bubble::after\s*\{[\s\S]*top:\s*calc\(100%\s*\+\s*var\(--size-bubble-tail-gap\)\);[\s\S]*border-top:\s*var\(--size-bubble-tail-inner-size\)\s+solid\s+var\(--panel-bg\);[\s\S]*\}/.test(html));
     assert.ok(!/\.size-bubble::after\s*\{[\s\S]*margin-top:\s*-1px;/.test(html));
+  });
+
+  it("exposes split bubble controls in the General tab without reviving hide-all UI", () => {
+    const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
+    const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
+    assert.ok(generalSource.includes("buildBubblePolicyRow()"));
+    assert.ok(generalSource.includes("setBubbleCategoryEnabled"));
+    assert.ok(generalSource.includes("confirmDisableUpdateBubbles"));
+    assert.ok(generalSource.includes("category === \"update\" && next === 0"));
+    assert.ok(generalSource.includes("notificationBubbleAutoCloseSeconds"));
+    assert.ok(generalSource.includes("updateBubbleAutoCloseSeconds"));
+    assert.ok(generalSource.includes("bubble-policy-prefix"));
+    assert.ok(generalSource.includes("showSettingsConfirmModal"));
+    assert.ok(generalSource.includes("updateBubbleDisableConfirmTitle"));
+    assert.ok(!generalSource.includes("rowHideBubbles"));
+    assert.ok(i18nSource.includes("rowBubblePolicy"));
+    assert.ok(i18nSource.includes("bubbleUpdateWarning"));
+    assert.ok(i18nSource.includes("bubbleSecondsPrefix"));
+  });
+
+  it("keeps update bubble disable confirmation inside the Settings renderer", () => {
+    const preloadSource = fs.readFileSync(PRELOAD_SETTINGS, "utf8");
+    const mainSource = fs.readFileSync(MAIN_PROCESS, "utf8");
+    const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
+    const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
+    const html = fs.readFileSync(SETTINGS_HTML, "utf8");
+    assert.ok(generalSource.includes("settings-confirm-modal"));
+    assert.ok(generalSource.includes("updateBubbleDisableConfirmAction"));
+    assert.ok(html.includes(".settings-confirm-modal"));
+    assert.ok(html.includes(".settings-confirm-backdrop"));
+    assert.ok(!preloadSource.includes("confirmDisableUpdateBubbles"));
+    assert.ok(!preloadSource.includes("settings:confirm-disable-update-bubbles"));
+    assert.ok(!mainSource.includes("UPDATE_BUBBLE_DIALOG_STRINGS"));
+    assert.ok(!mainSource.includes('ipcMain.handle("settings:confirm-disable-update-bubbles"'));
+    assert.ok(i18nSource.includes("Hide update bubbles"));
+    assert.ok(i18nSource.includes("隐藏更新气泡"));
   });
 
   it("keeps stale sound override prefs resettable from the settings UI", () => {

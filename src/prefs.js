@@ -21,6 +21,11 @@ const path = require("path");
 const { isPlainObject } = require("./theme-loader");
 const { normalizeShortcuts, getDefaultShortcuts } = require("./shortcut-actions");
 const { isValidDisplaySnapshot } = require("./work-area");
+const {
+  NOTIFICATION_DEFAULT_SECONDS,
+  UPDATE_DEFAULT_SECONDS,
+  MAX_AUTO_CLOSE_SECONDS,
+} = require("./bubble-policy");
 
 const CURRENT_VERSION = 1;
 
@@ -80,6 +85,17 @@ const SCHEMA = {
   openAtLoginHydrated: { type: "boolean", default: false },
   bubbleFollowPet: { type: "boolean", default: false },
   hideBubbles: { type: "boolean", default: false },
+  permissionBubblesEnabled: { type: "boolean", default: true },
+  notificationBubbleAutoCloseSeconds: {
+    type: "number",
+    default: NOTIFICATION_DEFAULT_SECONDS,
+    validate: (v) => Number.isInteger(v) && v >= 0 && v <= MAX_AUTO_CLOSE_SECONDS,
+  },
+  updateBubbleAutoCloseSeconds: {
+    type: "number",
+    default: UPDATE_DEFAULT_SECONDS,
+    validate: (v) => Number.isInteger(v) && v >= 0 && v <= MAX_AUTO_CLOSE_SECONDS,
+  },
   showSessionId: { type: "boolean", default: false },
   soundMuted: { type: "boolean", default: false },
   soundVolume: {
@@ -201,6 +217,19 @@ function migrate(raw) {
     out.positionSaved =
       (typeof out.x === "number" && out.x !== 0) ||
       (typeof out.y === "number" && out.y !== 0);
+  }
+  // Backfill the split bubble settings from the old aggregate switch. This is
+  // intentionally field-level so users who already have the new keys keep them.
+  if (typeof out.hideBubbles === "boolean") {
+    if (out.permissionBubblesEnabled === undefined) {
+      out.permissionBubblesEnabled = !out.hideBubbles;
+    }
+    if (out.notificationBubbleAutoCloseSeconds === undefined) {
+      out.notificationBubbleAutoCloseSeconds = out.hideBubbles ? 0 : NOTIFICATION_DEFAULT_SECONDS;
+    }
+    if (out.updateBubbleAutoCloseSeconds === undefined) {
+      out.updateBubbleAutoCloseSeconds = out.hideBubbles ? 0 : UPDATE_DEFAULT_SECONDS;
+    }
   }
   // Future migrations slot in here as `if (out.version < N) { ... out.version = N }`.
   return out;

@@ -86,6 +86,10 @@ const prefsModule = require("./prefs");
 const { createSettingsController } = require("./settings-controller");
 const { ANIMATION_OVERRIDES_EXPORT_VERSION } = require("./settings-actions");
 const {
+  getBubblePolicy,
+  isAllBubblesHidden,
+} = require("./bubble-policy");
+const {
   SHORTCUT_ACTIONS,
   SHORTCUT_ACTION_IDS,
 } = require("./shortcut-actions");
@@ -412,7 +416,6 @@ let manageClaudeHooksAutomatically = _settingsController.get("manageClaudeHooksA
 let autoStartWithClaude = _settingsController.get("autoStartWithClaude");
 let openAtLogin = _settingsController.get("openAtLogin");
 let bubbleFollowPet = _settingsController.get("bubbleFollowPet");
-let hideBubbles = _settingsController.get("hideBubbles");
 let showSessionId = _settingsController.get("showSessionId");
 let soundMuted = _settingsController.get("soundMuted");
 let soundVolume = _settingsController.get("soundVolume");
@@ -433,6 +436,14 @@ function broadcastShortcutFailures() {
     "shortcut-failures-changed",
     Object.fromEntries(shortcutRegistrationFailures)
   );
+}
+
+function getRuntimeBubblePolicy(kind) {
+  return getBubblePolicy(_settingsController.getSnapshot(), kind);
+}
+
+function getAllBubblesHidden() {
+  return isAllBubblesHidden(_settingsController.getSnapshot());
 }
 
 function reportShortcutFailure(actionId, reason) {
@@ -761,8 +772,9 @@ const _permCtx = {
   get bubbleFollowPet() { return bubbleFollowPet; },
   get permDebugLog() { return permDebugLog; },
   get doNotDisturb() { return doNotDisturb; },
-  get hideBubbles() { return hideBubbles; },
+  get hideBubbles() { return getAllBubblesHidden(); },
   get petHidden() { return petHidden; },
+  getBubblePolicy: getRuntimeBubblePolicy,
   getPetWindowBounds,
   getNearestWorkArea,
   getHitRectScreen,
@@ -792,6 +804,7 @@ const _updateBubbleCtx = {
   get win() { return win; },
   get bubbleFollowPet() { return bubbleFollowPet; },
   get petHidden() { return petHidden; },
+  getBubblePolicy: getRuntimeBubblePolicy,
   getPendingPermissions: () => pendingPermissions,
   getPetWindowBounds,
   getNearestWorkArea,
@@ -1008,7 +1021,8 @@ const _serverCtx = {
   get manageClaudeHooksAutomatically() { return manageClaudeHooksAutomatically; },
   get autoStartWithClaude() { return autoStartWithClaude; },
   get doNotDisturb() { return doNotDisturb; },
-  get hideBubbles() { return hideBubbles; },
+  get hideBubbles() { return getAllBubblesHidden(); },
+  getBubblePolicy: getRuntimeBubblePolicy,
   get pendingPermissions() { return pendingPermissions; },
   get PASSTHROUGH_TOOLS() { return PASSTHROUGH_TOOLS; },
   get STATE_SVGS() { return _state.STATE_SVGS; },
@@ -1151,8 +1165,10 @@ const _menuCtx = {
   set openAtLogin(v) { _settingsController.applyUpdate("openAtLogin", v); },
   get bubbleFollowPet() { return bubbleFollowPet; },
   set bubbleFollowPet(v) { _settingsController.applyUpdate("bubbleFollowPet", v); },
-  get hideBubbles() { return hideBubbles; },
-  set hideBubbles(v) { _settingsController.applyUpdate("hideBubbles", v); },
+  get hideBubbles() { return getAllBubblesHidden(); },
+  set hideBubbles(v) { _settingsController.applyCommand("setAllBubblesHidden", { hidden: !!v }).catch((err) => {
+    console.warn("Clawd: setAllBubblesHidden failed:", err && err.message);
+  }); },
   get showSessionId() { return showSessionId; },
   set showSessionId(v) { _settingsController.applyUpdate("showSessionId", v); },
   get soundMuted() { return soundMuted; },
@@ -1221,7 +1237,8 @@ const { t, buildContextMenu, buildTrayMenu, rebuildAllMenus, createTray,
 // route writes through the controller, so menu clicks and IPC updates
 // from a future settings panel land here identically.
 const MENU_AFFECTING_KEYS = new Set([
-  "lang", "soundMuted", "bubbleFollowPet", "hideBubbles", "showSessionId",
+  "lang", "soundMuted", "bubbleFollowPet", "hideBubbles", "permissionBubblesEnabled",
+  "notificationBubbleAutoCloseSeconds", "updateBubbleAutoCloseSeconds", "showSessionId",
   "manageClaudeHooksAutomatically", "autoStartWithClaude", "openAtLogin", "showTray", "showDock", "theme", "size",
 ]);
 let lastTogglePetShortcut = ((_settingsController.getSnapshot().shortcuts) || {}).togglePet || null;
@@ -1258,7 +1275,6 @@ function wireSettingsSubscribers() {
       openAtLogin = changes.openAtLogin;
     }
     if ("bubbleFollowPet" in changes) bubbleFollowPet = changes.bubbleFollowPet;
-    if ("hideBubbles" in changes) hideBubbles = changes.hideBubbles;
     if ("showSessionId" in changes) showSessionId = changes.showSessionId;
     if ("soundMuted" in changes) soundMuted = changes.soundMuted;
     if ("soundVolume" in changes) soundVolume = changes.soundVolume;
@@ -1266,9 +1282,33 @@ function wireSettingsSubscribers() {
     if ("keepSizeAcrossDisplays" in changes) keepSizeAcrossDisplaysCached = changes.keepSizeAcrossDisplays;
 
     // 2. Reactive side effects (mirror what the legacy setters / click handlers used to do).
-    if ("hideBubbles" in changes) {
+    if ("hideBubbles" in changes || "permissionBubblesEnabled" in changes) {
       try { syncPermissionShortcuts(); } catch (err) {
         console.warn("Clawd: syncPermissionShortcuts failed:", err && err.message);
+      }
+    }
+    if ("permissionBubblesEnabled" in changes && changes.permissionBubblesEnabled === false) {
+      try {
+        if (_perm && typeof _perm.dismissInteractivePermissionBubbles === "function") {
+          _perm.dismissInteractivePermissionBubbles();
+        }
+      } catch (err) {
+        console.warn("Clawd: dismiss interactive bubbles failed:", err && err.message);
+      }
+    }
+    if ("notificationBubbleAutoCloseSeconds" in changes && changes.notificationBubbleAutoCloseSeconds === 0) {
+      try {
+        clearCodexNotifyBubbles();
+        clearKimiNotifyBubbles();
+      } catch (err) {
+        console.warn("Clawd: clear notification bubbles failed:", err && err.message);
+      }
+    }
+    if ("updateBubbleAutoCloseSeconds" in changes && changes.updateBubbleAutoCloseSeconds === 0) {
+      try {
+        if (_updateBubble && typeof _updateBubble.hideForPolicy === "function") _updateBubble.hideForPolicy();
+      } catch (err) {
+        console.warn("Clawd: hide update bubble failed:", err && err.message);
       }
     }
     if ("bubbleFollowPet" in changes) {

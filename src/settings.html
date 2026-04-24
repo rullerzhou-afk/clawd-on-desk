@@ -220,6 +220,70 @@ html, body {
   gap: 8px;
 }
 
+.bubble-policy-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.bubble-policy-heading {
+  width: 100%;
+}
+.bubble-policy-list {
+  display: grid;
+  gap: 8px;
+}
+.bubble-policy-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--row-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-bg) 74%, transparent);
+}
+.bubble-policy-copy {
+  min-width: 0;
+}
+.bubble-policy-warning {
+  color: var(--accent);
+}
+.bubble-policy-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.bubble-policy-seconds {
+  width: 58px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel-bg);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  padding: 0 7px;
+  outline: none;
+}
+.bubble-policy-seconds:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(217, 119, 87, 0.16);
+}
+.bubble-policy-seconds:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.bubble-policy-unit {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.bubble-policy-prefix {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
 /* ── Switch (iOS-style) ── */
 .switch {
   position: relative;
@@ -1087,6 +1151,59 @@ html, body {
   justify-content: center;
   padding: 24px;
   z-index: 1100;
+}
+.settings-confirm-backdrop {
+  background: rgba(24, 24, 27, 0.22);
+  backdrop-filter: blur(4px);
+}
+.settings-confirm-modal {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 10px;
+  padding: 20px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--panel-bg);
+  color: var(--text-primary);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.20);
+}
+.settings-confirm-icon {
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--accent);
+  background: rgba(217, 119, 87, 0.12);
+  border: 1px solid rgba(217, 119, 87, 0.24);
+  font-weight: 800;
+}
+.settings-confirm-modal h2 {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.25;
+}
+.settings-confirm-modal p {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.55;
+  font-size: 13px;
+}
+.settings-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+.settings-confirm-danger {
+  color: #ffffff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.settings-confirm-danger:hover:not(:disabled) {
+  color: #ffffff;
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 .asset-picker-modal {
   width: min(920px, 100%);

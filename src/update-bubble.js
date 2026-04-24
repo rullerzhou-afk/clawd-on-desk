@@ -24,6 +24,16 @@ function deferMacFloatingVisibility(ctx, win) {
   }, MAC_FLOATING_TOPMOST_DELAY_MS);
 }
 
+function getPolicy(ctx) {
+  if (typeof ctx.getBubblePolicy === "function") {
+    try {
+      const policy = ctx.getBubblePolicy("update");
+      if (policy && typeof policy.enabled === "boolean") return policy;
+    } catch {}
+  }
+  return { enabled: true, autoCloseMs: 0 };
+}
+
 function estimateHeight(payload) {
   let height = payload && payload.mode === "error" ? 220 : 150;
   if (payload && payload.message) {
@@ -97,6 +107,7 @@ module.exports = function initUpdateBubble(ctx) {
   let activePayload = null;
   let resolveAction = null;
   let hideTimer = null;
+  let autoCloseTimer = null;
 
   function getPermissionStackHeight() {
     const pending = typeof ctx.getPendingPermissions === "function" ? ctx.getPendingPermissions() : [];
@@ -202,14 +213,40 @@ module.exports = function initUpdateBubble(ctx) {
     resolver(actionId);
   }
 
+  function clearAutoCloseTimer() {
+    if (autoCloseTimer) {
+      clearTimeout(autoCloseTimer);
+      autoCloseTimer = null;
+    }
+  }
+
+  function scheduleAutoClose(payload) {
+    clearAutoCloseTimer();
+    const policy = getPolicy(ctx);
+    if (!policy.enabled || !(policy.autoCloseMs > 0)) return;
+    autoCloseTimer = setTimeout(() => {
+      autoCloseTimer = null;
+      const fallback = payload && payload.defaultAction != null ? payload.defaultAction : null;
+      if (resolveAction) settlePrevious(fallback);
+      hideUpdateBubble();
+    }, policy.autoCloseMs);
+  }
+
   function showUpdateBubble(payload) {
-    activePayload = payload;
+    const policy = getPolicy(ctx);
+    const fallback = payload && payload.defaultAction != null ? payload.defaultAction : null;
     if (hideTimer) {
       clearTimeout(hideTimer);
       hideTimer = null;
     }
+    clearAutoCloseTimer();
     if (resolveAction) {
-      settlePrevious(payload.defaultAction != null ? payload.defaultAction : null);
+      settlePrevious(fallback);
+    }
+    activePayload = payload;
+    if (!policy.enabled) {
+      hideUpdateBubble();
+      return Promise.resolve(fallback);
     }
     const win = ensureBubble();
 
@@ -219,6 +256,7 @@ module.exports = function initUpdateBubble(ctx) {
       if (win && !win.isDestroyed()) {
         win.webContents.send("update-bubble-show", payload);
         syncVisibility();
+        scheduleAutoClose(payload);
       }
     };
 
@@ -230,7 +268,7 @@ module.exports = function initUpdateBubble(ctx) {
 
     if (!payload.requireAction) {
       resolveAction = null;
-      return Promise.resolve(payload.defaultAction != null ? payload.defaultAction : null);
+      return Promise.resolve(fallback);
     }
 
     return new Promise((resolve) => {
@@ -241,10 +279,19 @@ module.exports = function initUpdateBubble(ctx) {
   function hideUpdateBubble() {
     if (!bubble || bubble.isDestroyed()) return;
     bubble.webContents.send("update-bubble-hide");
+    clearAutoCloseTimer();
     if (hideTimer) clearTimeout(hideTimer);
     hideTimer = setTimeout(() => {
       if (bubble && !bubble.isDestroyed()) bubble.hide();
     }, 250);
+  }
+
+  function hideForPolicy() {
+    if (resolveAction) {
+      const fallback = activePayload && activePayload.defaultAction != null ? activePayload.defaultAction : null;
+      settlePrevious(fallback);
+    }
+    hideUpdateBubble();
   }
 
   function resolveCurrentAction(actionId) {
@@ -272,6 +319,7 @@ module.exports = function initUpdateBubble(ctx) {
 
   function cleanup() {
     if (hideTimer) clearTimeout(hideTimer);
+    clearAutoCloseTimer();
     settlePrevious(activePayload && activePayload.defaultAction != null ? activePayload.defaultAction : null);
     if (bubble && !bubble.isDestroyed()) bubble.destroy();
     bubble = null;
@@ -284,6 +332,7 @@ module.exports = function initUpdateBubble(ctx) {
     handleUpdateBubbleAction,
     handleUpdateBubbleHeight,
     syncVisibility,
+    hideForPolicy,
     cleanup,
     getBubbleWindow: () => bubble,
   };

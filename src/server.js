@@ -32,6 +32,16 @@ function shouldBypassOpencodeBubble(ctx) {
   return !ctx.isAgentPermissionsEnabled("opencode");
 }
 
+function arePermissionBubblesEnabled(ctx) {
+  if (typeof ctx.getBubblePolicy === "function") {
+    try {
+      const policy = ctx.getBubblePolicy("permission");
+      if (policy && typeof policy.enabled === "boolean") return policy.enabled;
+    } catch {}
+  }
+  return !ctx.hideBubbles;
+}
+
 // Truncate large string values in objects (recursive) — bubble only needs a preview
 const PREVIEW_MAX = 500;
 const MAX_PERMISSION_SUGGESTIONS = 20;
@@ -650,8 +660,8 @@ function startHttpServer() {
             // No HTTP connection to hold open — only degradation is to
             // not render a bubble and let the TUI prompt handle it.
             const opencodeSubGateBypass = shouldBypassOpencodeBubble(ctx);
-            if (ctx.hideBubbles || opencodeSubGateBypass) {
-              ctx.permLog(`opencode bubble hidden: tool=${toolName} — TUI fallback (hideBubbles=${ctx.hideBubbles} subGateBypass=${opencodeSubGateBypass})`);
+            if (!arePermissionBubblesEnabled(ctx) || opencodeSubGateBypass) {
+              ctx.permLog(`opencode bubble hidden: tool=${toolName} — TUI fallback (permissionBubblesEnabled=${arePermissionBubblesEnabled(ctx)} subGateBypass=${opencodeSubGateBypass})`);
               return;
             }
 
@@ -719,6 +729,11 @@ function startHttpServer() {
           const ccAgentId = typeof data.agent_id === "string" && data.agent_id ? data.agent_id : "claude-code";
           if (typeof ctx.isAgentEnabled === "function" && !ctx.isAgentEnabled(ccAgentId)) {
             ctx.permLog(`${ccAgentId} disabled → destroy connection, chat fallback`);
+            res.destroy();
+            return;
+          }
+          if (!arePermissionBubblesEnabled(ctx)) {
+            ctx.permLog(`${ccAgentId} permission bubbles disabled → destroy connection, terminal fallback`);
             res.destroy();
             return;
           }
@@ -790,7 +805,7 @@ function startHttpServer() {
             permEntry.abortHandler = abortHandler;
             res.on("close", abortHandler);
             ctx.pendingPermissions.push(permEntry);
-            if (!ctx.hideBubbles) ctx.showPermissionBubble(permEntry);
+            ctx.showPermissionBubble(permEntry);
             return;
           }
 
@@ -826,12 +841,8 @@ function startHttpServer() {
           // mutating session state — so working/thinking is preserved for resolve.
           ctx.updateSession(sessionId, "notification", "PermissionRequest", { agentId: permAgentId });
 
-          if (ctx.hideBubbles) {
-            ctx.permLog(`bubble hidden: tool=${toolName} session=${sessionId} — terminal only`);
-          } else {
-            ctx.permLog(`showing bubble: tool=${toolName} session=${sessionId} suggestions=${suggestions.length} stack=${ctx.pendingPermissions.length}`);
-            ctx.showPermissionBubble(permEntry);
-          }
+          ctx.permLog(`showing bubble: tool=${toolName} session=${sessionId} suggestions=${suggestions.length} stack=${ctx.pendingPermissions.length}`);
+          ctx.showPermissionBubble(permEntry);
         } catch (err) {
           ctx.permLog(`/permission handler error: ${err && err.message}`);
           // Response may already be sent (opencode branch 200-ACKs before

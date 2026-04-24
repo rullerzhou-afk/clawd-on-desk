@@ -77,12 +77,25 @@ describe("updateRegistry pure-data validators", () => {
   it("function-form boolean fields reject non-booleans", () => {
     const deps = { snapshot: baseSnapshot };
     for (const key of [
-      "soundMuted", "bubbleFollowPet", "hideBubbles", "allowEdgePinning", "keepSizeAcrossDisplays",
+      "soundMuted", "bubbleFollowPet", "hideBubbles", "permissionBubblesEnabled", "allowEdgePinning", "keepSizeAcrossDisplays",
       "showSessionId", "miniMode", "openAtLoginHydrated",
     ]) {
       assert.strictEqual(updateRegistry[key](true, deps).status, "ok", `${key}(true)`);
       assert.strictEqual(updateRegistry[key](false, deps).status, "ok", `${key}(false)`);
       assert.strictEqual(updateRegistry[key]("yes", deps).status, "error", `${key}("yes")`);
+    }
+  });
+
+  it("bubble auto-close seconds require integers in range", () => {
+    const deps = { snapshot: baseSnapshot };
+    for (const key of ["notificationBubbleAutoCloseSeconds", "updateBubbleAutoCloseSeconds"]) {
+      assert.strictEqual(updateRegistry[key](0, deps).status, "ok", `${key}(0)`);
+      assert.strictEqual(updateRegistry[key](30, deps).status, "ok", `${key}(30)`);
+      assert.strictEqual(updateRegistry[key](3600, deps).status, "ok", `${key}(3600)`);
+      assert.strictEqual(updateRegistry[key](-1, deps).status, "error", `${key}(-1)`);
+      assert.strictEqual(updateRegistry[key](1.5, deps).status, "error", `${key}(1.5)`);
+      assert.strictEqual(updateRegistry[key](3601, deps).status, "error", `${key}(3601)`);
+      assert.strictEqual(updateRegistry[key]("30", deps).status, "error", `${key}("30")`);
     }
   });
 
@@ -311,6 +324,62 @@ describe("object-form effects (autoStartWithClaude / manageClaudeHooksAutomatica
     const r = updateRegistry.openAtLogin.effect(true, deps);
     assert.strictEqual(r.status, "error");
     assert.match(r.message, /permission denied/);
+  });
+});
+
+describe("bubble policy commands", () => {
+  it("setBubbleCategoryEnabled toggles notification and update defaults", async () => {
+    const snapshot = prefs.getDefaults();
+    const offNotify = await commandRegistry.setBubbleCategoryEnabled(
+      { category: "notification", enabled: false },
+      { snapshot }
+    );
+    assert.strictEqual(offNotify.status, "ok");
+    assert.strictEqual(offNotify.commit.notificationBubbleAutoCloseSeconds, 0);
+    assert.strictEqual(offNotify.commit.hideBubbles, false);
+
+    const onUpdate = await commandRegistry.setBubbleCategoryEnabled(
+      { category: "update", enabled: true },
+      { snapshot: { ...snapshot, updateBubbleAutoCloseSeconds: 0 } }
+    );
+    assert.strictEqual(onUpdate.status, "ok");
+    assert.strictEqual(onUpdate.commit.updateBubbleAutoCloseSeconds, 9);
+  });
+
+  it("setBubbleCategoryEnabled toggles permission without auto-close", async () => {
+    const snapshot = {
+      ...prefs.getDefaults(),
+      permissionBubblesEnabled: true,
+      notificationBubbleAutoCloseSeconds: 0,
+      updateBubbleAutoCloseSeconds: 0,
+    };
+    const result = await commandRegistry.setBubbleCategoryEnabled(
+      { category: "permission", enabled: false },
+      { snapshot }
+    );
+    assert.strictEqual(result.status, "ok");
+    assert.strictEqual(result.commit.permissionBubblesEnabled, false);
+    assert.strictEqual(result.commit.hideBubbles, true);
+  });
+
+  it("setAllBubblesHidden preserves legacy aggregate menu semantics", async () => {
+    const hidden = await commandRegistry.setAllBubblesHidden({ hidden: true }, { snapshot: prefs.getDefaults() });
+    assert.strictEqual(hidden.status, "ok");
+    assert.deepStrictEqual(hidden.commit, {
+      hideBubbles: true,
+      permissionBubblesEnabled: false,
+      notificationBubbleAutoCloseSeconds: 0,
+      updateBubbleAutoCloseSeconds: 0,
+    });
+
+    const shown = await commandRegistry.setAllBubblesHidden({ hidden: false }, { snapshot: prefs.getDefaults() });
+    assert.strictEqual(shown.status, "ok");
+    assert.deepStrictEqual(shown.commit, {
+      hideBubbles: false,
+      permissionBubblesEnabled: true,
+      notificationBubbleAutoCloseSeconds: 3,
+      updateBubbleAutoCloseSeconds: 9,
+    });
   });
 });
 
