@@ -714,6 +714,8 @@ let dragSnapshot = null;
 let menuOpen = false;
 let idlePaused = false;
 let forceEyeResend = false;
+let forceEyeResendBoostUntil = 0;
+let requestFastTick = () => {};
 let themeReloadInProgress = false;
 let repositionSessionHud = () => {};
 let syncSessionHudVisibility = () => {};
@@ -721,6 +723,14 @@ let broadcastSessionHudSnapshot = () => {};
 let sendSessionHudI18n = () => {};
 let getSessionHudReservedOffset = () => 0;
 let getSessionHudWindow = () => null;
+
+function setForceEyeResend(value) {
+  forceEyeResend = !!value;
+  if (forceEyeResend) {
+    forceEyeResendBoostUntil = Math.max(forceEyeResendBoostUntil, Date.now() + 2000);
+    requestFastTick(100);
+  }
+}
 
 // Keep drag math in Electron's main-process DIP coordinate space. Renderer
 // PointerEvent.screenX/Y can be scaled differently on high-DPI displays.
@@ -891,7 +901,7 @@ const _stateCtx = {
   get idlePaused() { return idlePaused; },
   set idlePaused(v) { idlePaused = v; },
   get forceEyeResend() { return forceEyeResend; },
-  set forceEyeResend(v) { forceEyeResend = v; },
+  set forceEyeResend(v) { setForceEyeResend(v); },
   get mouseStillSince() { return _tick ? _tick._mouseStillSince : Date.now(); },
   get pendingPermissions() { return pendingPermissions; },
   sendToRenderer,
@@ -1020,7 +1030,8 @@ const _tickCtx = {
   get mouseOverPet() { return mouseOverPet; },
   set mouseOverPet(v) { mouseOverPet = v; },
   get forceEyeResend() { return forceEyeResend; },
-  set forceEyeResend(v) { forceEyeResend = v; },
+  set forceEyeResend(v) { setForceEyeResend(v); },
+  get forceEyeResendBoostUntil() { return forceEyeResendBoostUntil; },
   get startupRecoveryActive() { return _state.getStartupRecoveryActive(); },
   sendToRenderer,
   sendToHitWin,
@@ -1032,6 +1043,7 @@ const _tickCtx = {
   getHitRectScreen,
 };
 const _tick = require("./tick")(_tickCtx);
+requestFastTick = (maxDelay) => _tick.scheduleSoon(maxDelay);
 const { startMainTick, resetIdleTimer } = _tick;
 
 // ── Terminal focus — delegated to src/focus.js ──
@@ -1145,7 +1157,7 @@ function scheduleHwndRecovery() {
     if (!win || win.isDestroyed()) return;
     // Just restore z-order — input routing is handled by hitWin now
     reassertWinTopmost();
-    forceEyeResend = true;
+    setForceEyeResend(true);
   }, 1000);
 }
 
@@ -1155,7 +1167,7 @@ function guardAlwaysOnTop(w) {
     if (!isOnTop && w && !w.isDestroyed()) {
       w.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
       if (w === win && !dragLocked && !_mini.getIsAnimating() && !_mini.getMiniTransitioning()) {
-        forceEyeResend = true;
+        setForceEyeResend(true);
         const bounds = getPetWindowBounds();
         applyPetWindowPosition(bounds.x + 1, bounds.y);
         applyPetWindowPosition(bounds.x, bounds.y);
