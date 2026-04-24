@@ -275,12 +275,11 @@
 
     if (secondsKey) {
       const input = document.createElement("input");
-      input.type = "number";
+      input.type = "text";
       input.className = "bubble-policy-seconds";
-      input.min = "0";
-      input.max = "3600";
-      input.step = "1";
       input.inputMode = "numeric";
+      input.maxLength = 4;
+      input.pattern = "[0-9]*";
       input.value = String(Number(state.snapshot && state.snapshot[secondsKey]) || 0);
       const prefix = document.createElement("span");
       prefix.className = "bubble-policy-prefix";
@@ -292,6 +291,10 @@
       controls.insertBefore(input, sw);
       controls.insertBefore(suffix, sw);
       input.disabled = !currentEnabled();
+      input.addEventListener("input", () => {
+        const next = input.value.replace(/\D+/g, "").slice(0, 4);
+        if (input.value !== next) input.value = next;
+      });
       input.addEventListener("change", () => {
         const raw = input.value.trim();
         const next = Number(raw);

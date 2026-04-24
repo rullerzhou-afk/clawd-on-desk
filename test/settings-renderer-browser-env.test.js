@@ -111,9 +111,14 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes("notificationBubbleAutoCloseSeconds"));
     assert.ok(generalSource.includes("updateBubbleAutoCloseSeconds"));
     assert.ok(generalSource.includes("bubble-policy-prefix"));
+    assert.ok(generalSource.includes('input.type = "text"'));
+    assert.ok(generalSource.includes("input.maxLength = 4"));
+    assert.ok(generalSource.includes('input.pattern = "[0-9]*"'));
+    assert.ok(generalSource.includes('input.value.replace(/\\D+/g, "").slice(0, 4)'));
     assert.ok(generalSource.includes("showSettingsConfirmModal"));
     assert.ok(generalSource.includes("updateBubbleDisableConfirmTitle"));
     assert.ok(/\.bubble-policy-seconds\s*\{[\s\S]*width:\s*48px;/.test(html));
+    assert.ok(/\.bubble-policy-seconds\s*\{[\s\S]*box-sizing:\s*border-box;[\s\S]*padding:\s*0 5px;/.test(html));
     assert.ok(!generalSource.includes("rowHideBubbles"));
     assert.ok(i18nSource.includes("rowBubblePolicy"));
     assert.ok(i18nSource.includes("bubbleUpdateWarning"));
