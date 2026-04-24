@@ -30,6 +30,7 @@ describe("settings renderer browser environment", () => {
       "settings-size-slider.js",
       "settings-i18n.js",
       "settings-ui-core.js",
+      "settings-agent-order.js",
       "settings-tab-general.js",
       "settings-tab-agents.js",
       "settings-tab-theme.js",
@@ -59,15 +60,19 @@ describe("settings renderer browser environment", () => {
     const rendererSource = fs.readFileSync(SETTINGS_RENDERER, "utf8");
     const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
+    const agentOrderSource = fs.readFileSync(path.join(SRC_DIR, "settings-agent-order.js"), "utf8");
 
     assert.ok(rendererSource.includes("globalThis.ClawdSettingsCore"));
     assert.ok(coreSource.includes("ClawdSettingsSizeSlider"));
     assert.ok(i18nSource.includes("globalThis"));
+    assert.ok(agentOrderSource.includes("globalThis"));
+    assert.ok(agentOrderSource.includes("module.exports"));
 
     for (const source of [rendererSource, coreSource, i18nSource]) {
       assert.ok(!source.includes("require("));
       assert.ok(!source.includes("module.exports"));
     }
+    assert.ok(!agentOrderSource.includes("require("));
 
     for (const file of TAB_MODULES) {
       const source = fs.readFileSync(file, "utf8");
@@ -141,6 +146,82 @@ describe("settings renderer browser environment", () => {
     assert.ok(!mainSource.includes('ipcMain.handle("settings:confirm-disable-update-bubbles"'));
     assert.ok(i18nSource.includes("Hide update bubbles"));
     assert.ok(i18nSource.includes("隐藏更新气泡"));
+  });
+
+  it("provides a persisted collapsible Settings group helper with smart default collapse", () => {
+    const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
+    const html = fs.readFileSync(SETTINGS_HTML, "utf8");
+    const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
+    assert.ok(coreSource.includes("COLLAPSED_GROUPS_STORAGE_KEY"));
+    assert.ok(coreSource.includes("function buildCollapsibleGroup("));
+    assert.ok(coreSource.includes("localStorage.getItem(COLLAPSED_GROUPS_STORAGE_KEY)"));
+    assert.ok(coreSource.includes("localStorage.setItem(COLLAPSED_GROUPS_STORAGE_KEY"));
+    assert.ok(coreSource.includes("defaultCollapsed = false"));
+    assert.ok(coreSource.includes('header.setAttribute("aria-expanded"'));
+    assert.ok(coreSource.includes("collapsibleSummary"));
+    assert.ok(html.includes(".collapsible-group-header"));
+    assert.ok(html.includes(".collapsible-group-chevron"));
+    assert.ok(i18nSource.includes("collapsibleExpand"));
+    assert.ok(i18nSource.includes("collapsibleCollapse"));
+  });
+
+  it("animates collapsible Settings groups with measured height instead of instant hidden jumps", () => {
+    const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
+    const html = fs.readFileSync(SETTINGS_HTML, "utf8");
+    assert.ok(coreSource.includes("function measureCollapsibleBodyHeight("));
+    assert.ok(coreSource.includes('body.style.setProperty("--collapsible-body-height"'));
+    assert.ok(coreSource.includes("requestAnimationFrame(() => {"));
+    assert.ok(coreSource.includes("collapsing"));
+    assert.ok(coreSource.includes("expanding"));
+    assert.ok(coreSource.includes("function setBodyInteractivity(isCollapsed)"));
+    assert.ok(coreSource.includes('body.setAttribute("aria-hidden"'));
+    assert.ok(coreSource.includes("body.inert = isCollapsed"));
+    assert.ok(!coreSource.includes("body.hidden = collapsed;"));
+    assert.ok(/\.collapsible-group-body\s*\{[\s\S]*max-height:\s*var\(--collapsible-body-height,\s*0px\);/.test(html));
+    assert.ok(/\.collapsible-group-body\s*\{[\s\S]*transition:\s*max-height 0\.22s cubic-bezier\(0\.22,\s*1,\s*0\.36,\s*1\),\s*opacity 0\.16s ease,\s*transform 0\.18s ease,\s*padding 0\.18s ease,\s*border-color 0\.18s ease;/.test(html));
+    assert.ok(/\.collapsible-group\.collapsed\s+\.collapsible-group-body\s*\{[\s\S]*opacity:\s*0;[\s\S]*transform:\s*translateY\(-4px\);/.test(html));
+    assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.collapsible-group-body/.test(html));
+  });
+
+  it("collapses only the detailed bubble policy controls while keeping primary bubble rows visible", () => {
+    const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
+    const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
+    assert.ok(generalSource.includes("buildBubblePolicySummary"));
+    assert.ok(generalSource.includes("helpers.buildCollapsibleGroup({"));
+    assert.ok(generalSource.includes('id: "general:bubble-policy"'));
+    assert.ok(generalSource.includes("defaultCollapsed: true"));
+    assert.ok(generalSource.includes('title: t("rowBubblePolicy")'));
+    assert.ok(generalSource.includes("summary: buildBubblePolicySummary()"));
+    assert.ok(generalSource.includes("children: [buildBubblePolicyList()]"));
+    assert.ok(generalSource.includes('key: "bubbleFollowPet"'));
+    assert.ok(generalSource.includes('key: "showSessionId"'));
+    assert.ok(i18nSource.includes("bubblePolicySummaryPermission"));
+    assert.ok(i18nSource.includes("bubblePolicySummaryNotification"));
+    assert.ok(i18nSource.includes("bubblePolicySummaryUpdate"));
+  });
+
+  it("renders Agent management as collapsed per-agent groups with master switches always visible", () => {
+    const agentsSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-agents.js"), "utf8");
+    assert.ok(agentsSource.includes("function buildAgentGroup(agent)"));
+    assert.ok(agentsSource.includes("const masterRow = buildAgentMasterRow(agent);"));
+    assert.ok(agentsSource.includes("const detailRows = buildAgentDetailRows(agent);"));
+    assert.ok(agentsSource.includes('id: `agents:${agent.id}`'));
+    assert.ok(agentsSource.includes("defaultCollapsed: true"));
+    assert.ok(agentsSource.includes("headerContent: masterRow"));
+    assert.ok(agentsSource.includes("children: detailRows"));
+    assert.ok(agentsSource.includes("ev.stopPropagation();"));
+    assert.ok(agentsSource.includes("agent-subgroup"));
+  });
+
+  it("uses a dedicated Settings agent ordering helper before rendering Agent management groups", () => {
+    const agentsSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-agents.js"), "utf8");
+    const agentOrderSource = fs.readFileSync(path.join(SRC_DIR, "settings-agent-order.js"), "utf8");
+    assert.ok(agentOrderSource.includes("function isAgentCollapsible("));
+    assert.ok(agentOrderSource.includes("function sortAgentMetadataForSettings("));
+    assert.ok(agentOrderSource.includes("COLLAPSIBLE_AGENT_PRIORITY"));
+    assert.ok(agentOrderSource.includes("NON_COLLAPSIBLE_AGENT_PRIORITY"));
+    assert.ok(agentsSource.includes("ClawdSettingsAgentOrder"));
+    assert.ok(agentsSource.includes("sortAgentMetadataForSettings(runtime.agentMetadata"));
   });
 
   it("keeps stale sound override prefs resettable from the settings UI", () => {

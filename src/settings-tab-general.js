@@ -165,18 +165,51 @@
   }
 
   function buildBubblePolicyRow() {
-    const row = document.createElement("div");
-    row.className = "row bubble-policy-row";
-    row.innerHTML =
-      `<div class="row-text bubble-policy-heading">` +
-        `<span class="row-label"></span>` +
-        `<span class="row-desc"></span>` +
-      `</div>` +
-      `<div class="bubble-policy-list"></div>`;
-    row.querySelector(".row-label").textContent = t("rowBubblePolicy");
-    row.querySelector(".row-desc").textContent = t("rowBubblePolicyDesc");
+    return helpers.buildCollapsibleGroup({
+      id: "general:bubble-policy",
+      title: t("rowBubblePolicy"),
+      desc: t("rowBubblePolicyDesc"),
+      summary: buildBubblePolicySummary(),
+      defaultCollapsed: true,
+      children: [buildBubblePolicyList()],
+      className: "bubble-policy-collapsible",
+    });
+  }
 
-    const list = row.querySelector(".bubble-policy-list");
+  function buildBubblePolicySummary() {
+    const wrap = document.createElement("div");
+    const permissionOn = !!(state.snapshot && state.snapshot.permissionBubblesEnabled !== false);
+    const notificationSeconds = Number(state.snapshot && state.snapshot.notificationBubbleAutoCloseSeconds) || 0;
+    const updateSeconds = Number(state.snapshot && state.snapshot.updateBubbleAutoCloseSeconds) || 0;
+    const items = [
+      {
+        text: t("bubblePolicySummaryPermission").replace(
+          "{state}",
+          permissionOn ? t("bubblePolicySummaryOn") : t("bubblePolicySummaryOff")
+        ),
+        accent: permissionOn,
+      },
+      {
+        text: t("bubblePolicySummaryNotification").replace("{seconds}", String(notificationSeconds)),
+        accent: notificationSeconds > 0,
+      },
+      {
+        text: t("bubblePolicySummaryUpdate").replace("{seconds}", String(updateSeconds)),
+        accent: updateSeconds > 0,
+      },
+    ];
+    for (const item of items) {
+      const chip = document.createElement("span");
+      chip.className = "collapsible-summary-chip" + (item.accent ? " accent" : "");
+      chip.textContent = item.text;
+      wrap.appendChild(chip);
+    }
+    return wrap;
+  }
+
+  function buildBubblePolicyList() {
+    const list = document.createElement("div");
+    list.className = "bubble-policy-list";
     list.appendChild(buildBubbleCategoryControl({
       category: "permission",
       labelKey: "bubblePermissionLabel",
@@ -196,7 +229,7 @@
       warningKey: "bubbleUpdateWarning",
       secondsKey: "updateBubbleAutoCloseSeconds",
     }));
-    return row;
+    return list;
   }
 
   function buildBubbleCategoryControl({ category, labelKey, descKey, warningKey = null, secondsKey = null }) {

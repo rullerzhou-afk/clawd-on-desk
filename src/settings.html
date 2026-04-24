@@ -182,6 +182,128 @@ html, body {
 @media (prefers-color-scheme: dark) {
   .section-rows { background: #1a1a1d; }
 }
+.collapsible-group {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+}
+.collapsible-group-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s ease, padding 0.18s ease;
+}
+.collapsible-group-header:hover {
+  background: rgba(0, 0, 0, 0.025);
+}
+@media (prefers-color-scheme: dark) {
+  .collapsible-group-header:hover {
+    background: rgba(255, 255, 255, 0.035);
+  }
+}
+.collapsible-group-header:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.collapsible-group-chevron {
+  flex: 0 0 auto;
+  width: 14px;
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1), color 0.16s ease;
+}
+.collapsible-group:not(.collapsed) .collapsible-group-chevron {
+  transform: rotate(90deg);
+  color: var(--accent);
+}
+.collapsible-group-text,
+.collapsible-group-header-content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.collapsible-group-header-content > .row {
+  padding: 0;
+  border-bottom: none;
+  background: transparent;
+}
+.collapsible-group-summary {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 48%;
+  transition: opacity 0.16s ease, transform 0.18s ease;
+}
+.collapsible-group:not(.collapsed) .collapsible-group-summary {
+  opacity: 0.72;
+  transform: translateX(2px);
+}
+.collapsible-summary-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 160px;
+  min-height: 20px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.045);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.collapsible-summary-chip.accent {
+  background: rgba(217, 119, 87, 0.12);
+  color: var(--accent);
+}
+@media (prefers-color-scheme: dark) {
+  .collapsible-summary-chip {
+    background: rgba(255, 255, 255, 0.08);
+  }
+}
+.collapsible-group-body {
+  max-height: var(--collapsible-body-height, 0px);
+  overflow: hidden;
+  border-top: 1px solid var(--row-border);
+  padding: 10px 16px 12px 40px;
+  opacity: 1;
+  transform: translateY(0);
+  transition: max-height 0.22s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.16s ease, transform 0.18s ease, padding 0.18s ease, border-color 0.18s ease;
+  will-change: max-height, opacity, transform;
+}
+.collapsible-group.collapsed .collapsible-group-body {
+  max-height: 0;
+  border-top-color: transparent;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+  transform: translateY(-4px);
+}
+.collapsible-group.expanding .collapsible-group-body,
+.collapsible-group.collapsing .collapsible-group-body {
+  pointer-events: none;
+}
+.agent-subgroup .collapsible-group-body {
+  padding: 0;
+}
+.agent-subgroup .collapsible-group-body .row:last-child {
+  border-bottom: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .collapsible-group-header,
+  .collapsible-group-chevron,
+  .collapsible-group-summary,
+  .collapsible-group-body {
+    transition: none;
+  }
+}
 
 /* Per-agent sub-toggle (e.g. "Show permission bubbles"), rendered under
    the master agent row. Indented to show the parent/child relationship;
@@ -1482,6 +1604,7 @@ html, body {
 <script src="settings-size-slider.js"></script>
 <script src="settings-i18n.js"></script>
 <script src="settings-ui-core.js"></script>
+<script src="settings-agent-order.js"></script>
 <script src="settings-tab-general.js"></script>
 <script src="settings-tab-agents.js"></script>
 <script src="settings-tab-theme.js"></script>

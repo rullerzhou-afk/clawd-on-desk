@@ -1,6 +1,9 @@
 "use strict";
 
 (function initSettingsTabAgents(root) {
+  const {
+    sortAgentMetadataForSettings,
+  } = root.ClawdSettingsAgentOrder || {};
   let state = null;
   let runtime = null;
   let readers = null;
@@ -28,47 +31,66 @@
       return;
     }
 
-    const rows = runtime.agentMetadata.flatMap((agent) => buildAgentRows(agent));
-    parent.appendChild(helpers.buildSection("", rows));
+    const agents = typeof sortAgentMetadataForSettings === "function"
+      ? sortAgentMetadataForSettings(runtime.agentMetadata)
+      : runtime.agentMetadata;
+    const groups = agents.map((agent) => buildAgentGroup(agent));
+    parent.appendChild(helpers.buildSection("", groups));
   }
 
-  function buildAgentRows(agent) {
+  function buildAgentGroup(agent) {
+    const masterRow = buildAgentMasterRow(agent);
+    const detailRows = buildAgentDetailRows(agent);
+    masterRow.classList.add("agent-summary-row");
+    if (detailRows.length === 0) return masterRow;
+    return helpers.buildCollapsibleGroup({
+      id: `agents:${agent.id}`,
+      headerContent: masterRow,
+      children: detailRows,
+      defaultCollapsed: true,
+      className: "agent-subgroup",
+    });
+  }
+
+  function buildAgentMasterRow(agent) {
+    return buildAgentSwitchRow({
+      agent,
+      flag: "enabled",
+      extraClass: null,
+      disabled: false,
+      buildText: (text) => {
+        const label = document.createElement("span");
+        label.className = "row-label";
+        label.textContent = agent.name || agent.id;
+        text.appendChild(label);
+        const badges = document.createElement("span");
+        badges.className = "row-desc agent-badges";
+        const esKey = agent.eventSource === "log-poll" ? "eventSourceLogPoll"
+          : agent.eventSource === "plugin-event" ? "eventSourcePlugin"
+          : "eventSourceHook";
+        const esBadge = document.createElement("span");
+        esBadge.className = "agent-badge";
+        esBadge.textContent = t(esKey);
+        badges.appendChild(esBadge);
+        if (agent.capabilities && agent.capabilities.permissionApproval) {
+          const permBadge = document.createElement("span");
+          permBadge.className = "agent-badge accent";
+          permBadge.textContent = t("badgePermissionBubble");
+          badges.appendChild(permBadge);
+        }
+        text.appendChild(badges);
+      },
+    });
+  }
+
+  function buildAgentDetailRows(agent) {
     // Sub-switches depend on the master: when the agent is turned off, the
     // sub-flags have no effect (server-side gate drops the events upstream),
     // so we render them as visually disabled to match reality. Committed
     // values are preserved — flipping the master back on restores sub-switch
     // state verbatim without re-asking the user to opt back in.
     const masterOn = readers.readAgentFlagValue(agent.id, "enabled");
-    const rows = [
-      buildAgentSwitchRow({
-        agent,
-        flag: "enabled",
-        extraClass: null,
-        disabled: false,
-        buildText: (text) => {
-          const label = document.createElement("span");
-          label.className = "row-label";
-          label.textContent = agent.name || agent.id;
-          text.appendChild(label);
-          const badges = document.createElement("span");
-          badges.className = "row-desc agent-badges";
-          const esKey = agent.eventSource === "log-poll" ? "eventSourceLogPoll"
-            : agent.eventSource === "plugin-event" ? "eventSourcePlugin"
-            : "eventSourceHook";
-          const esBadge = document.createElement("span");
-          esBadge.className = "agent-badge";
-          esBadge.textContent = t(esKey);
-          badges.appendChild(esBadge);
-          if (agent.capabilities && agent.capabilities.permissionApproval) {
-            const permBadge = document.createElement("span");
-            permBadge.className = "agent-badge accent";
-            permBadge.textContent = t("badgePermissionBubble");
-            badges.appendChild(permBadge);
-          }
-          text.appendChild(badges);
-        },
-      }),
-    ];
+    const rows = [];
     const caps = agent.capabilities || {};
     if (caps.permissionApproval || caps.interactiveBubble) {
       rows.push(buildAgentSwitchRow({
@@ -124,6 +146,12 @@
     sw.className = "switch";
     sw.setAttribute("role", "switch");
     sw.setAttribute("tabindex", disabled ? "-1" : "0");
+    sw.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+    });
+    sw.addEventListener("keydown", (ev) => {
+      ev.stopPropagation();
+    });
     if (disabled) {
       sw.classList.add("disabled");
       sw.setAttribute("aria-disabled", "true");
