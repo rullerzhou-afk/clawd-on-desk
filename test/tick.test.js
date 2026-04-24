@@ -299,4 +299,37 @@ describe("tick adaptive polling", () => {
     assert.equal(eyeMoves.length, 1);
     assert.equal(ctx.forceEyeResend, false);
   });
+
+  it("preserves ticks scheduled while the current tick is running", () => {
+    const theme = cloneTheme(_defaultTheme);
+    theme.timings.mouseIdleTimeout = 60000;
+    theme.timings.mouseSleepTimeout = 120000;
+    theme.idleAnimations = [];
+    let eyeMoveCount = 0;
+
+    ctx = makeCtx(theme, statesSeen);
+    ctx.sendToRenderer = (channel) => {
+      if (channel === "eye-move") {
+        eyeMoveCount++;
+        tickApi.scheduleSoon(100);
+      }
+    };
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+
+    mock.timers.tick(2200);
+    ctx.forceEyeResend = true;
+
+    for (let elapsed = 0; eyeMoveCount === 0 && elapsed < 1000; elapsed++) {
+      mock.timers.tick(1);
+    }
+    assert.equal(eyeMoveCount, 1);
+    const callsAfterEyeMove = cursorCalls;
+
+    mock.timers.tick(99);
+    assert.equal(cursorCalls, callsAfterEyeMove);
+
+    mock.timers.tick(1);
+    assert.equal(cursorCalls, callsAfterEyeMove + 1);
+  });
 });

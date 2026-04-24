@@ -592,6 +592,17 @@ function _calcLayerOffset(dx, dy, maxOffset) {
   return [(dx / dist) * clamp, (dy / dist) * clamp];
 }
 
+function _getLayerTarget(layer, rawDx, rawDy) {
+  const scale = layer.maxOffset / (_themeMaxOffset || 20);
+  return [rawDx * scale, rawDy * scale];
+}
+
+function _layerNeedsAnimation(layer, rawDx, rawDy) {
+  const [tx, ty] = _getLayerTarget(layer, rawDx, rawDy);
+  return Math.abs(layer.x - tx) >= LAYER_SETTLE_EPSILON
+    || Math.abs(layer.y - ty) >= LAYER_SETTLE_EPSILON;
+}
+
 /**
  * Initialize layered tracking for a loaded SVG document.
  * Creates <g> wrappers for each element listed in trackingLayers config.
@@ -633,8 +644,11 @@ function _initLayeredTracking(svgDoc) {
     };
   }
 
-  // The loop starts on the next eye-move event. Starting immediately at (0,0)
-  // keeps Chromium repainting an already-settled SVG.
+  _layerTargetDx = lastEyeDx;
+  _layerTargetDy = lastEyeDy;
+  if (Object.values(_trackingLayers).some(layer => _layerNeedsAnimation(layer, _layerTargetDx, _layerTargetDy))) {
+    _startLayerAnimLoop();
+  }
 }
 
 /**
@@ -653,9 +667,7 @@ function _startLayerAnimLoop() {
     for (const layer of Object.values(_trackingLayers)) {
       // Scale the pre-calculated offset (from tick.js, already in [-maxOffset, maxOffset])
       // to this layer's range. No second normalization — tick.js already did it.
-      const scale = layer.maxOffset / (_themeMaxOffset || 20);
-      const tx = rawDx * scale;
-      const ty = rawDy * scale;
+      const [tx, ty] = _getLayerTarget(layer, rawDx, rawDy);
 
       // Lerp towards target
       layer.x += (tx - layer.x) * layer.ease;

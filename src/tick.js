@@ -97,7 +97,7 @@ function runMainTick() {
   mainTickTimer = null;
   nextMainTickAt = 0;
   const delay = runMainTickOnce();
-  if (mainTickActive) scheduleNextTick(delay);
+  if (mainTickActive && !mainTickTimer) scheduleNextTick(delay);
 }
 
 function runMainTickOnce() {

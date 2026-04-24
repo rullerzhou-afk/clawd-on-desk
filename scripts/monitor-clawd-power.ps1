@@ -183,7 +183,10 @@ function New-OutputRow {
       if ($null -ne $proc.CPU) {
         $cpuValue = [double]$proc.CPU
       }
-      $cpuDelta += $cpuValue - [double]$Previous.CpuByPid[$pidValue]
+      $processCpuDelta = $cpuValue - [double]$Previous.CpuByPid[$pidValue]
+      if ($processCpuDelta -gt 0) {
+        $cpuDelta += $processCpuDelta
+      }
     }
   }
 
@@ -211,7 +214,7 @@ function New-OutputRow {
       $pidValue = [int]$_.Id
       $pidCpuDelta = 0.0
       if ($Previous.CpuByPid.ContainsKey($pidValue)) {
-        $pidCpuDelta = $cpuValue - [double]$Previous.CpuByPid[$pidValue]
+        $pidCpuDelta = [math]::Max(0.0, $cpuValue - [double]$Previous.CpuByPid[$pidValue])
       }
       $pidCpuOneCore = 100.0 * $pidCpuDelta / $elapsed
       "pid=$($_.Id) deltaCpuSeconds=$([math]::Round($pidCpuDelta, 4)) cpuOneCorePercent=$([math]::Round($pidCpuOneCore, 2)) cpuSeconds=$([math]::Round($cpuValue, 2)) wsMB=$([math]::Round($_.WorkingSet64 / 1MB, 1)) privateMB=$([math]::Round($_.PrivateMemorySize64 / 1MB, 1)) name=$($_.ProcessName)"
