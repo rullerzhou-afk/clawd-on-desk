@@ -47,15 +47,21 @@ describe("package build config", () => {
       const target = getWindowsNsisTarget();
       assert.ok(target, "build.win.target should include an nsis target");
       assert.deepStrictEqual(
-        target.arch,
-        ["x64", "arm64"],
+        target.arch.slice().sort(),
+        ["x64", "arm64"].slice().sort(),
         "Windows NSIS builds should publish both x64 and ARM64 installers"
       );
     });
 
     it("uses architecture-specific Windows installer names", () => {
+      const artifactName = pkg.build.win && pkg.build.win.artifactName;
+      assert.strictEqual(
+        typeof artifactName,
+        "string",
+        "build.win.artifactName should be a string"
+      );
       assert.match(
-        pkg.build.win && pkg.build.win.artifactName,
+        artifactName,
         /\$\{arch\}/,
         "Windows artifactName must include ${arch} so x64 and ARM64 installers cannot collide"
       );
