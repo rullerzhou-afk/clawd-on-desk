@@ -12,6 +12,12 @@ const HUD_WIDTH = 240;
 const HUD_ROW_HEIGHT = 28;
 const HUD_MAX_EXPANDED_ROWS = 3;
 const HUD_HEIGHT = HUD_ROW_HEIGHT + HUD_BORDER_Y;
+const HUD_WINDOW_SHELL = Object.freeze({
+  top: 2,
+  right: 3,
+  bottom: 8,
+  left: 3,
+});
 const HUD_PET_GAP = 4;
 const BUBBLE_GAP = 6;
 const EDGE_MARGIN = 8;
@@ -50,12 +56,19 @@ function computeHudHeight(rowCount) {
   return rowCount * HUD_ROW_HEIGHT + HUD_BORDER_Y;
 }
 
+function computeHudReservedOffset(cardHeight) {
+  const h = Number.isFinite(cardHeight) && cardHeight > 0 ? cardHeight : HUD_ROW_HEIGHT;
+  return HUD_PET_GAP + h + HUD_WINDOW_SHELL.bottom + BUBBLE_GAP;
+}
+
 function computeSessionHudBounds({ hitRect, workArea, width = HUD_WIDTH, height = HUD_HEIGHT }) {
   if (!hitRect || !workArea) return null;
   const hitTop = Math.round(hitRect.top);
   const hitBottom = Math.round(hitRect.bottom);
   const hitCx = Math.round((hitRect.left + hitRect.right) / 2);
 
+  const outerWidth = width + HUD_WINDOW_SHELL.left + HUD_WINDOW_SHELL.right;
+  const outerHeight = height + HUD_WINDOW_SHELL.top + HUD_WINDOW_SHELL.bottom;
   const minX = Math.round(workArea.x);
   const maxX = Math.round(workArea.x + workArea.width - width);
   const x = clampToWorkArea(hitCx - Math.round(width / 2), minX, maxX);
@@ -63,8 +76,15 @@ function computeSessionHudBounds({ hitRect, workArea, width = HUD_WIDTH, height 
   const belowY = hitBottom + HUD_PET_GAP;
   const belowMax = workArea.y + workArea.height - EDGE_MARGIN;
   if (belowY + height <= belowMax) {
+    const contentBounds = { x, y: belowY, width, height };
     return {
-      bounds: { x, y: belowY, width, height },
+      bounds: {
+        x: contentBounds.x - HUD_WINDOW_SHELL.left,
+        y: contentBounds.y - HUD_WINDOW_SHELL.top,
+        width: outerWidth,
+        height: outerHeight,
+      },
+      contentBounds,
       flippedAbove: false,
     };
   }
@@ -72,13 +92,20 @@ function computeSessionHudBounds({ hitRect, workArea, width = HUD_WIDTH, height 
   const minY = Math.round(workArea.y + EDGE_MARGIN);
   const maxY = Math.round(workArea.y + workArea.height - EDGE_MARGIN - height);
   const aboveY = hitTop - height - HUD_PET_GAP;
+  const contentBounds = {
+    x,
+    y: clampToWorkArea(aboveY, minY, maxY),
+    width,
+    height,
+  };
   return {
     bounds: {
-      x,
-      y: clampToWorkArea(aboveY, minY, maxY),
-      width,
-      height,
+      x: contentBounds.x - HUD_WINDOW_SHELL.left,
+      y: contentBounds.y - HUD_WINDOW_SHELL.top,
+      width: outerWidth,
+      height: outerHeight,
     },
+    contentBounds,
     flippedAbove: true,
   };
 }
@@ -145,8 +172,8 @@ module.exports = function initSessionHud(ctx) {
     hudFlippedAbove = false;
     hudWindow = new BrowserWindow({
       parent: ctx.win,
-      width: HUD_WIDTH,
-      height: HUD_HEIGHT,
+      width: HUD_WIDTH + HUD_WINDOW_SHELL.left + HUD_WINDOW_SHELL.right,
+      height: HUD_HEIGHT + HUD_WINDOW_SHELL.top + HUD_WINDOW_SHELL.bottom,
       show: false,
       frame: false,
       transparent: true,
@@ -259,8 +286,7 @@ module.exports = function initSessionHud(ctx) {
   function readHudReservedOffset() {
     if (!hudWindow || hudWindow.isDestroyed() || !hudWindow.isVisible()) return 0;
     if (hudFlippedAbove) return 0;
-    const h = Number.isFinite(lastHudHeight) && lastHudHeight > 0 ? lastHudHeight : HUD_ROW_HEIGHT;
-    return HUD_PET_GAP + h + BUBBLE_GAP;
+    return computeHudReservedOffset(lastHudHeight);
   }
 
   function notifyReservedOffsetIfChanged() {
@@ -295,12 +321,14 @@ module.exports.__test = {
   computeSessionHudBounds,
   computeHudLayout,
   computeHudHeight,
+  computeHudReservedOffset,
   isHudSession,
   constants: {
     HUD_WIDTH,
     HUD_HEIGHT,
     HUD_ROW_HEIGHT,
     HUD_MAX_EXPANDED_ROWS,
+    HUD_WINDOW_SHELL,
     HUD_PET_GAP,
     BUBBLE_GAP,
     EDGE_MARGIN,
