@@ -6,6 +6,9 @@
   "scripts": {
     "start": "node launch.js",
     "build": "electron-builder --win",
+    "build:win:x64": "electron-builder --win nsis:x64",
+    "build:win:arm64": "electron-builder --win nsis:arm64",
+    "build:win:all": "electron-builder --win nsis:x64 nsis:arm64",
     "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux",
     "build:all": "electron-builder --win --mac --linux",
@@ -49,12 +52,13 @@
     "win": {
       "icon": "assets/icon.ico",
       "signAndEditExecutable": false,
-      "artifactName": "Clawd-on-Desk-Setup-${version}.${ext}",
+      "artifactName": "Clawd-on-Desk-Setup-${version}-${arch}.${ext}",
       "target": [
         {
           "target": "nsis",
           "arch": [
-            "x64"
+            "x64",
+            "arm64"
           ]
         }
       ]
@@ -81,6 +85,7 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
+      "buildUniversalInstaller": false,
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico",
       "installerHeaderIcon": "assets/icon.ico"

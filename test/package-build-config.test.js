@@ -37,6 +37,45 @@ describe("package build config", () => {
     );
   });
 
+  describe("Windows architecture targets", () => {
+    function getWindowsNsisTarget() {
+      const targets = pkg.build.win && pkg.build.win.target;
+      return Array.isArray(targets) ? targets.find((target) => target && target.target === "nsis") : null;
+    }
+
+    it("builds native Windows installers for x64 and arm64", () => {
+      const target = getWindowsNsisTarget();
+      assert.ok(target, "build.win.target should include an nsis target");
+      assert.deepStrictEqual(
+        target.arch,
+        ["x64", "arm64"],
+        "Windows NSIS builds should publish both x64 and ARM64 installers"
+      );
+    });
+
+    it("uses architecture-specific Windows installer names", () => {
+      assert.match(
+        pkg.build.win && pkg.build.win.artifactName,
+        /\$\{arch\}/,
+        "Windows artifactName must include ${arch} so x64 and ARM64 installers cannot collide"
+      );
+    });
+
+    it("exposes explicit Windows architecture build scripts", () => {
+      assert.strictEqual(pkg.scripts["build:win:x64"], "electron-builder --win nsis:x64");
+      assert.strictEqual(pkg.scripts["build:win:arm64"], "electron-builder --win nsis:arm64");
+      assert.strictEqual(pkg.scripts["build:win:all"], "electron-builder --win nsis:x64 nsis:arm64");
+    });
+
+    it("does not emit a redundant universal Windows installer", () => {
+      assert.strictEqual(
+        pkg.build.nsis && pkg.build.nsis.buildUniversalInstaller,
+        false,
+        "Windows releases should publish explicit x64/ARM64 installers, not an extra universal NSIS installer"
+      );
+    });
+  });
+
   // getWindowsShellIconPath has a three-step fallback:
   //   1. resourcesPath/icon.ico            ← extraResources copy
   //   2. resourcesPath/app.asar.unpacked/assets/icon.ico
