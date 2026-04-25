@@ -1,4 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+<!--
+  clawd-experiment-working-building-helmet-v1.svg (2026-04-24)
+  基础 = D:\animation\assets\svg\clawd-working-building.svg
+  改动 = 把原黄色安全帽 (#FBC02D/#F9A825) 换成 helmet-tryon-v1 的三色橙帽 (#EFA74A/#B7782E/#FAB253)
+  帽子仍放在 body-squash 组内, 跟随锤击 squash; z-order: torso → helmet → eyes (helmet 不遮眼, 无视觉冲突)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="crispEdges">
   <defs>
     <style>
       /* ===== Independent sub-animations ===== */
@@ -219,40 +225,79 @@
         <!-- Torso -->
         <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
 
-        <!-- Hard Hat (all pixel detail preserved) -->
-        <g>
-          <!-- Ridges top (y=1) -->
-          <rect x="4" y="1" width="2" height="1" fill="#FBC02D"/>
-          <rect x="9" y="1" width="2" height="1" fill="#FBC02D"/>
-          <!-- Upper Dome (y=2) -->
-          <rect x="3" y="2" width="1" height="1" fill="#F9A825"/>
-          <rect x="4" y="2" width="2" height="1" fill="#FBC02D"/>
-          <rect x="6" y="2" width="1" height="1" fill="#F9A825"/>
-          <rect x="7" y="2" width="1" height="1" fill="#FBC02D"/>
-          <rect x="8" y="2" width="1" height="1" fill="#F9A825"/>
-          <rect x="9" y="2" width="2" height="1" fill="#FBC02D"/>
-          <rect x="11" y="2" width="1" height="1" fill="#F9A825"/>
-          <!-- Mid Dome (y=3) -->
-          <rect x="2" y="3" width="1" height="1" fill="#F9A825"/>
-          <rect x="3" y="3" width="3" height="1" fill="#FBC02D"/>
-          <rect x="6" y="3" width="1" height="1" fill="#F9A825"/>
-          <rect x="7" y="3" width="1" height="1" fill="#FBC02D"/>
-          <rect x="8" y="3" width="1" height="1" fill="#F9A825"/>
-          <rect x="9" y="3" width="3" height="1" fill="#FBC02D"/>
-          <rect x="12" y="3" width="1" height="1" fill="#F9A825"/>
-          <!-- Lower Dome / Brim (y=4) -->
-          <rect x="1" y="4" width="2" height="1" fill="#F9A825"/>
-          <rect x="3" y="4" width="9" height="1" fill="#FBC02D"/>
-          <rect x="12" y="4" width="2" height="1" fill="#F9A825"/>
-          <!-- Bottom Band (y=5) -->
-          <rect x="0" y="5" width="15" height="1" fill="#F9A825"/>
-        </g>
-
-        <!-- Eyes [look 5s > blink 4s] — standard 1x2 at (4,8)/(10,8) -->
+        <!-- Eyes [look 5s > blink 4s] — 放在 helmet 之前, 让帽子压过眼睛 -->
         <g class="eyes-look">
           <g class="blink" fill="#000">
             <rect x="4" y="8" width="1" height="2"/>
             <rect x="10" y="8" width="1" height="2"/>
+          </g>
+        </g>
+
+        <!-- Helmet (from helmet-tryon-v1: 三色橙, translate(0.5 1) scale(0.7) — v1 下移 1 格戴更低) -->
+        <g id="helmet" transform="translate(0.5 1) scale(0.7)">
+          <g fill="#EFA74A">
+            <rect x="7" y="0" width="6" height="1"/>
+            <rect x="7" y="1" width="6" height="1"/>
+            <rect x="14" y="1" width="2" height="1"/>
+            <rect x="2" y="2" width="3" height="1"/>
+            <rect x="7" y="2" width="2" height="1"/>
+            <rect x="11" y="2" width="2" height="1"/>
+            <rect x="14" y="2" width="4" height="1"/>
+            <rect x="2" y="3" width="3" height="1"/>
+            <rect x="7" y="3" width="1" height="1"/>
+            <rect x="14" y="3" width="4" height="1"/>
+            <rect x="1" y="4" width="4" height="1"/>
+            <rect x="7" y="4" width="1" height="1"/>
+            <rect x="14" y="4" width="5" height="1"/>
+            <rect x="1" y="5" width="4" height="1"/>
+            <rect x="7" y="5" width="1" height="1"/>
+            <rect x="12" y="5" width="1" height="1"/>
+            <rect x="14" y="5" width="5" height="1"/>
+            <rect x="1" y="6" width="4" height="1"/>
+            <rect x="8" y="6" width="1" height="1"/>
+            <rect x="11" y="6" width="1" height="1"/>
+            <rect x="14" y="6" width="5" height="1"/>
+            <rect x="1" y="7" width="1" height="1"/>
+            <rect x="0" y="9" width="20" height="1"/>
+          </g>
+          <g fill="#B7782E">
+            <rect x="6" y="1" width="1" height="1"/>
+            <rect x="13" y="1" width="1" height="1"/>
+            <rect x="6" y="2" width="1" height="1"/>
+            <rect x="9" y="2" width="2" height="1"/>
+            <rect x="13" y="2" width="1" height="1"/>
+            <rect x="6" y="3" width="1" height="1"/>
+            <rect x="8" y="3" width="4" height="1"/>
+            <rect x="13" y="3" width="1" height="1"/>
+            <rect x="6" y="4" width="1" height="1"/>
+            <rect x="8" y="4" width="4" height="1"/>
+            <rect x="13" y="4" width="1" height="1"/>
+            <rect x="6" y="5" width="1" height="1"/>
+            <rect x="9" y="5" width="2" height="1"/>
+            <rect x="13" y="5" width="1" height="1"/>
+            <rect x="6" y="6" width="1" height="1"/>
+            <rect x="9" y="6" width="2" height="1"/>
+            <rect x="13" y="6" width="1" height="1"/>
+            <rect x="7" y="7" width="1" height="1"/>
+            <rect x="12" y="7" width="1" height="1"/>
+            <rect x="1" y="8" width="18" height="1"/>
+          </g>
+          <g fill="#FAB253">
+            <rect x="5" y="1" width="1" height="1"/>
+            <rect x="5" y="2" width="1" height="1"/>
+            <rect x="5" y="3" width="1" height="1"/>
+            <rect x="12" y="3" width="1" height="1"/>
+            <rect x="5" y="4" width="1" height="1"/>
+            <rect x="12" y="4" width="1" height="1"/>
+            <rect x="5" y="5" width="1" height="1"/>
+            <rect x="8" y="5" width="1" height="1"/>
+            <rect x="11" y="5" width="1" height="1"/>
+            <rect x="5" y="6" width="1" height="1"/>
+            <rect x="7" y="6" width="1" height="1"/>
+            <rect x="12" y="6" width="1" height="1"/>
+            <rect x="2" y="7" width="5" height="1"/>
+            <rect x="8" y="7" width="4" height="1"/>
+            <rect x="13" y="7" width="6" height="1"/>
           </g>
         </g>
 

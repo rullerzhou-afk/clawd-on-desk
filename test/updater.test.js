@@ -195,6 +195,111 @@ describe("updater visual flow", () => {
     assert.ok(applied.some((entry) => entry.state === "notification" && entry.svgOverride == null));
   });
 
+  it("does not flash available overlay for non-manual checks during mini mode", async () => {
+    const visualStates = [];
+    const bubbles = [];
+    const handlers = {};
+    let hideCount = 0;
+    let overlayState = null;
+    const ctx = makeCtx({
+      miniMode: true,
+      setUpdateVisualState: (state) => {
+        visualStates.push(state);
+        overlayState = state;
+      },
+      resolveDisplayState: () => overlayState === "checking" ? "thinking" : (overlayState || "idle"),
+      showUpdateBubble: async (payload) => {
+        bubbles.push(payload);
+        return payload.defaultAction || null;
+      },
+      hideUpdateBubble: () => { hideCount += 1; },
+    });
+    const updater = initUpdater(ctx, makeDeps({
+      autoUpdaterFactory: () => ({
+        autoDownload: false,
+        autoInstallOnAppQuit: true,
+        on(event, handler) { handlers[event] = handler; },
+        checkForUpdates: async () => ({ updateInfo: { version: "0.5.11" } }),
+        quitAndInstall() {},
+        downloadUpdate() {},
+      }),
+      httpsGetImpl: (options, cb) => {
+        const res = {
+          statusCode: 200,
+          on(event, handler) {
+            if (event === "data") handler(Buffer.from(JSON.stringify({ tag_name: "v0.5.11" })));
+            if (event === "end") handler();
+            return this;
+          },
+        };
+        cb(res);
+        return { on() { return this; }, setTimeout() {} };
+      },
+    }));
+
+    updater.setupAutoUpdater();
+    await updater.checkForUpdates(false);
+    await handlers["update-available"]({ version: "0.5.11" });
+
+    assert.deepStrictEqual(visualStates, ["checking", null]);
+    assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking"]);
+    assert.strictEqual(hideCount, 1);
+  });
+
+  it("rebuilds git-mode menus after silent available check returns to idle", async () => {
+    const visualStates = [];
+    const bubbles = [];
+    const menuLabels = [];
+    let hideCount = 0;
+    let overlayState = null;
+    let updater;
+    const ctx = makeCtx({
+      miniMode: true,
+      rebuildAllMenus: () => {
+        if (updater) menuLabels.push(updater.getUpdateMenuLabel());
+      },
+      setUpdateVisualState: (state) => {
+        visualStates.push(state);
+        overlayState = state;
+      },
+      resolveDisplayState: () => overlayState === "checking" ? "thinking" : (overlayState || "idle"),
+      showUpdateBubble: async (payload) => {
+        bubbles.push(payload);
+        return payload.defaultAction || null;
+      },
+      hideUpdateBubble: () => { hideCount += 1; },
+    });
+    const stdoutByArgs = new Map([
+      ["rev-parse --abbrev-ref HEAD", "main"],
+      ["fetch origin main", ""],
+      ["rev-parse HEAD", "aaaaaaaa"],
+      ["rev-parse origin/main", "bbbbbbbb"],
+      ["show origin/main:package.json", JSON.stringify({ version: "0.5.11" })],
+    ]);
+    updater = initUpdater(ctx, makeDeps({
+      app: {
+        isPackaged: false,
+        getVersion: () => "0.5.10",
+        relaunch() {},
+        exit() {},
+      },
+      fsImpl: {
+        statSync: () => ({ isDirectory: () => true }),
+      },
+      execFileImpl: (_cmd, args, _options, cb) => {
+        const key = args.join(" ");
+        process.nextTick(() => cb(null, stdoutByArgs.get(key) || ""));
+      },
+    }));
+
+    await updater.checkForUpdates(false);
+
+    assert.deepStrictEqual(visualStates, ["checking", null]);
+    assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking"]);
+    assert.strictEqual(hideCount, 1);
+    assert.strictEqual(menuLabels[menuLabels.length - 1], "Check for Updates");
+  });
+
   it("shows error state and detail bubble when GitHub API check fails", async () => {
     const visualStates = [];
     const appliedStates = [];

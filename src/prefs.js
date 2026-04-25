@@ -21,6 +21,7 @@ const path = require("path");
 const { isPlainObject } = require("./theme-loader");
 const { normalizeShortcuts, getDefaultShortcuts } = require("./shortcut-actions");
 const { isValidDisplaySnapshot } = require("./work-area");
+const { normalizeSessionAliases } = require("./session-alias");
 
 const CURRENT_VERSION = 1;
 
@@ -79,8 +80,8 @@ const SCHEMA = {
   openAtLogin: { type: "boolean", default: false },
   openAtLoginHydrated: { type: "boolean", default: false },
   bubbleFollowPet: { type: "boolean", default: false },
+  sessionHudEnabled: { type: "boolean", default: true },
   hideBubbles: { type: "boolean", default: false },
-  showSessionId: { type: "boolean", default: false },
   soundMuted: { type: "boolean", default: false },
   soundVolume: {
     type: "number",
@@ -126,6 +127,11 @@ const SCHEMA = {
     type: "object",
     defaultFactory: () => ({}),
     normalize: normalizeThemeVariant,
+  },
+  sessionAliases: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizeSessionAliases,
   },
 };
 

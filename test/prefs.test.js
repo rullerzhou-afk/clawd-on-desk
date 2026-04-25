@@ -30,6 +30,7 @@ describe("prefs.getDefaults", () => {
     assert.notStrictEqual(a.agents, b.agents);
     assert.notStrictEqual(a.themeOverrides, b.themeOverrides);
     assert.notStrictEqual(a.shortcuts, b.shortcuts);
+    assert.notStrictEqual(a.sessionAliases, b.sessionAliases);
     // Mutating one shouldn't affect the other
     a.agents["claude-code"].enabled = false;
     assert.strictEqual(b.agents["claude-code"].enabled, true);
@@ -46,8 +47,10 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.autoStartWithClaude, false);
     assert.strictEqual(d.allowEdgePinning, false);
     assert.strictEqual(d.keepSizeAcrossDisplays, false);
+    assert.strictEqual(d.sessionHudEnabled, true);
     assert.strictEqual(d.savedPixelWidth, 0);
     assert.strictEqual(d.savedPixelHeight, 0);
+    assert.deepStrictEqual(d.sessionAliases, {});
   });
 
   it("seeds all known agents as enabled", () => {
@@ -77,6 +80,7 @@ describe("prefs.validate", () => {
       soundVolume: 2,        // out of range → default 1
       x: NaN,                // not finite
       bubbleFollowPet: true, // ok
+      sessionHudEnabled: "yes",
       hideBubbles: 0,        // wrong type
       allowEdgePinning: "yes",
       savedPixelWidth: -1,
@@ -88,6 +92,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.soundVolume, 1);
     assert.strictEqual(v.x, 0);
     assert.strictEqual(v.bubbleFollowPet, true);
+    assert.strictEqual(v.sessionHudEnabled, true);
     assert.strictEqual(v.hideBubbles, false);
     assert.strictEqual(v.allowEdgePinning, false);
     assert.strictEqual(v.savedPixelWidth, 0);
@@ -100,6 +105,7 @@ describe("prefs.validate", () => {
       soundMuted: true,
       soundVolume: 0.4,
       bubbleFollowPet: true,
+      sessionHudEnabled: false,
       allowEdgePinning: true,
       keepSizeAcrossDisplays: true,
       savedPixelWidth: 286,
@@ -114,6 +120,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.soundMuted, true);
     assert.strictEqual(v.soundVolume, 0.4);
     assert.strictEqual(v.bubbleFollowPet, true);
+    assert.strictEqual(v.sessionHudEnabled, false);
     assert.strictEqual(v.allowEdgePinning, true);
     assert.strictEqual(v.keepSizeAcrossDisplays, true);
     assert.strictEqual(v.savedPixelWidth, 286);
@@ -277,6 +284,38 @@ describe("prefs.validate", () => {
     assert.deepStrictEqual(v.themeVariant, {});
     const w = prefs.validate({ themeVariant: [1, 2] });
     assert.deepStrictEqual(w.themeVariant, {});
+  });
+
+  it("sessionAliases normalizes valid entries and drops malformed values", () => {
+    const v = prefs.validate({
+      sessionAliases: {
+        "local|codex|s1": { title: "  Codex main  ", updatedAt: 100 },
+        "local|codex|missing-time": { title: "Missing time" },
+        "local|codex|empty": { title: "   ", updatedAt: 100 },
+        "local|codex|bad": { title: 42, updatedAt: 100 },
+      },
+    });
+    assert.strictEqual(v.sessionAliases["local|codex|s1"].title, "Codex main");
+    assert.strictEqual(v.sessionAliases["local|codex|s1"].updatedAt, 100);
+    assert.strictEqual(v.sessionAliases["local|codex|missing-time"].title, "Missing time");
+    assert.strictEqual(typeof v.sessionAliases["local|codex|missing-time"].updatedAt, "number");
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(v.sessionAliases, "local|codex|empty"), false);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(v.sessionAliases, "local|codex|bad"), false);
+  });
+
+  it("sessionAliases falls back to defaults when not an object", () => {
+    assert.deepStrictEqual(prefs.validate({ sessionAliases: "nope" }).sessionAliases, {});
+    assert.deepStrictEqual(prefs.validate({ sessionAliases: [1, 2] }).sessionAliases, {});
+  });
+
+  it("drops legacy workspaceAliases because they are no longer in the schema", () => {
+    const v = prefs.validate({
+      workspaceAliases: {
+        "local|d:/animation": "Clawd main repo",
+      },
+    });
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(v, "workspaceAliases"), false);
+    assert.deepStrictEqual(v.sessionAliases, {});
   });
 
   it("shortcuts defaults to the built-in shortcut map", () => {

@@ -34,7 +34,6 @@ function makeCtx(overrides = {}) {
     buildTrayMenu: () => {},
     pendingPermissions: [],
     resolvePermissionEntry: () => {},
-    showSessionId: false,
     focusTerminalWindow: () => {},
     // Default: all pids dead
     processKill: () => { const e = new Error("ESRCH"); e.code = "ESRCH"; throw e; },
@@ -183,6 +182,23 @@ describe("resolveDisplayState()", () => {
 
     api.setUpdateVisualState(null);
     assert.strictEqual(api.resolveDisplayState(), "idle");
+  });
+
+  it("refreshes the active checking update visual override when the theme changes", () => {
+    const ctx = makeCtx();
+    api.cleanup();
+    api = require("../src/state")(ctx);
+
+    api.setUpdateVisualState("checking");
+    assert.strictEqual(api.getSvgOverride("thinking"), "clawd-working-debugger.svg");
+
+    ctx.theme = _calicoTheme;
+    api.refreshTheme();
+    assert.strictEqual(api.getSvgOverride("thinking"), "calico-thinking.apng");
+
+    ctx.theme = _defaultTheme;
+    api.refreshTheme();
+    assert.strictEqual(api.getSvgOverride("thinking"), "clawd-working-debugger.svg");
   });
 
   it("update overlay does not override higher-priority agent states", () => {
@@ -791,38 +807,6 @@ describe("updateSession()", () => {
     assert.strictEqual(api.sessions.get("s1").sessionTitle, null);
   });
 
-  it("buildSessionSubmenu uses sessionTitle over cwd folder name", () => {
-    update(api, {
-      id: "s1",
-      state: "idle",
-      cwd: "/tmp/project-abc",
-      sessionTitle: "Fix login bug",
-    });
-    const menu = api.buildSessionSubmenu();
-    // Label format: `${name}  ${stateText}  ${elapsed}` — name should be the title
-    assert.ok(
-      menu[0].label.includes("Fix login bug"),
-      `expected label to include title, got: ${menu[0].label}`
-    );
-    assert.ok(
-      !menu[0].label.includes("project-abc"),
-      `expected label to NOT include folder when title present, got: ${menu[0].label}`
-    );
-  });
-
-  it("buildSessionSubmenu falls back to folder name when sessionTitle is null", () => {
-    update(api, {
-      id: "s1",
-      state: "idle",
-      cwd: "/tmp/project-abc",
-      // no sessionTitle
-    });
-    const menu = api.buildSessionSubmenu();
-    assert.ok(
-      menu[0].label.includes("project-abc"),
-      `expected folder fallback, got: ${menu[0].label}`
-    );
-  });
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -873,6 +857,19 @@ describe("recentEvents tracking", () => {
     );
   });
 
+  it("updates recentEvents when an existing session receives a oneshot error", () => {
+    update(api, { id: "s1", state: "working", event: "PreToolUse" });
+    update(api, { id: "s1", state: "error", event: "PostToolUseFailure" });
+
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.state, "idle");
+    assert.deepStrictEqual(
+      session.recentEvents.map((e) => e.event),
+      ["PreToolUse", "PostToolUseFailure"]
+    );
+    assert.strictEqual(api.deriveSessionBadge(session), "interrupted");
+  });
+
   it("handles null event as null (not crash, not skipped)", () => {
     // The update() helper falls back to "PreToolUse" on null event —
     // bypass it here to test the null path directly.
@@ -880,6 +877,366 @@ describe("recentEvents tracking", () => {
     const events = api.sessions.get("s1").recentEvents;
     assert.strictEqual(events.length, 1);
     assert.strictEqual(events[0].event, null);
+  });
+});
+
+describe("buildSessionSnapshot", () => {
+  let api, ctx;
+  const pid = process.pid;
+
+  beforeEach(() => {
+    ctx = makeCtx({ processKill: makePidKill(new Set([pid])) });
+    api = require("../src/state")(ctx);
+  });
+  afterEach(() => api.cleanup());
+
+  it("returns a JSON-serializable empty snapshot", () => {
+    const snapshot = api.buildSessionSnapshot();
+    assert.deepStrictEqual(snapshot, {
+      sessions: [],
+      groups: [],
+      orderedIds: [],
+      menuOrderedIds: [],
+      hudTotalNonIdle: 0,
+      hudLastSessionId: null,
+      hudLastTitle: null,
+      lastSessionId: null,
+      lastTitle: null,
+    });
+    assert.doesNotThrow(() => JSON.stringify(snapshot));
+  });
+
+  it("builds renderer-safe fields, groups, and both dashboard/menu orderings", () => {
+    api.sessions.set("old-working", rawSession("working", {
+      updatedAt: 1000,
+      sourcePid: pid,
+      cwd: "/tmp/old-project",
+      agentId: "claude-code",
+      sessionTitle: "Fix login",
+      recentEvents: [{ event: "PreToolUse", state: "working", at: 900 }],
+    }));
+    api.sessions.set("latest-remote", rawSession("idle", {
+      updatedAt: 3000,
+      cwd: "/tmp/latest-project",
+      agentId: "codex",
+      host: "remote-box",
+      headless: true,
+      recentEvents: [{ event: "MysteryEvent", state: "idle", at: 2900 }],
+    }));
+    api.sessions.set("error-local", rawSession("error", {
+      updatedAt: 2000,
+      cwd: "/tmp/error-project",
+      agentId: "missing-agent",
+      recentEvents: [],
+    }));
+
+    const snapshot = api.buildSessionSnapshot();
+
+    assert.doesNotThrow(() => JSON.stringify(snapshot));
+    assert.deepStrictEqual(snapshot.orderedIds, ["latest-remote", "error-local", "old-working"]);
+    assert.deepStrictEqual(snapshot.menuOrderedIds, ["error-local", "old-working", "latest-remote"]);
+    assert.deepStrictEqual(snapshot.groups, [
+      { host: "", ids: ["error-local", "old-working"] },
+      { host: "remote-box", ids: ["latest-remote"] },
+    ]);
+    assert.strictEqual(snapshot.hudTotalNonIdle, 2);
+    assert.strictEqual(snapshot.hudLastSessionId, "error-local");
+    assert.strictEqual(snapshot.hudLastTitle, "error-project");
+    assert.strictEqual(snapshot.lastSessionId, "latest-remote");
+    assert.strictEqual(snapshot.lastTitle, "latest-project");
+
+    const oldWorking = snapshot.sessions.find((s) => s.id === "old-working");
+    assert.strictEqual(oldWorking.badge, "running");
+    assert.strictEqual(oldWorking.sessionTitle, "Fix login");
+    assert.strictEqual(oldWorking.displayTitle, "Fix login");
+    assert.strictEqual(oldWorking.iconUrl.startsWith("file:"), true);
+    assert.deepStrictEqual(oldWorking.lastEvent, {
+      labelKey: "eventLabelPreToolUse",
+      rawEvent: "PreToolUse",
+      at: 900,
+    });
+
+    const latestRemote = snapshot.sessions.find((s) => s.id === "latest-remote");
+    assert.strictEqual(latestRemote.headless, true);
+    assert.strictEqual(latestRemote.displayTitle, "latest-project");
+    assert.deepStrictEqual(latestRemote.lastEvent, {
+      labelKey: null,
+      rawEvent: "MysteryEvent",
+      at: 2900,
+    });
+
+    const errorLocal = snapshot.sessions.find((s) => s.id === "error-local");
+    assert.strictEqual(errorLocal.displayTitle, "error-project");
+    assert.strictEqual(errorLocal.iconUrl, null);
+  });
+
+  it("keeps headless sessions in Dashboard data but excludes them from HUD aggregates", () => {
+    api.sessions.set("headless-active", rawSession("working", {
+      updatedAt: 3000,
+      cwd: "/tmp/headless",
+      agentId: "claude-code",
+      headless: true,
+    }));
+    api.sessions.set("interactive-active", rawSession("thinking", {
+      updatedAt: 2000,
+      cwd: "/tmp/interactive",
+      agentId: "codex",
+    }));
+
+    const snapshot = api.buildSessionSnapshot();
+
+    assert.deepStrictEqual(snapshot.orderedIds, ["headless-active", "interactive-active"]);
+    assert.strictEqual(snapshot.sessions.length, 2);
+    assert.strictEqual(snapshot.lastSessionId, "headless-active");
+    assert.strictEqual(snapshot.hudTotalNonIdle, 1);
+    assert.strictEqual(snapshot.hudLastSessionId, "interactive-active");
+    assert.strictEqual(snapshot.hudLastTitle, "interactive");
+  });
+
+  it("keeps done idle interactive sessions in HUD aggregates", () => {
+    api.sessions.set("done-local", rawSession("idle", {
+      updatedAt: 3000,
+      sourcePid: pid,
+      cwd: "/tmp/done-project",
+      agentId: "claude-code",
+      recentEvents: [{ event: "Stop", state: "attention", at: 2900 }],
+    }));
+    api.sessions.set("sleeping-local", rawSession("sleeping", {
+      updatedAt: 4000,
+      sourcePid: pid,
+      cwd: "/tmp/sleeping-project",
+      agentId: "codex",
+    }));
+
+    const snapshot = api.buildSessionSnapshot();
+    assert.strictEqual(snapshot.sessions.find((s) => s.id === "done-local").badge, "done");
+    assert.strictEqual(snapshot.hudTotalNonIdle, 1);
+    assert.strictEqual(snapshot.hudLastSessionId, "done-local");
+    assert.strictEqual(snapshot.hudLastTitle, "done-project");
+  });
+
+  it("applies session aliases to displayTitle without mutating raw session fields", () => {
+    api.cleanup();
+    api = require("../src/state")(makeCtx({
+      getSessionAliases: () => ({
+        "local|claude-code|claude-local": { title: "Claude review", updatedAt: 100 },
+        "local|codex|codex-local": { title: "Codex follow-up", updatedAt: 100 },
+      }),
+    }));
+    api.sessions.set("claude-local", rawSession("working", {
+      updatedAt: 2000,
+      cwd: "D:\\animation",
+      agentId: "claude-code",
+      sessionTitle: "Agent title",
+    }));
+    api.sessions.set("codex-local", rawSession("thinking", {
+      updatedAt: 1000,
+      cwd: "d:/animation/",
+      agentId: "codex",
+    }));
+
+    const snapshot = api.buildSessionSnapshot();
+    const claude = snapshot.sessions.find((s) => s.id === "claude-local");
+    const codex = snapshot.sessions.find((s) => s.id === "codex-local");
+
+    assert.strictEqual(claude.displayTitle, "Claude review");
+    assert.strictEqual(claude.sessionTitle, "Agent title");
+    assert.strictEqual(claude.cwd, "D:\\animation");
+    assert.strictEqual(codex.displayTitle, "Codex follow-up");
+    assert.strictEqual(codex.cwd, "d:/animation/");
+    assert.strictEqual(snapshot.hudLastTitle, "Claude review");
+  });
+
+  it("keeps session aliases scoped by host, agent, and session id", () => {
+    api.cleanup();
+    api = require("../src/state")(makeCtx({
+      getSessionAliases: () => ({
+        "remote-box|codex|remote": { title: "Remote Codex", updatedAt: 100 },
+        "local|claude-code|local": { title: "Local Claude", updatedAt: 100 },
+      }),
+    }));
+    api.sessions.set("local", rawSession("working", {
+      updatedAt: 1000,
+      cwd: "/home/me/project",
+      host: null,
+      agentId: "claude-code",
+    }));
+    api.sessions.set("remote", rawSession("working", {
+      updatedAt: 2000,
+      cwd: "/home/me/project",
+      host: "remote-box",
+      agentId: "codex",
+    }));
+    api.sessions.set("remote-other-agent", rawSession("working", {
+      updatedAt: 3000,
+      cwd: "/home/me/project",
+      host: "remote-box",
+      agentId: "claude-code",
+    }));
+
+    const snapshot = api.buildSessionSnapshot();
+    assert.strictEqual(
+      snapshot.sessions.find((s) => s.id === "local").displayTitle,
+      "Local Claude"
+    );
+    assert.strictEqual(
+      snapshot.sessions.find((s) => s.id === "remote").displayTitle,
+      "Remote Codex"
+    );
+    assert.strictEqual(
+      snapshot.sessions.find((s) => s.id === "remote-other-agent").displayTitle,
+      "project"
+    );
+  });
+
+  it("scopes Kiro default-session aliases by cwd", () => {
+    api.cleanup();
+    api = require("../src/state")(makeCtx({
+      getSessionAliases: () => ({
+        "local|kiro-cli|default|cwd:%2Frepo%2Fa": { title: "Kiro repo A", updatedAt: 100 },
+      }),
+    }));
+    api.sessions.set("default", rawSession("working", {
+      updatedAt: 1000,
+      cwd: "/repo/b",
+      agentId: "kiro-cli",
+    }));
+
+    const snapshot = api.buildSessionSnapshot();
+    assert.strictEqual(snapshot.sessions[0].displayTitle, "b");
+  });
+
+  it("falls back to legacy Kiro default-session aliases when no cwd-scoped alias exists", () => {
+    api.cleanup();
+    api = require("../src/state")(makeCtx({
+      getSessionAliases: () => ({
+        "local|kiro-cli|default": { title: "Legacy Kiro", updatedAt: 100 },
+      }),
+    }));
+    api.sessions.set("default", rawSession("working", {
+      updatedAt: 1000,
+      cwd: "/repo/a",
+      agentId: "kiro-cli",
+    }));
+
+    const snapshot = api.buildSessionSnapshot();
+    assert.strictEqual(snapshot.sessions[0].displayTitle, "Legacy Kiro");
+  });
+
+  it("prefers cwd-scoped Kiro default-session aliases over legacy aliases", () => {
+    api.cleanup();
+    api = require("../src/state")(makeCtx({
+      getSessionAliases: () => ({
+        "local|kiro-cli|default": { title: "Legacy Kiro", updatedAt: 100 },
+        "local|kiro-cli|default|cwd:%2Frepo%2Fa": { title: "Kiro repo A", updatedAt: 200 },
+      }),
+    }));
+    api.sessions.set("default", rawSession("working", {
+      updatedAt: 1000,
+      cwd: "/repo/a",
+      agentId: "kiro-cli",
+    }));
+
+    const snapshot = api.buildSessionSnapshot();
+    assert.strictEqual(snapshot.sessions[0].displayTitle, "Kiro repo A");
+  });
+
+  it("returns active session alias keys for all sessions including idle and headless", () => {
+    api.cleanup();
+    api = require("../src/state")(makeCtx());
+    api.sessions.set("idle-session", rawSession("idle", {
+      agentId: "codex",
+      host: null,
+    }));
+    api.sessions.set("headless-session", rawSession("working", {
+      agentId: "claude-code",
+      host: "remote-box",
+      headless: true,
+    }));
+    api.sessions.set("default", rawSession("working", {
+      agentId: "kiro-cli",
+      cwd: "/repo/a",
+    }));
+
+    assert.deepStrictEqual(
+      Array.from(api.getActiveSessionAliasKeys()).sort(),
+      [
+        "local|codex|idle-session",
+        "local|kiro-cli|default|cwd:%2Frepo%2Fa",
+        "remote-box|claude-code|headless-session",
+      ]
+    );
+  });
+});
+
+describe("emitSessionSnapshot diff", () => {
+  let api, broadcasts;
+
+  beforeEach(() => {
+    broadcasts = [];
+    api = require("../src/state")(makeCtx({
+      broadcastSessionSnapshot: (snapshot) => broadcasts.push(snapshot),
+    }));
+  });
+  afterEach(() => api.cleanup());
+
+  it("does not broadcast when only a single session updatedAt changes", () => {
+    api.sessions.set("s1", rawSession("working", {
+      updatedAt: 1000,
+      cwd: "/tmp/one",
+      agentId: "claude-code",
+      recentEvents: [{ event: "PreToolUse", state: "working", at: 900 }],
+    }));
+
+    assert.strictEqual(api.emitSessionSnapshot().changed, true);
+    assert.strictEqual(broadcasts.length, 1);
+
+    api.sessions.get("s1").updatedAt = 2000;
+    assert.strictEqual(api.emitSessionSnapshot().changed, false);
+    assert.strictEqual(broadcasts.length, 1);
+  });
+
+  it("broadcasts when updatedAt changes dashboard order and last session", () => {
+    api.sessions.set("s1", rawSession("working", {
+      updatedAt: 1000,
+      cwd: "/tmp/one",
+      agentId: "claude-code",
+    }));
+    api.sessions.set("s2", rawSession("working", {
+      updatedAt: 2000,
+      cwd: "/tmp/two",
+      agentId: "codex",
+    }));
+
+    assert.strictEqual(api.emitSessionSnapshot().changed, true);
+    assert.deepStrictEqual(broadcasts[broadcasts.length - 1].orderedIds, ["s2", "s1"]);
+
+    api.sessions.get("s1").updatedAt = 3000;
+    assert.strictEqual(api.emitSessionSnapshot().changed, true);
+    assert.deepStrictEqual(broadcasts[broadcasts.length - 1].orderedIds, ["s1", "s2"]);
+    assert.strictEqual(broadcasts[broadcasts.length - 1].lastSessionId, "s1");
+  });
+
+  it("broadcasts when visible fields change, including cwd and agentId", () => {
+    api.sessions.set("s1", rawSession("idle", {
+      updatedAt: 1000,
+      cwd: "/tmp/one",
+      agentId: "claude-code",
+      recentEvents: [{ event: "SessionStart", state: "idle", at: 900 }],
+    }));
+
+    assert.strictEqual(api.emitSessionSnapshot().changed, true);
+
+    api.sessions.get("s1").cwd = "/tmp/two";
+    assert.strictEqual(api.emitSessionSnapshot().changed, true);
+
+    api.sessions.get("s1").agentId = "codex";
+    assert.strictEqual(api.emitSessionSnapshot().changed, true);
+
+    api.sessions.get("s1").recentEvents.push({ event: "SessionStart", state: "idle", at: 1200 });
+    assert.strictEqual(api.emitSessionSnapshot().changed, true);
+
+    assert.strictEqual(broadcasts.length, 4);
   });
 });
 
@@ -970,119 +1327,6 @@ describe("deriveSessionBadge", () => {
 
   it("handles missing recentEvents field (defensive)", () => {
     assert.strictEqual(api.deriveSessionBadge({ state: "idle" }), "idle");
-  });
-});
-
-// ═════════════════════════════════════════════════════════════════════════════
-// Group 6c: Sessions submenu badge + i18n (C2)
-// ═════════════════════════════════════════════════════════════════════════════
-
-describe("buildSessionSubmenu badge + i18n", () => {
-  let api, ctx;
-  const pid = process.pid;
-
-  beforeEach(() => {
-    ctx = makeCtx({ processKill: makePidKill(new Set([pid])) });
-    api = require("../src/state")(ctx);
-  });
-  afterEach(() => api.cleanup());
-
-  function menuLabel() {
-    // First entry's label — assume single session in these tests so no
-    // host-grouping header rows.
-    return api.buildSessionSubmenu()[0].label;
-  }
-
-  it("shows English 'Running' when session is working (lang=en)", () => {
-    update(api, { id: "s1", state: "working", event: "PreToolUse", sourcePid: pid });
-    ctx.lang = "en";
-    assert.match(menuLabel(), /Running/);
-  });
-
-  it("shows Chinese '运行中' when lang=zh", () => {
-    update(api, { id: "s1", state: "working", event: "PreToolUse", sourcePid: pid });
-    ctx.lang = "zh";
-    assert.match(menuLabel(), /运行中/);
-  });
-
-  it("shows Korean '실행 중' when lang=ko", () => {
-    update(api, { id: "s1", state: "working", event: "PreToolUse", sourcePid: pid });
-    ctx.lang = "ko";
-    assert.match(menuLabel(), /실행 중/);
-  });
-
-  it("shows 'Done' after Stop event (en)", () => {
-    update(api, { id: "s1", state: "working", event: "PreToolUse", sourcePid: pid });
-    update(api, { id: "s1", state: "idle", event: "Stop", sourcePid: pid });
-    ctx.lang = "en";
-    assert.match(menuLabel(), /Done/);
-  });
-
-  it("shows '已完成' after Stop event (zh)", () => {
-    update(api, { id: "s1", state: "working", event: "PreToolUse", sourcePid: pid });
-    update(api, { id: "s1", state: "idle", event: "Stop", sourcePid: pid });
-    ctx.lang = "zh";
-    assert.match(menuLabel(), /已完成/);
-  });
-
-  it("shows 'Interrupted' after StopFailure (en)", () => {
-    update(api, { id: "s1", state: "working", event: "PreToolUse", sourcePid: pid });
-    update(api, { id: "s1", state: "idle", event: "StopFailure", sourcePid: pid });
-    ctx.lang = "en";
-    assert.match(menuLabel(), /Interrupted/);
-  });
-
-  it("shows '中断' after StopFailure (zh)", () => {
-    update(api, { id: "s1", state: "working", event: "PreToolUse", sourcePid: pid });
-    update(api, { id: "s1", state: "idle", event: "StopFailure", sourcePid: pid });
-    ctx.lang = "zh";
-    assert.match(menuLabel(), /中断/);
-  });
-
-  it("shows 'Idle' for fresh idle session with no notable events (en)", () => {
-    update(api, { id: "s1", state: "idle", event: "SessionStart", sourcePid: pid });
-    ctx.lang = "en";
-    assert.match(menuLabel(), /Idle/);
-  });
-
-  it("language switch changes label without needing a new state event", () => {
-    update(api, { id: "s1", state: "working", event: "PreToolUse", sourcePid: pid });
-    ctx.lang = "en";
-    const enLabel = menuLabel();
-    ctx.lang = "zh";
-    const zhLabel = menuLabel();
-    ctx.lang = "ko";
-    const koLabel = menuLabel();
-    assert.notStrictEqual(enLabel, zhLabel, "en vs zh should differ");
-    assert.notStrictEqual(zhLabel, koLabel, "zh vs ko should differ");
-    assert.match(enLabel, /Running/);
-    assert.match(zhLabel, /运行中/);
-    assert.match(koLabel, /실행 중/);
-  });
-
-  it("badge label falls back for idle sessions with only SessionStart", () => {
-    // SessionStart event shouldn't flip badge to done/interrupted
-    update(api, { id: "s1", state: "idle", event: "SessionStart", sourcePid: pid });
-    ctx.lang = "en";
-    const label = menuLabel();
-    assert.ok(!/Done|Interrupted/.test(label), `unexpected badge in: ${label}`);
-    assert.match(label, /Idle/);
-  });
-
-  it("sessionTitle still takes precedence over folder name when badge is present", () => {
-    update(api, {
-      id: "s1",
-      state: "working",
-      event: "PreToolUse",
-      sourcePid: pid,
-      cwd: "/tmp/project-abc",
-      sessionTitle: "Fix login bug",
-    });
-    ctx.lang = "en";
-    const label = menuLabel();
-    assert.ok(label.includes("Fix login bug"));
-    assert.ok(!label.includes("project-abc"));
-    assert.match(label, /Running/);
   });
 });
 

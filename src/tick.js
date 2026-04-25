@@ -16,6 +16,15 @@ let yawnDelayTimer = null;     // tracked setTimeout for yawn/idle-look transiti
 let idleWasActive = false;
 let lastEyeDx = 0, lastEyeDy = 0;
 let mainTickTimer = null;
+let mainTickActive = false;
+let nextMainTickAt = 0;
+
+const FAST_TICK_MS = 50;
+const BOOST_TICK_MS = 100;
+const IDLE_TICK_MS = 250;
+const REACTION_TICK_MS = 500;
+const BACKGROUND_TICK_MS = 750;
+const RECENT_MOUSE_MS = 2000;
 
 // ── Theme-driven state (refreshed on hot theme switch) ──
 let theme = null;
@@ -39,17 +48,65 @@ refreshTheme();
 // ── Unified main tick (cursor polling for eye tracking + sleep + mini peek) ──
 // Input routing is handled by hitWin — no setIgnoreMouseEvents toggling here.
 function startMainTick() {
-  if (mainTickTimer) return;
+  if (mainTickActive) return;
   // Render window: permanently click-through (set once, never toggle)
   ctx.win.setIgnoreMouseEvents(true);
   ctx.mouseOverPet = false;
 
-  mainTickTimer = setInterval(() => {
-    if (!ctx.win || ctx.win.isDestroyed()) return;
+  mainTickActive = true;
+  scheduleNextTick(0);
+}
+
+function getBaseTickDelay(idleNow, miniIdleNow) {
+  if (ctx.miniMode || miniIdleNow || ctx.dragLocked) return FAST_TICK_MS;
+  if (idleNow) {
+    if (Date.now() - mouseStillSince <= RECENT_MOUSE_MS) return BOOST_TICK_MS;
+    return IDLE_TICK_MS;
+  }
+  if (ctx.idlePaused) return REACTION_TICK_MS;
+  return BACKGROUND_TICK_MS;
+}
+
+function applyBoost(delay) {
+  const boostUntil = Number(ctx.forceEyeResendBoostUntil) || 0;
+  if (boostUntil > Date.now()) return Math.min(delay, BOOST_TICK_MS);
+  return delay;
+}
+
+function getNextTickDelay(idleNow, miniIdleNow) {
+  return applyBoost(getBaseTickDelay(idleNow, miniIdleNow));
+}
+
+function scheduleNextTick(delay) {
+  if (!mainTickActive) return;
+  if (mainTickTimer) clearTimeout(mainTickTimer);
+  const safeDelay = Math.max(0, Number.isFinite(delay) ? delay : BACKGROUND_TICK_MS);
+  nextMainTickAt = Date.now() + safeDelay;
+  mainTickTimer = setTimeout(runMainTick, safeDelay);
+}
+
+function scheduleSoon(maxDelay = BOOST_TICK_MS) {
+  if (!mainTickActive) return;
+  const safeDelay = Math.max(0, Number.isFinite(maxDelay) ? maxDelay : BOOST_TICK_MS);
+  if (!mainTickTimer || nextMainTickAt - Date.now() > safeDelay) {
+    scheduleNextTick(safeDelay);
+  }
+}
+
+function runMainTick() {
+  mainTickTimer = null;
+  nextMainTickAt = 0;
+  const delay = runMainTickOnce();
+  if (mainTickActive && !mainTickTimer) scheduleNextTick(delay);
+}
+
+function runMainTickOnce() {
+    if (!ctx.win || ctx.win.isDestroyed()) return BACKGROUND_TICK_MS;
 
     // ── Idle state edge detection (must run every tick for timer cleanup) ──
     const idleNow = ctx.currentState === "idle" && !ctx.idlePaused;
     const miniIdleNow = ctx.currentState === "mini-idle" && !ctx.idlePaused && !ctx.miniTransitioning;
+    const nextDelay = () => getNextTickDelay(idleNow, miniIdleNow);
 
     if (idleNow && !idleWasActive) {
       isMouseIdle = false;
@@ -73,15 +130,22 @@ function startMainTick() {
     // Skip expensive native IPC calls (getCursorScreenPoint, getBounds) when
     // cursor tracking is not needed — saves ~20 calls/sec to the OS layer.
     const needsCursorPoll = idleNow || miniIdleNow || ctx.miniMode;
-    if (!needsCursorPoll) return;
+    if (!needsCursorPoll) return nextDelay();
 
     const cursor = screen.getCursorScreenPoint();
+    const moved = lastCursorX !== null && (cursor.x !== lastCursorX || cursor.y !== lastCursorY);
+    lastCursorX = cursor.x;
+    lastCursorY = cursor.y;
 
     // ── Cursor-over-pet tracking (for mini peek + eye tracking, NOT for input routing) ──
-    const bounds = typeof ctx.getPetWindowBounds === "function"
-      ? ctx.getPetWindowBounds()
-      : ctx.win.getBounds();
-    if (!ctx.dragLocked) {
+    const needsBounds = ctx.miniMode || moved || ctx.forceEyeResend || miniIdleNow;
+    let bounds = null;
+    if (needsBounds) {
+      bounds = typeof ctx.getPetWindowBounds === "function"
+        ? ctx.getPetWindowBounds()
+        : ctx.win.getBounds();
+    }
+    if (bounds && !ctx.dragLocked) {
       const hit = ctx.getHitRectScreen(bounds);
       const over = cursor.x >= hit.left && cursor.x <= hit.right
                 && cursor.y >= hit.top  && cursor.y <= hit.bottom;
@@ -110,13 +174,9 @@ function startMainTick() {
       }
     }
 
-    if (!idleNow && !miniIdleNow) return;
+    if (!idleNow && !miniIdleNow) return nextDelay();
 
     // ── Below: idle or mini-idle logic ──
-    const moved = lastCursorX !== null && (cursor.x !== lastCursorX || cursor.y !== lastCursorY);
-    lastCursorX = cursor.x;
-    lastCursorY = cursor.y;
-
     // Normal idle: mouse idle detection + sleep sequence
     if (idleNow) {
       if (moved) {
@@ -151,7 +211,7 @@ function startMainTick() {
             if (ctx.currentState === "idle") ctx.setState("yawning");
           }, isMouseIdle ? 50 : 250);
         }
-        return;
+        return nextDelay();
       }
 
       // 20s no mouse movement → random idle animation (play once, then return to idle-follow)
@@ -175,21 +235,27 @@ function startMainTick() {
             setTimeout(() => { ctx.forceEyeResend = true; }, 200);
           }
         }, 250 + pick.duration);
-        return;
+        return nextDelay();
       }
     }
 
     const trackEyesNow = (idleNow && ctx.currentSvg === SVG_IDLE_FOLLOW && !isMouseIdle) || miniIdleNow;
-    if (!trackEyesNow) return;
+    if (!trackEyesNow) return nextDelay();
     if (ctx.eyePauseUntil) {
-      if (Date.now() < ctx.eyePauseUntil) return;
+      if (Date.now() < ctx.eyePauseUntil) return nextDelay();
       ctx.eyePauseUntil = null;
     }
-    if (!moved && !ctx.forceEyeResend) return;
+    if (!moved && !ctx.forceEyeResend) return nextDelay();
 
     // ── Eye position calculation (shared by idle and mini-idle) ──
     const skipDedup = ctx.forceEyeResend;
     ctx.forceEyeResend = false;
+
+    if (!bounds) {
+      bounds = typeof ctx.getPetWindowBounds === "function"
+        ? ctx.getPetWindowBounds()
+        : ctx.win.getBounds();
+    }
 
     const obj = ctx.getObjRect(bounds);
     const eyeScreenX = obj.x + obj.w * theme.eyeTracking.eyeRatioX;
@@ -217,7 +283,8 @@ function startMainTick() {
       lastEyeDy = eyeDy;
       ctx.sendToRenderer("eye-move", eyeDx, eyeDy);
     }
-  }, 50); // ~20fps — hit-test needs faster response than 67ms eye tracking
+
+    return nextDelay();
 }
 
 function resetIdleTimer() {
@@ -225,7 +292,9 @@ function resetIdleTimer() {
 }
 
 function cleanup() {
-  if (mainTickTimer) { clearInterval(mainTickTimer); mainTickTimer = null; }
+  mainTickActive = false;
+  if (mainTickTimer) { clearTimeout(mainTickTimer); mainTickTimer = null; }
+  nextMainTickAt = 0;
   if (idleLookReturnTimer) { clearTimeout(idleLookReturnTimer); idleLookReturnTimer = null; }
   if (yawnDelayTimer) { clearTimeout(yawnDelayTimer); yawnDelayTimer = null; }
   lastCursorX = null;
@@ -243,6 +312,6 @@ Object.defineProperty(startMainTick, '_mouseStillSince', {
   get() { return mouseStillSince; },
 });
 
-return { startMainTick, resetIdleTimer, cleanup, refreshTheme, get _mouseStillSince() { return mouseStillSince; } };
+return { startMainTick, resetIdleTimer, cleanup, refreshTheme, scheduleSoon, get _mouseStillSince() { return mouseStillSince; } };
 
 };

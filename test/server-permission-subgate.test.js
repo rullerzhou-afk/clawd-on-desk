@@ -5,9 +5,10 @@ const assert = require("node:assert");
 
 const { shouldBypassCCBubble, shouldBypassOpencodeBubble } = require("../src/server").__test;
 
-function makeCtx({ enabled = true } = {}) {
+function makeCtx({ enabled = true, hideBubbles = false } = {}) {
   return {
     isAgentPermissionsEnabled: () => enabled,
+    hideBubbles,
   };
 }
 
@@ -34,6 +35,22 @@ describe("shouldBypassCCBubble", () => {
 
   it("missing isAgentPermissionsEnabled → fail-open (don't suppress)", () => {
     assert.strictEqual(shouldBypassCCBubble({}, "Bash", "claude-code"), false);
+  });
+
+  it("bypasses when hideBubbles is on, even if the per-agent gate is on", () => {
+    const ctx = makeCtx({ enabled: true, hideBubbles: true });
+    assert.strictEqual(shouldBypassCCBubble(ctx, "Bash", "claude-code"), true);
+    assert.strictEqual(shouldBypassCCBubble(ctx, "Edit", "codebuddy"), true);
+  });
+
+  it("hideBubbles does NOT bypass ExitPlanMode or AskUserQuestion — those would hang CC", () => {
+    const ctx = makeCtx({ enabled: true, hideBubbles: true });
+    assert.strictEqual(shouldBypassCCBubble(ctx, "ExitPlanMode", "claude-code"), false);
+    assert.strictEqual(shouldBypassCCBubble(ctx, "AskUserQuestion", "claude-code"), false);
+  });
+
+  it("hideBubbles works without isAgentPermissionsEnabled helper present", () => {
+    assert.strictEqual(shouldBypassCCBubble({ hideBubbles: true }, "Bash", "claude-code"), true);
   });
 });
 

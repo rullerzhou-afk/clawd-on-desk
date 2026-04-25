@@ -26,6 +26,14 @@ let miniTransitionTimer = null;
 let peekAnimTimer = null;
 let isAnimating = false;
 
+function syncSessionHudVisibility() {
+  if (typeof ctx.syncSessionHudVisibility === "function") ctx.syncSessionHudVisibility();
+}
+
+function repositionSessionHud() {
+  if (typeof ctx.repositionSessionHud === "function") ctx.repositionSessionHud();
+}
+
 function refreshTheme() {
   MINI_OFFSET_RATIO = ctx.theme.miniMode.offsetRatio;
 }
@@ -80,6 +88,7 @@ function animateWindowX(targetX, durationMs, onDone) {
       return;
     }
     ctx.syncHitWin();
+    repositionSessionHud();
     // Throttle bubble reposition to every 3rd frame (~20fps) — visually identical, less overhead
     if (ctx.bubbleFollowPet && ctx.pendingPermissions.length && (++frameCount % 3 === 0 || t >= 1)) ctx.repositionBubbles();
     if (t < 1) {
@@ -132,6 +141,7 @@ function animateWindowParabola(targetX, targetY, durationMs, onDone) {
       return;
     }
     ctx.syncHitWin();
+    repositionSessionHud();
     // Throttle bubble reposition to every 3rd frame (~20fps) — visually identical, less overhead
     if (ctx.bubbleFollowPet && ctx.pendingPermissions.length && (++frameCount % 3 === 0 || t >= 1)) ctx.repositionBubbles();
     if (t < 1) {
@@ -259,6 +269,7 @@ function enterMiniMode(wa, viaMenu, edge) {
   miniTransitioning = true;
   ctx.buildContextMenu();
   ctx.buildTrayMenu();
+  syncSessionHudVisibility();
 
   const enterSvgState = ctx.doNotDisturb ? "mini-enter-sleep" : "mini-enter";
 
@@ -281,6 +292,7 @@ function enterMiniMode(wa, viaMenu, edge) {
         miniSnap = { y: bounds.y, width: size.width, height: size.height };
         ctx.win.setBounds({ x: currentMiniX, y: miniSnap.y, width: miniSnap.width, height: miniSnap.height });
         ctx.syncHitWin();
+        syncSessionHudVisibility();
         finishMiniEntry(enterDurationMs);
         return;
       }
@@ -289,6 +301,7 @@ function enterMiniMode(wa, viaMenu, edge) {
         ctx.win.setBounds({ x: currentMiniX, y: miniSnap.y, width: miniSnap.width, height: miniSnap.height });
         miniTransitionTimer = null;
         ctx.syncHitWin();
+        syncSessionHudVisibility();
         finishMiniEntry(enterDurationMs);
       }, MINI_ENTER_PRELOAD_MS);
     });
@@ -344,6 +357,7 @@ function exitMiniMode() {
     ctx.sendToHitWin("hit-state-sync", { miniMode: false });
     ctx.buildContextMenu();
     ctx.buildTrayMenu();
+    syncSessionHudVisibility();
     if (ctx.doNotDisturb) {
       ctx.doNotDisturb = false;
       ctx.sendToRenderer("dnd-change", false);
@@ -377,6 +391,7 @@ function enterMiniViaMenu() {
   miniEdge = edge;
 
   miniTransitioning = true;
+  syncSessionHudVisibility();
 
   // Send edge before crabwalk so CSS flip applies before animation starts
   ctx.sendToRenderer("mini-mode-change", true, edge);
@@ -412,6 +427,7 @@ function handleDisplayChange() {
   const clampedY = Math.max(wa.y, Math.min(snapY, wa.y + wa.height - size.height));
   miniSnap = { y: clampedY, width: size.width, height: size.height };
   ctx.win.setBounds({ x: currentMiniX, y: clampedY, width: size.width, height: size.height });
+  syncSessionHudVisibility();
 }
 
 function handleResize(sizeKey) {
@@ -423,6 +439,7 @@ function handleResize(sizeKey) {
   const clampedY = Math.max(wa.y, Math.min(y, wa.y + wa.height - size.height));
   miniSnap = { y: clampedY, width: size.width, height: size.height };
   ctx.win.setBounds({ x: currentMiniX, y: clampedY, width: size.width, height: size.height });
+  syncSessionHudVisibility();
   return true;
 }
 

@@ -18,6 +18,26 @@
 | WorktreeCreate | 搬运 | 搬箱子 | <img src="../assets/gif/clawd-carrying.gif" width="160"> | <img src="../assets/gif/calico-carrying.gif" width="130"> |
 | 60 秒无事件 | 睡觉 | 睡眠 | <img src="../assets/gif/clawd-sleeping.gif" width="160"> | <img src="../assets/gif/calico-sleeping.gif" width="130"> |
 
+## Kimi Code CLI（Kimi-CLI）Hook 事件
+
+Kimi Code CLI（Kimi-CLI）现已采用 hook-only 集成（`~/.kimi/config.toml`），下面这 13 个 hook 事件会映射到 Clawd 的共享状态：
+
+| Kimi Hook Event | 状态 |
+|---|---|
+| SessionStart | idle |
+| SessionEnd | sleeping |
+| UserPromptSubmit | thinking |
+| PreToolUse | 默认映射到 working。只有在 payload 中出现明确审批信号（`permission_required` / `requires_approval` / `waiting_for_approval` / `is_permission_request`）时，才会切到 permission 类动画。持久化模式开关：`CLAWD_KIMI_PERMISSION_MODE=explicit`（默认，仅显式信号触发 notification）或 `CLAWD_KIMI_PERMISSION_MODE=suspect`（对 gated tool 使用延迟启发式判断）。安装脚本（`npm run install:kimi-hooks` 以及启动时自动同步）会把这个值写进 `~/.kimi/config.toml` 中每个 Kimi hook 的 `command` 字段，所以重启 Clawd 后仍会保留。其他可选开关：`CLAWD_KIMI_PERMISSION_IMMEDIATE=1` 可对权限工具强制立即映射；`CLAWD_KIMI_PERMISSION_SUSPECT=1`（旧别名）只对当前进程开启 suspect mode；`CLAWD_KIMI_PERMISSION_SUSPECT_MS=<ms>` 可调 suspect 窗口；`CLAWD_KIMI_DISABLE_PRETOOL_PERMISSION=1` 会在开启可选模式时仍保持 explicit-only 行为。 |
+| PostToolUse | working |
+| PostToolUseFailure | error |
+| Stop | attention |
+| StopFailure | error |
+| SubagentStart | juggling |
+| SubagentStop | working |
+| PreCompact | sweeping |
+| PostCompact | attention |
+| Notification | notification |
+
 ## 极简模式
 
 拖到屏幕右边缘（或右键 →"极简模式"）进入——半身露出在屏幕边缘，悬停时探出来。

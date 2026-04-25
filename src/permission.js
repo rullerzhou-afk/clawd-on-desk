@@ -102,6 +102,7 @@ function computeBubbleStackLayout({
   gap,
   workArea: wa,
   hitRect,
+  hudReservedOffset = 0,
 }) {
   const N = bubbleHeights.length;
   const bounds = new Array(N);
@@ -128,9 +129,10 @@ function computeBubbleStackLayout({
     // 1. Below pet — enough vertical room to hang the stack from the hitbox.
     //    Iterate oldest→newest growing downward so the visual order matches
     //    the side/corner branches' upward-stacking loop below.
-    if (wa.y + wa.height - hitBottom >= totalH) {
+    const reserve = Math.max(0, Number(hudReservedOffset) || 0);
+    if (wa.y + wa.height - hitBottom >= reserve + totalH) {
       x = Math.max(wa.x, Math.min(hitCx - Math.round(bw / 2), wa.x + wa.width - bw));
-      let yTop = hitBottom;
+      let yTop = hitBottom + reserve;
       for (let i = 0; i < N; i++) {
         const bh = bubbleHeights[i];
         bounds[i] = { x, y: yTop, width: bw, height: bh };
@@ -303,6 +305,12 @@ function syncPermissionShortcuts() {
   });
 }
 
+function repositionDependentBubbles() {
+  if (typeof ctx.repositionUpdateBubble === "function") {
+    try { ctx.repositionUpdateBubble(); } catch {}
+  }
+}
+
 function hotkeyResolve(behavior, message) {
   const targets = getActionablePermissions();
   if (!targets.length) return;
@@ -356,6 +364,7 @@ function repositionBubbles() {
     gap,
     workArea: wa,
     hitRect,
+    hudReservedOffset: typeof ctx.getHudReservedOffset === "function" ? ctx.getHudReservedOffset() : 0,
   });
 
   for (let i = 0; i < pendingPermissions.length; i++) {
@@ -433,6 +442,7 @@ function showPermissionBubble(permEntry) {
 
   repositionBubbles();
   bub.showInactive();
+  repositionDependentBubbles();
   // Linux WMs may reset skipTaskbar after showInactive — re-apply explicitly
   if (isLinux) bub.setSkipTaskbar(true);
   // macOS: constructing/raising a topmost panel too early can still activate
@@ -487,6 +497,7 @@ function resolvePermissionEntry(permEntry, behavior, message) {
 
   // Reposition remaining bubbles to fill the gap
   repositionBubbles();
+  repositionDependentBubbles();
   syncPermissionShortcuts();
 
   // opencode: decisions go back via the plugin's reverse bridge (Bun.serve
@@ -628,6 +639,7 @@ function handleBubbleHeight(event, height) {
   if (perm && typeof height === "number" && height > 0) {
     perm.measuredHeight = Math.ceil(height);
     repositionBubbles();
+    repositionDependentBubbles();
   }
 }
 
@@ -687,6 +699,7 @@ function handleDecide(event, behavior) {
       perm.hideTimer = setTimeout(() => { if (!bub.isDestroyed()) bub.destroy(); }, 250);
     }
     repositionBubbles();
+    repositionDependentBubbles();
     syncPermissionShortcuts();
     ctx.focusTerminalForSession(perm.sessionId);
   } else {
@@ -751,6 +764,7 @@ function dismissPassiveNotify(permEntry) {
     setTimeout(() => { if (!bub.isDestroyed()) bub.destroy(); }, 250);
   }
   repositionBubbles();
+  repositionDependentBubbles();
   syncPermissionShortcuts();
 }
 
@@ -788,6 +802,7 @@ function dismissPermissionsByAgent(agentId) {
     }
   }
   repositionBubbles();
+  repositionDependentBubbles();
   syncPermissionShortcuts();
   permLog(`dismissPermissionsByAgent(${agentId}): cleared ${toDismiss.length}`);
   return toDismiss.length;

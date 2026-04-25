@@ -45,7 +45,7 @@ Release-prep pass that tightened external input surfaces — especially relevant
 
 ### Docs & Legal
 
-- **Artwork license separation** — code remains MIT, character artwork under All Rights Reserved with no-commercial-use notice
+- **Artwork license separation** — source code license and character artwork rights are documented separately, with artwork under All Rights Reserved and a no-commercial-use notice
 - **Docs reorganization and localization** — docs are now split into clearer category subfolders, setup/architecture notes were refreshed, and Korean documentation coverage was added
 - **Chinese README synced with setup docs** (#82, thanks @YOIMIYA66)
 

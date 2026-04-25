@@ -416,17 +416,17 @@ function initUpdater(ctx, deps = {}) {
         remoteVersion = remoteHead.slice(0, 8);
       }
 
+      if (!manual && isSilentMode()) {
+        hideBubble();
+        updateStatus = "idle";
+        manualUpdateCheck = false;
+        dismissToResolvedState();
+        return;
+      }
+
       updateStatus = "available";
       setOverlay("available");
       rebuildMenus();
-
-      if (!manual && isSilentMode()) {
-        hideBubble();
-        dismissToResolvedState();
-        updateStatus = "idle";
-        manualUpdateCheck = false;
-        return;
-      }
 
       await promptAvailableUpdate({
         mode: "git",
@@ -475,15 +475,17 @@ function initUpdater(ctx, deps = {}) {
     autoUpdater.on("update-available", async (info) => {
       const wasManual = manualUpdateCheck;
       manualUpdateCheck = false;
-      updateStatus = "available";
-      setOverlay("available");
-      rebuildMenus();
 
       if (!wasManual && isSilentMode()) {
+        hideBubble();
         updateStatus = "idle";
         dismissToResolvedState();
         return;
       }
+
+      updateStatus = "available";
+      setOverlay("available");
+      rebuildMenus();
 
       await promptAvailableUpdate({
         mode: isMac ? "mac" : "win",

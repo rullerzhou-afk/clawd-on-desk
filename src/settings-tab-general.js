@@ -5,13 +5,13 @@
     "size",
     "soundMuted",
     "soundVolume",
+    "sessionHudEnabled",
     "allowEdgePinning",
     "keepSizeAcrossDisplays",
     "openAtLogin",
     "autoStartWithClaude",
     "bubbleFollowPet",
     "hideBubbles",
-    "showSessionId",
   ]);
 
   let state = null;
@@ -36,6 +36,12 @@
     parent.appendChild(helpers.buildSection(t("sectionAppearance"), [
       buildLanguageRow(),
       buildSizeSliderRow(),
+      helpers.buildSwitchRow({
+        key: "sessionHudEnabled",
+        labelKey: "rowSessionHud",
+        descKey: "rowSessionHudDesc",
+      }),
+      buildDashboardRow(),
       helpers.buildSwitchRow({
         key: "soundMuted",
         labelKey: "rowSound",
@@ -93,11 +99,6 @@
         labelKey: "rowHideBubbles",
         descKey: "rowHideBubblesDesc",
       }),
-      helpers.buildSwitchRow({
-        key: "showSessionId",
-        labelKey: "rowShowSessionId",
-        descKey: "rowShowSessionIdDesc",
-      }),
     ]));
   }
 
@@ -124,6 +125,29 @@
       if (!result || !result.confirmed) return { status: "ok", noop: true };
       return window.settingsAPI.command("uninstallHooks");
     });
+  }
+
+  function buildDashboardRow() {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML =
+      `<div class="row-text">` +
+        `<span class="row-label"></span>` +
+        `<span class="row-desc"></span>` +
+      `</div>` +
+      `<div class="row-control">` +
+        `<button type="button" class="soft-btn accent"></button>` +
+      `</div>`;
+    row.querySelector(".row-label").textContent = t("rowSessionDashboard");
+    row.querySelector(".row-desc").textContent = t("rowSessionDashboardDesc");
+    const btn = row.querySelector("button");
+    btn.textContent = t("actionOpenDashboard");
+    btn.addEventListener("click", () => {
+      if (window.settingsAPI && typeof window.settingsAPI.openDashboard === "function") {
+        window.settingsAPI.openDashboard();
+      }
+    });
+    return row;
   }
 
   function buildLanguageRow() {

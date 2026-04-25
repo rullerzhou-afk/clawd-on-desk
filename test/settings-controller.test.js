@@ -370,6 +370,33 @@ describe("applyCommand", () => {
     assert.strictEqual(ctrl.get("manageClaudeHooksAutomatically"), false);
     assert.strictEqual(ctrl.get("autoStartWithClaude"), true);
   });
+
+  it("applies setSessionAlias through the default command registry and persists it", async () => {
+    const p = makeTempPath();
+    const ctrl = createSettingsController({
+      prefsPath: p,
+      injectedDeps: {
+        now: () => 1000,
+        getActiveSessionAliasKeys: () => new Set(["local|codex|s1"]),
+      },
+    });
+
+    const r = await ctrl.applyCommand("setSessionAlias", {
+      host: null,
+      agentId: "codex",
+      sessionId: "s1",
+      alias: "Codex main",
+    });
+
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(ctrl.get("sessionAliases"), {
+      "local|codex|s1": { title: "Codex main", updatedAt: 1000 },
+    });
+    const onDisk = JSON.parse(fs.readFileSync(p, "utf8"));
+    assert.deepStrictEqual(onDisk.sessionAliases, {
+      "local|codex|s1": { title: "Codex main", updatedAt: 1000 },
+    });
+  });
 });
 
 describe("subscribe / subscribeKey", () => {
