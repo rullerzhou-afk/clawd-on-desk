@@ -20,36 +20,54 @@ function mkSession(id, overrides = {}) {
 }
 
 describe("session HUD geometry", () => {
-  it("positions below the pet hitbox and clamps horizontally", () => {
+  it("positions the visible HUD card below the pet hitbox with a fixed gap", () => {
     const result = computeSessionHudBounds({
       hitRect: { left: 10, top: 80, right: 90, bottom: 160 },
       workArea: { x: 0, y: 0, width: 800, height: 600 },
     });
 
-    assert.deepStrictEqual(result, {
-      bounds: {
-        x: 0,
-        y: 160 + constants.HUD_PET_GAP,
-        width: constants.HUD_WIDTH,
-        height: constants.HUD_HEIGHT,
-      },
-      flippedAbove: false,
+    assert.deepStrictEqual(result.contentBounds, {
+      x: 0,
+      y: 160 + constants.HUD_PET_GAP,
+      width: constants.HUD_WIDTH,
+      height: constants.HUD_HEIGHT,
     });
+    assert.deepStrictEqual(result.bounds, {
+      x: -constants.HUD_WINDOW_PADDING,
+      y: 160 + constants.HUD_PET_GAP - constants.HUD_WINDOW_PADDING,
+      width: constants.HUD_WIDTH + constants.HUD_WINDOW_PADDING * 2,
+      height: constants.HUD_HEIGHT + constants.HUD_WINDOW_PADDING * 2,
+    });
+    assert.strictEqual(result.flippedAbove, false);
   });
 
-  it("flips above the hitbox when there is no room below", () => {
+  it("keeps the visible HUD card above the pet hitbox with a fixed gap when flipped", () => {
     const result = computeSessionHudBounds({
       hitRect: { left: 320, top: 520, right: 400, bottom: 590 },
       workArea: { x: 0, y: 0, width: 800, height: 620 },
     });
 
     assert.strictEqual(result.flippedAbove, true);
-    assert.deepStrictEqual(result.bounds, {
+    assert.deepStrictEqual(result.contentBounds, {
       x: 240,
       y: 520 - constants.HUD_HEIGHT - constants.HUD_PET_GAP,
       width: constants.HUD_WIDTH,
       height: constants.HUD_HEIGHT,
     });
+    assert.deepStrictEqual(result.bounds, {
+      x: 240 - constants.HUD_WINDOW_PADDING,
+      y: 520 - constants.HUD_HEIGHT - constants.HUD_PET_GAP - constants.HUD_WINDOW_PADDING,
+      width: constants.HUD_WIDTH + constants.HUD_WINDOW_PADDING * 2,
+      height: constants.HUD_HEIGHT + constants.HUD_WINDOW_PADDING * 2,
+    });
+  });
+
+  it("keeps the reserved offset aligned to the visible card height plus the lower shadow pad", () => {
+    const expected = constants.HUD_PET_GAP
+      + constants.HUD_HEIGHT
+      + constants.HUD_WINDOW_PADDING
+      + constants.BUBBLE_GAP;
+    assert.strictEqual(sessionHud.__test.computeHudReservedOffset(constants.HUD_HEIGHT), expected);
   });
 });
 

@@ -12,6 +12,7 @@ const HUD_WIDTH = 240;
 const HUD_ROW_HEIGHT = 28;
 const HUD_MAX_EXPANDED_ROWS = 3;
 const HUD_HEIGHT = HUD_ROW_HEIGHT + HUD_BORDER_Y;
+const HUD_WINDOW_PADDING = 6;
 const HUD_PET_GAP = 4;
 const BUBBLE_GAP = 6;
 const EDGE_MARGIN = 8;
@@ -50,21 +51,35 @@ function computeHudHeight(rowCount) {
   return rowCount * HUD_ROW_HEIGHT + HUD_BORDER_Y;
 }
 
+function computeHudReservedOffset(cardHeight) {
+  const h = Number.isFinite(cardHeight) && cardHeight > 0 ? cardHeight : HUD_ROW_HEIGHT;
+  return HUD_PET_GAP + h + HUD_WINDOW_PADDING + BUBBLE_GAP;
+}
+
 function computeSessionHudBounds({ hitRect, workArea, width = HUD_WIDTH, height = HUD_HEIGHT }) {
   if (!hitRect || !workArea) return null;
   const hitTop = Math.round(hitRect.top);
   const hitBottom = Math.round(hitRect.bottom);
   const hitCx = Math.round((hitRect.left + hitRect.right) / 2);
 
+  const outerWidth = width + HUD_WINDOW_PADDING * 2;
+  const outerHeight = height + HUD_WINDOW_PADDING * 2;
   const minX = Math.round(workArea.x);
   const maxX = Math.round(workArea.x + workArea.width - width);
-  const x = clampToWorkArea(hitCx - Math.round(width / 2), minX, maxX);
+  const cardX = clampToWorkArea(hitCx - Math.round(width / 2), minX, maxX);
 
   const belowY = hitBottom + HUD_PET_GAP;
   const belowMax = workArea.y + workArea.height - EDGE_MARGIN;
   if (belowY + height <= belowMax) {
+    const contentBounds = { x: cardX, y: belowY, width, height };
     return {
-      bounds: { x, y: belowY, width, height },
+      bounds: {
+        x: contentBounds.x - HUD_WINDOW_PADDING,
+        y: contentBounds.y - HUD_WINDOW_PADDING,
+        width: outerWidth,
+        height: outerHeight,
+      },
+      contentBounds,
       flippedAbove: false,
     };
   }
@@ -72,13 +87,20 @@ function computeSessionHudBounds({ hitRect, workArea, width = HUD_WIDTH, height 
   const minY = Math.round(workArea.y + EDGE_MARGIN);
   const maxY = Math.round(workArea.y + workArea.height - EDGE_MARGIN - height);
   const aboveY = hitTop - height - HUD_PET_GAP;
+  const contentBounds = {
+    x: cardX,
+    y: clampToWorkArea(aboveY, minY, maxY),
+    width,
+    height,
+  };
   return {
     bounds: {
-      x,
-      y: clampToWorkArea(aboveY, minY, maxY),
-      width,
-      height,
+      x: contentBounds.x - HUD_WINDOW_PADDING,
+      y: contentBounds.y - HUD_WINDOW_PADDING,
+      width: outerWidth,
+      height: outerHeight,
     },
+    contentBounds,
     flippedAbove: true,
   };
 }
@@ -102,7 +124,7 @@ module.exports = function initSessionHud(ctx) {
   let latestSnapshot = null;
   let hudFlippedAbove = false;
   let lastReservedOffset = 0;
-  let lastHudHeight = HUD_ROW_HEIGHT;
+  let lastHudCardHeight = HUD_ROW_HEIGHT;
 
   function getCurrentSnapshot() {
     return typeof ctx.getSessionSnapshot === "function"
@@ -145,8 +167,8 @@ module.exports = function initSessionHud(ctx) {
     hudFlippedAbove = false;
     hudWindow = new BrowserWindow({
       parent: ctx.win,
-      width: HUD_WIDTH,
-      height: HUD_HEIGHT,
+      width: HUD_WIDTH + HUD_WINDOW_PADDING * 2,
+      height: HUD_HEIGHT + HUD_WINDOW_PADDING * 2,
       show: false,
       frame: false,
       transparent: true,
@@ -208,7 +230,7 @@ module.exports = function initSessionHud(ctx) {
       : { x: 0, y: 0, width: 1280, height: 800 };
     const layout = computeHudLayout(snapshot);
     const height = computeHudHeight(layout.rowCount);
-    lastHudHeight = height;
+    lastHudCardHeight = height;
     return computeSessionHudBounds({ hitRect, workArea, height });
   }
 
@@ -259,8 +281,7 @@ module.exports = function initSessionHud(ctx) {
   function readHudReservedOffset() {
     if (!hudWindow || hudWindow.isDestroyed() || !hudWindow.isVisible()) return 0;
     if (hudFlippedAbove) return 0;
-    const h = Number.isFinite(lastHudHeight) && lastHudHeight > 0 ? lastHudHeight : HUD_ROW_HEIGHT;
-    return HUD_PET_GAP + h + BUBBLE_GAP;
+    return computeHudReservedOffset(lastHudCardHeight);
   }
 
   function notifyReservedOffsetIfChanged() {
@@ -275,7 +296,7 @@ module.exports = function initSessionHud(ctx) {
     hudWindow = null;
     didFinishLoad = false;
     hudFlippedAbove = false;
-    lastHudHeight = HUD_ROW_HEIGHT;
+    lastHudCardHeight = HUD_ROW_HEIGHT;
     notifyReservedOffsetIfChanged();
   }
 
@@ -295,12 +316,14 @@ module.exports.__test = {
   computeSessionHudBounds,
   computeHudLayout,
   computeHudHeight,
+  computeHudReservedOffset,
   isHudSession,
   constants: {
     HUD_WIDTH,
     HUD_HEIGHT,
     HUD_ROW_HEIGHT,
     HUD_MAX_EXPANDED_ROWS,
+    HUD_WINDOW_PADDING,
     HUD_PET_GAP,
     BUBBLE_GAP,
     EDGE_MARGIN,
