@@ -8,6 +8,7 @@ let pendingNext = null;
 const LOW_POWER_IDLE_PAUSE_MS = 5000;
 const LOW_POWER_PAUSE_STYLE_ID = "clawd-low-power-pause-svg";
 const LOW_POWER_PAUSE_STATES = new Set(["idle", "mini-idle", "dozing"]);
+const LOW_POWER_BOUNDARY_EPSILON_MS = 80;
 let lowPowerIdleMode = false;
 let lowPowerIdlePauseTimer = null;
 let lowPowerSvgPaused = false;
@@ -99,10 +100,72 @@ function shouldPauseForLowPower() {
   return lowPowerIdleMode && LOW_POWER_PAUSE_STATES.has(currentState);
 }
 
-function pauseCurrentSvgForLowPower() {
+function getLowPowerAnimationBoundaryDelayMs(root) {
+  if (!root || typeof root.getAnimations !== "function") return 0;
+  let animations = [];
+  try {
+    animations = root.getAnimations({ subtree: true });
+  } catch {
+    return 0;
+  }
+
+  let delayMs = 0;
+  for (const animation of animations) {
+    if (!animation || animation.playState === "paused" || animation.playState === "finished") continue;
+    const effect = animation.effect;
+    if (!effect || typeof effect.getComputedTiming !== "function") continue;
+
+    let timing = null;
+    try {
+      timing = effect.getComputedTiming();
+    } catch {
+      continue;
+    }
+    if (!timing) continue;
+
+    const localTime = Number.isFinite(timing.localTime)
+      ? timing.localTime
+      : (Number.isFinite(animation.currentTime) ? animation.currentTime : null);
+    if (!Number.isFinite(localTime) || localTime < 0) continue;
+
+    const activeDuration = Number.isFinite(timing.activeDuration)
+      ? timing.activeDuration
+      : (Number.isFinite(timing.endTime) ? timing.endTime : null);
+    if (Number.isFinite(activeDuration) && activeDuration > localTime) {
+      delayMs = Math.max(delayMs, activeDuration - localTime);
+      continue;
+    }
+
+    const duration = Number.isFinite(timing.duration) ? timing.duration : null;
+    if (!Number.isFinite(duration) || duration <= 0) continue;
+
+    let direction = timing.direction || "";
+    try {
+      const rawTiming = typeof effect.getTiming === "function" ? effect.getTiming() : null;
+      if (rawTiming && rawTiming.direction) direction = rawTiming.direction;
+    } catch {}
+    const loopDuration = duration * ((direction === "alternate" || direction === "alternate-reverse") ? 2 : 1);
+    const progress = localTime % loopDuration;
+    const remaining = progress <= LOW_POWER_BOUNDARY_EPSILON_MS ? 0 : loopDuration - progress;
+    delayMs = Math.max(delayMs, remaining);
+  }
+  return delayMs > LOW_POWER_BOUNDARY_EPSILON_MS ? Math.ceil(delayMs) : 0;
+}
+
+function pauseCurrentSvgForLowPower({ waitForBoundary = false } = {}) {
   if (!shouldPauseForLowPower()) return;
   const root = getCurrentSvgRoot();
   if (!root) return;
+  if (waitForBoundary) {
+    const delayMs = getLowPowerAnimationBoundaryDelayMs(root);
+    if (delayMs > 0) {
+      lowPowerIdlePauseTimer = setTimeout(() => {
+        lowPowerIdlePauseTimer = null;
+        pauseCurrentSvgForLowPower();
+      }, delayMs);
+      return;
+    }
+  }
   const svgDoc = root.ownerDocument;
   if (svgDoc && !svgDoc.getElementById(LOW_POWER_PAUSE_STYLE_ID)) {
     const style = svgDoc.createElementNS("http://www.w3.org/2000/svg", "style");
@@ -149,7 +212,7 @@ function scheduleLowPowerIdlePause() {
   }
   lowPowerIdlePauseTimer = setTimeout(() => {
     lowPowerIdlePauseTimer = null;
-    pauseCurrentSvgForLowPower();
+    pauseCurrentSvgForLowPower({ waitForBoundary: true });
   }, LOW_POWER_IDLE_PAUSE_MS);
 }
 
