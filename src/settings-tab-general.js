@@ -15,6 +15,11 @@
     "notificationBubbleAutoCloseSeconds",
     "updateBubbleAutoCloseSeconds",
   ]);
+  const BUBBLE_POLICY_KEYS = new Set([
+    "permissionBubblesEnabled",
+    "notificationBubbleAutoCloseSeconds",
+    "updateBubbleAutoCloseSeconds",
+  ]);
 
   let state = null;
   let readers = null;
@@ -189,47 +194,64 @@
   }
 
   function buildBubblePolicyRow() {
+    const summaryControl = buildBubblePolicySummary();
+    state.mountedControls.bubblePolicySummary = summaryControl;
     return helpers.buildCollapsibleGroup({
       id: "general:bubble-policy",
       title: t("rowBubblePolicy"),
       desc: t("rowBubblePolicyDesc"),
-      summary: buildBubblePolicySummary(),
+      summary: summaryControl.element,
       defaultCollapsed: true,
       children: [buildBubblePolicyList()],
       className: "bubble-policy-collapsible",
     });
   }
 
+  function readBubblePolicySnapshot() {
+    const aggregateHidden = !!(state.snapshot && state.snapshot.hideBubbles === true);
+    return {
+      permissionOn: !aggregateHidden && !!(state.snapshot && state.snapshot.permissionBubblesEnabled !== false),
+      notificationSeconds: aggregateHidden ? 0 : Number(state.snapshot && state.snapshot.notificationBubbleAutoCloseSeconds) || 0,
+      updateSeconds: aggregateHidden ? 0 : Number(state.snapshot && state.snapshot.updateBubbleAutoCloseSeconds) || 0,
+    };
+  }
+
   function buildBubblePolicySummary() {
     const wrap = document.createElement("div");
-    const aggregateHidden = !!(state.snapshot && state.snapshot.hideBubbles === true);
-    const permissionOn = !aggregateHidden && !!(state.snapshot && state.snapshot.permissionBubblesEnabled !== false);
-    const notificationSeconds = aggregateHidden ? 0 : Number(state.snapshot && state.snapshot.notificationBubbleAutoCloseSeconds) || 0;
-    const updateSeconds = aggregateHidden ? 0 : Number(state.snapshot && state.snapshot.updateBubbleAutoCloseSeconds) || 0;
-    const items = [
+
+    function syncFromSnapshot() {
+      wrap.innerHTML = "";
+      const snapshot = readBubblePolicySnapshot();
+      const items = [
       {
         text: t("bubblePolicySummaryPermission").replace(
           "{state}",
-          permissionOn ? t("bubblePolicySummaryOn") : t("bubblePolicySummaryOff")
+          snapshot.permissionOn ? t("bubblePolicySummaryOn") : t("bubblePolicySummaryOff")
         ),
-        accent: permissionOn,
+        accent: snapshot.permissionOn,
       },
       {
-        text: t("bubblePolicySummaryNotification").replace("{seconds}", String(notificationSeconds)),
-        accent: notificationSeconds > 0,
+        text: t("bubblePolicySummaryNotification").replace("{seconds}", String(snapshot.notificationSeconds)),
+        accent: snapshot.notificationSeconds > 0,
       },
       {
-        text: t("bubblePolicySummaryUpdate").replace("{seconds}", String(updateSeconds)),
-        accent: updateSeconds > 0,
+        text: t("bubblePolicySummaryUpdate").replace("{seconds}", String(snapshot.updateSeconds)),
+        accent: snapshot.updateSeconds > 0,
       },
-    ];
-    for (const item of items) {
-      const chip = document.createElement("span");
-      chip.className = "collapsible-summary-chip" + (item.accent ? " accent" : "");
-      chip.textContent = item.text;
-      wrap.appendChild(chip);
+      ];
+      for (const item of items) {
+        const chip = document.createElement("span");
+        chip.className = "collapsible-summary-chip" + (item.accent ? " accent" : "");
+        chip.textContent = item.text;
+        wrap.appendChild(chip);
+      }
     }
-    return wrap;
+
+    syncFromSnapshot();
+    return {
+      element: wrap,
+      syncFromSnapshot,
+    };
   }
 
   function buildBubblePolicyList() {
@@ -258,6 +280,7 @@
   }
 
   function buildBubbleCategoryControl({ category, labelKey, descKey, warningKey = null, secondsKey = null }) {
+    const stateKey = secondsKey || "permissionBubblesEnabled";
     const item = document.createElement("div");
     item.className = "bubble-policy-item";
     item.innerHTML =
@@ -279,6 +302,7 @@
 
     const sw = item.querySelector(".switch");
     const controls = item.querySelector(".bubble-policy-controls");
+    let secondsInput = null;
 
     function currentEnabled() {
       if (state.snapshot && state.snapshot.hideBubbles === true) return false;
@@ -287,12 +311,19 @@
       return Number.isFinite(seconds) && seconds > 0;
     }
 
+    function currentSeconds() {
+      if (!secondsKey) return 0;
+      return Number(state.snapshot && state.snapshot[secondsKey]) || 0;
+    }
+
     function setVisual(enabled, pending = false) {
       helpers.setSwitchVisual(sw, enabled, { pending });
-      if (secondsKey) {
-        const input = controls.querySelector("input");
-        if (input) input.disabled = !enabled || pending;
-      }
+      if (secondsInput) secondsInput.disabled = !enabled || pending;
+    }
+
+    function syncFromSnapshot() {
+      setVisual(currentEnabled(), false);
+      if (secondsInput) secondsInput.value = String(currentSeconds());
     }
 
     function runToggle() {
@@ -349,6 +380,7 @@
       controls.insertBefore(prefix, sw);
       controls.insertBefore(input, sw);
       controls.insertBefore(suffix, sw);
+      secondsInput = input;
       input.disabled = !currentEnabled();
       input.addEventListener("input", () => {
         const next = input.value.replace(/\D+/g, "").slice(0, 4);
@@ -365,6 +397,11 @@
         commitSecondsValue(input, secondsKey, next, category);
       });
     }
+
+    state.mountedControls.bubblePolicyControls.set(stateKey, {
+      row: item,
+      syncFromSnapshot,
+    });
 
     return item;
   }
@@ -406,12 +443,12 @@
 
       const cancelBtn = document.createElement("button");
       cancelBtn.type = "button";
-      cancelBtn.className = "soft-btn";
+      cancelBtn.className = "soft-btn accent";
       cancelBtn.textContent = cancelLabel;
 
       const confirmBtn = document.createElement("button");
       confirmBtn.type = "button";
-      confirmBtn.className = "soft-btn accent settings-confirm-danger";
+      confirmBtn.className = "soft-btn";
       confirmBtn.textContent = confirmLabel;
 
       function close(confirmed) {
@@ -433,8 +470,8 @@
       confirmBtn.addEventListener("click", () => close(true));
       document.addEventListener("keydown", onKeyDown, true);
 
-      actions.appendChild(cancelBtn);
       actions.appendChild(confirmBtn);
+      actions.appendChild(cancelBtn);
       modal.appendChild(icon);
       modal.appendChild(titleNode);
       modal.appendChild(detailNode);
@@ -717,6 +754,11 @@
     }
     for (const key of keys) {
       if (key === "size" || key === "soundVolume") continue;
+      if (BUBBLE_POLICY_KEYS.has(key)) {
+        const meta = state.mountedControls.bubblePolicyControls.get(key);
+        if (!meta || !document.body.contains(meta.row)) return false;
+        continue;
+      }
       const meta = state.mountedControls.generalSwitches.get(key);
       if (!meta || !document.body.contains(meta.element)) return false;
     }
@@ -726,12 +768,21 @@
         state.mountedControls.soundVolume.syncValueFromSnapshot();
         continue;
       }
+      if (BUBBLE_POLICY_KEYS.has(key)) {
+        state.mountedControls.bubblePolicyControls.get(key).syncFromSnapshot();
+        continue;
+      }
       const meta = state.mountedControls.generalSwitches.get(key);
       state.transientUiState.generalSwitches.delete(key);
       helpers.setSwitchVisual(meta.element, readers.readGeneralSwitchVisual(key, meta.invert), { pending: false });
       if (key === "soundMuted") {
         state.mountedControls.soundVolume.syncDisabled();
       }
+    }
+    if (keys.some((key) => BUBBLE_POLICY_KEYS.has(key))) {
+      const summaryControl = state.mountedControls.bubblePolicySummary;
+      if (!summaryControl || !document.body.contains(summaryControl.element)) return false;
+      summaryControl.syncFromSnapshot();
     }
     return true;
   }

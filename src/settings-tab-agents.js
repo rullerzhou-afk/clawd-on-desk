@@ -84,11 +84,6 @@
   }
 
   function buildAgentDetailRows(agent) {
-    // Sub-switches depend on the master: when the agent is turned off, the
-    // sub-flags have no effect (server-side gate drops the events upstream),
-    // so we render them as visually disabled to match reality. Committed
-    // values are preserved — flipping the master back on restores sub-switch
-    // state verbatim without re-asking the user to opt back in.
     const masterOn = readers.readAgentFlagValue(agent.id, "enabled");
     const rows = [];
     const caps = agent.capabilities || {};
@@ -131,6 +126,14 @@
     return rows;
   }
 
+  function syncAgentSwitchDisabledState(meta, disabled) {
+    meta.disabled = !!disabled;
+    const sw = meta.element;
+    sw.classList.toggle("disabled", !!disabled);
+    sw.setAttribute("aria-disabled", disabled ? "true" : "false");
+    sw.setAttribute("tabindex", disabled ? "-1" : "0");
+  }
+
   function buildAgentSwitchRow({ agent, flag, extraClass, disabled = false, buildText }) {
     const row = document.createElement("div");
     row.className = extraClass ? `row ${extraClass}` : "row";
@@ -152,31 +155,21 @@
     sw.addEventListener("keydown", (ev) => {
       ev.stopPropagation();
     });
-    if (disabled) {
-      sw.classList.add("disabled");
-      sw.setAttribute("aria-disabled", "true");
-    }
     const stateId = readers.agentSwitchStateId(agent.id, flag);
     const override = state.transientUiState.agentSwitches.get(stateId);
     const committedVisual = readers.readAgentFlagValue(agent.id, flag);
     helpers.setSwitchVisual(sw, override ? override.visualOn : committedVisual, {
       pending: override ? override.pending : false,
     });
-    state.mountedControls.agentSwitches.set(stateId, {
+    const meta = {
       element: sw,
       agentId: agent.id,
       flag,
       disabled,
-    });
-    // Disabled sub-switches intentionally skip the click handler so the flip
-    // animation never fires while the master is off. Committed value stays
-    // untouched — buildAgentRows reads it at the next re-render and the flip
-    // restores naturally when the master turns back on.
-    if (disabled) {
-      ctrl.appendChild(sw);
-      row.appendChild(ctrl);
-      return row;
-    }
+      syncDisabledState: (nextDisabled) => syncAgentSwitchDisabledState(meta, nextDisabled),
+    };
+    state.mountedControls.agentSwitches.set(stateId, meta);
+    syncAgentSwitchDisabledState(meta, disabled);
     helpers.attachAnimatedSwitch(sw, {
       getCommittedVisual: () => readers.readAgentFlagValue(agent.id, flag),
       getTransientState: () => state.transientUiState.agentSwitches.get(stateId) || null,
@@ -202,26 +195,14 @@
     const keys = changes ? Object.keys(changes) : [];
     if (!(keys.length === 1 && keys[0] === "agents")) return false;
     if (state.mountedControls.agentSwitches.size === 0) return false;
-    // A master flip changes which sub-switches should render disabled; that's
-    // a structural change (attach/detach click handler + tabindex + aria),
-    // so fall back to a full re-render instead of trying to patch it in place.
-    // Also clear lingering transient state before doing so — otherwise the
-    // in-flight `pending:true` from the master click itself leaks into the
-    // re-render, locks `.pending` onto the new master switch, and
-    // attachAnimatedSwitch silently bails on every subsequent click.
     for (const [, meta] of state.mountedControls.agentSwitches) {
       if (!meta || !document.body.contains(meta.element)) return false;
-      if (meta.flag === "enabled") continue;
-      const masterOn = readers.readAgentFlagValue(meta.agentId, "enabled");
-      if (meta.disabled === masterOn) {
-        for (const id of state.mountedControls.agentSwitches.keys()) {
-          state.transientUiState.agentSwitches.delete(id);
-        }
-        return false;
-      }
     }
     for (const [id, meta] of state.mountedControls.agentSwitches) {
       state.transientUiState.agentSwitches.delete(id);
+      if (meta.flag !== "enabled") {
+        meta.syncDisabledState(!readers.readAgentFlagValue(meta.agentId, "enabled"));
+      }
       helpers.setSwitchVisual(meta.element, readers.readAgentFlagValue(meta.agentId, meta.flag), { pending: false });
     }
     return true;

@@ -53,7 +53,9 @@
     },
     mountedControls: {
       generalSwitches: new Map(),
+      bubblePolicyControls: new Map(),
       agentSwitches: new Map(),
+      bubblePolicySummary: null,
       size: null,
       soundVolume: null,
     },
@@ -203,6 +205,7 @@
     invoke,
   }) {
     const run = () => {
+      if (sw.classList.contains("disabled") || sw.getAttribute("aria-disabled") === "true") return;
       if (sw.classList.contains("pending")) return;
       const currentVisual = getCommittedVisual();
       const nextVisual = !currentVisual;
@@ -356,6 +359,23 @@
       }
     }
 
+    function preserveScrollAnchor(invoke) {
+      const scroller = document.getElementById("content");
+      if (!scroller || !document.body.contains(header)) {
+        invoke();
+        return;
+      }
+      const beforeTop = header.getBoundingClientRect().top;
+      const beforeScrollTop = scroller.scrollTop;
+      invoke();
+      requestAnimationFrame(() => {
+        if (!document.body.contains(header)) return;
+        const afterTop = header.getBoundingClientRect().top;
+        const delta = afterTop - beforeTop;
+        if (delta !== 0) scroller.scrollTop = beforeScrollTop + delta;
+      });
+    }
+
     function applyCollapsedState({ animate = false } = {}) {
       header.setAttribute("aria-expanded", collapsed ? "false" : "true");
       header.setAttribute("aria-label", collapsed ? t("collapsibleExpand") : t("collapsibleCollapse"));
@@ -392,7 +412,7 @@
       const nextState = readCollapsedGroupState();
       nextState[id] = collapsed;
       writeCollapsedGroupState(nextState);
-      applyCollapsedState({ animate: true });
+      preserveScrollAnchor(() => applyCollapsedState({ animate: true }));
     }
 
     header.addEventListener("click", toggleCollapsed);
@@ -547,7 +567,9 @@
       state.mountedControls.soundVolume.dispose();
     }
     state.mountedControls.generalSwitches.clear();
+    state.mountedControls.bubblePolicyControls.clear();
     state.mountedControls.agentSwitches.clear();
+    state.mountedControls.bubblePolicySummary = null;
     state.mountedControls.size = null;
     state.mountedControls.soundVolume = null;
   }

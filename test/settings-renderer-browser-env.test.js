@@ -111,6 +111,8 @@ describe("settings renderer browser environment", () => {
     const html = fs.readFileSync(SETTINGS_HTML, "utf8");
     assert.ok(generalSource.includes("buildBubblePolicyRow()"));
     assert.ok(generalSource.includes("setBubbleCategoryEnabled"));
+    assert.ok(generalSource.includes("state.mountedControls.bubblePolicyControls"));
+    assert.ok(generalSource.includes("state.mountedControls.bubblePolicySummary"));
     assert.ok(generalSource.includes("confirmDisableUpdateBubbles"));
     assert.ok(generalSource.includes("category === \"update\" && next === 0"));
     assert.ok(generalSource.includes("notificationBubbleAutoCloseSeconds"));
@@ -146,6 +148,10 @@ describe("settings renderer browser environment", () => {
     assert.ok(!mainSource.includes('ipcMain.handle("settings:confirm-disable-update-bubbles"'));
     assert.ok(i18nSource.includes("Hide update bubbles"));
     assert.ok(i18nSource.includes("隐藏更新气泡"));
+    assert.ok(generalSource.includes('confirmBtn.className = "soft-btn";'));
+    assert.ok(generalSource.includes('cancelBtn.className = "soft-btn accent";'));
+    assert.ok(generalSource.indexOf("actions.appendChild(confirmBtn);") < generalSource.indexOf("actions.appendChild(cancelBtn);"));
+    assert.ok(generalSource.includes("cancelBtn.focus();"));
   });
 
   it("provides a persisted collapsible Settings group helper with smart default collapse", () => {
@@ -169,6 +175,7 @@ describe("settings renderer browser environment", () => {
     const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
     const html = fs.readFileSync(SETTINGS_HTML, "utf8");
     assert.ok(coreSource.includes("function measureCollapsibleBodyHeight("));
+    assert.ok(coreSource.includes("function preserveScrollAnchor("));
     assert.ok(coreSource.includes('body.style.setProperty("--collapsible-body-height"'));
     assert.ok(coreSource.includes("requestAnimationFrame(() => {"));
     assert.ok(coreSource.includes("collapsing"));
@@ -191,7 +198,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes('id: "general:bubble-policy"'));
     assert.ok(generalSource.includes("defaultCollapsed: true"));
     assert.ok(generalSource.includes('title: t("rowBubblePolicy")'));
-    assert.ok(generalSource.includes("summary: buildBubblePolicySummary()"));
+    assert.ok(generalSource.includes("const summaryControl = buildBubblePolicySummary();"));
+    assert.ok(generalSource.includes("summary: summaryControl.element"));
     assert.ok(generalSource.includes("children: [buildBubblePolicyList()]"));
     assert.ok(generalSource.includes('key: "bubbleFollowPet"'));
     assert.ok(!generalSource.includes('key: "showSessionId"'));
@@ -212,6 +220,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(agentsSource.includes("children: detailRows"));
     assert.ok(agentsSource.includes("ev.stopPropagation();"));
     assert.ok(agentsSource.includes("agent-subgroup"));
+    assert.ok(agentsSource.includes("function syncAgentSwitchDisabledState("));
+    assert.ok(!agentsSource.includes("full re-render"));
   });
 
   it("uses a dedicated Settings agent ordering helper before rendering Agent management groups", () => {
