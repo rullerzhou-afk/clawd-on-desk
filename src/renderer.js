@@ -7,7 +7,7 @@ let clawdEl = document.getElementById("clawd");
 let pendingNext = null;
 const LOW_POWER_IDLE_PAUSE_MS = 5000;
 const LOW_POWER_PAUSE_STYLE_ID = "clawd-low-power-pause-svg";
-const LOW_POWER_PAUSE_STATES = new Set(["idle", "mini-idle", "sleeping", "mini-sleep", "dozing"]);
+const LOW_POWER_PAUSE_STATES = new Set(["idle", "mini-idle", "dozing"]);
 let lowPowerIdleMode = false;
 let lowPowerIdlePauseTimer = null;
 let lowPowerSvgPaused = false;
@@ -154,6 +154,7 @@ function scheduleLowPowerIdlePause() {
 }
 
 function noteLowPowerActivity() {
+  if (!lowPowerIdleMode && !lowPowerSvgPaused) return;
   if (lowPowerSvgPaused) {
     resumeCurrentSvgForLowPower();
   }
