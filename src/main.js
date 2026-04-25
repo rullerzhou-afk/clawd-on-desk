@@ -431,6 +431,7 @@ let bubbleFollowPet = _settingsController.get("bubbleFollowPet");
 let sessionHudEnabled = _settingsController.get("sessionHudEnabled");
 let soundMuted = _settingsController.get("soundMuted");
 let soundVolume = _settingsController.get("soundVolume");
+let lowPowerIdleMode = _settingsController.get("lowPowerIdleMode");
 let allowEdgePinningCached = _settingsController.get("allowEdgePinning");
 let keepSizeAcrossDisplaysCached = _settingsController.get("keepSizeAcrossDisplays");
 let petHidden = false;
@@ -631,6 +632,7 @@ function syncHitStateAfterLoad() {
 }
 
 function syncRendererStateAfterLoad({ includeStartupRecovery = true } = {}) {
+  sendToRenderer("low-power-idle-mode-change", lowPowerIdleMode);
   if (_mini.getMiniMode()) {
     sendToRenderer("mini-mode-change", true, _mini.getMiniEdge());
   }
@@ -1392,6 +1394,10 @@ function wireSettingsSubscribers() {
     if ("sessionHudEnabled" in changes) sessionHudEnabled = changes.sessionHudEnabled;
     if ("soundMuted" in changes) soundMuted = changes.soundMuted;
     if ("soundVolume" in changes) soundVolume = changes.soundVolume;
+    if ("lowPowerIdleMode" in changes) {
+      lowPowerIdleMode = changes.lowPowerIdleMode;
+      sendToRenderer("low-power-idle-mode-change", lowPowerIdleMode);
+    }
     if ("allowEdgePinning" in changes) allowEdgePinningCached = changes.allowEdgePinning;
     if ("keepSizeAcrossDisplays" in changes) keepSizeAcrossDisplaysCached = changes.keepSizeAcrossDisplays;
     if ("lang" in changes) {

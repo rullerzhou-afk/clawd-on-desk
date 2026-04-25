@@ -45,6 +45,7 @@ describe("prefs.getDefaults", () => {
     const d = prefs.getDefaults();
     assert.strictEqual(d.manageClaudeHooksAutomatically, true);
     assert.strictEqual(d.autoStartWithClaude, false);
+    assert.strictEqual(d.lowPowerIdleMode, false);
     assert.strictEqual(d.allowEdgePinning, false);
     assert.strictEqual(d.keepSizeAcrossDisplays, false);
     assert.strictEqual(d.sessionHudEnabled, true);
@@ -81,6 +82,7 @@ describe("prefs.validate", () => {
       lang: "klingon",       // not in enum
       soundMuted: "yes",     // wrong type
       soundVolume: 2,        // out of range → default 1
+      lowPowerIdleMode: "yes",
       x: NaN,                // not finite
       bubbleFollowPet: true, // ok
       sessionHudEnabled: "yes",
@@ -96,6 +98,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.lang, d.lang);
     assert.strictEqual(v.soundMuted, false);
     assert.strictEqual(v.soundVolume, 1);
+    assert.strictEqual(v.lowPowerIdleMode, false);
     assert.strictEqual(v.x, 0);
     assert.strictEqual(v.bubbleFollowPet, true);
     assert.strictEqual(v.sessionHudEnabled, true);
@@ -141,6 +144,7 @@ describe("prefs.validate", () => {
       lang: "ko",
       soundMuted: true,
       soundVolume: 0.4,
+      lowPowerIdleMode: true,
       bubbleFollowPet: true,
       sessionHudEnabled: false,
       allowEdgePinning: true,
@@ -156,6 +160,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.lang, "ko");
     assert.strictEqual(v.soundMuted, true);
     assert.strictEqual(v.soundVolume, 0.4);
+    assert.strictEqual(v.lowPowerIdleMode, true);
     assert.strictEqual(v.bubbleFollowPet, true);
     assert.strictEqual(v.sessionHudEnabled, false);
     assert.strictEqual(v.allowEdgePinning, true);

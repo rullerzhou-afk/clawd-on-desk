@@ -79,7 +79,7 @@ describe("updateRegistry pure-data validators", () => {
     for (const key of [
       "sessionHudEnabled", "miniMode", "openAtLoginHydrated",
       "soundMuted", "bubbleFollowPet", "sessionHudEnabled", "hideBubbles", "permissionBubblesEnabled",
-      "allowEdgePinning", "keepSizeAcrossDisplays", "miniMode", "openAtLoginHydrated",
+      "lowPowerIdleMode", "allowEdgePinning", "keepSizeAcrossDisplays", "miniMode", "openAtLoginHydrated",
     ]) {
       assert.strictEqual(updateRegistry[key](true, deps).status, "ok", `${key}(true)`);
       assert.strictEqual(updateRegistry[key](false, deps).status, "ok", `${key}(false)`);

@@ -5,6 +5,12 @@
 const container = document.getElementById("pet-container");
 let clawdEl = document.getElementById("clawd");
 let pendingNext = null;
+const LOW_POWER_IDLE_PAUSE_MS = 5000;
+const LOW_POWER_PAUSE_STYLE_ID = "clawd-low-power-pause-svg";
+const LOW_POWER_PAUSE_STATES = new Set(["idle", "mini-idle", "sleeping", "mini-sleep", "dozing"]);
+let lowPowerIdleMode = false;
+let lowPowerIdlePauseTimer = null;
+let lowPowerSvgPaused = false;
 
 // ── Theme config (injected via preload.js additionalArguments) ──
 let tc = window.themeConfig || {};
@@ -75,6 +81,91 @@ function applyObjectScaleStyle(el, file) {
     el.style.left = `calc(${_objectScaleCSS.left} + ${ox}px)`;
     el.style.top = "auto";
     el.style.bottom = `calc(${_objectScaleCSS.objBottom} + ${oy + _viewportOffsetY}px)`;
+  }
+}
+
+function getCurrentSvgRoot() {
+  if (!clawdEl || clawdEl.tagName !== "OBJECT") return null;
+  try {
+    const svgDoc = clawdEl.contentDocument;
+    return svgDoc ? svgDoc.documentElement : null;
+  } catch {
+    return null;
+  }
+}
+
+function shouldPauseForLowPower() {
+  if (isReacting || isDragReacting) return false;
+  return lowPowerIdleMode && LOW_POWER_PAUSE_STATES.has(currentState);
+}
+
+function pauseCurrentSvgForLowPower() {
+  if (!shouldPauseForLowPower()) return;
+  const root = getCurrentSvgRoot();
+  if (!root) return;
+  const svgDoc = root.ownerDocument;
+  if (svgDoc && !svgDoc.getElementById(LOW_POWER_PAUSE_STYLE_ID)) {
+    const style = svgDoc.createElementNS("http://www.w3.org/2000/svg", "style");
+    style.id = LOW_POWER_PAUSE_STYLE_ID;
+    style.textContent = `
+      *, *::before, *::after {
+        animation-play-state: paused !important;
+        transition-property: none !important;
+      }
+    `;
+    root.appendChild(style);
+  }
+  try {
+    if (typeof root.pauseAnimations === "function") root.pauseAnimations();
+  } catch {}
+  lowPowerSvgPaused = true;
+}
+
+function resumeCurrentSvgForLowPower() {
+  if (lowPowerIdlePauseTimer) {
+    clearTimeout(lowPowerIdlePauseTimer);
+    lowPowerIdlePauseTimer = null;
+  }
+  const root = getCurrentSvgRoot();
+  if (root) {
+    try {
+      const svgDoc = root.ownerDocument;
+      const style = svgDoc && svgDoc.getElementById(LOW_POWER_PAUSE_STYLE_ID);
+      if (style) style.remove();
+      if (typeof root.unpauseAnimations === "function") root.unpauseAnimations();
+    } catch {}
+  }
+  lowPowerSvgPaused = false;
+}
+
+function scheduleLowPowerIdlePause() {
+  if (lowPowerIdlePauseTimer) {
+    clearTimeout(lowPowerIdlePauseTimer);
+    lowPowerIdlePauseTimer = null;
+  }
+  if (!shouldPauseForLowPower()) {
+    resumeCurrentSvgForLowPower();
+    return;
+  }
+  lowPowerIdlePauseTimer = setTimeout(() => {
+    lowPowerIdlePauseTimer = null;
+    pauseCurrentSvgForLowPower();
+  }, LOW_POWER_IDLE_PAUSE_MS);
+}
+
+function noteLowPowerActivity() {
+  if (lowPowerSvgPaused) {
+    resumeCurrentSvgForLowPower();
+  }
+  scheduleLowPowerIdlePause();
+}
+
+function setLowPowerIdleMode(enabled) {
+  lowPowerIdleMode = !!enabled;
+  if (lowPowerIdleMode) {
+    scheduleLowPowerIdlePause();
+  } else {
+    resumeCurrentSvgForLowPower();
   }
 }
 
@@ -199,6 +290,10 @@ let currentState = null;      // last state name received from main (for re-puls
 let dndEnabled = false;
 let miniLeftFlip = false;
 
+if (window.electronAPI && typeof window.electronAPI.onLowPowerIdleModeChange === "function") {
+  window.electronAPI.onLowPowerIdleModeChange(setLowPowerIdleMode);
+}
+
 window.electronAPI.onDndChange((enabled) => { dndEnabled = enabled; });
 
 window.electronAPI.onMiniModeChange((enabled, edge) => {
@@ -285,6 +380,7 @@ window.electronAPI.onPlayClickReaction((svg, duration) => playReaction(svg, dura
 function playReaction(svgFile, durationMs) {
   isReacting = true;
   detachEyeTracking();
+  resumeCurrentSvgForLowPower();
   window.electronAPI.pauseCursorPolling();
 
   // Reactions always use <img> channel (no eye tracking needed)
@@ -323,6 +419,7 @@ function startDragReaction() {
 
   isDragReacting = true;
   detachEyeTracking();
+  resumeCurrentSvgForLowPower();
   window.electronAPI.pauseCursorPolling();
   swapToFile(_dragSvg, null, false);
 }
@@ -402,6 +499,7 @@ function swapToFile(file, state, useObjectChannel) {
         attachEyeTracking(next);
       }
       if (miniLeftFlip) applyGlyphFlipCompensation(next);
+      scheduleLowPowerIdlePause();
     };
 
     next.addEventListener("load", swap, { once: true });
@@ -446,6 +544,7 @@ function swapToFile(file, state, useObjectChannel) {
       pendingSvgFile = null;
       clawdEl = next;
       currentDisplayedSvg = file;
+      scheduleLowPowerIdlePause();
     };
 
     next.addEventListener("load", swap, { once: true });
@@ -476,6 +575,7 @@ window.electronAPI.onStateChange((state, svg) => {
   // Track the latest state name so the Kimi permission pulse can re-trigger
   // swapToFile() with the matching state for eye-tracking decisions.
   currentState = state;
+  noteLowPowerActivity();
 
   // Dedup: same file already displayed OR currently loading → don't re-swap
   const alreadyDisplayed = clawdEl && clawdEl.isConnected && currentDisplayedSvg === svg;
@@ -488,6 +588,7 @@ window.electronAPI.onStateChange((state, svg) => {
       } else if (!needsObjectChannel(state, svg)) {
         detachEyeTracking();
       }
+      scheduleLowPowerIdlePause();
     }
     currentIdleSvg = svg;
     return;
@@ -791,6 +892,7 @@ function detachEyeTracking() {
 }
 
 window.electronAPI.onEyeMove((dx, dy) => {
+  noteLowPowerActivity();
   const effectiveDx = miniLeftFlip ? -dx : dx;
   lastEyeDx = effectiveDx;
   lastEyeDy = dy;
