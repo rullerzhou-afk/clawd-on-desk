@@ -25,7 +25,7 @@
     "claude-code"
   ],
   "author": "rullerzhou-afk",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "type": "commonjs",
   "build": {
     "appId": "com.clawd.on-desk",

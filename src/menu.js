@@ -119,12 +119,6 @@ module.exports = function initMenu(ctx) {
         checked: !ctx.soundMuted,
         click: (menuItem) => { ctx.soundMuted = !menuItem.checked; },
       },
-      {
-        label: t("showSessionId"),
-        type: "checkbox",
-        checked: ctx.showSessionId,
-        click: (menuItem) => { ctx.showSessionId = menuItem.checked; },
-      },
       { type: "separator" },
       {
         label: t("startOnLogin"),
@@ -162,6 +156,12 @@ module.exports = function initMenu(ctx) {
       {
         label: t("settings"),
         click: () => ctx.openSettingsWindow(),
+      },
+      {
+        label: t("openDashboard"),
+        click: () => {
+          if (typeof ctx.openDashboard === "function") ctx.openDashboard();
+        },
       },
       buildBringToPrimaryDisplayMenuItem(),
       { type: "separator" },
@@ -308,8 +308,10 @@ module.exports = function initMenu(ctx) {
       },
       { type: "separator" },
       {
-        label: `${t("sessions")} (${ctx.sessions.size})`,
-        submenu: ctx.buildSessionSubmenu(),
+        label: t("openDashboard"),
+        click: () => {
+          if (typeof ctx.openDashboard === "function") ctx.openDashboard();
+        },
       },
     ];
     // sendToDisplay is a multi-display-only tail entry. Push dynamically

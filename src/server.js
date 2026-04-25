@@ -21,8 +21,15 @@ const {
 // travel through /permission, but they're UX flows — not approvals the
 // sub-gate is named for. Silencing them would break plan-mode and leave
 // CC hanging on an elicitation.
+//
+// hideBubbles is also honored here: dropping the HTTP connection lets
+// CC/codebuddy fall back to their terminal chat prompt. The previous
+// behavior merely skipped showPermissionBubble, leaving the request
+// parked in pendingPermissions — CC would then hang for 600s before
+// timing out with nothing in the terminal.
 function shouldBypassCCBubble(ctx, toolName, agentId) {
   if (toolName === "ExitPlanMode" || toolName === "AskUserQuestion") return false;
+  if (ctx.hideBubbles) return true;
   if (typeof ctx.isAgentPermissionsEnabled !== "function") return false;
   return !ctx.isAgentPermissionsEnabled(agentId);
 }
@@ -769,7 +776,8 @@ function startHttpServer() {
           }
 
           if (shouldBypassCCBubble(ctx, toolName, permAgentId)) {
-            ctx.permLog(`${permAgentId} bubbles disabled → destroy connection, chat fallback (tool=${toolName})`);
+            const reason = ctx.hideBubbles ? "hideBubbles" : `${permAgentId} bubbles disabled`;
+            ctx.permLog(`${reason} → destroy connection, chat fallback (tool=${toolName})`);
             res.destroy();
             return;
           }

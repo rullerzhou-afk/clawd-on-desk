@@ -30,7 +30,6 @@ function buildBaseCtx(overrides = {}) {
     openAtLogin: false,
     bubbleFollowPet: false,
     hideBubbles: false,
-    showSessionId: false,
     soundMuted: false,
     menuOpen: false,
     tray: null,
@@ -40,7 +39,7 @@ function buildBaseCtx(overrides = {}) {
     getMiniMode: () => false,
     getMiniTransitioning: () => false,
     getActiveThemeCapabilities: () => ({ miniMode: true }),
-    buildSessionSubmenu: () => [],
+    openDashboard: () => {},
     openSettingsWindow: () => {},
     togglePetVisibility: () => {},
     bringPetToPrimaryDisplay: () => {},
@@ -288,5 +287,91 @@ describe("menu recovery action", () => {
     const recover = ctx.tray.contextMenu.template.find((item) => item.label === "Bring Pet to Primary Display");
     assert.ok(recover, "tray menu should expose the recovery action");
     assert.strictEqual(recover.enabled, false);
+  });
+});
+
+describe("menu dashboard action", () => {
+  it("adds a context menu item that opens the Dashboard", () => {
+    const fakeElectron = {
+      app: { quit: () => {}, setActivationPolicy: () => {}, dock: { show: () => {}, hide: () => {} } },
+      BrowserWindow: function BrowserWindow() {},
+      Menu: {
+        buildFromTemplate(template) {
+          return { template };
+        },
+      },
+      Tray: function Tray() {},
+      nativeImage: {
+        createFromPath() {
+          return {
+            resize() { return this; },
+            setTemplateImage() {},
+          };
+        },
+      },
+      screen: {
+        getAllDisplays: () => [{ id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1040 } }],
+        getCursorScreenPoint: () => ({ x: 0, y: 0 }),
+        getDisplayNearestPoint: () => ({ id: 1 }),
+      },
+    };
+    const initMenu = loadMenuWithElectron(fakeElectron);
+
+    let called = 0;
+    const ctx = buildBaseCtx({
+      openDashboard: () => { called += 1; },
+    });
+
+    const menu = initMenu(ctx);
+    menu.buildContextMenu();
+
+    const openDashboard = ctx.contextMenu.template.find((item) => item.label === "Open Dashboard");
+    assert.ok(openDashboard, "context menu should expose dashboard entry");
+    openDashboard.click();
+    assert.strictEqual(called, 1);
+  });
+
+  it("adds a tray menu item that opens the Dashboard", () => {
+    const fakeElectron = {
+      app: { quit: () => {}, setActivationPolicy: () => {}, dock: { show: () => {}, hide: () => {} } },
+      BrowserWindow: function BrowserWindow() {},
+      Menu: {
+        buildFromTemplate(template) {
+          return { template };
+        },
+      },
+      Tray: function Tray() {
+        this.setToolTip = () => {};
+        this.setContextMenu = (menu) => { this.contextMenu = menu; };
+        this.destroy = () => {};
+      },
+      nativeImage: {
+        createFromPath() {
+          return {
+            resize() { return this; },
+            setTemplateImage() {},
+          };
+        },
+      },
+      screen: {
+        getAllDisplays: () => [{ id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1040 } }],
+        getCursorScreenPoint: () => ({ x: 0, y: 0 }),
+        getDisplayNearestPoint: () => ({ id: 1 }),
+      },
+    };
+    const initMenu = loadMenuWithElectron(fakeElectron);
+
+    let called = 0;
+    const ctx = buildBaseCtx({
+      openDashboard: () => { called += 1; },
+    });
+
+    const menu = initMenu(ctx);
+    menu.createTray();
+
+    const openDashboard = ctx.tray.contextMenu.template.find((item) => item.label === "Open Dashboard");
+    assert.ok(openDashboard, "tray menu should expose dashboard entry");
+    openDashboard.click();
+    assert.strictEqual(called, 1);
   });
 });

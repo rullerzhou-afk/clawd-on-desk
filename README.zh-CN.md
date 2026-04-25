@@ -20,7 +20,7 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 
 你提问时它思考，工具运行时它打字，子代理工作时它杂耍，审批权限时它弹卡片，任务完成时它庆祝，你离开时它睡觉。内置两套主题：**Clawd**（像素螃蟹）和 **Calico**（三花猫），支持自定义主题。
 
-> 支持 Windows 11、macOS 和 Ubuntu/Linux。需要 Node.js。支持 **Claude Code**、**Codex CLI**、**Copilot CLI**、**Gemini CLI**、**Cursor Agent**、**CodeBuddy**、**Kiro CLI** 与 **opencode**。
+> 支持 Windows 11、macOS 和 Ubuntu/Linux。需要 Node.js。支持 **Claude Code**、**Codex CLI**、**Copilot CLI**、**Gemini CLI**、**Cursor Agent**、**CodeBuddy**、**Kiro CLI**、**Kimi Code CLI（Kimi-CLI）** 与 **opencode**。
 
 ## 功能特性
 
@@ -32,6 +32,7 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 - **Cursor Agent** — [Cursor IDE hooks](https://cursor.com/docs/agent/hooks)，配置在 `~/.cursor/hooks.json`（Clawd 启动时自动注册，或执行 `npm run install:cursor-hooks`）
 - **CodeBuddy** — 通过与 Claude Code 兼容的 command hook + HTTP 权限 hook 集成，配置写入 `~/.codebuddy/settings.json`（Clawd 启动时自动注册，或执行 `node hooks/codebuddy-install.js`）
 - **Kiro CLI** — command hooks 注入到 `~/.kiro/agents/` 下的自定义 agent 配置中，并自动创建一个 `clawd` agent；Clawd 每次启动时都会重新从内置 `kiro_default` 同步它，尽量保持与默认 agent 一致。macOS 与 Windows 上状态动效已验证可用；需要时可用 `kiro-cli --agent clawd` 或在会话内执行 `/agent swap clawd` 启用 hooks（Clawd 启动时自动注册，或执行 `npm run install:kiro-hooks`）
+- **Kimi Code CLI（Kimi-CLI）** — 通过 `~/.kimi/config.toml`（`[[hooks]]` 条目）配置 command hooks（Clawd 启动时自动注册，或执行 `npm run install:kimi-hooks`）
 - **opencode** — [plugin 集成](https://opencode.ai/docs/plugins)，写入 `~/.config/opencode/opencode.json`（Clawd 启动时自动注册）；零延迟事件流、Allow/Always/Deny 权限气泡、`task` 工具分派并行子代理时自动播放建筑动画
 - **多 Agent 共存** — 多个 Agent 可同时运行，Clawd 独立追踪每个会话
 
@@ -55,7 +56,8 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 ### 会话智能
 - **多会话追踪** — 所有已支持 Agent 的会话统一解析到最高优先级状态
 - **子代理感知** — 1 个子代理杂耍，2 个以上指挥
-- **终端聚焦** — 右键 Clawd → 会话菜单，一键跳转到对应会话的终端窗口；通知/注意状态自动聚焦相关终端
+- **会话 Dashboard + HUD** — 右键或托盘 → `打开 Dashboard` 查看活跃会话、最近事件、别名，并可跳转终端；Clawd 附近的轻量 HUD 会持续显示当前 live session
+- **终端聚焦** — Dashboard / HUD 操作可跳转到指定会话的终端窗口；通知/注意状态会自动聚焦相关终端
 - **进程存活检测** — 检测已崩溃/退出的受支持 Agent 进程，并在 10 秒内清理孤儿会话
 - **启动恢复** — 如果 Clawd 重启时仍有受支持的 Agent 在运行，它会保持清醒等待后续事件，而不是直接睡觉
 
@@ -124,7 +126,7 @@ npm install
 npm start
 ```
 
-**Claude Code** 和 **Codex CLI** 开箱即用。**Gemini CLI**、**Cursor Agent**、**CodeBuddy**、**Kiro CLI**、**opencode** 在已安装前提下会在 Clawd 启动时自动同步；**Copilot CLI** 仍需一次性手动配置 hooks。也涵盖远程 SSH、WSL 及平台说明（macOS / Linux）：**[docs/guides/setup-guide.zh-CN.md](docs/guides/setup-guide.zh-CN.md)**
+**Claude Code** 和 **Codex CLI** 开箱即用。**Gemini CLI**、**Cursor Agent**、**CodeBuddy**、**Kiro CLI**、**Kimi Code CLI（Kimi-CLI）**、**opencode** 在已安装前提下会在 Clawd 启动时自动同步；**Copilot CLI** 仍需一次性手动配置 hooks。也涵盖远程 SSH、WSL 及平台说明（macOS / Linux）：**[docs/guides/setup-guide.zh-CN.md](docs/guides/setup-guide.zh-CN.md)**
 
 关于 `Codex + WSL` 的官方现状、Clawd 当前实现边界、以及为什么容易被误解，见：**[docs/guides/codex-wsl-clarification.zh-CN.md](docs/guides/codex-wsl-clarification.zh-CN.md)**
 
@@ -207,6 +209,8 @@ Clawd on Desk 是一个社区驱动的项目。欢迎提 Bug、提需求、提 P
 <a href="https://github.com/hhhzxyhhh"><img src="https://github.com/hhhzxyhhh.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/TVpoet"><img src="https://github.com/TVpoet.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/zeus6768"><img src="https://github.com/zeus6768.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/anhtrinh919"><img src="https://github.com/anhtrinh919.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/tomaioo"><img src="https://github.com/tomaioo.png" width="50" style="border-radius:50%" /></a>
 
 ## 致谢
 
@@ -215,9 +219,9 @@ Clawd on Desk 是一个社区驱动的项目。欢迎提 Bug、提需求、提 P
 
 ## 许可证
 
-源代码基于 [MIT 许可证](LICENSE) 开源。
+源代码基于 [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0）开源。
 
-**美术素材（assets/）不适用 MIT 许可。** 所有权利归各自版权持有人所有，详见 [assets/LICENSE](assets/LICENSE)。
+**美术素材（assets/）不适用 AGPL-3.0 许可。** 所有权利归各自版权持有人所有，详见 [assets/LICENSE](assets/LICENSE)。
 
 - **Clawd** 角色设计归属 [Anthropic](https://www.anthropic.com)。本项目为非官方粉丝作品，与 Anthropic 无官方关联。
 - **三花猫** 素材由 鹿鹿 ([@rullerzhou-afk](https://github.com/rullerzhou-afk)) 创作，保留所有权利。

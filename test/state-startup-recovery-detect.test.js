@@ -31,7 +31,6 @@ function makeCtx(overrides = {}) {
     buildTrayMenu: () => {},
     pendingPermissions: [],
     resolvePermissionEntry: () => {},
-    showSessionId: false,
     focusTerminalWindow: () => {},
     processKill: () => { const e = new Error("ESRCH"); e.code = "ESRCH"; throw e; },
     getCursorScreenPoint: () => ({ x: 100, y: 100 }),

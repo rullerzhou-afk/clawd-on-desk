@@ -5,11 +5,14 @@ let screen, nativeImage;
 try { ({ screen, nativeImage } = require("electron")); } catch { screen = null; nativeImage = null; }
 const path = require("path");
 const fs = require("fs");
+const { pathToFileURL } = require("url");
 const { VISUAL_FALLBACK_STATES } = require("./theme-loader");
+const { sessionAliasKey } = require("./session-alias");
 
 // ── Agent icons (official logos from assets/icons/agents/) ──
 const AGENT_ICON_DIR = path.join(__dirname, "..", "assets", "icons", "agents");
 const _agentIconCache = new Map();
+const _agentIconUrlCache = new Map();
 
 function getAgentIcon(agentId) {
   if (!nativeImage || !agentId) return undefined;
@@ -19,6 +22,15 @@ function getAgentIcon(agentId) {
   const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
   _agentIconCache.set(agentId, icon);
   return icon;
+}
+
+function getAgentIconUrl(agentId) {
+  if (!agentId) return null;
+  if (_agentIconUrlCache.has(agentId)) return _agentIconUrlCache.get(agentId);
+  const iconPath = path.join(AGENT_ICON_DIR, `${agentId}.png`);
+  const iconUrl = fs.existsSync(iconPath) ? pathToFileURL(iconPath).href : null;
+  _agentIconUrlCache.set(agentId, iconUrl);
+  return iconUrl;
 }
 
 module.exports = function initState(ctx) {
@@ -53,15 +65,6 @@ const ONESHOT_STATES = new Set(["attention", "error", "sweeping", "notification"
 // extending the state machine. Cap avoids unbounded growth on long sessions.
 const RECENT_EVENT_LIMIT = 8;
 
-// Badge (4-category) → i18n key. Flat keys, not dot-paths — createTranslator()
-// in src/i18n.js only does flat dict[key] lookup.
-const SESSION_BADGE_KEYS = {
-  running: "sessionBadgeRunning",
-  done: "sessionBadgeDone",
-  interrupted: "sessionBadgeInterrupted",
-  idle: "sessionBadgeIdle",
-};
-
 // Hook event name → i18n key for recentEvents.label derivation (C2 renders at
 // read time so a language switch updates already-stored events too).
 // eslint-disable-next-line no-unused-vars
@@ -92,6 +95,8 @@ const sessions = new Map();
 const MAX_SESSIONS = 20;
 const SESSION_STALE_MS = 600000;
 const WORKING_STALE_MS = 300000;
+let lastSessionSnapshotSignature = null;
+let lastSessionSnapshot = null;
 let startupRecoveryActive = false;
 let startupRecoveryTimer = null;
 const STARTUP_RECOVERY_MAX_MS = 300000;
@@ -112,6 +117,7 @@ let autoReturnTimer = null;
 let pendingState = null;
 let eyeResendTimer = null;
 let updateVisualState = null;
+let updateVisualKind = null;
 let updateVisualSvgOverride = null;
 let updateVisualPriority = null;
 
@@ -246,9 +252,16 @@ function refreshTheme() {
   } else {
     currentHitBox = HIT_BOXES.default;
   }
+  refreshUpdateVisualOverride();
 }
 
 refreshTheme();
+
+function refreshUpdateVisualOverride() {
+  updateVisualSvgOverride = (updateVisualKind === "checking" && theme && theme.updateVisuals && theme.updateVisuals.checking)
+    ? theme.updateVisuals.checking
+    : null;
+}
 
 function setState(newState, svgOverride) {
   if (ctx.doNotDisturb) return;
@@ -623,6 +636,199 @@ function normalizeTitle(value) {
     : collapsed;
 }
 
+function sessionUpdatedAt(session) {
+  const updatedAt = Number(session && session.updatedAt);
+  return Number.isFinite(updatedAt) ? updatedAt : 0;
+}
+
+function getSessionAliases() {
+  if (typeof ctx.getSessionAliases !== "function") return {};
+  const aliases = ctx.getSessionAliases();
+  return aliases && typeof aliases === "object" && !Array.isArray(aliases)
+    ? aliases
+    : {};
+}
+
+function getSessionAliasEntry(id, sessionLike, sessionAliases = {}) {
+  const scopedAliasKey = sessionAliasKey(
+    sessionLike && sessionLike.host,
+    sessionLike && sessionLike.agentId,
+    id,
+    { cwd: sessionLike && sessionLike.cwd }
+  );
+  if (scopedAliasKey && sessionAliases[scopedAliasKey]) return sessionAliases[scopedAliasKey];
+
+  const legacyAliasKey = sessionAliasKey(
+    sessionLike && sessionLike.host,
+    sessionLike && sessionLike.agentId,
+    id
+  );
+  if (legacyAliasKey && legacyAliasKey !== scopedAliasKey) return sessionAliases[legacyAliasKey] || null;
+  return legacyAliasKey ? sessionAliases[legacyAliasKey] : null;
+}
+
+function sessionDisplayTitle(id, sessionLike, sessionAliases = {}) {
+  const alias = getSessionAliasEntry(id, sessionLike, sessionAliases);
+  if (alias && typeof alias.title === "string" && alias.title) return alias.title;
+  const title = normalizeTitle(sessionLike && sessionLike.sessionTitle);
+  if (title) return title;
+  const cwd = sessionLike && sessionLike.cwd;
+  if (cwd) return path.basename(cwd);
+  return id && id.length > 6 ? `${id.slice(0, 6)}..` : id;
+}
+
+function sessionMenuComparator(a, b) {
+  const pa = STATE_PRIORITY[a.state] || 0;
+  const pb = STATE_PRIORITY[b.state] || 0;
+  if (pb !== pa) return pb - pa;
+  return sessionUpdatedAt(b) - sessionUpdatedAt(a);
+}
+
+function sessionUpdatedAtComparator(a, b) {
+  const byTime = sessionUpdatedAt(b) - sessionUpdatedAt(a);
+  if (byTime !== 0) return byTime;
+  return String(a.id).localeCompare(String(b.id));
+}
+
+function buildSessionSnapshotEntry(id, session, sessionAliases = {}) {
+  const alias = getSessionAliasEntry(id, session, sessionAliases);
+  const recentEvents = Array.isArray(session && session.recentEvents)
+    ? session.recentEvents
+    : [];
+  const latestEvent = recentEvents.length ? recentEvents[recentEvents.length - 1] : null;
+  const rawEvent = latestEvent && latestEvent.event ? latestEvent.event : null;
+  const eventAt = Number(latestEvent && latestEvent.at);
+  return {
+    id,
+    agentId: (session && session.agentId) || null,
+    iconUrl: getAgentIconUrl(session && session.agentId),
+    state: (session && session.state) || "idle",
+    badge: deriveSessionBadge(session),
+    hasAlias: !!(alias && typeof alias.title === "string" && alias.title),
+    sessionTitle: normalizeTitle(session && session.sessionTitle),
+    displayTitle: sessionDisplayTitle(id, session, sessionAliases),
+    cwd: (session && session.cwd) || "",
+    updatedAt: sessionUpdatedAt(session),
+    sourcePid: (session && session.sourcePid) || null,
+    host: (session && session.host) || null,
+    headless: !!(session && session.headless),
+    lastEvent: latestEvent ? {
+      labelKey: rawEvent ? (EVENT_LABEL_KEYS[rawEvent] || null) : null,
+      rawEvent,
+      at: Number.isFinite(eventAt) ? eventAt : 0,
+    } : null,
+  };
+}
+
+function buildSessionSnapshot() {
+  const entries = [];
+  const sessionAliases = getSessionAliases();
+  for (const [id, session] of sessions) {
+    entries.push(buildSessionSnapshotEntry(id, session, sessionAliases));
+  }
+
+  const dashboardEntries = entries.slice().sort(sessionUpdatedAtComparator);
+  const menuEntries = entries.slice().sort(sessionMenuComparator);
+  const orderedIds = dashboardEntries.map((entry) => entry.id);
+  const menuOrderedIds = menuEntries.map((entry) => entry.id);
+  const hudEntries = dashboardEntries.filter((entry) =>
+    !entry.headless && entry.state !== "sleeping"
+  );
+
+  const groupMap = new Map();
+  for (const entry of dashboardEntries) {
+    const host = entry.host || "";
+    if (!groupMap.has(host)) groupMap.set(host, []);
+    groupMap.get(host).push(entry.id);
+  }
+  const groups = [];
+  if (groupMap.has("")) {
+    groups.push({ host: "", ids: groupMap.get("") });
+  }
+  for (const [host, ids] of groupMap) {
+    if (!host) continue;
+    groups.push({ host, ids });
+  }
+
+  const lastSession = dashboardEntries[0] || null;
+  return {
+    sessions: entries,
+    groups,
+    orderedIds,
+    menuOrderedIds,
+    hudTotalNonIdle: hudEntries.length,
+    hudLastSessionId: hudEntries.length ? hudEntries[0].id : null,
+    hudLastTitle: hudEntries.length ? hudEntries[0].displayTitle : null,
+    lastSessionId: lastSession ? lastSession.id : null,
+    lastTitle: lastSession ? lastSession.displayTitle : null,
+  };
+}
+
+function getActiveSessionAliasKeys() {
+  const keys = new Set();
+  for (const [id, session] of sessions) {
+    const key = sessionAliasKey(
+      session && session.host,
+      session && session.agentId,
+      id,
+      { cwd: session && session.cwd }
+    );
+    if (key) keys.add(key);
+  }
+  return keys;
+}
+
+function sessionSnapshotSignature(snapshot) {
+  return JSON.stringify({
+    orderedIds: snapshot.orderedIds,
+    menuOrderedIds: snapshot.menuOrderedIds,
+    hudTotalNonIdle: snapshot.hudTotalNonIdle,
+    hudLastSessionId: snapshot.hudLastSessionId,
+    hudLastTitle: snapshot.hudLastTitle,
+    lastSessionId: snapshot.lastSessionId,
+    lastTitle: snapshot.lastTitle,
+    sessions: snapshot.sessions.map((entry) => ({
+      id: entry.id,
+      state: entry.state,
+      badge: entry.badge,
+      hasAlias: entry.hasAlias,
+      sessionTitle: entry.sessionTitle,
+      displayTitle: entry.displayTitle,
+      cwd: entry.cwd,
+      agentId: entry.agentId,
+      sourcePid: entry.sourcePid,
+      headless: entry.headless,
+      host: entry.host,
+      lastEventLabelKey: entry.lastEvent ? entry.lastEvent.labelKey : null,
+      lastEventRawEvent: entry.lastEvent ? entry.lastEvent.rawEvent : null,
+      lastEventAt: entry.lastEvent ? entry.lastEvent.at : null,
+    })),
+  });
+}
+
+function broadcastSessionSnapshot(snapshot) {
+  if (typeof ctx.broadcastSessionSnapshot !== "function") return;
+  try { ctx.broadcastSessionSnapshot(snapshot); } catch {}
+}
+
+function emitSessionSnapshot(options = {}) {
+  const force = !!options.force;
+  const snapshot = buildSessionSnapshot();
+  const signature = sessionSnapshotSignature(snapshot);
+  const changed = force || signature !== lastSessionSnapshotSignature;
+  lastSessionSnapshot = snapshot;
+  if (changed) {
+    lastSessionSnapshotSignature = signature;
+    broadcastSessionSnapshot(snapshot);
+  }
+  return { changed, snapshot };
+}
+
+function getLastSessionSnapshot() {
+  if (!lastSessionSnapshot) lastSessionSnapshot = buildSessionSnapshot();
+  return lastSessionSnapshot;
+}
+
 function describeSession(sessionId, session) {
   if (!session) return `sid=${sessionId} <deleted>`;
   return [
@@ -641,6 +847,7 @@ function describeSession(sessionId, session) {
 // positional params — refactored in B2 to an options bag so new fields
 // (sessionTitle, etc.) don't keep extending the argument list.
 function updateSession(sessionId, state, event, opts = {}) {
+  try {
   const {
     sourcePid = null,
     cwd = null,
@@ -772,14 +979,11 @@ function updateSession(sessionId, state, event, opts = {}) {
     sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), displayHint: null, ...base, resumeState: null });
   } else if (ONESHOT_STATES.has(state)) {
     if (existing) {
+      Object.assign(existing, base);
+      existing.state = "idle";
       existing.updatedAt = Date.now();
       existing.displayHint = null;
       existing.resumeState = null;
-      if (sourcePid) existing.sourcePid = sourcePid;
-      if (cwd) existing.cwd = cwd;
-      if (editor) existing.editor = editor;
-      if (pidChain && pidChain.length) existing.pidChain = pidChain;
-      if (agentPid) existing.agentPid = agentPid;
     } else {
       sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), displayHint: null, ...base, resumeState: null });
     }
@@ -871,6 +1075,9 @@ function updateSession(sessionId, state, event, opts = {}) {
 
   const displayState = resolveDisplayState();
   setState(displayState, getSvgOverride(displayState));
+  } finally {
+    emitSessionSnapshot();
+  }
 }
 
 function isProcessAlive(pid) {
@@ -955,6 +1162,7 @@ function cleanStaleSessions() {
     const resolved = resolveDisplayState();
     setState(resolved, getSvgOverride(resolved));
   }
+  if (changed) emitSessionSnapshot();
 
   if (startupRecoveryActive && sessions.size === 0) {
     detectRunningAgentProcesses((found) => {
@@ -1021,6 +1229,7 @@ function clearSessionsByAgent(agentId) {
   if (removed > 0) {
     const resolved = resolveDisplayState();
     setState(resolved, getSvgOverride(resolved));
+    emitSessionSnapshot();
   }
   return removed;
 }
@@ -1197,15 +1406,15 @@ function resolveDisplayState() {
 function setUpdateVisualState(kind) {
   if (!kind) {
     updateVisualState = null;
+    updateVisualKind = null;
     updateVisualSvgOverride = null;
     updateVisualPriority = null;
     return null;
   }
+  updateVisualKind = kind;
   updateVisualState = UPDATE_VISUAL_STATE_MAP[kind] || kind;
   updateVisualPriority = UPDATE_VISUAL_PRIORITY_MAP[kind] || STATE_PRIORITY[updateVisualState] || 0;
-  updateVisualSvgOverride = (kind === "checking" && theme && theme.updateVisuals && theme.updateVisuals.checking)
-    ? theme.updateVisuals.checking
-    : null;
+  refreshUpdateVisualOverride();
   return updateVisualState;
 }
 
@@ -1287,71 +1496,6 @@ function formatElapsed(ms) {
   if (min < 60) return ctx.t("sessionMinAgo").replace("{n}", min);
   const hr = Math.floor(min / 60);
   return ctx.t("sessionHrAgo").replace("{n}", hr);
-}
-
-function buildSessionSubmenu() {
-  const entries = [];
-  for (const [id, s] of sessions) {
-    entries.push({ id, state: s.state, updatedAt: s.updatedAt, sourcePid: s.sourcePid, cwd: s.cwd, editor: s.editor, pidChain: s.pidChain, host: s.host, headless: s.headless, agentId: s.agentId, sessionTitle: s.sessionTitle, recentEvents: s.recentEvents });
-  }
-  if (entries.length === 0) {
-    return [{ label: ctx.t("noSessions"), enabled: false }];
-  }
-  entries.sort((a, b) => {
-    const pa = STATE_PRIORITY[a.state] || 0;
-    const pb = STATE_PRIORITY[b.state] || 0;
-    if (pb !== pa) return pb - pa;
-    return b.updatedAt - a.updatedAt;
-  });
-
-  const now = Date.now();
-
-  function buildItem(e) {
-    // 4-category badge derived from session.state + recentEvents tail.
-    // Not the raw state name — user-facing language (Running/Done/...).
-    const badgeKey = SESSION_BADGE_KEYS[deriveSessionBadge(e)] || "sessionBadgeIdle";
-    const badgeText = ctx.t(badgeKey);
-    const folder = e.cwd ? path.basename(e.cwd) : (e.id.length > 6 ? e.id.slice(0, 6) + ".." : e.id);
-    // Prefer user-set session title (Claude Code /rename, Codex turn summary)
-    // over the cwd folder name when available.
-    const baseName = normalizeTitle(e.sessionTitle) || folder;
-    const name = ctx.showSessionId ? `${baseName} #${e.id.slice(-3)}` : baseName;
-    const elapsed = formatElapsed(now - e.updatedAt);
-    const hasPid = !!e.sourcePid;
-    const icon = getAgentIcon(e.agentId);
-    const item = {
-      label: `${e.headless ? "🤖 " : ""}${name}  ${badgeText}  ${elapsed}`,
-      enabled: hasPid,
-      click: hasPid ? () => ctx.focusTerminalWindow(e.sourcePid, e.cwd, e.editor, e.pidChain) : undefined,
-    };
-    if (icon) item.icon = icon;
-    return item;
-  }
-
-  // Single-pass grouping by host
-  const groups = new Map(); // key: host || "" for local
-  for (const e of entries) {
-    const key = e.host || "";
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(e);
-  }
-
-  if (groups.size === 1 && groups.has("")) return entries.map(buildItem);
-
-  // Build grouped menu: local first, then each remote host
-  const items = [];
-  const local = groups.get("");
-  if (local) {
-    items.push({ label: `📍 ${ctx.t("sessionLocal")}`, enabled: false });
-    items.push(...local.map(buildItem));
-  }
-  for (const [h, group] of groups) {
-    if (!h) continue;
-    if (items.length) items.push({ type: "separator" });
-    items.push({ label: `🖥 ${h}`, enabled: false });
-    items.push(...group.map(buildItem));
-  }
-  return items;
 }
 
 // ── Do Not Disturb ──
@@ -1446,7 +1590,9 @@ return {
   enableDoNotDisturb, disableDoNotDisturb,
   startStaleCleanup, stopStaleCleanup, startWakePoll, stopWakePoll,
   getSvgOverride, cleanStaleSessions, startStartupRecovery, refreshTheme,
-  detectRunningAgentProcesses, buildSessionSubmenu,
+  detectRunningAgentProcesses, buildSessionSnapshot,
+  emitSessionSnapshot, broadcastSessionSnapshot, getLastSessionSnapshot,
+  getActiveSessionAliasKeys,
   clearSessionsByAgent,
   disposeAllKimiPermissionState,
   deriveSessionBadge,

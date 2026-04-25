@@ -194,7 +194,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes("summary: buildBubblePolicySummary()"));
     assert.ok(generalSource.includes("children: [buildBubblePolicyList()]"));
     assert.ok(generalSource.includes('key: "bubbleFollowPet"'));
-    assert.ok(generalSource.includes('key: "showSessionId"'));
+    assert.ok(!generalSource.includes('key: "showSessionId"'));
+    assert.ok(!generalSource.includes('key: "hideBubbles"'));
     assert.ok(i18nSource.includes("bubblePolicySummaryPermission"));
     assert.ok(i18nSource.includes("bubblePolicySummaryNotification"));
     assert.ok(i18nSource.includes("bubblePolicySummaryUpdate"));

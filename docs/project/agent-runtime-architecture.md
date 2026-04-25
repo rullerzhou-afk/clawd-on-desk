@@ -48,6 +48,12 @@ CodeBuddy 状态同步（Claude Code 兼容 hook，command）：
     → 同上状态机（agent_id: codebuddy）
   Hook 注册到 ~/.codebuddy/settings.json，格式与 Claude Code 完全兼容。
 
+Kimi Code CLI（Kimi-CLI）状态同步（hook-only，config.toml）：
+  Kimi Code CLI（Kimi-CLI）触发事件
+    → hooks/kimi-hook.js（hook 事件 → agents/kimi-cli.js 映射 → HTTP POST）
+    → 同上状态机（agent_id: kimi-cli）
+  Hook 注册到 ~/.kimi/config.toml 的 [[hooks]] 条目；Clawd 启动时会自动同步这些条目。
+
 opencode 状态同步（in-process plugin，~0ms 延迟）：
   opencode 触发事件（session.created / session.status / message.part.updated 等）
     → hooks/opencode-plugin/index.mjs（Bun 运行时，插件跑在 opencode.exe 进程内）
@@ -84,6 +90,7 @@ opencode 权限气泡（event hook + 反向 bridge，非阻塞）：
 - `agents/copilot-cli.js` — Copilot CLI camelCase 事件映射
 - `agents/cursor-agent.js` — Cursor Agent（hooks.json）事件映射
 - `agents/gemini-cli.js` — Gemini CLI 事件映射 + JSON 轮询配置
+- `agents/kimi-cli.js` — Kimi Code CLI（Kimi-CLI）hook 事件映射 + permission 分类策略
 - `agents/kiro-cli.js` — Kiro CLI 事件映射（camelCase），无 HTTP hook / 无权限 / 无 subagent
 - `agents/codebuddy.js` — CodeBuddy 事件映射（PascalCase，Claude Code 兼容），支持权限
 - `agents/opencode.js` — opencode 事件映射 + 能力（plugin、permission、terminal focus）
@@ -98,7 +105,7 @@ opencode 权限气泡（event hook + 反向 bridge，非阻塞）：
 启动链路会自动补齐缺失集成：
 
 - `main.js` 会先调用 `registerHooks({ silent: true, autoStart: true, port })`
-- `server.js` 启动后异步同步 Claude / Gemini / Cursor / CodeBuddy / Kiro hooks 和 opencode plugin
+- `server.js` 启动后异步同步 Claude / Gemini / Cursor / CodeBuddy / Kiro / Kimi hooks 和 opencode plugin
 - Claude hook 同步时还会扫 `DEPRECATED_CORE_HOOKS`（当前含 `WorktreeCreate`）清掉旧版本留下的过时 clawd hook 条目，仅删 command 指向 `clawd-hook.js` 的那条，用户自己写的同事件 hook 不动
 
 手动安装命令主要用于调试、重装或远程机部署。

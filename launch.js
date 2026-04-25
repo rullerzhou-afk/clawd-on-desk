@@ -14,14 +14,13 @@ const electron = require("electron");
 
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
-if (process.platform === "linux") {
-  // Some Linux environments still trip Chromium sandbox initialization even
-  // with argv flags; force-disable via env too for reliability.
+const disableSandbox = process.platform === "linux" && process.env.CLAWD_DISABLE_SANDBOX === "1";
+if (disableSandbox) {
   env.ELECTRON_DISABLE_SANDBOX = "1";
   env.CHROME_DEVEL_SANDBOX = "";
 }
 
-const args = process.platform === "linux"
+const args = disableSandbox
   ? [".", "--no-sandbox", "--disable-setuid-sandbox"]
   : ["."];
 const child = spawn(electron, args, {

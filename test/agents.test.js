@@ -21,7 +21,7 @@ const state = require("../src/state.js")({
   sendToHitWin: () => {}, miniPeekIn: () => {}, miniPeekOut: () => {},
   buildContextMenu: () => {}, buildTrayMenu: () => {},
   pendingPermissions: [], resolvePermissionEntry: () => {},
-  t: (k) => k, showSessionId: false, focusTerminalWindow: () => {},
+  t: (k) => k, focusTerminalWindow: () => {},
 });
 
 const VALID_STATES = new Set(Object.keys(state.STATE_PRIORITY));

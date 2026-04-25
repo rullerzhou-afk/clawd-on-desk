@@ -77,8 +77,9 @@ describe("updateRegistry pure-data validators", () => {
   it("function-form boolean fields reject non-booleans", () => {
     const deps = { snapshot: baseSnapshot };
     for (const key of [
-      "soundMuted", "bubbleFollowPet", "hideBubbles", "permissionBubblesEnabled", "allowEdgePinning", "keepSizeAcrossDisplays",
-      "showSessionId", "miniMode", "openAtLoginHydrated",
+      "sessionHudEnabled", "miniMode", "openAtLoginHydrated",
+      "soundMuted", "bubbleFollowPet", "sessionHudEnabled", "hideBubbles", "permissionBubblesEnabled",
+      "allowEdgePinning", "keepSizeAcrossDisplays", "miniMode", "openAtLoginHydrated",
     ]) {
       assert.strictEqual(updateRegistry[key](true, deps).status, "ok", `${key}(true)`);
       assert.strictEqual(updateRegistry[key](false, deps).status, "ok", `${key}(false)`);
@@ -192,6 +193,20 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(updateRegistry.agents([], deps).status, "error");
     assert.strictEqual(updateRegistry.themeOverrides({}, deps).status, "ok");
     assert.strictEqual(updateRegistry.themeOverrides("nope", deps).status, "error");
+  });
+
+  it("sessionAliases requires a plain object of valid alias entries", () => {
+    const deps = { snapshot: baseSnapshot };
+    assert.strictEqual(
+      updateRegistry.sessionAliases({ "local|codex|s1": { title: "Codex", updatedAt: 100 } }, deps).status,
+      "ok"
+    );
+    assert.strictEqual(updateRegistry.sessionAliases({}, deps).status, "ok");
+    assert.strictEqual(updateRegistry.sessionAliases([], deps).status, "error");
+    assert.strictEqual(
+      updateRegistry.sessionAliases({ "local|codex|s1": { title: "", updatedAt: 100 } }, deps).status,
+      "error"
+    );
   });
 
   it("shortcuts commit validator accepts only known keys with string/null values", () => {
@@ -423,6 +438,95 @@ describe("hook commands", () => {
     assert.strictEqual(r.status, "error");
     assert.match(r.message, /disk locked/);
     assert.deepStrictEqual(calls, ["stop", "uninstall", "start"]);
+  });
+});
+
+describe("setSessionAlias command", () => {
+  it("stores a sanitized alias under the normalized session key", () => {
+    const snapshot = { ...prefs.getDefaults(), sessionAliases: {} };
+    const r = commandRegistry.setSessionAlias(
+      { host: null, agentId: "codex", sessionId: "s1", alias: "  Codex\nmain  " },
+      { snapshot, now: 1000, getActiveSessionAliasKeys: () => new Set(["local|codex|s1"]) }
+    );
+
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(r.commit.sessionAliases, {
+      "local|codex|s1": { title: "Codex main", updatedAt: 1000 },
+    });
+  });
+
+  it("stores Kiro default-session aliases under a cwd-scoped key", () => {
+    const snapshot = { ...prefs.getDefaults(), sessionAliases: {} };
+    const r = commandRegistry.setSessionAlias(
+      { host: null, agentId: "kiro-cli", sessionId: "default", cwd: "/repo/a", alias: "Kiro A" },
+      { snapshot, now: 1000, getActiveSessionAliasKeys: () => new Set(["local|kiro-cli|default|cwd:%2Frepo%2Fa"]) }
+    );
+
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(r.commit.sessionAliases, {
+      "local|kiro-cli|default|cwd:%2Frepo%2Fa": { title: "Kiro A", updatedAt: 1000 },
+    });
+  });
+
+  it("clears an existing alias when alias is empty", () => {
+    const snapshot = {
+      ...prefs.getDefaults(),
+      sessionAliases: { "local|codex|s1": { title: "Codex main", updatedAt: 1000 } },
+    };
+    const r = commandRegistry.setSessionAlias(
+      { host: "local", agentId: "codex", sessionId: "s1", alias: "   " },
+      { snapshot, now: 2000, getActiveSessionAliasKeys: () => new Set(["local|codex|s1"]) }
+    );
+
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(r.commit.sessionAliases, {});
+  });
+
+  it("returns noop when the alias value is unchanged", () => {
+    const snapshot = {
+      ...prefs.getDefaults(),
+      sessionAliases: { "local|codex|s1": { title: "Codex main", updatedAt: 1000 } },
+    };
+    const r = commandRegistry.setSessionAlias(
+      { host: null, agentId: "codex", sessionId: "s1", alias: "Codex main" },
+      { snapshot, now: 2000, getActiveSessionAliasKeys: () => new Set(["local|codex|s1"]) }
+    );
+
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(r.noop, true);
+  });
+
+  it("prunes expired inactive aliases even when the requested alias is unchanged", () => {
+    const old = 1000;
+    const now = old + 8 * 24 * 60 * 60 * 1000;
+    const snapshot = {
+      ...prefs.getDefaults(),
+      sessionAliases: {
+        "local|codex|s1": { title: "Codex main", updatedAt: old },
+        "local|codex|stale": { title: "Stale", updatedAt: old },
+      },
+    };
+    const r = commandRegistry.setSessionAlias(
+      { host: null, agentId: "codex", sessionId: "s1", alias: "Codex main" },
+      { snapshot, now, getActiveSessionAliasKeys: () => new Set(["local|codex|s1"]) }
+    );
+
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(r.commit.sessionAliases, {
+      "local|codex|s1": { title: "Codex main", updatedAt: old },
+    });
+  });
+
+  it("rejects missing sessionId or non-string alias", () => {
+    const deps = { snapshot: prefs.getDefaults() };
+    assert.strictEqual(
+      commandRegistry.setSessionAlias({ host: null, agentId: "codex", sessionId: "", alias: "x" }, deps).status,
+      "error"
+    );
+    assert.strictEqual(
+      commandRegistry.setSessionAlias({ host: null, agentId: "codex", sessionId: "s1", alias: 42 }, deps).status,
+      "error"
+    );
   });
 });
 

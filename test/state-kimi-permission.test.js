@@ -32,7 +32,6 @@ function makeCtx() {
     buildTrayMenu: () => {},
     pendingPermissions: [],
     resolvePermissionEntry: () => {},
-    showSessionId: false,
     focusTerminalWindow: () => {},
     showKimiNotifyBubble: ({ sessionId }) => { kimiNotifyShown.push(sessionId); },
     clearKimiNotifyBubbles: (sessionId) => { kimiNotifyCleared.push(sessionId || "__all__"); },

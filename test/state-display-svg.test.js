@@ -28,7 +28,6 @@ function makeCtx() {
     pendingPermissions: [],
     resolvePermissionEntry() {},
     t: (k) => k,
-    showSessionId: false,
     focusTerminalWindow() {},
   };
 }

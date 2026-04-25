@@ -26,6 +26,7 @@ const {
   UPDATE_DEFAULT_SECONDS,
   MAX_AUTO_CLOSE_SECONDS,
 } = require("./bubble-policy");
+const { normalizeSessionAliases } = require("./session-alias");
 
 const CURRENT_VERSION = 1;
 
@@ -84,6 +85,7 @@ const SCHEMA = {
   openAtLogin: { type: "boolean", default: false },
   openAtLoginHydrated: { type: "boolean", default: false },
   bubbleFollowPet: { type: "boolean", default: false },
+  sessionHudEnabled: { type: "boolean", default: true },
   hideBubbles: { type: "boolean", default: false },
   permissionBubblesEnabled: { type: "boolean", default: true },
   notificationBubbleAutoCloseSeconds: {
@@ -96,7 +98,6 @@ const SCHEMA = {
     default: UPDATE_DEFAULT_SECONDS,
     validate: (v) => Number.isInteger(v) && v >= 0 && v <= MAX_AUTO_CLOSE_SECONDS,
   },
-  showSessionId: { type: "boolean", default: false },
   soundMuted: { type: "boolean", default: false },
   soundVolume: {
     type: "number",
@@ -142,6 +143,11 @@ const SCHEMA = {
     type: "object",
     defaultFactory: () => ({}),
     normalize: normalizeThemeVariant,
+  },
+  sessionAliases: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizeSessionAliases,
   },
 };
 

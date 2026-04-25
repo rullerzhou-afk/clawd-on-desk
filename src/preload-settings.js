@@ -58,6 +58,7 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   update: (key, value) => ipcRenderer.invoke("settings:update", { key, value }),
   getPreviewSoundUrl: () => ipcRenderer.invoke("settings:get-preview-sound-url"),
   command: (action, payload) => ipcRenderer.invoke("settings:command", { action, payload }),
+  openDashboard: () => ipcRenderer.send("settings:open-dashboard"),
   listAgents: () => ipcRenderer.invoke("settings:list-agents"),
   getAboutInfo: () => ipcRenderer.invoke("settings:get-about-info"),
   checkForUpdates: () => ipcRenderer.invoke("settings:check-for-updates"),

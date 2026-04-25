@@ -34,7 +34,6 @@ function makeCtx({ notificationHookEnabled = true } = {}) {
     buildTrayMenu: () => {},
     pendingPermissions: [],
     resolvePermissionEntry: () => {},
-    showSessionId: false,
     focusTerminalWindow: () => {},
     showKimiNotifyBubble: () => {},
     clearKimiNotifyBubbles: () => {},

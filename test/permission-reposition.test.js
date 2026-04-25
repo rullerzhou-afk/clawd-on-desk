@@ -221,4 +221,35 @@ describe("permission bubble stack layout", () => {
     assert.strictEqual(bounds[1].y, 500 + 188 + 6);
     assert.strictEqual(bounds[2].y, 500 + (188 + 6) * 2);
   });
+
+  it("reserves the HUD lane before placing bubbles below the pet", () => {
+    const bounds = layout({
+      followPet: true,
+      bubbleHeights: [150, 150],
+      workArea: FHD,
+      hitRect: { left: 800, top: 400, right: 920, bottom: 500 },
+      hudReservedOffset: 38,
+    });
+
+    assert.deepStrictEqual(bounds, [
+      { x: 690, y: 538, width: 340, height: 150 },
+      { x: 690, y: 694, width: 340, height: 150 },
+    ]);
+  });
+
+  it("includes the HUD reserve in the below-pet fit check", () => {
+    const common = {
+      followPet: true,
+      bubbleHeights: [190],
+      workArea: { x: 0, y: 0, width: 1920, height: 700 },
+      hitRect: { left: 800, top: 400, right: 920, bottom: 500 },
+    };
+
+    const withoutHud = layout(common);
+    const withHud = layout({ ...common, hudReservedOffset: 38 });
+
+    assert.strictEqual(withoutHud[0].y, 500, "without HUD it still fits below");
+    assert.strictEqual(withHud[0].x, 920, "with HUD reserve it falls to the side");
+    assert.notStrictEqual(withHud[0].y, 538);
+  });
 });

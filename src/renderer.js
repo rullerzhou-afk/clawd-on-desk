@@ -160,6 +160,7 @@ let _layerTargetDx = 0;           // raw dx from tick.js (scaled to _themeMaxOff
 let _layerTargetDy = 0;           // raw dy from tick.js
 let _layerAnimFrame = null;        // requestAnimationFrame handle
 let _layeredTrackingObj = null;    // the <object> element currently tracked (guard against re-init)
+const LAYER_SETTLE_EPSILON = 0.02;
 
 initWithConfig(tc);
 
@@ -591,6 +592,17 @@ function _calcLayerOffset(dx, dy, maxOffset) {
   return [(dx / dist) * clamp, (dy / dist) * clamp];
 }
 
+function _getLayerTarget(layer, rawDx, rawDy) {
+  const scale = layer.maxOffset / (_themeMaxOffset || 20);
+  return [rawDx * scale, rawDy * scale];
+}
+
+function _layerNeedsAnimation(layer, rawDx, rawDy) {
+  const [tx, ty] = _getLayerTarget(layer, rawDx, rawDy);
+  return Math.abs(layer.x - tx) >= LAYER_SETTLE_EPSILON
+    || Math.abs(layer.y - ty) >= LAYER_SETTLE_EPSILON;
+}
+
 /**
  * Initialize layered tracking for a loaded SVG document.
  * Creates <g> wrappers for each element listed in trackingLayers config.
@@ -632,8 +644,11 @@ function _initLayeredTracking(svgDoc) {
     };
   }
 
-  // Start the easing animation loop
-  _startLayerAnimLoop();
+  _layerTargetDx = lastEyeDx;
+  _layerTargetDy = lastEyeDy;
+  if (Object.values(_trackingLayers).some(layer => _layerNeedsAnimation(layer, _layerTargetDx, _layerTargetDy))) {
+    _startLayerAnimLoop();
+  }
 }
 
 /**
@@ -647,23 +662,27 @@ function _startLayerAnimLoop() {
 
     const rawDx = _layerTargetDx;
     const rawDy = _layerTargetDy;
+    let allSettled = true;
 
     for (const layer of Object.values(_trackingLayers)) {
       // Scale the pre-calculated offset (from tick.js, already in [-maxOffset, maxOffset])
       // to this layer's range. No second normalization — tick.js already did it.
-      const scale = layer.maxOffset / (_themeMaxOffset || 20);
-      const tx = rawDx * scale;
-      const ty = rawDy * scale;
+      const [tx, ty] = _getLayerTarget(layer, rawDx, rawDy);
 
       // Lerp towards target
       layer.x += (tx - layer.x) * layer.ease;
       layer.y += (ty - layer.y) * layer.ease;
+
+      if (Math.abs(layer.x - tx) < LAYER_SETTLE_EPSILON) layer.x = tx;
+      if (Math.abs(layer.y - ty) < LAYER_SETTLE_EPSILON) layer.y = ty;
 
       // Snap to zero when very close (avoid sub-pixel jitter)
       if (Math.abs(layer.x) < 0.01 && Math.abs(layer.y) < 0.01 && tx === 0 && ty === 0) {
         layer.x = 0;
         layer.y = 0;
       }
+
+      if (layer.x !== tx || layer.y !== ty) allSettled = false;
 
       // Quantize to quarter-pixel grid for smooth rendering
       const qx = Math.round(layer.x * 4) / 4;
@@ -673,6 +692,11 @@ function _startLayerAnimLoop() {
       for (const w of layer.wrappers) {
         w.setAttribute("transform", `translate(${qx},${qy})`);
       }
+    }
+
+    if (allSettled) {
+      _layerAnimFrame = null;
+      return;
     }
 
     _layerAnimFrame = requestAnimationFrame(tick);
@@ -775,6 +799,7 @@ window.electronAPI.onEyeMove((dx, dy) => {
     // Layered tracking: store targets, RAF loop handles easing
     _layerTargetDx = effectiveDx;
     _layerTargetDy = dy;
+    _startLayerAnimLoop();
     return;
   }
 
