@@ -5,6 +5,7 @@ const fs = require("fs");
 const electron = require("electron");
 
 const isMac = process.platform === "darwin";
+const RELEASES_LATEST_URL = "https://github.com/rullerzhou-afk/clawd-on-desk/releases/latest";
 
 function makeTranslate(ctx) {
   return (key, fallback) => {
@@ -65,6 +66,24 @@ function buildErrorDetail({ failureType, operation, reason, nextStep, detail }) 
   return lines.join("\n").trim();
 }
 
+function shouldPromptNativeArm64({ platform, arch, isPackaged, runningUnderARM64Translation }) {
+  return platform === "win32" &&
+    arch === "x64" &&
+    !!isPackaged &&
+    !!runningUnderARM64Translation;
+}
+
+function findWindowsArm64InstallerAsset(release) {
+  const assets = release && Array.isArray(release.assets) ? release.assets : [];
+  return assets.find((asset) => {
+    const name = String(asset && asset.name || "");
+    return /setup/i.test(name) &&
+      /arm64/i.test(name) &&
+      /\.exe$/i.test(name) &&
+      asset.browser_download_url;
+  }) || null;
+}
+
 function initUpdater(ctx, deps = {}) {
   const app = deps.app || electron.app;
   const shell = deps.shell || electron.shell;
@@ -72,12 +91,15 @@ function initUpdater(ctx, deps = {}) {
   const execFileFn = deps.execFileImpl || execFile;
   const fsApi = deps.fsImpl || fs;
   const t = makeTranslate(ctx);
+  const runtimePlatform = deps.platform || process.platform;
+  const runtimeArch = deps.arch || process.arch;
 
   let updateStatus = "idle";
   let manualUpdateCheck = false;
   let repoRootCache;
   let autoUpdaterInstance = null;
   let overlayKind = null;
+  let nativeArm64PromptDismissed = false;
 
   function rebuildMenus() {
     if (typeof ctx.rebuildAllMenus === "function") ctx.rebuildAllMenus();
@@ -232,7 +254,7 @@ function initUpdater(ctx, deps = {}) {
     });
   }
 
-  function fetchLatestVersion() {
+  function fetchLatestRelease() {
     return new Promise((resolve, reject) => {
       const req = httpsGet({
         hostname: "api.github.com",
@@ -249,7 +271,7 @@ function initUpdater(ctx, deps = {}) {
           try {
             const release = JSON.parse(data);
             if (!release.tag_name) return reject(new Error("No tag_name in release"));
-            resolve(release.tag_name);
+            resolve(release);
           } catch (err) {
             reject(new Error(`Failed to parse GitHub response: ${err.message}`));
           }
@@ -263,6 +285,17 @@ function initUpdater(ctx, deps = {}) {
           reject(new Error("GitHub API request timed out (10s)"));
         });
       }
+    });
+  }
+
+  function isRunningX64OnWindowsArm64() {
+    return shouldPromptNativeArm64({
+      platform: runtimePlatform,
+      arch: runtimeArch,
+      isPackaged: app.isPackaged,
+      runningUnderARM64Translation: deps.runningUnderARM64Translation != null
+        ? deps.runningUnderARM64Translation
+        : app.runningUnderARM64Translation,
     });
   }
 
@@ -333,6 +366,65 @@ function initUpdater(ctx, deps = {}) {
     updateStatus = "idle";
     rebuildMenus();
     return null;
+  }
+
+  async function maybePromptNativeArm64Installer(release, { manual = false, currentVersion = app.getVersion() } = {}) {
+    if (!isRunningX64OnWindowsArm64()) return false;
+    if (!manual && (nativeArm64PromptDismissed || isSilentMode())) return false;
+
+    const version = release && release.tag_name;
+    if (!version || compareVersions(currentVersion, version) > 0) return false;
+
+    const asset = findWindowsArm64InstallerAsset(release);
+    if (!asset) return false;
+
+    updateStatus = "available";
+    setOverlay("available");
+    rebuildMenus();
+
+    const action = await showBubble({
+      mode: "available",
+      title: t("nativeArm64Available", "Native ARM64 Build Available"),
+      message: t(
+        "nativeArm64AvailableMsg",
+        "Clawd v{version} has a native Windows ARM64 installer. Install it for better performance and battery life?"
+      ).replace("{version}", version),
+      version,
+      actions: [
+        { id: "primary", label: t("download", "Download"), variant: "primary" },
+        { id: "later", label: t("restartLater", "Later"), variant: "secondary" },
+      ],
+      defaultAction: "later",
+      lang: ctx.lang || "en",
+      requireAction: true,
+    });
+
+    if (action === "primary") {
+      shell.openExternal(asset.browser_download_url || RELEASES_LATEST_URL);
+      updateStatus = "idle";
+      manualUpdateCheck = false;
+      rebuildMenus();
+      await showSuccessBubble({
+        title: t("updateReady", "Update Ready"),
+        message: t("nativeArm64DownloadOpened", "Opened the ARM64 installer download in your browser."),
+        version,
+        actions: [
+          { id: "dismiss", label: t("dismiss", "Dismiss"), variant: "secondary" },
+        ],
+        defaultAction: "dismiss",
+        requireAction: true,
+      });
+      dismissToResolvedState();
+      return true;
+    }
+
+    nativeArm64PromptDismissed = true;
+    hideBubble();
+    dismissToResolvedState();
+    updateStatus = "idle";
+    manualUpdateCheck = false;
+    rebuildMenus();
+    return true;
   }
 
   async function runGitUpdate(repoRoot, branch, localHead) {
@@ -469,6 +561,13 @@ function initUpdater(ctx, deps = {}) {
   }
 
   function setupAutoUpdater() {
+    if (isRunningX64OnWindowsArm64()) {
+      Promise.resolve()
+        .then(fetchLatestRelease)
+        .then((release) => maybePromptNativeArm64Installer(release, { manual: false }))
+        .catch((err) => log(`Native ARM64 prompt skipped: ${err.message}`));
+    }
+
     const autoUpdater = getAutoUpdater();
     if (!autoUpdater) return;
 
@@ -492,7 +591,7 @@ function initUpdater(ctx, deps = {}) {
         version: info.version,
         onPrimary: async () => {
           if (isMac) {
-            shell.openExternal("https://github.com/rullerzhou-afk/clawd-on-desk/releases/latest");
+            shell.openExternal(RELEASES_LATEST_URL);
             updateStatus = "idle";
             manualUpdateCheck = false;
             rebuildMenus();
@@ -596,9 +695,11 @@ function initUpdater(ctx, deps = {}) {
       t("checkingForUpdates", "Checking for Updates...")
     );
 
+    let latestRelease;
     let latestVersion;
     try {
-      latestVersion = await fetchLatestVersion();
+      latestRelease = await fetchLatestRelease();
+      latestVersion = latestRelease.tag_name;
     } catch (err) {
       updateStatus = "error";
       manualUpdateCheck = false;
@@ -615,6 +716,8 @@ function initUpdater(ctx, deps = {}) {
       }
       return;
     }
+
+    if (await maybePromptNativeArm64Installer(latestRelease, { manual, currentVersion })) return;
 
     if (compareVersions(currentVersion, latestVersion) >= 0) {
       updateStatus = "idle";
@@ -712,5 +815,7 @@ function initUpdater(ctx, deps = {}) {
 module.exports = initUpdater;
 module.exports.__test = {
   compareVersions,
+  findWindowsArm64InstallerAsset,
   isUpdate404Error,
+  shouldPromptNativeArm64,
 };
