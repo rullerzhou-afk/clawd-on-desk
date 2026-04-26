@@ -66,6 +66,10 @@ function buildErrorDetail({ failureType, operation, reason, nextStep, detail }) 
   return lines.join("\n").trim();
 }
 
+function formatVersionForMessage(version) {
+  return String(version || "").replace(/^v/i, "");
+}
+
 function shouldPromptNativeArm64({ platform, arch, isPackaged, runningUnderARM64Translation }) {
   return platform === "win32" &&
     arch === "x64" &&
@@ -371,9 +375,11 @@ function initUpdater(ctx, deps = {}) {
   async function maybePromptNativeArm64Installer(release, { manual = false, currentVersion = app.getVersion() } = {}) {
     if (!isRunningX64OnWindowsArm64()) return false;
     if (!manual && (nativeArm64PromptDismissed || isSilentMode())) return false;
+    if (!manual && (manualUpdateCheck || updateStatus !== "idle")) return false;
 
     const version = release && release.tag_name;
     if (!version || compareVersions(currentVersion, version) > 0) return false;
+    const displayVersion = formatVersionForMessage(version);
 
     const asset = findWindowsArm64InstallerAsset(release);
     if (!asset) return false;
@@ -388,7 +394,7 @@ function initUpdater(ctx, deps = {}) {
       message: t(
         "nativeArm64AvailableMsg",
         "Clawd v{version} has a native Windows ARM64 installer. Install it for better performance and battery life?"
-      ).replace("{version}", version),
+      ).replace("{version}", displayVersion),
       version,
       actions: [
         { id: "primary", label: t("download", "Download"), variant: "primary" },
@@ -816,6 +822,7 @@ module.exports = initUpdater;
 module.exports.__test = {
   compareVersions,
   findWindowsArm64InstallerAsset,
+  formatVersionForMessage,
   isUpdate404Error,
   shouldPromptNativeArm64,
 };

@@ -68,6 +68,23 @@ function makeLatestReleaseResponse(release) {
   };
 }
 
+function makePendingReleaseResponse(queue) {
+  return (options, cb) => {
+    queue.push((release) => {
+      const res = {
+        statusCode: 200,
+        on(event, handler) {
+          if (event === "data") handler(Buffer.from(JSON.stringify(release)));
+          if (event === "end") handler();
+          return this;
+        },
+      };
+      cb(res);
+    });
+    return { on() { return this; }, setTimeout() {} };
+  };
+}
+
 describe("updater visual flow", () => {
   beforeEach(() => {
     mock.restoreAll();
@@ -453,6 +470,8 @@ describe("updater visual flow", () => {
     assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "available", "ready"]);
     assert.match(bubbles[1].title, /ARM64/);
     assert.match(bubbles[1].message, /native Windows ARM64 installer/i);
+    assert.match(bubbles[1].message, /Clawd v0\.6\.1/);
+    assert.doesNotMatch(bubbles[1].message, /vv0\.6\.1/);
     assert.strictEqual(openedUrls[0], "https://example.invalid/arm64.exe");
     assert.strictEqual(autoUpdateChecks, 0);
   });
@@ -525,6 +544,63 @@ describe("updater visual flow", () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["available"]);
+  });
+
+  it("does not let the startup ARM64 prompt overwrite an active manual update check", async () => {
+    const bubbles = [];
+    const pendingResponses = [];
+    const ctx = makeCtx({
+      showUpdateBubble: async (payload) => {
+        bubbles.push(payload);
+        return payload.defaultAction || null;
+      },
+    });
+    const updater = initUpdater(ctx, makeDeps({
+      platform: "win32",
+      arch: "x64",
+      app: {
+        isPackaged: true,
+        runningUnderARM64Translation: true,
+        getVersion: () => "0.6.1",
+        relaunch() {},
+        exit() {},
+      },
+      httpsGetImpl: makePendingReleaseResponse(pendingResponses),
+    }));
+
+    updater.setupAutoUpdater();
+    await Promise.resolve();
+    assert.strictEqual(pendingResponses.length, 1);
+
+    const manualCheck = updater.checkForUpdates(true);
+    await Promise.resolve();
+    assert.strictEqual(pendingResponses.length, 2);
+
+    pendingResponses[0]({
+      tag_name: "v0.6.1",
+      assets: [
+        {
+          name: "Clawd-on-Desk-Setup-0.6.1-arm64.exe",
+          browser_download_url: "https://example.invalid/arm64.exe",
+        },
+      ],
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking"]);
+
+    pendingResponses[1]({
+      tag_name: "v0.6.1",
+      assets: [
+        {
+          name: "Clawd-on-Desk-Setup-0.6.1-arm64.exe",
+          browser_download_url: "https://example.invalid/arm64.exe",
+        },
+      ],
+    });
+    await manualCheck;
+
+    assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "available"]);
   });
 
   it("uses the macOS packaged-update path by opening the releases page and showing a success bubble", async () => {
@@ -697,6 +773,13 @@ describe("updater Windows ARM64 migration helpers", () => {
       isPackaged: false,
       runningUnderARM64Translation: true,
     }), false);
+  });
+
+  it("formats release tags for messages with a single hard-coded v prefix", () => {
+    const { formatVersionForMessage } = initUpdater.__test;
+
+    assert.strictEqual(formatVersionForMessage("v0.6.1"), "0.6.1");
+    assert.strictEqual(formatVersionForMessage("0.6.1"), "0.6.1");
   });
 
   it("finds Windows ARM64 installer assets without matching blockmaps", () => {
