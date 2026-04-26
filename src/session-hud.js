@@ -2,6 +2,7 @@
 
 const { BrowserWindow } = require("electron");
 const path = require("path");
+const { keepOutOfTaskbar } = require("./taskbar");
 
 const isLinux = process.platform === "linux";
 const isMac = process.platform === "darwin";
@@ -243,7 +244,7 @@ module.exports = function initSessionHud(ctx) {
     if (!win || win.isDestroyed() || !didFinishLoad) return;
     if (!win.isVisible()) {
       win.showInactive();
-      if (isLinux) win.setSkipTaskbar(true);
+      keepOutOfTaskbar(win);
       if (isMac) deferMacFloatingVisibility(ctx, win);
       else if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
     }

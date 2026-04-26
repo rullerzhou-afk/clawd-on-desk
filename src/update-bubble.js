@@ -1,5 +1,6 @@
 const { BrowserWindow } = require("electron");
 const path = require("path");
+const { keepOutOfTaskbar } = require("./taskbar");
 
 const isLinux = process.platform === "linux";
 const isMac = process.platform === "darwin";
@@ -221,7 +222,7 @@ module.exports = function initUpdateBubble(ctx) {
       return;
     }
     bubble.showInactive();
-    if (isLinux) bubble.setSkipTaskbar(true);
+    keepOutOfTaskbar(bubble);
     if (isMac) deferMacFloatingVisibility(ctx, bubble);
     else if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
   }

@@ -3,6 +3,7 @@
 
 const { BrowserWindow, globalShortcut } = require("electron");
 const { getDefaultShortcuts } = require("./shortcut-actions");
+const { keepOutOfTaskbar } = require("./taskbar");
 const path = require("path");
 const http = require("http");
 const {
@@ -505,8 +506,7 @@ function showPermissionBubble(permEntry) {
   repositionBubbles();
   bub.showInactive();
   repositionDependentBubbles();
-  // Linux WMs may reset skipTaskbar after showInactive — re-apply explicitly
-  if (isLinux) bub.setSkipTaskbar(true);
+  keepOutOfTaskbar(bub);
   // macOS: constructing/raising a topmost panel too early can still activate
   // Clawd on some setups. Defer topmost restoration until after showInactive.
   if (isMac) deferMacFloatingVisibility(ctx, bub);

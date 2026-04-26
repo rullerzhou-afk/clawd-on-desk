@@ -43,6 +43,7 @@ const {
   getLaunchSizingWorkArea,
   getProportionalPixelSize,
 } = require("./size-utils");
+const { keepOutOfTaskbar } = require("./taskbar");
 
 // ── Autoplay policy: allow sound playback without user gesture ──
 // MUST be set before any BrowserWindow is created (before app.whenReady)
@@ -521,16 +522,16 @@ function togglePetVisibility() {
   if (_mini.getMiniTransitioning()) return;
   if (petHidden) {
     win.showInactive();
-    if (isLinux) win.setSkipTaskbar(true);
+    keepOutOfTaskbar(win);
     if (hitWin && !hitWin.isDestroyed()) {
       hitWin.showInactive();
-      if (isLinux) hitWin.setSkipTaskbar(true);
+      keepOutOfTaskbar(hitWin);
     }
     // Restore any permission bubbles that were hidden
     for (const perm of pendingPermissions) {
       if (perm.bubble && !perm.bubble.isDestroyed()) {
         perm.bubble.showInactive();
-        if (isLinux) perm.bubble.setSkipTaskbar(true);
+        keepOutOfTaskbar(perm.bubble);
       }
     }
     syncUpdateBubbleVisibility();
@@ -574,10 +575,10 @@ function bringPetToPrimaryDisplay() {
     togglePetVisibility();
   } else {
     win.showInactive();
-    if (isLinux) win.setSkipTaskbar(true);
+    keepOutOfTaskbar(win);
     if (hitWin && !hitWin.isDestroyed()) {
       hitWin.showInactive();
-      if (isLinux) hitWin.setSkipTaskbar(true);
+      keepOutOfTaskbar(hitWin);
     }
   }
 
@@ -1265,21 +1266,28 @@ function startTopmostWatchdog() {
   topmostWatchdog = setInterval(() => {
     if (win && !win.isDestroyed()) {
       win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+      keepOutOfTaskbar(win);
     }
     // Keep hitWin topmost too
     if (hitWin && !hitWin.isDestroyed()) {
       hitWin.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+      keepOutOfTaskbar(hitWin);
     }
     for (const perm of pendingPermissions) {
-      if (perm.bubble && !perm.bubble.isDestroyed() && perm.bubble.isVisible()) perm.bubble.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+      if (perm.bubble && !perm.bubble.isDestroyed() && perm.bubble.isVisible()) {
+        perm.bubble.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+        keepOutOfTaskbar(perm.bubble);
+      }
     }
     const updateBubbleWin = _updateBubble.getBubbleWindow();
     if (updateBubbleWin && !updateBubbleWin.isDestroyed() && updateBubbleWin.isVisible()) {
       updateBubbleWin.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+      keepOutOfTaskbar(updateBubbleWin);
     }
     const sessionHudWin = getSessionHudWindow();
     if (sessionHudWin && !sessionHudWin.isDestroyed() && sessionHudWin.isVisible()) {
       sessionHudWin.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+      keepOutOfTaskbar(sessionHudWin);
     }
   }, TOPMOST_WATCHDOG_MS);
 }
@@ -3209,7 +3217,10 @@ function createWindow() {
     win.on("close", (event) => {
       if (!isQuitting) {
         event.preventDefault();
-        if (!win.isVisible()) win.showInactive();
+        if (!win.isVisible()) {
+          win.showInactive();
+          keepOutOfTaskbar(win);
+        }
       }
     });
     win.on("unresponsive", () => {
@@ -3226,8 +3237,7 @@ function createWindow() {
   win.loadFile(path.join(__dirname, "index.html"));
   applyPetWindowBounds(initialVirtualBounds);
   win.showInactive();
-  // Linux WMs may reset skipTaskbar after showInactive — re-apply explicitly
-  if (isLinux) win.setSkipTaskbar(true);
+  keepOutOfTaskbar(win);
   // macOS: apply after showInactive() — it resets NSWindowCollectionBehavior
   reapplyMacVisibility();
 
@@ -3281,8 +3291,7 @@ function createWindow() {
     hitWin.setIgnoreMouseEvents(false);  // PERMANENT — never toggle
     if (isMac) hitWin.setFocusable(false);
     hitWin.showInactive();
-    // Linux WMs may reset skipTaskbar after showInactive — re-apply explicitly
-    if (isLinux) hitWin.setSkipTaskbar(true);
+    keepOutOfTaskbar(hitWin);
     if (isWin) {
       hitWin.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
     }
@@ -3793,11 +3802,11 @@ if (!gotTheLock) {
   app.on("second-instance", (_event, commandLine) => {
     if (win) {
       win.showInactive();
-      if (isLinux) win.setSkipTaskbar(true);
+      keepOutOfTaskbar(win);
     }
     if (hitWin && !hitWin.isDestroyed()) {
       hitWin.showInactive();
-      if (isLinux) hitWin.setSkipTaskbar(true);
+      keepOutOfTaskbar(hitWin);
     }
     if (shouldOpenSettingsWindowFromArgv(commandLine)) {
       openSettingsWindowWhenReady();
