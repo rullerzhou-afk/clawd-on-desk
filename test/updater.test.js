@@ -603,6 +603,88 @@ describe("updater visual flow", () => {
     assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "available"]);
   });
 
+  it("does not let a visible startup ARM64 prompt clear a later manual update check", async () => {
+    const bubbles = [];
+    const visualStates = [];
+    const pendingResponses = [];
+    let activeAction = null;
+    let activePayload = null;
+    let hideCount = 0;
+    const ctx = makeCtx({
+      setUpdateVisualState: (state) => visualStates.push(state),
+      hideUpdateBubble: () => { hideCount += 1; },
+      showUpdateBubble: (payload) => {
+        if (activeAction) {
+          const fallback = activePayload && activePayload.defaultAction != null
+            ? activePayload.defaultAction
+            : null;
+          const resolve = activeAction;
+          activeAction = null;
+          activePayload = null;
+          resolve(fallback);
+        }
+        bubbles.push(payload);
+        if (!payload.requireAction) {
+          return Promise.resolve(payload.defaultAction != null ? payload.defaultAction : null);
+        }
+        activePayload = payload;
+        return new Promise((resolve) => {
+          activeAction = resolve;
+        });
+      },
+    });
+    const updater = initUpdater(ctx, makeDeps({
+      platform: "win32",
+      arch: "x64",
+      app: {
+        isPackaged: true,
+        runningUnderARM64Translation: true,
+        getVersion: () => "0.6.1",
+        relaunch() {},
+        exit() {},
+      },
+      httpsGetImpl: makePendingReleaseResponse(pendingResponses),
+    }));
+
+    updater.setupAutoUpdater();
+    await Promise.resolve();
+    pendingResponses[0]({
+      tag_name: "v0.6.1",
+      assets: [
+        {
+          name: "Clawd-on-Desk-Setup-0.6.1-arm64.exe",
+          browser_download_url: "https://example.invalid/arm64.exe",
+        },
+      ],
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["available"]);
+    assert.deepStrictEqual(visualStates, ["available"]);
+
+    const manualCheck = updater.checkForUpdates(true);
+    await Promise.resolve();
+    assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["available", "checking"]);
+    assert.deepStrictEqual(visualStates, ["available", "checking"]);
+    assert.strictEqual(hideCount, 0);
+    assert.strictEqual(pendingResponses.length, 2);
+
+    pendingResponses[1]({
+      tag_name: "v0.6.1",
+      assets: [
+        {
+          name: "Clawd-on-Desk-Setup-0.6.1-x64.exe",
+          browser_download_url: "https://example.invalid/x64.exe",
+        },
+      ],
+    });
+    await manualCheck;
+
+    assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["available", "checking", "up-to-date"]);
+    assert.deepStrictEqual(visualStates, ["available", "checking", null]);
+    assert.strictEqual(hideCount, 0);
+  });
+
   it("uses the macOS packaged-update path by opening the releases page and showing a success bubble", async () => {
     const originalPlatform = process.platform;
     const bubbles = [];

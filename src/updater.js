@@ -104,6 +104,7 @@ function initUpdater(ctx, deps = {}) {
   let autoUpdaterInstance = null;
   let overlayKind = null;
   let nativeArm64PromptDismissed = false;
+  let nativeArm64PromptToken = 0;
 
   function rebuildMenus() {
     if (typeof ctx.rebuildAllMenus === "function") ctx.rebuildAllMenus();
@@ -160,6 +161,10 @@ function initUpdater(ctx, deps = {}) {
   function dismissToResolvedState() {
     clearOverlay();
     rebuildMenus();
+  }
+
+  function invalidateNativeArm64Prompt() {
+    nativeArm64PromptToken += 1;
   }
 
   function showInfoBubble(mode, title, message, extra = {}) {
@@ -383,6 +388,8 @@ function initUpdater(ctx, deps = {}) {
 
     const asset = findWindowsArm64InstallerAsset(release);
     if (!asset) return false;
+    const promptToken = nativeArm64PromptToken + 1;
+    nativeArm64PromptToken = promptToken;
 
     updateStatus = "available";
     setOverlay("available");
@@ -404,6 +411,8 @@ function initUpdater(ctx, deps = {}) {
       lang: ctx.lang || "en",
       requireAction: true,
     });
+
+    if (promptToken !== nativeArm64PromptToken) return true;
 
     if (action === "primary") {
       shell.openExternal(asset.browser_download_url || RELEASES_LATEST_URL);
@@ -686,6 +695,8 @@ function initUpdater(ctx, deps = {}) {
       log(`Check skipped: already ${updateStatus}`);
       return;
     }
+
+    invalidateNativeArm64Prompt();
 
     const repoRoot = getRepoRoot();
     if (repoRoot) return gitCheckForUpdates(repoRoot, manual);
