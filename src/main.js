@@ -154,6 +154,11 @@ function _deferredStartMonitorForAgent(id) {
 function _deferredStopMonitorForAgent(id) {
   return stopMonitorForAgent(id);
 }
+function _deferredSyncIntegrationForAgent(id) {
+  return _server && typeof _server.syncIntegrationForAgent === "function"
+    ? _server.syncIntegrationForAgent(id)
+    : false;
+}
 function _deferredClearSessionsByAgent(id) {
   return _state && typeof _state.clearSessionsByAgent === "function"
     ? _state.clearSessionsByAgent(id)
@@ -199,6 +204,7 @@ const _settingsController = createSettingsController({
     setOpenAtLogin: _writeSystemOpenAtLogin,
     startMonitorForAgent: _deferredStartMonitorForAgent,
     stopMonitorForAgent: _deferredStopMonitorForAgent,
+    syncIntegrationForAgent: _deferredSyncIntegrationForAgent,
     clearSessionsByAgent: _deferredClearSessionsByAgent,
     dismissPermissionsByAgent: _deferredDismissPermissionsByAgent,
     resizePet: _deferredResizePet,

@@ -848,6 +848,7 @@ function setAgentFlag(payload, deps) {
         if (typeof deps.clearSessionsByAgent === "function") deps.clearSessionsByAgent(agentId);
         if (typeof deps.dismissPermissionsByAgent === "function") deps.dismissPermissionsByAgent(agentId);
       } else {
+        if (typeof deps.syncIntegrationForAgent === "function") deps.syncIntegrationForAgent(agentId);
         if (typeof deps.startMonitorForAgent === "function") deps.startMonitorForAgent(agentId);
       }
     } else if (flag === "permissionsEnabled") {

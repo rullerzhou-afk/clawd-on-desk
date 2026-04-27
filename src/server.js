@@ -368,6 +368,11 @@ function shouldManageClaudeHooks() {
   return ctx.manageClaudeHooksAutomatically !== false;
 }
 
+function isAgentEnabled(agentId) {
+  if (typeof ctx.isAgentEnabled !== "function") return true;
+  return ctx.isAgentEnabled(agentId) !== false;
+}
+
 function getClaudeSettingsDir() {
   return typeof ctx.claudeSettingsDir === "string"
     ? ctx.claudeSettingsDir
@@ -497,6 +502,39 @@ function syncOpencodePlugin() {
     }
   } catch (err) {
     console.warn("Clawd: failed to sync opencode plugin:", err.message);
+  }
+}
+
+const AGENT_INTEGRATION_SYNCERS = Object.freeze({
+  "gemini-cli": syncGeminiHooks,
+  "cursor-agent": syncCursorHooks,
+  codebuddy: syncCodeBuddyHooks,
+  "kiro-cli": syncKiroHooks,
+  "kimi-cli": syncKimiHooks,
+  codex: syncCodexHooks,
+  opencode: syncOpencodePlugin,
+});
+
+function syncIntegrationForAgent(agentId) {
+  if (agentId === "claude-code") {
+    if (!shouldManageClaudeHooks()) return false;
+    syncClawdHooks();
+    startClaudeSettingsWatcher();
+    return true;
+  }
+  const sync = AGENT_INTEGRATION_SYNCERS[agentId];
+  if (typeof sync !== "function") return false;
+  sync();
+  return true;
+}
+
+function syncEnabledStartupIntegrations() {
+  if (shouldManageClaudeHooks() && isAgentEnabled("claude-code")) {
+    syncClawdHooks();
+    startClaudeSettingsWatcher();
+  }
+  for (const [agentId, sync] of Object.entries(AGENT_INTEGRATION_SYNCERS)) {
+    if (isAgentEnabled(agentId)) sync();
   }
 }
 
@@ -1070,17 +1108,7 @@ function startHttpServer() {
     // and they operate on independent files for independent agents, so
     // none of them need to block the HTTP server from accepting traffic.
     setImmediateFn(() => {
-      if (shouldManageClaudeHooks()) {
-        syncClawdHooks();
-        startClaudeSettingsWatcher();
-      }
-      syncGeminiHooks();
-      syncCursorHooks();
-      syncCodeBuddyHooks();
-      syncKiroHooks();
-      syncKimiHooks();
-      syncCodexHooks();
-      syncOpencodePlugin();
+      syncEnabledStartupIntegrations();
     });
   });
 
@@ -1104,6 +1132,7 @@ return {
   syncKimiHooks,
   syncCodexHooks,
   syncOpencodePlugin,
+  syncIntegrationForAgent,
   startClaudeSettingsWatcher,
   stopClaudeSettingsWatcher,
   cleanup,

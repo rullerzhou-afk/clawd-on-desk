@@ -177,6 +177,7 @@ describe("setAgentFlag command", () => {
       stopMonitorForAgent: [],
       clearSessionsByAgent: [],
       dismissPermissionsByAgent: [],
+      syncIntegrationForAgent: [],
     };
     return {
       calls,
@@ -186,6 +187,7 @@ describe("setAgentFlag command", () => {
         stopMonitorForAgent: (id) => calls.stopMonitorForAgent.push(id),
         clearSessionsByAgent: (id) => calls.clearSessionsByAgent.push(id),
         dismissPermissionsByAgent: (id) => calls.dismissPermissionsByAgent.push(id),
+        syncIntegrationForAgent: (id) => calls.syncIntegrationForAgent.push(id),
         ...overrides,
       },
     };
@@ -243,7 +245,7 @@ describe("setAgentFlag command", () => {
     assert.strictEqual(r.commit.agents["claude-code"].enabled, true);
   });
 
-  it("enabling a previously-disabled agent starts the monitor", () => {
+  it("enabling a previously-disabled agent syncs its integration and starts the monitor", () => {
     const seeded = prefs.getDefaults();
     seeded.agents.codex = { enabled: false, permissionsEnabled: true };
     const { deps, calls } = makeDeps({ snapshot: seeded });
@@ -252,6 +254,7 @@ describe("setAgentFlag command", () => {
       deps
     );
     assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(calls.syncIntegrationForAgent, ["codex"]);
     assert.deepStrictEqual(calls.startMonitorForAgent, ["codex"]);
     assert.strictEqual(calls.stopMonitorForAgent.length, 0);
     assert.strictEqual(r.commit.agents.codex.enabled, true);
