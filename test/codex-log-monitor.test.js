@@ -400,6 +400,39 @@ describe("CodexLogMonitor", () => {
     assert.strictEqual(monitor._tracked.size, 0);
   });
 
+  it("emits SessionEnd on stale cleanup so state.js deletes the session", (_, done) => {
+    // Codex desktop is a long-lived process: every conversation reuses the
+    // same agentPid/sourcePid, so cleanStaleSessions in state.js can never
+    // observe the source dying. The log monitor's stale cleanup is the only
+    // signal that triggers actual deletion — and it must be SessionEnd, not
+    // a regular state event, because only SessionEnd takes the delete path.
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      '{"type":"event_msg","payload":{"type":"task_started"}}',
+    ].join("\n") + "\n");
+
+    const config = makeConfig(tmpDir);
+    const events = [];
+    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+      events.push({ sid, state, event, extra });
+      if (events.length === 2) {
+        for (const tracked of monitor._tracked.values()) {
+          tracked.lastEventTime = Date.now() - 301000;
+        }
+        monitor._cleanStaleFiles();
+
+        const last = events[events.length - 1];
+        assert.strictEqual(last.event, "SessionEnd");
+        assert.strictEqual(last.state, "sleeping");
+        assert.strictEqual(last.sid, EXPECTED_SID);
+        assert.strictEqual(monitor._tracked.size, 0);
+        done();
+      }
+    });
+    monitor.start();
+  });
+
   it("should handle corrupted JSON lines gracefully", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [

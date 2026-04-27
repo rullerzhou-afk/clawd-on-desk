@@ -593,7 +593,12 @@ class CodexLogMonitor {
         // them silently instead of synthesizing a fake "sleeping" event.
         if (tracked.approvalTimer) clearTimeout(tracked.approvalTimer);
         if (tracked.hasEmittedState) {
-          this._emitStateChange(tracked, "sleeping", "stale-cleanup", {
+          // Use SessionEnd so state.js actually deletes the session entry.
+          // Codex desktop runs as a long-lived process — every conversation
+          // shares the same agentPid/sourcePid, so the timeout-based cleanup
+          // in cleanStaleSessions can never observe the source dying and
+          // would otherwise leave idle zombie sessions piling up forever.
+          this._emitStateChange(tracked, "sleeping", "SessionEnd", {
             sourcePid: tracked.agentPid,
             agentPid: tracked.agentPid,
           });
