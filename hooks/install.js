@@ -468,7 +468,7 @@ function removeMatchingHttpHooks(entries, predicate) {
   return { entries: nextEntries, removed, changed };
 }
 
-function syncHttpHook(entries, expectedUrl) {
+function syncHttpHook(entries, expectedUrl, expectedMatcher) {
   let found = false;
   let changed = false;
   if (!Array.isArray(entries)) return { found, changed };
@@ -482,13 +482,31 @@ function syncHttpHook(entries, expectedUrl) {
       }
     }
     if (!Array.isArray(entry.hooks)) continue;
+    let entryHasClawd = false;
+    let entryAllClawd = entry.hooks.length > 0;
     for (const hook of entry.hooks) {
-      if (!isClawdPermissionHook(hook)) continue;
-      found = true;
-      if (hook.url !== expectedUrl) {
-        hook.url = expectedUrl;
-        changed = true;
+      if (isClawdPermissionHook(hook)) {
+        entryHasClawd = true;
+        found = true;
+        if (hook.url !== expectedUrl) {
+          hook.url = expectedUrl;
+          changed = true;
+        }
+      } else {
+        entryAllClawd = false;
       }
+    }
+    // Upgrade matcher on Clawd-owned entries that have a stale (e.g. legacy "")
+    // matcher. We only touch entries whose hooks are exclusively Clawd's, so we
+    // never modify user-authored entries that happen to bundle a Clawd hook.
+    if (
+      entryHasClawd
+      && entryAllClawd
+      && typeof expectedMatcher === "string"
+      && entry.matcher !== expectedMatcher
+    ) {
+      entry.matcher = expectedMatcher;
+      changed = true;
     }
   }
   return { found, changed };
@@ -501,9 +519,12 @@ function getHookServerPort(explicitPort) {
 // HTTP hooks: PermissionRequest uses bidirectional HTTP hook for permission decisions.
 // Claude Code fires PermissionRequest for tools needing approval (primarily Bash).
 // Edit/Write permissions are handled by Claude Code's own permission mode — not our hook.
+// We narrow the matcher to "Bash" so when Clawd's HTTP server is offline (ECONNREFUSED),
+// only Bash calls are affected — Edit/Write/mcp__* fall through to CC's native permission
+// flow instead of being silent-denied (upstream anthropics/claude-code#46193).
 const HTTP_HOOKS = {
   PermissionRequest: {
-    matcher: "",
+    matcher: "Bash",
     hook: {
       type: "http",
       url: "http://127.0.0.1:23333/permission",
@@ -736,7 +757,7 @@ function registerHooks(options = {}) {
     }
 
     const desiredHook = { ...hook, url: buildPermissionUrl(hookPort) };
-    const httpSync = syncHttpHook(settings.hooks[event], desiredHook.url);
+    const httpSync = syncHttpHook(settings.hooks[event], desiredHook.url, matcher);
     if (httpSync.found) {
       if (httpSync.changed) {
         updated++;

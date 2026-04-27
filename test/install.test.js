@@ -806,6 +806,110 @@ describe("Hook installer deprecated hook cleanup", () => {
   });
 });
 
+describe("Hook installer PermissionRequest matcher", () => {
+  function getPermissionEntries(settings) {
+    return (settings.hooks?.PermissionRequest ?? []).filter((entry) => {
+      if (!entry || typeof entry !== "object") return false;
+      if (!Array.isArray(entry.hooks)) return false;
+      return entry.hooks.some(
+        (h) => h && h.type === "http" && typeof h.url === "string" && h.url.includes("/permission")
+      );
+    });
+  }
+
+  it("registers PermissionRequest with matcher 'Bash' on fresh install", () => {
+    const settingsPath = makeTempSettings({});
+    registerHooks({
+      silent: true,
+      settingsPath,
+      claudeVersionInfo: { version: "2.1.112", source: "test", status: "known" },
+    });
+
+    const settings = readSettings(settingsPath);
+    const entries = getPermissionEntries(settings);
+    assert.strictEqual(entries.length, 1);
+    assert.strictEqual(entries[0].matcher, "Bash");
+  });
+
+  it("upgrades legacy Clawd PermissionRequest matcher '' -> 'Bash'", () => {
+    const settingsPath = makeTempSettings({
+      hooks: {
+        PermissionRequest: [
+          {
+            matcher: "",
+            hooks: [{ type: "http", url: "http://127.0.0.1:23333/permission", timeout: 600 }],
+          },
+        ],
+      },
+    });
+
+    const result = registerHooks({
+      silent: true,
+      settingsPath,
+      claudeVersionInfo: { version: "2.1.112", source: "test", status: "known" },
+    });
+
+    const settings = readSettings(settingsPath);
+    const entries = getPermissionEntries(settings);
+    assert.strictEqual(entries.length, 1);
+    assert.strictEqual(entries[0].matcher, "Bash");
+    assert.ok(result.updated >= 1);
+  });
+
+  it("is idempotent — second install does not churn matcher or duplicate entries", () => {
+    const settingsPath = makeTempSettings({});
+    registerHooks({
+      silent: true,
+      settingsPath,
+      claudeVersionInfo: { version: "2.1.112", source: "test", status: "known" },
+    });
+    const second = registerHooks({
+      silent: true,
+      settingsPath,
+      claudeVersionInfo: { version: "2.1.112", source: "test", status: "known" },
+    });
+
+    const settings = readSettings(settingsPath);
+    const entries = getPermissionEntries(settings);
+    assert.strictEqual(entries.length, 1);
+    assert.strictEqual(entries[0].matcher, "Bash");
+    assert.strictEqual(second.added, 0);
+    assert.strictEqual(second.updated, 0);
+  });
+
+  it("does not modify user-authored PermissionRequest entries (no Clawd marker)", () => {
+    const settingsPath = makeTempSettings({
+      hooks: {
+        PermissionRequest: [
+          {
+            matcher: "",
+            hooks: [{ type: "http", url: "http://localhost:9999/permission", timeout: 100 }],
+          },
+        ],
+      },
+    });
+
+    registerHooks({
+      silent: true,
+      settingsPath,
+      claudeVersionInfo: { version: "2.1.112", source: "test", status: "known" },
+    });
+
+    const settings = readSettings(settingsPath);
+    const userEntry = settings.hooks.PermissionRequest.find(
+      (e) => e.hooks?.[0]?.url === "http://localhost:9999/permission"
+    );
+    assert.ok(userEntry, "user entry should be preserved");
+    assert.strictEqual(userEntry.matcher, "", "user matcher must NOT be touched");
+
+    const clawdEntry = settings.hooks.PermissionRequest.find(
+      (e) => e.hooks?.[0]?.url?.startsWith("http://127.0.0.1:") && e !== userEntry
+    );
+    assert.ok(clawdEntry, "Clawd entry should be added");
+    assert.strictEqual(clawdEntry.matcher, "Bash");
+  });
+});
+
 describe("Hook installer unregisterHooks", () => {
   it("removes Clawd command hooks, HTTP hook, and auto-start while preserving third-party hooks", () => {
     const settingsPath = makeTempSettings({
