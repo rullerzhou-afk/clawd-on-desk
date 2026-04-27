@@ -49,6 +49,7 @@
 // keep validate side-effect-free.
 
 const { CURRENT_VERSION, AGENT_FLAGS, normalizeThemeOverrides } = require("./prefs");
+const { isAgentEnabled } = require("./agent-gate");
 const { isValidDisplaySnapshot } = require("./work-area");
 const {
   MAX_AUTO_CLOSE_SECONDS,
@@ -355,6 +356,9 @@ const updateRegistry = {
       }
       try {
         if (value) {
+          if (!isAgentEnabled(deps.snapshot, "claude-code")) {
+            return { status: "ok" };
+          }
           deps.syncClaudeHooksNow();
           deps.startClaudeSettingsWatcher();
         } else {
@@ -844,6 +848,9 @@ function setAgentFlag(payload, deps) {
   try {
     if (flag === "enabled") {
       if (!value) {
+        if (agentId === "claude-code" && typeof deps.stopIntegrationForAgent === "function") {
+          deps.stopIntegrationForAgent(agentId);
+        }
         if (typeof deps.stopMonitorForAgent === "function") deps.stopMonitorForAgent(agentId);
         if (typeof deps.clearSessionsByAgent === "function") deps.clearSessionsByAgent(agentId);
         if (typeof deps.dismissPermissionsByAgent === "function") deps.dismissPermissionsByAgent(agentId);

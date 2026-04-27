@@ -257,6 +257,21 @@ describe("server Claude hook management", () => {
     assert.deepStrictEqual(syncCalls, []);
   });
 
+  it("watcher does not re-sync missing Claude hooks while Claude Code is disabled", () => {
+    let claudeEnabled = true;
+    const { api, syncCalls, timers, getWatcher, setSettingsRaw } = makeServer({
+      isAgentEnabled: (agentId) => agentId !== "claude-code" || claudeEnabled,
+    });
+
+    api.startClaudeSettingsWatcher();
+    claudeEnabled = false;
+    setSettingsRaw('{"hooks":{}}');
+    getWatcher().emitChange("settings.json");
+    timers.flush();
+
+    assert.deepStrictEqual(syncCalls, []);
+  });
+
   it("disconnect-style restart does not reinstall Claude hooks when management stays disabled", () => {
     const first = makeServer({ manageClaudeHooksAutomatically: false });
     first.api.startHttpServer();

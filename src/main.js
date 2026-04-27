@@ -159,6 +159,11 @@ function _deferredSyncIntegrationForAgent(id) {
     ? _server.syncIntegrationForAgent(id)
     : false;
 }
+function _deferredStopIntegrationForAgent(id) {
+  return _server && typeof _server.stopIntegrationForAgent === "function"
+    ? _server.stopIntegrationForAgent(id)
+    : false;
+}
 function _deferredClearSessionsByAgent(id) {
   return _state && typeof _state.clearSessionsByAgent === "function"
     ? _state.clearSessionsByAgent(id)
@@ -205,6 +210,7 @@ const _settingsController = createSettingsController({
     startMonitorForAgent: _deferredStartMonitorForAgent,
     stopMonitorForAgent: _deferredStopMonitorForAgent,
     syncIntegrationForAgent: _deferredSyncIntegrationForAgent,
+    stopIntegrationForAgent: _deferredStopIntegrationForAgent,
     clearSessionsByAgent: _deferredClearSessionsByAgent,
     dismissPermissionsByAgent: _deferredDismissPermissionsByAgent,
     resizePet: _deferredResizePet,

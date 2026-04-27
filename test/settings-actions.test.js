@@ -295,6 +295,25 @@ describe("object-form effects (autoStartWithClaude / manageClaudeHooksAutomatica
     assert.strictEqual(stopCalls, 0);
   });
 
+  it("manageClaudeHooksAutomatically effect skips side effects on true when Claude Code is disabled", () => {
+    let syncCalls = 0;
+    let startCalls = 0;
+    let stopCalls = 0;
+    const snapshot = prefs.getDefaults();
+    snapshot.agents["claude-code"].enabled = false;
+    const deps = {
+      snapshot,
+      syncClaudeHooksNow: () => syncCalls++,
+      startClaudeSettingsWatcher: () => startCalls++,
+      stopClaudeSettingsWatcher: () => stopCalls++,
+    };
+    const r = updateRegistry.manageClaudeHooksAutomatically.effect(true, deps);
+    assert.deepStrictEqual(r, { status: "ok" });
+    assert.strictEqual(syncCalls, 0);
+    assert.strictEqual(startCalls, 0);
+    assert.strictEqual(stopCalls, 0);
+  });
+
   it("manageClaudeHooksAutomatically effect stops watcher on false", () => {
     let syncCalls = 0;
     let startCalls = 0;

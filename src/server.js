@@ -528,6 +528,11 @@ function syncIntegrationForAgent(agentId) {
   return true;
 }
 
+function stopIntegrationForAgent(agentId) {
+  if (agentId !== "claude-code") return false;
+  return stopClaudeSettingsWatcher();
+}
+
 function syncEnabledStartupIntegrations() {
   if (shouldManageClaudeHooks() && isAgentEnabled("claude-code")) {
     syncClawdHooks();
@@ -575,6 +580,7 @@ function startClaudeSettingsWatcher() {
       if (settingsWatchDebounceTimer) return;
       settingsWatchDebounceTimer = setTimeoutFn(() => {
         settingsWatchDebounceTimer = null;
+        if (!shouldManageClaudeHooks() || !isAgentEnabled("claude-code")) return;
         // Rate-limit: don't re-sync within 5s to avoid write wars with CC-Switch
         if (nowFn() - settingsWatchLastSyncTime < settingsWatchRateLimitMs) return;
         try {
@@ -1133,6 +1139,7 @@ return {
   syncCodexHooks,
   syncOpencodePlugin,
   syncIntegrationForAgent,
+  stopIntegrationForAgent,
   startClaudeSettingsWatcher,
   stopClaudeSettingsWatcher,
   cleanup,

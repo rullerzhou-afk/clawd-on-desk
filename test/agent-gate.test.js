@@ -178,6 +178,7 @@ describe("setAgentFlag command", () => {
       clearSessionsByAgent: [],
       dismissPermissionsByAgent: [],
       syncIntegrationForAgent: [],
+      stopIntegrationForAgent: [],
     };
     return {
       calls,
@@ -188,6 +189,7 @@ describe("setAgentFlag command", () => {
         clearSessionsByAgent: (id) => calls.clearSessionsByAgent.push(id),
         dismissPermissionsByAgent: (id) => calls.dismissPermissionsByAgent.push(id),
         syncIntegrationForAgent: (id) => calls.syncIntegrationForAgent.push(id),
+        stopIntegrationForAgent: (id) => calls.stopIntegrationForAgent.push(id),
         ...overrides,
       },
     };
@@ -237,6 +239,7 @@ describe("setAgentFlag command", () => {
       deps
     );
     assert.strictEqual(r.status, "ok");
+    assert.strictEqual(calls.stopIntegrationForAgent.length, 0);
     assert.deepStrictEqual(calls.stopMonitorForAgent, ["codex"]);
     assert.deepStrictEqual(calls.clearSessionsByAgent, ["codex"]);
     assert.deepStrictEqual(calls.dismissPermissionsByAgent, ["codex"]);
@@ -258,6 +261,22 @@ describe("setAgentFlag command", () => {
     assert.deepStrictEqual(calls.startMonitorForAgent, ["codex"]);
     assert.strictEqual(calls.stopMonitorForAgent.length, 0);
     assert.strictEqual(r.commit.agents.codex.enabled, true);
+  });
+
+  it("disabling Claude Code stops its integration watcher before commit", () => {
+    const seeded = prefs.getDefaults();
+    seeded.agents["claude-code"] = { enabled: true, permissionsEnabled: true };
+    const { deps, calls } = makeDeps({ snapshot: seeded });
+    const r = commandRegistry.setAgentFlag(
+      { agentId: "claude-code", flag: "enabled", value: false },
+      deps
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(calls.stopIntegrationForAgent, ["claude-code"]);
+    assert.deepStrictEqual(calls.stopMonitorForAgent, ["claude-code"]);
+    assert.deepStrictEqual(calls.clearSessionsByAgent, ["claude-code"]);
+    assert.deepStrictEqual(calls.dismissPermissionsByAgent, ["claude-code"]);
+    assert.strictEqual(r.commit.agents["claude-code"].enabled, false);
   });
 
   it("toggling master flag preserves permissionsEnabled (no silent wipe)", () => {
