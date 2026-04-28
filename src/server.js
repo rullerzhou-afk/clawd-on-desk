@@ -1132,6 +1132,7 @@ function startHttpServer() {
                 hookSource: CODEX_OFFICIAL_HOOK_SOURCE,
               });
               ctx.permLog(`codex native permission mode -> no decision, native prompt fallback (tool=${toolName})`);
+              recordRequestHookEvent.accepted();
               sendCodexPermissionNoDecision(res);
               return;
             }

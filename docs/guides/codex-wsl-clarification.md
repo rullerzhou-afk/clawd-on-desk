@@ -100,7 +100,7 @@ The official hook implementation is in [`hooks/codex-hook.js`](../../hooks/codex
 At runtime:
 
 - official hooks handle SessionStart, UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, and Stop
-- PermissionRequest can produce a real Clawd Allow/Deny bubble; DND/disabled/unavailable paths return no-decision so Codex uses its native approval prompt
+- PermissionRequest defaults to native mode: Clawd observes the event and returns no-decision so Codex AutoReview/native prompts stay in charge. Opt-in intercept mode can still produce a real Clawd Allow/Deny bubble.
 - JSONL polling remains active for hook-disabled sessions and events official hooks do not cover, such as web search, compaction, and abort
 
 The fallback monitor expands `~` using the current process's own `os.homedir()`. In practice:

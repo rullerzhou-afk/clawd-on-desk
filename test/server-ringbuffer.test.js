@@ -224,6 +224,32 @@ describe("server hook event ringbuffer", () => {
     assert.strictEqual(api.getRecentHookEvents()[0].outcome, "dropped-by-disabled");
   });
 
+  it("records Codex native permission mode as accepted HTTP activity", async () => {
+    const { api, handler, ctx } = startServer();
+
+    const res = await callHandler(handler, "POST", "/permission", {
+      agent_id: "codex",
+      hook_source: "codex-official",
+      session_id: "codex:s1",
+      tool_name: "Bash",
+      tool_input: { command: "whoami /all" },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(ctx._test.pendingPermissions.length, 0);
+    assert.deepStrictEqual(api.getRecentHookEvents().map(({ agentId, eventType, route, outcome }) => ({
+      agentId,
+      eventType,
+      route,
+      outcome,
+    })), [{
+      agentId: "codex",
+      eventType: "PermissionRequest",
+      route: "permission",
+      outcome: "accepted",
+    }]);
+  });
+
   it("records /permission accepted once on the bubble path", async () => {
     const { api, handler, ctx } = startServer();
     const res = makeRes();
