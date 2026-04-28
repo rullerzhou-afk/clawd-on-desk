@@ -173,6 +173,7 @@
           `<button data-lang="en"></button>` +
           `<button data-lang="zh"></button>` +
           `<button data-lang="ko"></button>` +
+          `<button data-lang="ja"></button>` +
         `</div>` +
       `</div>`;
     row.querySelector(".row-label").textContent = t("rowLanguage");
@@ -181,6 +182,7 @@
     buttons[0].textContent = t("langEnglish");
     buttons[1].textContent = t("langChinese");
     buttons[2].textContent = t("langKorean");
+    buttons[3].textContent = t("langJapanese");
     const current = readers.getLang();
     for (const btn of buttons) {
       if (btn.dataset.lang === current) btn.classList.add("active");
