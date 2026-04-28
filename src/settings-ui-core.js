@@ -56,6 +56,7 @@
       generalSwitches: new Map(),
       bubblePolicyControls: new Map(),
       agentSwitches: new Map(),
+      agentPermissionModes: new Map(),
       bubblePolicySummary: null,
       size: null,
       soundVolume: null,
@@ -125,6 +126,12 @@
   function readAgentFlagValue(agentId, flag) {
     const entry = state.snapshot && state.snapshot.agents && state.snapshot.agents[agentId];
     return entry ? entry[flag] !== false : true;
+  }
+
+  function readAgentPermissionMode(agentId) {
+    const entry = state.snapshot && state.snapshot.agents && state.snapshot.agents[agentId];
+    if (agentId === "codex" && entry && entry.permissionMode === "intercept") return "intercept";
+    return "native";
   }
 
   function getShortcutValue(actionId) {
@@ -570,6 +577,7 @@
     state.mountedControls.generalSwitches.clear();
     state.mountedControls.bubblePolicyControls.clear();
     state.mountedControls.agentSwitches.clear();
+    state.mountedControls.agentPermissionModes.clear();
     state.mountedControls.bubblePolicySummary = null;
     state.mountedControls.size = null;
     state.mountedControls.soundVolume = null;
@@ -839,6 +847,7 @@
     readGeneralSwitchVisual,
     agentSwitchStateId,
     readAgentFlagValue,
+    readAgentPermissionMode,
     getShortcutValue,
     getLang,
     readThemeOverrideMap,

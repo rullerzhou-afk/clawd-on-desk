@@ -3,7 +3,13 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
-const { isAgentEnabled, isAgentPermissionsEnabled, isAgentNotificationHookEnabled } = require("../src/agent-gate");
+const {
+  getCodexPermissionMode,
+  isAgentEnabled,
+  isAgentPermissionsEnabled,
+  isAgentNotificationHookEnabled,
+  isCodexPermissionInterceptEnabled,
+} = require("../src/agent-gate");
 const { commandRegistry } = require("../src/settings-actions");
 const prefs = require("../src/prefs");
 
@@ -167,6 +173,25 @@ describe("isAgentNotificationHookEnabled", () => {
       },
     };
     assert.strictEqual(isAgentNotificationHookEnabled(snap, "claude-code"), true);
+  });
+});
+
+describe("Codex permission mode gate", () => {
+  it("defaults missing Codex permissionMode to native", () => {
+    assert.strictEqual(getCodexPermissionMode(null), "native");
+    assert.strictEqual(getCodexPermissionMode({ agents: { codex: {} } }), "native");
+    assert.strictEqual(isCodexPermissionInterceptEnabled({ agents: { codex: {} } }), false);
+  });
+
+  it("enables interception only for explicit intercept mode", () => {
+    assert.strictEqual(
+      isCodexPermissionInterceptEnabled({ agents: { codex: { permissionMode: "intercept" } } }),
+      true
+    );
+    assert.strictEqual(
+      isCodexPermissionInterceptEnabled({ agents: { codex: { permissionMode: "native" } } }),
+      false
+    );
   });
 });
 
@@ -387,6 +412,56 @@ describe("setAgentFlag command", () => {
       r.commit.agents["claude-code"].permissionsEnabled,
       true,
       "permissionsEnabled sibling must be preserved"
+    );
+  });
+});
+
+describe("setAgentPermissionMode command", () => {
+  function makeDeps(overrides = {}) {
+    const calls = { dismissPermissionsByAgent: [] };
+    return {
+      calls,
+      deps: {
+        snapshot: prefs.getDefaults(),
+        dismissPermissionsByAgent: (id) => calls.dismissPermissionsByAgent.push(id),
+        ...overrides,
+      },
+    };
+  }
+
+  it("switches Codex to intercept mode without dismissing bubbles", () => {
+    const { deps, calls } = makeDeps();
+    const r = commandRegistry.setAgentPermissionMode(
+      { agentId: "codex", mode: "intercept" },
+      deps
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(r.commit.agents.codex.permissionMode, "intercept");
+    assert.deepStrictEqual(calls.dismissPermissionsByAgent, []);
+  });
+
+  it("switches Codex back to native mode and dismisses pending Codex bubbles", () => {
+    const seeded = prefs.getDefaults();
+    seeded.agents.codex.permissionMode = "intercept";
+    const { deps, calls } = makeDeps({ snapshot: seeded });
+    const r = commandRegistry.setAgentPermissionMode(
+      { agentId: "codex", mode: "native" },
+      deps
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(r.commit.agents.codex.permissionMode, "native");
+    assert.deepStrictEqual(calls.dismissPermissionsByAgent, ["codex"]);
+  });
+
+  it("rejects unsupported agents and modes", () => {
+    const { deps } = makeDeps();
+    assert.strictEqual(
+      commandRegistry.setAgentPermissionMode({ agentId: "claude-code", mode: "native" }, deps).status,
+      "error"
+    );
+    assert.strictEqual(
+      commandRegistry.setAgentPermissionMode({ agentId: "codex", mode: "auto" }, deps).status,
+      "error"
     );
   });
 });

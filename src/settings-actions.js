@@ -48,7 +48,12 @@
 // prefs without writing them right back. Object-form entries must therefore
 // keep validate side-effect-free.
 
-const { CURRENT_VERSION, AGENT_FLAGS, normalizeThemeOverrides } = require("./prefs");
+const {
+  CURRENT_VERSION,
+  AGENT_FLAGS,
+  CODEX_PERMISSION_MODES,
+  normalizeThemeOverrides,
+} = require("./prefs");
 const { isAgentEnabled } = require("./agent-gate");
 const { isValidDisplaySnapshot } = require("./work-area");
 const {
@@ -883,6 +888,49 @@ function setAgentFlag(payload, deps) {
 
   const nextEntry = { ...(currentEntry || {}), [flag]: value };
   const nextAgents = { ...currentAgents, [agentId]: nextEntry };
+  return { status: "ok", commit: { agents: nextAgents } };
+}
+
+const _validateAgentPermissionModeId = requireString("setAgentPermissionMode.agentId");
+function setAgentPermissionMode(payload, deps) {
+  if (!payload || typeof payload !== "object") {
+    return { status: "error", message: "setAgentPermissionMode: payload must be an object" };
+  }
+  const idCheck = _validateAgentPermissionModeId(payload.agentId);
+  if (idCheck.status !== "ok") return idCheck;
+  if (payload.agentId !== "codex") {
+    return { status: "error", message: "setAgentPermissionMode only supports codex" };
+  }
+  if (!CODEX_PERMISSION_MODES.includes(payload.mode)) {
+    return {
+      status: "error",
+      message: `setAgentPermissionMode.mode must be one of: ${CODEX_PERMISSION_MODES.join(", ")}`,
+    };
+  }
+
+  const snapshot = deps && deps.snapshot;
+  const currentAgents = (snapshot && snapshot.agents) || {};
+  const currentEntry = currentAgents.codex || {};
+  const currentMode = CODEX_PERMISSION_MODES.includes(currentEntry.permissionMode)
+    ? currentEntry.permissionMode
+    : "native";
+  if (currentMode === payload.mode) return { status: "ok", noop: true };
+
+  try {
+    if (payload.mode !== "intercept" && typeof deps.dismissPermissionsByAgent === "function") {
+      deps.dismissPermissionsByAgent("codex");
+    }
+  } catch (err) {
+    return {
+      status: "error",
+      message: `setAgentPermissionMode side effect threw: ${err && err.message}`,
+    };
+  }
+
+  const nextAgents = {
+    ...currentAgents,
+    codex: { ...currentEntry, permissionMode: payload.mode },
+  };
   return { status: "ok", commit: { agents: nextAgents } };
 }
 
@@ -1789,6 +1837,7 @@ const commandRegistry = {
   resetShortcut,
   resetAllShortcuts,
   setAgentFlag,
+  setAgentPermissionMode,
   setAllBubblesHidden,
   setBubbleCategoryEnabled,
   setSessionAlias,

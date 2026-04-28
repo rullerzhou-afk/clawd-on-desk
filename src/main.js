@@ -884,7 +884,12 @@ function moveWindowForDrag() {
 
 
 // ── Permission bubble — delegated to src/permission.js ──
-const { isAgentEnabled: _isAgentEnabled, isAgentPermissionsEnabled: _isAgentPermissionsEnabled, isAgentNotificationHookEnabled: _isAgentNotificationHookEnabled } = require("./agent-gate");
+const {
+  isAgentEnabled: _isAgentEnabled,
+  isAgentPermissionsEnabled: _isAgentPermissionsEnabled,
+  isAgentNotificationHookEnabled: _isAgentNotificationHookEnabled,
+  isCodexPermissionInterceptEnabled: _isCodexPermissionInterceptEnabled,
+} = require("./agent-gate");
 const _permCtx = {
   get win() { return win; },
   get lang() { return lang; },
@@ -1229,6 +1234,7 @@ const _serverCtx = {
   get sessions() { return sessions; },
   isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
   isAgentPermissionsEnabled: (agentId) => _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
+  isCodexPermissionInterceptEnabled: () => _isCodexPermissionInterceptEnabled({ agents: _settingsController.get("agents") }),
   setState,
   updateSession: updateSessionFromServer,
   resolvePermissionEntry,

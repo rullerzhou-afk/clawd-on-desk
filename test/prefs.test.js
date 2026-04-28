@@ -74,6 +74,11 @@ describe("prefs.getDefaults", () => {
       );
     }
   });
+
+  it("defaults Codex permissions to native mode", () => {
+    const d = prefs.getDefaults();
+    assert.strictEqual(d.agents.codex.permissionMode, "native");
+  });
 });
 
 describe("prefs.validate", () => {
@@ -236,6 +241,25 @@ describe("prefs.validate", () => {
     });
     assert.strictEqual(v.agents["claude-code"].enabled, true);
     assert.strictEqual(v.agents["claude-code"].notificationHookEnabled, false);
+  });
+
+  it("normalizes agents: preserves valid Codex permissionMode", () => {
+    const v = prefs.validate({
+      agents: {
+        codex: { enabled: true, permissionMode: "intercept" },
+      },
+    });
+    assert.strictEqual(v.agents.codex.enabled, true);
+    assert.strictEqual(v.agents.codex.permissionMode, "intercept");
+  });
+
+  it("normalizes agents: drops invalid Codex permissionMode to native", () => {
+    const v = prefs.validate({
+      agents: {
+        codex: { enabled: true, permissionMode: "auto" },
+      },
+    });
+    assert.strictEqual(v.agents.codex.permissionMode, "native");
   });
 
   it("normalizes agents: fills missing notificationHookEnabled from defaults", () => {

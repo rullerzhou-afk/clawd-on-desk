@@ -9,6 +9,7 @@
   let runtime = null;
   let readers = null;
   let helpers = null;
+  let ops = null;
 
   function t(key) {
     return helpers.t(key);
@@ -90,12 +91,16 @@
     const masterOn = readers.readAgentFlagValue(agent.id, "enabled");
     const rows = [];
     const caps = agent.capabilities || {};
+    if (agent.id === "codex") {
+      rows.push(buildCodexPermissionModeRow(agent, !masterOn));
+    }
     if (caps.permissionApproval || caps.interactiveBubble) {
+      const codexNativeMode = agent.id === "codex" && readers.readAgentPermissionMode(agent.id) !== "intercept";
       rows.push(buildAgentSwitchRow({
         agent,
         flag: "permissionsEnabled",
         extraClass: "row-sub",
-        disabled: !masterOn,
+        disabled: !masterOn || codexNativeMode,
         buildText: (text) => {
           const label = document.createElement("span");
           label.className = "row-label";
@@ -127,6 +132,62 @@
       }));
     }
     return rows;
+  }
+
+  function buildCodexPermissionModeRow(agent, disabled) {
+    const row = document.createElement("div");
+    row.className = "row row-sub";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("rowCodexPermissionMode");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("rowCodexPermissionModeDesc");
+    text.appendChild(label);
+    text.appendChild(desc);
+    row.appendChild(text);
+
+    const ctrl = document.createElement("div");
+    ctrl.className = "row-control";
+    const segmented = document.createElement("div");
+    segmented.className = "segmented";
+    segmented.setAttribute("role", "tablist");
+    const current = readers.readAgentPermissionMode(agent.id);
+    const modes = [
+      { id: "native", labelKey: "codexPermissionModeNative" },
+      { id: "intercept", labelKey: "codexPermissionModeIntercept" },
+    ];
+    for (const mode of modes) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.dataset.mode = mode.id;
+      btn.textContent = t(mode.labelKey);
+      btn.classList.toggle("active", current === mode.id);
+      btn.disabled = !!disabled;
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (disabled || btn.classList.contains("active")) return;
+        window.settingsAPI.command("setAgentPermissionMode", {
+          agentId: agent.id,
+          mode: mode.id,
+        }).then((result) => {
+          if (!result || result.status !== "ok") {
+            const msg = (result && result.message) || "unknown error";
+            ops.showToast(t("toastSaveFailed") + msg, { error: true });
+          }
+        }).catch((err) => {
+          ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+        });
+      });
+      segmented.appendChild(btn);
+    }
+    ctrl.appendChild(segmented);
+    row.appendChild(ctrl);
+    state.mountedControls.agentPermissionModes.set(agent.id, { row });
+    return row;
   }
 
   function syncAgentSwitchDisabledState(meta, disabled) {
@@ -196,6 +257,9 @@
 
   function patchInPlace(changes) {
     const keys = changes ? Object.keys(changes) : [];
+    if (keys.length === 1 && keys[0] === "agents" && state.mountedControls.agentPermissionModes.size > 0) {
+      return false;
+    }
     if (!(keys.length === 1 && keys[0] === "agents")) return false;
     if (state.mountedControls.agentSwitches.size === 0) return false;
     for (const [, meta] of state.mountedControls.agentSwitches) {
@@ -216,6 +280,7 @@
     runtime = core.runtime;
     readers = core.readers;
     helpers = core.helpers;
+    ops = core.ops;
     core.tabs.agents = {
       render,
       patchInPlace,

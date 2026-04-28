@@ -46,6 +46,11 @@ function shouldBypassCodexBubble(ctx) {
   return !ctx.isAgentPermissionsEnabled("codex");
 }
 
+function shouldInterceptCodexPermission(ctx) {
+  if (typeof ctx.isCodexPermissionInterceptEnabled !== "function") return false;
+  return ctx.isCodexPermissionInterceptEnabled();
+}
+
 function arePermissionBubblesEnabled(ctx) {
   if (typeof ctx.getBubblePolicy === "function") {
     try {
@@ -1117,6 +1122,16 @@ function startHttpServer() {
             if (typeof ctx.isAgentEnabled === "function" && !ctx.isAgentEnabled("codex")) {
               recordRequestHookEvent.droppedByDisabled();
               ctx.permLog(`codex disabled -> no decision, native prompt fallback (tool=${toolName})`);
+              sendCodexPermissionNoDecision(res);
+              return;
+            }
+
+            if (!shouldInterceptCodexPermission(ctx)) {
+              ctx.updateSession(sessionId, "notification", "PermissionRequest", {
+                agentId: "codex",
+                hookSource: CODEX_OFFICIAL_HOOK_SOURCE,
+              });
+              ctx.permLog(`codex native permission mode -> no decision, native prompt fallback (tool=${toolName})`);
               sendCodexPermissionNoDecision(res);
               return;
             }

@@ -127,6 +127,7 @@ describe("Codex official /permission path", () => {
   it("returns no-decision when Codex permission bubbles are disabled", async () => {
     const { handler, pendingPermissions } = startServer({
       isAgentPermissionsEnabled: (agentId) => agentId !== "codex",
+      isCodexPermissionInterceptEnabled: () => true,
     });
 
     const res = await callPermission(handler, {
@@ -140,8 +141,32 @@ describe("Codex official /permission path", () => {
     assert.strictEqual(pendingPermissions.length, 0);
   });
 
-  it("enqueues a real Codex approval bubble without suggestions or elicitation", async () => {
+  it("defaults Codex PermissionRequest to native no-decision while recording the event", async () => {
     const { handler, pendingPermissions, updates, shown } = startServer();
+    const res = await callPermission(handler, {
+      agent_id: "codex",
+      hook_source: "codex-official",
+      session_id: "codex:s1",
+      tool_name: "Bash",
+      tool_input: { command: "whoami /all" },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.body, "");
+    assert.strictEqual(pendingPermissions.length, 0);
+    assert.strictEqual(shown.length, 0);
+    assert.deepStrictEqual(updates[0], [
+      "codex:s1",
+      "notification",
+      "PermissionRequest",
+      { agentId: "codex", hookSource: "codex-official" },
+    ]);
+  });
+
+  it("enqueues a real Codex approval bubble in intercept mode without suggestions or elicitation", async () => {
+    const { handler, pendingPermissions, updates, shown } = startServer({
+      isCodexPermissionInterceptEnabled: () => true,
+    });
     const req = makeReq({
       agent_id: "codex",
       hook_source: "codex-official",
