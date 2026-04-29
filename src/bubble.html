@@ -669,15 +669,25 @@ function measureNaturalBubbleHeight() {
 }
 
 function applyElicitationViewport() {
-  if (!elicitationMode || !elicitationForm.classList.contains("visible")) return;
-  const cardRect = card.getBoundingClientRect();
-  const formRect = elicitationForm.getBoundingClientRect();
-  const fixedCardHeight = Math.max(0, cardRect.height - formRect.height);
-  const availableFormHeight = Math.floor(window.innerHeight - BUBBLE_BODY_PADDING_Y - fixedCardHeight);
-  const maxFormHeight = Math.max(MIN_ELICITATION_FORM_HEIGHT, availableFormHeight);
-
-  elicitationForm.style.maxHeight = `${maxFormHeight}px`;
-  card.classList.add("elicitation-scrollable");
+  // Intentionally a no-op.
+  //
+  // Previously this function clamped the elicitation form's maxHeight and added
+  // the `elicitation-scrollable` class (overflow-y: auto). The scroll container
+  // caused arrow keys to scroll the div instead of navigating between radio
+  // options — even with preventDefault()/stopPropagation() on keydown — because
+  // Chromium's scroll-on-arrow default action fires before JS handlers in the
+  // bubble phase, not after.
+  //
+  // The correct approach: let the form grow to its natural height and drive
+  // window size through reportHeight() → IPC bubble-height → setBounds().
+  // permission.js clampBubbleHeight() already caps the window at workArea.height
+  // so content-heavy bubbles will never exceed the screen.
+  //
+  // Safety: "User answered in terminal" cannot be triggered by elicitation
+  // bubbles. That denial path is wired to PostToolUse/Stop hook events matched
+  // by toolUseId (server.js:694) — elicitation uses a completely separate
+  // code path (server.js:1008, isElicitation: true) and is explicitly excluded
+  // from the shortcut-navigation and resolve logic (permission.js:321, 630).
 }
 
 function scheduleBubbleHeightReport() {
@@ -1000,6 +1010,23 @@ function renderElicitationStep() {
 
   updateElicitationSubmitState();
   scheduleBubbleHeightReport();
+
+  // Auto-focus the first preset radio on render so arrow keys work immediately
+  // without requiring a click first. Uses rAF so the DOM is painted before we
+  // query it. If a radio is already checked (navigating back to a previously
+  // answered question), keep that selection instead of resetting it.
+  requestAnimationFrame(() => {
+    const question = elicitationQuestions[activeQuestionIndex];
+    if (!question) return;
+    const alreadyChecked = elicitationForm.querySelector(
+      `input[name="elicitation-${activeQuestionIndex}"]:checked`
+    );
+    if (alreadyChecked) { alreadyChecked.focus(); return; }
+    const first = elicitationForm.querySelector(
+      `input[name="elicitation-${activeQuestionIndex}"]:not([data-other])`
+    );
+    if (first) { first.focus(); first.click(); }
+  });
 }
 
 function renderElicitationForm(data) {
