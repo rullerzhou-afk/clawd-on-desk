@@ -164,6 +164,53 @@ function scheduleTerminalTabFocus(editor, pidChain) {
   }, 800);
 }
 
+function scheduleITermTabFocus(sourcePid, pidChain) {
+  if (!isMac || !sourcePid || !Array.isArray(pidChain) || !pidChain.length) return;
+  execFile("ps", ["-o", "comm=", "-p", String(sourcePid)], { encoding: "utf8", timeout: 500 }, (err, stdout) => {
+    if (err) return;
+    const name = path.basename(stdout.trim()).toLowerCase();
+    if (name !== "iterm2") return;
+
+    // Find the shell PID's TTY to match against iTerm2 sessions.
+    // Walk pidChain from agent (index 0) upward — the first PID with a valid TTY
+    // is typically the shell or login process that owns the iTerm2 session.
+    const candidates = pidChain.filter(p => Number.isFinite(p) && p > 0 && p !== sourcePid);
+    if (!candidates.length) return;
+
+    const pidsArg = candidates.slice(0, 5).join(",");
+    execFile("ps", ["-o", "pid=,tty=", "-p", pidsArg], { encoding: "utf8", timeout: 500 }, (psErr, psOut) => {
+      if (psErr || !psOut) return;
+      let ttyName = null;
+      for (const line of psOut.trim().split("\n")) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length >= 2 && parts[1] !== "??" && parts[1] !== "?") {
+          ttyName = parts[1];
+          break;
+        }
+      }
+      if (!ttyName) return;
+
+      const script = `
+        tell application "iTerm2"
+          repeat with w in windows
+            repeat with t in tabs of w
+              repeat with s in sessions of t
+                if tty of s ends with "${ttyName}" then
+                  select t
+                  select w
+                  return "ok"
+                end if
+              end repeat
+            end repeat
+          end repeat
+        end tell`;
+      setTimeout(() => {
+        execFile("osascript", ["-e", script], { timeout: MAC_FOCUS_TIMEOUT_MS }, () => {});
+      }, 400);
+    });
+  });
+}
+
 function clearMacFocusCooldownTimer() {
   if (macFocusCooldownTimer) {
     clearTimeout(macFocusCooldownTimer);
@@ -206,6 +253,7 @@ function executeMacFocusRequest(request) {
 
   focusTerminalWindowLegacy(request.sourcePid, request.cwd, finalize, request.pidChain);
   scheduleTerminalTabFocus(request.editor, request.pidChain);
+  scheduleITermTabFocus(request.sourcePid, request.pidChain);
 }
 
 function requestMacFocus(sourcePid, cwd, editor, pidChain) {
