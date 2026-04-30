@@ -3557,7 +3557,7 @@ function clampToScreenVisual(x, y, w, h, options = {}) {
   const clampMargins = getRestClampMargins({
     height: h,
     visibleMargins: margins,
-    allowEdgePinning: allowEdgePinningCached,
+    allowEdgePinning: "allowEdgePinning" in options ? options.allowEdgePinning : allowEdgePinningCached,
     bottomInset,
   });
   return {
@@ -3584,6 +3584,7 @@ const _miniCtx = {
   SIZES,
   getCurrentPixelSize,
   getEffectiveCurrentPixelSize,
+  getPixelSizeFor,
   isProportionalMode,
   sendToRenderer,
   sendToHitWin,

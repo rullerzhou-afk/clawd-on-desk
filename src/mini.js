@@ -431,8 +431,10 @@ function handleDisplayChange() {
 }
 
 function handleResize(sizeKey) {
-  const size = ctx.SIZES[sizeKey] || _getSize();
   if (!miniMode) return false;
+  const size = (typeof ctx.getPixelSizeFor === "function")
+    ? ctx.getPixelSizeFor(sizeKey)
+    : (ctx.SIZES[sizeKey] || _getSize());
   const { y } = ctx.win.getBounds();
   const wa = ctx.getNearestWorkArea(currentMiniX + size.width / 2, y + size.height / 2);
   currentMiniX = calcMiniX(wa, size);

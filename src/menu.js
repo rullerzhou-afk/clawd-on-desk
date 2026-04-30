@@ -381,7 +381,7 @@ module.exports = function initMenu(ctx) {
     if (!ctx.miniHandleResize(sizeKey)) {
       if (ctx.win && !ctx.win.isDestroyed()) {
         const { x, y } = ctx.getPetWindowBounds();
-        const clamped = ctx.clampToScreenVisual(x, y, size.width, size.height);
+        const clamped = ctx.clampToScreenVisual(x, y, size.width, size.height, { allowEdgePinning: false });
         ctx.applyPetWindowBounds({ ...clamped, width: size.width, height: size.height });
       }
     }
