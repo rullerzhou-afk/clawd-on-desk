@@ -133,6 +133,9 @@ body { padding: 2px 3px 8px; }
 
 .right {
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-weight: 400;
   line-height: 1;
   color: var(--text-muted);
@@ -141,6 +144,28 @@ body { padding: 2px 3px 8px; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.unread-bell {
+  flex: 0 0 auto;
+  color: #f59e0b;
+  display: flex;
+  align-items: center;
+}
+
+@keyframes bell-ring {
+  0%   { transform: rotate(0deg); }
+  10%  { transform: rotate(12deg); }
+  20%  { transform: rotate(-10deg); }
+  30%  { transform: rotate(8deg); }
+  40%  { transform: rotate(-6deg); }
+  50%  { transform: rotate(0deg); }
+  100% { transform: rotate(0deg); }
+}
+
+.unread-bell svg {
+  animation: bell-ring 1.8s ease-in-out infinite;
+  transform-origin: 50% 2px;
 }
 </style>
 </head>

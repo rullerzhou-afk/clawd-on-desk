@@ -5,6 +5,9 @@ const HUD_MAX_EXPANDED_ROWS = 3;
 let snapshot = { sessions: [], orderedIds: [], hudTotalNonIdle: 0, hudLastTitle: null };
 let i18nPayload = { lang: "en", translations: {} };
 
+const unreadSessions = new Set();
+const prevBadges = new Map();
+
 const hudEl = document.getElementById("hud");
 
 function isHudSession(session) {
@@ -48,6 +51,26 @@ function orderedHudSessions(currentSnapshot) {
   return ordered.concat(missing).filter(isHudSession);
 }
 
+const BELL_SVG = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>`;
+
+function updateUnread(sessions) {
+  const currentIds = new Set(sessions.map((s) => s.id));
+  for (const id of unreadSessions) {
+    if (!currentIds.has(id)) unreadSessions.delete(id);
+  }
+  for (const session of sessions) {
+    const prev = prevBadges.get(session.id);
+    const curr = session.badge;
+    if (prev !== undefined && prev !== "done" && curr === "done") {
+      unreadSessions.add(session.id);
+    }
+    prevBadges.set(session.id, curr);
+  }
+  for (const id of prevBadges.keys()) {
+    if (!currentIds.has(id)) prevBadges.delete(id);
+  }
+}
+
 function splitHudLayout(sessions) {
   const expanded = sessions.slice(0, HUD_MAX_EXPANDED_ROWS);
   const folded = sessions.slice(HUD_MAX_EXPANDED_ROWS);
@@ -80,12 +103,23 @@ function createRowForSession(session, now) {
 
   const right = document.createElement("span");
   right.className = "right";
-  right.textContent = formatElapsed(now - (Number(session.updatedAt) || now));
+
+  if (unreadSessions.has(session.id)) {
+    const bell = document.createElement("span");
+    bell.className = "unread-bell";
+    bell.innerHTML = BELL_SVG;
+    right.appendChild(bell);
+  }
+
+  const elapsed = document.createElement("span");
+  elapsed.textContent = formatElapsed(now - (Number(session.updatedAt) || now));
+  right.appendChild(elapsed);
 
   row.appendChild(left);
   row.appendChild(right);
 
   row.addEventListener("click", () => {
+    unreadSessions.delete(session.id);
     window.sessionHudAPI.focusSession(session.id);
   });
 
@@ -119,6 +153,7 @@ function createFoldedRow(count) {
 
 function render() {
   const sessions = orderedHudSessions(snapshot);
+  updateUnread(sessions);
   hudEl.replaceChildren();
   if (!sessions.length) return;
 
