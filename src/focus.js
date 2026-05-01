@@ -57,7 +57,32 @@ public class WinFocus {
 "@
 `;
 
-function makeFocusCmd(sourcePid, cwdCandidates) {
+function makeEditorFallbackBlock(editor, psNames) {
+  if (editor !== "code" && editor !== "cursor") return "";
+  // Process name for VS Code is "Code", for Cursor is "Cursor".
+  // This fallback activates when the PID walk + WT scan found nothing,
+  // which happens when Claude Code runs in WSL2 (Linux PIDs are invisible
+  // to the Windows process tree).
+  const procName = editor === "cursor" ? "Cursor" : "Code";
+  const titleFallback = psNames ? `
+    foreach ($name in @(${psNames})) {
+        $hwnd = [WinFocus]::FindByPidTitle([uint32]$ep.Id, $name)
+        if ($hwnd -ne [IntPtr]::Zero) { [WinFocus]::Focus($hwnd); $focused = $true; break }
+    }` : "";
+  return `
+if (-not $focused) {
+    $editorProcs = Get-Process -Name '${procName}' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }
+    foreach ($ep in $editorProcs) {${titleFallback}
+        if ($focused) { break }
+    }
+    if (-not $focused) {
+        $ep = $editorProcs | Select-Object -First 1
+        if ($ep) { [WinFocus]::Focus($ep.MainWindowHandle); $focused = $true }
+    }
+}`;
+}
+
+function makeFocusCmd(sourcePid, cwdCandidates, editor) {
   // Walk up the process tree (same proven logic as before).
   // When we find the process with MainWindowHandle, try title-matching first
   // to support multi-window editors (Cursor/VS Code). Fall back to MainWindowHandle.
@@ -113,6 +138,7 @@ if (-not $focused) {${wtTitleMatch}
         if ($wt -and $wt.MainWindowHandle -ne 0) { [WinFocus]::Focus($wt.MainWindowHandle) }
     }
 }
+${makeEditorFallbackBlock(editor, psNames)}
 `;
 }
 
@@ -252,14 +278,14 @@ function focusTerminalWindow(sourcePid, cwd, editor, pidChain) {
   }
 
   // Legacy focus for reliable window activation (ALT key trick + SetForegroundWindow)
-  focusTerminalWindowLegacy(sourcePid, cwd);
+  focusTerminalWindowLegacy(sourcePid, cwd, null, pidChain, editor);
 
   // VS Code / Cursor: request precise terminal tab switch via extension's HTTP server.
   // Delayed so legacy PowerShell focus completes first (it's fire-and-forget via stdin).
   scheduleTerminalTabFocus(editor, pidChain);
 }
 
-function focusTerminalWindowLegacy(sourcePid, cwd, onDone, pidChain) {
+function focusTerminalWindowLegacy(sourcePid, cwd, onDone, pidChain, editor) {
   if (isMac) {
     const pidCandidates = [sourcePid];
     if (Array.isArray(pidChain)) {
@@ -331,7 +357,7 @@ function focusTerminalWindowLegacy(sourcePid, cwd, onDone, pidChain) {
   }
 
   // Windows: send command to persistent PowerShell process (near-instant)
-  const cmd = makeFocusCmd(sourcePid, cwdCandidates);
+  const cmd = makeFocusCmd(sourcePid, cwdCandidates, editor);
   if (psProc && psProc.stdin.writable) {
     psProc.stdin.write(cmd + "\n");
   } else {

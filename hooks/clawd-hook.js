@@ -167,7 +167,10 @@ function buildStateBody(event, payload, resolve) {
   } else {
     const { stablePid, agentPid, detectedEditor, pidChain } = resolve();
     body.source_pid = stablePid;
-    if (detectedEditor) body.editor = detectedEditor;
+    const termProgram = process.env.TERM_PROGRAM;
+    const editorFromEnv = termProgram === "vscode" ? "code" : termProgram === "cursor" ? "cursor" : null;
+    const resolvedEditor = detectedEditor || editorFromEnv;
+    if (resolvedEditor) body.editor = resolvedEditor;
     if (agentPid) {
       body.agent_pid = agentPid;
       body.claude_pid = agentPid; // backward compat with older Clawd versions
