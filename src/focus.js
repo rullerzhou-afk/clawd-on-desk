@@ -9,6 +9,31 @@ const isMac = process.platform === "darwin";
 const isWin = process.platform === "win32";
 const isLinux = process.platform === "linux";
 
+function makeEditorFallbackBlock(editor, psNames) {
+  if (editor !== "code" && editor !== "cursor") return "";
+  // Process name for VS Code is "Code", for Cursor is "Cursor".
+  // This fallback activates when the PID walk + WT scan found nothing,
+  // which happens when Claude Code runs in WSL2 (Linux PIDs are invisible
+  // to the Windows process tree).
+  const procName = editor === "cursor" ? "Cursor" : "Code";
+  const titleFallback = psNames ? `
+    foreach ($name in @(${psNames})) {
+        $hwnd = [WinFocus]::FindByPidTitle([uint32]$ep.Id, $name)
+        if ($hwnd -ne [IntPtr]::Zero) { [WinFocus]::Focus($hwnd); $focused = $true; break }
+    }` : "";
+  return `
+if (-not $focused) {
+    $editorProcs = Get-Process -Name '${procName}' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }
+    foreach ($ep in $editorProcs) {${titleFallback}
+        if ($focused) { break }
+    }
+    if (-not $focused) {
+        $ep = $editorProcs | Select-Object -First 1
+        if ($ep) { [WinFocus]::Focus($ep.MainWindowHandle); $focused = $true }
+    }
+}`;
+}
+
 module.exports = function initFocus(ctx) {
 
 const PS_FOCUS_ADDTYPE = `
@@ -56,31 +81,6 @@ public class WinFocus {
 }
 "@
 `;
-
-function makeEditorFallbackBlock(editor, psNames) {
-  if (editor !== "code" && editor !== "cursor") return "";
-  // Process name for VS Code is "Code", for Cursor is "Cursor".
-  // This fallback activates when the PID walk + WT scan found nothing,
-  // which happens when Claude Code runs in WSL2 (Linux PIDs are invisible
-  // to the Windows process tree).
-  const procName = editor === "cursor" ? "Cursor" : "Code";
-  const titleFallback = psNames ? `
-    foreach ($name in @(${psNames})) {
-        $hwnd = [WinFocus]::FindByPidTitle([uint32]$ep.Id, $name)
-        if ($hwnd -ne [IntPtr]::Zero) { [WinFocus]::Focus($hwnd); $focused = $true; break }
-    }` : "";
-  return `
-if (-not $focused) {
-    $editorProcs = Get-Process -Name '${procName}' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }
-    foreach ($ep in $editorProcs) {${titleFallback}
-        if ($focused) { break }
-    }
-    if (-not $focused) {
-        $ep = $editorProcs | Select-Object -First 1
-        if ($ep) { [WinFocus]::Focus($ep.MainWindowHandle); $focused = $true }
-    }
-}`;
-}
 
 function makeFocusCmd(sourcePid, cwdCandidates, editor) {
   // Walk up the process tree (same proven logic as before).
@@ -383,3 +383,5 @@ function cleanup() {
 return { initFocusHelper, killFocusHelper, focusTerminalWindow, clearMacFocusCooldownTimer, cleanup };
 
 };
+
+module.exports.__test = { makeEditorFallbackBlock };
