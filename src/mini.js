@@ -22,6 +22,7 @@ let miniPeeked = false;
 let preMiniX = 0, preMiniY = 0;
 let currentMiniX = 0;
 let miniSnap = null;  // { y, width, height } — canonical rect to prevent DPI drift
+let lastMiniWorkArea = null;  // workArea of the display the mini pet is on
 let miniTransitionTimer = null;
 let peekAnimTimer = null;
 let isAnimating = false;
@@ -260,6 +261,7 @@ function enterMiniMode(wa, viaMenu, edge) {
   if (edge) miniEdge = edge;
   const size = _getSize();
   currentMiniX = calcMiniX(wa, size);
+  lastMiniWorkArea = wa;
   miniSnap = { y: bounds.y, width: size.width, height: size.height };
 
   ctx.stopWakePoll();
@@ -422,6 +424,7 @@ function handleDisplayChange() {
   const bounds = ctx.win.getBounds();
   const snapY = miniSnap ? miniSnap.y : bounds.y;
   const wa = ctx.getNearestWorkArea(currentMiniX + size.width / 2, snapY + size.height / 2);
+  lastMiniWorkArea = wa;
   currentMiniX = calcMiniX(wa, size);
   // mini 的 y 必须在工作区内(real 坐标),加回两端 clamp
   const clampedY = Math.max(wa.y, Math.min(snapY, wa.y + wa.height - size.height));
@@ -432,13 +435,13 @@ function handleDisplayChange() {
 
 function handleResize(sizeKey) {
   if (!miniMode) return false;
+  const { y: curY } = ctx.win.getBounds();
+  const wa = lastMiniWorkArea || ctx.getNearestWorkArea(currentMiniX, curY);
   const size = (typeof ctx.getPixelSizeFor === "function")
-    ? ctx.getPixelSizeFor(sizeKey)
-    : (ctx.SIZES[sizeKey] || _getSize());
-  const { y } = ctx.win.getBounds();
-  const wa = ctx.getNearestWorkArea(currentMiniX + size.width / 2, y + size.height / 2);
+    ? ctx.getPixelSizeFor(sizeKey, wa)
+    : ctx.SIZES[sizeKey];
   currentMiniX = calcMiniX(wa, size);
-  const clampedY = Math.max(wa.y, Math.min(y, wa.y + wa.height - size.height));
+  const clampedY = Math.max(wa.y, Math.min(curY, wa.y + wa.height - size.height));
   miniSnap = { y: clampedY, width: size.width, height: size.height };
   ctx.win.setBounds({ x: currentMiniX, y: clampedY, width: size.width, height: size.height });
   syncSessionHudVisibility();
@@ -450,6 +453,7 @@ function restoreFromPrefs(prefs, size) {
   preMiniY = prefs.preMiniY || 0;
   miniEdge = prefs.miniEdge || "right";
   const wa = ctx.getNearestWorkArea(prefs.x + size.width / 2, prefs.y + size.height / 2);
+  lastMiniWorkArea = wa;
   currentMiniX = calcMiniX(wa, size);
   // 启动恢复 mini 时 y 必须在工作区内(保证 offset = 0,符合 mini 语义)
   const startY = Math.max(wa.y, Math.min(prefs.y, wa.y + wa.height - size.height));
