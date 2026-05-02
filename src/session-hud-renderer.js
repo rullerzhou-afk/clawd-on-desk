@@ -61,7 +61,9 @@ function updateUnread(sessions) {
   for (const session of sessions) {
     const prev = prevBadges.get(session.id);
     const curr = session.badge;
-    if (prev !== undefined && prev !== "done" && curr === "done") {
+    if (curr !== "done") {
+      unreadSessions.delete(session.id);
+    } else if (prev !== undefined && prev !== "done") {
       unreadSessions.add(session.id);
     }
     prevBadges.set(session.id, curr);
@@ -104,7 +106,7 @@ function createRowForSession(session, now) {
   const right = document.createElement("span");
   right.className = "right";
 
-  if (unreadSessions.has(session.id)) {
+  if (session.badge === "done" && unreadSessions.has(session.id)) {
     const bell = document.createElement("span");
     bell.className = "unread-bell";
     bell.innerHTML = BELL_SVG;
@@ -120,6 +122,7 @@ function createRowForSession(session, now) {
 
   row.addEventListener("click", () => {
     unreadSessions.delete(session.id);
+    render();
     window.sessionHudAPI.focusSession(session.id);
   });
 

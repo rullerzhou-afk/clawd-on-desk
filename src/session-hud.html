@@ -167,6 +167,12 @@ body { padding: 2px 3px 8px; }
   animation: bell-ring 1.8s ease-in-out infinite;
   transform-origin: 50% 2px;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .unread-bell svg {
+    animation: none;
+  }
+}
 </style>
 </head>
 <body>
