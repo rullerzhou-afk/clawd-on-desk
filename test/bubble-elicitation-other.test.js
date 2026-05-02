@@ -33,4 +33,16 @@ describe("AskUserQuestion bubble Other option", () => {
     assert.match(bubbleHtml, /if \(!otherText\) return "";/);
     assert.match(bubbleHtml, /for \(const el of elicitationForm\.querySelectorAll\("input, textarea, button"\)\) el\.disabled = true;/);
   });
+
+  it("keeps Other arrow navigation narrow and avoids checkbox toggles", () => {
+    assert.match(bubbleHtml, /if \(e\.key === "ArrowUp" && !e\.shiftKey && !e\.isComposing\) \{/);
+    assert.match(bubbleHtml, /const shouldEscape = isEmpty \|\| atStart;/);
+    assert.match(bubbleHtml, /if \(!question\.multiSelect\) target\.click\(\);/);
+    assert.match(
+      bubbleHtml,
+      /otherInput\.addEventListener\("keydown", \(e\) => \{[\s\S]*?e\.key === "ArrowDown"[\s\S]*?ta\.focus\(\);/
+    );
+    assert.doesNotMatch(bubbleHtml, /if \(target\) \{ target\.focus\(\); target\.click\(\); \}/);
+    assert.doesNotMatch(bubbleHtml, /const atEnd = otherTextarea\.selectionStart === otherTextarea\.value\.length/);
+  });
 });

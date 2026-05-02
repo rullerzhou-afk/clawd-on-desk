@@ -932,29 +932,25 @@ function createElicitationQuestionCard(question, questionIndex) {
     updateElicitationSubmitState();
   });
   // Enter activates the primary action when it is enabled; Shift+Enter inserts a newline.
-  // ArrowUp when cursor is at position 0 escapes back to the last preset radio option,
-  // matching CLI arrow-key navigation behaviour where Up always moves to the previous item.
+  // ArrowUp from the start of Other returns focus to the last preset option.
   otherTextarea.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       if (!btnAllow.disabled) btnAllow.click();
       return;
     }
-    if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.isComposing) {
-      // Only escape when the textarea is empty OR cursor is at the very start (ArrowUp)
-      // or very end (ArrowDown). This avoids hijacking multi-line navigation inside a
-      // filled textarea.
+    if (e.key === "ArrowUp" && !e.shiftKey && !e.isComposing) {
       const atStart = otherTextarea.selectionStart === 0 && otherTextarea.selectionEnd === 0;
-      const atEnd = otherTextarea.selectionStart === otherTextarea.value.length
-        && otherTextarea.selectionEnd === otherTextarea.value.length;
       const isEmpty = otherTextarea.value.length === 0;
-      const shouldEscape = isEmpty || (e.key === "ArrowUp" && atStart) || (e.key === "ArrowDown" && atEnd);
+      const shouldEscape = isEmpty || atStart;
       if (shouldEscape) {
         e.preventDefault();
-        // Focus the last preset radio (ArrowUp) or first preset radio (ArrowDown).
-        const radios = optionList.querySelectorAll(`input[name="elicitation-${questionIndex}"]:not([data-other])`);
-        const target = e.key === "ArrowUp" ? radios[radios.length - 1] : radios[0];
-        if (target) { target.focus(); target.click(); }
+        const presetInputs = optionList.querySelectorAll(`input[name="elicitation-${questionIndex}"]:not([data-other])`);
+        const target = presetInputs[presetInputs.length - 1];
+        if (target) {
+          target.focus();
+          if (!question.multiSelect) target.click();
+        }
       }
     }
   });
@@ -974,8 +970,7 @@ function createElicitationQuestionCard(question, questionIndex) {
     setElicitationSelection(question, questionIndex, ELICITATION_OTHER_KEY, otherInput.checked);
     updateOtherTextarea();
   });
-  // ArrowDown on the "Other" radio (when textarea is visible) moves focus into the textarea,
-  // completing the loop: radio list ↔ ArrowUp/Down ↔ Other textarea.
+  // ArrowDown on Other moves focus into the textarea when it is visible.
   otherInput.addEventListener("keydown", (e) => {
     if (e.key === "ArrowDown" && !e.shiftKey && !e.isComposing) {
       const ta = optionList.querySelector("[data-other-textarea]");
