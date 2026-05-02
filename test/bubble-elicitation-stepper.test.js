@@ -28,15 +28,18 @@ describe("AskUserQuestion bubble stepper", () => {
     assert.doesNotMatch(body, /forEach\(\(question, questionIndex\)/);
   });
 
-  it("does not auto-toggle the first checkbox when initially focusing a multi-select question", () => {
+  it("does not auto-select the first option on initial focus (form-like elicitation)", () => {
     const body = functionBody("renderElicitationStep");
 
-    // Source guard only: if first.click() changes shape, replace this with a renderer
-    // behavior test or update the guard to keep the multi-select protection explicit.
-    const firstClicks = body.match(/first\.click\(/g) || [];
-    assert.strictEqual(firstClicks.length, 1);
-    assert.match(body, /if \(first\) \{\s*first\.focus\(\);\s*if \(!question\.multiSelect\) first\.click\(\);\s*\}/);
-    assert.doesNotMatch(body, /first\.focus\(\);\s*first\.click\(\);/);
+    // B route: form-like elicitation for both single-choice and multi-select.
+    // Initial focus puts the cursor on the first preset so arrow keys / Tab work
+    // immediately, but it must not call .click() and must not pre-select.
+    //
+    // Source guard only. If first.click() appears in any rewritten form
+    // (first.click({preventScroll:true}), first?.click(), inputs[0].click(), …)
+    // update the guard or replace it with a renderer behavior test.
+    assert.doesNotMatch(body, /first\.click\(/);
+    assert.match(body, /if \(first\) first\.focus\(\);/);
   });
 
   it("lets answered summary rows reopen their question", () => {

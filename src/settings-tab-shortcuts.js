@@ -135,13 +135,16 @@
     parent.appendChild(head);
 
     const rows = i18n.SHORTCUT_ACTION_IDS.map((actionId) => buildShortcutRow(actionId));
-    rows.push(buildFixedKeyRow());
+    rows.push(buildFixedKeyRow("shortcutLabelBubbleNextOption", "Tab / ↓"));
+    rows.push(buildFixedKeyRow("shortcutLabelBubblePrevOption", "Shift+Tab / ↑"));
+    rows.push(buildFixedKeyRow("shortcutLabelBubbleToggleOption", "Space"));
+    rows.push(buildFixedKeyRow("shortcutLabelBubbleSubmit", "Enter"));
     parent.appendChild(helpers.buildSection("", rows));
   }
 
-  // Grayed row for keys that aren't customizable, so users don't wonder
-  // why "Enter" isn't in the list.
-  function buildFixedKeyRow() {
+  // Grayed row for keys that aren't customizable, so users can see them in
+  // the same list as the customizable shortcuts.
+  function buildFixedKeyRow(labelKey, keysText) {
     const row = document.createElement("div");
     row.className = "row shortcut-row";
 
@@ -149,7 +152,7 @@
     textWrap.className = "row-text";
     const label = document.createElement("span");
     label.className = "row-label";
-    label.textContent = t("shortcutLabelBubbleSubmit");
+    label.textContent = t(labelKey);
     textWrap.appendChild(label);
     row.appendChild(textWrap);
 
@@ -157,7 +160,7 @@
     control.className = "row-control shortcut-row-control";
     const value = document.createElement("div");
     value.className = "shortcut-value";
-    value.textContent = "Enter";
+    value.textContent = keysText;
     control.appendChild(value);
 
     const tooltip = t("shortcutBuiltinKeyTooltip");
