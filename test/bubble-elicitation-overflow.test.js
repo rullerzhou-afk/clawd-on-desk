@@ -5,22 +5,23 @@ const path = require("node:path");
 
 const bubbleHtml = fs.readFileSync(path.join(__dirname, "..", "src", "bubble.html"), "utf8");
 
+function functionBody(name) {
+  const start = bubbleHtml.indexOf(`function ${name}(`);
+  assert.notStrictEqual(start, -1, `missing function ${name}`);
+  const next = bubbleHtml.indexOf("\nfunction ", start + 1);
+  return next === -1 ? bubbleHtml.slice(start) : bubbleHtml.slice(start, next);
+}
+
 describe("AskUserQuestion bubble overflow", () => {
-  it("scrolls only elicitation content while leaving footer actions outside the scroll area", () => {
-    assert.match(
-      bubbleHtml,
-      /\.card\.elicitation-scrollable \.elicitation-form \{[\s\S]*overflow-y: auto;/
-    );
-    assert.match(
-      bubbleHtml,
-      /<div class="elicitation-form" id="elicitationForm"><\/div>\s*<div class="elicitation-progress" id="elicitationProgress"><\/div>\s*<div class="actions">/
-    );
-    const actionsBlock = bubbleHtml.match(/\.actions\s*\{(?<body>[^}]*)\}/);
-    assert.ok(actionsBlock, "bubble.html should define a base .actions block");
-    assert.doesNotMatch(actionsBlock.groups.body, /overflow-y:/);
+  it("documents applyElicitationViewport as a no-op until the overflow redesign lands", () => {
+    const body = functionBody("applyElicitationViewport");
+
+    assert.match(body, /Intentionally a no-op/);
+    assert.match(body, /The correct approach: let the form grow to its natural height/);
+    assert.match(body, /permission\.js clampBubbleHeight\(\) already caps the window/);
   });
 
-  it("reports natural content height before applying the viewport scroll clamp", () => {
+  it("reports natural content height before calling the no-op viewport hook", () => {
     assert.match(bubbleHtml, /function measureNaturalBubbleHeight\(\)/);
     assert.match(bubbleHtml, /card\.classList\.remove\("elicitation-scrollable"\);/);
     assert.match(bubbleHtml, /elicitationForm\.style\.maxHeight = "";/);
@@ -31,8 +32,12 @@ describe("AskUserQuestion bubble overflow", () => {
     assert.doesNotMatch(bubbleHtml, /max-height:\s*calc\(100vh/);
   });
 
-  it("reapplies the internal scroll limit after Electron resizes the bubble window", () => {
-    assert.match(bubbleHtml, /function applyElicitationViewport\(\)/);
-    assert.match(bubbleHtml, /window\.addEventListener\("resize", applyElicitationViewport\);/);
+  it("does not make the no-op viewport hook add internal scrolling or a max-height clamp", () => {
+    const body = functionBody("applyElicitationViewport");
+
+    // Long-prompt overflow remains deferred to the #222 redesign; this guard only
+    // prevents tests from implying the current no-op provides runtime scrolling.
+    assert.doesNotMatch(body, /card\.classList\.(?:add|toggle)\("elicitation-scrollable"/);
+    assert.doesNotMatch(body, /elicitationForm\.style\.maxHeight\s*=/);
   });
 });

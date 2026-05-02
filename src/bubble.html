@@ -1121,7 +1121,10 @@ function renderElicitationStep() {
     const first = elicitationForm.querySelector(
       `input[name="elicitation-${activeQuestionIndex}"]:not([data-other])`
     );
-    if (first) { first.focus(); first.click(); }
+    if (first) {
+      first.focus();
+      if (!question.multiSelect) first.click();
+    }
   });
 }
 

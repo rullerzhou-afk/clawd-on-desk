@@ -28,6 +28,17 @@ describe("AskUserQuestion bubble stepper", () => {
     assert.doesNotMatch(body, /forEach\(\(question, questionIndex\)/);
   });
 
+  it("does not auto-toggle the first checkbox when initially focusing a multi-select question", () => {
+    const body = functionBody("renderElicitationStep");
+
+    // Source guard only: if first.click() changes shape, replace this with a renderer
+    // behavior test or update the guard to keep the multi-select protection explicit.
+    const firstClicks = body.match(/first\.click\(/g) || [];
+    assert.strictEqual(firstClicks.length, 1);
+    assert.match(body, /if \(first\) \{\s*first\.focus\(\);\s*if \(!question\.multiSelect\) first\.click\(\);\s*\}/);
+    assert.doesNotMatch(body, /first\.focus\(\);\s*first\.click\(\);/);
+  });
+
   it("lets answered summary rows reopen their question", () => {
     const body = functionBody("createQuestionSummary");
     assert.match(body, /summaryButton\.addEventListener\("click", \(\) => \{/);
