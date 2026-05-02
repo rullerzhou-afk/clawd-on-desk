@@ -1,27 +1,37 @@
 // test/focus-iterm-tab.test.js — Tests for iTerm2 tab-level focus switching
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
-const path = require("path");
 
 // focus.js destructures { execFile, spawn } at require-time, so we must
-// patch child_process BEFORE requiring focus.js.
+// patch child_process and process.platform BEFORE requiring focus.js.
 
-function loadFocusWithMock(execFileMock) {
+function loadFocusWithMock(execFileMock, options = {}) {
   const cpKey = require.resolve("child_process");
   const focusKey = require.resolve("../src/focus");
+  const platform = options.platform || "darwin";
 
   // Save originals
   const origCp = require.cache[cpKey];
   const origFocus = require.cache[focusKey];
+  const origPlatform = Object.getOwnPropertyDescriptor(process, "platform");
 
   // Build a patched child_process module
   const realCp = require("child_process");
   const patchedCp = { ...realCp, execFile: execFileMock, spawn: realCp.spawn };
   require.cache[cpKey] = { id: cpKey, filename: cpKey, loaded: true, exports: patchedCp };
+  Object.defineProperty(process, "platform", {
+    ...origPlatform,
+    value: platform,
+  });
 
   // Clear focus.js cache so it picks up patched child_process
   delete require.cache[focusKey];
-  const initFocus = require("../src/focus");
+  let initFocus;
+  try {
+    initFocus = require("../src/focus");
+  } finally {
+    Object.defineProperty(process, "platform", origPlatform);
+  }
 
   // Restore child_process cache immediately (focus.js already captured the reference)
   if (origCp) require.cache[cpKey] = origCp;
@@ -172,5 +182,56 @@ describe("iTerm2 tab focus (macOS)", () => {
 
       done();
     }, 2000);
+  });
+
+  it("should not drop same-iTerm2-PID focus requests with different pid chains", (t, done) => {
+    const calls = [];
+    const { initFocus, cleanup } = loadFocusWithMock(function mockExecFile(cmd, args, opts, cb) {
+      if (typeof opts === "function") { cb = opts; opts = {}; }
+      calls.push({ cmd, args: [...args] });
+      if (cmd === "osascript") {
+        if (cb) cb(null, "", "");
+        return;
+      }
+      if (cmd === "ps") {
+        const a = args.join(" ");
+        if (a.includes("comm=")) {
+          if (cb) cb(null, "iTerm2\n", "");
+          return;
+        }
+        if (a.includes("tty=")) {
+          const pids = args[args.indexOf("-p") + 1] || "";
+          const tty = pids.includes("301") ? "ttys002" : "ttys001";
+          if (cb) cb(null, `  ${pids.split(",")[0]} ${tty}\n`, "");
+          return;
+        }
+      }
+      if (cb) cb(null, "", "");
+    });
+
+    const { focusTerminalWindow } = initFocus({});
+    focusTerminalWindow(11940, "/test/cwd-a", null, [201, 11940]);
+    setTimeout(() => {
+      focusTerminalWindow(11940, "/test/cwd-b", null, [301, 11940]);
+    }, 10);
+
+    setTimeout(() => {
+      cleanup();
+
+      const itermScripts = calls
+        .filter(c => c.cmd === "osascript")
+        .filter(c => c.args.some(a => typeof a === "string" && a.includes("iTerm2")));
+      assert.strictEqual(itermScripts.length, 2, "Should run tab switch for both pid chains");
+      assert.ok(
+        itermScripts.some(c => c.args.some(a => a.includes("ttys001"))),
+        "Should switch to first TTY"
+      );
+      assert.ok(
+        itermScripts.some(c => c.args.some(a => a.includes("ttys002"))),
+        "Should switch to second TTY"
+      );
+
+      done();
+    }, 2600);
   });
 });

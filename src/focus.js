@@ -123,7 +123,7 @@ const MAC_FOCUS_THROTTLE_MS = 1500;
 const MAC_FOCUS_TIMEOUT_MS = 1500;
 let macFocusInFlight = false;
 let macFocusLastRunAt = 0;
-let macFocusLastPid = null;
+let macFocusLastRequestKey = null;
 let macQueuedFocusRequest = null;
 let macFocusCooldownTimer = null;
 
@@ -241,10 +241,17 @@ function flushQueuedMacFocus() {
   executeMacFocusRequest(nextRequest);
 }
 
+function getMacFocusRequestKey(sourcePid, pidChain) {
+  const chain = Array.isArray(pidChain)
+    ? pidChain.filter(p => Number.isFinite(p) && p > 0).join(",")
+    : "";
+  return `${sourcePid || ""}|${chain}`;
+}
+
 function executeMacFocusRequest(request) {
   macFocusInFlight = true;
   macFocusLastRunAt = Date.now();
-  macFocusLastPid = request.sourcePid;
+  macFocusLastRequestKey = request.key;
 
   const finalize = () => {
     macFocusInFlight = false;
@@ -259,9 +266,10 @@ function executeMacFocusRequest(request) {
 function requestMacFocus(sourcePid, cwd, editor, pidChain) {
   const elapsed = Date.now() - macFocusLastRunAt;
   const inCooldown = elapsed < MAC_FOCUS_THROTTLE_MS;
-  if (inCooldown && macFocusLastPid === sourcePid) return;
+  const key = getMacFocusRequestKey(sourcePid, pidChain);
+  if (inCooldown && macFocusLastRequestKey === key) return;
 
-  const request = { sourcePid, cwd, editor, pidChain };
+  const request = { sourcePid, cwd, editor, pidChain, key };
   if (macFocusInFlight) {
     macQueuedFocusRequest = request;
     return;
