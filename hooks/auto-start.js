@@ -56,24 +56,19 @@ function launchApp() {
         }
       }
     } else {
-      // Source / development mode
+      // Source / development mode — spawn Electron directly to avoid
+      // a visible console window from the npm → launch.js chain.
       const projectDir = path.resolve(__dirname, "..");
-      if (isWin) {
-        // On Windows, .cmd files cannot be spawned directly with detached:true
-        // (EINVAL). Wrap with cmd.exe /c instead.
-        spawn("cmd.exe", ["/c", "npm.cmd", "start"], {
-          cwd: projectDir,
-          detached: true,
-          stdio: "ignore",
-          windowsHide: true,
-        }).unref();
-      } else {
-        spawn("npm", ["start"], {
-          cwd: projectDir,
-          detached: true,
-          stdio: "ignore",
-        }).unref();
-      }
+      const electron = require("electron");
+      const env = { ...process.env };
+      delete env.ELECTRON_RUN_AS_NODE;
+      spawn(electron, [projectDir], {
+        cwd: projectDir,
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+        env,
+      }).unref();
     }
   } catch (err) {
     process.stderr.write(`clawd auto-start: ${err.message}\n`);
