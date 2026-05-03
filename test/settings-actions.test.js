@@ -77,7 +77,7 @@ describe("updateRegistry pure-data validators", () => {
   it("function-form boolean fields reject non-booleans", () => {
     const deps = { snapshot: baseSnapshot };
     for (const key of [
-      "sessionHudEnabled", "miniMode", "openAtLoginHydrated",
+      "sessionHudEnabled", "sessionHudShowElapsed", "miniMode", "openAtLoginHydrated",
       "soundMuted", "bubbleFollowPet", "sessionHudEnabled", "hideBubbles", "permissionBubblesEnabled",
       "lowPowerIdleMode", "allowEdgePinning", "keepSizeAcrossDisplays", "miniMode", "openAtLoginHydrated",
     ]) {
