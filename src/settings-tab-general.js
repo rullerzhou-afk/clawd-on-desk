@@ -8,6 +8,7 @@
     "lowPowerIdleMode",
     "sessionHudEnabled",
     "sessionHudShowElapsed",
+    "sessionHudCleanupDetachedCodex",
     "allowEdgePinning",
     "keepSizeAcrossDisplays",
     "openAtLogin",
@@ -55,6 +56,11 @@
         key: "sessionHudShowElapsed",
         labelKey: "rowSessionHudElapsed",
         descKey: "rowSessionHudElapsedDesc",
+      }),
+      helpers.buildSwitchRow({
+        key: "sessionHudCleanupDetachedCodex",
+        labelKey: "rowSessionHudCleanupDetachedCodex",
+        descKey: "rowSessionHudCleanupDetachedCodexDesc",
       }),
       buildDashboardRow(),
       helpers.buildSwitchRow({

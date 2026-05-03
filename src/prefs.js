@@ -87,6 +87,7 @@ const SCHEMA = {
   bubbleFollowPet: { type: "boolean", default: false },
   sessionHudEnabled: { type: "boolean", default: true },
   sessionHudShowElapsed: { type: "boolean", default: true },
+  sessionHudCleanupDetachedCodex: { type: "boolean", default: true },
   hideBubbles: { type: "boolean", default: false },
   permissionBubblesEnabled: { type: "boolean", default: true },
   notificationBubbleAutoCloseSeconds: {

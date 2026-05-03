@@ -630,6 +630,28 @@ describe("cleanStaleSessions()", () => {
     assert.strictEqual(api.sessions.size, 0);
   });
 
+  it("detached idle Codex session expires quickly when HUD cleanup is enabled", () => {
+    api = require("../src/state")(makeCtx());
+    api.sessions.set("s1", rawSession("idle", {
+      agentId: "codex",
+      pidReachable: true,
+      updatedAt: Date.now() - 31000,
+    }));
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 0);
+  });
+
+  it("detached idle Codex session follows normal stale cleanup when HUD cleanup is disabled", () => {
+    api = require("../src/state")(makeCtx({ sessionHudCleanupDetachedCodex: false }));
+    api.sessions.set("s1", rawSession("idle", {
+      agentId: "codex",
+      pidReachable: true,
+      updatedAt: Date.now() - 31000,
+    }));
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 1);
+  });
+
   it("last non-headless deleted → triggers yawning", () => {
     api = require("../src/state")(makeCtx({ processKill: makePidKill(new Set()) }));
     api.sessions.set("s1", rawSession("working", { agentPid: 9999, pidReachable: true }));

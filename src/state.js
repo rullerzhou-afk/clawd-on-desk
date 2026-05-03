@@ -99,6 +99,7 @@ const sessions = new Map();
 const MAX_SESSIONS = 20;
 const SESSION_STALE_MS = 600000;
 const WORKING_STALE_MS = 300000;
+const CODEX_DETACHED_IDLE_STALE_MS = 30000;
 let lastSessionSnapshotSignature = null;
 let lastSessionSnapshot = null;
 let startupRecoveryActive = false;
@@ -1121,6 +1122,10 @@ function isProcessAlive(pid) {
   try { _kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; }
 }
 
+function shouldCleanupDetachedCodexSessions() {
+  return ctx.sessionHudCleanupDetachedCodex !== false;
+}
+
 function cleanStaleSessions() {
   const now = Date.now();
   let changed = false;
@@ -1151,6 +1156,20 @@ function cleanStaleSessions() {
       debugSession(`stale-delete agent-exit ${describeSession(id, s)}`);
       if (!s.headless) removedNonHeadless = true;
       if (s && s.agentId === "kimi-cli") disposeKimiTimers(id);
+      sessions.delete(id); changed = true;
+      continue;
+    }
+
+    if (
+      shouldCleanupDetachedCodexSessions()
+      && s.agentId === "codex"
+      && !s.headless
+      && s.state === "idle"
+      && !s.agentPid
+      && age > CODEX_DETACHED_IDLE_STALE_MS
+    ) {
+      debugSession(`stale-delete codex-detached-idle ${describeSession(id, s)}`);
+      removedNonHeadless = true;
       sessions.delete(id); changed = true;
       continue;
     }

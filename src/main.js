@@ -527,6 +527,7 @@ let openAtLogin = _settingsController.get("openAtLogin");
 let bubbleFollowPet = _settingsController.get("bubbleFollowPet");
 let sessionHudEnabled = _settingsController.get("sessionHudEnabled");
 let sessionHudShowElapsed = _settingsController.get("sessionHudShowElapsed");
+let sessionHudCleanupDetachedCodex = _settingsController.get("sessionHudCleanupDetachedCodex");
 let soundMuted = _settingsController.get("soundMuted");
 let soundVolume = _settingsController.get("soundVolume");
 let lowPowerIdleMode = _settingsController.get("lowPowerIdleMode");
@@ -1066,6 +1067,7 @@ const _stateCtx = {
     const entry = (stateMap && stateMap[stateKey]) || (themeMap && themeMap[stateKey]);
     return !!(entry && entry.disabled === true);
   },
+  get sessionHudCleanupDetachedCodex() { return sessionHudCleanupDetachedCodex; },
   getSessionAliases: () => _settingsController.get("sessionAliases"),
   hasAnyEnabledAgent: () => {
     // `get("agents")` returns the live reference (no clone) — we're only
@@ -1519,6 +1521,9 @@ function wireSettingsSubscribers() {
     if ("bubbleFollowPet" in changes) bubbleFollowPet = changes.bubbleFollowPet;
     if ("sessionHudEnabled" in changes) sessionHudEnabled = changes.sessionHudEnabled;
     if ("sessionHudShowElapsed" in changes) sessionHudShowElapsed = changes.sessionHudShowElapsed;
+    if ("sessionHudCleanupDetachedCodex" in changes) {
+      sessionHudCleanupDetachedCodex = changes.sessionHudCleanupDetachedCodex;
+    }
     if ("soundMuted" in changes) soundMuted = changes.soundMuted;
     if ("soundVolume" in changes) soundVolume = changes.soundVolume;
     if ("lowPowerIdleMode" in changes) {

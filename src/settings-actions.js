@@ -312,6 +312,7 @@ const updateRegistry = {
   bubbleFollowPet: requireBoolean("bubbleFollowPet"),
   sessionHudEnabled: requireBoolean("sessionHudEnabled"),
   sessionHudShowElapsed: requireBoolean("sessionHudShowElapsed"),
+  sessionHudCleanupDetachedCodex: requireBoolean("sessionHudCleanupDetachedCodex"),
   hideBubbles: requireBoolean("hideBubbles"),
   permissionBubblesEnabled: requireBoolean("permissionBubblesEnabled"),
   notificationBubbleAutoCloseSeconds: requireIntegerInRange(
