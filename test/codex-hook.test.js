@@ -15,6 +15,7 @@ const {
   readFirstSessionMeta,
   sanitizeCodexPermissionOutput,
 } = require("../hooks/codex-hook");
+const { readCodexThreadName } = require("../hooks/codex-session-index");
 
 const mockResolve = () => ({
   stablePid: 123,
@@ -29,6 +30,16 @@ function withTempTranscript(lines, fn) {
   fs.writeFileSync(file, lines.join("\n") + "\n", "utf8");
   try {
     return fn(file);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function withTempCodexIndex(lines, fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-index-"));
+  fs.writeFileSync(path.join(dir, "session_index.jsonl"), lines.join("\n") + "\n", "utf8");
+  try {
+    return fn(dir);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -80,6 +91,40 @@ describe("Codex official hook", () => {
     assert.strictEqual(body.agent_pid, 456);
     assert.strictEqual(body.editor, "code");
     assert.deepStrictEqual(body.pid_chain, [789, 456, 123]);
+  });
+
+  it("reads Codex /rename thread_name from session_index.jsonl", () => {
+    withTempCodexIndex([
+      JSON.stringify({ id: "019d23d4-f1a9-7633-b9c7-758327137228", thread_name: "Old Name" }),
+      JSON.stringify({ id: "other", thread_name: "Other" }),
+      JSON.stringify({ id: "019d23d4-f1a9-7633-b9c7-758327137228", thread_name: "요구사항개선" }),
+    ], (codexDir) => {
+      assert.strictEqual(
+        readCodexThreadName("codex:019d23d4-f1a9-7633-b9c7-758327137228", { codexDir }),
+        "요구사항개선"
+      );
+    });
+  });
+
+  it("sends Codex /rename thread_name as session_title", () => {
+    withTempCodexIndex([
+      JSON.stringify({ id: "019d23d4-f1a9-7633-b9c7-758327137228", thread_name: "요구사항개선" }),
+    ], (codexDir) => {
+      const oldCodexHome = process.env.CODEX_HOME;
+      process.env.CODEX_HOME = codexDir;
+      try {
+        const body = buildStateBody({
+          hook_event_name: "SessionStart",
+          session_id: "official-session",
+          transcript_path: "/tmp/rollout-2026-03-25T15-10-51-019d23d4-f1a9-7633-b9c7-758327137228.jsonl",
+        }, mockResolve);
+
+        assert.strictEqual(body.session_title, "요구사항개선");
+      } finally {
+        if (oldCodexHome === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = oldCodexHome;
+      }
+    });
   });
 
   it("passes through tool metadata without raw tool_input", () => {

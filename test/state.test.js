@@ -1,10 +1,13 @@
 // test/state.test.js — Unit tests for src/state.js core logic
 const { describe, it, beforeEach, afterEach, mock } = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
 // Load default theme for test ctx
 const themeLoader = require("../src/theme-loader");
-themeLoader.init(require("path").join(__dirname, "..", "src"));
+themeLoader.init(path.join(__dirname, "..", "src"));
 const _defaultTheme = themeLoader.loadTheme("clawd");
 const _calicoTheme = themeLoader.loadTheme("calico");
 const { createTranslator } = require("../src/i18n");
@@ -1144,6 +1147,34 @@ describe("buildSessionSnapshot", () => {
     assert.strictEqual(codex.displayTitle, "Codex follow-up");
     assert.strictEqual(codex.cwd, "d:/animation/");
     assert.strictEqual(snapshot.hudLastTitle, "Claude review");
+  });
+
+  it("uses Codex thread_name from session_index.jsonl for local session displayTitle", () => {
+    const codexDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-index-"));
+    fs.writeFileSync(path.join(codexDir, "session_index.jsonl"), [
+      JSON.stringify({
+        id: "019d23d4-f1a9-7633-b9c7-758327137228",
+        thread_name: "요구사항개선",
+      }),
+    ].join("\n") + "\n", "utf8");
+    const oldCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = codexDir;
+    try {
+      api.sessions.set("codex:019d23d4-f1a9-7633-b9c7-758327137228", rawSession("thinking", {
+        updatedAt: 1000,
+        cwd: "D:\\repository\\spms",
+        agentId: "codex",
+        sessionTitle: "Auto Summary",
+      }));
+
+      const snapshot = api.buildSessionSnapshot();
+      assert.strictEqual(snapshot.sessions[0].sessionTitle, "요구사항개선");
+      assert.strictEqual(snapshot.sessions[0].displayTitle, "요구사항개선");
+    } finally {
+      if (oldCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = oldCodexHome;
+      fs.rmSync(codexDir, { recursive: true, force: true });
+    }
   });
 
   it("keeps session aliases scoped by host, agent, and session id", () => {

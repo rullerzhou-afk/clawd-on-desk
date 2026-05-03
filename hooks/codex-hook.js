@@ -16,6 +16,7 @@ const {
   classifyHookPayload,
   classifySessionMeta,
 } = require("./codex-subagent-fields");
+const { readCodexThreadName } = require("./codex-session-index");
 
 const TOOL_MATCH_STRING_MAX = 240;
 const TOOL_MATCH_ARRAY_MAX = 16;
@@ -265,9 +266,10 @@ function buildStateBody(payload, resolve) {
   if (!state) return null;
   if (event === "Stop" && payload.stop_hook_active === true) return null;
 
+  const sessionId = normalizeCodexSessionId(payload.session_id, payload.transcript_path);
   const body = {
     state,
-    session_id: normalizeCodexSessionId(payload.session_id, payload.transcript_path),
+    session_id: sessionId,
     event,
     agent_id: "codex",
     hook_source: "codex-official",
@@ -288,6 +290,8 @@ function buildStateBody(payload, resolve) {
   }
 
   const sessionMeta = readFirstSessionMeta(payload.transcript_path);
+  const threadName = readCodexThreadName(sessionId);
+  if (threadName) body.session_title = threadName;
   const codexRole = resolveCodexSessionRole(payload, sessionMeta);
   if (codexRole !== ROLE_UNKNOWN) body.codex_session_role = codexRole;
   applyCodexUpstreamFields(body, payload, sessionMeta);

@@ -18,6 +18,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const CodexSubagentClassifier = require("./codex-subagent-classifier");
+const { readCodexThreadName } = require("../hooks/codex-session-index");
 
 const APPROVAL_HEURISTIC_MS = 2000;
 const MAX_TRACKED_FILES = 50;
@@ -49,6 +50,7 @@ class CodexLogMonitor {
     // Map<filePath, { offset, sessionId, cwd, lastEventTime, lastState, partial }>
     this._tracked = new Map();
     this._baseDir = this._resolveBaseDir();
+    this._codexDir = options.codexDir || null;
     this._recentDayDirsCache = [];
     this._recentDayDirsCacheAt = 0;
     this._recentDayDirsDateKey = "";
@@ -382,6 +384,10 @@ class CodexLogMonitor {
     const extractedTitle = this._extractSessionTitle(obj);
     if (extractedTitle && extractedTitle !== tracked.sessionTitle) {
       tracked.sessionTitle = extractedTitle;
+    }
+    const threadName = readCodexThreadName(tracked.sessionId, { codexDir: this._codexDir });
+    if (threadName && threadName !== tracked.sessionTitle) {
+      tracked.sessionTitle = threadName;
     }
 
     // Approval heuristic: exec_command_end / function_call_output means command finished.

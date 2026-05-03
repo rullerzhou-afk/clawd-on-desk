@@ -755,6 +755,33 @@ describe("CodexLogMonitor", () => {
       });
       monitor.start();
     });
+
+    it("uses Codex /rename thread_name from session_index.jsonl", (_, done) => {
+      const testFile = path.join(dateDir, TEST_FILENAME);
+      fs.writeFileSync(testFile, [
+        '{"type":"turn_context","payload":{"summary":"Auto Summary"}}',
+        '{"type":"session_meta","payload":{"cwd":"/projects/foo"}}',
+      ].join("\n") + "\n");
+      const codexDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-index-"));
+      fs.writeFileSync(path.join(codexDir, "session_index.jsonl"), [
+        JSON.stringify({
+          id: "019d23d4-f1a9-7633-b9c7-758327137228",
+          thread_name: "요구사항개선",
+        }),
+      ].join("\n") + "\n", "utf8");
+
+      const config = makeConfig(tmpDir);
+      monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+        if (state !== "idle") return;
+        try {
+          assert.strictEqual(extra.sessionTitle, "요구사항개선");
+          done();
+        } finally {
+          fs.rmSync(codexDir, { recursive: true, force: true });
+        }
+      }, { codexDir });
+      monitor.start();
+    });
   });
 
   it("should process recent existing day dirs even if not today/yesterday", (_, done) => {

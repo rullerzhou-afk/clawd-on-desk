@@ -8,6 +8,7 @@ const fs = require("fs");
 const { pathToFileURL } = require("url");
 const { VISUAL_FALLBACK_STATES } = require("./theme-loader");
 const { sessionAliasKey } = require("./session-alias");
+const { readCodexThreadName } = require("../hooks/codex-session-index");
 
 // ── Agent icons (official logos from assets/icons/agents/) ──
 const AGENT_ICON_DIR = path.join(__dirname, "..", "assets", "icons", "agents");
@@ -695,11 +696,19 @@ function getSessionAliasEntry(id, sessionLike, sessionAliases = {}) {
 function sessionDisplayTitle(id, sessionLike, sessionAliases = {}) {
   const alias = getSessionAliasEntry(id, sessionLike, sessionAliases);
   if (alias && typeof alias.title === "string" && alias.title) return alias.title;
-  const title = normalizeTitle(sessionLike && sessionLike.sessionTitle);
+  const title = getEffectiveSessionTitle(id, sessionLike);
   if (title) return title;
   const cwd = sessionLike && sessionLike.cwd;
   if (cwd) return path.basename(cwd);
   return id && id.length > 6 ? `${id.slice(0, 6)}..` : id;
+}
+
+function getEffectiveSessionTitle(id, sessionLike) {
+  if (sessionLike && sessionLike.agentId === "codex" && !sessionLike.host) {
+    const threadName = normalizeTitle(readCodexThreadName(id));
+    if (threadName) return threadName;
+  }
+  return normalizeTitle(sessionLike && sessionLike.sessionTitle);
 }
 
 function sessionMenuComparator(a, b) {
@@ -730,7 +739,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}) {
     state: (session && session.state) || "idle",
     badge: deriveSessionBadge(session),
     hasAlias: !!(alias && typeof alias.title === "string" && alias.title),
-    sessionTitle: normalizeTitle(session && session.sessionTitle),
+    sessionTitle: getEffectiveSessionTitle(id, session),
     displayTitle: sessionDisplayTitle(id, session, sessionAliases),
     cwd: (session && session.cwd) || "",
     updatedAt: sessionUpdatedAt(session),
