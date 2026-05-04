@@ -68,7 +68,7 @@ If you run Claude Code inside WSL while Clawd runs on the Windows host, hooks ca
 mkdir -p ~/.claude/hooks
 
 # Copy hook files from the Windows-side repo (adjust the /mnt/ path to your Clawd location)
-cp /mnt/d/animation/hooks/{server-config,json-utils,shared-process,clawd-hook,install,codex-hook,codex-install,codex-install-utils,codex-remote-monitor,codex-subagent-fields}.js ~/.claude/hooks/
+cp /mnt/d/animation/hooks/{server-config,json-utils,shared-process,clawd-hook,install,codex-hook,codex-install,codex-install-utils,codex-remote-monitor,codex-session-index,codex-subagent-fields}.js ~/.claude/hooks/
 
 # Register Claude hooks in remote mode
 node ~/.claude/hooks/install.js --remote

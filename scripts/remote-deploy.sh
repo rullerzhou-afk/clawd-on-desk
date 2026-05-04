@@ -51,6 +51,7 @@ FILES=(
   "$HOOKS_DIR/codex-install.js"
   "$HOOKS_DIR/codex-install-utils.js"
   "$HOOKS_DIR/codex-remote-monitor.js"
+  "$HOOKS_DIR/codex-session-index.js"
   "$HOOKS_DIR/codex-subagent-fields.js"
 )
 

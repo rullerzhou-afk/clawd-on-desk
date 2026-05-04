@@ -68,7 +68,7 @@ Host my-server
 mkdir -p ~/.claude/hooks
 
 # 从 Windows 侧的 Clawd 仓库复制 hook 文件（按实际路径调整 /mnt/ 前缀）
-cp /mnt/d/animation/hooks/{server-config,json-utils,shared-process,clawd-hook,install,codex-hook,codex-install,codex-install-utils,codex-remote-monitor,codex-subagent-fields}.js ~/.claude/hooks/
+cp /mnt/d/animation/hooks/{server-config,json-utils,shared-process,clawd-hook,install,codex-hook,codex-install,codex-install-utils,codex-remote-monitor,codex-session-index,codex-subagent-fields}.js ~/.claude/hooks/
 
 # 以远程模式注册 Claude hooks
 node ~/.claude/hooks/install.js --remote
