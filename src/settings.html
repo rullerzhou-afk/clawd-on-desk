@@ -1497,16 +1497,16 @@ html, body {
   margin-top: -5.5px;
   border: 2px solid rgba(255, 255, 255, 0.9);
   border-radius: 50%;
-  background: linear-gradient(180deg, #e68663 0%, var(--accent) 100%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 76%, white) 0%, var(--accent) 100%);
   box-shadow:
-    0 5px 12px rgba(217, 119, 87, 0.28),
+    0 5px 12px color-mix(in srgb, var(--accent) 32%, transparent),
     0 1px 2px rgba(0, 0, 0, 0.18);
   transition: transform 0.16s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.16s ease;
 }
 .anim-override-slider-row input[type="range"]:hover::-webkit-slider-thumb {
   transform: scale(1.08);
   box-shadow:
-    0 7px 16px rgba(217, 119, 87, 0.34),
+    0 7px 16px color-mix(in srgb, var(--accent) 38%, transparent),
     0 1px 2px rgba(0, 0, 0, 0.18);
 }
 .anim-override-slider-row input[type="range"]:focus-visible {
@@ -1514,8 +1514,8 @@ html, body {
 }
 .anim-override-slider-row input[type="range"]:focus-visible::-webkit-slider-thumb {
   box-shadow:
-    0 0 0 3px rgba(217, 119, 87, 0.20),
-    0 7px 16px rgba(217, 119, 87, 0.34),
+    0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent),
+    0 7px 16px color-mix(in srgb, var(--accent) 38%, transparent),
     0 1px 2px rgba(0, 0, 0, 0.18);
 }
 .anim-override-number-field {
@@ -1527,7 +1527,7 @@ html, body {
   white-space: nowrap;
 }
 .anim-override-slider-row input[type="number"] {
-  width: 60px;
+  width: 76px;
   min-width: 0;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1546,6 +1546,23 @@ html, body {
   color: var(--text-tertiary);
   font-size: 11px;
   line-height: 1;
+}
+@media (forced-colors: active) {
+  .anim-override-slider-row input[type="range"] {
+    -webkit-appearance: auto;
+    appearance: auto;
+    background: Canvas;
+    accent-color: Highlight;
+  }
+  .anim-override-slider-row input[type="range"]::-webkit-slider-runnable-track,
+  .anim-override-slider-row input[type="range"]::-webkit-slider-thumb {
+    background: initial;
+    box-shadow: none;
+  }
+  .anim-override-slider-row input[type="range"]:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
 }
 .anim-override-drawer-footer {
   display: flex;

@@ -876,6 +876,7 @@
 
   function applyChanges(payload) {
     const previousLang = getLang();
+    const previousSnapshot = state.snapshot;
     if (payload && payload.snapshot) {
       state.snapshot = payload.snapshot;
     } else if (payload && payload.changes && state.snapshot) {
@@ -894,6 +895,18 @@
     const needsAnimOverridesRefresh = !!(changes && (
       "theme" in changes || "themeVariant" in changes || "themeOverrides" in changes
     ));
+    if (changes && (
+      Object.prototype.hasOwnProperty.call(changes, "theme")
+      || Object.prototype.hasOwnProperty.call(changes, "themeVariant")
+    )) {
+      if (runtime.pendingAnimationOverrideEdits && typeof runtime.pendingAnimationOverrideEdits.clear === "function") {
+        runtime.pendingAnimationOverrideEdits.clear();
+      }
+      if (state.mountedControls.animOverrideTimingSliders
+        && typeof state.mountedControls.animOverrideTimingSliders.clear === "function") {
+        state.mountedControls.animOverrideTimingSliders.clear();
+      }
+    }
     const shouldPreserveAnimOverridesData = !!(
       needsAnimOverridesRefresh
       && (state.activeTab === "animOverrides" || runtime.assetPicker.state)
@@ -903,7 +916,8 @@
     }
 
     const activeTab = tabs[state.activeTab];
-    if (activeTab && typeof activeTab.patchInPlace === "function" && activeTab.patchInPlace(changes)) {
+    if (activeTab && typeof activeTab.patchInPlace === "function"
+      && activeTab.patchInPlace(changes, { previousSnapshot, snapshot: state.snapshot })) {
       return;
     }
 

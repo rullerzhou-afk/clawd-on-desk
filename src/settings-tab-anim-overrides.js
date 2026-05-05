@@ -71,8 +71,13 @@
     const keys = Object.keys(patch);
     if (!keys.length) return false;
     return keys.every((key) => {
-      if (key === "transition") return patch.transition && typeof patch.transition === "object";
-      return key === "autoReturnMs" || key === "durationMs";
+      if (key === "transition") {
+        return patch.transition
+          && typeof patch.transition === "object"
+          && Number.isFinite(patch.transition.in)
+          && Number.isFinite(patch.transition.out);
+      }
+      return (key === "autoReturnMs" || key === "durationMs") && Number.isFinite(patch[key]);
     });
   }
 
@@ -90,16 +95,29 @@
       : 1;
     runtime.nextAnimationOverrideEditSeq = seq + 1;
     const current = edits.get(card.id) || {};
-    const next = { ...current, seq };
+    const next = {
+      ...current,
+      seq,
+      slotType: card.slotType,
+      stateKey: card.stateKey,
+      tierGroup: card.tierGroup,
+      originalFile: card.originalFile,
+      reactionKey: card.reactionKey,
+    };
+    let storedTimingValue = false;
     if (patch.transition && typeof patch.transition === "object") {
       next.transition = { ...patch.transition };
+      storedTimingValue = true;
     }
-    if (Object.prototype.hasOwnProperty.call(patch, "autoReturnMs")) {
+    if (Number.isFinite(patch.autoReturnMs)) {
       next.autoReturnMs = patch.autoReturnMs;
+      storedTimingValue = true;
     }
-    if (Object.prototype.hasOwnProperty.call(patch, "durationMs")) {
+    if (Number.isFinite(patch.durationMs)) {
       next.durationMs = patch.durationMs;
+      storedTimingValue = true;
     }
+    if (!storedTimingValue) return null;
     edits.set(card.id, next);
     return { id: card.id, seq };
   }
@@ -160,6 +178,117 @@
       const value = getCardTimingValue(card, control.field);
       if (Number.isFinite(value)) control.setValue(value);
     }
+  }
+
+  function clonePlainObject(value) {
+    if (!value || typeof value !== "object") return {};
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch {
+      return {};
+    }
+  }
+
+  function plainObjectsEqual(a, b) {
+    if (a === b) return true;
+    if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    if (aKeys.length !== bKeys.length) return false;
+    for (const key of aKeys) {
+      if (!Object.prototype.hasOwnProperty.call(b, key)) return false;
+      if (!plainObjectsEqual(a[key], b[key])) return false;
+    }
+    return true;
+  }
+
+  function pruneEmptyObject(parent, key) {
+    if (parent && parent[key] && typeof parent[key] === "object" && !Object.keys(parent[key]).length) {
+      delete parent[key];
+    }
+  }
+
+  function pruneThemeOverrideMap(themeMap) {
+    if (!themeMap || typeof themeMap !== "object") return;
+    pruneEmptyObject(themeMap, "states");
+    if (themeMap.tiers && typeof themeMap.tiers === "object") {
+      pruneEmptyObject(themeMap.tiers, "workingTiers");
+      pruneEmptyObject(themeMap.tiers, "jugglingTiers");
+      pruneEmptyObject(themeMap, "tiers");
+    }
+    if (themeMap.timings && typeof themeMap.timings === "object") {
+      pruneEmptyObject(themeMap.timings, "autoReturn");
+      pruneEmptyObject(themeMap, "timings");
+    }
+    pruneEmptyObject(themeMap, "idleAnimations");
+    pruneEmptyObject(themeMap, "reactions");
+  }
+
+  function ensureThemeOverrideEntry(themeMap, pending) {
+    if (!themeMap || !pending || !pending.slotType) return null;
+    if (pending.slotType === "state") {
+      if (!pending.stateKey) return null;
+      themeMap.states = themeMap.states || {};
+      themeMap.states[pending.stateKey] = themeMap.states[pending.stateKey] || {};
+      return themeMap.states[pending.stateKey];
+    }
+    if (pending.slotType === "tier") {
+      if (!pending.tierGroup || !pending.originalFile) return null;
+      themeMap.tiers = themeMap.tiers || {};
+      themeMap.tiers[pending.tierGroup] = themeMap.tiers[pending.tierGroup] || {};
+      themeMap.tiers[pending.tierGroup][pending.originalFile] = themeMap.tiers[pending.tierGroup][pending.originalFile] || {};
+      return themeMap.tiers[pending.tierGroup][pending.originalFile];
+    }
+    if (pending.slotType === "idleAnimation") {
+      if (!pending.originalFile) return null;
+      themeMap.idleAnimations = themeMap.idleAnimations || {};
+      themeMap.idleAnimations[pending.originalFile] = themeMap.idleAnimations[pending.originalFile] || {};
+      return themeMap.idleAnimations[pending.originalFile];
+    }
+    if (pending.slotType === "reaction") {
+      if (!pending.reactionKey) return null;
+      themeMap.reactions = themeMap.reactions || {};
+      themeMap.reactions[pending.reactionKey] = themeMap.reactions[pending.reactionKey] || {};
+      return themeMap.reactions[pending.reactionKey];
+    }
+    return null;
+  }
+
+  function applyPendingEditToThemeOverrides(themeMap, pending) {
+    let entry = null;
+    if (pending.transition || Object.prototype.hasOwnProperty.call(pending, "durationMs")) {
+      entry = ensureThemeOverrideEntry(themeMap, pending);
+      if (!entry) return false;
+    }
+    if (pending.transition) entry.transition = { ...pending.transition };
+    if (Object.prototype.hasOwnProperty.call(pending, "autoReturnMs")) {
+      if (pending.slotType !== "state" || !pending.stateKey) return false;
+      themeMap.timings = themeMap.timings || {};
+      themeMap.timings.autoReturn = themeMap.timings.autoReturn || {};
+      themeMap.timings.autoReturn[pending.stateKey] = pending.autoReturnMs;
+    }
+    if (Object.prototype.hasOwnProperty.call(pending, "durationMs")) {
+      if (pending.slotType !== "idleAnimation" && pending.slotType !== "reaction") return false;
+      entry.durationMs = pending.durationMs;
+    }
+    pruneThemeOverrideMap(themeMap);
+    return true;
+  }
+
+  function pendingEditsMatchThemeOverrideBroadcast(previousSnapshot, nextSnapshot) {
+    const themeId = getCurrentOverrideThemeId();
+    if (!themeId || !previousSnapshot || !nextSnapshot) return false;
+    const edits = getPendingAnimationOverrideEdits();
+    if (!edits.size) return false;
+    const expectedOverrides = clonePlainObject(previousSnapshot.themeOverrides || {});
+    const expectedThemeMap = expectedOverrides[themeId] || {};
+    expectedOverrides[themeId] = expectedThemeMap;
+    for (const pending of edits.values()) {
+      if (!applyPendingEditToThemeOverrides(expectedThemeMap, pending)) return false;
+    }
+    pruneThemeOverrideMap(expectedThemeMap);
+    pruneEmptyObject(expectedOverrides, themeId);
+    return plainObjectsEqual(expectedOverrides, nextSnapshot.themeOverrides || {});
   }
 
   function getAnimationAssetsSignature(data = runtime.animationOverridesData) {
@@ -271,10 +400,15 @@
     return { ...base, ...patch };
   }
 
+  function getCurrentAnimationOverrideCard(card) {
+    if (!card || !card.id) return card;
+    return applyPendingAnimationOverrideEdit(getAnimOverrideCardById(card.id) || card);
+  }
+
   function runAnimationOverrideCommand(card, patch) {
     const payload = buildAnimOverrideRequest(card, patch);
     const timingOnly = isTimingOnlyPatch(patch);
-    const pendingToken = recordPendingAnimationOverrideEdit(card, patch);
+    const pendingToken = timingOnly ? recordPendingAnimationOverrideEdit(card, patch) : null;
     return window.settingsAPI.command("setAnimationOverride", payload).then((result) => {
       if (!result || result.status !== "ok" || result.noop) {
         clearPendingAnimationOverrideEdit(pendingToken);
@@ -295,7 +429,7 @@
     });
   }
 
-  function patchInPlace(changes) {
+  function patchInPlace(changes, context = {}) {
     if (!changes || typeof changes !== "object") return false;
     if (!Object.prototype.hasOwnProperty.call(changes, "themeOverrides")) return false;
     if (Object.prototype.hasOwnProperty.call(changes, "theme")
@@ -306,6 +440,7 @@
     if (runtime.animOverridesSubtab !== "animations") return false;
     if (!runtime.animationOverridesData) return false;
     if (!getPendingAnimationOverrideEdits().size) return false;
+    if (!pendingEditsMatchThemeOverrideBroadcast(context.previousSnapshot, context.snapshot)) return false;
 
     ops.fetchAnimationOverridesData().then(() => {
       reconcilePendingAnimationOverrideEdits();
@@ -1009,9 +1144,13 @@
       label: t("animOverridesFadeIn"),
       min: 0, max: 1000, step: 10,
       value: card.transition.in,
-      onCommit: (v) => runAnimationOverrideCommand(card, {
-        transition: { in: v, out: card.transition.out },
-      }),
+      onCommit: (v) => {
+        const current = getCurrentAnimationOverrideCard(card);
+        const transition = (current && current.transition) || card.transition || {};
+        return runAnimationOverrideCommand(card, {
+          transition: { in: v, out: transition.out },
+        });
+      },
     }));
     sliders.appendChild(buildAnimOverrideSliderRow({
       cardId: card.id,
@@ -1019,9 +1158,13 @@
       label: t("animOverridesFadeOut"),
       min: 0, max: 1000, step: 10,
       value: card.transition.out,
-      onCommit: (v) => runAnimationOverrideCommand(card, {
-        transition: { in: card.transition.in, out: v },
-      }),
+      onCommit: (v) => {
+        const current = getCurrentAnimationOverrideCard(card);
+        const transition = (current && current.transition) || card.transition || {};
+        return runAnimationOverrideCommand(card, {
+          transition: { in: transition.in, out: v },
+        });
+      },
     }));
     if (card.supportsAutoReturn) {
       const current = Number.isFinite(card.autoReturnMs) ? card.autoReturnMs : (card.suggestedDurationMs || 3000);
