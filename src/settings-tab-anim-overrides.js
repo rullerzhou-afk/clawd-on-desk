@@ -432,6 +432,7 @@
   function patchInPlace(changes, context = {}) {
     if (!changes || typeof changes !== "object") return false;
     if (!Object.prototype.hasOwnProperty.call(changes, "themeOverrides")) return false;
+    if (Object.keys(changes).length !== 1) return false;
     if (Object.prototype.hasOwnProperty.call(changes, "theme")
       || Object.prototype.hasOwnProperty.call(changes, "themeVariant")) {
       return false;

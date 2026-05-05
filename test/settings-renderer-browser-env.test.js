@@ -2072,7 +2072,7 @@ describe("settings renderer browser environment", () => {
     const html = fs.readFileSync(SETTINGS_HTML, "utf8");
     assert.match(
       html,
-      /\.anim-override-slider-row\s*\{[\s\S]*grid-template-columns:\s*96px minmax\(0,\s*1fr\) 86px;/
+      /\.anim-override-slider-row\s*\{[\s\S]*grid-template-columns:\s*96px minmax\(0,\s*1fr\) 100px;/
     );
     assert.match(
       html,
@@ -2439,6 +2439,131 @@ describe("settings renderer browser environment", () => {
       "unrelated themeOverrides broadcasts should fall through to a full content refresh"
     );
     assert.strictEqual(fetchCount, 1);
+  });
+
+  it("routes matching Animation Overrides timing broadcasts through applyChanges in place", () => {
+    const core = loadSettingsCoreForTest({
+      getAnimationOverridesData: () => Promise.resolve({
+        theme: { id: "cloudling", name: "Cloudling" },
+        assets: [],
+        sections: [],
+        cards: [{
+          id: "state:thinking",
+          slotType: "state",
+          stateKey: "thinking",
+          transition: { in: 260, out: 180 },
+        }],
+        sounds: [],
+      }),
+    });
+    core.state.activeTab = "animOverrides";
+    core.state.snapshot = {
+      theme: "cloudling",
+      themeOverrides: {},
+    };
+    core.runtime.animationOverridesData = {
+      theme: { id: "cloudling", name: "Cloudling" },
+      assets: [],
+      sections: [],
+      cards: [{
+        id: "state:thinking",
+        slotType: "state",
+        stateKey: "thinking",
+        transition: { in: 120, out: 180 },
+      }],
+      sounds: [],
+    };
+    core.runtime.animOverridesSubtab = "animations";
+    core.runtime.assetPicker.state = null;
+    core.runtime.pendingAnimationOverrideEdits.set("state:thinking", {
+      seq: 1,
+      slotType: "state",
+      stateKey: "thinking",
+      transition: { in: 260, out: 180 },
+    });
+
+    let contentRenderCount = 0;
+    let modalRenderCount = 0;
+    core.ops.installRenderHooks({
+      sidebar: () => {},
+      content: () => {
+        contentRenderCount++;
+      },
+      modal: () => {
+        modalRenderCount++;
+      },
+    });
+
+    const nextSnapshot = {
+      theme: "cloudling",
+      themeOverrides: {
+        cloudling: {
+          states: {
+            thinking: {
+              transition: { in: 260, out: 180 },
+            },
+          },
+        },
+      },
+    };
+    core.ops.applyChanges({
+      changes: { themeOverrides: nextSnapshot.themeOverrides },
+      snapshot: nextSnapshot,
+    });
+
+    assert.strictEqual(contentRenderCount, 0, "matching timing ack should avoid rebuilding content");
+    assert.strictEqual(modalRenderCount, 0, "modal render happens after the async fetch settles");
+  });
+
+  it("does not patch mixed-key Animation Overrides broadcasts in place", () => {
+    const card = createAnimOverrideCard();
+    const runtime = createAnimOverridesRuntime(card);
+    const modalRoot = new FakeElement("div");
+    let fetchCount = 0;
+    const { core } = loadAnimOverridesTabForTest({
+      runtime,
+      modalRoot,
+      settingsAPI: {
+        command: () => new Promise(() => {}),
+      },
+      opsOverrides: {
+        fetchAnimationOverridesData: () => {
+          fetchCount++;
+          return Promise.resolve(runtime.animationOverridesData);
+        },
+      },
+    });
+    const parent = new FakeElement("main");
+    core.tabs.animOverrides.render(parent, core);
+
+    const fadeInRange = parent.querySelectorAll("input").find((input) => input.type === "range");
+    fadeInRange.value = "260";
+    for (const listener of fadeInRange.eventListeners.input || []) listener();
+    for (const listener of fadeInRange.eventListeners.change || []) listener();
+
+    const previousSnapshot = { lang: "en", themeOverrides: {} };
+    const snapshot = {
+      lang: "ja",
+      themeOverrides: {
+        cloudling: {
+          states: {
+            thinking: {
+              transition: { in: 260, out: 180 },
+            },
+          },
+        },
+      },
+    };
+
+    assert.strictEqual(
+      core.tabs.animOverrides.patchInPlace(
+        { lang: "ja", themeOverrides: snapshot.themeOverrides },
+        { previousSnapshot, snapshot }
+      ),
+      false,
+      "mixed-key broadcasts should fall through so non-timing UI side effects can render"
+    );
+    assert.strictEqual(fetchCount, 0);
   });
 
   it("clears pending Animation Overrides timing edits on theme changes", () => {
