@@ -44,6 +44,10 @@ const {
   getProportionalPixelSize,
 } = require("./size-utils");
 const { keepOutOfTaskbar } = require("./taskbar");
+const {
+  animateWindowOpacity,
+  setWindowOpacity,
+} = require("./window-opacity-transition");
 
 // ── Autoplay policy: allow sound playback without user gesture ──
 // MUST be set before any BrowserWindow is created (before app.whenReady)
@@ -53,6 +57,9 @@ const isMac = process.platform === "darwin";
 const isLinux = process.platform === "linux";
 const isWin = process.platform === "win32";
 const LINUX_WINDOW_TYPE = "toolbar";
+const THEME_SWITCH_FADE_OUT_MS = 140;
+const THEME_SWITCH_FADE_IN_MS = 180;
+const THEME_SWITCH_FADE_FALLBACK_MS = 4000;
 
 applyWindowsAppUserModelId(app, process.platform);
 
@@ -1306,6 +1313,8 @@ let forceEyeResend = false;
 let forceEyeResendBoostUntil = 0;
 let requestFastTick = () => {};
 let themeReloadInProgress = false;
+let themeSwitchTransitionSeq = 0;
+let themeSwitchFadeFallbackTimer = null;
 let repositionSessionHud = () => {};
 let syncSessionHudVisibility = () => {};
 let broadcastSessionHudSnapshot = () => {};
@@ -4627,6 +4636,41 @@ Object.defineProperties(this || {}, {}); // no-op placeholder
 // controller rejects the commit — otherwise prefs would record a theme id
 // that can't actually render. Does NOT write `theme` back to prefs; the
 // controller commits after this returns (writing here would infinite-loop).
+function clearThemeSwitchFadeFallback() {
+  if (themeSwitchFadeFallbackTimer) {
+    clearTimeout(themeSwitchFadeFallbackTimer);
+    themeSwitchFadeFallbackTimer = null;
+  }
+}
+
+function scheduleThemeSwitchFadeFallback(seq) {
+  clearThemeSwitchFadeFallback();
+  themeSwitchFadeFallbackTimer = setTimeout(() => {
+    themeSwitchFadeFallbackTimer = null;
+    if (seq !== themeSwitchTransitionSeq) return;
+    setWindowOpacity(win, 1);
+  }, THEME_SWITCH_FADE_FALLBACK_MS);
+}
+
+function fadeInThemeWindow(seq) {
+  if (seq !== themeSwitchTransitionSeq) return;
+  clearThemeSwitchFadeFallback();
+  animateWindowOpacity(win, 1, { durationMs: THEME_SWITCH_FADE_IN_MS }).then((ok) => {
+    if (!ok && seq === themeSwitchTransitionSeq) setWindowOpacity(win, 1);
+  });
+}
+
+function reloadThemeWindowsAfterFade(seq) {
+  if (seq !== themeSwitchTransitionSeq) return;
+  if (!win || win.isDestroyed() || !hitWin || hitWin.isDestroyed()) {
+    setWindowOpacity(win, 1);
+    return;
+  }
+  scheduleThemeSwitchFadeFallback(seq);
+  win.webContents.reload();
+  hitWin.webContents.reload();
+}
+
 function activateTheme(themeId, variantId) {
   if (!win || win.isDestroyed()) {
     throw new Error("theme switch requires ready windows");
@@ -4686,12 +4730,13 @@ function activateTheme(themeId, variantId) {
   _tick.refreshTheme();
   if (_mini.getMiniMode()) _mini.handleDisplayChange();
 
+  const transitionSeq = ++themeSwitchTransitionSeq;
+  clearThemeSwitchFadeFallback();
   themeReloadInProgress = true;
-  win.webContents.reload();
-  hitWin.webContents.reload();
 
   let ready = 0;
   const onReady = () => {
+    if (transitionSeq !== themeSwitchTransitionSeq) return;
     if (++ready < 2) return;
     themeReloadInProgress = false;
     if (preservedVirtualBounds && !_mini.getMiniTransitioning()) {
@@ -4709,9 +4754,14 @@ function activateTheme(themeId, variantId) {
     syncSessionHudVisibility();
     startMainTick();
     _runPendingPostReloadTasks();
+    fadeInThemeWindow(transitionSeq);
   };
   win.webContents.once("did-finish-load", onReady);
   hitWin.webContents.once("did-finish-load", onReady);
+
+  animateWindowOpacity(win, 0, { durationMs: THEME_SWITCH_FADE_OUT_MS }).then(() => {
+    reloadThemeWindowsAfterFade(transitionSeq);
+  });
 
   flushRuntimeStateToPrefs();
 
