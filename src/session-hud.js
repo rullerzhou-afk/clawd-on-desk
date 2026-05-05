@@ -10,6 +10,7 @@ const isWin = process.platform === "win32";
 
 const HUD_BORDER_Y = 2;
 const HUD_WIDTH = 240;
+const HUD_WIDTH_COMPACT = 190;
 const HUD_ROW_HEIGHT = 28;
 const HUD_MAX_EXPANDED_ROWS = 3;
 const HUD_HEIGHT = HUD_ROW_HEIGHT + HUD_BORDER_Y;
@@ -40,7 +41,7 @@ function isScreenRect(rect) {
 }
 
 function isHudSession(session) {
-  return !!session && !session.headless && session.state !== "sleeping";
+  return !!session && !session.headless && session.state !== "sleeping" && !session.hiddenFromHud;
 }
 
 function computeHudLayout(snapshot) {
@@ -120,6 +121,10 @@ function computeSessionHudBounds({ hitRect, anchorRect, workArea, width = HUD_WI
   };
 }
 
+function getHudWidth(showElapsed = true) {
+  return showElapsed === false ? HUD_WIDTH_COMPACT : HUD_WIDTH;
+}
+
 function deferMacFloatingVisibility(ctx, win) {
   if (!isMac || !win || win.isDestroyed()) return;
   const deferUntil = Date.now() + MAC_FLOATING_TOPMOST_DELAY_MS;
@@ -164,7 +169,10 @@ module.exports = function initSessionHud(ctx) {
   function sendSnapshot(snapshot = latestSnapshot) {
     if (!snapshot || !hudWindow || hudWindow.isDestroyed() || !didFinishLoad) return;
     if (!hudWindow.webContents || hudWindow.webContents.isDestroyed()) return;
-    hudWindow.webContents.send("session-hud:session-snapshot", snapshot);
+    hudWindow.webContents.send("session-hud:session-snapshot", {
+      ...snapshot,
+      hudShowElapsed: ctx.sessionHudShowElapsed !== false,
+    });
   }
 
   function sendI18n() {
@@ -180,9 +188,10 @@ module.exports = function initSessionHud(ctx) {
 
     didFinishLoad = false;
     hudFlippedAbove = false;
+    const hudWidth = getHudWidth(ctx.sessionHudShowElapsed !== false);
     hudWindow = new BrowserWindow({
       parent: ctx.win,
-      width: HUD_WIDTH + HUD_WINDOW_SHELL.left + HUD_WINDOW_SHELL.right,
+      width: hudWidth + HUD_WINDOW_SHELL.left + HUD_WINDOW_SHELL.right,
       height: HUD_HEIGHT + HUD_WINDOW_SHELL.top + HUD_WINDOW_SHELL.bottom,
       show: false,
       frame: false,
@@ -248,8 +257,9 @@ module.exports = function initSessionHud(ctx) {
       : { x: 0, y: 0, width: 1280, height: 800 };
     const layout = computeHudLayout(snapshot);
     const height = computeHudHeight(layout.rowCount);
+    const width = getHudWidth(ctx.sessionHudShowElapsed !== false);
     lastHudHeight = height;
-    return computeSessionHudBounds({ hitRect, anchorRect, workArea, height });
+    return computeSessionHudBounds({ hitRect, anchorRect, workArea, width, height });
   }
 
   function showSessionHud(win) {
@@ -336,8 +346,10 @@ module.exports.__test = {
   computeHudHeight,
   computeHudReservedOffset,
   isHudSession,
+  getHudWidth,
   constants: {
     HUD_WIDTH,
+    HUD_WIDTH_COMPACT,
     HUD_HEIGHT,
     HUD_ROW_HEIGHT,
     HUD_MAX_EXPANDED_ROWS,

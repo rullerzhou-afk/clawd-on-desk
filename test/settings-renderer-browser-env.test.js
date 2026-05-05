@@ -713,6 +713,15 @@ describe("settings renderer browser environment", () => {
     assert.ok(clearIndex < renderIndex, "broadcast cleanup must happen before full rerender");
   });
 
+  it("rerenders general tab when the Session HUD parent switch changes", () => {
+    const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
+    const match = generalSource.match(/const GENERAL_IN_PLACE_KEYS = new Set\(\[([\s\S]*?)\]\);/);
+    assert.ok(match, "general in-place key list must be present");
+    assert.ok(!match[1].includes('"sessionHudEnabled"'));
+    assert.ok(match[1].includes('"sessionHudShowElapsed"'));
+    assert.ok(match[1].includes('"sessionHudCleanupDetached"'));
+  });
+
   it("uses a roomier grid layout for Settings confirmation buttons", () => {
     const html = fs.readFileSync(SETTINGS_HTML, "utf8");
     assert.ok(/\.settings-confirm-modal\s*\{[\s\S]*width:\s*min\(480px,\s*100%\);/.test(html));

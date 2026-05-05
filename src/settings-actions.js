@@ -311,6 +311,8 @@ const updateRegistry = {
   lowPowerIdleMode: requireBoolean("lowPowerIdleMode"),
   bubbleFollowPet: requireBoolean("bubbleFollowPet"),
   sessionHudEnabled: requireBoolean("sessionHudEnabled"),
+  sessionHudShowElapsed: requireBoolean("sessionHudShowElapsed"),
+  sessionHudCleanupDetached: requireBoolean("sessionHudCleanupDetached"),
   hideBubbles: requireBoolean("hideBubbles"),
   permissionBubblesEnabled: requireBoolean("permissionBubblesEnabled"),
   notificationBubbleAutoCloseSeconds: requireIntegerInRange(

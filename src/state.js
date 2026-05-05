@@ -100,6 +100,7 @@ const sessions = new Map();
 const MAX_SESSIONS = 20;
 const SESSION_STALE_MS = 600000;
 const WORKING_STALE_MS = 300000;
+const DETACHED_IDLE_STALE_MS = 30000;
 const CODEX_EXIT_PROBE_DELAYS_MS = [1000, 3000, 8000, 15000];
 let lastSessionSnapshotSignature = null;
 let lastSessionSnapshot = null;
@@ -767,6 +768,18 @@ function deriveSessionBadge(session) {
   return "idle";
 }
 
+function isEndedSessionBadge(badge) {
+  return badge === "done" || badge === "interrupted";
+}
+
+function shouldAutoClearDetachedSession(session, badge) {
+  if (ctx.sessionHudCleanupDetached !== true) return false;
+  if (!session || session.headless || session.state !== "idle" || session.agentPid) return false;
+  if (!session.pidReachable || !session.sourcePid) return false;
+  if (!isEndedSessionBadge(badge)) return false;
+  return !isProcessAlive(session.sourcePid);
+}
+
 // Local title normalizer (trim, strip control chars, clamp, empty → null).
 // Note: hooks/clawd-hook.js has an identical helper; hook scripts can't require src/* (different runtime
 // context: plain node child process, no Electron), so the two are kept in
@@ -856,12 +869,14 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}) {
   const latestEvent = recentEvents.length ? recentEvents[recentEvents.length - 1] : null;
   const rawEvent = latestEvent && latestEvent.event ? latestEvent.event : null;
   const eventAt = Number(latestEvent && latestEvent.at);
+  const badge = deriveSessionBadge(session);
   return {
     id,
     agentId: (session && session.agentId) || null,
     iconUrl: getAgentIconUrl(session && session.agentId),
     state: (session && session.state) || "idle",
-    badge: deriveSessionBadge(session),
+    badge,
+    hiddenFromHud: shouldAutoClearDetachedSession(session, badge),
     hasAlias: !!(alias && typeof alias.title === "string" && alias.title),
     sessionTitle: getEffectiveSessionTitle(id, session),
     displayTitle: sessionDisplayTitle(id, session, sessionAliases),
@@ -890,7 +905,7 @@ function buildSessionSnapshot() {
   const orderedIds = dashboardEntries.map((entry) => entry.id);
   const menuOrderedIds = menuEntries.map((entry) => entry.id);
   const hudEntries = dashboardEntries.filter((entry) =>
-    !entry.headless && entry.state !== "sleeping"
+    !entry.headless && entry.state !== "sleeping" && !entry.hiddenFromHud
   );
 
   const groupMap = new Map();
@@ -956,6 +971,7 @@ function sessionSnapshotSignature(snapshot) {
       agentId: entry.agentId,
       sourcePid: entry.sourcePid,
       headless: entry.headless,
+      hiddenFromHud: !!entry.hiddenFromHud,
       host: entry.host,
       lastEventLabelKey: entry.lastEvent ? entry.lastEvent.labelKey : null,
       lastEventRawEvent: entry.lastEvent ? entry.lastEvent.rawEvent : null,
@@ -1259,6 +1275,7 @@ function isProcessAlive(pid) {
 function cleanStaleSessions() {
   const now = Date.now();
   let changed = false;
+  let snapshotRefreshNeeded = false;
   for (const [id, s] of sessions) {
     const age = now - s.updatedAt;
 
@@ -1268,6 +1285,19 @@ function cleanStaleSessions() {
       if (s && s.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-disposed");
       sessions.delete(id); changed = true;
       continue;
+    }
+
+    const badge = deriveSessionBadge(s);
+    const autoClearDetached = shouldAutoClearDetachedSession(s, badge);
+    if (autoClearDetached) {
+      if (age > DETACHED_IDLE_STALE_MS) {
+        debugSession(`stale-delete detached-ended ${describeSession(id, s)} badge=${badge}`);
+        if (s && s.agentId === "codex") cancelCodexExitProbe(id, "stale-delete-detached-ended");
+        if (s && s.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-disposed");
+        sessions.delete(id); changed = true;
+        continue;
+      }
+      snapshotRefreshNeeded = true;
     }
 
     if (age > SESSION_STALE_MS) {
@@ -1310,7 +1340,7 @@ function cleanStaleSessions() {
     const resolved = resolveDisplayState();
     setState(resolved, getSvgOverride(resolved));
   }
-  if (changed) emitSessionSnapshot();
+  if (changed || snapshotRefreshNeeded) emitSessionSnapshot();
 
   if (startupRecoveryActive && sessions.size === 0) {
     detectRunningAgentProcesses((found) => {

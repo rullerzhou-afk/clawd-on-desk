@@ -633,6 +633,113 @@ describe("cleanStaleSessions()", () => {
     assert.strictEqual(api.sessions.size, 0);
   });
 
+  it("detached ended idle session expires quickly when auto-clear is enabled", () => {
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set()),
+      sessionHudCleanupDetached: true,
+    }));
+    api.sessions.set("s1", rawSession("idle", {
+      agentId: "claude-code",
+      sourcePid: 9999,
+      pidReachable: true,
+      updatedAt: Date.now() - 31000,
+      recentEvents: [{ event: "Stop", state: "attention", at: Date.now() - 32000 }],
+    }));
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 0);
+  });
+
+  it("detached idle session stays by default before normal stale cleanup", () => {
+    api = require("../src/state")(makeCtx({ processKill: makePidKill(new Set()) }));
+    api.sessions.set("s1", rawSession("idle", {
+      agentId: "claude-code",
+      sourcePid: 9999,
+      pidReachable: true,
+      updatedAt: Date.now() - 31000,
+      recentEvents: [{ event: "Stop", state: "attention", at: Date.now() - 32000 }],
+    }));
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 1);
+  });
+
+  it("broadcasts HUD-hidden state before deleting detached ended session", () => {
+    const alivePids = new Set([9999]);
+    const broadcasts = [];
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(alivePids),
+      sessionHudCleanupDetached: true,
+      broadcastSessionSnapshot: (snapshot) => broadcasts.push(snapshot),
+    }));
+    api.sessions.set("s1", rawSession("idle", {
+      agentId: "claude-code",
+      sourcePid: 9999,
+      pidReachable: true,
+      updatedAt: Date.now() - 10000,
+      recentEvents: [{ event: "Stop", state: "attention", at: Date.now() - 11000 }],
+    }));
+
+    assert.strictEqual(api.emitSessionSnapshot({ force: true }).changed, true);
+    assert.strictEqual(broadcasts[0].sessions.find((s) => s.id === "s1").hiddenFromHud, false);
+
+    alivePids.delete(9999);
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 1);
+    assert.strictEqual(broadcasts.length, 2);
+    assert.strictEqual(broadcasts[1].sessions.find((s) => s.id === "s1").hiddenFromHud, true);
+  });
+
+  it("detached idle session without an ended badge does not auto-clear", () => {
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set()),
+      sessionHudCleanupDetached: true,
+    }));
+    api.sessions.set("s1", rawSession("idle", {
+      agentId: "gemini-cli",
+      sourcePid: 9999,
+      pidReachable: true,
+      updatedAt: Date.now() - 31000,
+      recentEvents: [{ event: "AfterAgent", state: "idle", at: Date.now() - 32000 }],
+    }));
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 1);
+  });
+
+  it("detached ended session does not auto-clear when pid reachability was never confirmed", () => {
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set()),
+      sessionHudCleanupDetached: true,
+    }));
+    api.sessions.set("s1", rawSession("idle", {
+      agentId: "claude-code",
+      sourcePid: 9999,
+      pidReachable: false,
+      updatedAt: Date.now() - 31000,
+      recentEvents: [{ event: "Stop", state: "attention", at: Date.now() - 32000 }],
+    }));
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 1);
+  });
+
+  it("detached ended Kimi auto-clear disposes notification state", () => {
+    const cleared = [];
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set()),
+      sessionHudCleanupDetached: true,
+      clearKimiNotifyBubbles: (id, reason) => cleared.push({ id, reason }),
+    }));
+    api.updateSession("k1", "notification", "PermissionRequest", { agentId: "kimi-cli" });
+    api.sessions.set("k1", rawSession("idle", {
+      agentId: "kimi-cli",
+      sourcePid: 9999,
+      pidReachable: true,
+      updatedAt: Date.now() - 31000,
+      recentEvents: [{ event: "Stop", state: "attention", at: Date.now() - 32000 }],
+    }));
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 0);
+    assert.deepStrictEqual(cleared, [{ id: "k1", reason: "kimi-session-disposed" }]);
+  });
+
   it("last non-headless deleted → returns to idle", () => {
     api = require("../src/state")(makeCtx({ processKill: makePidKill(new Set()) }));
     api.sessions.set("s1", rawSession("working", { agentPid: 9999, pidReachable: true }));
@@ -1223,6 +1330,7 @@ describe("buildSessionSnapshot", () => {
     api.sessions.set("done-local", rawSession("idle", {
       updatedAt: 3000,
       sourcePid: pid,
+      pidReachable: true,
       cwd: "/tmp/done-project",
       agentId: "claude-code",
       recentEvents: [{ event: "Stop", state: "attention", at: 2900 }],
@@ -1236,9 +1344,77 @@ describe("buildSessionSnapshot", () => {
 
     const snapshot = api.buildSessionSnapshot();
     assert.strictEqual(snapshot.sessions.find((s) => s.id === "done-local").badge, "done");
+    assert.strictEqual(snapshot.sessions.find((s) => s.id === "done-local").hiddenFromHud, false);
     assert.strictEqual(snapshot.hudTotalNonIdle, 1);
     assert.strictEqual(snapshot.hudLastSessionId, "done-local");
     assert.strictEqual(snapshot.hudLastTitle, "done-project");
+  });
+
+  it("hides detached ended idle sessions from HUD aggregates when auto-clear is enabled and source is dead", () => {
+    api.cleanup();
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set()),
+      sessionHudCleanupDetached: true,
+    }));
+    api.sessions.set("done-local", rawSession("idle", {
+      updatedAt: 3000,
+      sourcePid: 9999,
+      pidReachable: true,
+      cwd: "/tmp/done-project",
+      agentId: "claude-code",
+      recentEvents: [{ event: "Stop", state: "attention", at: 2900 }],
+    }));
+
+    const snapshot = api.buildSessionSnapshot();
+    assert.strictEqual(snapshot.sessions.find((s) => s.id === "done-local").badge, "done");
+    assert.strictEqual(snapshot.sessions.find((s) => s.id === "done-local").hiddenFromHud, true);
+    assert.strictEqual(snapshot.hudTotalNonIdle, 0);
+    assert.strictEqual(snapshot.hudLastSessionId, null);
+    assert.strictEqual(snapshot.hudLastTitle, null);
+  });
+
+  it("keeps detached idle sessions in HUD aggregates when auto-clear is enabled but badge is idle", () => {
+    api.cleanup();
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set()),
+      sessionHudCleanupDetached: true,
+    }));
+    api.sessions.set("idle-local", rawSession("idle", {
+      updatedAt: 3000,
+      sourcePid: 9999,
+      pidReachable: true,
+      cwd: "/tmp/idle-project",
+      agentId: "gemini-cli",
+      recentEvents: [{ event: "AfterAgent", state: "idle", at: 2900 }],
+    }));
+
+    const snapshot = api.buildSessionSnapshot();
+    assert.strictEqual(snapshot.sessions.find((s) => s.id === "idle-local").badge, "idle");
+    assert.strictEqual(snapshot.sessions.find((s) => s.id === "idle-local").hiddenFromHud, false);
+    assert.strictEqual(snapshot.hudTotalNonIdle, 1);
+    assert.strictEqual(snapshot.hudLastSessionId, "idle-local");
+  });
+
+  it("keeps detached ended sessions in HUD aggregates when pid reachability is unknown", () => {
+    api.cleanup();
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set()),
+      sessionHudCleanupDetached: true,
+    }));
+    api.sessions.set("done-local", rawSession("idle", {
+      updatedAt: 3000,
+      sourcePid: 9999,
+      pidReachable: false,
+      cwd: "/tmp/done-project",
+      agentId: "claude-code",
+      recentEvents: [{ event: "Stop", state: "attention", at: 2900 }],
+    }));
+
+    const snapshot = api.buildSessionSnapshot();
+    assert.strictEqual(snapshot.sessions.find((s) => s.id === "done-local").badge, "done");
+    assert.strictEqual(snapshot.sessions.find((s) => s.id === "done-local").hiddenFromHud, false);
+    assert.strictEqual(snapshot.hudTotalNonIdle, 1);
+    assert.strictEqual(snapshot.hudLastSessionId, "done-local");
   });
 
   it("applies session aliases to displayTitle without mutating raw session fields", () => {

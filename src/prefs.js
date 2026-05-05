@@ -86,6 +86,8 @@ const SCHEMA = {
   openAtLoginHydrated: { type: "boolean", default: false },
   bubbleFollowPet: { type: "boolean", default: false },
   sessionHudEnabled: { type: "boolean", default: true },
+  sessionHudShowElapsed: { type: "boolean", default: true },
+  sessionHudCleanupDetached: { type: "boolean", default: false },
   hideBubbles: { type: "boolean", default: false },
   permissionBubblesEnabled: { type: "boolean", default: true },
   notificationBubbleAutoCloseSeconds: {

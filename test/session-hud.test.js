@@ -6,6 +6,7 @@ const {
   computeSessionHudBounds,
   computeHudLayout,
   computeHudHeight,
+  getHudWidth,
   constants,
 } = sessionHud.__test;
 
@@ -20,6 +21,23 @@ function mkSession(id, overrides = {}) {
 }
 
 describe("session HUD geometry", () => {
+  it("uses a narrower HUD width when elapsed time is hidden", () => {
+    assert.strictEqual(getHudWidth(true), constants.HUD_WIDTH);
+    assert.strictEqual(getHudWidth(false), constants.HUD_WIDTH_COMPACT);
+
+    const result = computeSessionHudBounds({
+      hitRect: { left: 10, top: 80, right: 90, bottom: 160 },
+      workArea: { x: 0, y: 0, width: 800, height: 600 },
+      width: constants.HUD_WIDTH_COMPACT,
+    });
+
+    assert.strictEqual(result.contentBounds.width, constants.HUD_WIDTH_COMPACT);
+    assert.strictEqual(
+      result.bounds.width,
+      constants.HUD_WIDTH_COMPACT + constants.HUD_WINDOW_SHELL.left + constants.HUD_WINDOW_SHELL.right
+    );
+  });
+
   it("positions the visible HUD card below the pet hitbox with a fixed gap", () => {
     const result = computeSessionHudBounds({
       hitRect: { left: 10, top: 80, right: 90, bottom: 160 },
@@ -136,6 +154,20 @@ describe("session HUD layout", () => {
     const sessions = [
       mkSession("visible"),
       mkSession("hidden", { headless: true }),
+    ];
+    const { expanded, folded, rowCount } = computeHudLayout({
+      sessions,
+      orderedIds: ["visible", "hidden"],
+    });
+    assert.deepStrictEqual(expanded.map((s) => s.id), ["visible"]);
+    assert.strictEqual(folded.length, 0);
+    assert.strictEqual(rowCount, 1);
+  });
+
+  it("excludes hidden sessions from both expanded and folded counts", () => {
+    const sessions = [
+      mkSession("visible"),
+      mkSession("hidden", { hiddenFromHud: true }),
     ];
     const { expanded, folded, rowCount } = computeHudLayout({
       sessions,

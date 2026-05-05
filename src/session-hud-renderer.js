@@ -2,7 +2,7 @@
 
 const HUD_MAX_EXPANDED_ROWS = 3;
 
-let snapshot = { sessions: [], orderedIds: [], hudTotalNonIdle: 0, hudLastTitle: null };
+let snapshot = { sessions: [], orderedIds: [], hudTotalNonIdle: 0, hudLastTitle: null, hudShowElapsed: true };
 let i18nPayload = { lang: "en", translations: {} };
 
 const unreadSessions = new Set();
@@ -11,7 +11,7 @@ const prevBadges = new Map();
 const hudEl = document.getElementById("hud");
 
 function isHudSession(session) {
-  return !!session && !session.headless && session.state !== "sleeping";
+  return !!session && !session.headless && session.state !== "sleeping" && !session.hiddenFromHud;
 }
 
 function t(key) {
@@ -103,22 +103,28 @@ function createRowForSession(session, now) {
   title.textContent = titleFor(session);
   left.appendChild(title);
 
+  const showElapsed = snapshot.hudShowElapsed !== false;
   const right = document.createElement("span");
   right.className = "right";
+  let hasRightContent = false;
 
   if (session.badge === "done" && unreadSessions.has(session.id)) {
     const bell = document.createElement("span");
     bell.className = "unread-bell";
     bell.innerHTML = BELL_SVG;
     right.appendChild(bell);
+    hasRightContent = true;
   }
 
-  const elapsed = document.createElement("span");
-  elapsed.textContent = formatElapsed(now - (Number(session.updatedAt) || now));
-  right.appendChild(elapsed);
+  if (showElapsed) {
+    const elapsed = document.createElement("span");
+    elapsed.textContent = formatElapsed(now - (Number(session.updatedAt) || now));
+    right.appendChild(elapsed);
+    hasRightContent = true;
+  }
 
   row.appendChild(left);
-  row.appendChild(right);
+  if (hasRightContent) row.appendChild(right);
 
   row.addEventListener("click", () => {
     unreadSessions.delete(session.id);

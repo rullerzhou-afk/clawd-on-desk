@@ -6,7 +6,8 @@
     "soundMuted",
     "soundVolume",
     "lowPowerIdleMode",
-    "sessionHudEnabled",
+    "sessionHudShowElapsed",
+    "sessionHudCleanupDetached",
     "allowEdgePinning",
     "keepSizeAcrossDisplays",
     "openAtLogin",
@@ -42,6 +43,7 @@
     subtitle.textContent = t("settingsSubtitle");
     parent.appendChild(subtitle);
 
+    const sessionHudControlsEnabled = !!(state.snapshot && state.snapshot.sessionHudEnabled);
     parent.appendChild(helpers.buildSection(t("sectionAppearance"), [
       buildLanguageRow(),
       buildSizeSliderRow(),
@@ -49,6 +51,18 @@
         key: "sessionHudEnabled",
         labelKey: "rowSessionHud",
         descKey: "rowSessionHudDesc",
+      }),
+      helpers.buildSwitchRow({
+        key: "sessionHudShowElapsed",
+        labelKey: "rowSessionHudElapsed",
+        descKey: "rowSessionHudElapsedDesc",
+        disabled: !sessionHudControlsEnabled,
+      }),
+      helpers.buildSwitchRow({
+        key: "sessionHudCleanupDetached",
+        labelKey: "rowSessionHudCleanupDetached",
+        descKey: "rowSessionHudCleanupDetachedDesc",
+        disabled: !sessionHudControlsEnabled,
       }),
       buildDashboardRow(),
       helpers.buildSwitchRow({
