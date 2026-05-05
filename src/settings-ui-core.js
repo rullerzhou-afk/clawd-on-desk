@@ -87,6 +87,8 @@
     animationPosterRenderPending: false,
     animationPosterRenderFlags: null,
     animationPreviewPosterCache: new Map(),
+    pendingAnimationOverrideEdits: new Map(),
+    nextAnimationOverrideEditSeq: 1,
     animOverridesSubtab: "animations",
     expandedOverrideRowIds: new Set(),
     assetPicker: {
@@ -890,7 +892,13 @@
     const needsAnimOverridesRefresh = !!(changes && (
       "theme" in changes || "themeVariant" in changes || "themeOverrides" in changes
     ));
-    if (needsAnimOverridesRefresh) runtime.animationOverridesData = null;
+    const shouldPreserveAnimOverridesData = !!(
+      needsAnimOverridesRefresh
+      && (state.activeTab === "animOverrides" || runtime.assetPicker.state)
+    );
+    if (needsAnimOverridesRefresh && !shouldPreserveAnimOverridesData) {
+      runtime.animationOverridesData = null;
+    }
 
     if (changes && "themeOverrides" in changes) {
       if (state.activeTab === "theme") {

@@ -35,6 +35,86 @@
     return Array.isArray(cards) ? cards.find((card) => card.id === cardId) || null : null;
   }
 
+  function getPendingAnimationOverrideEdits() {
+    if (!runtime.pendingAnimationOverrideEdits || typeof runtime.pendingAnimationOverrideEdits.get !== "function") {
+      runtime.pendingAnimationOverrideEdits = new Map();
+    }
+    return runtime.pendingAnimationOverrideEdits;
+  }
+
+  function recordPendingAnimationOverrideEdit(card, patch) {
+    if (!card || !card.id || !patch || typeof patch !== "object") return null;
+    const touchesTiming = !!(
+      patch.transition
+      || Object.prototype.hasOwnProperty.call(patch, "autoReturnMs")
+      || Object.prototype.hasOwnProperty.call(patch, "durationMs")
+    );
+    if (!touchesTiming) return null;
+    const edits = getPendingAnimationOverrideEdits();
+    const seq = Number.isFinite(runtime.nextAnimationOverrideEditSeq)
+      ? runtime.nextAnimationOverrideEditSeq
+      : 1;
+    runtime.nextAnimationOverrideEditSeq = seq + 1;
+    const current = edits.get(card.id) || {};
+    const next = { ...current, seq };
+    if (patch.transition && typeof patch.transition === "object") {
+      next.transition = { ...patch.transition };
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, "autoReturnMs")) {
+      next.autoReturnMs = patch.autoReturnMs;
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, "durationMs")) {
+      next.durationMs = patch.durationMs;
+    }
+    edits.set(card.id, next);
+    return { id: card.id, seq };
+  }
+
+  function clearPendingAnimationOverrideEdit(token) {
+    if (!token || !token.id) return;
+    const edits = getPendingAnimationOverrideEdits();
+    const current = edits.get(token.id);
+    if (!current || current.seq !== token.seq) return;
+    edits.delete(token.id);
+  }
+
+  function applyPendingAnimationOverrideEdit(card) {
+    if (!card || !card.id) return card;
+    const pending = getPendingAnimationOverrideEdits().get(card.id);
+    if (!pending) return card;
+    return {
+      ...card,
+      transition: pending.transition ? { ...pending.transition } : card.transition,
+      ...(Object.prototype.hasOwnProperty.call(pending, "autoReturnMs") ? { autoReturnMs: pending.autoReturnMs } : {}),
+      ...(Object.prototype.hasOwnProperty.call(pending, "durationMs") ? { durationMs: pending.durationMs } : {}),
+    };
+  }
+
+  function cardReflectsPendingEdit(card, pending) {
+    if (!card || !pending) return false;
+    if (pending.transition) {
+      if (!card.transition) return false;
+      if (card.transition.in !== pending.transition.in) return false;
+      if (card.transition.out !== pending.transition.out) return false;
+    }
+    if (Object.prototype.hasOwnProperty.call(pending, "autoReturnMs") && card.autoReturnMs !== pending.autoReturnMs) {
+      return false;
+    }
+    if (Object.prototype.hasOwnProperty.call(pending, "durationMs") && card.durationMs !== pending.durationMs) {
+      return false;
+    }
+    return true;
+  }
+
+  function reconcilePendingAnimationOverrideEdits() {
+    const edits = getPendingAnimationOverrideEdits();
+    if (!edits.size) return;
+    for (const [id, pending] of edits) {
+      const card = getAnimOverrideCardById(id);
+      if (cardReflectsPendingEdit(card, pending)) edits.delete(id);
+    }
+  }
+
   function getAnimationAssetsSignature(data = runtime.animationOverridesData) {
     const assets = data && Array.isArray(data.assets) ? data.assets : [];
     return assets.map((asset) => [
@@ -146,9 +226,14 @@
 
   function runAnimationOverrideCommand(card, patch) {
     const payload = buildAnimOverrideRequest(card, patch);
+    const pendingToken = recordPendingAnimationOverrideEdit(card, patch);
     return window.settingsAPI.command("setAnimationOverride", payload).then((result) => {
-      if (!result || result.status !== "ok" || result.noop) return result;
+      if (!result || result.status !== "ok" || result.noop) {
+        clearPendingAnimationOverrideEdit(pendingToken);
+        return result;
+      }
       return ops.fetchAnimationOverridesData().then(() => {
+        reconcilePendingAnimationOverrideEdits();
         ops.normalizeAssetPickerSelection();
         if (state.activeTab === "animOverrides") ops.requestRender({ content: true });
         ops.requestRender({ modal: true });
@@ -304,6 +389,7 @@
     if (runtime.animationOverridesData === null) {
       const loading = document.createElement("div");
       loading.className = "placeholder-desc";
+      loading.textContent = t("animOverridesLoading");
       parent.appendChild(loading);
       ops.fetchAnimationOverridesData().then(() => {
         if (state.activeTab === "animOverrides") ops.requestRender({ content: true });
@@ -311,6 +397,7 @@
       return;
     }
 
+    reconcilePendingAnimationOverrideEdits();
     const data = runtime.animationOverridesData;
     const themeMeta = document.createElement("div");
     themeMeta.className = "anim-override-meta";
@@ -627,6 +714,7 @@
   }
 
   function buildAnimOverrideRow(card) {
+    card = applyPendingAnimationOverrideEdit(card);
     const row = document.createElement("details");
     row.className = "anim-override-row";
     if (card.fallbackTargetState) row.classList.add("inherited");
