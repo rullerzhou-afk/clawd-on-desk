@@ -1457,7 +1457,7 @@ html, body {
 }
 .anim-override-slider-row {
   display: grid;
-  grid-template-columns: 120px 1fr 80px;
+  grid-template-columns: 96px minmax(0, 1fr) 86px;
   align-items: center;
   gap: 10px;
 }
@@ -1467,10 +1467,68 @@ html, body {
 }
 .anim-override-slider-row input[type="range"] {
   width: 100%;
-  accent-color: var(--accent);
+  height: 22px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  --anim-override-fill: 0%;
+}
+.anim-override-slider-row input[type="range"]::-webkit-slider-runnable-track {
+  height: 7px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    var(--accent) var(--anim-override-fill),
+    var(--row-border) var(--anim-override-fill),
+    var(--row-border) 100%
+  );
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.32),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.08);
+}
+.anim-override-slider-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  margin-top: -5.5px;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  border-radius: 50%;
+  background: linear-gradient(180deg, #e68663 0%, var(--accent) 100%);
+  box-shadow:
+    0 5px 12px rgba(217, 119, 87, 0.28),
+    0 1px 2px rgba(0, 0, 0, 0.18);
+  transition: transform 0.16s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.16s ease;
+}
+.anim-override-slider-row input[type="range"]:hover::-webkit-slider-thumb {
+  transform: scale(1.08);
+  box-shadow:
+    0 7px 16px rgba(217, 119, 87, 0.34),
+    0 1px 2px rgba(0, 0, 0, 0.18);
+}
+.anim-override-slider-row input[type="range"]:focus-visible {
+  outline: none;
+}
+.anim-override-slider-row input[type="range"]:focus-visible::-webkit-slider-thumb {
+  box-shadow:
+    0 0 0 3px rgba(217, 119, 87, 0.20),
+    0 7px 16px rgba(217, 119, 87, 0.34),
+    0 1px 2px rgba(0, 0, 0, 0.18);
+}
+.anim-override-number-field {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+  white-space: nowrap;
 }
 .anim-override-slider-row input[type="number"] {
-  width: 100%;
+  width: 60px;
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: transparent;
@@ -1478,11 +1536,16 @@ html, body {
   padding: 4px 6px;
   font: inherit;
   font-size: 12px;
-  text-align: right;
+  text-align: center;
 }
 .anim-override-slider-row input[type="number"]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+.anim-override-slider-unit {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1;
 }
 .anim-override-drawer-footer {
   display: flex;

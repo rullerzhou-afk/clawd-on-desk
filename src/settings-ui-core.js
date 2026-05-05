@@ -66,6 +66,7 @@
       agentPermissionModes: new Map(),
       animMapSwitches: new Map(),
       animMapReset: null,
+      animOverrideTimingSliders: new Map(),
       bubblePolicySummary: null,
       size: null,
       soundVolume: null,
@@ -612,6 +613,7 @@
     state.mountedControls.agentPermissionModes.clear();
     state.mountedControls.animMapSwitches.clear();
     state.mountedControls.animMapReset = null;
+    state.mountedControls.animOverrideTimingSliders.clear();
     state.mountedControls.bubblePolicySummary = null;
     state.mountedControls.size = null;
     state.mountedControls.soundVolume = null;
@@ -900,6 +902,11 @@
       runtime.animationOverridesData = null;
     }
 
+    const activeTab = tabs[state.activeTab];
+    if (activeTab && typeof activeTab.patchInPlace === "function" && activeTab.patchInPlace(changes)) {
+      return;
+    }
+
     if (changes && "themeOverrides" in changes) {
       if (state.activeTab === "theme") {
         fetchThemes().then(() => {
@@ -935,10 +942,6 @@
       }));
     }
 
-    const activeTab = tabs[state.activeTab];
-    if (activeTab && typeof activeTab.patchInPlace === "function" && activeTab.patchInPlace(changes)) {
-      return;
-    }
     requestRender({ sidebar: true, content: true });
   }
 

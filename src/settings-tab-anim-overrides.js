@@ -42,6 +42,40 @@
     return runtime.pendingAnimationOverrideEdits;
   }
 
+  function getMountedTimingSliders() {
+    if (!state.mountedControls || typeof state.mountedControls !== "object") {
+      state.mountedControls = {};
+    }
+    if (!state.mountedControls.animOverrideTimingSliders
+      || typeof state.mountedControls.animOverrideTimingSliders.get !== "function") {
+      state.mountedControls.animOverrideTimingSliders = new Map();
+    }
+    return state.mountedControls.animOverrideTimingSliders;
+  }
+
+  function timingControlKey(cardId, field) {
+    return `${cardId}:${field}`;
+  }
+
+  function getCardTimingValue(card, field) {
+    if (!card) return null;
+    if (field === "transition.in") return card.transition && card.transition.in;
+    if (field === "transition.out") return card.transition && card.transition.out;
+    if (field === "autoReturnMs") return card.autoReturnMs;
+    if (field === "durationMs") return card.durationMs;
+    return null;
+  }
+
+  function isTimingOnlyPatch(patch) {
+    if (!patch || typeof patch !== "object") return false;
+    const keys = Object.keys(patch);
+    if (!keys.length) return false;
+    return keys.every((key) => {
+      if (key === "transition") return patch.transition && typeof patch.transition === "object";
+      return key === "autoReturnMs" || key === "durationMs";
+    });
+  }
+
   function recordPendingAnimationOverrideEdit(card, patch) {
     if (!card || !card.id || !patch || typeof patch !== "object") return null;
     const touchesTiming = !!(
@@ -112,6 +146,19 @@
     for (const [id, pending] of edits) {
       const card = getAnimOverrideCardById(id);
       if (cardReflectsPendingEdit(card, pending)) edits.delete(id);
+    }
+  }
+
+  function syncMountedTimingSliders() {
+    const controls = getMountedTimingSliders();
+    for (const [key, control] of controls) {
+      if (!control || !control.row || !control.row.parentNode) {
+        controls.delete(key);
+        continue;
+      }
+      const card = applyPendingAnimationOverrideEdit(getAnimOverrideCardById(control.cardId));
+      const value = getCardTimingValue(card, control.field);
+      if (Number.isFinite(value)) control.setValue(value);
     }
   }
 
@@ -226,20 +273,47 @@
 
   function runAnimationOverrideCommand(card, patch) {
     const payload = buildAnimOverrideRequest(card, patch);
+    const timingOnly = isTimingOnlyPatch(patch);
     const pendingToken = recordPendingAnimationOverrideEdit(card, patch);
     return window.settingsAPI.command("setAnimationOverride", payload).then((result) => {
       if (!result || result.status !== "ok" || result.noop) {
         clearPendingAnimationOverrideEdit(pendingToken);
+        if (timingOnly) syncMountedTimingSliders();
         return result;
       }
       return ops.fetchAnimationOverridesData().then(() => {
         reconcilePendingAnimationOverrideEdits();
         ops.normalizeAssetPickerSelection();
-        if (state.activeTab === "animOverrides") ops.requestRender({ content: true });
+        if (timingOnly && state.activeTab === "animOverrides") {
+          syncMountedTimingSliders();
+        } else if (state.activeTab === "animOverrides") {
+          ops.requestRender({ content: true });
+        }
         ops.requestRender({ modal: true });
         return result;
       });
     });
+  }
+
+  function patchInPlace(changes) {
+    if (!changes || typeof changes !== "object") return false;
+    if (!Object.prototype.hasOwnProperty.call(changes, "themeOverrides")) return false;
+    if (Object.prototype.hasOwnProperty.call(changes, "theme")
+      || Object.prototype.hasOwnProperty.call(changes, "themeVariant")) {
+      return false;
+    }
+    if (runtime.assetPicker.state) return false;
+    if (runtime.animOverridesSubtab !== "animations") return false;
+    if (!runtime.animationOverridesData) return false;
+    if (!getPendingAnimationOverrideEdits().size) return false;
+
+    ops.fetchAnimationOverridesData().then(() => {
+      reconcilePendingAnimationOverrideEdits();
+      ops.normalizeAssetPickerSelection();
+      syncMountedTimingSliders();
+      ops.requestRender({ modal: true });
+    });
+    return true;
   }
 
   function openAssetPicker(card) {
@@ -930,6 +1004,8 @@
     const sliders = document.createElement("div");
     sliders.className = "anim-override-sliders";
     sliders.appendChild(buildAnimOverrideSliderRow({
+      cardId: card.id,
+      field: "transition.in",
       label: t("animOverridesFadeIn"),
       min: 0, max: 1000, step: 10,
       value: card.transition.in,
@@ -938,6 +1014,8 @@
       }),
     }));
     sliders.appendChild(buildAnimOverrideSliderRow({
+      cardId: card.id,
+      field: "transition.out",
       label: t("animOverridesFadeOut"),
       min: 0, max: 1000, step: 10,
       value: card.transition.out,
@@ -948,6 +1026,8 @@
     if (card.supportsAutoReturn) {
       const current = Number.isFinite(card.autoReturnMs) ? card.autoReturnMs : (card.suggestedDurationMs || 3000);
       sliders.appendChild(buildAnimOverrideSliderRow({
+        cardId: card.id,
+        field: "autoReturnMs",
         label: t("animOverridesDuration"),
         min: 500, max: 10000, step: 100,
         value: current,
@@ -962,6 +1042,8 @@
     if (card.supportsDuration) {
       const current = Number.isFinite(card.durationMs) ? card.durationMs : (card.suggestedDurationMs || 3000);
       sliders.appendChild(buildAnimOverrideSliderRow({
+        cardId: card.id,
+        field: "durationMs",
         label: t("animOverridesDurationIdle"),
         min: 500, max: 20000, step: 100,
         value: current,
@@ -1001,7 +1083,7 @@
     return drawer;
   }
 
-  function buildAnimOverrideSliderRow({ label, min, max, step, value, numberMin, numberMax, onCommit }) {
+  function buildAnimOverrideSliderRow({ cardId, field, label, min, max, step, value, numberMin, numberMax, onCommit }) {
     const row = document.createElement("div");
     row.className = "anim-override-slider-row";
 
@@ -1024,22 +1106,78 @@
     number.max = String(Number.isFinite(numberMax) ? numberMax : max);
     number.step = String(step);
     number.value = String(value);
-    row.appendChild(number);
+
+    const numberField = document.createElement("span");
+    numberField.className = "anim-override-number-field";
+    numberField.appendChild(number);
+    const unit = document.createElement("span");
+    unit.className = "anim-override-slider-unit";
+    unit.textContent = "ms";
+    numberField.appendChild(unit);
+    row.appendChild(numberField);
+
+    const syncRangeFill = () => {
+      const current = Number(range.value);
+      const normalized = Number.isFinite(current) && max > min
+        ? Math.max(0, Math.min(1, (current - min) / (max - min)))
+        : 0;
+      range.style.setProperty("--anim-override-fill", `${Math.round(normalized * 10000) / 100}%`);
+    };
+    const setValue = (nextValue) => {
+      range.value = String(clampNumber(nextValue, min, max));
+      number.value = String(nextValue);
+      syncRangeFill();
+    };
+    syncRangeFill();
+
+    let pendingValue = null;
+    let committedValue = Number.isFinite(Number(value)) ? Number(value) : null;
+    const commitValue = (v) => {
+      if (!Number.isFinite(v)) return;
+      if (pendingValue === v || committedValue === v) return;
+      pendingValue = v;
+      const result = onCommit(v);
+      Promise.resolve(result).then((commandResult) => {
+        if (commandResult && commandResult.status === "ok" && !commandResult.noop) {
+          committedValue = v;
+        }
+      }).finally(() => {
+        if (pendingValue === v) pendingValue = null;
+      });
+    };
+
+    if (cardId && field) {
+      getMountedTimingSliders().set(timingControlKey(cardId, field), {
+        row,
+        range,
+        number,
+        cardId,
+        field,
+        setValue: (nextValue) => {
+          committedValue = Number.isFinite(Number(nextValue)) ? Number(nextValue) : committedValue;
+          setValue(nextValue);
+        },
+      });
+    }
 
     range.addEventListener("input", () => {
       number.value = range.value;
+      syncRangeFill();
     });
     range.addEventListener("change", () => {
       const v = Number(range.value);
-      if (Number.isFinite(v)) onCommit(v);
+      commitValue(v);
     });
     number.addEventListener("input", () => {
       const v = Number(number.value);
-      if (Number.isFinite(v)) range.value = String(clampNumber(v, min, max));
+      if (Number.isFinite(v)) {
+        range.value = String(clampNumber(v, min, max));
+        syncRangeFill();
+      }
     });
     const commitFromNumber = () => {
       const v = Number(number.value);
-      if (Number.isFinite(v)) onCommit(v);
+      commitValue(v);
     };
     number.addEventListener("change", commitFromNumber);
     number.addEventListener("blur", commitFromNumber);
@@ -1295,6 +1433,7 @@
     core.renderHooks.modal = renderAssetPickerModal;
     core.tabs.animOverrides = {
       render,
+      patchInPlace,
       onExit,
     };
   }
