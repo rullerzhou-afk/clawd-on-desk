@@ -523,6 +523,30 @@ function loadGeneralTabForTest({
   };
 }
 
+function makeGeneralSnapshot(overrides = {}) {
+  return {
+    lang: "en",
+    size: 50,
+    sessionHudEnabled: true,
+    sessionHudShowElapsed: true,
+    sessionHudCleanupDetached: true,
+    soundMuted: false,
+    soundVolume: 0.5,
+    lowPowerIdleMode: false,
+    allowEdgePinning: true,
+    keepSizeAcrossDisplays: true,
+    manageClaudeHooksAutomatically: true,
+    openAtLogin: false,
+    autoStartWithClaude: false,
+    hideBubbles: false,
+    bubbleFollowPet: true,
+    permissionBubblesEnabled: true,
+    notificationBubbleAutoCloseSeconds: 8,
+    updateBubbleAutoCloseSeconds: 12,
+    ...overrides,
+  };
+}
+
 function loadAgentsTabForTest({
   snapshot,
   agentMetadata,
@@ -1420,6 +1444,215 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(aggregate.classList.contains("on"), true);
     assert.strictEqual(notificationSwitch.classList.contains("on"), false);
     assert.strictEqual(notificationSeconds.disabled, true);
+  });
+
+  it("patches the Session HUD master switch off without rebuilding General content", async () => {
+    const updateCalls = [];
+    const initialSnapshot = makeGeneralSnapshot({ sessionHudEnabled: true });
+    const harness = loadGeneralTabForTest({
+      snapshot: initialSnapshot,
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.renderContent();
+
+    const master = harness.getSwitch("sessionHudEnabled");
+    const elapsed = harness.getSwitch("sessionHudShowElapsed");
+    const cleanup = harness.getSwitch("sessionHudCleanupDetached");
+    assert.ok(master);
+    assert.ok(elapsed);
+    assert.ok(cleanup);
+    assert.strictEqual(elapsed.classList.contains("disabled"), false);
+    assert.strictEqual(cleanup.classList.contains("disabled"), false);
+
+    const beforeRenderCount = harness.getContentRenderCount();
+    harness.core.ops.applyChanges({
+      changes: { sessionHudEnabled: false },
+      snapshot: { ...initialSnapshot, sessionHudEnabled: false },
+    });
+
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(harness.getSwitch("sessionHudEnabled"), master);
+    assert.strictEqual(harness.getSwitch("sessionHudShowElapsed"), elapsed);
+    assert.strictEqual(harness.getSwitch("sessionHudCleanupDetached"), cleanup);
+    assert.strictEqual(master.classList.contains("on"), false);
+    assert.strictEqual(elapsed.classList.contains("disabled"), true);
+    assert.strictEqual(elapsed.attributes["aria-disabled"], "true");
+    assert.strictEqual(elapsed.tabIndex, -1);
+    assert.strictEqual(cleanup.classList.contains("disabled"), true);
+    assert.strictEqual(cleanup.attributes["aria-disabled"], "true");
+    assert.strictEqual(cleanup.tabIndex, -1);
+
+    elapsed.eventListeners.click[0]();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepStrictEqual(updateCalls, []);
+  });
+
+  it("patches Claude hook management off and restores the child disabled note", async () => {
+    const updateCalls = [];
+    const initialSnapshot = makeGeneralSnapshot({
+      manageClaudeHooksAutomatically: true,
+      autoStartWithClaude: true,
+    });
+    const harness = loadGeneralTabForTest({
+      snapshot: initialSnapshot,
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.renderContent();
+
+    const master = harness.getSwitch("manageClaudeHooksAutomatically");
+    const autoStart = harness.getSwitch("autoStartWithClaude");
+    const autoStartMeta = harness.getSwitchMeta("autoStartWithClaude");
+    assert.ok(master);
+    assert.ok(autoStart);
+    assert.ok(autoStartMeta);
+    assert.strictEqual(autoStart.classList.contains("disabled"), false);
+    assert.strictEqual(autoStartMeta.extraElement, null);
+
+    const beforeRenderCount = harness.getContentRenderCount();
+    harness.core.ops.applyChanges({
+      changes: { manageClaudeHooksAutomatically: false },
+      snapshot: { ...initialSnapshot, manageClaudeHooksAutomatically: false },
+    });
+
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(harness.getSwitch("manageClaudeHooksAutomatically"), master);
+    assert.strictEqual(harness.getSwitch("autoStartWithClaude"), autoStart);
+    assert.strictEqual(master.classList.contains("on"), false);
+    assert.strictEqual(autoStart.classList.contains("disabled"), true);
+    assert.strictEqual(autoStart.attributes["aria-disabled"], "true");
+    assert.strictEqual(autoStart.tabIndex, -1);
+    assert.ok(autoStartMeta.extraElement);
+    assert.strictEqual(
+      autoStartMeta.extraElement.textContent,
+      harness.core.helpers.t("rowStartWithClaudeDisabledDesc")
+    );
+
+    autoStart.eventListeners.click[0]();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepStrictEqual(updateCalls, []);
+  });
+
+  it("patches hide-bubbles aggregate off without rebuilding General content", () => {
+    const initialSnapshot = makeGeneralSnapshot({ hideBubbles: true });
+    const harness = loadGeneralTabForTest({ snapshot: initialSnapshot });
+    harness.renderContent();
+
+    const aggregate = harness.getSwitch("hideBubbles");
+    const notificationPolicy = harness.core.state.mountedControls.bubblePolicyControls.get("notificationBubbleAutoCloseSeconds");
+    const notificationSwitch = notificationPolicy.row.querySelector(".switch");
+    const notificationSeconds = notificationPolicy.row.querySelector("input");
+    const summary = harness.core.state.mountedControls.bubblePolicySummary.element;
+    assert.ok(aggregate);
+    assert.strictEqual(aggregate.classList.contains("on"), true);
+    assert.strictEqual(notificationSwitch.classList.contains("on"), false);
+    assert.strictEqual(notificationSeconds.disabled, true);
+    assert.ok(summary.children.every((chip) => !chip.classList.contains("accent")));
+
+    const beforeRenderCount = harness.getContentRenderCount();
+    harness.core.ops.applyChanges({
+      changes: { hideBubbles: false },
+      snapshot: { ...initialSnapshot, hideBubbles: false },
+    });
+
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(harness.getSwitch("hideBubbles"), aggregate);
+    assert.strictEqual(aggregate.classList.contains("on"), false);
+    assert.strictEqual(notificationSwitch.classList.contains("on"), true);
+    assert.strictEqual(notificationSeconds.disabled, false);
+    assert.strictEqual(notificationSeconds.value, "8");
+    assert.strictEqual(summary.children.length, 3);
+    assert.ok(summary.children.every((chip) => chip.classList.contains("accent")));
+  });
+
+  it("rerenders General content for mixed non-patchable broadcasts", () => {
+    const initialSnapshot = makeGeneralSnapshot({
+      lang: "en",
+      sessionHudEnabled: false,
+    });
+    const harness = loadGeneralTabForTest({ snapshot: initialSnapshot });
+    harness.renderContent();
+
+    const master = harness.getSwitch("sessionHudEnabled");
+    const beforeRenderCount = harness.getContentRenderCount();
+    harness.core.ops.applyChanges({
+      changes: { sessionHudEnabled: true, lang: "zh" },
+      snapshot: { ...initialSnapshot, sessionHudEnabled: true, lang: "zh" },
+    });
+
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount + 1);
+    assert.notStrictEqual(harness.getSwitch("sessionHudEnabled"), master);
+    assert.strictEqual(harness.getSwitch("sessionHudEnabled").classList.contains("on"), true);
+  });
+
+  it("patches combined bubble aggregate and seconds broadcasts in place", () => {
+    const initialSnapshot = makeGeneralSnapshot({
+      hideBubbles: false,
+      notificationBubbleAutoCloseSeconds: 8,
+    });
+    const harness = loadGeneralTabForTest({ snapshot: initialSnapshot });
+    harness.renderContent();
+
+    const aggregate = harness.getSwitch("hideBubbles");
+    const notificationPolicy = harness.core.state.mountedControls.bubblePolicyControls.get("notificationBubbleAutoCloseSeconds");
+    const notificationSwitch = notificationPolicy.row.querySelector(".switch");
+    const notificationSeconds = notificationPolicy.row.querySelector("input");
+
+    const beforeRenderCount = harness.getContentRenderCount();
+    harness.core.ops.applyChanges({
+      changes: { hideBubbles: true, notificationBubbleAutoCloseSeconds: 0 },
+      snapshot: {
+        ...initialSnapshot,
+        hideBubbles: true,
+        notificationBubbleAutoCloseSeconds: 0,
+      },
+    });
+
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(harness.getSwitch("hideBubbles"), aggregate);
+    assert.strictEqual(aggregate.classList.contains("on"), true);
+    assert.strictEqual(notificationSwitch.classList.contains("on"), false);
+    assert.strictEqual(notificationSeconds.disabled, true);
+    assert.strictEqual(notificationSeconds.value, "0");
+  });
+
+  it("patches pure bubble policy seconds broadcasts in place", () => {
+    const initialSnapshot = makeGeneralSnapshot({
+      hideBubbles: false,
+      notificationBubbleAutoCloseSeconds: 0,
+    });
+    const harness = loadGeneralTabForTest({ snapshot: initialSnapshot });
+    harness.renderContent();
+
+    const notificationPolicy = harness.core.state.mountedControls.bubblePolicyControls.get("notificationBubbleAutoCloseSeconds");
+    const notificationSwitch = notificationPolicy.row.querySelector(".switch");
+    const notificationSeconds = notificationPolicy.row.querySelector("input");
+    const summary = harness.core.state.mountedControls.bubblePolicySummary.element;
+    assert.strictEqual(notificationSwitch.classList.contains("on"), false);
+    assert.strictEqual(notificationSeconds.disabled, true);
+
+    const beforeRenderCount = harness.getContentRenderCount();
+    harness.core.ops.applyChanges({
+      changes: { notificationBubbleAutoCloseSeconds: 5 },
+      snapshot: { ...initialSnapshot, notificationBubbleAutoCloseSeconds: 5 },
+    });
+
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(notificationSwitch.classList.contains("on"), true);
+    assert.strictEqual(notificationSeconds.disabled, false);
+    assert.strictEqual(notificationSeconds.value, "5");
+    assert.strictEqual(summary.children[1].classList.contains("accent"), true);
   });
 
   it("uses a roomier grid layout for Settings confirmation buttons", () => {

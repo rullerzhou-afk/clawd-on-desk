@@ -915,7 +915,6 @@
       meta.element.setAttribute("aria-disabled", "true");
       meta.element.tabIndex = -1;
     } else {
-      meta.element.classList.remove("disabled");
       meta.element.removeAttribute("aria-disabled");
       meta.element.tabIndex = 0;
     }
