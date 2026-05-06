@@ -526,18 +526,20 @@
     row.querySelector(".row-label").textContent = t(labelKey);
     const text = row.querySelector(".row-text");
     row.querySelector(".row-desc").textContent = t(descKey);
+    let extraElement = null;
     if (descExtraKey) {
       const extra = document.createElement("span");
-      extra.className = "row-desc";
+      extra.className = "row-desc row-desc-extra";
       extra.textContent = t(descExtraKey);
       text.appendChild(extra);
+      extraElement = extra;
     }
     const sw = row.querySelector(".switch");
     const control = row.querySelector(".row-control");
     const override = state.transientUiState.generalSwitches.get(key);
     const visualOn = override ? override.visualOn : readGeneralSwitchVisual(key, invert);
     setSwitchVisual(sw, visualOn, { pending: override ? override.pending : false });
-    state.mountedControls.generalSwitches.set(key, { element: sw, invert });
+    state.mountedControls.generalSwitches.set(key, { element: sw, invert, row, text, extraElement });
     if (actionButton) {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -550,7 +552,6 @@
       sw.classList.add("disabled");
       sw.setAttribute("aria-disabled", "true");
       sw.tabIndex = -1;
-      return row;
     }
     attachAnimatedSwitch(sw, {
       getCommittedVisual: () => readGeneralSwitchVisual(key, invert),

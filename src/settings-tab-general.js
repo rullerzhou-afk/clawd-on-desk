@@ -6,12 +6,15 @@
     "soundMuted",
     "soundVolume",
     "lowPowerIdleMode",
+    "sessionHudEnabled",
     "sessionHudShowElapsed",
     "sessionHudCleanupDetached",
     "allowEdgePinning",
     "keepSizeAcrossDisplays",
+    "manageClaudeHooksAutomatically",
     "openAtLogin",
     "autoStartWithClaude",
+    "hideBubbles",
     "bubbleFollowPet",
     "permissionBubblesEnabled",
     "notificationBubbleAutoCloseSeconds",
@@ -22,6 +25,13 @@
     "notificationBubbleAutoCloseSeconds",
     "updateBubbleAutoCloseSeconds",
   ]);
+  const SESSION_HUD_CHILD_SWITCH_KEYS = [
+    "sessionHudShowElapsed",
+    "sessionHudCleanupDetached",
+  ];
+  const CLAUDE_HOOK_MANAGEMENT_CHILD_SWITCH_KEYS = [
+    "autoStartWithClaude",
+  ];
   const BUBBLE_SECONDS_AUTO_COMMIT_DELAY_MS = 600;
 
   let state = null;
@@ -891,23 +901,104 @@
     return row;
   }
 
+  function getMountedGeneralSwitch(key) {
+    const meta = state.mountedControls.generalSwitches.get(key);
+    if (!meta || !document.body.contains(meta.element)) return null;
+    return meta;
+  }
+
+  function setGeneralSwitchDisabled(key, disabled) {
+    const meta = getMountedGeneralSwitch(key);
+    if (!meta) return false;
+    meta.element.classList.toggle("disabled", !!disabled);
+    if (disabled) {
+      meta.element.setAttribute("aria-disabled", "true");
+      meta.element.tabIndex = -1;
+    } else {
+      meta.element.classList.remove("disabled");
+      meta.element.removeAttribute("aria-disabled");
+      meta.element.tabIndex = 0;
+    }
+    return true;
+  }
+
+  function setGeneralSwitchExtraDesc(key, descExtraKey) {
+    const meta = getMountedGeneralSwitch(key);
+    if (!meta || !meta.text) return false;
+    if (descExtraKey) {
+      if (!meta.extraElement) {
+        meta.extraElement = document.createElement("span");
+        meta.extraElement.className = "row-desc row-desc-extra";
+        meta.text.appendChild(meta.extraElement);
+      }
+      meta.extraElement.textContent = t(descExtraKey);
+      return true;
+    }
+    if (meta.extraElement) {
+      meta.extraElement.remove();
+      meta.extraElement = null;
+    }
+    return true;
+  }
+
+  function syncSessionHudChildSwitchesDisabled() {
+    const disabled = !(state.snapshot && state.snapshot.sessionHudEnabled);
+    for (const key of SESSION_HUD_CHILD_SWITCH_KEYS) {
+      if (!setGeneralSwitchDisabled(key, disabled)) return false;
+    }
+    return true;
+  }
+
+  function syncClaudeHookManagementChildSwitchesDisabled() {
+    const disabled = !(state.snapshot && state.snapshot.manageClaudeHooksAutomatically);
+    for (const key of CLAUDE_HOOK_MANAGEMENT_CHILD_SWITCH_KEYS) {
+      if (!setGeneralSwitchDisabled(key, disabled)) return false;
+    }
+    return setGeneralSwitchExtraDesc(
+      "autoStartWithClaude",
+      disabled ? "rowStartWithClaudeDisabledDesc" : null
+    );
+  }
+
+  function hasMountedBubblePolicyControls() {
+    const summaryControl = state.mountedControls.bubblePolicySummary;
+    if (!summaryControl || !document.body.contains(summaryControl.element)) return false;
+    for (const key of BUBBLE_POLICY_KEYS) {
+      const meta = state.mountedControls.bubblePolicyControls.get(key);
+      if (!meta || !document.body.contains(meta.row)) return false;
+    }
+    return true;
+  }
+
+  function syncBubblePolicyControlsFromSnapshot() {
+    if (!hasMountedBubblePolicyControls()) return false;
+    for (const key of BUBBLE_POLICY_KEYS) {
+      state.mountedControls.bubblePolicyControls.get(key).syncFromSnapshot();
+    }
+    state.mountedControls.bubblePolicySummary.syncFromSnapshot();
+    return true;
+  }
+
   function patchInPlace(changes) {
     const keys = changes ? Object.keys(changes) : [];
     if (keys.length === 0) return false;
-    if (keys.includes("hideBubbles")) {
-      // Aggregate hiding also changes the policy summary and category controls.
-      const meta = state.mountedControls.generalSwitches.get("hideBubbles");
-      if (meta && document.body.contains(meta.element)) {
-        state.transientUiState.generalSwitches.delete("hideBubbles");
-        helpers.setSwitchVisual(meta.element, readers.readGeneralSwitchVisual("hideBubbles", meta.invert), { pending: false });
-      }
-      return false;
-    }
     if (!keys.every((key) => GENERAL_IN_PLACE_KEYS.has(key))) return false;
     if (keys.includes("size") && !ops.syncMountedSizeControl({ fromBroadcast: true })) return false;
     if (keys.includes("soundVolume") || keys.includes("soundMuted")) {
       const vc = state.mountedControls.soundVolume;
       if (!vc || !document.body.contains(vc.row)) return false;
+    }
+    if (keys.includes("sessionHudEnabled")
+      && !SESSION_HUD_CHILD_SWITCH_KEYS.every((key) => getMountedGeneralSwitch(key))) {
+      return false;
+    }
+    if (keys.includes("manageClaudeHooksAutomatically")
+      && !CLAUDE_HOOK_MANAGEMENT_CHILD_SWITCH_KEYS.every((key) => getMountedGeneralSwitch(key))) {
+      return false;
+    }
+    if ((keys.includes("hideBubbles") || keys.some((key) => BUBBLE_POLICY_KEYS.has(key)))
+      && !hasMountedBubblePolicyControls()) {
+      return false;
     }
     for (const key of keys) {
       if (key === "size" || key === "soundVolume") continue;
@@ -936,11 +1027,11 @@
         state.mountedControls.soundVolume.syncDisabled();
       }
     }
-    if (keys.some((key) => BUBBLE_POLICY_KEYS.has(key))) {
-      const summaryControl = state.mountedControls.bubblePolicySummary;
-      if (!summaryControl || !document.body.contains(summaryControl.element)) return false;
-      summaryControl.syncFromSnapshot();
-    }
+    if (keys.includes("sessionHudEnabled") && !syncSessionHudChildSwitchesDisabled()) return false;
+    if (keys.includes("manageClaudeHooksAutomatically")
+      && !syncClaudeHookManagementChildSwitchesDisabled()) return false;
+    if ((keys.includes("hideBubbles") || keys.some((key) => BUBBLE_POLICY_KEYS.has(key)))
+      && !syncBubblePolicyControlsFromSnapshot()) return false;
     return true;
   }
 

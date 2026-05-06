@@ -176,6 +176,21 @@ class FakeElement {
     return child;
   }
 
+  insertBefore(child, reference) {
+    child.parentNode = this;
+    const index = this.children.indexOf(reference);
+    if (index === -1) this.children.push(child);
+    else this.children.splice(index, 0, child);
+    return child;
+  }
+
+  remove() {
+    if (!this.parentNode) return;
+    const index = this.parentNode.children.indexOf(this);
+    if (index !== -1) this.parentNode.children.splice(index, 1);
+    this.parentNode = null;
+  }
+
   setAttribute(name, value) {
     this.attributes[name] = String(value);
     if (name === "class") this.className = String(value);
@@ -186,6 +201,10 @@ class FakeElement {
       const key = name.slice(5).replace(/-([a-z])/g, (_m, ch) => ch.toUpperCase());
       this.dataset[key] = String(value);
     }
+  }
+
+  getAttribute(name) {
+    return this.attributes[name];
   }
 
   removeAttribute(name) {
@@ -397,6 +416,110 @@ function loadGeneralLanguageRowForTest({
     getContentRenderCount: () => contentRenderCount,
     getLanguageTransitionSeenByRender: () => languageTransitionSeenByRender,
     getSegmented: () => content.querySelector(".language-segmented"),
+  };
+}
+
+function loadGeneralTabForTest({
+  snapshot,
+  settingsAPI = {},
+} = {}) {
+  const body = new FakeElement("body");
+  const content = new FakeElement("main");
+  content.id = "content";
+  body.appendChild(content);
+
+  const document = {
+    body,
+    createElement: (tagName) => new FakeElement(tagName),
+    getElementById(id) {
+      if (id === "content") return content;
+      return null;
+    },
+  };
+
+  const context = {
+    console,
+    navigator: { platform: "Win32" },
+    localStorage: {
+      getItem: () => null,
+      setItem: () => {},
+    },
+    document,
+    requestAnimationFrame: (cb) => {
+      cb();
+      return 1;
+    },
+    getComputedStyle: () => ({
+      getPropertyValue: () => "",
+    }),
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    window: null,
+    globalThis: null,
+    settingsAPI: {
+      update: () => Promise.resolve({ status: "ok" }),
+      command: () => Promise.resolve({ status: "ok" }),
+      getPreviewSoundUrl: () => Promise.resolve(null),
+      openDashboard: () => {},
+      ...settingsAPI,
+    },
+    ClawdSettingsSizeSlider: {
+      SIZE_UI_MIN: 1,
+      SIZE_UI_MAX: 100,
+      SIZE_TICK_VALUES: [25, 50, 75, 100],
+      SIZE_SLIDER_THUMB_DIAMETER: 18,
+      prefsSizeToUi: (value) => value,
+      clampSizeUi: (value) => value,
+      sizeUiToPct: (value) => value,
+      getSizeSliderAnchorPx: () => 0,
+      createSizeSliderController: () => ({
+        syncFromSnapshot: () => {},
+        dispose: () => {},
+        pointerDown: () => {},
+        pointerUp: () => {},
+        pointerCancel: () => {},
+        blur: () => {},
+        input: () => {},
+        change: () => {},
+      }),
+    },
+    ClawdSettingsI18n: {
+      STRINGS: loadSettingsI18nForTest(),
+      CONTRIBUTORS: [],
+      MAINTAINERS: [],
+    },
+  };
+  context.window = context;
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(SETTINGS_ANIM_OVERRIDES_MERGE, "utf8"), context);
+  vm.runInContext(fs.readFileSync(SETTINGS_UI_CORE, "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8"), context);
+
+  const core = context.ClawdSettingsCore;
+  core.state.snapshot = snapshot || {};
+  core.state.activeTab = "general";
+  context.ClawdSettingsTabGeneral.init(core);
+
+  let contentRenderCount = 0;
+  function renderContent() {
+    contentRenderCount++;
+    core.ops.clearMountedControls();
+    content.innerHTML = "";
+    core.tabs.general.render(content, core);
+  }
+  core.ops.installRenderHooks({ content: renderContent });
+
+  return {
+    core,
+    content,
+    renderContent,
+    getContentRenderCount: () => contentRenderCount,
+    getSwitchMeta: (key) => core.state.mountedControls.generalSwitches.get(key) || null,
+    getSwitch: (key) => {
+      const meta = core.state.mountedControls.generalSwitches.get(key);
+      return meta ? meta.element : null;
+    },
   };
 }
 
@@ -1107,13 +1230,196 @@ describe("settings renderer browser environment", () => {
     assert.ok(clearIndex < renderIndex, "broadcast cleanup must happen before full rerender");
   });
 
-  it("rerenders general tab when the Session HUD parent switch changes", () => {
-    const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
-    const match = generalSource.match(/const GENERAL_IN_PLACE_KEYS = new Set\(\[([\s\S]*?)\]\);/);
-    assert.ok(match, "general in-place key list must be present");
-    assert.ok(!match[1].includes('"sessionHudEnabled"'));
-    assert.ok(match[1].includes('"sessionHudShowElapsed"'));
-    assert.ok(match[1].includes('"sessionHudCleanupDetached"'));
+  it("patches the Session HUD master switch without rebuilding General content", async () => {
+    const updateCalls = [];
+    const initialSnapshot = {
+      lang: "en",
+      size: 50,
+      sessionHudEnabled: false,
+      sessionHudShowElapsed: true,
+      sessionHudCleanupDetached: true,
+      soundMuted: false,
+      soundVolume: 0.5,
+      lowPowerIdleMode: false,
+      allowEdgePinning: true,
+      keepSizeAcrossDisplays: true,
+      manageClaudeHooksAutomatically: false,
+      openAtLogin: false,
+      autoStartWithClaude: false,
+      hideBubbles: false,
+      bubbleFollowPet: true,
+      permissionBubblesEnabled: true,
+      notificationBubbleAutoCloseSeconds: 8,
+      updateBubbleAutoCloseSeconds: 12,
+    };
+    const harness = loadGeneralTabForTest({
+      snapshot: initialSnapshot,
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.renderContent();
+
+    const master = harness.getSwitch("sessionHudEnabled");
+    const elapsed = harness.getSwitch("sessionHudShowElapsed");
+    const cleanup = harness.getSwitch("sessionHudCleanupDetached");
+    assert.ok(master);
+    assert.ok(elapsed);
+    assert.ok(cleanup);
+    assert.strictEqual(elapsed.classList.contains("disabled"), true);
+    assert.strictEqual(elapsed.attributes["aria-disabled"], "true");
+    assert.strictEqual(elapsed.tabIndex, -1);
+
+    const beforeRenderCount = harness.getContentRenderCount();
+    harness.core.ops.applyChanges({
+      changes: { sessionHudEnabled: true },
+      snapshot: { ...initialSnapshot, sessionHudEnabled: true },
+    });
+
+    assert.strictEqual(
+      harness.getContentRenderCount(),
+      beforeRenderCount,
+      "Session HUD master broadcasts should patch mounted controls instead of rebuilding General"
+    );
+    assert.strictEqual(harness.getSwitch("sessionHudEnabled"), master);
+    assert.strictEqual(harness.getSwitch("sessionHudShowElapsed"), elapsed);
+    assert.strictEqual(harness.getSwitch("sessionHudCleanupDetached"), cleanup);
+    assert.strictEqual(master.classList.contains("on"), true);
+    assert.strictEqual(master.classList.contains("pending"), false);
+    assert.strictEqual(elapsed.classList.contains("disabled"), false);
+    assert.strictEqual(elapsed.attributes["aria-disabled"], undefined);
+    assert.strictEqual(elapsed.tabIndex, 0);
+    assert.strictEqual(cleanup.classList.contains("disabled"), false);
+    assert.strictEqual(cleanup.tabIndex, 0);
+
+    assert.ok(
+      elapsed.eventListeners.click && elapsed.eventListeners.click.length > 0,
+      "Session HUD child switches must remain wired after being enabled in place"
+    );
+    elapsed.eventListeners.click[0]();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepStrictEqual(updateCalls, [{ key: "sessionHudShowElapsed", value: false }]);
+  });
+
+  it("patches Claude hook management child switch state without rebuilding General content", async () => {
+    const updateCalls = [];
+    const initialSnapshot = {
+      lang: "en",
+      size: 50,
+      sessionHudEnabled: true,
+      sessionHudShowElapsed: true,
+      sessionHudCleanupDetached: true,
+      soundMuted: false,
+      soundVolume: 0.5,
+      lowPowerIdleMode: false,
+      allowEdgePinning: true,
+      keepSizeAcrossDisplays: true,
+      manageClaudeHooksAutomatically: false,
+      openAtLogin: false,
+      autoStartWithClaude: false,
+      hideBubbles: false,
+      bubbleFollowPet: true,
+      permissionBubblesEnabled: true,
+      notificationBubbleAutoCloseSeconds: 8,
+      updateBubbleAutoCloseSeconds: 12,
+    };
+    const harness = loadGeneralTabForTest({
+      snapshot: initialSnapshot,
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.renderContent();
+
+    const master = harness.getSwitch("manageClaudeHooksAutomatically");
+    const autoStart = harness.getSwitch("autoStartWithClaude");
+    const autoStartMeta = harness.getSwitchMeta("autoStartWithClaude");
+    assert.ok(master);
+    assert.ok(autoStart);
+    assert.ok(autoStartMeta.extraElement);
+    assert.strictEqual(autoStart.classList.contains("disabled"), true);
+
+    const beforeRenderCount = harness.getContentRenderCount();
+    harness.core.ops.applyChanges({
+      changes: { manageClaudeHooksAutomatically: true },
+      snapshot: { ...initialSnapshot, manageClaudeHooksAutomatically: true },
+    });
+
+    assert.strictEqual(
+      harness.getContentRenderCount(),
+      beforeRenderCount,
+      "Claude hook management broadcasts should patch the mounted startup switches"
+    );
+    assert.strictEqual(harness.getSwitch("manageClaudeHooksAutomatically"), master);
+    assert.strictEqual(harness.getSwitch("autoStartWithClaude"), autoStart);
+    assert.strictEqual(master.classList.contains("on"), true);
+    assert.strictEqual(autoStart.classList.contains("disabled"), false);
+    assert.strictEqual(autoStart.attributes["aria-disabled"], undefined);
+    assert.strictEqual(autoStart.tabIndex, 0);
+    assert.strictEqual(autoStartMeta.extraElement, null);
+
+    autoStart.eventListeners.click[0]();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepStrictEqual(updateCalls, [{ key: "autoStartWithClaude", value: true }]);
+  });
+
+  it("patches hide-bubbles aggregate changes without rebuilding General content", () => {
+    const initialSnapshot = {
+      lang: "en",
+      size: 50,
+      sessionHudEnabled: true,
+      sessionHudShowElapsed: true,
+      sessionHudCleanupDetached: true,
+      soundMuted: false,
+      soundVolume: 0.5,
+      lowPowerIdleMode: false,
+      allowEdgePinning: true,
+      keepSizeAcrossDisplays: true,
+      manageClaudeHooksAutomatically: true,
+      openAtLogin: false,
+      autoStartWithClaude: false,
+      hideBubbles: false,
+      bubbleFollowPet: true,
+      permissionBubblesEnabled: true,
+      notificationBubbleAutoCloseSeconds: 8,
+      updateBubbleAutoCloseSeconds: 12,
+    };
+    const harness = loadGeneralTabForTest({ snapshot: initialSnapshot });
+    harness.renderContent();
+
+    const aggregate = harness.getSwitch("hideBubbles");
+    const notificationPolicy = harness.core.state.mountedControls.bubblePolicyControls.get("notificationBubbleAutoCloseSeconds");
+    const notificationSwitch = notificationPolicy.row.querySelector(".switch");
+    const notificationSeconds = notificationPolicy.row.querySelector("input");
+    assert.ok(aggregate);
+    assert.ok(notificationSwitch);
+    assert.ok(notificationSeconds);
+    assert.strictEqual(notificationSwitch.classList.contains("on"), true);
+    assert.strictEqual(notificationSeconds.disabled, false);
+
+    const beforeRenderCount = harness.getContentRenderCount();
+    harness.core.ops.applyChanges({
+      changes: { hideBubbles: true },
+      snapshot: { ...initialSnapshot, hideBubbles: true },
+    });
+
+    assert.strictEqual(
+      harness.getContentRenderCount(),
+      beforeRenderCount,
+      "hide-bubbles broadcasts should patch summary and category controls in place"
+    );
+    assert.strictEqual(harness.getSwitch("hideBubbles"), aggregate);
+    assert.strictEqual(aggregate.classList.contains("on"), true);
+    assert.strictEqual(notificationSwitch.classList.contains("on"), false);
+    assert.strictEqual(notificationSeconds.disabled, true);
   });
 
   it("uses a roomier grid layout for Settings confirmation buttons", () => {
