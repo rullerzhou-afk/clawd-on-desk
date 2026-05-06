@@ -35,6 +35,10 @@ function easeInOut(t) {
   return x < 0.5 ? 2 * x * x : 1 - ((-2 * x + 2) ** 2) / 2;
 }
 
+function isCancelled(signal) {
+  return !!(signal && signal.cancelled);
+}
+
 function animateWindowOpacity(win, targetOpacity, options = {}) {
   if (!isUsableWindow(win)) return Promise.resolve(false);
 
@@ -43,8 +47,11 @@ function animateWindowOpacity(win, targetOpacity, options = {}) {
   const now = typeof options.now === "function" ? options.now : Date.now;
   const setTimer = typeof options.setTimeout === "function" ? options.setTimeout : setTimeout;
   const clearTimer = typeof options.clearTimeout === "function" ? options.clearTimeout : clearTimeout;
+  const cancelSignal = options.cancelSignal || null;
   const from = getWindowOpacity(win);
   const to = clampOpacity(targetOpacity);
+
+  if (isCancelled(cancelSignal)) return Promise.resolve(false);
 
   if (durationMs <= 0 || Math.abs(from - to) < 0.001) {
     return Promise.resolve(setWindowOpacity(win, to));
@@ -66,6 +73,10 @@ function animateWindowOpacity(win, targetOpacity, options = {}) {
     };
 
     const step = () => {
+      if (isCancelled(cancelSignal)) {
+        finish(false);
+        return;
+      }
       if (!isUsableWindow(win)) {
         finish(false);
         return;

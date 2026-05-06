@@ -78,4 +78,32 @@ describe("window opacity transition", () => {
     assert.strictEqual(result, true);
     assert.strictEqual(values.at(-1), 1);
   });
+
+  it("stops writing opacity after cancellation", async () => {
+    const timers = createFakeTimers();
+    const values = [];
+    const cancelSignal = { cancelled: false };
+    const win = {
+      isDestroyed: () => false,
+      getOpacity: () => values.at(-1) ?? 1,
+      setOpacity: (value) => values.push(value),
+    };
+
+    const done = animateWindowOpacity(win, 0, {
+      durationMs: 100,
+      frameMs: 20,
+      now: timers.now,
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+      cancelSignal,
+    });
+
+    timers.advance(20);
+    cancelSignal.cancelled = true;
+    const countAfterCancel = values.length;
+    timers.advance(20);
+
+    assert.strictEqual(await done, false);
+    assert.strictEqual(values.length, countAfterCancel);
+  });
 });
