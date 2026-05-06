@@ -37,7 +37,7 @@ describe("main theme transition wiring", () => {
       "theme transition should have an opacity fallback so the window cannot stay transparent"
     );
     assert.match(source, /scheduleThemeSwitchFadeFallback\(seq,\s*onFallback\)/);
-    assert.match(source, /finishThemeReload\(\{\s*force:\s*true\s*\}\)/);
+    assert.match(source, /const finishThemeReload = \(\) =>/);
     assert.ok(
       source.includes("cancelThemeSwitchOpacityAnimation()"),
       "starting a newer theme switch should cancel stale opacity timers"

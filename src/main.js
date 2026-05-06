@@ -4785,13 +4785,13 @@ function activateTheme(themeId, variantId) {
 
   let ready = 0;
   let reloadSettled = false;
-  const finishThemeReload = ({ force = false } = {}) => {
+  const finishThemeReload = () => {
     if (transitionSeq !== themeSwitchTransitionSeq || reloadSettled) return;
     reloadSettled = true;
     clearThemeSwitchFadeFallback();
     clearThemeSwitchReloadListeners();
     themeReloadInProgress = false;
-    if (!force && preservedVirtualBounds && !_mini.getMiniTransitioning() && win && !win.isDestroyed()) {
+    if (preservedVirtualBounds && !_mini.getMiniTransitioning() && win && !win.isDestroyed()) {
       applyPetWindowBounds(preservedVirtualBounds);
       const clamped = computeFinalDragBounds(
         getPetWindowBounds(),
@@ -4800,6 +4800,8 @@ function activateTheme(themeId, variantId) {
       );
       if (clamped) applyPetWindowBounds(clamped);
     }
+    // Fallback can reach this path before both reload events arrive; the sync
+    // helpers are window-guarded and serve as a best-effort state resend.
     if (hitWin && !hitWin.isDestroyed()) syncHitStateAfterLoad();
     if (win && !win.isDestroyed()) {
       syncRendererStateAfterLoad({ includeStartupRecovery: false });
@@ -4820,7 +4822,7 @@ function activateTheme(themeId, variantId) {
     reloadThemeWindowsAfterFade(
       transitionSeq,
       onReady,
-      () => finishThemeReload({ force: true })
+      () => finishThemeReload()
     );
   });
 
