@@ -616,6 +616,14 @@
     themeLabel.textContent = `${t("animOverridesCurrentTheme")}: ${(data.theme && data.theme.name) || "clawd"}`;
     themeMeta.appendChild(themeLabel);
 
+    const primaryActions = document.createElement("div");
+    primaryActions.className = "anim-override-meta-actions anim-override-meta-primary-actions";
+    const replacementLabel = document.createElement("div");
+    replacementLabel.className = "anim-override-meta-label";
+    replacementLabel.textContent = t("animOverridesReplacementConfig");
+    const secondaryActions = document.createElement("div");
+    secondaryActions.className = "anim-override-meta-actions anim-override-meta-secondary-actions";
+
     const themeBtn = document.createElement("button");
     themeBtn.type = "button";
     themeBtn.className = "soft-btn";
@@ -623,30 +631,36 @@
     themeBtn.addEventListener("click", () => {
       ops.selectTab("theme");
     });
-    themeMeta.appendChild(themeBtn);
+    primaryActions.appendChild(themeBtn);
 
     const assetsBtn = document.createElement("button");
     assetsBtn.type = "button";
     assetsBtn.className = "soft-btn";
     assetsBtn.textContent = t("animOverridesOpenAssets");
     helpers.attachActivation(assetsBtn, () => window.settingsAPI.openThemeAssetsDir());
-    themeMeta.appendChild(assetsBtn);
+    primaryActions.appendChild(assetsBtn);
+
+    themeMeta.appendChild(primaryActions);
+    themeMeta.appendChild(replacementLabel);
 
     const themeId = data.theme && data.theme.id;
-    const resetAllBtn = document.createElement("button");
-    resetAllBtn.type = "button";
-    resetAllBtn.className = "soft-btn";
-    resetAllBtn.textContent = t("animOverridesResetAll");
-    resetAllBtn.disabled = !themeId || !readers.hasAnyThemeOverride(themeId);
-    helpers.attachActivation(resetAllBtn, () =>
-      window.settingsAPI.command("resetThemeOverrides", { themeId }).then((result) => {
-        if (result && result.status === "ok" && !result.noop) {
-          ops.showToast(t("toastAnimMapResetOk"));
+    const importBtn = document.createElement("button");
+    importBtn.type = "button";
+    importBtn.className = "soft-btn";
+    importBtn.textContent = t("animOverridesImport");
+    helpers.attachActivation(importBtn, () =>
+      window.settingsAPI.importAnimationOverrides().then((result) => {
+        if (!result) return result;
+        const dict = i18n.STRINGS[readers.getLang()] || i18n.STRINGS.en;
+        if (result.status === "ok") {
+          ops.showToast(dict.toastAnimOverridesImportOk(result.themeCount || 0));
+        } else if (result.status === "error") {
+          ops.showToast(dict.toastAnimOverridesImportFailed(result.message || ""), { error: true });
         }
         return result;
       })
     );
-    themeMeta.appendChild(resetAllBtn);
+    secondaryActions.appendChild(importBtn);
 
     const exportBtn = document.createElement("button");
     exportBtn.type = "button";
@@ -666,25 +680,23 @@
         return result;
       })
     );
-    themeMeta.appendChild(exportBtn);
+    secondaryActions.appendChild(exportBtn);
 
-    const importBtn = document.createElement("button");
-    importBtn.type = "button";
-    importBtn.className = "soft-btn";
-    importBtn.textContent = t("animOverridesImport");
-    helpers.attachActivation(importBtn, () =>
-      window.settingsAPI.importAnimationOverrides().then((result) => {
-        if (!result) return result;
-        const dict = i18n.STRINGS[readers.getLang()] || i18n.STRINGS.en;
-        if (result.status === "ok") {
-          ops.showToast(dict.toastAnimOverridesImportOk(result.themeCount || 0));
-        } else if (result.status === "error") {
-          ops.showToast(dict.toastAnimOverridesImportFailed(result.message || ""), { error: true });
+    const resetAllBtn = document.createElement("button");
+    resetAllBtn.type = "button";
+    resetAllBtn.className = "soft-btn";
+    resetAllBtn.textContent = t("animOverridesResetAll");
+    resetAllBtn.disabled = !themeId || !readers.hasAnyThemeOverride(themeId);
+    helpers.attachActivation(resetAllBtn, () =>
+      window.settingsAPI.command("resetThemeOverrides", { themeId }).then((result) => {
+        if (result && result.status === "ok" && !result.noop) {
+          ops.showToast(t("toastAnimMapResetOk"));
         }
         return result;
       })
     );
-    themeMeta.appendChild(importBtn);
+    secondaryActions.appendChild(resetAllBtn);
+    themeMeta.appendChild(secondaryActions);
 
     parent.appendChild(buildSubtabSwitcher());
 

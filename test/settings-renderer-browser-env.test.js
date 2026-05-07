@@ -2604,6 +2604,62 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(placeholders[0].textContent, "animOverridesLoading");
   });
 
+  it("renders Animation Overrides theme actions in two intentional rows", () => {
+    const runtime = createAnimOverridesRuntime(createAnimOverrideCard());
+    const modalRoot = new FakeElement("div");
+    const { core } = loadAnimOverridesTabForTest({ runtime, modalRoot });
+    const parent = new FakeElement("main");
+
+    core.tabs.animOverrides.render(parent, core);
+
+    const meta = parent.querySelector(".anim-override-meta");
+    assert.ok(meta);
+    assert.deepStrictEqual(
+      meta.querySelectorAll(".anim-override-meta-label").map((label) => label.textContent),
+      ["animOverridesCurrentTheme: Cloudling", "animOverridesReplacementConfig"]
+    );
+
+    const primary = meta.querySelector(".anim-override-meta-primary-actions");
+    const secondary = meta.querySelector(".anim-override-meta-secondary-actions");
+    assert.deepStrictEqual(
+      primary.querySelectorAll("button").map((button) => button.textContent),
+      ["animOverridesOpenThemeTab", "animOverridesOpenAssets"]
+    );
+    assert.deepStrictEqual(
+      secondary.querySelectorAll("button").map((button) => button.textContent),
+      ["animOverridesImport", "animOverridesExport", "animOverridesResetAll"]
+    );
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    assert.match(
+      css,
+      /\.anim-override-meta\s*\{[\s\S]*display:\s*grid;[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\) auto;/
+    );
+    assert.match(
+      css,
+      /\.anim-override-meta-actions\s*\{[\s\S]*justify-content:\s*flex-end;/
+    );
+    assert.match(
+      css,
+      /@media \(max-width:\s*640px\)\s*\{[\s\S]*\.anim-override-meta-actions\s*\{[\s\S]*justify-content:\s*flex-start;/
+    );
+
+    const strings = loadSettingsI18nForTest();
+    assert.strictEqual(strings.en.animOverridesReplacementConfig, "Animation & sound replacement config");
+    assert.strictEqual(strings.zh.animOverridesReplacementConfig, "动画/音效替换配置");
+    assert.strictEqual(strings.ko.animOverridesReplacementConfig, "애니메이션/사운드 교체 설정");
+    assert.strictEqual(strings.ja.animOverridesReplacementConfig, "アニメ/サウンド差し替え設定");
+    assert.strictEqual(strings.en.animOverridesImport, "Import config…");
+    assert.strictEqual(strings.zh.animOverridesImport, "导入配置…");
+    assert.strictEqual(strings.en.animOverridesExport, "Export config…");
+    assert.strictEqual(strings.zh.animOverridesExport, "导出配置…");
+    assert.strictEqual(strings.en.animOverridesResetAll, "Clear all replacements");
+    assert.strictEqual(strings.zh.animOverridesResetAll, "清除全部替换");
+    assert.match(
+      css,
+      /@media \(max-width:\s*640px\)\s*\{[\s\S]*\.anim-override-meta\s*\{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\);/
+    );
+  });
+
   it("uses specific fade timing labels and gives the slider label enough room", () => {
     const strings = loadSettingsI18nForTest();
     assert.strictEqual(strings.en.animOverridesFadeIn, "Fade in on enter");

@@ -1121,10 +1121,11 @@ html, body {
 
 /* ── Animation Overrides ── */
 .anim-override-meta {
-  display: flex;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 16px;
+  row-gap: 8px;
   align-items: center;
-  flex-wrap: wrap;
   margin-bottom: 18px;
 }
 .anim-override-subtabs {
@@ -1133,7 +1134,22 @@ html, body {
 .anim-override-meta-label {
   font-size: 12px;
   color: var(--text-secondary);
-  margin-right: auto;
+  min-width: 0;
+}
+.anim-override-meta-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+@media (max-width: 640px) {
+  .anim-override-meta {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .anim-override-meta-actions {
+    grid-column: 1;
+    justify-content: flex-start;
+  }
 }
 .anim-override-section {
   display: flex;
