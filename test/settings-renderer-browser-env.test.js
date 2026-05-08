@@ -2644,16 +2644,22 @@ describe("settings renderer browser environment", () => {
     );
 
     const strings = loadSettingsI18nForTest();
-    assert.strictEqual(strings.en.animOverridesReplacementConfig, "Animation replacement config");
-    assert.strictEqual(strings.zh.animOverridesReplacementConfig, "动画替换配置");
-    assert.strictEqual(strings.ko.animOverridesReplacementConfig, "애니메이션 교체 설정");
-    assert.strictEqual(strings.ja.animOverridesReplacementConfig, "アニメ差し替え設定");
-    assert.strictEqual(strings.en.animOverridesImport, "Import config");
-    assert.strictEqual(strings.zh.animOverridesImport, "导入配置");
-    assert.strictEqual(strings.en.animOverridesExport, "Export config");
-    assert.strictEqual(strings.zh.animOverridesExport, "导出配置");
-    assert.strictEqual(strings.en.animOverridesResetAll, "Clear all replacements");
-    assert.strictEqual(strings.zh.animOverridesResetAll, "清除全部替换");
+    assert.strictEqual(strings.en.animOverridesReplacementConfig, "Overrides config");
+    assert.strictEqual(strings.zh.animOverridesReplacementConfig, "动画/音效覆盖配置");
+    assert.strictEqual(strings.ko.animOverridesReplacementConfig, "애니메이션/사운드 덮어쓰기 설정");
+    assert.strictEqual(strings.ja.animOverridesReplacementConfig, "アニメ/サウンド上書き設定");
+    assert.strictEqual(strings.en.animOverridesImport, "Import config…");
+    assert.strictEqual(strings.zh.animOverridesImport, "导入配置…");
+    assert.strictEqual(strings.ko.animOverridesImport, "설정 가져오기…");
+    assert.strictEqual(strings.ja.animOverridesImport, "設定をインポート…");
+    assert.strictEqual(strings.en.animOverridesExport, "Export config…");
+    assert.strictEqual(strings.zh.animOverridesExport, "导出配置…");
+    assert.strictEqual(strings.ko.animOverridesExport, "설정 내보내기…");
+    assert.strictEqual(strings.ja.animOverridesExport, "設定をエクスポート…");
+    assert.strictEqual(strings.en.animOverridesResetAll, "Clear all overrides");
+    assert.strictEqual(strings.zh.animOverridesResetAll, "清除全部覆盖");
+    assert.strictEqual(strings.ko.animOverridesResetAll, "모든 덮어쓰기 지우기");
+    assert.strictEqual(strings.ja.animOverridesResetAll, "すべての上書きを解除");
     assert.match(
       css,
       /@media \(max-width:\s*640px\)\s*\{[\s\S]*\.anim-override-meta\s*\{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\);/
