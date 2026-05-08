@@ -68,7 +68,7 @@ describe("AskUserQuestion bubble stepper", () => {
     const body = functionBody("renderElicitationTerminalFallback");
     assert.match(body, /btn\.className = "btn-suggestion";/);
     assert.match(body, /btn\.textContent = bubbleText\(currentLang, "goToTerminal"\);/);
-    assert.match(body, /window\.bubbleAPI\.decide\("deny"\);/);
+    assert.match(body, /window\.bubbleAPI\.decide\("deny-and-focus"\);/);
   });
 
   it("does not recalculate submit state twice when a non-Other radio hides the Other textarea", () => {

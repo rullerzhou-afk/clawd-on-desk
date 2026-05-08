@@ -973,7 +973,7 @@ function renderElicitationTerminalFallback() {
   btn.addEventListener("click", () => {
     btn.textContent = "...";
     disableAll();
-    window.bubbleAPI.decide("deny");
+    window.bubbleAPI.decide("deny-and-focus");
   });
   suggestionsContainer.appendChild(btn);
 }
