@@ -740,6 +740,7 @@ function loadAnimOverridesTabForTest({
   settingsAPI = {},
   opsOverrides = {},
   readersOverrides = {},
+  helpersOverrides = {},
 }) {
   const document = {
     body: new FakeElement("body"),
@@ -783,6 +784,7 @@ function loadAnimOverridesTabForTest({
         if (typeof invoke === "function") el.addEventListener("click", () => invoke());
         return el;
       },
+      ...helpersOverrides,
     },
     ops: {
       selectTab: () => {},
@@ -2636,7 +2638,7 @@ describe("settings renderer browser environment", () => {
     );
     assert.match(
       css,
-      /\.anim-override-meta-actions\s*\{[\s\S]*justify-content:\s*flex-end;/
+      /\.anim-override-meta-actions\s*\{[\s\S]*align-items:\s*center;[\s\S]*justify-content:\s*flex-end;/
     );
     assert.match(
       css,
@@ -2664,6 +2666,29 @@ describe("settings renderer browser environment", () => {
       css,
       /@media \(max-width:\s*640px\)\s*\{[\s\S]*\.anim-override-meta\s*\{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\);/
     );
+  });
+
+  it("does not build Animation Overrides theme actions on the Sounds subtab", () => {
+    const runtime = createAnimOverridesRuntime(createAnimOverrideCard(), { animOverridesSubtab: "sounds" });
+    const modalRoot = new FakeElement("div");
+    let activationCount = 0;
+    const { core } = loadAnimOverridesTabForTest({
+      runtime,
+      modalRoot,
+      helpersOverrides: {
+        attachActivation: (el, invoke) => {
+          activationCount += 1;
+          if (typeof invoke === "function") el.addEventListener("click", () => invoke());
+          return el;
+        },
+      },
+    });
+    const parent = new FakeElement("main");
+
+    core.tabs.animOverrides.render(parent, core);
+
+    assert.strictEqual(parent.querySelector(".anim-override-meta"), null);
+    assert.strictEqual(activationCount, 1, "only the Sounds directory button should be wired");
   });
 
   it("uses specific fade timing labels and gives the slider label enough room", () => {
