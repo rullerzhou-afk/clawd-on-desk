@@ -245,7 +245,8 @@ html, body {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
-.collapsible-group-chevron {
+.collapsible-group-chevron,
+.anim-override-chevron {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -261,13 +262,15 @@ html, body {
     color 0.16s ease,
     opacity 0.16s ease;
 }
-.collapsible-group-chevron svg {
+.collapsible-group-chevron svg,
+.anim-override-chevron svg {
   width: 16px;
   height: 16px;
   display: block;
   overflow: visible;
 }
-.collapsible-group-chevron path {
+.collapsible-group-chevron path,
+.anim-override-chevron path {
   fill: none;
   stroke: currentColor;
   stroke-width: 2.2;
@@ -1224,35 +1227,6 @@ html, body {
 .anim-override-row > summary:hover { background: rgba(0, 0, 0, 0.03); }
 @media (prefers-color-scheme: dark) {
   .anim-override-row > summary:hover { background: rgba(255, 255, 255, 0.04); }
-}
-.anim-override-chevron {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  color: var(--text-tertiary);
-  opacity: 0.72;
-  transform: translateX(-6px) rotate(0deg);
-  transform-origin: center;
-  transition:
-    transform 0.22s cubic-bezier(0.22, 1, 0.36, 1),
-    color 0.16s ease,
-    opacity 0.16s ease;
-}
-.anim-override-chevron svg {
-  width: 16px;
-  height: 16px;
-  display: block;
-  overflow: visible;
-}
-.anim-override-chevron path {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2.2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 .anim-override-row > summary:hover .anim-override-chevron {
   color: var(--text-secondary);

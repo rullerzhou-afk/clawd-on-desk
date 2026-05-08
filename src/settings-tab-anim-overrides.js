@@ -943,10 +943,7 @@
   function buildAnimOverrideSummary(card) {
     const summary = document.createElement("summary");
 
-    const chevron = document.createElement("span");
-    chevron.className = "anim-override-chevron";
-    chevron.setAttribute("aria-hidden", "true");
-    chevron.innerHTML = '<svg viewBox="0 0 20 20" focusable="false"><path d="M8 5l5 5-5 5" /></svg>';
+    const chevron = helpers.createDisclosureChevron("anim-override-chevron");
     summary.appendChild(chevron);
 
     const thumb = document.createElement("div");

@@ -305,6 +305,24 @@
     } catch (_) {}
   }
 
+  function createDisclosureChevron(className) {
+    const chevron = document.createElement("span");
+    chevron.className = className;
+    chevron.setAttribute("aria-hidden", "true");
+
+    const createSvgElement = typeof document.createElementNS === "function"
+      ? (tagName) => document.createElementNS("http://www.w3.org/2000/svg", tagName)
+      : (tagName) => document.createElement(tagName);
+    const svg = createSvgElement("svg");
+    svg.setAttribute("viewBox", "0 0 20 20");
+    svg.setAttribute("focusable", "false");
+    const path = createSvgElement("path");
+    path.setAttribute("d", "M8 5l5 5-5 5");
+    svg.appendChild(path);
+    chevron.appendChild(svg);
+    return chevron;
+  }
+
   function buildCollapsibleGroup({
     id,
     title = "",
@@ -329,10 +347,7 @@
     header.setAttribute("role", "button");
     header.setAttribute("tabindex", "0");
 
-    const chevron = document.createElement("span");
-    chevron.className = "collapsible-group-chevron";
-    chevron.setAttribute("aria-hidden", "true");
-    chevron.innerHTML = '<svg viewBox="0 0 20 20" focusable="false"><path d="M8 5l5 5-5 5" /></svg>';
+    const chevron = createDisclosureChevron("collapsible-group-chevron");
     header.appendChild(chevron);
 
     if (headerContent) {
@@ -981,6 +996,7 @@
     buildSwitchRow,
     buildSection,
     buildCollapsibleGroup,
+    createDisclosureChevron,
     attachActivation,
     buildShortcutButton,
     openExternalSafe,
