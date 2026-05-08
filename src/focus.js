@@ -1,9 +1,11 @@
 // src/focus.js — Terminal focus system (PowerShell persistent process + macOS osascript)
 // Extracted from main.js L1030-1335
 
+const fs = require("fs");
 const http = require("http");
+const os = require("os");
 const path = require("path");
-const { execFile, spawn } = require("child_process");
+const { execFile, execFileSync, spawn } = require("child_process");
 
 const isMac = process.platform === "darwin";
 const isWin = process.platform === "win32";
@@ -259,6 +261,193 @@ function focusTerminalWindow(sourcePid, cwd, editor, pidChain) {
   scheduleTerminalTabFocus(editor, pidChain);
 }
 
+// ── Mac-only: specialized focus paths ────────────────────────────────────────
+// These cover terminal hosts the generic `set frontmost of process` script
+// cannot reach correctly:
+//   • Superset.app — multi-workspace Electron host. Generic frontmost only
+//     activates the app, not the specific worktree workspace. Resolved via the
+//     reverse-engineered `superset://workspace/<id>` URL scheme (observed
+//     2026-05-08).
+//   • iTerm2 — multiple sessions per window. Match by tty so the right tab
+//     is selected even when many shells share one window.
+//   • Ghostty — no public IPC; rely on window title containing the cwd
+//     basename. Users need a shell prompt that updates the OSC 2 title.
+
+function findSupersetDataDirs() {
+  // Superset by default lives in ~/.superset, but custom instances use
+  // `~/.superset-<name>` and the matching URL scheme `superset-<name>://`.
+  try {
+    const home = os.homedir();
+    return fs.readdirSync(home, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && e.name.startsWith(".superset"))
+      .map((e) => path.join(home, e.name))
+      .filter((dir) => {
+        try { return fs.existsSync(path.join(dir, "local.db")); }
+        catch { return false; }
+      });
+  } catch { return []; }
+}
+
+function supersetSchemeForDir(dir) {
+  const base = path.basename(dir);
+  return base === ".superset" ? "superset" : `superset-${base.slice(".superset-".length)}`;
+}
+
+function querySupersetWorkspaceId(dbPath, cwd) {
+  if (!cwd) return null;
+  const candidates = [cwd];
+  try {
+    const real = fs.realpathSync(cwd);
+    if (real && real !== cwd) candidates.push(real);
+  } catch {}
+  for (const candidate of candidates) {
+    const escaped = candidate.replace(/'/g, "''");
+    const sql = `SELECT ws.id FROM workspaces ws JOIN worktrees w ON w.id = ws.worktree_id WHERE w.path = '${escaped}' ORDER BY COALESCE(ws.last_opened_at, 0) DESC LIMIT 1;`;
+    try {
+      const out = execFileSync("sqlite3", ["-readonly", dbPath, sql], {
+        encoding: "utf8",
+        timeout: 1500,
+      }).trim();
+      if (out) return out;
+    } catch {}
+  }
+  return null;
+}
+
+function tryFocusSuperset(cwd, callback) {
+  if (!cwd) return callback(false);
+  const dirs = findSupersetDataDirs();
+  if (!dirs.length) return callback(false);
+  for (const dir of dirs) {
+    const id = querySupersetWorkspaceId(path.join(dir, "local.db"), cwd);
+    if (!id) continue;
+    const url = `${supersetSchemeForDir(dir)}://workspace/${id}`;
+    execFile("/usr/bin/open", [url], { timeout: 1500 }, (err) => {
+      if (err) console.warn("focusSuperset failed:", err.message);
+      callback(!err);
+    });
+    return;
+  }
+  callback(false);
+}
+
+function getTtyFromPids(pids) {
+  for (const pid of pids) {
+    if (!Number.isFinite(pid) || pid <= 0) continue;
+    try {
+      const out = execFileSync("ps", ["-o", "tty=", "-p", String(pid)], {
+        encoding: "utf8",
+        timeout: 500,
+      }).trim();
+      if (out && out !== "??" && out !== "?" && out !== "-") return out;
+    } catch {}
+  }
+  return null;
+}
+
+function isAppRunning(processName, callback) {
+  const escaped = processName.replace(/"/g, '\\"');
+  const script = `tell application "System Events" to return (name of processes) contains "${escaped}"`;
+  execFile("osascript", ["-e", script], { timeout: 1000 }, (err, stdout) => {
+    if (err) return callback(false);
+    callback(/true/i.test(String(stdout).trim()));
+  });
+}
+
+function tryFocusITerm(pidCandidates, callback) {
+  isAppRunning("iTerm2", (running) => {
+    if (!running) return callback(false);
+    const tty = getTtyFromPids(pidCandidates);
+    if (!tty) return callback(false);
+    // tty from `ps` is "ttys001"; iTerm exposes "/dev/ttys001". Match by suffix.
+    const ttyEsc = tty.replace(/"/g, '\\"');
+    const script = `
+      tell application "iTerm2"
+        activate
+        repeat with w in windows
+          repeat with t in tabs of w
+            repeat with s in sessions of t
+              if tty of s ends with "${ttyEsc}" then
+                select s
+                return "ok"
+              end if
+            end repeat
+          end repeat
+        end repeat
+        return "miss"
+      end tell`;
+    execFile("osascript", ["-e", script], { timeout: MAC_FOCUS_TIMEOUT_MS }, (err, stdout) => {
+      if (err) return callback(false);
+      callback(/^ok/.test(String(stdout).trim()));
+    });
+  });
+}
+
+function tryFocusGhostty(cwd, callback) {
+  if (!cwd) return callback(false);
+  isAppRunning("ghostty", (running) => {
+    if (!running) return callback(false);
+    const title = path.basename(cwd);
+    if (!title) return callback(false);
+    const titleEsc = title.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const script = `
+      tell application "ghostty" to activate
+      tell application "System Events"
+        tell process "ghostty"
+          repeat with w in windows
+            try
+              if title of w contains "${titleEsc}" then
+                perform action "AXRaise" of w
+                return "ok"
+              end if
+            end try
+          end repeat
+        end tell
+      end tell
+      return "miss"`;
+    execFile("osascript", ["-e", script], { timeout: MAC_FOCUS_TIMEOUT_MS }, (err, stdout) => {
+      if (err) return callback(false);
+      callback(/^ok/.test(String(stdout).trim()));
+    });
+  });
+}
+
+function trySpecialMacFocus(sourcePid, cwd, pidChain, callback) {
+  const pidCandidates = [sourcePid];
+  if (Array.isArray(pidChain)) {
+    for (const pid of pidChain) {
+      if (!Number.isFinite(pid) || pid <= 0 || pidCandidates.includes(pid)) continue;
+      pidCandidates.push(pid);
+    }
+  }
+  tryFocusSuperset(cwd, (ok) => {
+    if (ok) return callback(true);
+    tryFocusITerm(pidCandidates, (ok2) => {
+      if (ok2) return callback(true);
+      tryFocusGhostty(cwd, (ok3) => callback(!!ok3));
+    });
+  });
+}
+
+function runGenericMacFocus(pidCandidates, onDone) {
+  const applePidList = pidCandidates.join(", ");
+  const script = `
+    tell application "System Events"
+      repeat with targetPid in {${applePidList}}
+        set pidValue to contents of targetPid
+        set pList to every process whose unix id is pidValue
+        if (count of pList) > 0 then
+          set frontmost of item 1 of pList to true
+          exit repeat
+        end if
+      end repeat
+    end tell`;
+  execFile("osascript", ["-e", script], { timeout: MAC_FOCUS_TIMEOUT_MS }, (err) => {
+    if (err) console.warn("focusTerminal macOS failed:", err.message);
+    if (onDone) onDone();
+  });
+}
+
 function focusTerminalWindowLegacy(sourcePid, cwd, onDone, pidChain) {
   if (isMac) {
     const pidCandidates = [sourcePid];
@@ -269,21 +458,13 @@ function focusTerminalWindowLegacy(sourcePid, cwd, onDone, pidChain) {
         if (pidCandidates.length >= 3) break;
       }
     }
-    const applePidList = pidCandidates.join(", ");
-    const script = `
-      tell application "System Events"
-        repeat with targetPid in {${applePidList}}
-          set pidValue to contents of targetPid
-          set pList to every process whose unix id is pidValue
-          if (count of pList) > 0 then
-            set frontmost of item 1 of pList to true
-            exit repeat
-          end if
-        end repeat
-      end tell`;
-    execFile("osascript", ["-e", script], { timeout: MAC_FOCUS_TIMEOUT_MS }, (err) => {
-      if (err) console.warn("focusTerminal macOS failed:", err.message);
-      if (onDone) onDone();
+
+    // Try Superset / iTerm2 / Ghostty in order; fall back to generic
+    // osascript frontmost when no specialized path matches. Each step is
+    // best-effort and short-circuits the chain on success.
+    trySpecialMacFocus(sourcePid, cwd, pidChain, (focused) => {
+      if (focused) { if (onDone) onDone(); return; }
+      runGenericMacFocus(pidCandidates, onDone);
     });
     return;
   }
