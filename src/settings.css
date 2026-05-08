@@ -366,6 +366,7 @@ html, body {
 @media (prefers-reduced-motion: reduce) {
   .collapsible-group-header,
   .collapsible-group-chevron,
+  .anim-override-chevron,
   .collapsible-group-summary,
   .collapsible-group-body {
     transition: none;
