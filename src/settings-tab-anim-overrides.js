@@ -945,8 +945,8 @@
 
     const chevron = document.createElement("span");
     chevron.className = "anim-override-chevron";
-    chevron.textContent = "\u25B8";
     chevron.setAttribute("aria-hidden", "true");
+    chevron.innerHTML = '<svg viewBox="0 0 20 20" focusable="false"><path d="M8 5l5 5-5 5" /></svg>';
     summary.appendChild(chevron);
 
     const thumb = document.createElement("div");

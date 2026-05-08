@@ -227,7 +227,7 @@ html, body {
 .collapsible-group-header {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 4px;
   padding: 12px 16px;
   cursor: pointer;
   user-select: none;
@@ -247,15 +247,44 @@ html, body {
 }
 .collapsible-group-chevron {
   flex: 0 0 auto;
-  width: 14px;
-  text-align: center;
-  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
   color: var(--text-tertiary);
-  transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1), color 0.16s ease;
+  opacity: 0.72;
+  transform: translateX(-6px) rotate(0deg);
+  transform-origin: center;
+  transition:
+    transform 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+    color 0.16s ease,
+    opacity 0.16s ease;
+}
+.collapsible-group-chevron svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+  overflow: visible;
+}
+.collapsible-group-chevron path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.collapsible-group-header:hover .collapsible-group-chevron {
+  color: var(--text-secondary);
+  opacity: 0.95;
+}
+.collapsible-group.collapsed .collapsible-group-chevron {
+  transform: translateX(-6px) rotate(0deg);
 }
 .collapsible-group:not(.collapsed) .collapsible-group-chevron {
-  transform: rotate(90deg);
+  transform: translateX(-6px) rotate(90deg);
   color: var(--accent);
+  opacity: 1;
 }
 .collapsible-group-text,
 .collapsible-group-header-content {
@@ -1198,14 +1227,41 @@ html, body {
 }
 .anim-override-chevron {
   flex: 0 0 auto;
-  width: 14px;
-  text-align: center;
-  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
   color: var(--text-tertiary);
-  transition: transform 0.15s ease;
+  opacity: 0.72;
+  transform: translateX(-6px) rotate(0deg);
+  transform-origin: center;
+  transition:
+    transform 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+    color 0.16s ease,
+    opacity 0.16s ease;
+}
+.anim-override-chevron svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+  overflow: visible;
+}
+.anim-override-chevron path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.anim-override-row > summary:hover .anim-override-chevron {
+  color: var(--text-secondary);
+  opacity: 0.95;
 }
 .anim-override-row[open] > summary .anim-override-chevron {
-  transform: rotate(90deg);
+  transform: translateX(-6px) rotate(90deg);
+  color: var(--accent);
+  opacity: 1;
 }
 .anim-override-thumb {
   flex: 0 0 auto;
@@ -1218,6 +1274,7 @@ html, body {
   justify-content: center;
   overflow: hidden;
   cursor: pointer;
+  transform: translateX(-3px);
 }
 @media (prefers-color-scheme: dark) {
   .anim-override-thumb { background: rgba(255, 255, 255, 0.04); }
@@ -1263,6 +1320,7 @@ html, body {
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+  transform: translateX(-3px);
 }
 .anim-override-trigger {
   font-size: 13px;
