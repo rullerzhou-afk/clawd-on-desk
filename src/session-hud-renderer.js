@@ -1,6 +1,6 @@
 "use strict";
 
-const HUD_MAX_EXPANDED_ROWS = 3;
+const HUD_MAX_EXPANDED_ROWS = 5;
 
 let snapshot = { sessions: [], orderedIds: [], hudTotalNonIdle: 0, hudLastTitle: null, hudShowElapsed: true, hudAutoHide: false, hudPinned: false };
 let i18nPayload = { lang: "en", translations: {} };
@@ -49,6 +49,28 @@ function orderedHudSessions(currentSnapshot) {
   const orderedIds = new Set(ordered.map((session) => session.id));
   const missing = sessions.filter((session) => !orderedIds.has(session.id));
   return ordered.concat(missing).filter(isHudSession);
+}
+
+const STATE_CHIP_MAP = {
+  thinking:     { key: "sessionThinking",    cls: "chip-thinking" },
+  working:      { key: "sessionWorking",     cls: "chip-working" },
+  juggling:     { key: "sessionJuggling",    cls: "chip-juggling" },
+  error:        { key: "sessionError",       cls: "chip-error" },
+  sweeping:     { key: "sessionSweeping",    cls: "chip-sweeping" },
+  notification: { key: "sessionNotification",cls: "chip-notification" },
+  carrying:     { key: "sessionCarrying",    cls: "chip-carrying" },
+  attention:    { key: "sessionBadgeDone",   cls: "chip-done" },
+};
+
+function stateChipInfo(session) {
+  if (session.badge === "running") {
+    const entry = STATE_CHIP_MAP[session.state];
+    if (entry) return { label: t(entry.key), cls: entry.cls };
+    return { label: t("sessionBadgeRunning"), cls: "chip-working" };
+  }
+  if (session.badge === "done") return { label: t("sessionBadgeDone"), cls: "chip-done" };
+  if (session.badge === "interrupted") return { label: t("sessionBadgeInterrupted"), cls: "chip-interrupted" };
+  return null;
 }
 
 const BELL_SVG = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>`;
@@ -115,6 +137,15 @@ function createRowForSession(session, now) {
     bell.className = "unread-bell";
     bell.innerHTML = BELL_SVG;
     right.appendChild(bell);
+    hasRightContent = true;
+  }
+
+  const chipInfo = stateChipInfo(session);
+  if (chipInfo && !(session.badge === "done" && unreadSessions.has(session.id))) {
+    const chip = document.createElement("span");
+    chip.className = `state-chip ${chipInfo.cls}`;
+    chip.textContent = chipInfo.label;
+    right.appendChild(chip);
     hasRightContent = true;
   }
 

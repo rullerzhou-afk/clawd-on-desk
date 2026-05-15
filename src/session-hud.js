@@ -9,10 +9,10 @@ const isMac = process.platform === "darwin";
 const isWin = process.platform === "win32";
 
 const HUD_BORDER_Y = 2;
-const HUD_WIDTH = 240;
-const HUD_WIDTH_COMPACT = 190;
+const HUD_WIDTH = 320;
+const HUD_WIDTH_COMPACT = 260;
 const HUD_ROW_HEIGHT = 28;
-const HUD_MAX_EXPANDED_ROWS = 3;
+const HUD_MAX_EXPANDED_ROWS = 5;
 const HUD_HEIGHT = HUD_ROW_HEIGHT + HUD_BORDER_Y;
 const HUD_WINDOW_SHELL = Object.freeze({
   top: 2,

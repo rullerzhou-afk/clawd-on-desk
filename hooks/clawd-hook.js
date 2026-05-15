@@ -162,6 +162,13 @@ function buildStateBody(event, payload, resolve) {
     normalizeTitle(payload.session_title) ||
     extractSessionTitleFromTranscript(payload.transcript_path);
   if (sessionTitle) body.session_title = sessionTitle;
+  // Use the user's prompt first line as session title when no explicit title exists
+  if (event === "UserPromptSubmit" && !body.session_title) {
+    const rawPrompt = typeof payload.prompt === "string" ? payload.prompt : "";
+    const firstLine = rawPrompt.split(/\r?\n/)[0].trim();
+    const promptTitle = normalizeTitle(firstLine);
+    if (promptTitle) body.session_title = promptTitle;
+  }
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();
   } else {
