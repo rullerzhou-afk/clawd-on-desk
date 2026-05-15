@@ -63,10 +63,49 @@ probe_login_shells() {
   done
 }
 
+probe_version_managers() {
+  # nvm — source the init script so Node lands on PATH even when
+  # shell rc files are not sourced by the non-interactive SSH session.
+  for nvm_sh in "$HOME"/.nvm/nvm.sh /root/.nvm/nvm.sh; do
+    if [ -n "$nvm_sh" ] && [ -f "$nvm_sh" ] && [ -r "$nvm_sh" ]; then
+      NVM_DIR="$(dirname "$nvm_sh")" . "$nvm_sh" 2>/dev/null || true
+      p="$(command -v node 2>/dev/null || true)"
+      emit_node "$p" "nvm:sourced"
+      break
+    fi
+  done
+
+  # fnm — use its own env generator when the binary is on PATH.
+  if command -v fnm >/dev/null 2>&1; then
+    eval "$(fnm env --shell sh 2>/dev/null)" 2>/dev/null || true
+    p="$(command -v node 2>/dev/null || true)"
+    emit_node "$p" "fnm:sourced"
+  fi
+
+  # asdf — dot-source its main script so shims become visible.
+  for asdf_sh in "$HOME"/.asdf/asdf.sh /opt/homebrew/opt/asdf/libexec/asdf.sh /usr/local/opt/asdf/libexec/asdf.sh; do
+    if [ -f "$asdf_sh" ] && [ -r "$asdf_sh" ]; then
+      . "$asdf_sh" 2>/dev/null || true
+      p="$(command -v node 2>/dev/null || true)"
+      emit_node "$p" "asdf:sourced"
+      break
+    fi
+  done
+
+  # mise — activate its shims through the CLI.
+  if command -v mise >/dev/null 2>&1; then
+    eval "$(mise activate sh 2>/dev/null)" 2>/dev/null || true
+    p="$(command -v node 2>/dev/null || true)"
+    emit_node "$p" "mise:sourced"
+  fi
+}
+
 p="$(command -v node 2>/dev/null || true)"
 emit_node "$p" "path"
 
 probe_login_shells
+
+probe_version_managers
 
 for p in \\
   /opt/homebrew/bin/node \\
