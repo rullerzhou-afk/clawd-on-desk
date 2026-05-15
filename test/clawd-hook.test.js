@@ -59,6 +59,39 @@ describe("buildStateBody", () => {
     assert.strictEqual(body.state, "working");
   });
 
+  it("maps PreToolUse Task to synthetic SubagentStart", () => {
+    const body = buildStateBody(
+      "PreToolUse",
+      { session_id: "s", tool_name: "Task" },
+      mockResolve
+    );
+    assert.strictEqual(body.state, "juggling");
+    assert.strictEqual(body.event, "SubagentStart");
+    assert.strictEqual(body.tool_name, "Task");
+  });
+
+  it("keeps non-Task PreToolUse as working", () => {
+    const body = buildStateBody(
+      "PreToolUse",
+      { session_id: "s", tool_name: "Bash" },
+      mockResolve
+    );
+    assert.strictEqual(body.state, "working");
+    assert.strictEqual(body.event, "PreToolUse");
+    assert.strictEqual(body.tool_name, "Bash");
+  });
+
+  it("keeps PostToolUse Task as working", () => {
+    const body = buildStateBody(
+      "PostToolUse",
+      { session_id: "s", tool_name: "Task" },
+      mockResolve
+    );
+    assert.strictEqual(body.state, "working");
+    assert.strictEqual(body.event, "PostToolUse");
+    assert.strictEqual(body.tool_name, "Task");
+  });
+
   it("maps Stop to attention state", () => {
     const body = buildStateBody("Stop", { session_id: "s" }, mockResolve);
     assert.strictEqual(body.state, "attention");
@@ -143,6 +176,57 @@ describe("buildStateBody", () => {
   it("omits pid_chain when empty", () => {
     const body = buildStateBody("PreToolUse", { session_id: "s" }, mockResolve);
     assert.ok(!("pid_chain" in body));
+  });
+
+  describe("agentPid and headless detection", () => {
+    const makeResolve = (agentPid, agentCommandLine = "") =>
+      () => ({ stablePid: 1, agentPid, agentCommandLine, detectedEditor: null, pidChain: [] });
+
+    it("sets agent_pid and claude_pid when agentPid is present", () => {
+      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(42));
+      assert.strictEqual(body.agent_pid, 42);
+      assert.strictEqual(body.claude_pid, 42);
+    });
+
+    it("omits agent_pid and claude_pid when agentPid is absent", () => {
+      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(null));
+      assert.ok(!("agent_pid" in body));
+      assert.ok(!("claude_pid" in body));
+    });
+
+    it("sets headless when agentCommandLine ends with -p", () => {
+      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99, "node claude-code -p"));
+      assert.strictEqual(body.headless, true);
+    });
+
+    it("sets headless when agentCommandLine has -p followed by a space", () => {
+      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99, "node claude-code -p some-prompt"));
+      assert.strictEqual(body.headless, true);
+    });
+
+    it("sets headless when agentCommandLine contains --print", () => {
+      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99, "node claude-code --print"));
+      assert.strictEqual(body.headless, true);
+    });
+
+    it("does not set headless when -p is a prefix of a longer option", () => {
+      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99, "node claude-code --port 3000"));
+      assert.ok(!("headless" in body));
+    });
+
+    it("does not set headless when agentCommandLine is empty", () => {
+      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99, ""));
+      assert.ok(!("headless" in body));
+    });
+
+    it("does not set headless when agentCommandLine is missing from resolve()", () => {
+      // Backward compat: a resolver that never populates agentCommandLine must
+      // not crash and must not set headless.
+      const resolve = () => ({ stablePid: 1, agentPid: 77, detectedEditor: null, pidChain: [] });
+      const body = buildStateBody("PreToolUse", { session_id: "s" }, resolve);
+      assert.strictEqual(body.agent_pid, 77);
+      assert.ok(!("headless" in body));
+    });
   });
 
   it("passes through tool metadata for tool events", () => {

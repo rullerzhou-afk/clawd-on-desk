@@ -699,6 +699,19 @@ function resolvePidReachable(existing, agentPid, sourcePid) {
   return existing ? !!existing.pidReachable : false;
 }
 
+function evictOldestSessionIfNeeded(sessionId) {
+  if (sessions.has(sessionId) || sessions.size < MAX_SESSIONS) return;
+  let oldestId = null;
+  let oldestTime = Infinity;
+  for (const [id, s] of sessions) {
+    if (s.updatedAt < oldestTime) {
+      oldestTime = s.updatedAt;
+      oldestId = id;
+    }
+  }
+  if (oldestId) sessions.delete(oldestId);
+}
+
 // ── Session management ──
 // Session-related fields go through `opts`. Earlier versions took 13
 // positional params — refactored in B2 to an options bag so new fields
@@ -714,6 +727,11 @@ function updateSession(sessionId, state, event, opts = {}) {
     agentId = null,
     host = null,
     headless = false,
+    platform = null,
+    model = null,
+    provider = null,
+    codexOriginator = null,
+    codexSource = null,
     displayHint = undefined,
     sessionTitle = null,
     permissionSuspect = false,
@@ -741,6 +759,52 @@ function updateSession(sessionId, state, event, opts = {}) {
       && typeof ctx.isAgentPermissionsEnabled === "function"
       && !ctx.isAgentPermissionsEnabled("kimi-cli")
     ) return;
+    const shouldPersistCodexPermissionFocus = permAgentId === "codex" && (
+      sourcePid || agentPid || (pidChain && pidChain.length) || cwd || host ||
+      model || provider || codexOriginator || codexSource || platform
+    );
+    if (shouldPersistCodexPermissionFocus) {
+      const existing = sessions.get(sessionId);
+      evictOldestSessionIfNeeded(sessionId);
+      const srcPid = sourcePid || (existing && existing.sourcePid) || null;
+      const srcCwd = cwd || (existing && existing.cwd) || "";
+      const srcEditor = editor || (existing && existing.editor) || null;
+      const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
+      const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
+      const srcAgentId = agentId || (existing && existing.agentId) || null;
+      const srcHost = host || (existing && existing.host) || null;
+      const srcHeadless = headless || (existing && existing.headless) || false;
+      const srcPlatform = platform || (existing && existing.platform) || null;
+      const srcModel = model || (existing && existing.model) || null;
+      const srcProvider = provider || (existing && existing.provider) || null;
+      const srcCodexOriginator = codexOriginator || (existing && existing.codexOriginator) || null;
+      const srcCodexSource = codexSource || (existing && existing.codexSource) || null;
+      const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
+      const storedState = existing && existing.state ? existing.state : "notification";
+      const recentEvents = pushRecentEvent(existing, storedState, event);
+      sessions.set(sessionId, {
+        state: storedState,
+        updatedAt: Date.now(),
+        displayHint: existing ? existing.displayHint : null,
+        sourcePid: srcPid,
+        cwd: srcCwd,
+        editor: srcEditor,
+        pidChain: srcPidChain,
+        agentPid: srcAgentPid,
+        agentId: srcAgentId,
+        host: srcHost,
+        headless: srcHeadless,
+        platform: srcPlatform,
+        model: srcModel,
+        provider: srcProvider,
+        codexOriginator: srcCodexOriginator,
+        codexSource: srcCodexSource,
+        sessionTitle: srcSessionTitle,
+        recentEvents,
+        pidReachable: resolvePidReachable(existing, srcAgentPid, srcPid),
+        resumeState: (existing && existing.resumeState) || null,
+      });
+    }
     setState("notification");
     if (permAgentId === "kimi-cli") startKimiPermissionPoll(sessionId);
     return;
@@ -755,6 +819,11 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcAgentId = agentId || (existing && existing.agentId) || null;
   const srcHost = host || (existing && existing.host) || null;
   const srcHeadless = headless || (existing && existing.headless) || false;
+  const srcPlatform = platform || (existing && existing.platform) || null;
+  const srcModel = model || (existing && existing.model) || null;
+  const srcProvider = provider || (existing && existing.provider) || null;
+  const srcCodexOriginator = codexOriginator || (existing && existing.codexOriginator) || null;
+  const srcCodexSource = codexSource || (existing && existing.codexSource) || null;
   // Sticky: empty input does not clear an existing title. A session that has
   // ever been named keeps that name until the user explicitly renames it.
   const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
@@ -768,16 +837,10 @@ function updateSession(sessionId, state, event, opts = {}) {
   const pidReachable = resolvePidReachable(existing, srcAgentPid, srcPid);
 
   const recentEvents = pushRecentEvent(existing, preservedState || state, event);
-  const base = { sourcePid: srcPid, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, sessionTitle: srcSessionTitle, recentEvents, pidReachable };
+  const base = { sourcePid: srcPid, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, sessionTitle: srcSessionTitle, recentEvents, pidReachable };
 
-  // Evict oldest session if at capacity and this is a new session
-  if (!existing && sessions.size >= MAX_SESSIONS) {
-    let oldestId = null, oldestTime = Infinity;
-    for (const [id, s] of sessions) {
-      if (s.updatedAt < oldestTime) { oldestTime = s.updatedAt; oldestId = id; }
-    }
-    if (oldestId) sessions.delete(oldestId);
-  }
+  // Evict oldest session if at capacity and this is a new session.
+  evictOldestSessionIfNeeded(sessionId);
 
   if (isSubagentStop) {
     updateCodexExitProbe(sessionId, srcAgentId, event);
@@ -1077,21 +1140,28 @@ function detectRunningAgentProcesses(callback) {
   // call entirely — nothing we could "find" should keep startup recovery
   // alive. When at least one agent is enabled, we still run the combined
   // detection because the query can't attribute individual processes back
-  // to agent ids (wmic/pgrep would need per-name queries), and the result
+  // to agent ids without per-name process queries, and the result
   // is only a boolean for startup recovery — not a session creator.
   if (typeof ctx.hasAnyEnabledAgent === "function" && !ctx.hasAnyEnabledAgent()) {
     done(false);
     return;
   }
-  const { exec } = require("child_process");
+  const { execFile, exec } = require("child_process");
   if (process.platform === "win32") {
-    exec(
-      'wmic process where "(Name=\'node.exe\' and CommandLine like \'%claude-code%\') or Name=\'claude.exe\' or Name=\'codex.exe\' or Name=\'copilot.exe\' or Name=\'gemini.exe\' or Name=\'codebuddy.exe\' or Name=\'kiro-cli.exe\' or Name=\'kimi.exe\' or Name=\'opencode.exe\'" get ProcessId /format:csv',
-      { encoding: "utf8", timeout: 5000, windowsHide: true },
+    const psScript =
+      "$names = 'claude.exe','codex.exe','copilot.exe','gemini.exe','codebuddy.exe','kiro-cli.exe','kimi.exe','opencode.exe','pi.exe','hermes.exe'; " +
+      "$match = Get-CimInstance Win32_Process | Where-Object { " +
+        "$names -contains $_.Name -or ($_.Name -eq 'node.exe' -and $_.CommandLine -like '*claude-code*') " +
+      "} | Select-Object -First 1; " +
+      "if ($match) { $match.ProcessId }";
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", psScript],
+      { encoding: "utf8", timeout: 5000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
       (err, stdout) => done(!err && /\d+/.test(stdout))
     );
   } else {
-    exec("pgrep -f 'claude-code|codex|copilot|codebuddy|kimi' || pgrep -x 'gemini' || pgrep -x 'kiro-cli' || pgrep -x 'opencode'", { timeout: 3000 },
+    exec("pgrep -f 'claude-code|codex|copilot|codebuddy|kimi|@earendil-works/pi-coding-agent|pi-coding-agent/dist/cli\\.js' || pgrep -x 'gemini' || pgrep -x 'kiro-cli' || pgrep -x 'opencode' || pgrep -x 'hermes'", { timeout: 3000 },
       (err) => done(!err)
     );
   }

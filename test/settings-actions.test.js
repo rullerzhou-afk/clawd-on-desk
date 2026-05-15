@@ -91,7 +91,11 @@ describe("updateRegistry pure-data validators", () => {
 
   it("bubble auto-close seconds require integers in range", () => {
     const deps = { snapshot: baseSnapshot };
-    for (const key of ["notificationBubbleAutoCloseSeconds", "updateBubbleAutoCloseSeconds"]) {
+    for (const key of [
+      "notificationBubbleAutoCloseSeconds",
+      "permissionBubbleAutoCloseSeconds",
+      "updateBubbleAutoCloseSeconds",
+    ]) {
       assert.strictEqual(updateRegistry[key](0, deps).status, "ok", `${key}(0)`);
       assert.strictEqual(updateRegistry[key](30, deps).status, "ok", `${key}(30)`);
       assert.strictEqual(updateRegistry[key](3600, deps).status, "ok", `${key}(3600)`);
@@ -457,7 +461,7 @@ describe("bubble policy commands", () => {
     assert.deepStrictEqual(shown.commit, {
       hideBubbles: false,
       permissionBubblesEnabled: true,
-      notificationBubbleAutoCloseSeconds: 3,
+      notificationBubbleAutoCloseSeconds: 6,
       updateBubbleAutoCloseSeconds: 9,
     });
   });
@@ -1596,6 +1600,32 @@ describe("setWideHitboxOverride command", () => {
     assert.deepStrictEqual(activatedWith.overrideMap, {
       hitbox: { wide: { "foo.svg": true } },
     });
+  });
+
+  it("prefers refreshActiveThemeHitboxOverrides over activateTheme for active theme changes", () => {
+    let refreshedWith = null;
+    let activated = false;
+    const snapshot = { theme: "clawd", themeOverrides: {} };
+    const r = commandRegistry.setWideHitboxOverride(
+      { themeId: "clawd", file: "foo.svg", enabled: true },
+      {
+        snapshot,
+        refreshActiveThemeHitboxOverrides: (id, overrideMap) => {
+          refreshedWith = { id, overrideMap };
+        },
+        activateTheme: () => {
+          activated = true;
+        },
+      }
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(refreshedWith, {
+      id: "clawd",
+      overrideMap: {
+        hitbox: { wide: { "foo.svg": true } },
+      },
+    });
+    assert.strictEqual(activated, false);
   });
 });
 

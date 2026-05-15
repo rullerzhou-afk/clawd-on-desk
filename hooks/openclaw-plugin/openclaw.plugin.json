@@ -1,0 +1,13 @@
+{
+  "id": "clawd-on-desk",
+  "name": "Clawd on Desk",
+  "description": "Forward OpenClaw lifecycle and tool-state events to Clawd on Desk.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

@@ -38,10 +38,10 @@ function registerSessionIpc(options = {}) {
   on("session-hud:focus-session", (_event, sessionId) =>
     focusSession(sessionId, { requestSource: "hud" })
   );
-  on("session-hud:open-dashboard", () => showDashboard());
+  on("session-hud:open-dashboard", () => showDashboard({ source: "hud" }));
   on("session-hud:set-pinned", (_event, value) => setSessionHudPinned(!!value));
 
-  on("settings:open-dashboard", () => showDashboard());
+  on("settings:open-dashboard", () => showDashboard({ source: "settings" }));
   on("show-dashboard", () => showDashboard());
 
   return {

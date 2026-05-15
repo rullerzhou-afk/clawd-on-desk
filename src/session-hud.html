@@ -108,6 +108,10 @@ body { padding: 2px 3px 8px; }
   transition: background 80ms ease;
 }
 
+.row-unfocusable {
+  cursor: default;
+}
+
 .row:hover {
   background: rgba(0, 0, 0, 0.06);
 }
@@ -232,6 +236,22 @@ body { padding: 2px 3px 8px; }
   color: #f59e0b;
   display: flex;
   align-items: center;
+}
+
+.focus-unavailable {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  opacity: 0.72;
+}
+
+.focus-unavailable svg {
+  width: 11px;
+  height: 11px;
 }
 
 @keyframes bell-ring {

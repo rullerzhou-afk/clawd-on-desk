@@ -52,6 +52,10 @@ function flushMicrotasks() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+function activeTimeout(timers) {
+  return timers.timeouts.find((timer) => !timer.cleared);
+}
+
 function createHarness(options = {}) {
   const renderWin = new FakeWindow();
   const hitWin = new FakeWindow();
@@ -126,7 +130,7 @@ describe("theme fade sequencer", () => {
     await flushMicrotasks();
 
     renderWin.webContents.emit("did-finish-load");
-    timers.timeouts[0].fn();
+    activeTimeout(timers).fn();
     await flushMicrotasks();
 
     assert.deepStrictEqual(events, ["fallback"]);
@@ -165,6 +169,26 @@ describe("theme fade sequencer", () => {
     assert.strictEqual(animations[1].targetOpacity, 0);
   });
 
+  it("uses fallback if fade-out never settles", async () => {
+    const { animations, renderWin, sequencer, timers } = createHarness({ autoResolveAnimation: false });
+    const events = [];
+
+    sequencer.run({
+      onReloadFinished: () => events.push("loaded"),
+      onFallback: (info) => events.push(info.reason),
+    });
+
+    assert.strictEqual(animations.length, 1);
+    assert.strictEqual(animations[0].targetOpacity, 0);
+    activeTimeout(timers).fn();
+    await flushMicrotasks();
+
+    assert.deepStrictEqual(events, ["fallback"]);
+    assert.deepStrictEqual(renderWin.opacityWrites, []);
+    assert.strictEqual(animations.length, 2);
+    assert.strictEqual(animations[1].targetOpacity, 1);
+  });
+
   it("does not leak prior opacity writes after mid-ramp cancellation", async () => {
     const { animations, hitWin, renderWin, sequencer } = createHarness({ autoResolveAnimation: false });
 
@@ -188,11 +212,12 @@ describe("theme fade sequencer", () => {
 
     assert.strictEqual(renderWin.webContents.listenerCountForLoad(), 1);
     assert.strictEqual(hitWin.webContents.listenerCountForLoad(), 1);
-    assert.strictEqual(timers.timeouts.length, 1);
+    assert.strictEqual(timers.timeouts.length, 2);
+    assert.strictEqual(timers.timeouts.filter((timer) => !timer.cleared).length, 1);
 
     sequencer.cleanup();
 
-    assert.strictEqual(timers.timeouts[0].cleared, true);
+    assert.ok(timers.timeouts.every((timer) => timer.cleared));
     assert.strictEqual(renderWin.webContents.listenerCountForLoad(), 0);
     assert.strictEqual(hitWin.webContents.listenerCountForLoad(), 0);
   });

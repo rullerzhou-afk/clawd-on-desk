@@ -38,6 +38,12 @@ function shouldBypassOpencodeBubble(ctx) {
   return !ctx.isAgentPermissionsEnabled("opencode");
 }
 
+function shouldBypassPiBubble(ctx) {
+  if (!arePermissionBubblesEnabled(ctx)) return true;
+  if (typeof ctx.isAgentPermissionsEnabled !== "function") return false;
+  return !ctx.isAgentPermissionsEnabled("pi");
+}
+
 function shouldBypassCodexBubble(ctx) {
   if (!arePermissionBubblesEnabled(ctx)) return true;
   if (typeof ctx.isAgentPermissionsEnabled !== "function") return false;
@@ -59,7 +65,50 @@ function arePermissionBubblesEnabled(ctx) {
   return !ctx.hideBubbles;
 }
 
+function normalizeString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function normalizePositiveInteger(value) {
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
+}
+
+function buildCodexPermissionSessionOptions(data) {
+  const sourcePid = normalizePositiveInteger(data.source_pid);
+  const rawAgentPid = data.agent_pid ?? data.claude_pid ?? data.cursor_pid;
+  const agentPid = normalizePositiveInteger(rawAgentPid);
+  const pidChain = Array.isArray(data.pid_chain)
+    ? data.pid_chain.filter((n) => Number.isFinite(n) && n > 0).map((n) => Math.floor(n))
+    : null;
+  const options = {
+    agentId: "codex",
+    hookSource: CODEX_OFFICIAL_HOOK_SOURCE,
+  };
+
+  if (sourcePid) options.sourcePid = sourcePid;
+  if (agentPid) options.agentPid = agentPid;
+  if (pidChain && pidChain.length) options.pidChain = pidChain;
+  const cwd = normalizeString(data.cwd);
+  const host = normalizeString(data.host);
+  const platform = normalizeString(data.platform);
+  const model = normalizeString(data.model);
+  const codexOriginator = normalizeString(data.codex_originator);
+  const codexSource = normalizeString(data.codex_source);
+  if (cwd) options.cwd = cwd;
+  if (host) options.host = host;
+  if (platform) options.platform = platform;
+  if (model) options.model = model;
+  if (codexOriginator) options.codexOriginator = codexOriginator;
+  if (codexSource) options.codexSource = codexSource;
+  return options;
+}
+
 function sendCodexPermissionNoDecision(res) {
+  res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+  res.end();
+}
+
+function sendPiPermissionNoDecision(res) {
   res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
   res.end();
 }
@@ -227,6 +276,7 @@ function handlePermissionPost(req, res, options) {
         const toolInputFingerprint = typeof data.tool_input_fingerprint === "string" && data.tool_input_fingerprint
           ? data.tool_input_fingerprint
           : buildToolInputFingerprint(rawInput);
+        const codexSessionOptions = buildCodexPermissionSessionOptions(data);
 
         if (ctx.doNotDisturb) {
           recordRequestHookEvent.droppedByDnd();
@@ -243,10 +293,7 @@ function handlePermissionPost(req, res, options) {
         }
 
         if (!shouldInterceptCodexPermission(ctx)) {
-          ctx.updateSession(sessionId, "notification", "PermissionRequest", {
-            agentId: "codex",
-            hookSource: CODEX_OFFICIAL_HOOK_SOURCE,
-          });
+          ctx.updateSession(sessionId, "notification", "PermissionRequest", codexSessionOptions);
           ctx.permLog(`codex native permission mode -> no decision, native prompt fallback (tool=${toolName})`);
           recordRequestHookEvent.accepted();
           sendCodexPermissionNoDecision(res);
@@ -278,6 +325,15 @@ function handlePermissionPost(req, res, options) {
           createdAt: Date.now(),
           agentId: "codex",
           isCodex: true,
+          sourcePid: codexSessionOptions.sourcePid || null,
+          cwd: codexSessionOptions.cwd || "",
+          agentPid: codexSessionOptions.agentPid || null,
+          pidChain: codexSessionOptions.pidChain || null,
+          host: codexSessionOptions.host || null,
+          platform: codexSessionOptions.platform || null,
+          model: codexSessionOptions.model || null,
+          codexOriginator: codexSessionOptions.codexOriginator || null,
+          codexSource: codexSessionOptions.codexSource || null,
         };
         const abortHandler = () => {
           if (res.writableFinished) return;
@@ -288,10 +344,7 @@ function handlePermissionPost(req, res, options) {
         res.on("close", abortHandler);
 
         ctx.pendingPermissions.push(permEntry);
-        ctx.updateSession(sessionId, "notification", "PermissionRequest", {
-          agentId: "codex",
-          hookSource: CODEX_OFFICIAL_HOOK_SOURCE,
-        });
+        ctx.updateSession(sessionId, "notification", "PermissionRequest", codexSessionOptions);
 
         ctx.permLog(`codex showing bubble: tool=${toolName} session=${sessionId} stack=${ctx.pendingPermissions.length}`);
         recordRequestHookEvent.accepted();
@@ -303,6 +356,85 @@ function handlePermissionPost(req, res, options) {
           if (popIdx !== -1) ctx.pendingPermissions.splice(popIdx, 1);
           if (permEntry.abortHandler) res.removeListener("close", permEntry.abortHandler);
           sendCodexPermissionNoDecision(res);
+        }
+        return;
+      }
+
+      // ── Pi extension PermissionRequest branch ──
+      // Pi waits synchronously on tool_call handlers but has no native
+      // permission prompt. Any Clawd-side no-decision must therefore return
+      // promptly so the extension can call ctx.ui.confirm() in the terminal.
+      if (data.agent_id === "pi") {
+        const toolName = typeof data.tool_name === "string" && data.tool_name ? data.tool_name : "unknown";
+        const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
+        const toolInput = truncateDeep(rawInput);
+        const sessionId = typeof data.session_id === "string" && data.session_id ? data.session_id : "pi:default";
+        const toolUseId = normalizeHookToolUseId(
+          data.tool_use_id ?? data.toolUseId ?? data.toolUseID
+        );
+        const toolInputFingerprint = buildToolInputFingerprint(rawInput);
+
+        if (ctx.doNotDisturb) {
+          recordRequestHookEvent.droppedByDnd();
+          ctx.permLog(`pi DND -> no decision, terminal fallback (tool=${toolName})`);
+          sendPiPermissionNoDecision(res);
+          return;
+        }
+
+        if (typeof ctx.isAgentEnabled === "function" && !ctx.isAgentEnabled("pi")) {
+          recordRequestHookEvent.droppedByDisabled();
+          ctx.permLog(`pi disabled -> no decision, terminal fallback (tool=${toolName})`);
+          sendPiPermissionNoDecision(res);
+          return;
+        }
+
+        if (shouldBypassPiBubble(ctx)) {
+          recordRequestHookEvent.accepted();
+          const reason = !arePermissionBubblesEnabled(ctx)
+            ? "permission bubbles disabled"
+            : "pi bubbles disabled";
+          ctx.permLog(`${reason} -> no decision, terminal fallback (tool=${toolName})`);
+          sendPiPermissionNoDecision(res);
+          return;
+        }
+
+        const permEntry = {
+          res,
+          abortHandler: null,
+          suggestions: [],
+          sessionId,
+          bubble: null,
+          hideTimer: null,
+          toolName,
+          toolInput,
+          toolUseId,
+          toolInputFingerprint,
+          resolvedSuggestion: null,
+          createdAt: Date.now(),
+          agentId: "pi",
+          isPi: true,
+        };
+        const abortHandler = () => {
+          if (res.writableFinished) return;
+          ctx.permLog("abortHandler fired (pi)");
+          ctx.resolvePermissionEntry(permEntry, "no-decision", "Client disconnected");
+        };
+        permEntry.abortHandler = abortHandler;
+        res.on("close", abortHandler);
+
+        ctx.pendingPermissions.push(permEntry);
+        ctx.updateSession(sessionId, "notification", "PermissionRequest", { agentId: "pi" });
+
+        ctx.permLog(`pi showing bubble: tool=${toolName} session=${sessionId} stack=${ctx.pendingPermissions.length}`);
+        recordRequestHookEvent.accepted();
+        try {
+          ctx.showPermissionBubble(permEntry);
+        } catch (bubbleErr) {
+          ctx.permLog(`pi bubble failed: ${bubbleErr && bubbleErr.message} -> no decision`);
+          const popIdx = ctx.pendingPermissions.indexOf(permEntry);
+          if (popIdx !== -1) ctx.pendingPermissions.splice(popIdx, 1);
+          if (permEntry.abortHandler) res.removeListener("close", permEntry.abortHandler);
+          sendPiPermissionNoDecision(res);
         }
         return;
       }
@@ -444,7 +576,30 @@ function handlePermissionPost(req, res, options) {
 
       ctx.permLog(`showing bubble: tool=${toolName} session=${sessionId} suggestions=${suggestions.length} stack=${ctx.pendingPermissions.length}`);
       recordRequestHookEvent.accepted();
-      ctx.showPermissionBubble(permEntry);
+      try {
+        ctx.showPermissionBubble(permEntry);
+      } catch (bubbleErr) {
+        // Mirror the Codex/Pi branches: a BrowserWindow construction failure
+        // here would leave a ghost permEntry in pendingPermissions because
+        // abortHandler only fires on res close. Pop the entry explicitly and
+        // destroy the socket so CC falls back to its built-in chat prompt
+        // (non-blocking error per hooks doc) instead of hanging on a stale
+        // bubble that was never visible. showPermissionBubble assigns
+        // permEntry.bubble before loadFile/showInactive/reposition, so a
+        // throw after that point leaves a partially-constructed window —
+        // tear it down along with any timers we've armed.
+        ctx.permLog(`bubble failed: ${bubbleErr && bubbleErr.message} -> drop connection, chat fallback`);
+        const popIdx = ctx.pendingPermissions.indexOf(permEntry);
+        if (popIdx !== -1) ctx.pendingPermissions.splice(popIdx, 1);
+        if (permEntry.abortHandler) res.removeListener("close", permEntry.abortHandler);
+        if (permEntry.autoCloseTimer) { clearTimeout(permEntry.autoCloseTimer); permEntry.autoCloseTimer = null; }
+        if (permEntry.hideTimer) { clearTimeout(permEntry.hideTimer); permEntry.hideTimer = null; }
+        if (permEntry.bubble && !permEntry.bubble.isDestroyed()) {
+          try { permEntry.bubble.destroy(); } catch {}
+        }
+        permEntry.bubble = null;
+        try { res.destroy(); } catch {}
+      }
     } catch (err) {
       ctx.permLog(`/permission handler error: ${err && err.message}`);
       // Response may already be sent (opencode branch 200-ACKs before
@@ -462,8 +617,10 @@ module.exports = {
   shouldBypassCCBubble,
   shouldBypassCodexBubble,
   shouldBypassOpencodeBubble,
+  shouldBypassPiBubble,
   arePermissionBubblesEnabled,
   shouldInterceptCodexPermission,
   sendCodexPermissionNoDecision,
+  sendPiPermissionNoDecision,
   handlePermissionPost,
 };

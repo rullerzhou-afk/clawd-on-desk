@@ -133,6 +133,17 @@ const EVENT_TO_STATE = {
   WorktreeCreate: "carrying",
 };
 
+function isTaskToolStart(event, payload) {
+  // Claude Code may report subagent launches as PreToolUse(Task) without a
+  // matching SubagentStart. Keep PostToolUse(Task) as a normal working update:
+  // state.js holds juggling through working events and releases it on a later
+  // Stop/UserPromptSubmit, or on a real SubagentStop if Claude emits one.
+  return event === "PreToolUse"
+    && payload
+    && typeof payload.tool_name === "string"
+    && payload.tool_name === "Task";
+}
+
 function buildStateBody(event, payload, resolve) {
   const state = EVENT_TO_STATE[event];
   if (!state) return null;
@@ -140,12 +151,16 @@ function buildStateBody(event, payload, resolve) {
   const sessionId = payload.session_id || "default";
   const cwd = payload.cwd || "";
   const source = payload.source || payload.reason || "";
+  const syntheticSubagentStart = isTaskToolStart(event, payload);
 
   // /clear triggers SessionEnd → SessionStart in quick succession;
   // show sweeping (clearing context) instead of sleeping
-  const resolvedState = (event === "SessionEnd" && source === "clear") ? "sweeping" : state;
+  const resolvedState = syntheticSubagentStart
+    ? "juggling"
+    : ((event === "SessionEnd" && source === "clear") ? "sweeping" : state);
+  const resolvedEvent = syntheticSubagentStart ? "SubagentStart" : event;
 
-  const body = { state: resolvedState, session_id: sessionId, event };
+  const body = { state: resolvedState, session_id: sessionId, event: resolvedEvent };
   body.agent_id = "claude-code";
   if (cwd) body.cwd = cwd;
   const toolName = typeof payload.tool_name === "string" && payload.tool_name ? payload.tool_name : null;
@@ -172,24 +187,15 @@ function buildStateBody(event, payload, resolve) {
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();
   } else {
-    const { stablePid, agentPid, detectedEditor, pidChain } = resolve();
+    const { stablePid, agentPid, agentCommandLine, detectedEditor, pidChain } = resolve();
     body.source_pid = stablePid;
     if (detectedEditor) body.editor = detectedEditor;
     if (agentPid) {
       body.agent_pid = agentPid;
       body.claude_pid = agentPid; // backward compat with older Clawd versions
-      // Check if claude process is running in non-interactive (-p/--print) mode
-      try {
-        const { execSync } = require("child_process");
-        const isWin = process.platform === "win32";
-        const cmdOut = isWin
-          ? execSync(
-              `wmic process where "ProcessId=${agentPid}" get CommandLine /format:csv`,
-              { encoding: "utf8", timeout: 500, windowsHide: true }
-            )
-          : execSync(`ps -o command= -p ${agentPid}`, { encoding: "utf8", timeout: 500 });
-        if (/\s(-p|--print)(\s|$)/.test(cmdOut)) body.headless = true;
-      } catch {}
+      if (agentCommandLine && /\s(-p|--print)(\s|$)/.test(agentCommandLine)) {
+        body.headless = true;
+      }
     }
     if (pidChain.length) body.pid_chain = pidChain;
   }

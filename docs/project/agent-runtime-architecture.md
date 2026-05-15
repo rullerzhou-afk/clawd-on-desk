@@ -66,6 +66,27 @@ opencode 状态同步（in-process plugin，~0ms 延迟）：
     → fire-and-forget HTTP POST 127.0.0.1:23333/state
     → 同上状态机（agent_id: opencode）
 
+Pi 状态同步（global extension，state-only）：
+  Pi 触发 session_start / before_agent_start / tool_call / tool_result / agent_end 等事件
+    → ~/.pi/agent/extensions/clawd-on-desk/index.ts（Pi extension runtime）
+    → hooks/pi-extension-core.js 映射为 PascalCase Clawd event 名
+    → HTTP POST 127.0.0.1:23333/state
+    → 同上状态机（agent_id: pi）
+
+OpenClaw 状态同步（in-process plugin，state-only）：
+  OpenClaw 触发 session_start / model_call_started / before_tool_call / after_tool_call / model_call_ended 等事件
+    → hooks/openclaw-plugin/index.js（plain ESM default object，OpenClaw plugin loader 直接识别）
+    → 映射为 PascalCase Clawd event 名，POST body 只发送 allowlist 字段
+    → fire-and-forget HTTP POST 127.0.0.1:23333/state
+    → 同上状态机（agent_id: openclaw）
+
+Hermes Agent 状态同步（Python plugin，Hermes SDK）：
+  Hermes 触发 on_session_start / pre_llm_call / post_llm_call / pre_tool_call / post_tool_call / on_session_end / on_session_finalize / on_session_reset
+    → hooks/hermes-plugin/__init__.py（plugin 跑在 Hermes worker 进程内）
+    → 映射为 Clawd event + 同步 HTTP POST 127.0.0.1:23333/state
+    → 同上状态机（agent_id: hermes）
+  终端聚焦 metadata 在 plugin register 时用 daemon thread 异步解析进程树；首个 hook 可不带 source_pid。
+
 opencode 权限气泡（event hook + 反向 bridge，非阻塞）：
   opencode 请求权限 → event hook 收到 permission.asked
     → plugin POST /permission（带 bridge_url + bridge_token）→ Clawd 立即 200 ACK（不挂连接）
@@ -106,6 +127,9 @@ opencode 权限气泡（event hook + 反向 bridge，非阻塞）：
 - `agents/kiro-cli.js` — Kiro CLI 事件映射（camelCase），无 HTTP hook / 无权限 / 无 subagent
 - `agents/codebuddy.js` — CodeBuddy 事件映射（PascalCase，Claude Code 兼容），支持权限
 - `agents/opencode.js` — opencode 事件映射 + 能力（plugin、permission、terminal focus）
+- `agents/pi.js` — Pi extension 事件映射 + 能力（extension、permission、terminal fallback）
+- `agents/openclaw.js` — OpenClaw plugin 事件映射 + 能力（state-only，本地终端聚焦暂不支持）
+- `agents/hermes.js` — Hermes Agent plugin 事件映射 + 能力（session、SessionEnd、terminal focus；无 permission/subagent）
 - `agents/registry.js` — agent 注册表：按 ID 或进程名查找 agent 配置
 - `agents/codex-log-monitor.js` — Codex JSONL fallback 增量轮询器（文件监视 + 增量读取 + approval heuristic）
 - `agents/gemini-log-monitor.js` — legacy Gemini session JSON 轮询器；当前 hook-only 路径不启动
@@ -117,7 +141,7 @@ opencode 权限气泡（event hook + 反向 bridge，非阻塞）：
 启动链路会自动补齐缺失集成：
 
 - `main.js` 会先调用 `registerHooks({ silent: true, autoStart: true, port })`
-- `server.js` 启动后异步同步 Claude / Codex / Gemini / Cursor / CodeBuddy / Kiro / Kimi hooks 和 opencode plugin
+- `server.js` 启动后异步同步 Claude / Codex / Gemini / Cursor / CodeBuddy / Kiro / Kimi hooks、opencode / OpenClaw / Hermes plugins 和 Pi extension；Hermes 默认开启但启动同步会先做无副作用安装探测，未安装时不创建 `~/.hermes`
 - Claude hook 同步时还会扫 `DEPRECATED_CORE_HOOKS`（当前含 `WorktreeCreate`）清掉旧版本留下的过时 clawd hook 条目，仅删 command 指向 `clawd-hook.js` 的那条，用户自己写的同事件 hook 不动
 
 手动安装命令主要用于调试、重装或远程机部署。
@@ -146,9 +170,9 @@ P0 spike（2026-04-26，Windows native Codex CLI）采到的实际 payload 边�
 - `PermissionRequest.tool_input.description` 在真实审批样本中存在，作为 bubble 文案首选；缺失时回退格式化 `tool_input`。
 - Codex PermissionRequest 输出必须 omit `updatedInput` / `updatedPermissions` / `interrupt`，不能写 `null`；这些字段今天 fail closed。
 
-## Opencode Notes
+## Plugin Notes
 
-opencode 是唯一以 plugin 形式集成的 agent，其他 agent 都是 hook 脚本。
+opencode、OpenClaw 和 Hermes 是 plugin 形式集成的 agent；OpenClaw Phase 1 只上报状态，其他 agent 主要是 hook 脚本。
 
 - 进程树 walk 从 `process.pid` 起步，不是 `ppid`
 - `task` 工具会直接新建 session，而不是产出 subtask part，所以多会话建筑动画天然成立
@@ -156,6 +180,32 @@ opencode 是唯一以 plugin 形式集成的 agent，其他 agent 都是 hook �
 - 由于 `permission.ask` hook 在 opencode 1.3.13 上未被调用，权限只能走 event hook + 反向 bridge
 - plugin 内发出的 POST 必须 fire-and-forget，避免拖慢 TUI
 - 打包后需要把 `app.asar/` 重写为 `app.asar.unpacked/`
+- Hermes plugin 使用同步 POST，避免短命 `hermes -z` 进程退出前丢事件；Clawd 未启动时有短 cooldown，避免反复扫端口
+- Hermes 的 `agent_pid` 当前是 plugin worker 进程 PID；`source_pid` 来自异步进程树解析，给终端聚焦使用
+- Hermes config.yaml 是用户 YAML，不做 line-oriented 编辑；安装只复制托管 plugin 文件并调用 `hermes plugins enable clawd-on-desk`
+
+## Pi Notes
+
+- Pi 使用 global extension 目录 `~/.pi/agent/extensions/clawd-on-desk`；安装器复制 `pi-extension.ts` 和自包含的 `pi-extension-core.js`
+- Extension 运行目录不在 Clawd repo 内，不能依赖 `hooks/shared-process.js`；需要的进程树和 HTTP 逻辑保持在 extension 文件内
+- 只在 `ctx.hasUI === true` 或交互式 TTY 模式上报状态，避免 print/RPC 模式污染桌宠状态
+- `bash` / `write` / `edit` 的 `tool_call` 会同步等待 Clawd `/permission`；Allow 放行，Deny 返回 `{ block: true }`
+- Pi 没有可接管的原生桌面审批流，所以 Clawd DND、隐藏气泡、agent/subgate disabled、HTTP 失败、坏响应等都必须转成 Pi terminal `ctx.ui.confirm()` fallback，不能 auto-allow
+- `tool_call` handler 必须顶层 catch；Pi 的 `emitToolCall()` 不 catch extension 异常，未捕获异常会变成通用 `Extension failed, blocking execution`
+- `tool_result` 按 `isError` 拆成 `PostToolUse` / `PostToolUseFailure`
+- Pi permission bubble 默认开启：`prefs` 默认把 `agents.pi.permissionsEnabled` 置为 `true`；v1->v2 migration 会保留显式已有值，缺省时补成 `true`
+
+## OpenClaw Notes
+
+- Phase 1 只支持状态动画，不接 OpenClaw 的 `requireApproval` / permission bubble。
+- Phase 1 明确面向 `openclaw tui --local` 这类本地单进程使用形态；gateway / daemon / messaging 部署没有稳定终端窗口锚点，后续再设计。
+- 插件目录是 `hooks/openclaw-plugin/`，manifest 必须包含 `activation.onStartup` 和空对象 `configSchema`。
+- 安装器默认只直写已经存在且可被 `JSON.parse` 解析的 `~/.openclaw/openclaw.json`（或 `OPENCLAW_CONFIG_PATH`）；发现 JSON5/comment/$include 时跳过启动同步，手动 `npm run install:openclaw-plugin` 才走 OpenClaw CLI fallback。
+- 启动同步不会主动创建 `~/.openclaw/openclaw.json`。OpenClaw 没装或尚未初始化时返回 skip，避免抢先写入残缺配置。
+- OpenClaw 在 Windows 上通常是 `node.exe ... openclaw.mjs`，所以 `agents/openclaw.js` 不声明进程名。OpenClaw 的 install scanner 会拦截带 `child_process` 的插件；Phase 1 插件不做进程树 walk，只发送 `agent_pid`，Sessions Dashboard 的终端聚焦对 OpenClaw 暂不可用。
+- `model_call_ended` 成功后用 1500ms debounce 发 `Stop`；期间有新 model/tool/compaction 活动则取消。`failureKind=aborted|terminated` 也按非错误 `Stop` 处理，只有 timeout/connection 等失败发 `StopFailure`。
+- `session_end` 只在 `idle|daily|deleted|unknown` 时映射 `SessionEnd/sleeping`；`new|reset|compaction` 不让桌宠睡觉。
+- OpenClaw POST body 是 allowlist：`agent_id`、`session_id`、`state`、`event`、`cwd`、`agent_pid`、`tool_name`、`tool_use_id`、`hook_source`、`openclaw_*`、`error_present` 等；禁止透传 `params` / `result` / `error` 字符串 / `messages`。
 
 ## Terminal Focus And Remote
 

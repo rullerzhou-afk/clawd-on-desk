@@ -1,0 +1,13 @@
+name: clawd-on-desk
+version: 0.1.0
+description: "Forward Hermes Agent lifecycle and tool state events to Clawd."
+author: "Clawd on Desk"
+hooks:
+  - on_session_start
+  - pre_llm_call
+  - post_llm_call
+  - pre_tool_call
+  - post_tool_call
+  - on_session_end
+  - on_session_finalize
+  - on_session_reset

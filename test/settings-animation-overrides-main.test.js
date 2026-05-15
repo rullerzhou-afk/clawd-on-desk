@@ -51,6 +51,7 @@ function makeTheme(root, overrides = {}) {
       jugglingTiers: [],
       displayHintMap: {},
     },
+    _baseTransitions: {},
     _stateBindings: {
       idle: { files: ["idle.svg"] },
       thinking: { files: ["scripted.svg"] },
@@ -82,7 +83,9 @@ function createRuntimeHarness(overrides = {}) {
 
   const stateCalls = [];
   let themeReloadInProgress = !!overrides.themeReloadInProgress;
-  const activeTheme = overrides.activeTheme || makeTheme(root, overrides.themeOverrides);
+  const activeTheme = typeof overrides.activeThemeFactory === "function"
+    ? overrides.activeThemeFactory(root)
+    : (overrides.activeTheme || makeTheme(root, overrides.themeOverrides));
   const runtime = createSettingsAnimationOverridesMain({
     app: { isPackaged: false, getVersion: () => "1.2.3" },
     BrowserWindow: FakeBrowserWindow,
@@ -102,7 +105,7 @@ function createRuntimeHarness(overrides = {}) {
       probeAssetCycle: () => ({ ms: null, status: "unavailable", source: null }),
     },
     settingsController: {
-      getSnapshot: () => ({ themeOverrides: {} }),
+      getSnapshot: () => (overrides.snapshot || { themeOverrides: {} }),
       applyCommand: async () => ({ status: "ok", importedThemeCount: 0 }),
     },
     getActiveTheme: () => activeTheme,
@@ -318,6 +321,118 @@ test("animation preview requests defer while theme reload is in progress", () =>
     harness.runtime.runPendingPostReloadTasks();
 
     assert.deepStrictEqual(harness.stateCalls[0], ["applyState", "thinking", "scripted.svg"]);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("animation override cards expose theme-default wide hitbox state separately from the effective override state", () => {
+  const harness = createRuntimeHarness({
+    snapshot: {
+      themeOverrides: {
+        cloudling: {
+          hitbox: {
+            wide: {
+              "scripted.svg": false,
+            },
+          },
+        },
+      },
+    },
+    activeThemeFactory: (root) => makeTheme(root, {
+      wideHitboxFiles: [],
+      _baseWideHitboxFiles: ["scripted.svg"],
+    }),
+  });
+  try {
+    const data = harness.runtime.buildAnimationOverrideData();
+    const thinkingCard = data.cards.find((card) => card.stateKey === "thinking");
+
+    assert.ok(thinkingCard);
+    assert.strictEqual(thinkingCard.wideHitboxEnabled, false);
+    assert.strictEqual(thinkingCard.wideHitboxThemeDefault, true);
+    assert.strictEqual(thinkingCard.wideHitboxOverridden, true);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("animation override cards expose theme-default transition state separately from effective timing", () => {
+  const harness = createRuntimeHarness({
+    snapshot: {
+      themeOverrides: {
+        cloudling: {
+          states: {
+            thinking: {
+              transition: { in: 160, out: 150 },
+            },
+          },
+        },
+      },
+    },
+    activeThemeFactory: (root) => makeTheme(root, {
+      transitions: {
+        "scripted.svg": { in: 160, out: 150 },
+      },
+      _baseTransitions: {
+        "scripted.svg": { in: 150, out: 150 },
+      },
+    }),
+  });
+  try {
+    const data = harness.runtime.buildAnimationOverrideData();
+    const thinkingCard = data.cards.find((card) => card.stateKey === "thinking");
+
+    assert.ok(thinkingCard);
+    assert.deepStrictEqual(thinkingCard.transition, { in: 160, out: 150 });
+    assert.deepStrictEqual(thinkingCard.transitionThemeDefault, { in: 150, out: 150 });
+    assert.strictEqual(thinkingCard.hasTransitionOverride, true);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("animation override data builds tier cards with transition override metadata", () => {
+  const harness = createRuntimeHarness({
+    snapshot: {
+      themeOverrides: {
+        cloudling: {
+          tiers: {
+            workingTiers: {
+              "scripted.svg": {
+                transition: { in: 180, out: 150 },
+              },
+            },
+          },
+        },
+      },
+    },
+    activeThemeFactory: (root) => makeTheme(root, {
+      _bindingBase: {
+        states: { idle: "idle.svg", thinking: "scripted.svg", sleeping: "sleep.svg" },
+        workingTiers: [{ originalFile: "scripted.svg" }],
+        jugglingTiers: [],
+        displayHintMap: {},
+      },
+      workingTiers: [
+        { file: "scripted.svg", minSessions: 2 },
+      ],
+      transitions: {
+        "scripted.svg": { in: 180, out: 150 },
+      },
+      _baseTransitions: {
+        "scripted.svg": { in: 150, out: 150 },
+      },
+    }),
+  });
+  try {
+    const data = harness.runtime.buildAnimationOverrideData();
+    const tierCard = data.cards.find((card) => card.id === "workingTiers:scripted.svg");
+
+    assert.ok(tierCard);
+    assert.strictEqual(tierCard.hasTransitionOverride, true);
+    assert.deepStrictEqual(tierCard.transition, { in: 180, out: 150 });
+    assert.deepStrictEqual(tierCard.transitionThemeDefault, { in: 150, out: 150 });
   } finally {
     harness.cleanup();
   }

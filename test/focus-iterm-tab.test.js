@@ -1,49 +1,7 @@
 // test/focus-iterm-tab.test.js — Tests for iTerm2 tab-level focus switching
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
-
-// focus.js destructures { execFile, spawn } at require-time, so we must
-// patch child_process and process.platform BEFORE requiring focus.js.
-
-function loadFocusWithMock(execFileMock, options = {}) {
-  const cpKey = require.resolve("child_process");
-  const focusKey = require.resolve("../src/focus");
-  const platform = options.platform || "darwin";
-
-  // Save originals
-  const origCp = require.cache[cpKey];
-  const origFocus = require.cache[focusKey];
-  const origPlatform = Object.getOwnPropertyDescriptor(process, "platform");
-
-  // Build a patched child_process module
-  const realCp = require("child_process");
-  const patchedCp = { ...realCp, execFile: execFileMock, spawn: realCp.spawn };
-  require.cache[cpKey] = { id: cpKey, filename: cpKey, loaded: true, exports: patchedCp };
-  Object.defineProperty(process, "platform", {
-    ...origPlatform,
-    value: platform,
-  });
-
-  // Clear focus.js cache so it picks up patched child_process
-  delete require.cache[focusKey];
-  let initFocus;
-  try {
-    initFocus = require("../src/focus");
-  } finally {
-    Object.defineProperty(process, "platform", origPlatform);
-  }
-
-  // Restore child_process cache immediately (focus.js already captured the reference)
-  if (origCp) require.cache[cpKey] = origCp;
-  else delete require.cache[cpKey];
-
-  const cleanup = () => {
-    if (origFocus) require.cache[focusKey] = origFocus;
-    else delete require.cache[focusKey];
-  };
-
-  return { initFocus, cleanup };
-}
+const { loadFocusWithMock } = require("./helpers/load-focus-with-mock");
 
 describe("iTerm2 tab focus (macOS)", () => {
 
@@ -128,10 +86,19 @@ describe("iTerm2 tab focus (macOS)", () => {
   });
 
   it("should skip iTerm2 tab focus when pidChain is empty", (t, done) => {
+    // Other focus probes (Superset / Ghostty) also call `ps -o comm=` to
+    // detect their host, so we can't use `ps -o comm=` count as a proxy for
+    // "iTerm not probed". Assert iTerm-specific behavior instead: no
+    // `tty=` lookup and no iTerm2 AppleScript dispatch.
     const calls = [];
     const { initFocus, cleanup } = loadFocusWithMock(function mockExecFile(cmd, args, opts, cb) {
       if (typeof opts === "function") { cb = opts; opts = {}; }
       calls.push({ cmd, args: [...args] });
+      if (cmd === "ps" && args.join(" ").includes("comm=")) {
+        // Return iTerm2 so we'd reach tty lookup if pidChain weren't empty.
+        if (cb) cb(null, "iTerm2\n", "");
+        return;
+      }
       if (cb) cb(null, "", "");
     });
 
@@ -141,8 +108,13 @@ describe("iTerm2 tab focus (macOS)", () => {
     setTimeout(() => {
       cleanup();
 
-      const commCalls = calls.filter(c => c.cmd === "ps" && c.args.join(" ").includes("comm="));
-      assert.strictEqual(commCalls.length, 0, "Should not attempt iTerm detection with empty pidChain");
+      const ttyCalls = calls.filter(c => c.cmd === "ps" && c.args.join(" ").includes("tty="));
+      assert.strictEqual(ttyCalls.length, 0, "Should not look up tty when pidChain is empty");
+
+      const itermScripts = calls
+        .filter(c => c.cmd === "osascript")
+        .filter(c => c.args.some(a => typeof a === "string" && a.includes("iTerm2")));
+      assert.strictEqual(itermScripts.length, 0, "Should not dispatch iTerm2 AppleScript with empty pidChain");
 
       done();
     }, 1000);

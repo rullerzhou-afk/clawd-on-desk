@@ -26,6 +26,7 @@ const {
   shouldBypassCCBubble,
   shouldBypassCodexBubble,
   shouldBypassOpencodeBubble,
+  shouldBypassPiBubble,
 } = require("./server-route-permission");
 const {
   getCodexOfficialTurnKey,
@@ -139,6 +140,7 @@ const {
   syncKimiHooks,
   syncCodexHooks,
   syncOpencodePlugin,
+  syncPiExtension,
   syncIntegrationForAgent,
   repairIntegrationForAgent,
   stopIntegrationForAgent,
@@ -258,6 +260,7 @@ return {
   syncKimiHooks,
   syncCodexHooks,
   syncOpencodePlugin,
+  syncPiExtension,
   syncIntegrationForAgent,
   repairIntegrationForAgent,
   repairRuntimeStatus,
@@ -276,6 +279,7 @@ module.exports.__test = {
   shouldBypassCCBubble,
   shouldBypassCodexBubble,
   shouldBypassOpencodeBubble,
+  shouldBypassPiBubble,
   normalizePermissionSuggestions,
   normalizeElicitationToolInput,
   normalizeCodexPermissionToolInput,

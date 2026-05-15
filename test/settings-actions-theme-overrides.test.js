@@ -68,6 +68,71 @@ test("settings theme override actions update an active state slot with explicit 
   ]);
 });
 
+test("settings theme override actions clear transition overrides that match the theme default", () => {
+  const calls = [];
+  const snapshot = {
+    theme: "clawd",
+    themeOverrides: {
+      clawd: {
+        states: {
+          thinking: {
+            transition: { in: 160, out: 150 },
+          },
+        },
+      },
+    },
+  };
+
+  const result = themeOverrideCommands.setAnimationOverride(
+    {
+      themeId: "clawd",
+      slotType: "state",
+      stateKey: "thinking",
+      transition: { in: 150, out: 150 },
+      transitionThemeDefault: { in: 150, out: 150 },
+    },
+    {
+      snapshot,
+      activateTheme: (themeId, variantId, overrideMap) => {
+        calls.push({ themeId, variantId, overrideMap });
+      },
+    }
+  );
+
+  assert.strictEqual(result.status, "ok");
+  assert.strictEqual(result.commit.themeOverrides.clawd, undefined);
+  assert.deepStrictEqual(calls, [
+    {
+      themeId: "clawd",
+      variantId: null,
+      overrideMap: {},
+    },
+  ]);
+});
+
+test("settings theme override actions keep transition overrides that differ from the theme default", () => {
+  const result = themeOverrideCommands.setAnimationOverride(
+    {
+      themeId: "clawd",
+      slotType: "state",
+      stateKey: "thinking",
+      transition: { in: 160, out: 150 },
+      transitionThemeDefault: { in: 150, out: 150 },
+    },
+    {
+      snapshot: { theme: "other", themeOverrides: {} },
+      activateTheme: () => {
+        throw new Error("inactive theme should not reload");
+      },
+    }
+  );
+
+  assert.strictEqual(result.status, "ok");
+  assert.deepStrictEqual(result.commit.themeOverrides.clawd.states.thinking, {
+    transition: { in: 160, out: 150 },
+  });
+});
+
 test("settings theme override actions preserve animation and hitbox data when changing sound overrides", () => {
   const snapshot = {
     theme: "calico",

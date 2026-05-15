@@ -11,6 +11,8 @@ const { getAgentDescriptors } = require("./agent-descriptors");
 const { validateHookCommand } = require("./agent-node-bin-parser");
 const { checkCodexHookTrust, checkCodexHooksFeature } = require("./codex-features-check");
 const { validateOpencodeEntry } = require("./opencode-entry-validator");
+const { validateOpenClawEntry } = require("./openclaw-entry-validator");
+const { hasIncludeDirective } = require("../../hooks/openclaw-install");
 
 const INFO_ONLY_STATUSES = new Set([
   "disabled",
@@ -503,9 +505,198 @@ function checkKiroDirMode(descriptor, options) {
   });
 }
 
+function checkPluginDirMode(descriptor, options) {
+  const pluginDir = descriptor.configPath;
+  if (!dirExists(options.fs, pluginDir)) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: false,
+      configPath: pluginDir,
+      detail: `${pluginDir} missing`,
+      missingPluginFiles: descriptor.managedFiles || [],
+    });
+  }
+
+  const managedFiles = Array.isArray(descriptor.managedFiles) ? descriptor.managedFiles : [];
+  const missingPluginFiles = managedFiles.filter((file) => !fileExists(options.fs, path.join(pluginDir, file)));
+  if (missingPluginFiles.length > 0) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: pluginDir,
+      detail: `${pluginDir} missing managed file(s): ${missingPluginFiles.join(", ")}`,
+      missingPluginFiles,
+    });
+  }
+
+  const configFilePath = descriptor.configFilePath;
+  let pluginEnabled = null;
+  if (configFilePath && fileExists(options.fs, configFilePath)) {
+    try {
+      const text = options.fs.readFileSync(configFilePath, "utf8");
+      pluginEnabled = parseYamlPluginEnabled(text, descriptor.marker);
+    } catch (err) {
+      return makeDetail(descriptor, "config-corrupt", {
+        level: "warning",
+        parentDirExists: true,
+        configFileExists: true,
+        configPath: pluginDir,
+        pluginConfigPath: configFilePath,
+        detail: err && err.message ? err.message : "plugin config read failed",
+      });
+    }
+  }
+
+  if (pluginEnabled === false) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: pluginDir,
+      pluginConfigPath: configFilePath,
+      pluginEnabled: false,
+      detail: `${configFilePath} does not list ${descriptor.marker} as an enabled plugin`,
+    });
+  }
+
+  if (pluginEnabled === null) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: pluginDir,
+      pluginConfigPath: configFilePath || null,
+      pluginEnabled: null,
+      detail: `${configFilePath || "plugin config"} missing; cannot verify ${descriptor.marker} is enabled`,
+    });
+  }
+
+  return makeDetail(descriptor, "ok", {
+    level: null,
+    parentDirExists: true,
+    configFileExists: true,
+    configPath: pluginDir,
+    pluginConfigPath: configFilePath,
+    pluginEnabled: true,
+    detail: `${pluginDir} plugin files present and enabled`,
+  });
+}
+
+function stripYamlComment(line) {
+  let quote = null;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (quote === "\"" && ch === "\\") {
+        i++;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "\"" || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "#") return line.slice(0, i);
+  }
+  return line;
+}
+
+function yamlIndent(line) {
+  const match = String(line || "").match(/^ */);
+  return match ? match[0].length : 0;
+}
+
+function unquoteYamlScalar(value) {
+  const text = String(value || "").trim();
+  if (text.length >= 2 && text.startsWith("\"") && text.endsWith("\"")) {
+    return text.slice(1, -1).replace(/\\"/g, "\"").replace(/\\\\/g, "\\");
+  }
+  if (text.length >= 2 && text.startsWith("'") && text.endsWith("'")) {
+    return text.slice(1, -1).replace(/''/g, "'");
+  }
+  return text;
+}
+
+function yamlScalarEquals(value, expected) {
+  return unquoteYamlScalar(value) === expected;
+}
+
+function yamlInlineListContains(value, expected) {
+  const text = String(value || "").trim();
+  if (!text.startsWith("[") || !text.endsWith("]")) return null;
+  const inner = text.slice(1, -1).trim();
+  if (!inner) return false;
+  return inner
+    .split(",")
+    .map((entry) => entry.trim())
+    .some((entry) => yamlScalarEquals(entry, expected));
+}
+
+function parseYamlPluginEnabled(text, pluginId) {
+  if (typeof text !== "string" || typeof pluginId !== "string" || !pluginId) return null;
+  const lines = text.split(/\r?\n/);
+  let inPlugins = false;
+  let pluginsIndent = -1;
+  let currentKey = "";
+  let sawEnabled = false;
+
+  for (const rawLine of lines) {
+    const withoutComment = stripYamlComment(rawLine);
+    if (!withoutComment.trim()) continue;
+    const indent = yamlIndent(withoutComment);
+    const trimmed = withoutComment.trim();
+
+    if (!inPlugins) {
+      if (indent === 0 && /^plugins\s*:\s*$/.test(trimmed)) {
+        inPlugins = true;
+        pluginsIndent = indent;
+      }
+      continue;
+    }
+
+    if (indent <= pluginsIndent) break;
+
+    const keyMatch = trimmed.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
+    if (keyMatch && indent === pluginsIndent + 2) {
+      currentKey = keyMatch[1];
+      if (currentKey !== "enabled") continue;
+
+      sawEnabled = true;
+      const rest = keyMatch[2].trim();
+      const inlineList = yamlInlineListContains(rest, pluginId);
+      if (inlineList === true) return true;
+      if (inlineList === false || rest === "" || rest === "[]") continue;
+      if (yamlScalarEquals(rest, pluginId)) return true;
+      continue;
+    }
+
+    if (currentKey === "enabled" && trimmed.startsWith("-")) {
+      const item = trimmed.slice(1).trim();
+      if (yamlScalarEquals(item, pluginId)) return true;
+    }
+  }
+
+  return sawEnabled ? false : null;
+}
+
 function findOpencodePluginEntry(pluginEntries, marker) {
   if (!Array.isArray(pluginEntries)) return null;
   for (const entry of pluginEntries) {
+    if (typeof entry !== "string") continue;
+    const normalized = entry.replace(/\\/g, "/");
+    const isAbsolute = path.posix.isAbsolute(normalized) || path.win32.isAbsolute(normalized);
+    if (isAbsolute && path.posix.basename(normalized) === marker) return entry;
+  }
+  return null;
+}
+
+function findOpenClawPluginEntry(pluginPaths, marker) {
+  if (!Array.isArray(pluginPaths)) return null;
+  for (const entry of pluginPaths) {
     if (typeof entry !== "string") continue;
     const normalized = entry.replace(/\\/g, "/");
     const isAbsolute = path.posix.isAbsolute(normalized) || path.win32.isAbsolute(normalized);
@@ -546,6 +737,173 @@ function checkOpencodeSettings(descriptor, settings, options) {
     configPath: descriptor.configPath,
     detail: `${descriptor.configPath} plugin entry verified`,
     opencodeEntry: entry,
+  });
+}
+
+function checkOpenClawPluginMode(descriptor, options) {
+  if (!fileExists(options.fs, descriptor.configPath)) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: false,
+      configPath: descriptor.configPath,
+      detail: `${descriptor.configPath} missing`,
+    });
+  }
+
+  let settings;
+  try {
+    settings = readJson(options.fs, descriptor.configPath);
+  } catch (err) {
+    return makeDetail(descriptor, "needs-review", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: `OpenClaw config is not strict JSON; Clawd startup sync will skip direct edits (${err && err.message ? err.message : "parse failed"})`,
+    });
+  }
+
+  if (hasIncludeDirective(settings)) {
+    return makeDetail(descriptor, "needs-review", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: "OpenClaw config uses include directives; Clawd startup sync will not edit it directly",
+    });
+  }
+
+  const pluginPaths = settings
+    && settings.plugins
+    && settings.plugins.load
+    && settings.plugins.load.paths;
+  const entry = findOpenClawPluginEntry(pluginPaths, descriptor.marker);
+  if (!entry) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: `${descriptor.configPath} has no ${descriptor.marker} plugin path`,
+    });
+  }
+
+  const pluginConfig = settings
+    && settings.plugins
+    && settings.plugins.entries
+    && settings.plugins.entries[descriptor.pluginId || "clawd-on-desk"];
+  if (pluginConfig && pluginConfig.enabled === false) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: "OpenClaw Clawd plugin is registered but disabled",
+      openclawEntry: entry,
+    });
+  }
+
+  const validation = validateOpenClawEntry(entry, { fs: options.fs });
+  if (!validation.ok) {
+    return makeDetail(descriptor, "broken-path", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: `OpenClaw plugin path is invalid: ${validation.reason}`,
+      openclawEntryIssue: validation.reason,
+      openclawEntry: entry,
+    });
+  }
+
+  return makeDetail(descriptor, "ok", {
+    level: null,
+    parentDirExists: true,
+    configFileExists: true,
+    configPath: descriptor.configPath,
+    detail: `${descriptor.configPath} OpenClaw plugin entry verified`,
+    openclawEntry: entry,
+  });
+}
+
+function readJsonIfPresent(fsImpl, filePath) {
+  try {
+    return JSON.parse(fsImpl.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function isPiManagedMarker(value) {
+  return !!(
+    value
+    && value.app === "clawd-on-desk"
+    && value.integration === "pi"
+    && value.managed === true
+  );
+}
+
+function checkPiExtensionMode(descriptor, options) {
+  const extensionDir = descriptor.configPath;
+  const markerPath = path.join(extensionDir, descriptor.markerFile || ".clawd-managed.json");
+  const extensionPath = path.join(extensionDir, descriptor.marker || "index.ts");
+  const corePath = path.join(extensionDir, descriptor.coreFile || "pi-extension-core.js");
+
+  if (!dirExists(options.fs, extensionDir)) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: false,
+      configPath: extensionDir,
+      extensionDir,
+      detail: `${extensionDir} missing`,
+    });
+  }
+
+  const marker = readJsonIfPresent(options.fs, markerPath);
+  if (!isPiManagedMarker(marker)) {
+    return makeDetail(descriptor, "needs-review", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: extensionDir,
+      extensionDir,
+      markerPath,
+      detail: `${extensionDir} exists but is not Clawd-managed`,
+    });
+  }
+
+  const extensionFileExists = fileExists(options.fs, extensionPath);
+  const coreFileExists = fileExists(options.fs, corePath);
+  if (!extensionFileExists || !coreFileExists) {
+    return makeDetail(descriptor, "broken-path", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: extensionDir,
+      extensionDir,
+      markerPath,
+      extensionPath,
+      corePath,
+      extensionFileExists,
+      coreFileExists,
+      detail: "Pi extension files are missing or incomplete",
+    });
+  }
+
+  return makeDetail(descriptor, "ok", {
+    level: null,
+    parentDirExists: true,
+    configFileExists: true,
+    configPath: extensionDir,
+    extensionDir,
+    markerPath,
+    extensionPath,
+    corePath,
+    extensionFileExists,
+    coreFileExists,
+    detail: `${extensionDir} extension verified`,
   });
 }
 
@@ -591,6 +949,12 @@ function checkAgent(descriptor, options) {
     detail = checkTomlTextMode(descriptor, options);
   } else if (descriptor.configMode === "dir") {
     detail = checkKiroDirMode(descriptor, options);
+  } else if (descriptor.configMode === "pi-extension") {
+    detail = checkPiExtensionMode(descriptor, options);
+  } else if (descriptor.configMode === "openclaw-plugin") {
+    detail = checkOpenClawPluginMode(descriptor, options);
+  } else if (descriptor.configMode === "plugin-dir") {
+    detail = checkPluginDirMode(descriptor, options);
   } else {
     detail = makeDetail(descriptor, "manual-only", {
       level: "info",
@@ -640,11 +1004,16 @@ function checkAgentIntegrations(options = {}) {
 module.exports = {
   checkAgentIntegrations,
   checkAgent,
+  findOpenClawPluginEntry,
   findOpencodePluginEntry,
   summarize,
   __test: {
     checkFileMode,
     checkKiroDirMode,
+    checkOpenClawPluginMode,
+    checkPiExtensionMode,
+    checkPluginDirMode,
+    parseYamlPluginEnabled,
     checkTomlTextMode,
     validateCommandList,
   },

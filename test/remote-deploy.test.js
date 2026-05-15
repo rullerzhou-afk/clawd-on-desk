@@ -44,6 +44,15 @@ describe("scripts/remote-deploy.sh FILES manifest", () => {
     const script = fs.readFileSync(SCRIPT_PATH, "utf8");
 
     assert.match(script, /codex-install\.js/);
-    assert.match(script, /node ~\/\.claude\/hooks\/codex-install\.js --remote/);
+    assert.match(script, /remote_node_command codex-install\.js --remote/);
+  });
+
+  it("resolves a remote Node binary before registering hooks", () => {
+    const script = fs.readFileSync(SCRIPT_PATH, "utf8");
+
+    assert.match(script, /REMOTE_NODE_PROBE=/);
+    assert.match(script, /CLAWD_REMOTE_NODE_BIN/);
+    assert.match(script, /REMOTE_NODE_BIN=/);
+    assert.doesNotMatch(script, /ssh "\$SSH_TARGET" "node ~\/\.claude\/hooks\/install\.js --remote"/);
   });
 });

@@ -68,7 +68,10 @@
       animMapReset: null,
       animOverrideTimingSliders: new Map(),
       bubblePolicySummary: null,
+      sessionHudSummary: null,
+      languagePicker: null,
       size: null,
+      soundSummary: null,
       soundVolume: null,
     },
     shortcutRecordingActionId: null,
@@ -82,6 +85,7 @@
     themeList: null,
     codexPetsRefreshPending: false,
     codexPetZipImportPending: false,
+    userThemeZipImportPending: false,
     codexPetRemovalPendingThemeId: null,
     animationOverridesData: null,
     animationOverridesFetchSeq: 0,
@@ -103,7 +107,6 @@
       clickCount: 0,
       contributorsExpanded: false,
     },
-    languageTransition: null,
   };
 
   const renderHooks = {
@@ -181,6 +184,12 @@
     const all = state.snapshot && state.snapshot.themeOverrides;
     const map = all && all[themeId];
     if (!map || typeof map !== "object") return false;
+    const hitboxKeys = [];
+    if (map.hitbox && typeof map.hitbox === "object") {
+      for (const group of Object.values(map.hitbox)) {
+        if (group && typeof group === "object") hitboxKeys.push(...Object.keys(group));
+      }
+    }
     const keys = [
       ...(map.states ? Object.keys(map.states) : []),
       ...(map.tiers && map.tiers.workingTiers ? Object.keys(map.tiers.workingTiers) : []),
@@ -188,7 +197,7 @@
       ...(map.timings && map.timings.autoReturn ? Object.keys(map.timings.autoReturn) : []),
       ...(map.idleAnimations ? Object.keys(map.idleAnimations) : []),
       ...(map.reactions ? Object.keys(map.reactions) : []),
-      ...(map.hitbox ? Object.keys(map.hitbox) : []),
+      ...hitboxKeys,
       ...(map.sounds ? Object.keys(map.sounds) : []),
     ];
     return keys.length > 0;
@@ -540,7 +549,9 @@
       `<div class="row-control"><div class="switch" role="switch" tabindex="0"></div></div>`;
     row.querySelector(".row-label").textContent = t(labelKey);
     const text = row.querySelector(".row-text");
-    row.querySelector(".row-desc").textContent = t(descKey);
+    const desc = row.querySelector(".row-desc");
+    if (descKey) desc.textContent = t(descKey);
+    else desc.remove();
     let extraElement = null;
     if (descExtraKey) {
       const extra = document.createElement("span");
@@ -617,6 +628,9 @@
   }
 
   function clearMountedControls() {
+    if (state.mountedControls.languagePicker && typeof state.mountedControls.languagePicker.dispose === "function") {
+      state.mountedControls.languagePicker.dispose();
+    }
     if (state.mountedControls.size && typeof state.mountedControls.size.dispose === "function") {
       Promise.resolve(state.mountedControls.size.dispose()).catch(() => {});
     }
@@ -631,7 +645,10 @@
     state.mountedControls.animMapReset = null;
     state.mountedControls.animOverrideTimingSliders.clear();
     state.mountedControls.bubblePolicySummary = null;
+    state.mountedControls.sessionHudSummary = null;
+    state.mountedControls.languagePicker = null;
     state.mountedControls.size = null;
+    state.mountedControls.soundSummary = null;
     state.mountedControls.soundVolume = null;
   }
 
@@ -891,7 +908,6 @@
   }
 
   function applyChanges(payload) {
-    const previousLang = getLang();
     const previousSnapshot = state.snapshot;
     if (payload && payload.snapshot) {
       state.snapshot = payload.snapshot;
@@ -901,12 +917,6 @@
     if (!state.snapshot) return;
 
     const changes = payload && payload.changes;
-    if (changes && Object.prototype.hasOwnProperty.call(changes, "lang")) {
-      const nextLang = getLang();
-      runtime.languageTransition = state.activeTab === "general" && previousLang !== nextLang
-        ? { from: previousLang, to: nextLang }
-        : null;
-    }
     clearTransientStateForChanges(changes);
     const needsAnimOverridesRefresh = !!(changes && (
       "theme" in changes || "themeVariant" in changes || "themeOverrides" in changes
@@ -918,9 +928,23 @@
       if (runtime.pendingAnimationOverrideEdits && typeof runtime.pendingAnimationOverrideEdits.clear === "function") {
         runtime.pendingAnimationOverrideEdits.clear();
       }
+      if (runtime.pendingWideHitboxOverrideEdits && typeof runtime.pendingWideHitboxOverrideEdits.clear === "function") {
+        runtime.pendingWideHitboxOverrideEdits.clear();
+      }
+      if (runtime.pendingAnimationOverrideResets && typeof runtime.pendingAnimationOverrideResets.clear === "function") {
+        runtime.pendingAnimationOverrideResets.clear();
+      }
       if (state.mountedControls.animOverrideTimingSliders
         && typeof state.mountedControls.animOverrideTimingSliders.clear === "function") {
         state.mountedControls.animOverrideTimingSliders.clear();
+      }
+      if (state.mountedControls.animOverrideWideHitboxToggles
+        && typeof state.mountedControls.animOverrideWideHitboxToggles.clear === "function") {
+        state.mountedControls.animOverrideWideHitboxToggles.clear();
+      }
+      if (state.mountedControls.animOverrideStatusControls
+        && typeof state.mountedControls.animOverrideStatusControls.clear === "function") {
+        state.mountedControls.animOverrideStatusControls.clear();
       }
     }
     const shouldPreserveAnimOverridesData = !!(

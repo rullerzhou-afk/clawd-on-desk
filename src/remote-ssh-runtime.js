@@ -13,7 +13,7 @@
 //   buildScpArgs(profile, opt) — same for scp (note: scp port flag is `-P`)
 //   classifyStderr(stderr)     — pure error classifier
 //   classifyProbeExit(code)    — pure probe-exit-code classifier
-//   buildProbeCommand(port)    — builds the `node -e ...` remote command
+//   buildProbeCommand(port)    — builds the remote Node health probe command
 //
 // Stateful (factory):
 //
@@ -31,6 +31,12 @@
 
 const childProcess = require("child_process");
 const { EventEmitter } = require("events");
+const {
+  resolveRemoteNodeBin,
+  getCachedRemoteNodeBin,
+  clearCachedRemoteNodeBin,
+  buildRemoteNodeEvalCommand,
+} = require("./remote-ssh-node");
 
 const SSH_BASE_OPTS = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
 const SCP_BASE_OPTS = ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
@@ -216,7 +222,7 @@ function classifyProbeExit(code) {
 // argument: the remoteForwardPort (NOT localRuntimePort — probe runs from
 // remote and hits 127.0.0.1:<remoteForwardPort> which is the bound side of
 // the reverse tunnel).
-function buildProbeCommand(remoteForwardPort) {
+function buildProbeCommand(remoteForwardPort, nodeBin = "node") {
   if (!Number.isInteger(remoteForwardPort)) {
     throw new TypeError("buildProbeCommand: remoteForwardPort must be an integer");
   }
@@ -232,7 +238,8 @@ function buildProbeCommand(remoteForwardPort) {
     `});` +
     `r.on('error',()=>process.exit(2));` +
     `r.setTimeout(2000,()=>{r.destroy();process.exit(4);});`;
-  return `node -e ${JSON.stringify(js)}`;
+  if (nodeBin === "node") return `node -e ${JSON.stringify(js)}`;
+  return buildRemoteNodeEvalCommand(nodeBin, js);
 }
 
 // ── Backoff helper ──
@@ -250,6 +257,7 @@ function createRemoteSshRuntime(deps = {}) {
   const log = deps.log || (() => {});
   const setTimeoutFn = deps.setTimeout || setTimeout;
   const clearTimeoutFn = deps.clearTimeout || clearTimeout;
+  const resolveRemoteNode = deps.resolveRemoteNodeBin || resolveRemoteNodeBin;
 
   if (typeof getHookServerPort !== "function") {
     throw new Error("createRemoteSshRuntime: deps.getHookServerPort is required");
@@ -274,6 +282,10 @@ function createRemoteSshRuntime(deps = {}) {
       probeWindowDeadline: 0,
       probeIntervalTimer: null,
       probeWindowTimer: null,
+      remoteNodeBin: null,
+      remoteNodeSource: null,
+      allowBareNodeProbe: false,
+      remoteNodeResolveInFlight: false,
       backoffTimer: null,
       retryAttempt: 0,
       unknownStrikes: 0,
@@ -343,6 +355,7 @@ function createRemoteSshRuntime(deps = {}) {
 
   function startConnect(state) {
     if (state.stopped) return;
+    state.remoteNodeResolveInFlight = false;
     setStatus(state, state.status === "reconnecting" ? "reconnecting" : "connecting", {
       message: null,
       lastError: null,
@@ -438,8 +451,147 @@ function createRemoteSshRuntime(deps = {}) {
       onSshExit(state, child, code, signal);
     });
 
-    // Start probe loop immediately — don't wait for ConnectTimeout to elapse.
+    startProbeLoopWithRemoteNode(state, child);
+  }
+
+  function remoteNodeExpectedTarget(profile) {
+    return {
+      host: profile && profile.host,
+      port: profile && profile.port,
+      identityFile: profile && profile.identityFile,
+      remoteForwardPort: profile && profile.remoteForwardPort,
+      hostPrefix: profile && profile.hostPrefix,
+    };
+  }
+
+  function startProbeLoopWithRemoteNode(state, child) {
+    const cached = getCachedRemoteNodeBin(state.profile);
+    if (cached && cached.nodeBin) {
+      state.remoteNodeBin = cached.nodeBin;
+      state.remoteNodeSource = cached.source || "cache";
+      state.allowBareNodeProbe = false;
+      startProbeLoop(state);
+      return;
+    }
+
+    // Cache miss: start the health probe immediately with the legacy bare
+    // node command while resolving an absolute Node path in the background.
+    // Once the resolver returns, subsequent probes switch to the absolute
+    // path and the result is emitted for profile persistence.
+    state.remoteNodeBin = null;
+    state.remoteNodeSource = null;
+    state.allowBareNodeProbe = true;
     startProbeLoop(state);
+  }
+
+  function emitRemoteNodeDetected(state, resolved) {
+    emitter.emit("remote-node-detected", {
+      id: state.profile.id,
+      nodeBin: resolved.nodeBin,
+      version: resolved.version || null,
+      source: resolved.source || null,
+      detectedAt: Date.now(),
+      expectedTarget: remoteNodeExpectedTarget(state.profile),
+    });
+  }
+
+  function resolveRemoteNodeInBackground(state, child) {
+    if (state.remoteNodeResolveInFlight) return;
+    state.remoteNodeResolveInFlight = true;
+    const finish = (resolved) => {
+      if (state.sshChild !== child) return;
+      if (state.stopped) {
+        state.remoteNodeResolveInFlight = false;
+        return;
+      }
+      state.remoteNodeResolveInFlight = false;
+      if (!resolved || resolved.ok !== true || !resolved.nodeBin) {
+        const cls = classifyStderr((resolved && resolved.stderr) || "");
+        if (cls.kind === "permanent") {
+          finishFailure(state, {
+            kind: "permanent",
+            reason: cls.reason,
+            hint: cls.hint,
+            message: stderrSummary(resolved.stderr) || (resolved && resolved.message) || "Remote SSH failed.",
+          });
+          return;
+        }
+        if (state.status === "connected") {
+          // TODO(remote-ssh): add a short-lived negative cache for resolver
+          // failures. Some hosts can pass the bare `node` health probe but
+          // still fail this absolute-path resolver; without a retry-after
+          // cache, every reconnect pays another background resolver attempt.
+          log("remote-ssh: remote Node resolver failed after probe success:", resolved && resolved.message);
+          return;
+        }
+        finishFailure(state, {
+          kind: "permanent",
+          reason: "probe_node_missing",
+          hint: "remoteSshProbeNodeMissing",
+          message: (resolved && resolved.message) || "Remote Node.js not found.",
+        });
+        return;
+      }
+      state.remoteNodeBin = resolved.nodeBin;
+      state.remoteNodeSource = resolved.source || null;
+      state.allowBareNodeProbe = false;
+      emitRemoteNodeDetected(state, resolved);
+      if (state.status !== "connected" && state.sshChild && !state.probeInFlight) {
+        schedNextProbe(state, 0);
+      }
+    };
+    const fail = (err) => {
+      if (state.sshChild !== child) return;
+      if (state.stopped) {
+        state.remoteNodeResolveInFlight = false;
+        return;
+      }
+      state.remoteNodeResolveInFlight = false;
+      const cls = classifyStderr((err && err.stderr) || "");
+      if (cls.kind === "permanent") {
+        finishFailure(state, {
+          kind: "permanent",
+          reason: cls.reason,
+          hint: cls.hint,
+          message: stderrSummary(err.stderr) || (err && err.message) || "Remote SSH failed.",
+        });
+        return;
+      }
+      if (state.status === "connected") {
+        // TODO(remote-ssh): add a short-lived negative cache for resolver
+        // failures. Some hosts can pass the bare `node` health probe but
+        // still fail this absolute-path resolver; without a retry-after
+        // cache, every reconnect pays another background resolver attempt.
+        log("remote-ssh: remote Node resolver threw after probe success:", err && err.message);
+        return;
+      }
+      finishFailure(state, {
+        kind: "permanent",
+        reason: "probe_node_missing",
+        hint: "remoteSshProbeNodeMissing",
+        message: (err && err.message) || "Remote Node.js probe failed.",
+      });
+    };
+
+    try {
+      const result = resolveRemoteNode({
+        profile: state.profile,
+        spawn,
+        buildSshArgs,
+        runtime: {
+          registerChild,
+          unregisterChild,
+        },
+        useCache: false,
+      });
+      if (result && typeof result.then === "function") {
+        result.then(finish, fail);
+      } else {
+        finish(result);
+      }
+    } catch (err) {
+      fail(err);
+    }
   }
 
   function onSshExit(state, child, code, signal) {
@@ -533,10 +685,24 @@ function createRemoteSshRuntime(deps = {}) {
   function runProbe(state) {
     if (state.probeInFlight) return;
     if (Date.now() >= state.probeWindowDeadline) return;
+    if (state.allowBareNodeProbe && state.remoteNodeResolveInFlight && !state.remoteNodeBin) {
+      return;
+    }
     state.probeInFlight = true;
 
     const profile = state.profile;
-    const probeCmd = buildProbeCommand(profile.remoteForwardPort);
+    const nodeBin = state.remoteNodeBin || (state.allowBareNodeProbe ? "node" : null);
+    if (!nodeBin) {
+      state.probeInFlight = false;
+      finishFailure(state, {
+        kind: "permanent",
+        reason: "probe_node_missing",
+        hint: "remoteSshProbeNodeMissing",
+        message: "Remote Node.js path has not been resolved.",
+      });
+      return;
+    }
+    const probeCmd = buildProbeCommand(profile.remoteForwardPort, nodeBin);
     const probeArgs = buildSshArgs(profile, {
       extraOpts: ["-o", "ConnectTimeout=2"],
     }).concat([probeCmd]);
@@ -585,6 +751,17 @@ function createRemoteSshRuntime(deps = {}) {
       const exitCode = signalToExitCode(code, signal);
       state.probeLastExitCode = exitCode;
       if (state.stopped) return;
+      if ((exitCode === 126 || exitCode === 127)
+          && state.sshChild
+          && !state.remoteNodeResolveInFlight) {
+        if (state.remoteNodeBin) {
+          clearCachedRemoteNodeBin(state.profile);
+          state.remoteNodeBin = null;
+          state.remoteNodeSource = null;
+          state.allowBareNodeProbe = true;
+        }
+        resolveRemoteNodeInBackground(state, state.sshChild);
+      }
       if (exitCode === 0 && state.sshChild) {
         onProbeSuccess(state);
         return;
@@ -597,6 +774,11 @@ function createRemoteSshRuntime(deps = {}) {
   }
 
   function onProbeSuccess(state) {
+    const child = state.sshChild;
+    const shouldResolveBareNode = state.allowBareNodeProbe
+      && !state.remoteNodeBin
+      && child
+      && !state.remoteNodeResolveInFlight;
     cleanupProbeLoop(state);
     state.retryAttempt = 0;
     state.unknownStrikes = 0;
@@ -605,6 +787,9 @@ function createRemoteSshRuntime(deps = {}) {
       lastError: null,
       lastErrorReason: null,
     });
+    if (shouldResolveBareNode) {
+      resolveRemoteNodeInBackground(state, child);
+    }
   }
 
   function onProbeWindowTimeout(state) {
@@ -632,6 +817,25 @@ function createRemoteSshRuntime(deps = {}) {
       return;
     }
     if (cls.kind === "permanent") {
+      if ((cls.reason === "probe_node_missing" || cls.reason === "probe_node_not_exec")
+          && (state.allowBareNodeProbe || state.remoteNodeBin)) {
+        if (state.remoteNodeBin) {
+          clearCachedRemoteNodeBin(state.profile);
+          state.remoteNodeBin = null;
+          state.remoteNodeSource = null;
+          state.allowBareNodeProbe = true;
+        }
+        if (!state.remoteNodeResolveInFlight && state.sshChild) {
+          resolveRemoteNodeInBackground(state, state.sshChild);
+        }
+        if (state.stopped) return;
+        if (state.remoteNodeResolveInFlight) {
+          state.probeWindowDeadline = Date.now() + PROBE_WINDOW_MS;
+          state.probeWindowTimer = setTimeoutFn(() => onProbeWindowTimeout(state), PROBE_WINDOW_MS);
+          schedNextProbe(state, PROBE_MIN_GAP_MS);
+          return;
+        }
+      }
       // Tear down main ssh and mark failed.
       killChild(state.sshChild);
       state.sshChild = null;
@@ -700,6 +904,7 @@ function createRemoteSshRuntime(deps = {}) {
       clearTimeoutFn(state.backoffTimer);
       state.backoffTimer = null;
     }
+    state.remoteNodeResolveInFlight = false;
     state.stopped = true;
     setStatus(state, "failed", {
       message: message || hint || reason,
@@ -725,6 +930,7 @@ function createRemoteSshRuntime(deps = {}) {
     }
     state.retryAttempt = 0;
     state.unknownStrikes = 0;
+    state.remoteNodeResolveInFlight = false;
     setStatus(state, "idle", {
       message: null,
       lastError: null,
@@ -758,6 +964,7 @@ function createRemoteSshRuntime(deps = {}) {
       cleanupProbeLoop(state);
       if (state.backoffTimer) clearTimeoutFn(state.backoffTimer);
       state.backoffTimer = null;
+      state.remoteNodeResolveInFlight = false;
       if (state.sshChild) killChild(state.sshChild);
       state.sshChild = null;
     }
@@ -826,6 +1033,7 @@ module.exports = {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
   PROBE_WINDOW_MS,
+  PROBE_MIN_GAP_MS,
   BACKOFF_SCHEDULE_MS,
   UNKNOWN_STRIKES_LIMIT,
 };

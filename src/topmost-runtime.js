@@ -49,6 +49,7 @@ function createTopmostRuntime(options = {}) {
 
   let topmostWatchdog = null;
   let hwndRecoveryTimer = null;
+  let pendingNudgeRestore = null;
 
   function reassertWinTopmost() {
     if (!isWin) return;
@@ -107,8 +108,44 @@ function createTopmostRuntime(options = {}) {
       const win = getWin();
       if (!isLiveWindow(win)) return;
       reassertWinTopmost();
+      if (!isDragLocked() && !isMiniAnimating() && !isMiniTransitioning()) {
+        restorePendingNudge();
+      } else {
+        pendingNudgeRestore = null;
+      }
       setForceEyeResend(true);
     }, hwndRecoveryDelayMs);
+  }
+
+  function restorePendingNudge(options = {}) {
+    if (!pendingNudgeRestore) return false;
+    const pending = pendingNudgeRestore;
+    const clear = options.clear !== false;
+    const current = getPetWindowBounds();
+    if (!current) {
+      if (clear) pendingNudgeRestore = null;
+      return false;
+    }
+
+    const stillAtNudgedPosition = current.x === pending.nudgedX && current.y === pending.y;
+    const movedElsewhere = current.x !== pending.x || current.y !== pending.y;
+    if (stillAtNudgedPosition) {
+      if (clear) pendingNudgeRestore = null;
+      applyPetWindowPosition(pending.x, pending.y);
+      syncHitWin();
+      return true;
+    }
+
+    if (movedElsewhere || clear) pendingNudgeRestore = null;
+    return false;
+  }
+
+  function applyFreshNudge(bounds) {
+    if (!bounds) return false;
+    pendingNudgeRestore = { x: bounds.x, y: bounds.y, nudgedX: bounds.x + 1 };
+    applyPetWindowPosition(bounds.x + 1, bounds.y);
+    applyPetWindowPosition(bounds.x, bounds.y);
+    return true;
   }
 
   function guardAlwaysOnTop(winToGuard) {
@@ -124,9 +161,14 @@ function createTopmostRuntime(options = {}) {
       ) {
         setForceEyeResend(true);
         const bounds = getPetWindowBounds();
-        if (bounds) {
-          applyPetWindowPosition(bounds.x + 1, bounds.y);
-          applyPetWindowPosition(bounds.x, bounds.y);
+        if (bounds && !pendingNudgeRestore) {
+          applyFreshNudge(bounds);
+        } else if (pendingNudgeRestore) {
+          const handled = restorePendingNudge({ clear: false });
+          if (!handled && !pendingNudgeRestore) {
+            const fresh = getPetWindowBounds();
+            applyFreshNudge(fresh);
+          }
         }
         syncHitWin();
         scheduleHwndRecovery();
@@ -183,6 +225,7 @@ function createTopmostRuntime(options = {}) {
       clearTimeoutFn(hwndRecoveryTimer);
       hwndRecoveryTimer = null;
     }
+    pendingNudgeRestore = null;
   }
 
   return {

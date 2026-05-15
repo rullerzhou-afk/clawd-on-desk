@@ -2,8 +2,12 @@
 
 const BUBBLE_KINDS = Object.freeze(["permission", "notification", "update"]);
 const BUBBLE_KIND_SET = new Set(BUBBLE_KINDS);
-const NOTIFICATION_DEFAULT_SECONDS = 3;
+const NOTIFICATION_DEFAULT_SECONDS = 6;
 const UPDATE_DEFAULT_SECONDS = 9;
+// Permission default = 0 (off): permission requests block tool execution, so an
+// auto-dismiss is a defensive fallback for cases where the agent's HTTP socket
+// stays half-alive (proxy/EDR/etc.) and abortHandler never fires. Users opt in.
+const PERMISSION_DEFAULT_SECONDS = 0;
 const MAX_AUTO_CLOSE_SECONDS = 3600;
 
 function isValidBubbleKind(kind) {
@@ -29,6 +33,9 @@ function isAllBubblesHidden(snapshot = {}) {
     snapshot.updateBubbleAutoCloseSeconds,
     UPDATE_DEFAULT_SECONDS
   );
+  // permissionBubbleAutoCloseSeconds doesn't gate the "all hidden" check —
+  // disabling permission bubbles is via permissionBubblesEnabled; autoclose
+  // is an orthogonal dismissal policy on top of an already-enabled bubble.
   return !permissionEnabled && notificationSeconds === 0 && updateSeconds === 0;
 }
 
@@ -38,12 +45,18 @@ function getBubblePolicy(snapshot = {}, kind) {
   }
 
   if (snapshot.hideBubbles === true) {
-    return { enabled: false, autoCloseMs: kind === "permission" ? null : 0 };
+    return { enabled: false, autoCloseMs: 0 };
   }
 
   if (kind === "permission") {
     const enabled = snapshot.permissionBubblesEnabled !== false;
-    return { enabled, autoCloseMs: null };
+    const seconds = normalizeAutoCloseSeconds(
+      snapshot.permissionBubbleAutoCloseSeconds,
+      PERMISSION_DEFAULT_SECONDS
+    );
+    // autoCloseMs > 0 means "auto-dismiss without decision after N seconds".
+    // 0 means never auto-dismiss (keep waiting for user / agent disconnect).
+    return { enabled, autoCloseMs: seconds > 0 ? seconds * 1000 : 0 };
   }
 
   if (kind === "notification") {
@@ -134,6 +147,7 @@ module.exports = {
   BUBBLE_KINDS,
   NOTIFICATION_DEFAULT_SECONDS,
   UPDATE_DEFAULT_SECONDS,
+  PERMISSION_DEFAULT_SECONDS,
   MAX_AUTO_CLOSE_SECONDS,
   getBubblePolicy,
   isAllBubblesHidden,

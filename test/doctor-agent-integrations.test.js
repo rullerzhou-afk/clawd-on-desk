@@ -6,6 +6,7 @@ const os = require("os");
 
 const {
   checkAgentIntegrations,
+  findOpenClawPluginEntry,
   findOpencodePluginEntry,
 } = require("../src/doctor-detectors/agent-integrations");
 const { GEMINI_HOOK_EVENTS } = require("../hooks/gemini-install");
@@ -113,6 +114,39 @@ describe("checkAgentIntegrations", () => {
     assert.strictEqual(detail.status, "not-installed");
     assert.strictEqual(detail.level, "info");
     assert.strictEqual(detail.parentDirExists, false);
+  });
+
+  it("keeps enabled Hermes missing install info-only when another integration is ok", () => {
+    const okDescriptor = baseDescriptor({
+      agentId: "ok-agent",
+      marker: "ok-hook.js",
+    });
+    writeJson(okDescriptor.configPath, {
+      hooks: {
+        Stop: [{ command: '"/node" "/app/hooks/ok-hook.js" Stop' }],
+      },
+    });
+    const hermesDescriptor = baseDescriptor({
+      agentId: "hermes",
+      marker: "clawd-on-desk",
+      configMode: "plugin-dir",
+    });
+
+    const result = checkAgentIntegrations({
+      fs,
+      prefs: { agents: { hermes: { enabled: true } } },
+      descriptors: [okDescriptor, hermesDescriptor],
+      validateCommand: () => ({
+        ok: true,
+        nodeBin: "/node",
+        scriptPath: "/app/hooks/ok-hook.js",
+      }),
+    });
+
+    const hermes = result.details.find((detail) => detail.agentId === "hermes");
+    assert.strictEqual(result.status, "pass");
+    assert.strictEqual(hermes.status, "not-installed");
+    assert.strictEqual(hermes.level, "info");
   });
 
   it("returns not-connected when config is missing for an auto-installed agent", () => {
@@ -464,6 +498,78 @@ describe("checkAgentIntegrations", () => {
     assert.strictEqual(detail.fixAction, undefined);
   });
 
+  function piDescriptor() {
+    const root = makeTempDir();
+    const parentDir = path.join(root, ".pi", "agent");
+    return baseDescriptor({
+      agentId: "pi",
+      agentName: "Pi",
+      eventSource: "extension",
+      parentDir,
+      configPath: path.join(parentDir, "extensions", "clawd-on-desk"),
+      configMode: "pi-extension",
+      marker: "index.ts",
+      coreFile: "pi-extension-core.js",
+      markerFile: ".clawd-managed.json",
+    });
+  }
+
+  it("reports missing Pi extension as repairable not-connected", () => {
+    const descriptor = piDescriptor();
+    fs.mkdirSync(descriptor.parentDir, { recursive: true });
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.eventSource, "extension");
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "pi" });
+  });
+
+  it("reports unmanaged Pi extension directory as needs-review without repair action", () => {
+    const descriptor = piDescriptor();
+    fs.mkdirSync(descriptor.configPath, { recursive: true });
+    fs.writeFileSync(path.join(descriptor.configPath, "index.ts"), "export default function() {}\n", "utf8");
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "needs-review");
+    assert.strictEqual(detail.level, "warning");
+    assert.strictEqual(detail.fixAction, undefined);
+  });
+
+  it("reports managed Pi extension as ok", () => {
+    const descriptor = piDescriptor();
+    writeJson(path.join(descriptor.configPath, ".clawd-managed.json"), {
+      app: "clawd-on-desk",
+      integration: "pi",
+      managed: true,
+    });
+    fs.writeFileSync(path.join(descriptor.configPath, "index.ts"), "export default function() {}\n", "utf8");
+    fs.writeFileSync(path.join(descriptor.configPath, "pi-extension-core.js"), "module.exports = {}\n", "utf8");
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "ok");
+    assert.strictEqual(detail.extensionFileExists, true);
+    assert.strictEqual(detail.coreFileExists, true);
+  });
+
+  it("reports managed Pi extension with missing copied files as repairable broken-path", () => {
+    const descriptor = piDescriptor();
+    writeJson(path.join(descriptor.configPath, ".clawd-managed.json"), {
+      app: "clawd-on-desk",
+      integration: "pi",
+      managed: true,
+    });
+    fs.writeFileSync(path.join(descriptor.configPath, "index.ts"), "export default function() {}\n", "utf8");
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "broken-path");
+    assert.strictEqual(detail.coreFileExists, false);
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "pi" });
+  });
+
   it("reports opencode stale absolute plugin paths", () => {
     const root = makeTempDir();
     const parentDir = path.join(root, ".config", "opencode");
@@ -481,6 +587,223 @@ describe("checkAgentIntegrations", () => {
     assert.strictEqual(detail.status, "broken-path");
     assert.strictEqual(detail.opencodeEntryIssue, "directory-missing");
     assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "opencode" });
+  });
+
+  function openClawDescriptor() {
+    const root = makeTempDir();
+    const parentDir = path.join(root, ".openclaw");
+    return baseDescriptor({
+      agentId: "openclaw",
+      agentName: "OpenClaw",
+      eventSource: "plugin-event",
+      parentDir,
+      configPath: path.join(parentDir, "openclaw.json"),
+      configMode: "openclaw-plugin",
+      marker: "openclaw-plugin",
+      pluginId: "clawd-on-desk",
+    });
+  }
+
+  function makeOpenClawPluginDir(root) {
+    const pluginDir = path.join(root, "hooks", "openclaw-plugin");
+    fs.mkdirSync(pluginDir, { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, "index.js"), "export default { id: 'clawd-on-desk', register() {} };\n", "utf8");
+    writeJson(path.join(pluginDir, "openclaw.plugin.json"), {
+      id: "clawd-on-desk",
+      name: "Clawd on Desk",
+      description: "test",
+      activation: { onStartup: true },
+      configSchema: { type: "object", additionalProperties: false, properties: {} },
+    });
+    return pluginDir;
+  }
+
+  it("reports missing OpenClaw plugin config as repairable not-connected", () => {
+    const descriptor = openClawDescriptor();
+    fs.mkdirSync(descriptor.parentDir, { recursive: true });
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.eventSource, "plugin-event");
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "openclaw" });
+  });
+
+  it("reports OpenClaw JSON5 configs as needs-review instead of corrupting them", () => {
+    const descriptor = openClawDescriptor();
+    fs.mkdirSync(descriptor.parentDir, { recursive: true });
+    fs.writeFileSync(descriptor.configPath, "{ // json5\n plugins: {} }\n", "utf8");
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "needs-review");
+    assert.match(detail.detail, /not strict JSON/);
+    assert.strictEqual(detail.fixAction, undefined);
+  });
+
+  it("reports valid OpenClaw plugin paths as ok", () => {
+    const descriptor = openClawDescriptor();
+    const pluginDir = makeOpenClawPluginDir(path.dirname(descriptor.parentDir));
+    writeJson(descriptor.configPath, {
+      plugins: {
+        load: { paths: [pluginDir] },
+        entries: {
+          "clawd-on-desk": {
+            enabled: true,
+            hooks: { allowConversationAccess: false },
+          },
+        },
+      },
+    });
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "ok");
+    assert.strictEqual(detail.openclawEntry, pluginDir);
+  });
+
+  it("reports OpenClaw stale plugin paths as repairable broken-path", () => {
+    const descriptor = openClawDescriptor();
+    const pluginDir = path.join(path.dirname(descriptor.parentDir), "missing", "openclaw-plugin");
+    writeJson(descriptor.configPath, {
+      plugins: {
+        load: { paths: [pluginDir] },
+        entries: { "clawd-on-desk": { enabled: true } },
+      },
+    });
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "broken-path");
+    assert.strictEqual(detail.openclawEntryIssue, "directory-missing");
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "openclaw" });
+  });
+
+  it("checks Hermes plugin directory files and enabled marker", () => {
+    const root = makeTempDir();
+    const parentDir = path.join(root, ".hermes");
+    const pluginDir = path.join(parentDir, "plugins", "clawd-on-desk");
+    const descriptor = baseDescriptor({
+      agentId: "hermes",
+      marker: "clawd-on-desk",
+      parentDir,
+      configPath: pluginDir,
+      configMode: "plugin-dir",
+      managedFiles: ["plugin.yaml", "__init__.py"],
+      configFilePath: path.join(parentDir, "config.yaml"),
+    });
+    fs.mkdirSync(pluginDir, { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, "plugin.yaml"), "name: clawd-on-desk\n", "utf8");
+    fs.writeFileSync(path.join(pluginDir, "__init__.py"), "# plugin\n", "utf8");
+    fs.writeFileSync(descriptor.configFilePath, "plugins:\n  enabled:\n    - clawd-on-desk\n", "utf8");
+
+    const detail = runOne(descriptor, {
+      prefs: { agents: { hermes: { enabled: true } } },
+    });
+
+    assert.strictEqual(detail.status, "ok");
+    assert.strictEqual(detail.pluginEnabled, true);
+  });
+
+  it("reports Hermes plugin directory missing managed files as repairable", () => {
+    const root = makeTempDir();
+    const parentDir = path.join(root, ".hermes");
+    const pluginDir = path.join(parentDir, "plugins", "clawd-on-desk");
+    const descriptor = baseDescriptor({
+      agentId: "hermes",
+      marker: "clawd-on-desk",
+      parentDir,
+      configPath: pluginDir,
+      configMode: "plugin-dir",
+      managedFiles: ["plugin.yaml", "__init__.py"],
+      configFilePath: path.join(parentDir, "config.yaml"),
+    });
+    fs.mkdirSync(pluginDir, { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, "plugin.yaml"), "name: clawd-on-desk\n", "utf8");
+
+    const detail = runOne(descriptor, {
+      prefs: { agents: { hermes: { enabled: true } } },
+    });
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.deepStrictEqual(detail.missingPluginFiles, ["__init__.py"]);
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "hermes" });
+  });
+
+  it("does not report Hermes ok when clawd-on-desk appears only in disabled plugins", () => {
+    const root = makeTempDir();
+    const parentDir = path.join(root, ".hermes");
+    const pluginDir = path.join(parentDir, "plugins", "clawd-on-desk");
+    const descriptor = baseDescriptor({
+      agentId: "hermes",
+      marker: "clawd-on-desk",
+      parentDir,
+      configPath: pluginDir,
+      configMode: "plugin-dir",
+      managedFiles: ["plugin.yaml", "__init__.py"],
+      configFilePath: path.join(parentDir, "config.yaml"),
+    });
+    fs.mkdirSync(pluginDir, { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, "plugin.yaml"), "name: clawd-on-desk\n", "utf8");
+    fs.writeFileSync(path.join(pluginDir, "__init__.py"), "# plugin\n", "utf8");
+    fs.writeFileSync(
+      descriptor.configFilePath,
+      "plugins:\n  enabled: []\n  disabled:\n    - clawd-on-desk\n",
+      "utf8"
+    );
+
+    const detail = runOne(descriptor, {
+      prefs: { agents: { hermes: { enabled: true } } },
+    });
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.pluginEnabled, false);
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "hermes" });
+  });
+
+  it("accepts Hermes inline enabled plugin lists", () => {
+    const root = makeTempDir();
+    const parentDir = path.join(root, ".hermes");
+    const pluginDir = path.join(parentDir, "plugins", "clawd-on-desk");
+    const descriptor = baseDescriptor({
+      agentId: "hermes",
+      marker: "clawd-on-desk",
+      parentDir,
+      configPath: pluginDir,
+      configMode: "plugin-dir",
+      managedFiles: ["plugin.yaml", "__init__.py"],
+      configFilePath: path.join(parentDir, "config.yaml"),
+    });
+    fs.mkdirSync(pluginDir, { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, "plugin.yaml"), "name: clawd-on-desk\n", "utf8");
+    fs.writeFileSync(path.join(pluginDir, "__init__.py"), "# plugin\n", "utf8");
+    fs.writeFileSync(
+      descriptor.configFilePath,
+      "plugins:\n  enabled: [\"clawd-on-desk\"]\n  disabled: []\n",
+      "utf8"
+    );
+
+    const detail = runOne(descriptor, {
+      prefs: { agents: { hermes: { enabled: true } } },
+    });
+
+    assert.strictEqual(detail.status, "ok");
+    assert.strictEqual(detail.pluginEnabled, true);
+  });
+
+  it("keeps Hermes disabled as info-only by default", () => {
+    const descriptor = baseDescriptor({
+      agentId: "hermes",
+      marker: "clawd-on-desk",
+      configMode: "plugin-dir",
+    });
+
+    const detail = runOne(descriptor, {
+      prefs: { agents: { hermes: { enabled: false } } },
+    });
+
+    assert.strictEqual(detail.status, "disabled");
+    assert.strictEqual(detail.level, "info");
   });
 
   it("adds a non-failing note when per-agent permission bubbles are disabled", () => {
@@ -545,6 +868,16 @@ describe("findOpencodePluginEntry", () => {
     const absEntry = "C:\\clawd\\hooks\\opencode-plugin";
     assert.strictEqual(
       findOpencodePluginEntry(["vendor/opencode-plugin", absEntry], "opencode-plugin"),
+      absEntry
+    );
+  });
+});
+
+describe("findOpenClawPluginEntry", () => {
+  it("matches only absolute plugin entries by basename", () => {
+    const absEntry = "C:\\clawd\\hooks\\openclaw-plugin";
+    assert.strictEqual(
+      findOpenClawPluginEntry(["vendor/openclaw-plugin", absEntry], "openclaw-plugin"),
       absEntry
     );
   });

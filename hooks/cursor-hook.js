@@ -36,7 +36,7 @@ function displaySvgFromToolHook(hookName, payload) {
   const name = payload && payload.tool_name;
   if (!name || typeof name !== "string") return undefined;
   if (name === "Shell" || name.startsWith("MCP:")) return "clawd-working-building.svg";
-  if (name === "Task") return "clawd-working-juggling.svg";
+  if (name === "Task") return "clawd-headphones-groove.svg";
   if (name === "Write" || name === "Delete") return "clawd-working-typing.svg";
   if (name === "Read" || name === "Grep") return "clawd-idle-reading.svg";
   return undefined;

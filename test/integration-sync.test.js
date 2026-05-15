@@ -26,6 +26,13 @@ function makeRuntime(overrides = {}) {
       return { status: "ok", message: "done" };
     },
     syncOpencodePluginImpl: () => calls.push({ name: "opencode" }),
+    syncPiExtensionImpl: () => calls.push({ name: "pi" }),
+    syncOpenClawPluginImpl: () => calls.push({ name: "openclaw" }),
+    repairOpenClawPluginImpl: () => {
+      calls.push({ name: "openclaw-repair" });
+      return { status: "ok", message: "done" };
+    },
+    syncHermesPluginImpl: () => calls.push({ name: "hermes" }),
     ...(overrides.ctx || {}),
   };
   const runtime = createIntegrationSyncRuntime({
@@ -71,6 +78,9 @@ describe("integration sync runtime", () => {
       "kiro",
       "kimi",
       "codex",
+      "pi",
+      "openclaw",
+      "hermes",
     ]);
   });
 
@@ -102,11 +112,46 @@ describe("integration sync runtime", () => {
     assert.deepStrictEqual(repairOptions, [{ forceCodexHooksFeature: true }]);
   });
 
+  it("repairIntegrationForAgent uses OpenClaw repair", () => {
+    const { runtime, calls } = makeRuntime();
+
+    const result = runtime.repairIntegrationForAgent("openclaw");
+
+    assert.deepStrictEqual(result, { status: "ok", message: "done" });
+    assert.deepStrictEqual(calls.map((entry) => entry.name), ["openclaw-repair"]);
+  });
+
   it("stopIntegrationForAgent only stops the Claude watcher", () => {
     const { runtime, calls } = makeRuntime();
 
     assert.strictEqual(runtime.stopIntegrationForAgent("codex"), false);
     assert.strictEqual(runtime.stopIntegrationForAgent("claude-code"), "stopped");
     assert.deepStrictEqual(calls.map((entry) => entry.name), ["watcher:stop"]);
+  });
+
+  it("does not log Pi extension sync when the managed files are already current", () => {
+    const piInstall = require("../hooks/pi-install");
+    const originalRegister = piInstall.registerPiExtension;
+    const originalLog = console.log;
+    const logs = [];
+    piInstall.registerPiExtension = () => ({
+      installed: true,
+      skipped: false,
+      updated: false,
+      extensionDir: "C:/Users/Tester/.pi/agent/extensions/clawd-on-desk",
+    });
+    console.log = (message) => logs.push(message);
+
+    try {
+      const { runtime } = makeRuntime({ ctx: { syncPiExtensionImpl: undefined } });
+      const result = runtime.syncPiExtension();
+
+      assert.strictEqual(result.status, "ok");
+      assert.strictEqual(result.installed, true);
+      assert.deepStrictEqual(logs, []);
+    } finally {
+      piInstall.registerPiExtension = originalRegister;
+      console.log = originalLog;
+    }
   });
 });

@@ -71,6 +71,96 @@ describe("CodexLogMonitor", () => {
     monitor.start();
   });
 
+  it("emits Codex Desktop session metadata from session_meta records", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, JSON.stringify({
+      type: "session_meta",
+      payload: {
+        cwd: "/projects/foo",
+        originator: "Codex Desktop",
+        source: "vscode",
+      },
+    }) + "\n");
+
+    const config = makeConfig(tmpDir);
+    const events = [];
+    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+      events.push({ sid, state, event, extra });
+    });
+
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].sid, EXPECTED_SID);
+    assert.strictEqual(events[0].state, "idle");
+    assert.strictEqual(events[0].extra.cwd, "/projects/foo");
+    assert.strictEqual(events[0].extra.codexOriginator, "Codex Desktop");
+    assert.strictEqual(events[0].extra.codexSource, "vscode");
+  });
+
+  it("uses stale Codex Desktop session_meta for later live events without replaying it", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, JSON.stringify({
+      timestamp: new Date(Date.now() - 60 * 1000).toISOString(),
+      type: "session_meta",
+      payload: {
+        cwd: "/projects/foo",
+        originator: "Codex Desktop",
+        source: "vscode",
+      },
+    }) + "\n");
+
+    const config = makeConfig(tmpDir);
+    const events = [];
+    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+      events.push({ sid, state, event, extra });
+    });
+
+    monitor._pollFile(testFile, path.basename(testFile));
+    assert.strictEqual(events.length, 0, "old session_meta must not emit idle");
+
+    fs.appendFileSync(testFile, '{"type":"event_msg","payload":{"type":"task_started"}}\n');
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].sid, EXPECTED_SID);
+    assert.strictEqual(events[0].state, "thinking");
+    assert.strictEqual(events[0].extra.cwd, "/projects/foo");
+    assert.strictEqual(events[0].extra.codexOriginator, "Codex Desktop");
+    assert.strictEqual(events[0].extra.codexSource, "vscode");
+  });
+
+  it("preserves Codex Desktop session metadata across tracker retirement and resume", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, JSON.stringify({
+      type: "session_meta",
+      payload: {
+        cwd: "/projects/foo",
+        originator: "Codex Desktop",
+        source: "vscode",
+      },
+    }) + "\n");
+
+    const config = makeConfig(tmpDir);
+    const events = [];
+    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+      events.push({ sid, state, event, extra });
+    });
+
+    monitor._pollFile(testFile, path.basename(testFile));
+    const tracked = monitor._tracked.get(testFile);
+    assert.ok(tracked);
+    monitor._retireTrackedFile(testFile, tracked);
+
+    fs.appendFileSync(testFile, '{"type":"event_msg","payload":{"type":"task_started"}}\n');
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    assert.strictEqual(events.length, 2);
+    assert.strictEqual(events[1].state, "thinking");
+    assert.strictEqual(events[1].extra.codexOriginator, "Codex Desktop");
+    assert.strictEqual(events[1].extra.codexSource, "vscode");
+  });
+
   it("should map task_started to thinking", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [

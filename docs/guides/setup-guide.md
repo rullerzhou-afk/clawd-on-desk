@@ -8,7 +8,7 @@
 
 **Codex CLI** — works out of the box. Clawd auto-registers official Codex hooks in `~/.codex/hooks.json` when Codex is installed, and enables `[features].hooks = true` unless the user explicitly set hooks to `false`. The installer migrates the deprecated `[features].codex_hooks` key to `hooks` while preserving an explicit false value. The official hook path gives live state updates plus real Allow/Deny permission bubbles. JSONL polling of `~/.codex/sessions/` remains as a fallback for hook-disabled sessions and events Codex hooks do not cover.
 
-**Copilot CLI** — the one supported agent that still requires manual hook setup. See [copilot-setup.md](copilot-setup.md) for instructions.
+**Copilot CLI** — local installs still need a manual `~/.copilot/hooks/hooks.json` (Clawd does not auto-sync Copilot at startup). Remote SSH installs are automatic via `scripts/remote-deploy.sh`. See [copilot-setup.md](copilot-setup.md) for both flows.
 
 **Gemini CLI** — hooks live in `~/.gemini/settings.json`. Clawd auto-registers them on launch when Gemini is installed, or you can run `npm run install:gemini-hooks` manually.
 
@@ -22,7 +22,13 @@
 
 **opencode** — uses a plugin entry in `~/.config/opencode/opencode.json`. Clawd auto-registers it on launch when opencode is installed, or you can run `node hooks/opencode-install.js` manually.
 
-## Remote SSH (Claude Code & Codex CLI)
+**Pi** — uses a global extension directory at `~/.pi/agent/extensions/clawd-on-desk`. Clawd auto-registers it on launch when Pi is installed, or you can run `npm run install:pi-extension` manually. Interactive Pi sessions report lifecycle state to Clawd. Pi permission bubbles are enabled by default for `bash`, `write`, and `edit` tool calls; when Clawd bubbles are unavailable, disabled, or hidden by DND, the extension falls back to Pi's terminal confirmation instead of allowing the tool silently.
+
+**OpenClaw** — uses a plugin path under `~/.openclaw/openclaw.json`. Clawd auto-registers it only when an OpenClaw config already exists, or you can run `npm run install:openclaw-plugin` manually to let OpenClaw's CLI handle first-time setup. Phase 1 is state-only and targets local `openclaw tui --local` sessions.
+
+**Hermes Agent** — install Hermes from [hermes-agent.org](https://hermes-agent.org/) or [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent). Clawd shows Hermes in Settings by default, but startup auto-sync is no-op until Hermes is installed. Once Hermes exists (`%LOCALAPPDATA%\hermes` on Windows or `~/.hermes` on macOS/Linux), Clawd copies its plugin into Hermes' managed plugin directory and enables it through `hermes plugins enable clawd-on-desk`. You can force a manual sync with `npm run install:hermes-plugin`, or remove Clawd's Hermes plugin with `npm run uninstall:hermes-plugin`.
+
+## Remote SSH (Claude Code, Codex CLI & Copilot CLI)
 
 <img src="../assets/screenshot-remote-ssh.png" width="560" alt="Remote SSH — permission bubble from Raspberry Pi">
 
@@ -34,7 +40,7 @@ Clawd can sense AI agent activity on remote servers via SSH reverse port forward
 bash scripts/remote-deploy.sh user@remote-host
 ```
 
-This copies hook files to the remote server, registers Claude Code hooks and Codex official hooks in remote mode, and prints SSH configuration instructions.
+This copies hook files to the remote server, registers Claude Code hooks, Codex official hooks, and Copilot CLI hooks in remote mode, and prints SSH configuration instructions.
 
 **SSH configuration** (add to your local `~/.ssh/config`):
 
@@ -50,6 +56,7 @@ Host my-server
 **How it works:**
 - **Claude Code** — command hooks on the remote server POST state changes to `localhost:23333`, which the SSH tunnel forwards back to your local Clawd. Permission bubbles work too — the HTTP round-trip goes through the tunnel.
 - **Codex CLI** — official hooks on the remote server POST state changes and permission requests through the same tunnel. If Codex hooks are unavailable or disabled on the remote install, use the fallback log monitor: `node ~/.claude/hooks/codex-remote-monitor.js --port 23333`
+- **Copilot CLI** — `scripts/remote-deploy.sh` writes `~/.copilot/hooks/hooks.json` on the remote (when Copilot CLI is installed, i.e. `~/.copilot/` exists). Hooks POST state and session titles through the same tunnel.
 
 Remote hooks run in `CLAWD_REMOTE` mode which skips PID collection (remote PIDs are meaningless locally). Terminal focus is not available for remote sessions.
 
@@ -68,13 +75,16 @@ If you run Claude Code inside WSL while Clawd runs on the Windows host, hooks ca
 mkdir -p ~/.claude/hooks
 
 # Copy hook files from the Windows-side repo (adjust the /mnt/ path to your Clawd location)
-cp /mnt/d/animation/hooks/{server-config,json-utils,shared-process,clawd-hook,install,codex-hook,codex-install,codex-install-utils,codex-remote-monitor,codex-session-index,codex-subagent-fields}.js ~/.claude/hooks/
+cp /mnt/d/animation/hooks/{server-config,json-utils,shared-process,clawd-hook,install,codex-hook,codex-install,codex-install-utils,codex-remote-monitor,codex-session-index,codex-subagent-fields,copilot-hook,copilot-install}.js ~/.claude/hooks/
 
 # Register Claude hooks in remote mode
 node ~/.claude/hooks/install.js --remote
 
 # Register Codex official hooks in remote mode when Codex CLI is installed in WSL
 node ~/.claude/hooks/codex-install.js --remote
+
+# Register Copilot CLI hooks in remote mode when Copilot CLI is installed in WSL
+node ~/.claude/hooks/copilot-install.js --remote
 ```
 
 If you have SSH enabled in WSL, the one-click deploy script also works:
@@ -134,6 +144,12 @@ node hooks/codebuddy-install.js
 
 # opencode
 node hooks/opencode-install.js
+
+# Pi
+node hooks/pi-install.js
+
+# OpenClaw
+node hooks/openclaw-install.js
 ```
 
 > **Tip:** If the repo is cloned inside WSL (e.g. `~/clawd-on-desk`), hook scripts will automatically use WSL's Node.js path. If the repo is on a Windows drive (e.g. `/mnt/c/...`), make sure `node` is in WSL's `PATH`.

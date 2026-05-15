@@ -25,11 +25,12 @@ const { normalizeRemoteSsh, getDefaults: getRemoteSshDefaults } = require("./rem
 const {
   NOTIFICATION_DEFAULT_SECONDS,
   UPDATE_DEFAULT_SECONDS,
+  PERMISSION_DEFAULT_SECONDS,
   MAX_AUTO_CLOSE_SECONDS,
 } = require("./bubble-policy");
 const { normalizeSessionAliases } = require("./session-alias");
 
-const CURRENT_VERSION = 1;
+const CURRENT_VERSION = 3;
 
 // ── Schema ──
 // Each field has: type, default OR defaultFactory, optional enum/normalize/validate.
@@ -73,7 +74,7 @@ const SCHEMA = {
   preMiniX: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
   preMiniY: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
   // Pure data prefs
-  lang: { type: "string", default: "en", enum: ["en", "zh", "ko", "ja"] },
+  lang: { type: "string", default: "en", enum: ["en", "zh", "zh-TW", "ko", "ja"] },
   showTray: { type: "boolean", default: true },
   showDock: { type: "boolean", default: true },
   manageClaudeHooksAutomatically: { type: "boolean", default: true },
@@ -96,6 +97,11 @@ const SCHEMA = {
   notificationBubbleAutoCloseSeconds: {
     type: "number",
     default: NOTIFICATION_DEFAULT_SECONDS,
+    validate: (v) => Number.isInteger(v) && v >= 0 && v <= MAX_AUTO_CLOSE_SECONDS,
+  },
+  permissionBubbleAutoCloseSeconds: {
+    type: "number",
+    default: PERMISSION_DEFAULT_SECONDS,
     validate: (v) => Number.isInteger(v) && v >= 0 && v <= MAX_AUTO_CLOSE_SECONDS,
   },
   updateBubbleAutoCloseSeconds: {
@@ -135,6 +141,9 @@ const SCHEMA = {
       "kiro-cli": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "kimi-cli": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "opencode": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
+      "pi": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
+      "openclaw": { enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
+      "hermes": { enabled: true },
     }),
     normalize: normalizeAgents,
   },
@@ -220,6 +229,11 @@ function validate(raw) {
 // v0 → v1: add `version`, `agents`, `themeOverrides` fields. Existing fields
 //   stay as-is and get re-validated downstream. Pre-existing prefs files have
 //   no `version` key — that's the v0 marker.
+// v1 → v2: no structural migration. Version 2 is the first schema version that
+//   includes Hermes in the built-in agent defaults.
+// v2 → v3: raise passive notification bubble default from 3s to 6s. Users
+//   who explicitly chose 3s in v2 are indistinguishable from defaulted-3 and
+//   are migrated too; other non-default values are preserved.
 function migrate(raw) {
   if (!raw || typeof raw !== "object") return raw;
   const out = { ...raw };
@@ -251,6 +265,33 @@ function migrate(raw) {
     if (out.updateBubbleAutoCloseSeconds === undefined) {
       out.updateBubbleAutoCloseSeconds = out.hideBubbles ? 0 : UPDATE_DEFAULT_SECONDS;
     }
+  }
+  // v1 -> v2: Pi originally shipped as a state-only integration. When Pi
+  // permission bubbles become available, preserve any explicit stored value;
+  // otherwise default the new subgate to enabled like the other bubble agents.
+  if (out.version < 2) {
+    if (!out.agents || typeof out.agents !== "object") out.agents = {};
+    const currentPi = out.agents.pi && typeof out.agents.pi === "object" ? out.agents.pi : {};
+    out.agents.pi = {
+      ...currentPi,
+      enabled: typeof currentPi.enabled === "boolean" ? currentPi.enabled : true,
+      permissionsEnabled: typeof currentPi.permissionsEnabled === "boolean"
+        ? currentPi.permissionsEnabled
+        : true,
+      notificationHookEnabled: typeof currentPi.notificationHookEnabled === "boolean"
+        ? currentPi.notificationHookEnabled
+        : true,
+    };
+    out.version = 2;
+  }
+  if (out.version < 3) {
+    if (out.notificationBubbleAutoCloseSeconds === 3) {
+      out.notificationBubbleAutoCloseSeconds = NOTIFICATION_DEFAULT_SECONDS;
+    }
+    out.version = 3;
+  }
+  if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
+    out.version = CURRENT_VERSION;
   }
   // Future migrations slot in here as `if (out.version < N) { ... out.version = N }`.
   return out;
@@ -288,7 +329,8 @@ function normalizeAgents(value, defaultsValue) {
       || { enabled: true, permissionsEnabled: true, notificationHookEnabled: true };
     const merged = { ...base };
     let touched = false;
-    for (const flag of AGENT_FLAGS) {
+    const allowedFlags = AGENT_FLAGS.filter((flag) => Object.prototype.hasOwnProperty.call(base, flag));
+    for (const flag of allowedFlags) {
       if (typeof entry[flag] === "boolean") {
         merged[flag] = entry[flag];
         touched = true;

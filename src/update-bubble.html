@@ -263,6 +263,14 @@ function modeLabel(mode, lang) {
     "up-to-date": "最新版本",
     error: "失败",
   };
+  const zhTW = {
+    checking: "檢查中",
+    available: "可更新",
+    downloading: "下載中",
+    ready: "已就緒",
+    "up-to-date": "最新版本",
+    error: "失敗",
+  };
   const en = {
     checking: "Checking",
     available: "Available",
@@ -271,7 +279,15 @@ function modeLabel(mode, lang) {
     "up-to-date": "Latest",
     error: "Error",
   };
-  const dict = lang === "zh" ? zh : (lang === "ko" ? ko : en);
+
+  const dictMap = {
+    zh,
+    ko,
+    en,
+    "zh-TW": zhTW,
+  };
+
+  const dict = dictMap[lang] || en;
   return dict[mode] || mode;
 }
 

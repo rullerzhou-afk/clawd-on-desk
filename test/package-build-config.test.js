@@ -26,6 +26,13 @@ describe("package build config", () => {
     );
   });
 
+  it("ships third-party notices in packaged builds", () => {
+    assert.ok(
+      pkg.build.files.includes("NOTICE.md"),
+      "build.files should include NOTICE.md"
+    );
+  });
+
   it("unpacks built-in theme assets so the folder can be opened from settings", () => {
     assert.ok(
       pkg.build.asarUnpack.includes("assets/svg/**/*"),

@@ -1,98 +1,356 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <!-- clawd 戴巫师帽螃蟹走 v7 dark-hat variant - 2026-05-11
+       基于调参页参数回填:
+       dropY=2 dropX=0.7 recoverY=0.8 fallScale=1.11 pushScale=1
+       tilt=7.5 counterTilt=-3 brimX=-0.2 brimY=-0.5 brimTilt=7 brimCounterTilt=-1.5
+
+       魔法增强:
+         - hat-drop 负责掉落位移, hat-scale 负责 42/55 帧轻微放大。
+         - 帽身和帽檐分别调角度, 帽檐额外整体上移贴回帽身。
+         - 扶帽时帽子轻微上浮, 帽尖软弹, 帽星闪烁。
+         - 手碰帽后弹出 5 颗像素星尘, 增加巫师帽魔法感。
+         - 成功后眼睛看向用户并眨眼; 眼睛高光常驻显示。
+         - dark variant: 帽子改成更接近拼豆图纸的深蓝紫/靛紫配色。
+  -->
+
   <defs>
     <style>
-      .body-magic {
+      .body-hunch {
         transform-origin: 7.5px 15px;
-        animation: float-body 3s infinite ease-in-out;
+        animation: hunch-walk 7s infinite ease-in-out;
       }
-      .arm-wand {
-        transform-origin: 14px 10px;
-        animation: wave-wand 3s infinite ease-in-out;
+      .leg-step { transform-origin: top center; transform-box: fill-box; }
+      .leg-1 { animation: leg-step 7s infinite linear; }
+      .leg-2 { animation: leg-step 7s infinite linear; animation-delay: -0.245s; }
+      .shadow-walk {
+        transform-origin: 7.5px 15.5px;
+        animation: shadow-walk 7s infinite ease-in-out;
       }
-      .arm-l-magic {
-        transform-origin: 1px 10px;
-        animation: wave-magic 3s infinite ease-in-out;
+      .hat-drop {
+        transform-origin: 7.5px 6px;
+        animation: hat-drop 7s infinite ease-in-out;
       }
-      .eyes-magic {
-        animation: blink-magic 3s infinite;
+      .hat-scale {
+        transform-origin: 7.5px 6px;
+        animation: hat-scale 7s infinite ease-in-out;
       }
-      .magic-star {
-        opacity: 0;
-        animation: sparkle-magic 2s infinite ease-out;
+      .hat-tilt {
+        transform-origin: 7.5px 5px;
+        animation: hat-tilt 7s infinite ease-in-out;
       }
-      .s1 { animation-delay: 0s; fill: #FFD700; }
-      .s2 { animation-delay: 0.5s; fill: #40C4FF; }
-      .s3 { animation-delay: 1s; fill: #B388FF; }
-      .s4 { animation-delay: 1.5s; fill: #FF8A80; }
+      .hat-crown-magic {
+        transform-origin: 7.5px 1px;
+        animation: hat-crown-magic 7s infinite ease-in-out;
+      }
+      .hat-stars-magic {
+        animation: hat-stars-magic 7s infinite ease-in-out;
+      }
+      .brim-tilt {
+        transform-origin: 7.5px 5.5px;
+        animation: brim-tilt 7s infinite ease-in-out;
+      }
+      .brim-center {
+        transform-origin: 7.5px 5.5px;
+        animation: brim-center-sag 7s infinite ease-in-out;
+      }
+      .brim-side {
+        animation: brim-side-fall 7s infinite ease-in-out;
+      }
+      .arm-fix {
+        transform-origin: 13px 10px;
+        animation: arm-fix 7s infinite ease-in-out;
+      }
+      .eyes-wizard {
+        transform-origin: 7.5px 9px;
+        animation: eyes-wizard 7s infinite ease-in-out;
+      }
+      svg:hover .eyes-wizard {
+        animation: eyes-user-hover 0.9s infinite ease-in-out;
+      }
+      .magic-sparkle-a { animation: magic-sparkle-a 7s infinite ease-in-out; opacity: 0; }
+      .magic-sparkle-b { animation: magic-sparkle-b 7s infinite ease-in-out; opacity: 0; }
+      .magic-sparkle-c { animation: magic-sparkle-c 7s infinite ease-in-out; opacity: 0; }
+      .magic-sparkle-d { animation: magic-sparkle-d 7s infinite ease-in-out; opacity: 0; }
+      .magic-sparkle-e { animation: magic-sparkle-e 7s infinite ease-in-out; opacity: 0; }
 
-      @keyframes float-body {
-        0%, 100% { transform: translateY(0); }
-        50% { transform: translateY(-2px); }
+      @keyframes hunch-walk {
+        0%   { transform: translate(-2px, 1px) rotate(2deg); }
+        14%  { transform: translate(3px, 1px) rotate(2deg); }
+        28%  { transform: translate(0, 1px) rotate(2deg); }
+        72%  { transform: translate(0, 1px) rotate(2deg); }
+        87%  { transform: translate(-3px, 1px) rotate(2deg); }
+        100% { transform: translate(-2px, 1px) rotate(2deg); }
       }
-      @keyframes wave-wand {
-        0%, 100% { transform: rotate(-20deg); }
-        50% { transform: rotate(-120deg); }
+
+      @keyframes leg-step {
+        0%   { transform: rotate(0deg) scaleY(1); }
+        7%   { transform: rotate(-25deg) scaleY(0.7); }
+        14%  { transform: rotate(0deg) scaleY(1); }
+        21%  { transform: rotate(-25deg) scaleY(0.7); }
+        28%  { transform: rotate(0deg) scaleY(1); }
+        72%  { transform: rotate(0deg) scaleY(1); }
+        79%  { transform: rotate(-25deg) scaleY(0.7); }
+        86%  { transform: rotate(0deg) scaleY(1); }
+        93%  { transform: rotate(-25deg) scaleY(0.7); }
+        100% { transform: rotate(0deg) scaleY(1); }
       }
-      @keyframes wave-magic {
-        0%, 100% { transform: rotate(20deg); }
-        50% { transform: rotate(120deg); }
+
+      @keyframes shadow-walk {
+        0%   { transform: translateX(-2px) scale(0.9); opacity: 0.4; }
+        14%  { transform: translateX(3px) scale(0.9); opacity: 0.4; }
+        28%  { transform: translateX(0) scale(0.9); opacity: 0.4; }
+        72%  { transform: translateX(0) scale(0.9); opacity: 0.4; }
+        87%  { transform: translateX(-3px) scale(0.9); opacity: 0.4; }
+        100% { transform: translateX(-2px) scale(0.9); opacity: 0.4; }
       }
-      @keyframes blink-magic {
-        0%, 40% { transform: scaleY(0.1); }
-        45%, 95% { transform: scaleY(1); }
-        100% { transform: scaleY(0.1); }
+
+      @keyframes hat-drop {
+        0%, 28% { transform: translate(0, 0); }
+        35%     { transform: translate(0.42px, 1px); }
+        42%, 55%{ transform: translate(0.7px, 2px); }
+        58%     { transform: translate(0.315px, 1.2px); }
+        63%     { transform: translate(0.105px, 0.35px); }
+        67%     { transform: translate(0, -0.35px); }
+        70%     { transform: translate(0, 0.15px); }
+        72%, 100%{ transform: translate(0, 0); }
       }
-      @keyframes sparkle-magic {
-        0% { transform: translate(14px, 4px) scale(0) rotate(0deg); opacity: 0; }
-        20% { opacity: 1; }
-        100% { transform: translate(14px, -15px) scale(1.5) rotate(180deg); opacity: 0; }
+
+      @keyframes hat-scale {
+        0%, 28% { transform: scale(1); }
+        35%     { transform: scale(1.0495); }
+        42%, 55%{ transform: scale(1.11); }
+        58%, 67%{ transform: scale(1); }
+        72%, 100%{ transform: scale(1); }
+      }
+
+      @keyframes hat-tilt {
+        0%, 28% { transform: rotate(0deg); }
+        35%     { transform: rotate(3.15deg); }
+        42%, 55%{ transform: rotate(7.5deg); }
+        58%     { transform: rotate(-3deg); }
+        63%     { transform: rotate(2.1deg); }
+        67%     { transform: rotate(-1deg); }
+        70%     { transform: rotate(0.5deg); }
+        72%, 100%{ transform: rotate(0deg); }
+      }
+
+      @keyframes hat-crown-magic {
+        0%, 55%  { transform: rotate(0deg) translateY(0); }
+        58%      { transform: rotate(-2deg) translateY(-0.15px); }
+        62%      { transform: rotate(3deg) translateY(-0.35px); }
+        66%      { transform: rotate(-1.5deg) translateY(-0.15px); }
+        70%      { transform: rotate(0.8deg) translateY(0); }
+        72%, 100%{ transform: rotate(0deg) translateY(0); }
+      }
+
+      @keyframes hat-stars-magic {
+        0%, 52%  { opacity: 1; }
+        55%      { opacity: 0.35; }
+        58%      { opacity: 1; }
+        61%      { opacity: 0.45; }
+        64%      { opacity: 1; }
+        72%, 100%{ opacity: 1; }
+      }
+
+      @keyframes brim-tilt {
+        0%, 28% { transform: rotate(0deg); }
+        35%     { transform: rotate(3.15deg); }
+        42%, 55%{ transform: rotate(7deg); }
+        58%     { transform: rotate(-1.5deg); }
+        63%     { transform: rotate(1.4deg); }
+        67%     { transform: rotate(-0.6deg); }
+        70%     { transform: rotate(0.3deg); }
+        72%, 100%{ transform: rotate(0deg); }
+      }
+
+      @keyframes brim-center-sag {
+        0%, 28% { transform: translateY(0); }
+        35%     { transform: translateY(0.2px); }
+        42%, 55%{ transform: translateY(0.4px); }
+        58%     { transform: translateY(0.24px); }
+        63%     { transform: translateY(0.25px); }
+        67%     { transform: translateY(0.1px); }
+        72%, 100%{ transform: translateY(0); }
+      }
+
+      @keyframes brim-side-fall {
+        0%, 28% { transform: translateY(0); }
+        35%     { transform: translateY(0); }
+        42%, 55%{ transform: translateY(0); }
+        58%     { transform: translateY(0); }
+        63%     { transform: translateY(0); }
+        67%     { transform: translateY(0); }
+        72%, 100%{ transform: translateY(0); }
+      }
+
+      @keyframes arm-fix {
+        0%, 38%   { transform: rotate(0deg); }
+        45%       { transform: translate(-2px, -3px) rotate(-90deg); }
+        50%       { transform: translate(-2px, -3px) rotate(-90deg); }
+        55%       { transform: translate(-2px, -3px) rotate(-100deg); }
+        58%       { transform: translate(-2px, -3px) rotate(-80deg); }
+        62%       { transform: translate(-2px, -3px) rotate(-90deg); }
+        67%       { transform: rotate(0deg); }
+        100%      { transform: rotate(0deg); }
+      }
+
+      @keyframes eyes-wizard {
+        0%, 28%  { transform: translateX(2px) scaleY(1); }
+        32%      { transform: translateX(0) scaleY(1); }
+        38%, 58% { transform: translateX(0) scaleY(1); }
+        62%      { transform: translate(0, -0.25px) scaleY(1); }
+        66%      { transform: translate(0, -0.15px) scaleY(1.12); }
+        70%      { transform: translateX(0) scaleY(0.1); }
+        73%      { transform: translateX(0) scaleY(1.08); }
+        78%      { transform: translateX(-0.7px) scaleY(1); }
+        82%      { transform: translateX(0.4px) scaleY(1); }
+        88%      { transform: translateX(2px) scaleY(1); }
+        100%     { transform: translateX(2px) scaleY(1); }
+      }
+
+      @keyframes eyes-user-hover {
+        0%   { transform: translateX(0) scaleY(1); }
+        45%  { transform: translateX(0) scaleY(1); }
+        55%  { transform: translateX(0) scaleY(0.18); }
+        70%  { transform: translateX(0) scaleY(1.08); }
+        100% { transform: translateX(0) scaleY(1); }
+      }
+
+      @keyframes magic-sparkle-a {
+        0%, 47%  { opacity: 0; transform: translate(0, 0); }
+        50%      { opacity: 1; transform: translate(0, 0); }
+        58%      { opacity: 1; transform: translate(-1.6px, -2.2px); }
+        66%      { opacity: 0; transform: translate(-2.6px, -3.6px); }
+        100%     { opacity: 0; transform: translate(-2.6px, -3.6px); }
+      }
+
+      @keyframes magic-sparkle-b {
+        0%, 50%  { opacity: 0; transform: translate(0, 0); }
+        54%      { opacity: 1; transform: translate(0, 0); }
+        62%      { opacity: 1; transform: translate(1.7px, -1.8px); }
+        70%      { opacity: 0; transform: translate(2.8px, -3px); }
+        100%     { opacity: 0; transform: translate(2.8px, -3px); }
+      }
+
+      @keyframes magic-sparkle-c {
+        0%, 52%  { opacity: 0; transform: translate(0, 0); }
+        56%      { opacity: 1; transform: translate(0, 0); }
+        64%      { opacity: 0.8; transform: translate(-0.8px, -2.8px); }
+        72%      { opacity: 0; transform: translate(-1.2px, -3.8px); }
+        100%     { opacity: 0; transform: translate(-1.2px, -3.8px); }
+      }
+
+      @keyframes magic-sparkle-d {
+        0%, 53%  { opacity: 0; transform: translate(0, 0); }
+        58%      { opacity: 1; transform: translate(0, 0); }
+        66%      { opacity: 0.7; transform: translate(2.2px, -1px); }
+        72%      { opacity: 0; transform: translate(3.4px, -1.8px); }
+        100%     { opacity: 0; transform: translate(3.4px, -1.8px); }
+      }
+
+      @keyframes magic-sparkle-e {
+        0%, 56%  { opacity: 0; transform: translate(0, 0); }
+        60%      { opacity: 1; transform: translate(0, 0); }
+        68%      { opacity: 0.8; transform: translate(-1.8px, 0.8px); }
+        74%      { opacity: 0; transform: translate(-2.8px, 1.2px); }
+        100%     { opacity: 0; transform: translate(-2.8px, 1.2px); }
       }
     </style>
-    <g id="star">
-      <polygon points="0,-2 0.5,-0.5 2,0 0.5,0.5 0,2 -0.5,0.5 -2,0 -0.5,-0.5"/>
-    </g>
   </defs>
 
-  <rect id="ground-shadow" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.4"/>
+  <rect id="ground-shadow" class="shadow-walk" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
 
-  <!-- Magic Stars -->
-  <g>
-    <use href="#star" class="magic-star s1"/>
-    <use href="#star" class="magic-star s2" transform="translate(-10, 0)"/>
-    <use href="#star" class="magic-star s3" transform="translate(5, -5)"/>
-    <use href="#star" class="magic-star s4" transform="translate(-5, -10)"/>
-  </g>
+  <g class="body-hunch">
 
-  <g class="body-magic">
     <g id="legs" fill="#DE886D">
-      <rect x="3" y="13" width="1" height="2"/>
-      <rect x="5" y="13" width="1" height="2"/>
-      <rect x="9" y="13" width="1" height="2"/>
-      <rect x="11" y="13" width="1" height="2"/>
+      <rect class="leg-step leg-1" x="3" y="13" width="1" height="2"/>
+      <rect class="leg-step leg-2" x="5" y="13" width="1" height="2"/>
+      <rect class="leg-step leg-1" x="9" y="13" width="1" height="2"/>
+      <rect class="leg-step leg-2" x="11" y="13" width="1" height="2"/>
     </g>
 
     <g id="body-color-group" fill="#DE886D">
-      <rect x="2" y="6" width="11" height="7"/>
-      <g class="arm-l-magic"><rect x="0" y="9" width="2" height="2"/></g>
+      <rect id="torso" x="2" y="6" width="11" height="7"/>
+      <rect id="left-arm" x="0" y="9" width="2" height="2"/>
     </g>
 
-    <g fill="#000000" class="eyes-magic" transform-origin="7.5px 9px">
+    <g class="eyes-wizard" fill="#000000">
       <rect x="4" y="8" width="1" height="2"/>
       <rect x="10" y="8" width="1" height="2"/>
+      <rect x="4" y="8" width="0.35" height="0.35" fill="#FFFFFF"/>
+      <rect x="10" y="8" width="0.35" height="0.35" fill="#FFFFFF"/>
     </g>
 
-    <!-- Wizard Hat -->
-    <g transform="translate(7.5, 6)">
-      <polygon points="-4,0 4,0 0,-6" fill="#673AB7"/>
-      <rect x="-5" y="0" width="10" height="1" fill="#512DA8"/>
-      <polygon points="0,-3 0.5,-2.5 1.5,-2.5 0.75,-1.75 1,-0.5 0,-1.25 -1,-0.5 -0.75,-1.75 -1.5,-2.5 -0.5,-2.5" fill="#FFC107"/>
+    <!-- 巫师帽: 帽身倾斜, 帽檐软碰撞 -->
+    <g class="hat-drop">
+      <g class="hat-scale">
+      <g id="wizard-hat-fit" transform="translate(0, 1.5) translate(7.5, 6) scale(0.95) translate(-7.5, -6)">
+        <g class="hat-tilt">
+          <g class="hat-crown-magic">
+          <g id="hat-cone" fill="#5865C8">
+            <rect x="3" y="-5" width="4" height="1"/>
+            <rect x="2" y="-4" width="6" height="1"/>
+            <rect x="2" y="-3" width="7" height="1"/>
+            <rect x="4" y="-2" width="6" height="1"/>
+            <rect x="3" y="-1" width="8" height="1"/>
+            <rect x="3" y="0"  width="9" height="1"/>
+            <rect x="2" y="1"  width="11" height="1"/>
+            <rect x="2" y="2"  width="11" height="1"/>
+          </g>
+          <g id="hat-fold" fill="#404CB0">
+            <rect x="4" y="-3" width="1" height="1"/>
+            <rect x="4" y="-2" width="1" height="1"/>
+          </g>
+          <g id="hat-stars" class="hat-stars-magic" fill="#FFFFFF">
+            <rect x="6" y="-4" width="1" height="1"/>
+            <rect x="3" y="-3" width="1" height="1"/>
+            <rect x="7" y="-2" width="1" height="1"/>
+            <rect x="8" y="0"  width="1" height="1"/>
+            <rect x="4" y="1"  width="1" height="1"/>
+            <rect x="10" y="2" width="1" height="1"/>
+          </g>
+          </g>
+          <g id="hat-band" fill="#2C2557">
+            <rect x="1" y="3" width="13" height="2"/>
+          </g>
+        </g>
+
+        <g transform="translate(-0.2, -0.5)">
+        <g class="brim-tilt">
+        <g id="hat-brim" fill="#6A70D8">
+          <rect class="brim-side" x="-1" y="5" width="3" height="1"/>
+          <rect class="brim-center" x="2" y="5" width="11" height="1"/>
+          <rect class="brim-side" x="13" y="5" width="3" height="1"/>
+        </g>
+        </g>
+        </g>
+      </g>
+      </g>
     </g>
 
-    <!-- Wand arm (on top of hat and eyes) -->
-    <g class="arm-wand" fill="#DE886D">
-      <rect x="13" y="9" width="2" height="2"/>
-      <rect x="13.5" y="4" width="1" height="6" fill="#8D6E63"/>
-      <rect x="13.5" y="4" width="1" height="1" fill="#FFD700"/>
+    <g class="arm-fix" fill="#DE886D">
+      <rect id="right-arm" x="13" y="9" width="2" height="2"/>
     </g>
+
+    <g id="magic-sparkles">
+      <g class="magic-sparkle-a" fill="#FFF3A8">
+        <rect x="13" y="2.8" width="1.1" height="1.1"/>
+      </g>
+      <g class="magic-sparkle-b" fill="#FFFFFF">
+        <rect x="15" y="4" width="1" height="1"/>
+        <rect x="15.35" y="3.65" width="0.3" height="1.7"/>
+        <rect x="14.65" y="4.35" width="1.7" height="0.3"/>
+      </g>
+      <g class="magic-sparkle-c" fill="#DCC5FF">
+        <rect x="9.2" y="3.4" width="1.1" height="1.1"/>
+      </g>
+      <g class="magic-sparkle-d" fill="#FFF3A8">
+        <rect x="15.4" y="6.2" width="1" height="1"/>
+      </g>
+      <g class="magic-sparkle-e" fill="#FFFFFF">
+        <rect x="9" y="6.5" width="0.9" height="0.9"/>
+      </g>
+    </g>
+
   </g>
 </svg>

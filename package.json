@@ -1,6 +1,6 @@
 {
   "name": "clawd-on-desk",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "A desktop pet that reacts to your Claude Code sessions in real-time.",
   "main": "src/main.js",
   "scripts": {
@@ -14,16 +14,23 @@
     "build:all": "electron-builder --win --mac --linux",
     "test": "node --test test/*.test.js",
     "create-theme": "node scripts/create-theme.js",
+    "export-agent-icons": "node scripts/export-agent-icons.js",
     "install:claude-hooks": "node hooks/install.js",
     "uninstall:claude-hooks": "node hooks/uninstall.js",
     "install:gemini-hooks": "node hooks/gemini-install.js",
     "install:cursor-hooks": "node hooks/cursor-install.js",
     "install:kiro-hooks": "node hooks/kiro-install.js",
     "install:kimi-hooks": "node hooks/kimi-install.js",
+    "install:pi-extension": "node hooks/pi-install.js",
+    "uninstall:pi-extension": "node hooks/pi-install.js --uninstall",
+    "install:openclaw-plugin": "node hooks/openclaw-install.js",
+    "uninstall:openclaw-plugin": "node hooks/openclaw-install.js --uninstall",
     "install:codex-hooks": "node hooks/codex-install.js",
     "uninstall:codex-hooks": "node hooks/codex-install.js --uninstall",
     "install:codex-debug-hooks": "node hooks/codex-debug-install.js",
     "uninstall:codex-debug-hooks": "node hooks/codex-debug-install.js --uninstall",
+    "install:hermes-plugin": "node hooks/hermes-install.js",
+    "uninstall:hermes-plugin": "node hooks/hermes-install.js --uninstall",
     "register-protocol:dev": "node launch.js --register-protocol"
   },
   "keywords": [
@@ -101,9 +108,11 @@
       "buildUniversalInstaller": false,
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico",
-      "installerHeaderIcon": "assets/icon.ico"
+      "installerHeaderIcon": "assets/icon.ico",
+      "include": "build/installer.nsh"
     },
     "files": [
+      "NOTICE.md",
       "src/**/*",
       "assets/icon.ico",
       "assets/icons/**/*",

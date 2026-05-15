@@ -76,11 +76,24 @@ function registerRemoteSshIpc(options = {}) {
   const onProgress = (payload) => {
     broadcast(BrowserWindow, "remoteSsh:progress", payload);
   };
+  const onRemoteNodeDetected = (payload) => {
+    settingsController.applyCommand("remoteSsh.markRemoteNode", payload)
+      .then((r) => {
+        if (r && r.noop && r.reason === "target_drift") {
+          log("remote-ssh: remote node stamp skipped due to target drift on", r.targetDrift);
+        } else if (!r || r.status !== "ok") {
+          log("remote-ssh: failed to stamp remote node:", (r && r.message) || "non-ok result");
+        }
+      })
+      .catch((err) => log("remote-ssh: failed to stamp remote node:", err && err.message));
+  };
   remoteSshRuntime.on("status-changed", onStatusChanged);
   remoteSshRuntime.on("progress", onProgress);
+  remoteSshRuntime.on("remote-node-detected", onRemoteNodeDetected);
   disposers.push(() => {
     remoteSshRuntime.off("status-changed", onStatusChanged);
     remoteSshRuntime.off("progress", onProgress);
+    remoteSshRuntime.off("remote-node-detected", onRemoteNodeDetected);
   });
 
   // ── Status / list ──
@@ -173,6 +186,7 @@ function registerRemoteSshIpc(options = {}) {
             id: profile.id,
             deployedAt: Date.now(),
             expectedTarget,
+            remoteNode: result.remoteNode,
           });
           if (stamp && stamp.noop && stamp.reason === "target_drift") {
             log("remote-ssh: deploy stamp skipped due to target drift on", stamp.targetDrift);

@@ -93,6 +93,32 @@ describe("Codex official hook", () => {
     assert.deepStrictEqual(body.pid_chain, [789, 456, 123]);
   });
 
+  it("carries Codex Desktop session metadata and prefers persistent agent pid", () => {
+    withTempTranscript([
+      JSON.stringify({
+        type: "session_meta",
+        payload: {
+          cwd: "/repo",
+          originator: "Codex Desktop",
+          source: "vscode",
+        },
+      }),
+    ], (transcriptPath) => {
+      const body = buildStateBody({
+        hook_event_name: "SessionStart",
+        session_id: "official-session",
+        transcript_path: transcriptPath,
+      }, mockResolve);
+
+      assert.strictEqual(body.session_id, "codex:019d23d4-f1a9-7633-b9c7-758327137228");
+      assert.strictEqual(body.codex_originator, "Codex Desktop");
+      assert.strictEqual(body.codex_source, "vscode");
+      assert.strictEqual(body.source_pid, 456);
+      assert.strictEqual(body.agent_pid, 456);
+      assert.deepStrictEqual(body.pid_chain, [789, 456, 123]);
+    });
+  });
+
   it("reads Codex /rename thread_name from session_index.jsonl", () => {
     withTempCodexIndex([
       JSON.stringify({ id: "019d23d4-f1a9-7633-b9c7-758327137228", thread_name: "Old Name" }),
@@ -279,6 +305,32 @@ describe("Codex official hook", () => {
     assert.strictEqual(body.permission_mode, "default");
     assert.strictEqual(body.source_pid, 123);
     assert.strictEqual(Object.prototype.hasOwnProperty.call(body, "codex_session_role"), false);
+  });
+
+  it("carries Codex Desktop metadata on PermissionRequest payloads", () => {
+    withTempTranscript([
+      JSON.stringify({
+        type: "session_meta",
+        payload: {
+          originator: "Codex Desktop",
+          source: "vscode",
+        },
+      }),
+    ], (transcriptPath) => {
+      const body = buildPermissionBody({
+        hook_event_name: "PermissionRequest",
+        session_id: "official-session",
+        transcript_path: transcriptPath,
+        tool_name: "Bash",
+        tool_input: { command: "npm test" },
+      }, mockResolve);
+
+      assert.strictEqual(body.session_id, "codex:019d23d4-f1a9-7633-b9c7-758327137228");
+      assert.strictEqual(body.codex_originator, "Codex Desktop");
+      assert.strictEqual(body.codex_source, "vscode");
+      assert.strictEqual(body.source_pid, 456);
+      assert.strictEqual(body.agent_pid, 456);
+    });
   });
 
   it("does not classify PermissionRequest payloads even when the transcript is subagent", () => {

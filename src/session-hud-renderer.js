@@ -74,6 +74,7 @@ function stateChipInfo(session) {
 }
 
 const BELL_SVG = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>`;
+const FOCUS_UNAVAILABLE_SVG = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l16 16"/><path d="M9.5 5h5"/><path d="M7 9h10"/><path d="M5 14h9"/><path d="M12 19h5"/></svg>`;
 const PIN_SVG_FILLED = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M14 4l6 6-4 1-3 3 1 5-2 1-4-4-5 5-1-1 5-5-4-4 1-2 5 1 3-3 1-4z"/></svg>`;
 const PIN_SVG_OUTLINE = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M14 4l6 6-4 1-3 3 1 5-2 1-4-4-5 5-1-1 5-5-4-4 1-2 5 1 3-3 1-4z"/></svg>`;
 
@@ -103,9 +104,20 @@ function splitHudLayout(sessions) {
   return { expanded, folded };
 }
 
+function focusUnavailableTooltip(session) {
+  return session && session.host
+    ? t("sessionHudRemoteFocusUnavailableTooltip")
+    : t("sessionHudFocusUnavailableTooltip");
+}
+
 function createRowForSession(session, now) {
   const row = document.createElement("div");
   row.className = "row";
+  const canFocus = session.canFocus === true;
+  if (!canFocus) {
+    row.classList.add("row-unfocusable");
+    row.title = focusUnavailableTooltip(session);
+  }
 
   const left = document.createElement("div");
   left.className = "left";
@@ -140,6 +152,16 @@ function createRowForSession(session, now) {
     hasRightContent = true;
   }
 
+  if (!canFocus) {
+    const marker = document.createElement("span");
+    marker.className = "focus-unavailable";
+    marker.innerHTML = FOCUS_UNAVAILABLE_SVG;
+    marker.title = focusUnavailableTooltip(session);
+    marker.setAttribute("aria-label", focusUnavailableTooltip(session));
+    right.appendChild(marker);
+    hasRightContent = true;
+  }
+
   const chipInfo = stateChipInfo(session);
   if (chipInfo && !(session.badge === "done" && unreadSessions.has(session.id))) {
     const chip = document.createElement("span");
@@ -162,7 +184,7 @@ function createRowForSession(session, now) {
   row.addEventListener("click", () => {
     unreadSessions.delete(session.id);
     render();
-    window.sessionHudAPI.focusSession(session.id);
+    if (canFocus) window.sessionHudAPI.focusSession(session.id);
   });
 
   return row;

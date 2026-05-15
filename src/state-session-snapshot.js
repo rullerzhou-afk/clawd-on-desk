@@ -2,6 +2,7 @@
 
 const path = require("path");
 const { sessionAliasKey } = require("./session-alias");
+const { getSessionFocusTarget } = require("./session-focus");
 const { readCodexThreadName } = require("../hooks/codex-session-index");
 
 const EVENT_LABEL_KEYS = {
@@ -136,21 +137,33 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
   const getAgentIconUrl = typeof options.getAgentIconUrl === "function"
     ? options.getAgentIconUrl
     : () => null;
+  const state = (session && session.state) || "idle";
+  const hiddenFromHud = shouldAutoClearDetachedSession(session, badge, options);
+  const focusTarget = session && !session.headless && state !== "sleeping" && !hiddenFromHud
+    ? getSessionFocusTarget({ ...(session || {}), id })
+    : { canFocus: false, type: null, url: null };
   return {
     id,
     agentId: (session && session.agentId) || null,
     iconUrl: getAgentIconUrl(session && session.agentId),
-    state: (session && session.state) || "idle",
+    state,
     badge,
-    hiddenFromHud: shouldAutoClearDetachedSession(session, badge, options),
+    hiddenFromHud,
     hasAlias: !!(alias && typeof alias.title === "string" && alias.title),
     sessionTitle: getEffectiveSessionTitle(id, session, options),
     displayTitle: sessionDisplayTitle(id, session, sessionAliases, options),
     cwd: (session && session.cwd) || "",
     updatedAt: sessionUpdatedAt(session),
     sourcePid: (session && session.sourcePid) || null,
+    canFocus: focusTarget.canFocus === true,
+    focusTarget: focusTarget.type ? { type: focusTarget.type, url: focusTarget.url || null } : null,
     host: (session && session.host) || null,
     headless: !!(session && session.headless),
+    platform: (session && session.platform) || null,
+    model: (session && session.model) || null,
+    provider: (session && session.provider) || null,
+    codexOriginator: (session && session.codexOriginator) || null,
+    codexSource: (session && session.codexSource) || null,
     lastEvent: latestEvent ? {
       labelKey: rawEvent ? (EVENT_LABEL_KEYS[rawEvent] || null) : null,
       rawEvent,
@@ -245,9 +258,16 @@ function sessionSnapshotSignature(snapshot) {
       cwd: entry.cwd,
       agentId: entry.agentId,
       sourcePid: entry.sourcePid,
+      canFocus: entry.canFocus,
+      focusTarget: entry.focusTarget,
       headless: entry.headless,
       hiddenFromHud: !!entry.hiddenFromHud,
       host: entry.host,
+      platform: entry.platform,
+      model: entry.model,
+      provider: entry.provider,
+      codexOriginator: entry.codexOriginator,
+      codexSource: entry.codexSource,
       lastEventLabelKey: entry.lastEvent ? entry.lastEvent.labelKey : null,
       lastEventRawEvent: entry.lastEvent ? entry.lastEvent.rawEvent : null,
       lastEventAt: entry.lastEvent ? entry.lastEvent.at : null,

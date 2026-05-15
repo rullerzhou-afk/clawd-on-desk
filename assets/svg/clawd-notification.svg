@@ -1,149 +1,438 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <!-- PoC v8: v7 左右翻转版
+       唯一改动: master-group 加 transform="translate(15, 0) scale(-1, 1)"
+                围绕 viewBox 中心 X=7.5 镜像翻转
+       视觉效果: 举手从右上变左上, body 倾斜方向反转, 左右腿角色互换
+       本仓库版额外压缩前段 timing: 更快举手, 保留中后段亮灯 hold
+       ground-shadow 在 master-group 外保持不动 (本身左右对称)
+  -->
+
+  <!-- v7 原注释保留作为技术参考: v6 + 眼睛序列 + 灯泡跟手摆动 + rays 居中修正
+       v6 → v7 三件改动:
+         1. 眼睛运动序列:
+            - 11-16% rect 眼移到右上看灯泡 (+1px, -0.5px)
+            - 16-24% 保持看灯泡
+            - 28% 回正中
+            - 30% 眨眼 (scaleY 0.1)
+            - 31-72% 切换为 ^^ 微笑眼 (复刻 mini-happy 的 polyline)
+            - 73-74% 微笑收起, rect 重新睁开
+            实现: rect 眼 + smile 眼 两套元素叠加, opacity step-end 切换 + scaleY 眨眼
+         2. 灯泡跟手微摆: lightbulb-zone 在 hold 期 (30-66%) 加微抖 (跟身体晃同步)
+            translate ±0.3px / ±0.2px, 比身体晃小一档, 表达"被举着也跟着重心晃"
+         3. rays 重排居中:
+            - 上下 y 范围从 [-5.8~7.2] 改为 [-5~5] 严格对称
+            - 几何中心从 (13.5, 1.0) 上移到 (13.5, 0.5), 更接近灯泡玻璃罩中心 (13.04, 0.16)
+            - transform-origin 同步改为 13.5px 0.5px
+
+       6s loop 时间轴:
+         0-3%    idle
+         3-10%   右手举到 -3px
+         10-16%  右手 hold + 灯泡 pop, 11% 眼睛开始看灯泡
+         16-24%  ★ 用力: body 右倾下压, 左腿被挤抬, 右手多举 1.5px
+         24-30%  眼睛回正中 + 灯丝亮起
+         24-66%  hold 用力姿态 + rays 闪 + body/腿/灯泡微抖
+         30%     眨眼瞬间
+         31-72%  ^^ 微笑眼显示
+         66-76%  右手回到 -3px, body 回正
+         70%     灯泡消失
+         73-74%  微笑收起, rect 眼重新睁开
+         76-84%  右手放下
+         84-100% 复位 idle
+  -->
+
   <defs>
     <style>
-      /* 3.5s loop: startle + 4 decaying jumps */
-
-      .body-anim {
-        transform-origin: 7.5px 15px;
-        animation: body-jump 3.5s infinite ease-in-out;
+      .body-breathe {
+        transform-box: view-box;
+        transform-origin: 7.5px 12px;
+        animation: body-breathe 6s infinite ease-in-out;
+      }
+      @keyframes body-breathe {
+        0%, 12%, 84%, 100% { transform: translateY(0); }
+        38%, 64%           { transform: translateY(-0.28px); }
+        72%                { transform: translateY(-0.12px); }
       }
 
-      .shadow-anim {
+      #ground-shadow {
+        transform-box: view-box;
         transform-origin: 7.5px 15.5px;
-        animation: shadow-pulse 3.5s infinite ease-in-out;
+        animation: shadow-breathe 6s infinite ease-in-out;
+      }
+      @keyframes shadow-breathe {
+        0%, 12%, 84%, 100% { opacity: 0.5; transform: scaleX(1); }
+        38%, 64%           { opacity: 0.36; transform: scaleX(0.86); }
+        72%                { opacity: 0.44; transform: scaleX(0.94); }
       }
 
-      .eyes-look {
-        transform-origin: 7.5px 9px;
-        animation: eye-track 3.5s infinite ease-in-out;
+      /* === body 右倾下压 + hold 期 4 次微晃 (重心不稳) === */
+      .body-tilt {
+        transform-box: view-box;
+        transform-origin: 7.5px 13px;
+        animation: body-tilt 6s infinite ease-in-out;
+      }
+      @keyframes body-tilt {
+        0%, 16%, 76%, 100% { transform: rotate(0deg) scaleY(1); }
+        24%                { transform: rotate(3deg) scaleY(0.97); }
+        39%                { transform: rotate(4.5deg) scaleY(0.97); }
+        48%                { transform: rotate(2deg) scaleY(0.97); }
+        57%                { transform: rotate(4deg) scaleY(0.97); }
+        66%                { transform: rotate(3deg) scaleY(0.97); }
       }
 
-      .arm-l {
-        transform-origin: 1px 10px;
-        animation: arm-wave-l 3.5s infinite ease-in-out;
+      /* === 左两腿被挤抬起 + hold 期 6 次微抖 (用力颤抖) === */
+      .leg-left-inner {
+        transform-box: fill-box;
+        transform-origin: 50% 0%;
+        animation: leg-left-inner 6s infinite ease-in-out;
       }
+      @keyframes leg-left-inner {
+        0%, 16%, 76%, 100% { transform: rotate(0deg); }
+        24%                { transform: rotate(12deg); }
+        36%                { transform: rotate(15deg); }
+        42%                { transform: rotate(9deg); }
+        48%                { transform: rotate(15deg); }
+        54%                { transform: rotate(9deg); }
+        60%                { transform: rotate(15deg); }
+        66%                { transform: rotate(12deg); }
+      }
+      .leg-left-outer {
+        transform-box: fill-box;
+        transform-origin: 50% 0%;
+        animation: leg-left-outer 6s infinite ease-in-out;
+      }
+      @keyframes leg-left-outer {
+        0%, 16%, 76%, 100% { transform: rotate(0deg); }
+        24%                { transform: rotate(22deg); }
+        36%                { transform: rotate(26deg); }
+        42%                { transform: rotate(19deg); }
+        48%                { transform: rotate(26deg); }
+        54%                { transform: rotate(19deg); }
+        60%                { transform: rotate(26deg); }
+        66%                { transform: rotate(22deg); }
+      }
+
+      /* === 左手: hold 期下沉 + 微晃 (配重稳平衡) === */
+      .arm-l-balance {
+        transform-box: fill-box;
+        transform-origin: 100% 0%;
+        animation: arm-l-balance 6s infinite ease-in-out;
+      }
+      @keyframes arm-l-balance {
+        0%, 16%, 76%, 100% { transform: translate(0, 0) rotate(0deg); }
+        24%                { transform: translate(0, 0.5px) rotate(-2deg); }
+        37%                { transform: translate(0, 0.55px) rotate(1deg); }
+        44%                { transform: translate(0, 0.5px) rotate(-3deg); }
+        51%                { transform: translate(0, 0.55px) rotate(2deg); }
+        58%                { transform: translate(0, 0.5px) rotate(-1deg); }
+        66%                { transform: translate(0, 0.5px) rotate(0deg); }
+      }
+
+      /* === 右手: idle → 举到 -3 → 用力多举到 -4.5 → 回落 → 放下 === */
       .arm-r {
-        transform-origin: 14px 10px;
-        animation: arm-wave-r 3.5s infinite ease-in-out;
+        transform-origin: 13px 10px;
+        animation: arm-r 6s infinite ease-in-out;
+      }
+      @keyframes arm-r {
+        0%, 3%    { transform: none; }
+        10%, 16%  { transform: translateY(-3px) rotate(-90deg); }
+        24%, 66%  { transform: translateY(-4.5px) rotate(-90deg); }
+        76%       { transform: translateY(-3px) rotate(-90deg); }
+        80%, 100% { transform: none; }
       }
 
-      .alert-pop {
-        transform-origin: 16px -1px;
-        animation: alert-flash 3.5s infinite ease-in-out;
+      /* === 灯泡 + rays 整组跟着右手举更高 + hold 期跟身体微摆 === */
+      .lightbulb-zone {
+        transform-box: view-box;
+        transform-origin: 0 0;
+        animation: lightbulb-zone 6s infinite ease-in-out;
+      }
+      @keyframes lightbulb-zone {
+        0%, 16%, 76%, 100% { transform: translate(0, 0); }
+        24%                { transform: translate(0, -1.5px); }
+        39%                { transform: translate(0.3px, -1.7px); }
+        48%                { transform: translate(-0.2px, -1.3px); }
+        57%                { transform: translate(0.3px, -1.6px); }
+        66%                { transform: translate(0, -1.5px); }
+      }
+
+      /* === 眼睛: rect 眼 (idle/看灯泡/眨眼) === */
+      .eyes-rect {
+        transform-box: view-box;
+        transform-origin: 7.5px 9px;
+        animation:
+          eyes-rect-move 6s infinite ease-in-out,
+          eyes-rect-vis 6s infinite step-end;
+      }
+      @keyframes eyes-rect-move {
+        0%, 11%       { transform: translate(0, 0) scaleY(1); }
+        16%, 24%      { transform: translate(1px, -0.5px) scaleY(1); }   /* 看灯泡 */
+        28%           { transform: translate(0, 0) scaleY(1); }          /* 回正中 */
+        30%           { transform: translate(0, 0) scaleY(0.1); }        /* 眨眼 */
+        72%           { transform: translate(0, 0) scaleY(0.1); }        /* 闭眼期 */
+        74%, 100%     { transform: translate(0, 0) scaleY(1); }          /* 睁开 */
+      }
+      @keyframes eyes-rect-vis {
+        0%, 30%       { opacity: 1; }
+        31%, 72%      { opacity: 0; }
+        73%, 100%     { opacity: 1; }
+      }
+
+      /* === 眼睛: ^^ 微笑眼 (灯泡 hold 期出现, 复刻 mini-happy) === */
+      .eyes-smile {
         opacity: 0;
+        animation: eyes-smile-vis 6s infinite step-end;
+      }
+      @keyframes eyes-smile-vis {
+        0%, 30%       { opacity: 0; }
+        31%, 72%      { opacity: 1; }
+        73%, 100%     { opacity: 0; }
       }
 
-      /* --- Keyframes --- */
-
-      @keyframes body-jump {
-        0%          { transform: translate(0, 0) scale(1, 1); }
-        3%          { transform: translate(-1.5px, -1px) scale(1.03, 0.97); }
-        10%         { transform: translate(-1.5px, -1px) scale(1.03, 0.97); }
-        15%         { transform: translate(0, 1.5px) scale(1.05, 0.96); }
-        20%         { transform: translate(0, -10px) scale(0.96, 1.04); }
-        25%         { transform: translate(0, 1.5px) scale(1.05, 0.96); }
-        30%         { transform: translate(0, -8px) scale(0.97, 1.03); }
-        35%         { transform: translate(0, 1.2px) scale(1.04, 0.97); }
-        40%         { transform: translate(0, -5px) scale(0.98, 1.02); }
-        45%         { transform: translate(0, 1px) scale(1.03, 0.98); }
-        50%         { transform: translate(0, -3px) scale(0.99, 1.01); }
-        55%         { transform: translate(0, 0.5px) scale(1.01, 0.99); }
-        62%, 100%   { transform: translate(0, 0) scale(1, 1); }
+      /* === 灯泡: 头顶固定点 pop 出现 → 8 次亮灯 → 消失 === */
+      .bulb {
+        transform-box: view-box;
+        transform-origin: 0 0;
+        opacity: 0;
+        animation: bulb-fly 6s infinite ease-in-out;
+      }
+      @keyframes bulb-fly {
+        0%, 11%   { opacity: 0; transform: translate(9.5px, -2.7px) scale(0.15); }
+        13%       { opacity: 1; transform: translate(9.5px, -2.7px) scale(0.27); }
+        16%, 66%  { opacity: 1; transform: translate(9.5px, -2.7px) scale(0.24); }
+        70%, 100% { opacity: 0; transform: translate(9.5px, -2.7px) scale(0.2); }
       }
 
-      @keyframes shadow-pulse {
-        0%              { transform: scale(1); opacity: 0.5; }
-        3%, 10%         { transform: translate(-1.5px, 0) scale(1); opacity: 0.5; }
-        15%             { transform: scale(1.1); opacity: 0.55; }
-        20%             { transform: scale(0.5); opacity: 0.12; }
-        25%             { transform: scale(1.12); opacity: 0.55; }
-        30%             { transform: scale(0.55); opacity: 0.15; }
-        35%             { transform: scale(1.1); opacity: 0.52; }
-        40%             { transform: scale(0.65); opacity: 0.2; }
-        45%             { transform: scale(1.06); opacity: 0.5; }
-        50%             { transform: scale(0.75); opacity: 0.3; }
-        55%             { transform: scale(1.03); opacity: 0.5; }
-        62%, 100%       { transform: scale(1); opacity: 0.5; }
+      /* === 暗/亮玻璃: 只做一次灰色到亮起, 之后保持亮 === */
+      .bulb rect[fill="#FFB000"] { animation: glass-edge 6s infinite step-end; }
+      .bulb rect[fill="#FFD400"] { animation: glass-main 6s infinite step-end; }
+      .bulb rect[fill="#E88900"] { animation: glass-shadow 6s infinite step-end; }
+      .bulb rect[fill="#FFFFFF"],
+      .bulb rect[fill="#FFF8B8"] { animation: glass-highlight 6s infinite step-end; }
+
+      @keyframes glass-main {
+        0%, 19%   { fill: #8A7428; }
+        20%, 70%  { fill: #FFD400; }
+        71%, 100% { fill: #8A7428; }
+      }
+      @keyframes glass-edge {
+        0%, 19%   { fill: #725B20; }
+        20%, 70%  { fill: #FFB000; }
+        71%, 100% { fill: #725B20; }
+      }
+      @keyframes glass-shadow {
+        0%, 19%   { fill: #56451D; }
+        20%, 70%  { fill: #E88900; }
+        71%, 100% { fill: #56451D; }
+      }
+      @keyframes glass-highlight {
+        0%, 19%   { opacity: 0.25; }
+        20%, 70%  { opacity: 1; }
+        71%, 100% { opacity: 0.25; }
       }
 
-      @keyframes eye-track {
-        0%          { transform: translate(0, 0) scaleY(1); }
-        3%          { transform: translate(4px, 0) scaleY(0.3); }
-        6%          { transform: translate(4px, 0) scaleY(1); }
-        10%         { transform: translate(4px, 0) scaleY(1); }
-        15%, 100%   { transform: translate(0, 0) scaleY(1); }
+      .f-anim { animation: filament-f 6s infinite step-end; }
+      @keyframes filament-f {
+        0%, 19%   { fill: #555; }
+        20%, 70%  { fill: #C96E00; }
+        71%, 100% { fill: #555; }
       }
 
-      @keyframes arm-wave-l {
-        0%          { transform: rotate(0deg); }
-        3%, 10%     { transform: rotate(25deg); }
-        15%         { transform: rotate(30deg); }
-        20%         { transform: rotate(155deg); }
-        25%         { transform: rotate(115deg); }
-        30%         { transform: rotate(140deg); }
-        35%         { transform: rotate(100deg); }
-        40%         { transform: rotate(115deg); }
-        45%         { transform: rotate(80deg); }
-        50%         { transform: rotate(80deg); }
-        55%         { transform: rotate(40deg); }
-        62%, 100%   { transform: rotate(0deg); }
+      .fg-anim { animation: filament-fg 6s infinite step-end; }
+      @keyframes filament-fg {
+        0%, 19%   { fill: #777; }
+        20%, 70%  { fill: #E89500; }
+        71%, 100% { fill: #777; }
       }
 
-      @keyframes arm-wave-r {
-        0%          { transform: rotate(0deg); }
-        3%, 10%     { transform: rotate(-30deg); }
-        15%         { transform: rotate(-30deg); }
-        20%         { transform: rotate(-155deg); }
-        25%         { transform: rotate(-115deg); }
-        30%         { transform: rotate(-140deg); }
-        35%         { transform: rotate(-100deg); }
-        40%         { transform: rotate(-115deg); }
-        45%         { transform: rotate(-80deg); }
-        50%         { transform: rotate(-80deg); }
-        55%         { transform: rotate(-40deg); }
-        62%, 100%   { transform: rotate(0deg); }
+      .rays {
+        transform-box: view-box;
+        transform-origin: 13.5px 0.5px;
+        opacity: 0;
+        animation: rays-burst 6s infinite ease-in-out;
       }
-
-      @keyframes alert-flash {
-        0%          { opacity: 0; transform: scale(0.3); }
-        3%          { opacity: 1; transform: scale(1.3); }
-        10%         { opacity: 1; transform: scale(1); }
-        50%         { opacity: 1; transform: scale(1); }
-        55%         { opacity: 0.7; transform: scale(0.9); }
-        62%         { opacity: 0; transform: scale(0.6); }
-        100%        { opacity: 0; transform: scale(0.6); }
+      @keyframes rays-burst {
+        0%, 24%   { opacity: 0; transform: translate(-0.1px, -0.1px) scale(0.65); }
+        25%, 26%  { opacity: 0.9; transform: translate(-0.1px, -0.1px) scale(0.9); }
+        27%, 28%  { opacity: 0; transform: translate(-0.1px, -0.1px) scale(0.65); }
+        30%, 31%  { opacity: 0.9; transform: translate(-0.1px, -0.1px) scale(0.95); }
+        32%, 33%  { opacity: 0; transform: translate(-0.1px, -0.1px) scale(0.65); }
+        35%, 36%  { opacity: 0.9; transform: translate(-0.1px, -0.1px) scale(0.9); }
+        37%, 38%  { opacity: 0; transform: translate(-0.1px, -0.1px) scale(0.65); }
+        40%, 41%  { opacity: 0.9; transform: translate(-0.1px, -0.1px) scale(0.95); }
+        42%, 43%  { opacity: 0; transform: translate(-0.1px, -0.1px) scale(0.65); }
+        45%, 46%  { opacity: 0.9; transform: translate(-0.1px, -0.1px) scale(0.9); }
+        47%, 48%  { opacity: 0; transform: translate(-0.1px, -0.1px) scale(0.65); }
+        50%, 51%  { opacity: 0.9; transform: translate(-0.1px, -0.1px) scale(0.95); }
+        52%, 53%  { opacity: 0; transform: translate(-0.1px, -0.1px) scale(0.65); }
+        55%, 56%  { opacity: 0.9; transform: translate(-0.1px, -0.1px) scale(0.9); }
+        57%, 60%  { opacity: 1; transform: translate(-0.1px, -0.1px) scale(0.95); }
+        61%, 100% { opacity: 0; transform: translate(-0.1px, -0.1px) scale(0.65); }
       }
     </style>
   </defs>
 
-  <!-- Mirrored character -->
-  <g transform="translate(15, 0) scale(-1, 1)">
-    <rect class="shadow-anim" x="3" y="15" width="9" height="1" fill="#000000"/>
+  <rect id="ground-shadow" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
 
-    <g class="body-anim">
-      <g fill="#DE886D">
-        <rect x="3" y="13" width="1" height="2"/>
-        <rect x="5" y="13" width="1" height="2"/>
-        <rect x="9" y="13" width="1" height="2"/>
-        <rect x="11" y="13" width="1" height="2"/>
-        <rect x="2" y="6" width="11" height="7"/>
-        <g class="arm-l">
-          <rect x="0" y="9" width="2" height="2"/>
+  <g id="master-group" transform="translate(15, 0) scale(-1, 1)">
+    <!-- 主体 + 左侧腿 (要 body-tilt) + 左手 -->
+    <g class="body-breathe">
+      <g class="body-tilt">
+        <!-- 左外/左内腿: 被身体右倾挤压抬起 -->
+        <rect class="leg-left-outer" x="3" y="13" width="1" height="2" fill="#DE886D"/>
+        <rect class="leg-left-inner" x="5" y="13" width="1" height="2" fill="#DE886D"/>
+
+        <!-- torso -->
+        <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
+
+        <!-- 眼睛 rect (正眼/看灯泡/眨眼) -->
+        <g class="eyes-rect" fill="#000000">
+          <rect x="4"  y="8" width="1" height="2"/>
+          <rect x="10" y="8" width="1" height="2"/>
         </g>
-        <g class="arm-r">
+
+        <!-- 眼睛 ^^ 微笑 (灯泡 hold 期出现, 复刻 mini-happy 的 polyline 描边) -->
+        <g class="eyes-smile" fill="none" stroke="#000000" stroke-width="0.7" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="3.5,9 4.5,8 5.5,9"/>
+          <polyline points="9.5,9 10.5,8 11.5,9"/>
+        </g>
+
+        <!-- 左手 (在 body-tilt 内, 跟身体倾斜 + 自身 hold 期下沉微晃) -->
+        <rect class="arm-l-balance" x="0" y="9" width="2" height="2" fill="#DE886D"/>
+      </g>
+
+      <!-- 右内腿 (在 body-tilt 外, 独立支撑) -->
+      <rect x="9" y="13" width="1" height="2" fill="#DE886D"/>
+    </g>
+
+    <!-- 右外腿 (完全独立支撑, 不受任何 transform 影响) -->
+    <rect x="11" y="13" width="1" height="2" fill="#DE886D"/>
+
+    <!-- 灯泡 + rays 包一组, 跟右手举更高 -->
+    <g class="lightbulb-zone">
+      <g class="bulb">
+        <!-- 玻璃罩 描边橙 #FFB000 -->
+        <rect fill="#FFB000" x="12" y="2"  width="8"  height="1"/>
+        <rect fill="#FFB000" x="10" y="3"  width="12" height="1"/>
+        <rect fill="#FFB000" x="9"  y="4"  width="14" height="1"/>
+        <rect fill="#FFB000" x="8"  y="5"  width="16" height="1"/>
+        <rect fill="#FFB000" x="7"  y="6"  width="18" height="1"/>
+        <rect fill="#FFB000" x="6"  y="7"  width="20" height="1"/>
+        <rect fill="#FFB000" x="5"  y="8"  width="22" height="2"/>
+        <rect fill="#FFB000" x="4"  y="10" width="24" height="7"/>
+        <rect fill="#FFB000" x="5"  y="17" width="22" height="2"/>
+        <rect fill="#FFB000" x="6"  y="19" width="20" height="1"/>
+        <rect fill="#FFB000" x="7"  y="20" width="18" height="1"/>
+        <rect fill="#FFB000" x="8"  y="21" width="16" height="1"/>
+        <rect fill="#FFB000" x="9"  y="22" width="14" height="1"/>
+        <rect fill="#FFB000" x="10" y="23" width="12" height="1"/>
+        <rect fill="#FFB000" x="12" y="24" width="8"  height="2"/>
+
+        <!-- 玻璃罩 主体黄 #FFD400 -->
+        <rect fill="#FFD400" x="13" y="3"  width="6"  height="1"/>
+        <rect fill="#FFD400" x="11" y="4"  width="10" height="1"/>
+        <rect fill="#FFD400" x="10" y="5"  width="12" height="1"/>
+        <rect fill="#FFD400" x="9"  y="6"  width="14" height="1"/>
+        <rect fill="#FFD400" x="8"  y="7"  width="16" height="1"/>
+        <rect fill="#FFD400" x="7"  y="8"  width="18" height="2"/>
+        <rect fill="#FFD400" x="6"  y="10" width="20" height="7"/>
+        <rect fill="#FFD400" x="7"  y="17" width="18" height="2"/>
+        <rect fill="#FFD400" x="8"  y="19" width="16" height="1"/>
+        <rect fill="#FFD400" x="9"  y="20" width="14" height="1"/>
+        <rect fill="#FFD400" x="10" y="21" width="12" height="1"/>
+        <rect fill="#FFD400" x="11" y="22" width="10" height="1"/>
+        <rect fill="#FFD400" x="12" y="23" width="8"  height="1"/>
+        <rect fill="#FFD400" x="13" y="24" width="6"  height="2"/>
+
+        <!-- 玻璃罩 边缘暗橙 #E88900 -->
+        <rect fill="#E88900" x="21" y="4"  width="2" height="1"/>
+        <rect fill="#E88900" x="22" y="5"  width="1" height="2"/>
+        <rect fill="#E88900" x="24" y="8"  width="1" height="4"/>
+        <rect fill="#E88900" x="25" y="10" width="1" height="4"/>
+        <rect fill="#E88900" x="23" y="17" width="2" height="1"/>
+        <rect fill="#E88900" x="22" y="19" width="2" height="1"/>
+        <rect fill="#E88900" x="20" y="22" width="2" height="1"/>
+        <rect fill="#E88900" x="18" y="24" width="2" height="2"/>
+        <rect fill="#E88900" x="7"  y="8"  width="1" height="2"/>
+        <rect fill="#E88900" x="6"  y="17" width="1" height="1"/>
+        <rect fill="#E88900" x="8"  y="20" width="1" height="1"/>
+        <rect fill="#E88900" x="10" y="23" width="1" height="1"/>
+
+        <!-- 高光 -->
+        <rect fill="#FFFFFF" x="13" y="4"  width="2" height="1"/>
+        <rect fill="#FFF8B8" x="12" y="5"  width="1" height="2"/>
+        <rect fill="#FFFFFF" x="11" y="7"  width="2" height="1"/>
+        <rect fill="#FFF8B8" x="10" y="8"  width="1" height="1"/>
+        <rect fill="#FFF8B8" x="9"  y="10" width="1" height="2"/>
+
+        <!-- 灯丝 -->
+        <rect class="f-anim"  x="13" y="12" width="2" height="1"/>
+        <rect class="f-anim"  x="18" y="12" width="2" height="1"/>
+        <rect class="f-anim"  x="13" y="13" width="1" height="3"/>
+        <rect class="f-anim"  x="19" y="13" width="1" height="3"/>
+        <rect class="fg-anim" x="14" y="14" width="1" height="2"/>
+        <rect class="fg-anim" x="18" y="14" width="1" height="2"/>
+        <rect class="f-anim"  x="15" y="15" width="3" height="1"/>
+        <rect class="fg-anim" x="15" y="16" width="1" height="2"/>
+        <rect class="fg-anim" x="17" y="16" width="1" height="2"/>
+        <rect class="f-anim"  x="16" y="18" width="1" height="7"/>
+
+        <!-- 灯口 -->
+        <rect fill="#2E2E2E" x="11" y="25" width="10" height="1"/>
+        <rect fill="#2E2E2E" x="12" y="26" width="1"  height="1"/>
+        <rect fill="#9B9B9B" x="13" y="26" width="2"  height="1"/>
+        <rect fill="#D7D7D7" x="15" y="26" width="4"  height="1"/>
+        <rect fill="#2E2E2E" x="19" y="26" width="1"  height="1"/>
+        <rect fill="#2E2E2E" x="11" y="27" width="1"  height="1"/>
+        <rect fill="#9B9B9B" x="12" y="27" width="3"  height="1"/>
+        <rect fill="#D7D7D7" x="15" y="27" width="4"  height="1"/>
+        <rect fill="#666666" x="19" y="27" width="1"  height="1"/>
+        <rect fill="#2E2E2E" x="20" y="27" width="1"  height="1"/>
+        <rect fill="#2E2E2E" x="12" y="28" width="1"  height="1"/>
+        <rect fill="#9B9B9B" x="13" y="28" width="2"  height="1"/>
+        <rect fill="#D7D7D7" x="15" y="28" width="4"  height="1"/>
+        <rect fill="#2E2E2E" x="19" y="28" width="1"  height="1"/>
+        <rect fill="#2E2E2E" x="11" y="29" width="1"  height="1"/>
+        <rect fill="#9B9B9B" x="12" y="29" width="3"  height="1"/>
+        <rect fill="#D7D7D7" x="15" y="29" width="4"  height="1"/>
+        <rect fill="#666666" x="19" y="29" width="1"  height="1"/>
+        <rect fill="#2E2E2E" x="20" y="29" width="1"  height="1"/>
+        <rect fill="#2E2E2E" x="12" y="30" width="1"  height="1"/>
+        <rect fill="#9B9B9B" x="13" y="30" width="2"  height="1"/>
+        <rect fill="#D7D7D7" x="15" y="30" width="4"  height="1"/>
+        <rect fill="#2E2E2E" x="19" y="30" width="1"  height="1"/>
+        <rect fill="#2E2E2E" x="13" y="31" width="6"  height="1"/>
+        <rect fill="#2E2E2E" x="14" y="32" width="4"  height="1"/>
+      </g>
+
+      <!-- 放射线 12 条 (v7 重排, 上下严格对称, 中心 (13.5, 0.5) 接近灯泡玻璃罩中心) -->
+      <g class="rays" fill="#FFFFFF">
+        <!-- 主方向 上 (2 像素长条) -->
+        <rect x="13" y="-5" width="1" height="1"/>
+        <rect x="13" y="-4" width="1" height="1"/>
+        <!-- 主方向 下 (2 像素长条) -->
+        <rect x="13" y="4"  width="1" height="1"/>
+        <rect x="13" y="5"  width="1" height="1"/>
+        <!-- 主方向 左 (2 像素长条) -->
+        <rect x="6"  y="0"  width="1" height="1"/>
+        <rect x="7"  y="0"  width="1" height="1"/>
+        <!-- 主方向 右 (2 像素长条) -->
+        <rect x="19" y="0"  width="1" height="1"/>
+        <rect x="20" y="0"  width="1" height="1"/>
+        <!-- 对角 4 个单像素点 -->
+        <rect x="9"  y="-3" width="1" height="1"/>
+        <rect x="17" y="-3" width="1" height="1"/>
+        <rect x="9"  y="3"  width="1" height="1"/>
+        <rect x="17" y="3"  width="1" height="1"/>
+      </g>
+    </g>
+
+    <!-- 右手: body-breathe → body-tilt → arm-r 三层嵌套 (跟身体微呼吸 + 身体右倾 + 自己举起多举) -->
+    <g class="body-breathe">
+      <g class="body-tilt">
+        <g class="arm-r" fill="#DE886D">
           <rect x="13" y="9" width="2" height="2"/>
         </g>
       </g>
-      <g class="eyes-look" fill="#000000">
-        <rect x="4" y="8" width="1" height="2"/>
-        <rect x="10" y="8" width="1" height="2"/>
-      </g>
     </g>
-  </g>
-
-  <!-- Exclamation mark (screen coords, not mirrored) -->
-  <g class="alert-pop" fill="#FF3D00">
-    <rect x="15" y="-6" width="2" height="5"/>
-    <rect x="15" y="0" width="2" height="2"/>
   </g>
 </svg>

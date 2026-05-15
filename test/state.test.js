@@ -80,6 +80,11 @@ function update(api, o = {}) {
       headless: o.headless || false,
       displayHint: o.displayHint,
       sessionTitle: o.sessionTitle ?? null,
+      platform: o.platform ?? null,
+      model: o.model ?? null,
+      provider: o.provider ?? null,
+      codexOriginator: o.codexOriginator ?? null,
+      codexSource: o.codexSource ?? null,
     },
   );
 }
@@ -98,6 +103,11 @@ function rawSession(state, opts = {}) {
     agentId: opts.agentId || null,
     host: opts.host || null,
     headless: opts.headless || false,
+    platform: opts.platform || null,
+    model: opts.model || null,
+    provider: opts.provider || null,
+    codexOriginator: opts.codexOriginator || null,
+    codexSource: opts.codexSource || null,
     sessionTitle: opts.sessionTitle ?? null,
     recentEvents: opts.recentEvents || [],
     pidReachable: opts.pidReachable ?? false,
@@ -347,10 +357,10 @@ describe("working sub-animations", () => {
     assert.strictEqual(api.getSvgOverride("working"), "clawd-working-typing.svg");
   });
 
-  it("2 working sessions → juggling SVG", () => {
+  it("2 working sessions → headphones groove SVG", () => {
     api.sessions.set("s1", rawSession("working"));
     api.sessions.set("s2", rawSession("working"));
-    assert.strictEqual(api.getSvgOverride("working"), "clawd-working-juggling.svg");
+    assert.strictEqual(api.getSvgOverride("working"), "clawd-headphones-groove.svg");
   });
 
   it("3+ working sessions → building SVG", () => {
@@ -360,15 +370,15 @@ describe("working sub-animations", () => {
     assert.strictEqual(api.getSvgOverride("working"), "clawd-working-building.svg");
   });
 
-  it("1 juggling session → juggling SVG", () => {
+  it("1 juggling session → headphones groove SVG", () => {
     api.sessions.set("s1", rawSession("juggling"));
-    assert.strictEqual(api.getSvgOverride("juggling"), "clawd-working-juggling.svg");
+    assert.strictEqual(api.getSvgOverride("juggling"), "clawd-headphones-groove.svg");
   });
 
-  it("2+ juggling sessions → conducting SVG", () => {
+  it("2+ juggling sessions → three-ball juggling SVG", () => {
     api.sessions.set("s1", rawSession("juggling"));
     api.sessions.set("s2", rawSession("juggling"));
-    assert.strictEqual(api.getSvgOverride("juggling"), "clawd-working-conducting.svg");
+    assert.strictEqual(api.getSvgOverride("juggling"), "clawd-working-juggling.svg");
   });
 
   it("idle → follow SVG", () => {
@@ -850,6 +860,60 @@ describe("updateSession()", () => {
     assert.strictEqual(api.getCurrentState(), "notification");
   });
 
+  it("Codex PermissionRequest persists focus metadata for snapshots", () => {
+    update(api, {
+      id: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+      state: "notification",
+      event: "PermissionRequest",
+      agentId: "codex",
+      sourcePid: 456,
+      cwd: "/repo",
+      agentPid: 456,
+      pidChain: [789, 456],
+      model: "gpt-5.4",
+      codexOriginator: "Codex Desktop",
+      codexSource: "vscode",
+    });
+
+    const session = api.sessions.get("codex:019e115a-4df2-7ed0-b90e-8e6345aca777");
+    assert.ok(session);
+    assert.strictEqual(session.agentId, "codex");
+    assert.strictEqual(session.sourcePid, 456);
+    assert.strictEqual(session.cwd, "/repo");
+    assert.deepStrictEqual(session.pidChain, [789, 456]);
+    assert.strictEqual(session.codexOriginator, "Codex Desktop");
+    assert.strictEqual(session.codexSource, "vscode");
+    const entry = api.getLastSessionSnapshot().sessions.find((item) =>
+      item.id === "codex:019e115a-4df2-7ed0-b90e-8e6345aca777"
+    );
+    assert.strictEqual(entry.canFocus, true);
+    assert.deepStrictEqual(entry.focusTarget, {
+      type: "codex-thread",
+      url: "codex://threads/019e115a-4df2-7ed0-b90e-8e6345aca777",
+    });
+  });
+
+  it("Codex PermissionRequest focus metadata respects the session cap", () => {
+    for (let i = 0; i < 20; i++) {
+      update(api, { id: `s${i}`, state: "working" });
+      mock.timers.tick(1);
+    }
+    assert.strictEqual(api.sessions.size, 20);
+
+    update(api, {
+      id: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+      state: "notification",
+      event: "PermissionRequest",
+      agentId: "codex",
+      sourcePid: 456,
+      codexOriginator: "Codex Desktop",
+    });
+
+    assert.strictEqual(api.sessions.size, 20);
+    assert.ok(api.sessions.has("codex:019e115a-4df2-7ed0-b90e-8e6345aca777"));
+    assert.ok(!api.sessions.has("s0"));
+  });
+
   it("SessionEnd + sweeping → plays sweeping even with other active sessions", () => {
     // Insert sessions directly to avoid MIN_DISPLAY_MS cascade from setState
     api.sessions.set("s1", rawSession("working"));
@@ -1035,6 +1099,25 @@ describe("updateSession()", () => {
   it("stores sessionTitle from updateSession positional arg", () => {
     update(api, { id: "s1", state: "working", sessionTitle: "My Task" });
     assert.strictEqual(api.sessions.get("s1").sessionTitle, "My Task");
+  });
+
+  it("stores optional platform and model metadata", () => {
+    update(api, {
+      id: "s1",
+      state: "working",
+      platform: "webui",
+      model: "gpt-5.4",
+      provider: "openai",
+    });
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.platform, "webui");
+    assert.strictEqual(session.model, "gpt-5.4");
+    assert.strictEqual(session.provider, "openai");
+
+    update(api, { id: "s1", state: "idle", event: "Stop" });
+    assert.strictEqual(api.sessions.get("s1").platform, "webui");
+    assert.strictEqual(api.sessions.get("s1").model, "gpt-5.4");
+    assert.strictEqual(api.sessions.get("s1").provider, "openai");
   });
 
   it("trims whitespace on sessionTitle", () => {

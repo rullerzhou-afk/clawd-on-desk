@@ -44,6 +44,7 @@ docs/**
 !docs/releases/release-v0.6.1.md
 !docs/releases/release-v0.6.2.md
 !docs/releases/release-v0.6.3.md
+!docs/releases/release-v0.7.1.md
 
 # Temp files from testing
 .tmp_*
@@ -80,6 +81,7 @@ scripts/*
 !scripts/monitor-clawd-power.ps1
 !scripts/validate-theme.js
 !scripts/create-theme.js
+!scripts/export-agent-icons.js
 
 # oh-my-cursor state
 .omc/

@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { registerHooks, unregisterHooks, registerHooksAsync, unregisterHooksAsync, __test } = require("../hooks/install");
+const { buildPermissionUrl, SERVER_PORTS } = require("../hooks/server-config");
 const {
   parseClaudeVersion,
   getWindowsClaudePathSuffixes,
@@ -16,6 +17,7 @@ const {
   readClaudeVersionFallback,
   readClaudeVersionFallbackAsync,
   getClaudeVersionAsync,
+  isClawdPermissionUrl,
 } = __test;
 
 const tempDirs = [];
@@ -1000,6 +1002,84 @@ describe("Hook installer version compatibility", () => {
   });
 });
 
+describe("Claude permission hook ownership", () => {
+  it("recognizes only exact Clawd PermissionRequest URLs on managed ports", () => {
+    for (const port of SERVER_PORTS) {
+      assert.strictEqual(
+        isClawdPermissionUrl(`http://127.0.0.1:${port}/permission`),
+        true,
+        `expected managed port ${port} to be Clawd-owned`
+      );
+    }
+
+    assert.strictEqual(isClawdPermissionUrl("http://127.0.0.1:8080/permission"), false);
+    assert.strictEqual(isClawdPermissionUrl("http://localhost:23333/permission"), false);
+    assert.strictEqual(isClawdPermissionUrl("https://127.0.0.1:23333/permission"), false);
+    assert.strictEqual(isClawdPermissionUrl("http://127.0.0.1:23333/permission?x=1"), false);
+    assert.strictEqual(isClawdPermissionUrl("http://127.0.0.1:23333/permission#frag"), false);
+    assert.strictEqual(isClawdPermissionUrl("http://user@127.0.0.1:23333/permission"), false);
+    assert.strictEqual(isClawdPermissionUrl("http://127.0.0.1/permission"), false);
+  });
+
+  it("preserves third-party local PermissionRequest URLs while adding Clawd HTTP hook", () => {
+    const clawdUrl = buildPermissionUrl(SERVER_PORTS[0]);
+    const settingsPath = makeTempSettings({
+      hooks: {
+        PermissionRequest: [
+          {
+            matcher: "",
+            hooks: [{ type: "http", url: "http://127.0.0.1:8080/permission", timeout: 100 }],
+          },
+          {
+            matcher: "",
+            hooks: [{ type: "http", url: "http://localhost:8080/permission", timeout: 100 }],
+          },
+        ],
+      },
+    });
+
+    registerHooks({
+      silent: true,
+      settingsPath,
+      port: SERVER_PORTS[0],
+      claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
+    });
+
+    const settings = readSettings(settingsPath);
+    assert.deepStrictEqual(getHttpUrls(settings, "PermissionRequest"), [
+      "http://127.0.0.1:8080/permission",
+      "http://localhost:8080/permission",
+      clawdUrl,
+    ]);
+  });
+
+  it("updates stale Clawd PermissionRequest URLs on managed fallback ports", () => {
+    const expectedUrl = buildPermissionUrl(SERVER_PORTS[0]);
+    const staleUrl = buildPermissionUrl(SERVER_PORTS[SERVER_PORTS.length - 1]);
+    const settingsPath = makeTempSettings({
+      hooks: {
+        PermissionRequest: [
+          {
+            matcher: "",
+            hooks: [{ type: "http", url: staleUrl, timeout: 600 }],
+          },
+        ],
+      },
+    });
+
+    const result = registerHooks({
+      silent: true,
+      settingsPath,
+      port: SERVER_PORTS[0],
+      claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
+    });
+
+    const settings = readSettings(settingsPath);
+    assert.ok(result.updated >= 1);
+    assert.deepStrictEqual(getHttpUrls(settings, "PermissionRequest"), [expectedUrl]);
+  });
+});
+
 describe("Hook installer deprecated hook cleanup", () => {
   it("does not register WorktreeCreate on fresh install (issue #127)", () => {
     const settingsPath = makeTempSettings({});
@@ -1105,6 +1185,10 @@ describe("Hook installer unregisterHooks", () => {
             matcher: "",
             hooks: [{ type: "http", url: "http://localhost:8080/permission", timeout: 100 }],
           },
+          {
+            matcher: "",
+            hooks: [{ type: "http", url: "http://127.0.0.1:8080/permission", timeout: 100 }],
+          },
         ],
       },
     });
@@ -1119,7 +1203,10 @@ describe("Hook installer unregisterHooks", () => {
       settings.hooks.SessionStart[0].hooks[0].command,
       'node "/tmp/third-party.js" SessionStart'
     );
-    assert.deepStrictEqual(getHttpUrls(settings, "PermissionRequest"), ["http://localhost:8080/permission"]);
+    assert.deepStrictEqual(getHttpUrls(settings, "PermissionRequest"), [
+      "http://localhost:8080/permission",
+      "http://127.0.0.1:8080/permission",
+    ]);
     assert.ok(!Object.prototype.hasOwnProperty.call(settings.hooks, "Stop"));
   });
 
@@ -1131,6 +1218,10 @@ describe("Hook installer unregisterHooks", () => {
             matcher: "",
             hooks: [{ type: "http", url: "http://localhost:8080/permission", timeout: 600 }],
           },
+          {
+            matcher: "",
+            hooks: [{ type: "http", url: "http://127.0.0.1:8080/permission", timeout: 600 }],
+          },
         ],
       },
     });
@@ -1139,7 +1230,10 @@ describe("Hook installer unregisterHooks", () => {
     const settings = readSettings(settingsPath);
 
     assert.deepStrictEqual(result, { removed: 0, changed: false });
-    assert.deepStrictEqual(getHttpUrls(settings, "PermissionRequest"), ["http://localhost:8080/permission"]);
+    assert.deepStrictEqual(getHttpUrls(settings, "PermissionRequest"), [
+      "http://localhost:8080/permission",
+      "http://127.0.0.1:8080/permission",
+    ]);
   });
 
   it("recognizes stale Clawd PermissionRequest URLs on any managed port", () => {

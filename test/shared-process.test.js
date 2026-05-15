@@ -29,6 +29,12 @@ describe("getPlatformConfig()", () => {
     assert.ok(all.length > 5, "should have several terminals");
   });
 
+  it("recognizes Windows console hosts as terminal anchors", { skip: process.platform !== "win32" }, () => {
+    const cfg = getPlatformConfig();
+    assert.ok(cfg.terminalNames.has("conhost.exe"));
+    assert.ok(cfg.terminalNames.has("openconsole.exe"));
+  });
+
   it("merges extraTerminals into base set", () => {
     const cfg = getPlatformConfig({
       extraTerminals: { win: ["custom.exe"], mac: ["custom"], linux: ["custom"] },
@@ -156,6 +162,148 @@ describe("buildElectronLaunchConfig()", () => {
     assert.strictEqual(cfg.env.ELECTRON_RUN_AS_NODE, undefined);
     assert.strictEqual(cfg.env.ELECTRON_DISABLE_SANDBOX, "1");
     assert.strictEqual(cfg.env.CHROME_DEVEL_SANDBOX, "");
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// createPidResolver() — Windows PowerShell / Get-CimInstance path (win32 only)
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("createPidResolver() — Windows PowerShell path", { skip: process.platform !== "win32" }, () => {
+  const childProcess = require("child_process");
+
+  function withMockedExec(mockFn, cb) {
+    const orig = childProcess.execFileSync;
+    childProcess.execFileSync = mockFn;
+    try { cb(); } finally { childProcess.execFileSync = orig; }
+  }
+
+  // Builds the JSON the snapshot helper expects: one ConvertTo-Json array of
+  // process records. Each record: { pid, name, ppid, cmd? }
+  function snapshotJson(procs) {
+    return JSON.stringify(procs.map((p) => ({
+      ProcessId: p.pid,
+      Name: p.name,
+      ParentProcessId: p.ppid,
+      CommandLine: typeof p.cmd === "string" ? p.cmd : null,
+    })));
+  }
+
+  it("populates pidChain by walking the snapshot Map", () => {
+    const cfg = getPlatformConfig();
+    const resolve = createPidResolver({ platformConfig: cfg, startPid: 1000 });
+    withMockedExec(() => snapshotJson([
+      { pid: 1000, name: "cmd.exe", ppid: 1001 },
+      { pid: 1001, name: "explorer.exe", ppid: 0 },
+    ]), () => {
+      const { pidChain } = resolve();
+      assert.ok(pidChain.includes(1000));
+      assert.ok(pidChain.includes(1001));
+    });
+  });
+
+  it("breaks the walk immediately when the snapshot is empty", () => {
+    const cfg = getPlatformConfig();
+    const resolve = createPidResolver({ platformConfig: cfg, startPid: 9999 });
+    withMockedExec(() => "", () => {
+      const { pidChain } = resolve();
+      assert.strictEqual(pidChain.length, 0);
+    });
+  });
+
+  it("breaks the walk cleanly when ConvertTo-Json outputs 'null'", () => {
+    const cfg = getPlatformConfig();
+    const resolve = createPidResolver({ platformConfig: cfg, startPid: 9000 });
+    withMockedExec(() => "null", () => {
+      const { pidChain } = resolve();
+      assert.strictEqual(pidChain.length, 0, "'null' PS output must abort the walk");
+    });
+  });
+
+  it("sets stablePid to the terminal PID when a terminal process is found", () => {
+    const cfg = getPlatformConfig();
+    const resolve = createPidResolver({ platformConfig: cfg, startPid: 500 });
+    withMockedExec(() => snapshotJson([
+      { pid: 500, name: "windowsterminal.exe", ppid: 0 },
+    ]), () => {
+      const { stablePid } = resolve();
+      assert.strictEqual(stablePid, 500);
+    });
+  });
+
+  it("detects editor from process name", () => {
+    const cfg = getPlatformConfig();
+    const resolve = createPidResolver({ platformConfig: cfg, startPid: 200 });
+    withMockedExec(() => snapshotJson([
+      { pid: 200, name: "code.exe", ppid: 0 },
+    ]), () => {
+      const { detectedEditor } = resolve();
+      assert.strictEqual(detectedEditor, "code");
+    });
+  });
+
+  it("stops the walk at a system boundary process (explorer.exe)", () => {
+    const cfg = getPlatformConfig();
+    const resolve = createPidResolver({ platformConfig: cfg, startPid: 300 });
+    withMockedExec(() => snapshotJson([
+      { pid: 300, name: "cmd.exe", ppid: 301 },
+      { pid: 301, name: "explorer.exe", ppid: 302 },
+      { pid: 302, name: "unreachable.exe", ppid: 0 },
+    ]), () => {
+      const { pidChain } = resolve();
+      assert.ok(pidChain.includes(301), "explorer.exe must be in the chain");
+      assert.ok(!pidChain.includes(302), "walk must stop after the system boundary");
+    });
+  });
+
+  it("uses a single PowerShell spawn for the snapshot regardless of chain depth", () => {
+    const cfg = getPlatformConfig();
+    const resolve = createPidResolver({ platformConfig: cfg, startPid: 100 });
+    let spawnCount = 0;
+    withMockedExec(() => {
+      spawnCount++;
+      return snapshotJson([
+        { pid: 100, name: "cmd.exe", ppid: 101 },
+        { pid: 101, name: "powershell.exe", ppid: 102 },
+        { pid: 102, name: "windowsterminal.exe", ppid: 0 },
+      ]);
+    }, () => {
+      resolve();
+      assert.strictEqual(spawnCount, 1, "snapshot must be taken exactly once");
+    });
+  });
+
+  it("detects agentPid when agentNameSet matches a process name", () => {
+    const cfg = getPlatformConfig();
+    const resolve = createPidResolver({
+      platformConfig: cfg,
+      startPid: 400,
+      agentNames: { win: new Set(["claude.exe"]), mac: new Set(["claude"]) },
+    });
+    withMockedExec(() => snapshotJson([
+      { pid: 400, name: "node.exe", ppid: 401 },
+      { pid: 401, name: "claude.exe", ppid: 0, cmd: "C:\\Program Files\\claude\\claude.exe" },
+    ]), () => {
+      const { agentPid, agentCommandLine } = resolve();
+      assert.strictEqual(agentPid, 401);
+      assert.ok(agentCommandLine.includes("claude.exe"), "agentCommandLine must come from the snapshot");
+    });
+  });
+
+  it("detects agentPid via agentCmdlineCheck on node.exe using snapshot CommandLine", () => {
+    const cfg = getPlatformConfig();
+    const resolve = createPidResolver({
+      platformConfig: cfg,
+      startPid: 600,
+      agentCmdlineCheck: (cmdline) => cmdline.includes("claude-code"),
+    });
+    withMockedExec(() => snapshotJson([
+      { pid: 600, name: "node.exe", ppid: 0, cmd: "node C:\\Users\\x\\AppData\\Local\\claude-code\\index.js" },
+    ]), () => {
+      const { agentPid, agentCommandLine } = resolve();
+      assert.strictEqual(agentPid, 600);
+      assert.ok(agentCommandLine.includes("claude-code"));
+    });
   });
 });
 

@@ -13,6 +13,7 @@ const {
   isValidHostPrefix,
   isValidLabel,
   isValidId,
+  isValidDetectedRemoteNodeBin,
   validateProfile,
   sanitizeProfile,
   normalizeRemoteSsh,
@@ -192,6 +193,13 @@ test("isValidId rejects empty / too long / special chars", () => {
   assert.equal(isValidId("dot.id"), false);
 });
 
+test("isValidDetectedRemoteNodeBin accepts only absolute POSIX paths without controls", () => {
+  assert.equal(isValidDetectedRemoteNodeBin("/home/me/.nvm/versions/node/v22/bin/node"), true);
+  assert.equal(isValidDetectedRemoteNodeBin("/Users/me/My Tools/node"), true);
+  assert.equal(isValidDetectedRemoteNodeBin("node"), false);
+  assert.equal(isValidDetectedRemoteNodeBin("/tmp/no\nnode"), false);
+});
+
 // ── validateProfile ──
 
 function basicProfile(over = {}) {
@@ -275,6 +283,44 @@ test("sanitizeProfile preserves valid lastDeployedAt; drops invalid", () => {
   // Invalid values are dropped (becomes undefined → omitted from JSON).
   const bad = sanitizeProfile({ ...basicProfile(), lastDeployedAt: -5 });
   assert.equal(Object.prototype.hasOwnProperty.call(bad, "lastDeployedAt"), false);
+});
+
+test("validateProfile accepts detected remote Node metadata", () => {
+  const r = validateProfile(basicProfile({
+    detectedRemoteNodeBin: "/home/me/.nvm/versions/node/v22/bin/node",
+    detectedRemoteNodeVersion: "v22.1.0",
+    detectedRemoteNodeSource: "shell:/bin/bash",
+    detectedRemoteNodeAt: 12345,
+  }));
+  assert.equal(r.status, "ok");
+});
+
+test("validateProfile rejects invalid detected remote Node metadata", () => {
+  assert.equal(validateProfile(basicProfile({ detectedRemoteNodeBin: "node" })).status, "error");
+  assert.equal(validateProfile(basicProfile({ detectedRemoteNodeVersion: "22.1.0" })).status, "error");
+  assert.equal(validateProfile(basicProfile({ detectedRemoteNodeSource: "bad\nsource" })).status, "error");
+  assert.equal(validateProfile(basicProfile({ detectedRemoteNodeAt: 0 })).status, "error");
+});
+
+test("sanitizeProfile preserves valid detected remote Node metadata; drops invalid", () => {
+  const ok = sanitizeProfile({
+    ...basicProfile(),
+    detectedRemoteNodeBin: "/opt/homebrew/bin/node",
+    detectedRemoteNodeVersion: "v20.10.0",
+    detectedRemoteNodeSource: "candidate",
+    detectedRemoteNodeAt: 12345,
+  });
+  assert.equal(ok.detectedRemoteNodeBin, "/opt/homebrew/bin/node");
+  assert.equal(ok.detectedRemoteNodeVersion, "v20.10.0");
+  assert.equal(ok.detectedRemoteNodeSource, "candidate");
+  assert.equal(ok.detectedRemoteNodeAt, 12345);
+
+  const bad = sanitizeProfile({
+    ...basicProfile(),
+    detectedRemoteNodeBin: "node",
+    detectedRemoteNodeVersion: "v20.10.0",
+  });
+  assert.equal(Object.prototype.hasOwnProperty.call(bad, "detectedRemoteNodeBin"), false);
 });
 
 test("validateProfile rejects non-boolean autoStartCodexMonitor / connectOnLaunch", () => {
@@ -465,6 +511,28 @@ test("settings-actions: remoteSsh.markDeployed stamps lastDeployedAt without tou
   assert.equal(r.commit.remoteSsh.profiles[0].host, "user@pi.local");
 });
 
+test("settings-actions: remoteSsh.markDeployed can persist detected remote Node metadata", () => {
+  const cmd = commandRegistry["remoteSsh.markDeployed"];
+  const r = cmd({
+    id: "p1",
+    deployedAt: 12345,
+    remoteNode: {
+      nodeBin: "/home/me/.nvm/versions/node/v22/bin/node",
+      version: "v22.1.0",
+      source: "shell:/bin/bash",
+    },
+  }, {
+    snapshot: { remoteSsh: { profiles: [basicProfile()] } },
+  });
+  assert.equal(r.status, "ok");
+  const profile = r.commit.remoteSsh.profiles[0];
+  assert.equal(profile.lastDeployedAt, 12345);
+  assert.equal(profile.detectedRemoteNodeBin, "/home/me/.nvm/versions/node/v22/bin/node");
+  assert.equal(profile.detectedRemoteNodeVersion, "v22.1.0");
+  assert.equal(profile.detectedRemoteNodeSource, "shell:/bin/bash");
+  assert.equal(profile.detectedRemoteNodeAt, 12345);
+});
+
 test("settings-actions: remoteSsh.markDeployed survives concurrent edit (lost-update fix)", () => {
   // Caller captures pre-deploy snapshot at T=0 with label "Pi".
   // T=10s: user edits label to "树莓派" via remoteSsh.update — settings-controller commits.
@@ -552,6 +620,46 @@ test("settings-actions: remoteSsh.markDeployed validates inputs", () => {
   assert.equal(cmd({ id: "p1", deployedAt: NaN }, { snapshot: {} }).status, "error");
 });
 
+test("settings-actions: remoteSsh.markRemoteNode stamps detected node without touching other fields", () => {
+  const cmd = commandRegistry["remoteSsh.markRemoteNode"];
+  const original = basicProfile({ label: "Pi" });
+  const r = cmd({
+    id: "p1",
+    nodeBin: "/usr/local/bin/node",
+    version: "v20.10.0",
+    source: "path",
+    detectedAt: 555,
+  }, {
+    snapshot: { remoteSsh: { profiles: [original] } },
+  });
+  assert.equal(r.status, "ok");
+  const profile = r.commit.remoteSsh.profiles[0];
+  assert.equal(profile.label, "Pi");
+  assert.equal(profile.detectedRemoteNodeBin, "/usr/local/bin/node");
+  assert.equal(profile.detectedRemoteNodeVersion, "v20.10.0");
+  assert.equal(profile.detectedRemoteNodeSource, "path");
+  assert.equal(profile.detectedRemoteNodeAt, 555);
+});
+
+test("settings-actions: remoteSsh.markRemoteNode noops when target drifted", () => {
+  const cmd = commandRegistry["remoteSsh.markRemoteNode"];
+  const r = cmd({
+    id: "p1",
+    nodeBin: "/usr/local/bin/node",
+    detectedAt: 555,
+    expectedTarget: {
+      host: "old-host",
+      remoteForwardPort: 23333,
+    },
+  }, {
+    snapshot: { remoteSsh: { profiles: [basicProfile({ host: "new-host" })] } },
+  });
+  assert.equal(r.status, "ok");
+  assert.equal(r.noop, true);
+  assert.equal(r.reason, "target_drift");
+  assert.equal(r.commit, undefined);
+});
+
 // ── update: preserves lastDeployedAt on cosmetic edits ──
 
 test("settings-actions: remoteSsh.update preserves lastDeployedAt when only cosmetic fields change", () => {
@@ -567,6 +675,27 @@ test("settings-actions: remoteSsh.update preserves lastDeployedAt when only cosm
     "cosmetic edit must keep deploy stamp");
 });
 
+test("settings-actions: remoteSsh.update preserves detected remote Node on cosmetic edits", () => {
+  const cmd = commandRegistry["remoteSsh.update"];
+  const stamped = basicProfile({
+    label: "Pi",
+    detectedRemoteNodeBin: "/home/me/.nvm/versions/node/v22/bin/node",
+    detectedRemoteNodeVersion: "v22.1.0",
+    detectedRemoteNodeSource: "shell:/bin/bash",
+    detectedRemoteNodeAt: 12345,
+  });
+  const cosmeticEdit = basicProfile({ label: "树莓派" });
+  const r = cmd(cosmeticEdit, {
+    snapshot: { remoteSsh: { profiles: [stamped] } },
+  });
+  const profile = r.commit.remoteSsh.profiles[0];
+  assert.equal(profile.label, "树莓派");
+  assert.equal(profile.detectedRemoteNodeBin, "/home/me/.nvm/versions/node/v22/bin/node");
+  assert.equal(profile.detectedRemoteNodeVersion, "v22.1.0");
+  assert.equal(profile.detectedRemoteNodeSource, "shell:/bin/bash");
+  assert.equal(profile.detectedRemoteNodeAt, 12345);
+});
+
 test("settings-actions: remoteSsh.update CLEARS lastDeployedAt when host changes (target drift)", () => {
   const cmd = commandRegistry["remoteSsh.update"];
   const stamped = basicProfile({ host: "pi", lastDeployedAt: 12345 });
@@ -578,6 +707,21 @@ test("settings-actions: remoteSsh.update CLEARS lastDeployedAt when host changes
   assert.equal(r.commit.remoteSsh.profiles[0].host, "newpi");
   assert.equal(r.commit.remoteSsh.profiles[0].lastDeployedAt, undefined,
     "host change must clear deploy stamp (UI re-warns 'never deployed')");
+});
+
+test("settings-actions: remoteSsh.update clears detected remote Node when host changes", () => {
+  const cmd = commandRegistry["remoteSsh.update"];
+  const stamped = basicProfile({
+    host: "pi",
+    detectedRemoteNodeBin: "/usr/local/bin/node",
+    detectedRemoteNodeVersion: "v20.10.0",
+  });
+  const targetEdit = basicProfile({ host: "newpi" });
+  const r = cmd(targetEdit, {
+    snapshot: { remoteSsh: { profiles: [stamped] } },
+  });
+  assert.equal(r.status, "ok");
+  assert.equal(r.commit.remoteSsh.profiles[0].detectedRemoteNodeBin, undefined);
 });
 
 test("settings-actions: remoteSsh.update clears lastDeployedAt on remoteForwardPort change", () => {

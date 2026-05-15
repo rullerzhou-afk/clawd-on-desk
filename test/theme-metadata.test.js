@@ -132,7 +132,7 @@ describe("theme metadata variants", () => {
 
     const variants = buildVariantMetadata(raw, themeDir, false);
 
-    assert.deepStrictEqual(variants[0].name, { en: "Standard", zh: "标准" });
+    assert.deepStrictEqual(variants[0].name, { en: "Standard", zh: "标准", "zh-TW": "標準" });
     assert.ok(variants.find((v) => v.id === "cozy").previewFileUrl.includes("cozy.svg"));
     assert.deepStrictEqual(variants.find((v) => v.id === "cozy").name, { en: "Cozy", zh: "舒适" });
     assert.deepStrictEqual(variants.find((v) => v.id === "cozy").description, { en: "Softer" });

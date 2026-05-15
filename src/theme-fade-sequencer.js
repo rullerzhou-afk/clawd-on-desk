@@ -141,7 +141,10 @@ function createThemeFadeSequencer(options = {}) {
       finish("loaded");
     };
 
+    scheduleFadeFallback(seq, () => finish("fallback"));
+
     animateOpacity(seq, 0, fadeOutMs).then(() => {
+      if (!isCurrent(seq) || settled) return;
       reloadAfterFade(seq, onReady, () => finish("fallback"));
     });
 

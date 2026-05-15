@@ -126,6 +126,36 @@ const BUBBLE_STRINGS = {
     approve: "\u6279\u51C6",
     reject: "\u62D2\u7EDD",
   },
+  "zh-TW": {
+    autoAcceptEdits: "自動接受編輯",
+    switchToPlanMode: "切換到計劃模式",
+    allowInDir: "允許 {tool} 在 {dir}/",
+    alwaysAllowRule: "一律允許 `{rule}`",
+    alwaysAllow: "一律允許",
+    permissionRequest: "權限請求",
+    allow: "允許",
+    deny: "拒絕",
+    alwaysAllowBlanket: "一律允許（全部）",
+    alwaysAllowBlanketTitle: "警告：opencode 的 'always' 規則會自動允許本次工作階段中後續所有同類工具呼叫（包含 rm 等破壞性命令）。此規則只儲存在記憶體中，重新啟動 opencode 即可取消此規則。",
+    needsInput: "需要回應",
+    goToTerminal: "跳至終端機",
+    submitAnswer: "送出答案",
+    nextQuestion: "下一題",
+    previousQuestion: "上一題",
+    questionProgress: "{current} / {total}",
+    chooseOneOption: "請選擇一個選項",
+    chooseAtLeastOneOption: "可複選，請至少選擇一項",
+    questionLabel: "問題 {index}",
+    other: "其他",
+    otherPlaceholder: "輸入你的回答…",
+    codexPermission: "Codex 權限請求",
+    kimiPermission: "Kimi 權限請求",
+    checkKimiTerminal: "請在 Kimi 終端機中允許或拒絕此請求。",
+    gotIt: "了解",
+    planReview: "計畫審查",
+    approve: "允許",
+    reject: "拒絕",
+  },
   ko: {
     autoAcceptEdits: "\uD3B8\uC9D1 \uC790\uB3D9 \uC2B9\uC778",
     switchToPlanMode: "Plan \uBAA8\uB4DC\uB85C \uC804\uD658",
@@ -591,6 +621,10 @@ function renderElicitationTerminalFallback() {
   btn.addEventListener("click", () => {
     btn.textContent = "...";
     disableAll();
+    // Use plain "deny" — permission.js's elicitation branch already calls
+    // focusTerminalForSession after sending the Elicitation deny response.
+    // "deny-and-focus" hides the bubble without writing to perm.res, which
+    // would leave the blocking Elicitation HTTP hook open.
     window.bubbleAPI.decide("deny");
   });
   suggestionsContainer.appendChild(btn);

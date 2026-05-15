@@ -6,6 +6,7 @@
 
 const BASE_TERMINAL_NAMES_WIN = [
   "windowsterminal.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
+  "conhost.exe", "openconsole.exe",
   "code.exe", "alacritty.exe", "wezterm-gui.exe", "mintty.exe",
   "conemu64.exe", "conemu.exe", "hyper.exe", "tabby.exe",
   "antigravity.exe", "warp.exe", "iterm.exe", "ghostty.exe",
@@ -81,6 +82,38 @@ function getPlatformConfig(options) {
 //   startPid             — number (default process.ppid)
 //   maxDepth             — number (default 8)
 
+// One PS spawn per resolve, not per ancestor — PowerShell cold-start (~270 ms)
+// would dominate the walk otherwise. Returns empty Map on failure.
+function getWindowsProcessSnapshot(execFileSync) {
+  try {
+    const out = execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile", "-NonInteractive", "-Command",
+        "Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name, CommandLine | ConvertTo-Json -Compress",
+      ],
+      { encoding: "utf8", timeout: 3000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }
+    );
+    const trimmed = (out || "").trim();
+    if (!trimmed) return new Map();
+    const parsed = JSON.parse(trimmed);
+    const list = Array.isArray(parsed) ? parsed : [parsed];
+    const map = new Map();
+    for (const proc of list) {
+      const pid = Number(proc && proc.ProcessId);
+      if (!Number.isFinite(pid)) continue;
+      map.set(pid, {
+        name: typeof proc.Name === "string" ? proc.Name.toLowerCase() : "",
+        ppid: Number(proc.ParentProcessId) || 0,
+        commandLine: typeof proc.CommandLine === "string" ? proc.CommandLine : "",
+      });
+    }
+    return map;
+  } catch {
+    return new Map();
+  }
+}
+
 function createPidResolver(options) {
   const { platformConfig } = options;
   const { terminalNames, systemBoundary, editorMap, editorPathChecks } = platformConfig;
@@ -101,26 +134,25 @@ function createPidResolver(options) {
     if (_cached) return _cached;
 
     const { execFileSync } = require("child_process");
+    const winSnapshot = isWin ? getWindowsProcessSnapshot(execFileSync) : null;
+
     let pid = startPid;
     let lastGoodPid = pid;
     let terminalPid = null;
     let detectedEditor = null;
     let agentPid = null;
+    let agentCommandLine = "";
     const pidChain = [];
 
     for (let i = 0; i < maxDepth; i++) {
-      let name, parentPid;
+      let name, parentPid, commandLine = "";
       try {
         if (isWin) {
-          const out = execFileSync(
-            "wmic", ["process", "where", `ProcessId=${pid}`, "get", "Name,ParentProcessId", "/format:csv"],
-            { encoding: "utf8", timeout: 1500, windowsHide: true }
-          );
-          const lines = out.trim().split("\n").filter(l => l.includes(","));
-          if (!lines.length) break;
-          const parts = lines[lines.length - 1].split(",");
-          name = (parts[1] || "").trim().toLowerCase();
-          parentPid = parseInt(parts[2], 10);
+          const info = winSnapshot.get(pid);
+          if (!info) break;
+          name = info.name;
+          parentPid = info.ppid;
+          commandLine = info.commandLine;
         } else {
           const ppidOut = execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8", timeout: 1000 }).trim();
           const commOut = execFileSync("ps", ["-o", "comm=", "-p", String(pid)], { encoding: "utf8", timeout: 1000 }).trim();
@@ -138,17 +170,25 @@ function createPidResolver(options) {
       pidChain.push(pid);
       if (!detectedEditor && editorMap[name]) detectedEditor = editorMap[name];
 
-      // Agent process detection
       if (!agentPid) {
         if (agentNameSet && agentNameSet.has(name)) {
           agentPid = pid;
+          if (isWin) {
+            agentCommandLine = commandLine;
+          } else {
+            try {
+              agentCommandLine = execFileSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 500 });
+            } catch {}
+          }
         } else if (agentCmdlineCheck && (name === "node.exe" || name === "node")) {
           try {
             const cmdOut = isWin
-              ? execFileSync("wmic", ["process", "where", `ProcessId=${pid}`, "get", "CommandLine", "/format:csv"],
-                  { encoding: "utf8", timeout: 500, windowsHide: true })
+              ? commandLine
               : execFileSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 500 });
-            if (agentCmdlineCheck(cmdOut)) agentPid = pid;
+            if (agentCmdlineCheck(cmdOut)) {
+              agentPid = pid;
+              agentCommandLine = cmdOut;
+            }
           } catch {}
         }
       }
@@ -160,7 +200,7 @@ function createPidResolver(options) {
       pid = parentPid;
     }
 
-    _cached = { stablePid: terminalPid || lastGoodPid, agentPid, detectedEditor, pidChain };
+    _cached = { stablePid: terminalPid || lastGoodPid, agentPid, agentCommandLine, detectedEditor, pidChain };
     return _cached;
   };
 }

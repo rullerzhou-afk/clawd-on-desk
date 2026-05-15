@@ -75,6 +75,7 @@
           ? getAgentEventSourceBadgeKey(agent)
           : (agent.eventSource === "log-poll" ? "eventSourceLogPoll"
             : agent.eventSource === "plugin-event" ? "eventSourcePlugin"
+            : agent.eventSource === "extension" ? "eventSourceExtension"
             : "eventSourceHook");
         const esBadge = document.createElement("span");
         esBadge.className = "agent-badge";

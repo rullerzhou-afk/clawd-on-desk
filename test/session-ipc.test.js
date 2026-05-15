@@ -2,6 +2,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const { registerSessionIpc } = require("../src/session-ipc");
 
@@ -58,8 +60,8 @@ function createHarness(overrides = {}) {
       calls.push(["setSessionAlias", payload]);
       return { status: "ok", alias: payload.alias };
     }),
-    showDashboard: overrides.showDashboard || (() => {
-      calls.push(["showDashboard"]);
+    showDashboard: overrides.showDashboard || ((options) => {
+      calls.push(["showDashboard", options]);
     }),
     setSessionHudPinned: overrides.setSessionHudPinned || ((value) => {
       calls.push(["setSessionHudPinned", value]);
@@ -138,8 +140,23 @@ test("session IPC owns dashboard open bridges", () => {
   ipcMain.send("show-dashboard");
 
   assert.deepStrictEqual(calls, [
-    ["showDashboard"],
-    ["showDashboard"],
-    ["showDashboard"],
+    ["showDashboard", { source: "hud" }],
+    ["showDashboard", { source: "settings" }],
+    ["showDashboard", undefined],
   ]);
+});
+
+test("main forwards dashboard open source options into session IPC", () => {
+  const mainSource = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
+  const preservesOptions = [
+    /registerSessionIpc\(\{[\s\S]*?showDashboard\s*,/,
+    /registerSessionIpc\(\{[\s\S]*?showDashboard:\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*=>\s*showDashboard\(\s*\1\s*\)/,
+    /registerSessionIpc\(\{[\s\S]*?showDashboard:\s*\(\s*\.\.\.\s*([A-Za-z_$][\w$]*)\s*\)\s*=>\s*showDashboard\(\s*\.\.\.\s*\1\s*\)/,
+  ].some((pattern) => pattern.test(mainSource));
+
+  assert.strictEqual(
+    preservesOptions,
+    true,
+    "main.js should preserve dashboard open options when wiring session IPC"
+  );
 });

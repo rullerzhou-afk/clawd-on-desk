@@ -100,36 +100,141 @@ describe("server-config helpers", () => {
   });
 
   it("resolveNodeBin falls back to login shell when no well-known paths exist", () => {
+    const nodePath = "/Users/tester/.nvm/versions/node/v20.11.0/bin/node";
     const result = serverConfig.resolveNodeBin({
       platform: "darwin",
       isElectron: true,
       homeDir: "/Users/tester",
-      accessSync() { throw new Error("ENOENT"); },
+      accessSync(candidate) {
+        if (candidate === nodePath) return;
+        throw new Error("ENOENT");
+      },
       execFileSync(shell, args) {
-        if (shell === "/bin/zsh") return "/Users/tester/.nvm/versions/node/v20.11.0/bin/node\n";
+        if (shell === "/bin/zsh") return `${nodePath}\n`;
         throw new Error("not found");
       },
     });
-    assert.strictEqual(result, "/Users/tester/.nvm/versions/node/v20.11.0/bin/node");
+    assert.strictEqual(result, nodePath);
   });
 
   it("resolveNodeBin extracts node path from noisy interactive shell output", () => {
+    const nodePath = "/Users/tester/.nvm/versions/node/v22.0.0/bin/node";
     const result = serverConfig.resolveNodeBin({
       platform: "darwin",
       isElectron: true,
       homeDir: "/Users/tester",
-      accessSync() { throw new Error("ENOENT"); },
+      accessSync(candidate) {
+        if (candidate === nodePath) return;
+        throw new Error("ENOENT");
+      },
       execFileSync(shell, args) {
         if (shell === "/bin/zsh") {
           // Simulates Oh My Zsh / Powerlevel10k / neofetch output before `which node`
           return "[oh-my-zsh] Would you like to check for updates? [Y/n]\n" +
                  "\n" +
-                 "/Users/tester/.nvm/versions/node/v22.0.0/bin/node\n";
+                 `${nodePath}\n`;
         }
         throw new Error("not found");
       },
     });
-    assert.strictEqual(result, "/Users/tester/.nvm/versions/node/v22.0.0/bin/node");
+    assert.strictEqual(result, nodePath);
+  });
+
+  it("resolveNodeBin scans nvm versions before falling back to shell probing", () => {
+    const root = "/Users/tester/.nvm/versions/node";
+    const expected = `${root}/v22.3.0/bin/node`;
+    const result = serverConfig.resolveNodeBin({
+      platform: "darwin",
+      isElectron: true,
+      homeDir: "/Users/tester",
+      accessSync(candidate) {
+        if (candidate === expected) return;
+        throw new Error("ENOENT");
+      },
+      readdirSync(dir) {
+        if (dir === root) return ["v18.19.1", "not-node", "v22.3.0", "v20.11.0"];
+        throw new Error("ENOENT");
+      },
+      execFileSync() {
+        throw new Error("shell probing should not run when nvm node is found");
+      },
+    });
+
+    assert.strictEqual(result, expected);
+  });
+
+  it("resolveNodeBin prefers versioned binaries over asdf shims", () => {
+    const root = "/Users/tester/.asdf/installs/nodejs";
+    const versionedNode = `${root}/20.11.1/bin/node`;
+    const shimNode = "/Users/tester/.asdf/shims/node";
+    const attempted = [];
+    const result = serverConfig.resolveNodeBin({
+      platform: "darwin",
+      isElectron: true,
+      homeDir: "/Users/tester",
+      accessSync(candidate) {
+        attempted.push(candidate);
+        if (candidate === versionedNode || candidate === shimNode) return;
+        throw new Error("ENOENT");
+      },
+      readdirSync(dir) {
+        if (dir === root) return ["20.11.1"];
+        throw new Error("ENOENT");
+      },
+      execFileSync() {
+        throw new Error("shell probing should not run when asdf node is found");
+      },
+    });
+
+    assert.strictEqual(result, versionedNode);
+    assert.ok(attempted.includes(versionedNode));
+    assert.ok(!attempted.includes(shimNode));
+  });
+
+  it("resolveNodeBin keeps shell fallback when command -v returns a non-path token", () => {
+    const nodePath = "/Users/tester/.nvm/versions/node/v20.11.0/bin/node";
+    const result = serverConfig.resolveNodeBin({
+      platform: "darwin",
+      isElectron: true,
+      homeDir: "/Users/tester",
+      accessSync(candidate) {
+        if (candidate === nodePath) return;
+        throw new Error("ENOENT");
+      },
+      readdirSync() { throw new Error("ENOENT"); },
+      execFileSync(shell, args) {
+        assert.deepStrictEqual(args, ["-lic", "command -v node 2>/dev/null; which node 2>/dev/null; true"]);
+        if (shell === "/bin/zsh") return `node\n${nodePath}\n`;
+        throw new Error("not found");
+      },
+    });
+
+    assert.strictEqual(result, nodePath);
+  });
+
+  it("resolveNodeBin ignores shell function body lines that look like absolute paths", () => {
+    const nodePath = "/Users/tester/.nvm/versions/node/v20.11.0/bin/node";
+    const functionBodyLine = '/opt/homebrew/bin/node "$@"';
+    const attempted = [];
+    const result = serverConfig.resolveNodeBin({
+      platform: "darwin",
+      isElectron: true,
+      homeDir: "/Users/tester",
+      accessSync(candidate) {
+        attempted.push(candidate);
+        if (candidate === nodePath) return;
+        throw new Error("ENOENT");
+      },
+      readdirSync() { throw new Error("ENOENT"); },
+      execFileSync(shell, args) {
+        assert.deepStrictEqual(args, ["-lic", "command -v node 2>/dev/null; which node 2>/dev/null; true"]);
+        if (shell === "/bin/zsh") return `${nodePath}\n${functionBodyLine}\n`;
+        throw new Error("not found");
+      },
+    });
+
+    assert.strictEqual(result, nodePath);
+    assert.ok(!attempted.includes(functionBodyLine));
   });
 
   it("resolveNodeBin finds node on Linux via well-known paths in Electron", () => {
@@ -180,18 +285,20 @@ describe("server-config helpers", () => {
   });
 
   it("resolveNodeBinAsync falls back to async login shell output", async () => {
+    const nodePath = "/Users/tester/.nvm/versions/node/v22.0.0/bin/node";
     const result = await serverConfig.resolveNodeBinAsync({
       platform: "darwin",
       isElectron: true,
       homeDir: "/Users/tester",
-      async access() {
+      async access(candidate) {
+        if (candidate === nodePath) return;
         throw new Error("ENOENT");
       },
       async execFile(shell, args) {
-        assert.deepStrictEqual(args, ["-lic", "which node"]);
+        assert.deepStrictEqual(args, ["-lic", "command -v node 2>/dev/null; which node 2>/dev/null; true"]);
         if (shell === "/bin/zsh") {
           return {
-            stdout: "[oh-my-zsh]\n/Users/tester/.nvm/versions/node/v22.0.0/bin/node\n",
+            stdout: `[oh-my-zsh]\n${nodePath}\n`,
           };
         }
         throw new Error("not found");
@@ -204,7 +311,36 @@ describe("server-config helpers", () => {
       },
     });
 
-    assert.strictEqual(result, "/Users/tester/.nvm/versions/node/v22.0.0/bin/node");
+    assert.strictEqual(result, nodePath);
+  });
+
+  it("resolveNodeBinAsync scans fnm versions without sync probes", async () => {
+    const root = "/Users/tester/.fnm/node-versions";
+    const expected = `${root}/v21.7.3/installation/bin/node`;
+    const result = await serverConfig.resolveNodeBinAsync({
+      platform: "darwin",
+      isElectron: true,
+      homeDir: "/Users/tester",
+      async access(candidate) {
+        if (candidate === expected) return;
+        throw new Error("ENOENT");
+      },
+      async readdir(dir) {
+        if (dir === root) return ["v18.20.0", "v21.7.3"];
+        throw new Error("ENOENT");
+      },
+      async execFile() {
+        throw new Error("shell probing should not run when fnm node is found");
+      },
+      accessSync() {
+        throw new Error("sync access should not run");
+      },
+      execFileSync() {
+        throw new Error("sync exec should not run");
+      },
+    });
+
+    assert.strictEqual(result, expected);
   });
 
   it("postStateToRunningServer probes fallback ports before posting", async () => {

@@ -9,16 +9,56 @@ const path = require("path");
 const { discoverClawdPort } = require("./server-config");
 const { buildElectronLaunchConfig } = require("./shared-process");
 
-const TIMEOUT_MS = 300;
+const INITIAL_DISCOVER_TIMEOUT_MS = 300;
+const STARTUP_READY_TIMEOUT_MS = 6000;
+const STARTUP_DISCOVER_TIMEOUT_MS = 100;
+const STARTUP_POLL_INTERVAL_MS = 100;
 
-discoverClawdPort({ timeoutMs: TIMEOUT_MS }, (port) => {
-  if (port) {
-    process.exit(0);
-    return;
+function waitForClawdPort(options, callback) {
+  const discover = options.discoverClawdPort || discoverClawdPort;
+  const setTimeoutFn = options.setTimeout || setTimeout;
+  const nowFn = options.now || Date.now;
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : STARTUP_READY_TIMEOUT_MS;
+  const discoverTimeoutMs = Number.isFinite(options.discoverTimeoutMs)
+    ? options.discoverTimeoutMs
+    : STARTUP_DISCOVER_TIMEOUT_MS;
+  const intervalMs = Number.isFinite(options.intervalMs) ? options.intervalMs : STARTUP_POLL_INTERVAL_MS;
+  const deadline = nowFn() + Math.max(0, timeoutMs);
+
+  function probe() {
+    discover({ timeoutMs: discoverTimeoutMs }, (port) => {
+      if (port || nowFn() >= deadline) {
+        callback(port || null);
+        return;
+      }
+      setTimeoutFn(probe, intervalMs);
+    });
   }
-  launchApp();
-  process.exit(0);
-});
+
+  probe();
+}
+
+function main(deps = {}) {
+  const discover = deps.discoverClawdPort || discoverClawdPort;
+  const launch = deps.launchApp || launchApp;
+  const exit = deps.exit || ((code) => process.exit(code));
+
+  discover({ timeoutMs: INITIAL_DISCOVER_TIMEOUT_MS }, (port) => {
+    if (port) {
+      exit(0);
+      return;
+    }
+    launch();
+    waitForClawdPort({
+      discoverClawdPort: discover,
+      setTimeout: deps.setTimeout,
+      now: deps.now,
+      timeoutMs: deps.startupReadyTimeoutMs,
+      discoverTimeoutMs: deps.startupDiscoverTimeoutMs,
+      intervalMs: deps.startupPollIntervalMs,
+    }, () => exit(0));
+  });
+}
 
 function launchApp() {
   const isPackaged = __dirname.includes("app.asar");
@@ -74,3 +114,15 @@ function launchApp() {
     process.stderr.write(`clawd auto-start: ${err.message}\n`);
   }
 }
+
+if (require.main === module) main();
+
+module.exports = {
+  INITIAL_DISCOVER_TIMEOUT_MS,
+  STARTUP_READY_TIMEOUT_MS,
+  STARTUP_DISCOVER_TIMEOUT_MS,
+  STARTUP_POLL_INTERVAL_MS,
+  waitForClawdPort,
+  launchApp,
+  main,
+};

@@ -7,6 +7,7 @@ const MENU_AFFECTING_KEYS = new Set([
   "hideBubbles",
   "permissionBubblesEnabled",
   "notificationBubbleAutoCloseSeconds",
+  "permissionBubbleAutoCloseSeconds",
   "updateBubbleAutoCloseSeconds",
   "manageClaudeHooksAutomatically",
   "autoStartWithClaude",
@@ -59,6 +60,7 @@ function createSettingsEffectRouter(options = {}) {
   const clearCodexNotifyBubbles = options.clearCodexNotifyBubbles || noop;
   const clearKimiNotifyBubbles = options.clearKimiNotifyBubbles || noop;
   const refreshPassiveNotifyAutoClose = options.refreshPassiveNotifyAutoClose || noop;
+  const refreshPermissionAutoCloseForPolicy = options.refreshPermissionAutoCloseForPolicy || noop;
   const hideUpdateBubbleForPolicy = options.hideUpdateBubbleForPolicy || noop;
   const refreshUpdateBubbleAutoClose = options.refreshUpdateBubbleAutoClose || noop;
   const repositionFloatingBubbles = options.repositionFloatingBubbles || noop;
@@ -150,6 +152,15 @@ function createSettingsEffectRouter(options = {}) {
         logWarn,
         "Clawd: refresh update bubble timer failed:",
         refreshUpdateBubbleAutoClose
+      );
+    }
+    // Permission autoclose: any change (including 0 = disable) needs to be
+    // pushed into pending entries so they re-arm or clear timers.
+    if ("permissionBubbleAutoCloseSeconds" in changes) {
+      safeCall(
+        logWarn,
+        "Clawd: refresh permission bubble timer failed:",
+        refreshPermissionAutoCloseForPolicy
       );
     }
     if ("bubbleFollowPet" in changes) {

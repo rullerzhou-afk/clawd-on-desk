@@ -14,6 +14,10 @@ function placeholders(value) {
   return Array.from(String(value).matchAll(/\{[^}]+\}/g), (m) => m[0]).sort();
 }
 
+function regexEscape(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function assertLocaleObjectParity(locales, label) {
   const baseKeys = Object.keys(locales.en).sort();
   for (const lang of SUPPORTED_LANGS) {
@@ -50,8 +54,8 @@ function loadBubbleStrings() {
 }
 
 describe("i18n locales", () => {
-  it("lists Korean and Japanese in supported languages", () => {
-    assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "ko", "ja"]);
+  it("lists all selectable languages in supported languages", () => {
+    assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja"]);
   });
 
   it("keeps all locale keysets aligned with English", () => {
@@ -83,7 +87,23 @@ describe("i18n locales", () => {
       assert.notStrictEqual(end, -1, `unterminated ${name}`);
       const block = source.slice(start, end);
       for (const lang of SUPPORTED_LANGS) {
-        assert.match(block, new RegExp(`\\n\\s*${lang}:`), `${name} missing ${lang}`);
+        const escapedLang = regexEscape(lang);
+        assert.match(block, new RegExp(`\\n\\s*(?:"${escapedLang}"|${escapedLang}):`), `${name} missing ${lang}`);
+      }
+    }
+  });
+
+  it("keeps Codex Pet main dialog strings available for every supported language", () => {
+    const source = fs.readFileSync(path.join(ROOT, "src", "codex-pet-main.js"), "utf8");
+    for (const name of ["getImportDialogStrings", "getRemovalDialogStrings"]) {
+      const start = source.indexOf(`function ${name}()`);
+      assert.notStrictEqual(start, -1, `missing ${name}`);
+      const end = source.indexOf("\n  async function", start);
+      assert.notStrictEqual(end, -1, `unterminated ${name}`);
+      const block = source.slice(start, end);
+      for (const lang of SUPPORTED_LANGS) {
+        const escapedLang = regexEscape(lang);
+        assert.match(block, new RegExp(`\\n\\s*(?:"${escapedLang}"|${escapedLang}):`), `${name} missing ${lang}`);
       }
     }
   });

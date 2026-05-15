@@ -1,5 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
 const createCodexPetMain = require("../src/codex-pet-main");
 
@@ -175,6 +178,74 @@ test("Codex Pet import URLs queued before app ready do not flush until explicitl
   } finally {
     global.setImmediate = originalSetImmediate;
   }
+});
+
+test("Codex Pet import dialog uses zh-TW strings", async () => {
+  const { runtime, showMessageBoxCalls } = createQueueRuntime({
+    runtimeOptions: {
+      getLang: () => "zh-TW",
+    },
+  });
+
+  runtime.enqueueImportUrl("clawd://import-pet?url=https%3A%2F%2Fexample.test%2Fpet.json");
+  await runtime.flushPendingImportUrls();
+
+  assert.strictEqual(showMessageBoxCalls.length, 1);
+  assert.deepStrictEqual(showMessageBoxCalls[0].options.buttons, ["匯入", "取消"]);
+  assert.strictEqual(showMessageBoxCalls[0].options.message, "從 example.test 匯入 Codex Pet？");
+  assert.match(showMessageBoxCalls[0].options.detail, /下載、驗證並安裝/);
+});
+
+test("Codex Pet removal confirmation uses zh-TW strings", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-pet-main-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const petsRoot = path.join(root, "pets");
+  const themesRoot = path.join(root, "themes");
+  const packageDir = path.join(petsRoot, "pet-one");
+  fs.mkdirSync(packageDir, { recursive: true });
+  fs.mkdirSync(path.join(themesRoot, "codex-pet-one"), { recursive: true });
+  fs.writeFileSync(path.join(packageDir, "pet.json"), "{}");
+
+  const showMessageBoxCalls = [];
+  const runtime = createCodexPetMain({
+    app: {
+      getPath: () => root,
+      isReady: () => false,
+    },
+    dialog: {
+      async showMessageBox(parent, options) {
+        showMessageBoxCalls.push({ parent, options });
+        return { response: 1 };
+      },
+    },
+    shell: {},
+    settingsController: {
+      get: () => "clawd",
+    },
+    themeLoader: {
+      ensureUserThemesDir: () => themesRoot,
+      getThemeMetadata: () => ({ name: "小貓" }),
+    },
+    codexPetAdapter: {
+      readManagedMarker: () => ({
+        sourcePetId: "pet-one",
+        sourcePackagePath: packageDir,
+      }),
+      syncCodexPetThemes: () => ({ themes: [] }),
+    },
+    codexPetImporter: {
+      getDefaultCodexPetsDir: () => petsRoot,
+    },
+    getLang: () => "zh-TW",
+  });
+
+  assert.deepStrictEqual(await runtime.removeCodexPet("codex-pet-one"), { status: "cancel" });
+
+  assert.strictEqual(showMessageBoxCalls.length, 1);
+  assert.deepStrictEqual(showMessageBoxCalls[0].options.buttons, ["解除安裝", "取消"]);
+  assert.strictEqual(showMessageBoxCalls[0].options.message, "解除安裝匯入的寵物「小貓」？");
+  assert.match(showMessageBoxCalls[0].options.detail, /無法復原/);
 });
 
 test("Codex Pet import queue ignores overlapping flush calls while the first drain is active", async () => {

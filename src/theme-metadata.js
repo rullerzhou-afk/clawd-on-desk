@@ -67,7 +67,7 @@ function buildVariantMetadata(raw, themeDir, isBuiltin, options = {}) {
   if (!hasExplicitDefault) {
     out.push({
       id: "default",
-      name: { en: "Standard", zh: "标准" },
+      name: { en: "Standard", zh: "标准", "zh-TW": "標準" },
       description: null,
       previewFileUrl: buildPreviewUrl(raw, themeDir, isBuiltin, options),
     });

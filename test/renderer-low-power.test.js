@@ -4,6 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
+const vm = require("node:vm");
 
 const RENDERER = path.join(__dirname, "..", "src", "renderer.js");
 const PRELOAD = path.join(__dirname, "..", "src", "preload.js");
@@ -17,6 +18,144 @@ function matchSource(source, pattern, message) {
   const match = source.match(pattern);
   assert.ok(match, message || `missing pattern ${pattern}`);
   return match;
+}
+
+class FakeElement {
+  constructor(tagName) {
+    this.tagName = tagName.toUpperCase();
+    this.style = {};
+    this.attributes = new Map();
+    this.children = [];
+    this.parentNode = null;
+    this.isConnected = false;
+    this.className = "";
+    this.id = "";
+    this.data = "";
+    this.src = "";
+    this.contentDocument = null;
+    this.contentWindow = {};
+    this.listeners = new Map();
+  }
+
+  get offsetHeight() {
+    return 1;
+  }
+
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+    if (name === "data") this.data = String(value);
+    if (name === "src") this.src = String(value);
+  }
+
+  getAttribute(name) {
+    if (name === "data") return this.data || this.attributes.get(name) || "";
+    if (name === "src") return this.src || this.attributes.get(name) || "";
+    return this.attributes.get(name) || "";
+  }
+
+  appendChild(child) {
+    child.parentNode = this;
+    child.isConnected = true;
+    this.children.push(child);
+    return child;
+  }
+
+  remove() {
+    this.isConnected = false;
+    if (this.parentNode) {
+      this.parentNode.children = this.parentNode.children.filter((child) => child !== this);
+      this.parentNode = null;
+    }
+  }
+
+  addEventListener(event, callback) {
+    this.listeners.set(event, callback);
+  }
+
+  querySelectorAll() {
+    return this.children.filter((child) => (
+      child.tagName === "OBJECT"
+      || (child.tagName === "IMG" && String(child.className).split(/\s+/).includes("clawd-img"))
+    ));
+  }
+}
+
+function createRendererHarness() {
+  const timers = [];
+  const container = new FakeElement("div");
+  container.id = "pet-container";
+  container.isConnected = true;
+  const clawd = new FakeElement("object");
+  clawd.id = "clawd";
+  clawd.data = "../assets/svg/current.svg";
+  clawd.style.opacity = "0";
+  container.appendChild(clawd);
+
+  const document = {
+    getElementById(id) {
+      if (id === "pet-container") return container;
+      if (id === "clawd") return clawd;
+      return null;
+    },
+    createElement(tagName) {
+      return new FakeElement(tagName);
+    },
+  };
+  const electronAPI = new Proxy({}, {
+    get() {
+      return () => {};
+    },
+  });
+  const context = {
+    document,
+    window: {
+      themeConfig: {
+        assetsPath: "../assets/svg",
+        eyeTracking: { states: ["idle"] },
+      },
+      electronAPI,
+      getComputedStyle: (el) => ({ opacity: el.style.opacity || "1" }),
+    },
+    console: { warn() {} },
+    setTimeout(callback, ms) {
+      const timer = { callback, ms, cleared: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeout(timer) {
+      if (timer) timer.cleared = true;
+    },
+    requestAnimationFrame(callback) {
+      return context.setTimeout(callback, 16);
+    },
+    cancelAnimationFrame(timer) {
+      context.clearTimeout(timer);
+    },
+    Audio: function FakeAudio() {
+      return { play: () => Promise.resolve(), volume: 1, currentTime: 0 };
+    },
+  };
+  context.globalThis = context;
+
+  const source = `${readNormalized(RENDERER)}
+globalThis.__rendererTest = {
+  swapToFile,
+  getPetMediaElements,
+  get pendingNext() { return pendingNext; },
+  get pendingSvgFile() { return pendingSvgFile; },
+  get activeSwapToken() { return activeSwapToken; },
+  get clawdEl() { return clawdEl; },
+};`;
+  vm.runInNewContext(source, context);
+
+  return {
+    context,
+    container,
+    clawd,
+    timers,
+    api: context.__rendererTest,
+    activeTimers: () => timers.filter((timer) => !timer.cleared),
+  };
 }
 
 describe("renderer low-power idle mode", () => {
@@ -127,6 +266,45 @@ describe("renderer object-channel selection", () => {
     assert.ok(source.includes("const desiredAssetUrl = getAssetUrl(svg);"));
     assert.ok(source.includes("currentDisplayedAssetUrl === desiredAssetUrl"));
     assert.ok(source.includes("pendingAssetUrl === desiredAssetUrl"));
+  });
+
+  it("rescues an invisible object-channel pending swap by reloading through the img channel", () => {
+    const harness = createRendererHarness();
+
+    harness.api.swapToFile("next.svg", "idle", true);
+    const rescue = harness.activeTimers().find((timer) => timer.ms === 3750);
+    rescue.callback();
+
+    assert.strictEqual(harness.api.pendingNext.tagName, "IMG");
+    assert.strictEqual(harness.api.pendingSvgFile, "next.svg");
+    assert.strictEqual(
+      harness.container.querySelectorAll().some((el) => el.tagName === "OBJECT" && el !== harness.clawd),
+      false
+    );
+  });
+
+  it("ignores stale rescue timers after a newer swap starts", () => {
+    const harness = createRendererHarness();
+
+    harness.api.swapToFile("old.svg", "idle", true);
+    const staleRescue = harness.activeTimers().find((timer) => timer.ms === 3750);
+    harness.api.swapToFile("new.svg", "idle", true);
+    staleRescue.callback();
+
+    assert.strictEqual(harness.api.pendingNext.tagName, "OBJECT");
+    assert.strictEqual(harness.api.pendingSvgFile, "new.svg");
+  });
+
+  it("does not rescue over an already visible pet element", () => {
+    const harness = createRendererHarness();
+    harness.clawd.style.opacity = "1";
+
+    harness.api.swapToFile("next.svg", "idle", true);
+    const rescue = harness.activeTimers().find((timer) => timer.ms === 3750);
+    rescue.callback();
+
+    assert.strictEqual(harness.api.pendingNext.tagName, "OBJECT");
+    assert.strictEqual(harness.api.pendingSvgFile, "next.svg");
   });
 });
 

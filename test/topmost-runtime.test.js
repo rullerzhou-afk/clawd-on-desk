@@ -102,6 +102,151 @@ describe("topmost runtime Windows recovery", () => {
     timers.timeouts[0].fn();
     assert.deepStrictEqual(forceEye, [true, true]);
     assert.strictEqual(win.calls.length, 2);
+    assert.deepStrictEqual(positions, [[11, 20], [10, 20]]);
+  });
+
+  it("does not accumulate repeated topmost nudges while recovery is pending", () => {
+    const timers = makeTimers();
+    const win = new FakeWindow();
+    const positions = [];
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => win,
+      getPetWindowBounds: () => ({ x: 10, y: 20, width: 100, height: 100 }),
+      applyPetWindowPosition: (x, y) => positions.push([x, y]),
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+
+    runtime.guardAlwaysOnTop(win);
+    win.emit("always-on-top-changed", null, false);
+    win.emit("always-on-top-changed", null, false);
+
+    assert.deepStrictEqual(positions, [
+      [11, 20],
+      [10, 20],
+    ]);
+
+    timers.timeouts.at(-1).fn();
+    assert.deepStrictEqual(positions, [
+      [11, 20],
+      [10, 20],
+    ]);
+  });
+
+  it("restores the original position only when the immediate nudge-back was swallowed", () => {
+    const timers = makeTimers();
+    const win = new FakeWindow();
+    const positions = [];
+    const current = { x: 10, y: 20, width: 100, height: 100 };
+    let swallowImmediateRestore = true;
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => win,
+      getPetWindowBounds: () => ({ ...current }),
+      applyPetWindowPosition: (x, y) => {
+        positions.push([x, y]);
+        if (swallowImmediateRestore && x === 10 && y === 20) return;
+        current.x = x;
+        current.y = y;
+      },
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+
+    runtime.guardAlwaysOnTop(win);
+    win.emit("always-on-top-changed", null, false);
+    assert.deepStrictEqual(current, { x: 11, y: 20, width: 100, height: 100 });
+
+    swallowImmediateRestore = false;
+    timers.timeouts[0].fn();
+
+    assert.deepStrictEqual(positions, [[11, 20], [10, 20], [10, 20]]);
+    assert.deepStrictEqual(current, { x: 10, y: 20, width: 100, height: 100 });
+  });
+
+  it("does not restore stale nudge coordinates after the pet legitimately moved", () => {
+    const timers = makeTimers();
+    const win = new FakeWindow();
+    const positions = [];
+    const current = { x: 10, y: 20, width: 100, height: 100 };
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => win,
+      getPetWindowBounds: () => ({ ...current }),
+      applyPetWindowPosition: (x, y) => {
+        positions.push([x, y]);
+        current.x = x;
+        current.y = y;
+      },
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+
+    runtime.guardAlwaysOnTop(win);
+    win.emit("always-on-top-changed", null, false);
+    current.x = 500;
+    current.y = 500;
+    timers.timeouts[0].fn();
+
+    assert.deepStrictEqual(positions, [[11, 20], [10, 20]]);
+    assert.deepStrictEqual(current, { x: 500, y: 500, width: 100, height: 100 });
+  });
+
+  it("starts a fresh nudge for a repeated topmost loss after the pet legitimately moved", () => {
+    const timers = makeTimers();
+    const win = new FakeWindow();
+    const positions = [];
+    const current = { x: 10, y: 20, width: 100, height: 100 };
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => win,
+      getPetWindowBounds: () => ({ ...current }),
+      applyPetWindowPosition: (x, y) => {
+        positions.push([x, y]);
+        current.x = x;
+        current.y = y;
+      },
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+
+    runtime.guardAlwaysOnTop(win);
+    win.emit("always-on-top-changed", null, false);
+    current.x = 500;
+    current.y = 500;
+    win.emit("always-on-top-changed", null, false);
+
+    assert.deepStrictEqual(positions, [
+      [11, 20],
+      [10, 20],
+      [501, 500],
+      [500, 500],
+    ]);
+    assert.deepStrictEqual(current, { x: 500, y: 500, width: 100, height: 100 });
+  });
+
+  it("does not restore a topmost nudge over an active drag", () => {
+    const timers = makeTimers();
+    const win = new FakeWindow();
+    const positions = [];
+    let dragging = false;
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => win,
+      getPetWindowBounds: () => ({ x: 10, y: 20, width: 100, height: 100 }),
+      applyPetWindowPosition: (x, y) => positions.push([x, y]),
+      isDragLocked: () => dragging,
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+
+    runtime.guardAlwaysOnTop(win);
+    win.emit("always-on-top-changed", null, false);
+    dragging = true;
+    timers.timeouts[0].fn();
+
+    assert.deepStrictEqual(positions, [[11, 20], [10, 20]]);
   });
 
   it("skips the nudge path while dragging or mini transitions own movement", () => {

@@ -95,7 +95,8 @@ describe("Windows terminal focus", () => {
 
       assert.match(cmd, /wt-parent-title-match/);
       assert.match(cmd, /wt-parent-title-ambiguous/);
-      assert.match(cmd, /wt-parent-title-mismatch/);
+      assert.doesNotMatch(cmd, /wt-parent-title-mismatch/);
+      assert.match(cmd, /wt-parent-direct-fallback/);
       assert.match(cmd, /\$wtMatches = @\(\)/);
       assert.match(cmd, /\$wtMatches\.Count -eq 1/);
       assert.match(cmd, /wt-title-match/);
@@ -119,6 +120,35 @@ describe("Windows terminal focus", () => {
       assert.doesNotMatch(helperScript, /Add-Content/);
       assert.doesNotMatch(cmd, /focus-debug\.log/);
       assert.doesNotMatch(helperScript, /focus-debug\.log/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("tries the attached console HWND when a PowerShell process has no main window", () => {
+    const { initFocus, cleanup } = loadFocusWithMock();
+    try {
+      const focus = initFocus({});
+      const cmd = focus.__test.makeFocusCmd(1234, ["repo"]);
+      const helperScript = focus.__test.PS_FOCUS_ADDTYPE;
+
+      assert.match(helperScript, /AttachConsole/);
+      assert.match(helperScript, /GetConsoleWindow/);
+      assert.match(helperScript, /FindConsoleWindowForPid/);
+      assert.match(cmd, /FindConsoleWindowForPid\(\[uint32\]\$curPid\)/);
+      assert.match(cmd, /reason = 'console-window'/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("caps CIM parent-process lookup time in the Windows focus helper", () => {
+    const { initFocus, cleanup } = loadFocusWithMock();
+    try {
+      const focus = initFocus({});
+      const cmd = focus.__test.makeFocusCmd(1234, ["repo"]);
+
+      assert.match(cmd, /Get-CimInstance Win32_Process -Filter "ProcessId=\$curPid" -OperationTimeoutSec 2/);
     } finally {
       cleanup();
     }

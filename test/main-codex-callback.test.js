@@ -38,6 +38,27 @@ describe("Codex monitor callback helpers", () => {
     });
   });
 
+  it("passes Codex Desktop focus metadata from JSONL monitor updates", () => {
+    assert.deepStrictEqual(buildCodexMonitorUpdateOptions({
+      cwd: "/repo",
+      sourcePid: 11,
+      agentPid: 22,
+      pidChain: [22, 11],
+      codexOriginator: "Codex Desktop",
+      codexSource: "vscode",
+    }, { includeHeadless: true }), {
+      cwd: "/repo",
+      agentId: "codex",
+      sessionTitle: undefined,
+      sourcePid: 11,
+      agentPid: 22,
+      pidChain: [22, 11],
+      codexOriginator: "Codex Desktop",
+      codexSource: "vscode",
+      headless: false,
+    });
+  });
+
   it("omits headless for permission update options", () => {
     const options = buildCodexMonitorUpdateOptions({
       cwd: "/repo",

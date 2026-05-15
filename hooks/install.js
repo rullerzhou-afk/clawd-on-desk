@@ -7,7 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const childProcess = require("child_process");
-const { buildPermissionUrl, DEFAULT_SERVER_PORT, PERMISSION_PATH, readRuntimePort, resolveNodeBin, resolveNodeBinAsync } = require("./server-config");
+const { buildPermissionUrl, DEFAULT_SERVER_PORT, PERMISSION_PATH, readRuntimePort, resolveNodeBin, resolveNodeBinAsync, SERVER_PORTS } = require("./server-config");
 const { writeJsonAtomic, writeJsonAtomicAsync, asarUnpackedPath } = require("./json-utils");
 
 const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".claude");
@@ -542,9 +542,16 @@ function isClawdPermissionUrl(url) {
   if (typeof url !== "string" || !url) return false;
   try {
     const parsed = new URL(url);
+    const port = Number(parsed.port);
     return parsed.protocol === "http:"
       && parsed.hostname === "127.0.0.1"
-      && parsed.pathname === HTTP_MARKER;
+      && parsed.pathname === HTTP_MARKER
+      && parsed.search === ""
+      && parsed.hash === ""
+      && parsed.username === ""
+      && parsed.password === ""
+      && Number.isInteger(port)
+      && SERVER_PORTS.includes(port);
   } catch {
     return false;
   }

@@ -120,7 +120,7 @@ function getPolicy(ctx, kind) {
       if (policy && typeof policy.enabled === "boolean") return policy;
     } catch {}
   }
-  if (kind === "permission") return { enabled: !ctx.hideBubbles, autoCloseMs: null };
+  if (kind === "permission") return { enabled: !ctx.hideBubbles, autoCloseMs: 0 };
   if (kind === "notification") return { enabled: !ctx.hideBubbles, autoCloseMs: 30000 };
   return { enabled: !ctx.hideBubbles, autoCloseMs: 0 };
 }
@@ -303,6 +303,23 @@ function buildElicitationUpdatedInput(toolInput, answers) {
     questions,
     answers: normalizedAnswers,
   };
+}
+
+function buildPermissionFocusEntry(perm) {
+  if (!perm || typeof perm !== "object") return null;
+  const sessionId = String(perm.sessionId || "");
+  if (!sessionId) return null;
+  const focusEntry = { id: sessionId, agentId: perm.agentId || null };
+  if (perm.sourcePid) focusEntry.sourcePid = perm.sourcePid;
+  if (perm.cwd) focusEntry.cwd = perm.cwd;
+  if (perm.agentPid) focusEntry.agentPid = perm.agentPid;
+  if (perm.pidChain) focusEntry.pidChain = perm.pidChain;
+  if (perm.host) focusEntry.host = perm.host;
+  if (perm.platform) focusEntry.platform = perm.platform;
+  if (perm.model) focusEntry.model = perm.model;
+  if (perm.codexOriginator) focusEntry.codexOriginator = perm.codexOriginator;
+  if (perm.codexSource) focusEntry.codexSource = perm.codexSource;
+  return focusEntry;
 }
 
 module.exports = function initPermission(ctx) {
@@ -555,6 +572,49 @@ function showPermissionBubble(permEntry) {
 
   ctx.guardAlwaysOnTop(bub);
   syncPermissionShortcuts();
+  armPermissionAutoCloseTimer(permEntry);
+}
+
+// Autoclose: set up the dismiss-without-decision timer for a single pending
+// permission. Passive notification entries (codex/kimi) own their own
+// dismissal via dismissPassiveNotify and must not be auto-closed through this
+// path — their UI lifecycle is decoupled from the agent's response channel.
+function armPermissionAutoCloseTimer(permEntry) {
+  if (!permEntry || permEntry.isCodexNotify || permEntry.isKimiNotify) return;
+  if (permEntry.autoCloseTimer) {
+    clearTimeout(permEntry.autoCloseTimer);
+    permEntry.autoCloseTimer = null;
+  }
+  const policy = getPolicy(ctx, "permission");
+  if (!policy.enabled || !(policy.autoCloseMs > 0)) return;
+  const elapsed = Math.max(0, Date.now() - (permEntry.createdAt || Date.now()));
+  const remaining = Math.max(0, policy.autoCloseMs - elapsed);
+  if (remaining === 0) {
+    dismissPermissionWithoutDecision(permEntry, "Auto-closed before timer armed");
+    return;
+  }
+  permEntry.autoCloseTimer = setTimeout(() => {
+    permEntry.autoCloseTimer = null;
+    dismissPermissionWithoutDecision(permEntry, "Auto-closed after configured timeout");
+  }, remaining);
+}
+
+function dismissPermissionWithoutDecision(permEntry, message) {
+  if (!permEntry) return;
+  const idx = pendingPermissions.indexOf(permEntry);
+  if (idx === -1) return;
+  permLog(`auto-close dismiss: tool=${permEntry.toolName} session=${permEntry.sessionId} agent=${permEntry.agentId || "claude-code"}`);
+  resolvePermissionEntry(permEntry, "no-decision", message || "Auto-closed");
+}
+
+// Called by settings-effect-router after permissionBubbleAutoCloseSeconds
+// changes. Re-arm every visible permission entry against the current policy
+// so a freshly-raised value extends pending bubbles and a lowered value
+// shortens (or immediately fires) the remaining wait.
+function refreshPermissionAutoCloseForPolicy() {
+  for (const perm of [...pendingPermissions]) {
+    armPermissionAutoCloseTimer(perm);
+  }
 }
 
 function buildPermissionBubblePayload(permEntry) {
@@ -570,6 +630,7 @@ function buildPermissionBubblePayload(permEntry) {
     lang: ctx.lang,
     isElicitation: permEntry.isElicitation || false,
     isOpencode: permEntry.isOpencode || false,
+    isPi: permEntry.isPi || false,
     opencodeAlways: permEntry.opencodeAlwaysCandidates || [],
     opencodePatterns: permEntry.opencodePatterns || [],
     sessionFolder,
@@ -606,6 +667,11 @@ function syncPermissionBubbleContent(permEntry) {
 
   pendingPermissions.splice(idx, 1);
 
+  if (permEntry.autoCloseTimer) {
+    clearTimeout(permEntry.autoCloseTimer);
+    permEntry.autoCloseTimer = null;
+  }
+
   const { res, abortHandler, bubble: bub } = permEntry;
   if (res && abortHandler) res.removeListener("close", abortHandler);
 
@@ -628,6 +694,9 @@ function syncPermissionBubbleContent(permEntry) {
   // Hono route. Plugin sent us a fire-and-forget POST — no HTTP response to
   // complete on this connection.
   if (permEntry.isOpencode) {
+    // Autoclose: silent drop — same DND semantics. opencode TUI falls back
+    // to its built-in prompt so the user can answer in the terminal.
+    if (behavior === "no-decision") return;
     let reply;
     if (behavior === "deny") reply = "reject";
     else if (permEntry.opencodeAlwaysPicked) reply = "always";
@@ -657,7 +726,25 @@ function syncPermissionBubbleContent(permEntry) {
     return;
   }
 
+  if (permEntry.isPi) {
+    if (behavior === "no-decision") {
+      sendNoDecisionResponse(res, message || "fallback", "pi");
+    } else {
+      const decision = { behavior: behavior === "deny" ? "deny" : "allow" };
+      if (behavior === "deny" && message) decision.message = message;
+      sendPermissionResponse(res, decision);
+    }
+    return;
+  }
+
   if (permEntry.isElicitation) {
+    if (behavior === "no-decision") {
+      // Autoclose: drop the socket so CC stops waiting, then refocus the
+      // terminal — same UX as the deny path but without sending a decision.
+      try { res.destroy(); } catch {}
+      ctx.focusTerminalForSession(permEntry.sessionId);
+      return;
+    }
     if (behavior === "allow" && permEntry.resolvedUpdatedInput) {
       sendPermissionResponse(res, {
         behavior: "allow",
@@ -667,6 +754,15 @@ function syncPermissionBubbleContent(permEntry) {
       sendPermissionResponse(res, "deny", message, "Elicitation");
       ctx.focusTerminalForSession(permEntry.sessionId);
     }
+    return;
+  }
+
+  if (behavior === "no-decision") {
+    // Claude Code / CodeBuddy autoclose path: destroy the socket so the
+    // hook's curl sees a connection failure, which is a non-blocking error
+    // per the hooks doc — CC falls back to its built-in chat prompt rather
+    // than treating it as an explicit deny.
+    try { res.destroy(); } catch {}
     return;
   }
 
@@ -768,12 +864,16 @@ function sendPermissionResponse(res, decisionOrBehavior, message, hookEventName 
   res.end(responseBody);
 }
 
-function sendCodexNoDecisionResponse(res, reason = "") {
+function sendNoDecisionResponse(res, reason = "", label = "permission") {
   if (!res || res.writableEnded || res.destroyed || res.headersSent) return false;
-  if (reason) permLog(`codex no-decision: ${reason}`);
+  if (reason) permLog(`${label} no-decision: ${reason}`);
   res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
   res.end();
   return true;
+}
+
+function sendCodexNoDecisionResponse(res, reason = "") {
+  return sendNoDecisionResponse(res, reason, "codex");
 }
 
 function sendCodexPermissionResponse(res, decisionOrBehavior, message) {
@@ -820,7 +920,16 @@ function handleDecide(event, behavior) {
     // elsewhere" must answer no-decision immediately instead of leaving the
     // hook parked until its long timeout.
     resolvePermissionEntry(perm, "no-decision", `Unsupported Codex bubble action: ${String(behavior)}`);
-    if (behavior === "deny-and-focus") ctx.focusTerminalForSession(perm.sessionId);
+    if (behavior === "deny-and-focus") {
+      ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
+    }
+    return;
+  }
+  if (perm.isPi && behavior !== "allow" && behavior !== "deny") {
+    resolvePermissionEntry(perm, "no-decision", `Unsupported Pi bubble action: ${String(behavior)}`);
+    if (behavior === "deny-and-focus") {
+      ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
+    }
     return;
   }
   if (perm.isElicitation && behavior && typeof behavior === "object" && behavior.type === "elicitation-submit") {
@@ -871,7 +980,7 @@ function handleDecide(event, behavior) {
     repositionBubbles();
     repositionDependentBubbles();
     syncPermissionShortcuts();
-    ctx.focusTerminalForSession(perm.sessionId);
+    ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
   } else {
     resolvePermissionEntry(perm, behavior === "allow" ? "allow" : "deny");
   }
@@ -1002,6 +1111,7 @@ function dismissInteractivePermissionWithoutDecision(perm, reason) {
   const idx = pendingPermissions.indexOf(perm);
   if (idx !== -1) pendingPermissions.splice(idx, 1);
   if (perm._delayTimer) { clearTimeout(perm._delayTimer); perm._delayTimer = null; }
+  if (perm.autoCloseTimer) { clearTimeout(perm.autoCloseTimer); perm.autoCloseTimer = null; }
   if (perm.abortHandler && perm.res) {
     try { perm.res.removeListener("close", perm.abortHandler); } catch {}
   }
@@ -1018,6 +1128,8 @@ function dismissInteractivePermissionWithoutDecision(perm, reason) {
   // close, and opencode falls back by receiving no bridge reply.
   if (perm.isCodex) {
     sendCodexNoDecisionResponse(perm.res, reason || "permission-dismissed");
+  } else if (perm.isPi) {
+    sendNoDecisionResponse(perm.res, reason || "permission-dismissed", "pi");
   } else if (!perm.isOpencode && perm.res && !perm.res.destroyed) {
     try { perm.res.destroy(); } catch {}
   }
@@ -1108,7 +1220,7 @@ function cleanup() {
   for (const perm of [...pendingPermissions]) {
     if (perm._delayTimer) clearTimeout(perm._delayTimer);
     if (perm.autoExpireTimer) clearTimeout(perm.autoExpireTimer);
-    if (perm.isCodex) resolvePermissionEntry(perm, "no-decision", "Clawd is quitting");
+    if (perm.isCodex || perm.isPi) resolvePermissionEntry(perm, "no-decision", "Clawd is quitting");
     else resolvePermissionEntry(perm, "deny", "Clawd is quitting");
   }
 }
@@ -1121,6 +1233,7 @@ return {
   showCodexNotifyBubble, clearCodexNotifyBubbles,
   showKimiNotifyBubble, clearKimiNotifyBubbles,
   refreshPassiveNotifyAutoClose,
+  refreshPermissionAutoCloseForPolicy,
   dismissPermissionsByAgent, dismissInteractivePermissionBubbles,
   dismissPermissionsForDnd,
   syncPermissionShortcuts,

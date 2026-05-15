@@ -15,6 +15,7 @@ jobs:
         with:
           node-version: 20
       - run: npm install
+      - run: npm test
       - run: npx electron-builder --win --publish never
       - uses: actions/upload-artifact@v4
         with:

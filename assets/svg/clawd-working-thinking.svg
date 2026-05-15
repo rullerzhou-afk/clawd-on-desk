@@ -1,196 +1,501 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <!-- clawd thinking bubble v25 (2026-05-15)
+
+       v25 = v24 + dreamy edge-flow rewrite.
+       Lu's call: v24 flow pixels read as broken — codex used
+       step-end (hard on/off) + translate jumps + scattered
+       positions across different sides, so the eye reads
+       "buggy detached pixel" not "edge flow".
+
+       Fix: 4 pale-blue 1x1 pixels per bubble, each sitting
+       exactly 1px outside one flat edge (top / right / bottom
+       / left of rim). They fade in and out softly via
+       ease-in-out opacity only (no transform), staggered 6%
+       apart so adjacent pixels overlap during their fades.
+       The eye reads this as a single highlight marching
+       clockwise around the rim — the dreamy / imagining /
+       thought-cloud signature Lu asked for.
+
+       v24 = v23 + "脚站定不动".
+       Lu's call: legs jiggling per body-lean reads as restless.
+       Fix: lift the 4 leg <rect>s out of #clawd-body so they do
+       NOT inherit body-attend rotate/translate or body-breathe
+       scale. Torso / arm / eyes still inherit body motion as
+       before. The leg-*-think keyframes are no longer
+       referenced (kept defined for diff clarity, no perf cost).
+
+       Side note: torso底部边缘旋转时会与脚顶部出现 0.1-0.2px
+       的极小错位 (max body-attend rotate ≈ 2.6deg around y=13
+       即脚顶部基线), 桌宠尺寸下肉眼不可见。
+
+       v23 from v22 critique: "not cute / not精致".
+       Five fixes layered on top of v22 timing:
+         1. Bubble tail: chat-style stair removed.
+            Now a real "thought bubble chain" — main bubble +
+            two recurring small puffs (1px and 0.5px) trailing
+            down to clawd's head. This is the manga thought-cloud
+            signature; clawd looks like he is thinking, not being
+            messaged.
+         2. Eyes react: rect eyes during the thinking hold
+            switch to ^^ smile eyes for a "got it!" beat
+            during the third dot reveal, then blink back to rect
+            before the bubble exits. Uses technique 14
+            (blink-cover swap from rect to smile).
+         3. Inspiration sparkle: a small + pops above the
+            bubble exactly when the smile happens, technique 8
+            "double-flash" reused as a single emphatic blink.
+         4. Chin-rest arm now visible: same-side arm rotates
+            ~50deg with a translate so the hand actually reaches
+            the cheek/chin area, not the previous +22deg micro-tilt.
+         5. Bubble tone switched to white (#FFFFFF), with dots
+            in a slightly deeper Clawd blue (#256891) so they read
+            clearly inside the bubble.
+         6. White bubble gets subtle pale-blue pixels outside the
+            rim, stepping around the outer contour for a small
+            pixel-flow feel while keeping the interior clean.
+
+       Timing, 12s loop (three slow dot reveals per side):
+         0-3%    idle
+         3-7%    notice left + left bubble arrives
+         7-43%   left thinking, three slow dot reveals
+         43-44%  blink (cover swap rect -> smile)
+         44-48%  "got it" smile + + flash
+         48-49%  blink (cover swap smile -> rect)
+         49-52%  left bubble leaves
+         52-54%  very short neutral reset
+         54-58%  notice right + right bubble arrives
+         58-92%  right thinking, three slow dot reveals
+         92-93%  blink (cover swap rect -> smile)
+         93-96%  "got it" smile + + flash
+         96-97%  blink (cover swap smile -> rect)
+         97-99%  right bubble leaves
+         99-100% short loop-end idle
+  -->
+
   <defs>
     <style>
-      /* === 12s master timeline: mostly still, one gentle "thinking moment" === */
-
-      /* Body: one subtle lean at the thinking moment */
-      .body-master {
-        transform-origin: 7.5px 15px;
-        animation: body-think 12s infinite ease-in-out;
-      }
-
-      /* Breathing: the ONLY constant cycle (3.2s) */
-      .breathe {
-        transform-origin: 7.5px 13px;
-        animation: breathe 3.2s infinite ease-in-out;
-      }
-
-      /* Shadow follows body */
-      .shadow-think {
+      #ground-shadow {
+        transform-box: view-box;
+        transform-origin: 7.5px 15.5px;
         animation: shadow-think 12s infinite ease-in-out;
       }
 
-      /* Right arm: resting on chin, one gentle press per cycle */
-      .arm-r {
-        transform-origin: 14px 10px;
-        animation: arm-r-think 12s infinite ease-in-out;
+      .body-breathe {
+        transform-box: view-box;
+        transform-origin: 7.5px 13px;
+        animation: body-breathe 12s infinite ease-in-out;
       }
 
-      /* Left arm: one tiny shift with body lean */
-      .arm-l {
-        transform-origin: 1px 10px;
-        animation: arm-l-think 12s infinite ease-in-out;
+      .body-attend {
+        transform-box: view-box;
+        transform-origin: 7.5px 13px;
+        animation: body-attend 12s infinite ease-in-out;
       }
 
-      /* Eyes: combined movement + blink on same timeline
-         Blinks are intentionally placed before/after eye drift */
-      .eyes-think {
-        transform-origin: 7.5px 8px;
+      .arm-left,
+      .arm-right,
+      .leg-left-inner,
+      .leg-left-outer,
+      .leg-right-inner,
+      .leg-right-outer {
+        transform-box: fill-box;
+        transform-origin: 50% 0%;
+      }
+
+      .arm-left {
+        transform-origin: 100% 0%;
+        animation: arm-left-think 12s infinite ease-in-out;
+      }
+      .arm-right {
+        transform-origin: 0% 0%;
+        animation: arm-right-think 12s infinite ease-in-out;
+      }
+      .leg-right-inner { animation: leg-right-inner-think 12s infinite ease-in-out; }
+      .leg-right-outer { animation: leg-right-outer-think 12s infinite ease-in-out; }
+      .leg-left-inner  { animation: leg-left-inner-think  12s infinite ease-in-out; }
+      .leg-left-outer  { animation: leg-left-outer-think  12s infinite ease-in-out; }
+
+      .eyes {
+        transform-box: view-box;
+        transform-origin: 7.5px 9px;
         animation: eyes-think 12s infinite ease-in-out;
       }
 
-      /* === Bubble edge morph === */
-      .bubble-h {
-        animation: morph-h 5s infinite ease-in-out;
-      }
-      .bubble-v {
-        animation: morph-v 4s infinite ease-in-out;
-      }
-      .bubble-main {
-        animation: morph-main 6s infinite ease-in-out;
-      }
+      .eyes-rect  { animation: eyes-rect-vis  12s infinite step-end; }
+      .eyes-smile { opacity: 0; animation: eyes-smile-vis 12s infinite step-end; }
 
-      /* === Loading dots (2s) === */
+      .left-bubble,
+      .right-bubble {
+        transform-box: fill-box;
+        transform-origin: 50% 100%;
+        opacity: 0;
+      }
+      .left-bubble  { animation: left-bubble-life 12s infinite ease-in-out; }
+      .right-bubble { animation: right-bubble-life 12s infinite ease-in-out; }
+
       .dot { opacity: 0; }
-      .d1 { animation: load-dot-1 2s infinite; }
-      .d2 { animation: load-dot-2 2s infinite; }
-      .d3 { animation: load-dot-3 2s infinite; }
+      .left-bubble  .dot1 { animation: left-dot-1  12s infinite step-end; }
+      .left-bubble  .dot2 { animation: left-dot-2  12s infinite step-end; }
+      .left-bubble  .dot3 { animation: left-dot-3  12s infinite step-end; }
+      .right-bubble .dot1 { animation: right-dot-1 12s infinite step-end; }
+      .right-bubble .dot2 { animation: right-dot-2 12s infinite step-end; }
+      .right-bubble .dot3 { animation: right-dot-3 12s infinite step-end; }
 
-      /* ==================== Keyframes ==================== */
-
-      /* Body: neutral → gentle lean at 50% → return
-         Only 1.5deg, barely perceptible, but gives "weight shift" */
-      @keyframes body-think {
-        0%, 35%, 80%, 100% { transform: rotate(0deg) translate(0, 0); }
-        50%                { transform: rotate(1.5deg) translate(0.3px, 0); }
+      .bubble-flow {
+        opacity: 0;
       }
+      .left-bubble  .flow1 { animation: left-flow-1  12s infinite ease-in-out; }
+      .left-bubble  .flow2 { animation: left-flow-2  12s infinite ease-in-out; }
+      .left-bubble  .flow3 { animation: left-flow-3  12s infinite ease-in-out; }
+      .left-bubble  .flow4 { animation: left-flow-4  12s infinite ease-in-out; }
+      .right-bubble .flow1 { animation: right-flow-1 12s infinite ease-in-out; }
+      .right-bubble .flow2 { animation: right-flow-2 12s infinite ease-in-out; }
+      .right-bubble .flow3 { animation: right-flow-3 12s infinite ease-in-out; }
+      .right-bubble .flow4 { animation: right-flow-4 12s infinite ease-in-out; }
 
-      /* Shadow: subtle horizontal shift with body */
+      .left-spark,
+      .right-spark {
+        transform-box: fill-box;
+        transform-origin: 50% 50%;
+        opacity: 0;
+      }
+      .left-spark  { animation: left-spark-bling  12s infinite ease-out; }
+      .right-spark { animation: right-spark-bling 12s infinite ease-out; }
+
       @keyframes shadow-think {
-        0%, 35%, 80%, 100% { transform: translate(0, 0); }
-        50%                { transform: translate(0.3px, 0); }
+        0%, 3%, 52%, 99%, 100%      { opacity: 0.5; transform: translateX(0) scaleX(1); }
+        15%, 43%                    { opacity: 0.4; transform: translateX(-0.28px) scaleX(0.9); }
+        70%, 96%                    { opacity: 0.4; transform: translateX(0.28px) scaleX(0.9); }
       }
 
-      /* Breathing: standard template, always running */
-      @keyframes breathe {
-        0%, 100% { transform: scale(1, 1) translate(0, 0); }
-        50%      { transform: scale(1.02, 0.98) translate(0, 0.5px); }
+      @keyframes body-breathe {
+        0%, 3%, 52%, 99%, 100%      { transform: scale(1, 1) translateY(0); }
+        15%, 29%, 43%, 70%, 84%, 96% { transform: scale(1.006, 0.994) translateY(0.08px); }
+        22%, 36%, 64%, 78%, 90%     { transform: scale(1.014, 0.986) translateY(0.18px); }
+        54%                         { transform: scale(0.996, 1.004) translateY(-0.08px); }
       }
 
-      /* Right arm: resting at -130deg (on chin), one slow press to -138deg
-         Arm is mostly STILL — the press is the "thinking moment" */
-      @keyframes arm-r-think {
-        0%, 38%, 75%, 100% { transform: rotate(-130deg); }
-        52%                { transform: rotate(-138deg); }
-        62%                { transform: rotate(-127deg); }
+      @keyframes body-attend {
+        0%, 3%, 52%, 99%, 100%      { transform: translate(0, 0) rotate(0deg); }
+        7%                          { transform: translate(-0.3px, 0.08px) rotate(-1.6deg); }
+        15%                         { transform: translate(-0.48px, 0.14px) rotate(-2.6deg); }
+        30%                         { transform: translate(-0.45px, 0.1px) rotate(-2.3deg); }
+        42%                         { transform: translate(-0.4px, 0.08px) rotate(-2.0deg); }
+        49%                         { transform: translate(-0.2px, 0.04px) rotate(-0.8deg); }
+        51%                         { transform: translate(-0.05px, 0) rotate(-0.2deg); }
+        54%                         { transform: translate(0, 0.08px) rotate(0deg); }
+        58%                         { transform: translate(0.3px, 0.08px) rotate(1.6deg); }
+        70%                         { transform: translate(0.48px, 0.14px) rotate(2.6deg); }
+        84%                         { transform: translate(0.45px, 0.1px) rotate(2.3deg); }
+        96%                         { transform: translate(0.32px, 0.06px) rotate(1.4deg); }
+        98%                         { transform: translate(0.05px, 0) rotate(0.2deg); }
       }
 
-      /* Left arm: resting at 22deg, tiny 4deg shift with body lean */
-      @keyframes arm-l-think {
-        0%, 40%, 78%, 100% { transform: rotate(22deg); }
-        55%                { transform: rotate(26deg); }
+      /*
+        v23 chin-rest arm: noticeable lift instead of v22's
+        invisible +22deg / -1px microtilt. Same-side arm
+        rotates ~52deg + translate so the hand physically
+        reaches the cheek line.
+      */
+      /*
+        v23 arm: per Lu's call, restored verbatim from v22.
+        v22's micro-tilt feels "still" but does not stutter.
+        The other v23 changes (bubble chain / smile eyes /
+        sparkle / timing) are kept on top.
+      */
+      @keyframes arm-left-think {
+        0%, 3%, 52%, 99%, 100%      { transform: translate(0, 0) rotate(0deg); }
+        7%                          { transform: translate(0.18px, -0.7px) rotate(14deg); }
+        15%, 49%                    { transform: translate(0.35px, -1.05px) rotate(22deg); }
+        30%                         { transform: translate(0.28px, -0.92px) rotate(26deg); }
+        58%, 96%                    { transform: translate(-0.08px, 0.45px) rotate(0deg); }
+        84%                         { transform: translate(-0.12px, 0.55px) rotate(0deg); }
+      }
+      @keyframes arm-right-think {
+        0%, 3%, 52%, 99%, 100%      { transform: translate(0, 0) rotate(0deg); }
+        7%, 49%                     { transform: translate(0.08px, 0.45px) rotate(0deg); }
+        30%                         { transform: translate(0.12px, 0.55px) rotate(0deg); }
+        58%                         { transform: translate(-0.18px, -0.7px) rotate(-14deg); }
+        70%, 96%                    { transform: translate(-0.35px, -1.05px) rotate(-22deg); }
+        84%                         { transform: translate(-0.28px, -0.92px) rotate(-26deg); }
       }
 
-      /* Eyes: combined translate (gaze) + scaleY (blink)
-         3 blinks in 12s ≈ natural rate
-         Blinks gate the eye drift transitions (intentional)
+      @keyframes leg-right-inner-think {
+        0%, 3%, 39%, 98%, 100%      { transform: rotate(0deg) translateY(0); }
+        8%, 34%                     { transform: rotate(7deg) translateY(-0.12px); }
+        20%                         { transform: rotate(9deg) translateY(-0.2px); }
+        42%, 94%                    { transform: rotate(-4deg) translateY(-0.08px); }
+        70%                         { transform: rotate(-5deg) translateY(-0.14px); }
+      }
+      @keyframes leg-right-outer-think {
+        0%, 3%, 39%, 98%, 100%      { transform: rotate(0deg) translateY(0); }
+        8%, 34%                     { transform: rotate(10deg) translateY(-0.18px); }
+        20%                         { transform: rotate(12deg) translateY(-0.26px); }
+        42%, 94%                    { transform: rotate(-5deg) translateY(-0.1px); }
+        70%                         { transform: rotate(-6deg) translateY(-0.16px); }
+      }
+      @keyframes leg-left-inner-think {
+        0%, 3%, 39%, 98%, 100%      { transform: rotate(0deg) translateY(0); }
+        8%, 34%                     { transform: rotate(4deg) translateY(-0.08px); }
+        20%                         { transform: rotate(5deg) translateY(-0.14px); }
+        42%, 94%                    { transform: rotate(-7deg) translateY(-0.12px); }
+        70%                         { transform: rotate(-9deg) translateY(-0.2px); }
+      }
+      @keyframes leg-left-outer-think {
+        0%, 3%, 39%, 98%, 100%      { transform: rotate(0deg) translateY(0); }
+        8%, 34%                     { transform: rotate(5deg) translateY(-0.1px); }
+        20%                         { transform: rotate(6deg) translateY(-0.16px); }
+        42%, 94%                    { transform: rotate(-10deg) translateY(-0.18px); }
+        70%                         { transform: rotate(-12deg) translateY(-0.26px); }
+      }
 
-         Mirror note: translate(+x) = screen LEFT toward bubble
-         Gaze amplitude: max 0.5px (tiny, dreamy) */
+      /*
+        v23 eyes: thinking squint + blink-cover swap to ^^ smile
+        at 43%/48% (left) and 92%/97% (right).
+        scaleY(0.85) during thinking = subtle squint.
+        scaleY(0.12) at swap = full blink that hides the
+        rect->smile / smile->rect transition.
+      */
       @keyframes eyes-think {
-        /* --- quiet phase: gazing vaguely at bubble --- */
-        0%   { transform: translate(0.5px, -0.3px) scaleY(1); }
-        14%  { transform: translate(0.5px, -0.3px) scaleY(1); }
-        16%  { transform: translate(0.5px, -0.3px) scaleY(0.1); }
-        18%  { transform: translate(0.5px, -0.3px) scaleY(1); }
-        /* --- still quiet, holding gaze --- */
-        42%  { transform: translate(0.5px, -0.3px) scaleY(1); }
-        44%  { transform: translate(0.5px, -0.3px) scaleY(0.1); }
-        46%  { transform: translate(0.5px, -0.3px) scaleY(1); }
-        /* --- slow drift to the side (the "hmm" moment) --- */
-        56%  { transform: translate(-0.5px, 0) scaleY(1); }
-        70%  { transform: translate(-0.5px, 0) scaleY(1); }
-        /* --- blink, then drift back --- */
-        74%  { transform: translate(-0.5px, 0) scaleY(1); }
-        76%  { transform: translate(-0.5px, 0) scaleY(0.1); }
-        78%  { transform: translate(-0.5px, 0) scaleY(1); }
-        /* --- return to bubble --- */
-        88%  { transform: translate(0.5px, -0.3px) scaleY(1); }
-        100% { transform: translate(0.5px, -0.3px) scaleY(1); }
+        0%, 3%, 52%, 99%, 100%      { transform: translate(0, 0) scaleY(1); }
+        5%                          { transform: translate(-0.3px, -0.5px) scaleY(0.95); }
+        9%, 42%                     { transform: translate(-0.45px, -0.78px) scaleY(0.85); }
+        43%                         { transform: translate(-0.45px, -0.78px) scaleY(0.12); }
+        44%, 47%                    { transform: translate(-0.45px, -0.78px) scaleY(1); }
+        48%                         { transform: translate(-0.45px, -0.78px) scaleY(0.12); }
+        50%                         { transform: translate(-0.15px, -0.25px) scaleY(0.95); }
+        54%                         { transform: translate(0, 0) scaleY(0.18); }
+        55%                         { transform: translate(0.3px, -0.5px) scaleY(0.95); }
+        59%, 88%                    { transform: translate(0.45px, -0.78px) scaleY(0.85); }
+        92%                         { transform: translate(0.45px, -0.78px) scaleY(0.12); }
+        93%, 96%                    { transform: translate(0.45px, -0.78px) scaleY(1); }
+        97%                         { transform: translate(0.45px, -0.78px) scaleY(0.12); }
+        98%                         { transform: translate(0.2px, -0.4px) scaleY(0.95); }
+        100%                        { transform: translate(0, 0) scaleY(1); }
       }
 
-      /* Bubble edge morphing */
-      @keyframes morph-main {
-        0%, 100% { transform: translate(0, 0); }
-        50%      { transform: translate(0, -0.3px); }
+      @keyframes eyes-rect-vis {
+        0%   { opacity: 1; }
+        43%  { opacity: 0; }
+        48%  { opacity: 1; }
+        92%  { opacity: 0; }
+        97%  { opacity: 1; }
       }
-      @keyframes morph-h {
-        0%, 100% { transform: translate(0, 0); }
-        50%      { transform: translate(0.3px, 0); }
-      }
-      @keyframes morph-v {
-        0%, 100% { transform: translate(0, 0); }
-        50%      { transform: translate(0, 0.3px); }
+      @keyframes eyes-smile-vis {
+        0%   { opacity: 0; }
+        43%  { opacity: 1; }
+        48%  { opacity: 0; }
+        92%  { opacity: 1; }
+        97%  { opacity: 0; }
       }
 
-      /* Loading dots */
-      @keyframes load-dot-1 {
-        0%, 20%  { opacity: 0; }
-        21%, 100% { opacity: 1; }
+      @keyframes left-bubble-life {
+        0%, 3%    { opacity: 0; transform: translate(-0.2px, 0.7px) scale(0.82); }
+        5%        { opacity: 0.75; transform: translate(-0.1px, 0.25px) scale(0.94); }
+        7%        { opacity: 1; transform: translate(0, 0) scale(1.04); }
+        10%, 43%  { opacity: 1; transform: translate(0, 0) scale(1); }
+        46%       { opacity: 1; transform: translate(0, -0.2px) scale(1.02); }
+        48%       { opacity: 1; transform: translate(0, -0.18px) scale(1.01); }
+        49%       { opacity: 1; transform: translate(0, 0) scale(1); }
+        52%       { opacity: 0; transform: translate(0, 0.65px) scale(0.9); }
+        53%, 100% { opacity: 0; transform: translate(0, 0.65px) scale(0.9); }
       }
-      @keyframes load-dot-2 {
-        0%, 40%  { opacity: 0; }
-        41%, 100% { opacity: 1; }
+
+      @keyframes right-bubble-life {
+        0%, 53%        { opacity: 0; transform: translate(0.2px, 0.7px) scale(0.82); }
+        54%            { opacity: 0.75; transform: translate(0.1px, 0.25px) scale(0.94); }
+        58%            { opacity: 1; transform: translate(0, 0) scale(1.04); }
+        61%, 92%       { opacity: 1; transform: translate(0, 0) scale(1); }
+        94%            { opacity: 1; transform: translate(0, -0.2px) scale(1.02); }
+        96%            { opacity: 1; transform: translate(0, -0.18px) scale(1.01); }
+        97%            { opacity: 1; transform: translate(0, 0) scale(1); }
+        99%            { opacity: 0; transform: translate(0, 0.65px) scale(0.9); }
+        100%           { opacity: 0; transform: translate(0, 0.65px) scale(0.9); }
       }
-      @keyframes load-dot-3 {
-        0%, 60%  { opacity: 0; }
-        61%, 100% { opacity: 1; }
+
+      @keyframes left-dot-1 {
+        0%, 7.99%, 17.99%, 19.99%, 29.99%, 31.99%, 48.99%, 100% { opacity: 0; }
+        8%, 17.98%, 20%, 29.98%, 32%, 48.98%                    { opacity: 1; }
+      }
+      @keyframes left-dot-2 {
+        0%, 11.99%, 17.99%, 23.99%, 29.99%, 35.99%, 48.99%, 100% { opacity: 0; }
+        12%, 17.98%, 24%, 29.98%, 36%, 48.98%                    { opacity: 1; }
+      }
+      @keyframes left-dot-3 {
+        0%, 15.99%, 17.99%, 27.99%, 29.99%, 39.99%, 48.99%, 100% { opacity: 0; }
+        16%, 17.98%, 28%, 29.98%, 40%, 48.98%                    { opacity: 1; }
+      }
+      @keyframes right-dot-1 {
+        0%, 58.99%, 68.99%, 70.99%, 80.99%, 82.99%, 98.49%, 100% { opacity: 0; }
+        59%, 68.98%, 71%, 80.98%, 83%, 98.48%                    { opacity: 1; }
+      }
+      @keyframes right-dot-2 {
+        0%, 62.99%, 68.99%, 74.99%, 80.99%, 86.99%, 98.49%, 100% { opacity: 0; }
+        63%, 68.98%, 75%, 80.98%, 87%, 98.48%                    { opacity: 1; }
+      }
+      @keyframes right-dot-3 {
+        0%, 66.99%, 68.99%, 78.99%, 80.99%, 90.99%, 98.49%, 100% { opacity: 0; }
+        67%, 68.98%, 79%, 80.98%, 91%, 98.48%                    { opacity: 1; }
+      }
+
+      /*
+        v25 edge-flow keyframes.
+        Each pixel: opacity 0 -> 0.7 -> 0 over a 12% window,
+        with 6% stagger between adjacent pixels so two are
+        always overlapping mid-fade. Pure opacity, no transform
+        (v24's translate jumps were the broken-pixel feel).
+        Window math:
+          left thinking phase  = 10-43%
+          right thinking phase = 60-92%
+        flow1 = top rim, flow2 = right rim,
+        flow3 = bottom rim, flow4 = left rim (clockwise).
+      */
+      @keyframes left-flow-1 {
+        0%, 10%, 22%, 100% { opacity: 0; }
+        14%, 18%           { opacity: 0.7; }
+      }
+      @keyframes left-flow-2 {
+        0%, 16%, 28%, 100% { opacity: 0; }
+        20%, 24%           { opacity: 0.7; }
+      }
+      @keyframes left-flow-3 {
+        0%, 22%, 34%, 100% { opacity: 0; }
+        26%, 30%           { opacity: 0.7; }
+      }
+      @keyframes left-flow-4 {
+        0%, 28%, 40%, 100% { opacity: 0; }
+        32%, 36%           { opacity: 0.7; }
+      }
+      @keyframes right-flow-1 {
+        0%, 62%, 74%, 100% { opacity: 0; }
+        66%, 70%           { opacity: 0.7; }
+      }
+      @keyframes right-flow-2 {
+        0%, 68%, 80%, 100% { opacity: 0; }
+        72%, 76%           { opacity: 0.7; }
+      }
+      @keyframes right-flow-3 {
+        0%, 74%, 86%, 100% { opacity: 0; }
+        78%, 82%           { opacity: 0.7; }
+      }
+      @keyframes right-flow-4 {
+        0%, 80%, 92%, 100% { opacity: 0; }
+        84%, 88%           { opacity: 0.7; }
+      }
+
+      /*
+        v23 sparkle bling: single emphatic flash at "got it"
+        moment (left 28-32% / right 71-82%).
+        scale + opacity pulse from technique 8.
+      */
+      @keyframes left-spark-bling {
+        0%, 43%, 49%, 100% { opacity: 0; transform: scale(0.4); }
+        44%                { opacity: 0; transform: scale(0.5); }
+        45%                { opacity: 1; transform: scale(1.35); }
+        46.5%              { opacity: 1; transform: scale(1); }
+        48%                { opacity: 0.4; transform: scale(0.7); }
+      }
+      @keyframes right-spark-bling {
+        0%, 91%, 97%, 100% { opacity: 0; transform: scale(0.4); }
+        92%                { opacity: 0; transform: scale(0.5); }
+        93%                { opacity: 1; transform: scale(1.35); }
+        94.5%              { opacity: 1; transform: scale(1); }
+        96%                { opacity: 0.4; transform: scale(0.7); }
       }
     </style>
   </defs>
 
-  <!-- Thinking Bubble (upper-left) -->
-  <g transform="translate(-3, -7)">
-    <g class="think-bubble">
-      <g fill="#FFFFFF" opacity="0.9">
-        <rect class="bubble-main" x="2" y="1" width="8" height="7"/>
-        <rect class="bubble-h" x="1" y="2" width="10" height="5"/>
-        <rect class="bubble-v" x="3" y="0" width="6" height="9"/>
-        <rect x="8" y="7" width="2" height="2"/>
-        <rect x="10" y="9" width="1" height="1"/>
-      </g>
-      <g fill="#0082FC">
-        <rect class="dot d1" x="2.5" y="4" width="1" height="1"/>
-        <rect class="dot d2" x="5.5" y="4" width="1" height="1"/>
-        <rect class="dot d3" x="8.5" y="4" width="1" height="1"/>
-      </g>
-    </g>
+  <rect id="ground-shadow" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
+
+  <!--
+    v24: legs are lifted out of #clawd-body so they do not inherit
+    body-attend (rotate/translate toward bubble) or body-breathe
+    (scale). Rendered before #master-group so the torso (which is
+    inside master-group) draws on top of the leg tops as before.
+  -->
+  <g id="legs-static" fill="#DE886D">
+    <rect id="outer-left-leg"  x="3"  y="13" width="1" height="2"/>
+    <rect id="inner-left-leg"  x="5"  y="13" width="1" height="2"/>
+    <rect id="inner-right-leg" x="9"  y="13" width="1" height="2"/>
+    <rect id="outer-right-leg" x="11" y="13" width="1" height="2"/>
   </g>
 
-  <!-- Mirrored Character -->
-  <g transform="translate(15, 0) scale(-1, 1)">
-    <rect class="shadow-think" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
-
-    <g class="body-master">
-      <g class="breathe">
-        <g fill="#DE886D">
-          <rect x="3" y="13" width="1" height="2"/>
-          <rect x="5" y="13" width="1" height="2"/>
-          <rect x="9" y="13" width="1" height="2"/>
-          <rect x="11" y="13" width="1" height="2"/>
+  <g id="master-group">
+    <g class="body-breathe">
+      <g id="clawd-body" class="body-attend">
+        <g id="body-color-group" fill="#DE886D">
           <rect id="torso" x="2" y="6" width="11" height="7"/>
-          <g class="arm-l">
-            <rect x="0" y="9" width="3" height="2"/>
-          </g>
-          <g class="arm-r">
-            <rect x="13" y="9" width="2" height="2"/>
-          </g>
+          <rect class="arm-left"  id="left-arm"  x="0"  y="9" width="2" height="2"/>
+          <rect class="arm-right" id="right-arm" x="13" y="9" width="2" height="2"/>
         </g>
-        <g class="eyes-think" fill="#000000">
-          <rect x="5" y="7" width="1" height="2"/>
-          <rect x="11" y="7" width="1" height="2"/>
+
+        <g class="eyes" id="eyes-color-group">
+          <g class="eyes-rect" fill="#000000">
+            <rect id="left-eye"  x="4"  y="8" width="1" height="2"/>
+            <rect id="right-eye" x="10" y="8" width="1" height="2"/>
+          </g>
+          <g class="eyes-smile" fill="none" stroke="#000000" stroke-width="0.7" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3.5,9 4.5,8 5.5,9"/>
+            <polyline points="9.5,9 10.5,8 11.5,9"/>
+          </g>
         </g>
       </g>
+    </g>
+
+    <!--
+      Left thought bubble.
+      v23: bubble path lifted by 1px (path y -3..4 -> -4..3) so
+      there is a 3px gap to clawd's head. Old chat-tail
+      (0,4)(1,4)(1,5) deleted. New chain: 1x1 puff at (1,4) +
+      0.5x0.5 puff at (2,5.5) trailing toward clawd's head top
+      (y=6).
+    -->
+    <g class="left-bubble">
+      <path d="M-1 -4 H6 V-3 H7 V2 H6 V3 H-1 V2 H-2 V-3 H-1 Z" fill="#FFFFFF"/>
+      <!-- v25 rim-flow pixels: clockwise top -> right -> bottom -> left -->
+      <rect class="bubble-flow flow1" x="3"  y="-5" width="1" height="1" fill="#BFEAFF"/>
+      <rect class="bubble-flow flow2" x="8"  y="0"  width="1" height="1" fill="#BFEAFF"/>
+      <rect class="bubble-flow flow3" x="4"  y="4"  width="1" height="1" fill="#BFEAFF"/>
+      <rect class="bubble-flow flow4" x="-3" y="0"  width="1" height="1" fill="#BFEAFF"/>
+      <rect x="1"   y="4"   width="1"   height="1"   fill="#FFFFFF"/>
+      <rect x="2"   y="5.5" width="0.5" height="0.5" fill="#FFFFFF"/>
+      <rect class="dot dot1" x="0" y="-1" width="1" height="1" fill="#256891"/>
+      <rect class="dot dot2" x="2" y="-1" width="1" height="1" fill="#256891"/>
+      <rect class="dot dot3" x="4" y="-1" width="1" height="1" fill="#256891"/>
+    </g>
+
+    <g class="right-bubble">
+      <path d="M9 -4 H16 V-3 H17 V2 H16 V3 H9 V2 H8 V-3 H9 Z" fill="#FFFFFF"/>
+      <!-- v25 rim-flow pixels: clockwise top -> right -> bottom -> left -->
+      <rect class="bubble-flow flow1" x="12" y="-5" width="1" height="1" fill="#BFEAFF"/>
+      <rect class="bubble-flow flow2" x="18" y="0"  width="1" height="1" fill="#BFEAFF"/>
+      <rect class="bubble-flow flow3" x="15" y="4"  width="1" height="1" fill="#BFEAFF"/>
+      <rect class="bubble-flow flow4" x="7"  y="0"  width="1" height="1" fill="#BFEAFF"/>
+      <rect x="13"   y="4"   width="1"   height="1"   fill="#FFFFFF"/>
+      <rect x="12.5" y="5.5" width="0.5" height="0.5" fill="#FFFFFF"/>
+      <rect class="dot dot1" x="10" y="-1" width="1" height="1" fill="#256891"/>
+      <rect class="dot dot2" x="12" y="-1" width="1" height="1" fill="#256891"/>
+      <rect class="dot dot3" x="14" y="-1" width="1" height="1" fill="#256891"/>
+    </g>
+
+    <!--
+      v23 inspiration sparkles. Pixel + (5 small rects) above
+      each bubble, bling at the "got it" moment.
+      Color #FFE066 (per technique 12 anti-boss-gold rule).
+    -->
+    <g class="left-spark">
+      <rect x="6"   y="-7"   width="1"   height="0.6" fill="#FFE066"/>
+      <rect x="6"   y="-6.4" width="1"   height="1"   fill="#FFE066"/>
+      <rect x="6"   y="-5.4" width="1"   height="0.6" fill="#FFE066"/>
+      <rect x="5"   y="-6.4" width="1"   height="1"   fill="#FFE066"/>
+      <rect x="7"   y="-6.4" width="1"   height="1"   fill="#FFE066"/>
+    </g>
+    <g class="right-spark">
+      <rect x="8"   y="-7"   width="1"   height="0.6" fill="#FFE066"/>
+      <rect x="8"   y="-6.4" width="1"   height="1"   fill="#FFE066"/>
+      <rect x="8"   y="-5.4" width="1"   height="0.6" fill="#FFE066"/>
+      <rect x="7"   y="-6.4" width="1"   height="1"   fill="#FFE066"/>
+      <rect x="9"   y="-6.4" width="1"   height="1"   fill="#FFE066"/>
     </g>
   </g>
 </svg>

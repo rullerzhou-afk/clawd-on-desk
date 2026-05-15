@@ -14,8 +14,26 @@ describe("bubble policy", () => {
   it("keeps permission bubbles visible without auto-close by default", () => {
     assert.deepStrictEqual(getBubblePolicy({}, "permission"), {
       enabled: true,
-      autoCloseMs: null,
+      autoCloseMs: 0,
     });
+  });
+
+  it("maps permissionBubbleAutoCloseSeconds to autoCloseMs for permission kind", () => {
+    assert.deepStrictEqual(getBubblePolicy({ permissionBubbleAutoCloseSeconds: 30 }, "permission"), {
+      enabled: true,
+      autoCloseMs: 30000,
+    });
+    assert.deepStrictEqual(getBubblePolicy({ permissionBubbleAutoCloseSeconds: 0 }, "permission"), {
+      enabled: true,
+      autoCloseMs: 0,
+    });
+  });
+
+  it("disabling the permission bubble switch ignores any autoclose seconds", () => {
+    assert.deepStrictEqual(
+      getBubblePolicy({ permissionBubblesEnabled: false, permissionBubbleAutoCloseSeconds: 60 }, "permission"),
+      { enabled: false, autoCloseMs: 60000 }
+    );
   });
 
   it("maps notification and update seconds to enabled policies", () => {
@@ -57,7 +75,7 @@ describe("bubble policy", () => {
     const result = buildCategoryEnabledCommit(snapshot, "notification", true);
     assert.deepStrictEqual(result.commit, {
       permissionBubblesEnabled: false,
-      notificationBubbleAutoCloseSeconds: 3,
+      notificationBubbleAutoCloseSeconds: 6,
       updateBubbleAutoCloseSeconds: 0,
       hideBubbles: false,
     });
@@ -112,7 +130,7 @@ describe("bubble policy", () => {
     }), {
       hideBubbles: false,
       permissionBubblesEnabled: true,
-      notificationBubbleAutoCloseSeconds: 3,
+      notificationBubbleAutoCloseSeconds: 6,
       updateBubbleAutoCloseSeconds: 9,
     });
   });

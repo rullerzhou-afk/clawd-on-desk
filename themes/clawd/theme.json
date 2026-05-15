@@ -70,7 +70,7 @@
       "clawd-working-typing.svg"
     ],
     "juggling": [
-      "clawd-working-juggling.svg"
+      "clawd-headphones-groove.svg"
     ],
     "sweeping": [
       "clawd-working-sweeping.svg"
@@ -101,7 +101,7 @@
     },
     {
       "minSessions": 2,
-      "file": "clawd-working-juggling.svg"
+      "file": "clawd-headphones-groove.svg"
     },
     {
       "minSessions": 1,
@@ -111,11 +111,11 @@
   "jugglingTiers": [
     {
       "minSessions": 2,
-      "file": "clawd-working-conducting.svg"
+      "file": "clawd-working-juggling.svg"
     },
     {
       "minSessions": 1,
-      "file": "clawd-working-juggling.svg"
+      "file": "clawd-headphones-groove.svg"
     }
   ],
   "idleAnimations": [
@@ -135,8 +135,9 @@
   "displayHintMap": {
     "clawd-working-building.svg": "clawd-working-building.svg",
     "clawd-working-typing.svg": "clawd-working-typing.svg",
+    "clawd-headphones-groove.svg": "clawd-headphones-groove.svg",
     "clawd-working-juggling.svg": "clawd-working-juggling.svg",
-    "clawd-working-conducting.svg": "clawd-working-conducting.svg",
+    "clawd-working-conducting.svg": "clawd-working-juggling.svg",
     "clawd-idle-reading.svg": "clawd-idle-reading.svg",
     "clawd-working-debugger.svg": "clawd-working-debugger.svg",
     "clawd-working-thinking.svg": "clawd-working-thinking.svg"
@@ -149,7 +150,7 @@
       "attention": 4000,
       "error": 5000,
       "sweeping": 5500,
-      "notification": 2500,
+      "notification": 5000,
       "carrying": 3000,
       "working": 1000,
       "thinking": 1000
@@ -158,7 +159,7 @@
       "attention": 4000,
       "error": 5000,
       "sweeping": 300000,
-      "notification": 2500,
+      "notification": 5000,
       "carrying": 3000
     },
     "yawnDuration": 3000,
@@ -197,8 +198,7 @@
   },
   "wideHitboxFiles": [
     "clawd-error.svg",
-    "clawd-notification.svg",
-    "clawd-working-conducting.svg"
+    "clawd-notification.svg"
   ],
   "sleepingHitboxFiles": [
     "clawd-sleeping.svg",

@@ -6,6 +6,8 @@ const container = document.getElementById("pet-container");
 let clawdEl = document.getElementById("clawd");
 let pendingNext = null;
 const LOW_POWER_IDLE_PAUSE_MS = 5000;
+const SWAP_LOAD_FALLBACK_MS = 3000;
+const SWAP_VISIBILITY_RESCUE_BUFFER_MS = 750;
 const LOW_POWER_PAUSE_STYLE_ID = "clawd-low-power-pause-svg";
 const LOW_POWER_PAUSE_STATES = new Set(["idle", "mini-idle", "dozing"]);
 const LOW_POWER_BOUNDARY_EPSILON_MS = 80;
@@ -629,6 +631,8 @@ let currentDisplayedSvg = getObjectSvgName(clawdEl);
 let currentDisplayedAssetUrl = null;
 let pendingSvgFile = null; // tracks the SVG currently being loaded (for dedup)
 let pendingAssetUrl = null;
+let activeSwapToken = 0;
+let swapVisibilityRescueTimer = null;
 currentIdleSvg = currentDisplayedSvg;
 
 /**
@@ -647,7 +651,75 @@ function fadeOutAndRemove(el, durationMs) {
   }, durationMs);
 }
 
-function swapToFile(file, state, useObjectChannel) {
+function getPetMediaElements() {
+  return [...container.querySelectorAll("object, img.clawd-img")];
+}
+
+function isVisiblyOpaque(el) {
+  if (!el || !el.isConnected) return false;
+  let opacity = 1;
+  try {
+    const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+    opacity = Number.parseFloat((style && style.opacity) || el.style.opacity || "1");
+  } catch {
+    opacity = Number.parseFloat(el.style.opacity || "1");
+  }
+  return !Number.isFinite(opacity) || opacity > 0.05;
+}
+
+function hasVisiblePetElement() {
+  return getPetMediaElements().some(isVisiblyOpaque);
+}
+
+function forceVisiblePetElement(el) {
+  if (!el || !el.isConnected) return false;
+  el.style.transition = "none";
+  el.style.opacity = "1";
+  return true;
+}
+
+function clearSwapVisibilityRescueTimer() {
+  if (swapVisibilityRescueTimer) {
+    clearTimeout(swapVisibilityRescueTimer);
+    swapVisibilityRescueTimer = null;
+  }
+}
+
+function getSwapVisibilityRescueDelay(file) {
+  const fadeInMs = (_transitions[file] && _transitions[file].in) || 0;
+  return Math.max(SWAP_LOAD_FALLBACK_MS + SWAP_VISIBILITY_RESCUE_BUFFER_MS, fadeInMs + SWAP_VISIBILITY_RESCUE_BUFFER_MS);
+}
+
+function scheduleSwapVisibilityRescue(token, file, state) {
+  clearSwapVisibilityRescueTimer();
+  const timer = setTimeout(() => {
+    if (swapVisibilityRescueTimer === timer) swapVisibilityRescueTimer = null;
+    if (token !== activeSwapToken) return;
+    if (hasVisiblePetElement()) return;
+
+    if (pendingNext && pendingSvgFile === file) {
+      forceImageChannelReload(file, state);
+      return;
+    }
+
+    if (forceVisiblePetElement(clawdEl)) return;
+    forceImageChannelReload(file, state);
+  }, getSwapVisibilityRescueDelay(file));
+  swapVisibilityRescueTimer = timer;
+}
+
+function forceImageChannelReload(file, state, allowImageFallback = true) {
+  if (!allowImageFallback) return false;
+  if (!file) return false;
+  if (hasVisiblePetElement()) return false;
+  console.warn("Clawd: animation stayed invisible; reloading through the image channel:", file);
+  swapToFile(file, state, false, { allowImageFallback: false });
+  return true;
+}
+
+function swapToFile(file, state, useObjectChannel, options = {}) {
+  const swapToken = ++activeSwapToken;
+  const allowImageFallback = options.allowImageFallback !== false;
   if (pendingNext) {
     if (pendingNext.tagName === "OBJECT") releaseObject(pendingNext);
     else releaseImg(pendingNext);
@@ -670,6 +742,7 @@ function swapToFile(file, state, useObjectChannel) {
 
     const swap = () => {
       if (pendingNext !== next) return;
+      if (swapToken === activeSwapToken) clearSwapVisibilityRescueTimer();
       const fadeInMs = (_transitions[file] && _transitions[file].in) || 0;
       const fadeOutMs = (currentDisplayedSvg && _transitions[currentDisplayedSvg] && _transitions[currentDisplayedSvg].out) || 0;
 
@@ -709,6 +782,7 @@ function swapToFile(file, state, useObjectChannel) {
     next.data = url;
     container.appendChild(next);
     pendingNext = next;
+    scheduleSwapVisibilityRescue(swapToken, file, state);
     setTimeout(() => {
       if (pendingNext !== next) return;
       try {
@@ -717,11 +791,12 @@ function swapToFile(file, state, useObjectChannel) {
           pendingNext = null;
           pendingSvgFile = null;
           pendingAssetUrl = null;
+          forceImageChannelReload(file, state, allowImageFallback);
           return;
         }
       } catch {}
       swap();
-    }, 3000);
+    }, SWAP_LOAD_FALLBACK_MS);
   } else {
     // Img channel: <img> for pure playback (all formats)
     const next = document.createElement("img");
@@ -733,6 +808,7 @@ function swapToFile(file, state, useObjectChannel) {
 
     const swap = () => {
       if (pendingNext !== next) return;
+      if (swapToken === activeSwapToken) clearSwapVisibilityRescueTimer();
       const fadeInMs = (_transitions[file] && _transitions[file].in) || 0;
       const fadeOutMs = (currentDisplayedSvg && _transitions[currentDisplayedSvg] && _transitions[currentDisplayedSvg].out) || 0;
 
@@ -775,11 +851,12 @@ function swapToFile(file, state, useObjectChannel) {
     next.src = `${url}${url.includes("?") ? "&" : "?"}_t=${cacheBust}`;
     container.appendChild(next);
     pendingNext = next;
+    scheduleSwapVisibilityRescue(swapToken, file, state);
     // Timeout fallback for images that fail to load
     setTimeout(() => {
       if (pendingNext !== next) return;
       swap();
-    }, 3000);
+    }, SWAP_LOAD_FALLBACK_MS);
   }
 }
 

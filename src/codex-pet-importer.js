@@ -540,6 +540,8 @@ module.exports = {
   importCodexPetFromUrl,
   importCodexPetFromZipBuffer,
   extractCodexPetZip,
+  readZipEntries,
+  extractZipEntry,
   resolveDirectSpritesheetUrl,
   installCodexPetPackage,
   readImportMarker,

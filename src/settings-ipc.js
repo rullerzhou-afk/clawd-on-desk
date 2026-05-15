@@ -2,11 +2,13 @@
 
 const defaultFs = require("fs");
 const defaultPath = require("path");
+const settingsThemeImporter = require("./settings-theme-importer");
 
 const SOUND_OVERRIDE_ASSET_EXTS = new Set([".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"]);
 const SOUND_OVERRIDE_DIALOG_STRINGS = {
   en: { title: "Choose a sound file", filterName: "Audio" },
   zh: { title: "选择音效文件", filterName: "音频" },
+  "zh-TW": { title: "選擇音效檔案", filterName: "音效" },
   ko: { title: "음향 파일 선택", filterName: "오디오" },
   ja: { title: "音声ファイルを選択", filterName: "音声" },
 };
@@ -23,6 +25,12 @@ const REMOVE_THEME_DIALOG_STRINGS = {
     cancel: "取消",
     message: (name) => `确认删除主题 "${name}"？`,
     detail: "此操作不可撤销。主题的所有文件将从磁盘移除。",
+  },
+  "zh-TW": {
+    delete: "刪除",
+    cancel: "取消",
+    message: (name) => `確定要刪除主題「${name}」？`,
+    detail: "此動作無法復原。此主題的所有檔案都會從磁碟移除。",
   },
   ko: {
     delete: "삭제",
@@ -272,6 +280,44 @@ function registerSettingsIpc(options = {}) {
     } catch (err) {
       console.warn("Clawd: settings:list-themes failed:", err && err.message);
       return [];
+    }
+  });
+
+  handle("settings:open-user-themes-dir", async () => {
+    const dir = typeof themeLoader.ensureUserThemesDir === "function"
+      ? themeLoader.ensureUserThemesDir()
+      : null;
+    if (!dir) return { status: "error", message: "user themes directory unavailable" };
+    const openResult = await shell.openPath(dir);
+    if (openResult) return { status: "error", message: openResult };
+    return { status: "ok", path: dir };
+  });
+
+  handle("settings:import-user-theme-zip", async (event) => {
+    let result;
+    try {
+      result = await dialog.showOpenDialog(getDialogParent(event), {
+        properties: ["openFile"],
+        filters: [{ name: "Clawd theme zip", extensions: ["zip"] }],
+      });
+    } catch (err) {
+      return { status: "error", message: `theme zip picker failed: ${err && err.message}` };
+    }
+    if (!result || result.canceled || !result.filePaths || !result.filePaths[0]) {
+      return { status: "cancel" };
+    }
+
+    try {
+      const userThemesDir = typeof themeLoader.ensureUserThemesDir === "function"
+        ? themeLoader.ensureUserThemesDir()
+        : null;
+      return settingsThemeImporter.importUserThemeZip(result.filePaths[0], {
+        fs,
+        path,
+        userThemesDir,
+      });
+    } catch (err) {
+      return { status: "error", message: (err && err.message) || String(err) };
     }
   });
 

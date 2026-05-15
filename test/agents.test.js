@@ -131,4 +131,11 @@ describe("Agent config modules — data integrity", () => {
     assert.strictEqual(codex.capabilities.interactiveBubble, true);
   });
 
+  it("pi has interactiveBubble=true so settings UI renders its bubble sub-toggle", () => {
+    const pi = agents.find((a) => a.id === "pi");
+    assert.ok(pi);
+    assert.strictEqual(pi.capabilities.permissionApproval, true);
+    assert.strictEqual(pi.capabilities.interactiveBubble, true);
+  });
+
 });

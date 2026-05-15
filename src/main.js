@@ -40,7 +40,9 @@ const createFloatingWindowRuntime = require("./floating-window-runtime");
 const createPetWindowRuntime = require("./pet-window-runtime");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
+  getSessionFocusTarget,
 } = require("./session-focus");
+const { focusCodexThreadTarget } = require("./session-focus-handoff");
 const { getAllAgents } = require("../agents/registry");
 
 // ── Autoplay policy: allow sound playback without user gesture ──
@@ -207,6 +209,8 @@ const _settingsController = createSettingsController({
     // Theme runtime is wired after theme-loader.init(); keep these closures
     // lazy so settings actions never capture a pre-init runtime reference.
     activateTheme: (id, variantId, overrideMap) => themeRuntime.activateTheme(id, variantId, overrideMap),
+    refreshActiveThemeHitboxOverrides: (id, overrideMap) =>
+      themeRuntime.refreshActiveThemeHitboxOverrides(id, overrideMap),
     getThemeInfo: (id) => themeRuntime.getThemeInfo(id),
     removeThemeDir: (id) => themeRuntime.removeThemeDir(id),
     globalShortcut,
@@ -788,18 +792,10 @@ const _permCtx = {
   isAgentPermissionsEnabled: (agentId) =>
     _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
   focusTerminalForSession: (sessionId, options = {}) => {
-    const s = sessions.get(sessionId);
-    if (s && s.sourcePid) {
-      focusTerminalWindow({
-        sourcePid: s.sourcePid,
-        cwd: s.cwd,
-        editor: s.editor,
-        pidChain: s.pidChain,
-        sessionId: String(sessionId),
-        agentId: s.agentId,
-        requestSource: options.requestSource || "permission-bubble",
-      });
-    }
+    focusDashboardSession(sessionId, {
+      requestSource: options.requestSource || "permission-bubble",
+      fallbackEntry: options.fallbackEntry || getPendingPermissionFocusEntry(sessionId),
+    });
   },
   getSettingsSnapshot: () => _settingsController.getSnapshot(),
   subscribeShortcuts: (cb) => _settingsController.subscribeKey("shortcuts", (_value, snapshot) => {
@@ -816,6 +812,24 @@ let permDebugLog = null; // set after app.whenReady()
 let updateDebugLog = null; // set after app.whenReady()
 let sessionDebugLog = null; // set after app.whenReady()
 let focusDebugLog = null; // set after app.whenReady()
+
+function getPendingPermissionFocusEntry(sessionId) {
+  const id = String(sessionId || "");
+  if (!id) return null;
+  const entry = pendingPermissions.find((perm) => perm && perm.sessionId === id && perm.agentId === "codex");
+  if (!entry) return null;
+  const focusEntry = { id, agentId: entry.agentId };
+  if (entry.sourcePid) focusEntry.sourcePid = entry.sourcePid;
+  if (entry.cwd) focusEntry.cwd = entry.cwd;
+  if (entry.agentPid) focusEntry.agentPid = entry.agentPid;
+  if (entry.pidChain) focusEntry.pidChain = entry.pidChain;
+  if (entry.host) focusEntry.host = entry.host;
+  if (entry.platform) focusEntry.platform = entry.platform;
+  if (entry.model) focusEntry.model = entry.model;
+  if (entry.codexOriginator) focusEntry.codexOriginator = entry.codexOriginator;
+  if (entry.codexSource) focusEntry.codexSource = entry.codexSource;
+  return focusEntry;
+}
 
 const _updateBubbleCtx = {
   get win() { return win; },
@@ -1007,24 +1021,57 @@ function getFocusableLocalHudSessionIds() {
   return selectFocusableLocalHudSessionIds(_state.buildSessionSnapshot());
 }
 
+function focusTerminalSession(session, sessionId, requestSource) {
+  if (!session || !session.sourcePid) return false;
+  focusTerminalWindow({
+    sourcePid: session.sourcePid,
+    cwd: session.cwd,
+    editor: session.editor,
+    pidChain: session.pidChain,
+    sessionId: String(sessionId),
+    agentId: session.agentId,
+    requestSource,
+  });
+  return true;
+}
+
 function focusDashboardSession(sessionId, options = {}) {
   if (!sessionId) return;
   const requestSource = options.requestSource || "dashboard";
-  const session = sessions.get(String(sessionId));
-  if (session && session.sourcePid) {
-    focusTerminalWindow({
-      sourcePid: session.sourcePid,
-      cwd: session.cwd,
-      editor: session.editor,
-      pidChain: session.pidChain,
-      sessionId: String(sessionId),
-      agentId: session.agentId,
+  const id = String(sessionId);
+  const session = sessions.get(id);
+  const fallbackEntry = options.fallbackEntry && typeof options.fallbackEntry === "object"
+    ? options.fallbackEntry
+    : null;
+  if (!session && !fallbackEntry) {
+    focusLog(`focus result branch=none reason=session-not-found source=${requestSource} sid=${id}`);
+    return;
+  }
+
+  const focusEntry = { ...(session || {}), ...(fallbackEntry || {}), id };
+  const focusTarget = getSessionFocusTarget(focusEntry);
+  if (focusTarget.type === "codex-thread" && focusTarget.url) {
+    focusCodexThreadTarget({
+      shell,
+      focusEntry,
+      sessionId: id,
       requestSource,
+      url: focusTarget.url,
+      focusLog,
+      focusTerminalSession,
     });
-  } else if (!session) {
-    focusLog(`focus result branch=none reason=session-not-found source=${requestSource} sid=${String(sessionId)}`);
+    return;
+  }
+
+  if (focusTarget.type === "terminal") {
+    focusTerminalSession(focusEntry, id, requestSource);
+    return;
+  }
+
+  if (focusEntry.platform === "webui") {
+    focusLog(`focus result branch=none reason=webui-unfocusable source=${requestSource} sid=${id}`);
   } else {
-    focusLog(`focus result branch=none reason=no-source-pid source=${requestSource} sid=${String(sessionId)}`);
+    focusLog(`focus result branch=none reason=no-source-pid source=${requestSource} sid=${id}`);
   }
 }
 
@@ -1045,6 +1092,7 @@ const _dashboard = require("./dashboard")({
   getI18n: () => getDashboardI18nPayload(),
   getPetWindowBounds,
   getNearestWorkArea,
+  getSettingsWindow: () => settingsWindowRuntime.getWindow(),
   iconPath: settingsWindowRuntime.getIconPath(),
 });
 showDashboard = _dashboard.showDashboard;
@@ -1259,6 +1307,7 @@ const settingsEffectRouter = createSettingsEffectRouter({
   clearCodexNotifyBubbles,
   clearKimiNotifyBubbles,
   refreshPassiveNotifyAutoClose: () => callRuntimeMethod(_perm, "refreshPassiveNotifyAutoClose"),
+  refreshPermissionAutoCloseForPolicy: () => callRuntimeMethod(_perm, "refreshPermissionAutoCloseForPolicy"),
   hideUpdateBubbleForPolicy: () => callRuntimeMethod(_updateBubble, "hideForPolicy"),
   refreshUpdateBubbleAutoClose: () => callRuntimeMethod(_updateBubble, "refreshAutoCloseForPolicy"),
   repositionFloatingBubbles,
@@ -1414,7 +1463,7 @@ registerSessionIpc({
   focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
   hideSession: (sessionId) => hideDashboardSession(sessionId),
   setSessionAlias: (payload) => _settingsController.applyCommand("setSessionAlias", payload),
-  showDashboard: () => showDashboard(),
+  showDashboard: (options) => showDashboard(options),
   setSessionHudPinned: (value) => {
     const result = _settingsController.applyUpdate("sessionHudPinned", !!value);
     if (result && typeof result.then === "function") {

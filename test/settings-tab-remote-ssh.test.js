@@ -6,6 +6,7 @@ const fs = require("fs");
 const path = require("path");
 
 const SRC_DIR = path.join(__dirname, "..", "src");
+const { SUPPORTED_LANGS } = require("../src/i18n");
 
 // ── settings-tab-remote-ssh.js script integrity ──
 
@@ -31,9 +32,9 @@ test("settings-renderer.js SIDEBAR_TABS includes remote-ssh entry", () => {
   assert.match(code, /labelKey:\s*"sidebarRemoteSsh"/);
 });
 
-// ── i18n: all four language packs include the new keys ──
+// ── i18n: all language packs include the new keys ──
 
-test("settings-i18n.js: all 4 language packs include remote-ssh keys", () => {
+test("settings-i18n.js: all language packs include remote-ssh keys", () => {
   const code = fs.readFileSync(path.join(SRC_DIR, "settings-i18n.js"), "utf8");
   const REQUIRED_KEYS = [
     "sidebarRemoteSsh",
@@ -51,24 +52,32 @@ test("settings-i18n.js: all 4 language packs include remote-ssh keys", () => {
     "remoteSshStatus_connecting",
     "remoteSshStatus_connected",
     "remoteSshStatus_failed",
+    "remoteSshStep_install-copilot",
   ];
-  // Each key should appear at least 4 times (once per language pack).
+  // Each key should appear at least once per language pack.
   for (const key of REQUIRED_KEYS) {
     const matches = code.match(new RegExp(`\\b${key}\\b`, "g")) || [];
-    assert.ok(matches.length >= 4, `key ${key} should appear ≥4 times (4 langs); found ${matches.length}`);
+    assert.ok(
+      matches.length >= SUPPORTED_LANGS.length,
+      `key ${key} should appear ≥${SUPPORTED_LANGS.length} times (${SUPPORTED_LANGS.length} langs); found ${matches.length}`
+    );
   }
 });
 
-// ── i18n strings sanity: the four lang blocks each define sidebarRemoteSsh ──
+// ── i18n strings sanity: every lang block defines sidebarRemoteSsh ──
 
-test("settings-i18n.js: sidebarRemoteSsh defined in en/zh/ko/ja", () => {
+test("settings-i18n.js: sidebarRemoteSsh defined in every supported language", () => {
   const code = fs.readFileSync(path.join(SRC_DIR, "settings-i18n.js"), "utf8");
   const matches = code.match(/sidebarRemoteSsh:\s*"[^"]+"/g) || [];
-  assert.equal(matches.length, 4, `expected 4 sidebarRemoteSsh defs (en/zh/ko/ja); got ${matches.length}`);
+  assert.equal(
+    matches.length,
+    SUPPORTED_LANGS.length,
+    `expected ${SUPPORTED_LANGS.length} sidebarRemoteSsh defs; got ${matches.length}`
+  );
   // No two should be the same (sanity: ensures actual translation, not copy-paste).
   const values = matches.map((m) => m.match(/"([^"]+)"/)[1]);
   const unique = new Set(values);
-  assert.equal(unique.size, 4, `expected 4 distinct translations; got ${[...unique]}`);
+  assert.equal(unique.size, SUPPORTED_LANGS.length, `expected ${SUPPORTED_LANGS.length} distinct translations; got ${[...unique]}`);
 });
 
 // ── Smoke: the tab module exports a render that doesn't blow up at top-level eval ──
@@ -147,18 +156,18 @@ test("settings.css defines remote-ssh-* layout rules used by the tab", () => {
   }
 });
 
-test("settings-i18n.js: codexHookReviewReminder defined in all 4 langs (B2 followup)", () => {
+test("settings-i18n.js: codexHookReviewReminder defined in every supported language (B2 followup)", () => {
   const code = fs.readFileSync(path.join(SRC_DIR, "settings-i18n.js"), "utf8");
   const matches = code.match(/codexHookReviewReminder:\s*"[^"]+"/g) || [];
-  assert.equal(matches.length, 4,
-    `expected 4 codexHookReviewReminder defs (en/zh/ko/ja); got ${matches.length}`);
+  assert.equal(matches.length, SUPPORTED_LANGS.length,
+    `expected ${SUPPORTED_LANGS.length} codexHookReviewReminder defs; got ${matches.length}`);
   // Translations must differ — guards against copy-paste leaving English in 3 slots.
   const values = matches.map((m) => m.match(/"([^"]+)"/)[1]);
-  assert.equal(new Set(values).size, 4,
-    `expected 4 distinct translations; got ${[...new Set(values)]}`);
+  assert.equal(new Set(values).size, SUPPORTED_LANGS.length,
+    `expected ${SUPPORTED_LANGS.length} distinct translations; got ${[...new Set(values)]}`);
 });
 
-test("settings-i18n.js: hooks deploy status keys present in all 4 langs", () => {
+test("settings-i18n.js: hooks deploy status keys present in every supported language", () => {
   const code = fs.readFileSync(path.join(SRC_DIR, "settings-i18n.js"), "utf8");
   const REQUIRED_KEYS = [
     "remoteSshHooksLabel",
@@ -171,8 +180,8 @@ test("settings-i18n.js: hooks deploy status keys present in all 4 langs", () => 
   ];
   for (const key of REQUIRED_KEYS) {
     const matches = code.match(new RegExp(`\\b${key}\\b`, "g")) || [];
-    assert.ok(matches.length >= 4,
-      `key ${key} should appear ≥4 times (one per lang); found ${matches.length}`);
+    assert.ok(matches.length >= SUPPORTED_LANGS.length,
+      `key ${key} should appear ≥${SUPPORTED_LANGS.length} times (one per lang); found ${matches.length}`);
   }
 });
 

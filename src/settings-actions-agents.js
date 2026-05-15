@@ -19,6 +19,7 @@ const AUTO_REPAIRABLE_AGENT_IDS = new Set([
   "kiro-cli",
   "kimi-cli",
   "opencode",
+  "hermes",
 ]);
 
 // setAgentFlag is atomic single-agent, single-flag toggle.

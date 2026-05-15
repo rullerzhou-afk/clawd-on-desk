@@ -39,6 +39,13 @@ const ANIMATION_OVERRIDES_EXPORT_DIALOG_STRINGS = {
     jsonFilter: "Clawd 动画覆盖",
     nothingToExport: "没有可导出的动画覆盖。先自定义几个动画试试。",
   },
+  "zh-TW": {
+    saveTitle: "匯出動畫與音效自訂設定",
+    openTitle: "匯入動畫與音效自訂設定",
+    defaultName: (ts) => `clawd-animation-overrides-${ts}.json`,
+    jsonFilter: "Clawd 動畫與音效自訂設定",
+    nothingToExport: "目前沒有可匯出的自訂設定。",
+  },
   ko: {
     saveTitle: "애니메이션 덮어쓰기 내보내기",
     openTitle: "애니메이션 덮어쓰기 가져오기",
@@ -261,14 +268,18 @@ function createSettingsAnimationOverridesMain(options = {}) {
   function computeCardHitboxInfo(currentFile, themeOverrideMap) {
     const activeTheme = getActiveTheme();
     if (!currentFile || !activeTheme) {
-      return { wideHitboxEnabled: false, wideHitboxOverridden: false };
+      return { wideHitboxEnabled: false, wideHitboxOverridden: false, wideHitboxThemeDefault: false };
     }
     const wideFiles = Array.isArray(activeTheme.wideHitboxFiles) ? activeTheme.wideHitboxFiles : [];
+    const baseWideFiles = Array.isArray(activeTheme._baseWideHitboxFiles)
+      ? activeTheme._baseWideHitboxFiles
+      : wideFiles;
     const wideHitboxEnabled = wideFiles.includes(currentFile);
+    const wideHitboxThemeDefault = baseWideFiles.includes(currentFile);
     const overrideWide = themeOverrideMap && themeOverrideMap.hitbox && themeOverrideMap.hitbox.wide;
     const wideHitboxOverridden = !!(overrideWide
       && Object.prototype.hasOwnProperty.call(overrideWide, currentFile));
-    return { wideHitboxEnabled, wideHitboxOverridden };
+    return { wideHitboxEnabled, wideHitboxOverridden, wideHitboxThemeDefault };
   }
 
   function resolveAnimationAssetsDir(theme = getActiveTheme()) {
@@ -629,13 +640,26 @@ function createSettingsAnimationOverridesMain(options = {}) {
     return assets;
   }
 
-  function readResolvedTransition(file) {
-    const activeTheme = getActiveTheme();
-    const entry = activeTheme && activeTheme.transitions && activeTheme.transitions[file];
+  function readTransitionFromMap(file, map) {
+    const entry = map && map[file];
     return {
       in: entry && Number.isFinite(entry.in) ? entry.in : 150,
       out: entry && Number.isFinite(entry.out) ? entry.out : 150,
     };
+  }
+
+  function readResolvedTransition(file) {
+    const activeTheme = getActiveTheme();
+    return readTransitionFromMap(file, activeTheme && activeTheme.transitions);
+  }
+
+  function readThemeDefaultTransition(file) {
+    const activeTheme = getActiveTheme();
+    return readTransitionFromMap(file, activeTheme && activeTheme._baseTransitions);
+  }
+
+  function hasTransitionOverride(entry) {
+    return !!(entry && Object.prototype.hasOwnProperty.call(entry, "transition"));
   }
 
   function hasOwnStateFiles(stateKey) {
@@ -651,7 +675,15 @@ function createSettingsAnimationOverridesMain(options = {}) {
     return false;
   }
 
-  function buildTierCardGroup(tierGroup, triggerKind, resolvedTiers, baseTiers, baseHintMap, sectionId = "work") {
+  function buildTierCardGroup(
+    tierGroup,
+    triggerKind,
+    resolvedTiers,
+    baseTiers,
+    baseHintMap,
+    sectionId = "work",
+    themeOverrideMap = null
+  ) {
     if (!Array.isArray(resolvedTiers)) return [];
     return resolvedTiers.map((tier, index) => {
       const baseTier = Array.isArray(baseTiers) ? baseTiers[index] : null;
@@ -679,6 +711,13 @@ function createSettingsAnimationOverridesMain(options = {}) {
         previewPosterPending: preview.previewPosterPending,
         bindingLabel: `${tierGroup}[${originalFile}]`,
         transition: readResolvedTransition(tier.file),
+        transitionThemeDefault: readThemeDefaultTransition(tier.file),
+        hasTransitionOverride: hasTransitionOverride(
+          themeOverrideMap
+          && themeOverrideMap.tiers
+          && themeOverrideMap.tiers[tierGroup]
+          && themeOverrideMap.tiers[tierGroup][originalFile]
+        ),
         supportsAutoReturn: false,
         supportsDuration: false,
         autoReturnMs: null,
@@ -764,6 +803,12 @@ function createSettingsAnimationOverridesMain(options = {}) {
         ? `${bindingPathPrefix}.${stateKey}.fallbackTo -> ${fallbackTargetState}`
         : `${bindingPathPrefix}.${stateKey}[0]`,
       transition: readResolvedTransition(currentFile),
+      transitionThemeDefault: readThemeDefaultTransition(currentFile),
+      hasTransitionOverride: hasTransitionOverride(
+        themeOverrideMap
+        && themeOverrideMap.states
+        && themeOverrideMap.states[stateKey]
+      ),
       supportsAutoReturn,
       supportsDuration: false,
       autoReturnMs: resolvedAutoReturnMs,
@@ -807,6 +852,8 @@ function createSettingsAnimationOverridesMain(options = {}) {
           previewPosterPending: preview.previewPosterPending,
           bindingLabel: `idleAnimations[${index}] (${originalFile})`,
           transition: readResolvedTransition(entry.file),
+          transitionThemeDefault: readThemeDefaultTransition(entry.file),
+          hasTransitionOverride: hasTransitionOverride(overrideMap && overrideMap[originalFile]),
           supportsAutoReturn: false,
           supportsDuration: true,
           autoReturnMs: null,
@@ -858,6 +905,8 @@ function createSettingsAnimationOverridesMain(options = {}) {
         previewPosterPending: preview.previewPosterPending,
         bindingLabel: `reactions.${spec.key}`,
         transition: readResolvedTransition(currentFile),
+        transitionThemeDefault: readThemeDefaultTransition(currentFile),
+        hasTransitionOverride: hasTransitionOverride(overrideEntry),
         supportsAutoReturn: false,
         supportsDuration: spec.supportsDuration,
         autoReturnMs: null,
@@ -896,7 +945,8 @@ function createSettingsAnimationOverridesMain(options = {}) {
       activeTheme.workingTiers || [],
       baseBindings.workingTiers || [],
       baseBindings.displayHintMap || {},
-      "work"
+      "work",
+      themeOverrideMap
     ));
     workCards.push(...buildTierCardGroup(
       "jugglingTiers",
@@ -904,7 +954,8 @@ function createSettingsAnimationOverridesMain(options = {}) {
       activeTheme.jugglingTiers || [],
       baseBindings.jugglingTiers || [],
       baseBindings.displayHintMap || {},
-      "work"
+      "work",
+      themeOverrideMap
     ));
     pushSection(sections, "work", null, workCards);
 
@@ -980,9 +1031,14 @@ function createSettingsAnimationOverridesMain(options = {}) {
       if (!section || !Array.isArray(section.cards)) continue;
       if (section.id === "reactions") continue;
       for (const card of section.cards) {
-        const { wideHitboxEnabled, wideHitboxOverridden } = computeCardHitboxInfo(card.currentFile, themeOverrideMap);
+        const {
+          wideHitboxEnabled,
+          wideHitboxOverridden,
+          wideHitboxThemeDefault,
+        } = computeCardHitboxInfo(card.currentFile, themeOverrideMap);
         card.wideHitboxEnabled = wideHitboxEnabled;
         card.wideHitboxOverridden = wideHitboxOverridden;
+        card.wideHitboxThemeDefault = wideHitboxThemeDefault;
         card.aspectRatioWarning = computeAspectRatioWarning(card.baseFile, card.currentFile);
       }
     }

@@ -104,6 +104,9 @@ const {
 const {
   validateProfile: validateRemoteSshProfile,
   sanitizeProfile: sanitizeRemoteSshProfile,
+  isValidDetectedRemoteNodeBin,
+  isValidDetectedRemoteNodeVersion,
+  isValidDetectedRemoteNodeSource,
   deployTargetFingerprint,
   deployTargetDrift,
 } = require("./remote-ssh-profile");
@@ -146,7 +149,7 @@ const updateRegistry = {
   savedPixelHeight: requireNonNegativeFiniteNumber("savedPixelHeight"),
 
   // ── Pure data prefs (function-form: validator only) ──
-  lang: requireEnum("lang", ["en", "zh", "ko", "ja"]),
+  lang: requireEnum("lang", ["en", "zh", "zh-TW", "ko", "ja"]),
   soundMuted: requireBoolean("soundMuted"),
   soundVolume: requireNumberInRange("soundVolume", 0, 1),
   lowPowerIdleMode: requireBoolean("lowPowerIdleMode"),
@@ -160,6 +163,11 @@ const updateRegistry = {
   permissionBubblesEnabled: requireBoolean("permissionBubblesEnabled"),
   notificationBubbleAutoCloseSeconds: requireIntegerInRange(
     "notificationBubbleAutoCloseSeconds",
+    0,
+    MAX_AUTO_CLOSE_SECONDS
+  ),
+  permissionBubbleAutoCloseSeconds: requireIntegerInRange(
+    "permissionBubbleAutoCloseSeconds",
     0,
     MAX_AUTO_CLOSE_SECONDS
   ),
@@ -540,6 +548,45 @@ function _remoteSshSnapshot(deps) {
   return { profiles };
 }
 
+function normalizeRemoteNodeDetection(input, detectedAtFallback = Date.now()) {
+  if (!input || typeof input !== "object") return null;
+  const nodeBin = input.nodeBin || input.detectedRemoteNodeBin;
+  if (!isValidDetectedRemoteNodeBin(nodeBin)) return null;
+
+  const out = {
+    detectedRemoteNodeBin: nodeBin,
+  };
+  const version = input.version || input.detectedRemoteNodeVersion;
+  if (isValidDetectedRemoteNodeVersion(version)) {
+    out.detectedRemoteNodeVersion = version;
+  }
+  const source = input.source || input.detectedRemoteNodeSource;
+  if (isValidDetectedRemoteNodeSource(source)) {
+    out.detectedRemoteNodeSource = source;
+  }
+  const detectedAt = Number.isFinite(input.detectedAt)
+    ? input.detectedAt
+    : (Number.isFinite(input.detectedRemoteNodeAt) ? input.detectedRemoteNodeAt : detectedAtFallback);
+  if (Number.isFinite(detectedAt) && detectedAt > 0) {
+    out.detectedRemoteNodeAt = detectedAt;
+  }
+  return out;
+}
+
+function copyRemoteNodeDetection(target, source) {
+  if (!target || !source || !isValidDetectedRemoteNodeBin(source.detectedRemoteNodeBin)) return;
+  target.detectedRemoteNodeBin = source.detectedRemoteNodeBin;
+  if (isValidDetectedRemoteNodeVersion(source.detectedRemoteNodeVersion)) {
+    target.detectedRemoteNodeVersion = source.detectedRemoteNodeVersion;
+  }
+  if (isValidDetectedRemoteNodeSource(source.detectedRemoteNodeSource)) {
+    target.detectedRemoteNodeSource = source.detectedRemoteNodeSource;
+  }
+  if (Number.isFinite(source.detectedRemoteNodeAt) && source.detectedRemoteNodeAt > 0) {
+    target.detectedRemoteNodeAt = source.detectedRemoteNodeAt;
+  }
+}
+
 function remoteSshAddProfile(payload, deps) {
   const profile = sanitizeRemoteSshProfile(payload);
   if (!profile) {
@@ -587,9 +634,14 @@ function remoteSshUpdateProfile(payload, deps) {
   // optional strings before comparing — naive prev[f] === profile[f] would
   // false-flag "port drift" when prev had port:22 and the UI saveBtn omitted
   // the default 22 from the payload.
-  if (Number.isFinite(prev.lastDeployedAt) && !Number.isFinite(payload.lastDeployedAt)) {
-    const drift = deployTargetDrift(deployTargetFingerprint(prev), deployTargetFingerprint(profile));
-    if (drift === null) profile.lastDeployedAt = prev.lastDeployedAt;
+  const drift = deployTargetDrift(deployTargetFingerprint(prev), deployTargetFingerprint(profile));
+  if (drift === null) {
+    if (Number.isFinite(prev.lastDeployedAt) && !Number.isFinite(payload.lastDeployedAt)) {
+      profile.lastDeployedAt = prev.lastDeployedAt;
+    }
+    if (profile.detectedRemoteNodeBin === undefined) {
+      copyRemoteNodeDetection(profile, prev);
+    }
   }
   next.profiles[idx] = profile;
   return { status: "ok", commit: { remoteSsh: next } };
@@ -644,9 +696,52 @@ function remoteSshMarkDeployed(payload, deps) {
       };
     }
   }
-  // Only mutate lastDeployedAt — every other field stays as-is so concurrent
-  // user edits (label / autoStartCodexMonitor / connectOnLaunch) survive.
+  // Only mutate deployment metadata — every other field stays as-is so
+  // concurrent user edits (label / autoStartCodexMonitor / connectOnLaunch)
+  // survive.
   const updatedProfile = { ...current, lastDeployedAt: deployedAt };
+  const remoteNode = normalizeRemoteNodeDetection(payload.remoteNode || payload, deployedAt);
+  if (remoteNode) copyRemoteNodeDetection(updatedProfile, remoteNode);
+  const newProfiles = next.profiles.slice();
+  newProfiles[idx] = updatedProfile;
+  return { status: "ok", commit: { remoteSsh: { profiles: newProfiles } } };
+}
+
+function remoteSshMarkRemoteNode(payload, deps) {
+  if (!payload || typeof payload !== "object") {
+    return { status: "error", message: "remoteSsh.markRemoteNode: payload must be an object" };
+  }
+  const { id, expectedTarget } = payload;
+  if (typeof id !== "string" || !id) {
+    return { status: "error", message: "remoteSsh.markRemoteNode.id must be a non-empty string" };
+  }
+  const remoteNode = normalizeRemoteNodeDetection(payload);
+  if (!remoteNode) {
+    return { status: "error", message: "remoteSsh.markRemoteNode.nodeBin must be an absolute POSIX path" };
+  }
+  const next = _remoteSshSnapshot(deps);
+  const idx = next.profiles.findIndex((p) => p.id === id);
+  if (idx === -1) {
+    return { status: "ok", noop: true, reason: "profile_deleted" };
+  }
+  const current = next.profiles[idx];
+  if (expectedTarget && typeof expectedTarget === "object") {
+    const drift = deployTargetDrift(
+      deployTargetFingerprint(current),
+      deployTargetFingerprint(expectedTarget)
+    );
+    if (drift) {
+      return {
+        status: "ok",
+        noop: true,
+        reason: "target_drift",
+        targetDrift: drift,
+        message: `remoteSsh.markRemoteNode: profile ${id}.${drift} changed during detection; not stamping`,
+      };
+    }
+  }
+  const updatedProfile = { ...current };
+  copyRemoteNodeDetection(updatedProfile, remoteNode);
   const newProfiles = next.profiles.slice();
   newProfiles[idx] = updatedProfile;
   return { status: "ok", commit: { remoteSsh: { profiles: newProfiles } } };
@@ -686,6 +781,7 @@ remoteSshAddProfile.lockKey = "remoteSsh";
 remoteSshUpdateProfile.lockKey = "remoteSsh";
 remoteSshDeleteProfile.lockKey = "remoteSsh";
 remoteSshMarkDeployed.lockKey = "remoteSsh";
+remoteSshMarkRemoteNode.lockKey = "remoteSsh";
 
 const repairDoctorIssue = createRepairDoctorIssue({
   repairAgentIntegration,
@@ -719,6 +815,7 @@ const commandRegistry = {
   "remoteSsh.update": remoteSshUpdateProfile,
   "remoteSsh.delete": remoteSshDeleteProfile,
   "remoteSsh.markDeployed": remoteSshMarkDeployed,
+  "remoteSsh.markRemoteNode": remoteSshMarkRemoteNode,
 };
 
 module.exports = {

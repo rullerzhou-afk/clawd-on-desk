@@ -333,6 +333,173 @@ function postPermissionToRunningServer(body, options, callback) {
   });
 }
 
+function joinPosixPath(...parts) {
+  return path.posix.join(
+    ...parts
+      .filter((part) => typeof part === "string" && part.length > 0)
+      .map((part, index) => (index === 0 ? part.replace(/\\/g, "/") : part))
+  );
+}
+
+function parseNodeVersionName(value) {
+  const match = String(value || "").match(/^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[.-].*)?$/);
+  if (!match) return null;
+  return [
+    Number(match[1]) || 0,
+    Number(match[2]) || 0,
+    Number(match[3]) || 0,
+  ];
+}
+
+function compareVersionNamesDesc(a, b) {
+  const av = parseNodeVersionName(a);
+  const bv = parseNodeVersionName(b);
+  if (!av && !bv) return String(b).localeCompare(String(a));
+  if (!av) return 1;
+  if (!bv) return -1;
+  for (let i = 0; i < Math.max(av.length, bv.length); i++) {
+    const delta = (bv[i] || 0) - (av[i] || 0);
+    if (delta !== 0) return delta;
+  }
+  return String(b).localeCompare(String(a));
+}
+
+function readNodeVersionDirsSync(baseDir, options = {}) {
+  const readdirSync = options.readdirSync || fs.readdirSync;
+  try {
+    return readdirSync(baseDir)
+      .filter((entry) => typeof entry === "string" && parseNodeVersionName(entry))
+      .sort(compareVersionNamesDesc);
+  } catch {
+    return [];
+  }
+}
+
+async function readNodeVersionDirsAsync(baseDir, options = {}) {
+  const readdir = options.readdir || fs.promises.readdir.bind(fs.promises);
+  try {
+    const entries = await readdir(baseDir);
+    return entries
+      .filter((entry) => typeof entry === "string" && parseNodeVersionName(entry))
+      .sort(compareVersionNamesDesc);
+  } catch {
+    return [];
+  }
+}
+
+function getManagedNodeCandidatesSync(homeDir, options = {}) {
+  const directCandidates = [
+    joinPosixPath(homeDir, ".volta", "bin", "node"),
+    joinPosixPath(homeDir, ".local", "bin", "node"),
+    joinPosixPath(homeDir, ".nvm", "current", "bin", "node"),
+  ];
+  const shimCandidates = [
+    joinPosixPath(homeDir, ".asdf", "shims", "node"),
+    joinPosixPath(homeDir, ".mise", "shims", "node"),
+    joinPosixPath(homeDir, ".local", "share", "mise", "shims", "node"),
+  ];
+  const candidates = [...directCandidates];
+
+  const versionedRoots = [
+    {
+      root: joinPosixPath(homeDir, ".nvm", "versions", "node"),
+      suffix: ["bin", "node"],
+    },
+    {
+      root: joinPosixPath(homeDir, ".fnm", "node-versions"),
+      suffix: ["installation", "bin", "node"],
+    },
+    {
+      root: joinPosixPath(homeDir, ".local", "share", "fnm", "node-versions"),
+      suffix: ["installation", "bin", "node"],
+    },
+    {
+      root: joinPosixPath(homeDir, ".asdf", "installs", "nodejs"),
+      suffix: ["bin", "node"],
+    },
+  ];
+
+  for (const { root, suffix } of versionedRoots) {
+    for (const versionDir of readNodeVersionDirsSync(root, options)) {
+      candidates.push(joinPosixPath(root, versionDir, ...suffix));
+    }
+  }
+
+  candidates.push(...shimCandidates);
+  return candidates;
+}
+
+async function getManagedNodeCandidatesAsync(homeDir, options = {}) {
+  const directCandidates = [
+    joinPosixPath(homeDir, ".volta", "bin", "node"),
+    joinPosixPath(homeDir, ".local", "bin", "node"),
+    joinPosixPath(homeDir, ".nvm", "current", "bin", "node"),
+  ];
+  const shimCandidates = [
+    joinPosixPath(homeDir, ".asdf", "shims", "node"),
+    joinPosixPath(homeDir, ".mise", "shims", "node"),
+    joinPosixPath(homeDir, ".local", "share", "mise", "shims", "node"),
+  ];
+  const candidates = [...directCandidates];
+
+  const versionedRoots = [
+    {
+      root: joinPosixPath(homeDir, ".nvm", "versions", "node"),
+      suffix: ["bin", "node"],
+    },
+    {
+      root: joinPosixPath(homeDir, ".fnm", "node-versions"),
+      suffix: ["installation", "bin", "node"],
+    },
+    {
+      root: joinPosixPath(homeDir, ".local", "share", "fnm", "node-versions"),
+      suffix: ["installation", "bin", "node"],
+    },
+    {
+      root: joinPosixPath(homeDir, ".asdf", "installs", "nodejs"),
+      suffix: ["bin", "node"],
+    },
+  ];
+
+  for (const { root, suffix } of versionedRoots) {
+    for (const versionDir of await readNodeVersionDirsAsync(root, options)) {
+      candidates.push(joinPosixPath(root, versionDir, ...suffix));
+    }
+  }
+
+  candidates.push(...shimCandidates);
+  return candidates;
+}
+
+function getShellCandidates(options = {}) {
+  const candidates = [];
+  const add = (value) => {
+    if (typeof value !== "string" || !value.startsWith("/")) return;
+    if (!candidates.includes(value)) candidates.push(value);
+  };
+  add(options.shellPath);
+  add(options.env && options.env.SHELL);
+  add(process.env.SHELL);
+  add("/bin/zsh");
+  add("/bin/bash");
+  add("/bin/sh");
+  return candidates;
+}
+
+function isCleanAbsoluteShellPath(value) {
+  const text = String(value || "").trim();
+  return text.startsWith("/") && !/[\s"'$`]/.test(text);
+}
+
+function extractAbsolutePathFromShellOutput(raw) {
+  const lines = String(raw || "").split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (isCleanAbsoluteShellPath(line)) return line;
+  }
+  return null;
+}
+
 /**
  * Resolve the absolute path to the Node.js binary for hook commands.
  * On macOS/Linux, Claude Code runs hooks with a minimal PATH (/usr/bin:/bin)
@@ -367,12 +534,11 @@ function resolveNodeBin(options = {}) {
   const homeDir = options.homeDir || os.homedir();
   const access = options.accessSync || fs.accessSync;
 
-  // Strategy 1: Check well-known paths (fast, no shell spawn)
+  // Strategy 1: Check well-known and common Node-manager paths (fast, no shell spawn).
   const candidates = [
     "/opt/homebrew/bin/node",                          // Homebrew ARM Mac
     "/usr/local/bin/node",                             // Homebrew Intel Mac / official .pkg
-    path.join(homeDir, ".volta", "bin", "node"),       // Volta
-    path.join(homeDir, ".local", "bin", "node"),       // pipx-style / manual
+    ...getManagedNodeCandidatesSync(homeDir, options), // Volta / nvm / fnm / asdf / mise
     "/usr/bin/node",                                   // system package manager
   ];
 
@@ -386,20 +552,19 @@ function resolveNodeBin(options = {}) {
   // Strategy 2: Login + interactive shell (sources both .zprofile AND .zshrc/.bashrc,
   // needed because nvm/fnm initialize in rc files, not profile files)
   const execFileSync = options.execFileSync || require("child_process").execFileSync;
-  const shells = ["/bin/zsh", "/bin/bash"];
-  for (const shell of shells) {
+  for (const shell of getShellCandidates(options)) {
     try {
-      const raw = execFileSync(shell, ["-lic", "which node"], {
+      const raw = execFileSync(shell, ["-lic", "command -v node 2>/dev/null; which node 2>/dev/null; true"], {
         encoding: "utf8",
         timeout: 5000,
         windowsHide: true,
       });
       // Interactive shells may produce extra output (Oh My Zsh, Powerlevel10k, etc.)
-      // before `which node`. Take the last line that looks like an absolute path.
-      const lines = raw.split("\n");
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const line = lines[i].trim();
-        if (line.startsWith("/")) return line;
+      // before `command -v node`. Take the last line that looks like an absolute path.
+      const resolved = extractAbsolutePathFromShellOutput(raw);
+      if (resolved) {
+        access(resolved, fs.constants.X_OK);
+        return resolved;
       }
     } catch {}
   }
@@ -427,8 +592,7 @@ async function resolveNodeBinAsync(options = {}) {
   const candidates = [
     "/opt/homebrew/bin/node",
     "/usr/local/bin/node",
-    path.join(homeDir, ".volta", "bin", "node"),
-    path.join(homeDir, ".local", "bin", "node"),
+    ...await getManagedNodeCandidatesAsync(homeDir, options),
     "/usr/bin/node",
   ];
 
@@ -445,19 +609,18 @@ async function resolveNodeBinAsync(options = {}) {
       else resolve({ stdout, stderr });
     });
   }));
-  const shells = ["/bin/zsh", "/bin/bash"];
-  for (const shell of shells) {
+  for (const shell of getShellCandidates(options)) {
     try {
-      const out = await execFile(shell, ["-lic", "which node"], {
+      const out = await execFile(shell, ["-lic", "command -v node 2>/dev/null; which node 2>/dev/null; true"], {
         encoding: "utf8",
         timeout: 5000,
         windowsHide: true,
       });
       const raw = typeof out === "string" ? out : out && typeof out.stdout === "string" ? out.stdout : "";
-      const lines = raw.split("\n");
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const line = lines[i].trim();
-        if (line.startsWith("/")) return line;
+      const resolved = extractAbsolutePathFromShellOutput(raw);
+      if (resolved) {
+        await access(resolved, fs.constants.X_OK);
+        return resolved;
       }
     } catch {}
   }

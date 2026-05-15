@@ -14,6 +14,7 @@ const {
   shouldBypassCCBubble,
   shouldBypassCodexBubble,
   shouldBypassOpencodeBubble,
+  shouldBypassPiBubble,
 } = require("../src/server-route-permission");
 
 function makeReq(body) {
@@ -121,6 +122,10 @@ describe("server-route-permission helpers", () => {
     assert.strictEqual(shouldBypassOpencodeBubble({
       isAgentPermissionsEnabled: (agentId) => agentId !== "opencode",
     }), true);
+    assert.strictEqual(shouldBypassPiBubble({ hideBubbles: true }), true);
+    assert.strictEqual(shouldBypassPiBubble({
+      isAgentPermissionsEnabled: (agentId) => agentId !== "pi",
+    }), true);
   });
 });
 
@@ -157,6 +162,57 @@ describe("server-route-permission POST", () => {
     assert.deepStrictEqual(res.ctx.pendingPermissions, []);
   });
 
+  it("passes Codex Desktop focus metadata through permission bubbles", async () => {
+    const sessionId = "codex:019e115a-4df2-7ed0-b90e-8e6345aca777";
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "codex",
+      session_id: sessionId,
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      source_pid: 456,
+      agent_pid: 456,
+      pid_chain: [789, 456, -1],
+      cwd: "/repo",
+      platform: "webui",
+      model: "gpt-5.4",
+      codex_originator: "Codex Desktop",
+      codex_source: "vscode",
+    }));
+
+    assert.strictEqual(res.statusCode, null);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.sessionId, sessionId);
+    assert.strictEqual(entry.agentId, "codex");
+    assert.strictEqual(entry.isCodex, true);
+    assert.strictEqual(entry.sourcePid, 456);
+    assert.strictEqual(entry.agentPid, 456);
+    assert.deepStrictEqual(entry.pidChain, [789, 456]);
+    assert.strictEqual(entry.cwd, "/repo");
+    assert.strictEqual(entry.platform, "webui");
+    assert.strictEqual(entry.model, "gpt-5.4");
+    assert.strictEqual(entry.codexOriginator, "Codex Desktop");
+    assert.strictEqual(entry.codexSource, "vscode");
+    assert.deepStrictEqual(res.ctx.calls.updateSession, [[
+      sessionId,
+      "notification",
+      "PermissionRequest",
+      {
+        agentId: "codex",
+        hookSource: "codex-official",
+        sourcePid: 456,
+        agentPid: 456,
+        pidChain: [789, 456],
+        cwd: "/repo",
+        platform: "webui",
+        model: "gpt-5.4",
+        codexOriginator: "Codex Desktop",
+        codexSource: "vscode",
+      },
+    ]]);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
+  });
+
   it("silently drops disabled opencode permissions after ACK", async () => {
     const res = await callPermissionPost(JSON.stringify({
       agent_id: "opencode",
@@ -187,6 +243,86 @@ describe("server-route-permission POST", () => {
 
     assert.strictEqual(res.destroyed, true);
     assert.deepStrictEqual(res.recorder.map((entry) => entry.outcome).filter(Boolean), ["dnd"]);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+  });
+
+  it("returns no-decision for Pi DND fallback", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "pi",
+      session_id: "pi:sid",
+      tool_name: "bash",
+      tool_input: { command: "npm test" },
+    }), {
+      ctx: { doNotDisturb: true },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.headers[CLAWD_SERVER_HEADER], CLAWD_SERVER_ID);
+    assert.deepStrictEqual(res.recorder.map((entry) => entry.outcome).filter(Boolean), ["dnd"]);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+  });
+
+  it("returns no-decision when Pi permission subgate is disabled", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "pi",
+      session_id: "pi:sid",
+      tool_name: "write",
+      tool_input: { path: "out.txt", content: "x" },
+    }), {
+      ctx: {
+        isAgentPermissionsEnabled: (agentId) => agentId !== "pi",
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.headers[CLAWD_SERVER_HEADER], CLAWD_SERVER_ID);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+  });
+
+  it("pushes a Pi permission entry and shows the bubble", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "pi",
+      session_id: "pi:sid",
+      tool_name: "bash",
+      tool_input: { command: "npm test" },
+      tool_use_id: "tool-1",
+    }));
+
+    assert.strictEqual(res.statusCode, null);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.res, res);
+    assert.strictEqual(entry.sessionId, "pi:sid");
+    assert.strictEqual(entry.toolName, "bash");
+    assert.strictEqual(entry.toolUseId, "tool-1");
+    assert.strictEqual(entry.agentId, "pi");
+    assert.strictEqual(entry.isPi, true);
+    assert.deepStrictEqual(res.ctx.calls.updateSession, [[
+      "pi:sid",
+      "notification",
+      "PermissionRequest",
+      { agentId: "pi" },
+    ]]);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
+    assert.deepStrictEqual(res.recorder.map((item) => item.outcome).filter(Boolean), ["accepted"]);
+  });
+
+  it("returns no-decision when Pi bubble creation fails", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "pi",
+      session_id: "pi:sid",
+      tool_name: "edit",
+      tool_input: { path: "a.txt" },
+    }), {
+      ctx: {
+        showPermissionBubble: () => {
+          throw new Error("no window");
+        },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.headers[CLAWD_SERVER_HEADER], CLAWD_SERVER_ID);
     assert.deepStrictEqual(res.ctx.pendingPermissions, []);
   });
 

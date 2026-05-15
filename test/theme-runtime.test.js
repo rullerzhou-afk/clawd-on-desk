@@ -259,6 +259,29 @@ describe("theme-runtime active ownership", () => {
     ]);
   });
 
+  it("refreshes active theme hitbox overrides without running the full reload protocol", () => {
+    makeFixture();
+    const { runtime, calls } = createRuntime();
+    runtime.loadInitialTheme("clawd");
+
+    const result = runtime.refreshActiveThemeHitboxOverrides("clawd", {
+      hitbox: {
+        wide: {
+          "thinking.svg": true,
+        },
+      },
+    });
+
+    assert.deepStrictEqual(result, { themeId: "clawd", variantId: "default" });
+    assert.deepStrictEqual(runtime.getActiveTheme().wideHitboxFiles, ["thinking.svg"]);
+    assert.deepStrictEqual(calls, [
+      "state.refreshTheme",
+      "syncHitState",
+      "syncHitWin",
+      "flushPrefs",
+    ]);
+  });
+
   it("applies clamped preserved bounds after theme reload when the clamp path adjusts them", () => {
     makeFixture();
     const { runtime, calls } = createRuntime({

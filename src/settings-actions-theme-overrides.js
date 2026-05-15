@@ -130,6 +130,11 @@ function normalizeTransitionPayload(transition) {
   return Object.keys(out).length > 0 ? out : null;
 }
 
+function transitionMatchesThemeDefault(transition, defaultTransition) {
+  if (!transition || !defaultTransition) return false;
+  return transition.in === defaultTransition.in && transition.out === defaultTransition.out;
+}
+
 const _validateThemeOverrideThemeId = requireString("setThemeOverrideDisabled.themeId");
 function setThemeOverrideDisabled(payload, deps) {
   if (!payload || typeof payload !== "object") {
@@ -213,6 +218,13 @@ function setAnimationOverride(payload, deps) {
   if (touchesTransition && payload.transition !== null && !normalizeTransitionPayload(payload.transition)) {
     return { status: "error", message: "setAnimationOverride.transition must contain finite non-negative in/out values" };
   }
+  const normalizedTransition = touchesTransition && payload.transition !== null
+    ? normalizeTransitionPayload(payload.transition)
+    : null;
+  const normalizedTransitionDefault = normalizeTransitionPayload(payload.transitionThemeDefault);
+  const transitionMatchesDefault = !!(touchesTransition
+    && normalizedTransition
+    && transitionMatchesThemeDefault(normalizedTransition, normalizedTransitionDefault));
   if (touchesAutoReturn && payload.autoReturnMs !== null) {
     if (typeof payload.autoReturnMs !== "number" || !Number.isFinite(payload.autoReturnMs)) {
       return { status: "error", message: "setAnimationOverride.autoReturnMs must be null or a finite number" };
@@ -260,8 +272,8 @@ function setAnimationOverride(payload, deps) {
       }
     }
     if (touchesTransition) {
-      if (payload.transition === null) delete nextEntry.transition;
-      else nextEntry.transition = normalizeTransitionPayload(payload.transition);
+      if (payload.transition === null || transitionMatchesDefault) delete nextEntry.transition;
+      else nextEntry.transition = normalizedTransition;
     }
     if (Object.keys(nextEntry).length > 0) nextStates[stateKey] = nextEntry;
     else delete nextStates[stateKey];
@@ -295,8 +307,8 @@ function setAnimationOverride(payload, deps) {
       }
     }
     if (touchesTransition) {
-      if (payload.transition === null) delete nextEntry.transition;
-      else nextEntry.transition = normalizeTransitionPayload(payload.transition);
+      if (payload.transition === null || transitionMatchesDefault) delete nextEntry.transition;
+      else nextEntry.transition = normalizedTransition;
     }
     if (Object.keys(nextEntry).length > 0) tierMap[originalFile] = nextEntry;
     else delete tierMap[originalFile];
@@ -318,8 +330,8 @@ function setAnimationOverride(payload, deps) {
       }
     }
     if (touchesTransition) {
-      if (payload.transition === null) delete nextEntry.transition;
-      else nextEntry.transition = normalizeTransitionPayload(payload.transition);
+      if (payload.transition === null || transitionMatchesDefault) delete nextEntry.transition;
+      else nextEntry.transition = normalizedTransition;
     }
     if (touchesDuration) {
       if (payload.durationMs === null) delete nextEntry.durationMs;
@@ -348,8 +360,8 @@ function setAnimationOverride(payload, deps) {
       }
     }
     if (touchesTransition) {
-      if (payload.transition === null) delete nextEntry.transition;
-      else nextEntry.transition = normalizeTransitionPayload(payload.transition);
+      if (payload.transition === null || transitionMatchesDefault) delete nextEntry.transition;
+      else nextEntry.transition = normalizedTransition;
     }
     if (touchesDuration) {
       if (payload.durationMs === null) delete nextEntry.durationMs;
@@ -504,11 +516,21 @@ function setWideHitboxOverride(payload, deps) {
 
   const activeThemeId = snapshot.theme;
   if (themeId === activeThemeId) {
-    if (!deps || typeof deps.activateTheme !== "function") {
-      return { status: "error", message: "setWideHitboxOverride effect requires activateTheme dep" };
+    if (!deps || (
+      typeof deps.refreshActiveThemeHitboxOverrides !== "function"
+      && typeof deps.activateTheme !== "function"
+    )) {
+      return {
+        status: "error",
+        message: "setWideHitboxOverride effect requires refreshActiveThemeHitboxOverrides or activateTheme dep",
+      };
     }
     try {
-      deps.activateTheme(themeId, null, nextThemeMap);
+      if (typeof deps.refreshActiveThemeHitboxOverrides === "function") {
+        deps.refreshActiveThemeHitboxOverrides(themeId, nextThemeMap);
+      } else {
+        deps.activateTheme(themeId, null, nextThemeMap);
+      }
     } catch (err) {
       return { status: "error", message: `setWideHitboxOverride: ${err && err.message}` };
     }

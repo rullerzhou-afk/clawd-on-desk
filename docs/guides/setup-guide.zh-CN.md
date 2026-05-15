@@ -8,7 +8,7 @@
 
 **Codex CLI** — 开箱即用。Clawd 会在检测到 Codex 时自动注册 official hooks 到 `~/.codex/hooks.json`，并在用户没有显式关闭 hooks 时启用 `[features].hooks = true`。Installer 会把已废弃的 `[features].codex_hooks` 迁移到 `hooks`，同时保留用户显式设置的 false。Official hooks 提供实时状态和真实 Allow/Deny 权限气泡；`~/.codex/sessions/` JSONL 轮询保留为 hook 被禁用或 hook 未覆盖事件的 fallback。
 
-**Copilot CLI** — 目前唯一仍需手动配置 hooks 的受支持 Agent。请参考 [copilot-setup.md](copilot-setup.md)。
+**Copilot CLI** — 本地安装仍需手动配置 `~/.copilot/hooks/hooks.json`（Clawd 启动时不自动同步 Copilot）。SSH 远程部署 (`scripts/remote-deploy.sh`) 现在已经自动配置。详见 [copilot-setup.md](copilot-setup.md)。
 
 **Gemini CLI** — hooks 配置在 `~/.gemini/settings.json`。如果本机已安装 Gemini，Clawd 启动时会自动注册；也可以手动执行 `npm run install:gemini-hooks`。
 
@@ -22,7 +22,13 @@
 
 **opencode** — 使用 `~/.config/opencode/opencode.json` 里的 plugin 配置。如果本机已安装 opencode，Clawd 启动时会自动注册；也可以手动执行 `node hooks/opencode-install.js`。
 
-## 远程 SSH 模式（Claude Code & Codex CLI）
+**Pi** — 使用全局 extension 目录 `~/.pi/agent/extensions/clawd-on-desk`。如果本机已安装 Pi，Clawd 启动时会自动注册；也可以手动执行 `npm run install:pi-extension`。交互式 Pi 会话会向 Clawd 上报状态；`bash` / `write` / `edit` 工具默认走 Clawd 权限气泡。Clawd 气泡不可用、被关闭或被 DND 隐藏时，extension 会回退到 Pi 终端确认，而不是静默允许工具执行。
+
+**OpenClaw** — 使用 `~/.openclaw/openclaw.json` 里的 plugin 路径。如果 OpenClaw 配置文件已经存在，Clawd 启动时会自动注册；也可以手动执行 `npm run install:openclaw-plugin`，由 OpenClaw CLI 处理首次安装。Phase 1 只做状态动画，面向本地 `openclaw tui --local` 会话；暂不接 OpenClaw 权限气泡，也不支持 OpenClaw 终端聚焦。
+
+**Hermes Agent** — 从 [hermes-agent.org](https://hermes-agent.org/) 或 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) 安装 Hermes。Clawd 默认会在 Settings 里显示 Hermes 开关，但启动自动同步会先探测 Hermes 是否已安装；未安装时不会写入 `~/.hermes` 或 `%LOCALAPPDATA%\hermes`。安装 Hermes 后，Clawd 会把 plugin 复制到 Hermes 的托管 plugin 目录，并通过 `hermes plugins enable clawd-on-desk` 启用它。也可以手动执行 `npm run install:hermes-plugin` 强制同步，或执行 `npm run uninstall:hermes-plugin` 移除 Clawd 的 Hermes plugin。
+
+## 远程 SSH 模式（Claude Code, Codex CLI & Copilot CLI）
 
 <img src="../assets/screenshot-remote-ssh.png" width="560" alt="远程 SSH — 来自树莓派的权限气泡">
 
@@ -34,7 +40,7 @@ Clawd 支持通过 SSH 反向端口转发感知远程服务器上的 AI Agent �
 bash scripts/remote-deploy.sh user@远程主机
 ```
 
-脚本会将 hook 文件复制到远程服务器，以远程模式注册 Claude Code hooks 和 Codex official hooks，并打印 SSH 配置指引。
+脚本会将 hook 文件复制到远程服务器，以远程模式注册 Claude Code、Codex official 以及 Copilot CLI hooks，并打印 SSH 配置指引。
 
 **SSH 配置**（添加到本地 `~/.ssh/config`）：
 
@@ -50,6 +56,7 @@ Host my-server
 **工作原理：**
 - **Claude Code** — 远程 hook 将状态 POST 到 `localhost:23333`，SSH 隧道转发回本地 Clawd。权限气泡也能正常弹出——HTTP 往返通过隧道完成。
 - **Codex CLI** — 远程 official hooks 通过同一隧道 POST 状态和权限请求。如果远程 Codex hooks 不可用或被禁用，再使用 fallback 日志监控：`node ~/.claude/hooks/codex-remote-monitor.js --port 23333`
+- **Copilot CLI** — `scripts/remote-deploy.sh` 会自动写入远程的 `~/.copilot/hooks/hooks.json`（前提是远程已安装 Copilot CLI，即 `~/.copilot/` 存在）。Hook 通过同一隧道 POST 状态和 session title。
 
 远程 hook 以 `CLAWD_REMOTE` 模式运行，跳过 PID 采集（远程 PID 在本地无意义）。远程会话不支持终端聚焦。
 
@@ -68,13 +75,16 @@ Host my-server
 mkdir -p ~/.claude/hooks
 
 # 从 Windows 侧的 Clawd 仓库复制 hook 文件（按实际路径调整 /mnt/ 前缀）
-cp /mnt/d/animation/hooks/{server-config,json-utils,shared-process,clawd-hook,install,codex-hook,codex-install,codex-install-utils,codex-remote-monitor,codex-session-index,codex-subagent-fields}.js ~/.claude/hooks/
+cp /mnt/d/animation/hooks/{server-config,json-utils,shared-process,clawd-hook,install,codex-hook,codex-install,codex-install-utils,codex-remote-monitor,codex-session-index,codex-subagent-fields,copilot-hook,copilot-install}.js ~/.claude/hooks/
 
 # 以远程模式注册 Claude hooks
 node ~/.claude/hooks/install.js --remote
 
 # 如果 WSL 中安装了 Codex CLI，也以远程模式注册 Codex official hooks
 node ~/.claude/hooks/codex-install.js --remote
+
+# 如果 WSL 中安装了 Copilot CLI，也以远程模式注册 Copilot CLI hooks
+node ~/.claude/hooks/copilot-install.js --remote
 ```
 
 如果你的 WSL 里开启了 SSH 服务，也可以用一键部署脚本：
@@ -134,6 +144,12 @@ node hooks/codebuddy-install.js
 
 # opencode
 node hooks/opencode-install.js
+
+# Pi
+node hooks/pi-install.js
+
+# OpenClaw
+node hooks/openclaw-install.js
 ```
 
 > 提示：如果仓库克隆在 WSL 内（如 `~/clawd-on-desk`），hook 脚本会自动使用 WSL 的 Node.js 路径。如果仓库放在 Windows 盘里（如 `/mnt/c/...`），请确保 WSL 的 PATH 中有 `node`。

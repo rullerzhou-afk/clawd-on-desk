@@ -55,6 +55,9 @@ describe("state-session-snapshot builder", () => {
         updatedAt: 1000,
         cwd: "/tmp/old-project",
         sessionTitle: "Fix login",
+        platform: "webui",
+        model: "gpt-5.4",
+        provider: "openai",
         recentEvents: [{ event: "PreToolUse", state: "working", at: 900 }],
       })],
       ["latest-remote", session("idle", {
@@ -92,6 +95,9 @@ describe("state-session-snapshot builder", () => {
     const oldWorking = snapshot.sessions.find((entry) => entry.id === "old-working");
     assert.strictEqual(oldWorking.badge, "running");
     assert.strictEqual(oldWorking.iconUrl, "icon:claude-code");
+    assert.strictEqual(oldWorking.platform, "webui");
+    assert.strictEqual(oldWorking.model, "gpt-5.4");
+    assert.strictEqual(oldWorking.provider, "openai");
     assert.strictEqual(oldWorking.sessionTitle, "Fix login");
     assert.strictEqual(oldWorking.displayTitle, "Fix login");
     assert.deepStrictEqual(oldWorking.lastEvent, {
@@ -108,6 +114,59 @@ describe("state-session-snapshot builder", () => {
       rawEvent: "MysteryEvent",
       at: 2900,
     });
+  });
+
+  it("exposes focus target metadata for terminal and Codex Desktop sessions", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["terminal", session("working", { sourcePid: 123 })],
+      ["webui", session("working", { sourcePid: 456, platform: "webui" })],
+      ["codex:019e115a-4df2-7ed0-b90e-8e6345aca777", session("working", {
+        agentId: "codex",
+        codexOriginator: "Codex Desktop",
+        codexSource: "vscode",
+      })],
+    ]));
+
+    const byId = new Map(snapshot.sessions.map((entry) => [entry.id, entry]));
+    assert.strictEqual(byId.get("terminal").canFocus, true);
+    assert.deepStrictEqual(byId.get("terminal").focusTarget, { type: "terminal", url: null });
+    assert.strictEqual(byId.get("webui").canFocus, false);
+    assert.strictEqual(byId.get("webui").focusTarget, null);
+    assert.strictEqual(byId.get("codex:019e115a-4df2-7ed0-b90e-8e6345aca777").canFocus, true);
+    assert.deepStrictEqual(byId.get("codex:019e115a-4df2-7ed0-b90e-8e6345aca777").focusTarget, {
+      type: "codex-thread",
+      url: "codex://threads/019e115a-4df2-7ed0-b90e-8e6345aca777",
+    });
+    assert.strictEqual(byId.get("codex:019e115a-4df2-7ed0-b90e-8e6345aca777").codexSource, "vscode");
+  });
+
+  it("does not expose focus targets for sessions hidden from the focusable UI surface", () => {
+    const hiddenEndedSession = session("idle", {
+      sourcePid: 123,
+      pidReachable: true,
+      agentPid: null,
+      recentEvents: [{ event: "Stop", state: "idle", at: 1 }],
+    });
+    const snapshot = buildSessionSnapshot(new Map([
+      ["headless", session("working", { sourcePid: 123, headless: true })],
+      ["sleeping", session("sleeping", { sourcePid: 123 })],
+      ["remote", session("working", { sourcePid: 123, host: "remote-box" })],
+      ["hidden", hiddenEndedSession],
+      ["codex:019e115a-4df2-7ed0-b90e-8e6345aca777", session("working", {
+        agentId: "codex",
+        codexOriginator: "Codex Desktop",
+        headless: true,
+      })],
+    ]), {
+      sessionHudCleanupDetached: true,
+      isProcessAlive: () => false,
+    });
+
+    for (const entry of snapshot.sessions) {
+      assert.strictEqual(entry.canFocus, false, entry.id);
+      assert.strictEqual(entry.focusTarget, null, entry.id);
+    }
+    assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "hidden").hiddenFromHud, true);
   });
 
   it("applies aliases, Codex thread names, and Kiro cwd-scoped alias keys", () => {

@@ -187,6 +187,20 @@ function loadTheme(themeId, opts = {}) {
   theme._variantId = resolvedId;
   theme._userOverrides = userOverrides;
   theme._bindingBase = _buildBaseBindingMetadata(afterVariant);
+  theme._baseTransitions = {};
+  if (afterVariant.transitions && typeof afterVariant.transitions === "object") {
+    for (const [file, transition] of Object.entries(afterVariant.transitions)) {
+      const name = _basenameOnly(file);
+      if (!name || !transition || typeof transition !== "object") continue;
+      const clean = {};
+      if (Number.isFinite(transition.in)) clean.in = transition.in;
+      if (Number.isFinite(transition.out)) clean.out = transition.out;
+      if (Object.keys(clean).length > 0) theme._baseTransitions[name] = clean;
+    }
+  }
+  theme._baseWideHitboxFiles = Array.isArray(afterVariant.wideHitboxFiles)
+    ? [...new Set(afterVariant.wideHitboxFiles.map((file) => _basenameOnly(file)).filter(Boolean))]
+    : [];
   theme._capabilities = _buildCapabilities(theme);
 
   // For external themes: sanitize SVGs + resolve asset paths

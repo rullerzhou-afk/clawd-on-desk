@@ -278,7 +278,14 @@ test("remoteSsh:deploy stamps via markDeployed (not full update) on success", as
     spawn: makeSucceedingSpawn().spawn,
     // Inject a fake deploy that just resolves ok — we're testing the
     // post-success commit, not the deploy steps themselves.
-    deployFn: async () => ({ ok: true }),
+    deployFn: async () => ({
+      ok: true,
+      remoteNode: {
+        nodeBin: "/usr/local/bin/node",
+        version: "v20.10.0",
+        source: "path",
+      },
+    }),
   });
   const r = await ipcMain.invoke("remoteSsh:deploy", "p1");
   assert.equal(r.status, "ok");
@@ -296,10 +303,44 @@ test("remoteSsh:deploy stamps via markDeployed (not full update) on success", as
   assert.ok(args.expectedTarget, "must pass expectedTarget for drift detection");
   assert.equal(args.expectedTarget.host, "user@pi");
   assert.equal(args.expectedTarget.remoteForwardPort, 23333);
+  assert.equal(args.remoteNode.nodeBin, "/usr/local/bin/node");
+  assert.equal(args.remoteNode.version, "v20.10.0");
   // The full profile snapshot must NOT be in the args — that would defeat
   // the lost-update fix.
   assert.equal(args.label, undefined,
     "markDeployed args must not carry full profile fields like label");
+  ipc.dispose();
+});
+
+test("runtime remote-node-detected event stamps profile node metadata", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const rt = mockRuntime();
+  const settingsController = mockSettingsController([baseProfile]);
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController,
+    remoteSshRuntime: rt,
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+  });
+
+  rt.emit("remote-node-detected", {
+    id: "p1",
+    nodeBin: "/home/me/.nvm/versions/node/v22/bin/node",
+    version: "v22.1.0",
+    source: "shell:/bin/bash",
+    detectedAt: 12345,
+    expectedTarget: {
+      host: "user@pi",
+      remoteForwardPort: 23333,
+    },
+  });
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(settingsController._commandCalls.length, 1);
+  assert.equal(settingsController._commandCalls[0].action, "remoteSsh.markRemoteNode");
+  assert.equal(settingsController._commandCalls[0].args.nodeBin, "/home/me/.nvm/versions/node/v22/bin/node");
   ipc.dispose();
 });
 

@@ -36,6 +36,26 @@ const CONTROL_CHARS_RE = /[\x00-\x1f\x7f]/;
 // quote, backtick, dollar, backslash, exclamation.
 const HOST_PREFIX_FORBIDDEN_RE = /[\x00-\x1f\x7f'"`$\\!]/;
 
+function isValidDetectedRemoteNodeBin(value) {
+  return typeof value === "string"
+    && value.startsWith("/")
+    && !CONTROL_CHARS_RE.test(value);
+}
+
+function isValidDetectedRemoteNodeVersion(value) {
+  return typeof value === "string"
+    && value.length <= 50
+    && /^v\d+/i.test(value)
+    && !CONTROL_CHARS_RE.test(value);
+}
+
+function isValidDetectedRemoteNodeSource(value) {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= 120
+    && !CONTROL_CHARS_RE.test(value);
+}
+
 function isValidHost(value) {
   if (typeof value !== "string" || value.length === 0) return false;
   if (value.length > 255) return false;
@@ -138,6 +158,26 @@ function validateProfile(profile) {
       return { status: "error", message: "profile.lastDeployedAt must be a positive finite number" };
     }
   }
+  if (profile.detectedRemoteNodeBin !== undefined && profile.detectedRemoteNodeBin !== null) {
+    if (!isValidDetectedRemoteNodeBin(profile.detectedRemoteNodeBin)) {
+      return { status: "error", message: "profile.detectedRemoteNodeBin must be an absolute POSIX path with no control characters" };
+    }
+  }
+  if (profile.detectedRemoteNodeVersion !== undefined && profile.detectedRemoteNodeVersion !== null) {
+    if (!isValidDetectedRemoteNodeVersion(profile.detectedRemoteNodeVersion)) {
+      return { status: "error", message: "profile.detectedRemoteNodeVersion must be a Node.js version string like v20.10.0" };
+    }
+  }
+  if (profile.detectedRemoteNodeSource !== undefined && profile.detectedRemoteNodeSource !== null) {
+    if (!isValidDetectedRemoteNodeSource(profile.detectedRemoteNodeSource)) {
+      return { status: "error", message: "profile.detectedRemoteNodeSource must be a short string with no control characters" };
+    }
+  }
+  if (profile.detectedRemoteNodeAt !== undefined && profile.detectedRemoteNodeAt !== null) {
+    if (!Number.isFinite(profile.detectedRemoteNodeAt) || profile.detectedRemoteNodeAt <= 0) {
+      return { status: "error", message: "profile.detectedRemoteNodeAt must be a positive finite number" };
+    }
+  }
   return { status: "ok" };
 }
 
@@ -164,6 +204,18 @@ function sanitizeProfile(raw) {
       ? raw.lastDeployedAt
       : undefined,
   };
+  if (isValidDetectedRemoteNodeBin(raw.detectedRemoteNodeBin)) {
+    out.detectedRemoteNodeBin = raw.detectedRemoteNodeBin;
+    if (isValidDetectedRemoteNodeVersion(raw.detectedRemoteNodeVersion)) {
+      out.detectedRemoteNodeVersion = raw.detectedRemoteNodeVersion;
+    }
+    if (isValidDetectedRemoteNodeSource(raw.detectedRemoteNodeSource)) {
+      out.detectedRemoteNodeSource = raw.detectedRemoteNodeSource;
+    }
+    if (Number.isFinite(raw.detectedRemoteNodeAt) && raw.detectedRemoteNodeAt > 0) {
+      out.detectedRemoteNodeAt = raw.detectedRemoteNodeAt;
+    }
+  }
   // Strip undefineds for cleaner JSON.
   for (const k of Object.keys(out)) {
     if (out[k] === undefined) delete out[k];
@@ -249,6 +301,9 @@ module.exports = {
   isValidHostPrefix,
   isValidLabel,
   isValidId,
+  isValidDetectedRemoteNodeBin,
+  isValidDetectedRemoteNodeVersion,
+  isValidDetectedRemoteNodeSource,
   validateProfile,
   sanitizeProfile,
   normalizeRemoteSsh,

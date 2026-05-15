@@ -229,6 +229,34 @@ function createThemeRuntime(options = {}) {
     return { themeId, variantId: newTheme._variantId };
   }
 
+  function refreshActiveThemeHitboxOverrides(themeId, overrideMap) {
+    if (!activeTheme || activeTheme._id !== themeId) {
+      throw new Error("hitbox refresh requires the requested theme to already be active");
+    }
+
+    const targetVariant = activeTheme._variantId || "default";
+    const targetOverrideSignature = JSON.stringify(overrideMap || {});
+    if ((activeTheme._overrideSignature || "{}") === targetOverrideSignature) {
+      return { themeId, variantId: targetVariant };
+    }
+
+    const newTheme = themeLoader.loadTheme(themeId, {
+      strict: true,
+      variant: targetVariant,
+      overrides: overrideMap,
+    });
+    newTheme._overrideSignature = targetOverrideSignature;
+    setActiveTheme(newTheme);
+
+    const stateRuntime = getStateRuntime();
+    callMethod(stateRuntime, "refreshTheme");
+    if (isLiveWindow(getHitWindow())) syncHitStateAfterLoad();
+    if (isLiveWindow(getRenderWindow())) syncHitWin();
+    flushRuntimeStateToPrefs();
+
+    return { themeId, variantId: newTheme._variantId };
+  }
+
   function getThemeInfo(themeId) {
     const all = themeLoader.discoverThemes();
     const entry = all.find((theme) => theme.id === themeId);
@@ -265,6 +293,7 @@ function createThemeRuntime(options = {}) {
   return {
     loadInitialTheme,
     activateTheme,
+    refreshActiveThemeHitboxOverrides,
     getActiveTheme,
     getActiveThemeContext,
     getActiveThemeId,

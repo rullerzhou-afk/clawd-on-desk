@@ -40,6 +40,94 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOKS_DIR="$(cd "$SCRIPT_DIR/../hooks" && pwd)"
 REMOTE_HOOKS_DIR='~/.claude/hooks'
 
+quote_remote_arg() {
+  local value="$1"
+  value="${value//\'/\'\\\'\'}"
+  printf "'%s'" "$value"
+}
+
+remote_node_command() {
+  local script_name="$1"
+  shift
+  local node_q
+  node_q="$(quote_remote_arg "$REMOTE_NODE_BIN")"
+  printf '%s "$HOME/.claude/hooks/%s"' "$node_q" "$script_name"
+  local arg
+  for arg in "$@"; do
+    printf ' %s' "$(quote_remote_arg "$arg")"
+  done
+}
+
+REMOTE_NODE_PROBE=$(cat <<'REMOTE_NODE_PROBE_SCRIPT'
+node_version_supported() {
+  v="$1"
+  major="${v#v}"
+  major="${major%%.*}"
+  case "$major" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$major" -ge 14 ]
+}
+
+emit_node() {
+  p="$1"
+  src="$2"
+  if [ -z "$p" ]; then return 1; fi
+  case "$p" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  if [ ! -x "$p" ]; then return 1; fi
+  v="$("$p" --version 2>/dev/null)" || return 1
+  node_version_supported "$v" || return 1
+  printf 'CLAWD_REMOTE_NODE_BIN=%s\n' "$p"
+  printf 'CLAWD_REMOTE_NODE_VERSION=%s\n' "$v"
+  printf 'CLAWD_REMOTE_NODE_SOURCE=%s\n' "$src"
+  exit 0
+}
+
+probe_login_shells() {
+  for shell in "$SHELL" /bin/zsh /bin/bash /bin/sh
+  do
+    if [ -z "$shell" ]; then continue; fi
+    case "$shell" in
+      /*) ;;
+      *) continue ;;
+    esac
+    if [ ! -x "$shell" ]; then continue; fi
+    out="$("$shell" -lic 'printf "__CLAWD_REMOTE_NODE_PROBE__\n"; command -v node 2>/dev/null; which node 2>/dev/null; true' 2>/dev/null)"
+    p="$(printf '%s\n' "$out" | awk 'found && $0 ~ /^\// { last=$0 } $0 == "__CLAWD_REMOTE_NODE_PROBE__" { found=1 } END { if (last) print last }')"
+    emit_node "$p" "shell:$shell"
+  done
+}
+
+p="$(command -v node 2>/dev/null || true)"
+emit_node "$p" "path"
+
+probe_login_shells
+
+for p in \
+  /opt/homebrew/bin/node \
+  /usr/local/bin/node \
+  /usr/bin/node \
+  "$HOME"/.volta/bin/node \
+  "$HOME"/.local/bin/node \
+  "$HOME"/.nvm/current/bin/node \
+  "$HOME"/.nvm/versions/node/*/bin/node \
+  "$HOME"/.fnm/node-versions/*/installation/bin/node \
+  "$HOME"/.local/share/fnm/node-versions/*/installation/bin/node \
+  "$HOME"/.asdf/installs/nodejs/*/bin/node \
+  "$HOME"/.asdf/shims/node \
+  "$HOME"/.mise/shims/node \
+  "$HOME"/.local/share/mise/shims/node
+do
+  emit_node "$p" "candidate"
+done
+
+exit 127
+REMOTE_NODE_PROBE_SCRIPT
+)
+
 # Files to deploy
 FILES=(
   "$HOOKS_DIR/server-config.js"
@@ -53,6 +141,8 @@ FILES=(
   "$HOOKS_DIR/codex-remote-monitor.js"
   "$HOOKS_DIR/codex-session-index.js"
   "$HOOKS_DIR/codex-subagent-fields.js"
+  "$HOOKS_DIR/copilot-hook.js"
+  "$HOOKS_DIR/copilot-install.js"
 )
 
 # ── Local port detection ──
@@ -95,13 +185,16 @@ ssh "$SSH_TARGET" "mkdir -p ~/.claude/hooks" || {
 }
 
 # Check Node.js
-REMOTE_NODE=$(ssh "$SSH_TARGET" "command -v node && node --version 2>/dev/null || echo MISSING" 2>/dev/null)
-if echo "$REMOTE_NODE" | grep -q "MISSING"; then
+REMOTE_NODE=$(ssh "$SSH_TARGET" "sh -c $(quote_remote_arg "$REMOTE_NODE_PROBE")" 2>/dev/null || true)
+REMOTE_NODE_BIN=$(printf '%s\n' "$REMOTE_NODE" | sed -n 's/^CLAWD_REMOTE_NODE_BIN=//p' | head -n 1)
+REMOTE_NODE_VERSION=$(printf '%s\n' "$REMOTE_NODE" | sed -n 's/^CLAWD_REMOTE_NODE_VERSION=//p' | head -n 1)
+REMOTE_NODE_SOURCE=$(printf '%s\n' "$REMOTE_NODE" | sed -n 's/^CLAWD_REMOTE_NODE_SOURCE=//p' | head -n 1)
+if [ -z "$REMOTE_NODE_BIN" ] || [ -z "$REMOTE_NODE_VERSION" ]; then
   echo "ERROR: Node.js not found on remote server"
   echo "Install Node.js on the remote server first."
   exit 1
 fi
-echo "  Remote node: $(echo "$REMOTE_NODE" | tail -1)"
+echo "  Remote node: $REMOTE_NODE_VERSION ($REMOTE_NODE_BIN via $REMOTE_NODE_SOURCE)"
 
 # ── Deploy files ──
 
@@ -138,13 +231,18 @@ fi
 # ── Register hooks ──
 
 echo "Registering Claude Code hooks (remote mode)..."
-ssh "$SSH_TARGET" "node ~/.claude/hooks/install.js --remote" || {
+ssh "$SSH_TARGET" "$(remote_node_command install.js --remote)" || {
   echo "WARNING: Hook registration failed (Claude Code may not be installed on remote)"
 }
 
 echo "Registering Codex official hooks (remote mode)..."
-ssh "$SSH_TARGET" "node ~/.claude/hooks/codex-install.js --remote" || {
+ssh "$SSH_TARGET" "$(remote_node_command codex-install.js --remote)" || {
   echo "WARNING: Codex official hook registration failed (Codex CLI may not be installed on remote)"
+}
+
+echo "Registering Copilot CLI hooks (remote mode)..."
+ssh "$SSH_TARGET" "$(remote_node_command copilot-install.js --remote)" || {
+  echo "WARNING: Copilot CLI hook registration failed (Copilot CLI may not be installed on remote)"
 }
 
 # ── Print SSH configuration ──
@@ -182,11 +280,11 @@ echo "Codex official hooks were registered when ~/.codex exists."
 echo "If hooks are unavailable or disabled on the remote Codex install,"
 echo "you can still start the fallback Codex log monitor:"
 echo ""
-echo "  node ~/.claude/hooks/codex-remote-monitor.js"
+echo "  $(remote_node_command codex-remote-monitor.js)"
 echo ""
 echo "Or run in background:"
 echo ""
-echo "  nohup node ~/.claude/hooks/codex-remote-monitor.js > /dev/null 2>&1 &"
+echo "  nohup $(remote_node_command codex-remote-monitor.js) > /dev/null 2>&1 &"
 echo ""
 echo "The fallback monitor polls Codex JSONL logs and syncs states"
 echo "back to your local Clawd through the SSH tunnel."

@@ -331,6 +331,18 @@ function createCodexPetMain(options = {}) {
         successDetail: "导入的 Codex Pet 已设为当前主题。",
         failedMessage: "导入 Codex Pet 失败",
       },
+      "zh-TW": {
+        import: "匯入",
+        cancel: "取消",
+        ok: "確定",
+        confirmMessage: (host) => `從 ${host} 匯入 Codex Pet？`,
+        confirmDetail: (url) => `Clawd 會先下載、驗證並安裝這個寵物套件，然後切換到它。\n\n${url}`,
+        replaceMessage: (name) => `取代現有的本機寵物「${name}」？`,
+        replaceDetail: "本機已經有相同 id 的 Codex Pet 套件。繼續會覆寫這個本機套件。",
+        successMessage: (name) => `已匯入「${name}」`,
+        successDetail: "匯入的 Codex Pet 已設為目前主題。",
+        failedMessage: "匯入 Codex Pet 失敗",
+      },
       ko: {
         import: "가져오기",
         cancel: "취소",
@@ -410,6 +422,12 @@ function createCodexPetMain(options = {}) {
         cancel: "取消",
         message: (name) => `卸载导入宠物 "${name}"？`,
         detail: "Clawd 会从 Codex pets 文件夹删除源包，并清理生成的主题。此操作不可撤销。",
+      },
+      "zh-TW": {
+        uninstall: "解除安裝",
+        cancel: "取消",
+        message: (name) => `解除安裝匯入的寵物「${name}」？`,
+        detail: "Clawd 會從 Codex pets 資料夾移除來源套件，並清理產生的主題。此操作無法復原。",
       },
       ko: {
         uninstall: "제거",
