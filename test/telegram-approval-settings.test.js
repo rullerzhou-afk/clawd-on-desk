@@ -31,6 +31,7 @@ test("normalizeTelegramApproval trims ids and accepts numeric chat id shorthand"
     enabled: true,
     allowedTgUserId: "123456789",
     targetSessionKey: "telegram:987654321",
+    nativeMode: true,
   });
 });
 
