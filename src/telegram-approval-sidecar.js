@@ -463,7 +463,10 @@ class TelegramApprovalSidecar extends EventEmitter {
     this.client = null;
     this.startPromise = null;
     if (this.requestedStop) {
-      this._setStatus({ status: "stopped" });
+      // When stop() was called, stop()'s own finish() callback handles the
+      // status emission. Skip here to avoid emitting "stopped" twice, which
+      // could overwrite a subsequent "starting" status if a new start() was
+      // triggered between the two emissions.
       return;
     }
     const message = `sidecar exited (${formatExit(code, signal)})`;

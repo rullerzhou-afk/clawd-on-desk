@@ -32,10 +32,14 @@
       ops.showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
       return Promise.resolve({ status: "error" });
     }
-    return window.settingsAPI.command(action, payload).catch((err) => ({
-      status: "error",
-      message: err && err.message,
-    }));
+    try {
+      return window.settingsAPI.command(action, payload).catch((err) => ({
+        status: "error",
+        message: err && err.message,
+      }));
+    } catch (err) {
+      return Promise.resolve({ status: "error", message: err && err.message });
+    }
   }
 
   function refreshStatus({ forceRender = false } = {}) {
@@ -191,6 +195,10 @@
         ops.showToast(t("telegramApprovalTokenSaved"));
         view.status = null;
         refreshStatus({ forceRender: true });
+      }).catch(() => {
+        view.tokenPending = false;
+        ops.showToast(t("telegramApprovalTokenSaveFailed"), { error: true });
+        ops.requestRender({ content: true });
       });
     });
     ctrl.appendChild(input);
@@ -318,6 +326,10 @@
         }
         view.status = null;
         refreshStatus({ forceRender: true });
+      }).catch(() => {
+        view.testPending = false;
+        ops.showToast(t("telegramApprovalTestFailed"), { error: true });
+        ops.requestRender({ content: true });
       });
     });
     ctrl.appendChild(btn);
