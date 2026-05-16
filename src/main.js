@@ -175,6 +175,7 @@ let agentRuntime = null;
 let floatingWindowRuntime = null;
 let codexPetMain = null;
 let telegramApprovalSidecar = null;
+let telegramNativeBot = null;
 let telegramApprovalSyncPromise = Promise.resolve();
 let telegramApprovalConfigSignature = "";
 let telegramApprovalTokenRevision = 0;
@@ -1201,6 +1202,9 @@ function focusLog(msg) {
 }
 
 function getTelegramApprovalClient() {
+  // Prefer native bot (supports rich interactions: options, checkboxes, text)
+  if (telegramNativeBot && telegramNativeBot.isEnabled()) return telegramNativeBot;
+  // Fall back to sidecar (basic allow/deny only)
   if (!telegramApprovalSidecar || typeof telegramApprovalSidecar.getClient !== "function") return null;
   return telegramApprovalSidecar.getClient();
 }
@@ -1255,6 +1259,18 @@ function getTelegramApprovalStatus() {
   const config = getTelegramApprovalPrefs();
   const token = getTelegramApprovalTokenStatus();
   const ready = telegramApprovalSettings.readiness(config, token);
+  // Native bot mode reports as "running" if enabled and configured
+  if (telegramNativeBot && telegramNativeBot.isEnabled()) {
+    return {
+      status: "running",
+      mode: "native",
+      enabled: config.enabled === true,
+      configured: ready.ready === true,
+      reason: ready.reason || "",
+      message: "",
+      tokenStored: token.tokenStored === true,
+    };
+  }
   const sidecarStatus = telegramApprovalSidecar && typeof telegramApprovalSidecar.getStatus === "function"
     ? telegramApprovalSidecar.getStatus()
     : { status: "stopped" };
@@ -1297,6 +1313,26 @@ function startTelegramApprovalSidecar() {
     }
     return false;
   }
+
+  // Native mode: use direct Telegram Bot API (supports rich interactions)
+  if (config.nativeMode !== false) {
+    const chatId = config.targetSessionKey
+      ? config.targetSessionKey.replace(/^telegram:/, "")
+      : "";
+    if (telegramNativeBot) telegramNativeBot.cleanup();
+    const { TelegramNativeBotClient } = require("./telegram-native-bot");
+    telegramNativeBot = new TelegramNativeBotClient({
+      tokenFilePath: paths.tokenEnvFilePath,
+      allowedUserId: config.allowedTgUserId,
+      chatId,
+      ttlMs: 90000,
+      log: telegramApprovalLog,
+    });
+    telegramApprovalLog("info", "native bot mode enabled");
+    telegramApprovalConfigSignature = buildTelegramApprovalSignature(config, paths, token);
+    return true;
+  }
+
   const configWrite = telegramApprovalSettings.writeBridgeConfigFile({
     fs,
     path,
@@ -1320,7 +1356,16 @@ function startTelegramApprovalSidecar() {
     }
     return true;
   }
-  if (telegramApprovalSidecar) return true;
+  if (telegramApprovalSidecar) {
+    // Config changed but old sidecar still assigned — stop it and recreate
+    // with updated config. Without this, a user-ID or session-key change
+    // would be written to TOML but the running sidecar would keep the old
+    // config until app restart.
+    telegramApprovalLog("info", "config signature changed, recreating sidecar");
+    telegramApprovalSidecar.stop().catch(() => {});
+    telegramApprovalSidecar = null;
+    telegramApprovalConfigSignature = "";
+  }
   // The bot token only ever lives at userData/telegram-approval.env on disk.
   // The sidecar reads it from there directly — Clawd's main process must never
   // pipe a token value through process.env or child env, so there is no
@@ -1346,6 +1391,11 @@ function startTelegramApprovalSidecar() {
 }
 
 function stopTelegramApprovalSidecar() {
+  // Cleanup native bot
+  if (telegramNativeBot) {
+    telegramNativeBot.cleanup();
+    telegramNativeBot = null;
+  }
   const sidecar = telegramApprovalSidecar;
   telegramApprovalSidecar = null;
   telegramApprovalConfigSignature = "";
@@ -1382,21 +1432,26 @@ function queueTelegramApprovalSidecarSync(reason) {
 
 async function sendTelegramApprovalTest() {
   await queueTelegramApprovalSidecarSync("test");
-  if (telegramApprovalSidecar && !getTelegramApprovalClient() && typeof telegramApprovalSidecar.start === "function") {
-    try {
-      await telegramApprovalSidecar.start();
-    } catch (err) {
-      return { status: "error", message: err && err.message ? err.message : "Telegram approval sidecar failed to start" };
+  // Native bot mode: already instantiated by sync
+  const client = getTelegramApprovalClient();
+  if (!client) {
+    // Fallback: try starting sidecar if native bot not available
+    if (telegramApprovalSidecar && typeof telegramApprovalSidecar.start === "function") {
+      try {
+        await telegramApprovalSidecar.start();
+      } catch (err) {
+        return { status: "error", message: err && err.message ? err.message : "Telegram approval failed to start" };
+      }
     }
   }
-  const client = getTelegramApprovalClient();
-  if (!client || typeof client.requestApproval !== "function") {
-    return { status: "error", message: "Telegram approval sidecar is not running" };
+  const finalClient = getTelegramApprovalClient();
+  if (!finalClient || typeof finalClient.requestApproval !== "function") {
+    return { status: "error", message: "Telegram approval is not running" };
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 60 * 1000);
   try {
-    const decision = await client.requestApproval({
+    const decision = await finalClient.requestApproval({
       title: "Clawd Telegram approval test",
       detail: "This is a settings test message. It is not attached to any agent permission request.",
     }, { signal: controller.signal });

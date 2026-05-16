@@ -666,16 +666,25 @@ function compactRemoteApprovalText(value, maxLen = 200) {
 
 function isRemoteApprovalActionable(permEntry) {
   if (!permEntry || typeof permEntry !== "object") return false;
-  if (permEntry.isElicitation || permEntry.isCodexNotify || permEntry.isKimiNotify || permEntry.isOpencode) return false;
-  if (permEntry.toolName === "ExitPlanMode" || permEntry.toolName === "AskUserQuestion") return false;
+  if (permEntry.isCodexNotify || permEntry.isKimiNotify || permEntry.isOpencode) return false;
+  if (permEntry.toolName === "ExitPlanMode") return false;
   if (PASSTHROUGH_TOOLS.has(permEntry.toolName)) return false;
-  // Headless sessions auto-deny locally; mirror that on the Telegram side so a
-  // non-interactive Codex/Pi/CC run never sends an actionable approval card.
   const session = ctx.sessions && typeof ctx.sessions.get === "function"
     ? ctx.sessions.get(permEntry.sessionId)
     : null;
   if (session && session.headless) return false;
   return true;
+}
+
+function getRemoteApprovalType(permEntry) {
+  if (!isRemoteApprovalActionable(permEntry)) return null;
+  if (permEntry.isElicitation || permEntry.toolName === "AskUserQuestion") {
+    return "elicitation";
+  }
+  if (Array.isArray(permEntry.suggestions) && permEntry.suggestions.length > 0) {
+    return "suggestions";
+  }
+  return "permission";
 }
 
 // Returns a redacted summary string, or null when no agent-supplied description
@@ -765,11 +774,25 @@ function dismissPermissionForTerminal(perm) {
 }
 
 function maybeStartRemoteApproval(permEntry) {
-  if (!isRemoteApprovalActionable(permEntry)) return false;
+  const approvalType = getRemoteApprovalType(permEntry);
+  if (!approvalType) return false;
   const client = getTelegramApprovalClient();
   if (!client || typeof client.requestApproval !== "function") return false;
   if (typeof client.isEnabled === "function" && !client.isEnabled()) return false;
 
+  const supportsRich = typeof client.requestElicitation === "function";
+
+  if (approvalType === "elicitation") {
+    if (!supportsRich) return false;
+    return startElicitationRemoteApproval(permEntry, client);
+  }
+  if (approvalType === "suggestions" && supportsRich) {
+    return startSuggestionsRemoteApproval(permEntry, client);
+  }
+  return startBasicRemoteApproval(permEntry, client);
+}
+
+function startBasicRemoteApproval(permEntry, client) {
   const payload = buildRemoteApprovalPayload(permEntry);
   if (!payload) return false;
 
@@ -800,6 +823,121 @@ function maybeStartRemoteApproval(permEntry) {
     })
     .catch((err) => {
       permLog(`telegram remote approval failed: ${compactRemoteApprovalText(err && err.message ? err.message : err, 200)}`);
+    })
+    .finally(() => {
+      if (controller && permEntry.remoteApprovalAbortController === controller) {
+        permEntry.remoteApprovalAbortController = null;
+      }
+    });
+  return true;
+}
+
+function startSuggestionsRemoteApproval(permEntry, client) {
+  const payload = buildRemoteApprovalPayload(permEntry);
+  if (!payload) return false;
+
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  if (controller) permEntry.remoteApprovalAbortController = controller;
+
+  let request;
+  try {
+    request = client.requestWithSuggestions(
+      payload,
+      permEntry.suggestions || [],
+      controller ? { signal: controller.signal } : {}
+    );
+  } catch (err) {
+    if (controller && permEntry.remoteApprovalAbortController === controller) {
+      permEntry.remoteApprovalAbortController = null;
+    }
+    permLog(`telegram remote approval (suggestions) failed: ${compactRemoteApprovalText(err && err.message ? err.message : err, 200)}`);
+    return false;
+  }
+
+  Promise.resolve(request)
+    .then((result) => {
+      if (!result) return;
+      if (result === "allow" || result === "deny") {
+        resolvePermissionEntry(permEntry, result);
+        return;
+      }
+      if (result.decision === "allow" && result.selectedSuggestion) {
+        const sug = result.selectedSuggestion;
+        if (sug.type === "addRules") {
+          const rules = Array.isArray(sug.rules) ? sug.rules
+            : [{ toolName: sug.toolName, ruleContent: sug.ruleContent }];
+          permEntry.resolvedSuggestion = {
+            type: "addRules",
+            destination: sug.destination || "localSettings",
+            behavior: sug.behavior || "allow",
+            rules,
+          };
+        } else if (sug.type === "setMode") {
+          permEntry.resolvedSuggestion = {
+            type: "setMode",
+            mode: sug.mode,
+            destination: sug.destination || "localSettings",
+          };
+        }
+        resolvePermissionEntry(permEntry, "allow");
+      } else if (result.decision) {
+        resolvePermissionEntry(permEntry, result.decision);
+      }
+    })
+    .catch((err) => {
+      permLog(`telegram remote approval (suggestions) failed: ${compactRemoteApprovalText(err && err.message ? err.message : err, 200)}`);
+    })
+    .finally(() => {
+      if (controller && permEntry.remoteApprovalAbortController === controller) {
+        permEntry.remoteApprovalAbortController = null;
+      }
+    });
+  return true;
+}
+
+function startElicitationRemoteApproval(permEntry, client) {
+  const toolInput = permEntry.toolInput && typeof permEntry.toolInput === "object" ? permEntry.toolInput : {};
+  const questions = Array.isArray(toolInput.questions) ? toolInput.questions : [];
+  if (questions.length === 0) return false;
+
+  const agentId = compactRemoteApprovalText(permEntry.agentId || "claude-code", 80) || "claude-code";
+  const payload = {
+    title: `${agentId} asks a question`,
+    detail: compactRemoteApprovalText(questions[0].question || "", 200),
+  };
+
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  if (controller) permEntry.remoteApprovalAbortController = controller;
+
+  let request;
+  try {
+    request = client.requestElicitation(
+      payload,
+      questions,
+      controller ? { signal: controller.signal } : {}
+    );
+  } catch (err) {
+    if (controller && permEntry.remoteApprovalAbortController === controller) {
+      permEntry.remoteApprovalAbortController = null;
+    }
+    permLog(`telegram remote elicitation failed: ${compactRemoteApprovalText(err && err.message ? err.message : err, 200)}`);
+    return false;
+  }
+
+  Promise.resolve(request)
+    .then((result) => {
+      if (!result) return;
+      if (result === "deny" || result.decision === "deny") {
+        resolvePermissionEntry(permEntry, "deny");
+        return;
+      }
+      if (result.decision === "allow" && result.answers) {
+        permEntry.resolvedUpdatedInput = buildElicitationUpdatedInput(toolInput, result.answers);
+        resolvePermissionEntry(permEntry, "allow");
+      }
+    })
+    .catch((err) => {
+      permLog(`telegram remote elicitation failed: ${compactRemoteApprovalText(err && err.message ? err.message : err, 200)}`);
     })
     .finally(() => {
       if (controller && permEntry.remoteApprovalAbortController === controller) {

@@ -566,7 +566,9 @@ function handlePermissionPost(req, res, options) {
           }
           permEntry.bubble = null;
           ctx.sendPermissionResponse(res, "deny", "Elicitation bubble unavailable; answer in terminal", "Elicitation");
+          return;
         }
+        startRemoteApproval(ctx, permEntry);
         return;
       }
 
