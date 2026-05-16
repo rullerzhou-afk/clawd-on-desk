@@ -6,11 +6,12 @@ const DEFAULT_TG_APPROVAL = Object.freeze({
   enabled: false,
   allowedTgUserId: "",
   targetSessionKey: "",
+  nativeMode: true,
 });
 
 const BOT_TOKEN_RE = /^\d+:[A-Za-z0-9_-]{30,}$/;
-const TELEGRAM_USER_ID_RE = /^[1-9]\d{4,19}$/;
-const TELEGRAM_SESSION_KEY_RE = /^telegram:-?[1-9]\d{4,19}(?::\d{1,20}){0,2}$/;
+const TELEGRAM_USER_ID_RE = /^[1-9]\d{0,19}$/;
+const TELEGRAM_SESSION_KEY_RE = /^telegram:-?[1-9]\d{0,19}(?::\d{1,20}){0,2}$/;
 
 function isPlainObject(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -46,6 +47,7 @@ function normalizeTelegramApproval(value, defaultsValue = DEFAULT_TG_APPROVAL) {
     enabled: defaults.enabled === true,
     allowedTgUserId: trimString(defaults.allowedTgUserId, 64),
     targetSessionKey: normalizeTelegramSessionKey(defaults.targetSessionKey),
+    nativeMode: defaults.nativeMode !== false,
   };
   if (!isPlainObject(value)) return out;
   if (typeof value.enabled === "boolean") out.enabled = value.enabled;
@@ -56,6 +58,7 @@ function normalizeTelegramApproval(value, defaultsValue = DEFAULT_TG_APPROVAL) {
   if (typeof value.targetSessionKey === "string") {
     out.targetSessionKey = normalizeTelegramSessionKey(value.targetSessionKey);
   }
+  if (typeof value.nativeMode === "boolean") out.nativeMode = value.nativeMode;
   return out;
 }
 
@@ -64,7 +67,7 @@ function validateTelegramApproval(value) {
     return { status: "error", message: "tgApproval must be a plain object" };
   }
   for (const key of Object.keys(value)) {
-    if (key !== "enabled" && key !== "allowedTgUserId" && key !== "targetSessionKey") {
+    if (key !== "enabled" && key !== "allowedTgUserId" && key !== "targetSessionKey" && key !== "nativeMode") {
       return { status: "error", message: `tgApproval.${key} is not supported` };
     }
   }
@@ -165,7 +168,7 @@ function writeTokenEnvFile({ fs, path: pathModule = path, filePath, token, platf
   }
 }
 
-function writeBridgeConfigFile({ fs, path: pathModule = path, filePath, config } = {}) {
+function writeBridgeConfigFile({ fs, path: pathModule = path, filePath, config, platform = process.platform } = {}) {
   if (!fs || typeof fs.writeFileSync !== "function") {
     return { status: "error", message: "writeBridgeConfigFile requires fs" };
   }
@@ -177,7 +180,7 @@ function writeBridgeConfigFile({ fs, path: pathModule = path, filePath, config }
   try {
     fs.mkdirSync(pathModule.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, buildBridgeConfigToml(config), { encoding: "utf8", mode: 0o600 });
-    if (process.platform !== "win32" && typeof fs.chmodSync === "function") {
+    if (platform !== "win32" && typeof fs.chmodSync === "function") {
       try { fs.chmodSync(filePath, 0o600); } catch {}
     }
     return { status: "ok", filePath };
