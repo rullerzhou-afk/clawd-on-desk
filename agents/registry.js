@@ -13,6 +13,7 @@ const opencode = require("./opencode");
 const pi = require("./pi");
 const openclaw = require("./openclaw");
 const hermes = require("./hermes");
+const nanoAgent = require("./nano-agent");
 
 const AGENTS = [
   claudeCode,
@@ -27,6 +28,7 @@ const AGENTS = [
   pi,
   openclaw,
   hermes,
+  nanoAgent,
 ];
 const AGENT_MAP = new Map(AGENTS.map((a) => [a.id, a]));
 

@@ -144,6 +144,7 @@ const SCHEMA = {
       "pi": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "openclaw": { enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
       "hermes": { enabled: true },
+      "nano-agent": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
     }),
     normalize: normalizeAgents,
   },

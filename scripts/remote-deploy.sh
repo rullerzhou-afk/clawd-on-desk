@@ -143,6 +143,18 @@ FILES=(
   "$HOOKS_DIR/codex-subagent-fields.js"
   "$HOOKS_DIR/copilot-hook.js"
   "$HOOKS_DIR/copilot-install.js"
+  "$HOOKS_DIR/nano-agent-hook.js"
+  "$HOOKS_DIR/nano-agent-install.js"
+)
+
+# js-yaml (and its only dep argparse) is required by nano-agent-install.js to
+# edit nano-agent's YAML config. We scp both packages alongside the hook
+# scripts so the remote install never needs npm. Missing locally => skip
+# nano-agent registration with a warning rather than failing the whole deploy.
+NODE_MODULES_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/node_modules"
+NANO_NODE_MODULE_DIRS=(
+  "$NODE_MODULES_DIR/js-yaml"
+  "$NODE_MODULES_DIR/argparse"
 )
 
 # ── Local port detection ──
@@ -244,6 +256,44 @@ echo "Registering Copilot CLI hooks (remote mode)..."
 ssh "$SSH_TARGET" "$(remote_node_command copilot-install.js --remote)" || {
   echo "WARNING: Copilot CLI hook registration failed (Copilot CLI may not be installed on remote)"
 }
+
+# ── nano-agent ──
+# nano-agent-install.js requires js-yaml. Ship js-yaml + argparse as a
+# self-contained bundle next to the hooks so `require("js-yaml")` resolves
+# without needing npm on the remote host.
+NANO_DEPLOY_OK=1
+for dep_dir in "${NANO_NODE_MODULE_DIRS[@]}"; do
+  if [ ! -d "$dep_dir" ]; then
+    echo "WARNING: missing $dep_dir — skipping nano-agent hook registration"
+    echo "         run \`npm install\` locally before re-running remote-deploy"
+    NANO_DEPLOY_OK=0
+    break
+  fi
+done
+
+if [ "$NANO_DEPLOY_OK" = "1" ]; then
+  echo "Copying nano-agent runtime deps (js-yaml, argparse)..."
+  ssh "$SSH_TARGET" "mkdir -p ~/.claude/hooks/node_modules" || {
+    echo "WARNING: failed to create remote node_modules dir — skipping nano-agent registration"
+    NANO_DEPLOY_OK=0
+  }
+fi
+
+if [ "$NANO_DEPLOY_OK" = "1" ]; then
+  if ! scp -q -r "${NANO_NODE_MODULE_DIRS[@]}" "$SSH_TARGET:~/.claude/hooks/node_modules/"; then
+    echo "WARNING: failed to copy nano-agent deps — skipping nano-agent registration"
+    NANO_DEPLOY_OK=0
+  else
+    echo "  [OK] Deps copied to ~/.claude/hooks/node_modules/"
+  fi
+fi
+
+if [ "$NANO_DEPLOY_OK" = "1" ]; then
+  echo "Registering nano-agent hooks (remote mode)..."
+  ssh "$SSH_TARGET" "$(remote_node_command nano-agent-install.js --remote)" || {
+    echo "WARNING: nano-agent hook registration failed (nano-agent may not be installed or its config is missing)"
+  }
+fi
 
 # ── Print SSH configuration ──
 

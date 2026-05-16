@@ -33,6 +33,7 @@ function makeRuntime(overrides = {}) {
       return { status: "ok", message: "done" };
     },
     syncHermesPluginImpl: () => calls.push({ name: "hermes" }),
+    syncNanoAgentHooksImpl: () => calls.push({ name: "nano-agent" }),
     ...(overrides.ctx || {}),
   };
   const runtime = createIntegrationSyncRuntime({
@@ -81,6 +82,7 @@ describe("integration sync runtime", () => {
       "pi",
       "openclaw",
       "hermes",
+      "nano-agent",
     ]);
   });
 
