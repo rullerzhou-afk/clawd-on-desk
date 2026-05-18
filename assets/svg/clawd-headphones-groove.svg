@@ -4,7 +4,7 @@
   1. 眼睛 V 字 y +0.5 (顶 8->8.5 底 9->9.5) — v5 位置偏高
   2. 耳罩压缩 0.78 -> 0.85 (缩量 22%->15%), 过冲 1.04 -> 1.02 一起收 — v5 压太多
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="geometricPrecision">
   <defs>
     <style>
       .shadow-sway {

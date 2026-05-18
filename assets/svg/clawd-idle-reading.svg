@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="crispEdges">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="geometricPrecision">
   <defs>
     <style>
       /* ═══ 14s story: idle 挥手 → 抓书 + 戴眼镜 → 读 (眼镜下滑+推回) → 书+眼镜同步退场

@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="geometricPrecision">
   <!-- PoC v8: v7 左右翻转版
        唯一改动: master-group 加 transform="translate(15, 0) scale(-1, 1)"
                 围绕 viewBox 中心 X=7.5 镜像翻转

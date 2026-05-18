@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="crispEdges">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="geometricPrecision">
   <!-- 吹泡泡 v8
        v7 反馈: 整体 ok, 但眼睛回到正中后再眨一次眼更好
        v8 修正: eyes-anim 加一个 96% 眨眼帧 (在 (0, 0) 正中位置) -->

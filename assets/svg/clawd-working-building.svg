@@ -4,7 +4,7 @@
   改动 = 把原黄色安全帽 (#FBC02D/#F9A825) 换成 helmet-tryon-v1 的三色橙帽 (#EFA74A/#B7782E/#FAB253)
   帽子仍放在 body-squash 组内, 跟随锤击 squash; z-order: torso → helmet → eyes (helmet 不遮眼, 无视觉冲突)
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="crispEdges">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="geometricPrecision">
   <defs>
     <style>
       /* ===== Independent sub-animations ===== */
