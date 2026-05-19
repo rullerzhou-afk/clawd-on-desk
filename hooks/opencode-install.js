@@ -4,6 +4,12 @@
 // Strategy: append the absolute path of hooks/opencode-plugin/ into
 // ~/.config/opencode/opencode.json under the "plugin" array. Idempotent.
 //
+// Also writes disabled_hooks: ["session-notification"] to
+// ~/.config/opencode/oh-my-openagent.jsonc so that oh-my-openagent's
+// built-in session-notification hook (which sends native OS toast
+// notifications) is suppressed — Clawd's bell animation takes over
+// the notification UX instead.
+//
 // Why global opencode.json and not plugins/ directory scanning:
 //   - Phase 0 spike verified that 1.3.13 does NOT auto-scan ~/.config/opencode/plugins/
 //     for bare .mjs files. It only loads plugins listed in "plugin" arrays.
@@ -19,6 +25,44 @@ const { writeJsonAtomic, asarUnpackedPath } = require("./json-utils");
 const PLUGIN_DIR_NAME = "opencode-plugin";
 const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".config", "opencode");
 const DEFAULT_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, "opencode.json");
+const DEFAULT_OMA_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, "oh-my-openagent.jsonc");
+
+// Minimal JSONC strip: remove single-line (//) and multi-line (/* */) comments
+// and trailing commas before ] or } so JSON.parse can handle the result.
+function stripJsonc(raw) {
+  let out = "";
+  let i = 0;
+  let inString = false;
+  while (i < raw.length) {
+    const ch = raw[i];
+    if (inString) {
+      out += ch;
+      if (ch === "\\" && i + 1 < raw.length) { out += raw[++i]; }
+      else if (ch === '"') { inString = false; }
+      i++;
+      continue;
+    }
+    if (ch === '"') { inString = true; out += ch; i++; continue; }
+    if (ch === "/" && i + 1 < raw.length && raw[i + 1] === "/") {
+      while (i < raw.length && raw[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && i + 1 < raw.length && raw[i + 1] === "*") {
+      i += 2;
+      while (i < raw.length - 1 && !(raw[i] === "*" && raw[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  out = out.replace(/,\s*([}\]])/g, "$1");
+  return out;
+}
+
+function parseJsonc(raw) {
+  return JSON.parse(stripJsonc(raw));
+}
 
 /**
  * Resolve the absolute path to hooks/opencode-plugin/ as seen from a running
@@ -133,16 +177,81 @@ function registerOpencodePlugin(options = {}) {
   return { added, skipped, created, configPath, pluginDir };
 }
 
+/**
+ * Disable oh-my-openagent's session-notification hook in
+ * ~/.config/opencode/oh-my-openagent.jsonc so that native OS
+ * notifications are suppressed. Clawd's bell animation + sound takes
+ * over the notification UX instead.
+ *
+ * @param {object} [options]
+ * @param {boolean} [options.silent]       suppress console output
+ * @param {string}  [options.omaConfigPath] override path to oh-my-openagent.jsonc (for tests)
+ * @returns {{ updated: boolean, skipped: boolean, created: boolean, configPath: string }}
+ */
+function disableSessionNotificationHook(options = {}) {
+  const configPath = options.omaConfigPath || DEFAULT_OMA_CONFIG_PATH;
+  const configDir = path.dirname(configPath);
+
+  if (!options.omaConfigPath) {
+    let exists = false;
+    try { exists = fs.statSync(configDir).isDirectory(); } catch {}
+    if (!exists) {
+      if (!options.silent) {
+        console.log("Clawd: ~/.config/opencode/ not found — skipping oh-my-openagent notification disable");
+      }
+      return { updated: false, skipped: true, created: false, configPath };
+    }
+  }
+
+  let settings = {};
+  let created = false;
+  try {
+    const raw = fs.readFileSync(configPath, "utf-8");
+    settings = parseJsonc(raw);
+    if (!settings || typeof settings !== "object") settings = {};
+  } catch (err) {
+    if (err.code === "ENOENT") {
+      settings = {};
+      created = true;
+    } else {
+      throw new Error(`Failed to read ${configPath}: ${err.message}`);
+    }
+  }
+
+  if (!Array.isArray(settings.disabled_hooks)) settings.disabled_hooks = [];
+
+  const HOOK_NAME = "session-notification";
+  if (settings.disabled_hooks.includes(HOOK_NAME)) {
+    if (!options.silent) {
+      console.log(`Clawd: ${HOOK_NAME} already in disabled_hooks — skipping`);
+    }
+    return { updated: false, skipped: true, created: false, configPath };
+  }
+
+  settings.disabled_hooks.push(HOOK_NAME);
+  writeJsonAtomic(configPath, settings);
+
+  if (!options.silent) {
+    console.log(`Clawd: disabled ${HOOK_NAME} hook → ${configPath}`);
+    if (created) console.log("  Created oh-my-openagent.jsonc");
+  }
+
+  return { updated: true, skipped: false, created, configPath };
+}
+
 module.exports = {
   DEFAULT_PARENT_DIR,
   DEFAULT_CONFIG_PATH,
+  DEFAULT_OMA_CONFIG_PATH,
   registerOpencodePlugin,
+  disableSessionNotificationHook,
   resolvePluginDir,
 };
 
 if (require.main === module) {
   try {
     registerOpencodePlugin({});
+    disableSessionNotificationHook({});
   } catch (err) {
     console.error(err.message);
     process.exit(1);

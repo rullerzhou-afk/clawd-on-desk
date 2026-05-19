@@ -128,7 +128,8 @@ Copilot CLI 是唯一在本地启动时不会自动同步 hooks 的受支持 age
 - hook 脚本只允许依赖 Node 内置模块，以及同目录的 `server-config.js`、`shared-process.js`、`json-utils.js`、`codex-subagent-fields.js`
 - hook 脚本需要稳定终端 PID 时，必须走 `getStablePid()` 进程树解析；不要用 `process.ppid` 做简化替代
 - opencode 权限不走 `permission.ask` hook，而是 event hook + reverse bridge
-- CodeFree-O 与 opencode 共享进程名（`opencode.exe`/`opencode`）和配置目录（`~/.config/opencode/`），但使用独立 `AGENT_ID="codefree-o"` 和独立 plugin（`codefree-o-plugin`）以在 UI 和 Settings 中区分身份；权限走与 opencode 相同的 event hook + reverse bridge 路径（`isOpencode: true`）
+- CodeFree-O 与 opencode 共享进程名（`opencode.exe`/`opencode`），但使用独立配置目录（`~/.codefree-o/.config/`，非 `~/.config/opencode/`）、独立 `AGENT_ID="codefree-o"` 和独立 plugin（`codefree-o-plugin`）以在 UI 和 Settings 中区分身份；权限走与 opencode 相同的 event hook + reverse bridge 路径（`isOpencode: true`）
+- opencode / CodeFree-O 的原生 OS 通知（Windows toast、macOS Notification Center、Linux notify-send）由 oh-my-openagent 的 `session-notification` hook 发出。Clawd 通过在 `oh-my-openagent.jsonc` 中写入 `disabled_hooks: ["session-notification"]` 禁用该 hook，改由 Clawd 的铃铛动画 + 音效接管通知 UX。plugin 将 `session.idle` 映射为 `Notification` 事件（而非 `Stop`/`attention`），与 Claude Code 的通知模式一致
 - Pi 通过 `~/.pi/agent/extensions/clawd-on-desk` 的 global extension 推送状态；权限气泡第一版只覆盖 `bash` / `write` / `edit`，不可用时必须回退到 Pi terminal confirmation
 - OpenClaw 通过 `~/.openclaw/openclaw.json` plugin 路径做 state-only 集成；Phase 1 不做 permission bubble / terminal focus，主要支持本地 `openclaw tui --local`
 - HTTP 服务端口范围固定为 `127.0.0.1:23333-23337`；运行时端口写入 `~/.clawd/runtime.json`

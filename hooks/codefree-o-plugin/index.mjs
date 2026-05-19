@@ -418,15 +418,15 @@ function translateEvent(event) {
       return { state: "sweeping", event: "PreCompact" };
 
     case "session.idle":
-      // Phase 3 (plan A): only the root session's idle fires the happy
-      // animation. Subtask sessions (spawned by the `task` tool) end with
-      // SessionEnd so Clawd removes them from its tracking map — no happy
-      // flash, no menu pollution. If _rootSessionId is null (no session
-      // seen yet, should never happen), fall through to old behavior.
+      // Root session idle → Notification event (bell animation + sound).
+      // oh-my-openagent's session-notification hook is disabled via
+      // disabled_hooks in oh-my-openagent.jsonc, so Clawd owns the
+      // notification UX. Subtask sessions end with SessionEnd so Clawd
+      // removes them from its tracking map — no bell, no menu pollution.
       if (_rootSessionId && props.sessionID && props.sessionID !== _rootSessionId) {
         return { state: "sleeping", event: "SessionEnd" };
       }
-      return { state: "attention", event: "Stop" };
+      return { state: "notification", event: "Notification" };
 
     case "session.error":
       return { state: "error", event: "StopFailure" };

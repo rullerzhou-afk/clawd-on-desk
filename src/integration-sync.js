@@ -163,12 +163,13 @@ function createIntegrationSyncRuntime(options = {}) {
   function syncOpencodePlugin() {
     try {
       if (typeof ctx.syncOpencodePluginImpl === "function") return ctx.syncOpencodePluginImpl();
-      const { registerOpencodePlugin } = require("../hooks/opencode-install.js");
+      const { registerOpencodePlugin, disableSessionNotificationHook } = require("../hooks/opencode-install.js");
       const { added, created } = registerOpencodePlugin({ silent: true });
-      if (added || created) {
-        console.log(`Clawd: synced opencode plugin (added=${added}, created=${created})`);
+      const hookResult = disableSessionNotificationHook({ silent: true });
+      if (added || created || hookResult.updated || hookResult.created) {
+        console.log(`Clawd: synced opencode plugin (added=${added}, created=${created}, notificationHookDisabled=${hookResult.updated || hookResult.created})`);
       }
-      return { status: "ok", added, created };
+      return { status: "ok", added, created, notificationHookDisabled: hookResult.updated || hookResult.created };
     } catch (err) {
       console.warn("Clawd: failed to sync opencode plugin:", err.message);
       return { status: "error", message: err && err.message ? err.message : "Failed to sync opencode plugin" };
@@ -178,12 +179,13 @@ function createIntegrationSyncRuntime(options = {}) {
   function syncCodeFreeOPlugin() {
     try {
       if (typeof ctx.syncCodeFreeOPluginImpl === "function") return ctx.syncCodeFreeOPluginImpl();
-      const { registerCodeFreeOPlugin } = require("../hooks/codefree-o-install.js");
+      const { registerCodeFreeOPlugin, disableSessionNotificationHook } = require("../hooks/codefree-o-install.js");
       const { added, created } = registerCodeFreeOPlugin({ silent: true });
-      if (added || created) {
-        console.log(`Clawd: synced CodeFree-O plugin (added=${added}, created=${created})`);
+      const hookResult = disableSessionNotificationHook({ silent: true });
+      if (added || created || hookResult.updated || hookResult.created) {
+        console.log(`Clawd: synced CodeFree-O plugin (added=${added}, created=${created}, notificationHookDisabled=${hookResult.updated || hookResult.created})`);
       }
-      return { status: "ok", added, created };
+      return { status: "ok", added, created, notificationHookDisabled: hookResult.updated || hookResult.created };
     } catch (err) {
       console.warn("Clawd: failed to sync CodeFree-O plugin:", err.message);
       return { status: "error", message: err && err.message ? err.message : "Failed to sync CodeFree-O plugin" };
