@@ -64,12 +64,18 @@ function isEndedSessionBadge(badge) {
 
 function shouldAutoClearDetachedSession(session, badge, options = {}) {
   if (options.sessionHudCleanupDetached !== true) return false;
-  if (!session || session.headless || session.state !== "idle" || session.agentPid) return false;
-  if (!session.pidReachable || !session.sourcePid) return false;
-  if (!isEndedSessionBadge(badge)) return false;
+  if (!session || session.state !== "idle" || session.agentPid) return false;
   const isProcessAlive = typeof options.isProcessAlive === "function"
     ? options.isProcessAlive
     : () => true;
+  // Headless sessions with dead source processes should be auto-cleared so
+  // they don't linger in the session map and inflate headlessCount.
+  if (session.headless) {
+    if (!session.sourcePid) return false;
+    return !isProcessAlive(session.sourcePid);
+  }
+  if (!session.pidReachable || !session.sourcePid) return false;
+  if (!isEndedSessionBadge(badge)) return false;
   return !isProcessAlive(session.sourcePid);
 }
 
@@ -189,8 +195,21 @@ function buildSessionSnapshot(sessions, options = {}) {
     entries.push(buildSessionSnapshotEntry(id, session, sessionAliases, options));
   }
 
+  // Build a byId map first so we can look up headless session states.
+  const byId = new Map(entries.map((e) => [e.id, e]));
+
+  // States that count as "active" for headless sessions — must align with
+  // HEADLESS_ACTIVE_STATES in state-priority.js so that headlessCount and
+  // badge override use the same definition of "running".
+  const ACTIVE_BADGE_STATES = new Set([
+    "working", "thinking", "juggling", "sweeping",
+    "error", "notification", "carrying",
+  ]);
+
   // Group headless sessions by their root session (same agentId + sourcePid + cwd)
-  // and attach a headlessCount to the root session entry.
+  // and attach a headlessCount to the root session entry. Only headless sessions
+  // in an ACTIVE state are counted — ended (sleeping/idle) subagents must not
+  // inflate the count shown as "N 个后台任务运行中".
   const headlessByRoot = new Map();
   for (const entry of entries) {
     if (!entry.headless) continue;
@@ -203,16 +222,18 @@ function buildSessionSnapshot(sessions, options = {}) {
     const rootKey = `${entry.agentId || ""}|${entry.sourcePid || ""}|${entry.cwd || ""}`;
     const headlessIds = headlessByRoot.get(rootKey);
     if (headlessIds && headlessIds.length > 0) {
-      entry.headlessCount = headlessIds.length;
+      const activeCount = headlessIds.filter((hid) => {
+        const h = byId.get(hid);
+        return h && ACTIVE_BADGE_STATES.has(h.state);
+      }).length;
+      entry.headlessCount = activeCount;
     }
   }
 
   // Badge override: if a root session's badge is "done" or "idle" but it has
-  // active headless sub-sessions (working/thinking/juggling/sweeping), the
-  // root session should show "running" instead — the conversation is still
-  // in progress even though the root session itself is temporarily idle.
-  const ACTIVE_BADGE_STATES = new Set(["working", "thinking", "juggling", "sweeping"]);
-  const byId = new Map(entries.map((e) => [e.id, e]));
+  // active headless sub-sessions, the root session should show "running"
+  // instead — the conversation is still in progress even though the root
+  // session itself is temporarily idle.
   for (const entry of entries) {
     if (entry.headless) continue;
     if (entry.badge !== "done" && entry.badge !== "idle") continue;

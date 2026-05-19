@@ -344,7 +344,11 @@ function sendState(state, eventName, sessionId) {
   const lastState = _lastStatePerSession.get(sessionId) || null;
 
   // Per-session dedup: skip only if the SAME session repeats the SAME state.
-  if (state === lastState) {
+  // SessionEnd must always be sent — it removes the session from Clawd's
+  // tracking map. Without this bypass, a subtask that was already sleeping
+  // would have its SessionEnd deduped (sleeping === sleeping), leaving a
+  // stale entry that inflates headlessCount.
+  if (state === lastState && eventName !== "SessionEnd") {
     return;
   }
 

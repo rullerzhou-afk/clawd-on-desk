@@ -8,6 +8,7 @@ const {
   buildSessionSnapshot,
   getActiveSessionAliasKeys,
   sessionSnapshotSignature,
+  shouldAutoClearDetachedSession,
 } = require("../src/state-session-snapshot");
 
 const STATE_PRIORITY = {
@@ -278,5 +279,151 @@ describe("state-session-snapshot builder", () => {
 
     assert.strictEqual(sessionSnapshotSignature(base), sessionSnapshotSignature(sameExceptIcon));
     assert.notStrictEqual(sessionSnapshotSignature(base), sessionSnapshotSignature(differentTitle));
+  });
+
+  it("headlessCount only counts headless sessions in active states (BUG 1)", () => {
+    // Root session + 3 headless children: 2 active (working, thinking), 1 ended (sleeping)
+    const sessions = new Map([
+      ["root", session("idle", {
+        updatedAt: 3000,
+        cwd: "/repo",
+        agentId: "opencode",
+        sourcePid: 100,
+        recentEvents: [{ event: "Stop", state: "idle", at: 2900 }],
+      })],
+      ["sub-working", session("working", {
+        updatedAt: 2000,
+        cwd: "/repo",
+        agentId: "opencode",
+        sourcePid: 100,
+        headless: true,
+      })],
+      ["sub-thinking", session("thinking", {
+        updatedAt: 1500,
+        cwd: "/repo",
+        agentId: "opencode",
+        sourcePid: 100,
+        headless: true,
+      })],
+      ["sub-sleeping", session("sleeping", {
+        updatedAt: 500,
+        cwd: "/repo",
+        agentId: "opencode",
+        sourcePid: 100,
+        headless: true,
+      })],
+    ]);
+
+    const snapshot = buildSessionSnapshot(sessions, { statePriority: STATE_PRIORITY });
+    const root = snapshot.sessions.find((e) => e.id === "root");
+
+    // Only 2 active headless sessions should be counted, not 3
+    assert.strictEqual(root.headlessCount, 2);
+  });
+
+  it("headlessCount is 0 when all headless sessions are sleeping/idle (BUG 1)", () => {
+    const sessions = new Map([
+      ["root", session("idle", {
+        updatedAt: 3000,
+        cwd: "/repo",
+        agentId: "opencode",
+        sourcePid: 100,
+        recentEvents: [{ event: "Stop", state: "idle", at: 2900 }],
+      })],
+      ["sub-1", session("sleeping", {
+        updatedAt: 500,
+        cwd: "/repo",
+        agentId: "opencode",
+        sourcePid: 100,
+        headless: true,
+      })],
+      ["sub-2", session("idle", {
+        updatedAt: 400,
+        cwd: "/repo",
+        agentId: "opencode",
+        sourcePid: 100,
+        headless: true,
+      })],
+    ]);
+
+    const snapshot = buildSessionSnapshot(sessions, { statePriority: STATE_PRIORITY });
+    const root = snapshot.sessions.find((e) => e.id === "root");
+
+    // All headless sessions are inactive — count should be 0
+    assert.strictEqual(root.headlessCount, 0);
+  });
+
+  it("badge override promotes root to running when headless is in notification/error/carrying state (BUG 7)", () => {
+    for (const headlessState of ["notification", "error", "carrying"]) {
+      const sessions = new Map([
+        ["root", session("idle", {
+          updatedAt: 3000,
+          cwd: "/repo",
+          agentId: "opencode",
+          sourcePid: 100,
+          recentEvents: [{ event: "Stop", state: "idle", at: 2900 }],
+        })],
+        ["sub", session(headlessState, {
+          updatedAt: 2000,
+          cwd: "/repo",
+          agentId: "opencode",
+          sourcePid: 100,
+          headless: true,
+        })],
+      ]);
+
+      const snapshot = buildSessionSnapshot(sessions, { statePriority: STATE_PRIORITY });
+      const root = snapshot.sessions.find((e) => e.id === "root");
+
+      assert.strictEqual(root.badge, "running", `badge should be running when headless is in ${headlessState}`);
+    }
+  });
+
+  it("shouldAutoClearDetachedSession clears headless sessions with dead source process (BUG 5)", () => {
+    const headlessSession = session("idle", {
+      sourcePid: 9999,
+      headless: true,
+      recentEvents: [{ event: "SessionEnd", state: "idle", at: 1 }],
+    });
+
+    // Should be cleared when source process is dead
+    assert.strictEqual(
+      shouldAutoClearDetachedSession(headlessSession, "done", {
+        sessionHudCleanupDetached: true,
+        isProcessAlive: () => false,
+      }),
+      true
+    );
+
+    // Should NOT be cleared when source process is still alive
+    assert.strictEqual(
+      shouldAutoClearDetachedSession(headlessSession, "done", {
+        sessionHudCleanupDetached: true,
+        isProcessAlive: () => true,
+      }),
+      false
+    );
+
+    // Should NOT be cleared when cleanup is not enabled
+    assert.strictEqual(
+      shouldAutoClearDetachedSession(headlessSession, "done", {
+        sessionHudCleanupDetached: false,
+        isProcessAlive: () => false,
+      }),
+      false
+    );
+
+    // Headless session without sourcePid should NOT be cleared
+    const headlessNoPid = session("idle", {
+      headless: true,
+      recentEvents: [{ event: "SessionEnd", state: "idle", at: 1 }],
+    });
+    assert.strictEqual(
+      shouldAutoClearDetachedSession(headlessNoPid, "done", {
+        sessionHudCleanupDetached: true,
+        isProcessAlive: () => false,
+      }),
+      false
+    );
   });
 });
