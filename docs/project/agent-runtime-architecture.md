@@ -66,6 +66,15 @@ opencode 状态同步（in-process plugin，~0ms 延迟）：
     → fire-and-forget HTTP POST 127.0.0.1:23333/state
     → 同上状态机（agent_id: opencode）
 
+CodeFree-O 状态同步（in-process plugin，与 opencode 架构完全一致）：
+  CodeFree-O 触发事件（session.created / session.status / message.part.updated 等）
+    → hooks/codefree-o-plugin/index.mjs（Bun 运行时，插件跑在 opencode.exe 进程内）
+    → translateEvent 映射（与 opencode plugin 相同的事件词汇 → PascalCase Clawd event 名）
+    → fire-and-forget HTTP POST 127.0.0.1:23333/state
+    → 同上状态机（agent_id: codefree-o）
+  唯一区别：AGENT_ID="codefree-o"，用于 UI/设置区分 CodeFree-O 会话与原生 opencode 会话。
+  CodeFree-O 权限气泡同样走 event hook + 反向 bridge，与 opencode 权限流完全一致。
+
 Pi 状态同步（global extension，state-only）：
   Pi 触发 session_start / before_agent_start / tool_call / tool_result / agent_end 等事件
     → ~/.pi/agent/extensions/clawd-on-desk/index.ts（Pi extension runtime）
@@ -127,6 +136,7 @@ opencode 权限气泡（event hook + 反向 bridge，非阻塞）：
 - `agents/kiro-cli.js` — Kiro CLI 事件映射（camelCase），无 HTTP hook / 无权限 / 无 subagent
 - `agents/codebuddy.js` — CodeBuddy 事件映射（PascalCase，Claude Code 兼容），支持权限
 - `agents/opencode.js` — opencode 事件映射 + 能力（plugin、permission、terminal focus）
+- `agents/codefree-o.js` — CodeFree-O 事件映射 + 能力（与 opencode 相同的 plugin SDK、permission、terminal focus；AGENT_ID="codefree-o" 用于 UI/设置区分）
 - `agents/pi.js` — Pi extension 事件映射 + 能力（extension、permission、terminal fallback）
 - `agents/openclaw.js` — OpenClaw plugin 事件映射 + 能力（state-only，本地终端聚焦暂不支持）
 - `agents/hermes.js` — Hermes Agent plugin 事件映射 + 能力（session、SessionEnd、terminal focus；无 permission/subagent）

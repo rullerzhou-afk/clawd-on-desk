@@ -16,6 +16,7 @@ describe("Agent Registry", () => {
       "kiro-cli",
       "kimi-cli",
       "opencode",
+      "codefree-o",
       "pi",
       "openclaw",
       "hermes",
@@ -29,6 +30,7 @@ describe("Agent Registry", () => {
     assert.strictEqual(registry.getAgent("gemini-cli").name, "Gemini CLI");
     assert.strictEqual(registry.getAgent("cursor-agent").name, "Cursor Agent");
     assert.strictEqual(registry.getAgent("codebuddy").name, "CodeBuddy");
+    assert.strictEqual(registry.getAgent("codefree-o").name, "CodeFree-O");
     assert.strictEqual(registry.getAgent("kiro-cli").name, "Kiro CLI");
     assert.strictEqual(registry.getAgent("pi").name, "Pi");
     assert.strictEqual(registry.getAgent("openclaw").name, "OpenClaw");

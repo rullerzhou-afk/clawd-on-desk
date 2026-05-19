@@ -26,6 +26,7 @@ const {
   shouldBypassCCBubble,
   shouldBypassCodexBubble,
   shouldBypassOpencodeBubble,
+  shouldBypassCodeFreeOBubble,
   shouldBypassPiBubble,
 } = require("./server-route-permission");
 const {
@@ -140,6 +141,7 @@ const {
   syncKimiHooks,
   syncCodexHooks,
   syncOpencodePlugin,
+  syncCodeFreeOPlugin,
   syncPiExtension,
   syncIntegrationForAgent,
   repairIntegrationForAgent,
@@ -260,6 +262,7 @@ return {
   syncKimiHooks,
   syncCodexHooks,
   syncOpencodePlugin,
+  syncCodeFreeOPlugin,
   syncPiExtension,
   syncIntegrationForAgent,
   repairIntegrationForAgent,
@@ -279,6 +282,7 @@ module.exports.__test = {
   shouldBypassCCBubble,
   shouldBypassCodexBubble,
   shouldBypassOpencodeBubble,
+  shouldBypassCodeFreeOBubble,
   shouldBypassPiBubble,
   normalizePermissionSuggestions,
   normalizeElicitationToolInput,

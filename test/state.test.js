@@ -141,8 +141,19 @@ describe("resolveDisplayState()", () => {
     assert.strictEqual(api.resolveDisplayState(), "error");
   });
 
-  it("headless sessions excluded from priority", () => {
+  it("headless active states participate in priority", () => {
+    // Headless error(8) beats non-headless working(3) — active headless
+    // states contribute to the pet's display state so the pet stays
+    // animated while background tasks run.
     api.sessions.set("s1", rawSession("error", { headless: true }));
+    api.sessions.set("s2", rawSession("working"));
+    assert.strictEqual(api.resolveDisplayState(), "error");
+  });
+
+  it("headless idle/sleeping/attention excluded from priority", () => {
+    // Headless sessions in non-active states (idle, sleeping, attention)
+    // do NOT participate in priority — only the root session drives those.
+    api.sessions.set("s1", rawSession("idle", { headless: true }));
     api.sessions.set("s2", rawSession("working"));
     assert.strictEqual(api.resolveDisplayState(), "working");
   });

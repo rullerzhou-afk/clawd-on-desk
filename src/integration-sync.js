@@ -175,6 +175,21 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncCodeFreeOPlugin() {
+    try {
+      if (typeof ctx.syncCodeFreeOPluginImpl === "function") return ctx.syncCodeFreeOPluginImpl();
+      const { registerCodeFreeOPlugin } = require("../hooks/codefree-o-install.js");
+      const { added, created } = registerCodeFreeOPlugin({ silent: true });
+      if (added || created) {
+        console.log(`Clawd: synced CodeFree-O plugin (added=${added}, created=${created})`);
+      }
+      return { status: "ok", added, created };
+    } catch (err) {
+      console.warn("Clawd: failed to sync CodeFree-O plugin:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync CodeFree-O plugin" };
+    }
+  }
+
   function syncPiExtension() {
     try {
       if (typeof ctx.syncPiExtensionImpl === "function") return ctx.syncPiExtensionImpl();
@@ -260,6 +275,7 @@ function createIntegrationSyncRuntime(options = {}) {
     "kimi-cli": syncKimiHooks,
     codex: syncCodexHooks,
     opencode: syncOpencodePlugin,
+    "codefree-o": syncCodeFreeOPlugin,
     pi: syncPiExtension,
     openclaw: syncOpenClawPlugin,
     hermes: syncHermesPlugin,
@@ -320,6 +336,7 @@ function createIntegrationSyncRuntime(options = {}) {
     syncKimiHooks,
     syncCodexHooks,
     syncOpencodePlugin,
+    syncCodeFreeOPlugin,
     syncPiExtension,
     syncOpenClawPlugin,
     syncHermesPlugin,

@@ -40,6 +40,7 @@
     "uninstall:codex-debug-hooks": "node hooks/codex-debug-install.js --uninstall",
     "install:hermes-plugin": "node hooks/hermes-install.js",
     "uninstall:hermes-plugin": "node hooks/hermes-install.js --uninstall",
+    "install:codefree-o-plugin": "node hooks/codefree-o-install.js",
     "register-protocol:dev": "node launch.js --register-protocol"
   },
   "keywords": [

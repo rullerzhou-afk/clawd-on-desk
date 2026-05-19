@@ -10,6 +10,7 @@ const codebuddy = require("./codebuddy");
 const kiroCli = require("./kiro-cli");
 const kimiCli = require("./kimi-cli");
 const opencode = require("./opencode");
+const codefreeO = require("./codefree-o");
 const pi = require("./pi");
 const openclaw = require("./openclaw");
 const hermes = require("./hermes");
@@ -24,6 +25,7 @@ const AGENTS = [
   kiroCli,
   kimiCli,
   opencode,
+  codefreeO,
   pi,
   openclaw,
   hermes,

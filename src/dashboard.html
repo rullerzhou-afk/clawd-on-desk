@@ -320,6 +320,28 @@ button:disabled {
 
 .hidden { display: none !important; }
 
+.subagent-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px 6px 50px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: var(--surface-alt);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  cursor: default;
+}
+
+.subagent-summary .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--running);
+  flex: 0 0 auto;
+}
+
 @media (max-width: 420px) {
   .header { padding: 16px 16px 12px; }
   .content { padding: 12px; }

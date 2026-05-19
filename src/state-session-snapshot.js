@@ -189,6 +189,45 @@ function buildSessionSnapshot(sessions, options = {}) {
     entries.push(buildSessionSnapshotEntry(id, session, sessionAliases, options));
   }
 
+  // Group headless sessions by their root session (same agentId + sourcePid + cwd)
+  // and attach a headlessCount to the root session entry.
+  const headlessByRoot = new Map();
+  for (const entry of entries) {
+    if (!entry.headless) continue;
+    const rootKey = `${entry.agentId || ""}|${entry.sourcePid || ""}|${entry.cwd || ""}`;
+    if (!headlessByRoot.has(rootKey)) headlessByRoot.set(rootKey, []);
+    headlessByRoot.get(rootKey).push(entry.id);
+  }
+  for (const entry of entries) {
+    if (entry.headless) continue;
+    const rootKey = `${entry.agentId || ""}|${entry.sourcePid || ""}|${entry.cwd || ""}`;
+    const headlessIds = headlessByRoot.get(rootKey);
+    if (headlessIds && headlessIds.length > 0) {
+      entry.headlessCount = headlessIds.length;
+    }
+  }
+
+  // Badge override: if a root session's badge is "done" or "idle" but it has
+  // active headless sub-sessions (working/thinking/juggling/sweeping), the
+  // root session should show "running" instead — the conversation is still
+  // in progress even though the root session itself is temporarily idle.
+  const ACTIVE_BADGE_STATES = new Set(["working", "thinking", "juggling", "sweeping"]);
+  const byId = new Map(entries.map((e) => [e.id, e]));
+  for (const entry of entries) {
+    if (entry.headless) continue;
+    if (entry.badge !== "done" && entry.badge !== "idle") continue;
+    const rootKey = `${entry.agentId || ""}|${entry.sourcePid || ""}|${entry.cwd || ""}`;
+    const headlessIds = headlessByRoot.get(rootKey);
+    if (!headlessIds || headlessIds.length === 0) continue;
+    const hasActiveHeadless = headlessIds.some((hid) => {
+      const h = byId.get(hid);
+      return h && ACTIVE_BADGE_STATES.has(h.state);
+    });
+    if (hasActiveHeadless) {
+      entry.badge = "running";
+    }
+  }
+
   const dashboardEntries = entries.slice().sort(sessionUpdatedAtComparator);
   const menuEntries = entries.slice().sort((a, b) => sessionMenuComparator(a, b, options.statePriority));
   const orderedIds = dashboardEntries.map((entry) => entry.id);
@@ -263,6 +302,7 @@ function sessionSnapshotSignature(snapshot) {
       canFocus: entry.canFocus,
       focusTarget: entry.focusTarget,
       headless: entry.headless,
+      headlessCount: entry.headlessCount || 0,
       hiddenFromHud: !!entry.hiddenFromHud,
       host: entry.host,
       platform: entry.platform,

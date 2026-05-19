@@ -822,7 +822,25 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
   const srcAgentId = agentId || (existing && existing.agentId) || null;
   const srcHost = host || (existing && existing.host) || null;
-  const srcHeadless = headless || (existing && existing.headless) || false;
+
+  // Server-side headless auto-detection: if this is a NEW session (no existing
+  // entry) sharing the same agentId + sourcePid + cwd as an existing non-headless
+  // session, it must be a subagent spawned by the root's `task` tool. Mark it
+  // headless automatically so the Dashboard shows a summary row instead of a
+  // duplicate card. This is a fallback for plugins that don't (or can't) set
+  // headless=true in the POST body (e.g. when _rootSessionId capture fails due
+  // to event property shape differences).
+  let autoHeadless = false;
+  if (!existing && srcAgentId && srcPid) {
+    const newKey = `${srcAgentId}|${srcPid}|${srcCwd}`;
+    for (const [, s] of sessions) {
+      if (s.headless) continue;
+      const sKey = `${s.agentId || ""}|${s.sourcePid || ""}|${s.cwd || ""}`;
+      if (sKey === newKey) { autoHeadless = true; break; }
+    }
+  }
+
+  const srcHeadless = headless || autoHeadless || (existing && existing.headless) || false;
   const srcPlatform = platform || (existing && existing.platform) || null;
   const srcModel = model || (existing && existing.model) || null;
   const srcProvider = provider || (existing && existing.provider) || null;

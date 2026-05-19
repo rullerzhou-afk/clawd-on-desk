@@ -28,7 +28,7 @@ Clawd 住在你的桌面上，即時感知 AI 程式設計助理在做什麼。�
 
 你提問時牠思考，工具執行時牠打字，子代理在跑時牠會戴耳機律動或三球雜耍，審查權限時牠彈卡片，任務完成時牠慶祝，你離開時牠睡覺。內建三套主題：**Clawd**（像素螃蟹）、**Calico**（三花貓）和 **Cloudling**（雲寶），支援自訂主題，也支援匯入 Codex Pet 動畫套件。
 
-> 支援 Windows 11、macOS 和 Ubuntu/Linux。Windows 發布版本提供獨立的 x64 和 ARM64 安裝檔。從原始碼執行需要 Node.js。支援 **Claude Code**、**Codex CLI**、**Copilot CLI**、**Gemini CLI**、**Cursor Agent**、**CodeBuddy**、**Kiro CLI**、**Kimi Code CLI（Kimi-CLI）**、**opencode**、**Pi**、**OpenClaw** 與 **Hermes Agent**。
+> 支援 Windows 11、macOS 和 Ubuntu/Linux。Windows 發布版本提供獨立的 x64 和 ARM64 安裝檔。從原始碼執行需要 Node.js。支援 **Claude Code**、**Codex CLI**、**Copilot CLI**、**Gemini CLI**、**Cursor Agent**、**CodeBuddy**、**Kiro CLI**、**Kimi Code CLI（Kimi-CLI）**、**opencode**、**CodeFree-O**、**Pi**、**OpenClaw** 與 **Hermes Agent**。
 
 ## 功能特色
 
@@ -43,6 +43,7 @@ Clawd 住在你的桌面上，即時感知 AI 程式設計助理在做什麼。�
 - **Kiro CLI** — command hooks 注入到 `~/.kiro/agents/` 下的自訂 agent 設定，並自動建立 `clawd` agent；Clawd 每次啟動都會從內建的 `kiro_default` 重新同步它，盡量和預設 agent 保持一致。macOS 與 Windows 上狀態動效已驗證可用；需要時可用 `kiro-cli --agent clawd` 或在工作階段內執行 `/agent swap clawd` 啟用 hooks（Clawd 啟動時自動註冊，或執行 `npm run install:kiro-hooks`）
 - **Kimi Code CLI（Kimi-CLI）** — 在 `~/.kimi/config.toml` 的 `[[hooks]]` 條目設定 command hooks（Clawd 啟動時自動註冊，或執行 `npm run install:kimi-hooks`）
 - **opencode** — [外掛整合](https://opencode.ai/docs/plugins)，寫入 `~/.config/opencode/opencode.json`（Clawd 啟動時自動註冊）；零延遲事件流、Allow/Always/Deny 權限對話框、`task` 工具分派平行子代理時自動播放建築動畫
+- **CodeFree-O**（中國電信）— [外掛整合](https://opencode.ai/docs/plugins)，寫入 `~/.config/opencode/opencode.json`（Clawd 啟動時自動註冊）；與 opencode 相同的零延遲事件流、權限對話框和子代理動畫
 - **Pi** — 以全域擴充功能整合，寫入 `~/.pi/agent/extensions/clawd-on-desk`（Clawd 啟動時自動註冊，或執行 `npm run install:pi-extension`）；支援互動式 Pi 工作階段狀態感知，並為 `bash`、`write` 和 `edit` 工具提供權限對話框；Clawd 無法使用時退回 Pi 終端機確認
 - **OpenClaw** — 靠 `~/.openclaw/openclaw.json` 裡的外掛路徑做狀態感知（OpenClaw 設定已存在時 Clawd 啟動會自動註冊，或執行 `npm run install:openclaw-plugin`）；Phase 1 針對本機 `openclaw tui --local` 工作階段，只驅動動畫，沒接權限對話框和終端機焦點
 - **Hermes Agent** — [外掛整合](https://hermes-agent.org/)，寫入 Hermes 受管理的外掛目錄（偵測到 Hermes 後 Clawd 啟動時自動註冊，或執行 `npm run install:hermes-plugin`）；支援狀態、工作階段、SessionEnd 和終端機焦點
@@ -61,7 +62,7 @@ Clawd 住在你的桌面上，即時感知 AI 程式設計助理在做什麼。�
 
 ### 權限審查對話框
 
-- **桌面端權限審查** — Claude Code、Codex CLI、CodeBuddy、opencode 或 Pi 請求工具權限時，Clawd 會彈出浮動卡片，不用切回終端機
+- **桌面端權限審查** — Claude Code、Codex CLI、CodeBuddy、opencode、CodeFree-O 或 Pi 請求工具權限時，Clawd 會彈出浮動卡片，不用切回終端機
 - **允許 / 拒絕 / Agent 原生擴充功能** — 一鍵允許或拒絕；如果該 Agent 支援，還會顯示權限規則或 `Always` 之類的額外動作
 - **全域快速鍵** — `Ctrl+Shift+Y` 允許、`Ctrl+Shift+N` 拒絕最新的權限對話框（只在對話框可見時註冊）
 - **堆疊版面** — 多個權限請求從螢幕右下角往上堆疊
@@ -150,7 +151,7 @@ npm install
 npm start
 ```
 
-**Claude Code** 和 **Codex CLI** 會自動註冊 hooks，開箱即用。**Gemini CLI**、**Cursor Agent**、**CodeBuddy**、**Kiro CLI**、**Kimi Code CLI（Kimi-CLI）**、**opencode**、**Pi**、**OpenClaw**、**Hermes Agent** 在已安裝的前提下，會在 Clawd 啟動時自動同步（OpenClaw 還需要已有設定）；**Copilot CLI** 還是要做一次手動 hooks 設定。也涵蓋遠端 SSH、WSL 及平台說明（macOS 與 Linux）：**[設定指南（簡體中文）](docs/guides/setup-guide.zh-CN.md)**
+**Claude Code** 和 **Codex CLI** 會自動註冊 hooks，開箱即用。**Gemini CLI**、**Cursor Agent**、**CodeBuddy**、**Kiro CLI**、**Kimi Code CLI（Kimi-CLI）**、**opencode**、**CodeFree-O**、**Pi**、**OpenClaw**、**Hermes Agent** 在已安裝的前提下，會在 Clawd 啟動時自動同步（OpenClaw 還需要已有設定）；**Copilot CLI** 還是要做一次手動 hooks 設定。也涵蓋遠端 SSH、WSL 及平台說明（macOS 與 Linux）：**[設定指南（簡體中文）](docs/guides/setup-guide.zh-CN.md)**
 
 關於 `Codex + WSL` 的官方現況、Clawd 目前實作的邊界、以及為什麼容易被誤解，見：**[Codex / WSL 說明（簡體中文）](docs/guides/codex-wsl-clarification.zh-CN.md)**
 

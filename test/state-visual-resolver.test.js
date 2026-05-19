@@ -77,11 +77,12 @@ describe("state-visual-resolver SVG overrides", () => {
       ["d", session("working", { headless: true })],
     ]);
 
-    assert.strictEqual(countActiveSessionsByStates(sessions, new Set(["working", "thinking", "juggling"])), 3);
+    assert.strictEqual(countActiveSessionsByStates(sessions, new Set(["working", "thinking", "juggling"])), 4);
     assert.strictEqual(selectTieredStateFile([
+      { minSessions: 4, file: "four.svg" },
       { minSessions: 3, file: "three.svg" },
       { minSessions: 2, file: "two.svg" },
-    ], 3, "one.svg"), "three.svg");
+    ], 4, "one.svg"), "four.svg");
   });
 
   it("uses the most recently updated display hint and ignores headless sessions", () => {

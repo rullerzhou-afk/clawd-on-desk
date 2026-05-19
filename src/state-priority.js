@@ -39,6 +39,16 @@ function normalizeSessionsIterable(sessions) {
   return [];
 }
 
+// Headless sessions (subagents spawned by the root's `task` tool) should not
+// drive idle/attention/sleeping states — those belong to the root session only.
+// But their ACTIVE states (working, thinking, juggling, sweeping, error) MUST
+// participate in priority resolution so the pet stays animated while background
+// tasks are running, even if the root session has gone idle.
+const HEADLESS_ACTIVE_STATES = new Set([
+  "working", "thinking", "juggling", "sweeping", "error",
+  "notification", "carrying",
+]);
+
 function resolveDominantSessionState(sessions, options = {}) {
   const statePriority = options.statePriority || STATE_PRIORITY;
   let best = "sleeping";
@@ -47,9 +57,17 @@ function resolveDominantSessionState(sessions, options = {}) {
 
   for (const [, session] of normalizeSessionsIterable(sessions)) {
     hasSession = true;
-    if (session && session.headless) continue;
-    hasNonHeadless = true;
     const state = session && session.state;
+    // Headless sessions contribute only their active states to priority
+    // resolution. Their idle/sleeping/attention states are ignored so the
+    // root session's state isn't overridden by a subagent going idle.
+    if (session && session.headless) {
+      if (state && HEADLESS_ACTIVE_STATES.has(state)) {
+        if (getStatePriority(state, statePriority) > getStatePriority(best, statePriority)) best = state;
+      }
+      continue;
+    }
+    hasNonHeadless = true;
     if (getStatePriority(state, statePriority) > getStatePriority(best, statePriority)) best = state;
   }
 

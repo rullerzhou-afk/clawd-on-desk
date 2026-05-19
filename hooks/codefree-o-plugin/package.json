@@ -1,0 +1,9 @@
+{
+  "name": "clawd-codefree-o-plugin",
+  "version": "0.1.0",
+  "description": "Clawd on Desk plugin for CodeFree-O — reports session/tool events to the Clawd desktop pet",
+  "type": "module",
+  "main": "index.mjs",
+  "private": true,
+  "license": "AGPL-3.0-only"
+}

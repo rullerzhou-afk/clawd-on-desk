@@ -22,6 +22,8 @@
 
 **opencode** — uses a plugin entry in `~/.config/opencode/opencode.json`. Clawd auto-registers it on launch when opencode is installed, or you can run `node hooks/opencode-install.js` manually.
 
+**CodeFree-O** (China Telecom) — uses the same plugin system and config path as opencode (`~/.config/opencode/opencode.json`). The `codefree-o-plugin` is a dedicated copy of the opencode plugin with `AGENT_ID="codefree-o"`, which allows Clawd to distinguish CodeFree-O sessions from vanilla opencode in the UI and settings. Clawd auto-registers it on launch when CodeFree-O is installed. Both opencode and CodeFree-O can coexist; each registers its own plugin entry in `opencode.json`.
+
 **Pi** — uses a global extension directory at `~/.pi/agent/extensions/clawd-on-desk`. Clawd auto-registers it on launch when Pi is installed, or you can run `npm run install:pi-extension` manually. Interactive Pi sessions report lifecycle state to Clawd. Pi permission bubbles are enabled by default for `bash`, `write`, and `edit` tool calls; when Clawd bubbles are unavailable, disabled, or hidden by DND, the extension falls back to Pi's terminal confirmation instead of allowing the tool silently.
 
 **OpenClaw** — uses a plugin path under `~/.openclaw/openclaw.json`. Clawd auto-registers it only when an OpenClaw config already exists, or you can run `npm run install:openclaw-plugin` manually to let OpenClaw's CLI handle first-time setup. Phase 1 is state-only and targets local `openclaw tui --local` sessions.

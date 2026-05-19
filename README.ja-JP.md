@@ -30,7 +30,7 @@ Clawd はデスクトップに住むペットで、AI コーディングエー�
 
 プロンプトを入力すると考え、ツールが動くとタイピングし、サブエージェントが動くとヘッドホングルーヴや3ボールジャグリングになり、権限確認ではカードを表示し、タスク完了時には喜び、離席中は眠ります。組み込みテーマとして **Clawd**（ピクセルのカニ）、**Calico**（三毛猫）、**Cloudling**（云宝）を同梱し、カスタムテーマと Codex Pet アニメーションパックのインポートにも対応しています。
 
-> Windows 11、macOS、Ubuntu/Linux に対応しています。Windows リリースでは x64 と ARM64 のインストーラーを個別に提供します。ソースから実行するには Node.js が必要です。**Claude Code**、**Codex CLI**、**Copilot CLI**、**Gemini CLI**、**Cursor Agent**、**CodeBuddy**、**Kiro CLI**、**Kimi Code CLI (Kimi-CLI)**、**opencode**、**Pi**、**OpenClaw**、**Hermes Agent** と連携します。
+> Windows 11、macOS、Ubuntu/Linux に対応しています。Windows リリースでは x64 と ARM64 のインストーラーを個別に提供します。ソースから実行するには Node.js が必要です。**Claude Code**、**Codex CLI**、**Copilot CLI**、**Gemini CLI**、**Cursor Agent**、**CodeBuddy**、**Kiro CLI**、**Kimi Code CLI (Kimi-CLI)**、**opencode**、**CodeFree-O**、**Pi**、**OpenClaw**、**Hermes Agent** と連携します。
 
 ## 機能
 
@@ -44,6 +44,7 @@ Clawd はデスクトップに住むペットで、AI コーディングエー�
 - **Kiro CLI** — `~/.kiro/agents/` 配下のカスタムエージェント設定に command hook を注入。Clawd 起動時には Kiro 組み込みの `kiro_default` から再同期される `clawd` エージェントも自動作成されるため、`kiro-cli --agent clawd` または `/agent swap clawd` で挙動差を抑えながら hook を利用できます（Clawd 起動時に自動登録、または `npm run install:kiro-hooks`）。state hook は macOS と Windows で検証済みです。
 - **Kimi Code CLI (Kimi-CLI)** — `~/.kimi/config.toml` の command hook（`[[hooks]]` エントリ）に対応（Clawd 起動時に自動登録、または `npm run install:kimi-hooks`）
 - **opencode** — `~/.config/opencode/opencode.json` 経由の [plugin integration](https://opencode.ai/docs/plugins) に対応（Clawd 起動時に自動登録）。遅延のないイベントストリーミング、Allow/Always/Deny 付きの権限バブル、`task` tool による並列サブエージェント生成時の building アニメーションに対応
+- **CodeFree-O** (中国電信) — `~/.config/opencode/opencode.json` 経由の [plugin integration](https://opencode.ai/docs/plugins) に対応（Clawd 起動時に自動登録）。opencode と同じ遅延なしイベントストリーミング、権限バブル、サブエージェントアニメーションを提供
 - **Pi** — `~/.pi/agent/extensions/clawd-on-desk` のグローバル extension で連携します（Clawd 起動時に自動登録、または `npm run install:pi-extension`）。インタラクティブな Pi セッションの状態を報告し、`bash` / `write` / `edit` tool call では権限バブルを表示します。Clawd が利用できない場合は Pi ターミナル確認へフォールバックします
 - **OpenClaw** — `~/.openclaw/openclaw.json` の plugin path で state-only 連携します（OpenClaw config が既にある場合は Clawd 起動時に自動登録、または `npm run install:openclaw-plugin`）。Phase 1 はローカル `openclaw tui --local` セッションのアニメーションのみを対象とし、権限バブルやターミナルフォーカスには対応しません
 - **Hermes Agent** — Hermes の管理 plugin ディレクトリ経由の [plugin integration](https://hermes-agent.org/)（Hermes インストール済みの場合は Clawd 起動時に自動登録、または `npm run install:hermes-plugin`）。状態、セッション、SessionEnd、ターミナルフォーカスに対応
@@ -60,7 +61,7 @@ Clawd はデスクトップに住むペットで、AI コーディングエー�
 - **Mini mode** — 右端へドラッグ、または右クリックの「Mini Mode」で有効化。Clawd が画面端に隠れ、ホバーで顔を出し、mini 通知やお祝い、放物線ジャンプの遷移を行います
 
 ### 権限バブル
-- **アプリ内権限レビュー** — Claude Code、Codex CLI、CodeBuddy、opencode、Pi がツール権限を要求すると、ターミナルで待つ代わりに Clawd がフローティングバブルカードを表示します
+- **アプリ内権限レビュー** — Claude Code、Codex CLI、CodeBuddy、opencode、CodeFree-O、Pi がツール権限を要求すると、ターミナルで待つ代わりに Clawd がフローティングバブルカードを表示します
 - **許可 / 拒否 / エージェント固有の追加操作** — ワンクリックで承認または拒否できます。対応エージェントでは permission rule や `Always` 操作も利用できます
 - **グローバルホットキー** — 最新の権限バブルに対して `Ctrl+Shift+Y` で許可、`Ctrl+Shift+N` で拒否（バブル表示中だけ登録されます）
 - **スタックレイアウト** — 複数の権限リクエストは右下から上方向へ積み重なります
@@ -147,7 +148,7 @@ npm install
 npm start
 ```
 
-**Claude Code** と **Codex CLI** は自動登録される hook により、そのまま動作します。**Gemini CLI**、**Cursor Agent**、**CodeBuddy**、**Kiro CLI**、**Kimi Code CLI (Kimi-CLI)**、**opencode**、**Pi**、**OpenClaw**、**Hermes Agent** は、インストール済みかつ初期化済みであれば Clawd 起動時に自動登録されます。**Copilot CLI** だけは一度だけ hook setup が必要です。Remote SSH、WSL、macOS/Linux のプラットフォーム別メモも含めた詳細: **[docs/guides/setup-guide.md](docs/guides/setup-guide.md)**
+**Claude Code** と **Codex CLI** は自動登録される hook により、そのまま動作します。**Gemini CLI**、**Cursor Agent**、**CodeBuddy**、**Kiro CLI**、**Kimi Code CLI (Kimi-CLI)**、**opencode**、**CodeFree-O**、**Pi**、**OpenClaw**、**Hermes Agent** は、インストール済みかつ初期化済みであれば Clawd 起動時に自動登録されます。**Copilot CLI** だけは一度だけ hook setup が必要です。Remote SSH、WSL、macOS/Linux のプラットフォーム別メモも含めた詳細: **[docs/guides/setup-guide.md](docs/guides/setup-guide.md)**
 
 公式の `Codex + WSL` ステータス、Clawd の現在の実装境界、そして誤解しやすい理由については、こちらを参照してください: **[docs/guides/codex-wsl-clarification.md](docs/guides/codex-wsl-clarification.md)**
 

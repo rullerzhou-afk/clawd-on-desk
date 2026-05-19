@@ -9,6 +9,7 @@ const AGENT_LABELS = {
   "kiro-cli": "Kiro",
   "kimi-cli": "Kimi",
   opencode: "opencode",
+  "codefree-o": "CodeFree-O",
   codebuddy: "CodeBuddy",
   pi: "Pi",
   openclaw: "OpenClaw",
@@ -250,6 +251,18 @@ function createHideButton(session) {
   return button;
 }
 
+function createSubagentSummary(count) {
+  const row = document.createElement("div");
+  row.className = "subagent-summary";
+  const dot = document.createElement("span");
+  dot.className = "dot";
+  row.appendChild(dot);
+  row.appendChild(document.createTextNode(
+    t("dashboardSubagentSummary").replace("{n}", count)
+  ));
+  return row;
+}
+
 function createCard(session, now) {
   const card = document.createElement("article");
   card.className = "card";
@@ -303,7 +316,8 @@ function renderEmpty() {
 function render(options = {}) {
   if (activeEdit && !options.force) return;
   const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
-  const count = sessions.length;
+  const visibleSessions = sessions.filter((s) => !s.headless);
+  const count = visibleSessions.length;
   titleEl.textContent = t("dashboardWindowTitle");
   countEl.textContent = t("dashboardCount").replace("{n}", count);
   document.title = t("dashboardWindowTitle");
@@ -330,7 +344,11 @@ function render(options = {}) {
     const cards = document.createElement("div");
     cards.className = "cards";
     for (const session of groupSessions) {
+      if (session.headless) continue;
       cards.appendChild(createCard(session, now));
+      if (session.headlessCount && session.headlessCount > 0) {
+        cards.appendChild(createSubagentSummary(session.headlessCount));
+      }
     }
     section.appendChild(cards);
     fragment.appendChild(section);

@@ -145,6 +145,7 @@ const SCHEMA = {
       "kiro-cli": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "kimi-cli": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "opencode": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
+      "codefree-o": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "pi": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "openclaw": { enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
       "hermes": { enabled: true },

@@ -77,7 +77,11 @@ function normalizeSessionsIterable(sessions) {
 function countActiveSessionsByStates(sessions, states) {
   let count = 0;
   for (const [, session] of normalizeSessionsIterable(sessions)) {
-    if (!session.headless && states.has(session.state)) count += 1;
+    // Headless (subagent) sessions in active states count toward the
+    // working/thinking/juggling tier selection so the pet picks the right
+    // animation variant (1→typing, 2→juggling, 3+→building) even when
+    // only background tasks are running.
+    if (states.has(session.state)) count += 1;
   }
   return count;
 }
@@ -121,6 +125,9 @@ function getWinningSessionDisplayHint(sessions, targetState, displayHintMap = {}
   let best = null;
   let bestAt = -1;
   for (const [, session] of normalizeSessionsIterable(sessions)) {
+    // Display hints come from the root (non-headless) session only — headless
+    // subagents may have different displayHint values that shouldn't override
+    // the root session's visual selection.
     if (session.headless || session.state !== targetState) continue;
     if (session.updatedAt >= bestAt) {
       bestAt = session.updatedAt;

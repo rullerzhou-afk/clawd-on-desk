@@ -1,23 +1,27 @@
-// Clawd on Desk — opencode Plugin
-// Runs inside the opencode process (Bun runtime) and forwards session/tool
-// events to the Clawd HTTP server (127.0.0.1:23333-23337).
+// Clawd on Desk — CodeFree-O Plugin
+// Runs inside the CodeFree-O process (Bun runtime, same as opencode) and
+// forwards session/tool events to the Clawd HTTP server (127.0.0.1:23333-23337).
 //
-// Design invariants:
+// CodeFree-O (中国电信 CodeFree 研发大模型) is built on the opencode platform
+// and shares the same plugin SDK, event vocabulary, and config directory.
+// This plugin is a dedicated copy with AGENT_ID="codefree-o" so Clawd can
+// distinguish CodeFree-O sessions from vanilla opencode sessions.
+//
+// Design invariants (same as opencode-plugin):
 //   - Zero dependencies (Bun's built-in fetch + fs/os/path + Bun.serve + node:crypto)
 //   - fire-and-forget: event hook never awaits the fetch, so slow/broken Clawd
-//     cannot stall opencode
+//     cannot stall CodeFree-O
 //   - same-state dedup — consecutive identical states skip POST
 //   - self-healing port discovery: cache hit skips I/O; on miss we read
 //     runtime.json, then fall back to a full SERVER_PORTS scan
 //
 // Phase 2 bridge (permission replies):
-//   opencode TUI does NOT bind an external HTTP listener (verified via
-//   Phase 2 Spike — ctx.serverUrl is a phantom URL, ctx.client.fetch is
-//   bound to Server.Default().fetch() in-process). So Clawd cannot call
-//   opencode's REST API directly from outside the Bun process. Instead we
-//   start a tiny Bun.serve() bridge here: Clawd POSTs decisions to the
-//   bridge, and the bridge calls ctx.client._client.post() — the same
-//   in-process Hono router that `opencode serve` would expose externally.
+//   CodeFree-O TUI does NOT bind an external HTTP listener (same as opencode —
+//   ctx.serverUrl is a phantom URL, ctx.client.fetch is bound to
+//   Server.Default().fetch() in-process). So Clawd cannot call CodeFree-O's
+//   REST API directly from outside the Bun process. Instead we start a tiny
+//   Bun.serve() bridge here: Clawd POSTs decisions to the bridge, and the
+//   bridge calls ctx.client._client.post() — the same in-process Hono router.
 //   A random 32-byte hex token gates the bridge endpoint since localhost
 //   TCP is visible to any process on the machine.
 
@@ -29,16 +33,16 @@ import { execFileSync, execSync } from "child_process";
 
 const CLAWD_DIR = join(homedir(), ".clawd");
 const RUNTIME_CONFIG_PATH = join(CLAWD_DIR, "runtime.json");
-const DEBUG_LOG_PATH = join(CLAWD_DIR, "opencode-plugin.log");
+const DEBUG_LOG_PATH = join(CLAWD_DIR, "codefree-o-plugin.log");
 const SERVER_PORTS = [23333, 23334, 23335, 23336, 23337];
 const STATE_PATH = "/state";
 // Fire-and-forget: the IIFE never blocks the event hook's return value, so a
 // generous timeout is safe. 200ms was too tight when Clawd's IPC roundtrip
 // (main → renderer → main) ran under load and silently timed out.
 const POST_TIMEOUT_MS = 1000;
-const AGENT_ID = "opencode";
+const AGENT_ID = "codefree-o";
 
-// opencode emits session.status=busy between every tool call as the LLM
+// CodeFree-O emits session.status=busy between every tool call as the LLM
 // deliberates the next step; without this gate the pet would flash
 // thinking ↔ working on every invocation. Active states listed here
 // suppress the "back to thinking" regression.
@@ -79,14 +83,14 @@ const EDITOR_MAP_WIN = { "code.exe": "code", "cursor.exe": "cursor" };
 const EDITOR_MAP_MAC = { "code": "code", "cursor": "cursor" };
 const EDITOR_MAP_LINUX = { "code": "code", "cursor": "cursor", "code-insiders": "code" };
 
-// Per plugin-instance state (scoped to one opencode process).
+// Per plugin-instance state (scoped to one CodeFree-O process).
 let _cachedPort = null;
 // Per-session last-state tracking. Keyed by sessionId so that subagent
 // sessions (spawned by the `task` tool) don't clobber the root session's
 // dedup/gate state. Each value is the last Clawd state sent for that session.
 const _lastStatePerSession = new Map();
 let _reqCounter = 0;
-// Phase 3: opencode subtasks are full child sessions (not subtask parts). The
+// Phase 3: CodeFree-O subtasks are full child sessions (not subtask parts). The
 // parent session's `task` tool spawns a `session.created` with a new sessionID
 // and agent="explore"/other. Clawd's multi-session fanout already handles this
 // visually (1→typing, 2→juggling, 3+→building). The only fix needed is to
@@ -103,11 +107,11 @@ let _detectedEditor = null;
 // POST so state.js can display path.basename(cwd) as the session menu label
 // (otherwise it falls back to the session_id prefix, e.g. "ses 2a..").
 let _cwd = "";
-// opencode HTTP server URL, captured at plugin init from ctx.serverUrl. Kept
+// CodeFree-O HTTP server URL, captured at plugin init from ctx.serverUrl. Kept
 // for debug logging only — see Phase 2 Spike: TUI does not actually listen
 // on this URL. Replies go through _bridgeUrl instead.
 let _serverUrl = "";
-// Captured at plugin init — the opencode SDK client. Used by the reverse
+// Captured at plugin init — the CodeFree-O SDK client. Used by the reverse
 // bridge to call in-process Hono routes (e.g. /permission/:id/reply).
 let _ctxClient = null;
 // Reverse bridge state. Set by startBridge() at plugin init. Clawd receives
@@ -117,11 +121,11 @@ let _bridgeTokenHex = "";
 let _bridgeTokenBuf = null;
 let _bridgeServer = null;
 
-// Debug log is reset on plugin init so each opencode startup gets a clean
+// Debug log is reset on plugin init so each CodeFree-O startup gets a clean
 // file. message.part.updated ignores are filtered out at the event-handler
 // level to keep volume low, but we still write via a batched async flush
 // (libuv threadpool) so even a burst of MAP/SEND/POST lines from a single
-// event tick never blocks the opencode TUI main thread.
+// event tick never blocks the CodeFree-O TUI main thread.
 const _debugBuffer = [];
 let _debugFlushing = false;
 function debugLog(msg) {
@@ -329,7 +333,7 @@ function postStateToClawd(body) {
 }
 
 // Fire-and-forget permission forward. Clawd decides allow/deny/always in its
-// bubble UI and — critically — replies to opencode's own REST API directly
+// bubble UI and — critically — replies to CodeFree-O's own REST API directly
 // (POST ${server_url}permission/:request_id/reply). The plugin never waits.
 function postPermissionToClawd(body) {
   postToClawd("/permission", body, `PERM tool=${body.tool_name} req=${body.request_id}`);
@@ -367,7 +371,7 @@ function sendState(state, eventName, sessionId) {
   postStateToClawd(body);
 }
 
-// Translate an opencode event into a Clawd (state, eventName) pair, or null
+// Translate a CodeFree-O event into a Clawd (state, eventName) pair, or null
 // if Clawd should ignore it. Event shape (from runtime dumps):
 //   { type: "session.status", properties: { sessionID, status: { type } } }
 //   { type: "message.part.updated", properties: { part: { type, tool, state: { status } } } }
@@ -436,7 +440,7 @@ function translateEvent(event) {
   }
 }
 
-// Normalize ctx.serverUrl into a string with a trailing slash. opencode passes
+// Normalize ctx.serverUrl into a string with a trailing slash. CodeFree-O passes
 // a URL object in practice but we coerce defensively in case future versions
 // hand us a plain string. Trailing slash lets Clawd concat cleanly:
 //   `${server_url}permission/${request_id}/reply`
@@ -487,8 +491,8 @@ function verifyBridgeToken(headerValue) {
 }
 
 // Handle POST /reply from Clawd. Reads { request_id, reply } and forwards to
-// the opencode in-process Hono router via ctx.client._client.post(). Return
-// 200 on success (opencode's own route returned 2xx), 4xx on auth/shape
+// the CodeFree-O in-process Hono router via ctx.client._client.post(). Return
+// 200 on success (CodeFree-O's own route returned 2xx), 4xx on auth/shape
 // errors, 502 if the upstream call itself throws.
 async function handleBridgeRequest(req) {
   const url = new URL(req.url);
@@ -514,11 +518,11 @@ async function handleBridgeRequest(req) {
     return new Response("plugin not ready", { status: 503 });
   }
 
-  debugLog(`BRIDGE → opencode permission reply requestId=${requestId} reply=${reply}`);
+  debugLog(`BRIDGE → CodeFree-O permission reply requestId=${requestId} reply=${reply}`);
   try {
     // HeyApi v1 client.post() signature confirmed by reading
     // @opencode-ai/sdk/dist/gen/sdk.gen.js — it takes { url, body, headers }
-    // and routes through the client.fetch that opencode bound to
+    // and routes through the client.fetch that CodeFree-O bound to
     // Server.Default().fetch() at plugin init time. No real TCP here.
     const result = await _ctxClient._client.post({
       url: `/permission/${encodeURIComponent(requestId)}/reply`,
@@ -549,7 +553,7 @@ async function handleBridgeRequest(req) {
 }
 
 // Start the Bun.serve reverse bridge on a random localhost port. Called once
-// at plugin init. Survives the plugin's lifetime; opencode owns the process
+// at plugin init. Survives the plugin's lifetime; CodeFree-O owns the process
 // so there's no explicit shutdown path — the server dies with the process.
 function startBridge() {
   if (typeof Bun === "undefined" || !Bun.serve) {
@@ -576,7 +580,7 @@ function startBridge() {
   }
 }
 
-// Plugin entrypoint (opencode loads this via default export).
+// Plugin entrypoint (CodeFree-O loads this via default export).
 export default async (ctx) => {
   resetDebugLog();
   _serverUrl = normalizeServerUrl(ctx && ctx.serverUrl);
@@ -607,7 +611,7 @@ export default async (ctx) => {
         }
 
         // Phase 2: permission.asked rides a parallel channel — forward to Clawd
-        // and skip state translation. Clawd replies directly to opencode's own
+        // and skip state translation. Clawd replies directly to CodeFree-O's own
         // REST API, so we don't need to watch permission.replied here.
         if (event.type === "permission.asked") {
           handlePermissionAsked(event);

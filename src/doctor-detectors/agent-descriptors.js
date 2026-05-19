@@ -11,6 +11,7 @@ const codebuddy = require("../../hooks/codebuddy-install");
 const kiro = require("../../hooks/kiro-install");
 const kimi = require("../../hooks/kimi-install");
 const opencode = require("../../hooks/opencode-install");
+const codefreeO = require("../../hooks/codefree-o-install");
 const pi = require("../../hooks/pi-install");
 const openclaw = require("../../hooks/openclaw-install");
 const hermes = require("../../hooks/hermes-install");
@@ -128,6 +129,19 @@ const AGENT_DESCRIPTORS = Object.freeze([
     // opencode registers a plugin directory, not a command hook script.
     // Detection matches an absolute plugin entry by basename.
     marker: "opencode-plugin",
+    detection: "opencode-plugin",
+  }),
+  Object.freeze({
+    agentId: "codefree-o",
+    agentName: agentName("codefree-o"),
+    eventSource: agentEventSource("codefree-o"),
+    parentDir: codefreeO.DEFAULT_PARENT_DIR,
+    configPath: codefreeO.DEFAULT_CONFIG_PATH,
+    configMode: "file",
+    autoInstall: true,
+    // CodeFree-O shares the same config directory as opencode but uses a
+    // separate plugin directory for identity distinction in Clawd UI.
+    marker: "codefree-o-plugin",
     detection: "opencode-plugin",
   }),
   Object.freeze({

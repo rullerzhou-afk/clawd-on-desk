@@ -147,6 +147,14 @@ function createRowForSession(session, now) {
     hasRightContent = true;
   }
 
+  if (session.headlessCount && session.headlessCount > 0) {
+    const subagentBadge = document.createElement("span");
+    subagentBadge.className = "subagent-badge";
+    subagentBadge.textContent = t("dashboardSubagentSummary").replace("{n}", session.headlessCount);
+    right.appendChild(subagentBadge);
+    hasRightContent = true;
+  }
+
   row.appendChild(left);
   if (hasRightContent) row.appendChild(right);
 

@@ -22,6 +22,8 @@
 
 **opencode** — 使用 `~/.config/opencode/opencode.json` 里的 plugin 配置。如果本机已安装 opencode，Clawd 启动时会自动注册；也可以手动执行 `node hooks/opencode-install.js`。
 
+**CodeFree-O**（中国电信）— 使用与 opencode 相同的 plugin 系统和配置路径（`~/.config/opencode/opencode.json`）。`codefree-o-plugin` 是 opencode plugin 的专用副本，`AGENT_ID="codefree-o"`，让 Clawd 在 UI 和设置中区分 CodeFree-O 会话与原生 opencode 会话。如果本机已安装 CodeFree-O，Clawd 启动时会自动注册。opencode 和 CodeFree-O 可以共存，各自在 `opencode.json` 中注册独立的 plugin 条目。
+
 **Pi** — 使用全局 extension 目录 `~/.pi/agent/extensions/clawd-on-desk`。如果本机已安装 Pi，Clawd 启动时会自动注册；也可以手动执行 `npm run install:pi-extension`。交互式 Pi 会话会向 Clawd 上报状态；`bash` / `write` / `edit` 工具默认走 Clawd 权限气泡。Clawd 气泡不可用、被关闭或被 DND 隐藏时，extension 会回退到 Pi 终端确认，而不是静默允许工具执行。
 
 **OpenClaw** — 使用 `~/.openclaw/openclaw.json` 里的 plugin 路径。如果 OpenClaw 配置文件已经存在，Clawd 启动时会自动注册；也可以手动执行 `npm run install:openclaw-plugin`，由 OpenClaw CLI 处理首次安装。Phase 1 只做状态动画，面向本地 `openclaw tui --local` 会话；暂不接 OpenClaw 权限气泡，也不支持 OpenClaw 终端聚焦。

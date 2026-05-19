@@ -38,6 +38,11 @@ function shouldBypassOpencodeBubble(ctx) {
   return !ctx.isAgentPermissionsEnabled("opencode");
 }
 
+function shouldBypassCodeFreeOBubble(ctx) {
+  if (typeof ctx.isAgentPermissionsEnabled !== "function") return false;
+  return !ctx.isAgentPermissionsEnabled("codefree-o");
+}
+
 function shouldBypassPiBubble(ctx) {
   if (!arePermissionBubblesEnabled(ctx)) return true;
   if (typeof ctx.isAgentPermissionsEnabled !== "function") return false;
@@ -262,6 +267,102 @@ function handlePermissionPost(req, res, options) {
           // Pop the ghost entry and send an immediate reject so the
           // TUI unblocks and the user can re-answer in the terminal.
           ctx.permLog(`opencode bubble failed: ${bubbleErr && bubbleErr.message} — reject via bridge`);
+          const popIdx = ctx.pendingPermissions.indexOf(permEntry);
+          if (popIdx !== -1) ctx.pendingPermissions.splice(popIdx, 1);
+          ctx.replyOpencodePermission({ bridgeUrl, bridgeToken, requestId, reply: "reject", toolName });
+        }
+        return;
+      }
+
+      // ── CodeFree-O branch ──
+      // CodeFree-O (中国电信 CodeFree 研发大模型) uses the same plugin
+      // architecture as opencode: fire-and-forget POST, reverse bridge for
+      // replies, same event vocabulary. The codefree-o-plugin sends
+      // agent_id="codefree-o" so Clawd can distinguish it from vanilla
+      // opencode sessions in the UI and settings.
+      if (data.agent_id === "codefree-o") {
+        res.writeHead(200, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+        res.end("ok");
+
+        // Agent gate: same silent-drop semantics as DND — plugin is
+        // fire-and-forget, so 200 ACK satisfies it; skipping the bridge
+        // reply lets the CodeFree-O TUI fall back to its built-in prompt.
+        if (typeof ctx.isAgentEnabled === "function" && !ctx.isAgentEnabled("codefree-o")) {
+          recordRequestHookEvent.droppedByDisabled();
+          ctx.permLog("CodeFree-O disabled → silent drop, TUI fallback");
+          return;
+        }
+
+        const toolName = typeof data.tool_name === "string" && data.tool_name ? data.tool_name : "unknown";
+        const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
+        const toolInput = truncateDeep(rawInput);
+        const sessionId = typeof data.session_id === "string" ? data.session_id : "default";
+        const requestId = typeof data.request_id === "string" ? data.request_id : null;
+        const bridgeUrl = typeof data.bridge_url === "string" ? data.bridge_url : "";
+        const bridgeToken = typeof data.bridge_token === "string" ? data.bridge_token : "";
+        const alwaysCandidates = Array.isArray(data.always) ? data.always : [];
+        const patterns = Array.isArray(data.patterns) ? data.patterns : [];
+
+        ctx.permLog(`CodeFree-O perm: tool=${toolName} session=${sessionId} req=${requestId} bridge=${bridgeUrl} always=${alwaysCandidates.length}`);
+
+        // bridge_url/bridge_token are required — this is the reverse
+        // channel Clawd uses to send the decision back to the plugin,
+        // which then calls CodeFree-O's in-process Hono route. Without it
+        // we have no way to resolve the pending permission.
+        if (!requestId || !bridgeUrl || !bridgeToken) {
+          const missing = !requestId ? "request_id" : (!bridgeUrl ? "bridge_url" : "bridge_token");
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`SKIPPED CodeFree-O perm: missing ${missing}`);
+          return;
+        }
+
+        // DND: drop silently — do NOT reply via bridge. CodeFree-O TUI
+        // will fall back to its built-in permission prompt so the user
+        // can confirm in the terminal themselves.
+        if (ctx.doNotDisturb) {
+          recordRequestHookEvent.droppedByDnd();
+          ctx.permLog(`CodeFree-O DND → silent drop, TUI fallback — request=${requestId}`);
+          return;
+        }
+
+        // No HTTP connection to hold open — only degradation is to
+        // not render a bubble and let the TUI prompt handle it.
+        const codefreeOSubGateBypass = shouldBypassCodeFreeOBubble(ctx);
+        if (!arePermissionBubblesEnabled(ctx) || codefreeOSubGateBypass) {
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`CodeFree-O bubble hidden: tool=${toolName} — TUI fallback (permissionBubblesEnabled=${arePermissionBubblesEnabled(ctx)} subGateBypass=${codefreeOSubGateBypass})`);
+          return;
+        }
+
+        const permEntry = {
+          res: null,
+          abortHandler: null,
+          suggestions: [],
+          sessionId,
+          bubble: null,
+          hideTimer: null,
+          toolName,
+          toolInput,
+          resolvedSuggestion: null,
+          createdAt: Date.now(),
+          agentId: "codefree-o",
+          isOpencode: true,  // reuse opencode's reverse bridge reply path
+          opencodeRequestId: requestId,
+          opencodeBridgeUrl: bridgeUrl,
+          opencodeBridgeToken: bridgeToken,
+          opencodeAlwaysCandidates: alwaysCandidates,
+          opencodePatterns: patterns,
+        };
+        ctx.pendingPermissions.push(permEntry);
+        ctx.updateSession(sessionId, "notification", "PermissionRequest", { agentId: "codefree-o" });
+        ctx.permLog(`CodeFree-O showing bubble: tool=${toolName} session=${sessionId}`);
+        recordRequestHookEvent.accepted();
+        try {
+          ctx.showPermissionBubble(permEntry);
+        } catch (bubbleErr) {
+          // If bubble creation fails, pop the ghost entry and send an
+          // immediate reject so the TUI unblocks.
+          ctx.permLog(`CodeFree-O bubble failed: ${bubbleErr && bubbleErr.message} — reject via bridge`);
           const popIdx = ctx.pendingPermissions.indexOf(permEntry);
           if (popIdx !== -1) ctx.pendingPermissions.splice(popIdx, 1);
           ctx.replyOpencodePermission({ bridgeUrl, bridgeToken, requestId, reply: "reject", toolName });

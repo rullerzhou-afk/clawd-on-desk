@@ -4,7 +4,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 
 ## Project Overview
 
-Clawd 是一个 Electron 桌宠：通过 hook、日志轮询、plugin 和 extension 感知 AI coding agent 的工作状态，并播放像素风动画。当前支持 Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Cursor Agent、CodeBuddy、Kiro CLI、Kimi Code CLI (Kimi-CLI)、opencode、Pi、OpenClaw；内置 Clawd / Calico / Cloudling 三套主题，支持用户主题；平台覆盖 Windows、macOS、Linux，UI 支持 en / zh / ko / ja。
+Clawd 是一个 Electron 桌宠：通过 hook、日志轮询、plugin 和 extension 感知 AI coding agent 的工作状态，并播放像素风动画。当前支持 Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Cursor Agent、CodeBuddy、Kiro CLI、Kimi Code CLI (Kimi-CLI)、opencode、CodeFree-O（中国电信）、Pi、OpenClaw；内置 Clawd / Calico / Cloudling 三套主题，支持用户主题；平台覆盖 Windows、macOS、Linux，UI 支持 en / zh / ko / ja。
 
 ## Common Commands
 
@@ -37,6 +37,7 @@ npm run install:codex-debug-hooks
 npm run uninstall:codex-debug-hooks
 node hooks/codebuddy-install.js
 node hooks/opencode-install.js
+node hooks/codefree-o-install.js
 
 bash scripts/remote-deploy.sh user@host
 bash test-demo.sh [seconds]
@@ -45,7 +46,7 @@ bash test-macos.sh
 bash test-oneshot-gate.sh [state] [seconds]
 ```
 
-正常启动时，Clawd 只会为已启用的 agent 自动同步 Claude / Codex / Gemini / Cursor / CodeBuddy / Kiro / Kimi hooks、opencode / OpenClaw plugins 和 Pi extension。禁用 agent 会跳过启动同步并屏蔽事件/权限入口，但不会卸载用户已有 hooks / plugins / extensions；从 Settings 重新启用时会对该 agent 做一次 integration sync。手动安装命令主要用于调试、重装或远程部署。
+正常启动时，Clawd 只会为已启用的 agent 自动同步 Claude / Codex / Gemini / Cursor / CodeBuddy / Kiro / Kimi hooks、opencode / CodeFree-O / OpenClaw plugins 和 Pi extension。禁用 agent 会跳过启动同步并屏蔽事件/权限入口，但不会卸载用户已有 hooks / plugins / extensions；从 Settings 重新启用时会对该 agent 做一次 integration sync。手动安装命令主要用于调试、重装或远程部署。
 Copilot CLI 是唯一在本地启动时不会自动同步 hooks 的受支持 agent；本地需手动配置 `~/.copilot/hooks/hooks.json`，远程 SSH 部署 (`scripts/remote-deploy.sh`) 会自动写入。详见 `docs/guides/copilot-setup.md`。
 
 ## Read These Docs
@@ -116,7 +117,7 @@ Copilot CLI 是唯一在本地启动时不会自动同步 hooks 的受支持 age
 | `hooks/install.js` | Claude hook 注册 / 卸载 |
 | `hooks/auto-start.js` | Claude `SessionStart` 自动拉起 Clawd 的 hook |
 | `hooks/codex-hook.js` / `hooks/codex-install.js` | Codex official hooks 状态与权限审批、安装 / 卸载 |
-| `hooks/cursor-install.js` / `gemini-install.js` / `kiro-install.js` / `kimi-install.js` / `codebuddy-install.js` / `opencode-install.js` / `pi-install.js` / `openclaw-install.js` | 各 agent 集成安装逻辑 |
+| `hooks/cursor-install.js` / `gemini-install.js` / `kiro-install.js` / `kimi-install.js` / `codebuddy-install.js` / `opencode-install.js` / `codefree-o-install.js` / `pi-install.js` / `openclaw-install.js` | 各 agent 集成安装逻辑 |
 | `hooks/codex-remote-monitor.js` | 远程 Codex JSONL 轮询并通过 SSH 隧道回传 |
 | `extensions/vscode/extension.js` | VS Code / Cursor 终端 tab 聚焦辅助扩展 |
 
@@ -127,6 +128,7 @@ Copilot CLI 是唯一在本地启动时不会自动同步 hooks 的受支持 age
 - hook 脚本只允许依赖 Node 内置模块，以及同目录的 `server-config.js`、`shared-process.js`、`json-utils.js`、`codex-subagent-fields.js`
 - hook 脚本需要稳定终端 PID 时，必须走 `getStablePid()` 进程树解析；不要用 `process.ppid` 做简化替代
 - opencode 权限不走 `permission.ask` hook，而是 event hook + reverse bridge
+- CodeFree-O 与 opencode 共享进程名（`opencode.exe`/`opencode`）和配置目录（`~/.config/opencode/`），但使用独立 `AGENT_ID="codefree-o"` 和独立 plugin（`codefree-o-plugin`）以在 UI 和 Settings 中区分身份；权限走与 opencode 相同的 event hook + reverse bridge 路径（`isOpencode: true`）
 - Pi 通过 `~/.pi/agent/extensions/clawd-on-desk` 的 global extension 推送状态；权限气泡第一版只覆盖 `bash` / `write` / `edit`，不可用时必须回退到 Pi terminal confirmation
 - OpenClaw 通过 `~/.openclaw/openclaw.json` plugin 路径做 state-only 集成；Phase 1 不做 permission bubble / terminal focus，主要支持本地 `openclaw tui --local`
 - HTTP 服务端口范围固定为 `127.0.0.1:23333-23337`；运行时端口写入 `~/.clawd/runtime.json`

@@ -22,6 +22,7 @@ describe("doctor agent descriptors", () => {
         "kiro-cli",
         "kimi-cli",
         "opencode",
+        "codefree-o",
         "pi",
         "openclaw",
         "hermes",
@@ -38,6 +39,7 @@ describe("doctor agent descriptors", () => {
     const kiro = require("../hooks/kiro-install");
     const kimi = require("../hooks/kimi-install");
     const opencode = require("../hooks/opencode-install");
+    const codefreeO = require("../hooks/codefree-o-install");
     const pi = require("../hooks/pi-install");
     const openclaw = require("../hooks/openclaw-install");
     const hermes = require("../hooks/hermes-install");
@@ -66,6 +68,9 @@ describe("doctor agent descriptors", () => {
 
     assert.strictEqual(getAgentDescriptor("opencode").parentDir, opencode.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("opencode").configPath, opencode.DEFAULT_CONFIG_PATH);
+
+    assert.strictEqual(getAgentDescriptor("codefree-o").parentDir, codefreeO.DEFAULT_PARENT_DIR);
+    assert.strictEqual(getAgentDescriptor("codefree-o").configPath, codefreeO.DEFAULT_CONFIG_PATH);
 
     assert.strictEqual(getAgentDescriptor("pi").parentDir, pi.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("pi").configPath, pi.DEFAULT_EXTENSION_DIR);
