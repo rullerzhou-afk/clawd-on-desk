@@ -1063,7 +1063,7 @@
       telegramApprovalTokenReplaceHintHtml: "貼新 token 會覆蓋原本的。需要新 token 就再到 [@BotFather](https://t.me/botfather) 申請。",
       telegramApprovalStep2Title: "2. 接收人",
       telegramApprovalRecipientLabel: "你的 Telegram 使用者 ID",
-      telegramApprovalRecipientHintHtml: "到 Telegram 找 [@userinfobot](https://t.me/userinfobot) 私訊 /start 取得你的數字 ID。Clawd 會用它同時做為唯一核決者與接收核准卡片的 chat。記得先到你自己的機器人發一次 /start 啟動私訊。",
+      telegramApprovalRecipientHintHtml: "到 Telegram 找 [@userinfobot](https://t.me/userinfobot) 私訊 /start 取得你的數字 ID。Clawd 會用它同時做為唯一核准者與接收核准卡片的 chat。記得先到你自己的機器人發一次 /start 啟動私訊。",
       telegramApprovalRecipientPlaceholder: "例如：123456789",
       telegramApprovalRecipientEmpty: "請先填你的 Telegram 使用者 ID。",
       telegramApprovalRecipientInvalid: "Telegram 使用者 ID 必須是至少 5 位的數字。",
