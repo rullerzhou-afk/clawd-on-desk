@@ -34,6 +34,7 @@ function decision(target, overrides = {}) {
     deriveSessionBadge: overrides.deriveSessionBadge || (() => "idle"),
     shouldAutoClearDetachedSession: overrides.shouldAutoClearDetachedSession || (() => false),
     staleConfig: overrides.staleConfig,
+    unackedMaxAgeMs: overrides.unackedMaxAgeMs,
   });
   return { result, calls };
 }
@@ -201,5 +202,91 @@ describe("state stale cleanup decisions", () => {
       },
     });
     assert.deepStrictEqual(result, { action: "delete", reason: "unreachable" });
+  });
+
+  // ── PR2 — requiresCompletionAck + ackedAt + global referenceTs ──
+
+  it("un-acked remote session with old updatedAt still deletes (regression: referenceTs falls back to updatedAt)", () => {
+    const { result } = decision(session({
+      updatedAt: 1000000 - 11 * 60 * 1000,
+      pidReachable: false,
+    }), {
+      staleConfig: { sessionStaleMs: 10 * 60 * 1000 },
+    });
+    assert.deepStrictEqual(result, { action: "delete", reason: "unreachable" });
+  });
+
+  it("acked session age uses Math.max(updatedAt, ackedAt) globally (not just inside ack-pending branch)", () => {
+    // Flag already cleared post-ack; updatedAt is ancient, but ackedAt is
+    // recent — referenceTs hoist must rescue the session in branch 3 too.
+    const { result } = decision(session({
+      updatedAt: 1000000 - 11 * 60 * 1000,
+      ackedAt: 1000000 - 30 * 1000,
+      pidReachable: false,
+    }), {
+      staleConfig: { sessionStaleMs: 10 * 60 * 1000 },
+    });
+    assert.deepStrictEqual(result, { action: null });
+  });
+
+  it("requiresCompletionAck=true holds an otherwise-deletable remote session", () => {
+    const { result } = decision(session({
+      updatedAt: 1000000 - 11 * 60 * 1000,
+      pidReachable: false,
+      requiresCompletionAck: true,
+    }), {
+      staleConfig: { sessionStaleMs: 10 * 60 * 1000 },
+    });
+    assert.deepStrictEqual(result, { action: null, reason: "ack-pending" });
+  });
+
+  it("requiresCompletionAck=true past 24h cap deletes with reason ack-expired", () => {
+    // Use a realistic now baseline so updatedAt stays positive — the
+    // global referenceTs hoist uses Math.max(updatedAt, ackedAt||0), so
+    // a negative updatedAt would silently fall back to 0 and break the
+    // age math.
+    const now = 2_000_000_000_000;
+    const { result } = decision(session({
+      updatedAt: now - 86_400_000 - 1,
+      pidReachable: false,
+      requiresCompletionAck: true,
+    }), { now });
+    assert.deepStrictEqual(result, { action: "delete", reason: "ack-expired" });
+  });
+
+  it("ack-expired still fires with sessionStaleMs=0 (explicit delete, not fall-through)", () => {
+    const now = 2_000_000_000_000;
+    const { result } = decision(session({
+      state: "idle",
+      updatedAt: now - 86_400_000 - 1,
+      pidReachable: false,
+      requiresCompletionAck: true,
+    }), {
+      now,
+      staleConfig: { sessionStaleMs: 0 },
+    });
+    assert.deepStrictEqual(result, { action: "delete", reason: "ack-expired" });
+  });
+
+  it("agent-exit wins over requiresCompletionAck", () => {
+    const { result } = decision(session({
+      agentPid: 99,
+      pidReachable: true,
+      requiresCompletionAck: true,
+    }), {
+      alivePids: new Set(),
+    });
+    assert.deepStrictEqual(result, { action: "delete", reason: "agent-exit" });
+  });
+
+  it("options.unackedMaxAgeMs overrides the 24h cap for tests", () => {
+    const { result } = decision(session({
+      updatedAt: 1000000 - 6 * 60 * 1000,
+      pidReachable: false,
+      requiresCompletionAck: true,
+    }), {
+      unackedMaxAgeMs: 5 * 60 * 1000,
+    });
+    assert.deepStrictEqual(result, { action: "delete", reason: "ack-expired" });
   });
 });

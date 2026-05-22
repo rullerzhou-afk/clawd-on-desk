@@ -241,6 +241,19 @@ h1 {
 .actions {
   display: flex;
   justify-content: flex-end;
+  gap: 6px;
+}
+
+.mark-read-button {
+  background: var(--surface-alt);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.mark-read-button:hover:not(:disabled) {
+  background: var(--accent);
+  color: #ffffff;
+  border-color: transparent;
 }
 
 button {

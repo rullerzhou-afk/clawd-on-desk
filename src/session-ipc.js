@@ -14,6 +14,7 @@ function registerSessionIpc(options = {}) {
   const setSessionAlias = requiredDependency(options.setSessionAlias, "setSessionAlias");
   const showDashboard = requiredDependency(options.showDashboard, "showDashboard");
   const setSessionHudPinned = requiredDependency(options.setSessionHudPinned, "setSessionHudPinned");
+  const ackSessionCompletion = requiredDependency(options.ackSessionCompletion, "ackSessionCompletion");
   const disposers = [];
 
   function handle(channel, listener) {
@@ -43,6 +44,21 @@ function registerSessionIpc(options = {}) {
 
   on("settings:open-dashboard", () => showDashboard({ source: "settings" }));
   on("show-dashboard", () => showDashboard());
+
+  // Both HUD and Dashboard call into this — invoke/handle (not send) so the
+  // click handlers can re-enable the Mark-read button if the ack failed.
+  handle("session:ack-completion", (_event, sessionId) => {
+    if (typeof sessionId !== "string" || !sessionId) {
+      return { status: "error", message: "session:ack-completion requires a sessionId string" };
+    }
+    try {
+      const acked = ackSessionCompletion(sessionId);
+      if (!acked) return { status: "noop", reason: "not-pending-or-missing" };
+      return { status: "ok" };
+    } catch (err) {
+      return { status: "error", message: err && err.message };
+    }
+  });
 
   return {
     dispose() {

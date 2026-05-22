@@ -250,6 +250,14 @@ function createRowForSession(session, now) {
     unreadSessions.delete(session.id);
     render();
     if (canFocus) window.sessionHudAPI.focusSession(session.id);
+    // Fire-and-forget: the row click's primary intent is focus / unread
+    // dismissal. ack failure shouldn't block the UI — the next snapshot
+    // will reconcile the lifecycle flag.
+    if (window.sessionHudAPI && typeof window.sessionHudAPI.ackCompletion === "function") {
+      Promise.resolve(window.sessionHudAPI.ackCompletion(session.id)).catch((err) => {
+        console.warn("ack completion threw:", err);
+      });
+    }
   });
 
   return row;

@@ -279,4 +279,47 @@ describe("state-session-snapshot builder", () => {
     assert.strictEqual(sessionSnapshotSignature(base), sessionSnapshotSignature(sameExceptIcon));
     assert.notStrictEqual(sessionSnapshotSignature(base), sessionSnapshotSignature(differentTitle));
   });
+
+  // ── PR2: requiresCompletionAck exposure ──
+  it("entry includes requiresCompletionAck=false for normal sessions", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["a", session("idle", { recentEvents: [{ event: "PreToolUse", state: "idle", at: 1 }] })],
+    ]), { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+    const entry = snapshot.sessions.find((s) => s.id === "a");
+    assert.strictEqual(entry.requiresCompletionAck, false);
+  });
+
+  it("entry includes requiresCompletionAck=true when the session flag is set", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["a", session("idle", {
+        requiresCompletionAck: true,
+        recentEvents: [{ event: "Stop", state: "idle", at: 1 }],
+      })],
+    ]), { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+    const entry = snapshot.sessions.find((s) => s.id === "a");
+    assert.strictEqual(entry.requiresCompletionAck, true);
+  });
+
+  it("ackedAt stays internal — does NOT appear in the snapshot entry", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["a", session("idle", { ackedAt: 12345, requiresCompletionAck: false })],
+    ]), { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+    const entry = snapshot.sessions.find((s) => s.id === "a");
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(entry, "ackedAt"), false);
+  });
+
+  it("snapshot signature changes when requiresCompletionAck flips", () => {
+    const baseSessions = new Map([
+      ["a", session("idle", { recentEvents: [{ event: "Stop", state: "idle", at: 1 }] })],
+    ]);
+    const flaggedSessions = new Map([
+      ["a", session("idle", {
+        requiresCompletionAck: true,
+        recentEvents: [{ event: "Stop", state: "idle", at: 1 }],
+      })],
+    ]);
+    const base = buildSessionSnapshot(baseSessions, { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+    const flagged = buildSessionSnapshot(flaggedSessions, { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+    assert.notStrictEqual(sessionSnapshotSignature(base), sessionSnapshotSignature(flagged));
+  });
 });

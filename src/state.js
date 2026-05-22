@@ -701,15 +701,76 @@ function resolvePidReachable(existing, agentPid, sourcePid) {
 
 function evictOldestSessionIfNeeded(sessionId) {
   if (sessions.has(sessionId) || sessions.size < MAX_SESSIONS) return;
+
+  // Phase 1: prefer the oldest NON-ack session — capacity safety is what we
+  // care about first, but we don't want to silently evict a session the user
+  // hasn't seen yet.
   let oldestId = null;
   let oldestTime = Infinity;
   for (const [id, s] of sessions) {
+    if (s && s.requiresCompletionAck === true) continue;
     if (s.updatedAt < oldestTime) {
       oldestTime = s.updatedAt;
       oldestId = id;
     }
   }
+
+  // Phase 2: only when EVERY entry is ack-pending do we evict the oldest
+  // ack one — capacity is a memory cap, ack retention is a UX promise; when
+  // they conflict, capacity has to win.
+  if (!oldestId) {
+    for (const [id, s] of sessions) {
+      if (s.updatedAt < oldestTime) {
+        oldestTime = s.updatedAt;
+        oldestId = id;
+      }
+    }
+  }
+
   if (oldestId) sessions.delete(oldestId);
+}
+
+// Sets / clears `requiresCompletionAck` based on the current event.
+// Called from updateSession's `finally` block so every early-return path
+// (PermissionRequest on disabled Kimi, SessionEnd, SubagentStop on missing
+// session, etc.) still gets its flag reconciled — placing this in the
+// dispatch body would miss those paths.
+//
+// `ackedAt` is intentionally NOT touched here. It's only set in
+// ackSessionCompletion (user-initiated). The reconciler just toggles the
+// boolean flag.
+function reconcileAckFlag(sessionId, srcAgentId, srcHost, event) {
+  const entry = sessions.get(sessionId);
+  if (!entry) return; // session was deleted by this update — nothing to do
+  const isRemoteCodexStop =
+    srcAgentId === "codex" && !!srcHost && event === "Stop";
+  if (isRemoteCodexStop) {
+    entry.requiresCompletionAck = true;
+  } else if (entry.requiresCompletionAck) {
+    // Strict equality on "Stop": any other event (including null/undefined,
+    // which in practice means a state-derived refresh with no semantic
+    // carry) clears the flag. Locked in by a test so future refactors that
+    // want to preserve the flag on null events have to update it consciously.
+    entry.requiresCompletionAck = false;
+  }
+}
+
+// User-initiated acknowledgment. Returns true if the session existed AND had
+// the flag set (a meaningful clear happened). Returns false for missing
+// sessions or sessions that aren't pending — both are idempotent no-ops the
+// renderer can safely ignore.
+function ackSessionCompletion(sessionId) {
+  const id = typeof sessionId === "string" ? sessionId : "";
+  if (!id) return false;
+  const session = sessions.get(id);
+  if (!session) return false;
+  if (session.requiresCompletionAck !== true) return false;
+  session.requiresCompletionAck = false;
+  session.ackedAt = Date.now();
+  // Force snapshot so the Mark-read button visibility (and any HUD bell
+  // wiring) reaches renderers without waiting for the next debounce.
+  emitSessionSnapshot({ force: true });
+  return true;
 }
 
 // ── Session management ──
@@ -1007,6 +1068,25 @@ function updateSession(sessionId, state, event, opts = {}) {
   const displayState = resolveDisplayState();
   setState(displayState, getSvgOverride(displayState));
   } finally {
+    try {
+      // Reconcile the ack flag from the LATEST entry view, not the closure
+      // copies taken at the top — early-return paths (state.js Kimi
+      // PermissionRequest gate, SessionEnd, SubagentStop on missing
+      // session) bail out before the resolved srcAgentId/srcHost block
+      // runs. The Object.assign(existing, base) ONESHOT branch can also
+      // rebuild the entry midway. Re-fetch + fall back to raw opts so we
+      // never miss either signal.
+      const entry = sessions.get(sessionId);
+      const srcAgentId = (opts && opts.agentId) || (entry && entry.agentId) || null;
+      const srcHost = (opts && opts.host) || (entry && entry.host) || null;
+      reconcileAckFlag(sessionId, srcAgentId, srcHost, event);
+    } catch (err) {
+      // Defensive: must never let a reconciler throw shadow the outer
+      // error chain. The reconciler is one Map lookup + a boolean toggle,
+      // so this should never fire — log if it does so the regression is
+      // visible.
+      console.warn("reconcileAckFlag threw:", err);
+    }
     emitSessionSnapshot();
   }
 }
@@ -1432,6 +1512,7 @@ return {
   emitSessionSnapshot, broadcastSessionSnapshot, getLastSessionSnapshot,
   getActiveSessionAliasKeys,
   dismissSession,
+  ackSessionCompletion,
   clearSessionsByAgent,
   disposeAllKimiPermissionState,
   deriveSessionBadge,

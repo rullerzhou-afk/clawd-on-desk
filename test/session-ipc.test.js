@@ -66,6 +66,10 @@ function createHarness(overrides = {}) {
     setSessionHudPinned: overrides.setSessionHudPinned || ((value) => {
       calls.push(["setSessionHudPinned", value]);
     }),
+    ackSessionCompletion: overrides.ackSessionCompletion || ((sessionId) => {
+      calls.push(["ackSessionCompletion", sessionId]);
+      return true;
+    }),
   });
   return { ipcMain, runtime, calls };
 }
@@ -79,6 +83,7 @@ test("session IPC registers owned channels and disposes them", () => {
     "dashboard:hide-session",
     "dashboard:set-session-alias",
     "session-hud:get-i18n",
+    "session:ack-completion",
   ]);
   assert.deepStrictEqual([...ipcMain.listeners.keys()].sort(), [
     "dashboard:focus-session",
@@ -144,6 +149,90 @@ test("session IPC owns dashboard open bridges", () => {
     ["showDashboard", { source: "settings" }],
     ["showDashboard", undefined],
   ]);
+});
+
+test("session:ack-completion returns {status:ok} when ack lands", async () => {
+  const { ipcMain, calls } = createHarness({
+    ackSessionCompletion: (sessionId) => {
+      calls.push(["ackSessionCompletion", sessionId]);
+      return true;
+    },
+  });
+  const result = await ipcMain.invoke("session:ack-completion", "s1");
+  assert.deepStrictEqual(result, { status: "ok" });
+  assert.deepStrictEqual(calls, [["ackSessionCompletion", "s1"]]);
+});
+
+test("session:ack-completion returns noop when session missing or unflagged", async () => {
+  const { ipcMain } = createHarness({
+    ackSessionCompletion: () => false,
+  });
+  const result = await ipcMain.invoke("session:ack-completion", "s-missing");
+  assert.deepStrictEqual(result, { status: "noop", reason: "not-pending-or-missing" });
+});
+
+test("session:ack-completion returns error when ackSessionCompletion throws", async () => {
+  const { ipcMain } = createHarness({
+    ackSessionCompletion: () => { throw new Error("boom"); },
+  });
+  const result = await ipcMain.invoke("session:ack-completion", "s1");
+  assert.strictEqual(result.status, "error");
+  assert.strictEqual(result.message, "boom");
+});
+
+test("session:ack-completion validates sessionId payload", async () => {
+  const { ipcMain } = createHarness();
+  for (const bad of [null, undefined, "", 42, { id: "s1" }]) {
+    const result = await ipcMain.invoke("session:ack-completion", bad);
+    assert.strictEqual(result.status, "error", `expected error for payload ${JSON.stringify(bad)}`);
+  }
+});
+
+test("registerSessionIpc requires ackSessionCompletion dep", () => {
+  assert.throws(
+    () => registerSessionIpc({
+      ipcMain: new FakeIpcMain(),
+      getSessionSnapshot: () => ({}),
+      getI18n: () => ({}),
+      focusSession: () => {},
+      hideSession: () => {},
+      setSessionAlias: () => {},
+      showDashboard: () => {},
+      setSessionHudPinned: () => {},
+      // ackSessionCompletion intentionally absent
+    }),
+    /ackSessionCompletion/
+  );
+});
+
+test("dashboard renderer wires the Mark-read button + ackCompletion fallback (source check)", () => {
+  // The renderer module runs in a browser context; a full DOM harness
+  // would be heavy. The contract this test enforces is structural:
+  // (1) Mark-read button mounts gated on requiresCompletionAck,
+  // (2) Jump-to-terminal click awaits ackCompletion,
+  // (3) Mark-read click awaits invoke result and re-enables on failure.
+  // Manual QA covers the actual click flow.
+  const rendererSrc = fs.readFileSync(
+    path.join(__dirname, "..", "src", "dashboard-renderer.js"),
+    "utf8"
+  );
+  assert.ok(rendererSrc.includes("session.requiresCompletionAck === true"),
+    "Mark-read button visibility must gate on requiresCompletionAck");
+  assert.ok(rendererSrc.includes("createMarkReadButton"),
+    "Mark-read button helper missing");
+  assert.ok(rendererSrc.includes("dashboardAPI.ackCompletion"),
+    "Renderer must call dashboardAPI.ackCompletion");
+  // Failure path re-enables the button so the user can retry
+  assert.ok(/result\.status !== "ok"[\s\S]+button\.disabled = false/.test(rendererSrc),
+    "Mark-read click must re-enable button on ack failure");
+
+  const i18nSrc = fs.readFileSync(path.join(__dirname, "..", "src", "i18n.js"), "utf8");
+  // Both new keys must appear in all 5 language tables (en/zh/zh-TW/ko/ja).
+  for (const key of ["dashboardMarkRead", "dashboardMarkReadTitle"]) {
+    const matches = i18nSrc.match(new RegExp(`\\b${key}:`, "g"));
+    assert.ok(matches && matches.length >= 5,
+      `${key} should appear in all 5 language tables (saw ${matches ? matches.length : 0})`);
+  }
 });
 
 test("main forwards dashboard open source options into session IPC", () => {
