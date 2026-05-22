@@ -289,6 +289,18 @@ describe("settings-effect-router", () => {
     ]);
   });
 
+  it("triggers a cleanup sweep + forced snapshot when any stale-cleanup config key changes", () => {
+    for (const key of ["sessionStaleMs", "workingStaleMs", "detachedIdleStaleMs"]) {
+      const { calls, emit } = createHarness();
+      emit({ [key]: key === "detachedIdleStaleMs" ? 60_000 : 900_000 });
+      assert.deepStrictEqual(calls, [
+        ["updateMirrors", { [key]: key === "detachedIdleStaleMs" ? 60_000 : 900_000 }],
+        ["cleanStaleSessions"],
+        ["emitSessionSnapshot", { force: true }],
+      ], `expected stale-cleanup branch to fire for ${key}`);
+    }
+  });
+
   it("dispose unsubscribes both settings routes", () => {
     const { calls, emit, router } = createHarness();
 

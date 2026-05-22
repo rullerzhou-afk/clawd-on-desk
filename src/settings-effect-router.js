@@ -195,6 +195,18 @@ function createSettingsEffectRouter(options = {}) {
         { force: true }
       );
     }
+    if (
+      "sessionStaleMs" in changes
+      || "workingStaleMs" in changes
+      || "detachedIdleStaleMs" in changes
+    ) {
+      try {
+        cleanStaleSessions();
+        emitSessionSnapshot({ force: true });
+      } catch (err) {
+        warn(logWarn, "Clawd: stale cleanup config refresh failed:", err);
+      }
+    }
     if ("allowEdgePinning" in changes) {
       safeCall(
         logWarn,

@@ -606,6 +606,9 @@ let sessionHudShowElapsed = _settingsController.get("sessionHudShowElapsed");
 let sessionHudCleanupDetached = _settingsController.get("sessionHudCleanupDetached");
 let sessionHudAutoHide = _settingsController.get("sessionHudAutoHide");
 let sessionHudPinned = _settingsController.get("sessionHudPinned");
+let sessionStaleMs = _settingsController.get("sessionStaleMs");
+let workingStaleMs = _settingsController.get("workingStaleMs");
+let detachedIdleStaleMs = _settingsController.get("detachedIdleStaleMs");
 let soundMuted = _settingsController.get("soundMuted");
 let soundVolume = _settingsController.get("soundVolume");
 let lowPowerIdleMode = _settingsController.get("lowPowerIdleMode");
@@ -991,6 +994,11 @@ const _stateCtx = {
     return !!(entry && entry.disabled === true);
   },
   get sessionHudCleanupDetached() { return sessionHudCleanupDetached; },
+  getStaleConfig: () => ({
+    sessionStaleMs,
+    workingStaleMs,
+    detachedIdleStaleMs,
+  }),
   getSessionAliases: () => _settingsController.get("sessionAliases"),
   hasAnyEnabledAgent: () => {
     // `get("agents")` returns the live reference (no clone) — we're only
@@ -1815,6 +1823,8 @@ const SETTINGS_MIRROR_SETTERS = {
   sessionHudShowStateLabels: (v) => { sessionHudShowStateLabels = v; },
   sessionHudShowElapsed: (v) => { sessionHudShowElapsed = v; }, sessionHudCleanupDetached: (v) => { sessionHudCleanupDetached = v; },
   sessionHudAutoHide: (v) => { sessionHudAutoHide = v; }, sessionHudPinned: (v) => { sessionHudPinned = v; },
+  sessionStaleMs: (v) => { sessionStaleMs = v; }, workingStaleMs: (v) => { workingStaleMs = v; },
+  detachedIdleStaleMs: (v) => { detachedIdleStaleMs = v; },
   soundMuted: (v) => { soundMuted = v; }, soundVolume: (v) => { soundVolume = v; }, lowPowerIdleMode: (v) => { lowPowerIdleMode = v; },
   allowEdgePinning: (v) => { allowEdgePinningCached = v; }, keepSizeAcrossDisplays: (v) => { keepSizeAcrossDisplaysCached = v; },
 };

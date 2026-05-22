@@ -62,6 +62,7 @@
     mountedControls: {
       generalSwitches: new Map(),
       bubblePolicyControls: new Map(),
+      sessionCleanupControls: new Map(),
       agentSwitches: new Map(),
       agentPermissionModes: new Map(),
       animMapSwitches: new Map(),
@@ -615,6 +616,166 @@
     return btn;
   }
 
+  // Generic number-input row used by the Session cleanup group. Mirrors the
+  // bubble-policy seconds-input shape but without a toggle axis: label + desc
+  // + numeric input + localized unit suffix. Debounces commits so typing
+  // doesn't fire a write on every keystroke; reverts on rejection.
+  //
+  // `toDisplay(ms)` maps the stored ms value -> the integer shown in the
+  // input. `fromDisplay(display)` maps the user's input back to ms. The
+  // helper does not enforce the cross-field invariant; that's the
+  // controller's job (`settings-actions.js`).
+  const NUMBER_INPUT_COMMIT_DELAY_MS = 600;
+  function buildNumberInputRow({
+    key,
+    labelKey,
+    descKey,
+    unitKey,
+    toDisplay,
+    fromDisplay,
+    min,
+    max,
+    zeroLabelKey = null,
+    debounceMs = NUMBER_INPUT_COMMIT_DELAY_MS,
+  }) {
+    const row = document.createElement("div");
+    row.className = "row session-cleanup-row";
+    row.innerHTML =
+      `<div class="row-text">` +
+        `<span class="row-label"></span>` +
+        `<span class="row-desc"></span>` +
+      `</div>` +
+      `<div class="row-control session-cleanup-control">` +
+        `<input type="text" class="bubble-policy-seconds session-cleanup-input" inputmode="numeric" />` +
+        `<span class="bubble-policy-unit session-cleanup-unit"></span>` +
+      `</div>`;
+    row.querySelector(".row-label").textContent = t(labelKey);
+    const descNode = row.querySelector(".row-desc");
+    if (descKey) descNode.textContent = t(descKey);
+    else descNode.remove();
+    const input = row.querySelector(".session-cleanup-input");
+    const unit = row.querySelector(".session-cleanup-unit");
+    if (unitKey) unit.textContent = t(unitKey);
+    else unit.remove();
+    input.maxLength = String(max).length + 1;
+
+    function currentStored() {
+      const stored = state.snapshot && state.snapshot[key];
+      return Number.isFinite(stored) ? stored : 0;
+    }
+    function renderValue() {
+      const stored = currentStored();
+      const display = toDisplay(stored);
+      if (stored === 0 && zeroLabelKey) {
+        input.value = t(zeroLabelKey);
+      } else {
+        input.value = String(display);
+      }
+    }
+    renderValue();
+
+    let commitTimer = null;
+    let inFlightDisplay = null;
+    let commitSeq = 0;
+    function clearCommitTimer() {
+      if (commitTimer) {
+        clearTimeout(commitTimer);
+        commitTimer = null;
+      }
+    }
+    function syncFromSnapshot() {
+      if (document.activeElement === input) return;
+      renderValue();
+    }
+    function revert() {
+      renderValue();
+    }
+    function commit(nextStored) {
+      const seq = ++commitSeq;
+      inFlightDisplay = nextStored;
+      return window.settingsAPI.update(key, nextStored).then((result) => {
+        if (seq !== commitSeq) return false;
+        inFlightDisplay = null;
+        if (!result || result.status !== "ok") {
+          const msg = (result && result.message) || "unknown error";
+          showToast(t("toastSaveFailed") + msg, { error: true });
+          revert();
+          return false;
+        }
+        return true;
+      }).catch((err) => {
+        if (seq !== commitSeq) return false;
+        inFlightDisplay = null;
+        showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+        revert();
+        return false;
+      });
+    }
+    function parseInput() {
+      const raw = input.value.trim();
+      if (raw === "" || (zeroLabelKey && raw === t(zeroLabelKey))) {
+        // Treat the localized "Disabled" label as the literal zero.
+        return zeroLabelKey ? 0 : null;
+      }
+      if (!/^[0-9]+(?:\.[0-9]+)?$/.test(raw)) return null;
+      const display = Number(raw);
+      if (!Number.isFinite(display) || display < min || display > max) return null;
+      return display;
+    }
+    function commitFromInput() {
+      const display = parseInput();
+      if (display == null) {
+        showToast(t("toastSaveFailed") + `${min}-${max}`, { error: true });
+        revert();
+        return;
+      }
+      const nextStored = display === 0 ? 0 : fromDisplay(display);
+      if (nextStored === currentStored() || nextStored === inFlightDisplay) {
+        // No change — just re-render so the input matches the stored value.
+        renderValue();
+        return;
+      }
+      void commit(nextStored);
+    }
+    function scheduleCommit() {
+      clearCommitTimer();
+      commitTimer = setTimeout(() => {
+        commitTimer = null;
+        commitFromInput();
+      }, debounceMs);
+    }
+
+    input.addEventListener("focus", () => {
+      // Strip the zero-label so the user types numerics, not localized text.
+      const stored = currentStored();
+      if (stored === 0 && zeroLabelKey) input.value = "0";
+    });
+    input.addEventListener("input", () => {
+      scheduleCommit();
+    });
+    input.addEventListener("blur", () => {
+      clearCommitTimer();
+      commitFromInput();
+    });
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        clearCommitTimer();
+        commitFromInput();
+        input.blur();
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        clearCommitTimer();
+        revert();
+        input.blur();
+      }
+    });
+
+    const handle = { row, input, syncFromSnapshot };
+    state.mountedControls.sessionCleanupControls.set(key, handle);
+    return handle;
+  }
+
   function openExternalSafe(url) {
     if (!url) return;
     if (!window.settingsAPI || typeof window.settingsAPI.openExternal !== "function") return;
@@ -639,6 +800,7 @@
     }
     state.mountedControls.generalSwitches.clear();
     state.mountedControls.bubblePolicyControls.clear();
+    state.mountedControls.sessionCleanupControls.clear();
     state.mountedControls.agentSwitches.clear();
     state.mountedControls.agentPermissionModes.clear();
     state.mountedControls.animMapSwitches.clear();
@@ -1023,6 +1185,7 @@
     createDisclosureChevron,
     attachActivation,
     buildShortcutButton,
+    buildNumberInputRow,
     openExternalSafe,
     SIZE_UI_MIN,
     SIZE_UI_MAX,

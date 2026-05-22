@@ -589,6 +589,53 @@ describe("prefs.validate", () => {
     });
   });
 
+  it("defaults the three stale-cleanup intervals to the historical constants", () => {
+    const d = prefs.getDefaults();
+    assert.strictEqual(d.sessionStaleMs, 600000);
+    assert.strictEqual(d.workingStaleMs, 300000);
+    assert.strictEqual(d.detachedIdleStaleMs, 30000);
+  });
+
+  it("accepts sessionStaleMs=0 (disables idle-age cutoff)", () => {
+    const v = prefs.validate({ sessionStaleMs: 0 });
+    assert.strictEqual(v.sessionStaleMs, 0);
+  });
+
+  it("drops below-minimum non-zero sessionStaleMs back to default", () => {
+    // 30s is below the 60s floor for non-zero values, so it should fall
+    // back to the default rather than land on disk as an unsafe value.
+    const v = prefs.validate({ sessionStaleMs: 30_000 });
+    assert.strictEqual(v.sessionStaleMs, 600_000);
+  });
+
+  it("drops workingStaleMs=0 back to default (0 not allowed)", () => {
+    const v = prefs.validate({ workingStaleMs: 0 });
+    assert.strictEqual(v.workingStaleMs, 300_000);
+  });
+
+  it("drops detachedIdleStaleMs=0 back to default (0 not allowed)", () => {
+    const v = prefs.validate({ detachedIdleStaleMs: 0 });
+    assert.strictEqual(v.detachedIdleStaleMs, 30_000);
+  });
+
+  it("clamps a hand-edited inverted pair: workingStaleMs > sessionStaleMs", () => {
+    const v = prefs.validate({
+      sessionStaleMs: 120_000,
+      workingStaleMs: 600_000,
+    });
+    assert.strictEqual(v.sessionStaleMs, 120_000);
+    assert.strictEqual(v.workingStaleMs, 120_000);
+  });
+
+  it("leaves workingStaleMs alone when sessionStaleMs is disabled (=0)", () => {
+    const v = prefs.validate({
+      sessionStaleMs: 0,
+      workingStaleMs: 600_000,
+    });
+    assert.strictEqual(v.sessionStaleMs, 0);
+    assert.strictEqual(v.workingStaleMs, 600_000);
+  });
+
   it("normalizes Hardware Buddy settings", () => {
     const v = prefs.validate({
       hardwareBuddy: {

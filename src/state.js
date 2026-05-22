@@ -1019,12 +1019,14 @@ function cleanStaleSessions() {
   const now = Date.now();
   let changed = false;
   let snapshotRefreshNeeded = false;
+  const staleConfig = typeof ctx.getStaleConfig === "function" ? ctx.getStaleConfig() : null;
   for (const [id, s] of sessions) {
     const decision = getStaleSessionDecision(s, {
       now,
       isProcessAlive,
       deriveSessionBadge,
       shouldAutoClearDetachedSession,
+      staleConfig,
     });
 
     if (decision.snapshotRefreshNeeded) snapshotRefreshNeeded = true;

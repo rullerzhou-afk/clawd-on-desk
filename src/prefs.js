@@ -101,6 +101,25 @@ const SCHEMA = {
   sessionHudCleanupDetached: { type: "boolean", default: false },
   sessionHudAutoHide: { type: "boolean", default: true },
   sessionHudPinned: { type: "boolean", default: false },
+  // Stale-cleanup intervals (ms). Defaults match the historical constants in
+  // state-stale-cleanup.js so upgrading users see no behavioral change.
+  // sessionStaleMs = 0 means "never drop a session by idle age".
+  sessionStaleMs: {
+    type: "number",
+    default: 600000,
+    validate: (v) =>
+      Number.isInteger(v) && (v === 0 || (v >= 60_000 && v <= 86_400_000)),
+  },
+  workingStaleMs: {
+    type: "number",
+    default: 300000,
+    validate: (v) => Number.isInteger(v) && v >= 30_000 && v <= 86_400_000,
+  },
+  detachedIdleStaleMs: {
+    type: "number",
+    default: 30000,
+    validate: (v) => Number.isInteger(v) && v >= 5_000 && v <= 300_000,
+  },
   hideBubbles: { type: "boolean", default: false },
   permissionBubblesEnabled: { type: "boolean", default: true },
   notificationBubbleAutoCloseSeconds: {
@@ -243,6 +262,25 @@ function validate(raw) {
       out[key] = value;
     }
     // else: keep default already in `out`
+  }
+  normalizeStaleTriple(out);
+  return out;
+}
+
+// Hand-edited-file fallback: if a user manually inverted the pair in
+// clawd-prefs.json, clamp workingStaleMs down to sessionStaleMs at load time
+// so the live mirror is consistent. Primary enforcement lives in the
+// per-key validators in settings-actions.js and the
+// commandRegistry["sessionCleanup.setTriple"] command — this function is
+// only the boot-time safety net for files that bypass the controller.
+function normalizeStaleTriple(out) {
+  if (
+    Number.isFinite(out.sessionStaleMs) &&
+    out.sessionStaleMs > 0 &&
+    Number.isFinite(out.workingStaleMs) &&
+    out.workingStaleMs > out.sessionStaleMs
+  ) {
+    out.workingStaleMs = out.sessionStaleMs;
   }
   return out;
 }

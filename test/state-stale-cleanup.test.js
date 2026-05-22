@@ -33,6 +33,7 @@ function decision(target, overrides = {}) {
     },
     deriveSessionBadge: overrides.deriveSessionBadge || (() => "idle"),
     shouldAutoClearDetachedSession: overrides.shouldAutoClearDetachedSession || (() => false),
+    staleConfig: overrides.staleConfig,
   });
   return { result, calls };
 }
@@ -129,5 +130,76 @@ describe("state stale cleanup decisions", () => {
     assert.strictEqual(isWorkingLikeState("thinking"), true);
     assert.strictEqual(isWorkingLikeState("juggling"), true);
     assert.strictEqual(isWorkingLikeState("idle"), false);
+  });
+
+  it("falls back to module defaults when no staleConfig provided", () => {
+    // Regression: passing no staleConfig must behave identically to before.
+    const { result } = decision(session({
+      updatedAt: 1000000 - SESSION_STALE_MS - 1,
+      pidReachable: false,
+    }));
+    assert.deepStrictEqual(result, { action: "delete", reason: "unreachable" });
+  });
+
+  it("honors a configured sessionStaleMs cutoff", () => {
+    const { result } = decision(session({
+      updatedAt: 1000000 - 65_000,
+      pidReachable: false,
+    }), {
+      staleConfig: { sessionStaleMs: 60_000 },
+    });
+    assert.deepStrictEqual(result, { action: "delete", reason: "unreachable" });
+  });
+
+  it("treats sessionStaleMs=0 as disabled — does not delete by age", () => {
+    // 10h-old idle remote session, sessionStaleMs disabled -> stays alive.
+    const { result } = decision(session({
+      state: "idle",
+      updatedAt: 1000000 - 10 * 60 * 60 * 1000,
+      pidReachable: false,
+    }), {
+      staleConfig: { sessionStaleMs: 0 },
+    });
+    assert.deepStrictEqual(result, { action: null });
+  });
+
+  it("honors a configured workingStaleMs floor", () => {
+    // Bump the working timeout up so a 5-min-old working session stays
+    // working instead of getting downgraded to idle.
+    const { result } = decision(session({
+      state: "working",
+      updatedAt: 1000000 - 5 * 60 * 1000,
+      sourcePid: null,
+    }), {
+      staleConfig: { workingStaleMs: 600_000 },
+    });
+    assert.deepStrictEqual(result, { action: null });
+  });
+
+  it("honors a configured detachedIdleStaleMs cutoff", () => {
+    const { result } = decision(session({
+      updatedAt: 1000000 - 6_000,
+      sourcePid: 20,
+    }), {
+      staleConfig: { detachedIdleStaleMs: 5_000 },
+      deriveSessionBadge: () => "done",
+      shouldAutoClearDetachedSession: () => true,
+    });
+    assert.deepStrictEqual(result, { action: "delete", reason: "detached-ended", badge: "done" });
+  });
+
+  it("ignores non-finite staleConfig fields and falls back to defaults", () => {
+    // Garbage values in any field must not break the decision.
+    const { result } = decision(session({
+      updatedAt: 1000000 - SESSION_STALE_MS - 1,
+      pidReachable: false,
+    }), {
+      staleConfig: {
+        sessionStaleMs: "not a number",
+        workingStaleMs: null,
+        detachedIdleStaleMs: NaN,
+      },
+    });
+    assert.deepStrictEqual(result, { action: "delete", reason: "unreachable" });
   });
 });

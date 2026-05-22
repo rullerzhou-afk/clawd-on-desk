@@ -10,6 +10,17 @@ function isWorkingLikeState(state) {
 
 function getStaleSessionDecision(session, options = {}) {
   const now = options.now;
+  const config = options.staleConfig || {};
+  const sessionStaleMs = Number.isFinite(config.sessionStaleMs)
+    ? config.sessionStaleMs
+    : SESSION_STALE_MS;
+  const workingStaleMs = Number.isFinite(config.workingStaleMs)
+    ? config.workingStaleMs
+    : WORKING_STALE_MS;
+  const detachedIdleStaleMs = Number.isFinite(config.detachedIdleStaleMs)
+    ? config.detachedIdleStaleMs
+    : DETACHED_IDLE_STALE_MS;
+
   const age = now - session.updatedAt;
   const isProcessAlive = options.isProcessAlive;
 
@@ -22,13 +33,16 @@ function getStaleSessionDecision(session, options = {}) {
   const badge = deriveSessionBadge(session);
   const autoClearDetached = shouldAutoClearDetachedSession(session, badge);
   if (autoClearDetached) {
-    if (age > DETACHED_IDLE_STALE_MS) {
+    if (age > detachedIdleStaleMs) {
       return { action: "delete", reason: "detached-ended", badge };
     }
     return { action: null, snapshotRefreshNeeded: true };
   }
 
-  if (age > SESSION_STALE_MS) {
+  // sessionStaleMs === 0 disables the idle-age cutoff entirely; the
+  // working-timeout branch below still applies for stuck working/thinking
+  // sessions because it's a UX guard, not an idle cutoff.
+  if (sessionStaleMs > 0 && age > sessionStaleMs) {
     if (session.pidReachable && session.sourcePid) {
       if (!isProcessAlive(session.sourcePid)) {
         return { action: "delete", reason: "source-exit" };
@@ -41,7 +55,7 @@ function getStaleSessionDecision(session, options = {}) {
     } else {
       return { action: "delete", reason: "no-source" };
     }
-  } else if (age > WORKING_STALE_MS) {
+  } else if (age > workingStaleMs) {
     if (session.pidReachable && session.sourcePid && !isProcessAlive(session.sourcePid)) {
       return { action: "delete", reason: "working-source-exit" };
     }

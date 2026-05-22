@@ -21,6 +21,9 @@
     "permissionBubblesEnabled",
     "notificationBubbleAutoCloseSeconds",
     "updateBubbleAutoCloseSeconds",
+    "sessionStaleMs",
+    "workingStaleMs",
+    "detachedIdleStaleMs",
   ]);
   const BUBBLE_POLICY_KEYS = new Set([
     "permissionBubblesEnabled",
@@ -28,6 +31,16 @@
     "notificationBubbleAutoCloseSeconds",
     "updateBubbleAutoCloseSeconds",
   ]);
+  const SESSION_CLEANUP_NUMBER_KEYS = new Set([
+    "sessionStaleMs",
+    "workingStaleMs",
+    "detachedIdleStaleMs",
+  ]);
+  const SESSION_CLEANUP_DEFAULTS = {
+    sessionStaleMs: 600_000,
+    workingStaleMs: 300_000,
+    detachedIdleStaleMs: 30_000,
+  };
   const SESSION_HUD_CHILD_SWITCH_KEYS = [
     "sessionHudShowStateLabels",
     "sessionHudShowElapsed",
@@ -71,6 +84,7 @@
       buildLanguageRow(),
       buildSizeSliderRow(),
       buildSessionHudGroup(),
+      buildSessionCleanupGroup(),
       buildDashboardRow(),
       buildSoundGroup(),
       helpers.buildSwitchRow({
@@ -449,6 +463,78 @@
       element: wrap,
       syncFromSnapshot,
     };
+  }
+
+  function buildSessionCleanupGroup() {
+    const optionList = buildOptionList("session-cleanup-option-list", [
+      helpers.buildNumberInputRow({
+        key: "sessionStaleMs",
+        labelKey: "rowStaleSession",
+        descKey: "rowStaleSessionDesc",
+        unitKey: "unitMinutes",
+        toDisplay: (ms) => Math.round(ms / 60_000),
+        fromDisplay: (min) => Math.max(0, Math.round(min * 60_000)),
+        min: 0,
+        max: 1440,
+        zeroLabelKey: "valueDisabled",
+      }).row,
+      helpers.buildNumberInputRow({
+        key: "workingStaleMs",
+        labelKey: "rowStaleWorking",
+        descKey: "rowStaleWorkingDesc",
+        unitKey: "unitSeconds",
+        toDisplay: (ms) => Math.round(ms / 1000),
+        fromDisplay: (sec) => Math.max(30_000, Math.min(86_400_000, Math.round(sec * 1000))),
+        min: 30,
+        max: 86_400,
+      }).row,
+      helpers.buildNumberInputRow({
+        key: "detachedIdleStaleMs",
+        labelKey: "rowStaleDetached",
+        descKey: "rowStaleDetachedDesc",
+        unitKey: "unitSeconds",
+        toDisplay: (ms) => Math.round(ms / 1000),
+        fromDisplay: (sec) => Math.max(5_000, Math.min(300_000, Math.round(sec * 1000))),
+        min: 5,
+        max: 300,
+      }).row,
+    ]);
+
+    // Reset lives in its own row outside the option-list so it doesn't render
+    // as a card; mirrors how Sound group puts the volume slider on its own row.
+    const resetRow = document.createElement("div");
+    resetRow.className = "row session-cleanup-reset-row";
+    const resetButton = document.createElement("button");
+    resetButton.type = "button";
+    resetButton.className = "soft-btn";
+    resetButton.textContent = t("actionResetSessionCleanup");
+    resetButton.addEventListener("click", async () => {
+      resetButton.disabled = true;
+      try {
+        const result = await window.settingsAPI.command(
+          "sessionCleanup.setTriple",
+          { ...SESSION_CLEANUP_DEFAULTS }
+        );
+        if (!result || result.status !== "ok") {
+          const msg = (result && result.message) || "unknown error";
+          ops.showToast(t("toastSaveFailed") + msg, { error: true });
+        }
+      } catch (err) {
+        ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+      } finally {
+        resetButton.disabled = false;
+      }
+    });
+    resetRow.appendChild(resetButton);
+
+    return helpers.buildCollapsibleGroup({
+      id: "general:session-cleanup",
+      title: t("rowSessionCleanupGroup"),
+      desc: t("rowSessionCleanupGroupDesc"),
+      defaultCollapsed: true,
+      className: "session-cleanup-collapsible",
+      children: [optionList, resetRow],
+    });
   }
 
   function buildSoundGroup() {
@@ -1395,6 +1481,13 @@
       && !hasMountedBubblePolicyControls()) {
       return false;
     }
+    if (keys.some((key) => SESSION_CLEANUP_NUMBER_KEYS.has(key))) {
+      for (const key of keys) {
+        if (!SESSION_CLEANUP_NUMBER_KEYS.has(key)) continue;
+        const meta = state.mountedControls.sessionCleanupControls.get(key);
+        if (!meta || !document.body.contains(meta.row)) return false;
+      }
+    }
     for (const key of keys) {
       if (key === "size" || key === "soundVolume") continue;
       if (BUBBLE_POLICY_KEYS.has(key)) {
@@ -1402,6 +1495,7 @@
         if (!meta || !document.body.contains(meta.row)) return false;
         continue;
       }
+      if (SESSION_CLEANUP_NUMBER_KEYS.has(key)) continue;
       const meta = state.mountedControls.generalSwitches.get(key);
       if (!meta || !document.body.contains(meta.element)) return false;
     }
@@ -1413,6 +1507,10 @@
       }
       if (BUBBLE_POLICY_KEYS.has(key)) {
         state.mountedControls.bubblePolicyControls.get(key).syncFromSnapshot();
+        continue;
+      }
+      if (SESSION_CLEANUP_NUMBER_KEYS.has(key)) {
+        state.mountedControls.sessionCleanupControls.get(key).syncFromSnapshot();
         continue;
       }
       const meta = state.mountedControls.generalSwitches.get(key);

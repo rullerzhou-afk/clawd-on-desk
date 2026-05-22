@@ -564,6 +564,169 @@ describe("bubble policy commands", () => {
   });
 });
 
+describe("session cleanup interval validators", () => {
+  const snapshot = prefs.getDefaults();
+
+  it("sessionStaleMs accepts 0 (disabled) regardless of workingStaleMs", () => {
+    const result = updateRegistry.sessionStaleMs(0, { snapshot });
+    assert.strictEqual(result.status, "ok");
+  });
+
+  it("sessionStaleMs accepts non-zero values >= current workingStaleMs", () => {
+    const result = updateRegistry.sessionStaleMs(600_000, { snapshot });
+    assert.strictEqual(result.status, "ok");
+  });
+
+  it("sessionStaleMs rejects values below the workingStaleMs floor", () => {
+    const result = updateRegistry.sessionStaleMs(60_000, {
+      snapshot: { ...snapshot, workingStaleMs: 300_000 },
+    });
+    assert.strictEqual(result.status, "error");
+    assert.match(result.message, /workingStaleMs/);
+  });
+
+  it("sessionStaleMs rejects non-integers / out-of-range", () => {
+    assert.strictEqual(updateRegistry.sessionStaleMs("nope", { snapshot }).status, "error");
+    assert.strictEqual(updateRegistry.sessionStaleMs(1.5, { snapshot }).status, "error");
+    assert.strictEqual(updateRegistry.sessionStaleMs(30_000, { snapshot }).status, "error");
+    assert.strictEqual(updateRegistry.sessionStaleMs(90_000_000, { snapshot }).status, "error");
+  });
+
+  it("workingStaleMs rejects values above sessionStaleMs when the latter is non-zero", () => {
+    const result = updateRegistry.workingStaleMs(700_000, {
+      snapshot: { ...snapshot, sessionStaleMs: 600_000 },
+    });
+    assert.strictEqual(result.status, "error");
+    assert.match(result.message, /sessionStaleMs/);
+  });
+
+  it("workingStaleMs accepts any in-range value when sessionStaleMs is 0", () => {
+    const result = updateRegistry.workingStaleMs(700_000, {
+      snapshot: { ...snapshot, sessionStaleMs: 0 },
+    });
+    assert.strictEqual(result.status, "ok");
+  });
+
+  it("workingStaleMs accepts equal to sessionStaleMs", () => {
+    const result = updateRegistry.workingStaleMs(600_000, {
+      snapshot: { ...snapshot, sessionStaleMs: 600_000 },
+    });
+    assert.strictEqual(result.status, "ok");
+  });
+
+  it("workingStaleMs rejects below floor / above ceiling", () => {
+    assert.strictEqual(updateRegistry.workingStaleMs(0, { snapshot }).status, "error");
+    assert.strictEqual(updateRegistry.workingStaleMs(20_000, { snapshot }).status, "error");
+    assert.strictEqual(updateRegistry.workingStaleMs(90_000_000, { snapshot }).status, "error");
+  });
+
+  it("detachedIdleStaleMs enforces 5s-300s integer range", () => {
+    assert.strictEqual(updateRegistry.detachedIdleStaleMs(5_000, { snapshot }).status, "ok");
+    assert.strictEqual(updateRegistry.detachedIdleStaleMs(300_000, { snapshot }).status, "ok");
+    assert.strictEqual(updateRegistry.detachedIdleStaleMs(0, { snapshot }).status, "error");
+    assert.strictEqual(updateRegistry.detachedIdleStaleMs(1_000, { snapshot }).status, "error");
+    assert.strictEqual(updateRegistry.detachedIdleStaleMs(400_000, { snapshot }).status, "error");
+  });
+});
+
+describe("sessionCleanup.setTriple command", () => {
+  const cmd = commandRegistry["sessionCleanup.setTriple"];
+  const baseSnapshot = prefs.getDefaults();
+
+  it("commits a full valid triple", async () => {
+    const result = await cmd(
+      {
+        sessionStaleMs: 600_000,
+        workingStaleMs: 300_000,
+        detachedIdleStaleMs: 30_000,
+      },
+      { snapshot: baseSnapshot }
+    );
+    assert.strictEqual(result.status, "ok");
+    assert.deepStrictEqual(result.commit, {
+      sessionStaleMs: 600_000,
+      workingStaleMs: 300_000,
+      detachedIdleStaleMs: 30_000,
+    });
+  });
+
+  it("rejects an inverted triple (workingStaleMs > sessionStaleMs)", async () => {
+    const result = await cmd(
+      {
+        sessionStaleMs: 120_000,
+        workingStaleMs: 300_000,
+        detachedIdleStaleMs: 30_000,
+      },
+      { snapshot: baseSnapshot }
+    );
+    assert.strictEqual(result.status, "error");
+    assert.match(result.message, /workingStaleMs.*must be <= sessionStaleMs/);
+  });
+
+  it("accepts sessionStaleMs=0 with any in-range workingStaleMs", async () => {
+    const result = await cmd(
+      {
+        sessionStaleMs: 0,
+        workingStaleMs: 86_400_000,
+        detachedIdleStaleMs: 30_000,
+      },
+      { snapshot: baseSnapshot }
+    );
+    assert.strictEqual(result.status, "ok");
+    assert.deepStrictEqual(result.commit, {
+      sessionStaleMs: 0,
+      workingStaleMs: 86_400_000,
+      detachedIdleStaleMs: 30_000,
+    });
+  });
+
+  it("defaults absent fields from the snapshot", async () => {
+    const snapshot = {
+      ...baseSnapshot,
+      sessionStaleMs: 900_000,
+      workingStaleMs: 450_000,
+      detachedIdleStaleMs: 45_000,
+    };
+    const result = await cmd({ sessionStaleMs: 600_000 }, { snapshot });
+    assert.strictEqual(result.status, "ok");
+    assert.deepStrictEqual(result.commit, {
+      sessionStaleMs: 600_000,
+      workingStaleMs: 450_000,
+      detachedIdleStaleMs: 45_000,
+    });
+  });
+
+  it("rejects payload with non-integer present value (no silent snapshot fallback)", async () => {
+    const result = await cmd(
+      { sessionStaleMs: "600000" },
+      { snapshot: baseSnapshot }
+    );
+    assert.strictEqual(result.status, "error");
+    assert.match(result.message, /sessionStaleMs.*must be an integer/);
+  });
+
+  it("rejects out-of-range fields without committing", async () => {
+    const tooSmall = await cmd(
+      { sessionStaleMs: 600_000, workingStaleMs: 1_000, detachedIdleStaleMs: 30_000 },
+      { snapshot: baseSnapshot }
+    );
+    assert.strictEqual(tooSmall.status, "error");
+    assert.strictEqual(tooSmall.commit, undefined);
+
+    const detTooBig = await cmd(
+      { sessionStaleMs: 600_000, workingStaleMs: 300_000, detachedIdleStaleMs: 999_999 },
+      { snapshot: baseSnapshot }
+    );
+    assert.strictEqual(detTooBig.status, "error");
+    assert.strictEqual(detTooBig.commit, undefined);
+  });
+
+  it("rejects non-object payload", async () => {
+    const r = await cmd(null, { snapshot: baseSnapshot });
+    assert.strictEqual(r.status, "error");
+  });
+});
+
 describe("hook commands", () => {
   it("installHooks triggers a one-shot Claude sync without changing prefs", async () => {
     let syncCalls = 0;

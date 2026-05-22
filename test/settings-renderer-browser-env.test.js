@@ -1820,6 +1820,59 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("bubbleSecondsPrefix"));
   });
 
+  it("registers the Session cleanup group with three number rows, atomic reset, and i18n keys", () => {
+    const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
+    const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
+    const uiCoreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
+    const actionsSource = fs.readFileSync(path.join(SRC_DIR, "settings-actions.js"), "utf8");
+
+    // Group is mounted top-level in the Appearance section (not nested under HUD).
+    assert.ok(generalSource.includes("buildSessionCleanupGroup()"));
+    assert.ok(generalSource.includes('id: "general:session-cleanup"'));
+
+    // All three numeric prefs map to their own number input row.
+    assert.ok(generalSource.includes('key: "sessionStaleMs"'));
+    assert.ok(generalSource.includes('key: "workingStaleMs"'));
+    assert.ok(generalSource.includes('key: "detachedIdleStaleMs"'));
+    assert.ok(generalSource.includes("buildNumberInputRow"));
+    assert.ok(generalSource.includes("SESSION_CLEANUP_NUMBER_KEYS"));
+
+    // Reset button goes through the atomic command path.
+    assert.ok(generalSource.includes('"sessionCleanup.setTriple"'));
+    assert.ok(generalSource.includes("SESSION_CLEANUP_DEFAULTS"));
+    assert.ok(generalSource.includes('"actionResetSessionCleanup"'));
+
+    // patchInPlace covers the new keys in BOTH the existence guard and the sync loop.
+    assert.ok(generalSource.match(/SESSION_CLEANUP_NUMBER_KEYS\.has\(key\)[\s\S]+sessionCleanupControls\.get\(key\)\.syncFromSnapshot\(\)/));
+
+    // ui-core registers the helper and the mountedControls bag.
+    assert.ok(uiCoreSource.includes("buildNumberInputRow"));
+    assert.ok(uiCoreSource.includes("sessionCleanupControls: new Map()"));
+    assert.ok(uiCoreSource.includes("state.mountedControls.sessionCleanupControls.clear()"));
+
+    // The command is registered in settings-actions.
+    assert.ok(actionsSource.includes('"sessionCleanup.setTriple": setSessionCleanupTriple'));
+
+    // i18n keys present in all five languages.
+    for (const key of [
+      "rowSessionCleanupGroup",
+      "rowSessionCleanupGroupDesc",
+      "rowStaleSession",
+      "rowStaleSessionDesc",
+      "rowStaleWorking",
+      "rowStaleWorkingDesc",
+      "rowStaleDetached",
+      "rowStaleDetachedDesc",
+      "unitMinutes",
+      "unitSeconds",
+      "valueDisabled",
+      "actionResetSessionCleanup",
+    ]) {
+      const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
+      assert.ok(matches && matches.length >= 5, `${key} should appear in all 5 language tables (saw ${matches ? matches.length : 0})`);
+    }
+  });
+
   it("uses collapsible option lists for Session HUD and sound controls", () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");
