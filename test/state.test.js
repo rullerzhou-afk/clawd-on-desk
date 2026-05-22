@@ -2053,6 +2053,20 @@ describe("requiresCompletionAck lifecycle", () => {
     assert.strictEqual(session && session.requiresCompletionAck, true);
   });
 
+  it("remote Codex JSONL task_complete also sets requiresCompletionAck=true", () => {
+    update(api, { id: "s1", state: "attention", event: "event_msg:task_complete", agentId: "codex", host: "ssh:example.com" });
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session && session.requiresCompletionAck, true);
+  });
+
+  it("remote Codex task_complete after Stop preserves the ack flag", () => {
+    update(api, { id: "s1", state: "idle", event: "Stop", agentId: "codex", host: "ssh:example.com" });
+    assert.strictEqual(api.sessions.get("s1").requiresCompletionAck, true);
+
+    update(api, { id: "s1", state: "attention", event: "event_msg:task_complete", agentId: "codex", host: "ssh:example.com" });
+    assert.strictEqual(api.sessions.get("s1").requiresCompletionAck, true);
+  });
+
   it("LOCAL Codex Stop does NOT set the flag (host=null)", () => {
     update(api, { id: "s1", state: "idle", event: "Stop", agentId: "codex", host: null });
     const session = api.sessions.get("s1");

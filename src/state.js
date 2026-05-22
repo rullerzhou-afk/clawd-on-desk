@@ -742,9 +742,11 @@ function evictOldestSessionIfNeeded(sessionId) {
 function reconcileAckFlag(sessionId, srcAgentId, srcHost, event) {
   const entry = sessions.get(sessionId);
   if (!entry) return; // session was deleted by this update — nothing to do
-  const isRemoteCodexStop =
-    srcAgentId === "codex" && !!srcHost && event === "Stop";
-  if (isRemoteCodexStop) {
+  const isRemoteCodexCompletion =
+    srcAgentId === "codex"
+    && !!srcHost
+    && (event === "Stop" || event === "event_msg:task_complete");
+  if (isRemoteCodexCompletion) {
     entry.requiresCompletionAck = true;
   } else if (entry.requiresCompletionAck) {
     // Strict equality on "Stop": any other event (including null/undefined,
