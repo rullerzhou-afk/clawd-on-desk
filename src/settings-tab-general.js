@@ -83,9 +83,6 @@
     parent.appendChild(helpers.buildSection(t("sectionAppearance"), [
       buildLanguageRow(),
       buildSizeSliderRow(),
-      buildSessionHudGroup(),
-      buildSessionCleanupGroup(),
-      buildDashboardRow(),
       buildSoundGroup(),
       helpers.buildSwitchRow({
         key: "lowPowerIdleMode",
@@ -102,6 +99,12 @@
         labelKey: "rowKeepSizeAcrossDisplays",
         descKey: "rowKeepSizeAcrossDisplaysDesc",
       }),
+    ]));
+
+    parent.appendChild(helpers.buildSection(t("sectionSession"), [
+      buildSessionHudGroup(),
+      buildSessionCleanupGroup(),
+      buildDashboardRow(),
     ]));
 
     const manageClaudeHooksEnabled = !!(state.snapshot && state.snapshot.manageClaudeHooksAutomatically);

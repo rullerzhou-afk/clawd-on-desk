@@ -1826,7 +1826,7 @@ describe("settings renderer browser environment", () => {
     const uiCoreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
     const actionsSource = fs.readFileSync(path.join(SRC_DIR, "settings-actions.js"), "utf8");
 
-    // Group is mounted top-level in the Appearance section (not nested under HUD).
+    // Group is mounted top-level in the General tab (not nested under HUD).
     assert.ok(generalSource.includes("buildSessionCleanupGroup()"));
     assert.ok(generalSource.includes('id: "general:session-cleanup"'));
 
@@ -1923,7 +1923,7 @@ describe("settings renderer browser environment", () => {
 
     const sections = generalHarness.content.querySelectorAll(".section");
     const sectionTitles = sections.map((section) => section.querySelector(".section-title").textContent);
-    assert.deepStrictEqual(sectionTitles, ["Appearance", "Startup", "Bubbles"]);
+    assert.deepStrictEqual(sectionTitles, ["Appearance", "Session management", "Startup", "Bubbles"]);
     assert.strictEqual(generalHarness.content.querySelector(".hardware-buddy-collapsible"), null);
 
     const remoteHarness = loadTelegramApprovalTabForTest({
