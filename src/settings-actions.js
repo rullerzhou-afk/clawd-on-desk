@@ -110,6 +110,13 @@ const {
   deployTargetFingerprint,
   deployTargetDrift,
 } = require("./remote-ssh-profile");
+const {
+  validateTelegramApproval,
+  validateTelegramBotToken,
+} = require("./telegram-approval-settings");
+const {
+  validateHardwareBuddySettings,
+} = require("./hardware-buddy-settings");
 
 // ── updateRegistry ──
 // Maps prefs field name → validator. Controller looks up by key and runs.
@@ -155,6 +162,7 @@ const updateRegistry = {
   lowPowerIdleMode: requireBoolean("lowPowerIdleMode"),
   bubbleFollowPet: requireBoolean("bubbleFollowPet"),
   sessionHudEnabled: requireBoolean("sessionHudEnabled"),
+  sessionHudShowStateLabels: requireBoolean("sessionHudShowStateLabels"),
   sessionHudShowElapsed: requireBoolean("sessionHudShowElapsed"),
   sessionHudCleanupDetached: requireBoolean("sessionHudCleanupDetached"),
   sessionHudAutoHide: requireBoolean("sessionHudAutoHide"),
@@ -176,6 +184,41 @@ const updateRegistry = {
     0,
     MAX_AUTO_CLOSE_SECONDS
   ),
+  // Session stale-cleanup intervals. Cross-field invariant
+  // (sessionStaleMs > 0 -> workingStaleMs <= sessionStaleMs) is enforced
+  // here against the live snapshot AND atomically through the
+  // `sessionCleanup.setTriple` command below. Hand-edit fallback lives in
+  // prefs.normalizeStaleTriple.
+  sessionStaleMs(value, deps = {}) {
+    if (value === 0) return { status: "ok" };
+    const base = requireIntegerInRange("sessionStaleMs", 60_000, 86_400_000)(value);
+    if (base.status !== "ok") return base;
+    const snapshot = (deps && deps.snapshot) || {};
+    const currentWorking = Number(snapshot.workingStaleMs);
+    if (Number.isFinite(currentWorking) && currentWorking > value) {
+      return {
+        status: "error",
+        message:
+          `sessionStaleMs (${value}) must be >= workingStaleMs (${currentWorking}). ` +
+          "To lower both, use the Reset / paired control.",
+      };
+    }
+    return { status: "ok" };
+  },
+  workingStaleMs(value, deps = {}) {
+    const base = requireIntegerInRange("workingStaleMs", 30_000, 86_400_000)(value);
+    if (base.status !== "ok") return base;
+    const snapshot = (deps && deps.snapshot) || {};
+    const currentSession = Number(snapshot.sessionStaleMs);
+    if (Number.isFinite(currentSession) && currentSession > 0 && value > currentSession) {
+      return {
+        status: "error",
+        message: `workingStaleMs (${value}) must be <= sessionStaleMs (${currentSession}).`,
+      };
+    }
+    return { status: "ok" };
+  },
+  detachedIdleStaleMs: requireIntegerInRange("detachedIdleStaleMs", 5_000, 300_000),
   allowEdgePinning: requireBoolean("allowEdgePinning"),
   keepSizeAcrossDisplays: requireBoolean("keepSizeAcrossDisplays"),
 
@@ -281,6 +324,13 @@ const updateRegistry = {
     }
     return { status: "ok" };
   },
+  tgApproval(value) {
+    return validateTelegramApproval(value);
+  },
+
+  hardwareBuddy(value) {
+    return validateHardwareBuddySettings(value);
+  },
 
   shortcuts: {
     validate(value) {
@@ -332,6 +382,70 @@ function setBubbleCategoryEnabled(payload, deps) {
   const result = buildCategoryEnabledCommit((deps && deps.snapshot) || {}, category, enabled);
   if (result.error) return { status: "error", message: result.error };
   return { status: "ok", commit: result.commit };
+}
+
+// Atomic three-key writer for the session-cleanup intervals. Lives as a
+// command (not as `applyBulk`) because applyBulk runs each single-key
+// validator against the PRE-bulk snapshot, which would reject a Reset that
+// lowers both knobs simultaneously. The controller's command path re-runs
+// validators against the merged snapshot, so the cross-field invariant is
+// checked against the values being written together rather than mixed
+// with the current state.
+function setSessionCleanupTriple(payload, deps) {
+  if (!payload || typeof payload !== "object") {
+    return { status: "error", message: "sessionCleanup.setTriple: payload must be an object" };
+  }
+  const snapshot = (deps && deps.snapshot) || {};
+
+  // Strict presence check: a present-but-wrong-type value is a programmer
+  // error and must surface, not silently fall back to the snapshot.
+  function pick(key) {
+    if (key in payload) {
+      const v = payload[key];
+      if (!Number.isInteger(v)) {
+        return { error: `${key} must be an integer (received ${typeof v})` };
+      }
+      return { value: v };
+    }
+    const fallback = Number(snapshot[key]);
+    if (!Number.isFinite(fallback)) {
+      return { error: `${key} missing from payload and not present in snapshot` };
+    }
+    return { value: fallback };
+  }
+
+  const s = pick("sessionStaleMs");
+  if (s.error) return { status: "error", message: s.error };
+  const w = pick("workingStaleMs");
+  if (w.error) return { status: "error", message: w.error };
+  const d = pick("detachedIdleStaleMs");
+  if (d.error) return { status: "error", message: d.error };
+
+  const sessionStaleMs = s.value;
+  const workingStaleMs = w.value;
+  const detachedIdleStaleMs = d.value;
+
+  if (!(sessionStaleMs === 0 || (sessionStaleMs >= 60_000 && sessionStaleMs <= 86_400_000))) {
+    return { status: "error", message: `sessionStaleMs out of range: ${sessionStaleMs}` };
+  }
+  if (!(workingStaleMs >= 30_000 && workingStaleMs <= 86_400_000)) {
+    return { status: "error", message: `workingStaleMs out of range: ${workingStaleMs}` };
+  }
+  if (!(detachedIdleStaleMs >= 5_000 && detachedIdleStaleMs <= 300_000)) {
+    return { status: "error", message: `detachedIdleStaleMs out of range: ${detachedIdleStaleMs}` };
+  }
+
+  if (sessionStaleMs > 0 && workingStaleMs > sessionStaleMs) {
+    return {
+      status: "error",
+      message: `workingStaleMs (${workingStaleMs}) must be <= sessionStaleMs (${sessionStaleMs}).`,
+    };
+  }
+
+  return {
+    status: "ok",
+    commit: { sessionStaleMs, workingStaleMs, detachedIdleStaleMs },
+  };
 }
 
 function sessionAliasMapEqual(a, b) {
@@ -764,6 +878,50 @@ function remoteSshDeleteProfile(payload, deps) {
   return { status: "ok", commit: { remoteSsh: next } };
 }
 
+async function telegramApprovalSetToken(payload, deps = {}) {
+  const token = typeof payload === "string"
+    ? payload
+    : (payload && typeof payload === "object" ? payload.token : "");
+  const valid = validateTelegramBotToken(token);
+  if (valid.status !== "ok") return valid;
+  if (!deps || typeof deps.writeTelegramApprovalToken !== "function") {
+    return { status: "error", message: "telegramApproval.setToken requires writeTelegramApprovalToken dep" };
+  }
+  const result = await deps.writeTelegramApprovalToken(valid.token);
+  if (!result || result.status !== "ok") {
+    return result || { status: "error", message: "Telegram bot token write failed" };
+  }
+  return { status: "ok", tokenStored: true };
+}
+
+function telegramApprovalStatus(_payload, deps = {}) {
+  if (!deps || typeof deps.getTelegramApprovalStatus !== "function") {
+    return { status: "error", message: "telegramApproval.status requires getTelegramApprovalStatus dep" };
+  }
+  const status = deps.getTelegramApprovalStatus();
+  return { status: "ok", state: status || { status: "stopped" } };
+}
+
+function telegramApprovalTokenInfo(_payload, deps = {}) {
+  if (!deps || typeof deps.getTelegramApprovalTokenInfo !== "function") {
+    return { status: "error", message: "telegramApproval.tokenInfo requires getTelegramApprovalTokenInfo dep" };
+  }
+  const info = deps.getTelegramApprovalTokenInfo() || { configured: false, masked: "" };
+  return {
+    status: "ok",
+    configured: info.configured === true,
+    masked: typeof info.masked === "string" ? info.masked : "",
+  };
+}
+
+async function telegramApprovalSendTest(_payload, deps = {}) {
+  if (!deps || typeof deps.sendTelegramApprovalTest !== "function") {
+    return { status: "error", message: "telegramApproval.test requires sendTelegramApprovalTest dep" };
+  }
+  const result = await deps.sendTelegramApprovalTest();
+  return result || { status: "error", message: "Telegram approval test returned no result" };
+}
+
 // Share a domain lock across all four remoteSsh.* commands so concurrent
 // invocations against the same prefs field serialize. Without this, the
 // controller assigns each command its own lock by name, and two commands
@@ -782,6 +940,8 @@ remoteSshUpdateProfile.lockKey = "remoteSsh";
 remoteSshDeleteProfile.lockKey = "remoteSsh";
 remoteSshMarkDeployed.lockKey = "remoteSsh";
 remoteSshMarkRemoteNode.lockKey = "remoteSsh";
+telegramApprovalSetToken.lockKey = "tgApproval";
+telegramApprovalSendTest.lockKey = "tgApproval";
 
 const repairDoctorIssue = createRepairDoctorIssue({
   repairAgentIntegration,
@@ -803,6 +963,7 @@ const commandRegistry = {
   setAgentPermissionMode,
   setAllBubblesHidden,
   setBubbleCategoryEnabled,
+  "sessionCleanup.setTriple": setSessionCleanupTriple,
   setSessionAlias,
   setAnimationOverride,
   setSoundOverride,
@@ -816,6 +977,10 @@ const commandRegistry = {
   "remoteSsh.delete": remoteSshDeleteProfile,
   "remoteSsh.markDeployed": remoteSshMarkDeployed,
   "remoteSsh.markRemoteNode": remoteSshMarkRemoteNode,
+  "telegramApproval.setToken": telegramApprovalSetToken,
+  "telegramApproval.status": telegramApprovalStatus,
+  "telegramApproval.tokenInfo": telegramApprovalTokenInfo,
+  "telegramApproval.test": telegramApprovalSendTest,
 };
 
 module.exports = {

@@ -5,7 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { resolveNodeBin } = require("./server-config");
-const { asarUnpackedPath } = require("./json-utils");
+const { asarUnpackedPath, extractExistingNodeBinFromCommands } = require("./json-utils");
 const MARKER = "kimi-hook.js";
 const MODE_EXPLICIT = "explicit";
 const MODE_SUSPECT = "suspect";
@@ -144,8 +144,6 @@ function registerKimiHooks(options = {}) {
   }
 
   const hookScript = asarUnpackedPath(path.resolve(__dirname, "kimi-hook.js").replace(/\\/g, "/"));
-  const resolved = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
-  const nodeBin = resolved || "node";
 
   let content = "";
   try {
@@ -157,6 +155,15 @@ function registerKimiHooks(options = {}) {
     // Create a minimal config.toml if it doesn't exist
     content = 'default_model = "kimi-for-coding"\n';
   }
+
+  // Preserve a user-repaired absolute Node path baked into the existing TOML
+  // when fresh detection fails. Without this, startup auto-sync would overwrite
+  // a working `C:\Program Files\nodejs\node.exe` back to bare `"node"` — the
+  // same regression mode #317 reported for Claude's settings.json.
+  const resolved = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
+  const nodeBin = resolved
+    || extractExistingNodeBinFromCommands(findKimiHookCommands(content, MARKER), MARKER)
+    || "node";
 
   // Priority: explicit caller option → env var → mode already baked into the
   // existing config.toml hook command. The fallback is critical for the

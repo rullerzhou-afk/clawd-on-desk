@@ -135,6 +135,30 @@ describe("Codex permission response sanitizer", () => {
     assert.strictEqual(permission.__test.buildCodexPermissionResponseBody({ behavior: "ask" }), "{}");
   });
 
+  it("keeps Antigravity allow/ask decisions and drops permissionOverrides", () => {
+    const permission = loadPermissionWithElectron();
+    const body = permission.__test.buildAntigravityPermissionResponseBody({
+      decision: "force_ask",
+      reason: "Review natively",
+      permissionOverrides: ["command(npm test)"],
+    });
+    const parsed = JSON.parse(body);
+
+    assert.deepStrictEqual(parsed, {
+      decision: "force_ask",
+      reason: "Review natively",
+    });
+    const allowBody = permission.__test.buildAntigravityPermissionResponseBody({
+      decision: "allow",
+      permissionOverrides: ["command(Remove-Item test.md)"],
+    });
+    assert.deepStrictEqual(JSON.parse(allowBody), {
+      decision: "allow",
+      allowTool: true,
+    });
+    assert.strictEqual(permission.__test.buildAntigravityPermissionResponseBody({ decision: "maybe" }), "{}");
+  });
+
   it("treats Codex deny-and-focus as immediate no-decision instead of hanging the socket", () => {
     const { api, focusCalls } = createCodexDecisionHarness();
     const res = createFakeRes();
@@ -214,7 +238,7 @@ describe("Codex permission response sanitizer", () => {
     }
   });
 
-  it("treats Pi deny-and-focus as immediate no-decision instead of hanging the socket", () => {
+  it("treats Antigravity deny-and-focus as immediate no-decision instead of hanging the socket", () => {
     const { api, focusCalls } = createCodexDecisionHarness();
     const res = createFakeRes();
     const bubble = createFakeBubble();
@@ -222,14 +246,19 @@ describe("Codex permission response sanitizer", () => {
       res,
       abortHandler: () => {},
       suggestions: [],
-      sessionId: "pi:s1",
+      sessionId: "antigravity:s1",
       bubble,
       hideTimer: null,
-      toolName: "bash",
-      toolInput: { command: "npm test" },
+      toolName: "run_command",
+      toolInput: { CommandLine: "npm test" },
       createdAt: Date.now(),
-      agentId: "pi",
-      isPi: true,
+      agentId: "antigravity-cli",
+      isAntigravity: true,
+      sourcePid: 456,
+      cwd: "/repo",
+      agentPid: 456,
+      pidChain: [789, 456],
+      platform: "win32",
     };
     api.pendingPermissions.push(permEntry);
 
@@ -238,11 +267,24 @@ describe("Codex permission response sanitizer", () => {
     assert.strictEqual(res.statusCode, 204);
     assert.strictEqual(res.writableEnded, true);
     assert.strictEqual(res.body, "");
-    assert.deepStrictEqual(focusCalls, [["pi:s1", { fallbackEntry: { id: "pi:s1", agentId: "pi" } }]]);
+    assert.deepStrictEqual(focusCalls, [[
+      "antigravity:s1",
+      {
+        fallbackEntry: {
+          id: "antigravity:s1",
+          agentId: "antigravity-cli",
+          sourcePid: 456,
+          cwd: "/repo",
+          agentPid: 456,
+          pidChain: [789, 456],
+          platform: "win32",
+        },
+      },
+    ]]);
     assert.strictEqual(api.pendingPermissions.length, 0);
   });
 
-  it("responds to Pi allow and deny with the shared permission response shape", () => {
+  it("responds to Antigravity allow and deny with direct hook stdout shape", () => {
     for (const behavior of ["allow", "deny"]) {
       const { api } = createCodexDecisionHarness();
       const res = createFakeRes();
@@ -251,22 +293,25 @@ describe("Codex permission response sanitizer", () => {
         res,
         abortHandler: () => {},
         suggestions: [],
-        sessionId: "pi:s1",
+        sessionId: "antigravity:s1",
         bubble,
         hideTimer: null,
-        toolName: "bash",
-        toolInput: { command: "npm test" },
+        toolName: "run_command",
+        toolInput: { CommandLine: "npm test" },
         createdAt: Date.now(),
-        agentId: "pi",
-        isPi: true,
+        agentId: "antigravity-cli",
+        isAntigravity: true,
       });
 
       api.handleDecide({ sender: { __window: bubble } }, behavior);
 
       assert.strictEqual(res.statusCode, 200);
       const parsed = JSON.parse(res.body);
-      assert.strictEqual(parsed.hookSpecificOutput.hookEventName, "PermissionRequest");
-      assert.strictEqual(parsed.hookSpecificOutput.decision.behavior, behavior);
+      assert.strictEqual(parsed.decision, behavior);
+      if (behavior === "allow") {
+        assert.strictEqual(parsed.allowTool, true);
+      }
+      assert.strictEqual(parsed.permissionOverrides, undefined);
       assert.strictEqual(api.pendingPermissions.length, 0);
     }
   });
@@ -276,11 +321,11 @@ describe("Codex permission response sanitizer", () => {
     const codexRes = createFakeRes();
     const claudeRes = createFakeRes();
     const opencodeRes = createFakeRes();
-    const piRes = createFakeRes();
+    const antigravityRes = createFakeRes();
     const codexBubble = createFakeBubble();
     const claudeBubble = createFakeBubble();
     const opencodeBubble = createFakeBubble();
-    const piBubble = createFakeBubble();
+    const antigravityBubble = createFakeBubble();
     const notifyBubble = createFakeBubble();
 
     api.pendingPermissions.push(
@@ -313,13 +358,13 @@ describe("Codex permission response sanitizer", () => {
         requestId: "req-1",
       },
       {
-        res: piRes,
+        res: antigravityRes,
         abortHandler: () => {},
-        sessionId: "pi:s1",
-        bubble: piBubble,
+        sessionId: "antigravity:s1",
+        bubble: antigravityBubble,
         hideTimer: null,
-        agentId: "pi",
-        isPi: true,
+        agentId: "antigravity-cli",
+        isAntigravity: true,
       },
       {
         sessionId: "codex:s1",
@@ -333,15 +378,15 @@ describe("Codex permission response sanitizer", () => {
 
     assert.strictEqual(codexRes.statusCode, 204);
     assert.strictEqual(codexRes.body, "");
-    assert.strictEqual(piRes.statusCode, 204);
-    assert.strictEqual(piRes.body, "");
+    assert.strictEqual(antigravityRes.statusCode, 204);
+    assert.strictEqual(antigravityRes.body, "");
     assert.strictEqual(claudeRes.destroyed, true);
     assert.strictEqual(opencodeRes.destroyed, false);
     assert.strictEqual(opencodeRes.statusCode, null);
     assert.strictEqual(codexBubble.hidden, true);
     assert.strictEqual(claudeBubble.hidden, true);
     assert.strictEqual(opencodeBubble.hidden, true);
-    assert.strictEqual(piBubble.hidden, true);
+    assert.strictEqual(antigravityBubble.hidden, true);
     assert.strictEqual(notifyBubble.hidden, true);
     assert.strictEqual(api.pendingPermissions.length, 0);
   });

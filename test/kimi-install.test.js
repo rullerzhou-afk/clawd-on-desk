@@ -217,6 +217,31 @@ timeout = 30
     assert.strictEqual(markerLines.length, KIMI_HOOK_EVENTS.length);
   });
 
+  it("preserves an existing absolute Windows node path when detection fails", () => {
+    // Issue #317 follow-up: Kimi TOML used to lose the user's manual
+    // C:\Program Files\nodejs\node.exe repair on startup auto-sync because
+    // no preservation chain existed for the kimi-install path.
+    const { settingsPath } = makeTempKimiHome();
+    const existingWinPath = "C:\\Program Files\\nodejs\\node.exe";
+    const initial = [
+      'default_model = "kimi-for-coding"',
+      "",
+      "[[hooks]]",
+      'event = "PreToolUse"',
+      `command = '"${existingWinPath}" "/opt/clawd/hooks/kimi-hook.js"'`,
+      'matcher = ""',
+      "timeout = 30",
+      "",
+    ].join("\n");
+    fs.writeFileSync(settingsPath, initial, "utf8");
+
+    registerKimiHooks({ silent: true, settingsPath, nodeBin: null });
+
+    const after = fs.readFileSync(settingsPath, "utf8");
+    assert.ok(after.includes(existingWinPath), `expected ${existingWinPath} to be preserved`);
+    assert.ok(!/command\s*=\s*'"node"/.test(after), "should not downgrade to bare node");
+  });
+
   it("skips when ~/.kimi/ does not exist", () => {
     const { root } = makeTempKimiHome();
     const settingsPath = path.join(root, ".kimi-not-exist", "config.toml");

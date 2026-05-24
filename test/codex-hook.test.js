@@ -24,6 +24,14 @@ const mockResolve = () => ({
   pidChain: [789, 456, 123],
 });
 
+const mockResolveWithWtHwnd = () => ({
+  stablePid: 123,
+  agentPid: 456,
+  detectedEditor: "code",
+  pidChain: [789, 456, 123],
+  foregroundWtHwnd: "123456",
+});
+
 function withTempTranscript(lines, fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-hook-"));
   const file = path.join(dir, "rollout-2026-03-25T15-10-51-019d23d4-f1a9-7633-b9c7-758327137228.jsonl");
@@ -91,6 +99,25 @@ describe("Codex official hook", () => {
     assert.strictEqual(body.agent_pid, 456);
     assert.strictEqual(body.editor, "code");
     assert.deepStrictEqual(body.pid_chain, [789, 456, 123]);
+  });
+
+  it("includes foreground WT HWND only on foreground-safe state events", () => {
+    const startBody = buildStateBody({
+      hook_event_name: "SessionStart",
+      session_id: "s1",
+    }, mockResolveWithWtHwnd);
+    const promptBody = buildStateBody({
+      hook_event_name: "UserPromptSubmit",
+      session_id: "s1",
+    }, mockResolveWithWtHwnd);
+    const stopBody = buildStateBody({
+      hook_event_name: "Stop",
+      session_id: "s1",
+    }, mockResolveWithWtHwnd);
+
+    assert.strictEqual(startBody.wt_hwnd, "123456");
+    assert.strictEqual(promptBody.wt_hwnd, "123456");
+    assert.ok(!("wt_hwnd" in stopBody));
   });
 
   it("carries Codex Desktop session metadata and prefers persistent agent pid", () => {

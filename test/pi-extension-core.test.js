@@ -77,48 +77,6 @@ describe("pi-extension-core", () => {
     });
   });
 
-  it("builds a Clawd /permission payload with Pi tool input and pid fields", () => {
-    const payload = core.buildPermissionPayload({
-      nativeEvent: {
-        toolName: "bash",
-        toolCallId: "tool-1",
-        input: { command: "echo ok" },
-      },
-      ctx: makeCtx(),
-      metadata: {
-        cwd: "D:/work/project",
-        sourcePid: 1234,
-        pidChain: [3333, 2222, 1234],
-        editor: "code",
-      },
-      agentPid: 3333,
-    });
-
-    assert.deepStrictEqual(payload, {
-      agent_id: "pi",
-      hook_source: "pi-extension",
-      session_id: "pi:session-1",
-      tool_input: { command: "echo ok" },
-      agent_pid: 3333,
-      cwd: "D:/work/project",
-      source_pid: 1234,
-      pid_chain: [3333, 2222, 1234],
-      editor: "code",
-      tool_name: "bash",
-      tool_use_id: "tool-1",
-    });
-  });
-
-  it("requests permission only for mutating Pi tools", () => {
-    assert.strictEqual(core.shouldRequestPermission({ toolName: "bash" }), true);
-    assert.strictEqual(core.shouldRequestPermission({ toolName: "write" }), true);
-    assert.strictEqual(core.shouldRequestPermission({ toolName: "edit" }), true);
-    assert.strictEqual(core.shouldRequestPermission({ toolName: "read" }), false);
-    assert.strictEqual(core.shouldRequestPermission({ toolName: "grep" }), false);
-    assert.strictEqual(core.shouldRequestPermission({ toolName: "find" }), false);
-    assert.strictEqual(core.shouldRequestPermission({ toolName: "ls" }), false);
-  });
-
   it("falls back to a default session id when Pi session metadata is unavailable", () => {
     const payload = core.buildPayload({
       state: "idle",
@@ -171,7 +129,7 @@ describe("pi-extension-core", () => {
     assert.strictEqual(posts[0].agent_pid, 999);
   });
 
-  it("allows read-only tool calls without permission", async () => {
+  it("reports mutating tool calls as state only and never asks for permission", async () => {
     const handlers = {};
     const pi = {
       on(name, handler) {
@@ -179,7 +137,6 @@ describe("pi-extension-core", () => {
       },
     };
     const posts = [];
-    const permissionCalls = [];
     core.attach(pi, {
       shouldReport: () => true,
       buildPayload: ({ state, event, nativeEvent, ctx }) => core.buildPayload({
@@ -188,57 +145,9 @@ describe("pi-extension-core", () => {
         nativeEvent,
         ctx,
       }),
-      buildPermissionPayload: ({ nativeEvent, ctx }) => core.buildPermissionPayload({ nativeEvent, ctx }),
       postState: (payload) => {
         posts.push(payload);
         return true;
-      },
-      postPermission: (payload) => {
-        permissionCalls.push(payload);
-        return { behavior: "allow" };
-      },
-    });
-
-    const result = await handlers.tool_call({
-      type: "tool_call",
-      toolName: "read",
-      toolCallId: "tool-read",
-      input: { path: "README.md" },
-    }, makeCtx());
-    await Promise.resolve();
-
-    assert.strictEqual(result, undefined);
-    assert.deepStrictEqual(permissionCalls, []);
-    assert.deepStrictEqual(posts.map((payload) => [payload.event, payload.state, payload.tool_name]), [
-      ["PreToolUse", "working", "read"],
-    ]);
-  });
-
-  it("maps Clawd allow to no block for mutating tools", async () => {
-    const handlers = {};
-    const pi = {
-      on(name, handler) {
-        handlers[name] = handler;
-      },
-    };
-    const posts = [];
-    const permissionCalls = [];
-    core.attach(pi, {
-      shouldReport: () => true,
-      buildPayload: ({ state, event, nativeEvent, ctx }) => core.buildPayload({
-        state,
-        event,
-        nativeEvent,
-        ctx,
-      }),
-      buildPermissionPayload: ({ nativeEvent, ctx }) => core.buildPermissionPayload({ nativeEvent, ctx }),
-      postState: (payload) => {
-        posts.push(payload);
-        return true;
-      },
-      postPermission: (payload) => {
-        permissionCalls.push(payload);
-        return { behavior: "allow" };
       },
     });
 
@@ -251,155 +160,35 @@ describe("pi-extension-core", () => {
     await Promise.resolve();
 
     assert.strictEqual(result, undefined);
-    assert.strictEqual(permissionCalls.length, 1);
-    assert.deepStrictEqual(permissionCalls[0].tool_input, { command: "echo ok" });
     assert.deepStrictEqual(posts.map((payload) => [payload.event, payload.state, payload.tool_name]), [
       ["PreToolUse", "working", "bash"],
     ]);
   });
 
-  it("maps Clawd deny to a blocking Pi tool_call result", async () => {
+  it("does not block Pi tools if state reporting fails", async () => {
     const handlers = {};
     const pi = {
       on(name, handler) {
         handlers[name] = handler;
       },
     };
-    const posts = [];
     core.attach(pi, {
       shouldReport: () => true,
-      buildPayload: ({ state, event, nativeEvent, ctx }) => core.buildPayload({
-        state,
-        event,
-        nativeEvent,
-        ctx,
-      }),
-      buildPermissionPayload: ({ nativeEvent, ctx }) => core.buildPermissionPayload({ nativeEvent, ctx }),
-      postState: (payload) => {
-        posts.push(payload);
-        return true;
+      buildPayload: () => {
+        throw new Error("metadata failed");
       },
-      postPermission: () => ({ behavior: "deny", message: "Blocked by test" }),
+      postState: () => true,
     });
 
     const result = await handlers.tool_call({
       type: "tool_call",
-      toolName: "write",
-      toolCallId: "tool-write",
-      input: { path: "out.txt", content: "x" },
-    }, makeCtx());
-
-    assert.deepStrictEqual(result, { block: true, reason: "Blocked by test" });
-    assert.deepStrictEqual(posts.map((payload) => [payload.event, payload.state, payload.tool_name]), [
-      ["PostToolUseFailure", "error", "write"],
-    ]);
-  });
-
-  it("falls back to terminal confirmation on no permission decision", async () => {
-    const handlers = {};
-    const pi = {
-      on(name, handler) {
-        handlers[name] = handler;
-      },
-    };
-    const posts = [];
-    const confirmations = [];
-    core.attach(pi, {
-      shouldReport: () => true,
-      buildPayload: ({ state, event, nativeEvent, ctx }) => core.buildPayload({
-        state,
-        event,
-        nativeEvent,
-        ctx,
-      }),
-      buildPermissionPayload: ({ nativeEvent, ctx }) => core.buildPermissionPayload({ nativeEvent, ctx }),
-      postState: (payload) => {
-        posts.push(payload);
-        return true;
-      },
-      postPermission: () => ({ behavior: "no-decision" }),
-      confirmPermission: (payload) => {
-        confirmations.push(payload);
-        return true;
-      },
-    });
-
-    const result = await handlers.tool_call({
-      type: "tool_call",
-      toolName: "edit",
-      toolCallId: "tool-edit",
-      input: { path: "a.txt" },
+      toolName: "bash",
+      toolCallId: "tool-bash",
+      input: { command: "echo ok" },
     }, makeCtx());
     await Promise.resolve();
 
     assert.strictEqual(result, undefined);
-    assert.strictEqual(confirmations.length, 1);
-    assert.deepStrictEqual(posts.map((payload) => [payload.event, payload.state, payload.tool_name]), [
-      ["PreToolUse", "working", "edit"],
-    ]);
-  });
-
-  it("blocks mutating tools when terminal fallback is denied", async () => {
-    const handlers = {};
-    const pi = {
-      on(name, handler) {
-        handlers[name] = handler;
-      },
-    };
-    core.attach(pi, {
-      shouldReport: () => true,
-      buildPayload: ({ state, event, nativeEvent, ctx }) => core.buildPayload({
-        state,
-        event,
-        nativeEvent,
-        ctx,
-      }),
-      buildPermissionPayload: ({ nativeEvent, ctx }) => core.buildPermissionPayload({ nativeEvent, ctx }),
-      postState: () => true,
-      postPermission: () => ({ behavior: "no-decision" }),
-      confirmPermission: () => false,
-    });
-
-    const result = await handlers.tool_call({
-      type: "tool_call",
-      toolName: "bash",
-      toolCallId: "tool-bash",
-      input: { command: "echo no" },
-    }, makeCtx());
-
-    assert.deepStrictEqual(result, { block: true, reason: core.DEFAULT_PERMISSION_DENY_REASON });
-  });
-
-  it("does not throw from tool_call when permission fallback itself fails", async () => {
-    const handlers = {};
-    const pi = {
-      on(name, handler) {
-        handlers[name] = handler;
-      },
-    };
-    core.attach(pi, {
-      shouldReport: () => true,
-      buildPermissionPayload: ({ nativeEvent, ctx }) => core.buildPermissionPayload({ nativeEvent, ctx }),
-      postState: () => true,
-      postPermission: () => {
-        throw new Error("network exploded");
-      },
-      confirmPermission: () => {
-        throw new Error("confirm exploded");
-      },
-    });
-
-    const result = await handlers.tool_call({
-      type: "tool_call",
-      toolName: "bash",
-      toolCallId: "tool-bash",
-      input: { command: "echo no" },
-    }, makeCtx());
-
-    assert.deepStrictEqual(result, {
-      block: true,
-      reason: core.DEFAULT_PERMISSION_FALLBACK_DENY_REASON,
-    });
   });
 
   it("maps tool_result errors separately from successful tool results", async () => {

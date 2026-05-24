@@ -1,5 +1,7 @@
 // Pi agent configuration
-// Perception via Pi extension: lifecycle event hook -> HTTP POST to Clawd
+// Perception via Pi extension: lifecycle event hook -> HTTP POST to Clawd.
+// Pi remains state-only here; Clawd must not add a permission layer on top of
+// Pi's default YOLO execution model.
 
 module.exports = {
   id: "pi",
@@ -21,9 +23,9 @@ module.exports = {
   },
   capabilities: {
     httpHook: false,
-    permissionApproval: true,
+    permissionApproval: false,
     notificationHook: false,
-    interactiveBubble: true,
+    interactiveBubble: false,
     sessionEnd: true,
     subagent: false,
   },

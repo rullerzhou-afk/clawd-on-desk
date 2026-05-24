@@ -7,6 +7,8 @@ const { EventEmitter } = require("events");
 const {
   buildSshArgs,
   buildScpArgs,
+  parseOpenSshVersion,
+  isUnsupportedWindowsOpenSsh,
   classifyStderr,
   classifyProbeExit,
   buildProbeCommand,
@@ -15,16 +17,56 @@ const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
   PROBE_MIN_GAP_MS,
+  PROBE_CHILD_TIMEOUT_MS,
   BACKOFF_SCHEDULE_MS,
 } = require("../src/remote-ssh-runtime");
 const { clearRemoteNodeCache } = require("../src/remote-ssh-node");
 
+const DETECT_SSH_OK = () => ({
+  available: true,
+  version: "OpenSSH_9.5p2",
+  parsedVersion: { major: 9, minor: 5, patch: 2 },
+});
+
 function createRemoteSshRuntime(deps = {}) {
   return createRemoteSshRuntimeBase({
+    detectSsh: DETECT_SSH_OK,
     resolveRemoteNodeBin: () => ({ ok: true, nodeBin: "/usr/bin/node", version: "v20.0.0", source: "test" }),
     ...deps,
   });
 }
+
+// ── ssh detection ──
+
+test("parseOpenSshVersion extracts Windows and portable OpenSSH banners", () => {
+  assert.deepEqual(
+    parseOpenSshVersion("OpenSSH_for_Windows_7.7p1, LibreSSL 2.6.5"),
+    { major: 7, minor: 7, patch: 1 }
+  );
+  assert.deepEqual(
+    parseOpenSshVersion("OpenSSH_9.5p2 Ubuntu-1, OpenSSL 3.0.13"),
+    { major: 9, minor: 5, patch: 2 }
+  );
+  assert.deepEqual(
+    parseOpenSshVersion("OpenSSH_8.8p1, OpenSSL 3.0.5"),
+    { major: 8, minor: 8, patch: 1 }
+  );
+  assert.equal(parseOpenSshVersion("not ssh"), null);
+});
+
+test("Windows OpenSSH before 8 is rejected for Remote SSH health probes", () => {
+  const legacy = { available: true, version: "OpenSSH_for_Windows_7.7p1, LibreSSL 2.6.5" };
+  const modern = { available: true, version: "OpenSSH_for_Windows_8.1p1, LibreSSL 3.0.2" };
+  const gitForWindows = { available: true, version: "OpenSSH_8.8p1, OpenSSL 3.0.5" };
+  const unknown = { available: true, version: "plink masquerading as ssh" };
+  const missing = { available: false, error: "ssh executable not found in PATH" };
+  assert.equal(isUnsupportedWindowsOpenSsh(legacy, "win32"), true);
+  assert.equal(isUnsupportedWindowsOpenSsh(legacy, "linux"), false);
+  assert.equal(isUnsupportedWindowsOpenSsh(modern, "win32"), false);
+  assert.equal(isUnsupportedWindowsOpenSsh(gitForWindows, "win32"), false);
+  assert.equal(isUnsupportedWindowsOpenSsh(unknown, "win32"), false);
+  assert.equal(isUnsupportedWindowsOpenSsh(missing, "win32"), false);
+});
 
 // ── buildSshArgs ──
 
@@ -356,6 +398,66 @@ test("createRemoteSshRuntime requires getHookServerPort dep", () => {
   assert.throws(() => createRemoteSshRuntime({}), /getHookServerPort/);
 });
 
+test("connect fails fast on legacy Windows OpenSSH before spawning tunnel", () => {
+  let spawned = false;
+  const rt = createRemoteSshRuntime({
+    platform: "win32",
+    detectSsh: () => ({
+      available: true,
+      version: "OpenSSH_for_Windows_7.7p1, LibreSSL 2.6.5",
+    }),
+    spawn: () => {
+      spawned = true;
+      return makeMockChild();
+    },
+    getHookServerPort: () => 23333,
+  });
+  const events = [];
+  rt.on("status-changed", (s) => events.push(s));
+
+  rt.connect({ id: "p1", host: "pi", remoteForwardPort: 23333 });
+
+  const failed = events.find((e) => e.status === "failed");
+  assert.ok(failed);
+  assert.equal(failed.lastErrorReason, "windows_openssh_legacy");
+  assert.equal(failed.hint, "remoteSshErrWindowsOpenSshLegacy");
+  assert.match(failed.message, /Upgrade Windows OpenSSH to 8\.x or newer/);
+  assert.equal(spawned, false);
+});
+
+test("manual reconnect reruns ssh detection after legacy Windows OpenSSH failure", () => {
+  let detectCalls = 0;
+  let spawnCalls = 0;
+  const timers = makeFakeTimers();
+  const rt = createRemoteSshRuntime({
+    platform: "win32",
+    detectSsh: () => {
+      detectCalls += 1;
+      return detectCalls === 1
+        ? { available: true, version: "OpenSSH_for_Windows_7.7p1, LibreSSL 2.6.5" }
+        : { available: true, version: "OpenSSH_for_Windows_8.1p1, LibreSSL 3.0.2" };
+    },
+    spawn: () => {
+      spawnCalls += 1;
+      return makeMockChild();
+    },
+    getHookServerPort: () => 23333,
+    setTimeout: timers.setTimeoutFn,
+    clearTimeout: timers.clearTimeoutFn,
+  });
+  const profile = { id: "p1", host: "pi", remoteForwardPort: 23333 };
+
+  rt.connect(profile);
+  assert.equal(rt.getProfileStatus("p1").status, "failed");
+  assert.equal(spawnCalls, 0);
+
+  const second = rt.connect(profile);
+  assert.equal(detectCalls, 2);
+  assert.equal(spawnCalls, 1);
+  assert.equal(second.status, "connecting");
+  rt.cleanup();
+});
+
 test("connect spawns ssh with main forward args + LANG=C env", async () => {
   const spawnCalls = [];
   const mockChild = makeMockChild();
@@ -400,6 +502,34 @@ test("connect spawns ssh with main forward args + LANG=C env", async () => {
   rt.cleanup();
 });
 
+test("hung probe child is hard-timed out so the probe loop can retry", async () => {
+  const children = [];
+  const spawn = () => {
+    const c = makeMockChild();
+    children.push(c);
+    return c;
+  };
+  const timers = makeFakeTimers();
+  const rt = createRemoteSshRuntime({
+    spawn,
+    getHookServerPort: () => 23333,
+    setTimeout: timers.setTimeoutFn,
+    clearTimeout: timers.clearTimeoutFn,
+  });
+
+  rt.connect({ id: "p1", host: "pi", remoteForwardPort: 23333 });
+  timers.flushWhere((t) => t.ms === 0);
+  assert.equal(children.length, 2, "main tunnel + first probe");
+
+  timers.flushWhere((t) => t.ms === PROBE_CHILD_TIMEOUT_MS);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children[1]._killed, true);
+
+  timers.flushWhere((t) => t.ms === PROBE_MIN_GAP_MS);
+  assert.equal(children.length, 3, "probe retry should be allowed after hard timeout");
+  rt.cleanup();
+});
+
 test("connect starts health probe immediately on remote Node cache miss", async () => {
   clearRemoteNodeCache();
   const spawnCalls = [];
@@ -413,6 +543,7 @@ test("connect starts health probe immediately on remote Node cache miss", async 
   };
   const timers = makeFakeTimers();
   const rt = createRemoteSshRuntimeBase({
+    detectSsh: DETECT_SSH_OK,
     spawn,
     getHookServerPort: () => 23335,
     setTimeout: timers.setTimeoutFn,
@@ -449,6 +580,7 @@ test("bare node probe failure waits for in-flight resolver before failing", asyn
   };
   const timers = makeFakeTimers();
   const rt = createRemoteSshRuntimeBase({
+    detectSsh: DETECT_SSH_OK,
     spawn,
     getHookServerPort: () => 23335,
     setTimeout: timers.setTimeoutFn,
@@ -483,6 +615,7 @@ test("bare node probe does not keep spawning while absolute-node resolver is in 
   };
   const timers = makeFakeTimers();
   const rt = createRemoteSshRuntimeBase({
+    detectSsh: DETECT_SSH_OK,
     spawn,
     getHookServerPort: () => 23335,
     setTimeout: timers.setTimeoutFn,
@@ -518,6 +651,7 @@ test("disconnect followed by reconnect clears a stale in-flight node resolver ga
   const timers = makeFakeTimers();
   const profile = { id: "p1", host: "user@pi", remoteForwardPort: 23333 };
   const rt = createRemoteSshRuntimeBase({
+    detectSsh: DETECT_SSH_OK,
     spawn,
     getHookServerPort: () => 23335,
     setTimeout: timers.setTimeoutFn,
@@ -554,6 +688,7 @@ test("connect uses persisted remote Node path and skips background resolver", as
   };
   const timers = makeFakeTimers();
   const rt = createRemoteSshRuntimeBase({
+    detectSsh: DETECT_SSH_OK,
     spawn,
     getHookServerPort: () => 23335,
     setTimeout: timers.setTimeoutFn,
@@ -591,6 +726,7 @@ test("cached absolute node probe failure clears cache and re-resolves", async ()
   };
   const timers = makeFakeTimers();
   const rt = createRemoteSshRuntimeBase({
+    detectSsh: DETECT_SSH_OK,
     spawn,
     getHookServerPort: () => 23335,
     setTimeout: timers.setTimeoutFn,
@@ -635,6 +771,7 @@ test("connect emits remote-node-detected when background resolver succeeds", asy
   };
   const timers = makeFakeTimers();
   const rt = createRemoteSshRuntimeBase({
+    detectSsh: DETECT_SSH_OK,
     spawn,
     getHookServerPort: () => 23333,
     setTimeout: timers.setTimeoutFn,
@@ -685,6 +822,7 @@ test("connect classifies Permission denied as permanent failed (no retry)", asyn
   const last = events[events.length - 1];
   assert.equal(last.status, "failed");
   assert.equal(last.lastErrorReason, "auth_denied");
+  assert.equal(last.hint, "remoteSshErrAuthDenied");
   rt.cleanup();
 });
 
@@ -719,6 +857,7 @@ test("connect preserves auth failures reported by remote Node resolver", async (
   const last = events[events.length - 1];
   assert.equal(last.status, "failed");
   assert.equal(last.lastErrorReason, "auth_denied");
+  assert.equal(last.hint, "remoteSshErrAuthDenied");
   rt.cleanup();
 });
 
@@ -749,6 +888,7 @@ test("connect classifies Connection timed out as transient + schedules reconnect
   const reconnectEv = events.find((e) => e.status === "reconnecting");
   assert.ok(reconnectEv, "should enter reconnecting");
   assert.equal(reconnectEv.lastErrorReason, "net_timeout");
+  assert.equal(reconnectEv.hint, "remoteSshErrNetTimeout");
   // Status is reconnecting, not failed.
   assert.equal(rt.getProfileStatus("p1").status, "reconnecting");
   rt.cleanup();
@@ -802,6 +942,7 @@ test("disconnect tears down child, sets idle, and stops reconnect", async () => 
   rt.connect({ id: "p1", host: "pi", remoteForwardPort: 23333 });
   rt.disconnect("p1");
   assert.equal(rt.getProfileStatus("p1").status, "idle");
+  assert.equal(rt.getProfileStatus("p1").hint, null);
   assert.equal(mainChild._killed, true);
   rt.cleanup();
 });

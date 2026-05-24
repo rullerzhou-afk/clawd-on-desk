@@ -90,6 +90,7 @@ function animateWindowX(targetX, durationMs, onDone) {
     }
     ctx.syncHitWin();
     repositionSessionHud();
+    syncContainedClip();
     // Throttle bubble reposition to every 3rd frame (~20fps) — visually identical, less overhead
     if (ctx.bubbleFollowPet && ctx.pendingPermissions.length && (++frameCount % 3 === 0 || t >= 1)) ctx.repositionBubbles();
     if (t < 1) {
@@ -143,6 +144,7 @@ function animateWindowParabola(targetX, targetY, durationMs, onDone) {
     }
     ctx.syncHitWin();
     repositionSessionHud();
+    syncContainedClip();
     // Throttle bubble reposition to every 3rd frame (~20fps) — visually identical, less overhead
     if (ctx.bubbleFollowPet && ctx.pendingPermissions.length && (++frameCount % 3 === 0 || t >= 1)) ctx.repositionBubbles();
     if (t < 1) {
@@ -154,6 +156,58 @@ function animateWindowParabola(targetX, targetY, durationMs, onDone) {
     }
   };
   step();
+}
+
+// When the mini pet at `wa`/`yMid` sits at an internal seam in `edge`
+// direction, returns the seam X — the local display's *bounds* edge, which
+// is the physical boundary the neighbouring monitor begins at (and the same
+// place a single-display mini gets physically cut off by the screen edge).
+// Returns null at an outer screen edge (single display, or no neighbour at
+// the pet's vertical band). The 4px tolerance absorbs OS-side rounding.
+function seamBoundary(wa, yMid, edge) {
+  const displays = screen.getAllDisplays();
+  const cx = wa.x + wa.width / 2;
+  const cy = wa.y + wa.height / 2;
+  const local = displays.find((d) =>
+    cx >= d.workArea.x && cx <= d.workArea.x + d.workArea.width &&
+    cy >= d.workArea.y && cy <= d.workArea.y + d.workArea.height);
+  const lb = local ? local.bounds : wa;
+  const seam = edge === "right" ? lb.x + lb.width : lb.x;
+  const overlapsY = (d) => {
+    if (!Number.isFinite(yMid)) return false;
+    return yMid >= d.bounds.y && yMid <= d.bounds.y + d.bounds.height;
+  };
+  const hasNeighbour = displays.some((d) => {
+    if (d === local || !overlapsY(d)) return false;
+    const dEdge = edge === "right" ? d.bounds.x : d.bounds.x + d.bounds.width;
+    return Math.abs(dEdge - seam) <= 4;
+  });
+  return hasNeighbour ? seam : null;
+}
+
+// Multi-monitor seam state: when the mini pet sits at an internal seam, the
+// half that pokes past `containedBoundary` (the display 1 edge in screen X)
+// gets clip-pathed away in the renderer so it doesn't show on the neighbour.
+// `null` outside contained mini.
+let containedBoundary = null;
+
+function syncContainedClip() {
+  // Startup recovery computes the seam state before the render window
+  // exists; theme/renderer reload can also tear the window down briefly.
+  // Bail out rather than dereference a missing window — the clip is
+  // (re)sent from syncRendererStateAfterLoad() once the renderer is up.
+  if (!ctx.win || ctx.win.isDestroyed()) return;
+  if (!miniMode || containedBoundary == null) {
+    ctx.sendToRenderer("mini-clip", null);
+    return;
+  }
+  const bounds = ctx.win.getBounds();
+  if (!bounds.width) return;
+  const fraction = (containedBoundary - bounds.x) / bounds.width;
+  ctx.sendToRenderer("mini-clip", {
+    fraction: Math.max(0, Math.min(1, fraction)),
+    edge: miniEdge,
+  });
 }
 
 // Shared X-position formula for mini mode (eliminates duplication across 4+ call sites)
@@ -264,6 +318,12 @@ function enterMiniMode(wa, viaMenu, edge) {
   lastMiniWorkArea = wa;
   miniSnap = { y: bounds.y, width: size.width, height: size.height };
 
+  // Multi-monitor seam detection — when active, the renderer clips the half
+  // of the window that crosses the seam so the neighbouring display stays
+  // clean while the local display still shows the natural half-body peek.
+  containedBoundary = seamBoundary(wa, bounds.y + size.height / 2, miniEdge);
+  syncContainedClip();
+
   ctx.stopWakePoll();
 
   ctx.sendToRenderer("mini-mode-change", true, miniEdge);
@@ -276,16 +336,23 @@ function enterMiniMode(wa, viaMenu, edge) {
   const enterSvgState = ctx.doNotDisturb ? "mini-enter-sleep" : "mini-enter";
 
   if (viaMenu) {
-    const displays = screen.getAllDisplays();
+    const adjacent = containedBoundary != null;
     let jumpTarget;
-    if (miniEdge === "right") {
-      let maxRight = 0;
-      for (const d of displays) maxRight = Math.max(maxRight, d.bounds.x + d.bounds.width);
-      jumpTarget = maxRight;
+    if (adjacent) {
+      // Internal seam: skip fly-off-screen; arc lands at the contained mini X
+      // so the parabola never crosses onto the neighbouring display.
+      jumpTarget = currentMiniX;
     } else {
-      let minLeft = Infinity;
-      for (const d of displays) minLeft = Math.min(minLeft, d.bounds.x);
-      jumpTarget = minLeft - size.width;
+      const displays = screen.getAllDisplays();
+      if (miniEdge === "right") {
+        let maxRight = 0;
+        for (const d of displays) maxRight = Math.max(maxRight, d.bounds.x + d.bounds.width);
+        jumpTarget = maxRight;
+      } else {
+        let minLeft = Infinity;
+        for (const d of displays) minLeft = Math.min(minLeft, d.bounds.x);
+        jumpTarget = minLeft - size.width;
+      }
     }
     animateWindowParabola(jumpTarget, bounds.y, JUMP_DURATION, () => {
       const enterDurationMs = getMiniEnterDurationMs(enterSvgState);
@@ -295,6 +362,7 @@ function enterMiniMode(wa, viaMenu, edge) {
         ctx.win.setBounds({ x: currentMiniX, y: miniSnap.y, width: miniSnap.width, height: miniSnap.height });
         ctx.syncHitWin();
         syncSessionHudVisibility();
+        syncContainedClip();
         finishMiniEntry(enterDurationMs);
         return;
       }
@@ -304,6 +372,7 @@ function enterMiniMode(wa, viaMenu, edge) {
         miniTransitionTimer = null;
         ctx.syncHitWin();
         syncSessionHudVisibility();
+        syncContainedClip();
         finishMiniEntry(enterDurationMs);
       }, MINI_ENTER_PRELOAD_MS);
     });
@@ -355,6 +424,8 @@ function exitMiniMode() {
   animateWindowParabola(clamped.x, clamped.y, JUMP_DURATION, () => {
     miniMode = false;
     miniTransitioning = false;
+    containedBoundary = null;
+    ctx.sendToRenderer("mini-clip", null);
     ctx.sendToRenderer("mini-mode-change", false);
     ctx.sendToHitWin("hit-state-sync", { miniMode: false });
     ctx.buildContextMenu();
@@ -403,11 +474,14 @@ function enterMiniViaMenu() {
 
   ctx.applyState("mini-crabwalk");
 
+  const adjacent = seamBoundary(wa, bounds.y + size.height / 2, edge) != null;
   let edgeX;
   if (edge === "right") {
-    edgeX = wa.x + wa.width - size.width + Math.round(size.width * 0.25);
+    edgeX = adjacent
+      ? wa.x + wa.width - size.width
+      : wa.x + wa.width - size.width + Math.round(size.width * 0.25);
   } else {
-    edgeX = wa.x - Math.round(size.width * 0.25);
+    edgeX = adjacent ? wa.x : wa.x - Math.round(size.width * 0.25);
   }
   const walkDist = Math.abs(bounds.x - edgeX);
   const walkDuration = walkDist / CRABWALK_SPEED;
@@ -416,6 +490,18 @@ function enterMiniViaMenu() {
   miniTransitionTimer = setTimeout(() => {
     enterMiniMode(wa, true, edge);
   }, walkDuration + 50);
+}
+
+function refreshContainedBoundary(wa, yMid) {
+  containedBoundary = seamBoundary(wa, yMid, miniEdge);
+}
+
+// Internal-seam state for the hit (input) window. When non-null the hit
+// rect must be clipped to the same seam so the transparent input surface
+// does not keep capturing clicks over the neighbouring display.
+function getContainedSeam() {
+  if (containedBoundary == null) return null;
+  return { boundary: containedBoundary, edge: miniEdge };
 }
 
 function handleDisplayChange() {
@@ -432,6 +518,8 @@ function handleDisplayChange() {
   const clampedY = Math.max(wa.y, Math.min(snapY, wa.y + wa.height - size.height));
   miniSnap = { y: clampedY, width: size.width, height: size.height };
   ctx.win.setBounds({ x: currentMiniX, y: clampedY, width: size.width, height: size.height });
+  refreshContainedBoundary(wa, clampedY + size.height / 2);
+  syncContainedClip();
   syncSessionHudVisibility();
 }
 
@@ -446,6 +534,8 @@ function handleResize(sizeKey) {
   const clampedY = Math.max(wa.y, Math.min(curY, wa.y + wa.height - size.height));
   miniSnap = { y: clampedY, width: size.width, height: size.height };
   ctx.win.setBounds({ x: currentMiniX, y: clampedY, width: size.width, height: size.height });
+  refreshContainedBoundary(wa, clampedY + size.height / 2);
+  syncContainedClip();
   syncSessionHudVisibility();
   return true;
 }
@@ -464,6 +554,10 @@ function restoreFromPrefs(prefs, size) {
   miniTransitioning = false;
   miniSleepPeeked = false;
   miniPeeked = false;
+  // Compute the seam state only — the render window does not exist yet at
+  // startup restore. The renderer clip is (re)sent by
+  // syncRendererStateAfterLoad() once the renderer has finished loading.
+  refreshContainedBoundary(wa, startY + size.height / 2);
   return { x: currentMiniX, y: startY, width: size.width, height: size.height };
 }
 
@@ -490,6 +584,7 @@ return {
   miniPeekIn, miniPeekOut, checkMiniModeSnap, cancelMiniTransition,
   animateWindowX, animateWindowParabola,
   refreshTheme,
+  syncContainedClip, getContainedSeam,
   handleDisplayChange, handleResize, restoreFromPrefs,
   getMiniMode, getMiniEdge, getMiniTransitioning, getMiniSleepPeeked, setMiniSleepPeeked, getMiniPeeked, setMiniPeeked,
   getIsAnimating, getPreMiniX, getPreMiniY, getCurrentMiniX, getMiniSnap,

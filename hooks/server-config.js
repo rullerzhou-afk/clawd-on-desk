@@ -11,6 +11,8 @@ const SERVER_PORTS = Array.from({ length: SERVER_PORT_COUNT }, (_, i) => DEFAULT
 const STATE_PATH = "/state";
 const PERMISSION_PATH = "/permission";
 const RUNTIME_CONFIG_PATH = path.join(os.homedir(), ".clawd", "runtime.json");
+const DEFAULT_HOOK_HTTP_TIMEOUT_MS = 100;
+const REMOTE_HOOK_HTTP_TIMEOUT_MS = 5000;
 
 function normalizePort(value) {
   const port = Number(value);
@@ -140,6 +142,42 @@ function isClawdResponse(res, body) {
   }
 }
 
+function isRemoteHookMode(options = {}) {
+  if (options.remote === true) return true;
+  if (options.remote === false) return false;
+  const env = options.env || process.env;
+  const value = env && env.CLAWD_REMOTE;
+  if (!value) return false;
+  return !/^(0|false)$/i.test(String(value));
+}
+
+function normalizeHookHttpTimeout(value, fallback, options = {}) {
+  const n = Number(value);
+  const requested = Number.isFinite(n) && n > 0 ? n : fallback;
+  return isRemoteHookMode(options)
+    ? Math.max(requested, REMOTE_HOOK_HTTP_TIMEOUT_MS)
+    : requested;
+}
+
+function getStatePostTimeoutMs(options = {}) {
+  return normalizeHookHttpTimeout(
+    options.timeoutMs,
+    DEFAULT_HOOK_HTTP_TIMEOUT_MS,
+    options
+  );
+}
+
+function getPermissionProbeTimeoutMs(options = {}) {
+  // Permission discovery also crosses the reverse tunnel in remote mode.
+  // This can make the all-ports-dead path slower, but avoids missing a
+  // healthy local Clawd behind a high-latency tunnel.
+  return normalizeHookHttpTimeout(
+    options.probeTimeoutMs,
+    DEFAULT_HOOK_HTTP_TIMEOUT_MS,
+    options
+  );
+}
+
 function probePort(port, timeoutMs, callback, options = {}) {
   const httpGet = options.httpGet || http.get;
   const req = httpGet(
@@ -200,7 +238,7 @@ function postStateToPort(port, payload, timeoutMs, callback, options = {}) {
 }
 
 function discoverClawdPort(options, callback) {
-  const timeoutMs = options && options.timeoutMs ? options.timeoutMs : 100;
+  const timeoutMs = options && options.timeoutMs ? options.timeoutMs : DEFAULT_HOOK_HTTP_TIMEOUT_MS;
   const ports = getPortCandidates(options && options.preferredPort, options);
   const probe = options && options.probePort ? options.probePort : probePort;
   let index = 0;
@@ -225,7 +263,7 @@ function discoverClawdPort(options, callback) {
 }
 
 function postStateToRunningServer(body, options, callback) {
-  const timeoutMs = options && options.timeoutMs ? options.timeoutMs : 100;
+  const timeoutMs = getStatePostTimeoutMs(options || {});
   const payload = typeof body === "string" ? body : JSON.stringify(body);
   const { direct, fallback } = splitPortCandidates(options && options.preferredPort, options);
   const probe = options && options.probePort ? options.probePort : probePort;
@@ -317,7 +355,7 @@ function postPermissionToPort(port, payload, timeoutMs, callback, options = {}) 
 
 function postPermissionToRunningServer(body, options, callback) {
   const timeoutMs = options && options.timeoutMs ? options.timeoutMs : 590000;
-  const probeTimeoutMs = options && options.probeTimeoutMs ? options.probeTimeoutMs : 100;
+  const probeTimeoutMs = getPermissionProbeTimeoutMs(options || {});
   const payload = typeof body === "string" ? body : JSON.stringify(body);
   const discover = options && options.discoverClawdPort ? options.discoverClawdPort : discoverClawdPort;
   const post = options && options.postPermissionToPort ? options.postPermissionToPort : postPermissionToPort;
@@ -500,11 +538,172 @@ function extractAbsolutePathFromShellOutput(raw) {
   return null;
 }
 
+// Use path.win32.* explicitly throughout so resolveNodeBin behaves identically
+// when the test suite (or any caller) drives win32 logic from a Linux/macOS
+// host. The default `path` module follows the host platform, which on POSIX
+// treats `C:\Program Files\nodejs\node.exe` as a single filename — basename
+// returns the entire string and every Windows check silently misfires.
+const WINDOWS_NODE_BASENAMES = new Set(["node.exe", "node"]);
+
+function isWindowsNodeBasename(value) {
+  return WINDOWS_NODE_BASENAMES.has(
+    path.win32.basename(String(value || "")).toLowerCase()
+  );
+}
+
+function normalizeWindowsPathForMatch(value) {
+  return path.win32.normalize(String(value || "")).replace(/\//g, "\\").toLowerCase();
+}
+
+function isScoopShimPath(value) {
+  if (typeof value !== "string" || !value) return false;
+  return normalizeWindowsPathForMatch(value).includes("\\scoop\\shims\\");
+}
+
+function isClawdOrElectronPath(value) {
+  const norm = normalizeWindowsPathForMatch(value);
+  if (!norm) return false;
+  // Reject the packaged Electron host. Match by basename so we don't false-flag
+  // a legitimate Node living under a parent folder whose name happens to
+  // contain "Clawd" or "Electron".
+  const base = path.win32.basename(norm);
+  return base.includes("clawd on desk") || base === "electron.exe";
+}
+
+function validateWindowsNodeCandidate(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  // Accept drive letter (C:\...), UNC (\\server\share\...). path.win32.isAbsolute
+  // already covers both; the regex fallback exists only as a belt-and-braces
+  // guard if a future caller hands in a hand-built path object.
+  if (!path.win32.isAbsolute(trimmed) && !/^[A-Za-z]:[\\/]/.test(trimmed) && !trimmed.startsWith("\\\\")) {
+    return null;
+  }
+  if (!isWindowsNodeBasename(trimmed)) return null;
+  if (isScoopShimPath(trimmed)) return null;
+  if (isClawdOrElectronPath(trimmed)) return null;
+  return trimmed;
+}
+
+function getWindowsCommonNodePaths(options = {}) {
+  const env = options.env || process.env;
+  const probes = [];
+  if (env.ProgramFiles) {
+    probes.push(path.win32.join(env.ProgramFiles, "nodejs", "node.exe"));
+  }
+  if (env["ProgramFiles(x86)"]) {
+    probes.push(path.win32.join(env["ProgramFiles(x86)"], "nodejs", "node.exe"));
+  }
+  if (env.LOCALAPPDATA) {
+    probes.push(path.win32.join(env.LOCALAPPDATA, "Programs", "nodejs", "node.exe"));
+    probes.push(path.win32.join(env.LOCALAPPDATA, "Volta", "bin", "node.exe"));
+  }
+  if (env.USERPROFILE) {
+    probes.push(path.win32.join(env.USERPROFILE, "scoop", "apps", "nodejs", "current", "node.exe"));
+  }
+  return probes;
+}
+
+function windowsWhereExePath(options = {}) {
+  const systemRoot = (options.env || process.env).SystemRoot;
+  return systemRoot
+    ? path.win32.join(systemRoot, "System32", "where.exe")
+    : "where.exe";
+}
+
+function resolveWindowsNodeBinSync(options = {}) {
+  const access = options.accessSync || fs.accessSync;
+  const checkAccess = (candidate) => {
+    if (!candidate) return null;
+    try {
+      access(candidate, fs.constants.F_OK);
+      return candidate;
+    } catch {
+      return null;
+    }
+  };
+
+  // 1. process.execPath / options.execPath when it's actually node[.exe].
+  //    In packaged Clawd builds this is `Clawd on Desk.exe`, so it falls
+  //    through; mostly useful for unit tests and non-Electron Node runs.
+  const execHit = checkAccess(validateWindowsNodeCandidate(options.execPath || process.execPath));
+  if (execHit) return execHit;
+
+  // 2. where.exe node — iterate every line; first line passing validation wins.
+  try {
+    const execFileSync = options.execFileSync || require("child_process").execFileSync;
+    const out = execFileSync(windowsWhereExePath(options), ["node"], {
+      encoding: "utf8",
+      timeout: 2000,
+      windowsHide: true,
+    });
+    for (const line of String(out || "").split(/\r?\n/)) {
+      const hit = checkAccess(validateWindowsNodeCandidate(line));
+      if (hit) return hit;
+    }
+  } catch {}
+
+  // 3. Common install locations.
+  for (const probe of getWindowsCommonNodePaths(options)) {
+    const hit = checkAccess(validateWindowsNodeCandidate(probe));
+    if (hit) return hit;
+  }
+
+  return null;
+}
+
+async function resolveWindowsNodeBinAsync(options = {}) {
+  const access = options.access || fs.promises.access.bind(fs.promises);
+  const checkAccess = async (candidate) => {
+    if (!candidate) return null;
+    try {
+      await access(candidate, fs.constants.F_OK);
+      return candidate;
+    } catch {
+      return null;
+    }
+  };
+
+  const execHit = await checkAccess(validateWindowsNodeCandidate(options.execPath || process.execPath));
+  if (execHit) return execHit;
+
+  try {
+    const execFile = options.execFile || ((command, args, execOptions) => new Promise((resolve, reject) => {
+      require("child_process").execFile(command, args, execOptions, (err, stdout, stderr) => {
+        if (err) reject(err);
+        else resolve({ stdout, stderr });
+      });
+    }));
+    const out = await execFile(windowsWhereExePath(options), ["node"], {
+      encoding: "utf8",
+      timeout: 2000,
+      windowsHide: true,
+    });
+    const raw = typeof out === "string"
+      ? out
+      : (out && typeof out.stdout === "string" ? out.stdout : "");
+    for (const line of raw.split(/\r?\n/)) {
+      const hit = await checkAccess(validateWindowsNodeCandidate(line));
+      if (hit) return hit;
+    }
+  } catch {}
+
+  for (const probe of getWindowsCommonNodePaths(options)) {
+    const hit = await checkAccess(validateWindowsNodeCandidate(probe));
+    if (hit) return hit;
+  }
+
+  return null;
+}
+
 /**
  * Resolve the absolute path to the Node.js binary for hook commands.
  * On macOS/Linux, Claude Code runs hooks with a minimal PATH (/usr/bin:/bin)
- * that excludes Homebrew, nvm, volta, fnm, etc.  We embed the full path in
- * hook commands so they work regardless of the hook runner's PATH.
+ * that excludes Homebrew, nvm, volta, fnm, etc.  On Windows, hook runners
+ * can execute under PowerShell whose PATH does not include the Node install
+ * directory (see issue #317).  We embed the full path in hook commands so
+ * they work regardless of the hook runner's PATH.
  *
  * @param {object} [options] — for testing
  * @param {string} [options.platform]
@@ -513,13 +712,13 @@ function extractAbsolutePathFromShellOutput(raw) {
  * @param {Function} [options.accessSync]
  * @param {string} [options.execPath]
  * @param {boolean} [options.isElectron]
- * @returns {string|null} absolute path, "node" (Windows), or null (detection failed)
+ * @param {object} [options.env]
+ * @returns {string|null} absolute path, or null when detection fails
  */
 function resolveNodeBin(options = {}) {
   const platform = options.platform || process.platform;
 
-  // Windows: bare `node` works fine (PATH is inherited properly)
-  if (platform === "win32") return "node";
+  if (platform === "win32") return resolveWindowsNodeBinSync(options);
 
   const isElectron = options.isElectron !== undefined
     ? options.isElectron
@@ -577,7 +776,7 @@ function resolveNodeBin(options = {}) {
 async function resolveNodeBinAsync(options = {}) {
   const platform = options.platform || process.platform;
 
-  if (platform === "win32") return "node";
+  if (platform === "win32") return await resolveWindowsNodeBinAsync(options);
 
   const isElectron = options.isElectron !== undefined
     ? options.isElectron
@@ -631,8 +830,10 @@ async function resolveNodeBinAsync(options = {}) {
 module.exports = {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
+  DEFAULT_HOOK_HTTP_TIMEOUT_MS,
   DEFAULT_SERVER_PORT,
   PERMISSION_PATH,
+  REMOTE_HOOK_HTTP_TIMEOUT_MS,
   RUNTIME_CONFIG_PATH,
   SERVER_PORTS,
   STATE_PATH,
@@ -640,6 +841,8 @@ module.exports = {
   clearRuntimeConfig,
   discoverClawdPort,
   getPortCandidates,
+  getPermissionProbeTimeoutMs,
+  getStatePostTimeoutMs,
   postPermissionToPort,
   postPermissionToRunningServer,
   postStateToRunningServer,
@@ -648,6 +851,9 @@ module.exports = {
   readRuntimePort,
   resolveNodeBin,
   resolveNodeBinAsync,
+  resolveWindowsNodeBinSync,
+  resolveWindowsNodeBinAsync,
+  validateWindowsNodeCandidate,
   splitPortCandidates,
   postStateToPort,
   writeRuntimeConfig,

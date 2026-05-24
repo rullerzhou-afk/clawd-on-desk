@@ -130,4 +130,91 @@ describe("package build config", () => {
       );
     });
   });
+
+  describe("Telegram approval sidecar packaging", () => {
+    it("preflights sidecar binaries before source launches", () => {
+      assert.match(pkg.scripts.start, /node scripts\/ensure-sidecar-binaries\.js && node launch\.js/);
+    });
+
+    it("copies cc-connect-clawd sidecars into packaged resources", () => {
+      const extra = pkg.build.extraResources || [];
+      const copied = extra.some(
+        (e) => e && e.from === "bin/cc-connect-clawd" && e.to === "sidecars/cc-connect-clawd"
+      );
+      assert.ok(
+        copied,
+        "build.extraResources must copy bin/cc-connect-clawd -> sidecars/cc-connect-clawd"
+      );
+    });
+
+    it("documents the expected sidecar binary names in the README", () => {
+      const readme = path.join(ROOT, "bin", "cc-connect-clawd", "README.md");
+      assert.ok(fs.existsSync(readme), "bin/cc-connect-clawd/README.md should document release binary names");
+      const text = fs.readFileSync(readme, "utf8");
+      assert.match(text, /windows-x64\/cc-connect-clawd\.exe/);
+      assert.match(text, /darwin-arm64\/cc-connect-clawd/);
+      assert.match(text, /linux-x64\/cc-connect-clawd/);
+    });
+
+    it("fetches and verifies pinned sidecars before release builds", () => {
+      const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
+      assertWorkflowOrder(
+        workflow,
+        "npm run fetch:sidecars -- --target windows-x64,windows-arm64",
+        "node scripts/verify-sidecar-binaries.js prebuild:win:all",
+        "npx electron-builder --win --publish never"
+      );
+      assertWorkflowOrder(
+        workflow,
+        "npm run fetch:sidecars -- --target darwin-x64,darwin-arm64",
+        "node scripts/verify-sidecar-binaries.js prebuild:mac",
+        "npx electron-builder --mac --publish never"
+      );
+      assertWorkflowOrder(
+        workflow,
+        "npm run fetch:sidecars -- --target linux-x64",
+        "node scripts/verify-sidecar-binaries.js prebuild:linux",
+        "npx electron-builder --linux --publish never"
+      );
+    });
+
+    it("publishes GitHub releases only for version tags", () => {
+      const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
+      const releaseIndex = findWorkflowJobIndex(workflow, "release");
+      assert.ok(releaseIndex >= 0, "workflow should define a release job");
+      const releaseGateIndex = workflow.indexOf("if: startsWith(github.ref, 'refs/tags/v')", releaseIndex);
+      const bodyPathIndex = workflow.indexOf("body_path: docs/releases/release-${{ github.ref_name }}.md", releaseIndex);
+      assert.ok(releaseGateIndex >= 0, "release job should be gated to v* tags");
+      assert.ok(bodyPathIndex >= 0, "release job should still use tag-specific release notes");
+      assert.ok(releaseGateIndex < bodyPathIndex, "release job gate should run before release publication");
+    });
+
+    it("creates tag releases as drafts for final asset inspection", () => {
+      const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
+      const releaseIndex = findWorkflowJobIndex(workflow, "release");
+      assert.ok(releaseIndex >= 0, "workflow should define a release job");
+      const actionIndex = workflow.indexOf("softprops/action-gh-release@v2", releaseIndex);
+      const draftIndex = workflow.indexOf("draft: true", actionIndex);
+      const prereleaseIndex = workflow.indexOf("prerelease: ${{ contains(github.ref_name, '-') }}", actionIndex);
+      assert.ok(actionIndex >= 0, "release job should use the GitHub release action");
+      assert.ok(draftIndex > actionIndex, "tag releases should be created as drafts first");
+      assert.ok(prereleaseIndex > actionIndex, "hyphenated tags should be marked prerelease");
+    });
+  });
 });
+
+function findWorkflowJobIndex(workflow, jobName) {
+  const match = String(workflow || "").match(new RegExp(`(?:^|\\r?\\n)  ${jobName}:\\r?\\n`));
+  return match ? match.index : -1;
+}
+
+function assertWorkflowOrder(workflow, fetchCommand, verifyCommand, buildCommand) {
+  const fetchIndex = workflow.indexOf(fetchCommand);
+  const verifyIndex = workflow.indexOf(verifyCommand);
+  const buildIndex = workflow.indexOf(buildCommand);
+  assert.ok(fetchIndex >= 0, `workflow should run: ${fetchCommand}`);
+  assert.ok(verifyIndex >= 0, `workflow should run: ${verifyCommand}`);
+  assert.ok(buildIndex >= 0, `workflow should run: ${buildCommand}`);
+  assert.ok(fetchIndex < verifyIndex, `${fetchCommand} should run before ${verifyCommand}`);
+  assert.ok(verifyIndex < buildIndex, `${verifyCommand} should run before ${buildCommand}`);
+}

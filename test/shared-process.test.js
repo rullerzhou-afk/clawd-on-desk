@@ -189,6 +189,13 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
     })));
   }
 
+  function snapshotEnvelopeJson(procs, foreground) {
+    return JSON.stringify({
+      processes: JSON.parse(snapshotJson(procs)),
+      foreground,
+    });
+  }
+
   it("populates pidChain by walking the snapshot Map", () => {
     const cfg = getPlatformConfig();
     const resolve = createPidResolver({ platformConfig: cfg, startPid: 1000 });
@@ -228,6 +235,40 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
     ]), () => {
       const { stablePid } = resolve();
       assert.strictEqual(stablePid, 500);
+    });
+  });
+
+  it("captures the foreground Windows Terminal HWND from the same snapshot", () => {
+    const cfg = getPlatformConfig();
+    const resolve = createPidResolver({ platformConfig: cfg, startPid: 500 });
+    withMockedExec(() => snapshotEnvelopeJson([
+      { pid: 500, name: "powershell.exe", ppid: 501 },
+      { pid: 501, name: "explorer.exe", ppid: 0 },
+      { pid: 700, name: "WindowsTerminal.exe", ppid: 0 },
+    ], {
+      hwnd: "123456",
+      pid: 700,
+      className: "CASCADIA_HOSTING_WINDOW_CLASS",
+    }), () => {
+      const { foregroundWtHwnd } = resolve();
+      assert.strictEqual(foregroundWtHwnd, "123456");
+    });
+  });
+
+  it("rejects foreground HWNDs that are not Windows Terminal host windows", () => {
+    const cfg = getPlatformConfig();
+    const resolve = createPidResolver({ platformConfig: cfg, startPid: 500 });
+    withMockedExec(() => snapshotEnvelopeJson([
+      { pid: 500, name: "powershell.exe", ppid: 501 },
+      { pid: 501, name: "explorer.exe", ppid: 0 },
+      { pid: 700, name: "WindowsTerminal.exe", ppid: 0 },
+    ], {
+      hwnd: "123456",
+      pid: 700,
+      className: "PseudoConsoleWindow",
+    }), () => {
+      const { foregroundWtHwnd } = resolve();
+      assert.strictEqual(foregroundWtHwnd, null);
     });
   });
 

@@ -160,6 +160,14 @@ describe("settings-effect-router", () => {
     ]);
 
     calls.length = 0;
+    emit({ sessionHudShowStateLabels: false });
+    assert.deepStrictEqual(calls, [
+      ["updateMirrors", { sessionHudShowStateLabels: false }],
+      ["syncSessionHudVisibility"],
+      ["repositionFloatingBubbles"],
+    ]);
+
+    calls.length = 0;
     emit({ sessionHudCleanupDetached: true });
     assert.deepStrictEqual(calls, [
       ["updateMirrors", { sessionHudCleanupDetached: true }],
@@ -279,6 +287,18 @@ describe("settings-effect-router", () => {
       ["updateMirrors", { showTray: true }],
       ["rebuildAllMenus"],
     ]);
+  });
+
+  it("triggers a cleanup sweep + forced snapshot when any stale-cleanup config key changes", () => {
+    for (const key of ["sessionStaleMs", "workingStaleMs", "detachedIdleStaleMs"]) {
+      const { calls, emit } = createHarness();
+      emit({ [key]: key === "detachedIdleStaleMs" ? 60_000 : 900_000 });
+      assert.deepStrictEqual(calls, [
+        ["updateMirrors", { [key]: key === "detachedIdleStaleMs" ? 60_000 : 900_000 }],
+        ["cleanStaleSessions"],
+        ["emitSessionSnapshot", { force: true }],
+      ], `expected stale-cleanup branch to fire for ${key}`);
+    }
   });
 
   it("dispose unsubscribes both settings routes", () => {

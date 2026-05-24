@@ -8,7 +8,7 @@
 //
 // Pure data → safe to require under tests:
 //
-//   detectSsh()                — `where|which ssh` + `ssh -V` parse
+//   detectSsh()                — `ssh -V` parse
 //   buildSshArgs(profile, opt) — shared arg constructor for ALL ssh calls
 //   buildScpArgs(profile, opt) — same for scp (note: scp port flag is `-P`)
 //   classifyStderr(stderr)     — pure error classifier
@@ -43,6 +43,7 @@ const SCP_BASE_OPTS = ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
 
 const PROBE_WINDOW_MS = 12000;
 const PROBE_MIN_GAP_MS = 250;
+const PROBE_CHILD_TIMEOUT_MS = 5000;
 const BACKOFF_SCHEDULE_MS = [5000, 15000, 45000, 120000, 300000];
 const UNKNOWN_STRIKES_LIMIT = 3;
 
@@ -51,33 +52,58 @@ const CLAWD_SERVER_ID = "clawd-on-desk";
 
 // ── Detect ssh client ──
 //
-// Cheap one-shot at runtime construction. Returns
-//   { available: true, version: "OpenSSH_9.5p2 ..." }
+// Cheap one-shot. Returns
+//   { available: true, version: "OpenSSH_9.5p2 ...", parsedVersion: { ... } }
 // or { available: false, error: "..." } on failure / not found.
-//
-// Stays small (<30 lines) and inlined per plan v6 (folding detect into runtime).
-function detectSsh({ exec = childProcess.execFileSync } = {}) {
+
+function parseOpenSshVersion(version) {
+  const text = (version || "").toString();
+  const match = text.match(/OpenSSH(?:_for_Windows)?_(\d+)\.(\d+)(?:p(\d+))?/i);
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: match[3] == null ? null : Number(match[3]),
+  };
+}
+
+function isUnsupportedWindowsOpenSsh(sshInfo, platform = process.platform) {
+  if (platform !== "win32") return false;
+  if (!sshInfo || sshInfo.available !== true) return false;
+  const parsed = sshInfo.parsedVersion || parseOpenSshVersion(sshInfo.version);
+  return !!parsed && parsed.major < 8;
+}
+
+function detectSsh({ spawnSync = childProcess.spawnSync } = {}) {
   try {
-    // ssh -V writes to STDERR on every implementation. Capture both streams
-    // and merge for resilience against future behavior changes.
-    const out = exec("ssh", ["-V"], {
+    // ssh -V writes to stderr on most OpenSSH builds. spawnSync lets us read
+    // both streams even on success, unlike execFileSync's stdout-only return.
+    const result = spawnSync("ssh", ["-V"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 5000,
       windowsHide: true,
     });
-    // Some platforms put the banner on stderr only — execFileSync returns
-    // stdout. If empty, fall back to a flag-less invocation that should fail
-    // gracefully but still returns. We accept whatever ssh wrote.
-    const version = (out || "").toString().trim() || "(no version banner)";
-    return { available: true, version };
+
+    if (result && result.error) {
+      const msg = result.error.code === "ENOENT"
+        ? "ssh executable not found in PATH"
+        : result.error.message || "ssh detect failed";
+      return { available: false, error: msg };
+    }
+
+    const stdout = result && result.stdout ? result.stdout.toString().trim() : "";
+    const stderr = result && result.stderr ? result.stderr.toString().trim() : "";
+    const version = stderr || stdout || "(no version banner)";
+    const parsedVersion = parseOpenSshVersion(version);
+    return { available: true, version, parsedVersion };
   } catch (err) {
     if (err && err.stderr) {
       const stderr = err.stderr.toString().trim();
-      // Older ssh writes -V to stderr and exits 0 — execFileSync treats that
-      // as success. If it landed in catch we have an actual problem (ENOENT).
+      // Defensive: unusual spawnSync implementations can throw after producing
+      // stderr, while stock Node reports most failures via result.error.
       if (stderr && err.code !== "ENOENT") {
-        return { available: true, version: stderr };
+        return { available: true, version: stderr, parsedVersion: parseOpenSshVersion(stderr) };
       }
     }
     const msg = err && err.code === "ENOENT"
@@ -258,6 +284,9 @@ function createRemoteSshRuntime(deps = {}) {
   const setTimeoutFn = deps.setTimeout || setTimeout;
   const clearTimeoutFn = deps.clearTimeout || clearTimeout;
   const resolveRemoteNode = deps.resolveRemoteNodeBin || resolveRemoteNodeBin;
+  const detectSshClient = deps.detectSsh || (() => detectSsh());
+  const platform = deps.platform || process.platform;
+  let sshDetectionCache = null;
 
   if (typeof getHookServerPort !== "function") {
     throw new Error("createRemoteSshRuntime: deps.getHookServerPort is required");
@@ -272,6 +301,7 @@ function createRemoteSshRuntime(deps = {}) {
       profile,
       status: "idle",
       message: null,
+      hint: null,
       lastError: null,
       lastErrorReason: null,
       sshChild: null,
@@ -282,6 +312,7 @@ function createRemoteSshRuntime(deps = {}) {
       probeWindowDeadline: 0,
       probeIntervalTimer: null,
       probeWindowTimer: null,
+      probeChildTimer: null,
       remoteNodeBin: null,
       remoteNodeSource: null,
       allowBareNodeProbe: false,
@@ -296,6 +327,7 @@ function createRemoteSshRuntime(deps = {}) {
   function setStatus(state, status, extra = {}) {
     state.status = status;
     if ("message" in extra) state.message = extra.message;
+    if ("hint" in extra) state.hint = extra.hint;
     if ("lastError" in extra) state.lastError = extra.lastError;
     if ("lastErrorReason" in extra) state.lastErrorReason = extra.lastErrorReason;
     emitStatus(state);
@@ -310,6 +342,7 @@ function createRemoteSshRuntime(deps = {}) {
       profileId: state.profile.id,
       status: state.status,
       message: state.message,
+      hint: state.hint,
       lastError: state.lastError,
       lastErrorReason: state.lastErrorReason,
       retryAttempt: state.retryAttempt,
@@ -318,7 +351,7 @@ function createRemoteSshRuntime(deps = {}) {
 
   function getProfileStatus(profileId) {
     const state = states.get(profileId);
-    if (!state) return { profileId, status: "idle", message: null, lastError: null };
+    if (!state) return { profileId, status: "idle", message: null, hint: null, lastError: null };
     return snapshotState(state);
   }
 
@@ -349,6 +382,9 @@ function createRemoteSshRuntime(deps = {}) {
       state = newState(profile);
       states.set(profile.id, state);
     }
+    // A manual Connect is the user's chance to recover after installing or
+    // upgrading ssh.exe. Keep detection cached only within automatic retries.
+    sshDetectionCache = null;
     startConnect(state);
     return snapshotState(state);
   }
@@ -358,9 +394,16 @@ function createRemoteSshRuntime(deps = {}) {
     state.remoteNodeResolveInFlight = false;
     setStatus(state, state.status === "reconnecting" ? "reconnecting" : "connecting", {
       message: null,
+      hint: null,
       lastError: null,
       lastErrorReason: null,
     });
+
+    const sshPreflight = getSshPreflightFailure();
+    if (sshPreflight) {
+      finishFailure(state, sshPreflight);
+      return;
+    }
 
     let localPort;
     try {
@@ -482,6 +525,33 @@ function createRemoteSshRuntime(deps = {}) {
     state.remoteNodeSource = null;
     state.allowBareNodeProbe = true;
     startProbeLoop(state);
+  }
+
+  function getSshDetection() {
+    if (sshDetectionCache) return sshDetectionCache;
+    try {
+      sshDetectionCache = detectSshClient() || { available: false, error: "ssh detect failed" };
+    } catch (err) {
+      sshDetectionCache = {
+        available: false,
+        error: (err && err.message) || "ssh detect failed",
+      };
+    }
+    return sshDetectionCache;
+  }
+
+  function getSshPreflightFailure() {
+    const info = getSshDetection();
+    if (isUnsupportedWindowsOpenSsh(info, platform)) {
+      const version = info.version || "OpenSSH 7.x";
+      return {
+        kind: "permanent",
+        reason: "windows_openssh_legacy",
+        hint: "remoteSshErrWindowsOpenSshLegacy",
+        message: `${version} has a broken ConnectTimeout implementation on Windows. Upgrade Windows OpenSSH to 8.x or newer.`,
+      };
+    }
+    return null;
   }
 
   function emitRemoteNodeDetected(state, resolved) {
@@ -643,6 +713,7 @@ function createRemoteSshRuntime(deps = {}) {
     // Transient (or unknown under strike-limit): backoff + reconnect.
     scheduleReconnect(state, {
       message: stderrSummary(stderr) || `ssh exited ${formatExit(code, signal)}`,
+      hint: cls.hint || null,
       lastErrorReason: cls.reason || (cls.kind === "unknown" ? "unknown" : null),
       wasConnected,
     });
@@ -722,6 +793,19 @@ function createRemoteSshRuntime(deps = {}) {
     }
 
     state.probeChild = probe;
+    state.probeChildTimer = setTimeoutFn(() => {
+      if (state.probeChild !== probe) return;
+      state.probeInFlight = false;
+      state.probeChild = null;
+      state.probeChildTimer = null;
+      state.probeLastExitCode = -1;
+      killChild(probe);
+      log("remote-ssh probe child timed out");
+      if (state.stopped) return;
+      if (Date.now() < state.probeWindowDeadline && state.sshChild) {
+        schedNextProbe(state, PROBE_MIN_GAP_MS);
+      }
+    }, PROBE_CHILD_TIMEOUT_MS);
 
     // Identity-gate both handlers: if probeChild has rotated to a newer
     // probe (or been cleared by cleanupProbeLoop / disconnect), this stale
@@ -733,6 +817,7 @@ function createRemoteSshRuntime(deps = {}) {
     // work the exit handler would have, so the lock can't deadlock.
     probe.on("error", (err) => {
       if (state.probeChild !== probe) return;
+      clearProbeChildTimer(state);
       state.probeInFlight = false;
       state.probeChild = null;
       // Synthetic exit code so classifyProbeExit treats this as transient.
@@ -746,6 +831,7 @@ function createRemoteSshRuntime(deps = {}) {
 
     probe.on("exit", (code, signal) => {
       if (state.probeChild !== probe) return;
+      clearProbeChildTimer(state);
       state.probeInFlight = false;
       state.probeChild = null;
       const exitCode = signalToExitCode(code, signal);
@@ -784,6 +870,7 @@ function createRemoteSshRuntime(deps = {}) {
     state.unknownStrikes = 0;
     setStatus(state, "connected", {
       message: null,
+      hint: null,
       lastError: null,
       lastErrorReason: null,
     });
@@ -862,6 +949,7 @@ function createRemoteSshRuntime(deps = {}) {
       clearTimeoutFn(state.probeWindowTimer);
       state.probeWindowTimer = null;
     }
+    clearProbeChildTimer(state);
     if (state.probeChild) {
       killChild(state.probeChild);
       state.probeChild = null;
@@ -869,17 +957,25 @@ function createRemoteSshRuntime(deps = {}) {
     state.probeInFlight = false;
   }
 
+  function clearProbeChildTimer(state) {
+    if (!state.probeChildTimer) return;
+    clearTimeoutFn(state.probeChildTimer);
+    state.probeChildTimer = null;
+  }
+
   // ── Reconnect / failure paths ──
 
-  function scheduleReconnect(state, { message, lastErrorReason, wasConnected }) {
+  function scheduleReconnect(state, { message, hint, lastErrorReason, wasConnected }) {
     if (state.stopped) return;
     state.lastError = message;
     state.lastErrorReason = lastErrorReason;
     state.message = message;
+    state.hint = hint || null;
     const delay = backoffMsForAttempt(state.retryAttempt);
     state.retryAttempt += 1;
     setStatus(state, "reconnecting", {
       message,
+      hint: hint || null,
       lastError: message,
       lastErrorReason,
     });
@@ -908,6 +1004,7 @@ function createRemoteSshRuntime(deps = {}) {
     state.stopped = true;
     setStatus(state, "failed", {
       message: message || hint || reason,
+      hint: hint || null,
       lastError: message || hint || reason,
       lastErrorReason: reason,
     });
@@ -933,6 +1030,7 @@ function createRemoteSshRuntime(deps = {}) {
     state.remoteNodeResolveInFlight = false;
     setStatus(state, "idle", {
       message: null,
+      hint: null,
       lastError: null,
       lastErrorReason: null,
     });
@@ -1021,6 +1119,8 @@ function signalToExitCode(code, signal) {
 module.exports = {
   // pure helpers — stable surface for tests
   detectSsh,
+  parseOpenSshVersion,
+  isUnsupportedWindowsOpenSsh,
   buildSshArgs,
   buildScpArgs,
   classifyStderr,
@@ -1034,6 +1134,7 @@ module.exports = {
   CLAWD_SERVER_ID,
   PROBE_WINDOW_MS,
   PROBE_MIN_GAP_MS,
+  PROBE_CHILD_TIMEOUT_MS,
   BACKOFF_SCHEDULE_MS,
   UNKNOWN_STRIKES_LIMIT,
 };

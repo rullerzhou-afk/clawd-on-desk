@@ -171,6 +171,26 @@ describe("tick mini hover", () => {
     assert.deepStrictEqual(statesSeen, ["mini-peek"]);
   });
 
+  it("does not enter mini-peek when the cursor is outside the seam-clipped hit rect", () => {
+    const theme = cloneTheme(_defaultTheme);
+    let peekInCalls = 0;
+
+    cursor = { x: 130, y: 40 };
+    ctx = makeCtx(theme, statesSeen);
+    ctx.miniMode = true;
+    ctx.currentState = "mini-idle";
+    ctx.getHitRectScreen = () => ({ left: 0, top: 0, right: 100, bottom: 120 });
+    ctx.miniPeekIn = () => { peekInCalls++; };
+
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+    mock.timers.tick(60);
+
+    assert.equal(peekInCalls, 0);
+    assert.equal(ctx.mouseOverPet, false);
+    assert.deepStrictEqual(statesSeen, []);
+  });
+
   it("returns to mini-idle when the cursor leaves mini-peek", () => {
     const theme = cloneTheme(_defaultTheme);
     let peekOutCalls = 0;

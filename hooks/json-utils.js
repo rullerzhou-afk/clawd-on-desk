@@ -82,6 +82,33 @@ function formatNodeHookCommand(nodeBin, scriptPath, options = {}) {
 }
 
 /**
+ * Extract the first absolute node binary path from a list of command strings.
+ * Scans each command for double-quoted tokens, ignores the hook script marker
+ * itself, and returns the first token that looks like an absolute path
+ * (POSIX `/`, Windows `C:\`, or UNC `\\server`).
+ *
+ * Used as a shared primitive so installers that don't share a settings.hooks
+ * shape (e.g. Kimi's TOML) can still preserve a user-repaired Node path.
+ *
+ * @param {string[]} commands - Raw command strings (already unescaped)
+ * @param {string}   marker   - Hook script filename to skip
+ * @returns {string|null}
+ */
+function extractExistingNodeBinFromCommands(commands, marker) {
+  if (!Array.isArray(commands) || typeof marker !== "string" || !marker) return null;
+  for (const cmd of commands) {
+    if (typeof cmd !== "string") continue;
+    const matches = cmd.matchAll(/"([^"]+)"/g);
+    for (const match of matches) {
+      const token = match && match[1];
+      if (!token || token.includes(marker)) continue;
+      if (isAbsoluteCommandToken(token)) return token;
+    }
+  }
+  return null;
+}
+
+/**
  * Extract the existing absolute node binary path from hook commands that
  * contain `marker` (e.g. "cursor-hook.js").  Scans settings.hooks for
  * matching commands, then returns the first quoted token that is an
@@ -95,16 +122,7 @@ function formatNodeHookCommand(nodeBin, scriptPath, options = {}) {
  * @returns {string|null}
  */
 function extractExistingNodeBin(settings, marker, options) {
-  const commands = findHookCommands(settings, marker, options);
-  for (const cmd of commands) {
-    const matches = cmd.matchAll(/"([^"]+)"/g);
-    for (const match of matches) {
-      const token = match && match[1];
-      if (!token || token.includes(marker)) continue;
-      if (isAbsoluteCommandToken(token)) return token;
-    }
-  }
-  return null;
+  return extractExistingNodeBinFromCommands(findHookCommands(settings, marker, options), marker);
 }
 
 /**
@@ -147,6 +165,7 @@ module.exports = {
   writeJsonAtomicAsync,
   asarUnpackedPath,
   extractExistingNodeBin,
+  extractExistingNodeBinFromCommands,
   findHookCommands,
   formatNodeHookCommand,
 };

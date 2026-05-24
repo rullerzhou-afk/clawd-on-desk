@@ -1,10 +1,10 @@
 {
   "name": "clawd-on-desk",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "A desktop pet that reacts to your Claude Code sessions in real-time.",
   "main": "src/main.js",
   "scripts": {
-    "start": "node launch.js",
+    "start": "node scripts/ensure-sidecar-binaries.js && node launch.js",
     "build": "electron-builder --win",
     "build:win:x64": "electron-builder --win nsis:x64",
     "build:win:arm64": "electron-builder --win nsis:arm64",
@@ -12,11 +12,22 @@
     "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux",
     "build:all": "electron-builder --win --mac --linux",
-    "test": "node --test test/*.test.js",
+    "fetch:sidecars": "node scripts/fetch-sidecar-binaries.js",
+    "verify:sidecars": "node scripts/verify-sidecar-binaries.js",
+    "prebuild": "node scripts/verify-sidecar-binaries.js",
+    "prebuild:win:x64": "node scripts/verify-sidecar-binaries.js",
+    "prebuild:win:arm64": "node scripts/verify-sidecar-binaries.js",
+    "prebuild:win:all": "node scripts/verify-sidecar-binaries.js",
+    "prebuild:mac": "node scripts/verify-sidecar-binaries.js",
+    "prebuild:linux": "node scripts/verify-sidecar-binaries.js",
+    "prebuild:all": "node scripts/verify-sidecar-binaries.js",
+    "test": "node test/run-tests.js",
     "create-theme": "node scripts/create-theme.js",
+    "export-agent-icons": "node scripts/export-agent-icons.js",
     "install:claude-hooks": "node hooks/install.js",
     "uninstall:claude-hooks": "node hooks/uninstall.js",
     "install:gemini-hooks": "node hooks/gemini-install.js",
+    "install:antigravity-hooks": "node hooks/antigravity-install.js",
     "install:cursor-hooks": "node hooks/cursor-install.js",
     "install:kiro-hooks": "node hooks/kiro-install.js",
     "install:kimi-hooks": "node hooks/kimi-install.js",
@@ -134,6 +145,10 @@
       {
         "from": "assets/icon.ico",
         "to": "icon.ico"
+      },
+      {
+        "from": "bin/cc-connect-clawd",
+        "to": "sidecars/cc-connect-clawd"
       }
     ],
     "publish": [

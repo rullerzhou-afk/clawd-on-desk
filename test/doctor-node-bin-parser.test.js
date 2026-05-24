@@ -3,6 +3,7 @@ const assert = require("node:assert");
 const { formatNodeHookCommand } = require("../hooks/json-utils");
 const { withCommandEnv } = require("../hooks/codex-install-utils");
 const { validateHookCommand } = require("../src/doctor-detectors/agent-node-bin-parser");
+const { __test: antigravityInstallTest } = require("../hooks/antigravity-install");
 
 function fakeFs(existingPaths) {
   const existing = new Set(existingPaths);
@@ -49,6 +50,28 @@ describe("doctor hook command parser", () => {
       platform: "win32",
       windowsWrapper: "powershell",
     });
+
+    assert.deepStrictEqual(
+      validateHookCommand(command, {
+        platform: "win32",
+        fs: fakeFs([nodeBin, scriptPath]),
+      }),
+      { ok: true, nodeBin, scriptPath }
+    );
+  });
+
+  it("validates Windows PowerShell EncodedCommand hook commands", () => {
+    const nodeBin = "C:\\Program Files\\nodejs\\node.exe";
+    const scriptPath = "D:/animation/hooks/antigravity-hook.js";
+    const command = antigravityInstallTest.buildWindowsAntigravityHookCommand(
+      nodeBin,
+      scriptPath,
+      "PreInvocation",
+      {
+        platform: "win32",
+        powerShellBin: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      }
+    );
 
     assert.deepStrictEqual(
       validateHookCommand(command, {

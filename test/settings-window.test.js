@@ -34,8 +34,18 @@ class FakeBrowserWindow {
     this.calls.push("show");
   }
 
+  moveTop() {
+    this.calls.push("moveTop");
+  }
+
   focus() {
     this.calls.push("focus");
+  }
+
+  setAlwaysOnTop(value, level) {
+    this.calls.push(["setAlwaysOnTop", value, level]);
+    this.alwaysOnTop = value;
+    this.alwaysOnTopLevel = level;
   }
 
   setAppDetails(details) {
@@ -87,9 +97,29 @@ function createFakeApp({ ready = true, packaged = false } = {}) {
   };
 }
 
+function createFakeTimers() {
+  const timers = [];
+  return {
+    timers,
+    setTimeout(callback, delay) {
+      const timer = { callback, delay, cleared: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeout(timer) {
+      if (timer) timer.cleared = true;
+    },
+  };
+}
+
+function findPendingTimer(timers, delay) {
+  return timers.find((timer) => timer.delay === delay && !timer.cleared);
+}
+
 function createRuntime(options = {}) {
   FakeBrowserWindow.instances = [];
   const { app, listeners } = createFakeApp(options.app);
+  const fakeTimers = createFakeTimers();
   const fs = {
     existsSync(filePath) {
       return /assets[\\/](icons[\\/]256x256\.png|icon\.ico)$/.test(filePath);
@@ -108,15 +138,18 @@ function createRuntime(options = {}) {
     appDir: "C:\\app",
     settingsHtmlPath: "C:\\app\\src\\settings.html",
     preloadPath: "C:\\app\\src\\preload-settings.js",
+    setTimeout: fakeTimers.setTimeout,
+    clearTimeout: fakeTimers.clearTimeout,
     ...options.runtime,
   });
-  return { runtime, listeners };
+  return { runtime, listeners, timers: fakeTimers.timers };
 }
 
 test("settings window runtime creates the Settings BrowserWindow with taskbar identity", () => {
   const events = [];
   let runtime;
-  ({ runtime } = createRuntime({
+  let timers;
+  ({ runtime, timers } = createRuntime({
     dark: true,
     runtime: {
       onBeforeCreate: () => events.push("before-create"),
@@ -131,6 +164,10 @@ test("settings window runtime creates the Settings BrowserWindow with taskbar id
 
   assert.strictEqual(runtime.getWindow(), win);
   assert.strictEqual(win.options.title, "Clawd Settings");
+  assert.strictEqual(win.options.x, 240);
+  assert.strictEqual(win.options.y, 120);
+  assert.strictEqual(win.options.width, 800);
+  assert.strictEqual(win.options.height, 560);
   assert.strictEqual(win.options.backgroundColor, "#1c1c1f");
   assert.strictEqual(win.options.webPreferences.preload, "C:\\app\\src\\preload-settings.js");
   assert.strictEqual(win.options.webPreferences.nodeIntegration, false);
@@ -143,7 +180,18 @@ test("settings window runtime creates the Settings BrowserWindow with taskbar id
   assert.deepStrictEqual(events, ["before-create"]);
 
   win.emit("ready-to-show");
-  assert.deepStrictEqual(win.calls.slice(-2), ["show", "focus"]);
+  assert.deepStrictEqual(win.calls.slice(-4), [
+    "show",
+    ["setAlwaysOnTop", true, undefined],
+    "moveTop",
+    "focus",
+  ]);
+  assert.strictEqual(findPendingTimer(timers, 2000), undefined);
+
+  const lowerTimer = findPendingTimer(timers, 200);
+  assert.ok(lowerTimer);
+  lowerTimer.callback();
+  assert.deepStrictEqual(win.calls.at(-1), ["setAlwaysOnTop", false, undefined]);
 
   win.emit("closed");
   assert.deepStrictEqual(events, ["before-create", "before-closed", "after-closed-null"]);
@@ -151,16 +199,24 @@ test("settings window runtime creates the Settings BrowserWindow with taskbar id
 });
 
 test("settings window runtime reuses an existing non-destroyed Settings window", () => {
-  const { runtime } = createRuntime();
+  const { runtime, timers } = createRuntime();
   runtime.open();
   const win = FakeBrowserWindow.instances[0];
+  win.emit("ready-to-show");
+  findPendingTimer(timers, 200).callback();
   win.calls = [];
   win.minimized = true;
 
   runtime.open();
 
   assert.strictEqual(FakeBrowserWindow.instances.length, 1);
-  assert.deepStrictEqual(win.calls, ["restore", "show", "focus"]);
+  assert.deepStrictEqual(win.calls, [
+    "restore",
+    "show",
+    ["setAlwaysOnTop", true, undefined],
+    "moveTop",
+    "focus",
+  ]);
 });
 
 test("settings window runtime defers opening until Electron is ready", () => {
@@ -174,4 +230,83 @@ test("settings window runtime defers opening until Electron is ready", () => {
   listeners.get("ready")();
 
   assert.strictEqual(FakeBrowserWindow.instances.length, 1);
+});
+
+test("settings window runtime places the first Settings window on the pet display", () => {
+  let nearestArgs = null;
+  const { runtime } = createRuntime({
+    runtime: {
+      getPetWindowBounds: () => ({ x: 1700, y: 100, width: 280, height: 280 }),
+      getNearestWorkArea: (cx, cy) => {
+        nearestArgs = { cx, cy };
+        return { x: 1280, y: 40, width: 1600, height: 900 };
+      },
+    },
+  });
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+
+  assert.deepStrictEqual(nearestArgs, { cx: 1840, cy: 240 });
+  assert.strictEqual(win.options.x, 1680);
+  assert.strictEqual(win.options.y, 210);
+  assert.strictEqual(win.options.width, 800);
+  assert.strictEqual(win.options.height, 560);
+});
+
+test("settings window runtime shows from timeout if ready-to-show never fires", () => {
+  const { runtime, timers } = createRuntime();
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+  const readyFallbackTimer = findPendingTimer(timers, 2000);
+  assert.ok(readyFallbackTimer);
+
+  readyFallbackTimer.callback();
+  assert.deepStrictEqual(win.calls.slice(-4), [
+    "show",
+    ["setAlwaysOnTop", true, undefined],
+    "moveTop",
+    "focus",
+  ]);
+
+  win.calls = [];
+  win.emit("ready-to-show");
+  assert.deepStrictEqual(win.calls, []);
+});
+
+test("settings window runtime does not show twice if reopened before ready", () => {
+  const { runtime, timers } = createRuntime();
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+  runtime.open();
+
+  assert.deepStrictEqual(win.calls.slice(-4), [
+    "show",
+    ["setAlwaysOnTop", true, undefined],
+    "moveTop",
+    "focus",
+  ]);
+  assert.strictEqual(findPendingTimer(timers, 2000), undefined);
+
+  win.calls = [];
+  win.emit("ready-to-show");
+  assert.deepStrictEqual(win.calls, []);
+});
+
+test("settings window runtime skips temporary front lift outside Windows", () => {
+  const { runtime } = createRuntime({
+    runtime: {
+      isWin: false,
+      platform: "linux",
+    },
+  });
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+  win.emit("ready-to-show");
+
+  assert.deepStrictEqual(win.calls.slice(-3), ["show", "moveTop", "focus"]);
+  assert.strictEqual(win.calls.some((call) => Array.isArray(call) && call[0] === "setAlwaysOnTop"), false);
 });

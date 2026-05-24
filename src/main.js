@@ -1,6 +1,7 @@
 const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const { EventEmitter } = require("events");
 const {
   applyWindowsAppUserModelId,
   shouldOpenSettingsWindowFromArgv,
@@ -15,6 +16,8 @@ const { registerSessionIpc } = require("./session-ipc");
 const { registerPetInteractionIpc } = require("./pet-interaction-ipc");
 const initPermission = require("./permission");
 const { registerPermissionIpc } = initPermission;
+const { createTelegramApprovalSidecar } = require("./telegram-approval-sidecar");
+const telegramApprovalSettings = require("./telegram-approval-settings");
 const initUpdateBubble = require("./update-bubble");
 const { registerUpdateBubbleIpc } = initUpdateBubble;
 const createSettingsAnimationOverridesMain = require("./settings-animation-overrides-main");
@@ -38,6 +41,7 @@ const createThemeRuntime = require("./theme-runtime");
 const createAgentRuntimeMain = require("./agent-runtime-main");
 const createFloatingWindowRuntime = require("./floating-window-runtime");
 const createPetWindowRuntime = require("./pet-window-runtime");
+const { createHardwareBuddyAdapter } = require("./hardware-buddy-adapter");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
   getSessionFocusTarget,
@@ -172,6 +176,15 @@ let themeRuntime = null;
 let agentRuntime = null;
 let floatingWindowRuntime = null;
 let codexPetMain = null;
+let telegramApprovalSidecar = null;
+let telegramApprovalSyncPromise = Promise.resolve();
+let telegramApprovalConfigSignature = "";
+let telegramApprovalTokenRevision = 0;
+let hardwareBuddyAdapter = null;
+let hardwareBuddyStatus = null;
+let hardwareBuddyTestApprovalPromise = null;
+let lastHardwareBuddyStatusLogKey = "";
+let unsubscribeHardwareBuddySettings = null;
 const shortcutHandlers = {
   togglePet: () => togglePetVisibility(),
 };
@@ -206,6 +219,10 @@ const _settingsController = createSettingsController({
       _state && typeof _state.getActiveSessionAliasKeys === "function"
         ? _state.getActiveSessionAliasKeys()
         : new Set(),
+    writeTelegramApprovalToken: (token) => writeTelegramApprovalToken(token),
+    getTelegramApprovalStatus: () => getTelegramApprovalStatus(),
+    getTelegramApprovalTokenInfo: () => getTelegramApprovalTokenInfo(),
+    sendTelegramApprovalTest: () => sendTelegramApprovalTest(),
     // Theme runtime is wired after theme-loader.init(); keep these closures
     // lazy so settings actions never capture a pre-init runtime reference.
     activateTheme: (id, variantId, overrideMap) => themeRuntime.activateTheme(id, variantId, overrideMap),
@@ -366,6 +383,8 @@ const settingsWindowRuntime = createSettingsWindowRuntime({
   isWin,
   nativeTheme,
   path,
+  getPetWindowBounds: () => getPetWindowBounds(),
+  getNearestWorkArea: (cx, cy) => getNearestWorkArea(cx, cy),
   onBeforeCreate: () => bumpAnimationOverridePreviewPosterGeneration(),
   onBeforeClosed: () => {
     bumpAnimationOverridePreviewPosterGeneration();
@@ -481,6 +500,7 @@ const petWindowRuntime = createPetWindowRuntime({
   getCurrentHitBox: () => _state.getCurrentHitBox(),
   getMiniMode: () => _mini.getMiniMode(),
   getMiniTransitioning: () => _mini.getMiniTransitioning(),
+  getMiniContainedSeam: () => _mini.getContainedSeam(),
   getMiniPeekOffset: () => _mini.PEEK_OFFSET,
   getCurrentPixelSize: () => getCurrentPixelSize(),
   getEffectiveCurrentPixelSize: (workArea) => getEffectiveCurrentPixelSize(workArea),
@@ -581,10 +601,14 @@ let autoStartWithClaude = _settingsController.get("autoStartWithClaude");
 let openAtLogin = _settingsController.get("openAtLogin");
 let bubbleFollowPet = _settingsController.get("bubbleFollowPet");
 let sessionHudEnabled = _settingsController.get("sessionHudEnabled");
+let sessionHudShowStateLabels = _settingsController.get("sessionHudShowStateLabels");
 let sessionHudShowElapsed = _settingsController.get("sessionHudShowElapsed");
 let sessionHudCleanupDetached = _settingsController.get("sessionHudCleanupDetached");
 let sessionHudAutoHide = _settingsController.get("sessionHudAutoHide");
 let sessionHudPinned = _settingsController.get("sessionHudPinned");
+let sessionStaleMs = _settingsController.get("sessionStaleMs");
+let workingStaleMs = _settingsController.get("workingStaleMs");
+let detachedIdleStaleMs = _settingsController.get("detachedIdleStaleMs");
 let soundMuted = _settingsController.get("soundMuted");
 let soundVolume = _settingsController.get("soundVolume");
 let lowPowerIdleMode = _settingsController.get("lowPowerIdleMode");
@@ -609,6 +633,20 @@ function sendToHitWin(channel, ...args) {
   if (hitWin && !hitWin.isDestroyed()) hitWin.webContents.send(channel, ...args);
 }
 
+function getThemeSoundPreloadUrls() {
+  const urls = [];
+  for (const name of ["complete", "confirm"]) {
+    const url = themeRuntime.getSoundUrl(name);
+    if (url && !urls.includes(url)) urls.push(url);
+  }
+  return urls;
+}
+
+function syncSoundPreloads() {
+  const urls = getThemeSoundPreloadUrls();
+  if (urls.length) sendToRenderer("preload-sounds", { urls });
+}
+
 function setViewportOffsetY(offsetY) { return petWindowRuntime.setViewportOffsetY(offsetY); }
 function getPetWindowBounds() { return petWindowRuntime.getPetWindowBounds(); }
 function applyPetWindowBounds(bounds) { return petWindowRuntime.applyPetWindowBounds(bounds); }
@@ -624,9 +662,14 @@ function syncHitStateAfterLoad() {
 }
 
 function syncRendererStateAfterLoad({ includeStartupRecovery = true } = {}) {
+  syncSoundPreloads();
   sendToRenderer("low-power-idle-mode-change", lowPowerIdleMode);
   if (_mini.getMiniMode()) {
     sendToRenderer("mini-mode-change", true, _mini.getMiniEdge());
+    // mini-clip is a renderer inline style — a renderer/theme reload (and
+    // startup recovery) drops it. Re-send the current seam clip so a
+    // contained mini stays clipped instead of bleeding onto the neighbour.
+    _mini.syncContainedClip();
   }
   if (doNotDisturb) {
     sendToRenderer("dnd-change", true);
@@ -804,9 +847,13 @@ const _permCtx = {
   reportShortcutFailure: (actionId, reason) => shortcutRuntime.reportFailure(actionId, reason),
   clearShortcutFailure: (actionId) => shortcutRuntime.clearFailure(actionId),
   repositionUpdateBubble: () => repositionUpdateBubble(),
+  getTelegramApprovalClient: () => getTelegramApprovalClient(),
+  onPermissionsChanged: () => {
+    if (hardwareBuddyAdapter) hardwareBuddyAdapter.notifyPermissionsChanged();
+  },
 };
 const _perm = initPermission(_permCtx);
-const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, showCodexNotifyBubble, clearCodexNotifyBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodePermission } = _perm;
+const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, maybeStartRemoteApproval, showCodexNotifyBubble, clearCodexNotifyBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodePermission } = _perm;
 const pendingPermissions = _perm.pendingPermissions;
 let permDebugLog = null; // set after app.whenReady()
 let updateDebugLog = null; // set after app.whenReady()
@@ -820,6 +867,7 @@ function getPendingPermissionFocusEntry(sessionId) {
   if (!entry) return null;
   const focusEntry = { id, agentId: entry.agentId };
   if (entry.sourcePid) focusEntry.sourcePid = entry.sourcePid;
+  if (entry.wtHwnd) focusEntry.wtHwnd = entry.wtHwnd;
   if (entry.cwd) focusEntry.cwd = entry.cwd;
   if (entry.agentPid) focusEntry.agentPid = entry.agentPid;
   if (entry.pidChain) focusEntry.pidChain = entry.pidChain;
@@ -930,6 +978,7 @@ const _stateCtx = {
     broadcastDashboardSessionSnapshot(snapshot);
     broadcastSessionHudSnapshot(snapshot);
     repositionFloatingBubbles();
+    if (hardwareBuddyAdapter) hardwareBuddyAdapter.notifyStateChanged();
   },
   // Phase 3b: 读 prefs.themeOverrides 判断某个 oneshot state 是否被用户禁用。
   // state.js gate 调这个做 early-return。不做白名单校验——settings-actions
@@ -945,6 +994,11 @@ const _stateCtx = {
     return !!(entry && entry.disabled === true);
   },
   get sessionHudCleanupDetached() { return sessionHudCleanupDetached; },
+  getStaleConfig: () => ({
+    sessionStaleMs,
+    workingStaleMs,
+    detachedIdleStaleMs,
+  }),
   getSessionAliases: () => _settingsController.get("sessionAliases"),
   hasAnyEnabledAgent: () => {
     // `get("agents")` returns the live reference (no clone) — we're only
@@ -1025,6 +1079,7 @@ function focusTerminalSession(session, sessionId, requestSource) {
   if (!session || !session.sourcePid) return false;
   focusTerminalWindow({
     sourcePid: session.sourcePid,
+    wtHwnd: session.wtHwnd,
     cwd: session.cwd,
     editor: session.editor,
     pidChain: session.pidChain,
@@ -1092,6 +1147,7 @@ const _dashboard = require("./dashboard")({
   getI18n: () => getDashboardI18nPayload(),
   getPetWindowBounds,
   getNearestWorkArea,
+  getSettingsWindow: () => settingsWindowRuntime.getWindow(),
   iconPath: settingsWindowRuntime.getIconPath(),
 });
 showDashboard = _dashboard.showDashboard;
@@ -1102,6 +1158,7 @@ const _sessionHud = require("./session-hud")({
   get win() { return win; },
   get petHidden() { return petWindowRuntime.isPetHidden(); },
   get sessionHudEnabled() { return sessionHudEnabled; },
+  get sessionHudShowStateLabels() { return sessionHudShowStateLabels; },
   get sessionHudShowElapsed() { return sessionHudShowElapsed; },
   get sessionHudAutoHide() { return sessionHudAutoHide; },
   get sessionHudPinned() { return sessionHudPinned; },
@@ -1154,7 +1211,10 @@ const _serverCtx = {
   updateSession: agentRuntime.updateSessionFromServer,
   resolvePermissionEntry,
   sendPermissionResponse,
+  addPendingPermission,
+  removePendingPermission,
   showPermissionBubble,
+  maybeStartRemoteApproval,
   replyOpencodePermission,
   permLog,
 };
@@ -1173,11 +1233,499 @@ function sessionLog(msg) {
   rotatedAppend(sessionDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
 }
 
+ipcMain.on("sound-playback-error", (_event, payload) => {
+  const phase = payload && typeof payload.phase === "string"
+    ? payload.phase.replace(/[^a-z0-9_-]/gi, "").slice(0, 32)
+    : "unknown";
+  const message = payload && typeof payload.message === "string"
+    ? payload.message.replace(/\s+/g, " ").slice(0, 240)
+    : "unknown";
+  sessionLog(`sound playback error phase=${phase || "unknown"} message=${message || "unknown"}`);
+});
+
 function focusLog(msg) {
   if (!focusDebugLog) return;
   const { rotatedAppend } = require("./log-rotate");
   rotatedAppend(focusDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
 }
+
+function getTelegramApprovalClient() {
+  if (!telegramApprovalSidecar || typeof telegramApprovalSidecar.getClient !== "function") return null;
+  return telegramApprovalSidecar.getClient();
+}
+
+function telegramApprovalLog(level, message, meta = {}) {
+  const parts = [`telegram approval sidecar ${level}: ${message}`];
+  if (meta && meta.text) parts.push(String(meta.text).trim());
+  if (meta && meta.error) parts.push(String(meta.error).trim());
+  permLog(parts.filter(Boolean).join(" | "));
+}
+
+function getTelegramApprovalPrefs() {
+  return telegramApprovalSettings.normalizeTelegramApproval(_settingsController.get("tgApproval"));
+}
+
+// Canonical paths only — no env-var override. The Settings "Save token" button,
+// the sidecar's bridge TOML, and tokenStatus all share this single location so
+// a malicious or accidental CLAWD_TG_BOT_TOKEN_FILE / CLAWD_BRIDGE_CONFIG can't
+// redirect the writer to an attacker-controlled path or split the writer/reader
+// view of where the token lives.
+function getTelegramApprovalPaths() {
+  const userDataDir = app.getPath("userData");
+  return {
+    userDataDir,
+    configPath: telegramApprovalSettings.defaultBridgeConfigPath(userDataDir),
+    tokenEnvFilePath: telegramApprovalSettings.defaultTokenEnvFilePath(userDataDir),
+  };
+}
+
+function getTelegramApprovalTokenStatus() {
+  const paths = getTelegramApprovalPaths();
+  return telegramApprovalSettings.tokenStatus({
+    fs,
+    filePath: paths.tokenEnvFilePath,
+  });
+}
+
+function getTelegramApprovalTokenInfo() {
+  const paths = getTelegramApprovalPaths();
+  const status = telegramApprovalSettings.tokenStatus({
+    fs,
+    filePath: paths.tokenEnvFilePath,
+  });
+  if (!status.tokenStored) return { configured: false, masked: "" };
+  return {
+    configured: true,
+    masked: telegramApprovalSettings.readMaskedBotToken({
+      fs,
+      filePath: paths.tokenEnvFilePath,
+    }),
+  };
+}
+
+function buildTelegramApprovalSignature(config, paths, tokenStatus) {
+  return JSON.stringify({
+    enabled: config.enabled === true,
+    allowedTgUserId: config.allowedTgUserId,
+    targetSessionKey: config.targetSessionKey,
+    configPath: paths.configPath,
+    tokenEnvFilePath: paths.tokenEnvFilePath,
+    tokenStored: tokenStatus.tokenStored === true,
+    tokenFileMtimeMs: tokenStatus.tokenFileMtimeMs || 0,
+    tokenRevision: telegramApprovalTokenRevision,
+  });
+}
+
+function getTelegramApprovalStatus() {
+  const config = getTelegramApprovalPrefs();
+  const token = getTelegramApprovalTokenStatus();
+  const ready = telegramApprovalSettings.readiness(config, token);
+  const sidecarStatus = telegramApprovalSidecar && typeof telegramApprovalSidecar.getStatus === "function"
+    ? telegramApprovalSidecar.getStatus()
+    : { status: "stopped" };
+  return {
+    ...sidecarStatus,
+    enabled: config.enabled === true,
+    configured: ready.ready === true,
+    reason: ready.reason || "",
+    message: sidecarStatus.message || ready.message || "",
+    tokenStored: token.tokenStored === true,
+  };
+}
+
+function writeTelegramApprovalToken(token) {
+  const paths = getTelegramApprovalPaths();
+  const result = telegramApprovalSettings.writeTokenEnvFile({
+    fs,
+    path,
+    filePath: paths.tokenEnvFilePath,
+    token,
+    platform: process.platform,
+  });
+  if (result && result.status === "ok") {
+    telegramApprovalTokenRevision += 1;
+    queueTelegramApprovalSidecarSync("token");
+  }
+  return result;
+}
+
+async function startTelegramApprovalSidecar() {
+  const config = getTelegramApprovalPrefs();
+  const paths = getTelegramApprovalPaths();
+  const token = getTelegramApprovalTokenStatus();
+  const ready = telegramApprovalSettings.readiness(config, token);
+  if (!ready.ready) {
+    if (ready.reason !== "disabled") {
+      telegramApprovalLog("info", ready.reason || "not configured", {
+        error: ready.message || "",
+      });
+    }
+    return false;
+  }
+  const configWrite = telegramApprovalSettings.writeBridgeConfigFile({
+    fs,
+    path,
+    filePath: paths.configPath,
+    config,
+  });
+  if (!configWrite || configWrite.status !== "ok") {
+    telegramApprovalLog("warn", "config write failed", {
+      error: configWrite && configWrite.message,
+    });
+    return false;
+  }
+  const signature = buildTelegramApprovalSignature(config, paths, token);
+  if (telegramApprovalSidecar && telegramApprovalConfigSignature === signature) {
+    const sidecar = telegramApprovalSidecar;
+    if (typeof sidecar.isRunning !== "function" || !sidecar.isRunning()) {
+      try {
+        await sidecar.start();
+        if (telegramApprovalSidecar === sidecar) telegramApprovalLog("info", "running");
+      } catch (err) {
+        telegramApprovalLog("warn", "start failed", {
+          error: err && err.message ? err.message : String(err),
+        });
+        return false;
+      }
+    }
+    return telegramApprovalSidecar === sidecar;
+  }
+  if (telegramApprovalSidecar) await stopTelegramApprovalSidecar();
+  // The bot token only ever lives at userData/telegram-approval.env on disk.
+  // The sidecar reads it from there directly — Clawd's main process must never
+  // pipe a token value through process.env or child env, so there is no
+  // botToken option here and no CLAWD_TG_BOT_TOKEN read from process.env.
+  telegramApprovalSidecar = createTelegramApprovalSidecar({
+    baseEnv: process.env,
+    env: process.env,
+    userDataDir: paths.userDataDir,
+    resourcesPath: process.resourcesPath,
+    isPackaged: app.isPackaged,
+    configPath: paths.configPath,
+    tokenEnvFilePath: paths.tokenEnvFilePath,
+    redactionSecrets: telegramApprovalSettings.redactionSecretsForTelegramApproval(config),
+    log: telegramApprovalLog,
+  });
+  telegramApprovalConfigSignature = signature;
+  const sidecar = telegramApprovalSidecar;
+  try {
+    await sidecar.start();
+    if (telegramApprovalSidecar === sidecar) {
+      telegramApprovalLog("info", "running");
+      return true;
+    }
+  } catch (err) {
+    telegramApprovalLog("warn", "start failed", {
+      error: err && err.message ? err.message : String(err),
+    });
+  }
+  return false;
+}
+
+function stopTelegramApprovalSidecar() {
+  const sidecar = telegramApprovalSidecar;
+  telegramApprovalSidecar = null;
+  telegramApprovalConfigSignature = "";
+  if (!sidecar || typeof sidecar.stop !== "function") return Promise.resolve();
+  return sidecar.stop().catch((err) => telegramApprovalLog("warn", "stop failed", {
+    error: err && err.message ? err.message : String(err),
+  }));
+}
+
+async function syncTelegramApprovalSidecar(reason = "settings") {
+  const config = getTelegramApprovalPrefs();
+  const paths = getTelegramApprovalPaths();
+  const token = getTelegramApprovalTokenStatus();
+  const ready = telegramApprovalSettings.readiness(config, token);
+  if (!ready.ready) {
+    if (telegramApprovalSidecar) await stopTelegramApprovalSidecar();
+    return false;
+  }
+  const nextSignature = buildTelegramApprovalSignature(config, paths, token);
+  if (telegramApprovalSidecar && telegramApprovalConfigSignature !== nextSignature) {
+    await stopTelegramApprovalSidecar();
+  }
+  const started = await startTelegramApprovalSidecar();
+  if (started) telegramApprovalLog("debug", `sync ${reason}`);
+  return started;
+}
+
+function queueTelegramApprovalSidecarSync(reason) {
+  telegramApprovalSyncPromise = telegramApprovalSyncPromise
+    .catch(() => {})
+    .then(() => syncTelegramApprovalSidecar(reason));
+  return telegramApprovalSyncPromise;
+}
+
+function telegramApprovalUnavailableMessage(status) {
+  if (status && status.message) return status.message;
+  if (status && status.reason === "disabled") return "Telegram approval is disabled";
+  if (status && status.reason === "missing-token") return "Telegram bot token is not configured";
+  if (status && status.reason === "invalid-config") return "Telegram approval config is incomplete";
+  return "Telegram approval sidecar is not running";
+}
+
+async function sendTelegramApprovalTest() {
+  const beforeStatus = getTelegramApprovalStatus();
+  if (beforeStatus.configured !== true) {
+    return { status: "error", message: telegramApprovalUnavailableMessage(beforeStatus) };
+  }
+  await queueTelegramApprovalSidecarSync("test");
+  const client = getTelegramApprovalClient();
+  if (!client || typeof client.requestApproval !== "function") {
+    return { status: "error", message: telegramApprovalUnavailableMessage(getTelegramApprovalStatus()) };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 60 * 1000);
+  try {
+    const decision = await client.requestApproval({
+      title: "Clawd Telegram approval test",
+      detail: "This is a settings test message. It is not attached to any agent permission request.",
+    }, { signal: controller.signal });
+    if (decision === "allow" || decision === "deny") {
+      return { status: "ok", decision };
+    }
+    return { status: "error", message: "Telegram test did not receive a button response" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function hardwareBuddyLog(msg) {
+  const line = `[hardware-buddy] ${msg}`;
+  if (sessionDebugLog) {
+    sessionLog(line);
+  } else {
+    console.log(`Clawd: ${line}`);
+  }
+}
+
+function summarizeHardwareBuddyStatus(status) {
+  const lastError = status && status.lastError && typeof status.lastError === "object"
+    ? status.lastError
+    : null;
+  return {
+    enabled: !!(status && status.enabled),
+    started: !!(status && status.started),
+    sidecarRunning: !!(status && status.sidecarRunning),
+    permissionsEnabled: !!(status && status.permissionsEnabled),
+    connected: !!(status && status.connected),
+    secure: !!(status && status.secure),
+    error: lastError ? `${lastError.category || "unknown"}:${lastError.code || ""}` : "",
+    retryAttempt: status && Number.isFinite(status.retryAttempt) ? status.retryAttempt : 0,
+  };
+}
+
+function logHardwareBuddyStatus(status) {
+  const summary = summarizeHardwareBuddyStatus(status);
+  const key = JSON.stringify(summary);
+  if (key === lastHardwareBuddyStatusLogKey) return;
+  lastHardwareBuddyStatusLogKey = key;
+  hardwareBuddyLog(
+    `status enabled=${summary.enabled} started=${summary.started} sidecar=${summary.sidecarRunning}`
+      + ` permissions=${summary.permissionsEnabled} connected=${summary.connected} secure=${summary.secure}`
+      + ` retry=${summary.retryAttempt}${summary.error ? ` error=${summary.error}` : ""}`
+  );
+}
+
+function broadcastHardwareBuddyStatus(status) {
+  hardwareBuddyStatus = status || null;
+  logHardwareBuddyStatus(hardwareBuddyStatus);
+  try {
+    for (const bw of BrowserWindow.getAllWindows()) {
+      if (!bw.isDestroyed() && bw.webContents && !bw.webContents.isDestroyed()) {
+        bw.webContents.send("hardwareBuddy:status-changed", hardwareBuddyStatus);
+      }
+    }
+  } catch (err) {
+    console.warn("Clawd: Hardware Buddy status broadcast failed:", err && err.message);
+  }
+}
+
+function createHardwareBuddyTestResponse(onFinish) {
+  const res = new EventEmitter();
+  res.writableEnded = false;
+  res.destroyed = false;
+  res.headersSent = false;
+  res.statusCode = null;
+  res.body = "";
+  res.writeHead = (statusCode, headers) => {
+    res.statusCode = statusCode;
+    res.headers = headers || {};
+    res.headersSent = true;
+    return res;
+  };
+  res.end = (body = "") => {
+    if (res.writableEnded || res.destroyed) return res;
+    res.writableEnded = true;
+    res.body = typeof body === "string" ? body : String(body || "");
+    if (typeof onFinish === "function") onFinish(null, res);
+    res.emit("close");
+    return res;
+  };
+  res.destroy = (err) => {
+    if (res.writableEnded || res.destroyed) return res;
+    res.destroyed = true;
+    if (typeof onFinish === "function") onFinish(err || new Error("response destroyed"), res);
+    res.emit("close");
+    return res;
+  };
+  return res;
+}
+
+function parseHardwareBuddyTestDecision(res) {
+  if (!res || !res.body) return null;
+  try {
+    const parsed = JSON.parse(res.body);
+    const decision = parsed
+      && parsed.hookSpecificOutput
+      && parsed.hookSpecificOutput.decision;
+    const behavior = decision && decision.behavior;
+    return behavior === "allow" || behavior === "deny" ? behavior : null;
+  } catch {
+    return null;
+  }
+}
+
+function hardwareBuddyTestError(code, message) {
+  return { status: "error", code, message };
+}
+
+function sendHardwareBuddyTestApproval() {
+  if (hardwareBuddyTestApprovalPromise) return hardwareBuddyTestApprovalPromise;
+
+  const status = hardwareBuddyAdapter && typeof hardwareBuddyAdapter.getStatus === "function"
+    ? hardwareBuddyAdapter.getStatus()
+    : hardwareBuddyStatus;
+  if (!status || status.enabled !== true || status.started !== true) {
+    return Promise.resolve(hardwareBuddyTestError("disabled", "Hardware Buddy is not enabled."));
+  }
+  if (status.permissionsEnabled !== true) {
+    return Promise.resolve(hardwareBuddyTestError("permissions_off", "Hardware permission replies are disabled."));
+  }
+  if (status.connected !== true || status.secure !== true) {
+    return Promise.resolve(hardwareBuddyTestError("not_secure", "Hardware Buddy is not connected over a secure link."));
+  }
+
+  const createdAt = Date.now();
+  const sessionId = `hardware-buddy-test-${createdAt}`;
+  const toolUseId = `hardware-buddy-test-tool-${createdAt}`;
+  const timeoutMs = 60000;
+
+  const promise = new Promise((resolve) => {
+    let settled = false;
+    let permEntry = null;
+    let timeout = null;
+    let noDecisionCode = null;
+
+    const cleanupSession = () => {
+      try {
+        _state.updateSession(sessionId, "idle", "SessionEnd", { agentId: "codex" });
+      } catch (err) {
+        hardwareBuddyLog(`test cleanup failed: ${err && err.message ? err.message : err}`);
+      }
+    };
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      cleanupSession();
+      resolve(result);
+    };
+
+    const res = createHardwareBuddyTestResponse((err, response) => {
+      if (settled) return;
+      if (err) {
+        finish(hardwareBuddyTestError("internal_error", err.message || String(err)));
+        return;
+      }
+      const decision = parseHardwareBuddyTestDecision(response);
+      if (decision === "allow" || decision === "deny") {
+        finish({ status: "ok", decision });
+        return;
+      }
+      finish(hardwareBuddyTestError(
+        noDecisionCode || "no_decision",
+        noDecisionCode === "timeout"
+          ? "Hardware Buddy test timed out."
+          : "Hardware Buddy test did not receive a decision."
+      ));
+    });
+
+    permEntry = {
+      res,
+      abortHandler: null,
+      suggestions: [],
+      sessionId,
+      bubble: null,
+      hideTimer: null,
+      toolName: "Bash",
+      toolInput: {
+        command: "echo hardware-buddy-smoke",
+        description: "Hardware Buddy smoke test: echo hardware-buddy-smoke",
+      },
+      toolUseId,
+      toolInputFingerprint: `hardware-buddy-test:${createdAt}`,
+      resolvedSuggestion: null,
+      createdAt,
+      agentId: "codex",
+      isCodex: true,
+      isHardwareBuddyTest: true,
+      cwd: __dirname,
+      codexOriginator: "clawd-settings",
+      codexSource: "hardware-buddy-test",
+    };
+
+    try {
+      _state.updateSession(sessionId, "idle", "SessionStart", {
+        agentId: "codex",
+        cwd: __dirname,
+        sessionTitle: "Hardware Buddy test",
+      });
+      addPendingPermission(permEntry, "hardware-buddy-test");
+    } catch (err) {
+      removePendingPermission(permEntry, "hardware-buddy-test-failed");
+      finish(hardwareBuddyTestError("internal_error", err && err.message ? err.message : String(err)));
+      return;
+    }
+
+    timeout = setTimeout(() => {
+      if (settled) return;
+      hardwareBuddyLog("test approval timed out");
+      noDecisionCode = "timeout";
+      resolvePermissionEntry(permEntry, "no-decision", "Hardware Buddy test timed out");
+    }, timeoutMs);
+  });
+  hardwareBuddyTestApprovalPromise = promise.finally(() => {
+    hardwareBuddyTestApprovalPromise = null;
+  });
+  return hardwareBuddyTestApprovalPromise;
+}
+
+hardwareBuddyAdapter = createHardwareBuddyAdapter({
+  env: process.env,
+  getSettings: () => _settingsController.get("hardwareBuddy"),
+  getSessionSnapshot: () => _state.buildSessionSnapshot(),
+  getPendingPermissions: () => pendingPermissions,
+  getDoNotDisturb: () => doNotDisturb,
+  isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
+  isAgentPermissionsEnabled: (agentId) =>
+    _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
+  resolvePermissionEntry: (...args) => resolvePermissionEntry(...args),
+  statePriority: _state.STATE_PRIORITY,
+  log: hardwareBuddyLog,
+  onStatusChanged: broadcastHardwareBuddyStatus,
+});
+
+unsubscribeHardwareBuddySettings = _settingsController.subscribeKey("hardwareBuddy", () => {
+  if (!hardwareBuddyAdapter || typeof hardwareBuddyAdapter.applySettingsChange !== "function") return;
+  try {
+    hardwareBuddyAdapter.applySettingsChange();
+  } catch (err) {
+    console.warn("Clawd: failed to apply Hardware Buddy settings:", err && err.message);
+    hardwareBuddyLog(`settings apply failed: ${err && err.message ? err.message : err}`);
+  }
+});
 
 // ── Menu — delegated to src/menu.js ──
 //
@@ -1272,8 +1820,11 @@ const SETTINGS_MIRROR_SETTERS = {
   showDock: (v) => { showDock = v; }, manageClaudeHooksAutomatically: (v) => { manageClaudeHooksAutomatically = v; },
   autoStartWithClaude: (v) => { autoStartWithClaude = v; }, openAtLogin: (v) => { openAtLogin = v; },
   bubbleFollowPet: (v) => { bubbleFollowPet = v; }, sessionHudEnabled: (v) => { sessionHudEnabled = v; },
+  sessionHudShowStateLabels: (v) => { sessionHudShowStateLabels = v; },
   sessionHudShowElapsed: (v) => { sessionHudShowElapsed = v; }, sessionHudCleanupDetached: (v) => { sessionHudCleanupDetached = v; },
   sessionHudAutoHide: (v) => { sessionHudAutoHide = v; }, sessionHudPinned: (v) => { sessionHudPinned = v; },
+  sessionStaleMs: (v) => { sessionStaleMs = v; }, workingStaleMs: (v) => { workingStaleMs = v; },
+  detachedIdleStaleMs: (v) => { detachedIdleStaleMs = v; },
   soundMuted: (v) => { soundMuted = v; }, soundVolume: (v) => { soundVolume = v; }, lowPowerIdleMode: (v) => { lowPowerIdleMode = v; },
   allowEdgePinning: (v) => { allowEdgePinningCached = v; }, keepSizeAcrossDisplays: (v) => { keepSizeAcrossDisplaysCached = v; },
 };
@@ -1316,6 +1867,9 @@ const settingsEffectRouter = createSettingsEffectRouter({
   logWarn: console.warn,
 });
 settingsEffectRouter.start();
+_settingsController.subscribeKey("tgApproval", () => {
+  queueTelegramApprovalSidecarSync("settings");
+});
 
 animationOverridesMain = createSettingsAnimationOverridesMain({
   app,
@@ -1451,6 +2005,16 @@ registerSettingsIpc({
   getSoundMuted: () => soundMuted,
   getSoundVolume: () => soundVolume,
   getAllAgents,
+  getHardwareBuddyStatus: () => hardwareBuddyStatus || (hardwareBuddyAdapter && hardwareBuddyAdapter.getStatus
+    ? hardwareBuddyAdapter.getStatus()
+    : null),
+  testHardwareBuddyApproval: () => sendHardwareBuddyTestApproval(),
+  getQuickCommandPresets: () => hardwareBuddyAdapter && typeof hardwareBuddyAdapter.getQuickCommandPresets === "function"
+    ? hardwareBuddyAdapter.getQuickCommandPresets()
+    : { enabled: false, presets: [] },
+  sendQuickCommand: (payload) => hardwareBuddyAdapter && typeof hardwareBuddyAdapter.createQuickCommand === "function"
+    ? hardwareBuddyAdapter.createQuickCommand(payload)
+    : { status: "error", code: "quick_commands_unavailable", message: "Quick Commands are unavailable" },
   checkForUpdates,
   aboutHeroSvgPath: path.join(__dirname, "..", "assets", "svg", "clawd-about-hero.svg"),
 });
@@ -1461,8 +2025,9 @@ registerSessionIpc({
   getI18n: () => getDashboardI18nPayload(),
   focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
   hideSession: (sessionId) => hideDashboardSession(sessionId),
+  ackSessionCompletion: (sessionId) => _state.ackSessionCompletion(sessionId),
   setSessionAlias: (payload) => _settingsController.applyCommand("setSessionAlias", payload),
-  showDashboard: () => showDashboard(),
+  showDashboard: (options) => showDashboard(options),
   setSessionHudPinned: (value) => {
     const result = _settingsController.applyUpdate("sessionHudPinned", !!value);
     if (result && typeof result.then === "function") {
@@ -1814,6 +2379,7 @@ if (!gotTheLock) {
     updateDebugLog = path.join(app.getPath("userData"), "update-debug.log");
     sessionDebugLog = path.join(app.getPath("userData"), "session-debug.log");
     focusDebugLog = path.join(app.getPath("userData"), "focus-debug.log");
+    queueTelegramApprovalSidecarSync("startup");
     createWindow();
     if (shouldOpenSettingsWindowFromArgv(process.argv)) {
       settingsWindowRuntime.open();
@@ -1833,6 +2399,13 @@ if (!gotTheLock) {
     // shouldn't see its file watcher spin up on the next launch.
     agentRuntime.startCodexLogMonitor();
 
+    try {
+      hardwareBuddyAdapter.start();
+    } catch (err) {
+      console.warn("Clawd: failed to start Hardware Buddy adapter:", err && err.message);
+      hardwareBuddyLog(`start failed: ${err && err.message ? err.message : err}`);
+    }
+
     // Auto-install VS Code/Cursor terminal-focus extension
     try { installTerminalFocusExtension(); } catch (err) {
       console.warn("Clawd: failed to auto-install terminal-focus extension:", err.message);
@@ -1847,6 +2420,12 @@ if (!gotTheLock) {
     flushRuntimeStateToPrefs();
     globalShortcut.unregisterAll();
     void settingsSizePreviewSession.cleanup();
+    stopTelegramApprovalSidecar();
+    if (typeof unsubscribeHardwareBuddySettings === "function") {
+      unsubscribeHardwareBuddySettings();
+      unsubscribeHardwareBuddySettings = null;
+    }
+    if (hardwareBuddyAdapter) hardwareBuddyAdapter.stop();
     _perm.cleanup();
     _server.cleanup();
     _updateBubble.cleanup();

@@ -42,6 +42,13 @@ describe("state-session-snapshot badges", () => {
       recentEvents: [{ event: "Stop", state: "idle", at: 1 }],
     })), "done");
     assert.strictEqual(deriveSessionBadge(session("idle", {
+      recentEvents: [{ event: "event_msg:task_complete", state: "attention", at: 1 }],
+    })), "done");
+    assert.strictEqual(deriveSessionBadge(session("idle", {
+      requiresCompletionAck: true,
+      recentEvents: [{ event: "stale-cleanup", state: "sleeping", at: 1 }],
+    })), "done");
+    assert.strictEqual(deriveSessionBadge(session("idle", {
       recentEvents: [{ event: "PostToolUseFailure", state: "idle", at: 1 }],
     })), "interrupted");
     assert.strictEqual(deriveSessionBadge(null), "idle");
@@ -104,6 +111,45 @@ describe("state-session-snapshot builder", () => {
       labelKey: "eventLabelPreToolUse",
       rawEvent: "PreToolUse",
       at: 900,
+    });
+
+    const taskCompleteSnapshot = buildSessionSnapshot(new Map([
+      ["remote-complete", session("idle", {
+        agentId: "codex",
+        host: "remote-box",
+        recentEvents: [{ event: "event_msg:task_complete", state: "attention", at: 3300 }],
+      })],
+      ["local-complete", session("idle", {
+        agentId: "codex",
+        host: null,
+        recentEvents: [{ event: "event_msg:task_complete", state: "attention", at: 3400 }],
+      })],
+      ["remote-stale-complete", session("idle", {
+        agentId: "codex",
+        host: "remote-box",
+        requiresCompletionAck: true,
+        recentEvents: [
+          { event: "event_msg:task_complete", state: "attention", at: 3500 },
+          { event: "stale-cleanup", state: "sleeping", at: 3600 },
+        ],
+      })],
+    ]), { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+    const taskComplete = taskCompleteSnapshot.sessions.find((entry) => entry.id === "remote-complete");
+    assert.strictEqual(taskComplete.badge, "done");
+    assert.deepStrictEqual(taskComplete.lastEvent, {
+      labelKey: "eventLabelStop",
+      rawEvent: "event_msg:task_complete",
+      at: 3300,
+    });
+    const localComplete = taskCompleteSnapshot.sessions.find((entry) => entry.id === "local-complete");
+    assert.strictEqual(localComplete.badge, "done");
+    assert.strictEqual(localComplete.requiresCompletionAck, false);
+    const staleComplete = taskCompleteSnapshot.sessions.find((entry) => entry.id === "remote-stale-complete");
+    assert.strictEqual(staleComplete.badge, "done");
+    assert.deepStrictEqual(staleComplete.lastEvent, {
+      labelKey: "eventLabelStop",
+      rawEvent: "event_msg:task_complete",
+      at: 3500,
     });
 
     const latestRemote = snapshot.sessions.find((entry) => entry.id === "latest-remote");
@@ -278,5 +324,48 @@ describe("state-session-snapshot builder", () => {
 
     assert.strictEqual(sessionSnapshotSignature(base), sessionSnapshotSignature(sameExceptIcon));
     assert.notStrictEqual(sessionSnapshotSignature(base), sessionSnapshotSignature(differentTitle));
+  });
+
+  // ── PR2: requiresCompletionAck exposure ──
+  it("entry includes requiresCompletionAck=false for normal sessions", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["a", session("idle", { recentEvents: [{ event: "PreToolUse", state: "idle", at: 1 }] })],
+    ]), { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+    const entry = snapshot.sessions.find((s) => s.id === "a");
+    assert.strictEqual(entry.requiresCompletionAck, false);
+  });
+
+  it("entry includes requiresCompletionAck=true when the session flag is set", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["a", session("idle", {
+        requiresCompletionAck: true,
+        recentEvents: [{ event: "Stop", state: "idle", at: 1 }],
+      })],
+    ]), { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+    const entry = snapshot.sessions.find((s) => s.id === "a");
+    assert.strictEqual(entry.requiresCompletionAck, true);
+  });
+
+  it("ackedAt stays internal — does NOT appear in the snapshot entry", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["a", session("idle", { ackedAt: 12345, requiresCompletionAck: false })],
+    ]), { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+    const entry = snapshot.sessions.find((s) => s.id === "a");
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(entry, "ackedAt"), false);
+  });
+
+  it("snapshot signature changes when requiresCompletionAck flips", () => {
+    const baseSessions = new Map([
+      ["a", session("idle", { recentEvents: [{ event: "Stop", state: "idle", at: 1 }] })],
+    ]);
+    const flaggedSessions = new Map([
+      ["a", session("idle", {
+        requiresCompletionAck: true,
+        recentEvents: [{ event: "Stop", state: "idle", at: 1 }],
+      })],
+    ]);
+    const base = buildSessionSnapshot(baseSessions, { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+    const flagged = buildSessionSnapshot(flaggedSessions, { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+    assert.notStrictEqual(sessionSnapshotSignature(base), sessionSnapshotSignature(flagged));
   });
 });

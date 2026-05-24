@@ -17,6 +17,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { writeJsonAtomic, asarUnpackedPath } = require("./json-utils");
+const { resolveNodeBin } = require("./server-config");
 
 const MARKER = "copilot-hook.js";
 const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".copilot");
@@ -113,7 +114,13 @@ function registerCopilotHooks(options = {}) {
   const hookScript = options.hookScript
     || asarUnpackedPath(path.resolve(__dirname, "copilot-hook.js").replace(/\\/g, "/"));
 
-  const nodeBin = options.nodeBin || (options.remote === true ? process.execPath : "node");
+  // Remote installs keep using this process' Node executable so the SSH host
+  // doesn't need a working PATH. Local installs go through the shared resolver
+  // so Windows users get an absolute path (issue #317) instead of bare "node".
+  const localResolved = options.remote === true ? null : resolveNodeBin(options);
+  const nodeBin = options.nodeBin
+    || (options.remote === true ? process.execPath : localResolved)
+    || "node";
 
   let settings = {};
   try {

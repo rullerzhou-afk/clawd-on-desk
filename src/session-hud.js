@@ -11,8 +11,11 @@ const isWin = process.platform === "win32";
 const HUD_BORDER_Y = 2;
 const HUD_WIDTH = 240;
 const HUD_WIDTH_COMPACT = 190;
+const HUD_WIDTH_LABELS = 320;
+const HUD_WIDTH_LABELS_COMPACT = 260;
 const HUD_ROW_HEIGHT = 28;
 const HUD_MAX_EXPANDED_ROWS = 3;
+const HUD_MAX_EXPANDED_ROWS_LABELS = 5;
 const HUD_HEIGHT = HUD_ROW_HEIGHT + HUD_BORDER_Y;
 const HUD_WINDOW_SHELL = Object.freeze({
   top: 2,
@@ -138,7 +141,11 @@ function evaluateShouldShow({
   return { show, nextHoldUntil };
 }
 
-function computeHudLayout(snapshot) {
+function getHudMaxExpandedRows(showStateLabels = true) {
+  return showStateLabels === false ? HUD_MAX_EXPANDED_ROWS : HUD_MAX_EXPANDED_ROWS_LABELS;
+}
+
+function computeHudLayout(snapshot, options = {}) {
   const sessions = (snapshot && Array.isArray(snapshot.sessions)) ? snapshot.sessions : [];
   if (sessions.length === 0) return { expanded: [], folded: [], rowCount: 0 };
   const byId = new Map(sessions.map((s) => [s.id, s]));
@@ -149,8 +156,9 @@ function computeHudLayout(snapshot) {
   const orderedSet = new Set(ordered.map((s) => s.id));
   const missing = sessions.filter((s) => !orderedSet.has(s.id));
   const visible = ordered.concat(missing).filter(isHudSession);
-  const expanded = visible.slice(0, HUD_MAX_EXPANDED_ROWS);
-  const folded = visible.slice(HUD_MAX_EXPANDED_ROWS);
+  const maxExpandedRows = getHudMaxExpandedRows(options.showStateLabels);
+  const expanded = visible.slice(0, maxExpandedRows);
+  const folded = visible.slice(maxExpandedRows);
   const rowCount = expanded.length + (folded.length > 0 ? 1 : 0);
   return { expanded, folded, rowCount };
 }
@@ -215,8 +223,9 @@ function computeSessionHudBounds({ hitRect, anchorRect, workArea, width = HUD_WI
   };
 }
 
-function getHudWidth(showElapsed = true) {
-  return showElapsed === false ? HUD_WIDTH_COMPACT : HUD_WIDTH;
+function getHudWidth(showElapsed = true, showStateLabels = true) {
+  if (showStateLabels === false) return showElapsed === false ? HUD_WIDTH_COMPACT : HUD_WIDTH;
+  return showElapsed === false ? HUD_WIDTH_LABELS_COMPACT : HUD_WIDTH_LABELS;
 }
 
 function deferMacFloatingVisibility(ctx, win) {
@@ -296,9 +305,9 @@ module.exports = function initSessionHud(ctx) {
     const workArea = typeof ctx.getNearestWorkArea === "function"
       ? ctx.getNearestWorkArea(cx, cy)
       : { x: 0, y: 0, width: 1280, height: 800 };
-    const layout = computeHudLayout(snapshot);
+    const layout = computeHudLayout(snapshot, { showStateLabels: ctx.sessionHudShowStateLabels !== false });
     const height = computeHudHeight(layout.rowCount);
-    const width = getHudWidth(ctx.sessionHudShowElapsed !== false);
+    const width = getHudWidth(ctx.sessionHudShowElapsed !== false, ctx.sessionHudShowStateLabels !== false);
     const computed = computeSessionHudBounds({ hitRect, anchorRect, workArea, width, height });
     return { hitRect, contentBounds: computed && computed.contentBounds };
   }
@@ -389,6 +398,7 @@ module.exports = function initSessionHud(ctx) {
     if (!hudWindow.webContents || hudWindow.webContents.isDestroyed()) return;
     hudWindow.webContents.send("session-hud:session-snapshot", {
       ...snapshot,
+      hudShowStateLabels: ctx.sessionHudShowStateLabels !== false,
       hudShowElapsed: ctx.sessionHudShowElapsed !== false,
       hudAutoHide: ctx.sessionHudAutoHide === true,
       hudPinned: ctx.sessionHudPinned === true,
@@ -408,7 +418,7 @@ module.exports = function initSessionHud(ctx) {
 
     didFinishLoad = false;
     hudFlippedAbove = false;
-    const hudWidth = getHudWidth(ctx.sessionHudShowElapsed !== false);
+    const hudWidth = getHudWidth(ctx.sessionHudShowElapsed !== false, ctx.sessionHudShowStateLabels !== false);
     hudWindow = new BrowserWindow({
       parent: ctx.win,
       width: hudWidth + HUD_WINDOW_SHELL.left + HUD_WINDOW_SHELL.right,
@@ -475,9 +485,9 @@ module.exports = function initSessionHud(ctx) {
     const workArea = typeof ctx.getNearestWorkArea === "function"
       ? ctx.getNearestWorkArea(cx, cy)
       : { x: 0, y: 0, width: 1280, height: 800 };
-    const layout = computeHudLayout(snapshot);
+    const layout = computeHudLayout(snapshot, { showStateLabels: ctx.sessionHudShowStateLabels !== false });
     const height = computeHudHeight(layout.rowCount);
-    const width = getHudWidth(ctx.sessionHudShowElapsed !== false);
+    const width = getHudWidth(ctx.sessionHudShowElapsed !== false, ctx.sessionHudShowStateLabels !== false);
     lastHudHeight = height;
     return computeSessionHudBounds({ hitRect, anchorRect, workArea, width, height });
   }
@@ -565,6 +575,7 @@ module.exports = function initSessionHud(ctx) {
 module.exports.__test = {
   computeSessionHudBounds,
   computeHudLayout,
+  getHudMaxExpandedRows,
   computeHudHeight,
   computeHudReservedOffset,
   isHudSession,
@@ -577,9 +588,12 @@ module.exports.__test = {
   constants: {
     HUD_WIDTH,
     HUD_WIDTH_COMPACT,
+    HUD_WIDTH_LABELS,
+    HUD_WIDTH_LABELS_COMPACT,
     HUD_HEIGHT,
     HUD_ROW_HEIGHT,
     HUD_MAX_EXPANDED_ROWS,
+    HUD_MAX_EXPANDED_ROWS_LABELS,
     HUD_WINDOW_SHELL,
     HUD_PET_GAP,
     BUBBLE_GAP,

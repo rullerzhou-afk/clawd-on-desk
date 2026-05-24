@@ -46,6 +46,7 @@ function createPetWindowRuntime(options = {}) {
   const getCurrentHitBox = options.getCurrentHitBox || (() => null);
   const getMiniMode = options.getMiniMode || (() => false);
   const getMiniTransitioning = options.getMiniTransitioning || (() => false);
+  const getMiniContainedSeam = options.getMiniContainedSeam || (() => null);
   const getMiniPeekOffset = options.getMiniPeekOffset || (() => 0);
   const getCurrentPixelSize = options.getCurrentPixelSize || (() => null);
   const getEffectiveCurrentPixelSize = options.getEffectiveCurrentPixelSize || getCurrentPixelSize;
@@ -251,7 +252,7 @@ function createPetWindowRuntime(options = {}) {
   }
 
   function getHitRectScreen(bounds) {
-    return petGeometryMain.getHitRectScreen(bounds);
+    return clipHitRectToMiniSeam(petGeometryMain.getHitRectScreen(bounds));
   }
 
   function getUpdateBubbleAnchorRect(bounds) {
@@ -339,6 +340,24 @@ function createPetWindowRuntime(options = {}) {
 
   function needsFinalClampAdjustment(bounds, size, clampPosition = clampToScreenVisual) {
     return needsFinalClampAdjustmentRaw(bounds, size, clampPosition);
+  }
+
+  // At an internal multi-monitor seam the render window is clip-pathed so its
+  // seam-crossing half shows nothing — but the hit (input) window is a
+  // transparent surface and would keep capturing clicks over the neighbouring
+  // display. Clip the hit rect to the same seam so those clicks fall through.
+  // The clamps keep the rect from inverting when the whole hit rect is past
+  // the seam; the w<=0 guard in the callers then drops the degenerate result.
+  function clipHitRectToMiniSeam(hit) {
+    if (!hit) return hit;
+    const seam = getMiniContainedSeam();
+    if (!seam || !Number.isFinite(seam.boundary)) return hit;
+    if (seam.edge === "right") {
+      if (hit.right <= seam.boundary) return hit;
+      return { ...hit, right: Math.max(hit.left, seam.boundary) };
+    }
+    if (hit.left >= seam.boundary) return hit;
+    return { ...hit, left: Math.min(hit.right, seam.boundary) };
   }
 
   function syncHitWin() {
@@ -709,6 +728,10 @@ function createPetWindowRuntime(options = {}) {
 
   function handleDisplayAdded() {
     reapplyMacVisibility();
+    const win = getRenderWindow();
+    if (isLiveWindow(win) && !getMiniTransitioning() && getMiniMode()) {
+      handleMiniDisplayChange();
+    }
     repositionAnchoredSurfaces();
   }
 

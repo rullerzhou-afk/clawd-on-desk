@@ -10,6 +10,7 @@ describe("installer default path exports", () => {
     const codex = require("../hooks/codex-install");
     const cursor = require("../hooks/cursor-install");
     const gemini = require("../hooks/gemini-install");
+    const antigravity = require("../hooks/antigravity-install");
     const codebuddy = require("../hooks/codebuddy-install");
     const kiro = require("../hooks/kiro-install");
     const kimi = require("../hooks/kimi-install");
@@ -29,6 +30,9 @@ describe("installer default path exports", () => {
 
     assert.strictEqual(gemini.DEFAULT_PARENT_DIR, path.join(home, ".gemini"));
     assert.strictEqual(gemini.DEFAULT_CONFIG_PATH, path.join(home, ".gemini", "settings.json"));
+
+    assert.strictEqual(antigravity.DEFAULT_PARENT_DIR, path.join(home, ".gemini", "config"));
+    assert.strictEqual(antigravity.DEFAULT_CONFIG_PATH, path.join(home, ".gemini", "config", "hooks.json"));
 
     assert.strictEqual(codebuddy.DEFAULT_PARENT_DIR, path.join(home, ".codebuddy"));
     assert.strictEqual(codebuddy.DEFAULT_CONFIG_PATH, path.join(home, ".codebuddy", "settings.json"));

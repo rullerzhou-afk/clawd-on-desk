@@ -156,6 +156,14 @@ test("settings.css defines remote-ssh-* layout rules used by the tab", () => {
   }
 });
 
+test("settings-tab-remote-ssh.js translates runtime status hints before raw messages", () => {
+  const code = fs.readFileSync(path.join(SRC_DIR, "settings-tab-remote-ssh.js"), "utf8");
+  assert.match(code, /function\s+statusMessageText\s*\(\s*status\s*\)/);
+  assert.match(code, /status\.hint/);
+  assert.match(code, /translated\s*!==\s*status\.hint/);
+  assert.match(code, /msg\.title\s*=\s*status\.message/);
+});
+
 test("settings-i18n.js: codexHookReviewReminder defined in every supported language (B2 followup)", () => {
   const code = fs.readFileSync(path.join(SRC_DIR, "settings-i18n.js"), "utf8");
   const matches = code.match(/codexHookReviewReminder:\s*"[^"]+"/g) || [];

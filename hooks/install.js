@@ -8,7 +8,7 @@ const path = require("path");
 const os = require("os");
 const childProcess = require("child_process");
 const { buildPermissionUrl, DEFAULT_SERVER_PORT, PERMISSION_PATH, readRuntimePort, resolveNodeBin, resolveNodeBinAsync, SERVER_PORTS } = require("./server-config");
-const { writeJsonAtomic, writeJsonAtomicAsync, asarUnpackedPath } = require("./json-utils");
+const { writeJsonAtomic, writeJsonAtomicAsync, asarUnpackedPath, extractExistingNodeBin } = require("./json-utils");
 
 const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".claude");
 const DEFAULT_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, "settings.json");
@@ -435,42 +435,6 @@ const AUTO_START_MARKER = "auto-start.js";
 const LEGACY_AUTO_START_MARKER = "auto-start.sh";
 const HTTP_MARKER = PERMISSION_PATH;
 
-/**
- * Extract the node binary path from existing hook commands in settings.
- * Looks for the first quoted absolute path before `marker` in any hook command.
- * Returns the path (e.g. "/opt/homebrew/bin/node") or null.
- */
-function extractNodeBinFromSettings(settings, marker) {
-  if (!settings || !settings.hooks) return null;
-  for (const entries of Object.values(settings.hooks)) {
-    if (!Array.isArray(entries)) continue;
-    for (const entry of entries) {
-      if (!entry || typeof entry !== "object") continue;
-      const cmds = [];
-      if (typeof entry.command === "string") cmds.push(entry.command);
-      if (Array.isArray(entry.hooks)) {
-        for (const h of entry.hooks) {
-          if (h && typeof h.command === "string") cmds.push(h.command);
-        }
-      }
-      for (const cmd of cmds) {
-        if (!cmd.includes(marker)) continue;
-        // Find first quoted token: "something"
-        const qi = cmd.indexOf('"');
-        if (qi === -1) continue;
-        const qe = cmd.indexOf('"', qi + 1);
-        if (qe === -1) continue;
-        const firstQuoted = cmd.substring(qi + 1, qe);
-        // If first quoted token IS the hook script (old format), node was bare — nothing to preserve
-        if (firstQuoted.includes(marker)) continue;
-        // Only preserve absolute paths
-        if (firstQuoted.startsWith("/")) return firstQuoted;
-      }
-    }
-  }
-  return null;
-}
-
 function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {
   const platform = options.platform || process.platform;
   const argSuffix = args ? ` ${args}` : "";
@@ -789,7 +753,7 @@ function registerHooks(options = {}) {
   // to avoid destructively overwriting a working config with bare "node".
   const resolved = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
   const nodeBin = resolved
-    || extractNodeBinFromSettings(settings, MARKER)
+    || extractExistingNodeBin(settings, MARKER, { nested: true })
     || "node";
 
   let added = 0;
@@ -1005,7 +969,7 @@ async function registerHooksAsync(options = {}) {
 
   const configuredNodeBin = options.nodeBin !== undefined
     ? options.nodeBin
-    : extractNodeBinFromSettings(settings, MARKER);
+    : extractExistingNodeBin(settings, MARKER, { nested: true });
   const nodeBin = configuredNodeBin
     || await resolveNodeBinAsync(options)
     || "node";

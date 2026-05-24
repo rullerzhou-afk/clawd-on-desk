@@ -7,6 +7,7 @@ const claude = require("../../hooks/install");
 const codex = require("../../hooks/codex-install");
 const cursor = require("../../hooks/cursor-install");
 const gemini = require("../../hooks/gemini-install");
+const antigravity = require("../../hooks/antigravity-install");
 const codebuddy = require("../../hooks/codebuddy-install");
 const kiro = require("../../hooks/kiro-install");
 const kimi = require("../../hooks/kimi-install");
@@ -84,6 +85,17 @@ const AGENT_DESCRIPTORS = Object.freeze([
     autoInstall: true,
     marker: "gemini-hook.js",
     nested: true,
+  }),
+  Object.freeze({
+    agentId: "antigravity-cli",
+    agentName: agentName("antigravity-cli"),
+    eventSource: agentEventSource("antigravity-cli"),
+    parentDir: antigravity.DEFAULT_PARENT_DIR,
+    configPath: antigravity.DEFAULT_CONFIG_PATH,
+    configMode: "antigravity-hooks",
+    autoInstall: true,
+    marker: antigravity.MARKER,
+    hookEvents: antigravity.ANTIGRAVITY_HOOK_EVENTS,
   }),
   Object.freeze({
     agentId: "codebuddy",

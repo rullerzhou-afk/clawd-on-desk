@@ -5,6 +5,7 @@ const claudeCode = require("./claude-code");
 const codex = require("./codex");
 const copilotCli = require("./copilot-cli");
 const geminiCli = require("./gemini-cli");
+const antigravityCli = require("./antigravity-cli");
 const cursorAgent = require("./cursor-agent");
 const codebuddy = require("./codebuddy");
 const kiroCli = require("./kiro-cli");
@@ -19,6 +20,7 @@ const AGENTS = [
   codex,
   copilotCli,
   geminiCli,
+  antigravityCli,
   cursorAgent,
   codebuddy,
   kiroCli,

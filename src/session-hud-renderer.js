@@ -1,8 +1,11 @@
 "use strict";
 
 const HUD_MAX_EXPANDED_ROWS = 3;
+const HUD_MAX_EXPANDED_ROWS_LABELS = 5;
+const HUD_TITLE_MAX_UNITS = 15;
+const RECENT_DONE_UNREAD_MS = 60 * 1000;
 
-let snapshot = { sessions: [], orderedIds: [], hudTotalNonIdle: 0, hudLastTitle: null, hudShowElapsed: true, hudAutoHide: false, hudPinned: false };
+let snapshot = { sessions: [], orderedIds: [], hudTotalNonIdle: 0, hudLastTitle: null, hudShowStateLabels: true, hudShowElapsed: true, hudAutoHide: false, hudPinned: false };
 let i18nPayload = { lang: "en", translations: {} };
 
 const unreadSessions = new Set();
@@ -39,6 +42,39 @@ function titleFor(session) {
   return session.displayTitle || session.sessionTitle || session.id || "";
 }
 
+function titleUnits(value) {
+  let units = 0;
+  for (const ch of String(value || "")) {
+    if (/\s/.test(ch)) units += 0.5;
+    else units += ch.charCodeAt(0) > 0x7F ? 2 : 1;
+  }
+  return units;
+}
+
+function shortenHudTitle(value) {
+  const full = String(value || "").replace(/\s+/g, " ").trim();
+  if (!full || titleUnits(full) <= HUD_TITLE_MAX_UNITS) return full;
+
+  let units = 0;
+  let out = "";
+  for (const ch of full) {
+    const nextUnits = /\s/.test(ch) ? 0.5 : (ch.charCodeAt(0) > 0x7F ? 2 : 1);
+    if (units + nextUnits > HUD_TITLE_MAX_UNITS) break;
+    out += ch;
+    units += nextUnits;
+  }
+
+  let trimmed = out.trimEnd();
+  const next = full[trimmed.length] || "";
+  if (/[A-Za-z0-9]/.test(trimmed.slice(-1)) && /[A-Za-z0-9]/.test(next)) {
+    const wordTrimmed = trimmed.replace(/\s+\S*$/, "").trimEnd();
+    if (wordTrimmed && titleUnits(wordTrimmed) >= HUD_TITLE_MAX_UNITS * 0.55) {
+      trimmed = wordTrimmed;
+    }
+  }
+  return `${trimmed}\u2026`;
+}
+
 function orderedHudSessions(currentSnapshot) {
   const sessions = Array.isArray(currentSnapshot.sessions) ? currentSnapshot.sessions : [];
   const byId = new Map(sessions.map((session) => [session.id, session]));
@@ -51,12 +87,49 @@ function orderedHudSessions(currentSnapshot) {
   return ordered.concat(missing).filter(isHudSession);
 }
 
+const STATE_CHIP_MAP = {
+  thinking: { key: "sessionThinking", cls: "chip-thinking" },
+  working: { key: "sessionWorking", cls: "chip-working" },
+  juggling: { key: "sessionJuggling", cls: "chip-juggling" },
+};
+
+const EVENT_CHIP_MAP = {
+  PreCompact: { key: "sessionSweeping", cls: "chip-sweeping" },
+  PreCompress: { key: "sessionSweeping", cls: "chip-sweeping" },
+  PermissionRequest: { key: "sessionNotification", cls: "chip-notification" },
+  Elicitation: { key: "sessionNotification", cls: "chip-notification" },
+  Notification: { key: "sessionNotification", cls: "chip-notification" },
+  WorktreeCreate: { key: "sessionWorktree", cls: "chip-worktree" },
+};
+
+function makeChipInfo(entry) {
+  return entry ? { label: t(entry.key), cls: entry.cls } : null;
+}
+
+function stateChipInfo(session) {
+  if (snapshot.hudShowStateLabels === false) return null;
+  const rawEvent = session && session.lastEvent && session.lastEvent.rawEvent;
+  const eventChip = makeChipInfo(EVENT_CHIP_MAP[rawEvent]);
+  if (eventChip && session.badge !== "done" && session.badge !== "interrupted") return eventChip;
+
+  if (session.badge === "running") {
+    const stateChip = makeChipInfo(STATE_CHIP_MAP[session.state]);
+    if (stateChip) return stateChip;
+    return { label: t("sessionBadgeRunning"), cls: "chip-working" };
+  }
+  if (session.badge === "interrupted") {
+    return { label: t("sessionBadgeInterrupted"), cls: "chip-interrupted" };
+  }
+  return null;
+}
+
 const BELL_SVG = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>`;
 const FOCUS_UNAVAILABLE_SVG = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l16 16"/><path d="M9.5 5h5"/><path d="M7 9h10"/><path d="M5 14h9"/><path d="M12 19h5"/></svg>`;
 const PIN_SVG_FILLED = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M14 4l6 6-4 1-3 3 1 5-2 1-4-4-5 5-1-1 5-5-4-4 1-2 5 1 3-3 1-4z"/></svg>`;
 const PIN_SVG_OUTLINE = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M14 4l6 6-4 1-3 3 1 5-2 1-4-4-5 5-1-1 5-5-4-4 1-2 5 1 3-3 1-4z"/></svg>`;
 
 function updateUnread(sessions) {
+  const now = Date.now();
   const currentIds = new Set(sessions.map((s) => s.id));
   for (const id of unreadSessions) {
     if (!currentIds.has(id)) unreadSessions.delete(id);
@@ -68,6 +141,11 @@ function updateUnread(sessions) {
       unreadSessions.delete(session.id);
     } else if (prev !== undefined && prev !== "done") {
       unreadSessions.add(session.id);
+    } else if (prev === undefined) {
+      const updatedAt = Number(session.updatedAt);
+      if (Number.isFinite(updatedAt) && now - updatedAt <= RECENT_DONE_UNREAD_MS) {
+        unreadSessions.add(session.id);
+      }
     }
     prevBadges.set(session.id, curr);
   }
@@ -77,8 +155,11 @@ function updateUnread(sessions) {
 }
 
 function splitHudLayout(sessions) {
-  const expanded = sessions.slice(0, HUD_MAX_EXPANDED_ROWS);
-  const folded = sessions.slice(HUD_MAX_EXPANDED_ROWS);
+  const maxRows = snapshot.hudShowStateLabels === false
+    ? HUD_MAX_EXPANDED_ROWS
+    : HUD_MAX_EXPANDED_ROWS_LABELS;
+  const expanded = sessions.slice(0, maxRows);
+  const folded = sessions.slice(maxRows);
   return { expanded, folded };
 }
 
@@ -113,8 +194,11 @@ function createRowForSession(session, now) {
   }
 
   const title = document.createElement("span");
+  const fullTitle = titleFor(session);
+  const shortTitle = shortenHudTitle(fullTitle);
   title.className = "title";
-  title.textContent = titleFor(session);
+  title.textContent = shortTitle;
+  if (shortTitle && shortTitle !== fullTitle) title.title = fullTitle;
   left.appendChild(title);
 
   const showElapsed = snapshot.hudShowElapsed !== false;
@@ -124,7 +208,7 @@ function createRowForSession(session, now) {
 
   if (session.badge === "done" && unreadSessions.has(session.id)) {
     const bell = document.createElement("span");
-    bell.className = "unread-bell";
+    bell.className = "completion-bell unread-bell";
     bell.innerHTML = BELL_SVG;
     right.appendChild(bell);
     hasRightContent = true;
@@ -140,9 +224,21 @@ function createRowForSession(session, now) {
     hasRightContent = true;
   }
 
+  const chipInfo = stateChipInfo(session);
+  if (chipInfo) {
+    const chip = document.createElement("span");
+    chip.className = `state-chip ${chipInfo.cls}`;
+    chip.textContent = chipInfo.label;
+    right.appendChild(chip);
+    hasRightContent = true;
+  }
+
   if (showElapsed) {
+    const updatedAt = Number(session.updatedAt) || now;
     const elapsed = document.createElement("span");
-    elapsed.textContent = formatElapsed(now - (Number(session.updatedAt) || now));
+    elapsed.className = "elapsed";
+    elapsed.dataset.updatedAt = String(updatedAt);
+    elapsed.textContent = formatElapsed(now - updatedAt);
     right.appendChild(elapsed);
     hasRightContent = true;
   }
@@ -154,6 +250,14 @@ function createRowForSession(session, now) {
     unreadSessions.delete(session.id);
     render();
     if (canFocus) window.sessionHudAPI.focusSession(session.id);
+    // Fire-and-forget: the row click's primary intent is focus / unread
+    // dismissal. ack failure shouldn't block the UI — the next snapshot
+    // will reconcile the lifecycle flag.
+    if (window.sessionHudAPI && typeof window.sessionHudAPI.ackCompletion === "function") {
+      Promise.resolve(window.sessionHudAPI.ackCompletion(session.id)).catch((err) => {
+        console.warn("ack completion threw:", err);
+      });
+    }
   });
 
   return row;
@@ -221,6 +325,15 @@ function render() {
   }
 }
 
+function updateElapsedLabels() {
+  const now = Date.now();
+  for (const elapsed of document.querySelectorAll(".elapsed[data-updated-at]")) {
+    const updatedAt = Number(elapsed.dataset.updatedAt);
+    if (!Number.isFinite(updatedAt)) continue;
+    elapsed.textContent = formatElapsed(now - updatedAt);
+  }
+}
+
 async function init() {
   window.sessionHudAPI.onLangChange((payload) => {
     i18nPayload = payload || i18nPayload;
@@ -233,7 +346,7 @@ async function init() {
 
   i18nPayload = await window.sessionHudAPI.getI18n() || i18nPayload;
   render();
-  setInterval(render, 1000);
+  setInterval(updateElapsedLabels, 1000);
 }
 
 init().catch((err) => {

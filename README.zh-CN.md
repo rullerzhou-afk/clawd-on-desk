@@ -37,12 +37,13 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 - **Codex CLI** — official hooks 为主、JSONL 日志轮询（`~/.codex/sessions/`）兜底，自动注册并支持真实权限气泡
 - **Copilot CLI** — 通过 `~/.copilot/hooks/hooks.json` 配置 command hook
 - **Gemini CLI** — 通过 `~/.gemini/settings.json` 配置 command hook（Clawd 启动时自动注册，或执行 `npm run install:gemini-hooks`）
+- **Antigravity CLI (agy)** — 通过 `~/.gemini/config/hooks.json` 配置 command hook（已有 Antigravity 配置时 Clawd 启动会自动注册，或执行 `npm run install:antigravity-hooks`）；**仅状态同步**：Clawd 不会为 agy 弹任何权限气泡，所有 Allow / Deny / Always-allow 都在 agy 自己的终端菜单里完成
 - **Cursor Agent** — [Cursor IDE hooks](https://cursor.com/docs/agent/hooks)，配置在 `~/.cursor/hooks.json`（Clawd 启动时自动注册，或执行 `npm run install:cursor-hooks`）
 - **CodeBuddy** — 通过与 Claude Code 兼容的 command hook + HTTP 权限 hook 集成，配置写入 `~/.codebuddy/settings.json`（Clawd 启动时自动注册，或执行 `node hooks/codebuddy-install.js`）
 - **Kiro CLI** — command hooks 注入到 `~/.kiro/agents/` 下的自定义 agent 配置中，并自动创建一个 `clawd` agent；Clawd 每次启动时都会重新从内置 `kiro_default` 同步它，尽量保持与默认 agent 一致。macOS 与 Windows 上状态动效已验证可用；需要时可用 `kiro-cli --agent clawd` 或在会话内执行 `/agent swap clawd` 启用 hooks（Clawd 启动时自动注册，或执行 `npm run install:kiro-hooks`）
 - **Kimi Code CLI（Kimi-CLI）** — 通过 `~/.kimi/config.toml`（`[[hooks]]` 条目）配置 command hooks（Clawd 启动时自动注册，或执行 `npm run install:kimi-hooks`）
 - **opencode** — [plugin 集成](https://opencode.ai/docs/plugins)，写入 `~/.config/opencode/opencode.json`（Clawd 启动时自动注册）；零延迟事件流、Allow/Always/Deny 权限气泡、`task` 工具分派并行子代理时自动播放建筑动画
-- **Pi** — 通过全局 extension 集成，写入 `~/.pi/agent/extensions/clawd-on-desk`（Clawd 启动时自动注册，或执行 `npm run install:pi-extension`）；支持交互式 Pi 会话状态感知，并为 `bash` / `write` / `edit` 工具提供权限气泡，Clawd 不可用时回退到 Pi 终端确认
+- **Pi** — 通过全局 extension 集成，写入 `~/.pi/agent/extensions/clawd-on-desk`（Clawd 启动时自动注册，或执行 `npm run install:pi-extension`）；仅同步交互式 Pi 会话生命周期和工具活动状态，并保留 Pi 默认 YOLO 行为
 - **OpenClaw** — 通过 `~/.openclaw/openclaw.json` 中的 plugin 路径做状态感知（OpenClaw 配置已存在时 Clawd 启动会自动注册，或执行 `npm run install:openclaw-plugin`）；Phase 1 面向本地 `openclaw tui --local` 会话，只驱动动画，不接权限气泡和终端聚焦
 - **Hermes Agent** — [plugin 集成](https://hermes-agent.org/)，写入 Hermes 的托管 plugin 目录（检测到 Hermes 后 Clawd 启动时自动注册，或执行 `npm run install:hermes-plugin`）；支持状态、会话、SessionEnd 和终端聚焦
 - **多 Agent 共存** — 多个 Agent 可同时运行，Clawd 独立追踪每个会话
@@ -58,7 +59,7 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 - **极简模式** — 拖到右边缘或右键"极简模式"；Clawd 藏在屏幕边缘，悬停探头招手，通知/完成有迷你动画，抛物线跳跃过渡
 
 ### 权限审批气泡
-- **桌面端权限审批** — 当 Claude Code、Codex CLI、CodeBuddy、opencode 或 Pi 请求工具权限时，Clawd 会弹出浮动卡片，无需切回终端
+- **桌面端权限审批** — 当 Claude Code、Codex CLI、CodeBuddy 或 opencode 请求受支持的工具权限时，Clawd 会弹出浮动卡片，无需切回终端
 - **允许 / 拒绝 / Agent 原生扩展项** — 一键批准或拒绝；如果该 Agent 支持，还会显示权限规则 / `Always` 一类的额外操作
 - **全局快捷键** — `Ctrl+Shift+Y` 允许、`Ctrl+Shift+N` 拒绝最新的权限气泡（仅在气泡可见时注册）
 - **堆叠布局** — 多个权限请求从屏幕右下角向上堆叠
@@ -78,7 +79,7 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 - **位置记忆** — 重启后 Clawd 回到上次的位置（包括极简模式）
 - **单实例锁** — 防止重复启动
 - **自动启动** — Claude Code 的 SessionStart hook 可在 Clawd 未运行时自动拉起
-- **免打扰模式** — 右键或托盘菜单进入休眠，所有 hook 事件静默，直到手动唤醒。免打扰期间不弹权限气泡——Codex 和 opencode 会回退到原生命令行确认，Pi 会回退到终端确认，Claude Code 和 CodeBuddy 会回退到各自内置的权限确认流程
+- **免打扰模式** — 右键或托盘菜单进入休眠，所有 hook 事件静默，直到手动唤醒。免打扰期间不弹权限气泡——Codex 和 opencode 会回退到原生命令行确认，Claude Code 和 CodeBuddy 会回退到各自内置的权限确认流程。Antigravity 和 Pi 都是仅状态同步集成
 - **提示音效** — 任务完成和权限请求时播放短音效（右键菜单可开关；10 秒冷却，免打扰模式自动静音）
 - **系统托盘** — 调大小（S/M/L）、免打扰、语言切换、开机自启、检查更新
 - **国际化** — 支持英文、简体中文、繁体中文、韩文和日文界面，右键菜单或托盘切换
@@ -208,7 +209,7 @@ Clawd on Desk 是一个社区驱动的项目。欢迎提 Bug、提需求、提 P
 感谢每一位让 Clawd 变得更好的贡献者：
 
 <details>
-<summary>展开全部 47 位贡献者</summary>
+<summary>展开全部 48 位贡献者</summary>
 
 <a href="https://github.com/PixelCookie-zyf"><img src="https://github.com/PixelCookie-zyf.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/yujiachen-y"><img src="https://github.com/yujiachen-y.png" width="50" style="border-radius:50%" /></a>
@@ -257,6 +258,7 @@ Clawd on Desk 是一个社区驱动的项目。欢迎提 Bug、提需求、提 P
 <a href="https://github.com/XiangZheng2002"><img src="https://github.com/XiangZheng2002.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/keiyo118"><img src="https://github.com/keiyo118.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/pan93412"><img src="https://github.com/pan93412.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/taehwanis"><img src="https://github.com/taehwanis.png" width="50" style="border-radius:50%" /></a>
 
 </details>
 

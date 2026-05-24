@@ -4,7 +4,7 @@
 //
 //   Claude Code / CodeBuddy → res.destroy()        (chat fallback)
 //   Codex                   → sendCodexNoDecisionResponse (204)
-//   Pi                      → sendNoDecisionResponse (204, pi label)
+//   Antigravity             → sendNoDecisionResponse (204, ask fallback)
 //   Elicitation             → res.destroy() + focusTerminalForSession
 //   opencode                → silent drop (no bridge POST)
 //
@@ -123,6 +123,34 @@ describe("permission autoclose: no-decision dismiss semantics", () => {
     assert.equal(pendingPermissions.indexOf(permEntry), -1, "pending entry should be spliced");
   });
 
+  it("notifies when a resolved permission leaves the pending list", () => {
+    const changes = [];
+    const ctx = makeCtx({
+      onPermissionsChanged: (reason) => changes.push(reason),
+    });
+    const { resolvePermissionEntry, pendingPermissions } = initPermission(ctx);
+    const permEntry = makePermEntry();
+    pendingPermissions.push(permEntry);
+
+    resolvePermissionEntry(permEntry, "allow");
+
+    assert.deepEqual(changes, ["resolved"]);
+    assert.equal(pendingPermissions.indexOf(permEntry), -1);
+  });
+
+  it("notifies when a permission enters the pending list through the runtime helper", () => {
+    const changes = [];
+    const perm = initPermission(makeCtx({
+      onPermissionsChanged: (reason) => changes.push(reason),
+    }));
+    const permEntry = makePermEntry();
+
+    assert.strictEqual(perm.addPendingPermission(permEntry), permEntry);
+
+    assert.deepEqual(changes, ["added"]);
+    assert.deepEqual(perm.pendingPermissions, [permEntry]);
+  });
+
   it("Codex branch sends 204 no-decision instead of allow/deny", () => {
     const ctx = makeCtx();
     const { resolvePermissionEntry, pendingPermissions } = initPermission(ctx);
@@ -136,10 +164,10 @@ describe("permission autoclose: no-decision dismiss semantics", () => {
     assert.equal(pendingPermissions.indexOf(permEntry), -1);
   });
 
-  it("Pi branch sends 204 no-decision", () => {
+  it("Antigravity branch sends 204 no-decision", () => {
     const ctx = makeCtx();
     const { resolvePermissionEntry, pendingPermissions } = initPermission(ctx);
-    const permEntry = makePermEntry({ isPi: true });
+    const permEntry = makePermEntry({ isAntigravity: true, agentId: "antigravity-cli" });
     pendingPermissions.push(permEntry);
 
     resolvePermissionEntry(permEntry, "no-decision", "Auto-closed");
@@ -174,7 +202,10 @@ describe("permission autoclose: no-decision dismiss semantics", () => {
     // dismissInteractivePermissionWithoutDecision. Forgetting to clear
     // perm.autoCloseTimer there leaks the entry/window/response references
     // until the timer fires.
-    const ctx = makeCtx();
+    const changes = [];
+    const ctx = makeCtx({
+      onPermissionsChanged: (reason) => changes.push(reason),
+    });
     const perm = initPermission(ctx);
     const { dismissInteractivePermissionBubbles, pendingPermissions } = perm;
     const permEntry = makePermEntry();
@@ -187,6 +218,7 @@ describe("permission autoclose: no-decision dismiss semantics", () => {
     assert.equal(permEntry.autoCloseTimer, null, "autoCloseTimer should be cleared on direct dismiss");
     assert.equal(pendingPermissions.indexOf(permEntry), -1, "entry should be spliced");
     assert.equal(timerFired, false, "timer must not have fired (clearTimeout effective)");
+    assert.deepEqual(changes, ["dismissed"]);
   });
 
   it("opencode branch silently drops without bridge POST", () => {

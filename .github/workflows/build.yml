@@ -16,6 +16,8 @@ jobs:
           node-version: 20
       - run: npm install
       - run: npm test
+      - run: npm run fetch:sidecars -- --target windows-x64,windows-arm64
+      - run: node scripts/verify-sidecar-binaries.js prebuild:win:all
       - run: npx electron-builder --win --publish never
       - uses: actions/upload-artifact@v4
         with:
@@ -32,6 +34,8 @@ jobs:
         with:
           node-version: 20
       - run: npm install
+      - run: npm run fetch:sidecars -- --target darwin-x64,darwin-arm64
+      - run: node scripts/verify-sidecar-binaries.js prebuild:mac
       - run: npx electron-builder --mac --publish never
       - uses: actions/upload-artifact@v4
         with:
@@ -48,6 +52,8 @@ jobs:
         with:
           node-version: 20
       - run: npm install
+      - run: npm run fetch:sidecars -- --target linux-x64
+      - run: node scripts/verify-sidecar-binaries.js prebuild:linux
       - run: npx electron-builder --linux --publish never
       - uses: actions/upload-artifact@v4
         with:
@@ -58,6 +64,7 @@ jobs:
             dist/latest-linux.yml
 
   release:
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [build-windows, build-mac, build-linux]
     runs-on: ubuntu-latest
     permissions:
@@ -72,3 +79,5 @@ jobs:
         with:
           files: artifacts/*
           body_path: docs/releases/release-${{ github.ref_name }}.md
+          draft: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

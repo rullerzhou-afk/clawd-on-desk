@@ -4,11 +4,13 @@ const fs = require("fs");
 const path = require("path");
 
 const { isAgentEnabled, isAgentPermissionsEnabled } = require("../agent-gate");
+const { getAgent } = require("../../agents/registry");
 const { findHookCommands } = require("../../hooks/json-utils");
 const { GEMINI_HOOK_EVENTS } = require("../../hooks/gemini-install");
+const { ANTIGRAVITY_HOOK_EVENTS, HOOK_GROUP_ID: ANTIGRAVITY_HOOK_GROUP_ID } = require("../../hooks/antigravity-install");
 const { findKimiHookCommands } = require("../../hooks/kimi-install");
 const { getAgentDescriptors } = require("./agent-descriptors");
-const { validateHookCommand } = require("./agent-node-bin-parser");
+const { commandContainsFragment, validateHookCommand } = require("./agent-node-bin-parser");
 const { checkCodexHookTrust, checkCodexHooksFeature } = require("./codex-features-check");
 const { validateOpencodeEntry } = require("./opencode-entry-validator");
 const { validateOpenClawEntry } = require("./openclaw-entry-validator");
@@ -22,6 +24,7 @@ const INFO_ONLY_STATUSES = new Set([
 ]);
 const REPAIRABLE_AGENT_STATUSES = new Set(["not-connected", "broken-path"]);
 const GEMINI_HOOKS_DISABLED_DETAIL = "Gemini hooks are disabled in settings.json; Clawd preserves this user setting and will not receive hook events";
+const ANTIGRAVITY_HOOKS_DISABLED_DETAIL = "Antigravity Clawd hooks are disabled in hooks.json; Clawd preserves this user setting and will not receive hook events";
 
 function dirExists(fsImpl, dirPath) {
   try {
@@ -44,6 +47,14 @@ function readJson(fsImpl, filePath) {
 }
 
 function withAgentBubbleNote(detail, prefs, agentId) {
+  // State-only agents (capabilities.permissionApproval === false) never
+  // surface a Clawd bubble in the first place, so annotating them as
+  // "permission bubbles disabled" would be misleading. Antigravity, Pi,
+  // OpenClaw, and Hermes are current examples.
+  const agent = getAgent(agentId);
+  if (agent && agent.capabilities && agent.capabilities.permissionApproval === false) {
+    return detail;
+  }
   if (!isAgentPermissionsEnabled(prefs, agentId)) {
     return {
       ...detail,
@@ -60,6 +71,14 @@ function withAgentFixAction(detail, descriptor) {
     descriptor.agentId === "gemini-cli"
     && detail.supplementary
     && detail.supplementary.key === "gemini_hooks"
+    && detail.supplementary.value !== "enabled"
+  ) {
+    return detail;
+  }
+  if (
+    descriptor.agentId === "antigravity-cli"
+    && detail.supplementary
+    && detail.supplementary.key === "antigravity_hooks"
     && detail.supplementary.value !== "enabled"
   ) {
     return detail;
@@ -220,6 +239,95 @@ function validateGeminiHookEvents(descriptor, settings, options) {
   });
 }
 
+function findAntigravityHookCommandsForEvent(settings, eventName, marker) {
+  if (!settings || typeof settings !== "object" || typeof marker !== "string" || !marker) return [];
+  const commands = [];
+
+  for (const hookGroup of Object.values(settings)) {
+    if (!hookGroup || typeof hookGroup !== "object") continue;
+    const entries = hookGroup[eventName];
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (!entry || typeof entry !== "object") continue;
+      if (typeof entry.command === "string" && commandContainsFragment(entry.command, marker)) {
+        commands.push(entry.command);
+      }
+      if (!Array.isArray(entry.hooks)) continue;
+      for (const hook of entry.hooks) {
+        if (hook && typeof hook.command === "string" && commandContainsFragment(hook.command, marker)) {
+          commands.push(hook.command);
+        }
+      }
+    }
+  }
+
+  return commands;
+}
+
+function validateAntigravityHookEvents(descriptor, settings, options) {
+  const events = Array.isArray(descriptor.hookEvents) ? descriptor.hookEvents : ANTIGRAVITY_HOOK_EVENTS;
+  const missingEvents = [];
+  let commandCount = 0;
+  let firstOk = null;
+  let firstFailure = null;
+
+  for (const eventName of events) {
+    const commands = findAntigravityHookCommandsForEvent(settings, eventName, descriptor.marker);
+    commandCount += commands.length;
+    if (!commands.length) {
+      missingEvents.push(eventName);
+      continue;
+    }
+
+    const results = commands.map((command) => options.validateCommand(command, {
+      platform: options.platform,
+      fs: options.fs,
+    }));
+    const ok = results.find((result) => result.ok);
+    if (ok) {
+      if (!firstOk) firstOk = ok;
+      continue;
+    }
+    if (!firstFailure) {
+      firstFailure = {
+        eventName,
+        result: results[0] || { issue: "parse-failed" },
+        command: commands[0],
+      };
+    }
+  }
+
+  if (missingEvents.length) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      detail: `${descriptor.configPath} missing Antigravity hook event(s): ${missingEvents.join(", ")}`,
+      commandCount,
+      missingAntigravityHookEvents: missingEvents,
+    });
+  }
+
+  if (firstFailure) {
+    const first = firstFailure.result;
+    return makeDetail(descriptor, "broken-path", {
+      level: "warning",
+      detail: `Antigravity hook command failed validation for ${firstFailure.eventName}: ${first.issue || "parse-failed"}`,
+      commandCount,
+      hookCommandIssue: first.issue || "parse-failed",
+      nodeBin: first.nodeBin || null,
+      scriptPath: first.scriptPath || null,
+      commandFragment: first.fragment || String(firstFailure.command || "").slice(0, 128),
+      brokenAntigravityHookEvent: firstFailure.eventName,
+    });
+  }
+
+  return makeDetail(descriptor, "ok", {
+    level: null,
+    detail: `${descriptor.configPath} Antigravity hooks registered for ${events.length} events, scriptPath verified`,
+    commandCount,
+    scriptPath: firstOk && firstOk.scriptPath ? firstOk.scriptPath : null,
+  });
+}
+
 function applyCodexSupplementary(detail, descriptor, options, settings) {
   if (!descriptor.supplementary || descriptor.supplementary.key !== "hooks") return detail;
   if (detail.status !== "ok") return detail;
@@ -312,6 +420,41 @@ function applyGeminiSupplementary(detail, descriptor, settings) {
       status: "not-connected",
       level: "warning",
       detail: GEMINI_HOOKS_DISABLED_DETAIL,
+      supplementary,
+    };
+  }
+  return {
+    ...detail,
+    supplementary,
+  };
+}
+
+function getAntigravityHooksSupplementary(settings) {
+  const hookGroup = settings && typeof settings === "object" ? settings[ANTIGRAVITY_HOOK_GROUP_ID] : null;
+  if (hookGroup && typeof hookGroup === "object" && hookGroup.enabled === false) {
+    return {
+      key: "antigravity_hooks",
+      value: "disabled-clawd",
+      detail: `${ANTIGRAVITY_HOOK_GROUP_ID}.enabled is false`,
+    };
+  }
+  return {
+    key: "antigravity_hooks",
+    value: "enabled",
+    detail: "hooks.json allows Clawd Antigravity hooks",
+  };
+}
+
+function applyAntigravitySupplementary(detail, descriptor, settings) {
+  if (descriptor.agentId !== "antigravity-cli") return detail;
+
+  const supplementary = getAntigravityHooksSupplementary(settings);
+  if (supplementary.value !== "enabled") {
+    return {
+      ...detail,
+      status: "not-connected",
+      level: "warning",
+      detail: ANTIGRAVITY_HOOKS_DISABLED_DETAIL,
       supplementary,
     };
   }
@@ -582,6 +725,39 @@ function checkPluginDirMode(descriptor, options) {
     pluginEnabled: true,
     detail: `${pluginDir} plugin files present and enabled`,
   });
+}
+
+function checkAntigravityHooksMode(descriptor, options) {
+  if (!fileExists(options.fs, descriptor.configPath)) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: false,
+      configPath: descriptor.configPath,
+      detail: `${descriptor.configPath} missing`,
+    });
+  }
+
+  let settings;
+  try {
+    settings = readJson(options.fs, descriptor.configPath);
+  } catch (err) {
+    return makeDetail(descriptor, "config-corrupt", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: err && err.message ? err.message : "Antigravity hooks.json parse failed",
+    });
+  }
+
+  const detail = {
+    ...validateAntigravityHookEvents(descriptor, settings, options),
+    parentDirExists: true,
+    configFileExists: true,
+    configPath: descriptor.configPath,
+  };
+  return applyAntigravitySupplementary(detail, descriptor, settings);
 }
 
 function stripYamlComment(line) {
@@ -955,6 +1131,8 @@ function checkAgent(descriptor, options) {
     detail = checkOpenClawPluginMode(descriptor, options);
   } else if (descriptor.configMode === "plugin-dir") {
     detail = checkPluginDirMode(descriptor, options);
+  } else if (descriptor.configMode === "antigravity-hooks") {
+    detail = checkAntigravityHooksMode(descriptor, options);
   } else {
     detail = makeDetail(descriptor, "manual-only", {
       level: "info",
@@ -1013,6 +1191,8 @@ module.exports = {
     checkOpenClawPluginMode,
     checkPiExtensionMode,
     checkPluginDirMode,
+    checkAntigravityHooksMode,
+    findAntigravityHookCommandsForEvent,
     parseYamlPluginEnabled,
     checkTomlTextMode,
     validateCommandList,

@@ -115,6 +115,15 @@
     return t("remoteSshStatus_" + status) || status;
   }
 
+  function statusMessageText(status) {
+    if (!status) return "";
+    if (status.hint) {
+      const translated = t(status.hint);
+      if (translated && translated !== status.hint) return translated;
+    }
+    return status.message || "";
+  }
+
   function formatTimeAgo(ts) {
     if (!Number.isFinite(ts) || ts <= 0) return null;
     const diffMs = Date.now() - ts;
@@ -331,10 +340,14 @@
     statusBadge.className = "remote-ssh-status-badge " + statusBadgeClass(status.status);
     statusBadge.textContent = statusLabel(status.status);
     statusRow.appendChild(statusBadge);
-    if (status.message) {
+    const messageText = statusMessageText(status);
+    if (messageText) {
       const msg = document.createElement("span");
       msg.className = "remote-ssh-status-message";
-      msg.textContent = status.message;
+      msg.textContent = messageText;
+      if (status.message && status.message !== messageText) {
+        msg.title = status.message;
+      }
       statusRow.appendChild(msg);
     }
     section.appendChild(statusRow);

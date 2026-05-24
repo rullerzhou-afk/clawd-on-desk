@@ -18,6 +18,7 @@ describe("doctor agent descriptors", () => {
         "copilot-cli",
         "cursor-agent",
         "gemini-cli",
+        "antigravity-cli",
         "codebuddy",
         "kiro-cli",
         "kimi-cli",
@@ -34,6 +35,7 @@ describe("doctor agent descriptors", () => {
     const codex = require("../hooks/codex-install");
     const cursor = require("../hooks/cursor-install");
     const gemini = require("../hooks/gemini-install");
+    const antigravity = require("../hooks/antigravity-install");
     const codebuddy = require("../hooks/codebuddy-install");
     const kiro = require("../hooks/kiro-install");
     const kimi = require("../hooks/kimi-install");
@@ -54,6 +56,9 @@ describe("doctor agent descriptors", () => {
 
     assert.strictEqual(getAgentDescriptor("gemini-cli").parentDir, gemini.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("gemini-cli").configPath, gemini.DEFAULT_CONFIG_PATH);
+
+    assert.strictEqual(getAgentDescriptor("antigravity-cli").parentDir, antigravity.DEFAULT_PARENT_DIR);
+    assert.strictEqual(getAgentDescriptor("antigravity-cli").configPath, antigravity.DEFAULT_CONFIG_PATH);
 
     assert.strictEqual(getAgentDescriptor("codebuddy").parentDir, codebuddy.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("codebuddy").configPath, codebuddy.DEFAULT_CONFIG_PATH);
@@ -96,5 +101,15 @@ describe("doctor agent descriptors", () => {
 
     assert.strictEqual(descriptor.eventSource, "hook");
     assert.strictEqual(descriptor.nested, true);
+  });
+
+  it("checks Antigravity hooks as a global hooks file", () => {
+    const antigravity = require("../hooks/antigravity-install");
+    const descriptor = getAgentDescriptor("antigravity-cli");
+
+    assert.strictEqual(descriptor.eventSource, "hook");
+    assert.strictEqual(descriptor.configMode, "antigravity-hooks");
+    assert.strictEqual(descriptor.marker, antigravity.MARKER);
+    assert.deepStrictEqual(descriptor.hookEvents, antigravity.ANTIGRAVITY_HOOK_EVENTS);
   });
 });

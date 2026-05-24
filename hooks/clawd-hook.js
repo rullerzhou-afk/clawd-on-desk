@@ -11,6 +11,9 @@ const { createPidResolver, readStdinJson, getPlatformConfig } = require("./share
 const TRANSCRIPT_TAIL_BYTES = 262144; // 256 KB
 const SESSION_TITLE_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F]+/g;
 const SESSION_TITLE_MAX = 80;
+const PROMPT_TITLE_MAX = 40;
+const PROMPT_TITLE_SECRET_RE =
+  /\b(api[_-]?key|authorization|bearer|password|passwd|private[_-]?key|secret|token)\b|sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|[A-Za-z0-9+/=_-]{32,}/i;
 const TOOL_MATCH_STRING_MAX = 240;
 const TOOL_MATCH_ARRAY_MAX = 16;
 const TOOL_MATCH_OBJECT_KEYS_MAX = 32;
@@ -26,6 +29,28 @@ function normalizeTitle(value) {
   return collapsed.length > SESSION_TITLE_MAX
     ? `${collapsed.slice(0, SESSION_TITLE_MAX - 1)}\u2026`
     : collapsed;
+}
+
+function normalizeTitleWithMax(value, maxLen) {
+  const title = normalizeTitle(value);
+  if (!title || title.length <= maxLen) return title;
+  return `${title.slice(0, maxLen - 1)}\u2026`;
+}
+
+function looksSecretishPromptTitle(value) {
+  if (typeof value !== "string") return false;
+  return PROMPT_TITLE_SECRET_RE.test(value);
+}
+
+function extractPromptTitle(prompt) {
+  if (typeof prompt !== "string") return null;
+  for (const line of prompt.split(/\r?\n/)) {
+    const candidate = line.trim();
+    if (!candidate) continue;
+    if (looksSecretishPromptTitle(candidate)) return null;
+    return normalizeTitleWithMax(candidate, PROMPT_TITLE_MAX);
+  }
+  return null;
 }
 
 // Read the tail of a Claude Code transcript JSONL and return the most recent
@@ -114,6 +139,10 @@ function buildToolInputFingerprint(toolInput) {
     .digest("hex");
 }
 
+function shouldReportForegroundWtHwnd(event) {
+  return event === "SessionStart" || event === "UserPromptSubmit";
+}
+
 const EVENT_TO_STATE = {
   SessionStart: "idle",
   SessionEnd: "sleeping",
@@ -177,10 +206,14 @@ function buildStateBody(event, payload, resolve) {
     normalizeTitle(payload.session_title) ||
     extractSessionTitleFromTranscript(payload.transcript_path);
   if (sessionTitle) body.session_title = sessionTitle;
+  if (event === "UserPromptSubmit" && !body.session_title) {
+    const promptTitle = extractPromptTitle(payload.prompt);
+    if (promptTitle) body.session_title = promptTitle;
+  }
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();
   } else {
-    const { stablePid, agentPid, agentCommandLine, detectedEditor, pidChain } = resolve();
+    const { stablePid, agentPid, agentCommandLine, detectedEditor, pidChain, foregroundWtHwnd } = resolve();
     body.source_pid = stablePid;
     if (detectedEditor) body.editor = detectedEditor;
     if (agentPid) {
@@ -191,6 +224,9 @@ function buildStateBody(event, payload, resolve) {
       }
     }
     if (pidChain.length) body.pid_chain = pidChain;
+    if (shouldReportForegroundWtHwnd(event) && foregroundWtHwnd) {
+      body.wt_hwnd = String(foregroundWtHwnd);
+    }
   }
 
   return body;

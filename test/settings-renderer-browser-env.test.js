@@ -27,7 +27,9 @@ const TAB_MODULES = [
   path.join(SRC_DIR, "settings-tab-anim-map.js"),
   path.join(SRC_DIR, "settings-tab-anim-overrides.js"),
   path.join(SRC_DIR, "settings-tab-shortcuts.js"),
+  path.join(SRC_DIR, "settings-tab-telegram-approval.js"),
   path.join(SRC_DIR, "settings-tab-about.js"),
+  path.join(SRC_DIR, "settings-hardware-buddy-panel.js"),
 ];
 
 function createDeferred() {
@@ -584,6 +586,7 @@ function makeGeneralSnapshot(overrides = {}) {
     lang: "en",
     size: 50,
     sessionHudEnabled: true,
+    sessionHudShowStateLabels: true,
     sessionHudShowElapsed: true,
     sessionHudCleanupDetached: true,
     soundMuted: false,
@@ -891,6 +894,143 @@ function loadAnimMapTabForTest({
   };
 }
 
+function loadTelegramApprovalTabForTest({
+  snapshot,
+  settingsAPI = {},
+} = {}) {
+  const body = new FakeElement("body");
+  const content = new FakeElement("main");
+  content.id = "content";
+  body.appendChild(content);
+  const updates = [];
+  const commands = [];
+  const renderRequests = [];
+
+  const document = {
+    body,
+    createElement: (tagName) => new FakeElement(tagName),
+    getElementById(id) {
+      if (id === "content") return content;
+      return null;
+    },
+  };
+  const api = {
+    update: (key, value) => {
+      updates.push({ key, value });
+      return Promise.resolve({ status: "ok" });
+    },
+    command: (name, payload) => {
+      commands.push({ name, payload });
+      if (name === "telegramApproval.status") {
+        return Promise.resolve({ status: "ok", state: { status: "stopped", tokenStored: false } });
+      }
+      if (name === "telegramApproval.tokenInfo") {
+        return Promise.resolve({ status: "ok", configured: false, masked: "" });
+      }
+      return Promise.resolve({ status: "ok" });
+    },
+    ...settingsAPI,
+  };
+  const context = {
+    console,
+    document,
+    requestAnimationFrame: (cb) => {
+      cb();
+      return 1;
+    },
+    window: null,
+    globalThis: null,
+    settingsAPI: api,
+  };
+  context.window = context;
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-hardware-buddy-panel.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-telegram-approval.js"), "utf8"), context);
+
+  const core = {
+    state: {
+      snapshot: snapshot || {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+      },
+      activeTab: "telegram-approval",
+    },
+    runtime: {},
+    helpers: {
+      t: (key) => key,
+      buildSection: (_title, rows) => {
+        const section = document.createElement("section");
+        for (const row of rows) section.appendChild(row);
+        return section;
+      },
+      setSwitchVisual: (el, checked, options = {}) => {
+        el.classList.toggle("on", !!checked);
+        el.classList.toggle("pending", !!options.pending);
+        el.setAttribute("aria-checked", checked ? "true" : "false");
+      },
+      // Mirror the real buildCollapsibleGroup just enough that header content,
+      // title/summary, and children all end up in the DOM tree; collapsed
+      // behaviour is exercised by the real component's own tests.
+      buildCollapsibleGroup: ({ id, title = "", desc = "", summary = null, headerContent, children = [], className = "" } = {}) => {
+        const group = document.createElement("div");
+        group.className = `collapsible-group${className ? ` ${className}` : ""}`;
+        if (id) group.dataset.groupId = id;
+        const header = document.createElement("div");
+        header.className = "collapsible-group-header";
+        if (headerContent) {
+          header.appendChild(headerContent);
+        } else {
+          const text = document.createElement("div");
+          text.className = "collapsible-group-text";
+          const label = document.createElement("span");
+          label.className = "row-label";
+          label.textContent = title;
+          text.appendChild(label);
+          if (desc) {
+            const description = document.createElement("span");
+            description.className = "row-desc";
+            description.textContent = desc;
+            text.appendChild(description);
+          }
+          header.appendChild(text);
+        }
+        if (summary) {
+          const summaryWrap = document.createElement("div");
+          summaryWrap.className = "collapsibleSummary collapsible-group-summary";
+          if (typeof summary === "string") summaryWrap.textContent = summary;
+          else summaryWrap.appendChild(summary);
+          header.appendChild(summaryWrap);
+        }
+        group.appendChild(header);
+        const body = document.createElement("div");
+        body.className = "collapsible-group-body";
+        for (const child of children) body.appendChild(child);
+        group.appendChild(body);
+        return group;
+      },
+    },
+    ops: {
+      requestRender: (payload) => {
+        renderRequests.push(payload || {});
+      },
+      showToast: () => {},
+    },
+    tabs: {},
+  };
+  context.ClawdSettingsTabTelegramApproval.init(core);
+  function render() {
+    content.innerHTML = "";
+    core.tabs["telegram-approval"].render(content, core);
+  }
+  render();
+
+  return { core, content, updates, commands, render, renderRequests };
+}
+
 function loadAnimOverridesTabForTest({
   runtime,
   modalRoot,
@@ -1035,12 +1175,14 @@ describe("settings renderer browser environment", () => {
       "settings-anim-overrides-merge.js",
       "settings-ui-core.js",
       "settings-agent-order.js",
+      "settings-hardware-buddy-panel.js",
       "settings-tab-general.js",
       "settings-tab-agents.js",
       "settings-tab-theme.js",
       "settings-tab-anim-map.js",
       "settings-tab-anim-overrides.js",
       "settings-tab-shortcuts.js",
+      "settings-tab-telegram-approval.js",
       "settings-tab-about.js",
       "settings-tab-remote-ssh.js",
       "settings-doctor-modal.js",
@@ -1094,6 +1236,179 @@ describe("settings renderer browser environment", () => {
       assert.ok(!source.includes("settingsAPI.onShortcutRecordKey"), `${path.basename(file)} must not subscribe to settingsAPI.onShortcutRecordKey`);
       assert.ok(!source.includes("settingsAPI.onShortcutFailuresChanged"), `${path.basename(file)} must not subscribe to settingsAPI.onShortcutFailuresChanged`);
     }
+  });
+
+  it("keeps Telegram approval drafts local across toggles and rerenders", async () => {
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: { status: "stopped", configured: true, tokenStored: true },
+            });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    // Wait for tokenInfo + status to land so the switch is enabled.
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    // Token is configured → token row is collapsed (no input). Only the
+    // recipient input is rendered, at index 0.
+    const inputs = harness.content.querySelectorAll("input");
+    const allowedInput = inputs[0];
+    allowedInput.value = "987654321";
+    allowedInput.dispatchEvent({ type: "input" });
+
+    harness.content.querySelector(".switch").dispatchEvent({ type: "click" });
+
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates)), [{
+      key: "tgApproval",
+      value: {
+        enabled: true,
+        allowedTgUserId: "123456789",
+        targetSessionKey: "telegram:123456789",
+      },
+    }]);
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    harness.core.state.snapshot = {
+      ...harness.core.state.snapshot,
+      tgApproval: {
+        enabled: true,
+        allowedTgUserId: "555555555",
+        targetSessionKey: "telegram:555555555",
+      },
+    };
+    harness.render();
+
+    assert.equal(harness.content.querySelectorAll("input")[0].value, "987654321");
+  });
+
+  it("disables Telegram approval test until runtime status is ready", async () => {
+    const commandCalls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: true,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "",
+        },
+      },
+      settingsAPI: {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: {
+                status: "stopped",
+                configured: false,
+                reason: "invalid-config",
+                message: "Telegram target session key is not configured",
+                tokenStored: true,
+              },
+            });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    const buttons = harness.content.querySelectorAll("button");
+    const testButton = buttons.find((button) => button.textContent === "telegramApprovalSendTest");
+    assert.equal(testButton.disabled, true);
+    assert.match(testButton.title, /target session key/);
+
+    testButton.dispatchEvent({ type: "click" });
+    assert.equal(commandCalls.some((call) => call.name === "telegramApproval.test"), false);
+  });
+
+  it("repaints Telegram approval after forced status refresh overlaps pending status", async () => {
+    const staleStatus = createDeferred();
+    const updatedStatus = createDeferred();
+    const statusResponses = [staleStatus, updatedStatus];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: true,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramApproval.status") {
+            const next = statusResponses.shift();
+            assert.ok(next, "unexpected Telegram status request");
+            return next.promise;
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+
+    // The send-test button is the last button on the tab; click it to force
+    // a status refresh that overlaps the in-flight initial status request.
+    const buttons = harness.content.querySelectorAll("button");
+    buttons[buttons.length - 1].dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    const beforeStatusResolve = harness.renderRequests.length;
+
+    staleStatus.resolve({
+      status: "ok",
+      state: {
+        status: "stopped",
+        configured: false,
+        reason: "missing-token",
+        message: "Telegram bot token is not configured",
+        tokenStored: false,
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(harness.renderRequests.length, beforeStatusResolve + 1);
+
+    harness.render();
+    updatedStatus.resolve({
+      status: "ok",
+      state: {
+        status: "running",
+        configured: true,
+        reason: "",
+        message: "",
+        tokenStored: true,
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(harness.renderRequests.length, beforeStatusResolve + 2);
   });
 
   it("wires Clawd Doctor through Settings with Step 2 connection actions", () => {
@@ -1505,6 +1820,59 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("bubbleSecondsPrefix"));
   });
 
+  it("registers the Session cleanup group with three number rows, atomic reset, and i18n keys", () => {
+    const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
+    const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
+    const uiCoreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
+    const actionsSource = fs.readFileSync(path.join(SRC_DIR, "settings-actions.js"), "utf8");
+
+    // Group is mounted top-level in the General tab (not nested under HUD).
+    assert.ok(generalSource.includes("buildSessionCleanupGroup()"));
+    assert.ok(generalSource.includes('id: "general:session-cleanup"'));
+
+    // All three numeric prefs map to their own number input row.
+    assert.ok(generalSource.includes('key: "sessionStaleMs"'));
+    assert.ok(generalSource.includes('key: "workingStaleMs"'));
+    assert.ok(generalSource.includes('key: "detachedIdleStaleMs"'));
+    assert.ok(generalSource.includes("buildNumberInputRow"));
+    assert.ok(generalSource.includes("SESSION_CLEANUP_NUMBER_KEYS"));
+
+    // Reset button goes through the atomic command path.
+    assert.ok(generalSource.includes('"sessionCleanup.setTriple"'));
+    assert.ok(generalSource.includes("SESSION_CLEANUP_DEFAULTS"));
+    assert.ok(generalSource.includes('"actionResetSessionCleanup"'));
+
+    // patchInPlace covers the new keys in BOTH the existence guard and the sync loop.
+    assert.ok(generalSource.match(/SESSION_CLEANUP_NUMBER_KEYS\.has\(key\)[\s\S]+sessionCleanupControls\.get\(key\)\.syncFromSnapshot\(\)/));
+
+    // ui-core registers the helper and the mountedControls bag.
+    assert.ok(uiCoreSource.includes("buildNumberInputRow"));
+    assert.ok(uiCoreSource.includes("sessionCleanupControls: new Map()"));
+    assert.ok(uiCoreSource.includes("state.mountedControls.sessionCleanupControls.clear()"));
+
+    // The command is registered in settings-actions.
+    assert.ok(actionsSource.includes('"sessionCleanup.setTriple": setSessionCleanupTriple'));
+
+    // i18n keys present in all five languages.
+    for (const key of [
+      "rowSessionCleanupGroup",
+      "rowSessionCleanupGroupDesc",
+      "rowStaleSession",
+      "rowStaleSessionDesc",
+      "rowStaleWorking",
+      "rowStaleWorkingDesc",
+      "rowStaleDetached",
+      "rowStaleDetachedDesc",
+      "unitMinutes",
+      "unitSeconds",
+      "valueDisabled",
+      "actionResetSessionCleanup",
+    ]) {
+      const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
+      assert.ok(matches && matches.length >= 5, `${key} should appear in all 5 language tables (saw ${matches ? matches.length : 0})`);
+    }
+  });
+
   it("uses collapsible option lists for Session HUD and sound controls", () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");
@@ -1523,6 +1891,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes('state.transientUiState.generalSwitches.set("soundMuted"'));
     assert.ok(generalSource.includes("if (!result || result.status !== \"ok\" || result.noop)"));
     assert.ok(generalSource.includes("sessionHudSummaryAutoHide"));
+    assert.ok(generalSource.includes("sessionHudSummaryLabels"));
+    assert.ok(generalSource.includes('key: "sessionHudShowStateLabels"'));
     assert.ok(generalSource.includes("session-hud-summary-control"));
     assert.ok(/\.settings-option-list\s*\{[\s\S]*display:\s*grid;[\s\S]*gap:\s*8px;/.test(css));
     assert.ok(/\.settings-option-list \.settings-option-item\s*\{[\s\S]*background:\s*color-mix\(in srgb,\s*var\(--panel-bg\) 78%,\s*transparent\);/.test(css));
@@ -1534,7 +1904,9 @@ describe("settings renderer browser environment", () => {
     assert.ok(!/\.sound-collapsible \.collapsible-group-summary\s*\{[^}]*flex-wrap:\s*nowrap;/.test(css));
     assert.ok(/\.session-hud-summary-control\s*\{[\s\S]*grid-template-columns:\s*repeat\(4,\s*max-content\);/.test(css));
     assert.ok(/\.session-hud-summary-control\.compact\s*\{[\s\S]*display:\s*inline-flex;[\s\S]*width:\s*auto;/.test(css));
-    assert.ok(/@media \(max-width:\s*720px\)\s*\{[\s\S]*\.session-hud-summary-control\s*\{[\s\S]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);[\s\S]*width:\s*min\(238px,\s*42vw\);/.test(css));
+    assert.ok(/@media \(max-width:\s*720px\)\s*\{[\s\S]*\.session-hud-collapsible \.collapsible-group-header\s*\{[\s\S]*flex-wrap:\s*wrap;/.test(css));
+    assert.ok(/@media \(max-width:\s*720px\)\s*\{[\s\S]*\.session-hud-collapsible \.collapsible-group-summary\s*\{[\s\S]*flex:\s*0 0 calc\(100% - 22px\);[\s\S]*margin-left:\s*22px;/.test(css));
+    assert.ok(/@media \(max-width:\s*720px\)\s*\{[\s\S]*\.session-hud-summary-control\s*\{[\s\S]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);[\s\S]*width:\s*min\(238px,\s*100%\);/.test(css));
     assert.ok(/\.collapsible-group-text \.row-label\s*\{[\s\S]*text-overflow:\s*ellipsis;[\s\S]*white-space:\s*nowrap;/.test(css));
     assert.ok(/\.collapsible-group-text \.row-desc\s*\{[\s\S]*white-space:\s*normal;[\s\S]*-webkit-line-clamp:\s*2;/.test(css));
     assert.ok(/\.sound-summary-control\s*\{[\s\S]*display:\s*inline-flex;/.test(css));
@@ -1543,6 +1915,305 @@ describe("settings renderer browser environment", () => {
     assert.ok(/\.sound-summary-control \.collapsible-summary-chip\s*\{[\s\S]*flex:\s*0 0 auto;/.test(css));
     assert.ok(/\.sound-collapsible \.collapsible-group-text \.row-desc\s*\{[\s\S]*white-space:\s*normal;[\s\S]*-webkit-line-clamp:\s*2;/.test(css));
     assert.ok(i18nSource.includes("rowSoundEnabled"));
+  });
+
+  it("places Hardware Buddy on the Remote Approval tab instead of General", () => {
+    const generalHarness = loadGeneralTabForTest({ snapshot: makeGeneralSnapshot() });
+    generalHarness.renderContent();
+
+    const sections = generalHarness.content.querySelectorAll(".section");
+    const sectionTitles = sections.map((section) => section.querySelector(".section-title").textContent);
+    assert.deepStrictEqual(sectionTitles, ["Appearance", "Session management", "Startup", "Bubbles"]);
+    assert.strictEqual(generalHarness.content.querySelector(".hardware-buddy-collapsible"), null);
+
+    const remoteHarness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+        hardwareBuddy: {
+          enabled: false,
+          backend: "bleak",
+          address: "",
+          namePrefix: "Clawstick",
+          permissionsEnabled: false,
+        },
+      },
+    });
+    const telegramCard = remoteHarness.content.querySelector(".tg-approval-channel-card");
+    const hardwareBuddy = remoteHarness.content.querySelector(".hardware-buddy-collapsible");
+    assert.ok(hardwareBuddy, "Hardware Buddy panel should render");
+    assert.ok(telegramCard, "Telegram approval card should render");
+    assert.ok(remoteHarness.content.children.indexOf(telegramCard) < remoteHarness.content.children.indexOf(hardwareBuddy));
+    assert.strictEqual(hardwareBuddy.dataset.groupId, "remote-approval.hardware-buddy");
+  });
+
+  it("renders Hardware Buddy with the same remote approval channel header style", () => {
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+        hardwareBuddy: {
+          enabled: true,
+          backend: "bleak",
+          address: "",
+          namePrefix: "Clawstick",
+          permissionsEnabled: true,
+        },
+      },
+    });
+    harness.core.runtime.hardwareBuddyStatus = {
+      started: true,
+      connected: true,
+      secure: true,
+      lastStatus: { data: { name: "Clawstick" } },
+    };
+    harness.render();
+
+    const hardwareBuddy = harness.content.querySelector(".hardware-buddy-collapsible");
+    const header = hardwareBuddy.querySelector(".hardware-buddy-channel-header");
+    const badge = header.querySelector(".hardware-buddy-channel-badge");
+    const replyBadge = hardwareBuddy.querySelector(".hardware-buddy-reply-badge");
+    const testButton = hardwareBuddy.querySelector(".hardware-buddy-test-button");
+    assert.strictEqual(header.querySelector(".tg-approval-channel-name").textContent, "hardwareBuddyTitle");
+    assert.strictEqual(badge.querySelectorAll("span")[1].textContent, "hardwareBuddyStatus_secure");
+    assert.ok(badge.classList.contains("tg-approval-badge-running"));
+    assert.strictEqual(replyBadge.textContent, "hardwareBuddyRepliesOn");
+    assert.strictEqual(testButton.textContent, "hardwareBuddyTestButton");
+    assert.strictEqual(hardwareBuddy.querySelector(".hardware-buddy-summary-control"), null);
+    assert.ok(/\.remote-approval-channel-card\.collapsible-group\s*\{[\s\S]*margin:\s*8px 0 14px;/.test(css));
+    assert.ok(/\.tg-approval-channel-header\s*\{[\s\S]*justify-content:\s*space-between;/.test(css));
+    assert.ok(/\.hardware-buddy-status-control\s*\{[\s\S]*display:\s*inline-flex;/.test(css));
+    assert.ok(/\.hardware-buddy-test-button\s*\{[\s\S]*border:\s*1px solid var\(--accent\);/.test(css));
+    assert.ok(/\.hardware-buddy-quick-command-control\s*\{[\s\S]*display:\s*flex;/.test(css));
+    assert.ok(/\.hardware-buddy-quick-command-button\s*\{[\s\S]*min-height:\s*28px;/.test(css));
+  });
+
+  it("sends a Hardware Buddy test approval from the settings panel", async () => {
+    const calls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+        hardwareBuddy: {
+          enabled: true,
+          backend: "bleak",
+          address: "",
+          namePrefix: "Clawstick",
+          permissionsEnabled: true,
+        },
+      },
+      settingsAPI: {
+        testHardwareBuddyApproval: () => {
+          calls.push("test");
+          return Promise.resolve({ status: "ok", decision: "allow" });
+        },
+      },
+    });
+    harness.core.runtime.hardwareBuddyStatus = {
+      started: true,
+      connected: true,
+      secure: true,
+      lastStatus: { data: { name: "Clawstick" } },
+    };
+    harness.render();
+
+    const button = harness.content.querySelector(".hardware-buddy-test-button");
+    assert.strictEqual(button.disabled, false);
+    button.dispatchEvent({ type: "click" });
+    assert.deepStrictEqual(calls, ["test"]);
+    assert.equal(harness.renderRequests[harness.renderRequests.length - 1].content, true);
+
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepStrictEqual(harness.core.runtime.hardwareBuddyTest.result, {
+      status: "ok",
+      decision: "allow",
+    });
+  });
+
+  it("renders Hardware Buddy test error codes and clears stale results when config changes", () => {
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+        hardwareBuddy: {
+          enabled: true,
+          backend: "bleak",
+          address: "",
+          namePrefix: "Clawstick",
+          permissionsEnabled: true,
+        },
+      },
+      settingsAPI: {
+        testHardwareBuddyApproval: () => Promise.resolve({ status: "error", code: "timeout" }),
+      },
+    });
+    harness.core.runtime.hardwareBuddyStatus = {
+      started: true,
+      connected: true,
+      secure: true,
+      lastStatus: { data: { name: "Clawstick" } },
+    };
+    harness.core.runtime.hardwareBuddyTest = {
+      pending: false,
+      result: { status: "error", code: "timeout", message: "raw english fallback" },
+      contextKey: "",
+    };
+    harness.core.helpers.t = (key) => key === "hardwareBuddyTestErr_timeout" ? "timeout translated" : key;
+    harness.render();
+
+    let desc = harness.content.querySelector(".hardware-buddy-test-row .row-desc");
+    assert.strictEqual(desc.textContent, "timeout translated");
+
+    harness.core.state.snapshot.hardwareBuddy.enabled = false;
+    harness.render();
+
+    desc = harness.content.querySelector(".hardware-buddy-test-row .row-desc");
+    assert.strictEqual(harness.core.runtime.hardwareBuddyTest.result, null);
+    assert.strictEqual(desc.textContent, "hardwareBuddyTestDisabled");
+  });
+
+  it("renders Hardware Buddy Quick Command presets without adding stop and sends a command event", async () => {
+    const calls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+        hardwareBuddy: {
+          enabled: false,
+          backend: "bleak",
+          address: "",
+          namePrefix: "Clawstick",
+          permissionsEnabled: false,
+          quickCommandsEnabled: true,
+        },
+      },
+      settingsAPI: {
+        sendQuickCommand: (payload) => {
+          calls.push(payload);
+          return Promise.resolve({ status: "ok", quickCommand: { id: payload.id } });
+        },
+      },
+    });
+    harness.core.runtime.quickCommandPresets = {
+      enabled: true,
+      presets: [
+        { id: "plan_first", label: "先列计划" },
+        { id: "show_diff", label: "show diff" },
+      ],
+    };
+    harness.render();
+
+    const buttons = harness.content.querySelectorAll(".hardware-buddy-quick-command-button");
+    assert.deepStrictEqual(buttons.map((button) => button.textContent), ["先列计划", "show diff"]);
+    assert.ok(!buttons.some((button) => button.textContent === "停"));
+
+    buttons[0].dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(calls[0].id, "plan_first");
+    assert.match(calls[0].clientRequestId, /^clawd-settings-plan_first-/);
+    assert.deepStrictEqual(Object.keys(calls[0]).sort(), ["clientRequestId", "id"]);
+  });
+
+  it("keeps Hardware Buddy Quick Command presets disabled while the feature is off", () => {
+    const calls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+        hardwareBuddy: {
+          enabled: false,
+          backend: "bleak",
+          address: "",
+          namePrefix: "Clawstick",
+          permissionsEnabled: false,
+          quickCommandsEnabled: false,
+        },
+      },
+      settingsAPI: {
+        sendQuickCommand: (payload) => {
+          calls.push(payload);
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.core.runtime.quickCommandPresets = {
+      enabled: true,
+      presets: [{ id: "plan_first", label: "先列计划" }],
+    };
+    harness.render();
+
+    const button = harness.content.querySelector(".hardware-buddy-quick-command-button");
+    assert.strictEqual(button.disabled, true);
+    button.dispatchEvent({ type: "click" });
+    assert.strictEqual(calls.length, 0);
+  });
+
+  it("keeps a pending Hardware Buddy Quick Command disabled across rerenders", async () => {
+    const calls = [];
+    let resolveCommand;
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+        hardwareBuddy: {
+          enabled: false,
+          backend: "bleak",
+          address: "",
+          namePrefix: "Clawstick",
+          permissionsEnabled: false,
+          quickCommandsEnabled: true,
+        },
+      },
+      settingsAPI: {
+        sendQuickCommand: (payload) => {
+          calls.push(payload);
+          return new Promise((resolve) => { resolveCommand = resolve; });
+        },
+      },
+    });
+    harness.core.runtime.quickCommandPresets = {
+      enabled: true,
+      presets: [{ id: "plan_first", label: "先列计划" }],
+    };
+    harness.render();
+
+    harness.content.querySelector(".hardware-buddy-quick-command-button").dispatchEvent({ type: "click" });
+    harness.render();
+
+    const pendingButton = harness.content.querySelector(".hardware-buddy-quick-command-button");
+    assert.strictEqual(pendingButton.disabled, true);
+    pendingButton.dispatchEvent({ type: "click" });
+    assert.strictEqual(calls.length, 1);
+
+    resolveCommand({ status: "ok", quickCommand: { id: "plan_first" } });
+    await Promise.resolve();
+    await Promise.resolve();
   });
 
   it("adds hover affordance to General size and volume sliders", () => {
@@ -1660,6 +2331,7 @@ describe("settings renderer browser environment", () => {
       lang: "en",
       size: 50,
       sessionHudEnabled: false,
+      sessionHudShowStateLabels: true,
       sessionHudShowElapsed: true,
       sessionHudCleanupDetached: true,
       soundMuted: false,
@@ -1688,11 +2360,13 @@ describe("settings renderer browser environment", () => {
     harness.renderContent();
 
     const master = harness.getSwitch("sessionHudEnabled");
+    const labels = harness.getSwitch("sessionHudShowStateLabels");
     const elapsed = harness.getSwitch("sessionHudShowElapsed");
     const cleanup = harness.getSwitch("sessionHudCleanupDetached");
     const summary = harness.core.state.mountedControls.sessionHudSummary.element;
     const optionList = harness.content.querySelector(".session-hud-option-list");
     assert.ok(master);
+    assert.ok(labels);
     assert.ok(elapsed);
     assert.ok(cleanup);
     assert.ok(optionList);
@@ -1701,6 +2375,9 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(summary.children.length, 1);
     assert.strictEqual(summary.children[0].textContent, "HUD: off");
     assert.strictEqual(summary.classList.contains("compact"), true);
+    assert.strictEqual(labels.classList.contains("disabled"), true);
+    assert.strictEqual(labels.attributes["aria-disabled"], "true");
+    assert.strictEqual(labels.tabIndex, -1);
     assert.strictEqual(elapsed.classList.contains("disabled"), true);
     assert.strictEqual(elapsed.attributes["aria-disabled"], "true");
     assert.strictEqual(elapsed.tabIndex, -1);
@@ -1717,10 +2394,14 @@ describe("settings renderer browser environment", () => {
       "Session HUD master broadcasts should patch mounted controls instead of rebuilding General"
     );
     assert.strictEqual(harness.getSwitch("sessionHudEnabled"), master);
+    assert.strictEqual(harness.getSwitch("sessionHudShowStateLabels"), labels);
     assert.strictEqual(harness.getSwitch("sessionHudShowElapsed"), elapsed);
     assert.strictEqual(harness.getSwitch("sessionHudCleanupDetached"), cleanup);
     assert.strictEqual(master.classList.contains("on"), true);
     assert.strictEqual(master.classList.contains("pending"), false);
+    assert.strictEqual(labels.classList.contains("disabled"), false);
+    assert.strictEqual(labels.attributes["aria-disabled"], undefined);
+    assert.strictEqual(labels.tabIndex, 0);
     assert.strictEqual(elapsed.classList.contains("disabled"), false);
     assert.strictEqual(elapsed.attributes["aria-disabled"], undefined);
     assert.strictEqual(elapsed.tabIndex, 0);
@@ -1728,7 +2409,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(cleanup.tabIndex, 0);
     assert.strictEqual(summary.children.length, 4);
     assert.strictEqual(summary.classList.contains("compact"), false);
-    assert.strictEqual(summary.children[0].textContent, "HUD: on");
+    assert.strictEqual(summary.children[0].textContent, "Labels: on");
     assert.strictEqual(summary.children[1].textContent, "Time: on");
     assert.strictEqual(summary.children[2].textContent, "Auto-hide: off");
     assert.strictEqual(summary.children[3].textContent, "Auto-clear: on");
@@ -1938,6 +2619,7 @@ describe("settings renderer browser environment", () => {
       lang: "en",
       size: 50,
       sessionHudEnabled: true,
+      sessionHudShowStateLabels: true,
       sessionHudShowElapsed: true,
       sessionHudCleanupDetached: true,
       soundMuted: false,
@@ -2003,6 +2685,7 @@ describe("settings renderer browser environment", () => {
       lang: "en",
       size: 50,
       sessionHudEnabled: true,
+      sessionHudShowStateLabels: true,
       sessionHudShowElapsed: true,
       sessionHudCleanupDetached: true,
       soundMuted: false,
@@ -2064,11 +2747,14 @@ describe("settings renderer browser environment", () => {
     harness.renderContent();
 
     const master = harness.getSwitch("sessionHudEnabled");
+    const labels = harness.getSwitch("sessionHudShowStateLabels");
     const elapsed = harness.getSwitch("sessionHudShowElapsed");
     const cleanup = harness.getSwitch("sessionHudCleanupDetached");
     assert.ok(master);
+    assert.ok(labels);
     assert.ok(elapsed);
     assert.ok(cleanup);
+    assert.strictEqual(labels.classList.contains("disabled"), false);
     assert.strictEqual(elapsed.classList.contains("disabled"), false);
     assert.strictEqual(cleanup.classList.contains("disabled"), false);
 
@@ -2080,9 +2766,13 @@ describe("settings renderer browser environment", () => {
 
     assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
     assert.strictEqual(harness.getSwitch("sessionHudEnabled"), master);
+    assert.strictEqual(harness.getSwitch("sessionHudShowStateLabels"), labels);
     assert.strictEqual(harness.getSwitch("sessionHudShowElapsed"), elapsed);
     assert.strictEqual(harness.getSwitch("sessionHudCleanupDetached"), cleanup);
     assert.strictEqual(master.classList.contains("on"), false);
+    assert.strictEqual(labels.classList.contains("disabled"), true);
+    assert.strictEqual(labels.attributes["aria-disabled"], "true");
+    assert.strictEqual(labels.tabIndex, -1);
     assert.strictEqual(elapsed.classList.contains("disabled"), true);
     assert.strictEqual(elapsed.attributes["aria-disabled"], "true");
     assert.strictEqual(elapsed.tabIndex, -1);

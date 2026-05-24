@@ -71,6 +71,7 @@ function update(api, o = {}) {
     o.event || "PreToolUse",
     {
       sourcePid: o.sourcePid ?? null,
+      wtHwnd: o.wtHwnd ?? null,
       cwd: o.cwd || "/tmp",
       editor: o.editor || null,
       pidChain: o.pidChain || null,
@@ -96,6 +97,7 @@ function rawSession(state, opts = {}) {
     updatedAt: opts.updatedAt ?? Date.now(),
     displayHint: opts.displayHint || null,
     sourcePid: opts.sourcePid || null,
+    wtHwnd: opts.wtHwnd || null,
     cwd: opts.cwd || "",
     editor: opts.editor || null,
     pidChain: opts.pidChain || null,
@@ -891,6 +893,27 @@ describe("updateSession()", () => {
       type: "codex-thread",
       url: "codex://threads/019e115a-4df2-7ed0-b90e-8e6345aca777",
     });
+  });
+
+  it("keeps wtHwnd sticky when later events do not provide one", () => {
+    update(api, {
+      id: "s1",
+      state: "idle",
+      event: "SessionStart",
+      sourcePid: 100,
+      wtHwnd: "123456",
+    });
+    update(api, {
+      id: "s1",
+      state: "working",
+      event: "PostToolUse",
+      sourcePid: 100,
+    });
+
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.wtHwnd, "123456");
+    const entry = api.getLastSessionSnapshot().sessions.find((item) => item.id === "s1");
+    assert.strictEqual(entry.wtHwnd, "123456");
   });
 
   it("Codex PermissionRequest focus metadata respects the session cap", () => {
@@ -2012,5 +2035,229 @@ describe("refreshTheme()", () => {
 
     mock.timers.tick(1);
     assert.strictEqual(api.getCurrentState(), "idle");
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Group: requiresCompletionAck lifecycle (PR2, issue #308)
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("requiresCompletionAck lifecycle", () => {
+  let api;
+  beforeEach(() => { api = require("../src/state")(makeCtx()); });
+  afterEach(() => { api.cleanup(); });
+
+  it("remote Codex Stop sets requiresCompletionAck=true (via finally reconciler)", () => {
+    update(api, { id: "s1", state: "idle", event: "Stop", agentId: "codex", host: "ssh:example.com" });
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session && session.requiresCompletionAck, true);
+  });
+
+  it("remote Codex JSONL task_complete also sets requiresCompletionAck=true", () => {
+    update(api, { id: "s1", state: "attention", event: "event_msg:task_complete", agentId: "codex", host: "ssh:example.com" });
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session && session.requiresCompletionAck, true);
+  });
+
+  it("remote Codex task_complete after Stop preserves the ack flag", () => {
+    update(api, { id: "s1", state: "idle", event: "Stop", agentId: "codex", host: "ssh:example.com" });
+    assert.strictEqual(api.sessions.get("s1").requiresCompletionAck, true);
+
+    update(api, { id: "s1", state: "attention", event: "event_msg:task_complete", agentId: "codex", host: "ssh:example.com" });
+    assert.strictEqual(api.sessions.get("s1").requiresCompletionAck, true);
+  });
+
+  it("remote Codex stale-cleanup preserves an unacknowledged completion", () => {
+    update(api, { id: "s1", state: "attention", event: "event_msg:task_complete", agentId: "codex", host: "ssh:example.com" });
+    assert.strictEqual(api.sessions.get("s1").requiresCompletionAck, true);
+
+    update(api, { id: "s1", state: "sleeping", event: "stale-cleanup", agentId: "codex", host: "ssh:example.com" });
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.requiresCompletionAck, true);
+    assert.strictEqual(session.recentEvents.at(-1).event, "stale-cleanup");
+    const entry = api.buildSessionSnapshot().sessions.find((s) => s.id === "s1");
+    assert.strictEqual(entry.badge, "done");
+    assert.strictEqual(entry.requiresCompletionAck, true);
+  });
+
+  it("remote Codex stale-cleanup alone does not create an ack requirement", () => {
+    update(api, { id: "s1", state: "sleeping", event: "stale-cleanup", agentId: "codex", host: "ssh:example.com" });
+    assert.notStrictEqual(api.sessions.get("s1").requiresCompletionAck, true);
+  });
+
+  it("remote Codex activity after stale-cleanup clears the previous ack requirement", () => {
+    update(api, { id: "s1", state: "attention", event: "event_msg:task_complete", agentId: "codex", host: "ssh:example.com" });
+    update(api, { id: "s1", state: "sleeping", event: "stale-cleanup", agentId: "codex", host: "ssh:example.com" });
+    assert.strictEqual(api.sessions.get("s1").requiresCompletionAck, true);
+
+    update(api, { id: "s1", state: "thinking", event: "UserPromptSubmit", agentId: "codex", host: "ssh:example.com" });
+    assert.notStrictEqual(api.sessions.get("s1").requiresCompletionAck, true);
+  });
+
+  it("ackSessionCompletion works after remote Codex stale-cleanup", () => {
+    update(api, { id: "s1", state: "attention", event: "event_msg:task_complete", agentId: "codex", host: "ssh:example.com" });
+    update(api, { id: "s1", state: "sleeping", event: "stale-cleanup", agentId: "codex", host: "ssh:example.com" });
+
+    assert.strictEqual(api.ackSessionCompletion("s1"), true);
+    assert.strictEqual(api.sessions.get("s1").requiresCompletionAck, false);
+  });
+
+  it("LOCAL Codex Stop does NOT set the flag (host=null)", () => {
+    update(api, { id: "s1", state: "idle", event: "Stop", agentId: "codex", host: null });
+    const session = api.sessions.get("s1");
+    assert.notStrictEqual(session && session.requiresCompletionAck, true);
+  });
+
+  it("non-codex Stop on a remote session does NOT set the flag", () => {
+    update(api, { id: "s1", state: "idle", event: "Stop", agentId: "claude-code", host: "ssh:example.com" });
+    const session = api.sessions.get("s1");
+    assert.notStrictEqual(session && session.requiresCompletionAck, true);
+  });
+
+  it("subsequent non-Stop event clears the flag without touching ackedAt", () => {
+    update(api, { id: "s1", state: "idle", event: "Stop", agentId: "codex", host: "ssh:example.com" });
+    assert.strictEqual(api.sessions.get("s1").requiresCompletionAck, true);
+
+    update(api, { id: "s1", state: "working", event: "UserPromptSubmit", agentId: "codex", host: "ssh:example.com" });
+    const session = api.sessions.get("s1");
+    // "cleared" = not true. When sessions.set rebuilds the entry the flag
+    // simply isn't carried over (undefined); when the entry is mutated
+    // in place (Object.assign / juggling-hold paths) the reconciler sets
+    // it to false. Both render identically as `!!flag === false` in
+    // snapshot payloads.
+    assert.notStrictEqual(session.requiresCompletionAck, true);
+    assert.strictEqual(session.ackedAt, undefined);
+  });
+
+  it("event === null on a flagged session clears the flag (locked semantics)", () => {
+    // §3.11: null/undefined event = state-derived refresh with no carry;
+    // must NOT preserve the flag. This test lives so any future refactor
+    // that wants to preserve the flag on null events has to update it
+    // consciously. Calls updateSession directly because the `update()`
+    // helper's `o.event || "PreToolUse"` clobbers null.
+    update(api, { id: "s1", state: "idle", event: "Stop", agentId: "codex", host: "ssh:example.com" });
+    assert.strictEqual(api.sessions.get("s1").requiresCompletionAck, true);
+
+    api.updateSession("s1", "idle", null, {
+      agentId: "codex",
+      host: "ssh:example.com",
+    });
+    assert.notStrictEqual(api.sessions.get("s1").requiresCompletionAck, true);
+  });
+
+  it("Kimi PermissionRequest early-return still reconciles the flag", () => {
+    // §3.11 test #38: state.js:750-813 PermissionRequest path takes an
+    // early return — must still go through the finally reconciler.
+    // Pre-seed a flagged remote codex session, then deliver a Kimi
+    // PermissionRequest gated off — flag MUST clear.
+    api.sessions.set("s1", rawSession("idle", {
+      agentId: "codex",
+      host: "ssh:example.com",
+      updatedAt: Date.now(),
+    }));
+    api.sessions.get("s1").requiresCompletionAck = true;
+
+    const ctxNoKimi = makeCtx({ isAgentPermissionsEnabled: () => false });
+    const api2 = require("../src/state")(ctxNoKimi);
+    api2.sessions.set("s1", rawSession("idle", {
+      agentId: "codex",
+      host: "ssh:example.com",
+      updatedAt: Date.now(),
+    }));
+    api2.sessions.get("s1").requiresCompletionAck = true;
+    update(api2, { id: "s1", state: "notification", event: "PermissionRequest", agentId: "kimi-cli" });
+    // The Kimi gate early-returns, but flag should be cleared via finally.
+    assert.strictEqual(api2.sessions.get("s1").requiresCompletionAck, false);
+    api2.cleanup();
+  });
+
+  it("Object.assign ONESHOT path still reconciles the flag on non-Stop events", () => {
+    // §3.11 test #39: ONESHOT_STATES branch at state.js:910-916 mutates
+    // the existing entry in place via Object.assign; flag survival across
+    // that mutation must be governed by the reconciler.
+    api.sessions.set("s1", rawSession("idle", {
+      agentId: "codex",
+      host: "ssh:example.com",
+      updatedAt: Date.now(),
+    }));
+    api.sessions.get("s1").requiresCompletionAck = true;
+    // sweeping is a ONESHOT state — triggers Object.assign(existing, base).
+    update(api, { id: "s1", state: "sweeping", event: "UserPromptSubmit", agentId: "codex", host: "ssh:example.com" });
+    assert.strictEqual(api.sessions.get("s1").requiresCompletionAck, false);
+  });
+
+  it("ackSessionCompletion: clears flag, sets ackedAt, returns true, forces snapshot", () => {
+    update(api, { id: "s1", state: "idle", event: "Stop", agentId: "codex", host: "ssh:example.com" });
+    assert.strictEqual(api.sessions.get("s1").requiresCompletionAck, true);
+
+    const before = Date.now();
+    const result = api.ackSessionCompletion("s1");
+    assert.strictEqual(result, true);
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.requiresCompletionAck, false);
+    assert.ok(session.ackedAt >= before, "ackedAt should be set to the ack timestamp");
+  });
+
+  it("ackSessionCompletion on a missing session returns false silently", () => {
+    assert.strictEqual(api.ackSessionCompletion("does-not-exist"), false);
+  });
+
+  it("ackSessionCompletion on an unflagged session is an idempotent no-op", () => {
+    update(api, { id: "s1", state: "working", event: "PreToolUse", agentId: "codex", host: null });
+    assert.strictEqual(api.sessions.get("s1").requiresCompletionAck, undefined);
+    const result = api.ackSessionCompletion("s1");
+    assert.strictEqual(result, false);
+    assert.strictEqual(api.sessions.get("s1").ackedAt, undefined);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Group: two-phase MAX_SESSIONS evictor (PR2)
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("evictOldestSessionIfNeeded two-phase", () => {
+  let api;
+  beforeEach(() => { api = require("../src/state")(makeCtx()); });
+  afterEach(() => { api.cleanup(); });
+
+  function seed(api, count, ackedIndices = new Set()) {
+    // Helper: seed N sessions with distinct, RECENT updatedAt values so the
+    // "oldest" candidate is deterministic and none of them trip the 24h
+    // ack-pending cap when cleanStaleSessions sweeps after the eviction.
+    const baseTime = Date.now() - 10_000; // ~10 s ago, well within all caps
+    for (let i = 0; i < count; i++) {
+      const id = `s${i}`;
+      api.sessions.set(id, rawSession("idle", {
+        agentId: "codex",
+        host: "ssh:example.com",
+        updatedAt: baseTime + i, // s0 oldest, sN-1 newest
+      }));
+      if (ackedIndices.has(i)) {
+        api.sessions.get(id).requiresCompletionAck = true;
+      }
+    }
+  }
+
+  it("prefers the oldest non-ack session when capacity is hit", () => {
+    // 19 ack-pending + 1 non-ack. Adding the 21st (capacity = 20) must
+    // evict the non-ack oldest, not any of the ack-pending sessions.
+    seed(api, 20, new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]));
+    // s19 is non-ack and oldest of the non-ack group (only one).
+    update(api, { id: "s-new", state: "working", event: "PreToolUse", agentId: "claude-code" });
+    assert.strictEqual(api.sessions.has("s19"), false, "s19 (non-ack) should have been evicted");
+    // All 19 ack-pending entries survived
+    for (let i = 0; i <= 18; i++) {
+      assert.strictEqual(api.sessions.has(`s${i}`), true, `s${i} ack-pending should survive`);
+    }
+  });
+
+  it("evicts the oldest ack-pending session only when every entry is ack-pending", () => {
+    seed(api, 20, new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]));
+    update(api, { id: "s-new", state: "working", event: "PreToolUse", agentId: "claude-code" });
+    // s0 is oldest ack-pending (smallest updatedAt) — must be the victim.
+    assert.strictEqual(api.sessions.has("s0"), false, "oldest ack-pending should be evicted as fallback");
+    for (let i = 1; i <= 19; i++) {
+      assert.strictEqual(api.sessions.has(`s${i}`), true);
+    }
   });
 });

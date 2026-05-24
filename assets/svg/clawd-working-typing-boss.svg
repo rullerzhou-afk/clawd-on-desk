@@ -54,6 +54,14 @@
        其他保留 v11 (踱步 pacing gait / body-walk / 阴影脉动 / 代码烟雾) -->
 
   <defs>
+    <filter id="smoke-glow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="0.3" result="glow"/>
+      <feMerge>
+        <feMergeNode in="glow"/>
+        <feMergeNode in="glow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
     <style>
       .body-walk {
         transform-origin: 7.5px 15px;
@@ -240,7 +248,8 @@
 
         <g id="codesmoke" font-family="Consolas, 'Courier New', Menlo, monospace"
            font-size="1.5" font-weight="bold"
-           text-anchor="middle" dominant-baseline="central" fill="#888888">
+           text-anchor="middle" dominant-baseline="central"
+           fill="#5A5A5A" filter="url(#smoke-glow)">
 
           <text x="-2.9" y="8.25" opacity="0">{<animateTransform attributeName="transform" type="translate"
               values="0,0; 0.5,-3; -0.3,-6; 0.4,-9; -0.2,-12"

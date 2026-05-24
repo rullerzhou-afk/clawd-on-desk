@@ -399,11 +399,19 @@ html, body {
 @media (max-width: 720px) {
   .session-hud-collapsible .collapsible-group-header {
     align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .session-hud-collapsible .collapsible-group-summary {
+    flex: 0 0 calc(100% - 22px);
+    justify-content: flex-start;
+    max-width: calc(100% - 22px);
+    margin-left: 22px;
   }
   .session-hud-summary-control {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    width: min(238px, 42vw);
+    width: min(238px, 100%);
     max-width: 100%;
+    justify-content: start;
   }
   .session-hud-summary-control .collapsible-summary-chip {
     max-width: 100%;
@@ -606,6 +614,170 @@ html, body {
 .bubble-policy-prefix {
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+.hardware-buddy-status-row .row-desc {
+  max-width: 420px;
+}
+.hardware-buddy-status-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.hardware-buddy-status-badge,
+.hardware-buddy-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.hardware-buddy-status-badge {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+.hardware-buddy-status-badge::before,
+.hardware-buddy-status-chip::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+.hardware-buddy-status-off,
+.hardware-buddy-status-idle {
+  color: var(--text-tertiary);
+}
+.hardware-buddy-status-searching,
+.hardware-buddy-status-connected {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.28);
+}
+.hardware-buddy-status-secure {
+  color: #047857;
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.28);
+}
+.hardware-buddy-status-error {
+  color: var(--toast-error);
+  background: rgba(185, 28, 28, 0.08);
+  border-color: rgba(185, 28, 28, 0.24);
+}
+.hardware-buddy-reply-on {
+  color: #047857;
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.28);
+}
+.hardware-buddy-reply-blocked {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.28);
+}
+.hardware-buddy-reply-off {
+  color: var(--text-tertiary);
+}
+.hardware-buddy-test-button {
+  min-width: 78px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.hardware-buddy-test-button:hover:not(:disabled) {
+  background: var(--accent);
+  color: #ffffff;
+}
+.hardware-buddy-test-button:disabled {
+  cursor: default;
+  opacity: 0.52;
+}
+.hardware-buddy-quick-command-row {
+  align-items: flex-start;
+}
+.hardware-buddy-quick-command-control {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: min(440px, 52vw);
+}
+.hardware-buddy-quick-command-button {
+  min-height: 28px;
+  padding: 0 9px;
+  font-size: 11px;
+  line-height: 1.2;
+}
+.hardware-buddy-quick-command-button.pending {
+  cursor: wait;
+}
+.hardware-buddy-quick-command-empty {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.hardware-buddy-text-control {
+  min-width: min(260px, 42vw);
+}
+.hardware-buddy-text-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  padding: 0 9px;
+  outline: none;
+}
+.hardware-buddy-text-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(217, 119, 87, 0.16);
+}
+.hardware-buddy-text-input.pending {
+  cursor: wait;
+  opacity: 0.78;
+}
+@media (prefers-color-scheme: dark) {
+  .hardware-buddy-status-searching,
+  .hardware-buddy-status-connected { color: #fbbf24; }
+  .hardware-buddy-status-secure { color: #34d399; }
+  .hardware-buddy-status-error { color: #f87171; }
+  .hardware-buddy-reply-on { color: #34d399; }
+  .hardware-buddy-reply-blocked { color: #fbbf24; }
+}
+@media (max-width: 720px) {
+  .hardware-buddy-field-row {
+    align-items: stretch;
+  }
+  .hardware-buddy-status-control {
+    justify-content: flex-start;
+  }
+  .hardware-buddy-quick-command-control {
+    justify-content: flex-start;
+    max-width: 100%;
+  }
+  .hardware-buddy-field-row .row-control,
+  .hardware-buddy-text-control {
+    width: 100%;
+    min-width: 0;
+  }
 }
 
 /* ── Switch (iOS-style) ── */
@@ -2989,6 +3161,7 @@ html, body {
   color: var(--text-secondary);
 }
 .remote-ssh-field input[type="text"],
+.remote-ssh-field input[type="password"],
 .remote-ssh-field input[type="number"],
 .remote-ssh-field select {
   padding: 8px 10px;
@@ -3000,6 +3173,7 @@ html, body {
   font-family: inherit;
 }
 .remote-ssh-field input[type="text"]:focus,
+.remote-ssh-field input[type="password"]:focus,
 .remote-ssh-field input[type="number"]:focus,
 .remote-ssh-field select:focus {
   outline: 2px solid var(--accent);
@@ -3054,4 +3228,192 @@ html, body {
   font-size: 13px;
   color: var(--toast-error);
   cursor: help;
+}
+
+/* ── Remote approval tab ── */
+.remote-approval-channel-card.collapsible-group {
+  margin: 8px 0 14px;
+}
+.tg-approval-channel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.tg-approval-channel-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.tg-approval-channel-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--text-primary) 5%, var(--panel-bg));
+  color: var(--text-secondary);
+}
+.tg-approval-channel-badge-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+@keyframes tg-approval-dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.tg-approval-badge-ready {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel-bg));
+  color: var(--text-primary);
+}
+.tg-approval-badge-ready .tg-approval-channel-badge-dot { background: var(--accent); }
+.tg-approval-badge-starting {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel-bg));
+  color: var(--text-primary);
+}
+.tg-approval-badge-starting .tg-approval-channel-badge-dot {
+  background: var(--accent);
+  animation: tg-approval-dot-pulse 1.4s ease-in-out infinite;
+}
+.tg-approval-badge-running {
+  border-color: color-mix(in srgb, #22c55e 55%, transparent);
+  background: color-mix(in srgb, #22c55e 14%, var(--panel-bg));
+  color: var(--text-primary);
+}
+.tg-approval-badge-running .tg-approval-channel-badge-dot { background: #22c55e; }
+.tg-approval-badge-failed {
+  border-color: color-mix(in srgb, var(--toast-error) 55%, transparent);
+  background: color-mix(in srgb, var(--toast-error) 14%, var(--panel-bg));
+  color: var(--text-primary);
+}
+.tg-approval-badge-failed .tg-approval-channel-badge-dot { background: var(--toast-error); }
+
+.tg-approval-channel-status-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 16px;
+  margin: 0 0 4px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--text-primary) 5%, var(--panel-bg));
+}
+.tg-approval-channel-status-row.tg-approval-badge-running {
+  border-color: color-mix(in srgb, #22c55e 35%, transparent);
+  background: color-mix(in srgb, #22c55e 8%, var(--panel-bg));
+}
+.tg-approval-channel-status-row.tg-approval-badge-failed {
+  border-color: color-mix(in srgb, var(--toast-error) 35%, transparent);
+  background: color-mix(in srgb, var(--toast-error) 8%, var(--panel-bg));
+}
+.tg-approval-channel-status-row.tg-approval-badge-ready,
+.tg-approval-channel-status-row.tg-approval-badge-starting {
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel-bg));
+}
+.tg-approval-channel-status-text {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.45;
+}
+
+.tg-approval-token-stored-row {
+  align-items: center;
+}
+.tg-approval-token-stored-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.tg-approval-token-masked {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text-primary) 8%, var(--panel-bg));
+  color: var(--text-primary);
+  letter-spacing: 0.5px;
+}
+.tg-approval-token-current {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+/* Token-edit and recipient rows use vertical layout: the hint can be long
+   (links + multi-sentence instructions), and the inline-form variant from
+   earlier squeezed .row-text into a single-glyph column. */
+.tg-approval-token-edit-row,
+.tg-approval-recipient-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.tg-approval-token-edit-row .row-text,
+.tg-approval-recipient-row .row-text {
+  flex: 1 1 auto;
+  width: 100%;
+}
+.tg-approval-token-edit-row .row-control,
+.tg-approval-recipient-row .row-control {
+  width: 100%;
+  flex-shrink: 1;
+}
+.tg-approval-input-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  width: 100%;
+  min-width: 0;
+}
+.tg-approval-input-row .soft-btn {
+  flex-shrink: 0;
+}
+.tg-approval-input {
+  flex: 1 1 220px;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+}
+.tg-approval-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.tg-approval-prereq-row .row-desc {
+  color: var(--toast-error);
+}
+.tg-approval-row-disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+.tg-approval-row-disabled .row-control .switch {
+  cursor: not-allowed;
+}
+
+.row-desc a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.row-desc a:hover {
+  opacity: 0.8;
 }

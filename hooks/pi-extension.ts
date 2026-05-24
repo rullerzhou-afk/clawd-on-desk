@@ -11,12 +11,10 @@ const core = ((coreModule as any).default || coreModule) as any;
 const CLAWD_SERVER_ID = "clawd-on-desk";
 const CLAWD_SERVER_HEADER = "x-clawd-server";
 const STATE_PATH = "/state";
-const PERMISSION_PATH = "/permission";
 const DEFAULT_SERVER_PORT = 23333;
 const SERVER_PORTS = [23333, 23334, 23335, 23336, 23337];
 const RUNTIME_CONFIG_PATH = path.join(os.homedir(), ".clawd", "runtime.json");
 const HTTP_TIMEOUT_MS = 150;
-const PERMISSION_TIMEOUT_MS = 590000;
 const PROCESS_METADATA_TTL_MS = 2000;
 
 type ProcessMetadata = {
@@ -24,11 +22,6 @@ type ProcessMetadata = {
   sourcePid?: number;
   pidChain?: number[];
   editor?: "code" | "cursor";
-};
-
-type PermissionDecision = {
-  behavior: "allow" | "deny" | "no-decision";
-  message?: string;
 };
 
 type ProcessInfo = {
@@ -177,99 +170,12 @@ function postStateToPort(port: number, payload: string): Promise<boolean> {
   });
 }
 
-function probeClawdPort(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const req = http.get(
-      { hostname: "127.0.0.1", port, path: STATE_PATH, timeout: HTTP_TIMEOUT_MS },
-      (res) => {
-        let body = "";
-        res.setEncoding("utf8");
-        res.on("data", (chunk) => {
-          if (body.length < 256) body += chunk;
-        });
-        res.on("end", () => resolve(isClawdResponse(res, body)));
-      }
-    );
-    req.on("error", () => resolve(false));
-    req.on("timeout", () => {
-      req.destroy();
-      resolve(false);
-    });
-  });
-}
-
 async function postState(payload: Record<string, unknown>): Promise<boolean> {
   const body = JSON.stringify(payload);
   for (const port of getPortCandidates()) {
     if (await postStateToPort(port, body)) return true;
   }
   return false;
-}
-
-function parsePermissionDecision(body: string, statusCode: number): PermissionDecision {
-  if (statusCode === 204) return { behavior: "no-decision" };
-  if (statusCode < 200 || statusCode >= 300 || !body) return { behavior: "no-decision" };
-  try {
-    const parsed = JSON.parse(body);
-    const decision = parsed && parsed.hookSpecificOutput && parsed.hookSpecificOutput.decision;
-    const behavior = decision && decision.behavior;
-    if (behavior !== "allow" && behavior !== "deny") return { behavior: "no-decision" };
-    const out: PermissionDecision = { behavior };
-    if (behavior === "deny" && typeof decision.message === "string" && decision.message) {
-      out.message = decision.message;
-    }
-    return out;
-  } catch {
-    return { behavior: "no-decision" };
-  }
-}
-
-function postPermissionToPort(port: number, payload: string): Promise<PermissionDecision | null> {
-  return new Promise((resolve) => {
-    const req = http.request(
-      {
-        hostname: "127.0.0.1",
-        port,
-        path: PERMISSION_PATH,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(payload),
-        },
-        timeout: PERMISSION_TIMEOUT_MS,
-      },
-      (res) => {
-        let body = "";
-        res.setEncoding("utf8");
-        res.on("data", (chunk) => {
-          if (body.length < 262144) body += chunk;
-        });
-        res.on("end", () => {
-          if (readHeader(res, CLAWD_SERVER_HEADER) !== CLAWD_SERVER_ID) {
-            resolve(null);
-            return;
-          }
-          resolve(parsePermissionDecision(body, res.statusCode || 0));
-        });
-      }
-    );
-    req.on("error", () => resolve({ behavior: "no-decision" }));
-    req.on("timeout", () => {
-      req.destroy();
-      resolve({ behavior: "no-decision" });
-    });
-    req.end(payload);
-  });
-}
-
-async function postPermission(payload: Record<string, unknown>): Promise<PermissionDecision> {
-  const body = JSON.stringify(payload);
-  for (const port of getPortCandidates()) {
-    if (!(await probeClawdPort(port))) continue;
-    const decision = await postPermissionToPort(port, body);
-    if (decision) return decision;
-  }
-  return { behavior: "no-decision" };
 }
 
 function normalizeProcessName(name: string): string {
@@ -385,59 +291,6 @@ function getProcessMetadata(): ProcessMetadata {
   return value;
 }
 
-function truncateForPrompt(value: string, max = 600): string {
-  if (value.length <= max) return value;
-  return `${value.slice(0, max - 1)}...`;
-}
-
-function formatPermissionDetail(payload: Record<string, unknown>): string {
-  const toolName = typeof payload.tool_name === "string" ? payload.tool_name : "tool";
-  const input = payload.tool_input && typeof payload.tool_input === "object"
-    ? payload.tool_input as Record<string, unknown>
-    : {};
-  if (typeof input.command === "string" && input.command) {
-    return `$ ${truncateForPrompt(input.command)}`;
-  }
-  const pathValue = input.path ?? input.file_path ?? input.filePath;
-  if (typeof pathValue === "string" && pathValue) {
-    return `${toolName}: ${truncateForPrompt(pathValue)}`;
-  }
-  try {
-    return truncateForPrompt(JSON.stringify(input));
-  } catch {
-    return toolName;
-  }
-}
-
-async function confirmPermission(
-  payload: Record<string, unknown>,
-  _nativeEvent: ExtensionEvent,
-  ctx: ExtensionContext
-): Promise<PermissionDecision> {
-  if (!ctx || !ctx.hasUI || !ctx.ui || typeof ctx.ui.confirm !== "function") {
-    return {
-      behavior: "deny",
-      message: "Pi terminal confirmation was unavailable; blocked by Clawd.",
-    };
-  }
-
-  try {
-    const toolName = typeof payload.tool_name === "string" ? payload.tool_name : "tool";
-    const ok = await ctx.ui.confirm(
-      "Clawd permission",
-      `Allow Pi to run ${toolName}?\n\n${formatPermissionDetail(payload)}`
-    );
-    return ok
-      ? { behavior: "allow" }
-      : { behavior: "deny", message: "Denied in Pi terminal confirmation." };
-  } catch {
-    return {
-      behavior: "deny",
-      message: "Pi terminal confirmation was unavailable; blocked by Clawd.",
-    };
-  }
-}
-
 export default function clawdPiExtension(pi: ExtensionAPI): void {
   core.attach(pi, {
     shouldReport: (ctx: ExtensionContext) => core.shouldReport(ctx),
@@ -454,17 +307,6 @@ export default function clawdPiExtension(pi: ExtensionAPI): void {
       metadata: getProcessMetadata(),
       agentPid: process.pid,
     }),
-    buildPermissionPayload: ({ nativeEvent, ctx }: {
-      nativeEvent: ExtensionEvent;
-      ctx: ExtensionContext;
-    }) => core.buildPermissionPayload({
-      nativeEvent,
-      ctx,
-      metadata: getProcessMetadata(),
-      agentPid: process.pid,
-    }),
     postState,
-    postPermission,
-    confirmPermission,
   });
 }

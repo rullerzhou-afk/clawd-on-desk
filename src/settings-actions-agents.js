@@ -15,6 +15,7 @@ const AUTO_REPAIRABLE_AGENT_IDS = new Set([
   "codex",
   "cursor-agent",
   "gemini-cli",
+  "antigravity-cli",
   "codebuddy",
   "kiro-cli",
   "kimi-cli",

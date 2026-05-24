@@ -124,8 +124,8 @@
       "duration": 6500
     },
     {
-      "file": "clawd-working-debugger.svg",
-      "duration": 14000
+      "file": "clawd-idle-bubble.svg",
+      "duration": 13500
     },
     {
       "file": "clawd-idle-reading.svg",
@@ -139,6 +139,7 @@
     "clawd-working-juggling.svg": "clawd-working-juggling.svg",
     "clawd-working-conducting.svg": "clawd-working-juggling.svg",
     "clawd-idle-reading.svg": "clawd-idle-reading.svg",
+    "clawd-idle-bubble.svg": "clawd-idle-bubble.svg",
     "clawd-working-debugger.svg": "clawd-working-debugger.svg",
     "clawd-working-thinking.svg": "clawd-working-thinking.svg"
   },

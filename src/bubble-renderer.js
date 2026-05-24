@@ -1,3 +1,4 @@
+const { formatDetail, truncate } = window.ClawdBubbleFormat;
 const card = document.getElementById("card");
 const toolPill = document.getElementById("toolPill");
 const toolPillText = document.getElementById("toolPillText");
@@ -46,24 +47,6 @@ function setSessionTag(data) {
   }
 }
 
-function formatDetail(name, input) {
-  if (!input || typeof input !== "object") return "";
-  if (typeof input.description === "string" && input.description.trim()) return truncate(input.description.trim(), 120);
-  if (name === "Bash" && input.command) return truncate(input.command, 120);
-  if ((name === "Edit" || name === "Write" || name === "Read") && input.file_path)
-    return truncate(input.file_path, 120);
-  if ((name === "Glob" || name === "Grep") && input.pattern)
-    return truncate(input.pattern, 120);
-  for (const v of Object.values(input)) {
-    if (typeof v === "string") return truncate(v, 100);
-  }
-  return truncate(JSON.stringify(input), 100);
-}
-
-function truncate(s, max) {
-  if (s.length <= max) return s;
-  return s.slice(0, max - 1) + "\u2026";
-}
 
 const BUBBLE_STRINGS = {
   en: {
@@ -810,7 +793,7 @@ function show(data) {
   toolPill.setAttribute("data-tool", data.toolName || "");
 
   // Command block (textContent only — never innerHTML)
-  commandBlock.textContent = formatDetail(data.toolName, data.toolInput);
+  commandBlock.textContent = formatDetail(data.toolName, data.toolInput, { isAntigravity: !!data.isAntigravity });
 
   // Button labels
   btnAllow.textContent = isPlanReview ? bubbleText(data.lang, "approve") : bubbleText(data.lang, "allow");
@@ -844,7 +827,6 @@ function show(data) {
       suggestionsContainer.appendChild(btn);
     });
   }
-
   // Re-enable buttons
   btnAllow.disabled = false;
   btnDeny.disabled = false;

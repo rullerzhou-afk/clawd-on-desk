@@ -1,0 +1,180 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="crispEdges">
+  <!-- 吹泡泡 v8
+       v7 反馈: 整体 ok, 但眼睛回到正中后再眨一次眼更好
+       v8 修正: eyes-anim 加一个 96% 眨眼帧 (在 (0, 0) 正中位置) -->
+
+  <style>
+    @keyframes body-squash {
+      0%, 30%   { transform: scaleY(1); }
+      36%       { transform: scaleY(0.93); }
+      42%       { transform: scaleY(1.05); }
+      50%, 100% { transform: scaleY(1); }
+    }
+    .body-squash {
+      transform-origin: 7.5px 15px;
+      animation: body-squash 4.5s linear infinite;
+    }
+
+    /* === 眼睛: 复合 translate + scaleY, 含双眨眼 (88% pop 后 + 96% 回正后) === */
+    @keyframes eyes-anim {
+      0%, 6%    { transform: translate(0px, 0px) scaleY(1); }
+      18%, 30%  { transform: translate(1px, 0px) scaleY(1); }
+      34%       { transform: translate(1px, 0px) scaleY(0.5); }    /* 鼓气眯眼 */
+      42%, 46%  { transform: translate(1px, 0px) scaleY(1); }
+      66%, 86%  { transform: translate(1.5px, -0.5px) scaleY(1); }/* 追随主泡 + 看副泡 pop */
+      88%       { transform: translate(1.5px, -0.5px) scaleY(0.1); }/* 第一次眨眼 (响应 pop) */
+      90%       { transform: translate(1.5px, -0.5px) scaleY(1); } /* 睁开 */
+      94%       { transform: translate(0px, 0px) scaleY(1); }       /* 回到正中 */
+      96%       { transform: translate(0px, 0px) scaleY(0.1); }     /* 第二次眨眼 (回正后) */
+      98%, 100% { transform: translate(0px, 0px) scaleY(1); }       /* 睁开 + hold to loop */
+    }
+    .eyes-anim {
+      transform-origin: 7.5px 9px;
+      animation: eyes-anim 4.5s linear infinite;
+    }
+
+    @keyframes arm-right-out {
+      0%, 6%    { transform: translate(0px, 0px); }
+      18%, 86%  { transform: translate(0.45px, 0.55px); }
+      94%, 100% { transform: translate(0px, 0px); }
+    }
+    .arm-right-out { animation: arm-right-out 4.5s linear infinite; }
+
+    @keyframes arm-left-down {
+      0%, 6%    { transform: translate(0px, 0px); }
+      18%, 86%  { transform: translate(0px, 1px); }
+      94%, 100% { transform: translate(0px, 0px); }
+    }
+    .arm-left-down { animation: arm-left-down 4.5s linear infinite; }
+
+    @keyframes wand-appear {
+      0%, 16%   { opacity: 0; transform: scale(0.5); }
+      26%, 86%  { opacity: 1; transform: scale(1); }
+      92%, 100% { opacity: 0; transform: scale(0.5); }
+    }
+    .wand-appear { animation: wand-appear 4.5s linear infinite; }
+
+    @keyframes frame-puff {
+      0%, 30%   { transform: scale(1); }
+      36%       { transform: scale(1.08); }
+      42%       { transform: scale(0.95); }
+      50%, 100% { transform: scale(1); }
+    }
+    .frame-puff { animation: frame-puff 4.5s linear infinite; }
+
+    @keyframes bubble1-life {
+      0%, 42%   { opacity: 0; transform: translate(0px, 0px) scale(0); }
+      46%       { opacity: 1; transform: translate(0px, -0.3px) scale(0.3); }
+      52%       { opacity: 1; transform: translate(0.5px, -1.5px) scale(0.5); }
+      58%       { opacity: 1; transform: translate(1.5px, -3.5px) scale(0.7); }
+      64%       { opacity: 1; transform: translate(3px, -6px) scale(0.92); }
+      68%       { opacity: 1; transform: translate(4.1px, -8.45px) scale(1); }
+      70%       { opacity: 0.6; transform: translate(4.1px, -8.45px) scale(1.2); }
+      72%, 99%  { opacity: 0; transform: translate(4.1px, -8.45px) scale(1.4); }
+      100%      { opacity: 0; transform: translate(0px, 0px) scale(0); }
+    }
+    .bubble1-life { animation: bubble1-life 4.5s linear infinite; }
+
+    @keyframes bubble2-life {
+      0%, 58%   { opacity: 0; transform: translate(0px, 0px) scale(0); }
+      62%       { opacity: 1; transform: translate(0px, -0.3px) scale(0.3); }
+      68%       { opacity: 1; transform: translate(0.8px, -1.3px) scale(0.5); }
+      74%       { opacity: 1; transform: translate(2.5px, -3px) scale(0.65); }
+      80%       { opacity: 1; transform: translate(5px, -4.8px) scale(0.85); }
+      84%       { opacity: 1; transform: translate(7.1px, -6.3px) scale(1); }
+      86%       { opacity: 0.5; transform: translate(7.1px, -6.3px) scale(1.2); }
+      88%, 99%  { opacity: 0; transform: translate(7.1px, -6.3px) scale(1.4); }
+      100%      { opacity: 0; transform: translate(0px, 0px) scale(0); }
+    }
+    .bubble2-life { animation: bubble2-life 4.5s linear infinite; }
+
+    @keyframes pop-flash1 {
+      0%, 68%   { opacity: 0; transform: scale(0); }
+      70%       { opacity: 1; transform: scale(1); }
+      73%, 100% { opacity: 0; transform: scale(0); }
+    }
+    .pop-flash1 { animation: pop-flash1 4.5s linear infinite; }
+
+    @keyframes pop-flash2 {
+      0%, 84%   { opacity: 0; transform: scale(0); }
+      86%       { opacity: 1; transform: scale(1); }
+      89%, 100% { opacity: 0; transform: scale(0); }
+    }
+    .pop-flash2 { animation: pop-flash2 4.5s linear infinite; }
+  </style>
+
+  <rect id="ground-shadow" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
+
+  <g id="master-group">
+    <g class="body-squash">
+      <g fill="#DE886D">
+        <rect x="2" y="6" width="11" height="7"/>
+        <rect class="arm-left-down" x="0" y="9" width="2" height="2"/>
+        <rect x="3" y="13" width="1" height="2"/>
+        <rect x="5" y="13" width="1" height="2"/>
+        <rect x="9" y="13" width="1" height="2"/>
+        <rect x="11" y="13" width="1" height="2"/>
+      </g>
+      <g class="eyes-anim" fill="#000000">
+        <rect x="4" y="8" width="1" height="2"/>
+        <rect x="10" y="8" width="1" height="2"/>
+      </g>
+    </g>
+
+    <g class="arm-right-out">
+      <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+    </g>
+
+    <g transform="translate(14.45 10.55)">
+      <g class="wand-appear">
+        <rect x="0.06" y="-2.075" width="0.8" height="2.6" rx="0.4" fill="#3A2926"/>
+        <g transform="translate(0.45 -3.3)" shape-rendering="auto">
+          <g class="frame-puff">
+            <rect x="-1.275" y="-1.275" width="2.55" height="2.55" rx="0.42"
+                  fill="none" stroke="#3A2926" stroke-width="0.68" stroke-linejoin="round"/>
+            <rect x="-0.235" y="-0.645" width="0.82" height="0.82" rx="0.22"
+                  fill="none" stroke="#E8D8CF" stroke-width="0.24" opacity="0.9"/>
+          </g>
+        </g>
+      </g>
+    </g>
+
+    <g transform="translate(14.9 7.25)" shape-rendering="auto">
+      <g class="bubble1-life">
+        <circle r="3.05" fill="#F7FFFF" fill-opacity="0.12" stroke="#C7E6E8" stroke-width="0.24"/>
+        <circle r="2.72" fill="none" stroke="#FFFDF6" stroke-width="0.16" opacity="0.58"/>
+        <rect x="-1.75" y="-1.75" width="0.85" height="0.85" fill="#FFFDF6" opacity="0.9" shape-rendering="crispEdges"/>
+      </g>
+    </g>
+
+    <g transform="translate(14.9 7.25)" shape-rendering="auto">
+      <g class="bubble2-life">
+        <circle r="1.55" fill="#FFF9F4" fill-opacity="0.13" stroke="#E4D2C8" stroke-width="0.2"/>
+        <circle r="1.32" fill="none" stroke="#FFFDF6" stroke-width="0.12" opacity="0.5"/>
+        <rect x="0.7" y="0.7" width="0.38" height="0.38" fill="#FFF7EF" opacity="0.7" shape-rendering="crispEdges"/>
+      </g>
+    </g>
+
+    <g transform="translate(19 -1.2)">
+      <g class="pop-flash1" fill="#FFFFFF" shape-rendering="crispEdges">
+        <rect x="-3.25" y="-0.25" width="0.5" height="0.5"/>
+        <rect x="2.75" y="-0.25" width="0.5" height="0.5"/>
+        <rect x="-0.25" y="-3.25" width="0.5" height="0.5"/>
+        <rect x="-0.25" y="2.75" width="0.5" height="0.5"/>
+        <rect x="-2.2" y="-2.2" width="0.4" height="0.4" opacity="0.7"/>
+        <rect x="1.8" y="-2.2" width="0.4" height="0.4" opacity="0.7"/>
+        <rect x="-2.2" y="1.8" width="0.4" height="0.4" opacity="0.7"/>
+        <rect x="1.8" y="1.8" width="0.4" height="0.4" opacity="0.7"/>
+      </g>
+    </g>
+
+    <g transform="translate(22 0.95)">
+      <g class="pop-flash2" fill="#FFFFFF" shape-rendering="crispEdges">
+        <rect x="-1.75" y="-0.2" width="0.4" height="0.4"/>
+        <rect x="1.35" y="-0.2" width="0.4" height="0.4"/>
+        <rect x="-0.2" y="-1.75" width="0.4" height="0.4"/>
+        <rect x="-0.2" y="1.35" width="0.4" height="0.4"/>
+      </g>
+    </g>
+  </g>
+</svg>

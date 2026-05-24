@@ -168,6 +168,7 @@ function createSettingsEffectRouter(options = {}) {
     }
     if (
       "sessionHudEnabled" in changes
+      || "sessionHudShowStateLabels" in changes
       || "sessionHudShowElapsed" in changes
       || "sessionHudAutoHide" in changes
       || "sessionHudPinned" in changes
@@ -193,6 +194,18 @@ function createSettingsEffectRouter(options = {}) {
         emitSessionSnapshot,
         { force: true }
       );
+    }
+    if (
+      "sessionStaleMs" in changes
+      || "workingStaleMs" in changes
+      || "detachedIdleStaleMs" in changes
+    ) {
+      try {
+        cleanStaleSessions();
+        emitSessionSnapshot({ force: true });
+      } catch (err) {
+        warn(logWarn, "Clawd: stale cleanup config refresh failed:", err);
+      }
     }
     if ("allowEdgePinning" in changes) {
       safeCall(

@@ -86,6 +86,7 @@ using System.Runtime.InteropServices;
 public class WinFocus {
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
@@ -93,6 +94,9 @@ public class WinFocus {
     public static extern int GetWindowText(IntPtr hWnd, StringBuilder sb, int maxCount);
     [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+    [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetClassName(IntPtr hWnd, StringBuilder sb, int maxCount);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern bool AttachConsole(uint dwProcessId);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern bool FreeConsole();
     [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
@@ -104,6 +108,28 @@ public class WinFocus {
         keybd_event(0x12, 0, 0, UIntPtr.Zero);
         keybd_event(0x12, 0, 2, UIntPtr.Zero);
         SetForegroundWindow(hWnd);
+    }
+    public static bool IsUsableWindow(IntPtr hWnd) {
+        return hWnd != IntPtr.Zero && IsWindow(hWnd) && IsWindowVisible(hWnd);
+    }
+    public static string GetWindowClassNameString(IntPtr hWnd) {
+        if (hWnd == IntPtr.Zero) return "";
+        var sb = new StringBuilder(256);
+        GetClassName(hWnd, sb, sb.Capacity);
+        return sb.ToString();
+    }
+    public static bool IsWindowClass(IntPtr hWnd, string className) {
+        return String.Equals(
+            GetWindowClassNameString(hWnd),
+            className,
+            StringComparison.OrdinalIgnoreCase
+        );
+    }
+    public static bool IsUsableWindowsTerminalWindow(IntPtr hWnd) {
+        return IsUsableWindow(hWnd) && IsWindowClass(hWnd, "CASCADIA_HOSTING_WINDOW_CLASS");
+    }
+    public static bool IsLegacyConsoleWindow(IntPtr hWnd) {
+        return IsUsableWindow(hWnd) && IsWindowClass(hWnd, "ConsoleWindowClass");
     }
     public static IntPtr FindConsoleWindowForPid(uint targetPid) {
         // Console shells such as powershell.exe / pwsh.exe can have
@@ -142,6 +168,40 @@ public class WinFocus {
         }, IntPtr.Zero);
         return found.ToArray();
     }
+    public static IntPtr[] FindVisibleWindowsForPid(uint targetPid) {
+        var found = new List<IntPtr>();
+        var titled = new List<IntPtr>();
+        var unowned = new List<IntPtr>();
+        var unownedTitled = new List<IntPtr>();
+        var terminalHost = new List<IntPtr>();
+        var terminalHostTitled = new List<IntPtr>();
+        EnumWindows((hWnd, _) => {
+            if (!IsWindowVisible(hWnd)) return true;
+            uint pid; GetWindowThreadProcessId(hWnd, out pid);
+            if (pid != targetPid) return true;
+            bool hasOwner = GetWindow(hWnd, 4) != IntPtr.Zero; // GW_OWNER
+            int len = GetWindowTextLength(hWnd);
+            string className = GetWindowClassNameString(hWnd);
+            bool isTerminalHost = String.Equals(
+                className,
+                "CASCADIA_HOSTING_WINDOW_CLASS",
+                StringComparison.OrdinalIgnoreCase
+            );
+            if (!hasOwner) unowned.Add(hWnd);
+            if (len > 0) titled.Add(hWnd);
+            if (!hasOwner && len > 0) unownedTitled.Add(hWnd);
+            if (isTerminalHost) terminalHost.Add(hWnd);
+            if (isTerminalHost && len > 0) terminalHostTitled.Add(hWnd);
+            found.Add(hWnd);
+            return true;
+        }, IntPtr.Zero);
+        if (terminalHostTitled.Count > 0) return terminalHostTitled.ToArray();
+        if (terminalHost.Count > 0) return terminalHost.ToArray();
+        if (unownedTitled.Count > 0) return unownedTitled.ToArray();
+        if (titled.Count > 0) return titled.ToArray();
+        if (unowned.Count > 0) return unowned.ToArray();
+        return found.ToArray();
+    }
 }
 "@
 
@@ -151,7 +211,23 @@ function Write-ClawdFocusResult([string]$reason) {
 }
 `;
 
-function makeFocusCmd(sourcePid, cwdCandidates) {
+function psUtf8Expression(value) {
+  const b64 = Buffer.from(String(value || ""), "utf8").toString("base64");
+  return `([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64}')))`;
+}
+
+function normalizeHwndString(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  if (!/^[1-9]\d{0,18}$/.test(text)) return null;
+  try {
+    return BigInt(text) <= 9223372036854775807n ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = null) {
   // Walk up the process tree (same proven logic as before).
   // Windows Terminal needs title matching because one WT process can represent
   // multiple tabs/windows. Other parent windows keep direct PID focus.
@@ -159,33 +235,45 @@ function makeFocusCmd(sourcePid, cwdCandidates) {
   // stdin pipe (PowerShell 5.1 reads stdin as system codepage, not UTF-8).
   const psNames = cwdCandidates.length
     ? cwdCandidates.map(c => {
-        const b64 = Buffer.from(c, "utf8").toString("base64");
-        return `([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64}')))`;
+        return psUtf8Expression(c);
       }).join(",")
     : "";
   const titleNames = psNames ? `@(${psNames})` : "@()";
+  const cacheKey = focusCacheKey ? psUtf8Expression(focusCacheKey) : "$null";
+  const wtHwndLiteral = normalizeHwndString(wtHwnd) || "0";
   const parentWindowBlock = psNames ? `
-        if (@('WindowsTerminal', 'WindowsTerminalPreview') -contains $proc.ProcessName) {
+        if ($wtProcessNames -contains $proc.ProcessName) {
             $matches = @([WinFocus]::FindByPidTitles([uint32]$curPid, [string[]]$titleNames))
             if ($matches.Count -eq 1) {
                 [WinFocus]::Focus($matches[0])
+                Save-ClawdFocusCache $matches[0]
                 $focused = $true
                 $reason = 'wt-parent-title-match'
             } elseif ($matches.Count -gt 1) {
                 $reason = 'wt-parent-title-ambiguous'
             } else {
-                [WinFocus]::Focus($proc.MainWindowHandle)
-                $focused = $true
-                $reason = 'wt-parent-direct-fallback'
+                $pidWindows = @(Get-ClawdVisiblePidWindows -pids @([int]$curPid))
+                if ($pidWindows.Count -eq 1) {
+                    [WinFocus]::Focus($pidWindows[0])
+                    Save-ClawdFocusCache $pidWindows[0]
+                    $focused = $true
+                    $reason = 'wt-parent-pid-window'
+                } elseif ($pidWindows.Count -gt 1) {
+                    $reason = 'wt-parent-pid-window-ambiguous'
+                } else {
+                    $reason = 'wt-parent-no-pid-window'
+                }
             }
         } else {
             [WinFocus]::Focus($proc.MainWindowHandle)
+            Save-ClawdFocusCache $proc.MainWindowHandle
             $focused = $true
             $reason = 'parent-direct'
         }
         break` : `
-        if (@('WindowsTerminal', 'WindowsTerminalPreview') -notcontains $proc.ProcessName) {
+        if ($wtProcessNames -notcontains $proc.ProcessName) {
             [WinFocus]::Focus($proc.MainWindowHandle)
+            Save-ClawdFocusCache $proc.MainWindowHandle
             $focused = $true
             $reason = 'parent-direct-no-title'
         } else {
@@ -193,7 +281,10 @@ function makeFocusCmd(sourcePid, cwdCandidates) {
         }
         break`;
   const wtTitleMatch = psNames ? `
-    $wtProcs = Get-Process -Name 'WindowsTerminal' -ErrorAction SilentlyContinue
+    $wtProcs = @()
+    foreach ($wtName in $wtProcessNames) {
+        $wtProcs += @(Get-Process -Name $wtName -ErrorAction SilentlyContinue)
+    }
     $wtMatches = @()
     foreach ($wt in $wtProcs) {
         if ($wt.MainWindowHandle -eq 0) { continue }
@@ -208,37 +299,165 @@ function makeFocusCmd(sourcePid, cwdCandidates) {
     }
     if ($wtMatches.Count -eq 1) {
         [WinFocus]::Focus($wtMatches[0])
+        Save-ClawdFocusCache $wtMatches[0]
         $focused = $true
         $reason = 'wt-title-match'
     } elseif ($wtMatches.Count -gt 1) {
         $reason = 'wt-title-ambiguous'
     } else {
-        $reason = 'wt-title-mismatch'
+        $pidWindows = @(Get-ClawdVisiblePidWindows -pids $chainWindowsTerminalPids)
+        if ($pidWindows.Count -eq 1) {
+            [WinFocus]::Focus($pidWindows[0])
+            Save-ClawdFocusCache $pidWindows[0]
+            $focused = $true
+            $reason = 'wt-title-mismatch-pid-window'
+        } elseif ($pidWindows.Count -gt 1) {
+            $reason = 'wt-title-mismatch-pid-window-ambiguous'
+        } else {
+            $singleWtWindows = @(Get-ClawdWindowsTerminalWindows)
+            if ($singleWtWindows.Count -eq 1) {
+                [WinFocus]::Focus($singleWtWindows[0])
+                Save-ClawdFocusCache $singleWtWindows[0]
+                $focused = $true
+                $reason = 'wt-title-mismatch-single-wt-window'
+            } elseif ($singleWtWindows.Count -gt 1) {
+                $reason = 'wt-title-mismatch-single-wt-window-ambiguous'
+            } else {
+                $reason = 'wt-title-mismatch-no-pid-window'
+            }
+        }
     }` : `
     $reason = 'no-parent-window-no-title'`;
 
   return `
 $titleNames = ${titleNames}
+$wtProcessNames = @('WindowsTerminal', 'WindowsTerminalPreview')
+$chainWindowsTerminalPids = @()
+$focusCacheKey = ${cacheKey}
+$wtHwndFromHook = [IntPtr]([int64]${wtHwndLiteral})
+if ($null -eq $global:ClawdFocusWindowCache) {
+    $global:ClawdFocusWindowCache = @{}
+}
+function Save-ClawdFocusCache([IntPtr]$hwnd) {
+    if (-not $focusCacheKey -or $hwnd -eq [IntPtr]::Zero) { return }
+    $global:ClawdFocusWindowCache[$focusCacheKey] = $hwnd.ToInt64()
+}
+function Get-ClawdCachedWindow() {
+    if (-not $focusCacheKey) { return [IntPtr]::Zero }
+    if (-not $global:ClawdFocusWindowCache.ContainsKey($focusCacheKey)) { return [IntPtr]::Zero }
+    try {
+        $hwnd = [IntPtr]([int64]$global:ClawdFocusWindowCache[$focusCacheKey])
+    } catch {
+        $global:ClawdFocusWindowCache.Remove($focusCacheKey)
+        return [IntPtr]::Zero
+    }
+    if ([WinFocus]::IsUsableWindow($hwnd)) { return $hwnd }
+    $global:ClawdFocusWindowCache.Remove($focusCacheKey)
+    return [IntPtr]::Zero
+}
+function Get-ClawdVisiblePidWindows([int[]]$pids) {
+    $windows = @()
+    foreach ($pidValue in @($pids)) {
+        if (-not $pidValue -or $pidValue -le 0) { continue }
+        foreach ($hwnd in @([WinFocus]::FindVisibleWindowsForPid([uint32]$pidValue))) {
+            $exists = $false
+            foreach ($existing in $windows) {
+                if ($existing -eq $hwnd) { $exists = $true; break }
+            }
+            if (-not $exists) { $windows += $hwnd }
+        }
+    }
+    return @($windows)
+}
+function Get-ClawdWindowsTerminalWindows() {
+    $wtPids = @()
+    foreach ($wtName in $wtProcessNames) {
+        foreach ($wtProc in @(Get-Process -Name $wtName -ErrorAction SilentlyContinue)) {
+            if ($wtProc -and $wtProc.Id -gt 0 -and -not ($wtPids -contains [int]$wtProc.Id)) {
+                $wtPids += [int]$wtProc.Id
+            }
+        }
+    }
+    return @(Get-ClawdVisiblePidWindows -pids $wtPids)
+}
 $curPid = ${sourcePid}
 $focused = $false
 $reason = 'no-parent-window'
+$pendingConsoleHwnd = [IntPtr]::Zero
+$consoleShimSkipped = $false
+$wtHwndFromHookInvalid = $false
+$cachedHwnd = Get-ClawdCachedWindow
+if ($cachedHwnd -ne [IntPtr]::Zero) {
+    [WinFocus]::Focus($cachedHwnd)
+    $focused = $true
+    $reason = 'cached-window'
+}
+if (-not $focused -and $wtHwndFromHook -ne [IntPtr]::Zero) {
+    if ([WinFocus]::IsUsableWindowsTerminalWindow($wtHwndFromHook)) {
+        [WinFocus]::Focus($wtHwndFromHook)
+        Save-ClawdFocusCache $wtHwndFromHook
+        $focused = $true
+        $reason = 'wt-hwnd-from-hook'
+    } else {
+        $wtHwndFromHookInvalid = $true
+    }
+}
+if (-not $focused) {
 for ($i = 0; $i -lt 8; $i++) {
     $proc = Get-Process -Id $curPid -ErrorAction SilentlyContinue
     if (-not $proc -or $proc.ProcessName -eq 'explorer') { break }
+    if ($wtProcessNames -contains $proc.ProcessName) {
+        if (-not ($chainWindowsTerminalPids -contains [int]$curPid)) {
+            $chainWindowsTerminalPids += [int]$curPid
+        }
+    }
     if ($proc.MainWindowHandle -ne 0) {${parentWindowBlock}
     }
     $consoleHwnd = [WinFocus]::FindConsoleWindowForPid([uint32]$curPid)
     if ($consoleHwnd -ne [IntPtr]::Zero -and [WinFocus]::IsWindowVisible($consoleHwnd)) {
-        [WinFocus]::Focus($consoleHwnd)
-        $focused = $true
-        $reason = 'console-window'
-        break
+        if ([WinFocus]::IsLegacyConsoleWindow($consoleHwnd)) {
+          if ($pendingConsoleHwnd -eq [IntPtr]::Zero) {
+            $pendingConsoleHwnd = $consoleHwnd
+          }
+        } else {
+          $consoleShimSkipped = $true
+        }
     }
     $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$curPid" -OperationTimeoutSec 2 -ErrorAction SilentlyContinue
     if (-not $cim -or $cim.ParentProcessId -eq 0 -or $cim.ParentProcessId -eq $curPid) { break }
     $curPid = $cim.ParentProcessId
 }
+}
 if (-not $focused -and $reason -eq 'no-parent-window') {${wtTitleMatch}
+}
+if (-not $focused -and $pendingConsoleHwnd -ne [IntPtr]::Zero) {
+    if ($reason -eq 'no-parent-window' -or
+        $reason -eq 'no-parent-window-no-title' -or
+        $reason -eq 'wt-parent-title-ambiguous' -or
+        $reason -eq 'wt-parent-pid-window-ambiguous' -or
+        $reason -eq 'wt-parent-no-pid-window' -or
+        $reason -eq 'wt-title-ambiguous' -or
+        $reason -eq 'wt-title-mismatch-pid-window-ambiguous' -or
+        $reason -eq 'wt-title-mismatch-single-wt-window-ambiguous' -or
+        $reason -eq 'wt-title-mismatch-no-pid-window') {
+        [WinFocus]::Focus($pendingConsoleHwnd)
+        Save-ClawdFocusCache $pendingConsoleHwnd
+        $focused = $true
+        $reason = 'legacy-conhost-window'
+    }
+}
+if (-not $focused -and $consoleShimSkipped) {
+    if ($reason -eq 'no-parent-window' -or
+        $reason -eq 'no-parent-window-no-title' -or
+        $reason -eq 'wt-parent-title-ambiguous' -or
+        $reason -eq 'wt-parent-pid-window-ambiguous' -or
+        $reason -eq 'wt-parent-no-pid-window' -or
+        $reason -eq 'wt-title-ambiguous' -or
+        $reason -eq 'wt-title-mismatch-pid-window-ambiguous' -or
+        $reason -eq 'wt-title-mismatch-single-wt-window-ambiguous' -or
+        $reason -eq 'wt-title-mismatch-no-pid-window') {
+        $reason = 'console-window-shim-skip'
+    }
 }
 Write-ClawdFocusResult $reason
 `;
@@ -249,11 +468,14 @@ let psProc = null;
 // macOS Accessibility/System Events calls can pile up fast, so serialize focus attempts.
 const MAC_FOCUS_THROTTLE_MS = 1500;
 const MAC_FOCUS_TIMEOUT_MS = 1500;
+const WINDOWS_FOCUS_DEDUP_MS = 400;
 let macFocusInFlight = false;
 let macFocusLastRunAt = 0;
 let macFocusLastRequestKey = null;
 let macQueuedFocusRequest = null;
 let macFocusCooldownTimer = null;
+let windowsFocusLastRunAt = 0;
+let windowsFocusLastRequestKey = null;
 let psStdoutBuffer = "";
 
 function normalizePid(value) {
@@ -277,6 +499,7 @@ function normalizeFocusRequest(sourcePidOrRequest, cwd, editor, pidChain, meta =
       cwd: typeof request.cwd === "string" ? request.cwd : "",
       editor: request.editor === "code" || request.editor === "cursor" ? request.editor : null,
       pidChain: normalizePidChain(request.pidChain ?? request.pid_chain),
+      wtHwnd: normalizeHwndString(request.wtHwnd ?? request.wt_hwnd),
       sessionId: typeof request.sessionId === "string" ? request.sessionId : null,
       agentId: typeof request.agentId === "string" ? request.agentId : null,
       requestSource: typeof request.requestSource === "string" ? request.requestSource : null,
@@ -288,6 +511,7 @@ function normalizeFocusRequest(sourcePidOrRequest, cwd, editor, pidChain, meta =
     cwd: typeof cwd === "string" ? cwd : "",
     editor: editor === "code" || editor === "cursor" ? editor : null,
     pidChain: normalizePidChain(pidChain),
+    wtHwnd: normalizeHwndString(meta && (meta.wtHwnd ?? meta.wt_hwnd)),
     sessionId: meta && typeof meta.sessionId === "string" ? meta.sessionId : null,
     agentId: meta && typeof meta.agentId === "string" ? meta.agentId : null,
     requestSource: meta && typeof meta.requestSource === "string" ? meta.requestSource : null,
@@ -311,6 +535,33 @@ function formatPidChain(pidChain) {
   return Array.isArray(pidChain) && pidChain.length ? `[${pidChain.join(">")}]` : "[]";
 }
 
+function buildFocusCacheKey(request) {
+  if (!request || typeof request.sessionId !== "string" || !request.sessionId) return null;
+  return `${request.agentId || "agent"}|${request.sessionId}`;
+}
+
+function addUniqueTitleCandidate(candidates, value) {
+  if (typeof value !== "string" || !value.trim()) return;
+  if (candidates.some((candidate) => candidate.toLowerCase() === value.toLowerCase())) return;
+  candidates.push(value);
+}
+
+function buildWindowsTitleCandidates(request, cwdCandidates) {
+  const candidates = Array.isArray(cwdCandidates) ? [...cwdCandidates] : [];
+  switch (request && request.agentId) {
+    case "claude-code":
+      addUniqueTitleCandidate(candidates, "Claude Code");
+      addUniqueTitleCandidate(candidates, "Claude");
+      break;
+    case "codex":
+      addUniqueTitleCandidate(candidates, "codex");
+      break;
+    default:
+      break;
+  }
+  return candidates;
+}
+
 function focusLog(msg) {
   if (!ctx || typeof ctx.focusLog !== "function") return;
   try { ctx.focusLog(msg); } catch {}
@@ -327,6 +578,7 @@ function logFocusRequest(request) {
     `cwdTail=${safeLogValue(cwd.tail)}`,
     `cwdHash=${safeLogValue(cwd.hash)}`,
     `chain=${formatPidChain(request.pidChain)}`,
+    `wtHwnd=${request.wtHwnd ? "1" : "-"}`,
   ].join(" "));
 }
 
@@ -600,6 +852,40 @@ function getMacFocusRequestKey(sourcePid, pidChain) {
   return `${sourcePid || ""}|${chain}`;
 }
 
+function getWindowsFocusRequestKey(request) {
+  if (!request) return "";
+  if (request.sessionId) return `${request.agentId || "agent"}|${request.sessionId}`;
+  const chain = Array.isArray(request.pidChain)
+    ? request.pidChain.filter(p => Number.isFinite(p) && p > 0).join(",")
+    : "";
+  return `${request.sourcePid || ""}|${chain}`;
+}
+
+function requestWindowsFocus(request) {
+  const key = getWindowsFocusRequestKey(request);
+  const now = Date.now();
+  if (key && windowsFocusLastRequestKey === key && now - windowsFocusLastRunAt < WINDOWS_FOCUS_DEDUP_MS) {
+    return "dropped-duplicate";
+  }
+  windowsFocusLastRequestKey = key;
+  windowsFocusLastRunAt = now;
+
+  // Grant PowerShell helper permission to call SetForegroundWindow.
+  // This must happen HERE — Electron just received user input (click/hotkey),
+  // so it has foreground privilege to delegate.
+  if (ctx._allowSetForeground && psProc && psProc.pid) {
+    try { ctx._allowSetForeground(psProc.pid); } catch {}
+  }
+
+  // Legacy focus for reliable window activation (ALT key trick + SetForegroundWindow)
+  focusTerminalWindowLegacy(request);
+
+  // VS Code / Cursor: request precise terminal tab switch via extension's HTTP server.
+  // Delayed so legacy PowerShell focus completes first (it's fire-and-forget via stdin).
+  scheduleTerminalTabFocus(request.editor, request.pidChain);
+  return "submitted";
+}
+
 function executeMacFocusRequest(request) {
   macFocusInFlight = true;
   macFocusLastRunAt = Date.now();
@@ -735,20 +1021,9 @@ function focusTerminalWindow(sourcePidOrRequest, cwd, editor, pidChain, meta) {
     return;
   }
 
-  // Grant PowerShell helper permission to call SetForegroundWindow.
-  // This must happen HERE — Electron just received user input (click/hotkey),
-  // so it has foreground privilege to delegate.
-  if (ctx._allowSetForeground && psProc && psProc.pid) {
-    try { ctx._allowSetForeground(psProc.pid); } catch {}
-  }
-
-  // Legacy focus for reliable window activation (ALT key trick + SetForegroundWindow)
-  focusTerminalWindowLegacy(request);
-  logFocusResult("branch=windows-dispatched");
-
-  // VS Code / Cursor: request precise terminal tab switch via extension's HTTP server.
-  // Delayed so legacy PowerShell focus completes first (it's fire-and-forget via stdin).
-  scheduleTerminalTabFocus(request.editor, request.pidChain);
+  const result = requestWindowsFocus(request);
+  if (result === "submitted") logFocusResult("branch=windows-dispatched");
+  else logFocusResult(`branch=windows reason=${result || "unknown"}`);
 }
 
 function focusTerminalWindowLegacy(request, onDone) {
@@ -832,7 +1107,8 @@ function focusTerminalWindowLegacy(request, onDone) {
   }
 
   // Windows: send command to persistent PowerShell process (near-instant)
-  const cmd = makeFocusCmd(sourcePid, cwdCandidates);
+  const titleCandidates = buildWindowsTitleCandidates(request, cwdCandidates);
+  const cmd = makeFocusCmd(sourcePid, titleCandidates, buildFocusCacheKey(request), request.wtHwnd);
   if (psProc && psProc.stdin.writable) {
     psProc.stdin.write(cmd + "\n");
     return true;
@@ -858,6 +1134,8 @@ function cleanup() {
   clearMacFocusCooldownTimer();
   macQueuedFocusRequest = null;
   macFocusInFlight = false;
+  windowsFocusLastRunAt = 0;
+  windowsFocusLastRequestKey = null;
 }
 
 return {
@@ -868,6 +1146,7 @@ return {
   cleanup,
   __test: {
     makeFocusCmd,
+    buildWindowsTitleCandidates,
     normalizeFocusRequest,
     summarizeCwd,
     handleFocusHelperCompleteOutput,

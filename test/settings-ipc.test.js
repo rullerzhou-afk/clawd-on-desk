@@ -188,6 +188,10 @@ function createHarness(overrides = {}) {
     getSoundMuted: overrides.getSoundMuted || (() => false),
     getSoundVolume: overrides.getSoundVolume || (() => 0.4),
     getAllAgents: overrides.getAllAgents || (() => []),
+    getHardwareBuddyStatus: overrides.getHardwareBuddyStatus || (() => null),
+    testHardwareBuddyApproval: overrides.testHardwareBuddyApproval,
+    getQuickCommandPresets: overrides.getQuickCommandPresets,
+    sendQuickCommand: overrides.sendQuickCommand,
     checkForUpdates: (manual) => calls.push(["checkForUpdates", manual]),
     aboutHeroSvgPath: overrides.aboutHeroSvgPath || path.join(__dirname, "missing-about-hero.svg"),
     now: overrides.now || (() => 12345),
@@ -201,6 +205,9 @@ test("settings IPC registers owned channels and leaves animation override channe
   assert.ok(ipcMain.handlers.has("settings:get-snapshot"));
   assert.ok(ipcMain.handlers.has("settings:pick-sound-file"));
   assert.ok(ipcMain.handlers.has("settings:list-themes"));
+  assert.ok(ipcMain.handlers.has("settings:test-hardware-buddy-approval"));
+  assert.ok(ipcMain.handlers.has("settings:get-quick-command-presets"));
+  assert.ok(ipcMain.handlers.has("settings:send-quick-command"));
   assert.ok(ipcMain.handlers.has("settings:open-user-themes-dir"));
   assert.ok(ipcMain.handlers.has("settings:import-user-theme-zip"));
   assert.ok(ipcMain.handlers.has("settings:refresh-codex-pets"));
@@ -237,6 +244,20 @@ test("settings IPC delegates controller and size preview handlers", async () => 
   assert.deepStrictEqual(await ipcMain.invoke("settings:command", { action: "resizePet", payload: "P:30" }), {
     status: "ok",
   });
+  assert.strictEqual(await ipcMain.invoke("settings:get-hardware-buddy-status"), null);
+  assert.deepStrictEqual(await ipcMain.invoke("settings:test-hardware-buddy-approval"), {
+    status: "error",
+    message: "Hardware Buddy test approval is unavailable",
+  });
+  assert.deepStrictEqual(await ipcMain.invoke("settings:get-quick-command-presets"), {
+    enabled: false,
+    presets: [],
+  });
+  assert.deepStrictEqual(await ipcMain.invoke("settings:send-quick-command", { id: "plan_first" }), {
+    status: "error",
+    code: "quick_commands_unavailable",
+    message: "Quick Commands are unavailable",
+  });
   assert.deepStrictEqual(await ipcMain.invoke("settings:begin-size-preview"), {
     status: "ok",
     phase: "begin",
@@ -259,6 +280,53 @@ test("settings IPC delegates controller and size preview handlers", async () => 
     ["sizePreview", "P:35"],
     ["sizeEnd", "P:35"],
   ]);
+});
+
+test("settings IPC delegates Hardware Buddy test approval helper", async () => {
+  const calls = [];
+  const { ipcMain } = createHarness({
+    testHardwareBuddyApproval: () => {
+      calls.push("test");
+      return Promise.resolve({ status: "ok", decision: "deny" });
+    },
+  });
+
+  assert.deepStrictEqual(
+    await ipcMain.invoke("settings:test-hardware-buddy-approval", { ignored: true }),
+    { status: "ok", decision: "deny" }
+  );
+  assert.deepStrictEqual(calls, ["test"]);
+});
+
+test("settings IPC delegates Quick Command helpers", async () => {
+  const calls = [];
+  const { ipcMain } = createHarness({
+    getQuickCommandPresets: () => ({
+      enabled: true,
+      presets: [{ id: "plan_first", label: "先列计划" }],
+    }),
+    sendQuickCommand: (payload) => {
+      calls.push(payload);
+      return { status: "ok", quickCommand: { id: payload.id } };
+    },
+  });
+
+  assert.deepStrictEqual(await ipcMain.invoke("settings:get-quick-command-presets"), {
+    enabled: true,
+    presets: [{ id: "plan_first", label: "先列计划" }],
+  });
+  assert.deepStrictEqual(
+    await ipcMain.invoke("settings:send-quick-command", {
+      id: "plan_first",
+      clientRequestId: "qc-1",
+      userText: "should be stripped",
+      source: "renderer",
+      duration: "next_turn",
+      target: { scope: "active_session", sessionId: "session-1" },
+    }),
+    { status: "ok", quickCommand: { id: "plan_first" } }
+  );
+  assert.deepStrictEqual(calls, [{ id: "plan_first", clientRequestId: "qc-1" }]);
 });
 
 test("settings IPC delegates Codex Pet theme channels and decorates metadata", async () => {
@@ -478,6 +546,7 @@ test("settings IPC copies sound overrides, removes stale siblings, and invalidat
         originalName: "picked.wav",
       }],
       ["sendToRenderer", "invalidate-sound-cache", "file:///complete.wav"],
+      ["sendToRenderer", "preload-sounds", { urls: ["file:///complete.wav"] }],
     ]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

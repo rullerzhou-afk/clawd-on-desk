@@ -47,6 +47,21 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncAntigravityHooks() {
+    try {
+      if (typeof ctx.syncAntigravityHooksImpl === "function") return ctx.syncAntigravityHooksImpl();
+      const { registerAntigravityHooks } = require("../hooks/antigravity-install.js");
+      const result = registerAntigravityHooks({ silent: true });
+      if (result.added > 0 || result.updated > 0) {
+        console.log(`Clawd: synced Antigravity hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      return { status: "ok", ...result };
+    } catch (err) {
+      console.warn("Clawd: failed to sync Antigravity hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync Antigravity hooks" };
+    }
+  }
+
   function syncCodeBuddyHooks() {
     try {
       if (typeof ctx.syncCodeBuddyHooksImpl === "function") return ctx.syncCodeBuddyHooksImpl();
@@ -254,6 +269,7 @@ function createIntegrationSyncRuntime(options = {}) {
 
   const AGENT_INTEGRATION_SYNCERS = Object.freeze({
     "gemini-cli": syncGeminiHooks,
+    "antigravity-cli": syncAntigravityHooks,
     "cursor-agent": syncCursorHooks,
     codebuddy: syncCodeBuddyHooks,
     "kiro-cli": syncKiroHooks,
@@ -314,6 +330,7 @@ function createIntegrationSyncRuntime(options = {}) {
   return {
     syncClawdHooks,
     syncGeminiHooks,
+    syncAntigravityHooks,
     syncCursorHooks,
     syncCodeBuddyHooks,
     syncKiroHooks,

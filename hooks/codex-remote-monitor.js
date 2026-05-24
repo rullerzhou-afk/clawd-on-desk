@@ -97,7 +97,7 @@ function postState(sessionId, state, event, cwd, isSubagent) {
   const body = buildPostStateBody(sessionId, state, event, cwd, isSubagent);
   postStateToRunningServer(
     body,
-    { timeoutMs: 100, preferredPort },
+    { timeoutMs: 100, preferredPort, remote: true },
     () => {} // fire and forget — tunnel may be down
   );
 }

@@ -832,6 +832,42 @@ describe("Hook installer version compatibility", () => {
     assert.ok(!commands[0].startsWith('"node"'), "should not downgrade to bare node");
   });
 
+  it("preserves an existing absolute Windows node path when detection fails", () => {
+    // Issue #317: startup auto-sync must not overwrite the user's manual
+    // `C:\Program Files\nodejs\node.exe` repair with bare `"node"`. install.js
+    // previously gated preservation on POSIX `/` prefixes, so Windows paths
+    // slipped through and got clobbered.
+    const existingWinPath = "C:\\Program Files\\nodejs\\node.exe";
+    const settingsPath = makeTempSettings({
+      hooks: {
+        Stop: [
+          {
+            matcher: "",
+            hooks: [{
+              type: "command",
+              shell: "powershell",
+              command: `& "${existingWinPath}" "C:/app/hooks/clawd-hook.js" Stop`,
+            }],
+          },
+        ],
+      },
+    });
+
+    registerHooks({
+      silent: true,
+      settingsPath,
+      platform: "win32",
+      nodeBin: null,
+      claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
+    });
+
+    const settings = readSettings(settingsPath);
+    const commands = getClawdCommands(settings, "Stop");
+    assert.strictEqual(commands.length, 1);
+    assert.ok(commands[0].includes(existingWinPath), `expected ${existingWinPath} in: ${commands[0]}`);
+    assert.ok(!commands[0].includes('& "node"'), "should not downgrade to bare node");
+  });
+
   it("uses PowerShell-safe auto-start hooks on Windows", () => {
     const settingsPath = makeTempSettings({});
     registerHooks({

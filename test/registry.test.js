@@ -11,6 +11,7 @@ describe("Agent Registry", () => {
       "codex",
       "copilot-cli",
       "gemini-cli",
+      "antigravity-cli",
       "cursor-agent",
       "codebuddy",
       "kiro-cli",
@@ -27,6 +28,7 @@ describe("Agent Registry", () => {
     assert.strictEqual(registry.getAgent("codex").name, "Codex CLI");
     assert.strictEqual(registry.getAgent("copilot-cli").name, "Copilot CLI");
     assert.strictEqual(registry.getAgent("gemini-cli").name, "Gemini CLI");
+    assert.strictEqual(registry.getAgent("antigravity-cli").name, "Antigravity CLI");
     assert.strictEqual(registry.getAgent("cursor-agent").name, "Cursor Agent");
     assert.strictEqual(registry.getAgent("codebuddy").name, "CodeBuddy");
     assert.strictEqual(registry.getAgent("kiro-cli").name, "Kiro CLI");
@@ -50,6 +52,9 @@ describe("Agent Registry", () => {
 
     const gemini = registry.getAgent("gemini-cli");
     assert.deepStrictEqual(gemini.processNames.win, ["gemini.exe"]);
+
+    const antigravity = registry.getAgent("antigravity-cli");
+    assert.deepStrictEqual(antigravity.processNames.win, ["agy.exe"]);
 
     const cursor = registry.getAgent("cursor-agent");
     assert.deepStrictEqual(cursor.processNames.win, ["Cursor.exe"]);
@@ -76,6 +81,9 @@ describe("Agent Registry", () => {
 
     const gemini = registry.getAgent("gemini-cli");
     assert.deepStrictEqual(gemini.processNames.linux, ["gemini"]);
+
+    const antigravity = registry.getAgent("antigravity-cli");
+    assert.deepStrictEqual(antigravity.processNames.linux, ["agy"]);
 
     const cursor = registry.getAgent("cursor-agent");
     assert.deepStrictEqual(cursor.processNames.linux, ["cursor", "Cursor"]);
@@ -110,6 +118,7 @@ describe("Agent Registry", () => {
     assert.ok(agentIds.includes("codex"));
     assert.ok(agentIds.includes("copilot-cli"));
     assert.ok(agentIds.includes("gemini-cli"));
+    assert.ok(agentIds.includes("antigravity-cli"));
     assert.ok(agentIds.includes("cursor-agent"));
     assert.ok(agentIds.includes("kiro-cli"));
     assert.ok(agentIds.includes("pi"));
@@ -143,6 +152,15 @@ describe("Agent Registry", () => {
     assert.strictEqual(gemini.capabilities.sessionEnd, true);
     assert.strictEqual(gemini.capabilities.subagent, false);
 
+    const antigravity = registry.getAgent("antigravity-cli");
+    assert.strictEqual(antigravity.capabilities.httpHook, false);
+    // D2: state-only integration, agy native menu owns permission flow.
+    assert.strictEqual(antigravity.capabilities.permissionApproval, false);
+    assert.strictEqual(antigravity.capabilities.interactiveBubble, false);
+    assert.strictEqual(antigravity.capabilities.notificationHook, false);
+    assert.strictEqual(antigravity.capabilities.sessionEnd, true);
+    assert.strictEqual(antigravity.capabilities.subagent, true);
+
     const cursor = registry.getAgent("cursor-agent");
     assert.strictEqual(cursor.capabilities.httpHook, false);
     assert.strictEqual(cursor.capabilities.permissionApproval, false);
@@ -157,8 +175,8 @@ describe("Agent Registry", () => {
 
     const pi = registry.getAgent("pi");
     assert.strictEqual(pi.capabilities.httpHook, false);
-    assert.strictEqual(pi.capabilities.permissionApproval, true);
-    assert.strictEqual(pi.capabilities.interactiveBubble, true);
+    assert.strictEqual(pi.capabilities.permissionApproval, false);
+    assert.strictEqual(pi.capabilities.interactiveBubble, false);
     assert.strictEqual(pi.capabilities.sessionEnd, true);
     assert.strictEqual(pi.capabilities.subagent, false);
 
@@ -195,6 +213,13 @@ describe("Agent Registry", () => {
     assert.strictEqual(gemini.eventMap.AfterAgent, "idle");
     assert.strictEqual(gemini.eventMap.PreCompress, "idle");
 
+    const antigravity = registry.getAgent("antigravity-cli");
+    assert.strictEqual(antigravity.eventMap.PreInvocation, "thinking");
+    // D2: PreToolUse intentionally absent — agy native menu handles permission.
+    assert.strictEqual(antigravity.eventMap.PreToolUse, undefined);
+    assert.strictEqual(antigravity.eventMap.PostToolUse, "working");
+    assert.strictEqual(antigravity.eventMap.Stop, "attention");
+
     const cursor = registry.getAgent("cursor-agent");
     assert.strictEqual(cursor.eventMap.sessionStart, "idle");
     assert.strictEqual(cursor.eventMap.preToolUse, "working");
@@ -229,6 +254,15 @@ describe("Agent Registry", () => {
     assert.ok(gemini.hookConfig);
     assert.strictEqual(gemini.hookConfig.configFormat, "gemini-settings-json");
     assert.strictEqual(gemini.logConfig, undefined);
+  });
+
+  it("treats Antigravity CLI as a hook-only agent", () => {
+    const antigravity = registry.getAgent("antigravity-cli");
+
+    assert.strictEqual(antigravity.eventSource, "hook");
+    assert.ok(antigravity.hookConfig);
+    assert.strictEqual(antigravity.hookConfig.configFormat, "antigravity-hooks-json");
+    assert.strictEqual(antigravity.logConfig, undefined);
   });
 
   it("should have logEventMap for poll-based agents", () => {

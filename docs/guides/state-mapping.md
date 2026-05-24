@@ -69,7 +69,7 @@ Pi uses a global extension (`~/.pi/agent/extensions/clawd-on-desk`) and maps int
 | session_compact | PostCompact | attention |
 | session_shutdown | SessionEnd | remove session; idle if no live sessions |
 
-Pi is state-only in Clawd for now: permission approvals remain in Pi's own terminal/TUI.
+Pi is state-only in Clawd: Clawd does not intercept permissions or add confirmation prompts, so Pi keeps its default YOLO execution behavior.
 
 ## Mini Mode
 

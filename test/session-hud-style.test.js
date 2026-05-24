@@ -32,4 +32,41 @@ describe("session HUD visual shell", () => {
     assert.match(sessionHudRenderer, /row\.classList\.add\("row-unfocusable"\)/);
     assert.match(sessionHudRenderer, /if \(canFocus\) window\.sessionHudAPI\.focusSession\(session\.id\);/);
   });
+
+  it("renders state labels without replacing unread completed-session bells", () => {
+    assert.match(sessionHudHtml, /\.state-chip\s*\{/);
+    assert.match(sessionHudHtml, /\.chip-working\s*\{/);
+    assert.match(sessionHudHtml, /\.chip-worktree\s*\{/);
+    assert.match(sessionHudHtml, /\.completion-bell\s*\{/);
+    assert.match(sessionHudRenderer, /const STATE_CHIP_MAP\s*=/);
+    assert.match(sessionHudRenderer, /const EVENT_CHIP_MAP\s*=/);
+    assert.match(sessionHudRenderer, /PermissionRequest:\s*\{ key: "sessionNotification"/);
+    assert.match(sessionHudRenderer, /PreCompact:\s*\{ key: "sessionSweeping"/);
+    assert.match(sessionHudRenderer, /WorktreeCreate:\s*\{ key: "sessionWorktree"/);
+    assert.match(sessionHudRenderer, /session\.badge === "done" && unreadSessions\.has\(session\.id\)/);
+    assert.match(sessionHudRenderer, /bell\.className = "completion-bell unread-bell"/);
+    assert.match(sessionHudRenderer, /RECENT_DONE_UNREAD_MS\s*=\s*60 \* 1000/);
+    assert.match(sessionHudRenderer, /prev === undefined[\s\S]{0,180}unreadSessions\.add\(session\.id\)/);
+    assert.doesNotMatch(sessionHudRenderer, /sessionBadgeDone[\s\S]{0,80}chip-done/);
+    assert.doesNotMatch(sessionHudRenderer, /sessionCarrying/);
+  });
+
+  it("uses a compact HUD-only title without mutating the full session title", () => {
+    assert.match(sessionHudRenderer, /HUD_TITLE_MAX_UNITS\s*=\s*15/);
+    assert.match(sessionHudRenderer, /function shortenHudTitle\(value\)/);
+    assert.match(sessionHudRenderer, /title\.textContent = shortTitle/);
+    assert.match(sessionHudRenderer, /title\.title = fullTitle/);
+  });
+
+  it("updates elapsed labels without rebuilding animated rows every second", () => {
+    assert.match(sessionHudRenderer, /function updateElapsedLabels\(\)/);
+    assert.match(sessionHudRenderer, /elapsed\.className = "elapsed"/);
+    assert.match(sessionHudRenderer, /setInterval\(updateElapsedLabels, 1000\)/);
+    assert.doesNotMatch(sessionHudRenderer, /setInterval\(render, 1000\)/);
+  });
+
+  it("honors reduced motion for HUD animations", () => {
+    assert.match(sessionHudHtml, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*\.dot-running\s*\{[\s\S]*animation:\s*none;/);
+    assert.match(sessionHudHtml, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*\.unread-bell svg\s*\{[\s\S]*animation:\s*none;/);
+  });
 });

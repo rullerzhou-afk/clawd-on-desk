@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 
 const HOOK_COMMAND_FRAGMENT_MAX = 128;
+const POWERSHELL_ENCODED_COMMAND_FLAGS = new Set(["-encodedcommand", "-enc", "-e"]);
 
 function stripCmdWrapper(command) {
   const match = String(command || "").trim().match(/^cmd \/d \/s \/c "(.+)"$/i);
@@ -23,6 +24,22 @@ function stripPosixEnvPrefix(command) {
 
 function stripPowerShellCallOperator(command) {
   return String(command || "").replace(/^\s*&\s+/, "");
+}
+
+function isPowerShellExecutable(token) {
+  const name = path.basename(String(token || "").replace(/\\/g, "/")).toLowerCase();
+  return name === "powershell.exe" || name === "powershell" || name === "pwsh.exe" || name === "pwsh";
+}
+
+function decodePowerShellEncodedArgument(value) {
+  const encoded = String(value || "").trim();
+  if (!encoded || !/^[A-Za-z0-9+/=]+$/.test(encoded)) return null;
+  try {
+    const decoded = Buffer.from(encoded, "base64").toString("utf16le").trim();
+    return decoded || null;
+  } catch {
+    return null;
+  }
 }
 
 function tokenizeCommand(command) {
@@ -74,7 +91,30 @@ function tokenizeCommand(command) {
   return tokens;
 }
 
-function parseHookCommand(command) {
+function decodePowerShellEncodedCommand(command) {
+  const withoutCmd = stripCmdWrapper(command);
+  const withoutPsEnv = stripPowerShellEnvPrefix(withoutCmd);
+  const withoutPosixEnv = stripPosixEnvPrefix(withoutPsEnv);
+  const normalized = stripPowerShellCallOperator(withoutPosixEnv).trim();
+  const tokens = tokenizeCommand(normalized);
+  if (!tokens || tokens.length < 3 || !isPowerShellExecutable(tokens[0])) return null;
+
+  const encodedIndex = tokens.findIndex((token) =>
+    POWERSHELL_ENCODED_COMMAND_FLAGS.has(String(token || "").toLowerCase())
+  );
+  if (encodedIndex === -1 || encodedIndex + 1 >= tokens.length) return null;
+  return decodePowerShellEncodedArgument(tokens[encodedIndex + 1]);
+}
+
+function commandContainsFragment(command, fragment) {
+  if (typeof fragment !== "string" || !fragment) return false;
+  const text = String(command || "");
+  if (text.includes(fragment)) return true;
+  const decoded = decodePowerShellEncodedCommand(text);
+  return !!(decoded && decoded.includes(fragment));
+}
+
+function parseHookCommand(command, depth = 0) {
   const withoutCmd = stripCmdWrapper(command);
   const withoutPsEnv = stripPowerShellEnvPrefix(withoutCmd);
   const withoutPosixEnv = stripPosixEnvPrefix(withoutPsEnv);
@@ -86,6 +126,21 @@ function parseHookCommand(command) {
       issue: "parse-failed",
       fragment: String(command || "").slice(0, HOOK_COMMAND_FRAGMENT_MAX),
     };
+  }
+
+  if (depth < 2 && isPowerShellExecutable(tokens[0])) {
+    const decoded = decodePowerShellEncodedCommand(command);
+    if (decoded) {
+      const parsed = parseHookCommand(decoded, depth + 1);
+      if (parsed.ok) {
+        return {
+          ...parsed,
+          wrapperCommand: normalized,
+          decodedCommand: decoded,
+        };
+      }
+      return parsed;
+    }
   }
 
   const executableIndex = tokens.findIndex((token) => token && !token.startsWith("-"));
@@ -141,9 +196,13 @@ function validateHookCommand(command, options = {}) {
 }
 
 module.exports = {
+  commandContainsFragment,
+  decodePowerShellEncodedCommand,
   parseHookCommand,
   validateHookCommand,
   __test: {
+    decodePowerShellEncodedArgument,
+    isPowerShellExecutable,
     stripCmdWrapper,
     stripPowerShellEnvPrefix,
     stripPosixEnvPrefix,

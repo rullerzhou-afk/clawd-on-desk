@@ -26,7 +26,6 @@ const {
   shouldBypassCCBubble,
   shouldBypassCodexBubble,
   shouldBypassOpencodeBubble,
-  shouldBypassPiBubble,
 } = require("./server-route-permission");
 const {
   getCodexOfficialTurnKey,
@@ -134,6 +133,7 @@ const integrationSync = createIntegrationSyncRuntime({
 const {
   syncClawdHooks,
   syncGeminiHooks,
+  syncAntigravityHooks,
   syncCursorHooks,
   syncCodeBuddyHooks,
   syncKiroHooks,
@@ -254,6 +254,7 @@ return {
   clearRecentHookEvents,
   syncClawdHooks,
   syncGeminiHooks,
+  syncAntigravityHooks,
   syncCursorHooks,
   syncCodeBuddyHooks,
   syncKiroHooks,
@@ -279,7 +280,6 @@ module.exports.__test = {
   shouldBypassCCBubble,
   shouldBypassCodexBubble,
   shouldBypassOpencodeBubble,
-  shouldBypassPiBubble,
   normalizePermissionSuggestions,
   normalizeElicitationToolInput,
   normalizeCodexPermissionToolInput,

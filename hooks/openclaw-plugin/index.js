@@ -1,4 +1,4 @@
-import { readFileSync } from "fs";
+import { readFileSync, statSync } from "fs";
 import { request } from "http";
 import { homedir } from "os";
 import { join } from "path";
@@ -9,8 +9,11 @@ export const STOP_DEBOUNCE_MS = 1500;
 
 const CLAWD_DIR = join(homedir(), ".clawd");
 const RUNTIME_CONFIG_PATH = join(CLAWD_DIR, "runtime.json");
+const DEFAULT_OPENCLAW_STATE_DIR = join(homedir(), ".openclaw");
 const SERVER_PORTS = [23333, 23334, 23335, 23336, 23337];
 const POST_TIMEOUT_MS = 1000;
+const SESSION_TITLE_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F]+/g;
+const SESSION_TITLE_MAX = 80;
 
 const HOOK_NAMES = [
   "session_start",
@@ -69,6 +72,80 @@ function firstNumber(...values) {
     if (Number.isFinite(value)) return value;
   }
   return null;
+}
+
+function normalizeTitle(value) {
+  if (typeof value !== "string") return "";
+  const collapsed = value
+    .replace(SESSION_TITLE_CONTROL_RE, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!collapsed) return "";
+  if (collapsed.length <= SESSION_TITLE_MAX) return collapsed;
+  let end = SESSION_TITLE_MAX - 1;
+  const lastCodeUnit = collapsed.charCodeAt(end - 1);
+  if (lastCodeUnit >= 0xD800 && lastCodeUnit <= 0xDBFF) end -= 1;
+  return `${collapsed.slice(0, end)}\u2026`;
+}
+
+function resolveOpenClawConfigPath() {
+  const env = process.env || {};
+  if (typeof env.OPENCLAW_CONFIG_PATH === "string" && env.OPENCLAW_CONFIG_PATH) {
+    return env.OPENCLAW_CONFIG_PATH;
+  }
+  const stateDir = typeof env.OPENCLAW_STATE_DIR === "string" && env.OPENCLAW_STATE_DIR
+    ? env.OPENCLAW_STATE_DIR
+    : DEFAULT_OPENCLAW_STATE_DIR;
+  return join(stateDir, "openclaw.json");
+}
+
+// OpenClaw `sessionKey` is structured like `agent:<agentId>:<channel>:...`.
+// Extract the agent id segment.
+function getAgentIdFromSession(event, ctx) {
+  const key = firstString(event && event.sessionKey, ctx && ctx.sessionKey);
+  if (!key) return "";
+  const match = /^agent:([^:]+)/.exec(key);
+  return match ? match[1] : "";
+}
+
+// Cached lookup of OpenClaw's agents.list → display name (with emoji),
+// refreshed when the config file mtime changes.
+let cachedAgentIndex = null;
+let cachedAgentIndexMtimeMs = 0;
+let cachedAgentIndexPath = "";
+function loadAgentIndex() {
+  const configPath = resolveOpenClawConfigPath();
+  let mtimeMs;
+  try { mtimeMs = statSync(configPath).mtimeMs; } catch { return null; }
+  if (cachedAgentIndex && configPath === cachedAgentIndexPath && mtimeMs === cachedAgentIndexMtimeMs) {
+    return cachedAgentIndex;
+  }
+  let parsed;
+  try { parsed = JSON.parse(readFileSync(configPath, "utf8")); }
+  catch { return configPath === cachedAgentIndexPath ? cachedAgentIndex : null; }
+  const list = parsed && parsed.agents && Array.isArray(parsed.agents.list)
+    ? parsed.agents.list : [];
+  const index = new Map();
+  for (const entry of list) {
+    if (!entry || typeof entry.id !== "string" || !entry.id) continue;
+    const identity = entry.identity && typeof entry.identity === "object" ? entry.identity : {};
+    const display = firstString(identity.name, entry.name) || entry.id;
+    const emoji = normalizeTitle(identity.emoji);
+    const title = normalizeTitle(emoji ? `${emoji} ${display}` : display) || normalizeTitle(entry.id);
+    if (title) index.set(entry.id, title);
+  }
+  cachedAgentIndex = index;
+  cachedAgentIndexMtimeMs = mtimeMs;
+  cachedAgentIndexPath = configPath;
+  return index;
+}
+
+function getAgentDisplayName(event, ctx) {
+  const id = getAgentIdFromSession(event, ctx);
+  if (!id) return "";
+  const index = loadAgentIndex();
+  if (index && index.has(id)) return index.get(id);
+  return normalizeTitle(id);
 }
 
 function getSessionId(event, ctx) {
@@ -141,6 +218,7 @@ export function createOpenClawRuntime(options = {}) {
       state,
       event: eventName,
       session_id: getSessionId(nativeEvent, ctx),
+      session_title: getAgentDisplayName(nativeEvent, ctx),
       cwd: firstString(ctx.workspaceDir, nativeEvent.cwd, nativeEvent.workspaceDir),
       agent_pid: process.pid,
       source_pid: firstNumber(info.source_pid),

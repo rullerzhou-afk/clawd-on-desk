@@ -188,13 +188,20 @@ function isCodexDesktopSession(payload, sessionMeta) {
   return firstString(meta.originator, source.originator).toLowerCase() === "codex desktop";
 }
 
+function shouldReportForegroundWtHwnd(event) {
+  return event === "SessionStart" || event === "UserPromptSubmit";
+}
+
 function applyLocalProcessFields(body, resolve, options = {}) {
-  const { stablePid, agentPid, detectedEditor, pidChain } = resolve();
+  const { stablePid, agentPid, detectedEditor, pidChain, foregroundWtHwnd } = resolve();
   const sourcePid = options.preferAgentPid && agentPid ? agentPid : stablePid;
   body.source_pid = sourcePid;
   if (detectedEditor) body.editor = detectedEditor;
   if (agentPid) body.agent_pid = agentPid;
   if (pidChain.length) body.pid_chain = pidChain;
+  if (shouldReportForegroundWtHwnd(options.event, foregroundWtHwnd) && foregroundWtHwnd) {
+    body.wt_hwnd = String(foregroundWtHwnd);
+  }
 }
 
 function resolveCodexSessionRole(payload, sessionMeta) {
@@ -294,6 +301,7 @@ function buildPermissionBody(payload, resolve) {
   } else {
     applyLocalProcessFields(body, resolve, {
       preferAgentPid: isCodexDesktopSession(payload, sessionMeta),
+      event,
     });
   }
 
@@ -352,6 +360,7 @@ function buildStateBody(payload, resolve) {
   } else {
     applyLocalProcessFields(body, resolve, {
       preferAgentPid: isCodexDesktopSession(payload, sessionMeta),
+      event,
     });
   }
 

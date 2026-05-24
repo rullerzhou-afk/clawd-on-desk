@@ -7,14 +7,15 @@ function buildSettingsAgentOrderExports() {
     "gemini-cli",
     "kimi-cli",
     "opencode",
-    "pi",
     "codebuddy",
   ];
 
   const NON_COLLAPSIBLE_AGENT_PRIORITY = [
+    "antigravity-cli",
     "cursor-agent",
     "copilot-cli",
     "kiro-cli",
+    "pi",
     "openclaw",
     "hermes",
   ];

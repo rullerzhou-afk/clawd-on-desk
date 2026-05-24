@@ -15,6 +15,7 @@ function makeRuntime(overrides = {}) {
       return { status: "ok", source: "claude" };
     },
     syncGeminiHooksImpl: () => calls.push({ name: "gemini" }),
+    syncAntigravityHooksImpl: () => calls.push({ name: "antigravity" }),
     syncCursorHooksImpl: () => calls.push({ name: "cursor" }),
     syncCodeBuddyHooksImpl: () => calls.push({ name: "codebuddy" }),
     syncKiroHooksImpl: () => calls.push({ name: "kiro" }),
@@ -74,6 +75,7 @@ describe("integration sync runtime", () => {
       "claude",
       "watcher:start",
       "gemini",
+      "antigravity",
       "codebuddy",
       "kiro",
       "kimi",

@@ -274,4 +274,36 @@ describe("permission bubble stack layout", () => {
     assert.strictEqual(withHud[0].x, 920, "with HUD reserve it falls to the side");
     assert.notStrictEqual(withHud[0].y, 538);
   });
+
+  it("ignores Hardware Buddy test entries when stacking visible bubbles", () => {
+    const runtime = permission({
+      win: { isDestroyed: () => false },
+      bubbleFollowPet: false,
+      getPetWindowBounds: () => ({ x: 0, y: 0, width: 80, height: 80 }),
+      getNearestWorkArea: () => FHD,
+      getHitRectScreen: () => null,
+      getHudReservedOffset: () => 0,
+    });
+    const assigned = [];
+    const bubble = (name) => ({
+      isDestroyed: () => false,
+      setBounds: (bounds) => assigned.push([name, bounds]),
+    });
+
+    runtime.addPendingPermission({ bubble: bubble("old"), measuredHeight: 200, suggestions: [] }, "test");
+    runtime.addPendingPermission({
+      bubble: null,
+      measuredHeight: 200,
+      suggestions: [],
+      isHardwareBuddyTest: true,
+    }, "test");
+    runtime.addPendingPermission({ bubble: bubble("new"), measuredHeight: 200, suggestions: [] }, "test");
+
+    runtime.repositionBubbles();
+
+    assert.deepStrictEqual(assigned, [
+      ["old", { x: 1572, y: 666, width: 340, height: 200 }],
+      ["new", { x: 1572, y: 872, width: 340, height: 200 }],
+    ]);
+  });
 });

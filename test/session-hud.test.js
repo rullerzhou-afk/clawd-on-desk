@@ -26,9 +26,11 @@ function mkSession(id, overrides = {}) {
 }
 
 describe("session HUD geometry", () => {
-  it("uses a narrower HUD width when elapsed time is hidden", () => {
-    assert.strictEqual(getHudWidth(true), constants.HUD_WIDTH);
-    assert.strictEqual(getHudWidth(false), constants.HUD_WIDTH_COMPACT);
+  it("uses wider HUD widths when state labels are enabled", () => {
+    assert.strictEqual(getHudWidth(true, true), constants.HUD_WIDTH_LABELS);
+    assert.strictEqual(getHudWidth(false, true), constants.HUD_WIDTH_LABELS_COMPACT);
+    assert.strictEqual(getHudWidth(true, false), constants.HUD_WIDTH);
+    assert.strictEqual(getHudWidth(false, false), constants.HUD_WIDTH_COMPACT);
 
     const result = computeSessionHudBounds({
       hitRect: { left: 10, top: 80, right: 90, bottom: 160 },
@@ -129,14 +131,30 @@ describe("session HUD layout", () => {
     assert.strictEqual(rowCount, 3);
   });
 
-  it("folds sessions beyond the 3-row cap", () => {
+  it("folds sessions beyond the 5-row label cap", () => {
+    const sessions = [];
+    const orderedIds = [];
+    for (let i = 0; i < 7; i++) {
+      sessions.push(mkSession(`s${i}`));
+      orderedIds.push(`s${i}`);
+    }
+    const { expanded, folded, rowCount } = computeHudLayout({ sessions, orderedIds });
+    assert.strictEqual(expanded.length, constants.HUD_MAX_EXPANDED_ROWS_LABELS);
+    assert.strictEqual(folded.length, 7 - constants.HUD_MAX_EXPANDED_ROWS_LABELS);
+    assert.strictEqual(rowCount, constants.HUD_MAX_EXPANDED_ROWS_LABELS + 1);
+  });
+
+  it("folds sessions beyond the 3-row cap when state labels are hidden", () => {
     const sessions = [];
     const orderedIds = [];
     for (let i = 0; i < 5; i++) {
       sessions.push(mkSession(`s${i}`));
       orderedIds.push(`s${i}`);
     }
-    const { expanded, folded, rowCount } = computeHudLayout({ sessions, orderedIds });
+    const { expanded, folded, rowCount } = computeHudLayout(
+      { sessions, orderedIds },
+      { showStateLabels: false }
+    );
     assert.strictEqual(expanded.length, constants.HUD_MAX_EXPANDED_ROWS);
     assert.strictEqual(folded.length, 5 - constants.HUD_MAX_EXPANDED_ROWS);
     assert.strictEqual(rowCount, constants.HUD_MAX_EXPANDED_ROWS + 1);
@@ -150,7 +168,7 @@ describe("session HUD layout", () => {
       mkSession("oldest"),
     ];
     const orderedIds = ["newest", "middle", "old", "oldest"];
-    const { expanded, folded } = computeHudLayout({ sessions, orderedIds });
+    const { expanded, folded } = computeHudLayout({ sessions, orderedIds }, { showStateLabels: false });
     assert.deepStrictEqual(expanded.map((s) => s.id), ["newest", "middle", "old"]);
     assert.deepStrictEqual(folded.map((s) => s.id), ["oldest"]);
   });

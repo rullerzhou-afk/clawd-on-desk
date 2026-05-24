@@ -25,6 +25,7 @@ docs/**
 !docs/guides/setup-guide.zh-CN.md
 !docs/guides/state-mapping.md
 !docs/guides/state-mapping.zh-CN.md
+!docs/guides/telegram-approval.md
 !docs/guides/codex-wsl-clarification.md
 !docs/guides/codex-wsl-clarification.zh-CN.md
 !docs/guides/codex-wsl-clarification.ko-KR.md
@@ -33,6 +34,7 @@ docs/**
 !docs/investigations/codex-subagent-session-meta.md
 !docs/project/
 !docs/project/agent-runtime-architecture.md
+!docs/project/release-process.md
 !docs/project/theme-state-ui.md
 !docs/cloudling/
 !docs/cloudling/specs/
@@ -45,10 +47,16 @@ docs/**
 !docs/releases/release-v0.6.2.md
 !docs/releases/release-v0.6.3.md
 !docs/releases/release-v0.7.1.md
+!docs/releases/release-v0.8.0.md
+!docs/releases/release-v0.8.1.md
 
 # Temp files from testing
 .tmp_*
 *.tmp
+
+# Root-level scratch files (tmp-*.md / tmp-*.json / tmp-*.sh etc.)
+# Matches files like tmp-pr301-comment.md, tmp-issues.json at repo root only.
+/tmp-*
 
 # Local manual test / tuning scratch docs (root-level dotfile md)
 .*-test-*.md
@@ -73,6 +81,12 @@ tools/check_dark.py
 # Debug logs
 logs/
 
+# Telegram approval sidecar build artifacts
+bin/cc-connect-clawd/*/cc-connect-clawd
+bin/cc-connect-clawd/*/cc-connect-clawd.exe
+!bin/cc-connect-clawd/
+!bin/cc-connect-clawd/README.md
+
 # GIF recording tools (not part of main project)
 scripts/*
 !scripts/remote-deploy.sh
@@ -81,6 +95,9 @@ scripts/*
 !scripts/monitor-clawd-power.ps1
 !scripts/validate-theme.js
 !scripts/create-theme.js
+!scripts/export-agent-icons.js
+!scripts/verify-sidecar-binaries.js
+!scripts/fetch-sidecar-binaries.js
 
 # oh-my-cursor state
 .omc/

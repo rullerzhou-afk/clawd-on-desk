@@ -23,8 +23,15 @@ const EVENT_LABEL_KEYS = {
   Notification: "eventLabelNotification",
   Elicitation: "eventLabelElicitation",
   WorktreeCreate: "eventLabelWorktreeCreate",
+  "event_msg:task_complete": "eventLabelStop",
   "stale-cleanup": "eventLabelStaleCleanup",
 };
+
+const DONE_EVENTS = new Set(["Stop", "PostCompact", "event_msg:task_complete"]);
+
+function isDoneEvent(event) {
+  return DONE_EVENTS.has(event);
+}
 
 const SESSION_TITLE_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F]+/g;
 const SESSION_TITLE_MAX = 80;
@@ -50,12 +57,23 @@ function deriveSessionBadge(session) {
   if (!session) return "idle";
   if (session.state !== "idle" && session.state !== "sleeping") return "running";
   if (session.state === "sleeping") return "idle";
+  if (session.requiresCompletionAck === true) return "done";
   const events = Array.isArray(session.recentEvents) ? session.recentEvents : [];
   const latest = events.length ? events[events.length - 1] : null;
   const latestEvent = latest && latest.event;
   if (latestEvent === "StopFailure" || latestEvent === "PostToolUseFailure") return "interrupted";
-  if (latestEvent === "Stop" || latestEvent === "PostCompact") return "done";
+  if (isDoneEvent(latestEvent)) return "done";
   return "idle";
+}
+
+function getDisplayLastEvent(session, recentEvents) {
+  const latestEvent = recentEvents.length ? recentEvents[recentEvents.length - 1] : null;
+  if (!(session && session.requiresCompletionAck === true)) return latestEvent;
+  for (let i = recentEvents.length - 1; i >= 0; i--) {
+    const event = recentEvents[i];
+    if (event && isDoneEvent(event.event)) return event;
+  }
+  return latestEvent;
 }
 
 function isEndedSessionBadge(badge) {
@@ -130,7 +148,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
   const recentEvents = Array.isArray(session && session.recentEvents)
     ? session.recentEvents
     : [];
-  const latestEvent = recentEvents.length ? recentEvents[recentEvents.length - 1] : null;
+  const latestEvent = getDisplayLastEvent(session, recentEvents);
   const rawEvent = latestEvent && latestEvent.event ? latestEvent.event : null;
   const eventAt = Number(latestEvent && latestEvent.at);
   const badge = deriveSessionBadge(session);
@@ -155,6 +173,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     cwd: (session && session.cwd) || "",
     updatedAt: sessionUpdatedAt(session),
     sourcePid: (session && session.sourcePid) || null,
+    wtHwnd: (session && session.wtHwnd) || null,
     canFocus: focusTarget.canFocus === true,
     focusTarget: focusTarget.type ? { type: focusTarget.type, url: focusTarget.url || null } : null,
     host: (session && session.host) || null,
@@ -169,6 +188,9 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
       rawEvent,
       at: Number.isFinite(eventAt) ? eventAt : 0,
     } : null,
+    // Lifecycle flag for the Dashboard "Mark read" button visibility (PR2).
+    // ackedAt stays internal — only the boolean reaches renderers.
+    requiresCompletionAck: !!(session && session.requiresCompletionAck === true),
   };
 }
 
@@ -258,6 +280,7 @@ function sessionSnapshotSignature(snapshot) {
       cwd: entry.cwd,
       agentId: entry.agentId,
       sourcePid: entry.sourcePid,
+      wtHwnd: entry.wtHwnd,
       canFocus: entry.canFocus,
       focusTarget: entry.focusTarget,
       headless: entry.headless,
@@ -271,6 +294,7 @@ function sessionSnapshotSignature(snapshot) {
       lastEventLabelKey: entry.lastEvent ? entry.lastEvent.labelKey : null,
       lastEventRawEvent: entry.lastEvent ? entry.lastEvent.rawEvent : null,
       lastEventAt: entry.lastEvent ? entry.lastEvent.at : null,
+      requiresCompletionAck: !!entry.requiresCompletionAck,
     })),
   });
 }

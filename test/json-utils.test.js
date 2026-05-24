@@ -3,7 +3,7 @@ const assert = require("node:assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { extractExistingNodeBin, formatNodeHookCommand, writeJsonAtomicAsync } = require("../hooks/json-utils");
+const { extractExistingNodeBin, extractExistingNodeBinFromCommands, formatNodeHookCommand, writeJsonAtomicAsync } = require("../hooks/json-utils");
 
 describe("extractExistingNodeBin", () => {
   it("extracts node path from flat command format", () => {
@@ -108,6 +108,53 @@ describe("extractExistingNodeBin", () => {
       extractExistingNodeBin(settings, "cursor-hook.js"),
       "\\\\fileserver\\tools\\nodejs\\node.exe"
     );
+  });
+});
+
+describe("extractExistingNodeBinFromCommands", () => {
+  it("extracts the first absolute path that is not the hook script", () => {
+    const commands = ['"/usr/local/bin/node" "/path/to/kimi-hook.js"'];
+    assert.strictEqual(extractExistingNodeBinFromCommands(commands, "kimi-hook.js"), "/usr/local/bin/node");
+  });
+
+  it("returns Windows drive paths verbatim", () => {
+    const commands = ['"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\u\\.kimi\\hooks\\kimi-hook.js"'];
+    assert.strictEqual(
+      extractExistingNodeBinFromCommands(commands, "kimi-hook.js"),
+      "C:\\Program Files\\nodejs\\node.exe"
+    );
+  });
+
+  it("returns UNC paths", () => {
+    const commands = ['"\\\\fileserver\\tools\\node.exe" "C:\\hooks\\kimi-hook.js"'];
+    assert.strictEqual(
+      extractExistingNodeBinFromCommands(commands, "kimi-hook.js"),
+      "\\\\fileserver\\tools\\node.exe"
+    );
+  });
+
+  it("skips bare 'node' and returns null when nothing absolute is found", () => {
+    const commands = ['"node" "/path/to/kimi-hook.js"'];
+    assert.strictEqual(extractExistingNodeBinFromCommands(commands, "kimi-hook.js"), null);
+  });
+
+  it("walks past commands that begin with the marker itself", () => {
+    const commands = [
+      '"/path/to/kimi-hook.js"',
+      '"/usr/bin/node" "/path/to/kimi-hook.js"',
+    ];
+    assert.strictEqual(extractExistingNodeBinFromCommands(commands, "kimi-hook.js"), "/usr/bin/node");
+  });
+
+  it("returns null for non-array or missing inputs", () => {
+    assert.strictEqual(extractExistingNodeBinFromCommands([], "kimi-hook.js"), null);
+    assert.strictEqual(extractExistingNodeBinFromCommands(null, "kimi-hook.js"), null);
+    assert.strictEqual(extractExistingNodeBinFromCommands(["something"], ""), null);
+  });
+
+  it("ignores non-string entries in the commands array", () => {
+    const commands = [null, 42, '"/usr/bin/node" "/hooks/kimi-hook.js"'];
+    assert.strictEqual(extractExistingNodeBinFromCommands(commands, "kimi-hook.js"), "/usr/bin/node");
   });
 });
 

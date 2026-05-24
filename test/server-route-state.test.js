@@ -104,6 +104,7 @@ describe("server-route-state POST", () => {
       event: "PreToolUse",
       display_svg: "/tmp/display.svg",
       source_pid: 123.9,
+      wt_hwnd: "123456",
       cwd: "D:\\repo",
       editor: "cursor",
       pid_chain: [1, "bad", 3],
@@ -129,6 +130,7 @@ describe("server-route-state POST", () => {
       "PreToolUse",
       {
         sourcePid: 123,
+        wtHwnd: "123456",
         cwd: "D:\\repo",
         editor: "cursor",
         pidChain: [1, 3],
