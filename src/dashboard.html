@@ -22,6 +22,8 @@
   --done: #71717a;
   --interrupted: #b45309;
   --idle: #71717a;
+  --scroll-thumb: rgba(0, 0, 0, 0.15);
+  --scroll-thumb-hover: rgba(0, 0, 0, 0.25);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -38,6 +40,8 @@
     --done: #a1a1aa;
     --interrupted: #f59e0b;
     --idle: #a1a1aa;
+    --scroll-thumb: rgba(255, 255, 255, 0.1);
+    --scroll-thumb-hover: rgba(255, 255, 255, 0.2);
   }
 }
 
@@ -95,6 +99,10 @@ h1 {
   min-height: 0;
   padding: 16px 18px 20px;
 }
+.content::-webkit-scrollbar { width: 6px; }
+.content::-webkit-scrollbar-track { background: transparent; }
+.content::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 3px; }
+.content::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
 
 .group {
   margin: 0 0 18px;
