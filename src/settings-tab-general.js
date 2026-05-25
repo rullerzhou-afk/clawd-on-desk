@@ -4,6 +4,9 @@
   const GENERAL_IN_PLACE_KEYS = new Set([
     "size",
     "soundMuted",
+    "flashTaskbarOnComplete",
+    "flashIntervalMs",
+    "flashDurationMs",
     "soundVolume",
     "lowPowerIdleMode",
     "sessionHudEnabled",
@@ -89,6 +92,7 @@
         labelKey: "rowLowPowerIdleMode",
         descKey: "rowLowPowerIdleModeDesc",
       }),
+      buildFlashGroup(),
       helpers.buildSwitchRow({
         key: "allowEdgePinning",
         labelKey: "rowAllowEdgePinning",
@@ -553,6 +557,47 @@
       children: [buildOptionList("sound-option-list", [
         buildSoundEnabledRow(summaryControl),
         buildVolumeSliderRow(),
+      ])],
+    });
+  }
+
+  function buildFlashGroup() {
+    return helpers.buildCollapsibleGroup({
+      id: "general:flash",
+      title: t("rowFlash"),
+      desc: t("rowFlashDesc"),
+      defaultCollapsed: true,
+      className: "flash-collapsible",
+      children: [buildOptionList("flash-option-list", [
+        helpers.buildSwitchRow({
+          key: "flashTaskbarOnComplete",
+          labelKey: "rowFlashTaskbarOnComplete",
+          descKey: "rowFlashTaskbarOnCompleteDesc",
+        }),
+        helpers.buildNumberInputRow({
+          key: "flashIntervalMs",
+          labelKey: "rowFlashInterval",
+          descKey: "rowFlashIntervalDesc",
+          unitKey: "unitMilliseconds",
+          toDisplay: (ms) => ms,
+          fromDisplay: (v) => Math.max(200, Math.min(2000, Math.round(v))),
+          min: 200,
+          max: 2000,
+        }).row,
+        helpers.buildNumberInputRow({
+          key: "flashDurationMs",
+          labelKey: "rowFlashDuration",
+          descKey: "rowFlashDurationDesc",
+          unitKey: "unitMilliseconds",
+          toDisplay: (ms) => ms,
+          fromDisplay: (v) => {
+            const n = parseInt(v, 10);
+            return Number.isFinite(n) ? Math.max(0, Math.min(60000, Math.round(n))) : 0;
+          },
+          min: 0,
+          max: 60000,
+          zeroLabelKey: "valueAlways",
+        }).row,
       ])],
     });
   }

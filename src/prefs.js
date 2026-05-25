@@ -143,6 +143,17 @@ const SCHEMA = {
     default: 1,
     validate: (v) => Number.isFinite(v) && v >= 0 && v <= 1,
   },
+  flashTaskbarOnComplete: { type: "boolean", default: true },
+  flashIntervalMs: {
+    type: "number",
+    default: 500,
+    validate: (v) => Number.isInteger(v) && v >= 200 && v <= 2000,
+  },
+  flashDurationMs: {
+    type: "number",
+    default: 5000,
+    validate: (v) => Number.isInteger(v) && v >= 0 && v <= 60000,
+  },
   lowPowerIdleMode: { type: "boolean", default: false },
   allowEdgePinning: { type: "boolean", default: false },
   // When true, moving the pet between displays does not trigger a

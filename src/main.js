@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell } = require("electron");
+const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { EventEmitter } = require("events");
@@ -575,6 +575,11 @@ function getAssetPointerPayload(bounds, point) {
 
 let win;
 let hitWin;  // input window — small opaque rect over hitbox, receives all pointer events
+
+// Tray icon flash state
+let trayFlashTimer = null;
+let trayFlashNormalIcon = null;
+let trayFlashHighlightIcon = null;
 let tray = null;
 let contextMenuOwner = null;
 // Mirror of _settingsController.get("size") — initialized from disk, kept in
@@ -767,6 +772,74 @@ function playSound(name) {
 
 function resetSoundCooldown() {
   lastSoundTime = 0;
+}
+
+function stopTrayFlash() {
+  if (trayFlashTimer) {
+    clearInterval(trayFlashTimer);
+    trayFlashTimer = null;
+  }
+  const t = _menu.getTray ? _menu.getTray() : null;
+  if (t && trayFlashNormalIcon) {
+    t.setImage(trayFlashNormalIcon);
+  }
+}
+
+function flashTaskbar() {
+  if (doNotDisturb) return;
+  if (!_settingsController.get("flashTaskbarOnComplete")) return;
+
+  const tray = _menu.getTray ? _menu.getTray() : null;
+  if (!tray) return;
+
+  // Cache the normal icon on first call
+  if (!trayFlashNormalIcon) {
+    trayFlashNormalIcon = nativeImage.createFromPath(
+      path.join(__dirname, "../assets/tray-icon.png")
+    ).resize({ width: 32, height: 32 });
+  }
+
+  // Cache the highlight icon (orange circle) on first call
+  if (!trayFlashHighlightIcon) {
+    const flashPath = path.join(__dirname, "../assets/tray-icon-flash.png");
+    if (fs.existsSync(flashPath)) {
+      trayFlashHighlightIcon = nativeImage.createFromPath(flashPath).resize({ width: 32, height: 32 });
+    }
+  }
+
+  if (!trayFlashHighlightIcon) return;
+
+  // Clear any existing flash timer
+  if (trayFlashTimer) clearInterval(trayFlashTimer);
+
+  const intervalMs = _settingsController.get("flashIntervalMs") || 500;
+  const durationMs = _settingsController.get("flashDurationMs");
+  // durationMs defaults to 5000; 0 means flash until manually stopped
+
+  let useHighlight = true;
+  trayFlashTimer = setInterval(() => {
+    if (!_menu.getTray || !_menu.getTray()) {
+      stopTrayFlash();
+      return;
+    }
+    const t = _menu.getTray();
+    t.setImage(useHighlight ? trayFlashHighlightIcon : trayFlashNormalIcon);
+    useHighlight = !useHighlight;
+  }, intervalMs);
+
+  // Auto-stop after duration (unless duration is 0 = always)
+  if (durationMs !== 0) {
+    setTimeout(() => {
+      stopTrayFlash();
+    }, durationMs || 5000);
+  }
+
+  // Stop on tray click
+  tray.removeAllListeners("click");
+  tray.on("click", () => {
+    stopTrayFlash();
+    tray.removeAllListeners("click");
+  });
 }
 
 function syncHitWin() { return petWindowRuntime.syncHitWin(); }
@@ -988,6 +1061,7 @@ const _stateCtx = {
   sendToHitWin,
   syncHitWin,
   playSound,
+  flashTaskbar,
   t: (key) => t(key),
   focusTerminalWindow: (...args) => focusTerminalWindow(...args),
   resolvePermissionEntry: (...args) => resolvePermissionEntry(...args),
