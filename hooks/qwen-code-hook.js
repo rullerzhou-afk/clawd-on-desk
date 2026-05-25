@@ -20,6 +20,12 @@ const TOOL_MATCH_DEPTH_MAX = 6;
 const QWEN_PERMISSION_HTTP_TIMEOUT_MS = 590000;
 const DEFAULT_HOOK_DEBUG_MAX_BYTES = 256 * 1024;
 
+// Qwen Code 0.16.1 fires Notification ~700ms after every Stop as a generic
+// "task done" signal, which would yank the mascot from attention back to
+// notification every single turn. Drop Notification from the state map; the
+// hook installer still registers the event so qwen sees a hook and gets a
+// clean `{}` reply, but no /state POST goes out. PermissionRequest takes a
+// separate code path and is unaffected.
 const EVENT_TO_STATE = {
   SessionStart: "idle",
   SessionEnd: "sleeping",
@@ -27,7 +33,6 @@ const EVENT_TO_STATE = {
   PreToolUse: "working",
   PostToolUse: "working",
   Stop: "attention",
-  Notification: "notification",
 };
 
 function normalizeQwenSessionId(value) {
@@ -133,7 +138,6 @@ function maybeAddToolMetadata(body, payload) {
 
 function buildStateBody(hookName, payload, resolve, options = {}) {
   if (!EVENT_TO_STATE[hookName]) return null;
-  if (hookName === "Notification" && payload && payload.notification_type === "permission_prompt") return null;
 
   const body = {
     state: EVENT_TO_STATE[hookName],

@@ -55,13 +55,18 @@ describe("Qwen Code hook", () => {
     assert.deepStrictEqual(body.pid_chain, [789, 456, 123]);
   });
 
-  it("filters Notification(permission_prompt)", () => {
-    const body = buildStateBody("Notification", {
-      session_id: "s1",
-      notification_type: "permission_prompt",
-    }, mockResolve);
-
-    assert.strictEqual(body, null);
+  it("drops every Notification regardless of payload type", () => {
+    // qwen 0.16.1 fires Notification ~700ms after every Stop as a generic
+    // "task done" signal that would clobber attention on the mascot. Hook
+    // must never emit a /state POST for Notification, no matter the payload.
+    for (const payload of [
+      { session_id: "s1", notification_type: "permission_prompt" },
+      { session_id: "s1", notification_type: "info" },
+      { session_id: "s1", message: "ready" },
+      { session_id: "s1" },
+    ]) {
+      assert.strictEqual(buildStateBody("Notification", payload, mockResolve), null);
+    }
   });
 
   it("builds bounded PermissionRequest payloads", () => {

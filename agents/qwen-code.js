@@ -13,7 +13,6 @@ module.exports = {
     PreToolUse: "working",
     PostToolUse: "working",
     Stop: "attention",
-    Notification: "notification",
     PermissionRequest: "notification",
   },
   capabilities: {
