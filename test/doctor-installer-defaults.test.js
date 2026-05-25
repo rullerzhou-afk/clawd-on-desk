@@ -14,6 +14,7 @@ describe("installer default path exports", () => {
     const codebuddy = require("../hooks/codebuddy-install");
     const kiro = require("../hooks/kiro-install");
     const kimi = require("../hooks/kimi-install");
+    const qwen = require("../hooks/qwen-code-install");
     const opencode = require("../hooks/opencode-install");
     const pi = require("../hooks/pi-install");
     const hermes = require("../hooks/hermes-install");
@@ -42,6 +43,9 @@ describe("installer default path exports", () => {
 
     assert.strictEqual(kimi.DEFAULT_PARENT_DIR, path.join(home, ".kimi"));
     assert.strictEqual(kimi.DEFAULT_CONFIG_PATH, path.join(home, ".kimi", "config.toml"));
+
+    assert.strictEqual(qwen.DEFAULT_PARENT_DIR, path.join(home, ".qwen"));
+    assert.strictEqual(qwen.DEFAULT_CONFIG_PATH, path.join(home, ".qwen", "settings.json"));
 
     assert.strictEqual(opencode.DEFAULT_PARENT_DIR, path.join(home, ".config", "opencode"));
     assert.strictEqual(opencode.DEFAULT_CONFIG_PATH, path.join(home, ".config", "opencode", "opencode.json"));

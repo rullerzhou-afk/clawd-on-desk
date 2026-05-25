@@ -71,6 +71,7 @@ function makeCtx(overrides = {}) {
     syncCursorHooksImpl: () => {},
     syncCodeBuddyHooksImpl: () => {},
     syncKiroHooksImpl: () => {},
+    syncQwenHooksImpl: () => {},
     syncOpencodePluginImpl: () => {},
 
     // /state handler deps

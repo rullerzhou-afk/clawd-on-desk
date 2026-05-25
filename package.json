@@ -31,6 +31,7 @@
     "install:cursor-hooks": "node hooks/cursor-install.js",
     "install:kiro-hooks": "node hooks/kiro-install.js",
     "install:kimi-hooks": "node hooks/kimi-install.js",
+    "install:qwen-hooks": "node hooks/qwen-code-install.js",
     "install:pi-extension": "node hooks/pi-install.js",
     "uninstall:pi-extension": "node hooks/pi-install.js --uninstall",
     "install:openclaw-plugin": "node hooks/openclaw-install.js",

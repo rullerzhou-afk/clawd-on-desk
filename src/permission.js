@@ -153,6 +153,10 @@ function buildCodexPermissionResponseBody(decisionOrBehavior, message) {
   });
 }
 
+function buildQwenCodePermissionResponseBody(decisionOrBehavior, message) {
+  return buildCodexPermissionResponseBody(decisionOrBehavior, message);
+}
+
 function sanitizeAntigravityPermissionDecision(decisionOrBehavior, message) {
   const source = typeof decisionOrBehavior === "string"
     ? { decision: decisionOrBehavior, reason: message }
@@ -604,7 +608,8 @@ function showPermissionBubble(permEntry) {
   bub.on("closed", () => {
     const idx = pendingPermissions.indexOf(permEntry);
     if (idx !== -1) {
-      resolvePermissionEntry(permEntry, "deny", "Bubble window closed by user");
+      const behavior = permEntry.isQwenCode ? "no-decision" : "deny";
+      resolvePermissionEntry(permEntry, behavior, "Bubble window closed by user");
     }
   });
 
@@ -960,6 +965,18 @@ function maybeStartRemoteApproval(permEntry) {
     return;
   }
 
+  if (permEntry.isQwenCode) {
+    if (behavior === "no-decision") {
+      sendQwenCodeNoDecisionResponse(res, message || "fallback");
+    } else {
+      sendQwenCodePermissionResponse(res, {
+        behavior: behavior === "deny" ? "deny" : "allow",
+        message,
+      });
+    }
+    return;
+  }
+
   if (permEntry.isAntigravity) {
     if (behavior === "no-decision") {
       sendAntigravityNoDecisionResponse(res, message || "fallback");
@@ -1126,6 +1143,25 @@ function sendCodexPermissionResponse(res, decisionOrBehavior, message) {
   return true;
 }
 
+function sendQwenCodeNoDecisionResponse(res, reason = "") {
+  return sendNoDecisionResponse(res, reason, "qwen-code");
+}
+
+function sendQwenCodePermissionResponse(res, decisionOrBehavior, message) {
+  if (!res || res.writableEnded || res.destroyed || res.headersSent) return false;
+  const responseBody = buildQwenCodePermissionResponseBody(decisionOrBehavior, message);
+  if (responseBody === "{}") {
+    return sendQwenCodeNoDecisionResponse(res, "invalid decision");
+  }
+  permLog(`qwen-code response: ${responseBody}`);
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID,
+  });
+  res.end(responseBody);
+  return true;
+}
+
 function sendAntigravityNoDecisionResponse(res, reason = "") {
   return sendNoDecisionResponse(res, reason, "antigravity");
 }
@@ -1174,6 +1210,17 @@ function handleDecide(event, behavior) {
     // elsewhere" must answer no-decision immediately instead of leaving the
     // hook parked until its long timeout.
     resolvePermissionEntry(perm, "no-decision", `Unsupported Codex bubble action: ${String(behavior)}`);
+    if (behavior === "deny-and-focus") {
+      ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
+    }
+    return;
+  }
+  if (perm.isQwenCode) {
+    if (behavior === "allow" || behavior === "deny") {
+      resolvePermissionEntry(perm, behavior);
+      return;
+    }
+    resolvePermissionEntry(perm, "no-decision", `Unsupported Qwen bubble action: ${String(behavior)}`);
     if (behavior === "deny-and-focus") {
       ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
     }
@@ -1374,6 +1421,8 @@ function dismissInteractivePermissionWithoutDecision(perm, reason) {
   // via socket close, and opencode falls back by receiving no bridge reply.
   if (perm.isCodex) {
     sendCodexNoDecisionResponse(perm.res, reason || "permission-dismissed");
+  } else if (perm.isQwenCode) {
+    sendQwenCodeNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isAntigravity) {
     sendAntigravityNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (!perm.isOpencode && perm.res && !perm.res.destroyed) {
@@ -1460,13 +1509,13 @@ function cleanup() {
   if (typeof unsubscribeShortcuts === "function") {
     try { unsubscribeShortcuts(); } catch {}
   }
-  // Clean up all pending permission requests. Codex/Antigravity get
+  // Clean up all pending permission requests. Codex/Qwen/Antigravity get
   // no-decision so their native flow can continue; Claude/CodeBuddy get
   // explicit deny so they don't hang while quitting.
   for (const perm of [...pendingPermissions]) {
     if (perm._delayTimer) clearTimeout(perm._delayTimer);
     if (perm.autoExpireTimer) clearTimeout(perm.autoExpireTimer);
-    if (perm.isCodex || perm.isAntigravity) resolvePermissionEntry(perm, "no-decision", "Clawd is quitting");
+    if (perm.isCodex || perm.isQwenCode || perm.isAntigravity) resolvePermissionEntry(perm, "no-decision", "Clawd is quitting");
     else resolvePermissionEntry(perm, "deny", "Clawd is quitting");
   }
 }
@@ -1502,6 +1551,7 @@ module.exports.__test = {
   shouldSuppressCodexNotifyBubble,
   sanitizeCodexPermissionDecision,
   buildCodexPermissionResponseBody,
+  buildQwenCodePermissionResponseBody,
   sanitizeAntigravityPermissionDecision,
   buildAntigravityPermissionResponseBody,
   buildElicitationUpdatedInput,

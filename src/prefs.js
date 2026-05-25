@@ -173,6 +173,7 @@ const SCHEMA = {
       "codebuddy": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "kiro-cli": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "kimi-cli": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
+      "qwen-code": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "opencode": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "pi": { enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
       "openclaw": { enabled: true, permissionsEnabled: false, notificationHookEnabled: true },

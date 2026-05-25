@@ -22,6 +22,7 @@ describe("doctor agent descriptors", () => {
         "codebuddy",
         "kiro-cli",
         "kimi-cli",
+        "qwen-code",
         "opencode",
         "pi",
         "openclaw",
@@ -39,6 +40,7 @@ describe("doctor agent descriptors", () => {
     const codebuddy = require("../hooks/codebuddy-install");
     const kiro = require("../hooks/kiro-install");
     const kimi = require("../hooks/kimi-install");
+    const qwen = require("../hooks/qwen-code-install");
     const opencode = require("../hooks/opencode-install");
     const pi = require("../hooks/pi-install");
     const openclaw = require("../hooks/openclaw-install");
@@ -68,6 +70,10 @@ describe("doctor agent descriptors", () => {
 
     assert.strictEqual(getAgentDescriptor("kimi-cli").parentDir, kimi.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("kimi-cli").configPath, kimi.DEFAULT_CONFIG_PATH);
+
+    assert.strictEqual(getAgentDescriptor("qwen-code").parentDir, qwen.DEFAULT_PARENT_DIR);
+    assert.strictEqual(getAgentDescriptor("qwen-code").configPath, qwen.DEFAULT_CONFIG_PATH);
+    assert.strictEqual(getAgentDescriptor("qwen-code").marker, qwen.MARKER);
 
     assert.strictEqual(getAgentDescriptor("opencode").parentDir, opencode.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("opencode").configPath, opencode.DEFAULT_CONFIG_PATH);

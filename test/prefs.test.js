@@ -70,7 +70,7 @@ describe("prefs.getDefaults", () => {
 
   it("seeds all known agents as enabled", () => {
     const d = prefs.getDefaults();
-    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "antigravity-cli", "codebuddy", "kiro-cli", "kimi-cli", "opencode", "pi", "openclaw", "hermes"]) {
+    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "antigravity-cli", "codebuddy", "kiro-cli", "kimi-cli", "qwen-code", "opencode", "pi", "openclaw", "hermes"]) {
       assert.strictEqual(d.agents[id].enabled, true, `${id} should default enabled`);
     }
   });
@@ -78,7 +78,7 @@ describe("prefs.getDefaults", () => {
   it("seeds permission-capable agents with permissionsEnabled=true", () => {
     const d = prefs.getDefaults();
     // State-only integrations intentionally excluded — no bubble.
-    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "codebuddy", "kiro-cli", "kimi-cli", "opencode"]) {
+    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "codebuddy", "kiro-cli", "kimi-cli", "qwen-code", "opencode"]) {
       assert.strictEqual(
         d.agents[id].permissionsEnabled,
         true,
@@ -419,7 +419,7 @@ describe("prefs.validate", () => {
 
   it("seeds all known agents with notificationHookEnabled=true", () => {
     const d = prefs.getDefaults();
-    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "codebuddy", "kiro-cli", "opencode", "pi", "openclaw"]) {
+    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "codebuddy", "kiro-cli", "kimi-cli", "qwen-code", "opencode", "pi", "openclaw"]) {
       assert.strictEqual(
         d.agents[id].notificationHookEnabled,
         true,

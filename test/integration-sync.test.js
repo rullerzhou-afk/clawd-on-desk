@@ -20,6 +20,7 @@ function makeRuntime(overrides = {}) {
     syncCodeBuddyHooksImpl: () => calls.push({ name: "codebuddy" }),
     syncKiroHooksImpl: () => calls.push({ name: "kiro" }),
     syncKimiHooksImpl: () => calls.push({ name: "kimi" }),
+    syncQwenHooksImpl: () => calls.push({ name: "qwen" }),
     syncCodexHooksImpl: () => calls.push({ name: "codex" }),
     repairCodexHooksImpl: (options) => {
       calls.push({ name: "codex-repair" });
@@ -79,6 +80,7 @@ describe("integration sync runtime", () => {
       "codebuddy",
       "kiro",
       "kimi",
+      "qwen",
       "codex",
       "pi",
       "openclaw",

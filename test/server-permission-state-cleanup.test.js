@@ -67,6 +67,7 @@ function makeCtx(overrides = {}) {
     syncCursorHooksImpl: () => {},
     syncCodeBuddyHooksImpl: () => {},
     syncKiroHooksImpl: () => {},
+    syncQwenHooksImpl: () => {},
     syncOpencodePluginImpl: () => {},
     STATE_SVGS: {
       working: "x.svg",
@@ -242,6 +243,35 @@ describe("/state permission cleanup", () => {
 
     assert.strictEqual(res.statusCode, 200);
     assert.deepStrictEqual(resolved.map((entry) => entry.perm.id), ["b"]);
+    assert.deepStrictEqual(resolved.map((entry) => entry.message), ["User answered in terminal"]);
+  });
+
+  it("clears matching Qwen pending entries as no-decision instead of deny", async () => {
+    const pendingPermissions = [
+      {
+        id: "qwen",
+        sessionId: "qwen-code:sid",
+        toolUseId: "toolu_qwen",
+        toolName: "Bash",
+        toolInputFingerprint: buildToolInputFingerprint({ command: "npm test" }),
+        isQwenCode: true,
+        res: {},
+      },
+    ];
+    const { handler, resolved } = startServer({ pendingPermissions });
+
+    const res = await callHandler(handler, makeReq("POST", "/state", JSON.stringify({
+      state: "working",
+      session_id: "qwen-code:sid",
+      event: "PostToolUse",
+      tool_name: "Bash",
+      tool_use_id: "toolu_qwen",
+      tool_input_fingerprint: buildToolInputFingerprint({ command: "npm test" }),
+    })));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(resolved.map((entry) => entry.perm.id), ["qwen"]);
+    assert.deepStrictEqual(resolved.map((entry) => entry.behavior), ["no-decision"]);
     assert.deepStrictEqual(resolved.map((entry) => entry.message), ["User answered in terminal"]);
   });
 

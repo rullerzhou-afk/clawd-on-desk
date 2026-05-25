@@ -25,6 +25,7 @@ const INFO_ONLY_STATUSES = new Set([
 const REPAIRABLE_AGENT_STATUSES = new Set(["not-connected", "broken-path"]);
 const GEMINI_HOOKS_DISABLED_DETAIL = "Gemini hooks are disabled in settings.json; Clawd preserves this user setting and will not receive hook events";
 const ANTIGRAVITY_HOOKS_DISABLED_DETAIL = "Antigravity Clawd hooks are disabled in hooks.json; Clawd preserves this user setting and will not receive hook events";
+const QWEN_HOOKS_DISABLED_DETAIL = "Qwen Code hooks are disabled in settings.json; Clawd preserves this user setting and will not receive hook events";
 
 function dirExists(fsImpl, dirPath) {
   try {
@@ -79,6 +80,14 @@ function withAgentFixAction(detail, descriptor) {
     descriptor.agentId === "antigravity-cli"
     && detail.supplementary
     && detail.supplementary.key === "antigravity_hooks"
+    && detail.supplementary.value !== "enabled"
+  ) {
+    return detail;
+  }
+  if (
+    descriptor.agentId === "qwen-code"
+    && detail.supplementary
+    && detail.supplementary.key === "qwen_hooks"
     && detail.supplementary.value !== "enabled"
   ) {
     return detail;
@@ -429,6 +438,40 @@ function applyGeminiSupplementary(detail, descriptor, settings) {
   };
 }
 
+function getQwenHooksSupplementary(settings) {
+  if (settings && typeof settings === "object" && settings.disableAllHooks === true) {
+    return {
+      key: "qwen_hooks",
+      value: "disabled-global",
+      detail: "disableAllHooks is true",
+    };
+  }
+  return {
+    key: "qwen_hooks",
+    value: "enabled",
+    detail: "settings.json allows Clawd Qwen hooks",
+  };
+}
+
+function applyQwenSupplementary(detail, descriptor, settings) {
+  if (descriptor.agentId !== "qwen-code") return detail;
+
+  const supplementary = getQwenHooksSupplementary(settings);
+  if (supplementary.value !== "enabled") {
+    return {
+      ...detail,
+      status: "not-connected",
+      level: "warning",
+      detail: QWEN_HOOKS_DISABLED_DETAIL,
+      supplementary,
+    };
+  }
+  return {
+    ...detail,
+    supplementary,
+  };
+}
+
 function getAntigravityHooksSupplementary(settings) {
   const hookGroup = settings && typeof settings === "object" ? settings[ANTIGRAVITY_HOOK_GROUP_ID] : null;
   if (hookGroup && typeof hookGroup === "object" && hookGroup.enabled === false) {
@@ -506,7 +549,8 @@ function checkFileMode(descriptor, options) {
     configPath: descriptor.configPath,
   };
   detail = applyCodexSupplementary(detail, descriptor, options, settings);
-  return applyGeminiSupplementary(detail, descriptor, settings);
+  detail = applyGeminiSupplementary(detail, descriptor, settings);
+  return applyQwenSupplementary(detail, descriptor, settings);
 }
 
 function checkTomlTextMode(descriptor, options) {

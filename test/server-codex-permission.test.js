@@ -80,6 +80,7 @@ function startServer(overrides = {}) {
     syncCursorHooksImpl: () => {},
     syncCodeBuddyHooksImpl: () => {},
     syncKiroHooksImpl: () => {},
+    syncQwenHooksImpl: () => {},
     syncCodexHooksImpl: () => {},
     syncOpencodePluginImpl: () => {},
     pendingPermissions,

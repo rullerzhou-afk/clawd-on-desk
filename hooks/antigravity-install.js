@@ -5,7 +5,15 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { resolveNodeBin } = require("./server-config");
-const { writeJsonAtomic, asarUnpackedPath, formatNodeHookCommand } = require("./json-utils");
+const {
+  writeJsonAtomic,
+  asarUnpackedPath,
+  formatNodeHookCommand,
+  buildWindowsEncodedNodeHookCommand,
+  decodeWindowsEncodedCommand,
+  extractFirstQuotedToken,
+  windowsPowerShellBin,
+} = require("./json-utils");
 
 const HOOK_GROUP_ID = "clawd";
 const MARKER = "antigravity-hook.js";
@@ -37,46 +45,8 @@ function buildAntigravityHookCommand(nodeBin, hookScript, event, options = {}) {
   });
 }
 
-function quotePowerShellSingleArg(value) {
-  return `'${String(value).replace(/'/g, "''")}'`;
-}
-
-function windowsPowerShellBin(options = {}) {
-  if (options.powerShellBin) return options.powerShellBin;
-  const root = process.env.SystemRoot || "C:\\Windows";
-  return path.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-}
-
 function buildWindowsAntigravityHookCommand(nodeBin, hookScript, event, options = {}) {
-  const psCommand = [
-    "&",
-    quotePowerShellSingleArg(nodeBin),
-    quotePowerShellSingleArg(hookScript),
-    quotePowerShellSingleArg(event),
-  ].join(" ");
-  const encodedCommand = Buffer.from(psCommand, "utf16le").toString("base64");
-  return `${windowsPowerShellBin(options)} -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedCommand}`;
-}
-
-function decodeWindowsEncodedCommand(command) {
-  const match = String(command || "").match(/(?:^|\s)-(?:EncodedCommand|enc|e)\s+([A-Za-z0-9+/=]+)/i);
-  if (!match) return null;
-  try {
-    const decoded = Buffer.from(match[1], "base64").toString("utf16le").trim();
-    return decoded || null;
-  } catch {
-    return null;
-  }
-}
-
-function extractFirstQuotedToken(command) {
-  const text = String(command || "").trim().replace(/^&\s+/, "");
-  const single = text.match(/^'((?:''|[^'])*)'/);
-  if (single) return single[1].replace(/''/g, "'");
-  const double = text.match(/^"((?:\\"|[^"])*)"/);
-  if (double) return double[1].replace(/\\"/g, "\"").replace(/\\\\/g, "\\");
-  const bare = text.match(/^(\S+)/);
-  return bare ? bare[1] : null;
+  return buildWindowsEncodedNodeHookCommand(nodeBin, hookScript, [event], options);
 }
 
 function extractNodeBinFromCommand(command) {

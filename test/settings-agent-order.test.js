@@ -41,6 +41,7 @@ describe("settings agent order", () => {
       { id: "hermes", name: "Hermes Agent", capabilities: {} },
       { id: "codex", name: "Codex CLI", capabilities: { interactiveBubble: true } },
       { id: "kimi-cli", name: "Kimi CLI", capabilities: { permissionApproval: true, notificationHook: true } },
+      { id: "qwen-code", name: "Qwen Code", capabilities: { permissionApproval: true, notificationHook: true } },
       { id: "pi", name: "Pi", capabilities: {} },
     ]);
 
@@ -49,6 +50,7 @@ describe("settings agent order", () => {
       "codex",
       "gemini-cli",
       "kimi-cli",
+      "qwen-code",
       "opencode",
       "codebuddy",
       "antigravity-cli",

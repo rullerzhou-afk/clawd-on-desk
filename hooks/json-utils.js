@@ -60,18 +60,75 @@ function quoteHookCommandArg(value) {
   return `"${String(value).replace(/"/g, '\\"')}"`;
 }
 
+function quotePowerShellSingleArg(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function windowsPowerShellBin(options = {}) {
+  if (options.powerShellBin) return options.powerShellBin;
+  const root = (options.env && options.env.SystemRoot) || process.env.SystemRoot || "C:\\Windows";
+  return path.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+}
+
+/**
+ * Build a PowerShell -EncodedCommand hook command. The node bin and every
+ * argv are single-quoted at the PS level then base64 utf-16le encoded, so
+ * the resulting flat command line survives both cmd.exe quote stripping
+ * (qwen uses `cmd /d /s /c <command>`, which strips outer quotes under /s
+ * and breaks any path with a space) and any agent that wraps the command
+ * once more in its own shell. Used by Antigravity and Qwen Code installers.
+ */
+function buildWindowsEncodedNodeHookCommand(nodeBin, scriptPath, args, options = {}) {
+  const argv = Array.isArray(args) ? args : [];
+  const psCommand = [
+    "&",
+    quotePowerShellSingleArg(nodeBin),
+    quotePowerShellSingleArg(scriptPath),
+    ...argv.map((a) => quotePowerShellSingleArg(a)),
+  ].join(" ");
+  const encodedCommand = Buffer.from(psCommand, "utf16le").toString("base64");
+  return `${windowsPowerShellBin(options)} -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedCommand}`;
+}
+
+function decodeWindowsEncodedCommand(command) {
+  const match = String(command || "").match(/(?:^|\s)-(?:EncodedCommand|enc|e)\s+([A-Za-z0-9+/=]+)/i);
+  if (!match) return null;
+  try {
+    const decoded = Buffer.from(match[1], "base64").toString("utf16le").trim();
+    return decoded || null;
+  } catch {
+    return null;
+  }
+}
+
+function extractFirstQuotedToken(command) {
+  const text = String(command || "").trim().replace(/^&\s+/, "");
+  const single = text.match(/^'((?:''|[^'])*)'/);
+  if (single) return single[1].replace(/''/g, "'");
+  const double = text.match(/^"((?:\\"|[^"])*)"/);
+  if (double) return double[1].replace(/\\"/g, "\"").replace(/\\\\/g, "\\");
+  const bare = text.match(/^(\S+)/);
+  return bare ? bare[1] : null;
+}
+
 /**
  * Format a Node-based hook command consistently across installers.
  *
  * POSIX hook launchers can execute a plain quoted command. On Windows, some
  * launchers run through PowerShell, where a bare quoted executable is treated
- * as a string literal and must be prefixed with `&`; others are more reliable
- * when explicitly routed through cmd.exe. Callers choose the wrapper that
- * matches the target agent while sharing the quoting rules.
+ * as a string literal and must be prefixed with `&`; others (Qwen Code,
+ * Antigravity) shell out through `cmd.exe /d /s /c <command>`, which mangles
+ * any quoted path with a space — those use windowsWrapper:"encoded" to wrap
+ * everything in PowerShell -EncodedCommand and bypass cmd's parser entirely.
+ * Callers choose the wrapper that matches the target agent while sharing
+ * the quoting rules.
  */
 function formatNodeHookCommand(nodeBin, scriptPath, options = {}) {
   const platform = options.platform || process.platform;
   const args = Array.isArray(options.args) ? options.args : [];
+  if (platform === "win32" && options.windowsWrapper === "encoded") {
+    return buildWindowsEncodedNodeHookCommand(nodeBin, scriptPath, args, options);
+  }
   const command = [nodeBin, scriptPath, ...args].map(quoteHookCommandArg).join(" ");
   if (platform !== "win32") return command;
 
@@ -98,6 +155,14 @@ function extractExistingNodeBinFromCommands(commands, marker) {
   if (!Array.isArray(commands) || typeof marker !== "string" || !marker) return null;
   for (const cmd of commands) {
     if (typeof cmd !== "string") continue;
+    // Windows encoded-command form: decode first so we can extract the
+    // single-quoted PowerShell token (`& 'C:\path\node.exe' '...'`).
+    const decoded = decodeWindowsEncodedCommand(cmd);
+    if (decoded) {
+      const token = extractFirstQuotedToken(decoded);
+      if (token && !token.includes(marker) && isAbsoluteCommandToken(token)) return token;
+      continue;
+    }
     const matches = cmd.matchAll(/"([^"]+)"/g);
     for (const match of matches) {
       const token = match && match[1];
@@ -136,6 +201,13 @@ function extractExistingNodeBin(settings, marker, options) {
  * @param {boolean} [options.nested] - Also check entry.hooks[].command
  * @returns {string[]}
  */
+function commandMatchesMarker(command, marker) {
+  if (typeof command !== "string") return false;
+  if (command.includes(marker)) return true;
+  const decoded = decodeWindowsEncodedCommand(command);
+  return !!(decoded && decoded.includes(marker));
+}
+
 function findHookCommands(settings, marker, options) {
   if (!settings || !settings.hooks || typeof marker !== "string" || !marker) return [];
   const nested = options && options.nested;
@@ -147,12 +219,12 @@ function findHookCommands(settings, marker, options) {
       if (!entry || typeof entry !== "object") continue;
       if (nested && Array.isArray(entry.hooks)) {
         for (const h of entry.hooks) {
-          if (h && typeof h.command === "string" && h.command.includes(marker)) {
+          if (h && commandMatchesMarker(h.command, marker)) {
             commands.push(h.command);
           }
         }
       }
-      if (typeof entry.command === "string" && entry.command.includes(marker)) {
+      if (commandMatchesMarker(entry.command, marker)) {
         commands.push(entry.command);
       }
     }
@@ -168,4 +240,9 @@ module.exports = {
   extractExistingNodeBinFromCommands,
   findHookCommands,
   formatNodeHookCommand,
+  buildWindowsEncodedNodeHookCommand,
+  decodeWindowsEncodedCommand,
+  extractFirstQuotedToken,
+  quotePowerShellSingleArg,
+  windowsPowerShellBin,
 };

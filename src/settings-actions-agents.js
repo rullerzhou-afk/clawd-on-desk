@@ -19,6 +19,7 @@ const AUTO_REPAIRABLE_AGENT_IDS = new Set([
   "codebuddy",
   "kiro-cli",
   "kimi-cli",
+  "qwen-code",
   "opencode",
   "hermes",
 ]);

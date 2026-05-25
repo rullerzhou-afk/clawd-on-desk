@@ -44,6 +44,12 @@ function shouldBypassCodexBubble(ctx) {
   return !ctx.isAgentPermissionsEnabled("codex");
 }
 
+function shouldBypassQwenCodeBubble(ctx) {
+  if (!arePermissionBubblesEnabled(ctx)) return true;
+  if (typeof ctx.isAgentPermissionsEnabled !== "function") return false;
+  return !ctx.isAgentPermissionsEnabled("qwen-code");
+}
+
 function shouldInterceptCodexPermission(ctx) {
   if (typeof ctx.isCodexPermissionInterceptEnabled !== "function") return true;
   return ctx.isCodexPermissionInterceptEnabled();
@@ -97,7 +103,35 @@ function buildCodexPermissionSessionOptions(data) {
   return options;
 }
 
+function buildQwenCodePermissionSessionOptions(data) {
+  const sourcePid = normalizePositiveInteger(data.source_pid);
+  const rawAgentPid = data.agent_pid ?? data.claude_pid ?? data.cursor_pid;
+  const agentPid = normalizePositiveInteger(rawAgentPid);
+  const pidChain = Array.isArray(data.pid_chain)
+    ? data.pid_chain.filter((n) => Number.isFinite(n) && n > 0).map((n) => Math.floor(n))
+    : null;
+  const options = { agentId: "qwen-code" };
+
+  if (sourcePid) options.sourcePid = sourcePid;
+  if (agentPid) options.agentPid = agentPid;
+  if (pidChain && pidChain.length) options.pidChain = pidChain;
+  const cwd = normalizeString(data.cwd);
+  const host = normalizeString(data.host);
+  const platform = normalizeString(data.platform);
+  const model = normalizeString(data.model);
+  if (cwd) options.cwd = cwd;
+  if (host) options.host = host;
+  if (platform) options.platform = platform;
+  if (model) options.model = model;
+  return options;
+}
+
 function sendCodexPermissionNoDecision(res) {
+  res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+  res.end();
+}
+
+function sendQwenCodePermissionNoDecision(res) {
   res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
   res.end();
 }
@@ -419,6 +453,96 @@ function handlePermissionPost(req, res, options) {
         return;
       }
 
+      // ── Qwen Code PermissionRequest branch ──
+      // Qwen command hooks treat empty/no-decision output as "show native
+      // permission prompt". Keep every fallback as 204/no-decision so Clawd
+      // never denies tools on cleanup or disabled bubble paths.
+      if (data.agent_id === "qwen-code") {
+        const toolName = typeof data.tool_name === "string" && data.tool_name ? data.tool_name : "Unknown";
+        const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
+        const toolInput = truncateDeep(rawInput);
+        const sessionId = typeof data.session_id === "string" && data.session_id ? data.session_id : "qwen-code:default";
+        const toolUseId = normalizeHookToolUseId(
+          data.tool_use_id ?? data.toolUseId ?? data.toolUseID
+        );
+        const toolInputFingerprint = typeof data.tool_input_fingerprint === "string" && data.tool_input_fingerprint
+          ? data.tool_input_fingerprint
+          : buildToolInputFingerprint(rawInput);
+        const qwenSessionOptions = buildQwenCodePermissionSessionOptions(data);
+
+        if (ctx.doNotDisturb) {
+          recordRequestHookEvent.droppedByDnd();
+          ctx.permLog(`qwen DND -> no decision, native prompt fallback (tool=${toolName})`);
+          sendQwenCodePermissionNoDecision(res);
+          return;
+        }
+
+        if (typeof ctx.isAgentEnabled === "function" && !ctx.isAgentEnabled("qwen-code")) {
+          recordRequestHookEvent.droppedByDisabled();
+          ctx.permLog(`qwen disabled -> no decision, native prompt fallback (tool=${toolName})`);
+          sendQwenCodePermissionNoDecision(res);
+          return;
+        }
+
+        if (shouldBypassQwenCodeBubble(ctx)) {
+          recordRequestHookEvent.accepted();
+          const reason = !arePermissionBubblesEnabled(ctx)
+            ? "permission bubbles disabled"
+            : "qwen bubbles disabled";
+          ctx.permLog(`${reason} -> no decision, native prompt fallback (tool=${toolName})`);
+          sendQwenCodePermissionNoDecision(res);
+          return;
+        }
+
+        const permEntry = {
+          res,
+          abortHandler: null,
+          suggestions: [],
+          sessionId,
+          bubble: null,
+          hideTimer: null,
+          toolName,
+          toolInput,
+          toolUseId,
+          toolInputFingerprint,
+          resolvedSuggestion: null,
+          createdAt: Date.now(),
+          agentId: "qwen-code",
+          isQwenCode: true,
+          sourcePid: qwenSessionOptions.sourcePid || null,
+          cwd: qwenSessionOptions.cwd || "",
+          agentPid: qwenSessionOptions.agentPid || null,
+          pidChain: qwenSessionOptions.pidChain || null,
+          host: qwenSessionOptions.host || null,
+          platform: qwenSessionOptions.platform || null,
+          model: qwenSessionOptions.model || null,
+        };
+        const abortHandler = () => {
+          if (res.writableFinished) return;
+          ctx.permLog("abortHandler fired (qwen)");
+          ctx.resolvePermissionEntry(permEntry, "no-decision", "Client disconnected");
+        };
+        permEntry.abortHandler = abortHandler;
+        res.on("close", abortHandler);
+
+        addPendingPermission(ctx, permEntry);
+        ctx.updateSession(sessionId, "notification", "PermissionRequest", qwenSessionOptions);
+
+        ctx.permLog(`qwen showing bubble: tool=${toolName} session=${sessionId} stack=${ctx.pendingPermissions.length}`);
+        recordRequestHookEvent.accepted();
+        try {
+          ctx.showPermissionBubble(permEntry);
+        } catch (bubbleErr) {
+          ctx.permLog(`qwen bubble failed: ${bubbleErr && bubbleErr.message} -> no decision`);
+          removePendingPermission(ctx, permEntry, "qwen-bubble-failed");
+          if (permEntry.abortHandler) res.removeListener("close", permEntry.abortHandler);
+          sendQwenCodePermissionNoDecision(res);
+          return;
+        }
+        startRemoteApproval(ctx, permEntry);
+        return;
+      }
+
       // ── Pi extension legacy PermissionRequest branch ──
       // Pi is state-only in Clawd. Current extensions never POST /permission.
       // A pre-state-only managed extension may still be loaded in an existing
@@ -629,10 +753,12 @@ module.exports = {
   MAX_PERMISSION_BODY_BYTES,
   shouldBypassCCBubble,
   shouldBypassCodexBubble,
+  shouldBypassQwenCodeBubble,
   shouldBypassOpencodeBubble,
   arePermissionBubblesEnabled,
   shouldInterceptCodexPermission,
   sendCodexPermissionNoDecision,
+  sendQwenCodePermissionNoDecision,
   sendPiPermissionAllow,
   sendAntigravityPermissionNoDecision,
   handlePermissionPost,

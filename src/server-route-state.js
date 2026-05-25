@@ -144,7 +144,10 @@ function handleStatePost(req, res, options) {
             toolInputFingerprint,
             allowSingletonFallback: event === "Stop",
           });
-          if (perm) ctx.resolvePermissionEntry(perm, "deny", "User answered in terminal");
+          if (perm) {
+            const behavior = perm.isQwenCode ? "no-decision" : "deny";
+            ctx.resolvePermissionEntry(perm, behavior, "User answered in terminal");
+          }
           // Stale elicitation sweep: AskUserQuestion is a blocking tool
           // call, so any forward progress in the same session means the
           // user already answered in the terminal.  The exact-match above

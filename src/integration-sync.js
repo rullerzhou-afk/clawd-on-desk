@@ -107,6 +107,21 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncQwenHooks() {
+    try {
+      if (typeof ctx.syncQwenHooksImpl === "function") return ctx.syncQwenHooksImpl();
+      const { registerQwenCodeHooks } = require("../hooks/qwen-code-install.js");
+      const result = registerQwenCodeHooks({ silent: true });
+      if (result.added > 0 || result.updated > 0) {
+        console.log(`Clawd: synced Qwen hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      return { status: "ok", ...result };
+    } catch (err) {
+      console.warn("Clawd: failed to sync Qwen hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync Qwen hooks" };
+    }
+  }
+
   function syncCodexHooks() {
     try {
       if (typeof ctx.syncCodexHooksImpl === "function") return ctx.syncCodexHooksImpl();
@@ -274,6 +289,7 @@ function createIntegrationSyncRuntime(options = {}) {
     codebuddy: syncCodeBuddyHooks,
     "kiro-cli": syncKiroHooks,
     "kimi-cli": syncKimiHooks,
+    "qwen-code": syncQwenHooks,
     codex: syncCodexHooks,
     opencode: syncOpencodePlugin,
     pi: syncPiExtension,
@@ -335,6 +351,7 @@ function createIntegrationSyncRuntime(options = {}) {
     syncCodeBuddyHooks,
     syncKiroHooks,
     syncKimiHooks,
+    syncQwenHooks,
     syncCodexHooks,
     syncOpencodePlugin,
     syncPiExtension,

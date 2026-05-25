@@ -11,6 +11,7 @@ const antigravity = require("../../hooks/antigravity-install");
 const codebuddy = require("../../hooks/codebuddy-install");
 const kiro = require("../../hooks/kiro-install");
 const kimi = require("../../hooks/kimi-install");
+const qwen = require("../../hooks/qwen-code-install");
 const opencode = require("../../hooks/opencode-install");
 const pi = require("../../hooks/pi-install");
 const openclaw = require("../../hooks/openclaw-install");
@@ -128,6 +129,17 @@ const AGENT_DESCRIPTORS = Object.freeze([
     configMode: "toml-text",
     autoInstall: true,
     marker: "kimi-hook.js",
+  }),
+  Object.freeze({
+    agentId: "qwen-code",
+    agentName: agentName("qwen-code"),
+    eventSource: agentEventSource("qwen-code"),
+    parentDir: qwen.DEFAULT_PARENT_DIR,
+    configPath: qwen.DEFAULT_CONFIG_PATH,
+    configMode: "file",
+    autoInstall: true,
+    marker: qwen.MARKER,
+    nested: true,
   }),
   Object.freeze({
     agentId: "opencode",
