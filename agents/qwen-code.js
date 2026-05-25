@@ -12,7 +12,7 @@ module.exports = {
     UserPromptSubmit: "thinking",
     PreToolUse: "working",
     PostToolUse: "working",
-    Stop: "attention",
+    Stop: "idle",
     PermissionRequest: "notification",
   },
   capabilities: {

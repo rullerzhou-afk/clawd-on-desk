@@ -267,7 +267,9 @@ describe("Agent Registry", () => {
     assert.strictEqual(qwen.eventMap.SessionStart, "idle");
     assert.strictEqual(qwen.eventMap.PreToolUse, "working");
     assert.strictEqual(qwen.eventMap.PermissionRequest, "notification");
-    assert.strictEqual(qwen.eventMap.Stop, "attention");
+    // qwen Stop is end-of-LLM-response not end-of-session (PreToolUse keeps
+    // firing after it), so map to idle like codex-hook rather than attention.
+    assert.strictEqual(qwen.eventMap.Stop, "idle");
   });
 
   it("treats Gemini CLI as a hook-only agent", () => {
