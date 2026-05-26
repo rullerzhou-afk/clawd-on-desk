@@ -143,9 +143,11 @@ describe("Qwen Code hook", () => {
     assert.strictEqual(calls.length, 1);
     assert.deepStrictEqual(calls[0].options, { timeoutMs: 100 });
     assert.strictEqual(calls[0].body.event, "Stop");
-    // qwen Stop is end-of-LLM-response not end-of-session; mascot must not
-    // flash attention because PreToolUse/UserPromptSubmit keep coming.
-    assert.strictEqual(calls[0].body.state, "idle");
+    // qwen Stop plays the happy end-of-turn animation. The server-side
+    // self-submit filter (src/state.js lastBoundaryAt) drops the synthetic
+    // PostToolUse → UserPromptSubmit that used to interrupt it, so attention
+    // is safe again.
+    assert.strictEqual(calls[0].body.state, "attention");
   });
 
   it("returns exact no-decision stdout for failed permission posts", async () => {

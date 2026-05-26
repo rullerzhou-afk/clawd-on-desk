@@ -21,23 +21,23 @@ const QWEN_PERMISSION_HTTP_TIMEOUT_MS = 590000;
 const DEFAULT_HOOK_DEBUG_MAX_BYTES = 256 * 1024;
 
 // Qwen Code 0.16.1 quirks driving this map:
-//  1. Notification ~700ms after every Stop is a generic "task done" signal.
+//  1. Notification ~250ms after every Stop is a generic "task done" signal.
 //     Drop it from the map so it never POSTs /state. The hook installer
 //     still registers the event so qwen sees a hook and gets a clean `{}`
 //     reply. PermissionRequest is on a separate code path and unaffected.
-//  2. Stop is fired at the end of each LLM response, NOT at end of session
-//     - qwen's agentic loop keeps firing PreToolUse / self-submitted
-//     UserPromptSubmit after Stop. Map Stop to "idle" (like codex-hook does)
-//     so the mascot does not flash an obvious "waiting for you" pose only
-//     to be yanked back into working seconds later. True session end is
-//     covered by SessionEnd -> sleeping.
+//  2. PostToolUse → UserPromptSubmit self-submit (~900-1000ms) is the
+//     agentic-loop tool-result feedback, NOT user input. It used to flash
+//     "thinking" between working and idle. The server-side filter in
+//     `src/state.js#updateSession` (lastBoundaryAt + 2s window) drops these
+//     synthetic events, so Stop can stay on "attention" and play the happy
+//     end-of-turn animation. SessionEnd → sleeping handles true session end.
 const EVENT_TO_STATE = {
   SessionStart: "idle",
   SessionEnd: "sleeping",
   UserPromptSubmit: "thinking",
   PreToolUse: "working",
   PostToolUse: "working",
-  Stop: "idle",
+  Stop: "attention",
 };
 
 function normalizeQwenSessionId(value) {

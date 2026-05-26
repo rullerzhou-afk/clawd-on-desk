@@ -2261,3 +2261,118 @@ describe("evictOldestSessionIfNeeded two-phase", () => {
     }
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Qwen Code 0.16.1 self-submit filter — qwen's agentic loop fires a synthetic
+// UserPromptSubmit ~900-1000ms after PostToolUse to feed the tool result back
+// to the model. Without filtering this flashes "thinking" between working and
+// idle. Measured twice in dogfood (908ms non-interactive, 945ms interactive).
+// Filter window = 2000ms. See project_qwen_0_16_1_event_semantics for canary.
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("qwen-code self-submit filter", () => {
+  let api, ctx;
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    ctx = makeCtx();
+    api = require("../src/state")(ctx);
+    delete process.env.CLAWD_QWEN_SELF_SUBMIT_FILTER;
+  });
+  afterEach(() => {
+    api.cleanup();
+    mock.timers.reset();
+    delete process.env.CLAWD_QWEN_SELF_SUBMIT_FILTER;
+  });
+
+  function bootQwenAfterPostToolUse() {
+    update(api, { id: "qsid", state: "working", event: "PreToolUse", agentId: "qwen-code" });
+    update(api, { id: "qsid", state: "working", event: "PostToolUse", agentId: "qwen-code" });
+    const entry = api.sessions.get("qsid");
+    assert.ok(entry, "qwen session should exist after PostToolUse");
+    assert.ok(Number.isFinite(entry.lastBoundaryAt), "PostToolUse should bump lastBoundaryAt");
+    return entry;
+  }
+
+  it("PostToolUse within window → UserPromptSubmit dropped (state/updatedAt/recentEvents untouched)", () => {
+    const before = bootQwenAfterPostToolUse();
+    const snapshot = {
+      state: before.state,
+      updatedAt: before.updatedAt,
+      recentEvents: [...(before.recentEvents || [])],
+      lastBoundaryAt: before.lastBoundaryAt,
+    };
+
+    mock.timers.tick(1500); // within 2000ms
+    update(api, { id: "qsid", state: "thinking", event: "UserPromptSubmit", agentId: "qwen-code" });
+
+    const after = api.sessions.get("qsid");
+    assert.strictEqual(after.state, snapshot.state, "state must not change");
+    assert.strictEqual(after.updatedAt, snapshot.updatedAt, "updatedAt must not bump");
+    assert.deepStrictEqual(after.recentEvents, snapshot.recentEvents, "recentEvents must not append");
+    assert.strictEqual(after.lastBoundaryAt, snapshot.lastBoundaryAt, "lastBoundaryAt must not change");
+  });
+
+  it("UserPromptSubmit after window passes through → state switches to thinking", () => {
+    bootQwenAfterPostToolUse();
+    mock.timers.tick(2500); // outside 2000ms
+    update(api, { id: "qsid", state: "thinking", event: "UserPromptSubmit", agentId: "qwen-code" });
+
+    const after = api.sessions.get("qsid");
+    assert.strictEqual(after.state, "thinking", "real human input must reach state");
+  });
+
+  it("PostToolUseFailure also acts as a boundary", () => {
+    update(api, { id: "qsid", state: "working", event: "PreToolUse", agentId: "qwen-code" });
+    update(api, { id: "qsid", state: "working", event: "PostToolUseFailure", agentId: "qwen-code" });
+    const before = api.sessions.get("qsid");
+    assert.ok(Number.isFinite(before.lastBoundaryAt), "PostToolUseFailure should bump lastBoundaryAt");
+
+    mock.timers.tick(1500);
+    update(api, { id: "qsid", state: "thinking", event: "UserPromptSubmit", agentId: "qwen-code" });
+
+    const after = api.sessions.get("qsid");
+    assert.strictEqual(after.state, "working", "self-submit dropped after PostToolUseFailure");
+  });
+
+  it("Stop also acts as a boundary", () => {
+    update(api, { id: "qsid", state: "working", event: "PreToolUse", agentId: "qwen-code" });
+    update(api, { id: "qsid", state: "idle", event: "Stop", agentId: "qwen-code" });
+    const before = api.sessions.get("qsid");
+    assert.ok(Number.isFinite(before.lastBoundaryAt), "Stop should bump lastBoundaryAt");
+
+    mock.timers.tick(1500);
+    update(api, { id: "qsid", state: "thinking", event: "UserPromptSubmit", agentId: "qwen-code" });
+
+    const after = api.sessions.get("qsid");
+    assert.strictEqual(after.state, "idle", "self-submit dropped after Stop");
+  });
+
+  it("non-qwen agents are not filtered", () => {
+    update(api, { id: "csid", state: "working", event: "PreToolUse", agentId: "claude-code" });
+    update(api, { id: "csid", state: "working", event: "PostToolUse", agentId: "claude-code" });
+    mock.timers.tick(500); // well within the qwen window
+    update(api, { id: "csid", state: "thinking", event: "UserPromptSubmit", agentId: "claude-code" });
+
+    const after = api.sessions.get("csid");
+    assert.strictEqual(after.state, "thinking", "claude-code must pass through normally");
+  });
+
+  it("kill switch CLAWD_QWEN_SELF_SUBMIT_FILTER=0 disables the filter", () => {
+    process.env.CLAWD_QWEN_SELF_SUBMIT_FILTER = "0";
+    bootQwenAfterPostToolUse();
+    mock.timers.tick(500);
+    update(api, { id: "qsid", state: "thinking", event: "UserPromptSubmit", agentId: "qwen-code" });
+
+    const after = api.sessions.get("qsid");
+    assert.strictEqual(after.state, "thinking", "filter disabled — UserPromptSubmit must take effect");
+  });
+
+  it("UserPromptSubmit with no prior boundary passes through (cold session)", () => {
+    // Brand new qwen session, no PostToolUse yet — first UserPromptSubmit is
+    // always real human input, must reach state.
+    update(api, { id: "qsid", state: "thinking", event: "UserPromptSubmit", agentId: "qwen-code" });
+    const after = api.sessions.get("qsid");
+    assert.strictEqual(after.state, "thinking", "no boundary → cannot be a self-submit");
+  });
+});

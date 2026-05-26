@@ -154,6 +154,21 @@ function hasPermissionAnimationLock() {
   return kimiPermissionHolds.size > 0;
 }
 
+// ── Qwen Code self-submit filter ──
+// qwen 0.16.1 fires a synthetic UserPromptSubmit ~900-1000ms after
+// PostToolUse to feed the tool result back to the model. Without filtering,
+// the mascot flashes "thinking" (typing animation) between working and idle.
+// Measured twice in dogfood: 908ms (non-interactive) and 945ms (interactive).
+// 2000ms window covers the agentic loop with ~2x headroom while still letting
+// real human input through after the loop settles. See
+// project_qwen_0_16_1_event_semantics for the canary.
+const QWEN_SELF_SUBMIT_WINDOW_MS = 2000;
+function isQwenSelfSubmitFilterEnabled() {
+  // Default on. Kill switch for users to disable if qwen ≥0.17 changes the
+  // self-submit behavior in a way that breaks this filter.
+  return process.env.CLAWD_QWEN_SELF_SUBMIT_FILTER !== "0";
+}
+
 // ── Stale cleanup ──
 let staleCleanupTimer = null;
 let _detectInFlight = false;
@@ -910,6 +925,26 @@ function updateSession(sessionId, state, event, opts = {}) {
   const isSubagentStop = event === "SubagentStop" || event === "subagentStop";
   const preservedState = preserveState && existing ? existing.state : null;
 
+  // Qwen Code 0.16.1 self-submit guard. qwen's agentic loop fires a synthetic
+  // UserPromptSubmit ~900-1000ms after PostToolUse to feed the tool result
+  // back to the model. Dropping it here (before pushRecentEvent / setState)
+  // prevents the mascot from flashing "thinking" between working and idle.
+  // Falls through to normal handling when:
+  //   - No existing session / no boundary timestamp (cannot prove self-submit)
+  //   - Outside the window (real human input)
+  //   - Kill switch CLAWD_QWEN_SELF_SUBMIT_FILTER="0"
+  if (
+    event === "UserPromptSubmit"
+    && srcAgentId === "qwen-code"
+    && existing
+    && Number.isFinite(existing.lastBoundaryAt)
+    && (Date.now() - existing.lastBoundaryAt) < QWEN_SELF_SUBMIT_WINDOW_MS
+    && isQwenSelfSubmitFilterEnabled()
+  ) {
+    debugSession(`qwen self-submit drop sid=${sessionId} elapsed=${Date.now() - existing.lastBoundaryAt}ms`);
+    return;
+  }
+
   debugSession(`event ${describeSession(sessionId, existing)} -> incoming=${state}/${event || "-"} hint=${displayHint || "-"} source=${hookSource || "-"}`);
 
   const pidReachable = resolvePidReachable(existing, srcAgentPid, srcPid);
@@ -919,7 +954,15 @@ function updateSession(sessionId, state, event, opts = {}) {
     existing
     && existing.requiresCompletionAck === true
     && isAckPreservingHousekeepingEvent(srcAgentId, srcHost, event);
-  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, sessionTitle: srcSessionTitle, recentEvents, pidReachable };
+  // Agent-loop boundary timestamp. Bumped on PostToolUse / PostToolUseFailure /
+  // Stop so the qwen self-submit filter can recognize synthetic
+  // UserPromptSubmit events that fire within the window. Propagated through
+  // `base` so every sessions.set path keeps the value until the next bump.
+  const isBoundaryEvent = event === "PostToolUse" || event === "PostToolUseFailure" || event === "Stop";
+  const srcLastBoundaryAt = isBoundaryEvent
+    ? Date.now()
+    : (existing && Number.isFinite(existing.lastBoundaryAt) ? existing.lastBoundaryAt : null);
+  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, sessionTitle: srcSessionTitle, recentEvents, pidReachable, lastBoundaryAt: srcLastBoundaryAt };
   if (preserveCompletionAck) base.requiresCompletionAck = true;
 
   // Evict oldest session if at capacity and this is a new session.
