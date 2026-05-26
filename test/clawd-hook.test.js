@@ -14,6 +14,7 @@ const path = require("path");
 const {
   buildStateBody,
   extractSessionTitleFromTranscript,
+  extractApiErrorFromEntries,
 } = require("../hooks/clawd-hook.js");
 const { buildToolInputFingerprint } = require("../src/server").__test;
 
@@ -512,5 +513,279 @@ describe("extractSessionTitleFromTranscript", () => {
     parts.push(JSON.stringify({ type: "custom-title", customTitle: "End Title" }));
     fs.writeFileSync(file, parts.join("\n") + "\n");
     assert.strictEqual(extractSessionTitleFromTranscript(file), "End Title");
+  });
+});
+
+// Helper: build an isApiErrorMessage transcript entry. Mirrors the real
+// schema observed in ~/.claude/projects/**/*.jsonl during Phase 0 investigation.
+function makeApiErrorEntry({ sessionId = "sid-1", error = "unknown", uuid = "err-uuid" }) {
+  return {
+    type: "assistant",
+    uuid,
+    parentUuid: "parent",
+    timestamp: "2026-05-26T00:00:00.000Z",
+    sessionId,
+    isApiErrorMessage: true,
+    error,
+    message: {
+      model: "<synthetic>",
+      role: "assistant",
+      content: [{ type: "text", text: `API Error: ${error}` }],
+    },
+  };
+}
+
+describe("extractApiErrorFromEntries", () => {
+  it("returns null for empty / missing entries", () => {
+    assert.strictEqual(extractApiErrorFromEntries(null, "sid-1"), null);
+    assert.strictEqual(extractApiErrorFromEntries([], "sid-1"), null);
+  });
+
+  it("returns null when sessionId is missing", () => {
+    const entries = [makeApiErrorEntry({ sessionId: "sid-1", error: "unknown" })];
+    assert.strictEqual(extractApiErrorFromEntries(entries, ""), null);
+  });
+
+  it("hits a current-turn error followed only by system marker", () => {
+    const entries = [
+      makeApiErrorEntry({ sessionId: "sid-1", error: "rate_limit", uuid: "e1" }),
+      { type: "system", parentUuid: "e1", sessionId: "sid-1" },
+    ];
+    assert.deepStrictEqual(
+      extractApiErrorFromEntries(entries, "sid-1"),
+      { api_error_type: "rate_limit" }
+    );
+  });
+
+  it("hits when error is the only entry (no metadata yet)", () => {
+    const entries = [makeApiErrorEntry({ sessionId: "sid-1", error: "server_error" })];
+    assert.deepStrictEqual(
+      extractApiErrorFromEntries(entries, "sid-1"),
+      { api_error_type: "server_error" }
+    );
+  });
+
+  it("ignores error from a different sessionId (cross-session contamination guard)", () => {
+    const entries = [
+      makeApiErrorEntry({ sessionId: "other-session", error: "unknown" }),
+    ];
+    assert.strictEqual(extractApiErrorFromEntries(entries, "sid-1"), null);
+  });
+
+  it("suppresses stale error when a user message follows (turn moved on)", () => {
+    const entries = [
+      makeApiErrorEntry({ sessionId: "sid-1", error: "unknown", uuid: "e1" }),
+      { type: "system", parentUuid: "e1", sessionId: "sid-1" },
+      { type: "user", sessionId: "sid-1", message: { content: "next prompt" } },
+    ];
+    assert.strictEqual(extractApiErrorFromEntries(entries, "sid-1"), null);
+  });
+
+  it("suppresses when a non-error assistant message follows (auto-retry succeeded)", () => {
+    const entries = [
+      makeApiErrorEntry({ sessionId: "sid-1", error: "unknown", uuid: "e1" }),
+      { type: "assistant", sessionId: "sid-1", message: { content: "ok" } },
+    ];
+    assert.strictEqual(extractApiErrorFromEntries(entries, "sid-1"), null);
+  });
+
+  it("allows benign metadata types after the error", () => {
+    const entries = [
+      makeApiErrorEntry({ sessionId: "sid-1", error: "invalid_request", uuid: "e1" }),
+      { type: "system", parentUuid: "e1", sessionId: "sid-1" },
+      { type: "last-prompt", sessionId: "sid-1" },
+      { type: "file-history-snapshot", sessionId: "sid-1" },
+    ];
+    assert.deepStrictEqual(
+      extractApiErrorFromEntries(entries, "sid-1"),
+      { api_error_type: "invalid_request" }
+    );
+  });
+
+  it("returns the latest current-turn error when multiple errors are stacked (same turn)", () => {
+    // Multiple isApiErrorMessage entries with no user/assistant break between
+    // them — auto-retry that kept failing. Expect the LAST one to win.
+    const entries = [
+      makeApiErrorEntry({ sessionId: "sid-1", error: "rate_limit", uuid: "e1" }),
+      { type: "system", parentUuid: "e1", sessionId: "sid-1" },
+      makeApiErrorEntry({ sessionId: "sid-1", error: "server_error", uuid: "e2" }),
+      { type: "system", parentUuid: "e2", sessionId: "sid-1" },
+    ];
+    assert.deepStrictEqual(
+      extractApiErrorFromEntries(entries, "sid-1"),
+      { api_error_type: "server_error" }
+    );
+  });
+
+  it("falls back to 'unknown' for error types outside the known enum", () => {
+    const entries = [
+      makeApiErrorEntry({ sessionId: "sid-1", error: "some_future_value" }),
+    ];
+    assert.deepStrictEqual(
+      extractApiErrorFromEntries(entries, "sid-1"),
+      { api_error_type: "unknown" }
+    );
+  });
+
+  it("falls back to 'unknown' when error field is missing entirely", () => {
+    const entries = [
+      {
+        type: "assistant",
+        sessionId: "sid-1",
+        isApiErrorMessage: true,
+        message: { content: [{ type: "text", text: "No response requested." }] },
+      },
+    ];
+    assert.deepStrictEqual(
+      extractApiErrorFromEntries(entries, "sid-1"),
+      { api_error_type: "unknown" }
+    );
+  });
+
+  it("supports all 9 enum values observed in claude.exe 2.1.150", () => {
+    const enumValues = [
+      "authentication_failed", "oauth_org_not_allowed", "billing_error",
+      "rate_limit", "invalid_request", "model_not_found", "server_error",
+      "unknown", "max_output_tokens",
+    ];
+    for (const t of enumValues) {
+      const entries = [makeApiErrorEntry({ sessionId: "sid-1", error: t })];
+      assert.deepStrictEqual(
+        extractApiErrorFromEntries(entries, "sid-1"),
+        { api_error_type: t },
+        `enum ${t} should pass through`
+      );
+    }
+  });
+});
+
+describe("buildStateBody — Stop → ApiError upgrade", () => {
+  it("upgrades Stop to ApiError when transcript shows a current-turn error", () => {
+    const file = writeTmpJsonl([
+      makeApiErrorEntry({ sessionId: "sid-1", error: "rate_limit", uuid: "e1" }),
+      { type: "system", parentUuid: "e1", sessionId: "sid-1" },
+    ]);
+    const body = buildStateBody(
+      "Stop",
+      { session_id: "sid-1", transcript_path: file },
+      mockResolve
+    );
+    assert.strictEqual(body.event, "ApiError");
+    assert.strictEqual(body.state, "error");
+    assert.strictEqual(body.failure_kind, "api_error");
+    assert.strictEqual(body.api_error_type, "rate_limit");
+    assert.strictEqual(body.error_present, true);
+  });
+
+  it("does NOT upgrade Stop when the error is stale (user-followed)", () => {
+    const file = writeTmpJsonl([
+      makeApiErrorEntry({ sessionId: "sid-1", error: "unknown", uuid: "e1" }),
+      { type: "system", parentUuid: "e1", sessionId: "sid-1" },
+      { type: "user", sessionId: "sid-1", message: { content: "next prompt" } },
+    ]);
+    const body = buildStateBody(
+      "Stop",
+      { session_id: "sid-1", transcript_path: file },
+      mockResolve
+    );
+    assert.strictEqual(body.event, "Stop");
+    assert.strictEqual(body.state, "attention");
+    assert.ok(!("failure_kind" in body));
+    assert.ok(!("api_error_type" in body));
+    assert.ok(!("error_present" in body));
+  });
+
+  it("does NOT upgrade events other than Stop even if transcript shows an error", () => {
+    const file = writeTmpJsonl([
+      makeApiErrorEntry({ sessionId: "sid-1", error: "unknown", uuid: "e1" }),
+      { type: "system", parentUuid: "e1", sessionId: "sid-1" },
+    ]);
+    const body = buildStateBody(
+      "UserPromptSubmit",
+      { session_id: "sid-1", transcript_path: file },
+      mockResolve
+    );
+    assert.strictEqual(body.event, "UserPromptSubmit");
+    assert.ok(!("api_error_type" in body));
+  });
+
+  it("does NOT upgrade synthetic SubagentStart (PreToolUse Task)", () => {
+    // PreToolUse Task is remapped to SubagentStart; even if a transcript error
+    // exists, ApiError detection should not run for non-Stop branches.
+    const file = writeTmpJsonl([
+      makeApiErrorEntry({ sessionId: "sid-1", error: "unknown" }),
+    ]);
+    const body = buildStateBody(
+      "PreToolUse",
+      { session_id: "sid-1", tool_name: "Task", transcript_path: file },
+      mockResolve
+    );
+    assert.strictEqual(body.event, "SubagentStart");
+    assert.ok(!("api_error_type" in body));
+  });
+
+  it("does NOT transmit raw error text or errorDetails (privacy)", () => {
+    const file = writeTmpJsonl([
+      {
+        ...makeApiErrorEntry({ sessionId: "sid-1", error: "invalid_request" }),
+        requestId: "req_secret_001",
+        errorDetails: '400 {"message":"prompt fragment leak","request_id":"req_xxx"}',
+      },
+    ]);
+    const body = buildStateBody(
+      "Stop",
+      { session_id: "sid-1", transcript_path: file },
+      mockResolve
+    );
+    assert.strictEqual(body.event, "ApiError");
+    // PR1 must NOT include any of these fields
+    const serialized = JSON.stringify(body);
+    assert.ok(!serialized.includes("prompt fragment leak"), "text leaked");
+    assert.ok(!serialized.includes("req_secret_001"), "requestId leaked");
+    assert.ok(!serialized.includes("req_xxx"), "errorDetails leaked");
+    assert.ok(!("text" in body), "body.text must be absent");
+    assert.ok(!("errorDetails" in body), "body.errorDetails must be absent");
+    assert.ok(!("requestId" in body), "body.requestId must be absent");
+  });
+
+  it("ignores error from a different session (no upgrade)", () => {
+    const file = writeTmpJsonl([
+      makeApiErrorEntry({ sessionId: "other-sid", error: "unknown" }),
+    ]);
+    const body = buildStateBody(
+      "Stop",
+      { session_id: "sid-1", transcript_path: file },
+      mockResolve
+    );
+    assert.strictEqual(body.event, "Stop");
+    assert.ok(!("api_error_type" in body));
+  });
+
+  it("survives a transcript with corrupted JSON lines", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-hook-test-"));
+    const file = path.join(dir, "corrupt.jsonl");
+    const errEntry = makeApiErrorEntry({ sessionId: "sid-1", error: "server_error", uuid: "e1" });
+    const body =
+      JSON.stringify(errEntry) + "\n" +
+      "{not-valid-json}\n" +
+      JSON.stringify({ type: "system", parentUuid: "e1", sessionId: "sid-1" }) + "\n";
+    fs.writeFileSync(file, body);
+    const result = buildStateBody(
+      "Stop",
+      { session_id: "sid-1", transcript_path: file },
+      mockResolve
+    );
+    assert.strictEqual(result.event, "ApiError");
+    assert.strictEqual(result.api_error_type, "server_error");
+  });
+
+  it("falls back to Stop when transcript path is missing", () => {
+    const body = buildStateBody(
+      "Stop",
+      { session_id: "sid-1" },
+      mockResolve
+    );
+    assert.strictEqual(body.event, "Stop");
+    assert.strictEqual(body.state, "attention");
   });
 });

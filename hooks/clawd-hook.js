@@ -9,6 +9,19 @@ const { postStateToRunningServer, readHostPrefix } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
 
 const TRANSCRIPT_TAIL_BYTES = 262144; // 256 KB
+// Observed in Claude Code 2.1.150 StopFailure hook schema (tyq enum).
+// Unknown values from future versions fall back to "unknown".
+const API_ERROR_TYPES = new Set([
+  "authentication_failed",
+  "oauth_org_not_allowed",
+  "billing_error",
+  "rate_limit",
+  "invalid_request",
+  "model_not_found",
+  "server_error",
+  "unknown",
+  "max_output_tokens",
+]);
 const SESSION_TITLE_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F]+/g;
 const SESSION_TITLE_MAX = 80;
 const PROMPT_TITLE_MAX = 40;
@@ -53,10 +66,11 @@ function extractPromptTitle(prompt) {
   return null;
 }
 
-// Read the tail of a Claude Code transcript JSONL and return the most recent
-// user-set session title (custom-title / agent-name events). Returns null if
-// the file is missing/unreadable or no title events are found.
-function extractSessionTitleFromTranscript(transcriptPath) {
+// Read the tail of a Claude Code transcript JSONL and return parsed entries.
+// Skips the truncated first line when the tail is a partial read, and silently
+// drops lines that fail JSON.parse. Returns null if the file is missing or
+// unreadable.
+function readTranscriptTailEntries(transcriptPath) {
   if (typeof transcriptPath !== "string" || !transcriptPath) return null;
 
   let data;
@@ -79,16 +93,22 @@ function extractSessionTitleFromTranscript(transcriptPath) {
   }
 
   const lines = data.split("\n");
-  // If we read a tail of a larger file, the first line is likely a truncated
-  // JSON fragment — drop it so JSON.parse doesn't fail noisily on it.
   if (truncated && lines.length > 1) lines.shift();
 
-  let latest = null;
+  const entries = [];
   for (const line of lines) {
     if (!line.trim()) continue;
     let obj;
     try { obj = JSON.parse(line); } catch { continue; }
-    if (!obj || typeof obj !== "object") continue;
+    if (obj && typeof obj === "object") entries.push(obj);
+  }
+  return entries;
+}
+
+function extractSessionTitleFromEntries(entries) {
+  if (!entries) return null;
+  let latest = null;
+  for (const obj of entries) {
     const type = typeof obj.type === "string" ? obj.type : "";
     if (type !== "custom-title" && type !== "agent-name") continue;
     latest =
@@ -100,6 +120,40 @@ function extractSessionTitleFromTranscript(transcriptPath) {
       latest;
   }
   return latest;
+}
+
+function extractSessionTitleFromTranscript(transcriptPath) {
+  return extractSessionTitleFromEntries(readTranscriptTailEntries(transcriptPath));
+}
+
+// Find the most recent isApiErrorMessage entry for the current session, but
+// only if it belongs to the current turn. A current-turn API error has no
+// later "user" or non-error "assistant" entry — those indicate the turn has
+// moved on (user re-prompted or model recovered) and the error is stale.
+// See docs/investigations/api-error-race-condition.md for the 11-sample basis.
+function extractApiErrorFromEntries(entries, sessionId) {
+  if (!entries || !sessionId) return null;
+
+  let lastErrorIndex = -1;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e.isApiErrorMessage !== true) continue;
+    if (e.sessionId !== sessionId) continue;
+    lastErrorIndex = i;
+    break;
+  }
+  if (lastErrorIndex < 0) return null;
+
+  for (let i = lastErrorIndex + 1; i < entries.length; i++) {
+    const e = entries[i];
+    const type = typeof e.type === "string" ? e.type : "";
+    if (type === "user") return null;
+    if (type === "assistant" && e.isApiErrorMessage !== true) return null;
+  }
+
+  const rawType = entries[lastErrorIndex].error;
+  const apiErrorType = API_ERROR_TYPES.has(rawType) ? rawType : "unknown";
+  return { api_error_type: apiErrorType };
 }
 
 function normalizeToolUseId(value) {
@@ -152,6 +206,7 @@ const EVENT_TO_STATE = {
   PostToolUseFailure: "error",
   Stop: "attention",
   StopFailure: "error",
+  ApiError: "error",
   SubagentStart: "juggling",
   SubagentStop: "working",
   PreCompact: "sweeping",
@@ -200,15 +255,31 @@ function buildStateBody(event, payload, resolve) {
   if (toolName) body.tool_name = toolName;
   if (toolUseId) body.tool_use_id = toolUseId;
   if (toolInputFingerprint) body.tool_input_fingerprint = toolInputFingerprint;
-  // Session title: prefer payload field, fall back to scanning the transcript
-  // tail for user-set custom-title / agent-name events
+  // Read transcript tail once and reuse for both session title extraction and
+  // API error detection (Stop only). Avoids two file reads per hook invocation.
+  const transcriptEntries = readTranscriptTailEntries(payload.transcript_path);
   const sessionTitle =
     normalizeTitle(payload.session_title) ||
-    extractSessionTitleFromTranscript(payload.transcript_path);
+    extractSessionTitleFromEntries(transcriptEntries);
   if (sessionTitle) body.session_title = sessionTitle;
   if (event === "UserPromptSubmit" && !body.session_title) {
     const promptTitle = extractPromptTitle(payload.prompt);
     if (promptTitle) body.session_title = promptTitle;
+  }
+
+  // Claude Code synthesizes API errors into a fake assistant message tagged
+  // isApiErrorMessage:true and emits a regular Stop hook (not StopFailure).
+  // Upgrade Stop → ApiError when transcript tail shows a current-turn error.
+  // See docs/investigations/api-error-race-condition.md.
+  if (event === "Stop" && !syntheticSubagentStart) {
+    const apiError = extractApiErrorFromEntries(transcriptEntries, sessionId);
+    if (apiError) {
+      body.event = "ApiError";
+      body.state = "error";
+      body.failure_kind = "api_error";
+      body.api_error_type = apiError.api_error_type;
+      body.error_present = true;
+    }
   }
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();
@@ -260,4 +331,9 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { buildStateBody, extractSessionTitleFromTranscript };
+module.exports = {
+  buildStateBody,
+  extractSessionTitleFromTranscript,
+  extractApiErrorFromEntries,
+  readTranscriptTailEntries,
+};

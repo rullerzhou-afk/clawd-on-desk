@@ -15,6 +15,7 @@ const EVENT_LABEL_KEYS = {
   AfterAgent: "eventLabelAfterAgent",
   Stop: "eventLabelStop",
   StopFailure: "eventLabelStopFailure",
+  ApiError: "eventLabelApiError",
   SubagentStart: "eventLabelSubagentStart",
   SubagentStop: "eventLabelSubagentStop",
   PreCompress: "eventLabelPreCompress",
@@ -61,7 +62,7 @@ function deriveSessionBadge(session) {
   const events = Array.isArray(session.recentEvents) ? session.recentEvents : [];
   const latest = events.length ? events[events.length - 1] : null;
   const latestEvent = latest && latest.event;
-  if (latestEvent === "StopFailure" || latestEvent === "PostToolUseFailure") return "interrupted";
+  if (latestEvent === "StopFailure" || latestEvent === "PostToolUseFailure" || latestEvent === "ApiError") return "interrupted";
   if (isDoneEvent(latestEvent)) return "done";
   return "idle";
 }

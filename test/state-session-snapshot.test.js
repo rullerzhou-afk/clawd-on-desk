@@ -51,6 +51,12 @@ describe("state-session-snapshot badges", () => {
     assert.strictEqual(deriveSessionBadge(session("idle", {
       recentEvents: [{ event: "PostToolUseFailure", state: "idle", at: 1 }],
     })), "interrupted");
+    assert.strictEqual(deriveSessionBadge(session("idle", {
+      recentEvents: [{ event: "StopFailure", state: "idle", at: 1 }],
+    })), "interrupted");
+    assert.strictEqual(deriveSessionBadge(session("idle", {
+      recentEvents: [{ event: "ApiError", state: "idle", at: 1 }],
+    })), "interrupted");
     assert.strictEqual(deriveSessionBadge(null), "idle");
   });
 });
