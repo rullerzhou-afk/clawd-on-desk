@@ -56,9 +56,10 @@ describe("Qwen Code hook", () => {
   });
 
   it("drops every Notification regardless of payload type", () => {
-    // qwen 0.16.1 fires Notification ~700ms after every Stop as a generic
-    // "task done" signal that would clobber attention on the mascot. Hook
-    // must never emit a /state POST for Notification, no matter the payload.
+    // qwen 0.16.1 fires Notification shortly after Stop (measured ~250ms)
+    // as a generic "task done" signal that would clobber attention on the
+    // mascot. Hook must never emit a /state POST for Notification, no
+    // matter the payload.
     for (const payload of [
       { session_id: "s1", notification_type: "permission_prompt" },
       { session_id: "s1", notification_type: "info" },
