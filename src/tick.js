@@ -339,6 +339,8 @@ function runMainTickOnce() {
     eyeDx = Math.round(eyeDx * 2) / 2;
     eyeDy = Math.round(eyeDy * 2) / 2;
     const yClamp = MAX_OFFSET * 0.5;
+    const xClamp = MAX_OFFSET * 0.85;
+    eyeDx = Math.max(-xClamp, Math.min(xClamp, eyeDx));
     eyeDy = Math.max(-yClamp, Math.min(yClamp, eyeDy));
 
     if (skipDedup || eyeDx !== lastEyeDx || eyeDy !== lastEyeDy) {
