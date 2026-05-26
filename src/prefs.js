@@ -38,7 +38,7 @@ const {
 } = require("./bubble-policy");
 const { normalizeSessionAliases } = require("./session-alias");
 
-const CURRENT_VERSION = 4;
+const CURRENT_VERSION = 5;
 
 // ── Schema ──
 // Each field has: type, default OR defaultFactory, optional enum/normalize/validate.
@@ -99,7 +99,6 @@ const SCHEMA = {
   sessionHudShowStateLabels: { type: "boolean", default: true },
   sessionHudShowElapsed: { type: "boolean", default: true },
   sessionHudCleanupDetached: { type: "boolean", default: false },
-  sessionHudAutoHide: { type: "boolean", default: true },
   sessionHudPinned: { type: "boolean", default: false },
   // Stale-cleanup intervals (ms). Defaults match the historical constants in
   // state-stale-cleanup.js so upgrading users see no behavioral change.
@@ -367,6 +366,17 @@ function migrate(raw) {
         : true,
     };
     out.version = 4;
+  }
+  // v4 → v5: Session HUD hover/auto-hide mode removed in favor of explicit
+  // click-to-reveal. Users who explicitly opted out of auto-hide (
+  // `sessionHudAutoHide === false`, meaning "always show") get auto-pinned so
+  // their visual behavior is preserved. The deprecated field is dropped.
+  if (out.version < 5) {
+    if (out.sessionHudAutoHide === false && out.sessionHudPinned !== true) {
+      out.sessionHudPinned = true;
+    }
+    delete out.sessionHudAutoHide;
+    out.version = 5;
   }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;

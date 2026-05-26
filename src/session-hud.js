@@ -110,8 +110,8 @@ function pointInHotZone(point, hotZone) {
 function evaluateShouldShow({
   snapshot,
   sessionHudEnabled,
-  sessionHudAutoHide,
   sessionHudPinned,
+  clickRevealed,
   inHotZone,
   now,
   visibleHoldUntil,
@@ -128,9 +128,10 @@ function evaluateShouldShow({
     miniTransitioning,
   });
   if (!baseEligible) return { show: false, nextHoldUntil: 0 };
-  if (sessionHudAutoHide !== true) return { show: true, nextHoldUntil: 0 };
   if (sessionHudPinned === true) return { show: true, nextHoldUntil: 0 };
+  if (clickRevealed !== true) return { show: false, nextHoldUntil: 0 };
 
+  // revealed 态：hot zone 续命 + grace period
   let nextHoldUntil = Number.isFinite(visibleHoldUntil) ? visibleHoldUntil : 0;
   const tNow = Number.isFinite(now) ? now : 0;
   const grace = Number.isFinite(hideGraceMs) ? hideGraceMs : 0;
@@ -249,7 +250,7 @@ module.exports = function initSessionHud(ctx) {
   let lastReservedOffset = 0;
   let lastHudHeight = HUD_ROW_HEIGHT;
   let pollTimer = null;
-  let autoHideRevealed = false;
+  let clickRevealed = false;
   let visibleHoldUntil = 0;
 
   function getCurrentSnapshot() {
@@ -278,16 +279,14 @@ module.exports = function initSessionHud(ctx) {
 
   function shouldShow(snapshot = latestSnapshot) {
     if (!baseEligible(snapshot)) return false;
-    if (ctx.sessionHudAutoHide !== true) return true;
     if (ctx.sessionHudPinned === true) return true;
-    return autoHideRevealed;
+    return clickRevealed;
   }
 
   function isAutoHidePollingNeeded() {
     if (!baseEligible(latestSnapshot)) return false;
-    if (ctx.sessionHudAutoHide !== true) return false;
     if (ctx.sessionHudPinned === true) return false;
-    return true;
+    return clickRevealed === true;
   }
 
   function computeExpectedHudContentBounds(snapshot) {
@@ -337,8 +336,8 @@ module.exports = function initSessionHud(ctx) {
     const result = evaluateShouldShow({
       snapshot: latestSnapshot,
       sessionHudEnabled: ctx.sessionHudEnabled,
-      sessionHudAutoHide: ctx.sessionHudAutoHide,
       sessionHudPinned: ctx.sessionHudPinned,
+      clickRevealed,
       inHotZone,
       now,
       visibleHoldUntil,
@@ -348,10 +347,14 @@ module.exports = function initSessionHud(ctx) {
       miniTransitioning: getMiniTransitioning(),
     });
     visibleHoldUntil = result.nextHoldUntil;
-    if (result.show !== autoHideRevealed) {
-      autoHideRevealed = result.show;
+    // In revealed state, poll detecting !show means user moved away past grace.
+    // Clear clickRevealed so subsequent ticks stop polling.
+    const wasRevealed = clickRevealed;
+    if (wasRevealed && !result.show && ctx.sessionHudPinned !== true) {
+      clickRevealed = false;
+      visibleHoldUntil = 0;
       if (syncOnChange) {
-        syncSessionHud(latestSnapshot, { sendSnapshot: result.show });
+        syncSessionHud(latestSnapshot, { sendSnapshot: false });
       }
       return true;
     }
@@ -384,8 +387,61 @@ module.exports = function initSessionHud(ctx) {
       clearTimeout(pollTimer);
       pollTimer = null;
     }
-    autoHideRevealed = false;
+    clickRevealed = false;
     visibleHoldUntil = 0;
+  }
+
+  // Internal: clear revealed state without syncing. Caller decides next sync.
+  function clearReveal() {
+    clickRevealed = false;
+    visibleHoldUntil = 0;
+    if (pollTimer) {
+      clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  // Public API: user clicked the pet to reveal HUD.
+  function revealFromPet() {
+    if (!baseEligible(latestSnapshot)) return;
+    if (ctx.sessionHudPinned === true) return;     // pinned already always-show
+    if (clickRevealed) {
+      // Already revealed — refresh grace as a click tolerance.
+      visibleHoldUntil = Date.now() + HIDE_GRACE_MS;
+      return;
+    }
+    clickRevealed = true;
+    visibleHoldUntil = Date.now() + HIDE_GRACE_MS;  // seed
+    syncSessionHud(latestSnapshot, { sendSnapshot: true });
+    startAutoHidePoll();
+  }
+
+  // Public API: settings effect router calls this when sessionHudPinned flips.
+  // Router has already updated ctx.sessionHudPinned before calling.
+  function handlePinnedChanged(next) {
+    if (next === true) {
+      stopAutoHidePoll();
+      // Pinned now — HUD always shows via shouldShow. Clear any stale reveal.
+      clickRevealed = false;
+      visibleHoldUntil = 0;
+      syncSessionHud(latestSnapshot);
+      return;
+    }
+    // unpin transition — read real window state, NOT shouldShow() (router
+    // already mirrored sessionHudPinned=false so shouldShow would return
+    // false and cause the HUD to flash hidden).
+    const wasVisible =
+      hudWindow && !hudWindow.isDestroyed() && hudWindow.isVisible();
+    if (wasVisible && baseEligible(latestSnapshot)) {
+      // Seed revealed state so the HUD stays visible until the user moves
+      // away (grace period), preserving the on-screen experience.
+      clickRevealed = true;
+      visibleHoldUntil = Date.now() + HIDE_GRACE_MS;
+      startAutoHidePoll();
+      syncSessionHud(latestSnapshot);
+    } else {
+      syncSessionHud(latestSnapshot);
+    }
   }
 
   function syncAutoHidePollLifecycle() {
@@ -400,7 +456,6 @@ module.exports = function initSessionHud(ctx) {
       ...snapshot,
       hudShowStateLabels: ctx.sessionHudShowStateLabels !== false,
       hudShowElapsed: ctx.sessionHudShowElapsed !== false,
-      hudAutoHide: ctx.sessionHudAutoHide === true,
       hudPinned: ctx.sessionHudPinned === true,
     });
   }
@@ -505,6 +560,12 @@ module.exports = function initSessionHud(ctx) {
 
   function syncSessionHud(snapshot = latestSnapshot || getCurrentSnapshot(), options = {}) {
     latestSnapshot = snapshot;
+    // Defend against stale reveal: if base eligibility dropped (e.g. last
+    // session ended), clear any leftover clickRevealed so a future new
+    // session does not pop the HUD without a fresh user click.
+    if (!baseEligible(snapshot)) {
+      clearReveal();
+    }
     syncAutoHidePollLifecycle();
     if (!shouldShow(snapshot)) {
       hideSessionHud();
@@ -569,6 +630,10 @@ module.exports = function initSessionHud(ctx) {
     getHudReservedOffset,
     cleanup,
     getWindow: () => hudWindow,
+    // v5 three-state API
+    revealFromPet,
+    handlePinnedChanged,
+    clearReveal,
   };
 };
 

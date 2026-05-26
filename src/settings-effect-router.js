@@ -65,6 +65,7 @@ function createSettingsEffectRouter(options = {}) {
   const refreshUpdateBubbleAutoClose = options.refreshUpdateBubbleAutoClose || noop;
   const repositionFloatingBubbles = options.repositionFloatingBubbles || noop;
   const syncSessionHudVisibility = options.syncSessionHudVisibility || noop;
+  const handleSessionHudPinnedChanged = options.handleSessionHudPinnedChanged || noop;
   const reclampPetAfterEdgePinningChange = options.reclampPetAfterEdgePinningChange || noop;
   const rebuildAllMenus = options.rebuildAllMenus || noop;
 
@@ -166,12 +167,22 @@ function createSettingsEffectRouter(options = {}) {
     if ("bubbleFollowPet" in changes) {
       safeCall(logWarn, "Clawd: repositionFloatingBubbles failed:", repositionFloatingBubbles);
     }
+    if ("sessionHudPinned" in changes) {
+      // Pinned transitions are handled inside session-hud.js so the visible
+      // state can be inspected BEFORE the new mirror takes effect during a
+      // generic sync. handlePinnedChanged internally calls syncSessionHud,
+      // which triggers reposition via the reserved-offset callback — no
+      // need to call repositionFloatingBubbles here as well.
+      try {
+        handleSessionHudPinnedChanged(changes.sessionHudPinned);
+      } catch (err) {
+        warn(logWarn, "Clawd: session HUD pinned change failed:", err);
+      }
+    }
     if (
       "sessionHudEnabled" in changes
       || "sessionHudShowStateLabels" in changes
       || "sessionHudShowElapsed" in changes
-      || "sessionHudAutoHide" in changes
-      || "sessionHudPinned" in changes
     ) {
       try {
         syncSessionHudVisibility();

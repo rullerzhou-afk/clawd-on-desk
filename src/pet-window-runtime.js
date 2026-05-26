@@ -496,6 +496,7 @@ function createPetWindowRuntime(options = {}) {
         backgroundThrottling: false,
         additionalArguments: [
           "--hit-theme-config=" + JSON.stringify(optionsArg.hitThemeConfig),
+          "--hit-platform=" + process.platform,
         ],
       },
     });

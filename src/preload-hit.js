@@ -4,7 +4,16 @@ const { contextBridge, ipcRenderer } = require("electron");
 const hitThemeArg = process.argv.find(a => a.startsWith("--hit-theme-config="));
 const hitThemeConfig = hitThemeArg ? JSON.parse(hitThemeArg.slice("--hit-theme-config=".length)) : null;
 
+// Parse platform from additionalArguments so hit-renderer can branch on
+// macOS-specific input semantics (Cmd vs Ctrl, Ctrl-click = right-click, etc.).
+const platformArg = process.argv.find(a => a.startsWith("--hit-platform="));
+const platform = platformArg ? platformArg.slice("--hit-platform=".length) : process.platform;
+
 contextBridge.exposeInMainWorld("hitThemeConfig", hitThemeConfig);
+contextBridge.exposeInMainWorld("hitPlatform", {
+  isMac: platform === "darwin",
+  platform,
+});
 
 contextBridge.exposeInMainWorld("hitAPI", {
   // Theme config push (for hot-switch; additionalArguments won't update on reload)
@@ -17,6 +26,7 @@ contextBridge.exposeInMainWorld("hitAPI", {
   focusTerminal: () => ipcRenderer.send("focus-terminal"),
   exitMiniMode: () => ipcRenderer.send("exit-mini-mode"),
   showDashboard: () => ipcRenderer.send("show-dashboard"),
+  revealSessionHud: () => ipcRenderer.send("pet-interaction:reveal-session-hud"),
   // Reaction triggers → main → renderWin
   startDragReaction: () => ipcRenderer.send("start-drag-reaction"),
   endDragReaction: () => ipcRenderer.send("end-drag-reaction"),

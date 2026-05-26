@@ -44,6 +44,7 @@ function registerPetInteractionIpc(options = {}) {
   const focusLog = requiredDependency(options.focusLog, "focusLog");
   const showDashboard = requiredDependency(options.showDashboard, "showDashboard");
   const focusSession = requiredDependency(options.focusSession, "focusSession");
+  const revealSessionHud = requiredDependency(options.revealSessionHud, "revealSessionHud");
   const setLowPowerIdlePaused = requiredDependency(
     options.setLowPowerIdlePaused,
     "setLowPowerIdlePaused"
@@ -113,6 +114,10 @@ function registerPetInteractionIpc(options = {}) {
 
   on("exit-mini-mode", () => {
     if (isMiniMode()) exitMiniMode();
+  });
+
+  on("pet-interaction:reveal-session-hud", () => {
+    revealSessionHud();
   });
 
   on("focus-terminal", () => {

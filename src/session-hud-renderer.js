@@ -5,7 +5,7 @@ const HUD_MAX_EXPANDED_ROWS_LABELS = 5;
 const HUD_TITLE_MAX_UNITS = 15;
 const RECENT_DONE_UNREAD_MS = 60 * 1000;
 
-let snapshot = { sessions: [], orderedIds: [], hudTotalNonIdle: 0, hudLastTitle: null, hudShowStateLabels: true, hudShowElapsed: true, hudAutoHide: false, hudPinned: false };
+let snapshot = { sessions: [], orderedIds: [], hudTotalNonIdle: 0, hudLastTitle: null, hudShowStateLabels: true, hudShowElapsed: true, hudPinned: false };
 let i18nPayload = { lang: "en", translations: {} };
 
 const unreadSessions = new Set();
@@ -307,7 +307,7 @@ function render() {
   const sessions = orderedHudSessions(snapshot);
   updateUnread(sessions);
   hudEl.replaceChildren();
-  hudEl.classList.toggle("has-pin", snapshot.hudAutoHide === true);
+  hudEl.classList.add("has-pin");
   if (!sessions.length) return;
 
   const now = Date.now();
@@ -320,9 +320,7 @@ function render() {
     hudEl.appendChild(createFoldedRow(folded.length));
   }
 
-  if (snapshot.hudAutoHide === true) {
-    hudEl.appendChild(createPinButton(snapshot.hudPinned === true));
-  }
+  hudEl.appendChild(createPinButton(snapshot.hudPinned === true));
 }
 
 function updateElapsedLabels() {

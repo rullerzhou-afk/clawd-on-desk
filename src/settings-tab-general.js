@@ -10,7 +10,6 @@
     "sessionHudShowStateLabels",
     "sessionHudShowElapsed",
     "sessionHudCleanupDetached",
-    "sessionHudAutoHide",
     "allowEdgePinning",
     "keepSizeAcrossDisplays",
     "manageClaudeHooksAutomatically",
@@ -45,13 +44,11 @@
     "sessionHudShowStateLabels",
     "sessionHudShowElapsed",
     "sessionHudCleanupDetached",
-    "sessionHudAutoHide",
   ];
   const SESSION_HUD_SUMMARY_KEYS = new Set([
     "sessionHudEnabled",
     "sessionHudShowStateLabels",
     "sessionHudShowElapsed",
-    "sessionHudAutoHide",
     "sessionHudCleanupDetached",
   ]);
   const CLAUDE_HOOK_MANAGEMENT_CHILD_SWITCH_KEYS = [
@@ -391,12 +388,6 @@
         disabled: !sessionHudControlsEnabled,
       }),
       helpers.buildSwitchRow({
-        key: "sessionHudAutoHide",
-        labelKey: "rowSessionHudAutoHide",
-        descKey: "rowSessionHudAutoHideDesc",
-        disabled: !sessionHudControlsEnabled,
-      }),
-      helpers.buildSwitchRow({
         key: "sessionHudCleanupDetached",
         labelKey: "rowSessionHudCleanupDetached",
         descKey: "rowSessionHudCleanupDetachedDesc",
@@ -437,13 +428,6 @@
             snapshot.sessionHudShowElapsed !== false ? onLabel : offLabel
           ),
           accent: snapshot.sessionHudShowElapsed !== false,
-        });
-        items.push({
-          text: t("sessionHudSummaryAutoHide").replace(
-            "{state}",
-            snapshot.sessionHudAutoHide === true ? onLabel : offLabel
-          ),
-          accent: snapshot.sessionHudAutoHide === true,
         });
         items.push({
           text: t("sessionHudSummaryCleanup").replace(

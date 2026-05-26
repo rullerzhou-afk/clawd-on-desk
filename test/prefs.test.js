@@ -53,7 +53,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.sessionHudShowStateLabels, true);
     assert.strictEqual(d.sessionHudShowElapsed, true);
     assert.strictEqual(d.sessionHudCleanupDetached, false);
-    assert.strictEqual(d.sessionHudAutoHide, true);
+    assert.strictEqual("sessionHudAutoHide" in d, false);
     assert.strictEqual(d.sessionHudPinned, false);
     assert.strictEqual(d.savedPixelWidth, 0);
     assert.strictEqual(d.savedPixelHeight, 0);
@@ -698,6 +698,83 @@ describe("prefs.migrate", () => {
     const raw = { version: 1, x: 0, y: 0, positionSaved: true };
     const upgraded = prefs.migrate(raw);
     assert.strictEqual(upgraded.positionSaved, true);
+  });
+});
+
+describe("prefs.migrate v4 → v5 (sessionHudAutoHide removal)", () => {
+  it("auto-pins users who had sessionHudAutoHide=false (always-show)", () => {
+    const upgraded = prefs.migrate({
+      version: 4,
+      sessionHudAutoHide: false,
+      sessionHudPinned: false,
+    });
+    assert.strictEqual(upgraded.sessionHudPinned, true);
+    assert.strictEqual("sessionHudAutoHide" in upgraded, false);
+    assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
+  });
+
+  it("leaves pinned untouched for users who had auto-hide enabled", () => {
+    const upgraded = prefs.migrate({
+      version: 4,
+      sessionHudAutoHide: true,
+      sessionHudPinned: false,
+    });
+    assert.strictEqual(upgraded.sessionHudPinned, false);
+    assert.strictEqual("sessionHudAutoHide" in upgraded, false);
+  });
+
+  it("respects existing pinned=true even when sessionHudAutoHide=false", () => {
+    const upgraded = prefs.migrate({
+      version: 4,
+      sessionHudAutoHide: false,
+      sessionHudPinned: true,
+    });
+    assert.strictEqual(upgraded.sessionHudPinned, true);
+    assert.strictEqual("sessionHudAutoHide" in upgraded, false);
+  });
+
+  it("treats missing sessionHudAutoHide as no-op (no pin auto-set)", () => {
+    const upgraded = prefs.migrate({
+      version: 4,
+      sessionHudPinned: false,
+    });
+    assert.strictEqual(upgraded.sessionHudPinned, false);
+    assert.strictEqual("sessionHudAutoHide" in upgraded, false);
+  });
+
+  it("ignores non-boolean sessionHudAutoHide (only strict === false triggers pin)", () => {
+    for (const bad of ["yes", null, 0, "false"]) {
+      const upgraded = prefs.migrate({
+        version: 4,
+        sessionHudAutoHide: bad,
+        sessionHudPinned: false,
+      });
+      assert.strictEqual(
+        upgraded.sessionHudPinned,
+        false,
+        `bad value ${JSON.stringify(bad)} should not trigger pin`
+      );
+      assert.strictEqual("sessionHudAutoHide" in upgraded, false);
+    }
+  });
+
+  it("is idempotent on v5 input (skips the v4→v5 branch)", () => {
+    const upgraded = prefs.migrate({
+      version: 5,
+      sessionHudPinned: false,
+    });
+    assert.strictEqual(upgraded.sessionHudPinned, false);
+    assert.strictEqual("sessionHudAutoHide" in upgraded, false);
+    assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
+  });
+
+  it("does not let validate() re-populate the deprecated field after save", () => {
+    const validated = prefs.validate(prefs.migrate({
+      version: 4,
+      sessionHudAutoHide: false,
+    }));
+    assert.strictEqual("sessionHudAutoHide" in validated, false);
+    assert.strictEqual(validated.sessionHudPinned, true);
   });
 });
 
