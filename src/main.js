@@ -578,6 +578,7 @@ let hitWin;  // input window — small opaque rect over hitbox, receives all poi
 
 // Tray icon flash state
 let trayFlashTimer = null;
+let trayFlashStopTimer = null;
 let trayFlashNormalIcon = null;
 let trayFlashHighlightIcon = null;
 let tray = null;
@@ -779,6 +780,10 @@ function stopTrayFlash() {
     clearInterval(trayFlashTimer);
     trayFlashTimer = null;
   }
+  if (trayFlashStopTimer) {
+    clearTimeout(trayFlashStopTimer);
+    trayFlashStopTimer = null;
+  }
   const t = _menu.getTray ? _menu.getTray() : null;
   if (t && trayFlashNormalIcon) {
     t.setImage(trayFlashNormalIcon);
@@ -794,23 +799,37 @@ function flashTaskbar() {
 
   // Cache the normal icon on first call
   if (!trayFlashNormalIcon) {
-    trayFlashNormalIcon = nativeImage.createFromPath(
-      path.join(__dirname, "../assets/tray-icon.png")
-    ).resize({ width: 32, height: 32 });
+    if (process.platform === "darwin") {
+      trayFlashNormalIcon = nativeImage.createFromPath(
+        path.join(__dirname, "../assets/tray-iconTemplate.png")
+      );
+      trayFlashNormalIcon.setTemplateImage(true);
+    } else {
+      trayFlashNormalIcon = nativeImage.createFromPath(
+        path.join(__dirname, "../assets/tray-icon.png")
+      ).resize({ width: 32, height: 32 });
+    }
   }
 
   // Cache the highlight icon (orange circle) on first call
   if (!trayFlashHighlightIcon) {
     const flashPath = path.join(__dirname, "../assets/tray-icon-flash.png");
     if (fs.existsSync(flashPath)) {
-      trayFlashHighlightIcon = nativeImage.createFromPath(flashPath).resize({ width: 32, height: 32 });
+      const img = nativeImage.createFromPath(flashPath).resize({ width: 32, height: 32 });
+      if (!img.isEmpty()) {
+        trayFlashHighlightIcon = img;
+      }
     }
   }
 
   if (!trayFlashHighlightIcon) return;
 
-  // Clear any existing flash timer
+  // Clear any existing flash timers
   if (trayFlashTimer) clearInterval(trayFlashTimer);
+  if (trayFlashStopTimer) {
+    clearTimeout(trayFlashStopTimer);
+    trayFlashStopTimer = null;
+  }
 
   const intervalMs = _settingsController.get("flashIntervalMs") || 500;
   const durationMs = _settingsController.get("flashDurationMs");
@@ -829,7 +848,7 @@ function flashTaskbar() {
 
   // Auto-stop after duration (unless duration is 0 = always)
   if (durationMs !== 0) {
-    setTimeout(() => {
+    trayFlashStopTimer = setTimeout(() => {
       stopTrayFlash();
     }, durationMs || 5000);
   }

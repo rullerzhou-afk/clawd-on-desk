@@ -39,6 +39,10 @@
     "workingStaleMs",
     "detachedIdleStaleMs",
   ]);
+  const FLASH_NUMBER_KEYS = new Set([
+    "flashIntervalMs",
+    "flashDurationMs",
+  ]);
   const SESSION_CLEANUP_DEFAULTS = {
     sessionStaleMs: 600_000,
     workingStaleMs: 300_000,
@@ -1536,6 +1540,13 @@
         if (!meta || !document.body.contains(meta.row)) return false;
       }
     }
+    if (keys.some((key) => FLASH_NUMBER_KEYS.has(key))) {
+      for (const key of keys) {
+        if (!FLASH_NUMBER_KEYS.has(key)) continue;
+        const meta = state.mountedControls.sessionCleanupControls.get(key);
+        if (!meta || !document.body.contains(meta.row)) return false;
+      }
+    }
     for (const key of keys) {
       if (key === "size" || key === "soundVolume") continue;
       if (BUBBLE_POLICY_KEYS.has(key)) {
@@ -1544,6 +1555,7 @@
         continue;
       }
       if (SESSION_CLEANUP_NUMBER_KEYS.has(key)) continue;
+      if (FLASH_NUMBER_KEYS.has(key)) continue;
       const meta = state.mountedControls.generalSwitches.get(key);
       if (!meta || !document.body.contains(meta.element)) return false;
     }
@@ -1558,6 +1570,10 @@
         continue;
       }
       if (SESSION_CLEANUP_NUMBER_KEYS.has(key)) {
+        state.mountedControls.sessionCleanupControls.get(key).syncFromSnapshot();
+        continue;
+      }
+      if (FLASH_NUMBER_KEYS.has(key)) {
         state.mountedControls.sessionCleanupControls.get(key).syncFromSnapshot();
         continue;
       }
