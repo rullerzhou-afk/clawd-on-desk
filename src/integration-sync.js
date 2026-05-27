@@ -119,8 +119,9 @@ function createIntegrationSyncRuntime(options = {}) {
     } catch (err) {
       console.warn("Clawd: failed to sync Qwen hooks:", err.message);
       return { status: "error", message: err && err.message ? err.message : "Failed to sync Qwen hooks" };
+    }
   }
-  
+
   function syncQoderHooks() {
     try {
       if (typeof ctx.syncQoderHooksImpl === "function") return ctx.syncQoderHooksImpl();
