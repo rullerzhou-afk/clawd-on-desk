@@ -119,6 +119,20 @@ function createIntegrationSyncRuntime(options = {}) {
     } catch (err) {
       console.warn("Clawd: failed to sync Qwen hooks:", err.message);
       return { status: "error", message: err && err.message ? err.message : "Failed to sync Qwen hooks" };
+  }
+  
+  function syncQoderHooks() {
+    try {
+      if (typeof ctx.syncQoderHooksImpl === "function") return ctx.syncQoderHooksImpl();
+      const { registerQoderHooks } = require("../hooks/qoder-install.js");
+      const { added, updated } = registerQoderHooks({ silent: true });
+      if (added > 0 || updated > 0) {
+        console.log(`Clawd: synced Qoder hooks (added ${added}, updated ${updated})`);
+      }
+      return { status: "ok", added, updated };
+    } catch (err) {
+      console.warn("Clawd: failed to sync Qoder hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed" };
     }
   }
 
@@ -311,12 +325,14 @@ function createIntegrationSyncRuntime(options = {}) {
     pi: syncPiExtension,
     openclaw: syncOpenClawPlugin,
     hermes: syncHermesPlugin,
+    qoder: syncQoderHooks,
   });
 
   const AGENT_INTEGRATION_REPAIRERS = Object.freeze({
     ...AGENT_INTEGRATION_SYNCERS,
     codex: repairCodexHooks,
     openclaw: repairOpenClawPlugin,
+    qoder: syncQoderHooks,
   });
 
   function syncIntegrationForAgent(agentId) {
@@ -374,6 +390,7 @@ function createIntegrationSyncRuntime(options = {}) {
     syncPiExtension,
     syncOpenClawPlugin,
     syncHermesPlugin,
+    syncQoderHooks,
     repairCodexHooks,
     repairOpenClawPlugin,
     syncIntegrationForAgent,

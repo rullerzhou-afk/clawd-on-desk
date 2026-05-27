@@ -107,3 +107,4 @@ scripts/*
 
 # Cursor local config (MCP, rules from omc setup)
 .cursor/
+AGENTS.md

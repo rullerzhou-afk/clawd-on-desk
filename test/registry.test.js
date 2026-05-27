@@ -21,6 +21,7 @@ describe("Agent Registry", () => {
       "pi",
       "openclaw",
       "hermes",
+      "qoder",
     ]);
   });
 

@@ -177,6 +177,7 @@ const SCHEMA = {
       "pi": { enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
       "openclaw": { enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
       "hermes": { enabled: true },
+      "qoder": { enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
     }),
     normalize: normalizeAgents,
   },
