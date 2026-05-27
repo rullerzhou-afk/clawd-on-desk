@@ -147,7 +147,7 @@ npm install
 npm start
 ```
 
-**Claude Code** と **Codex CLI** は自動登録される hook により、そのまま動作します。**Gemini CLI**、**Cursor Agent**、**CodeBuddy**、**Kiro CLI**、**Kimi Code CLI (Kimi-CLI)**、**opencode**、**Pi**、**OpenClaw**、**Hermes Agent** は、インストール済みかつ初期化済みであれば Clawd 起動時に自動登録されます。**Copilot CLI** だけは一度だけ hook setup が必要です。Remote SSH、WSL、macOS/Linux のプラットフォーム別メモも含めた詳細: **[docs/guides/setup-guide.md](docs/guides/setup-guide.md)**
+**Claude Code**、**Codex CLI**、**Copilot CLI** は自動登録される hook により、そのまま動作します。**Gemini CLI**、**Cursor Agent**、**CodeBuddy**、**Kiro CLI**、**Kimi Code CLI (Kimi-CLI)**、**opencode**、**Pi**、**OpenClaw**、**Hermes Agent** は、インストール済みかつ初期化済みであれば Clawd 起動時に自動登録されます。Remote SSH、WSL、macOS/Linux のプラットフォーム別メモも含めた詳細: **[docs/guides/setup-guide.md](docs/guides/setup-guide.md)**
 
 リモートサーバーで Claude Code / Codex CLI を動かし、状態と権限バブルをローカル Clawd に転送したい場合は、アプリ内の **Settings → Remote SSH → One-click deploy** を使います。完全な手順、Doctor の境界、FAQ はこちら: **[docs/guides/guide-remote-ssh.md](docs/guides/guide-remote-ssh.md)**
 
@@ -190,7 +190,6 @@ node scripts/validate-theme.js path/to/your-theme
 今後検討したい項目です。
 
 - `codex.exe` PID からのプロセスツリー lookup による Codex ターミナルフォーカス
-- Copilot CLI hooks の自動登録（Claude Code と同様）
 - テーマレジストリとアプリ内ダウンロード
 - アプリのクリーン削除用 hook uninstall script
 

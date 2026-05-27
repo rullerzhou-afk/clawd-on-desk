@@ -8,7 +8,7 @@
 
 **Codex CLI** — works out of the box. Clawd auto-registers official Codex hooks in `~/.codex/hooks.json` when Codex is installed, and enables `[features].hooks = true` unless the user explicitly set hooks to `false`. The installer migrates the deprecated `[features].codex_hooks` key to `hooks` while preserving an explicit false value. The official hook path gives live state updates plus real Allow/Deny permission bubbles. JSONL polling of `~/.codex/sessions/` remains as a fallback for hook-disabled sessions and events Codex hooks do not cover.
 
-**Copilot CLI** — local installs still need a manual `~/.copilot/hooks/hooks.json` (Clawd does not auto-sync Copilot at startup). Remote SSH installs are automatic via the in-app **Settings → Remote SSH → One-click deploy** (or the `scripts/remote-deploy.sh` source-checkout fallback). See [copilot-setup.md](copilot-setup.md) for both flows.
+**Copilot CLI** — works out of the box. Clawd auto-registers hooks in `<COPILOT_HOME or ~/.copilot>/hooks/hooks.json` on launch (marker-based merge — your other hook entries and `hooks/*.json` files are preserved). Remote SSH installs are automatic via the in-app **Settings → Remote SSH → One-click deploy**. If `hooks.json` or `settings.json` has `disableAllHooks: true`, doctor reports a warning and skips the Fix button. See [copilot-setup.md](copilot-setup.md) for manual fallback and `COPILOT_HOME` notes.
 
 **Gemini CLI** — hooks live in `~/.gemini/settings.json`. Clawd auto-registers them on launch when Gemini is installed, or you can run `npm run install:gemini-hooks` manually.
 

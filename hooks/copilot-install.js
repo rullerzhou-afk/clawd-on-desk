@@ -1,17 +1,17 @@
 #!/usr/bin/env node
-// Merge Clawd Copilot CLI hooks into ~/.copilot/hooks/hooks.json
-// (append-only, idempotent).
-//
-// Local installs are intentionally still configured by hand — Copilot CLI is
-// the one supported agent for which Clawd does not auto-sync hooks at startup
-// (see AGENTS.md, docs/guides/copilot-setup.md). This installer exists so the
-// `scripts/remote-deploy.sh` flow can register Copilot hooks on a remote SSH
-// host alongside Claude Code and Codex CLI, matching their UX.
+// Merge Clawd Copilot CLI hooks into <copilot-home>/hooks/hooks.json
+// (append-only, idempotent). Called by both local startup integration sync
+// and `scripts/remote-deploy.sh` for SSH remotes.
 //
 // Copilot's hooks.json schema uses `bash` + `powershell` per-platform command
 // strings (not the single `command` field used by Claude/Cursor), so the
 // installer writes both fields. Marker-based reconciliation keeps existing
 // user-authored entries untouched and rewrites only the Clawd entry.
+//
+// `<copilot-home>` resolves to `$COPILOT_HOME` (trimmed, non-empty) when set,
+// else `~/.copilot`. See `resolveCopilotHome()` below. Paths are resolved at
+// call time, not at module load, so test injection of `options.env` /
+// `options.homeDir` / `options.copilotHome` works.
 
 const fs = require("fs");
 const path = require("path");
@@ -20,8 +20,27 @@ const { writeJsonAtomic, asarUnpackedPath } = require("./json-utils");
 const { resolveNodeBin } = require("./server-config");
 
 const MARKER = "copilot-hook.js";
-const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".copilot");
-const DEFAULT_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, "hooks", "hooks.json");
+
+function resolveCopilotHome(options = {}) {
+  if (options && typeof options.copilotHome === "string") {
+    const trimmed = options.copilotHome.trim();
+    if (trimmed) return trimmed;
+  }
+  const env = (options && options.env) || process.env;
+  if (env && typeof env.COPILOT_HOME === "string") {
+    const trimmed = env.COPILOT_HOME.trim();
+    if (trimmed) return trimmed;
+  }
+  return path.join(options.homeDir || os.homedir(), ".copilot");
+}
+
+function resolveCopilotHooksPath(options = {}) {
+  return path.join(resolveCopilotHome(options), "hooks", "hooks.json");
+}
+
+function resolveCopilotSettingsPath(options = {}) {
+  return path.join(resolveCopilotHome(options), "settings.json");
+}
 
 const COPILOT_HOOK_EVENTS = [
   "sessionStart",
@@ -29,6 +48,11 @@ const COPILOT_HOOK_EVENTS = [
   "preToolUse",
   "postToolUse",
   "sessionEnd",
+  "errorOccurred",
+  "agentStop",
+  "subagentStart",
+  "subagentStop",
+  "preCompact",
 ];
 
 const TIMEOUT_SEC = 5;
@@ -74,38 +98,46 @@ function entryMatches(existing, desired) {
 
 function entryHasMarker(entry) {
   if (!entry || typeof entry !== "object") return false;
-  const bash = typeof entry.bash === "string" ? entry.bash : "";
-  const ps = typeof entry.powershell === "string" ? entry.powershell : "";
-  return bash.includes(MARKER) || ps.includes(MARKER);
+  // Match doctor's scan in findCopilotHookCommandsForEvent: any of the three
+  // platform fields (bash / powershell / legacy `command`) counts. Otherwise
+  // a legacy command-only Clawd entry would be missed here, the installer
+  // would append a fresh bash/powershell entry, and the same Copilot event
+  // would fire two HTTP state posts.
+  for (const field of ["bash", "powershell", "command"]) {
+    const value = entry[field];
+    if (typeof value === "string" && value.includes(MARKER)) return true;
+  }
+  return false;
 }
 
 /**
- * Register Clawd hooks into ~/.copilot/hooks/hooks.json.
+ * Register Clawd hooks into <copilot-home>/hooks/hooks.json.
  *
  * @param {object} [options]
- * @param {boolean} [options.silent]    suppress console output (used by tests)
- * @param {string}  [options.hooksPath] override config file location (tests)
- * @param {string}  [options.homeDir]   override home dir (tests)
- * @param {string}  [options.nodeBin]   pin node binary. Remote installs default
- *                                       to this process' Node executable so
- *                                       non-interactive SSH PATH is not needed.
- * @param {string}  [options.hookScript] override absolute path to copilot-hook.js
- * @param {boolean} [options.remote]     register hooks for SSH remote mode
+ * @param {boolean} [options.silent]      suppress console output (used by tests)
+ * @param {string}  [options.hooksPath]   override config file location (tests)
+ * @param {string}  [options.homeDir]     override home dir (tests)
+ * @param {string}  [options.copilotHome] override resolved copilot home (tests)
+ * @param {object}  [options.env]         override process.env (tests)
+ * @param {string}  [options.nodeBin]     pin node binary. Remote installs default
+ *                                         to this process' Node executable so
+ *                                         non-interactive SSH PATH is not needed.
+ * @param {string}  [options.hookScript]  override absolute path to copilot-hook.js
+ * @param {boolean} [options.remote]      register hooks for SSH remote mode
  * @returns {{ added: number, updated: number, skipped: number, configChanged: boolean }}
  */
 function registerCopilotHooks(options = {}) {
-  const homeDir = options.homeDir || os.homedir();
-  const hooksPath = options.hooksPath || path.join(homeDir, ".copilot", "hooks", "hooks.json");
+  const copilotDir = resolveCopilotHome(options);
+  const hooksPath = options.hooksPath || path.join(copilotDir, "hooks", "hooks.json");
 
-  // Skip if Copilot CLI isn't installed (no ~/.copilot/) — but only when caller
+  // Skip if Copilot CLI isn't installed (no <copilot-home>/) — but only when caller
   // didn't explicitly override the path (tests do).
   if (!options.hooksPath) {
-    const copilotDir = path.join(homeDir, ".copilot");
     let exists = false;
     try { exists = fs.statSync(copilotDir).isDirectory(); } catch {}
     if (!exists) {
       if (!options.silent) {
-        console.log("Copilot CLI not installed (~/.copilot/ not found) — skipping hook registration.");
+        console.log(`Copilot CLI not installed (${copilotDir} not found) — skipping hook registration.`);
       }
       return { added: 0, updated: 0, skipped: 0, configChanged: false };
     }
@@ -181,14 +213,26 @@ function registerCopilotHooks(options = {}) {
 }
 
 module.exports = {
-  DEFAULT_PARENT_DIR,
-  DEFAULT_CONFIG_PATH,
+  MARKER,
   COPILOT_HOOK_EVENTS,
   TIMEOUT_SEC,
+  resolveCopilotHome,
+  resolveCopilotHooksPath,
+  resolveCopilotSettingsPath,
   buildCopilotHookCommands,
   buildCopilotHookEntry,
   registerCopilotHooks,
 };
+
+// Lazy-getter exports for back-compat — values reflect current env at access time.
+Object.defineProperty(module.exports, "DEFAULT_PARENT_DIR", {
+  enumerable: true,
+  get() { return resolveCopilotHome(); },
+});
+Object.defineProperty(module.exports, "DEFAULT_CONFIG_PATH", {
+  enumerable: true,
+  get() { return resolveCopilotHooksPath(); },
+});
 
 // CLI: `node hooks/copilot-install.js [--remote]`.
 if (require.main === module) {

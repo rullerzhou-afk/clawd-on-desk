@@ -145,7 +145,7 @@ npm install
 npm start
 ```
 
-**Claude Code**와 **Codex CLI**는 바로 사용할 수 있습니다. **Gemini CLI**, **Cursor Agent**, **CodeBuddy**, **Kiro CLI**, **Kimi Code CLI (Kimi-CLI)**, **opencode**, **Pi**, **OpenClaw**, **Hermes Agent**는 설치 및 초기화되어 있다면 Clawd 시작 시 자동 등록되며, **Copilot CLI**만 1회 hook 설정이 필요합니다. 원격 SSH, WSL, 플랫폼별 참고 사항(macOS / Linux)까지 포함된 가이드는 **[docs/guides/setup-guide.md](docs/guides/setup-guide.md)** 를 참고하세요.
+**Claude Code**, **Codex CLI**, **Copilot CLI**는 바로 사용할 수 있습니다. **Gemini CLI**, **Cursor Agent**, **CodeBuddy**, **Kiro CLI**, **Kimi Code CLI (Kimi-CLI)**, **opencode**, **Pi**, **OpenClaw**, **Hermes Agent**는 설치 및 초기화되어 있다면 Clawd 시작 시 자동 등록됩니다. 원격 SSH, WSL, 플랫폼별 참고 사항(macOS / Linux)까지 포함된 가이드는 **[docs/guides/setup-guide.md](docs/guides/setup-guide.md)** 를 참고하세요.
 
 `Codex + WSL`의 공식 현황, Clawd의 현재 구현 경계, 그리고 왜 이 부분이 오해되기 쉬운지는 **[docs/guides/codex-wsl-clarification.ko-KR.md](docs/guides/codex-wsl-clarification.ko-KR.md)** 를 참고하세요.
 
@@ -186,7 +186,6 @@ node scripts/validate-theme.js path/to/your-theme
 앞으로 탐색해 보고 싶은 것들:
 
 - `codex.exe` PID에서 프로세스 트리를 역추적하는 Codex 터미널 포커스
-- Claude Code처럼 Copilot CLI hooks 자동 등록
 - 테마 레지스트리와 앱 내 다운로드
 - 앱 제거를 위한 hook uninstall 스크립트
 

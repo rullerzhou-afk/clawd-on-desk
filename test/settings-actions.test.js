@@ -808,16 +808,18 @@ describe("doctor repair commands", () => {
     assert.deepStrictEqual(calls, [{ agentId: "codex", options: { forceCodexHooksFeature: true } }]);
   });
 
-  it("rejects Copilot CLI because it is manual-only", async () => {
+  it("accepts Copilot CLI through the standard auto-repair path", async () => {
     const calls = [];
     const r = await commandRegistry.repairAgentIntegration({ agentId: "copilot-cli" }, {
       snapshot: prefs.getDefaults(),
-      repairIntegrationForAgent: (agentId) => calls.push(agentId),
+      repairIntegrationForAgent: (agentId) => {
+        calls.push(agentId);
+        return { status: "ok", added: 10, updated: 0 };
+      },
     });
 
-    assert.strictEqual(r.status, "error");
-    assert.match(r.message, /manual/i);
-    assert.deepStrictEqual(calls, []);
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(calls, ["copilot-cli"]);
   });
 
   it("does not repair disabled agents", async () => {

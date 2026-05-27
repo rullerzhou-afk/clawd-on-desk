@@ -13,6 +13,7 @@ const {
 const AUTO_REPAIRABLE_AGENT_IDS = new Set([
   "claude-code",
   "codex",
+  "copilot-cli",
   "cursor-agent",
   "gemini-cli",
   "antigravity-cli",
@@ -144,9 +145,7 @@ async function repairAgentIntegration(payload, deps) {
   if (!AUTO_REPAIRABLE_AGENT_IDS.has(agentId)) {
     return {
       status: "error",
-      message: agentId === "copilot-cli"
-        ? "Copilot CLI uses manual project-level hooks and cannot be auto-repaired"
-        : `No automatic integration repair is available for ${agentId}`,
+      message: `No automatic integration repair is available for ${agentId}`,
     };
   }
 

@@ -18,6 +18,7 @@ CHANGELOG-draft.md
 docs/**
 !docs/guides/
 !docs/guides/copilot-setup.md
+!docs/guides/copilot-setup.zh-CN.md
 !docs/guides/guide-theme-creation.md
 !docs/guides/known-limitations.md
 !docs/guides/known-limitations.zh-CN.md

@@ -985,10 +985,12 @@ describe("checkAgentIntegrations", () => {
   });
 
   it("aggregates all-info states as critical when no integration is ok", () => {
+    // none-global agents (info status `manual-only`) + missing agents only:
+    // no real `ok` integrations means the overall summary is critical.
     const result = checkAgentIntegrations({
       fs,
       descriptors: [
-        baseDescriptor({ agentId: "copilot-cli", configMode: "none-global" }),
+        baseDescriptor({ agentId: "hypothetical-none-global", configMode: "none-global" }),
         baseDescriptor({ agentId: "missing-agent" }),
       ],
     });

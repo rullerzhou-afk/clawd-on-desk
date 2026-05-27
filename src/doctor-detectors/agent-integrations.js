@@ -92,6 +92,16 @@ function withAgentFixAction(detail, descriptor) {
   ) {
     return detail;
   }
+  if (
+    descriptor.agentId === "copilot-cli"
+    && detail.supplementary
+    && detail.supplementary.key === "copilot_hooks"
+    && typeof detail.supplementary.value === "string"
+    && detail.supplementary.value.startsWith("disabled")
+  ) {
+    // User explicitly set disableAllHooks; Clawd must not overwrite that intent.
+    return detail;
+  }
   const fixAction = { type: "agent-integration", agentId: descriptor.agentId };
   if (
     descriptor.agentId === "codex"
@@ -243,6 +253,108 @@ function validateGeminiHookEvents(descriptor, settings, options) {
   return makeDetail(descriptor, "ok", {
     level: null,
     detail: `${descriptor.configPath} Gemini hooks registered for ${GEMINI_HOOK_EVENTS.length} events, scriptPath verified`,
+    commandCount,
+    scriptPath: firstOk && firstOk.scriptPath ? firstOk.scriptPath : null,
+  });
+}
+
+// Copilot CLI's hooks.json entries store the command in per-platform `bash` /
+// `powershell` fields (not the single `command` field used by Claude/Cursor/
+// Gemini). Generic findHookCommandsForEvent would miss them, so scan all three
+// fields and let the validator decide which is platform-appropriate.
+function findCopilotHookCommandsForEvent(settings, eventName, marker) {
+  if (!settings || !settings.hooks || typeof marker !== "string" || !marker) return [];
+  const entries = settings.hooks[eventName];
+  if (!Array.isArray(entries)) return [];
+  const commands = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    for (const field of ["bash", "powershell", "command"]) {
+      const cmd = entry[field];
+      if (typeof cmd === "string" && commandContainsFragment(cmd, marker)) {
+        commands.push(cmd);
+      }
+    }
+  }
+  return commands;
+}
+
+function validateCopilotHookEvents(descriptor, settings, settingsJson, options) {
+  // disableAllHooks short-circuit — check both hooks.json (file-scoped) and
+  // settings.json (global). Either being true means hooks won't run.
+  if (settings && settings.disableAllHooks === true) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      detail: `${descriptor.configPath} has disableAllHooks=true; Clawd hooks will not run`,
+      supplementary: { key: "copilot_hooks", value: "disabled-file" },
+    });
+  }
+  if (settingsJson && settingsJson.disableAllHooks === true) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      detail: `${descriptor.settingsPath || "settings.json"} has disableAllHooks=true; Clawd hooks will not run`,
+      supplementary: { key: "copilot_hooks", value: "disabled-global" },
+    });
+  }
+
+  const events = Array.isArray(descriptor.hookEvents) ? descriptor.hookEvents : [];
+  const missingEvents = [];
+  let commandCount = 0;
+  let firstOk = null;
+  let firstFailure = null;
+
+  for (const eventName of events) {
+    const commands = findCopilotHookCommandsForEvent(settings, eventName, descriptor.marker);
+    commandCount += commands.length;
+    if (!commands.length) {
+      missingEvents.push(eventName);
+      continue;
+    }
+
+    const results = commands.map((command) => options.validateCommand(command, {
+      platform: options.platform,
+      fs: options.fs,
+    }));
+    const ok = results.find((result) => result.ok);
+    if (ok) {
+      if (!firstOk) firstOk = ok;
+      continue;
+    }
+    if (!firstFailure) {
+      firstFailure = {
+        eventName,
+        result: results[0] || { issue: "parse-failed" },
+        command: commands[0],
+      };
+    }
+  }
+
+  if (missingEvents.length) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      detail: `${descriptor.configPath} missing Copilot hook event(s): ${missingEvents.join(", ")}`,
+      commandCount,
+      missingCopilotHookEvents: missingEvents,
+    });
+  }
+
+  if (firstFailure) {
+    const first = firstFailure.result;
+    return makeDetail(descriptor, "broken-path", {
+      level: "warning",
+      detail: `Copilot hook command failed validation for ${firstFailure.eventName}: ${first.issue || "parse-failed"}`,
+      commandCount,
+      hookCommandIssue: first.issue || "parse-failed",
+      nodeBin: first.nodeBin || null,
+      scriptPath: first.scriptPath || null,
+      commandFragment: first.fragment || String(firstFailure.command || "").slice(0, 128),
+      brokenCopilotHookEvent: firstFailure.eventName,
+    });
+  }
+
+  return makeDetail(descriptor, "ok", {
+    level: null,
+    detail: `${descriptor.configPath} Copilot hooks registered for ${events.length} events, scriptPath verified`,
     commandCount,
     scriptPath: firstOk && firstOk.scriptPath ? firstOk.scriptPath : null,
   });
@@ -551,6 +663,52 @@ function checkFileMode(descriptor, options) {
   detail = applyCodexSupplementary(detail, descriptor, options, settings);
   detail = applyGeminiSupplementary(detail, descriptor, settings);
   return applyQwenSupplementary(detail, descriptor, settings);
+}
+
+function checkCopilotHooksMode(descriptor, options) {
+  if (!fileExists(options.fs, descriptor.configPath)) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: false,
+      configPath: descriptor.configPath,
+      detail: `${descriptor.configPath} missing`,
+    });
+  }
+
+  let hooksJson;
+  try {
+    hooksJson = readJson(options.fs, descriptor.configPath);
+  } catch (err) {
+    return makeDetail(descriptor, "config-corrupt", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: err && err.message ? err.message : "hooks.json parse failed",
+    });
+  }
+
+  // settings.json is optional and auxiliary — its only doctor signal is the
+  // disableAllHooks flag. Parse errors are ignored so a malformed
+  // settings.json never blocks hooks.json validation (see the matching
+  // "ignores parse errors in settings.json" test case).
+  let settingsJson = null;
+  if (descriptor.settingsPath && fileExists(options.fs, descriptor.settingsPath)) {
+    try {
+      settingsJson = readJson(options.fs, descriptor.settingsPath);
+    } catch {
+      // ignore parse errors; settings.json is auxiliary
+    }
+  }
+
+  const detail = validateCopilotHookEvents(descriptor, hooksJson, settingsJson, options);
+  return {
+    ...detail,
+    parentDirExists: true,
+    configFileExists: true,
+    configPath: descriptor.configPath,
+  };
 }
 
 function checkTomlTextMode(descriptor, options) {
@@ -1146,7 +1304,7 @@ function checkAgent(descriptor, options) {
   if (descriptor.configMode === "none-global") {
     return makeDetail(descriptor, "manual-only", {
       level: "info",
-      detail: "This agent uses project-level config",
+      detail: "This agent does not use a host-managed config file",
       scriptPath: descriptor.scriptPath || null,
       scriptExists: descriptor.scriptPath ? fileExists(options.fs, descriptor.scriptPath) : null,
     });
@@ -1165,6 +1323,8 @@ function checkAgent(descriptor, options) {
   let detail;
   if (descriptor.configMode === "file") {
     detail = checkFileMode(descriptor, options);
+  } else if (descriptor.configMode === "copilot-hooks") {
+    detail = checkCopilotHooksMode(descriptor, options);
   } else if (descriptor.configMode === "toml-text") {
     detail = checkTomlTextMode(descriptor, options);
   } else if (descriptor.configMode === "dir") {

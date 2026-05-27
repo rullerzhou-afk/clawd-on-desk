@@ -9,6 +9,8 @@ const {
   buildCopilotHookCommands,
   buildCopilotHookEntry,
   registerCopilotHooks,
+  resolveCopilotHome,
+  resolveCopilotHooksPath,
 } = require("../hooks/copilot-install");
 
 const MARKER = "copilot-hook.js";
@@ -40,6 +42,62 @@ afterEach(() => {
   while (tempDirs.length) {
     fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
   }
+});
+
+describe("COPILOT_HOOK_EVENTS", () => {
+  it("covers all 10 events Clawd's EVENT_TO_STATE map supports", () => {
+    assert.strictEqual(COPILOT_HOOK_EVENTS.length, 10);
+    for (const event of [
+      "sessionStart", "userPromptSubmitted", "preToolUse", "postToolUse", "sessionEnd",
+      "errorOccurred", "agentStop", "subagentStart", "subagentStop", "preCompact",
+    ]) {
+      assert.ok(COPILOT_HOOK_EVENTS.includes(event), `missing event ${event}`);
+    }
+  });
+});
+
+describe("resolveCopilotHome", () => {
+  it("prefers options.copilotHome (trimmed) over env and homeDir", () => {
+    const result = resolveCopilotHome({
+      copilotHome: "  /opt/custom-copilot  ",
+      env: { COPILOT_HOME: "/env/copilot" },
+      homeDir: "/home/u",
+    });
+    assert.strictEqual(result, "/opt/custom-copilot");
+  });
+
+  it("uses env.COPILOT_HOME (trimmed) when options.copilotHome is absent", () => {
+    const result = resolveCopilotHome({
+      env: { COPILOT_HOME: "  /env/copilot  " },
+      homeDir: "/home/u",
+    });
+    assert.strictEqual(result, "/env/copilot");
+  });
+
+  it("falls back to homeDir/.copilot when env.COPILOT_HOME is empty string", () => {
+    const result = resolveCopilotHome({ env: { COPILOT_HOME: "" }, homeDir: "/home/u" });
+    assert.strictEqual(result, path.join("/home/u", ".copilot"));
+  });
+
+  it("falls back to homeDir/.copilot when env.COPILOT_HOME is whitespace-only", () => {
+    const result = resolveCopilotHome({ env: { COPILOT_HOME: "   \t  " }, homeDir: "/home/u" });
+    assert.strictEqual(result, path.join("/home/u", ".copilot"));
+  });
+
+  it("falls back to homeDir/.copilot when env is missing", () => {
+    const result = resolveCopilotHome({ env: {}, homeDir: "/home/u" });
+    assert.strictEqual(result, path.join("/home/u", ".copilot"));
+  });
+});
+
+describe("resolveCopilotHooksPath", () => {
+  it("appends hooks/hooks.json to the resolved copilot home", () => {
+    const result = resolveCopilotHooksPath({
+      env: { COPILOT_HOME: "/custom" },
+      homeDir: "/home/u",
+    });
+    assert.strictEqual(result, path.join("/custom", "hooks", "hooks.json"));
+  });
 });
 
 describe("buildCopilotHookCommands", () => {
@@ -93,7 +151,7 @@ describe("buildCopilotHookEntry", () => {
 });
 
 describe("registerCopilotHooks", () => {
-  it("creates hooks.json from scratch with all 5 events on first install", () => {
+  it("creates hooks.json from scratch with all events on first install", () => {
     // makeTempHomeWithCopilot() with no arg leaves hooks.json absent,
     // exercising the ENOENT branch in registerCopilotHooks.
     const { homeDir, hooksPath } = makeTempHomeWithCopilot();
@@ -343,6 +401,43 @@ describe("registerCopilotHooks", () => {
     assert.ok(typeof entry.powershell === "string" && entry.powershell.length > 0);
   });
 
+  it("recognizes legacy entries that only use the command field (regression: no double-append)", () => {
+    // Doctor's findCopilotHookCommandsForEvent already accepts the `command`
+    // field (some old configs / SDK ports wrote it instead of bash+powershell).
+    // The installer must match that contract or it would append a fresh
+    // bash/powershell entry beside the legacy command entry, causing two
+    // HTTP posts per Copilot event.
+    const { homeDir, hooksPath } = makeTempHomeWithCopilot({
+      version: 1,
+      hooks: {
+        sessionStart: [
+          {
+            type: "command",
+            command: '"/usr/bin/node" "/old/copilot-hook.js" "sessionStart"',
+            timeoutSec: 5,
+          },
+        ],
+      },
+    });
+
+    const result = registerCopilotHooks({
+      silent: true,
+      homeDir,
+      nodeBin: "node",
+      hookScript: "/new/copilot-hook.js",
+    });
+
+    // sessionStart legacy entry recognized → updated (not appended)
+    assert.strictEqual(result.updated, 1, "legacy command entry should be updated, not appended");
+    // Other 9 events still get added fresh
+    assert.strictEqual(result.added, COPILOT_HOOK_EVENTS.length - 1);
+
+    const sessionStart = readJson(hooksPath).hooks.sessionStart;
+    assert.strictEqual(sessionStart.length, 1, "no duplicate Clawd entries");
+    assert.ok(sessionStart[0].bash.includes("/new/copilot-hook.js"));
+    assert.ok(sessionStart[0].powershell.includes("/new/copilot-hook.js"));
+  });
+
   it("recognizes legacy entries that only use the powershell field", () => {
     // Edge case: someone wrote a Windows-only entry; we still detect+normalize it.
     const { homeDir, hooksPath } = makeTempHomeWithCopilot({
@@ -379,5 +474,84 @@ describe("registerCopilotHooks", () => {
       () => registerCopilotHooks({ silent: true, homeDir }),
       /Failed to read hooks\.json/
     );
+  });
+
+  it("writes to env.COPILOT_HOME when set, not homeDir/.copilot", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-copilot-home-env-"));
+    tempDirs.push(tmpDir);
+    const customCopilot = path.join(tmpDir, "custom-cli");
+    fs.mkdirSync(path.join(customCopilot, "hooks"), { recursive: true });
+
+    const fakeHome = path.join(tmpDir, "fake-home");
+    fs.mkdirSync(fakeHome, { recursive: true });
+
+    const result = registerCopilotHooks({
+      silent: true,
+      homeDir: fakeHome,
+      env: { COPILOT_HOME: customCopilot },
+      nodeBin: "node",
+      hookScript: "/x/copilot-hook.js",
+    });
+
+    assert.strictEqual(result.added, COPILOT_HOOK_EVENTS.length);
+    // Hook written into the env-redirected path
+    assert.ok(fs.existsSync(path.join(customCopilot, "hooks", "hooks.json")));
+    // Not into the default fallback path
+    assert.strictEqual(fs.existsSync(path.join(fakeHome, ".copilot", "hooks", "hooks.json")), false);
+  });
+
+  it("options.copilotHome wins over env.COPILOT_HOME and homeDir", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-copilot-opt-"));
+    tempDirs.push(tmpDir);
+    const optHome = path.join(tmpDir, "opt-copilot");
+    fs.mkdirSync(path.join(optHome, "hooks"), { recursive: true });
+    const envHome = path.join(tmpDir, "env-copilot");
+    fs.mkdirSync(path.join(envHome, "hooks"), { recursive: true });
+    const fakeHome = path.join(tmpDir, "fake-home");
+    fs.mkdirSync(fakeHome, { recursive: true });
+
+    registerCopilotHooks({
+      silent: true,
+      copilotHome: optHome,
+      env: { COPILOT_HOME: envHome },
+      homeDir: fakeHome,
+      nodeBin: "node",
+      hookScript: "/x/copilot-hook.js",
+    });
+
+    assert.ok(fs.existsSync(path.join(optHome, "hooks", "hooks.json")));
+    assert.strictEqual(fs.existsSync(path.join(envHome, "hooks", "hooks.json")), false);
+    assert.strictEqual(fs.existsSync(path.join(fakeHome, ".copilot")), false);
+  });
+
+  it("env.COPILOT_HOME='' (empty) falls back to homeDir/.copilot", () => {
+    const { homeDir, hooksPath } = makeTempHomeWithCopilot();
+
+    registerCopilotHooks({
+      silent: true,
+      homeDir,
+      env: { COPILOT_HOME: "" },
+      nodeBin: "node",
+      hookScript: "/x/copilot-hook.js",
+    });
+
+    assert.ok(fs.existsSync(hooksPath), "should fall back to default ~/.copilot path");
+  });
+
+  it("skips registration when env.COPILOT_HOME points at a missing directory", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-copilot-env-missing-"));
+    tempDirs.push(tmpDir);
+    const fakeHome = path.join(tmpDir, "fake-home");
+    fs.mkdirSync(fakeHome, { recursive: true });
+    const nonexistent = path.join(tmpDir, "nope-copilot");
+
+    const result = registerCopilotHooks({
+      silent: true,
+      homeDir: fakeHome,
+      env: { COPILOT_HOME: nonexistent },
+    });
+
+    assert.deepStrictEqual(result, { added: 0, updated: 0, skipped: 0, configChanged: false });
+    assert.strictEqual(fs.existsSync(nonexistent), false);
   });
 });

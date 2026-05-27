@@ -190,6 +190,21 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncCopilotHooks() {
+    try {
+      if (typeof ctx.syncCopilotHooksImpl === "function") return ctx.syncCopilotHooksImpl();
+      const { registerCopilotHooks } = require("../hooks/copilot-install.js");
+      const { added, updated } = registerCopilotHooks({ silent: true });
+      if (added > 0 || updated > 0) {
+        console.log(`Clawd: synced Copilot hooks (added ${added}, updated ${updated})`);
+      }
+      return { status: "ok", added, updated };
+    } catch (err) {
+      console.warn("Clawd: failed to sync Copilot hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync Copilot hooks" };
+    }
+  }
+
   function syncOpencodePlugin() {
     try {
       if (typeof ctx.syncOpencodePluginImpl === "function") return ctx.syncOpencodePluginImpl();
@@ -286,6 +301,7 @@ function createIntegrationSyncRuntime(options = {}) {
     "gemini-cli": syncGeminiHooks,
     "antigravity-cli": syncAntigravityHooks,
     "cursor-agent": syncCursorHooks,
+    "copilot-cli": syncCopilotHooks,
     codebuddy: syncCodeBuddyHooks,
     "kiro-cli": syncKiroHooks,
     "kimi-cli": syncKimiHooks,
@@ -348,6 +364,7 @@ function createIntegrationSyncRuntime(options = {}) {
     syncGeminiHooks,
     syncAntigravityHooks,
     syncCursorHooks,
+    syncCopilotHooks,
     syncCodeBuddyHooks,
     syncKiroHooks,
     syncKimiHooks,

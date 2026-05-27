@@ -57,6 +57,22 @@ function parseWorkspaceYamlName(text) {
   return null;
 }
 
+// Resolve the Copilot session-state directory.
+//   - $COPILOT_HOME (trimmed, non-empty) overrides the default copilot home.
+//   - Empty / whitespace-only env falls back to ~/.copilot.
+// Inlined here (not imported from copilot-install) to keep this hook script
+// independent and avoid module-load overhead on every event spawn.
+function resolveCopilotSessionStateDir(options = {}) {
+  const env = (options && options.env) || process.env;
+  if (env && typeof env.COPILOT_HOME === "string") {
+    const trimmed = env.COPILOT_HOME.trim();
+    if (trimmed) return path.join(trimmed, "session-state");
+  }
+  const homeDir = options.homeDir || os.homedir();
+  if (!homeDir) return null;
+  return path.join(homeDir, ".copilot", "session-state");
+}
+
 // Read the renamed session title from Copilot's workspace.yaml.
 // Returns null if the session id is missing/invalid, the file doesn't
 // exist, or it has no usable `name:` field.
@@ -76,9 +92,9 @@ function readCopilotSessionTitle(sessionId, options = {}) {
   if (!trimmed) return null;
   if (!/^[A-Za-z0-9._-]+$/.test(trimmed)) return null;
   if (/^\.+$/.test(trimmed)) return null;
-  const homeDir = options.homeDir || os.homedir();
-  if (!homeDir) return null;
-  const baseDir = path.resolve(path.join(homeDir, ".copilot", "session-state"));
+  const sessionStateDir = resolveCopilotSessionStateDir(options);
+  if (!sessionStateDir) return null;
+  const baseDir = path.resolve(sessionStateDir);
   const sessionDir = path.resolve(path.join(baseDir, trimmed));
   if (!sessionDir.startsWith(baseDir + path.sep)) return null;
   const filePath = path.join(sessionDir, "workspace.yaml");
@@ -182,4 +198,5 @@ module.exports = {
   normalizeTitle,
   parseWorkspaceYamlName,
   readCopilotSessionTitle,
+  resolveCopilotSessionStateDir,
 };

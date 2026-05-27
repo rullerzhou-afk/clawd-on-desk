@@ -166,7 +166,7 @@ Mini 状态映射：
 - hook 脚本依赖 Node.js
 - Windows 终端聚焦依赖 `koffi`；macOS 依赖 `osascript`
 - Codex CLI 以 official hooks 为主、JSONL 轮询为 fallback；WebSearch / compaction / abort 等 hook 未覆盖事件仍可能有轮询延迟
-- Copilot CLI 需要手动创建 `~/.copilot/hooks/hooks.json`
+- Copilot CLI 自动同步 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`；`disableAllHooks: true` 时 doctor warning 且不挂 Fix 按钮
 - Gemini 无权限气泡，除非未来提供兼容的阻塞式审批协议；Cursor 权限走 stdout；Kiro 没有 global hooks；opencode 权限只能走 event hook + bridge
 - opencode 子会话会短暂出现在 Sessions 菜单里
 - 进程存活检测依赖进程名匹配，非标准进程名可能漏检

@@ -16,6 +16,7 @@ const {
   normalizeTitle,
   parseWorkspaceYamlName,
   readCopilotSessionTitle,
+  resolveCopilotSessionStateDir,
 } = require("../hooks/copilot-hook.js");
 
 function makeFakeHome(sessionId, contents) {
@@ -26,6 +27,17 @@ function makeFakeHome(sessionId, contents) {
     fs.writeFileSync(path.join(sessionDir, "workspace.yaml"), contents);
   }
   return dir;
+}
+
+function makeFakeCopilotHomeWithSession(rootName, sessionId, contents) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "copilot-hook-env-"));
+  const copilotHome = path.join(tmpDir, rootName);
+  const sessionDir = path.join(copilotHome, "session-state", sessionId);
+  fs.mkdirSync(sessionDir, { recursive: true });
+  if (contents !== null) {
+    fs.writeFileSync(path.join(sessionDir, "workspace.yaml"), contents);
+  }
+  return { tmpDir, copilotHome };
 }
 
 const mockResolve = () => ({
@@ -264,6 +276,106 @@ describe("buildStateBody (Copilot)", () => {
     } finally {
       if (oldRemote === undefined) delete process.env.CLAWD_REMOTE;
       else process.env.CLAWD_REMOTE = oldRemote;
+    }
+  });
+});
+
+describe("resolveCopilotSessionStateDir", () => {
+  it("uses env.COPILOT_HOME (trimmed) over homeDir", () => {
+    const result = resolveCopilotSessionStateDir({
+      env: { COPILOT_HOME: "  /custom-cli  " },
+      homeDir: "/home/u",
+    });
+    assert.strictEqual(result, path.join("/custom-cli", "session-state"));
+  });
+
+  it("falls back to homeDir/.copilot/session-state when env is empty", () => {
+    const result = resolveCopilotSessionStateDir({
+      env: { COPILOT_HOME: "" },
+      homeDir: "/home/u",
+    });
+    assert.strictEqual(result, path.join("/home/u", ".copilot", "session-state"));
+  });
+
+  it("falls back to homeDir/.copilot/session-state when env is whitespace-only", () => {
+    const result = resolveCopilotSessionStateDir({
+      env: { COPILOT_HOME: "  \t " },
+      homeDir: "/home/u",
+    });
+    assert.strictEqual(result, path.join("/home/u", ".copilot", "session-state"));
+  });
+
+  it("falls back to homeDir/.copilot/session-state when env is missing", () => {
+    const result = resolveCopilotSessionStateDir({ env: {}, homeDir: "/home/u" });
+    assert.strictEqual(result, path.join("/home/u", ".copilot", "session-state"));
+  });
+});
+
+describe("readCopilotSessionTitle + COPILOT_HOME", () => {
+  it("reads workspace.yaml from env.COPILOT_HOME, not homeDir/.copilot", () => {
+    const sessionId = "abc-123";
+    const { tmpDir, copilotHome } = makeFakeCopilotHomeWithSession(
+      "custom-cli", sessionId, "name: \"Env Title\"\n"
+    );
+    try {
+      // Decoy: default location has a different name; reader must not pick it.
+      const decoyHome = fs.mkdtempSync(path.join(os.tmpdir(), "copilot-hook-decoy-"));
+      const decoySession = path.join(decoyHome, ".copilot", "session-state", sessionId);
+      fs.mkdirSync(decoySession, { recursive: true });
+      fs.writeFileSync(path.join(decoySession, "workspace.yaml"), "name: \"Decoy Title\"\n");
+
+      const title = readCopilotSessionTitle(sessionId, {
+        env: { COPILOT_HOME: copilotHome },
+        homeDir: decoyHome,
+      });
+      assert.strictEqual(title, "Env Title");
+
+      fs.rmSync(decoyHome, { recursive: true, force: true });
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null when env points at a missing session even if homeDir has one", () => {
+    const sessionId = "abc-123";
+    const tmpEnv = fs.mkdtempSync(path.join(os.tmpdir(), "copilot-hook-env-empty-"));
+    const decoyHome = fs.mkdtempSync(path.join(os.tmpdir(), "copilot-hook-decoy-"));
+    try {
+      const decoySession = path.join(decoyHome, ".copilot", "session-state", sessionId);
+      fs.mkdirSync(decoySession, { recursive: true });
+      fs.writeFileSync(path.join(decoySession, "workspace.yaml"), "name: Decoy\n");
+
+      const title = readCopilotSessionTitle(sessionId, {
+        env: { COPILOT_HOME: tmpEnv },
+        homeDir: decoyHome,
+      });
+      assert.strictEqual(title, null);
+    } finally {
+      fs.rmSync(tmpEnv, { recursive: true, force: true });
+      fs.rmSync(decoyHome, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves path traversal defenses under env redirection", () => {
+    // Ensures the charset gate / pure-dot reject / containment check
+    // all still fire when sessionStateDir comes from env.
+    const tmpEnv = fs.mkdtempSync(path.join(os.tmpdir(), "copilot-hook-trav-"));
+    fs.mkdirSync(path.join(tmpEnv, "session-state"), { recursive: true });
+    try {
+      assert.strictEqual(
+        readCopilotSessionTitle("../escape", { env: { COPILOT_HOME: tmpEnv }, homeDir: "/" }),
+        null
+      );
+      assert.strictEqual(
+        readCopilotSessionTitle("..", { env: { COPILOT_HOME: tmpEnv }, homeDir: "/" }),
+        null
+      );
+      assert.strictEqual(
+        readCopilotSessionTitle("a/b", { env: { COPILOT_HOME: tmpEnv }, homeDir: "/" }),
+        null
+      );
+    } finally {
+      fs.rmSync(tmpEnv, { recursive: true, force: true });
     }
   });
 });

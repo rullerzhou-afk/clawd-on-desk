@@ -17,6 +17,7 @@ function makeRuntime(overrides = {}) {
     syncGeminiHooksImpl: () => calls.push({ name: "gemini" }),
     syncAntigravityHooksImpl: () => calls.push({ name: "antigravity" }),
     syncCursorHooksImpl: () => calls.push({ name: "cursor" }),
+    syncCopilotHooksImpl: () => calls.push({ name: "copilot" }),
     syncCodeBuddyHooksImpl: () => calls.push({ name: "codebuddy" }),
     syncKiroHooksImpl: () => calls.push({ name: "kiro" }),
     syncKimiHooksImpl: () => calls.push({ name: "kimi" }),
@@ -77,6 +78,7 @@ describe("integration sync runtime", () => {
       "watcher:start",
       "gemini",
       "antigravity",
+      "copilot",
       "codebuddy",
       "kiro",
       "kimi",
@@ -104,6 +106,24 @@ describe("integration sync runtime", () => {
 
     assert.deepStrictEqual(result, { status: "ok", source: "claude" });
     assert.deepStrictEqual(calls.map((entry) => entry.name), ["claude", "watcher:start"]);
+  });
+
+  it("syncIntegrationForAgent('copilot-cli') invokes the Copilot syncer", () => {
+    const { runtime, calls } = makeRuntime();
+
+    const result = runtime.syncIntegrationForAgent("copilot-cli");
+
+    assert.ok(result === true || (result && typeof result === "object"));
+    assert.deepStrictEqual(calls.map((entry) => entry.name), ["copilot"]);
+  });
+
+  it("repairIntegrationForAgent('copilot-cli') routes through syncCopilotHooks (no separate repair)", () => {
+    const { runtime, calls } = makeRuntime();
+
+    const result = runtime.repairIntegrationForAgent("copilot-cli");
+
+    assert.ok(result === true || (result && typeof result === "object"));
+    assert.deepStrictEqual(calls.map((entry) => entry.name), ["copilot"]);
   });
 
   it("repairIntegrationForAgent uses Codex repair and passes options through", () => {

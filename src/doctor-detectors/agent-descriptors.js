@@ -5,6 +5,7 @@ const { getAgent } = require("../../agents/registry");
 
 const claude = require("../../hooks/install");
 const codex = require("../../hooks/codex-install");
+const copilot = require("../../hooks/copilot-install");
 const cursor = require("../../hooks/cursor-install");
 const gemini = require("../../hooks/gemini-install");
 const antigravity = require("../../hooks/antigravity-install");
@@ -58,11 +59,13 @@ const AGENT_DESCRIPTORS = Object.freeze([
     agentId: "copilot-cli",
     agentName: agentName("copilot-cli"),
     eventSource: agentEventSource("copilot-cli"),
-    parentDir: null,
-    configPath: null,
-    configMode: "none-global",
-    autoInstall: false,
-    marker: "copilot-hook.js",
+    parentDir: copilot.resolveCopilotHome(),
+    configPath: copilot.resolveCopilotHooksPath(),
+    settingsPath: copilot.resolveCopilotSettingsPath(),
+    configMode: "copilot-hooks",
+    autoInstall: true,
+    marker: copilot.MARKER,
+    hookEvents: copilot.COPILOT_HOOK_EVENTS,
     scriptPath: path.join(__dirname, "..", "..", "hooks", "copilot-hook.js"),
   }),
   Object.freeze({

@@ -150,7 +150,7 @@ npm install
 npm start
 ```
 
-**Claude Code** 和 **Codex CLI** 會自動註冊 hooks，開箱即用。**Gemini CLI**、**Cursor Agent**、**CodeBuddy**、**Kiro CLI**、**Kimi Code CLI（Kimi-CLI）**、**opencode**、**Pi**、**OpenClaw**、**Hermes Agent** 在已安裝的前提下，會在 Clawd 啟動時自動同步（OpenClaw 還需要已有設定）；**Copilot CLI** 還是要做一次手動 hooks 設定。也涵蓋遠端 SSH、WSL 及平台說明（macOS 與 Linux）：**[設定指南（簡體中文）](docs/guides/setup-guide.zh-CN.md)**
+**Claude Code**、**Codex CLI**、**Copilot CLI** 會自動註冊 hooks，開箱即用。**Gemini CLI**、**Cursor Agent**、**CodeBuddy**、**Kiro CLI**、**Kimi Code CLI（Kimi-CLI）**、**opencode**、**Pi**、**OpenClaw**、**Hermes Agent** 在已安裝的前提下，會在 Clawd 啟動時自動同步（OpenClaw 還需要已有設定）。也涵蓋遠端 SSH、WSL 及平台說明（macOS 與 Linux）：**[設定指南（簡體中文）](docs/guides/setup-guide.zh-CN.md)**
 
 關於 `Codex + WSL` 的官方現況、Clawd 目前實作的邊界、以及為什麼容易被誤解，見：**[Codex / WSL 說明（簡體中文）](docs/guides/codex-wsl-clarification.zh-CN.md)**
 
@@ -193,7 +193,6 @@ node scripts/validate-theme.js path/to/your-theme
 幾個我們想試試的方向：
 
 - Codex 終端機焦點（從 `codex.exe` PID 反查行程樹）
-- Copilot CLI hooks 自動註冊（像 Claude Code 那樣開箱即用）
 - 主題註冊表 + 應用內下載
 - Hook 解除安裝腳本（乾淨移除應用程式）
 
