@@ -8,6 +8,7 @@ const {
   isAgentEnabled,
   isAgentPermissionsEnabled,
   isAgentNotificationHookEnabled,
+  isCodexNativeNotificationSoundEnabled,
   isCodexPermissionInterceptEnabled,
 } = require("../src/agent-gate");
 const { commandRegistry } = require("../src/settings-actions");
@@ -190,6 +191,28 @@ describe("Codex permission mode gate", () => {
     );
     assert.strictEqual(
       isCodexPermissionInterceptEnabled({ agents: { codex: { permissionMode: "native" } } }),
+      false
+    );
+  });
+});
+
+describe("Codex native notification sound gate", () => {
+  it("defaults off for missing / legacy prefs", () => {
+    assert.strictEqual(isCodexNativeNotificationSoundEnabled(null), false);
+    assert.strictEqual(isCodexNativeNotificationSoundEnabled({ agents: { codex: {} } }), false);
+  });
+
+  it("returns true only when nativeNotificationSoundEnabled === true", () => {
+    assert.strictEqual(
+      isCodexNativeNotificationSoundEnabled({
+        agents: { codex: { nativeNotificationSoundEnabled: true } },
+      }),
+      true
+    );
+    assert.strictEqual(
+      isCodexNativeNotificationSoundEnabled({
+        agents: { codex: { nativeNotificationSoundEnabled: false } },
+      }),
       false
     );
   });
@@ -413,6 +436,21 @@ describe("setAgentFlag command", () => {
       true,
       "permissionsEnabled sibling must be preserved"
     );
+  });
+
+  it("accepts Codex nativeNotificationSoundEnabled as a pure data flip", () => {
+    const { deps, calls } = makeDeps();
+    const r = commandRegistry.setAgentFlag(
+      { agentId: "codex", flag: "nativeNotificationSoundEnabled", value: true },
+      deps
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(calls.stopMonitorForAgent.length, 0);
+    assert.strictEqual(calls.startMonitorForAgent.length, 0);
+    assert.strictEqual(calls.clearSessionsByAgent.length, 0);
+    assert.strictEqual(calls.dismissPermissionsByAgent.length, 0);
+    assert.strictEqual(r.commit.agents.codex.nativeNotificationSoundEnabled, true);
+    assert.strictEqual(r.commit.agents.codex.permissionMode, "intercept");
   });
 });
 

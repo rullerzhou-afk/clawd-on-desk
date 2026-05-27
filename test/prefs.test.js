@@ -116,6 +116,7 @@ describe("prefs.getDefaults", () => {
   it("defaults Codex permissions to intercept mode", () => {
     const d = prefs.getDefaults();
     assert.strictEqual(d.agents.codex.permissionMode, "intercept");
+    assert.strictEqual(d.agents.codex.nativeNotificationSoundEnabled, false);
   });
 
   it("defaults Hardware Buddy to disabled state-only BLE", () => {
@@ -389,11 +390,12 @@ describe("prefs.validate", () => {
   it("normalizes agents: preserves valid Codex permissionMode", () => {
     const v = prefs.validate({
       agents: {
-        codex: { enabled: true, permissionMode: "intercept" },
+        codex: { enabled: true, permissionMode: "intercept", nativeNotificationSoundEnabled: false },
       },
     });
     assert.strictEqual(v.agents.codex.enabled, true);
     assert.strictEqual(v.agents.codex.permissionMode, "intercept");
+    assert.strictEqual(v.agents.codex.nativeNotificationSoundEnabled, false);
   });
 
   it("normalizes agents: drops invalid Codex permissionMode to intercept", () => {
@@ -415,6 +417,15 @@ describe("prefs.validate", () => {
       },
     });
     assert.strictEqual(v.agents["claude-code"].notificationHookEnabled, true);
+  });
+
+  it("normalizes agents: fills missing Codex nativeNotificationSoundEnabled from defaults", () => {
+    const v = prefs.validate({
+      agents: {
+        codex: { enabled: true, permissionMode: "native" },
+      },
+    });
+    assert.strictEqual(v.agents.codex.nativeNotificationSoundEnabled, false);
   });
 
   it("seeds all known agents with notificationHookEnabled=true", () => {
@@ -775,6 +786,24 @@ describe("prefs.migrate v4 → v5 (sessionHudAutoHide removal)", () => {
     }));
     assert.strictEqual("sessionHudAutoHide" in validated, false);
     assert.strictEqual(validated.sessionHudPinned, true);
+  });
+});
+
+describe("prefs.migrate v6 → v7 (Codex Native prompt sound default)", () => {
+  it("moves the early Codex Native prompt sound default to off", () => {
+    const upgraded = prefs.migrate({
+      version: 6,
+      agents: {
+        codex: {
+          enabled: true,
+          permissionsEnabled: true,
+          permissionMode: "native",
+          nativeNotificationSoundEnabled: true,
+        },
+      },
+    });
+    assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
+    assert.strictEqual(upgraded.agents.codex.nativeNotificationSoundEnabled, false);
   });
 });
 

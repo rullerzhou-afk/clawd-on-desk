@@ -132,6 +132,97 @@ describe("updateSession: Notification hook gate", () => {
     assert.strictEqual(stateChanges[0][1], "notification");
   });
 
+  it("can mute only the Codex native PermissionRequest prompt sound", () => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    ctx = makeCtx({ notificationHookEnabled: true });
+    api = require("../src/state")(ctx);
+
+    api.updateSession("codex-1", "notification", "PermissionRequest", {
+      agentId: "codex",
+      muteNotificationSound: true,
+    });
+
+    const stateChanges = ctx._rendererEvents.filter(([ch]) => ch === "state-change");
+    assert.ok(stateChanges.length >= 1, "Codex native prompt must still show notification");
+    assert.strictEqual(stateChanges[0][1], "notification");
+    assert.deepStrictEqual(ctx._soundsPlayed, [], "Codex native prompt sound must be muted");
+  });
+
+  it("lets Codex PermissionRequest play confirm when no mute flag is set", () => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    ctx = makeCtx({ notificationHookEnabled: true });
+    api = require("../src/state")(ctx);
+
+    api.updateSession("codex-1", "notification", "PermissionRequest", {
+      agentId: "codex",
+    });
+
+    assert.deepStrictEqual(ctx._soundsPlayed, ["confirm"], "baseline prompt sound must still play");
+  });
+
+  it("keeps Codex native prompt sound muted across notification auto-return", () => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    ctx = makeCtx({ notificationHookEnabled: true });
+    api = require("../src/state")(ctx);
+
+    api.updateSession("codex-1", "notification", "PermissionRequest", {
+      agentId: "codex",
+      sourcePid: 123,
+      muteNotificationSound: true,
+    });
+
+    assert.deepStrictEqual(ctx._soundsPlayed, [], "initial prompt sound must be muted");
+    mock.timers.tick(defaultTheme.timings.autoReturn.notification + 1);
+    assert.deepStrictEqual(ctx._soundsPlayed, [], "auto-return re-resolve must not replay confirm");
+  });
+
+  it("keeps Codex native prompt sound muted through the pending min-display path", () => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    ctx = makeCtx({ notificationHookEnabled: true });
+    api = require("../src/state")(ctx);
+
+    api.applyState("attention");
+    ctx._soundsPlayed.length = 0;
+    api.updateSession("codex-1", "notification", "PermissionRequest", {
+      agentId: "codex",
+      muteNotificationSound: true,
+    });
+
+    assert.deepStrictEqual(ctx._soundsPlayed, [], "pending notification should not sound immediately");
+    mock.timers.tick(defaultTheme.timings.minDisplay.attention + 1);
+    assert.deepStrictEqual(ctx._soundsPlayed, [], "pending notification must preserve mute options");
+  });
+
+  it("mutes Codex native prompt sound in mini-alert mode", () => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    ctx = makeCtx({ notificationHookEnabled: true });
+    ctx.miniMode = true;
+    api = require("../src/state")(ctx);
+
+    api.updateSession("codex-1", "notification", "PermissionRequest", {
+      agentId: "codex",
+      muteNotificationSound: true,
+    });
+
+    const stateChanges = ctx._rendererEvents.filter(([ch]) => ch === "state-change");
+    assert.ok(stateChanges.length >= 1, "mini mode should still show the alert animation");
+    assert.strictEqual(stateChanges[0][1], "mini-alert");
+    assert.deepStrictEqual(ctx._soundsPlayed, [], "mini-alert prompt sound must be muted");
+  });
+
+  it("keeps Codex completion sound even when native prompt sound is muted", () => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    ctx = makeCtx({ notificationHookEnabled: true });
+    api = require("../src/state")(ctx);
+
+    api.updateSession("codex-1", "attention", "Stop", {
+      agentId: "codex",
+      muteNotificationSound: true,
+    });
+
+    assert.deepStrictEqual(ctx._soundsPlayed, ["complete"], "completion sound must still play");
+  });
+
   it("never drops Elicitation events even when the flag is off", () => {
     // Elicitation fires notification state via a separate path (server.js
     // updateSession call with event="Elicitation"). The Notification gate

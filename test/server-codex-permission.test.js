@@ -210,6 +210,24 @@ describe("Codex official /permission path", () => {
     ]);
   });
 
+  it("marks native PermissionRequest notification sound muted when the Codex switch is off", async () => {
+    const { handler, updates } = startServer({
+      isCodexPermissionInterceptEnabled: () => false,
+      isCodexNativeNotificationSoundEnabled: () => false,
+    });
+    const res = await callPermission(handler, {
+      agent_id: "codex",
+      hook_source: "codex-official",
+      session_id: "codex:silent",
+      tool_name: "Bash",
+      tool_input: { command: "whoami /all" },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(updates.length, 1);
+    assert.strictEqual(updates[0][3].muteNotificationSound, true);
+  });
+
   it("enqueues a real Codex approval bubble in intercept mode without suggestions or elicitation", async () => {
     const { handler, pendingPermissions, updates, shown } = startServer({
       isCodexPermissionInterceptEnabled: () => true,

@@ -55,6 +55,11 @@ function shouldInterceptCodexPermission(ctx) {
   return ctx.isCodexPermissionInterceptEnabled();
 }
 
+function shouldMuteCodexNativeNotificationSound(ctx) {
+  if (typeof ctx.isCodexNativeNotificationSoundEnabled !== "function") return false;
+  return ctx.isCodexNativeNotificationSoundEnabled() === false;
+}
+
 function arePermissionBubblesEnabled(ctx) {
   if (typeof ctx.getBubblePolicy === "function") {
     try {
@@ -385,7 +390,11 @@ function handlePermissionPost(req, res, options) {
         }
 
         if (!shouldInterceptCodexPermission(ctx)) {
-          ctx.updateSession(sessionId, "notification", "PermissionRequest", codexSessionOptions);
+          const nativeSessionOptions = { ...codexSessionOptions };
+          if (shouldMuteCodexNativeNotificationSound(ctx)) {
+            nativeSessionOptions.muteNotificationSound = true;
+          }
+          ctx.updateSession(sessionId, "notification", "PermissionRequest", nativeSessionOptions);
           ctx.permLog(`codex native permission mode -> no decision, native prompt fallback (tool=${toolName})`);
           recordRequestHookEvent.accepted();
           sendCodexPermissionNoDecision(res);
@@ -757,6 +766,7 @@ module.exports = {
   shouldBypassOpencodeBubble,
   arePermissionBubblesEnabled,
   shouldInterceptCodexPermission,
+  shouldMuteCodexNativeNotificationSound,
   sendCodexPermissionNoDecision,
   sendQwenCodePermissionNoDecision,
   sendPiPermissionAllow,

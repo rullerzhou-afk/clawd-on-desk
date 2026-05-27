@@ -97,6 +97,22 @@
     const caps = agent.capabilities || {};
     if (agent.id === "codex") {
       rows.push(buildCodexPermissionModeRow(agent, computeAgentSubSwitchDisabled(agent.id, "permissionMode")));
+      rows.push(buildAgentSwitchRow({
+        agent,
+        flag: "nativeNotificationSoundEnabled",
+        extraClass: "row-sub",
+        disabled: computeAgentSubSwitchDisabled(agent.id, "nativeNotificationSoundEnabled"),
+        buildText: (text) => {
+          const label = document.createElement("span");
+          label.className = "row-label";
+          label.textContent = t("rowCodexNativeNotificationSound");
+          text.appendChild(label);
+          const desc = document.createElement("span");
+          desc.className = "row-desc";
+          desc.textContent = t("rowCodexNativeNotificationSoundDesc");
+          text.appendChild(desc);
+        },
+      }));
     }
     if (caps.permissionApproval || caps.interactiveBubble) {
       rows.push(buildAgentSwitchRow({
@@ -143,6 +159,9 @@
     if (!masterOn) return true;
     if (agentId === "codex" && flag === "permissionsEnabled") {
       return readers.readAgentPermissionMode(agentId) !== "intercept";
+    }
+    if (agentId === "codex" && flag === "nativeNotificationSoundEnabled") {
+      return readers.readAgentPermissionMode(agentId) !== "native";
     }
     return false;
   }

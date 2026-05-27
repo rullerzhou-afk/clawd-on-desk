@@ -773,6 +773,8 @@ function loadAgentsTabForTest({
           rowCodexPermissionModeDesc: "Permission mode desc",
           codexPermissionModeNative: "Native",
           codexPermissionModeIntercept: "Intercept",
+          rowCodexNativeNotificationSound: "Native sound",
+          rowCodexNativeNotificationSoundDesc: "Native sound desc",
           badgePermissionBubble: "Permission bubble",
           eventSourceHook: "Hook",
           eventSourceLogPoll: "Log poll",
@@ -3210,6 +3212,67 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(permissionsSwitch.element.classList.contains("disabled"), true);
     assert.strictEqual(permissionsSwitch.element.attributes["aria-disabled"], "true");
     assert.strictEqual(permissionsSwitch.element.attributes.tabindex, "-1");
+  });
+
+  it("enables the Codex native sound switch only in Native permission mode", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          codex: {
+            enabled: true,
+            permissionsEnabled: true,
+            permissionMode: "intercept",
+            nativeNotificationSoundEnabled: true,
+          },
+        },
+      },
+      agentMetadata: [{
+        id: "codex",
+        name: "Codex",
+        eventSource: "hook",
+        capabilities: {
+          permissionApproval: true,
+        },
+      }],
+      collapsedGroups: {
+        "agents:codex": false,
+      },
+    });
+
+    harness.core.ops.requestRender({ content: true });
+    harness.raf.flush();
+
+    const soundSwitch = [...harness.core.state.mountedControls.agentSwitches.values()]
+      .find((meta) => meta.agentId === "codex" && meta.flag === "nativeNotificationSoundEnabled");
+    assert.ok(soundSwitch, "Codex native sound switch should be mounted");
+    assert.strictEqual(soundSwitch.element.classList.contains("disabled"), true);
+
+    harness.core.ops.applyChanges({
+      changes: {
+        agents: {
+          codex: {
+            enabled: true,
+            permissionsEnabled: true,
+            permissionMode: "native",
+            nativeNotificationSoundEnabled: true,
+          },
+        },
+      },
+      snapshot: {
+        agents: {
+          codex: {
+            enabled: true,
+            permissionsEnabled: true,
+            permissionMode: "native",
+            nativeNotificationSoundEnabled: true,
+          },
+        },
+      },
+    });
+
+    assert.strictEqual(soundSwitch.element.classList.contains("disabled"), false);
+    assert.strictEqual(soundSwitch.element.attributes["aria-disabled"], "false");
+    assert.strictEqual(soundSwitch.element.attributes.tabindex, "0");
   });
 
   it("slides the Codex permission mode pill when mode broadcasts patch in place", () => {

@@ -246,7 +246,7 @@ function shouldDropForDnd() {
   return !!ctx.doNotDisturb;
 }
 
-function setState(newState, svgOverride) {
+function setState(newState, svgOverride, options = {}) {
   if (shouldDropForDnd()) return;
 
   if (newState === "yawning" && SLEEP_SEQUENCE.has(currentState)) return;
@@ -284,20 +284,22 @@ function setState(newState, svgOverride) {
     if (autoReturnTimer) { clearTimeout(autoReturnTimer); autoReturnTimer = null; }
     pendingState = newState;
     const pendingSvgOverride = svgOverride;
+    const pendingOptions = options;
     pendingTimer = setTimeout(() => {
       pendingTimer = null;
       const queued = pendingState;
       const queuedSvg = pendingSvgOverride;
+      const queuedOptions = pendingOptions || {};
       pendingState = null;
       if (ONESHOT_STATES.has(queued)) {
-        applyState(queued, queuedSvg);
+        applyState(queued, queuedSvg, queuedOptions);
       } else {
         const resolved = resolveDisplayState();
-        applyState(resolved, getSvgOverride(resolved));
+        applyState(resolved, getSvgOverride(resolved), queuedOptions);
       }
     }, remaining);
   } else {
-    applyState(newState, svgOverride);
+    applyState(newState, svgOverride, options);
   }
 }
 
@@ -318,7 +320,7 @@ function resolveVisualBinding(state) {
 
 function applyResolvedDisplayState() {
   const resolved = resolveDisplayState();
-  applyState(resolved, getSvgOverride(resolved));
+  applyState(resolved, getSvgOverride(resolved), resolveSoundOptionsForState(resolved));
   // Kimi CLI permission hold: while notification is pinned, re-trigger the
   // renderer animation so non-looping GIF/APNG assets replay instead of
   // freezing on their last frame. Throttled so concurrent agents flooding
@@ -352,7 +354,29 @@ function applyDndSleepState() {
   applyState(DND_SKIP_YAWN ? "collapsing" : "yawning");
 }
 
-function applyState(state, svgOverride) {
+function resolveSoundOptionsForState(state) {
+  const logicalState = state === "mini-alert" ? "notification" : state;
+  if (logicalState !== "notification") return {};
+  let sawNotificationSession = false;
+  for (const [, session] of sessions) {
+    if (!session || session.headless || session.state !== "notification") continue;
+    sawNotificationSession = true;
+    if (session.muteNotificationSound !== true) return {};
+  }
+  return sawNotificationSession ? { muteNotificationSound: true } : {};
+}
+
+function normalizeApplyStateOptions(state, options = {}) {
+  const derived = resolveSoundOptionsForState(state);
+  return {
+    ...options,
+    muteNotificationSound:
+      options.muteNotificationSound === true || derived.muteNotificationSound === true,
+  };
+}
+
+function applyState(state, svgOverride, options = {}) {
+  const applyOptions = normalizeApplyStateOptions(state, options);
   // Phase 3b: user-disabled oneshot state — skip visual + sound, fall back to
   // whatever resolveDisplayState picks (usually working/idle). Gate lives at
   // applyState() top so it catches all three paths that reach here:
@@ -374,8 +398,8 @@ function applyState(state, svgOverride) {
   }
 
   if (ctx.miniMode && !state.startsWith("mini-")) {
-    if (state === "notification") return applyState("mini-alert");
-    if (state === "attention") return applyState("mini-happy");
+    if (state === "notification") return applyState("mini-alert", undefined, applyOptions);
+    if (state === "attention") return applyState("mini-happy", undefined, applyOptions);
     if (state === "working" || state === "thinking" || state === "juggling") {
       if (hasOwnVisualFiles("mini-working")) return applyState("mini-working");
       return;
@@ -396,7 +420,7 @@ function applyState(state, svgOverride) {
     ctx.playSound("complete");
     if (ctx.flashTaskbar) ctx.flashTaskbar();
   } else if (state === "notification" || state === "mini-alert") {
-    ctx.playSound("confirm");
+    if (!applyOptions.muteNotificationSound) ctx.playSound("confirm");
   }
 
   const svg = svgOverride || resolveVisualBinding(state);
@@ -846,6 +870,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     permissionSuspect = false,
     preserveState = false,
     hookSource = null,
+    muteNotificationSound = false,
   } = opts;
   if (startupRecoveryActive) {
     startupRecoveryActive = false;
@@ -914,9 +939,10 @@ function updateSession(sessionId, state, event, opts = {}) {
         recentEvents,
         pidReachable: resolvePidReachable(existing, srcAgentPid, srcPid),
         resumeState: (existing && existing.resumeState) || null,
+        muteNotificationSound: muteNotificationSound === true,
       });
     }
-    setState("notification");
+    setState("notification", undefined, { muteNotificationSound: muteNotificationSound === true });
     if (permAgentId === "kimi-cli") startKimiPermissionPoll(sessionId);
     return;
   }
@@ -993,7 +1019,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcLastStopAt = isStopBoundary
     ? Date.now()
     : (existing && Number.isFinite(existing.lastStopAt) ? existing.lastStopAt : null);
-  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, sessionTitle: srcSessionTitle, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt };
+  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, sessionTitle: srcSessionTitle, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, muteNotificationSound: state === "notification" && muteNotificationSound === true };
   if (preserveCompletionAck) base.requiresCompletionAck = true;
 
   // Evict oldest session if at capacity and this is a new session.
@@ -1584,6 +1610,7 @@ function getStartupRecoveryActive() { return startupRecoveryActive; }
 
 function cleanup() {
   if (pendingTimer) clearTimeout(pendingTimer);
+  pendingState = null;
   if (autoReturnTimer) clearTimeout(autoReturnTimer);
   if (eyeResendTimer) clearTimeout(eyeResendTimer);
   if (startupRecoveryTimer) clearTimeout(startupRecoveryTimer);

@@ -38,7 +38,7 @@ const {
 } = require("./bubble-policy");
 const { normalizeSessionAliases } = require("./session-alias");
 
-const CURRENT_VERSION = 6;
+const CURRENT_VERSION = 7;
 
 // ── Schema ──
 // Each field has: type, default OR defaultFactory, optional enum/normalize/validate.
@@ -171,7 +171,7 @@ const SCHEMA = {
     type: "object",
     defaultFactory: () => ({
       "claude-code": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
-      "codex": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true, permissionMode: "intercept" },
+      "codex": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true, permissionMode: "intercept", nativeNotificationSoundEnabled: false },
       "copilot-cli": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "cursor-agent": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "gemini-cli": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
@@ -413,6 +413,18 @@ function migrate(raw) {
   if (out.version < 6) {
     out.version = 6;
   }
+  // v6 → v7: Codex Native permission prompt sound now defaults off. Early
+  // builds may have written the old default true into prefs, so reset that
+  // default-like value during migration; users can turn the switch back on.
+  if (out.version < 7) {
+    if (out.agents && typeof out.agents === "object") {
+      const codex = out.agents.codex;
+      if (codex && typeof codex === "object") {
+        codex.nativeNotificationSoundEnabled = false;
+      }
+    }
+    out.version = 7;
+  }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;
   }
@@ -420,7 +432,7 @@ function migrate(raw) {
   return out;
 }
 
-const AGENT_FLAGS = ["enabled", "permissionsEnabled", "notificationHookEnabled"];
+const AGENT_FLAGS = ["enabled", "permissionsEnabled", "notificationHookEnabled", "nativeNotificationSoundEnabled"];
 const CODEX_PERMISSION_MODES = ["native", "intercept"];
 
 function normalizeDismissedUpdateVersions(value) {
