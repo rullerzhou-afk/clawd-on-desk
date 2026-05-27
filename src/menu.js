@@ -165,6 +165,15 @@ module.exports = function initMenu(ctx) {
         },
       },
       buildBringToPrimaryDisplayMenuItem(),
+    );
+    // #329: surface the update item in the tray menu. The label switches
+    // to "Update available · vX" / "Update Ready" when applicable. Click
+    // routes to checkForUpdates / quitAndInstall via getUpdateMenuItem.
+    if (typeof ctx.getUpdateMenuItem === "function") {
+      const updateItem = ctx.getUpdateMenuItem();
+      if (updateItem) items.push({ type: "separator" }, updateItem);
+    }
+    items.push(
       { type: "separator" },
       {
         label: ctx.petHidden ? t("showPet") : t("hidePet"),
@@ -356,6 +365,13 @@ module.exports = function initMenu(ctx) {
         label: t("settings"),
         click: () => ctx.openSettingsWindow(),
       },
+    );
+    // #329: surface the update item in the right-click context menu too.
+    if (typeof ctx.getUpdateMenuItem === "function") {
+      const updateItem = ctx.getUpdateMenuItem();
+      if (updateItem) template.push({ type: "separator" }, updateItem);
+    }
+    template.push(
       { type: "separator" },
       { label: t("quit"), click: () => requestAppQuit() },
     );

@@ -1560,6 +1560,10 @@ function disableDoNotDisturb() {
   } else {
     playWakeTransitionOrResolve();
   }
+  // #329: a deferred update bubble may be waiting on DND exit.
+  if (typeof ctx.notifyUpdaterSilentExit === "function") {
+    try { ctx.notifyUpdaterSilentExit(); } catch {}
+  }
   ctx.buildContextMenu();
   ctx.buildTrayMenu();
 }

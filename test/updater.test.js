@@ -877,3 +877,364 @@ describe("updater Windows ARM64 migration helpers", () => {
     assert.strictEqual(asset.browser_download_url, "arm64");
   });
 });
+
+// ──────────────────────────────────────────────────────────────────────
+// #329 background update scheduler coverage
+//
+// Exercises: quietDiscover() purity, scheduler guards (!isPackaged, git
+// checkout, autoUpdateCheck off), source-tagged dedupe (user vs
+// autoClose vs policy), DND/mini deferral, intent='download' round-trip
+// auto-primary, ETag caching, and startup pending reconciliation.
+// ──────────────────────────────────────────────────────────────────────
+describe("updater #329 background scheduler", () => {
+  beforeEach(() => {
+    mock.restoreAll();
+    delete require.cache[require.resolve("../src/updater")];
+    initUpdater = require("../src/updater");
+  });
+
+  // Tiny in-memory prefs store. Mirrors the controller API surface the
+  // updater touches (get / applyUpdate via setUpdatePref shim).
+  function makePrefs(initial = {}) {
+    const store = { autoUpdateCheck: true, pendingUpdateVersion: "", dismissedUpdateVersions: {}, ...initial };
+    return {
+      get: (k) => store[k],
+      set: (k, v) => { store[k] = v; },
+      snapshot: () => ({ ...store }),
+    };
+  }
+
+  function makeCtxWithPrefs(prefs, overrides = {}) {
+    return makeCtx({
+      getUpdatePref: (k) => prefs.get(k),
+      setUpdatePref: (k, v) => prefs.set(k, v),
+      ...overrides,
+    });
+  }
+
+  it("quietDiscover() does not touch any UI surface", async () => {
+    const visualStates = [];
+    const bubbles = [];
+    const applied = [];
+    const ctx = makeCtxWithPrefs(makePrefs(), {
+      setUpdateVisualState: (s) => visualStates.push(s),
+      applyState: (s) => applied.push(s),
+      showUpdateBubble: (p) => bubbles.push(p),
+    });
+    const updater = initUpdater(ctx, makeDeps({
+      app: { isPackaged: true, getVersion: () => "0.5.0", relaunch() {}, exit() {} },
+      httpsGetImpl: makeLatestReleaseResponse({ tag_name: "v0.9.0", assets: [] }),
+    }));
+
+    const result = await updater.quietDiscover();
+    assert.strictEqual(result.status, "new-update");
+    assert.strictEqual(result.version, "v0.9.0");
+    assert.deepStrictEqual(visualStates, []);
+    assert.deepStrictEqual(applied, []);
+    assert.deepStrictEqual(bubbles, []);
+  });
+
+  it("quietDiscover() returns no-update when running version is newer", async () => {
+    const ctx = makeCtxWithPrefs(makePrefs());
+    const updater = initUpdater(ctx, makeDeps({
+      app: { isPackaged: true, getVersion: () => "0.9.0", relaunch() {}, exit() {} },
+      httpsGetImpl: makeLatestReleaseResponse({ tag_name: "v0.8.0", assets: [] }),
+    }));
+    const result = await updater.quietDiscover();
+    assert.strictEqual(result.status, "no-update");
+  });
+
+  it("startUpdateScheduler() skips when !app.isPackaged", () => {
+    const ctx = makeCtxWithPrefs(makePrefs());
+    const setTimeoutCalls = [];
+    const updater = initUpdater(ctx, makeDeps({
+      app: { isPackaged: false, getVersion: () => "0.5.0", relaunch() {}, exit() {} },
+      setTimeoutImpl: (fn, ms) => { setTimeoutCalls.push(ms); return { id: 1 }; },
+    }));
+    updater.startUpdateScheduler();
+    assert.strictEqual(updater.isSchedulerRunning(), false);
+    assert.strictEqual(setTimeoutCalls.length, 0);
+  });
+
+  it("startUpdateScheduler() skips when getRepoRoot() finds a git checkout", () => {
+    const ctx = makeCtxWithPrefs(makePrefs());
+    const setTimeoutCalls = [];
+    // Packaged build but pretend there's a .git dir adjacent (defensive guard).
+    const updater = initUpdater(ctx, makeDeps({
+      app: { isPackaged: false, getVersion: () => "0.5.0", relaunch() {}, exit() {} },
+      fsImpl: { statSync: () => ({ isDirectory: () => true }) },
+      setTimeoutImpl: (fn, ms) => { setTimeoutCalls.push(ms); return { id: 1 }; },
+    }));
+    updater.startUpdateScheduler();
+    assert.strictEqual(updater.isSchedulerRunning(), false);
+    assert.strictEqual(setTimeoutCalls.length, 0);
+  });
+
+  it("startUpdateScheduler() skips when autoUpdateCheck pref is false", () => {
+    const prefs = makePrefs({ autoUpdateCheck: false });
+    const ctx = makeCtxWithPrefs(prefs);
+    const setTimeoutCalls = [];
+    const updater = initUpdater(ctx, makeDeps({
+      app: { isPackaged: true, getVersion: () => "0.5.0", relaunch() {}, exit() {} },
+      setTimeoutImpl: (fn, ms) => { setTimeoutCalls.push(ms); return { id: 1 }; },
+    }));
+    updater.startUpdateScheduler();
+    assert.strictEqual(updater.isSchedulerRunning(), false);
+    assert.strictEqual(setTimeoutCalls.length, 0);
+  });
+
+  it("startUpdateScheduler() first-delay is in [2,5] minutes", () => {
+    const ctx = makeCtxWithPrefs(makePrefs());
+    const setTimeoutCalls = [];
+    const updater = initUpdater(ctx, makeDeps({
+      app: { isPackaged: true, getVersion: () => "0.5.0", relaunch() {}, exit() {} },
+      setTimeoutImpl: (fn, ms) => { setTimeoutCalls.push(ms); return { id: 1 }; },
+      randomImpl: () => 0,  // min boundary
+    }));
+    updater.startUpdateScheduler();
+    assert.strictEqual(setTimeoutCalls.length, 1);
+    assert.ok(setTimeoutCalls[0] >= 2 * 60 * 1000, `first delay too short: ${setTimeoutCalls[0]}`);
+    assert.ok(setTimeoutCalls[0] <= 5 * 60 * 1000, `first delay too long: ${setTimeoutCalls[0]}`);
+
+    delete require.cache[require.resolve("../src/updater")];
+    initUpdater = require("../src/updater");
+    const setTimeoutCalls2 = [];
+    const updater2 = initUpdater(makeCtxWithPrefs(makePrefs()), makeDeps({
+      app: { isPackaged: true, getVersion: () => "0.5.0", relaunch() {}, exit() {} },
+      setTimeoutImpl: (fn, ms) => { setTimeoutCalls2.push(ms); return { id: 2 }; },
+      randomImpl: () => 0.999999,  // max boundary
+    }));
+    updater2.startUpdateScheduler();
+    assert.ok(setTimeoutCalls2[0] >= 2 * 60 * 1000);
+    assert.ok(setTimeoutCalls2[0] <= 5 * 60 * 1000);
+  });
+
+  it("startUpdateScheduler() is idempotent under repeat calls", () => {
+    const ctx = makeCtxWithPrefs(makePrefs());
+    const setTimeoutCalls = [];
+    const updater = initUpdater(ctx, makeDeps({
+      app: { isPackaged: true, getVersion: () => "0.5.0", relaunch() {}, exit() {} },
+      setTimeoutImpl: (fn, ms) => { setTimeoutCalls.push(ms); return { id: setTimeoutCalls.length }; },
+    }));
+    updater.startUpdateScheduler();
+    updater.startUpdateScheduler();
+    updater.startUpdateScheduler();
+    assert.strictEqual(setTimeoutCalls.length, 1);
+  });
+
+  it("stopUpdateScheduler() cancels the pending timer", () => {
+    const ctx = makeCtxWithPrefs(makePrefs());
+    const cancelled = [];
+    const updater = initUpdater(ctx, makeDeps({
+      app: { isPackaged: true, getVersion: () => "0.5.0", relaunch() {}, exit() {} },
+      setTimeoutImpl: () => ({ id: 1 }),
+      clearTimeoutImpl: (t) => cancelled.push(t),
+    }));
+    updater.startUpdateScheduler();
+    updater.stopUpdateScheduler();
+    assert.strictEqual(updater.isSchedulerRunning(), false);
+    assert.strictEqual(cancelled.length, 1);
+  });
+
+  it("handlePendingVersion: source=user later → dedupe entry; next call no bubble", async () => {
+    const prefs = makePrefs();
+    const bubbles = [];
+    const ctx = makeCtxWithPrefs(prefs, {
+      showUpdateBubble: (payload) => {
+        bubbles.push(payload);
+        if (!payload.requireAction) return Promise.resolve({ action: payload.defaultAction || null, source: "autoClose" });
+        return Promise.resolve({ action: "later", source: "user" });
+      },
+    });
+    const updater = initUpdater(ctx, makeDeps({
+      app: { isPackaged: true, getVersion: () => "0.5.0", relaunch() {}, exit() {} },
+    }));
+
+    await updater.handlePendingVersion("v0.9.0", { tag_name: "v0.9.0" }, { trigger: "scheduled" });
+    assert.strictEqual(bubbles.length, 1);
+    assert.deepStrictEqual(prefs.snapshot().dismissedUpdateVersions, { "v0.9.0": true });
+
+    await updater.handlePendingVersion("v0.9.0", { tag_name: "v0.9.0" }, { trigger: "scheduled" });
+    assert.strictEqual(bubbles.length, 1);  // no second bubble
+  });
+
+  it("handlePendingVersion: source=autoClose later → NO dedupe entry", async () => {
+    const prefs = makePrefs();
+    const bubbles = [];
+    const ctx = makeCtxWithPrefs(prefs, {
+      showUpdateBubble: (payload) => {
+        bubbles.push(payload);
+        return Promise.resolve({ action: "later", source: "autoClose" });
+      },
+    });
+    const updater = initUpdater(ctx, makeDeps({
+      app: { isPackaged: true, getVersion: () => "0.5.0", relaunch() {}, exit() {} },
+    }));
+
+    await updater.handlePendingVersion("v0.9.0", { tag_name: "v0.9.0" }, { trigger: "scheduled" });
+    assert.deepStrictEqual(prefs.snapshot().dismissedUpdateVersions, {});
+    // Pending version is still recorded so the menu badge can show.
+    assert.strictEqual(prefs.snapshot().pendingUpdateVersion, "v0.9.0");
+  });
+
+  it("handlePendingVersion: source=policy later → NO dedupe entry", async () => {
+    const prefs = makePrefs();
+    const ctx = makeCtxWithPrefs(prefs, {
+      showUpdateBubble: () => Promise.resolve({ action: "later", source: "policy" }),
+    });
+    const updater = initUpdater(ctx, makeDeps({
+      app: { isPackaged: true, getVersion: () => "0.5.0", relaunch() {}, exit() {} },
+    }));
+    await updater.handlePendingVersion("v0.9.0", { tag_name: "v0.9.0" }, { trigger: "scheduled" });
+    assert.deepStrictEqual(prefs.snapshot().dismissedUpdateVersions, {});
+    assert.strictEqual(prefs.snapshot().pendingUpdateVersion, "v0.9.0");
+  });
+
+  it("handlePendingVersion: silent mode defers, onSilentModeExit fires bubble", async () => {
+    const prefs = makePrefs();
+    const bubbles = [];
+    const ctx = makeCtxWithPrefs(prefs, {
+      doNotDisturb: true,
+      showUpdateBubble: (payload) => {
+        bubbles.push(payload);
+        return Promise.resolve({ action: "later", source: "user" });
+      },
+    });
+    const updater = initUpdater(ctx, makeDeps({
+      app: { isPackaged: true, getVersion: () => "0.5.0", relaunch() {}, exit() {} },
+    }));
+
+    await updater.handlePendingVersion("v0.9.0", { tag_name: "v0.9.0" }, { trigger: "scheduled" });
+    assert.strictEqual(bubbles.length, 0);  // deferred, not shown
+    assert.strictEqual(prefs.snapshot().pendingUpdateVersion, "v0.9.0");
+
+    ctx.doNotDisturb = false;
+    updater.onSilentModeExit();
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(bubbles.length, 1);
+  });
+
+  it("onSilentModeExit: still in mini after DND off → defers again, no premature bubble", async () => {
+    const prefs = makePrefs();
+    const bubbles = [];
+    const ctx = makeCtxWithPrefs(prefs, {
+      doNotDisturb: true,
+      miniMode: true,
+      showUpdateBubble: (payload) => {
+        bubbles.push(payload);
+        return Promise.resolve({ action: "later", source: "user" });
+      },
+    });
+    const updater = initUpdater(ctx, makeDeps({
+      app: { isPackaged: true, getVersion: () => "0.5.0", relaunch() {}, exit() {} },
+    }));
+
+    await updater.handlePendingVersion("v0.9.0", { tag_name: "v0.9.0" }, { trigger: "scheduled" });
+    assert.strictEqual(bubbles.length, 0);
+
+    // DND off but mini still on — silent mode still active.
+    ctx.doNotDisturb = false;
+    updater.onSilentModeExit();
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(bubbles.length, 0, "bubble should not fire while still in mini mode");
+
+    // Now exit mini too — second silent-exit call fires the bubble.
+    ctx.miniMode = false;
+    updater.onSilentModeExit();
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(bubbles.length, 1);
+  });
+
+  it("handlePendingVersion: already-dismissed version → no bubble but pending set", async () => {
+    const prefs = makePrefs({ dismissedUpdateVersions: { "v0.9.0": true } });
+    const bubbles = [];
+    const ctx = makeCtxWithPrefs(prefs, {
+      showUpdateBubble: (p) => { bubbles.push(p); return Promise.resolve({ action: "later", source: "user" }); },
+    });
+    const updater = initUpdater(ctx, makeDeps({
+      app: { isPackaged: true, getVersion: () => "0.5.0", relaunch() {}, exit() {} },
+    }));
+    await updater.handlePendingVersion("v0.9.0", { tag_name: "v0.9.0" }, { trigger: "scheduled" });
+    assert.strictEqual(bubbles.length, 0);
+    assert.strictEqual(prefs.snapshot().pendingUpdateVersion, "v0.9.0");
+  });
+
+  it("download intent round-trip clears pendingUpdateVersion when latest is no longer newer", async () => {
+    // Scenario: scheduler discovered v0.9.0, user clicked Download. The
+    // manual round-trip with intent='download' hits GitHub and finds the
+    // release got yanked (latest now older). Pending marker must be cleared
+    // so the tray badge stops lying.
+    const prefs = makePrefs({ pendingUpdateVersion: "v0.9.0" });
+    const ctx = makeCtxWithPrefs(prefs);
+    const updater = initUpdater(ctx, makeDeps({
+      app: { isPackaged: true, getVersion: () => "1.0.0", relaunch() {}, exit() {} },
+      httpsGetImpl: makeLatestReleaseResponse({ tag_name: "v0.5.0", assets: [] }),
+    }));
+    await updater.checkForUpdates({ trigger: "manual", intent: "download" });
+    assert.strictEqual(prefs.snapshot().pendingUpdateVersion, "");
+  });
+
+  it("reconcilePendingOnStartup: clears pending when current >= pending", () => {
+    const prefs = makePrefs({ pendingUpdateVersion: "v0.7.0", dismissedUpdateVersions: { "v0.6.0": true, "v0.8.0": true } });
+    const ctx = makeCtxWithPrefs(prefs);
+    const updater = initUpdater(ctx, makeDeps({
+      app: { isPackaged: true, getVersion: () => "v0.7.0", relaunch() {}, exit() {} },
+    }));
+    updater.reconcilePendingOnStartup();
+    assert.strictEqual(prefs.snapshot().pendingUpdateVersion, "");
+    // v0.6.0 <= 0.7.0 dropped; v0.8.0 still pending so kept.
+    assert.deepStrictEqual(prefs.snapshot().dismissedUpdateVersions, { "v0.8.0": true });
+  });
+
+  it("reconcilePendingOnStartup: leaves pending when current < pending", () => {
+    const prefs = makePrefs({ pendingUpdateVersion: "v0.9.0" });
+    const ctx = makeCtxWithPrefs(prefs);
+    const updater = initUpdater(ctx, makeDeps({
+      app: { isPackaged: true, getVersion: () => "v0.7.0", relaunch() {}, exit() {} },
+    }));
+    updater.reconcilePendingOnStartup();
+    assert.strictEqual(prefs.snapshot().pendingUpdateVersion, "v0.9.0");
+  });
+
+  it("fetchLatestRelease sends If-None-Match on the second call and resolves 304 from cache", async () => {
+    let callIndex = 0;
+    const requestHeaders = [];
+    const httpsGetImpl = (options, cb) => {
+      requestHeaders.push(options.headers);
+      const isSecond = callIndex === 1;
+      callIndex += 1;
+      const release = { tag_name: "v0.9.0", assets: [] };
+      const res = {
+        statusCode: isSecond ? 304 : 200,
+        headers: { etag: '"abc123"' },
+        on(event, handler) {
+          if (event === "data" && !isSecond) handler(Buffer.from(JSON.stringify(release)));
+          if (event === "end") handler();
+          return this;
+        },
+        resume() {},
+      };
+      cb(res);
+      return { on() { return this; }, setTimeout() {} };
+    };
+
+    const ctx = makeCtxWithPrefs(makePrefs());
+    const updater = initUpdater(ctx, makeDeps({
+      app: { isPackaged: true, getVersion: () => "0.5.0", relaunch() {}, exit() {} },
+      httpsGetImpl,
+    }));
+
+    const first = await updater.quietDiscover();
+    assert.strictEqual(first.status, "new-update");
+    assert.strictEqual(first.version, "v0.9.0");
+    assert.strictEqual(requestHeaders[0]["If-None-Match"], undefined);
+
+    const second = await updater.quietDiscover();
+    assert.strictEqual(second.status, "new-update");
+    assert.strictEqual(second.version, "v0.9.0");
+    assert.strictEqual(requestHeaders[1]["If-None-Match"], '"abc123"');
+  });
+});

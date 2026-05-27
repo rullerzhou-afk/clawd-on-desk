@@ -626,6 +626,8 @@ test("settings IPC serves agent/about/update/external and remove-theme dialog he
       authorName: "Ruller_Lulu / \u9e7f\u9e7f",
       authorUrl: "https://github.com/rullerzhou-afk",
       heroSvgContent: "<svg id=\"hero\"></svg>",
+      pendingUpdateVersion: "",
+      autoUpdateCheck: true,
     });
     assert.deepStrictEqual(await ipcMain.invoke("settings:confirm-remove-theme", "user-theme"), {
       confirmed: true,

@@ -964,6 +964,11 @@ let showDashboard = () => {};
 let broadcastDashboardSessionSnapshot = () => {};
 let sendDashboardI18n = () => {};
 
+// Forward hook for the #329 updater scheduler. State/mini ctxs reference
+// this via notifyUpdaterSilentExit; the actual implementation is wired
+// after the updater module is constructed below.
+let notifyUpdaterSilentExit = () => {};
+
 const _stateCtx = {
   get theme() { return getActiveTheme(); },
   get win() { return win; },
@@ -983,6 +988,7 @@ const _stateCtx = {
   set forceEyeResend(v) { setForceEyeResend(v); },
   get mouseStillSince() { return _tick ? _tick._mouseStillSince : Date.now(); },
   get pendingPermissions() { return pendingPermissions; },
+  notifyUpdaterSilentExit: () => notifyUpdaterSilentExit(),
   sendToRenderer,
   sendToHitWin,
   syncHitWin,
@@ -1943,9 +1949,44 @@ const _updaterCtx = {
   resolveDisplayState: () => resolveDisplayState(),
   getSvgOverride: (state) => getSvgOverride(state),
   resetSoundCooldown: () => resetSoundCooldown(),
+  // #329 scheduler / pending-state prefs IO. Reads go straight to the
+  // settingsController snapshot; writes go through applyUpdate so the
+  // single-writer architecture (settings-controller.js) is honored.
+  getUpdatePref: (key) => {
+    try { return _settingsController.get(key); } catch { return undefined; }
+  },
+  setUpdatePref: (key, value) => {
+    try { _settingsController.applyUpdate(key, value); } catch {}
+  },
 };
 const _updater = require("./updater")(_updaterCtx);
-const { setupAutoUpdater, checkForUpdates, getUpdateMenuItem, getUpdateMenuLabel } = _updater;
+const {
+  setupAutoUpdater,
+  checkForUpdates,
+  getUpdateMenuItem,
+  getUpdateMenuLabel,
+  reconcilePendingOnStartup,
+  onSilentModeExit: updaterOnSilentModeExit,
+  startUpdateScheduler,
+  stopUpdateScheduler,
+} = _updater;
+// Now that updater is constructed, point the forward hook at it.
+notifyUpdaterSilentExit = () => { try { updaterOnSilentModeExit(); } catch {} };
+
+// #329: react to the autoUpdateCheck toggle in real time so users see
+// the scheduler start/stop without restarting Clawd.
+try {
+  _settingsController.subscribeKey("autoUpdateCheck", (value) => {
+    try {
+      if (value === false) stopUpdateScheduler();
+      else startUpdateScheduler();
+    } catch (err) {
+      updateLog(`scheduler toggle failed: ${err && err.message}`);
+    }
+  });
+} catch (err) {
+  updateLog(`scheduler subscribeKey failed: ${err && err.message}`);
+}
 
 // ── Doctor tab IPC ──
 const { registerDoctorIpc } = require("./doctor-ipc");
@@ -2272,6 +2313,7 @@ const _miniCtx = {
   get doNotDisturb() { return doNotDisturb; },
   set doNotDisturb(v) { doNotDisturb = v; },
   get currentState() { return _state.getCurrentState(); },
+  notifyUpdaterSilentExit: () => notifyUpdaterSilentExit(),
   SIZES,
   getCurrentPixelSize,
   getEffectiveCurrentPixelSize,
@@ -2457,10 +2499,17 @@ if (!gotTheLock) {
 
     // Auto-updater: setup event handlers (user triggers check via tray menu)
     setupAutoUpdater();
+    // #329: reconcile any stale pending-update entry (e.g. user installed
+    // out-of-band on macOS) and start the background scheduler. Both are
+    // safe in dev mode — reconcile is a no-op when nothing is pending,
+    // and startUpdateScheduler() short-circuits on !app.isPackaged.
+    try { reconcilePendingOnStartup(); } catch (err) { updateLog(`reconcile failed: ${err && err.message}`); }
+    try { startUpdateScheduler(); } catch (err) { updateLog(`scheduler start failed: ${err && err.message}`); }
   });
 
   app.on("before-quit", () => {
     isQuitting = true;
+    try { stopUpdateScheduler(); } catch {}
     flushRuntimeStateToPrefs();
     globalShortcut.unregisterAll();
     void settingsSizePreviewSession.cleanup();

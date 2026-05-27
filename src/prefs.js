@@ -38,7 +38,7 @@ const {
 } = require("./bubble-policy");
 const { normalizeSessionAliases } = require("./session-alias");
 
-const CURRENT_VERSION = 5;
+const CURRENT_VERSION = 6;
 
 // ── Schema ──
 // Each field has: type, default OR defaultFactory, optional enum/normalize/validate.
@@ -216,6 +216,23 @@ const SCHEMA = {
     defaultFactory: () => ({ ...DEFAULT_HARDWARE_BUDDY_SETTINGS }),
     normalize: normalizeHardwareBuddySettings,
   },
+  // Background update-check toggle. When true, the scheduler in updater.js
+  // runs a quiet GitHub discovery on a 12-hour cycle (packaged builds only).
+  // Default on per #329.
+  autoUpdateCheck: { type: "boolean", default: true },
+  // Last version the scheduler discovered that is newer than the running
+  // app. Empty string = none pending. Surfaced in the tray label and the
+  // About version-row hint. Cleared on install or by
+  // reconcilePendingOnStartup() when app.getVersion() catches up.
+  pendingUpdateVersion: { type: "string", default: "" },
+  // Versions the user explicitly dismissed (clicked Later on the scheduler
+  // bubble after actually seeing it). Object map of `{ "v0.9.0": true }`
+  // because prefs.js does not support `type: "array"` (see isValidValue).
+  dismissedUpdateVersions: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizeDismissedUpdateVersions,
+  },
 };
 
 const SCHEMA_KEYS = Object.freeze(Object.keys(SCHEMA));
@@ -378,6 +395,13 @@ function migrate(raw) {
     delete out.sessionHudAutoHide;
     out.version = 5;
   }
+  // v5 → v6: introduce autoUpdateCheck / pendingUpdateVersion /
+  // dismissedUpdateVersions for the #329 scheduler. No data conversion
+  // needed — new keys fill in from schema defaults via validate(); the
+  // version bump just records that the schema grew.
+  if (out.version < 6) {
+    out.version = 6;
+  }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;
   }
@@ -387,6 +411,15 @@ function migrate(raw) {
 
 const AGENT_FLAGS = ["enabled", "permissionsEnabled", "notificationHookEnabled"];
 const CODEX_PERMISSION_MODES = ["native", "intercept"];
+
+function normalizeDismissedUpdateVersions(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out = {};
+  for (const key of Object.keys(value)) {
+    if (typeof key === "string" && key && value[key] === true) out[key] = true;
+  }
+  return out;
+}
 
 function normalizePositionDisplay(value) {
   if (!isValidDisplaySnapshot(value)) return null;

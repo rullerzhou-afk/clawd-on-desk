@@ -10,15 +10,32 @@
     return helpers.t(key);
   }
 
+  // #329: getAboutInfo() now returns dynamic fields (pendingUpdateVersion,
+  // autoUpdateCheck) alongside the static identity fields. The static
+  // parts (heroSvgContent, license, copyright, etc.) are still safe to
+  // cache; the dynamic ones must be re-fetched on every render so the
+  // pending hint and the auto-update toggle reflect current state after
+  // the user flips the toggle or the scheduler discovers a new version.
+  const STATIC_ABOUT_KEYS = ["repoUrl", "license", "copyright", "authorName", "authorUrl", "heroSvgContent"];
   function fetchAboutInfo() {
-    if (runtime.about.infoCache) return Promise.resolve(runtime.about.infoCache);
     if (!window.settingsAPI || typeof window.settingsAPI.getAboutInfo !== "function") {
-      return Promise.resolve(null);
+      return Promise.resolve(runtime.about.infoCache || null);
     }
     return window.settingsAPI.getAboutInfo().then((info) => {
-      runtime.about.infoCache = info;
-      return info;
-    }).catch(() => null);
+      if (!info) return runtime.about.infoCache || null;
+      // Preserve any previously cached static field if a future getAboutInfo
+      // call ever omits one (defensive). Dynamic fields always come from
+      // the fresh response — they are not merged from the old cache.
+      const merged = { ...(runtime.about.infoCache || {}) };
+      for (const key of STATIC_ABOUT_KEYS) {
+        if (info[key] != null) merged[key] = info[key];
+      }
+      merged.version = info.version;
+      merged.pendingUpdateVersion = info.pendingUpdateVersion || "";
+      merged.autoUpdateCheck = info.autoUpdateCheck !== false;
+      runtime.about.infoCache = merged;
+      return merged;
+    }).catch(() => runtime.about.infoCache || null);
   }
 
   function handleAboutCrabClick(crabWrap) {
@@ -171,6 +188,18 @@
       const vv = document.createElement("span");
       vv.className = "about-info-value";
       vv.textContent = "v" + (safe.version || "?");
+      vvWrap.appendChild(vv);
+      if (safe.pendingUpdateVersion) {
+        const hint = document.createElement("span");
+        hint.className = "about-update-hint";
+        hint.textContent = "· " + t("aboutUpdateAvailableHint").replace("{version}", safe.pendingUpdateVersion);
+        hint.style.cursor = "pointer";
+        hint.addEventListener("click", () => {
+          if (!window.settingsAPI || typeof window.settingsAPI.checkForUpdates !== "function") return;
+          window.settingsAPI.checkForUpdates().catch(() => {});
+        });
+        vvWrap.appendChild(hint);
+      }
       const updateBtn = document.createElement("button");
       updateBtn.className = "about-check-update-btn";
       updateBtn.textContent = t("aboutCheckForUpdates");
@@ -181,11 +210,37 @@
           .catch(() => {})
           .finally(() => { updateBtn.disabled = false; });
       });
-      vvWrap.appendChild(vv);
       vvWrap.appendChild(updateBtn);
       versionRow.appendChild(vl);
       versionRow.appendChild(vvWrap);
       infoSection.appendChild(versionRow);
+
+      const autoUpdateRow = document.createElement("div");
+      autoUpdateRow.className = "about-info-row";
+      const autoUpdateLabelWrap = document.createElement("div");
+      autoUpdateLabelWrap.className = "about-info-label";
+      const autoUpdateLabel = document.createElement("div");
+      autoUpdateLabel.textContent = t("autoUpdateCheck");
+      const autoUpdateDesc = document.createElement("div");
+      autoUpdateDesc.className = "about-info-description";
+      autoUpdateDesc.textContent = t("autoUpdateCheckDescription");
+      autoUpdateDesc.style.opacity = "0.7";
+      autoUpdateDesc.style.fontSize = "12px";
+      autoUpdateLabelWrap.appendChild(autoUpdateLabel);
+      autoUpdateLabelWrap.appendChild(autoUpdateDesc);
+      const autoUpdateValue = document.createElement("div");
+      autoUpdateValue.className = "about-info-value";
+      const autoUpdateBox = document.createElement("input");
+      autoUpdateBox.type = "checkbox";
+      autoUpdateBox.checked = safe.autoUpdateCheck !== false;
+      autoUpdateBox.addEventListener("change", () => {
+        if (!window.settingsAPI || typeof window.settingsAPI.update !== "function") return;
+        window.settingsAPI.update("autoUpdateCheck", autoUpdateBox.checked).catch(() => {});
+      });
+      autoUpdateValue.appendChild(autoUpdateBox);
+      autoUpdateRow.appendChild(autoUpdateLabelWrap);
+      autoUpdateRow.appendChild(autoUpdateValue);
+      infoSection.appendChild(autoUpdateRow);
 
       if (safe.repoUrl) {
         infoSection.appendChild(buildAboutLinkRow(
