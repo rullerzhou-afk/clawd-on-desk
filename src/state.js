@@ -915,7 +915,12 @@ function updateSession(sessionId, state, event, opts = {}) {
       const srcCodexOriginator = codexOriginator || (existing && existing.codexOriginator) || null;
       const srcCodexSource = codexSource || (existing && existing.codexSource) || null;
       const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
-      const storedState = existing && existing.state ? existing.state : "notification";
+      // PermissionRequest should flash the pet via setState("notification"),
+      // but a brand-new Codex permission session must not persist as
+      // notification. Otherwise, if the prompt is resolved remotely and no
+      // later hook arrives for that synthetic session, auto-return keeps
+      // resolving back to notification forever.
+      const storedState = existing && existing.state ? existing.state : "idle";
       const recentEvents = pushRecentEvent(existing, storedState, event);
       sessions.set(sessionId, {
         state: storedState,
@@ -1292,6 +1297,28 @@ function dismissSession(sessionId) {
   return true;
 }
 
+function clearPermissionNotification(sessionId, options = {}) {
+  const id = typeof sessionId === "string" ? sessionId : "";
+  if (!id || options.hasPendingForSession === true) return false;
+
+  let changed = false;
+  const session = sessions.get(id);
+  if (session && session.state === "notification") {
+    session.state = "idle";
+    session.updatedAt = Date.now();
+    session.displayHint = null;
+    session.resumeState = null;
+    changed = true;
+  }
+
+  // Leave the one-shot notification immediately after the permission channel
+  // resolves. If another session still deserves notification, resolveDisplayState
+  // will pick it again.
+  applyResolvedDisplayState();
+  if (changed) emitSessionSnapshot({ force: true });
+  return changed;
+}
+
 function clearSessionsByAgent(agentId) {
   if (!agentId) return 0;
   let removed = 0;
@@ -1635,6 +1662,7 @@ return {
   emitSessionSnapshot, broadcastSessionSnapshot, getLastSessionSnapshot,
   getActiveSessionAliasKeys,
   dismissSession,
+  clearPermissionNotification,
   ackSessionCompletion,
   clearSessionsByAgent,
   disposeAllKimiPermissionState,

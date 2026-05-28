@@ -989,6 +989,10 @@ const _permCtx = {
   onPermissionsChanged: () => {
     if (hardwareBuddyAdapter) hardwareBuddyAdapter.notifyPermissionsChanged();
   },
+  onPermissionResolved: (permEntry, options = {}) => {
+    if (!_state || typeof _state.clearPermissionNotification !== "function") return;
+    _state.clearPermissionNotification(permEntry && permEntry.sessionId, options);
+  },
 };
 const _perm = initPermission(_permCtx);
 const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, maybeStartRemoteApproval, showCodexNotifyBubble, clearCodexNotifyBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodePermission } = _perm;

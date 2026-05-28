@@ -125,8 +125,10 @@ describe("permission autoclose: no-decision dismiss semantics", () => {
 
   it("notifies when a resolved permission leaves the pending list", () => {
     const changes = [];
+    const resolved = [];
     const ctx = makeCtx({
       onPermissionsChanged: (reason) => changes.push(reason),
+      onPermissionResolved: (entry, meta) => resolved.push({ entry, meta }),
     });
     const { resolvePermissionEntry, pendingPermissions } = initPermission(ctx);
     const permEntry = makePermEntry();
@@ -135,7 +137,30 @@ describe("permission autoclose: no-decision dismiss semantics", () => {
     resolvePermissionEntry(permEntry, "allow");
 
     assert.deepEqual(changes, ["resolved"]);
+    assert.deepEqual(resolved, [{
+      entry: permEntry,
+      meta: { reason: "resolved", hasPendingForSession: false },
+    }]);
     assert.equal(pendingPermissions.indexOf(permEntry), -1);
+  });
+
+  it("reports when another permission for the same session is still pending", () => {
+    const resolved = [];
+    const ctx = makeCtx({
+      onPermissionResolved: (entry, meta) => resolved.push({ entry, meta }),
+    });
+    const { resolvePermissionEntry, pendingPermissions } = initPermission(ctx);
+    const first = makePermEntry({ sessionId: "same-session" });
+    const second = makePermEntry({ sessionId: "same-session" });
+    pendingPermissions.push(first, second);
+
+    resolvePermissionEntry(first, "allow");
+
+    assert.deepEqual(resolved, [{
+      entry: first,
+      meta: { reason: "resolved", hasPendingForSession: true },
+    }]);
+    assert.deepEqual(pendingPermissions, [second]);
   });
 
   it("notifies when a permission enters the pending list through the runtime helper", () => {

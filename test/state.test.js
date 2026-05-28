@@ -937,6 +937,41 @@ describe("updateSession()", () => {
     assert.ok(!api.sessions.has("s0"));
   });
 
+  it("Codex PermissionRequest without an existing session does not persist notification", () => {
+    update(api, {
+      id: "codex:new-permission",
+      state: "notification",
+      event: "PermissionRequest",
+      agentId: "codex",
+      sourcePid: 456,
+      cwd: "/repo",
+    });
+
+    assert.strictEqual(api.getCurrentState(), "notification");
+    assert.strictEqual(api.sessions.get("codex:new-permission").state, "idle");
+    assert.strictEqual(api.resolveDisplayState(), "idle");
+
+    mock.timers.tick(5000);
+
+    assert.strictEqual(api.getCurrentState(), "idle");
+  });
+
+  it("clearPermissionNotification releases a persisted notification session immediately", () => {
+    api.sessions.set("codex:stale-permission", rawSession("notification", {
+      agentId: "codex",
+      sourcePid: 456,
+      pidReachable: true,
+    }));
+    api.setState("notification");
+
+    assert.strictEqual(api.getCurrentState(), "notification");
+
+    assert.strictEqual(api.clearPermissionNotification("codex:stale-permission"), true);
+
+    assert.strictEqual(api.sessions.get("codex:stale-permission").state, "idle");
+    assert.strictEqual(api.getCurrentState(), "idle");
+  });
+
   it("SessionEnd + sweeping → plays sweeping even with other active sessions", () => {
     // Insert sessions directly to avoid MIN_DISPLAY_MS cascade from setState
     api.sessions.set("s1", rawSession("working"));

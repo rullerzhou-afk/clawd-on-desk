@@ -659,6 +659,25 @@ function notifyPermissionsChanged(reason) {
   }
 }
 
+function notifyPermissionResolved(permEntry, reason) {
+  if (!permEntry || permEntry.isCodexNotify || permEntry.isKimiNotify) return;
+  if (typeof ctx.onPermissionResolved !== "function") return;
+  const hasPendingForSession = pendingPermissions.some((entry) =>
+    entry
+    && entry.sessionId === permEntry.sessionId
+    && !entry.isCodexNotify
+    && !entry.isKimiNotify
+  );
+  try {
+    ctx.onPermissionResolved(permEntry, {
+      reason: reason || "resolved",
+      hasPendingForSession,
+    });
+  } catch (err) {
+    permLog(`onPermissionResolved failed: ${err && err.message ? err.message : err}`);
+  }
+}
+
 function addPendingPermission(permEntry, reason = "added") {
   pendingPermissions.push(permEntry);
   notifyPermissionsChanged(reason);
@@ -824,6 +843,7 @@ function dismissPermissionForTerminal(perm) {
   if (idx !== -1) {
     pendingPermissions.splice(idx, 1);
     notifyPermissionsChanged("deny-and-focus");
+    notifyPermissionResolved(perm, "deny-and-focus");
   }
   if (perm.bubble && !perm.bubble.isDestroyed()) {
     perm.bubble.webContents.send("permission-hide");
@@ -905,6 +925,7 @@ function maybeStartRemoteApproval(permEntry) {
 
   pendingPermissions.splice(idx, 1);
   notifyPermissionsChanged("resolved");
+  notifyPermissionResolved(permEntry, "resolved");
 
   if (permEntry.autoCloseTimer) {
     clearTimeout(permEntry.autoCloseTimer);

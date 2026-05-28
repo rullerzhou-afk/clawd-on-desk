@@ -102,6 +102,7 @@ describe("permission telegram remote approval", () => {
   it("sends a conservative payload and resolves allow without a message", async () => {
     let resolveApproval;
     const requests = [];
+    const resolved = [];
     const client = {
       isEnabled: () => true,
       requestApproval: (payload, options) => {
@@ -109,7 +110,10 @@ describe("permission telegram remote approval", () => {
         return new Promise((resolve) => { resolveApproval = resolve; });
       },
     };
-    const perm = initPermission(makeCtx({ getTelegramApprovalClient: () => client }));
+    const perm = initPermission(makeCtx({
+      getTelegramApprovalClient: () => client,
+      onPermissionResolved: (entry, meta) => resolved.push({ entry, meta }),
+    }));
     const entry = makePermEntry({
       toolInput: {
         command: "npm test -- --token sk-1234567890123456",
@@ -135,6 +139,12 @@ describe("permission telegram remote approval", () => {
     await flush();
 
     assert.equal(perm.pendingPermissions.length, 0);
+    assert.equal(resolved.length, 1);
+    assert.equal(resolved[0].entry, entry);
+    assert.deepEqual(resolved[0].meta, {
+      reason: "resolved",
+      hasPendingForSession: false,
+    });
     const body = JSON.parse(entry.res.captured.body);
     assert.deepEqual(body.hookSpecificOutput.decision, { behavior: "allow" });
   });
