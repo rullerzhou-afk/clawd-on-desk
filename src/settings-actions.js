@@ -949,6 +949,14 @@ async function telegramApprovalSetToken(payload, deps = {}) {
   return { status: "ok", tokenStored: true };
 }
 
+async function telegramApprovalDeleteTokenFile(_payload, deps = {}) {
+  if (!deps || typeof deps.deleteTelegramApprovalTokenFile !== "function") {
+    return { status: "error", message: "telegramApproval.deleteTokenFile requires deleteTelegramApprovalTokenFile dep" };
+  }
+  const result = await deps.deleteTelegramApprovalTokenFile();
+  return result || { status: "error", message: "Telegram token file delete returned no result" };
+}
+
 function telegramApprovalStatus(_payload, deps = {}) {
   if (!deps || typeof deps.getTelegramApprovalStatus !== "function") {
     return { status: "error", message: "telegramApproval.status requires getTelegramApprovalStatus dep" };
@@ -1006,6 +1014,7 @@ async function telegramMigrationDispatch(payload, deps = {}) {
 }
 
 telegramMigrationDispatch.lockKey = "tgApproval";
+telegramApprovalDeleteTokenFile.lockKey = "tgApproval";
 
 async function telegramApprovalSendTest(_payload, deps = {}) {
   if (!deps || typeof deps.sendTelegramApprovalTest !== "function") {
@@ -1071,6 +1080,7 @@ const commandRegistry = {
   "remoteSsh.markDeployed": remoteSshMarkDeployed,
   "remoteSsh.markRemoteNode": remoteSshMarkRemoteNode,
   "telegramApproval.setToken": telegramApprovalSetToken,
+  "telegramApproval.deleteTokenFile": telegramApprovalDeleteTokenFile,
   "telegramApproval.status": telegramApprovalStatus,
   "telegramApproval.tokenInfo": telegramApprovalTokenInfo,
   "telegramApproval.test": telegramApprovalSendTest,

@@ -163,6 +163,7 @@
   function buildTelegramMigrationCard() {
     migrationCardEl = document.createElement("div");
     migrationCardEl.className = "tg-migration-card";
+    renderMigrationCard();
     refreshMigrationSnapshot();
     return migrationCardEl;
   }
@@ -308,8 +309,25 @@
   }
 
   function deleteLegacyTokenFile() {
-    // Reuse existing token clear command if available; spike just toasts.
-    ops.showToast("Delete legacy token: use Settings → Telegram approval → Token clear", { error: false });
+    if (migrationPending) return;
+    migrationPending = true;
+    renderMigrationCard();
+    callCommand("telegramApproval.deleteTokenFile").then((res) => {
+      migrationPending = false;
+      if (res && res.status === "ok") {
+        ops.showToast(res.deleted === false
+          ? "Telegram token file was already removed."
+          : "Telegram token file deleted.");
+      } else {
+        ops.showToast((res && res.message) || "Telegram token file delete failed", { error: true });
+      }
+      view.tokenInfo = null;
+      view.status = null;
+      renderMigrationCard();
+      refreshTokenInfo({ forceRender: true });
+      refreshStatus({ forceRender: true });
+      refreshMigrationSnapshot();
+    });
   }
 
   function buildTelegramChannelCard() {

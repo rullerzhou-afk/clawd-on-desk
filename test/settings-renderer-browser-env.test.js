@@ -1413,6 +1413,72 @@ describe("settings renderer browser environment", () => {
     assert.equal(harness.renderRequests.length, beforeStatusResolve + 2);
   });
 
+  it("wires the native migration delete-token button to a real command", async () => {
+    const commandCalls = [];
+    const toastMessages = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+      },
+      settingsAPI: {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
+          if (name === "telegramMigration.snapshot") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: {
+                state: "NATIVE_ACTIVE",
+                runtimeStatus: { status: "running" },
+                ownerSnapshot: { sidecarRunning: false, nativePolling: true },
+                migrationInfo: {},
+                nativeVerifiedAt: 123,
+              },
+            });
+          }
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({ status: "ok", state: { status: "stopped", tokenStored: true } });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          if (name === "telegramApproval.deleteTokenFile") {
+            return Promise.resolve({ status: "ok", deleted: true });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.core.ops.showToast = (message, options = {}) => {
+      toastMessages.push({ message, options });
+    };
+
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const deleteButton = harness.content
+      .querySelectorAll("button")
+      .find((button) => button.textContent === "Delete legacy token file");
+    assert.ok(deleteButton, "delete legacy token button should render for NATIVE_ACTIVE");
+
+    deleteButton.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.equal(
+      commandCalls.some((call) => call.name === "telegramApproval.deleteTokenFile"),
+      true,
+    );
+    assert.equal(
+      toastMessages.some((toast) => /deleted/i.test(toast.message)),
+      true,
+    );
+  });
+
   it("wires Clawd Doctor through Settings with Step 2 connection actions", () => {
     const html = fs.readFileSync(SETTINGS_HTML, "utf8");
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");
