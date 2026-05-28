@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld("hitAPI", {
   exitMiniMode: () => ipcRenderer.send("exit-mini-mode"),
   showDashboard: () => ipcRenderer.send("show-dashboard"),
   revealSessionHud: () => ipcRenderer.send("pet-interaction:reveal-session-hud"),
+  petHover: (hovered) => ipcRenderer.send("pet-hover", !!hovered),
   // Reaction triggers → main → renderWin
   startDragReaction: () => ipcRenderer.send("start-drag-reaction"),
   endDragReaction: () => ipcRenderer.send("end-drag-reaction"),

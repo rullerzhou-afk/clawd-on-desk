@@ -208,18 +208,15 @@ function createSettingsWindowRuntime(options = {}) {
       minWidth: MIN_WIDTH,
       minHeight: MIN_HEIGHT,
       show: false,
-      frame: true,
-      transparent: false,
+      frame: false,
+      transparent: true,
       resizable: true,
       minimizable: true,
       maximizable: true,
       skipTaskbar: false,
       alwaysOnTop: false,
       title: SETTINGS_WINDOW_TITLE,
-      // Match settings.html's dark-mode palette to avoid a white flash before
-      // CSS media query kicks in. Hex values must stay in sync with the
-      // `--bg` CSS variable in settings.html for each theme.
-      backgroundColor: nativeTheme.shouldUseDarkColors ? "#1c1c1f" : "#f5f5f7",
+      backgroundColor: "#00000000",
       webPreferences: {
         preload: preloadPath,
         nodeIntegration: false,
@@ -230,6 +227,9 @@ function createSettingsWindowRuntime(options = {}) {
 
     if (typeof options.onBeforeCreate === "function") options.onBeforeCreate();
     settingsWindow = new BrowserWindow(opts);
+    settingsWindow._clawdMaximized = false;
+    settingsWindow.on("maximize", () => { settingsWindow._clawdMaximized = true; });
+    settingsWindow.on("unmaximize", () => { settingsWindow._clawdMaximized = false; });
     const createdWindow = settingsWindow;
     if (isWin && typeof createdWindow.setAppDetails === "function") {
       const taskbarDetails = getTaskbarDetails();

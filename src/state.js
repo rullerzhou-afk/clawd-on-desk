@@ -849,6 +849,7 @@ function ackSessionCompletion(sessionId) {
 // positional params — refactored in B2 to an options bag so new fields
 // (sessionTitle, etc.) don't keep extending the argument list.
 function updateSession(sessionId, state, event, opts = {}) {
+  let usageEventForRecord = null;
   try {
   const {
     sourcePid = null,
@@ -871,6 +872,8 @@ function updateSession(sessionId, state, event, opts = {}) {
     preserveState = false,
     hookSource = null,
     muteNotificationSound = false,
+    tokenUsage = null,
+    usageEventId = null,
   } = opts;
   if (startupRecoveryActive) {
     startupRecoveryActive = false;
@@ -879,6 +882,18 @@ function updateSession(sessionId, state, event, opts = {}) {
 
   const sessionForPerm = sessions.get(sessionId);
   const permAgentId = agentId || (sessionForPerm && sessionForPerm.agentId) || null;
+  function queueUsageRecord(recordState, meta = {}) {
+    usageEventForRecord = {
+      at: Date.now(),
+      sessionId,
+      state: recordState || state || "idle",
+      event: meta.event !== undefined ? meta.event : event,
+      agentId: meta.agentId || agentId || (sessionForPerm && sessionForPerm.agentId) || null,
+      host: meta.host || host || (sessionForPerm && sessionForPerm.host) || null,
+      tokenUsage: tokenUsage || null,
+      usageEventId: usageEventId || null,
+    };
+  }
 
   if (event === "PermissionRequest") {
     if (permAgentId === "codex") cancelCodexExitProbe(sessionId, "PermissionRequest");
@@ -944,6 +959,10 @@ function updateSession(sessionId, state, event, opts = {}) {
     }
     setState("notification", undefined, { muteNotificationSound: muteNotificationSound === true });
     if (permAgentId === "kimi-cli") startKimiPermissionPoll(sessionId);
+    queueUsageRecord("notification", {
+      agentId: permAgentId,
+      host: host || (sessionForPerm && sessionForPerm.host) || null,
+    });
     return;
   }
 
@@ -1051,6 +1070,11 @@ function updateSession(sessionId, state, event, opts = {}) {
       debugSession(`subagent-stop keep ${describeSession(sessionId, sessions.get(sessionId))}`);
     }
 
+    const storedAfterSubagentStop = sessions.get(sessionId);
+    queueUsageRecord(storedAfterSubagentStop ? storedAfterSubagentStop.state : "sleeping", {
+      agentId: srcAgentId,
+      host: srcHost,
+    });
     cleanStaleSessions();
     const displayState = resolveDisplayState();
     setState(displayState, getSvgOverride(displayState));
@@ -1062,6 +1086,10 @@ function updateSession(sessionId, state, event, opts = {}) {
     cancelCodexExitProbe(sessionId, "SessionEnd");
     sessions.delete(sessionId);
     debugSession(`session-end delete ${describeSession(sessionId, endingSession)}`);
+    queueUsageRecord("sleeping", {
+      agentId: srcAgentId,
+      host: srcHost,
+    });
     cleanStaleSessions();
     if (srcAgentId === "kimi-cli") stopKimiPermissionPoll(sessionId);
     if (!endingSession || !endingSession.headless) {
@@ -1111,6 +1139,11 @@ function updateSession(sessionId, state, event, opts = {}) {
       sessions.set(sessionId, { state, updatedAt: Date.now(), displayHint: dh, ...base, resumeState: null });
     }
   }
+  const storedAfterUpdate = sessions.get(sessionId);
+  queueUsageRecord(storedAfterUpdate ? storedAfterUpdate.state : state, {
+    agentId: srcAgentId,
+    host: srcHost,
+  });
   cleanStaleSessions();
   updateCodexExitProbe(sessionId, srcAgentId, event);
   // Any Kimi event other than the PreToolUse that originally opened the hold
@@ -1186,6 +1219,13 @@ function updateSession(sessionId, state, event, opts = {}) {
   const displayState = resolveDisplayState();
   setState(displayState, getSvgOverride(displayState));
   } finally {
+    try {
+      if (usageEventForRecord && typeof ctx.recordUsageEvent === "function") {
+        ctx.recordUsageEvent(usageEventForRecord);
+      }
+    } catch (err) {
+      console.warn("recordUsageEvent threw:", err);
+    }
     try {
       // Reconcile the ack flag from the LATEST entry view, not the closure
       // copies taken at the top — early-return paths (state.js Kimi

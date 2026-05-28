@@ -56,7 +56,7 @@ const i18n = {
     bubbleFollow: "Bubble Follow Pet",
     hideBubbles: "Hide Bubbles",
     openDashboard: "Open Dashboard",
-    dashboardWindowTitle: "Sessions",
+    dashboardWindowTitle: "Dashboard",
     dashboardCount: "{n} active",
     dashboardEmpty: "No active sessions",
     dashboardEmptyHint: "Claude Code, Codex, and other agent sessions will appear here.",

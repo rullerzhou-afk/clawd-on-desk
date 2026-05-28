@@ -17,6 +17,7 @@ const MENU_AFFECTING_KEYS = new Set([
   "theme",
   "size",
   "sessionAliases",
+  "appearanceMode",
 ]);
 
 function requiredDependency(value, name) {
@@ -68,6 +69,7 @@ function createSettingsEffectRouter(options = {}) {
   const handleSessionHudPinnedChanged = options.handleSessionHudPinnedChanged || noop;
   const reclampPetAfterEdgePinningChange = options.reclampPetAfterEdgePinningChange || noop;
   const rebuildAllMenus = options.rebuildAllMenus || noop;
+  const applyAppearanceMode = options.applyAppearanceMode || noop;
 
   let started = false;
   let unsubscribeSettings = null;
@@ -92,6 +94,9 @@ function createSettingsEffectRouter(options = {}) {
     }
     if ("lowPowerIdleMode" in changes) {
       sendToRenderer("low-power-idle-mode-change", changes.lowPowerIdleMode);
+    }
+    if ("appearanceMode" in changes) {
+      safeCall(logWarn, "Clawd: applyAppearanceMode failed:", applyAppearanceMode, changes.appearanceMode);
     }
     if ("lang" in changes) {
       safeCall(logWarn, "Clawd: dashboard lang broadcast failed:", sendDashboardI18n);

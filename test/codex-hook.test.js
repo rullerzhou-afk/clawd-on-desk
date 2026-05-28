@@ -74,6 +74,20 @@ describe("Codex official hook", () => {
     assert.strictEqual(normalizeCodexSessionId("official-session", "/tmp/rollout.jsonl"), "codex:official-session");
   });
 
+  it("forwards explicit token usage without raw payload fields", () => {
+    const body = buildStateBody({
+      hook_event_name: "PostToolUse",
+      session_id: "s1",
+      turn_id: "turn-1",
+      usage: { input_tokens: 13, output_tokens: 7 },
+      prompt: "do not forward",
+    }, mockResolve);
+
+    assert.deepStrictEqual(body.token_usage, { input_tokens: 13, output_tokens: 7 });
+    assert.strictEqual(body.usage_event_id, "codex:codex:s1:PostToolUse:turn-1");
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(body, "prompt"), false);
+  });
+
   it("builds SessionStart state payloads", () => {
     const body = buildStateBody({
       hook_event_name: "SessionStart",

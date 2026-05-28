@@ -22,6 +22,12 @@
 
 const { contextBridge, ipcRenderer } = require("electron");
 
+contextBridge.exposeInMainWorld("windowControls", {
+  minimize: () => ipcRenderer.send("window:minimize"),
+  maximize: () => ipcRenderer.send("window:maximize"),
+  close: () => ipcRenderer.send("window:close"),
+});
+
 const listeners = new Set();
 const shortcutFailureListeners = new Set();
 const shortcutRecordKeyListeners = new Set();

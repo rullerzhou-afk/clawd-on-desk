@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Usage</title>
+  <style>
+    :root {
+      --panel: rgba(87, 83, 78, 0.94);
+      --panel-top: rgba(100, 96, 91, 0.96);
+      --stroke: rgba(250, 250, 248, 0.16);
+      --text: rgba(250, 250, 248, 0.94);
+      --muted: rgba(250, 250, 248, 0.62);
+      --accent: rgba(250, 250, 248, 0.86);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: transparent;
+      color: var(--text);
+      font-family: Inter, "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+      user-select: none;
+    }
+
+    .usage-hover {
+      width: 100%;
+      height: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--stroke);
+      border-radius: 10px;
+      background:
+        linear-gradient(180deg, var(--panel-top), var(--panel)),
+        var(--panel);
+      box-shadow:
+        0 14px 30px rgba(0, 0, 0, 0.18),
+        inset 0 1px 0 rgba(255, 255, 255, 0.13);
+      animation: hoverIn 150ms cubic-bezier(.2, .8, .2, 1);
+    }
+
+    .today {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 9px;
+    }
+
+    .metric {
+      min-width: 0;
+      position: relative;
+    }
+
+    .delta {
+      position: absolute;
+      top: -2px;
+      right: 0;
+      opacity: 0;
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 700;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+
+    .delta.show {
+      animation: deltaPop 950ms ease-out;
+    }
+
+    .label {
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .value {
+      display: block;
+      margin-top: 3px;
+      color: var(--text);
+      font-size: 21px;
+      line-height: 1;
+      font-weight: 750;
+      letter-spacing: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    @keyframes hoverIn {
+      from {
+        opacity: 0;
+        transform: translateY(5px) scale(0.985);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+    }
+
+    @keyframes deltaPop {
+      0% {
+        opacity: 0;
+        transform: translateY(5px) scale(0.96);
+      }
+      14% {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+      74% {
+        opacity: 1;
+        transform: translateY(-1px) scale(1);
+      }
+      100% {
+        opacity: 0;
+        transform: translateY(-8px) scale(0.98);
+      }
+    }
+  </style>
+</head>
+<body>
+  <section class="usage-hover" aria-label="Today usage">
+    <div class="today">
+      <span>Today</span>
+    </div>
+    <div class="metrics">
+      <div class="metric">
+        <span class="label">Tokens</span>
+        <span id="tokens-value" class="value">0</span>
+        <span id="token-delta" class="delta"></span>
+      </div>
+      <div class="metric">
+        <span class="label">Session</span>
+        <span id="session-value" class="value">0m</span>
+      </div>
+    </div>
+  </section>
+  <script src="./usage-hover-renderer.js"></script>
+</body>
+</html>

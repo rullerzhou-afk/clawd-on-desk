@@ -59,6 +59,23 @@ describe("Codex monitor callback helpers", () => {
     });
   });
 
+  it("passes usage metadata from JSONL monitor updates", () => {
+    assert.deepStrictEqual(buildCodexMonitorUpdateOptions({
+      cwd: "/repo",
+      tokenUsage: { input: 3, output: 2, total: 5, hasInputOutput: true },
+      usageEventId: "u1",
+      preserveState: true,
+    }, { includeHeadless: true }), {
+      cwd: "/repo",
+      agentId: "codex",
+      sessionTitle: undefined,
+      tokenUsage: { input: 3, output: 2, total: 5, hasInputOutput: true },
+      usageEventId: "u1",
+      preserveState: true,
+      headless: false,
+    });
+  });
+
   it("omits headless for permission update options", () => {
     const options = buildCodexMonitorUpdateOptions({
       cwd: "/repo",

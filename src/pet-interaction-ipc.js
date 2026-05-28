@@ -16,6 +16,7 @@ function registerPetInteractionIpc(options = {}) {
   const sendToRenderer = requiredDependency(options.sendToRenderer, "sendToRenderer");
   const setDragLocked = requiredDependency(options.setDragLocked, "setDragLocked");
   const setMouseOverPet = requiredDependency(options.setMouseOverPet, "setMouseOverPet");
+  const setPetHover = requiredDependency(options.setPetHover, "setPetHover");
   const beginDragSnapshot = requiredDependency(options.beginDragSnapshot, "beginDragSnapshot");
   const clearDragSnapshot = requiredDependency(options.clearDragSnapshot, "clearDragSnapshot");
   const syncHitWin = requiredDependency(options.syncHitWin, "syncHitWin");
@@ -71,10 +72,15 @@ function registerPetInteractionIpc(options = {}) {
     setLowPowerIdlePaused(!!paused);
   });
 
+  on("pet-hover", (_event, hovered) => {
+    setPetHover(!!hovered);
+  });
+
   on("drag-lock", (_event, locked) => {
     setDragLocked(!!locked);
     if (locked) {
       setMouseOverPet(true);
+      setPetHover(false);
       beginDragSnapshot();
     } else {
       clearDragSnapshot();

@@ -121,6 +121,18 @@ describe("Gemini hook script", () => {
     assert.strictEqual(postedBodies[0].editor, "code");
   });
 
+  it("forwards explicit token usage without raw payload fields", () => {
+    const body = __test.buildStateBody("AfterTool", {
+      session_id: "s1",
+      tokens: { input: 6, output: 4 },
+      prompt: "do not forward",
+    }, { remote: true, host: "remote" });
+
+    assert.deepStrictEqual(body.token_usage, { input: 6, output: 4 });
+    assert.strictEqual(body.usage_event_id, undefined);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(body, "prompt"), false);
+  });
+
   it("recognizes node-hosted Gemini CLI command lines for agent PID tracking", () => {
     assert.strictEqual(
       __test.isGeminiAgentCommandLine('"C:/Program Files/nodejs/node.exe" "C:/Users/me/AppData/Roaming/npm/node_modules/@google/gemini-cli/dist/index.js"'),

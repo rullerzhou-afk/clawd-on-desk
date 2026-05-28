@@ -15,6 +15,7 @@ const {
   buildStateBody,
   extractSessionTitleFromTranscript,
   extractApiErrorFromEntries,
+  extractTokenUsageFromTranscriptEntries,
 } = require("../hooks/clawd-hook.js");
 const { buildToolInputFingerprint } = require("../src/server").__test;
 
@@ -53,6 +54,18 @@ describe("buildStateBody", () => {
     assert.strictEqual(body.event, "SessionStart");
     assert.strictEqual(body.agent_id, "claude-code");
     assert.strictEqual(body.cwd, "/tmp/p");
+  });
+
+  it("forwards explicit token usage without raw payload fields", () => {
+    const body = buildStateBody("PostToolUse", {
+      session_id: "s",
+      usage: { input_tokens: 11, output_tokens: 6 },
+      prompt: "do not forward",
+    }, mockResolve);
+
+    assert.deepStrictEqual(body.token_usage, { input_tokens: 11, output_tokens: 6 });
+    assert.strictEqual(body.usage_event_id, undefined);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(body, "prompt"), false);
   });
 
   it("maps PreToolUse to working state", () => {
@@ -787,5 +800,155 @@ describe("buildStateBody — Stop → ApiError upgrade", () => {
     );
     assert.strictEqual(body.event, "Stop");
     assert.strictEqual(body.state, "attention");
+  });
+});
+
+describe("extractTokenUsageFromTranscriptEntries", () => {
+  it("returns null for empty / missing entries", () => {
+    assert.strictEqual(extractTokenUsageFromTranscriptEntries(null), null);
+    assert.strictEqual(extractTokenUsageFromTranscriptEntries([]), null);
+  });
+
+  it("extracts usage from assistant entry with message.usage", () => {
+    const entries = [
+      { type: "user", message: { content: "hi" } },
+      {
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "hello" }],
+          usage: { input_tokens: 42, output_tokens: 17 },
+        },
+      },
+    ];
+    assert.deepStrictEqual(
+      extractTokenUsageFromTranscriptEntries(entries),
+      { input_tokens: 42, output_tokens: 17 }
+    );
+  });
+
+  it("extracts usage from assistant entry with top-level usage", () => {
+    const entries = [
+      {
+        type: "assistant",
+        usage: { input_tokens: 100, output_tokens: 50 },
+      },
+    ];
+    assert.deepStrictEqual(
+      extractTokenUsageFromTranscriptEntries(entries),
+      { input_tokens: 100, output_tokens: 50 }
+    );
+  });
+
+  it("returns the most recent assistant usage entry", () => {
+    const entries = [
+      {
+        type: "assistant",
+        message: { usage: { input_tokens: 10, output_tokens: 5 } },
+      },
+      {
+        type: "assistant",
+        message: { usage: { input_tokens: 30, output_tokens: 15 } },
+      },
+    ];
+    assert.deepStrictEqual(
+      extractTokenUsageFromTranscriptEntries(entries),
+      { input_tokens: 30, output_tokens: 15 }
+    );
+  });
+
+  it("skips isApiErrorMessage entries", () => {
+    const entries = [
+      {
+        type: "assistant",
+        isApiErrorMessage: true,
+        message: { usage: { input_tokens: 5, output_tokens: 0 } },
+      },
+      {
+        type: "assistant",
+        message: { usage: { input_tokens: 60, output_tokens: 30 } },
+      },
+    ];
+    assert.deepStrictEqual(
+      extractTokenUsageFromTranscriptEntries(entries),
+      { input_tokens: 60, output_tokens: 30 }
+    );
+  });
+
+  it("handles missing output_tokens", () => {
+    const entries = [
+      {
+        type: "assistant",
+        message: { usage: { input_tokens: 25 } },
+      },
+    ];
+    assert.deepStrictEqual(
+      extractTokenUsageFromTranscriptEntries(entries),
+      { input_tokens: 25, output_tokens: 0 }
+    );
+  });
+
+  it("returns null when no assistant entries have usage", () => {
+    const entries = [
+      { type: "user", message: { content: "hi" } },
+      { type: "system", message: {} },
+    ];
+    assert.strictEqual(extractTokenUsageFromTranscriptEntries(entries), null);
+  });
+});
+
+describe("buildStateBody — transcript token usage fallback", () => {
+  it("extracts token usage from transcript when payload has none", () => {
+    const file = writeTmpJsonl([
+      { type: "user", message: { content: "hello" } },
+      {
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "hi there" }],
+          usage: { input_tokens: 80, output_tokens: 20 },
+        },
+      },
+    ]);
+    const body = buildStateBody(
+      "Stop",
+      { session_id: "sid-1", transcript_path: file },
+      mockResolve
+    );
+    assert.deepStrictEqual(body.token_usage, { input_tokens: 80, output_tokens: 20 });
+    assert.strictEqual(body.usage_event_id, "claude-code:sid-1:Stop:transcript:80:20");
+  });
+
+  it("prefers payload token usage over transcript", () => {
+    const file = writeTmpJsonl([
+      {
+        type: "assistant",
+        message: { usage: { input_tokens: 999, output_tokens: 999 } },
+      },
+    ]);
+    const body = buildStateBody(
+      "PostToolUse",
+      {
+        session_id: "s",
+        usage: { input_tokens: 11, output_tokens: 6 },
+        transcript_path: file,
+      },
+      mockResolve
+    );
+    // Payload usage should win
+    assert.deepStrictEqual(body.token_usage, { input_tokens: 11, output_tokens: 6 });
+    // usage_event_id from transcript fallback should NOT appear
+    assert.strictEqual(body.usage_event_id, undefined);
+  });
+
+  it("leaves token_usage absent when neither payload nor transcript has usage", () => {
+    const file = writeTmpJsonl([
+      { type: "user", message: { content: "hey" } },
+      { type: "assistant", message: { content: "yo" } },
+    ]);
+    const body = buildStateBody(
+      "Stop",
+      { session_id: "sid-1", transcript_path: file },
+      mockResolve
+    );
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(body, "token_usage"), false);
   });
 });

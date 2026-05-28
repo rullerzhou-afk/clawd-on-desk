@@ -102,12 +102,12 @@ describe("dashboard window", () => {
 
     dashboard.showDashboard();
     const createdWindow = getCreatedWindow();
-    assert.strictEqual(createdWindow.opts.backgroundColor, "#f5f5f7");
+    assert.strictEqual(createdWindow.opts.backgroundColor, "#56565c");
 
     nativeTheme.shouldUseDarkColors = true;
     nativeTheme.emit("updated");
 
-    assert.deepStrictEqual(createdWindow.backgroundColors, ["#f5f5f7", "#1c1c1f"]);
+    assert.deepStrictEqual(createdWindow.backgroundColors, ["#56565c", "#56565c"]);
   });
 
   it("centers the dashboard on the pet work area by default", () => {
@@ -116,10 +116,10 @@ describe("dashboard window", () => {
     dashboard.showDashboard();
 
     assert.deepStrictEqual(getCreatedWindow().bounds, {
-      x: 400,
-      y: 100,
-      width: 480,
-      height: 600,
+      x: 260,
+      y: 40,
+      width: 760,
+      height: 720,
     });
     assert.strictEqual(getCreatedWindow().opts.parent, undefined);
     assert.strictEqual(getCreatedWindow().opts.modal, undefined);
@@ -138,9 +138,9 @@ describe("dashboard window", () => {
     dashboard.showDashboard({ source: "settings" });
 
     assert.deepStrictEqual(getCreatedWindow().bounds, {
-      x: 260,
+      x: 120,
       y: 50,
-      width: 480,
+      width: 760,
       height: 560,
     });
     assert.strictEqual(getCreatedWindow().opts.parent, undefined);
@@ -162,9 +162,9 @@ describe("dashboard window", () => {
     dashboard.showDashboard({ source: "settings" });
 
     assert.deepStrictEqual(getCreatedWindow().bounds, {
-      x: 520,
+      x: 480,
       y: 0,
-      width: 480,
+      width: 520,
       height: 600,
     });
   });
@@ -181,10 +181,10 @@ describe("dashboard window", () => {
     dashboard.showDashboard({ source: "settings" });
 
     assert.deepStrictEqual(getCreatedWindow().bounds, {
-      x: 400,
-      y: 100,
-      width: 480,
-      height: 600,
+      x: 260,
+      y: 40,
+      width: 760,
+      height: 720,
     });
     assert.strictEqual(getCreatedWindow().opts.parent, undefined);
   });
@@ -203,9 +203,9 @@ describe("dashboard window", () => {
     dashboard.showDashboard({ source: "settings" });
 
     assert.deepStrictEqual(getCreatedWindow().setBoundsCalls, [{
-      x: 260,
+      x: 120,
       y: 50,
-      width: 480,
+      width: 760,
       height: 560,
     }]);
     assert.deepStrictEqual(getCreatedWindow().parentWindows, []);
@@ -229,9 +229,9 @@ describe("dashboard window", () => {
     for (const timer of timers) timer.callback();
 
     assert.deepStrictEqual(getCreatedWindow().setBoundsCalls, [
-      { x: 260, y: 50, width: 480, height: 540 },
-      { x: 260, y: 50, width: 480, height: 520 },
-      { x: 260, y: 50, width: 480, height: 520 },
+      { x: 120, y: 50, width: 760, height: 540 },
+      { x: 120, y: 50, width: 760, height: 520 },
+      { x: 120, y: 50, width: 760, height: 520 },
     ]);
     assert.deepStrictEqual(timers.map((timer) => timer.delay), [0, 80]);
   });
@@ -246,5 +246,23 @@ describe("dashboard window", () => {
     assert.match(rendererSource, /dashboardOpenCodexSession/);
     assert.doesNotMatch(rendererSource, /session\.platform === "webui"/);
     assert.match(preloadSource, /dashboard:hide-session/);
+  });
+
+  it("wires dashboard usage snapshot APIs", () => {
+    const dashboardSource = fs.readFileSync(path.join(__dirname, "..", "src", "dashboard.js"), "utf8");
+    const preloadSource = fs.readFileSync(path.join(__dirname, "..", "src", "preload-dashboard.js"), "utf8");
+    const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "dashboard-renderer.js"), "utf8");
+    const htmlSource = fs.readFileSync(path.join(__dirname, "..", "src", "dashboard.html"), "utf8");
+
+    assert.match(dashboardSource, /dashboard:usage-snapshot/);
+    assert.match(dashboardSource, /broadcastUsageSnapshot/);
+    assert.match(preloadSource, /getUsageSnapshot/);
+    assert.match(preloadSource, /onUsageSnapshot/);
+    assert.match(rendererSource, /createUsageSection/);
+    assert.match(rendererSource, /renderUsageChart/);
+    assert.match(htmlSource, /usage-section/);
+    assert.doesNotMatch(`${rendererSource}\n${htmlSource}`, /reported tokens/i);
+    assert.doesNotMatch(`${rendererSource}\n${htmlSource}`, /Daily reported tokens/i);
+    assert.doesNotMatch(`${rendererSource}\n${htmlSource}`, /Tokens \+ Time/);
   });
 });

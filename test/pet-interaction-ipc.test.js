@@ -78,6 +78,7 @@ function createHarness(overrides = {}) {
     focusSession: (sessionId, options) => calls.push(["focusSession", sessionId, options]),
     setLowPowerIdlePaused: (value) => calls.push(["setLowPowerIdlePaused", value]),
     revealSessionHud: () => calls.push(["revealSessionHud"]),
+    setPetHover: (value) => calls.push(["setPetHover", value]),
   });
   return { ipcMain, runtime, calls, state };
 }
@@ -94,6 +95,7 @@ test("pet interaction IPC registers owned channels and disposes them", () => {
     "focus-terminal",
     "low-power-idle-paused",
     "pause-cursor-polling",
+    "pet-hover",
     "pet-interaction:reveal-session-hud",
     "play-click-reaction",
     "resume-from-reaction",
@@ -111,6 +113,23 @@ test("pet interaction IPC delegates pet-interaction:reveal-session-hud to reveal
   ipcMain.send("pet-interaction:reveal-session-hud");
   assert.deepStrictEqual(calls.filter((c) => c[0] === "revealSessionHud"), [
     ["revealSessionHud"],
+  ]);
+});
+
+test("pet interaction IPC delegates pet-hover and hides it while dragging", () => {
+  const { ipcMain, calls } = createHarness();
+
+  ipcMain.send("pet-hover", true);
+  ipcMain.send("drag-lock", true);
+  ipcMain.send("pet-hover", false);
+
+  assert.deepStrictEqual(calls, [
+    ["setPetHover", true],
+    ["setDragLocked", true],
+    ["setMouseOverPet", true],
+    ["setPetHover", false],
+    ["beginDragSnapshot"],
+    ["setPetHover", false],
   ]);
 });
 
@@ -153,6 +172,7 @@ test("pet interaction IPC preserves drag lock lifecycle", () => {
   assert.deepStrictEqual(calls, [
     ["setDragLocked", true],
     ["setMouseOverPet", true],
+    ["setPetHover", false],
     ["beginDragSnapshot"],
     ["setDragLocked", false],
     ["clearDragSnapshot"],

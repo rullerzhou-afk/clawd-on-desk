@@ -1,18 +1,12 @@
 "use strict";
 
-const { BrowserWindow, nativeTheme } = require("electron");
+const { BrowserWindow } = require("electron");
 const path = require("path");
 
-const DEFAULT_WIDTH = 480;
-const DEFAULT_HEIGHT = 600;
-const MIN_WIDTH = 320;
-const MIN_HEIGHT = 400;
-const LIGHT_BACKGROUND = "#f5f5f7";
-const DARK_BACKGROUND = "#1c1c1f";
-
-function getDashboardBackgroundColor() {
-  return nativeTheme.shouldUseDarkColors ? DARK_BACKGROUND : LIGHT_BACKGROUND;
-}
+const DEFAULT_WIDTH = 760;
+const DEFAULT_HEIGHT = 720;
+const MIN_WIDTH = 520;
+const MIN_HEIGHT = 460;
 
 function isUsableBounds(bounds) {
   return !!bounds
@@ -47,6 +41,12 @@ module.exports = function initDashboard(ctx) {
     return typeof ctx.getSessionSnapshot === "function"
       ? ctx.getSessionSnapshot()
       : { sessions: [], groups: [], orderedIds: [], menuOrderedIds: [] };
+  }
+
+  function getCurrentUsageSnapshot() {
+    return typeof ctx.getUsageSnapshot === "function"
+      ? ctx.getUsageSnapshot({ days: 7 })
+      : null;
   }
 
   function computeInitialBounds() {
@@ -140,6 +140,13 @@ module.exports = function initDashboard(ctx) {
     dashboardWindow.webContents.send("dashboard:session-snapshot", snapshot);
   }
 
+  function sendUsageSnapshot(snapshot = getCurrentUsageSnapshot()) {
+    if (!snapshot) return;
+    if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
+    if (!dashboardWindow.webContents || dashboardWindow.webContents.isDestroyed()) return;
+    dashboardWindow.webContents.send("dashboard:usage-snapshot", snapshot);
+  }
+
   function sendI18n() {
     if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
     if (!dashboardWindow.webContents || dashboardWindow.webContents.isDestroyed()) return;
@@ -154,15 +161,15 @@ module.exports = function initDashboard(ctx) {
       minWidth: MIN_WIDTH,
       minHeight: MIN_HEIGHT,
       show: false,
-      frame: true,
-      transparent: false,
+      frame: false,
+      transparent: true,
       resizable: true,
       minimizable: true,
       maximizable: true,
       skipTaskbar: false,
       alwaysOnTop: false,
       title: typeof ctx.t === "function" ? ctx.t("dashboardWindowTitle") : "Sessions",
-      backgroundColor: getDashboardBackgroundColor(),
+      backgroundColor: "#00000000",
       webPreferences: {
         preload: path.join(__dirname, "preload-dashboard.js"),
         nodeIntegration: false,
@@ -172,11 +179,15 @@ module.exports = function initDashboard(ctx) {
     if (ctx.iconPath) opts.icon = ctx.iconPath;
 
     dashboardWindow = new BrowserWindow(opts);
+    dashboardWindow._clawdMaximized = false;
+    dashboardWindow.on("maximize", () => { dashboardWindow._clawdMaximized = true; });
+    dashboardWindow.on("unmaximize", () => { dashboardWindow._clawdMaximized = false; });
     dashboardWindow.setMenuBarVisibility(false);
     dashboardWindow.loadFile(path.join(__dirname, "dashboard.html"));
     dashboardWindow.webContents.once("did-finish-load", () => {
       sendI18n();
       sendSnapshot();
+      sendUsageSnapshot();
     });
     dashboardWindow.once("ready-to-show", () => {
       if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
@@ -191,15 +202,6 @@ module.exports = function initDashboard(ctx) {
     return dashboardWindow;
   }
 
-  function syncThemeBackground() {
-    if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
-    dashboardWindow.setBackgroundColor(getDashboardBackgroundColor());
-  }
-
-  if (nativeTheme && typeof nativeTheme.on === "function") {
-    nativeTheme.on("updated", syncThemeBackground);
-  }
-
   function showDashboard(options = {}) {
     if (dashboardWindow && !dashboardWindow.isDestroyed()) {
       if (dashboardWindow.isMinimized()) dashboardWindow.restore();
@@ -209,6 +211,7 @@ module.exports = function initDashboard(ctx) {
       dashboardWindow.focus();
       sendI18n();
       sendSnapshot();
+      sendUsageSnapshot();
       return dashboardWindow;
     }
     return createDashboardWindow(options);
@@ -218,9 +221,14 @@ module.exports = function initDashboard(ctx) {
     sendSnapshot(snapshot);
   }
 
+  function broadcastUsageSnapshot(snapshot) {
+    sendUsageSnapshot(snapshot);
+  }
+
   return {
     showDashboard,
     broadcastSessionSnapshot,
+    broadcastUsageSnapshot,
     sendI18n,
     getWindow: () => dashboardWindow,
   };
