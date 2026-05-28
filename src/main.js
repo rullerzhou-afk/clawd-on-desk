@@ -18,6 +18,7 @@ const initPermission = require("./permission");
 const { registerPermissionIpc } = initPermission;
 const { createTelegramApprovalSidecar } = require("./telegram-approval-sidecar");
 const telegramApprovalSettings = require("./telegram-approval-settings");
+const { createTelegramMigrationController } = require("./telegram-migration-controller");
 const initUpdateBubble = require("./update-bubble");
 const { registerUpdateBubbleIpc } = initUpdateBubble;
 const createSettingsAnimationOverridesMain = require("./settings-animation-overrides-main");
@@ -216,6 +217,8 @@ let telegramApprovalSidecar = null;
 let telegramApprovalSyncPromise = Promise.resolve();
 let telegramApprovalConfigSignature = "";
 let telegramApprovalTokenRevision = 0;
+let _telegramMigrationController = null;
+let suppressTelegramApprovalSidecarSync = 0;
 let hardwareBuddyAdapter = null;
 let hardwareBuddyStatus = null;
 let hardwareBuddyTestApprovalPromise = null;
@@ -259,6 +262,11 @@ const _settingsController = createSettingsController({
     getTelegramApprovalStatus: () => getTelegramApprovalStatus(),
     getTelegramApprovalTokenInfo: () => getTelegramApprovalTokenInfo(),
     sendTelegramApprovalTest: () => sendTelegramApprovalTest(),
+    // Lazy getter so settings-actions can use the controller even though it's
+    // instantiated below (forward-reference).
+    get telegramMigration() {
+      return _telegramMigrationController;
+    },
     // Theme runtime is wired after theme-loader.init(); keep these closures
     // lazy so settings actions never capture a pre-init runtime reference.
     activateTheme: (id, variantId, overrideMap) => themeRuntime.activateTheme(id, variantId, overrideMap),
@@ -1400,6 +1408,68 @@ function getTelegramApprovalPrefs() {
   return telegramApprovalSettings.normalizeTelegramApproval(_settingsController.get("tgApproval"));
 }
 
+function getTelegramMigrationPrefs() {
+  const raw = _settingsController.get("tgMigration");
+  return raw && typeof raw === "object" ? raw : {};
+}
+
+function readTelegramMigrationPrefsForController() {
+  const raw = { ...getTelegramMigrationPrefs() };
+  if (typeof raw.legacyEnabled !== "boolean") {
+    raw.legacyEnabled = getTelegramApprovalPrefs().enabled === true;
+  }
+  return raw;
+}
+
+function hasCompleteTelegramApprovalConfig(config, tokenInfo) {
+  return !!(
+    tokenInfo && tokenInfo.tokenStored === true
+    && config && config.allowedTgUserId
+    && config.targetSessionKey
+  );
+}
+
+function isTelegramLegacySidecarSyncAllowed() {
+  const migration = getTelegramMigrationPrefs();
+  if (migration.transport === "native" || migration.transport === "off") return false;
+  const controller = _telegramMigrationController;
+  if (controller && typeof controller.getSnapshot === "function") {
+    const snap = controller.getSnapshot() || {};
+    if (snap.state === "NATIVE_ACTIVE" || snap.state === "TESTING_NATIVE") return false;
+    if (snap.transport === "native" || snap.transport === "off") return false;
+  }
+  return true;
+}
+
+async function applySettingsUpdateOrThrow(key, value, label) {
+  const result = await Promise.resolve(_settingsController.applyUpdate(key, value));
+  if (!result || result.status !== "ok") {
+    throw new Error((result && result.message) || `${label || key} update failed`);
+  }
+  return result;
+}
+
+async function setTelegramApprovalEnabledForMigration(enabled) {
+  const current = getTelegramApprovalPrefs();
+  if (current.enabled === enabled) return;
+  suppressTelegramApprovalSidecarSync += 1;
+  try {
+    await applySettingsUpdateOrThrow("tgApproval", { ...current, enabled }, "tgApproval");
+  } finally {
+    suppressTelegramApprovalSidecarSync = Math.max(0, suppressTelegramApprovalSidecarSync - 1);
+  }
+}
+
+async function persistTelegramMigrationPatch(patch) {
+  const cur = getTelegramMigrationPrefs();
+  await applySettingsUpdateOrThrow("tgMigration", { ...cur, ...patch }, "tgMigration");
+  if (patch && patch.transport === "legacy") {
+    await setTelegramApprovalEnabledForMigration(true);
+  } else if (patch && (patch.transport === "native" || patch.transport === "off")) {
+    await setTelegramApprovalEnabledForMigration(false);
+  }
+}
+
 // Canonical paths only — no env-var override. The Settings "Save token" button,
 // the sidecar's bridge TOML, and tokenStatus all share this single location so
 // a malicious or accidental CLAWD_TG_BOT_TOKEN_FILE / CLAWD_BRIDGE_CONFIG can't
@@ -1557,6 +1627,110 @@ async function startTelegramApprovalSidecar() {
   return false;
 }
 
+async function initTelegramMigrationController() {
+  if (_telegramMigrationController) return _telegramMigrationController;
+  const paths = getTelegramApprovalPaths();
+
+  // Sidecar handle: forwards to the existing async start/stop functions so
+  // there is exactly one sidecar lifecycle in the process.
+  const sidecarHandle = {
+    isRunning: () => !!(telegramApprovalSidecar && telegramApprovalSidecar.isRunning && telegramApprovalSidecar.isRunning()),
+    start: async () => {
+      await setTelegramApprovalEnabledForMigration(true);
+      const started = await startTelegramApprovalSidecar();
+      if (!started) {
+        const err = new Error("Telegram approval sidecar did not start");
+        err.code = "SIDECAR_START_FAILED";
+        throw err;
+      }
+      return true;
+    },
+    stop: () => stopTelegramApprovalSidecar(),
+  };
+
+  // Native handle: spike-level real implementation. Token comes from the same
+  // env file the sidecar uses; production transport closes over the token.
+  const { envFileTokenStore } = require("./telegram-token-store");
+  const { createTelegramNativeRunner } = require("./telegram-native-runner");
+  const tokenStore = envFileTokenStore({ filePath: paths.tokenEnvFilePath });
+  const nativeRunner = createTelegramNativeRunner({
+    tokenStore,
+    transport: makeFetchTransport({ tokenStore }),
+    getDispatch: () => _telegramMigrationController && _telegramMigrationController.dispatch,
+    getChatId: () => {
+      const cfg = getTelegramApprovalPrefs();
+      const key = cfg && cfg.targetSessionKey;
+      // targetSessionKey is "telegram:<chat>:..." — extract chat id.
+      const m = typeof key === "string" ? key.match(/^telegram:(-?\d+)/) : null;
+      return m ? m[1] : "";
+    },
+    getAllowedUserId: () => {
+      const cfg = getTelegramApprovalPrefs();
+      return (cfg && cfg.allowedTgUserId) || "";
+    },
+    log: telegramApprovalLog,
+  });
+
+  _telegramMigrationController = createTelegramMigrationController({
+    sidecar: sidecarHandle,
+    native: nativeRunner,
+    readPrefs: () => readTelegramMigrationPrefsForController(),
+    writePrefs: (patch) => persistTelegramMigrationPatch(patch),
+    readFiles: () => {
+      const cfg = getTelegramApprovalPrefs();
+      const tokenInfo = getTelegramApprovalTokenStatus();
+      const hasTokenFile = !!(tokenInfo && tokenInfo.tokenStored);
+      const configComplete = hasCompleteTelegramApprovalConfig(cfg, tokenInfo);
+      return {
+        hasLegacyEnvFile: hasTokenFile,
+        legacyConfigComplete: configComplete,
+        nativeConfigComplete: configComplete,
+      };
+    },
+    log: telegramApprovalLog,
+  });
+
+  await _telegramMigrationController.init();
+  return _telegramMigrationController;
+}
+
+// Minimal fetch-based transport for the native client. Closes over the token
+// (no per-call token argument) so logging or debug serialization of request
+// args cannot leak the secret.
+function makeFetchTransport({ tokenStore }) {
+  return async ({ method, payload, signal }) => {
+    const token = await tokenStore.getToken();
+    if (!token) {
+      return { ok: false, status: null, error_code: "TOKEN_MISSING", description: "no token" };
+    }
+    const url = `https://api.telegram.org/bot${token}/${method}`;
+    let res;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload || {}),
+        signal,
+      });
+    } catch (err) {
+      if (err && err.name === "AbortError") throw err;
+      throw Object.assign(new Error(err && err.message), { code: err && err.code });
+    }
+    const status = res.status;
+    let body;
+    try { body = await res.json(); } catch { body = null; }
+    if (!body) return { ok: false, status, error_code: status, description: res.statusText || "" };
+    if (body.ok) return { ok: true, result: body.result };
+    return {
+      ok: false,
+      status,
+      error_code: body.error_code || status,
+      description: body.description || "",
+      parameters: body.parameters || {},
+    };
+  };
+}
+
 function stopTelegramApprovalSidecar() {
   const sidecar = telegramApprovalSidecar;
   telegramApprovalSidecar = null;
@@ -1568,6 +1742,11 @@ function stopTelegramApprovalSidecar() {
 }
 
 async function syncTelegramApprovalSidecar(reason = "settings") {
+  if (!isTelegramLegacySidecarSyncAllowed()) {
+    if (telegramApprovalSidecar) await stopTelegramApprovalSidecar();
+    telegramApprovalLog("debug", `sync ${reason} skipped by migration transport`);
+    return false;
+  }
   const config = getTelegramApprovalPrefs();
   const paths = getTelegramApprovalPaths();
   const token = getTelegramApprovalTokenStatus();
@@ -2008,6 +2187,7 @@ const settingsEffectRouter = createSettingsEffectRouter({
 });
 settingsEffectRouter.start();
 _settingsController.subscribeKey("tgApproval", () => {
+  if (suppressTelegramApprovalSidecarSync > 0) return;
   queueTelegramApprovalSidecarSync("settings");
 });
 
@@ -2560,7 +2740,9 @@ if (!gotTheLock) {
     updateDebugLog = path.join(app.getPath("userData"), "update-debug.log");
     sessionDebugLog = path.join(app.getPath("userData"), "session-debug.log");
     focusDebugLog = path.join(app.getPath("userData"), "focus-debug.log");
-    queueTelegramApprovalSidecarSync("startup");
+    initTelegramMigrationController().catch((err) => {
+      console.warn("Clawd: migration controller init failed:", err && err.message);
+    });
     createWindow();
     if (shouldOpenSettingsWindowFromArgv(process.argv)) {
       settingsWindowRuntime.open();

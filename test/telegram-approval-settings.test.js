@@ -231,10 +231,17 @@ test("invariant: Clawd source never reads process.env.CLAWD_TG_BOT_TOKEN", () =>
   // content for the sidecar to read) and in src/telegram-approval-sidecar.js
   // (handshake constants and child env stripping). What's forbidden is
   // process.env access to that specific name in Clawd's own code.
+  const srcDir = path.join(__dirname, "..", "src");
+  // Cover main.js plus every src/telegram-*.js (sidecar, settings, the new
+  // native-client / owner-manager / migration-state / token-store added in
+  // the v0.9.0 spike) so future Telegram modules can't silently regress this
+  // invariant.
   const sourceFiles = [
-    path.join(__dirname, "..", "src", "main.js"),
-    path.join(__dirname, "..", "src", "telegram-approval-sidecar.js"),
-    path.join(__dirname, "..", "src", "telegram-approval-settings.js"),
+    path.join(srcDir, "main.js"),
+    ...fs
+      .readdirSync(srcDir)
+      .filter((name) => /^telegram-.*\.js$/.test(name))
+      .map((name) => path.join(srcDir, name)),
   ];
   const offenders = [];
   const needle = "process.env.CLAWD_TG_BOT_TOKEN";

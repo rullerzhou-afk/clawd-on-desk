@@ -143,10 +143,173 @@
     subtitle.textContent = t("remoteApprovalSubtitle");
     parent.appendChild(subtitle);
 
+    // v0.9.0 migration: native vs sidecar transport selector. Lives ABOVE the
+    // legacy Telegram card so users see migration progress before the legacy
+    // setup steps.
+    parent.appendChild(buildTelegramMigrationCard());
+
     // Each remote approval channel renders as its own collapsible card so the
     // page can stay tidy as external approval channels grow.
     parent.appendChild(buildTelegramChannelCard());
     parent.appendChild(buildHardwareBuddyChannelCard());
+  }
+
+  // ── v0.9.0 migration card ──────────────────────────────────────────────────
+  let migrationSnapshot = null;
+  let migrationCardEl = null;
+  let migrationPending = false;
+  let migrationSnapshotSeq = 0;
+
+  function buildTelegramMigrationCard() {
+    migrationCardEl = document.createElement("div");
+    migrationCardEl.className = "tg-migration-card";
+    refreshMigrationSnapshot();
+    return migrationCardEl;
+  }
+
+  function refreshMigrationSnapshot() {
+    if (migrationPending) return;
+    const seq = ++migrationSnapshotSeq;
+    callCommand("telegramMigration.snapshot").then((res) => {
+      if (seq !== migrationSnapshotSeq || migrationPending) return;
+      if (res && res.status === "ok") {
+        migrationSnapshot = res.snapshot;
+        renderMigrationCard();
+      }
+    });
+  }
+
+  function migrationDispatch(eventType, extra = {}) {
+    if (migrationPending) return;
+    migrationPending = true;
+    renderMigrationCard();
+    callCommand("telegramMigration.dispatch", { type: eventType, ...extra }).then((res) => {
+      migrationPending = false;
+      if (res && res.snapshot) migrationSnapshot = res.snapshot;
+      if (res && res.status !== "ok" && res.errorCode) {
+        ops.showToast(`Telegram migration: ${res.errorCode}`, { error: true });
+      }
+      renderMigrationCard();
+      // Status of the legacy sidecar may change as a side-effect (start/stop).
+      refreshStatus({ forceRender: true });
+    });
+  }
+
+  function renderMigrationCard() {
+    if (!migrationCardEl) return;
+    migrationCardEl.innerHTML = "";
+    const snap = migrationSnapshot;
+    if (!snap) {
+      migrationCardEl.textContent = "Loading migration status…";
+      return;
+    }
+    const state = snap.state;
+    const title = document.createElement("h3");
+    title.textContent = "Telegram bot transport (v0.9.0 spike)";
+    migrationCardEl.appendChild(title);
+
+    const stateLine = document.createElement("p");
+    stateLine.className = "tg-migration-state";
+    stateLine.textContent = `State: ${state}` +
+      (snap.runtimeStatus && snap.runtimeStatus.status === "failed"
+        ? ` (runtime: failed — ${snap.runtimeStatus.reason || "unknown"})`
+        : "");
+    migrationCardEl.appendChild(stateLine);
+
+    const ownerLine = document.createElement("p");
+    ownerLine.className = "tg-migration-owner";
+    const o = snap.ownerSnapshot || {};
+    ownerLine.textContent = `Owner: sidecar=${o.sidecarRunning ? "running" : "stopped"}, native=${o.nativePolling ? "polling" : "stopped"}`;
+    migrationCardEl.appendChild(ownerLine);
+
+    const body = document.createElement("div");
+    body.className = "tg-migration-body";
+    migrationCardEl.appendChild(body);
+
+    const importErr = snap.migrationInfo && snap.migrationInfo.importError;
+    if (importErr && state === "LEGACY_ACTIVE") {
+      const banner = document.createElement("div");
+      banner.className = "tg-migration-banner";
+      banner.textContent = `Native config import failed: ${importErr}`;
+      body.appendChild(banner);
+      body.appendChild(migrationButton("Retry import", () =>
+        migrationDispatch("USER_TEST_NATIVE")));
+    }
+
+    switch (state) {
+      case "IDLE":
+      case "NEEDS_SETUP":
+        body.appendChild(migrationCopy(
+          "Configure the Telegram bot below, then choose how to run it:",
+        ));
+        body.appendChild(migrationButton("Test native bot and switch", () =>
+          migrationDispatch("USER_TEST_NATIVE")));
+        body.appendChild(migrationButton("Enable legacy sidecar", () =>
+          migrationDispatch("USER_ENABLE_LEGACY")));
+        break;
+      case "LEGACY_ACTIVE":
+        if (snap.runtimeStatus && snap.runtimeStatus.status === "failed") {
+          body.appendChild(migrationCopy("Legacy sidecar failed to start."));
+          body.appendChild(migrationButton("Retry legacy sidecar", () =>
+            migrationDispatch("USER_ENABLE_LEGACY")));
+        }
+        if (!snap.nativeVerifiedAt) {
+          body.appendChild(migrationCopy(
+            "Native Telegram bot is available. Test it to switch over — legacy stays as fallback.",
+          ));
+          body.appendChild(migrationButton("Test native and switch", () =>
+            migrationDispatch("USER_TEST_NATIVE")));
+        } else {
+          body.appendChild(migrationCopy("Legacy sidecar is active."));
+        }
+        body.appendChild(migrationButton("Disable Telegram approval", () =>
+          migrationDispatch("USER_DISABLE")));
+        break;
+      case "TESTING_NATIVE":
+        body.appendChild(migrationCopy("Waiting for your Telegram tap… (60s timeout)"));
+        break;
+      case "NATIVE_ACTIVE":
+        body.appendChild(migrationCopy(
+          "Native Telegram is active. Legacy files kept for rollback.",
+        ));
+        body.appendChild(migrationButton("Roll back to legacy", () =>
+          migrationDispatch("USER_ROLLBACK_TO_LEGACY")));
+        body.appendChild(migrationButton("Delete legacy token file", deleteLegacyTokenFile));
+        body.appendChild(migrationButton("Disable Telegram approval", () =>
+          migrationDispatch("USER_DISABLE")));
+        break;
+      case "SWITCHING_TO_LEGACY":
+        body.appendChild(migrationCopy("Switching to legacy approval…"));
+        break;
+    }
+    if (migrationPending) {
+      const pending = document.createElement("p");
+      pending.className = "tg-migration-pending";
+      pending.textContent = "Working…";
+      migrationCardEl.appendChild(pending);
+    }
+  }
+
+  function migrationCopy(text) {
+    const p = document.createElement("p");
+    p.className = "tg-migration-copy";
+    p.textContent = text;
+    return p;
+  }
+
+  function migrationButton(label, handler) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "tg-migration-btn";
+    btn.textContent = label;
+    btn.disabled = migrationPending;
+    btn.addEventListener("click", handler);
+    return btn;
+  }
+
+  function deleteLegacyTokenFile() {
+    // Reuse existing token clear command if available; spike just toasts.
+    ops.showToast("Delete legacy token: use Settings → Telegram approval → Token clear", { error: false });
   }
 
   function buildTelegramChannelCard() {

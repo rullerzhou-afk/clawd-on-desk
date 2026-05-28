@@ -114,9 +114,17 @@ const {
   validateTelegramApproval,
   validateTelegramBotToken,
 } = require("./telegram-approval-settings");
+const { EVENTS: TELEGRAM_MIGRATION_EVENTS } = require("./telegram-migration-state");
 const {
   validateHardwareBuddySettings,
 } = require("./hardware-buddy-settings");
+
+const TELEGRAM_MIGRATION_RENDERER_EVENTS = new Set([
+  TELEGRAM_MIGRATION_EVENTS.USER_TEST_NATIVE,
+  TELEGRAM_MIGRATION_EVENTS.USER_ENABLE_LEGACY,
+  TELEGRAM_MIGRATION_EVENTS.USER_ROLLBACK_TO_LEGACY,
+  TELEGRAM_MIGRATION_EVENTS.USER_DISABLE,
+]);
 
 // ── updateRegistry ──
 // Maps prefs field name → validator. Controller looks up by key and runs.
@@ -346,6 +354,33 @@ const updateRegistry = {
   },
   tgApproval(value) {
     return validateTelegramApproval(value);
+  },
+
+  // v0.9.0 spike: persisted migration state across restarts. Shape:
+  //   { transport?: "legacy"|"native"|"off", nativeVerifiedAt?: number|null,
+  //     legacyEnabled?: boolean|null,
+  //     migration?: { importedAt: number|null, importError: string|null } }
+  tgMigration(value) {
+    if (value == null || typeof value !== "object") {
+      return { status: "error", message: "tgMigration must be a plain object" };
+    }
+    const allowed = new Set(["transport", "nativeVerifiedAt", "legacyEnabled", "migration"]);
+    for (const k of Object.keys(value)) {
+      if (!allowed.has(k)) return { status: "error", message: `tgMigration.${k} not supported` };
+    }
+    if (value.transport != null && !["legacy", "native", "off"].includes(value.transport)) {
+      return { status: "error", message: "tgMigration.transport must be legacy|native|off" };
+    }
+    if (value.nativeVerifiedAt != null && (typeof value.nativeVerifiedAt !== "number" || !Number.isFinite(value.nativeVerifiedAt))) {
+      return { status: "error", message: "tgMigration.nativeVerifiedAt must be a finite number" };
+    }
+    if (value.legacyEnabled != null && typeof value.legacyEnabled !== "boolean") {
+      return { status: "error", message: "tgMigration.legacyEnabled must be boolean" };
+    }
+    if (value.migration != null && typeof value.migration !== "object") {
+      return { status: "error", message: "tgMigration.migration must be an object" };
+    }
+    return { status: "ok" };
   },
 
   hardwareBuddy(value) {
@@ -934,6 +969,44 @@ function telegramApprovalTokenInfo(_payload, deps = {}) {
   };
 }
 
+// v0.9.0 migration: native-vs-sidecar transport controller.
+// All telegramMigration.* commands lock on the same `tgApproval` domain as the
+// legacy approval commands so they can't race against token writes.
+function telegramMigrationSnapshot(_payload, deps = {}) {
+  if (!deps || !deps.telegramMigration) {
+    return { status: "error", message: "telegramMigration.snapshot requires controller dep" };
+  }
+  return { status: "ok", snapshot: deps.telegramMigration.getSnapshot() };
+}
+
+async function telegramMigrationDispatch(payload, deps = {}) {
+  if (!deps || !deps.telegramMigration) {
+    return { status: "error", message: "telegramMigration.dispatch requires controller dep" };
+  }
+  if (!payload || typeof payload.type !== "string") {
+    return { status: "error", message: "telegramMigration.dispatch requires event.type" };
+  }
+  if (!TELEGRAM_MIGRATION_RENDERER_EVENTS.has(payload.type)) {
+    return {
+      status: "error",
+      errorCode: "EVENT_NOT_ALLOWED",
+      message: `telegramMigration.dispatch event ${payload.type} is not renderer-callable`,
+      snapshot: deps.telegramMigration.getSnapshot(),
+    };
+  }
+  const res = await deps.telegramMigration.dispatch(payload);
+  return res && res.ok
+    ? { status: "ok", state: res.state, snapshot: deps.telegramMigration.getSnapshot() }
+    : {
+        status: "error",
+        errorCode: res ? res.errorCode : "UNKNOWN",
+        message: res && res.message,
+        snapshot: deps.telegramMigration.getSnapshot(),
+      };
+}
+
+telegramMigrationDispatch.lockKey = "tgApproval";
+
 async function telegramApprovalSendTest(_payload, deps = {}) {
   if (!deps || typeof deps.sendTelegramApprovalTest !== "function") {
     return { status: "error", message: "telegramApproval.test requires sendTelegramApprovalTest dep" };
@@ -1001,6 +1074,8 @@ const commandRegistry = {
   "telegramApproval.status": telegramApprovalStatus,
   "telegramApproval.tokenInfo": telegramApprovalTokenInfo,
   "telegramApproval.test": telegramApprovalSendTest,
+  "telegramMigration.snapshot": telegramMigrationSnapshot,
+  "telegramMigration.dispatch": telegramMigrationDispatch,
 };
 
 module.exports = {

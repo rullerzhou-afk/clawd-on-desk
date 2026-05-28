@@ -241,6 +241,10 @@ test("settings IPC delegates controller and size preview handlers", async () => 
     key: "size",
     value: "P:20",
   });
+  assert.deepStrictEqual(await ipcMain.invoke("settings:update", { key: "tgMigration", value: { transport: "native" } }), {
+    status: "error",
+    message: "tgMigration is internal; use telegramMigration.dispatch",
+  });
   assert.deepStrictEqual(await ipcMain.invoke("settings:command", { action: "resizePet", payload: "P:30" }), {
     status: "ok",
   });

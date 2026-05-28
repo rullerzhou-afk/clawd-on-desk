@@ -164,6 +164,9 @@ function registerSettingsIpc(options = {}) {
     if (!payload || typeof payload !== "object") {
       return { status: "error", message: "settings:update payload must be { key, value }" };
     }
+    if (payload.key === "tgMigration") {
+      return { status: "error", message: "tgMigration is internal; use telegramMigration.dispatch" };
+    }
     return settingsController.applyUpdate(payload.key, payload.value);
   });
   handle("settings:begin-size-preview", () => settingsSizePreviewSession.begin());
