@@ -43,6 +43,8 @@ const createAgentRuntimeMain = require("./agent-runtime-main");
 const createFloatingWindowRuntime = require("./floating-window-runtime");
 const createPetWindowRuntime = require("./pet-window-runtime");
 const { createHardwareBuddyAdapter } = require("./hardware-buddy-adapter");
+const { createUsageGaugeRuntime } = require("./usage-gauge-runtime");
+const { fetchRemoteCodexUsage } = require("./usage-codex-remote");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
   getSessionFocusTarget,
@@ -885,6 +887,8 @@ let broadcastSessionHudSnapshot = () => {};
 let sendSessionHudI18n = () => {};
 let getSessionHudReservedOffset = () => 0;
 let getSessionHudWindow = () => null;
+let usageGauge = null;
+let usageGaugeRuntime = null;
 const themeFadeSequencer = createThemeFadeSequencer({
   getRenderWindow: () => win,
   getHitWindow: () => hitWin,
@@ -1055,7 +1059,9 @@ floatingWindowRuntime = createFloatingWindowRuntime({
 });
 
 function repositionFloatingBubbles() {
-  return floatingWindowRuntime.repositionFloatingBubbles();
+  const result = floatingWindowRuntime.repositionFloatingBubbles();
+  if (usageGauge && typeof usageGauge.reposition === "function") usageGauge.reposition();
+  return result;
 }
 
 function repositionAnchoredFloatingSurfaces() {
@@ -2353,6 +2359,64 @@ const _remoteSshIpc = registerRemoteSshIpc({
   isPackaged: app.isPackaged,
 });
 
+function getActiveRemoteCodexUsageProfile() {
+  const statuses = _remoteSshRuntime.listStatuses();
+  const connectedIds = new Set(
+    statuses
+      .filter((s) => s && s.status === "connected")
+      .map((s) => s.profileId)
+  );
+  if (connectedIds.size === 0) return null;
+  const snap = _settingsController.getSnapshot();
+  const profiles = snap.remoteSsh && Array.isArray(snap.remoteSsh.profiles)
+    ? snap.remoteSsh.profiles
+    : [];
+  return profiles.find((p) => connectedIds.has(p.id) && p.autoStartCodexMonitor === true) || null;
+}
+
+usageGauge = require("./usage-gauge")({
+  get win() { return win; },
+  petHidden: () => petWindowRuntime.isPetHidden(),
+  getSettings: () => _settingsController.get("usageGauge"),
+  getMiniMode: () => _mini.getMiniMode(),
+  getMiniTransitioning: () => _mini.getMiniTransitioning(),
+  getPetWindowBounds,
+  getHitRectScreen,
+  getUsageGaugeAnchorRect: getSessionHudAnchorRect,
+  getNearestWorkArea,
+  guardAlwaysOnTop,
+  reapplyMacVisibility,
+});
+usageGaugeRuntime = createUsageGaugeRuntime({
+  getSettings: () => _settingsController.get("usageGauge"),
+  showSnapshot: (snapshot) => usageGauge.showSnapshot(snapshot),
+  hide: () => usageGauge.hide(),
+  getRemoteCodexProfile: getActiveRemoteCodexUsageProfile,
+  readRemoteCodex: (profile) => fetchRemoteCodexUsage(profile, { runtime: _remoteSshRuntime }),
+  logWarn: console.warn,
+});
+ipcMain.on("usage-gauge:toggle-expanded", () => {
+  if (usageGauge && typeof usageGauge.toggleExpanded === "function") usageGauge.toggleExpanded();
+});
+_settingsController.subscribeKey("usageGauge", () => {
+  const settings = _settingsController.get("usageGauge");
+  if (settings && settings.enabled === false) {
+    if (usageGaugeRuntime) usageGaugeRuntime.stop();
+    if (usageGauge) usageGauge.cleanup();
+    return;
+  }
+  if (usageGaugeRuntime && !usageGaugeRuntime.isRunning()) {
+    usageGaugeRuntime.start();
+    return;
+  }
+  if (usageGaugeRuntime && typeof usageGaugeRuntime.handleSettingsChanged === "function") {
+    usageGaugeRuntime.handleSettingsChanged();
+  }
+});
+_remoteSshRuntime.on("status-changed", () => {
+  if (usageGaugeRuntime && typeof usageGaugeRuntime.refresh === "function") usageGaugeRuntime.refresh();
+});
+
 // ── Settings panel window ──
 //
 // Single-instance, non-modal, system-titlebar BrowserWindow that hosts the
@@ -2818,6 +2882,7 @@ if (!gotTheLock) {
     // agent-gate snapshot — a user who disabled Codex at last shutdown
     // shouldn't see its file watcher spin up on the next launch.
     agentRuntime.startCodexLogMonitor();
+    if (usageGaugeRuntime) usageGaugeRuntime.start();
 
     try {
       hardwareBuddyAdapter.start();
@@ -2860,6 +2925,8 @@ if (!gotTheLock) {
     _tick.cleanup();
     _mini.cleanup();
     _sessionHud.cleanup();
+    if (usageGaugeRuntime) usageGaugeRuntime.stop();
+    if (usageGauge) usageGauge.cleanup();
     agentRuntime.cleanup();
     topmostRuntime.cleanup();
     themeRuntime.cleanup();

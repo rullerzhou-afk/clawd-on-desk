@@ -118,6 +118,9 @@ const { EVENTS: TELEGRAM_MIGRATION_EVENTS } = require("./telegram-migration-stat
 const {
   validateHardwareBuddySettings,
 } = require("./hardware-buddy-settings");
+const {
+  validateUsageGauge,
+} = require("./usage-gauge-settings");
 
 const TELEGRAM_MIGRATION_RENDERER_EVENTS = new Set([
   TELEGRAM_MIGRATION_EVENTS.USER_TEST_NATIVE,
@@ -177,6 +180,7 @@ const updateRegistry = {
   sessionHudShowElapsed: requireBoolean("sessionHudShowElapsed"),
   sessionHudCleanupDetached: requireBoolean("sessionHudCleanupDetached"),
   sessionHudPinned: requireBoolean("sessionHudPinned"),
+  usageGauge: validateUsageGauge,
   hideBubbles: requireBoolean("hideBubbles"),
   permissionBubblesEnabled: requireBoolean("permissionBubblesEnabled"),
   notificationBubbleAutoCloseSeconds: requireIntegerInRange(

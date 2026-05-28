@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self';">
+<title>Usage Gauge</title>
+<style>
+* { box-sizing: border-box; }
+:root {
+  --bg: rgba(255,255,255,0.88);
+  --border: rgba(0,0,0,0.12);
+  --text: #242427;
+  --muted: #6b6b70;
+  --track: rgba(0,0,0,0.10);
+  --green: #16a34a;
+  --yellow: #d97706;
+  --red: #dc2626;
+  --shadow: rgba(0,0,0,0.16);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: rgba(32,32,36,0.88);
+    --border: rgba(255,255,255,0.12);
+    --text: #f4f4f5;
+    --muted: #a1a1aa;
+    --track: rgba(255,255,255,0.12);
+    --green: #4ade80;
+    --yellow: #fbbf24;
+    --red: #f87171;
+    --shadow: rgba(0,0,0,0.34);
+  }
+}
+html, body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 11px;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+body { padding: 2px 3px 8px; }
+.panel {
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  box-shadow: 0 8px 18px -12px var(--shadow), 0 2px 4px rgba(0,0,0,0.10);
+  overflow: hidden;
+  cursor: pointer;
+}
+.donuts {
+  height: 62px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: center;
+  gap: 4px;
+  padding: 7px 8px 5px;
+}
+.donut-wrap {
+  min-width: 0;
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+}
+.donut {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: conic-gradient(var(--color) calc(var(--pct) * 1%), var(--track) 0);
+}
+.donut::after {
+  content: attr(data-value);
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 9px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.name {
+  max-width: 48px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bars {
+  border-top: 1px solid var(--border);
+  padding: 5px 8px 7px;
+  display: none;
+  gap: 5px;
+  flex-direction: column;
+}
+.expanded .bars { display: flex; }
+.bar-row {
+  display: grid;
+  grid-template-columns: 92px 1fr 32px;
+  align-items: center;
+  gap: 6px;
+  min-height: 18px;
+}
+.bar-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.bar-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--track);
+  overflow: hidden;
+}
+.bar-fill {
+  height: 100%;
+  width: calc(var(--pct) * 1%);
+  background: var(--color);
+}
+.bar-pct {
+  color: var(--muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+</style>
+</head>
+<body>
+<div id="panel" class="panel">
+  <div id="donuts" class="donuts"></div>
+  <div id="bars" class="bars"></div>
+</div>
+<script src="./usage-gauge-renderer.js"></script>
+</body>
+</html>

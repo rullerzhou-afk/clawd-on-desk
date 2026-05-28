@@ -37,6 +37,56 @@ const ACTIVE_SESSION_WINDOW_MS = 5 * 60 * 1000;
 const BACKFILL_GRACE_MS = 5 * 1000;
 const BACKFILL_SNAPSHOT_STATES = new Set(["thinking", "working", "codex-permission"]);
 
+function resolveCodexSessionBaseDir(options = {}) {
+  if (options.baseDir) return options.baseDir;
+  const codexDir = options.codexDir || path.join(os.homedir(), ".codex");
+  return path.join(codexDir, "sessions");
+}
+
+function findLatestRolloutFile(options = {}) {
+  const baseDir = resolveCodexSessionBaseDir(options);
+  let years;
+  try {
+    years = fs.readdirSync(baseDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && /^\d{4}$/.test(d.name))
+      .map((d) => d.name)
+      .sort((a, b) => b.localeCompare(a));
+  } catch {
+    return null;
+  }
+  for (const y of years) {
+    const yPath = path.join(baseDir, y);
+    let months;
+    try {
+      months = fs.readdirSync(yPath, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && /^\d{2}$/.test(d.name))
+        .map((d) => d.name)
+        .sort((a, b) => b.localeCompare(a));
+    } catch { continue; }
+    for (const m of months) {
+      const mPath = path.join(yPath, m);
+      let days;
+      try {
+        days = fs.readdirSync(mPath, { withFileTypes: true })
+          .filter((d) => d.isDirectory() && /^\d{2}$/.test(d.name))
+          .map((d) => d.name)
+          .sort((a, b) => b.localeCompare(a));
+      } catch { continue; }
+      for (const d of days) {
+        const dPath = path.join(mPath, d);
+        let files;
+        try {
+          files = fs.readdirSync(dPath)
+            .filter((file) => file.startsWith("rollout-") && file.endsWith(".jsonl"))
+            .sort((a, b) => b.localeCompare(a));
+        } catch { continue; }
+        if (files.length > 0) return path.join(dPath, files[0]);
+      }
+    }
+  }
+  return null;
+}
+
 class CodexLogMonitor {
   /**
    * @param {object} agentConfig - codex.js config (logConfig + logEventMap)
@@ -713,3 +763,5 @@ class CodexLogMonitor {
 }
 
 module.exports = CodexLogMonitor;
+module.exports.findLatestRolloutFile = findLatestRolloutFile;
+module.exports.resolveCodexSessionBaseDir = resolveCodexSessionBaseDir;
