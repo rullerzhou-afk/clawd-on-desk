@@ -616,6 +616,65 @@ html, body {
   color: var(--text-secondary);
 }
 
+.usage-gauge-select {
+  min-width: 128px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+}
+.usage-gauge-select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+.usage-gauge-number-control .usage-gauge-poll-input {
+  width: 54px;
+}
+.usage-gauge-limits-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.usage-gauge-limits-heading {
+  width: 100%;
+}
+.usage-gauge-limit-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.usage-gauge-limit-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--row-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-bg) 74%, transparent);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.usage-gauge-limit-item input {
+  flex: 0 0 auto;
+}
+.usage-gauge-limit-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .usage-gauge-limit-list {
+    grid-template-columns: 1fr;
+  }
+}
+
 .hardware-buddy-status-row .row-desc {
   max-width: 420px;
 }

@@ -106,7 +106,9 @@ function validateUsageGauge(value) {
   return { status: "ok" };
 }
 
-module.exports = {
+const api = {
+  PROVIDERS,
+  POSITIONS,
   LIMIT_IDS,
   DEFAULT_ALWAYS_ON_LIMIT_IDS,
   DEFAULT_EXPANDED_LIMIT_IDS,
@@ -117,3 +119,11 @@ module.exports = {
   normalizeUsageGauge,
   validateUsageGauge,
 };
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = api;
+}
+
+if (typeof globalThis !== "undefined") {
+  globalThis.ClawdUsageGaugeSettings = api;
+}
