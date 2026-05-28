@@ -218,6 +218,7 @@ let telegramApprovalSyncPromise = Promise.resolve();
 let telegramApprovalConfigSignature = "";
 let telegramApprovalTokenRevision = 0;
 let _telegramMigrationController = null;
+let telegramNativeRunner = null;
 let suppressTelegramApprovalSidecarSync = 0;
 let hardwareBuddyAdapter = null;
 let hardwareBuddyStatus = null;
@@ -1394,12 +1395,21 @@ function focusLog(msg) {
 }
 
 function getTelegramApprovalClient() {
+  const controller = _telegramMigrationController;
+  if (controller && typeof controller.getSnapshot === "function") {
+    const snap = controller.getSnapshot() || {};
+    if (snap.state === "NATIVE_ACTIVE"
+      && telegramNativeRunner
+      && typeof telegramNativeRunner.requestApproval === "function") {
+      return telegramNativeRunner;
+    }
+  }
   if (!telegramApprovalSidecar || typeof telegramApprovalSidecar.getClient !== "function") return null;
   return telegramApprovalSidecar.getClient();
 }
 
 function telegramApprovalLog(level, message, meta = {}) {
-  const parts = [`telegram approval sidecar ${level}: ${message}`];
+  const parts = [`telegram approval ${level}: ${message}`];
   if (meta && meta.text) parts.push(String(meta.text).trim());
   if (meta && meta.error) parts.push(String(meta.error).trim());
   permLog(parts.filter(Boolean).join(" | "));
@@ -1712,6 +1722,7 @@ async function initTelegramMigrationController() {
     },
     log: telegramApprovalLog,
   });
+  telegramNativeRunner = nativeRunner;
 
   _telegramMigrationController = createTelegramMigrationController({
     sidecar: sidecarHandle,

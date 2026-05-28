@@ -117,3 +117,183 @@ test("native runner sends nonce card and dispatches TEST_SUCCESS for matching ca
   assert.equal(server.calls.some((call) => call.method === "editMessageReplyMarkup"), true);
   assert.equal(runner.isPolling(), false);
 });
+
+test("native runner requestApproval resolves allow for matching callback", async () => {
+  const server = createFakeTelegramServer();
+  let releaseFirstPoll;
+  let allowData = "";
+  let denyData = "";
+
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueue("sendMessage", (payload) => {
+    assert.match(payload.text, /claude-code requests Bash/);
+    assert.match(payload.text, /Summary: Run tests/);
+    allowData = payload.reply_markup.inline_keyboard[0][0].callback_data;
+    denyData = payload.reply_markup.inline_keyboard[0][1].callback_data;
+    return { ok: true, result: { message_id: 99, chat: { id: 123 } } };
+  });
+  server.enqueue("getUpdates", () => ({
+    ok: true,
+    result: [{
+      update_id: 1,
+      callback_query: {
+        id: "cb-allow",
+        from: { id: 777 },
+        message: { message_id: 99, chat: { id: 123 } },
+        data: allowData,
+      },
+    }],
+  }));
+  server.enqueueOk("answerCallbackQuery", true);
+  server.enqueueOk("editMessageReplyMarkup", { message_id: 99 });
+
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+  });
+
+  await runner.start();
+  await tick();
+  const decisionPromise = runner.requestApproval({
+    title: "claude-code requests Bash",
+    detail: "Summary: Run tests",
+  });
+  await tick();
+  assert.match(allowData, /^clawdperm:[a-z0-9]+:allow$/);
+  assert.match(denyData, /^clawdperm:[a-z0-9]+:deny$/);
+
+  releaseFirstPoll({ ok: true, result: [] });
+  const decision = await decisionPromise;
+  assert.equal(decision, "allow");
+  assert.equal(server.calls.some((call) => call.method === "answerCallbackQuery"), true);
+  assert.equal(server.calls.some((call) => call.method === "editMessageReplyMarkup"), true);
+  await runner.stop();
+});
+
+test("native runner requestApproval ignores wrong user and resolves later callback", async () => {
+  const server = createFakeTelegramServer();
+  let releaseFirstPoll;
+  let denyData = "";
+
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueue("sendMessage", (payload) => {
+    denyData = payload.reply_markup.inline_keyboard[0][1].callback_data;
+    return { ok: true, result: { message_id: 100, chat: { id: 123 } } };
+  });
+  server.enqueue("getUpdates", () => ({
+    ok: true,
+    result: [
+      {
+        update_id: 1,
+        callback_query: {
+          id: "cb-wrong-user",
+          from: { id: 999 },
+          message: { message_id: 100, chat: { id: 123 } },
+          data: denyData,
+        },
+      },
+      {
+        update_id: 2,
+        callback_query: {
+          id: "cb-deny",
+          from: { id: 777 },
+          message: { message_id: 100, chat: { id: 123 } },
+          data: denyData,
+        },
+      },
+    ],
+  }));
+  server.enqueueOk("answerCallbackQuery", true);
+  server.enqueueOk("answerCallbackQuery", true);
+  server.enqueueOk("editMessageReplyMarkup", { message_id: 100 });
+
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+  });
+
+  await runner.start();
+  await tick();
+  const decisionPromise = runner.requestApproval({
+    title: "claude-code requests Bash",
+    detail: "Summary: Run tests",
+  });
+  await tick();
+  releaseFirstPoll({ ok: true, result: [] });
+
+  assert.equal(await decisionPromise, "deny");
+  assert.equal(
+    server.calls.filter((call) => call.method === "answerCallbackQuery").length,
+    2,
+  );
+  await runner.stop();
+});
+
+test("native runner requestApproval resolves null on abort and send failure", async () => {
+  {
+    const server = createFakeTelegramServer();
+    let releaseFirstPoll;
+    server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+    server.enqueueOk("sendMessage", { message_id: 1 });
+
+    const runner = createTelegramNativeRunner({
+      tokenStore: tokenStore(),
+      transport: server.transport,
+      getDispatch: () => async () => {},
+      getChatId: () => "123",
+      getAllowedUserId: () => "777",
+    });
+    await runner.start();
+    await tick();
+    const controller = new AbortController();
+    const promise = runner.requestApproval(
+      { title: "x", detail: "y" },
+      { signal: controller.signal },
+    );
+    controller.abort();
+    assert.equal(await promise, null);
+    releaseFirstPoll({ ok: true, result: [] });
+    await runner.stop();
+  }
+
+  {
+    const server = createFakeTelegramServer();
+    let releaseFirstPoll;
+    server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+    server.enqueueError("sendMessage", { status: 403, description: "Forbidden" });
+
+    const runner = createTelegramNativeRunner({
+      tokenStore: tokenStore(),
+      transport: server.transport,
+      getDispatch: () => async () => {},
+      getChatId: () => "123",
+      getAllowedUserId: () => "777",
+    });
+    await runner.start();
+    await tick();
+    const decision = await runner.requestApproval({ title: "x", detail: "y" });
+    assert.equal(decision, null);
+    releaseFirstPoll({ ok: true, result: [] });
+    await runner.stop();
+  }
+});
+
+test("native runner requestApproval is disabled until polling with a valid payload", async () => {
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: createFakeTelegramServer().transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+  });
+
+  assert.equal(runner.isEnabled(), false);
+  assert.equal(await runner.requestApproval({ title: "x", detail: "y" }), null);
+  assert.equal(await runner.requestApproval({ title: "", detail: "y" }), null);
+});
