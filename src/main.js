@@ -2359,19 +2359,19 @@ const _remoteSshIpc = registerRemoteSshIpc({
   isPackaged: app.isPackaged,
 });
 
-function getActiveRemoteCodexUsageProfile() {
+function getActiveRemoteCodexUsageProfiles() {
   const statuses = _remoteSshRuntime.listStatuses();
   const connectedIds = new Set(
     statuses
       .filter((s) => s && s.status === "connected")
       .map((s) => s.profileId)
   );
-  if (connectedIds.size === 0) return null;
+  if (connectedIds.size === 0) return [];
   const snap = _settingsController.getSnapshot();
   const profiles = snap.remoteSsh && Array.isArray(snap.remoteSsh.profiles)
     ? snap.remoteSsh.profiles
     : [];
-  return profiles.find((p) => connectedIds.has(p.id) && p.autoStartCodexMonitor === true) || null;
+  return profiles.filter((p) => p && connectedIds.has(p.id));
 }
 
 usageGauge = require("./usage-gauge")({
@@ -2391,7 +2391,7 @@ usageGaugeRuntime = createUsageGaugeRuntime({
   getSettings: () => _settingsController.get("usageGauge"),
   showSnapshot: (snapshot) => usageGauge.showSnapshot(snapshot),
   hide: () => usageGauge.hide(),
-  getRemoteCodexProfile: getActiveRemoteCodexUsageProfile,
+  getRemoteCodexProfiles: getActiveRemoteCodexUsageProfiles,
   readRemoteCodex: (profile) => fetchRemoteCodexUsage(profile, { runtime: _remoteSshRuntime }),
   logWarn: console.warn,
 });

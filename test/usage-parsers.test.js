@@ -6,12 +6,14 @@ const assert = require("node:assert");
 const {
   extractCodexRateLimitsFromLine,
   extractCodexRateLimitsFromJsonl,
+  normalizeCapturedAtMs,
   normalizeClaudeUsageResponse,
 } = require("../src/usage-parsers");
 
 describe("usage parsers", () => {
   it("extracts Codex rollout rate_limits from JSONL lines", () => {
     const line = JSON.stringify({
+      timestamp: "2026-05-29T03:04:05.000Z",
       type: "event_msg",
       payload: {
         type: "token_count",
@@ -24,6 +26,7 @@ describe("usage parsers", () => {
 
     const parsed = extractCodexRateLimitsFromLine(line);
     assert.strictEqual(parsed.provider, "codex");
+    assert.strictEqual(parsed.capturedAtMs, Date.parse("2026-05-29T03:04:05.000Z"));
     assert.strictEqual(parsed.limits.length, 2);
     assert.strictEqual(parsed.limits[0].id, "codex.primary");
     assert.strictEqual(parsed.limits[0].usedPercent, 42.5);
@@ -36,15 +39,40 @@ describe("usage parsers", () => {
   it("keeps the latest Codex rate_limits record and ignores missing data", () => {
     const jsonl = [
       JSON.stringify({ type: "event_msg", payload: { type: "other" } }),
-      JSON.stringify({ type: "event_msg", payload: { rate_limits: { primary: { used_percent: 20, resets_at: 1 } } } }),
+      JSON.stringify({
+        timestamp: "2026-05-29T01:00:00.000Z",
+        type: "event_msg",
+        payload: { rate_limits: { primary: { used_percent: 20, resets_at: 1 } } },
+      }),
       "{bad json",
-      JSON.stringify({ type: "event_msg", payload: { rate_limits: { primary: { used_percent: 90, resets_at: 2 } } } }),
+      JSON.stringify({
+        timestamp: "2026-05-29T02:00:00.000Z",
+        type: "event_msg",
+        payload: { rate_limits: { primary: { used_percent: 90, resets_at: 2 } } },
+      }),
     ].join("\n");
 
     const parsed = extractCodexRateLimitsFromJsonl(jsonl);
+    assert.strictEqual(parsed.capturedAtMs, Date.parse("2026-05-29T02:00:00.000Z"));
     assert.strictEqual(parsed.limits.length, 1);
     assert.strictEqual(parsed.limits[0].usedPercent, 90);
     assert.strictEqual(parsed.limits[0].severity, "red");
+  });
+
+  it("sets Codex capturedAtMs to null when the winning line timestamp is absent or invalid", () => {
+    const missing = extractCodexRateLimitsFromJsonl(JSON.stringify({
+      type: "event_msg",
+      payload: { rate_limits: { primary: { used_percent: 12, resets_at: 1 } } },
+    }));
+    const invalid = extractCodexRateLimitsFromJsonl(JSON.stringify({
+      timestamp: "not-a-date",
+      type: "event_msg",
+      payload: { rate_limits: { primary: { used_percent: 13, resets_at: 1 } } },
+    }));
+
+    assert.strictEqual(missing.capturedAtMs, null);
+    assert.strictEqual(invalid.capturedAtMs, null);
+    assert.strictEqual(normalizeCapturedAtMs("not-a-date"), null);
   });
 
   it("normalizes Claude usage response windows", () => {
@@ -69,7 +97,7 @@ describe("usage parsers", () => {
 
   it("degrades to empty provider data for failed or missing shapes", () => {
     assert.deepStrictEqual(extractCodexRateLimitsFromLine("{bad"), null);
-    assert.deepStrictEqual(extractCodexRateLimitsFromJsonl(""), { provider: "codex", limits: [] });
+    assert.deepStrictEqual(extractCodexRateLimitsFromJsonl(""), { provider: "codex", limits: [], capturedAtMs: null });
     assert.deepStrictEqual(normalizeClaudeUsageResponse(null), { provider: "claude", limits: [] });
     assert.deepStrictEqual(normalizeClaudeUsageResponse({ five_hour: {} }), { provider: "claude", limits: [] });
   });

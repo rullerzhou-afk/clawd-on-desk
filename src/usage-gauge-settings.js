@@ -33,7 +33,12 @@ function getDefaults() {
 }
 
 function normalizeLimitIds(value, fallback, { max = Infinity } = {}) {
-  const source = Array.isArray(value) ? value : fallback;
+  // An explicit array (even empty) is a deliberate user choice and must be
+  // preserved; only a missing/non-array value falls back to defaults. This
+  // keeps normalize consistent with validateUsageGauge, which accepts empty
+  // arrays — otherwise "show none" would silently revert to defaults on reload.
+  const explicit = Array.isArray(value);
+  const source = explicit ? value : fallback;
   const out = [];
   const allowed = new Set(LIMIT_IDS);
   for (const id of source || []) {
@@ -41,7 +46,8 @@ function normalizeLimitIds(value, fallback, { max = Infinity } = {}) {
     out.push(id);
     if (out.length >= max) break;
   }
-  return out.length ? out : fallback.slice(0, max);
+  if (out.length) return out;
+  return explicit ? [] : fallback.slice(0, max);
 }
 
 function normalizeProviders(value, fallback) {

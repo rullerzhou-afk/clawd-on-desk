@@ -33,6 +33,17 @@ function normalizeResetMs(value) {
   return n < 1e12 ? n * 1000 : n;
 }
 
+function normalizeCapturedAtMs(value) {
+  if (value == null || value === "") return null;
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n < 1e12 ? n * 1000 : n;
+}
+
 function severityFor(percent) {
   if (!Number.isFinite(percent)) return "unknown";
   if (percent > 85) return "red";
@@ -83,7 +94,9 @@ function extractCodexRateLimitsFromObject(obj) {
     : null;
   if (!payload || !payload.rate_limits || typeof payload.rate_limits !== "object") return null;
   const normalized = normalizeCodexRateLimits(payload.rate_limits);
-  return normalized.limits.length ? normalized : null;
+  return normalized.limits.length
+    ? { ...normalized, capturedAtMs: normalizeCapturedAtMs(obj.timestamp) }
+    : null;
 }
 
 function extractCodexRateLimitsFromLine(line) {
@@ -96,13 +109,13 @@ function extractCodexRateLimitsFromLine(line) {
 }
 
 function extractCodexRateLimitsFromJsonl(text) {
-  if (typeof text !== "string" || !text.trim()) return { provider: "codex", limits: [] };
+  if (typeof text !== "string" || !text.trim()) return { provider: "codex", limits: [], capturedAtMs: null };
   let latest = null;
   for (const line of text.split(/\r?\n/)) {
     const parsed = extractCodexRateLimitsFromLine(line);
     if (parsed && parsed.limits.length) latest = parsed;
   }
-  return latest || { provider: "codex", limits: [] };
+  return latest || { provider: "codex", limits: [], capturedAtMs: null };
 }
 
 function normalizeClaudeUsageResponse(body) {
@@ -126,6 +139,7 @@ function normalizeClaudeUsageResponse(body) {
 module.exports = {
   normalizePercent,
   normalizeResetMs,
+  normalizeCapturedAtMs,
   severityFor,
   normalizeCodexRateLimits,
   extractCodexRateLimitsFromObject,
