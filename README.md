@@ -33,6 +33,15 @@ Thinking when you prompt, typing when tools run, grooving or juggling for subage
 
 > Supports Windows 11, macOS, and Ubuntu/Linux. Windows releases provide separate x64 and ARM64 installers. Source builds require Node.js. Works with **Claude Code**, **Codex CLI**, **Copilot CLI**, **Gemini CLI**, **Antigravity CLI (agy)**, **Cursor Agent**, **CodeBuddy**, **Kiro CLI**, **Kimi Code CLI (Kimi-CLI)**, **Qwen Code**, **opencode**, **Pi**, **OpenClaw**, and **Hermes Agent**.
 
+## Petlaude Enhancements
+
+This fork adds several improvements on top of the original Clawd on Desk:
+
+- **Borderless window design** — Dashboard and Settings windows now use a modern, borderless design with rounded corners (macOS-style), with the content area smoothly blending into the window frame.
+- **Light / Dark / System theme** — Added an appearance mode setting that lets you switch between light, dark, and system-following themes independently from your OS settings.
+- **Usage Analytics Dashboard** — Track your vibe coding sessions with time and token statistics. The dashboard now includes bar and line charts showing daily agent usage, so you can see how much you're coding with each AI agent over time.
+- **Usage Hover popup** — Hover over the desktop pet to see a quick summary of today's agent usage via a compact pie/bar chart.
+
 ## Features
 
 ### Multi-Agent Support
@@ -214,10 +223,11 @@ Clawd on Desk is a community-driven project. Bug reports, feature ideas, and pul
 Thanks to everyone who has helped make Clawd better:
 
 <details>
-<summary>Show all 50 contributors</summary>
+<summary>Show all 51 contributors</summary>
 
 <table>
   <tr>
+    <td align="center" valign="top" width="110"><a href="https://github.com/zuoqiumama"><img src="https://github.com/zuoqiumama.png" width="50" style="border-radius:50%" /><br /><sub>zuoqiumama</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/PixelCookie-zyf"><img src="https://github.com/PixelCookie-zyf.png" width="50" style="border-radius:50%" /><br /><sub>PixelCookie-zyf</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/yujiachen-y"><img src="https://github.com/yujiachen-y.png" width="50" style="border-radius:50%" /><br /><sub>yujiachen-y</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/AooooooZzzz"><img src="https://github.com/AooooooZzzz.png" width="50" style="border-radius:50%" /><br /><sub>AooooooZzzz</sub></a></td>
