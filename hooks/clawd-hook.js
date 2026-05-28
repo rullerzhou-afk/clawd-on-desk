@@ -228,6 +228,80 @@ function isTaskToolStart(event, payload) {
     && payload.tool_name === "Task";
 }
 
+const TOKEN_USAGE_FIELD_NAMES = [
+  "input",
+  "output",
+  "total",
+  "input_tokens",
+  "output_tokens",
+  "prompt_tokens",
+  "completion_tokens",
+  "total_tokens",
+  "promptTokenCount",
+  "candidatesTokenCount",
+  "totalTokenCount",
+];
+
+function extractExplicitTokenUsage(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  let source = null;
+  for (const key of ["token_usage", "tokenUsage", "usage", "tokens"]) {
+    if (payload[key] && typeof payload[key] === "object") {
+      source = payload[key];
+      break;
+    }
+  }
+  if (!source) source = payload;
+  const out = {};
+  for (const key of TOKEN_USAGE_FIELD_NAMES) {
+    if (Number.isFinite(source[key])) out[key] = source[key];
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function extractTokenUsageFromTranscriptEntries(entries) {
+  if (!entries || !entries.length) return null;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (!entry || typeof entry !== "object") continue;
+    if (entry.type !== "assistant" || entry.isApiErrorMessage) continue;
+    for (const src of [entry.message, entry]) {
+      if (!src || typeof src !== "object") continue;
+      const usage = src.usage;
+      if (!usage || typeof usage !== "object") continue;
+      const input = Number.isFinite(usage.input_tokens) ? usage.input_tokens : null;
+      const output = Number.isFinite(usage.output_tokens) ? usage.output_tokens : null;
+      if (input !== null || output !== null) {
+        return { input_tokens: input ?? 0, output_tokens: output ?? 0 };
+      }
+    }
+  }
+  return null;
+}
+
+function addTokenUsage(body, payload, transcriptEntries) {
+  let tokenUsage = extractExplicitTokenUsage(payload);
+  let source = "payload";
+  if (!tokenUsage && transcriptEntries) {
+    tokenUsage = extractTokenUsageFromTranscriptEntries(transcriptEntries);
+    source = "transcript";
+  }
+  if (!tokenUsage) return;
+
+  body.token_usage = tokenUsage;
+  if (source === "transcript") {
+    const tu = tokenUsage;
+    body.usage_event_id = [body.agent_id, body.session_id, body.event, "transcript", tu.input_tokens ?? 0, tu.output_tokens ?? 0].join(":");
+    return;
+  }
+  const suffix = payload.turn_id || payload.turnId || payload.request_id || payload.requestId ||
+    payload.response_id || payload.responseId || payload.message_id || payload.messageId ||
+    payload.tool_use_id || payload.toolUseId || payload.toolUseID || payload.event_id || payload.eventId || "";
+  if (suffix) {
+    body.usage_event_id = [body.agent_id, body.session_id, body.event, suffix].filter(Boolean).join(":");
+  }
+}
+
 function buildStateBody(event, payload, resolve) {
   const state = EVENT_TO_STATE[event];
   if (!state) return null;
@@ -299,6 +373,7 @@ function buildStateBody(event, payload, resolve) {
       body.wt_hwnd = String(foregroundWtHwnd);
     }
   }
+  addTokenUsage(body, payload, transcriptEntries);
 
   return body;
 }
@@ -335,5 +410,6 @@ module.exports = {
   buildStateBody,
   extractSessionTitleFromTranscript,
   extractApiErrorFromEntries,
+  extractTokenUsageFromTranscriptEntries,
   readTranscriptTailEntries,
 };

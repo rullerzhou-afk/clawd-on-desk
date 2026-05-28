@@ -41,6 +41,7 @@ let didDrag = false;
 let mouseDownX, mouseDownY;
 let dragMoveRAF = null;
 const DRAG_THRESHOLD = 3;
+let hoverInside = false;
 
 // --- Reaction state (tracked here to gate input) ---
 let isReacting = false;
@@ -68,7 +69,19 @@ function clearQueuedDragMove() {
   dragMoveRAF = null;
 }
 
+function setHoverInside(value) {
+  const next = !!value;
+  if (hoverInside === next) return;
+  hoverInside = next;
+  if (!isDragging || !next) {
+    window.hitAPI.petHover(next);
+  }
+}
+
 // --- Pointer handlers ---
+area.addEventListener("pointerenter", () => setHoverInside(true));
+area.addEventListener("pointerleave", () => setHoverInside(false));
+
 area.addEventListener("pointerdown", (e) => {
   if (e.button === 0) {
     if (miniMode) { didDrag = false; return; }
@@ -78,6 +91,7 @@ area.addEventListener("pointerdown", (e) => {
     mouseDownX = e.clientX;
     mouseDownY = e.clientY;
     window.hitAPI.dragLock(true);
+    window.hitAPI.petHover(false);
     area.classList.add("dragging");
   }
 });
@@ -106,6 +120,9 @@ function stopDrag() {
     window.hitAPI.dragEnd();
   }
   endDragReaction();
+  if (hoverInside) {
+    window.hitAPI.petHover(true);
+  }
 }
 
 document.addEventListener("pointerup", (e) => {

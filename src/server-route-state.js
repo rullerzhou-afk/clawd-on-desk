@@ -10,6 +10,7 @@ const {
   findPendingPermissionForStateEvent,
 } = require("./server-permission-utils");
 const { resolveCodexOfficialHookState } = require("./server-codex-official-turns");
+const { normalizeTokenUsage } = require("./usage-analytics");
 
 // /state POST body size cap. Raised from 1024 to 4096 to give new fields
 // (session_title) headroom on top of cwd / pid_chain / host / etc. Still a
@@ -107,6 +108,12 @@ function handleStatePost(req, res, options) {
       const permissionSuspect = data.permission_suspect === true;
       const preserveState = data.preserve_state === true;
       const hookSource = typeof data.hook_source === "string" ? data.hook_source : null;
+      const tokenUsage = normalizeTokenUsage(
+        data.token_usage || data.tokenUsage || data.usage || data.tokens || null
+      );
+      const usageEventId = typeof data.usage_event_id === "string" && data.usage_event_id.trim()
+        ? data.usage_event_id.trim().slice(0, 240)
+        : null;
       // Agent gate: user disabled this agent in the settings panel. Drop
       // with 204 so hook scripts get a quick no-op response instead of
       // hanging on our HTTP connection. Still surfaces as a success code
@@ -165,7 +172,7 @@ function handleStatePost(req, res, options) {
           const safeSvg = pathApi.basename(svg);
           ctx.setState(state, safeSvg);
         } else {
-          ctx.updateSession(sid, state, event, {
+          const updateOptions = {
             sourcePid: source_pid,
             wtHwnd,
             cwd,
@@ -185,7 +192,10 @@ function handleStatePost(req, res, options) {
             permissionSuspect,
             preserveState,
             hookSource,
-          });
+          };
+          if (tokenUsage) updateOptions.tokenUsage = tokenUsage;
+          if (usageEventId) updateOptions.usageEventId = usageEventId;
+          ctx.updateSession(sid, state, event, updateOptions);
         }
         res.writeHead(200, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
         res.end("ok");

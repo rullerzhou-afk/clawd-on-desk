@@ -17,9 +17,12 @@ function createFloatingWindowRuntime(options = {}) {
   const repositionPermissionBubbles = options.repositionPermissionBubbles || noop;
   const repositionUpdateBubble = options.repositionUpdateBubble || noop;
   const repositionSessionHud = options.repositionSessionHud || noop;
+  const repositionUsageHover = options.repositionUsageHover || noop;
   const syncSessionHudVisibility = options.syncSessionHudVisibility || noop;
+  const syncUsageHoverVisibility = options.syncUsageHoverVisibility || noop;
   const syncUpdateBubbleVisibility = options.syncUpdateBubbleVisibility || noop;
   const hideUpdateBubble = options.hideUpdateBubble || noop;
+  const hideUsageHover = options.hideUsageHover || noop;
 
   function repositionFloatingBubbles() {
     if (getPendingList(getPendingPermissions).length) repositionPermissionBubbles();
@@ -28,11 +31,13 @@ function createFloatingWindowRuntime(options = {}) {
 
   function repositionAnchoredSurfaces() {
     repositionSessionHud();
+    repositionUsageHover();
     repositionFloatingBubbles();
   }
 
   function syncSessionHudVisibilityAndBubbles() {
     syncSessionHudVisibility();
+    syncUsageHoverVisibility();
     repositionFloatingBubbles();
   }
 
@@ -44,6 +49,7 @@ function createFloatingWindowRuntime(options = {}) {
         keepOutOfTaskbar(bubble);
       }
     }
+    syncUsageHoverVisibility();
     syncUpdateBubbleVisibility();
   }
 
@@ -54,6 +60,7 @@ function createFloatingWindowRuntime(options = {}) {
         bubble.hide();
       }
     }
+    hideUsageHover();
     hideUpdateBubble();
   }
 

@@ -141,6 +141,49 @@ function maybeAddToolMetadata(body, payload) {
   if (toolInputFingerprint) body.tool_input_fingerprint = toolInputFingerprint;
 }
 
+const TOKEN_USAGE_FIELD_NAMES = [
+  "input",
+  "output",
+  "total",
+  "input_tokens",
+  "output_tokens",
+  "prompt_tokens",
+  "completion_tokens",
+  "total_tokens",
+  "promptTokenCount",
+  "candidatesTokenCount",
+  "totalTokenCount",
+];
+
+function extractExplicitTokenUsage(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  let source = null;
+  for (const key of ["token_usage", "tokenUsage", "usage", "tokens"]) {
+    if (payload[key] && typeof payload[key] === "object") {
+      source = payload[key];
+      break;
+    }
+  }
+  if (!source) source = payload;
+  const out = {};
+  for (const key of TOKEN_USAGE_FIELD_NAMES) {
+    if (Number.isFinite(source[key])) out[key] = source[key];
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function addTokenUsage(body, payload) {
+  const tokenUsage = extractExplicitTokenUsage(payload);
+  if (!tokenUsage) return;
+  body.token_usage = tokenUsage;
+  const suffix = payload.turn_id || payload.turnId || payload.request_id || payload.requestId ||
+    payload.response_id || payload.responseId || payload.message_id || payload.messageId ||
+    payload.tool_use_id || payload.toolUseId || payload.toolUseID || payload.event_id || payload.eventId || "";
+  if (suffix) {
+    body.usage_event_id = [body.agent_id, body.session_id, body.event, suffix].filter(Boolean).join(":");
+  }
+}
+
 function buildStateBody(hookName, payload, resolve, options = {}) {
   if (!EVENT_TO_STATE[hookName]) return null;
 
@@ -168,6 +211,7 @@ function buildStateBody(hookName, payload, resolve, options = {}) {
   } else {
     applyLocalProcessFields(body, resolve);
   }
+  addTokenUsage(body, payload);
 
   return body;
 }

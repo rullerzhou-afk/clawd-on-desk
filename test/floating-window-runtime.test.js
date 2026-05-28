@@ -41,32 +41,34 @@ describe("floating-window-runtime", () => {
     assert.deepStrictEqual(calls, ["update", "permission", "update"]);
   });
 
-  it("keeps anchored surface ordering as HUD first, then permission/update bubbles", () => {
+  it("keeps anchored surface ordering as HUD, usage hover, then permission/update bubbles", () => {
     const calls = [];
     const runtime = createFloatingWindowRuntime({
       getPendingPermissions: () => [{ bubble: {} }],
       repositionSessionHud: () => calls.push("hud"),
+      repositionUsageHover: () => calls.push("usageHover"),
       repositionPermissionBubbles: () => calls.push("permission"),
       repositionUpdateBubble: () => calls.push("update"),
     });
 
     runtime.repositionAnchoredSurfaces();
 
-    assert.deepStrictEqual(calls, ["hud", "permission", "update"]);
+    assert.deepStrictEqual(calls, ["hud", "usageHover", "permission", "update"]);
   });
 
-  it("syncs Session HUD visibility before repositioning dependent bubbles", () => {
+  it("syncs HUD and usage hover visibility before repositioning dependent bubbles", () => {
     const calls = [];
     const runtime = createFloatingWindowRuntime({
       getPendingPermissions: () => [{ bubble: {} }],
       syncSessionHudVisibility: () => calls.push("syncHud"),
+      syncUsageHoverVisibility: () => calls.push("syncUsageHover"),
       repositionPermissionBubbles: () => calls.push("permission"),
       repositionUpdateBubble: () => calls.push("update"),
     });
 
     runtime.syncSessionHudVisibilityAndBubbles();
 
-    assert.deepStrictEqual(calls, ["syncHud", "permission", "update"]);
+    assert.deepStrictEqual(calls, ["syncHud", "syncUsageHover", "permission", "update"]);
   });
 
   it("restores live permission bubbles and update bubble visibility when the pet is shown", () => {
@@ -77,6 +79,7 @@ describe("floating-window-runtime", () => {
       getPendingPermissions: () => [{ bubble: live }, { bubble: destroyed }, { bubble: null }],
       keepOutOfTaskbar: (win) => calls.push(["taskbar", win === live ? "live" : "other"]),
       syncUpdateBubbleVisibility: () => calls.push(["syncUpdate"]),
+      syncUsageHoverVisibility: () => calls.push(["syncUsageHover"]),
     });
 
     runtime.showFloatingSurfacesForPet();
@@ -84,6 +87,7 @@ describe("floating-window-runtime", () => {
     assert.deepStrictEqual(calls, [
       ["show", "live"],
       ["taskbar", "live"],
+      ["syncUsageHover"],
       ["syncUpdate"],
     ]);
   });
@@ -95,12 +99,14 @@ describe("floating-window-runtime", () => {
     const runtime = createFloatingWindowRuntime({
       getPendingPermissions: () => [{ bubble: live }, { bubble: destroyed }, { bubble: null }],
       hideUpdateBubble: () => calls.push(["hideUpdate"]),
+      hideUsageHover: () => calls.push(["hideUsageHover"]),
     });
 
     runtime.hideFloatingSurfacesForPet();
 
     assert.deepStrictEqual(calls, [
       ["hide", "live"],
+      ["hideUsageHover"],
       ["hideUpdate"],
     ]);
   });

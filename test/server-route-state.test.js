@@ -162,6 +162,23 @@ describe("server-route-state POST", () => {
     assert.deepStrictEqual(res.calls.setState, [["working", "pet.svg"]]);
   });
 
+  it("passes explicit token usage metadata to updateSession", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "PostToolUse",
+      agent_id: "gemini-cli",
+      token_usage: { input: 12, output: 8 },
+      usage_event_id: "gemini:sid:2",
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession[0][3].tokenUsage.input, 12);
+    assert.strictEqual(res.calls.updateSession[0][3].tokenUsage.output, 8);
+    assert.strictEqual(res.calls.updateSession[0][3].tokenUsage.total, 20);
+    assert.strictEqual(res.calls.updateSession[0][3].usageEventId, "gemini:sid:2");
+  });
+
   it("drops disabled agents with a 204 and records the disabled outcome", async () => {
     const res = await callStatePost(JSON.stringify({
       state: "working",

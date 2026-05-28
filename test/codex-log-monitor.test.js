@@ -361,6 +361,26 @@ describe("CodexLogMonitor", () => {
     monitor.start();
   });
 
+  it("emits token_count as preserve-state usage metadata", (_, done) => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      '{"type":"event_msg","payload":{"type":"task_started"}}',
+      '{"type":"event_msg","payload":{"type":"token_count","input_tokens":21,"output_tokens":9}}',
+    ].join("\n") + "\n");
+
+    const config = makeConfig(tmpDir);
+    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+      if (event !== "event_msg:token_count") return;
+      assert.strictEqual(state, "thinking");
+      assert.deepStrictEqual(extra.tokenUsage, { input_tokens: 21, output_tokens: 9 });
+      assert.match(extra.usageEventId, new RegExp(`^${sid}:event_msg:token_count:\\d+$`));
+      assert.strictEqual(extra.preserveState, true);
+      done();
+    });
+    monitor.start();
+  });
+
   it("should skip old files (>5min mtime)", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, '{"type":"session_meta","payload":{"cwd":"/tmp"}}\n');

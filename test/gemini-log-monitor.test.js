@@ -87,9 +87,11 @@ describe("GeminiLogMonitor", () => {
     ]));
 
     const config = makeConfig(tmpDir);
-    monitor = new GeminiLogMonitor(config, (sid, state, event) => {
+    monitor = new GeminiLogMonitor(config, (sid, state, event, extra) => {
       if (state === "attention") {
         assert.strictEqual(event, "Stop");
+        assert.deepStrictEqual(extra.tokenUsage, { input: 10, output: 20 });
+        assert.strictEqual(extra.usageEventId, `${sid}:2:Stop`);
         done();
       }
     });

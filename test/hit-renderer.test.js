@@ -63,6 +63,7 @@ function createHarness({ isMac = false, sendState = {} } = {}) {
         exitMiniMode: () => apiCalls.push(["exitMiniMode"]),
         showDashboard: () => apiCalls.push(["showDashboard"]),
         revealSessionHud: () => apiCalls.push(["revealSessionHud"]),
+        petHover: (value) => apiCalls.push(["petHover", value]),
         startDragReaction: () => apiCalls.push(["startDragReaction"]),
         endDragReaction: () => apiCalls.push(["endDragReaction"]),
         playClickReaction: (svg, d) => apiCalls.push(["playClickReaction", svg, d]),
@@ -115,6 +116,25 @@ describe("hit-renderer input layer", () => {
     const names = h.apiCalls.map((c) => c[0]);
     assert.ok(names.includes("revealSessionHud"), "should call revealSessionHud");
     assert.ok(!names.includes("focusTerminal"), "must not call focusTerminal");
+  });
+
+  it("reports hover enter/leave and suppresses hover while dragging", () => {
+    const h = createHarness();
+    h.area.listeners.get("pointerenter")({});
+    h.area.listeners.get("pointerdown")({ button: 0, pointerId: 1, clientX: 5, clientY: 5 });
+    h.context.document._dispatch("pointermove", { clientX: 20, clientY: 5 });
+    h.pointerup({});
+    h.area.listeners.get("pointerleave")({});
+
+    assert.deepStrictEqual(
+      h.apiCalls.filter((c) => c[0] === "petHover"),
+      [
+        ["petHover", true],
+        ["petHover", false],
+        ["petHover", true],
+        ["petHover", false],
+      ]
+    );
   });
 
   it("Ctrl+click on non-mac opens Dashboard, does NOT call reveal", () => {

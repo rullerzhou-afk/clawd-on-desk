@@ -36,6 +36,19 @@ const ACTIVE_SESSION_WINDOW_MS = 5 * 60 * 1000;
 // file written within the grace window is a live session and emits normally.
 const BACKFILL_GRACE_MS = 5 * 1000;
 const BACKFILL_SNAPSHOT_STATES = new Set(["thinking", "working", "codex-permission"]);
+const TOKEN_USAGE_FIELD_NAMES = [
+  "input",
+  "output",
+  "total",
+  "input_tokens",
+  "output_tokens",
+  "prompt_tokens",
+  "completion_tokens",
+  "total_tokens",
+  "promptTokenCount",
+  "candidatesTokenCount",
+  "totalTokenCount",
+];
 
 class CodexLogMonitor {
   /**
@@ -365,6 +378,7 @@ class CodexLogMonitor {
 
     const type = obj.type;
     const payload = obj.payload;
+    tracked.eventSeq = (tracked.eventSeq || 0) + 1;
     const subtype =
       payload && typeof payload === "object" ? payload.type || "" : "";
 
@@ -395,6 +409,19 @@ class CodexLogMonitor {
     const threadName = readCodexThreadName(tracked.sessionId, { codexDir: this._codexDir });
     if (threadName && threadName !== tracked.sessionTitle) {
       tracked.sessionTitle = threadName;
+    }
+
+    if (key === "event_msg:token_count") {
+      const tokenUsage = this._extractExplicitTokenUsage(payload);
+      if (!tokenUsage) return;
+      if (tracked.backfilling) return;
+      const usageState = tracked.lastState || "idle";
+      this._emitStateChange(tracked, usageState, key, {
+        tokenUsage,
+        usageEventId: `${tracked.sessionId}:${key}:${tracked.eventSeq}`,
+        preserveState: true,
+      });
+      return;
     }
 
     // Approval heuristic: exec_command_end / function_call_output means command finished.
@@ -556,6 +583,23 @@ class CodexLogMonitor {
     if (!payload || typeof payload !== "object") return false;
     if (payload.type !== "guardian_assessment") return false;
     return payload.status === "in_progress" || payload.status === "approved";
+  }
+
+  _extractExplicitTokenUsage(payload) {
+    if (!payload || typeof payload !== "object") return null;
+    let source = null;
+    for (const key of ["token_usage", "tokenUsage", "usage", "tokens"]) {
+      if (payload[key] && typeof payload[key] === "object") {
+        source = payload[key];
+        break;
+      }
+    }
+    if (!source) source = payload;
+    const out = {};
+    for (const key of TOKEN_USAGE_FIELD_NAMES) {
+      if (Number.isFinite(source[key])) out[key] = source[key];
+    }
+    return Object.keys(out).length ? out : null;
   }
 
   // Extract UUID from rollout filename

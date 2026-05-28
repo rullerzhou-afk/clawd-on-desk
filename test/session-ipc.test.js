@@ -48,6 +48,7 @@ function createHarness(overrides = {}) {
   const runtime = registerSessionIpc({
     ipcMain,
     getSessionSnapshot: overrides.getSessionSnapshot || (() => ({ sessions: [{ id: "s1" }] })),
+    getUsageSnapshot: overrides.getUsageSnapshot,
     getI18n: overrides.getI18n || (() => ({ lang: "en", translations: { title: "Sessions" } })),
     focusSession: overrides.focusSession || ((sessionId, options) => {
       calls.push(["focusSession", sessionId, options]);
@@ -80,10 +81,12 @@ test("session IPC registers owned channels and disposes them", () => {
   assert.deepStrictEqual([...ipcMain.handlers.keys()].sort(), [
     "dashboard:get-i18n",
     "dashboard:get-snapshot",
+    "dashboard:get-usage-snapshot",
     "dashboard:hide-session",
     "dashboard:set-session-alias",
     "session-hud:get-i18n",
     "session:ack-completion",
+    "usage-hover:get-snapshot",
   ]);
   assert.deepStrictEqual([...ipcMain.listeners.keys()].sort(), [
     "dashboard:focus-session",
@@ -135,6 +138,17 @@ test("session IPC delegates dashboard and HUD behavior", async () => {
     ["hideSession", "hidden-session"],
     ["setSessionAlias", { sessionId: "s1", alias: "Frontend" }],
   ]);
+});
+
+test("session IPC exposes dashboard usage snapshot", async () => {
+  const { ipcMain } = createHarness({
+    getUsageSnapshot: () => ({ today: { totals: { tokens: 42 } }, days: [] }),
+  });
+
+  assert.deepStrictEqual(await ipcMain.invoke("dashboard:get-usage-snapshot"), {
+    today: { totals: { tokens: 42 } },
+    days: [],
+  });
 });
 
 test("session IPC owns dashboard open bridges", () => {
@@ -248,4 +262,8 @@ test("main forwards dashboard open source options into session IPC", () => {
     true,
     "main.js should preserve dashboard open options when wiring session IPC"
   );
+  assert.match(mainSource, /createUsageAnalytics/);
+  assert.match(mainSource, /recordUsageEvent/);
+  assert.match(mainSource, /getUsageSnapshot/);
+  assert.match(mainSource, /broadcastUsageSnapshot/);
 });

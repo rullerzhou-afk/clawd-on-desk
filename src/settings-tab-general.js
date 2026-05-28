@@ -26,6 +26,7 @@
     "sessionStaleMs",
     "workingStaleMs",
     "detachedIdleStaleMs",
+    "appearanceMode",
   ]);
   const BUBBLE_POLICY_KEYS = new Set([
     "permissionBubblesEnabled",
@@ -85,6 +86,7 @@
     parent.appendChild(subtitle);
 
     parent.appendChild(helpers.buildSection(t("sectionAppearance"), [
+      buildAppearanceModeRow(),
       buildLanguageRow(),
       buildSizeSliderRow(),
       buildSoundGroup(),
@@ -204,6 +206,52 @@
     "ko": "langKorean",
     "ja": "langJapanese",
   };
+
+  function buildAppearanceModeRow() {
+    const MODES = ["system", "light", "dark"];
+    const LABELS = { system: "System", light: "Light", dark: "Dark" };
+
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML =
+      `<div class="row-text">` +
+        `<span class="row-label">${t("rowAppearanceMode") || "Appearance"}</span>` +
+        `<span class="row-desc">${t("rowAppearanceModeDesc") || "Choose light, dark, or follow system"}</span>` +
+      `</div>` +
+      `<div class="row-control">` +
+        `<div class="segmented"></div>` +
+      `</div>`;
+
+    const segmented = row.querySelector(".segmented");
+    const currentMode = (state.snapshot && state.snapshot.appearanceMode) || "system";
+
+    for (const mode of MODES) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = LABELS[mode];
+      btn.dataset.mode = mode;
+      if (mode === currentMode) btn.classList.add("active");
+      btn.addEventListener("click", () => {
+        for (const b of segmented.querySelectorAll("button")) b.classList.remove("active");
+        btn.classList.add("active");
+        window.settingsAPI.update("appearanceMode", mode).catch((err) => {
+          ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+        });
+      });
+      segmented.appendChild(btn);
+    }
+
+    state.mountedControls.appearanceMode = {
+      sync: (snapshot) => {
+        const mode = (snapshot && snapshot.appearanceMode) || "system";
+        for (const b of segmented.querySelectorAll("button")) {
+          b.classList.toggle("active", b.dataset.mode === mode);
+        }
+      },
+    };
+
+    return row;
+  }
 
   function buildLanguageRow() {
     const row = document.createElement("div");
@@ -1532,7 +1580,7 @@
       }
     }
     for (const key of keys) {
-      if (key === "size" || key === "soundVolume") continue;
+      if (key === "size" || key === "soundVolume" || key === "appearanceMode") continue;
       if (BUBBLE_POLICY_KEYS.has(key)) {
         const meta = state.mountedControls.bubblePolicyControls.get(key);
         if (!meta || !document.body.contains(meta.row)) return false;
@@ -1545,6 +1593,11 @@
     }
     for (const key of keys) {
       if (key === "size") continue;
+      if (key === "appearanceMode") {
+        const ctrl = state.mountedControls.appearanceMode;
+        if (ctrl && typeof ctrl.sync === "function") ctrl.sync(state.snapshot);
+        continue;
+      }
       if (key === "soundVolume") {
         state.mountedControls.soundVolume.syncValueFromSnapshot();
         continue;

@@ -202,7 +202,10 @@ class GeminiLogMonitor {
     });
 
     this._onStateChange(sessionId, state, event, {
-      cwd, sourcePid: null, agentPid: null,
+      cwd,
+      sourcePid: null,
+      agentPid: null,
+      ...this._buildUsageExtra(data, sessionId, msgCount, event),
     });
   }
 
@@ -237,7 +240,10 @@ class GeminiLogMonitor {
         msgCount, hasTools: false, cwd, turnHasTools: false,
       });
       this._onStateChange(sessionId, "attention", "Stop", {
-        cwd, sourcePid: null, agentPid: null,
+        cwd,
+        sourcePid: null,
+        agentPid: null,
+        ...this._buildUsageExtra(data, sessionId, msgCount, "Stop"),
       });
     }, DEFER_COMPLETION_MS);
 
@@ -272,6 +278,17 @@ class GeminiLogMonitor {
     } catch {
       try { fs.appendFileSync(this._debugLogPath, line); } catch {}
     }
+  }
+
+  _buildUsageExtra(data, sessionId, msgCount, event) {
+    const msgs = data && Array.isArray(data.messages) ? data.messages : [];
+    const last = msgs[msgs.length - 1];
+    const tokens = last && last.tokens && typeof last.tokens === "object" ? last.tokens : null;
+    if (!tokens) return {};
+    return {
+      tokenUsage: tokens,
+      usageEventId: `${sessionId}:${msgCount}:${event || ""}`,
+    };
   }
 
   _cleanStale() {

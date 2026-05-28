@@ -13,6 +13,7 @@ const {
 const { registerSettingsIpc } = require("./settings-ipc");
 const createSettingsEffectRouter = require("./settings-effect-router");
 const { registerSessionIpc } = require("./session-ipc");
+const { createUsageAnalytics, encodeLedgerEntry } = require("./usage-analytics");
 const { registerPetInteractionIpc } = require("./pet-interaction-ipc");
 const initPermission = require("./permission");
 const { registerPermissionIpc } = initPermission;
@@ -20,6 +21,7 @@ const { createTelegramApprovalSidecar } = require("./telegram-approval-sidecar")
 const telegramApprovalSettings = require("./telegram-approval-settings");
 const initUpdateBubble = require("./update-bubble");
 const { registerUpdateBubbleIpc } = initUpdateBubble;
+const initUsageHover = require("./usage-hover");
 const createSettingsAnimationOverridesMain = require("./settings-animation-overrides-main");
 const { registerSettingsAnimationOverridesIpc } = createSettingsAnimationOverridesMain;
 const createShortcutRuntime = require("./shortcut-runtime");
@@ -875,6 +877,11 @@ let broadcastSessionHudSnapshot = () => {};
 let sendSessionHudI18n = () => {};
 let getSessionHudReservedOffset = () => 0;
 let getSessionHudWindow = () => null;
+let repositionUsageHover = () => {};
+let syncUsageHoverVisibility = () => {};
+let hideUsageHover = () => {};
+let broadcastUsageHoverSnapshot = () => {};
+let setUsageHoverVisible = () => {};
 const themeFadeSequencer = createThemeFadeSequencer({
   getRenderWindow: () => win,
   getHitWindow: () => hitWin,
@@ -1034,8 +1041,11 @@ floatingWindowRuntime = createFloatingWindowRuntime({
   repositionPermissionBubbles: () => repositionBubbles(),
   repositionUpdateBubble: () => repositionUpdateBubble(),
   repositionSessionHud: () => repositionSessionHud(),
+  repositionUsageHover: () => repositionUsageHover(),
   syncSessionHudVisibility: () => syncSessionHudVisibility(),
+  syncUsageHoverVisibility: () => syncUsageHoverVisibility(),
   syncUpdateBubbleVisibility: () => syncUpdateBubbleVisibility(),
+  hideUsageHover: () => hideUsageHover(),
   hideUpdateBubble: () => hideUpdateBubble(),
   keepOutOfTaskbar,
 });
@@ -1055,7 +1065,43 @@ function syncSessionHudVisibilityAndBubbles() {
 // ── State machine — delegated to src/state.js ──
 let showDashboard = () => {};
 let broadcastDashboardSessionSnapshot = () => {};
+let broadcastDashboardUsageSnapshot = () => {};
 let sendDashboardI18n = () => {};
+const usageAnalytics = createUsageAnalytics();
+let usageLedgerPath = null;
+
+function getUsageSnapshot(options = {}) {
+  return usageAnalytics.getSnapshot(options);
+}
+
+function initUsageLedger() {
+  try {
+    usageLedgerPath = path.join(app.getPath("userData"), "usage-ledger.jsonl");
+    if (!fs.existsSync(usageLedgerPath)) return;
+    const text = fs.readFileSync(usageLedgerPath, "utf8");
+    usageAnalytics.loadLedgerLines(text.split(/\r?\n/), { keepOpenSessions: false });
+  } catch (err) {
+    console.warn("Clawd: failed to load usage ledger:", err && err.message);
+  }
+}
+
+function appendUsageLedger(payload) {
+  if (!usageLedgerPath) return;
+  try {
+    fs.mkdirSync(path.dirname(usageLedgerPath), { recursive: true });
+    fs.appendFileSync(usageLedgerPath, encodeLedgerEntry({ ...payload, type: "state" }), "utf8");
+  } catch (err) {
+    console.warn("Clawd: failed to append usage ledger:", err && err.message);
+  }
+}
+
+function recordUsageEvent(payload) {
+  if (!payload || typeof payload !== "object") return;
+  usageAnalytics.recordState(payload);
+  appendUsageLedger(payload);
+  broadcastDashboardUsageSnapshot(getUsageSnapshot({ days: 7 }));
+  broadcastUsageHoverSnapshot(getUsageSnapshot({ days: 1 }));
+}
 
 // Forward hook for the #329 updater scheduler. State/mini ctxs reference
 // this via notifyUpdaterSilentExit; the actual implementation is wired
@@ -1089,6 +1135,7 @@ const _stateCtx = {
   flashTaskbar,
   t: (key) => t(key),
   focusTerminalWindow: (...args) => focusTerminalWindow(...args),
+  recordUsageEvent: (payload) => recordUsageEvent(payload),
   resolvePermissionEntry: (...args) => resolvePermissionEntry(...args),
   dismissPermissionsForDnd: (...args) => _perm.dismissPermissionsForDnd(...args),
   showKimiNotifyBubble: (...args) => showKimiNotifyBubble(...args),
@@ -1279,6 +1326,7 @@ const _dashboard = require("./dashboard")({
   get lang() { return lang; },
   t: (key) => translate(key),
   getSessionSnapshot: () => _state.buildSessionSnapshot(),
+  getUsageSnapshot: (options) => getUsageSnapshot(options),
   getI18n: () => getDashboardI18nPayload(),
   getPetWindowBounds,
   getNearestWorkArea,
@@ -1287,6 +1335,7 @@ const _dashboard = require("./dashboard")({
 });
 showDashboard = _dashboard.showDashboard;
 broadcastDashboardSessionSnapshot = _dashboard.broadcastSessionSnapshot;
+broadcastDashboardUsageSnapshot = _dashboard.broadcastUsageSnapshot;
 sendDashboardI18n = _dashboard.sendI18n;
 
 const _sessionHud = require("./session-hud")({
@@ -1314,6 +1363,24 @@ broadcastSessionHudSnapshot = _sessionHud.broadcastSessionSnapshot;
 sendSessionHudI18n = _sessionHud.sendI18n;
 getSessionHudReservedOffset = _sessionHud.getHudReservedOffset;
 getSessionHudWindow = _sessionHud.getWindow;
+
+const _usageHover = initUsageHover({
+  get win() { return win; },
+  get petHidden() { return petWindowRuntime.isPetHidden(); },
+  getMiniMode: () => _mini.getMiniMode(),
+  getMiniTransitioning: () => _mini.getMiniTransitioning(),
+  getUsageSnapshot: (options) => getUsageSnapshot(options),
+  getPetWindowBounds,
+  getHitRectScreen,
+  getNearestWorkArea,
+  guardAlwaysOnTop,
+  reapplyMacVisibility,
+});
+setUsageHoverVisible = _usageHover.setHoverVisible;
+repositionUsageHover = _usageHover.repositionUsageHover;
+syncUsageHoverVisibility = _usageHover.syncUsageHover;
+hideUsageHover = _usageHover.hideUsageHover;
+broadcastUsageHoverSnapshot = _usageHover.broadcastUsageSnapshot;
 
 agentRuntime = createAgentRuntimeMain({
   getServer: () => _server,
@@ -2004,9 +2071,47 @@ const settingsEffectRouter = createSettingsEffectRouter({
   },
   reclampPetAfterEdgePinningChange,
   rebuildAllMenus,
+  applyAppearanceMode: (mode) => {
+    const valid = ["system", "light", "dark"];
+    nativeTheme.themeSource = valid.includes(mode) ? mode : "system";
+  },
   logWarn: console.warn,
 });
 settingsEffectRouter.start();
+
+// ── Borderless window controls (dashboard & settings) ──
+ipcMain.on("window:minimize", (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win && !win.isDestroyed()) win.minimize();
+});
+ipcMain.on("window:maximize", (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed()) return;
+  const maximized = win.isMaximized() || win._clawdMaximized === true;
+  if (maximized) {
+    win.unmaximize();
+    if (win._preMaximizeBounds) {
+      win.setBounds(win._preMaximizeBounds);
+    }
+    win._clawdMaximized = false;
+  } else {
+    win._preMaximizeBounds = win.getBounds();
+    win._clawdMaximized = true;
+    win.maximize();
+  }
+});
+ipcMain.on("window:close", (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win && !win.isDestroyed()) win.close();
+});
+
+// Apply persisted appearance mode on startup
+{
+  const savedMode = _settingsController.get("appearanceMode");
+  if (savedMode === "light" || savedMode === "dark") {
+    nativeTheme.themeSource = savedMode;
+  }
+}
 _settingsController.subscribeKey("tgApproval", () => {
   queueTelegramApprovalSidecarSync("settings");
 });
@@ -2197,6 +2302,7 @@ registerSettingsIpc({
 registerSessionIpc({
   ipcMain,
   getSessionSnapshot: () => _state.buildSessionSnapshot(),
+  getUsageSnapshot: (options) => getUsageSnapshot(options),
   getI18n: () => getDashboardI18nPayload(),
   focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
   hideSession: (sessionId) => hideDashboardSession(sessionId),
@@ -2305,6 +2411,7 @@ function createWindow() {
     sendToRenderer,
     setDragLocked: (value) => { petWindowRuntime.setDragLocked(value); },
     setMouseOverPet: (value) => { mouseOverPet = !!value; },
+    setPetHover: (value) => setUsageHoverVisible(value),
     beginDragSnapshot: () => beginDragSnapshot(),
     clearDragSnapshot: () => clearDragSnapshot(),
     syncHitWin: () => syncHitWin(),
@@ -2560,6 +2667,7 @@ if (!gotTheLock) {
     updateDebugLog = path.join(app.getPath("userData"), "update-debug.log");
     sessionDebugLog = path.join(app.getPath("userData"), "session-debug.log");
     focusDebugLog = path.join(app.getPath("userData"), "focus-debug.log");
+    initUsageLedger();
     queueTelegramApprovalSidecarSync("startup");
     createWindow();
     if (shouldOpenSettingsWindowFromArgv(process.argv)) {

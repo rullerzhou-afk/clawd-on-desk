@@ -811,6 +811,25 @@ describe("updateSession()", () => {
     assert.ok(api.sessions.get("s1").updatedAt >= t1);
   });
 
+  it("notifies usage tracker after accepted session updates", () => {
+    const calls = [];
+    ctx.recordUsageEvent = (payload) => calls.push(payload);
+
+    api.updateSession("s1", "working", "PostToolUse", {
+      cwd: "/tmp",
+      agentId: "codex",
+      tokenUsage: { input: 10, output: 4, total: 14, hasInputOutput: true },
+      usageEventId: "codex:s1:turn1",
+    });
+
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(calls[0].agentId, "codex");
+    assert.strictEqual(calls[0].sessionId, "s1");
+    assert.strictEqual(calls[0].state, "working");
+    assert.strictEqual(calls[0].tokenUsage.total, 14);
+    assert.strictEqual(calls[0].usageEventId, "codex:s1:turn1");
+  });
+
   it("juggling + working (non-SubagentStop) → keeps juggling", () => {
     update(api, { id: "s1", state: "juggling", event: "SubagentStart" });
     assert.strictEqual(api.sessions.get("s1").state, "juggling");

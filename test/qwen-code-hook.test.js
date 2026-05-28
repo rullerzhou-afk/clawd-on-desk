@@ -55,6 +55,18 @@ describe("Qwen Code hook", () => {
     assert.deepStrictEqual(body.pid_chain, [789, 456, 123]);
   });
 
+  it("forwards explicit token usage without raw payload fields", () => {
+    const body = buildStateBody("PostToolUse", {
+      session_id: "s1",
+      usage: { input_tokens: 8, output_tokens: 5 },
+      prompt: "do not forward",
+    }, mockResolve);
+
+    assert.deepStrictEqual(body.token_usage, { input_tokens: 8, output_tokens: 5 });
+    assert.strictEqual(body.usage_event_id, undefined);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(body, "prompt"), false);
+  });
+
   it("drops every Notification regardless of payload type", () => {
     // qwen 0.16.1 fires Notification shortly after Stop (measured ~250ms)
     // as a generic "task done" signal that would clobber attention on the

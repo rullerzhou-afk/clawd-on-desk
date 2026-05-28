@@ -7,9 +7,21 @@
 <link rel="stylesheet" href="settings.css">
 </head>
 <body>
-<div class="app">
-  <nav class="sidebar" id="sidebar"></nav>
-  <main class="content" id="content"></main>
+<div class="window-frame">
+  <div class="app">
+    <nav class="sidebar" id="sidebar"></nav>
+    <div class="main-area">
+      <div class="title-bar">
+        <span class="title-bar-text">Settings</span>
+        <div class="traffic-lights">
+          <button class="traffic-light minimize" aria-label="Minimize"></button>
+          <button class="traffic-light maximize" aria-label="Maximize"></button>
+          <button class="traffic-light close" aria-label="Close"></button>
+        </div>
+      </div>
+      <main class="content" id="content"></main>
+    </div>
+  </div>
 </div>
 <div class="toast-stack" id="toastStack"></div>
 <div id="modalRoot"></div>

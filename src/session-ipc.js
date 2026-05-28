@@ -8,6 +8,7 @@ function requiredDependency(value, name) {
 function registerSessionIpc(options = {}) {
   const ipcMain = requiredDependency(options.ipcMain, "ipcMain");
   const getSessionSnapshot = requiredDependency(options.getSessionSnapshot, "getSessionSnapshot");
+  const getUsageSnapshot = options.getUsageSnapshot || (() => null);
   const getI18n = requiredDependency(options.getI18n, "getI18n");
   const focusSession = requiredDependency(options.focusSession, "focusSession");
   const hideSession = requiredDependency(options.hideSession, "hideSession");
@@ -28,6 +29,8 @@ function registerSessionIpc(options = {}) {
   }
 
   handle("dashboard:get-snapshot", () => getSessionSnapshot());
+  handle("dashboard:get-usage-snapshot", () => getUsageSnapshot({ days: 7 }));
+  handle("usage-hover:get-snapshot", () => getUsageSnapshot({ days: 1 }));
   handle("dashboard:get-i18n", () => getI18n());
   on("dashboard:focus-session", (_event, sessionId) =>
     focusSession(sessionId, { requestSource: "dashboard" })

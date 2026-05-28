@@ -2,6 +2,30 @@
 
 const core = globalThis.ClawdSettingsCore;
 
+// Bind window control buttons (CSP-safe)
+function bindWindowControls() {
+  const ctrl = window.windowControls;
+  if (!ctrl) return;
+  const lights = document.querySelector(".traffic-lights");
+  if (!lights) return;
+  const frame = document.querySelector(".window-frame");
+  lights.querySelector(".traffic-light.close")?.addEventListener("click", () => ctrl.close());
+  lights.querySelector(".traffic-light.minimize")?.addEventListener("click", () => ctrl.minimize());
+  lights.querySelector(".traffic-light.maximize")?.addEventListener("click", () => {
+    ctrl.maximize();
+    if (frame) frame.classList.toggle("maximized");
+  });
+}
+bindWindowControls();
+
+// Double-click title bar to maximize/restore
+{
+  const titleBar = document.querySelector(".title-bar");
+  if (titleBar && window.windowControls) {
+    titleBar.addEventListener("dblclick", () => window.windowControls.maximize());
+  }
+}
+
 const SIDEBAR_TABS = [
   { id: "general", icon: "\u2699", labelKey: "sidebarGeneral", available: true },
   { id: "agents", icon: "\u26A1", labelKey: "sidebarAgents", available: true },
