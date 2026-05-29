@@ -8,10 +8,18 @@ const { extractCodexRateLimitsFromJsonl, normalizeClaudeUsageResponse } = requir
 const CodexLogMonitor = require("../agents/codex-log-monitor");
 
 const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+// Token refresh endpoint. Confirmed against decompiled Claude Code source
+// (TOKEN_URL in the OAuth config) and ~8 independent OAuth implementations.
+// NOTE: api.anthropic.com/api/oauth/token is NOT a refresh endpoint (returns
+// 404); that host only serves /claude_cli/create_api_key. Do not re-add it.
 const CLAUDE_REFRESH_URLS = Object.freeze([
-  "https://api.anthropic.com/api/oauth/token",
   "https://console.anthropic.com/v1/oauth/token",
 ]);
+// Claude Code's public OAuth client_id (PKCE public client, not a secret).
+// Not stored in ~/.claude/.credentials.json, so it must be hardcoded here —
+// sending client_id: undefined gets the request rejected (and triggers 429s
+// under polling). Value cross-checked across decompiled source + many repos.
+const CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const CLAUDE_USER_AGENT = "claude-code/2.1.0";
 const CLAUDE_BETA = "oauth-2025-04-20";
 
@@ -99,7 +107,7 @@ async function refreshClaudeAccessToken(creds, options = {}) {
   const body = JSON.stringify({
     grant_type: "refresh_token",
     refresh_token: oauth.refreshToken,
-    client_id: oauth.clientId || oauth.client_id || undefined,
+    client_id: oauth.clientId || oauth.client_id || CLAUDE_OAUTH_CLIENT_ID,
   });
   const headers = {
     "content-type": "application/json",
