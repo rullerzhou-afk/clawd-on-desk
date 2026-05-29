@@ -104,7 +104,8 @@ function createUsageGaugeRuntime(options = {}) {
           return { provider: "codex", limits: [] };
         })),
     ];
-    return pickFreshestCodexUsage(await Promise.all(reads));
+    const results = await Promise.all(reads);
+    return pickFreshestCodexUsage(results);
   }
 
   async function refresh() {
