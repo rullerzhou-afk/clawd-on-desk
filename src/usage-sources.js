@@ -109,9 +109,12 @@ async function refreshClaudeAccessToken(creds, options = {}) {
     refresh_token: oauth.refreshToken,
     client_id: oauth.clientId || oauth.client_id || CLAUDE_OAUTH_CLIENT_ID,
   });
+  // NOTE: do NOT send user-agent: claude-code/... on the refresh call. With that
+  // UA the token endpoint returns 429 (it rate-limits requests posing as the real
+  // CLI), while the identical body with only content-type returns 200. Confirmed
+  // empirically: same client_id/body, UA present => 429, UA absent => 200.
   const headers = {
     "content-type": "application/json",
-    "user-agent": CLAUDE_USER_AGENT,
   };
   for (const url of (options.refreshUrls || CLAUDE_REFRESH_URLS)) {
     try {
