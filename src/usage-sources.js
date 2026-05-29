@@ -176,7 +176,7 @@ async function fetchClaudeUsage(options = {}) {
         "user-agent": CLAUDE_USER_AGENT,
       },
     });
-    return normalizeClaudeUsageResponse(body);
+    return normalizeClaudeUsageResponse(body, Date.now());
   } catch {
     return { provider: "claude", limits: [] };
   }

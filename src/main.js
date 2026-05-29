@@ -45,6 +45,7 @@ const createPetWindowRuntime = require("./pet-window-runtime");
 const { createHardwareBuddyAdapter } = require("./hardware-buddy-adapter");
 const { createUsageGaugeRuntime } = require("./usage-gauge-runtime");
 const { fetchRemoteCodexUsage } = require("./usage-codex-remote");
+const { fetchRemoteClaudeUsage } = require("./usage-claude-remote");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
   getSessionFocusTarget,
@@ -2393,6 +2394,7 @@ usageGaugeRuntime = createUsageGaugeRuntime({
   hide: () => usageGauge.hide(),
   getRemoteCodexProfiles: getActiveRemoteCodexUsageProfiles,
   readRemoteCodex: (profile) => fetchRemoteCodexUsage(profile, { runtime: _remoteSshRuntime }),
+  readRemoteClaude: (profile) => fetchRemoteClaudeUsage(profile, { runtime: _remoteSshRuntime }),
   logWarn: console.warn,
 });
 ipcMain.on("usage-gauge:toggle-expanded", () => {

@@ -81,7 +81,7 @@ describe("usage parsers", () => {
       seven_day: { utilization: 70, resets_at: 1800000000 },
       seven_day_opus: { utilization: 0.86, resets_at: 1800001000 },
       seven_day_sonnet: { utilization: 8, resets_at: 1800002000 },
-    });
+    }, Date.parse("2026-05-29T10:00:00.000Z"));
 
     assert.deepStrictEqual(parsed.limits.map((l) => l.id), [
       "claude.five_hour",
@@ -93,12 +93,26 @@ describe("usage parsers", () => {
     assert.strictEqual(parsed.limits[1].severity, "yellow");
     assert.strictEqual(parsed.limits[2].severity, "red");
     assert.strictEqual(parsed.limits[3].severity, "green");
+    assert.strictEqual(parsed.capturedAtMs, Date.parse("2026-05-29T10:00:00.000Z"));
+  });
+
+  it("defaults Claude capturedAtMs to the receive time when not injected", () => {
+    const before = Date.now();
+    const parsed = normalizeClaudeUsageResponse({ five_hour: { utilization: 10 } });
+    const after = Date.now();
+    assert.ok(parsed.capturedAtMs >= before && parsed.capturedAtMs <= after);
   });
 
   it("degrades to empty provider data for failed or missing shapes", () => {
     assert.deepStrictEqual(extractCodexRateLimitsFromLine("{bad"), null);
     assert.deepStrictEqual(extractCodexRateLimitsFromJsonl(""), { provider: "codex", limits: [], capturedAtMs: null });
-    assert.deepStrictEqual(normalizeClaudeUsageResponse(null), { provider: "claude", limits: [] });
-    assert.deepStrictEqual(normalizeClaudeUsageResponse({ five_hour: {} }), { provider: "claude", limits: [] });
+    assert.deepStrictEqual(
+      normalizeClaudeUsageResponse(null, 123),
+      { provider: "claude", limits: [], capturedAtMs: 123 }
+    );
+    assert.deepStrictEqual(
+      normalizeClaudeUsageResponse({ five_hour: {} }, 123),
+      { provider: "claude", limits: [], capturedAtMs: 123 }
+    );
   });
 });

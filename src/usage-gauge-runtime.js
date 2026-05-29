@@ -25,10 +25,10 @@ function projectLimits(snapshot, settings) {
   return { ...snapshot, alwaysOn, expanded };
 }
 
-function pickFreshestCodexUsage(results) {
+function pickFreshestUsage(results, provider) {
   const candidates = (Array.isArray(results) ? results : [])
     .filter((result) => result && Array.isArray(result.limits) && result.limits.length > 0);
-  if (!candidates.length) return { provider: "codex", limits: [] };
+  if (!candidates.length) return { provider, limits: [] };
   let freshest = candidates[0];
   let freshestCapturedAt = Number.isFinite(freshest.capturedAtMs) ? freshest.capturedAtMs : -Infinity;
   for (const candidate of candidates.slice(1)) {
@@ -41,6 +41,12 @@ function pickFreshestCodexUsage(results) {
   return freshest;
 }
 
+// Retained for backward compat (tests reference it). Delegates to the
+// provider-agnostic picker.
+function pickFreshestCodexUsage(results) {
+  return pickFreshestUsage(results, "codex");
+}
+
 function createUsageGaugeRuntime(options = {}) {
   const getSettings = options.getSettings || (() => ({ enabled: false }));
   const showSnapshot = options.showSnapshot || (() => {});
@@ -48,12 +54,15 @@ function createUsageGaugeRuntime(options = {}) {
   const readCodex = options.readCodex || readCodexUsageLocal;
   const readRemoteCodex = options.readRemoteCodex || null;
   const readClaude = options.readClaude || fetchClaudeUsage;
+  const readRemoteClaude = options.readRemoteClaude || null;
   const getRemoteCodexProfiles = options.getRemoteCodexProfiles
     || (() => {
       if (typeof options.getRemoteCodexProfile !== "function") return [];
       const profile = options.getRemoteCodexProfile();
       return profile ? [profile] : [];
     });
+  // Claude remote reads reuse the same SSH profiles as Codex (same host).
+  const getRemoteClaudeProfiles = options.getRemoteClaudeProfiles || getRemoteCodexProfiles;
   const setTimeoutFn = options.setTimeout || setTimeout;
   const clearTimeoutFn = options.clearTimeout || clearTimeout;
   const now = options.now || Date.now;
@@ -105,7 +114,38 @@ function createUsageGaugeRuntime(options = {}) {
         })),
     ];
     const results = await Promise.all(reads);
-    return pickFreshestCodexUsage(results);
+    return pickFreshestUsage(results, "codex");
+  }
+
+  async function fetchClaude(settings) {
+    if (settings.providers && settings.providers.claude === false) {
+      return { provider: "claude", limits: [] };
+    }
+    let profiles = [];
+    if (readRemoteClaude) {
+      try {
+        const remoteProfiles = getRemoteClaudeProfiles();
+        profiles = Array.isArray(remoteProfiles) ? remoteProfiles : [];
+      } catch (err) {
+        logWarn("Clawd: remote Claude usage profiles failed:", err && err.message);
+      }
+    }
+    const reads = [
+      Promise.resolve()
+        .then(() => readClaude())
+        .catch((err) => {
+          logWarn("Clawd: local Claude usage failed:", err && err.message);
+          return { provider: "claude", limits: [] };
+        }),
+      ...profiles.map((profile) => Promise.resolve()
+        .then(() => readRemoteClaude(profile))
+        .catch((err) => {
+          logWarn("Clawd: remote Claude usage failed:", err && err.message);
+          return { provider: "claude", limits: [] };
+        })),
+    ];
+    const results = await Promise.all(reads);
+    return pickFreshestUsage(results, "claude");
   }
 
   async function refresh() {
@@ -119,9 +159,7 @@ function createUsageGaugeRuntime(options = {}) {
     try {
       const providers = await Promise.all([
         fetchCodex(settings),
-        settings.providers && settings.providers.claude === false
-          ? Promise.resolve({ provider: "claude", limits: [] })
-          : readClaude(),
+        fetchClaude(settings),
       ]);
       const snapshot = projectLimits({
         updatedAt: now(),
@@ -190,6 +228,7 @@ function createUsageGaugeRuntime(options = {}) {
 module.exports = {
   byLimitId,
   projectLimits,
+  pickFreshestUsage,
   pickFreshestCodexUsage,
   createUsageGaugeRuntime,
 };

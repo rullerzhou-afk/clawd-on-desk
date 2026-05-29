@@ -118,9 +118,15 @@ function extractCodexRateLimitsFromJsonl(text) {
   return latest || { provider: "codex", limits: [], capturedAtMs: null };
 }
 
-function normalizeClaudeUsageResponse(body) {
+function normalizeClaudeUsageResponse(body, capturedAtMs) {
+  // The Claude usage API returns live utilization with no "measured at"
+  // field (resets_at is the window end, not a capture time). Because the
+  // value is real-time, the moment we receive the response IS the data's
+  // freshness. Default to Date.now(); callers (local/remote fetchers) may
+  // inject the receive time, and tests pass a deterministic value.
+  const captured = Number.isFinite(capturedAtMs) ? capturedAtMs : Date.now();
   if (!body || typeof body !== "object") {
-    return { provider: "claude", limits: [] };
+    return { provider: "claude", limits: [], capturedAtMs: captured };
   }
   const limits = [];
   for (const key of ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"]) {
@@ -133,7 +139,7 @@ function normalizeClaudeUsageResponse(body) {
     });
     if (limit) limits.push(limit);
   }
-  return { provider: "claude", limits };
+  return { provider: "claude", limits, capturedAtMs: captured };
 }
 
 module.exports = {
