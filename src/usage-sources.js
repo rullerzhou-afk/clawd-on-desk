@@ -81,7 +81,12 @@ function requestJson(url, options = {}) {
         if (res.statusCode < 200 || res.statusCode >= 300) {
           const err = new Error(`HTTP ${res.statusCode}`);
           err.statusCode = res.statusCode;
-          err.body = raw;
+          // Keep a truncated, token-redacted copy for diagnostics. This body can
+          // carry OAuth material on the token endpoint, so never store it raw —
+          // mask access/refresh tokens before anything can log err.body.
+          err.body = String(raw)
+            .replace(/("(?:access|refresh)_token"\s*:\s*")[^"]*(")/g, "$1<redacted>$2")
+            .slice(0, 500);
           reject(err);
           return;
         }

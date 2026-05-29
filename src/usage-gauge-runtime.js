@@ -209,10 +209,9 @@ function createUsageGaugeRuntime(options = {}) {
       return;
     }
     if (!running) return;
-    if (settings.pollIntervalMs !== lastPollIntervalMs) {
-      refresh();
-      return;
-    }
+    // A poll-interval change takes effect on the next reschedule (the finally
+    // block in refresh() reads the latest interval), so a single refresh() is
+    // enough for both the interval-changed and unchanged cases.
     refresh();
   }
 

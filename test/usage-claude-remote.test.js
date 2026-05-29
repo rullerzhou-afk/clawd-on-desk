@@ -10,7 +10,7 @@ const {
   fetchRemoteClaudeUsage,
 } = require("../src/usage-claude-remote");
 
-const PROFILE = { id: "ssh-a", host: "jinhomeserver" };
+const PROFILE = { id: "ssh-a", host: "test-host" };
 
 // Minimal fake child that mirrors the parts fetchRemoteClaudeUsage uses:
 // stdout data events, then "exit" (code cached) and "close" (final).
