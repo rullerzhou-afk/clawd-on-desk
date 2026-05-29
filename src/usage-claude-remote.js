@@ -1,8 +1,8 @@
 "use strict";
 
-const childProcess = require("child_process");
-const { buildSshArgs } = require("./remote-ssh-runtime");
+const { quoteForPosixShellArg } = require("./remote-ssh-quote");
 const { normalizeClaudeUsageResponse } = require("./usage-parsers");
+const { runRemoteUsageFetch } = require("./usage-remote-fetch");
 
 // Remote Node snippet: reads the OAuth accessToken from the remote
 // ~/.claude/.credentials.json, calls the Claude usage API directly, and
@@ -27,89 +27,31 @@ const REMOTE_CLAUDE_USAGE_JS =
   "req.end();" +
   "})();";
 
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, "'\\''")}'`;
-}
-
 function buildRemoteClaudeUsageCommand(nodeBin = "node") {
-  const node = nodeBin === "node" ? "node" : shellQuote(nodeBin);
-  return `${node} -e ${shellQuote(REMOTE_CLAUDE_USAGE_JS)}`;
-}
-
-function emptyResult() {
-  return { provider: "claude", limits: [] };
+  const node = nodeBin === "node" ? "node" : quoteForPosixShellArg(nodeBin);
+  return `${node} -e ${quoteForPosixShellArg(REMOTE_CLAUDE_USAGE_JS)}`;
 }
 
 function fetchRemoteClaudeUsage(profile, options = {}) {
-  const spawn = options.spawn || childProcess.spawn;
-  const runtime = options.runtime || null;
-  const timeoutMs = options.timeoutMs || 8000;
-  const now = options.now || Date.now;
-  const nodeBin = profile && profile.remoteNodeBin ? profile.remoteNodeBin : "node";
-  const args = buildSshArgs(profile).concat([buildRemoteClaudeUsageCommand(nodeBin)]);
-  return new Promise((resolve) => {
-    let child;
-    try {
-      child = spawn("ssh", args, {
-        env: { ...process.env, LANG: "C", LC_ALL: "C" },
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      });
-    } catch {
-      resolve(emptyResult());
-      return;
-    }
-    if (runtime && typeof runtime.registerChild === "function") runtime.registerChild(child);
-    const chunks = [];
-    let done = false;
-    const finish = (result) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      if (runtime && typeof runtime.unregisterChild === "function") runtime.unregisterChild(child);
-      resolve(result);
-    };
-    let exitCode = null;
-    const timer = setTimeout(() => {
-      try { child.kill(); } catch {}
-      finish(emptyResult());
-    }, timeoutMs);
-    if (child.stdout) child.stdout.on("data", (chunk) => chunks.push(chunk));
-    child.on("error", () => finish(emptyResult()));
-    child.on("exit", (code) => { exitCode = code; });
-    // Wait for "close" (all stdio drained), not "exit": the remote process can
-    // exit while stdout still has unread bytes in the pipe buffer, which would
-    // truncate the JSON body. "close" guarantees the full stdout was read.
-    child.on("close", (code) => {
-      const finalCode = exitCode != null ? exitCode : code;
-      // capturedAtMs = the moment we received the live usage response. See
-      // normalizeClaudeUsageResponse for why this is the correct freshness key.
-      const capturedAtMs = now();
-      if (finalCode !== 0) {
-        finish(emptyResult());
-        return;
-      }
-      const text = Buffer.concat(chunks).toString("utf8").trim();
-      if (!text) {
-        finish(emptyResult());
-        return;
-      }
+  return runRemoteUsageFetch({
+    profile,
+    provider: "claude",
+    buildCommand: buildRemoteClaudeUsageCommand,
+    // capturedAtMs = the moment we received the live usage response. See
+    // normalizeClaudeUsageResponse for why this is the correct freshness key.
+    parse: (text, { capturedAtMs }) => {
+      const trimmed = text.trim();
+      if (!trimmed) return null;
       let parsed;
       try {
-        parsed = JSON.parse(text);
+        parsed = JSON.parse(trimmed);
       } catch {
-        finish(emptyResult());
-        return;
+        return null;
       }
-      if (parsed && parsed.error) {
-        finish(emptyResult());
-        return;
-      }
-      finish({
-        ...normalizeClaudeUsageResponse(parsed, capturedAtMs),
-        source: { kind: "remote", profileId: profile && profile.id },
-      });
-    });
+      if (parsed && parsed.error) return null;
+      return normalizeClaudeUsageResponse(parsed, capturedAtMs);
+    },
+    options,
   });
 }
 
