@@ -1081,7 +1081,16 @@ const _stateCtx = {
   get win() { return win; },
   get hitWin() { return hitWin; },
   get doNotDisturb() { return doNotDisturb; },
-  set doNotDisturb(v) { doNotDisturb = v; },
+  set doNotDisturb(v) {
+    doNotDisturb = v;
+    // DND change flips game-launcher suppression. The launcher's evaluate()
+    // re-reads ctx.isSuppressed() on every hover transition, but a DND
+    // toggle while the cursor is sitting on the pet has no transition —
+    // notify here so the launcher hides immediately.
+    if (_gameLauncher && typeof _gameLauncher.syncSuppression === "function") {
+      _gameLauncher.syncSuppression();
+    }
+  },
   get miniMode() { return _mini.getMiniMode(); },
   get miniTransitioning() { return _mini.getMiniTransitioning(); },
   get mouseOverPet() { return mouseOverPet; },
@@ -1196,7 +1205,17 @@ const _tickCtx = {
   get miniPeeked() { return _mini.getMiniPeeked(); },
   set miniPeeked(v) { _mini.setMiniPeeked(v); },
   get mouseOverPet() { return mouseOverPet; },
-  set mouseOverPet(v) { mouseOverPet = v; },
+  set mouseOverPet(v) {
+    const next = !!v;
+    if (mouseOverPet === next) return;
+    mouseOverPet = next;
+    // Drive the game-launcher floating panel from the same hover signal the
+    // tick already computes; assigned lazily below to avoid a TDZ at module
+    // load.
+    if (_gameLauncher && typeof _gameLauncher.setMouseOverPet === "function") {
+      _gameLauncher.setMouseOverPet(next);
+    }
+  },
   get forceEyeResend() { return forceEyeResend; },
   set forceEyeResend(v) { setForceEyeResend(v); },
   get forceEyeResendBoostUntil() { return forceEyeResendBoostUntil; },
@@ -1302,6 +1321,36 @@ const _dashboard = require("./dashboard")({
 showDashboard = _dashboard.showDashboard;
 broadcastDashboardSessionSnapshot = _dashboard.broadcastSessionSnapshot;
 sendDashboardI18n = _dashboard.sendI18n;
+
+// Arcade — Snake / Plane mini-games ported from vibe-arcade. Each game
+// runs in its own BrowserWindow; the user picks one from the hover-launcher
+// floating to the right of the pet.
+const _arcade = require("./arcade")({
+  t: (key) => translate(key),
+  getPetWindowBounds,
+  getHitRectScreen,
+  getNearestWorkArea,
+  iconPath: settingsWindowRuntime.getIconPath(),
+});
+const showArcade = _arcade.showArcade;
+
+// Game launcher — the small floating panel that pops up beside the pet on
+// hover with one button per game. Visibility is driven by mouseOverPet
+// (set inside src/tick.js) plus DND / mini-mode / pet-hidden suppression.
+const _gameLauncher = require("./game-launcher")({
+  t: (key) => translate(key),
+  getI18n: () => getDashboardI18nPayload(),
+  getPetWindowBounds,
+  getHitRectScreen,
+  getNearestWorkArea,
+  isSuppressed: () =>
+    doNotDisturb
+    || _mini.getMiniMode()
+    || _mini.getMiniTransitioning()
+    || petWindowRuntime.isPetHidden()
+    || petWindowRuntime.isDragLocked(),
+  openGame: (gameId) => showArcade(gameId),
+});
 
 const _sessionHud = require("./session-hud")({
   get win() { return win; },
@@ -2643,7 +2692,16 @@ const _miniCtx = {
   get win() { return win; },
   get currentSize() { return currentSize; },
   get doNotDisturb() { return doNotDisturb; },
-  set doNotDisturb(v) { doNotDisturb = v; },
+  set doNotDisturb(v) {
+    doNotDisturb = v;
+    // DND change flips game-launcher suppression. The launcher's evaluate()
+    // re-reads ctx.isSuppressed() on every hover transition, but a DND
+    // toggle while the cursor is sitting on the pet has no transition —
+    // notify here so the launcher hides immediately.
+    if (_gameLauncher && typeof _gameLauncher.syncSuppression === "function") {
+      _gameLauncher.syncSuppression();
+    }
+  },
   get currentState() { return _state.getCurrentState(); },
   notifyUpdaterSilentExit: () => notifyUpdaterSilentExit(),
   SIZES,

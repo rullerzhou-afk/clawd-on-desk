@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'">
+  <title>Clawd Game Launcher</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100%;
+      width: 100%;
+      background: transparent;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+      color: #18181b;
+      user-select: none;
+      -webkit-user-select: none;
+      cursor: default;
+    }
+    .launcher {
+      position: absolute;
+      inset: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      align-items: stretch;
+      justify-content: center;
+      padding: 6px;
+      background: #ffffff;
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      border-radius: 10px;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18), 0 1px 2px rgba(0, 0, 0, 0.08);
+      -webkit-app-region: no-drag;
+    }
+    @media (prefers-color-scheme: dark) {
+      html, body { color: #f4f4f5; }
+      .launcher {
+        background: #232327;
+        border-color: rgba(255, 255, 255, 0.08);
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55), 0 1px 2px rgba(0, 0, 0, 0.3);
+      }
+    }
+    button {
+      flex: 1 1 0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 10px;
+      background: transparent;
+      color: inherit;
+      border: 0;
+      border-radius: 6px;
+      font: 500 13px inherit;
+      cursor: pointer;
+      transition: background 100ms ease;
+    }
+    button:hover, button:focus-visible {
+      background: rgba(0, 0, 0, 0.06);
+      outline: none;
+    }
+    button:active { background: rgba(0, 0, 0, 0.10); }
+    @media (prefers-color-scheme: dark) {
+      button:hover, button:focus-visible { background: rgba(255, 255, 255, 0.08); }
+      button:active { background: rgba(255, 255, 255, 0.14); }
+    }
+    .icon { font-size: 16px; line-height: 1; width: 18px; text-align: center; }
+    .label { flex: 1; text-align: left; }
+  </style>
+</head>
+<body>
+  <div class="launcher" id="launcher">
+    <button type="button" data-game="plane" title="Plane Shooter">
+      <span class="icon">✈</span>
+      <span class="label" id="label-plane">PLANE</span>
+    </button>
+    <button type="button" data-game="snake" title="Snake">
+      <span class="icon">🐍</span>
+      <span class="label" id="label-snake">SNAKE</span>
+    </button>
+  </div>
+  <script src="game-launcher-renderer.js"></script>
+</body>
+</html>

@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Clawd Arcade</title>
+  <style>
+    :root {
+      --crt-green: #00FF7F;
+      --crt-bg: #0a0a0a;
+      --crt-border: rgba(0, 255, 127, 0.55);
+      --crt-glow: 0 0 6px rgba(0, 255, 127, 0.45);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100%;
+      width: 100%;
+      background: transparent;
+      overflow: hidden;
+    }
+    body {
+      color: var(--crt-green);
+      font-family: 'Courier New', monospace;
+      user-select: none;
+      -webkit-user-select: none;
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+    }
+    .crt-frame {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: var(--crt-bg);
+      border: 1px solid var(--crt-border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .hud {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 8px;
+      background: var(--crt-bg);
+      border-bottom: 1px solid var(--crt-border);
+      /* Whole title bar acts as the drag region for the frameless window. */
+      -webkit-app-region: drag;
+    }
+    .hud .icon { font-size: 13px; line-height: 1; }
+    .hud h1 {
+      font-size: 11px;
+      letter-spacing: 1.5px;
+      flex: 0 0 auto;
+      font-weight: 700;
+    }
+    .hud #status {
+      flex: 1;
+      font-size: 10px;
+      opacity: 0.8;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .hud button {
+      -webkit-app-region: no-drag;
+      width: 18px;
+      height: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      color: var(--crt-green);
+      border: 1px solid var(--crt-border);
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 11px;
+      line-height: 1;
+      padding: 0;
+    }
+    .hud button:hover { background: rgba(0, 255, 127, 0.15); }
+    main {
+      flex: 1;
+      background: var(--crt-bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 4px;
+      min-height: 0;
+    }
+    canvas {
+      display: block;
+      background: transparent;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      /* Keep the pixel-art look when the canvas is scaled down by CSS. */
+      image-rendering: pixelated;
+      image-rendering: -moz-crisp-edges;
+    }
+    footer {
+      flex: 0 0 auto;
+      padding: 3px 8px;
+      border-top: 1px solid var(--crt-border);
+      background: var(--crt-bg);
+      text-align: center;
+      font-size: 9px;
+      opacity: 0.6;
+      letter-spacing: 0.5px;
+    }
+  </style>
+</head>
+<body>
+  <div class="crt-frame">
+    <header class="hud">
+      <span class="icon" id="game-icon">▣</span>
+      <h1 id="title">SNAKE</h1>
+      <span id="status">Score: 0</span>
+      <button id="close" title="Close">×</button>
+    </header>
+    <main>
+      <canvas id="stage" width="640" height="320"></canvas>
+    </main>
+    <footer id="hint">arrow keys or WASD to move</footer>
+  </div>
+  <script>require('./arcade-renderer.js');</script>
+</body>
+</html>
