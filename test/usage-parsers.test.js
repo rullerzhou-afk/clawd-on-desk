@@ -76,10 +76,12 @@ describe("usage parsers", () => {
   });
 
   it("normalizes Claude usage response windows", () => {
+    // utilization is already a 0-100 percent in the live API (e.g. 2 == 2%),
+    // NOT a 0-1 ratio. Values are passed through (clamped), never *100.
     const parsed = normalizeClaudeUsageResponse({
-      five_hour: { utilization: 0.5, resets_at: "2026-05-29T12:00:00.000Z" },
+      five_hour: { utilization: 50, resets_at: "2026-05-29T12:00:00.000Z" },
       seven_day: { utilization: 70, resets_at: 1800000000 },
-      seven_day_opus: { utilization: 0.86, resets_at: 1800001000 },
+      seven_day_opus: { utilization: 90, resets_at: 1800001000 },
       seven_day_sonnet: { utilization: 8, resets_at: 1800002000 },
     }, Date.parse("2026-05-29T10:00:00.000Z"));
 
@@ -94,6 +96,14 @@ describe("usage parsers", () => {
     assert.strictEqual(parsed.limits[2].severity, "red");
     assert.strictEqual(parsed.limits[3].severity, "green");
     assert.strictEqual(parsed.capturedAtMs, Date.parse("2026-05-29T10:00:00.000Z"));
+  });
+
+  it("treats a sub-1 percent as a real percent, not a 0-1 ratio", () => {
+    // Regression: utilization 1 (== 1% used) must stay 1%, never become 100%.
+    const parsed = normalizeClaudeUsageResponse({ five_hour: { utilization: 1 } });
+    assert.strictEqual(parsed.limits[0].usedPercent, 1);
+    assert.strictEqual(parsed.limits[0].remainingPercent, 99);
+    assert.strictEqual(parsed.limits[0].severity, "green");
   });
 
   it("defaults Claude capturedAtMs to the receive time when not injected", () => {

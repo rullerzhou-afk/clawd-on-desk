@@ -15,8 +15,10 @@ const CLAUDE_LIMITS = Object.freeze({
 function normalizePercent(value) {
   const n = Number(value);
   if (!Number.isFinite(n) || n < 0) return null;
-  const percent = n <= 1 ? n * 100 : n;
-  return Math.max(0, Math.min(100, percent));
+  // Both sources report utilization already as a 0-100 percent (Claude usage
+  // API `utilization`, Codex `used_percent`). Do NOT treat values <= 1 as a
+  // 0-1 ratio and multiply by 100 — that turned a real 1% into 100%.
+  return Math.max(0, Math.min(100, n));
 }
 
 function normalizeResetMs(value) {
