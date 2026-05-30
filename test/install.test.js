@@ -526,7 +526,7 @@ describe("Claude version detection helpers", () => {
 });
 
 describe("Hook installer version compatibility", () => {
-  it("uses PowerShell-safe command hooks on Windows", () => {
+  it("uses bash-compatible command hooks on Windows", () => {
     const settingsPath = makeTempSettings({});
     registerHooks({
       silent: true,
@@ -539,10 +539,10 @@ describe("Hook installer version compatibility", () => {
     const settings = readSettings(settingsPath);
     const stopHooks = getCommandHookEntries(settings, "Stop", "clawd-hook.js");
     assert.strictEqual(stopHooks.length, 1);
-    assert.strictEqual(stopHooks[0].shell, "powershell");
+    assert.ok(!Object.prototype.hasOwnProperty.call(stopHooks[0], "shell"));
     assert.strictEqual(stopHooks[0].async, true);
     assert.strictEqual(stopHooks[0].timeout, 5);
-    assert.ok(stopHooks[0].command.startsWith('& "node" "'), stopHooks[0].command);
+    assert.ok(stopHooks[0].command.startsWith('"node" "'), stopHooks[0].command);
     assert.ok(stopHooks[0].command.endsWith('" Stop'), stopHooks[0].command);
   });
 
@@ -747,8 +747,8 @@ describe("Hook installer version compatibility", () => {
     const stopHooks = getCommandHookEntries(settings, "Stop", "clawd-hook.js");
     assert.strictEqual(result.updated, 1);
     assert.strictEqual(stopHooks.length, 1);
-    assert.strictEqual(stopHooks[0].shell, "powershell");
-    assert.ok(stopHooks[0].command.startsWith("& "), stopHooks[0].command);
+    assert.ok(!Object.prototype.hasOwnProperty.call(stopHooks[0], "shell"));
+    assert.ok(stopHooks[0].command.startsWith('"node"'), stopHooks[0].command);
     assert.ok(!stopHooks[0].command.includes("/old/path/"));
   });
 
@@ -826,8 +826,8 @@ describe("Hook installer version compatibility", () => {
     const settings = readSettings(settingsPath);
     const stopHooks = getCommandHookEntries(settings, "Stop", "clawd-hook.js");
     assert.strictEqual(stopHooks.length, 1);
-    assert.strictEqual(stopHooks[0].shell, "powershell");
-    assert.ok(stopHooks[0].command.startsWith("& "), stopHooks[0].command);
+    assert.ok(!Object.prototype.hasOwnProperty.call(stopHooks[0], "shell"));
+    assert.ok(stopHooks[0].command.startsWith('"node"'), stopHooks[0].command);
   });
 
   it("preserves existing absolute node path when detection fails", () => {
@@ -909,10 +909,10 @@ describe("Hook installer version compatibility", () => {
     const settings = readSettings(settingsPath);
     const autoStartHooks = getCommandHookEntries(settings, "SessionStart", "auto-start.js");
     assert.strictEqual(autoStartHooks.length, 1);
-    assert.strictEqual(autoStartHooks[0].shell, "powershell");
+    assert.ok(!Object.prototype.hasOwnProperty.call(autoStartHooks[0], "shell"));
     assert.strictEqual(autoStartHooks[0].async, true);
     assert.strictEqual(autoStartHooks[0].timeout, 15);
-    assert.ok(autoStartHooks[0].command.startsWith('& "node" "'), autoStartHooks[0].command);
+    assert.ok(autoStartHooks[0].command.startsWith('"node" "'), autoStartHooks[0].command);
   });
 
   it("uses async auto-start hooks on non-Windows", () => {
@@ -960,10 +960,10 @@ describe("Hook installer version compatibility", () => {
     const autoStartHooks = getCommandHookEntries(settings, "SessionStart", "auto-start.js");
     assert.ok(result.updated >= 1);
     assert.strictEqual(autoStartHooks.length, 1);
-    assert.strictEqual(autoStartHooks[0].shell, "powershell");
+    assert.ok(!Object.prototype.hasOwnProperty.call(autoStartHooks[0], "shell"));
     assert.strictEqual(autoStartHooks[0].async, true);
     assert.strictEqual(autoStartHooks[0].timeout, 15);
-    assert.ok(autoStartHooks[0].command.startsWith("& "), autoStartHooks[0].command);
+    assert.ok(autoStartHooks[0].command.startsWith('"node"'), autoStartHooks[0].command);
     assert.ok(!autoStartHooks[0].command.includes("/old/path/"));
   });
 
@@ -1279,11 +1279,11 @@ describe("Hook installer unregisterHooks", () => {
         SessionStart: [
           {
             matcher: "",
-            hooks: [{ type: "command", shell: "powershell", command: '& "node" "/tmp/auto-start.js"' }],
+            hooks: [{ type: "command", command: '"node" "/tmp/auto-start.js"' }],
           },
           {
             matcher: "",
-            hooks: [{ type: "command", shell: "powershell", command: '& "node" "/tmp/clawd-hook.js" SessionStart' }],
+            hooks: [{ type: "command", command: '"node" "/tmp/clawd-hook.js" SessionStart' }],
           },
           {
             matcher: "",
@@ -1293,7 +1293,7 @@ describe("Hook installer unregisterHooks", () => {
         Stop: [
           {
             matcher: "",
-            hooks: [{ type: "command", shell: "powershell", command: '& "node" "/tmp/clawd-hook.js" Stop' }],
+            hooks: [{ type: "command", command: '"node" "/tmp/clawd-hook.js" Stop' }],
           },
         ],
         PermissionRequest: [

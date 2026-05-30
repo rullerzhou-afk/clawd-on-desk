@@ -465,8 +465,7 @@ function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {
   if (platform === "win32") {
     return withHookOptions({
       type: "command",
-      shell: "powershell",
-      command: `& ${quotedCommand}`,
+      command: quotedCommand,
     });
   }
 
