@@ -33,7 +33,8 @@ function buildGeminiHookEntry(command) {
 }
 
 function buildGeminiHookCommand(nodeBin, hookScript, event, options = {}) {
-  return formatNodeHookCommand(nodeBin, hookScript, { ...options, args: [event] });
+  const opts = options.windowsWrapper !== undefined ? options : { ...options, windowsWrapper: "none" };
+  return formatNodeHookCommand(nodeBin, hookScript, { ...opts, args: [event] });
 }
 
 function replaceEntry(target, source) {

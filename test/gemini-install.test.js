@@ -251,7 +251,7 @@ describe("Gemini hook installer", () => {
     assert.deepStrictEqual(settings.hooksConfig.disabled, ["other-hook", "clawd"]);
   });
 
-  it("builds Windows PowerShell commands with the Gemini event argv", () => {
+  it("builds bash-compatible bare commands with the Gemini event argv on Windows", () => {
     const command = __test.buildGeminiHookCommand(
       "node",
       "D:/clawd/hooks/gemini-hook.js",
@@ -259,7 +259,7 @@ describe("Gemini hook installer", () => {
       { platform: "win32" }
     );
 
-    assert.strictEqual(command, '& "node" "D:/clawd/hooks/gemini-hook.js" "BeforeTool"');
+    assert.strictEqual(command, '"node" "D:/clawd/hooks/gemini-hook.js" "BeforeTool"');
   });
 
   it("builds Windows cmd-wrapped commands with the Gemini event argv", () => {
