@@ -824,8 +824,8 @@ function registerHooks(options = {}) {
       changed = true;  // format was normalized, need to persist
     }
 
-    // Local Windows hooks must use explicit PowerShell invocation because Claude
-    // Code defaults command hooks to bash on Windows. Remote hooks stay on the
+    // Local Windows hooks use bare commands (no shell wrapper) because Claude
+    // Code runs command hooks with bash on Windows. Remote hooks stay on the
     // legacy POSIX/bash-compatible form; see buildCommandHookSpec().
     const desiredHook = buildCommandHookSpec(nodeBin, hookScript, event, {
       platform,
