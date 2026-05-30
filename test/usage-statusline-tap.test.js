@@ -136,8 +136,10 @@ test("runChain pipes raw stdin to the chained command's stdin (transparent proxy
 
   assert.strictEqual(spawnedCmd, "node hud.js");
   assert.strictEqual(spawnedOpts.shell, true);
-  // stdout inherited so the chained statusline renders straight through.
-  assert.deepStrictEqual(spawnedOpts.stdio, ["pipe", "inherit", "inherit"]);
+  // stdout inherited so the chained statusline renders straight through;
+  // stderr ignored so a broken chained command can't leak an error trace into
+  // Claude Code's statusline area.
+  assert.deepStrictEqual(spawnedOpts.stdio, ["pipe", "inherit", "ignore"]);
   assert.deepStrictEqual(writes, [STDIN]);
   assert.strictEqual(ended, true);
 });

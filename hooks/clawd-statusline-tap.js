@@ -185,7 +185,11 @@ function runChain(chainCommand, rawText, deps = {}) {
     try {
       child = spawn(chainCommand, {
         shell: true,
-        stdio: ["pipe", "inherit", "inherit"],
+        // stdout passes through (the chained statusline's rendering); stderr is
+        // ignored so a broken/stale chained command (e.g. a moved plugin path)
+        // can't leak an error trace into Claude Code's statusline area. On any
+        // failure we just render whatever stdout produced (often nothing).
+        stdio: ["pipe", "inherit", "ignore"],
         windowsHide: true,
       });
     } catch {
