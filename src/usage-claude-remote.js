@@ -8,10 +8,15 @@ const { runRemoteUsageFetch } = require("./usage-remote-fetch");
 // ~/.claude/.credentials.json, calls the Claude usage API directly, and
 // streams the raw usage JSON body back to stdout. On any failure it emits a
 // small {"error":...} JSON object instead, which the receiver treats as an
-// empty result. The write-then-exit-in-flush-callback pattern is required:
+// empty result. A 429 is reported as {"error":"http:429","retry_after":<sec>}
+// so the local runtime can arm the same shared 429 backoff for remote polls.
+// The write-then-exit-in-flush-callback pattern is required:
 // process.exit(0) right after process.stdout.write() truncates payloads
 // because the pipe write is async and exit() kills the process before the
 // OS pipe buffer drains. The callback fires post-flush.
+// TODO(remote-statusline): prefer SSH `cat ~/.clawd/statusline.json` first and
+// only fall back to this API call when the remote snapshot is stale, mirroring
+// the local hybrid. For now the remote path is API-only with 429 backoff.
 const REMOTE_CLAUDE_USAGE_JS =
   "(function(){" +
   "const fs=require('fs'),path=require('path'),os=require('os'),https=require('https');" +
@@ -20,7 +25,9 @@ const REMOTE_CLAUDE_USAGE_JS =
   "const tok=o.accessToken;" +
   "if(!tok){process.stdout.write(JSON.stringify({error:'no-token'}),()=>process.exit(0));return;}" +
   "const req=https.request('https://api.anthropic.com/api/oauth/usage',{method:'GET',headers:{authorization:'Bearer '+tok,'anthropic-beta':'oauth-2025-04-20','user-agent':'claude-code/2.1.0'},timeout:8000},(res)=>{" +
-  "let b='';res.on('data',d=>b+=d);res.on('end',()=>{process.stdout.write(b,()=>process.exit(0));});" +
+  "let b='';res.on('data',d=>b+=d);res.on('end',()=>{" +
+  "if(res.statusCode<200||res.statusCode>=300){var ra=res.headers&&res.headers['retry-after'];process.stdout.write(JSON.stringify({error:'http:'+res.statusCode,retry_after:ra||null}),()=>process.exit(0));return;}" +
+  "process.stdout.write(b,()=>process.exit(0));});" +
   "});" +
   "req.on('error',e=>{process.stdout.write(JSON.stringify({error:'req:'+e.message}),()=>process.exit(0));});" +
   "req.on('timeout',()=>{req.destroy();process.stdout.write(JSON.stringify({error:'timeout'}),()=>process.exit(0));});" +
@@ -48,7 +55,20 @@ function fetchRemoteClaudeUsage(profile, options = {}) {
       } catch {
         return null;
       }
-      if (parsed && parsed.error) return null;
+      if (parsed && parsed.error) {
+        // Propagate a remote 429 so the local runtime arms the shared backoff
+        // (skips the next remote + local API poll). Other errors stay empty.
+        if (typeof parsed.error === "string" && parsed.error === "http:429") {
+          const secs = Number(parsed.retry_after);
+          return {
+            provider: "claude",
+            limits: [],
+            rateLimited: true,
+            retryAfterMs: Number.isFinite(secs) && secs > 0 ? secs * 1000 : null,
+          };
+        }
+        return null;
+      }
       return normalizeClaudeUsageResponse(parsed, capturedAtMs);
     },
     options,

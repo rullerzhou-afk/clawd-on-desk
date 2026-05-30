@@ -1,6 +1,17 @@
 "use strict";
 
 const { readCodexUsageLocal, fetchClaudeUsage } = require("./usage-sources");
+const { readStatuslineUsage } = require("./usage-statusline");
+
+// Default backoff after a 429 from the Claude usage API. The per-token bucket
+// stays locked 30-60 min; re-polling extends the lock. We honor a positive
+// Retry-After when present, otherwise wait this long. Capped below.
+const DEFAULT_RATE_LIMIT_BACKOFF_MS = 30 * 60 * 1000;
+const MAX_RATE_LIMIT_BACKOFF_MS = 60 * 60 * 1000;
+// A cached last-good value older than this is treated as too stale to show even
+// as a fallback (it likely no longer reflects reality). resets_at-based hiding
+// happens in the renderer; this is the hard ceiling.
+const MAX_STALE_CACHE_MS = 6 * 60 * 60 * 1000;
 
 function byLimitId(snapshot) {
   const out = new Map();
@@ -54,6 +65,7 @@ function createUsageGaugeRuntime(options = {}) {
   const readCodex = options.readCodex || readCodexUsageLocal;
   const readRemoteCodex = options.readRemoteCodex || null;
   const readClaude = options.readClaude || fetchClaudeUsage;
+  const readStatusline = options.readStatusline || readStatuslineUsage;
   const readRemoteClaude = options.readRemoteClaude || null;
   const getRemoteCodexProfiles = options.getRemoteCodexProfiles
     || (() => {
@@ -72,6 +84,12 @@ function createUsageGaugeRuntime(options = {}) {
   let running = false;
   let inFlight = false;
   let lastPollIntervalMs = 0;
+  // 429 backoff: until this timestamp the Claude usage API (local + remote) is
+  // off-limits. The statusLine snapshot read is unaffected (it's a file read).
+  let claudeApiBlockedUntil = 0;
+  // Last non-empty Claude result, kept so a transient API failure / 429 doesn't
+  // blank the gauge. Capped by MAX_STALE_CACHE_MS.
+  let lastClaudeUsage = null;
 
   function clearTimer() {
     if (timer) clearTimeoutFn(timer);
@@ -117,10 +135,58 @@ function createUsageGaugeRuntime(options = {}) {
     return pickFreshestUsage(results, "codex");
   }
 
+  // Remember a non-empty Claude result as the last-good fallback.
+  function rememberClaude(result) {
+    if (result && Array.isArray(result.limits) && result.limits.length) {
+      lastClaudeUsage = { result, at: now() };
+    }
+    return result;
+  }
+
+  // Return the cached last-good value if it's still within MAX_STALE_CACHE_MS,
+  // else null. Used when every live source comes back empty / rate-limited.
+  function staleClaudeFallback() {
+    if (!lastClaudeUsage) return null;
+    if (now() - lastClaudeUsage.at > MAX_STALE_CACHE_MS) return null;
+    return lastClaudeUsage.result;
+  }
+
+  // Note a 429 and arm the backoff window. Honors a positive Retry-After hint
+  // from the API, otherwise uses the default; clamped to MAX_RATE_LIMIT_BACKOFF_MS.
+  function noteClaudeRateLimited(retryAfterMs) {
+    const wait = Number.isFinite(retryAfterMs) && retryAfterMs > 0
+      ? Math.min(retryAfterMs, MAX_RATE_LIMIT_BACKOFF_MS)
+      : DEFAULT_RATE_LIMIT_BACKOFF_MS;
+    claudeApiBlockedUntil = now() + wait;
+    logWarn("Clawd: Claude usage API rate-limited (429); backing off for", Math.round(wait / 1000), "s");
+  }
+
   async function fetchClaude(settings) {
     if (settings.providers && settings.providers.claude === false) {
       return { provider: "claude", limits: [] };
     }
+
+    // 1. statusLine stdin tap (primary). When Claude Code is running this is
+    //    fresh every prompt and costs zero API calls — the whole point of the
+    //    hybrid. If it's fresh we return immediately and NEVER touch the API.
+    let snapshot = null;
+    try {
+      snapshot = readStatusline();
+    } catch (err) {
+      logWarn("Clawd: Claude statusline snapshot read failed:", err && err.message);
+    }
+    if (snapshot && Array.isArray(snapshot.limits) && snapshot.limits.length) {
+      return rememberClaude(snapshot);
+    }
+
+    // 2. Fallback: the rate-limited usage API (local token + remote SSH). Skip
+    //    entirely while the 429 backoff window is open — re-polling a locked
+    //    bucket only extends the lock.
+    if (now() < claudeApiBlockedUntil) {
+      const cached = staleClaudeFallback();
+      return cached || { provider: "claude", limits: [] };
+    }
+
     let profiles = [];
     if (readRemoteClaude) {
       try {
@@ -145,7 +211,19 @@ function createUsageGaugeRuntime(options = {}) {
         })),
     ];
     const results = await Promise.all(reads);
-    return pickFreshestUsage(results, "claude");
+
+    // Any source reporting a 429 arms the backoff (skip the API next cycle).
+    const limited = results.find((r) => r && r.rateLimited);
+    if (limited) noteClaudeRateLimited(limited.retryAfterMs);
+
+    const freshest = pickFreshestUsage(results, "claude");
+    if (freshest && Array.isArray(freshest.limits) && freshest.limits.length) {
+      return rememberClaude(freshest);
+    }
+    // Everything came back empty (expired token / 429 / SSH down). Keep the last
+    // good value visible rather than blanking the gauge, until it ages out.
+    const cached = staleClaudeFallback();
+    return cached || freshest;
   }
 
   async function refresh() {
@@ -225,6 +303,9 @@ function createUsageGaugeRuntime(options = {}) {
 }
 
 module.exports = {
+  DEFAULT_RATE_LIMIT_BACKOFF_MS,
+  MAX_RATE_LIMIT_BACKOFF_MS,
+  MAX_STALE_CACHE_MS,
   byLimitId,
   projectLimits,
   pickFreshestUsage,

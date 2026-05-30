@@ -66,6 +66,25 @@ function parseExpiresAt(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+// Parse a Retry-After header into a positive millisecond delay, or null. Accepts
+// both the delta-seconds form ("2458") and the HTTP-date form. Non-positive or
+// unparseable values yield null so the caller falls back to its own default.
+function parseRetryAfterMs(value, nowMs) {
+  if (value == null || value === "") return null;
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const str = String(Array.isArray(value) ? value[0] : value).trim();
+  if (/^\d+$/.test(str)) {
+    const secs = Number(str);
+    return Number.isFinite(secs) && secs > 0 ? secs * 1000 : null;
+  }
+  const when = Date.parse(str);
+  if (Number.isFinite(when)) {
+    const delta = when - now;
+    return delta > 0 ? delta : null;
+  }
+  return null;
+}
+
 function requestJson(url, options = {}) {
   const timeoutMs = options.timeoutMs || 6000;
   return new Promise((resolve, reject) => {
@@ -81,6 +100,10 @@ function requestJson(url, options = {}) {
         if (res.statusCode < 200 || res.statusCode >= 300) {
           const err = new Error(`HTTP ${res.statusCode}`);
           err.statusCode = res.statusCode;
+          // Honor a positive Retry-After (seconds or HTTP-date) so 429 backoff
+          // can wait exactly as long as the server asks. A 0 / missing / bogus
+          // value leaves retryAfterMs null and the caller uses its own default.
+          err.retryAfterMs = parseRetryAfterMs(res.headers && res.headers["retry-after"]);
           // Keep a truncated, token-redacted copy for diagnostics. This body can
           // carry OAuth material on the token endpoint, so never store it raw —
           // mask access/refresh tokens before anything can log err.body.
@@ -193,7 +216,19 @@ async function fetchClaudeUsage(options = {}) {
       },
     });
     return normalizeClaudeUsageResponse(body, Date.now());
-  } catch {
+  } catch (err) {
+    // Surface a 429 so the runtime can back off (the bucket stays locked for
+    // 30-60 min; re-polling makes it worse). requestJson sets err.statusCode and
+    // — when the server sends one — err.retryAfterMs. The empty-result shape is
+    // unchanged; rateLimited/retryAfterMs are extra hints the runtime reads.
+    if (err && err.statusCode === 429) {
+      return {
+        provider: "claude",
+        limits: [],
+        rateLimited: true,
+        retryAfterMs: Number.isFinite(err.retryAfterMs) ? err.retryAfterMs : null,
+      };
+    }
     return { provider: "claude", limits: [] };
   }
 }
@@ -204,6 +239,7 @@ module.exports = {
   readCodexUsageLocal,
   readClaudeCredentials,
   parseExpiresAt,
+  parseRetryAfterMs,
   requestJson,
   refreshClaudeAccessToken,
   getClaudeAccessToken,

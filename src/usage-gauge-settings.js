@@ -17,8 +17,13 @@ const DEFAULT_ALWAYS_ON_LIMIT_IDS = Object.freeze([
   "claude.seven_day",
 ]);
 const DEFAULT_EXPANDED_LIMIT_IDS = Object.freeze(LIMIT_IDS.slice());
-const DEFAULT_POLL_INTERVAL_MS = 60 * 1000;
-const MIN_POLL_INTERVAL_MS = 15 * 1000;
+// The Claude usage API is a per-access-token bucket that 429s (stickily, for
+// 30-60 min) after only a handful of polls. The statusLine stdin tap is the
+// primary source and costs zero API calls; the API poll is a fallback for
+// users who never run Claude Code. A slow default + a high floor keep that
+// fallback from ever re-triggering the rate limit.
+const DEFAULT_POLL_INTERVAL_MS = 5 * 60 * 1000;
+const MIN_POLL_INTERVAL_MS = 60 * 1000;
 const MAX_POLL_INTERVAL_MS = 60 * 60 * 1000;
 
 function getDefaults() {
