@@ -323,6 +323,7 @@ function createIntegrationSyncRuntime(options = {}) {
     if (agentId === "claude-code") {
       if (!shouldManageClaudeHooks()) return false;
       const result = syncClawdHooks();
+      syncStatuslineTap();
       startClaudeSettingsWatcher();
       return result && typeof result === "object" ? result : true;
     }
@@ -346,12 +347,36 @@ function createIntegrationSyncRuntime(options = {}) {
 
   function stopIntegrationForAgent(agentId) {
     if (agentId !== "claude-code") return false;
+    removeStatuslineTap();
     return stopClaudeSettingsWatcher();
+  }
+
+  function syncStatuslineTap() {
+    try {
+      if (typeof ctx.syncStatuslineTapImpl === "function") return ctx.syncStatuslineTapImpl();
+      const { registerStatuslineTap } = require("../hooks/statusline-install.js");
+      const result = registerStatuslineTap();
+      return { status: "ok", changed: !!(result && result.changed) };
+    } catch (err) {
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync statusLine tap" };
+    }
+  }
+
+  function removeStatuslineTap() {
+    try {
+      if (typeof ctx.removeStatuslineTapImpl === "function") return ctx.removeStatuslineTapImpl();
+      const { unregisterStatuslineTap } = require("../hooks/statusline-install.js");
+      const result = unregisterStatuslineTap();
+      return { status: "ok", changed: !!(result && result.changed) };
+    } catch (err) {
+      return { status: "error", message: err && err.message ? err.message : "Failed to remove statusLine tap" };
+    }
   }
 
   function syncEnabledStartupIntegrations() {
     if (shouldManageClaudeHooks() && isAgentEnabled("claude-code")) {
       syncClawdHooks();
+      syncStatuslineTap();
       startClaudeSettingsWatcher();
     }
     for (const [agentId, sync] of Object.entries(AGENT_INTEGRATION_SYNCERS)) {
@@ -379,6 +404,8 @@ function createIntegrationSyncRuntime(options = {}) {
     syncIntegrationForAgent,
     repairIntegrationForAgent,
     stopIntegrationForAgent,
+    syncStatuslineTap,
+    removeStatuslineTap,
     syncEnabledStartupIntegrations,
   };
 }
