@@ -252,6 +252,13 @@ const _settingsController = createSettingsController({
       ? _server.repairRuntimeStatus()
       : false,
     restartClawd: _restartClawdNow,
+    restartWatch: () => {
+      if (typeof watchAdapter !== "undefined" && watchAdapter) {
+        watchAdapter.stop();
+        return watchAdapter.start();
+      }
+      return { status: "ok" };
+    },
     clearSessionsByAgent: (id) => agentRuntime ? agentRuntime.clearSessionsByAgent(id) : 0,
     dismissPermissionsByAgent: (id) => agentRuntime ? agentRuntime.dismissPermissionsByAgent(id) : 0,
     resizePet: _deferredResizePet,
@@ -988,6 +995,7 @@ const _permCtx = {
   getTelegramApprovalClient: () => getTelegramApprovalClient(),
   onPermissionsChanged: () => {
     if (hardwareBuddyAdapter) hardwareBuddyAdapter.notifyPermissionsChanged();
+    if (watchAdapter) watchAdapter.notifyPermissionsChanged();
   },
   onPermissionResolved: (permEntry, options = {}) => {
     if (!_state || typeof _state.clearPermissionNotification !== "function") return;
@@ -1128,6 +1136,7 @@ const _stateCtx = {
     broadcastSessionHudSnapshot(snapshot);
     repositionFloatingBubbles();
     if (hardwareBuddyAdapter) hardwareBuddyAdapter.notifyStateChanged();
+    if (watchAdapter) watchAdapter.notifyStateChanged();
   },
   // Phase 3b: 读 prefs.themeOverrides 判断某个 oneshot state 是否被用户禁用。
   // state.js gate 调这个做 early-return。不做白名单校验——settings-actions
@@ -2098,6 +2107,43 @@ unsubscribeHardwareBuddySettings = _settingsController.subscribeKey("hardwareBud
   }
 });
 
+// ── Watch adapter (independent from Hardware Buddy) ──
+
+const { createWatchAdapter } = require("./watch-adapter");
+let watchAdapter = null;
+let watchStatus = null;
+let unsubscribeWatchSettings = null;
+
+function watchLog(message) {
+  console.log("Clawd Watch:", message);
+}
+
+function broadcastWatchStatus(status) {
+  watchStatus = status;
+  const { BrowserWindow } = require("electron");
+  for (const win of BrowserWindow.getAllWindows()) {
+    try { win.webContents.send("watch:status-changed", status); } catch (_) {}
+  }
+}
+
+watchAdapter = createWatchAdapter({
+  env: process.env,
+  getSettings: () => _settingsController.get("watch"),
+  getSessionSnapshot: () => _state.buildSessionSnapshot(),
+  getCurrentState: () => _state.getCurrentState(),
+  getCurrentSvg: () => _state.getCurrentSvg(),
+  getPendingPermissions: () => pendingPermissions,
+  getDoNotDisturb: () => doNotDisturb,
+  resolvePermissionEntry: (...args) => resolvePermissionEntry(...args),
+  log: watchLog,
+  onStatusChanged: broadcastWatchStatus,
+});
+
+unsubscribeWatchSettings = _settingsController.subscribeKey("watch", () => {
+  if (!watchAdapter) return;
+  try { watchAdapter.applySettingsChange(); } catch (err) { watchLog(`settings apply failed: ${err && err.message}`); }
+});
+
 // ── Menu — delegated to src/menu.js ──
 //
 // Setters that previously assigned to module-level vars now route through
@@ -2419,6 +2465,9 @@ registerSettingsIpc({
   getAllAgents,
   getHardwareBuddyStatus: () => hardwareBuddyStatus || (hardwareBuddyAdapter && hardwareBuddyAdapter.getStatus
     ? hardwareBuddyAdapter.getStatus()
+    : null),
+  getWatchStatus: () => watchStatus || (watchAdapter && typeof watchAdapter.getStatus === "function"
+    ? watchAdapter.getStatus()
     : null),
   testHardwareBuddyApproval: () => sendHardwareBuddyTestApproval(),
   getQuickCommandPresets: () => hardwareBuddyAdapter && typeof hardwareBuddyAdapter.getQuickCommandPresets === "function"
@@ -2826,6 +2875,12 @@ if (!gotTheLock) {
       hardwareBuddyLog(`start failed: ${err && err.message ? err.message : err}`);
     }
 
+    try {
+      if (watchAdapter) watchAdapter.start();
+    } catch (err) {
+      watchLog(`start failed: ${err && err.message ? err.message : err}`);
+    }
+
     // Auto-install VS Code/Cursor terminal-focus extension
     try { installTerminalFocusExtension(); } catch (err) {
       console.warn("Clawd: failed to auto-install terminal-focus extension:", err.message);
@@ -2853,6 +2908,11 @@ if (!gotTheLock) {
       unsubscribeHardwareBuddySettings = null;
     }
     if (hardwareBuddyAdapter) hardwareBuddyAdapter.stop();
+    if (watchAdapter) watchAdapter.stop();
+    if (typeof unsubscribeWatchSettings === "function") {
+      unsubscribeWatchSettings();
+      unsubscribeWatchSettings = null;
+    }
     _perm.cleanup();
     _server.cleanup();
     _updateBubble.cleanup();

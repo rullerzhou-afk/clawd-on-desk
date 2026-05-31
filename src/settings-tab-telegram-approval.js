@@ -152,6 +152,7 @@
     // page can stay tidy as external approval channels grow.
     parent.appendChild(buildTelegramChannelCard());
     parent.appendChild(buildHardwareBuddyChannelCard());
+    parent.appendChild(buildWatchChannelCard());
   }
 
   // ── v0.9.0 migration card ──────────────────────────────────────────────────
@@ -354,6 +355,15 @@
   function buildHardwareBuddyChannelCard() {
     return root.ClawdSettingsHardwareBuddyPanel.build(coreRef, {
       id: "remote-approval.hardware-buddy",
+      activeTabId: "telegram-approval",
+      className: "remote-approval-channel-card",
+    });
+  }
+
+  function buildWatchChannelCard() {
+    if (!root.ClawdSettingsWatchPanel) return document.createElement("div");
+    return root.ClawdSettingsWatchPanel.build(coreRef, {
+      id: "remote-approval.watch",
       activeTabId: "telegram-approval",
       className: "remote-approval-channel-card",
     });

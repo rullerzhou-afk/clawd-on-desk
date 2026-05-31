@@ -102,9 +102,21 @@ scripts/*
 !scripts/export-agent-icons.js
 !scripts/verify-sidecar-binaries.js
 !scripts/fetch-sidecar-binaries.js
+!scripts/watch_buddy_bridge.py
+!scripts/sync-watch-svgs.sh
 
 # oh-my-cursor state
 .omc/
 
 # Cursor local config (MCP, rules from omc setup)
 .cursor/
+
+# JetBrains IDE
+.idea/
+
+# Android / Gradle build artifacts
+watch-app/**/build/
+watch-app/**/.gradle/
+*.apk
+*.aab
+local.properties

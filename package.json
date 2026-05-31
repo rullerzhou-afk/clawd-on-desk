@@ -152,6 +152,10 @@
       {
         "from": "bin/cc-connect-clawd",
         "to": "sidecars/cc-connect-clawd"
+      },
+      {
+        "from": "scripts/watch_buddy_bridge.py",
+        "to": "sidecars/watch-bridge/watch_buddy_bridge.py"
       }
     ],
     "publish": [

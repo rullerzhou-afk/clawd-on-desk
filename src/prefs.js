@@ -31,6 +31,10 @@ const {
   normalizeHardwareBuddySettings,
 } = require("./hardware-buddy-settings");
 const {
+  DEFAULT_WATCH_SETTINGS,
+  normalizeWatchSettings,
+} = require("./watch-settings");
+const {
   NOTIFICATION_DEFAULT_SECONDS,
   UPDATE_DEFAULT_SECONDS,
   PERMISSION_DEFAULT_SECONDS,
@@ -254,6 +258,11 @@ const SCHEMA = {
     type: "object",
     defaultFactory: () => ({ ...DEFAULT_HARDWARE_BUDDY_SETTINGS }),
     normalize: normalizeHardwareBuddySettings,
+  },
+  watch: {
+    type: "object",
+    defaultFactory: () => ({ ...DEFAULT_WATCH_SETTINGS }),
+    normalize: normalizeWatchSettings,
   },
   // Background update-check toggle. When true, the scheduler in updater.js
   // runs a quiet GitHub discovery on a 12-hour cycle (packaged builds only).

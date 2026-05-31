@@ -124,6 +124,7 @@ function registerSettingsIpc(options = {}) {
   const getAllAgents = requiredDependency(options.getAllAgents, "getAllAgents");
   const checkForUpdates = options.checkForUpdates || (() => {});
   const getHardwareBuddyStatus = options.getHardwareBuddyStatus || (() => null);
+  const getWatchStatus = options.getWatchStatus || (() => null);
   const testHardwareBuddyApproval = options.testHardwareBuddyApproval || (async () => ({
     status: "error",
     message: "Hardware Buddy test approval is unavailable",
@@ -423,6 +424,7 @@ function registerSettingsIpc(options = {}) {
 
   handle("settings:get-hardware-buddy-status", () => getHardwareBuddyStatus());
   handle("settings:test-hardware-buddy-approval", () => testHardwareBuddyApproval());
+  handle("settings:get-watch-status", () => getWatchStatus());
   handle("settings:get-quick-command-presets", () => getQuickCommandPresets());
   handle("settings:send-quick-command", (_event, payload) => sendQuickCommand(sanitizeQuickCommandPayload(payload)));
 

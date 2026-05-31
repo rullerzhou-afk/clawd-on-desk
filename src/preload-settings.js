@@ -28,6 +28,7 @@ const shortcutRecordKeyListeners = new Set();
 const remoteSshStatusListeners = new Set();
 const remoteSshProgressListeners = new Set();
 const hardwareBuddyStatusListeners = new Set();
+const watchStatusListeners = new Set();
 ipcRenderer.on("settings-changed", (_event, payload) => {
   for (const cb of listeners) {
     try { cb(payload); } catch (err) { console.warn("settings onChanged listener threw:", err); }
@@ -58,6 +59,11 @@ ipcRenderer.on("hardwareBuddy:status-changed", (_event, payload) => {
     try { cb(payload); } catch (err) { console.warn("hardwareBuddy status listener threw:", err); }
   }
 });
+ipcRenderer.on("watch:status-changed", (_event, payload) => {
+  for (const cb of watchStatusListeners) {
+    try { cb(payload); } catch (err) { console.warn("watch status listener threw:", err); }
+  }
+});
 
 contextBridge.exposeInMainWorld("settingsAPI", {
   getSnapshot: () => ipcRenderer.invoke("settings:get-snapshot"),
@@ -85,6 +91,7 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   checkForUpdates: () => ipcRenderer.invoke("settings:check-for-updates"),
   getHardwareBuddyStatus: () => ipcRenderer.invoke("settings:get-hardware-buddy-status"),
   testHardwareBuddyApproval: () => ipcRenderer.invoke("settings:test-hardware-buddy-approval"),
+  getWatchStatus: () => ipcRenderer.invoke("settings:get-watch-status"),
   getQuickCommandPresets: () => ipcRenderer.invoke("settings:get-quick-command-presets"),
   sendQuickCommand: (payload) => ipcRenderer.invoke("settings:send-quick-command", payload),
   openExternal: (url) => ipcRenderer.invoke("settings:open-external", url),
@@ -122,6 +129,11 @@ contextBridge.exposeInMainWorld("settingsAPI", {
     if (typeof cb !== "function") return () => {};
     hardwareBuddyStatusListeners.add(cb);
     return () => hardwareBuddyStatusListeners.delete(cb);
+  },
+  onWatchStatusChanged: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    watchStatusListeners.add(cb);
+    return () => watchStatusListeners.delete(cb);
   },
 });
 
