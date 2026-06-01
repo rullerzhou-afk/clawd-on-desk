@@ -33,6 +33,10 @@ describe("session HUD geometry", () => {
     assert.strictEqual(getHudWidth(false, true), constants.HUD_WIDTH_LABELS_COMPACT);
     assert.strictEqual(getHudWidth(true, false), constants.HUD_WIDTH);
     assert.strictEqual(getHudWidth(false, false), constants.HUD_WIDTH_COMPACT);
+    assert.strictEqual(
+      getHudWidth(true, true, true),
+      constants.HUD_WIDTH_LABELS + constants.HUD_CONTEXT_USAGE_WIDTH_BUMP
+    );
 
     const result = computeSessionHudBounds({
       hitRect: { left: 10, top: 80, right: 90, bottom: 160 },

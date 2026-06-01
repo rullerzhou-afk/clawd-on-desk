@@ -42,6 +42,26 @@ function normalizeAssistantLastOutput(value) {
     : text;
 }
 
+function normalizeContextUsage(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const used = Number(value.used);
+  if (!Number.isFinite(used) || used < 0) return null;
+
+  const out = { used };
+  const limit = Number(value.limit);
+  if (Number.isFinite(limit) && limit > 0) out.limit = limit;
+
+  const percent = Number(value.percent);
+  if (Number.isFinite(percent)) {
+    out.percent = Math.max(0, Math.min(100, Math.round(percent)));
+  } else if (out.limit) {
+    out.percent = Math.max(0, Math.min(100, Math.round((used / out.limit) * 100)));
+  }
+
+  if (value.source === "claude" || value.source === "codex") out.source = value.source;
+  return out;
+}
+
 function sendStateHealthResponse(res, options) {
   const body = JSON.stringify({ ok: true, app: CLAWD_SERVER_ID, port: options.getHookServerPort() });
   res.writeHead(200, {
@@ -120,6 +140,7 @@ function handleStatePost(req, res, options) {
       // "ignore + fall back" pattern used by cwd / agent_id above.
       const rawTitle = typeof data.session_title === "string" ? data.session_title.trim() : "";
       const sessionTitle = rawTitle || null;
+      const contextUsage = normalizeContextUsage(data.context_usage);
       const assistantLastOutput = normalizeAssistantLastOutput(data.assistant_last_output);
       const assistantLastOutputTruncated = data.assistant_last_output_truncated === true;
       const permissionSuspect = data.permission_suspect === true;
@@ -200,6 +221,7 @@ function handleStatePost(req, res, options) {
             codexSource,
             displayHint: display_svg,
             sessionTitle,
+            contextUsage,
             assistantLastOutput,
             assistantLastOutputTruncated,
             permissionSuspect,

@@ -145,6 +145,7 @@ describe("server-route-state POST", () => {
         codexSource: "vscode",
         displayHint: "display.svg",
         sessionTitle: "Work title",
+        contextUsage: null,
         assistantLastOutput: null,
         assistantLastOutputTruncated: false,
         permissionSuspect: true,
@@ -166,6 +167,35 @@ describe("server-route-state POST", () => {
     assert.strictEqual(res.statusCode, 200);
     assert.strictEqual(res.calls.updateSession[0][3].assistantLastOutput, "Done.\nsecret=abc123");
     assert.strictEqual(res.calls.updateSession[0][3].assistantLastOutputTruncated, true);
+  });
+
+  it("passes valid context_usage to updateSession", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "PreToolUse",
+      context_usage: { used: 1000, limit: 200000, percent: 1, source: "claude" },
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(res.calls.updateSession[0][3].contextUsage, {
+      used: 1000,
+      limit: 200000,
+      percent: 1,
+      source: "claude",
+    });
+  });
+
+  it("drops invalid context_usage without rejecting state", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "PreToolUse",
+      context_usage: { used: -1, limit: 0 },
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession[0][3].contextUsage, null);
   });
 
   it("marks missing agent_id as a defaulted Claude Code attribution", async () => {

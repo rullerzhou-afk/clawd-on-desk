@@ -13,6 +13,7 @@ const HUD_WIDTH = 240;
 const HUD_WIDTH_COMPACT = 190;
 const HUD_WIDTH_LABELS = 320;
 const HUD_WIDTH_LABELS_COMPACT = 260;
+const HUD_CONTEXT_USAGE_WIDTH_BUMP = 36;
 const HUD_ROW_HEIGHT = 28;
 const HUD_MAX_EXPANDED_ROWS = 3;
 const HUD_MAX_EXPANDED_ROWS_LABELS = 5;
@@ -224,9 +225,11 @@ function computeSessionHudBounds({ hitRect, anchorRect, workArea, width = HUD_WI
   };
 }
 
-function getHudWidth(showElapsed = true, showStateLabels = true) {
-  if (showStateLabels === false) return showElapsed === false ? HUD_WIDTH_COMPACT : HUD_WIDTH;
-  return showElapsed === false ? HUD_WIDTH_LABELS_COMPACT : HUD_WIDTH_LABELS;
+function getHudWidth(showElapsed = true, showStateLabels = true, showContextUsage = false) {
+  const base = showStateLabels === false
+    ? (showElapsed === false ? HUD_WIDTH_COMPACT : HUD_WIDTH)
+    : (showElapsed === false ? HUD_WIDTH_LABELS_COMPACT : HUD_WIDTH_LABELS);
+  return showContextUsage === true ? base + HUD_CONTEXT_USAGE_WIDTH_BUMP : base;
 }
 
 function deferMacFloatingVisibility(ctx, win) {
@@ -306,7 +309,11 @@ module.exports = function initSessionHud(ctx) {
       : { x: 0, y: 0, width: 1280, height: 800 };
     const layout = computeHudLayout(snapshot, { showStateLabels: ctx.sessionHudShowStateLabels !== false });
     const height = computeHudHeight(layout.rowCount);
-    const width = getHudWidth(ctx.sessionHudShowElapsed !== false, ctx.sessionHudShowStateLabels !== false);
+    const width = getHudWidth(
+      ctx.sessionHudShowElapsed !== false,
+      ctx.sessionHudShowStateLabels !== false,
+      ctx.sessionHudShowContextUsage !== false
+    );
     const computed = computeSessionHudBounds({ hitRect, anchorRect, workArea, width, height });
     return { hitRect, contentBounds: computed && computed.contentBounds };
   }
@@ -456,6 +463,7 @@ module.exports = function initSessionHud(ctx) {
       ...snapshot,
       hudShowStateLabels: ctx.sessionHudShowStateLabels !== false,
       hudShowElapsed: ctx.sessionHudShowElapsed !== false,
+      hudShowContextUsage: ctx.sessionHudShowContextUsage !== false,
       hudPinned: ctx.sessionHudPinned === true,
     });
   }
@@ -473,7 +481,11 @@ module.exports = function initSessionHud(ctx) {
 
     didFinishLoad = false;
     hudFlippedAbove = false;
-    const hudWidth = getHudWidth(ctx.sessionHudShowElapsed !== false, ctx.sessionHudShowStateLabels !== false);
+    const hudWidth = getHudWidth(
+      ctx.sessionHudShowElapsed !== false,
+      ctx.sessionHudShowStateLabels !== false,
+      ctx.sessionHudShowContextUsage !== false
+    );
     hudWindow = new BrowserWindow({
       parent: ctx.win,
       width: hudWidth + HUD_WINDOW_SHELL.left + HUD_WINDOW_SHELL.right,
@@ -542,7 +554,11 @@ module.exports = function initSessionHud(ctx) {
       : { x: 0, y: 0, width: 1280, height: 800 };
     const layout = computeHudLayout(snapshot, { showStateLabels: ctx.sessionHudShowStateLabels !== false });
     const height = computeHudHeight(layout.rowCount);
-    const width = getHudWidth(ctx.sessionHudShowElapsed !== false, ctx.sessionHudShowStateLabels !== false);
+    const width = getHudWidth(
+      ctx.sessionHudShowElapsed !== false,
+      ctx.sessionHudShowStateLabels !== false,
+      ctx.sessionHudShowContextUsage !== false
+    );
     lastHudHeight = height;
     return computeSessionHudBounds({ hitRect, anchorRect, workArea, width, height });
   }
@@ -655,6 +671,7 @@ module.exports.__test = {
     HUD_WIDTH_COMPACT,
     HUD_WIDTH_LABELS,
     HUD_WIDTH_LABELS_COMPACT,
+    HUD_CONTEXT_USAGE_WIDTH_BUMP,
     HUD_HEIGHT,
     HUD_ROW_HEIGHT,
     HUD_MAX_EXPANDED_ROWS,

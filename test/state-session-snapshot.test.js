@@ -336,6 +336,26 @@ describe("state-session-snapshot builder", () => {
     );
   });
 
+  it("includes contextUsage in snapshot entries", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["s1", session("working", {
+        contextUsage: {
+          used: 1000,
+          limit: 200000,
+          percent: 1,
+          source: "claude",
+        },
+      })],
+    ]), { statePriority: STATE_PRIORITY });
+
+    assert.deepStrictEqual(snapshot.sessions[0].contextUsage, {
+      used: 1000,
+      limit: 200000,
+      percent: 1,
+      source: "claude",
+    });
+  });
+
   it("marks detached ended idle sessions hidden from HUD only when cleanup is enabled and pid is dead", () => {
     const sessions = new Map([
       ["done-local", session("idle", {

@@ -38,6 +38,30 @@ function formatElapsed(ms) {
   return t("sessionHrAgo").replace("{n}", hr);
 }
 
+function formatTokenCount(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return "";
+  try {
+    return new Intl.NumberFormat(i18nPayload.lang || "en").format(Math.round(n));
+  } catch (_err) {
+    return String(Math.round(n));
+  }
+}
+
+function contextUsageText(session) {
+  const usage = session && session.contextUsage;
+  if (!usage || !Number.isFinite(Number(usage.used))) return "";
+  const used = formatTokenCount(usage.used);
+  if (Number.isFinite(Number(usage.limit))) {
+    const limit = formatTokenCount(usage.limit);
+    const percent = Number.isFinite(Number(usage.percent))
+      ? ` (${Math.max(0, Math.min(100, Math.round(Number(usage.percent))))}%)`
+      : "";
+    return `${t("dashboardContextUsage")}: ${used} / ${limit}${percent}`;
+  }
+  return t("dashboardContextUsageUnknownLimit").replace("{used}", used);
+}
+
 function badgeLabel(badge) {
   const key = {
     running: "sessionBadgeRunning",
@@ -211,6 +235,12 @@ function appendEvent(main, session, now) {
   ));
 }
 
+function appendContextUsage(main, session) {
+  const text = contextUsageText(session);
+  if (!text) return;
+  main.appendChild(createText("div", "context-usage-row", text));
+}
+
 function createIcon(session) {
   if (session.iconUrl) {
     const img = document.createElement("img");
@@ -269,6 +299,7 @@ function createCard(session, now) {
   appendMeta(main, session, now);
   appendPath(main, session);
   appendEvent(main, session, now);
+  appendContextUsage(main, session);
   card.appendChild(main);
 
   const actions = document.createElement("div");

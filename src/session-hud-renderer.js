@@ -5,7 +5,7 @@ const HUD_MAX_EXPANDED_ROWS_LABELS = 5;
 const HUD_TITLE_MAX_UNITS = 15;
 const RECENT_DONE_UNREAD_MS = 60 * 1000;
 
-let snapshot = { sessions: [], orderedIds: [], hudTotalNonIdle: 0, hudLastTitle: null, hudShowStateLabels: true, hudShowElapsed: true, hudPinned: false };
+let snapshot = { sessions: [], orderedIds: [], hudTotalNonIdle: 0, hudLastTitle: null, hudShowStateLabels: true, hudShowElapsed: true, hudShowContextUsage: true, hudPinned: false };
 let i18nPayload = { lang: "en", translations: {} };
 
 const unreadSessions = new Set();
@@ -36,6 +36,20 @@ function formatElapsed(ms) {
   if (min < 60) return t("sessionMinAgo").replace("{n}", min);
   const hr = Math.floor(min / 60);
   return t("sessionHrAgo").replace("{n}", hr);
+}
+
+function formatTokenCount(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return "";
+  if (n >= 1000000) {
+    const formatted = (n / 1000000).toFixed(n >= 10000000 ? 0 : 1);
+    return `${formatted.replace(/\.0$/, "")}m`;
+  }
+  if (n >= 1000) {
+    const formatted = (n / 1000).toFixed(n >= 10000 ? 0 : 1);
+    return `${formatted.replace(/\.0$/, "")}k`;
+  }
+  return String(Math.round(n));
 }
 
 function titleFor(session) {
@@ -121,6 +135,33 @@ function stateChipInfo(session) {
     return { label: t("sessionBadgeInterrupted"), cls: "chip-interrupted" };
   }
   return null;
+}
+
+function usageChipInfo(session) {
+  if (snapshot.hudShowContextUsage === false) return null;
+  const usage = session && session.contextUsage;
+  if (!usage || !Number.isFinite(Number(usage.used))) return null;
+  const usedLabel = formatTokenCount(usage.used);
+  const percentKnown = Number.isFinite(Number(usage.percent));
+  if (percentKnown) {
+    const percent = Math.max(0, Math.min(100, Math.round(Number(usage.percent))));
+    const hasLimit = Number.isFinite(Number(usage.limit));
+    return {
+      label: `${percent}%`,
+      cls: percent >= 90 ? "usage-hot" : (percent >= 75 ? "usage-warm" : "usage-neutral"),
+      title: hasLimit
+        ? t("sessionHudContextUsageTooltip")
+          .replace("{used}", usedLabel)
+          .replace("{limit}", formatTokenCount(usage.limit))
+          .replace("{percent}", percent)
+        : t("sessionHudContextUsageTooltipUnknownLimit").replace("{used}", usedLabel),
+    };
+  }
+  return {
+    label: usedLabel,
+    cls: "usage-neutral",
+    title: t("sessionHudContextUsageTooltipUnknownLimit").replace("{used}", usedLabel),
+  };
 }
 
 const BELL_SVG = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>`;
@@ -229,6 +270,16 @@ function createRowForSession(session, now) {
     const chip = document.createElement("span");
     chip.className = `state-chip ${chipInfo.cls}`;
     chip.textContent = chipInfo.label;
+    right.appendChild(chip);
+    hasRightContent = true;
+  }
+
+  const usageInfo = usageChipInfo(session);
+  if (usageInfo && usageInfo.label) {
+    const chip = document.createElement("span");
+    chip.className = `usage-chip ${usageInfo.cls}`;
+    chip.textContent = usageInfo.label;
+    chip.title = usageInfo.title;
     right.appendChild(chip);
     hasRightContent = true;
   }

@@ -187,6 +187,7 @@ function createSettingsEffectRouter(options = {}) {
       "sessionHudEnabled" in changes
       || "sessionHudShowStateLabels" in changes
       || "sessionHudShowElapsed" in changes
+      || "sessionHudShowContextUsage" in changes
     ) {
       try {
         syncSessionHudVisibility();

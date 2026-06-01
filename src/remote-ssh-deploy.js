@@ -46,6 +46,7 @@ const HOOK_FILES = [
   "server-config.js",
   "json-utils.js",
   "shared-process.js",
+  "context-usage.js",
   "clawd-hook.js",
   "install.js",
   "codex-hook.js",

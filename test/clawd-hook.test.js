@@ -262,6 +262,46 @@ describe("buildStateBody", () => {
     assert.strictEqual(body.tool_input_fingerprint, buildToolInputFingerprint(payload.tool_input));
   });
 
+  it("adds context_usage from transcript usage", () => {
+    const transcript = writeTmpJsonl([
+      {
+        type: "assistant",
+        message: {
+          model: "claude-sonnet-4-5",
+          usage: {
+            input_tokens: 1000,
+            output_tokens: 200,
+            cache_read_input_tokens: 3000,
+            cache_creation_input_tokens: 400,
+          },
+        },
+      },
+    ]);
+
+    const body = buildStateBody("PostToolUse", {
+      session_id: "s",
+      transcript_path: transcript,
+    }, mockResolve);
+
+    assert.deepStrictEqual(body.context_usage, {
+      used: 4400,
+      limit: 200000,
+      percent: 2,
+      source: "claude",
+    });
+  });
+
+  it("omits context_usage when transcript has no usage", () => {
+    const transcript = writeTmpJsonl([{ type: "user", message: { content: "hi" } }]);
+
+    const body = buildStateBody("PostToolUse", {
+      session_id: "s",
+      transcript_path: transcript,
+    }, mockResolve);
+
+    assert.ok(!("context_usage" in body));
+  });
+
   it("accepts camelCase tool_use_id aliases", () => {
     const body = buildStateBody("PreToolUse", {
       session_id: "s",
