@@ -85,6 +85,99 @@ describe("agent-runtime-main", () => {
     );
   });
 
+  it("lets JSONL token_count update official-hook Codex session metadata during suppression", () => {
+    let currentTime = 1000;
+    const instances = [];
+    const calls = [];
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const runtime = createAgentRuntimeMain({
+      now: () => currentTime,
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      isAgentEnabled: (agentId) => agentId === "codex",
+      updateSession: (...args) => calls.push(["update", ...args]),
+      clearCodexNotifyBubbles: (...args) => calls.push(["clear", ...args]),
+      codexSubagentClassifier: {},
+    });
+    const monitor = runtime.startCodexLogMonitor();
+
+    runtime.updateSessionFromServer("codex:abc", "working", "UserPromptSubmit", {
+      agentId: "codex",
+      hookSource: "codex-official",
+    });
+
+    monitor.emit("codex:abc", "idle", "event_msg:task_complete", {
+      cwd: "D:\\repo",
+      contextUsage: {
+        used: 49961,
+        limit: 258400,
+        percent: 19,
+        source: "codex",
+      },
+    });
+
+    assert.deepStrictEqual(calls, [
+      ["update", "codex:abc", "working", "UserPromptSubmit", {
+        agentId: "codex",
+        hookSource: "codex-official",
+      }],
+      ["update", "codex:abc", "idle", "event_msg:task_complete", {
+        cwd: "D:\\repo",
+        agentId: "codex",
+        sessionTitle: undefined,
+        contextUsage: {
+          used: 49961,
+          limit: 258400,
+          percent: 19,
+          source: "codex",
+        },
+        headless: false,
+        preserveState: true,
+      }],
+    ]);
+  });
+
+  it("handles JSONL token_count as metadata without clearing bubbles or changing state", () => {
+    const instances = [];
+    const calls = [];
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      isAgentEnabled: (agentId) => agentId === "codex",
+      updateSession: (...args) => calls.push(["update", ...args]),
+      clearCodexNotifyBubbles: (...args) => calls.push(["clear", ...args]),
+      codexSubagentClassifier: {},
+    });
+    const monitor = runtime.startCodexLogMonitor();
+
+    monitor.emit("codex:abc", "working", "event_msg:token_count", {
+      cwd: "D:\\repo",
+      contextUsage: {
+        used: 23959,
+        limit: 258400,
+        percent: 9,
+        source: "codex",
+      },
+    });
+
+    assert.deepStrictEqual(calls, [
+      ["update", "codex:abc", "working", "event_msg:token_count", {
+        cwd: "D:\\repo",
+        agentId: "codex",
+        sessionTitle: undefined,
+        contextUsage: {
+          used: 23959,
+          limit: 258400,
+          percent: 9,
+          source: "codex",
+        },
+        headless: false,
+        preserveState: true,
+      }],
+    ]);
+  });
+
   it("maps Codex JSONL monitor permission and state callbacks through the main runtime effects", () => {
     const instances = [];
     const calls = [];

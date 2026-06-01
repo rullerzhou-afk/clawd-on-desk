@@ -41,6 +41,46 @@ const ACTIVE_SESSION_WINDOW_MS = 5 * 60 * 1000;
 const BACKFILL_GRACE_MS = 5 * 1000;
 const BACKFILL_SNAPSHOT_STATES = new Set(["thinking", "working", "codex-permission"]);
 
+function finiteNonnegativeNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+function positiveNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function extractCodexContextUsage(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const info = payload.info && typeof payload.info === "object" ? payload.info : null;
+  const lastUsage = info && info.last_token_usage && typeof info.last_token_usage === "object"
+    ? info.last_token_usage
+    : null;
+  const used = finiteNonnegativeNumber(
+    (lastUsage && lastUsage.total_tokens)
+    ?? payload.total_tokens
+    ?? payload.tokens_used
+    ?? payload.input_tokens
+    ?? payload.context_tokens
+  );
+  if (used === null) return null;
+
+  const limit = positiveNumber(
+    (info && info.model_context_window)
+    ?? payload.model_context_window
+    ?? payload.context_window
+    ?? payload.limit
+    ?? payload.max_tokens
+  );
+  const out = { used, source: "codex" };
+  if (limit !== null) {
+    out.limit = limit;
+    out.percent = Math.max(0, Math.min(100, Math.round((used / limit) * 100)));
+  }
+  return out;
+}
+
 class CodexLogMonitor {
   /**
    * @param {object} agentConfig - codex.js config (logConfig + logEventMap)
@@ -308,6 +348,7 @@ class CodexLogMonitor {
         pendingApprovalDetail: null,
         assistantLastOutput: retired ? retired.assistantLastOutput || null : null,
         assistantLastOutputTruncated: retired ? retired.assistantLastOutputTruncated === true : false,
+        contextUsage: retired ? retired.contextUsage || null : null,
         // Backfill mode: only a file whose last write predates monitor
         // start (by more than BACKFILL_GRACE_MS) is treated as stale
         // history — we replay it silently to advance offset + pick up
@@ -387,7 +428,7 @@ class CodexLogMonitor {
     // storms on app restart from driving stale state transitions.
     if (obj && typeof obj.timestamp === "string") {
       const ts = Date.parse(obj.timestamp);
-      if (Number.isFinite(ts) && ts < this._startedAtMs - 1500) return;
+      if (!tracked.backfilling && Number.isFinite(ts) && ts < this._startedAtMs - 1500) return;
     }
 
     const assistantText = extractAssistantTextFromRecord(obj);
@@ -395,6 +436,17 @@ class CodexLogMonitor {
       const assistantOutput = clampAssistantOutputText(assistantText);
       tracked.assistantLastOutput = assistantOutput ? assistantOutput.text : null;
       tracked.assistantLastOutputTruncated = !!(assistantOutput && assistantOutput.truncated);
+    }
+
+    if (key === "event_msg:token_count") {
+      const contextUsage = extractCodexContextUsage(payload);
+      if (contextUsage) {
+        tracked.contextUsage = contextUsage;
+        if (!tracked.backfilling) {
+          this._emitStateChange(tracked, tracked.lastState || "idle", key);
+        }
+      }
+      return;
     }
 
     // Extract Codex-authored session summary (turn_context.summary).
@@ -668,6 +720,7 @@ class CodexLogMonitor {
       agentPid: tracked.agentPid || null,
       assistantLastOutput: tracked.assistantLastOutput || null,
       assistantLastOutputTruncated: tracked.assistantLastOutputTruncated === true,
+      contextUsage: tracked.contextUsage || null,
     });
     while (this._retiredTracked.size > MAX_RETIRED_TRACKED_FILES) {
       const oldest = this._retiredTracked.keys().next().value;
@@ -677,7 +730,12 @@ class CodexLogMonitor {
 
   _emitBackfillSnapshot(tracked) {
     const snapshotState = tracked.lastState;
-    if (!BACKFILL_SNAPSHOT_STATES.has(snapshotState)) return;
+    if (!BACKFILL_SNAPSHOT_STATES.has(snapshotState)) {
+      if (tracked.contextUsage) {
+        this._emitStateChange(tracked, "idle", "event_msg:token_count");
+      }
+      return;
+    }
     const extra = snapshotState === "codex-permission" && tracked.pendingApprovalDetail
       ? { permissionDetail: tracked.pendingApprovalDetail }
       : null;
@@ -697,6 +755,11 @@ class CodexLogMonitor {
       assistantLastOutput: tracked.assistantLastOutput,
       assistantLastOutputTruncated: tracked.assistantLastOutputTruncated === true,
     };
+  }
+
+  _withTrackedContextUsage(tracked, extra = null) {
+    if (!tracked || !tracked.contextUsage) return extra;
+    return { ...(extra || {}), contextUsage: tracked.contextUsage };
   }
 
   _isTrackedSubagent(tracked) {
@@ -731,7 +794,7 @@ class CodexLogMonitor {
       sessionTitle: tracked.sessionTitle,
       codexOriginator: tracked.codexOriginator || null,
       codexSource: tracked.codexSource || null,
-      ...(extra || {}),
+      ...this._withTrackedContextUsage(tracked, extra),
       headless: this._isTrackedSubagent(tracked)
         ? true
         : (extra && Object.prototype.hasOwnProperty.call(extra, "headless") ? extra.headless : undefined),

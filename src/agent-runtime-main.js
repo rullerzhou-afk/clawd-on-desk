@@ -3,6 +3,7 @@
 const DefaultCodexSubagentClassifier = require("../agents/codex-subagent-classifier");
 const {
   buildCodexMonitorUpdateOptions,
+  isCodexMonitorMetadataOnlyEvent,
   isCodexMonitorPermissionEvent,
 } = require("./codex-monitor-callback");
 
@@ -124,7 +125,30 @@ function createAgentRuntimeMain(options = {}) {
       const CodexLogMonitor = loadCodexLogMonitor();
       const codexAgent = loadCodexAgent();
       codexMonitor = new CodexLogMonitor(codexAgent, (sid, state, event, extra) => {
-        if (shouldSuppressCodexLogEvent(sid, state, event)) return;
+        if (isCodexMonitorMetadataOnlyEvent(event, extra)) {
+          const metadataOptions = buildCodexMonitorUpdateOptions(extra, {
+            includeHeadless: true,
+          });
+          if (metadataOptions.contextUsage) {
+            updateSession(sid, state, event, {
+              ...metadataOptions,
+              preserveState: true,
+            });
+          }
+          return;
+        }
+        if (shouldSuppressCodexLogEvent(sid, state, event)) {
+          const metadataOptions = buildCodexMonitorUpdateOptions(extra, {
+            includeHeadless: true,
+          });
+          if (metadataOptions.contextUsage) {
+            updateSession(sid, state, event, {
+              ...metadataOptions,
+              preserveState: true,
+            });
+          }
+          return;
+        }
         if (isCodexMonitorPermissionEvent(state)) {
           updateSession(sid, "notification", event, buildCodexMonitorUpdateOptions(extra, {
             includeHeadless: false,

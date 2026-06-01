@@ -5,6 +5,7 @@ const assert = require("node:assert");
 
 const {
   buildCodexMonitorUpdateOptions,
+  isCodexMonitorMetadataOnlyEvent,
   isCodexMonitorPermissionEvent,
 } = require("../src/codex-monitor-callback");
 
@@ -12,6 +13,22 @@ describe("Codex monitor callback helpers", () => {
   it("identifies JSONL permission events", () => {
     assert.strictEqual(isCodexMonitorPermissionEvent("codex-permission"), true);
     assert.strictEqual(isCodexMonitorPermissionEvent("working"), false);
+  });
+
+  it("identifies token_count context updates as metadata-only events", () => {
+    assert.strictEqual(
+      isCodexMonitorMetadataOnlyEvent("event_msg:token_count", {
+        contextUsage: { used: 23959, limit: 258400, percent: 9, source: "codex" },
+      }),
+      true
+    );
+    assert.strictEqual(isCodexMonitorMetadataOnlyEvent("event_msg:token_count", {}), false);
+    assert.strictEqual(
+      isCodexMonitorMetadataOnlyEvent("event_msg:task_complete", {
+        contextUsage: { used: 23959, source: "codex" },
+      }),
+      false
+    );
   });
 
   it("passes headless for normal monitor state updates", () => {
@@ -55,6 +72,41 @@ describe("Codex monitor callback helpers", () => {
       pidChain: [22, 11],
       codexOriginator: "Codex Desktop",
       codexSource: "vscode",
+      headless: false,
+    });
+  });
+
+  it("passes context usage from JSONL monitor updates", () => {
+    assert.deepStrictEqual(buildCodexMonitorUpdateOptions({
+      cwd: "/repo",
+      contextUsage: {
+        used: 24846,
+        limit: 258400,
+        percent: 10,
+        source: "codex",
+      },
+    }, { includeHeadless: true }), {
+      cwd: "/repo",
+      agentId: "codex",
+      sessionTitle: undefined,
+      contextUsage: {
+        used: 24846,
+        limit: 258400,
+        percent: 10,
+        source: "codex",
+      },
+      headless: false,
+    });
+  });
+
+  it("omits invalid context usage from JSONL monitor updates", () => {
+    assert.deepStrictEqual(buildCodexMonitorUpdateOptions({
+      cwd: "/repo",
+      contextUsage: { used: -1, limit: 0, source: "codex" },
+    }, { includeHeadless: true }), {
+      cwd: "/repo",
+      agentId: "codex",
+      sessionTitle: undefined,
       headless: false,
     });
   });

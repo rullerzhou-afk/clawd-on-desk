@@ -1406,6 +1406,34 @@ describe("updateSession()", () => {
     });
   });
 
+  it("updates contextUsage without changing state when preserveState is true", () => {
+    update(api, {
+      id: "codex:abc",
+      state: "working",
+      agentId: "codex",
+    });
+    api.updateSession("codex:abc", "idle", "event_msg:task_complete", {
+      agentId: "codex",
+      cwd: "/tmp",
+      preserveState: true,
+      contextUsage: {
+        used: 49961,
+        limit: 258400,
+        percent: 19,
+        source: "codex",
+      },
+    });
+
+    const session = api.sessions.get("codex:abc");
+    assert.strictEqual(session.state, "working");
+    assert.deepStrictEqual(session.contextUsage, {
+      used: 49961,
+      limit: 258400,
+      percent: 19,
+      source: "codex",
+    });
+  });
+
   it("trims whitespace on sessionTitle", () => {
     update(api, { id: "s1", state: "working", sessionTitle: "  Spaced  " });
     assert.strictEqual(api.sessions.get("s1").sessionTitle, "Spaced");

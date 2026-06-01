@@ -418,6 +418,127 @@ describe("CodexLogMonitor", () => {
     monitor.start();
   });
 
+  it("carries token_count context usage on the next mapped state update", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      '{"type":"event_msg","payload":{"type":"task_started"}}',
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: { total_tokens: 999999 },
+            last_token_usage: { total_tokens: 24846 },
+            model_context_window: 258400,
+          },
+        },
+      }),
+      '{"type":"event_msg","payload":{"type":"task_complete"}}',
+    ].join("\n") + "\n");
+
+    const config = makeConfig(tmpDir);
+    const events = [];
+    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+      events.push({ sid, state, event, extra });
+    });
+
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    assert.deepStrictEqual(events.map((entry) => entry.event), [
+      "session_meta",
+      "event_msg:task_started",
+      "event_msg:token_count",
+      "event_msg:task_complete",
+    ]);
+    assert.deepStrictEqual(events[2].extra.contextUsage, {
+      used: 24846,
+      limit: 258400,
+      percent: 10,
+      source: "codex",
+    });
+    assert.deepStrictEqual(events[3].extra.contextUsage, {
+      used: 24846,
+      limit: 258400,
+      percent: 10,
+      source: "codex",
+    });
+  });
+
+  it("does not treat cumulative Codex total_token_usage as context-window usage", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      '{"type":"event_msg","payload":{"type":"task_started"}}',
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: { total_tokens: 27799148 },
+            model_context_window: 258400,
+          },
+        },
+      }),
+      '{"type":"event_msg","payload":{"type":"task_complete"}}',
+    ].join("\n") + "\n");
+
+    const config = makeConfig(tmpDir);
+    const events = [];
+    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+      events.push({ sid, state, event, extra });
+    });
+
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    assert.strictEqual(events.length, 3);
+    assert.deepStrictEqual(events.map((entry) => entry.event), [
+      "session_meta",
+      "event_msg:task_started",
+      "event_msg:task_complete",
+    ]);
+    assert.strictEqual(events[2].extra.contextUsage, undefined);
+  });
+
+  it("emits token_count context usage even when token_count is the final live record", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      '{"type":"event_msg","payload":{"type":"task_started"}}',
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: { total_tokens: 8118607 },
+            last_token_usage: { total_tokens: 23959 },
+            model_context_window: 258400,
+          },
+        },
+      }),
+    ].join("\n") + "\n");
+
+    const config = makeConfig(tmpDir);
+    const events = [];
+    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+      events.push({ sid, state, event, extra });
+    });
+
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    assert.deepStrictEqual(events.map((entry) => entry.event), [
+      "session_meta",
+      "event_msg:task_started",
+      "event_msg:token_count",
+    ]);
+    assert.deepStrictEqual(events[2].extra.contextUsage, {
+      used: 23959,
+      limit: 258400,
+      percent: 9,
+      source: "codex",
+    });
+  });
+
   it("should skip old files (>5min mtime)", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, '{"type":"session_meta","payload":{"cwd":"/tmp"}}\n');
@@ -630,7 +751,7 @@ describe("CodexLogMonitor", () => {
     const config = makeConfig(tmpDir);
     const events = [];
     monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
-      events.push({ sid, state, event, cwd: extra.cwd });
+      events.push({ sid, state, event, cwd: extra.cwd, contextUsage: extra.contextUsage });
     });
 
     monitor._tracked.set(testFile, {
@@ -643,6 +764,7 @@ describe("CodexLogMonitor", () => {
       hadToolUse: false,
       isSubagent: false,
       agentPid: null,
+      contextUsage: { used: 1200, limit: 12000, percent: 10, source: "codex" },
       lastEventTime: 1,
     });
     for (let i = 0; i < 49; i++) {
@@ -665,7 +787,98 @@ describe("CodexLogMonitor", () => {
       state: "thinking",
       event: "event_msg:task_started",
       cwd: "/tmp",
+      contextUsage: { used: 1200, limit: 12000, percent: 10, source: "codex" },
     }]);
+  });
+
+  it("includes token_count context usage in backfill snapshots", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const oldTimestamp = new Date(Date.now() - 60 * 1000).toISOString();
+    fs.writeFileSync(testFile, [
+      JSON.stringify({
+        timestamp: oldTimestamp,
+        type: "session_meta",
+        payload: { cwd: "/tmp" },
+      }),
+      JSON.stringify({
+        timestamp: oldTimestamp,
+        type: "event_msg",
+        payload: { type: "task_started" },
+      }),
+      JSON.stringify({
+        timestamp: oldTimestamp,
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: { total_tokens: 50000 },
+            model_context_window: 200000,
+          },
+        },
+      }),
+    ].join("\n") + "\n");
+    const oldTime = new Date(Date.now() - 60 * 1000);
+    fs.utimesSync(testFile, oldTime, oldTime);
+
+    const config = makeConfig(tmpDir);
+    const events = [];
+    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+      events.push({ sid, state, event, extra });
+    });
+
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].state, "thinking");
+    assert.deepStrictEqual(events[0].extra.contextUsage, {
+      used: 50000,
+      limit: 200000,
+      percent: 25,
+      source: "codex",
+    });
+  });
+
+  it("emits token_count metadata when backfill has context usage but no sustained state", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const oldTimestamp = new Date(Date.now() - 60 * 1000).toISOString();
+    fs.writeFileSync(testFile, [
+      JSON.stringify({
+        timestamp: oldTimestamp,
+        type: "session_meta",
+        payload: { cwd: "/tmp" },
+      }),
+      JSON.stringify({
+        timestamp: oldTimestamp,
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: { total_tokens: 64027 },
+            model_context_window: 258400,
+          },
+        },
+      }),
+    ].join("\n") + "\n");
+    const oldTime = new Date(Date.now() - 60 * 1000);
+    fs.utimesSync(testFile, oldTime, oldTime);
+
+    const config = makeConfig(tmpDir);
+    const events = [];
+    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+      events.push({ sid, state, event, extra });
+    });
+
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].state, "idle");
+    assert.strictEqual(events[0].event, "event_msg:token_count");
+    assert.deepStrictEqual(events[0].extra.contextUsage, {
+      used: 64027,
+      limit: 258400,
+      percent: 25,
+      source: "codex",
+    });
   });
 
   it("should handle corrupted JSON lines gracefully", (_, done) => {
