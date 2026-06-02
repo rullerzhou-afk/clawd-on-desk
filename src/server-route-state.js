@@ -166,15 +166,39 @@ function handleStatePost(req, res, options) {
             const behavior = perm.isQwenCode ? "no-decision" : "deny";
             ctx.resolvePermissionEntry(perm, behavior, "User answered in terminal");
           }
-          // Stale elicitation sweep: AskUserQuestion is a blocking tool
-          // call, so any forward progress in the same session means the
-          // user already answered in the terminal.  The exact-match above
-          // may miss the elicitation entry when the /state PostToolUse
-          // carries a different tool_input fingerprint from the original
-          // /permission request, or when tool_use_id is absent.
+          // Stale blocking-tool sweep: both AskUserQuestion (elicitation) and
+          // ExitPlanMode (plan review) are blocking tool calls. Any forward
+          // progress in the same session means the user already answered in the
+          // terminal. The exact-match above may miss the entry when tool_use_id
+          // or tool_input_fingerprint diverge between /permission and /state.
           for (const stale of [...ctx.pendingPermissions]) {
-            if (stale !== perm && stale.isElicitation && stale.res && stale.sessionId === sid) {
+            if (
+              stale !== perm
+              && stale.res
+              && stale.sessionId === sid
+              && (stale.isElicitation || stale.toolName === "ExitPlanMode")
+            ) {
               ctx.resolvePermissionEntry(stale, "deny", "User answered in terminal");
+            }
+          }
+        }
+        // Stale ExitPlanMode sweep for events outside the PostToolUse/Stop block:
+        // UserPromptSubmit = user typed feedback in plan TUI ("Tell Claude what to
+        // change"); PreToolUse(non-ExitPlanMode) = Claude started executing after
+        // plan approval; SessionEnd = session torn down.
+        if (
+          event === "UserPromptSubmit"
+          || event === "SessionEnd"
+          || (event === "PreToolUse" && toolName !== "ExitPlanMode")
+        ) {
+          for (const stale of [...ctx.pendingPermissions]) {
+            if (
+              stale
+              && stale.res
+              && stale.sessionId === sid
+              && stale.toolName === "ExitPlanMode"
+            ) {
+              ctx.resolvePermissionEntry(stale, "deny", "Plan dialog dismissed in terminal");
             }
           }
         }

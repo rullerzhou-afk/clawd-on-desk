@@ -250,3 +250,112 @@ describe("server-route-state POST", () => {
     assert.strictEqual(res.body, "bad json");
   });
 });
+
+describe("server-route-state ExitPlanMode stale sweep", () => {
+  it("clears stale ExitPlanMode on UserPromptSubmit for same session", async () => {
+    const stalePerm = { res: {}, sessionId: "sid", toolName: "ExitPlanMode" };
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "UserPromptSubmit",
+    }), {
+      ctx: { pendingPermissions: [stalePerm] },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.resolved.length, 1);
+    assert.strictEqual(res.calls.resolved[0].perm, stalePerm);
+    assert.strictEqual(res.calls.resolved[0].behavior, "deny");
+    assert.strictEqual(res.calls.resolved[0].message, "Plan dialog dismissed in terminal");
+  });
+
+  it("does NOT clear ExitPlanMode for a different session", async () => {
+    const stalePerm = { res: {}, sessionId: "other-sid", toolName: "ExitPlanMode" };
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "UserPromptSubmit",
+    }), {
+      ctx: { pendingPermissions: [stalePerm] },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.resolved.length, 0);
+  });
+
+  it("does NOT trigger sweep on PreToolUse(ExitPlanMode)", async () => {
+    const stalePerm = { res: {}, sessionId: "sid", toolName: "ExitPlanMode" };
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "PreToolUse",
+      tool_name: "ExitPlanMode",
+    }), {
+      ctx: { pendingPermissions: [stalePerm] },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.resolved.length, 0);
+  });
+
+  it("triggers sweep on PreToolUse with a different tool", async () => {
+    const stalePerm = { res: {}, sessionId: "sid", toolName: "ExitPlanMode" };
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "PreToolUse",
+      tool_name: "Bash",
+    }), {
+      ctx: { pendingPermissions: [stalePerm] },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.resolved.length, 1);
+    assert.strictEqual(res.calls.resolved[0].perm, stalePerm);
+  });
+
+  it("does NOT clear non-ExitPlanMode pending permissions", async () => {
+    const otherPerm = { res: {}, sessionId: "sid", toolName: "Bash" };
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "UserPromptSubmit",
+    }), {
+      ctx: { pendingPermissions: [otherPerm] },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.resolved.length, 0);
+  });
+
+  it("skips entries with no res (already cleaned up)", async () => {
+    const stalePerm = { res: null, sessionId: "sid", toolName: "ExitPlanMode" };
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "Stop",
+    }), {
+      ctx: { pendingPermissions: [stalePerm] },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.resolved.length, 0);
+  });
+
+  it("clears stale ExitPlanMode on PostToolUse(ExitPlanMode) as fallback", async () => {
+    const stalePerm = { res: {}, sessionId: "sid", toolName: "ExitPlanMode" };
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "PostToolUse",
+      tool_name: "ExitPlanMode",
+    }), {
+      ctx: { pendingPermissions: [stalePerm] },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.resolved.length, 1);
+    assert.strictEqual(res.calls.resolved[0].perm, stalePerm);
+    assert.strictEqual(res.calls.resolved[0].message, "User answered in terminal");
+  });
+});

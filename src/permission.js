@@ -593,10 +593,12 @@ function showPermissionBubble(permEntry) {
     ...(isLinux ? { type: LINUX_WINDOW_TYPE } : {}),
     ...(isMac ? { type: "panel" } : {}),
     // Elicitation needs keyboard focus for the Other/textarea input path.
+    // ExitPlanMode needs keyboard focus for the "Tell Claude what to change"
+    // textarea feedback path.
     // Permission prompts stay non-focusable so they don't steal focus from
     // CC's terminal (which would trigger false "User answered in terminal"
     // denials — see bub.focus() note below).
-    focusable: !!permEntry.isElicitation,
+    focusable: !!(permEntry.isElicitation || permEntry.toolName === "ExitPlanMode"),
     webPreferences: {
       preload: path.join(__dirname, "preload-bubble.js"),
       nodeIntegration: false,
@@ -1430,6 +1432,26 @@ function handleDecide(event, behavior) {
   if (perm.isElicitation && behavior && typeof behavior === "object" && behavior.type === "elicitation-submit") {
     perm.resolvedUpdatedInput = buildElicitationUpdatedInput(perm.toolInput, behavior.answers);
     resolvePermissionEntry(perm, "allow");
+    return;
+  }
+  // Plan feedback: "Tell Claude what to change" textarea submitted from the
+  // ExitPlanMode bubble. Sends deny + reason so CC feeds the feedback to
+  // Claude as a system message for plan revision.
+  if (
+    perm.toolName === "ExitPlanMode"
+    && behavior
+    && typeof behavior === "object"
+    && behavior.type === "plan-feedback"
+  ) {
+    const feedback = typeof behavior.feedback === "string"
+      ? behavior.feedback.trim()
+      : "";
+    if (!feedback) {
+      // Empty feedback → treat as "go to terminal"
+      dismissPermissionForTerminal(perm);
+      return;
+    }
+    resolvePermissionEntry(perm, "deny", feedback);
     return;
   }
   // opencode "Always" button — map to reply="always" via resolvePermissionEntry
