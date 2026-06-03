@@ -56,6 +56,11 @@ function validateOpencodeEntry(entry, options = {}) {
 // a line-leading `export` that isn't `export default`, after stripping block
 // comments so commented-out examples don't trip it. (Line comments start with
 // `//`, so a leading `export` keyword can never sit inside one.)
+//
+// Known limitation: a backtick template literal whose own line begins with
+// `export` would false-positive. That is safe by direction -- it produces an
+// extra warning, never a missed failure -- and does not occur in the plugin
+// entry. Fully fixing it would require a JS parser, which isn't worth it here.
 function hasNamedExport(source) {
   if (typeof source !== "string" || !source) return false;
   const stripped = source.replace(/\/\*[\s\S]*?\*\//g, "");
