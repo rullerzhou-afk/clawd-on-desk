@@ -72,10 +72,10 @@ describe("opencode plugin session ids", () => {
     const start = { type: "session.created", properties: { sessionID: "ses_same" } };
     const end = { type: "session.deleted", properties: { sessionID: "ses_same" } };
 
-    const startMapped = mod.__test.translateEvent(start);
-    const endMapped = mod.__test.translateEvent(end);
-    const startBody = mod.__test.buildStateBody(startMapped.state, startMapped.event, "ses_same");
-    const endBody = mod.__test.buildStateBody(endMapped.state, endMapped.event, "ses_same");
+    const startMapped = mod.default.__test.translateEvent(start);
+    const endMapped = mod.default.__test.translateEvent(end);
+    const startBody = mod.default.__test.buildStateBody(startMapped.state, startMapped.event, "ses_same");
+    const endBody = mod.default.__test.buildStateBody(endMapped.state, endMapped.event, "ses_same");
 
     assert.strictEqual(startBody.session_id, "opencode:ses_same");
     assert.strictEqual(endBody.session_id, "opencode:ses_same");
@@ -89,8 +89,8 @@ describe("opencode plugin headless (parentID-based child detection)", () => {
 
   beforeEach(async () => {
     pluginMod = await loadPluginModule();
-    pluginMod.__test._sessionParentById.clear();
-    pluginMod.__test._rootSessionId = null;
+    pluginMod.default.__test._sessionParentById.clear();
+    pluginMod.default.__test._rootSessionId = null;
   });
 
   // Use case 1: getEventParentSessionId extracts parentID from event.properties.info
@@ -172,22 +172,22 @@ describe("opencode plugin headless (parentID-based child detection)", () => {
   // (both raw and prefixed sessionId forms)
   it("buildStateBody adds headless: true for child sessions (raw and prefixed id)", async () => {
     // Simulate what the event handler does: store normalized keys
-    pluginMod.__test._sessionParentById.set("opencode:ses_child", "opencode:ses_root");
+    pluginMod.default.__test._sessionParentById.set("opencode:ses_child", "opencode:ses_root");
 
     // Raw id passed to buildStateBody → isChildSessionId normalizes → match
-    const bodyRaw = pluginMod.__test.buildStateBody("working", "PreToolUse", "ses_child");
+    const bodyRaw = pluginMod.default.__test.buildStateBody("working", "PreToolUse", "ses_child");
     assert.strictEqual(bodyRaw.headless, true);
     assert.strictEqual(bodyRaw.session_id, "opencode:ses_child");
 
     // Prefixed id passed to buildStateBody → isChildSessionId normalizes → match
-    const bodyPrefixed = pluginMod.__test.buildStateBody("working", "PreToolUse", "opencode:ses_child");
+    const bodyPrefixed = pluginMod.default.__test.buildStateBody("working", "PreToolUse", "opencode:ses_child");
     assert.strictEqual(bodyPrefixed.headless, true);
     assert.strictEqual(bodyPrefixed.session_id, "opencode:ses_child");
   });
 
   // Use case 4: buildStateBody does NOT add headless for root sessions
   it("buildStateBody does not add headless for root sessions", async () => {
-    const body = pluginMod.__test.buildStateBody("working", "PreToolUse", "ses_root");
+    const body = pluginMod.default.__test.buildStateBody("working", "PreToolUse", "ses_root");
     assert.strictEqual(body.headless, undefined);
     assert.strictEqual(body.session_id, "opencode:ses_root");
   });
@@ -195,19 +195,19 @@ describe("opencode plugin headless (parentID-based child detection)", () => {
   // Use case 5: standalone session (not in _sessionParentById, not root)
   // must NOT be marked headless — no heuristic fallback
   it("buildStateBody does not add headless for standalone sessions without parentID", async () => {
-    pluginMod.__test._rootSessionId = "opencode:ses_root";
+    pluginMod.default.__test._rootSessionId = "opencode:ses_root";
 
     // ses_other is not in _sessionParentById → NOT headless (no heuristic)
-    const body = pluginMod.__test.buildStateBody("working", "PreToolUse", "ses_other");
+    const body = pluginMod.default.__test.buildStateBody("working", "PreToolUse", "ses_other");
     assert.strictEqual(body.headless, undefined);
     assert.strictEqual(body.session_id, "opencode:ses_other");
   });
 
   // Use case 6: translateEvent maps child session.idle → SessionEnd
   it("translateEvent maps child session.idle to SessionEnd when in _sessionParentById", async () => {
-    pluginMod.__test._sessionParentById.set("opencode:ses_child", "opencode:ses_root");
+    pluginMod.default.__test._sessionParentById.set("opencode:ses_child", "opencode:ses_root");
 
-    const result = pluginMod.__test.translateEvent({
+    const result = pluginMod.default.__test.translateEvent({
       type: "session.idle",
       properties: { sessionID: "ses_child" },
     });
@@ -217,7 +217,7 @@ describe("opencode plugin headless (parentID-based child detection)", () => {
 
   // Use case 7: translateEvent maps root session.idle → Stop (attention)
   it("translateEvent maps root session.idle to Stop (attention)", async () => {
-    const result = pluginMod.__test.translateEvent({
+    const result = pluginMod.default.__test.translateEvent({
       type: "session.idle",
       properties: { sessionID: "ses_root" },
     });
@@ -227,10 +227,10 @@ describe("opencode plugin headless (parentID-based child detection)", () => {
 
   // Use case 8: standalone session.idle (not in map) → Stop, NOT SessionEnd
   it("translateEvent maps standalone session.idle to Stop (no heuristic fallback)", async () => {
-    pluginMod.__test._rootSessionId = "opencode:ses_root";
+    pluginMod.default.__test._rootSessionId = "opencode:ses_root";
 
     // ses_other is not in _sessionParentById → Stop (not SessionEnd)
-    const result = pluginMod.__test.translateEvent({
+    const result = pluginMod.default.__test.translateEvent({
       type: "session.idle",
       properties: { sessionID: "ses_other" },
     });
@@ -312,15 +312,15 @@ describe("opencode plugin headless (parentID-based child detection)", () => {
 
   // Use case 13: full flow — session.created with parentID → headless body + SessionEnd idle
   it("full flow: session.created with parentID produces headless body and SessionEnd idle", async () => {
-    pluginMod.__test._sessionParentById.set("opencode:ses_child", "opencode:ses_root");
+    pluginMod.default.__test._sessionParentById.set("opencode:ses_child", "opencode:ses_root");
 
     // buildStateBody for child → headless
-    const body = pluginMod.__test.buildStateBody("working", "PreToolUse", "ses_child");
+    const body = pluginMod.default.__test.buildStateBody("working", "PreToolUse", "ses_child");
     assert.strictEqual(body.headless, true);
     assert.strictEqual(body.session_id, "opencode:ses_child");
 
     // translateEvent for child session.idle → SessionEnd
-    const idleResult = pluginMod.__test.translateEvent({
+    const idleResult = pluginMod.default.__test.translateEvent({
       type: "session.idle",
       properties: { sessionID: "ses_child" },
     });
@@ -328,7 +328,7 @@ describe("opencode plugin headless (parentID-based child detection)", () => {
     assert.strictEqual(idleResult.event, "SessionEnd");
 
     // translateEvent for root session.idle → Stop
-    const rootIdleResult = pluginMod.__test.translateEvent({
+    const rootIdleResult = pluginMod.default.__test.translateEvent({
       type: "session.idle",
       properties: { sessionID: "ses_root" },
     });

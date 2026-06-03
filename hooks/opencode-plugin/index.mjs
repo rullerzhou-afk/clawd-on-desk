@@ -453,7 +453,12 @@ function translateEvent(event) {
   }
 }
 
-export const __test = {
+// Test-only internals. Attached to the default export at the bottom of this
+// file — NOT a named export. opencode's plugin loader runs getLegacyPlugins()
+// over Object.values(mod) and throws "Plugin export is not a function" on ANY
+// non-function module export, which silently kills the whole plugin. The module
+// must therefore expose exactly one export: the default function. See #413.
+const __testInternals = {
   buildStateBody,
   translateEvent,
   get _sessionParentById() { return _sessionParentById; },
@@ -603,7 +608,7 @@ function startBridge() {
 }
 
 // Plugin entrypoint (opencode loads this via default export).
-export default async (ctx) => {
+const plugin = async (ctx) => {
   resetDebugLog();
   _serverUrl = normalizeServerUrl(ctx && ctx.serverUrl);
   _ctxClient = ctx && ctx.client ? ctx.client : null;
@@ -694,3 +699,11 @@ export default async (ctx) => {
     },
   };
 };
+
+// Expose test internals on the default-exported function rather than as a
+// separate named export — see the note on __testInternals and issue #413.
+// Object.values(mod) must contain only functions, or opencode's legacy plugin
+// loader throws "Plugin export is not a function" and the plugin never registers.
+plugin.__test = __testInternals;
+
+export default plugin;
