@@ -84,6 +84,20 @@ describe("opencode plugin session ids", () => {
   });
 });
 
+describe("opencode plugin module shape (#413 regression guard)", () => {
+  it("exposes exactly one export: the default plugin function", async () => {
+    const mod = await loadPluginModule();
+    // opencode's getLegacyPlugins() iterates Object.values(mod) and throws
+    // "Plugin export is not a function" on any non-function export. Any extra
+    // named export (a test helper, a constant, anything) silently kills the
+    // whole plugin — that was #413. Test internals must ride on the default
+    // function (mod.default.__test), never as a separate module export.
+    assert.deepStrictEqual(Object.keys(mod), ["default"]);
+    assert.strictEqual(typeof mod.default, "function");
+    assert.deepStrictEqual(Object.values(mod).map((v) => typeof v), ["function"]);
+  });
+});
+
 describe("opencode plugin headless (parentID-based child detection)", () => {
   let pluginMod;
 

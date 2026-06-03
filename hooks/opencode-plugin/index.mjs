@@ -704,6 +704,7 @@ const plugin = async (ctx) => {
 // separate named export — see the note on __testInternals and issue #413.
 // Object.values(mod) must contain only functions, or opencode's legacy plugin
 // loader throws "Plugin export is not a function" and the plugin never registers.
-plugin.__test = __testInternals;
+// Non-enumerable: it's a private test backdoor, never part of the plugin surface.
+Object.defineProperty(plugin, "__test", { value: __testInternals });
 
 export default plugin;
