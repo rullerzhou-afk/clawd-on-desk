@@ -89,6 +89,7 @@ describe("state-session-snapshot builder", () => {
         updatedAt: 1000,
         cwd: "/tmp/old-project",
         sessionTitle: "Fix login",
+        editor: "code",
         platform: "webui",
         model: "gpt-5.4",
         provider: "openai",
@@ -132,6 +133,7 @@ describe("state-session-snapshot builder", () => {
     assert.strictEqual(oldWorking.platform, "webui");
     assert.strictEqual(oldWorking.model, "gpt-5.4");
     assert.strictEqual(oldWorking.provider, "openai");
+    assert.strictEqual(oldWorking.editor, "code");
     assert.strictEqual(oldWorking.sessionTitle, "Fix login");
     assert.strictEqual(oldWorking.displayTitle, "Fix login");
     assert.deepStrictEqual(oldWorking.lastEvent, {

@@ -63,6 +63,15 @@ describe("settings agent order", () => {
     ]);
   });
 
+  it("places Qoder in the collapsible group right after codebuddy", () => {
+    const sorted = sortAgentMetadataForSettings([
+      { id: "qoder", name: "Qoder", capabilities: { notificationHook: true } },
+      { id: "codebuddy", name: "CodeBuddy", capabilities: { permissionApproval: true, notificationHook: true } },
+      { id: "claude-code", name: "Claude Code", capabilities: { permissionApproval: true } },
+    ]);
+    assert.deepStrictEqual(sorted.map((agent) => agent.id), ["claude-code", "codebuddy", "qoder"]);
+  });
+
   it("keeps unknown agents in their group but appends them after known priorities by name", () => {
     const sorted = sortAgentMetadataForSettings([
       { id: "zeta-hook", name: "Zeta Hook", capabilities: { notificationHook: true } },

@@ -99,6 +99,60 @@ describe("buildStateBody", () => {
     assert.strictEqual(body.state, "attention");
   });
 
+  it("maps PostCompact (auto / unspecified) to thinking, not attention (#406)", () => {
+    assert.strictEqual(
+      buildStateBody("PostCompact", { session_id: "s" }, mockResolve).state,
+      "thinking"
+    );
+    assert.strictEqual(
+      buildStateBody("PostCompact", { session_id: "s", trigger: "auto" }, mockResolve).state,
+      "thinking"
+    );
+  });
+
+  it("maps PostCompact (manual /compact) to idle (#406)", () => {
+    const body = buildStateBody(
+      "PostCompact",
+      { session_id: "s", trigger: "manual" },
+      mockResolve
+    );
+    assert.strictEqual(body.state, "idle");
+  });
+
+  it("forwards background_tasks / session_crons counts on Stop (#406)", () => {
+    const body = buildStateBody(
+      "Stop",
+      { session_id: "s", background_tasks: [{}, {}], session_crons: [{}] },
+      mockResolve
+    );
+    assert.strictEqual(body.background_tasks_count, 2);
+    assert.strictEqual(body.session_crons_count, 1);
+  });
+
+  it("forwards only counts — never background task command/description text (#406)", () => {
+    const body = buildStateBody(
+      "Stop",
+      { session_id: "s", background_tasks: [{ command: "npm run secret-dev", description: "do not leak" }] },
+      mockResolve
+    );
+    assert.strictEqual(body.background_tasks_count, 1);
+    const serialized = JSON.stringify(body);
+    assert.ok(!serialized.includes("npm run secret-dev"), "task command must not leak");
+    assert.ok(!serialized.includes("do not leak"), "task description must not leak");
+  });
+
+  it("forwards stop_hook_active on Stop (#406)", () => {
+    const body = buildStateBody("Stop", { session_id: "s", stop_hook_active: true }, mockResolve);
+    assert.strictEqual(body.stop_hook_active, true);
+  });
+
+  it("omits completion-gate fields on a plain Stop with no background work (#406)", () => {
+    const body = buildStateBody("Stop", { session_id: "s" }, mockResolve);
+    assert.ok(!("background_tasks_count" in body));
+    assert.ok(!("session_crons_count" in body));
+    assert.ok(!("stop_hook_active" in body));
+  });
+
   it("maps SubagentStart to juggling state", () => {
     const body = buildStateBody("SubagentStart", { session_id: "s" }, mockResolve);
     assert.strictEqual(body.state, "juggling");

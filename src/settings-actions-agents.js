@@ -23,6 +23,7 @@ const AUTO_REPAIRABLE_AGENT_IDS = new Set([
   "qwen-code",
   "opencode",
   "hermes",
+  "qoder",
 ]);
 
 // setAgentFlag is atomic single-agent, single-flag toggle.

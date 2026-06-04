@@ -1,0 +1,14 @@
+{
+  "name": "Clawd Mobile",
+  "short_name": "Clawd",
+  "description": "Monitor Claude Code sessions from your phone",
+  "start_url": "/mobile/",
+  "display": "standalone",
+  "background_color": "#111318",
+  "theme_color": "#111318",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "icons/icon-256.png", "sizes": "256x256", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

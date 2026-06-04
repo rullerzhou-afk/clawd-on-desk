@@ -168,7 +168,7 @@ Mini 状态映射：
 - Codex CLI 以 official hooks 为主、JSONL 轮询为 fallback；WebSearch / compaction / abort 等 hook 未覆盖事件仍可能有轮询延迟
 - Copilot CLI 自动同步 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`；`disableAllHooks: true` 时 doctor warning 且不挂 Fix 按钮
 - Gemini 无权限气泡，除非未来提供兼容的阻塞式审批协议；Cursor 权限走 stdout；Kiro 没有 global hooks；opencode 权限只能走 event hook + bridge
-- opencode 子会话会短暂出现在 Sessions 菜单里
+- opencode child / subtask session 只有在 `session.created` 明确带 `event.properties.info.parentID` 时才会被标记为 headless；这类后台 child 不进入 HUD / focus / 多会话 fanout
 - 进程存活检测依赖进程名匹配，非标准进程名可能漏检
 
 ## Do Not Fix This Again

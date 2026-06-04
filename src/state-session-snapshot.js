@@ -28,7 +28,9 @@ const EVENT_LABEL_KEYS = {
   "stale-cleanup": "eventLabelStaleCleanup",
 };
 
-const DONE_EVENTS = new Set(["Stop", "PostCompact", "event_msg:task_complete"]);
+// PostCompact intentionally excluded (#406): compaction finishing is not turn
+// completion, so it must not raise the "done" badge.
+const DONE_EVENTS = new Set(["Stop", "event_msg:task_complete"]);
 
 function isDoneEvent(event) {
   return DONE_EVENTS.has(event);
@@ -188,6 +190,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     updatedAt: sessionUpdatedAt(session),
     sourcePid: (session && session.sourcePid) || null,
     wtHwnd: (session && session.wtHwnd) || null,
+    editor: (session && session.editor) || null,
     canFocus: focusTarget.canFocus === true,
     focusTarget: focusTarget.type ? { type: focusTarget.type, url: focusTarget.url || null } : null,
     host: (session && session.host) || null,

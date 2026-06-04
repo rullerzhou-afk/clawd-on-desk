@@ -85,6 +85,46 @@ describe("agent-runtime-main", () => {
     );
   });
 
+  it("captures Ghostty terminal id for foreground session-start events", () => {
+    const updates = [];
+    const focusUpdates = [];
+    const captures = [];
+    const runtime = createAgentRuntimeMain({
+      updateSession: (...args) => updates.push(args),
+      getStateRuntime: () => ({
+        updateSessionFocusMetadata: (...args) => focusUpdates.push(args),
+      }),
+      captureGhosttyTerminalId: (request, callback) => {
+        captures.push(request);
+        callback("ghostty-term-42");
+        return true;
+      },
+      codexSubagentClassifier: {},
+    });
+
+    runtime.updateSessionFromServer("sid", "thinking", "UserPromptSubmit", {
+      agentId: "claude-code",
+      sourcePid: 1234,
+      cwd: "/repo",
+    });
+    runtime.updateSessionFromServer("remote", "thinking", "UserPromptSubmit", {
+      agentId: "claude-code",
+      sourcePid: 1235,
+      host: "remote-box",
+    });
+    runtime.updateSessionFromServer("tool", "working", "PreToolUse", {
+      agentId: "claude-code",
+      sourcePid: 1236,
+    });
+
+    assert.deepStrictEqual(updates.map((call) => call[0]), ["sid", "remote", "tool"]);
+    assert.deepStrictEqual(captures, [{ sourcePid: 1234, cwd: "/repo" }]);
+    assert.deepStrictEqual(focusUpdates, [["sid", {
+      sourcePid: 1234,
+      ghosttyTerminalId: "ghostty-term-42",
+    }]]);
+  });
+
   it("maps Codex JSONL monitor permission and state callbacks through the main runtime effects", () => {
     const instances = [];
     const calls = [];
@@ -236,5 +276,181 @@ describe("agent-runtime-main", () => {
       ["resolve"],
       ["setState", "idle", "svg:idle"],
     ]);
+  });
+
+  it("rescues a stuck local Codex turn with JSONL task_complete while suppressing other covered events", () => {
+    const sessions = new Map();
+    const runtime = createAgentRuntimeMain({
+      codexSubagentClassifier: {},
+      getStateRuntime: () => ({ sessions }),
+    });
+
+    // Official hooks were active this turn, but the official Stop never arrived,
+    // so the session is still shown as working-like.
+    runtime.markCodexOfficialHookSession("codex:s1");
+    sessions.set("codex:s1", { agentId: "codex", state: "working" });
+
+    // task_complete from JSONL is allowed through to close the turn (attention
+    // when the turn used tools, idle when it did not).
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:s1", "attention", "event_msg:task_complete"),
+      false
+    );
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:s1", "idle", "event_msg:task_complete"),
+      false
+    );
+
+    // Every other covered JSONL event stays suppressed under recent official hooks.
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:s1", "working", "event_msg:task_started"),
+      true
+    );
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:s1", "attention", "event_msg:exec_command_end"),
+      true
+    );
+  });
+
+  it("treats every working-like state as a rescuable local Codex turn", () => {
+    const sessions = new Map();
+    const runtime = createAgentRuntimeMain({
+      codexSubagentClassifier: {},
+      getStateRuntime: () => ({ sessions }),
+    });
+    runtime.markCodexOfficialHookSession("codex:s1");
+
+    for (const workingLike of ["working", "thinking", "juggling"]) {
+      sessions.set("codex:s1", { agentId: "codex", state: workingLike });
+      assert.equal(
+        runtime.shouldSuppressCodexLogEvent("codex:s1", "idle", "event_msg:task_complete"),
+        false,
+        `expected ${workingLike} session to allow the JSONL completion fallback`
+      );
+    }
+  });
+
+  it("keeps suppressing JSONL task_complete once the official Stop has idled the session", () => {
+    const sessions = new Map();
+    const runtime = createAgentRuntimeMain({
+      codexSubagentClassifier: {},
+      getStateRuntime: () => ({ sessions }),
+    });
+    runtime.markCodexOfficialHookSession("codex:s1");
+
+    // Official Stop already closed the turn → no longer working-like.
+    sessions.set("codex:s1", { agentId: "codex", state: "idle" });
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:s1", "attention", "event_msg:task_complete"),
+      true
+    );
+
+    // A session that has moved on to a fresh non-working state is not rescued either.
+    sessions.set("codex:s1", { agentId: "codex", state: "attention" });
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:s1", "idle", "event_msg:task_complete"),
+      true
+    );
+  });
+
+  it("does not apply the JSONL completion fallback to remote or headless Codex sessions", () => {
+    const sessions = new Map();
+    const runtime = createAgentRuntimeMain({
+      codexSubagentClassifier: {},
+      getStateRuntime: () => ({ sessions }),
+    });
+    runtime.markCodexOfficialHookSession("codex:remote");
+    runtime.markCodexOfficialHookSession("codex:headless");
+
+    sessions.set("codex:remote", { agentId: "codex", state: "working", host: "ssh:example" });
+    sessions.set("codex:headless", { agentId: "codex", state: "working", headless: true });
+
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:remote", "idle", "event_msg:task_complete"),
+      true
+    );
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:headless", "attention", "event_msg:task_complete"),
+      true
+    );
+  });
+
+  it("only rescues known local Codex sessions, and never suppresses without recent official hooks", () => {
+    const sessions = new Map();
+    const runtime = createAgentRuntimeMain({
+      codexSubagentClassifier: {},
+      getStateRuntime: () => ({ sessions }),
+    });
+    runtime.markCodexOfficialHookSession("codex:s1");
+
+    // Recent official hook, but the state runtime has no entry for the session.
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:s1", "idle", "event_msg:task_complete"),
+      true
+    );
+
+    // Recent official hook, but the session belongs to a different agent.
+    sessions.set("codex:s1", { agentId: "claude-code", state: "working" });
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:s1", "idle", "event_msg:task_complete"),
+      true
+    );
+
+    // No official hook seen for this session: JSONL is the only completion source,
+    // so it must not be suppressed regardless of working-like state.
+    sessions.set("codex:s2", { agentId: "codex", state: "working" });
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:s2", "idle", "event_msg:task_complete"),
+      false
+    );
+  });
+
+  it("lets the JSONL monitor close a stuck local Codex turn, then suppresses the duplicate", () => {
+    const instances = [];
+    const calls = [];
+    const sessions = new Map();
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      codexSubagentClassifier: {},
+      isAgentEnabled: (agentId) => agentId === "codex",
+      getStateRuntime: () => ({ sessions }),
+      updateSession: (...args) => calls.push(["update", ...args]),
+      showCodexNotifyBubble: (...args) => calls.push(["notify", ...args]),
+      clearCodexNotifyBubbles: (...args) => calls.push(["clear", ...args]),
+    });
+
+    const monitor = runtime.startCodexLogMonitor();
+
+    // Recent official hook activity + a still-working local Codex session whose
+    // official Stop never arrived.
+    runtime.markCodexOfficialHookSession("codex:s1");
+    sessions.set("codex:s1", { agentId: "codex", state: "working" });
+
+    monitor.emit("codex:s1", "idle", "event_msg:task_complete", {
+      cwd: "D:\\repo",
+      sessionTitle: "Codex turn",
+    });
+
+    assert.deepStrictEqual(calls, [
+      ["clear", "codex:s1", "codex-state-transition:idle"],
+      ["update", "codex:s1", "idle", "event_msg:task_complete", {
+        cwd: "D:\\repo",
+        agentId: "codex",
+        sessionTitle: "Codex turn",
+        headless: false,
+      }],
+    ]);
+
+    // The fallback idled the turn; a duplicate JSONL task_complete is now dropped
+    // so there is no double done/celebration.
+    calls.length = 0;
+    sessions.set("codex:s1", { agentId: "codex", state: "idle" });
+    monitor.emit("codex:s1", "idle", "event_msg:task_complete", {
+      cwd: "D:\\repo",
+      sessionTitle: "Codex turn",
+    });
+    assert.deepStrictEqual(calls, []);
   });
 });

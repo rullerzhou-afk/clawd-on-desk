@@ -9,6 +9,7 @@ function buildSettingsAgentOrderExports() {
     "qwen-code",
     "opencode",
     "codebuddy",
+    "qoder",
   ];
 
   const NON_COLLAPSIBLE_AGENT_PRIORITY = [

@@ -55,6 +55,41 @@ function pathExists(filePath) {
   }
 }
 
+function discoverHermesProfileHomes(hermesHome) {
+  const profilesDir = path.join(hermesHome, "profiles");
+  let entries = [];
+  try {
+    entries = fs.readdirSync(profilesDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const homes = [];
+  for (const entry of entries) {
+    if (!entry || !entry.isDirectory()) continue;
+    const profileHome = path.join(profilesDir, entry.name);
+    if (!pathExists(path.join(profileHome, "config.yaml"))) continue;
+    homes.push(profileHome);
+  }
+  homes.sort((a, b) => a.localeCompare(b));
+  return homes;
+}
+
+function hermesHomesForSync(options = {}) {
+  const hermesHome = resolveHermesHome(options);
+  const homes = [hermesHome];
+  if (options.syncProfiles === false) return homes;
+
+  const seen = new Set(homes.map((home) => path.resolve(home)));
+  for (const profileHome of discoverHermesProfileHomes(hermesHome)) {
+    const resolved = path.resolve(profileHome);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    homes.push(resolved);
+  }
+  return homes;
+}
+
 function hermesCommandCandidates(options = {}, hermesHome = resolveHermesHome(options)) {
   const env = options.env || process.env;
   const platform = options.platform || process.platform;
@@ -216,51 +251,114 @@ function runHermesCli(args, options = {}) {
 
 function registerHermesPlugin(options = {}) {
   const hermesHome = resolveHermesHome(options);
-  const pluginDir = options.pluginDir || path.join(hermesHome, "plugins", PLUGIN_ID);
-  const copied = copyManagedPluginFiles({
-    baseDir: options.baseDir,
-    sourcePluginDir: options.sourcePluginDir,
-    pluginDir,
-  });
+  const syncHomes = options.pluginDir ? [hermesHome] : hermesHomesForSync({ ...options, hermesHome });
+  const primaryCommand = resolveHermesCommand({ ...options, hermesHome });
+  const results = [];
+  let firstError = null;
+  let installed = 0;
+  let updated = 0;
+  let skipped = 0;
+  let primaryResult = null;
 
-  const enableResult = runHermesCli(["plugins", "enable", PLUGIN_ID], {
-    ...options,
-    hermesHome,
-  });
-  const enableCommand = enableResult.displayCommand
-    || formatHermesCommand(resolveHermesCommand({ ...options, hermesHome }) || "hermes", ["plugins", "enable", PLUGIN_ID]);
+  for (const targetHome of syncHomes) {
+    const pluginDir = options.pluginDir && targetHome === hermesHome
+      ? options.pluginDir
+      : path.join(targetHome, "plugins", PLUGIN_ID);
+    const copied = copyManagedPluginFiles({
+      baseDir: options.baseDir,
+      sourcePluginDir: options.sourcePluginDir,
+      pluginDir,
+    });
+    installed += copied.installed;
+    updated += copied.updated;
+    skipped += copied.skipped;
+
+    const enableResult = runHermesCli(["plugins", "enable", PLUGIN_ID], {
+      ...options,
+      hermesHome: targetHome,
+      // Profile homes do not contain their own Hermes venv. Reuse the root
+      // CLI command and only swap HERMES_HOME so Hermes writes that profile's
+      // plugins.enabled allow-list.
+      hermesCommand: options.hermesCommand || primaryCommand,
+    });
+    const enableCommand = enableResult.displayCommand
+      || formatHermesCommand(resolveHermesCommand({ ...options, hermesHome: targetHome }) || "hermes", ["plugins", "enable", PLUGIN_ID]);
+
+    const base = {
+      ...copied,
+      pluginDir,
+      hermesHome: targetHome,
+      enableCommand,
+      reason: null,
+      skipped: copied.skipped,
+    };
+
+    let entry;
+    if (!enableResult.ok) {
+      const reason = enableResult.unavailable ? "hermes-cli-unavailable" : "hermes-cli-enable-failed";
+      entry = {
+        ...base,
+        status: "error",
+        reason,
+        message: enableResult.unavailable
+          ? `Hermes plugin files were installed, but Hermes CLI was not found. Run: ${enableCommand}`
+          : `Hermes plugin files were installed, but enabling failed: ${enableResult.message}`,
+      };
+      if (!firstError) firstError = entry;
+    } else {
+      entry = {
+        ...base,
+        status: "ok",
+        message: copied.installed || copied.updated ? "Hermes plugin installed" : "Hermes plugin already installed",
+      };
+    }
+    results.push(entry);
+    if (targetHome === hermesHome) primaryResult = entry;
+  }
 
   const base = {
-    ...copied,
-    pluginDir,
+    ...(primaryResult || {}),
+    installed,
+    updated,
+    skipped,
     hermesHome,
-    enableCommand,
-    reason: null,
-    skipped: copied.skipped,
+    pluginDir: options.pluginDir || path.join(hermesHome, "plugins", PLUGIN_ID),
+    profileResults: results,
   };
 
-  if (!enableResult.ok) {
-    const reason = enableResult.unavailable ? "hermes-cli-unavailable" : "hermes-cli-enable-failed";
+  if (firstError) {
+    const profileErrors = results.filter((entry) => entry.status === "error");
+    if (primaryResult && primaryResult.status === "ok") {
+      return {
+        ...base,
+        status: "ok",
+        profileStatus: "partial",
+        profileErrorCount: profileErrors.length,
+        profileWarning: firstError.message,
+        message: installed || updated
+          ? "Hermes plugin installed; some profiles failed to enable"
+          : "Hermes plugin already installed; some profiles failed to enable",
+      };
+    }
     return {
       ...base,
       status: "error",
-      reason,
-      message: enableResult.unavailable
-        ? `Hermes plugin files were installed, but Hermes CLI was not found. Run: ${enableCommand}`
-        : `Hermes plugin files were installed, but enabling failed: ${enableResult.message}`,
+      reason: firstError.reason,
+      message: firstError.message,
     };
   }
 
   if (!options.silent) {
-    console.log(`Clawd Hermes plugin -> ${pluginDir}`);
-    console.log(`  Installed: ${copied.installed}, updated: ${copied.updated}, skipped: ${copied.skipped}`);
+    console.log(`Clawd Hermes plugin -> ${base.pluginDir}`);
+    console.log(`  Installed: ${installed}, updated: ${updated}, skipped: ${skipped}`);
+    if (results.length > 1) console.log(`  Profiles synced: ${results.length - 1}`);
     console.log("  Enabled: clawd-on-desk");
   }
 
   return {
     ...base,
     status: "ok",
-    message: copied.installed || copied.updated ? "Hermes plugin installed" : "Hermes plugin already installed",
+    message: installed || updated ? "Hermes plugin installed" : "Hermes plugin already installed",
   };
 }
 
@@ -325,7 +423,9 @@ module.exports = {
   MANAGED_PLUGIN_FILES,
   PLUGIN_ID,
   copyManagedPluginFiles,
+  discoverHermesProfileHomes,
   formatHermesCommand,
+  hermesHomesForSync,
   isHermesInstalled,
   registerHermesPlugin,
   resolveHermesCommand,

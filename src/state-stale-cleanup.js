@@ -5,11 +5,6 @@ const WORKING_STALE_MS = 300000;
 const DETACHED_IDLE_STALE_MS = 30000;
 const CODEX_LOCAL_WORKING_STALE_FLOOR_MS = 20 * 60 * 1000;
 
-// Hard ceiling for sessions held back by requiresCompletionAck — beyond this
-// we delete the session even if the user never clicked anything. Private
-// constant; tests inject `options.unackedMaxAgeMs` if they need to override.
-const UNACKED_SESSION_MAX_AGE_MS = 86_400_000;
-
 function isWorkingLikeState(state) {
   return state === "working" || state === "juggling" || state === "thinking";
 }
@@ -54,34 +49,24 @@ function getStaleSessionDecision(session, options = {}) {
     return { action: "delete", reason: "agent-exit" };
   }
 
-  // GLOBAL reference time hoisted to the top: ack-pending guard and stale
-  // branches both consume Math.max(updatedAt, ackedAt). Without this hoist,
-  // an ack-then-natural-stale path would revert to raw updatedAt the moment
-  // the flag clears, deleting on the next 10s tick.
+  // GLOBAL reference time: the stale branches consume Math.max(updatedAt,
+  // ackedAt) so a freshly-acked session restarts its idle countdown from the
+  // ack instant instead of its (possibly ancient) last updatedAt.
   const referenceTs = Math.max(
     Number(session.updatedAt) || 0,
     Number(session.ackedAt) || 0
   );
   const age = now - referenceTs;
 
-  // requiresCompletionAck holds the session out of stale cleanup until the
-  // user acknowledges, OR until the hard ceiling fires. Order matters:
-  // agent-exit above still wins (a dead process is dead). The ack-pending
-  // guard runs BEFORE the detached-cleanup branch — once a session has the
-  // flag set, the detached sweep cannot reach it either (the whole point of
-  // the flag is "hold this session until user sees it").
-  if (session.requiresCompletionAck === true) {
-    const cap = Number.isFinite(options.unackedMaxAgeMs)
-      ? options.unackedMaxAgeMs
-      : UNACKED_SESSION_MAX_AGE_MS;
-    if (age <= cap) {
-      return { action: null, reason: "ack-pending" };
-    }
-    // Explicit delete at the cap. With sessionStaleMs=0 the branch below is
-    // skipped, and a `done`-state session isn't working-like either, so
-    // without an explicit delete here the session would leak forever.
-    return { action: "delete", reason: "ack-expired" };
-  }
+  // NOTE: requiresCompletionAck does NOT hold a session out of stale cleanup.
+  // The completion notification (e.g. Telegram push) already fires once at the
+  // completion instant, so an unacknowledged remote session has already been
+  // surfaced — it does not need to linger past the user's configured session
+  // timeout to be "seen". The `done` badge (deriveSessionBadge) keeps the
+  // session visually distinct while it waits out the normal timeout, then it
+  // deletes like any other idle remote session. With sessionStaleMs=0 the
+  // session is kept forever, matching a normal idle session. agent-exit above
+  // still wins (a dead process is dead).
 
   const deriveSessionBadge = options.deriveSessionBadge;
   const shouldAutoClearDetachedSession = options.shouldAutoClearDetachedSession;

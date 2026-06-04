@@ -3,6 +3,7 @@
 // This file mocks process.platform while loading src/focus; keep those mocks contained here.
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
+const { EventEmitter } = require("node:events");
 
 function loadFocusWithMock(options = {}) {
   const cpKey = require.resolve("child_process");
@@ -130,11 +131,18 @@ describe("Windows terminal focus", () => {
     const { initFocus, cleanup } = loadFocusWithMock();
     try {
       const focus = initFocus({});
-      const cmd = focus.__test.makeFocusCmd(1234, ["repo"]);
+      const cmd = focus.__test.makeFocusCmd(1234, ["repo"], null, null, "tok-1");
       const helperScript = focus.__test.PS_FOCUS_ADDTYPE;
 
       assert.match(cmd, /Write-ClawdFocusResult/);
+      assert.match(cmd, /\$focusToken = 'tok-1'/);
+      assert.match(cmd, /\$selectedTargetHwnd = \[IntPtr\]::Zero/);
+      assert.match(cmd, /GetForegroundWindow\(\)/);
+      assert.match(cmd, /Start-Sleep -Milliseconds 25/);
       assert.match(helperScript, /__CLAWD_FOCUS_RESULT__/);
+      assert.match(helperScript, /targetHwnd/);
+      assert.match(helperScript, /foregroundHwnd/);
+      assert.match(helperScript, /confirmed/);
       assert.doesNotMatch(cmd, /Add-Content/);
       assert.doesNotMatch(helperScript, /Add-Content/);
       assert.doesNotMatch(cmd, /focus-debug\.log/);
@@ -252,6 +260,117 @@ describe("Windows terminal focus", () => {
       focus.__test.handleFocusHelperCompleteOutput("noise\n__CLAWD_FOCUS_RESULT__ parent-direct\n");
 
       assert.match(logs.join("\n"), /focus result branch=windows-helper reason=parent-direct/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("confirms foreground only for positive reasons with matching HWNDs", () => {
+    const { initFocus, cleanup } = loadFocusWithMock();
+    try {
+      const focus = initFocus({});
+      const { confirmForeground } = focus.__test;
+
+      assert.equal(confirmForeground(
+        { reason: "parent-direct", targetHwnd: "1001", foregroundHwnd: "1001" },
+        { hwnd: "1001" }
+      ), true);
+      assert.equal(confirmForeground(
+        { reason: "parent-direct", targetHwnd: "1001", foregroundHwnd: "2002" },
+        { hwnd: "1001" }
+      ), false);
+      assert.equal(confirmForeground(
+        { reason: "wt-title-ambiguous", targetHwnd: "1001", foregroundHwnd: "1001" },
+        { hwnd: "1001" }
+      ), false);
+      assert.equal(confirmForeground(
+        { reason: "wt-hwnd-from-hook", targetHwnd: "3003", foregroundHwnd: "3003" },
+        { type: "windows-terminal", hwnd: "3003" }
+      ), false);
+      assert.equal(confirmForeground(
+        { reason: "wt-parent-pid-window", targetHwnd: "4004", foregroundHwnd: "4004" },
+        { type: "pid-window", hwnd: "4004" }
+      ), false);
+      assert.equal(confirmForeground(
+        { reason: "wt-title-match", targetHwnd: "5005", foregroundHwnd: "5005" },
+        { type: "windows-terminal", hwnd: "5005" }
+      ), true);
+      assert.equal(confirmForeground(
+        { reason: "wt-parent-title-match", targetHwnd: "6006", foregroundHwnd: "6006" },
+        { type: "windows-terminal", hwnd: "6006" }
+      ), true);
+      assert.equal(confirmForeground(
+        { reason: "parent-direct", targetHwnd: "7007", foregroundHwnd: null },
+        { hwnd: "7007" }
+      ), false);
+      assert.equal(confirmForeground(
+        { reason: "parent-direct", targetHwnd: null, foregroundHwnd: "8008" },
+        { hwnd: null }
+      ), false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("correlates concurrent Windows helper results by token", async () => {
+    const writes = [];
+    const logs = [];
+    const stdout = new EventEmitter();
+    stdout.setEncoding = () => {};
+    stdout.unref = () => {};
+    const { initFocus, cleanup } = loadFocusWithMock({
+      spawn: () => ({
+        pid: 9999,
+        stdin: {
+          writable: true,
+          write: (chunk) => writes.push(String(chunk)),
+          on() {},
+        },
+        stdout,
+        on() {},
+        unref() {},
+        kill() {},
+      }),
+    });
+
+    try {
+      const focus = initFocus({ focusLog: (msg) => logs.push(msg) });
+      focus.initFocusHelper();
+      writes.length = 0;
+
+      const first = focus.focusTerminalWindow({
+        sourcePid: 1111,
+        cwd: "D:\\repo-a",
+        sessionId: "session-a",
+        agentId: "claude-code",
+        requestSource: "telegram-direct-send",
+      });
+      const second = focus.focusTerminalWindow({
+        sourcePid: 2222,
+        cwd: "D:\\repo-b",
+        sessionId: "session-b",
+        agentId: "claude-code",
+        requestSource: "telegram-direct-send",
+      });
+
+      assert.equal(writes.length, 2);
+      const tokenA = writes[0].match(/\$focusToken = '([^']+)'/)[1];
+      const tokenB = writes[1].match(/\$focusToken = '([^']+)'/)[1];
+      assert.notEqual(tokenA, tokenB);
+
+      stdout.emit("data", `__CLAWD_FOCUS_RESULT__ {"token":"${tokenB}","reason":"parent-direct","targetHwnd":"222","foregroundHwnd":"222","confirmed":true,"status":"confirmed"}\n`);
+      const secondResult = await second;
+      assert.equal(secondResult.token, tokenB);
+      assert.equal(secondResult.confirmed, true);
+      assert.equal(secondResult.targetHwnd, "222");
+
+      stdout.emit("data", `__CLAWD_FOCUS_RESULT__ {"token":"${tokenA}","reason":"wt-title-ambiguous","targetHwnd":"111","foregroundHwnd":"111","confirmed":true,"status":"confirmed"}\n`);
+      const firstResult = await first;
+      assert.equal(firstResult.token, tokenA);
+      assert.equal(firstResult.confirmed, false);
+      assert.equal(firstResult.reason, "wt-title-ambiguous");
+      assert.match(logs.join("\n"), new RegExp(`token=${tokenB}`));
+      assert.match(logs.join("\n"), new RegExp(`token=${tokenA}`));
     } finally {
       cleanup();
     }

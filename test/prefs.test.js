@@ -73,7 +73,7 @@ describe("prefs.getDefaults", () => {
 
   it("seeds all known agents as enabled", () => {
     const d = prefs.getDefaults();
-    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "antigravity-cli", "codebuddy", "kiro-cli", "kimi-cli", "qwen-code", "opencode", "pi", "openclaw", "hermes"]) {
+    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "antigravity-cli", "codebuddy", "kiro-cli", "kimi-cli", "qwen-code", "opencode", "pi", "openclaw", "hermes", "qoder"]) {
       assert.strictEqual(d.agents[id].enabled, true, `${id} should default enabled`);
     }
   });
@@ -81,25 +81,20 @@ describe("prefs.getDefaults", () => {
   it("seeds permission-capable agents with permissionsEnabled=true", () => {
     const d = prefs.getDefaults();
     // State-only integrations intentionally excluded — no bubble.
-    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "codebuddy", "kiro-cli", "kimi-cli", "qwen-code", "opencode"]) {
+    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "codebuddy", "kiro-cli", "kimi-cli", "qwen-code", "opencode", "hermes"]) {
       assert.strictEqual(
         d.agents[id].permissionsEnabled,
         true,
         `${id} should default permissionsEnabled`
       );
     }
-    for (const id of ["antigravity-cli", "pi", "openclaw"]) {
+    for (const id of ["antigravity-cli", "pi", "openclaw", "qoder"]) {
       assert.strictEqual(
         d.agents[id].permissionsEnabled,
         false,
         `${id} is state-only, permissionsEnabled must default to false`
       );
     }
-    assert.strictEqual(
-      Object.prototype.hasOwnProperty.call(d.agents.hermes, "permissionsEnabled"),
-      false,
-      "hermes should not expose a dead permissionsEnabled switch"
-    );
   });
 
   it("defaults OpenClaw permission bubbles off", () => {
@@ -107,6 +102,13 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.agents.openclaw.enabled, true);
     assert.strictEqual(d.agents.openclaw.permissionsEnabled, false);
     assert.strictEqual(d.agents.openclaw.notificationHookEnabled, true);
+  });
+
+  it("defaults Qoder permission bubbles off (state-only)", () => {
+    const d = prefs.getDefaults();
+    assert.strictEqual(d.agents.qoder.enabled, true);
+    assert.strictEqual(d.agents.qoder.permissionsEnabled, false);
+    assert.strictEqual(d.agents.qoder.notificationHookEnabled, true);
   });
 
   it("defaults Pi permission bubbles off", () => {
@@ -365,13 +367,13 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.agents["claude-code"].permissionsEnabled, true);
   });
 
-  it("normalizes agents: strips Hermes permission/notification flags until implemented", () => {
+  it("normalizes agents: preserves Hermes permission/notification flags", () => {
     const v = prefs.validate({
       agents: {
         hermes: { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       },
     });
-    assert.deepStrictEqual(v.agents.hermes, { enabled: true });
+    assert.deepStrictEqual(v.agents.hermes, { enabled: true, permissionsEnabled: true, notificationHookEnabled: true });
   });
 
   it("normalizes agents: preserves Antigravity permission flag but strips notification flag", () => {
@@ -436,18 +438,13 @@ describe("prefs.validate", () => {
 
   it("seeds all known agents with notificationHookEnabled=true", () => {
     const d = prefs.getDefaults();
-    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "codebuddy", "kiro-cli", "kimi-cli", "qwen-code", "opencode", "pi", "openclaw"]) {
+    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "codebuddy", "kiro-cli", "kimi-cli", "qwen-code", "opencode", "pi", "openclaw", "hermes", "qoder"]) {
       assert.strictEqual(
         d.agents[id].notificationHookEnabled,
         true,
         `${id} should default notificationHookEnabled`
       );
     }
-    assert.strictEqual(
-      Object.prototype.hasOwnProperty.call(d.agents.hermes, "notificationHookEnabled"),
-      false,
-      "hermes should not expose a dead notificationHookEnabled switch"
-    );
     assert.strictEqual(
       Object.prototype.hasOwnProperty.call(d.agents["antigravity-cli"], "notificationHookEnabled"),
       false,

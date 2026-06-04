@@ -79,6 +79,11 @@ describe("detectRunningAgentProcesses() agent coverage", () => {
     assert.match(seenScript, /'agy\.exe'/);
     assert.match(seenScript, /'kimi\.exe'/);
     assert.match(seenScript, /'pi\.exe'/);
+    assert.match(seenScript, /'qodercli\.exe'/);
+    assert.match(seenScript, /'qoder-cli\.exe'/);
+    // Conservative: only the Qoder CLI counts as active agent work. The IDE
+    // process (qoder.exe) must NOT trigger startup recovery.
+    assert.doesNotMatch(seenScript, /'qoder\.exe'/);
     assert.match(seenScript, /Get-CimInstance Win32_Process/);
   });
 
@@ -98,6 +103,8 @@ describe("detectRunningAgentProcesses() agent coverage", () => {
     assert.match(seenCommand, /claude-code\|codex\|copilot\|codebuddy\|kimi/);
     assert.match(seenCommand, /pgrep -x 'agy'/);
     assert.match(seenCommand, /pi-coding-agent/);
+    assert.match(seenCommand, /pgrep -x 'qodercli'/);
+    assert.match(seenCommand, /pgrep -x 'qoder-cli'/);
     assert.doesNotMatch(seenCommand, /pgrep -x 'pi'/);
   });
 });

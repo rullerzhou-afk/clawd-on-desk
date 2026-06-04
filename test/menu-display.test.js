@@ -438,3 +438,87 @@ describe("menu dashboard action", () => {
     assert.strictEqual(called, 1);
   });
 });
+
+describe("menu new session action", () => {
+  function fakeElectron() {
+    return {
+      app: { quit: () => {}, setActivationPolicy: () => {}, dock: { show: () => {}, hide: () => {} } },
+      BrowserWindow: function BrowserWindow() {},
+      Menu: {
+        buildFromTemplate(template) {
+          return { template };
+        },
+      },
+      Tray: function Tray() {},
+      nativeImage: {
+        createFromPath() {
+          return {
+            resize() { return this; },
+            setTemplateImage() {},
+          };
+        },
+      },
+      screen: {
+        getAllDisplays: () => [{ id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1040 } }],
+        getCursorScreenPoint: () => ({ x: 0, y: 0 }),
+        getDisplayNearestPoint: () => ({ id: 1 }),
+      },
+    };
+  }
+
+  function findNewSession(ctx) {
+    return ctx.contextMenu.template.find((item) => item.label === "New Session");
+  }
+
+  it("exposes a New Session submenu with the two folder entries", () => {
+    const initMenu = loadMenuWithElectron(fakeElectron());
+    const ctx = buildBaseCtx({
+      newSessionWithFolder: () => {},
+      newSessionInCurrentDir: () => {},
+    });
+    const menu = initMenu(ctx);
+    menu.buildContextMenu();
+
+    const newSession = findNewSession(ctx);
+    assert.ok(newSession, "context menu should expose New Session");
+    assert.ok(Array.isArray(newSession.submenu), "New Session should be a submenu");
+    assert.deepStrictEqual(
+      newSession.submenu.map((item) => item.label),
+      ["Select Folder...", "Home Directory"],
+    );
+  });
+
+  it("Select Folder entry invokes ctx.newSessionWithFolder(t)", () => {
+    const initMenu = loadMenuWithElectron(fakeElectron());
+    let calledWith = null;
+    const ctx = buildBaseCtx({
+      newSessionWithFolder: (t) => { calledWith = t; },
+      newSessionInCurrentDir: () => { throw new Error("wrong handler"); },
+    });
+    const menu = initMenu(ctx);
+    menu.buildContextMenu();
+
+    const newSession = findNewSession(ctx);
+    const selectFolder = newSession.submenu.find((item) => item.label === "Select Folder...");
+    selectFolder.click();
+    assert.strictEqual(typeof calledWith, "function", "handler should receive the translator t");
+    assert.strictEqual(calledWith("newSession"), "New Session");
+  });
+
+  it("Home Directory entry invokes ctx.newSessionInCurrentDir(t)", () => {
+    const initMenu = loadMenuWithElectron(fakeElectron());
+    let calledWith = null;
+    const ctx = buildBaseCtx({
+      newSessionWithFolder: () => { throw new Error("wrong handler"); },
+      newSessionInCurrentDir: (t) => { calledWith = t; },
+    });
+    const menu = initMenu(ctx);
+    menu.buildContextMenu();
+
+    const newSession = findNewSession(ctx);
+    const homeDir = newSession.submenu.find((item) => item.label === "Home Directory");
+    homeDir.click();
+    assert.strictEqual(typeof calledWith, "function", "handler should receive the translator t");
+    assert.strictEqual(calledWith("newSession"), "New Session");
+  });
+});

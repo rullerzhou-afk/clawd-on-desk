@@ -108,6 +108,9 @@ function handleStatePost(req, res, options) {
       const codexSource = typeof data.codex_source === "string" && data.codex_source.trim()
         ? data.codex_source.trim()
         : null;
+      const ghosttyTerminalId = typeof data.ghostty_terminal_id === "string" && data.ghostty_terminal_id.trim()
+        ? data.ghostty_terminal_id.trim()
+        : null;
       const toolName = typeof data.tool_name === "string" && data.tool_name ? data.tool_name : null;
       const toolUseId = normalizeHookToolUseId(
         data.tool_use_id ?? data.toolUseId ?? data.toolUseID
@@ -125,6 +128,13 @@ function handleStatePost(req, res, options) {
       const permissionSuspect = data.permission_suspect === true;
       const preserveState = data.preserve_state === true;
       const hookSource = typeof data.hook_source === "string" ? data.hook_source : null;
+      // #406 completion-gate inputs from the Claude Stop hook. Counts / boolean
+      // only — the hook never forwards task command or description text.
+      const backgroundTasksCount = Number.isFinite(data.background_tasks_count)
+        ? data.background_tasks_count : 0;
+      const sessionCronsCount = Number.isFinite(data.session_crons_count)
+        ? data.session_crons_count : 0;
+      const stopHookActive = data.stop_hook_active === true;
       // Agent gate: user disabled this agent in the settings panel. Drop
       // with 204 so hook scripts get a quick no-op response instead of
       // hanging on our HTTP connection. Still surfaces as a success code
@@ -166,15 +176,39 @@ function handleStatePost(req, res, options) {
             const behavior = perm.isQwenCode ? "no-decision" : "deny";
             ctx.resolvePermissionEntry(perm, behavior, "User answered in terminal");
           }
-          // Stale elicitation sweep: AskUserQuestion is a blocking tool
-          // call, so any forward progress in the same session means the
-          // user already answered in the terminal.  The exact-match above
-          // may miss the elicitation entry when the /state PostToolUse
-          // carries a different tool_input fingerprint from the original
-          // /permission request, or when tool_use_id is absent.
+          // Stale blocking-tool sweep: both AskUserQuestion (elicitation) and
+          // ExitPlanMode (plan review) are blocking tool calls. Any forward
+          // progress in the same session means the user already answered in the
+          // terminal. The exact-match above may miss the entry when tool_use_id
+          // or tool_input_fingerprint diverge between /permission and /state.
           for (const stale of [...ctx.pendingPermissions]) {
-            if (stale !== perm && stale.isElicitation && stale.res && stale.sessionId === sid) {
+            if (
+              stale !== perm
+              && stale.res
+              && stale.sessionId === sid
+              && (stale.isElicitation || stale.toolName === "ExitPlanMode")
+            ) {
               ctx.resolvePermissionEntry(stale, "deny", "User answered in terminal");
+            }
+          }
+        }
+        // Stale ExitPlanMode sweep for events outside the PostToolUse/Stop block:
+        // UserPromptSubmit = user typed feedback in plan TUI ("Tell Claude what to
+        // change"); PreToolUse(non-ExitPlanMode) = Claude started executing after
+        // plan approval; SessionEnd = session torn down.
+        if (
+          event === "UserPromptSubmit"
+          || event === "SessionEnd"
+          || (event === "PreToolUse" && toolName !== "ExitPlanMode")
+        ) {
+          for (const stale of [...ctx.pendingPermissions]) {
+            if (
+              stale
+              && stale.res
+              && stale.sessionId === sid
+              && stale.toolName === "ExitPlanMode"
+            ) {
+              ctx.resolvePermissionEntry(stale, "deny", "Plan dialog dismissed in terminal");
             }
           }
         }
@@ -198,6 +232,7 @@ function handleStatePost(req, res, options) {
             provider,
             codexOriginator,
             codexSource,
+            ghosttyTerminalId,
             displayHint: display_svg,
             sessionTitle,
             assistantLastOutput,
@@ -205,6 +240,9 @@ function handleStatePost(req, res, options) {
             permissionSuspect,
             preserveState,
             hookSource,
+            backgroundTasksCount,
+            sessionCronsCount,
+            stopHookActive,
             ...(agentIdentity.defaulted ? { agentIdDefaulted: true } : {}),
           });
         }

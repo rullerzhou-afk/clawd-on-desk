@@ -194,6 +194,7 @@ function createHarness(overrides = {}) {
     sendQuickCommand: overrides.sendQuickCommand,
     checkForUpdates: (manual) => calls.push(["checkForUpdates", manual]),
     aboutHeroSvgPath: overrides.aboutHeroSvgPath || path.join(__dirname, "missing-about-hero.svg"),
+    getLanWsServer: overrides.getLanWsServer || (() => null),
     now: overrides.now || (() => 12345),
   });
   return { ipcMain, runtime, calls, activeTheme };
@@ -226,6 +227,44 @@ test("settings IPC registers owned channels and leaves animation override channe
 
   assert.strictEqual(ipcMain.handlers.size, 0);
   assert.strictEqual(ipcMain.listeners.size, 0);
+});
+
+test("mobile connection info reports starting until the LAN bridge has a port", async () => {
+  const token = "0123456789abcdef0123456789abcdef";
+  const { ipcMain, runtime } = createHarness({
+    getLanWsServer: () => ({
+      getPort: () => null,
+      getToken: () => token,
+    }),
+  });
+
+  const result = await ipcMain.invoke("settings:mobile-connection-info");
+
+  assert.deepStrictEqual(result, {
+    status: "starting",
+    message: "LAN bridge is starting",
+  });
+  runtime.dispose();
+});
+
+test("mobile connection info returns a ready pair URL only when port and token are available", async () => {
+  const token = "0123456789abcdef0123456789abcdef";
+  const { ipcMain, runtime } = createHarness({
+    getLanWsServer: () => ({
+      getPort: () => 23334,
+      getToken: () => token,
+    }),
+  });
+
+  const result = await ipcMain.invoke("settings:mobile-connection-info");
+
+  assert.strictEqual(result.status, "ok");
+  assert.strictEqual(result.port, 23334);
+  assert.strictEqual(result.token, token);
+  assert.ok(result.pairUrl.includes("port=23334"));
+  assert.ok(result.pairUrl.includes(`token=${token}`));
+  assert.ok(!result.pairUrl.includes("port=null"));
+  runtime.dispose();
 });
 
 test("settings IPC delegates controller and size preview handlers", async () => {

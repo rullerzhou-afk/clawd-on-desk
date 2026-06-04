@@ -27,6 +27,7 @@ describe("doctor agent descriptors", () => {
         "pi",
         "openclaw",
         "hermes",
+        "qoder",
       ]
     );
   });
@@ -46,6 +47,7 @@ describe("doctor agent descriptors", () => {
     const pi = require("../hooks/pi-install");
     const openclaw = require("../hooks/openclaw-install");
     const hermes = require("../hooks/hermes-install");
+    const qoder = require("../hooks/qoder-install");
 
     assert.strictEqual(getAgentDescriptor("claude-code").parentDir, claude.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("claude-code").configPath, claude.DEFAULT_CONFIG_PATH);
@@ -99,6 +101,11 @@ describe("doctor agent descriptors", () => {
       getAgentDescriptor("hermes").configPath,
       path.join(hermes.resolveHermesHome(), "plugins", hermes.PLUGIN_ID)
     );
+
+    assert.strictEqual(getAgentDescriptor("qoder").parentDir, qoder.DEFAULT_PARENT_DIR);
+    assert.strictEqual(getAgentDescriptor("qoder").configPath, qoder.DEFAULT_CONFIG_PATH);
+    assert.strictEqual(getAgentDescriptor("qoder").marker, qoder.MARKER);
+    assert.deepStrictEqual(getAgentDescriptor("qoder").hookEvents, qoder.QODER_HOOK_EVENTS);
   });
 
   it("returns copies from public accessors", () => {
@@ -175,5 +182,17 @@ describe("doctor agent descriptors", () => {
       else process.env.COPILOT_HOME = prevEnv;
       fs.rmSync(tempHome, { recursive: true, force: true });
     }
+  });
+
+  it("checks Qoder hooks as a state-only nested settings file", () => {
+    const qoder = require("../hooks/qoder-install");
+    const descriptor = getAgentDescriptor("qoder");
+
+    assert.strictEqual(descriptor.eventSource, "hook");
+    assert.strictEqual(descriptor.configMode, "file");
+    assert.strictEqual(descriptor.nested, true);
+    assert.strictEqual(descriptor.autoInstall, true);
+    assert.strictEqual(descriptor.marker, qoder.MARKER);
+    assert.deepStrictEqual(descriptor.hookEvents, qoder.QODER_HOOK_EVENTS);
   });
 });

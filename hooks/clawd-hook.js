@@ -309,7 +309,11 @@ const EVENT_TO_STATE = {
   SubagentStart: "juggling",
   SubagentStop: "working",
   PreCompact: "sweeping",
-  PostCompact: "attention",
+  // PostCompact is "compaction finished", NOT turn completion (#406). Default to
+  // thinking so the pet stays busy until work resumes (auto-compact continues
+  // the task); buildStateBody downgrades a manual /compact to idle below. Either
+  // way it must not be "attention" — compacting is not task done.
+  PostCompact: "thinking",
   Notification: "notification",
   // PermissionRequest is handled by HTTP hook (blocking) — not command hook
   Elicitation: "notification",
@@ -338,9 +342,16 @@ function buildStateBody(event, payload, resolve) {
 
   // /clear triggers SessionEnd → SessionStart in quick succession;
   // show sweeping (clearing context) instead of sleeping
+  // PostCompact: keep the EVENT_TO_STATE "thinking" for auto-compact (context
+  // full, work resumes right after), but settle a manual /compact to idle.
+  // Neither is "attention" anymore — see #406.
+  const postCompactState = event === "PostCompact"
+    ? (payload.trigger === "manual" ? "idle" : "thinking")
+    : null;
   const resolvedState = syntheticSubagentStart
     ? "juggling"
-    : ((event === "SessionEnd" && source === "clear") ? "sweeping" : state);
+    : (postCompactState
+        || ((event === "SessionEnd" && source === "clear") ? "sweeping" : state));
   const resolvedEvent = syntheticSubagentStart ? "SubagentStart" : event;
 
   const body = { state: resolvedState, session_id: sessionId, event: resolvedEvent };
@@ -385,6 +396,18 @@ function buildStateBody(event, payload, resolve) {
         if (assistantOutput.truncated) body.assistant_last_output_truncated = true;
       }
     }
+  }
+  // #406 completion-gate inputs. A Stop that still has live background shells or
+  // cron wakeups, or a Stop-hook continuation (stop_hook_active), is not a real
+  // turn completion. Forward only counts + the boolean — never the task
+  // command/description — so state.js can suppress the celebration without
+  // leaking shell contents into Clawd state.
+  if (body.event === "Stop") {
+    const bgCount = Array.isArray(payload.background_tasks) ? payload.background_tasks.length : 0;
+    const cronCount = Array.isArray(payload.session_crons) ? payload.session_crons.length : 0;
+    if (bgCount > 0) body.background_tasks_count = bgCount;
+    if (cronCount > 0) body.session_crons_count = cronCount;
+    if (payload.stop_hook_active === true) body.stop_hook_active = true;
   }
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();

@@ -17,6 +17,10 @@ toolPill.addEventListener("mouseleave", stopMarquee);
 const commandBlock = document.getElementById("commandBlock");
 const elicitationForm = document.getElementById("elicitationForm");
 const elicitationProgress = document.getElementById("elicitationProgress");
+const planFeedbackForm = document.getElementById("planFeedbackForm");
+const planFeedbackTextarea = document.getElementById("planFeedbackTextarea");
+const planFeedbackBack = document.getElementById("planFeedbackBack");
+const planFeedbackSubmit = document.getElementById("planFeedbackSubmit");
 const btnAllow = document.getElementById("btnAllow");
 const btnDeny = document.getElementById("btnDeny");
 const suggestionsContainer = document.getElementById("suggestions");
@@ -78,6 +82,10 @@ const BUBBLE_STRINGS = {
     planReview: "Plan Review",
     approve: "Approve",
     reject: "Reject",
+    tellClaudeWhatToChange: "Suggest changes",
+    planFeedbackPlaceholder: "What should be changed?",
+    submitFeedback: "Send",
+    back: "Back",
   },
   zh: {
     autoAcceptEdits: "\u81EA\u52A8\u63A5\u53D7\u7F16\u8F91",
@@ -108,6 +116,10 @@ const BUBBLE_STRINGS = {
     planReview: "\u8BA1\u5212\u5BA1\u6279",
     approve: "\u6279\u51C6",
     reject: "\u62D2\u7EDD",
+    tellClaudeWhatToChange: "\u63D0\u4FEE\u6539\u610F\u89C1",
+    planFeedbackPlaceholder: "\u54EA\u91CC\u9700\u8981\u6539?",
+    submitFeedback: "\u53D1\u9001",
+    back: "\u8FD4\u56DE",
   },
   "zh-TW": {
     autoAcceptEdits: "自動接受編輯",
@@ -138,6 +150,10 @@ const BUBBLE_STRINGS = {
     planReview: "計畫審查",
     approve: "允許",
     reject: "拒絕",
+    tellClaudeWhatToChange: "提修改意見",
+    planFeedbackPlaceholder: "哪裡需要改?",
+    submitFeedback: "傳送",
+    back: "返回",
   },
   ko: {
     autoAcceptEdits: "\uD3B8\uC9D1 \uC790\uB3D9 \uC2B9\uC778",
@@ -168,6 +184,10 @@ const BUBBLE_STRINGS = {
     planReview: "\uACC4\uD68D \uAC80\uD1A0",
     approve: "\uC2B9\uC778",
     reject: "\uAC70\uBD80",
+    tellClaudeWhatToChange: "\uC218\uC815 \uC694\uCCAD",
+    planFeedbackPlaceholder: "\uC5B4\uB514\uB97C \uBC14\uAFD4\uC57C \uD558\uB098\uC694?",
+    submitFeedback: "\uBCF4\uB0B4\uAE30",
+    back: "\uB4A4\uB85C",
   },
   ja: {
     autoAcceptEdits: "編集を自動承認",
@@ -198,6 +218,10 @@ const BUBBLE_STRINGS = {
     planReview: "計画レビュー",
     approve: "承認",
     reject: "却下",
+    tellClaudeWhatToChange: "修正を提案",
+    planFeedbackPlaceholder: "どこを変更すべき?",
+    submitFeedback: "送信",
+    back: "戻る",
   },
 };
 
@@ -316,6 +340,15 @@ function resetBubbleContent() {
   elicitationForm.classList.remove("visible");
   elicitationProgress.textContent = "";
   elicitationProgress.classList.remove("visible");
+  // NOTE: this resets the feedback form's visibility + textarea value only, not
+  // the other side effects of enterPlanFeedbackMode() (suggestionsContainer
+  // display:none and the disabled flags on textarea/back/submit). That's safe
+  // today because every ExitPlanMode bubble is a fresh BrowserWindow/document —
+  // show() runs once per window so resetBubbleContent never has to undo a prior
+  // feedback session. If plan bubbles ever start reusing a window, restore those
+  // here too (suggestionsContainer.style.display + the disabled flags).
+  planFeedbackForm.classList.remove("visible");
+  planFeedbackTextarea.value = "";
   toolPill.style.display = "";
   stopMarquee();
   btnAllow.style.display = "";
@@ -802,6 +835,12 @@ function show(data) {
   // Dynamic suggestion buttons
   suggestionsContainer.innerHTML = "";
   if (isPlanReview) {
+    // "Tell Claude what to change" button — opens feedback textarea
+    const tellBtn = document.createElement("button");
+    tellBtn.className = "btn-suggestion";
+    tellBtn.textContent = bubbleText(data.lang, "tellClaudeWhatToChange");
+    tellBtn.addEventListener("click", () => enterPlanFeedbackMode(data.lang));
+    suggestionsContainer.appendChild(tellBtn);
     // "Go to Terminal" button — deny + focus terminal
     const btn = document.createElement("button");
     btn.className = "btn-suggestion";
@@ -905,5 +944,64 @@ document.addEventListener("keydown", (e) => {
 });
 
 window.addEventListener("resize", applyElicitationViewport);
+
+// ── Plan Feedback Mode ──
+
+function enterPlanFeedbackMode(lang) {
+  // Hide action buttons and suggestions
+  btnAllow.style.display = "none";
+  btnDeny.style.display = "none";
+  suggestionsContainer.style.display = "none";
+  // Setup and show feedback form
+  planFeedbackTextarea.placeholder = bubbleText(lang, "planFeedbackPlaceholder");
+  planFeedbackSubmit.textContent = bubbleText(lang, "submitFeedback");
+  planFeedbackBack.textContent = bubbleText(lang, "back");
+  planFeedbackSubmit.disabled = true;
+  planFeedbackForm.classList.add("visible");
+  scheduleBubbleHeightReport();
+  // Focus textarea after DOM settles (web-level focus, not window focus)
+  requestAnimationFrame(() => planFeedbackTextarea.focus());
+}
+
+function exitPlanFeedbackMode() {
+  planFeedbackForm.classList.remove("visible");
+  planFeedbackTextarea.value = "";
+  // Restore plan review layout: Approve visible, Deny hidden, suggestions visible
+  btnAllow.style.display = "";
+  btnDeny.style.display = "none";
+  suggestionsContainer.style.display = "";
+  scheduleBubbleHeightReport();
+}
+
+planFeedbackTextarea.addEventListener("input", () => {
+  planFeedbackSubmit.disabled = !planFeedbackTextarea.value.trim();
+  scheduleBubbleHeightReport();
+});
+
+planFeedbackTextarea.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    if (!planFeedbackSubmit.disabled) planFeedbackSubmit.click();
+    return;
+  }
+  if (e.key === "Escape") {
+    e.preventDefault();
+    exitPlanFeedbackMode();
+  }
+});
+
+planFeedbackSubmit.addEventListener("click", () => {
+  const feedback = planFeedbackTextarea.value.trim();
+  if (!feedback) return;
+  planFeedbackSubmit.disabled = true;
+  planFeedbackBack.disabled = true;
+  planFeedbackTextarea.disabled = true;
+  window.bubbleAPI.decide({ type: "plan-feedback", feedback });
+});
+
+planFeedbackBack.addEventListener("click", () => {
+  exitPlanFeedbackMode();
+});
+
 window.bubbleAPI.onPermissionShow(show);
 window.bubbleAPI.onPermissionHide(hide);

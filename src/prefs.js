@@ -154,6 +154,7 @@ const SCHEMA = {
     validate: (v) => Number.isInteger(v) && v >= 0 && v <= 60000,
   },
   lowPowerIdleMode: { type: "boolean", default: false },
+  mobilePreviewEnabled: { type: "boolean", default: false },
   // When true, prevent the OS from sleeping while any agent task is in
   // progress (working/thinking/etc.); allow sleep again once tasks finish.
   keepAwakeWhileWorking: { type: "boolean", default: false },
@@ -190,7 +191,9 @@ const SCHEMA = {
       "opencode": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "pi": { enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
       "openclaw": { enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
-      "hermes": { enabled: true },
+      "hermes": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
+      // Qoder is state-only (Phase 1) — permission bubbles default off.
+      "qoder": { enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
     }),
     normalize: normalizeAgents,
   },

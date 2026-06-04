@@ -193,16 +193,25 @@ function createPetWindowRuntime(options = {}) {
     if (isLiveWindow(hitWin)) hitWin.hide();
   }
 
-  function togglePetVisibility() {
+  // Idempotent visibility setter. Returns { applied, deferred, changed }:
+  //  - no render window  -> { applied:false, deferred:false, changed:false }
+  //  - mini transitioning -> { applied:false, deferred:true,  changed:false } (petHidden untouched)
+  //  - already in target  -> { applied:true,  deferred:false, changed:false }
+  //  - state flipped      -> { applied:true,  deferred:false, changed:true  }
+  function setPetHidden(hidden) {
+    const target = !!hidden;
     const win = getRenderWindow();
-    if (!isLiveWindow(win)) return;
-    if (getMiniTransitioning()) return;
+    if (!isLiveWindow(win)) return { applied: false, deferred: false, changed: false };
+    if (getMiniTransitioning()) return { applied: false, deferred: true, changed: false };
+    if (target === petHidden) return { applied: true, deferred: false, changed: false };
     if (petHidden) {
+      // becoming visible
       showPetWindows();
       showFloatingSurfacesForPet();
       reapplyMacVisibility();
       petHidden = false;
     } else {
+      // becoming hidden
       hidePetWindows();
       hideFloatingSurfacesForPet();
       petHidden = true;
@@ -211,6 +220,11 @@ function createPetWindowRuntime(options = {}) {
     syncPermissionShortcuts();
     buildTrayMenu();
     buildContextMenu();
+    return { applied: true, deferred: false, changed: true };
+  }
+
+  function togglePetVisibility() {
+    return setPetHidden(!petHidden);
   }
 
   function bringPetToPrimaryDisplay() {
@@ -746,6 +760,7 @@ function createPetWindowRuntime(options = {}) {
     applyPetWindowBounds,
     applyPetWindowPosition,
     isPetHidden,
+    setPetHidden,
     togglePetVisibility,
     bringPetToPrimaryDisplay,
     getViewportOffsetY,

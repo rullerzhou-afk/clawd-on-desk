@@ -141,6 +141,7 @@ const MANAGED_CLEANUP_AGENT_IDS = Object.freeze([
   "pi",
   "openclaw",
   "hermes",
+  "qoder",
 ]);
 
 // ── updateRegistry ──
@@ -249,6 +250,7 @@ const updateRegistry = {
   detachedIdleStaleMs: requireIntegerInRange("detachedIdleStaleMs", 5_000, 300_000),
   allowEdgePinning: requireBoolean("allowEdgePinning"),
   keepSizeAcrossDisplays: requireBoolean("keepSizeAcrossDisplays"),
+  mobilePreviewEnabled: requireBoolean("mobilePreviewEnabled"),
 
   // ── System-backed prefs (object-form: validate + effect pre-commit gate) ──
   autoStartWithClaude,
