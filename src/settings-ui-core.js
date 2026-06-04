@@ -106,7 +106,6 @@
     about: {
       infoCache: null,
       clickCount: 0,
-      contributorsExpanded: false,
     },
   };
 

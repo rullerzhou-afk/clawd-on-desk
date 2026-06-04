@@ -63,6 +63,33 @@ describe("Hermes plugin", () => {
     assert.match(source, /def _finish_session_boundary/);
   });
 
+  it("falls back safely when clarify args are not a dict", () => {
+    const output = runPluginPython(String.raw`
+import importlib.util
+import json
+import sys
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("hermes_plugin", r"hooks/hermes-plugin/__init__.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+posts = []
+mod._post_state = lambda payload: posts.append(dict(payload))
+mod._append_log = lambda *args, **kwargs: None
+def fail_post_permission(*args, **kwargs):
+    raise AssertionError("_post_permission should not run without a valid clarify question")
+mod._post_permission = fail_post_permission
+
+for value in (None, "oops", ["x"]):
+    assert mod._handle_clarify_tool(args=value, tool_name="clarify", session_id="hermes:s1") is None
+
+print(json.dumps({"events": [item["event"] for item in posts]}, sort_keys=True))
+`);
+    const result = JSON.parse(output);
+    assert.deepStrictEqual(result.events, ["PreToolUse", "PreToolUse", "PreToolUse"]);
+  });
+
   it("clears stale tool mappings on reset and drops orphan post-tool events", () => {
     const output = runPluginPython(String.raw`
 import importlib.util
@@ -467,5 +494,217 @@ print(json.dumps({
         agent_pid: 10,
       },
     ]);
+  });
+
+  it("probes existing /state health route before the long blocking permission POST", () => {
+    const output = runPluginPython(String.raw`
+import importlib.util
+import json
+import sys
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("hermes_plugin", r"hooks/hermes-plugin/__init__.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+calls = []
+class FakeHeaders(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+class FakeResponse:
+    def __init__(self, status=200, headers=None, body=b""):
+        self.status = status
+        self.headers = FakeHeaders(headers or {})
+        self._body = body
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc, tb):
+        return False
+    def read(self):
+        return self._body
+
+def fake_urlopen(req, timeout=None):
+    calls.append({"url": req.full_url, "method": req.get_method(), "timeout": timeout})
+    if req.full_url.endswith("/state"):
+        return FakeResponse(headers={mod.CLAWD_SERVER_HEADER: mod.CLAWD_SERVER_ID})
+    if req.full_url.endswith("/permission"):
+        return FakeResponse(
+            headers={mod.CLAWD_SERVER_HEADER: mod.CLAWD_SERVER_ID},
+            body=json.dumps({"decision": "allow"}).encode("utf-8"),
+        )
+    raise AssertionError(req.full_url)
+
+mod.request.urlopen = fake_urlopen
+mod._port_candidates = lambda: [23333]
+mod._add_process_meta = lambda payload: None
+mod._runtime_cwd = lambda: "/repo"
+mod._append_log = lambda *args, **kwargs: None
+mod._cached_port = None
+mod._no_server_until = 0.0
+
+result = mod._post_permission("execute_bash", {"command": "echo hi"}, "hermes:s1")
+print(json.dumps({"result": result, "calls": calls, "cached_port": mod._cached_port}, sort_keys=True))
+`);
+    const result = JSON.parse(output);
+    assert.deepStrictEqual(result.result, { decision: "allow" });
+    assert.strictEqual(result.cached_port, 23333);
+    assert.deepStrictEqual(result.calls.map((call) => [call.method, call.url, call.timeout]), [
+      ["GET", "http://127.0.0.1:23333/state", 0.25],
+      ["POST", "http://127.0.0.1:23333/permission", 600],
+    ]);
+  });
+
+  it("skips process metadata on WebUI permission posts", () => {
+    const output = runPluginPython(String.raw`
+import importlib.util
+import json
+import sys
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("hermes_plugin", r"hooks/hermes-plugin/__init__.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+meta_calls = []
+permission_payloads = []
+class FakeHeaders(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+class FakeResponse:
+    def __init__(self, status=200, headers=None, body=b""):
+        self.status = status
+        self.headers = FakeHeaders(headers or {})
+        self._body = body
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc, tb):
+        return False
+    def read(self):
+        return self._body
+
+def fake_urlopen(req, timeout=None):
+    if req.full_url.endswith("/state"):
+        return FakeResponse(headers={mod.CLAWD_SERVER_HEADER: mod.CLAWD_SERVER_ID})
+    if req.full_url.endswith("/permission"):
+        permission_payloads.append(json.loads(req.data.decode("utf-8")))
+        return FakeResponse(
+            headers={mod.CLAWD_SERVER_HEADER: mod.CLAWD_SERVER_ID},
+            body=json.dumps({"decision": "allow"}).encode("utf-8"),
+        )
+    raise AssertionError(req.full_url)
+
+def fake_add_process_meta(payload):
+    meta_calls.append(dict(payload))
+    payload["source_pid"] = 1234
+    payload["editor"] = "code"
+
+mod.request.urlopen = fake_urlopen
+mod._port_candidates = lambda: [23333]
+mod._add_process_meta = fake_add_process_meta
+mod._runtime_cwd = lambda: "/repo"
+mod._append_log = lambda *args, **kwargs: None
+mod._cached_port = None
+mod._no_server_until = 0.0
+
+result = mod._post_permission("execute_bash", {"command": "echo hi"}, "web-session", "webui")
+print(json.dumps({
+    "result": result,
+    "meta_calls": meta_calls,
+    "payload": permission_payloads[0],
+}, sort_keys=True))
+`);
+    const result = JSON.parse(output);
+    assert.deepStrictEqual(result.result, { decision: "allow" });
+    assert.deepStrictEqual(result.meta_calls, []);
+    assert.strictEqual(result.payload.source_pid, undefined);
+    assert.strictEqual(result.payload.editor, undefined);
+  });
+
+  it("skips Hermes permission POST during no-server cooldown", () => {
+    const output = runPluginPython(String.raw`
+import importlib.util
+import json
+import sys
+import time
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("hermes_plugin", r"hooks/hermes-plugin/__init__.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+calls = []
+logs = []
+def fake_urlopen(*args, **kwargs):
+    calls.append([str(args), kwargs])
+    raise AssertionError("urlopen should not run during cooldown")
+
+mod.request.urlopen = fake_urlopen
+mod._append_log = lambda payload, **kwargs: logs.append(payload)
+mod._cached_port = None
+mod._no_server_until = time.monotonic() + 10
+
+result = mod._post_permission("execute_bash", {}, "hermes:s1")
+print(json.dumps({"result": result, "calls": calls, "logs": logs}, sort_keys=True))
+`);
+    const result = JSON.parse(output);
+    assert.strictEqual(result.result, null);
+    assert.deepStrictEqual(result.calls, []);
+    assert.strictEqual(result.logs[0].event, "post_permission_skipped_no_server");
+  });
+
+  it("does not issue the long permission POST when the short probe is not Clawd", () => {
+    const output = runPluginPython(String.raw`
+import importlib.util
+import json
+import sys
+import time
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("hermes_plugin", r"hooks/hermes-plugin/__init__.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+calls = []
+class FakeHeaders(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+class FakeResponse:
+    status = 200
+    headers = FakeHeaders({})
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc, tb):
+        return False
+    def read(self):
+        return b""
+
+def fake_urlopen(req, timeout=None):
+    calls.append({"url": req.full_url, "method": req.get_method(), "timeout": timeout})
+    assert req.full_url.endswith("/state"), "permission POST should not be attempted after probe mismatch"
+    return FakeResponse()
+
+mod.request.urlopen = fake_urlopen
+mod._port_candidates = lambda: [23333]
+mod._append_log = lambda *args, **kwargs: None
+mod._cached_port = None
+mod._no_server_until = 0.0
+
+result = mod._post_permission("execute_bash", {}, "hermes:s1")
+print(json.dumps({
+    "result": result,
+    "calls": calls,
+    "cached_port": mod._cached_port,
+    "cooldown_set": mod._no_server_until > time.monotonic(),
+}, sort_keys=True))
+`);
+    const result = JSON.parse(output);
+    assert.strictEqual(result.result, null);
+    assert.deepStrictEqual(result.calls.map((call) => [call.method, call.url, call.timeout]), [
+      ["GET", "http://127.0.0.1:23333/state", 0.25],
+    ]);
+    assert.strictEqual(result.cached_port, null);
+    assert.strictEqual(result.cooldown_set, true);
   });
 });

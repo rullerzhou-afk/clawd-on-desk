@@ -18,8 +18,8 @@ module.exports = {
   },
   capabilities: {
     httpHook: false,
-    permissionApproval: false,
-    interactiveBubble: false,
+    permissionApproval: true,
+    interactiveBubble: true,
     sessionEnd: true,
     subagent: false,
   },

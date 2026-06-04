@@ -325,6 +325,24 @@ module.exports = function initMenu(ctx) {
           if (typeof ctx.openDashboard === "function") ctx.openDashboard();
         },
       },
+      { type: "separator" },
+      {
+        label: t("newSession"),
+        submenu: [
+          {
+            label: t("newSessionSelectFolder"),
+            click: () => {
+              if (typeof ctx.newSessionWithFolder === "function") ctx.newSessionWithFolder(t);
+            },
+          },
+          {
+            label: t("newSessionHomeDir"),
+            click: () => {
+              if (typeof ctx.newSessionInCurrentDir === "function") ctx.newSessionInCurrentDir(t);
+            },
+          },
+        ],
+      },
     ];
     // sendToDisplay is a multi-display-only tail entry. Push dynamically
     // (rather than visible:false) — Electron leaves a phantom gap for

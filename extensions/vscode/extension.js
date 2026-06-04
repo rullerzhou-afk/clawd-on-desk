@@ -14,7 +14,7 @@ async function focusTerminalByPids(pids) {
   for (const terminal of vscode.window.terminals) {
     const termPid = await terminal.processId;
     if (termPid && pids.includes(termPid)) {
-      terminal.show(true); // true = preserveFocus, switch tab without stealing focus
+      terminal.show(false);
       return true;
     }
   }

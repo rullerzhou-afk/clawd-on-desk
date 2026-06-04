@@ -41,6 +41,19 @@ module.exports = function initState(ctx) {
 const _getCursor = ctx.getCursorScreenPoint || (screen ? () => screen.getCursorScreenPoint() : null);
 const _kill = ctx.processKill || process.kill.bind(process);
 
+function normalizeGhosttyTerminalId(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).replace(/[\r\n\t]+/g, " ").trim();
+  if (!text || text.length > 160) return null;
+  if (/^(error|unsupported|missing|miss)([-:]|$)/i.test(text)) return null;
+  return text;
+}
+
+function normalizePositiveInteger(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+}
+
 // ── Theme-driven state (refreshed on hot theme switch) ──
 let theme = null;
 let SVG_IDLE_FOLLOW = null;
@@ -66,6 +79,27 @@ const sessions = new Map();
 const MAX_SESSIONS = 20;
 const ASSISTANT_OUTPUT_MAX = 2400;
 const CODEX_EXIT_PROBE_DELAYS_MS = [1000, 3000, 8000, 15000];
+// PostCompact intentionally excluded (#406): compaction finishing is not a turn
+// completion, so it must not flip awaitingInputSinceStop.
+const POST_COMPLETION_EVENTS = new Set(["Stop", "event_msg:task_complete"]);
+// #406: forward progress for a session cancels its pending (debounced)
+// completion — these events all mean the agent loop is still running.
+const COMPLETION_CANCEL_EVENTS = new Set([
+  "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
+  "SubagentStart", "SubagentStop", "PreCompact", "PostCompact",
+  "PermissionRequest", "Elicitation", "StopFailure", "ApiError", "SessionEnd",
+]);
+function getCompletionDebounceMs() {
+  const raw = process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
+  const n = Number.parseInt(raw, 10);
+  // Opt-in, default 0 = celebrate immediately on Stop. The field gates
+  // (PostCompact / background_tasks / session_crons / stop_hook_active) already
+  // suppress the common false completions with zero delay; the debounce only
+  // adds value for the rare third-party Stop-hook veto, so it is off by default
+  // and users who actually hit that can set CLAWD_COMPLETION_DEBOUNCE_MS > 0.
+  if (Number.isFinite(n) && n >= 0 && n <= 10000) return n;
+  return 0;
+}
 let lastSessionSnapshotSignature = null;
 let lastSessionSnapshot = null;
 let startupRecoveryActive = false;
@@ -102,6 +136,9 @@ let stateChangedAt = Date.now();
 let pendingTimer = null;
 let autoReturnTimer = null;
 let pendingState = null;
+// #406 Stop completion debounce: sessionId -> timer holding a Stop as "working"
+// until a quiet window confirms the turn really ended.
+const pendingCompletionTimers = new Map();
 let eyeResendTimer = null;
 let updateVisualState = null;
 let updateVisualKind = null;
@@ -167,6 +204,22 @@ function parseSuspectDelay() {
 function hasPermissionAnimationLock() {
   // Kimi-only lock: do not alter Claude/Codex/opencode permission behavior.
   return kimiPermissionHolds.size > 0;
+}
+
+function resolveAwaitingInputSinceStop(existing, event) {
+  if (POST_COMPLETION_EVENTS.has(event)) return true;
+  if (event === "Notification") return !!(existing && existing.awaitingInputSinceStop === true);
+  if (!event || event === "stale-cleanup") return !!(existing && existing.awaitingInputSinceStop === true);
+  return false;
+}
+
+function shouldMuteMiniPostCompletionNotification(state, event, session) {
+  return !!ctx.miniMode
+    && state === "notification"
+    && event === "Notification"
+    && session
+    && session.awaitingInputSinceStop === true
+    && !hasPermissionAnimationLock();
 }
 
 // ── Qwen Code self-submit filter ──
@@ -882,6 +935,80 @@ function normalizeContextUsage(value) {
   return out;
 }
 
+function updateSessionFocusMetadata(sessionId, opts = {}) {
+  const id = typeof sessionId === "string" ? sessionId : "";
+  if (!id) return false;
+  const session = sessions.get(id);
+  if (!session) return false;
+  const expectedSourcePid = normalizePositiveInteger(opts.sourcePid);
+  if (expectedSourcePid && normalizePositiveInteger(session.sourcePid) !== expectedSourcePid) return false;
+  const ghosttyTerminalId = normalizeGhosttyTerminalId(opts.ghosttyTerminalId);
+  if (!ghosttyTerminalId) return false;
+  session.ghosttyTerminalId = ghosttyTerminalId;
+  return true;
+}
+
+// ── #406 Stop completion gate ──
+// A Claude "Stop" maps to "attention" (celebrate + complete sound), but a Stop
+// is not always a real turn completion. Decidable-now signals (live
+// background_tasks/session_crons, or a stop_hook_active continuation) are held
+// as "working" by updateSession directly. For a plain Stop we debounce: hold
+// "working" and only celebrate if no forward-progress event for the session
+// arrives within the window — this catches a third-party Stop hook that vetoes
+// the stop (Claude keeps going) without us ever seeing the veto.
+function scheduleCompletionDebounce(sessionId) {
+  const debounceMs = getCompletionDebounceMs();
+  const existing = pendingCompletionTimers.get(sessionId);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    pendingCompletionTimers.delete(sessionId);
+    promoteCompletion(sessionId);
+  }, debounceMs);
+  pendingCompletionTimers.set(sessionId, timer);
+}
+
+function cancelCompletionDebounce(sessionId, reason) {
+  const timer = pendingCompletionTimers.get(sessionId);
+  if (!timer) return;
+  clearTimeout(timer);
+  pendingCompletionTimers.delete(sessionId);
+  debugSession(`stop-debounce cancel sid=${sessionId} by=${reason || "-"}`);
+}
+
+function clearAllCompletionDebounces() {
+  for (const timer of pendingCompletionTimers.values()) clearTimeout(timer);
+  pendingCompletionTimers.clear();
+}
+
+// Debounce window elapsed with no forward progress → the turn really ended.
+// Replay the real Stop the gate withheld: append a Stop event (so the badge →
+// "done" and the Telegram completion fires exactly once, re-asserting a Stop
+// tail over any Notification that landed during the window), settle to idle,
+// and only now flip awaitingInputSinceStop. Then celebrate, unless a Kimi
+// permission lock is holding the pet.
+function promoteCompletion(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  session.recentEvents = pushRecentEvent(session, "idle", "Stop");
+  session.state = "idle";
+  session.updatedAt = Date.now();
+  session.displayHint = null;
+  session.awaitingInputSinceStop = true;
+  emitSessionSnapshot({ force: true });
+  if (hasPermissionAnimationLock()) {
+    const display = resolveDisplayState();
+    setState(display, getSvgOverride(display));
+    return;
+  }
+  // The completion's data (done badge + Telegram push) already landed via the
+  // snapshot above. The celebration is visual-only, so let setState()'s
+  // priority guard decide: if a higher-priority visual is queued — possibly
+  // from ANOTHER session (e.g. an error) — it must win. We must NOT clear the
+  // global pending queue here; pendingTimer/pendingState are process-wide, not
+  // per-session, so clearing them would swallow another session's visual.
+  setState("attention");
+}
+
 // ── Session management ──
 // Session-related fields go through `opts`. Earlier versions took 13
 // positional params — refactored in B2 to an options bag so new fields
@@ -903,6 +1030,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     provider = null,
     codexOriginator = null,
     codexSource = null,
+    ghosttyTerminalId = null,
     displayHint = undefined,
     sessionTitle = null,
     contextUsage = null,
@@ -914,10 +1042,19 @@ function updateSession(sessionId, state, event, opts = {}) {
     agentIdDefaulted = false,
     muteNotificationSound = false,
     transientPermissionEvent = false,
+    backgroundTasksCount = 0,
+    sessionCronsCount = 0,
+    stopHookActive = false,
   } = opts;
   if (startupRecoveryActive) {
     startupRecoveryActive = false;
     if (startupRecoveryTimer) { clearTimeout(startupRecoveryTimer); startupRecoveryTimer = null; }
+  }
+
+  // #406: forward progress cancels a pending debounced completion. Runs before
+  // the PermissionRequest early-return so a permission prompt cancels too.
+  if (event !== "Stop" && COMPLETION_CANCEL_EVENTS.has(event)) {
+    cancelCompletionDebounce(sessionId, event);
   }
 
   const sessionForPerm = sessions.get(sessionId);
@@ -938,7 +1075,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     ) return;
     const shouldPersistCodexPermissionFocus = permAgentId === "codex" && (
       sourcePid || wtHwnd || agentPid || (pidChain && pidChain.length) || cwd || host ||
-      model || provider || codexOriginator || codexSource || platform
+      model || provider || codexOriginator || codexSource || platform || ghosttyTerminalId
     );
     if (shouldPersistCodexPermissionFocus) {
       const existing = sessions.get(sessionId);
@@ -957,6 +1094,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       const srcProvider = provider || (existing && existing.provider) || null;
       const srcCodexOriginator = codexOriginator || (existing && existing.codexOriginator) || null;
       const srcCodexSource = codexSource || (existing && existing.codexSource) || null;
+      const srcGhosttyTerminalId = normalizeGhosttyTerminalId(ghosttyTerminalId) || (existing && existing.ghosttyTerminalId) || null;
       const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
       const srcContextUsage = normalizeContextUsage(contextUsage) || (existing && existing.contextUsage) || null;
       // PermissionRequest should flash the pet via setState("notification"),
@@ -986,6 +1124,7 @@ function updateSession(sessionId, state, event, opts = {}) {
         provider: srcProvider,
         codexOriginator: srcCodexOriginator,
         codexSource: srcCodexSource,
+        ghosttyTerminalId: srcGhosttyTerminalId,
         sessionTitle: srcSessionTitle,
         contextUsage: srcContextUsage,
         recentEvents,
@@ -1014,6 +1153,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcProvider = provider || (existing && existing.provider) || null;
   const srcCodexOriginator = codexOriginator || (existing && existing.codexOriginator) || null;
   const srcCodexSource = codexSource || (existing && existing.codexSource) || null;
+  const srcGhosttyTerminalId = normalizeGhosttyTerminalId(ghosttyTerminalId) || (existing && existing.ghosttyTerminalId) || null;
   // Sticky: empty input does not clear an existing title. A session that has
   // ever been named keeps that name until the user explicitly renames it.
   const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
@@ -1024,6 +1164,43 @@ function updateSession(sessionId, state, event, opts = {}) {
   const isSubagentStart = event === "SubagentStart" || event === "subagentStart";
   const isSubagentStop = event === "SubagentStop" || event === "subagentStop";
   const preservedState = preserveState && existing ? existing.state : null;
+
+  // #406 Stop completion gate — Claude Code only; other agents keep their own
+  // completion semantics (Codex task_complete + remote exit probes, etc.). A
+  // Stop → "attention" is not always a real turn end:
+  //   · live background_tasks / session_crons → work continues in the bg
+  //   · stop_hook_active → a Stop hook vetoed the stop; Claude will continue
+  //   · a third-party Stop hook can veto THIS stop, invisibly to us → debounce
+  // The first two are decidable now: hold "working" (badge stays "running", no
+  // celebrate, no "done"). A plain Stop is debounced — held "working" until a
+  // quiet window with no forward-progress event confirms the turn really ended.
+  if (event === "Stop" && state === "attention" && srcAgentId === "claude-code") {
+    cancelCompletionDebounce(sessionId, "stop-superseded");
+    const liveWork =
+      backgroundTasksCount > 0 || sessionCronsCount > 0 || stopHookActive === true;
+    const debounceMs = getCompletionDebounceMs();
+    if (liveWork || debounceMs > 0) {
+      // Hold the Stop as "working" and DROP the event to null so recentEvents
+      // keeps NO "Stop" tail while held. Why null and not "Stop": deriveSessionBadge
+      // only inspects the latest event, so a withheld Stop tail would (a) be
+      // resurrected as a false "done" once stale-cleanup flips the session to
+      // idle, and (b) be buried by a follow-up Notification, losing the real
+      // completion. With no tail the badge stays "running" (no celebrate, no
+      // done, no Telegram push). promoteCompletion replays a real Stop if/when
+      // the quiet window confirms the turn actually ended.
+      state = "working";
+      event = null;
+      if (liveWork) {
+        debugSession(
+          `stop-gate sid=${sessionId} bg=${backgroundTasksCount} crons=${sessionCronsCount} active=${stopHookActive} action=hold-working`
+        );
+        // liveWork never auto-promotes; a later plain Stop (no bg work) will.
+      } else {
+        scheduleCompletionDebounce(sessionId);
+      }
+    }
+    // debounceMs <= 0 && !liveWork → keep "attention" (immediate celebration).
+  }
 
   // Qwen Code 0.16.1 self-submit guard. qwen's agentic loop fires a synthetic
   // UserPromptSubmit ~900-1000ms after PostToolUse to feed the tool result
@@ -1074,7 +1251,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcLastStopAt = isStopBoundary
     ? Date.now()
     : (existing && Number.isFinite(existing.lastStopAt) ? existing.lastStopAt : null);
-  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, muteNotificationSound: state === "notification" && muteNotificationSound === true };
+  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
   if (preserveCompletionAck) base.requiresCompletionAck = true;
 
   // Evict oldest session if at capacity and this is a new session.
@@ -1216,6 +1393,18 @@ function updateSession(sessionId, state, event, opts = {}) {
     // keep the pet on notification and block all other one-shot visuals.
     // (One-shot branch normally bypasses resolveDisplayState()).
     if (hasPermissionAnimationLock() && state !== "notification") {
+      return;
+    }
+    // Mini mode already celebrated completion with mini-happy. Keep the idle
+    // wait-for-input event in session history, but do not make the tucked-away
+    // pet pop a second strong alert for the same completed turn.
+    if (
+      event === "Notification"
+      && state === "notification"
+      && shouldMuteMiniPostCompletionNotification(state, event, sessions.get(sessionId))
+    ) {
+      const displayState = resolveDisplayState();
+      setState(displayState, getSvgOverride(displayState));
       return;
     }
     // Per-agent Notification-hook mute: presentation-layer only. By this
@@ -1459,7 +1648,7 @@ function detectRunningAgentProcesses(callback) {
   const { execFile, exec } = require("child_process");
   if (process.platform === "win32") {
     const psScript =
-      "$names = 'claude.exe','codex.exe','copilot.exe','gemini.exe','agy.exe','codebuddy.exe','kiro-cli.exe','kimi.exe','opencode.exe','pi.exe','hermes.exe'; " +
+      "$names = 'claude.exe','codex.exe','copilot.exe','gemini.exe','agy.exe','codebuddy.exe','kiro-cli.exe','kimi.exe','opencode.exe','pi.exe','hermes.exe','qodercli.exe','qoder-cli.exe'; " +
       "$match = Get-CimInstance Win32_Process | Where-Object { " +
         "$names -contains $_.Name -or ($_.Name -eq 'node.exe' -and $_.CommandLine -like '*claude-code*') " +
       "} | Select-Object -First 1; " +
@@ -1471,7 +1660,7 @@ function detectRunningAgentProcesses(callback) {
       (err, stdout) => done(!err && /\d+/.test(stdout))
     );
   } else {
-    exec("pgrep -f 'claude-code|codex|copilot|codebuddy|kimi|@earendil-works/pi-coding-agent|pi-coding-agent/dist/cli\\.js' || pgrep -x 'gemini' || pgrep -x 'agy' || pgrep -x 'kiro-cli' || pgrep -x 'opencode' || pgrep -x 'hermes'", { timeout: 3000 },
+    exec("pgrep -f 'claude-code|codex|copilot|codebuddy|kimi|@earendil-works/pi-coding-agent|pi-coding-agent/dist/cli\\.js' || pgrep -x 'gemini' || pgrep -x 'agy' || pgrep -x 'kiro-cli' || pgrep -x 'opencode' || pgrep -x 'hermes' || pgrep -x 'qodercli' || pgrep -x 'qoder-cli'", { timeout: 3000 },
       (err) => done(!err)
     );
   }
@@ -1671,6 +1860,7 @@ function enableDoNotDisturb() {
   disposeAllKimiPermissionState();
   if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; pendingState = null; }
   if (autoReturnTimer) { clearTimeout(autoReturnTimer); autoReturnTimer = null; }
+  clearAllCompletionDebounces();
   stopWakePoll();
   if (ctx.miniMode) {
     applyState("mini-sleep");
@@ -1718,6 +1908,7 @@ function cleanup() {
   if (pendingTimer) clearTimeout(pendingTimer);
   pendingState = null;
   if (autoReturnTimer) clearTimeout(autoReturnTimer);
+  clearAllCompletionDebounces();
   if (eyeResendTimer) clearTimeout(eyeResendTimer);
   if (startupRecoveryTimer) clearTimeout(startupRecoveryTimer);
   if (wakePollTimer) clearInterval(wakePollTimer);
@@ -1741,6 +1932,7 @@ return {
   emitSessionSnapshot, broadcastSessionSnapshot, getLastSessionSnapshot,
   getActiveSessionAliasKeys,
   dismissSession,
+  updateSessionFocusMetadata,
   clearPermissionNotification,
   ackSessionCompletion,
   clearSessionsByAgent,

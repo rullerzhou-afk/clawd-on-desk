@@ -17,6 +17,7 @@ const opencode = require("../../hooks/opencode-install");
 const pi = require("../../hooks/pi-install");
 const openclaw = require("../../hooks/openclaw-install");
 const hermes = require("../../hooks/hermes-install");
+const qoder = require("../../hooks/qoder-install");
 
 function agentName(agentId) {
   const agent = getAgent(agentId);
@@ -193,6 +194,18 @@ const AGENT_DESCRIPTORS = Object.freeze([
     marker: hermes.PLUGIN_ID,
     managedFiles: hermes.MANAGED_PLUGIN_FILES,
     configFilePath: path.join(hermes.resolveHermesHome(), "config.yaml"),
+  }),
+  Object.freeze({
+    agentId: "qoder",
+    agentName: agentName("qoder"),
+    eventSource: agentEventSource("qoder"),
+    parentDir: qoder.DEFAULT_PARENT_DIR,
+    configPath: qoder.DEFAULT_CONFIG_PATH,
+    configMode: "file",
+    autoInstall: true,
+    marker: qoder.MARKER,
+    nested: true,
+    hookEvents: qoder.QODER_HOOK_EVENTS,
   }),
 ]);
 

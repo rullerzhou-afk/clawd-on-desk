@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker } = require("electron");
+const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker, clipboard } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { EventEmitter } = require("events");
@@ -14,6 +14,8 @@ const { registerSettingsIpc } = require("./settings-ipc");
 const createSettingsEffectRouter = require("./settings-effect-router");
 const { registerSessionIpc } = require("./session-ipc");
 const { registerPetInteractionIpc } = require("./pet-interaction-ipc");
+const { launchClaudeSession } = require("./launch-claude");
+const { dialog: electronDialog } = require("electron");
 const initPermission = require("./permission");
 const { registerPermissionIpc } = initPermission;
 const { createTelegramApprovalSidecar } = require("./telegram-approval-sidecar");
@@ -48,6 +50,7 @@ const createThemeRuntime = require("./theme-runtime");
 const createAgentRuntimeMain = require("./agent-runtime-main");
 const createFloatingWindowRuntime = require("./floating-window-runtime");
 const createPetWindowRuntime = require("./pet-window-runtime");
+const createMacHideController = require("./mac-hide");
 const { createHardwareBuddyAdapter } = require("./hardware-buddy-adapter");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
@@ -690,8 +693,25 @@ function getAllBubblesHidden() {
   return isAllBubblesHidden(_settingsController.getSnapshot());
 }
 
-function togglePetVisibility() { return petWindowRuntime.togglePetVisibility(); }
-function bringPetToPrimaryDisplay() { return petWindowRuntime.bringPetToPrimaryDisplay(); }
+let macHideController = null; // macOS app-hidden ↔ pet visibility bridge (#416); created in whenReady
+// Shared mac prep for any manual "show / move the pet" entry point (tray,
+// shortcut, bring-to-primary): release OS-hide ownership so a later
+// activate/unhide won't falsely restore, and if the app is OS-hidden, unhide it
+// first to avoid a "window shown but app still hidden" limbo.
+function prepManualPetVisibility() {
+  if (macHideController) macHideController.noteManualChange();
+  if (isMac && petWindowRuntime.isPetHidden() && typeof app.isHidden === "function" && app.isHidden()) {
+    try { app.show(); } catch (_) {}
+  }
+}
+function togglePetVisibility() {
+  prepManualPetVisibility();
+  return petWindowRuntime.togglePetVisibility();
+}
+function bringPetToPrimaryDisplay() {
+  prepManualPetVisibility();
+  return petWindowRuntime.bringPetToPrimaryDisplay();
+}
 
 function sendToRenderer(channel, ...args) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, ...args);
@@ -1150,6 +1170,7 @@ const _stateCtx = {
     if (telegramCompanion) {
       try { telegramCompanion.onSnapshot(snapshot); } catch {}
     }
+    if (_lanWss) { try { _lanWss.onSnapshot(); } catch {} }
   },
   // Phase 3b: 读 prefs.themeOverrides 判断某个 oneshot state 是否被用户禁用。
   // state.js gate 调这个做 early-return。不做白名单校验——settings-actions
@@ -1272,7 +1293,13 @@ const { startMainTick, resetIdleTimer } = _tick;
 
 // ── Terminal focus — delegated to src/focus.js ──
 const _focus = require("./focus")({ _allowSetForeground, focusLog });
-const { initFocusHelper, killFocusHelper, focusTerminalWindow, clearMacFocusCooldownTimer } = _focus;
+const {
+  initFocusHelper,
+  killFocusHelper,
+  focusTerminalWindow,
+  captureGhosttyTerminalId,
+  clearMacFocusCooldownTimer,
+} = _focus;
 
 function getFocusableLocalHudSessionIds() {
   if (!_state || typeof _state.buildSessionSnapshot !== "function") return [];
@@ -1281,17 +1308,17 @@ function getFocusableLocalHudSessionIds() {
 
 function focusTerminalSession(session, sessionId, requestSource) {
   if (!session || !session.sourcePid) return false;
-  focusTerminalWindow({
+  return focusTerminalWindow({
     sourcePid: session.sourcePid,
     wtHwnd: session.wtHwnd,
     cwd: session.cwd,
     editor: session.editor,
     pidChain: session.pidChain,
+    ghosttyTerminalId: session.ghosttyTerminalId,
     sessionId: String(sessionId),
     agentId: session.agentId,
     requestSource,
   });
-  return true;
 }
 
 function focusDashboardSession(sessionId, options = {}) {
@@ -1391,6 +1418,7 @@ agentRuntime = createAgentRuntimeMain({
   getPermissionRuntime: () => _perm,
   isAgentEnabled: (agentId) => _isAgentEnabled(_settingsController.getSnapshot(), agentId),
   updateSession: (sessionId, state, event, opts) => updateSession(sessionId, state, event, opts),
+  captureGhosttyTerminalId,
   showCodexNotifyBubble: (payload) => showCodexNotifyBubble(payload),
   clearCodexNotifyBubbles: (...args) => clearCodexNotifyBubbles(...args),
 });
@@ -1425,6 +1453,17 @@ const _serverCtx = {
 };
 const _server = require("./server")(_serverCtx);
 const { startHttpServer, getHookServerPort } = _server;
+
+// ── LAN WebSocket bridge for PWA mobile clients (lazy-loaded) ──
+let _lanWss = null;
+if (_settingsController.get("mobilePreviewEnabled") === true) {
+  const { initMobilePreviewServer } = require("./network/mobile-preview-server");
+  _lanWss = initMobilePreviewServer({
+    sessions,
+    getSettingsSnapshot: () => _settingsController.getSnapshot(),
+    isEnabled: () => _settingsController.get("mobilePreviewEnabled") === true,
+  });
+}
 
 function updateLog(msg) {
   if (!updateDebugLog) return;
@@ -1494,7 +1533,7 @@ function telegramApprovalLog(level, message, meta = {}) {
   const parts = [`telegram approval ${level}: ${message}`];
   if (meta && meta.text) parts.push(String(meta.text).trim());
   if (meta && meta.error) parts.push(String(meta.error).trim());
-  for (const key of ["errorClass", "errorCode", "delayMs", "id", "sessionId", "messageId"]) {
+  for (const key of ["errorClass", "errorCode", "delayMs", "id", "sessionId", "messageId", "status", "reason", "fallbackReason"]) {
     const value = meta && meta[key];
     if (value !== undefined && value !== null && value !== "") {
       parts.push(`${key}=${String(value).trim()}`);
@@ -1863,7 +1902,11 @@ async function initTelegramMigrationController() {
   // Native handle: spike-level real implementation. Token comes from the same
   // env file the sidecar uses; production transport closes over the token.
   const { envFileTokenStore } = require("./telegram-token-store");
-  const { createTelegramDirectSend } = require("./telegram-direct-send");
+  const {
+    createClipboardFallbackDeliveryAdapter,
+    createTelegramDirectSend,
+    createWindowsPasteOnlyDeliveryAdapter,
+  } = require("./telegram-direct-send");
   const { createTelegramNativeRunner } = require("./telegram-native-runner");
   const tokenStore = envFileTokenStore({ filePath: paths.tokenEnvFilePath });
   telegramDirectSend = createTelegramDirectSend({
@@ -1872,6 +1915,8 @@ async function initTelegramMigrationController() {
       : { sessions: [] },
     getPendingPermissions: () => pendingPermissions,
     focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
+    deliveryAdapter: isWin ? createWindowsPasteOnlyDeliveryAdapter({ clipboard }) : undefined,
+    fallbackAdapter: createClipboardFallbackDeliveryAdapter({ clipboard }),
     isEnabled: () => {
       const snap = _telegramMigrationController && typeof _telegramMigrationController.getSnapshot === "function"
         ? _telegramMigrationController.getSnapshot()
@@ -2329,6 +2374,106 @@ unsubscribeHardwareBuddySettings = _settingsController.subscribeKey("hardwareBud
 // effects that used to live inside setters (e.g.
 // `syncPermissionShortcuts()` for hideBubbles) are now reactive and live in
 // the subscriber too.
+
+async function confirmDangerousMode(t) {
+  const parent = win && !win.isDestroyed() ? win : null;
+  const result = await electronDialog.showMessageBox(parent, {
+    type: "warning",
+    buttons: [t("confirm") || "Confirm", t("cancel") || "Cancel"],
+    defaultId: 1,
+    cancelId: 1,
+    title: t("dangerousConfirmTitle") || "Confirm Dangerous Mode",
+    message: t("dangerousConfirmMessage") || "Dangerous mode skips ALL permission checks.",
+  });
+  return result.response === 0;
+}
+
+// Await launchClaudeSession and surface failures instead of swallowing them:
+// show a localized error dialog so the user knows nothing happened, and log
+// for diagnosis. Never throws.
+async function runLaunchClaudeSession(t, mode, cwd, sessionId) {
+  let res;
+  try {
+    res = await launchClaudeSession(mode, cwd, sessionId);
+  } catch (err) {
+    console.error("[launch-claude] launch threw:", err);
+    res = { ok: false, message: (err && err.message) || String(err) };
+  }
+  if (res && res.ok) return res;
+  console.error("[launch-claude] launch failed:", res && res.message);
+  try {
+    const parent = win && !win.isDestroyed() ? win : null;
+    await electronDialog.showMessageBox(parent, {
+      type: "error",
+      buttons: [t("dismiss") || "OK"],
+      title: t("newSession") || "New Session",
+      message: t("launchFailed") || "Failed to launch Claude Code.",
+      detail: (res && res.message) || "",
+    });
+  } catch (err) {
+    console.error("[launch-claude] failed to show error dialog:", err);
+  }
+  return res;
+}
+
+function showResumeInput(t) {
+  return new Promise((resolve) => {
+    const inputWin = new BrowserWindow({
+      width: 420,
+      height: 180,
+      resizable: false,
+      alwaysOnTop: true,
+      frame: false,
+      transparent: true,
+      skipTaskbar: true,
+      parent: win && !win.isDestroyed() ? win : undefined,
+      modal: true,
+      webPreferences: { nodeIntegration: false, contextIsolation: true },
+    });
+    const title = t("resumeSessionTitle") || "Resume Session";
+    const hint = t("resumeSessionHint") || "Enter Session ID";
+    const confirmLabel = t("confirm") || "OK";
+    const cancelLabel = t("dismiss") || "Cancel";
+    const html = `<!DOCTYPE html><html><head><style>
+      *{margin:0;padding:0;box-sizing:border-box}
+      body{font-family:system-ui,-apple-system,sans-serif;background:#1e1e2e;color:#cdd6f4;display:flex;flex-direction:column;height:100vh;padding:16px;border-radius:12px;overflow:hidden}
+      .title{font-size:14px;font-weight:600;margin-bottom:12px}
+      input{width:100%;padding:8px 12px;border:1px solid #45475a;border-radius:6px;background:#313244;color:#cdd6f4;font-size:13px;outline:none}
+      input:focus{border-color:#89b4fa}
+      input::placeholder{color:#6c7086}
+      .btns{display:flex;gap:8px;margin-top:14px;justify-content:flex-end}
+      button{padding:6px 16px;border:none;border-radius:6px;font-size:12px;cursor:pointer}
+      .ok{background:#89b4fa;color:#1e1e2e;font-weight:600}
+      .cancel{background:#45475a;color:#cdd6f4}
+    </style></head><body>
+      <div class="title">${title}</div>
+      <input id="sid" type="text" placeholder="${hint}" autofocus />
+      <div class="btns">
+        <button class="cancel" onclick="result(null)">${cancelLabel}</button>
+        <button class="ok" onclick="result(document.getElementById('sid').value)">${confirmLabel}</button>
+      </div>
+      <script>
+        function result(v){window._resolve(v)}
+        document.getElementById('sid').addEventListener('keydown',e=>{
+          if(e.key==='Enter')result(document.getElementById('sid').value);
+          if(e.key==='Escape')result(null);
+        });
+      </script>
+    </body></html>`;
+    inputWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    inputWin.webContents.on("did-finish-load", () => {
+      inputWin.webContents.executeJavaScript(
+        "new Promise(r=>{window._resolve=r})"
+      ).then((val) => {
+        const sessionId = typeof val === "string" ? val.trim() : "";
+        resolve(sessionId || null);
+        try { inputWin.close(); } catch {}
+      });
+    });
+    inputWin.on("closed", () => resolve(null));
+  });
+}
+
 const _menuCtx = {
   get win() { return win; },
   get sessions() { return sessions; },
@@ -2380,6 +2525,76 @@ const _menuCtx = {
   checkForUpdates: (...args) => checkForUpdates(...args),
   getUpdateMenuItem: () => getUpdateMenuItem(),
   openDashboard: () => showDashboard(),
+  launchClaudeSession: (mode, cwd, sessionId) => launchClaudeSession(mode, cwd, sessionId),
+  newSessionWithFolder: async (t) => {
+    const parent = win && !win.isDestroyed() ? win : null;
+    const result = await electronDialog.showOpenDialog(parent, {
+      title: t("selectFolder"),
+      properties: ["openDirectory"],
+    });
+    if (result.canceled || !result.filePaths.length) return;
+    const folder = result.filePaths[0];
+    const mode = await electronDialog.showMessageBox(parent, {
+      type: "question",
+      buttons: [t("newSessionNormal"), t("newSessionDangerous"), t("newSessionContinue"), t("newSessionResume"), t("dismiss")],
+      defaultId: 0,
+      cancelId: 4,
+      title: t("newSession"),
+      message: t("newSession"),
+      detail: folder,
+    });
+    if (mode.response === 4) return;
+    if (mode.response === 3) {
+      const sessionId = await showResumeInput(t);
+      if (!sessionId) return;
+      const resumeMode = await electronDialog.showMessageBox(parent, {
+        type: "question",
+        buttons: [t("modeNormal"), t("modeDangerous"), t("dismiss")],
+        defaultId: 0,
+        cancelId: 2,
+        title: t("newSessionResume"),
+        message: sessionId,
+      });
+      if (resumeMode.response === 2) return;
+      if (resumeMode.response === 1 && !(await confirmDangerousMode(t))) return;
+      await runLaunchClaudeSession(t, resumeMode.response === 1 ? "resume-dangerous" : "resume", folder, sessionId);
+      return;
+    }
+    if (mode.response === 1 && !(await confirmDangerousMode(t))) return;
+    const modes = ["normal", "dangerous", "continue"];
+    await runLaunchClaudeSession(t, modes[mode.response], folder);
+  },
+  newSessionInCurrentDir: async (t) => {
+    const parent = win && !win.isDestroyed() ? win : null;
+    const mode = await electronDialog.showMessageBox(parent, {
+      type: "question",
+      buttons: [t("newSessionNormal"), t("newSessionDangerous"), t("newSessionContinue"), t("newSessionResume"), t("dismiss")],
+      defaultId: 0,
+      cancelId: 4,
+      title: t("newSession"),
+      message: t("newSession"),
+    });
+    if (mode.response === 4) return;
+    if (mode.response === 3) {
+      const sessionId = await showResumeInput(t);
+      if (!sessionId) return;
+      const resumeMode = await electronDialog.showMessageBox(parent, {
+        type: "question",
+        buttons: [t("modeNormal"), t("modeDangerous"), t("dismiss")],
+        defaultId: 0,
+        cancelId: 2,
+        title: t("newSessionResume"),
+        message: sessionId,
+      });
+      if (resumeMode.response === 2) return;
+      if (resumeMode.response === 1 && !(await confirmDangerousMode(t))) return;
+      await runLaunchClaudeSession(t, resumeMode.response === 1 ? "resume-dangerous" : "resume", undefined, sessionId);
+      return;
+    }
+    if (mode.response === 1 && !(await confirmDangerousMode(t))) return;
+    const modes = ["normal", "dangerous", "continue"];
+    await runLaunchClaudeSession(t, modes[mode.response]);
+  },
   // The settings controller is the only writer of persisted prefs. Toggle
   // setters above route through it; resize/sendToDisplay use
   // flushRuntimeStateToPrefs to capture window bounds after movement.
@@ -2411,7 +2626,7 @@ const { t, buildContextMenu, buildTrayMenu, rebuildAllMenus, createTray,
 // ── Settings effect router ──
 const SETTINGS_MIRROR_SETTERS = {
   lang: (v) => { lang = v; }, size: (v) => { currentSize = v; }, showTray: (v) => { showTray = v; },
-  showDock: (v) => { showDock = v; }, manageClaudeHooksAutomatically: (v) => { manageClaudeHooksAutomatically = v; },
+  showDock: (v) => { showDock = v; if (macHideController) macHideController.noteManualChange(); }, manageClaudeHooksAutomatically: (v) => { manageClaudeHooksAutomatically = v; },
   autoStartWithClaude: (v) => { autoStartWithClaude = v; }, openAtLogin: (v) => { openAtLogin = v; },
   bubbleFollowPet: (v) => { bubbleFollowPet = v; }, sessionHudEnabled: (v) => { sessionHudEnabled = v; },
   sessionHudShowStateLabels: (v) => { sessionHudShowStateLabels = v; },
@@ -2473,6 +2688,21 @@ settingsEffectRouter.start();
 _settingsController.subscribeKey("tgApproval", () => {
   if (suppressTelegramApprovalSidecarSync > 0) return;
   queueTelegramApprovalSidecarSync("settings");
+});
+_settingsController.subscribeKey("mobilePreviewEnabled", async (enabled) => {
+  if (enabled) {
+    if (!_lanWss) {
+      const { initMobilePreviewServer } = require("./network/mobile-preview-server");
+      _lanWss = initMobilePreviewServer({
+        sessions,
+        getSettingsSnapshot: () => _settingsController.getSnapshot(),
+        isEnabled: () => _settingsController.get("mobilePreviewEnabled") === true,
+      });
+    }
+    await _lanWss.start();
+  } else if (_lanWss) {
+    _lanWss.cleanup();
+  }
 });
 
 animationOverridesMain = createSettingsAnimationOverridesMain({
@@ -2656,6 +2886,7 @@ registerSettingsIpc({
     : { status: "error", code: "quick_commands_unavailable", message: "Quick Commands are unavailable" },
   checkForUpdates,
   aboutHeroSvgPath: path.join(__dirname, "..", "assets", "svg", "clawd-about-hero.svg"),
+  getLanWsServer: () => _lanWss,
 });
 
 registerSessionIpc({
@@ -2679,6 +2910,7 @@ registerSessionIpc({
       console.warn("Clawd: failed to pin Session HUD:", result.message);
     }
   },
+  getLanWsServer: () => _lanWss,
 });
 
 function createWindow() {
@@ -2809,6 +3041,7 @@ function createWindow() {
   initFocusHelper();
   startMainTick();
   startHttpServer();
+  if (_settingsController.get("mobilePreviewEnabled") === true) _lanWss.start();
   startStaleCleanup();
   // Wait for renderer to be ready before sending initial state
   // If hooks arrived during startup, respect them instead of forcing idle
@@ -2924,7 +3157,7 @@ Object.defineProperties(this || {}, {}); // no-op placeholder
 
 // ── Auto-install VS Code / Cursor terminal-focus extension ──
 const EXT_ID = "clawd.clawd-terminal-focus";
-const EXT_VERSION = "0.1.0";
+const EXT_VERSION = "0.1.1";
 const EXT_DIR_NAME = `${EXT_ID}-${EXT_VERSION}`;
 
 function installTerminalFocusExtension() {
@@ -3008,6 +3241,19 @@ if (!gotTheLock) {
   }
 
   app.whenReady().then(() => {
+    // macOS: override the dock icon with a version padded to the macOS icon
+    // grid (~80.5% of the canvas, ~100px transparent margin per side) so the
+    // Dock tile matches neighbor apps. The build-time icon.png sits ~72.6%
+    // (looks small); the earlier full-bleed dock-icon.png looked oversized
+    // (issue #416). Source preserved at assets/source/dock-icon-fullbleed.png.
+    if (isMac && app.dock && _settingsController.get("showDock") !== false) {
+      try {
+        app.dock.setIcon(path.join(__dirname, "..", "assets", "dock-icon.png"));
+      } catch (_) {
+        // non-fatal: fall back to the bundled icon
+      }
+    }
+
     const protocolRegistered = codexPetMain.registerProtocolClient();
     if (process.argv.includes(REGISTER_PROTOCOL_DEV_ARG)) {
       console.log(`Clawd: clawd:// dev protocol registration ${protocolRegistered ? "succeeded" : "failed"}`);
@@ -3028,6 +3274,21 @@ if (!gotTheLock) {
       console.warn("Clawd: migration controller init failed:", err && err.message);
     });
     createWindow();
+    // macOS: bridge the OS app-hidden state (⌘H / Dock right-click → 隐藏) to the
+    // pet. Pet windows are setCanHide:NO, so the OS marks the app hidden but the
+    // windows refuse to vanish, and an inactive-app Dock Hide fires no
+    // did-resign-active — so we poll app.isHidden() and drive setPetHidden(). (#416)
+    if (isMac) {
+      macHideController = createMacHideController({
+        isMac,
+        app,
+        getShowDock: () => showDock,
+        isPetHidden: () => petWindowRuntime.isPetHidden(),
+        setPetHidden: (hidden) => petWindowRuntime.setPetHidden(hidden),
+      });
+      macHideController.start();
+      app.on("activate", () => { if (macHideController) macHideController.onActivate(); });
+    }
     if (shouldOpenSettingsWindowFromArgv(process.argv)) {
       settingsWindowRuntime.open();
     }
@@ -3083,10 +3344,12 @@ if (!gotTheLock) {
     if (hardwareBuddyAdapter) hardwareBuddyAdapter.stop();
     _perm.cleanup();
     _server.cleanup();
+    if (_lanWss) _lanWss.cleanup();
     _updateBubble.cleanup();
     _state.cleanup();
     _tick.cleanup();
     _mini.cleanup();
+    if (macHideController) macHideController.stop();
     _sessionHud.cleanup();
     agentRuntime.cleanup();
     topmostRuntime.cleanup();

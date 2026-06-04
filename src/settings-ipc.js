@@ -438,6 +438,44 @@ function registerSettingsIpc(options = {}) {
     }
   });
 
+  handle("settings:mobile-connection-info", async () => {
+    try {
+      const lanWsServer = options.getLanWsServer ? options.getLanWsServer() : null;
+      if (!lanWsServer) return { status: "error", message: "LAN bridge not available" };
+      const port = lanWsServer.getPort();
+      const tok = lanWsServer.getToken();
+      if (!Number.isInteger(port) || port <= 0 || typeof tok !== "string" || !tok) {
+        return { status: "starting", message: "LAN bridge is starting" };
+      }
+      const os = require("os");
+      let lanIp = "127.0.0.1";
+      const interfaces = os.networkInterfaces();
+      const wlanPattern = /WLAN|Wi-?Fi|Wireless|无线/i;
+      // 1) 优先找 WLAN 接口
+      for (const name of Object.keys(interfaces)) {
+        if (wlanPattern.test(name)) {
+          for (const iface of interfaces[name]) {
+            if (iface.family === "IPv4" && !iface.internal) { lanIp = iface.address; break; }
+          }
+          if (lanIp !== "127.0.0.1") break;
+        }
+      }
+      // 2) fallback：第一个非 internal IPv4
+      if (lanIp === "127.0.0.1") {
+        for (const name of Object.keys(interfaces)) {
+          for (const iface of interfaces[name]) {
+            if (iface.family === "IPv4" && !iface.internal) { lanIp = iface.address; break; }
+          }
+          if (lanIp !== "127.0.0.1") break;
+        }
+      }
+      const pairUrl = `http://${lanIp}:${port}/mobile/?host=${lanIp}&port=${port}&token=${tok}`;
+      return { status: "ok", port, token: tok, lanIp, pairUrl };
+    } catch (err) {
+      return { status: "error", message: (err && err.message) || String(err) };
+    }
+  });
+
   return {
     dispose() {
       while (disposers.length) {

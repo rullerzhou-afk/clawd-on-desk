@@ -7,6 +7,20 @@ const test = require("node:test");
 
 const ROOT = path.join(__dirname, "..");
 const TABLE_READMES = ["README.md", "README.ko-KR.md", "README.ja-JP.md"];
+const ALL_READMES = [
+  "README.md",
+  "README.zh-CN.md",
+  "README.zh-TW.md",
+  "README.ko-KR.md",
+  "README.ja-JP.md",
+];
+const VERIFIED_GITHUB_CONTRIBUTORS = [
+  "Bynlk",
+  "zxypro1",
+  "NeroAyase",
+  "divergentD",
+  "Ne9roni",
+];
 
 function extractContributorTable(markdown, filename) {
   const tables = [...markdown.matchAll(/<table>[\s\S]*?<\/table>/g)]
@@ -53,6 +67,17 @@ function getContributorShape(filename) {
   return cellCounts;
 }
 
+function extractContributorSection(markdown, filename) {
+  const firstContributor = markdown.indexOf("https://github.com/PixelCookie-zyf");
+  assert.notStrictEqual(firstContributor, -1, `${filename} should list contributors`);
+
+  const start = markdown.lastIndexOf("### ", firstContributor);
+  assert.notStrictEqual(start, -1, `${filename} should have a contributor heading`);
+
+  const end = markdown.indexOf("\n## ", firstContributor);
+  return markdown.slice(start, end === -1 ? markdown.length : end);
+}
+
 test("table-based README contributor grids are filled consistently", () => {
   const [baselineFile, ...localizedFiles] = TABLE_READMES;
   const baselineShape = getContributorShape(baselineFile);
@@ -63,5 +88,27 @@ test("table-based README contributor grids are filled consistently", () => {
       baselineShape,
       `${filename} should match ${baselineFile}'s contributor row shape`,
     );
+  }
+});
+
+test("README contributor sections stay visible", () => {
+  for (const filename of ALL_READMES) {
+    const markdown = fs.readFileSync(path.join(ROOT, filename), "utf8");
+    const section = extractContributorSection(markdown, filename);
+    assert.ok(!section.includes("<details>"), `${filename} should not fold contributors`);
+    assert.ok(!section.includes("<summary>"), `${filename} should not fold contributors`);
+  }
+});
+
+test("README contributor sections include verified GitHub contributors", () => {
+  for (const filename of ALL_READMES) {
+    const markdown = fs.readFileSync(path.join(ROOT, filename), "utf8");
+
+    for (const login of VERIFIED_GITHUB_CONTRIBUTORS) {
+      assert.ok(
+        markdown.includes(`https://github.com/${login}`),
+        `${filename} should include ${login}`,
+      );
+    }
   }
 });

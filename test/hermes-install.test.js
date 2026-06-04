@@ -7,6 +7,7 @@ const os = require("os");
 const {
   PLUGIN_ID,
   MANAGED_PLUGIN_FILES,
+  hermesHomesForSync,
   isHermesInstalled,
   registerHermesPlugin,
   resolveHermesHome,
@@ -76,6 +77,107 @@ describe("Hermes plugin installer", () => {
       fs.readFileSync(path.join(result.pluginDir, "plugin.yaml"), "utf8"),
       "name: clawd-on-desk\n"
     );
+  });
+
+  it("enables Clawd in every Hermes profile config", () => {
+    const sourcePluginDir = makeSourcePlugin();
+    const hermesHome = makeTempDir();
+    const opsHome = path.join(hermesHome, "profiles", "ops");
+    const browserHome = path.join(hermesHome, "profiles", "browser");
+    const ignoredHome = path.join(hermesHome, "profiles", "scratch");
+    fs.mkdirSync(opsHome, { recursive: true });
+    fs.mkdirSync(browserHome, { recursive: true });
+    fs.mkdirSync(ignoredHome, { recursive: true });
+    fs.writeFileSync(path.join(opsHome, "config.yaml"), "plugins:\n  desktop_notify:\n    bell: true\n", "utf8");
+    fs.writeFileSync(path.join(browserHome, "config.yaml"), "plugins:\n  enabled:\n  - other\n", "utf8");
+    const spawnSync = makeSpawn();
+
+    const result = registerHermesPlugin({
+      silent: true,
+      hermesHome,
+      sourcePluginDir,
+      hermesCommand: "hermes",
+      spawnSync,
+      env: {},
+    });
+
+    assert.strictEqual(result.status, "ok");
+    assert.deepStrictEqual(hermesHomesForSync({ hermesHome }), [hermesHome, browserHome, opsHome]);
+    assert.deepStrictEqual(
+      spawnSync.calls.map((call) => ({ args: call.args, hermesHome: call.options.env.HERMES_HOME })),
+      [hermesHome, browserHome, opsHome].map((home) => ({
+        args: ["plugins", "enable", PLUGIN_ID],
+        hermesHome: home,
+      }))
+    );
+    assert.deepStrictEqual(
+      result.profileResults.map((entry) => entry.hermesHome),
+      [hermesHome, browserHome, opsHome]
+    );
+    assert.ok(fs.existsSync(path.join(opsHome, "plugins", PLUGIN_ID, "__init__.py")));
+    assert.ok(fs.existsSync(path.join(browserHome, "plugins", PLUGIN_ID, "__init__.py")));
+    assert.ok(!fs.existsSync(path.join(ignoredHome, "plugins", PLUGIN_ID)));
+  });
+
+  it("reports partial profile sync without failing the primary Hermes home", () => {
+    const sourcePluginDir = makeSourcePlugin();
+    const hermesHome = makeTempDir();
+    const opsHome = path.join(hermesHome, "profiles", "ops");
+    const browserHome = path.join(hermesHome, "profiles", "browser");
+    fs.mkdirSync(opsHome, { recursive: true });
+    fs.mkdirSync(browserHome, { recursive: true });
+    fs.writeFileSync(path.join(opsHome, "config.yaml"), "plugins: {}\n", "utf8");
+    fs.writeFileSync(path.join(browserHome, "config.yaml"), "plugins: {}\n", "utf8");
+    const calls = [];
+    const spawnSync = (command, args, options) => {
+      calls.push({ command, args, options });
+      if (options.env.HERMES_HOME === opsHome) {
+        return { status: 1, stdout: "", stderr: "profile enable failed" };
+      }
+      return { status: 0, stdout: "", stderr: "" };
+    };
+
+    const result = registerHermesPlugin({
+      silent: true,
+      hermesHome,
+      sourcePluginDir,
+      hermesCommand: "hermes",
+      spawnSync,
+      env: {},
+    });
+
+    assert.strictEqual(result.status, "ok");
+    assert.strictEqual(result.profileStatus, "partial");
+    assert.strictEqual(result.profileErrorCount, 1);
+    assert.match(result.profileWarning, /profile enable failed/);
+    assert.deepStrictEqual(calls.map((call) => call.options.env.HERMES_HOME), [hermesHome, browserHome, opsHome]);
+    assert.deepStrictEqual(
+      result.profileResults.map((entry) => [entry.hermesHome, entry.status]),
+      [[hermesHome, "ok"], [browserHome, "ok"], [opsHome, "error"]]
+    );
+  });
+
+  it("can skip Hermes profile sync when requested", () => {
+    const sourcePluginDir = makeSourcePlugin();
+    const hermesHome = makeTempDir();
+    const opsHome = path.join(hermesHome, "profiles", "ops");
+    fs.mkdirSync(opsHome, { recursive: true });
+    fs.writeFileSync(path.join(opsHome, "config.yaml"), "plugins: {}\n", "utf8");
+    const spawnSync = makeSpawn();
+
+    const result = registerHermesPlugin({
+      silent: true,
+      hermesHome,
+      sourcePluginDir,
+      hermesCommand: "hermes",
+      spawnSync,
+      syncProfiles: false,
+      env: {},
+    });
+
+    assert.strictEqual(result.status, "ok");
+    assert.deepStrictEqual(spawnSync.calls.map((call) => call.options.env.HERMES_HOME), [hermesHome]);
+    assert.strictEqual(fs.existsSync(path.join(opsHome, "plugins", PLUGIN_ID)), false);
   });
 
   it("is idempotent when managed files already match", () => {

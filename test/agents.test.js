@@ -138,4 +138,12 @@ describe("Agent config modules — data integrity", () => {
     assert.strictEqual(pi.capabilities.interactiveBubble, false);
   });
 
+  it("qoder is state-only and does not expose a bubble sub-toggle", () => {
+    const qoder = agents.find((a) => a.id === "qoder");
+    assert.ok(qoder);
+    assert.strictEqual(qoder.capabilities.permissionApproval, false);
+    assert.strictEqual(qoder.capabilities.interactiveBubble, false);
+    assert.strictEqual(qoder.capabilities.notificationHook, true);
+  });
+
 });

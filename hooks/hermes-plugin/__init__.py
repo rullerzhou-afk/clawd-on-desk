@@ -25,6 +25,7 @@ CLAWD_SERVER_HEADER = "x-clawd-server"
 CLAWD_SERVER_ID = "clawd-on-desk"
 SERVER_PORTS = (23333, 23334, 23335, 23336, 23337)
 POST_TIMEOUT_SECONDS = 0.25
+PERMISSION_POST_TIMEOUT_SECONDS = 600.0
 NO_SERVER_COOLDOWN_SECONDS = 2.0
 TASK_SESSION_TTL_SECONDS = 10 * 60
 MAX_TASK_SESSION_IDS = 256
@@ -258,6 +259,101 @@ def _post_state(body: Dict[str, Any]) -> None:
             continue
     _cached_port = None
     _no_server_until = time.monotonic() + NO_SERVER_COOLDOWN_SECONDS
+
+
+def _post_permission(tool_name: str, tool_input: dict, session_id: str, platform: str = "") -> Optional[dict]:
+    """POST to Clawd's /permission endpoint and block until user decides.
+
+    Returns the JSON response body as a dict, or None if Clawd is unreachable,
+    returns 204 (no-decision), or the request fails.
+
+    Respects the no-server cooldown to avoid blocking Hermes tool calls when
+    Clawd is known to be absent.  Before the long blocking POST, issues a short
+    header probe so a non-Clawd service on a candidate port cannot block a
+    Hermes tool call for up to PERMISSION_POST_TIMEOUT_SECONDS.
+    """
+    global _cached_port, _no_server_until
+    now = time.monotonic()
+    if _cached_port is None and _no_server_until > now:
+        _append_log({
+            "ts": _utc_now(),
+            "event": "post_permission_skipped_no_server",
+            "cooldown_ms": int((_no_server_until - now) * 1000),
+        })
+        return None
+
+    payload_dict: Dict[str, Any] = {
+        "agent_id": AGENT_ID,
+        "tool_name": tool_name,
+        "tool_input": tool_input,
+        "session_id": session_id,
+        "cwd": _runtime_cwd(),
+        "agent_pid": os.getpid(),
+    }
+    if platform != "webui":
+        _add_process_meta(payload_dict)
+    payload = json.dumps(payload_dict).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Content-Length": str(len(payload)),
+    }
+    for port in _port_candidates():
+        # ── Short probe — verify Clawd is on this port before the long POST ──
+        # Reuse the existing GET /state health route instead of inventing a
+        # plugin-only /probe endpoint.  The server includes CLAWD_SERVER_HEADER
+        # on /state responses; non-Clawd services or stale candidate ports fail
+        # here with a short timeout and never reach the 600s permission POST.
+        probe_req = request.Request(
+            f"http://127.0.0.1:{port}/state",
+            method="GET",
+        )
+        try:
+            with request.urlopen(probe_req, timeout=POST_TIMEOUT_SECONDS) as probe_resp:
+                if probe_resp.headers.get(CLAWD_SERVER_HEADER) != CLAWD_SERVER_ID:
+                    continue
+        except Exception:
+            continue
+
+        # ── Blocking permission POST ──
+        req = request.Request(
+            f"http://127.0.0.1:{port}/permission",
+            data=payload,
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with request.urlopen(req, timeout=PERMISSION_POST_TIMEOUT_SECONDS) as response:
+                if response.status == 204:
+                    _cached_port = port
+                    return None
+                if response.headers.get(CLAWD_SERVER_HEADER) == CLAWD_SERVER_ID:
+                    _cached_port = port
+                    body = json.loads(response.read().decode("utf-8"))
+                    return body
+                _append_log({
+                    "ts": _utc_now(),
+                    "event": "post_permission_header_mismatch",
+                    "port": port,
+                })
+        except (OSError, URLError) as exc:
+            _append_log({
+                "ts": _utc_now(),
+                "event": "post_permission_failed",
+                "port": port,
+                "error": str(exc),
+            })
+            continue
+        except Exception as exc:
+            _append_log({
+                "ts": _utc_now(),
+                "event": "post_permission_error",
+                "port": port,
+                "error": str(exc),
+            })
+            continue
+    _cached_port = None
+    _no_server_until = time.monotonic() + NO_SERVER_COOLDOWN_SECONDS
+    return None
 
 
 def _platform_key() -> str:
@@ -885,13 +981,149 @@ def _handle_hook(event_name: str, **kwargs: Any) -> None:
             _append_log({"ts": _utc_now(), "event": event_name, "slow_ms": elapsed_ms})
 
 
+# Tools that require user approval via permission bubble.
+# Configure via CLAWD_HERMES_PERMISSION_TOOLS env var (comma-separated tool names).
+_PERMISSION_TOOLS_ENV = os.environ.get("CLAWD_HERMES_PERMISSION_TOOLS", "").strip()
+_PERMISSION_TOOLS: set = set()
+if _PERMISSION_TOOLS_ENV:
+    _PERMISSION_TOOLS = {t.strip() for t in _PERMISSION_TOOLS_ENV.split(",") if t.strip()}
+
+
 def _make_callback(event_name: str):
+    if event_name == "pre_tool_call":
+        def callback(**kwargs: Any):
+            tool_name = kwargs.get("tool_name", "")
+            if tool_name == "clarify":
+                return _handle_clarify_tool(**kwargs)
+            if _PERMISSION_TOOLS and tool_name in _PERMISSION_TOOLS:
+                return _handle_permission_request(tool_name, **kwargs)
+            _handle_hook(event_name, **kwargs)
+            return None
+        callback.__name__ = "clawd_pre_tool_call"
+        return callback
+
     def callback(**kwargs: Any) -> None:
         _handle_hook(event_name, **kwargs)
         return None
 
     callback.__name__ = f"clawd_{event_name}"
     return callback
+
+
+def _handle_clarify_tool(**kwargs: Any):
+    """Intercept clarify tool and show elicitation bubble via /permission.
+
+    COMPROMISE — error-channel result injection:
+    When the user answers via the Clawd permission bubble, we return
+    ``{"action": "block", "message": "User selected: <answer>"}`` from
+    ``pre_tool_call``.  Hermes' plugin contract translates this into a tool
+    result of ``{"error": "User selected: <answer>"}`` (see
+    ``tool_executor.py:220`` in hermes-agent).  The model receives this as
+    the clarify tool's output — semantically an error shape, but the
+    answer text is plain enough that models parse it reliably.
+
+    When Hermes adds a result-injection hook (inject a result without
+    blocking the tool), this interception should be migrated to that
+    cleaner path.
+
+    Falls back to Hermes' native clarify dialog when:
+    - Clawd is unreachable (None result)
+    - Clawd returns 204 / no-decision
+    - The permission bubble fails to create
+    """
+    args = kwargs.get("args", {})
+    if not isinstance(args, dict):
+        args = {}
+    question = str(args.get("question") or "").strip()
+    choices_raw = args.get("choices")
+    choices: list[str] = []
+    if isinstance(choices_raw, list):
+        choices = [str(c).strip() for c in choices_raw if str(c).strip()]
+
+    if not question:
+        _handle_hook("pre_tool_call", **kwargs)
+        return None
+
+    options = [{"label": c} for c in choices] if choices else []
+    tool_input = {"questions": [{"question": question, "options": options}]}
+    session_id = _session_id("pre_tool_call", kwargs)
+
+    try:
+        result = _post_permission("clarify", tool_input, session_id, _session_platform(session_id, kwargs))
+    except Exception:
+        _append_log({
+            "ts": _utc_now(),
+            "event": "clarify_intercept_error",
+            "error": traceback.format_exc(),
+        }, force=True)
+        result = None
+
+    if result is None:
+        _handle_hook("pre_tool_call", **kwargs)
+        return None
+
+    decision = result.get("decision", "")
+    if decision == "allow":
+        answers = result.get("answers", {})
+        answer = answers.get(question, "")
+        if not answer:
+            for a in answers.values():
+                if a:
+                    answer = a
+                    break
+        if answer:
+            _append_log({
+                "ts": _utc_now(),
+                "event": "clarify_intercepted",
+                "question": question,
+                "choices": choices,
+                "answer": answer,
+            })
+            return {"action": "block", "message": f"User selected: {answer}"}
+
+    if decision == "deny":
+        return {"action": "block", "message": "User cancelled the clarification"}
+
+    _handle_hook("pre_tool_call", **kwargs)
+    return None
+
+
+def _handle_permission_request(tool_name: str, **kwargs: Any):
+    """Show permission bubble for tools that require user approval."""
+    args = kwargs.get("args", {})
+    tool_input = _safe_value(args) if args else {}
+    session_id = _session_id("pre_tool_call", kwargs)
+
+    try:
+        result = _post_permission(tool_name, tool_input, session_id, _session_platform(session_id, kwargs))
+    except Exception:
+        _append_log({
+            "ts": _utc_now(),
+            "event": "permission_intercept_error",
+            "tool_name": tool_name,
+            "error": traceback.format_exc(),
+        }, force=True)
+        result = None
+
+    if result is None:
+        _handle_hook("pre_tool_call", **kwargs)
+        return None
+
+    decision = result.get("decision", "")
+    if decision == "allow":
+        _handle_hook("pre_tool_call", **kwargs)
+        return None
+    if decision == "deny":
+        message = result.get("message", "User denied this tool execution")
+        _append_log({
+            "ts": _utc_now(),
+            "event": "permission_denied",
+            "tool_name": tool_name,
+        })
+        return {"action": "block", "message": message}
+
+    _handle_hook("pre_tool_call", **kwargs)
+    return None
 
 
 def register(ctx) -> None:

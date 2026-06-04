@@ -27,6 +27,7 @@ function runDoctorChecks(options = {}) {
     (options.checkLocalServer || checkLocalServer)(options.server),
     (options.checkAgentIntegrations || checkAgentIntegrations)({
       prefs,
+      server: options.server,
       fs: options.fs,
       platform: options.platform,
       descriptors: options.descriptors,

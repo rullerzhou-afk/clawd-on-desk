@@ -1,6 +1,8 @@
 "use strict";
 
 const DEFAULT_CLAUDE_CONTEXT_LIMIT = 200000;
+const CLAUDE_1M_CONTEXT_LIMIT = 1000000;
+const CLAUDE_1M_CONTEXT_MARKER_RE = /(?:^|[^a-z0-9])1m(?:[^a-z0-9]|$)/i;
 
 function normalizeUsageNumber(value) {
   const n = Number(value);
@@ -10,6 +12,7 @@ function normalizeUsageNumber(value) {
 function resolveClaudeContextLimit(model) {
   const raw = typeof model === "string" ? model.toLowerCase() : "";
   if (!raw) return DEFAULT_CLAUDE_CONTEXT_LIMIT;
+  if (CLAUDE_1M_CONTEXT_MARKER_RE.test(raw)) return CLAUDE_1M_CONTEXT_LIMIT;
   if (raw.includes("opus") || raw.includes("sonnet") || raw.includes("haiku")) {
     return DEFAULT_CLAUDE_CONTEXT_LIMIT;
   }
@@ -55,6 +58,7 @@ function extractClaudeContextUsageFromEntries(entries) {
 }
 
 module.exports = {
+  CLAUDE_1M_CONTEXT_LIMIT,
   DEFAULT_CLAUDE_CONTEXT_LIMIT,
   computeClaudeUsageFromEntry,
   extractClaudeContextUsageFromEntries,

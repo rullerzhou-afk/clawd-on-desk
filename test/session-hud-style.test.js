@@ -65,6 +65,12 @@ describe("session HUD visual shell", () => {
     assert.doesNotMatch(sessionHudRenderer, /setInterval\(render, 1000\)/);
   });
 
+  it("keeps context usage chips visible before truncating elapsed text", () => {
+    assert.match(sessionHudHtml, /\.right\s*\{[\s\S]*flex:\s*0 1 58%;[\s\S]*max-width:\s*58%;[\s\S]*overflow:\s*hidden;[\s\S]*\}/);
+    assert.match(sessionHudHtml, /\.elapsed\s*\{[\s\S]*min-width:\s*0;[\s\S]*text-overflow:\s*ellipsis;[\s\S]*\}/);
+    assert.match(sessionHudHtml, /\.usage-chip\s*\{[\s\S]*flex:\s*0 0 auto;[\s\S]*white-space:\s*nowrap;[\s\S]*\}/);
+  });
+
   it("honors reduced motion for HUD animations", () => {
     assert.match(sessionHudHtml, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*\.dot-running\s*\{[\s\S]*animation:\s*none;/);
     assert.match(sessionHudHtml, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*\.unread-bell svg\s*\{[\s\S]*animation:\s*none;/);

@@ -802,11 +802,11 @@
       case "idleTracked": return "Idle follow";
       case "idleStatic": return "Idle";
       case "idleAnimation": return `Idle random #${card.poolIndex || 1}`;
-      case "thinking": return "UserPromptSubmit";
+      case "thinking": return "UserPromptSubmit / PostCompact";
       case "working": return `PreToolUse (${formatSessionRange(card.minSessions, card.maxSessions)})`;
       case "juggling": return `SubagentStart (${formatSessionRange(card.minSessions, card.maxSessions)})`;
       case "error": return "PostToolUseFailure";
-      case "attention": return "Stop / PostCompact";
+      case "attention": return "Stop";
       case "notification": return "PermissionRequest";
       case "sweeping": return "PreCompact";
       case "carrying": return "WorktreeCreate";

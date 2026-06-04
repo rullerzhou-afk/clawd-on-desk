@@ -57,6 +57,29 @@ describe("Claude context usage parser", () => {
     });
   });
 
+  it("uses a 1M limit for Claude models marked with 1m context", () => {
+    const usage = extractClaudeContextUsageFromEntries([
+      {
+        type: "assistant",
+        message: {
+          model: "claude-opus-4-8[1m]",
+          usage: {
+            input_tokens: 250000,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+        },
+      },
+    ]);
+
+    assert.deepStrictEqual(usage, {
+      used: 250000,
+      limit: 1000000,
+      percent: 25,
+      source: "claude",
+    });
+  });
+
   it("uses the latest usage entry from a transcript tail", () => {
     const usage = extractClaudeContextUsageFromEntries([
       {

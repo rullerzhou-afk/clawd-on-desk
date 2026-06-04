@@ -57,6 +57,12 @@ function shouldBypassCopilotBubble(ctx) {
   return !ctx.isAgentPermissionsEnabled("copilot-cli");
 }
 
+function shouldBypassHermesBubble(ctx) {
+  if (!arePermissionBubblesEnabled(ctx)) return true;
+  if (typeof ctx.isAgentPermissionsEnabled !== "function") return false;
+  return !ctx.isAgentPermissionsEnabled("hermes");
+}
+
 function shouldInterceptCodexPermission(ctx) {
   if (typeof ctx.isCodexPermissionInterceptEnabled !== "function") return true;
   return ctx.isCodexPermissionInterceptEnabled();
@@ -156,6 +162,24 @@ function buildCopilotPermissionSessionOptions(data) {
   return options;
 }
 
+function buildHermesPermissionSessionOptions(data) {
+  const sourcePid = normalizePositiveInteger(data.source_pid);
+  const agentPid = normalizePositiveInteger(data.agent_pid);
+  const pidChain = Array.isArray(data.pid_chain)
+    ? data.pid_chain.filter((n) => Number.isFinite(n) && n > 0).map((n) => Math.floor(n))
+    : null;
+  const options = { agentId: "hermes" };
+
+  if (sourcePid) options.sourcePid = sourcePid;
+  if (agentPid) options.agentPid = agentPid;
+  if (pidChain && pidChain.length) options.pidChain = pidChain;
+  const cwd = normalizeString(data.cwd);
+  if (cwd) options.cwd = cwd;
+  const editor = normalizeString(data.editor);
+  if (editor) options.editor = editor;
+  return options;
+}
+
 function sendCodexPermissionNoDecision(res) {
   res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
   res.end();
@@ -186,6 +210,11 @@ function sendPiPermissionAllow(res) {
 }
 
 function sendAntigravityPermissionNoDecision(res) {
+  res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+  res.end();
+}
+
+function sendHermesPermissionNoDecision(res) {
   res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
   res.end();
 }
@@ -705,6 +734,151 @@ function handlePermissionPost(req, res, options) {
         return;
       }
 
+      // ── Hermes Agent branch ──
+      // Blocking HTTP. Fallback is 204 (no-decision) so the Hermes plugin
+      // returns None and the tool executes via Hermes's native flow.
+      if (data.agent_id === "hermes") {
+        const toolName = typeof data.tool_name === "string" && data.tool_name ? data.tool_name : "Unknown";
+        const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
+        const toolInput = truncateDeep(rawInput);
+        const sessionId = typeof data.session_id === "string" && data.session_id ? data.session_id : "hermes:default";
+        const toolUseId = normalizeHookToolUseId(
+          data.tool_use_id ?? data.toolUseId ?? data.toolUseID
+        );
+        const toolInputFingerprint = buildToolInputFingerprint(rawInput);
+
+        if (ctx.doNotDisturb) {
+          recordRequestHookEvent.droppedByDnd();
+          ctx.permLog(`hermes DND -> no decision, native fallback (tool=${toolName})`);
+          sendHermesPermissionNoDecision(res);
+          return;
+        }
+
+        if (typeof ctx.isAgentEnabled === "function" && !ctx.isAgentEnabled("hermes")) {
+          recordRequestHookEvent.droppedByDisabled();
+          ctx.permLog(`hermes disabled -> no decision, native fallback (tool=${toolName})`);
+          sendHermesPermissionNoDecision(res);
+          return;
+        }
+
+        if (shouldBypassHermesBubble(ctx)) {
+          recordRequestHookEvent.accepted();
+          const reason = !arePermissionBubblesEnabled(ctx)
+            ? "permission bubbles disabled"
+            : "hermes bubbles disabled";
+          ctx.permLog(`${reason} -> no decision, native fallback (tool=${toolName})`);
+          sendHermesPermissionNoDecision(res);
+          return;
+        }
+
+        const isElicitation = toolName === "clarify" || toolName === "AskUserQuestion";
+
+        if (isElicitation) {
+          const elicitationInput = normalizeElicitationToolInput(toolInput);
+          const hermesSessionOptions = buildHermesPermissionSessionOptions(data);
+          ctx.permLog(`HERMES ELICITATION: tool=${toolName} session=${sessionId}`);
+          ctx.updateSession(sessionId, "notification", "Elicitation", hermesSessionOptions);
+
+          const permEntry = {
+            res,
+            abortHandler: null,
+            suggestions: [],
+            sessionId,
+            bubble: null,
+            hideTimer: null,
+            toolName,
+            toolInput: elicitationInput,
+            toolUseId,
+            toolInputFingerprint,
+            resolvedSuggestion: null,
+            createdAt: Date.now(),
+            isElicitation: true,
+            isHermes: true,
+            agentId: "hermes",
+            cwd: hermesSessionOptions.cwd || "",
+            agentPid: hermesSessionOptions.agentPid || null,
+            sourcePid: hermesSessionOptions.sourcePid || null,
+            pidChain: hermesSessionOptions.pidChain || null,
+            editor: hermesSessionOptions.editor || null,
+          };
+          const abortHandler = () => {
+            if (res.writableFinished) return;
+            ctx.permLog("hermes abortHandler fired (elicitation)");
+            ctx.resolvePermissionEntry(permEntry, "no-decision", "Client disconnected");
+          };
+          permEntry.abortHandler = abortHandler;
+          res.on("close", abortHandler);
+          addPendingPermission(ctx, permEntry);
+          recordRequestHookEvent.accepted();
+          try {
+            ctx.showPermissionBubble(permEntry);
+          } catch (bubbleErr) {
+            ctx.permLog(`hermes elicitation bubble failed: ${bubbleErr && bubbleErr.message} -> no decision`);
+            removePendingPermission(ctx, permEntry, "hermes-elicitation-bubble-failed");
+            if (permEntry.abortHandler) res.removeListener("close", permEntry.abortHandler);
+            if (permEntry.autoCloseTimer) { clearTimeout(permEntry.autoCloseTimer); permEntry.autoCloseTimer = null; }
+            if (permEntry.hideTimer) { clearTimeout(permEntry.hideTimer); permEntry.hideTimer = null; }
+            if (permEntry.bubble && !permEntry.bubble.isDestroyed()) {
+              try { permEntry.bubble.destroy(); } catch {}
+            }
+            permEntry.bubble = null;
+            sendHermesPermissionNoDecision(res);
+          }
+          return;
+        }
+
+        // General permission request
+        const hermesSessionOptions = buildHermesPermissionSessionOptions(data);
+        ctx.permLog(`HERMES PERMISSION: tool=${toolName} session=${sessionId}`);
+        ctx.updateSession(sessionId, "notification", "PermissionRequest", hermesSessionOptions);
+
+        const permEntry = {
+          res,
+          abortHandler: null,
+          suggestions: [],
+          sessionId,
+          bubble: null,
+          hideTimer: null,
+          toolName,
+          toolInput,
+          toolUseId,
+          toolInputFingerprint,
+          resolvedSuggestion: null,
+          createdAt: Date.now(),
+          isHermes: true,
+          agentId: "hermes",
+          cwd: hermesSessionOptions.cwd || "",
+          agentPid: hermesSessionOptions.agentPid || null,
+          sourcePid: hermesSessionOptions.sourcePid || null,
+          pidChain: hermesSessionOptions.pidChain || null,
+          editor: hermesSessionOptions.editor || null,
+        };
+        const abortHandler = () => {
+          if (res.writableFinished) return;
+          ctx.permLog("hermes abortHandler fired");
+          ctx.resolvePermissionEntry(permEntry, "no-decision", "Client disconnected");
+        };
+        permEntry.abortHandler = abortHandler;
+        res.on("close", abortHandler);
+        addPendingPermission(ctx, permEntry);
+        recordRequestHookEvent.accepted();
+        try {
+          ctx.showPermissionBubble(permEntry);
+        } catch (bubbleErr) {
+          ctx.permLog(`hermes bubble failed: ${bubbleErr && bubbleErr.message} -> no decision`);
+          removePendingPermission(ctx, permEntry, "hermes-bubble-failed");
+          if (permEntry.abortHandler) res.removeListener("close", permEntry.abortHandler);
+          if (permEntry.autoCloseTimer) { clearTimeout(permEntry.autoCloseTimer); permEntry.autoCloseTimer = null; }
+          if (permEntry.hideTimer) { clearTimeout(permEntry.hideTimer); permEntry.hideTimer = null; }
+          if (permEntry.bubble && !permEntry.bubble.isDestroyed()) {
+            try { permEntry.bubble.destroy(); } catch {}
+          }
+          permEntry.bubble = null;
+          sendHermesPermissionNoDecision(res);
+        }
+        return;
+      }
+
       // ── Claude Code branch ──
       // DND: destroy connection — do NOT send deny on the user's behalf.
       // CC falls back to its built-in chat permission prompt so the user
@@ -907,5 +1081,7 @@ module.exports = {
   sendCopilotPermissionNoDecision,
   sendPiPermissionAllow,
   sendAntigravityPermissionNoDecision,
+  sendHermesPermissionNoDecision,
+  shouldBypassHermesBubble,
   handlePermissionPost,
 };
