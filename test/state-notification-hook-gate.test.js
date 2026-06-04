@@ -50,10 +50,20 @@ function makeCtx({ notificationHookEnabled = true } = {}) {
 describe("updateSession: Notification hook gate", () => {
   let api;
   let ctx;
+  let savedDebounceEnv;
+
+  beforeEach(() => {
+    // These tests exercise the Notification gate, not the #406 completion
+    // debounce — disable the debounce so a Claude Stop settles immediately.
+    savedDebounceEnv = process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
+    process.env.CLAWD_COMPLETION_DEBOUNCE_MS = "0";
+  });
 
   afterEach(() => {
     if (api) api.cleanup();
     mock.timers.reset();
+    if (savedDebounceEnv === undefined) delete process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
+    else process.env.CLAWD_COMPLETION_DEBOUNCE_MS = savedDebounceEnv;
   });
 
   it("mutes Notification bell + animation when the per-agent flag is off", () => {

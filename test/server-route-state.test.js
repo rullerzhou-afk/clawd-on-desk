@@ -150,6 +150,9 @@ describe("server-route-state POST", () => {
         permissionSuspect: true,
         preserveState: true,
         hookSource: "codex-official",
+        backgroundTasksCount: 0,
+        sessionCronsCount: 0,
+        stopHookActive: false,
       },
     ]]);
   });

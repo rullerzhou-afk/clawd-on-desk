@@ -66,7 +66,27 @@ const sessions = new Map();
 const MAX_SESSIONS = 20;
 const ASSISTANT_OUTPUT_MAX = 2400;
 const CODEX_EXIT_PROBE_DELAYS_MS = [1000, 3000, 8000, 15000];
-const POST_COMPLETION_EVENTS = new Set(["Stop", "PostCompact", "event_msg:task_complete"]);
+// PostCompact intentionally excluded (#406): compaction finishing is not a turn
+// completion, so it must not flip awaitingInputSinceStop.
+const POST_COMPLETION_EVENTS = new Set(["Stop", "event_msg:task_complete"]);
+// #406: forward progress for a session cancels its pending (debounced)
+// completion — these events all mean the agent loop is still running.
+const COMPLETION_CANCEL_EVENTS = new Set([
+  "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
+  "SubagentStart", "SubagentStop", "PreCompact", "PostCompact",
+  "PermissionRequest", "Elicitation", "StopFailure", "ApiError", "SessionEnd",
+]);
+function getCompletionDebounceMs() {
+  const raw = process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
+  const n = Number.parseInt(raw, 10);
+  // Opt-in, default 0 = celebrate immediately on Stop. The field gates
+  // (PostCompact / background_tasks / session_crons / stop_hook_active) already
+  // suppress the common false completions with zero delay; the debounce only
+  // adds value for the rare third-party Stop-hook veto, so it is off by default
+  // and users who actually hit that can set CLAWD_COMPLETION_DEBOUNCE_MS > 0.
+  if (Number.isFinite(n) && n >= 0 && n <= 10000) return n;
+  return 0;
+}
 let lastSessionSnapshotSignature = null;
 let lastSessionSnapshot = null;
 let startupRecoveryActive = false;
@@ -103,6 +123,9 @@ let stateChangedAt = Date.now();
 let pendingTimer = null;
 let autoReturnTimer = null;
 let pendingState = null;
+// #406 Stop completion debounce: sessionId -> timer holding a Stop as "working"
+// until a quiet window confirms the turn really ended.
+const pendingCompletionTimers = new Map();
 let eyeResendTimer = null;
 let updateVisualState = null;
 let updateVisualKind = null;
@@ -886,6 +909,67 @@ function resolveIncomingAgentId(existing, incomingAgentId, incomingDefaulted) {
   return incomingAgentId || remembered || null;
 }
 
+// ── #406 Stop completion gate ──
+// A Claude "Stop" maps to "attention" (celebrate + complete sound), but a Stop
+// is not always a real turn completion. Decidable-now signals (live
+// background_tasks/session_crons, or a stop_hook_active continuation) are held
+// as "working" by updateSession directly. For a plain Stop we debounce: hold
+// "working" and only celebrate if no forward-progress event for the session
+// arrives within the window — this catches a third-party Stop hook that vetoes
+// the stop (Claude keeps going) without us ever seeing the veto.
+function scheduleCompletionDebounce(sessionId) {
+  const debounceMs = getCompletionDebounceMs();
+  const existing = pendingCompletionTimers.get(sessionId);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    pendingCompletionTimers.delete(sessionId);
+    promoteCompletion(sessionId);
+  }, debounceMs);
+  pendingCompletionTimers.set(sessionId, timer);
+}
+
+function cancelCompletionDebounce(sessionId, reason) {
+  const timer = pendingCompletionTimers.get(sessionId);
+  if (!timer) return;
+  clearTimeout(timer);
+  pendingCompletionTimers.delete(sessionId);
+  debugSession(`stop-debounce cancel sid=${sessionId} by=${reason || "-"}`);
+}
+
+function clearAllCompletionDebounces() {
+  for (const timer of pendingCompletionTimers.values()) clearTimeout(timer);
+  pendingCompletionTimers.clear();
+}
+
+// Debounce window elapsed with no forward progress → the turn really ended.
+// Replay the real Stop the gate withheld: append a Stop event (so the badge →
+// "done" and the Telegram completion fires exactly once, re-asserting a Stop
+// tail over any Notification that landed during the window), settle to idle,
+// and only now flip awaitingInputSinceStop. Then celebrate, unless a Kimi
+// permission lock is holding the pet.
+function promoteCompletion(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  session.recentEvents = pushRecentEvent(session, "idle", "Stop");
+  session.state = "idle";
+  session.updatedAt = Date.now();
+  session.displayHint = null;
+  session.awaitingInputSinceStop = true;
+  emitSessionSnapshot({ force: true });
+  if (hasPermissionAnimationLock()) {
+    const display = resolveDisplayState();
+    setState(display, getSvgOverride(display));
+    return;
+  }
+  // The completion's data (done badge + Telegram push) already landed via the
+  // snapshot above. The celebration is visual-only, so let setState()'s
+  // priority guard decide: if a higher-priority visual is queued — possibly
+  // from ANOTHER session (e.g. an error) — it must win. We must NOT clear the
+  // global pending queue here; pendingTimer/pendingState are process-wide, not
+  // per-session, so clearing them would swallow another session's visual.
+  setState("attention");
+}
+
 // ── Session management ──
 // Session-related fields go through `opts`. Earlier versions took 13
 // positional params — refactored in B2 to an options bag so new fields
@@ -917,10 +1001,19 @@ function updateSession(sessionId, state, event, opts = {}) {
     agentIdDefaulted = false,
     muteNotificationSound = false,
     transientPermissionEvent = false,
+    backgroundTasksCount = 0,
+    sessionCronsCount = 0,
+    stopHookActive = false,
   } = opts;
   if (startupRecoveryActive) {
     startupRecoveryActive = false;
     if (startupRecoveryTimer) { clearTimeout(startupRecoveryTimer); startupRecoveryTimer = null; }
+  }
+
+  // #406: forward progress cancels a pending debounced completion. Runs before
+  // the PermissionRequest early-return so a permission prompt cancels too.
+  if (event !== "Stop" && COMPLETION_CANCEL_EVENTS.has(event)) {
+    cancelCompletionDebounce(sessionId, event);
   }
 
   const sessionForPerm = sessions.get(sessionId);
@@ -1024,6 +1117,43 @@ function updateSession(sessionId, state, event, opts = {}) {
   const isSubagentStart = event === "SubagentStart" || event === "subagentStart";
   const isSubagentStop = event === "SubagentStop" || event === "subagentStop";
   const preservedState = preserveState && existing ? existing.state : null;
+
+  // #406 Stop completion gate — Claude Code only; other agents keep their own
+  // completion semantics (Codex task_complete + remote exit probes, etc.). A
+  // Stop → "attention" is not always a real turn end:
+  //   · live background_tasks / session_crons → work continues in the bg
+  //   · stop_hook_active → a Stop hook vetoed the stop; Claude will continue
+  //   · a third-party Stop hook can veto THIS stop, invisibly to us → debounce
+  // The first two are decidable now: hold "working" (badge stays "running", no
+  // celebrate, no "done"). A plain Stop is debounced — held "working" until a
+  // quiet window with no forward-progress event confirms the turn really ended.
+  if (event === "Stop" && state === "attention" && srcAgentId === "claude-code") {
+    cancelCompletionDebounce(sessionId, "stop-superseded");
+    const liveWork =
+      backgroundTasksCount > 0 || sessionCronsCount > 0 || stopHookActive === true;
+    const debounceMs = getCompletionDebounceMs();
+    if (liveWork || debounceMs > 0) {
+      // Hold the Stop as "working" and DROP the event to null so recentEvents
+      // keeps NO "Stop" tail while held. Why null and not "Stop": deriveSessionBadge
+      // only inspects the latest event, so a withheld Stop tail would (a) be
+      // resurrected as a false "done" once stale-cleanup flips the session to
+      // idle, and (b) be buried by a follow-up Notification, losing the real
+      // completion. With no tail the badge stays "running" (no celebrate, no
+      // done, no Telegram push). promoteCompletion replays a real Stop if/when
+      // the quiet window confirms the turn actually ended.
+      state = "working";
+      event = null;
+      if (liveWork) {
+        debugSession(
+          `stop-gate sid=${sessionId} bg=${backgroundTasksCount} crons=${sessionCronsCount} active=${stopHookActive} action=hold-working`
+        );
+        // liveWork never auto-promotes; a later plain Stop (no bg work) will.
+      } else {
+        scheduleCompletionDebounce(sessionId);
+      }
+    }
+    // debounceMs <= 0 && !liveWork → keep "attention" (immediate celebration).
+  }
 
   // Qwen Code 0.16.1 self-submit guard. qwen's agentic loop fires a synthetic
   // UserPromptSubmit ~900-1000ms after PostToolUse to feed the tool result
@@ -1683,6 +1813,7 @@ function enableDoNotDisturb() {
   disposeAllKimiPermissionState();
   if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; pendingState = null; }
   if (autoReturnTimer) { clearTimeout(autoReturnTimer); autoReturnTimer = null; }
+  clearAllCompletionDebounces();
   stopWakePoll();
   if (ctx.miniMode) {
     applyState("mini-sleep");
@@ -1730,6 +1861,7 @@ function cleanup() {
   if (pendingTimer) clearTimeout(pendingTimer);
   pendingState = null;
   if (autoReturnTimer) clearTimeout(autoReturnTimer);
+  clearAllCompletionDebounces();
   if (eyeResendTimer) clearTimeout(eyeResendTimer);
   if (startupRecoveryTimer) clearTimeout(startupRecoveryTimer);
   if (wakePollTimer) clearInterval(wakePollTimer);
