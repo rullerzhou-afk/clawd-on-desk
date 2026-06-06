@@ -10,6 +10,10 @@
     return helpers.t(key);
   }
 
+  function formatVersionForMessage(version) {
+    return String(version || "").replace(/^v/i, "");
+  }
+
   // #329: getAboutInfo() now returns dynamic fields (pendingUpdateVersion,
   // autoUpdateCheck) alongside the static identity fields. The static
   // parts (heroSvgContent, license, copyright, etc.) are still safe to
@@ -245,7 +249,10 @@
       if (safe.pendingUpdateVersion) {
         const hint = document.createElement("span");
         hint.className = "about-update-hint";
-        hint.textContent = "· " + t("aboutUpdateAvailableHint").replace("{version}", safe.pendingUpdateVersion);
+        hint.textContent = "· " + t("aboutUpdateAvailableHint").replace(
+          "{version}",
+          formatVersionForMessage(safe.pendingUpdateVersion)
+        );
         hint.style.cursor = "pointer";
         hint.addEventListener("click", () => {
           if (!window.settingsAPI || typeof window.settingsAPI.checkForUpdates !== "function") return;

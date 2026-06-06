@@ -542,6 +542,7 @@ describe("updater visual flow", () => {
       },
     });
     const updater = initUpdater(ctx, makeDeps({
+      platform: "win32",
       autoUpdaterFactory: () => ({
         autoDownload: false,
         autoInstallOnAppQuit: true,
@@ -1352,6 +1353,29 @@ describe("updater #329 background scheduler", () => {
     assert.deepStrictEqual(prefs.snapshot().dismissedUpdateVersions, {});
     // Pending version is still recorded so the menu badge can show.
     assert.strictEqual(prefs.snapshot().pendingUpdateVersion, "v0.9.0");
+  });
+
+  it("formats pending update menu labels without duplicating the release tag v prefix", async () => {
+    const prefs = makePrefs();
+    const bubbles = [];
+    const ctx = makeCtxWithPrefs(prefs, {
+      t: (key) => key === "checkForUpdatesPending" ? "有新版本 · v{version}" : key,
+      showUpdateBubble: (payload) => {
+        bubbles.push(payload);
+        return Promise.resolve({ action: "later", source: "autoClose" });
+      },
+    });
+    const updater = initUpdater(ctx, makeDeps({
+      app: { isPackaged: true, getVersion: () => "0.5.0", relaunch() {}, exit() {} },
+    }));
+
+    await updater.handlePendingVersion("v0.9.0", { tag_name: "v0.9.0" }, { trigger: "scheduled" });
+
+    assert.strictEqual(prefs.snapshot().pendingUpdateVersion, "v0.9.0");
+    assert.strictEqual(updater.getUpdateMenuLabel(), "有新版本 · v0.9.0");
+    assert.doesNotMatch(updater.getUpdateMenuLabel(), /vv0\.9\.0/);
+    assert.strictEqual(bubbles[0].version, "v0.9.0");
+    assert.doesNotMatch(bubbles[0].message, /vv0\.9\.0/);
   });
 
   it("handlePendingVersion: source=policy later → NO dedupe entry", async () => {
