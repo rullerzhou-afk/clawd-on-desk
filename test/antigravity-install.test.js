@@ -15,6 +15,11 @@ const {
 
 const tempDirs = [];
 
+// POSIX tests exec a real shell via /bin/sh (absent on Windows); Windows tests
+// spawn powershell.exe. Each is skipped on the platform where it cannot run.
+const posixOnly = { skip: process.platform === "win32" ? "requires POSIX /bin/sh" : false };
+const windowsOnly = { skip: process.platform !== "win32" ? "requires Windows PowerShell" : false };
+
 function makeTempHome({ withConfig = true } = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-antigravity-home-"));
   tempDirs.push(home);
@@ -35,6 +40,16 @@ function listCleanupBackups(filePath) {
 function decodeEncodedCommand(command) {
   const encoded = command.split(/\s+/).at(-1);
   return Buffer.from(encoded, "base64").toString("utf16le");
+}
+
+function runWindowsHookCommand(command, options = {}) {
+  const idx = command.indexOf(" -NoProfile");
+  assert.notStrictEqual(idx, -1, "expected PowerShell command");
+  return spawnSync(command.slice(0, idx), command.slice(idx + 1).split(/\s+/), {
+    input: options.input || JSON.stringify({ conversationId: "c1" }),
+    encoding: "utf8",
+    timeout: options.timeout,
+  });
 }
 
 afterEach(() => {
@@ -71,7 +86,7 @@ describe("Antigravity hook installer", () => {
         : commands[0];
       assert.ok(commandText.includes(MARKER));
       assert.ok(commandText.includes(event));
-      assert.ok(commandText.includes("printf") || commandText.includes("[Console]::Out.WriteLine"));
+      assert.ok(commandText.includes("printf") || commandText.includes("ProcessStartInfo"));
     }
     // D2: PreToolUse intentionally NOT registered.
     assert.strictEqual(hooks[HOOK_GROUP_ID].PreToolUse, undefined);
@@ -199,7 +214,7 @@ describe("Antigravity hook installer", () => {
     assert.ok(Array.isArray(group.Stop));
   });
 
-  it("fail-opens POSIX hook commands when Node cannot start", () => {
+  it("fail-opens POSIX hook commands when Node cannot start", posixOnly, () => {
     const command = __test.buildAntigravityHookCommand(
       "/definitely/missing/node",
       "/definitely/missing/antigravity-hook.js",
@@ -217,7 +232,7 @@ describe("Antigravity hook installer", () => {
     assert.strictEqual(result.stderr, "");
   });
 
-  it("fail-opens POSIX Stop hooks with an allow-shaped fallback", () => {
+  it("fail-opens POSIX Stop hooks with an allow-shaped fallback", posixOnly, () => {
     const command = __test.buildAntigravityHookCommand(
       "/definitely/missing/node",
       "/definitely/missing/antigravity-hook.js",
@@ -235,11 +250,11 @@ describe("Antigravity hook installer", () => {
     assert.strictEqual(result.stderr, "");
   });
 
-  it("overrides partial POSIX hook stdout when Node exits nonzero", () => {
+  it("overrides partial POSIX hook stdout when Node exits nonzero", posixOnly, () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-antigravity-partial-"));
     tempDirs.push(tmpDir);
     const scriptPath = path.join(tmpDir, "partial-hook.js");
-    fs.writeFileSync(scriptPath, "process.stdout.write('{}\\n'); process.exit(1);\n", "utf8");
+    fs.writeFileSync(scriptPath, "process.stdout.write('PARTIAL-NOT-JSON'); process.exit(1);", "utf8");
     const command = __test.buildAntigravityHookCommand(
       process.execPath,
       scriptPath,
@@ -257,7 +272,7 @@ describe("Antigravity hook installer", () => {
     assert.strictEqual(result.stderr, "");
   });
 
-  it("falls back when a POSIX hook exits successfully with empty stdout", () => {
+  it("falls back when a POSIX hook exits successfully with empty stdout", posixOnly, () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-antigravity-empty-"));
     tempDirs.push(tmpDir);
     const scriptPath = path.join(tmpDir, "empty-hook.js");
@@ -279,7 +294,7 @@ describe("Antigravity hook installer", () => {
     assert.strictEqual(result.stderr, "");
   });
 
-  it("preserves successful POSIX multiline stdout and suppresses stderr", () => {
+  it("preserves successful POSIX multiline stdout and suppresses stderr", posixOnly, () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-antigravity-multiline-"));
     tempDirs.push(tmpDir);
     const scriptPath = path.join(tmpDir, "multiline-hook.js");
@@ -305,6 +320,125 @@ describe("Antigravity hook installer", () => {
     assert.strictEqual(result.stderr, "");
   });
 
+  it("falls back when a POSIX hook prints non-JSON on a zero exit", posixOnly, () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-antigravity-nonjson-"));
+    tempDirs.push(tmpDir);
+    const scriptPath = path.join(tmpDir, "nonjson-hook.js");
+    fs.writeFileSync(scriptPath, "process.stdout.write('{bad}'); process.exit(0);", "utf8");
+    const command = __test.buildAntigravityHookCommand(
+      process.execPath,
+      scriptPath,
+      "PreInvocation",
+      { platform: "linux" }
+    );
+
+    const result = spawnSync("/bin/sh", ["-c", command], {
+      input: JSON.stringify({ conversationId: "c1" }),
+      encoding: "utf8",
+    });
+
+    assert.strictEqual(result.status, 0);
+    assert.strictEqual(result.stdout.trim(), "{}");
+    assert.strictEqual(result.stderr, "");
+  });
+
+  it("fails open when a POSIX hook exceeds the internal timeout", posixOnly, () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-antigravity-timeout-"));
+    tempDirs.push(tmpDir);
+    const scriptPath = path.join(tmpDir, "timeout-hook.js");
+    fs.writeFileSync(scriptPath, "setTimeout(() => process.stdout.write('{}'), 5000);", "utf8");
+    const command = __test.buildAntigravityHookCommand(
+      process.execPath,
+      scriptPath,
+      "PreInvocation",
+      { platform: "linux", failOpenTimeoutSeconds: 1 }
+    );
+
+    const started = Date.now();
+    const result = spawnSync("/bin/sh", ["-c", command], {
+      input: JSON.stringify({ conversationId: "c1" }),
+      encoding: "utf8",
+    });
+
+    assert.strictEqual(result.status, 0);
+    assert.strictEqual(result.stdout.trim(), "{}");
+    assert.strictEqual(result.stderr, "");
+    assert.ok(Date.now() - started < 4000, "wrapper should not wait for the child timer");
+  });
+
+  it("fail-opens Windows hook commands when Node cannot start", windowsOnly, () => {
+    const command = __test.buildAntigravityHookCommand(
+      "C:/definitely/missing/node.exe",
+      "C:/definitely/missing/antigravity-hook.js",
+      "PreInvocation",
+      { platform: "win32" }
+    );
+    const result = runWindowsHookCommand(command);
+
+    assert.strictEqual(result.status, 0);
+    assert.strictEqual(result.stdout.trim(), "{}");
+  });
+
+  it("falls back on Windows when the hook prints non-JSON on a zero exit", windowsOnly, () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-antigravity-winjson-"));
+    tempDirs.push(tmpDir);
+    const scriptPath = path.join(tmpDir, "antigravity-hook.js");
+    fs.writeFileSync(scriptPath, "process.stdout.write('{bad}'); process.exit(0);", "utf8");
+    const command = __test.buildAntigravityHookCommand(
+      process.execPath,
+      scriptPath,
+      "PreInvocation",
+      { platform: "win32" }
+    );
+    const result = runWindowsHookCommand(command);
+
+    assert.strictEqual(result.status, 0);
+    assert.strictEqual(result.stdout.trim(), "{}");
+  });
+
+  it("preserves successful Windows hook stdout and suppresses stderr", windowsOnly, () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-antigravity-winok-"));
+    tempDirs.push(tmpDir);
+    const scriptPath = path.join(tmpDir, "antigravity-hook.js");
+    fs.writeFileSync(
+      scriptPath,
+      "process.stderr.write('noise\\n'); process.stdout.write('{\\n  \"ok\": true\\n}\\n');",
+      "utf8"
+    );
+    const command = __test.buildAntigravityHookCommand(
+      process.execPath,
+      scriptPath,
+      "PreInvocation",
+      { platform: "win32" }
+    );
+
+    const result = runWindowsHookCommand(command);
+
+    assert.strictEqual(result.status, 0);
+    assert.strictEqual(result.stdout.trim().replace(/\r\n/g, "\n"), "{\n  \"ok\": true\n}");
+    assert.strictEqual(result.stderr, "");
+  });
+
+  it("fails open when a Windows hook exceeds the internal timeout", windowsOnly, () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-antigravity-wintimeout-"));
+    tempDirs.push(tmpDir);
+    const scriptPath = path.join(tmpDir, "antigravity-hook.js");
+    fs.writeFileSync(scriptPath, "setTimeout(() => process.stdout.write('{}'), 5000);", "utf8");
+    const command = __test.buildAntigravityHookCommand(
+      process.execPath,
+      scriptPath,
+      "PreInvocation",
+      { platform: "win32", failOpenTimeoutSeconds: 1 }
+    );
+
+    const started = Date.now();
+    const result = runWindowsHookCommand(command, { timeout: 4000 });
+
+    assert.strictEqual(result.status, 0);
+    assert.strictEqual(result.stdout.trim(), "{}");
+    assert.ok(Date.now() - started < 4000, "wrapper should not wait for the child timer");
+  });
+
   it("builds Windows PowerShell bridge commands with fail-open fallback", () => {
     const command = __test.buildAntigravityHookCommand(
       "C:\\Program Files\\nodejs\\node.exe",
@@ -316,8 +450,11 @@ describe("Antigravity hook installer", () => {
     assert.ok(command.startsWith("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand "));
     const decoded = decodeEncodedCommand(command);
     assert.ok(decoded.includes("$ErrorActionPreference='SilentlyContinue'"));
-    assert.ok(decoded.includes("$out = & 'C:\\Program Files\\nodejs\\node.exe' 'D:/clawd/hooks/antigravity-hook.js' 'PreToolUse' 2>$null"));
-    assert.ok(decoded.includes("if (($LASTEXITCODE -eq 0) -and ($null -ne $out))"));
+    assert.ok(decoded.includes("$psi = New-Object System.Diagnostics.ProcessStartInfo"));
+    assert.ok(decoded.includes("$psi.FileName = 'C:\\Program Files\\nodejs\\node.exe'"));
+    assert.ok(decoded.includes("$psi.Arguments = 'D:/clawd/hooks/antigravity-hook.js PreToolUse'"));
+    assert.ok(decoded.includes("if ($proc.WaitForExit(8000))"));
+    assert.ok(decoded.includes("ConvertFrom-Json -ErrorAction Stop"));
     assert.ok(decoded.includes("[Console]::Out.WriteLine( '{\"decision\":\"ask\"}' )"));
     assert.ok(decoded.endsWith("exit 0"));
   });
@@ -339,7 +476,8 @@ describe("Antigravity hook installer", () => {
 
     const hooks = readJson(path.join(homeDir, ".gemini", "config", "hooks.json"));
     const decoded = decodeEncodedCommand(hooks[HOOK_GROUP_ID].PreInvocation[0].command);
-    assert.ok(decoded.includes(`$out = & '${nodeBin}' '${path.resolve(__dirname, "..", "hooks", "antigravity-hook.js").replace(/\\/g, "/")}' 'PreInvocation' 2>$null`));
+    assert.ok(decoded.includes(`$psi.FileName = '${nodeBin}'`));
+    assert.ok(decoded.includes(`$psi.Arguments = '${path.resolve(__dirname, "..", "hooks", "antigravity-hook.js").replace(/\\/g, "/")} PreInvocation'`));
     assert.ok(decoded.includes("[Console]::Out.WriteLine( '{}' )"));
   });
 

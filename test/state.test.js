@@ -2888,3 +2888,74 @@ describe("qwen-code self-submit filter", () => {
     assert.strictEqual(after.state, "thinking", "out-of-range env must fall back to default 2000ms (not honored)");
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Antigravity 1.0.6 can emit a trailing PostToolUse after Stop. Once Stop has
+// marked the session awaiting input, that stale tool boundary must not resurrect
+// the mascot into a stuck typing/working state.
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("antigravity trailing PostToolUse filter", () => {
+  let api, ctx;
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    ctx = makeCtx();
+    api = require("../src/state")(ctx);
+  });
+  afterEach(() => {
+    api.cleanup();
+    mock.timers.reset();
+  });
+
+  function finishAntigravityTurn() {
+    update(api, { id: "agid", state: "thinking", event: "UserPromptSubmit", agentId: "antigravity-cli" });
+    mock.timers.tick(100);
+    update(api, { id: "agid", state: "working", event: "PostToolUse", agentId: "antigravity-cli" });
+    mock.timers.tick(100);
+    update(api, { id: "agid", state: "idle", event: "AfterAgent", agentId: "antigravity-cli" });
+    mock.timers.tick(100);
+    update(api, { id: "agid", state: "attention", event: "Stop", agentId: "antigravity-cli" });
+    const afterStop = api.sessions.get("agid");
+    assert.ok(afterStop, "Antigravity session should exist after Stop");
+    assert.strictEqual(afterStop.state, "idle");
+    assert.strictEqual(afterStop.awaitingInputSinceStop, true);
+    assert.ok(Number.isFinite(afterStop.lastStopAt), "Stop should bump lastStopAt");
+    return afterStop;
+  }
+
+  it("drops PostToolUse that arrives after a fully-idle Stop", () => {
+    const before = finishAntigravityTurn();
+    const snapshot = {
+      state: before.state,
+      updatedAt: before.updatedAt,
+      recentEvents: [...(before.recentEvents || [])],
+      lastToolBoundaryAt: before.lastToolBoundaryAt,
+      lastStopAt: before.lastStopAt,
+    };
+
+    mock.timers.tick(1200);
+    update(api, { id: "agid", state: "working", event: "PostToolUse", agentId: "antigravity-cli" });
+
+    const after = api.sessions.get("agid");
+    assert.strictEqual(after.state, "idle", "stale PostToolUse must not resurrect working");
+    assert.strictEqual(after.updatedAt, snapshot.updatedAt, "dropped event must not bump updatedAt");
+    assert.deepStrictEqual(after.recentEvents, snapshot.recentEvents, "dropped event must not append history");
+    assert.strictEqual(after.lastToolBoundaryAt, snapshot.lastToolBoundaryAt, "dropped event must not refresh tool boundary");
+    assert.strictEqual(after.lastStopAt, snapshot.lastStopAt, "dropped event must preserve Stop timestamp");
+  });
+
+  it("allows PostToolUse after a new user prompt starts the next turn", () => {
+    finishAntigravityTurn();
+
+    mock.timers.tick(500);
+    update(api, { id: "agid", state: "thinking", event: "UserPromptSubmit", agentId: "antigravity-cli" });
+    mock.timers.tick(100);
+    update(api, { id: "agid", state: "working", event: "PostToolUse", agentId: "antigravity-cli" });
+
+    const after = api.sessions.get("agid");
+    assert.strictEqual(after.state, "working");
+    assert.strictEqual(after.awaitingInputSinceStop, false);
+    assert.ok(after.lastToolBoundaryAt > after.lastStopAt, "new turn should refresh tool boundary after Stop");
+  });
+});

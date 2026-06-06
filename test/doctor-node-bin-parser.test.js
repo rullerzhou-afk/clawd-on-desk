@@ -82,6 +82,28 @@ describe("doctor hook command parser", () => {
     );
   });
 
+  it("validates EncodedCommand ProcessStartInfo args when the hook path has spaces", () => {
+    const nodeBin = "C:\\Program Files\\nodejs\\node.exe";
+    const scriptPath = "D:/Program Files/Clawd/hooks/antigravity-hook.js";
+    const command = antigravityInstallTest.buildWindowsAntigravityHookCommand(
+      nodeBin,
+      scriptPath,
+      "PreInvocation",
+      {
+        platform: "win32",
+        powerShellBin: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      }
+    );
+
+    assert.deepStrictEqual(
+      validateHookCommand(command, {
+        platform: "win32",
+        fs: fakeFs([nodeBin, scriptPath]),
+      }),
+      { ok: true, nodeBin, scriptPath }
+    );
+  });
+
   it("validates POSIX Antigravity fail-open capture commands", () => {
     const nodeBin = "/usr/local/bin/node";
     const scriptPath = "/opt/clawd/hooks/antigravity-hook.js";

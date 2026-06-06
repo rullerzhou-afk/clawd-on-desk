@@ -222,6 +222,15 @@ function shouldMuteMiniPostCompletionNotification(state, event, session) {
     && !hasPermissionAnimationLock();
 }
 
+function shouldDropAntigravityPostStopToolUse(existing, state, event, agentId) {
+  return agentId === "antigravity-cli"
+    && event === "PostToolUse"
+    && state === "working"
+    && existing
+    && existing.awaitingInputSinceStop === true
+    && Number.isFinite(existing.lastStopAt);
+}
+
 // ── Qwen Code self-submit filter ──
 // qwen 0.16.1 fires a synthetic UserPromptSubmit ~900-1000ms after
 // PostToolUse to feed the tool result back to the model. Without filtering,
@@ -1205,6 +1214,14 @@ function updateSession(sessionId, state, event, opts = {}) {
     && isQwenSelfSubmitFilterEnabled()
   ) {
     debugSession(`qwen self-submit drop sid=${sessionId} elapsed=${Date.now() - existing.lastToolBoundaryAt}ms`);
+    return;
+  }
+
+  // Antigravity 1.0.6 can emit a trailing PostToolUse about a second after a
+  // fully-idle Stop for the same conversation. Treat it as stale so it does not
+  // resurrect the completed session into a permanent typing/working state.
+  if (shouldDropAntigravityPostStopToolUse(existing, state, event, srcAgentId)) {
+    debugSession(`antigravity trailing PostToolUse drop sid=${sessionId}`);
     return;
   }
 

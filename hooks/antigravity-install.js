@@ -11,7 +11,6 @@ const {
   writeJsonAtomic,
   writeJsonAtomicWithBackup,
   asarUnpackedPath,
-  formatNodeHookCommand,
   decodeWindowsEncodedCommand,
   extractFirstQuotedToken,
   windowsPowerShellBin,
@@ -35,6 +34,7 @@ const ANTIGRAVITY_HOOK_EVENTS = [
   "Stop",
 ];
 const DEFAULT_HOOK_TIMEOUT_SECONDS = 10;
+const FAIL_OPEN_CHILD_TIMEOUT_SECONDS = 8;
 
 function fallbackStdoutForEvent(event) {
   return stdoutForAntigravityEvent(event);
@@ -48,27 +48,144 @@ function quotePowerShellSingleArg(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
-function withFailOpenShellFallback(command, event) {
+function normalizeFailOpenTimeoutSeconds(options = {}) {
+  const raw = Number(options.failOpenTimeoutSeconds);
+  if (Number.isFinite(raw) && raw > 0) return Math.max(1, Math.floor(raw));
+  return FAIL_OPEN_CHILD_TIMEOUT_SECONDS;
+}
+
+function quoteWindowsProcessArg(value) {
+  const text = String(value);
+  if (text && !/[\s"]/u.test(text)) return text;
+  let out = '"';
+  let backslashes = 0;
+  for (const ch of text) {
+    if (ch === "\\") {
+      backslashes++;
+      continue;
+    }
+    if (ch === '"') {
+      out += "\\".repeat((backslashes * 2) + 1);
+      out += '"';
+      backslashes = 0;
+      continue;
+    }
+    out += "\\".repeat(backslashes);
+    backslashes = 0;
+    out += ch;
+  }
+  out += "\\".repeat(backslashes * 2);
+  out += '"';
+  return out;
+}
+
+function withFailOpenShellFallback(command, event, nodeBin, options = {}) {
   const fallback = quoteShellSingleArg(fallbackStdoutForEvent(event));
-  return `out=$(${command} 2>/dev/null); status=$?; if [ "$status" -eq 0 ] && [ -n "$out" ]; then printf '%s\\n' "$out"; else printf '%s\\n' ${fallback}; fi; exit 0`;
+  const timeoutSeconds = normalizeFailOpenTimeoutSeconds(options);
+  const validatorScript = [
+    "let s='';",
+    "process.stdin.setEncoding('utf8');",
+    "process.stdin.on('data',c=>s+=c);",
+    "process.stdin.on('end',()=>{",
+    "try{const v=JSON.parse(s);if(!v||typeof v!=='object'||Array.isArray(v))process.exit(1);}",
+    "catch{process.exit(1);}",
+    "});",
+  ].join("");
+  const validatorCommand = [
+    nodeBin,
+    "-e",
+    validatorScript,
+  ].map(quoteShellSingleArg).join(" ");
+  return [
+    "tmp_dir=${TMPDIR:-/tmp}",
+    "in_file=$(mktemp \"$tmp_dir/clawd-agy-in.XXXXXX\" 2>/dev/null || printf '%s/clawd-agy-in-%s' \"$tmp_dir\" \"$$\")",
+    "out_file=$(mktemp \"$tmp_dir/clawd-agy-out.XXXXXX\" 2>/dev/null || printf '%s/clawd-agy-out-%s' \"$tmp_dir\" \"$$\")",
+    "pid=",
+    "watchdog=",
+    "cleanup(){ [ -n \"$watchdog\" ] && kill \"$watchdog\" 2>/dev/null; [ -n \"$pid\" ] && kill \"$pid\" 2>/dev/null; rm -f \"$in_file\" \"$out_file\"; }",
+    "trap cleanup EXIT HUP INT TERM",
+    "cat > \"$in_file\" 2>/dev/null || :",
+    `${command} < "$in_file" > "$out_file" 2>/dev/null & pid=$!`,
+    `( sleep ${timeoutSeconds}; kill "$pid" 2>/dev/null ) & watchdog=$!`,
+    "wait \"$pid\" 2>/dev/null",
+    "status=$?",
+    "kill \"$watchdog\" 2>/dev/null",
+    "wait \"$watchdog\" 2>/dev/null",
+    "pid=",
+    "watchdog=",
+    "out=$(cat \"$out_file\" 2>/dev/null)",
+    `if [ "$status" -eq 0 ] && [ -n "$out" ] && printf '%s' "$out" | ${validatorCommand} 2>/dev/null; then printf '%s\\n' "$out"; else printf '%s\\n' ${fallback}; fi`,
+    "exit 0",
+  ].join("; ");
 }
 
 function buildWindowsEncodedFailOpenNodeHookCommand(nodeBin, hookScript, event, options = {}) {
   const fallback = fallbackStdoutForEvent(event);
+  const timeoutMs = normalizeFailOpenTimeoutSeconds(options) * 1000;
+  const childArgs = [
+    quoteWindowsProcessArg(hookScript),
+    quoteWindowsProcessArg(event),
+  ].join(" ");
   const psCommand = [
     "$ErrorActionPreference='SilentlyContinue'",
+    ";",
+    "$ProgressPreference='SilentlyContinue'",
     ";",
     "$text=''",
     ";",
     "try {",
-    "$out = &",
-    quotePowerShellSingleArg(nodeBin),
-    quotePowerShellSingleArg(hookScript),
-    quotePowerShellSingleArg(event),
-    "2>$null",
+    "$psi = New-Object System.Diagnostics.ProcessStartInfo",
     ";",
-    "if (($LASTEXITCODE -eq 0) -and ($null -ne $out)) { $text=($out -join [Environment]::NewLine) }",
+    "$psi.FileName =",
+    quotePowerShellSingleArg(nodeBin),
+    ";",
+    "$psi.Arguments =",
+    quotePowerShellSingleArg(childArgs),
+    ";",
+    "$psi.UseShellExecute = $false",
+    ";",
+    "$psi.RedirectStandardInput = $true",
+    ";",
+    "$psi.RedirectStandardOutput = $true",
+    ";",
+    "$psi.RedirectStandardError = $true",
+    ";",
+    "$psi.CreateNoWindow = $true",
+    ";",
+    "$proc = New-Object System.Diagnostics.Process",
+    ";",
+    "$proc.StartInfo = $psi",
+    ";",
+    "[void]$proc.Start()",
+    ";",
+    "$stdoutTask = $proc.StandardOutput.ReadToEndAsync()",
+    ";",
+    "$stderrTask = $proc.StandardError.ReadToEndAsync()",
+    ";",
+    "$stdinText = [Console]::In.ReadToEnd()",
+    ";",
+    "$proc.StandardInput.Write($stdinText)",
+    ";",
+    "$proc.StandardInput.Close()",
+    ";",
+    `if ($proc.WaitForExit(${timeoutMs})) {`,
+    "$proc.WaitForExit()",
+    ";",
+    "$out = $stdoutTask.Result",
+    ";",
+    "[void]$stderrTask.Result",
+    ";",
+    "if (($proc.ExitCode -eq 0) -and ($null -ne $out)) { $text=$out.TrimEnd(\"`r\", \"`n\") }",
+    "} else {",
+    "try { $proc.Kill() } catch {}",
+    ";",
+    "try { [void]$proc.WaitForExit(1000) } catch {}",
+    ";",
+    "$text=''",
+    "}",
     "} catch { $text='' }",
+    ";",
+    "if ($text.Length -gt 0) { $trimmed=$text.Trim(); if (($trimmed.Length -lt 2) -or ($trimmed[0] -ne '{') -or ($trimmed[$trimmed.Length - 1] -ne '}')) { $text='' } else { try { $null = ($text | ConvertFrom-Json -ErrorAction Stop) } catch { $text='' } } }",
     ";",
     "if ($text.Length -gt 0) { [Console]::Out.WriteLine($text) } else { [Console]::Out.WriteLine(",
     quotePowerShellSingleArg(fallback),
@@ -85,11 +202,11 @@ function buildAntigravityHookCommand(nodeBin, hookScript, event, options = {}) {
   if (platform === "win32") {
     return buildWindowsAntigravityHookCommand(nodeBin, hookScript, event, options);
   }
-  const command = formatNodeHookCommand(nodeBin, hookScript, {
-    ...options,
-    args: [event],
-  });
-  return withFailOpenShellFallback(command, event);
+  // Single-quote each argv at the shell level so a node/hook/event path that
+  // contains $ or backticks is never expanded by /bin/sh inside the $(...)
+  // capture. (formatNodeHookCommand double-quotes, which leaks expansion.)
+  const command = [nodeBin, hookScript, event].map(quoteShellSingleArg).join(" ");
+  return withFailOpenShellFallback(command, event, nodeBin, options);
 }
 
 function buildWindowsAntigravityHookCommand(nodeBin, hookScript, event, options = {}) {
@@ -286,6 +403,8 @@ module.exports = {
     extractExistingAntigravityNodeBin,
     extractNodeBinFromCommand,
     fallbackStdoutForEvent,
+    normalizeFailOpenTimeoutSeconds,
+    quoteWindowsProcessArg,
     groupHasClawdMarker,
     hasAntigravityConfig,
     normalizeSettings,

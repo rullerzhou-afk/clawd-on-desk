@@ -119,15 +119,22 @@ function extractQuotedTokens(command) {
 function parseNodeScriptPairFromTokens(tokens) {
   if (!Array.isArray(tokens)) return null;
   const skip = new Set(["&", "=", "try", "{", "}", ";"]);
-  const scriptIndexes = tokens
-    .map((token, index) => ({ token, index }))
-    .filter(({ token }) => looksLikePrimaryHookScriptToken(token));
-  if (!scriptIndexes.length) {
-    scriptIndexes.push(...tokens
-      .map((token, index) => ({ token, index }))
-      .filter(({ token }) => looksLikeHookScriptToken(token)));
+  // A token consumed by a preload flag (--require/--import/--loader X) is NOT
+  // the hook script even when it ends in hook.js (e.g. a "pre-hook.js" preload).
+  const preloadFlags = new Set(["-r", "--require", "--import", "--loader", "--experimental-loader"]);
+  const consumed = new Set();
+  for (let k = 0; k < tokens.length - 1; k++) {
+    if (preloadFlags.has(tokens[k])) consumed.add(k + 1);
   }
-  for (const { index: i } of scriptIndexes) {
+  const pick = (pred) => tokens
+    .map((token, index) => ({ token, index }))
+    .filter(({ token, index }) => !consumed.has(index) && pred(token));
+  let scriptIndexes = pick(looksLikePrimaryHookScriptToken);
+  if (!scriptIndexes.length) scriptIndexes = pick(looksLikeHookScriptToken);
+  // Prefer the LAST matching script: the real hook script is the final
+  // positional argument, after any preload modules.
+  for (let s = scriptIndexes.length - 1; s >= 0; s--) {
+    const i = scriptIndexes[s].index;
     for (let j = i - 1; j >= 0; j--) {
       const candidate = tokens[j];
       if (!candidate || skip.has(candidate) || candidate.startsWith("$")) continue;
@@ -144,6 +151,27 @@ function parseNodeScriptPairFromTokens(tokens) {
 
 function parseNodeScriptPairFromQuotedText(command) {
   return parseNodeScriptPairFromTokens(extractQuotedTokens(command));
+}
+
+function extractPowerShellSingleQuotedAssignment(command, name) {
+  const pattern = new RegExp(`\\$psi\\.${name}\\s*=\\s*'((?:''|[^'])*)'`, "i");
+  const match = String(command || "").match(pattern);
+  return match ? match[1].replace(/''/g, "'") : null;
+}
+
+function parseProcessStartInfoNodePair(command) {
+  const nodeBin = extractPowerShellSingleQuotedAssignment(command, "FileName");
+  const args = extractPowerShellSingleQuotedAssignment(command, "Arguments");
+  if (!looksLikeNodeCandidate(nodeBin) || !args) return null;
+  const argTokens = tokenizeCommand(args);
+  if (!argTokens) return null;
+  const scriptToken = argTokens.find((token) => looksLikeHookScriptToken(token));
+  if (!scriptToken) return null;
+  return {
+    ok: true,
+    nodeBin,
+    scriptPath: scriptToken,
+  };
 }
 
 function decodePowerShellEncodedCommand(command) {
@@ -184,6 +212,13 @@ function parseHookCommand(command, depth = 0) {
     };
   }
 
+  const processStartInfoPair = parseProcessStartInfoNodePair(quotedSource);
+  if (processStartInfoPair) {
+    return {
+      ...processStartInfoPair,
+      normalizedCommand: normalized,
+    };
+  }
   const quotedPair = parseNodeScriptPairFromQuotedText(quotedSource);
   if (quotedPair) {
     return {
