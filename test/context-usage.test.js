@@ -186,6 +186,43 @@ describe("Claude context usage parser", () => {
     });
   });
 
+  it("skips non-assistant entries that carry a usage object", () => {
+    const usage = extractClaudeContextUsageFromEntries([
+      {
+        type: "assistant",
+        message: { model: "claude-sonnet-4-5", usage: { input_tokens: 50000 } },
+      },
+      {
+        type: "summary",
+        message: { model: "claude-sonnet-4-5", usage: { input_tokens: 999 } },
+      },
+    ], "sess-1");
+
+    assert.deepStrictEqual(usage, {
+      used: 50000,
+      limit: 200000,
+      percent: 25,
+      source: "claude",
+    });
+  });
+
+  it("still counts a real-session entry when no session id is provided", () => {
+    const usage = extractClaudeContextUsageFromEntries([
+      {
+        type: "assistant",
+        sessionId: "real-uuid",
+        message: { model: "claude-sonnet-4-5", usage: { input_tokens: 2000 } },
+      },
+    ], null);
+
+    assert.deepStrictEqual(usage, {
+      used: 2000,
+      limit: 200000,
+      percent: 1,
+      source: "claude",
+    });
+  });
+
   it("ignores entries without usage", () => {
     assert.strictEqual(extractClaudeContextUsageFromEntries([{ type: "user" }]), null);
   });

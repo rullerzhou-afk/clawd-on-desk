@@ -69,11 +69,14 @@ function entryLooksSubagent(entry) {
 function extractClaudeContextUsageFromEntries(entries, sessionId) {
   if (!Array.isArray(entries)) return null;
   // Walk backwards so the first acceptable entry is the most recent one,
-  // skipping sub-agent / cross-session / API-error entries rather than
-  // letting a trailing sidechain message win.
+  // skipping non-assistant / sub-agent / cross-session / API-error entries
+  // rather than letting a trailing message win. Usage is only meaningful on
+  // assistant turns; the type guard also stops a future non-assistant record
+  // that happens to carry a usage object from being read as Claude context.
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     if (!entry || typeof entry !== "object") continue;
+    if (entry.type !== "assistant") continue;
     if (entry.isApiErrorMessage === true) continue;
     if (!entryMatchesSession(entry, sessionId)) continue;
     if (entryLooksSubagent(entry)) continue;

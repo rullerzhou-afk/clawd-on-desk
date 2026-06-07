@@ -369,7 +369,13 @@ function buildStateBody(event, payload, resolve) {
   // Read transcript tail once and reuse for both session title extraction and
   // API error detection (Stop only). Avoids two file reads per hook invocation.
   const transcriptEntries = readTranscriptTailEntries(payload.transcript_path);
-  const contextUsage = extractClaudeContextUsageFromEntries(transcriptEntries, sessionId);
+  // Pass the raw session id (null when the hook payload omits it), not the
+  // "default" placeholder above: a transcript whose entries carry a real
+  // sessionId must not be filtered out just because session_id was missing.
+  const contextUsage = extractClaudeContextUsageFromEntries(
+    transcriptEntries,
+    payload.session_id || null,
+  );
   if (contextUsage) body.context_usage = contextUsage;
   const sessionTitle =
     normalizeTitle(payload.session_title) ||

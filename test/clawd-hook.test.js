@@ -356,6 +356,34 @@ describe("buildStateBody", () => {
     assert.ok(!("context_usage" in body));
   });
 
+  it("scopes context_usage to the main session, ignoring trailing sidechain usage", () => {
+    const transcript = writeTmpJsonl([
+      {
+        type: "assistant",
+        sessionId: "s",
+        message: { model: "claude-sonnet-4-5", usage: { input_tokens: 150000 } },
+      },
+      {
+        type: "assistant",
+        sessionId: "s",
+        isSidechain: true,
+        message: { model: "claude-sonnet-4-5", usage: { input_tokens: 12000 } },
+      },
+    ]);
+
+    const body = buildStateBody("PostToolUse", {
+      session_id: "s",
+      transcript_path: transcript,
+    }, mockResolve);
+
+    assert.deepStrictEqual(body.context_usage, {
+      used: 150000,
+      limit: 200000,
+      percent: 75,
+      source: "claude",
+    });
+  });
+
   it("accepts camelCase tool_use_id aliases", () => {
     const body = buildStateBody("PreToolUse", {
       session_id: "s",
