@@ -102,7 +102,14 @@ function createTelegramFetchTransport({
         appliedKey = key;                                 // 3) commit key last
         if (typeof ses.resolveProxy === "function") {
           const type = await probeProxyType(ses, resolveTimeoutMs);
-          if (type) log("debug", "telegram proxy resolved", { mode: cfg.mode, proxy: type });
+          // The injected logger ultimately does a synchronous file write
+          // (telegramApprovalLog → permLog → rotatedAppend) that can throw on a
+          // bad path / EACCES. A best-effort diagnostic must never fail a request
+          // whose proxy is already applied (Codex review [P2]; same rationale as
+          // telegram-native-runner's safeLog).
+          if (type) {
+            try { log("debug", "telegram proxy resolved", { mode: cfg.mode, proxy: type }); } catch {}
+          }
         }
       }
       return ses;
