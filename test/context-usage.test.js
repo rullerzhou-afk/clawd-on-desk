@@ -106,6 +106,86 @@ describe("Claude context usage parser", () => {
     });
   });
 
+  it("skips sidechain sub-agent usage and falls back to the main-chain entry", () => {
+    const usage = extractClaudeContextUsageFromEntries([
+      {
+        type: "assistant",
+        message: { model: "claude-sonnet-4-5", usage: { input_tokens: 150000 } },
+      },
+      {
+        type: "assistant",
+        isSidechain: true,
+        message: { model: "claude-sonnet-4-5", usage: { input_tokens: 12000 } },
+      },
+    ], "sess-1");
+
+    assert.deepStrictEqual(usage, {
+      used: 150000,
+      limit: 200000,
+      percent: 75,
+      source: "claude",
+    });
+  });
+
+  it("ignores usage from a different session", () => {
+    const usage = extractClaudeContextUsageFromEntries([
+      {
+        type: "assistant",
+        sessionId: "sess-1",
+        message: { model: "claude-sonnet-4-5", usage: { input_tokens: 90000 } },
+      },
+      {
+        type: "assistant",
+        sessionId: "other",
+        message: { model: "claude-sonnet-4-5", usage: { input_tokens: 1000 } },
+      },
+    ], "sess-1");
+
+    assert.deepStrictEqual(usage, {
+      used: 90000,
+      limit: 200000,
+      percent: 45,
+      source: "claude",
+    });
+  });
+
+  it("skips API-error entries that carry a usage object", () => {
+    const usage = extractClaudeContextUsageFromEntries([
+      {
+        type: "assistant",
+        message: { model: "claude-sonnet-4-5", usage: { input_tokens: 50000 } },
+      },
+      {
+        type: "assistant",
+        isApiErrorMessage: true,
+        message: { model: "claude-sonnet-4-5", usage: { input_tokens: 999 } },
+      },
+    ], "sess-1");
+
+    assert.deepStrictEqual(usage, {
+      used: 50000,
+      limit: 200000,
+      percent: 25,
+      source: "claude",
+    });
+  });
+
+  it("counts entries without a sessionId field even when a session is given", () => {
+    const usage = extractClaudeContextUsageFromEntries([
+      {
+        type: "assistant",
+        message: { model: "claude-sonnet-4-5", usage: { input_tokens: 8000 } },
+      },
+    ], "sess-1");
+
+    assert.deepStrictEqual(usage, {
+      used: 8000,
+      limit: 200000,
+      percent: 4,
+      source: "claude",
+    });
+  });
+
   it("ignores entries without usage", () => {
     assert.strictEqual(extractClaudeContextUsageFromEntries([{ type: "user" }]), null);
   });

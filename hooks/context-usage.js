@@ -47,14 +47,40 @@ function computeClaudeUsageFromEntry(entry) {
   return out;
 }
 
-function extractClaudeContextUsageFromEntries(entries) {
+// Mirror the transcript-pollution guards used by the assistant-output
+// extractor in clawd-hook.js. Without these, the most recent usage-bearing
+// entry can belong to a Task sub-agent (sidechain), a different session
+// (resumed/forked transcript), or a synthetic API-error message — none of
+// which reflect the main session's context window.
+function entryMatchesSession(entry, sessionId) {
+  if (!sessionId) return true;
+  if (!entry || typeof entry !== "object") return false;
+  return !entry.sessionId || entry.sessionId === sessionId;
+}
+
+function entryLooksSubagent(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  return entry.isSidechain === true
+    || entry.isSubagent === true
+    || entry.is_subagent === true
+    || entry.subagent === true;
+}
+
+function extractClaudeContextUsageFromEntries(entries, sessionId) {
   if (!Array.isArray(entries)) return null;
-  let latest = null;
-  for (const entry of entries) {
+  // Walk backwards so the first acceptable entry is the most recent one,
+  // skipping sub-agent / cross-session / API-error entries rather than
+  // letting a trailing sidechain message win.
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (!entry || typeof entry !== "object") continue;
+    if (entry.isApiErrorMessage === true) continue;
+    if (!entryMatchesSession(entry, sessionId)) continue;
+    if (entryLooksSubagent(entry)) continue;
     const usage = computeClaudeUsageFromEntry(entry);
-    if (usage) latest = usage;
+    if (usage) return usage;
   }
-  return latest;
+  return null;
 }
 
 module.exports = {
