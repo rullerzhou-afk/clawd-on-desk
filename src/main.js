@@ -1907,6 +1907,7 @@ async function initTelegramMigrationController() {
     createWindowsPasteOnlyDeliveryAdapter,
   } = require("./telegram-direct-send");
   const { createTelegramNativeRunner } = require("./telegram-native-runner");
+  const { createTelegramFetchTransport } = require("./telegram-fetch-transport");
   const tokenStore = envFileTokenStore({ filePath: paths.tokenEnvFilePath });
   telegramDirectSend = createTelegramDirectSend({
     getSessionSnapshot: () => _state && typeof _state.buildSessionSnapshot === "function"
@@ -1931,7 +1932,14 @@ async function initTelegramMigrationController() {
   });
   const nativeRunner = createTelegramNativeRunner({
     tokenStore,
-    transport: makeFetchTransport({ tokenStore }),
+    // issue #359: route the bot's HTTP through Electron's Chromium net stack so
+    // it follows the OS system proxy (and PAC/SOCKS), instead of Node's global
+    // fetch which ignores system/env proxy. Dedicated in-memory session.
+    transport: createTelegramFetchTransport({
+      tokenStore,
+      sessionFactory: () => require("electron").session.fromPartition("clawd-telegram", { cache: false }),
+      log: telegramApprovalLog,
+    }),
     getDispatch: () => _telegramMigrationController && _telegramMigrationController.dispatch,
     getChatId: () => {
       const cfg = getTelegramApprovalPrefs();
@@ -2008,46 +2016,6 @@ async function initTelegramMigrationController() {
 
   await _telegramMigrationController.init();
   return _telegramMigrationController;
-}
-
-// Minimal fetch-based transport for the native client. Closes over the token
-// (no per-call token argument) so logging or debug serialization of request
-// args cannot leak the secret.
-function makeFetchTransport({ tokenStore }) {
-  return async ({ method, payload, signal }) => {
-    const token = await tokenStore.getToken();
-    if (!token) {
-      return { ok: false, status: null, error_code: "TOKEN_MISSING", description: "no token" };
-    }
-    const url = `https://api.telegram.org/bot${token}/${method}`;
-    let res;
-    try {
-      res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload || {}),
-        signal,
-      });
-    } catch (err) {
-      if (err && err.name === "AbortError") throw err;
-      throw Object.assign(new Error(err && err.message ? err.message : String(err)), {
-        code: (err && (err.code || (err.cause && err.cause.code))) || undefined,
-        causeCode: err && err.cause && err.cause.code,
-      });
-    }
-    const status = res.status;
-    let body;
-    try { body = await res.json(); } catch { body = null; }
-    if (!body) return { ok: false, status, error_code: status, description: res.statusText || "" };
-    if (body.ok) return { ok: true, result: body.result };
-    return {
-      ok: false,
-      status,
-      error_code: body.error_code || status,
-      description: body.description || "",
-      parameters: body.parameters || {},
-    };
-  };
 }
 
 function stopTelegramApprovalSidecar() {

@@ -74,6 +74,16 @@ function classifyError(err) {
     return ERROR_CLASSES.NETWORK;
   }
   const message = String(err.message || "");
+  // Electron/Chromium net stack surfaces failures as "net::ERR_*" in the message
+  // with no Node-style err.code (issue #359). Allowlist the connection/proxy/DNS/
+  // transport failures as retryable NETWORK — NOT a catch-all, so ERR_CERT_* /
+  // ERR_BLOCKED_BY_* still fall through to UNKNOWN. ERR_ABORTED maps to NETWORK,
+  // not TIMEOUT: the poll loop treats TIMEOUT as user-stop and exits, while a
+  // genuine user abort is already handled above (err.name === "AbortError").
+  // PROXY_CONNECTION_FAILED is narrowed so proxy cert/auth errors aren't mislabeled.
+  if (/net::ERR_(PROXY_CONNECTION_FAILED|TUNNEL_|SOCKS_|CONNECTION_|NAME_NOT_RESOLVED|TIMED_OUT|NETWORK_CHANGED|INTERNET_DISCONNECTED|ADDRESS_UNREACHABLE|EMPTY_RESPONSE|ABORTED)/i.test(message)) {
+    return ERROR_CLASSES.NETWORK;
+  }
   if (/fetch failed|network|socket|timeout/i.test(message)) return ERROR_CLASSES.NETWORK;
   return ERROR_CLASSES.UNKNOWN;
 }

@@ -177,6 +177,33 @@ test("Error classes: undici fetch cause codes are network errors", () => {
   assert.equal(classifyError(err), ERROR_CLASSES.NETWORK);
 });
 
+test("Error classes: Chromium net::ERR_* connection failures are NETWORK (issue #359)", () => {
+  for (const message of [
+    "net::ERR_PROXY_CONNECTION_FAILED",
+    "net::ERR_TUNNEL_CONNECTION_FAILED",
+    "net::ERR_SOCKS_CONNECTION_FAILED",
+    "net::ERR_NAME_NOT_RESOLVED",
+    "net::ERR_CONNECTION_REFUSED",
+    "net::ERR_CONNECTION_RESET",
+    "net::ERR_TIMED_OUT",
+    "net::ERR_INTERNET_DISCONNECTED",
+  ]) {
+    assert.equal(classifyError(new Error(message)), ERROR_CLASSES.NETWORK, message);
+  }
+});
+
+test("Error classes: net::ERR_ABORTED is NETWORK, not TIMEOUT (must not exit poll loop)", () => {
+  // A genuine user abort arrives as name === "AbortError" and is handled earlier.
+  // An involuntary Chromium abort must be retried, so it must NOT map to TIMEOUT —
+  // the poll loop exits on TIMEOUT (telegram-native-runner.js loop/loopFirst).
+  assert.equal(classifyError(new Error("net::ERR_ABORTED")), ERROR_CLASSES.NETWORK);
+});
+
+test("Error classes: non-retryable net::ERR_* (cert / blocked) fall through to UNKNOWN", () => {
+  assert.equal(classifyError(new Error("net::ERR_CERT_AUTHORITY_INVALID")), ERROR_CLASSES.UNKNOWN);
+  assert.equal(classifyError(new Error("net::ERR_BLOCKED_BY_CLIENT")), ERROR_CLASSES.UNKNOWN);
+});
+
 test("Error classes: status=null but error_code=409 still classified as CONFLICT", () => {
   const err = new TelegramApiError({ status: null, code: 409, description: "Conflict" });
   assert.equal(classifyError(err), ERROR_CLASSES.CONFLICT);
