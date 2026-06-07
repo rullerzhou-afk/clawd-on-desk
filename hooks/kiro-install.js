@@ -144,11 +144,11 @@ function formatHookCommand(nodeBin, scriptPath, platformOverride) {
 function getKiroCliCandidates(homeDir = os.homedir(), platformOverride, env = process.env) {
   const platform = platformOverride || process.platform;
   if (platform === "win32") {
-    const localAppData = env.LOCALAPPDATA || path.join(homeDir, "AppData", "Local");
+    const localAppData = env.LOCALAPPDATA || path.win32.join(homeDir, "AppData", "Local");
     const programFiles = env.ProgramFiles || "C:\\Program Files";
     return [
-      path.join(localAppData, "Kiro-Cli", "kiro-cli.exe"),
-      path.join(programFiles, "Kiro-Cli", "kiro-cli.exe"),
+      path.win32.join(localAppData, "Kiro-Cli", "kiro-cli.exe"),
+      path.win32.join(programFiles, "Kiro-Cli", "kiro-cli.exe"),
       "kiro-cli.exe",
       "kiro-cli",
     ];
