@@ -213,6 +213,23 @@ function resolveAwaitingInputSinceStop(existing, event) {
   return false;
 }
 
+function hasCompletionTailWithoutProgress(session) {
+  const events = Array.isArray(session && session.recentEvents) ? session.recentEvents : [];
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i] && events[i].event;
+    if (POST_COMPLETION_EVENTS.has(event)) return true;
+    if (event === "Notification" || event === "stale-cleanup" || event == null) continue;
+    return false;
+  }
+  return false;
+}
+
+function shouldSuppressDuplicateCompletionVisual(existing, state, event) {
+  if (state !== "attention" || !POST_COMPLETION_EVENTS.has(event)) return false;
+  if (!existing || (existing.state !== "idle" && existing.state !== "sleeping")) return false;
+  return existing.awaitingInputSinceStop === true || hasCompletionTailWithoutProgress(existing);
+}
+
 function shouldMuteMiniPostCompletionNotification(state, event, session) {
   return !!ctx.miniMode
     && state === "notification"
@@ -1173,6 +1190,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const isSubagentStart = event === "SubagentStart" || event === "subagentStart";
   const isSubagentStop = event === "SubagentStop" || event === "subagentStop";
   const preservedState = preserveState && existing ? existing.state : null;
+  const duplicateCompletionVisualAtEntry = shouldSuppressDuplicateCompletionVisual(existing, state, event);
 
   // #406 Stop completion gate — Claude Code only; other agents keep their own
   // completion semantics (Codex task_complete + remote exit probes, etc.). A
@@ -1183,7 +1201,12 @@ function updateSession(sessionId, state, event, opts = {}) {
   // The first two are decidable now: hold "working" (badge stays "running", no
   // celebrate, no "done"). A plain Stop is debounced — held "working" until a
   // quiet window with no forward-progress event confirms the turn really ended.
-  if (event === "Stop" && state === "attention" && srcAgentId === "claude-code") {
+  if (
+    !duplicateCompletionVisualAtEntry
+    && event === "Stop"
+    && state === "attention"
+    && srcAgentId === "claude-code"
+  ) {
     cancelCompletionDebounce(sessionId, "stop-superseded");
     const liveWork =
       backgroundTasksCount > 0 || sessionCronsCount > 0 || stopHookActive === true;
@@ -1405,6 +1428,9 @@ function updateSession(sessionId, state, event, opts = {}) {
     schedulePermissionSuspect(sessionId);
   }
 
+  const suppressDuplicateCompletionVisual =
+    duplicateCompletionVisualAtEntry || shouldSuppressDuplicateCompletionVisual(existing, state, event);
+
   if (ONESHOT_STATES.has(state)) {
     // Permission animation lock: while any permission request is pending,
     // keep the pet on notification and block all other one-shot visuals.
@@ -1436,6 +1462,11 @@ function updateSession(sessionId, state, event, opts = {}) {
       && typeof ctx.isAgentNotificationHookEnabled === "function"
       && !ctx.isAgentNotificationHookEnabled(srcAgentId)
     ) {
+      const displayState = resolveDisplayState();
+      setState(displayState, getSvgOverride(displayState));
+      return;
+    }
+    if (suppressDuplicateCompletionVisual) {
       const displayState = resolveDisplayState();
       setState(displayState, getSvgOverride(displayState));
       return;

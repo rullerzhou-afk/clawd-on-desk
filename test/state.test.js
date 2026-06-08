@@ -1374,6 +1374,115 @@ describe("updateSession()", () => {
     assert.strictEqual(api.getCurrentState(), "attention");
   });
 
+  it("does not replay the completion animation for a duplicate Stop without progress", () => {
+    const soundsPlayed = [];
+    const stateChanges = [];
+    api.cleanup();
+    ctx = makeCtx({
+      processKill: () => true,
+      playSound: (name) => soundsPlayed.push(name),
+      sendToRenderer: (channel, state) => {
+        if (channel === "state-change") stateChanges.push(state);
+      },
+    });
+    api = require("../src/state")(ctx);
+
+    update(api, { id: "s1", state: "working" });
+    mock.timers.tick(1000);
+    stateChanges.length = 0;
+
+    update(api, { id: "s1", state: "attention", event: "Stop" });
+    assert.strictEqual(soundsPlayed.filter((name) => name === "complete").length, 1);
+    assert.deepStrictEqual(stateChanges, ["attention"]);
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "done");
+    mock.timers.tick(4000);
+    assert.strictEqual(api.getCurrentState(), "idle");
+
+    soundsPlayed.length = 0;
+    stateChanges.length = 0;
+    update(api, { id: "s1", state: "attention", event: "Stop" });
+
+    assert.strictEqual(soundsPlayed.filter((name) => name === "complete").length, 0);
+    assert.ok(!stateChanges.includes("attention"), "duplicate Stop must not re-send attention");
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "done");
+    assert.strictEqual(api.getCurrentState(), "idle");
+  });
+
+  it("does not replay remote Codex task_complete after the completion animation returned to idle", () => {
+    const soundsPlayed = [];
+    const stateChanges = [];
+    api.cleanup();
+    ctx = makeCtx({
+      processKill: () => true,
+      playSound: (name) => soundsPlayed.push(name),
+      sendToRenderer: (channel, state) => {
+        if (channel === "state-change") stateChanges.push(state);
+      },
+    });
+    api = require("../src/state")(ctx);
+
+    update(api, {
+      id: "codex:remote",
+      state: "attention",
+      event: "event_msg:task_complete",
+      agentId: "codex",
+      host: "ssh:box",
+    });
+    assert.strictEqual(soundsPlayed.filter((name) => name === "complete").length, 1);
+    assert.deepStrictEqual(stateChanges, ["attention"]);
+    assert.strictEqual(api.sessions.get("codex:remote").requiresCompletionAck, true);
+    mock.timers.tick(4000);
+    assert.strictEqual(api.getCurrentState(), "idle");
+
+    soundsPlayed.length = 0;
+    stateChanges.length = 0;
+    update(api, {
+      id: "codex:remote",
+      state: "attention",
+      event: "event_msg:task_complete",
+      agentId: "codex",
+      host: "ssh:box",
+    });
+
+    assert.strictEqual(soundsPlayed.filter((name) => name === "complete").length, 0);
+    assert.ok(!stateChanges.includes("attention"), "duplicate task_complete must not re-send attention");
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("codex:remote")), "done");
+    assert.strictEqual(api.sessions.get("codex:remote").requiresCompletionAck, true);
+  });
+
+  it("still plays completion after new progress follows a completed turn", () => {
+    const soundsPlayed = [];
+    const stateChanges = [];
+    api.cleanup();
+    ctx = makeCtx({
+      processKill: () => true,
+      playSound: (name) => soundsPlayed.push(name),
+      sendToRenderer: (channel, state) => {
+        if (channel === "state-change") stateChanges.push(state);
+      },
+    });
+    api = require("../src/state")(ctx);
+
+    update(api, { id: "s1", state: "working", event: "PreToolUse" });
+    mock.timers.tick(1000);
+    update(api, { id: "s1", state: "attention", event: "Stop" });
+    mock.timers.tick(4000);
+
+    soundsPlayed.length = 0;
+    stateChanges.length = 0;
+    update(api, { id: "s1", state: "thinking", event: "UserPromptSubmit" });
+    mock.timers.tick(1000);
+    update(api, { id: "s1", state: "working", event: "PreToolUse" });
+    mock.timers.tick(1000);
+    stateChanges.length = 0;
+
+    update(api, { id: "s1", state: "attention", event: "Stop" });
+
+    assert.strictEqual(soundsPlayed.filter((name) => name === "complete").length, 1);
+    assert.deepStrictEqual(stateChanges, ["attention"]);
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "done");
+  });
+
   it("SessionEnd + other non-headless sessions → resolves to highest", () => {
     update(api, { id: "s1", state: "working" });
     update(api, { id: "s2", state: "thinking" });
@@ -2198,6 +2307,27 @@ describe("Stop completion gate (#406)", () => {
     assert.strictEqual(api.getCurrentState(), "attention");
     assert.ok(soundsPlayed.includes("complete"), "a real completion celebrates");
     assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "done");
+  });
+
+  it("debounce: a duplicate Stop after auto-return does not replay completion", () => {
+    update(api, { id: "s1", state: "attention", event: "Stop" });
+    mock.timers.tick(1000);
+    assert.strictEqual(api.sessions.get("s1").state, "idle");
+    assert.strictEqual(api.getCurrentState(), "attention");
+    assert.strictEqual(soundsPlayed.filter((name) => name === "complete").length, 1);
+    mock.timers.tick(4000);
+    assert.strictEqual(api.getCurrentState(), "idle");
+
+    soundsPlayed.length = 0;
+    stateChanges.length = 0;
+    update(api, { id: "s1", state: "attention", event: "Stop" });
+
+    assert.strictEqual(api.sessions.get("s1").state, "idle");
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "done");
+    mock.timers.tick(5000);
+    assert.strictEqual(soundsPlayed.filter((name) => name === "complete").length, 0);
+    assert.ok(!stateChanges.includes("working"), "duplicate Stop must not reopen a running state");
+    assert.ok(!stateChanges.includes("attention"), "duplicate Stop must not replay attention");
   });
 
   it("does not debounce non-Claude agents — a Codex Stop celebrates immediately", () => {
