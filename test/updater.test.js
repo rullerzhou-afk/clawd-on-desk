@@ -23,11 +23,16 @@ function makeDeps(overrides = {}) {
   const app = {
     isPackaged: true,
     getVersion: () => "0.5.10",
+    getPath: () => "/tmp/clawd-on-desk-test",
+    quit() {},
     relaunch() {},
     exit() {},
   };
   return {
     app,
+    platform: "win32",
+    arch: "x64",
+    env: {},
     dialog: {
       showMessageBox: async () => ({ response: 1 }),
     },
@@ -963,63 +968,173 @@ describe("updater visual flow", () => {
     assert.strictEqual(hideCount, 0);
   });
 
-  it("uses the macOS packaged-update path by opening the releases page and showing a success bubble", async () => {
-    const originalPlatform = process.platform;
+  it("downloads, verifies, and installs a packaged macOS update through the platform updater", async () => {
     const bubbles = [];
-    const handlers = {};
+    let autoUpdaterLoads = 0;
+    let prepares = 0;
+    let installs = 0;
+    const release = {
+      tag_name: "v0.5.11",
+      assets: [{
+        name: "Clawd-on-Desk-0.5.11-arm64.dmg",
+        browser_download_url: "https://github.com/example/mac.dmg",
+      }],
+    };
+    const ctx = makeCtx({
+      showUpdateBubble: async (payload) => {
+        bubbles.push(payload);
+        if (payload.mode === "available" || payload.mode === "ready") return "primary";
+        return payload.defaultAction || null;
+      },
+    });
+    const updater = initUpdater(ctx, makeDeps({
+      platform: "darwin",
+      arch: "arm64",
+      autoUpdaterFactory: () => {
+        autoUpdaterLoads += 1;
+        return { on() {} };
+      },
+      prepareMacUpdateImpl: async (options) => {
+        prepares += 1;
+        assert.deepStrictEqual(options.release, release);
+        assert.strictEqual(options.arch, "arm64");
+        return { install: async () => { installs += 1; } };
+      },
+      httpsGetImpl: makeLatestReleaseResponse(release),
+    }));
+
+    updater.setupAutoUpdater();
+    await updater.checkForUpdates(true);
+
+    assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "available", "downloading", "ready"]);
+    assert.strictEqual(autoUpdaterLoads, 0);
+    assert.strictEqual(prepares, 1);
+    assert.strictEqual(installs, 1);
+  });
+
+  it("opens the release page when a packaged custom update has no verifiable asset metadata", async () => {
+    const bubbles = [];
     const openedUrls = [];
-    Object.defineProperty(process, "platform", { value: "darwin" });
-    try {
-      delete require.cache[require.resolve("../src/updater")];
-      initUpdater = require("../src/updater");
-      const ctx = makeCtx({
-        showUpdateBubble: async (payload) => {
-          bubbles.push(payload);
-          if (payload.mode === "available") return "primary";
-          if (payload.mode === "ready") return "dismiss";
-          return payload.defaultAction || null;
-        },
-      });
-      const updater = initUpdater(ctx, makeDeps({
-        shell: {
-          openExternal(url) {
-            openedUrls.push(url);
-          },
-        },
-        autoUpdaterFactory: () => ({
-          autoDownload: false,
-          autoInstallOnAppQuit: true,
-          on(event, handler) { handlers[event] = handler; },
-          checkForUpdates: async () => ({ updateInfo: { version: "0.5.11" } }),
-          quitAndInstall() {},
-          downloadUpdate() {
-            throw new Error("downloadUpdate should not run on macOS");
-          },
-        }),
-        httpsGetImpl: (options, cb) => {
-          const res = {
-            statusCode: 200,
-            on(event, handler) {
-              if (event === "data") handler(Buffer.from(JSON.stringify({ tag_name: "v0.5.11" })));
-              if (event === "end") handler();
-              return this;
-            },
-          };
-          cb(res);
-          return { on() { return this; }, setTimeout() {} };
-        },
-      }));
+    let prepares = 0;
+    const updater = initUpdater(makeCtx({
+      showUpdateBubble: async (payload) => {
+        bubbles.push(payload);
+        if (payload.mode === "available") return "primary";
+        return payload.defaultAction || null;
+      },
+    }), makeDeps({
+      platform: "darwin",
+      arch: "arm64",
+      shell: { openExternal(url) { openedUrls.push(url); } },
+      prepareMacUpdateImpl: async () => {
+        prepares += 1;
+        return { install() {} };
+      },
+      httpsGetImpl: makeLatestReleaseResponse({ tag_name: "v0.5.11", assets: [] }),
+    }));
 
-      updater.setupAutoUpdater();
-      await updater.checkForUpdates(true);
-      await handlers["update-available"]({ version: "0.5.11" });
+    await updater.checkForUpdates(true);
+    assert.strictEqual(prepares, 0);
+    assert.deepStrictEqual(openedUrls, ["https://github.com/rullerzhou-afk/clawd-on-desk/releases/latest"]);
+    assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "available", "ready"]);
+  });
 
-      assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "available", "ready"]);
-      assert.strictEqual(openedUrls[0], "https://github.com/rullerzhou-afk/clawd-on-desk/releases/latest");
-      assert.match(bubbles[2].message, /opened/i);
-    } finally {
-      Object.defineProperty(process, "platform", { value: originalPlatform });
-    }
+  it("keeps a verified Linux deb ready when the user chooses Later, then installs from the menu", async () => {
+    const bubbles = [];
+    let prepares = 0;
+    let installs = 0;
+    const release = {
+      tag_name: "v0.5.11",
+      assets: [{
+        name: "Clawd-on-Desk-0.5.11-amd64.deb",
+        browser_download_url: "https://github.com/example/linux.deb",
+      }],
+    };
+    const updater = initUpdater(makeCtx({
+      showUpdateBubble: async (payload) => {
+        bubbles.push(payload);
+        if (payload.mode === "available") return "primary";
+        if (payload.mode === "ready") return "later";
+        return payload.defaultAction || null;
+      },
+    }), makeDeps({
+      platform: "linux",
+      arch: "x64",
+      env: {},
+      prepareLinuxUpdateImpl: async () => {
+        prepares += 1;
+        return { install: async () => { installs += 1; } };
+      },
+      httpsGetImpl: makeLatestReleaseResponse(release),
+    }));
+
+    updater.setupAutoUpdater();
+    await updater.checkForUpdates(true);
+    assert.strictEqual(prepares, 1);
+    assert.strictEqual(installs, 0);
+    assert.strictEqual(updater.getUpdateMenuLabel(), "Update Ready");
+
+    await updater.getUpdateMenuItem().click();
+    assert.strictEqual(installs, 1);
+    assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "available", "downloading", "ready"]);
+  });
+
+  it("keeps Linux AppImage updates on electron-updater", async () => {
+    const handlers = {};
+    let downloads = 0;
+    const updater = initUpdater(makeCtx({
+      showUpdateBubble: async (payload) => payload.mode === "available" ? "primary" : payload.defaultAction,
+    }), makeDeps({
+      platform: "linux",
+      arch: "x64",
+      env: { APPIMAGE: "/tmp/Clawd.AppImage" },
+      autoUpdaterFactory: () => ({
+        autoDownload: false,
+        autoInstallOnAppQuit: true,
+        on(event, handler) { handlers[event] = handler; },
+        checkForUpdates: async () => ({ updateInfo: { version: "0.5.11" } }),
+        quitAndInstall() {},
+        downloadUpdate() { downloads += 1; },
+      }),
+      httpsGetImpl: makeLatestReleaseResponse({ tag_name: "v0.5.11", assets: [] }),
+    }));
+
+    updater.setupAutoUpdater();
+    await updater.checkForUpdates(true);
+    await handlers["update-available"]({ version: "0.5.11" });
+    assert.strictEqual(downloads, 1);
+  });
+
+  it("keeps Windows NSIS updates on electron-updater through download and restart install", async () => {
+    const handlers = {};
+    let downloads = 0;
+    let installs = 0;
+    const updater = initUpdater(makeCtx({
+      showUpdateBubble: async (payload) => (
+        payload.mode === "available" || payload.mode === "ready"
+          ? "primary"
+          : payload.defaultAction
+      ),
+    }), makeDeps({
+      platform: "win32",
+      arch: "x64",
+      autoUpdaterFactory: () => ({
+        autoDownload: false,
+        autoInstallOnAppQuit: true,
+        on(event, handler) { handlers[event] = handler; },
+        checkForUpdates: async () => ({ updateInfo: { version: "0.5.11" } }),
+        quitAndInstall() { installs += 1; },
+        downloadUpdate() { downloads += 1; },
+      }),
+      httpsGetImpl: makeLatestReleaseResponse({ tag_name: "v0.5.11", assets: [] }),
+    }));
+
+    updater.setupAutoUpdater();
+    await updater.checkForUpdates(true);
+    await handlers["update-available"]({ version: "0.5.11" });
+    await handlers["update-downloaded"]({ version: "0.5.11" });
+    assert.strictEqual(downloads, 1);
+    assert.strictEqual(installs, 1);
   });
 
   it("uses a friendly dirty-worktree message while keeping detailed file status", async () => {

@@ -174,7 +174,7 @@ node hooks/openclaw-install.js
 ## Windows 说明
 
 - **安装包**：GitHub Releases 提供独立的 Windows x64 和 Windows ARM64 NSIS 安装包。Intel / AMD Windows 设备下载 `Clawd-on-Desk-Setup-<version>-x64.exe`，Windows on ARM 设备下载 `Clawd-on-Desk-Setup-<version>-arm64.exe`。
-- **自动更新**：Windows 安装包使用 `electron-updater`，更新时会保持当前匹配的架构。
+- **自动更新**：Windows 安装包使用 `electron-updater`。用户确认更新后，Clawd 会下载匹配当前架构的安装包，并在重启时完成安装。
 
 ## macOS 说明
 
@@ -182,10 +182,11 @@ node hooks/openclaw-install.js
 - **DMG 安装包**：未签名 Apple 开发者证书，macOS Gatekeeper 会拦截。解决方法：
   - 右键点击应用 → **打开** → 在弹窗中点击 **打开**，或
   - 在终端运行 `xattr -cr /Applications/Clawd\ on\ Desk.app`
+- **自动更新**：用户确认后，Clawd 会下载匹配 Intel / Apple Silicon 架构的 DMG，校验 GitHub SHA-256、bundle id、版本、架构和代码签名，并在重启时安装。替换前会备份旧应用；若新版无法启动，会自动回滚。
 
 ## Linux 说明
 
 - **源码运行**（`npm start`）：默认启用 Electron sandbox。如果你的 Linux 开发环境仍然遇到 chrome-sandbox 初始化失败，可临时使用 `CLAWD_DISABLE_SANDBOX=1 npm start` 作为兼容方案。
 - **安装包**：AppImage 和 `.deb` 可从 [GitHub Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases) 下载。deb 安装后应用图标会出现在 GNOME 应用菜单。
 - **终端聚焦**：依赖 `wmctrl` 或 `xdotool`（有一个就行）。安装：`sudo apt install wmctrl` 或 `sudo apt install xdotool`。
-- **自动更新**：源码运行时，"检查更新"会执行 `git pull` + `npm install`（依赖有变化时）并自动重启。
+- **自动更新**：AppImage 使用 `electron-updater`。Debian / Ubuntu 的 `.deb` 会在下载并校验后，通过 `pkexec` 请求系统授权，再调用 `apt-get` 安装；其他包管理格式仍需通过对应包管理器更新。源码运行时，"检查更新"会执行 `git pull` + `npm install`（依赖有变化时）并自动重启。

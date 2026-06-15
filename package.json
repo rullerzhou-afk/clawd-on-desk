@@ -86,7 +86,13 @@
       "category": "public.app-category.entertainment",
       "extendInfo": {
         "LSUIElement": true
-      }
+      },
+      "extraResources": [
+        {
+          "from": "src/macos-update-helper.sh",
+          "to": "macos-update-helper.sh"
+        }
+      ]
     },
     "win": {
       "icon": "assets/icon.ico",

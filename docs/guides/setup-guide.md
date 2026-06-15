@@ -190,7 +190,7 @@ node hooks/openclaw-install.js
 ## Windows Notes
 
 - **Installer**: GitHub Releases provide separate NSIS installers for Windows x64 and Windows ARM64. Use `Clawd-on-Desk-Setup-<version>-x64.exe` on Intel/AMD Windows, and `Clawd-on-Desk-Setup-<version>-arm64.exe` on Windows on ARM.
-- **Auto-update**: packaged Windows installs use `electron-updater`; updates keep the matching architecture.
+- **Auto-update**: packaged Windows installs use `electron-updater`; after you confirm the update, Clawd downloads the matching architecture and installs it on restart.
 
 ## macOS Notes
 
@@ -198,10 +198,11 @@ node hooks/openclaw-install.js
 - **DMG installer**: the app is not signed with an Apple Developer certificate, so macOS Gatekeeper will block it. To open:
   - Right-click the app → **Open** → click **Open** in the dialog, or
   - Run `xattr -cr /Applications/Clawd\ on\ Desk.app` in Terminal.
+- **Auto-update**: after you confirm an update, Clawd downloads the matching Intel or Apple Silicon DMG, verifies the GitHub SHA-256 digest, bundle id, version, architecture, and code signature, then installs it on restart. The previous app is backed up before replacement and restored automatically if the new app cannot launch.
 
 ## Linux Notes
 
 - **From source** (`npm start`): the Electron sandbox is enabled by default. If your Linux dev environment still fails chrome-sandbox initialization, use `CLAWD_DISABLE_SANDBOX=1 npm start` as a temporary workaround.
 - **Packages**: AppImage and `.deb` are available from [GitHub Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases). After deb install, the app icon appears in GNOME's app menu.
 - **Terminal focus**: uses `wmctrl` or `xdotool` (whichever is available). Install one for session terminal jumping to work: `sudo apt install wmctrl` or `sudo apt install xdotool`.
-- **Auto-update**: when running from a cloned repo, "Check for Updates" performs `git pull` + `npm install` (if dependencies changed) and restarts the app automatically.
+- **Auto-update**: AppImage installs use `electron-updater`. Debian/Ubuntu `.deb` installs download and verify the release package, then request system authorization through `pkexec` before running `apt-get`. Other package-manager formats still need to be updated through their package manager. Source checkouts use `git pull` + `npm install` (if dependencies changed) and restart automatically.

@@ -3,6 +3,12 @@ const { execFile } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const electron = require("electron");
+const {
+  findLinuxDebAsset,
+  findMacDmgAsset,
+  prepareLinuxDebUpdate,
+  prepareMacDmgUpdate,
+} = require("./platform-updater");
 
 const RELEASES_LATEST_URL = "https://github.com/rullerzhou-afk/clawd-on-desk/releases/latest";
 
@@ -96,7 +102,11 @@ function initUpdater(ctx, deps = {}) {
   const t = makeTranslate(ctx);
   const runtimePlatform = deps.platform || process.platform;
   const runtimeArch = deps.arch || process.arch;
+  const runtimeEnv = deps.env || process.env;
   const isMac = runtimePlatform === "darwin";
+  const isLinux = runtimePlatform === "linux";
+  const prepareMacUpdateFn = deps.prepareMacUpdateImpl || prepareMacDmgUpdate;
+  const prepareLinuxUpdateFn = deps.prepareLinuxUpdateImpl || prepareLinuxDebUpdate;
 
   let updateStatus = "idle";
   // activeCheck carries the current in-flight check context. trigger:
@@ -118,6 +128,25 @@ function initUpdater(ctx, deps = {}) {
   let pendingUpdateVersion = "";
   let pendingUpdateRelease = null;
   let pendingPromptDeferred = null;
+  let pendingPackagedInstall = null;
+
+  function getPackagedUpdateMode() {
+    if (!app.isPackaged) return "source";
+    if (isMac) return "mac-dmg";
+    if (isLinux && !runtimeEnv.APPIMAGE) return "linux-deb";
+    return "native";
+  }
+
+  function isCustomPackagedUpdate() {
+    const mode = getPackagedUpdateMode();
+    return mode === "mac-dmg" || mode === "linux-deb";
+  }
+
+  function findCustomReleaseAsset(release, mode) {
+    if (mode === "mac-dmg") return findMacDmgAsset(release, runtimeArch);
+    if (mode === "linux-deb") return findLinuxDebAsset(release, runtimeArch);
+    return null;
+  }
 
   function isManualCheck() {
     return !!activeCheck && activeCheck.trigger === "manual";
@@ -636,10 +665,15 @@ function initUpdater(ctx, deps = {}) {
     // pet does not get stuck masking working/thinking.
     pulseState("notification");
 
-    const primaryLabel = isMac ? t("download", "Download") : t("updateNow", "Update Now");
-    const messageKey = isMac
-      ? t("updateAvailableMacMsg", "v{version} is available. Open the download page?")
-      : t("updateAvailableMsg", "v{version} is available. Download and install now?");
+    const updateMode = getPackagedUpdateMode();
+    const primaryLabel = isCustomPackagedUpdate()
+      ? t("download", "Download")
+      : t("updateNow", "Update Now");
+    const messageKey = updateMode === "mac-dmg"
+      ? t("updateAvailableMacMsg", "v{version} is available. Download and install it from the app?")
+      : updateMode === "linux-deb"
+        ? t("updateAvailableLinuxDebMsg", "v{version} is available. Download it and install with system authorization?")
+        : t("updateAvailableMsg", "v{version} is available. Download and install now?");
 
     const result = await awaitBubbleResult(showBubble({
       mode: "available",
@@ -710,9 +744,11 @@ function initUpdater(ctx, deps = {}) {
     const action = await awaitBubbleAction(showBubble({
       mode: "available",
       title: t("updateAvailable", "Update Available"),
-      message: (mode === "mac"
-        ? t("updateAvailableMacMsg", "v{version} is available. Open the download page?")
-        : t("updateAvailableMsg", "v{version} is available. Download and install now?"))
+      message: (mode === "mac-dmg"
+        ? t("updateAvailableMacMsg", "v{version} is available. Download and install it from the app?")
+        : mode === "linux-deb"
+          ? t("updateAvailableLinuxDebMsg", "v{version} is available. Download it and install with system authorization?")
+          : t("updateAvailableMsg", "v{version} is available. Download and install now?"))
         .replace("{version}", displayVersion),
       version,
       actions: [
@@ -753,9 +789,97 @@ function initUpdater(ctx, deps = {}) {
     if (action === "primary") return onPrimary();
     hideBubble();
     dismissToResolvedState();
-    updateStatus = "idle";
+    updateStatus = "ready";
     rebuildMenus();
     return null;
+  }
+
+  async function installPendingPackagedUpdate() {
+    if (!pendingPackagedInstall) return;
+    try {
+      await pendingPackagedInstall.install();
+    } catch (err) {
+      updateStatus = "error";
+      rebuildMenus();
+      clearOverlay();
+      await showErrorBubble({
+        failureType: "Package Install Failed",
+        operation: "Install Update",
+        reason: getErrorMessage(err),
+        nextStep: "Keep Clawd open, check the system authorization prompt, and try again.",
+        detail: getErrorMessage(err),
+      });
+    }
+  }
+
+  async function prepareCustomPackagedUpdate(release, version, mode) {
+    updateStatus = "downloading";
+    setOverlay("downloading");
+    rebuildMenus();
+    await showInfoBubble(
+      "downloading",
+      t("updateDownloading", "Downloading Update..."),
+      t("updateDownloading", "Downloading Update...")
+    );
+
+    try {
+      const prepare = mode === "mac-dmg" ? prepareMacUpdateFn : prepareLinuxUpdateFn;
+      pendingPackagedInstall = await prepare({
+        release,
+        version,
+        app,
+        arch: runtimeArch,
+        execPath: deps.execPath || process.execPath,
+        resourcesPath: deps.resourcesPath || process.resourcesPath,
+        userDataPath: deps.userDataPath,
+        pid: deps.pid || process.pid,
+        messages: {
+          success: t("macUpdateInstalled", "Clawd was updated to v{version}.")
+            .replace("{version}", formatVersionForMessage(version)),
+          rollback: t("macUpdateRolledBack", "The update failed, so the previous version was restored."),
+          quitTimeout: t("macUpdateQuitTimeout", "Clawd could not quit, so the update was cancelled."),
+        },
+      });
+      clearActiveCheck();
+      updateStatus = "ready";
+      clearOverlay();
+      rebuildMenus();
+      await promptReadyUpdate(version, installPendingPackagedUpdate);
+    } catch (err) {
+      pendingPackagedInstall = null;
+      updateStatus = "error";
+      clearActiveCheck();
+      rebuildMenus();
+      clearOverlay();
+      await showErrorBubble({
+        failureType: "Update Verification Failed",
+        operation: "Download and Verify Update",
+        reason: getErrorMessage(err),
+        nextStep: "Check your network connection and the release assets, then try again.",
+        detail: getErrorMessage(err),
+      });
+    }
+  }
+
+  async function openManualDownloadFallback(version) {
+    shell.openExternal(RELEASES_LATEST_URL);
+    updateStatus = "idle";
+    clearActiveCheck();
+    rebuildMenus();
+    await showSuccessBubble({
+      title: t("updateReady", "Update Ready"),
+      message: t(
+        "updateManualDownloadOpened",
+        "Automatic installation is unavailable for this release, so the download page was opened in your browser."
+      ),
+      version,
+      actions: [
+        { id: "dismiss", label: t("dismiss", "Dismiss"), variant: "secondary" },
+      ],
+      defaultAction: "dismiss",
+      requireAction: true,
+    });
+    dismissToResolvedState();
   }
 
   async function maybePromptNativeArm64Installer(release, { manual = false, currentVersion = app.getVersion() } = {}) {
@@ -1036,6 +1160,11 @@ function initUpdater(ctx, deps = {}) {
         .catch((err) => log(`Native ARM64 prompt skipped: ${err.message}`));
     }
 
+    // Unsigned macOS DMGs and Linux deb packages cannot use the native
+    // electron-updater install path. checkForUpdates() routes those packages
+    // through the verified platform installers instead.
+    if (isCustomPackagedUpdate()) return;
+
     const autoUpdater = getAutoUpdater();
     if (!autoUpdater) return;
 
@@ -1056,25 +1185,6 @@ function initUpdater(ctx, deps = {}) {
       rebuildMenus();
 
       const onPrimary = async () => {
-        if (isMac) {
-          shell.openExternal(RELEASES_LATEST_URL);
-          updateStatus = "idle";
-          clearActiveCheck();
-          rebuildMenus();
-          await showSuccessBubble({
-            title: t("updateReady", "Update Ready"),
-            message: t("macUpdateOpened", "Opened the latest download page in your browser."),
-            version: info.version,
-            actions: [
-              { id: "dismiss", label: t("dismiss", "Dismiss"), variant: "secondary" },
-            ],
-            defaultAction: "dismiss",
-            requireAction: true,
-          });
-          dismissToResolvedState();
-          return;
-        }
-
         updateStatus = "downloading";
         setOverlay("downloading");
         rebuildMenus();
@@ -1096,7 +1206,7 @@ function initUpdater(ctx, deps = {}) {
       }
 
       await promptAvailableUpdate({
-        mode: isMac ? "mac" : "win",
+        mode: "native",
         version: info.version,
         onPrimary,
       });
@@ -1244,6 +1354,23 @@ function initUpdater(ctx, deps = {}) {
       return;
     }
 
+    const packagedUpdateMode = getPackagedUpdateMode();
+    if (isCustomPackagedUpdate()) {
+      updateStatus = "available";
+      setOverlay("available");
+      rebuildMenus();
+      const onPrimary = findCustomReleaseAsset(latestRelease, packagedUpdateMode)
+        ? () => prepareCustomPackagedUpdate(latestRelease, latestVersion, packagedUpdateMode)
+        : () => openManualDownloadFallback(latestVersion);
+      if (downloadIntent) await onPrimary();
+      else await promptAvailableUpdate({
+        mode: packagedUpdateMode,
+        version: latestVersion,
+        onPrimary,
+      });
+      return;
+    }
+
     const autoUpdater = getAutoUpdater();
     if (!autoUpdater) {
       updateStatus = "error";
@@ -1323,7 +1450,9 @@ function initUpdater(ctx, deps = {}) {
       label: getUpdateMenuLabel(),
       enabled: updateStatus !== "checking" && updateStatus !== "downloading",
       click: () => updateStatus === "ready"
-        ? getAutoUpdater()?.quitAndInstall(false, true)
+        ? pendingPackagedInstall
+          ? installPendingPackagedUpdate()
+          : getAutoUpdater()?.quitAndInstall(false, true)
         : checkForUpdates(true),
     };
   }
