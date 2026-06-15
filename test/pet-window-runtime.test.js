@@ -114,6 +114,9 @@ function createRuntime(overrides = {}) {
     reapplyMacVisibility: () => calls.push(["reapplyMacVisibility"]),
     reassertWinTopmost: () => calls.push(["reassertWinTopmost"]),
     scheduleHwndRecovery: () => calls.push(["scheduleHwndRecovery"]),
+    isWindowCloaked: (win) => typeof overrides.isWindowCloaked === "function"
+      ? overrides.isWindowCloaked(win)
+      : false,
     isNearWorkAreaEdge: () => overrides.nearEdge || false,
     flushRuntimeStateToPrefs: () => calls.push(["flushRuntimeStateToPrefs"]),
     handleMiniDisplayChange: () => calls.push(["handleMiniDisplayChange"]),
@@ -198,9 +201,9 @@ describe("pet-window-runtime", () => {
     assert.doesNotMatch(mainSource, /ownedHitWin\.webContents\.reload\(\)/);
   });
 
-  it("creates the render window as non-focusable and materializes the initial virtual bounds", () => {
+  it("keeps non-Windows render windows non-focusable and materializes the initial virtual bounds", () => {
     const instances = [];
-    const harness = createRuntime();
+    const harness = createRuntime({ isWin: false });
 
     harness.runtime.createRenderWindow({
       BrowserWindow: makeBrowserWindow(instances),
@@ -217,16 +220,35 @@ describe("pet-window-runtime", () => {
     assert.deepStrictEqual(instances[0].calls.filter((call) => call[0] === "setFocusable"), [
       ["setFocusable", false],
     ]);
-    assert.deepStrictEqual(instances[0].calls.find((call) => call[0] === "setAlwaysOnTop"), [
-      "setAlwaysOnTop",
-      true,
-      "pop-up-menu",
-    ]);
     assert.deepStrictEqual(instances[0].calls.find((call) => call[0] === "setBounds"), [
       "setBounds",
       { x: 40, y: 0, width: 120, height: 120 },
     ]);
     assert.equal(harness.runtime.getViewportOffsetY(), 25);
+  });
+
+  it("leaves Windows render windows focusable to avoid DWM cloaking", () => {
+    const instances = [];
+    const harness = createRuntime({ isWin: true });
+
+    harness.runtime.createRenderWindow({
+      BrowserWindow: makeBrowserWindow(instances),
+      size: { width: 120, height: 120 },
+      initialWindowBounds: { x: 40, y: 0, width: 120, height: 120 },
+      initialVirtualBounds: { x: 40, y: 0, width: 120, height: 120 },
+      preloadPath: "preload.js",
+      loadFilePath: "index.html",
+      themeConfig: { ok: true },
+      setRenderWindow: harness.setRenderWin,
+      isQuitting: () => false,
+    });
+
+    assert.deepStrictEqual(instances[0].calls.filter((call) => call[0] === "setFocusable"), []);
+    assert.deepStrictEqual(instances[0].calls.find((call) => call[0] === "setAlwaysOnTop"), [
+      "setAlwaysOnTop",
+      true,
+      "pop-up-menu",
+    ]);
   });
 
   it("flushes runtime prefs once during Windows session end", () => {
@@ -458,6 +480,28 @@ describe("pet-window-runtime", () => {
     assert.ok(harness.calls.some((call) => call[0] === "reassertWinTopmost"));
     assert.ok(harness.calls.some((call) => call[0] === "scheduleHwndRecovery"));
     assert.ok(harness.calls.some((call) => call[0] === "flushRuntimeStateToPrefs"));
+  });
+
+  it("treats a cloaked visible Windows pet window as hidden and recovers it", () => {
+    const renderWin = makeWindow();
+    const hitWin = makeWindow();
+    const harness = createRuntime({
+      renderWin,
+      hitWin,
+      isWindowCloaked: (win) => win === renderWin,
+    });
+
+    harness.runtime.togglePetVisibility();
+
+    assert.deepStrictEqual(renderWin.calls.slice(0, 2), [
+      ["hide"],
+      ["showInactive"],
+    ]);
+    assert.ok(!renderWin.calls.some((call) => call[0] === "hide" && renderWin.calls.indexOf(call) > 0));
+    assert.ok(hitWin.calls.some((call) => call[0] === "showInactive"));
+    assert.equal(harness.runtime.isPetHidden(), false);
+    assert.ok(harness.calls.some((call) => call[0] === "reassertWinTopmost"));
+    assert.ok(harness.calls.some((call) => call[0] === "scheduleHwndRecovery"));
   });
 });
 
