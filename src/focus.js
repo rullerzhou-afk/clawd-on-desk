@@ -73,6 +73,64 @@ function querySupersetWorkspaceId(dbPath, cwd, callback) {
   tryNext(0);
 }
 
+// ── Module-scope window helpers ─────────────────────────────────────────
+// These are pure functions with no ctx dependency, exposed both for the
+// factory's internal use and for unit-test access via module.exports.__test.
+
+function normalizeCapturedWindow(value) {
+  if (!value || typeof value !== "object") return null;
+  const appName = typeof value.appName === "string" ? value.appName.trim() : "";
+  if (!appName || appName.length > 120) return null;
+  const title = typeof value.title === "string" ? value.title.trim() : "";
+  const bounds = value.bounds && typeof value.bounds === "object" ? {
+    x: Number(value.bounds.x) || 0,
+    y: Number(value.bounds.y) || 0,
+    w: Number(value.bounds.w) || 0,
+    h: Number(value.bounds.h) || 0,
+  } : null;
+  if (!bounds || bounds.w < 100 || bounds.h < 50) return null;
+  return {
+    appName,
+    title: title.slice(0, 300),
+    bounds,
+    capturedAt: typeof value.capturedAt === "number" ? value.capturedAt : Date.now(),
+  };
+}
+
+function extractProjectFolderName(cwd) {
+  if (typeof cwd !== "string" || !cwd) return "";
+  const parts = cwd.replace(/\\/g, "/").split("/").filter(Boolean);
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const name = parts[i].trim();
+    if (name && name.length >= 2 && !name.startsWith(".")) return name;
+  }
+  return "";
+}
+
+function extractStableTitlePrefix(title) {
+  if (typeof title !== "string" || !title) return "";
+  // IntelliJ-style: "project – file – IDE" → project
+  const emDashParts = title.split("–");
+  if (emDashParts.length >= 2) {
+    const first = emDashParts[0].trim();
+    if (first.length >= 2) return first;
+  }
+  // VS Code / editor style: "file — project - AppName" (EM DASH U+2014)
+  const dashParts = title.split("—");
+  if (dashParts.length >= 2) {
+    // Try the second-to-last part (usually the project/folder name).
+    // For 2 parts: ["file ", " project - App"] → use last
+    // For 3+ parts: ["a ", " b ", " c"] → use middle
+    const idx = dashParts.length >= 3 ? dashParts.length - 2 : dashParts.length - 1;
+    const part = dashParts[idx].trim();
+    // Strip trailing " - AppName" suffix if present (e.g. "project - VS Code")
+    const hyphenIdx = part.lastIndexOf(" - ");
+    const clean = hyphenIdx > 0 ? part.slice(0, hyphenIdx).trim() : part;
+    if (clean.length >= 2) return clean;
+  }
+  return title.trim();
+}
+
 module.exports = function initFocus(ctx) {
 
 const FOCUS_RESULT_PREFIX = "__CLAWD_FOCUS_RESULT__ ";
@@ -637,6 +695,7 @@ function normalizeFocusRequest(sourcePidOrRequest, cwd, editor, pidChain, meta =
       agentId: typeof request.agentId === "string" ? request.agentId : null,
       requestSource: typeof request.requestSource === "string" ? request.requestSource : null,
       ghosttyTerminalId: normalizeGhosttyTerminalId(request.ghosttyTerminalId ?? request.ghostty_terminal_id),
+      capturedWindow: normalizeCapturedWindow(request.capturedWindow),
       tmuxSocket: normalizeTmuxSocket(request.tmuxSocket ?? request.tmux_socket),
       tmuxClient: normalizeTmuxClient(request.tmuxClient ?? request.tmux_client),
     };
@@ -652,6 +711,7 @@ function normalizeFocusRequest(sourcePidOrRequest, cwd, editor, pidChain, meta =
     agentId: meta && typeof meta.agentId === "string" ? meta.agentId : null,
     requestSource: meta && typeof meta.requestSource === "string" ? meta.requestSource : null,
     ghosttyTerminalId: normalizeGhosttyTerminalId(meta && (meta.ghosttyTerminalId ?? meta.ghostty_terminal_id)),
+    capturedWindow: normalizeCapturedWindow(meta && meta.capturedWindow),
     tmuxSocket: normalizeTmuxSocket(meta && (meta.tmuxSocket ?? meta.tmux_socket)),
     tmuxClient: normalizeTmuxClient(meta && (meta.tmuxClient ?? meta.tmux_client)),
   };
@@ -1428,6 +1488,7 @@ function executeMacFocusRequest(request) {
   scheduleCmuxWorkspaceSwitch(request.pidChain);
   scheduleSupersetFocus(request.sourcePid, request.cwd);
   scheduleGhosttyFocus(request.sourcePid, request.cwd, request.pidChain, request.ghosttyTerminalId);
+  scheduleCapturedWindowFocus(request);
 }
 
 function scheduleSupersetFocus(sourcePid, cwd) {
@@ -1576,6 +1637,246 @@ function captureGhosttyTerminalId(sourcePidOrRequest, callback) {
     });
   });
   return true;
+}
+
+// ── General window-metadata capture (macOS) ──────────────────────────────
+// Captures the frontmost window's process name, title and bounds for the
+// given sourcePid via System Events. The metadata is stored in the session
+// and later used by scheduleCapturedWindowFocus to restore focus to the
+// exact window (not just the most-recently-active window of the app).
+
+function captureFrontmostWindow(sourcePidOrRequest, callback) {
+  const request = normalizeFocusRequest(sourcePidOrRequest);
+  const done = typeof callback === "function" ? callback : () => {};
+  if (!isMac || !request.sourcePid) return false;
+  execFile("ps", ["-o", "comm=", "-p", String(request.sourcePid)], { encoding: "utf8", timeout: 500 }, (err, stdout) => {
+    if (err) return done(null);
+    const appName = path.basename(stdout.trim());
+    if (!appName) return done(null);
+
+    const script = `
+      tell application "System Events"
+        try
+          set frontProc to first process whose frontmost is true
+          if unix id of frontProc is not ${request.sourcePid} then
+            return "miss-frontmost-pid"
+          end if
+          set winName to name of front window of frontProc
+          set winPos to position of front window of frontProc
+          set winSize to size of front window of frontProc
+          return winName & "\\t" & (item 1 of winPos) & "\\t" & (item 2 of winPos) & "\\t" & (item 1 of winSize) & "\\t" & (item 2 of winSize)
+        on error errMsg number errNum
+          return "error:" & errNum
+        end try
+      end tell`;
+
+    execFile("osascript", ["-e", script], { timeout: 1000 }, (osaErr, osaOut) => {
+      if (osaErr) {
+        logFocusResult(`branch=capture-window reason=osascript-failed:${safeLogValue(osaErr.code || osaErr.name || "error")}`);
+        done(null);
+        return;
+      }
+      const out = String(osaOut || "").trim();
+      if (!out || out.startsWith("miss") || out.startsWith("error")) {
+        logFocusResult(`branch=capture-window reason=${safeLogValue(out || "empty")}`);
+        done(null);
+        return;
+      }
+      const parts = out.split("\t");
+      if (parts.length < 5) { done(null); return; }
+      const capturedWindow = normalizeCapturedWindow({
+        appName,
+        title: parts[0],
+        bounds: {
+          x: Number(parts[1]) || 0,
+          y: Number(parts[2]) || 0,
+          w: Number(parts[3]) || 0,
+          h: Number(parts[4]) || 0,
+        },
+        capturedAt: Date.now(),
+      });
+      if (!capturedWindow) { done(null); return; }
+      logFocusResult(`branch=capture-window reason=ok app=${safeLogValue(appName)} title=${safeLogValue(capturedWindow.title.slice(0, 60))} bounds=${capturedWindow.bounds.x},${capturedWindow.bounds.y}`);
+      done(capturedWindow);
+    });
+  });
+  return true;
+}
+
+// ── Captured-window focus cascade (macOS) ───────────────────────────────
+// Runs after the app-specific handlers (iTerm2/Ghostty/cmux/Superset) and
+// tries to restore focus to the exact window via Accessibility matching.
+//
+// Cascade (each level falls through to the next on failure):
+//   L1 – title + bounds match (captured title AND position both match)
+//   L2 – project-name unique match (only one window whose title contains
+//        the deepest CWD folder name)
+//   L3 – title substring match (any window whose title contains the
+//        captured title's stable prefix)
+//   L4 – bounds unique match (only one window at the captured position)
+//   L5 – generic app activation (delegates back to open bundle / System
+//        Events frontmost – the existing fallback)
+//
+// Each level first calls `set frontmost to true` on the target process so
+// the app is active before we attempt window-level operations.
+
+const CAPTURED_WINDOW_FOCUS_DELAY_MS = 500;
+
+// Build AppleScript snippets for each cascade level. Each returns "ok" on
+// success or "miss" / "miss-ambiguous" on failure.
+
+function buildAxTitleBoundsFocusScript(appName, titleSub, bounds) {
+  const escapedTitle = escapeAppleScriptString(titleSub);
+  const bx = Math.round(bounds.x);
+  const by = Math.round(bounds.y);
+  return `
+    tell application "System Events"
+      try
+        set frontmost of process "${escapeAppleScriptString(appName)}" to true
+        repeat with w in windows of process "${escapeAppleScriptString(appName)}"
+          try
+            if name of w contains "${escapedTitle}" then
+              set {wx, wy} to position of w
+              if wx = ${bx} and wy = ${by} then
+                perform action "AXRaise" of w
+                return "ok"
+              end if
+            end if
+          end try
+        end repeat
+        return "miss"
+      on error
+        return "miss"
+      end try
+    end tell`;
+}
+
+function buildAxProjectFocusScript(appName, projectName) {
+  const escapedName = escapeAppleScriptString(projectName);
+  return `
+    tell application "System Events"
+      try
+        set frontmost of process "${escapeAppleScriptString(appName)}" to true
+        set matchedCount to 0
+        set lastMatch to missing value
+        repeat with w in windows of process "${escapeAppleScriptString(appName)}"
+          try
+            if name of w contains "${escapedName}" then
+              set matchedCount to matchedCount + 1
+              set lastMatch to w
+            end if
+          end try
+        end repeat
+        if matchedCount is 1 then
+          perform action "AXRaise" of lastMatch
+          return "ok"
+        end if
+        return "miss"
+      on error
+        return "miss"
+      end try
+    end tell`;
+}
+
+function buildAxTitleFocusScript(appName, titleSub) {
+  const escapedTitle = escapeAppleScriptString(titleSub);
+  return `
+    tell application "System Events"
+      try
+        set frontmost of process "${escapeAppleScriptString(appName)}" to true
+        repeat with w in windows of process "${escapeAppleScriptString(appName)}"
+          try
+            if name of w contains "${escapedTitle}" then
+              perform action "AXRaise" of w
+              return "ok"
+            end if
+          end try
+        end repeat
+        return "miss"
+      on error
+        return "miss"
+      end try
+    end tell`;
+}
+
+function buildAxBoundsUniqueFocusScript(appName, bounds) {
+  const bx = Math.round(bounds.x);
+  const by = Math.round(bounds.y);
+  return `
+    tell application "System Events"
+      try
+        set frontmost of process "${escapeAppleScriptString(appName)}" to true
+        set matchedCount to 0
+        set lastMatch to missing value
+        repeat with w in windows of process "${escapeAppleScriptString(appName)}"
+          try
+            set {wx, wy} to position of w
+            if wx = ${bx} and wy = ${by} then
+              set matchedCount to matchedCount + 1
+              set lastMatch to w
+            end if
+          end try
+        end repeat
+        if matchedCount is 1 then
+          perform action "AXRaise" of lastMatch
+          return "ok"
+        end if
+        return "miss"
+      on error
+        return "miss"
+      end try
+    end tell`;
+}
+
+function scheduleCapturedWindowFocus(request) {
+  if (!isMac) return;
+  const cw = request.capturedWindow;
+  if (!cw || !cw.appName) return;
+
+  const projectName = extractProjectFolderName(request.cwd);
+  const stableTitle = extractStableTitlePrefix(cw.title);
+
+  // Skip captured-window focus for apps that already have precise handlers.
+  // The app-specific handlers (scheduleITermTabFocus, scheduleGhosttyFocus,
+  // scheduleCmuxWorkspaceSwitch, scheduleSupersetFocus) run in parallel and
+  // are more accurate; capturedWindow is a fallback for everything else.
+  const appNameLower = cw.appName.toLowerCase();
+  if (appNameLower === "iterm2" || appNameLower === "ghostty" || appNameLower === "cmux" || appNameLower === "superset") return;
+
+  const runScript = (script, label, onMiss) => {
+    if (!script) { if (onMiss) onMiss(); return; }
+    execFile("osascript", ["-e", script], { timeout: MAC_FOCUS_TIMEOUT_MS }, (err, out) => {
+      const ok = !err && String(out || "").trim() === "ok";
+      logFocusResult(`branch=captured-window reason=${label} status=${ok ? "ok" : "miss"}`);
+      if (ok || !onMiss) return;
+      onMiss();
+    });
+  };
+
+  setTimeout(() => {
+    // L1: title + bounds match
+    const l1 = () => {
+      if (!cw.title || !cw.bounds) return l2();
+      runScript(buildAxTitleBoundsFocusScript(cw.appName, stableTitle || cw.title, cw.bounds), "title-bounds", l2);
+    };
+    // L2: project-name unique match
+    const l2 = () => {
+      if (!projectName) return l3();
+      runScript(buildAxProjectFocusScript(cw.appName, projectName), "project-unique", l3);
+    };
+    // L3: title substring match
+    const l3 = () => {
+      if (!stableTitle && !cw.title) return l4();
+      const search = stableTitle || cw.title;
+      runScript(buildAxTitleFocusScript(cw.appName, search), "title", l4);
+    };
+    // L4: bounds unique match
+    const l4 = () => {
+      if (!cw.bounds) return;
+      runScript(buildAxBoundsUniqueFocusScript(cw.appName, cw.bounds), "bounds-unique", null);
+    };
+    l1();
+  }, CAPTURED_WINDOW_FOCUS_DELAY_MS);
 }
 
 function requestMacFocus(request) {
@@ -1813,6 +2114,7 @@ return {
   killFocusHelper,
   focusTerminalWindow,
   captureGhosttyTerminalId,
+  captureFrontmostWindow,
   clearMacFocusCooldownTimer,
   cleanup,
   __test: {
@@ -1823,6 +2125,7 @@ return {
     isPositiveFocusReason,
     normalizeFocusRequest,
     normalizeGhosttyTerminalId,
+    normalizeCapturedWindow,
     normalizeFocusResultPayload,
     parseFocusHelperResult,
     summarizeCwd,
@@ -1836,6 +2139,12 @@ return {
     buildGhosttyTtyFocusScript,
     buildGhosttyPidFocusScript,
     buildGhosttyCwdFocusScript,
+    buildAxTitleBoundsFocusScript,
+    buildAxProjectFocusScript,
+    buildAxTitleFocusScript,
+    buildAxBoundsUniqueFocusScript,
+    extractProjectFolderName,
+    extractStableTitlePrefix,
     scheduleTmuxPaneFocus,
     __setTmuxBin,
     resolveTmuxBin,
@@ -1853,4 +2162,7 @@ module.exports.__test = {
   findSupersetDataDirs,
   supersetSchemeForDir,
   querySupersetWorkspaceId,
+  normalizeCapturedWindow,
+  extractProjectFolderName,
+  extractStableTitlePrefix,
 };
