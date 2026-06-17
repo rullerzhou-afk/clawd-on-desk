@@ -23,6 +23,23 @@
     formDirty: false,
   };
 
+  const feishuView = {
+    status: null,
+    statusSeq: 0,
+    statusLoading: false,
+    statusForceRenderPending: false,
+    secretInfo: null,
+    secretInfoSeq: 0,
+    secretInfoLoading: false,
+    secretInfoForceRenderPending: false,
+    secretPending: false,
+    secretEditing: false,
+    configPending: false,
+    testPending: false,
+    formDraft: null,
+    formDirty: false,
+  };
+
   function t(key) {
     return helpers.t(key);
   }
@@ -44,6 +61,15 @@
     };
   }
 
+  function currentFeishuConfig() {
+    const cfg = state.snapshot && state.snapshot.feishuApproval;
+    return {
+      enabled: !!(cfg && cfg.enabled),
+      idType: cfg && typeof cfg.idType === "string" ? cfg.idType : "open_id",
+      approverId: cfg && typeof cfg.approverId === "string" ? cfg.approverId : "",
+    };
+  }
+
   function getFormDraft() {
     if (!view.formDraft || !view.formDirty) {
       const cfg = currentConfig();
@@ -61,6 +87,25 @@
   function resetFormDraft() {
     view.formDraft = null;
     view.formDirty = false;
+  }
+
+  function getFeishuFormDraft() {
+    if (!feishuView.formDraft || !feishuView.formDirty) {
+      const cfg = currentFeishuConfig();
+      feishuView.formDraft = { idType: cfg.idType, approverId: cfg.approverId };
+    }
+    return feishuView.formDraft;
+  }
+
+  function setFeishuFormDraftValue(key, value) {
+    const draft = getFeishuFormDraft();
+    draft[key] = value;
+    feishuView.formDirty = true;
+  }
+
+  function resetFeishuFormDraft() {
+    feishuView.formDraft = null;
+    feishuView.formDirty = false;
   }
 
   function callCommand(action, payload) {
@@ -121,6 +166,61 @@
     });
   }
 
+  function refreshFeishuStatus({ forceRender = false } = {}) {
+    if (feishuView.statusLoading) {
+      if (forceRender) feishuView.statusForceRenderPending = true;
+      return;
+    }
+    feishuView.statusLoading = true;
+    const seq = ++feishuView.statusSeq;
+    callCommand("feishuApproval.status").then((result) => {
+      if (seq !== feishuView.statusSeq) return;
+      feishuView.statusLoading = false;
+      const previousStatus = feishuView.status;
+      const hadStatus = !!previousStatus;
+      const updated = result && result.status === "ok";
+      const nextStatus = updated ? result.state || null : previousStatus;
+      const shouldForceRender = forceRender || feishuView.statusForceRenderPending;
+      feishuView.statusForceRenderPending = false;
+      const changed = updated && feishuStatusRenderKey(previousStatus) !== feishuStatusRenderKey(nextStatus);
+      if (updated) feishuView.status = result.state || null;
+      const initialVisibleChange = !hadStatus && feishuStatusNeedsRender(nextStatus);
+      if ((shouldForceRender || (updated && (initialVisibleChange || (hadStatus && changed)))) && state.activeTab === "telegram-approval") {
+        ops.requestRender({ content: true });
+      }
+    });
+  }
+
+  function refreshFeishuSecretInfo({ forceRender = false } = {}) {
+    if (feishuView.secretInfoLoading) {
+      if (forceRender) feishuView.secretInfoForceRenderPending = true;
+      return;
+    }
+    feishuView.secretInfoLoading = true;
+    const seq = ++feishuView.secretInfoSeq;
+    callCommand("feishuApproval.secretInfo").then((result) => {
+      if (seq !== feishuView.secretInfoSeq) return;
+      feishuView.secretInfoLoading = false;
+      const previous = feishuView.secretInfo;
+      const updated = result && result.status === "ok";
+      const next = updated ? {
+        configured: result.configured === true,
+        appId: result.appId || "",
+        appSecret: result.appSecret || "",
+        verificationToken: result.verificationToken || "",
+        encryptKey: result.encryptKey || "",
+      } : previous;
+      const shouldForceRender = forceRender || feishuView.secretInfoForceRenderPending;
+      feishuView.secretInfoForceRenderPending = false;
+      const changed = updated && feishuSecretInfoRenderKey(previous) !== feishuSecretInfoRenderKey(next);
+      if (updated) feishuView.secretInfo = next;
+      const initialVisibleChange = !previous && feishuSecretInfoNeedsRender(next);
+      if ((shouldForceRender || (updated && (initialVisibleChange || (previous && changed)))) && state.activeTab === "telegram-approval") {
+        ops.requestRender({ content: true });
+      }
+    });
+  }
+
   function statusRenderKey(status) {
     const s = status && typeof status === "object" ? status : {};
     return [
@@ -139,9 +239,49 @@
     return [i.configured === true ? "1" : "0", i.masked || ""].join("");
   }
 
+  function feishuStatusRenderKey(status) {
+    const s = status && typeof status === "object" ? status : {};
+    return [
+      s.status || "",
+      s.enabled === true ? "1" : "0",
+      s.configured === true ? "1" : "0",
+      s.reason || "",
+      s.message || "",
+      s.secretsStored === true ? "1" : "0",
+    ].join("");
+  }
+
+  function feishuSecretInfoRenderKey(info) {
+    const i = info && typeof info === "object" ? info : {};
+    return [
+      i.configured === true ? "1" : "0",
+      i.appId || "",
+      i.appSecret || "",
+      i.verificationToken || "",
+      i.encryptKey || "",
+    ].join("");
+  }
+
+  function feishuStatusNeedsRender(status) {
+    const s = status && typeof status === "object" ? status : {};
+    return !!(
+      s.status === "running"
+      || s.status === "starting"
+      || s.status === "failed"
+      || s.configured === true
+      || s.secretsStored === true
+    );
+  }
+
+  function feishuSecretInfoNeedsRender(info) {
+    return !!(info && info.configured);
+  }
+
   function render(parent) {
     refreshStatus();
     refreshTokenInfo();
+    refreshFeishuStatus();
+    refreshFeishuSecretInfo();
 
     const h1 = document.createElement("h1");
     h1.textContent = t("remoteApprovalTitle");
@@ -160,6 +300,7 @@
     // Each remote approval channel renders as its own collapsible card so the
     // page can stay tidy as external approval channels grow.
     parent.appendChild(buildTelegramChannelCard());
+    parent.appendChild(buildFeishuChannelCard());
     parent.appendChild(buildHardwareBuddyChannelCard());
   }
 
@@ -415,6 +556,24 @@
     });
   }
 
+  function buildFeishuChannelCard() {
+    const kind = deriveFeishuCardKind();
+    const defaultCollapsed = kind === "running";
+
+    return helpers.buildCollapsibleGroup({
+      id: "remote-approval.feishu",
+      headerContent: buildChannelHeader(t("feishuApprovalChannelName"), kind),
+      defaultCollapsed,
+      className: "remote-approval-channel-card feishu-approval-channel-card",
+      children: [
+        buildChannelStatusRow(kind, deriveFeishuCardMessage(kind)),
+        helpers.buildSection(t("feishuApprovalStep1Title"), [buildFeishuSecretsRow()]),
+        helpers.buildSection(t("feishuApprovalStep2Title"), [buildFeishuApproverRow()]),
+        buildFeishuStep3Section(),
+      ],
+    });
+  }
+
   function buildHardwareBuddyChannelCard() {
     return root.ClawdSettingsHardwareBuddyPanel.build(coreRef, {
       id: "remote-approval.hardware-buddy",
@@ -445,12 +604,12 @@
     return wrap;
   }
 
-  function buildChannelStatusRow(kind) {
+  function buildChannelStatusRow(kind, message) {
     const row = document.createElement("div");
     row.className = "tg-approval-channel-status-row " + statusBadgeClass(kind);
     const text = document.createElement("span");
     text.className = "tg-approval-channel-status-text";
-    text.textContent = deriveCardMessage(kind);
+    text.textContent = message || deriveCardMessage(kind);
     row.appendChild(text);
     return row;
   }
@@ -493,6 +652,30 @@
     if (!tokenOk) return t("telegramApprovalCardMissingToken");
     if (!recipientOk) return t("telegramApprovalCardMissingRecipient");
     return t("telegramApprovalCardReadyToEnable");
+  }
+
+  function deriveFeishuCardKind() {
+    const s = feishuView.status || {};
+    if (s.status === "running") return "running";
+    if (s.status === "starting") return "starting";
+    if (s.status === "failed") return "failed";
+    if (s.configured === true || (s.status === "ready" && s.secretsStored === true)) return "ready";
+    return "incomplete";
+  }
+
+  function deriveFeishuCardMessage(kind) {
+    const s = feishuView.status || {};
+    if (kind === "failed") return s.message || t("feishuApprovalCardFailed");
+    if (kind === "running") return t("feishuApprovalCardRunning");
+    if (kind === "starting") return t("feishuApprovalCardStarting");
+    if (kind === "ready") return t("feishuApprovalCardReadyToEnable");
+    const secretsOk = !!(feishuView.secretInfo && feishuView.secretInfo.configured) || s.secretsStored === true;
+    const cfg = currentFeishuConfig();
+    const approverOk = !!cfg.approverId;
+    if (!secretsOk && !approverOk) return t("feishuApprovalCardMissingBoth");
+    if (!secretsOk) return t("feishuApprovalCardMissingSecrets");
+    if (!approverOk) return t("feishuApprovalCardMissingApprover");
+    return t("feishuApprovalCardReadyToEnable");
   }
 
   // ── Step 1: Bot Token ──
@@ -944,6 +1127,362 @@
     return row;
   }
 
+  // ── Feishu: App credentials ──
+
+  function buildFeishuSecretsRow() {
+    const info = feishuView.secretInfo;
+    const configured = !!(info && info.configured);
+    if (configured && !feishuView.secretEditing) {
+      return buildFeishuSecretsStoredRow(info);
+    }
+    return buildFeishuSecretsEditRow({ configured, info });
+  }
+
+  function buildFeishuSecretsStoredRow(info) {
+    const row = document.createElement("div");
+    row.className = "row tg-approval-token-stored-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label tg-approval-token-stored-label";
+    label.textContent = t("feishuApprovalSecretsConfiguredLabel");
+    const masked = document.createElement("span");
+    masked.className = "tg-approval-token-masked";
+    masked.textContent = info && info.appId ? info.appId : t("feishuApprovalSecretsConfiguredNoMask");
+    label.appendChild(masked);
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("feishuApprovalSecretsConfiguredDesc");
+    text.appendChild(label);
+    text.appendChild(desc);
+    row.appendChild(text);
+
+    const ctrl = document.createElement("div");
+    ctrl.className = "row-control";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "soft-btn";
+    btn.textContent = t("feishuApprovalReplaceSecrets");
+    btn.addEventListener("click", () => {
+      feishuView.secretEditing = true;
+      ops.requestRender({ content: true });
+    });
+    ctrl.appendChild(btn);
+    row.appendChild(ctrl);
+    return row;
+  }
+
+  function buildFeishuSecretsEditRow({ configured, info }) {
+    const row = document.createElement("div");
+    row.className = "row tg-approval-token-edit-row feishu-approval-secrets-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("feishuApprovalSecretsLabel");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.innerHTML = configured
+      ? escapeWithLink(t("feishuApprovalSecretsReplaceHintHtml"))
+      : escapeWithLink(t("feishuApprovalSecretsHintHtml"));
+    text.appendChild(label);
+    if (configured && info) {
+      const current = document.createElement("span");
+      current.className = "tg-approval-token-current";
+      current.textContent = t("feishuApprovalSecretsCurrent").replace("{masked}", info.appId || "");
+      text.appendChild(current);
+    }
+    text.appendChild(desc);
+    row.appendChild(text);
+
+    const ctrl = document.createElement("div");
+    ctrl.className = "row-control tg-approval-input-row feishu-approval-secrets-grid";
+    const appIdInput = buildFeishuSecretInput("feishuApprovalAppIdPlaceholder", false);
+    const appSecretInput = buildFeishuSecretInput("feishuApprovalAppSecretPlaceholder", true);
+    const verificationInput = buildFeishuSecretInput("feishuApprovalVerificationTokenPlaceholder", true);
+    const encryptInput = buildFeishuSecretInput("feishuApprovalEncryptKeyPlaceholder", true);
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "soft-btn accent";
+    saveBtn.textContent = feishuView.secretPending ? t("feishuApprovalSaving") : t("feishuApprovalSaveSecrets");
+    saveBtn.disabled = feishuView.secretPending;
+    saveBtn.addEventListener("click", () => {
+      const payload = {
+        appId: appIdInput.value.trim(),
+        appSecret: appSecretInput.value.trim(),
+        verificationToken: verificationInput.value.trim(),
+        encryptKey: encryptInput.value.trim(),
+      };
+      if (!configured && (!payload.appId || !payload.appSecret)) {
+        ops.showToast(t("feishuApprovalSecretsRequired"), { error: true });
+        return;
+      }
+      if (configured && !payload.appId && !payload.appSecret && !payload.verificationToken && !payload.encryptKey) {
+        ops.showToast(t("feishuApprovalSecretsEmpty"), { error: true });
+        return;
+      }
+      feishuView.secretPending = true;
+      ops.requestRender({ content: true });
+      callCommand("feishuApproval.setSecrets", payload).then((result) => {
+        feishuView.secretPending = false;
+        if (!result || result.status !== "ok") {
+          ops.showToast((result && result.message) || t("feishuApprovalSecretsSaveFailed"), { error: true });
+          ops.requestRender({ content: true });
+          return;
+        }
+        ops.showToast(t("feishuApprovalSecretsSaved"));
+        feishuView.secretEditing = false;
+        feishuView.secretInfo = null;
+        feishuView.status = null;
+        refreshFeishuSecretInfo({ forceRender: true });
+        refreshFeishuStatus({ forceRender: true });
+      });
+    });
+
+    ctrl.appendChild(appIdInput);
+    ctrl.appendChild(appSecretInput);
+    ctrl.appendChild(verificationInput);
+    ctrl.appendChild(encryptInput);
+    ctrl.appendChild(saveBtn);
+    if (configured) {
+      const cancelBtn = document.createElement("button");
+      cancelBtn.type = "button";
+      cancelBtn.className = "soft-btn";
+      cancelBtn.textContent = t("telegramApprovalCancel");
+      cancelBtn.disabled = feishuView.secretPending;
+      cancelBtn.addEventListener("click", () => {
+        feishuView.secretEditing = false;
+        ops.requestRender({ content: true });
+      });
+      ctrl.appendChild(cancelBtn);
+    }
+    row.appendChild(ctrl);
+    return row;
+  }
+
+  function buildFeishuSecretInput(placeholderKey, secret) {
+    const input = document.createElement("input");
+    input.type = secret ? "password" : "text";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.placeholder = t(placeholderKey);
+    input.className = "tg-approval-input";
+    return input;
+  }
+
+  // ── Feishu: approver ──
+
+  function buildFeishuApproverRow() {
+    const draft = getFeishuFormDraft();
+    const row = document.createElement("div");
+    row.className = "row tg-approval-recipient-row feishu-approval-approver-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("feishuApprovalApproverLabel");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.innerHTML = escapeWithLink(t("feishuApprovalApproverHintHtml"));
+    text.appendChild(label);
+    text.appendChild(desc);
+    row.appendChild(text);
+
+    const ctrl = document.createElement("div");
+    ctrl.className = "row-control tg-approval-input-row";
+    const segmented = document.createElement("div");
+    segmented.className = "segmented feishu-approval-id-type";
+    segmented.setAttribute("role", "tablist");
+    const idTypes = [
+      { id: "open_id", label: "open_id" },
+      { id: "user_id", label: "user_id" },
+      { id: "union_id", label: "union_id" },
+    ];
+    for (const item of idTypes) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.dataset.idType = item.id;
+      btn.textContent = item.label;
+      btn.classList.toggle("active", draft.idType === item.id);
+      btn.addEventListener("click", () => {
+        setFeishuFormDraftValue("idType", item.id);
+        ops.requestRender({ content: true });
+      });
+      segmented.appendChild(btn);
+    }
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.placeholder = t("feishuApprovalApproverPlaceholder");
+    input.className = "tg-approval-input";
+    input.value = draft.approverId || "";
+    input.addEventListener("input", () => setFeishuFormDraftValue("approverId", input.value));
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "soft-btn accent";
+    saveBtn.textContent = feishuView.configPending ? t("feishuApprovalSaving") : t("feishuApprovalSaveApprover");
+    saveBtn.disabled = feishuView.configPending;
+    saveBtn.addEventListener("click", () => {
+      const nextDraft = getFeishuFormDraft();
+      const approverId = String(nextDraft.approverId || "").trim();
+      const idType = ["open_id", "user_id", "union_id"].includes(nextDraft.idType) ? nextDraft.idType : "open_id";
+      if (!approverId) {
+        ops.showToast(t("feishuApprovalApproverEmpty"), { error: true });
+        return;
+      }
+      saveFeishuConfig({
+        enabled: currentFeishuConfig().enabled,
+        idType,
+        approverId,
+      });
+    });
+
+    ctrl.appendChild(segmented);
+    ctrl.appendChild(input);
+    ctrl.appendChild(saveBtn);
+    row.appendChild(ctrl);
+    return row;
+  }
+
+  // ── Feishu: Enable + Test ──
+
+  function buildFeishuStep3Section() {
+    const secretsConfigured = !!(feishuView.secretInfo && feishuView.secretInfo.configured)
+      || (feishuView.status && feishuView.status.secretsStored === true);
+    const cfg = currentFeishuConfig();
+    const approverConfigured = !!cfg.approverId;
+    const ready = secretsConfigured && approverConfigured;
+
+    const rows = [];
+    if (!ready) {
+      rows.push(buildFeishuPrerequisitesRow({ secretsConfigured, approverConfigured }));
+    }
+    rows.push(buildFeishuEnabledRow({ ready }));
+    rows.push(buildFeishuTestRow({ ready }));
+    return helpers.buildSection(t("feishuApprovalStep3Title"), rows);
+  }
+
+  function buildFeishuPrerequisitesRow({ secretsConfigured, approverConfigured }) {
+    const row = document.createElement("div");
+    row.className = "row tg-approval-prereq-row";
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("feishuApprovalPrereqLabel");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    const missing = [];
+    if (!secretsConfigured) missing.push(t("feishuApprovalPrereqMissingSecrets"));
+    if (!approverConfigured) missing.push(t("feishuApprovalPrereqMissingApprover"));
+    desc.textContent = t("feishuApprovalPrereqDesc") + " " + missing.join(", ");
+    text.appendChild(label);
+    text.appendChild(desc);
+    row.appendChild(text);
+    return row;
+  }
+
+  function buildFeishuEnabledRow({ ready }) {
+    const cfg = currentFeishuConfig();
+    const row = document.createElement("div");
+    row.className = "row";
+    if (!ready) row.classList.add("tg-approval-row-disabled");
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("feishuApprovalToggle");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("feishuApprovalToggleDesc");
+    text.appendChild(label);
+    text.appendChild(desc);
+    row.appendChild(text);
+
+    const ctrl = document.createElement("div");
+    ctrl.className = "row-control";
+    const sw = document.createElement("div");
+    sw.className = "switch";
+    sw.setAttribute("role", "switch");
+    sw.setAttribute("tabindex", "0");
+    helpers.setSwitchVisual(sw, cfg.enabled, { pending: feishuView.configPending });
+    if (!ready) {
+      sw.classList.add("disabled");
+      sw.setAttribute("aria-disabled", "true");
+      sw.removeAttribute("tabindex");
+    } else {
+      const toggle = () => saveFeishuConfig({ ...cfg, enabled: !cfg.enabled }, { resetDraft: false });
+      sw.addEventListener("click", toggle);
+      sw.addEventListener("keydown", (ev) => {
+        if (ev.key === " " || ev.key === "Enter") {
+          ev.preventDefault();
+          toggle();
+        }
+      });
+    }
+    ctrl.appendChild(sw);
+    row.appendChild(ctrl);
+    return row;
+  }
+
+  function buildFeishuTestRow({ ready }) {
+    const s = feishuView.status || {};
+    const runtimeReady = s.configured === true;
+    const testDisabled = feishuView.testPending || !ready || !runtimeReady;
+    const row = document.createElement("div");
+    row.className = "row";
+    if (!ready) row.classList.add("tg-approval-row-disabled");
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("feishuApprovalTest");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("feishuApprovalTestDesc");
+    text.appendChild(label);
+    text.appendChild(desc);
+    row.appendChild(text);
+
+    const ctrl = document.createElement("div");
+    ctrl.className = "row-control";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "soft-btn accent";
+    btn.textContent = feishuView.testPending ? t("feishuApprovalTesting") : t("feishuApprovalSendTest");
+    btn.disabled = testDisabled;
+    if (testDisabled && !feishuView.testPending) {
+      btn.title = (s.message && String(s.message)) || t("feishuApprovalCardMissingBoth");
+    }
+    btn.addEventListener("click", () => {
+      if (testDisabled) return;
+      feishuView.testPending = true;
+      ops.requestRender({ content: true });
+      callCommand("feishuApproval.test").then((result) => {
+        feishuView.testPending = false;
+        if (result && result.status === "ok") {
+          ops.showToast(t("feishuApprovalTestSent"));
+        } else {
+          ops.showToast((result && result.message) || t("feishuApprovalTestFailed"), { error: true });
+        }
+        feishuView.status = null;
+        refreshFeishuStatus({ forceRender: true });
+      });
+    });
+    ctrl.appendChild(btn);
+    row.appendChild(ctrl);
+    return row;
+  }
+
   // ── Save / shared ──
 
   function saveConfig(next, options = {}) {
@@ -966,6 +1505,31 @@
       refreshStatus({ forceRender: true });
     }).catch((err) => {
       view.configPending = false;
+      ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+      ops.requestRender({ content: true });
+    });
+  }
+
+  function saveFeishuConfig(next, options = {}) {
+    if (!window.settingsAPI || typeof window.settingsAPI.update !== "function") {
+      ops.showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
+      return;
+    }
+    feishuView.configPending = true;
+    ops.requestRender({ content: true });
+    window.settingsAPI.update("feishuApproval", next).then((result) => {
+      feishuView.configPending = false;
+      if (!result || result.status !== "ok") {
+        ops.showToast((result && result.message) || t("toastSaveFailed"), { error: true });
+        ops.requestRender({ content: true });
+        return;
+      }
+      ops.showToast(t("feishuApprovalConfigSaved"));
+      if (options.resetDraft !== false) resetFeishuFormDraft();
+      feishuView.status = null;
+      refreshFeishuStatus({ forceRender: true });
+    }).catch((err) => {
+      feishuView.configPending = false;
       ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
       ops.requestRender({ content: true });
     });

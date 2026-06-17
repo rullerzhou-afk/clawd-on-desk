@@ -3468,6 +3468,32 @@ html, body {
   min-width: 180px;
 }
 
+.feishu-approval-secrets-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: center;
+}
+.feishu-approval-secrets-grid .soft-btn {
+  justify-self: end;
+}
+.feishu-approval-id-type {
+  flex: 0 1 auto;
+  min-width: 260px;
+}
+.feishu-approval-id-type button {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+@media (max-width: 640px) {
+  .feishu-approval-secrets-grid {
+    grid-template-columns: 1fr;
+  }
+  .feishu-approval-id-type {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
 .tg-approval-prereq-row .row-desc {
   color: var(--toast-error);
 }

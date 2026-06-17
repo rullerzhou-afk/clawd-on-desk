@@ -350,6 +350,92 @@ describe("permission telegram remote approval", () => {
     assert.deepEqual(requests, []);
   });
 
+  it("starts Feishu elicitation and submits returned answers to Claude Code", async () => {
+    let resolveElicitation;
+    const requests = [];
+    const feishuClient = {
+      isEnabled: () => true,
+      requestApproval: () => {
+        throw new Error("normal approval should not be used for elicitation");
+      },
+      requestElicitation: (payload, options) => {
+        requests.push({ payload, options });
+        return new Promise((resolve) => { resolveElicitation = resolve; });
+      },
+    };
+    const perm = initPermission(makeCtx({ getRemoteApprovalClients: () => [{ name: "feishu", client: feishuClient }] }));
+    const entry = makePermEntry({
+      isElicitation: true,
+      toolName: "AskUserQuestion",
+      toolInput: {
+        questions: [{
+          header: "当前任务",
+          question: "您当前正在进行什么类型的工作？",
+          options: [{ label: "开发新功能", description: "正在开发新的业务功能或模块" }],
+        }],
+      },
+    });
+    perm.pendingPermissions.push(entry);
+
+    assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].payload.questions[0].question, "您当前正在进行什么类型的工作？");
+
+    resolveElicitation({
+      type: "elicitation-submit",
+      answers: {
+        "您当前正在进行什么类型的工作？": "开发新功能\n正在开发新的业务功能或模块",
+      },
+    });
+    await flush();
+    await flush();
+
+    assert.equal(perm.pendingPermissions.length, 0);
+    const body = JSON.parse(entry.res.captured.body);
+    assert.deepEqual(body.hookSpecificOutput.decision, {
+      behavior: "allow",
+      updatedInput: {
+        questions: entry.toolInput.questions,
+        answers: {
+          "您当前正在进行什么类型的工作？": "开发新功能\n正在开发新的业务功能或模块",
+        },
+      },
+    });
+  });
+
+  it("updates Feishu card when desktop resolves the permission first", async () => {
+    let feishuSignal;
+    const updates = [];
+    const feishuClient = {
+      isEnabled: () => true,
+      requestApproval: (_payload, options) => {
+        feishuSignal = options.signal;
+        return new Promise(() => {});
+      },
+      resolveApprovalExternally: (signal, outcome) => {
+        updates.push({ signal, outcome });
+        return true;
+      },
+    };
+    const perm = initPermission(makeCtx({ getRemoteApprovalClients: () => [{ name: "feishu", client: feishuClient }] }));
+    const entry = makePermEntry();
+    perm.pendingPermissions.push(entry);
+
+    assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    assert.equal(feishuSignal.aborted, false);
+
+    perm.resolvePermissionEntry(entry, "deny");
+
+    assert.equal(feishuSignal.aborted, true);
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0].signal, feishuSignal);
+    assert.deepEqual(updates[0].outcome, {
+      decision: "deny",
+      actionLabel: "拒绝",
+      source: "desktop",
+    });
+  });
+
   it("does not send a Telegram card when the tool input lacks a description/summary/reason", () => {
     const requests = [];
     const client = {

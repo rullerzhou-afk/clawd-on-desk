@@ -126,6 +126,9 @@ const {
   validateTelegramApproval,
   validateTelegramBotToken,
 } = require("./telegram-approval-settings");
+const {
+  validateFeishuApproval,
+} = require("./feishu-approval-settings");
 const { EVENTS: TELEGRAM_MIGRATION_EVENTS } = require("./telegram-migration-state");
 const {
   validateHardwareBuddySettings,
@@ -437,6 +440,9 @@ const updateRegistry = {
   },
   tgApproval(value) {
     return validateTelegramApproval(value);
+  },
+  feishuApproval(value) {
+    return validateFeishuApproval(value);
   },
 
   // v0.9.0 spike: persisted migration state across restarts. Shape:
@@ -1132,6 +1138,42 @@ async function telegramApprovalSendTest(_payload, deps = {}) {
   return result || { status: "error", message: "Telegram approval test returned no result" };
 }
 
+async function feishuApprovalSetSecrets(payload, deps = {}) {
+  const secrets = payload && typeof payload === "object" ? payload : {};
+  if (!deps || typeof deps.writeFeishuApprovalSecrets !== "function") {
+    return { status: "error", message: "feishuApproval.setSecrets requires writeFeishuApprovalSecrets dep" };
+  }
+  const result = await deps.writeFeishuApprovalSecrets(secrets);
+  if (!result || result.status !== "ok") {
+    return result || { status: "error", message: "Feishu approval secrets write failed" };
+  }
+  return { status: "ok", secretsStored: true };
+}
+
+function feishuApprovalStatus(_payload, deps = {}) {
+  if (!deps || typeof deps.getFeishuApprovalStatus !== "function") {
+    return { status: "error", message: "feishuApproval.status requires getFeishuApprovalStatus dep" };
+  }
+  const status = deps.getFeishuApprovalStatus();
+  return { status: "ok", state: status || { status: "stopped" } };
+}
+
+function feishuApprovalSecretInfo(_payload, deps = {}) {
+  if (!deps || typeof deps.getFeishuApprovalSecretInfo !== "function") {
+    return { status: "error", message: "feishuApproval.secretInfo requires getFeishuApprovalSecretInfo dep" };
+  }
+  const info = deps.getFeishuApprovalSecretInfo() || { configured: false };
+  return { status: "ok", ...info };
+}
+
+async function feishuApprovalSendTest(_payload, deps = {}) {
+  if (!deps || typeof deps.sendFeishuApprovalTest !== "function") {
+    return { status: "error", message: "feishuApproval.test requires sendFeishuApprovalTest dep" };
+  }
+  const result = await deps.sendFeishuApprovalTest();
+  return result || { status: "error", message: "Feishu approval test returned no result" };
+}
+
 function cleanupMessage(result) {
   const summary = result && result.summary;
   if (!summary) return "Integration cleanup finished";
@@ -1245,6 +1287,8 @@ remoteSshMarkDeployed.lockKey = "remoteSsh";
 remoteSshMarkRemoteNode.lockKey = "remoteSsh";
 telegramApprovalSetToken.lockKey = "tgApproval";
 telegramApprovalSendTest.lockKey = "tgApproval";
+feishuApprovalSetSecrets.lockKey = "feishuApproval";
+feishuApprovalSendTest.lockKey = "feishuApproval";
 cleanupIntegrationsCommand.lockKey = "agentIntegration";
 
 const repairDoctorIssue = createRepairDoctorIssue({
@@ -1324,6 +1368,10 @@ const commandRegistry = {
   "telegramApproval.status": telegramApprovalStatus,
   "telegramApproval.tokenInfo": telegramApprovalTokenInfo,
   "telegramApproval.test": telegramApprovalSendTest,
+  "feishuApproval.setSecrets": feishuApprovalSetSecrets,
+  "feishuApproval.status": feishuApprovalStatus,
+  "feishuApproval.secretInfo": feishuApprovalSecretInfo,
+  "feishuApproval.test": feishuApprovalSendTest,
   "telegramMigration.snapshot": telegramMigrationSnapshot,
   "telegramMigration.dispatch": telegramMigrationDispatch,
 };

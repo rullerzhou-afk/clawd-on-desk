@@ -243,6 +243,31 @@ describe("updateRegistry pure-data validators", () => {
     }, deps).status, "error");
   });
 
+  it("feishuApproval validates the settings object while allowing incomplete saved config", () => {
+    const deps = { snapshot: baseSnapshot };
+    assert.strictEqual(updateRegistry.feishuApproval({
+      enabled: false,
+      idType: "open_id",
+      approverId: "",
+    }, deps).status, "ok");
+    assert.strictEqual(updateRegistry.feishuApproval({
+      enabled: true,
+      idType: "open_id",
+      approverId: "ou_abc",
+    }, deps).status, "ok");
+    assert.strictEqual(updateRegistry.feishuApproval({
+      enabled: true,
+      idType: "bad",
+      approverId: "ou_abc",
+    }, deps).status, "error");
+    assert.strictEqual(updateRegistry.feishuApproval({
+      enabled: false,
+      idType: "open_id",
+      approverId: "",
+      appSecret: "should-not-live-in-prefs",
+    }, deps).status, "error");
+  });
+
   it("hardwareBuddy accepts only the normalized product settings shape", () => {
     assert.strictEqual(updateRegistry.hardwareBuddy({
       enabled: true,
@@ -558,6 +583,58 @@ describe("telegram approval commands", () => {
     assert.strictEqual(blocked.status, "error");
     assert.strictEqual(blocked.errorCode, "EVENT_NOT_ALLOWED");
     assert.deepStrictEqual(calls, [{ type: "USER_TEST_NATIVE" }]);
+  });
+});
+
+describe("feishu approval commands", () => {
+  it("feishuApproval.setSecrets delegates storage without writing secrets to prefs", async () => {
+    const calls = [];
+    const secrets = {
+      appId: "cli_123",
+      appSecret: "secret",
+      verificationToken: "verify",
+      encryptKey: "encrypt",
+    };
+    const result = await commandRegistry["feishuApproval.setSecrets"](secrets, {
+      writeFeishuApprovalSecrets: (value) => {
+        calls.push(value);
+        return { status: "ok", secretsStored: true };
+      },
+    });
+    assert.deepStrictEqual(calls, [secrets]);
+    assert.deepStrictEqual(result, { status: "ok", secretsStored: true });
+
+    const missing = await commandRegistry["feishuApproval.setSecrets"](secrets, {});
+    assert.equal(missing.status, "error");
+  });
+
+  it("feishuApproval.status, secretInfo, and test proxy injected runtime helpers", async () => {
+    const status = await commandRegistry["feishuApproval.status"](null, {
+      getFeishuApprovalStatus: () => ({ status: "running", configured: true, secretsStored: true }),
+    });
+    assert.deepStrictEqual(status, {
+      status: "ok",
+      state: { status: "running", configured: true, secretsStored: true },
+    });
+
+    const info = await commandRegistry["feishuApproval.secretInfo"](null, {
+      getFeishuApprovalSecretInfo: () => ({
+        configured: true,
+        appId: "cli_......1234",
+        appSecret: "secr......alue",
+      }),
+    });
+    assert.deepStrictEqual(info, {
+      status: "ok",
+      configured: true,
+      appId: "cli_......1234",
+      appSecret: "secr......alue",
+    });
+
+    const testResult = await commandRegistry["feishuApproval.test"](null, {
+      sendFeishuApprovalTest: async () => ({ status: "ok", decision: "deny" }),
+    });
+    assert.deepStrictEqual(testResult, { status: "ok", decision: "deny" });
   });
 });
 

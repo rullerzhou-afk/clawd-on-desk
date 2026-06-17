@@ -71,6 +71,11 @@ describe("prefs.getDefaults", () => {
       completionOutputMode: "off",
       r3DirectSendEnabled: false,
     });
+    assert.deepStrictEqual(d.feishuApproval, {
+      enabled: false,
+      idType: "open_id",
+      approverId: "",
+    });
   });
 
   it("seeds only default-installed agents as enabled", () => {
