@@ -921,6 +921,10 @@ function handlePermissionPost(req, res, options) {
             }
             permEntry.bubble = null;
             sendHermesPermissionNoDecision(res);
+            return;
+          }
+          if (Array.isArray(elicitationInput.questions) && elicitationInput.questions.length > 0) {
+            startRemoteApproval(ctx, permEntry);
           }
           return;
         }
@@ -1105,6 +1109,10 @@ function handlePermissionPost(req, res, options) {
           }
           permEntry.bubble = null;
           ctx.sendPermissionResponse(res, "deny", "Elicitation bubble unavailable; answer in terminal", "Elicitation");
+          return;
+        }
+        if (Array.isArray(elicitationInput.questions) && elicitationInput.questions.length > 0) {
+          startRemoteApproval(ctx, permEntry);
         }
         return;
       }

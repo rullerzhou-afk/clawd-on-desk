@@ -596,6 +596,22 @@ describe("server-route-permission POST", () => {
     }]);
   });
 
+  it("starts remote approval for Claude AskUserQuestion after the bubble is shown", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "sid",
+      tool_name: "AskUserQuestion",
+      tool_input: { questions: [{ question: "Continue?" }] },
+    }));
+
+    assert.strictEqual(res.statusCode, null);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.isElicitation, true);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
+    assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, [entry]);
+  });
+
   it("keeps local Claude permission pending if remote approval startup throws", async () => {
     const res = await callPermissionPost(JSON.stringify({
       agent_id: "claude-code",
@@ -1036,6 +1052,7 @@ describe("server-route-permission POST", () => {
     ]]);
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
     assert.deepStrictEqual(res.ctx.calls.addPendingPermission, [entry]);
+    assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, [entry]);
   });
 
   it("recovers via 204 when the Hermes bubble fails to construct", async () => {
