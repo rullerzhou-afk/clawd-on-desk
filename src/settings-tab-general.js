@@ -19,6 +19,7 @@
     "sessionHudCleanupDetached",
     "allowEdgePinning",
     "disableMiniMode",
+    "freeRoam",
     "keepSizeAcrossDisplays",
     "manageClaudeHooksAutomatically",
     "openAtLogin",
@@ -107,6 +108,11 @@
         key: "disableMiniMode",
         labelKey: "rowDisableMiniMode",
         descKey: "rowDisableMiniModeDesc",
+      }),
+      helpers.buildSwitchRow({
+        key: "freeRoam",
+        labelKey: "rowFreeRoam",
+        descKey: "rowFreeRoamDesc",
       }),
       helpers.buildSwitchRow({
         key: "keepSizeAcrossDisplays",

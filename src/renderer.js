@@ -916,6 +916,15 @@ window.electronAPI.onStateChange((state, svg) => {
   // swapToFile() with the matching state for eye-tracking decisions.
   currentState = state;
   noteLowPowerActivity();
+
+  // ── Roam state: add walk animation class for visual movement ──
+  // When the pet is roaming (free-roam mode), add a CSS animation to simulate
+  // walking even if the theme doesn't have a dedicated roam SVG. The animation
+  // is a subtle horizontal bob that makes the idle SVG look like it's walking.
+  if (container) {
+    container.classList.toggle("roam-walk", state === "roam");
+  }
+
   if (!shouldUseCloudlingPointerBridge(state, svg)) {
     clearCloudlingPointerBridge();
   }

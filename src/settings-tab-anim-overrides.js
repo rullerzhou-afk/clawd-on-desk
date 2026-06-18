@@ -802,6 +802,7 @@
       case "idleTracked": return "Idle follow";
       case "idleStatic": return "Idle";
       case "idleAnimation": return `Idle random #${card.poolIndex || 1}`;
+      case "roam": return "Free roam walk";
       case "thinking": return "UserPromptSubmit / PostCompact";
       case "working": return `PreToolUse (${formatSessionRange(card.minSessions, card.maxSessions)})`;
       case "juggling": return `SubagentStart (${formatSessionRange(card.minSessions, card.maxSessions)})`;

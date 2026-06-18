@@ -311,6 +311,8 @@ function refreshTheme() {
   SVG_IDLE_FOLLOW = theme.states.idle[0];
   STATE_SVGS = { ...theme.states };
   STATE_BINDINGS = buildStateBindings(theme);
+  // Sync back so settings-animation-overrides can resolve roam/fallback states
+  theme._stateBindings = STATE_BINDINGS;
   if (theme.miniMode && theme.miniMode.states) {
     Object.assign(STATE_SVGS, theme.miniMode.states);
   }

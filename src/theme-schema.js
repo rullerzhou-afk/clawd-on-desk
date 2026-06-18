@@ -71,6 +71,7 @@ const VISUAL_FALLBACK_STATES = new Set([
   "sweeping",
   "carrying",
   "sleeping",
+  "roam",
 ]);
 
 function validateTheme(cfg) {
@@ -183,7 +184,7 @@ function validateTheme(cfg) {
     const entry = normalizedStates[stateKey];
     if (!entry.fallbackTo) continue;
     if (!VISUAL_FALLBACK_STATES.has(stateKey)) {
-      errors.push(`states.${stateKey}.fallbackTo is only allowed on error/attention/notification/sweeping/carrying/sleeping`);
+      errors.push(`states.${stateKey}.fallbackTo is only allowed on error/attention/notification/sweeping/carrying/sleeping/roam`);
       continue;
     }
     if (!Object.prototype.hasOwnProperty.call(normalizedStates, entry.fallbackTo)) {
