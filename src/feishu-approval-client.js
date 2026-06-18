@@ -658,8 +658,37 @@ function createWsClient(config = {}) {
     appSecret: config.appSecret,
     loggerLevel: lark.LoggerLevel ? lark.LoggerLevel.warn : undefined,
     autoReconnect: true,
+    handshakeTimeoutMs: config.handshakeTimeoutMs || 15000,
+    onReady: config.onReady,
+    onError: config.onError,
+    onReconnecting: config.onReconnecting,
+    onReconnected: config.onReconnected,
   });
   return { wsClient, dispatcher };
+}
+
+function normalizeConnectionState(connection) {
+  const state = connection && typeof connection.state === "string" ? connection.state : "";
+  if (state === "connected" || state === "connecting" || state === "reconnecting" || state === "failed" || state === "idle") {
+    return state;
+  }
+  return "idle";
+}
+
+function statusForConnectionState(state, enabled) {
+  if (!enabled) return "stopped";
+  if (state === "connected") return "running";
+  if (state === "connecting" || state === "reconnecting") return "starting";
+  if (state === "failed") return "failed";
+  return "ready";
+}
+
+function normalizeConnectionTimeoutMs(value) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return Math.max(1, Math.round(numeric * 1000));
+  }
+  return 15000;
 }
 
 class FeishuApprovalClient {
@@ -677,6 +706,13 @@ class FeishuApprovalClient {
     this.dispatcher = options.dispatcher || null;
     this.pending = new Map();
     this.log = typeof options.log === "function" ? options.log : () => {};
+    this.onStatusChange = typeof options.onStatusChange === "function" ? options.onStatusChange : () => {};
+    this.connectionState = this.wsClient ? "idle" : "idle";
+    this.lastErrorMessage = "";
+    this.connectionTimeoutMs = normalizeConnectionTimeoutMs(options.connectionTimeoutSeconds);
+    this.connectionTimer = null;
+    this.connectionTimerMode = "";
+    this.lastStatusNotifyKey = "";
   }
 
   isEnabled() {
@@ -686,41 +722,154 @@ class FeishuApprovalClient {
   getStatus() {
     const connection = this.wsClient && typeof this.wsClient.getConnectionStatus === "function"
       ? this.wsClient.getConnectionStatus()
-      : { state: this.wsClient ? "connected" : "stopped" };
+      : { state: this.wsClient ? this.connectionState : "idle", reconnectAttempts: 0 };
+    const sdkState = normalizeConnectionState(connection);
+    let state = sdkState;
+    if (this.connectionState === "failed" && sdkState !== "connected") {
+      state = "failed";
+    } else if (this.connectionState === "connected" && (sdkState === "idle" || sdkState === "connecting")) {
+      state = "connected";
+    } else if ((this.connectionState === "connecting" || this.connectionState === "reconnecting") && sdkState === "idle") {
+      state = this.connectionState;
+    }
+    this.connectionState = state;
     return {
-      status: this.isEnabled() ? (this.wsClient ? "running" : "ready") : "stopped",
-      connection,
+      status: statusForConnectionState(state, this.isEnabled()),
+      message: state === "failed" ? this.lastErrorMessage : "",
+      connection: { ...connection, state },
     };
   }
 
+  notifyStatusChange() {
+    const status = this.getStatus();
+    const key = [
+      status.status || "",
+      status.message || "",
+      status.connection && status.connection.state ? status.connection.state : "",
+    ].join("\u001f");
+    if (key === this.lastStatusNotifyKey) return;
+    this.lastStatusNotifyKey = key;
+    try {
+      this.onStatusChange(status);
+    } catch {}
+  }
+
+  isConnected() {
+    return this.getStatus().status === "running";
+  }
+
+  clearConnectionTimer() {
+    if (this.connectionTimer) clearTimeout(this.connectionTimer);
+    this.connectionTimer = null;
+    this.connectionTimerMode = "";
+  }
+
+  startConnectionTimer(mode) {
+    this.clearConnectionTimer();
+    this.connectionTimerMode = mode === "reconnecting" ? "reconnecting" : "connecting";
+    this.connectionTimer = setTimeout(() => {
+      const activeMode = this.connectionTimerMode;
+      if (this.connectionState !== activeMode) return;
+      this.connectionState = "failed";
+      const seconds = Math.max(1, Math.round(this.connectionTimeoutMs / 1000));
+      const label = activeMode === "reconnecting" ? "reconnect" : "connection";
+      this.lastErrorMessage = `Feishu long ${label} timed out after ${this.connectionTimeoutMs}ms. Check app credentials, long connection event subscription, and network.`;
+      this.log("warn", "connection timeout", { error: this.lastErrorMessage, timeoutSeconds: seconds });
+      this.clearConnectionTimer();
+      this.notifyStatusChange();
+    }, this.connectionTimeoutMs);
+    if (typeof this.connectionTimer.unref === "function") this.connectionTimer.unref();
+  }
+
   async start() {
-    if (!this.isEnabled() || this.wsClient) return false;
+    if (!this.isEnabled()) return false;
+    const current = this.getStatus().status;
+    if (this.wsClient && (current === "running" || current === "starting")) return false;
+    if (this.wsClient) this.close();
     const created = this.wsFactory({
       appId: this.appId,
       appSecret: this.appSecret,
       verificationToken: this.verificationToken || "",
       encryptKey: this.encryptKey || "",
       lark: this.lark,
+      handshakeTimeoutMs: this.connectionTimeoutMs,
       onCardAction: (event) => this.handleCardAction(event),
+      onReady: () => {
+        this.clearConnectionTimer();
+        this.connectionState = "connected";
+        this.lastErrorMessage = "";
+        this.log("info", "connected");
+        this.notifyStatusChange();
+      },
+      onError: (err) => {
+        this.clearConnectionTimer();
+        this.connectionState = "failed";
+        this.lastErrorMessage = err && err.message ? err.message : String(err || "Feishu long connection failed");
+        this.log("warn", "connection failed", { error: this.lastErrorMessage });
+        this.notifyStatusChange();
+      },
+      onReconnecting: () => {
+        this.connectionState = "reconnecting";
+        this.lastErrorMessage = "";
+        this.startConnectionTimer("reconnecting");
+        this.log("info", "reconnecting");
+        this.notifyStatusChange();
+      },
+      onReconnected: () => {
+        this.clearConnectionTimer();
+        this.connectionState = "connected";
+        this.lastErrorMessage = "";
+        this.log("info", "reconnected");
+        this.notifyStatusChange();
+      },
     });
     this.wsClient = created.wsClient;
     this.dispatcher = created.dispatcher;
+    this.connectionState = "connecting";
+    this.lastErrorMessage = "";
+    this.startConnectionTimer("connecting");
+    this.notifyStatusChange();
     if (this.wsClient && typeof this.wsClient.start === "function") {
       await this.wsClient.start({ eventDispatcher: this.dispatcher });
     }
     return true;
   }
 
+  waitUntilConnected(timeoutMs = 15000) {
+    if (this.isConnected()) return Promise.resolve(true);
+    if (this.getStatus().status === "failed") return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const start = Date.now();
+      const timer = setInterval(() => {
+        const status = this.getStatus();
+        if (status.status === "running") {
+          clearInterval(timer);
+          resolve(true);
+          return;
+        }
+        if (status.status === "failed" || Date.now() - start >= timeoutMs) {
+          clearInterval(timer);
+          resolve(false);
+        }
+      }, 100);
+      if (typeof timer.unref === "function") timer.unref();
+    });
+  }
+
   close() {
+    this.clearConnectionTimer();
     if (this.wsClient && typeof this.wsClient.close === "function") {
       try { this.wsClient.close(); } catch {}
     }
     this.wsClient = null;
     this.dispatcher = null;
+    this.connectionState = "idle";
+    this.lastErrorMessage = "";
     for (const entry of this.pending.values()) {
       entry.resolve(null);
     }
     this.pending.clear();
+    this.notifyStatusChange();
   }
 
   messageApi() {
@@ -840,7 +989,9 @@ class FeishuApprovalClient {
         content: JSON.stringify(buildApprovalCard(payload, { requestId })),
       },
     });
-    return normalizeApiMessageId(response);
+    const messageId = normalizeApiMessageId(response);
+    this.log("debug", "card sent", { requestId, messageId });
+    return messageId;
   }
 
   async sendElicitationCard(requestId, payload, options = {}) {
@@ -854,7 +1005,9 @@ class FeishuApprovalClient {
         content: JSON.stringify(buildElicitationCard(payload, { requestId, questionIndex: options.questionIndex || 0 })),
       },
     });
-    return normalizeApiMessageId(response);
+    const messageId = normalizeApiMessageId(response);
+    this.log("debug", "elicitation card sent", { requestId, messageId });
+    return messageId;
   }
 
   async updateCard(messageId, payload, outcome) {
@@ -936,6 +1089,11 @@ class FeishuApprovalClient {
     const normalizedAction = entry && entry.kind === "elicitation"
       ? normalizeElicitationActionEvent(event, entry.payload.questions, this.idType)
       : action;
+    this.log("debug", "card action received", {
+      requestId,
+      decision: normalizedAction && normalizedAction.decision ? normalizedAction.decision : "",
+      matched: !!(normalizedAction && normalizedAction.operatorId === this.approverId && entry),
+    });
     if (!normalizedAction || normalizedAction.operatorId !== this.approverId) return false;
     if (!entry) return false;
 

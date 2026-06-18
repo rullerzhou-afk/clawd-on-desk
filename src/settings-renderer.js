@@ -98,6 +98,15 @@ if (window.settingsAPI && typeof window.settingsAPI.onShortcutFailuresChanged ==
   window.settingsAPI.onShortcutFailuresChanged((failures) => core.ops.applyShortcutFailures(failures));
 }
 
+if (window.settingsAPI && typeof window.settingsAPI.onRemoteApprovalStatusChanged === "function") {
+  window.settingsAPI.onRemoteApprovalStatusChanged((payload) => {
+    const tab = core.tabs[core.state.activeTab];
+    if (tab && typeof tab.refreshRuntimeStatus === "function") {
+      tab.refreshRuntimeStatus(payload);
+    }
+  });
+}
+
 if (window.settingsAPI && typeof window.settingsAPI.getShortcutFailures === "function") {
   window.settingsAPI.getShortcutFailures().then((failures) => {
     core.ops.applyShortcutFailures(failures);

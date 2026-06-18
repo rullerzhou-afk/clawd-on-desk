@@ -25,16 +25,20 @@ test("normalizeFeishuApproval trims config and defaults to open_id", () => {
     enabled: true,
     idType: " user_id ",
     approverId: "  user_123  ",
+    connectionTimeoutSeconds: 30,
   }), {
     enabled: true,
     idType: "user_id",
     approverId: "user_123",
+    connectionTimeoutSeconds: 30,
   });
   assert.deepEqual(settings.normalizeFeishuApproval({ idType: "bad", approverId: "" }), {
     enabled: false,
     idType: "open_id",
     approverId: "",
+    connectionTimeoutSeconds: 15,
   });
+  assert.equal(settings.normalizeFeishuApproval({ connectionTimeoutSeconds: 999 }).connectionTimeoutSeconds, 15);
 });
 
 test("validateFeishuApproval permits incomplete saved config and rejects unknown keys", () => {
@@ -47,7 +51,14 @@ test("validateFeishuApproval permits incomplete saved config and rejects unknown
     enabled: true,
     idType: "open_id",
     approverId: "ou_abc",
+    connectionTimeoutSeconds: 15,
   }).status, "ok");
+  assert.equal(settings.validateFeishuApproval({
+    enabled: true,
+    idType: "open_id",
+    approverId: "ou_abc",
+    connectionTimeoutSeconds: 999,
+  }).status, "error");
   assert.equal(settings.validateFeishuApproval({
     enabled: true,
     idType: "bad",
@@ -112,6 +123,34 @@ test("readiness requires enabled config, approver id, and app credentials", () =
     appId: "cli_123",
     appSecret: "secret",
   }).ready, true);
+});
+
+test("readiness rejects obviously invalid Feishu app ids", () => {
+  const result = settings.readiness({ enabled: true, idType: "open_id", approverId: "ou_1" }, {
+    appId: "not-a-cli-id",
+    appSecret: "secret",
+  });
+  assert.equal(result.reason, "invalid-secret");
+  assert.match(result.message, /App ID/);
+});
+
+test("redactionSecretsForFeishuApproval includes saved ids and secrets", () => {
+  assert.deepEqual(settings.redactionSecretsForFeishuApproval({
+    enabled: true,
+    idType: "open_id",
+    approverId: "ou_1",
+  }, {
+    appId: "cli_123",
+    appSecret: "secret-value",
+    verificationToken: "verify-value",
+    encryptKey: "encrypt-value",
+  }), [
+    "ou_1",
+    "cli_123",
+    "secret-value",
+    "verify-value",
+    "encrypt-value",
+  ]);
 });
 
 test("masked secret info never returns raw secret values", () => {

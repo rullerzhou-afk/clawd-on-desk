@@ -36,6 +36,7 @@
     secretEditing: false,
     configPending: false,
     testPending: false,
+    refreshTimer: null,
     formDraft: null,
     formDirty: false,
   };
@@ -63,10 +64,12 @@
 
   function currentFeishuConfig() {
     const cfg = state.snapshot && state.snapshot.feishuApproval;
+    const timeout = Number(cfg && cfg.connectionTimeoutSeconds);
     return {
       enabled: !!(cfg && cfg.enabled),
       idType: cfg && typeof cfg.idType === "string" ? cfg.idType : "open_id",
       approverId: cfg && typeof cfg.approverId === "string" ? cfg.approverId : "",
+      connectionTimeoutSeconds: [5, 10, 15, 30, 60].includes(timeout) ? timeout : 15,
     };
   }
 
@@ -184,11 +187,29 @@
       feishuView.statusForceRenderPending = false;
       const changed = updated && feishuStatusRenderKey(previousStatus) !== feishuStatusRenderKey(nextStatus);
       if (updated) feishuView.status = result.state || null;
+      scheduleFeishuStatusRefresh(nextStatus);
       const initialVisibleChange = !hadStatus && feishuStatusNeedsRender(nextStatus);
       if ((shouldForceRender || (updated && (initialVisibleChange || (hadStatus && changed)))) && state.activeTab === "telegram-approval") {
         ops.requestRender({ content: true });
       }
     });
+  }
+
+  function clearFeishuStatusRefreshTimer() {
+    if (feishuView.refreshTimer && typeof clearTimeout === "function") {
+      clearTimeout(feishuView.refreshTimer);
+    }
+    feishuView.refreshTimer = null;
+  }
+
+  function scheduleFeishuStatusRefresh(status) {
+    clearFeishuStatusRefreshTimer();
+    const s = status && typeof status === "object" ? status : {};
+    if (state.activeTab !== "telegram-approval" || s.status !== "starting" || typeof setTimeout !== "function") return;
+    feishuView.refreshTimer = setTimeout(() => {
+      feishuView.refreshTimer = null;
+      refreshFeishuStatus({ forceRender: true });
+    }, 1000);
   }
 
   function refreshFeishuSecretInfo({ forceRender = false } = {}) {
@@ -302,6 +323,12 @@
     parent.appendChild(buildTelegramChannelCard());
     parent.appendChild(buildFeishuChannelCard());
     parent.appendChild(buildHardwareBuddyChannelCard());
+  }
+
+  function refreshRuntimeStatus(payload) {
+    if (!payload || payload.channel !== "feishu") return false;
+    refreshFeishuStatus({ forceRender: true });
+    return true;
   }
 
   // ── v0.9.0 migration card ──────────────────────────────────────────────────
@@ -1338,7 +1365,7 @@
         return;
       }
       saveFeishuConfig({
-        enabled: currentFeishuConfig().enabled,
+        ...currentFeishuConfig(),
         idType,
         approverId,
       });
@@ -1365,6 +1392,7 @@
       rows.push(buildFeishuPrerequisitesRow({ secretsConfigured, approverConfigured }));
     }
     rows.push(buildFeishuEnabledRow({ ready }));
+    rows.push(buildFeishuTimeoutRow());
     rows.push(buildFeishuTestRow({ ready }));
     return helpers.buildSection(t("feishuApprovalStep3Title"), rows);
   }
@@ -1429,6 +1457,45 @@
       });
     }
     ctrl.appendChild(sw);
+    row.appendChild(ctrl);
+    return row;
+  }
+
+  function buildFeishuTimeoutRow() {
+    const cfg = currentFeishuConfig();
+    const row = document.createElement("div");
+    row.className = "row feishu-approval-timeout-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("feishuApprovalConnectionTimeout");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("feishuApprovalConnectionTimeoutDesc");
+    text.appendChild(label);
+    text.appendChild(desc);
+    row.appendChild(text);
+
+    const ctrl = document.createElement("div");
+    ctrl.className = "row-control";
+    const select = document.createElement("select");
+    select.className = "tg-approval-input tg-approval-output-select feishu-approval-timeout-select";
+    select.disabled = feishuView.configPending;
+    for (const value of [5, 10, 15, 30, 60]) {
+      const option = document.createElement("option");
+      option.value = String(value);
+      option.textContent = t("feishuApprovalConnectionTimeoutOption").replace("{seconds}", String(value));
+      select.appendChild(option);
+    }
+    select.value = String(cfg.connectionTimeoutSeconds);
+    select.addEventListener("change", () => {
+      const nextTimeout = Number(select.value);
+      if (![5, 10, 15, 30, 60].includes(nextTimeout) || nextTimeout === cfg.connectionTimeoutSeconds) return;
+      saveFeishuConfig({ ...cfg, connectionTimeoutSeconds: nextTimeout }, { resetDraft: false });
+    });
+    ctrl.appendChild(select);
     row.appendChild(ctrl);
     return row;
   }
@@ -1570,7 +1637,7 @@
     state = core.state;
     helpers = core.helpers;
     ops = core.ops;
-    core.tabs["telegram-approval"] = { render };
+    core.tabs["telegram-approval"] = { render, refreshRuntimeStatus };
   }
 
   root.ClawdSettingsTabTelegramApproval = { init };

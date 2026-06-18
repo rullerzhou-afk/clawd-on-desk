@@ -6,9 +6,11 @@ const DEFAULT_FEISHU_APPROVAL = Object.freeze({
   enabled: false,
   idType: "open_id",
   approverId: "",
+  connectionTimeoutSeconds: 15,
 });
 
 const FEISHU_ID_TYPES = new Set(["open_id", "user_id", "union_id"]);
+const CONNECTION_TIMEOUT_SECONDS = new Set([5, 10, 15, 30, 60]);
 const SECRET_KEYS = Object.freeze({
   appId: "FEISHU_APP_ID",
   appSecret: "FEISHU_APP_SECRET",
@@ -29,13 +31,20 @@ function cloneDefaultFeishuApproval() {
   return { ...DEFAULT_FEISHU_APPROVAL };
 }
 
+function normalizeConnectionTimeoutSeconds(value, fallback = DEFAULT_FEISHU_APPROVAL.connectionTimeoutSeconds) {
+  const numeric = Number(value);
+  return CONNECTION_TIMEOUT_SECONDS.has(numeric) ? numeric : fallback;
+}
+
 function normalizeFeishuApproval(value, defaultsValue = DEFAULT_FEISHU_APPROVAL) {
   const defaults = isPlainObject(defaultsValue) ? defaultsValue : DEFAULT_FEISHU_APPROVAL;
   const defaultIdType = FEISHU_ID_TYPES.has(defaults.idType) ? defaults.idType : DEFAULT_FEISHU_APPROVAL.idType;
+  const defaultTimeout = normalizeConnectionTimeoutSeconds(defaults.connectionTimeoutSeconds);
   const out = {
     enabled: defaults.enabled === true,
     idType: defaultIdType,
     approverId: trimString(defaults.approverId, 128),
+    connectionTimeoutSeconds: defaultTimeout,
   };
   if (!isPlainObject(value)) return out;
   if (typeof value.enabled === "boolean") out.enabled = value.enabled;
@@ -44,13 +53,16 @@ function normalizeFeishuApproval(value, defaultsValue = DEFAULT_FEISHU_APPROVAL)
     out.idType = FEISHU_ID_TYPES.has(idType) ? idType : DEFAULT_FEISHU_APPROVAL.idType;
   }
   if (typeof value.approverId === "string") out.approverId = trimString(value.approverId, 128);
+  if (value.connectionTimeoutSeconds !== undefined) {
+    out.connectionTimeoutSeconds = normalizeConnectionTimeoutSeconds(value.connectionTimeoutSeconds, defaultTimeout);
+  }
   return out;
 }
 
 function validateFeishuApproval(value) {
   if (!isPlainObject(value)) return { status: "error", message: "feishuApproval must be a plain object" };
   for (const key of Object.keys(value)) {
-    if (key !== "enabled" && key !== "idType" && key !== "approverId") {
+    if (key !== "enabled" && key !== "idType" && key !== "approverId" && key !== "connectionTimeoutSeconds") {
       return { status: "error", message: `feishuApproval.${key} is not supported` };
     }
   }
@@ -65,6 +77,9 @@ function validateFeishuApproval(value) {
   }
   if (value.approverId.length > 128) {
     return { status: "error", message: "feishuApproval.approverId is too long" };
+  }
+  if (value.connectionTimeoutSeconds !== undefined && !CONNECTION_TIMEOUT_SECONDS.has(Number(value.connectionTimeoutSeconds))) {
+    return { status: "error", message: "feishuApproval.connectionTimeoutSeconds must be 5, 10, 15, 30, or 60" };
   }
   return { status: "ok" };
 }
@@ -200,6 +215,10 @@ function readiness(config, secrets) {
   if (!secrets || !secrets.appId || !secrets.appSecret) {
     return { ready: false, reason: "missing-secret", message: "Feishu App ID and App Secret are not configured", config: normalized };
   }
+  const appId = String(secrets.appId || "").trim();
+  if (!/^cli_[A-Za-z0-9_-]+$/.test(appId)) {
+    return { ready: false, reason: "invalid-secret", message: "Feishu App ID format is invalid", config: normalized };
+  }
   return { ready: true, config: normalized };
 }
 
@@ -218,6 +237,7 @@ function redactionSecretsForFeishuApproval(config, secrets) {
 module.exports = {
   DEFAULT_FEISHU_APPROVAL,
   FEISHU_ID_TYPES,
+  CONNECTION_TIMEOUT_SECONDS,
   cloneDefaultFeishuApproval,
   normalizeFeishuApproval,
   validateFeishuApproval,

@@ -950,6 +950,7 @@ function loadTelegramApprovalTabForTest({
   const updates = [];
   const commands = [];
   const renderRequests = [];
+  const timers = [];
 
   const document = {
     body,
@@ -989,6 +990,13 @@ function loadTelegramApprovalTabForTest({
       cb();
       return 1;
     },
+    setTimeout: (cb, ms) => {
+      timers.push({ cb, ms, cleared: false });
+      return timers.length;
+    },
+    clearTimeout: (id) => {
+      if (timers[id - 1]) timers[id - 1].cleared = true;
+    },
     window: null,
     globalThis: null,
     settingsAPI: api,
@@ -1012,6 +1020,7 @@ function loadTelegramApprovalTabForTest({
           enabled: false,
           idType: "open_id",
           approverId: "",
+          connectionTimeoutSeconds: 15,
         },
       },
       activeTab: "telegram-approval",
@@ -1085,7 +1094,7 @@ function loadTelegramApprovalTabForTest({
   }
   render();
 
-  return { core, content, updates, commands, render, renderRequests };
+  return { core, content, updates, commands, render, renderRequests, timers };
 }
 
 function loadAnimOverridesTabForTest({
@@ -1272,6 +1281,8 @@ describe("settings renderer browser environment", () => {
     const agentOrderSource = fs.readFileSync(path.join(SRC_DIR, "settings-agent-order.js"), "utf8");
 
     assert.ok(rendererSource.includes("globalThis.ClawdSettingsCore"));
+    assert.ok(rendererSource.includes("settingsAPI.onRemoteApprovalStatusChanged"));
+    assert.ok(rendererSource.includes("tab.refreshRuntimeStatus(payload)"));
     assert.ok(coreSource.includes("ClawdSettingsSizeSlider"));
     assert.ok(i18nSource.includes("globalThis"));
     assert.ok(doctorModalSource.includes("globalThis"));
@@ -1292,6 +1303,7 @@ describe("settings renderer browser environment", () => {
       assert.ok(!source.includes("settingsAPI.onChanged"), `${path.basename(file)} must not subscribe to settingsAPI.onChanged`);
       assert.ok(!source.includes("settingsAPI.onShortcutRecordKey"), `${path.basename(file)} must not subscribe to settingsAPI.onShortcutRecordKey`);
       assert.ok(!source.includes("settingsAPI.onShortcutFailuresChanged"), `${path.basename(file)} must not subscribe to settingsAPI.onShortcutFailuresChanged`);
+      assert.ok(!source.includes("settingsAPI.onRemoteApprovalStatusChanged"), `${path.basename(file)} must not subscribe to remote approval status directly`);
     }
   });
 
@@ -2014,6 +2026,7 @@ describe("settings renderer browser environment", () => {
           enabled: false,
           idType: "open_id",
           approverId: "ou_1",
+          connectionTimeoutSeconds: 15,
         },
       },
       settingsAPI: {
@@ -2076,6 +2089,7 @@ describe("settings renderer browser environment", () => {
           enabled: false,
           idType: "open_id",
           approverId: "",
+          connectionTimeoutSeconds: 15,
         },
       },
       settingsAPI: {
@@ -2120,6 +2134,7 @@ describe("settings renderer browser environment", () => {
         enabled: false,
         idType: "open_id",
         approverId: "ou_f1a6f7f520883298be9b9fb9488c1aef",
+        connectionTimeoutSeconds: 15,
       },
     });
 
@@ -2127,6 +2142,7 @@ describe("settings renderer browser environment", () => {
       enabled: true,
       idType: "open_id",
       approverId: "ou_f1a6f7f520883298be9b9fb9488c1aef",
+      connectionTimeoutSeconds: 15,
     };
     await Promise.resolve();
     await Promise.resolve();
@@ -2137,6 +2153,118 @@ describe("settings renderer browser environment", () => {
     assert.equal(testButton.disabled, false);
     testButton.dispatchEvent({ type: "click" });
     assert.equal(commandCalls.some((call) => call.name === "feishuApproval.test"), true);
+  });
+
+  it("saves Feishu long connection timeout from settings", async () => {
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+        feishuApproval: {
+          enabled: true,
+          idType: "open_id",
+          approverId: "ou_1",
+          connectionTimeoutSeconds: 15,
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({ status: "ok", state: { status: "stopped", tokenStored: false } });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: false, masked: "" });
+          }
+          if (name === "feishuApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: { status: "running", configured: true, secretsStored: true },
+            });
+          }
+          if (name === "feishuApproval.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, appId: "cli_......abcd" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const select = harness.content.querySelector(".feishu-approval-timeout-select");
+    assert.ok(select, "Feishu timeout select should render");
+    assert.equal(select.value, "15");
+    select.value = "30";
+    select.dispatchEvent({ type: "change" });
+
+    await Promise.resolve();
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates.find((call) => call.key === "feishuApproval"))), {
+      key: "feishuApproval",
+      value: {
+        enabled: true,
+        idType: "open_id",
+        approverId: "ou_1",
+        connectionTimeoutSeconds: 30,
+      },
+    });
+  });
+
+  it("refreshes Feishu status while long connection is starting", async () => {
+    let feishuStatusCalls = 0;
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+        feishuApproval: {
+          enabled: true,
+          idType: "open_id",
+          approverId: "ou_1",
+          connectionTimeoutSeconds: 15,
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({ status: "ok", state: { status: "stopped", tokenStored: false } });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: false, masked: "" });
+          }
+          if (name === "feishuApproval.status") {
+            feishuStatusCalls += 1;
+            return Promise.resolve({
+              status: "ok",
+              state: feishuStatusCalls === 1
+                ? { status: "starting", configured: true, secretsStored: true }
+                : { status: "failed", configured: true, secretsStored: true, message: "connection timeout" },
+            });
+          }
+          if (name === "feishuApproval.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, appId: "cli_......abcd" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(feishuStatusCalls, 1);
+    assert.equal(harness.timers.length, 1);
+    assert.equal(harness.timers[0].ms, 1000);
+
+    harness.timers[0].cb();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(feishuStatusCalls, 2);
+    assert.equal(harness.renderRequests.some((payload) => payload && payload.content === true), true);
   });
 
   it("repaints Telegram approval after forced status refresh overlaps pending status", async () => {

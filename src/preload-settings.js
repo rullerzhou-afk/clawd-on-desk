@@ -28,6 +28,7 @@ const shortcutRecordKeyListeners = new Set();
 const remoteSshStatusListeners = new Set();
 const remoteSshProgressListeners = new Set();
 const hardwareBuddyStatusListeners = new Set();
+const remoteApprovalStatusListeners = new Set();
 const textScaleContextListeners = new Set();
 ipcRenderer.on("settings-changed", (_event, payload) => {
   for (const cb of listeners) {
@@ -57,6 +58,11 @@ ipcRenderer.on("remoteSsh:progress", (_event, payload) => {
 ipcRenderer.on("hardwareBuddy:status-changed", (_event, payload) => {
   for (const cb of hardwareBuddyStatusListeners) {
     try { cb(payload); } catch (err) { console.warn("hardwareBuddy status listener threw:", err); }
+  }
+});
+ipcRenderer.on("remoteApproval:status-changed", (_event, payload) => {
+  for (const cb of remoteApprovalStatusListeners) {
+    try { cb(payload); } catch (err) { console.warn("remote approval status listener threw:", err); }
   }
 });
 // Fired by the settings-window runtime whenever the window's effective text
@@ -143,6 +149,11 @@ contextBridge.exposeInMainWorld("settingsAPI", {
     if (typeof cb !== "function") return () => {};
     hardwareBuddyStatusListeners.add(cb);
     return () => hardwareBuddyStatusListeners.delete(cb);
+  },
+  onRemoteApprovalStatusChanged: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    remoteApprovalStatusListeners.add(cb);
+    return () => remoteApprovalStatusListeners.delete(cb);
   },
 });
 

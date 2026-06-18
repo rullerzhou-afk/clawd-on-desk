@@ -249,11 +249,13 @@ describe("updateRegistry pure-data validators", () => {
       enabled: false,
       idType: "open_id",
       approverId: "",
+      connectionTimeoutSeconds: 15,
     }, deps).status, "ok");
     assert.strictEqual(updateRegistry.feishuApproval({
       enabled: true,
       idType: "open_id",
       approverId: "ou_abc",
+      connectionTimeoutSeconds: 15,
     }, deps).status, "ok");
     assert.strictEqual(updateRegistry.feishuApproval({
       enabled: true,
@@ -264,6 +266,7 @@ describe("updateRegistry pure-data validators", () => {
       enabled: false,
       idType: "open_id",
       approverId: "",
+      connectionTimeoutSeconds: 999,
       appSecret: "should-not-live-in-prefs",
     }, deps).status, "error");
   });

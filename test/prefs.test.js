@@ -75,6 +75,7 @@ describe("prefs.getDefaults", () => {
       enabled: false,
       idType: "open_id",
       approverId: "",
+      connectionTimeoutSeconds: 15,
     });
   });
 

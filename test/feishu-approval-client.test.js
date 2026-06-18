@@ -45,6 +45,7 @@ test("buildApprovalCard creates an interactive allow deny card", () => {
 test("FeishuApprovalClient sends a card and resolves from card action", async () => {
   const sent = [];
   const updated = [];
+  const logs = [];
   const fakeClient = {
     im: { v1: { message: {
       create: async (payload) => {
@@ -63,6 +64,7 @@ test("FeishuApprovalClient sends a card and resolves from card action", async ()
     approverId: "ou_1",
     idType: "open_id",
     larkClient: fakeClient,
+    log: (level, message, meta) => logs.push({ level, message, meta }),
   });
 
   const decisionPromise = client.requestApproval({ title: "Run", detail: "Summary: Run tests" });
@@ -81,6 +83,261 @@ test("FeishuApprovalClient sends a card and resolves from card action", async ()
   assert.equal(updated.length, 1);
   assert.equal(updated[0].path.message_id, "om_1");
   assert.match(JSON.parse(updated[0].data.content).header.title.content, /已批准/);
+  assert.deepEqual(logs.filter((entry) => entry.level === "debug").map((entry) => ({
+    message: entry.message,
+    requestIdPrefix: String(entry.meta.requestId || "").slice(0, 3),
+    decision: entry.meta.decision || "",
+    matched: entry.meta.matched,
+  })), [
+    { message: "card sent", requestIdPrefix: "fs_", decision: "", matched: undefined },
+    { message: "card action received", requestIdPrefix: "fs_", decision: "allow", matched: true },
+  ]);
+});
+
+test("FeishuApprovalClient reports running only after WS ready", async () => {
+  let wsParams;
+  const fakeWs = {
+    startCalls: 0,
+    state: "idle",
+    getConnectionStatus() {
+      return { state: this.state, reconnectAttempts: 0 };
+    },
+    async start() {
+      this.startCalls += 1;
+      this.state = "connecting";
+    },
+    close() {
+      this.state = "idle";
+    },
+  };
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    wsFactory: (params) => {
+      wsParams = params;
+      return { wsClient: fakeWs, dispatcher: {} };
+    },
+  });
+
+  assert.equal(client.getStatus().status, "ready");
+  await client.start();
+  assert.equal(client.getStatus().status, "starting");
+  assert.equal(client.isConnected(), false);
+
+  wsParams.onReady();
+  assert.equal(client.getStatus().status, "running");
+  assert.equal(client.isConnected(), true);
+});
+
+test("FeishuApprovalClient marks WS error failed and recreates on restart", async () => {
+  const created = [];
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    wsFactory: (params) => {
+      const fakeWs = {
+        state: "idle",
+        closed: false,
+        getConnectionStatus() {
+          return { state: this.state, reconnectAttempts: 0 };
+        },
+        async start() {
+          this.state = "connecting";
+        },
+        close() {
+          this.closed = true;
+          this.state = "idle";
+        },
+      };
+      created.push({ params, fakeWs });
+      return { wsClient: fakeWs, dispatcher: {} };
+    },
+  });
+
+  await client.start();
+  created[0].params.onError(new Error("long connection disabled"));
+  assert.equal(client.getStatus().status, "failed");
+  assert.match(client.getStatus().message, /long connection disabled/);
+  assert.equal(client.isConnected(), false);
+
+  await client.start();
+  assert.equal(created.length, 2);
+  assert.equal(created[0].fakeWs.closed, true);
+  assert.equal(client.getStatus().status, "starting");
+});
+
+test("FeishuApprovalClient marks initial connection failed after configured timeout", async () => {
+  const logs = [];
+  let wsParams;
+  const fakeWs = {
+    state: "idle",
+    closed: false,
+    getConnectionStatus() {
+      return { state: this.state, reconnectAttempts: 0 };
+    },
+    async start() {
+      this.state = "connecting";
+    },
+    close() {
+      this.closed = true;
+      this.state = "idle";
+    },
+  };
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    connectionTimeoutSeconds: 0.02,
+    wsFactory: (params) => {
+      wsParams = params;
+      return { wsClient: fakeWs, dispatcher: {} };
+    },
+    log: (level, message, meta) => logs.push({ level, message, meta }),
+  });
+
+  await client.start();
+  assert.equal(client.getStatus().status, "starting");
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  const failed = client.getStatus();
+  assert.equal(failed.status, "failed");
+  assert.match(failed.message, /20ms/);
+  assert.equal(fakeWs.closed, false);
+  assert.equal(logs.some((entry) => entry.message === "connection timeout"), true);
+
+  wsParams.onReady();
+  assert.equal(client.getStatus().status, "running");
+});
+
+test("FeishuApprovalClient notifies status changes during connection lifecycle", async () => {
+  const notifications = [];
+  let wsParams;
+  const fakeWs = {
+    state: "idle",
+    getConnectionStatus() {
+      return { state: this.state, reconnectAttempts: 0 };
+    },
+    async start() {
+      this.state = "connecting";
+    },
+    close() {
+      this.state = "idle";
+    },
+  };
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    connectionTimeoutSeconds: 0.02,
+    wsFactory: (params) => {
+      wsParams = params;
+      return { wsClient: fakeWs, dispatcher: {} };
+    },
+    onStatusChange: (status) => notifications.push(status.status),
+  });
+
+  await client.start();
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  fakeWs.state = "connected";
+  wsParams.onReady();
+
+  assert.deepEqual(notifications, ["starting", "failed", "running"]);
+});
+
+test("FeishuApprovalClient marks reconnect failed after timeout and recovers on reconnected", async () => {
+  let wsParams;
+  const fakeWs = {
+    state: "idle",
+    getConnectionStatus() {
+      return { state: this.state, reconnectAttempts: 1 };
+    },
+    async start() {
+      this.state = "connecting";
+    },
+    close() {
+      this.state = "idle";
+    },
+  };
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    connectionTimeoutSeconds: 0.02,
+    wsFactory: (params) => {
+      wsParams = params;
+      return { wsClient: fakeWs, dispatcher: {} };
+    },
+  });
+
+  await client.start();
+  wsParams.onReady();
+  assert.equal(client.getStatus().status, "running");
+
+  fakeWs.state = "reconnecting";
+  wsParams.onReconnecting();
+  assert.equal(client.getStatus().status, "starting");
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(client.getStatus().status, "failed");
+  assert.match(client.getStatus().message, /reconnect/i);
+
+  fakeWs.state = "connected";
+  wsParams.onReconnected();
+  assert.equal(client.getStatus().status, "running");
+});
+
+test("FeishuApprovalClient follows SDK reconnecting state after a ready connection", async () => {
+  let wsParams;
+  const fakeWs = {
+    state: "idle",
+    getConnectionStatus() {
+      return { state: this.state, reconnectAttempts: 1 };
+    },
+    async start() {
+      this.state = "connecting";
+    },
+    close() {
+      this.state = "idle";
+    },
+  };
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    connectionTimeoutSeconds: 1,
+    wsFactory: (params) => {
+      wsParams = params;
+      return { wsClient: fakeWs, dispatcher: {} };
+    },
+  });
+
+  await client.start();
+  wsParams.onReady();
+  assert.equal(client.getStatus().status, "running");
+
+  fakeWs.state = "reconnecting";
+  assert.equal(client.getStatus().status, "starting");
+  fakeWs.state = "failed";
+  assert.equal(client.getStatus().status, "failed");
+});
+
+test("FeishuApprovalClient does not send approval card until WS is connected", async () => {
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+  });
+
+  assert.equal(client.isConnected(), false);
+  assert.equal(client.getStatus().status, "ready");
 });
 
 test("FeishuApprovalClient resolves terminal action and external desktop updates card", async () => {

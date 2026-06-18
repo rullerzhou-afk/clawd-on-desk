@@ -906,6 +906,14 @@ function sendToRenderer(channel, ...args) {
 function sendToHitWin(channel, ...args) {
   if (hitWin && !hitWin.isDestroyed()) hitWin.webContents.send(channel, ...args);
 }
+function broadcastSettingsWindow(channel, payload) {
+  try {
+    const settingsWin = getSettingsWindow();
+    if (!settingsWin || settingsWin.isDestroyed()) return;
+    if (!settingsWin.webContents || settingsWin.webContents.isDestroyed()) return;
+    settingsWin.webContents.send(channel, payload);
+  } catch {}
+}
 
 function getThemeSoundPreloadUrls() {
   const urls = [];
@@ -1221,7 +1229,9 @@ const _permCtx = {
   getTelegramApprovalClient: () => getTelegramApprovalClient(),
   getRemoteApprovalClients: () => {
     const client = getFeishuApprovalClient();
-    return client ? [{ name: "feishu", client }] : [];
+    return client && typeof client.isConnected === "function" && client.isConnected()
+      ? [{ name: "feishu", client }]
+      : [];
   },
   onPermissionsChanged: () => {
     if (hardwareBuddyAdapter) hardwareBuddyAdapter.notifyPermissionsChanged();
@@ -1744,6 +1754,12 @@ function getTelegramCompanionClient() {
 }
 
 function getFeishuApprovalClient() {
+  return feishuApprovalClient && typeof feishuApprovalClient.isConnected === "function" && feishuApprovalClient.isConnected()
+    ? feishuApprovalClient
+    : null;
+}
+
+function getConfiguredFeishuApprovalClient() {
   return feishuApprovalClient && typeof feishuApprovalClient.isEnabled === "function" && feishuApprovalClient.isEnabled()
     ? feishuApprovalClient
     : null;
@@ -1766,6 +1782,21 @@ function feishuApprovalLog(level, message, meta = {}) {
   const parts = [`feishu approval ${level}: ${message}`];
   if (meta && meta.text) parts.push(String(meta.text).trim());
   if (meta && meta.error) parts.push(String(meta.error).trim());
+  for (const key of ["requestId", "messageId", "decision", "matched"]) {
+    const value = meta && meta[key];
+    if (value !== undefined && value !== null && value !== "") {
+      parts.push(`${key}=${String(value).trim()}`);
+    }
+  }
+  const config = getFeishuApprovalPrefs();
+  const secrets = getFeishuApprovalSecrets();
+  const redactionSecrets = feishuApprovalSettings.redactionSecretsForFeishuApproval(config, secrets);
+  for (const secret of redactionSecrets) {
+    if (!secret) continue;
+    for (let i = 0; i < parts.length; i += 1) {
+      parts[i] = String(parts[i]).split(String(secret)).join("<redacted>");
+    }
+  }
   permLog(parts.filter(Boolean).join(" | "));
 }
 
@@ -1887,6 +1918,7 @@ function buildFeishuApprovalSignature(config, paths, secrets) {
     appSecret: secrets.appSecret ? "set" : "",
     verificationToken: secrets.verificationToken ? "set" : "",
     encryptKey: secrets.encryptKey ? "set" : "",
+    connectionTimeoutSeconds: config.connectionTimeoutSeconds,
     secretsRevision: feishuApprovalSecretsRevision,
   });
 }
@@ -1904,8 +1936,16 @@ function getFeishuApprovalStatus() {
     configured: ready.ready === true,
     reason: ready.reason || "",
     message: clientStatus.message || ready.message || "",
+    connectionTimeoutSeconds: config.connectionTimeoutSeconds,
     secretsStored: !!(secrets.appId || secrets.appSecret || secrets.verificationToken || secrets.encryptKey),
   };
+}
+
+function broadcastFeishuApprovalStatus() {
+  broadcastSettingsWindow("remoteApproval:status-changed", {
+    channel: "feishu",
+    status: getFeishuApprovalStatus(),
+  });
 }
 
 function writeFeishuApprovalSecrets(secrets) {
@@ -1956,12 +1996,14 @@ async function startFeishuApprovalClient() {
     encryptKey: secrets.encryptKey,
     approverId: config.approverId,
     idType: config.idType,
+    connectionTimeoutSeconds: config.connectionTimeoutSeconds,
     log: feishuApprovalLog,
+    onStatusChange: () => broadcastFeishuApprovalStatus(),
   });
   feishuApprovalConfigSignature = signature;
   try {
     await feishuApprovalClient.start();
-    feishuApprovalLog("info", "running");
+    feishuApprovalLog("info", "starting");
     return true;
   } catch (err) {
     feishuApprovalLog("warn", "start failed", { error: err && err.message ? err.message : String(err) });
@@ -2014,9 +2056,17 @@ async function sendFeishuApprovalTest() {
     return { status: "error", message: feishuApprovalUnavailableMessage(beforeStatus) };
   }
   await queueFeishuApprovalSync("test");
-  const client = getFeishuApprovalClient();
+  const client = getConfiguredFeishuApprovalClient();
   if (!client || typeof client.requestApproval !== "function") {
     return { status: "error", message: feishuApprovalUnavailableMessage(getFeishuApprovalStatus()) };
+  }
+  if (typeof client.waitUntilConnected === "function") {
+    const config = getFeishuApprovalPrefs();
+    const timeoutMs = Math.max(1, Number(config.connectionTimeoutSeconds) || 15) * 1000;
+    const connected = await client.waitUntilConnected(timeoutMs);
+    if (!connected) {
+      return { status: "error", message: feishuApprovalUnavailableMessage(getFeishuApprovalStatus()) };
+    }
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 60 * 1000);
