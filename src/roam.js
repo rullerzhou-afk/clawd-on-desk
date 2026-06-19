@@ -22,6 +22,7 @@ const ROAM_SPEED_PX_PER_MS = 0.08;   // 80px/s — slower than mini crabwalk (12
 const ROAM_MIN_DIST = 100;
 const ROAM_MARGIN_RATIO = 0.15;
 const ROAM_FRAME_MS = 16;
+const ROAM_TARGET_ATTEMPTS = 8;
 
 module.exports = function initRoam(ctx) {
   let enabled = false;
@@ -60,13 +61,33 @@ module.exports = function initRoam(ctx) {
     const yMin = wa.y + marginY;
     const yMax = wa.y + wa.height - bounds.height - marginY;
     if (xMax <= xMin || yMax <= yMin) return null;
-    const targetX = xMin + Math.floor(Math.random() * (xMax - xMin));
-    const targetY = yMin + Math.floor(Math.random() * (yMax - yMin));
-    const dx = targetX - bounds.x;
-    const dy = targetY - bounds.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist < ROAM_MIN_DIST) return null;
-    return { x: targetX, y: targetY };
+    for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
+      const targetX = xMin + Math.floor(Math.random() * (xMax - xMin));
+      const targetY = yMin + Math.floor(Math.random() * (yMax - yMin));
+      const dx = targetX - bounds.x;
+      const dy = targetY - bounds.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist >= ROAM_MIN_DIST) return { x: targetX, y: targetY };
+    }
+
+    const fallbackTargets = [
+      { x: xMin, y: yMin },
+      { x: xMax, y: yMin },
+      { x: xMin, y: yMax },
+      { x: xMax, y: yMax },
+    ];
+    let best = null;
+    let bestDist = -1;
+    for (const target of fallbackTargets) {
+      const dx = target.x - bounds.x;
+      const dy = target.y - bounds.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > bestDist) {
+        best = target;
+        bestDist = dist;
+      }
+    }
+    return bestDist >= ROAM_MIN_DIST ? best : null;
   }
 
   function animateTo(targetX, targetY) {
