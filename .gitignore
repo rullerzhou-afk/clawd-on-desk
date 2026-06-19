@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .env
+scripts/*.env
 __pycache__/
 *.pyc
 .DS_Store
@@ -81,6 +82,7 @@ scripts/*
 !scripts/monitor-clawd-power.ps1
 !scripts/validate-theme.js
 !scripts/create-theme.js
+!scripts/zoom_phone_sync.py
 
 # oh-my-cursor state
 .omc/
