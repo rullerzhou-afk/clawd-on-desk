@@ -167,6 +167,54 @@ Copilot CLI 是唯一在本地启动时不会自动同步 hooks 的受支持 age
 - Kiro 没有 global hooks，只能注入到 `~/.kiro/agents/*.json`
 - `src/renderer.js` 里给 `<img>` SVG 追加的 `?_t=` cache-bust query 不能删；Chromium 会复用同 URL SVG 的动画时间线，一次性动画会停在末帧
 
+---
+
+## Google Sheets 月次管理スクリプト（scripts/）
+
+スプレッドシートID: `1Q_l5s4ZAnjceMFORoRfGokBFnEiGLJSmY3ogZw1Iz94`  
+Google Workspace 操作は `gws` CLI を使用（`~/.config/gws/client_secret.json` で認証済み）。
+
+### スクリプト一覧
+
+| ファイル | 役割 |
+|---|---|
+| `scripts/sync_kancho.py` | ZoomPhone/Figma/TimesCar/Claude 4タブに管掌列を追加・同期し管掌昇順ソート |
+| `scripts/claude_sheet_format.py` | Claudeタブ E列ステータス条件付き書式（オーナー=赤/管理者=青/主要所有者=緑）+ 管掌昇順ソート |
+| `scripts/fix_format_after_kancho.py` | 管掌列挿入後の条件付き書式列ズレ修正（一度だけ実行） |
+| `scripts/zoom_phone_sync.py` | ZoomPhone_自動集計タブの月次自動集計 |
+
+### TimesCarタブ 月次更新手順
+
+毎月、タイムズカービジネス管理画面から以下2種のCSVをダウンロードし、スプレッドシートに反映する。
+
+**ダウンロードするCSV（cp932エンコード）**
+- `DrivingReportDetail_00815382_YYYYMM.csv` — 走行詳細（利用者名・最高速度・急加減速回数）
+- `concerningUse_00815382_YYYYMMDD_YYYYMMDD.csv` — 問題利用（運転者名・キャンセル忘れ金額・超過料金）
+
+**集計ルール**（ユーザー×月 単位）
+- 最高速度（km/h）: 月内の最大値 → `X km/h` 形式（利用なし＝空白）
+- 急加減速回数（回）: 月内の合計 → `X回` 形式（0回＝空白）
+- キャンセル忘れ金額: 月内の合計（円） → `¥X,XXX` 形式（¥0＝空白）
+- 超過料金: 月内の合計（円） → `¥X,XXX` 形式（¥0＝空白）
+
+**列構成**（1ヶ月あたり4列、F列以降）  
+`最高速度（km/h）` / `急加減速回数（回）` / `キャンセル忘れ金額` / `超過料金`
+
+**条件付き書式（F列以降 最高速度列）**
+- `>=140` → 背景色: 濃い赤 `rgb(0.918, 0.600, 0.600)`
+- `>=120` → 背景色: 濃いオレンジ `rgb(0.976, 0.796, 0.612)`
+- `>=110` → 背景色: 濃い黄色 `rgb(1.000, 0.898, 0.600)`
+
+**条件付き書式（G列以降 急加減速・料金列）**
+- 急加減速回数 `>=5` → 背景色: 濃い黄色（上記と同色）
+- キャンセル忘れ金額 `>=¥1` → 背景色: 濃い黄色
+- 超過料金 `>=¥1` → 背景色: 濃い黄色
+
+**新しい月を追加するときの注意**  
+条件付き書式は列範囲がハードコードされているため、新月列を追加したら `gws sheets spreadsheets get` で現在のルールを確認し、各ルールの `ranges` に新月の列インデックスを追加する batchUpdate を実行すること。
+
+---
+
 ## Do Not Revisit
 
 Language 子菜单底部截断是 Electron 透明窗口 + Windows DWM 的底层兼容问题。不要再尝试通过切换 `alwaysOnTop`、透明窗策略或 JS 菜单布局修它。
