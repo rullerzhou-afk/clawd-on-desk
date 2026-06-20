@@ -12,6 +12,7 @@ const SOUND_OVERRIDE_DIALOG_STRINGS = {
   "zh-TW": { title: "選擇音效檔案", filterName: "音效" },
   ko: { title: "음향 파일 선택", filterName: "오디오" },
   ja: { title: "音声ファイルを選択", filterName: "音声" },
+  es: { title: "Elige un archivo de sonido", filterName: "Audio" },
 };
 
 const REMOVE_THEME_DIALOG_STRINGS = {
@@ -44,6 +45,12 @@ const REMOVE_THEME_DIALOG_STRINGS = {
     cancel: "キャンセル",
     message: (name) => `テーマ "${name}" を削除しますか？`,
     detail: "この操作は元に戻せません。このテーマのすべてのファイルがディスクから削除されます。",
+  },
+  es: {
+    delete: "Eliminar",
+    cancel: "Cancelar",
+    message: (name) => `¿Eliminar el tema "${name}"?`,
+    detail: "Esta acción no se puede deshacer. Todos los archivos de este tema se quitarán del disco.",
   },
 };
 
@@ -526,7 +533,16 @@ function registerSettingsIpc(options = {}) {
         }
       }
       const pairUrl = `http://${lanIp}:${port}/mobile/?host=${lanIp}&port=${port}&token=${tok}`;
-      return { status: "ok", port, token: tok, lanIp, pairUrl };
+      // Render a scannable QR of the pair URL so phones can pair from the camera.
+      let qrSvg = null;
+      try {
+        const qrcode = require("qrcode-generator");
+        const qr = qrcode(0, "M");
+        qr.addData(pairUrl);
+        qr.make();
+        qrSvg = qr.createSvgTag({ cellSize: 4, margin: 2 });
+      } catch {}
+      return { status: "ok", port, token: tok, lanIp, pairUrl, qrSvg };
     } catch (err) {
       return { status: "error", message: (err && err.message) || String(err) };
     }

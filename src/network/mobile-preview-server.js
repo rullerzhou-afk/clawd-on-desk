@@ -24,6 +24,7 @@ const GRACE_PERIOD_MS = 5 * 60 * 1000;          // 5 minutes
 const ROTATION_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 const PWA_DIR = path.resolve(__dirname, "../../pwa");
+const PET_SVG_DIR = path.resolve(__dirname, "../../assets/svg");
 const TOKEN_PATH = path.join(os.homedir(), ".clawd", "mobile-token.json");
 
 const MIME = {
@@ -236,12 +237,91 @@ function initMobilePreviewServer(ctx) {
       return;
     }
 
+    // Pet animation SVGs (from the active-theme asset set) so the phone can show
+    // the same mascot. Strictly sanitized: a single .svg filename, no traversal.
+    if (urlPath.startsWith("/mobile/pet/")) {
+      const petFile = path.basename(urlPath);
+      if (!/^[a-z0-9-]+\.svg$/i.test(petFile)) { res.writeHead(404); res.end(); return; }
+      const petPath = path.join(PET_SVG_DIR, petFile);
+      if (!isPathInside(PET_SVG_DIR, petPath)) { res.writeHead(403); res.end(); return; }
+      fs.readFile(petPath, (err, data) => {
+        if (err) { res.writeHead(404); res.end(); return; }
+        res.writeHead(200, { "Content-Type": "image/svg+xml; charset=utf-8", "Cache-Control": "public, max-age=86400" });
+        res.end(data);
+      });
+      return;
+    }
+
     if (urlPath === "/mobile/" || urlPath === "/mobile") urlPath = "/mobile/index.html";
     if (!urlPath.startsWith("/mobile/")) { res.writeHead(404); res.end(); return; }
     const rel = urlPath.slice("/mobile/".length);
     const filePath = path.join(PWA_DIR, rel);
     if (!isPathInside(PWA_DIR, filePath)) { res.writeHead(403); res.end(); return; }
     const ext = path.extname(filePath).toLowerCase();
+    // Inject the pairing params into the manifest <link> server-side so iOS reads
+    // a manifest whose start_url already carries the token. A JS rewrite of the
+    // <link> lands too late — iOS reads the manifest from the initial HTML when
+    // you tap "Add to Home Screen". Only echoes params the caller already
+    // presented in the query, so an unauthenticated GET /mobile/ gets a
+    // token-less link and learns nothing.
+    if (rel === "index.html") {
+      fs.readFile(filePath, "utf8", (err, raw) => {
+        if (err) { res.writeHead(404); res.end(); return; }
+        let html = raw;
+        try {
+          // Make the PWA follow the desktop app's UI language.
+          const SUPPORTED_LANGS = ["en", "zh", "zh-TW", "ko", "ja", "es"];
+          let appLang = "en";
+          try {
+            const snap = ctx && typeof ctx.getSettingsSnapshot === "function" ? ctx.getSettingsSnapshot() : null;
+            if (snap && SUPPORTED_LANGS.indexOf(snap.lang) !== -1) appLang = snap.lang;
+          } catch {}
+          html = html.replace(/<html lang="[^"]*">/, `<html lang="${appLang}">`);
+          html = html.replace("</head>", `  <script>window.__CLAWD_LANG__=${JSON.stringify(appLang)};</script>\n</head>`);
+          const q = new URL(req.url, "http://localhost").searchParams;
+          const host = q.get("host");
+          const port = q.get("port");
+          const token = q.get("token");
+          if (host && port && token) {
+            const qs = `?host=${encodeURIComponent(host)}`
+              + `&port=${encodeURIComponent(port)}&token=${encodeURIComponent(token)}`;
+            html = html.replace('href="/mobile/manifest.json"', `href="/mobile/manifest.json${qs}"`);
+          }
+        } catch {}
+        res.writeHead(200, { "Content-Type": MIME[".html"], "Cache-Control": "no-cache" });
+        res.end(html);
+      });
+      return;
+    }
+    // iOS "Add to Home Screen" launches the manifest's start_url in storage that
+    // is isolated from Safari, so the QR-scanned token never reaches it. To make
+    // the home-screen icon connect, we let start_url carry the pairing params —
+    // but ONLY by echoing back the host/port/token the requester already presented
+    // in the query string. We never read the server's own token here, so an
+    // unauthenticated GET /mobile/manifest.json (no query) gets a token-less
+    // manifest and learns nothing. The PWA appends these params to the manifest
+    // link (see pwa/app.js) so only a paired client triggers the echo.
+    if (rel === "manifest.json") {
+      fs.readFile(filePath, "utf8", (err, raw) => {
+        if (err) { res.writeHead(404); res.end(); return; }
+        let body = raw;
+        try {
+          const manifest = JSON.parse(raw);
+          const q = new URL(req.url, "http://localhost").searchParams;
+          const host = q.get("host");
+          const port = q.get("port");
+          const token = q.get("token");
+          if (host && port && token) {
+            manifest.start_url = `/mobile/?host=${encodeURIComponent(host)}`
+              + `&port=${encodeURIComponent(port)}&token=${encodeURIComponent(token)}`;
+          }
+          body = JSON.stringify(manifest);
+        } catch {}
+        res.writeHead(200, { "Content-Type": MIME[".json"], "Cache-Control": "no-cache" });
+        res.end(body);
+      });
+      return;
+    }
     fs.readFile(filePath, (err, data) => {
       if (err) { res.writeHead(404); res.end(); return; }
       res.writeHead(200, {
@@ -401,7 +481,7 @@ function initMobilePreviewServer(ctx) {
 
   function buildPayload(sid, session) {
     if (!session) return null;
-    const recentEvents = Array.isArray(session.recentEvents) ? session.recentEvents.slice(-10) : [];
+    const recentEvents = Array.isArray(session.recentEvents) ? session.recentEvents.slice(-25) : [];
     return {
       sessionId: sid,
       agentId: session.agentId || null,
@@ -409,6 +489,10 @@ function initMobilePreviewServer(ctx) {
       basename: session.cwd ? path.basename(session.cwd) : null,
       state: session.state || "idle",
       updatedAt: session.updatedAt || null,
+      contextUsage: session.contextUsage || null,
+      // Latest assistant text (what it just wrote) so phones can read along.
+      assistantLastOutput: typeof session.assistantLastOutput === "string" ? session.assistantLastOutput : null,
+      assistantLastOutputTruncated: session.assistantLastOutputTruncated === true,
       recentEvents,
     };
   }

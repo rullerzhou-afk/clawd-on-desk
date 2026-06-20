@@ -46,6 +46,7 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(updateRegistry.lang("en", { snapshot: baseSnapshot }).status, "ok");
     assert.strictEqual(updateRegistry.lang("zh", { snapshot: baseSnapshot }).status, "ok");
     assert.strictEqual(updateRegistry.lang("ko", { snapshot: baseSnapshot }).status, "ok");
+    assert.strictEqual(updateRegistry.lang("es", { snapshot: baseSnapshot }).status, "ok");
     assert.strictEqual(updateRegistry.lang("klingon", { snapshot: baseSnapshot }).status, "error");
   });
 

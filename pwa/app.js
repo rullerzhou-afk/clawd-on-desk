@@ -1,34 +1,81 @@
 (function() {
   "use strict";
 
+  // === i18n ===
+  // Strings live in pwa/i18n.js (window.ClawdMobileI18N). The active language is
+  // injected by the desktop app's LAN server as window.__CLAWD_LANG__ so the PWA
+  // follows whatever language you picked on the desktop; it falls back to the
+  // document/browser language, then English.
+  var I18N = (typeof window !== "undefined" && window.ClawdMobileI18N) || { en: {} };
+  var LANG = (function() {
+    var want = (typeof window !== "undefined" && window.__CLAWD_LANG__) || "";
+    if (I18N[want]) return want;
+    var docLang = (document.documentElement && document.documentElement.lang) || "";
+    if (I18N[docLang]) return docLang;
+    var nav = (navigator.language || "en");
+    if (I18N[nav]) return nav;
+    var base = String(nav).split("-")[0];
+    for (var k in I18N) { if (I18N.hasOwnProperty(k) && k.split("-")[0] === base) return k; }
+    return "en";
+  })();
+  function t(key, vars) {
+    var dict = I18N[LANG] || I18N.en || {};
+    var s = (dict[key] != null) ? dict[key] : ((I18N.en && I18N.en[key] != null) ? I18N.en[key] : key);
+    if (vars) { for (var vk in vars) { if (vars.hasOwnProperty(vk)) s = s.replace("{" + vk + "}", vars[vk]); } }
+    return s;
+  }
+  function applyStaticI18n() {
+    var els = document.querySelectorAll("[data-i18n]");
+    for (var i = 0; i < els.length; i++) {
+      var k = els[i].getAttribute("data-i18n");
+      if (k) els[i].textContent = t(k);
+    }
+    if (document.documentElement) document.documentElement.lang = LANG;
+  }
+
   // === Constants ===
 
   var STATE_CONFIG = {
-    error:        { icon: "error",        color: "#ef4444", priority: 0, label: "错误" },
-    attention:    { icon: "attention",    color: "#b45309", priority: 1, label: "需要关注" },
-    working:      { icon: "working",      color: "#22c55e", priority: 2, label: "工作中" },
-    juggling:     { icon: "juggling",     color: "#22c55e", priority: 2, label: "多任务" },
-    thinking:     { icon: "thinking",     color: "#3b82f6", priority: 3, label: "思考中" },
-    notification: { icon: "notification", color: "#d97757", priority: 4, label: "通知" },
-    sweeping:     { icon: "sweeping",     color: "#71717a", priority: 5, label: "清理中" },
-    carrying:     { icon: "carrying",     color: "#71717a", priority: 5, label: "搬运中" },
-    idle:         { icon: "idle",         color: "#71717a", priority: 6, label: "空闲" },
-    sleeping:     { icon: "sleeping",     color: "#a1a1aa", priority: 7, label: "休眠" },
+    error:        { icon: "error",        color: "#ef4444", priority: 0, label: t("stError") },
+    attention:    { icon: "attention",    color: "#b45309", priority: 1, label: t("stAttention") },
+    working:      { icon: "working",      color: "#22c55e", priority: 2, label: t("stWorking") },
+    juggling:     { icon: "juggling",     color: "#22c55e", priority: 2, label: t("stJuggling") },
+    thinking:     { icon: "thinking",     color: "#3b82f6", priority: 3, label: t("stThinking") },
+    notification: { icon: "notification", color: "#d97757", priority: 4, label: t("stNotification") },
+    sweeping:     { icon: "sweeping",     color: "#71717a", priority: 5, label: t("stSweeping") },
+    carrying:     { icon: "carrying",     color: "#71717a", priority: 5, label: t("stCarrying") },
+    idle:         { icon: "idle",         color: "#71717a", priority: 6, label: t("stIdle") },
+    sleeping:     { icon: "sleeping",     color: "#a1a1aa", priority: 7, label: t("stSleeping") },
   };
 
   var CONNECTION_STATES = {
-    connected:    { dot: "connected", text: "已连接", color: "#22c55e" },
-    connecting:   { dot: "connecting", text: "连接中...", color: "#b45309" },
-    reconnecting: { dot: "reconnecting", text: "重连中...", color: "#ef4444" },
+    connected:    { dot: "connected", text: t("connConnected"), color: "#22c55e" },
+    connecting:   { dot: "connecting", text: t("connConnecting"), color: "#b45309" },
+    reconnecting: { dot: "reconnecting", text: t("connReconnecting"), color: "#ef4444" },
     disconnected: { dot: "", text: "", color: "#52525b" },
-    auth_failed:  { dot: "", text: "认证失败", color: "#ef4444" },
+    auth_failed:  { dot: "", text: t("connAuthFailed"), color: "#ef4444" },
   };
 
-  var EVENT_LABELS_CN = {
-    UserPromptSubmit: "用户输入", PreToolUse: "工具启动", PostToolUse: "工具完成",
-    PostToolUseFailure: "工具失败", Stop: "已完成", SessionStart: "会话开始",
-    SessionEnd: "会话结束", PermissionRequest: "需要权限", Notification: "通知",
-    SubagentStart: "子代理启动", SubagentStop: "子代理停止",
+  var EVENT_LABELS_I18N = {
+    UserPromptSubmit: t("evUserPromptSubmit"), PreToolUse: t("evPreToolUse"), PostToolUse: t("evPostToolUse"),
+    PostToolUseFailure: t("evPostToolUseFailure"), Stop: t("evStop"), SessionStart: t("evSessionStart"),
+    SessionEnd: t("evSessionEnd"), PermissionRequest: t("evPermissionRequest"), Notification: t("evNotification"),
+    SubagentStart: t("evSubagentStart"), SubagentStop: t("evSubagentStop"),
+  };
+
+  // Mascot animation per state — served from the active theme's asset set so the
+  // phone shows the same Clawd pet, reacting to the most active session.
+  var PET_SVG = {
+    error: "clawd-error.svg",
+    attention: "clawd-notification.svg",
+    notification: "clawd-notification.svg",
+    working: "clawd-working-typing.svg",
+    juggling: "clawd-working-juggling.svg",
+    thinking: "clawd-working-thinking.svg",
+    sweeping: "clawd-working-sweeping.svg",
+    carrying: "clawd-working-carrying.svg",
+    idle: "clawd-idle-follow.svg",
+    sleeping: "clawd-sleeping.svg",
   };
 
 
@@ -57,14 +104,14 @@
   function formatAgo(ts) {
     if (!ts) return "";
     var sec = Math.floor((Date.now() - ts) / 1000);
-    if (sec < 5) return "刚刚";
-    if (sec < 60) return sec + "秒前";
-    if (sec < 3600) return Math.floor(sec / 60) + "分钟前";
-    return Math.floor(sec / 3600) + "小时前";
+    if (sec < 5) return t("timeJustNow");
+    if (sec < 60) return t("timeSecAgo", { n: sec });
+    if (sec < 3600) return t("timeMinAgo", { n: Math.floor(sec / 60) });
+    return t("timeHrAgo", { n: Math.floor(sec / 3600) });
   }
 
   function eventLabel(eventName) {
-    return EVENT_LABELS_CN[eventName] || (typeof EVENT_LABELS !== "undefined" && EVENT_LABELS[eventName]) || eventName || "";
+    return EVENT_LABELS_I18N[eventName] || (typeof EVENT_LABELS !== "undefined" && EVENT_LABELS[eventName]) || eventName || "";
   }
 
   var EVENT_ICONS = {
@@ -135,17 +182,25 @@
     }
 
     onStateChange(sessionId, data) {
-      if (this.permission !== "granted" || document.visibilityState === "visible") return;
       var prev = this.lastStates.get(sessionId);
       this.lastStates.set(sessionId, data.state);
       var s = data.state;
       var config = STATE_CONFIG[s];
       if (!config) return;
       var label = data.title || data.agentId || "Agent";
-      if (s === "error" || s === "attention") {
-        this._notify(config.label, label + " - " + config.label, s);
-      } else if ((prev === "working" || prev === "thinking") && s === "idle") {
-        this._notify("任务完成", label + " 已完成任务", "idle");
+      var title = null, body = null, tag = s;
+      if (s === "error" || s === "attention" || s === "notification") {
+        title = config.label; body = label + " — " + config.label;
+      } else if ((prev === "working" || prev === "thinking" || prev === "juggling") && s === "idle") {
+        title = t("notifyTaskDone"); body = t("notifyTaskDoneBody", { label: label }); tag = "idle";
+      }
+      if (!title) return;
+      // Haptic buzz (Android; iOS ignores navigator.vibrate, but the system
+      // notification itself buzzes the phone).
+      try { if (navigator.vibrate) navigator.vibrate(s === "error" ? [60, 40, 60] : [40]); } catch (e) {}
+      // System notification only when the app isn't already in the foreground.
+      if (this.permission === "granted" && document.visibilityState !== "visible") {
+        this._notify(title, body, tag);
       }
     }
 
@@ -203,13 +258,14 @@
       socket.onopen = function() {
         if (socket !== self.ws) return; // stale socket — ignore
         connected = true; self.retryCount = 0; self.reconnectDelay = 1000;
-        self._setState("connected"); log("Connected"); showToast("已连接到桌面端", "success");
+        self._setState("connected"); log("Connected"); showToast(t("toastConnected"), "success");
         // Dismiss any persistent toasts (e.g. retry hint)
         var persisted = document.querySelectorAll(".toast-persist");
         for (var i = 0; i < persisted.length; i++) { persisted[i].remove(); }
-        // Strip query params from URL so stale ?token= from QR codes
-        // won't overwrite a rotated token in history on next auto-connect.
-        if (window.location.search) { history.replaceState(null, "", window.location.pathname); }
+        // Keep the query params in the URL: iOS "Add to Home Screen" may bookmark
+        // the current URL rather than the manifest start_url, and stripping them
+        // broke that. The token rotates and _autoConnect prefers the freshest
+        // token from history, so a stale ?token= left here is harmless.
       };
       socket.onmessage = function(event) {
         if (socket !== self.ws) return;
@@ -217,7 +273,7 @@
       };
       socket.onclose = function(event) {
         if (socket !== self.ws) return; // stale socket — ignore
-        if (event.code === 1008) { self._setState("auth_failed"); log("Auth failed"); showToast("Token 已过期，请重新连接", "error"); return; }
+        if (event.code === 1008) { self._setState("auth_failed"); log("Auth failed"); showToast(t("toastTokenExpired"), "error"); return; }
         if (connected) log("Disconnected (code: " + event.code + ")");
         if (self.onDisconnected) self.onDisconnected();
         self._scheduleReconnect();
@@ -233,7 +289,7 @@
       this._setState("reconnecting");
       // After several retries, give actionable feedback (don't stop — just inform)
       if (this.retryCount === 5) {
-        showToast("仍在重连…请检查地址、端口或桌面端是否已开启", "info", true);
+        showToast(t("toastStillReconnecting"), "info", true);
       }
       var self = this;
       this.reconnectTimer = setTimeout(function() { self.reconnectDelay = Math.min(self.reconnectDelay * 2, self.maxReconnectDelay); self._doConnect(); }, this.reconnectDelay);
@@ -311,6 +367,7 @@
 
     render() {
       var self = this;
+      this._updatePet();
       var entries = [];
       this.sessions.forEach(function(v, k) { entries.push([k, v]); });
       entries.sort(function(a, b) {
@@ -321,15 +378,17 @@
 
       if (entries.length === 0) {
         this.container.innerHTML = '<div class="empty-state"><div class="empty-icon">' + icon("paw") + '</div>' +
-          '<div class="empty-text">连接桌面端开始监控</div>' +
-          '<div class="empty-hint">前往设置页配置连接</div></div>';
+          '<div class="empty-text">' + esc(t("emptyTitle")) + '</div>' +
+          '<div class="empty-hint">' + esc(t("emptyHint")) + '</div></div>';
         return;
       }
 
-      var html = '<div class="section-label">活跃会话 &middot; ' + entries.length + '</div>';
+      var html = '<div class="section-label">' + esc(t("activeSessions")) + ' &middot; ' + entries.length + '</div>';
       for (var i = 0; i < entries.length; i++) html += this._renderCard(entries[i][0], entries[i][1]);
       this.container.innerHTML = html;
-      this.container.querySelectorAll(".card-footer").forEach(function(el) {
+      // Touch-friendly: tapping anywhere on the card toggles it (not just the
+      // little chevron). Tapping again collapses it.
+      this.container.querySelectorAll(".session-card").forEach(function(el) {
         el.addEventListener("click", function() { self.toggleExpand(this.getAttribute("data-sid")); });
       });
       if (this._animatingSid) {
@@ -338,8 +397,7 @@
         if (this.expandedSet.has(animatingSid)) {
           var cards = this.container.querySelectorAll('.session-card');
           cards.forEach(function(card) {
-            var footer = card.querySelector('.card-footer');
-            if (footer && footer.getAttribute('data-sid') === animatingSid) {
+            if (card.getAttribute('data-sid') === animatingSid) {
               var eh = card.querySelector('.event-history');
               if (eh) requestAnimationFrame(function() { eh.classList.add('show'); });
             }
@@ -355,7 +413,7 @@
       var stateKey = s.state || "idle";
       var agentLabel = (s.agentId || "agent").toUpperCase();
       var sessionTitle = s.title || "";
-      var html = '<div class="session-card">';
+      var html = '<div class="session-card" data-sid="' + sid + '">';
       html += '<div class="card-header"><div class="card-agent"><div class="agent-dot"></div>';
       html += '<span class="agent-name">' + esc(agentLabel) + '</span></div>';
       html += '<span class="state-badge ' + stateKey + '">' + config.label + '</span></div>';
@@ -363,19 +421,25 @@
       html += '<div class="card-meta">';
       if (s.basename) { html += '<span class="meta-item mono">' + icon("folder") + '<span>' + esc(s.basename) + '</span></span>'; }
       if (s.updatedAt) { html += '<span class="meta-sep">&middot;</span><span class="meta-item meta-time" data-ts="' + s.updatedAt + '">' + formatAgo(s.updatedAt) + '</span>'; }
+      if (s.contextUsage && typeof s.contextUsage.percent === "number") { html += '<span class="meta-sep">&middot;</span><span class="meta-item ctx-usage' + (s.contextUsage.percent >= 80 ? ' ctx-high' : '') + '">' + s.contextUsage.percent + '% ctx</span>'; }
       html += '</div>';
       html += '<div class="card-divider"></div>';
-      html += '<div class="card-footer" data-sid="' + sid + '"><div class="footer-events">' + icon("activity") + '<span>最近事件</span>';
+      html += '<div class="card-footer"><div class="footer-events">' + icon("activity") + '<span>' + esc(t("recentEvents")) + '</span>';
       if (events.length) html += '<span class="event-count">' + events.length + '</span>';
       html += '</div><span class="footer-chevron">' + (isExpanded ? icon("collapse") : icon("expand")) + '</span></div>';
-      if (events.length) html += this._renderEvents(events, isExpanded, this._animatingSid === sid);
+      if (events.length || s.assistantLastOutput) html += this._renderExpanded(s, isExpanded, this._animatingSid === sid);
       html += '</div>';
       return html;
     }
 
-    _renderEvents(events, expanded, animate) {
+    _renderExpanded(s, expanded, animate) {
       var showClass = (expanded && !animate) ? ' show' : '';
       var html = '<div class="event-history' + showClass + '"><div class="event-timeline">';
+      // Latest assistant text — read along on the phone with what it just wrote.
+      if (s.assistantLastOutput) {
+        html += '<div class="assistant-output">' + esc(s.assistantLastOutput) + (s.assistantLastOutputTruncated ? ' …' : '') + '</div>';
+      }
+      var events = s.recentEvents || [];
       for (var i = 0; i < events.length; i++) {
         var ev = events[i]; var c = STATE_CONFIG[ev.state] || STATE_CONFIG.idle;
         html += '<div class="event-row"><div class="event-dot" style="background:' + c.color + '"></div>';
@@ -399,6 +463,30 @@
       }, 1000);
     }
 
+    _updatePet() {
+      var petEl = document.getElementById("pet-display");
+      if (!petEl) return;
+      // Aggregate state = the highest-priority (most active) session's state.
+      var state = "sleeping";
+      var bestP = 999;
+      this.sessions.forEach(function(s) {
+        var p = (STATE_CONFIG[s.state] || STATE_CONFIG.idle).priority;
+        if (p < bestP) { bestP = p; state = s.state || "idle"; }
+      });
+      var svg = PET_SVG[state] || PET_SVG.idle;
+      var img = petEl.querySelector("img.pet-img");
+      if (!img) {
+        petEl.innerHTML = '<img class="pet-img" alt=""><div class="pet-label"></div>';
+        img = petEl.querySelector("img.pet-img");
+      }
+      if (img.getAttribute("data-svg") !== svg) {
+        img.setAttribute("data-svg", svg);
+        img.src = "/mobile/pet/" + svg;
+      }
+      var labelEl = petEl.querySelector(".pet-label");
+      if (labelEl) labelEl.textContent = (STATE_CONFIG[state] || STATE_CONFIG.idle).label;
+    }
+
     startStaleCleanup() {
       var self = this;
       this.staleTimer = setInterval(function() {
@@ -417,11 +505,12 @@
     constructor(container) { this.container = container; }
 
     render(connection) {
+      var self = this;
       var html = '';
 
       // Connection status
       html += '<div class="settings-section">';
-      html += '<div class="settings-section-title">连接</div>';
+      html += '<div class="settings-section-title">' + esc(t("settingsConnection")) + '</div>';
       var st = connection.state;
       var stCfg = CONNECTION_STATES[st] || CONNECTION_STATES.disconnected;
       html += '<div class="conn-status">';
@@ -431,13 +520,40 @@
       html += '</div>';
       html += '</div>';
 
+      // Notifications
+      if ("Notification" in window) {
+        html += '<div class="settings-section">';
+        html += '<div class="settings-section-title">' + esc(t("notifSection")) + '</div>';
+        if (Notification.permission === "granted") {
+          html += '<div class="notif-status notif-on">' + esc(t("notifOn")) + '</div>';
+        } else if (Notification.permission === "denied") {
+          html += '<div class="notif-status notif-blocked">' + esc(t("notifBlocked")) + '</div>';
+        } else {
+          html += '<button class="notif-enable-btn" id="btn-enable-notif">' + esc(t("notifEnable")) + '</button>';
+        }
+        html += '</div>';
+      }
+
       // Log section (collapsed by default)
       html += '<div class="log-section">';
-      html += '<button class="log-toggle" id="btn-toggle-log">日志 (' + _logBuffer.length + ')</button>';
+      html += '<button class="log-toggle" id="btn-toggle-log">' + esc(t("logLabel")) + ' (' + _logBuffer.length + ')</button>';
       html += '<div class="log-body" id="settings-log-content"></div>';
       html += '</div>';
 
       this.container.innerHTML = html;
+
+      // Enable-notifications button
+      var notifBtn = document.getElementById("btn-enable-notif");
+      if (notifBtn) {
+        notifBtn.addEventListener("click", function() {
+          if (window.Notification && Notification.requestPermission) {
+            Notification.requestPermission().then(function() {
+              if (window._clawdApp && window._clawdApp.notifier) window._clawdApp.notifier.permission = Notification.permission;
+              self.render(connection);
+            });
+          }
+        });
+      }
 
       // Render buffered log lines
       var logEl = document.getElementById("settings-log-content");
@@ -466,6 +582,7 @@
 
   class App {
     constructor() {
+      applyStaticI18n();
       this.connection = new ConnectionManager();
       this.renderer = new SessionRenderer(document.getElementById("session-list"));
       this.settingsRenderer = new SettingsRenderer(document.getElementById("settings-content"));
@@ -487,14 +604,29 @@
       var urlHost = params.get("host");
       var urlPort = params.get("port");
       var urlToken = params.get("token");
+      // Carry the pairing params into the manifest request so iOS "Add to Home
+      // Screen" captures a start_url that can connect. The server only echoes
+      // params we already hold, so the token is never exposed to an
+      // unauthenticated manifest request.
       if (urlHost && urlPort && urlToken) {
-        this.connection.connect({ host: urlHost, port: parseInt(urlPort, 10), token: urlToken });
-        return;
+        var mlink = document.querySelector('link[rel="manifest"]');
+        if (mlink) mlink.setAttribute("href", "/mobile/manifest.json" + window.location.search);
       }
       var history = this.connection.getHistory();
+      if (urlHost && urlPort) {
+        // The token rotates, but the home-screen icon (iOS) always launches the
+        // same start_url. Prefer the freshest token saved for this host:port so a
+        // returning client survives rotation; fall back to the URL token.
+        var saved = null;
+        for (var i = 0; i < history.length; i++) {
+          if (history[i].host === urlHost && String(history[i].port) === String(urlPort)) { saved = history[i]; break; }
+        }
+        var token = (saved && saved.token) || urlToken;
+        if (token) { this.connection.connect({ host: urlHost, port: parseInt(urlPort, 10), token: token }); return; }
+      }
+      // No usable URL params (e.g. opened from the home-screen icon after the
+      // token was stripped): reconnect using the most recent saved connection.
       if (history.length > 0) { this.connection.connect(history[0]); return; }
-      // M1: no auto-connect without token. User must open via clawd:// URL (from Settings page)
-      // or manually enter host/port/token in the connection history.
     }
 
     _bindNav() {
@@ -539,7 +671,7 @@
             self.connection._updateHistoryToken(self.connection.config.host, self.connection.config.port, newToken);
             self.connection.send({ type: "token_rotate_ack" });
             log("Token rotated");
-            showToast("令牌已更新", "success");
+            showToast(t("toastTokenUpdated"), "success");
           }
         }
       };

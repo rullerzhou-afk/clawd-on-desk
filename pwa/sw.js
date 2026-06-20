@@ -1,9 +1,11 @@
-const CACHE_NAME = "clawd-mobile-v5";
+const CACHE_NAME = "clawd-mobile-v8";
+// Versioned static assets only. The HTML document is intentionally NOT precached:
+// the LAN server injects the desktop UI language into it, so it must come fresh
+// from the network (with a cached fallback when offline).
 const STATIC_ASSETS = [
-  "/mobile/",
-  "/mobile/index.html",
   "/mobile/style.css",
   "/mobile/icons.js",
+  "/mobile/i18n.js",
   "/mobile/app.js",
   "/mobile/manifest.json",
 ];
@@ -25,9 +27,27 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
-  // WS 请求不拦截
+  // Do not intercept WS requests
   if (event.request.url.includes("/ws")) return;
 
+  // HTML/navigation: network-first so the document always reflects the current
+  // desktop language and latest build; fall back to a cached copy when offline.
+  if (event.request.mode === "navigate" || event.request.destination === "document") {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (response && response.ok) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put("/mobile/index.html", clone));
+          }
+          return response;
+        })
+        .catch(() => caches.match("/mobile/index.html"))
+    );
+    return;
+  }
+
+  // Static assets: cache-first (busted by CACHE_NAME on each release).
   event.respondWith(
     caches.match(event.request).then((cached) => {
       if (cached) return cached;
@@ -38,15 +58,11 @@ self.addEventListener("fetch", (event) => {
         }
         return response;
       });
-    }).catch(() => {
-      if (event.request.destination === "document") {
-        return caches.match("/mobile/index.html");
-      }
     })
   );
 });
 
-// 通知点击：聚焦到已有窗口
+// Notification click: focus the existing window
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   event.waitUntil(

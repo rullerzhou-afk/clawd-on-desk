@@ -87,10 +87,14 @@ body { display: flex; flex-direction: column; height: 100%; }
 .empty-icon svg { width: 64px; height: 64px; }
 .empty-text { font-size: 16px; }
 .empty-hint { font-size: 13px; color: var(--faint); }
+.pet-display { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 10px 0 2px; gap: 2px; min-height: 96px; }
+.pet-img { width: 96px; height: 96px; object-fit: contain; image-rendering: pixelated; image-rendering: crisp-edges; }
+.pet-label { font-size: 11px; color: var(--faint); font-weight: 500; letter-spacing: 0.3px; text-transform: uppercase; }
 @keyframes breathe { 0%, 100% { transform: scale(1); opacity: 0.6; } 50% { transform: scale(1.05); opacity: 1; } }
 
 /* === Session Card === */
-.session-card { background: var(--card); border: 0.5px solid var(--card-border); border-radius: var(--radius); padding: 12px 14px 10px; }
+.session-card { background: var(--card); border: 0.5px solid var(--card-border); border-radius: var(--radius); padding: 12px 14px 10px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.session-card:active { background: var(--card-active, #1c1c26); }
 .card-header { display: flex; align-items: center; justify-content: space-between; }
 .card-agent { display: flex; align-items: center; gap: 5px; }
 .agent-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
@@ -122,6 +126,13 @@ body { display: flex; flex-direction: column; height: 100%; }
 .event-history.show { grid-template-rows: 1fr; }
 .event-history > .event-timeline { overflow: hidden; min-height: 0; }
 .event-timeline { padding-left: 4px; }
+.assistant-output { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; color: var(--subtle); background: #16161f; border: 0.5px solid var(--card-border); border-radius: var(--radius-sm); padding: 10px 12px; margin: 6px 0 12px; max-height: 240px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; -webkit-overflow-scrolling: touch; }
+.ctx-usage { color: var(--faint); }
+.ctx-usage.ctx-high { color: var(--orange); font-weight: 600; }
+.notif-enable-btn { width: 100%; padding: 11px; background: var(--accent); color: #fff; border: none; border-radius: var(--radius-sm); font-size: 14px; font-weight: 500; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.notif-status { font-size: 13px; padding: 4px 0; }
+.notif-status.notif-on { color: var(--green); }
+.notif-status.notif-blocked { color: var(--muted); }
 .event-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; position: relative; }
 .event-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; position: relative; z-index: 1; }
 .event-line { position: absolute; left: 3.5px; top: 13px; bottom: -5px; width: 1px; opacity: 0.3; }

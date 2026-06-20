@@ -63,7 +63,7 @@ describe("bubble-renderer MCP labeling (issue #445)", () => {
   it("defines the new title key in every supported language", () => {
     // Mirrors test/i18n.test.js parity, scoped to the key this change adds.
     const count = (RENDERER_SRC.match(/codexToolApproval:/g) || []).length;
-    assert.strictEqual(count, 5, "expected codexToolApproval in all 5 locales");
+    assert.strictEqual(count, 6, "expected codexToolApproval in all 6 locales");
   });
 });
 
