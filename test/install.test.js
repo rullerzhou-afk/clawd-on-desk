@@ -1523,7 +1523,14 @@ describe("async hook installer parity", () => {
     });
 
     assert.deepStrictEqual(readSettings(asyncSettingsPath), readSettings(syncSettingsPath));
-    assert.deepStrictEqual(asyncResult, syncResult);
+
+    // backupPath is path-specific (each call uses its own temp settingsPath), so
+    // compare the rest of the result for parity and assert both paths backed up.
+    const { backupPath: syncBackup, ...syncRest } = syncResult;
+    const { backupPath: asyncBackup, ...asyncRest } = asyncResult;
+    assert.deepStrictEqual(asyncRest, syncRest);
+    assert.ok(syncBackup && syncBackup.endsWith(".bak"), "registerHooks should back up the prior settings");
+    assert.ok(asyncBackup && asyncBackup.endsWith(".bak"), "registerHooksAsync should back up the prior settings");
   });
 
   it("unregisterHooksAsync removes the same entries as unregisterHooks", async () => {
@@ -1541,5 +1548,57 @@ describe("async hook installer parity", () => {
 
     assert.deepStrictEqual(readSettings(asyncSettingsPath), readSettings(syncSettingsPath));
     assert.deepStrictEqual(asyncResult, syncResult);
+  });
+});
+
+describe("Hook installer settings backup", () => {
+  const versionInfo = { version: "2.1.78", source: "test", status: "known" };
+
+  function bakFiles(settingsPath) {
+    const dir = path.dirname(settingsPath);
+    return fs.readdirSync(dir).filter((name) => name.endsWith(".bak"));
+  }
+
+  it("backs up an existing settings.json before injecting hooks", () => {
+    const original = { hooks: { Stop: [{ matcher: "", hooks: [{ type: "command", command: "user-own-hook" }] }] } };
+    const settingsPath = makeTempSettings(original);
+
+    const result = registerHooks({ silent: true, settingsPath, claudeVersionInfo: versionInfo });
+
+    assert.ok(result.backupPath, "should return a backupPath");
+    assert.ok(fs.existsSync(result.backupPath), "backup file should exist on disk");
+    // Backup holds the ORIGINAL pre-install content (the user's own hook, no Clawd hooks).
+    assert.deepStrictEqual(readSettings(result.backupPath), original);
+    // Live file was mutated (Clawd hooks added) and the user's hook is preserved.
+    assert.ok(getClawdCommands(readSettings(settingsPath), "Stop").length > 0, "Clawd hooks should be installed");
+  });
+
+  it("does not back up when settings.json does not pre-exist", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-install-"));
+    tempDirs.push(tmpDir);
+    const settingsPath = path.join(tmpDir, "settings.json"); // intentionally absent
+
+    const result = registerHooks({ silent: true, settingsPath, claudeVersionInfo: versionInfo });
+
+    assert.strictEqual(result.backupPath, null, "no backup for a freshly created file");
+    assert.deepStrictEqual(bakFiles(settingsPath), [], "no .bak files written");
+    assert.ok(fs.existsSync(settingsPath), "settings.json should still be created");
+  });
+
+  it("respects backup: false (opt out)", () => {
+    const settingsPath = makeTempSettings({ hooks: {} });
+
+    const result = registerHooks({ silent: true, settingsPath, backup: false, claudeVersionInfo: versionInfo });
+
+    assert.strictEqual(result.backupPath, null);
+    assert.deepStrictEqual(bakFiles(settingsPath), []);
+  });
+
+  it("backs up on the async path too", async () => {
+    const settingsPath = makeTempSettings({ hooks: {} });
+
+    const result = await registerHooksAsync({ silent: true, settingsPath, claudeVersionInfo: versionInfo });
+
+    assert.ok(result.backupPath && fs.existsSync(result.backupPath), "async install should back up");
   });
 });

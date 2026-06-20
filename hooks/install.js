@@ -781,8 +781,10 @@ function registerHooks(options = {}) {
 
   // Read existing settings
   let settings = {};
+  let preExisting = false;
   try {
     settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+    preExisting = true;
   } catch (err) {
     if (err.code !== "ENOENT") {
       throw new Error(`Failed to read settings.json: ${err.message}`);
@@ -961,8 +963,23 @@ function registerHooks(options = {}) {
   }
 
   // Only write if something changed (avoid unnecessary disk I/O)
+  let backupPath = null;
   if (added > 0 || changed) {
-    writeJsonAtomic(settingsPath, settings);
+    // Snapshot the user's prior settings before mutating so the install is
+    // recoverable. Atomic write prevents a half-written file, not an undo —
+    // and we inject hooks into a shared global config the user did not author.
+    // Only back up a file that already existed; opt out with `backup: false`.
+    if (preExisting && options.backup !== false) {
+      backupPath = writeJsonAtomicWithBackup(settingsPath, settings, {
+        backup: true,
+        backupPath: options.backupPath,
+      });
+      if (backupPath && !options.silent) {
+        console.log(`  Backup: saved previous settings to ${backupPath}`);
+      }
+    } else {
+      writeJsonAtomic(settingsPath, settings);
+    }
   }
 
   if (!options.silent) {
@@ -998,6 +1015,7 @@ function registerHooks(options = {}) {
     version: versionInfo.version,
     versionStatus: versionInfo.status,
     versionSource: versionInfo.source,
+    backupPath,
   };
 }
 
@@ -1008,8 +1026,10 @@ async function registerHooksAsync(options = {}) {
   const platform = options.platform || process.platform;
 
   let settings = {};
+  let preExisting = false;
   try {
     settings = JSON.parse(await fs.promises.readFile(settingsPath, "utf-8"));
+    preExisting = true;
   } catch (err) {
     if (err.code !== "ENOENT") {
       throw new Error(`Failed to read settings.json: ${err.message}`);
@@ -1168,8 +1188,21 @@ async function registerHooksAsync(options = {}) {
     added++;
   }
 
+  let backupPath = null;
   if (added > 0 || changed) {
-    await writeJsonAtomicAsync(settingsPath, settings);
+    // See registerHooks(): back up the prior config before injecting hooks so
+    // the change is recoverable. Only back up a pre-existing file; `backup: false` opts out.
+    if (preExisting && options.backup !== false) {
+      backupPath = await writeJsonAtomicWithBackupAsync(settingsPath, settings, {
+        backup: true,
+        backupPath: options.backupPath,
+      });
+      if (backupPath && !options.silent) {
+        console.log(`  Backup: saved previous settings to ${backupPath}`);
+      }
+    } else {
+      await writeJsonAtomicAsync(settingsPath, settings);
+    }
   }
 
   if (!options.silent) {
@@ -1205,6 +1238,7 @@ async function registerHooksAsync(options = {}) {
     version: versionInfo.version,
     versionStatus: versionInfo.status,
     versionSource: versionInfo.source,
+    backupPath,
   };
 }
 
