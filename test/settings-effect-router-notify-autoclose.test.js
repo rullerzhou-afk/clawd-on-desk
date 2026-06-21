@@ -33,6 +33,7 @@ describe("settings effect router notification auto-close sync", () => {
       settingsController: controller,
       clearCodexNotifyBubbles: (...args) => calls.push(["clearCodex", ...args]),
       clearKimiNotifyBubbles: (...args) => calls.push(["clearKimi", ...args]),
+      clearStateNotifyBubbles: (...args) => calls.push(["clearState", ...args]),
       refreshPassiveNotifyAutoClose: () => calls.push(["refreshPassive"]),
       updateMirrors: () => {},
     });
@@ -42,6 +43,7 @@ describe("settings effect router notification auto-close sync", () => {
     assert.deepStrictEqual(calls, [
       ["clearCodex", undefined, "settings-policy-disabled"],
       ["clearKimi", undefined, "settings-policy-disabled"],
+      ["clearState", undefined, "settings-policy-disabled"],
     ]);
 
     calls.length = 0;
@@ -53,6 +55,7 @@ describe("settings effect router notification auto-close sync", () => {
     assert.deepStrictEqual(calls, [
       ["clearCodex", undefined, "settings-policy-disabled"],
       ["clearKimi", undefined, "settings-policy-disabled"],
+      ["clearState", undefined, "settings-policy-disabled"],
     ]);
   });
 

@@ -124,6 +124,7 @@ describe("server-route-state POST", () => {
       permission_suspect: true,
       preserve_state: true,
       hook_source: "codex-official",
+      tool_name: "Bash",
     }));
 
     assert.strictEqual(res.statusCode, 200);
@@ -160,6 +161,7 @@ describe("server-route-state POST", () => {
         backgroundTasksCount: 0,
         sessionCronsCount: 0,
         stopHookActive: false,
+        toolName: "Bash",
       },
     ]]);
   });

@@ -15,6 +15,7 @@ function startMarqueeIfOverflowing() {
 toolPill.addEventListener("mouseenter", startMarqueeIfOverflowing);
 toolPill.addEventListener("mouseleave", stopMarquee);
 const commandBlock = document.getElementById("commandBlock");
+const stateDetails = document.getElementById("stateDetails");
 const elicitationForm = document.getElementById("elicitationForm");
 const elicitationProgress = document.getElementById("elicitationProgress");
 const planFeedbackForm = document.getElementById("planFeedbackForm");
@@ -23,6 +24,7 @@ const planFeedbackBack = document.getElementById("planFeedbackBack");
 const planFeedbackSubmit = document.getElementById("planFeedbackSubmit");
 const btnAllow = document.getElementById("btnAllow");
 const btnDeny = document.getElementById("btnDeny");
+const actionsContainer = btnAllow.parentElement;
 const suggestionsContainer = document.getElementById("suggestions");
 const headerTitle = document.querySelector(".header-title");
 const sessionTag = document.getElementById("sessionTag");
@@ -87,6 +89,7 @@ const BUBBLE_STRINGS = {
     planFeedbackPlaceholder: "What should be changed?",
     submitFeedback: "Send",
     back: "Back",
+    stateUpdate: "Phoebe Update",
   },
   zh: {
     autoAcceptEdits: "\u81EA\u52A8\u63A5\u53D7\u7F16\u8F91",
@@ -122,6 +125,7 @@ const BUBBLE_STRINGS = {
     planFeedbackPlaceholder: "\u54EA\u91CC\u9700\u8981\u6539?",
     submitFeedback: "\u53D1\u9001",
     back: "\u8FD4\u56DE",
+    stateUpdate: "Phoebe \u72B6\u6001",
   },
   "zh-TW": {
     autoAcceptEdits: "自動接受編輯",
@@ -157,6 +161,7 @@ const BUBBLE_STRINGS = {
     planFeedbackPlaceholder: "哪裡需要改?",
     submitFeedback: "傳送",
     back: "返回",
+    stateUpdate: "Phoebe 狀態",
   },
   ko: {
     autoAcceptEdits: "\uD3B8\uC9D1 \uC790\uB3D9 \uC2B9\uC778",
@@ -192,6 +197,7 @@ const BUBBLE_STRINGS = {
     planFeedbackPlaceholder: "\uC5B4\uB514\uB97C \uBC14\uAFD4\uC57C \uD558\uB098\uC694?",
     submitFeedback: "\uBCF4\uB0B4\uAE30",
     back: "\uB4A4\uB85C",
+    stateUpdate: "Phoebe \uC0C1\uD0DC",
   },
   ja: {
     autoAcceptEdits: "編集を自動承認",
@@ -227,6 +233,7 @@ const BUBBLE_STRINGS = {
     planFeedbackPlaceholder: "どこを変更すべき?",
     submitFeedback: "送信",
     back: "戻る",
+    stateUpdate: "Phoebe 状態",
   },
 };
 
@@ -345,6 +352,12 @@ function resetBubbleContent() {
   elicitationForm.classList.remove("visible");
   elicitationProgress.textContent = "";
   elicitationProgress.classList.remove("visible");
+  card.classList.remove("state-notify", "state-expanded");
+  document.body.classList.remove("state-notify-body");
+  card.removeAttribute("data-state");
+  stateDetails.innerHTML = "";
+  stateDetails.style.display = "";
+  headerTitle.style.display = "";
   // NOTE: this resets the feedback form's visibility + textarea value only, not
   // the other side effects of enterPlanFeedbackMode() (suggestionsContainer
   // display:none and the disabled flags on textarea/back/submit). That's safe
@@ -360,6 +373,8 @@ function resetBubbleContent() {
   btnAllow.disabled = false;
   btnDeny.style.display = "";
   btnDeny.disabled = false;
+  if (actionsContainer) actionsContainer.style.display = "";
+  suggestionsContainer.style.display = "";
   suggestionsContainer.innerHTML = "";
 }
 
@@ -783,6 +798,29 @@ function show(data) {
     renderElicitationForm(data);
     btnAllow.style.display = "";
     btnDeny.style.display = "";
+    revealCard();
+    return;
+  }
+
+  // Generic state notify mode — local fixed-text bubble, no raw prompt/code content.
+  if (data.toolName === "ClawdStateNotify") {
+    const input = (data.toolInput && typeof data.toolInput === "object") ? data.toolInput : {};
+    card.classList.add("state-notify");
+    document.body.classList.add("state-notify-body");
+    card.setAttribute("data-state", input.state || "");
+    headerTitle.textContent = "";
+    headerTitle.style.display = "none";
+    toolPillText.textContent = input.badgeLabel || input.agentLabel || "PHOEBE";
+    toolPill.setAttribute("data-tool", "ClawdStateNotify");
+    toolPill.style.display = "";
+    commandBlock.textContent = "";
+    commandBlock.style.display = "none";
+    stateDetails.innerHTML = "";
+    stateDetails.style.display = "none";
+    btnAllow.style.display = "none";
+    btnDeny.style.display = "none";
+    if (actionsContainer) actionsContainer.style.display = "none";
+    suggestionsContainer.innerHTML = "";
     revealCard();
     return;
   }

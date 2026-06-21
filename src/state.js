@@ -35,6 +35,10 @@ const {
   sessionSnapshotSignature,
 } = require("./state-session-snapshot");
 const { getAgentIconUrl } = require("./state-agent-icons");
+const {
+  shouldShowStateNotify,
+  shouldClearStateNotify,
+} = require("./state-notify-bubble");
 
 module.exports = function initState(ctx) {
 
@@ -100,6 +104,31 @@ const COMPLETION_CANCEL_EVENTS = new Set([
 // UserPromptSubmit lands within hook-spawn latency (~0.3s) of the Stop, so a
 // 2s quiet window absorbs it; a genuinely final Stop just celebrates 2s late.
 const HEADLESS_COMPLETION_DEBOUNCE_MS = 2000;
+function syncStateNotifyBubble(sessionId, state, event, opts = {}) {
+  if (shouldClearStateNotify({ state, event }) && typeof ctx.clearStateNotifyBubbles === "function") {
+    try { ctx.clearStateNotifyBubbles(sessionId, `state-transition:${state || event || "unknown"}`); } catch {}
+  }
+  if (!shouldShowStateNotify({
+    agentId: opts.agentId,
+    state,
+    event,
+    headless: opts.headless,
+  })) return;
+  if (typeof ctx.showStateNotifyBubble !== "function") return;
+  try {
+    ctx.showStateNotifyBubble({
+      sessionId,
+      agentId: opts.agentId,
+      state,
+      event,
+      toolName: opts.toolName,
+      model: opts.model,
+      provider: opts.provider,
+      contextUsage: opts.contextUsage,
+    });
+  } catch {}
+}
+
 function getCompletionDebounceMs(headless) {
   const raw = process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
   const n = Number.parseInt(raw, 10);
@@ -1094,6 +1123,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     backgroundTasksCount = 0,
     sessionCronsCount = 0,
     stopHookActive = false,
+    toolName = null,
   } = opts;
   if (startupRecoveryActive) {
     startupRecoveryActive = false;
@@ -1360,6 +1390,14 @@ function updateSession(sessionId, state, event, opts = {}) {
   }
 
   if (event === "SessionEnd") {
+    syncStateNotifyBubble(sessionId, state, event, {
+      agentId: srcAgentId,
+      headless: srcHeadless,
+      toolName,
+      model: srcModel,
+      provider: srcProvider,
+      contextUsage: srcContextUsage,
+    });
     const endingSession = sessions.get(sessionId);
     cancelCodexExitProbe(sessionId, "SessionEnd");
     sessions.delete(sessionId);
@@ -1460,6 +1498,15 @@ function updateSession(sessionId, state, event, opts = {}) {
 
   const suppressDuplicateCompletionVisual =
     duplicateCompletionVisualAtEntry || shouldSuppressDuplicateCompletionVisual(existing, state, event);
+
+  syncStateNotifyBubble(sessionId, state, event, {
+    agentId: srcAgentId,
+    headless: srcHeadless,
+    toolName,
+    model: srcModel,
+    provider: srcProvider,
+    contextUsage: srcContextUsage,
+  });
 
   if (ONESHOT_STATES.has(state)) {
     // Permission animation lock: while any permission request is pending,

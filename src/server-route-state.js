@@ -284,6 +284,7 @@ function handleStatePost(req, res, options) {
             backgroundTasksCount,
             sessionCronsCount,
             stopHookActive,
+            ...(toolName ? { toolName } : {}),
             ...(agentIdentity.defaulted ? { agentIdDefaulted: true } : {}),
           });
         }

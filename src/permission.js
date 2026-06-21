@@ -11,6 +11,10 @@ const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
 } = require("../hooks/server-config");
+const {
+  STATE_NOTIFY_TOOL_NAME,
+  buildStateNotifyCopy,
+} = require("./state-notify-bubble");
 
 const isMac = process.platform === "darwin";
 const isLinux = process.platform === "linux";
@@ -44,6 +48,9 @@ const BUBBLE_HEIGHT_RESERVE = 24;
 // integer DIP width, so the CSS viewport width (and therefore renderer-side
 // height measurements) stays exact across scale changes.
 const BUBBLE_BASE_WIDTH = 340;
+// State tags sit just above the pet with a small air gap.
+const STATE_NOTIFY_TAG_GAP = 10;
+const STATE_NOTIFY_DONE_AUTO_CLOSE_MS = 30 * 1000;
 // Hard cap so a scaled bubble can't swallow a small work area.
 const BUBBLE_MAX_WORK_AREA_WIDTH_RATIO = 0.9;
 const REMOTE_RICH_APPROVAL_AGENT_IDS = new Set(["claude-code", "codebuddy"]);
@@ -119,6 +126,11 @@ function shouldSuppressKimiNotifyBubble(ctx) {
     ctx.isAgentPermissionsEnabled("kimi-cli");
   const policy = getPolicy(ctx, "notification");
   return !!(ctx.doNotDisturb || !policy.enabled || !kimiBubblesEnabled);
+}
+
+function shouldSuppressStateNotifyBubble(ctx) {
+  const policy = getPolicy(ctx, "notification");
+  return !!(ctx.doNotDisturb || !policy.enabled);
 }
 
 function getPolicy(ctx, kind) {
@@ -222,7 +234,7 @@ function buildCopilotPermissionResponseBody(decisionOrBehavior, message) {
 }
 
 function isPassiveNotifyEntry(permEntry) {
-  return !!(permEntry && (permEntry.isCodexNotify || permEntry.isKimiNotify));
+  return !!(permEntry && (permEntry.isCodexNotify || permEntry.isKimiNotify || permEntry.isStateNotify));
 }
 
 function computePassiveNotifyRemainingMs(createdAt, autoCloseMs, now = Date.now()) {
@@ -231,6 +243,21 @@ function computePassiveNotifyRemainingMs(createdAt, autoCloseMs, now = Date.now(
   const startedAt = Number(createdAt);
   if (!Number.isFinite(startedAt) || startedAt <= 0) return totalMs;
   return Math.max(0, totalMs - Math.max(0, now - startedAt));
+}
+
+function computeStateNotifyBubbleBounds({ bubbleWidth: bw, bubbleHeight: bh, margin, gap, workArea: wa, hitRect }) {
+  if (!hitRect || !wa || !Number.isFinite(bw) || !Number.isFinite(bh)) return null;
+  const hitTop = Math.round(hitRect.top);
+  const hitBottom = Math.round(hitRect.bottom);
+  const hitCx = Math.round((hitRect.left + hitRect.right) / 2);
+  const x = Math.max(wa.x + margin, Math.min(hitCx - Math.round(bw / 2), wa.x + wa.width - bw - margin));
+  const attachGap = Math.max(2, Number(STATE_NOTIFY_TAG_GAP) || 0);
+  const aboveY = hitTop - attachGap - bh;
+  if (aboveY >= wa.y + margin) return { x, y: aboveY, width: bw, height: bh };
+  const belowY = hitBottom + attachGap;
+  if (belowY + bh <= wa.y + wa.height - margin) return { x, y: belowY, width: bw, height: bh };
+  const y = Math.max(wa.y + margin, Math.min(hitTop, wa.y + wa.height - bh - margin));
+  return { x, y, width: bw, height: bh };
 }
 
 // Pure layout calculator for the permission bubble stack. Extracted out of
@@ -443,6 +470,7 @@ function getActionablePermissions() {
       && !p.isElicitation
       && !p.isCodexNotify
       && !p.isKimiNotify
+      && !p.isStateNotify
       && p.toolName !== "ExitPlanMode"
   );
 }
@@ -562,30 +590,39 @@ function repositionBubbles() {
   const petBounds = ctx.getPetWindowBounds();
   const wa = getAnchorWorkArea(petBounds);
   const bw = getBubbleWidth(scale, wa);
-  const hitRect = ctx.bubbleFollowPet ? ctx.getHitRectScreen(petBounds) : null;
-
   const layoutPermissions = pendingPermissions.filter((perm) => !isHardwareBuddyTestPermission(perm));
+  const stateOnlyLayout = layoutPermissions.length === 1 && layoutPermissions[0].isStateNotify;
+  const hitRect = (ctx.bubbleFollowPet || stateOnlyLayout) ? ctx.getHitRectScreen(petBounds) : null;
   const bubbleHeights = layoutPermissions.map(perm =>
     clampBubbleHeight(
       // measuredHeight/estimate are CSS px; the window needs DIP.
       scaleHeight(
-        perm.measuredHeight || estimateBubbleHeight((perm.suggestions || []).length),
+        perm.measuredHeight || (perm.isStateNotify ? 34 : estimateBubbleHeight((perm.suggestions || []).length)),
         scale
       ),
       wa.height
     )
   );
 
-  const bounds = computeBubbleStackLayout({
-    followPet: !!ctx.bubbleFollowPet,
-    bubbleHeights,
-    bubbleWidth: bw,
-    margin,
-    gap,
-    workArea: wa,
-    hitRect,
-    hudReservedOffset: typeof ctx.getHudReservedOffset === "function" ? ctx.getHudReservedOffset() : 0,
-  });
+  const bounds = stateOnlyLayout && hitRect
+    ? [computeStateNotifyBubbleBounds({
+      bubbleWidth: bw,
+      bubbleHeight: bubbleHeights[0],
+      margin,
+      gap,
+      workArea: wa,
+      hitRect,
+    })]
+    : computeBubbleStackLayout({
+      followPet: !!ctx.bubbleFollowPet,
+      bubbleHeights,
+      bubbleWidth: bw,
+      margin,
+      gap,
+      workArea: wa,
+      hitRect,
+      hudReservedOffset: typeof ctx.getHudReservedOffset === "function" ? ctx.getHudReservedOffset() : 0,
+    });
 
   for (let i = 0; i < layoutPermissions.length; i++) {
     const perm = layoutPermissions[i];
@@ -633,7 +670,7 @@ function maybeAutoApprovePermission(permEntry) {
   if (typeof ctx.isAutoApproveAllEnabled !== "function" || !ctx.isAutoApproveAllEnabled()) {
     return false;
   }
-  if (permEntry.isCodexNotify || permEntry.isKimiNotify) return false;
+  if (permEntry.isCodexNotify || permEntry.isKimiNotify || permEntry.isStateNotify) return false;
   if (isHardwareBuddyTestPermission(permEntry)) return false;
 
   // Elicitation (AskUserQuestion / Hermes clarify): a bare "allow" with no
@@ -749,7 +786,7 @@ function showPermissionBubble(permEntry) {
 // dismissal via dismissPassiveNotify and must not be auto-closed through this
 // path — their UI lifecycle is decoupled from the agent's response channel.
 function armPermissionAutoCloseTimer(permEntry) {
-  if (!permEntry || permEntry.isCodexNotify || permEntry.isKimiNotify) return;
+  if (!permEntry || permEntry.isCodexNotify || permEntry.isKimiNotify || permEntry.isStateNotify) return;
   if (permEntry.autoCloseTimer) {
     clearTimeout(permEntry.autoCloseTimer);
     permEntry.autoCloseTimer = null;
@@ -786,13 +823,14 @@ function notifyPermissionsChanged(reason) {
 }
 
 function notifyPermissionResolved(permEntry, reason) {
-  if (!permEntry || permEntry.isCodexNotify || permEntry.isKimiNotify) return;
+  if (!permEntry || permEntry.isCodexNotify || permEntry.isKimiNotify || permEntry.isStateNotify) return;
   if (typeof ctx.onPermissionResolved !== "function") return;
   const hasPendingForSession = pendingPermissions.some((entry) =>
     entry
     && entry.sessionId === permEntry.sessionId
     && !entry.isCodexNotify
     && !entry.isKimiNotify
+    && !entry.isStateNotify
   );
   try {
     ctx.onPermissionResolved(permEntry, {
@@ -885,7 +923,7 @@ function isRemoteRichApprovalSupported(permEntry) {
 
 function isRemoteApprovalActionable(permEntry) {
   if (!permEntry || typeof permEntry !== "object") return false;
-  if (permEntry.isElicitation || permEntry.isCodexNotify || permEntry.isKimiNotify || permEntry.isOpencode || permEntry.isAntigravity || permEntry.isCopilotCli) return false;
+  if (permEntry.isElicitation || permEntry.isCodexNotify || permEntry.isKimiNotify || permEntry.isStateNotify || permEntry.isOpencode || permEntry.isAntigravity || permEntry.isCopilotCli) return false;
   if (permEntry.toolName === "ExitPlanMode" || permEntry.toolName === "AskUserQuestion") return false;
   if (PASSTHROUGH_TOOLS.has(permEntry.toolName)) return false;
   // Headless sessions auto-deny locally; mirror that on the Telegram side so a
@@ -1132,7 +1170,7 @@ function applyPermissionSuggestion(perm, index, options = {}) {
 
   function resolvePermissionEntry(permEntry, behavior, message) {
     // Codex notify bubbles have no HTTP connection — route to dedicated cleanup
-    if (permEntry.isCodexNotify || permEntry.isKimiNotify) {
+    if (isPassiveNotifyEntry(permEntry)) {
       dismissPassiveNotify(permEntry, `resolve:${behavior || "unknown"}`);
       return;
     }
@@ -1510,7 +1548,7 @@ function handleDecide(event, behavior) {
   const perm = pendingPermissions.find(p => p.bubble === senderWin);
   permLog(`IPC permission-decide: behavior=${behavior} matched=${!!perm}`);
   if (!perm) return;
-  if (perm.isCodexNotify || perm.isKimiNotify) {
+  if (isPassiveNotifyEntry(perm)) {
     dismissPassiveNotify(perm, "ipc-decide");
     return;
   }
@@ -1678,15 +1716,80 @@ function showKimiNotifyBubble({ sessionId, command }) {
   schedulePassiveNotifyAutoExpire(permEntry, policy.autoCloseMs);
 }
 
+
+function isStateNotifyCompletionState(state) {
+  const normalized = typeof state === "string" ? state.trim().toLowerCase() : "";
+  return normalized === "attention" || normalized === "done";
+}
+
+function scheduleStateNotifyCompletionExpire(permEntry, state) {
+  if (!permEntry || !permEntry.isStateNotify) return false;
+  if (permEntry.autoExpireTimer) {
+    clearTimeout(permEntry.autoExpireTimer);
+    permEntry.autoExpireTimer = null;
+  }
+  if (!isStateNotifyCompletionState(state)) return false;
+  return schedulePassiveNotifyAutoExpire(permEntry, STATE_NOTIFY_DONE_AUTO_CLOSE_MS);
+}
+
+function showStateNotifyBubble({ sessionId, agentId, state, event, toolName, model, provider, contextUsage }) {
+  if (shouldSuppressStateNotifyBubble(ctx)) {
+    const policy = getPolicy(ctx, "notification");
+    permLog(`state notify suppressed: agent=${agentId || "unknown"} session=${sessionId} state=${state || "unknown"} dnd=${ctx.doNotDisturb} notificationEnabled=${policy.enabled}`);
+    return;
+  }
+  const copy = buildStateNotifyCopy({
+    lang: ctx.lang,
+    agentId,
+    state,
+    event,
+    toolName,
+    model,
+    provider,
+    contextUsage,
+  });
+  const existing = findStateNotifyEntryBySession(sessionId);
+  if (existing) {
+    existing.toolInput = copy;
+    existing.createdAt = Date.now();
+    existing.agentId = agentId || existing.agentId || "hermes";
+    permLog(`state notify refresh: agent=${existing.agentId} session=${sessionId} state=${state || "unknown"} persistent=true`);
+    syncPermissionBubbleContent(existing);
+    scheduleStateNotifyCompletionExpire(existing, state);
+    return;
+  }
+  const permEntry = {
+    res: null,
+    abortHandler: null, suggestions: [],
+    sessionId, bubble: null, hideTimer: null,
+    toolName: STATE_NOTIFY_TOOL_NAME,
+    toolInput: copy,
+    resolvedSuggestion: null, createdAt: Date.now(),
+    isElicitation: false, isStateNotify: true,
+    agentId: agentId || "hermes",
+    autoExpireTimer: null,
+  };
+  addPendingPermission(permEntry, "passive-added");
+  showPermissionBubble(permEntry);
+  permLog(`state notify show: agent=${permEntry.agentId} session=${sessionId} state=${state || "unknown"} persistent=true`);
+  scheduleStateNotifyCompletionExpire(permEntry, state);
+}
+
 function getPassiveNotifyAgentId(permEntry) {
   if (permEntry?.isCodexNotify) return "codex";
   if (permEntry?.isKimiNotify) return "kimi-cli";
+  if (permEntry?.isStateNotify) return permEntry.agentId || "state";
   return permEntry?.agentId || "unknown";
 }
 
 function findCodexNotifyEntryBySession(sessionId) {
   if (!sessionId) return null;
   return pendingPermissions.find((permEntry) => permEntry && permEntry.isCodexNotify && permEntry.sessionId === sessionId) || null;
+}
+
+function findStateNotifyEntryBySession(sessionId) {
+  if (!sessionId) return null;
+  return pendingPermissions.find((permEntry) => permEntry && permEntry.isStateNotify && permEntry.sessionId === sessionId) || null;
 }
 
 function dismissPassiveNotify(permEntry, reason = "unknown") {
@@ -1730,7 +1833,7 @@ function schedulePassiveNotifyAutoExpire(permEntry, autoCloseMs, now = Date.now(
 }
 
 function refreshPassiveNotifyAutoClose() {
-  const passiveEntries = pendingPermissions.filter(isPassiveNotifyEntry);
+  const passiveEntries = pendingPermissions.filter((entry) => isPassiveNotifyEntry(entry) && !entry.isStateNotify);
   if (passiveEntries.length === 0) return 0;
   const policy = getPolicy(ctx, "notification");
   const now = Date.now();
@@ -1825,7 +1928,7 @@ function dismissPermissionsForDnd() {
   const toDismiss = pendingPermissions.filter(Boolean);
   if (toDismiss.length === 0) return 0;
   for (const perm of toDismiss) {
-    if (perm.isCodexNotify || perm.isKimiNotify) {
+    if (isPassiveNotifyEntry(perm)) {
       dismissPassiveNotify(perm, "dnd-enabled");
       continue;
     }
@@ -1855,6 +1958,15 @@ function clearKimiNotifyBubbles(sessionId, reason = sessionId ? "kimi-session-re
   for (const perm of toRemove) dismissPassiveNotify(perm, reason);
 }
 
+function clearStateNotifyBubbles(sessionId, reason = sessionId ? "state-session-release" : "state-global-clear") {
+  const hasStateNotify = pendingPermissions.some(p => p.isStateNotify);
+  if (!hasStateNotify) return;
+  const toRemove = sessionId
+    ? pendingPermissions.filter((p) => p.isStateNotify && p.sessionId === sessionId)
+    : pendingPermissions.filter((p) => p.isStateNotify);
+  for (const perm of toRemove) dismissPassiveNotify(perm, reason);
+}
+
 function cleanup() {
   // Unregister hotkeys
   if (registeredAllowAccel !== null) {
@@ -1874,7 +1986,8 @@ function cleanup() {
   for (const perm of [...pendingPermissions]) {
     if (perm._delayTimer) clearTimeout(perm._delayTimer);
     if (perm.autoExpireTimer) clearTimeout(perm.autoExpireTimer);
-    if (perm.isCodex || perm.isQwenCode || perm.isCopilotCli || perm.isAntigravity || perm.isHermes) resolvePermissionEntry(perm, "no-decision", "Clawd is quitting");
+    if (isPassiveNotifyEntry(perm)) dismissPassiveNotify(perm, "cleanup");
+    else if (perm.isCodex || perm.isQwenCode || perm.isCopilotCli || perm.isAntigravity || perm.isHermes) resolvePermissionEntry(perm, "no-decision", "Clawd is quitting");
     else resolvePermissionEntry(perm, "deny", "Clawd is quitting");
   }
 }
@@ -1889,6 +2002,7 @@ return {
   handleBubbleHeight, handleDecide, cleanup,
   showCodexNotifyBubble, clearCodexNotifyBubbles,
   showKimiNotifyBubble, clearKimiNotifyBubbles,
+  showStateNotifyBubble, clearStateNotifyBubbles,
   refreshPassiveNotifyAutoClose,
   refreshPermissionAutoCloseForPolicy,
   dismissPermissionsByAgent, dismissInteractivePermissionBubbles,
@@ -1905,6 +2019,7 @@ module.exports.registerPermissionIpc = registerPermissionIpc;
 // hit the pure layout function without standing up Electron / ctx mocks.
 module.exports.__test = {
   computeBubbleStackLayout,
+  computeStateNotifyBubbleBounds,
   computePassiveNotifyRemainingMs,
   clampBubbleHeight,
   shouldSuppressCodexNotifyBubble,

@@ -2,7 +2,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
 const permission = require("../src/permission");
-const { computeBubbleStackLayout, clampBubbleHeight } = permission.__test;
+const { computeBubbleStackLayout, computeStateNotifyBubbleBounds, clampBubbleHeight } = permission.__test;
 
 // Common defaults so each test only spells out what's interesting.
 const BW = 340;
@@ -38,6 +38,30 @@ describe("permission bubble height clamp", () => {
 
   it("falls back to the natural height when work area height is unavailable", () => {
     assert.strictEqual(clampBubbleHeight(500, 0), 500);
+  });
+});
+
+describe("state notify bubble placement", () => {
+  it("places a single state bubble above the pet when there is room", () => {
+    assert.deepStrictEqual(computeStateNotifyBubbleBounds({
+      bubbleWidth: BW,
+      bubbleHeight: 34,
+      margin: MARGIN,
+      gap: GAP,
+      workArea: FHD,
+      hitRect: { left: 800, top: 400, right: 920, bottom: 500 },
+    }), { x: 690, y: 356, width: 340, height: 34 });
+  });
+
+  it("falls back below the pet when the top edge is too tight", () => {
+    assert.deepStrictEqual(computeStateNotifyBubbleBounds({
+      bubbleWidth: BW,
+      bubbleHeight: 34,
+      margin: MARGIN,
+      gap: GAP,
+      workArea: FHD,
+      hitRect: { left: 800, top: 40, right: 920, bottom: 140 },
+    }), { x: 690, y: 150, width: 340, height: 34 });
   });
 });
 
