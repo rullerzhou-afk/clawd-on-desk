@@ -162,10 +162,12 @@ if (isWin) {
       } catch {
         return false;
       }
-      if (!handle || handle.length < 4) return false;
+      if (!handle || handle.length < 8) return false;
+      const hwnd = handle.readBigUInt64LE(0);
+      if (hwnd === 0n) return false;
       const out = Buffer.alloc(4);
       try {
-        const hr = dwmGetWindowAttribute(handle, 14, out, 4);
+        const hr = dwmGetWindowAttribute(hwnd, 14, out, 4);
         return hr === 0 && out.readInt32LE(0) !== 0;
       } catch {
         return false;
