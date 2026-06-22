@@ -156,7 +156,7 @@ describe("Cursor hook installer", () => {
     assert.strictEqual(fs.existsSync(path.join(fakeHome, ".cursor", "hooks.json")), false);
   });
 
-  it("wraps Windows commands in cmd /c", () => {
+  it("uses PowerShell call syntax for Windows commands", () => {
     const hooksPath = makeTempHooksFile({});
     registerCursorHooks({
       silent: true,
@@ -172,7 +172,8 @@ describe("Cursor hook installer", () => {
       "win32"
     );
     assert.strictEqual(settings.hooks.stop[0].command, expected);
-    assert.ok(settings.hooks.stop[0].command.startsWith("cmd /d /s /c "));
+    assert.ok(settings.hooks.stop[0].command.startsWith("& "));
+    assert.ok(settings.hooks.stop[0].command.includes('"C:\\Program Files\\nodejs\\node.exe"'));
   });
 
   it("preserves an existing Windows node path when detection fails", () => {
@@ -194,6 +195,6 @@ describe("Cursor hook installer", () => {
 
     const settings = readJson(hooksPath);
     assert.ok(settings.hooks.stop[0].command.includes("C:\\Program Files\\nodejs\\node.exe"));
-    assert.ok(settings.hooks.stop[0].command.startsWith("cmd /d /s /c "));
+    assert.ok(settings.hooks.stop[0].command.startsWith("& "));
   });
 });

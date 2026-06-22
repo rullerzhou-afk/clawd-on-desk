@@ -29,17 +29,11 @@ const CURSOR_HOOK_EVENTS = [
   "subagentStart",
   "subagentStop",
   "preCompact",
-  "afterAgentThought",
   "stop",
 ];
 
 function buildCursorHookCommand(nodeBin, hookScript, platform = process.platform) {
-  // Cursor's Windows hook launcher is more reliable when the command goes
-  // through cmd.exe explicitly instead of invoking node directly.
-  return formatNodeHookCommand(nodeBin, hookScript, {
-    platform,
-    windowsWrapper: "cmd",
-  });
+  return formatNodeHookCommand(nodeBin, hookScript, { platform });
 }
 
 /**

@@ -291,7 +291,7 @@ describe("Agent Registry", () => {
     const cursor = registry.getAgent("cursor-agent");
     assert.strictEqual(cursor.eventMap.sessionStart, "idle");
     assert.strictEqual(cursor.eventMap.preToolUse, "working");
-    assert.strictEqual(cursor.eventMap.afterAgentThought, "thinking");
+    assert.strictEqual(cursor.eventMap.afterAgentThought, undefined);
     assert.strictEqual(cursor.eventMap.stop, "attention");
 
     const pi = registry.getAgent("pi");

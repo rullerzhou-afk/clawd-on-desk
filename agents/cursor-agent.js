@@ -21,7 +21,6 @@ module.exports = {
     subagentStart: "juggling",
     subagentStop: "working",
     preCompact: "sweeping",
-    afterAgentThought: "thinking",
   },
   capabilities: {
     httpHook: false,

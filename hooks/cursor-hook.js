@@ -3,7 +3,7 @@
 // Registered in ~/.cursor/hooks.json by hooks/cursor-install.js
 
 const { postStateToRunningServer, readHostPrefix } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, getPlatformConfig } = require("./shared-process");
 
 const HOOK_TO_STATE = {
   sessionStart: { state: "idle", event: "SessionStart" },
@@ -15,7 +15,6 @@ const HOOK_TO_STATE = {
   subagentStart: { state: "juggling", event: "SubagentStart" },
   subagentStop: { state: "working", event: "SubagentStop" },
   preCompact: { state: "sweeping", event: "PreCompact" },
-  afterAgentThought: { state: "thinking", event: "AfterAgentThought" },
 };
 
 const config = getPlatformConfig({ extraTerminals: { win: ["cursor.exe"] } });
@@ -55,7 +54,9 @@ function resolveStateAndEvent(payload, hookName) {
 // Safety timeout: guarantee valid JSON on stdout within 1s even if stdin never
 // arrives or the process tree walk hangs. Without this Cursor would see empty
 // stdout which is invalid JSON and logs an error on every hook invocation.
-const SAFETY_TIMEOUT_MS = 800;
+const SAFETY_TIMEOUT_MS = 3000;
+const STDIN_TIMEOUT_MS = 2000;
+const STATE_POST_TIMEOUT_MS = 5000;
 let _wrote = false;
 let _exited = false;
 let safetyTimer = null;
@@ -79,7 +80,35 @@ function finish(outLine) {
 
 safetyTimer = setTimeout(() => finish("{}"), SAFETY_TIMEOUT_MS);
 
-readStdinJson()
+function readCursorStdinJson(timeoutMs = STDIN_TIMEOUT_MS) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    let done = false;
+    let timer = null;
+
+    const onData = (chunk) => chunks.push(Buffer.from(chunk));
+    function finishRead() {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      process.stdin.off("data", onData);
+      process.stdin.off("end", finishRead);
+
+      let payload = {};
+      try {
+        const raw = Buffer.concat(chunks).toString("utf8").replace(/^\uFEFF/, "");
+        if (raw.trim()) payload = JSON.parse(raw);
+      } catch {}
+      resolve(payload);
+    }
+
+    process.stdin.on("data", onData);
+    process.stdin.on("end", finishRead);
+    timer = setTimeout(finishRead, timeoutMs);
+  });
+}
+
+readCursorStdinJson()
   .then((payload) => {
     const argvOverride = process.argv[2];
     const hookNameResolved = argvOverride || (payload && payload.hook_event_name) || "";
@@ -127,7 +156,7 @@ readStdinJson()
     // process, so we exit in its callback (with the safety timer as backstop).
     writeStdoutOnce(outLine);
 
-    postStateToRunningServer(JSON.stringify(body), { timeoutMs: 100 }, () => {
+    postStateToRunningServer(JSON.stringify(body), { timeoutMs: STATE_POST_TIMEOUT_MS }, () => {
       finish(outLine);
     });
   })
