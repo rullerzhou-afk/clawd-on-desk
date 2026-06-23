@@ -37,6 +37,7 @@ function createAgentRuntimeMain(options = {}) {
   const isAgentEnabled = options.isAgentEnabled || (() => true);
   const updateSession = options.updateSession || (() => {});
   const captureGhosttyTerminalId = options.captureGhosttyTerminalId || null;
+  const captureFrontmostWindow = options.captureFrontmostWindow || null;
   const showCodexNotifyBubble = options.showCodexNotifyBubble || (() => {});
   const clearCodexNotifyBubbles = options.clearCodexNotifyBubbles || (() => {});
 
@@ -93,6 +94,7 @@ function createAgentRuntimeMain(options = {}) {
     }
     const result = updateSession(sessionId, state, event, opts);
     maybeCaptureGhosttyTerminalId(sessionId, event, opts);
+    maybeCaptureWindowMetadata(sessionId, event, opts);
     return result;
   }
 
@@ -107,6 +109,21 @@ function createAgentRuntimeMain(options = {}) {
       state.updateSessionFocusMetadata(String(sessionId), {
         sourcePid: opts.sourcePid,
         ghosttyTerminalId: terminalId,
+      });
+    });
+  }
+
+  function maybeCaptureWindowMetadata(sessionId, event, opts = {}) {
+    if (typeof captureFrontmostWindow !== "function") return false;
+    if (!sessionId || opts.host || !opts.sourcePid || !opts.cwd) return false;
+    if (event !== "SessionStart" && event !== "UserPromptSubmit") return false;
+    return captureFrontmostWindow({ sourcePid: opts.sourcePid, cwd: opts.cwd }, (capturedWindow) => {
+      if (!capturedWindow) return;
+      const state = getStateRuntime();
+      if (!state || typeof state.updateSessionFocusMetadata !== "function") return;
+      state.updateSessionFocusMetadata(String(sessionId), {
+        sourcePid: opts.sourcePid,
+        capturedWindow,
       });
     });
   }

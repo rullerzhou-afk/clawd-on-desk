@@ -1044,9 +1044,24 @@ function updateSessionFocusMetadata(sessionId, opts = {}) {
   const expectedSourcePid = normalizePositiveInteger(opts.sourcePid);
   if (expectedSourcePid && normalizePositiveInteger(session.sourcePid) !== expectedSourcePid) return false;
   const ghosttyTerminalId = normalizeGhosttyTerminalId(opts.ghosttyTerminalId);
-  if (!ghosttyTerminalId) return false;
-  session.ghosttyTerminalId = ghosttyTerminalId;
-  return true;
+  if (ghosttyTerminalId) session.ghosttyTerminalId = ghosttyTerminalId;
+
+  const capturedWindow = opts.capturedWindow && typeof opts.capturedWindow === "object" ? opts.capturedWindow : null;
+  if (capturedWindow && capturedWindow.appName) {
+    session.capturedWindow = {
+      appName: String(capturedWindow.appName).slice(0, 120),
+      title: typeof capturedWindow.title === "string" ? capturedWindow.title.slice(0, 300) : "",
+      bounds: capturedWindow.bounds && typeof capturedWindow.bounds === "object" && capturedWindow.bounds.w >= 100 && capturedWindow.bounds.h >= 50 ? {
+        x: Number(capturedWindow.bounds.x) || 0,
+        y: Number(capturedWindow.bounds.y) || 0,
+        w: Number(capturedWindow.bounds.w) || 0,
+        h: Number(capturedWindow.bounds.h) || 0,
+      } : null,
+      capturedAt: typeof capturedWindow.capturedAt === "number" ? capturedWindow.capturedAt : Date.now(),
+    };
+  }
+
+  return !!(ghosttyTerminalId || (capturedWindow && capturedWindow.appName));
 }
 
 // ── #406 Stop completion gate ──
@@ -1133,6 +1148,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     codexOriginator = null,
     codexSource = null,
     ghosttyTerminalId = null,
+    capturedWindow = null,
     displayHint = undefined,
     sessionTitle = null,
     contextUsage = null,
@@ -1177,7 +1193,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     ) return;
     const shouldPersistCodexPermissionFocus = permAgentId === "codex" && (
       sourcePid || wtHwnd || agentPid || (pidChain && pidChain.length) || cwd || host ||
-      model || provider || codexOriginator || codexSource || platform || ghosttyTerminalId ||
+      model || provider || codexOriginator || codexSource || platform || ghosttyTerminalId || capturedWindow ||
       tmuxSocket || tmuxClient
     );
     if (shouldPersistCodexPermissionFocus) {
@@ -1200,6 +1216,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       const srcCodexOriginator = codexOriginator || (existing && existing.codexOriginator) || null;
       const srcCodexSource = codexSource || (existing && existing.codexSource) || null;
       const srcGhosttyTerminalId = normalizeGhosttyTerminalId(ghosttyTerminalId) || (existing && existing.ghosttyTerminalId) || null;
+      const srcCapturedWindow = capturedWindow || (existing && existing.capturedWindow) || null;
       const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
       const srcContextUsage = normalizeContextUsage(contextUsage) || (existing && existing.contextUsage) || null;
       // PermissionRequest should flash the pet via setState("notification"),
@@ -1232,6 +1249,7 @@ function updateSession(sessionId, state, event, opts = {}) {
         codexOriginator: srcCodexOriginator,
         codexSource: srcCodexSource,
         ghosttyTerminalId: srcGhosttyTerminalId,
+        capturedWindow: srcCapturedWindow,
         sessionTitle: srcSessionTitle,
         contextUsage: srcContextUsage,
         recentEvents,
@@ -1263,6 +1281,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcCodexOriginator = codexOriginator || (existing && existing.codexOriginator) || null;
   const srcCodexSource = codexSource || (existing && existing.codexSource) || null;
   const srcGhosttyTerminalId = normalizeGhosttyTerminalId(ghosttyTerminalId) || (existing && existing.ghosttyTerminalId) || null;
+  const srcCapturedWindow = capturedWindow || (existing && existing.capturedWindow) || null;
   // Sticky: empty input does not clear an existing title. A session that has
   // ever been named keeps that name until the user explicitly renames it.
   const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
@@ -1386,7 +1405,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcLastStopAt = isStopBoundary
     ? Date.now()
     : (existing && Number.isFinite(existing.lastStopAt) ? existing.lastStopAt : null);
-  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
+  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, capturedWindow: srcCapturedWindow, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
   if (preserveCompletionAck) base.requiresCompletionAck = true;
 
   // Evict oldest session if at capacity and this is a new session.

@@ -1510,6 +1510,7 @@ const {
   killFocusHelper,
   focusTerminalWindow,
   captureGhosttyTerminalId,
+  captureFrontmostWindow,
   clearMacFocusCooldownTimer,
 } = _focus;
 
@@ -1529,6 +1530,7 @@ function focusTerminalSession(session, sessionId, requestSource) {
     tmuxSocket: session.tmuxSocket,
     tmuxClient: session.tmuxClient,
     ghosttyTerminalId: session.ghosttyTerminalId,
+    capturedWindow: session.capturedWindow,
     sessionId: String(sessionId),
     agentId: session.agentId,
     requestSource,
@@ -1747,6 +1749,7 @@ agentRuntime = createAgentRuntimeMain({
   isAgentEnabled: (agentId) => _isAgentEnabled(_settingsController.getSnapshot(), agentId),
   updateSession: (sessionId, state, event, opts) => updateSession(sessionId, state, event, opts),
   captureGhosttyTerminalId,
+  captureFrontmostWindow,
   showCodexNotifyBubble: (payload) => showCodexNotifyBubble(payload),
   clearCodexNotifyBubbles: (...args) => clearCodexNotifyBubbles(...args),
 });
