@@ -406,11 +406,13 @@ function exitMiniMode() {
   const size = _getSize();
   const visualState = ctx.doNotDisturb ? "idle" : ctx.resolveDisplayState();
   const visualFile = visualState ? ctx.getSvgOverride(visualState) : null;
+  const restoreWorkArea = getAttachedMiniWorkArea();
   const clamped = ctx.clampToScreenVisual(preMiniX, preMiniY, size.width, size.height, {
     state: visualState,
     file: visualFile,
+    workArea: restoreWorkArea,
   });
-  const wa = ctx.getNearestWorkArea(clamped.x + size.width / 2, clamped.y + size.height / 2);
+  const wa = restoreWorkArea || ctx.getNearestWorkArea(clamped.x + size.width / 2, clamped.y + size.height / 2);
   const mEdge = Math.round(size.width * 0.25);
   // Prevent right-edge re-snap
   if (clamped.x >= wa.x + wa.width - size.width + mEdge - SNAP_TOLERANCE) {
@@ -498,6 +500,38 @@ function enterMiniViaMenu() {
 
 function refreshContainedBoundary(wa, yMid) {
   containedBoundary = seamBoundary(wa, yMid, miniEdge);
+}
+
+function isValidWorkArea(wa) {
+  return !!(
+    wa
+    && Number.isFinite(wa.x)
+    && Number.isFinite(wa.y)
+    && Number.isFinite(wa.width)
+    && wa.width > 0
+    && Number.isFinite(wa.height)
+    && wa.height > 0
+  );
+}
+
+function sameWorkArea(a, b) {
+  return !!(
+    isValidWorkArea(a)
+    && isValidWorkArea(b)
+    && a.x === b.x
+    && a.y === b.y
+    && a.width === b.width
+    && a.height === b.height
+  );
+}
+
+function getAttachedMiniWorkArea() {
+  if (!isValidWorkArea(lastMiniWorkArea)) return null;
+  const displays = screen.getAllDisplays();
+  if (!Array.isArray(displays) || displays.length === 0) return null;
+  return displays.some((d) => d && sameWorkArea(d.workArea, lastMiniWorkArea))
+    ? lastMiniWorkArea
+    : null;
 }
 
 // Internal-seam state for the hit (input) window. When non-null the hit

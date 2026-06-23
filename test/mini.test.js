@@ -219,6 +219,40 @@ const SIDE_BY_SIDE = [
   { bounds: { x: 800, y: 0, width: 800, height: 600 }, workArea: { x: 800, y: 0, width: 800, height: 600 } },
 ];
 
+const THREE_SIDE_BY_SIDE = [
+  { bounds: { x: 0, y: 0, width: 800, height: 600 }, workArea: { x: 0, y: 0, width: 800, height: 600 } },
+  { bounds: { x: 800, y: 0, width: 800, height: 600 }, workArea: { x: 800, y: 0, width: 800, height: 600 } },
+  { bounds: { x: 1600, y: 0, width: 800, height: 600 }, workArea: { x: 1600, y: 0, width: 800, height: 600 } },
+];
+
+function findNearestWorkArea(displays, cx, cy) {
+  let nearest = displays[0].workArea;
+  let minDist = Infinity;
+  for (const d of displays) {
+    const wa = d.workArea;
+    const dx = Math.max(wa.x - cx, 0, cx - (wa.x + wa.width));
+    const dy = Math.max(wa.y - cy, 0, cy - (wa.y + wa.height));
+    const dist = dx * dx + dy * dy;
+    if (dist < minDist) {
+      minDist = dist;
+      nearest = wa;
+    }
+  }
+  return nearest;
+}
+
+function installDisplayAwareClamp(ctx, displays) {
+  ctx.getNearestWorkArea = (cx, cy) => findNearestWorkArea(displays, cx, cy);
+  ctx.clampToScreenVisual = (x, y, width, height, options = {}) => {
+    const wa = options.workArea || findNearestWorkArea(displays, x + width / 2, y + height / 2);
+    const marginX = Math.round(width * 0.25);
+    return {
+      x: Math.max(wa.x - marginX, Math.min(x, wa.x + wa.width - width + marginX)),
+      y: Math.max(wa.y, Math.min(y, wa.y + wa.height - height)),
+    };
+  };
+}
+
 function miniClips(rendererEvents) {
   return rendererEvents.filter((e) => e[0] === "mini-clip").map((e) => e[1]);
 }
@@ -468,5 +502,63 @@ describe("mini mode multi-monitor seam clip", () => {
     ctx.win = null;
     assert.doesNotThrow(() => mini.syncContainedClip());
     assert.equal(rendererEvents.length, 0, "no IPC sent without a render window");
+  });
+});
+
+describe("mini mode restore screen ownership", () => {
+  let loader;
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  });
+
+  afterEach(() => {
+    if (loader) loader.restore();
+    mock.timers.reset();
+    loader = null;
+  });
+
+  it("restores onto the middle screen when snapped to the middle screen's left seam", () => {
+    loader = loadMiniWithElectron({ getAllDisplays() { return THREE_SIDE_BY_SIDE; } });
+    const ctx = makeCtx(cloneTheme(_defaultTheme), [], 725);
+    installDisplayAwareClamp(ctx, THREE_SIDE_BY_SIDE);
+    const mini = loader.initMini(ctx);
+    const middle = THREE_SIDE_BY_SIDE[1].workArea;
+
+    // The saved pre-mini center is slightly over the halfway mark into the
+    // left screen, but the snap itself belongs to the middle screen's seam.
+    mini.enterMiniMode(middle, false, "left");
+    mock.timers.tick(1140);
+    mini.exitMiniMode();
+    mock.timers.tick(400);
+
+    const bounds = ctx.getBoundsSnapshot();
+    const centerX = bounds.x + bounds.width / 2;
+    assert.ok(
+      centerX >= middle.x && centerX < middle.x + middle.width,
+      `expected restored center ${centerX} to stay on middle screen`
+    );
+  });
+
+  it("restores onto the right screen when snapped to the right screen's left seam", () => {
+    loader = loadMiniWithElectron({ getAllDisplays() { return THREE_SIDE_BY_SIDE; } });
+    const ctx = makeCtx(cloneTheme(_defaultTheme), [], 1525);
+    installDisplayAwareClamp(ctx, THREE_SIDE_BY_SIDE);
+    const mini = loader.initMini(ctx);
+    const right = THREE_SIDE_BY_SIDE[2].workArea;
+
+    // The saved pre-mini center is slightly over the halfway mark into the
+    // middle screen, but the snap itself belongs to the right screen's seam.
+    mini.enterMiniMode(right, false, "left");
+    mock.timers.tick(1140);
+    mini.exitMiniMode();
+    mock.timers.tick(400);
+
+    const bounds = ctx.getBoundsSnapshot();
+    const centerX = bounds.x + bounds.width / 2;
+    assert.ok(
+      centerX >= right.x && centerX < right.x + right.width,
+      `expected restored center ${centerX} to stay on right screen`
+    );
   });
 });

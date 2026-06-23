@@ -332,13 +332,30 @@ function createPetWindowRuntime(options = {}) {
     );
   }
 
+  function isValidWorkArea(wa) {
+    return !!(
+      wa
+      && Number.isFinite(wa.x)
+      && Number.isFinite(wa.y)
+      && Number.isFinite(wa.width)
+      && wa.width > 0
+      && Number.isFinite(wa.height)
+      && wa.height > 0
+    );
+  }
+
   function clampToScreenVisual(x, y, w, h, optionsArg = {}) {
     const margins = getVisibleContentMargins(
       { x, y, width: w, height: h },
       optionsArg
     );
-    const nearest = getNearestWorkArea(x + w / 2, y + h / 2);
-    const bottomInset = getNearestDisplayBottomInset(x + w / 2, y + h / 2);
+    const forcedWorkArea = isValidWorkArea(optionsArg.workArea)
+      ? optionsArg.workArea
+      : null;
+    const nearest = forcedWorkArea || getNearestWorkArea(x + w / 2, y + h / 2);
+    const insetProbeX = forcedWorkArea ? nearest.x + nearest.width / 2 : x + w / 2;
+    const insetProbeY = forcedWorkArea ? nearest.y + nearest.height / 2 : y + h / 2;
+    const bottomInset = getNearestDisplayBottomInset(insetProbeX, insetProbeY);
     const mLeft = Math.round(w * 0.25);
     const mRight = Math.round(w * 0.25);
     const clampMargins = getRestClampMargins({
