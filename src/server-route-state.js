@@ -287,6 +287,12 @@ function handleStatePost(req, res, options) {
             ...(agentIdentity.defaulted ? { agentIdDefaulted: true } : {}),
           });
         }
+        // Test-result reaction tag (set by the hook on a finished test command).
+        // Fire-and-forget; never blocks the state response.
+        if ((data.test_result === "pass" || data.test_result === "fail")
+            && typeof ctx.onTestResult === "function") {
+          try { ctx.onTestResult(data.test_result); } catch {}
+        }
         res.writeHead(200, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
         res.end("ok");
       } else {

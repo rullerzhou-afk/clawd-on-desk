@@ -332,6 +332,55 @@ function isTaskToolStart(event, payload) {
     && payload.tool_name === "Task";
 }
 
+// Recognizes common test-runner invocations in a Bash command string.
+const TEST_CMD_RE = /(?:^|[\s;&|(])(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test|npm\s+t|jest|vitest|mocha|ava|tap\b|node\s+--test|node:test|pytest|py\.test|python\s+-m\s+pytest|go\s+test|cargo\s+test|rspec|phpunit|gradlew?\s+test|mvn\s+test|dotnet\s+test|ctest|deno\s+test|rake\s+test|elixir\s+test|mix\s+test)/i;
+
+// Classify a finished Bash test command as "pass" | "fail" from its response,
+// or null when it's not a recognizable test run. Heuristic, failure-biased.
+function classifyTestResult(payload) {
+  if (!payload || payload.tool_name !== "Bash") return null;
+  const ti = payload.tool_input;
+  const cmd = ti && typeof ti.command === "string" ? ti.command : "";
+  if (!cmd || !TEST_CMD_RE.test(cmd)) return null;
+
+  const r = payload.tool_response;
+  let text = "";
+  if (typeof r === "string") text = r;
+  else if (r && typeof r === "object") {
+    text = [r.stdout, r.stderr, r.output, r.content, r.text]
+      .filter((s) => typeof s === "string")
+      .join("\n");
+    if (!text && Array.isArray(r.content)) {
+      text = r.content.map((c) => (c && typeof c.text === "string" ? c.text : "")).join("\n");
+    }
+  }
+  if (!text) return null;
+  text = text.slice(-8000); // tail is where the summary lives
+
+  // Explicit non-zero failure counts win. Handles both "3 failed" (jest/pytest/
+  // cargo) and "# fail 3" / "failures: 3" (TAP / node --test).
+  const failNum =
+    text.match(/(\d+)\s+(?:failed|failing|errors?)\b/i) ||
+    text.match(/(?:^|\n)[#\s]*fail(?:ed|ures)?[:\s]+(\d+)/i) ||
+    text.match(/\bfailures?[:=]\s*(\d+)/i);
+  if (failNum && parseInt(failNum[1], 10) > 0) return "fail";
+  if (/(?:^|\n)\s*(?:FAIL|FAILED|✗|✖|✘)\b|AssertionError|Traceback \(most recent|panic:|test result:\s*FAILED|\bBUILD FAILED\b|\bexit (?:code|status) [1-9]/.test(text)) {
+    return "fail";
+  }
+  // Otherwise look for positive signals: explicit pass counts, then keywords.
+  const passNum =
+    text.match(/(\d+)\s+pass(?:ed|ing)\b/i) ||
+    text.match(/(?:^|\n)[#\s]*pass(?:ed)?[:\s]+(\d+)/i);
+  if (passNum) return "pass";
+  if (/\b(?:all tests passed|test result:\s*ok|tests? passed)\b/i.test(text) ||
+      /(?:^|\n)ok\s+\S/i.test(text) ||      // go: "ok  pkg  0.02s"
+      /(?:^|\n)\s*PASS\b/.test(text) ||
+      /✓|✔/.test(text)) {
+    return "pass";
+  }
+  return null;
+}
+
 function buildStateBody(event, payload, resolve) {
   const state = EVENT_TO_STATE[event];
   if (!state) return null;
@@ -366,6 +415,12 @@ function buildStateBody(event, payload, resolve) {
   if (toolName) body.tool_name = toolName;
   if (toolUseId) body.tool_use_id = toolUseId;
   if (toolInputFingerprint) body.tool_input_fingerprint = toolInputFingerprint;
+  // Test-result reaction tag: on a Bash test command finishing, classify the
+  // outcome from the tool response so the pet can celebrate / commiserate.
+  if (event === "PostToolUse" || event === "PostToolUseFailure") {
+    const testResult = classifyTestResult(payload);
+    if (testResult) body.test_result = testResult;
+  }
   // Read transcript tail once and reuse for both session title extraction and
   // API error detection (Stop only). Avoids two file reads per hook invocation.
   const transcriptEntries = readTranscriptTailEntries(payload.transcript_path);
@@ -474,6 +529,7 @@ if (require.main === module) main();
 
 module.exports = {
   buildStateBody,
+  classifyTestResult,
   extractSessionTitleFromTranscript,
   extractApiErrorFromEntries,
   extractLastAssistantTextFromEntries,

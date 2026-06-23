@@ -399,11 +399,237 @@ window.electronAPI.onThemeConfig((newConfig) => {
   // Clean up layered tracking before reinitializing
   _cleanupLayeredTracking();
   initWithConfig(newConfig);
+  // Re-anchor the worn accessory to the new theme's headAnchor.
+  reapplyAccessory();
 });
 
 window.electronAPI.onViewportOffset((offsetY) => {
   setViewportOffset(offsetY);
 });
+
+// ── Cosmetic accessory (the pet's wardrobe) ──
+// The worn item is injected as an <image> INSIDE the pet's live SVG document,
+// parented to the animated body group — so it inherits every transform (the
+// per-pose head position, the breathe/lean motion, the mini flip) and stays
+// glued to the head instead of floating in window space.
+//
+// `aspect` = the asset's viewBox w/h (so injected height is derived from width).
+// `wScale` scales the item vs the theme's base head width; `dy` nudges the
+// resting line (+down) in viewBox units — e.g. a halo floats above the head.
+// Placement comes from the theme's `layout.headAnchor` in viewBox units:
+//   { cx: head centre x, baseY: head-top line, width: base hat width }.
+const ACCESSORY_ASSETS = {
+  "cowboy-hat": { file: "cowboy-hat.svg",  aspect: 16 / 7 },
+  "party-hat":  { file: "party-hat.svg",   aspect: 11 / 14, wScale: 0.7,  dy: 0.3 },
+  "wizard-hat": { file: "wizard-hat.svg",  aspect: 15 / 16, wScale: 0.95, dy: 0.3 },
+  "top-hat":    { file: "top-hat.svg",     aspect: 14 / 10, wScale: 0.88, dy: 0.2 },
+  "santa-hat":  { file: "santa-hat.svg",   aspect: 16 / 9,  wScale: 1.0,  dy: 0.2 },
+  "pumpkin-hat":{ file: "pumpkin-hat.svg", aspect: 13 / 9,  wScale: 0.85, dy: 0.4 },
+  "halo":       { file: "halo.svg",        aspect: 14 / 5,  wScale: 1.15, dy: -1.4 },
+};
+// viewBox-unit fallback if a theme declares no headAnchor (clawd-ish framing).
+// `width` = base hat width in viewBox units; `eyeGap` = units above the eyes
+// where the hat base rests; cx/baseY are the fixed fallback when no eyes found.
+const DEFAULT_HEAD_ANCHOR = { cx: 7.5, baseY: 6.5, width: 16, eyeGap: 2.5 };
+const SVG_NS = "http://www.w3.org/2000/svg";
+const XLINK_NS = "http://www.w3.org/1999/xlink";
+let _accessoryId = "none";       // the stored pref ("none" | concrete id | "seasonal")
+let _accessoryActive = false;    // resolves to a real item right now (drives channel)
+let _accessoryCacheBust = 0;
+let _seasonalTimer = null;
+
+// "seasonal" is a meta-id resolved by calendar date to a concrete item. Returns
+// "none" out of season. Birthday/other dates can be added later.
+function resolveSeasonalAccessory() {
+  const now = new Date();
+  const month = now.getMonth() + 1; // 1-12
+  const day = now.getDate();
+  if (month === 12) return "santa-hat";        // December → Santa
+  if (month === 10) return "pumpkin-hat";       // October → pumpkin
+  if (month === 1 && day === 1) return "party-hat"; // New Year's Day
+  return "none";
+}
+
+function resolveAccessoryId() {
+  if (_accessoryId === "seasonal") return resolveSeasonalAccessory();
+  return _accessoryId;
+}
+
+function accNum(v, d) { return Number.isFinite(v) ? v : d; }
+
+// Find the pet's eyes group in a pose SVG. Every clawd pose draws eyes on the
+// head (ids/classes vary: eyes-js, eyes-code, eyes-blink…), so the eyes are a
+// reliable, pose-agnostic head marker.
+function findEyesEl(svgDoc) {
+  return svgDoc.querySelector('[id^="eyes"]')
+    || svgDoc.querySelector('[id^="eye"]')
+    || svgDoc.querySelector('[class~="eyes"]')
+    || svgDoc.querySelector('[class*="eye"]')
+    || null;
+}
+
+// Inject (or clear) the worn item inside the given SVG document. Idempotent.
+// The item is anchored to the eyes' bounding box and parented to the eyes'
+// group, so it sits on the head AND inherits that group's transforms (breathe,
+// body-bounce, lean) in every pose — no per-state tuning needed.
+function injectAccessory(svgDoc) {
+  if (!svgDoc) return;
+  const root = svgDoc.documentElement;
+  if (!root) return;
+  const prior = svgDoc.getElementById("clawd-acc");
+  if (prior) prior.remove();
+
+  const item = ACCESSORY_ASSETS[resolveAccessoryId()];
+  if (!item) return;
+
+  const a = (_layout && _layout.headAnchor) || DEFAULT_HEAD_ANCHOR;
+  const baseW = accNum(a.width, DEFAULT_HEAD_ANCHOR.width);
+  const eyeGap = accNum(a.eyeGap, DEFAULT_HEAD_ANCHOR.eyeGap);
+
+  let cx;
+  let baseY;       // the head line the hat's base rests on
+  let parent = null;
+
+  const eyes = findEyesEl(svgDoc);
+  if (eyes) {
+    try {
+      const bb = eyes.getBBox();
+      if (bb && Number.isFinite(bb.x) && bb.width >= 0) {
+        cx = bb.x + bb.width / 2;
+        baseY = bb.y - eyeGap;            // a touch above the eyes = top of head
+        parent = eyes.parentNode || null;  // share the eyes' animated group
+      }
+    } catch { /* getBBox can throw on a not-yet-laid-out doc */ }
+  }
+  if (parent == null || !Number.isFinite(cx)) {
+    // Fallback: fixed theme anchor at the root (no pose tracking, best effort).
+    cx = accNum(a.cx, DEFAULT_HEAD_ANCHOR.cx);
+    baseY = accNum(a.baseY, DEFAULT_HEAD_ANCHOR.baseY);
+    parent = svgDoc.getElementById("body-js") || root;
+  }
+
+  const w = baseW * (item.wScale || 1);
+  const h = w / (item.aspect || 1.6);
+  const dy = item.dy || 0;
+  const x = cx - w / 2;
+  const y = baseY + dy - h; // bottom-anchored: the item's base sits at baseY+dy
+
+  const img = svgDoc.createElementNS(SVG_NS, "image");
+  img.setAttribute("id", "clawd-acc");
+  img.setAttribute("x", String(x));
+  img.setAttribute("y", String(y));
+  img.setAttribute("width", String(w));
+  img.setAttribute("height", String(h));
+  img.setAttribute("preserveAspectRatio", "xMidYMax meet");
+  img.style.pointerEvents = "none";
+  // Absolute file URL so it resolves regardless of the SVG doc's own location;
+  // cache-bust to dodge Chromium's same-URL SVG reuse.
+  const href = new URL("../assets/accessories/" + item.file, document.baseURI).href
+    + "?_t=" + (++_accessoryCacheBust);
+  img.setAttribute("href", href);
+  img.setAttributeNS(XLINK_NS, "href", href);
+
+  parent.appendChild(img);
+}
+
+// Re-apply to the live pet. If it's already an object SVG, inject directly;
+// otherwise re-swap the current state so the channel flips (an active accessory
+// forces the object channel for SVG states — see needsObjectChannel).
+function reapplyAccessory() {
+  _accessoryActive = !!ACCESSORY_ASSETS[resolveAccessoryId()];
+  if (clawdEl && clawdEl.tagName === "OBJECT" && clawdEl.contentDocument) {
+    injectAccessory(clawdEl.contentDocument);
+    if (!_accessoryActive) return; // nothing more to do when clearing
+  }
+  if (currentDisplayedSvg && (!clawdEl || clawdEl.tagName !== "OBJECT") && _accessoryActive && isSvgFile(currentDisplayedSvg)) {
+    // currently an <img> SVG but we want the hat → re-render through object channel
+    swapToFile(currentDisplayedSvg, currentState, needsObjectChannel(currentState, currentDisplayedSvg));
+  }
+}
+
+function setAccessory(id) {
+  const valid = id === "seasonal" || (typeof id === "string" && ACCESSORY_ASSETS[id]);
+  _accessoryId = valid ? id : "none";
+  // Re-resolve "seasonal" hourly so it flips across midnight / month boundaries.
+  if (_seasonalTimer) { clearInterval(_seasonalTimer); _seasonalTimer = null; }
+  if (_accessoryId === "seasonal") {
+    _seasonalTimer = setInterval(reapplyAccessory, 60 * 60 * 1000);
+  }
+  reapplyAccessory();
+}
+
+if (window.electronAPI && typeof window.electronAPI.onSetAccessory === "function") {
+  window.electronAPI.onSetAccessory(setAccessory);
+}
+
+// ── Pet color tint (palette swaps) ──
+// A CSS filter applied to the pet sprite only (the accessory keeps its own
+// colors). Re-applied on every swap because each state is a fresh element.
+const TINT_FILTERS = {
+  none: "",
+  midnight: "hue-rotate(200deg) saturate(1.2) brightness(0.82)",
+  gold: "sepia(0.8) saturate(2.2) hue-rotate(-18deg) brightness(1.05)",
+  vaporwave: "hue-rotate(265deg) saturate(1.6) contrast(1.05)",
+  mono: "grayscale(1) brightness(1.05)",
+  matcha: "hue-rotate(75deg) saturate(1.25) brightness(1.0)",
+};
+let _petTint = "none";
+
+function applyPetTint() {
+  if (!clawdEl) return;
+  clawdEl.style.filter = TINT_FILTERS[_petTint] || "";
+}
+
+function setPetTint(id) {
+  _petTint = (typeof id === "string" && TINT_FILTERS[id] != null) ? id : "none";
+  applyPetTint();
+}
+
+if (window.electronAPI && typeof window.electronAPI.onSetPetTint === "function") {
+  window.electronAPI.onSetPetTint(setPetTint);
+}
+
+// ── Test-result reactions ──
+// One-shot, theme-agnostic delight when a test command finishes: a confetti
+// burst over the pet on pass, a quick shake on fail. Pure DOM/CSS — no
+// dependency on per-theme reaction SVGs. Triggered by main via IPC.
+const CONFETTI_COLORS = ["#ff5d8f", "#ffd166", "#4ec3e0", "#8a5cff", "#5ad17a"];
+
+function burstConfetti() {
+  const n = 18;
+  for (let i = 0; i < n; i++) {
+    const p = document.createElement("div");
+    p.className = "clawd-confetti";
+    const startX = 30 + Math.floor((i / n) * 40); // spread across the head
+    const dx = (i % 2 === 0 ? 1 : -1) * (10 + (i * 7) % 60);
+    const delay = (i % 6) * 40;
+    p.style.left = startX + "%";
+    p.style.background = CONFETTI_COLORS[i % CONFETTI_COLORS.length];
+    p.style.setProperty("--dx", dx + "px");
+    p.style.animationDelay = delay + "ms";
+    container.appendChild(p);
+    // Remove after the animation (1.2s + max delay) to avoid DOM buildup.
+    setTimeout(() => { try { p.remove(); } catch {} }, 1500 + delay);
+  }
+}
+
+function shakePet() {
+  const target = container;
+  target.classList.remove("clawd-shake");
+  // Force reflow so re-adding the class restarts the animation.
+  void target.offsetWidth;
+  target.classList.add("clawd-shake");
+  setTimeout(() => { try { target.classList.remove("clawd-shake"); } catch {} }, 650);
+}
+
+function playTestReaction(result) {
+  if (result === "pass") burstConfetti();
+  else if (result === "fail") shakePet();
+}
+
+if (window.electronAPI && typeof window.electronAPI.onPlayTestReaction === "function") {
+  window.electronAPI.onPlayTestReaction(playTestReaction);
+}
 
 // Release an <object> SVG element: navigate away to unload the SVG document
 // (stops CSS animations and frees the internal frame), then remove from DOM.
@@ -547,6 +773,10 @@ function needsEyeTracking(state) {
  */
 function needsObjectChannel(state, file) {
   if (!isSvgFile(file)) return false;
+  // A worn accessory is injected into the SVG document, so SVG *state* poses
+  // must use the object channel. `state` is falsy for one-shot reaction swaps —
+  // we leave those on the image channel to avoid freezing their animation.
+  if (_accessoryActive && state) return true;
   return _forceSvgObjectChannel || needsEyeTracking(state) || _trustedScriptedSvgFiles.has(file);
 }
 
@@ -831,6 +1061,8 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
       clawdEl = next;
       currentDisplayedSvg = file;
       currentDisplayedAssetUrl = url;
+      applyPetTint();
+      injectAccessory(next.contentDocument);
 
       if (state && needsEyeTracking(state)) {
         attachEyeTracking(next);
@@ -904,6 +1136,7 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
       clawdEl = next;
       currentDisplayedSvg = file;
       currentDisplayedAssetUrl = url;
+      applyPetTint();
       scheduleLowPowerIdlePause();
     };
 

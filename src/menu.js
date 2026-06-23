@@ -21,6 +21,32 @@ const SIZES = {
   L: { width: 360, height: 360 },
 };
 
+// ── Cosmetic accessories (the pet's wardrobe) ──
+// id must match the prefs `accessory` enum + the renderer's ACCESSORY_ASSETS
+// map. Add new hats/items here and they show up in the Accessories submenu.
+const ACCESSORIES = [
+  { id: "none", labelKey: "accessoryNone" },
+  { id: "cowboy-hat", labelKey: "accessoryCowboyHat" },
+  { id: "party-hat", labelKey: "accessoryPartyHat" },
+  { id: "wizard-hat", labelKey: "accessoryWizardHat" },
+  { id: "top-hat", labelKey: "accessoryTopHat" },
+  { id: "santa-hat", labelKey: "accessorySantaHat" },
+  { id: "pumpkin-hat", labelKey: "accessoryPumpkinHat" },
+  { id: "halo", labelKey: "accessoryHalo" },
+  { id: "seasonal", labelKey: "accessorySeasonal" },
+];
+
+// ── Pet color tints (palette swaps) ──
+// id must match the prefs `petTint` enum + the renderer's TINT_FILTERS map.
+const PET_TINTS = [
+  { id: "none", labelKey: "tintNone" },
+  { id: "midnight", labelKey: "tintMidnight" },
+  { id: "gold", labelKey: "tintGold" },
+  { id: "vaporwave", labelKey: "tintVaporwave" },
+  { id: "matcha", labelKey: "tintMatcha" },
+  { id: "mono", labelKey: "tintMono" },
+];
+
 // i18n string pool + translator factory live in src/i18n.js so the future
 // settings panel can share them. menu.js binds the translator to ctx.lang.
 const { createTranslator } = require("./i18n");
@@ -115,6 +141,56 @@ module.exports = function initMenu(ctx) {
     };
   }
 
+  // Accessories submenu: radio list of the pet's wardrobe. Writing ctx.accessory
+  // routes through the settings controller, which persists + broadcasts
+  // "set-accessory" to the renderer (see settings-effect-router).
+  function buildAccessoryMenuItem() {
+    const current = ctx.accessory;
+    return {
+      label: t("accessories"),
+      submenu: ACCESSORIES.map((a) => ({
+        label: t(a.labelKey),
+        type: "radio",
+        checked: current === a.id,
+        click: () => { ctx.accessory = a.id; },
+      })),
+    };
+  }
+
+  // Pet color submenu: radio list of palette tints. Writing ctx.petTint routes
+  // through the settings controller (persist + broadcast "set-pet-tint").
+  function buildPetTintMenuItem() {
+    const current = ctx.petTint;
+    return {
+      label: t("petColor"),
+      submenu: PET_TINTS.map((p) => ({
+        label: t(p.labelKey),
+        type: "radio",
+        checked: current === p.id,
+        click: () => { ctx.petTint = p.id; },
+      })),
+    };
+  }
+
+  // Today's Claude spend: a live (disabled) readout plus a show/hide toggle.
+  // The dollar figure is an estimate computed by cost-tracker.js (main caches it).
+  function buildCostMenuGroup() {
+    const group = [];
+    if (ctx.costHudEnabled) {
+      const value = (typeof ctx.hasTodayCost === "function" && ctx.hasTodayCost())
+        ? ctx.getTodayCostText()
+        : "…";
+      group.push({ label: `💰 ${t("costToday")}: ${value}`, enabled: false });
+    }
+    group.push({
+      label: t("costShow"),
+      type: "checkbox",
+      checked: ctx.costHudEnabled,
+      click: (menuItem) => { ctx.costHudEnabled = menuItem.checked; },
+    });
+    return group;
+  }
+
   function buildBringToPrimaryDisplayMenuItem() {
     return {
       label: t("bringPetToPrimaryDisplay"),
@@ -192,6 +268,14 @@ module.exports = function initMenu(ctx) {
         checked: !ctx.soundMuted,
         click: (menuItem) => { ctx.soundMuted = !menuItem.checked; },
       },
+      {
+        label: t("testReactions"),
+        type: "checkbox",
+        checked: ctx.testReactionsEnabled,
+        click: (menuItem) => { ctx.testReactionsEnabled = menuItem.checked; },
+      },
+      buildAccessoryMenuItem(),
+      buildPetTintMenuItem(),
     ];
 
     // Dashboard + the danger auto-approve toggle (danger last, as in the
@@ -261,7 +345,7 @@ module.exports = function initMenu(ctx) {
       { label: t("quit"), click: () => requestAppQuit() },
     ];
 
-    const items = joinGroups([stateGroup, noiseGroup, workGroup, systemGroup, appGroup, quitGroup]);
+    const items = joinGroups([stateGroup, noiseGroup, workGroup, buildCostMenuGroup(), systemGroup, appGroup, quitGroup]);
     ctx.tray.setContextMenu(Menu.buildFromTemplate(items));
   }
 
@@ -433,6 +517,8 @@ module.exports = function initMenu(ctx) {
           },
         ],
       },
+      buildAccessoryMenuItem(),
+      buildPetTintMenuItem(),
       // Danger auto-approve sits at the tail of the work group: it governs how
       // agent permission requests are handled, and keeping it here (rather than
       // near the top) makes it harder to hit by accident.

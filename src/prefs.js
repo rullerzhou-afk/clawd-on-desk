@@ -224,6 +224,29 @@ const SCHEMA = {
   },
   // Theme
   theme: { type: "string", default: "clawd" },
+  // Cosmetic accessory worn by the pet ("none" = bare). Rendered as a sibling
+  // overlay layer anchored to the head via the theme's layout.headAnchor, so it
+  // works across every state/theme regardless of the SVG/img render channel.
+  // New wardrobe items: add the id here, in settings-actions' validator, the
+  // renderer's ACCESSORY_ASSETS map, and the menu's accessory submenu.
+  accessory: {
+    type: "string",
+    default: "none",
+    enum: ["none", "cowboy-hat", "party-hat", "wizard-hat", "top-hat", "santa-hat", "pumpkin-hat", "halo", "seasonal"],
+  },
+  // Pet color tint — a CSS filter applied to the pet sprite (not the accessory).
+  // "none" = the theme's native colors. Palette swaps without new art.
+  petTint: {
+    type: "string",
+    default: "none",
+    enum: ["none", "midnight", "gold", "vaporwave", "mono", "matcha"],
+  },
+  // Show today's estimated Claude Code spend as a live line in the tray menu.
+  // Read-only readout; the dollar figure is an estimate (see cost-tracker.js).
+  costHudEnabled: { type: "boolean", default: true },
+  // Play a one-shot reaction (confetti on pass / shake on fail) when a test
+  // command finishes, detected from the Claude Code PostToolUse hook.
+  testReactionsEnabled: { type: "boolean", default: true },
   // Phase 2/3 placeholders — schema reserves the keys so future migrations don't need v2.
   agents: {
     type: "object",

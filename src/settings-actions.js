@@ -223,6 +223,12 @@ const updateRegistry = {
   flashDurationMs: requireNumberInRange("flashDurationMs", 0, 60000),
   lowPowerIdleMode: requireBoolean("lowPowerIdleMode"),
   keepAwakeWhileWorking: requireBoolean("keepAwakeWhileWorking"),
+  // Cosmetic accessory + pet tint — pure data, no effect. The renderer is
+  // updated by the settings-effect-router branches ("set-accessory"/"set-pet-tint").
+  accessory: requireEnum("accessory", ["none", "cowboy-hat", "party-hat", "wizard-hat", "top-hat", "santa-hat", "pumpkin-hat", "halo", "seasonal"]),
+  petTint: requireEnum("petTint", ["none", "midnight", "gold", "vaporwave", "mono", "matcha"]),
+  costHudEnabled: requireBoolean("costHudEnabled"),
+  testReactionsEnabled: requireBoolean("testReactionsEnabled"),
   bubbleFollowPet: requireBoolean("bubbleFollowPet"),
   sessionHudEnabled: requireBoolean("sessionHudEnabled"),
   sessionHudShowStateLabels: requireBoolean("sessionHudShowStateLabels"),
