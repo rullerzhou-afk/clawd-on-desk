@@ -105,6 +105,48 @@ describe("topmost runtime Windows recovery", () => {
     assert.deepStrictEqual(positions, [[11, 20], [10, 20]]);
   });
 
+  it("re-tops the hit window when the render window loses topmost (no z-order inversion)", () => {
+    const timers = makeTimers();
+    const win = new FakeWindow();
+    const hitWin = new FakeWindow();
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => win,
+      getHitWin: () => hitWin,
+      getPetWindowBounds: () => ({ x: 10, y: 20, width: 100, height: 100 }),
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+
+    runtime.guardAlwaysOnTop(win);
+    win.emit("always-on-top-changed", null, false);
+
+    // Render window re-topped, then the hit window re-topped above it — without
+    // the fix only `win` would be re-asserted, leaving the hit layer beneath.
+    assert.deepStrictEqual(win.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]]);
+    assert.deepStrictEqual(hitWin.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]]);
+  });
+
+  it("re-tops only the guarded window when a non-render window loses topmost", () => {
+    const win = new FakeWindow();
+    const hitWin = new FakeWindow();
+    const bubble = new FakeWindow();
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => win,
+      getHitWin: () => hitWin,
+    });
+
+    runtime.guardAlwaysOnTop(bubble);
+    bubble.emit("always-on-top-changed", null, false);
+
+    // A bubble/HUD losing topmost must not drag the pet's render+hit pair into
+    // a re-assert; only the bubble itself is re-topped.
+    assert.deepStrictEqual(bubble.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]]);
+    assert.deepStrictEqual(win.calls, []);
+    assert.deepStrictEqual(hitWin.calls, []);
+  });
+
   it("does not accumulate repeated topmost nudges while recovery is pending", () => {
     const timers = makeTimers();
     const win = new FakeWindow();

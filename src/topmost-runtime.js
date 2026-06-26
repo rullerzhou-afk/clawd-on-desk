@@ -152,7 +152,15 @@ function createTopmostRuntime(options = {}) {
     if (!isWin || !winToGuard || typeof winToGuard.on !== "function") return;
     winToGuard.on("always-on-top-changed", (_event, isOnTop) => {
       if (isOnTop || !isLiveWindow(winToGuard)) return;
-      winToGuard.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+      if (winToGuard === getWin()) {
+        // Re-topping only the render window would re-insert it at the top of
+        // the topmost band, briefly leaving the hit window beneath it
+        // (z-order inversion). reassertWinTopmost re-tops win then hitWin, so
+        // the hit layer lands back above the pet.
+        reassertWinTopmost();
+      } else {
+        winToGuard.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+      }
       if (
         winToGuard === getWin()
         && !isDragLocked()

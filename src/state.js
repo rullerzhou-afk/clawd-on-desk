@@ -1882,11 +1882,13 @@ function detectRunningAgentProcesses(callback) {
   }
   const { execFile, exec } = require("child_process");
   if (process.platform === "win32") {
+    // Keep this WQL filter built only from hard-coded literals. Real process
+    // names are matched by WMI; external input must not be spliced into it.
     const psScript =
       "$names = 'claude.exe','codex.exe','copilot.exe','gemini.exe','agy.exe','codebuddy.exe','kiro-cli.exe','kimi.exe','codewhale.exe','opencode.exe','pi.exe','hermes.exe','qodercli.exe','qoder-cli.exe'; " +
-      "$match = Get-CimInstance Win32_Process | Where-Object { " +
-        "$names -contains $_.Name -or ($_.Name -eq 'node.exe' -and $_.CommandLine -like '*claude-code*') " +
-      "} | Select-Object -First 1; " +
+      "$nameFilters = $names | ForEach-Object { \"Name='$_'\" }; " +
+      "$filter = ($nameFilters + \"(Name='node.exe' AND CommandLine LIKE '%claude-code%')\") -join ' OR '; " +
+      "$match = Get-CimInstance Win32_Process -Filter $filter | Select-Object -First 1; " +
       "if ($match) { $match.ProcessId }";
     execFile(
       "powershell.exe",

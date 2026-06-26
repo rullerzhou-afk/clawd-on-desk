@@ -3435,7 +3435,21 @@ function createWindow() {
   guardAlwaysOnTop(win);
   startTopmostWatchdog();
 
-  screen.on("display-metrics-changed", () => petWindowRuntime.handleDisplayMetricsChanged());
+  // display-metrics-changed fires in bursts during DPI changes and RDP
+  // reconnects, and each one re-clamps/repositions the pet — running them all
+  // makes the pet visibly jitter mid-transition. Debounce the geometry handler
+  // to the settled state, mirroring the textScale debounce below. (Keep
+  // display-removed/added immediate: those rescue the pet off a vanished
+  // display and must not be delayed.)
+  let displayMetricsGeometryTimer = null;
+  const reapplyDisplayGeometryAfterMetricsChange = () => {
+    if (displayMetricsGeometryTimer) clearTimeout(displayMetricsGeometryTimer);
+    displayMetricsGeometryTimer = setTimeout(() => {
+      displayMetricsGeometryTimer = null;
+      petWindowRuntime.handleDisplayMetricsChanged();
+    }, 400);
+  };
+  screen.on("display-metrics-changed", reapplyDisplayGeometryAfterMetricsChange);
   screen.on("display-removed", () => petWindowRuntime.handleDisplayRemoved());
   screen.on("display-added", () => petWindowRuntime.handleDisplayAdded());
 
