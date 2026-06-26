@@ -230,6 +230,56 @@ test("remoteSsh:connect 404 when profile not in snapshot", async () => {
   ipc.dispose();
 });
 
+// ── connect-on-launch sweep ──
+
+test("connectOnLaunchProfiles connects only flagged profiles", () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const rt = mockRuntime();
+  const connected = [];
+  rt.connect = (p) => { connected.push(p.id); };
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController: mockSettingsController([
+      { ...baseProfile, id: "p1", connectOnLaunch: true },
+      { ...baseProfile, id: "p2", connectOnLaunch: false },
+      { ...baseProfile, id: "p3", connectOnLaunch: true },
+    ]),
+    remoteSshRuntime: rt,
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+  });
+  const started = ipc.connectOnLaunchProfiles();
+  assert.deepEqual(started, ["p1", "p3"]);
+  assert.deepEqual(connected, ["p1", "p3"]);
+  ipc.dispose();
+});
+
+test("connectOnLaunchProfiles keeps going when one connect throws", () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const rt = mockRuntime();
+  const connected = [];
+  rt.connect = (p) => {
+    if (p.id === "p1") throw new Error("boom");
+    connected.push(p.id);
+  };
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController: mockSettingsController([
+      { ...baseProfile, id: "p1", connectOnLaunch: true },
+      { ...baseProfile, id: "p2", connectOnLaunch: true },
+    ]),
+    remoteSshRuntime: rt,
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+  });
+  const started = ipc.connectOnLaunchProfiles();
+  assert.deepEqual(started, ["p2"]);
+  assert.deepEqual(connected, ["p2"]);
+  ipc.dispose();
+});
+
 test("remoteSsh:disconnect requires profileId", async () => {
   const ipcMain = mockIpcMain();
   const { BrowserWindow } = mockBrowserWindow();

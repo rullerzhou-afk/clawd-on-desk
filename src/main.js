@@ -3403,6 +3403,10 @@ function createWindow() {
   initFocusHelper();
   startMainTick();
   startHttpServer();
+  // Silently connect any remote SSH profile flagged "connect on launch" now
+  // that the hook server is listening. Best-effort: failures fall back to the
+  // runtime's own reconnect/backoff and never block startup.
+  try { _remoteSshIpc.connectOnLaunchProfiles(); } catch {}
   if (_settingsController.get("mobilePreviewEnabled") === true) _lanWss.start();
   startStaleCleanup();
   // Wait for renderer to be ready before sending initial state

@@ -590,6 +590,7 @@
       hint: t("remoteSshFieldHostPrefixHint"),
     }));
     section.appendChild(checkbox("remoteSshFieldAutoStartCodex", "autoStartCodexMonitor"));
+    section.appendChild(checkbox("remoteSshFieldConnectOnLaunch", "connectOnLaunch"));
 
     // Submit / cancel
     const formActions = document.createElement("div");
