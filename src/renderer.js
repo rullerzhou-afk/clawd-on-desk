@@ -16,6 +16,7 @@ const CLOUDLING_POINTER_BRIDGE_STATES = new Set(["idle", "mini-idle", "mini-peek
 let lowPowerIdleMode = false;
 let lowPowerIdlePauseTimer = null;
 let lowPowerSvgPaused = false;
+let _lowPowerStaticImageOverrides = {};
 
 // ── Theme config (injected via preload.js additionalArguments) ──
 let tc = window.themeConfig || {};
@@ -33,6 +34,7 @@ function initWithConfig(cfg) {
   _eyeTrackingStates = (tc.eyeTrackingStates) || ["idle", "dozing", "mini-idle"];
   _trustedScriptedSvgFiles = new Set(Array.isArray(tc.trustedScriptedSvgFiles) ? tc.trustedScriptedSvgFiles : []);
   _forceSvgObjectChannel = !!(tc.rendering && tc.rendering.svgChannel === "object");
+  _lowPowerStaticImageOverrides = (tc.rendering && tc.rendering.lowPowerStaticImageOverrides) || {};
   _imgCacheBustSeq = 0;
   _miniViewBox = tc.miniModeViewBox || null;
   _fileViewBoxes = tc.fileViewBoxes || {};
@@ -266,6 +268,7 @@ function setLowPowerIdleMode(enabled) {
   } else {
     resumeCurrentSvgForLowPower();
   }
+  refreshCurrentStateForLowPowerStaticImage();
 }
 
 function isSvgFile(file) {
@@ -423,6 +426,7 @@ let isDragReacting = false;
 let reactTimer = null;
 let currentIdleSvg = null;    // tracks which SVG is currently showing
 let currentState = null;      // last state name received from main (for re-pulse)
+let currentRequestedSvg = null; // original state file from main, before low-power substitution
 let lastCloudlingPointerPayload = null;
 let dndEnabled = false;
 let miniLeftFlip = false;
@@ -544,6 +548,18 @@ function needsEyeTracking(state) {
 function needsObjectChannel(state, file) {
   if (!isSvgFile(file)) return false;
   return _forceSvgObjectChannel || needsEyeTracking(state) || _trustedScriptedSvgFiles.has(file);
+}
+
+function resolveLowPowerStaticImageOverride(state, file) {
+  if (!lowPowerIdleMode) return null;
+  const override = _lowPowerStaticImageOverrides && _lowPowerStaticImageOverrides[state];
+  if (!override || override.from !== file || !override.to) return null;
+  return override.to;
+}
+
+function hasLowPowerStaticImageOverride(state, file) {
+  const override = _lowPowerStaticImageOverrides && _lowPowerStaticImageOverrides[state];
+  return !!(override && override.from === file && override.to);
 }
 
 function shouldUseCloudlingPointerBridge(state, file) {
@@ -827,7 +843,14 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
     };
 
     next.addEventListener("load", swap, { once: true });
-    next.data = url;
+    // Same cache-bust as the <img> channel below. Chromium reuses the SVG
+    // document (and its CSS animation timeline) across loads of the same
+    // URL on the object channel too, so one-shot animations for scripted /
+    // eye-tracking SVGs would stall on their last frame on re-entry. A fresh
+    // query each swap forces a fresh document. Bookkeeping (currentDisplayed
+    // /pendingAssetUrl) stays keyed on the base `url`, not the busted one.
+    const cacheBust = `${Date.now()}-${++_imgCacheBustSeq}`;
+    next.data = `${url}${url.includes("?") ? "&" : "?"}_t=${cacheBust}`;
     container.appendChild(next);
     pendingNext = next;
     scheduleSwapVisibilityRescue(swapToken, file, state);
@@ -908,28 +931,40 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
   }
 }
 
-// --- State change → switch animation (preload + instant swap) ---
-window.electronAPI.onStateChange((state, svg) => {
+function renderStateFile(state, svg) {
   // Main process state change → cancel any active click reaction
   cancelReaction();
   // Track the latest state name so the Kimi permission pulse can re-trigger
   // swapToFile() with the matching state for eye-tracking decisions.
   currentState = state;
+  currentRequestedSvg = svg;
+  const requestedSvg = svg;
+  const lowPowerStaticImageOverride = resolveLowPowerStaticImageOverride(state, requestedSvg);
+  const effectiveSvg = lowPowerStaticImageOverride || requestedSvg;
   noteLowPowerActivity();
-  if (!shouldUseCloudlingPointerBridge(state, svg)) {
+
+  // ── Roam state: add walk animation class for visual movement ──
+  // When the pet is roaming (free-roam mode), add a CSS animation to simulate
+  // walking even if the theme doesn't have a dedicated roam SVG. The animation
+  // is a subtle horizontal bob that makes the idle SVG look like it's walking.
+  if (container) {
+    container.classList.toggle("roam-walk", state === "roam");
+  }
+
+  if (!shouldUseCloudlingPointerBridge(state, effectiveSvg)) {
     clearCloudlingPointerBridge();
   }
 
   // Dedup only when the same file resolves to the same asset URL. Imported
   // Codex Pet themes reuse filenames, so filename-only dedup can keep showing
   // the previous theme until a drag/click forces a different animation.
-  const desiredObjectChannel = needsObjectChannel(state, svg);
-  const desiredAssetUrl = getAssetUrl(svg);
+  const desiredObjectChannel = lowPowerStaticImageOverride ? false : needsObjectChannel(state, effectiveSvg);
+  const desiredAssetUrl = getAssetUrl(effectiveSvg);
   const alreadyDisplayed = clawdEl && clawdEl.isConnected
-    && currentDisplayedSvg === svg
+    && currentDisplayedSvg === effectiveSvg
     && currentDisplayedAssetUrl === desiredAssetUrl;
   const displayedChannelMatches = !alreadyDisplayed || ((clawdEl.tagName === "OBJECT") === desiredObjectChannel);
-  const alreadyPending = pendingSvgFile === svg
+  const alreadyPending = pendingSvgFile === effectiveSvg
     && pendingNext
     && pendingAssetUrl === desiredAssetUrl;
   const pendingChannelMatches = !alreadyPending || ((pendingNext.tagName === "OBJECT") === desiredObjectChannel);
@@ -941,12 +976,12 @@ window.electronAPI.onStateChange((state, svg) => {
       } else if (!needsEyeTracking(state)) {
         detachEyeTracking();
       }
-      if (shouldUseCloudlingPointerBridge(state, svg) && lastCloudlingPointerPayload) {
+      if (shouldUseCloudlingPointerBridge(state, effectiveSvg) && lastCloudlingPointerPayload) {
         applyCloudlingPointerBridge(lastCloudlingPointerPayload);
       }
       scheduleLowPowerIdlePause();
     }
-    currentIdleSvg = svg;
+    currentIdleSvg = effectiveSvg;
     return;
   }
 
@@ -960,8 +995,19 @@ window.electronAPI.onStateChange((state, svg) => {
   }
   detachEyeTracking();
 
-  swapToFile(svg, state);
-  currentIdleSvg = svg;
+  swapToFile(effectiveSvg, state, lowPowerStaticImageOverride ? false : undefined);
+  currentIdleSvg = effectiveSvg;
+}
+
+function refreshCurrentStateForLowPowerStaticImage() {
+  if (!currentState || !currentRequestedSvg) return;
+  if (!hasLowPowerStaticImageOverride(currentState, currentRequestedSvg)) return;
+  renderStateFile(currentState, currentRequestedSvg);
+}
+
+// --- State change → switch animation (preload + instant swap) ---
+window.electronAPI.onStateChange((state, svg) => {
+  renderStateFile(state, svg);
 });
 
 // Kimi CLI permission hold: re-trigger the current animation so it loops

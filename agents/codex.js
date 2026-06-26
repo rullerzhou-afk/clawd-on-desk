@@ -30,7 +30,7 @@ module.exports = {
     "response_item:function_call": "working",
     "response_item:custom_tool_call": "working",
     "response_item:web_search_call": "working",
-    "event_msg:task_complete": "codex-turn-end", // resolved by monitor: attention if tools were used, idle otherwise
+    "event_msg:task_complete": "codex-turn-end", // resolved by monitor: attention if tools/assistant output happened, idle otherwise
     "event_msg:context_compacted": "sweeping",
     "event_msg:turn_aborted": "idle",
   },

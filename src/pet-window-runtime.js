@@ -23,9 +23,57 @@ const {
 } = require("./drag-position");
 
 const noop = () => {};
+const DEFAULT_CRASH_RELOAD_LIMIT = 5;
+const DEFAULT_CRASH_RELOAD_WINDOW_MS = 30_000;
+const NON_RELOADABLE_RENDER_GONE_REASONS = new Set([
+  "clean-exit",
+  "killed",
+  "integrity-failure",
+  "launch-failed",
+]);
 
 function isLiveWindow(win) {
   return !!(win && typeof win.isDestroyed === "function" && !win.isDestroyed());
+}
+
+function getRenderGoneReason(details) {
+  return details && typeof details.reason === "string" ? details.reason : "unknown";
+}
+
+function createRenderProcessGoneReloadGuard(options = {}) {
+  const crashReloadLimit = Number.isFinite(options.crashReloadLimit)
+    ? Math.max(0, Math.floor(options.crashReloadLimit))
+    : DEFAULT_CRASH_RELOAD_LIMIT;
+  const crashReloadWindowMs = Number.isFinite(options.crashReloadWindowMs)
+    ? Math.max(0, options.crashReloadWindowMs)
+    : DEFAULT_CRASH_RELOAD_WINDOW_MS;
+  const now = typeof options.now === "function" ? options.now : Date.now;
+  const log = typeof options.crashReloadLog === "function"
+    ? options.crashReloadLog
+    : (message) => console.warn(message);
+  const reloadsByKey = new Map();
+
+  return function shouldReloadAfterRenderProcessGone(crashKey, details) {
+    const key = crashKey || "default";
+    const reason = getRenderGoneReason(details);
+    if (NON_RELOADABLE_RENDER_GONE_REASONS.has(reason)) {
+      log(`Clawd: not reloading ${key} after render-process-gone (${reason})`);
+      return false;
+    }
+
+    const ts = Number(now());
+    const cutoff = ts - crashReloadWindowMs;
+    const recent = (reloadsByKey.get(key) || []).filter((value) => value >= cutoff);
+    if (recent.length >= crashReloadLimit) {
+      log(`Clawd: stopped reloading ${key} after ${recent.length} crashes in ${crashReloadWindowMs}ms`);
+      reloadsByKey.set(key, recent);
+      return false;
+    }
+
+    recent.push(ts);
+    reloadsByKey.set(key, recent);
+    return true;
+  };
 }
 
 function reloadWindowWebContents(win) {
@@ -85,6 +133,18 @@ function createPetWindowRuntime(options = {}) {
   const flushRuntimeStateToPrefs = options.flushRuntimeStateToPrefs || noop;
   const handleMiniDisplayChange = options.handleMiniDisplayChange || noop;
   const exitMiniMode = options.exitMiniMode || noop;
+  const shouldReloadAfterRenderProcessGone = createRenderProcessGoneReloadGuard(options);
+
+  function reloadRuntimeWindowWebContents(win, reloadOptions = {}) {
+    if (
+      reloadOptions
+      && reloadOptions.crashKey
+      && !shouldReloadAfterRenderProcessGone(reloadOptions.crashKey, reloadOptions.details)
+    ) {
+      return false;
+    }
+    return reloadWindowWebContents(win);
+  }
 
   const petGeometryMain = createPetGeometryMain({
     getActiveTheme,
@@ -573,7 +633,7 @@ function createPetWindowRuntime(options = {}) {
         optionsArg.onRenderProcessGone(details, hitWin);
         return;
       }
-      reloadWindowWebContents(hitWin);
+      reloadRuntimeWindowWebContents(hitWin, { crashKey: "hitWin", details });
     });
     return hitWin;
   }
@@ -812,7 +872,7 @@ function createPetWindowRuntime(options = {}) {
     getInitialHitWindowBounds,
     createRenderWindow,
     createHitWindow,
-    reloadWindowWebContents,
+    reloadWindowWebContents: reloadRuntimeWindowWebContents,
     setDragLocked,
     isDragLocked,
     beginDragSnapshot,

@@ -133,7 +133,13 @@ describe("theme schema defaults and normalization", () => {
         "../idle.svg": { x: 1, y: 2, w: 3, h: 4 },
         "bad.svg": { x: 1, y: 2, w: 0, h: 4 },
       },
-      rendering: { svgChannel: "object" },
+      rendering: {
+        svgChannel: "object",
+        lowPowerStaticImageOverrides: {
+          sleeping: { from: "../sleep.svg", to: "../sleep.png" },
+          bad: { from: "", to: "missing.png" },
+        },
+      },
       trustedRuntime: {
         scriptedSvgFiles: ["../bridge.svg", "not-png.png", "bridge.svg"],
         scriptedSvgCycleMs: { "../bridge.svg": 120.4, "missing.svg": 20 },
@@ -143,7 +149,12 @@ describe("theme schema defaults and normalization", () => {
     assert.deepStrictEqual(builtin.fileHitBoxes, {
       "idle.svg": { x: 1, y: 2, w: 3, h: 4 },
     });
-    assert.deepStrictEqual(builtin.rendering, { svgChannel: "object" });
+    assert.deepStrictEqual(builtin.rendering, {
+      svgChannel: "object",
+      lowPowerStaticImageOverrides: {
+        sleeping: { from: "sleep.svg", to: "sleep.png" },
+      },
+    });
     assert.deepStrictEqual(builtin.trustedRuntime, {
       scriptedSvgFiles: ["bridge.svg"],
       scriptedSvgCycleMs: { "bridge.svg": 120 },
@@ -166,6 +177,11 @@ describe("theme schema defaults and normalization", () => {
       workingTiers: [{ file: "../tier.svg" }],
       jugglingTiers: [{ file: "juggling.svg" }],
       idleAnimations: [{ file: "idle-look.svg" }],
+      rendering: {
+        lowPowerStaticImageOverrides: {
+          sleeping: { from: "../sleep.svg", to: "sleep.png" },
+        },
+      },
       reactions: {
         drag: { file: "drag.svg", fileLeft: "../drag-left.svg", fileRight: "nested/drag-right.svg" },
         double: { files: ["drag.svg", "../double.svg"] },
@@ -184,6 +200,8 @@ describe("theme schema defaults and normalization", () => {
       "idle-look.svg",
       "idle.svg",
       "juggling.svg",
+      "sleep.png",
+      "sleep.svg",
       "tier.svg",
       "working.svg",
     ]);

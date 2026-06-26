@@ -458,6 +458,73 @@
       .replace("{message}", values.message || "unknown error");
   }
 
+  function showClaudeHooksDisableConfirmModal() {
+    return helpers.showSettingsConfirmModal({
+      title: t("claudeHooksDisableConfirmTitle"),
+      detail: t("claudeHooksDisableConfirmDetail"),
+      actions: [
+        { id: "disconnect", label: t("claudeHooksDisableConfirmDisconnect"), tone: "danger" },
+        { id: "disable", label: t("claudeHooksDisableConfirmDisableOnly"), tone: "neutral" },
+        { id: "keep", label: t("claudeHooksDisableConfirmKeep"), tone: "accent", defaultFocus: true },
+      ],
+    });
+  }
+
+  function showClaudeHooksDisconnectConfirmModal() {
+    return helpers.showSettingsConfirmModal({
+      title: t("claudeHooksDisconnectConfirmTitle"),
+      detail: t("claudeHooksDisconnectConfirmDetail"),
+      actions: [
+        { id: "disconnect", label: t("claudeHooksDisconnectConfirmAction"), tone: "danger" },
+        { id: "keep", label: t("claudeHooksDisconnectConfirmKeep"), tone: "accent", defaultFocus: true },
+      ],
+    });
+  }
+
+  function confirmDisableClaudeHookManagement(nextRaw) {
+    if (nextRaw) return window.settingsAPI.update("manageClaudeHooksAutomatically", true);
+    return showClaudeHooksDisableConfirmModal().then((actionId) => {
+      if (!actionId || actionId === "keep") return { status: "ok", noop: true };
+      if (actionId === "disconnect") return window.settingsAPI.command("uninstallHooks");
+      return window.settingsAPI.update("manageClaudeHooksAutomatically", false);
+    });
+  }
+
+  function runDisconnectClaudeHooks() {
+    if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") {
+      return Promise.resolve({ status: "error", message: "settings API unavailable" });
+    }
+    return showClaudeHooksDisconnectConfirmModal().then((actionId) => {
+      if (actionId !== "disconnect") return { status: "ok", noop: true };
+      return window.settingsAPI.command("uninstallHooks");
+    });
+  }
+
+  function buildClaudeHookManagementRows() {
+    const manageHooksEnabled = !!(state.snapshot && state.snapshot.manageClaudeHooksAutomatically);
+    const manageRow = helpers.buildSwitchRow({
+      key: "manageClaudeHooksAutomatically",
+      labelKey: "rowManageClaudeHooks",
+      descKey: "rowManageClaudeHooksDesc",
+      descExtraKey: "rowManageClaudeHooksOffNote",
+      onToggle: ({ nextRaw }) => confirmDisableClaudeHookManagement(nextRaw),
+      actionButton: {
+        labelKey: "actionDisconnectClaudeHooks",
+        invoke: () => runDisconnectClaudeHooks(),
+      },
+    });
+    manageRow.classList.add("row-sub");
+    const autoStartRow = helpers.buildSwitchRow({
+      key: "autoStartWithClaude",
+      labelKey: "rowStartWithClaude",
+      descKey: "rowStartWithClaudeDesc",
+      descExtraKey: manageHooksEnabled ? null : "rowStartWithClaudeDisabledDesc",
+      disabled: !manageHooksEnabled,
+    });
+    autoStartRow.classList.add("row-sub");
+    return [manageRow, autoStartRow];
+  }
+
   function buildAgentGroup(agent) {
     const masterRow = buildAgentMasterRow(agent);
     const detailRows = buildAgentDetailRows(agent);
@@ -523,6 +590,9 @@
   function buildAgentDetailRows(agent) {
     const rows = [];
     const caps = agent.capabilities || {};
+    if (agent.id === "claude-code") {
+      rows.push(...buildClaudeHookManagementRows());
+    }
     if (agent.id === "codex") {
       rows.push(buildCodexPermissionModeRow(agent, computeAgentSubSwitchDisabled(agent.id, "permissionMode")));
       rows.push(buildAgentSwitchRow({

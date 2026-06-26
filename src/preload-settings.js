@@ -101,6 +101,7 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   detectAgentInstallations: () => ipcRenderer.invoke("settings:detect-agent-installations"),
   getAboutInfo: () => ipcRenderer.invoke("settings:get-about-info"),
   checkForUpdates: () => ipcRenderer.invoke("settings:check-for-updates"),
+  showTutorial: () => ipcRenderer.invoke("settings:show-tutorial"),
   getHardwareBuddyStatus: () => ipcRenderer.invoke("settings:get-hardware-buddy-status"),
   testHardwareBuddyApproval: () => ipcRenderer.invoke("settings:test-hardware-buddy-approval"),
   getQuickCommandPresets: () => ipcRenderer.invoke("settings:get-quick-command-presets"),

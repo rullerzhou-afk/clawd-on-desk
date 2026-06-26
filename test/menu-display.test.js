@@ -518,7 +518,7 @@ describe("menu new session action", () => {
   }
 
   function findNewSession(ctx) {
-    return ctx.contextMenu.template.find((item) => item.label === "New Session");
+    return ctx.contextMenu.template.find((item) => item.label === "New Claude Session");
   }
 
   it("exposes a New Session submenu with the two folder entries", () => {
@@ -553,7 +553,7 @@ describe("menu new session action", () => {
     const selectFolder = newSession.submenu.find((item) => item.label === "Select Folder...");
     selectFolder.click();
     assert.strictEqual(typeof calledWith, "function", "handler should receive the translator t");
-    assert.strictEqual(calledWith("newSession"), "New Session");
+    assert.strictEqual(calledWith("newSession"), "New Claude Session");
   });
 
   it("Home Directory entry invokes ctx.newSessionInCurrentDir(t)", () => {
@@ -570,6 +570,6 @@ describe("menu new session action", () => {
     const homeDir = newSession.submenu.find((item) => item.label === "Home Directory");
     homeDir.click();
     assert.strictEqual(typeof calledWith, "function", "handler should receive the translator t");
-    assert.strictEqual(calledWith("newSession"), "New Session");
+    assert.strictEqual(calledWith("newSession"), "New Claude Session");
   });
 });

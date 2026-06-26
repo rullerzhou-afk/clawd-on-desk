@@ -101,7 +101,7 @@
     animationPreviewPosterCache: new Map(),
     pendingAnimationOverrideEdits: new Map(),
     nextAnimationOverrideEditSeq: 1,
-    animOverridesSubtab: "animations",
+    animOverridesSubtab: "map",
     expandedOverrideRowIds: new Set(),
     assetPicker: {
       state: null,
@@ -1213,10 +1213,9 @@
         });
         return;
       }
-      if (state.activeTab !== "animMap") {
-        requestRender({ sidebar: true, content: true });
-        return;
-      }
+      // Any other tab that surfaces theme-derived content: full re-render.
+      requestRender({ sidebar: true, content: true });
+      return;
     }
 
     if (needsAnimOverridesRefresh && (state.activeTab === "animOverrides" || runtime.assetPicker.state)) {
@@ -1251,8 +1250,79 @@
     hasAnyThemeOverride,
   };
 
+  function showSettingsConfirmModal({ title, detail, actions }) {
+    const rootNode = document.getElementById("modalRoot");
+    if (!rootNode) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      let settled = false;
+      const overlay = document.createElement("div");
+      overlay.className = "modal-backdrop settings-confirm-backdrop";
+
+      const modal = document.createElement("div");
+      modal.className = "settings-confirm-modal";
+      modal.setAttribute("role", "dialog");
+      modal.setAttribute("aria-modal", "true");
+
+      const icon = document.createElement("div");
+      icon.className = "settings-confirm-icon";
+      icon.textContent = "!";
+
+      const titleNode = document.createElement("h2");
+      titleNode.textContent = title;
+
+      const detailNode = document.createElement("p");
+      detailNode.textContent = detail;
+
+      const actionsNode = document.createElement("div");
+      actionsNode.className = "settings-confirm-actions";
+
+      function close(actionId) {
+        if (settled) return;
+        settled = true;
+        document.removeEventListener("keydown", onKeyDown, true);
+        rootNode.innerHTML = "";
+        resolve(actionId);
+      }
+
+      function onKeyDown(ev) {
+        if (ev.key === "Escape") close(null);
+      }
+
+      overlay.addEventListener("click", (ev) => {
+        if (ev.target === overlay) close(null);
+      });
+      const buttons = (Array.isArray(actions) ? actions : []).map((action) => {
+        const button = document.createElement("button");
+        const tone = action && typeof action.tone === "string" ? action.tone : "neutral";
+        const toneClass = tone === "accent"
+          ? "accent"
+          : (tone === "danger" ? "settings-confirm-danger" : "");
+        button.type = "button";
+        button.className = `soft-btn${toneClass ? ` ${toneClass}` : ""}`;
+        button.textContent = action && action.label ? action.label : "";
+        button.addEventListener("click", () => close(action && action.id ? action.id : null));
+        actionsNode.appendChild(button);
+        return { action, button };
+      });
+      document.addEventListener("keydown", onKeyDown, true);
+      modal.appendChild(icon);
+      modal.appendChild(titleNode);
+      modal.appendChild(detailNode);
+      modal.appendChild(actionsNode);
+      overlay.appendChild(modal);
+      rootNode.innerHTML = "";
+      rootNode.appendChild(overlay);
+      const focusTarget =
+        buttons.find((action) => action.action && action.action.defaultFocus)
+        || buttons[buttons.length - 1]
+        || null;
+      if (focusTarget) focusTarget.button.focus();
+    });
+  }
+
   core.helpers = {
     t,
+    showSettingsConfirmModal,
     escapeHtml,
     setSwitchVisual,
     attachAnimatedSwitch,

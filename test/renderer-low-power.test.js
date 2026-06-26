@@ -35,6 +35,12 @@ class FakeElement {
     this.contentDocument = null;
     this.contentWindow = {};
     this.listeners = new Map();
+    this.classList = {
+      toggle: () => {},
+      contains: () => false,
+      add: () => {},
+      remove: () => {},
+    };
   }
 
   get offsetHeight() {
@@ -80,7 +86,7 @@ class FakeElement {
   }
 }
 
-function createRendererHarness() {
+function createRendererHarness(options = {}) {
   const timers = [];
   const audioInstances = [];
   const electronHandlers = {};
@@ -118,6 +124,7 @@ function createRendererHarness() {
       themeConfig: {
         assetsPath: "../assets/svg",
         eyeTracking: { states: ["idle"] },
+        ...(options.themeConfig || {}),
       },
       electronAPI,
       getComputedStyle: (el) => ({ opacity: el.style.opacity || "1" }),
@@ -259,6 +266,42 @@ describe("renderer object-channel selection", () => {
     assert.ok(source.includes("return _forceSvgObjectChannel || needsEyeTracking(state) || _trustedScriptedSvgFiles.has(file);"));
   });
 
+  it("uses state-specific static image overrides only while low-power mode is enabled", () => {
+    const source = readNormalized(RENDERER);
+
+    assert.ok(source.includes("function resolveLowPowerStaticImageOverride(state, file)"));
+    assert.ok(source.includes("if (!lowPowerIdleMode) return null;"));
+    assert.ok(source.includes("const lowPowerStaticImageOverride = resolveLowPowerStaticImageOverride(state, requestedSvg);"));
+    assert.ok(source.includes("const effectiveSvg = lowPowerStaticImageOverride || requestedSvg;"));
+    assert.ok(source.includes("const desiredObjectChannel = lowPowerStaticImageOverride ? false : needsObjectChannel(state, effectiveSvg);"));
+    assert.ok(source.includes("swapToFile(effectiveSvg, state, lowPowerStaticImageOverride ? false : undefined);"));
+  });
+
+  it("refreshes the current sleeping media when low-power static image mode changes", () => {
+    const harness = createRendererHarness({
+      themeConfig: {
+        trustedScriptedSvgFiles: ["sleep.svg"],
+        rendering: {
+          lowPowerStaticImageOverrides: {
+            sleeping: { from: "sleep.svg", to: "sleep-static.png" },
+          },
+        },
+      },
+    });
+
+    harness.electronHandlers.onStateChange("sleeping", "sleep.svg");
+    assert.strictEqual(harness.api.pendingNext.tagName, "OBJECT");
+    assert.strictEqual(harness.api.pendingSvgFile, "sleep.svg");
+
+    harness.electronHandlers.onLowPowerIdleModeChange(true);
+    assert.strictEqual(harness.api.pendingNext.tagName, "IMG");
+    assert.strictEqual(harness.api.pendingSvgFile, "sleep-static.png");
+
+    harness.electronHandlers.onLowPowerIdleModeChange(false);
+    assert.strictEqual(harness.api.pendingNext.tagName, "OBJECT");
+    assert.strictEqual(harness.api.pendingSvgFile, "sleep.svg");
+  });
+
   it("keeps eye-tracking attachment state-based only", () => {
     const source = readNormalized(RENDERER);
 
@@ -289,7 +332,7 @@ describe("renderer object-channel selection", () => {
 
     assert.ok(source.includes("let currentDisplayedAssetUrl = null;"));
     assert.ok(source.includes("let pendingAssetUrl = null;"));
-    assert.ok(source.includes("const desiredAssetUrl = getAssetUrl(svg);"));
+    assert.ok(source.includes("const desiredAssetUrl = getAssetUrl(effectiveSvg);"));
     assert.ok(source.includes("currentDisplayedAssetUrl === desiredAssetUrl"));
     assert.ok(source.includes("pendingAssetUrl === desiredAssetUrl"));
   });

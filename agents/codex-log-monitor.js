@@ -498,7 +498,8 @@ class CodexLogMonitor {
       tracked.hadToolUse = true;
     }
 
-    // Turn-end: happy if tools were used this turn, idle otherwise
+    // Turn-end: happy if tools were used or the turn produced assistant text;
+    // metadata-only completions stay idle to avoid noisy fallback animation.
     if (state === "codex-turn-end") {
       if (tracked.approvalTimer) {
         clearTimeout(tracked.approvalTimer);
@@ -507,7 +508,7 @@ class CodexLogMonitor {
       tracked.pendingApprovalDetail = null;
       const resolved = this._isTrackedSubagent(tracked)
         ? "idle"
-        : (tracked.hadToolUse ? "attention" : "idle");
+        : (tracked.hadToolUse || !!tracked.assistantLastOutput ? "attention" : "idle");
       tracked.hadToolUse = false;
       tracked.lastState = resolved;
       if (tracked.backfilling) return;

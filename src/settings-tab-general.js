@@ -19,10 +19,9 @@
     "sessionHudCleanupDetached",
     "allowEdgePinning",
     "disableMiniMode",
+    "freeRoam",
     "keepSizeAcrossDisplays",
-    "manageClaudeHooksAutomatically",
     "openAtLogin",
-    "autoStartWithClaude",
     "hideBubbles",
     "bubbleFollowPet",
     "permissionBubblesEnabled",
@@ -66,9 +65,6 @@
     "sessionHudShowContextUsage",
     "sessionHudCleanupDetached",
   ]);
-  const CLAUDE_HOOK_MANAGEMENT_CHILD_SWITCH_KEYS = [
-    "autoStartWithClaude",
-  ];
   const BUBBLE_SECONDS_AUTO_COMMIT_DELAY_MS = 600;
 
   let state = null;
@@ -91,13 +87,52 @@
     subtitle.className = "subtitle";
     subtitle.textContent = t("settingsSubtitle");
     parent.appendChild(subtitle);
+    parent.appendChild(buildTutorialReplayHint());
 
+    // General tab IA: sections are ordered by how often they're touched, with
+    // the danger section pinned last. Appearance stays first (language sits at
+    // the top of settings by convention); Session ranks high because it's
+    // checked often; Behavior & position and System & startup are set-once, so
+    // they sink toward the bottom.
     parent.appendChild(helpers.buildSection(t("sectionAppearance"), [
       buildLanguageRow(),
       buildSizeSliderRow(),
       buildTextScaleRow(),
+    ]));
+
+    parent.appendChild(helpers.buildSection(t("sectionSession"), [
+      buildSessionHudGroup(),
+      buildSessionCleanupGroup(),
+      buildDashboardRow(),
+    ]));
+
+    // Alerts & feedback: every way the pet gets your attention — sound, screen
+    // flash, and the bubble preferences (visibility, auto-close policy, follow).
+    parent.appendChild(helpers.buildSection(t("sectionAlerts"), [
       buildSoundGroup(),
       buildFlashGroup(),
+      helpers.buildSwitchRow({
+        key: "hideBubbles",
+        labelKey: "rowHideBubbles",
+        descKey: "rowHideBubblesDesc",
+        onToggle: ({ nextRaw }) => window.settingsAPI.command("setAllBubblesHidden", { hidden: nextRaw }),
+      }),
+      buildBubblePolicyRow(),
+      helpers.buildSwitchRow({
+        key: "bubbleFollowPet",
+        labelKey: "rowBubbleFollow",
+        descKey: "rowBubbleFollowDesc",
+      }),
+    ]));
+
+    // Behavior & position: how the pet moves and sits on screen. Rarely changed
+    // after first setup, so it sits below the everyday sections.
+    parent.appendChild(helpers.buildSection(t("sectionBehavior"), [
+      helpers.buildSwitchRow({
+        key: "freeRoam",
+        labelKey: "rowFreeRoam",
+        descKey: "rowFreeRoamDesc",
+      }),
       helpers.buildSwitchRow({
         key: "allowEdgePinning",
         labelKey: "rowAllowEdgePinning",
@@ -115,16 +150,9 @@
       }),
     ]));
 
-    parent.appendChild(helpers.buildSection(t("sectionSession"), [
-      buildSessionHudGroup(),
-      buildSessionCleanupGroup(),
-      buildDashboardRow(),
-    ]));
-
-    // System: global power / system behaviors that aren't per-session and
-    // aren't appearance. Both toggles affect the whole machine's power state
-    // (low-power idle throttling; blocking OS sleep while any task runs).
-    parent.appendChild(helpers.buildSection(t("sectionSystem"), [
+    // System & startup: machine-level toggles (low-power idle throttling and
+    // blocking OS sleep while working) plus launch-at-login. Set-once, near bottom.
+    parent.appendChild(helpers.buildSection(t("sectionSystemStartup"), [
       helpers.buildSwitchRow({
         key: "lowPowerIdleMode",
         labelKey: "rowLowPowerIdleMode",
@@ -135,53 +163,15 @@
         labelKey: "rowKeepAwakeWhileWorking",
         descKey: "rowKeepAwakeWhileWorkingDesc",
       }),
-    ]));
-
-    const manageClaudeHooksEnabled = !!(state.snapshot && state.snapshot.manageClaudeHooksAutomatically);
-    parent.appendChild(helpers.buildSection(t("sectionStartup"), [
-      helpers.buildSwitchRow({
-        key: "manageClaudeHooksAutomatically",
-        labelKey: "rowManageClaudeHooks",
-        descKey: "rowManageClaudeHooksDesc",
-        descExtraKey: "rowManageClaudeHooksOffNote",
-        onToggle: ({ nextRaw }) => confirmDisableClaudeHookManagement(nextRaw),
-        actionButton: {
-          labelKey: "actionDisconnectClaudeHooks",
-          invoke: () => runDisconnectClaudeHooks(),
-        },
-      }),
       helpers.buildSwitchRow({
         key: "openAtLogin",
         labelKey: "rowOpenAtLogin",
         descKey: "rowOpenAtLoginDesc",
       }),
-      helpers.buildSwitchRow({
-        key: "autoStartWithClaude",
-        labelKey: "rowStartWithClaude",
-        descKey: "rowStartWithClaudeDesc",
-        descExtraKey: manageClaudeHooksEnabled ? null : "rowStartWithClaudeDisabledDesc",
-        disabled: !manageClaudeHooksEnabled,
-      }),
     ]));
 
-    parent.appendChild(helpers.buildSection(t("sectionBubbles"), [
-      helpers.buildSwitchRow({
-        key: "hideBubbles",
-        labelKey: "rowHideBubbles",
-        descKey: "rowHideBubblesDesc",
-        onToggle: ({ nextRaw }) => window.settingsAPI.command("setAllBubblesHidden", { hidden: nextRaw }),
-      }),
-      buildBubblePolicyRow(),
-      helpers.buildSwitchRow({
-        key: "bubbleFollowPet",
-        labelKey: "rowBubbleFollow",
-        descKey: "rowBubbleFollowDesc",
-      }),
-    ]));
-
-    // Permissions is its own section (not "Bubbles") because auto-pilot is a
-    // permission-handling behavior, not a bubble-display preference. Kept last
-    // so the danger toggle sits at the bottom, away from everyday settings.
+    // Permissions is kept last so the danger toggle (auto-approve everything)
+    // sits at the bottom, away from everyday settings.
     parent.appendChild(helpers.buildSection(t("sectionPermissions"), [
       helpers.buildSwitchRow({
         key: "autoApproveAllPermissions",
@@ -191,6 +181,36 @@
         onToggle: ({ nextRaw }) => confirmAutoApproveAll(nextRaw),
       }),
     ]));
+  }
+
+  function buildTutorialReplayHint() {
+    const wrap = document.createElement("p");
+    wrap.className = "general-tutorial-hint";
+
+    const button = document.createElement("button");
+    button.className = "general-tutorial-link";
+    button.type = "button";
+    button.textContent = t("settingsTutorialReplayLink");
+    button.addEventListener("click", () => {
+      if (!window.settingsAPI || typeof window.settingsAPI.showTutorial !== "function") return;
+      button.disabled = true;
+      window.settingsAPI.showTutorial()
+        .then((result) => {
+          if (!result || result.status !== "ok") {
+            throw new Error((result && result.message) || t("settingsTutorialReplayFailed"));
+          }
+        })
+        .catch((err) => {
+          const message = t("settingsTutorialReplayFailed") + (err && err.message ? ": " + err.message : "");
+          ops.showToast(message, { ttl: 5000 });
+        })
+        .finally(() => {
+          button.disabled = false;
+        });
+    });
+
+    wrap.appendChild(button);
+    return wrap;
   }
 
   // DANGER "auto-pilot": enabling auto-approves every agent permission request
@@ -208,32 +228,13 @@
   }
 
   function showAutoApproveAllConfirmModal() {
-    return showSettingsConfirmModal({
+    return helpers.showSettingsConfirmModal({
       title: t("autoApproveAllConfirmTitle"),
       detail: t("autoApproveAllConfirmDetail"),
       actions: [
         { id: "enable", label: t("autoApproveAllConfirmEnable"), tone: "danger" },
         { id: "cancel", label: t("autoApproveAllConfirmCancel"), tone: "accent", defaultFocus: true },
       ],
-    });
-  }
-
-  function confirmDisableClaudeHookManagement(nextRaw) {
-    if (nextRaw) return window.settingsAPI.update("manageClaudeHooksAutomatically", true);
-    return showClaudeHooksDisableConfirmModal().then((actionId) => {
-      if (!actionId || actionId === "keep") return { status: "ok", noop: true };
-      if (actionId === "disconnect") return window.settingsAPI.command("uninstallHooks");
-      return window.settingsAPI.update("manageClaudeHooksAutomatically", false);
-    });
-  }
-
-  function runDisconnectClaudeHooks() {
-    if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") {
-      return Promise.resolve({ status: "error", message: "settings API unavailable" });
-    }
-    return showClaudeHooksDisconnectConfirmModal().then((actionId) => {
-      if (actionId !== "disconnect") return { status: "ok", noop: true };
-      return window.settingsAPI.command("uninstallHooks");
     });
   }
 
@@ -1115,106 +1116,13 @@
   }
 
   function confirmDisableUpdateBubbles() {
-    return showSettingsConfirmModal({
+    return helpers.showSettingsConfirmModal({
       title: t("updateBubbleDisableConfirmTitle"),
       detail: t("updateBubbleDisableConfirmDetail"),
       actions: [
         { id: "confirm", label: t("updateBubbleDisableConfirmAction"), tone: "danger" },
         { id: "cancel", label: t("updateBubbleDisableConfirmCancel"), tone: "accent", defaultFocus: true },
       ],
-    });
-  }
-
-  function showClaudeHooksDisableConfirmModal() {
-    return showSettingsConfirmModal({
-      title: t("claudeHooksDisableConfirmTitle"),
-      detail: t("claudeHooksDisableConfirmDetail"),
-      actions: [
-        { id: "disconnect", label: t("claudeHooksDisableConfirmDisconnect"), tone: "danger" },
-        { id: "disable", label: t("claudeHooksDisableConfirmDisableOnly"), tone: "neutral" },
-        { id: "keep", label: t("claudeHooksDisableConfirmKeep"), tone: "accent", defaultFocus: true },
-      ],
-    });
-  }
-
-  function showClaudeHooksDisconnectConfirmModal() {
-    return showSettingsConfirmModal({
-      title: t("claudeHooksDisconnectConfirmTitle"),
-      detail: t("claudeHooksDisconnectConfirmDetail"),
-      actions: [
-        { id: "disconnect", label: t("claudeHooksDisconnectConfirmAction"), tone: "danger" },
-        { id: "keep", label: t("claudeHooksDisconnectConfirmKeep"), tone: "accent", defaultFocus: true },
-      ],
-    });
-  }
-
-  function showSettingsConfirmModal({ title, detail, actions }) {
-    const rootNode = document.getElementById("modalRoot");
-    if (!rootNode) return Promise.resolve(null);
-    return new Promise((resolve) => {
-      let settled = false;
-      const overlay = document.createElement("div");
-      overlay.className = "modal-backdrop settings-confirm-backdrop";
-
-      const modal = document.createElement("div");
-      modal.className = "settings-confirm-modal";
-      modal.setAttribute("role", "dialog");
-      modal.setAttribute("aria-modal", "true");
-
-      const icon = document.createElement("div");
-      icon.className = "settings-confirm-icon";
-      icon.textContent = "!";
-
-      const titleNode = document.createElement("h2");
-      titleNode.textContent = title;
-
-      const detailNode = document.createElement("p");
-      detailNode.textContent = detail;
-
-      const actionsNode = document.createElement("div");
-      actionsNode.className = "settings-confirm-actions";
-
-      function close(actionId) {
-        if (settled) return;
-        settled = true;
-        document.removeEventListener("keydown", onKeyDown, true);
-        rootNode.innerHTML = "";
-        resolve(actionId);
-      }
-
-      function onKeyDown(ev) {
-        if (ev.key === "Escape") close(null);
-      }
-
-      overlay.addEventListener("click", (ev) => {
-        if (ev.target === overlay) close(null);
-      });
-      const buttons = (Array.isArray(actions) ? actions : []).map((action) => {
-        const button = document.createElement("button");
-        const tone = action && typeof action.tone === "string" ? action.tone : "neutral";
-        const toneClass = tone === "accent"
-          ? "accent"
-          : (tone === "danger" ? "settings-confirm-danger" : "");
-        button.type = "button";
-        button.className = `soft-btn${toneClass ? ` ${toneClass}` : ""}`;
-        button.textContent = action && action.label ? action.label : "";
-        button.addEventListener("click", () => close(action && action.id ? action.id : null));
-        actionsNode.appendChild(button);
-        return { action, button };
-      });
-      document.addEventListener("keydown", onKeyDown, true);
-      modal.appendChild(icon);
-      modal.appendChild(titleNode);
-      modal.appendChild(detailNode);
-      modal.appendChild(actionsNode);
-      overlay.appendChild(modal);
-      rootNode.innerHTML = "";
-      rootNode.appendChild(overlay);
-      const focusTarget =
-        buttons.find((action) => action.action && action.action.defaultFocus)
-        || buttons[buttons.length - 1]
-        || null;
-      if (focusTarget) focusTarget.button.focus();
     });
   }
 
@@ -1735,42 +1643,12 @@
     return true;
   }
 
-  function setGeneralSwitchExtraDesc(key, descExtraKey) {
-    const meta = getMountedGeneralSwitch(key);
-    if (!meta || !meta.text) return false;
-    if (descExtraKey) {
-      if (!meta.extraElement) {
-        meta.extraElement = document.createElement("span");
-        meta.extraElement.className = "row-desc row-desc-extra";
-        meta.text.appendChild(meta.extraElement);
-      }
-      meta.extraElement.textContent = t(descExtraKey);
-      return true;
-    }
-    if (meta.extraElement) {
-      meta.extraElement.remove();
-      meta.extraElement = null;
-    }
-    return true;
-  }
-
   function syncSessionHudChildSwitchesDisabled() {
     const disabled = !(state.snapshot && state.snapshot.sessionHudEnabled);
     for (const key of SESSION_HUD_CHILD_SWITCH_KEYS) {
       if (!setGeneralSwitchDisabled(key, disabled)) return false;
     }
     return true;
-  }
-
-  function syncClaudeHookManagementChildSwitchesDisabled() {
-    const disabled = !(state.snapshot && state.snapshot.manageClaudeHooksAutomatically);
-    for (const key of CLAUDE_HOOK_MANAGEMENT_CHILD_SWITCH_KEYS) {
-      if (!setGeneralSwitchDisabled(key, disabled)) return false;
-    }
-    return setGeneralSwitchExtraDesc(
-      "autoStartWithClaude",
-      disabled ? "rowStartWithClaudeDisabledDesc" : null
-    );
   }
 
   function hasMountedBubblePolicyControls() {
@@ -1809,10 +1687,6 @@
     }
     if (keys.includes("sessionHudEnabled")
       && !SESSION_HUD_CHILD_SWITCH_KEYS.every((key) => getMountedGeneralSwitch(key))) {
-      return false;
-    }
-    if (keys.includes("manageClaudeHooksAutomatically")
-      && !CLAUDE_HOOK_MANAGEMENT_CHILD_SWITCH_KEYS.every((key) => getMountedGeneralSwitch(key))) {
       return false;
     }
     if ((keys.includes("hideBubbles") || keys.some((key) => BUBBLE_POLICY_KEYS.has(key)))
@@ -1879,8 +1753,6 @@
       const summary = state.mountedControls.sessionHudSummary;
       if (summary && document.body.contains(summary.element)) summary.syncFromSnapshot();
     }
-    if (keys.includes("manageClaudeHooksAutomatically")
-      && !syncClaudeHookManagementChildSwitchesDisabled()) return false;
     if ((keys.includes("hideBubbles") || keys.some((key) => BUBBLE_POLICY_KEYS.has(key)))
       && !syncBubblePolicyControlsFromSnapshot()) return false;
     if ((keys.includes("soundVolume") || keys.includes("soundMuted"))

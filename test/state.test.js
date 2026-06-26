@@ -89,6 +89,10 @@ function update(api, o = {}) {
       codexOriginator: o.codexOriginator ?? null,
       codexSource: o.codexSource ?? null,
       ghosttyTerminalId: o.ghosttyTerminalId ?? null,
+      assistantLastOutput: o.assistantLastOutput ?? null,
+      assistantLastOutputTruncated: o.assistantLastOutputTruncated ?? false,
+      toolName: o.toolName ?? null,
+      transcriptPath: o.transcriptPath ?? null,
       backgroundTasksCount: o.backgroundTasksCount ?? 0,
       sessionCronsCount: o.sessionCronsCount ?? 0,
       stopHookActive: o.stopHookActive ?? false,
@@ -604,6 +608,47 @@ describe("wake poll behavior", () => {
     mock.timers.tick(500); // wake poll delay
     mock.timers.tick(200); // poll fires, checks DEEP_SLEEP_TIMEOUT
     assert.strictEqual(api.getCurrentState(), "collapsing");
+  });
+
+  // ── wake-poll lifecycle hardening (kept after the low-power cadence change was
+  // dropped): the start timer is now tracked so it can't fire after teardown. ──
+  it("keeps the wake cursor baseline when state changes mid-poll", () => {
+    api.applyState("collapsing");
+    mock.timers.tick(500); // start delay → wake poll begins, baseline = current cursor
+    api.applyState("sleeping"); // state change must NOT reset the baseline or the timer
+    fakeCursor.x = 200;
+    mock.timers.tick(200); // existing poll still sees movement from the original baseline
+    assert.strictEqual(api.getCurrentState(), "waking");
+  });
+
+  it("cleanup clears a pending wake-poll start before it samples the cursor", () => {
+    let cursorCalls = 0;
+    api.cleanup();
+    ctx = makeCtx({
+      getCursorScreenPoint: () => { cursorCalls += 1; return { ...fakeCursor }; },
+    });
+    api = require("../src/state")(ctx);
+
+    api.applyState("dozing"); // schedules the 500ms wake-poll start
+    api.cleanup();            // must cancel the pending start timer
+    mock.timers.tick(500);
+
+    assert.strictEqual(cursorCalls, 0);
+  });
+
+  it("DND clears a pending wake-poll start before it samples the cursor", () => {
+    let cursorCalls = 0;
+    api.cleanup();
+    ctx = makeCtx({
+      getCursorScreenPoint: () => { cursorCalls += 1; return { ...fakeCursor }; },
+    });
+    api = require("../src/state")(ctx);
+
+    api.applyState("dozing");
+    api.enableDoNotDisturb(); // leaving the wake-poll states must cancel the pending start
+    mock.timers.tick(500);
+
+    assert.strictEqual(cursorCalls, 0);
   });
 });
 
@@ -2320,13 +2365,46 @@ describe("Stop completion gate (#406)", () => {
     else process.env.CLAWD_COMPLETION_DEBOUNCE_MS = savedDebounceEnv;
   });
 
-  it("live background_tasks hold the Claude Stop as working — no celebrate, badge stays running", () => {
+  it("background_tasks without final assistant text hold the Claude Stop as working — no celebrate, badge stays running", () => {
     update(api, { id: "s1", state: "attention", event: "Stop", backgroundTasksCount: 2 });
     assert.strictEqual(api.sessions.get("s1").state, "working");
     assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "running");
-    mock.timers.tick(5000); // no debounce scheduled for liveWork — nothing promotes
+    mock.timers.tick(5000); // no debounce scheduled for hard live work — nothing promotes
     assert.strictEqual(api.sessions.get("s1").state, "working");
     assert.ok(!soundsPlayed.includes("complete"), "completion sound must not play");
+  });
+
+  it("background_tasks with final assistant text debounce, then celebrate on a quiet window", () => {
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      backgroundTasksCount: 1,
+      assistantLastOutput: "Done.",
+    });
+    assert.strictEqual(api.sessions.get("s1").state, "working", "held during the bg-only quiet window");
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "running");
+    assert.deepStrictEqual(soundsPlayed, [], "no completion sound before the quiet window elapses");
+    mock.timers.tick(1000);
+    assert.strictEqual(api.sessions.get("s1").state, "idle");
+    assert.strictEqual(api.getCurrentState(), "attention");
+    assert.ok(soundsPlayed.includes("complete"), "bg-only completion with final text celebrates");
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "done");
+  });
+
+  it("background_tasks with final assistant text cancel when work resumes inside the window", () => {
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      backgroundTasksCount: 1,
+      assistantLastOutput: "Intermediate result.",
+    });
+    mock.timers.tick(500);
+    update(api, { id: "s1", state: "working", event: "PreToolUse" });
+    mock.timers.tick(2000);
+    assert.strictEqual(api.sessions.get("s1").state, "working");
+    assert.ok(!soundsPlayed.includes("complete"), "resumed work cancels the bg-only completion");
   });
 
   it("session_crons hold the Claude Stop as working", () => {
@@ -2335,9 +2413,52 @@ describe("Stop completion gate (#406)", () => {
     assert.ok(!soundsPlayed.includes("complete"));
   });
 
+  it("session_crons still hard-hold even when final assistant text exists", () => {
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      sessionCronsCount: 1,
+      assistantLastOutput: "Done.",
+    });
+    mock.timers.tick(5000);
+    assert.strictEqual(api.sessions.get("s1").state, "working");
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "running");
+    assert.ok(!soundsPlayed.includes("complete"));
+  });
+
   it("stop_hook_active (continuation) holds the Claude Stop as working", () => {
     update(api, { id: "s1", state: "attention", event: "Stop", stopHookActive: true });
     assert.strictEqual(api.sessions.get("s1").state, "working");
+    assert.ok(!soundsPlayed.includes("complete"));
+  });
+
+  it("stop_hook_active still hard-holds even when final assistant text exists", () => {
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      stopHookActive: true,
+      assistantLastOutput: "Done.",
+    });
+    mock.timers.tick(5000);
+    assert.strictEqual(api.sessions.get("s1").state, "working");
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "running");
+    assert.ok(!soundsPlayed.includes("complete"));
+  });
+
+  it("session_crons dominate bg-only assistant text and keep the Stop hard-held", () => {
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      backgroundTasksCount: 1,
+      sessionCronsCount: 1,
+      assistantLastOutput: "Done.",
+    });
+    mock.timers.tick(5000);
+    assert.strictEqual(api.sessions.get("s1").state, "working");
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "running");
     assert.ok(!soundsPlayed.includes("complete"));
   });
 
@@ -2401,6 +2522,27 @@ describe("Stop completion gate (#406)", () => {
     }
   });
 
+  it("CLAWD_COMPLETION_DEBOUNCE_MS=0 also disables the bg-only assistant-text quiet window", () => {
+    const saved = process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
+    process.env.CLAWD_COMPLETION_DEBOUNCE_MS = "0";
+    try {
+      update(api, {
+        id: "s1",
+        state: "attention",
+        event: "Stop",
+        backgroundTasksCount: 1,
+        assistantLastOutput: "Done.",
+      });
+      assert.strictEqual(api.getCurrentState(), "attention");
+      assert.strictEqual(api.sessions.get("s1").state, "idle");
+      assert.ok(soundsPlayed.includes("complete"));
+      assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "done");
+    } finally {
+      if (saved === undefined) delete process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
+      else process.env.CLAWD_COMPLETION_DEBOUNCE_MS = saved;
+    }
+  });
+
   it("Stop then Notification within the window still records completion (badge done) (#406 regression)", () => {
     update(api, { id: "s1", state: "attention", event: "Stop" });
     assert.strictEqual(api.sessions.get("s1").state, "working", "held during the window");
@@ -2415,7 +2557,7 @@ describe("Stop completion gate (#406)", () => {
     assert.strictEqual(api.deriveSessionBadge(s), "done");
   });
 
-  it("liveWork-held Stop does not become a false 'done' after stale cleanup (#406 regression)", () => {
+  it("hard liveWork-held Stop does not become a false 'done' after stale cleanup (#406 regression)", () => {
     update(api, { id: "s1", state: "attention", event: "Stop", backgroundTasksCount: 1, agentPid: 1000, sourcePid: 2000 });
     const held = api.sessions.get("s1");
     assert.strictEqual(held.state, "working");
@@ -2458,6 +2600,88 @@ describe("Stop completion gate (#406)", () => {
       if (saved === undefined) delete process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
       else process.env.CLAWD_COMPLETION_DEBOUNCE_MS = saved;
     }
+  });
+
+  it("Claude AskUserQuestion PostToolUse falls back to transcript completion when Stop is missed", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-claude-stop-fallback-"));
+    const transcript = path.join(dir, "transcript.jsonl");
+    fs.writeFileSync(transcript, [
+      JSON.stringify({ type: "assistant", sessionId: "s1", message: { content: [{ type: "tool_use", name: "AskUserQuestion" }] } }),
+      JSON.stringify({ type: "user", sessionId: "s1", message: { content: [{ type: "tool_result", content: "Allow" }] } }),
+    ].join("\n") + "\n");
+
+    update(api, {
+      id: "s1",
+      state: "working",
+      event: "PostToolUse",
+      toolName: "AskUserQuestion",
+      transcriptPath: transcript,
+    });
+
+    mock.timers.tick(1999);
+    assert.strictEqual(api.sessions.get("s1").state, "working");
+    assert.deepStrictEqual(soundsPlayed, []);
+
+    fs.appendFileSync(transcript, JSON.stringify({
+      type: "assistant",
+      sessionId: "s1",
+      message: { content: "Final answer from Claude Desktop." },
+    }) + "\n");
+    mock.timers.tick(1);
+
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.state, "idle");
+    assert.strictEqual(session.assistantLastOutput, "Final answer from Claude Desktop.");
+    assert.strictEqual(api.getCurrentState(), "attention");
+    assert.ok(soundsPlayed.includes("complete"));
+    assert.strictEqual(api.deriveSessionBadge(session), "done");
+  });
+
+  it("Claude transcript completion fallback is limited to AskUserQuestion tool results", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-claude-stop-fallback-"));
+    const transcript = path.join(dir, "transcript.jsonl");
+    fs.writeFileSync(transcript, [
+      JSON.stringify({ type: "user", sessionId: "s1", message: { content: [{ type: "tool_result", content: "ok" }] } }),
+      JSON.stringify({ type: "assistant", sessionId: "s1", message: { content: "Intermediate explanation." } }),
+    ].join("\n") + "\n");
+
+    update(api, {
+      id: "s1",
+      state: "working",
+      event: "PostToolUse",
+      toolName: "Read",
+      transcriptPath: transcript,
+    });
+    mock.timers.tick(10000);
+
+    assert.strictEqual(api.sessions.get("s1").state, "working");
+    assert.ok(!soundsPlayed.includes("complete"));
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "running");
+  });
+
+  it("Claude transcript completion fallback cancels when work resumes", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-claude-stop-fallback-"));
+    const transcript = path.join(dir, "transcript.jsonl");
+    fs.writeFileSync(transcript, [
+      JSON.stringify({ type: "assistant", sessionId: "s1", message: { content: [{ type: "tool_use", name: "AskUserQuestion" }] } }),
+      JSON.stringify({ type: "user", sessionId: "s1", message: { content: [{ type: "tool_result", content: "Allow" }] } }),
+      JSON.stringify({ type: "assistant", sessionId: "s1", message: { content: "Continuing after answer." } }),
+    ].join("\n") + "\n");
+
+    update(api, {
+      id: "s1",
+      state: "working",
+      event: "PostToolUse",
+      toolName: "AskUserQuestion",
+      transcriptPath: transcript,
+    });
+    mock.timers.tick(500);
+    update(api, { id: "s1", state: "working", event: "PreToolUse" });
+    mock.timers.tick(10000);
+
+    assert.strictEqual(api.sessions.get("s1").state, "working");
+    assert.ok(!soundsPlayed.includes("complete"));
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "running");
   });
 });
 
@@ -2510,6 +2734,23 @@ describe("Headless Stop debounce default (#449)", () => {
     update(api, { id: "i1", state: "attention", event: "Stop" });
     assert.strictEqual(api.getCurrentState(), "attention");
     assert.ok(soundsPlayed.includes("complete"));
+  });
+
+  it("interactive bg-only Stop with final assistant text waits 2s by default, then celebrates", () => {
+    update(api, {
+      id: "i1",
+      state: "attention",
+      event: "Stop",
+      backgroundTasksCount: 1,
+      assistantLastOutput: "Done from Claude Desktop.",
+    });
+    mock.timers.tick(1999);
+    assert.deepStrictEqual(soundsPlayed, [], "still waiting for a quiet bg-only window");
+    mock.timers.tick(1);
+    assert.strictEqual(api.sessions.get("i1").state, "idle");
+    assert.strictEqual(api.getCurrentState(), "attention");
+    assert.ok(soundsPlayed.includes("complete"));
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("i1")), "done");
   });
 
   it("the headless flag persists — a later Stop without the flag still debounces", () => {

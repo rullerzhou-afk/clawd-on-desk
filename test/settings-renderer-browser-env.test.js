@@ -918,11 +918,15 @@ function loadAnimMapTabForTest({
   vm.runInContext(fs.readFileSync(SETTINGS_ANIM_OVERRIDES_MERGE, "utf8"), context);
   vm.runInContext(fs.readFileSync(SETTINGS_UI_CORE, "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-map.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-overrides.js"), "utf8"), context);
 
   const core = context.ClawdSettingsCore;
   core.state.snapshot = snapshot || { theme: "clawd", themeOverrides: {} };
-  core.state.activeTab = "animMap";
+  // The Animation Map now lives as the default "on / off" subtab of the
+  // Animation & Sound Overrides tab, so patching flows through that tab.
+  core.state.activeTab = "animOverrides";
   context.ClawdSettingsTabAnimMap.init(core);
+  context.ClawdSettingsTabAnimOverrides.init(core);
 
   let contentRenderCount = 0;
   core.ops.installRenderHooks({
@@ -1232,6 +1236,7 @@ describe("settings renderer browser environment", () => {
       "settings-tab-about.js",
       "settings-tab-remote-ssh.js",
       "settings-doctor-modal.js",
+      "settings-icons.js",
       "settings-renderer.js",
     ];
 
@@ -2749,7 +2754,7 @@ describe("settings renderer browser environment", () => {
 
     const sections = generalHarness.content.querySelectorAll(".section");
     const sectionTitles = sections.map((section) => section.querySelector(".section-title").textContent);
-    assert.deepStrictEqual(sectionTitles, ["Appearance", "Session management", "System", "Startup", "Bubbles", "Permissions"]);
+    assert.deepStrictEqual(sectionTitles, ["Appearance", "Session management", "Alerts & feedback", "Behavior & position", "System & startup", "Permissions"]);
     assert.strictEqual(generalHarness.content.querySelector(".hardware-buddy-collapsible"), null);
 
     const remoteHarness = loadTelegramApprovalTabForTest({
@@ -2998,7 +3003,8 @@ describe("settings renderer browser environment", () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");
-    assert.ok(generalSource.includes("settings-confirm-modal"));
+    const uiCoreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
+    assert.ok(uiCoreSource.includes("settings-confirm-modal"));
     assert.ok(generalSource.includes("updateBubbleDisableConfirmAction"));
     assert.ok(css.includes(".settings-confirm-modal"));
     assert.ok(css.includes(".settings-confirm-backdrop"));
@@ -3011,8 +3017,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes('{ id: "confirm", label: t("updateBubbleDisableConfirmAction"), tone: "danger" }'));
     assert.ok(generalSource.includes('{ id: "cancel", label: t("updateBubbleDisableConfirmCancel"), tone: "accent", defaultFocus: true }'));
     assert.ok(generalSource.includes('if (actionId === "confirm") runToggleCommit(nextEnabled);'));
-    assert.ok(generalSource.includes('tone === "accent"'));
-    assert.ok(generalSource.includes('tone === "danger"'));
+    assert.ok(uiCoreSource.includes('tone === "accent"'));
+    assert.ok(uiCoreSource.includes('tone === "danger"'));
   });
 
   it("keeps Claude hooks confirmations inside the Settings renderer", () => {
@@ -3021,15 +3027,17 @@ describe("settings renderer browser environment", () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");
-    assert.ok(generalSource.includes("confirmDisableClaudeHookManagement"));
-    assert.ok(generalSource.includes("runDisconnectClaudeHooks"));
-    assert.ok(generalSource.includes("showSettingsConfirmModal({"));
-    assert.ok(generalSource.includes("claudeHooksDisableConfirmTitle"));
-    assert.ok(generalSource.includes("claudeHooksDisconnectConfirmTitle"));
-    assert.ok(generalSource.includes("buttons.find((action) => action.action && action.action.defaultFocus)"));
-    assert.ok(generalSource.includes('button.className = `soft-btn${toneClass ? ` ${toneClass}` : ""}`;'));
-    assert.ok(generalSource.includes('tone === "accent"'));
-    assert.ok(generalSource.includes('tone === "danger"'));
+    const agentsSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-agents.js"), "utf8");
+    const uiCoreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
+    assert.ok(agentsSource.includes("confirmDisableClaudeHookManagement"));
+    assert.ok(agentsSource.includes("runDisconnectClaudeHooks"));
+    assert.ok(agentsSource.includes("showSettingsConfirmModal({"));
+    assert.ok(agentsSource.includes("claudeHooksDisableConfirmTitle"));
+    assert.ok(agentsSource.includes("claudeHooksDisconnectConfirmTitle"));
+    assert.ok(uiCoreSource.includes("buttons.find((action) => action.action && action.action.defaultFocus)"));
+    assert.ok(uiCoreSource.includes('button.className = `soft-btn${toneClass ? ` ${toneClass}` : ""}`;'));
+    assert.ok(uiCoreSource.includes('tone === "accent"'));
+    assert.ok(uiCoreSource.includes('tone === "danger"'));
     assert.ok(css.includes(".settings-confirm-danger"));
     assert.ok(!preloadSource.includes("confirmDisableClaudeHooks"));
     assert.ok(!preloadSource.includes("confirmDisconnectClaudeHooks"));
@@ -3056,8 +3064,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(coreSource.includes("row-label-danger"));
     assert.ok(css.includes(".row-label.row-label-danger"));
     // Simple title + localized confirm strings exist.
-    assert.ok(i18nSource.includes('rowAutoApproveAll: "Auto-pilot"'));
-    assert.ok(i18nSource.includes('rowAutoApproveAll: "自动驾驶"'));
+    assert.ok(i18nSource.includes('rowAutoApproveAll: "Auto-approve all requests"'));
+    assert.ok(i18nSource.includes('rowAutoApproveAll: "自动放行所有请求"'));
     assert.ok(i18nSource.includes("autoApproveAllConfirmTitle"));
     // Lives in its own Permissions section, not under Bubbles.
     assert.ok(generalSource.includes('t("sectionPermissions")'));
@@ -3390,71 +3398,72 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.core.state.transientUiState.generalSwitches.has("soundMuted"), false);
   });
 
-  it("patches Claude hook management child switch state without rebuilding General content", async () => {
-    const updateCalls = [];
-    const initialSnapshot = {
-      lang: "en",
-      size: 50,
-      sessionHudEnabled: true,
-      sessionHudShowStateLabels: true,
-      sessionHudShowElapsed: true,
-      sessionHudCleanupDetached: true,
-      soundMuted: false,
-      soundVolume: 0.5,
-      lowPowerIdleMode: false,
-      allowEdgePinning: true,
-      keepSizeAcrossDisplays: true,
-      manageClaudeHooksAutomatically: false,
-      openAtLogin: false,
-      autoStartWithClaude: false,
-      hideBubbles: false,
-      bubbleFollowPet: true,
-      permissionBubblesEnabled: true,
-      notificationBubbleAutoCloseSeconds: 8,
-      updateBubbleAutoCloseSeconds: 12,
-    };
-    const harness = loadGeneralTabForTest({
-      snapshot: initialSnapshot,
-      settingsAPI: {
-        update: (key, value) => {
-          updateCalls.push({ key, value });
-          return Promise.resolve({ status: "ok" });
-        },
+  it("renders Claude hook management in the Agents claude-code group with autoStart gated", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        manageClaudeHooksAutomatically: false,
+        autoStartWithClaude: true,
+        agents: { "claude-code": { integrationInstalled: true, enabled: true } },
       },
+      agentMetadata: [
+        { id: "claude-code", name: "Claude Code", eventSource: "hook", capabilities: {} },
+      ],
     });
-    harness.renderContent();
 
-    const master = harness.getSwitch("manageClaudeHooksAutomatically");
-    const autoStart = harness.getSwitch("autoStartWithClaude");
-    const autoStartMeta = harness.getSwitchMeta("autoStartWithClaude");
-    assert.ok(master);
-    assert.ok(autoStart);
-    assert.ok(autoStartMeta.extraElement);
-    assert.strictEqual(autoStart.classList.contains("disabled"), true);
+    harness.core.ops.requestRender({ content: true });
 
-    const beforeRenderCount = harness.getContentRenderCount();
+    const manage = harness.core.state.mountedControls.generalSwitches.get("manageClaudeHooksAutomatically");
+    const autoStart = harness.core.state.mountedControls.generalSwitches.get("autoStartWithClaude");
+    assert.ok(manage, "manage-hooks switch should mount inside the Agents claude-code group");
+    assert.ok(autoStart, "autoStart switch should mount inside the Agents claude-code group");
+    // Master is off, so the child autoStart is disabled at render time (D2: Agents
+    // does a full rebuild on these keys instead of an in-place patch).
+    assert.strictEqual(autoStart.element.classList.contains("disabled"), true);
+    assert.ok(autoStart.extraElement, "autoStart shows the disabled note when management is off");
+  });
+
+  it("re-gates autoStart when Claude hook management toggles via applyChanges (D2 full rebuild)", () => {
+    const baseSnapshot = {
+      manageClaudeHooksAutomatically: true,
+      autoStartWithClaude: true,
+      agents: { "claude-code": { integrationInstalled: true, enabled: true } },
+    };
+    const harness = loadAgentsTabForTest({
+      snapshot: { ...baseSnapshot },
+      agentMetadata: [
+        { id: "claude-code", name: "Claude Code", eventSource: "hook", capabilities: {} },
+      ],
+    });
+
+    harness.core.ops.requestRender({ content: true });
+
+    // Master is on, so the child autoStart starts enabled with no disabled note.
+    let autoStart = harness.core.state.mountedControls.generalSwitches.get("autoStartWithClaude");
+    assert.ok(autoStart, "autoStart switch should mount inside the Agents claude-code group");
+    assert.strictEqual(autoStart.element.classList.contains("disabled"), false);
+    assert.strictEqual(autoStart.extraElement, null);
+
+    // Turning management off is not an `agents` patch, so Agents falls through to a
+    // full rebuild (D2) — the rebuilt child must come back disabled with the note.
+    harness.core.ops.applyChanges({
+      changes: { manageClaudeHooksAutomatically: false },
+      snapshot: { ...baseSnapshot, manageClaudeHooksAutomatically: false },
+    });
+
+    autoStart = harness.core.state.mountedControls.generalSwitches.get("autoStartWithClaude");
+    assert.ok(autoStart, "autoStart switch should remount after the rebuild");
+    assert.strictEqual(autoStart.element.classList.contains("disabled"), true);
+    assert.ok(autoStart.extraElement, "autoStart shows the disabled note after management is turned off");
+
+    // Turning management back on re-enables the child and drops the note.
     harness.core.ops.applyChanges({
       changes: { manageClaudeHooksAutomatically: true },
-      snapshot: { ...initialSnapshot, manageClaudeHooksAutomatically: true },
+      snapshot: { ...baseSnapshot, manageClaudeHooksAutomatically: true },
     });
 
-    assert.strictEqual(
-      harness.getContentRenderCount(),
-      beforeRenderCount,
-      "Claude hook management broadcasts should patch the mounted startup switches"
-    );
-    assert.strictEqual(harness.getSwitch("manageClaudeHooksAutomatically"), master);
-    assert.strictEqual(harness.getSwitch("autoStartWithClaude"), autoStart);
-    assert.strictEqual(master.classList.contains("on"), true);
-    assert.strictEqual(autoStart.classList.contains("disabled"), false);
-    assert.strictEqual(autoStart.attributes["aria-disabled"], undefined);
-    assert.strictEqual(autoStart.tabIndex, 0);
-    assert.strictEqual(autoStartMeta.extraElement, null);
-
-    autoStart.eventListeners.click[0]();
-    await Promise.resolve();
-    await Promise.resolve();
-    assert.deepStrictEqual(updateCalls, [{ key: "autoStartWithClaude", value: true }]);
+    autoStart = harness.core.state.mountedControls.generalSwitches.get("autoStartWithClaude");
+    assert.strictEqual(autoStart.element.classList.contains("disabled"), false);
+    assert.strictEqual(autoStart.extraElement, null);
   });
 
   it("patches hide-bubbles aggregate changes without rebuilding General content", () => {
@@ -3563,55 +3572,27 @@ describe("settings renderer browser environment", () => {
     assert.deepStrictEqual(updateCalls, []);
   });
 
-  it("patches Claude hook management off and restores the child disabled note", async () => {
-    const updateCalls = [];
-    const initialSnapshot = makeGeneralSnapshot({
-      manageClaudeHooksAutomatically: true,
-      autoStartWithClaude: true,
-    });
-    const harness = loadGeneralTabForTest({
-      snapshot: initialSnapshot,
-      settingsAPI: {
-        update: (key, value) => {
-          updateCalls.push({ key, value });
-          return Promise.resolve({ status: "ok" });
-        },
-      },
-    });
-    harness.renderContent();
-
-    const master = harness.getSwitch("manageClaudeHooksAutomatically");
-    const autoStart = harness.getSwitch("autoStartWithClaude");
-    const autoStartMeta = harness.getSwitchMeta("autoStartWithClaude");
-    assert.ok(master);
-    assert.ok(autoStart);
-    assert.ok(autoStartMeta);
-    assert.strictEqual(autoStart.classList.contains("disabled"), false);
-    assert.strictEqual(autoStartMeta.extraElement, null);
-
-    const beforeRenderCount = harness.getContentRenderCount();
-    harness.core.ops.applyChanges({
-      changes: { manageClaudeHooksAutomatically: false },
-      snapshot: { ...initialSnapshot, manageClaudeHooksAutomatically: false },
-    });
-
-    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
-    assert.strictEqual(harness.getSwitch("manageClaudeHooksAutomatically"), master);
-    assert.strictEqual(harness.getSwitch("autoStartWithClaude"), autoStart);
-    assert.strictEqual(master.classList.contains("on"), false);
-    assert.strictEqual(autoStart.classList.contains("disabled"), true);
-    assert.strictEqual(autoStart.attributes["aria-disabled"], "true");
-    assert.strictEqual(autoStart.tabIndex, -1);
-    assert.ok(autoStartMeta.extraElement);
-    assert.strictEqual(
-      autoStartMeta.extraElement.textContent,
-      harness.core.helpers.t("rowStartWithClaudeDisabledDesc")
-    );
-
-    autoStart.eventListeners.click[0]();
-    await Promise.resolve();
-    await Promise.resolve();
-    assert.deepStrictEqual(updateCalls, []);
+  it("moves Claude hook management out of General into the Agents claude-code group", () => {
+    const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
+    const agentsSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-agents.js"), "utf8");
+    // No longer rendered or patched by the General tab.
+    assert.ok(!generalSource.includes('key: "manageClaudeHooksAutomatically"'));
+    assert.ok(!generalSource.includes('key: "autoStartWithClaude"'));
+    assert.ok(!generalSource.includes("CLAUDE_HOOK_MANAGEMENT_CHILD_SWITCH_KEYS"));
+    assert.ok(!generalSource.includes("manageClaudeHooksAutomatically"));
+    // Built in the Agents claude-code group as top-level pref rows.
+    assert.ok(agentsSource.includes("buildClaudeHookManagementRows"));
+    assert.ok(agentsSource.includes('agent.id === "claude-code"'));
+    assert.ok(agentsSource.includes('key: "manageClaudeHooksAutomatically"'));
+    assert.ok(agentsSource.includes('key: "autoStartWithClaude"'));
+    assert.ok(agentsSource.includes("rowManageClaudeHooks"));
+    assert.ok(agentsSource.includes("rowStartWithClaude"));
+    // autoStart stays gated on the master (disabled + extra note computed at render).
+    assert.ok(agentsSource.includes("disabled: !manageHooksEnabled"));
+    assert.ok(agentsSource.includes('descExtraKey: manageHooksEnabled ? null : "rowStartWithClaudeDisabledDesc"'));
+    // Confirm/disconnect flows moved with the switches.
+    assert.ok(agentsSource.includes("confirmDisableClaudeHookManagement"));
+    assert.ok(agentsSource.includes("runDisconnectClaudeHooks"));
   });
 
   it("patches hide-bubbles aggregate off without rebuilding General content", () => {
@@ -3783,6 +3764,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(tabSource.includes("handleRemoveCodexPet"));
     assert.ok(tabSource.includes("themeUninstallPetLabel"));
     assert.ok(tabSource.includes('footer.className = "theme-card-footer";'));
+    assert.ok(tabSource.includes('caps.powerProfile === "scripted"'));
+    assert.ok(tabSource.includes("themeCapabilityFineMotion"));
     assert.ok(tabSource.includes('if (!theme.active) indicator.setAttribute("aria-hidden", "true");'));
     assert.ok(!tabSource.includes("if (theme.active || canDelete || canRemoveCodexPet)"));
     assert.ok(coreSource.includes("codexPetZipImportPending"));
@@ -3820,7 +3803,9 @@ describe("settings renderer browser environment", () => {
     assert.ok(strings.en.themeImportUserThemeZipHint.includes("theme.json"));
     assert.strictEqual(strings.en.themeOpenUserThemesFolder, "Open themes folder");
     assert.strictEqual(strings.en.themeRefreshThemes, "Refresh themes");
+    assert.strictEqual(strings.en.themeCapabilityFineMotion, "Fine motion");
     assert.strictEqual(strings.zh.themeImportPetZip, "导入 Codex Pet 包（.zip）");
+    assert.strictEqual(strings.zh.themeCapabilityFineMotion, "精细动效");
     assert.strictEqual(strings.zh.themeActionGroupCodexPets, "Codex Pets");
     assert.strictEqual(strings.zh.themeImportUserThemeZip, "导入 Clawd 主题包（.zip）");
     assert.ok(strings.zh.themeImportUserThemeZipHint.includes("theme.json"));
@@ -4830,20 +4815,37 @@ describe("settings renderer browser environment", () => {
     );
   });
 
-  it("uses animated switches and local theme override patching in Animation Map", () => {
+  it("uses animated switches and local theme override patching in the Animation Map subtab", () => {
     const animMapSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-map.js"), "utf8");
+    const overridesSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-overrides.js"), "utf8");
     const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
     assert.ok(animMapSource.includes("state.transientUiState.animMapSwitches"));
     assert.ok(animMapSource.includes("state.mountedControls.animMapSwitches"));
     assert.ok(animMapSource.includes("helpers.attachAnimatedSwitch(sw, {"));
     assert.ok(animMapSource.includes('command("setThemeOverrideDisabled"'));
     assert.ok(!animMapSource.includes("helpers.attachActivation(sw"));
-    assert.ok(animMapSource.includes("function patchInPlace(changes)"));
+    assert.ok(animMapSource.includes("function renderMapSubtab(parent)"));
+    assert.ok(animMapSource.includes("function patchMapInPlace(changes)"));
     assert.ok(animMapSource.includes('Object.prototype.hasOwnProperty.call(changes, "themeOverrides")'));
     assert.ok(animMapSource.includes("helpers.setSwitchVisual(meta.element, readAnimMapVisualOn(meta.themeId, meta.stateKey), { pending: false });"));
-    assert.ok(animMapSource.includes("patchInPlace,"));
-    assert.ok(coreSource.includes('if (state.activeTab !== "animMap") {'));
+    // Folded in: the Animation & Sound Overrides tab renders + patches the map subtab.
+    assert.ok(overridesSource.includes("ClawdSettingsTabAnimMap.renderMapSubtab"));
+    assert.ok(overridesSource.includes("ClawdSettingsTabAnimMap.patchMapInPlace"));
     assert.ok(coreSource.includes("activeTab.patchInPlace(changes"));
+  });
+
+  it("renders the Animation Map switches inside the Animation Overrides 'on / off' subtab", () => {
+    const harness = loadAnimMapTabForTest({
+      snapshot: { theme: "clawd", themeOverrides: {} },
+    });
+    // Map is the default subtab; rendering the overrides tab should mount the
+    // five interrupt on/off switches under it (folded in, not a standalone tab).
+    harness.core.tabs.animOverrides.render(harness.content);
+    assert.strictEqual(harness.core.state.mountedControls.animMapSwitches.size, 5);
+    assert.ok(
+      harness.core.state.mountedControls.animMapReset,
+      "the reset-all control should mount under the subtab"
+    );
   });
 
   it("keeps Animation Map theme override broadcasts in place and syncs the mounted switch", () => {
@@ -4940,6 +4942,37 @@ describe("settings renderer browser environment", () => {
       harness.getContentRenderCount(),
       before + 1,
       "theme changes should force a rebuild so Animation Map switches use the new theme id"
+    );
+  });
+
+  it("drops the cached animation/sound card data when the map subtab patches a theme-override change", () => {
+    const harness = loadAnimMapTabForTest({
+      snapshot: {
+        theme: "clawd",
+        themeOverrides: { clawd: { states: { error: { disabled: false } } } },
+      },
+    });
+    // Simulate having opened the Animations subtab earlier: its card data is cached.
+    harness.core.runtime.animationOverridesData = { theme: { id: "clawd" }, cards: [], sounds: [] };
+    // A mounted map switch so patchMapInPlace takes the in-place themeOverrides branch.
+    const sw = new FakeElement("div");
+    sw.className = "switch on";
+    harness.content.appendChild(sw);
+    harness.core.state.mountedControls.animMapSwitches.set("clawd:error", {
+      element: sw,
+      themeId: "clawd",
+      stateKey: "error",
+    });
+
+    harness.core.ops.applyChanges({
+      changes: { themeOverrides: { clawd: { states: { error: { disabled: true } } } } },
+      snapshot: { theme: "clawd", themeOverrides: { clawd: { states: { error: { disabled: true } } } } },
+    });
+
+    assert.strictEqual(
+      harness.core.runtime.animationOverridesData,
+      null,
+      "a map-subtab theme-override patch must invalidate the cached cards so Animations/Sounds refetch"
     );
   });
 

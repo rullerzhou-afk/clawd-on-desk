@@ -11,6 +11,7 @@ const {
 } = require("./server-permission-utils");
 const { resolveHookAgentId } = require("./server-agent-id");
 const { resolveCodexOfficialHookState } = require("./server-codex-official-turns");
+const { normalizeTranscriptPath } = require("./transcript-path");
 
 // /state POST body size cap. Raised from 1024 to 4096 to give new fields
 // (session_title) headroom on top of cwd / pid_chain / host / etc. Still a
@@ -163,6 +164,7 @@ function handleStatePost(req, res, options) {
       const contextUsage = normalizeContextUsage(data.context_usage);
       const assistantLastOutput = normalizeAssistantLastOutput(data.assistant_last_output);
       const assistantLastOutputTruncated = data.assistant_last_output_truncated === true;
+      const transcriptPath = normalizeTranscriptPath(data.transcript_path);
       const permissionSuspect = data.permission_suspect === true;
       const preserveState = data.preserve_state === true;
       const hookSource = typeof data.hook_source === "string" ? data.hook_source : null;
@@ -278,6 +280,8 @@ function handleStatePost(req, res, options) {
             contextUsage,
             assistantLastOutput,
             assistantLastOutputTruncated,
+            toolName,
+            transcriptPath,
             permissionSuspect,
             preserveState,
             hookSource,

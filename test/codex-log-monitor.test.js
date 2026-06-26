@@ -220,6 +220,28 @@ describe("CodexLogMonitor", () => {
     monitor.start();
   });
 
+  it("should map no-tool task_complete to attention when assistant output is present", (_, done) => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      '{"type":"event_msg","payload":{"type":"task_started"}}',
+      '{"type":"event_msg","payload":{"type":"agent_message","message":"Short answer."}}',
+      '{"type":"event_msg","payload":{"type":"task_complete"}}',
+    ].join("\n") + "\n");
+
+    const config = makeConfig(tmpDir);
+    const states = [];
+    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+      states.push(state);
+      if (state === "attention") {
+        assert.deepStrictEqual(states, ["idle", "thinking", "attention"]);
+        assert.strictEqual(extra.assistantLastOutput, "Short answer.");
+        done();
+      }
+    });
+    monitor.start();
+  });
+
   it("should map task_complete to attention when tools were used", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [

@@ -9,6 +9,7 @@ const path = require("node:path");
 const {
   getThemeMetadata,
   listThemesWithMetadata,
+  buildThemeMetadata,
   buildPreviewUrl,
   buildVariantMetadata,
   computePreviewContentRatio,
@@ -184,6 +185,31 @@ describe("theme metadata facade helpers", () => {
     assert.ok(meta.previewFileUrl.includes("preview.svg"));
     assert.strictEqual(meta.previewContentRatio, 0.5);
     assert.ok(meta.capabilities);
+  });
+
+  it("marks only trusted or forced-object metadata as higher power profile", () => {
+    const { builtinThemesDir, userThemesDir } = makeTempRoot();
+    const raw = validThemeJson({
+      trustedRuntime: { scriptedSvgFiles: ["idle.svg"] },
+    });
+    const builtinDir = writeTheme(builtinThemesDir, "builtin-scripted", raw);
+    const userDir = writeTheme(userThemesDir, "user-scripted", raw);
+    const forcedObjectRaw = validThemeJson({
+      rendering: { svgChannel: "object" },
+    });
+
+    assert.strictEqual(
+      buildThemeMetadata("builtin-scripted", raw, true, builtinDir).capabilities.powerProfile,
+      "scripted"
+    );
+    assert.strictEqual(
+      buildThemeMetadata("user-scripted", raw, false, userDir).capabilities.powerProfile,
+      "standard"
+    );
+    assert.strictEqual(
+      buildThemeMetadata("forced-object", forcedObjectRaw, false, userDir).capabilities.powerProfile,
+      "scripted"
+    );
   });
 
   it("scans built-in and user metadata while skipping scaffold, malformed, and duplicate user themes", () => {

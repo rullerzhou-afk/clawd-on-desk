@@ -366,6 +366,9 @@ function buildStateBody(event, payload, resolve) {
   if (toolName) body.tool_name = toolName;
   if (toolUseId) body.tool_use_id = toolUseId;
   if (toolInputFingerprint) body.tool_input_fingerprint = toolInputFingerprint;
+  if (event !== "Stop" && typeof payload.transcript_path === "string" && payload.transcript_path) {
+    body.transcript_path = payload.transcript_path;
+  }
   // Read transcript tail once and reuse for both session title extraction and
   // API error detection (Stop only). Avoids two file reads per hook invocation.
   const transcriptEntries = readTranscriptTailEntries(payload.transcript_path);

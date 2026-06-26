@@ -591,7 +591,7 @@ The validator checks:
 ## Theme Installation (User Side)
 
 1. Download/clone the theme to the themes directory (see paths above)
-2. In `Settings...` -> `Theme`, check the capability badges (`Tracked idle`, `Animated idle`, `Static theme`, `Mini`, `Direct sleep`, `No reactions`) to confirm what the theme supports
+2. In `Settings...` -> `Theme`, check the capability badges (`Tracked idle`, `Animated idle`, `Static theme`, `Mini`, `Direct sleep`, `Fine motion`, `No reactions`) to confirm what the theme supports
 3. Select the theme card. The theme appears by its `name` field from `theme.json`.
 4. Restart Clawd only if a newly copied theme folder does not appear yet.
 

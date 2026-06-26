@@ -69,7 +69,7 @@ describe("agent installation detector", () => {
       },
     });
 
-    const report = detectAgentInstallations({ homeDir, now: 1 });
+    const report = detectAgentInstallations({ homeDir, now: 1, env: {} });
     const qwen = byId(report, "qwen-code");
     const codewhale = byId(report, "codewhale");
 
@@ -95,7 +95,7 @@ describe("agent installation detector", () => {
     writeText(path.join(homeDir, ".gemini", "settings.json.backup"), "backup file");
     writeText(path.join(homeDir, ".gemini", ".config.swp"), "swap file");
 
-    const report = detectAgentInstallations({ homeDir, now: 1 });
+    const report = detectAgentInstallations({ homeDir, now: 1, env: {} });
     const gemini = byId(report, "gemini-cli");
     const antigravity = byId(report, "antigravity-cli");
 
@@ -172,7 +172,7 @@ describe("agent installation detector", () => {
     const homeDir = makeHome();
     mkdirp(path.join(homeDir, ".hermes"));
 
-    const report = detectAgentInstallations({ homeDir, now: 1 });
+    const report = detectAgentInstallations({ homeDir, now: 1, env: {} });
     const hermes = byId(report, "hermes");
 
     assert.strictEqual(hermes.detectedInstalled, true);

@@ -527,6 +527,7 @@ clearAgentCleanupHints.lockKey = "agentIntegration";
 clearAgentInstallHints.lockKey = "agentIntegration";
 
 module.exports = {
+  INSTALLABLE_AGENT_IDS,
   clearAgentCleanupHints,
   clearAgentInstallHints,
   dismissAgentCleanupHints,

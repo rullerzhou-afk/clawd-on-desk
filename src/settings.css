@@ -107,9 +107,9 @@ html, body {
   height: 18px;
   align-items: center;
   justify-content: center;
-  font-size: 14px;
   flex-shrink: 0;
 }
+.sidebar-item-icon svg { display: block; width: 100%; height: 100%; }
 .sidebar-item-label { flex: 1; }
 .sidebar-item-soon {
   font-size: 10px;
@@ -190,6 +190,30 @@ html, body {
   margin: 0 0 24px;
   font-size: 12px;
   color: var(--text-secondary);
+}
+.general-tutorial-hint {
+  margin: -16px 0 24px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.general-tutorial-link {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  padding: 0;
+}
+.general-tutorial-link:hover:not(:disabled) {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.general-tutorial-link:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 .section {
@@ -1271,10 +1295,13 @@ html, body {
   color: var(--text-tertiary);
 }
 .placeholder-icon {
-  font-size: 36px;
+  width: 48px;
+  height: 48px;
   margin-bottom: 12px;
   opacity: 0.5;
+  color: var(--text-secondary);
 }
+.placeholder-icon svg { width: 100%; height: 100%; }
 .placeholder-title {
   font-size: 16px;
   font-weight: 600;
@@ -2949,14 +2976,14 @@ html, body {
   margin-top: 8px;
   border-top: 1px solid var(--row-border);
 }
-.about-cleanup-wrap {
+.about-footer-action-wrap {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  padding: 0 0 14px;
+  padding: 0 0 10px;
 }
-.about-cleanup-button {
+.about-footer-action-button {
   appearance: none;
   background: transparent;
   border: none;
@@ -2967,10 +2994,10 @@ html, body {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
-.about-cleanup-button:hover:not(:disabled) {
+.about-footer-action-button:hover:not(:disabled) {
   color: var(--accent);
 }
-.about-cleanup-button:disabled {
+.about-footer-action-button:disabled {
   cursor: default;
   opacity: 0.6;
 }

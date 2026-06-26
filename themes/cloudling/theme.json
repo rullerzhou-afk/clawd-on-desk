@@ -147,6 +147,15 @@
   "sleepSequence": {
     "mode": "full"
   },
+  "rendering": {
+    "svgChannel": "auto",
+    "lowPowerStaticImageOverrides": {
+      "sleeping": {
+        "from": "cloudling-sleeping.svg",
+        "to": "cloudling-sleeping-static.png"
+      }
+    }
+  },
   "workingTiers": [
     {
       "minSessions": 3,

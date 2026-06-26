@@ -309,11 +309,26 @@ describe("buildStateBody", () => {
       tool_name: "Read",
       tool_use_id: "toolu_123",
       tool_input: { file_path: "src/server.js" },
+      transcript_path: "/tmp/claude-transcript.jsonl",
     };
     const body = buildStateBody("PostToolUse", payload, mockResolve);
     assert.strictEqual(body.tool_name, "Read");
     assert.strictEqual(body.tool_use_id, "toolu_123");
     assert.strictEqual(body.tool_input_fingerprint, buildToolInputFingerprint(payload.tool_input));
+    assert.strictEqual(body.transcript_path, "/tmp/claude-transcript.jsonl");
+  });
+
+  it("does not forward transcript_path on Stop after extracting completion data", () => {
+    const file = writeTmpJsonl([
+      { type: "assistant", sessionId: "sid-1", message: { content: "Done." } },
+    ]);
+    const body = buildStateBody(
+      "Stop",
+      { session_id: "sid-1", transcript_path: file },
+      mockResolve
+    );
+    assert.strictEqual(body.assistant_last_output, "Done.");
+    assert.ok(!("transcript_path" in body));
   });
 
   it("adds context_usage from transcript usage", () => {

@@ -69,6 +69,7 @@ if (_xwaylandRelaunch) {
 const { clampTextScale, scaleWidth, scaleHeight, resolveTextScaleForKey } = require("./text-scale");
 const path = require("path");
 const fs = require("fs");
+const { pathToFileURL } = require("url");
 const { EventEmitter } = require("events");
 const {
   applyWindowsAppUserModelId,
@@ -208,7 +209,7 @@ const SIZES = {
 // `_settingsController.applyUpdate()`, which auto-persists.
 const prefsModule = require("./prefs");
 const { createSettingsController } = require("./settings-controller");
-const { createTranslator, i18n } = require("./i18n");
+const { createTranslator, i18n, SUPPORTED_LANGS } = require("./i18n");
 const {
   getBubblePolicy,
   isAllBubblesHidden,
@@ -410,6 +411,26 @@ function hydrateSystemBackedSettings() {
   });
   if (result && result.status === "error") {
     console.warn("Clawd: openAtLogin hydration failed:", result.message);
+  }
+}
+
+// First-run only: seed the UI language from the device locale. A brand-new
+// install has no prefs file, so `lang` would otherwise sit at the schema default
+// ("en") regardless of the user's OS language. Gated on _initialPrefsLoad.fresh
+// (missing-file load) so a RETURNING user's chosen language is never touched.
+// MUST run inside app.whenReady() — app.getLocale() is only stable after ready —
+// and before createWindow() so the first menu/tray render is already localized.
+function hydrateFreshInstallLanguage() {
+  if (!_initialPrefsLoad || !_initialPrefsLoad.fresh) return;
+  let detected = "en";
+  try {
+    detected = prefsModule.mapLocaleToLang(app.getLocale());
+  } catch (err) {
+    console.warn("Clawd: failed to detect device locale for language:", err && err.message);
+    return;
+  }
+  if (detected && detected !== _settingsController.get("lang")) {
+    _settingsController.applyUpdate("lang", detected);
   }
 }
 
@@ -1532,6 +1553,7 @@ const _tickCtx = {
   getObjRect,
   getHitRectScreen,
   getAssetPointerPayload,
+  get roam() { return _roam; },
 };
 const _tick = require("./tick")(_tickCtx);
 requestFastTick = (maxDelay) => _tick.scheduleSoon(maxDelay);
@@ -1636,6 +1658,115 @@ showDashboard = _dashboard.showDashboard;
 broadcastDashboardSessionSnapshot = _dashboard.broadcastSessionSnapshot;
 sendDashboardI18n = _dashboard.sendI18n;
 
+// ── First-run onboarding tutorial ──
+// Buckets the installable agents for the tutorial's step 2. We call the
+// detector with skipDefaultIntegrations:false so the default integrations
+// (claude-code, codex) are checked too — that's the only way to flag the
+// marquee "default Codex hook but Codex isn't installed → recommend removing"
+// case, which the Settings UI doesn't surface.
+function buildTutorialAgentOnboardingState() {
+  const { detectAgentInstallations } = require("./agent-installation-detector");
+  const { INSTALLABLE_AGENT_IDS } = require("./settings-actions-agents");
+  const { bucketAgentsForTutorial } = require("./tutorial-agent-buckets");
+  let detection = { agents: [] };
+  try {
+    detection = detectAgentInstallations({ skipDefaultIntegrations: false }) || detection;
+  } catch (err) {
+    console.warn("Clawd: tutorial agent detection failed:", err && err.message);
+  }
+  return bucketAgentsForTutorial({
+    detectionAgents: detection.agents,
+    agentsPref: _settingsController.get("agents") || {},
+    installableIds: INSTALLABLE_AGENT_IDS,
+  });
+}
+
+// The editable shortcuts the tutorial teaches. Reflects the user's current
+// binding (null when they've unassigned it) and falls back to the shipped
+// default only when the key has never been touched.
+function buildTutorialShortcutsSummary() {
+  const { SHORTCUT_ACTIONS, SHORTCUT_ACTION_IDS } = require("./shortcut-actions");
+  const userShortcuts = _settingsController.get("shortcuts") || {};
+  return SHORTCUT_ACTION_IDS.map((id) => {
+    const action = SHORTCUT_ACTIONS[id] || {};
+    const accelerator = Object.prototype.hasOwnProperty.call(userShortcuts, id)
+      ? userShortcuts[id]
+      : action.defaultAccelerator;
+    return {
+      id,
+      label: translate(action.labelKey),
+      accelerator,
+      defaultAccelerator: action.defaultAccelerator,
+      persistent: !!action.persistent,
+    };
+  });
+}
+
+// The welcome screen uses the app icon so first run feels like product setup.
+// Keep this as a file URL so repeated tutorial state pushes don't clone the
+// 1.46 MB PNG as a base64 string on every agent/shortcut update.
+let _tutorialHeroSrcCache = null;
+function getTutorialHeroSrc() {
+  if (_tutorialHeroSrcCache != null) return _tutorialHeroSrcCache;
+  try {
+    _tutorialHeroSrcCache = pathToFileURL(path.join(__dirname, "..", "assets", "icon.png")).href;
+  } catch (err) {
+    console.warn("Clawd: failed to resolve tutorial icon:", err && err.message);
+    _tutorialHeroSrcCache = "";
+  }
+  return _tutorialHeroSrcCache;
+}
+
+let _tutorialDoneHeroSvgCache = null;
+function getTutorialDoneHeroSvg() {
+  if (_tutorialDoneHeroSvgCache != null) return _tutorialDoneHeroSvgCache;
+  try {
+    _tutorialDoneHeroSvgCache = fs.readFileSync(
+      path.join(__dirname, "..", "assets", "svg", "clawd-about-hero.svg"),
+      "utf8"
+    );
+  } catch (err) {
+    console.warn("Clawd: failed to read tutorial done hero:", err && err.message);
+    _tutorialDoneHeroSvgCache = "";
+  }
+  return _tutorialDoneHeroSvgCache;
+}
+
+const _tutorial = require("./tutorial")({
+  t: (key) => translate(key),
+  getI18n: () => getDashboardI18nPayload().translations,
+  getLang: () => lang,
+  getLangs: () => SUPPORTED_LANGS.slice(),
+  // Let the user override the (system-seeded) language right from the wizard.
+  // Persists as their chosen language; the set-lang IPC re-pushes state so the
+  // whole wizard re-localizes immediately.
+  setLang: (value) => {
+    if (typeof value === "string" && SUPPORTED_LANGS.includes(value)) {
+      _settingsController.applyUpdate("lang", value);
+    }
+  },
+  getHeroSrc: () => getTutorialHeroSrc(),
+  getDoneHeroSvg: () => getTutorialDoneHeroSvg(),
+  iconPath: settingsWindowRuntime.getIconPath(),
+  getAgentOnboardingState: () => buildTutorialAgentOnboardingState(),
+  // install/uninstall route through the controller's command API so the commit
+  // (integrationInstalled flag, hint cleanup, monitor start/stop) persists and
+  // validates exactly as the Settings → Agents path does.
+  installAgent: (agentId) => _settingsController.applyCommand("installAgentIntegration", { agentId }),
+  uninstallAgent: (agentId) => _settingsController.applyCommand("uninstallAgentIntegration", { agentId }),
+  registerShortcut: (payload) => _settingsController.applyCommand("registerShortcut", payload),
+  resetShortcut: (payload) => _settingsController.applyCommand("resetShortcut", payload),
+  // v1: deep-link to a specific tab is deferred — open Settings to its default tab.
+  openSettingsTab: () => settingsWindowRuntime.open(),
+  markTutorialSeen: () => {
+    _settingsController.applyUpdate("tutorialSeen", true);
+  },
+  getShortcutsSummary: () => buildTutorialShortcutsSummary(),
+  getTextScale: () => effectiveTextScaleForKey(
+    getWindowDisplayKey(_tutorial ? _tutorial.getWindow() : null) || getPetDisplayKey()
+  ),
+});
+
 const _sessionHud = require("./session-hud")({
   get win() { return win; },
   get petHidden() { return petWindowRuntime.isPetHidden(); },
@@ -1644,6 +1775,7 @@ const _sessionHud = require("./session-hud")({
   get sessionHudShowElapsed() { return sessionHudShowElapsed; },
   get sessionHudShowContextUsage() { return sessionHudShowContextUsage; },
   get sessionHudPinned() { return sessionHudPinned; },
+  get lowPowerIdleMode() { return lowPowerIdleMode; },
   getMiniMode: () => _mini.getMiniMode(),
   getMiniTransitioning: () => _mini.getMiniTransitioning(),
   getSessionSnapshot: () => _state.buildSessionSnapshot(),
@@ -2880,6 +3012,7 @@ const _menuCtx = {
   getActiveThemeCapabilities: () => themeRuntime.getActiveThemeCapabilities(),
   ensureUserThemesDir: () => themeLoader.ensureUserThemesDir(),
   openSettingsWindow: () => settingsWindowRuntime.open(),
+  showTutorial: () => _tutorial.open(),
 };
 const _menu = require("./menu")(_menuCtx);
 const { t, buildContextMenu, buildTrayMenu, rebuildAllMenus, createTray,
@@ -2902,6 +3035,7 @@ const SETTINGS_MIRROR_SETTERS = {
   soundMuted: (v) => { soundMuted = v; }, soundVolume: (v) => { soundVolume = v; }, lowPowerIdleMode: (v) => { lowPowerIdleMode = v; },
   keepAwakeWhileWorking: (v) => { keepAwakeWhileWorking = v; },
   allowEdgePinning: (v) => { allowEdgePinningCached = v; }, disableMiniMode: (v) => { disableMiniModeCached = v; }, keepSizeAcrossDisplays: (v) => { keepSizeAcrossDisplaysCached = v; resetKeepSizeFrozen(); },
+  freeRoam: (v) => { _roam.setEnabled(v); },
   textScale: (v) => { textScale = v; textScalePreview = null; },
   textScaleByDisplay: (v) => { textScaleByDisplay = v; textScalePreview = null; },
 };
@@ -3160,6 +3294,10 @@ registerSettingsIpc({
     ? hardwareBuddyAdapter.createQuickCommand(payload)
     : { status: "error", code: "quick_commands_unavailable", message: "Quick Commands are unavailable" },
   checkForUpdates,
+  showTutorial: () => {
+    _tutorial.open();
+    return { status: "ok" };
+  },
   aboutHeroSvgPath: path.join(__dirname, "..", "assets", "svg", "clawd-about-hero.svg"),
   getLanWsServer: () => _lanWss,
 });
@@ -3268,7 +3406,11 @@ function createWindow() {
     },
     onRenderProcessGone: (details, ownedHitWin) => {
       safeConsoleError("hitWin renderer crashed:", details.reason);
-      petWindowRuntime.reloadWindowWebContents(ownedHitWin);
+      petWindowRuntime.setDragLocked(false);
+      petWindowRuntime.clearDragSnapshot();
+      idlePaused = false;
+      mouseOverPet = false;
+      petWindowRuntime.reloadWindowWebContents(ownedHitWin, { crashKey: "hitWin", details });
     },
   });
 
@@ -3358,13 +3500,27 @@ function createWindow() {
     petWindowRuntime.setDragLocked(false);
     idlePaused = false;
     mouseOverPet = false;
-    petWindowRuntime.reloadWindowWebContents(win);
+    petWindowRuntime.reloadWindowWebContents(win, { crashKey: "renderWin", details });
   });
 
   guardAlwaysOnTop(win);
   startTopmostWatchdog();
 
-  screen.on("display-metrics-changed", () => petWindowRuntime.handleDisplayMetricsChanged());
+  // display-metrics-changed fires in bursts during DPI changes and RDP
+  // reconnects, and each one re-clamps/repositions the pet — running them all
+  // makes the pet visibly jitter mid-transition. Debounce the geometry handler
+  // to the settled state, mirroring the textScale debounce below. (Keep
+  // display-removed/added immediate: those rescue the pet off a vanished
+  // display and must not be delayed.)
+  let displayMetricsGeometryTimer = null;
+  const reapplyDisplayGeometryAfterMetricsChange = () => {
+    if (displayMetricsGeometryTimer) clearTimeout(displayMetricsGeometryTimer);
+    displayMetricsGeometryTimer = setTimeout(() => {
+      displayMetricsGeometryTimer = null;
+      petWindowRuntime.handleDisplayMetricsChanged();
+    }, 400);
+  };
+  screen.on("display-metrics-changed", reapplyDisplayGeometryAfterMetricsChange);
   screen.on("display-removed", () => petWindowRuntime.handleDisplayRemoved());
   screen.on("display-added", () => petWindowRuntime.handleDisplayAdded());
 
@@ -3455,6 +3611,37 @@ const _mini = require("./mini")(_miniCtx);
 const { enterMiniMode, exitMiniMode, enterMiniViaMenu, miniPeekIn, miniPeekOut,
         checkMiniModeSnap, cancelMiniTransition, animateWindowX, animateWindowParabola } = _mini;
 
+// ── Free Roam — initialized here after state and mini modules ──
+const _roamCtx = {
+  get win() { return win; },
+  getPetWindowBounds,
+  applyPetWindowPosition,
+  syncHitWin: () => syncHitWin(),
+  repositionSessionHud: () => repositionSessionHud(),
+  repositionAnchoredSurfaces: () => repositionAnchoredFloatingSurfaces(),
+  repositionBubbles: () => repositionFloatingBubbles(),
+  get bubbleFollowPet() { return bubbleFollowPet; },
+  get pendingPermissions() { return pendingPermissions; },
+  getNearestWorkArea,
+  clampToScreenVisual,
+  getMiniMode: () => _mini.getMiniMode(),
+  getCurrentState: () => _state.getCurrentState(),
+  get miniTransitioning() { return _mini.getMiniTransitioning(); },
+  applyState: (state, svgOverride, opts) => _state.applyState(state, svgOverride, opts),
+  setState: (state, svgOverride, opts) => _state.setState(state, svgOverride, opts),
+};
+const _roam = require("./roam")(_roamCtx);
+
+// Free roam: initialize from prefs and react to toggle changes
+_roam.setEnabled(_settingsController.get("freeRoam") === true);
+try {
+  _settingsController.subscribeKey("freeRoam", (value) => {
+    _roam.setEnabled(value === true);
+  });
+} catch (err) {
+  console.warn("Clawd: freeRoam subscribeKey failed:", err && err.message);
+}
+
 // Convenience getters for mini state (used throughout main.js)
 Object.defineProperties(this || {}, {}); // no-op placeholder
 // Mini state is accessed via _mini getters in ctx objects below
@@ -3528,13 +3715,18 @@ if (!gotTheLock) {
   app.quit();
 } else {
   app.on("second-instance", (_event, commandLine) => {
-    if (win) {
-      win.showInactive();
-      keepOutOfTaskbar(win);
-    }
-    if (hitWin && !hitWin.isDestroyed()) {
-      hitWin.showInactive();
-      keepOutOfTaskbar(hitWin);
+    if (petWindowRuntime.isPetHidden()) {
+      prepManualPetVisibility();
+      petWindowRuntime.setPetHidden(false);
+    } else {
+      if (win) {
+        win.showInactive();
+        keepOutOfTaskbar(win);
+      }
+      if (hitWin && !hitWin.isDestroyed()) {
+        hitWin.showInactive();
+        keepOutOfTaskbar(hitWin);
+      }
     }
     if (shouldOpenSettingsWindowFromArgv(commandLine)) {
       settingsWindowRuntime.openWhenReady();
@@ -3575,6 +3767,9 @@ if (!gotTheLock) {
     // Must run before createWindow() so the first menu draw sees the
     // hydrated value rather than the schema default.
     hydrateSystemBackedSettings();
+    // First-run only: seed UI language from the device locale, before createWindow
+    // so the very first menu/tray render is already in the user's language.
+    hydrateFreshInstallLanguage();
 
     permDebugLog = path.join(app.getPath("userData"), "permission-debug.log");
     updateDebugLog = path.join(app.getPath("userData"), "update-debug.log");
@@ -3601,6 +3796,15 @@ if (!gotTheLock) {
     }
     if (shouldOpenSettingsWindowFromArgv(process.argv)) {
       settingsWindowRuntime.open();
+    }
+    // First-run onboarding: anyone who has never seen the tutorial gets it once.
+    // `tutorialSeen` is persisted but deliberately NOT migration-backfilled, so
+    // existing users who update also see it once on their next launch, then the
+    // flag flips to true forever (any dismissal counts). See prefs.js SCHEMA.
+    try {
+      if (!_settingsController.get("tutorialSeen")) _tutorial.open();
+    } catch (err) {
+      console.warn("Clawd: failed to open first-run tutorial:", err && err.message);
     }
     codexPetMain.enqueueImportUrlsFromArgv(process.argv);
     codexPetMain.flushPendingImportUrls().catch((err) => {

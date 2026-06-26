@@ -103,9 +103,9 @@
 
   function createCleanupFooterAction() {
     const wrap = document.createElement("div");
-    wrap.className = "about-cleanup-wrap";
+    wrap.className = "about-footer-action-wrap";
     const button = document.createElement("button");
-    button.className = "about-cleanup-button";
+    button.className = "about-footer-action-button about-cleanup-button";
     button.type = "button";
     button.textContent = t("aboutCleanupButton");
     const status = document.createElement("div");

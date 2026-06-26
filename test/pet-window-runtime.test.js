@@ -118,6 +118,10 @@ function createRuntime(overrides = {}) {
     flushRuntimeStateToPrefs: () => calls.push(["flushRuntimeStateToPrefs"]),
     handleMiniDisplayChange: () => calls.push(["handleMiniDisplayChange"]),
     exitMiniMode: () => calls.push(["exitMiniMode"]),
+    crashReloadLimit: overrides.crashReloadLimit,
+    crashReloadWindowMs: overrides.crashReloadWindowMs,
+    crashReloadLog: overrides.crashReloadLog,
+    now: overrides.now,
   });
   return {
     runtime,
@@ -188,13 +192,51 @@ describe("pet-window-runtime", () => {
     assert.deepStrictEqual(destroyedContents.calls, []);
   });
 
+  it("does not reload renderer windows for terminal render-process-gone reasons", () => {
+    const logs = [];
+    const harness = createRuntime({ crashReloadLog: (message) => logs.push(message) });
+    const live = makeWindow();
+
+    assert.equal(harness.runtime.reloadWindowWebContents(live, {
+      crashKey: "renderWin",
+      details: { reason: "integrity-failure" },
+    }), false);
+    assert.deepStrictEqual(live.calls, []);
+    assert.match(logs[0], /not reloading renderWin/);
+  });
+
+  it("stops reloading renderer windows after repeated crashes in the guard window", () => {
+    let now = 1000;
+    const logs = [];
+    const harness = createRuntime({
+      crashReloadLimit: 2,
+      crashReloadWindowMs: 1000,
+      crashReloadLog: (message) => logs.push(message),
+      now: () => now,
+    });
+    const live = makeWindow();
+    const options = { crashKey: "hitWin", details: { reason: "crashed" } };
+
+    assert.equal(harness.runtime.reloadWindowWebContents(live, options), true);
+    now += 100;
+    assert.equal(harness.runtime.reloadWindowWebContents(live, options), true);
+    now += 100;
+    assert.equal(harness.runtime.reloadWindowWebContents(live, options), false);
+    assert.deepStrictEqual(live.calls, [["reload"], ["reload"]]);
+    assert.match(logs[0], /stopped reloading hitWin/);
+
+    now += 1001;
+    assert.equal(harness.runtime.reloadWindowWebContents(live, options), true);
+    assert.deepStrictEqual(live.calls, [["reload"], ["reload"], ["reload"]]);
+  });
+
   it("uses safe reload helpers for pet render-process-gone handlers", () => {
     const runtimeSource = fs.readFileSync(path.join(SRC_DIR, "pet-window-runtime.js"), "utf8");
     const mainSource = fs.readFileSync(path.join(SRC_DIR, "main.js"), "utf8");
 
-    assert.match(runtimeSource, /reloadWindowWebContents\(hitWin\)/);
-    assert.match(mainSource, /petWindowRuntime\.reloadWindowWebContents\(ownedHitWin\)/);
-    assert.match(mainSource, /petWindowRuntime\.reloadWindowWebContents\(win\)/);
+    assert.ok(runtimeSource.includes('reloadRuntimeWindowWebContents(hitWin, { crashKey: "hitWin", details });'));
+    assert.ok(mainSource.includes('petWindowRuntime.reloadWindowWebContents(ownedHitWin, { crashKey: "hitWin", details });'));
+    assert.ok(mainSource.includes('petWindowRuntime.reloadWindowWebContents(win, { crashKey: "renderWin", details });'));
     assert.doesNotMatch(mainSource, /ownedHitWin\.webContents\.reload\(\)/);
   });
 

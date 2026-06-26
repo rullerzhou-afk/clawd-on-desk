@@ -35,6 +35,7 @@ const MAC_FLOATING_TOPMOST_DELAY_MS = 120;
 const HOT_ZONE_PAD = 24;
 const AUTO_HIDE_POLL_MS = 200;
 const HIDE_GRACE_MS = 500;
+const HIDDEN_WINDOW_DESTROY_MS = 30000;
 const HUD_WIDTH_GROWTH_RATIO = 0.4;
 
 function clampToWorkArea(value, min, max) {
@@ -288,6 +289,7 @@ module.exports = function initSessionHud(ctx) {
   let latestSnapshot = null;
   let hudFlippedAbove = false;
   let lastReservedOffset = 0;
+  let hiddenDestroyTimer = null;
 
   function getTextScale() {
     return clampTextScale(typeof ctx.getTextScale === "function" ? ctx.getTextScale() : 1);
@@ -447,6 +449,28 @@ module.exports = function initSessionHud(ctx) {
     visibleHoldUntil = 0;
   }
 
+  function cancelHiddenDestroy() {
+    if (!hiddenDestroyTimer) return;
+    clearTimeout(hiddenDestroyTimer);
+    hiddenDestroyTimer = null;
+  }
+
+  function scheduleHiddenDestroy() {
+    // Reclaiming the hidden HUD renderer is a low-power-idle-mode behavior;
+    // default mode keeps the window warm so reveals stay instant.
+    if (!ctx.lowPowerIdleMode) return;
+    if (!hudWindow || hudWindow.isDestroyed()) return;
+    if (hudWindow.isVisible()) return;
+    if (hiddenDestroyTimer) return;
+    hiddenDestroyTimer = setTimeout(() => {
+      hiddenDestroyTimer = null;
+      // Re-check the flag: the user may have left low-power mode while hidden.
+      if (!ctx.lowPowerIdleMode) return;
+      if (!hudWindow || hudWindow.isDestroyed() || hudWindow.isVisible()) return;
+      hudWindow.destroy();
+    }, HIDDEN_WINDOW_DESTROY_MS);
+  }
+
   // Internal: clear revealed state without syncing. Caller decides next sync.
   function clearReveal() {
     clickRevealed = false;
@@ -525,6 +549,7 @@ module.exports = function initSessionHud(ctx) {
   }
 
   function ensureSessionHud() {
+    cancelHiddenDestroy();
     if (hudWindow && !hudWindow.isDestroyed()) return hudWindow;
     if (!ctx.win || ctx.win.isDestroyed()) return null;
 
@@ -578,6 +603,7 @@ module.exports = function initSessionHud(ctx) {
       syncSessionHud();
     });
     hudWindow.on("closed", () => {
+      cancelHiddenDestroy();
       hudWindow = null;
       didFinishLoad = false;
       hudFlippedAbove = false;
@@ -591,6 +617,7 @@ module.exports = function initSessionHud(ctx) {
     hudFlippedAbove = false;
     if (hudWindow && !hudWindow.isDestroyed()) hudWindow.hide();
     notifyReservedOffsetIfChanged();
+    scheduleHiddenDestroy();
   }
 
   function computeBounds(snapshot, scale = getTextScale()) {
@@ -622,6 +649,7 @@ module.exports = function initSessionHud(ctx) {
 
   function showSessionHud(win) {
     if (!win || win.isDestroyed() || !didFinishLoad) return;
+    cancelHiddenDestroy();
     if (!win.isVisible()) {
       win.showInactive();
       keepOutOfTaskbar(win);
@@ -694,6 +722,7 @@ module.exports = function initSessionHud(ctx) {
 
   function cleanup() {
     stopAutoHidePoll();
+    cancelHiddenDestroy();
     if (hudWindow && !hudWindow.isDestroyed()) hudWindow.destroy();
     hudWindow = null;
     didFinishLoad = false;
@@ -752,6 +781,7 @@ module.exports.__test = {
     HOT_ZONE_PAD,
     AUTO_HIDE_POLL_MS,
     HIDE_GRACE_MS,
+    HIDDEN_WINDOW_DESTROY_MS,
     HUD_WIDTH_GROWTH_RATIO,
   },
 };
