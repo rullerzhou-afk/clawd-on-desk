@@ -2,7 +2,7 @@
 
 const RETRY_DELAYS_MS = Object.freeze([0, 250, 1000, 2500]);
 const WAKE_DEDUPE_MS = 500;
-const WAKE_TIMEOUT_MS = 3500;
+const WAKE_TIMEOUT_MS = 7500;
 const VALID_TRIGGERS = new Set(["resume", "unlock-screen"]);
 const VALID_RESULTS = new Set(["resumed", "no-svg", "error"]);
 
@@ -70,11 +70,12 @@ function createSystemWakeRecovery(options = {}) {
   function finishWithTimeout(wake) {
     if (activeWake !== wake) return;
     clearWakeTimers(wake);
+    wake.timedOut = true;
     activeWake = null;
     log(
       `system-wake id=${wake.id} trigger=${wake.trigger} result=timeout ` +
       "receiptMs=- lowPowerWasPaused=- pauseStyleRemoved=- eyeTrackingReady=- " +
-      "eyeTargetWasCurrentDocument=- objectReloaded=- eyeTargetRebound=-"
+      "eyeTargetWasCurrentDocument=- objectReloaded=- eyeTargetRebound=- late=-"
     );
   }
 
@@ -93,6 +94,8 @@ function createSystemWakeRecovery(options = {}) {
       startedAt,
       timers: [],
       timeoutTimer: null,
+      recovered: false,
+      timedOut: false,
     };
     activeWake = wake;
     lastWake = wake;
@@ -111,15 +114,34 @@ function createSystemWakeRecovery(options = {}) {
 
   function handleStatus(_event, payload) {
     const status = normalizeWakeStatus(payload);
-    if (!status || !activeWake || status.id !== activeWake.id) return false;
+    if (!status) return false;
 
-    const wake = activeWake;
+    let wake = null;
+    let late = false;
+    if (activeWake && status.id === activeWake.id) {
+      wake = activeWake;
+    } else if (
+      lastWake
+      && status.id === lastWake.id
+      && lastWake.timedOut
+      && !lastWake.recovered
+      && status.result === "resumed"
+    ) {
+      wake = lastWake;
+      late = true;
+    } else {
+      return false;
+    }
+
     const receiptMs = Math.max(0, Number(now()) - wake.startedAt);
-    clearWakeTimers(wake);
-    activeWake = null;
+    if (!late) {
+      clearWakeTimers(wake);
+      activeWake = null;
+    }
+    wake.recovered = true;
 
     try {
-      onRecovered(status, { trigger: wake.trigger, receiptMs });
+      onRecovered(status, { trigger: wake.trigger, receiptMs, late });
     } catch (err) {
       onError(err);
     }
@@ -130,7 +152,8 @@ function createSystemWakeRecovery(options = {}) {
       `eyeTrackingReady=${status.eyeTrackingReady ? 1 : 0} ` +
       `eyeTargetWasCurrentDocument=${status.eyeTargetWasCurrentDocument ? 1 : 0} ` +
       `objectReloaded=${status.objectReloaded ? 1 : 0} ` +
-      `eyeTargetRebound=${status.eyeTargetRebound ? 1 : 0}`
+      `eyeTargetRebound=${status.eyeTargetRebound ? 1 : 0} ` +
+      `late=${late ? 1 : 0}`
     );
     return true;
   }

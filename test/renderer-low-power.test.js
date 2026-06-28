@@ -197,6 +197,18 @@ globalThis.__rendererTest = {
   };
 }
 
+function drainActiveTimers(harness, predicate, limit = 100) {
+  let count = 0;
+  while (count < limit) {
+    const timer = harness.activeTimers().find(predicate);
+    if (!timer) return count;
+    timer.cleared = true;
+    timer.callback();
+    count++;
+  }
+  return count;
+}
+
 function attachFakeSvgDocument(objectEl, { withEyes = false } = {}) {
   const root = new FakeElement("svg");
   const elements = new Map();
@@ -343,6 +355,39 @@ describe("renderer low-power idle mode", () => {
     });
   });
 
+  it("waits for async eye attach before reporting wake recovery", () => {
+    const harness = createRendererHarness();
+    attachFakeSvgDocument(harness.clawd, { withEyes: true });
+    harness.api.setCurrentState("idle");
+    harness.api.setLowPowerIdleMode(true);
+
+    harness.electronHandlers.onSystemWake({ id: "wake-async-1", trigger: "resume", attempt: 0 });
+    const replacementObject = harness.api.pendingNext;
+    assert.ok(replacementObject);
+
+    replacementObject.listeners.get("load")();
+    assert.equal(
+      harness.electronCalls.filter((call) => call.name === "reportSystemWakeStatus").length,
+      0
+    );
+
+    const freshSvg = attachFakeSvgDocument(replacementObject, { withEyes: true });
+    drainActiveTimers(harness, (timer) => timer.ms === 16 && !timer.cleared);
+
+    assert.strictEqual(harness.api.eyeTarget.ownerDocument, freshSvg.svgDoc);
+    const report = harness.electronCalls.find((call) => call.name === "reportSystemWakeStatus");
+    assert.deepEqual(report.args[0], {
+      id: "wake-async-1",
+      result: "resumed",
+      lowPowerWasPaused: false,
+      pauseStyleRemoved: true,
+      eyeTrackingReady: true,
+      eyeTargetWasCurrentDocument: false,
+      objectReloaded: true,
+      eyeTargetRebound: true,
+    });
+  });
+
   it("removes a residual pause style even when the renderer mirror is already false", () => {
     const harness = createRendererHarness();
     const svg = attachFakeSvgDocument(harness.clawd);
@@ -474,7 +519,38 @@ describe("renderer low-power idle mode", () => {
     assert.equal(report.args[0].eyeTargetRebound, true);
   });
 
-  it("keeps the old object and reports an error when the wake reload cannot load", () => {
+  it("retries a wake object reload once before reporting success", () => {
+    const harness = createRendererHarness();
+    attachFakeSvgDocument(harness.clawd, { withEyes: true });
+    harness.api.setCurrentState("idle");
+    harness.api.setLowPowerIdleMode(true);
+
+    harness.electronHandlers.onSystemWake({ id: "wake-retry-1", trigger: "resume", attempt: 0 });
+    const firstObject = harness.api.pendingNext;
+    const firstSwapToken = harness.api.activeSwapToken;
+    drainActiveTimers(harness, (timer) => timer.ms === 3000 && !timer.cleared, 1);
+
+    assert.equal(firstObject.isConnected, false);
+    assert.equal(
+      harness.electronCalls.filter((call) => call.name === "reportSystemWakeStatus").length,
+      0
+    );
+    const retryObject = harness.api.pendingNext;
+    assert.ok(retryObject);
+    assert.notStrictEqual(retryObject, firstObject);
+    assert.equal(harness.api.activeSwapToken, firstSwapToken + 1);
+    assert.equal(harness.container.children.some((element) => element.tagName === "IMG"), false);
+
+    attachFakeSvgDocument(retryObject, { withEyes: true });
+    retryObject.listeners.get("load")();
+
+    const report = harness.electronCalls.find((call) => call.name === "reportSystemWakeStatus");
+    assert.equal(report.args[0].result, "resumed");
+    assert.equal(report.args[0].objectReloaded, true);
+    assert.equal(report.args[0].eyeTrackingReady, true);
+  });
+
+  it("keeps the old object and reports an error after the wake reload retry cannot load", () => {
     const harness = createRendererHarness();
     attachFakeSvgDocument(harness.clawd, { withEyes: true });
     harness.api.setCurrentState("idle");
@@ -482,8 +558,11 @@ describe("renderer low-power idle mode", () => {
 
     harness.electronHandlers.onSystemWake({ id: "wake-fail-1", trigger: "resume", attempt: 0 });
     const failedObject = harness.api.pendingNext;
-    const loadTimeout = harness.activeTimers().find((timer) => timer.ms === 3000 && !timer.cleared);
-    loadTimeout.callback();
+    drainActiveTimers(harness, (timer) => timer.ms === 3000 && !timer.cleared, 1);
+    const retryObject = harness.api.pendingNext;
+    assert.ok(retryObject);
+    assert.notStrictEqual(retryObject, failedObject);
+    drainActiveTimers(harness, (timer) => timer.ms === 3000 && !timer.cleared, 1);
 
     assert.strictEqual(harness.api.clawdEl, harness.clawd);
     assert.equal(harness.api.pendingNext, null);
@@ -494,6 +573,7 @@ describe("renderer low-power idle mode", () => {
     assert.equal(report.args[0].eyeTrackingReady, true);
     assert.strictEqual(harness.api.eyeTarget.ownerDocument, harness.clawd.contentDocument);
     assert.equal(failedObject.isConnected, false);
+    assert.equal(retryObject.isConnected, false);
   });
 
   it("does not rebuild an eye object when low-power mode is disabled", () => {

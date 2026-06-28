@@ -9,6 +9,9 @@ let pendingNext = null;
 const LOW_POWER_IDLE_PAUSE_MS = 5000;
 const SWAP_LOAD_FALLBACK_MS = 3000;
 const SWAP_VISIBILITY_RESCUE_BUFFER_MS = 750;
+const EYE_ATTACH_RETRY_MS = 16;
+const EYE_ATTACH_MAX_ATTEMPTS = 60;
+const WAKE_OBJECT_RELOAD_RETRIES = 1;
 const LOW_POWER_PAUSE_STYLE_ID = "clawd-low-power-pause-svg";
 const LOW_POWER_PAUSE_STATES = new Set(["idle", "mini-idle", "dozing"]);
 const LOW_POWER_BOUNDARY_EPSILON_MS = 80;
@@ -900,12 +903,14 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
       if (pendingNext !== next) return;
       try {
         if (!next.contentDocument) {
-          finishSwapError("object-document-unavailable");
           releaseObject(next);
-          pendingNext = null;
-          pendingSvgFile = null;
-          pendingAssetUrl = null;
-          forceImageChannelReload(file, state, allowImageFallback);
+          if (pendingNext === next) {
+            pendingNext = null;
+            pendingSvgFile = null;
+            pendingAssetUrl = null;
+          }
+          finishSwapError("object-document-unavailable");
+          if (!pendingNext) forceImageChannelReload(file, state, allowImageFallback);
           return;
         }
       } catch {}
@@ -1290,7 +1295,7 @@ function attachEyeTracking(objectEl) {
     try {
       const svgDoc = objectEl.contentDocument;
       if (!svgDoc) {
-        if (attempt < 60) setTimeout(() => tryAttach(attempt + 1), 16);
+        if (attempt < EYE_ATTACH_MAX_ATTEMPTS) setTimeout(() => tryAttach(attempt + 1), EYE_ATTACH_RETRY_MS);
         return;
       }
 
@@ -1318,11 +1323,11 @@ function attachEyeTracking(objectEl) {
       return;
     }
 
-    if (attempt >= 60) {
+    if (attempt >= EYE_ATTACH_MAX_ATTEMPTS) {
       console.warn("Timed out waiting for SVG eye targets");
       return;
     }
-    setTimeout(() => tryAttach(attempt + 1), 16);
+    setTimeout(() => tryAttach(attempt + 1), EYE_ATTACH_RETRY_MS);
   };
 
   tryAttach(0);
@@ -1353,6 +1358,18 @@ function isEyeTrackingReady() {
   return !!(eyeTarget
     && eyeTarget.ownerDocument === currentDocument
     && eyeTarget.ownerDocument.defaultView);
+}
+
+function waitForWakeEyeTrackingReady(callback, attempt = 0) {
+  if (isEyeTrackingReady()) {
+    callback(true);
+    return;
+  }
+  if (attempt >= EYE_ATTACH_MAX_ATTEMPTS) {
+    callback(false);
+    return;
+  }
+  setTimeout(() => waitForWakeEyeTrackingReady(callback, attempt + 1), EYE_ATTACH_RETRY_MS);
 }
 
 function reportSystemWakeStatus(status) {
@@ -1405,42 +1422,76 @@ function recoverFromSystemWake(payload) {
     && currentDisplayedSvg;
 
   if (shouldReloadEyeObject) {
-    const wakeState = currentState;
-    const wakeSvg = currentDisplayedSvg;
-    const pauseStyleRemoved = !hasLowPowerPauseStyle();
+    const wakeContext = {
+      id,
+      wakeState: currentState,
+      wakeSvg: currentDisplayedSvg,
+      lowPowerWasPaused,
+      pauseStyleRemoved: !hasLowPowerPauseStyle(),
+      eyeTargetWasCurrentDocument,
+    };
+
+    const finishWakeEyeObjectReload = (objectEl) => {
+      waitForWakeEyeTrackingReady((eyeTrackingReady) => {
+        if (pendingSystemWakeId !== wakeContext.id) return;
+        const stillCurrentWakeObject = clawdEl === objectEl
+          && currentDisplayedSvg === wakeContext.wakeSvg
+          && currentState === wakeContext.wakeState;
+        const ready = stillCurrentWakeObject && eyeTrackingReady;
+        finishSystemWake({
+          id: wakeContext.id,
+          result: ready ? "resumed" : "error",
+          lowPowerWasPaused: wakeContext.lowPowerWasPaused,
+          pauseStyleRemoved: wakeContext.pauseStyleRemoved,
+          eyeTrackingReady: ready,
+          eyeTargetWasCurrentDocument: wakeContext.eyeTargetWasCurrentDocument,
+          objectReloaded: stillCurrentWakeObject,
+          eyeTargetRebound: ready,
+        });
+      });
+    };
+
+    const failWakeEyeObjectReload = () => {
+      if (pendingSystemWakeId !== wakeContext.id) return;
+      if (clawdEl && clawdEl.tagName === "OBJECT" && clawdEl.isConnected) {
+        attachEyeTracking(clawdEl);
+      }
+      const eyeTrackingReady = isEyeTrackingReady();
+      finishSystemWake({
+        id: wakeContext.id,
+        result: "error",
+        lowPowerWasPaused: wakeContext.lowPowerWasPaused,
+        pauseStyleRemoved: wakeContext.pauseStyleRemoved,
+        eyeTrackingReady,
+        eyeTargetWasCurrentDocument: wakeContext.eyeTargetWasCurrentDocument,
+        objectReloaded: false,
+        eyeTargetRebound: !wakeContext.eyeTargetWasCurrentDocument && eyeTrackingReady,
+      });
+    };
+
+    const reloadWakeObject = (reloadAttempt = 0) => {
+      if (pendingSystemWakeId !== wakeContext.id) return;
+      if (currentState !== wakeContext.wakeState || currentDisplayedSvg !== wakeContext.wakeSvg) {
+        failWakeEyeObjectReload();
+        return;
+      }
+      swapToFile(wakeContext.wakeSvg, wakeContext.wakeState, true, {
+        allowImageFallback: false,
+        onReady: finishWakeEyeObjectReload,
+        onError: (reason) => {
+          if (pendingSystemWakeId !== wakeContext.id) return;
+          if (reason === "object-document-unavailable" && reloadAttempt < WAKE_OBJECT_RELOAD_RETRIES) {
+            reloadWakeObject(reloadAttempt + 1);
+            return;
+          }
+          failWakeEyeObjectReload();
+        },
+      });
+    };
+
     pendingSystemWakeId = id;
     detachEyeTracking();
-    swapToFile(wakeSvg, wakeState, true, {
-      allowImageFallback: false,
-      onReady: () => {
-        const eyeTrackingReady = isEyeTrackingReady();
-        finishSystemWake({
-          id,
-          result: eyeTrackingReady ? "resumed" : "error",
-          lowPowerWasPaused,
-          pauseStyleRemoved,
-          eyeTrackingReady,
-          eyeTargetWasCurrentDocument,
-          objectReloaded: true,
-          eyeTargetRebound: eyeTrackingReady,
-        });
-      },
-      onError: () => {
-        if (clawdEl && clawdEl.tagName === "OBJECT" && clawdEl.isConnected) {
-          attachEyeTracking(clawdEl);
-        }
-        finishSystemWake({
-          id,
-          result: "error",
-          lowPowerWasPaused,
-          pauseStyleRemoved,
-          eyeTrackingReady: isEyeTrackingReady(),
-          eyeTargetWasCurrentDocument,
-          objectReloaded: false,
-          eyeTargetRebound: !eyeTargetWasCurrentDocument && isEyeTrackingReady(),
-        });
-      },
-    });
+    reloadWakeObject();
     return;
   }
 

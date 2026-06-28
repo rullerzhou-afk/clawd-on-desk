@@ -6,6 +6,7 @@ const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const path = require("node:path");
 const {
+  WAKE_TIMEOUT_MS,
   createSystemWakeRecovery,
   normalizeWakeStatus,
 } = require("../src/system-wake-recovery");
@@ -134,13 +135,44 @@ describe("system wake recovery", () => {
   it("retries at bounded delays and writes one timeout result without a receipt", () => {
     const harness = createHarness();
     harness.powerMonitor.emit("resume");
-    harness.clock.advance(3500);
+    harness.clock.advance(WAKE_TIMEOUT_MS);
 
     assert.deepEqual(harness.sent.map((entry) => entry.payload.attempt), [0, 1, 2, 3]);
     assert.equal(harness.logs.length, 1);
     assert.match(harness.logs[0], /result=timeout/);
     assert.equal(harness.runtime.getPendingWakeId(), null);
     assert.equal(harness.clock.pendingCount(), 0);
+  });
+
+  it("accepts a late successful receipt after timeout once", () => {
+    const harness = createHarness();
+    harness.powerMonitor.emit("resume");
+    const id = harness.sent[0].payload.id;
+
+    harness.clock.advance(WAKE_TIMEOUT_MS);
+    assert.equal(harness.runtime.getPendingWakeId(), null);
+    assert.match(harness.logs[0], /result=timeout/);
+
+    harness.ipcMain.emit("system-wake-status", {}, {
+      id,
+      result: "resumed",
+      lowPowerWasPaused: true,
+      pauseStyleRemoved: true,
+      eyeTrackingReady: true,
+      eyeTargetWasCurrentDocument: false,
+      objectReloaded: true,
+      eyeTargetRebound: true,
+    });
+
+    assert.equal(harness.recovered.length, 1);
+    assert.equal(harness.recovered[0].meta.trigger, "resume");
+    assert.equal(harness.recovered[0].meta.late, true);
+    assert.equal(harness.recovered[0].meta.receiptMs, WAKE_TIMEOUT_MS);
+    assert.match(harness.logs[1], /result=resumed/);
+    assert.match(harness.logs[1], /late=1/);
+
+    harness.ipcMain.emit("system-wake-status", {}, { id, result: "resumed" });
+    assert.equal(harness.recovered.length, 1);
   });
 
   it("ignores malformed and stale receipts", () => {
