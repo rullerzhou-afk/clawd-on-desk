@@ -3402,11 +3402,19 @@ function createWindow() {
 
   initFocusHelper();
   startMainTick();
-  startHttpServer();
-  // Silently connect any remote SSH profile flagged "connect on launch" now
-  // that the hook server is listening. Best-effort: failures fall back to the
-  // runtime's own reconnect/backoff and never block startup.
-  try { _remoteSshIpc.connectOnLaunchProfiles(); } catch {}
+  // Silently connect any remote SSH profile flagged "connect on launch" once
+  // the hook server is ACTUALLY listening and its real port is known.
+  // runtime.connect() reads getHookServerPort() synchronously to build the SSH
+  // reverse tunnel, and listen() is async — sweeping before the 'listening'
+  // event would read a stale fallback port and tunnel to the wrong local port
+  // if the bind drifted (port in use, multi-instance). startHttpServer()
+  // resolves null when no port could be bound, in which case we skip the sweep.
+  // Best-effort: failures fall back to the runtime's own reconnect/backoff and
+  // never block startup.
+  startHttpServer().then((port) => {
+    if (port == null) return;
+    try { _remoteSshIpc.connectOnLaunchProfiles(); } catch {}
+  }).catch(() => {});
   if (_settingsController.get("mobilePreviewEnabled") === true) _lanWss.start();
   startStaleCleanup();
   // Wait for renderer to be ready before sending initial state
