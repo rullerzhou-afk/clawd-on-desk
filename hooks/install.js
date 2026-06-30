@@ -973,6 +973,7 @@ function registerHooks(options = {}) {
       backupPath = writeJsonAtomicWithBackup(settingsPath, settings, {
         backup: true,
         backupPath: options.backupPath,
+        backupKeep: options.backupKeep,
       });
       if (backupPath && !options.silent) {
         console.log(`  Backup: saved previous settings to ${backupPath}`);
@@ -1196,6 +1197,7 @@ async function registerHooksAsync(options = {}) {
       backupPath = await writeJsonAtomicWithBackupAsync(settingsPath, settings, {
         backup: true,
         backupPath: options.backupPath,
+        backupKeep: options.backupKeep,
       });
       if (backupPath && !options.silent) {
         console.log(`  Backup: saved previous settings to ${backupPath}`);

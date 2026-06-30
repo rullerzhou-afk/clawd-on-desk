@@ -1601,4 +1601,28 @@ describe("Hook installer settings backup", () => {
 
     assert.ok(result.backupPath && fs.existsSync(result.backupPath), "async install should back up");
   });
+
+  it("caps backups under repeated re-register instead of piling up unbounded", () => {
+    // Simulates a CC-Switch style write war: an external tool keeps stripping
+    // Clawd's hooks from settings.json, the watcher keeps re-registering them.
+    // Each real write snapshots the prior file, but the total must stay bounded.
+    const thirdParty = { hooks: { Stop: [{ matcher: "", hooks: [{ type: "command", command: "user-own-hook" }] }] } };
+    const settingsPath = makeTempSettings(thirdParty);
+    const dir = path.dirname(settingsPath);
+    const countBaks = () => fs.readdirSync(dir).filter((n) => n.endsWith(".bak")).length;
+
+    for (let i = 0; i < 8; i++) {
+      // External tool overwrites settings.json back to third-party-only (drops Clawd hooks).
+      fs.writeFileSync(settingsPath, JSON.stringify(thirdParty, null, 2), "utf-8");
+      const result = registerHooks({ silent: true, settingsPath, claudeVersionInfo: versionInfo, backupKeep: 3 });
+      assert.ok(result.backupPath, "each re-register over an existing file should back up");
+      // The returned path must actually exist — i.e. the fresh backup is never
+      // the one pruned away (regression: copyFileSync inherits the source mtime).
+      assert.ok(fs.existsSync(result.backupPath), "returned backup path must exist on disk");
+    }
+
+    assert.strictEqual(countBaks(), 3, `backups must stay capped at backupKeep, found ${countBaks()}`);
+    // The live file still has Clawd's hooks plus the user's own hook preserved.
+    assert.ok(getClawdCommands(readSettings(settingsPath), "Stop").length > 0, "Clawd hooks still installed");
+  });
 });

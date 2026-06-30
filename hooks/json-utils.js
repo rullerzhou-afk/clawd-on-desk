@@ -87,29 +87,190 @@ function uniqueBackupPath(filePath, options = {}) {
   return `${stem}.${process.pid}.${Date.now()}.bak`;
 }
 
+// Cap how many timestamped backups we keep for a single file. Without a cap, a
+// config that gets rewritten repeatedly — e.g. the settings watcher
+// re-registering hooks after another tool (CC-Switch) strips them — would
+// accrue `.clawd-cleanup-*.bak` files without bound. 5 keeps a short history
+// while staying bounded; override per-call with `backupKeep`.
+const DEFAULT_BACKUP_KEEP = 5;
+
+function resolveBackupKeep(options = {}) {
+  return Number.isInteger(options.backupKeep) && options.backupKeep > 0
+    ? options.backupKeep
+    : DEFAULT_BACKUP_KEEP;
+}
+
+function ownBackupPrefix(filePath) {
+  return `${path.basename(filePath)}.clawd-cleanup-`;
+}
+
+function isOwnBackupName(name, prefix) {
+  return name.startsWith(prefix) && name.endsWith(".bak");
+}
+
+// Order backups by the timestamp encoded in their FILENAME, not by mtime.
+// fs.copyFileSync inherits the SOURCE file's mtime (notably on Windows, via the
+// CopyFile API), so a backup's mtime reflects the settings file's contents, not
+// when the backup was taken — ordering by mtime can flag the just-written
+// backup as "oldest" and delete it. The filename stamp comes from `new Date()`
+// at creation time (see cleanupBackupPath), so it is the reliable creation
+// order. Format: <prefix><stamp>[.<collision-n>][.<pid>.<ms>].bak
+function backupOrderKey(name, prefix) {
+  const body = name.slice(prefix.length, name.length - ".bak".length);
+  const parts = body.split(".");
+  // stamp is fixed-width digits (YYYYMMDDHHMMSSmmm); compare it as a STRING so
+  // 17-digit values (which exceed Number.MAX_SAFE_INTEGER) keep full precision
+  // and still sort chronologically. Collision suffixes (.1/.2, or the
+  // .pid.ms fallback) compare numerically.
+  return {
+    stamp: parts[0] || "",
+    suffixes: parts.slice(1).map((part) => {
+      const n = Number(part);
+      return Number.isFinite(n) ? n : Infinity; // unparseable → sort last (kept, not deleted)
+    }),
+  };
+}
+
+function compareBackupKeys(a, b) {
+  if (a.stamp !== b.stamp) return a.stamp < b.stamp ? -1 : 1;
+  const len = Math.max(a.suffixes.length, b.suffixes.length);
+  for (let i = 0; i < len; i++) {
+    const x = i < a.suffixes.length ? a.suffixes[i] : 0; // missing suffix (".bak") is earlier than ".1.bak"
+    const y = i < b.suffixes.length ? b.suffixes[i] : 0;
+    if (x !== y) return x - y;
+  }
+  return 0;
+}
+
+function listOrderedBackups(names, prefix) {
+  return names
+    .map((name) => ({ name, key: backupOrderKey(name, prefix) }))
+    .sort((a, b) => compareBackupKeys(a.key, b.key))
+    .map((entry) => entry.name); // oldest first
+}
+
+// Decide which backups survive a prune: never drop the one we just wrote
+// (keepPath), always preserve the oldest (the original pre-install snapshot,
+// the most valuable restore point), and fill the rest of the budget with the
+// most recent backups.
+function backupSurvivors(orderedOldestFirst, keep, keepPath) {
+  const survivors = new Set();
+  const keepName = keepPath ? path.basename(keepPath) : null;
+  if (keepName) survivors.add(keepName);
+  if (keep >= 2 && orderedOldestFirst.length) survivors.add(orderedOldestFirst[0]);
+  for (let i = orderedOldestFirst.length - 1; i >= 0 && survivors.size < keep; i--) {
+    survivors.add(orderedOldestFirst[i]);
+  }
+  return survivors;
+}
+
+function pruneOldBackups(filePath, options = {}, keepPath = null) {
+  // A caller-specified backupPath is managed by the caller — never sweep it.
+  if (typeof options.backupPath === "string" && options.backupPath) return;
+  const keep = resolveBackupKeep(options);
+  const dir = path.dirname(filePath);
+  const prefix = ownBackupPrefix(filePath);
+  let names;
+  try {
+    names = fs.readdirSync(dir).filter((name) => isOwnBackupName(name, prefix));
+  } catch {
+    return;
+  }
+  if (names.length <= keep) return;
+  const ordered = listOrderedBackups(names, prefix);
+  const survivors = backupSurvivors(ordered, keep, keepPath);
+  for (const name of ordered) {
+    if (survivors.has(name)) continue;
+    try { fs.unlinkSync(path.join(dir, name)); } catch {}
+  }
+}
+
+async function pruneOldBackupsAsync(filePath, options = {}, keepPath = null) {
+  if (typeof options.backupPath === "string" && options.backupPath) return;
+  const keep = resolveBackupKeep(options);
+  const dir = path.dirname(filePath);
+  const prefix = ownBackupPrefix(filePath);
+  let names;
+  try {
+    names = (await fs.promises.readdir(dir)).filter((name) => isOwnBackupName(name, prefix));
+  } catch {
+    return;
+  }
+  if (names.length <= keep) return;
+  const ordered = listOrderedBackups(names, prefix);
+  const survivors = backupSurvivors(ordered, keep, keepPath);
+  for (const name of ordered) {
+    if (survivors.has(name)) continue;
+    try { await fs.promises.unlink(path.join(dir, name)); } catch {}
+  }
+}
+
+// How many fresh names to try when an auto-named backup collides mid-write.
+const BACKUP_COPY_ATTEMPTS = 5;
+
 function createBackup(filePath, options = {}) {
   if (options.backup !== true) return null;
-  const backupPath = uniqueBackupPath(filePath, options);
-  fs.copyFileSync(filePath, backupPath);
-  return backupPath;
+  // A caller-specified backupPath is honored as-is — the caller owns the name
+  // and expects an overwrite if it already exists.
+  if (typeof options.backupPath === "string" && options.backupPath) {
+    const backupPath = uniqueBackupPath(filePath, options);
+    fs.copyFileSync(filePath, backupPath);
+    return backupPath;
+  }
+  // Auto-named path: COPYFILE_EXCL makes the copy fail if the destination
+  // already exists, closing the existsSync→copy TOCTOU window where two
+  // processes pick the same name and one clobbers the other. On collision,
+  // recompute a fresh unique name (uniqueBackupPath now sees the other file) and retry.
+  let lastErr;
+  for (let attempt = 0; attempt < BACKUP_COPY_ATTEMPTS; attempt++) {
+    const backupPath = uniqueBackupPath(filePath, options);
+    try {
+      fs.copyFileSync(filePath, backupPath, fs.constants.COPYFILE_EXCL);
+      return backupPath;
+    } catch (err) {
+      lastErr = err;
+      if (err.code === "EEXIST") continue; // a racing writer took this name; pick another
+      throw err;
+    }
+  }
+  throw lastErr;
 }
 
 async function createBackupAsync(filePath, options = {}) {
   if (options.backup !== true) return null;
-  const backupPath = uniqueBackupPath(filePath, options);
-  await fs.promises.copyFile(filePath, backupPath);
-  return backupPath;
+  if (typeof options.backupPath === "string" && options.backupPath) {
+    const backupPath = uniqueBackupPath(filePath, options);
+    await fs.promises.copyFile(filePath, backupPath);
+    return backupPath;
+  }
+  let lastErr;
+  for (let attempt = 0; attempt < BACKUP_COPY_ATTEMPTS; attempt++) {
+    const backupPath = uniqueBackupPath(filePath, options);
+    try {
+      await fs.promises.copyFile(filePath, backupPath, fs.constants.COPYFILE_EXCL);
+      return backupPath;
+    } catch (err) {
+      lastErr = err;
+      if (err.code === "EEXIST") continue;
+      throw err;
+    }
+  }
+  throw lastErr;
 }
 
 function writeJsonAtomicWithBackup(filePath, data, options = {}) {
   const backupPath = createBackup(filePath, options);
   writeJsonAtomic(filePath, data);
+  // Prune only after the live write succeeds (a failed write keeps the prior
+  // backups), and pass the just-written backup so it is never the one deleted.
+  if (backupPath) pruneOldBackups(filePath, options, backupPath);
   return backupPath;
 }
 
 async function writeJsonAtomicWithBackupAsync(filePath, data, options = {}) {
   const backupPath = await createBackupAsync(filePath, options);
   await writeJsonAtomicAsync(filePath, data);
+  if (backupPath) await pruneOldBackupsAsync(filePath, options, backupPath);
   return backupPath;
 }
 
@@ -130,6 +291,7 @@ function writeTextAtomic(filePath, text, encoding = "utf-8") {
 function writeTextAtomicWithBackup(filePath, text, options = {}) {
   const backupPath = createBackup(filePath, options);
   writeTextAtomic(filePath, text, options.encoding || "utf-8");
+  if (backupPath) pruneOldBackups(filePath, options, backupPath);
   return backupPath;
 }
 
@@ -421,6 +583,9 @@ module.exports = {
   writeTextAtomicWithBackup,
   createBackup,
   createBackupAsync,
+  pruneOldBackups,
+  pruneOldBackupsAsync,
+  DEFAULT_BACKUP_KEEP,
   asarUnpackedPath,
   commandMatchesMarker,
   extractExistingNodeBin,

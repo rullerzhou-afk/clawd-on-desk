@@ -3,7 +3,7 @@ const assert = require("node:assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { extractExistingNodeBin, extractExistingNodeBinFromCommands, formatNodeHookCommand, writeJsonAtomicAsync } = require("../hooks/json-utils");
+const { extractExistingNodeBin, extractExistingNodeBinFromCommands, formatNodeHookCommand, writeJsonAtomicAsync, createBackup, writeJsonAtomicWithBackup, writeJsonAtomicWithBackupAsync, pruneOldBackups, pruneOldBackupsAsync, DEFAULT_BACKUP_KEEP } = require("../hooks/json-utils");
 
 describe("extractExistingNodeBin", () => {
   it("extracts node path from flat command format", () => {
@@ -202,5 +202,166 @@ describe("writeJsonAtomicAsync", () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("backup pruning", () => {
+  const PREFIX = "settings.json.clawd-cleanup-";
+  // 17-digit, lexically-increasing creation stamp (matches YYYYMMDDHHMMSSmmm width).
+  const stampAt = (i) => `20260630000000${String(i).padStart(3, "0")}`;
+  const bakOf = (stamp, suffix) => `${PREFIX}${stamp}${suffix != null ? "." + suffix : ""}.bak`;
+
+  // Seed a backup file. `mtimeSec` lets a test set an mtime that disagrees with
+  // the filename order (mimicking copyFileSync inheriting the source's mtime).
+  function seedBak(dir, stamp, opts = {}) {
+    const name = bakOf(stamp, opts.suffix);
+    const p = path.join(dir, name);
+    fs.writeFileSync(p, opts.content != null ? opts.content : "{}", "utf8");
+    if (opts.mtimeSec != null) fs.utimesSync(p, opts.mtimeSec, opts.mtimeSec);
+    return name;
+  }
+  function bakNames(dir) {
+    return fs.readdirSync(dir).filter((n) => n.startsWith(PREFIX) && n.endsWith(".bak")).sort();
+  }
+  function withTmp(fn) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-prune-"));
+    try { return fn(dir); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  }
+  async function withTmpAsync(fn) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-prune-"));
+    try { return await fn(dir); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  it("keeps the oldest (original) snapshot plus the most recent N-1", () => {
+    withTmp((dir) => {
+      const settingsPath = path.join(dir, "settings.json");
+      for (let i = 1; i <= 8; i++) seedBak(dir, stampAt(i));
+      pruneOldBackups(settingsPath, { backupKeep: 3 });
+      // oldest (1) kept as the original snapshot, plus the two most recent (7, 8)
+      assert.deepStrictEqual(bakNames(dir), [bakOf(stampAt(1)), bakOf(stampAt(7)), bakOf(stampAt(8))]);
+    });
+  });
+
+  it("orders by filename stamp, not by mtime (copyFileSync inherits source mtime)", () => {
+    withTmp((dir) => {
+      const settingsPath = path.join(dir, "settings.json");
+      // mtimes deliberately REVERSED vs filename order: the oldest filename gets
+      // the newest mtime. A mtime-based prune would keep the wrong set.
+      for (let i = 1; i <= 6; i++) seedBak(dir, stampAt(i), { mtimeSec: 1_700_000_000 + (6 - i) });
+      pruneOldBackups(settingsPath, { backupKeep: 3 });
+      assert.deepStrictEqual(bakNames(dir), [bakOf(stampAt(1)), bakOf(stampAt(5)), bakOf(stampAt(6))]);
+    });
+  });
+
+  it("never deletes the freshly-created backup, even when the source mtime is old", () => {
+    // This is the core regression: on Windows fs.copyFileSync gives the new
+    // backup the SOURCE file's (old) mtime, so an mtime-based prune deletes the
+    // backup it just wrote and returns a path that no longer exists.
+    withTmp((dir) => {
+      const settingsPath = path.join(dir, "settings.json");
+      fs.writeFileSync(settingsPath, JSON.stringify({ user: "config" }), "utf8");
+      const weekAgo = 1_700_000_000;
+      fs.utimesSync(settingsPath, weekAgo, weekAgo); // source looks old
+      // 5 pre-existing backups that look "newer" by mtime
+      for (let i = 1; i <= 5; i++) seedBak(dir, stampAt(i), { mtimeSec: 1_800_000_000 + i });
+      const created = writeJsonAtomicWithBackup(settingsPath, { user: "config", clawd: true }, { backup: true, backupKeep: 5 });
+      assert.ok(created, "should return a backup path");
+      assert.ok(fs.existsSync(created), "the just-written backup must NOT be pruned away");
+      assert.ok(bakNames(dir).includes(path.basename(created)), "new backup is among survivors");
+      assert.strictEqual(bakNames(dir).length, 5, "total still capped at keep");
+    });
+  });
+
+  it("orders same-stamp collisions by suffix (bare .bak is older than .1.bak)", () => {
+    withTmp((dir) => {
+      const settingsPath = path.join(dir, "settings.json");
+      seedBak(dir, stampAt(1));                 // oldest overall
+      seedBak(dir, stampAt(5));                  // bare: first within stamp5
+      seedBak(dir, stampAt(5), { suffix: 1 });    // .1: next
+      seedBak(dir, stampAt(5), { suffix: 2 });    // .2: newest
+      pruneOldBackups(settingsPath, { backupKeep: 3 });
+      // oldest(1) + the two most recent of the collision group (.1, .2); bare stamp5 dropped
+      assert.deepStrictEqual(bakNames(dir), [bakOf(stampAt(1)), bakOf(stampAt(5), 1), bakOf(stampAt(5), 2)]);
+    });
+  });
+
+  it("defaults to keeping DEFAULT_BACKUP_KEEP when backupKeep is absent", () => {
+    withTmp((dir) => {
+      const settingsPath = path.join(dir, "settings.json");
+      for (let i = 1; i <= DEFAULT_BACKUP_KEEP + 4; i++) seedBak(dir, stampAt(i));
+      pruneOldBackups(settingsPath);
+      assert.strictEqual(bakNames(dir).length, DEFAULT_BACKUP_KEEP);
+    });
+  });
+
+  it("falls back to the default for invalid backupKeep and never deletes everything", () => {
+    for (const bad of [0, -1, 1.5, "3", null, NaN]) {
+      withTmp((dir) => {
+        const settingsPath = path.join(dir, "settings.json");
+        for (let i = 1; i <= 9; i++) seedBak(dir, stampAt(i));
+        pruneOldBackups(settingsPath, { backupKeep: bad });
+        assert.strictEqual(bakNames(dir).length, DEFAULT_BACKUP_KEEP, `backupKeep=${String(bad)} should fall back to default`);
+      });
+    }
+  });
+
+  it("is a no-op under the cap and safe on a missing directory", () => {
+    withTmp((dir) => {
+      const settingsPath = path.join(dir, "settings.json");
+      for (let i = 1; i <= 2; i++) seedBak(dir, stampAt(i));
+      pruneOldBackups(settingsPath, { backupKeep: 5 }); // fewer than cap → no-op
+      assert.strictEqual(bakNames(dir).length, 2);
+      assert.doesNotThrow(() => pruneOldBackups(path.join(dir, "nope", "settings.json")));
+    });
+  });
+
+  it("scopes pruning to the target file and leaves other files alone", () => {
+    withTmp((dir) => {
+      const settingsPath = path.join(dir, "settings.json");
+      for (let i = 1; i <= 6; i++) seedBak(dir, stampAt(i));
+      const otherBak = path.join(dir, `other.json.clawd-cleanup-${stampAt(1)}.bak`);
+      fs.writeFileSync(otherBak, "{}", "utf8");
+      fs.writeFileSync(settingsPath, "{}", "utf8");
+      pruneOldBackups(settingsPath, { backupKeep: 2 });
+      assert.strictEqual(bakNames(dir).length, 2, "own backups capped");
+      assert.ok(fs.existsSync(otherBak), "a different file's backup is untouched");
+      assert.ok(fs.existsSync(settingsPath), "the live file is untouched");
+    });
+  });
+
+  it("does not prune when a caller-specified backupPath is used", () => {
+    withTmp((dir) => {
+      const settingsPath = path.join(dir, "settings.json");
+      for (let i = 1; i <= 6; i++) seedBak(dir, stampAt(i));
+      pruneOldBackups(settingsPath, { backupKeep: 2, backupPath: path.join(dir, "explicit.bak") });
+      assert.strictEqual(bakNames(dir).length, 6, "explicit backupPath disables pruning");
+    });
+  });
+
+  it("prunes on the async path with the same policy, keeping the fresh backup", async () => {
+    await withTmpAsync(async (dir) => {
+      const settingsPath = path.join(dir, "settings.json");
+      fs.writeFileSync(settingsPath, JSON.stringify({ a: 1 }), "utf8");
+      fs.utimesSync(settingsPath, 1_700_000_000, 1_700_000_000); // old source mtime
+      for (let i = 1; i <= 5; i++) seedBak(dir, stampAt(i), { mtimeSec: 1_800_000_000 + i });
+      const created = await writeJsonAtomicWithBackupAsync(settingsPath, { a: 2 }, { backup: true, backupKeep: 4 });
+      assert.ok(created && fs.existsSync(created), "async: the fresh backup survives its own prune");
+      assert.strictEqual(bakNames(dir).length, 4, "async: capped at keep");
+    });
+  });
+
+  it("never overwrites an existing backup when auto-naming (COPYFILE_EXCL + retry)", () => {
+    withTmp((dir) => {
+      const settingsPath = path.join(dir, "settings.json");
+      fs.writeFileSync(settingsPath, JSON.stringify({ v: 2 }), "utf8");
+      // Pin the stamp so we know the first name createBackup will try, then occupy it.
+      const now = () => new Date("2026-06-30T12:00:00.000Z");
+      const firstName = `${PREFIX}20260630120000000.bak`;
+      fs.writeFileSync(path.join(dir, firstName), "SENTINEL", "utf8");
+      const created = createBackup(settingsPath, { backup: true, now });
+      assert.notStrictEqual(path.basename(created), firstName, "must not reuse the occupied name");
+      assert.strictEqual(fs.readFileSync(path.join(dir, firstName), "utf8"), "SENTINEL", "the occupied backup is left intact");
+      assert.ok(fs.existsSync(created), "a fresh backup is written under a different name");
+    });
   });
 });
