@@ -4,6 +4,7 @@ const { BrowserWindow, screen } = require("electron");
 const path = require("path");
 const { keepOutOfTaskbar } = require("./taskbar");
 const { clampTextScale, scaleHeight, applyZoomToWindow } = require("./text-scale");
+const deepseekBalance = require("./deepseek-balance");
 
 const isLinux = process.platform === "linux";
 const isMac = process.platform === "darwin";
@@ -351,7 +352,8 @@ module.exports = function initSessionHud(ctx) {
       ? ctx.getNearestWorkArea(cx, cy)
       : { x: 0, y: 0, width: 1280, height: 800 };
     const layout = computeHudLayout(snapshot, { showStateLabels: ctx.sessionHudShowStateLabels !== false });
-    const height = computeHudHeight(layout.rowCount);
+    const balanceRowCount = deepseekBalance.isAvailable ? 1 : 0;
+    const height = computeHudHeight(layout.rowCount + balanceRowCount);
     const width = getHudWidth(
       ctx.sessionHudShowElapsed !== false,
       ctx.sessionHudShowStateLabels !== false,
@@ -636,7 +638,8 @@ module.exports = function initSessionHud(ctx) {
       ? ctx.getNearestWorkArea(cx, cy)
       : { x: 0, y: 0, width: 1280, height: 800 };
     const layout = computeHudLayout(snapshot, { showStateLabels: ctx.sessionHudShowStateLabels !== false });
-    const height = computeHudHeight(layout.rowCount);
+    const balanceRowCount = deepseekBalance.isAvailable ? 1 : 0;
+    const height = computeHudHeight(layout.rowCount + balanceRowCount);
     const width = getHudWidth(
       ctx.sessionHudShowElapsed !== false,
       ctx.sessionHudShowStateLabels !== false,

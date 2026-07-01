@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld("sessionHudAPI", {
   openDashboard: () => ipcRenderer.send("session-hud:open-dashboard"),
   setPinned: (value) => ipcRenderer.send("session-hud:set-pinned", !!value),
   ackCompletion: (sessionId) => ipcRenderer.invoke("session:ack-completion", sessionId),
+  getBalance: () => ipcRenderer.invoke("session-hud:get-balance"),
+  refreshBalance: () => ipcRenderer.invoke("session-hud:refresh-balance"),
   onSessionSnapshot: (cb) => {
     if (typeof cb !== "function") return () => {};
     snapshotListeners.add(cb);

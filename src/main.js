@@ -82,6 +82,7 @@ const {
 const { registerSettingsIpc } = require("./settings-ipc");
 const createSettingsEffectRouter = require("./settings-effect-router");
 const { registerSessionIpc } = require("./session-ipc");
+const deepseekBalance = require("./deepseek-balance");
 const { registerPetInteractionIpc } = require("./pet-interaction-ipc");
 const { createSystemWakeRecovery } = require("./system-wake-recovery");
 const { formatLocalTimestamp } = require("./log-timestamp");
@@ -3356,6 +3357,8 @@ registerSessionIpc({
     }
   },
   getLanWsServer: () => _lanWss,
+  getBalance: () => deepseekBalance.getBalance(),
+  refreshBalance: () => deepseekBalance.refreshBalance(),
 });
 
 function createWindow() {

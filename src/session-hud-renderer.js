@@ -4,6 +4,7 @@ const HUD_MAX_EXPANDED_ROWS = 3;
 const HUD_MAX_EXPANDED_ROWS_LABELS = 5;
 const HUD_TITLE_MAX_UNITS = 15;
 const RECENT_DONE_UNREAD_MS = 60 * 1000;
+const BALANCE_REFRESH_INTERVAL_MS = 60_000;
 
 let snapshot = { sessions: [], orderedIds: [], hudTotalNonIdle: 0, hudLastTitle: null, hudShowStateLabels: true, hudShowElapsed: true, hudShowContextUsage: true, hudPinned: false };
 let i18nPayload = { lang: "en", translations: {} };
@@ -12,6 +13,10 @@ const unreadSessions = new Set();
 const prevBadges = new Map();
 
 const hudEl = document.getElementById("hud");
+const sessionListEl = document.getElementById("session-list");
+const balanceRowEl = document.getElementById("balance-row");
+
+const REFRESH_SVG = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.8L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.8L3 16"/></svg>';
 
 function isHudSession(session) {
   return !!session && !session.headless && session.state !== "sleeping" && !session.hiddenFromHud;
@@ -87,6 +92,112 @@ function shortenHudTitle(value) {
     }
   }
   return `${trimmed}\u2026`;
+}
+
+function formatBalanceAmount(balanceInfos) {
+  if (!Array.isArray(balanceInfos) || balanceInfos.length === 0) return null;
+  const cny = balanceInfos.find((b) => b.currency === "CNY");
+  const usd = balanceInfos.find((b) => b.currency === "USD");
+  const preferred = cny || usd || balanceInfos[0];
+  const symbol = preferred.currency === "CNY" ? "¥" : (preferred.currency === "USD" ? "$" : "");
+  const total = parseFloat(preferred.total_balance);
+  return { symbol, total, amount: preferred.total_balance, text: `${symbol}${preferred.total_balance}`, currency: preferred.currency };
+}
+
+async function renderBalanceRow() {
+  if (!window.sessionHudAPI || typeof window.sessionHudAPI.getBalance !== "function") {
+    balanceRowEl.style.display = "none";
+    return;
+  }
+  if (!balanceRowEl) return;
+  balanceRowEl.replaceChildren();
+  const result = await window.sessionHudAPI.getBalance();
+  if (!result) {
+    balanceRowEl.style.display = "none";
+    return;
+  }
+  balanceRowEl.style.display = "flex";
+
+  // dot
+  const dot = document.createElement("span");
+  dot.className = "balance-dot";
+
+  // text
+  const text = document.createElement("span");
+  text.className = "balance-text";
+
+  if (result.error) {
+    dot.classList.add("dot-error");
+    text.classList.add("balance-error");
+    const errorMap = {
+      auth_failed: t("balanceAuthFailed"),
+      rate_limited: t("balanceRateLimited"),
+      network_error: t("balanceNetworkError"),
+      request_failed: t("balanceRequestFailed"),
+    };
+    text.textContent = `⚠️ ${errorMap[result.error] || result.error}`;
+  } else if (result.is_available === false) {
+    dot.classList.add("dot-error");
+    text.classList.add("balance-error");
+    text.textContent = `⚠️ ${t("balanceUnavailable")}`;
+  } else {
+    const fmt = formatBalanceAmount(result.balance_infos);
+    if (!fmt) {
+      dot.classList.add("dot-error");
+      text.classList.add("balance-error");
+      text.textContent = `⚠️ ${t("balanceDataError")}`;
+    } else {
+      if (fmt.total < 0) {
+        dot.classList.add("dot-negative");
+        text.classList.add("balance-negative");
+      } else if (fmt.total === 0) {
+        dot.classList.add("dot-warn");
+        text.classList.add("balance-negative");
+      } else {
+        dot.classList.add("dot-ok");
+      }
+      text.textContent = t("balanceTotal").replace("{symbol}", fmt.symbol).replace("{amount}", fmt.amount);
+    }
+  }
+
+  // refresh button
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "balance-refresh-btn";
+  btn.innerHTML = REFRESH_SVG;
+  btn.title = t("balanceRefreshTitle");
+
+  btn.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    btn.classList.add("spinning");
+    try {
+      if (window.sessionHudAPI && typeof window.sessionHudAPI.refreshBalance === "function") {
+        await window.sessionHudAPI.refreshBalance();
+      }
+      await renderBalanceRow();
+    } finally {
+      btn.classList.remove("spinning");
+    }
+  });
+
+  balanceRowEl.appendChild(dot);
+  balanceRowEl.appendChild(text);
+  balanceRowEl.appendChild(btn);
+}
+
+let balanceRefreshTimer = null;
+
+function scheduleBalanceRefresh() {
+  if (balanceRefreshTimer) {
+    clearTimeout(balanceRefreshTimer);
+    balanceRefreshTimer = null;
+  }
+  if (window.sessionHudAPI && typeof window.sessionHudAPI.getBalance === "function") {
+    balanceRefreshTimer = setTimeout(() => {
+      renderBalanceRow().catch(() => {});
+      scheduleBalanceRefresh();
+    }, BALANCE_REFRESH_INTERVAL_MS);
+  }
 }
 
 function orderedHudSessions(currentSnapshot) {
@@ -357,7 +468,8 @@ function createPinButton(pinned) {
 function render() {
   const sessions = orderedHudSessions(snapshot);
   updateUnread(sessions);
-  hudEl.replaceChildren();
+  void renderBalanceRow();
+  sessionListEl.replaceChildren();
   hudEl.classList.add("has-pin");
   if (!sessions.length) return;
 
@@ -395,6 +507,7 @@ async function init() {
 
   i18nPayload = await window.sessionHudAPI.getI18n() || i18nPayload;
   render();
+  scheduleBalanceRefresh();
   setInterval(updateElapsedLabels, 1000);
 }
 

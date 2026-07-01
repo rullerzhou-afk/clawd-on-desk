@@ -291,19 +291,100 @@ body { padding: 2px 3px 8px; }
   transform-origin: 50% 2px;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .dot-running {
-    animation: none;
-  }
+.balance-row {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  flex: 0 0 28px;
+  padding: 0 10px;
+  gap: 6px;
+  border-bottom: 1px solid var(--hud-border);
+  background: inherit;
+}
 
-  .unread-bell svg {
+.balance-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.balance-dot.dot-ok { background: var(--running); }
+.balance-dot.dot-warn { background: var(--interrupted); }
+.balance-dot.dot-negative { background: #dc2626; }
+.balance-dot.dot-error { background: var(--idle); }
+
+.balance-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text);
+}
+.balance-text.balance-negative {
+  color: #dc2626;
+}
+.balance-text.balance-error {
+  color: #dc2626;
+}
+
+@media (prefers-color-scheme: dark) {
+  .balance-dot.dot-negative { background: #f87171; }
+  .balance-text.balance-negative { color: #f87171; }
+  .balance-text.balance-error { color: #f87171; }
+}
+
+.balance-refresh-btn {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  opacity: 0.55;
+  transition: opacity 100ms ease, background 100ms ease, color 100ms ease;
+}
+
+.balance-refresh-btn:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+@media (prefers-color-scheme: dark) {
+  .balance-refresh-btn:hover {
+    background: rgba(255, 255, 255, 0.10);
+  }
+}
+
+.balance-refresh-btn.spinning svg {
+  animation: balance-spin 0.6s linear infinite;
+}
+
+@keyframes balance-spin {
+  100% { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .balance-refresh-btn.spinning svg {
     animation: none;
   }
 }
 </style>
 </head>
 <body>
-  <div id="hud" class="hud"></div>
+  <div id="hud" class="hud">
+    <div id="balance-row" class="balance-row" style="display:none"></div>
+    <div id="session-list"></div>
+  </div>
   <script src="./session-hud-renderer.js"></script>
 </body>
 </html>

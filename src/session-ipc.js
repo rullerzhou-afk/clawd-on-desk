@@ -15,6 +15,8 @@ function registerSessionIpc(options = {}) {
   const showDashboard = requiredDependency(options.showDashboard, "showDashboard");
   const setSessionHudPinned = requiredDependency(options.setSessionHudPinned, "setSessionHudPinned");
   const ackSessionCompletion = requiredDependency(options.ackSessionCompletion, "ackSessionCompletion");
+  const getBalance = options.getBalance;
+  const refreshBalance = options.refreshBalance;
   const disposers = [];
 
   function handle(channel, listener) {
@@ -41,6 +43,9 @@ function registerSessionIpc(options = {}) {
   );
   on("session-hud:open-dashboard", () => showDashboard({ source: "hud" }));
   on("session-hud:set-pinned", (_event, value) => setSessionHudPinned(!!value));
+
+  handle("session-hud:get-balance", () => (typeof getBalance === "function" ? getBalance() : null));
+  handle("session-hud:refresh-balance", () => (typeof refreshBalance === "function" ? refreshBalance() : null));
 
   on("settings:open-dashboard", () => showDashboard({ source: "settings" }));
   on("show-dashboard", () => showDashboard());
