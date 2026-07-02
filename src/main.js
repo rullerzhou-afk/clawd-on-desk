@@ -1233,7 +1233,12 @@ function setHitWinFocusable(focusable) {
   // after a fullscreen exit (or a screenshot overlay dismissing) flashes a
   // taskbar button for the hit window (#586). Delete the tab again in the
   // same turn, before the taskbar repaints.
-  keepOutOfTaskbar(hitWin);
+  // true-direction ONLY: SetFocusable(false) already deletes the tab
+  // internally, and re-deleting on that path broke cursor-drag while a
+  // fullscreen app was foreground (real-machine repro during #586 review;
+  // exact Windows-side mechanism unconfirmed). Do not "simplify" this into
+  // an unconditional call.
+  if (next) keepOutOfTaskbar(hitWin);
 }
 
 // ── Mini Mode — delegated to src/mini.js ──
