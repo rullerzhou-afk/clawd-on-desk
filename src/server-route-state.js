@@ -155,6 +155,19 @@ function handleStatePost(req, res, options) {
         ? data.ghostty_terminal_id.trim()
         : null;
       const toolName = typeof data.tool_name === "string" && data.tool_name ? data.tool_name : null;
+      // #583: hook-reported stdin diagnostics, attached only when the hook's
+      // stdin payload carried no session_id. Normalized here so state.js can
+      // log it without trusting hook-side shapes.
+      const stdinDiag = data.stdin_diag && typeof data.stdin_diag === "object"
+        ? {
+            bytes: Number.isFinite(data.stdin_diag.bytes) ? Math.max(0, Math.floor(data.stdin_diag.bytes)) : null,
+            timedOut: data.stdin_diag.timed_out === true,
+            durationMs: Number.isFinite(data.stdin_diag.duration_ms) ? Math.max(0, Math.floor(data.stdin_diag.duration_ms)) : null,
+            parseError: typeof data.stdin_diag.parse_error === "string" && data.stdin_diag.parse_error
+              ? data.stdin_diag.parse_error.slice(0, 120)
+              : null,
+          }
+        : null;
       const toolUseId = normalizeHookToolUseId(
         data.tool_use_id ?? data.toolUseId ?? data.toolUseID
       );
@@ -293,6 +306,7 @@ function handleStatePost(req, res, options) {
             backgroundTasksCount,
             sessionCronsCount,
             stopHookActive,
+            stdinDiag,
             ...(agentIdentity.defaulted ? { agentIdDefaulted: true } : {}),
           });
         }

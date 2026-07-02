@@ -946,6 +946,20 @@ function describeSession(sessionId, session) {
   ].join(" ");
 }
 
+// #583: renders hook-reported stdin diagnostics (present only when the hook's
+// stdin payload had no session_id) for the event log line. bytes:0 + timeout:1
+// means stdin never reached the hook; bytes>0 + stdinErr means it arrived
+// mangled — entirely different culprits, distinguishable from one log line.
+function formatStdinDiag(diag) {
+  if (!diag || typeof diag !== "object") return "";
+  const bytes = Number.isFinite(diag.bytes) ? diag.bytes : "-";
+  const durationMs = Number.isFinite(diag.durationMs) ? diag.durationMs : "-";
+  const err = typeof diag.parseError === "string" && diag.parseError
+    ? ` stdinErr="${diag.parseError.replace(/\s+/g, " ").slice(0, 80)}"`
+    : "";
+  return ` stdin=bytes:${bytes},timeout:${diag.timedOut === true ? 1 : 0},ms:${durationMs}${err}`;
+}
+
 function resolvePidReachable(existing, agentPid, sourcePid) {
   if (agentPid && isProcessAlive(agentPid)) return true;
   if (sourcePid && isProcessAlive(sourcePid)) return true;
@@ -1234,6 +1248,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     backgroundTasksCount = 0,
     sessionCronsCount = 0,
     stopHookActive = false,
+    stdinDiag = null,
   } = opts;
   if (startupRecoveryActive) {
     startupRecoveryActive = false;
@@ -1452,7 +1467,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     return;
   }
 
-  debugSession(`event ${describeSession(sessionId, existing)} -> incoming=${state}/${event || "-"} hint=${displayHint || "-"} source=${hookSource || "-"}`);
+  debugSession(`event ${describeSession(sessionId, existing)} -> incoming=${state}/${event || "-"} hint=${displayHint || "-"} source=${hookSource || "-"}${formatStdinDiag(stdinDiag)}`);
 
   const pidReachable = resolvePidReachable(existing, srcAgentPid, srcPid);
 
@@ -2182,6 +2197,7 @@ return {
   emitSessionSnapshot, broadcastSessionSnapshot, getLastSessionSnapshot,
   getActiveSessionAliasKeys,
   dismissSession,
+  formatStdinDiag,
   updateSessionFocusMetadata,
   clearPermissionNotification,
   ackSessionCompletion,

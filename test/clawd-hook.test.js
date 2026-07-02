@@ -13,6 +13,7 @@ const path = require("path");
 
 const {
   buildStateBody,
+  attachStdinDiag,
   extractSessionTitleFromTranscript,
   extractApiErrorFromEntries,
   extractLastAssistantTextFromEntries,
@@ -1027,5 +1028,54 @@ describe("buildStateBody — Stop → ApiError upgrade", () => {
     );
     assert.strictEqual(body.event, "Stop");
     assert.strictEqual(body.state, "attention");
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// attachStdinDiag (#583)
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("attachStdinDiag", () => {
+  const makeBody = () => ({ state: "idle", session_id: "default", event: "SessionStart" });
+
+  it("attaches diagnostics when the stdin payload had no session_id", () => {
+    const body = makeBody();
+    attachStdinDiag(body, {
+      payload: {},
+      bytes: 0,
+      timedOut: true,
+      parseError: null,
+      durationMs: 2001,
+    });
+    assert.deepStrictEqual(body.stdin_diag, { bytes: 0, timed_out: true, duration_ms: 2001 });
+  });
+
+  it("includes parse_error only when present", () => {
+    const body = makeBody();
+    attachStdinDiag(body, {
+      payload: {},
+      bytes: 17,
+      timedOut: false,
+      parseError: "Unexpected token",
+      durationMs: 3,
+    });
+    assert.deepStrictEqual(body.stdin_diag, {
+      bytes: 17,
+      timed_out: false,
+      duration_ms: 3,
+      parse_error: "Unexpected token",
+    });
+  });
+
+  it("does not attach anything when session_id arrived", () => {
+    const body = makeBody();
+    attachStdinDiag(body, {
+      payload: { session_id: "real-sid" },
+      bytes: 500,
+      timedOut: false,
+      parseError: null,
+      durationMs: 4,
+    });
+    assert.strictEqual(body.stdin_diag, undefined);
   });
 });

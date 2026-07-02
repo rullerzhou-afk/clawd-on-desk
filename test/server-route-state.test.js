@@ -165,6 +165,7 @@ describe("server-route-state POST", () => {
         backgroundTasksCount: 0,
         sessionCronsCount: 0,
         stopHookActive: false,
+        stdinDiag: null,
       },
     ]]);
   });
@@ -196,6 +197,39 @@ describe("server-route-state POST", () => {
     assert.strictEqual(res.statusCode, 200);
     assert.strictEqual(res.calls.updateSession[0][1], "attention");
     assert.strictEqual(res.calls.updateSession[0][3].assistantLastOutput, "Short answer.");
+  });
+
+  it("normalizes and passes stdin_diag to updateSession (#583)", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      event: "SessionStart",
+      stdin_diag: { bytes: 0, timed_out: true, duration_ms: 2001.7, parse_error: "Unexpected end of JSON input" },
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(res.calls.updateSession[0][3].stdinDiag, {
+      bytes: 0,
+      timedOut: true,
+      durationMs: 2001,
+      parseError: "Unexpected end of JSON input",
+    });
+  });
+
+  it("passes stdinDiag=null when stdin_diag is absent or malformed", async () => {
+    const absent = await callStatePost(JSON.stringify({
+      state: "idle",
+      session_id: "sid",
+      event: "SessionStart",
+    }));
+    assert.strictEqual(absent.calls.updateSession[0][3].stdinDiag, null);
+
+    const malformed = await callStatePost(JSON.stringify({
+      state: "idle",
+      session_id: "sid",
+      event: "SessionStart",
+      stdin_diag: "bytes:0",
+    }));
+    assert.strictEqual(malformed.calls.updateSession[0][3].stdinDiag, null);
   });
 
   it("passes valid context_usage to updateSession", async () => {

@@ -346,34 +346,66 @@ function createPidResolver(options) {
 }
 
 // ── readStdinJson ────────────────────────────────────────────────────────────
-// Reads stdin, parses JSON, returns Promise<Object>.
-// 400ms timeout + finishOnce protection. Returns {} on parse failure or timeout.
+// Reads stdin until EOF, parses JSON. EOF-driven with a safety-net timer:
+// agent hosts write the payload and close stdin within a few ms even through a
+// PowerShell intermediary (measured 3-5ms incl. 200KB bodies on the #583
+// repro rig), so the timer only fires in pathological environments — e.g. a
+// PATH shim or security software swallowing stdin. Raised from 400ms so
+// slow-but-alive forwarding still lands inside the window; agent-side hook
+// timeouts (5s+) leave ample room. Returns {} on parse failure or timeout.
+//
+// readStdinJsonDetailed() additionally reports what the read saw (bytes
+// received, timed out, parse error, duration) so a missing session_id can be
+// triaged from logs: "never arrived" (bytes:0, timeout) vs "arrived broken"
+// (bytes>0, parse error) point at entirely different culprits.
 
-function readStdinJson() {
+const STDIN_READ_TIMEOUT_MS = 2000;
+
+function readStdinJsonDetailed(options = {}) {
+  const stream = options.stream || process.stdin;
+  const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+    ? options.timeoutMs
+    : STDIN_READ_TIMEOUT_MS;
   return new Promise((resolve) => {
+    const startedAt = Date.now();
     const chunks = [];
     let done = false;
     let timer = null;
 
     const onData = (c) => chunks.push(c);
-    function finish() {
+    const onEnd = () => finish(false);
+    function finish(timedOut) {
       if (done) return;
       done = true;
       if (timer) clearTimeout(timer);
-      process.stdin.off("data", onData);
-      process.stdin.off("end", finish);
+      stream.off("data", onData);
+      stream.off("end", onEnd);
+      const raw = Buffer.concat(chunks);
       let payload = {};
+      let parseError = null;
       try {
-        const raw = Buffer.concat(chunks).toString();
-        if (raw.trim()) payload = JSON.parse(raw);
-      } catch {}
-      resolve(payload);
+        const text = raw.toString();
+        if (text.trim()) payload = JSON.parse(text);
+      } catch (err) {
+        parseError = String((err && err.message) || "parse error").slice(0, 120);
+      }
+      resolve({
+        payload,
+        bytes: raw.length,
+        timedOut: timedOut === true,
+        parseError,
+        durationMs: Date.now() - startedAt,
+      });
     }
 
-    process.stdin.on("data", onData);
-    process.stdin.on("end", finish);
-    timer = setTimeout(finish, 400);
+    stream.on("data", onData);
+    stream.on("end", onEnd);
+    timer = setTimeout(() => finish(true), timeoutMs);
   });
+}
+
+function readStdinJson() {
+  return readStdinJsonDetailed().then((result) => result.payload);
 }
 
 function buildElectronLaunchConfig(projectDir, options = {}) {
@@ -400,5 +432,7 @@ module.exports = {
   getPlatformConfig,
   createPidResolver,
   readStdinJson,
+  readStdinJsonDetailed,
+  STDIN_READ_TIMEOUT_MS,
   buildElectronLaunchConfig,
 };
