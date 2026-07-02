@@ -255,6 +255,19 @@ test("getRendererConfig reports hasRoamVisual only for a dedicated roam binding"
       states: { idle: ["idle.svg"], roam: ["crabwalk.svg"] },
     }), fixture);
     assert.strictEqual(ctxDedicated.getRendererConfig().hasRoamVisual, true);
+
+    // Multi-entry bindings are author intent, not the resolver's synthetic
+    // single-entry fallback — dedicated regardless of entry order or an idle
+    // file appearing among them (the resolver picks randomly from the array).
+    const ctxMultiTail = createThemeContext(makeTheme({
+      states: { idle: ["idle.svg"], roam: ["idle.svg", "walk.svg"] },
+    }), fixture);
+    assert.strictEqual(ctxMultiTail.getRendererConfig().hasRoamVisual, true);
+
+    const ctxMultiHead = createThemeContext(makeTheme({
+      states: { idle: ["idle.svg"], roam: ["walk.svg", "idle.svg"] },
+    }), fixture);
+    assert.strictEqual(ctxMultiHead.getRendererConfig().hasRoamVisual, true);
   } finally {
     fixture.cleanup();
   }

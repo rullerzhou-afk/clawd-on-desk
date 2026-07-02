@@ -1025,6 +1025,12 @@ function renderStateFile(state, svg) {
   const pendingChannelMatches = !alreadyPending || ((pendingNext.tagName === "OBJECT") === desiredObjectChannel);
 
   if ((alreadyDisplayed && displayedChannelMatches) || (alreadyPending && pendingChannelMatches)) {
+    // Same file, no swap — but the flip is state-dependent (mini flip vs roam
+    // heading), so re-apply it for the incoming state. E.g. a leftward roam
+    // entering mini pre-entry reuses the same crabwalk asset; without this the
+    // roam mirror would leak into the mini entry (and vice versa).
+    if (alreadyDisplayed) applyMiniFlip(clawdEl, state);
+    if (alreadyPending && pendingNext) applyMiniFlip(pendingNext, state);
     if (alreadyDisplayed) {
       if (needsEyeTracking(state) && !eyeTarget && !_trackingLayers) {
         if (clawdEl.tagName === "OBJECT") attachEyeTracking(clawdEl);
@@ -1563,10 +1569,12 @@ if (window.electronAPI && typeof window.electronAPI.onCloudlingPointer === "func
 if (window.electronAPI && typeof window.electronAPI.onRoamHeading === "function") {
   window.electronAPI.onRoamHeading((headingLeft) => {
     _roamHeadingLeft = !!headingLeft;
-    // Re-apply to the element already on screen: main sends the heading just
-    // before applyState("roam"), but consecutive walks reuse the displayed
-    // roam visual without a swap, so the flip must update in place too.
+    // Re-apply in place: consecutive walks reuse the displayed roam visual
+    // without a swap, and if this message lands after the state-change (IPC
+    // order across channels is not contractual) the flip captured at IMG
+    // creation is stale — refresh both the on-screen and the pending element.
     applyMiniFlip(clawdEl, currentState);
+    if (pendingNext) applyMiniFlip(pendingNext, currentState);
   });
 }
 
