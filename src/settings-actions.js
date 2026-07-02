@@ -210,7 +210,7 @@ const updateRegistry = {
   },
 
   // ── Pure data prefs (function-form: validator only) ──
-  lang: requireEnum("lang", ["en", "zh", "zh-TW", "ko", "ja"]),
+  lang: requireEnum("lang", ["en", "zh", "zh-TW", "ko", "ja", "es"]),
   tutorialSeen: requireBoolean("tutorialSeen"),
   soundMuted: requireBoolean("soundMuted"),
   soundVolume: requireNumberInRange("soundVolume", 0, 1),

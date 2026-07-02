@@ -104,7 +104,7 @@ const SCHEMA = {
   preMiniX: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
   preMiniY: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
   // Pure data prefs
-  lang: { type: "string", default: "en", enum: ["en", "zh", "zh-TW", "ko", "ja"] },
+  lang: { type: "string", default: "en", enum: ["en", "zh", "zh-TW", "ko", "ja", "es"] },
   showTray: { type: "boolean", default: true },
   // Default off (macOS): a fresh install runs as an accessory/agent app — pet +
   // menu-bar icon, no Dock tile. Existing users keep their Dock — a persisted
@@ -1007,6 +1007,7 @@ function mapLocaleToLang(locale) {
   }
   if (l === "ko" || l.startsWith("ko-")) return "ko";
   if (l === "ja" || l.startsWith("ja-")) return "ja";
+  if (l === "es" || l.startsWith("es-")) return "es";
   return "en";
 }
 
