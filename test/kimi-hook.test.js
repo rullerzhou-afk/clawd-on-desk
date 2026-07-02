@@ -615,6 +615,22 @@ describe("Kimi Code native events (#563)", () => {
     }
   });
 
+  it("rejected PermissionResult preserves state (PostToolUseFailure owns the visual)", () => {
+    const rejected = buildStateBody(
+      "PermissionResult",
+      { session_id: "s", tool_name: "Bash", decision: "rejected" },
+      resolve
+    );
+    assert.strictEqual(rejected.preserve_state, true);
+
+    const approved = buildStateBody(
+      "PermissionResult",
+      { session_id: "s", tool_name: "Bash", decision: "approved" },
+      resolve
+    );
+    assert.strictEqual(approved.preserve_state, undefined);
+  });
+
   it("maps Interrupt (user Esc) to idle", () => {
     const body = buildStateBody(
       "Interrupt",

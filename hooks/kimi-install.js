@@ -206,6 +206,13 @@ function validateKimiCodeHookBlocks(blocksText, allowedEvents) {
         throw new Error(`kimi-code hook validation: illegal key "${key}" (strict schema would drop the whole hooks section)`);
       }
     }
+    // Upstream treats matcher/timeout as optional, but our generator always
+    // writes all four keys — a missing one means the generator broke.
+    for (const key of KIMI_CODE_ALLOWED_HOOK_KEYS) {
+      if (!keys.has(key)) {
+        throw new Error(`kimi-code hook validation: missing key "${key}"`);
+      }
+    }
     const eventValue = (keys.get("event") || "").replace(/^"|"$/g, "");
     if (!allowed.has(eventValue)) {
       throw new Error(`kimi-code hook validation: unknown event "${eventValue}"`);
@@ -400,18 +407,31 @@ function registerKimiHooks(options = {}) {
       if (!options.silent) console.warn(`Clawd: Kimi hook sync failed for ${target.settingsPath}: ${err.message}`);
     }
   }
+  return aggregateRegisterResults(results, errors);
+}
+
+// Pure aggregation over per-target register results. A failed target must be
+// VISIBLE to integration-sync: normalizeCountSyncResult only reads counts
+// unless a `status` string is present, so a partial failure that left counts
+// looking healthy ("legacy already current, kimi-code write failed") — or a
+// zero-count failure it would misread as "not installed" — gets an explicit
+// error status with the failing paths in the message.
+function aggregateRegisterResults(results, errors) {
   const aggregate = {
     added: results.reduce((sum, r) => sum + (r.added || 0), 0),
     skipped: results.reduce((sum, r) => sum + (r.skipped || 0), 0),
     updated: results.reduce((sum, r) => sum + (r.updated || 0), 0),
     targets: results,
   };
-  // Both targets failing with nothing accomplished should surface as an error
-  // (integration-sync converts the throw into an error status); a partial
-  // failure still reports the successful target's counts.
-  if (errors.length === targets.length && aggregate.added + aggregate.skipped + aggregate.updated === 0) {
+  if (errors.length === 0) return aggregate;
+  // Every target failed outright: throw, matching the single-target contract
+  // (integration-sync's catch converts it into an error status).
+  if (errors.length === results.length) {
     throw errors[0];
   }
+  const failed = results.filter((r) => r.error);
+  aggregate.status = "error";
+  aggregate.message = `Kimi hook sync failed for ${failed.map((r) => r.settingsPath).join(", ")}: ${failed[0].error}`;
   return aggregate;
 }
 
@@ -479,6 +499,7 @@ module.exports = {
   findKimiHookCommands,
   stripClawdKimiHookBlocks,
   validateKimiCodeHookBlocks,
+  aggregateRegisterResults,
   MODE_EXPLICIT,
   MODE_SUSPECT,
   FLAVOR_LEGACY,

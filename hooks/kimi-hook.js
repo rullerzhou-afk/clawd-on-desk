@@ -307,6 +307,16 @@ function buildStateBody(event, payload, resolve) {
     if (typeof payload.decision === "string" && payload.decision) {
       body.permission_decision = payload.decision;
     }
+    // Rejected approval: upstream already fired PostToolUseFailure (it
+    // arrives BEFORE PermissionResult on this path) and the pet played the
+    // error one-shot. Pushing "working" now would overwrite that with a
+    // running look while nothing is running. Keep the stored state and let
+    // the event clear the permission hold; the model's follow-up events
+    // (text, Stop) advance the state naturally. Approved keeps plain
+    // "working" — the tool really is about to run.
+    if (event === "PermissionResult" && payload.decision === "rejected") {
+      body.preserve_state = true;
+    }
   }
 
   if (process.env.CLAWD_REMOTE) {

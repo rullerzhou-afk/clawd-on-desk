@@ -605,6 +605,34 @@ describe("Kimi Code hook installer (kimi-code flavor, #563)", () => {
     assert.ok(!fs.readFileSync(kimiCode.settingsPath, "utf8").includes("kimi-hook.js"));
   });
 
+  it("aggregateRegisterResults surfaces partial failure as an error status", () => {
+    const { aggregateRegisterResults } = require("../hooks/kimi-install");
+    const ok = { added: 0, skipped: 1, updated: 0, flavor: "legacy", settingsPath: "/a/.kimi/config.toml" };
+    const bad = {
+      added: 0, skipped: 0, updated: 0,
+      flavor: "kimi-code", settingsPath: "/a/.kimi-code/config.toml",
+      error: "validation failed",
+    };
+
+    // Partial failure: counts stay, but status must flip to error so
+    // integration-sync does not report "ok" / "not installed".
+    const partial = aggregateRegisterResults([ok, bad], [new Error("validation failed")]);
+    assert.strictEqual(partial.status, "error");
+    assert.ok(partial.message.includes(".kimi-code"));
+    assert.strictEqual(partial.skipped, 1);
+
+    // All targets failing throws (single-target contract).
+    assert.throws(
+      () => aggregateRegisterResults([{ ...bad }, { ...bad }], [new Error("x"), new Error("y")]),
+      /x/
+    );
+
+    // No failure: no status field, counts only.
+    const clean = aggregateRegisterResults([ok], []);
+    assert.strictEqual(clean.status, undefined);
+    assert.strictEqual(clean.skipped, 1);
+  });
+
   it("validateKimiCodeHookBlocks rejects blocks the strict schema would drop", () => {
     assert.throws(
       () => validateKimiCodeHookBlocks('[[hooks]]\nevent = "NotARealEvent"\ncommand = \'x\'\nmatcher = ""\ntimeout = 30\n', KIMI_CODE_HOOK_EVENTS),
@@ -617,6 +645,10 @@ describe("Kimi Code hook installer (kimi-code flavor, #563)", () => {
     assert.throws(
       () => validateKimiCodeHookBlocks('[[hooks]]\nevent = "Stop"\ncommand = \'x\'\nmatcher = ""\ntimeout = 999\n', KIMI_CODE_HOOK_EVENTS),
       /timeout out of range/
+    );
+    assert.throws(
+      () => validateKimiCodeHookBlocks('[[hooks]]\nevent = "Stop"\ncommand = \'x\'\ntimeout = 30\n', KIMI_CODE_HOOK_EVENTS),
+      /missing key "matcher"/
     );
   });
 });
