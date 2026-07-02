@@ -12,6 +12,9 @@ const {
 const { resolveHookAgentId } = require("./server-agent-id");
 const { resolveCodexOfficialHookState } = require("./server-codex-official-turns");
 const { normalizeTranscriptPath } = require("./transcript-path");
+const { normalizeQuotaGroup } = require("../hooks/quota-bucket");
+const { ANTIGRAVITY_QUOTA_FIELDS } = require("../hooks/antigravity-context-usage");
+const { CLAUDE_QUOTA_FIELDS } = require("../hooks/claude-rate-limits");
 
 // /state POST body size cap. Raised 1024 → 4096 → 16384: a CJK
 // assistant_last_output (3 UTF-8 bytes/char) on a Stop completion blew past
@@ -79,8 +82,19 @@ function normalizeContextUsage(value) {
     out.percent = Math.max(0, Math.min(100, Math.round((used / out.limit) * 100)));
   }
 
-  if (value.source === "claude" || value.source === "codex") out.source = value.source;
+  if (value.source === "claude" || value.source === "codex" || value.source === "antigravity") out.source = value.source;
   return out;
+}
+
+// Account-wide rate-limit quota. Re-validated here rather than trusted from
+// the hook, matching normalizeContextUsage. Two independent sources - see
+// hooks/antigravity-context-usage.js and hooks/claude-rate-limits.js.
+function normalizeAntigravityQuota(value) {
+  return normalizeQuotaGroup(value, ANTIGRAVITY_QUOTA_FIELDS);
+}
+
+function normalizeClaudeQuota(value) {
+  return normalizeQuotaGroup(value, CLAUDE_QUOTA_FIELDS);
 }
 
 function sendStateHealthResponse(res, options) {
@@ -180,6 +194,8 @@ function handleStatePost(req, res, options) {
       const rawTitle = typeof data.session_title === "string" ? data.session_title.trim() : "";
       const sessionTitle = rawTitle || null;
       const contextUsage = normalizeContextUsage(data.context_usage);
+      const antigravityQuota = normalizeAntigravityQuota(data.antigravity_quota);
+      const claudeQuota = normalizeClaudeQuota(data.claude_quota);
       const assistantLastOutput = normalizeAssistantLastOutput(data.assistant_last_output);
       const assistantLastOutputTruncated = data.assistant_last_output_truncated === true;
       const transcriptPath = normalizeTranscriptPath(data.transcript_path);
@@ -296,6 +312,8 @@ function handleStatePost(req, res, options) {
             displayHint: display_svg,
             sessionTitle,
             contextUsage,
+            antigravityQuota,
+            claudeQuota,
             assistantLastOutput,
             assistantLastOutputTruncated,
             toolName,

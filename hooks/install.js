@@ -1403,16 +1403,101 @@ function isAutoStartRegistered() {
   }
 }
 
+const STATUSLINE_MARKER = "claude-statusline.js";
+
+function hasClaudeSettingsDir(homeDir) {
+  return fs.existsSync(path.join(homeDir, ".claude"));
+}
+
+// Claude Code's statusLine setting is a single slot, not an event-keyed map
+// like hooks - only one script can render the visible status line at a
+// time. We only ever take that slot when it is empty or already ours, and
+// unregister only clears it when the command still carries our marker. A
+// user's own (or a third-party) statusline script is never touched. Mirrors
+// hooks/antigravity-install.js registerAntigravityStatusline.
+function registerClaudeStatusline(options = {}) {
+  const homeDir = options.homeDir || os.homedir();
+  const settingsPath = options.settingsPath || path.join(homeDir, ".claude", "settings.json");
+
+  if (!options.settingsPath && !hasClaudeSettingsDir(homeDir)) {
+    if (!options.silent) console.log("Clawd: Claude Code settings not found - skipping statusline registration");
+    return { installed: false, changed: false, skippedExisting: false, settingsPath };
+  }
+
+  let settings = {};
+  try {
+    settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+  } catch (err) {
+    if (err.code !== "ENOENT") throw new Error(`Failed to read settings.json: ${err.message}`);
+  }
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) settings = {};
+
+  const existing = settings.statusLine && typeof settings.statusLine === "object" ? settings.statusLine : null;
+  const existingIsOurs = !!(existing && typeof existing.command === "string" && existing.command.includes(STATUSLINE_MARKER));
+
+  if (existing && !existingIsOurs) {
+    if (!options.silent) console.log(`Clawd: existing Claude Code statusline detected at ${settingsPath} - leaving it in place`);
+    return { installed: true, changed: false, skippedExisting: true, settingsPath };
+  }
+
+  const scriptPath = asarUnpackedPath(path.resolve(__dirname, "claude-statusline.js").replace(/\\/g, "/"));
+  const nodeBin = (options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin()) || "node";
+  const platform = options.platform || process.platform;
+  const command = platform === "win32" ? `& "${nodeBin}" "${scriptPath}"` : `"${nodeBin}" "${scriptPath}"`;
+  const desired = { type: "command", command, padding: 0 };
+
+  const changed = !existing || JSON.stringify(existing) !== JSON.stringify(desired);
+  if (changed) {
+    settings.statusLine = desired;
+    writeJsonAtomic(settingsPath, settings);
+  }
+
+  if (!options.silent) {
+    console.log(`Clawd Claude Code statusline -> ${settingsPath}${changed ? " (updated)" : " (already up to date)"}`);
+  }
+
+  return { installed: true, changed, skippedExisting: false, settingsPath };
+}
+
+function unregisterClaudeStatusline(options = {}) {
+  const homeDir = options.homeDir || os.homedir();
+  const settingsPath = options.settingsPath || path.join(homeDir, ".claude", "settings.json");
+  let settings = {};
+  try {
+    settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+  } catch (err) {
+    if (err.code !== "ENOENT") throw new Error(`Failed to read settings.json: ${err.message}`);
+  }
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) settings = {};
+
+  const existing = settings.statusLine && typeof settings.statusLine === "object" ? settings.statusLine : null;
+  const existingIsOurs = !!(existing && typeof existing.command === "string" && existing.command.includes(STATUSLINE_MARKER));
+
+  if (!existingIsOurs) {
+    return { installed: !!existing, removed: 0, changed: false, settingsPath };
+  }
+
+  delete settings.statusLine;
+  const backupPath = writeJsonAtomicWithBackup(settingsPath, settings, options);
+  if (!options.silent) console.log(`Clawd Claude Code statusline removed -> ${settingsPath}`);
+  const result = { installed: true, removed: 1, changed: true, settingsPath };
+  if (options.backup === true) result.backupPath = backupPath;
+  return result;
+}
+
 // Export for use by main.js
 module.exports = {
   DEFAULT_PARENT_DIR,
   DEFAULT_CONFIG_PATH,
+  STATUSLINE_MARKER,
   registerHooks,
   registerHooksAsync,
   unregisterHooks,
   unregisterHooksAsync,
   unregisterAutoStart,
   isAutoStartRegistered,
+  registerClaudeStatusline,
+  unregisterClaudeStatusline,
   __test: {
     parseClaudeVersion,
     getWindowsClaudePathSuffixes,

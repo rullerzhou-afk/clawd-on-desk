@@ -247,4 +247,27 @@ describe("dashboard window", () => {
     assert.doesNotMatch(rendererSource, /session\.platform === "webui"/);
     assert.match(preloadSource, /dashboard:hide-session/);
   });
+
+  it("wires the account-quota summary bar (Antigravity + Claude Code) into the dashboard header", () => {
+    const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "dashboard-renderer.js"), "utf8");
+    const htmlSource = fs.readFileSync(path.join(__dirname, "..", "src", "dashboard.html"), "utf8");
+
+    assert.match(htmlSource, /id="quotaSummary" class="quota-summary" hidden/);
+    assert.match(rendererSource, /renderQuotaSummary\(sessions\)/);
+    assert.match(rendererSource, /resolveQuotaForDisplay\(sessions, agentId, field\)/);
+    assert.match(rendererSource, /resolveQuotaForDisplay\(sessions, "antigravity-cli", "antigravityQuota"\)/);
+    assert.match(rendererSource, /resolveQuotaForDisplay\(sessions, "claude-code", "claudeQuota"\)/);
+    for (const key of [
+      "dashboardQuotaSectionAntigravity",
+      "dashboardQuotaGroupGemini",
+      "dashboardQuotaGroupThirdParty",
+      "dashboardQuotaSectionClaudeCode",
+      "dashboardQuotaFiveHour",
+      "dashboardQuotaWeekly",
+      "dashboardQuotaResetIn",
+      "dashboardQuotaResetOn",
+    ]) {
+      assert.match(rendererSource, new RegExp(key));
+    }
+  });
 });

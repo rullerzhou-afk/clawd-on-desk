@@ -358,6 +358,64 @@ describe("state-session-snapshot builder", () => {
     });
   });
 
+  it("includes antigravityQuota in snapshot entries", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["antigravity:s1", session("idle", {
+        agentId: "antigravity-cli",
+        antigravityQuota: {
+          geminiFiveHour: { usedPercent: 100 },
+          geminiWeekly: { usedPercent: 98, resetInSeconds: 431180 },
+        },
+      })],
+    ]), { statePriority: STATE_PRIORITY });
+
+    assert.deepStrictEqual(snapshot.sessions[0].antigravityQuota, {
+      geminiFiveHour: { usedPercent: 100 },
+      geminiWeekly: { usedPercent: 98, resetInSeconds: 431180 },
+    });
+  });
+
+  it("snapshot signature changes when antigravityQuota changes", () => {
+    const withoutQuota = buildSessionSnapshot(new Map([
+      ["antigravity:s1", session("idle", { agentId: "antigravity-cli" })],
+    ]), { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+    const withQuota = buildSessionSnapshot(new Map([
+      ["antigravity:s1", session("idle", {
+        agentId: "antigravity-cli",
+        antigravityQuota: { geminiWeekly: { usedPercent: 98 } },
+      })],
+    ]), { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+
+    assert.notStrictEqual(sessionSnapshotSignature(withoutQuota), sessionSnapshotSignature(withQuota));
+  });
+
+  it("includes claudeQuota in snapshot entries", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["s1", session("idle", {
+        claudeQuota: {
+          claudeFiveHour: { usedPercent: 24, resetInSeconds: 25600 },
+          claudeWeekly: { usedPercent: 41 },
+        },
+      })],
+    ]), { statePriority: STATE_PRIORITY });
+
+    assert.deepStrictEqual(snapshot.sessions[0].claudeQuota, {
+      claudeFiveHour: { usedPercent: 24, resetInSeconds: 25600 },
+      claudeWeekly: { usedPercent: 41 },
+    });
+  });
+
+  it("snapshot signature changes when claudeQuota changes", () => {
+    const withoutQuota = buildSessionSnapshot(new Map([
+      ["s1", session("idle")],
+    ]), { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+    const withQuota = buildSessionSnapshot(new Map([
+      ["s1", session("idle", { claudeQuota: { claudeWeekly: { usedPercent: 41 } } })],
+    ]), { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+
+    assert.notStrictEqual(sessionSnapshotSignature(withoutQuota), sessionSnapshotSignature(withQuota));
+  });
+
   it("marks detached ended idle sessions hidden from HUD only when cleanup is enabled and pid is dead", () => {
     const sessions = new Map([
       ["done-local", session("idle", {

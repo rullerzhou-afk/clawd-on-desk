@@ -83,6 +83,8 @@ function update(api, o = {}) {
       displayHint: o.displayHint,
       sessionTitle: o.sessionTitle ?? null,
       contextUsage: o.contextUsage ?? null,
+      antigravityQuota: o.antigravityQuota ?? null,
+      claudeQuota: o.claudeQuota ?? null,
       platform: o.platform ?? null,
       model: o.model ?? null,
       provider: o.provider ?? null,
@@ -1723,6 +1725,98 @@ describe("updateSession()", () => {
       limit: 258400,
       percent: 19,
       source: "codex",
+    });
+  });
+
+  it("stores antigravityQuota from updateSession opts", () => {
+    update(api, {
+      id: "s1",
+      state: "working",
+      antigravityQuota: {
+        geminiFiveHour: { usedPercent: 100 },
+        geminiWeekly: { usedPercent: 98, resetInSeconds: 431180 },
+      },
+    });
+
+    assert.deepStrictEqual(api.sessions.get("s1").antigravityQuota, {
+      geminiFiveHour: { usedPercent: 100 },
+      geminiWeekly: { usedPercent: 98, resetInSeconds: 431180 },
+    });
+  });
+
+  it("keeps antigravityQuota sticky when later events omit it", () => {
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      antigravityQuota: { thirdPartyWeekly: { usedPercent: 69 } },
+    });
+    update(api, { id: "s1", state: "working" });
+
+    assert.deepStrictEqual(api.sessions.get("s1").antigravityQuota, {
+      thirdPartyWeekly: { usedPercent: 69 },
+    });
+  });
+
+  it("updates antigravityQuota without changing state when preserveState is true", () => {
+    update(api, {
+      id: "antigravity:abc",
+      state: "working",
+      agentId: "antigravity-cli",
+    });
+    api.updateSession("antigravity:abc", "idle", undefined, {
+      agentId: "antigravity-cli",
+      cwd: "/tmp",
+      preserveState: true,
+      antigravityQuota: { geminiWeekly: { usedPercent: 98, resetInSeconds: 431180 } },
+    });
+
+    const session = api.sessions.get("antigravity:abc");
+    assert.strictEqual(session.state, "working");
+    assert.deepStrictEqual(session.antigravityQuota, {
+      geminiWeekly: { usedPercent: 98, resetInSeconds: 431180 },
+    });
+  });
+
+  it("stores claudeQuota from updateSession opts", () => {
+    update(api, {
+      id: "s1",
+      state: "working",
+      claudeQuota: {
+        claudeFiveHour: { usedPercent: 24, resetInSeconds: 25600 },
+        claudeWeekly: { usedPercent: 41 },
+      },
+    });
+
+    assert.deepStrictEqual(api.sessions.get("s1").claudeQuota, {
+      claudeFiveHour: { usedPercent: 24, resetInSeconds: 25600 },
+      claudeWeekly: { usedPercent: 41 },
+    });
+  });
+
+  it("keeps claudeQuota sticky when later events omit it", () => {
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      claudeQuota: { claudeWeekly: { usedPercent: 41 } },
+    });
+    update(api, { id: "s1", state: "working" });
+
+    assert.deepStrictEqual(api.sessions.get("s1").claudeQuota, {
+      claudeWeekly: { usedPercent: 41 },
+    });
+  });
+
+  it("updates claudeQuota without changing state when preserveState is true", () => {
+    update(api, { id: "s1", state: "working" });
+    api.updateSession("s1", "idle", undefined, {
+      preserveState: true,
+      claudeQuota: { claudeFiveHour: { usedPercent: 24, resetInSeconds: 25600 } },
+    });
+
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.state, "working");
+    assert.deepStrictEqual(session.claudeQuota, {
+      claudeFiveHour: { usedPercent: 24, resetInSeconds: 25600 },
     });
   });
 

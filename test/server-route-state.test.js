@@ -155,6 +155,8 @@ describe("server-route-state POST", () => {
         displayHint: "display.svg",
         sessionTitle: "Work title",
         contextUsage: null,
+        antigravityQuota: null,
+        claudeQuota: null,
         assistantLastOutput: null,
         assistantLastOutputTruncated: false,
         toolName: "Read",
@@ -259,6 +261,62 @@ describe("server-route-state POST", () => {
 
     assert.strictEqual(res.statusCode, 200);
     assert.strictEqual(res.calls.updateSession[0][3].contextUsage, null);
+  });
+
+  it("passes valid antigravity_quota to updateSession", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      session_id: "sid",
+      antigravity_quota: {
+        geminiFiveHour: { usedPercent: 100 },
+        geminiWeekly: { usedPercent: 98, resetInSeconds: 431180 },
+      },
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(res.calls.updateSession[0][3].antigravityQuota, {
+      geminiFiveHour: { usedPercent: 100 },
+      geminiWeekly: { usedPercent: 98, resetInSeconds: 431180 },
+    });
+  });
+
+  it("drops invalid antigravity_quota without rejecting state", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      session_id: "sid",
+      antigravity_quota: { geminiFiveHour: { usedPercent: "not-a-number" } },
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession[0][3].antigravityQuota, null);
+  });
+
+  it("passes valid claude_quota to updateSession", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      session_id: "sid",
+      claude_quota: {
+        claudeFiveHour: { usedPercent: 24, resetInSeconds: 25600 },
+        claudeWeekly: { usedPercent: 41 },
+      },
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(res.calls.updateSession[0][3].claudeQuota, {
+      claudeFiveHour: { usedPercent: 24, resetInSeconds: 25600 },
+      claudeWeekly: { usedPercent: 41 },
+    });
+  });
+
+  it("drops invalid claude_quota without rejecting state", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      session_id: "sid",
+      claude_quota: { claudeFiveHour: { usedPercent: "not-a-number" } },
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession[0][3].claudeQuota, null);
   });
 
   it("marks missing agent_id as a defaulted Claude Code attribution", async () => {
