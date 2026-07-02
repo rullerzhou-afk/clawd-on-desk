@@ -723,3 +723,78 @@ describe("tick spin detection (dizzy gesture)", () => {
     assert.ok(!statesSeen.includes("dizzy"), `pause should reset the meter, saw ${JSON.stringify(statesSeen)}`);
   });
 });
+
+describe("tick free roam cancellation (#569)", () => {
+  let cursor;
+  let loader;
+  let tickApi;
+  let ctx;
+  let statesSeen;
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    cursor = { x: 40, y: 40 };
+    loader = loadTickWithScreen(() => ({ ...cursor }));
+    statesSeen = [];
+  });
+
+  afterEach(() => {
+    if (tickApi) tickApi.cleanup();
+    if (loader) loader.restore();
+    mock.timers.reset();
+    tickApi = null;
+    ctx = null;
+  });
+
+  function makeRoamCtx() {
+    const theme = cloneTheme(_defaultTheme);
+    const c = makeCtx(theme, statesSeen);
+    // Pet is mid-walk: roam.js switched the visual state to "roam".
+    c.currentState = "roam";
+    c.roamCancels = 0;
+    c.roam = {
+      enabled: true,
+      cancelRoam() { c.roamCancels += 1; },
+      tick() {},
+    };
+    return c;
+  }
+
+  it("cancels an active walk when the mouse moves during state 'roam'", () => {
+    ctx = makeRoamCtx();
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+
+    // Baseline ticks with a still cursor — records lastCursor, must not cancel.
+    mock.timers.tick(800);
+    assert.equal(ctx.roamCancels, 0, "no cancel while the mouse is still");
+
+    // Mouse moves mid-walk — the next tick must cancel the walk. Before the
+    // #569 follow-up, state "roam" was excluded from the cursor poll gate and
+    // this cancel block was unreachable during a walk.
+    cursor = { x: 300, y: 260 };
+    mock.timers.tick(800);
+    assert.ok(ctx.roamCancels >= 1, "mouse move during an active walk must cancel roam");
+  });
+
+  it("does not cancel while the mouse stays still for the whole walk", () => {
+    ctx = makeRoamCtx();
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+
+    for (let i = 0; i < 6; i++) mock.timers.tick(800);
+    assert.equal(ctx.roamCancels, 0, "a still mouse must never cancel the walk");
+  });
+
+  it("does not cancel a walk while idlePaused (e.g. menu open)", () => {
+    ctx = makeRoamCtx();
+    ctx.idlePaused = true;
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+
+    mock.timers.tick(800);
+    cursor = { x: 300, y: 260 };
+    mock.timers.tick(800);
+    assert.equal(ctx.roamCancels, 0, "idlePaused suppresses roam cursor cancellation");
+  });
+});

@@ -176,6 +176,12 @@ function runMainTickOnce() {
     // ── Idle state edge detection (must run every tick for timer cleanup) ──
     const idleNow = ctx.currentState === "idle" && !ctx.idlePaused;
     const miniIdleNow = ctx.currentState === "mini-idle" && !ctx.idlePaused && !ctx.miniTransitioning;
+    // #569: an active roam walk runs in state "roam", so it must keep polling
+    // the cursor as well — otherwise the "cancel roaming when mouse moves"
+    // block below is unreachable mid-walk, and a user interaction that resizes
+    // the pet (e.g. the Settings size slider) lands mid-walk only to be
+    // overwritten by the walk's anchored per-frame bounds writes.
+    const roamNow = ctx.currentState === "roam" && !ctx.idlePaused;
     const nextDelay = () => getNextTickDelay(idleNow, miniIdleNow);
 
     if (idleNow && !idleWasActive) {
@@ -202,7 +208,7 @@ function runMainTickOnce() {
 
     // Skip expensive native IPC calls (getCursorScreenPoint, getBounds) when
     // cursor tracking is not needed — saves ~20 calls/sec to the OS layer.
-    const needsCursorPoll = idleNow || miniIdleNow || ctx.miniMode;
+    const needsCursorPoll = idleNow || miniIdleNow || ctx.miniMode || roamNow;
     if (!needsCursorPoll) return nextDelay();
 
     const cursor = screen.getCursorScreenPoint();
@@ -254,7 +260,7 @@ function runMainTickOnce() {
 
     sendPointerBridge(cursor, bounds);
 
-    if (!idleNow && !miniIdleNow) return nextDelay();
+    if (!idleNow && !miniIdleNow && !roamNow) return nextDelay();
 
     // ── Free roam: cancel roaming when mouse moves ──
     if (ctx.roam) {
