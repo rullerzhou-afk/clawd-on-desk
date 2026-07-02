@@ -3660,7 +3660,9 @@ const { enterMiniMode, exitMiniMode, enterMiniViaMenu, miniPeekIn, miniPeekOut,
 const _roamCtx = {
   get win() { return win; },
   getPetWindowBounds,
-  applyPetWindowPosition,
+  applyPetWindowBounds,
+  // #569: lets roam anchor to the keep-size frozen size when that toggle is on
+  getEffectiveCurrentPixelSize,
   syncHitWin: () => syncHitWin(),
   repositionSessionHud: () => repositionSessionHud(),
   repositionAnchoredSurfaces: () => repositionAnchoredFloatingSurfaces(),

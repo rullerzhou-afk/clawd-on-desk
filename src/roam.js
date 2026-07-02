@@ -6,8 +6,9 @@
 //   • Before moving the window, the visual state switches to "roam" (which
 //     falls back to idle SVG for themes without a dedicated roam animation).
 //     This prevents the "idle pet dragged across the desktop" regression.
-//   • Movement goes through applyPetWindowPosition every frame so virtual bounds,
-//     hit window, HUD, and anchored surfaces stay in sync with the pet.
+//   • Movement goes through applyPetWindowBounds every frame — anchored to a
+//     size captured once at walk start (#569) — so virtual bounds, hit window,
+//     HUD, and anchored surfaces stay in sync with the pet.
 //   • Each animation step re-checks isRoamAllowed() so a state change to working /
 //     notification / permission cancels the roam immediately — no "pet drifting while
 //     working" regression.
@@ -98,10 +99,25 @@ module.exports = function initRoam(ctx) {
     if (!startBounds) { roamActive = false; return; }
     const startX = startBounds.x;
     const startY = startBounds.y;
+    // #569: freeze the window size for the whole walk (mirrors the drag
+    // snapshot in drag-position.js). Re-reading live bounds every frame lets
+    // the non-idempotent setBounds(getBounds()) round-trip on mixed-DPI
+    // Windows setups ratchet the pet larger while roaming — same mechanism
+    // as #408. When keepSizeAcrossDisplays is ON, the frozen keep-size wins
+    // over the live start bounds so both anchors share one source of truth.
+    const effectiveSize = typeof ctx.getEffectiveCurrentPixelSize === "function"
+      ? ctx.getEffectiveCurrentPixelSize()
+      : null;
+    const roamW = effectiveSize && Number.isFinite(effectiveSize.width) && effectiveSize.width > 0
+      ? effectiveSize.width
+      : startBounds.width;
+    const roamH = effectiveSize && Number.isFinite(effectiveSize.height) && effectiveSize.height > 0
+      ? effectiveSize.height
+      : startBounds.height;
     let finalX = targetX;
     let finalY = targetY;
     if (ctx.clampToScreenVisual) {
-      const clamped = ctx.clampToScreenVisual(finalX, finalY, startBounds.width, startBounds.height);
+      const clamped = ctx.clampToScreenVisual(finalX, finalY, roamW, roamH);
       finalX = clamped.x;
       finalY = clamped.y;
     }
@@ -145,7 +161,8 @@ module.exports = function initRoam(ctx) {
       if (!Number.isFinite(vx) || !Number.isFinite(vy)) { roamActive = false; return; }
 
       // ── Per-frame sync ──
-      ctx.applyPetWindowPosition(vx, vy);
+      // Write the anchored size, never a re-read of live bounds (#569).
+      ctx.applyPetWindowBounds({ x: vx, y: vy, width: roamW, height: roamH });
       if (typeof ctx.syncHitWin === "function") ctx.syncHitWin();
       if (typeof ctx.repositionAnchoredSurfaces === "function") ctx.repositionAnchoredSurfaces();
       // Throttle bubble reposition to every 3rd frame (~20fps) — same as mini.js

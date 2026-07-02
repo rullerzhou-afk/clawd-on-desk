@@ -10,8 +10,9 @@ function makeCtx(overrides = {}) {
   const realBounds = { x: 400, y: 300, width: 120, height: 120 };
   const syncLog = [];
   const stateLog = [];
+  const appliedBounds = [];
   let currentState = "idle";
-  return {
+  const ctx = {
     win: {
       getBounds() { return { ...realBounds }; },
       setBounds(next) {
@@ -23,11 +24,22 @@ function makeCtx(overrides = {}) {
       isDestroyed() { return false; },
     },
     getPetWindowBounds() { return { ...bounds }; },
+    applyPetWindowBounds(next) {
+      appliedBounds.push({ ...next });
+      bounds.x = next.x;
+      bounds.y = next.y;
+      bounds.width = next.width;
+      bounds.height = next.height;
+      realBounds.x = next.x;
+      realBounds.y = next.y;
+      realBounds.width = next.width;
+      realBounds.height = next.height;
+    },
+    // Mirrors the real runtime: a position-only write re-reads live bounds and
+    // launders their width/height back through applyPetWindowBounds — the #569
+    // ratchet vector.
     applyPetWindowPosition(x, y) {
-      bounds.x = x;
-      bounds.y = y;
-      realBounds.x = x;
-      realBounds.y = y;
+      ctx.applyPetWindowBounds({ ...ctx.getPetWindowBounds(), x, y });
     },
     syncHitWin() { syncLog.push("syncHitWin"); },
     repositionSessionHud() { syncLog.push("repositionSessionHud"); },
@@ -47,8 +59,10 @@ function makeCtx(overrides = {}) {
     _stateLog: stateLog,
     _bounds: bounds,
     _realBounds: realBounds,
-    ...overrides,
+    _appliedBounds: appliedBounds,
   };
+  Object.assign(ctx, overrides);
+  return ctx;
 }
 
 describe("roam module", () => {
@@ -381,6 +395,16 @@ describe("roam module", () => {
       smallRealBounds.width = next.width;
       smallRealBounds.height = next.height;
     };
+    ctx.applyPetWindowBounds = (next) => {
+      smallBounds.x = next.x;
+      smallBounds.y = next.y;
+      smallBounds.width = next.width;
+      smallBounds.height = next.height;
+      smallRealBounds.x = next.x;
+      smallRealBounds.y = next.y;
+      smallRealBounds.width = next.width;
+      smallRealBounds.height = next.height;
+    };
 
     const roam = roamModule(ctx);
     roam.setEnabled(true);
@@ -483,8 +507,10 @@ describe("roam module", () => {
       realBounds.x = next.x; realBounds.y = next.y;
       realBounds.width = next.width; realBounds.height = next.height;
     };
-    ctx.applyPetWindowPosition = (x, y) => {
-      bounds.x = x; bounds.y = y; realBounds.x = x; realBounds.y = y;
+    ctx.applyPetWindowBounds = (next) => {
+      bounds.x = next.x; bounds.y = next.y;
+      realBounds.x = next.x; realBounds.y = next.y;
+      realBounds.width = next.width; realBounds.height = next.height;
     };
 
     const roam = roamModule(ctx);
@@ -501,5 +527,77 @@ describe("roam module", () => {
     // its start (the old null-return bug).
     assert.ok(Math.abs(realBounds.x - 150) < 5 && Math.abs(realBounds.y - 150) < 5,
       `expected move to farthest corner (150,150), got (${realBounds.x},${realBounds.y})`);
+  });
+
+  it("anchors the window size for the whole walk even when live bounds read back DPI-polluted (#569)", () => {
+    const ctx = makeCtx();
+    // Simulate the Windows mixed-DPI ratchet: every live read reports the
+    // window 4px larger than what was last written. Re-laundering that value
+    // through per-frame writes is exactly the #569 growth mechanism.
+    const cleanGet = ctx.getPetWindowBounds;
+    ctx.getPetWindowBounds = () => {
+      const b = cleanGet();
+      return { ...b, width: b.width + 4, height: b.height + 4 };
+    };
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    for (let i = 0; i < 2000; i++) {
+      mock.timers.tick(16);
+      if (ctx._stateLog.some(e => e.type === "setState" && e.state === "idle")) break;
+    }
+
+    const widths = new Set(ctx._appliedBounds.map(b => b.width));
+    const heights = new Set(ctx._appliedBounds.map(b => b.height));
+    assert.ok(ctx._appliedBounds.length > 10,
+      `walk should span many frames, got ${ctx._appliedBounds.length}`);
+    assert.equal(widths.size, 1,
+      `width must stay constant across the walk, saw [${[...widths].join(", ")}]`);
+    assert.equal(heights.size, 1,
+      `height must stay constant across the walk, saw [${[...heights].join(", ")}]`);
+    // Anchored to the single read at walk start (120 + one polluted read = 124),
+    // never re-read per frame — no cumulative growth.
+    assert.equal([...widths][0], 124, "size is captured once at walk start");
+  });
+
+  it("prefers the keep-size effective size over walk-start bounds when exposed (#408 interplay)", () => {
+    // keepSizeAcrossDisplays ON: getEffectiveCurrentPixelSize returns the
+    // frozen size, which must win over (possibly polluted) live start bounds
+    // so roam and keep-size stay on one source of truth.
+    const ctx = makeCtx({
+      getEffectiveCurrentPixelSize: () => ({ width: 100, height: 100 }),
+    });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(16);
+    mock.timers.tick(16);
+
+    assert.ok(ctx._appliedBounds.length >= 2, "walk should have written frames");
+    for (const b of ctx._appliedBounds) {
+      assert.equal(b.width, 100, "frozen keep-size width must win over start bounds");
+      assert.equal(b.height, 100, "frozen keep-size height must win over start bounds");
+    }
+  });
+
+  it("falls back to walk-start size when getEffectiveCurrentPixelSize returns nothing", () => {
+    const ctx = makeCtx({ getEffectiveCurrentPixelSize: () => null });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(16);
+    mock.timers.tick(16);
+
+    assert.ok(ctx._appliedBounds.length >= 2, "walk should have written frames");
+    for (const b of ctx._appliedBounds) {
+      assert.equal(b.width, 120, "falls back to the size read at walk start");
+      assert.equal(b.height, 120, "falls back to the size read at walk start");
+    }
   });
 });
