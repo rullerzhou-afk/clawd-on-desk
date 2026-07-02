@@ -11,6 +11,11 @@ const { extractClaudeContextUsageFromEntries } = require("./context-usage");
 const { createPidResolver, readStdinJsonDetailed, getPlatformConfig } = require("./shared-process");
 
 const TRANSCRIPT_TAIL_BYTES = 262144; // 256 KB
+// #583: claude-code registers this hook with async:true and a 5s timeout
+// (hooks/install.js), so a 2s stdin window never stalls the agent. Do NOT
+// raise the shared default in shared-process.js instead — other agent hooks
+// run ~800ms stdout safety timers that must win against a slow stdin read.
+const STDIN_READ_TIMEOUT_MS = 2000;
 const ASSISTANT_OUTPUT_MAX = 2200;
 // Observed in Claude Code 2.1.150 StopFailure hook schema (tyq enum).
 // Unknown values from future versions fall back to "unknown".
@@ -480,7 +485,7 @@ function main() {
   // Remote mode: skip PID collection — remote PIDs are meaningless on the local machine
   if (event === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
 
-  readStdinJsonDetailed()
+  readStdinJsonDetailed({ timeoutMs: STDIN_READ_TIMEOUT_MS })
     .then((stdinRead) => {
       const payload = stdinRead.payload;
       const body = buildStateBody(event, payload || {}, resolve);
@@ -512,6 +517,7 @@ if (require.main === module) main();
 module.exports = {
   buildStateBody,
   attachStdinDiag,
+  STDIN_READ_TIMEOUT_MS,
   extractSessionTitleFromTranscript,
   extractApiErrorFromEntries,
   extractLastAssistantTextFromEntries,

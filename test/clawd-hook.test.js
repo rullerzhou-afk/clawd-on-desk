@@ -14,6 +14,7 @@ const path = require("path");
 const {
   buildStateBody,
   attachStdinDiag,
+  STDIN_READ_TIMEOUT_MS: CLAWD_HOOK_STDIN_TIMEOUT_MS,
   extractSessionTitleFromTranscript,
   extractApiErrorFromEntries,
   extractLastAssistantTextFromEntries,
@@ -1077,5 +1078,25 @@ describe("attachStdinDiag", () => {
       durationMs: 4,
     });
     assert.strictEqual(body.stdin_diag, undefined);
+  });
+});
+
+describe("clawd-hook stdin timeout budget (#583)", () => {
+  it("uses a 2s stdin window — safe only because install.js registers async:true + timeout:5", () => {
+    assert.strictEqual(CLAWD_HOOK_STDIN_TIMEOUT_MS, 2000);
+  });
+});
+
+describe("attachStdinDiag edge cases", () => {
+  it("treats an empty-string session_id as missing and attaches diagnostics", () => {
+    const body = { state: "idle", session_id: "default", event: "SessionStart" };
+    attachStdinDiag(body, {
+      payload: { session_id: "" },
+      bytes: 30,
+      timedOut: false,
+      parseError: null,
+      durationMs: 2,
+    });
+    assert.deepStrictEqual(body.stdin_diag, { bytes: 30, timed_out: false, duration_ms: 2 });
   });
 });

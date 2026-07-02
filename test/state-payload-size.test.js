@@ -158,3 +158,19 @@ describe("state-payload-size fitStateBodyToByteBudget", () => {
     assert.ok(Buffer.byteLength(JSON.stringify(r.body), "utf8") <= 250);
   });
 });
+
+describe("state-payload-size stdin_diag interaction (#583)", () => {
+  it("preserves stdin_diag when an oversized assistant_last_output is truncated", () => {
+    const body = {
+      state: "attention",
+      session_id: "default",
+      event: "Stop",
+      stdin_diag: { bytes: 0, timed_out: true, duration_ms: 2001 },
+      assistant_last_output: "y".repeat(20 * 1024),
+    };
+    const fitted = fitStateBodyToByteBudget(body);
+    assert.ok(fitted.bytes <= DEFAULT_TARGET_BYTES);
+    assert.ok(fitted.assistantTruncated || fitted.assistantDropped);
+    assert.deepStrictEqual(fitted.body.stdin_diag, { bytes: 0, timed_out: true, duration_ms: 2001 });
+  });
+});

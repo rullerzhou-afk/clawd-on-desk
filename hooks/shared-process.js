@@ -346,40 +346,48 @@ function createPidResolver(options) {
 }
 
 // ── readStdinJson ────────────────────────────────────────────────────────────
-// Reads stdin until EOF, parses JSON. EOF-driven with a safety-net timer:
-// agent hosts write the payload and close stdin within a few ms even through a
-// PowerShell intermediary (measured 3-5ms incl. 200KB bodies on the #583
-// repro rig), so the timer only fires in pathological environments — e.g. a
-// PATH shim or security software swallowing stdin. Raised from 400ms so
-// slow-but-alive forwarding still lands inside the window; agent-side hook
-// timeouts (5s+) leave ample room. Returns {} on parse failure or timeout.
+// Reads stdin until EOF, parses JSON. EOF-driven with a safety-net timer.
+// The default stays at 400ms: several agent hooks (cursor, codebuddy, gemini,
+// reasonix) run their own ~800ms stdout safety timers and non-async hot-path
+// registrations, so a longer shared default would let those timers win the
+// race and drop payloads that used to be parsed at 400ms. Callers whose agent
+// registration tolerates a longer stall (claude-code: async + 5s hook timeout)
+// opt in via options.timeoutMs. Returns {} on parse failure or timeout.
 //
 // readStdinJsonDetailed() additionally reports what the read saw (bytes
-// received, timed out, parse error, duration) so a missing session_id can be
-// triaged from logs: "never arrived" (bytes:0, timeout) vs "arrived broken"
-// (bytes>0, parse error) point at entirely different culprits.
+// received, timed out, parse/stream error, duration) so a missing session_id
+// can be triaged from logs: "never arrived" (bytes:0, timeout) vs "arrived
+// broken" (bytes>0, parse error) point at entirely different culprits (#583).
 
-const STDIN_READ_TIMEOUT_MS = 2000;
+const DEFAULT_STDIN_READ_TIMEOUT_MS = 400;
 
 function readStdinJsonDetailed(options = {}) {
   const stream = options.stream || process.stdin;
   const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
     ? options.timeoutMs
-    : STDIN_READ_TIMEOUT_MS;
+    : DEFAULT_STDIN_READ_TIMEOUT_MS;
   return new Promise((resolve) => {
     const startedAt = Date.now();
     const chunks = [];
     let done = false;
     let timer = null;
+    let streamError = null;
 
     const onData = (c) => chunks.push(c);
     const onEnd = () => finish(false);
+    // Without this, an emitted 'error' would crash the hook (unhandled stream
+    // error) and the promise would never settle. Resolve with what we have.
+    const onError = (err) => {
+      streamError = String((err && err.message) || "stream error").slice(0, 120);
+      finish(false);
+    };
     function finish(timedOut) {
       if (done) return;
       done = true;
       if (timer) clearTimeout(timer);
       stream.off("data", onData);
       stream.off("end", onEnd);
+      stream.off("error", onError);
       const raw = Buffer.concat(chunks);
       let payload = {};
       let parseError = null;
@@ -389,6 +397,7 @@ function readStdinJsonDetailed(options = {}) {
       } catch (err) {
         parseError = String((err && err.message) || "parse error").slice(0, 120);
       }
+      if (streamError) parseError = `stream error: ${streamError}`;
       resolve({
         payload,
         bytes: raw.length,
@@ -400,6 +409,7 @@ function readStdinJsonDetailed(options = {}) {
 
     stream.on("data", onData);
     stream.on("end", onEnd);
+    stream.on("error", onError);
     timer = setTimeout(() => finish(true), timeoutMs);
   });
 }
@@ -433,6 +443,6 @@ module.exports = {
   createPidResolver,
   readStdinJson,
   readStdinJsonDetailed,
-  STDIN_READ_TIMEOUT_MS,
+  DEFAULT_STDIN_READ_TIMEOUT_MS,
   buildElectronLaunchConfig,
 };

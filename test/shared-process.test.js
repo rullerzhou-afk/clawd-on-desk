@@ -8,7 +8,7 @@ const {
   getPlatformConfig,
   createPidResolver,
   readStdinJsonDetailed,
-  STDIN_READ_TIMEOUT_MS,
+  DEFAULT_STDIN_READ_TIMEOUT_MS,
   buildElectronLaunchConfig,
 } = require("../hooks/shared-process");
 
@@ -573,7 +573,34 @@ describe("readStdinJsonDetailed()", () => {
     assert.strictEqual(result.parseError, null);
   });
 
-  it("defaults the safety-net timeout to 2000ms", () => {
-    assert.strictEqual(STDIN_READ_TIMEOUT_MS, 2000);
+  it("keeps the shared default timeout at 400ms — other agent hooks run ~800ms stdout safety timers that must win the race", () => {
+    assert.strictEqual(DEFAULT_STDIN_READ_TIMEOUT_MS, 400);
+  });
+
+  it("resolves (instead of crashing) when the stream errors mid-read, reporting a stream error", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream });
+    stream.write('{"half":');
+    stream.emit("error", new Error("boom"));
+
+    const result = await pending;
+    assert.deepStrictEqual(result.payload, {});
+    assert.strictEqual(result.bytes, 8);
+    assert.strictEqual(result.timedOut, false);
+    assert.strictEqual(result.parseError, "stream error: boom");
+  });
+
+  it("handles multi-megabyte stdin without truncation", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream });
+    const big = JSON.stringify({ session_id: "big-sid", blob: "z".repeat(3 * 1024 * 1024) });
+    // write in 64KB slices like a real pipe would
+    for (let i = 0; i < big.length; i += 65536) stream.write(big.slice(i, i + 65536));
+    stream.end();
+
+    const result = await pending;
+    assert.strictEqual(result.payload.session_id, "big-sid");
+    assert.strictEqual(result.bytes, Buffer.byteLength(big));
+    assert.strictEqual(result.parseError, null);
   });
 });

@@ -58,6 +58,19 @@ describe("formatStdinDiag", () => {
     assert.strictEqual(out, ' stdin=bytes:17,timeout:0,ms:3 stdinErr="Unexpected end of JSON input"');
   });
 
+  it("strips quotes, backslashes, ANSI escapes, and control chars from parse errors (forged /state)", () => {
+    const ESC = String.fromCharCode(27); // raw ESC kept out of this source file
+    const out = api.formatStdinDiag({
+      bytes: 5,
+      timedOut: false,
+      durationMs: 1,
+      parseError: 'bad\" timeout:1 ' + ESC + '[2Kinject\\ed',
+    });
+    assert.strictEqual(out, ' stdin=bytes:5,timeout:0,ms:1 stdinErr=\"bad timeout:1 [2Kinject ed\"');
+    assert.ok(!out.includes(ESC), "ANSI escape must be stripped");
+    assert.strictEqual((out.match(/\"/g) || []).length, 2, "only the two delimiter quotes may remain");
+  });
+
   it("caps the parse error at 80 chars and collapses whitespace", () => {
     const out = api.formatStdinDiag({
       bytes: 5,
