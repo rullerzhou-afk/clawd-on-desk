@@ -1247,6 +1247,8 @@ function updateSession(sessionId, state, event, opts = {}) {
     toolName = null,
     transcriptPath = null,
     permissionSuspect = false,
+    permissionAction = null,
+    permissionCommand = null,
     preserveState = false,
     hookSource = null,
     agentIdDefaulted = false,
@@ -1353,7 +1355,9 @@ function updateSession(sessionId, state, event, opts = {}) {
       });
     }
     setState("notification", undefined, { muteNotificationSound: muteNotificationSound === true });
-    if (permAgentId === "kimi-cli") startKimiPermissionPoll(sessionId);
+    if (permAgentId === "kimi-cli") {
+      startKimiPermissionPoll(sessionId, { toolName, permissionAction, permissionCommand });
+    }
     return;
   }
 
@@ -1621,6 +1625,13 @@ function updateSession(sessionId, state, event, opts = {}) {
     "PreCompact",
     "PostCompact",
     "Notification",
+    // Kimi Code native events (#563). PermissionResult is the definitive
+    // "approval answered" signal (decision: approved/rejected). On the
+    // rejected path upstream fires PostToolUseFailure BEFORE
+    // PermissionResult — both clear, so ordering does not matter here.
+    // Interrupt is the user's Esc: any pending approval UI is gone with it.
+    "PermissionResult",
+    "Interrupt",
   ]);
   const shouldClearKimiPermission = srcAgentId === "kimi-cli"
     && KIMI_HOLD_CLEAR_EVENTS.has(event);
@@ -1920,7 +1931,10 @@ function detectRunningAgentProcesses(callback) {
     const psScript =
       "$names = 'claude.exe','codex.exe','copilot.exe','gemini.exe','agy.exe','codebuddy.exe','kiro-cli.exe','kimi.exe','codewhale.exe','opencode.exe','pi.exe','hermes.exe','qodercli.exe','qoder-cli.exe'; " +
       "$nameFilters = $names | ForEach-Object { \"Name='$_'\" }; " +
-      "$filter = ($nameFilters + \"(Name='node.exe' AND CommandLine LIKE '%claude-code%')\") -join ' OR '; " +
+      // kimi.exe only covers the native (install-script) build; the npm
+      // install of Kimi Code runs as node.exe, recognizable by the package
+      // directory name in its command line (#563).
+      "$filter = ($nameFilters + \"(Name='node.exe' AND CommandLine LIKE '%claude-code%')\" + \"(Name='node.exe' AND CommandLine LIKE '%kimi-code%')\") -join ' OR '; " +
       "$match = Get-CimInstance Win32_Process -Filter $filter | Select-Object -First 1; " +
       "if ($match) { $match.ProcessId }";
     execFile(
@@ -1945,7 +1959,7 @@ function stopStaleCleanup() {
   if (staleCleanupTimer) { clearInterval(staleCleanupTimer); staleCleanupTimer = null; }
 }
 
-function startKimiPermissionPoll(sessionId) {
+function startKimiPermissionPoll(sessionId, permissionDetail = null) {
   if (!sessionId) return;
   // DND / agent permissions-off both suppress the passive bubble at creation
   // time (see shouldSuppressKimiNotifyBubble in permission.js). Skipping the
@@ -1980,7 +1994,15 @@ function startKimiPermissionPoll(sessionId) {
   // Avoid stacking duplicate passive bubbles for the same pending request.
   // Refreshing the hold timer should not create extra UI noise.
   if (!existing && typeof ctx.showKimiNotifyBubble === "function") {
-    ctx.showKimiNotifyBubble({ sessionId });
+    // #563: Kimi Code native PermissionRequest carries what actually needs
+    // approval; the bubble shows the real command instead of generic copy.
+    // Legacy synthesized requests pass null detail and keep the old text.
+    ctx.showKimiNotifyBubble({
+      sessionId,
+      toolName: permissionDetail && permissionDetail.toolName ? permissionDetail.toolName : null,
+      permissionAction: permissionDetail && permissionDetail.permissionAction ? permissionDetail.permissionAction : null,
+      permissionCommand: permissionDetail && permissionDetail.permissionCommand ? permissionDetail.permissionCommand : null,
+    });
   }
 }
 

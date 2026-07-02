@@ -52,7 +52,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   "copilot-cli": "GitHub Copilot CLI",
   codebuddy: "CodeBuddy",
   "kiro-cli": "Kiro CLI",
-  "kimi-cli": "Kimi Code CLI",
+  "kimi-cli": "Kimi Code",
   "qwen-code": "Qwen Code",
   codewhale: "CodeWhale",
   codex: "Codex CLI",
@@ -152,7 +152,11 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       },
       "kimi-cli": {
         ...common,
-        settingsPath: path.join(homeDir, ".kimi", "config.toml"),
+        // #563: clean both generations — legacy Kimi CLI and Kimi Code.
+        settingsPaths: [
+          path.join(homeDir, ".kimi", "config.toml"),
+          path.join(homeDir, ".kimi-code", "config.toml"),
+        ],
       },
       "qwen-code": {
         ...common,

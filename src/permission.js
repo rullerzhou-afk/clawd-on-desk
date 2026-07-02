@@ -1654,19 +1654,25 @@ function showCodexNotifyBubble({ sessionId, command }) {
   schedulePassiveNotifyAutoExpire(permEntry, policy.autoCloseMs);
 }
 
-function showKimiNotifyBubble({ sessionId, command }) {
+function showKimiNotifyBubble({ sessionId, command, toolName, permissionAction, permissionCommand }) {
   if (shouldSuppressKimiNotifyBubble(ctx)) {
     const policy = getPolicy(ctx, "notification");
     permLog(`kimi notify suppressed: session=${sessionId} dnd=${ctx.doNotDisturb} notificationEnabled=${policy.enabled}`);
     return;
   }
   const policy = getPolicy(ctx, "notification");
+  // #563: prefer the real command from Kimi Code's native PermissionRequest
+  // display block, then its human-readable action line; legacy synthesized
+  // requests carry neither and keep the generic copy.
+  const bubbleCommand = permissionCommand || permissionAction || command
+    || "Approve or reject in Kimi terminal.";
   const permEntry = {
     res: null,
     abortHandler: null, suggestions: [],
     sessionId, bubble: null, hideTimer: null,
     toolName: "KimiPermission",
-    toolInput: { command: command || "Approve or reject in Kimi terminal." },
+    toolInput: { command: bubbleCommand },
+    kimiToolName: typeof toolName === "string" && toolName ? toolName : null,
     resolvedSuggestion: null, createdAt: Date.now(),
     isElicitation: false, isKimiNotify: true,
     agentId: "kimi-cli",

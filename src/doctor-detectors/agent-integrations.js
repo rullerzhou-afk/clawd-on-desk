@@ -1678,15 +1678,29 @@ function checkAgent(descriptor, options) {
     });
   }
 
-  const parentDirExists = descriptor.parentDir ? dirExists(options.fs, descriptor.parentDir) : false;
+  // Multi-generation agents (#563: kimi legacy + kimi-code) declare ordered
+  // configTargets; the first whose directory exists is the one doctor judges.
+  const activeTarget = Array.isArray(descriptor.configTargets)
+    ? descriptor.configTargets.find((target) => dirExists(options.fs, target.parentDir))
+    : null;
+  const effectiveDescriptor = activeTarget
+    ? { ...descriptor, parentDir: activeTarget.parentDir, configPath: activeTarget.configPath }
+    : descriptor;
+
+  const parentDirExists = effectiveDescriptor.parentDir
+    ? dirExists(options.fs, effectiveDescriptor.parentDir)
+    : false;
   if (!parentDirExists) {
     return makeDetail(descriptor, "not-installed", {
       level: "info",
       parentDirExists: false,
       configPath: descriptor.configPath,
-      detail: `${descriptor.parentDir} missing`,
+      detail: Array.isArray(descriptor.configTargets)
+        ? `${descriptor.configTargets.map((target) => target.parentDir).join(" / ")} missing`
+        : `${descriptor.parentDir} missing`,
     });
   }
+  descriptor = effectiveDescriptor;
 
   let detail;
   if (descriptor.configMode === "file") {

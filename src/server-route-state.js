@@ -184,6 +184,15 @@ function handleStatePost(req, res, options) {
       const assistantLastOutputTruncated = data.assistant_last_output_truncated === true;
       const transcriptPath = normalizeTranscriptPath(data.transcript_path);
       const permissionSuspect = data.permission_suspect === true;
+      // #563: Kimi Code native PermissionRequest carries a human-readable
+      // action ("Running: echo hi") and the real command; the passive bubble
+      // shows them instead of the generic "check the terminal" line.
+      const permissionAction = typeof data.permission_action === "string" && data.permission_action.trim()
+        ? data.permission_action.trim().slice(0, 300)
+        : null;
+      const permissionCommand = typeof data.permission_command === "string" && data.permission_command.trim()
+        ? data.permission_command.trim().slice(0, 500)
+        : null;
       const preserveState = data.preserve_state === true;
       const hookSource = typeof data.hook_source === "string" ? data.hook_source : null;
       // #406 completion-gate inputs from the Claude Stop hook. Counts / boolean
@@ -301,6 +310,8 @@ function handleStatePost(req, res, options) {
             toolName,
             transcriptPath,
             permissionSuspect,
+            permissionAction,
+            permissionCommand,
             preserveState,
             hookSource,
             backgroundTasksCount,

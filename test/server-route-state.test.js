@@ -160,6 +160,8 @@ describe("server-route-state POST", () => {
         toolName: "Read",
         transcriptPath: "/Users/tester/.claude/projects/repo/session.jsonl",
         permissionSuspect: true,
+        permissionAction: null,
+        permissionCommand: null,
         preserveState: true,
         hookSource: "codex-official",
         backgroundTasksCount: 0,
@@ -168,6 +170,24 @@ describe("server-route-state POST", () => {
         stdinDiag: null,
       },
     ]]);
+  });
+
+  it("forwards Kimi Code permission context to updateSession (#563)", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "notification",
+      session_id: "kimi-cli:session_abc",
+      event: "PermissionRequest",
+      agent_id: "kimi-cli",
+      tool_name: "Bash",
+      permission_action: "Running: echo hi",
+      permission_command: "echo hi",
+    }), { ctx: { STATE_SVGS: { notification: "x.svg" } } });
+
+    assert.strictEqual(res.statusCode, 200);
+    const opts = res.calls.updateSession[0][3];
+    assert.strictEqual(opts.toolName, "Bash");
+    assert.strictEqual(opts.permissionAction, "Running: echo hi");
+    assert.strictEqual(opts.permissionCommand, "echo hi");
   });
 
   it("passes assistant last output metadata to updateSession", async () => {

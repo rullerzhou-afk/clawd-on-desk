@@ -132,6 +132,21 @@ const AGENT_DESCRIPTORS = Object.freeze([
     eventSource: agentEventSource("kimi-cli"),
     parentDir: kimi.DEFAULT_PARENT_DIR,
     configPath: kimi.DEFAULT_CONFIG_PATH,
+    // #563: the agent spans two generations with separate homes. Ordered by
+    // priority — doctor reports the first target whose directory exists, so
+    // a machine with both installed is judged by the modern kimi-code config.
+    configTargets: Object.freeze([
+      Object.freeze({
+        label: "kimi-code",
+        parentDir: kimi.KIMI_CODE_PARENT_DIR,
+        configPath: kimi.KIMI_CODE_CONFIG_PATH,
+      }),
+      Object.freeze({
+        label: "legacy",
+        parentDir: kimi.DEFAULT_PARENT_DIR,
+        configPath: kimi.DEFAULT_CONFIG_PATH,
+      }),
+    ]),
     configMode: "toml-text",
     autoInstall: true,
     marker: "kimi-hook.js",
