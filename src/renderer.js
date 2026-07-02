@@ -73,6 +73,7 @@ function initWithConfig(cfg) {
   _fileOffsets = os.fileOffsets || {};
   _transitions = tc.transitions || {};
   _miniFlipAssets = !!tc.miniFlipAssets;
+  _hasRoamVisual = !!tc.hasRoamVisual;
 
   applyObjectScaleStyle(clawdEl, getObjectSvgName(clawdEl), null);
   applyObjectScaleStyle(pendingNext, getObjectSvgName(pendingNext), null);
@@ -376,6 +377,8 @@ let _fileScales = {};
 let _fileOffsets = {};
 let _transitions = {};  // per-file fade config: { "file.apng": { in: 400, out: 400 } }
 let _miniFlipAssets = false; // theme's mini assets drawn in reverse direction
+let _hasRoamVisual = false;  // theme binds a dedicated roam visual (≠ idle)
+let _roamHeadingLeft = false; // current walk direction; roam visuals are drawn facing right
 let _inMiniMode = false;
 let _miniPreEntryMode = false;
 let _viewportOffsetY = 0;
@@ -391,6 +394,9 @@ function setViewportOffset(offsetY) {
 }
 
 function shouldApplyMiniAssetFlip(state) {
+  // Free roam: the dedicated roam visual is drawn facing right; mirror it
+  // while the walk heads left (heading pushed from main via roam-heading).
+  if (state === "roam") return _hasRoamVisual && _roamHeadingLeft;
   return _miniFlipAssets && (_inMiniMode || (_miniPreEntryMode && state === "mini-crabwalk"));
 }
 
@@ -995,8 +1001,9 @@ function renderStateFile(state, svg) {
   // When the pet is roaming (free-roam mode), add a CSS animation to simulate
   // walking even if the theme doesn't have a dedicated roam SVG. The animation
   // is a subtle horizontal bob that makes the idle SVG look like it's walking.
+  // Themes with a dedicated roam visual animate themselves — no bob on top.
   if (container) {
-    container.classList.toggle("roam-walk", state === "roam");
+    container.classList.toggle("roam-walk", state === "roam" && !_hasRoamVisual);
   }
 
   if (!shouldUseCloudlingPointerBridge(state, effectiveSvg)) {
@@ -1550,6 +1557,16 @@ if (window.electronAPI && typeof window.electronAPI.onSystemWake === "function")
 if (window.electronAPI && typeof window.electronAPI.onCloudlingPointer === "function") {
   window.electronAPI.onCloudlingPointer((payload) => {
     applyCloudlingPointerBridge(payload);
+  });
+}
+
+if (window.electronAPI && typeof window.electronAPI.onRoamHeading === "function") {
+  window.electronAPI.onRoamHeading((headingLeft) => {
+    _roamHeadingLeft = !!headingLeft;
+    // Re-apply to the element already on screen: main sends the heading just
+    // before applyState("roam"), but consecutive walks reuse the displayed
+    // roam visual without a swap, so the flip must update in place too.
+    applyMiniFlip(clawdEl, currentState);
   });
 }
 

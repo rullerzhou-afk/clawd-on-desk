@@ -54,6 +54,9 @@
     "idle": [
       "clawd-idle-follow.svg"
     ],
+    "roam": [
+      "clawd-mini-crabwalk.svg"
+    ],
     "yawning": [
       "clawd-idle-yawn.svg"
     ],

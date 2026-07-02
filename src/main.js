@@ -3676,6 +3676,7 @@ const _roamCtx = {
   get miniTransitioning() { return _mini.getMiniTransitioning(); },
   applyState: (state, svgOverride, opts) => _state.applyState(state, svgOverride, opts),
   setState: (state, svgOverride, opts) => _state.setState(state, svgOverride, opts),
+  setRoamHeading: (headingLeft) => sendToRenderer("roam-heading", !!headingLeft),
 };
 const _roam = require("./roam")(_roamCtx);
 

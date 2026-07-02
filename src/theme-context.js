@@ -80,6 +80,13 @@ function createThemeContext(theme, options = {}) {
         right: theme.reactions.drag.fileRight || null,
       } : null,
       idleFollowSvg: theme.states.idle[0],
+      // Free roam: true when the theme binds a dedicated roam visual (distinct
+      // from idle). The visual resolver injects states.roam = [idle[0]] as a
+      // synthetic fallback, so "same file as idle" still means "no dedicated
+      // visual" — the renderer then keeps its roam-walk bob compensation.
+      hasRoamVisual: !!(theme.states && Array.isArray(theme.states.roam)
+        && theme.states.roam.length > 0
+        && theme.states.roam[0] !== theme.states.idle[0]),
       eyeTrackingStates: theme.eyeTracking.enabled ? theme.eyeTracking.states : [],
       trustedScriptedSvgFiles: [...trustedScriptedSvgFiles],
       rendering: theme.rendering || { svgChannel: "auto" },

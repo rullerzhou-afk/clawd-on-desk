@@ -127,6 +127,15 @@ module.exports = function initRoam(ctx) {
     const dist = Math.sqrt(dx * dx + dy * dy);
     const animDurationMs = Math.max(1000, dist / ROAM_SPEED_PX_PER_MS);
 
+    // ── Face the walk direction ──
+    // Dedicated roam visuals (e.g. clawd's crabwalk) are drawn facing right;
+    // tell the renderer to mirror while heading left. Sent before applyState
+    // so the flip is settled when the roam visual swaps in. A purely vertical
+    // walk keeps the previous heading.
+    if (typeof ctx.setRoamHeading === "function" && dx !== 0) {
+      ctx.setRoamHeading(dx < 0);
+    }
+
     // ── Switch to "roam" visual state before moving ──
     // This ensures the pet shows a walk animation (if the theme provides one)
     // or at least the idle SVG via fallback, instead of being "dragged" in

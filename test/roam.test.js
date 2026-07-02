@@ -600,4 +600,47 @@ describe("roam module", () => {
       assert.equal(b.height, 120, "falls back to the size read at walk start");
     }
   });
+
+  it("sends heading=false (face right) when the walk moves rightward", () => {
+    // Default mocked random (0.9) picks a target right of the start (400,300).
+    const headings = [];
+    const ctx = makeCtx({ setRoamHeading(left) { headings.push(left); } });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+
+    assert.deepEqual(headings, [false], "rightward walk must face right (no mirror)");
+  });
+
+  it("sends heading=true (mirror) when the walk moves leftward", () => {
+    // random=0.05 → target (349,193), left of the start (400,300), dist ≈ 118.
+    mock.method(Math, "random", () => 0.05);
+    const headings = [];
+    const ctx = makeCtx({ setRoamHeading(left) { headings.push(left); } });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+
+    assert.deepEqual(headings, [true], "leftward walk must mirror the roam visual");
+  });
+
+  it("keeps the previous heading on a purely vertical walk", () => {
+    // Clamp forces finalX back to the start X → dx === 0 → no heading update.
+    const headings = [];
+    const ctx = makeCtx({
+      setRoamHeading(left) { headings.push(left); },
+      clampToScreenVisual(x, y, w, h) { return { x: 400, y, width: w, height: h }; },
+    });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+
+    assert.deepEqual(headings, [], "vertical walk must not change the heading");
+  });
 });
