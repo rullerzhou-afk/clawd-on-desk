@@ -1227,6 +1227,13 @@ function setHitWinFocusable(focusable) {
   const next = !!focusable;
   if (typeof hitWin.isFocusable === "function" && hitWin.isFocusable() === next) return;
   hitWin.setFocusable(next);
+  // Electron's NativeWindowViews::SetFocusable couples activation to the
+  // taskbar on Windows: SetFocusable(true) internally calls
+  // SetSkipTaskbar(false) → ITaskbarList::AddTab, so restoring activation
+  // after a fullscreen exit (or a screenshot overlay dismissing) flashes a
+  // taskbar button for the hit window (#586). Delete the tab again in the
+  // same turn, before the taskbar repaints.
+  keepOutOfTaskbar(hitWin);
 }
 
 // ── Mini Mode — delegated to src/mini.js ──
