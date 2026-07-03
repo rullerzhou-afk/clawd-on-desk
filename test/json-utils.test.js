@@ -3,7 +3,7 @@ const assert = require("node:assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { extractExistingNodeBin, extractExistingNodeBinFromCommands, formatNodeHookCommand, writeJsonAtomicAsync, createBackup, writeJsonAtomicWithBackup, writeJsonAtomicWithBackupAsync, pruneOldBackups, pruneOldBackupsAsync, DEFAULT_BACKUP_KEEP } = require("../hooks/json-utils");
+const { buildPortableStatuslineCommand, extractExistingNodeBin, extractExistingNodeBinFromCommands, formatNodeHookCommand, writeJsonAtomicAsync, createBackup, writeJsonAtomicWithBackup, writeJsonAtomicWithBackupAsync, pruneOldBackups, pruneOldBackupsAsync, DEFAULT_BACKUP_KEEP } = require("../hooks/json-utils");
 
 describe("extractExistingNodeBin", () => {
   it("extracts node path from flat command format", () => {
@@ -185,6 +185,63 @@ describe("formatNodeHookCommand", () => {
         windowsWrapper: "cmd",
       }),
       'cmd /d /s /c ""C:\\Program Files\\nodejs\\node.exe" "D:/app/hooks/codex-debug-hook.js""'
+    );
+  });
+});
+
+// statusLine settings have no `shell` field, so unlike hook commands the
+// string must parse under Git Bash AND PowerShell (Claude Code picks per
+// machine) and ideally cmd (Antigravity). The load-bearing property: the
+// command token is never quoted and never prefixed with `&`.
+describe("buildPortableStatuslineCommand", () => {
+  it("falls back to bare node when the node path contains spaces (default Program Files install)", () => {
+    assert.strictEqual(
+      buildPortableStatuslineCommand("C:\\Program Files\\nodejs\\node.exe", "D:/app/hooks/claude-statusline.js", {
+        platform: "win32",
+      }),
+      'node "D:/app/hooks/claude-statusline.js"'
+    );
+  });
+
+  it("uses an unquoted forward-slash absolute path when it needs no quoting (nvm/portable installs)", () => {
+    assert.strictEqual(
+      buildPortableStatuslineCommand("C:\\nvm\\v20.11.0\\node.exe", "D:/app/hooks/claude-statusline.js", {
+        platform: "win32",
+      }),
+      'C:/nvm/v20.11.0/node.exe "D:/app/hooks/claude-statusline.js"'
+    );
+  });
+
+  it("keeps the script path double-quoted with forward slashes", () => {
+    assert.strictEqual(
+      buildPortableStatuslineCommand("node", "C:\\Users\\My Name\\app\\hooks\\claude-statusline.js", {
+        platform: "win32",
+      }),
+      'node "C:/Users/My Name/app/hooks/claude-statusline.js"'
+    );
+  });
+
+  it("falls back to bare node for null nodeBin and for paths with shell-special characters", () => {
+    for (const nodeBin of [null, "", "C:\\tools (x86)\\node.exe", "C:\\nvm&stuff\\node.exe", "C:\\it's\\node.exe"]) {
+      const command = buildPortableStatuslineCommand(nodeBin, "D:/app/hooks/claude-statusline.js", { platform: "win32" });
+      assert.strictEqual(command, 'node "D:/app/hooks/claude-statusline.js"', `nodeBin=${JSON.stringify(nodeBin)}`);
+    }
+  });
+
+  it("never emits a PowerShell call operator or a quoted command token on win32", () => {
+    for (const nodeBin of ["C:\\Program Files\\nodejs\\node.exe", "C:\\nvm\\node.exe", null]) {
+      const command = buildPortableStatuslineCommand(nodeBin, "D:/app/hooks/claude-statusline.js", { platform: "win32" });
+      assert.ok(!command.startsWith("& "), command);
+      assert.ok(!command.startsWith('"'), command);
+    }
+  });
+
+  it("formats POSIX commands as quoted node + script", () => {
+    assert.strictEqual(
+      buildPortableStatuslineCommand("/usr/local/bin/node", "/app/hooks/claude-statusline.js", {
+        platform: "darwin",
+      }),
+      '"/usr/local/bin/node" "/app/hooks/claude-statusline.js"'
     );
   });
 });

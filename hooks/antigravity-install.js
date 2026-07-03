@@ -11,6 +11,7 @@ const {
   writeJsonAtomic,
   writeJsonAtomicWithBackup,
   asarUnpackedPath,
+  buildPortableStatuslineCommand,
   decodeWindowsEncodedCommand,
   extractFirstQuotedToken,
   windowsPowerShellBin,
@@ -394,10 +395,15 @@ function hasAntigravityStatuslineSettings(homeDir) {
   return fs.existsSync(path.join(homeDir, ".gemini", "antigravity-cli"));
 }
 
+// On Windows this must NOT use quoteWindowsProcessArg for the interpreter:
+// a quoted command token is a string literal under PowerShell and never
+// executes, and agy's statusline runner shell is not pinned down the way
+// its hook runner (cmd) is. buildPortableStatuslineCommand emits a form
+// that parses identically under Git Bash, PowerShell, and cmd.
 function buildAntigravityStatuslineCommand(nodeBin, scriptPath, options = {}) {
   const platform = options.platform || process.platform;
-  const quote = platform === "win32" ? quoteWindowsProcessArg : quoteShellSingleArg;
-  return [nodeBin, scriptPath].map(quote).join(" ");
+  if (platform === "win32") return buildPortableStatuslineCommand(nodeBin, scriptPath, options);
+  return [nodeBin, scriptPath].map(quoteShellSingleArg).join(" ");
 }
 
 // Antigravity's statusLine setting is a single slot, not an event-keyed map

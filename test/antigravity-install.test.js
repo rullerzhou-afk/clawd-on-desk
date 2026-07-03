@@ -596,7 +596,7 @@ describe("Antigravity statusline installer", () => {
   it("registers the statusline command when settings.json has none", () => {
     const homeDir = makeTempStatuslineHome();
 
-    const result = registerAntigravityStatusline({ silent: true, homeDir, nodeBin: "/usr/local/bin/node" });
+    const result = registerAntigravityStatusline({ silent: true, homeDir, platform: "darwin", nodeBin: "/usr/local/bin/node" });
 
     const settingsPath = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
     assert.strictEqual(result.installed, true);
@@ -615,6 +615,42 @@ describe("Antigravity statusline installer", () => {
     const result = registerAntigravityStatusline({ silent: true, homeDir, nodeBin: "/usr/local/bin/node" });
 
     assert.strictEqual(result.changed, false);
+  });
+
+  // Unlike hook commands (pinned to cmd via EncodedCommand), the statusline
+  // runner's shell is not pinned down, so the command must parse under
+  // Git Bash, PowerShell, AND cmd: command token unquoted, no `&` prefix.
+  it("win32: writes a shell-portable command (bare node) when the node path has spaces", () => {
+    const homeDir = makeTempStatuslineHome();
+
+    registerAntigravityStatusline({
+      silent: true,
+      homeDir,
+      platform: "win32",
+      nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+    });
+
+    const settingsPath = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+    const command = readJson(settingsPath).statusLine.command;
+    assert.ok(!command.startsWith("& "), command);
+    assert.ok(!command.startsWith('"'), command);
+    assert.ok(command.startsWith('node "'), command);
+    assert.ok(command.includes(STATUSLINE_MARKER));
+  });
+
+  it("win32: keeps a space-free absolute node path, unquoted with forward slashes", () => {
+    const homeDir = makeTempStatuslineHome();
+
+    registerAntigravityStatusline({
+      silent: true,
+      homeDir,
+      platform: "win32",
+      nodeBin: "C:\\nvm\\v20.11.0\\node.exe",
+    });
+
+    const settingsPath = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+    const command = readJson(settingsPath).statusLine.command;
+    assert.ok(command.startsWith('C:/nvm/v20.11.0/node.exe "'), command);
   });
 
   it("skips when Antigravity CLI settings directory is absent", () => {

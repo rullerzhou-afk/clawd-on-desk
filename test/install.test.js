@@ -1640,7 +1640,7 @@ describe("Claude Code statusline installer", () => {
   it("registers the statusline command when settings.json has none", () => {
     const settingsPath = makeTempSettings({});
 
-    const result = registerClaudeStatusline({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+    const result = registerClaudeStatusline({ silent: true, settingsPath, platform: "darwin", nodeBin: "/usr/local/bin/node" });
 
     assert.strictEqual(result.installed, true);
     assert.strictEqual(result.changed, true);
@@ -1658,6 +1658,63 @@ describe("Claude Code statusline installer", () => {
     const result = registerClaudeStatusline({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
 
     assert.strictEqual(result.changed, false);
+  });
+
+  // On Windows Claude Code runs statusLine.command through Git Bash whenever
+  // Git is installed (a Claude Code install prerequisite), so the PowerShell
+  // call-operator form (`& "..."`) is a bash syntax error and the statusline
+  // dies silently. statusLine has no `shell` field to pin PowerShell.
+  it("win32: writes a bash-safe command (bare node) when the node path has spaces", () => {
+    const settingsPath = makeTempSettings({});
+
+    registerClaudeStatusline({
+      silent: true,
+      settingsPath,
+      platform: "win32",
+      nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+    });
+
+    const command = readSettings(settingsPath).statusLine.command;
+    assert.ok(!command.startsWith("& "), command);
+    assert.ok(command.startsWith('node "'), command);
+    assert.ok(command.includes(STATUSLINE_MARKER));
+  });
+
+  it("win32: keeps a space-free absolute node path, unquoted with forward slashes", () => {
+    const settingsPath = makeTempSettings({});
+
+    registerClaudeStatusline({
+      silent: true,
+      settingsPath,
+      platform: "win32",
+      nodeBin: "C:\\nvm\\v20.11.0\\node.exe",
+    });
+
+    const command = readSettings(settingsPath).statusLine.command;
+    assert.ok(command.startsWith('C:/nvm/v20.11.0/node.exe "'), command);
+  });
+
+  it("win32: rewrites our own legacy PowerShell-only command on re-register (startup sync migration)", () => {
+    const settingsPath = makeTempSettings({
+      statusLine: {
+        type: "command",
+        command: '& "C:\\Program Files\\nodejs\\node.exe" "C:/app/hooks/claude-statusline.js"',
+        padding: 0,
+      },
+    });
+
+    const result = registerClaudeStatusline({
+      silent: true,
+      settingsPath,
+      platform: "win32",
+      nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+    });
+
+    assert.strictEqual(result.changed, true);
+    assert.strictEqual(result.skippedExisting, false);
+    const command = readSettings(settingsPath).statusLine.command;
+    assert.ok(!command.startsWith("& "), command);
+    assert.ok(command.includes(STATUSLINE_MARKER));
   });
 
   it("never overwrites a pre-existing third-party statusline", () => {

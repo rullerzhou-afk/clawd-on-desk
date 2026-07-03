@@ -16,6 +16,7 @@ const {
   writeJsonAtomicWithBackup,
   writeJsonAtomicWithBackupAsync,
   asarUnpackedPath,
+  buildPortableStatuslineCommand,
   extractExistingNodeBin,
 } = require("./json-utils");
 
@@ -1443,7 +1444,11 @@ function registerClaudeStatusline(options = {}) {
   const scriptPath = asarUnpackedPath(path.resolve(__dirname, "claude-statusline.js").replace(/\\/g, "/"));
   const nodeBin = (options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin()) || "node";
   const platform = options.platform || process.platform;
-  const command = platform === "win32" ? `& "${nodeBin}" "${scriptPath}"` : `"${nodeBin}" "${scriptPath}"`;
+  // No `& "..."` here: statusLine has no shell field, and on Windows Claude
+  // Code runs this through Git Bash when Git is installed - the PowerShell
+  // call-operator form is a bash syntax error and the statusline dies
+  // silently. See buildPortableStatuslineCommand.
+  const command = buildPortableStatuslineCommand(nodeBin, scriptPath, { platform });
   const desired = { type: "command", command, padding: 0 };
 
   const changed = !existing || JSON.stringify(existing) !== JSON.stringify(desired);

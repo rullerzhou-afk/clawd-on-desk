@@ -388,6 +388,38 @@ function formatNodeHookCommand(nodeBin, scriptPath, options = {}) {
   return `& ${command}`;
 }
 
+// Characters that would need quoting (or would be rewritten) in at least one
+// of Git Bash / PowerShell / cmd when they appear in an unquoted command
+// token. A path containing any of these cannot be written portably, so the
+// command falls back to a bare PATH lookup instead.
+const NON_PORTABLE_COMMAND_TOKEN_RE = /[\s"'`&|<>^%!();,$*?#~={}[\]]/;
+
+/**
+ * Build a statusline command that parses in every shell the host agent might
+ * run it under. Unlike hooks, statusLine settings have no `shell` field:
+ * Claude Code runs the command through Git Bash when Git is installed
+ * (nearly always - it's an install prerequisite) and PowerShell otherwise;
+ * Antigravity is expected to use cmd like its hook runner. No QUOTED command
+ * token parses in all of those: `& "..."` is PowerShell-only (bash: syntax
+ * error), a bare `"..."` is a string literal in PowerShell (never executed),
+ * and an unquoted backslash path is eaten by bash. So the interpreter token
+ * must be unquoted: an absolute path only when it needs no quoting (no
+ * spaces or shell-special characters), written with forward slashes, and a
+ * bare `node` PATH lookup otherwise (the default install under
+ * "C:\Program Files" is on PATH by the Node installer). The script path
+ * stays double-quoted - a quoted *argument* is fine in all three shells.
+ */
+function buildPortableStatuslineCommand(nodeBin, scriptPath, options = {}) {
+  const platform = options.platform || process.platform;
+  const script = String(scriptPath).replace(/\\/g, "/");
+  if (platform !== "win32") return `"${nodeBin}" "${script}"`;
+  const raw = String(nodeBin || "").trim();
+  const nodeToken = /^[A-Za-z]:[\\/]/.test(raw) && !NON_PORTABLE_COMMAND_TOKEN_RE.test(raw)
+    ? raw.replace(/\\/g, "/")
+    : "node";
+  return `${nodeToken} "${script}"`;
+}
+
 /**
  * Extract the first absolute node binary path from a list of command strings.
  * Scans each command for double-quoted tokens, ignores the hook script marker
@@ -594,6 +626,7 @@ module.exports = {
   removeMatchingCommandHooks,
   removeMatchingHttpHooks,
   formatNodeHookCommand,
+  buildPortableStatuslineCommand,
   buildWindowsEncodedNodeHookCommand,
   decodeWindowsEncodedCommand,
   extractFirstQuotedToken,
