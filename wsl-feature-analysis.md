@@ -130,11 +130,7 @@ src/wsl-utils.js（新建）
 │   封装 spawnAndWait（复用 remote-ssh-deploy.js 的模式）
 │   返回: { code, stdout, stderr }
 │
-├─ resolveWslNodePath(distro)
-│   执行: wsl -d <distro> -- bash -lic "command -v node"
-│   返回: node 绝对路径或 null
-│
-└─ getWslHomeDir(distro)
+├─ getWslHomeDir(distro)
     执行: wsl -d <distro> -- bash -c "echo \$HOME"
     返回: WSL 内的 home 路径
 ```
@@ -264,7 +260,7 @@ session-alias.js:
 
 | 文件 | 操作 | 内容 |
 |------|------|------|
-| `src/wsl-utils.js` | **新建** | `getWslDistributions()`, `execInWsl()`, `resolveWslNodePath()`, `getWslHomeDir()` |
+| `src/wsl-utils.js` | **新建** | `getWslDistributions()`, `execInWsl()`, `getWslHomeDir()`, `dirExistsInWsl()`, `fileExistsInWsl()` |
 | `src/wsl-deploy.js` | **新建** | `deployToWsl(distro, agentDescriptor)`, 文件 base64 传输 + install.js 执行 |
 | `src/agent-installation-detector.js` | **修改** | 新增 `detectWslAgentInstallations()` 函数，`detectAgentInstallations()` 返回新增 `wslAgents` 字段 |
 | `src/main.js` | **修改** | 调 `detectWslAgentInstallations()`，结果传给 settings UI；`wsl-deploy.js` 暴露给 renderer |

@@ -167,65 +167,6 @@ async function fileExistsInWsl(distro, wslPath, options = {}) {
   return safeTrim(result.stdout) === "yes";
 }
 
-// ── Node.js detection ─────────────────────────────────────────────────
-
-async function resolveWslNodePath(distro, options = {}) {
-  // Strategy 0: Direct version-manager scans — bypasses shell init entirely.
-  // Many users' .bashrc guards nvm behind `case $- in *i*)` for
-  // interactive-only, so `bash -lc 'command -v node'` finds nothing.
-  // We scan the known directory layouts directly.
-  const homeDir = options.wslHome || await getWslHomeDir(distro, options);
-  if (homeDir) {
-    const h = homeDir.replace(/'/g, "'\\''");
-    // Single wsl.exe spawn checks nvm, volta, fnm, asdf — first hit wins.
-    const vmResult = await execInWsl(
-      distro,
-      `nvm_node=$(ls -d '${h}/.nvm/versions/node/'*/bin/node 2>/dev/null | sort -Vr | head -1) && echo "NVM:$nvm_node"; ` +
-      `[ -x '${h}/.volta/bin/node' ] && echo "VOLTA:${h}/.volta/bin/node"; ` +
-      `fnm_node=$(ls -d '${h}/.local/share/fnm/node-versions/'*/installation/bin/node 2>/dev/null | sort -Vr | head -1) && echo "FNM:$fnm_node"; ` +
-      `asdf_node=$(ls -d '${h}/.asdf/installs/nodejs/'*/bin/node 2>/dev/null | sort -Vr | head -1) && echo "ASDF:$asdf_node"`,
-      { timeout: (options.timeout || 15000) }
-    );
-    if (vmResult && vmResult.stdout) {
-      for (const line of vmResult.stdout.split("\n")) {
-        const trimmed = safeTrim(line);
-        if (!trimmed) continue;
-        const colonIdx = trimmed.indexOf(":");
-        if (colonIdx === -1) continue;
-        const pathPart = safeTrim(trimmed.slice(colonIdx + 1));
-        if (pathPart && pathPart.startsWith("/")) return pathPart;
-      }
-    }
-  }
-
-  // Strategy 1: login shell — picks up nvm/volta/fnm/asdf-managed Node
-  // when the user's .bashrc does NOT guard behind $- == *i*.
-  const loginResult = await execInWsl(
-    distro,
-    "bash -lc 'command -v node 2>/dev/null || which node 2>/dev/null || true'",
-    { timeout: options.timeout || 15000 }
-  );
-  const loginPath = safeTrim(loginResult.stdout).split("\n")
-    .map(safeTrim).filter((p) => p.startsWith("/")).pop();
-  if (loginPath) return loginPath;
-
-  // Strategy 2: bare PATH search (faster, for apt/pacman/brew Node)
-  const fastResult = await execInWsl(
-    distro,
-    "command -v node 2>/dev/null || which node 2>/dev/null",
-    { timeout: 8000 }
-  );
-  const fastPath = safeTrim(fastResult.stdout);
-  if (fastPath && fastPath.startsWith("/")) return fastPath;
-
-  // Strategy 3: check common locations
-  for (const candidate of ["/usr/local/bin/node", "/usr/bin/node", "/home/linuxbrew/.linuxbrew/bin/node"]) {
-    if (await fileExistsInWsl(distro, candidate, options)) return candidate;
-  }
-
-  return null;
-}
-
 // ── Path conversion ──────────────────────────────────────────────────
 
 // Convert a Windows home-relative path to its WSL POSIX equivalent.
@@ -242,31 +183,12 @@ function rebaseHomePathPosix(value, wslHome, winHome) {
   return value;
 }
 
-// ── Agent detection helpers ───────────────────────────────────────────
-
-async function detectAgentDirInWsl(distro, wslParentDir, options = {}) {
-  return wslParentDir ? dirExistsInWsl(distro, wslParentDir, options) : false;
-}
-
-async function detectAgentCommandInWsl(distro, commandName, options = {}) {
-  const result = await execInWsl(
-    distro,
-    `command -v '${commandName.replace(/'/g, "'\\''")}' 2>/dev/null || which '${commandName.replace(/'/g, "'\\''")}' 2>/dev/null`,
-    { timeout: options.timeout || 10000 }
-  );
-  const found = safeTrim(result.stdout);
-  return !!(found && found.startsWith("/"));
-}
-
 module.exports = {
   getWslDistributions,
   execInWsl,
   getWslHomeDir,
   dirExistsInWsl,
   fileExistsInWsl,
-  resolveWslNodePath,
-  detectAgentDirInWsl,
-  detectAgentCommandInWsl,
   isWindows,
   rebaseHomePathPosix,
   // Exported for tests

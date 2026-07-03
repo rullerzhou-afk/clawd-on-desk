@@ -7,14 +7,15 @@
 // through wsl.exe stdin to avoid /mnt/ path assumptions and command-line
 // length limits.
 //
-// KEEP IN SYNC with src/remote-ssh-deploy.js: both implement the same
-// verify-files → check-node → mkdir → copy-files → run-install pipeline.
-// When adding a step to one path, mirror it in the other.
+// Conceptually mirrors src/remote-ssh-deploy.js: both deploy hook scripts
+// to a remote environment and run agent-specific install scripts. Step
+// lists differ (wsl.exe stdin pipe vs scp) but new deploy requirements
+// should be addressed in both paths.
 
 const childProcess = require("child_process");
 const fs = require("fs");
 const path = require("path");
-const { execInWsl, resolveWslNodePath, getWslHomeDir, isWindows } = require("./wsl-utils");
+const { execInWsl, getWslHomeDir, isWindows } = require("./wsl-utils");
 
 // All .js files in the hooks/ directory — the full set is needed because
 // different agent install scripts have different dependencies
@@ -171,7 +172,7 @@ async function deployToWsl(distro, options = {}) {
   }
   emit("verify-files", "ok", null, { fileCount: fileEntries.length });
 
-  // 2. Resolve WSL home directory (needed by Node path lookup below).
+  // 2. Resolve WSL home and create hooks directory.
   emit("prepare-dir", "start");
   const wslHome = await getWslHomeDir(distro, options);
   if (!wslHome) {
@@ -179,18 +180,6 @@ async function deployToWsl(distro, options = {}) {
     emit("prepare-dir", "fail", msg);
     return { ok: false, step: "prepare-dir", message: msg };
   }
-
-  // 3. Check WSL Node.js — pass wslHome so resolveWslNodePath can scan
-  //    nvm/volta/fnm/asdf dirs directly without an extra getWslHomeDir spawn.
-  emit("check-node", "start");
-  const nodePath = await resolveWslNodePath(distro, { ...options, wslHome });
-  if (!nodePath) {
-    const msg = `Node.js not found in WSL ${distro}. Install Node.js first: https://nodejs.org/`;
-    emit("prepare-dir", "fail", msg);
-    emit("check-node", "fail", msg);
-    return { ok: false, step: "check-node", message: msg };
-  }
-  emit("check-node", "ok", null, { nodePath });
   const hooksTargetDir = `${wslHome}/.claude/hooks`;
   const hooksTargetDirEscaped = hooksTargetDir.replace(/'/g, "'\\''");
 
@@ -202,7 +191,7 @@ async function deployToWsl(distro, options = {}) {
   }
   emit("prepare-dir", "ok", null, { hooksTargetDir });
 
-  // 4. Copy hook files into WSL.
+  // 3. Copy hook files into WSL.
   emit("copy-files", "start");
   let copied = 0;
   const copyErrors = [];
@@ -225,16 +214,19 @@ async function deployToWsl(distro, options = {}) {
   }
   emit("copy-files", "ok", null, { copied, total: fileEntries.length });
 
-  // 5. Run agent-specific install script inside WSL.
+  // 4. Run agent-specific install script inside WSL.
   // Pass CLAWD_WSL_DISTRO so install.js's buildCommandHookSpec detects WSL
   // and emits plain (unquoted) command format. Without this, the hook runner
   // treats quotes as part of the executable name → silent hook failure.
+  //
+  // Use bash -l -i -c so version managers (nvm/volta/fnm) are initialised
+  // and `node` resolves to the user's managed version, not a stale system one.
   emit("run-install", "start");
   const distroEscaped = distro.replace(/'/g, "'\\''");
   const runResult = await execInWsl(
     distro,
-    `cd '${hooksTargetDirEscaped}' && CLAWD_WSL_DISTRO='${distroEscaped}' '${nodePath}' ${installScript}`,
-    { ...options, timeout: 60000 }
+    `cd '${hooksTargetDirEscaped}' && CLAWD_WSL_DISTRO='${distroEscaped}' node ${installScript}`,
+    { ...options, shell: "bash", shellFlags: ["-l", "-i", "-c"], timeout: 60000 }
   );
   if (runResult.code !== 0) {
     const msg = runResult.stderr || `${installScript} failed with code ${runResult.code}`;
@@ -248,7 +240,6 @@ async function deployToWsl(distro, options = {}) {
     distro,
     agentId,
     hooksTargetDir,
-    nodePath,
     filesCopied: copied,
   };
 }
@@ -270,7 +261,6 @@ async function removeFromWsl(distro, options = {}) {
 
   const hooksDir = `${wslHome}/.claude/hooks`;
   const hooksDirEscaped = hooksDir.replace(/'/g, "'\\''");
-  const nodePath = await resolveWslNodePath(distro, options);
   const agentId = options.agentId || "claude-code";
 
   function emit(step, status, message, hint) {
@@ -281,19 +271,18 @@ async function removeFromWsl(distro, options = {}) {
 
   emit("remove", "start");
 
-  // Run the agent's uninstall script if Node is available.
-  if (nodePath) {
-    const installScript = getInstallScript(agentId);
-    if (installScript) {
-      const uninstallResult = await execInWsl(
-        distro,
-        `cd '${hooksDirEscaped}' && '${nodePath}' ${installScript} --uninstall`,
-        { ...options, timeout: 30000 }
-      );
-      // Best-effort: uninstall may fail if hooks were already removed.
-      if (uninstallResult.code !== 0) {
-        emit("remove", "stderr", uninstallResult.stderr || `uninstall exited ${uninstallResult.code}`);
-      }
+  // Run the agent's uninstall script — best-effort, may fail if Node or
+  // hooks were already removed. Use bash -l -i -c so version managers
+  // (nvm/volta/fnm) are initialised and `node` resolves correctly.
+  const installScript = getInstallScript(agentId);
+  if (installScript) {
+    const uninstallResult = await execInWsl(
+      distro,
+      `cd '${hooksDirEscaped}' && node ${installScript} --uninstall`,
+      { ...options, shell: "bash", shellFlags: ["-l", "-i", "-c"], timeout: 30000 }
+    );
+    if (uninstallResult.code !== 0) {
+      emit("remove", "stderr", uninstallResult.stderr || `uninstall exited ${uninstallResult.code}`);
     }
   }
 
