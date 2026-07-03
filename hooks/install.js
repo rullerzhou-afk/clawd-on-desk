@@ -800,8 +800,13 @@ function reconcileVersionedHooks(settings, supportedEvents, versionInfo) {
  * @returns {{ added: number, skipped: number, updated: number, removed: number, version: string|null, versionStatus: "known"|"unknown", versionSource: string|null }}
  */
 function resolveWritePath(settingsPath) {
-  try { return fs.realpathSync(settingsPath); } catch { /* new file, no symlink yet */ }
-  return settingsPath;
+  try { return fs.realpathSync(settingsPath); } catch (err) {
+    // ENOENT: new file, no symlink yet — use the unresolved path.
+    // Other errors (ELOOP, EACCES, EIO) — surface them rather than silently
+    // replacing a symlink with a regular file.
+    if (err && err.code === "ENOENT") return settingsPath;
+    throw err;
+  }
 }
 
 function registerHooks(options = {}) {

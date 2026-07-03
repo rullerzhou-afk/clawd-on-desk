@@ -6,6 +6,10 @@
 // The user never needs to clone the repo inside WSL. Hook files are piped
 // through wsl.exe stdin to avoid /mnt/ path assumptions and command-line
 // length limits.
+//
+// KEEP IN SYNC with src/remote-ssh-deploy.js: both implement the same
+// verify-files → check-node → mkdir → copy-files → run-install pipeline.
+// When adding a step to one path, mirror it in the other.
 
 const childProcess = require("child_process");
 const fs = require("fs");
@@ -25,7 +29,10 @@ function collectHookFiles(hooksDir) {
       files.push({ name, path: full, content: fs.readFileSync(full, "utf8") });
     }
   } catch (err) {
-    // hooksDir missing — caller should verify before deploy
+    // Permission denied, I/O error, or other FS failure — throw so the
+    // deploy fails with the real error rather than "No hook files found".
+    console.warn("Clawd: collectHookFiles failed:", err && err.message ? err.message : err);
+    throw err;
   }
   return files;
 }
@@ -55,7 +62,7 @@ const AGENT_INSTALL_SCRIPT = {
 };
 
 function getInstallScript(agentId) {
-  return AGENT_INSTALL_SCRIPT[agentId] || null;
+  return getAgentInstallScriptName(agentId);
 }
 
 // Resolve hooks directory for both dev (source tree) and packaged.
@@ -100,7 +107,9 @@ function pipeFileToWsl(distro, wslDestDir, fileName, content, options = {}) {
       child.stderr.on("data", (d) => { stderrChunks.push(d); });
     }
 
-    child.on("exit", (code) => {
+    // Use 'close' not 'exit' — only 'close' guarantees stdio streams are
+    // fully drained. 'exit' can fire while OS buffers still hold data.
+    child.on("close", (code) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
@@ -181,8 +190,9 @@ async function deployToWsl(distro, options = {}) {
     return { ok: false, step: "prepare-dir", message: msg };
   }
   const hooksTargetDir = `${wslHome}/.claude/hooks`;
+  const hooksTargetDirEscaped = hooksTargetDir.replace(/'/g, "'\\''");
 
-  const mkdirResult = await execInWsl(distro, `mkdir -p '${hooksTargetDir}'`, options);
+  const mkdirResult = await execInWsl(distro, `mkdir -p '${hooksTargetDirEscaped}'`, options);
   if (mkdirResult.code !== 0) {
     const msg = mkdirResult.stderr || `mkdir failed with code ${mkdirResult.code}`;
     emit("prepare-dir", "fail", msg);
@@ -221,7 +231,7 @@ async function deployToWsl(distro, options = {}) {
   const distroEscaped = distro.replace(/'/g, "'\\''");
   const runResult = await execInWsl(
     distro,
-    `cd '${hooksTargetDir}' && CLAWD_WSL_DISTRO='${distroEscaped}' '${nodePath}' ${installScript}`,
+    `cd '${hooksTargetDirEscaped}' && CLAWD_WSL_DISTRO='${distroEscaped}' '${nodePath}' ${installScript}`,
     { ...options, timeout: 60000 }
   );
   if (runResult.code !== 0) {
@@ -257,6 +267,7 @@ async function removeFromWsl(distro, options = {}) {
   }
 
   const hooksDir = `${wslHome}/.claude/hooks`;
+  const hooksDirEscaped = hooksDir.replace(/'/g, "'\\''");
   const nodePath = await resolveWslNodePath(distro, options);
   const agentId = options.agentId || "claude-code";
 
@@ -274,7 +285,7 @@ async function removeFromWsl(distro, options = {}) {
     if (installScript) {
       const uninstallResult = await execInWsl(
         distro,
-        `cd '${hooksDir}' && '${nodePath}' ${installScript} --uninstall`,
+        `cd '${hooksDirEscaped}' && '${nodePath}' ${installScript} --uninstall`,
         { ...options, timeout: 30000 }
       );
       // Best-effort: uninstall may fail if hooks were already removed.
@@ -287,7 +298,7 @@ async function removeFromWsl(distro, options = {}) {
   // Remove the hooks directory.
   const rmResult = await execInWsl(
     distro,
-    `rm -rf '${hooksDir}'`,
+    `rm -rf '${hooksDirEscaped}'`,
     { ...options, timeout: 30000 }
   );
   if (rmResult.code !== 0) {

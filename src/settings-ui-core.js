@@ -922,9 +922,10 @@
       return Promise.resolve(runtime.agentInstallationHints);
     }
 
-    let opts;
-    if (refreshWsl) opts = { refreshWsl: true };
-    else if (force) opts = { force: true };
+    // refreshWsl triggers a backend WSL re-scan; force just bypasses the
+    // frontend cache. The backend only inspects refreshWsl — passing force
+    // in the IPC payload would be dead weight.
+    const opts = refreshWsl ? { refreshWsl: true } : undefined;
     runtime.agentInstallationHintsPending = true;
     runtime.agentInstallationHintsPromise = window.settingsAPI.detectAgentInstallations(opts)
       .then((result) => {

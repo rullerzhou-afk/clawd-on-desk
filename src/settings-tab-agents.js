@@ -404,7 +404,7 @@
       ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
     } finally {
       agentHintActionPending = false;
-      refreshInstallationHints().finally(() => ops.requestRender({ content: true }));
+      refreshInstallationHints().finally(() => ops.requestRender({ content: true })).catch(() => {});
     }
   }
 
@@ -466,7 +466,7 @@
       ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
     } finally {
       agentHintActionPending = false;
-      refreshInstallationHints().finally(() => ops.requestRender({ content: true }));
+      refreshInstallationHints().finally(() => ops.requestRender({ content: true })).catch(() => {});
     }
   }
 
@@ -793,6 +793,8 @@
             if (typeof ops.fetchAgentInstallationHints === "function") {
               ops.fetchAgentInstallationHints({ refreshWsl: true }).then(() => {
                 ops.requestRender({ content: true });
+              }).catch(() => {
+                // DOM may be torn down if user navigated away before refresh completes
               });
             }
           } else {

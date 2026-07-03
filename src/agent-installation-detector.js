@@ -410,11 +410,14 @@ function detectAgentInstallation(descriptor, options = {}) {
 let _cachedWslAgents = [];
 let _cachedWslDistros = [];
 let _cachedDetected = process.platform !== "win32";
+let _wslRefreshGeneration = 0;
+let _wslRefreshCommitted = 0;
 
 function invalidateWslCache() {
   _cachedWslAgents = [];
   _cachedWslDistros = [];
   _cachedDetected = process.platform !== "win32";
+  _wslRefreshCommitted = 0;
 }
 
 function detectAgentInstallations(options = {}) {
@@ -445,16 +448,26 @@ function detectAgentInstallations(options = {}) {
 
 // Async WSL scan — runs at startup and on explicit user action.
 // Populates module-level cache so subsequent reads are instant.
+//
+// Uses a committed-generation counter: successful results are only
+// overwritten by a newer scan that actually completes. If a newer scan
+// fails (timeout, broken wsl.exe), the previous results survive.
+// Also batches dir-exists checks into one wsl.exe spawn per distro
+// instead of one per (distro × agent).
 async function refreshWslDetection(options = {}) {
   if (process.platform !== "win32") {
     _cachedDetected = true;
     return detectAgentInstallations(options);
   }
 
+  const generation = ++_wslRefreshGeneration;
+
   try {
-    const { getWslDistributions, getWslHomeDir, dirExistsInWsl, rebaseHomePathPosix } = require("./wsl-utils");
+    const { getWslDistributions, getWslHomeDir, execInWsl, rebaseHomePathPosix } = require("./wsl-utils");
     const descriptors = Array.isArray(options.descriptors) ? options.descriptors : getAgentDescriptors();
 
+    const homeDir = options.homeDir || os.homedir();
+    const skipDefaultIntegrations = options.skipDefaultIntegrations !== false;
     const distros = await getWslDistributions({ excludeDistros: options.excludeDistros });
     const wslAgents = [];
 
@@ -462,16 +475,50 @@ async function refreshWslDetection(options = {}) {
       const wslHome = await getWslHomeDir(distro.name, options);
       if (!wslHome) continue;
 
-      const skipDefaultIntegrations = options.skipDefaultIntegrations !== false;
+      // Collect all directories to check for this distro.
+      const checks = [];
       for (const descriptor of descriptors) {
         if (!descriptor || typeof descriptor.agentId !== "string") continue;
         if (skipDefaultIntegrations && DEFAULT_SKIPPED_AGENT_IDS.has(descriptor.agentId)) continue;
-
-        const homeDir = options.homeDir || os.homedir();
         const wslParentDir = rebaseHomePathPosix(descriptor.parentDir, wslHome, homeDir);
         if (!wslParentDir) continue;
+        checks.push({ descriptor, wslParentDir });
+      }
 
-        const hasParentDir = await dirExistsInWsl(distro.name, wslParentDir, options);
+      if (checks.length === 0) continue;
+
+      // Batch all dir-exists checks into a single wsl.exe spawn.
+      // Each line emits "OK N" or "NO N" for the Nth check.
+      const batchLines = checks.map((c, i) => {
+        const escaped = c.wslParentDir.replace(/'/g, "'\\''");
+        return `test -d '${escaped}' && echo "OK ${i}" || echo "NO ${i}"`;
+      });
+      const batchResult = await execInWsl(
+        distro.name,
+        batchLines.join("; "),
+        { timeout: 30000 }  // fixed 30s — test -d is sub-ms, only distro boot/hang justifies a timeout
+      );
+
+      // Parse: collect indices of "OK" lines.
+      const foundIndices = new Set();
+      const stdout = (batchResult && batchResult.stdout) || "";
+      for (const line of stdout.split("\n")) {
+        const m = line.trim().match(/^OK (\d+)$/);
+        if (m) foundIndices.add(parseInt(m[1], 10));
+      }
+
+      // Warn on partial results (timeout / distro crash mid-batch).
+      if (batchResult && batchResult.error) {
+        console.warn("Clawd: WSL batch dir check error in", distro.name, "—",
+          batchResult.error.message, `(${foundIndices.size}/${checks.length} checks completed)`);
+      } else if (foundIndices.size < checks.length && (batchResult && batchResult.code !== 0)) {
+        console.warn("Clawd: WSL batch dir check partial in", distro.name, "—",
+          `exit ${batchResult.code}, ${foundIndices.size}/${checks.length} checks completed`);
+      }
+
+      for (let i = 0; i < checks.length; i++) {
+        const { descriptor, wslParentDir } = checks[i];
+        const hasParentDir = foundIndices.has(i);
         wslAgents.push({
           agentId: descriptor.agentId,
           agentName: descriptor.agentName,
@@ -488,12 +535,26 @@ async function refreshWslDetection(options = {}) {
       }
     }
 
+    // Only overwrite cache if no newer scan has already committed.
+    // This preserves results from this scan even if a newer scan started
+    // concurrently and subsequently failed (generation > committed).
+    if (generation <= _wslRefreshCommitted) return detectAgentInstallations(options);
+
     _cachedWslAgents = wslAgents;
     _cachedWslDistros = distros;
     _cachedDetected = true;
+    _wslRefreshCommitted = generation;
   } catch (err) {
+    // If a newer scan already committed, don't touch the cache.
+    if (generation <= _wslRefreshCommitted) return detectAgentInstallations(options);
+
     console.warn("Clawd: WSL detection scan failed:", err && err.message ? err.message : err);
-    _cachedDetected = true; // don't retry forever
+    _cachedDetected = true;
+    _wslRefreshCommitted = generation;
+
+    const result = detectAgentInstallations(options);
+    result.wslError = err && err.message ? err.message : String(err);
+    return result;
   }
 
   return detectAgentInstallations(options);
