@@ -4,7 +4,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 
 ## Project Overview
 
-Clawd 是一个 Electron 桌宠：通过 hook、日志轮询、plugin 和 extension 感知 AI coding agent 的工作状态，并播放像素风动画。当前支持 Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Antigravity CLI (agy)、Cursor Agent、CodeBuddy、Kiro CLI、Kimi Code CLI (Kimi-CLI)、Qwen Code、CodeWhale、opencode、Pi、OpenClaw、Hermes Agent、Qoder、Reasonix；内置 Clawd / Calico / Cloudling 三套主题，支持用户主题；平台覆盖 Windows、macOS、Linux，UI 支持 en / zh / ko / ja。
+Clawd 是一个 Electron 桌宠：通过 hook、日志轮询、plugin 和 extension 感知 AI coding agent 的工作状态，并播放像素风动画。当前支持 Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Antigravity CLI (agy)、Cursor Agent、CodeBuddy、Kiro CLI、Kimi Code CLI (Kimi-CLI)、Qwen Code、CodeWhale、opencode、Pi、OpenClaw、Hermes Agent、Qoder、QoderWork、Reasonix；内置 Clawd / Calico / Cloudling 三套主题，支持用户主题；平台覆盖 Windows、macOS、Linux，UI 支持 en / zh / ko / ja。
 
 ## Common Commands
 
@@ -39,6 +39,8 @@ npm run install:hermes-plugin
 npm run uninstall:hermes-plugin
 npm run install:qoder-hooks
 npm run uninstall:qoder-hooks
+npm run install:qoderwork-hooks
+npm run uninstall:qoderwork-hooks
 npm run install:reasonix-hooks
 npm run uninstall:reasonix-hooks
 npm run install:codex-hooks
@@ -55,7 +57,7 @@ bash test-macos.sh
 bash test-oneshot-gate.sh [state] [seconds]
 ```
 
-新安装默认只把 Claude Code 和 Codex 标记为已安装并启用；其他 agent 默认未安装、未启用。正常启动时，Clawd 只会为 `integrationInstalled=true` 且 `enabled=true` 的 agent 自动同步 Claude / Codex / Copilot / Gemini / Antigravity / Cursor / CodeBuddy / Kiro / Kimi / Qwen / CodeWhale / Qoder / Reasonix hooks、opencode / OpenClaw / Hermes plugins 和 Pi extension。Settings Agent 页的 Install 会安装并启用该集成；Uninstall 会卸载 Clawd 管理的 hook/plugin/extension，并同时把该 agent 设为未安装、未启用。单独关闭 enabled 只会跳过启动同步并屏蔽事件/权限入口，不卸载用户已有 hooks / plugins / extensions；重新启用未安装 agent 只打开事件入口，不会写本机集成文件。手动安装命令主要用于调试、重装或远程部署。
+新安装默认只把 Claude Code 和 Codex 标记为已安装并启用；其他 agent 默认未安装、未启用。正常启动时，Clawd 只会为 `integrationInstalled=true` 且 `enabled=true` 的 agent 自动同步 Claude / Codex / Copilot / Gemini / Antigravity / Cursor / CodeBuddy / Kiro / Kimi / Qwen / CodeWhale / Qoder / QoderWork / Reasonix hooks、opencode / OpenClaw / Hermes plugins 和 Pi extension。Settings Agent 页的 Install 会安装并启用该集成；Uninstall 会卸载 Clawd 管理的 hook/plugin/extension，并同时把该 agent 设为未安装、未启用。单独关闭 enabled 只会跳过启动同步并屏蔽事件/权限入口，不卸载用户已有 hooks / plugins / extensions；重新启用未安装 agent 只打开事件入口，不会写本机集成文件。手动安装命令主要用于调试、重装或远程部署。
 Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-based 增量合并只接管含 `copilot-hook.js` 标记的条目，用户其他 entry / 其他 `hooks/*.json` 文件原样保留；hooks.json 或 `settings.json` 顶层 `disableAllHooks: true` 时 doctor 报 warning（不挂 Fix 按钮）。详见 `docs/guides/copilot-setup.md`。
 
 ## Read These Docs
@@ -126,7 +128,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 | `hooks/install.js` | Claude hook 注册 / 卸载 |
 | `hooks/auto-start.js` | Claude `SessionStart` 自动拉起 Clawd 的 hook |
 | `hooks/codex-hook.js` / `hooks/codex-install.js` | Codex official hooks 状态与权限审批、安装 / 卸载 |
-| `hooks/cursor-install.js` / `gemini-install.js` / `antigravity-install.js` / `kiro-install.js` / `kimi-install.js` / `qwen-code-install.js` / `codewhale-install.js` / `codebuddy-install.js` / `opencode-install.js` / `pi-install.js` / `openclaw-install.js` / `hermes-install.js` / `qoder-install.js` / `reasonix-install.js` | 各 agent 集成安装逻辑 |
+| `hooks/cursor-install.js` / `gemini-install.js` / `antigravity-install.js` / `kiro-install.js` / `kimi-install.js` / `qwen-code-install.js` / `codewhale-install.js` / `codebuddy-install.js` / `opencode-install.js` / `pi-install.js` / `openclaw-install.js` / `hermes-install.js` / `qoder-install.js` / `qoderwork-install.js` / `reasonix-install.js` | 各 agent 集成安装逻辑 |
 | `hooks/qoder-hook.js` | Qoder state-only 状态上报脚本（Phase 1，stdout 恒为 `{}`） |
 | `hooks/codex-remote-monitor.js` | 远程 Codex JSONL 轮询并通过 SSH 隧道回传 |
 | `extensions/vscode/extension.js` | VS Code / Cursor 终端 tab 聚焦辅助扩展 |

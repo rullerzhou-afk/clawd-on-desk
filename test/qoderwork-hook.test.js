@@ -6,8 +6,6 @@ const {
   sendHookEvent,
   normalizeSessionId,
   isQoderWorkAgentCommandLine,
-  isQoderWorkWorkspaceCwd,
-  extractAddDirFromCommandLine,
   resolveHookName,
   shouldResolvePid,
 } = require("../hooks/qoderwork-hook");
@@ -187,25 +185,6 @@ describe("QoderWork hook runtime (Phase 1 state-only)", () => {
     // Must NOT match other executables.
     assert.strictEqual(isQoderWorkAgentCommandLine("node /home/me/qoderwork-notes/index.js"), false);
     assert.strictEqual(isQoderWorkAgentCommandLine(""), false);
-  });
-
-  it("detects QoderWork workspace cwd paths", () => {
-    assert.strictEqual(isQoderWorkWorkspaceCwd("/Users/me/.qoderwork/workspace/mqgw60jiigjsjcid"), true);
-    assert.strictEqual(isQoderWorkWorkspaceCwd("C:\\Users\\me\\.qoderwork\\workspace\\abc123"), true);
-    // Not workspace paths.
-    assert.strictEqual(isQoderWorkWorkspaceCwd("/Users/me/projects/myapp"), false);
-    assert.strictEqual(isQoderWorkWorkspaceCwd("/Users/me/.qoderwork/"), false);
-    assert.strictEqual(isQoderWorkWorkspaceCwd(""), false);
-    assert.strictEqual(isQoderWorkWorkspaceCwd(null), false);
-  });
-
-  it("extracts --add-dir from command-line strings", () => {
-    assert.strictEqual(extractAddDirFromCommandLine('qodercli --add-dir "/work/project"'), "/work/project");
-    assert.strictEqual(extractAddDirFromCommandLine("qodercli --add-dir /work/project"), "/work/project");
-    assert.strictEqual(extractAddDirFromCommandLine("qodercli --add-dir '/work/project'"), "/work/project");
-    assert.strictEqual(extractAddDirFromCommandLine("qodercli --other-flag"), null);
-    assert.strictEqual(extractAddDirFromCommandLine(""), null);
-    assert.strictEqual(extractAddDirFromCommandLine(null), null);
   });
 
   it("resolveHookName prefers payload hook_event_name over argv", () => {

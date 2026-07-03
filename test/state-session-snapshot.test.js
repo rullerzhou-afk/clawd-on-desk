@@ -9,6 +9,7 @@ const {
   buildSessionSnapshot,
   getActiveSessionAliasKeys,
   sessionSnapshotSignature,
+  sessionDisplayTitle,
 } = require("../src/state-session-snapshot");
 
 const STATE_PRIORITY = {
@@ -52,6 +53,26 @@ describe("isSessionInProgress state mapping", () => {
   it("returns false for nullish sessions", () => {
     assert.strictEqual(isSessionInProgress(null), false);
     assert.strictEqual(isSessionInProgress(undefined), false);
+  });
+});
+
+describe("sessionDisplayTitle cwd fallback", () => {
+  it("falls back to path.basename(cwd) for normal project paths", () => {
+    assert.strictEqual(
+      sessionDisplayTitle("qoderwork:abc123", session("working", { cwd: "/home/me/projects/myapp" })),
+      "myapp"
+    );
+  });
+
+  it("skips QoderWork internal workspace cwds so the HUD never shows a raw workspace id", () => {
+    assert.strictEqual(
+      sessionDisplayTitle("qoderwork:abc123", session("working", { cwd: "/Users/me/.qoderwork/workspace/mqgw60jiigjsjcid" })),
+      "qoderw.."
+    );
+    assert.strictEqual(
+      sessionDisplayTitle("qoderwork:abc123", session("working", { cwd: "C:\\Users\\me\\.qoderwork\\workspace\\abc123" })),
+      "qoderw.."
+    );
   });
 });
 

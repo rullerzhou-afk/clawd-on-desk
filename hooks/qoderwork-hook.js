@@ -5,10 +5,9 @@
 // Reads the hook payload from stdin (JSON with hook_event_name), POSTs a
 // state event to the running Clawd server, and ALWAYS writes `{}` to stdout.
 // Clawd never answers a QoderWork permission decision in Phase 1, so
-// PermissionRequest / PermissionDenied are observed as passive `notification`
+// PermissionRequest / PermissionDenied are observed as passive `working`
 // state only and QoderWork's native permission flow stays in control.
 
-const path = require("path");
 const crypto = require("crypto");
 const { postStateToRunningServer, readHostPrefix } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
@@ -83,69 +82,6 @@ function buildToolInputFingerprint(toolInput) {
     .createHash("sha1")
     .update(JSON.stringify(normalized))
     .digest("hex");
-}
-
-// Detect QoderWork internal workspace paths like
-// /Users/<user>/.qoderwork/workspace/<id> and return true.
-function isQoderWorkWorkspaceCwd(cwd) {
-  if (typeof cwd !== "string") return false;
-  const normalized = cwd.replace(/\\/g, "/");
-  return /\/\.qoderwork\/workspace\/[^/]+$/.test(normalized);
-}
-
-// Extract --add-dir value from a command-line string.
-function extractAddDirFromCommandLine(cmd) {
-  if (typeof cmd !== "string") return null;
-  // Match --add-dir followed by a quoted or unquoted path
-  const match = cmd.match(/--add-dir\s+(?:"([^"]+)"|'([^']+)'|(\S+))/);
-  if (!match) return null;
-  return match[1] || match[2] || match[3] || null;
-}
-
-// Walk up the process tree from the current process to find a qodercli
-// process, then extract --add-dir from its command line. Returns the
-// project directory path or null. Cached at module level to avoid
-// redundant process tree walks within the same hook invocation.
-let _cachedProjectDir = undefined;
-function resolveProjectDirFromQoderCli() {
-  if (_cachedProjectDir !== undefined) return _cachedProjectDir;
-  _cachedProjectDir = null; // mark as resolved (even if null) to prevent re-entry
-  try {
-    const { execFileSync } = require("child_process");
-    if (process.platform === "win32") {
-      // Windows: query Win32_Process for qodercli command lines
-      const out = execFileSync("powershell.exe", [
-        "-NoProfile", "-Command",
-        "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'qodercli.exe' -or $_.Name -eq 'qoder-cli.exe' } | Select-Object -ExpandProperty CommandLine",
-      ], { encoding: "utf8", timeout: 2000 });
-      for (const line of out.split(/\r?\n/)) {
-        const dir = extractAddDirFromCommandLine(line);
-        if (dir) { _cachedProjectDir = dir; return dir; }
-      }
-      return _cachedProjectDir; // null
-    }
-    // macOS / Linux: walk up process tree via ps
-    let pid = process.pid;
-    for (let depth = 0; depth < 8; depth++) {
-      const psOut = execFileSync("ps", ["-o", "ppid,command", "-p", String(pid)], {
-        encoding: "utf8", timeout: 1000, stdio: ["pipe", "pipe", "pipe"],
-      });
-      const lines = psOut.trim().split(/\n/);
-      if (lines.length < 2) break;
-      const dataLine = lines[1].trim();
-      const spaceIdx = dataLine.indexOf(" ");
-      if (spaceIdx < 0) break;
-      const ppid = parseInt(dataLine.slice(0, spaceIdx).trim(), 10);
-      const cmd = dataLine.slice(spaceIdx).trim();
-      if (/\bqodercli\b|\bqoder-cli\b/.test(cmd)) {
-        const dir = extractAddDirFromCommandLine(cmd);
-        if (dir) { _cachedProjectDir = dir; return dir; }
-      }
-      if (!ppid || ppid <= 1) break;
-      pid = ppid;
-    }
-  } catch {}
-  return _cachedProjectDir; // null if nothing found
 }
 
 // Match `QoderWork` as an executable token (bounded by path separators,
@@ -328,9 +264,6 @@ module.exports = {
   normalizeToolMatchValue,
   buildToolInputFingerprint,
   isQoderWorkAgentCommandLine,
-  isQoderWorkWorkspaceCwd,
-  extractAddDirFromCommandLine,
-  resolveProjectDirFromQoderCli,
   resolveHookName,
   shouldResolvePid,
   main,

@@ -29,7 +29,8 @@ const QODERWORK_HOOK_EVENTS = [
   "PostToolUseFailure",
   "Stop",
   "Notification",
-  // Phase 1 state-only — observed as a passive notification, never answered.
+  // Phase 1 state-only — observed as passive `working` state (they fire 40+
+  // times per task as part of normal tool flow), never answered.
   "PermissionRequest",
   "PermissionDenied",
   "SessionEnd",
