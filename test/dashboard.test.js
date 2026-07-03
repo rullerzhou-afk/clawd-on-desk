@@ -266,8 +266,18 @@ describe("dashboard window", () => {
       "dashboardQuotaWeekly",
       "dashboardQuotaResetIn",
       "dashboardQuotaResetOn",
+      "dashboardQuotaResetHoursMinutes",
+      "dashboardQuotaResetMinutes",
     ]) {
       assert.match(rendererSource, new RegExp(key));
     }
+  });
+
+  it("memoizes the quota summary rebuild instead of rebuilding on every 1s render tick", () => {
+    const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "dashboard-renderer.js"), "utf8");
+
+    assert.match(rendererSource, /computeQuotaSummarySignature\(antigravityQuota, claudeQuota\)/);
+    assert.match(rendererSource, /if \(signature === lastQuotaSummarySignature\) return;/);
+    assert.match(rendererSource, /resetDateFormatterLang !== lang/);
   });
 });

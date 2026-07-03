@@ -78,15 +78,27 @@ function formatResetIn(resetAt) {
   const totalMinutes = Math.round(secondsLeft / 60);
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
-  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+  return hours > 0
+    ? t("dashboardQuotaResetHoursMinutes").replace("{h}", hours).replace("{m}", minutes)
+    : t("dashboardQuotaResetMinutes").replace("{m}", minutes);
 }
+
+// renderQuotaSummary can run once a second (see the setInterval(render, 1000)
+// tick below) - cache the formatter per lang instead of constructing a new
+// Intl.DateTimeFormat on every call.
+let resetDateFormatterLang = null;
+let resetDateFormatter = null;
 
 function formatResetDate(resetAt) {
   const n = Number(resetAt);
   if (!Number.isFinite(n)) return "";
+  const lang = (i18nPayload && i18nPayload.lang) || "en";
   try {
-    const lang = (i18nPayload && i18nPayload.lang) || "en";
-    return new Intl.DateTimeFormat(lang, { month: "short", day: "numeric" }).format(n);
+    if (!resetDateFormatter || resetDateFormatterLang !== lang) {
+      resetDateFormatter = new Intl.DateTimeFormat(lang, { month: "short", day: "numeric" });
+      resetDateFormatterLang = lang;
+    }
+    return resetDateFormatter.format(n);
   } catch (_err) {
     return "";
   }
@@ -155,10 +167,33 @@ function buildQuotaSection(headerKey, rows) {
   return section;
 }
 
+// render() re-invokes renderQuotaSummary every second so the "resets in Xh
+// Ym" countdowns stay live even between real quota updates, but that only
+// needs to touch the DOM once a minute (formatResetIn's granularity) or when
+// the underlying quota/lang actually changes - not on every tick. Skipping
+// the rebuild otherwise avoids rebuilding the whole subtree (and re-running
+// every Intl.DateTimeFormat/formatResetIn call inside it) 59 times a minute
+// for nothing.
+let lastQuotaSummarySignature = null;
+
+function computeQuotaSummarySignature(antigravityQuota, claudeQuota) {
+  const hasData = !!(antigravityQuota || claudeQuota);
+  return JSON.stringify({
+    lang: (i18nPayload && i18nPayload.lang) || "en",
+    minute: hasData ? Math.floor(Date.now() / 60000) : null,
+    antigravityQuota,
+    claudeQuota,
+  });
+}
+
 function renderQuotaSummary(sessions) {
   if (!quotaSummaryEl) return;
   const antigravityQuota = resolveQuotaForDisplay(sessions, "antigravity-cli", "antigravityQuota");
   const claudeQuota = resolveQuotaForDisplay(sessions, "claude-code", "claudeQuota");
+
+  const signature = computeQuotaSummarySignature(antigravityQuota, claudeQuota);
+  if (signature === lastQuotaSummarySignature) return;
+  lastQuotaSummarySignature = signature;
 
   const sections = [];
   if (antigravityQuota) {
