@@ -1872,6 +1872,7 @@ const _serverCtx = {
   codexSubagentClassifier: agentRuntime.getCodexSubagentClassifier(),
   setState,
   updateSession: agentRuntime.updateSessionFromServer,
+  updateSessionMetadata: (sessionId, opts) => _state.updateSessionMetadata(sessionId, opts),
   resolvePermissionEntry,
   sendPermissionResponse,
   addPendingPermission,

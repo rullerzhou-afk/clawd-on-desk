@@ -37,12 +37,15 @@ function buildStateBody(payload, quota, options = {}) {
   const sessionId = payload && payload.session_id;
   if (!sessionId || !quota) return null;
 
-  // No `event`: this is a periodic metadata refresh, not a real hook
-  // transition - see hooks/antigravity-statusline.js for why that matters
-  // (state.js has event-keyed bookkeeping and drop guards).
+  // metadata_only routes this around the updateSession lifecycle machine:
+  // quota is annotated onto an existing session and dropped otherwise -
+  // never creating a session, touching recentEvents, or bumping updatedAt
+  // (src/server-route-state.js + state.js updateSessionMetadata).
+  // state/preserve_state stay as a defensive fallback shape only.
   const body = {
     state: "idle",
     preserve_state: true,
+    metadata_only: true,
     session_id: String(sessionId),
     agent_id: "claude-code",
     claude_quota: quota,

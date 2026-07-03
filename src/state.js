@@ -1106,6 +1106,36 @@ function updateSessionFocusMetadata(sessionId, opts = {}) {
   return true;
 }
 
+// Statusline refresh POSTs (metadata_only: true) annotate a session that real
+// hook traffic already created — they are telemetry, not lifecycle. Hence:
+// never create a session (a statusline for a dead/unknown session id would
+// resurrect it as a ghost card), never touch recentEvents (no hook event
+// happened, and the badge derivation reads that tail), and never bump
+// updatedAt (a statusline refreshing every ~300ms would keep any session
+// eternally "fresh", defeating staleness sweeps and resurrecting completed
+// cards as idle). Quota/context are the only fields a statusline owns.
+// Broadcast goes through emitSessionSnapshot, whose signature dedup already
+// swallows no-op refreshes (quota values are stable between real updates
+// now that resets are stored as absolute timestamps).
+function updateSessionMetadata(sessionId, opts = {}) {
+  const id = typeof sessionId === "string" ? sessionId : "";
+  if (!id) return false;
+  const session = sessions.get(id);
+  if (!session) {
+    debugSession(`metadata-only drop sid=${id} reason=no-session`);
+    return false;
+  }
+  const contextUsage = normalizeContextUsage(opts.contextUsage);
+  const antigravityQuota = normalizeAntigravityQuota(opts.antigravityQuota);
+  const claudeQuota = normalizeClaudeQuota(opts.claudeQuota);
+  if (!contextUsage && !antigravityQuota && !claudeQuota) return false;
+  if (contextUsage) session.contextUsage = contextUsage;
+  if (antigravityQuota) session.antigravityQuota = antigravityQuota;
+  if (claudeQuota) session.claudeQuota = claudeQuota;
+  emitSessionSnapshot();
+  return true;
+}
+
 // ── #406 Stop completion gate ──
 // A Claude "Stop" maps to "attention" (celebrate + complete sound), but a Stop
 // is not always a real turn completion. Decidable-now signals (live crons,
@@ -2243,6 +2273,7 @@ return {
   dismissSession,
   formatStdinDiag,
   updateSessionFocusMetadata,
+  updateSessionMetadata,
   clearPermissionNotification,
   ackSessionCompletion,
   clearSessionsByAgent,

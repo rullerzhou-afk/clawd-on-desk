@@ -26,7 +26,7 @@ describe("Antigravity statusline adapter", () => {
     assert.strictEqual(buildStatusLineText({}, null, null), "");
   });
 
-  it("builds a preserve_state body with context usage and quota attached", () => {
+  it("builds a metadata_only body with context usage and quota attached", () => {
     const body = buildStateBody(
       { conversation_id: "c1", cwd: "/work" },
       { used: 10, limit: 100, percent: 10, source: "antigravity" },
@@ -35,6 +35,7 @@ describe("Antigravity statusline adapter", () => {
     assert.deepStrictEqual(body, {
       state: "idle",
       preserve_state: true,
+      metadata_only: true,
       session_id: "antigravity:c1",
       agent_id: "antigravity-cli",
       cwd: "/work",

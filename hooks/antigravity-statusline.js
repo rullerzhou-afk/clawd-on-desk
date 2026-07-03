@@ -40,18 +40,17 @@ function buildStateBody(payload, contextUsage, quota, options = {}) {
   const conversationId = payload && payload.conversation_id;
   if (!conversationId) return null;
 
-  // No `event` on purpose: this is a periodic metadata refresh, not a real
-  // hook transition. A real event name (e.g. "PostToolUse") would corrupt
-  // state.js's tool-boundary/awaitingInputSinceStop bookkeeping and can be
-  // silently dropped outright by its post-Stop trailing-PostToolUse guard
-  // (src/state.js shouldDropAntigravityPostStopToolUse) - losing this
-  // context_usage update on every settled/idle session, which is most of
-  // the time. `state: "idle"` only matters if this ever lands before any
-  // real hook has established the session; preserve_state overrides it
-  // for every other case.
+  // metadata_only routes this around the updateSession lifecycle machine
+  // entirely (src/server-route-state.js + state.js updateSessionMetadata):
+  // context/quota are annotated onto an existing session and dropped
+  // otherwise - never creating a session, touching recentEvents, or bumping
+  // updatedAt. That also sidesteps all event-keyed bookkeeping concerns
+  // (tool boundaries, post-Stop drop guards). state/preserve_state stay as
+  // a defensive fallback shape only.
   const body = {
     state: "idle",
     preserve_state: true,
+    metadata_only: true,
     session_id: normalizeSessionId(conversationId),
     agent_id: "antigravity-cli",
   };

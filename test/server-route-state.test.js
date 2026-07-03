@@ -339,6 +339,67 @@ describe("server-route-state POST", () => {
     assert.strictEqual(res.calls.updateSession[0][3].claudeQuota, null);
   });
 
+  // #590 B2 — metadata_only POSTs (statusline refreshes) bypass the
+  // updateSession lifecycle machine entirely and go through
+  // updateSessionMetadata, which can only annotate an existing session.
+  it("routes metadata_only POSTs to updateSessionMetadata, never updateSession", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      preserve_state: true,
+      metadata_only: true,
+      session_id: "sid",
+      agent_id: "claude-code",
+      claude_quota: { claudeWeekly: { usedPercent: 41, resetAt: 1738831180000 } },
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.calls.updateSession.length, 0);
+    assert.strictEqual(res.calls.setState.length, 0);
+    assert.strictEqual(metadataCalls.length, 1);
+    assert.strictEqual(metadataCalls[0][0], "sid");
+    assert.deepStrictEqual(metadataCalls[0][1].claudeQuota, {
+      claudeWeekly: { usedPercent: 41, resetAt: 1738831180000 },
+    });
+  });
+
+  it("metadata_only still respects the disabled-agent gate", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "sid",
+      agent_id: "claude-code",
+      claude_quota: { claudeWeekly: { usedPercent: 41 } },
+    }), {
+      ctx: {
+        isAgentEnabled: () => false,
+        updateSessionMetadata: (...args) => metadataCalls.push(args),
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(metadataCalls.length, 0);
+  });
+
+  it("metadata_only does not record into the recent-hook-events ring", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "sid",
+      agent_id: "claude-code",
+      claude_quota: { claudeWeekly: { usedPercent: 41 } },
+    }), {
+      ctx: { updateSessionMetadata: () => true },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    const outcomes = res.calls.recorder.filter((entry) => entry.outcome);
+    assert.deepStrictEqual(outcomes, []);
+  });
+
   it("marks missing agent_id as a defaulted Claude Code attribution", async () => {
     const res = await callStatePost(JSON.stringify({
       state: "working",

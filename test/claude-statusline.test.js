@@ -20,7 +20,7 @@ describe("Claude Code statusline adapter", () => {
     assert.strictEqual(buildStatusLineText({}, null, null), "");
   });
 
-  it("builds a preserve_state body carrying claude_quota, no event field", () => {
+  it("builds a metadata_only body carrying claude_quota, no event field", () => {
     const body = buildStateBody(
       { session_id: "abc123", workspace: { current_dir: "/work" } },
       { claudeFiveHour: { usedPercent: 24, resetAt: 1738425600000 } }
@@ -28,6 +28,7 @@ describe("Claude Code statusline adapter", () => {
     assert.deepStrictEqual(body, {
       state: "idle",
       preserve_state: true,
+      metadata_only: true,
       session_id: "abc123",
       agent_id: "claude-code",
       claude_quota: { claudeFiveHour: { usedPercent: 24, resetAt: 1738425600000 } },
