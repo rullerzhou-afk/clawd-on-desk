@@ -401,6 +401,22 @@ function detectAgentInstallation(descriptor, options = {}) {
   };
 }
 
+// ── Detection cache ─────────────────────────────────────────────────
+// WSL detection is expensive (spawn per agent × distro). Cache permanently
+// in the module; invalidate on explicit refresh or after Pair.
+// Non-Windows platforms never need WSL detection — mark detected immediately
+// so the UI doesn't poll indefinitely.
+
+let _cachedWslAgents = [];
+let _cachedWslDistros = [];
+let _cachedDetected = process.platform !== "win32";
+
+function invalidateWslCache() {
+  _cachedWslAgents = [];
+  _cachedWslDistros = [];
+  _cachedDetected = process.platform !== "win32";
+}
+
 function detectAgentInstallations(options = {}) {
   const descriptors = Array.isArray(options.descriptors) ? options.descriptors : getAgentDescriptors();
   const skippedAgentIds = [];
@@ -414,19 +430,79 @@ function detectAgentInstallations(options = {}) {
     }
     agents.push(detectAgentInstallation(descriptor, options));
   }
+
+  // WSL: return cached results (populated by async startup scan). First
+  // open returns empty WSL data with wslPending flag so UI can show a spinner.
   return {
     checkedAt: checkedAtValue(options.now),
     agents,
-    // Default integrations are deliberately omitted from agents[].
-    // Consumers must not treat an absent entry as "not detected"; use the
-    // explicit detector entry set or exclude skippedAgentIds when deriving
-    // stale/cleanup candidates.
     skippedAgentIds,
+    wslAgents: _cachedWslAgents,
+    wslDistros: _cachedWslDistros,
+    wslPending: !_cachedDetected,
   };
+}
+
+// Async WSL scan — runs at startup and on explicit user action.
+// Populates module-level cache so subsequent reads are instant.
+async function refreshWslDetection(options = {}) {
+  if (process.platform !== "win32") {
+    _cachedDetected = true;
+    return detectAgentInstallations(options);
+  }
+
+  try {
+    const { getWslDistributions, getWslHomeDir, dirExistsInWsl, rebaseHomePathPosix } = require("./wsl-utils");
+    const descriptors = Array.isArray(options.descriptors) ? options.descriptors : getAgentDescriptors();
+
+    const distros = await getWslDistributions({ excludeDistros: options.excludeDistros });
+    const wslAgents = [];
+
+    for (const distro of distros) {
+      const wslHome = await getWslHomeDir(distro.name, options);
+      if (!wslHome) continue;
+
+      const skipDefaultIntegrations = options.skipDefaultIntegrations !== false;
+      for (const descriptor of descriptors) {
+        if (!descriptor || typeof descriptor.agentId !== "string") continue;
+        if (skipDefaultIntegrations && DEFAULT_SKIPPED_AGENT_IDS.has(descriptor.agentId)) continue;
+
+        const homeDir = options.homeDir || os.homedir();
+        const wslParentDir = rebaseHomePathPosix(descriptor.parentDir, wslHome, homeDir);
+        if (!wslParentDir) continue;
+
+        const hasParentDir = await dirExistsInWsl(distro.name, wslParentDir, options);
+        wslAgents.push({
+          agentId: descriptor.agentId,
+          agentName: descriptor.agentName,
+          distro: distro.name,
+          detectedInstalled: hasParentDir,
+          confidence: hasParentDir ? "high" : "low",
+          reason: hasParentDir ? "parent-dir" : "not-found",
+          detail: hasParentDir
+            ? `${wslParentDir} exists in WSL ${distro.name}`
+            : `${wslParentDir} not found in WSL ${distro.name}`,
+          wslHome,
+          wslParentDir,
+        });
+      }
+    }
+
+    _cachedWslAgents = wslAgents;
+    _cachedWslDistros = distros;
+    _cachedDetected = true;
+  } catch (err) {
+    console.warn("Clawd: WSL detection scan failed:", err && err.message ? err.message : err);
+    _cachedDetected = true; // don't retry forever
+  }
+
+  return detectAgentInstallations(options);
 }
 
 module.exports = {
   detectAgentInstallation,
   detectAgentInstallations,
+  refreshWslDetection,
+  invalidateWslCache,
   resolveAgentPaths,
 };

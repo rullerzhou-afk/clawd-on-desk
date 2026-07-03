@@ -887,6 +887,9 @@
       checkedAt: Number.isFinite(source.checkedAt) ? source.checkedAt : null,
       agents: Array.isArray(source.agents) ? source.agents : [],
       skippedAgentIds: Array.isArray(source.skippedAgentIds) ? source.skippedAgentIds : [],
+      wslAgents: Array.isArray(source.wslAgents) ? source.wslAgents : [],
+      wslDistros: Array.isArray(source.wslDistros) ? source.wslDistros : [],
+      wslPending: source.wslPending === true,
     };
     if (typeof source.error === "string" && source.error) normalized.error = source.error;
     return normalized;
@@ -897,16 +900,20 @@
       checkedAt: null,
       agents: [],
       skippedAgentIds: [],
+      wslAgents: [],
+      wslDistros: [],
+      wslPending: false,
     };
     if (error) result.error = error;
     return result;
   }
 
-  function fetchAgentInstallationHints({ force = false } = {}) {
+  function fetchAgentInstallationHints({ force = false, refreshWsl = false } = {}) {
     if (runtime.agentInstallationHintsPending) {
       return runtime.agentInstallationHintsPromise || Promise.resolve(runtime.agentInstallationHints);
     }
-    if (!force && runtime.agentInstallationHintsFetched) {
+    // refreshWsl always re-fetches; plain force only if not already done
+    if (!force && !refreshWsl && runtime.agentInstallationHintsFetched) {
       return Promise.resolve(runtime.agentInstallationHints);
     }
     if (!window.settingsAPI || typeof window.settingsAPI.detectAgentInstallations !== "function") {
@@ -915,8 +922,11 @@
       return Promise.resolve(runtime.agentInstallationHints);
     }
 
+    let opts;
+    if (refreshWsl) opts = { refreshWsl: true };
+    else if (force) opts = { force: true };
     runtime.agentInstallationHintsPending = true;
-    runtime.agentInstallationHintsPromise = window.settingsAPI.detectAgentInstallations()
+    runtime.agentInstallationHintsPromise = window.settingsAPI.detectAgentInstallations(opts)
       .then((result) => {
         runtime.agentInstallationHints = normalizeAgentInstallationHints(result);
         return runtime.agentInstallationHints;
@@ -933,6 +943,14 @@
         runtime.agentInstallationHintsFetched = true;
         runtime.agentInstallationHintsPromise = null;
         if (state.activeTab === "agents") requestRender({ content: true });
+        // If WSL data is still pending (startup scan hasn't finished),
+        // schedule a re-fetch so the UI updates when it lands.
+        if (runtime.agentInstallationHints && runtime.agentInstallationHints.wslPending) {
+          runtime.agentInstallationHintsFetched = false;
+          setTimeout(() => {
+            if (state.activeTab === "agents") fetchAgentInstallationHints();
+          }, 3000);
+        }
       });
     return runtime.agentInstallationHintsPromise;
   }

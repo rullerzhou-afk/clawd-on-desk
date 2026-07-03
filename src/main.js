@@ -343,6 +343,14 @@ const _settingsController = createSettingsController({
       agentRuntime ? agentRuntime.repairIntegrationForAgent(id, options) : false,
     stopIntegrationForAgent: (id) => agentRuntime ? agentRuntime.stopIntegrationForAgent(id) : false,
     uninstallIntegrationForAgent: (id) => agentRuntime ? agentRuntime.uninstallIntegrationForAgent(id) : false,
+    deployHooksToWsl: async (distro, agentId) => {
+      const { deployToWsl } = require("./wsl-deploy");
+      return deployToWsl(distro, { agentId, isPackaged: app.isPackaged });
+    },
+    removeHooksFromWsl: async (distro, agentId) => {
+      const { removeFromWsl } = require("./wsl-deploy");
+      return removeFromWsl(distro, { agentId });
+    },
     cleanupIntegrations: (options = {}) => {
       const { cleanupIntegrations } = require("../hooks/cleanup-integrations.js");
       return cleanupIntegrations({ ...options, backup: true, silent: true });
@@ -3886,6 +3894,16 @@ if (!gotTheLock) {
       console.warn("Clawd: migration controller init failed:", err && err.message);
     });
     createWindow();
+    // Kick off async WSL agent detection so the Settings Agents tab shows
+    // WSL instances immediately when opened later. Non-blocking.
+    if (process.platform === "win32") {
+      try {
+        const { refreshWslDetection } = require("./agent-installation-detector");
+        refreshWslDetection({ skipDefaultIntegrations: false }).catch((err) => {
+          console.warn("Clawd: startup WSL detection failed:", err && err.message);
+        });
+      } catch (_) { /* best-effort */ }
+    }
     systemWakeRecovery = createSystemWakeRecovery({
       powerMonitor,
       ipcMain,
