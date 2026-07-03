@@ -419,7 +419,7 @@ function createTelegramNativeRunner({
       try { await client.answerCallbackQuery({ callback_query_id: cb.id }); } catch {}
       return true;
     }
-    try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: "OK" }); } catch {}
+    try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramApprovalToastAck") }); } catch {}
     try {
       await client.editMessageReplyMarkup({
         chat_id: chatId,
@@ -439,13 +439,13 @@ function createTelegramNativeRunner({
     if (!parsed) return false;
     const entry = pendingApprovals.get(parsed.id);
     if (!entry) {
-      try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: "Expired" }); } catch {}
+      try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramApprovalToastExpired") }); } catch {}
       return true;
     }
     const isAllowedUser = !entry.allowedUser || fromId === String(entry.allowedUser);
     const isExpectedChat = !entry.chatId || chatId === String(entry.chatId);
     if (!isAllowedUser || !isExpectedChat) {
-      try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: "Not allowed" }); } catch {}
+      try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramApprovalToastNotAllowed") }); } catch {}
       return true;
     }
 

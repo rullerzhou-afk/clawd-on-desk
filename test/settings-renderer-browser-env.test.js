@@ -2392,7 +2392,7 @@ describe("settings renderer browser environment", () => {
 
     const deleteButton = harness.content
       .querySelectorAll("button")
-      .find((button) => button.textContent === "Delete legacy token file");
+      .find((button) => button.textContent === "telegramMigrationDeleteLegacyToken");
     assert.ok(deleteButton, "delete legacy token button should render for NATIVE_ACTIVE");
 
     deleteButton.dispatchEvent({ type: "click" });

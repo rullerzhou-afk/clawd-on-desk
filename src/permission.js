@@ -952,11 +952,34 @@ function buildRemoteElicitationPayload(permEntry) {
   };
 }
 
-// Returns a redacted summary string, or null when no agent-supplied description
-// is available. We refuse to send a Telegram approval card without something
-// describing the action — the local bubble shows the full tool input, so a
-// Telegram-only "Tool input hidden by Clawd." card would let the user approve
-// a black box.
+// Tool-specific fields that hint at what the action targets, tried in order
+// when the tool gave no description/summary/reason (e.g. Write, Edit, Read —
+// unlike Bash, which always carries `description`). Only cheap, low-risk
+// identifiers (a path, a pattern, a URL) — never full file contents/diffs.
+const FALLBACK_DETAIL_FIELDS = ["file_path", "path", "pattern", "url", "query", "command"];
+
+function buildRemoteApprovalFallbackDetail(input) {
+  for (const field of FALLBACK_DETAIL_FIELDS) {
+    const value = input[field];
+    if (typeof value !== "string" || !value.trim()) continue;
+    const display = field === "file_path" || field === "path"
+      ? basenameForDisplay(value)
+      : value;
+    const text = compactRemoteApprovalText(display, 200);
+    if (text) return text;
+  }
+  return null;
+}
+
+// Returns a redacted summary string — never null. We used to refuse to send a
+// Telegram card at all when the tool gave no description/summary/reason (e.g.
+// Write/Edit, unlike Bash which always carries `description`), reasoning that
+// a blank "Tool input hidden by Clawd" card would let the user approve a black
+// box. In practice that meant those requests never reached Telegram at all —
+// worse than a labelled blank card, since the user had no idea anything was
+// pending. Now we fall back to a cheap identifier (file path / pattern / URL)
+// and, failing that, an explicit "no description, go check the desktop bubble"
+// notice — so every remote-approval-eligible request produces a card.
 function buildRemoteApprovalSummary(permEntry) {
   const input = permEntry && permEntry.toolInput && typeof permEntry.toolInput === "object"
     ? permEntry.toolInput
@@ -970,7 +993,9 @@ function buildRemoteApprovalSummary(permEntry) {
     const text = compactRemoteApprovalText(candidate, 200);
     if (text) return text;
   }
-  return null;
+  const fallbackDetail = buildRemoteApprovalFallbackDetail(input);
+  if (fallbackDetail) return t("approvalSummaryFallbackDetail").replace("{detail}", fallbackDetail);
+  return t("approvalSummaryUnavailable");
 }
 
 function buildRemoteSuggestionLabel(suggestion) {
