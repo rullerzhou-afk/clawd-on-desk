@@ -66,12 +66,19 @@ describe("sessionDisplayTitle cwd fallback", () => {
 
   it("skips QoderWork internal workspace cwds so the HUD never shows a raw workspace id", () => {
     assert.strictEqual(
-      sessionDisplayTitle("qoderwork:abc123", session("working", { cwd: "/Users/me/.qoderwork/workspace/mqgw60jiigjsjcid" })),
+      sessionDisplayTitle("qoderwork:abc123", session("working", { agentId: "qoderwork", cwd: "/Users/me/.qoderwork/workspace/mqgw60jiigjsjcid" })),
       "qoderw.."
     );
     assert.strictEqual(
-      sessionDisplayTitle("qoderwork:abc123", session("working", { cwd: "C:\\Users\\me\\.qoderwork\\workspace\\abc123" })),
+      sessionDisplayTitle("qoderwork:abc123", session("working", { agentId: "qoderwork", cwd: "C:\\Users\\me\\.qoderwork\\workspace\\abc123" })),
       "qoderw.."
+    );
+  });
+
+  it("keeps the cwd basename for non-QoderWork agents even inside a QoderWork workspace dir", () => {
+    assert.strictEqual(
+      sessionDisplayTitle("claude:xyz789", session("working", { agentId: "claude-code", cwd: "/Users/me/.qoderwork/workspace/mqgw60jiigjsjcid" })),
+      "mqgw60jiigjsjcid"
     );
   });
 });

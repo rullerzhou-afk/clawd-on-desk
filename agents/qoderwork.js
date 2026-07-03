@@ -7,9 +7,10 @@
 // process name `QoderWork` so startup recovery never confuses the two.
 //
 // Clawd observes QoderWork's permission events (PermissionRequest /
-// PermissionDenied) as passive notifications but NEVER answers QoderWork
-// permission decisions — the hook always returns `{}` so QoderWork's native
-// permission flow stays in control.
+// PermissionDenied) as passive `working` state (they fire 40+ times per task
+// as part of normal tool flow) but NEVER answers QoderWork permission
+// decisions — the hook always returns `{}` so QoderWork's native permission
+// flow stays in control.
 // See docs/project/agent-runtime-architecture.md.
 
 module.exports = {

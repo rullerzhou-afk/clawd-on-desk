@@ -201,4 +201,9 @@ describe("QoderWork hook runtime (Phase 1 state-only)", () => {
     assert.strictEqual(shouldResolvePid("Stop", { CLAWD_REMOTE: "1" }), false);
     assert.strictEqual(shouldResolvePid("UnknownEvent", {}), false);
   });
+
+  it("skips pid resolution for high-frequency permission events (QoderWork waits on hook stdout)", () => {
+    assert.strictEqual(shouldResolvePid("PermissionRequest", {}), false);
+    assert.strictEqual(shouldResolvePid("PermissionDenied", {}), false);
+  });
 });

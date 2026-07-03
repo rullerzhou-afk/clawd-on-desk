@@ -2013,7 +2013,7 @@ function detectRunningAgentProcesses(callback) {
       (err, stdout) => done(!err && /\d+/.test(stdout))
     );
   } else {
-    exec("pgrep -f 'claude-code|codex|copilot|codebuddy|kimi|@earendil-works/pi-coding-agent|pi-coding-agent/dist/cli\\.js' || pgrep -x 'gemini' || pgrep -x 'agy' || pgrep -x 'kiro-cli' || pgrep -x 'codewhale' || pgrep -x 'opencode' || pgrep -x 'hermes' || pgrep -x 'qodercli' || pgrep -x 'qoder-cli' || pgrep -x 'qoderwork'", { timeout: 3000 },
+    exec("pgrep -f 'claude-code|codex|copilot|codebuddy|kimi|@earendil-works/pi-coding-agent|pi-coding-agent/dist/cli\\.js' || pgrep -x 'gemini' || pgrep -x 'agy' || pgrep -x 'kiro-cli' || pgrep -x 'codewhale' || pgrep -x 'opencode' || pgrep -x 'hermes' || pgrep -x 'qodercli' || pgrep -x 'qoder-cli' || pgrep -x '[Qq]oder[Ww]ork'", { timeout: 3000 },
       (err) => done(!err)
     );
   }

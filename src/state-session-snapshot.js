@@ -147,11 +147,17 @@ function sessionDisplayTitle(id, sessionLike, sessionAliases = {}, options = {})
   const title = getEffectiveSessionTitle(id, sessionLike, options);
   if (title) return title;
   const cwd = sessionLike && sessionLike.cwd;
-  // Skip cwd fallback for QoderWork internal workspace paths
-  // (e.g. ~/.qoderwork/workspace/<id>) — displaying the workspace ID
-  // like "mqgw60jiigjsjcid" is meaningless to the user.
-  if (cwd && typeof cwd === "string" && !/[/\\]\.qoderwork[/\\]workspace[/\\][^/\\]+$/.test(cwd.replace(/\\/g, "/"))) {
-    return path.basename(cwd);
+  if (cwd && typeof cwd === "string") {
+    // Skip the cwd fallback only for QoderWork sessions running inside a
+    // QoderWork internal workspace (~/.qoderwork/workspace/<id>) — the raw
+    // workspace ID like "mqgw60jiigjsjcid" is meaningless to the user. Other
+    // agents keep the basename fallback even under that path.
+    const isQoderWorkSession = (sessionLike && sessionLike.agentId === "qoderwork")
+      || (typeof id === "string" && id.startsWith("qoderwork:"));
+    const isQoderWorkWorkspaceCwd = /\/\.qoderwork\/workspace\/[^/]+$/.test(cwd.replace(/\\/g, "/"));
+    if (!(isQoderWorkSession && isQoderWorkWorkspaceCwd)) {
+      return path.basename(cwd);
+    }
   }
   return id && id.length > 6 ? `${id.slice(0, 6)}..` : id;
 }

@@ -113,8 +113,17 @@ function resolveHookName(payload, argvEvent) {
     || "";
 }
 
+// PermissionRequest / PermissionDenied fire 40+ times per task and QoderWork
+// waits on the hook's stdout before continuing its native permission flow, so
+// skip the process-tree walk (PowerShell snapshot on Windows) for them. The
+// server keeps a session's existing pids when an event arrives without them,
+// and every other lifecycle event still refreshes pid metadata.
+const PID_RESOLUTION_SKIP_EVENTS = new Set(["PermissionRequest", "PermissionDenied"]);
+
 function shouldResolvePid(hookName, env = process.env) {
-  return !!HOOK_MAP[hookName] && !env.CLAWD_REMOTE;
+  return !!HOOK_MAP[hookName]
+    && !PID_RESOLUTION_SKIP_EVENTS.has(hookName)
+    && !env.CLAWD_REMOTE;
 }
 
 function applyLocalProcessFields(body, pidMeta) {
