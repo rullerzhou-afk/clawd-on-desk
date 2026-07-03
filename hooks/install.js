@@ -1426,7 +1426,7 @@ function registerClaudeStatusline(options = {}) {
 
   let settings = {};
   try {
-    settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+    settings = readJsonFile(settingsPath);
   } catch (err) {
     if (err.code !== "ENOENT") throw new Error(`Failed to read settings.json: ${err.message}`);
   }
@@ -1464,7 +1464,7 @@ function unregisterClaudeStatusline(options = {}) {
   const settingsPath = options.settingsPath || path.join(homeDir, ".claude", "settings.json");
   let settings = {};
   try {
-    settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+    settings = readJsonFile(settingsPath);
   } catch (err) {
     if (err.code !== "ENOENT") throw new Error(`Failed to read settings.json: ${err.message}`);
   }

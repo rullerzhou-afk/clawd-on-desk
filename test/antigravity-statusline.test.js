@@ -1,6 +1,6 @@
 "use strict";
 
-const { describe, it } = require("node:test");
+const { describe, it, mock } = require("node:test");
 const assert = require("node:assert");
 
 const { __test } = require("../hooks/antigravity-statusline");
@@ -30,7 +30,7 @@ describe("Antigravity statusline adapter", () => {
     const body = buildStateBody(
       { conversation_id: "c1", cwd: "/work" },
       { used: 10, limit: 100, percent: 10, source: "antigravity" },
-      { geminiWeekly: { usedPercent: 98, resetInSeconds: 431180 } }
+      { geminiWeekly: { usedPercent: 98, resetAt: 1738831180000 } }
     );
     assert.deepStrictEqual(body, {
       state: "idle",
@@ -39,7 +39,7 @@ describe("Antigravity statusline adapter", () => {
       agent_id: "antigravity-cli",
       cwd: "/work",
       context_usage: { used: 10, limit: 100, percent: 10, source: "antigravity" },
-      antigravity_quota: { geminiWeekly: { usedPercent: 98, resetInSeconds: 431180 } },
+      antigravity_quota: { geminiWeekly: { usedPercent: 98, resetAt: 1738831180000 } },
     });
   });
 
@@ -54,6 +54,7 @@ describe("Antigravity statusline adapter", () => {
   });
 
   it("main() posts state (including quota) and always writes a stdout line, even on a slow/failed POST", async () => {
+    mock.timers.enable({ apis: ["Date"], now: 1738400000000 });
     const writes = [];
     const posted = [];
     const originalWrite = process.stdout.write;
@@ -71,11 +72,12 @@ describe("Antigravity statusline adapter", () => {
       });
     } finally {
       process.stdout.write = originalWrite;
+      mock.timers.reset();
     }
     assert.strictEqual(writes.length, 1);
     assert.strictEqual(writes[0], "Gemini 3.1 Pro (High) · 5% ctx · idle\n");
     assert.deepStrictEqual(posted[0].antigravity_quota, {
-      geminiWeekly: { usedPercent: 98, resetInSeconds: 431180 },
+      geminiWeekly: { usedPercent: 98, resetAt: 1738400000000 + 431180 * 1000 },
     });
   });
 

@@ -18,6 +18,13 @@ const CLAUDE_1M_CONTEXT_MODEL_RE = new RegExp(
   "i"
 );
 
+// Kept as a fallback alongside the table above (not a replacement for it):
+// legacy models with the 1M beta that predate the table (e.g.
+// "claude-opus-4-5[1m]") and API proxies that echo the request-side model
+// string back into the transcript can still carry this marker even though a
+// real Claude Code transcript's response-side message.model never does.
+const CLAUDE_1M_CONTEXT_MARKER_RE = /\[1m\]/i;
+
 function normalizeUsageNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) && n >= 0 ? n : 0;
@@ -26,7 +33,7 @@ function normalizeUsageNumber(value) {
 function resolveClaudeContextLimit(model) {
   const raw = typeof model === "string" ? model.toLowerCase() : "";
   if (!raw) return DEFAULT_CLAUDE_CONTEXT_LIMIT;
-  if (CLAUDE_1M_CONTEXT_MODEL_RE.test(raw)) return CLAUDE_1M_CONTEXT_LIMIT;
+  if (CLAUDE_1M_CONTEXT_MARKER_RE.test(raw) || CLAUDE_1M_CONTEXT_MODEL_RE.test(raw)) return CLAUDE_1M_CONTEXT_LIMIT;
   if (raw.includes("opus") || raw.includes("sonnet") || raw.includes("haiku")) {
     return DEFAULT_CLAUDE_CONTEXT_LIMIT;
   }

@@ -9,8 +9,8 @@ const { normalizeQuotaGroup } = require("./quota-bucket");
 // https://code.claude.com/docs/en/statusline
 // rate_limits.{five_hour,seven_day}.used_percentage is already 0-100 "used"
 // (same convention this app standardizes on - see hooks/quota-bucket.js).
-// .resets_at is an absolute Unix-epoch-seconds timestamp, not a relative
-// countdown like Antigravity's reset_in_seconds, so it's converted here.
+// .resets_at is an absolute Unix-epoch-seconds timestamp - converted to
+// epoch-ms here so it matches the quota-bucket.js resetAt convention.
 const CLAUDE_QUOTA_FIELDS = ["claudeFiveHour", "claudeWeekly"];
 const RATE_LIMIT_KEYS = {
   five_hour: "claudeFiveHour",
@@ -19,7 +19,6 @@ const RATE_LIMIT_KEYS = {
 
 function convertClaudeRateLimitsPayload(rateLimits) {
   const out = {};
-  const nowSeconds = Date.now() / 1000;
   for (const [key, field] of Object.entries(RATE_LIMIT_KEYS)) {
     const bucket = rateLimits[key];
     if (!bucket || typeof bucket !== "object") continue;
@@ -27,7 +26,7 @@ function convertClaudeRateLimitsPayload(rateLimits) {
     if (!Number.isFinite(usedPercent)) continue;
     const entry = { usedPercent };
     const resetsAt = Number(bucket.resets_at);
-    if (Number.isFinite(resetsAt)) entry.resetInSeconds = resetsAt - nowSeconds;
+    if (Number.isFinite(resetsAt)) entry.resetAt = resetsAt * 1000;
     out[field] = entry;
   }
   return out;

@@ -1,6 +1,6 @@
 "use strict";
 
-const { describe, it } = require("node:test");
+const { describe, it, mock } = require("node:test");
 const assert = require("node:assert");
 
 const {
@@ -86,21 +86,27 @@ describe("Antigravity context usage parser", () => {
 });
 
 describe("Antigravity account quota parser", () => {
-  it("maps all four buckets from remaining_fraction to a rounded usedPercent (inverted)", () => {
-    const quota = resolveAntigravityQuota({
-      quota: {
-        "gemini-5h": { remaining_fraction: 0.9977, reset_in_seconds: 16920 },
-        "gemini-weekly": { remaining_fraction: 0.9813, reset_in_seconds: 431180 },
-        "3p-5h": { remaining_fraction: 1 },
-        "3p-weekly": { remaining_fraction: 0.6918, reset_in_seconds: 431100 },
-      },
-    });
+  it("maps all four buckets from remaining_fraction to a rounded usedPercent (inverted), anchoring reset_in_seconds to receive time", () => {
+    mock.timers.enable({ apis: ["Date"], now: 1738400000000 });
+    let quota;
+    try {
+      quota = resolveAntigravityQuota({
+        quota: {
+          "gemini-5h": { remaining_fraction: 0.9977, reset_in_seconds: 16920 },
+          "gemini-weekly": { remaining_fraction: 0.9813, reset_in_seconds: 431180 },
+          "3p-5h": { remaining_fraction: 1 },
+          "3p-weekly": { remaining_fraction: 0.6918, reset_in_seconds: 431100 },
+        },
+      });
+    } finally {
+      mock.timers.reset();
+    }
 
     assert.deepStrictEqual(quota, {
-      geminiFiveHour: { usedPercent: 0, resetInSeconds: 16920 },
-      geminiWeekly: { usedPercent: 2, resetInSeconds: 431180 },
+      geminiFiveHour: { usedPercent: 0, resetAt: 1738400000000 + 16920 * 1000 },
+      geminiWeekly: { usedPercent: 2, resetAt: 1738400000000 + 431180 * 1000 },
       thirdPartyFiveHour: { usedPercent: 0 },
-      thirdPartyWeekly: { usedPercent: 31, resetInSeconds: 431100 },
+      thirdPartyWeekly: { usedPercent: 31, resetAt: 1738400000000 + 431100 * 1000 },
     });
   });
 

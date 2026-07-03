@@ -1681,6 +1681,33 @@ describe("Claude Code statusline installer", () => {
     assert.ok(settings.statusLine.command.includes(STATUSLINE_MARKER));
   });
 
+  it("registers into a UTF-8-BOM'd settings.json instead of throwing (Notepad's default save format)", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-install-"));
+    const settingsPath = path.join(tmpDir, "settings.json");
+    fs.writeFileSync(settingsPath, "﻿" + JSON.stringify({ model: "opus" }), "utf8");
+    tempDirs.push(tmpDir);
+
+    const result = registerClaudeStatusline({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    assert.strictEqual(result.installed, true);
+    assert.strictEqual(result.changed, true);
+    const settings = readSettings(settingsPath);
+    assert.strictEqual(settings.model, "opus");
+    assert.ok(settings.statusLine.command.includes(STATUSLINE_MARKER));
+  });
+
+  it("unregisters from a UTF-8-BOM'd settings.json instead of throwing", () => {
+    const settingsPath = makeTempSettings({});
+    registerClaudeStatusline({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+    const withBom = "﻿" + fs.readFileSync(settingsPath, "utf8");
+    fs.writeFileSync(settingsPath, withBom, "utf8");
+
+    const result = unregisterClaudeStatusline({ silent: true, settingsPath });
+
+    assert.strictEqual(result.removed, 1);
+    assert.strictEqual(readSettings(settingsPath).statusLine, undefined);
+  });
+
   it("unregister removes only a Clawd-owned statusline", () => {
     const settingsPath = makeTempSettings({});
     registerClaudeStatusline({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });

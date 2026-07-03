@@ -70,21 +70,23 @@ function contextUsageText(session) {
 // Claude/GPT-via-agy, 2 rows) and Claude Code's own rate_limits (1 row).
 const QUOTA_WARNING_THRESHOLD = 90;
 
-function formatResetIn(seconds) {
-  const n = Number(seconds);
-  if (!Number.isFinite(n) || n < 0) return "";
-  const totalMinutes = Math.round(n / 60);
+function formatResetIn(resetAt) {
+  const n = Number(resetAt);
+  if (!Number.isFinite(n)) return "";
+  const secondsLeft = Math.round((n - Date.now()) / 1000);
+  if (secondsLeft < 0) return "";
+  const totalMinutes = Math.round(secondsLeft / 60);
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 }
 
-function formatResetDate(seconds) {
-  const n = Number(seconds);
-  if (!Number.isFinite(n) || n < 0) return "";
+function formatResetDate(resetAt) {
+  const n = Number(resetAt);
+  if (!Number.isFinite(n)) return "";
   try {
     const lang = (i18nPayload && i18nPayload.lang) || "en";
-    return new Intl.DateTimeFormat(lang, { month: "short", day: "numeric" }).format(Date.now() + n * 1000);
+    return new Intl.DateTimeFormat(lang, { month: "short", day: "numeric" }).format(n);
   } catch (_err) {
     return "";
   }
@@ -111,10 +113,10 @@ function buildQuotaHalfBar(labelText, bucket, resetStyle) {
   labelRow.appendChild(createText("span", "quota-label", labelText));
   const percentText = `${bucket.usedPercent}%`;
   let resetText = "";
-  if (Number.isFinite(bucket.resetInSeconds)) {
+  if (Number.isFinite(bucket.resetAt)) {
     resetText = resetStyle === "date"
-      ? t("dashboardQuotaResetOn").replace("{date}", formatResetDate(bucket.resetInSeconds))
-      : t("dashboardQuotaResetIn").replace("{time}", formatResetIn(bucket.resetInSeconds));
+      ? t("dashboardQuotaResetOn").replace("{date}", formatResetDate(bucket.resetAt))
+      : t("dashboardQuotaResetIn").replace("{time}", formatResetIn(bucket.resetAt));
   }
   labelRow.appendChild(createText("span", "quota-percent", resetText ? `${percentText} · ${resetText}` : percentText));
   half.appendChild(labelRow);

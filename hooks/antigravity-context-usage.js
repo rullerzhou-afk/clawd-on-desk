@@ -64,15 +64,18 @@ const QUOTA_BUCKET_KEYS = {
 
 function invertAntigravityQuotaPayload(quota) {
   const out = {};
+  const nowMs = Date.now();
   for (const [key, field] of Object.entries(QUOTA_BUCKET_KEYS)) {
     const bucket = quota[key];
     if (!bucket || typeof bucket !== "object") continue;
     const remaining = Number(bucket.remaining_fraction);
     if (!Number.isFinite(remaining)) continue;
-    out[field] = {
-      usedPercent: (1 - Math.max(0, Math.min(1, remaining))) * 100,
-      resetInSeconds: bucket.reset_in_seconds,
-    };
+    const entry = { usedPercent: (1 - Math.max(0, Math.min(1, remaining))) * 100 };
+    // agy reports a relative countdown (reset_in_seconds), not an absolute
+    // instant, so anchor it to receive time here - see quota-bucket.js.
+    const resetInSeconds = Number(bucket.reset_in_seconds);
+    if (Number.isFinite(resetInSeconds)) entry.resetAt = nowMs + resetInSeconds * 1000;
+    out[field] = entry;
   }
   return out;
 }

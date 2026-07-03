@@ -269,14 +269,14 @@ describe("server-route-state POST", () => {
       session_id: "sid",
       antigravity_quota: {
         geminiFiveHour: { usedPercent: 100 },
-        geminiWeekly: { usedPercent: 98, resetInSeconds: 431180 },
+        geminiWeekly: { usedPercent: 98, resetAt: 1738831180000 },
       },
     }));
 
     assert.strictEqual(res.statusCode, 200);
     assert.deepStrictEqual(res.calls.updateSession[0][3].antigravityQuota, {
       geminiFiveHour: { usedPercent: 100 },
-      geminiWeekly: { usedPercent: 98, resetInSeconds: 431180 },
+      geminiWeekly: { usedPercent: 98, resetAt: 1738831180000 },
     });
   });
 
@@ -296,14 +296,14 @@ describe("server-route-state POST", () => {
       state: "idle",
       session_id: "sid",
       claude_quota: {
-        claudeFiveHour: { usedPercent: 24, resetInSeconds: 25600 },
+        claudeFiveHour: { usedPercent: 24, resetAt: 1738425600000 },
         claudeWeekly: { usedPercent: 41 },
       },
     }));
 
     assert.strictEqual(res.statusCode, 200);
     assert.deepStrictEqual(res.calls.updateSession[0][3].claudeQuota, {
-      claudeFiveHour: { usedPercent: 24, resetInSeconds: 25600 },
+      claudeFiveHour: { usedPercent: 24, resetAt: 1738425600000 },
       claudeWeekly: { usedPercent: 41 },
     });
   });

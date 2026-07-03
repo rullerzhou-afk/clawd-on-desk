@@ -1734,13 +1734,13 @@ describe("updateSession()", () => {
       state: "working",
       antigravityQuota: {
         geminiFiveHour: { usedPercent: 100 },
-        geminiWeekly: { usedPercent: 98, resetInSeconds: 431180 },
+        geminiWeekly: { usedPercent: 98, resetAt: 1738831180000 },
       },
     });
 
     assert.deepStrictEqual(api.sessions.get("s1").antigravityQuota, {
       geminiFiveHour: { usedPercent: 100 },
-      geminiWeekly: { usedPercent: 98, resetInSeconds: 431180 },
+      geminiWeekly: { usedPercent: 98, resetAt: 1738831180000 },
     });
   });
 
@@ -1767,13 +1767,13 @@ describe("updateSession()", () => {
       agentId: "antigravity-cli",
       cwd: "/tmp",
       preserveState: true,
-      antigravityQuota: { geminiWeekly: { usedPercent: 98, resetInSeconds: 431180 } },
+      antigravityQuota: { geminiWeekly: { usedPercent: 98, resetAt: 1738831180000 } },
     });
 
     const session = api.sessions.get("antigravity:abc");
     assert.strictEqual(session.state, "working");
     assert.deepStrictEqual(session.antigravityQuota, {
-      geminiWeekly: { usedPercent: 98, resetInSeconds: 431180 },
+      geminiWeekly: { usedPercent: 98, resetAt: 1738831180000 },
     });
   });
 
@@ -1782,13 +1782,13 @@ describe("updateSession()", () => {
       id: "s1",
       state: "working",
       claudeQuota: {
-        claudeFiveHour: { usedPercent: 24, resetInSeconds: 25600 },
+        claudeFiveHour: { usedPercent: 24, resetAt: 1738425600000 },
         claudeWeekly: { usedPercent: 41 },
       },
     });
 
     assert.deepStrictEqual(api.sessions.get("s1").claudeQuota, {
-      claudeFiveHour: { usedPercent: 24, resetInSeconds: 25600 },
+      claudeFiveHour: { usedPercent: 24, resetAt: 1738425600000 },
       claudeWeekly: { usedPercent: 41 },
     });
   });
@@ -1810,13 +1810,13 @@ describe("updateSession()", () => {
     update(api, { id: "s1", state: "working" });
     api.updateSession("s1", "idle", undefined, {
       preserveState: true,
-      claudeQuota: { claudeFiveHour: { usedPercent: 24, resetInSeconds: 25600 } },
+      claudeQuota: { claudeFiveHour: { usedPercent: 24, resetAt: 1738425600000 } },
     });
 
     const session = api.sessions.get("s1");
     assert.strictEqual(session.state, "working");
     assert.deepStrictEqual(session.claudeQuota, {
-      claudeFiveHour: { usedPercent: 24, resetInSeconds: 25600 },
+      claudeFiveHour: { usedPercent: 24, resetAt: 1738425600000 },
     });
   });
 

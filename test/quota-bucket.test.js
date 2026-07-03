@@ -6,18 +6,18 @@ const assert = require("node:assert");
 const { normalizeQuotaBucket, normalizeQuotaGroup } = require("../hooks/quota-bucket");
 
 describe("normalizeQuotaBucket", () => {
-  it("clamps usedPercent into [0, 100] and rounds resetInSeconds", () => {
-    assert.deepStrictEqual(normalizeQuotaBucket({ usedPercent: 41.6, resetInSeconds: 1234.9 }), {
+  it("clamps usedPercent into [0, 100] and rounds resetAt", () => {
+    assert.deepStrictEqual(normalizeQuotaBucket({ usedPercent: 41.6, resetAt: 1234.9 }), {
       usedPercent: 42,
-      resetInSeconds: 1235,
+      resetAt: 1235,
     });
     assert.strictEqual(normalizeQuotaBucket({ usedPercent: 142 }).usedPercent, 100);
     assert.strictEqual(normalizeQuotaBucket({ usedPercent: -5 }).usedPercent, 0);
   });
 
-  it("omits resetInSeconds when absent or negative", () => {
+  it("omits resetAt when absent or non-numeric", () => {
     assert.deepStrictEqual(normalizeQuotaBucket({ usedPercent: 10 }), { usedPercent: 10 });
-    assert.deepStrictEqual(normalizeQuotaBucket({ usedPercent: 10, resetInSeconds: -1 }), { usedPercent: 10 });
+    assert.deepStrictEqual(normalizeQuotaBucket({ usedPercent: 10, resetAt: "nope" }), { usedPercent: 10 });
   });
 
   it("returns null for missing/non-numeric usedPercent", () => {

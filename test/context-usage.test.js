@@ -101,6 +101,15 @@ describe("Claude context usage parser", () => {
     }
   });
 
+  it("falls back to the [1m] marker for models not in the table (legacy 1M beta, proxy echoes)", () => {
+    // claude-opus-4-5 defaults to 200k and isn't in CLAUDE_1M_CONTEXT_MODEL_TOKENS,
+    // but the request-side model id (echoed back by some API proxies, or present
+    // pre-table on legacy transcripts) still carries the beta marker.
+    assert.strictEqual(resolveClaudeContextLimit("claude-opus-4-5[1m]"), 1000000);
+    // Table match and marker match agree for models that are in both.
+    assert.strictEqual(resolveClaudeContextLimit("claude-opus-4-8[1m]"), 1000000);
+  });
+
   it("uses the latest usage entry from a transcript tail", () => {
     const usage = extractClaudeContextUsageFromEntries([
       {

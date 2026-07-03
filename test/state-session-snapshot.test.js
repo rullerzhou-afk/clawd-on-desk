@@ -364,14 +364,14 @@ describe("state-session-snapshot builder", () => {
         agentId: "antigravity-cli",
         antigravityQuota: {
           geminiFiveHour: { usedPercent: 100 },
-          geminiWeekly: { usedPercent: 98, resetInSeconds: 431180 },
+          geminiWeekly: { usedPercent: 98, resetAt: 1738831180000 },
         },
       })],
     ]), { statePriority: STATE_PRIORITY });
 
     assert.deepStrictEqual(snapshot.sessions[0].antigravityQuota, {
       geminiFiveHour: { usedPercent: 100 },
-      geminiWeekly: { usedPercent: 98, resetInSeconds: 431180 },
+      geminiWeekly: { usedPercent: 98, resetAt: 1738831180000 },
     });
   });
 
@@ -393,14 +393,14 @@ describe("state-session-snapshot builder", () => {
     const snapshot = buildSessionSnapshot(new Map([
       ["s1", session("idle", {
         claudeQuota: {
-          claudeFiveHour: { usedPercent: 24, resetInSeconds: 25600 },
+          claudeFiveHour: { usedPercent: 24, resetAt: 1738425600000 },
           claudeWeekly: { usedPercent: 41 },
         },
       })],
     ]), { statePriority: STATE_PRIORITY });
 
     assert.deepStrictEqual(snapshot.sessions[0].claudeQuota, {
-      claudeFiveHour: { usedPercent: 24, resetInSeconds: 25600 },
+      claudeFiveHour: { usedPercent: 24, resetAt: 1738425600000 },
       claudeWeekly: { usedPercent: 41 },
     });
   });

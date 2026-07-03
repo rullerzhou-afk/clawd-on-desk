@@ -1,28 +1,23 @@
 "use strict";
 
-const { describe, it, mock } = require("node:test");
+const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
 const { resolveClaudeRateLimitQuota, resolveClaudeModelLabel } = require("../hooks/claude-rate-limits");
 
 describe("Claude Code rate limit quota parser", () => {
-  it("maps five_hour and seven_day into claudeFiveHour/claudeWeekly", () => {
-    mock.timers.enable({ apis: ["Date"], now: 1738400000000 });
-    try {
-      const quota = resolveClaudeRateLimitQuota({
-        rate_limits: {
-          five_hour: { used_percentage: 23.5, resets_at: 1738425600 },
-          seven_day: { used_percentage: 41.2, resets_at: 1738857600 },
-        },
-      });
+  it("maps five_hour and seven_day into claudeFiveHour/claudeWeekly, converting resets_at to epoch-ms", () => {
+    const quota = resolveClaudeRateLimitQuota({
+      rate_limits: {
+        five_hour: { used_percentage: 23.5, resets_at: 1738425600 },
+        seven_day: { used_percentage: 41.2, resets_at: 1738857600 },
+      },
+    });
 
-      assert.deepStrictEqual(quota, {
-        claudeFiveHour: { usedPercent: 24, resetInSeconds: 1738425600 - 1738400000 },
-        claudeWeekly: { usedPercent: 41, resetInSeconds: 1738857600 - 1738400000 },
-      });
-    } finally {
-      mock.timers.reset();
-    }
+    assert.deepStrictEqual(quota, {
+      claudeFiveHour: { usedPercent: 24, resetAt: 1738425600 * 1000 },
+      claudeWeekly: { usedPercent: 41, resetAt: 1738857600 * 1000 },
+    });
   });
 
   it("keeps a bucket without resets_at (usedPercent only)", () => {

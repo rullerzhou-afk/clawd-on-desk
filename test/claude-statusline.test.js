@@ -1,6 +1,6 @@
 "use strict";
 
-const { describe, it, mock } = require("node:test");
+const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
 const { __test } = require("../hooks/claude-statusline");
@@ -23,14 +23,14 @@ describe("Claude Code statusline adapter", () => {
   it("builds a preserve_state body carrying claude_quota, no event field", () => {
     const body = buildStateBody(
       { session_id: "abc123", workspace: { current_dir: "/work" } },
-      { claudeFiveHour: { usedPercent: 24, resetInSeconds: 25600 } }
+      { claudeFiveHour: { usedPercent: 24, resetAt: 1738425600000 } }
     );
     assert.deepStrictEqual(body, {
       state: "idle",
       preserve_state: true,
       session_id: "abc123",
       agent_id: "claude-code",
-      claude_quota: { claudeFiveHour: { usedPercent: 24, resetInSeconds: 25600 } },
+      claude_quota: { claudeFiveHour: { usedPercent: 24, resetAt: 1738425600000 } },
       cwd: "/work",
     });
   });
@@ -41,7 +41,6 @@ describe("Claude Code statusline adapter", () => {
   });
 
   it("main() posts state and always writes a stdout line", async () => {
-    mock.timers.enable({ apis: ["Date"], now: 1738400000000 });
     const writes = [];
     const posted = [];
     const originalWrite = process.stdout.write;
@@ -53,7 +52,7 @@ describe("Claude Code statusline adapter", () => {
           model: { display_name: "Claude Sonnet 5" },
           context_window: { used_percentage: 8 },
           rate_limits: {
-            five_hour: { used_percentage: 24, resets_at: 1738400000 + 25600 },
+            five_hour: { used_percentage: 24, resets_at: 1738425600 },
             seven_day: { used_percentage: 41 },
           },
         },
@@ -61,12 +60,11 @@ describe("Claude Code statusline adapter", () => {
       });
     } finally {
       process.stdout.write = originalWrite;
-      mock.timers.reset();
     }
     assert.strictEqual(writes.length, 1);
     assert.strictEqual(writes[0], "Claude Sonnet 5 · 8% ctx · 41% weekly\n");
     assert.deepStrictEqual(posted[0].claude_quota, {
-      claudeFiveHour: { usedPercent: 24, resetInSeconds: 25600 },
+      claudeFiveHour: { usedPercent: 24, resetAt: 1738425600000 },
       claudeWeekly: { usedPercent: 41 },
     });
   });
