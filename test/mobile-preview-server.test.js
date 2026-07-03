@@ -900,3 +900,30 @@ describe("Rotate-on-use", () => {
     await new Promise((r) => setTimeout(r, 200));
   });
 });
+
+describe("mDNS advertisement", () => {
+  const sessions = new Map();
+
+  it("does not advertise by default (opt-in only)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-test-"));
+    const server = initMobilePreviewServer({
+      sessions,
+      tokenPath: path.join(tmpDir, "mobile-token.json"),
+    });
+    await server.start();
+    server.cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("starts and cleans up without throwing when advertiseMdns is enabled", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-test-"));
+    const server = initMobilePreviewServer({
+      sessions,
+      tokenPath: path.join(tmpDir, "mobile-token.json"),
+      advertiseMdns: true,
+    });
+    await server.start();
+    server.cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+});

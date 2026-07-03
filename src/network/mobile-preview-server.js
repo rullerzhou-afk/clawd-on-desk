@@ -11,6 +11,12 @@ const path = require("path");
 const crypto = require("crypto");
 const os = require("os");
 const WebSocket = require("ws");
+let Bonjour;
+try {
+  Bonjour = require("bonjour");
+} catch {
+  Bonjour = null;
+}
 
 const PROTOCOL_VERSION = "v1";
 const DEFAULT_PORT = 23334;
@@ -100,6 +106,8 @@ function initMobilePreviewServer(ctx) {
   let heartbeatTimer = null;
   let rotationTimer = null;
   let closed = false;
+  let bonjourInstance = null;
+  let bonjourService = null;
 
   // ── Token rotation ──
 
@@ -456,6 +464,41 @@ function initMobilePreviewServer(ctx) {
     }
   }
 
+  // ── mDNS advertisement ──
+  // Lets Clawd Mobile discover this machine on the LAN without the user
+  // copying a URL. The advertisement only carries enough to locate the
+  // server (host/port); clients still fetch a fresh token via
+  // /api/connection-info rather than trusting a TXT record.
+
+  function advertiseMDNS() {
+    if (!Bonjour || !(ctx && ctx.advertiseMdns === true)) return;
+    try {
+      bonjourInstance = new Bonjour();
+      bonjourService = bonjourInstance.publish({
+        name: `clawd-${os.hostname()}`,
+        type: "clawd",
+        protocol: "tcp",
+        port: activePort,
+        host: os.hostname(),
+        txt: { version: PROTOCOL_VERSION },
+      });
+      console.log(`[mobile-preview] mDNS advertised as clawd-${os.hostname()}._clawd._tcp.local`);
+    } catch (err) {
+      console.error("[mobile-preview] mDNS advertisement failed:", err.message);
+    }
+  }
+
+  function unAdvertiseMDNS() {
+    if (bonjourService) {
+      try { bonjourService.stop(); } catch {}
+      bonjourService = null;
+    }
+    if (bonjourInstance) {
+      try { bonjourInstance.destroy(); } catch {}
+      bonjourInstance = null;
+    }
+  }
+
   // ── Public API ──
 
   function start() {
@@ -480,6 +523,7 @@ function initMobilePreviewServer(ctx) {
       const onListening = () => {
         activePort = ports[idx];
         console.log(`[mobile-preview] started on 0.0.0.0:${activePort}`);
+        advertiseMDNS();
         httpServer.removeListener("error", onError);
         httpServer.removeListener("listening", onListening);
         resolve(activePort);
@@ -498,6 +542,7 @@ function initMobilePreviewServer(ctx) {
     closed = true;
     sessionCache.clear();
     stopHeartbeat();
+    unAdvertiseMDNS();
     if (rotationTimer) { clearTimeout(rotationTimer); rotationTimer = null; }
     for (const c of clients) { try { c.close(1001, "Server shutting down"); } catch {} }
     clients.clear();

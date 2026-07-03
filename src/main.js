@@ -1893,6 +1893,7 @@ if (_settingsController.get("mobilePreviewEnabled") === true) {
     sessions,
     getSettingsSnapshot: () => _settingsController.getSnapshot(),
     isEnabled: () => _settingsController.get("mobilePreviewEnabled") === true,
+    advertiseMdns: true,
   });
 }
 
