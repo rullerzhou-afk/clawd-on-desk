@@ -1129,10 +1129,29 @@ function updateSessionMetadata(sessionId, opts = {}) {
   const antigravityQuota = normalizeAntigravityQuota(opts.antigravityQuota);
   const claudeQuota = normalizeClaudeQuota(opts.claudeQuota);
   if (!contextUsage && !antigravityQuota && !claudeQuota) return false;
-  if (contextUsage) session.contextUsage = contextUsage;
-  if (antigravityQuota) session.antigravityQuota = antigravityQuota;
-  if (claudeQuota) session.claudeQuota = claudeQuota;
-  emitSessionSnapshot();
+  let changed = false;
+  if (contextUsage && JSON.stringify(contextUsage) !== JSON.stringify(session.contextUsage)) {
+    session.contextUsage = contextUsage;
+    changed = true;
+  }
+  if (antigravityQuota && JSON.stringify(antigravityQuota) !== JSON.stringify(session.antigravityQuota)) {
+    session.antigravityQuota = antigravityQuota;
+    changed = true;
+  }
+  if (claudeQuota && JSON.stringify(claudeQuota) !== JSON.stringify(session.claudeQuota)) {
+    session.claudeQuota = claudeQuota;
+    changed = true;
+  }
+  if (changed) {
+    // Freshness stamp for quota display arbitration only. Deliberately a
+    // separate field from updatedAt: staleness sweeps, badge derivation and
+    // eviction all key on updatedAt, and a statusline heartbeat must not
+    // feed them. Stamped only on real changes, so it cannot re-introduce a
+    // per-tick broadcast (and it is excluded from the snapshot signature
+    // like updatedAt anyway).
+    session.metadataUpdatedAt = Date.now();
+    emitSessionSnapshot();
+  }
   return true;
 }
 

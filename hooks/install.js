@@ -1532,6 +1532,11 @@ if (require.main === module) {
   try {
     const remote = process.argv.includes("--remote");
     registerHooks({ remote });
+    // Keep the CLI symmetric with hooks/uninstall.js, which unregisters the
+    // statusline: without this, a manual uninstall + reinstall cycle loses
+    // the statusline until the next app startup sync. Remote installs skip
+    // it - remote/SSH statusline support is an intentional non-goal.
+    if (!remote) registerClaudeStatusline();
   } catch (err) {
     console.error(err.message);
     process.exit(1);

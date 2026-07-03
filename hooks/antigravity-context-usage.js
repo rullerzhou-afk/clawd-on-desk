@@ -73,8 +73,16 @@ function invertAntigravityQuotaPayload(quota) {
     const entry = { usedPercent: (1 - Math.max(0, Math.min(1, remaining))) * 100 };
     // agy reports a relative countdown (reset_in_seconds), not an absolute
     // instant, so anchor it to receive time here - see quota-bucket.js.
+    // Quantized to whole minutes: the countdown and our receive time tick
+    // independently, so a raw nowMs + s*1000 jitters by hundreds of ms on
+    // every statusline refresh - each refresh would produce a "different"
+    // resetAt, changing the snapshot signature every tick and re-opening
+    // the broadcast storm that absolute timestamps were adopted to close.
+    // Reset labels render at minute granularity, so nothing is lost.
     const resetInSeconds = Number(bucket.reset_in_seconds);
-    if (Number.isFinite(resetInSeconds)) entry.resetAt = nowMs + resetInSeconds * 1000;
+    if (Number.isFinite(resetInSeconds)) {
+      entry.resetAt = Math.round((nowMs + resetInSeconds * 1000) / 60000) * 60000;
+    }
     out[field] = entry;
   }
   return out;

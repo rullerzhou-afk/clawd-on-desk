@@ -196,6 +196,9 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     displayTitle: sessionDisplayTitle(id, session, sessionAliases, options),
     cwd: (session && session.cwd) || "",
     updatedAt: sessionUpdatedAt(session),
+    // Quota/context freshness (statusline metadata POSTs, which do not bump
+    // updatedAt). Excluded from sessionSnapshotSignature, like updatedAt.
+    metadataUpdatedAt: (session && Number.isFinite(session.metadataUpdatedAt)) ? session.metadataUpdatedAt : null,
     sourcePid: (session && session.sourcePid) || null,
     wtHwnd: (session && session.wtHwnd) || null,
     editor: (session && session.editor) || null,

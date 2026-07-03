@@ -78,7 +78,7 @@ describe("Antigravity statusline adapter", () => {
     assert.strictEqual(writes.length, 1);
     assert.strictEqual(writes[0], "Gemini 3.1 Pro (High) · 5% ctx · idle\n");
     assert.deepStrictEqual(posted[0].antigravity_quota, {
-      geminiWeekly: { usedPercent: 98, resetAt: 1738400000000 + 431180 * 1000 },
+      geminiWeekly: { usedPercent: 98, resetAt: Math.round((1738400000000 + 431180 * 1000) / 60000) * 60000 },
     });
   });
 

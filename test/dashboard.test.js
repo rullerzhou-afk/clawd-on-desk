@@ -257,6 +257,10 @@ describe("dashboard window", () => {
     assert.match(rendererSource, /resolveQuotaForDisplay\(sessions, agentId, field\)/);
     assert.match(rendererSource, /resolveQuotaForDisplay\(sessions, "antigravity-cli", "antigravityQuota"\)/);
     assert.match(rendererSource, /resolveQuotaForDisplay\(sessions, "claude-code", "claudeQuota"\)/);
+    // #590 B2: quota arbitration must consider metadataUpdatedAt — statusline
+    // refreshes stamp it without bumping updatedAt, so updatedAt alone would
+    // pick a lifecycle-recent session over one with fresher quota.
+    assert.match(rendererSource, /session\.metadataUpdatedAt/);
     for (const key of [
       "dashboardQuotaSectionAntigravity",
       "dashboardQuotaGroupGemini",

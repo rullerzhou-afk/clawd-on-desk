@@ -408,6 +408,12 @@ const NON_PORTABLE_COMMAND_TOKEN_RE = /[\s"'`&|<>^%!();,$*?#~={}[\]]/;
  * bare `node` PATH lookup otherwise (the default install under
  * "C:\Program Files" is on PATH by the Node installer). The script path
  * stays double-quoted - a quoted *argument* is fine in all three shells.
+ *
+ * Known limit: inside double quotes, Git Bash/PowerShell still expand `$`
+ * and backticks and cmd expands %VAR%, so an install path containing those
+ * would be rewritten before node sees it. There is no quoting form that is
+ * inert in all three shells (cmd has no single-quote), and the previous
+ * PowerShell-only form had the same exposure - accepted, not a regression.
  */
 function buildPortableStatuslineCommand(nodeBin, scriptPath, options = {}) {
   const platform = options.platform || process.platform;

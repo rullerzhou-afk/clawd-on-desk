@@ -86,7 +86,7 @@ describe("Antigravity context usage parser", () => {
 });
 
 describe("Antigravity account quota parser", () => {
-  it("maps all four buckets from remaining_fraction to a rounded usedPercent (inverted), anchoring reset_in_seconds to receive time", () => {
+  it("maps all four buckets from remaining_fraction to a rounded usedPercent (inverted), anchoring reset_in_seconds to receive time (minute-quantized)", () => {
     mock.timers.enable({ apis: ["Date"], now: 1738400000000 });
     let quota;
     try {
@@ -102,12 +102,35 @@ describe("Antigravity account quota parser", () => {
       mock.timers.reset();
     }
 
+    const quantized = (ms) => Math.round(ms / 60000) * 60000;
     assert.deepStrictEqual(quota, {
-      geminiFiveHour: { usedPercent: 0, resetAt: 1738400000000 + 16920 * 1000 },
-      geminiWeekly: { usedPercent: 2, resetAt: 1738400000000 + 431180 * 1000 },
+      geminiFiveHour: { usedPercent: 0, resetAt: quantized(1738400000000 + 16920 * 1000) },
+      geminiWeekly: { usedPercent: 2, resetAt: quantized(1738400000000 + 431180 * 1000) },
       thirdPartyFiveHour: { usedPercent: 0 },
-      thirdPartyWeekly: { usedPercent: 31, resetAt: 1738400000000 + 431100 * 1000 },
+      thirdPartyWeekly: { usedPercent: 31, resetAt: quantized(1738400000000 + 431100 * 1000) },
     });
+  });
+
+  it("keeps resetAt stable across sub-minute refresh jitter (snapshot-signature storm guard)", () => {
+    // Receive time advances 300ms per refresh while the countdown loses a
+    // whole second - a raw nowMs + s*1000 would differ every call. The
+    // minute quantization must absorb both drifts.
+    const at = (now, resetInSeconds) => {
+      mock.timers.enable({ apis: ["Date"], now });
+      try {
+        return resolveAntigravityQuota({
+          quota: { "gemini-5h": { remaining_fraction: 0.5, reset_in_seconds: resetInSeconds } },
+        }).geminiFiveHour.resetAt;
+      } finally {
+        mock.timers.reset();
+      }
+    };
+
+    const first = at(1738400000000, 16920);
+    const second = at(1738400000300, 16920);
+    const third = at(1738400001300, 16919);
+    assert.strictEqual(second, first);
+    assert.strictEqual(third, first);
   });
 
   it("drops individual buckets with no numeric remaining_fraction but keeps the rest", () => {

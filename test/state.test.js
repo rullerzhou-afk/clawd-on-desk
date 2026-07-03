@@ -1898,6 +1898,24 @@ describe("updateSession()", () => {
     assert.strictEqual(broadcasts.length, before + 1, "identical refresh must be deduped by signature");
   });
 
+  it("updateSessionMetadata stamps metadataUpdatedAt on change only, never updatedAt", () => {
+    update(api, { id: "s1", state: "working" });
+    const session = api.sessions.get("s1");
+    session.updatedAt = 12345;
+
+    api.updateSessionMetadata("s1", {
+      claudeQuota: { claudeWeekly: { usedPercent: 41 } },
+    });
+    assert.ok(Number.isFinite(session.metadataUpdatedAt), "quota change must stamp metadataUpdatedAt");
+    assert.strictEqual(session.updatedAt, 12345);
+
+    session.metadataUpdatedAt = 777; // pin so a re-stamp is detectable
+    api.updateSessionMetadata("s1", {
+      claudeQuota: { claudeWeekly: { usedPercent: 41 } },
+    });
+    assert.strictEqual(session.metadataUpdatedAt, 777, "identical refresh must not re-stamp");
+  });
+
   it("trims whitespace on sessionTitle", () => {
     update(api, { id: "s1", state: "working", sessionTitle: "  Spaced  " });
     assert.strictEqual(api.sessions.get("s1").sessionTitle, "Spaced");
