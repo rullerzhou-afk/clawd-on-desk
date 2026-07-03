@@ -87,6 +87,7 @@ Thinking when you prompt, typing when tools run, grooving or juggling for subage
 - **Read-only by design** — the LAN bridge only broadcasts state; nothing on the phone can touch your machine (remote approval is on the roadmap)
 - **LAN-only + token-gated** — pairing requires a token, tokens rotate automatically with a grace window, and access can be regenerated or reset in one click
 - **Installable** — it's a PWA: add it to your home screen for an app-like experience
+- **QR code pairing** — Settings → Mobile shows a scannable QR code alongside the pairing URL, so you can connect without typing anything
 > The mobile companion line — from the first prototype to token rotation — is built and led by core contributor [@Bynlk](https://github.com/Bynlk), who also maintains [clawd-on-mobile](https://github.com/Bynlk/clawd-on-mobile), a sister fork with a native Android app.
 
 ### System

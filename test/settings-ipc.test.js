@@ -281,6 +281,8 @@ test("mobile connection info returns a ready pair URL only when port and token a
   assert.ok(result.pairUrl.includes("port=23334"));
   assert.ok(result.pairUrl.includes(`token=${token}`));
   assert.ok(!result.pairUrl.includes("port=null"));
+  assert.strictEqual(typeof result.qrSvg, "string");
+  assert.ok(result.qrSvg.startsWith("<svg"));
   runtime.dispose();
 });
 

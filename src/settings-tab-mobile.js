@@ -85,6 +85,14 @@
 
       html += '</div>';
 
+      // QR code — scan with phone camera to open Clawd on Mobile directly
+      if (info.qrSvg) {
+        html += '<div class="mobile-qr-section">';
+        html += `<div class="mobile-qr-code">${info.qrSvg}</div>`;
+        html += `<p class="mobile-qr-hint">${escapeHtml(t("mobileQrHint") || "Scan with your phone's camera to open Clawd on Mobile")}</p>`;
+        html += '</div>';
+      }
+
       // Action buttons
       html += '<div class="mobile-conn-actions">';
       html += `<button class="mobile-action-btn" id="mobile-regenerate-btn">${escapeHtml(t("mobileRegenerate") || "Regenerate Token")}</button>`;
