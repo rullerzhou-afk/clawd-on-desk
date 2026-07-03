@@ -148,6 +148,13 @@ function resolveAgentPaths(descriptor, options) {
   const paths = { parentDir, configPath };
   if (descriptor.settingsPath) paths.settingsPath = rebaseHomePath(descriptor.settingsPath, homeDir);
   if (descriptor.configFilePath) paths.configFilePath = rebaseHomePath(descriptor.configFilePath, homeDir);
+  if (Array.isArray(descriptor.configTargets)) {
+    paths.configTargets = descriptor.configTargets.map((target) => ({
+      ...target,
+      parentDir: rebaseHomePath(target.parentDir, homeDir),
+      configPath: rebaseHomePath(target.configPath, homeDir),
+    }));
+  }
   return paths;
 }
 
@@ -265,10 +272,21 @@ function detectInstallation(descriptor, paths, options) {
     case "antigravity-cli":
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "medium", "parent-dir", `${paths.parentDir} exists`);
       return notFound();
+    case "kimi-cli": {
+      // #563: two valid generations — ~/.kimi-code (Kimi Code) and ~/.kimi
+      // (legacy CLI). Either directory counts as installed; report which one
+      // matched so doctor/UI can tell the generations apart.
+      for (const target of paths.configTargets || []) {
+        if (dirExists(fsImpl, target.parentDir)) {
+          return installationResult(true, "high", "parent-dir", `${target.parentDir} exists`);
+        }
+      }
+      if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);
+      return notFound();
+    }
     case "copilot-cli":
     case "cursor-agent":
     case "codebuddy":
-    case "kimi-cli":
     case "qwen-code":
     case "codewhale":
     case "opencode":
@@ -327,6 +345,21 @@ function detectClawdIntegration(descriptor, paths, options) {
     return markerInDirectoryFiles(fsImpl, paths.configPath, descriptor.marker)
       ? { detected: true, reason: "marker-found", detail: `${paths.configPath} contains ${descriptor.marker}`, paths: { configPath: paths.configPath } }
       : { detected: false, reason: "not-found", detail: `No ${descriptor.marker} marker found` };
+  }
+  // Multi-generation agents (#563: kimi legacy + kimi-code) may carry the
+  // marker in any generation's config; report the first hit.
+  if (Array.isArray(paths.configTargets)) {
+    for (const target of paths.configTargets) {
+      const targetText = readText(fsImpl, target.configPath);
+      if (hasClawdMarkerText(targetText, descriptor.marker)) {
+        return {
+          detected: true,
+          reason: "marker-found",
+          detail: `${target.configPath} contains ${descriptor.marker}`,
+          paths: { configPath: target.configPath },
+        };
+      }
+    }
   }
   const text = readText(fsImpl, paths.configPath);
   if (hasClawdMarkerText(text, descriptor.marker)) {
