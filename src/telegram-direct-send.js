@@ -5,6 +5,7 @@ const {
   getSessionFocusTarget,
   isFocusableLocalHudSession,
 } = require("./session-focus");
+const { createTranslator } = require("./i18n");
 
 const DEFAULT_MAPPING_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_REPLY_TEXT = 3800;
@@ -311,26 +312,26 @@ async function invokeFallbackAdapter(fallbackAdapter, payload) {
   return { status: "failed", delivered: false, errorClass: "fallback_adapter_missing" };
 }
 
-function formatDeliveryAck(status, entry, deliveryResult) {
+function formatDeliveryAck(status, entry, deliveryResult, t) {
   const shortId = shortSessionId(entry && entry.id);
   switch (status) {
     case "sent_with_enter":
-      return `Sent to terminal for session ${shortId}.`;
+      return t("directSendAckSent").replace("{session}", shortId);
     case "pasted_without_enter":
       if (deliveryResult && deliveryResult.clipboardRestored === true) {
-        return `Pasted text into session ${shortId}; press Enter locally to send it. Your previous clipboard text was restored.`;
+        return t("directSendAckPastedRestored").replace("{session}", shortId);
       }
-      return `Pasted text into session ${shortId}; press Enter locally to send it. The text is still on this computer's clipboard for manual retry.`;
+      return t("directSendAckPastedManual").replace("{session}", shortId);
     case "fallback_copied":
-      return `Copied text to this computer's clipboard for session ${shortId}. Paste and send it locally when ready.`;
+      return t("directSendAckCopied").replace("{session}", shortId);
     case "failed":
-      return "Direct Send failed after focus confirmation. No text was pasted.";
+      return t("directSendAckFailed");
     case "focus_only":
     default:
       if (deliveryResult && deliveryResult.errorClass === "delivery_not_implemented") {
-        return `Focused session ${shortId} on your computer. Direct Send is in focus-only dogfood mode; no text was pasted.`;
+        return t("directSendAckFocusOnlyDogfood").replace("{session}", shortId);
       }
-      return `Focused session ${shortId} on your computer. Direct Send did not send text.`;
+      return t("directSendAckFocusOnly").replace("{session}", shortId);
   }
 }
 
@@ -346,7 +347,9 @@ function createTelegramDirectSend({
   maxDeliveries = DEFAULT_MAX_DELIVERIES,
   osPlatform = process.platform,
   log = () => {},
+  getLang = () => "en",
 } = {}) {
+  const t = createTranslator(getLang);
   const mappings = new Map(); // Telegram completion message id -> { sessionId, expiresAt }
   const deliveries = new Map(); // delivery id -> in-memory prompt delivery entry
   let deliverySeq = 0;
@@ -457,7 +460,7 @@ function createTelegramDirectSend({
       deliveryId: deliveryEntry && deliveryEntry.id,
       focusResult: patch.focusResult || undefined,
       deliveryResult: fallbackResult,
-      text: formatDeliveryAck("fallback_copied", entry || { id: patch.sessionId }, fallbackResult),
+      text: formatDeliveryAck("fallback_copied", entry || { id: patch.sessionId }, fallbackResult, t),
     };
   }
 
@@ -500,7 +503,7 @@ function createTelegramDirectSend({
     if (!promptText) {
       return {
         status: "empty",
-        text: "Send text as a reply to a Clawd completion notification.",
+        text: t("directSendEmptyText"),
       };
     }
 
@@ -512,7 +515,7 @@ function createTelegramDirectSend({
       return {
         status: "unmapped",
         deliveryId: deliveryEntry.id,
-        text: "Reply to a Clawd completion notification to choose the session.",
+        text: t("directSendUnmapped"),
       };
     }
 
@@ -535,7 +538,7 @@ function createTelegramDirectSend({
         status: "session_not_live",
         sessionId: mapping.sessionId,
         deliveryId: deliveryEntry.id,
-        text: "That session is no longer live on this computer.",
+        text: t("directSendSessionNotLive"),
       };
     }
 
@@ -558,7 +561,7 @@ function createTelegramDirectSend({
         status: "permission_pending",
         sessionId: entry.id,
         deliveryId: deliveryEntry.id,
-        text: "That session appears to be waiting for a permission decision, so I did not focus it for direct send.",
+        text: t("directSendPermissionPending"),
       };
     }
 
@@ -583,7 +586,7 @@ function createTelegramDirectSend({
         status: "not_focusable",
         sessionId: entry.id,
         deliveryId: deliveryEntry.id,
-        text: "That session cannot be focused as a local terminal on this computer.",
+        text: t("directSendNotFocusable"),
       };
     }
 
@@ -620,7 +623,7 @@ function createTelegramDirectSend({
         sessionId: entry.id,
         deliveryId: deliveryEntry.id,
         focusResult,
-        text: "I could not confirm that terminal was foregrounded. Direct Send stayed in focus-only fallback; no text was pasted.",
+        text: t("directSendFocusUnconfirmed"),
       };
     }
 
@@ -684,7 +687,7 @@ function createTelegramDirectSend({
       deliveryId: deliveryEntry.id,
       focusResult,
       deliveryResult,
-      text: formatDeliveryAck(deliveryResult.status, entry, deliveryResult),
+      text: formatDeliveryAck(deliveryResult.status, entry, deliveryResult, t),
     };
   }
 

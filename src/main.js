@@ -2643,6 +2643,7 @@ async function initTelegramMigrationController() {
         && getTelegramApprovalPrefs().r3DirectSendEnabled === true);
     },
     osPlatform: process.platform,
+    getLang: () => lang,
     log: telegramApprovalLog,
   });
   const nativeRunner = createTelegramNativeRunner({
