@@ -1916,6 +1916,20 @@ describe("updateSession()", () => {
     assert.strictEqual(session.metadataUpdatedAt, 777, "identical refresh must not re-stamp");
   });
 
+  it("lifecycle events carry metadataUpdatedAt forward with the quota they preserve", () => {
+    update(api, { id: "s1", state: "working" });
+    api.updateSessionMetadata("s1", {
+      claudeQuota: { claudeWeekly: { usedPercent: 41 } },
+    });
+    api.sessions.get("s1").metadataUpdatedAt = 777; // pin to make loss detectable
+
+    update(api, { id: "s1", state: "working", event: "PostToolUse" });
+
+    const session = api.sessions.get("s1");
+    assert.deepStrictEqual(session.claudeQuota, { claudeWeekly: { usedPercent: 41 } });
+    assert.strictEqual(session.metadataUpdatedAt, 777, "hook-event rebuild must not drop the quota freshness stamp");
+  });
+
   it("trims whitespace on sessionTitle", () => {
     update(api, { id: "s1", state: "working", sessionTitle: "  Spaced  " });
     assert.strictEqual(api.sessions.get("s1").sessionTitle, "Spaced");

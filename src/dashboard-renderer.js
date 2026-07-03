@@ -110,11 +110,13 @@ function resolveQuotaForDisplay(sessions, agentId, field) {
     if (!session || session.agentId !== agentId) continue;
     const quota = session[field];
     if (!quota || typeof quota !== "object") continue;
-    // Quota freshness, not lifecycle freshness: statusline metadata POSTs
-    // stamp metadataUpdatedAt without bumping updatedAt, so a quiet session
-    // whose statusline keeps refreshing carries newer quota than a session
-    // with a more recent lifecycle event but stale quota.
-    const freshness = Math.max(Number(session.metadataUpdatedAt) || 0, Number(session.updatedAt) || 0);
+    // Quota freshness, not lifecycle freshness: metadataUpdatedAt is when
+    // this session's quota was last CONFIRMED by a statusline (it travels
+    // with the quota through lifecycle rebuilds), so it outranks updatedAt
+    // outright - a session carrying stale quota competes with the stale
+    // stamp it inherited, not with its latest hook event. updatedAt is only
+    // a fallback for quota that never came through a statusline.
+    const freshness = Number(session.metadataUpdatedAt) || Number(session.updatedAt) || 0;
     if (!best || freshness > best.freshness) best = { quota, freshness };
   }
   return best ? best.quota : null;
