@@ -53,6 +53,29 @@ function buildCodexHookCommand(nodeBin, hookScript, platform = process.platform)
   });
 }
 
+function windowsPathToWslPath(value) {
+  const match = /^([A-Za-z]):[\\/](.*)$/.exec(String(value || ""));
+  if (!match) return null;
+  return `/mnt/${match[1].toLowerCase()}/${match[2].replace(/\\/g, "/")}`;
+}
+
+// POSIX-side `command` for a hooks.json shared with WSL through CODEX_HOME
+// (#544). Codex on Windows prefers `commandWindows` (openai/codex#22159), so
+// `command` is only executed by POSIX shells — for a Windows-authored
+// hooks.json that means WSL. Run the WINDOWS node.exe via WSL interop rather
+// than a Linux node: the hook then lives in a Windows process whose
+// 127.0.0.1 is the Windows loopback, so events reach Clawd's server (which
+// binds 127.0.0.1 only) even in WSL's default NAT mode, where a Linux-side
+// process gets connection-refused. Requires WSL interop (on by default).
+// Env-var prefixes (`KEY=value node.exe ...`) do NOT cross the interop
+// boundary — never prepend env here; put env in commandWindows instead.
+function buildCodexHookPosixInteropCommand(nodeBin, hookScript) {
+  const wslNodeBin = windowsPathToWslPath(nodeBin);
+  const posixNodeBin =
+    wslNodeBin || (/\.exe$/i.test(String(nodeBin)) ? nodeBin : `${nodeBin}.exe`);
+  return formatNodeHookCommand(posixNodeBin, hookScript, { platform: "linux" });
+}
+
 function quotePosixEnvValue(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
@@ -300,14 +323,53 @@ function ensureCodexHooksFeature(configPath, options = {}) {
   return { changed: true, warning: null };
 }
 
+function hookMatchesCodexMarker(hook, marker) {
+  return (
+    (typeof hook.command === "string" && commandMatchesMarker(hook.command, marker)) ||
+    (typeof hook.commandWindows === "string" && commandMatchesMarker(hook.commandWindows, marker))
+  );
+}
+
 function findCodexCommandHook(entry, marker) {
   if (!entry || typeof entry !== "object") return null;
   const innerHooks = Array.isArray(entry.hooks) ? entry.hooks : [];
   for (const hook of innerHooks) {
     if (!hook || typeof hook !== "object") continue;
-    if (typeof hook.command === "string" && commandMatchesMarker(hook.command, marker)) return hook;
+    if (hookMatchesCodexMarker(hook, marker)) return hook;
   }
-  if (typeof entry.command === "string" && commandMatchesMarker(entry.command, marker)) return entry;
+  if (hookMatchesCodexMarker(entry, marker)) return entry;
+  return null;
+}
+
+// Windows-host variant of extractExistingNodeBin: scans command AND
+// commandWindows, and only accepts Windows-form absolute paths (drive letter
+// or UNC). The POSIX `command` on a Windows host holds a derived /mnt/...
+// interop path — extracting that back as the node bin would corrupt
+// commandWindows on the next reconcile.
+function extractExistingWindowsNodeBin(settings, marker) {
+  const hooks = settings && settings.hooks;
+  if (!hooks || typeof hooks !== "object") return null;
+  const commands = [];
+  for (const entries of Object.values(hooks)) {
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (!entry || typeof entry !== "object") continue;
+      const inner = Array.isArray(entry.hooks) ? entry.hooks : [entry];
+      for (const hook of inner) {
+        if (!hook || typeof hook !== "object") continue;
+        for (const cmd of [hook.commandWindows, hook.command]) {
+          if (typeof cmd === "string" && commandMatchesMarker(cmd, marker)) commands.push(cmd);
+        }
+      }
+    }
+  }
+  for (const cmd of commands) {
+    for (const match of cmd.matchAll(/"([^"]+)"/g)) {
+      const token = match[1];
+      if (!token || token.includes(marker)) continue;
+      if (/^[A-Za-z]:[\\/]/.test(token) || token.startsWith("\\\\")) return token;
+    }
+  }
   return null;
 }
 
@@ -331,24 +393,36 @@ function registerCodexCommandHooks(options = {}) {
 
   const hookScript = asarUnpackedPath(path.resolve(__dirname, scriptName).replace(/\\/g, "/"));
   const settings = readJsonIfPresent(hooksPath, "hooks.json");
+  const hostPlatform = options.platform || process.platform;
+  const isWindowsHost = hostPlatform === "win32";
   const resolved = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
   const nodeBin = resolved
-    || extractExistingNodeBin(settings, marker, { nested: true })
+    || (isWindowsHost
+      ? extractExistingWindowsNodeBin(settings, marker)
+      : extractExistingNodeBin(settings, marker, { nested: true }))
     || "node";
-  const baseCommand = buildCodexHookCommand(
-    nodeBin,
-    hookScript,
-    options.platform || process.platform
-  );
   const commandEnv = {
     ...(options.env || {}),
     ...(options.remote ? { CLAWD_REMOTE: "1" } : {}),
   };
-  const desiredCommand = withCommandEnv(
-    baseCommand,
-    commandEnv,
-    options.platform || process.platform
-  );
+  // On a Windows host, a WSL session may consume this hooks.json through a
+  // shared CODEX_HOME (#544). Codex resolves `commandWindows` on Windows and
+  // `command` on POSIX, so write both: keep the PowerShell form in
+  // commandWindows (unchanged from what `command` used to hold, so existing
+  // Windows installs keep their trusted_hash) and put a WSL-interop form in
+  // `command`. Note codex builds before openai/codex#22159 (2026-05) ignore
+  // commandWindows and would run the POSIX form on Windows.
+  const desiredCommandWindows = isWindowsHost
+    ? withCommandEnv(buildCodexHookCommand(nodeBin, hookScript, "win32"), commandEnv, "win32")
+    : null;
+  const desiredCommand = isWindowsHost
+    ? buildCodexHookPosixInteropCommand(nodeBin, hookScript)
+    : withCommandEnv(buildCodexHookCommand(nodeBin, hookScript, hostPlatform), commandEnv, hostPlatform);
+  if (isWindowsHost && Object.keys(commandEnv).length) {
+    warnings.push(
+      "Env vars don't cross the WSL interop boundary; they were applied to commandWindows only."
+    );
+  }
 
   if (!settings.hooks || typeof settings.hooks !== "object") settings.hooks = {};
 
@@ -380,6 +454,10 @@ function registerCodexCommandHooks(options = {}) {
         hook.command = desiredCommand;
         stale = true;
       }
+      if (isWindowsHost && hook.commandWindows !== desiredCommandWindows) {
+        hook.commandWindows = desiredCommandWindows;
+        stale = true;
+      }
       if (hook.timeout !== desiredTimeout) {
         hook.timeout = desiredTimeout;
         stale = true;
@@ -397,9 +475,10 @@ function registerCodexCommandHooks(options = {}) {
       continue;
     }
 
-    arr.push({
-      hooks: [{ type: "command", command: desiredCommand, timeout: desiredTimeout }],
-    });
+    const newHook = isWindowsHost
+      ? { type: "command", command: desiredCommand, commandWindows: desiredCommandWindows, timeout: desiredTimeout }
+      : { type: "command", command: desiredCommand, timeout: desiredTimeout };
+    arr.push({ hooks: [newHook] });
     added++;
     changed = true;
   }
@@ -476,11 +555,14 @@ module.exports = {
   CODEX_HOOKS_FEATURE_KEY,
   LEGACY_CODEX_HOOKS_FEATURE_KEY,
   buildCodexHookCommand,
+  buildCodexHookPosixInteropCommand,
   ensureCodexHooksFeature,
+  extractExistingWindowsNodeBin,
   findCodexCommandHook,
   parseTomlTableHeader,
   registerCodexCommandHooks,
   timeoutForCodexEvent,
   unregisterCodexCommandHooks,
+  windowsPathToWslPath,
   withCommandEnv,
 };
