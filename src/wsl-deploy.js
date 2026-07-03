@@ -171,17 +171,7 @@ async function deployToWsl(distro, options = {}) {
   }
   emit("verify-files", "ok", null, { fileCount: fileEntries.length });
 
-  // 2. Check WSL Node.js.
-  emit("check-node", "start");
-  const nodePath = await resolveWslNodePath(distro, { ...options });
-  if (!nodePath) {
-    const msg = `Node.js not found in WSL ${distro}. Install Node.js first: https://nodejs.org/`;
-    emit("check-node", "fail", msg);
-    return { ok: false, step: "check-node", message: msg };
-  }
-  emit("check-node", "ok", null, { nodePath });
-
-  // 3. Resolve WSL home and create hooks directory.
+  // 2. Resolve WSL home directory (needed by Node path lookup below).
   emit("prepare-dir", "start");
   const wslHome = await getWslHomeDir(distro, options);
   if (!wslHome) {
@@ -189,6 +179,18 @@ async function deployToWsl(distro, options = {}) {
     emit("prepare-dir", "fail", msg);
     return { ok: false, step: "prepare-dir", message: msg };
   }
+
+  // 3. Check WSL Node.js — pass wslHome so resolveWslNodePath can scan
+  //    nvm/volta/fnm/asdf dirs directly without an extra getWslHomeDir spawn.
+  emit("check-node", "start");
+  const nodePath = await resolveWslNodePath(distro, { ...options, wslHome });
+  if (!nodePath) {
+    const msg = `Node.js not found in WSL ${distro}. Install Node.js first: https://nodejs.org/`;
+    emit("prepare-dir", "fail", msg);
+    emit("check-node", "fail", msg);
+    return { ok: false, step: "check-node", message: msg };
+  }
+  emit("check-node", "ok", null, { nodePath });
   const hooksTargetDir = `${wslHome}/.claude/hooks`;
   const hooksTargetDirEscaped = hooksTargetDir.replace(/'/g, "'\\''");
 

@@ -170,8 +170,36 @@ async function fileExistsInWsl(distro, wslPath, options = {}) {
 // ── Node.js detection ─────────────────────────────────────────────────
 
 async function resolveWslNodePath(distro, options = {}) {
-  // Strategy 1: login shell — picks up nvm/volta/fnm/asdf-managed Node.
-  // Slow (~2–5s) but finds the Node the user actually uses.
+  // Strategy 0: Direct version-manager scans — bypasses shell init entirely.
+  // Many users' .bashrc guards nvm behind `case $- in *i*)` for
+  // interactive-only, so `bash -lc 'command -v node'` finds nothing.
+  // We scan the known directory layouts directly.
+  const homeDir = options.wslHome || await getWslHomeDir(distro, options);
+  if (homeDir) {
+    const h = homeDir.replace(/'/g, "'\\''");
+    // Single wsl.exe spawn checks nvm, volta, fnm, asdf — first hit wins.
+    const vmResult = await execInWsl(
+      distro,
+      `nvm_node=$(ls -d '${h}/.nvm/versions/node/'*/bin/node 2>/dev/null | sort -Vr | head -1) && echo "NVM:$nvm_node"; ` +
+      `[ -x '${h}/.volta/bin/node' ] && echo "VOLTA:${h}/.volta/bin/node"; ` +
+      `fnm_node=$(ls -d '${h}/.local/share/fnm/node-versions/'*/installation/bin/node 2>/dev/null | sort -Vr | head -1) && echo "FNM:$fnm_node"; ` +
+      `asdf_node=$(ls -d '${h}/.asdf/installs/nodejs/'*/bin/node 2>/dev/null | sort -Vr | head -1) && echo "ASDF:$asdf_node"`,
+      { timeout: (options.timeout || 15000) }
+    );
+    if (vmResult && vmResult.stdout) {
+      for (const line of vmResult.stdout.split("\n")) {
+        const trimmed = safeTrim(line);
+        if (!trimmed) continue;
+        const colonIdx = trimmed.indexOf(":");
+        if (colonIdx === -1) continue;
+        const pathPart = safeTrim(trimmed.slice(colonIdx + 1));
+        if (pathPart && pathPart.startsWith("/")) return pathPart;
+      }
+    }
+  }
+
+  // Strategy 1: login shell — picks up nvm/volta/fnm/asdf-managed Node
+  // when the user's .bashrc does NOT guard behind $- == *i*.
   const loginResult = await execInWsl(
     distro,
     "bash -lc 'command -v node 2>/dev/null || which node 2>/dev/null || true'",
