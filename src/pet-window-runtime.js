@@ -23,9 +23,57 @@ const {
 } = require("./drag-position");
 
 const noop = () => {};
+const DEFAULT_CRASH_RELOAD_LIMIT = 5;
+const DEFAULT_CRASH_RELOAD_WINDOW_MS = 30_000;
+const NON_RELOADABLE_RENDER_GONE_REASONS = new Set([
+  "clean-exit",
+  "killed",
+  "integrity-failure",
+  "launch-failed",
+]);
 
 function isLiveWindow(win) {
   return !!(win && typeof win.isDestroyed === "function" && !win.isDestroyed());
+}
+
+function getRenderGoneReason(details) {
+  return details && typeof details.reason === "string" ? details.reason : "unknown";
+}
+
+function createRenderProcessGoneReloadGuard(options = {}) {
+  const crashReloadLimit = Number.isFinite(options.crashReloadLimit)
+    ? Math.max(0, Math.floor(options.crashReloadLimit))
+    : DEFAULT_CRASH_RELOAD_LIMIT;
+  const crashReloadWindowMs = Number.isFinite(options.crashReloadWindowMs)
+    ? Math.max(0, options.crashReloadWindowMs)
+    : DEFAULT_CRASH_RELOAD_WINDOW_MS;
+  const now = typeof options.now === "function" ? options.now : Date.now;
+  const log = typeof options.crashReloadLog === "function"
+    ? options.crashReloadLog
+    : (message) => console.warn(message);
+  const reloadsByKey = new Map();
+
+  return function shouldReloadAfterRenderProcessGone(crashKey, details) {
+    const key = crashKey || "default";
+    const reason = getRenderGoneReason(details);
+    if (NON_RELOADABLE_RENDER_GONE_REASONS.has(reason)) {
+      log(`Clawd: not reloading ${key} after render-process-gone (${reason})`);
+      return false;
+    }
+
+    const ts = Number(now());
+    const cutoff = ts - crashReloadWindowMs;
+    const recent = (reloadsByKey.get(key) || []).filter((value) => value >= cutoff);
+    if (recent.length >= crashReloadLimit) {
+      log(`Clawd: stopped reloading ${key} after ${recent.length} crashes in ${crashReloadWindowMs}ms`);
+      reloadsByKey.set(key, recent);
+      return false;
+    }
+
+    recent.push(ts);
+    reloadsByKey.set(key, recent);
+    return true;
+  };
 }
 
 function reloadWindowWebContents(win) {
@@ -85,6 +133,18 @@ function createPetWindowRuntime(options = {}) {
   const flushRuntimeStateToPrefs = options.flushRuntimeStateToPrefs || noop;
   const handleMiniDisplayChange = options.handleMiniDisplayChange || noop;
   const exitMiniMode = options.exitMiniMode || noop;
+  const shouldReloadAfterRenderProcessGone = createRenderProcessGoneReloadGuard(options);
+
+  function reloadRuntimeWindowWebContents(win, reloadOptions = {}) {
+    if (
+      reloadOptions
+      && reloadOptions.crashKey
+      && !shouldReloadAfterRenderProcessGone(reloadOptions.crashKey, reloadOptions.details)
+    ) {
+      return false;
+    }
+    return reloadWindowWebContents(win);
+  }
 
   const petGeometryMain = createPetGeometryMain({
     getActiveTheme,
@@ -573,7 +633,7 @@ function createPetWindowRuntime(options = {}) {
         optionsArg.onRenderProcessGone(details, hitWin);
         return;
       }
-      reloadWindowWebContents(hitWin);
+      reloadRuntimeWindowWebContents(hitWin, { crashKey: "hitWin", details });
     });
     return hitWin;
   }
@@ -597,12 +657,10 @@ function createPetWindowRuntime(options = {}) {
       dragSnapshot = null;
       return;
     }
-    // When keepSizeAcrossDisplays is on, the pet may currently be sized from
-    // a prior display. Snapshotting getCurrentPixelSize() here would snap it
-    // to the current display's proportional size at drag start.
-    const size = getKeepSizeAcrossDisplays()
-      ? { width: bounds.width, height: bounds.height }
-      : getCurrentPixelSize();
+    // #408: use the effective size (frozen, when keepSizeAcrossDisplays is on)
+    // so the drag snapshot follows the frozen invariant instead of re-reading
+    // live bounds — keeps every size path on one source of truth.
+    const size = getEffectiveCurrentPixelSize();
     dragSnapshot = createDragSnapshot(
       getCursorScreenPoint(),
       bounds,
@@ -748,12 +806,14 @@ function createPetWindowRuntime(options = {}) {
       return;
     }
     const current = getPetWindowBounds();
-    const size = getKeepSizeAcrossDisplays()
-      ? { width: current.width, height: current.height }
-      : getCurrentPixelSize();
+    const size = getEffectiveCurrentPixelSize();
     const clamped = clampToScreenVisual(current.x, current.y, size.width, size.height);
     const proportionalRecalc = isProportionalMode() && !getKeepSizeAcrossDisplays();
-    if (proportionalRecalc || clamped.x !== current.x || clamped.y !== current.y) {
+    // #408: also re-apply when the live size drifted from the effective size — a
+    // Windows sleep/wake can resize the window without moving it, and keepSize
+    // must snap it back to the frozen size even when no position clamp is needed.
+    const sizeDrifted = current.width !== size.width || current.height !== size.height;
+    if (proportionalRecalc || sizeDrifted || clamped.x !== current.x || clamped.y !== current.y) {
       applyPetWindowBounds({ ...clamped, width: size.width, height: size.height });
       syncHitWin();
       repositionAnchoredSurfaces();
@@ -770,9 +830,7 @@ function createPetWindowRuntime(options = {}) {
       return;
     }
     const current = getPetWindowBounds();
-    const size = getKeepSizeAcrossDisplays()
-      ? { width: current.width, height: current.height }
-      : getCurrentPixelSize();
+    const size = getEffectiveCurrentPixelSize();
     const clamped = clampToScreenVisual(current.x, current.y, size.width, size.height);
     applyPetWindowBounds({ ...clamped, width: size.width, height: size.height });
     syncHitWin();
@@ -814,7 +872,7 @@ function createPetWindowRuntime(options = {}) {
     getInitialHitWindowBounds,
     createRenderWindow,
     createHitWindow,
-    reloadWindowWebContents,
+    reloadWindowWebContents: reloadRuntimeWindowWebContents,
     setDragLocked,
     isDragLocked,
     beginDragSnapshot,

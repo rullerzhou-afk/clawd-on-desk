@@ -960,14 +960,19 @@ function createSettingsAnimationOverridesMain(options = {}) {
     pushSection(sections, "work", null, workCards);
 
     const idleMode = activeTheme._capabilities && activeTheme._capabilities.idleMode;
+    const idleCards = [];
     if (idleMode === "animated") {
-      pushSection(sections, "idle", idleMode, buildIdleAnimationCards(themeOverrideMap));
+      idleCards.push(...buildIdleAnimationCards(themeOverrideMap));
     } else {
       const idleCard = buildStateCard("idle", idleMode === "tracked" ? "idleTracked" : "idleStatic", themeOverrideMap, {
         sectionId: "idle",
       });
-      pushSection(sections, "idle", idleMode, idleCard ? [idleCard] : []);
+      if (idleCard) idleCards.push(idleCard);
     }
+    // Add roam state card (free-roam walking animation)
+    const roamCard = buildStateCard("roam", "roam", themeOverrideMap, { sectionId: "idle" });
+    if (roamCard) idleCards.push(roamCard);
+    pushSection(sections, "idle", idleMode, idleCards);
 
     const interruptCards = [];
     for (const [stateKey, triggerKind] of [

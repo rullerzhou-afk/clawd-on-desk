@@ -266,35 +266,68 @@ function startHttpServer() {
 
   const listenPorts = getPortCandidatesFn();
   let listenIndex = 0;
-  httpServer.on("error", (err) => {
-    if (!activeServerPort && err.code === "EADDRINUSE" && listenIndex < listenPorts.length - 1) {
-      listenIndex++;
-      httpServer.listen(listenPorts[listenIndex], "127.0.0.1");
-      return;
-    }
-    if (!activeServerPort && err.code === "EADDRINUSE") {
-      const firstPort = listenPorts[0];
-      const lastPort = listenPorts[listenPorts.length - 1];
-      console.warn(`Ports ${firstPort}-${lastPort} are occupied — state sync and permission bubbles are disabled`);
-    } else {
-      console.error("HTTP server error:", err.message);
-    }
-  });
+  // Resolves with the bound port once the server is actually listening, or
+  // null if every candidate port is occupied (or a non-EADDRINUSE bind error
+  // fires before listening). Callers that read the port synchronously to wire
+  // downstream connections — e.g. remote-ssh connect-on-launch, whose
+  // runtime.connect() builds the SSH reverse tunnel off getHookServerPort() —
+  // MUST await this. listen() is async, so activeServerPort is still null when
+  // startHttpServer() returns; acting before the 'listening' event would read
+  // a stale fallback port (readRuntimePort()/DEFAULT) and target the wrong
+  // local port whenever the bind drifted off the first candidate.
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
 
-  httpServer.on("listening", () => {
-    activeServerPort = listenPorts[listenIndex];
-    writeRuntimeConfigFn(activeServerPort);
-    console.log(`Clawd state server listening on 127.0.0.1:${activeServerPort}`);
-    // Defer hook/plugin registration off the startup path. Each sync call
-    // reads+parses+writes a config JSON (50-150ms cumulative on slow disks),
-    // and they operate on independent files for independent agents, so
-    // none of them need to block the HTTP server from accepting traffic.
-    setImmediateFn(() => {
-      syncEnabledStartupIntegrations();
+    httpServer.on("error", (err) => {
+      if (!activeServerPort && err.code === "EADDRINUSE" && listenIndex < listenPorts.length - 1) {
+        listenIndex++;
+        httpServer.listen(listenPorts[listenIndex], "127.0.0.1");
+        return;
+      }
+      if (!activeServerPort && err.code === "EADDRINUSE") {
+        const firstPort = listenPorts[0];
+        const lastPort = listenPorts[listenPorts.length - 1];
+        console.warn(`Ports ${firstPort}-${lastPort} are occupied — state sync and permission bubbles are disabled`);
+      } else {
+        console.error("HTTP server error:", err.message);
+      }
+      // Pre-listening failure: resolve null so startup callbacks can skip work
+      // that needs a live port. A post-listening runtime 'error' arrives after
+      // settle(port), so this is a no-op in that case.
+      settle(null);
     });
-  });
 
-  httpServer.listen(listenPorts[listenIndex], "127.0.0.1");
+    httpServer.on("listening", () => {
+      activeServerPort = listenPorts[listenIndex];
+      writeRuntimeConfigFn(activeServerPort);
+      console.log(`Clawd state server listening on 127.0.0.1:${activeServerPort}`);
+      // Defer hook/plugin registration off the startup path. Each sync call
+      // reads+parses+writes a config JSON (50-150ms cumulative on slow disks),
+      // and they operate on independent files for independent agents, so
+      // none of them need to block the HTTP server from accepting traffic.
+      setImmediateFn(() => {
+        syncEnabledStartupIntegrations();
+      });
+      settle(activeServerPort);
+    });
+
+    try {
+      httpServer.listen(listenPorts[listenIndex], "127.0.0.1");
+    } catch (err) {
+      // listen() can throw synchronously (bad args, certain Windows
+      // conditions). Honor the "resolves, never rejects" contract: log and
+      // resolve null so port-dependent startup work is skipped — same outcome
+      // as a pre-listening 'error' event, rather than rejecting and risking an
+      // unhandled rejection in a caller that forgot to .catch().
+      console.error("HTTP server listen threw:", err && err.message);
+      settle(null);
+    }
+  });
 }
 
 function cleanup() {

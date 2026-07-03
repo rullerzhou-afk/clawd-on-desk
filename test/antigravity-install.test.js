@@ -7,9 +7,12 @@ const { spawnSync } = require("child_process");
 const {
   HOOK_GROUP_ID,
   MARKER,
+  STATUSLINE_MARKER,
   ANTIGRAVITY_HOOK_EVENTS,
   registerAntigravityHooks,
   unregisterAntigravityHooks,
+  registerAntigravityStatusline,
+  unregisterAntigravityStatusline,
   __test,
 } = require("../hooks/antigravity-install");
 
@@ -579,5 +582,139 @@ describe("Antigravity hook installer", () => {
     assert.deepStrictEqual(result, { installed: true, removed: 0, changed: false, configPath });
     assert.deepStrictEqual(readJson(configPath), original);
     assert.deepStrictEqual(listCleanupBackups(configPath), []);
+  });
+});
+
+function makeTempStatuslineHome({ withSettings = true } = {}) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-antigravity-statusline-home-"));
+  tempDirs.push(home);
+  if (withSettings) fs.mkdirSync(path.join(home, ".gemini", "antigravity-cli"), { recursive: true });
+  return home;
+}
+
+describe("Antigravity statusline installer", () => {
+  it("registers the statusline command when settings.json has none", () => {
+    const homeDir = makeTempStatuslineHome();
+
+    const result = registerAntigravityStatusline({ silent: true, homeDir, platform: "darwin", nodeBin: "/usr/local/bin/node" });
+
+    const settingsPath = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+    assert.strictEqual(result.installed, true);
+    assert.strictEqual(result.changed, true);
+    assert.strictEqual(result.skippedExisting, false);
+    const settings = readJson(settingsPath);
+    assert.strictEqual(settings.statusLine.enabled, true);
+    assert.ok(settings.statusLine.command.includes(STATUSLINE_MARKER));
+    assert.ok(settings.statusLine.command.includes("/usr/local/bin/node"));
+  });
+
+  it("is idempotent on second run", () => {
+    const homeDir = makeTempStatuslineHome();
+    registerAntigravityStatusline({ silent: true, homeDir, nodeBin: "/usr/local/bin/node" });
+
+    const result = registerAntigravityStatusline({ silent: true, homeDir, nodeBin: "/usr/local/bin/node" });
+
+    assert.strictEqual(result.changed, false);
+  });
+
+  // Unlike hook commands (pinned to cmd via EncodedCommand), the statusline
+  // runner's shell is not pinned down, so the command must parse under
+  // Git Bash, PowerShell, AND cmd: command token unquoted, no `&` prefix.
+  it("win32: writes a shell-portable command (bare node) when the node path has spaces", () => {
+    const homeDir = makeTempStatuslineHome();
+
+    registerAntigravityStatusline({
+      silent: true,
+      homeDir,
+      platform: "win32",
+      nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+    });
+
+    const settingsPath = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+    const command = readJson(settingsPath).statusLine.command;
+    assert.ok(!command.startsWith("& "), command);
+    assert.ok(!command.startsWith('"'), command);
+    assert.ok(command.startsWith('node "'), command);
+    assert.ok(command.includes(STATUSLINE_MARKER));
+  });
+
+  it("win32: keeps a space-free absolute node path, unquoted with forward slashes", () => {
+    const homeDir = makeTempStatuslineHome();
+
+    registerAntigravityStatusline({
+      silent: true,
+      homeDir,
+      platform: "win32",
+      nodeBin: "C:\\nvm\\v20.11.0\\node.exe",
+    });
+
+    const settingsPath = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+    const command = readJson(settingsPath).statusLine.command;
+    assert.ok(command.startsWith('C:/nvm/v20.11.0/node.exe "'), command);
+  });
+
+  it("skips when Antigravity CLI settings directory is absent", () => {
+    const homeDir = makeTempStatuslineHome({ withSettings: false });
+
+    const result = registerAntigravityStatusline({ silent: true, homeDir, nodeBin: "/usr/local/bin/node" });
+
+    assert.strictEqual(result.installed, false);
+    assert.strictEqual(fs.existsSync(path.join(homeDir, ".gemini", "antigravity-cli", "settings.json")), false);
+  });
+
+  it("never overwrites a pre-existing third-party statusline", () => {
+    const homeDir = makeTempStatuslineHome();
+    const settingsPath = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+    fs.writeFileSync(settingsPath, JSON.stringify({
+      statusLine: { type: "", command: "/opt/homebrew/bin/my-custom-statusline.sh", enabled: true },
+    }));
+
+    const result = registerAntigravityStatusline({ silent: true, homeDir, nodeBin: "/usr/local/bin/node" });
+
+    assert.strictEqual(result.skippedExisting, true);
+    const settings = readJson(settingsPath);
+    assert.strictEqual(settings.statusLine.command, "/opt/homebrew/bin/my-custom-statusline.sh");
+  });
+
+  it("preserves other settings.json keys", () => {
+    const homeDir = makeTempStatuslineHome();
+    const settingsPath = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+    fs.writeFileSync(settingsPath, JSON.stringify({ model: "Gemini 3.1 Pro (High)", trustedWorkspaces: ["/x"] }));
+
+    registerAntigravityStatusline({ silent: true, homeDir, nodeBin: "/usr/local/bin/node" });
+
+    const settings = readJson(settingsPath);
+    assert.strictEqual(settings.model, "Gemini 3.1 Pro (High)");
+    assert.deepStrictEqual(settings.trustedWorkspaces, ["/x"]);
+    assert.ok(settings.statusLine.command.includes(STATUSLINE_MARKER));
+  });
+
+  it("unregister removes only a Clawd-owned statusline", () => {
+    const homeDir = makeTempStatuslineHome();
+    registerAntigravityStatusline({ silent: true, homeDir, nodeBin: "/usr/local/bin/node" });
+
+    const result = unregisterAntigravityStatusline({ silent: true, homeDir, backup: true });
+
+    const settingsPath = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+    assert.deepStrictEqual(result, {
+      installed: true,
+      removed: 1,
+      changed: true,
+      settingsPath,
+      backupPath: result.backupPath,
+    });
+    assert.strictEqual(readJson(settingsPath).statusLine, undefined);
+  });
+
+  it("unregister leaves a third-party statusline untouched", () => {
+    const homeDir = makeTempStatuslineHome();
+    const settingsPath = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+    const original = { statusLine: { type: "", command: "/opt/homebrew/bin/my-custom-statusline.sh", enabled: true } };
+    fs.writeFileSync(settingsPath, JSON.stringify(original));
+
+    const result = unregisterAntigravityStatusline({ silent: true, homeDir });
+
+    assert.deepStrictEqual(result, { installed: true, removed: 0, changed: false, settingsPath });
+    assert.deepStrictEqual(readJson(settingsPath), original);
   });
 });

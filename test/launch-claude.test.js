@@ -113,44 +113,46 @@ describe("cmd executable quoting", () => {
 
 describe("findClaudeCmd", () => {
   const NPM_DIR = "C:\\Users\\Tester\\AppData\\Roaming\\npm";
-  // `where`/`which` stub: emits the given paths as newline output.
-  const fakeWhere = (...paths) => ({ execFileSync: () => paths.join("\r\n") + "\r\n" });
+  // `where`/`which` stub: resolves with the given paths as newline stdout.
+  const fakeWhere = (...paths) => ({
+    execFileAsync: async () => ({ stdout: paths.join("\r\n") + "\r\n" }),
+  });
   // filesystem stub: only the listed paths "exist" (case-insensitive on Windows).
   const fakeFs = (existing) => {
     const set = new Set(existing.map((p) => String(p).toLowerCase()));
     return { existsSync: (p) => set.has(String(p).toLowerCase()) };
   };
 
-  it("Windows: prefers claude.cmd when `where` lists the extensionless script first", () => {
+  it("Windows: prefers claude.cmd when `where` lists the extensionless script first", async () => {
     const ext = `${NPM_DIR}\\claude`;
     const cmd = `${NPM_DIR}\\claude.cmd`;
-    const out = findClaudeCmd("win32", { ...fakeWhere(ext, cmd), ...fakeFs([ext, cmd]) });
+    const out = await findClaudeCmd("win32", { ...fakeWhere(ext, cmd), ...fakeFs([ext, cmd]) });
     assert.strictEqual(out, cmd, "must not return the 0x800700c1 POSIX shim");
   });
 
-  it("Windows: never returns the extensionless POSIX shim, probing for a sibling", () => {
+  it("Windows: never returns the extensionless POSIX shim, probing for a sibling", async () => {
     // `where` surfaced only the unrunnable script; its launchable sibling is
     // right next to it. Returning `ext` here is the exact #435 bug.
     const ext = `${NPM_DIR}\\claude`;
     const cmd = `${NPM_DIR}\\claude.cmd`;
-    const out = findClaudeCmd("win32", { ...fakeWhere(ext), ...fakeFs([ext, cmd]) });
+    const out = await findClaudeCmd("win32", { ...fakeWhere(ext), ...fakeFs([ext, cmd]) });
     assert.strictEqual(out, cmd);
   });
 
-  it("Windows: prefers a real claude.exe over the .cmd shim", () => {
+  it("Windows: prefers a real claude.exe over the .cmd shim", async () => {
     const exe = `${NPM_DIR}\\claude.exe`;
     const cmd = `${NPM_DIR}\\claude.cmd`;
-    const out = findClaudeCmd("win32", { ...fakeWhere(exe, cmd), ...fakeFs([exe, cmd]) });
+    const out = await findClaudeCmd("win32", { ...fakeWhere(exe, cmd), ...fakeFs([exe, cmd]) });
     assert.strictEqual(out, exe);
   });
 
-  it("Windows: falls back to %APPDATA%\\npm\\claude.cmd when PATH lookup misses", () => {
+  it("Windows: falls back to %APPDATA%\\npm\\claude.cmd when PATH lookup misses", async () => {
     const prev = process.env.APPDATA;
     process.env.APPDATA = "C:\\Users\\Tester\\AppData\\Roaming";
     try {
       const cmd = path.join(process.env.APPDATA, "npm", "claude.cmd");
-      const out = findClaudeCmd("win32", {
-        execFileSync: () => { throw new Error("where: not found"); },
+      const out = await findClaudeCmd("win32", {
+        execFileAsync: async () => { throw new Error("where: not found"); },
         ...fakeFs([cmd]),
       });
       assert.strictEqual(out, cmd);
@@ -160,29 +162,48 @@ describe("findClaudeCmd", () => {
     }
   });
 
-  it("Windows: returns bare \"claude\" when nothing is found", () => {
-    const out = findClaudeCmd("win32", { execFileSync: () => "", existsSync: () => false });
+  it("Windows: returns bare \"claude\" when nothing is found", async () => {
+    const out = await findClaudeCmd("win32", {
+      execFileAsync: async () => ({ stdout: "" }),
+      existsSync: () => false,
+    });
     assert.strictEqual(out, "claude");
   });
 
-  it("Windows: passes through to stage 3 when only an extensionless shim exists (no sibling)", () => {
+  it("Windows: passes through to stage 3 when only an extensionless shim exists (no sibling)", async () => {
     // No launchable variant anywhere — must NOT return the unrunnable script;
     // falls through to bare \"claude\" for cmd.exe/PATHEXT to resolve.
     const ext = `${NPM_DIR}\\claude`;
-    const out = findClaudeCmd("win32", { ...fakeWhere(ext), ...fakeFs([ext]) });
+    const out = await findClaudeCmd("win32", { ...fakeWhere(ext), ...fakeFs([ext]) });
     assert.strictEqual(out, "claude");
   });
 
-  it("Windows: matches launchable extensions case-insensitively", () => {
+  it("Windows: matches launchable extensions case-insensitively", async () => {
     const cmd = `${NPM_DIR}\\CLAUDE.CMD`;
-    const out = findClaudeCmd("win32", { ...fakeWhere(cmd), ...fakeFs([cmd]) });
+    const out = await findClaudeCmd("win32", { ...fakeWhere(cmd), ...fakeFs([cmd]) });
     assert.strictEqual(out, cmd);
   });
 
-  it("POSIX: returns the first existing `which` result", () => {
+  it("POSIX: returns the first existing `which` result", async () => {
     const p = "/usr/local/bin/claude";
-    const out = findClaudeCmd("linux", { ...fakeWhere(p), ...fakeFs([p]) });
+    const out = await findClaudeCmd("linux", { ...fakeWhere(p), ...fakeFs([p]) });
     assert.strictEqual(out, p);
+  });
+
+  it("does not block synchronously on the PATH probe (async findClaudeCmd)", async () => {
+    // Regression for #8: a slow `where`/`which` must not freeze the caller.
+    // The probe resolves on a later tick; findClaudeCmd must await it rather
+    // than returning before the result is in.
+    const cmd = `${NPM_DIR}\\claude.cmd`;
+    let resolveProbe;
+    const gate = new Promise((r) => { resolveProbe = r; });
+    const pending = findClaudeCmd("win32", {
+      execFileAsync: () => gate.then(() => ({ stdout: cmd + "\r\n" })),
+      ...fakeFs([cmd]),
+    });
+    assert.ok(pending instanceof Promise, "findClaudeCmd must be async");
+    resolveProbe();
+    assert.strictEqual(await pending, cmd);
   });
 });
 

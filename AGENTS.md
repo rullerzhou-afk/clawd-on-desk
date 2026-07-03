@@ -135,7 +135,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 
 - Claude Code / CodeBuddy 的阻塞式权限审批走 `POST /permission` HTTP hook；普通状态事件走 command hook
 - Codex 的阻塞式权限审批走 official `PermissionRequest` command hook：hook 脚本长连接 `POST /permission`，只允许 stdout 返回 sanitized `behavior/message`，`updatedInput` / `updatedPermissions` / `interrupt` 必须 omit
-- hook 脚本只允许依赖 Node 内置模块，以及同目录的 `server-config.js`、`shared-process.js`、`json-utils.js`、`codex-subagent-fields.js`
+- hook 脚本只允许依赖 Node 内置模块，以及同目录 `hooks/` 下、且登记在两套部署清单（`scripts/remote-deploy.sh` 的 `FILES` 与 `src/remote-ssh-deploy.js` 的 `HOOK_FILES`）的纯 Node helper（如 `server-config.js` / `shared-process.js` / `json-utils.js` / `codex-subagent-fields.js` / `context-usage.js` / `state-payload-size.js`）；两套清单由 manifest-consistency 测试强制同步，新增 helper 必须同时登记
 - hook 脚本需要稳定终端 PID 时，必须走 `getStablePid()` 进程树解析；不要用 `process.ppid` 做简化替代
 - opencode 权限不走 `permission.ask` hook，而是 event hook + reverse bridge
 - Pi 通过 `~/.pi/agent/extensions/clawd-on-desk` 的 global extension 推送状态；Clawd 对 Pi 是 **state-only**，不接管权限、不弹权限气泡，也不把 Pi 的默认 YOLO 流程改成手动确认

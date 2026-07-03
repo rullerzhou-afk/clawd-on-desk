@@ -22,6 +22,7 @@ let activeEdit = null;
 const titleEl = document.getElementById("title");
 const countEl = document.getElementById("count");
 const contentEl = document.getElementById("content");
+const quotaSummaryEl = document.getElementById("quotaSummary");
 
 function t(key) {
   const dict = i18nPayload && i18nPayload.translations ? i18nPayload.translations : {};
@@ -60,6 +61,171 @@ function contextUsageText(session) {
     return `${t("dashboardContextUsage")}: ${used} / ${limit}${percent}`;
   }
   return t("dashboardContextUsageUnknownLimit").replace("{used}", used);
+}
+
+// Account-wide rate-limit quota, shown once at the top of the dashboard -
+// it's the same number regardless of which session reported it most
+// recently, so it is not repeated per session card. Two independent
+// sources, each its own section: Antigravity's own /usage (Gemini +
+// Claude/GPT-via-agy, 2 rows) and Claude Code's own rate_limits (1 row).
+const QUOTA_WARNING_THRESHOLD = 90;
+
+function formatResetIn(resetAt) {
+  const n = Number(resetAt);
+  if (!Number.isFinite(n)) return "";
+  const secondsLeft = Math.round((n - Date.now()) / 1000);
+  if (secondsLeft < 0) return "";
+  const totalMinutes = Math.round(secondsLeft / 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours > 0
+    ? t("dashboardQuotaResetHoursMinutes").replace("{h}", hours).replace("{m}", minutes)
+    : t("dashboardQuotaResetMinutes").replace("{m}", minutes);
+}
+
+// renderQuotaSummary can run once a second (see the setInterval(render, 1000)
+// tick below) - cache the formatter per lang instead of constructing a new
+// Intl.DateTimeFormat on every call.
+let resetDateFormatterLang = null;
+let resetDateFormatter = null;
+
+function formatResetDate(resetAt) {
+  const n = Number(resetAt);
+  if (!Number.isFinite(n)) return "";
+  const lang = (i18nPayload && i18nPayload.lang) || "en";
+  try {
+    if (!resetDateFormatter || resetDateFormatterLang !== lang) {
+      resetDateFormatter = new Intl.DateTimeFormat(lang, { month: "short", day: "numeric" });
+      resetDateFormatterLang = lang;
+    }
+    return resetDateFormatter.format(n);
+  } catch (_err) {
+    return "";
+  }
+}
+
+function resolveQuotaForDisplay(sessions, agentId, field) {
+  let best = null;
+  for (const session of sessions) {
+    if (!session || session.agentId !== agentId) continue;
+    const quota = session[field];
+    if (!quota || typeof quota !== "object") continue;
+    // Quota freshness, not lifecycle freshness: metadataUpdatedAt is when
+    // this session's quota was last CONFIRMED by a statusline (it travels
+    // with the quota through lifecycle rebuilds), so it outranks updatedAt
+    // outright - a session carrying stale quota competes with the stale
+    // stamp it inherited, not with its latest hook event. updatedAt is only
+    // a fallback for quota that never came through a statusline.
+    const freshness = Number(session.metadataUpdatedAt) || Number(session.updatedAt) || 0;
+    if (!best || freshness > best.freshness) best = { quota, freshness };
+  }
+  return best ? best.quota : null;
+}
+
+function buildQuotaHalfBar(labelText, bucket, resetStyle) {
+  const half = document.createElement("div");
+  half.className = "quota-half";
+
+  const labelRow = document.createElement("div");
+  labelRow.className = "quota-label-row";
+  labelRow.appendChild(createText("span", "quota-label", labelText));
+  const percentText = `${bucket.usedPercent}%`;
+  let resetText = "";
+  if (Number.isFinite(bucket.resetAt)) {
+    resetText = resetStyle === "date"
+      ? t("dashboardQuotaResetOn").replace("{date}", formatResetDate(bucket.resetAt))
+      : t("dashboardQuotaResetIn").replace("{time}", formatResetIn(bucket.resetAt));
+  }
+  labelRow.appendChild(createText("span", "quota-percent", resetText ? `${percentText} · ${resetText}` : percentText));
+  half.appendChild(labelRow);
+
+  const track = document.createElement("div");
+  track.className = "quota-bar-track";
+  const fill = document.createElement("div");
+  fill.className = bucket.usedPercent >= QUOTA_WARNING_THRESHOLD ? "quota-bar-fill quota-bar-fill-warning" : "quota-bar-fill";
+  fill.style.width = `${Math.max(0, Math.min(100, bucket.usedPercent))}%`;
+  track.appendChild(fill);
+  half.appendChild(track);
+
+  return half;
+}
+
+function buildQuotaGroupRow(headerText, fiveHourBucket, weeklyBucket) {
+  if (!fiveHourBucket && !weeklyBucket) return null;
+  const row = document.createElement("div");
+  row.className = "quota-group-row";
+  if (headerText) row.appendChild(createText("div", "quota-group-header", headerText));
+  const halves = document.createElement("div");
+  halves.className = "quota-halves";
+  if (fiveHourBucket) halves.appendChild(buildQuotaHalfBar(t("dashboardQuotaFiveHour"), fiveHourBucket, "countdown"));
+  if (weeklyBucket) halves.appendChild(buildQuotaHalfBar(t("dashboardQuotaWeekly"), weeklyBucket, "date"));
+  row.appendChild(halves);
+  return row;
+}
+
+function buildQuotaSection(headerKey, rows) {
+  const usableRows = rows.filter(Boolean);
+  if (!usableRows.length) return null;
+  const section = document.createElement("div");
+  section.className = "quota-section";
+  section.appendChild(createText("div", "quota-section-header", t(headerKey)));
+  for (const row of usableRows) section.appendChild(row);
+  return section;
+}
+
+// render() re-invokes renderQuotaSummary every second so the "resets in Xh
+// Ym" countdowns stay live even between real quota updates, but that only
+// needs to touch the DOM once a minute (formatResetIn's granularity) or when
+// the underlying quota/lang actually changes - not on every tick. Skipping
+// the rebuild otherwise avoids rebuilding the whole subtree (and re-running
+// every Intl.DateTimeFormat/formatResetIn call inside it) 59 times a minute
+// for nothing.
+let lastQuotaSummarySignature = null;
+
+function computeQuotaSummarySignature(antigravityQuota, claudeQuota) {
+  const hasData = !!(antigravityQuota || claudeQuota);
+  return JSON.stringify({
+    lang: (i18nPayload && i18nPayload.lang) || "en",
+    minute: hasData ? Math.floor(Date.now() / 60000) : null,
+    antigravityQuota,
+    claudeQuota,
+  });
+}
+
+function renderQuotaSummary(sessions) {
+  if (!quotaSummaryEl) return;
+  const antigravityQuota = resolveQuotaForDisplay(sessions, "antigravity-cli", "antigravityQuota");
+  const claudeQuota = resolveQuotaForDisplay(sessions, "claude-code", "claudeQuota");
+
+  const signature = computeQuotaSummarySignature(antigravityQuota, claudeQuota);
+  if (signature === lastQuotaSummarySignature) return;
+  lastQuotaSummarySignature = signature;
+
+  const sections = [];
+  if (antigravityQuota) {
+    const section = buildQuotaSection("dashboardQuotaSectionAntigravity", [
+      buildQuotaGroupRow(t("dashboardQuotaGroupGemini"), antigravityQuota.geminiFiveHour, antigravityQuota.geminiWeekly),
+      buildQuotaGroupRow(t("dashboardQuotaGroupThirdParty"), antigravityQuota.thirdPartyFiveHour, antigravityQuota.thirdPartyWeekly),
+    ]);
+    if (section) sections.push(section);
+  }
+  if (claudeQuota) {
+    const section = buildQuotaSection("dashboardQuotaSectionClaudeCode", [
+      buildQuotaGroupRow(null, claudeQuota.claudeFiveHour, claudeQuota.claudeWeekly),
+    ]);
+    if (section) sections.push(section);
+  }
+
+  if (!sections.length) {
+    quotaSummaryEl.hidden = true;
+    quotaSummaryEl.replaceChildren();
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  for (const section of sections) fragment.appendChild(section);
+  quotaSummaryEl.replaceChildren(fragment);
+  quotaSummaryEl.hidden = false;
 }
 
 function badgeLabel(badge) {
@@ -381,6 +547,7 @@ function render(options = {}) {
   titleEl.textContent = t("dashboardWindowTitle");
   countEl.textContent = t("dashboardCount").replace("{n}", count);
   document.title = t("dashboardWindowTitle");
+  renderQuotaSummary(sessions);
 
   if (count === 0) {
     renderEmpty();

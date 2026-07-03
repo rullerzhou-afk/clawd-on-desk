@@ -94,6 +94,93 @@ h1 {
   font-weight: 600;
 }
 
+.quota-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.quota-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.quota-section + .quota-section {
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.quota-section-header {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.quota-group-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.quota-group-header {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.quota-halves {
+  display: flex;
+  gap: 14px;
+}
+
+.quota-half {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.quota-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10px;
+}
+
+.quota-label {
+  color: var(--muted);
+}
+
+.quota-percent {
+  color: var(--subtle);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quota-bar-track {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--surface-alt);
+  overflow: hidden;
+}
+
+.quota-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.quota-bar-fill-warning {
+  background: var(--interrupted);
+}
+
 .content {
   flex: 1 1 auto;
   overflow-y: auto;
@@ -368,6 +455,7 @@ button:disabled {
         <h1 id="title">Sessions</h1>
         <span id="count" class="count"></span>
       </div>
+      <div id="quotaSummary" class="quota-summary" hidden></div>
     </header>
     <main id="content" class="content" aria-live="polite"></main>
   </div>

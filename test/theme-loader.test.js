@@ -835,6 +835,32 @@ describe("theme-loader capability metadata", () => {
         }),
       },
       {
+        id: "scriptedPower",
+        builtin: true,
+        json: validThemeJson({
+          name: "Scripted Power",
+          trustedRuntime: { scriptedSvgFiles: ["idle.svg"] },
+        }),
+      },
+      {
+        id: "forgedScriptedPower",
+        builtin: false,
+        json: validThemeJson({
+          name: "Forged Scripted Power",
+          trustedRuntime: { scriptedSvgFiles: ["idle.svg"] },
+        }),
+        assets: {},
+      },
+      {
+        id: "forcedObjectPower",
+        builtin: false,
+        json: validThemeJson({
+          name: "Forced Object Power",
+          rendering: { svgChannel: "object" },
+        }),
+        assets: {},
+      },
+      {
         id: "badMini",
         builtin: true,
         json: validThemeJson({
@@ -863,6 +889,7 @@ describe("theme-loader capability metadata", () => {
       jugglingTiers: true,
       idleMode: "tracked",
       sleepMode: "full",
+      powerProfile: "standard",
     });
   });
 
@@ -877,11 +904,26 @@ describe("theme-loader capability metadata", () => {
       jugglingTiers: true,
       idleMode: "tracked",
       sleepMode: "full",
+      powerProfile: "standard",
     });
 
     const listed = themeLoader.listThemesWithMetadata().find((theme) => theme.id === "capTheme");
     assert.ok(listed, "capTheme should appear in metadata list");
     assert.deepStrictEqual(listed.capabilities, meta.capabilities);
+  });
+
+  it("marks scripted or forced-object themes as a higher power profile without trusting forged user runtime", () => {
+    const scripted = themeLoader.loadTheme("scriptedPower", { strict: true });
+    const forged = themeLoader.loadTheme("forgedScriptedPower", { strict: true });
+    const forcedObject = themeLoader.loadTheme("forcedObjectPower", { strict: true });
+
+    assert.strictEqual(scripted._capabilities.powerProfile, "scripted");
+    assert.strictEqual(themeLoader.getThemeMetadata("scriptedPower").capabilities.powerProfile, "scripted");
+    assert.strictEqual(forged.trustedRuntime.scriptedSvgFiles.length, 0);
+    assert.strictEqual(forged._capabilities.powerProfile, "standard");
+    assert.strictEqual(themeLoader.getThemeMetadata("forgedScriptedPower").capabilities.powerProfile, "standard");
+    assert.strictEqual(forcedObject._capabilities.powerProfile, "scripted");
+    assert.strictEqual(themeLoader.getThemeMetadata("forcedObjectPower").capabilities.powerProfile, "scripted");
   });
 
   it("treats a miniMode block as supported unless supported=false", () => {

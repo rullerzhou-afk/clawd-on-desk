@@ -346,34 +346,76 @@ function createPidResolver(options) {
 }
 
 // ── readStdinJson ────────────────────────────────────────────────────────────
-// Reads stdin, parses JSON, returns Promise<Object>.
-// 400ms timeout + finishOnce protection. Returns {} on parse failure or timeout.
+// Reads stdin until EOF, parses JSON. EOF-driven with a safety-net timer.
+// The default stays at 400ms: several agent hooks (cursor, codebuddy, gemini,
+// reasonix) run their own ~800ms stdout safety timers and non-async hot-path
+// registrations, so a longer shared default would let those timers win the
+// race and drop payloads that used to be parsed at 400ms. Callers whose agent
+// registration tolerates a longer stall (claude-code: async + 5s hook timeout)
+// opt in via options.timeoutMs. Returns {} on parse failure or timeout.
+//
+// readStdinJsonDetailed() additionally reports what the read saw (bytes
+// received, timed out, parse/stream error, duration) so a missing session_id
+// can be triaged from logs: "never arrived" (bytes:0, timeout) vs "arrived
+// broken" (bytes>0, parse error) point at entirely different culprits (#583).
 
-function readStdinJson() {
+const DEFAULT_STDIN_READ_TIMEOUT_MS = 400;
+
+function readStdinJsonDetailed(options = {}) {
+  const stream = options.stream || process.stdin;
+  const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+    ? options.timeoutMs
+    : DEFAULT_STDIN_READ_TIMEOUT_MS;
   return new Promise((resolve) => {
+    const startedAt = Date.now();
     const chunks = [];
     let done = false;
     let timer = null;
+    let streamError = null;
 
     const onData = (c) => chunks.push(c);
-    function finish() {
+    const onEnd = () => finish(false);
+    // Without this, an emitted 'error' would crash the hook (unhandled stream
+    // error) and the promise would never settle. Resolve with what we have.
+    const onError = (err) => {
+      streamError = String((err && err.message) || "stream error").slice(0, 120);
+      finish(false);
+    };
+    function finish(timedOut) {
       if (done) return;
       done = true;
       if (timer) clearTimeout(timer);
-      process.stdin.off("data", onData);
-      process.stdin.off("end", finish);
+      stream.off("data", onData);
+      stream.off("end", onEnd);
+      stream.off("error", onError);
+      const raw = Buffer.concat(chunks);
       let payload = {};
+      let parseError = null;
       try {
-        const raw = Buffer.concat(chunks).toString();
-        if (raw.trim()) payload = JSON.parse(raw);
-      } catch {}
-      resolve(payload);
+        const text = raw.toString();
+        if (text.trim()) payload = JSON.parse(text);
+      } catch (err) {
+        parseError = String((err && err.message) || "parse error").slice(0, 120);
+      }
+      if (streamError) parseError = `stream error: ${streamError}`;
+      resolve({
+        payload,
+        bytes: raw.length,
+        timedOut: timedOut === true,
+        parseError,
+        durationMs: Date.now() - startedAt,
+      });
     }
 
-    process.stdin.on("data", onData);
-    process.stdin.on("end", finish);
-    timer = setTimeout(finish, 400);
+    stream.on("data", onData);
+    stream.on("end", onEnd);
+    stream.on("error", onError);
+    timer = setTimeout(() => finish(true), timeoutMs);
   });
+}
+
+function readStdinJson() {
+  return readStdinJsonDetailed().then((result) => result.payload);
 }
 
 function buildElectronLaunchConfig(projectDir, options = {}) {
@@ -400,5 +442,7 @@ module.exports = {
   getPlatformConfig,
   createPidResolver,
   readStdinJson,
+  readStdinJsonDetailed,
+  DEFAULT_STDIN_READ_TIMEOUT_MS,
   buildElectronLaunchConfig,
 };

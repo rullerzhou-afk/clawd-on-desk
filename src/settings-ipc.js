@@ -145,6 +145,10 @@ function registerSettingsIpc(options = {}) {
     code: "quick_commands_unavailable",
     message: "Quick Commands are unavailable",
   }));
+  const showTutorial = options.showTutorial || (() => ({
+    status: "error",
+    message: "Tutorial is unavailable",
+  }));
   const now = options.now || (() => Date.now());
   const aboutHeroSvgPath = options.aboutHeroSvgPath
     || path.join(__dirname, "..", "assets", "svg", "clawd-about-hero.svg");
@@ -459,6 +463,15 @@ function registerSettingsIpc(options = {}) {
     try {
       checkForUpdates(true);
       return { status: "ok" };
+    } catch (err) {
+      return { status: "error", message: (err && err.message) || String(err) };
+    }
+  });
+
+  handle("settings:show-tutorial", async () => {
+    try {
+      const result = await showTutorial();
+      return result || { status: "ok" };
     } catch (err) {
       return { status: "error", message: (err && err.message) || String(err) };
     }

@@ -69,7 +69,7 @@ describe("agent installation detector", () => {
       },
     });
 
-    const report = detectAgentInstallations({ homeDir, now: 1 });
+    const report = detectAgentInstallations({ homeDir, now: 1, env: {} });
     const qwen = byId(report, "qwen-code");
     const codewhale = byId(report, "codewhale");
 
@@ -95,7 +95,7 @@ describe("agent installation detector", () => {
     writeText(path.join(homeDir, ".gemini", "settings.json.backup"), "backup file");
     writeText(path.join(homeDir, ".gemini", ".config.swp"), "swap file");
 
-    const report = detectAgentInstallations({ homeDir, now: 1 });
+    const report = detectAgentInstallations({ homeDir, now: 1, env: {} });
     const gemini = byId(report, "gemini-cli");
     const antigravity = byId(report, "antigravity-cli");
 
@@ -172,7 +172,7 @@ describe("agent installation detector", () => {
     const homeDir = makeHome();
     mkdirp(path.join(homeDir, ".hermes"));
 
-    const report = detectAgentInstallations({ homeDir, now: 1 });
+    const report = detectAgentInstallations({ homeDir, now: 1, env: {} });
     const hermes = byId(report, "hermes");
 
     assert.strictEqual(hermes.detectedInstalled, true);
@@ -197,5 +197,57 @@ describe("agent installation detector", () => {
     const report = detectAgentInstallations({ homeDir, fs: fsReadOnly, now: 1 });
 
     assert.strictEqual(byId(report, "opencode").detectedInstalled, true);
+  });
+
+  describe("kimi dual-generation detection (#563)", () => {
+    it("detects an install when only ~/.kimi-code exists", () => {
+      const homeDir = makeHome();
+      mkdirp(path.join(homeDir, ".kimi-code"));
+
+      const report = detectAgentInstallations({ homeDir, now: 1, env: {} });
+      const kimi = byId(report, "kimi-cli");
+
+      assert.strictEqual(kimi.detectedInstalled, true);
+      assert.strictEqual(kimi.confidence, "high");
+      assert.strictEqual(kimi.reason, "parent-dir");
+      assert.ok(kimi.detail.includes(".kimi-code"), `detail should name .kimi-code: ${kimi.detail}`);
+    });
+
+    it("detects an install when only legacy ~/.kimi exists", () => {
+      const homeDir = makeHome();
+      mkdirp(path.join(homeDir, ".kimi"));
+
+      const report = detectAgentInstallations({ homeDir, now: 1, env: {} });
+      const kimi = byId(report, "kimi-cli");
+
+      assert.strictEqual(kimi.detectedInstalled, true);
+      assert.strictEqual(kimi.reason, "parent-dir");
+    });
+
+    it("reports not installed when neither generation directory exists", () => {
+      const homeDir = makeHome();
+
+      const report = detectAgentInstallations({ homeDir, now: 1, env: {} });
+      const kimi = byId(report, "kimi-cli");
+
+      assert.strictEqual(kimi.detectedInstalled, false);
+    });
+
+    it("finds the Clawd marker in the kimi-code config when legacy has none", () => {
+      const homeDir = makeHome();
+      mkdirp(path.join(homeDir, ".kimi"));
+      writeText(
+        path.join(homeDir, ".kimi-code", "config.toml"),
+        "[[hooks]]\nevent = \"SessionStart\"\ncommand = '\"node\" \"/app/hooks/kimi-hook.js\"'\nmatcher = \"\"\ntimeout = 30\n"
+      );
+
+      const report = detectAgentInstallations({ homeDir, now: 1, env: {} });
+      const kimi = byId(report, "kimi-cli");
+
+      assert.strictEqual(kimi.detectedInstalled, true);
+      assert.strictEqual(kimi.clawdIntegration.detected, true);
+      assert.strictEqual(kimi.clawdIntegration.reason, "marker-found");
+      assert.ok(kimi.clawdIntegration.detail.includes(".kimi-code"));
+    });
   });
 });

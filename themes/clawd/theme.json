@@ -54,6 +54,9 @@
     "idle": [
       "clawd-idle-follow.svg"
     ],
+    "roam": [
+      "clawd-mini-crabwalk.svg"
+    ],
     "yawning": [
       "clawd-idle-yawn.svg"
     ],
@@ -92,6 +95,9 @@
     ],
     "waking": [
       "clawd-wake.svg"
+    ],
+    "dizzy": [
+      "clawd-dizzy.svg"
     ]
   },
   "workingTiers": [
@@ -161,7 +167,8 @@
       "error": 5000,
       "sweeping": 300000,
       "notification": 5000,
-      "carrying": 3000
+      "carrying": 3000,
+      "dizzy": 6000
     },
     "yawnDuration": 3000,
     "wakeDuration": 1500,

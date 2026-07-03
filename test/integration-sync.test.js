@@ -294,15 +294,23 @@ describe("integration sync runtime", () => {
       },
     ];
 
+    // antigravity-cli's real syncAntigravityHooks() also calls
+    // registerAntigravityStatusline as a side effect. Patch it to a no-op
+    // stub too, or this test would hit the real ~/.gemini/antigravity-cli
+    // on any machine that has Antigravity CLI installed.
+    const runEntry = (entry, run) => (entry.agentId === "antigravity-cli"
+      ? withPatchedExport("../hooks/antigravity-install.js", "registerAntigravityStatusline", () => ({ installed: false, changed: false, skippedExisting: false }), run)
+      : run());
+
     for (const entry of cases) {
       const missing = withPatchedExport(
         entry.modulePath,
         entry.exportName,
         () => ({ installed: false, skipped: true, updated: false, reason: entry.reason }),
-        () => {
+        () => runEntry(entry, () => {
           const { runtime } = makeRuntime({ ctx: { [entry.ctxKey]: undefined } });
           return runtime.syncIntegrationForAgent(entry.agentId);
-        }
+        })
       );
       assert.strictEqual(missing.status, "skipped", entry.agentId);
       assert.strictEqual(missing.reason, entry.reason, entry.agentId);
@@ -311,10 +319,10 @@ describe("integration sync runtime", () => {
         entry.modulePath,
         entry.exportName,
         () => ({ installed: true, skipped: true, updated: false }),
-        () => {
+        () => runEntry(entry, () => {
           const { runtime } = makeRuntime({ ctx: { [entry.ctxKey]: undefined } });
           return runtime.syncIntegrationForAgent(entry.agentId);
-        }
+        })
       );
       assert.strictEqual(alreadyCurrent.status, "ok", entry.agentId);
       assert.strictEqual(alreadyCurrent.installed, true, entry.agentId);

@@ -4,7 +4,6 @@ const DefaultCodexSubagentClassifier = require("../agents/codex-subagent-classif
 const {
   buildCodexMonitorUpdateOptions,
   isCodexMonitorMetadataOnlyEvent,
-  isCodexMonitorPermissionEvent,
 } = require("./codex-monitor-callback");
 
 const CODEX_OFFICIAL_LOG_SUPPRESS_TTL_MS = 10 * 60 * 1000;
@@ -37,7 +36,6 @@ function createAgentRuntimeMain(options = {}) {
   const isAgentEnabled = options.isAgentEnabled || (() => true);
   const updateSession = options.updateSession || (() => {});
   const captureGhosttyTerminalId = options.captureGhosttyTerminalId || null;
-  const showCodexNotifyBubble = options.showCodexNotifyBubble || (() => {});
   const clearCodexNotifyBubbles = options.clearCodexNotifyBubbles || (() => {});
 
   let codexMonitor = null;
@@ -80,7 +78,6 @@ function createAgentRuntimeMain(options = {}) {
   }
 
   function shouldSuppressCodexLogEvent(sessionId, state, event) {
-    if (state === "codex-permission") return hasRecentCodexOfficialHookSession(sessionId);
     if (!CODEX_LOG_EVENTS_COVERED_BY_OFFICIAL_HOOKS.has(event)) return false;
     if (!hasRecentCodexOfficialHookSession(sessionId)) return false;
     if (shouldAllowCodexJsonlCompletionFallback(sessionId, state, event)) return false;
@@ -196,16 +193,6 @@ function createAgentRuntimeMain(options = {}) {
               preserveState: true,
             });
           }
-          return;
-        }
-        if (isCodexMonitorPermissionEvent(state)) {
-          updateSession(sid, "notification", event, buildCodexMonitorUpdateOptions(extra, {
-            includeHeadless: false,
-          }));
-          showCodexNotifyBubble({
-            sessionId: sid,
-            command: (extra && extra.permissionDetail && extra.permissionDetail.command) || "",
-          });
           return;
         }
         clearCodexNotifyBubbles(sid, `codex-state-transition:${state}`);

@@ -143,7 +143,7 @@ opencode 权限气泡（event hook + 反向 bridge，非阻塞）：
 - `agents/openclaw.js` — OpenClaw plugin 事件映射 + 能力（state-only，本地终端聚焦暂不支持）
 - `agents/hermes.js` — Hermes Agent plugin 事件映射 + 能力（session、SessionEnd、terminal focus；无 permission/subagent）
 - `agents/registry.js` — agent 注册表：按 ID 或进程名查找 agent 配置
-- `agents/codex-log-monitor.js` — Codex JSONL fallback 增量轮询器（文件监视 + 增量读取 + approval heuristic）
+- `agents/codex-log-monitor.js` — Codex JSONL fallback 增量轮询器（文件监视 + 增量读取 + 状态 / metadata fallback，不再做审批猜测）
 - `agents/gemini-log-monitor.js` — legacy Gemini session JSON 轮询器；当前 hook-only 路径不启动
 
 运行时的 agent 安装意图 / 启停 / 权限气泡开关通过 `src/agent-gate.js` 读 `prefs.agents[id].integrationInstalled` / `.enabled` / `.permissionsEnabled`。`enabled` 仍然只表示是否处理该 agent 的事件：关闭会让 `state.js` / `server.js` 停止处理事件、清理 session / bubble；`integrationInstalled` 才表示本机 hook/plugin/extension 是否由 Clawd 维护。snapshot 缺字段时 gate 保守默认 true 以兼容旧版；新安装的 schema 会显式把 Claude Code / Codex 设为已安装且启用，其余 agent 设为未安装且未启用。Claude Code 额外有 `.subagentPermissionsEnabled` 子开关（#451，仅 claude-code 默认条目携带该 flag），控制 Task 子 agent 发起的 PermissionRequest 是否弹泡泡。
@@ -166,7 +166,7 @@ Settings Agent 页的 Install 会执行对应 sync 并把 `integrationInstalled=
 - bubble 会通过 IPC `bubble-height` 回报真实高度，主进程据此重排
 - 支持 Allow / Deny / suggestion 决策，以及 `addRules` / `setMode` suggestion 类型
 - DND 只负责“不弹 bubble”，不替用户决定权限：opencode 分支 silent drop，让 TUI 内置权限提示接管；Claude Code 分支 `res.destroy()`，让 CC 回到内置聊天/终端确认；Codex 分支返回 no-decision `{}`，让 Codex 原生审批接管
-- Codex JSONL approval 通知 bubble 只保留给 official hook 不可用的 fallback session；hook-active session 的旧 passive notify 会被 main.js wrapper 压掉
+- Codex 审批只认 official `PermissionRequest` hook；JSONL fallback 不再根据 shell function_call 猜测审批，也不再创建 Codex passive approval notify bubble
 - 涉及 Claude Code 权限 payload 的改动（`permission_suggestions`、`updatedPermissions`、elicitation 输入等）必须至少用一次真实 Claude Code 验证；`curl` 自编请求历史上掩盖过字段结构 bug
 
 ### Codex official hook notes

@@ -74,11 +74,9 @@
     return row;
   }
 
-  function render(parent) {
-    const h1 = document.createElement("h1");
-    h1.textContent = t("animMapTitle");
-    parent.appendChild(h1);
-
+  // Rendered as the "on / off" subtab of the Animation & Sound Overrides tab,
+  // so the parent tab already supplies the <h1> — we start at the subtitle.
+  function renderMapSubtab(parent) {
     const subtitle = document.createElement("p");
     subtitle.className = "subtitle";
     subtitle.textContent = t("animMapSubtitle");
@@ -121,9 +119,16 @@
     parent.appendChild(resetWrap);
   }
 
-  function patchInPlace(changes) {
+  function patchMapInPlace(changes) {
     if (!changes || !Object.prototype.hasOwnProperty.call(changes, "themeOverrides")) return false;
-    if (Object.prototype.hasOwnProperty.call(changes, "theme")) return false;
+    if (Object.prototype.hasOwnProperty.call(changes, "theme")) {
+      // Theme switched: the mounted switch ids (themeId:stateKey) are now stale,
+      // so rebuild the subtab. The map reads themeOverrides straight from the
+      // snapshot, so a synchronous content re-render is enough — no need to
+      // refetch the (unrelated) animation-override asset data.
+      ops.requestRender({ content: true });
+      return true;
+    }
     if (state.mountedControls.animMapSwitches.size === 0) return false;
     for (const [, meta] of state.mountedControls.animMapSwitches) {
       if (!meta || !document.body.contains(meta.element)) return false;
@@ -144,11 +149,9 @@
     helpers = core.helpers;
     ops = core.ops;
     readers = core.readers;
-    core.tabs.animMap = {
-      render,
-      patchInPlace,
-    };
   }
 
-  root.ClawdSettingsTabAnimMap = { init };
+  // The map is no longer a top-level tab — the Animation & Sound Overrides tab
+  // renders it as its "on / off" subtab via these two entry points.
+  root.ClawdSettingsTabAnimMap = { init, renderMapSubtab, patchMapInPlace };
 })(globalThis);

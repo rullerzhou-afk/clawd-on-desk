@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Clawd Desktop Pet — Kimi CLI Hook Script
+// Clawd Desktop Pet — Kimi Hook Script (legacy Kimi CLI + Kimi Code)
 // Usage: node kimi-hook.js <event_name>
-// Reads stdin JSON from Kimi CLI for session_id, cwd, tool_name, etc.
+// Reads stdin JSON (snake_case, identical shape across both generations) for
+// session_id, cwd, tool_name, etc.
 
 const { postStateToRunningServer, readHostPrefix } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
@@ -24,13 +25,27 @@ const EVENT_TO_STATE = {
   PreCompact: "sweeping",
   PostCompact: "attention",
   Notification: "notification",
+  // Kimi Code (TypeScript CLI) native events — the legacy Python CLI never
+  // sends these. PermissionRequest fires right before the approval TUI
+  // blocks; its body event matches what buildStateBody synthesizes from a
+  // legacy suspect/immediate PreToolUse, so state.js serves both generations
+  // through the same path. PermissionResult ends the approval (approved or
+  // rejected) and Interrupt is the user's Esc — both mean "stop showing the
+  // permission bubble".
+  PermissionRequest: "notification",
+  PermissionResult: "working",
+  Interrupt: "idle",
 };
 
-// Tools that typically trigger a user-approval prompt in Kimi CLI.
+// Tools that typically trigger a user-approval prompt in the LEGACY Kimi CLI.
 // When these tools fire PreToolUse, we flash notification so Clawd
 // visually signals that Kimi is waiting for permission.
-// Kimi CLI uses snake_case tool names in hook payloads (e.g. "shell",
+// Legacy Kimi CLI uses snake_case tool names in hook payloads (e.g. "shell",
 // "write_file") while logs show PascalCase.  Normalize before checking.
+// Kimi Code renamed its built-ins (Bash/Edit/Write, PascalCase) but also
+// ships native PermissionRequest/PermissionResult events, so this heuristic
+// list is legacy-only by design — the kimi-code install never sets a
+// permission mode and classifyPreTool stays "none" there.
 const DEFAULT_PERMISSION_TOOLS = [
   "shell",
   "writefile",
@@ -270,6 +285,39 @@ function buildStateBody(event, payload, resolve) {
   body.agent_id = "kimi-cli";
   if (permissionSuspect) body.permission_suspect = true;
   if (cwd) body.cwd = cwd;
+
+  // Permission context for the bubble. Native Kimi Code payloads carry a
+  // human-readable action ("Running: echo hi") and a display block with the
+  // real command; forward them so the bubble can show what actually needs
+  // approval instead of the generic "check the Kimi terminal" line. The
+  // legacy synthesized PermissionRequest (rewritten PreToolUse) has none of
+  // these fields, so it degrades to tool_name only — same behavior as before.
+  if (event === "PermissionRequest" || event === "PermissionResult") {
+    const toolName = readToolName(payload);
+    if (toolName) body.tool_name = toolName;
+    if (typeof payload.action === "string" && payload.action) {
+      body.permission_action = payload.action;
+    }
+    if (
+      payload.display && typeof payload.display === "object"
+      && typeof payload.display.command === "string" && payload.display.command
+    ) {
+      body.permission_command = payload.display.command;
+    }
+    if (typeof payload.decision === "string" && payload.decision) {
+      body.permission_decision = payload.decision;
+    }
+    // Rejected approval: upstream already fired PostToolUseFailure (it
+    // arrives BEFORE PermissionResult on this path) and the pet played the
+    // error one-shot. Pushing "working" now would overwrite that with a
+    // running look while nothing is running. Keep the stored state and let
+    // the event clear the permission hold; the model's follow-up events
+    // (text, Stop) advance the state naturally. Approved keeps plain
+    // "working" — the tool really is about to run.
+    if (event === "PermissionResult" && payload.decision === "rejected") {
+      body.preserve_state = true;
+    }
+  }
 
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Clawd — Reasonix state-only hook.
-// Registered in ~/.reasonix/settings.json by hooks/reasonix-install.js
+// Registered in <Reasonix home>/settings.json by hooks/reasonix-install.js
 //
 // All events: POST /state, fire-and-forget, exit immediately.
 // Reasonix owns its own permission flow natively (Gate + terminal prompt);

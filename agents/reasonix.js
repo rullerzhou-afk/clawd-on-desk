@@ -5,7 +5,7 @@
 
 module.exports = {
   id: "reasonix",
-  name: "Reasonix CLI",
+  name: "Reasonix",
   processNames: { win: ["reasonix.exe"], mac: ["reasonix"], linux: ["reasonix"] },
   eventSource: "hook",
   eventMap: {

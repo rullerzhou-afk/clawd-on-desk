@@ -201,7 +201,7 @@ function loadTheme(themeId, opts = {}) {
   theme._baseWideHitboxFiles = Array.isArray(afterVariant.wideHitboxFiles)
     ? [...new Set(afterVariant.wideHitboxFiles.map((file) => _basenameOnly(file)).filter(Boolean))]
     : [];
-  theme._capabilities = _buildCapabilities(theme);
+  theme._capabilities = _buildCapabilities(theme, { trustedRuntimeAllowed: !!theme._builtin });
 
   // For external themes: sanitize SVGs + resolve asset paths
   if (!isBuiltin) {

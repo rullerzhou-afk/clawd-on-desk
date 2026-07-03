@@ -13,6 +13,8 @@ const path = require("path");
 
 const {
   buildStateBody,
+  attachStdinDiag,
+  STDIN_READ_TIMEOUT_MS: CLAWD_HOOK_STDIN_TIMEOUT_MS,
   extractSessionTitleFromTranscript,
   extractApiErrorFromEntries,
   extractLastAssistantTextFromEntries,
@@ -309,11 +311,26 @@ describe("buildStateBody", () => {
       tool_name: "Read",
       tool_use_id: "toolu_123",
       tool_input: { file_path: "src/server.js" },
+      transcript_path: "/tmp/claude-transcript.jsonl",
     };
     const body = buildStateBody("PostToolUse", payload, mockResolve);
     assert.strictEqual(body.tool_name, "Read");
     assert.strictEqual(body.tool_use_id, "toolu_123");
     assert.strictEqual(body.tool_input_fingerprint, buildToolInputFingerprint(payload.tool_input));
+    assert.strictEqual(body.transcript_path, "/tmp/claude-transcript.jsonl");
+  });
+
+  it("does not forward transcript_path on Stop after extracting completion data", () => {
+    const file = writeTmpJsonl([
+      { type: "assistant", sessionId: "sid-1", message: { content: "Done." } },
+    ]);
+    const body = buildStateBody(
+      "Stop",
+      { session_id: "sid-1", transcript_path: file },
+      mockResolve
+    );
+    assert.strictEqual(body.assistant_last_output, "Done.");
+    assert.ok(!("transcript_path" in body));
   });
 
   it("adds context_usage from transcript usage", () => {
@@ -1012,5 +1029,74 @@ describe("buildStateBody — Stop → ApiError upgrade", () => {
     );
     assert.strictEqual(body.event, "Stop");
     assert.strictEqual(body.state, "attention");
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// attachStdinDiag (#583)
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("attachStdinDiag", () => {
+  const makeBody = () => ({ state: "idle", session_id: "default", event: "SessionStart" });
+
+  it("attaches diagnostics when the stdin payload had no session_id", () => {
+    const body = makeBody();
+    attachStdinDiag(body, {
+      payload: {},
+      bytes: 0,
+      timedOut: true,
+      parseError: null,
+      durationMs: 2001,
+    });
+    assert.deepStrictEqual(body.stdin_diag, { bytes: 0, timed_out: true, duration_ms: 2001 });
+  });
+
+  it("includes parse_error only when present", () => {
+    const body = makeBody();
+    attachStdinDiag(body, {
+      payload: {},
+      bytes: 17,
+      timedOut: false,
+      parseError: "Unexpected token",
+      durationMs: 3,
+    });
+    assert.deepStrictEqual(body.stdin_diag, {
+      bytes: 17,
+      timed_out: false,
+      duration_ms: 3,
+      parse_error: "Unexpected token",
+    });
+  });
+
+  it("does not attach anything when session_id arrived", () => {
+    const body = makeBody();
+    attachStdinDiag(body, {
+      payload: { session_id: "real-sid" },
+      bytes: 500,
+      timedOut: false,
+      parseError: null,
+      durationMs: 4,
+    });
+    assert.strictEqual(body.stdin_diag, undefined);
+  });
+});
+
+describe("clawd-hook stdin timeout budget (#583)", () => {
+  it("uses a 2s stdin window — safe only because install.js registers async:true + timeout:5", () => {
+    assert.strictEqual(CLAWD_HOOK_STDIN_TIMEOUT_MS, 2000);
+  });
+});
+
+describe("attachStdinDiag edge cases", () => {
+  it("treats an empty-string session_id as missing and attaches diagnostics", () => {
+    const body = { state: "idle", session_id: "default", event: "SessionStart" };
+    attachStdinDiag(body, {
+      payload: { session_id: "" },
+      bytes: 30,
+      timedOut: false,
+      parseError: null,
+      durationMs: 2,
+    });
+    assert.deepStrictEqual(body.stdin_diag, { bytes: 30, timed_out: false, duration_ms: 2 });
   });
 });

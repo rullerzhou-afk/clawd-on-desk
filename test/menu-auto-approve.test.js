@@ -104,7 +104,7 @@ function makeCtx(overrides = {}) {
 }
 
 function findAutoApproveItem(template) {
-  return template.find((item) => item && item.label === "Auto-pilot (Danger)");
+  return template.find((item) => item && item.label === "Auto-approve all requests");
 }
 
 describe("auto-pilot menu toggle", () => {

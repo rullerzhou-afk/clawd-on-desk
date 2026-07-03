@@ -155,6 +155,7 @@
     else if (caps.idleMode === "static") badges.push(t("themeCapabilityStatic"));
     if (caps.miniMode) badges.push(t("themeCapabilityMini"));
     if (caps.sleepMode === "direct") badges.push(t("themeCapabilityDirectSleep"));
+    if (caps.powerProfile === "scripted") badges.push(t("themeCapabilityFineMotion"));
     if (caps.reactions === false) badges.push(t("themeCapabilityNoReactions"));
     return badges;
   }

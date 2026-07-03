@@ -89,4 +89,92 @@ describe("size utils", () => {
       fallback,
     );
   });
+
+  it("clamps a saved keep-size bigger than its ORIGIN display back to proportional (#408)", () => {
+    const fallback = { width: 384, height: 384 };
+    // Corrupted: saved is taller than the display it was realized on
+    // (savedPixelWorkArea snapshot) — DPI round-trip growth, not a slider value.
+    assert.strictEqual(
+      getLaunchPixelSize(
+        {
+          keepSizeAcrossDisplays: true, size: "P:10",
+          savedPixelWidth: 2000, savedPixelHeight: 2000,
+          savedPixelWorkArea: { width: 1920, height: 1080 },
+        },
+        fallback,
+      ),
+      fallback,
+    );
+    // Legit cross-display: a size set on a 4K display is kept even though it
+    // exceeds a smaller launch display — that's the whole point of keep-size.
+    assert.deepStrictEqual(
+      getLaunchPixelSize(
+        {
+          keepSizeAcrossDisplays: true, size: "P:10",
+          savedPixelWidth: 1152, savedPixelHeight: 1152,
+          savedPixelWorkArea: { width: 3840, height: 2160 },
+        },
+        fallback,
+      ),
+      { width: 1152, height: 1152 },
+    );
+    // No origin snapshot → skip the clamp rather than risk healing a valid size.
+    assert.deepStrictEqual(
+      getLaunchPixelSize(
+        { keepSizeAcrossDisplays: true, size: "P:10", savedPixelWidth: 2000, savedPixelHeight: 2000 },
+        fallback,
+      ),
+      { width: 2000, height: 2000 },
+    );
+  });
+
+  it("does not mis-clamp when positionDisplay diverges from frozen origin after a Send-to-Display (#408 round-2)", () => {
+    const fallback = { width: 384, height: 384 };
+    // Scenario: pet frozen at 1152 on a 4K display, then "Send to display"
+    // moves it onto a 1080p screen. flushRuntimeStateToPrefs writes the
+    // frozen 1152 into savedPixelWidth/Height AND captures positionDisplay
+    // off the new (smaller) display. Without the dedicated savedPixelWorkArea
+    // field we'd compare 1152 against 1080 and wrongly self-heal a valid size.
+    assert.deepStrictEqual(
+      getLaunchPixelSize(
+        {
+          keepSizeAcrossDisplays: true, size: "P:10",
+          savedPixelWidth: 1152, savedPixelHeight: 1152,
+          savedPixelWorkArea: { width: 3840, height: 2160 }, // true frozen origin
+          positionDisplay: { workArea: { x: 0, y: 0, width: 1920, height: 1080 } }, // last-flush
+        },
+        fallback,
+      ),
+      { width: 1152, height: 1152 },
+    );
+  });
+
+  it("falls back to positionDisplay for legacy prefs without savedPixelWorkArea (#408 round-2)", () => {
+    const fallback = { width: 384, height: 384 };
+    // Pre-fix prefs only carried positionDisplay; honour it so existing users
+    // still get the corruption clamp until the next flush rewrites the new
+    // field. Both directions (clamp + keep) work via the legacy fallback.
+    assert.strictEqual(
+      getLaunchPixelSize(
+        {
+          keepSizeAcrossDisplays: true, size: "P:10",
+          savedPixelWidth: 2000, savedPixelHeight: 2000,
+          positionDisplay: { workArea: { x: 0, y: 0, width: 1920, height: 1080 } },
+        },
+        fallback,
+      ),
+      fallback,
+    );
+    assert.deepStrictEqual(
+      getLaunchPixelSize(
+        {
+          keepSizeAcrossDisplays: true, size: "P:10",
+          savedPixelWidth: 1152, savedPixelHeight: 1152,
+          positionDisplay: { workArea: { x: 0, y: 0, width: 3840, height: 2160 } },
+        },
+        fallback,
+      ),
+      { width: 1152, height: 1152 },
+    );
+  });
 });
