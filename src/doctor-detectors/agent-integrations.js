@@ -9,7 +9,7 @@ const {
   isAgentPermissionsEnabled,
 } = require("../agent-gate");
 const { getAgent } = require("../../agents/registry");
-const { findHookCommands } = require("../../hooks/json-utils");
+const { commandMatchesMarker, findHookCommands } = require("../../hooks/json-utils");
 const { GEMINI_HOOK_EVENTS } = require("../../hooks/gemini-install");
 const { ANTIGRAVITY_HOOK_EVENTS, HOOK_GROUP_ID: ANTIGRAVITY_HOOK_GROUP_ID } = require("../../hooks/antigravity-install");
 const { QWEN_CODE_HOOK_EVENTS } = require("../../hooks/qwen-code-install");
@@ -182,6 +182,40 @@ function statusLevel(status) {
     return "warning";
   }
   return status === "ok" ? null : "info";
+}
+
+// codex resolves commandWindows on Windows and command on POSIX
+// (openai/codex#22159). Since #544, a win32-authored hooks.json carries a
+// WSL-interop form in `command` that is only executable inside WSL, so the
+// doctor must validate the field THIS platform's codex would run — the
+// generic findHookCommands (command only) would flag every dual-field
+// Windows install as broken-path, and Repair would regenerate the same
+// fields forever.
+function resolveCodexPlatformCommand(hook, platform) {
+  if (!hook || typeof hook !== "object") return null;
+  const windowsVariant = typeof hook.commandWindows === "string" ? hook.commandWindows : null;
+  const base = typeof hook.command === "string" ? hook.command : null;
+  return platform === "win32" ? (windowsVariant || base) : base;
+}
+
+function findCodexPlatformHookCommands(settings, marker, platform) {
+  if (!settings || !settings.hooks || typeof settings.hooks !== "object") return [];
+  const commands = [];
+  const push = (hook) => {
+    const resolved = resolveCodexPlatformCommand(hook, platform);
+    if (resolved && commandMatchesMarker(resolved, marker)) commands.push(resolved);
+  };
+  for (const entries of Object.values(settings.hooks)) {
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (!entry || typeof entry !== "object") continue;
+      if (Array.isArray(entry.hooks)) {
+        for (const hook of entry.hooks) push(hook);
+      }
+      push(entry);
+    }
+  }
+  return commands;
 }
 
 function validateCommandList(descriptor, commands, options) {
@@ -809,6 +843,12 @@ function checkFileMode(descriptor, options) {
     detail = validateGeminiHookEvents(descriptor, settings, options);
   } else if (descriptor.agentId === "qwen-code") {
     detail = validateQwenHookEvents(descriptor, settings, options);
+  } else if (descriptor.agentId === "codex") {
+    detail = validateCommandList(
+      descriptor,
+      findCodexPlatformHookCommands(settings, descriptor.marker, options.platform || process.platform),
+      options
+    );
   } else {
     detail = validateCommandList(
       descriptor,

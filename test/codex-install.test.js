@@ -526,11 +526,80 @@ describe("Codex hooks on a Windows host write dual command fields (#544)", () =>
 
   // codex review finding: a UNC node path has no /mnt translation and a
   // POSIX shell cannot exec the raw backslash form — fall back to bare
-  // node.exe via the interop PATH.
+  // node.exe via the interop PATH. Forward-slash UNC form included.
   it("falls back to bare node.exe for a UNC node path in the interop command", () => {
     assert.strictEqual(
       buildCodexHookPosixInteropCommand("\\\\server\\share\\node.exe", "D:/x/codex-hook.js"),
       '"node.exe" "D:/x/codex-hook.js"'
     );
+    assert.strictEqual(
+      buildCodexHookPosixInteropCommand("//server/share/node.exe", "D:/x/codex-hook.js"),
+      '"node.exe" "D:/x/codex-hook.js"'
+    );
+  });
+
+  // Subagent review finding: an entry claimed through commandWindows whose
+  // command was hand-edited (marker gone) must keep the user's command —
+  // rewriting it would recreate the "reconcile wipes my manual fix" loop.
+  it("preserves a hand-edited marker-less command while managing commandWindows", () => {
+    const handEdit = '"/home/user/bin/my-codex-wrapper.sh"';
+    const codexDir = makeTempCodexDir({
+      hooks: {
+        SessionStart: [{
+          hooks: [{
+            type: "command",
+            command: handEdit,
+            commandWindows: `& "node" "${HOOK_SCRIPT}"`,
+            timeout: 30,
+          }],
+        }],
+      },
+    });
+
+    registerCodexHooks({ silent: true, codexDir, nodeBin: "node", platform: "win32" });
+
+    const settings = readJson(path.join(codexDir, "hooks.json"));
+    const entries = settings.hooks.SessionStart;
+    assert.strictEqual(entries.length, 1, "must not append a duplicate entry");
+    assert.strictEqual(entries[0].hooks[0].command, handEdit);
+    assert.strictEqual(entries[0].hooks[0].commandWindows, `& "node" "${HOOK_SCRIPT}"`);
+  });
+
+  // Subagent review finding: uninstall must not drop an entry whose nested
+  // hooks emptied out but whose top level still carries a third-party
+  // commandWindows.
+  it("uninstall keeps an entry with a third-party top-level commandWindows", () => {
+    const codexDir = makeTempCodexDir({
+      hooks: {
+        SessionStart: [{
+          commandWindows: '& "C:\\third\\party.exe"',
+          hooks: [{ type: "command", command: `"node.exe" "${HOOK_SCRIPT}"`, timeout: 30 }],
+        }],
+      },
+    });
+
+    const result = unregisterCodexHooks({ silent: true, codexDir });
+
+    assert.strictEqual(result.removed, 1);
+    const settings = readJson(path.join(codexDir, "hooks.json"));
+    assert.strictEqual(settings.hooks.SessionStart.length, 1);
+    assert.strictEqual(settings.hooks.SessionStart[0].commandWindows, '& "C:\\third\\party.exe"');
+    assert.deepStrictEqual(settings.hooks.SessionStart[0].hooks, []);
+  });
+
+  // Subagent review finding: the interop warning must apply the same filter
+  // withCommandEnv does — an env object contributing nothing (invalid keys,
+  // nullish values) must not warn, since repair escalates warnings to error.
+  it("does not emit the interop env warning for a no-op env object", () => {
+    const codexDir = makeTempCodexDir({});
+    const result = registerCodexHooks({
+      silent: true,
+      codexDir,
+      nodeBin: "node",
+      platform: "win32",
+      env: { FOO: undefined, "1BAD": "x" },
+    });
+
+    assert.ok(!result.warnings.some((w) => /interop/.test(w)), "no-op env must not warn");
   });
 });

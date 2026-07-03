@@ -1077,6 +1077,72 @@ describe("checkAgentIntegrations", () => {
   });
 
 
+  // #544: Windows Clawd writes dual-field entries — commandWindows carries
+  // the PowerShell form codex actually runs on Windows, command carries a
+  // WSL-interop form only executable inside WSL. The doctor must validate
+  // the field THIS platform's codex resolves; blanket-validating `command`
+  // flagged every dual-field Windows install as broken-path, and Repair
+  // regenerated the same fields forever.
+  it("validates commandWindows on win32 for dual-field Codex entries (#544)", () => {
+    const descriptor = codexDescriptor();
+    const psForm = '& "C:\\Program Files\\nodejs\\node.exe" "D:/app/hooks/codex-hook.js"';
+    const interopForm = '"/mnt/c/Program Files/nodejs/node.exe" "D:/app/hooks/codex-hook.js"';
+    writeJson(descriptor.configPath, {
+      hooks: {
+        Stop: [{ hooks: [{ type: "command", command: interopForm, commandWindows: psForm, timeout: 30 }] }],
+      },
+    });
+    fs.writeFileSync(descriptor.supplementary.configPath, codexTrustState(descriptor, ["Stop"]), "utf8");
+
+    const seen = [];
+    const result = checkAgentIntegrations({
+      fs,
+      prefs: {},
+      descriptors: [descriptor],
+      server: null,
+      platform: "win32",
+      validateCommand: (command) => {
+        seen.push(command);
+        return {
+          ok: true,
+          nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+          scriptPath: "D:/app/hooks/codex-hook.js",
+        };
+      },
+    });
+
+    assert.deepStrictEqual(seen, [psForm]);
+    assert.strictEqual(result.details[0].status, "ok");
+  });
+
+  it("validates the POSIX command field for dual-field Codex entries off win32", () => {
+    const descriptor = codexDescriptor();
+    const psForm = '& "C:\\Program Files\\nodejs\\node.exe" "D:/app/hooks/codex-hook.js"';
+    const interopForm = '"/mnt/c/Program Files/nodejs/node.exe" "D:/app/hooks/codex-hook.js"';
+    writeJson(descriptor.configPath, {
+      hooks: {
+        Stop: [{ hooks: [{ type: "command", command: interopForm, commandWindows: psForm, timeout: 30 }] }],
+      },
+    });
+    fs.writeFileSync(descriptor.supplementary.configPath, codexTrustState(descriptor, ["Stop"]), "utf8");
+
+    const seen = [];
+    const result = checkAgentIntegrations({
+      fs,
+      prefs: {},
+      descriptors: [descriptor],
+      server: null,
+      platform: "linux",
+      validateCommand: (command) => {
+        seen.push(command);
+        return { ok: true, nodeBin: "/mnt/c/Program Files/nodejs/node.exe", scriptPath: "D:/app/hooks/codex-hook.js" };
+      },
+    });
+
+    assert.deepStrictEqual(seen, [interopForm]);
+    assert.strictEqual(result.details[0].status, "ok");
+  });
+
   it("reports Codex hooks=false even when hook registration is missing", () => {
     const descriptor = codexDescriptor();
     writeJson(descriptor.configPath, { hooks: {} });

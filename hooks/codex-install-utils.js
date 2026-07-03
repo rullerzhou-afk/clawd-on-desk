@@ -70,11 +70,11 @@ function windowsPathToWslPath(value) {
 // boundary — never prepend env here; put env in commandWindows instead.
 function buildCodexHookPosixInteropCommand(nodeBin, hookScript) {
   const wslNodeBin = windowsPathToWslPath(nodeBin);
-  // A UNC node path (\\server\share\node.exe) has no /mnt translation and a
-  // POSIX shell cannot exec the raw backslash form — fall back to bare
-  // node.exe resolved through the interop PATH.
+  // A UNC node path (\\server\share\node.exe or //server/share/node.exe)
+  // has no /mnt translation and a POSIX shell cannot exec the raw Windows
+  // form — fall back to bare node.exe resolved through the interop PATH.
   const posixNodeBin = wslNodeBin
-    || (String(nodeBin).startsWith("\\\\")
+    || (/^[\\/]{2}/.test(String(nodeBin))
       ? "node.exe"
       : (/\.exe$/i.test(String(nodeBin)) ? nodeBin : `${nodeBin}.exe`));
   return formatNodeHookCommand(posixNodeBin, hookScript, { platform: "linux" });
@@ -88,10 +88,14 @@ function quotePowerShellEnvValue(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
-function withCommandEnv(command, env, platform = process.platform) {
-  if (!env || typeof env !== "object") return command;
-  const entries = Object.entries(env)
+function filterCommandEnvEntries(env) {
+  if (!env || typeof env !== "object") return [];
+  return Object.entries(env)
     .filter(([key, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && value !== undefined && value !== null);
+}
+
+function withCommandEnv(command, env, platform = process.platform) {
+  const entries = filterCommandEnvEntries(env);
   if (!entries.length) return command;
 
   if (platform === "win32") {
@@ -431,7 +435,11 @@ function removeCodexCommandHooks(entries, predicate) {
       continue;
     }
 
-    if (nextHooks.length === 0 && typeof entry.command !== "string") continue;
+    if (
+      nextHooks.length === 0
+      && typeof entry.command !== "string"
+      && typeof entry.commandWindows !== "string"
+    ) continue;
     nextEntries.push({ ...entry, hooks: nextHooks });
   }
 
@@ -483,7 +491,10 @@ function registerCodexCommandHooks(options = {}) {
   const desiredCommand = isWindowsHost
     ? buildCodexHookPosixInteropCommand(nodeBin, hookScript)
     : withCommandEnv(buildCodexHookCommand(nodeBin, hookScript, hostPlatform), commandEnv, hostPlatform);
-  if (isWindowsHost && Object.keys(commandEnv).length) {
+  // Gate the warning on the same filter withCommandEnv applies, so an env
+  // object that contributes nothing (invalid keys / nullish values) doesn't
+  // emit a false warning — repairCodexHooks escalates any warning to error.
+  if (isWindowsHost && filterCommandEnvEntries(commandEnv).length) {
     warnings.push(
       "Env vars don't cross the WSL interop boundary; they were applied to commandWindows only."
     );
@@ -515,7 +526,17 @@ function registerCodexCommandHooks(options = {}) {
         hook.type = "command";
         stale = true;
       }
-      if (hook.command !== desiredCommand) {
+      // On win32 an entry can be claimed through commandWindows alone. If
+      // its command string no longer carries the marker, the user replaced
+      // it deliberately (e.g. interop unavailable in their WSL) — keep
+      // their fix and keep managing commandWindows only. Rewriting it here
+      // would recreate the exact "reconcile wipes my manual fix" loop #544
+      // reported.
+      const commandHandEdited = isWindowsHost
+        && typeof hook.command === "string"
+        && hook.command !== ""
+        && !commandMatchesMarker(hook.command, marker);
+      if (!commandHandEdited && hook.command !== desiredCommand) {
         hook.command = desiredCommand;
         stale = true;
       }
