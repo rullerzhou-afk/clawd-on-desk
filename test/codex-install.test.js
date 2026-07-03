@@ -467,4 +467,70 @@ describe("Codex hooks on a Windows host write dual command fields (#544)", () =>
       assert.strictEqual(Object.prototype.hasOwnProperty.call(hook, "commandWindows"), false);
     }
   });
+
+  // codex review finding: a POSIX host must never claim an entry whose only
+  // Clawd trace is a leftover commandWindows — its command may be a
+  // third-party hook that reconciliation would silently overwrite.
+  it("POSIX reconcile does not overwrite a third-party command with a leftover commandWindows", () => {
+    const thirdParty = '"/usr/bin/some-other-tool" --flag';
+    const codexDir = makeTempCodexDir({
+      hooks: {
+        SessionStart: [{
+          hooks: [{
+            type: "command",
+            command: thirdParty,
+            commandWindows: `& "node" "${HOOK_SCRIPT}"`,
+            timeout: 30,
+          }],
+        }],
+      },
+    });
+
+    registerCodexHooks({
+      silent: true,
+      codexDir,
+      nodeBin: "/usr/local/bin/node",
+      platform: "linux",
+    });
+
+    const settings = readJson(path.join(codexDir, "hooks.json"));
+    const entries = settings.hooks.SessionStart;
+    // The third-party hook survives untouched; Clawd appends its own entry.
+    assert.strictEqual(entries[0].hooks[0].command, thirdParty);
+    assert.strictEqual(entries.length, 2);
+    assert.ok(entries[1].hooks[0].command.includes(MARKER));
+  });
+
+  // codex review finding: uninstall must match commandWindows too, so a
+  // hand-edited command cannot shield a still-live commandWindows.
+  it("uninstall removes an entry whose marker only survives in commandWindows", () => {
+    const codexDir = makeTempCodexDir({
+      hooks: {
+        SessionStart: [{
+          hooks: [{
+            type: "command",
+            command: '"/usr/bin/edited-away" --by-hand',
+            commandWindows: `& "node" "${HOOK_SCRIPT}"`,
+            timeout: 30,
+          }],
+        }],
+      },
+    });
+
+    const result = unregisterCodexHooks({ silent: true, codexDir });
+
+    assert.strictEqual(result.removed, 1);
+    const settings = readJson(path.join(codexDir, "hooks.json"));
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(settings.hooks, "SessionStart"), false);
+  });
+
+  // codex review finding: a UNC node path has no /mnt translation and a
+  // POSIX shell cannot exec the raw backslash form — fall back to bare
+  // node.exe via the interop PATH.
+  it("falls back to bare node.exe for a UNC node path in the interop command", () => {
+    assert.strictEqual(
+      buildCodexHookPosixInteropCommand("\\\\server\\share\\node.exe", "D:/x/codex-hook.js"),
+      '"node.exe" "D:/x/codex-hook.js"'
+    );
+  });
 });

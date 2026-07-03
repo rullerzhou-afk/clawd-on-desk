@@ -10,7 +10,6 @@ const {
   commandMatchesMarker,
   extractExistingNodeBin,
   formatNodeHookCommand,
-  removeMatchingCommandHooks,
 } = require("./json-utils");
 
 const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".codex");
@@ -71,8 +70,13 @@ function windowsPathToWslPath(value) {
 // boundary — never prepend env here; put env in commandWindows instead.
 function buildCodexHookPosixInteropCommand(nodeBin, hookScript) {
   const wslNodeBin = windowsPathToWslPath(nodeBin);
-  const posixNodeBin =
-    wslNodeBin || (/\.exe$/i.test(String(nodeBin)) ? nodeBin : `${nodeBin}.exe`);
+  // A UNC node path (\\server\share\node.exe) has no /mnt translation and a
+  // POSIX shell cannot exec the raw backslash form — fall back to bare
+  // node.exe resolved through the interop PATH.
+  const posixNodeBin = wslNodeBin
+    || (String(nodeBin).startsWith("\\\\")
+      ? "node.exe"
+      : (/\.exe$/i.test(String(nodeBin)) ? nodeBin : `${nodeBin}.exe`));
   return formatNodeHookCommand(posixNodeBin, hookScript, { platform: "linux" });
 }
 
@@ -323,21 +327,30 @@ function ensureCodexHooksFeature(configPath, options = {}) {
   return { changed: true, warning: null };
 }
 
-function hookMatchesCodexMarker(hook, marker) {
+// includeWindowsVariant widens the match to commandWindows. Registration
+// passes it only on win32 hosts: a POSIX host must never claim (and rewrite
+// the command of) an entry whose only Clawd trace is a leftover
+// commandWindows — that command could be a third-party hook. Uninstall, by
+// contrast, always matches both fields: removal must be complete on every
+// platform.
+function hookMatchesCodexMarker(hook, marker, includeWindowsVariant) {
   return (
     (typeof hook.command === "string" && commandMatchesMarker(hook.command, marker)) ||
-    (typeof hook.commandWindows === "string" && commandMatchesMarker(hook.commandWindows, marker))
+    (includeWindowsVariant === true
+      && typeof hook.commandWindows === "string"
+      && commandMatchesMarker(hook.commandWindows, marker))
   );
 }
 
-function findCodexCommandHook(entry, marker) {
+function findCodexCommandHook(entry, marker, options = {}) {
   if (!entry || typeof entry !== "object") return null;
+  const includeWindowsVariant = options.includeWindowsVariant === true;
   const innerHooks = Array.isArray(entry.hooks) ? entry.hooks : [];
   for (const hook of innerHooks) {
     if (!hook || typeof hook !== "object") continue;
-    if (hookMatchesCodexMarker(hook, marker)) return hook;
+    if (hookMatchesCodexMarker(hook, marker, includeWindowsVariant)) return hook;
   }
-  if (hookMatchesCodexMarker(entry, marker)) return entry;
+  if (hookMatchesCodexMarker(entry, marker, includeWindowsVariant)) return entry;
   return null;
 }
 
@@ -371,6 +384,58 @@ function extractExistingWindowsNodeBin(settings, marker) {
     }
   }
   return null;
+}
+
+// Local dual-field variant of removeMatchingCommandHooks: uninstall must
+// remove a hook when EITHER command or commandWindows carries the marker —
+// a hand-edited command must not shield a still-live commandWindows from
+// removal, on any platform. The shared helper only inspects command and
+// stays single-field for agents that never write commandWindows.
+function removeCodexCommandHooks(entries, predicate) {
+  if (!Array.isArray(entries)) return { entries, removed: 0, changed: false };
+  const hookMatches = (hook) =>
+    (typeof hook.command === "string" && predicate(hook.command))
+    || (typeof hook.commandWindows === "string" && predicate(hook.commandWindows));
+
+  let removed = 0;
+  let changed = false;
+  const nextEntries = [];
+
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") {
+      nextEntries.push(entry);
+      continue;
+    }
+
+    if (hookMatches(entry)) {
+      removed++;
+      changed = true;
+      continue;
+    }
+
+    if (!Array.isArray(entry.hooks)) {
+      nextEntries.push(entry);
+      continue;
+    }
+
+    const nextHooks = entry.hooks.filter((hook) => {
+      if (!hook || typeof hook !== "object") return true;
+      if (!hookMatches(hook)) return true;
+      removed++;
+      changed = true;
+      return false;
+    });
+
+    if (nextHooks.length === entry.hooks.length) {
+      nextEntries.push(entry);
+      continue;
+    }
+
+    if (nextHooks.length === 0 && typeof entry.command !== "string") continue;
+    nextEntries.push({ ...entry, hooks: nextHooks });
+  }
+
+  return { entries: nextEntries, removed, changed };
 }
 
 function registerCodexCommandHooks(options = {}) {
@@ -443,7 +508,7 @@ function registerCodexCommandHooks(options = {}) {
     const desiredTimeout = timeoutForCodexEvent(event);
 
     for (const entry of arr) {
-      const hook = findCodexCommandHook(entry, marker);
+      const hook = findCodexCommandHook(entry, marker, { includeWindowsVariant: isWindowsHost });
       if (!hook) continue;
       found = true;
       if (hook.type !== "command") {
@@ -528,7 +593,7 @@ function unregisterCodexCommandHooks(options = {}) {
   for (const event of events) {
     const arr = settings.hooks[event];
     if (!Array.isArray(arr)) continue;
-    const result = removeMatchingCommandHooks(arr, (command) =>
+    const result = removeCodexCommandHooks(arr, (command) =>
       markers.some((marker) => commandMatchesMarker(command, marker))
     );
     if (result.changed) {
