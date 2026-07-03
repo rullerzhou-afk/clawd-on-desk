@@ -5,6 +5,7 @@ const { BrowserWindow, globalShortcut } = require("electron");
 const { getDefaultShortcuts } = require("./shortcut-actions");
 const { keepOutOfTaskbar } = require("./taskbar");
 const { clampTextScale, scaleWidth, scaleHeight, applyZoomToWindow } = require("./text-scale");
+const { createTranslator } = require("./i18n");
 const path = require("path");
 const http = require("http");
 const {
@@ -393,6 +394,10 @@ function buildPermissionFocusEntry(perm) {
 }
 
 module.exports = function initPermission(ctx) {
+
+// Bound to ctx.lang (a live getter), so a runtime language switch is picked up
+// by the next remote-approval payload without recreating this module.
+const t = createTranslator(() => ctx.lang);
 
 // Each entry: { res, abortHandler, suggestions, sessionId, bubble, hideTimer, toolName, toolInput, resolvedSuggestion, createdAt, measuredHeight }
 const pendingPermissions = [];
@@ -921,10 +926,10 @@ function buildRemoteApprovalSummary(permEntry) {
 function buildRemoteSuggestionLabel(suggestion) {
   if (!suggestion || typeof suggestion !== "object") return "";
   if (suggestion.type === "setMode") {
-    if (suggestion.mode === "acceptEdits") return "Auto edits";
-    if (suggestion.mode === "plan") return "Plan mode";
+    if (suggestion.mode === "acceptEdits") return t("approvalSuggestionAutoEdits");
+    if (suggestion.mode === "plan") return t("approvalSuggestionPlanMode");
     const mode = compactRemoteApprovalText(suggestion.mode || "", 18);
-    return mode ? `Mode: ${mode}` : "";
+    return mode ? t("approvalSuggestionModePrefix").replace("{mode}", mode) : "";
   }
   if (suggestion.type === "addRules") {
     const rules = Array.isArray(suggestion.rules) ? suggestion.rules : [suggestion];
@@ -932,8 +937,12 @@ function buildRemoteSuggestionLabel(suggestion) {
     const behavior = compactRemoteApprovalText(suggestion.behavior || first.behavior || "allow", 12);
     const isDeny = behavior === "deny";
     const toolName = compactRemoteApprovalText(first.toolName || suggestion.toolName || "", 16);
-    if (toolName) return isDeny ? `Always deny ${toolName}` : `Always ${toolName}`;
-    return isDeny ? "Always deny" : "Always allow";
+    if (toolName) {
+      return isDeny
+        ? t("approvalSuggestionAlwaysDenyTool").replace("{tool}", toolName)
+        : t("approvalSuggestionAlwaysAllowTool").replace("{tool}", toolName);
+    }
+    return isDeny ? t("approvalSuggestionAlwaysDeny") : t("approvalSuggestionAlwaysAllow");
   }
   return "";
 }
@@ -959,25 +968,27 @@ function buildRemoteApprovalPayload(permEntry) {
   const summary = buildRemoteApprovalSummary(permEntry);
   if (!summary) return null;
   const agentId = compactRemoteApprovalText(permEntry.agentId || "claude-code", 80) || "claude-code";
-  const toolName = compactRemoteApprovalText(permEntry.toolName || "Unknown", 80) || "Unknown";
+  const toolName = compactRemoteApprovalText(permEntry.toolName || t("approvalUnknownTool"), 80) || t("approvalUnknownTool");
   const session = ctx.sessions.get(permEntry.sessionId);
   const sessionFolder = compactRemoteApprovalText(
     basenameForDisplay((session && session.cwd) || permEntry.cwd || ""),
     80
   );
-  // Label is "Folder" (not "Session") on purpose: the pinned cc-connect-clawd
-  // sidecar redacts any "<sensitive_key>: <value>" pair it recognises, and
-  // "session" is in its keyword set — even though the value here is just the
-  // cwd basename, not a session id. "Folder" is plain and avoids the redact.
+  // Label is "Folder" (not "Session") on purpose, in every language: the pinned
+  // cc-connect-clawd sidecar redacts any "<sensitive_key>: <value>" pair it
+  // recognises against an English keyword list, and "session" is in that set —
+  // even though the value here is just the cwd basename, not a session id.
+  // Translated "Folder" labels don't match that English keyword list either,
+  // so they stay just as un-redacted as the English one.
   const detail = [
-    `Agent: ${agentId}`,
-    `Tool: ${toolName}`,
-    sessionFolder ? `Folder: ${sessionFolder}` : null,
-    `Summary: ${summary}`,
+    `${t("approvalDetailAgent")}: ${agentId}`,
+    `${t("approvalDetailTool")}: ${toolName}`,
+    sessionFolder ? `${t("approvalDetailFolder")}: ${sessionFolder}` : null,
+    `${t("approvalDetailSummary")}: ${summary}`,
   ].filter(Boolean).join("\n");
   const suggestionButtons = buildRemoteSuggestionButtons(permEntry);
   const payload = {
-    title: `${agentId} requests ${toolName}`,
+    title: t("approvalRequestsTitle").replace("{agent}", agentId).replace("{tool}", toolName),
     detail,
   };
   if (suggestionButtons.length > 0) payload.suggestions = suggestionButtons;

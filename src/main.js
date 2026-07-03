@@ -2393,6 +2393,7 @@ async function initTelegramMigrationController() {
       log: telegramApprovalLog,
     }),
     getDispatch: () => _telegramMigrationController && _telegramMigrationController.dispatch,
+    getLang: () => lang,
     getChatId: () => {
       const cfg = getTelegramApprovalPrefs();
       const key = cfg && cfg.targetSessionKey;
