@@ -22,7 +22,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { postStateToRunningServer } = require("./server-config");
+const { postStateToRunningServer, applyWslSourceFields } = require("./server-config");
 
 const AGENT_ID = "codewhale";
 const HOOK_SOURCE = "codewhale-hook";
@@ -150,6 +150,10 @@ function buildPayload(codewhaleEventName, env, options = {}) {
   // Error info
   const errorMsg = safeString(env.DEEPSEEK_ERROR, "");
   if (errorMsg) payload.error_message = errorMsg;
+
+  // CodeWhale has no remote (SSH) mode of its own, but respect CLAWD_REMOTE
+  // if set so a future remote setup doesn't get its host overridden.
+  applyWslSourceFields(payload, { remote: !!process.env.CLAWD_REMOTE });
 
   return payload;
 }
