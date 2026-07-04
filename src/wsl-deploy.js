@@ -122,6 +122,10 @@ function pipeFileToWsl(distro, wslDestDir, fileName, content, options = {}) {
     });
 
     if (child.stdin) {
+      // EPIPE when wsl.exe dies before draining stdin (stopped/broken
+      // distro). Without a listener the stream 'error' event is unhandled
+      // and crashes the main process; 'close' already reports the failure.
+      child.stdin.on("error", () => {});
       child.stdin.end(content, "utf8");
     } else {
       if (done) return;

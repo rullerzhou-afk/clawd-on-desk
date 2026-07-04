@@ -799,6 +799,21 @@ function reconcileVersionedHooks(settings, supportedEvents, versionInfo) {
  * @param {{ version: string|null, source: string|null, status: "known"|"unknown" }} [options.claudeVersionInfo]
  * @returns {{ added: number, skipped: number, updated: number, removed: number, version: string|null, versionStatus: "known"|"unknown", versionSource: string|null }}
  */
+// WSL detection for the hook command format. CLAWD_WSL_DISTRO is injected
+// by the Windows-side one-click deploy; WSL_DISTRO_NAME is set by WSL init
+// itself, so a manual `node install.js` inside WSL also gets the plain
+// command format (the quoted form silently fails there — see
+// buildCommandHookSpec). Gated on linux so a stale variable in some other
+// environment cannot flip the format.
+function resolveInstallWslDistro(options = {}) {
+  if (options.wslDistro) return options.wslDistro;
+  if (process.env.CLAWD_WSL_DISTRO) return process.env.CLAWD_WSL_DISTRO;
+  if (process.platform === "linux" && process.env.WSL_DISTRO_NAME) {
+    return process.env.WSL_DISTRO_NAME;
+  }
+  return null;
+}
+
 function resolveWritePath(settingsPath) {
   try { return fs.realpathSync(settingsPath); } catch (err) {
     // ENOENT: new file, no symlink yet — use the unresolved path.
@@ -815,7 +830,7 @@ function registerHooks(options = {}) {
   const hookPort = getHookServerPort(options.port);
   const hookScript = asarUnpackedPath(path.resolve(__dirname, "clawd-hook.js").replace(/\\/g, "/"));
   const platform = options.platform || process.platform;
-  const wslDistro = options.wslDistro || process.env.CLAWD_WSL_DISTRO || null;
+  const wslDistro = resolveInstallWslDistro(options);
 
   // Read existing settings
   let settings = {};
@@ -1066,7 +1081,7 @@ async function registerHooksAsync(options = {}) {
   const hookPort = getHookServerPort(options.port);
   const hookScript = asarUnpackedPath(path.resolve(__dirname, "clawd-hook.js").replace(/\\/g, "/"));
   const platform = options.platform || process.platform;
-  const wslDistro = options.wslDistro || process.env.CLAWD_WSL_DISTRO || null;
+  const wslDistro = resolveInstallWslDistro(options);
 
   let settings = {};
   let preExisting = false;

@@ -29,6 +29,12 @@ const {
   isClawdPermissionUrl,
 } = __test;
 
+// registerHooks derives the hook command format from real-environment WSL
+// signals; clear them so command-format assertions stay deterministic when
+// the suite itself runs inside WSL.
+delete process.env.CLAWD_WSL_DISTRO;
+delete process.env.WSL_DISTRO_NAME;
+
 const tempDirs = [];
 
 function makeTempSettings(initialSettings = {}) {
