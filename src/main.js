@@ -1904,6 +1904,7 @@ const _serverCtx = {
   showPermissionBubble,
   maybeStartRemoteApproval,
   replyOpencodePermission,
+  syncPermissionShortcuts,
   permLog,
 };
 const _server = require("./server")(_serverCtx);

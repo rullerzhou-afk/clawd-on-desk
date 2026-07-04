@@ -573,6 +573,55 @@ describe("server-route-permission POST", () => {
     assert.deepStrictEqual(res.ctx.calls.removePendingPermission.map((item) => item.reason), ["bubble-failed"]);
   });
 
+  it("routes to Telegram-only approval when permission bubbles are disabled but remote approval picks it up", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "sid",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      tool_use_id: "tool-1",
+    }), {
+      ctx: {
+        hideBubbles: true,
+        maybeStartRemoteApproval: () => true,
+      },
+    });
+
+    // Connection must stay open — it's answered later once Telegram responds.
+    assert.strictEqual(res.destroyed, false);
+    assert.strictEqual(res.statusCode, null);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.bubble, null);
+    assert.strictEqual(entry.sessionId, "sid");
+    assert.strictEqual(entry.agentId, "claude-code");
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
+    assert.deepStrictEqual(res.ctx.calls.updateSession, [[
+      "sid",
+      "notification",
+      "PermissionRequest",
+      { agentId: "claude-code" },
+    ]]);
+  });
+
+  it("falls back to destroying the connection when bubbles are disabled and remote approval has nowhere to send it", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "sid",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    }), {
+      ctx: {
+        hideBubbles: true,
+        maybeStartRemoteApproval: () => false,
+      },
+    });
+
+    assert.strictEqual(res.destroyed, true);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
+  });
+
   it("returns terminal fallback when an elicitation bubble fails", async () => {
     const res = await callPermissionPost(JSON.stringify({
       agent_id: "claude-code",

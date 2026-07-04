@@ -274,6 +274,58 @@ function sendHermesPermissionNoDecision(res) {
   res.end();
 }
 
+// Turning off the desktop permission bubble (arePermissionBubblesEnabled ===
+// false) means "don't show a window on this computer" — it must not also
+// silence Telegram remote approval, since that's a separate channel the user
+// may still be relying on. Builds a permEntry with no bubble (bubble stays
+// null forever) and hands it straight to Telegram. Returns true if Telegram
+// picked it up — caller must leave the HTTP connection open; it's answered
+// later via the normal resolvePermissionEntry path. Returns false if there's
+// nowhere to send it (Telegram not configured/enabled), in which case the
+// caller keeps the pre-existing destroy-connection/native-chat-fallback
+// behavior.
+function tryRemoteOnlyApproval(ctx, fields) {
+  const { res } = fields;
+  const permEntry = {
+    ...fields,
+    bubble: null,
+    hideTimer: null,
+    resolvedSuggestion: null,
+    createdAt: Date.now(),
+  };
+  const abortHandler = () => {
+    if (res.writableFinished) return;
+    ctx.permLog("abortHandler fired (remote-only, bubbles disabled)");
+    ctx.resolvePermissionEntry(permEntry, "deny", "Client disconnected");
+  };
+  permEntry.abortHandler = abortHandler;
+  res.on("close", abortHandler);
+  addPendingPermission(ctx, permEntry);
+  ctx.updateSession(fields.sessionId, "notification", "PermissionRequest", { agentId: fields.agentId });
+
+  let started = false;
+  if (typeof ctx.maybeStartRemoteApproval === "function") {
+    try {
+      started = !!ctx.maybeStartRemoteApproval(permEntry);
+    } catch (err) {
+      ctx.permLog(`telegram remote approval start failed (remote-only): ${err && err.message ? err.message : err}`);
+      started = false;
+    }
+  }
+
+  if (!started) {
+    removePendingPermission(ctx, permEntry, "remote-only-approval-unavailable");
+    res.removeListener("close", abortHandler);
+    return false;
+  }
+
+  if (typeof ctx.syncPermissionShortcuts === "function") {
+    try { ctx.syncPermissionShortcuts(); } catch {}
+  }
+  ctx.permLog(`permission bubbles disabled, routed to Telegram-only approval: tool=${fields.toolName} session=${fields.sessionId}`);
+  return true;
+}
+
 function startRemoteApproval(ctx, permEntry) {
   if (permEntry && permEntry.toolName === "ExitPlanMode") return;
   if (typeof ctx.maybeStartRemoteApproval !== "function") return;
@@ -1047,10 +1099,22 @@ function handlePermissionPost(req, res, options) {
 
       if (shouldBypassCCBubble(ctx, toolName, permAgentId)) {
         recordRequestHookEvent.accepted();
-        const reason = !arePermissionBubblesEnabled(ctx)
-          ? "permission bubbles disabled"
-          : `${permAgentId} bubbles disabled`;
-        ctx.permLog(`${reason} → destroy connection, chat fallback (tool=${toolName})`);
+        // "Permission bubbles disabled" (the global/local toggle) only means
+        // no desktop window — it must not also drop Telegram remote approval.
+        // "<agent> bubbles disabled" is the per-agent gate (isAgentPermissionsEnabled),
+        // a stronger opt-out that keeps Clawd fully out of that agent's loop,
+        // so it still falls straight back to the native chat prompt.
+        if (!arePermissionBubblesEnabled(ctx)) {
+          const started = tryRemoteOnlyApproval(ctx, {
+            res, sessionId, toolName, toolInput, toolUseId, toolInputFingerprint,
+            agentId: permAgentId, subagentId, subagentType, suggestions,
+          });
+          if (started) return;
+          ctx.permLog(`permission bubbles disabled, no remote approval available → destroy connection, chat fallback (tool=${toolName})`);
+          res.destroy();
+          return;
+        }
+        ctx.permLog(`${permAgentId} bubbles disabled → destroy connection, chat fallback (tool=${toolName})`);
         res.destroy();
         return;
       }
