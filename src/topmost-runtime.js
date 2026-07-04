@@ -7,6 +7,12 @@ const {
 const WIN_TOPMOST_LEVEL = "pop-up-menu";  // above taskbar-level UI
 const MAC_TOPMOST_LEVEL = "screen-saver"; // above fullscreen apps on macOS
 const TOPMOST_WATCHDOG_MS = 5_000;
+// #562: the hit window's activation (focusable) tracks the fullscreen state on
+// its own fast timer, separate from the 5s topmost watchdog. Entering a
+// fullscreen game has to flip the hit window non-activating quickly — while it
+// still activates, an early click/drag can kick the game out of fullscreen — so
+// this polls ~1s instead of riding the slow watchdog (which left a ~5s window).
+const FOCUSABLE_POLL_MS = 1_000;
 const HWND_RECOVERY_DELAY_MS = 1000;
 
 function isLiveWindow(win) {
@@ -35,6 +41,26 @@ function createTopmostRuntime(options = {}) {
   const applyStationaryCollectionBehavior = options.applyStationaryCollectionBehavior
     || defaultApplyStationaryCollectionBehavior;
   const keepOutOfTaskbar = options.keepOutOfTaskbar || (() => {});
+  // Windows-only: when a fullscreen app/game owns the foreground, the watchdog
+  // and always-on-top guard stand down so we stop clawing the pet back over it
+  // every tick (#538). Defaults to "never fullscreen" so non-Windows and any
+  // FFI-load failure keep the original always-reassert behavior.
+  const isForegroundFullscreen = options.isForegroundFullscreen || (() => false);
+  // Windows-only (#562): when the user opts into fullscreen-overlay mode the pet
+  // floats ON TOP of a foreground fullscreen app instead of standing down. The
+  // topmost watchdog/guard keep re-asserting (pet stays visible + draggable over
+  // e.g. a borderless game); only the focus-stealing activation still stands
+  // down so a click can't yank the game's foreground. Defaults off → the
+  // original #538 stand-down. Off Windows isForegroundFullscreen is always false
+  // so this is moot.
+  const getFullscreenOverlay = options.getFullscreenOverlay || (() => false);
+  // Windows-only: toggle the hit window's activation with the fullscreen state.
+  // While a fullscreen app owns the foreground we make the hit window
+  // non-activating so a click on the pet can't steal focus from an
+  // exclusive-fullscreen game and minimize it; we re-enable activation when
+  // fullscreen ends because dragging needs it (#545). No-op off Windows / when
+  // unset. (#538 drag focus-steal)
+  const setHitWinFocusable = options.setHitWinFocusable || (() => {});
   const setForceEyeResend = options.setForceEyeResend || (() => {});
   const applyPetWindowPosition = options.applyPetWindowPosition || (() => {});
   const syncHitWin = options.syncHitWin || (() => {});
@@ -43,16 +69,30 @@ function createTopmostRuntime(options = {}) {
   const setTimeoutFn = options.setTimeout || setTimeout;
   const clearTimeoutFn = options.clearTimeout || clearTimeout;
   const watchdogMs = Number.isFinite(options.watchdogMs) ? options.watchdogMs : TOPMOST_WATCHDOG_MS;
+  const focusablePollMs = Number.isFinite(options.focusablePollMs)
+    ? options.focusablePollMs
+    : FOCUSABLE_POLL_MS;
   const hwndRecoveryDelayMs = Number.isFinite(options.hwndRecoveryDelayMs)
     ? options.hwndRecoveryDelayMs
     : HWND_RECOVERY_DELAY_MS;
 
   let topmostWatchdog = null;
+  let focusablePoll = null;
   let hwndRecoveryTimer = null;
   let pendingNudgeRestore = null;
 
   function reassertWinTopmost() {
     if (!isWin) return;
+    // A fullscreen foreground app owns the screen — stand down so the pet/hit
+    // windows don't claw their topmost band back over it. This is the same
+    // #538 stand-down the watchdog and always-on-top guard already apply, but
+    // it has to live here too: dragging funnels through this function both
+    // mid-drag (pet-window-runtime nudges topmost near a work-area edge) and on
+    // drag-end, and HWND recovery re-enters it on a timer. Without the guard a
+    // single drag would yank the pet back in front of the fullscreen game.
+    // #562: in fullscreen-overlay mode keep re-topping over the fullscreen app
+    // rather than standing down here (drag funnels through this function).
+    if (isForegroundFullscreen() && !getFullscreenOverlay()) return;
     const win = getWin();
     const hitWin = getHitWin();
     if (isLiveWindow(win)) win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
@@ -152,9 +192,23 @@ function createTopmostRuntime(options = {}) {
     if (!isWin || !winToGuard || typeof winToGuard.on !== "function") return;
     winToGuard.on("always-on-top-changed", (_event, isOnTop) => {
       if (isOnTop || !isLiveWindow(winToGuard)) return;
-      winToGuard.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+      const renderWin = getWin();
+      const hitLayerWin = getHitWin();
+      // A fullscreen app legitimately took topmost — don't fight back (no
+      // re-top, no 1px nudge, no HWND recovery). The 5s watchdog restores the
+      // pet within a cycle once the user leaves fullscreen (#538).
+      if ((winToGuard === renderWin || winToGuard === hitLayerWin) && isForegroundFullscreen() && !getFullscreenOverlay()) return;
+      if (winToGuard === renderWin) {
+        // Re-topping only the render window would re-insert it at the top of
+        // the topmost band, briefly leaving the hit window beneath it
+        // (z-order inversion). reassertWinTopmost re-tops win then hitWin, so
+        // the hit layer lands back above the pet.
+        reassertWinTopmost();
+      } else {
+        winToGuard.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+      }
       if (
-        winToGuard === getWin()
+        winToGuard === renderWin
         && !isDragLocked()
         && !isMiniAnimating()
         && !isMiniTransitioning()
@@ -176,17 +230,30 @@ function createTopmostRuntime(options = {}) {
     });
   }
 
-  function reassertWindowAndTaskbar(win) {
+  function reassertWindowAndTaskbar(win, { skipTopmost = false } = {}) {
     if (!isLiveWindow(win)) return;
-    win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+    // When a fullscreen app is foreground we skip the topmost re-assert (the
+    // part that interrupts the fullscreen app) but still keep the pet out of
+    // the taskbar, which is a non-focus-stealing maintenance op.
+    if (!skipTopmost) win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
     keepOutOfTaskbar(win);
   }
 
   function startTopmostWatchdog() {
     if (!isWin || topmostWatchdog) return;
     topmostWatchdog = setIntervalFn(() => {
-      reassertWindowAndTaskbar(getWin());
-      reassertWindowAndTaskbar(getHitWin());
+      // Only the pet + hit windows stand down under a fullscreen foreground.
+      // Permission bubbles / HUD below are deliberate interruptions the user
+      // must act on, so they keep re-asserting even over a fullscreen app.
+      // #562: stand down topmost over a fullscreen foreground app UNLESS the
+      // user opted into overlay mode (then keep floating on top). The hit
+      // window's activation is handled separately on the faster focusable poll
+      // (startFocusablePoll) — float-on-top (topmost, here) and don't-steal-
+      // focus (focusable, there) are independent decisions (#562).
+      const fsForeground = isForegroundFullscreen();
+      const skipTopmost = fsForeground && !getFullscreenOverlay();
+      reassertWindowAndTaskbar(getWin(), { skipTopmost });
+      reassertWindowAndTaskbar(getHitWin(), { skipTopmost });
 
       for (const perm of getPendingPermissions()) {
         const bubble = perm && perm.bubble;
@@ -219,8 +286,40 @@ function createTopmostRuntime(options = {}) {
     }
   }
 
+  // #562: drop the hit window's activation whenever a fullscreen app owns the
+  // foreground (a click on the pet must never steal focus and kick an
+  // exclusive-fullscreen game out), and restore it otherwise (desktop drag
+  // needs activation, #545). Runs on its own ~1s timer instead of the 5s
+  // watchdog so entering fullscreen flips activation within ~1s — closing the
+  // window where an early drag could still kick the game out (#562). Decoupled
+  // from the overlay/topmost decision: focus is never stolen from a fullscreen
+  // app, overlay or not. setHitWinFocusable is idempotent (no-op unchanged).
+  function syncHitWinFocusable() {
+    if (!isWin) return;
+    setHitWinFocusable(!isForegroundFullscreen());
+  }
+
+  function startFocusablePoll() {
+    if (!isWin || focusablePoll) return;
+    // Sync once up front: if Clawd starts (or this re-arms) while a fullscreen
+    // game is already foreground, drop the hit window's activation immediately
+    // rather than leaving it activatable for up to one poll interval (the hit
+    // window is created focusable: true). Idempotent, so the desktop case is a
+    // no-op.
+    syncHitWinFocusable();
+    focusablePoll = setIntervalFn(syncHitWinFocusable, focusablePollMs);
+  }
+
+  function stopFocusablePoll() {
+    if (focusablePoll) {
+      clearIntervalFn(focusablePoll);
+      focusablePoll = null;
+    }
+  }
+
   function cleanup() {
     stopTopmostWatchdog();
+    stopFocusablePoll();
     if (hwndRecoveryTimer) {
       clearTimeoutFn(hwndRecoveryTimer);
       hwndRecoveryTimer = null;
@@ -236,6 +335,8 @@ function createTopmostRuntime(options = {}) {
     guardAlwaysOnTop,
     startTopmostWatchdog,
     stopTopmostWatchdog,
+    startFocusablePoll,
+    stopFocusablePoll,
     cleanup,
   };
 }
@@ -243,6 +344,7 @@ function createTopmostRuntime(options = {}) {
 createTopmostRuntime.WIN_TOPMOST_LEVEL = WIN_TOPMOST_LEVEL;
 createTopmostRuntime.MAC_TOPMOST_LEVEL = MAC_TOPMOST_LEVEL;
 createTopmostRuntime.TOPMOST_WATCHDOG_MS = TOPMOST_WATCHDOG_MS;
+createTopmostRuntime.FOCUSABLE_POLL_MS = FOCUSABLE_POLL_MS;
 createTopmostRuntime.HWND_RECOVERY_DELAY_MS = HWND_RECOVERY_DELAY_MS;
 
 module.exports = createTopmostRuntime;

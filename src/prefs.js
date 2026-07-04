@@ -48,7 +48,7 @@ const {
   normalizeTextScaleByDisplay,
 } = require("./text-scale");
 
-const CURRENT_VERSION = 11;
+const CURRENT_VERSION = 12;
 const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
 const DEFAULT_INTEGRATION_INSTALLED_SET = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 
@@ -84,6 +84,16 @@ const SCHEMA = {
   // when keepSizeAcrossDisplays is enabled.
   savedPixelWidth: { type: "number", default: 0, validate: (v) => Number.isFinite(v) && v >= 0 },
   savedPixelHeight: { type: "number", default: 0, validate: (v) => Number.isFinite(v) && v >= 0 },
+  // #408: work area of the display the keep-size was *frozen* on (i.e. the
+  // realized origin). Kept separately from positionDisplay because that one
+  // tracks the LAST display the window sat on — after a "Send to display"
+  // the two diverge, and using positionDisplay as the frozen origin would
+  // clamp legitimate cross-display sizes back to the launch fallback.
+  savedPixelWorkArea: {
+    type: "object",
+    defaultFactory: () => null,
+    normalize: normalizeSavedPixelWorkArea,
+  },
   size: {
     type: "string",
     default: "P:9",
@@ -100,9 +110,22 @@ const SCHEMA = {
   // Pure data prefs
   lang: { type: "string", default: "en", enum: ["en", "zh", "zh-TW", "ko", "ja"] },
   showTray: { type: "boolean", default: true },
-  showDock: { type: "boolean", default: true },
+  // Default off (macOS): a fresh install runs as an accessory/agent app — pet +
+  // menu-bar icon, no Dock tile. Existing users keep their Dock — a persisted
+  // showDock is kept (save() bakes the full snapshot), and the v11->v12 migration
+  // backfills showDock=true for any pre-v12 file that lacks the key — so ONLY
+  // brand-new installs (which never run migrate) pick up this off default.
+  // showTray stays default-on so there is always one access point (menu bar).
+  showDock: { type: "boolean", default: false },
   manageClaudeHooksAutomatically: { type: "boolean", default: true },
   autoStartWithClaude: { type: "boolean", default: false },
+  // Codex approval awareness depends entirely on the official PermissionRequest
+  // hook (JSONL no longer infers approvals). These surface its health: the
+  // toggle gates the startup nudge, and LastNotified is the edge-trigger dedup
+  // signature (empty = healthy/never-warned) so a broken hook nags at most once
+  // per distinct breakage, not every launch. See codex-hook-health.js.
+  codexHookHealthNotifyEnabled: { type: "boolean", default: true },
+  codexHookHealthLastNotified: { type: "string", default: "" },
   // System-backed: actual truth lives in OS login items / autostart files.
   // `openAtLoginHydrated` starts false; main.js's startup hydrate helper imports
   // the current system value into prefs on first run, then flips this flag.
@@ -200,6 +223,19 @@ const SCHEMA = {
   keepSizeAcrossDisplays: { type: "boolean", default: false },
   // Free roam: when enabled and the pet is idle, it will wander around the screen
   freeRoam: { type: "boolean", default: false },
+  // #562: Windows-only. When ON, the pet floats ON TOP of a foreground
+  // fullscreen app (e.g. a borderless game) and stays draggable, instead of
+  // standing down below it (#538). Default ON — most users want to glance at
+  // the pet while gaming. OFF only restores the #538 stand-down, which depends
+  // on the game grabbing topmost: that fires for exclusive-fullscreen, but a
+  // borderless-fullscreen game never yields topmost, so the pet floats on top
+  // there regardless of this pref (a Windows platform limit — forcing the pet
+  // below via setAlwaysOnTop(false) scrambles z-order, so we don't). To remove
+  // the pet entirely the user hides it (Hide Pet). No settings UI as of #562
+  // (the toggle was a non-choice for borderless games — see
+  // settings-tab-general.js); this pref persists as an escape hatch and can be
+  // re-exposed.
+  fullscreenOverlay: { type: "boolean", default: true },
   // Text-window zoom (bubbles, HUD, dashboard, settings, resume input). The
   // pet itself scales via `size` and is never zoomed. `textScale` is the
   // global default; `textScaleByDisplay` overrides it per display id (the
@@ -251,6 +287,8 @@ const SCHEMA = {
       // Qoder is state-only (Phase 1) — permission bubbles default off.
       "qoder": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       "reasonix": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+      // QoderWork is state-only (Phase 1) — permission bubbles default off.
+      "qoderwork": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
     }),
     normalize: normalizeAgents,
   },
@@ -350,6 +388,15 @@ const SCHEMA = {
     defaultFactory: () => ({}),
     normalize: normalizeDismissedUpdateVersions,
   },
+  // First-run tutorial gate: false until the user has seen (completed OR skipped)
+  // the onboarding tutorial once, then true forever. Persisted (NOT ephemeral),
+  // and intentionally NOT backfilled by any migration. Existing users' files have
+  // no tutorialSeen key, so validate() resolves it to the false default — meaning
+  // they ALSO get the tutorial once on their next launch after updating, exactly
+  // like a brand-new install. "Seen once → true → never shown again", across any
+  // future version update. (Contrast showDock, which is migration-backfilled so
+  // ONLY fresh installs pick up its new default.)
+  tutorialSeen: { type: "boolean", default: false },
 };
 
 const SCHEMA_KEYS = Object.freeze(Object.keys(SCHEMA));
@@ -587,6 +634,17 @@ function migrate(raw) {
     }
     out.version = 11;
   }
+  // v11 -> v12: showDock now defaults OFF for FRESH INSTALLS ONLY (a new install
+  // runs as a menu-bar/pet accessory with no Dock tile). Existing files normally
+  // carry showDock explicitly (save() bakes the full snapshot), but a file from a
+  // pre-showDock build or hand-trimmed by the user lacks it — without this
+  // backfill validate() would hand those users the new off default and hide their
+  // Dock. Pin the old on-default for every pre-v12 file; fresh installs never run
+  // migrate().
+  if (out.version < 12) {
+    if (!("showDock" in out)) out.showDock = true;
+    out.version = 12;
+  }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;
   }
@@ -620,6 +678,15 @@ function normalizeDismissedAgentHintMap(value) {
     if (typeof key === "string" && key && value[key] === true) out[key] = true;
   }
   return out;
+}
+
+function normalizeSavedPixelWorkArea(value) {
+  if (!value || typeof value !== "object") return null;
+  const w = Number(value.width);
+  const h = Number(value.height);
+  if (!Number.isFinite(w) || w <= 0) return null;
+  if (!Number.isFinite(h) || h <= 0) return null;
+  return { width: w, height: h };
 }
 
 function normalizePositionDisplay(value) {
@@ -874,19 +941,25 @@ function normalizeThemeVariant(value, defaultsValue) {
 
 // ── Disk I/O ──
 
-// Read prefs from disk. Returns `{ snapshot, locked }`:
+// Read prefs from disk. Returns `{ snapshot, locked, fresh? }`:
 //   - snapshot: a valid prefs object (always — falls back to defaults on any error)
 //   - locked: true if the file came from a future version; save() should be a no-op
 //             to avoid clobbering it.
+//   - fresh: true ONLY when there was no prefs file at all (brand-new install).
+//            Callers use this to seed first-run-only state (e.g. UI language from
+//            the device locale) without ever overriding an existing user's choices.
+//            Absent/falsy on every other path — a corrupt or unreadable file is
+//            NOT treated as fresh, so we never clobber a returning user's language.
 function load(prefsPath) {
   let raw;
   try {
     const text = fs.readFileSync(prefsPath, "utf8");
     raw = JSON.parse(text);
   } catch (err) {
-    // Missing file is normal on first run — return defaults silently.
+    // Missing file is normal on first run — return defaults silently, flagged
+    // fresh so the caller can seed device-locale language exactly once.
     if (err && err.code === "ENOENT") {
-      return { snapshot: getDefaults(), locked: false };
+      return { snapshot: getDefaults(), locked: false, fresh: true };
     }
     // Any other error (parse fail, permission, etc.) → backup + defaults
     try {
@@ -930,6 +1003,24 @@ function save(prefsPath, snapshot) {
   fs.writeFileSync(prefsPath, JSON.stringify(validated, null, 2));
 }
 
+// Map an OS locale string (e.g. Electron's app.getLocale()) onto one of the
+// supported UI languages. Used ONLY to seed `lang` on a brand-new install from
+// the device locale — existing users keep whatever they picked. Unknown or empty
+// locales fall back to English. Pure (no Electron dependency) so it stays
+// unit-testable; the caller passes app.getLocale() in.
+function mapLocaleToLang(locale) {
+  if (typeof locale !== "string" || !locale) return "en";
+  const l = locale.toLowerCase().replace(/_/g, "-");
+  if (l === "zh" || l.startsWith("zh-")) {
+    // Traditional-script tags/regions → zh-TW; all other Chinese → zh.
+    if (/hant/.test(l) || /^zh-(tw|hk|mo)\b/.test(l)) return "zh-TW";
+    return "zh";
+  }
+  if (l === "ko" || l.startsWith("ko-")) return "ko";
+  if (l === "ja" || l.startsWith("ja-")) return "ja";
+  return "en";
+}
+
 module.exports = {
   CURRENT_VERSION,
   SCHEMA,
@@ -942,6 +1033,7 @@ module.exports = {
   migrate,
   load,
   save,
+  mapLocaleToLang,
   normalizeThemeOverrides,
   normalizeShortcuts,
 };

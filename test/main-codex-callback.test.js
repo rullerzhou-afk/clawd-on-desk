@@ -6,15 +6,9 @@ const assert = require("node:assert");
 const {
   buildCodexMonitorUpdateOptions,
   isCodexMonitorMetadataOnlyEvent,
-  isCodexMonitorPermissionEvent,
 } = require("../src/codex-monitor-callback");
 
 describe("Codex monitor callback helpers", () => {
-  it("identifies JSONL permission events", () => {
-    assert.strictEqual(isCodexMonitorPermissionEvent("codex-permission"), true);
-    assert.strictEqual(isCodexMonitorPermissionEvent("working"), false);
-  });
-
   it("identifies token_count context updates as metadata-only events", () => {
     assert.strictEqual(
       isCodexMonitorMetadataOnlyEvent("event_msg:token_count", {
@@ -111,17 +105,17 @@ describe("Codex monitor callback helpers", () => {
     });
   });
 
-  it("omits headless for permission update options", () => {
+  it("omits headless when requested", () => {
     const options = buildCodexMonitorUpdateOptions({
       cwd: "/repo",
-      sessionTitle: "Approval",
+      sessionTitle: "State update",
       headless: true,
     }, { includeHeadless: false });
 
     assert.deepStrictEqual(options, {
       cwd: "/repo",
       agentId: "codex",
-      sessionTitle: "Approval",
+      sessionTitle: "State update",
     });
     assert.strictEqual(Object.prototype.hasOwnProperty.call(options, "headless"), false);
   });

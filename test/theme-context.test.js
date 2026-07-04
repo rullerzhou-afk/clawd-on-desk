@@ -235,3 +235,40 @@ test("renderer config exposes trusted scripted files only for built-in themes", 
     fixture.cleanup();
   }
 });
+
+test("getRendererConfig reports hasRoamVisual only for a dedicated roam binding", () => {
+  const fixture = makeRoot();
+  try {
+    // No roam binding at all — nothing dedicated.
+    const ctxNone = createThemeContext(makeTheme(), fixture);
+    assert.strictEqual(ctxNone.getRendererConfig().hasRoamVisual, false);
+
+    // Synthetic fallback shape (the visual resolver injects roam = [idle[0]])
+    // — still not a dedicated visual, renderer keeps its roam-walk bob.
+    const ctxSynthetic = createThemeContext(makeTheme({
+      states: { idle: ["idle.svg"], roam: ["idle.svg"] },
+    }), fixture);
+    assert.strictEqual(ctxSynthetic.getRendererConfig().hasRoamVisual, false);
+
+    // Dedicated roam visual — renderer drops the bob and enables heading flips.
+    const ctxDedicated = createThemeContext(makeTheme({
+      states: { idle: ["idle.svg"], roam: ["crabwalk.svg"] },
+    }), fixture);
+    assert.strictEqual(ctxDedicated.getRendererConfig().hasRoamVisual, true);
+
+    // Multi-entry bindings are author intent, not the resolver's synthetic
+    // single-entry fallback — dedicated regardless of entry order or an idle
+    // file appearing among them (the resolver picks randomly from the array).
+    const ctxMultiTail = createThemeContext(makeTheme({
+      states: { idle: ["idle.svg"], roam: ["idle.svg", "walk.svg"] },
+    }), fixture);
+    assert.strictEqual(ctxMultiTail.getRendererConfig().hasRoamVisual, true);
+
+    const ctxMultiHead = createThemeContext(makeTheme({
+      states: { idle: ["idle.svg"], roam: ["walk.svg", "idle.svg"] },
+    }), fixture);
+    assert.strictEqual(ctxMultiHead.getRendererConfig().hasRoamVisual, true);
+  } finally {
+    fixture.cleanup();
+  }
+});

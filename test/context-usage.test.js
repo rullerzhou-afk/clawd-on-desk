@@ -38,7 +38,7 @@ describe("Claude context usage parser", () => {
       {
         type: "assistant",
         message: {
-          model: "claude-opus-4.7",
+          model: "claude-opus-4-5",
           usage: {
             input_tokens: 76578,
             output_tokens: 837,
@@ -57,12 +57,27 @@ describe("Claude context usage parser", () => {
     });
   });
 
-  it("uses a 1M limit for Claude models marked with 1m context", () => {
+  it("uses a 1M limit for models with a 1M context window by default", () => {
+    // Claude Opus 4.6+, Sonnet 4.6+/5, Fable 5, and Mythos ship 1M context
+    // as the model default (no beta header, no "[1m]" marker in transcripts).
+    for (const model of [
+      "claude-opus-4-6",
+      "claude-opus-4-7",
+      "claude-opus-4-8-20250929",
+      "claude-sonnet-4-6",
+      "claude-sonnet-5",
+      "claude-fable-5",
+      "claude-mythos-5",
+      "claude-mythos-preview",
+    ]) {
+      assert.strictEqual(resolveClaudeContextLimit(model), 1000000, model);
+    }
+
     const usage = extractClaudeContextUsageFromEntries([
       {
         type: "assistant",
         message: {
-          model: "claude-opus-4-8[1m]",
+          model: "claude-sonnet-4-6",
           usage: {
             input_tokens: 250000,
             cache_read_input_tokens: 0,
@@ -78,6 +93,21 @@ describe("Claude context usage parser", () => {
       percent: 25,
       source: "claude",
     });
+  });
+
+  it("keeps the 200k limit for models without a 1M context window", () => {
+    for (const model of ["claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-5"]) {
+      assert.strictEqual(resolveClaudeContextLimit(model), 200000, model);
+    }
+  });
+
+  it("falls back to the [1m] marker for models not in the table (legacy 1M beta, proxy echoes)", () => {
+    // claude-opus-4-5 defaults to 200k and isn't in CLAUDE_1M_CONTEXT_MODEL_TOKENS,
+    // but the request-side model id (echoed back by some API proxies, or present
+    // pre-table on legacy transcripts) still carries the beta marker.
+    assert.strictEqual(resolveClaudeContextLimit("claude-opus-4-5[1m]"), 1000000);
+    // Table match and marker match agree for models that are in both.
+    assert.strictEqual(resolveClaudeContextLimit("claude-opus-4-8[1m]"), 1000000);
   });
 
   it("uses the latest usage entry from a transcript tail", () => {

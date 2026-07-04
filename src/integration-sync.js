@@ -86,7 +86,7 @@ function createIntegrationSyncRuntime(options = {}) {
           port: getHookServerPort(),
         });
       }
-      const { registerHooks } = require("../hooks/install.js");
+      const { registerHooks, registerClaudeStatusline } = require("../hooks/install.js");
       const { added, updated, removed } = registerHooks({
         silent: true,
         autoStart: ctx.autoStartWithClaude,
@@ -94,6 +94,18 @@ function createIntegrationSyncRuntime(options = {}) {
       });
       if (added > 0 || updated > 0 || removed > 0) {
         console.log(`Clawd: synced hooks (added ${added}, updated ${updated}, removed ${removed})`);
+      }
+      // Statusline registration is best-effort and reported separately: it only
+      // takes the slot when empty/already ours (never overwrites a user's own
+      // statusline), so a skip here is expected and must not affect the
+      // hooks-sync status returned below.
+      try {
+        const statuslineResult = registerClaudeStatusline({ silent: true });
+        if (statuslineResult.changed) {
+          console.log("Clawd: registered Claude Code statusline (rate limit quota)");
+        }
+      } catch (statuslineErr) {
+        console.warn("Clawd: failed to sync Claude Code statusline:", statuslineErr.message);
       }
       return { status: "ok", added, updated, removed };
     } catch (err) {
@@ -120,10 +132,22 @@ function createIntegrationSyncRuntime(options = {}) {
   function syncAntigravityHooks() {
     try {
       if (typeof ctx.syncAntigravityHooksImpl === "function") return ctx.syncAntigravityHooksImpl();
-      const { registerAntigravityHooks } = require("../hooks/antigravity-install.js");
+      const { registerAntigravityHooks, registerAntigravityStatusline } = require("../hooks/antigravity-install.js");
       const result = registerAntigravityHooks({ silent: true });
       if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
         console.log(`Clawd: synced Antigravity hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      // Statusline registration is best-effort and reported separately: it only
+      // takes the slot when empty/already ours (never overwrites a user's own
+      // statusline), so a skip here is expected and must not affect the
+      // hooks-sync status returned below.
+      try {
+        const statuslineResult = registerAntigravityStatusline({ silent: true });
+        if (statuslineResult.changed) {
+          console.log("Clawd: registered Antigravity statusline (context usage)");
+        }
+      } catch (statuslineErr) {
+        console.warn("Clawd: failed to sync Antigravity statusline:", statuslineErr.message);
       }
       return normalizeInstalledFlagResult(result, "Antigravity CLI", "antigravity-not-installed");
     } catch (err) {
@@ -415,6 +439,21 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncQoderWorkHooks() {
+    try {
+      if (typeof ctx.syncQoderWorkHooksImpl === "function") return ctx.syncQoderWorkHooksImpl();
+      const { registerQoderWorkHooks } = require("../hooks/qoderwork-install.js");
+      const result = registerQoderWorkHooks({ silent: true });
+      if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
+        console.log(`Clawd: synced QoderWork hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      return normalizeCountSyncResult(result, "QoderWork", "qoderwork-not-installed");
+    } catch (err) {
+      console.warn("Clawd: failed to sync QoderWork hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync QoderWork hooks" };
+    }
+  }
+
   const AGENT_INTEGRATION_SYNCERS = Object.freeze({
     "gemini-cli": syncGeminiHooks,
     "antigravity-cli": syncAntigravityHooks,
@@ -432,6 +471,7 @@ function createIntegrationSyncRuntime(options = {}) {
     hermes: syncHermesPlugin,
     qoder: syncQoderHooks,
     reasonix: syncReasonixHooks,
+    qoderwork: syncQoderWorkHooks,
   });
 
   const AGENT_INTEGRATION_REPAIRERS = Object.freeze({
@@ -531,6 +571,7 @@ function createIntegrationSyncRuntime(options = {}) {
     syncHermesPlugin,
     syncQoderHooks,
     syncReasonixHooks,
+    syncQoderWorkHooks,
     repairCodexHooks,
     repairOpenClawPlugin,
     syncIntegrationForAgent,

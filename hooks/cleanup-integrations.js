@@ -4,9 +4,9 @@
 const os = require("os");
 const path = require("path");
 
-const { unregisterHooks: unregisterClaudeHooks } = require("./install");
+const { unregisterHooks: unregisterClaudeHooks, unregisterClaudeStatusline } = require("./install");
 const { unregisterGeminiHooks } = require("./gemini-install");
-const { unregisterAntigravityHooks } = require("./antigravity-install");
+const { unregisterAntigravityHooks, unregisterAntigravityStatusline } = require("./antigravity-install");
 const { unregisterCursorHooks } = require("./cursor-install");
 const { unregisterCopilotHooks } = require("./copilot-install");
 const { unregisterCodeBuddyHooks } = require("./codebuddy-install");
@@ -21,6 +21,7 @@ const { unregisterOpenClawPlugin } = require("./openclaw-install");
 const { resolveHermesHome, unregisterHermesPlugin } = require("./hermes-install");
 const { unregisterQoderHooks } = require("./qoder-install");
 const { unregisterReasonixHooks } = require("./reasonix-install");
+const { unregisterQoderWorkHooks } = require("./qoderwork-install");
 
 const CODEX_MARKERS = ["codex-hook.js", "codex-debug-hook.js"];
 
@@ -42,6 +43,7 @@ const MANAGED_AGENT_IDS = Object.freeze([
   "hermes",
   "qoder",
   "reasonix",
+  "qoderwork",
 ]);
 
 const AGENT_DISPLAY_NAMES = Object.freeze({
@@ -52,7 +54,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   "copilot-cli": "GitHub Copilot CLI",
   codebuddy: "CodeBuddy",
   "kiro-cli": "Kiro CLI",
-  "kimi-cli": "Kimi Code CLI",
+  "kimi-cli": "Kimi Code",
   "qwen-code": "Qwen Code",
   codewhale: "CodeWhale",
   codex: "Codex CLI",
@@ -62,6 +64,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   hermes: "Hermes Agent",
   qoder: "Qoder",
   reasonix: "Reasonix",
+  qoderwork: "QoderWork",
 });
 
 function normalizeHomeDir(value) {
@@ -131,6 +134,7 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       "antigravity-cli": {
         ...common,
         configPath: path.join(homeDir, ".gemini", "config", "hooks.json"),
+        settingsPath: path.join(homeDir, ".gemini", "antigravity-cli", "settings.json"),
       },
       "cursor-agent": {
         ...common,
@@ -152,7 +156,11 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       },
       "kimi-cli": {
         ...common,
-        settingsPath: path.join(homeDir, ".kimi", "config.toml"),
+        // #563: clean both generations — legacy Kimi CLI and Kimi Code.
+        settingsPaths: [
+          path.join(homeDir, ".kimi", "config.toml"),
+          path.join(homeDir, ".kimi-code", "config.toml"),
+        ],
       },
       "qwen-code": {
         ...common,
@@ -198,14 +206,42 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
         ...common,
         settingsPath: path.join(homeDir, ".reasonix", "settings.json"),
       },
+      qoderwork: {
+        ...common,
+        settingsPath: path.join(homeDir, ".qoderwork", "settings.json"),
+      },
     },
   };
 }
 
+function unregisterAntigravityIntegration(options = {}) {
+  const hooks = unregisterAntigravityHooks(options);
+  const statusline = unregisterAntigravityStatusline(options);
+  return {
+    removed: removedCountFromResult(hooks) + removedCountFromResult(statusline),
+    changed: changedFromResult(hooks) || changedFromResult(statusline),
+    backupPaths: [...backupPathsFromResult(hooks), ...backupPathsFromResult(statusline)],
+    hooks,
+    statusline,
+  };
+}
+
+function unregisterClaudeIntegration(options = {}) {
+  const hooks = unregisterClaudeHooks(options);
+  const statusline = unregisterClaudeStatusline(options);
+  return {
+    removed: removedCountFromResult(hooks) + removedCountFromResult(statusline),
+    changed: changedFromResult(hooks) || changedFromResult(statusline),
+    backupPaths: [...backupPathsFromResult(hooks), ...backupPathsFromResult(statusline)],
+    hooks,
+    statusline,
+  };
+}
+
 const AGENT_CLEANERS = Object.freeze({
-  "claude-code": unregisterClaudeHooks,
+  "claude-code": unregisterClaudeIntegration,
   "gemini-cli": unregisterGeminiHooks,
-  "antigravity-cli": unregisterAntigravityHooks,
+  "antigravity-cli": unregisterAntigravityIntegration,
   "cursor-agent": unregisterCursorHooks,
   "copilot-cli": unregisterCopilotHooks,
   codebuddy: unregisterCodeBuddyHooks,
@@ -220,6 +256,7 @@ const AGENT_CLEANERS = Object.freeze({
   hermes: unregisterHermesPlugin,
   qoder: unregisterQoderHooks,
   reasonix: unregisterReasonixHooks,
+  qoderwork: unregisterQoderWorkHooks,
 });
 
 function removedCountFromResult(result) {

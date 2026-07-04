@@ -4,7 +4,8 @@
 // Telegram companion via the real session-snapshot fanout. Locks the third
 // completion surface (the Telegram push) so the held -> promote flow can't
 // silently regress: a held Stop must not push, promote must push exactly once,
-// and live background work must never push.
+// hard live background work must never push, and bg-only Stops with final
+// assistant text promote after a quiet window.
 
 const { describe, it, beforeEach, afterEach, mock } = require("node:test");
 const assert = require("node:assert");
@@ -97,6 +98,15 @@ describe("#406 state -> Telegram completion integration", () => {
     mock.timers.tick(5000);
     await flush();
     assert.strictEqual(sent.length, 0, "background work pending -> no premature completion push");
+  });
+
+  it("bg-only Stop with final assistant text pushes exactly once after the quiet window", async () => {
+    stop(api, "s1", { backgroundTasksCount: 1, assistantLastOutput: "All done." });
+    await flush();
+    assert.strictEqual(sent.length, 0, "no push while bg-only Stop is waiting");
+    mock.timers.tick(1000);
+    await flush();
+    assert.strictEqual(sent.length, 1, "bg-only completion promotes exactly once");
   });
 
   it("Stop then Notification within the window still pushes exactly one completion", async () => {

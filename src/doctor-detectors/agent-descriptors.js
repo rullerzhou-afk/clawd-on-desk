@@ -20,6 +20,7 @@ const openclaw = require("../../hooks/openclaw-install");
 const hermes = require("../../hooks/hermes-install");
 const qoder = require("../../hooks/qoder-install");
 const reasonix = require("../../hooks/reasonix-install");
+const qoderwork = require("../../hooks/qoderwork-install");
 
 function agentName(agentId) {
   const agent = getAgent(agentId);
@@ -132,6 +133,21 @@ const AGENT_DESCRIPTORS = Object.freeze([
     eventSource: agentEventSource("kimi-cli"),
     parentDir: kimi.DEFAULT_PARENT_DIR,
     configPath: kimi.DEFAULT_CONFIG_PATH,
+    // #563: the agent spans two generations with separate homes. Ordered by
+    // priority — doctor reports the first target whose directory exists, so
+    // a machine with both installed is judged by the modern kimi-code config.
+    configTargets: Object.freeze([
+      Object.freeze({
+        label: "kimi-code",
+        parentDir: kimi.KIMI_CODE_PARENT_DIR,
+        configPath: kimi.KIMI_CODE_CONFIG_PATH,
+      }),
+      Object.freeze({
+        label: "legacy",
+        parentDir: kimi.DEFAULT_PARENT_DIR,
+        configPath: kimi.DEFAULT_CONFIG_PATH,
+      }),
+    ]),
     configMode: "toml-text",
     autoInstall: true,
     marker: "kimi-hook.js",
@@ -233,6 +249,18 @@ const AGENT_DESCRIPTORS = Object.freeze([
     marker: reasonix.MARKER,
     nested: true,
     hookEvents: reasonix.REASONIX_HOOK_EVENTS,
+  }),
+  Object.freeze({
+    agentId: "qoderwork",
+    agentName: agentName("qoderwork"),
+    eventSource: agentEventSource("qoderwork"),
+    parentDir: qoderwork.DEFAULT_PARENT_DIR,
+    configPath: qoderwork.DEFAULT_CONFIG_PATH,
+    configMode: "file",
+    autoInstall: true,
+    marker: qoderwork.MARKER,
+    nested: true,
+    hookEvents: qoderwork.QODERWORK_HOOK_EVENTS,
   }),
 ]);
 

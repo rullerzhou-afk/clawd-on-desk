@@ -6,10 +6,16 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const { postStateToRunningServer, readHostPrefix } = require("./server-config");
+const { fitStateBodyToByteBudget } = require("./state-payload-size");
 const { extractClaudeContextUsageFromEntries } = require("./context-usage");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJsonDetailed, getPlatformConfig } = require("./shared-process");
 
 const TRANSCRIPT_TAIL_BYTES = 262144; // 256 KB
+// #583: claude-code registers this hook with async:true and a 5s timeout
+// (hooks/install.js), so a 2s stdin window never stalls the agent. Do NOT
+// raise the shared default in shared-process.js instead — other agent hooks
+// run ~800ms stdout safety timers that must win against a slow stdin read.
+const STDIN_READ_TIMEOUT_MS = 2000;
 const ASSISTANT_OUTPUT_MAX = 2200;
 // Observed in Claude Code 2.1.150 StopFailure hook schema (tyq enum).
 // Unknown values from future versions fall back to "unknown".
@@ -366,6 +372,9 @@ function buildStateBody(event, payload, resolve) {
   if (toolName) body.tool_name = toolName;
   if (toolUseId) body.tool_use_id = toolUseId;
   if (toolInputFingerprint) body.tool_input_fingerprint = toolInputFingerprint;
+  if (event !== "Stop" && typeof payload.transcript_path === "string" && payload.transcript_path) {
+    body.transcript_path = payload.transcript_path;
+  }
   // Read transcript tail once and reuse for both session title extraction and
   // API error detection (Stop only). Avoids two file reads per hook invocation.
   const transcriptEntries = readTranscriptTailEntries(payload.transcript_path);
@@ -442,6 +451,25 @@ function buildStateBody(event, payload, resolve) {
   return body;
 }
 
+// #583: a missing session_id means the agent's stdin JSON was lost or mangled
+// somewhere between the agent host and this process (every real session then
+// collapses to sid=default server-side). Attach what the stdin read actually
+// saw so session-debug.log can separate "never arrived" (bytes:0 + timeout)
+// from "arrived broken" (bytes>0 + parse error) without a repro rig.
+function attachStdinDiag(body, stdinRead) {
+  if (!body || !stdinRead) return body;
+  const payload = stdinRead.payload;
+  if (payload && payload.session_id) return body;
+  const diag = {
+    bytes: stdinRead.bytes,
+    timed_out: stdinRead.timedOut === true,
+    duration_ms: stdinRead.durationMs,
+  };
+  if (stdinRead.parseError) diag.parse_error = stdinRead.parseError;
+  body.stdin_diag = diag;
+  return body;
+}
+
 function main() {
   const event = process.argv[2];
   if (!EVENT_TO_STATE[event]) process.exit(0);
@@ -457,13 +485,27 @@ function main() {
   // Remote mode: skip PID collection — remote PIDs are meaningless on the local machine
   if (event === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
 
-  readStdinJson()
-    .then((payload) => {
+  readStdinJsonDetailed({ timeoutMs: STDIN_READ_TIMEOUT_MS })
+    .then((stdinRead) => {
+      const payload = stdinRead.payload;
       const body = buildStateBody(event, payload || {}, resolve);
       if (!body) process.exit(0);
+      attachStdinDiag(body, stdinRead);
+      // Completion events (Stop) fire the happy animation, are low-frequency,
+      // and matter more than a few ms of latency. Give them a generous POST
+      // timeout so a momentarily slow (but alive) Clawd still receives them;
+      // connection-refused (Clawd not running) still fails instantly, so an
+      // idle machine is never penalized. High-frequency events keep 100ms so
+      // they never stall the agent.
+      const isCompletionEvent = body.event === "Stop";
+      const statePostTimeoutMs = isCompletionEvent ? 1500 : 100;
+      // Byte-fit the body so a long CJK assistant_last_output can't push it past
+      // the server's /state cap and trigger a headerless 413 (read back as
+      // posted=false, dropping the happy completion). hooks/state-payload-size.js.
+      const fitted = fitStateBodyToByteBudget(body);
       postStateToRunningServer(
-        JSON.stringify(body),
-        { timeoutMs: 100 },
+        JSON.stringify(fitted.body),
+        { timeoutMs: statePostTimeoutMs },
         () => process.exit(0)
       );
     })
@@ -474,6 +516,8 @@ if (require.main === module) main();
 
 module.exports = {
   buildStateBody,
+  attachStdinDiag,
+  STDIN_READ_TIMEOUT_MS,
   extractSessionTitleFromTranscript,
   extractApiErrorFromEntries,
   extractLastAssistantTextFromEntries,

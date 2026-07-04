@@ -2,10 +2,13 @@
 const { describe, it, beforeEach, mock } = require("node:test");
 const assert = require("node:assert");
 
+const { PassThrough } = require("node:stream");
+
 const {
   getPlatformConfig,
   createPidResolver,
-  readStdinJson,
+  readStdinJsonDetailed,
+  DEFAULT_STDIN_READ_TIMEOUT_MS,
   buildElectronLaunchConfig,
 } = require("../hooks/shared-process");
 
@@ -494,6 +497,110 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
   });
 });
 
-// readStdinJson() is not unit-tested here — it attaches listeners to
-// process.stdin (singleton) which prevents process exit. Validated by
-// real agent integration tests + the finishOnce/timeout logic is trivial.
+// ═════════════════════════════════════════════════════════════════════════════
+// readStdinJsonDetailed() — injectable stream + timeout (#583)
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("readStdinJsonDetailed()", () => {
+  it("parses a complete JSON payload on EOF and reports bytes", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream });
+    stream.end('{"session_id":"abc-123","cwd":"D:\\\\x"}');
+
+    const result = await pending;
+    assert.strictEqual(result.payload.session_id, "abc-123");
+    assert.strictEqual(result.bytes, Buffer.byteLength('{"session_id":"abc-123","cwd":"D:\\\\x"}'));
+    assert.strictEqual(result.timedOut, false);
+    assert.strictEqual(result.parseError, null);
+  });
+
+  it("concatenates chunked writes before parsing", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream });
+    stream.write('{"session_id":');
+    stream.write('"chunked"');
+    stream.end("}");
+
+    const result = await pending;
+    assert.strictEqual(result.payload.session_id, "chunked");
+    assert.strictEqual(result.timedOut, false);
+  });
+
+  it("returns empty payload with bytes:0 when stdin closes with no data", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream });
+    stream.end();
+
+    const result = await pending;
+    assert.deepStrictEqual(result.payload, {});
+    assert.strictEqual(result.bytes, 0);
+    assert.strictEqual(result.timedOut, false);
+    assert.strictEqual(result.parseError, null);
+  });
+
+  it("reports a parse error for malformed JSON but still resolves {}", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream });
+    stream.end('{"session_id":"broken"');
+
+    const result = await pending;
+    assert.deepStrictEqual(result.payload, {});
+    assert.strictEqual(result.bytes, 22);
+    assert.ok(typeof result.parseError === "string" && result.parseError.length > 0);
+  });
+
+  it("times out when EOF never arrives, keeping any bytes received so far", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream, timeoutMs: 40 });
+    stream.write('{"half":');
+    // no end() — simulates an intermediary swallowing EOF
+
+    const result = await pending;
+    assert.strictEqual(result.timedOut, true);
+    assert.strictEqual(result.bytes, 8);
+    assert.deepStrictEqual(result.payload, {});
+    assert.ok(typeof result.parseError === "string" && result.parseError.length > 0);
+  });
+
+  it("parses data that arrived in full even when EOF is swallowed", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream, timeoutMs: 40 });
+    stream.write('{"session_id":"no-eof"}');
+
+    const result = await pending;
+    assert.strictEqual(result.timedOut, true);
+    assert.strictEqual(result.payload.session_id, "no-eof");
+    assert.strictEqual(result.parseError, null);
+  });
+
+  it("keeps the shared default timeout at 400ms — other agent hooks run ~800ms stdout safety timers that must win the race", () => {
+    assert.strictEqual(DEFAULT_STDIN_READ_TIMEOUT_MS, 400);
+  });
+
+  it("resolves (instead of crashing) when the stream errors mid-read, reporting a stream error", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream });
+    stream.write('{"half":');
+    stream.emit("error", new Error("boom"));
+
+    const result = await pending;
+    assert.deepStrictEqual(result.payload, {});
+    assert.strictEqual(result.bytes, 8);
+    assert.strictEqual(result.timedOut, false);
+    assert.strictEqual(result.parseError, "stream error: boom");
+  });
+
+  it("handles multi-megabyte stdin without truncation", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream });
+    const big = JSON.stringify({ session_id: "big-sid", blob: "z".repeat(3 * 1024 * 1024) });
+    // write in 64KB slices like a real pipe would
+    for (let i = 0; i < big.length; i += 65536) stream.write(big.slice(i, i + 65536));
+    stream.end();
+
+    const result = await pending;
+    assert.strictEqual(result.payload.session_id, "big-sid");
+    assert.strictEqual(result.bytes, Buffer.byteLength(big));
+    assert.strictEqual(result.parseError, null);
+  });
+});

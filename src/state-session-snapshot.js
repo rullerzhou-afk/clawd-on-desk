@@ -8,6 +8,9 @@ const {
   isSupersededLocalCodexProcessSession,
 } = require("./state-session-dedupe");
 const { readCodexThreadName } = require("../hooks/codex-session-index");
+const { normalizeQuotaGroup } = require("../hooks/quota-bucket");
+const { ANTIGRAVITY_QUOTA_FIELDS } = require("../hooks/antigravity-context-usage");
+const { CLAUDE_QUOTA_FIELDS } = require("../hooks/claude-rate-limits");
 
 const EVENT_LABEL_KEYS = {
   SessionStart: "eventLabelSessionStart",
@@ -144,7 +147,18 @@ function sessionDisplayTitle(id, sessionLike, sessionAliases = {}, options = {})
   const title = getEffectiveSessionTitle(id, sessionLike, options);
   if (title) return title;
   const cwd = sessionLike && sessionLike.cwd;
-  if (cwd) return path.basename(cwd);
+  if (cwd && typeof cwd === "string") {
+    // Skip the cwd fallback only for QoderWork sessions running inside a
+    // QoderWork internal workspace (~/.qoderwork/workspace/<id>) — the raw
+    // workspace ID like "mqgw60jiigjsjcid" is meaningless to the user. Other
+    // agents keep the basename fallback even under that path.
+    const isQoderWorkSession = (sessionLike && sessionLike.agentId === "qoderwork")
+      || (typeof id === "string" && id.startsWith("qoderwork:"));
+    const isQoderWorkWorkspaceCwd = /\/\.qoderwork\/workspace\/[^/]+$/.test(cwd.replace(/\\/g, "/"));
+    if (!(isQoderWorkSession && isQoderWorkWorkspaceCwd)) {
+      return path.basename(cwd);
+    }
+  }
   return id && id.length > 6 ? `${id.slice(0, 6)}..` : id;
 }
 
@@ -193,6 +207,9 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     displayTitle: sessionDisplayTitle(id, session, sessionAliases, options),
     cwd: (session && session.cwd) || "",
     updatedAt: sessionUpdatedAt(session),
+    // Quota/context freshness (statusline metadata POSTs, which do not bump
+    // updatedAt). Excluded from sessionSnapshotSignature, like updatedAt.
+    metadataUpdatedAt: (session && Number.isFinite(session.metadataUpdatedAt)) ? session.metadataUpdatedAt : null,
     sourcePid: (session && session.sourcePid) || null,
     wtHwnd: (session && session.wtHwnd) || null,
     editor: (session && session.editor) || null,
@@ -206,6 +223,8 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     codexOriginator: (session && session.codexOriginator) || null,
     codexSource: (session && session.codexSource) || null,
     contextUsage: snapshotContextUsage(session),
+    antigravityQuota: normalizeQuotaGroup(session && session.antigravityQuota, ANTIGRAVITY_QUOTA_FIELDS),
+    claudeQuota: normalizeQuotaGroup(session && session.claudeQuota, CLAUDE_QUOTA_FIELDS),
     assistantLastOutput: (session && typeof session.assistantLastOutput === "string")
       ? session.assistantLastOutput
       : null,
@@ -231,7 +250,7 @@ function snapshotContextUsage(session) {
   if (Number.isFinite(limit) && limit > 0) out.limit = limit;
   const percent = Number(usage.percent);
   if (Number.isFinite(percent)) out.percent = Math.max(0, Math.min(100, Math.round(percent)));
-  if (usage.source === "claude" || usage.source === "codex") out.source = usage.source;
+  if (usage.source === "claude" || usage.source === "codex" || usage.source === "antigravity") out.source = usage.source;
   return out;
 }
 
@@ -337,6 +356,8 @@ function sessionSnapshotSignature(snapshot) {
       codexOriginator: entry.codexOriginator,
       codexSource: entry.codexSource,
       contextUsage: entry.contextUsage,
+      antigravityQuota: entry.antigravityQuota,
+      claudeQuota: entry.claudeQuota,
       assistantLastOutput: entry.assistantLastOutput,
       assistantLastOutputTruncated: !!entry.assistantLastOutputTruncated,
       lastEventLabelKey: entry.lastEvent ? entry.lastEvent.labelKey : null,

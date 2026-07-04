@@ -29,7 +29,8 @@ const AUTO_REPAIRABLE_AGENT_IDS = new Set([
   "opencode",
   "hermes",
   "qoder",
-  "reasonix"
+  "reasonix",
+  "qoderwork",
 ]);
 
 const INSTALLABLE_AGENT_IDS = new Set([
@@ -50,6 +51,7 @@ const INSTALLABLE_AGENT_IDS = new Set([
   "hermes",
   "qoder",
   "reasonix",
+  "qoderwork",
 ]);
 const SETTABLE_AGENT_FLAGS = AGENT_FLAGS.filter((flag) => flag !== "integrationInstalled");
 
@@ -527,6 +529,7 @@ clearAgentCleanupHints.lockKey = "agentIntegration";
 clearAgentInstallHints.lockKey = "agentIntegration";
 
 module.exports = {
+  INSTALLABLE_AGENT_IDS,
   clearAgentCleanupHints,
   clearAgentInstallHints,
   dismissAgentCleanupHints,

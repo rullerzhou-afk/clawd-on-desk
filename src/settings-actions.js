@@ -159,6 +159,7 @@ const MANAGED_CLEANUP_AGENT_IDS = Object.freeze([
   "hermes",
   "qoder",
   "reasonix",
+  "qoderwork",
 ]);
 
 // ── updateRegistry ──
@@ -197,9 +198,24 @@ const updateRegistry = {
   },
   savedPixelWidth: requireNonNegativeFiniteNumber("savedPixelWidth"),
   savedPixelHeight: requireNonNegativeFiniteNumber("savedPixelHeight"),
+  // #408: frozen-origin work area for keepSizeAcrossDisplays. null = unknown
+  // (legacy prefs / never seeded); otherwise positive width+height.
+  savedPixelWorkArea: (value) => {
+    if (value === null) return { status: "ok" };
+    if (!value || typeof value !== "object") {
+      return { status: "error", message: "savedPixelWorkArea must be null or { width, height }" };
+    }
+    const w = Number(value.width);
+    const h = Number(value.height);
+    if (!Number.isFinite(w) || w <= 0 || !Number.isFinite(h) || h <= 0) {
+      return { status: "error", message: "savedPixelWorkArea.width/height must be positive finite numbers" };
+    }
+    return { status: "ok" };
+  },
 
   // ── Pure data prefs (function-form: validator only) ──
   lang: requireEnum("lang", ["en", "zh", "zh-TW", "ko", "ja"]),
+  tutorialSeen: requireBoolean("tutorialSeen"),
   soundMuted: requireBoolean("soundMuted"),
   soundVolume: requireNumberInRange("soundVolume", 0, 1),
   textScale: requireNumberInRange("textScale", TEXT_SCALE_MIN, TEXT_SCALE_MAX),
@@ -223,6 +239,8 @@ const updateRegistry = {
   flashTaskbarOnComplete: requireBoolean("flashTaskbarOnComplete"),
   flashIntervalMs: requireNumberInRange("flashIntervalMs", 200, 2000),
   flashDurationMs: requireNumberInRange("flashDurationMs", 0, 60000),
+  codexHookHealthNotifyEnabled: requireBoolean("codexHookHealthNotifyEnabled"),
+  codexHookHealthLastNotified: requireString("codexHookHealthLastNotified", { allowEmpty: true }),
   lowPowerIdleMode: requireBoolean("lowPowerIdleMode"),
   keepAwakeWhileWorking: requireBoolean("keepAwakeWhileWorking"),
   bubbleFollowPet: requireBoolean("bubbleFollowPet"),
@@ -289,6 +307,7 @@ const updateRegistry = {
   disableMiniMode: requireBoolean("disableMiniMode"),
   freeRoam: requireBoolean("freeRoam"),
   keepSizeAcrossDisplays: requireBoolean("keepSizeAcrossDisplays"),
+  fullscreenOverlay: requireBoolean("fullscreenOverlay"),
   mobilePreviewEnabled: requireBoolean("mobilePreviewEnabled"),
 
   // ── System-backed prefs (object-form: validate + effect pre-commit gate) ──

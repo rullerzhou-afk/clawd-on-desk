@@ -16,6 +16,7 @@ const {
   writeJsonAtomicWithBackup,
   writeJsonAtomicWithBackupAsync,
   asarUnpackedPath,
+  buildPortableStatuslineCommand,
   extractExistingNodeBin,
 } = require("./json-utils");
 
@@ -781,8 +782,10 @@ function registerHooks(options = {}) {
 
   // Read existing settings
   let settings = {};
+  let preExisting = false;
   try {
     settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+    preExisting = true;
   } catch (err) {
     if (err.code !== "ENOENT") {
       throw new Error(`Failed to read settings.json: ${err.message}`);
@@ -961,8 +964,24 @@ function registerHooks(options = {}) {
   }
 
   // Only write if something changed (avoid unnecessary disk I/O)
+  let backupPath = null;
   if (added > 0 || changed) {
-    writeJsonAtomic(settingsPath, settings);
+    // Snapshot the user's prior settings before mutating so the install is
+    // recoverable. Atomic write prevents a half-written file, not an undo —
+    // and we inject hooks into a shared global config the user did not author.
+    // Only back up a file that already existed; opt out with `backup: false`.
+    if (preExisting && options.backup !== false) {
+      backupPath = writeJsonAtomicWithBackup(settingsPath, settings, {
+        backup: true,
+        backupPath: options.backupPath,
+        backupKeep: options.backupKeep,
+      });
+      if (backupPath && !options.silent) {
+        console.log(`  Backup: saved previous settings to ${backupPath}`);
+      }
+    } else {
+      writeJsonAtomic(settingsPath, settings);
+    }
   }
 
   if (!options.silent) {
@@ -998,6 +1017,7 @@ function registerHooks(options = {}) {
     version: versionInfo.version,
     versionStatus: versionInfo.status,
     versionSource: versionInfo.source,
+    backupPath,
   };
 }
 
@@ -1008,8 +1028,10 @@ async function registerHooksAsync(options = {}) {
   const platform = options.platform || process.platform;
 
   let settings = {};
+  let preExisting = false;
   try {
     settings = JSON.parse(await fs.promises.readFile(settingsPath, "utf-8"));
+    preExisting = true;
   } catch (err) {
     if (err.code !== "ENOENT") {
       throw new Error(`Failed to read settings.json: ${err.message}`);
@@ -1168,8 +1190,22 @@ async function registerHooksAsync(options = {}) {
     added++;
   }
 
+  let backupPath = null;
   if (added > 0 || changed) {
-    await writeJsonAtomicAsync(settingsPath, settings);
+    // See registerHooks(): back up the prior config before injecting hooks so
+    // the change is recoverable. Only back up a pre-existing file; `backup: false` opts out.
+    if (preExisting && options.backup !== false) {
+      backupPath = await writeJsonAtomicWithBackupAsync(settingsPath, settings, {
+        backup: true,
+        backupPath: options.backupPath,
+        backupKeep: options.backupKeep,
+      });
+      if (backupPath && !options.silent) {
+        console.log(`  Backup: saved previous settings to ${backupPath}`);
+      }
+    } else {
+      await writeJsonAtomicAsync(settingsPath, settings);
+    }
   }
 
   if (!options.silent) {
@@ -1205,6 +1241,7 @@ async function registerHooksAsync(options = {}) {
     version: versionInfo.version,
     versionStatus: versionInfo.status,
     versionSource: versionInfo.source,
+    backupPath,
   };
 }
 
@@ -1367,16 +1404,105 @@ function isAutoStartRegistered() {
   }
 }
 
+const STATUSLINE_MARKER = "claude-statusline.js";
+
+function hasClaudeSettingsDir(homeDir) {
+  return fs.existsSync(path.join(homeDir, ".claude"));
+}
+
+// Claude Code's statusLine setting is a single slot, not an event-keyed map
+// like hooks - only one script can render the visible status line at a
+// time. We only ever take that slot when it is empty or already ours, and
+// unregister only clears it when the command still carries our marker. A
+// user's own (or a third-party) statusline script is never touched. Mirrors
+// hooks/antigravity-install.js registerAntigravityStatusline.
+function registerClaudeStatusline(options = {}) {
+  const homeDir = options.homeDir || os.homedir();
+  const settingsPath = options.settingsPath || path.join(homeDir, ".claude", "settings.json");
+
+  if (!options.settingsPath && !hasClaudeSettingsDir(homeDir)) {
+    if (!options.silent) console.log("Clawd: Claude Code settings not found - skipping statusline registration");
+    return { installed: false, changed: false, skippedExisting: false, settingsPath };
+  }
+
+  let settings = {};
+  try {
+    settings = readJsonFile(settingsPath);
+  } catch (err) {
+    if (err.code !== "ENOENT") throw new Error(`Failed to read settings.json: ${err.message}`);
+  }
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) settings = {};
+
+  const existing = settings.statusLine && typeof settings.statusLine === "object" ? settings.statusLine : null;
+  const existingIsOurs = !!(existing && typeof existing.command === "string" && existing.command.includes(STATUSLINE_MARKER));
+
+  if (existing && !existingIsOurs) {
+    if (!options.silent) console.log(`Clawd: existing Claude Code statusline detected at ${settingsPath} - leaving it in place`);
+    return { installed: true, changed: false, skippedExisting: true, settingsPath };
+  }
+
+  const scriptPath = asarUnpackedPath(path.resolve(__dirname, "claude-statusline.js").replace(/\\/g, "/"));
+  const nodeBin = (options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin()) || "node";
+  const platform = options.platform || process.platform;
+  // No `& "..."` here: statusLine has no shell field, and on Windows Claude
+  // Code runs this through Git Bash when Git is installed - the PowerShell
+  // call-operator form is a bash syntax error and the statusline dies
+  // silently. See buildPortableStatuslineCommand.
+  const command = buildPortableStatuslineCommand(nodeBin, scriptPath, { platform });
+  const desired = { type: "command", command, padding: 0 };
+
+  const changed = !existing || JSON.stringify(existing) !== JSON.stringify(desired);
+  if (changed) {
+    settings.statusLine = desired;
+    writeJsonAtomic(settingsPath, settings);
+  }
+
+  if (!options.silent) {
+    console.log(`Clawd Claude Code statusline -> ${settingsPath}${changed ? " (updated)" : " (already up to date)"}`);
+  }
+
+  return { installed: true, changed, skippedExisting: false, settingsPath };
+}
+
+function unregisterClaudeStatusline(options = {}) {
+  const homeDir = options.homeDir || os.homedir();
+  const settingsPath = options.settingsPath || path.join(homeDir, ".claude", "settings.json");
+  let settings = {};
+  try {
+    settings = readJsonFile(settingsPath);
+  } catch (err) {
+    if (err.code !== "ENOENT") throw new Error(`Failed to read settings.json: ${err.message}`);
+  }
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) settings = {};
+
+  const existing = settings.statusLine && typeof settings.statusLine === "object" ? settings.statusLine : null;
+  const existingIsOurs = !!(existing && typeof existing.command === "string" && existing.command.includes(STATUSLINE_MARKER));
+
+  if (!existingIsOurs) {
+    return { installed: !!existing, removed: 0, changed: false, settingsPath };
+  }
+
+  delete settings.statusLine;
+  const backupPath = writeJsonAtomicWithBackup(settingsPath, settings, options);
+  if (!options.silent) console.log(`Clawd Claude Code statusline removed -> ${settingsPath}`);
+  const result = { installed: true, removed: 1, changed: true, settingsPath };
+  if (options.backup === true) result.backupPath = backupPath;
+  return result;
+}
+
 // Export for use by main.js
 module.exports = {
   DEFAULT_PARENT_DIR,
   DEFAULT_CONFIG_PATH,
+  STATUSLINE_MARKER,
   registerHooks,
   registerHooksAsync,
   unregisterHooks,
   unregisterHooksAsync,
   unregisterAutoStart,
   isAutoStartRegistered,
+  registerClaudeStatusline,
+  unregisterClaudeStatusline,
   __test: {
     parseClaudeVersion,
     getWindowsClaudePathSuffixes,
@@ -1406,6 +1532,11 @@ if (require.main === module) {
   try {
     const remote = process.argv.includes("--remote");
     registerHooks({ remote });
+    // Keep the CLI symmetric with hooks/uninstall.js, which unregisters the
+    // statusline: without this, a manual uninstall + reinstall cycle loses
+    // the statusline until the next app startup sync. Remote installs skip
+    // it - remote/SSH statusline support is an intentional non-goal.
+    if (!remote) registerClaudeStatusline();
   } catch (err) {
     console.error(err.message);
     process.exit(1);

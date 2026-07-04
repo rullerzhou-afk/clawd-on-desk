@@ -118,7 +118,7 @@ function buildThemeMetadata(themeId, raw, isBuiltin, themeDir, options = {}) {
     previewContentRatio: computePreviewContentRatio(raw),
     previewContentOffsetPct: computePreviewContentOffsetPct(raw),
     variants: buildVariantMetadata(raw, themeDir, isBuiltin, options),
-    capabilities: buildCapabilities(raw),
+    capabilities: buildCapabilities(raw, { trustedRuntimeAllowed: !!isBuiltin }),
   };
 }
 

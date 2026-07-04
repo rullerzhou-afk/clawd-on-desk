@@ -86,6 +86,9 @@ describe("detectRunningAgentProcesses() agent coverage", () => {
     // process (qoder.exe) must NOT trigger startup recovery.
     assert.doesNotMatch(seenScript, /'qoder\.exe'/);
     assert.match(seenScript, /Get-CimInstance Win32_Process/);
+    assert.match(seenScript, /-Filter/);
+    assert.doesNotMatch(seenScript, /Win32_Process \| Where-Object/);
+    assert.match(seenScript, /CommandLine LIKE '%claude-code%'/);
   });
 
   it("includes agy, kimi, and Pi package markers in macOS/Linux pgrep query", async () => {

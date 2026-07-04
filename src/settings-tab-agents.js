@@ -18,6 +18,7 @@
   let agentHintActionPending = false;
   let agentInstallHintResetPending = false;
   let agentCleanupHintResetPending = false;
+  let codexHookHealthRequestSeq = 0;
 
   function t(key) {
     return helpers.t(key);
@@ -458,6 +459,73 @@
       .replace("{message}", values.message || "unknown error");
   }
 
+  function showClaudeHooksDisableConfirmModal() {
+    return helpers.showSettingsConfirmModal({
+      title: t("claudeHooksDisableConfirmTitle"),
+      detail: t("claudeHooksDisableConfirmDetail"),
+      actions: [
+        { id: "disconnect", label: t("claudeHooksDisableConfirmDisconnect"), tone: "danger" },
+        { id: "disable", label: t("claudeHooksDisableConfirmDisableOnly"), tone: "neutral" },
+        { id: "keep", label: t("claudeHooksDisableConfirmKeep"), tone: "accent", defaultFocus: true },
+      ],
+    });
+  }
+
+  function showClaudeHooksDisconnectConfirmModal() {
+    return helpers.showSettingsConfirmModal({
+      title: t("claudeHooksDisconnectConfirmTitle"),
+      detail: t("claudeHooksDisconnectConfirmDetail"),
+      actions: [
+        { id: "disconnect", label: t("claudeHooksDisconnectConfirmAction"), tone: "danger" },
+        { id: "keep", label: t("claudeHooksDisconnectConfirmKeep"), tone: "accent", defaultFocus: true },
+      ],
+    });
+  }
+
+  function confirmDisableClaudeHookManagement(nextRaw) {
+    if (nextRaw) return window.settingsAPI.update("manageClaudeHooksAutomatically", true);
+    return showClaudeHooksDisableConfirmModal().then((actionId) => {
+      if (!actionId || actionId === "keep") return { status: "ok", noop: true };
+      if (actionId === "disconnect") return window.settingsAPI.command("uninstallHooks");
+      return window.settingsAPI.update("manageClaudeHooksAutomatically", false);
+    });
+  }
+
+  function runDisconnectClaudeHooks() {
+    if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") {
+      return Promise.resolve({ status: "error", message: "settings API unavailable" });
+    }
+    return showClaudeHooksDisconnectConfirmModal().then((actionId) => {
+      if (actionId !== "disconnect") return { status: "ok", noop: true };
+      return window.settingsAPI.command("uninstallHooks");
+    });
+  }
+
+  function buildClaudeHookManagementRows() {
+    const manageHooksEnabled = !!(state.snapshot && state.snapshot.manageClaudeHooksAutomatically);
+    const manageRow = helpers.buildSwitchRow({
+      key: "manageClaudeHooksAutomatically",
+      labelKey: "rowManageClaudeHooks",
+      descKey: "rowManageClaudeHooksDesc",
+      descExtraKey: "rowManageClaudeHooksOffNote",
+      onToggle: ({ nextRaw }) => confirmDisableClaudeHookManagement(nextRaw),
+      actionButton: {
+        labelKey: "actionDisconnectClaudeHooks",
+        invoke: () => runDisconnectClaudeHooks(),
+      },
+    });
+    manageRow.classList.add("row-sub");
+    const autoStartRow = helpers.buildSwitchRow({
+      key: "autoStartWithClaude",
+      labelKey: "rowStartWithClaude",
+      descKey: "rowStartWithClaudeDesc",
+      descExtraKey: manageHooksEnabled ? null : "rowStartWithClaudeDisabledDesc",
+      disabled: !manageHooksEnabled,
+    });
+    autoStartRow.classList.add("row-sub");
+    return [manageRow, autoStartRow];
+  }
+
   function buildAgentGroup(agent) {
     const masterRow = buildAgentMasterRow(agent);
     const detailRows = buildAgentDetailRows(agent);
@@ -523,6 +591,9 @@
   function buildAgentDetailRows(agent) {
     const rows = [];
     const caps = agent.capabilities || {};
+    if (agent.id === "claude-code") {
+      rows.push(...buildClaudeHookManagementRows());
+    }
     if (agent.id === "codex") {
       rows.push(buildCodexPermissionModeRow(agent, computeAgentSubSwitchDisabled(agent.id, "permissionMode")));
       rows.push(buildAgentSwitchRow({
@@ -541,6 +612,15 @@
           text.appendChild(desc);
         },
       }));
+      // Startup nudge gate: warn (once per breakage) when the official hook —
+      // now the ONLY Codex approval path — is disabled / needs review / inactive.
+      const codexHookNotifyRow = helpers.buildSwitchRow({
+        key: "codexHookHealthNotifyEnabled",
+        labelKey: "rowCodexHookHealthNotify",
+        descKey: "rowCodexHookHealthNotifyDesc",
+      });
+      codexHookNotifyRow.classList.add("row-sub");
+      rows.push(codexHookNotifyRow);
     }
     if (caps.permissionApproval || caps.interactiveBubble) {
       rows.push(buildAgentSwitchRow({
@@ -720,6 +800,32 @@
     const installed = readers.readAgentIntegrationInstalled(agentId);
     badge.classList.toggle("not-installed", !installed);
     badge.textContent = t(installed ? "agentIntegrationInstalled" : "agentIntegrationNotInstalled");
+    if (agentId === "codex") annotateCodexHookHealth(badge, installed);
+  }
+
+  // Codex approval awareness now depends ENTIRELY on the official PermissionRequest
+  // hook (JSONL no longer infers approvals). A hook that is registered but
+  // disabled / needs-review / mis-registered still reads as "Installed" from
+  // prefs, yet Codex never runs it — so the pet shows no approval prompts. Overlay
+  // an amber warning, sourced from the same check the Doctor uses (so they agree),
+  // with the specific reason in the tooltip. Async + best-effort: if the probe is
+  // unavailable or healthy, the badge keeps its base "Installed" state.
+  function annotateCodexHookHealth(badge, installed) {
+    if (!badge) return;
+    const seq = String(++codexHookHealthRequestSeq);
+    if (badge.dataset) badge.dataset.codexHookHealthSeq = seq;
+    badge.classList.remove("hook-warning");
+    badge.removeAttribute("title");
+    if (!installed || !window.doctor || typeof window.doctor.codexHookHealth !== "function") return;
+    window.doctor.codexHookHealth().then((health) => {
+      if (badge.isConnected === false) return;
+      if (badge.dataset && badge.dataset.codexHookHealthSeq !== seq) return;
+      if (!health || health.healthy || !health.signature) return;
+      if (!readers.readAgentIntegrationInstalled("codex")) return;
+      badge.classList.add("hook-warning");
+      badge.textContent = t("agentCodexHookNeedsAttention");
+      if (health.reasonKey) badge.title = t(health.reasonKey);
+    }).catch(() => {});
   }
 
   function syncAgentIntegrationAction(meta) {

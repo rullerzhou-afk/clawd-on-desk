@@ -6,8 +6,9 @@
 //   • Before moving the window, the visual state switches to "roam" (which
 //     falls back to idle SVG for themes without a dedicated roam animation).
 //     This prevents the "idle pet dragged across the desktop" regression.
-//   • Movement goes through applyPetWindowPosition every frame so virtual bounds,
-//     hit window, HUD, and anchored surfaces stay in sync with the pet.
+//   • Movement goes through applyPetWindowBounds every frame — anchored to a
+//     size captured once at walk start (#569) — so virtual bounds, hit window,
+//     HUD, and anchored surfaces stay in sync with the pet.
 //   • Each animation step re-checks isRoamAllowed() so a state change to working /
 //     notification / permission cancels the roam immediately — no "pet drifting while
 //     working" regression.
@@ -22,6 +23,7 @@ const ROAM_SPEED_PX_PER_MS = 0.08;   // 80px/s — slower than mini crabwalk (12
 const ROAM_MIN_DIST = 100;
 const ROAM_MARGIN_RATIO = 0.15;
 const ROAM_FRAME_MS = 16;
+const ROAM_TARGET_ATTEMPTS = 8;
 
 module.exports = function initRoam(ctx) {
   let enabled = false;
@@ -60,13 +62,33 @@ module.exports = function initRoam(ctx) {
     const yMin = wa.y + marginY;
     const yMax = wa.y + wa.height - bounds.height - marginY;
     if (xMax <= xMin || yMax <= yMin) return null;
-    const targetX = xMin + Math.floor(Math.random() * (xMax - xMin));
-    const targetY = yMin + Math.floor(Math.random() * (yMax - yMin));
-    const dx = targetX - bounds.x;
-    const dy = targetY - bounds.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist < ROAM_MIN_DIST) return null;
-    return { x: targetX, y: targetY };
+    for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
+      const targetX = xMin + Math.floor(Math.random() * (xMax - xMin));
+      const targetY = yMin + Math.floor(Math.random() * (yMax - yMin));
+      const dx = targetX - bounds.x;
+      const dy = targetY - bounds.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist >= ROAM_MIN_DIST) return { x: targetX, y: targetY };
+    }
+
+    const fallbackTargets = [
+      { x: xMin, y: yMin },
+      { x: xMax, y: yMin },
+      { x: xMin, y: yMax },
+      { x: xMax, y: yMax },
+    ];
+    let best = null;
+    let bestDist = -1;
+    for (const target of fallbackTargets) {
+      const dx = target.x - bounds.x;
+      const dy = target.y - bounds.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > bestDist) {
+        best = target;
+        bestDist = dist;
+      }
+    }
+    return bestDist >= ROAM_MIN_DIST ? best : null;
   }
 
   function animateTo(targetX, targetY) {
@@ -77,10 +99,25 @@ module.exports = function initRoam(ctx) {
     if (!startBounds) { roamActive = false; return; }
     const startX = startBounds.x;
     const startY = startBounds.y;
+    // #569: freeze the window size for the whole walk (mirrors the drag
+    // snapshot in drag-position.js). Re-reading live bounds every frame lets
+    // the non-idempotent setBounds(getBounds()) round-trip on mixed-DPI
+    // Windows setups ratchet the pet larger while roaming — same mechanism
+    // as #408. When keepSizeAcrossDisplays is ON, the frozen keep-size wins
+    // over the live start bounds so both anchors share one source of truth.
+    const effectiveSize = typeof ctx.getEffectiveCurrentPixelSize === "function"
+      ? ctx.getEffectiveCurrentPixelSize()
+      : null;
+    const roamW = effectiveSize && Number.isFinite(effectiveSize.width) && effectiveSize.width > 0
+      ? effectiveSize.width
+      : startBounds.width;
+    const roamH = effectiveSize && Number.isFinite(effectiveSize.height) && effectiveSize.height > 0
+      ? effectiveSize.height
+      : startBounds.height;
     let finalX = targetX;
     let finalY = targetY;
     if (ctx.clampToScreenVisual) {
-      const clamped = ctx.clampToScreenVisual(finalX, finalY, startBounds.width, startBounds.height);
+      const clamped = ctx.clampToScreenVisual(finalX, finalY, roamW, roamH);
       finalX = clamped.x;
       finalY = clamped.y;
     }
@@ -89,6 +126,15 @@ module.exports = function initRoam(ctx) {
     const dy = finalY - startY;
     const dist = Math.sqrt(dx * dx + dy * dy);
     const animDurationMs = Math.max(1000, dist / ROAM_SPEED_PX_PER_MS);
+
+    // ── Face the walk direction ──
+    // Dedicated roam visuals (e.g. clawd's crabwalk) are drawn facing right;
+    // tell the renderer to mirror while heading left. Sent before applyState
+    // so the flip is settled when the roam visual swaps in. A purely vertical
+    // walk keeps the previous heading.
+    if (typeof ctx.setRoamHeading === "function" && dx !== 0) {
+      ctx.setRoamHeading(dx < 0);
+    }
 
     // ── Switch to "roam" visual state before moving ──
     // This ensures the pet shows a walk animation (if the theme provides one)
@@ -124,7 +170,8 @@ module.exports = function initRoam(ctx) {
       if (!Number.isFinite(vx) || !Number.isFinite(vy)) { roamActive = false; return; }
 
       // ── Per-frame sync ──
-      ctx.applyPetWindowPosition(vx, vy);
+      // Write the anchored size, never a re-read of live bounds (#569).
+      ctx.applyPetWindowBounds({ x: vx, y: vy, width: roamW, height: roamH });
       if (typeof ctx.syncHitWin === "function") ctx.syncHitWin();
       if (typeof ctx.repositionAnchoredSurfaces === "function") ctx.repositionAnchoredSurfaces();
       // Throttle bubble reposition to every 3rd frame (~20fps) — same as mini.js

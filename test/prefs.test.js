@@ -59,6 +59,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.sessionHudPinned, false);
     assert.strictEqual(d.savedPixelWidth, 0);
     assert.strictEqual(d.savedPixelHeight, 0);
+    assert.strictEqual(d.savedPixelWorkArea, null);
     assert.strictEqual(d.permissionBubblesEnabled, true);
     assert.strictEqual(d.notificationBubbleAutoCloseSeconds, 6);
     assert.strictEqual(d.updateBubbleAutoCloseSeconds, 9);
@@ -198,6 +199,7 @@ describe("prefs.validate", () => {
       disableMiniMode: "yes",
       savedPixelWidth: -1,
       savedPixelHeight: "286",
+      savedPixelWorkArea: "bogus",
     });
     const d = prefs.getDefaults();
     assert.strictEqual(v.lang, d.lang);
@@ -219,6 +221,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.disableMiniMode, false);
     assert.strictEqual(v.savedPixelWidth, 0);
     assert.strictEqual(v.savedPixelHeight, 0);
+    assert.strictEqual(v.savedPixelWorkArea, null);
   });
 
   it("backfills split bubble prefs from legacy hideBubbles=true", () => {
@@ -332,6 +335,7 @@ describe("prefs.validate", () => {
       keepSizeAcrossDisplays: true,
       savedPixelWidth: 286,
       savedPixelHeight: 286,
+      savedPixelWorkArea: { width: 1920, height: 1080 },
       x: 100,
       y: -50,
       size: "P:15",
@@ -353,6 +357,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.keepSizeAcrossDisplays, true);
     assert.strictEqual(v.savedPixelWidth, 286);
     assert.strictEqual(v.savedPixelHeight, 286);
+    assert.deepStrictEqual(v.savedPixelWorkArea, { width: 1920, height: 1080 });
     assert.strictEqual(v.x, 100);
     assert.strictEqual(v.y, -50);
     assert.strictEqual(v.size, "P:15");
@@ -1112,6 +1117,29 @@ describe("prefs.migrate v10 → v11 (on-demand agent integrations)", () => {
   });
 });
 
+describe("prefs.migrate v11 → v12 (showDock default off for fresh installs)", () => {
+  it("backfills showDock=true for a pre-v12 file that lacks it (existing user keeps the Dock)", () => {
+    const validated = prefs.validate(prefs.migrate({ version: 11, lang: "en" }));
+    assert.strictEqual(validated.version, prefs.CURRENT_VERSION);
+    assert.strictEqual(validated.showDock, true);
+  });
+
+  it("preserves an explicit showDock=false from a pre-v12 file", () => {
+    const validated = prefs.validate(prefs.migrate({ version: 11, showDock: false }));
+    assert.strictEqual(validated.showDock, false);
+  });
+
+  it("fresh defaults (no prefs file, migrate never runs) get showDock off", () => {
+    const d = prefs.getDefaults();
+    assert.strictEqual(d.showDock, false);
+  });
+
+  it("is idempotent on v12 input (a fresh-install save is not re-backfilled)", () => {
+    const upgraded = prefs.migrate({ version: 12 });
+    assert.strictEqual("showDock" in upgraded, false);
+  });
+});
+
 describe("prefs ephemeral fields (auto-pilot does not persist)", () => {
   it("validate() never restores a persisted autoApproveAllPermissions=true", () => {
     assert.strictEqual(prefs.validate({ autoApproveAllPermissions: true }).autoApproveAllPermissions, false);
@@ -1552,5 +1580,80 @@ describe("prefs.save", () => {
       clickLeft: { file: "p.svg" },
       // explode: absent
     });
+  });
+});
+
+describe("prefs.tutorialSeen (first-run tutorial gate)", () => {
+  it("defaults to false on fresh defaults", () => {
+    assert.strictEqual(prefs.getDefaults().tutorialSeen, false);
+  });
+
+  it("persists true across a save/load round-trip", () => {
+    const p = makeTempPath();
+    prefs.save(p, { ...prefs.getDefaults(), tutorialSeen: true });
+    assert.strictEqual(prefs.load(p).snapshot.tutorialSeen, true);
+  });
+
+  it("resolves to false for an existing-user file lacking the key (they see it once too)", () => {
+    const p = makeTempPath();
+    // Pre-tutorial prefs file: current version, no tutorialSeen key at all.
+    fs.writeFileSync(p, JSON.stringify({ version: prefs.CURRENT_VERSION, showTray: true }));
+    assert.strictEqual(prefs.load(p).snapshot.tutorialSeen, false);
+  });
+
+  it("is NOT backfilled to true by migrate (unlike showDock)", () => {
+    const migrated = prefs.migrate({ version: 1 });
+    assert.notStrictEqual(migrated.tutorialSeen, true);
+    // migrate never adds it; validate fills the false default so the user is unseen.
+    assert.strictEqual(prefs.validate(migrated).tutorialSeen, false);
+  });
+});
+
+describe("prefs.load fresh flag (brand-new install detection)", () => {
+  it("flags fresh: true when there is no prefs file", () => {
+    const p = makeTempPath();          // temp dir exists, prefs file does not
+    assert.strictEqual(prefs.load(p).fresh, true);
+  });
+
+  it("does NOT flag fresh once a file exists", () => {
+    const p = makeTempPath();
+    prefs.save(p, prefs.getDefaults());
+    assert.notStrictEqual(prefs.load(p).fresh, true);
+  });
+
+  it("does NOT flag fresh for a corrupt file (returning user — keep their language)", () => {
+    const p = makeTempPath();
+    fs.writeFileSync(p, "{ this is not valid json ");
+    assert.notStrictEqual(prefs.load(p).fresh, true);
+  });
+});
+
+describe("prefs.mapLocaleToLang (device locale → UI language)", () => {
+  const cases = [
+    ["en-US", "en"], ["en", "en"],
+    ["zh-CN", "zh"], ["zh-Hans", "zh"], ["zh", "zh"],
+    ["zh-TW", "zh-TW"], ["zh-Hant", "zh-TW"], ["zh-HK", "zh-TW"], ["zh-Hant-TW", "zh-TW"],
+    ["ko-KR", "ko"], ["ko", "ko"],
+    ["ja-JP", "ja"], ["ja", "ja"],
+    ["fr-FR", "en"], ["de", "en"],
+  ];
+  for (const [input, expected] of cases) {
+    it(`maps ${input} -> ${expected}`, () => {
+      assert.strictEqual(prefs.mapLocaleToLang(input), expected);
+    });
+  }
+
+  it("falls back to en for empty / non-string input", () => {
+    assert.strictEqual(prefs.mapLocaleToLang(""), "en");
+    assert.strictEqual(prefs.mapLocaleToLang(undefined), "en");
+    assert.strictEqual(prefs.mapLocaleToLang(null), "en");
+    assert.strictEqual(prefs.mapLocaleToLang(123), "en");
+  });
+
+  it("only ever returns a value inside the lang enum", () => {
+    const enumVals = new Set(["en", "zh", "zh-TW", "ko", "ja"]);
+    for (const probe of ["xx", "ZH-tw", "JA", "en-GB", "pt-BR", ""]) {
+      assert.ok(enumVals.has(prefs.mapLocaleToLang(probe)), `${probe} mapped outside enum`);
+    }
   });
 });

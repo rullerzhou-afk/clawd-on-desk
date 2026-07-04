@@ -82,12 +82,20 @@ describe("updateRegistry pure-data validators", () => {
       "sessionHudShowStateLabels", "sessionHudPinned",
       "miniMode", "openAtLoginHydrated", "soundMuted", "bubbleFollowPet",
       "hideBubbles", "permissionBubblesEnabled", "lowPowerIdleMode",
-      "allowEdgePinning", "disableMiniMode", "keepSizeAcrossDisplays",
+      "allowEdgePinning", "disableMiniMode", "keepSizeAcrossDisplays", "codexHookHealthNotifyEnabled",
     ]) {
       assert.strictEqual(updateRegistry[key](true, deps).status, "ok", `${key}(true)`);
       assert.strictEqual(updateRegistry[key](false, deps).status, "ok", `${key}(false)`);
       assert.strictEqual(updateRegistry[key]("yes", deps).status, "error", `${key}("yes")`);
     }
+  });
+
+  it("codexHookHealthLastNotified accepts strings and empty reset", () => {
+    const deps = { snapshot: baseSnapshot };
+    assert.strictEqual(updateRegistry.codexHookHealthLastNotified("", deps).status, "ok");
+    assert.strictEqual(updateRegistry.codexHookHealthLastNotified("needs-review", deps).status, "ok");
+    assert.strictEqual(updateRegistry.codexHookHealthLastNotified(null, deps).status, "error");
+    assert.strictEqual(updateRegistry.codexHookHealthLastNotified(42, deps).status, "error");
   });
 
   it("bubble auto-close seconds require integers in range", () => {

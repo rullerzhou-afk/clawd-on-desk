@@ -37,6 +37,7 @@ function createHarness(overrides = {}) {
     currentSvg: "idle.svg",
     petWindowBounds: { x: 10, y: 20, width: 120, height: 80 },
     currentPixelSize: { width: 90, height: 60 },
+    effectivePixelSize: { width: 200, height: 200 },
     clampedBounds: { x: 12, y: 24, width: 90, height: 60 },
     focusableIds: [],
     statDirs: new Set(),
@@ -67,6 +68,8 @@ function createHarness(overrides = {}) {
     getPetWindowBounds: () => state.petWindowBounds,
     getKeepSizeAcrossDisplays: () => state.keepSizeAcrossDisplays,
     getCurrentPixelSize: () => state.currentPixelSize,
+    getEffectiveCurrentPixelSize: () =>
+      state.keepSizeAcrossDisplays ? state.effectivePixelSize : state.currentPixelSize,
     computeDragEndBounds: (bounds, size) => {
       calls.push(["computeDragEndBounds", bounds, size]);
       return state.clampedBounds;
@@ -224,7 +227,7 @@ test("pet interaction IPC finalizes drag end and always clears drag state", () =
     ["setDragLocked", false],
     ["clearDragSnapshot"],
     ["checkMiniModeSnap"],
-    ["computeDragEndBounds", state.petWindowBounds, { width: 120, height: 80 }],
+    ["computeDragEndBounds", state.petWindowBounds, state.effectivePixelSize],
     ["applyPetWindowBounds", state.clampedBounds],
     ["flushRuntimeStateToPrefs"],
     ["reassertWinTopmost"],

@@ -35,13 +35,14 @@ const CLOUDLING_ASSETS = [
   "cloudling-notification.svg",
   "cloudling-react-drag.svg",
   "cloudling-sleeping-to-idle.svg",
+  "cloudling-sleeping-static.png",
   "cloudling-sleeping.svg",
   "cloudling-sweeping.svg",
   "cloudling-thinking.svg",
   "cloudling-typing.svg",
 ];
 
-const CLOUDLING_SCRIPTED_FILES = CLOUDLING_ASSETS.filter((file) => file !== "cloudling-react-drag.svg");
+const CLOUDLING_SCRIPTED_FILES = CLOUDLING_ASSETS.filter((file) => file.endsWith(".svg") && file !== "cloudling-react-drag.svg");
 
 describe("built-in Cloudling theme", () => {
   it("loads as schema v1 with trusted scripted SVG files scoped to the built-in theme", () => {
@@ -56,6 +57,12 @@ describe("built-in Cloudling theme", () => {
     assert.strictEqual(theme.trustedRuntime.scriptedSvgCycleMs["cloudling-sweeping.svg"], 4550);
     assert.strictEqual(theme.trustedRuntime.scriptedSvgCycleMs["cloudling-react-drag.svg"], undefined);
     assert.deepStrictEqual(rendererConfig.trustedScriptedSvgFiles, CLOUDLING_SCRIPTED_FILES);
+    assert.deepStrictEqual(rendererConfig.rendering.lowPowerStaticImageOverrides, {
+      sleeping: {
+        from: "cloudling-sleeping.svg",
+        to: "cloudling-sleeping-static.png",
+      },
+    });
     assert.strictEqual(theme.miniMode.states["mini-crabwalk"][0], "cloudling-mini-crabwalk.svg");
     assert.strictEqual(theme.trustedRuntime.scriptedSvgFiles.includes("cloudling-react-drag.svg"), false);
 

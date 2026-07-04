@@ -741,6 +741,18 @@
   }
 
   function patchInPlace(changes, context = {}) {
+    // The "on / off" subtab owns its own theme-override patching (it re-syncs
+    // the mounted switches in place, or rebuilds on a theme switch).
+    if (runtime.animOverridesSubtab === "map") {
+      const handled = root.ClawdSettingsTabAnimMap.patchMapInPlace(changes);
+      // patchMapInPlace only returns true for a themeOverrides (and possibly
+      // theme) broadcast — which also makes the cached animation & sound cards
+      // stale (e.g. "reset all" wipes the whole theme's overrides). Drop the
+      // cache so the Animations/Sounds subtabs refetch when next opened; the
+      // map subtab never reads it, so it stays a pure in-place patch.
+      if (handled) runtime.animationOverridesData = null;
+      return handled;
+    }
     if (!changes || typeof changes !== "object") return false;
     if (!Object.prototype.hasOwnProperty.call(changes, "themeOverrides")) return false;
     if (Object.keys(changes).length !== 1) return false;
@@ -911,6 +923,16 @@
     h1.textContent = t("animOverridesTitle");
     parent.appendChild(h1);
 
+    // "On / off" subtab: which interrupt reactions play at all. It reads
+    // themeOverrides straight from the snapshot (no asset data needed), so it
+    // renders before the animationOverridesData loading gate and hands off to
+    // the anim-map module. Its own subtitle carries the explanatory copy.
+    if (runtime.animOverridesSubtab === "map") {
+      parent.appendChild(buildSubtabSwitcher());
+      root.ClawdSettingsTabAnimMap.renderMapSubtab(parent);
+      return;
+    }
+
     const subtitle = document.createElement("p");
     subtitle.className = "subtitle";
     subtitle.textContent = t("animOverridesSubtitle");
@@ -953,8 +975,10 @@
     group.className = "segmented";
     group.setAttribute("role", "tablist");
 
-    const current = runtime.animOverridesSubtab === "sounds" ? "sounds" : "animations";
+    const current = runtime.animOverridesSubtab === "sounds" ? "sounds"
+      : runtime.animOverridesSubtab === "map" ? "map" : "animations";
     const entries = [
+      { key: "map", label: t("animOverridesSubtabMap") },
       { key: "animations", label: t("animOverridesSubtabAnimations") },
       { key: "sounds", label: t("animOverridesSubtabSounds") },
     ];

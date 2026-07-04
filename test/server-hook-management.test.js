@@ -488,7 +488,7 @@ describe("Codex official hook turn tracking", () => {
     assert.strictEqual(turns.size, 0);
   });
 
-  it("resolves Stop to idle when no tool was seen", () => {
+  it("resolves Stop to idle when no tool or assistant output was seen", () => {
     const turns = new Map();
     resolveCodexOfficialHookState({
       agent_id: "codex",
@@ -507,6 +507,41 @@ describe("Codex official hook turn tracking", () => {
     }, "idle", turns);
 
     assert.deepStrictEqual(result, { state: "idle", drop: false });
+  });
+
+  it("resolves Stop to attention when a no-tool turn has assistant output", () => {
+    const turns = new Map();
+    resolveCodexOfficialHookState({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      event: "UserPromptSubmit",
+      session_id: "codex:s1",
+      turn_id: "turn-1",
+    }, "thinking", turns);
+
+    const result = resolveCodexOfficialHookState({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      event: "Stop",
+      session_id: "codex:s1",
+      turn_id: "turn-1",
+      assistant_last_output: "Short answer.",
+    }, "idle", turns);
+
+    assert.deepStrictEqual(result, { state: "attention", drop: false });
+    assert.strictEqual(turns.size, 0);
+  });
+
+  it("resolves Stop without a turn id to attention when assistant output is present", () => {
+    const result = resolveCodexOfficialHookState({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      event: "Stop",
+      session_id: "codex:s1",
+      assistant_last_output: "Done.",
+    }, "idle", new Map());
+
+    assert.deepStrictEqual(result, { state: "attention", drop: false });
   });
 
   it("drops stop_hook_active continuations without updating state", () => {

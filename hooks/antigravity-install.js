@@ -11,6 +11,7 @@ const {
   writeJsonAtomic,
   writeJsonAtomicWithBackup,
   asarUnpackedPath,
+  buildPortableStatuslineCommand,
   decodeWindowsEncodedCommand,
   extractFirstQuotedToken,
   windowsPowerShellBin,
@@ -20,6 +21,9 @@ const HOOK_GROUP_ID = "clawd";
 const MARKER = "antigravity-hook.js";
 const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".gemini", "config");
 const DEFAULT_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, "hooks.json");
+const STATUSLINE_MARKER = "antigravity-statusline.js";
+const DEFAULT_STATUSLINE_SETTINGS_DIR = path.join(os.homedir(), ".gemini", "antigravity-cli");
+const DEFAULT_STATUSLINE_SETTINGS_PATH = path.join(DEFAULT_STATUSLINE_SETTINGS_DIR, "settings.json");
 
 // PreToolUse intentionally NOT registered. Antigravity 1.0.1 LLMs proactively
 // call the built-in `ask_permission` tool before sensitive actions, which then
@@ -387,14 +391,96 @@ function unregisterAntigravityHooks(options = {}) {
   return result;
 }
 
+function hasAntigravityStatuslineSettings(homeDir) {
+  return fs.existsSync(path.join(homeDir, ".gemini", "antigravity-cli"));
+}
+
+// On Windows this must NOT use quoteWindowsProcessArg for the interpreter:
+// a quoted command token is a string literal under PowerShell and never
+// executes, and agy's statusline runner shell is not pinned down the way
+// its hook runner (cmd) is. buildPortableStatuslineCommand emits a form
+// that parses identically under Git Bash, PowerShell, and cmd.
+function buildAntigravityStatuslineCommand(nodeBin, scriptPath, options = {}) {
+  const platform = options.platform || process.platform;
+  if (platform === "win32") return buildPortableStatuslineCommand(nodeBin, scriptPath, options);
+  return [nodeBin, scriptPath].map(quoteShellSingleArg).join(" ");
+}
+
+// Antigravity's statusLine setting is a single slot, not an event-keyed map
+// like hooks.json - only one script can render the visible status line at a
+// time. We only ever take that slot when it is empty or already ours, and
+// unregister only clears it when the command still carries our marker. A
+// user's own (or a third-party) statusline script is never touched.
+function registerAntigravityStatusline(options = {}) {
+  const homeDir = options.homeDir || os.homedir();
+  const settingsPath = options.settingsPath || path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+
+  if (!options.settingsPath && !hasAntigravityStatuslineSettings(homeDir)) {
+    if (!options.silent) console.log("Clawd: Antigravity CLI settings not found - skipping statusline registration");
+    return { installed: false, changed: false, skippedExisting: false, settingsPath };
+  }
+
+  const settings = normalizeSettings(readJsonIfExists(settingsPath));
+  const existing = settings.statusLine && typeof settings.statusLine === "object" ? settings.statusLine : null;
+  const existingIsOurs = !!(existing && typeof existing.command === "string" && existing.command.includes(STATUSLINE_MARKER));
+
+  if (existing && !existingIsOurs) {
+    if (!options.silent) console.log(`Clawd: existing Antigravity statusline detected at ${settingsPath} - leaving it in place`);
+    return { installed: true, changed: false, skippedExisting: true, settingsPath };
+  }
+
+  const scriptPath = asarUnpackedPath(path.resolve(__dirname, "antigravity-statusline.js").replace(/\\/g, "/"));
+  const nodeBin = resolveAntigravityNodeBin(options) || "node";
+  const desired = {
+    type: "",
+    command: buildAntigravityStatuslineCommand(nodeBin, scriptPath, options),
+    enabled: true,
+  };
+
+  const changed = !existing || JSON.stringify(existing) !== JSON.stringify(desired);
+  if (changed) {
+    settings.statusLine = desired;
+    writeJsonAtomic(settingsPath, settings);
+  }
+
+  if (!options.silent) {
+    console.log(`Clawd Antigravity statusline -> ${settingsPath}${changed ? " (updated)" : " (already up to date)"}`);
+  }
+
+  return { installed: true, changed, skippedExisting: false, settingsPath };
+}
+
+function unregisterAntigravityStatusline(options = {}) {
+  const homeDir = options.homeDir || os.homedir();
+  const settingsPath = options.settingsPath || path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+  const settings = normalizeSettings(readJsonIfExists(settingsPath));
+  const existing = settings.statusLine && typeof settings.statusLine === "object" ? settings.statusLine : null;
+  const existingIsOurs = !!(existing && typeof existing.command === "string" && existing.command.includes(STATUSLINE_MARKER));
+
+  if (!existingIsOurs) {
+    return { installed: !!existing, removed: 0, changed: false, settingsPath };
+  }
+
+  delete settings.statusLine;
+  const backupPath = writeJsonAtomicWithBackup(settingsPath, settings, options);
+  if (!options.silent) console.log(`Clawd Antigravity statusline removed -> ${settingsPath}`);
+  const result = { installed: true, removed: 1, changed: true, settingsPath };
+  if (options.backup === true) result.backupPath = backupPath;
+  return result;
+}
+
 module.exports = {
   HOOK_GROUP_ID,
   MARKER,
+  STATUSLINE_MARKER,
   DEFAULT_PARENT_DIR,
   DEFAULT_CONFIG_PATH,
+  DEFAULT_STATUSLINE_SETTINGS_PATH,
   ANTIGRAVITY_HOOK_EVENTS,
   registerAntigravityHooks,
   unregisterAntigravityHooks,
+  registerAntigravityStatusline,
+  unregisterAntigravityStatusline,
   __test: {
     buildAntigravityHookCommand,
     buildAntigravityHooks,
@@ -411,13 +497,20 @@ module.exports = {
     normalizeSettings,
     resolveAntigravityNodeBin,
     withFailOpenShellFallback,
+    hasAntigravityStatuslineSettings,
+    buildAntigravityStatuslineCommand,
   },
 };
 
 if (require.main === module) {
   try {
-    if (process.argv.includes("--uninstall")) unregisterAntigravityHooks({});
-    else registerAntigravityHooks({});
+    if (process.argv.includes("--uninstall")) {
+      unregisterAntigravityHooks({});
+      unregisterAntigravityStatusline({});
+    } else {
+      registerAntigravityHooks({});
+      registerAntigravityStatusline({});
+    }
   } catch (err) {
     console.error(err.message);
     process.exit(1);

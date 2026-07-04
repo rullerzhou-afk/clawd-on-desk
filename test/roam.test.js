@@ -10,8 +10,9 @@ function makeCtx(overrides = {}) {
   const realBounds = { x: 400, y: 300, width: 120, height: 120 };
   const syncLog = [];
   const stateLog = [];
+  const appliedBounds = [];
   let currentState = "idle";
-  return {
+  const ctx = {
     win: {
       getBounds() { return { ...realBounds }; },
       setBounds(next) {
@@ -23,11 +24,22 @@ function makeCtx(overrides = {}) {
       isDestroyed() { return false; },
     },
     getPetWindowBounds() { return { ...bounds }; },
+    applyPetWindowBounds(next) {
+      appliedBounds.push({ ...next });
+      bounds.x = next.x;
+      bounds.y = next.y;
+      bounds.width = next.width;
+      bounds.height = next.height;
+      realBounds.x = next.x;
+      realBounds.y = next.y;
+      realBounds.width = next.width;
+      realBounds.height = next.height;
+    },
+    // Mirrors the real runtime: a position-only write re-reads live bounds and
+    // launders their width/height back through applyPetWindowBounds — the #569
+    // ratchet vector.
     applyPetWindowPosition(x, y) {
-      bounds.x = x;
-      bounds.y = y;
-      realBounds.x = x;
-      realBounds.y = y;
+      ctx.applyPetWindowBounds({ ...ctx.getPetWindowBounds(), x, y });
     },
     syncHitWin() { syncLog.push("syncHitWin"); },
     repositionSessionHud() { syncLog.push("repositionSessionHud"); },
@@ -47,17 +59,23 @@ function makeCtx(overrides = {}) {
     _stateLog: stateLog,
     _bounds: bounds,
     _realBounds: realBounds,
-    ...overrides,
+    _appliedBounds: appliedBounds,
   };
+  Object.assign(ctx, overrides);
+  return ctx;
 }
 
 describe("roam module", () => {
   beforeEach(() => {
+    const randomValues = [0.9, 0.9, 0.9, 0.1];
+    let randomIndex = 0;
+    mock.method(Math, "random", () => randomValues[randomIndex++ % randomValues.length]);
     mock.timers.enable({ apis: ["setTimeout", "Date"] });
   });
 
   afterEach(() => {
     mock.timers.reset();
+    mock.reset();
   });
 
   it("does not schedule roam when disabled", () => {
@@ -377,6 +395,16 @@ describe("roam module", () => {
       smallRealBounds.width = next.width;
       smallRealBounds.height = next.height;
     };
+    ctx.applyPetWindowBounds = (next) => {
+      smallBounds.x = next.x;
+      smallBounds.y = next.y;
+      smallBounds.width = next.width;
+      smallBounds.height = next.height;
+      smallRealBounds.x = next.x;
+      smallRealBounds.y = next.y;
+      smallRealBounds.width = next.width;
+      smallRealBounds.height = next.height;
+    };
 
     const roam = roamModule(ctx);
     roam.setEnabled(true);
@@ -456,5 +484,163 @@ describe("roam module", () => {
     ctx.setCurrentState("roam");
     roam.tick();
     assert.ok(true, "tick should not throw when in roam state");
+  });
+
+  it("falls back to the farthest work-area corner when every random target is too close", () => {
+    // Force all ROAM_TARGET_ATTEMPTS random picks to land on the pet's current
+    // position (dist 0 < ROAM_MIN_DIST), so target selection must use the
+    // four-corner fallback instead of returning null (the old flake).
+    // workArea 1000×1000, pet 120px, margin = round(1000*0.15) = 150 →
+    // xMin=150, xMax=1000-120-150=730. Math.random()=0.5 →
+    // targetX = 150 + floor(0.5*580) = 440, same for Y. Pet sits at (440,440)
+    // so every attempt has dist 0. All four corners are equidistant from
+    // (440,440); the impl tie-breaks to the first in its list, (xMin,yMin)=(150,150).
+    mock.method(Math, "random", () => 0.5);
+    const bounds = { x: 440, y: 440, width: 120, height: 120 };
+    const realBounds = { ...bounds };
+    const ctx = makeCtx({
+      getPetWindowBounds() { return { ...bounds }; },
+      getNearestWorkArea() { return { x: 0, y: 0, width: 1000, height: 1000 }; },
+    });
+    ctx.win.getBounds = () => ({ ...realBounds });
+    ctx.win.setBounds = (next) => {
+      realBounds.x = next.x; realBounds.y = next.y;
+      realBounds.width = next.width; realBounds.height = next.height;
+    };
+    ctx.applyPetWindowBounds = (next) => {
+      bounds.x = next.x; bounds.y = next.y;
+      realBounds.x = next.x; realBounds.y = next.y;
+      realBounds.width = next.width; realBounds.height = next.height;
+    };
+
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    mock.timers.tick(8000);
+    for (let i = 0; i < 2000; i++) {
+      mock.timers.tick(16);
+      if (ctx._stateLog.some(e => e.type === "setState" && e.state === "idle")) break;
+    }
+
+    // Fallback ties between all four equidistant corners; the impl keeps the
+    // first, (150,150). The pet must have actually moved there — not stalled at
+    // its start (the old null-return bug).
+    assert.ok(Math.abs(realBounds.x - 150) < 5 && Math.abs(realBounds.y - 150) < 5,
+      `expected move to farthest corner (150,150), got (${realBounds.x},${realBounds.y})`);
+  });
+
+  it("anchors the window size for the whole walk even when live bounds read back DPI-polluted (#569)", () => {
+    const ctx = makeCtx();
+    // Simulate the Windows mixed-DPI ratchet: every live read reports the
+    // window 4px larger than what was last written. Re-laundering that value
+    // through per-frame writes is exactly the #569 growth mechanism.
+    const cleanGet = ctx.getPetWindowBounds;
+    ctx.getPetWindowBounds = () => {
+      const b = cleanGet();
+      return { ...b, width: b.width + 4, height: b.height + 4 };
+    };
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    for (let i = 0; i < 2000; i++) {
+      mock.timers.tick(16);
+      if (ctx._stateLog.some(e => e.type === "setState" && e.state === "idle")) break;
+    }
+
+    const widths = new Set(ctx._appliedBounds.map(b => b.width));
+    const heights = new Set(ctx._appliedBounds.map(b => b.height));
+    assert.ok(ctx._appliedBounds.length > 10,
+      `walk should span many frames, got ${ctx._appliedBounds.length}`);
+    assert.equal(widths.size, 1,
+      `width must stay constant across the walk, saw [${[...widths].join(", ")}]`);
+    assert.equal(heights.size, 1,
+      `height must stay constant across the walk, saw [${[...heights].join(", ")}]`);
+    // Anchored to the single read at walk start (120 + one polluted read = 124),
+    // never re-read per frame — no cumulative growth.
+    assert.equal([...widths][0], 124, "size is captured once at walk start");
+  });
+
+  it("prefers the keep-size effective size over walk-start bounds when exposed (#408 interplay)", () => {
+    // keepSizeAcrossDisplays ON: getEffectiveCurrentPixelSize returns the
+    // frozen size, which must win over (possibly polluted) live start bounds
+    // so roam and keep-size stay on one source of truth.
+    const ctx = makeCtx({
+      getEffectiveCurrentPixelSize: () => ({ width: 100, height: 100 }),
+    });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(16);
+    mock.timers.tick(16);
+
+    assert.ok(ctx._appliedBounds.length >= 2, "walk should have written frames");
+    for (const b of ctx._appliedBounds) {
+      assert.equal(b.width, 100, "frozen keep-size width must win over start bounds");
+      assert.equal(b.height, 100, "frozen keep-size height must win over start bounds");
+    }
+  });
+
+  it("falls back to walk-start size when getEffectiveCurrentPixelSize returns nothing", () => {
+    const ctx = makeCtx({ getEffectiveCurrentPixelSize: () => null });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(16);
+    mock.timers.tick(16);
+
+    assert.ok(ctx._appliedBounds.length >= 2, "walk should have written frames");
+    for (const b of ctx._appliedBounds) {
+      assert.equal(b.width, 120, "falls back to the size read at walk start");
+      assert.equal(b.height, 120, "falls back to the size read at walk start");
+    }
+  });
+
+  it("sends heading=false (face right) when the walk moves rightward", () => {
+    // Default mocked random (0.9) picks a target right of the start (400,300).
+    const headings = [];
+    const ctx = makeCtx({ setRoamHeading(left) { headings.push(left); } });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+
+    assert.deepEqual(headings, [false], "rightward walk must face right (no mirror)");
+  });
+
+  it("sends heading=true (mirror) when the walk moves leftward", () => {
+    // random=0.05 → target (349,193), left of the start (400,300), dist ≈ 118.
+    mock.method(Math, "random", () => 0.05);
+    const headings = [];
+    const ctx = makeCtx({ setRoamHeading(left) { headings.push(left); } });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+
+    assert.deepEqual(headings, [true], "leftward walk must mirror the roam visual");
+  });
+
+  it("keeps the previous heading on a purely vertical walk", () => {
+    // Clamp forces finalX back to the start X → dx === 0 → no heading update.
+    const headings = [];
+    const ctx = makeCtx({
+      setRoamHeading(left) { headings.push(left); },
+      clampToScreenVisual(x, y, w, h) { return { x: 400, y, width: w, height: h }; },
+    });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+
+    assert.deepEqual(headings, [], "vertical walk must not change the heading");
   });
 });

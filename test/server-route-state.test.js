@@ -51,6 +51,7 @@ function callStatePost(body, overrides = {}) {
     };
     const ctx = {
       STATE_SVGS: {
+        idle: "x.svg",
         working: "x.svg",
         attention: "x.svg",
         "mini-idle": "x.svg",
@@ -121,6 +122,8 @@ describe("server-route-state POST", () => {
       codex_source: "vscode",
       ghostty_terminal_id: "ghostty-term-7",
       session_title: "  Work title  ",
+      tool_name: "Read",
+      transcript_path: "/Users/tester/.claude/projects/repo/session.jsonl",
       permission_suspect: true,
       preserve_state: true,
       hook_source: "codex-official",
@@ -152,16 +155,41 @@ describe("server-route-state POST", () => {
         displayHint: "display.svg",
         sessionTitle: "Work title",
         contextUsage: null,
+        antigravityQuota: null,
+        claudeQuota: null,
         assistantLastOutput: null,
         assistantLastOutputTruncated: false,
+        toolName: "Read",
+        transcriptPath: "/Users/tester/.claude/projects/repo/session.jsonl",
         permissionSuspect: true,
+        permissionAction: null,
+        permissionCommand: null,
         preserveState: true,
         hookSource: "codex-official",
         backgroundTasksCount: 0,
         sessionCronsCount: 0,
         stopHookActive: false,
+        stdinDiag: null,
       },
     ]]);
+  });
+
+  it("forwards Kimi Code permission context to updateSession (#563)", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "notification",
+      session_id: "kimi-cli:session_abc",
+      event: "PermissionRequest",
+      agent_id: "kimi-cli",
+      tool_name: "Bash",
+      permission_action: "Running: echo hi",
+      permission_command: "echo hi",
+    }), { ctx: { STATE_SVGS: { notification: "x.svg" } } });
+
+    assert.strictEqual(res.statusCode, 200);
+    const opts = res.calls.updateSession[0][3];
+    assert.strictEqual(opts.toolName, "Bash");
+    assert.strictEqual(opts.permissionAction, "Running: echo hi");
+    assert.strictEqual(opts.permissionCommand, "echo hi");
   });
 
   it("passes assistant last output metadata to updateSession", async () => {
@@ -176,6 +204,54 @@ describe("server-route-state POST", () => {
     assert.strictEqual(res.statusCode, 200);
     assert.strictEqual(res.calls.updateSession[0][3].assistantLastOutput, "Done.\nsecret=abc123");
     assert.strictEqual(res.calls.updateSession[0][3].assistantLastOutputTruncated, true);
+  });
+
+  it("celebrates Codex official no-tool Stop when assistant output is present", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      session_id: "codex:sid",
+      event: "Stop",
+      agent_id: "codex",
+      hook_source: "codex-official",
+      assistant_last_output: "Short answer.",
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession[0][1], "attention");
+    assert.strictEqual(res.calls.updateSession[0][3].assistantLastOutput, "Short answer.");
+  });
+
+  it("normalizes and passes stdin_diag to updateSession (#583)", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      event: "SessionStart",
+      stdin_diag: { bytes: 0, timed_out: true, duration_ms: 2001.7, parse_error: "Unexpected end of JSON input" },
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(res.calls.updateSession[0][3].stdinDiag, {
+      bytes: 0,
+      timedOut: true,
+      durationMs: 2001,
+      parseError: "Unexpected end of JSON input",
+    });
+  });
+
+  it("passes stdinDiag=null when stdin_diag is absent or malformed", async () => {
+    const absent = await callStatePost(JSON.stringify({
+      state: "idle",
+      session_id: "sid",
+      event: "SessionStart",
+    }));
+    assert.strictEqual(absent.calls.updateSession[0][3].stdinDiag, null);
+
+    const malformed = await callStatePost(JSON.stringify({
+      state: "idle",
+      session_id: "sid",
+      event: "SessionStart",
+      stdin_diag: "bytes:0",
+    }));
+    assert.strictEqual(malformed.calls.updateSession[0][3].stdinDiag, null);
   });
 
   it("passes valid context_usage to updateSession", async () => {
@@ -205,6 +281,123 @@ describe("server-route-state POST", () => {
 
     assert.strictEqual(res.statusCode, 200);
     assert.strictEqual(res.calls.updateSession[0][3].contextUsage, null);
+  });
+
+  it("passes valid antigravity_quota to updateSession", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      session_id: "sid",
+      antigravity_quota: {
+        geminiFiveHour: { usedPercent: 100 },
+        geminiWeekly: { usedPercent: 98, resetAt: 1738831180000 },
+      },
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(res.calls.updateSession[0][3].antigravityQuota, {
+      geminiFiveHour: { usedPercent: 100 },
+      geminiWeekly: { usedPercent: 98, resetAt: 1738831180000 },
+    });
+  });
+
+  it("drops invalid antigravity_quota without rejecting state", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      session_id: "sid",
+      antigravity_quota: { geminiFiveHour: { usedPercent: "not-a-number" } },
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession[0][3].antigravityQuota, null);
+  });
+
+  it("passes valid claude_quota to updateSession", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      session_id: "sid",
+      claude_quota: {
+        claudeFiveHour: { usedPercent: 24, resetAt: 1738425600000 },
+        claudeWeekly: { usedPercent: 41 },
+      },
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(res.calls.updateSession[0][3].claudeQuota, {
+      claudeFiveHour: { usedPercent: 24, resetAt: 1738425600000 },
+      claudeWeekly: { usedPercent: 41 },
+    });
+  });
+
+  it("drops invalid claude_quota without rejecting state", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      session_id: "sid",
+      claude_quota: { claudeFiveHour: { usedPercent: "not-a-number" } },
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession[0][3].claudeQuota, null);
+  });
+
+  // #590 B2 — metadata_only POSTs (statusline refreshes) bypass the
+  // updateSession lifecycle machine entirely and go through
+  // updateSessionMetadata, which can only annotate an existing session.
+  it("routes metadata_only POSTs to updateSessionMetadata, never updateSession", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      preserve_state: true,
+      metadata_only: true,
+      session_id: "sid",
+      agent_id: "claude-code",
+      claude_quota: { claudeWeekly: { usedPercent: 41, resetAt: 1738831180000 } },
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.calls.updateSession.length, 0);
+    assert.strictEqual(res.calls.setState.length, 0);
+    assert.strictEqual(metadataCalls.length, 1);
+    assert.strictEqual(metadataCalls[0][0], "sid");
+    assert.deepStrictEqual(metadataCalls[0][1].claudeQuota, {
+      claudeWeekly: { usedPercent: 41, resetAt: 1738831180000 },
+    });
+  });
+
+  it("metadata_only still respects the disabled-agent gate", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "sid",
+      agent_id: "claude-code",
+      claude_quota: { claudeWeekly: { usedPercent: 41 } },
+    }), {
+      ctx: {
+        isAgentEnabled: () => false,
+        updateSessionMetadata: (...args) => metadataCalls.push(args),
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(metadataCalls.length, 0);
+  });
+
+  it("metadata_only does not record into the recent-hook-events ring", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "sid",
+      agent_id: "claude-code",
+      claude_quota: { claudeWeekly: { usedPercent: 41 } },
+    }), {
+      ctx: { updateSessionMetadata: () => true },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    const outcomes = res.calls.recorder.filter((entry) => entry.outcome);
+    assert.deepStrictEqual(outcomes, []);
   });
 
   it("marks missing agent_id as a defaulted Claude Code attribution", async () => {
@@ -280,6 +473,25 @@ describe("server-route-state POST", () => {
 
     assert.strictEqual(res.statusCode, 413);
     assert.strictEqual(res.body, "state payload too large");
+  });
+
+  it("accepts a large CJK Stop body now that the cap is 16KB (happy-413 regression)", async () => {
+    const body = JSON.stringify({
+      state: "attention",
+      session_id: "sid",
+      event: "Stop",
+      assistant_last_output: "字".repeat(2200), // ~6600 UTF-8 bytes
+    });
+    // Bigger than the OLD 4096 cap that silently 413'd CJK completions, yet
+    // within the new 16KB cap — the completion must register, not be rejected.
+    assert.ok(Buffer.byteLength(body, "utf8") > 4096);
+    assert.ok(Buffer.byteLength(body, "utf8") <= MAX_STATE_BODY_BYTES);
+
+    const res = await callStatePost(body);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.headers[CLAWD_SERVER_HEADER], CLAWD_SERVER_ID);
+    assert.strictEqual(res.calls.updateSession.length, 1);
   });
 
   it("returns 400 for invalid JSON", async () => {

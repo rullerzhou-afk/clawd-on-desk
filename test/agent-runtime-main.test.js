@@ -70,10 +70,6 @@ describe("agent-runtime-main", () => {
       true
     );
     assert.equal(
-      runtime.shouldSuppressCodexLogEvent("codex-1", "codex-permission", "response_item:function_call"),
-      true
-    );
-    assert.equal(
       runtime.shouldSuppressCodexLogEvent("codex-1", "working", "event_msg:context_compacted"),
       false
     );
@@ -218,7 +214,7 @@ describe("agent-runtime-main", () => {
     }]]);
   });
 
-  it("maps Codex JSONL monitor permission and state callbacks through the main runtime effects", () => {
+  it("maps Codex JSONL monitor state callbacks through the main runtime effects", () => {
     const instances = [];
     const calls = [];
     const classifier = { classify: () => null };
@@ -229,7 +225,6 @@ describe("agent-runtime-main", () => {
       codexSubagentClassifier: classifier,
       isAgentEnabled: (agentId) => agentId === "codex",
       updateSession: (...args) => calls.push(["update", ...args]),
-      showCodexNotifyBubble: (...args) => calls.push(["notify", ...args]),
       clearCodexNotifyBubbles: (...args) => calls.push(["clear", ...args]),
     });
 
@@ -240,12 +235,6 @@ describe("agent-runtime-main", () => {
     assert.deepStrictEqual(monitor.agent, { id: "codex" });
     assert.equal(monitor.options.classifier, classifier);
 
-    monitor.emit("sid", "codex-permission", "event_msg:exec_command_end", {
-      cwd: "D:\\repo",
-      sessionTitle: "Run tests",
-      headless: true,
-      permissionDetail: { command: "npm test" },
-    });
     monitor.emit("sid", "working", "response_item:web_search_call", {
       cwd: "D:\\repo",
       sessionTitle: "Run tests",
@@ -253,12 +242,6 @@ describe("agent-runtime-main", () => {
     });
 
     assert.deepStrictEqual(calls, [
-      ["update", "sid", "notification", "event_msg:exec_command_end", {
-        cwd: "D:\\repo",
-        agentId: "codex",
-        sessionTitle: "Run tests",
-      }],
-      ["notify", { sessionId: "sid", command: "npm test" }],
       ["clear", "sid", "codex-state-transition:working"],
       ["update", "sid", "working", "response_item:web_search_call", {
         cwd: "D:\\repo",
@@ -510,7 +493,6 @@ describe("agent-runtime-main", () => {
       isAgentEnabled: (agentId) => agentId === "codex",
       getStateRuntime: () => ({ sessions }),
       updateSession: (...args) => calls.push(["update", ...args]),
-      showCodexNotifyBubble: (...args) => calls.push(["notify", ...args]),
       clearCodexNotifyBubbles: (...args) => calls.push(["clear", ...args]),
     });
 

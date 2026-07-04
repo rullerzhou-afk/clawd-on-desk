@@ -1,6 +1,7 @@
 const os = require("os");
 const path = require("path");
 const { runDoctorChecks } = require("./doctor");
+const { getCodexHookHealth } = require("./codex-hook-health");
 const { formatDiagnosticReport, redactDoctorResult } = require("./doctor-report");
 const { createConnectionTestDeduper, runConnectionTest } = require("./doctor-hook-activity");
 const { openClawdLog } = require("./doctor-logs");
@@ -100,6 +101,22 @@ function registerDoctorIpc({
   ipcMain.handle("doctor:run-checks", async () => (
     redactDoctorResult(await runDedupedDoctorChecks(), getDoctorRedactionOptions(app))
   ));
+
+  // Lightweight Codex-only hook-health probe for the Agents tab badge. Reuses
+  // the same per-agent integration check the Doctor uses, but skips the full
+  // doctor sweep so opening the Agents tab stays cheap. Returns a render-safe
+  // subset (no raw fs paths — detailText/error stay main-side).
+  ipcMain.handle("doctor:codex-hook-health", () => {
+    const verdict = getCodexHookHealth({ prefs: getPrefsSnapshot() });
+    return {
+      available: verdict.available,
+      healthy: verdict.healthy,
+      signature: verdict.signature,
+      reasonKey: verdict.reasonKey,
+      status: verdict.status,
+      fixAction: verdict.fixAction,
+    };
+  });
 
   ipcMain.handle("doctor:test-connection", async (_event, payload) => {
     const result = await runDedupedDoctorConnectionTest(normalizeDoctorConnectionTestPayload(payload));
