@@ -197,6 +197,34 @@ test("pet hidden: hotkey resolves the visible request, never the collapsed one",
   assert.strictEqual(globalShortcut.registered.size, 0);
 });
 
+// Defensive: real hide semantics only produce collapsed-older + visible-newer,
+// but the invariant is "newest VISIBLE wins", not "newest pending" — lock it in
+// against a future reordering or an out-of-band collapsed newer bubble.
+test("pet hidden: hotkey targets the newest visible request even when a newer one is collapsed", () => {
+  const { permission, context, globalShortcut } = loadPermission();
+  const visibleRes = createResponse();
+  const collapsedRes = createResponse();
+  pushPending(permission, {
+    bubble: createFakeBubble({ visible: true }),
+    res: visibleRes,
+  });
+  pushPending(permission, {
+    bubble: createFakeBubble({ visible: false }),
+    res: collapsedRes,
+  });
+  context.petHidden = true;
+  permission.syncPermissionShortcuts();
+
+  const handler = globalShortcut.registered.get(ALLOW_ACCEL);
+  assert.strictEqual(typeof handler, "function");
+  handler();
+
+  assert.strictEqual(visibleRes.statusCode, 200);
+  assert.match(visibleRes.body, /"behavior":"allow"/);
+  assert.strictEqual(collapsedRes.statusCode, null);
+  assert.strictEqual(permission.pendingPermissions.length, 1);
+});
+
 test("pet visible: a pending entry without a bubble window still registers hotkeys", () => {
   const { permission, globalShortcut } = loadPermission();
   pushPending(permission, { bubble: null });
