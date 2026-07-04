@@ -98,6 +98,10 @@ function parseDistroList(raw) {
     .filter(Boolean);
 }
 
+// Returns [] when there are genuinely no distros, null when wsl.exe itself
+// failed (missing, timeout, service restarting). Callers must treat null as
+// "unknown" — committing it as an empty result would silently wipe
+// previously detected distros on a transient failure.
 async function getWslDistributions(options = {}) {
   if (!isWindows()) return [];
 
@@ -105,7 +109,8 @@ async function getWslDistributions(options = {}) {
   const customExclude = Array.isArray(options.excludeDistros) ? options.excludeDistros : [];
 
   const result = await spawnWsl(["-l", "-q"]);
-  if (result.code !== 0 || !result.stdout) return [];
+  if (result.code !== 0) return null;
+  if (!result.stdout) return [];
 
   const names = parseDistroList(result.stdout);
   return names

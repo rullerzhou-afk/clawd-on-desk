@@ -890,6 +890,7 @@
       wslAgents: Array.isArray(source.wslAgents) ? source.wslAgents : [],
       wslDistros: Array.isArray(source.wslDistros) ? source.wslDistros : [],
       wslPending: source.wslPending === true,
+      wslSupported: source.wslSupported === true,
     };
     if (typeof source.error === "string" && source.error) normalized.error = source.error;
     return normalized;
@@ -903,6 +904,7 @@
       wslAgents: [],
       wslDistros: [],
       wslPending: false,
+      wslSupported: false,
     };
     if (error) result.error = error;
     return result;

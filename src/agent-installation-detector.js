@@ -443,6 +443,9 @@ function detectAgentInstallations(options = {}) {
     wslAgents: _cachedWslAgents,
     wslDistros: _cachedWslDistros,
     wslPending: !_cachedDetected,
+    // Lets the UI always offer a manual Scan on Windows, even after a failed
+    // startup scan left the cache empty (no rows, no pending flag).
+    wslSupported: process.platform === "win32",
   };
 }
 
@@ -464,22 +467,41 @@ async function refreshWslDetection(options = {}) {
 
   try {
     const { getWslDistributions, getWslHomeDir, execInWsl, rebaseHomePathPosix } = require("./wsl-utils");
+    const { getAgentInstallScriptName } = require("./wsl-deploy");
     const descriptors = Array.isArray(options.descriptors) ? options.descriptors : getAgentDescriptors();
 
     const homeDir = options.homeDir || os.homedir();
     const skipDefaultIntegrations = options.skipDefaultIntegrations !== false;
     const distros = await getWslDistributions({ excludeDistros: options.excludeDistros });
+    // null = wsl.exe failed (as opposed to "no distros"). Throw so the catch
+    // branch below keeps the previous cache instead of committing emptiness.
+    if (distros === null) {
+      throw new Error("WSL distro enumeration failed (wsl.exe error or timeout)");
+    }
     const wslAgents = [];
+
+    // Preserve a distro's previous entries when this scan cannot produce
+    // trustworthy results for it — a stopped distro or a mid-batch timeout
+    // must not demote previously detected agents to "not found".
+    const keepPreviousEntries = (distroName) => {
+      wslAgents.push(..._cachedWslAgents.filter((e) => e && e.distro === distroName));
+    };
 
     for (const distro of distros) {
       const wslHome = await getWslHomeDir(distro.name, options);
-      if (!wslHome) continue;
+      if (!wslHome) {
+        keepPreviousEntries(distro.name);
+        continue;
+      }
 
-      // Collect all directories to check for this distro.
+      // Collect all directories to check for this distro. Only agents that
+      // WSL deploy actually supports get entries — the UI renders a Pair
+      // button per entry, and a guaranteed-to-fail Pair is worse than none.
       const checks = [];
       for (const descriptor of descriptors) {
         if (!descriptor || typeof descriptor.agentId !== "string") continue;
         if (skipDefaultIntegrations && DEFAULT_SKIPPED_AGENT_IDS.has(descriptor.agentId)) continue;
+        if (!getAgentInstallScriptName(descriptor.agentId)) continue;
         const wslParentDir = rebaseHomePathPosix(descriptor.parentDir, wslHome, homeDir);
         if (!wslParentDir) continue;
         checks.push({ descriptor, wslParentDir });
@@ -488,32 +510,39 @@ async function refreshWslDetection(options = {}) {
       if (checks.length === 0) continue;
 
       // Batch all dir-exists checks into a single wsl.exe spawn.
-      // Each line emits "OK N" or "NO N" for the Nth check.
+      // Each line emits "OK N" or "NO N" for the Nth check; the final DEP
+      // line reports whether Clawd hooks are already deployed to the distro
+      // (drives the "hooks deployed" badge on Pair rows).
       const batchLines = checks.map((c, i) => {
         const escaped = c.wslParentDir.replace(/'/g, "'\\''");
         return `test -d '${escaped}' && echo "OK ${i}" || echo "NO ${i}"`;
       });
+      const deployedProbe = `${wslHome.replace(/\/$/, "")}/.claude/hooks/clawd-hook.js`;
+      batchLines.push(`test -f '${deployedProbe.replace(/'/g, "'\\''")}' && echo "DEP 1" || echo "DEP 0"`);
       const batchResult = await execInWsl(
         distro.name,
         batchLines.join("; "),
         { timeout: 30000 }  // fixed 30s — test -d is sub-ms, only distro boot/hang justifies a timeout
       );
 
-      // Parse: collect indices of "OK" lines.
-      const foundIndices = new Set();
-      const stdout = (batchResult && batchResult.stdout) || "";
-      for (const line of stdout.split("\n")) {
-        const m = line.trim().match(/^OK (\d+)$/);
-        if (m) foundIndices.add(parseInt(m[1], 10));
+      // A failed or timed-out batch has no trustworthy per-agent results;
+      // keep whatever the previous scan knew about this distro.
+      if (!batchResult || batchResult.error || batchResult.code !== 0) {
+        console.warn("Clawd: WSL batch dir check failed in", distro.name, "—",
+          (batchResult && (batchResult.error ? batchResult.error.message : `exit ${batchResult.code}`)) || "no result");
+        keepPreviousEntries(distro.name);
+        continue;
       }
 
-      // Warn on partial results (timeout / distro crash mid-batch).
-      if (batchResult && batchResult.error) {
-        console.warn("Clawd: WSL batch dir check error in", distro.name, "—",
-          batchResult.error.message, `(${foundIndices.size}/${checks.length} checks completed)`);
-      } else if (foundIndices.size < checks.length && (batchResult && batchResult.code !== 0)) {
-        console.warn("Clawd: WSL batch dir check partial in", distro.name, "—",
-          `exit ${batchResult.code}, ${foundIndices.size}/${checks.length} checks completed`);
+      // Parse: collect indices of "OK" lines and the DEP marker.
+      const foundIndices = new Set();
+      let hooksDeployed = false;
+      const stdout = (batchResult && batchResult.stdout) || "";
+      for (const line of stdout.split("\n")) {
+        const trimmed = line.trim();
+        const m = trimmed.match(/^OK (\d+)$/);
+        if (m) foundIndices.add(parseInt(m[1], 10));
+        else if (trimmed === "DEP 1") hooksDeployed = true;
       }
 
       for (let i = 0; i < checks.length; i++) {
@@ -531,6 +560,7 @@ async function refreshWslDetection(options = {}) {
             : `${wslParentDir} not found in WSL ${distro.name}`,
           wslHome,
           wslParentDir,
+          hooksDeployed,
         });
       }
     }

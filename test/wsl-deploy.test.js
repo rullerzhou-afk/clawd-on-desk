@@ -38,6 +38,15 @@ describe("wsl-deploy", () => {
       assert.strictEqual(getAgentInstallScriptName("unknown-agent"), null);
       assert.strictEqual(getAgentInstallScriptName(""), null);
     });
+
+    it("excludes agents whose install scripts need non-.js assets", () => {
+      // The stdin file pipe only transfers flat .js files; these installers
+      // need pi-extension.ts / *-plugin/ directories. See AGENT_INSTALL_SCRIPT.
+      assert.strictEqual(getAgentInstallScriptName("pi"), null);
+      assert.strictEqual(getAgentInstallScriptName("hermes"), null);
+      assert.strictEqual(getAgentInstallScriptName("opencode"), null);
+      assert.strictEqual(getAgentInstallScriptName("openclaw"), null);
+    });
   });
 
   describe("resolveHooksDir", () => {

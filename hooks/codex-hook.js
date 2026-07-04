@@ -10,6 +10,7 @@ const {
   postPermissionToRunningServer,
   postStateToRunningServer,
   readHostPrefix,
+  applyWslSourceFields,
 } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
 const {
@@ -310,7 +311,9 @@ function buildPermissionBody(payload, resolve) {
 
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();
+    applyWslSourceFields(body, { remote: true });
   } else {
+    applyWslSourceFields(body);
     applyLocalProcessFields(body, resolve, {
       preferAgentPid: isCodexDesktopSession(payload, sessionMeta),
       event,
@@ -376,7 +379,9 @@ function buildStateBody(payload, resolve) {
 
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();
+    applyWslSourceFields(body, { remote: true });
   } else {
+    applyWslSourceFields(body);
     applyLocalProcessFields(body, resolve, {
       preferAgentPid: isCodexDesktopSession(payload, sessionMeta),
       event,

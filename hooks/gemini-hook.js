@@ -2,7 +2,7 @@
 // Clawd — Gemini CLI hook (stdin JSON with hook_event_name; stdout JSON for gating hooks)
 // Registered in ~/.gemini/settings.json by hooks/gemini-install.js
 
-const { postStateToRunningServer, readHostPrefix } = require("./server-config");
+const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
 
 // Gemini hook event → { state, event } for the Clawd state machine
@@ -96,8 +96,10 @@ function buildStateBody(hookName, payload, options = {}) {
 
   if (options.remote) {
     body.host = options.host || readHostPrefix();
+    applyWslSourceFields(body, { remote: true });
     return body;
   }
+  applyWslSourceFields(body);
 
   const pidMeta = options.pidMeta;
   if (!pidMeta || typeof pidMeta !== "object") return body;

@@ -5,7 +5,7 @@
 
 const crypto = require("crypto");
 const fs = require("fs");
-const { postStateToRunningServer, readHostPrefix } = require("./server-config");
+const { postStateToRunningServer, readHostPrefix, resolveWslDistro } = require("./server-config");
 const { fitStateBodyToByteBudget } = require("./state-payload-size");
 const { extractClaudeContextUsageFromEntries } = require("./context-usage");
 const { createPidResolver, readStdinJsonDetailed, getPlatformConfig } = require("./shared-process");
@@ -336,27 +336,6 @@ function isTaskToolStart(event, payload) {
     && payload
     && typeof payload.tool_name === "string"
     && payload.tool_name === "Task";
-}
-
-// Auto-detect WSL so hooks can use the standard POSIX format (no shell field,
-// no env-var prefix). WSL_DISTRO_NAME is always set in WSL environments and
-// provides the stable distro identity. Detecting early avoids the need for
-// CLAWD_WSL_DISTRO to be injected at install time.
-function resolveWslDistro() {
-  if (process.platform !== "linux") return null;
-  // WSL_DISTRO_NAME is set by WSL init and matches wsl -l -q output exactly.
-  const distroName = process.env.WSL_DISTRO_NAME || null;
-  if (distroName) return distroName;
-  try {
-    const version = fs.readFileSync("/proc/version", "utf8");
-    if (!/microsoft|wsl/i.test(version)) return null;
-  } catch {
-    return null;
-  }
-  // Inside WSL but WSL_DISTRO_NAME not set (edge case — some older WSL
-  // builds or custom init systems). Return a stable sentinel so the host
-  // prefix "wsl:wsl" is at least self-consistent across hooks.
-  return "wsl";
 }
 
 function buildStateBody(event, payload, resolve) {

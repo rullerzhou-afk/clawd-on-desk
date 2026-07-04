@@ -40,11 +40,13 @@
     subtitle.textContent = t("agentsSubtitle");
     parent.appendChild(subtitle);
 
-    // Scan toolbar — shown when WSL distros are detected or scan is pending
+    // Scan toolbar — always available on Windows (wslSupported) so a failed
+    // startup scan still leaves the user a manual retry path.
     const hints = runtime.agentInstallationHints;
     const wslDistros = hints && Array.isArray(hints.wslDistros) ? hints.wslDistros : [];
     const wslPending = !!(hints && hints.wslPending);
-    if (wslDistros.length > 0 || wslPending) {
+    const wslSupported = !!(hints && hints.wslSupported);
+    if (wslSupported || wslDistros.length > 0 || wslPending) {
       const toolbar = document.createElement("div");
       toolbar.className = "agent-scan-toolbar";
 
@@ -763,6 +765,16 @@
     label.className = "row-label";
     label.textContent = `WSL: ${wslEntry.distro}`;
     text.appendChild(label);
+
+    // Distro-level marker: Clawd hook files are present in this distro.
+    // Not per-agent pairing truth — that would require inspecting each
+    // agent's config inside WSL — but enough to show Pair took effect.
+    if (wslEntry.hooksDeployed) {
+      const deployed = document.createElement("span");
+      deployed.className = "agent-instance-deployed";
+      deployed.textContent = t("agentInstanceDeployedBadge");
+      label.appendChild(deployed);
+    }
 
     const desc = document.createElement("span");
     desc.className = "row-desc";

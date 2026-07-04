@@ -436,6 +436,8 @@ function registerSettingsIpc(options = {}) {
         skippedAgentIds: [],
         wslAgents: [],
         wslDistros: [],
+        // Keep the manual Scan entry point alive even on a hard failure.
+        wslSupported: process.platform === "win32",
         error: err && err.message ? err.message : String(err),
       };
     }

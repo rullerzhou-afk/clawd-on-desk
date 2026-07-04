@@ -566,6 +566,15 @@ html, body {
   font-family: monospace;
   font-size: 11px;
 }
+.agent-instance-deployed {
+  font-size: 10px;
+  padding: 1px 6px;
+  margin-left: 8px;
+  border-radius: 8px;
+  background: rgba(76, 166, 79, 0.15);
+  color: #4ca64f;
+  white-space: nowrap;
+}
 .settings-option-list {
   display: grid;
   gap: 8px;
