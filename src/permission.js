@@ -6,6 +6,7 @@ const { getDefaultShortcuts } = require("./shortcut-actions");
 const { keepOutOfTaskbar } = require("./taskbar");
 const { clampTextScale, scaleWidth, scaleHeight, applyZoomToWindow } = require("./text-scale");
 const { createTranslator } = require("./i18n");
+const { firstStringValue } = require("./bubble-format");
 const path = require("path");
 const http = require("http");
 const {
@@ -897,7 +898,7 @@ function compactRemoteApprovalText(value, maxLen = 200) {
   text = text.replace(/\b\d+:[A-Za-z0-9_-]{20,}\b/g, "<redacted:telegram-token>");
   text = text.replace(/\b(?:Bearer|Token)\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, "Bearer <redacted>");
   text = text.replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,})\b/g, "<redacted:token>");
-  text = text.replace(/\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|cookie|password|secret)\s*[:=]\s*\S+/gi, "$1=<redacted>");
+  text = text.replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|cookie|password|secret)\s*[:=]\s*\S+/gi, "$1=<redacted>");
   text = text.replace(/\b(?:telegram:)?-?\d{7,}(?::\d+){0,2}\b/g, "<redacted:id>");
   if (text.length > maxLen) text = `${text.slice(0, Math.max(0, maxLen - 1))}…`;
   return text;
@@ -955,20 +956,55 @@ function buildRemoteElicitationPayload(permEntry) {
 // Tool-specific fields that hint at what the action targets, tried in order
 // when the tool gave no description/summary/reason (e.g. Write, Edit, Read —
 // unlike Bash, which always carries `description`). Only cheap, low-risk
-// identifiers (a path, a pattern, a URL) — never full file contents/diffs.
-const FALLBACK_DETAIL_FIELDS = ["file_path", "path", "pattern", "url", "query", "command"];
+// identifiers (a path, a pattern) — never full file contents/diffs/commands.
+// Field names reuse bubble-format.js's firstStringValue so this list doesn't
+// drift out of sync with the naming variants (TargetFile/AbsolutePath/...)
+// other agents use.
+const FALLBACK_PATH_FIELDS = ["file_path", "path", "TargetFile", "AbsolutePath", "filePath", "FilePath", "DirectoryPath"];
+const FALLBACK_PATTERN_FIELDS = ["pattern", "Pattern"];
+const FALLBACK_URL_FIELDS = ["url", "Url"];
+
+// `command`/`query` are deliberately excluded: they can carry secrets a
+// generic sanitizer can't reliably catch (inline env vars, API query
+// params), so they never leave the desktop bubble.
+function stripUrlQueryAndCredentials(value) {
+  try {
+    const parsed = new URL(value);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return null;
+  }
+}
 
 function buildRemoteApprovalFallbackDetail(input) {
-  for (const field of FALLBACK_DETAIL_FIELDS) {
-    const value = input[field];
-    if (typeof value !== "string" || !value.trim()) continue;
-    const display = field === "file_path" || field === "path"
-      ? basenameForDisplay(value)
-      : value;
-    const text = compactRemoteApprovalText(display, 200);
+  const pathValue = firstStringValue(input, FALLBACK_PATH_FIELDS);
+  if (pathValue) {
+    const text = compactRemoteApprovalText(basenameForDisplay(pathValue), 200);
     if (text) return text;
   }
+  const patternValue = firstStringValue(input, FALLBACK_PATTERN_FIELDS);
+  if (patternValue) {
+    const text = compactRemoteApprovalText(patternValue, 200);
+    if (text) return text;
+  }
+  const urlValue = firstStringValue(input, FALLBACK_URL_FIELDS);
+  if (urlValue) {
+    const originAndPath = stripUrlQueryAndCredentials(urlValue);
+    if (originAndPath) {
+      const text = compactRemoteApprovalText(originAndPath, 200);
+      if (text) return text;
+    }
+  }
   return null;
+}
+
+// String.prototype.replace's replacement-string argument treats $$/$&/$`/$'
+// as special sequences. Dynamic values (tool input, agent/tool names, etc.)
+// must never be interpolated with the string form — a Grep pattern
+// containing "$$", for example, would corrupt the rendered card. The
+// function form of the replacement argument is never parsed for $-sequences.
+function interpolate(template, token, value) {
+  return template.replace(token, () => value);
 }
 
 // Returns a redacted summary string — never null. We used to refuse to send a
@@ -994,7 +1030,7 @@ function buildRemoteApprovalSummary(permEntry) {
     if (text) return text;
   }
   const fallbackDetail = buildRemoteApprovalFallbackDetail(input);
-  if (fallbackDetail) return t("approvalSummaryFallbackDetail").replace("{detail}", fallbackDetail);
+  if (fallbackDetail) return interpolate(t("approvalSummaryFallbackDetail"), "{detail}", fallbackDetail);
   return t("approvalSummaryUnavailable");
 }
 
@@ -1004,7 +1040,7 @@ function buildRemoteSuggestionLabel(suggestion) {
     if (suggestion.mode === "acceptEdits") return t("approvalSuggestionAutoEdits");
     if (suggestion.mode === "plan") return t("approvalSuggestionPlanMode");
     const mode = compactRemoteApprovalText(suggestion.mode || "", 18);
-    return mode ? t("approvalSuggestionModePrefix").replace("{mode}", mode) : "";
+    return mode ? interpolate(t("approvalSuggestionModePrefix"), "{mode}", mode) : "";
   }
   if (suggestion.type === "addRules") {
     const rules = Array.isArray(suggestion.rules) ? suggestion.rules : [suggestion];
@@ -1014,8 +1050,8 @@ function buildRemoteSuggestionLabel(suggestion) {
     const toolName = compactRemoteApprovalText(first.toolName || suggestion.toolName || "", 16);
     if (toolName) {
       return isDeny
-        ? t("approvalSuggestionAlwaysDenyTool").replace("{tool}", toolName)
-        : t("approvalSuggestionAlwaysAllowTool").replace("{tool}", toolName);
+        ? interpolate(t("approvalSuggestionAlwaysDenyTool"), "{tool}", toolName)
+        : interpolate(t("approvalSuggestionAlwaysAllowTool"), "{tool}", toolName);
     }
     return isDeny ? t("approvalSuggestionAlwaysDeny") : t("approvalSuggestionAlwaysAllow");
   }
@@ -1036,12 +1072,12 @@ function buildRemoteSuggestionButtons(permEntry) {
   return buttons;
 }
 
-// Returns the Telegram approval payload, or null when there is no safe summary
-// to ship. Callers must treat null as a no-op signal — never send a card
-// without an action-describing summary.
+// Returns the Telegram approval payload. buildRemoteApprovalSummary always
+// returns a non-empty string (a real summary, a cheap fallback identifier, or
+// an explicit "no description" notice), so there is always a safe summary to
+// ship — this never returns null.
 function buildRemoteApprovalPayload(permEntry) {
   const summary = buildRemoteApprovalSummary(permEntry);
-  if (!summary) return null;
   const agentId = compactRemoteApprovalText(permEntry.agentId || "claude-code", 80) || "claude-code";
   const toolName = compactRemoteApprovalText(permEntry.toolName || t("approvalUnknownTool"), 80) || t("approvalUnknownTool");
   const session = ctx.sessions.get(permEntry.sessionId);
@@ -1063,7 +1099,7 @@ function buildRemoteApprovalPayload(permEntry) {
   ].filter(Boolean).join("\n");
   const suggestionButtons = buildRemoteSuggestionButtons(permEntry);
   const payload = {
-    title: t("approvalRequestsTitle").replace("{agent}", agentId).replace("{tool}", toolName),
+    title: interpolate(interpolate(t("approvalRequestsTitle"), "{agent}", agentId), "{tool}", toolName),
     detail,
   };
   if (suggestionButtons.length > 0) payload.suggestions = suggestionButtons;

@@ -45,6 +45,14 @@
     return helpers.t(key);
   }
 
+  // String.prototype.replace's replacement-string argument treats $$/$&/$`/$'
+  // as special sequences; error codes/reasons come from external processes and
+  // must never be interpolated that way. The function form of the replacement
+  // argument is never parsed for $-sequences.
+  function interpolate(template, token, value) {
+    return template.replace(token, () => value);
+  }
+
   function currentConfig() {
     const cfg = state.snapshot && state.snapshot.tgApproval;
     return {
@@ -420,7 +428,7 @@
       migrationPending = false;
       if (res && res.snapshot) migrationSnapshot = res.snapshot;
       if (res && res.status !== "ok" && res.errorCode) {
-        ops.showToast(t("telegramMigrationErrorToast").replace("{code}", res.errorCode), { error: true });
+        ops.showToast(interpolate(t("telegramMigrationErrorToast"), "{code}", res.errorCode), { error: true });
       }
       renderMigrationCard();
       // Status of the legacy sidecar may change as a side-effect (start/stop).
@@ -445,7 +453,7 @@
     stateLine.className = "tg-migration-state";
     stateLine.textContent = `${t("telegramMigrationStateLabel")}: ${state}` +
       (snap.runtimeStatus && snap.runtimeStatus.status === "failed"
-        ? t("telegramMigrationRuntimeFailedSuffix").replace("{reason}", snap.runtimeStatus.reason || t("telegramMigrationRuntimeUnknown"))
+        ? interpolate(t("telegramMigrationRuntimeFailedSuffix"), "{reason}", snap.runtimeStatus.reason || t("telegramMigrationRuntimeUnknown"))
         : "");
     migrationCardEl.appendChild(stateLine);
 
@@ -466,7 +474,7 @@
     if (importErr && state === "LEGACY_ACTIVE") {
       const banner = document.createElement("div");
       banner.className = "tg-migration-banner";
-      banner.textContent = t("telegramMigrationImportFailed").replace("{error}", importErr);
+      banner.textContent = interpolate(t("telegramMigrationImportFailed"), "{error}", importErr);
       body.appendChild(banner);
       body.appendChild(migrationButton(t("telegramMigrationRetryImport"), () =>
         migrationDispatch("USER_TEST_NATIVE")));
