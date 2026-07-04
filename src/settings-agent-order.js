@@ -9,6 +9,7 @@ function buildSettingsAgentOrderExports() {
     "qwen-code",
     "codewhale",
     "opencode",
+    "mimocode",
     "codebuddy",
     "qoder",
     "qoderwork",

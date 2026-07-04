@@ -13,6 +13,7 @@ const kimiCli = require("./kimi-cli");
 const qwenCode = require("./qwen-code");
 const codewhale = require("./codewhale");
 const opencode = require("./opencode");
+const mimocode = require("./mimocode");
 const pi = require("./pi");
 const openclaw = require("./openclaw");
 const hermes = require("./hermes");
@@ -33,6 +34,7 @@ const AGENTS = [
   qwenCode,
   codewhale,
   opencode,
+  mimocode,
   pi,
   openclaw,
   hermes,

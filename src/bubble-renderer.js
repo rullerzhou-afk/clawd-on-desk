@@ -711,14 +711,19 @@ function show(data) {
   elicitationMode = data.isElicitation || false;
   setSessionTag(data);
 
-  // opencode branch — Phase 2. Three differences from CC:
+  // opencode / mimocode branch — Phase 2. Three differences from CC:
   //   1. tool names are lowercase (edit/bash/write) — we PascalCase them so
   //      existing tool-pill CSS rules match (data-tool="Edit" etc).
   //   2. toolInput shape is opencode-native ({filepath,diff}/{command}/{url}),
   //      not CC's {file_path,command,pattern}. Custom picker below.
-  //   3. "Always Allow" button maps to reply="always" via "opencode-always"
+  //   3. "Always Allow" button maps to reply="always" via "<agent>-always"
   //      behavior (handleDecide special-cases this).
-  if (data.isOpencode) {
+  // mimocode is an opencode-derived runtime sharing the same plugin SDK and
+  // event/permission shapes, so it reuses this branch verbatim.
+  if (data.isOpencode || data.isMimocode) {
+    const alwaysKey = data.isMimocode ? "mimocodeAlways" : "opencodeAlways";
+    const patternsKey = data.isMimocode ? "mimocodePatterns" : "opencodePatterns";
+    const alwaysBehavior = data.isMimocode ? "mimocode-always" : "opencode-always";
     headerTitle.textContent = bubbleText(data.lang, "permissionRequest");
 
     const rawName = data.toolName || "unknown";
@@ -738,8 +743,8 @@ function show(data) {
       detail = input.command;
     } else if (typeof input.url === "string" && input.url) {
       detail = input.url;
-    } else if (Array.isArray(data.opencodePatterns) && data.opencodePatterns.length) {
-      detail = [...new Set(data.opencodePatterns)].join(", ");
+    } else if (Array.isArray(data[patternsKey]) && data[patternsKey].length) {
+      detail = [...new Set(data[patternsKey])].join(", ");
     } else {
       try { detail = JSON.stringify(input); } catch { detail = "(n/a)"; }
     }
@@ -752,22 +757,22 @@ function show(data) {
     btnAllow.disabled = false;
     btnDeny.disabled = false;
 
-    // Always Allow button — shown only when opencode provided persist candidates.
-    // ⚠ opencode's reply="always" is a BLANKET session rule: a single click
+    // Always Allow button — shown only when the agent provided persist candidates.
+    // ⚠ The reply="always" is a BLANKET session rule: a single click
     // auto-approves every subsequent tool call of the same category in this
     // session (e.g. ALL bash commands including rm -rf). Unlike Claude Code,
-    // opencode does not scope "always" to the specific pattern of this request.
-    // We keep the button to respect opencode's native UX, but the label + tooltip
-    // make the blast radius explicit.
+    // opencode/mimocode do not scope "always" to the specific pattern of this
+    // request. We keep the button to respect the native UX, but the label +
+    // tooltip make the blast radius explicit.
     suggestionsContainer.innerHTML = "";
-    if (Array.isArray(data.opencodeAlways) && data.opencodeAlways.length > 0) {
+    if (Array.isArray(data[alwaysKey]) && data[alwaysKey].length > 0) {
       const btn = document.createElement("button");
       btn.className = "btn-suggestion";
       btn.textContent = bubbleText(data.lang, "alwaysAllowBlanket");
       btn.title = bubbleText(data.lang, "alwaysAllowBlanketTitle");
       btn.addEventListener("click", () => {
         disableAll();
-        window.bubbleAPI.decide("opencode-always");
+        window.bubbleAPI.decide(alwaysBehavior);
       });
       suggestionsContainer.appendChild(btn);
     }

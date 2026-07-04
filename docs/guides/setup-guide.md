@@ -32,6 +32,8 @@ Fresh installs enable and install only Claude Code and Codex by default. For oth
 
 **opencode** — uses a plugin entry in `~/.config/opencode/opencode.json`. Install it from **Settings → Agents** when you want local opencode tracking; after that Clawd keeps the plugin synced on launch while opencode remains enabled. You can also run `node hooks/opencode-install.js` manually.
 
+**MiMo Code** — uses a plugin entry in `~/.config/mimocode/mimocode.jsonc`. Install it from **Settings → Agents** when you want local MiMo Code tracking; after that Clawd keeps the plugin synced on launch while MiMo Code remains enabled. You can also run `node hooks/mimocode-install.js` manually. MiMo Code shares the same `@mimo-ai/plugin` SDK as opencode, so it has the same zero-latency event streaming, Allow/Always/Deny permission bubbles, and building animations when parallel subagents are spawned via the `task` tool.
+
 **Pi** — uses a global extension directory at `~/.pi/agent/extensions/clawd-on-desk`. Install it from **Settings → Agents** when you want local Pi tracking; after that Clawd keeps the extension synced on launch while Pi remains enabled. You can also run `npm run install:pi-extension` manually. Interactive Pi sessions report lifecycle and tool activity to Clawd, but Pi is state-only: Clawd does not show permission bubbles, does not call Pi terminal confirmation, and preserves Pi's default YOLO execution behavior.
 
 **OpenClaw** — uses a plugin path under `~/.openclaw/openclaw.json`. Install it from **Settings → Agents** when you want local OpenClaw tracking; after that Clawd keeps the plugin synced on launch while OpenClaw remains enabled. You can also run `npm run install:openclaw-plugin` manually to let OpenClaw's CLI handle first-time setup. Phase 1 is state-only and targets local `openclaw tui --local` sessions.
@@ -177,6 +179,9 @@ node hooks/codebuddy-install.js
 
 # opencode
 node hooks/opencode-install.js
+
+# MiMo Code
+node hooks/mimocode-install.js
 
 # Pi
 node hooks/pi-install.js

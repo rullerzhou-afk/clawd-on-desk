@@ -16,6 +16,7 @@ const { unregisterQwenCodeHooks } = require("./qwen-code-install");
 const { unregisterCodewhaleHooks } = require("./codewhale-install");
 const { unregisterCodexCommandHooks } = require("./codex-install-utils");
 const { unregisterOpencodePlugin } = require("./opencode-install");
+const { unregisterMimocodePlugin } = require("./mimocode-install");
 const { unregisterPiExtension } = require("./pi-install");
 const { unregisterOpenClawPlugin } = require("./openclaw-install");
 const { resolveHermesHome, unregisterHermesPlugin } = require("./hermes-install");
@@ -38,6 +39,7 @@ const MANAGED_AGENT_IDS = Object.freeze([
   "codewhale",
   "codex",
   "opencode",
+  "mimocode",
   "pi",
   "openclaw",
   "hermes",
@@ -59,6 +61,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   codewhale: "CodeWhale",
   codex: "Codex CLI",
   opencode: "opencode",
+  mimocode: "MiMo Code",
   pi: "Pi",
   openclaw: "OpenClaw",
   hermes: "Hermes Agent",
@@ -180,6 +183,10 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
         ...common,
         configPath: path.join(homeDir, ".config", "opencode", "opencode.json"),
       },
+      mimocode: {
+        ...common,
+        configPath: path.join(homeDir, ".config", "mimocode", "mimocode.jsonc"),
+      },
       pi: {
         ...common,
         parentDir: path.join(homeDir, ".pi", "agent"),
@@ -251,6 +258,7 @@ const AGENT_CLEANERS = Object.freeze({
   codewhale: unregisterCodewhaleHooks,
   codex: unregisterCodexCommandHooks,
   opencode: unregisterOpencodePlugin,
+  mimocode: unregisterMimocodePlugin,
   pi: unregisterPiExtension,
   openclaw: unregisterOpenClawPlugin,
   hermes: unregisterHermesPlugin,

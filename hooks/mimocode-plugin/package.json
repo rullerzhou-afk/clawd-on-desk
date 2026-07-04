@@ -1,0 +1,9 @@
+{
+  "name": "clawd-mimocode-plugin",
+  "version": "0.1.0",
+  "description": "Clawd on Desk plugin for mimocode — reports session/tool events to the Clawd desktop pet",
+  "type": "module",
+  "main": "index.mjs",
+  "private": true,
+  "license": "AGPL-3.0-only"
+}

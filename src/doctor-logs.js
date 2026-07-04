@@ -11,6 +11,7 @@ const DEFAULT_LOG_BASENAMES = Object.freeze([
   "update-debug.log",
   "gemini-debug.log",
   "opencode-plugin.log",
+  "mimocode-plugin.log",
 ]);
 
 function isAllowedLogBasename(name, pathApi = path) {

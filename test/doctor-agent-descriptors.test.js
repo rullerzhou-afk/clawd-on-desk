@@ -25,6 +25,7 @@ describe("doctor agent descriptors", () => {
         "qwen-code",
         "codewhale",
         "opencode",
+        "mimocode",
         "pi",
         "openclaw",
         "hermes",
@@ -94,6 +95,10 @@ describe("doctor agent descriptors", () => {
 
     assert.strictEqual(getAgentDescriptor("opencode").parentDir, opencode.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("opencode").configPath, opencode.DEFAULT_CONFIG_PATH);
+
+    const mimocode = require("../hooks/mimocode-install");
+    assert.strictEqual(getAgentDescriptor("mimocode").parentDir, mimocode.DEFAULT_PARENT_DIR);
+    assert.strictEqual(getAgentDescriptor("mimocode").configPath, mimocode.DEFAULT_CONFIG_PATH);
 
     assert.strictEqual(getAgentDescriptor("pi").parentDir, pi.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("pi").configPath, pi.DEFAULT_EXTENSION_DIR);

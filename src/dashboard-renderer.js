@@ -10,6 +10,7 @@ const AGENT_LABELS = {
   "kiro-cli": "Kiro",
   "kimi-cli": "Kimi",
   opencode: "opencode",
+  mimocode: "MiMo Code",
   codebuddy: "CodeBuddy",
   pi: "Pi",
   openclaw: "OpenClaw",

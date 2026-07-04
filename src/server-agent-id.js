@@ -19,6 +19,7 @@ const HOOK_SOURCE_AGENT_IDS = new Map([
   ["codex-official", "codex"],
   ["copilot-hook", "copilot-cli"],
   ["opencode-plugin", "opencode"],
+  ["mimocode-plugin", "mimocode"],
   ["openclaw-plugin", "openclaw"],
   ["codewhale-hook", "codewhale"],
   ["pi-extension", "pi"],

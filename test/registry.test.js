@@ -19,6 +19,7 @@ describe("Agent Registry", () => {
       "qwen-code",
       "codewhale",
       "opencode",
+      "mimocode",
       "pi",
       "openclaw",
       "hermes",

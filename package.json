@@ -38,6 +38,8 @@
     "uninstall:pi-extension": "node hooks/pi-install.js --uninstall",
     "install:openclaw-plugin": "node hooks/openclaw-install.js",
     "uninstall:openclaw-plugin": "node hooks/openclaw-install.js --uninstall",
+    "install:mimocode-plugin": "node hooks/mimocode-install.js",
+    "uninstall:mimocode-plugin": "node hooks/mimocode-install.js --uninstall",
     "install:codex-hooks": "node hooks/codex-install.js",
     "uninstall:codex-hooks": "node hooks/codex-install.js --uninstall",
     "install:codex-debug-hooks": "node hooks/codex-debug-install.js",

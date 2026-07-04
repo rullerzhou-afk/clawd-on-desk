@@ -57,6 +57,11 @@ function shouldBypassOpencodeBubble(ctx) {
   return !ctx.isAgentPermissionsEnabled("opencode");
 }
 
+function shouldBypassMimocodeBubble(ctx) {
+  if (typeof ctx.isAgentPermissionsEnabled !== "function") return false;
+  return !ctx.isAgentPermissionsEnabled("mimocode");
+}
+
 function shouldBypassCodexBubble(ctx) {
   if (!arePermissionBubblesEnabled(ctx)) return true;
   if (typeof ctx.isAgentPermissionsEnabled !== "function") return false;
@@ -451,6 +456,91 @@ function handlePermissionPost(req, res, options) {
           ctx.permLog(`opencode bubble failed: ${bubbleErr && bubbleErr.message} — reject via bridge`);
           removePendingPermission(ctx, permEntry, "opencode-bubble-failed");
           ctx.replyOpencodePermission({ bridgeUrl, bridgeToken, requestId, reply: "reject", toolName });
+        }
+        return;
+      }
+
+      // ── mimocode permission branch (mirrors opencode: fire-and-forget + reverse bridge) ──
+      // mimocode is an opencode-derived runtime sharing the same plugin SDK and
+      // permission bridge protocol. See the opencode branch above for the full
+      // rationale; only the agent id and field-name prefixes differ.
+      if (agentId === "mimocode") {
+        res.writeHead(200, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+        res.end("ok");
+
+        if (typeof ctx.isAgentEnabled === "function" && !ctx.isAgentEnabled("mimocode")) {
+          recordRequestHookEvent.droppedByDisabled();
+          ctx.permLog("mimocode disabled → silent drop, TUI fallback");
+          return;
+        }
+
+        const toolName = typeof data.tool_name === "string" && data.tool_name ? data.tool_name : "unknown";
+        const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
+        const toolInput = truncateDeep(rawInput);
+        const sessionId = typeof data.session_id === "string" ? data.session_id : "default";
+        const requestId = typeof data.request_id === "string" ? data.request_id : null;
+        const bridgeUrl = typeof data.bridge_url === "string" ? data.bridge_url : "";
+        const bridgeToken = typeof data.bridge_token === "string" ? data.bridge_token : "";
+        const alwaysCandidates = Array.isArray(data.always) ? data.always : [];
+        const patterns = Array.isArray(data.patterns) ? data.patterns : [];
+
+        ctx.permLog(`mimocode perm: tool=${toolName} session=${sessionId} req=${requestId} bridge=${bridgeUrl} always=${alwaysCandidates.length}`);
+
+        if (!requestId || !bridgeUrl || !bridgeToken) {
+          const missing = !requestId ? "request_id" : (!bridgeUrl ? "bridge_url" : "bridge_token");
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`SKIPPED mimocode perm: missing ${missing}`);
+          return;
+        }
+
+        if (ctx.doNotDisturb) {
+          recordRequestHookEvent.droppedByDnd();
+          ctx.permLog(`mimocode DND → silent drop, TUI fallback — request=${requestId}`);
+          return;
+        }
+
+        if (isHeadlessPermissionRequest(ctx, sessionId, data)) {
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`mimocode headless session=${sessionId} → silent drop, TUI fallback — request=${requestId}`);
+          return;
+        }
+
+        const mimocodeSubGateBypass = shouldBypassMimocodeBubble(ctx);
+        if (!arePermissionBubblesEnabled(ctx) || mimocodeSubGateBypass) {
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`mimocode bubble hidden: tool=${toolName} — TUI fallback (permissionBubblesEnabled=${arePermissionBubblesEnabled(ctx)} subGateBypass=${mimocodeSubGateBypass})`);
+          return;
+        }
+
+        const permEntry = {
+          res: null,
+          abortHandler: null,
+          suggestions: [],
+          sessionId,
+          bubble: null,
+          hideTimer: null,
+          toolName,
+          toolInput,
+          resolvedSuggestion: null,
+          createdAt: Date.now(),
+          agentId: "mimocode",
+          isMimocode: true,
+          mimocodeRequestId: requestId,
+          mimocodeBridgeUrl: bridgeUrl,
+          mimocodeBridgeToken: bridgeToken,
+          mimocodeAlwaysCandidates: alwaysCandidates,
+          mimocodePatterns: patterns,
+        };
+        addPendingPermission(ctx, permEntry);
+        ctx.updateSession(sessionId, "notification", "PermissionRequest", { agentId: "mimocode" });
+        ctx.permLog(`mimocode showing bubble: tool=${toolName} session=${sessionId}`);
+        recordRequestHookEvent.accepted();
+        try {
+          ctx.showPermissionBubble(permEntry);
+        } catch (bubbleErr) {
+          ctx.permLog(`mimocode bubble failed: ${bubbleErr && bubbleErr.message} — reject via bridge`);
+          removePendingPermission(ctx, permEntry, "mimocode-bubble-failed");
+          ctx.replyMimocodePermission({ bridgeUrl, bridgeToken, requestId, reply: "reject", toolName });
         }
         return;
       }
@@ -1190,6 +1280,7 @@ module.exports = {
   shouldBypassQwenCodeBubble,
   shouldBypassCopilotBubble,
   shouldBypassOpencodeBubble,
+  shouldBypassMimocodeBubble,
   arePermissionBubblesEnabled,
   shouldInterceptCodexPermission,
   shouldMuteCodexNativeNotificationSound,
