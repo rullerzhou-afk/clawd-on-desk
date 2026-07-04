@@ -1275,6 +1275,14 @@ function handleRemoteApprovalDecision(permEntry, decision, sourceName) {
       source,
     }, sourceName);
     if (permEntry.isElicitation) {
+      if (permEntry.isHermes) {
+        // Hermes treats an explicit deny as "clarification cancelled"; only a
+        // no-decision (204) falls back to its native terminal prompt, which is
+        // what "go to terminal" means here.
+        resolvePermissionEntry(permEntry, "no-decision", "Go to terminal from remote approval");
+        ctx.focusTerminalForSession(permEntry.sessionId, { fallbackEntry: buildPermissionFocusEntry(permEntry) });
+        return;
+      }
       resolvePermissionEntry(permEntry, "deny", "User answered in terminal");
       return;
     }
