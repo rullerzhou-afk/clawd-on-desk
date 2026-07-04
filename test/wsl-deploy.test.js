@@ -67,6 +67,37 @@ describe("wsl-deploy", () => {
     });
   });
 
+  describe("parseConnectivityProbe", () => {
+    const { parseConnectivityProbe } = require("../src/wsl-deploy");
+
+    it("parses REACHABLE with port", () => {
+      assert.deepStrictEqual(
+        parseConnectivityProbe("REACHABLE 23333\n"),
+        { reachable: true, port: 23333 }
+      );
+    });
+
+    it("ignores login-shell noise around the marker", () => {
+      assert.deepStrictEqual(
+        parseConnectivityProbe("bash: warning\nREACHABLE 23334\n"),
+        { reachable: true, port: 23334 }
+      );
+    });
+
+    it("parses UNREACHABLE", () => {
+      assert.deepStrictEqual(
+        parseConnectivityProbe("UNREACHABLE\n"),
+        { reachable: false, port: null }
+      );
+    });
+
+    it("returns unknown for garbage, empty, or missing output", () => {
+      assert.deepStrictEqual(parseConnectivityProbe(""), { reachable: null, port: null });
+      assert.deepStrictEqual(parseConnectivityProbe(undefined), { reachable: null, port: null });
+      assert.deepStrictEqual(parseConnectivityProbe("node: command not found"), { reachable: null, port: null });
+    });
+  });
+
   describe("resolveHooksDir", () => {
     it("returns dev path when not packaged", () => {
       const dir = resolveHooksDir({ isPackaged: false });

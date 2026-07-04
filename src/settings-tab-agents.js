@@ -800,7 +800,13 @@
             distro: wslEntry.distro,
           });
           if (result && result.status === "ok") {
-            ops.showToast(result.message || t("agentInstancePaired"));
+            if (result.wslConnectivity === false) {
+              // Hooks installed, but the distro cannot reach Clawd (NAT
+              // networking) — sessions would silently never appear.
+              ops.showToast(t("agentInstancePairedNoConnectivity"), { error: true });
+            } else {
+              ops.showToast(result.message || t("agentInstancePaired"));
+            }
             // Refresh hints so the UI updates (and Pair button may disappear)
             if (typeof ops.fetchAgentInstallationHints === "function") {
               ops.fetchAgentInstallationHints({ refreshWsl: true }).then(() => {

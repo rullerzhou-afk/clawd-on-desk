@@ -548,7 +548,11 @@ async function _wslCommand(payload, deps, { commandName, depName, action }) {
   try {
     const result = await deps[depName](distro, agentId);
     if (result && result.ok) {
-      return { status: "ok", message: `${action} WSL ${distro}` };
+      const okResult = { status: "ok", message: `${action} WSL ${distro}` };
+      // deploy-only: false = hooks installed but Clawd is unreachable from
+      // the distro (NAT networking) — renderer shows a localized warning.
+      if (result.connectivity === false) okResult.wslConnectivity = false;
+      return okResult;
     }
     return {
       status: "error",

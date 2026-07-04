@@ -255,13 +255,47 @@ async function deployToWsl(distro, options = {}) {
   }
   emit("run-install", "ok");
 
+  // 5. Probe Windows-side Clawd reachability from inside the distro.
+  // Under default NAT networking, localhost belongs to the WSL VM, so hooks
+  // install fine but every report silently fails (verified on a real NAT
+  // machine). Deploy still succeeds — the UI turns connectivity=false into
+  // an actionable warning instead of a fake success.
+  emit("verify-connectivity", "start");
+  const probeResult = await execInWsl(
+    distro,
+    `cd '${hooksTargetDirEscaped}' && node wsl-connectivity-probe.js`,
+    { ...options, shell: "bash", shellFlags: ["-l", "-i", "-c"], timeout: 20000 }
+  );
+  const connectivity = parseConnectivityProbe(probeResult && probeResult.stdout);
+  if (connectivity.reachable === true) {
+    emit("verify-connectivity", "ok", null, { port: connectivity.port });
+  } else if (connectivity.reachable === false) {
+    emit("verify-connectivity", "warn", "Clawd HTTP server unreachable from WSL (NAT networking?)");
+  } else {
+    // Probe itself failed to produce a verdict (crashed, killed) — do not
+    // alarm the user on an unknown; hooks may still work.
+    emit("verify-connectivity", "skip", (probeResult && probeResult.stderr) || null);
+  }
+
   return {
     ok: true,
     distro,
     agentId,
     hooksTargetDir,
     filesCopied: copied,
+    connectivity: connectivity.reachable,
+    connectivityPort: connectivity.port,
   };
+}
+
+// Parse wsl-connectivity-probe.js output: "REACHABLE <port>" / "UNREACHABLE".
+// Anything else (probe crashed, empty output) → reachable: null = unknown.
+function parseConnectivityProbe(stdout) {
+  const text = typeof stdout === "string" ? stdout : "";
+  const m = text.match(/^REACHABLE (\d+)$/m);
+  if (m) return { reachable: true, port: parseInt(m[1], 10) };
+  if (/^UNREACHABLE$/m.test(text)) return { reachable: false, port: null };
+  return { reachable: null, port: null };
 }
 
 // ── Remove ────────────────────────────────────────────────────────────
@@ -333,6 +367,7 @@ module.exports = {
   removeFromWsl,
   getAgentInstallScriptName,
   getAgentUninstallCommand,
+  parseConnectivityProbe,
   resolveHooksDir,
   pipeFileToWsl,
   collectHookFiles,
