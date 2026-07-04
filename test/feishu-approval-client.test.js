@@ -80,6 +80,8 @@ test("FeishuApprovalClient sends a card and resolves from card action", async ()
   }), true);
 
   assert.equal(await decisionPromise, "allow");
+  // The card patch is best-effort and runs after the local decision resolves.
+  await flush();
   assert.equal(updated.length, 1);
   assert.equal(updated[0].path.message_id, "om_1");
   assert.match(JSON.parse(updated[0].data.content).header.title.content, /已批准/);
@@ -92,6 +94,56 @@ test("FeishuApprovalClient sends a card and resolves from card action", async ()
     { message: "card sent", requestIdPrefix: "fs_", decision: "", matched: undefined },
     { message: "card action received", requestIdPrefix: "fs_", decision: "allow", matched: true },
   ]);
+});
+
+test("FeishuApprovalClient resolves on the first card action; late duplicates are no-ops", async () => {
+  const sent = [];
+  const patches = [];
+  let releasePatch;
+  const patchGate = new Promise((resolve) => { releasePatch = resolve; });
+  const fakeClient = {
+    im: { v1: { message: {
+      create: async (payload) => {
+        sent.push(payload);
+        return { data: { message_id: "om_1" } };
+      },
+      patch: async (payload) => {
+        patches.push(payload);
+        await patchGate;
+        return { data: {} };
+      },
+    } } },
+  };
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    larkClient: fakeClient,
+  });
+
+  const decisionPromise = client.requestApproval({ title: "Run", detail: "Summary: Run tests" });
+  await flush();
+  const requestId = JSON.parse(sent[0].data.content).elements[1].actions[0].value.requestId;
+
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: { requestId, decision: "allow" } },
+  }), true);
+  // A second click racing the (still unfinished) card patch must not enter the
+  // decision flow: the first action already settled the request.
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: { requestId, decision: "deny" } },
+  }), false);
+
+  // The local decision is the first click, available before the patch finishes.
+  assert.equal(await decisionPromise, "allow");
+
+  releasePatch();
+  await flush();
+  assert.equal(patches.length, 1);
+  assert.match(JSON.parse(patches[0].data.content).header.title.content, /已批准/);
 });
 
 test("FeishuApprovalClient reports running only after WS ready", async () => {
@@ -328,6 +380,91 @@ test("FeishuApprovalClient follows SDK reconnecting state after a ready connecti
   assert.equal(client.getStatus().status, "failed");
 });
 
+test("FeishuApprovalClient ignores stale WS callbacks from a replaced generation", async () => {
+  const created = [];
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    connectionTimeoutSeconds: 0.02,
+    wsFactory: (params) => {
+      const fakeWs = {
+        state: "idle",
+        closed: false,
+        getConnectionStatus() {
+          return { state: this.state, reconnectAttempts: 0 };
+        },
+        async start() {
+          this.state = "connecting";
+        },
+        close() {
+          this.closed = true;
+          this.state = "idle";
+        },
+      };
+      created.push({ params, fakeWs });
+      return { wsClient: fakeWs, dispatcher: {} };
+    },
+  });
+
+  await client.start();
+  created[0].params.onError(new Error("gen1 failed"));
+  assert.equal(client.getStatus().status, "failed");
+
+  await client.start();
+  assert.equal(created.length, 2);
+  assert.equal(client.getStatus().status, "starting");
+
+  // A late callback from the replaced connection must not mark the new one
+  // as running…
+  created[0].params.onReady();
+  assert.equal(client.getStatus().status, "starting");
+  assert.equal(client.isConnected(), false);
+
+  // …and must not have cleared the new connection's timeout watchdog.
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(client.getStatus().status, "failed");
+
+  // The current generation still reports normally.
+  created[1].params.onReady();
+  assert.equal(client.getStatus().status, "running");
+});
+
+test("FeishuApprovalClient ignores WS callbacks arriving after close()", async () => {
+  const created = [];
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    wsFactory: (params) => {
+      const fakeWs = {
+        state: "idle",
+        getConnectionStatus() {
+          return { state: this.state, reconnectAttempts: 0 };
+        },
+        async start() {
+          this.state = "connecting";
+        },
+        close() {
+          this.state = "idle";
+        },
+      };
+      created.push({ params, fakeWs });
+      return { wsClient: fakeWs, dispatcher: {} };
+    },
+  });
+
+  await client.start();
+  client.close();
+  assert.equal(client.getStatus().status, "ready");
+
+  created[0].params.onReady();
+  assert.equal(client.getStatus().status, "ready");
+  assert.equal(client.isConnected(), false);
+});
+
 test("FeishuApprovalClient does not send approval card until WS is connected", async () => {
   const client = new FeishuApprovalClient({
     appId: "cli_123",
@@ -375,6 +512,8 @@ test("FeishuApprovalClient resolves terminal action and external desktop updates
     action: { value: { requestId, decision: "terminal" } },
   }), true);
   assert.equal(await decisionPromise, "terminal");
+  // The card patch is best-effort and runs after the local decision resolves.
+  await flush();
   assert.match(JSON.parse(updated[0].data.content).header.title.content, /已转到终端处理/);
 
   const ac2 = new AbortController();

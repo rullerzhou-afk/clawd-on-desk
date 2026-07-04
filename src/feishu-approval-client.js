@@ -707,12 +707,17 @@ class FeishuApprovalClient {
     this.pending = new Map();
     this.log = typeof options.log === "function" ? options.log : () => {};
     this.onStatusChange = typeof options.onStatusChange === "function" ? options.onStatusChange : () => {};
-    this.connectionState = this.wsClient ? "idle" : "idle";
+    this.connectionState = "idle";
     this.lastErrorMessage = "";
     this.connectionTimeoutMs = normalizeConnectionTimeoutMs(options.connectionTimeoutSeconds);
     this.connectionTimer = null;
     this.connectionTimerMode = "";
     this.lastStatusNotifyKey = "";
+    // Bumped on every start()/close(); WS lifecycle callbacks from an older
+    // wsClient generation must not mutate the state of the current one. The
+    // SDK's initial-start path can fire onReady/onError after close() (no
+    // generation re-check after its await), so we guard on our side.
+    this.wsGeneration = 0;
   }
 
   isEnabled() {
@@ -786,6 +791,11 @@ class FeishuApprovalClient {
     const current = this.getStatus().status;
     if (this.wsClient && (current === "running" || current === "starting")) return false;
     if (this.wsClient) this.close();
+    const generation = ++this.wsGeneration;
+    const ifCurrent = (fn) => (...args) => {
+      if (generation !== this.wsGeneration) return;
+      fn(...args);
+    };
     const created = this.wsFactory({
       appId: this.appId,
       appSecret: this.appSecret,
@@ -794,34 +804,34 @@ class FeishuApprovalClient {
       lark: this.lark,
       handshakeTimeoutMs: this.connectionTimeoutMs,
       onCardAction: (event) => this.handleCardAction(event),
-      onReady: () => {
+      onReady: ifCurrent(() => {
         this.clearConnectionTimer();
         this.connectionState = "connected";
         this.lastErrorMessage = "";
         this.log("info", "connected");
         this.notifyStatusChange();
-      },
-      onError: (err) => {
+      }),
+      onError: ifCurrent((err) => {
         this.clearConnectionTimer();
         this.connectionState = "failed";
         this.lastErrorMessage = err && err.message ? err.message : String(err || "Feishu long connection failed");
         this.log("warn", "connection failed", { error: this.lastErrorMessage });
         this.notifyStatusChange();
-      },
-      onReconnecting: () => {
+      }),
+      onReconnecting: ifCurrent(() => {
         this.connectionState = "reconnecting";
         this.lastErrorMessage = "";
         this.startConnectionTimer("reconnecting");
         this.log("info", "reconnecting");
         this.notifyStatusChange();
-      },
-      onReconnected: () => {
+      }),
+      onReconnected: ifCurrent(() => {
         this.clearConnectionTimer();
         this.connectionState = "connected";
         this.lastErrorMessage = "";
         this.log("info", "reconnected");
         this.notifyStatusChange();
-      },
+      }),
     });
     this.wsClient = created.wsClient;
     this.dispatcher = created.dispatcher;
@@ -857,6 +867,7 @@ class FeishuApprovalClient {
   }
 
   close() {
+    this.wsGeneration += 1;
     this.clearConnectionTimer();
     if (this.wsClient && typeof this.wsClient.close === "function") {
       try { this.wsClient.close(); } catch {}
@@ -1153,6 +1164,10 @@ class FeishuApprovalClient {
       };
     }
 
+    // Final action: resolve first so the click order decides the outcome and a
+    // slow/failed card patch can't delay or reorder the local decision. resolve()
+    // also removes the entry from pending, making duplicate actions no-ops.
+    entry.resolve(normalizedAction.decision);
     Promise.resolve(entry.sendReady)
       .then(() => {
         if (entry.kind === "elicitation") {
@@ -1169,8 +1184,7 @@ class FeishuApprovalClient {
       })
       .catch((err) => {
         this.log("warn", "update failed", { error: err && err.message ? err.message : String(err) });
-      })
-      .finally(() => entry.resolve(normalizedAction.decision));
+      });
     return true;
   }
 }
