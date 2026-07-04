@@ -447,6 +447,26 @@ function getActionablePermissions() {
   );
 }
 
+// #601: hotkeys must reach exactly what is on screen. While the pet is hidden,
+// bubbles pending at hide time are collapsed (they return on show) but new
+// requests still pop (docs/project/theme-state-ui.md) — so gate on bubble
+// visibility instead of dropping the hotkeys wholesale, and never let a blind
+// keypress resolve a request whose bubble the user cannot see. When the pet is
+// visible, keep the plain actionable list: entries without a bubble window
+// (creation failed / not yet created) must stay hotkey-reachable.
+function getHotkeyActionablePermissions() {
+  const actionable = getActionablePermissions();
+  if (!ctx.petHidden) return actionable;
+  return actionable.filter((p) => {
+    const bub = p.bubble;
+    try {
+      return !!bub && !bub.isDestroyed() && bub.isVisible();
+    } catch {
+      return false;
+    }
+  });
+}
+
 function syncSingle(actionId, current, target, handler, setState) {
   if (current === target) {
     if (typeof ctx.clearShortcutFailure === "function") {
@@ -488,8 +508,8 @@ function syncSingle(actionId, current, target, handler, setState) {
 function syncPermissionShortcuts() {
   const shortcutSnapshot = getShortcutSnapshot();
   const permissionPolicy = getPolicy(ctx, "permission");
-  const shouldRegister = permissionPolicy.enabled && !ctx.petHidden
-    && getActionablePermissions().length > 0;
+  const shouldRegister = permissionPolicy.enabled
+    && getHotkeyActionablePermissions().length > 0;
   const targetAllow = shouldRegister ? shortcutSnapshot.permissionAllow : null;
   const targetDeny = shouldRegister ? shortcutSnapshot.permissionDeny : null;
 
@@ -508,7 +528,7 @@ function repositionDependentBubbles() {
 }
 
 function hotkeyResolve(behavior, message) {
-  const targets = getActionablePermissions();
+  const targets = getHotkeyActionablePermissions();
   if (!targets.length) return;
   const perm = targets[targets.length - 1]; // newest
   captureFrontApp((appName) => {
