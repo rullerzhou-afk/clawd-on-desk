@@ -49,6 +49,24 @@ describe("wsl-deploy", () => {
     });
   });
 
+  describe("getAgentUninstallCommand", () => {
+    const { getAgentUninstallCommand } = require("../src/wsl-deploy");
+
+    it("uses uninstall.js for claude-code (install.js has no --uninstall flag)", () => {
+      assert.strictEqual(getAgentUninstallCommand("claude-code"), "uninstall.js");
+    });
+
+    it("uses <install-script> --uninstall for other agents", () => {
+      assert.strictEqual(getAgentUninstallCommand("codex"), "codex-install.js --uninstall");
+      assert.strictEqual(getAgentUninstallCommand("kimi-cli"), "kimi-install.js --uninstall");
+    });
+
+    it("returns null for unsupported agents", () => {
+      assert.strictEqual(getAgentUninstallCommand("unknown-agent"), null);
+      assert.strictEqual(getAgentUninstallCommand("pi"), null);
+    });
+  });
+
   describe("resolveHooksDir", () => {
     it("returns dev path when not packaged", () => {
       const dir = resolveHooksDir({ isPackaged: false });

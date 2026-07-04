@@ -39,8 +39,9 @@ function collectHookFiles(hooksDir) {
 }
 
 // Map agentId to the install script that runs in WSL.
-// Each script supports: node <script>.js        → register hooks
-//                         node <script>.js --uninstall → unregister hooks
+// Register: node <script>.js
+// Unregister: node <script>.js --uninstall — EXCEPT claude-code (see
+// AGENT_UNINSTALL_COMMAND below).
 const AGENT_INSTALL_SCRIPT = {
   "claude-code": "install.js",
   codex: "codex-install.js",
@@ -64,6 +65,21 @@ const AGENT_INSTALL_SCRIPT = {
 
 function getInstallScript(agentId) {
   return getAgentInstallScriptName(agentId);
+}
+
+// install.js does NOT understand --uninstall: it ignores unknown argv and
+// RE-REGISTERS hooks, so "node install.js --uninstall" re-installs 12 hook
+// entries and the subsequent rm -rf leaves them pointing at deleted files
+// (verified on a real Windows+WSL Ubuntu machine). Claude's uninstall lives
+// in the separate uninstall.js; every other agent installer handles the flag.
+const AGENT_UNINSTALL_COMMAND = {
+  "claude-code": "uninstall.js",
+};
+
+function getAgentUninstallCommand(agentId) {
+  if (AGENT_UNINSTALL_COMMAND[agentId]) return AGENT_UNINSTALL_COMMAND[agentId];
+  const installScript = getAgentInstallScriptName(agentId);
+  return installScript ? `${installScript} --uninstall` : null;
 }
 
 // Resolve hooks directory for both dev (source tree) and packaged.
@@ -278,11 +294,11 @@ async function removeFromWsl(distro, options = {}) {
   // Run the agent's uninstall script — best-effort, may fail if Node or
   // hooks were already removed. Use bash -l -i -c so version managers
   // (nvm/volta/fnm) are initialised and `node` resolves correctly.
-  const installScript = getInstallScript(agentId);
-  if (installScript) {
+  const uninstallCommand = getAgentUninstallCommand(agentId);
+  if (uninstallCommand) {
     const uninstallResult = await execInWsl(
       distro,
-      `cd '${hooksDirEscaped}' && node ${installScript} --uninstall`,
+      `cd '${hooksDirEscaped}' && node ${uninstallCommand}`,
       { ...options, shell: "bash", shellFlags: ["-l", "-i", "-c"], timeout: 30000 }
     );
     if (uninstallResult.code !== 0) {
@@ -316,6 +332,7 @@ module.exports = {
   deployToWsl,
   removeFromWsl,
   getAgentInstallScriptName,
+  getAgentUninstallCommand,
   resolveHooksDir,
   pipeFileToWsl,
   collectHookFiles,
