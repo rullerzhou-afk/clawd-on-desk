@@ -598,6 +598,28 @@ describe("Hook installer version compatibility", () => {
     });
   });
 
+  it("uses the plain (unquoted) command format for WSL installs", () => {
+    // Quoted-without-shell breaks Claude Code's hook runner on WSL — quotes
+    // become part of the executable name (silent hook failure, the root
+    // cause this PR fixes). Native POSIX keeps the quoted form.
+    const hook = __test.buildCommandHookSpec("/usr/bin/node", "/home/u/.claude/hooks/clawd-hook.js", "Stop", {
+      platform: "linux",
+      wslDistro: "Ubuntu",
+    });
+
+    assert.strictEqual(hook.type, "command");
+    assert.strictEqual(hook.command, "/usr/bin/node /home/u/.claude/hooks/clawd-hook.js Stop");
+    assert.ok(!("shell" in hook), "WSL hooks must not carry a shell field");
+  });
+
+  it("keeps the quoted command format for native POSIX (no wslDistro)", () => {
+    const hook = __test.buildCommandHookSpec("/usr/bin/node", "/opt/app dir/clawd-hook.js", "Stop", {
+      platform: "linux",
+    });
+
+    assert.strictEqual(hook.command, '"/usr/bin/node" "/opt/app dir/clawd-hook.js" Stop');
+  });
+
   it("registers remote hooks as async with reverse-tunnel headroom", () => {
     const settingsPath = makeTempSettings({});
     registerHooks({

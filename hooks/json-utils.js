@@ -310,6 +310,18 @@ function quoteHookCommandArg(value) {
   return `"${String(value).replace(/"/g, '\\"')}"`;
 }
 
+// WSL detection for the hook command format, mirroring install.js's
+// resolveInstallWslDistro: CLAWD_WSL_DISTRO is injected by the Windows-side
+// one-click deploy, WSL_DISTRO_NAME by WSL init itself. Gated on linux so a
+// stale variable in some other environment cannot flip the format.
+function resolveWslDistroEnv() {
+  if (process.env.CLAWD_WSL_DISTRO) return process.env.CLAWD_WSL_DISTRO;
+  if (process.platform === "linux" && process.env.WSL_DISTRO_NAME) {
+    return process.env.WSL_DISTRO_NAME;
+  }
+  return null;
+}
+
 function quotePowerShellSingleArg(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
@@ -378,6 +390,15 @@ function formatNodeHookCommand(nodeBin, scriptPath, options = {}) {
   const args = Array.isArray(options.args) ? options.args : [];
   if (platform === "win32" && options.windowsWrapper === "encoded") {
     return buildWindowsEncodedNodeHookCommand(nodeBin, scriptPath, args, options);
+  }
+  // WSL: plain (unquoted) form. A quoted command without a shell field breaks
+  // hook runners that naive-split on spaces (quotes become part of the
+  // executable name — the root cause of silent WSL hook failures; see
+  // install.js buildCommandHookSpec). Plain works under both naive-split and
+  // sh -c semantics since WSL-side paths contain no spaces.
+  const wslDistro = options.wslDistro !== undefined ? options.wslDistro : resolveWslDistroEnv();
+  if (platform !== "win32" && wslDistro) {
+    return [nodeBin, scriptPath, ...args].join(" ");
   }
   const command = [nodeBin, scriptPath, ...args].map(quoteHookCommandArg).join(" ");
   if (platform !== "win32") return command;
@@ -632,6 +653,7 @@ module.exports = {
   removeMatchingCommandHooks,
   removeMatchingHttpHooks,
   formatNodeHookCommand,
+  resolveWslDistroEnv,
   buildPortableStatuslineCommand,
   buildWindowsEncodedNodeHookCommand,
   decodeWindowsEncodedCommand,

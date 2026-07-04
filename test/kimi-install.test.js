@@ -16,6 +16,11 @@ const {
   FLAVOR_KIMI_CODE,
 } = require("../hooks/kimi-install");
 
+// Hook command format depends on real-environment WSL signals; clear them so
+// assertions stay deterministic when the suite itself runs inside WSL.
+delete process.env.CLAWD_WSL_DISTRO;
+delete process.env.WSL_DISTRO_NAME;
+
 const tempDirs = [];
 
 function makeTempKimiHome() {

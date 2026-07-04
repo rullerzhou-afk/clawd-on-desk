@@ -340,20 +340,24 @@ async function removeFromWsl(distro, options = {}) {
     }
   }
 
-  // Remove the hooks directory.
-  const rmResult = await execInWsl(
-    distro,
-    `rm -rf '${hooksDirEscaped}'`,
-    { ...options, timeout: 30000 }
-  );
-  if (rmResult.code !== 0) {
-    const msg = rmResult.stderr || `rm failed with code ${rmResult.code}`;
-    emit("remove", "fail", msg);
-    return { ok: false, step: "remove", message: msg };
+  // Remove the hook FILES only when explicitly asked: ~/.claude/hooks is
+  // shared by every paired agent in the distro, so a per-agent unpair from
+  // the UI must not delete files other agents' registered commands point at.
+  if (options.removeFiles === true) {
+    const rmResult = await execInWsl(
+      distro,
+      `rm -rf '${hooksDirEscaped}'`,
+      { ...options, timeout: 30000 }
+    );
+    if (rmResult.code !== 0) {
+      const msg = rmResult.stderr || `rm failed with code ${rmResult.code}`;
+      emit("remove", "fail", msg);
+      return { ok: false, step: "remove", message: msg };
+    }
   }
 
   emit("remove", "ok");
-  return { ok: true, distro, agentId };
+  return { ok: true, distro, agentId, filesRemoved: options.removeFiles === true };
 }
 
 // ── Agent-specific install script name lookup ─────────────────────────

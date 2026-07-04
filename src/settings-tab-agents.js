@@ -831,6 +831,46 @@
       }
     });
     ctrl.appendChild(button);
+
+    // Unpair — only meaningful once hooks are deployed. Runs the agent's
+    // uninstall inside the distro; hook files stay (shared by other agents).
+    if (wslEntry.hooksDeployed) {
+      const unpairBtn = document.createElement("button");
+      unpairBtn.className = "soft-btn agent-instance-action";
+      unpairBtn.textContent = t("agentInstanceUnpair");
+      unpairBtn.title = `WSL: ${wslEntry.distro}`;
+      unpairBtn.addEventListener("click", async () => {
+        unpairBtn.disabled = true;
+        unpairBtn.textContent = t("agentInstanceUnpairing");
+        try {
+          if (window.settingsAPI && typeof window.settingsAPI.command === "function") {
+            const result = await window.settingsAPI.command("removeFromWsl", {
+              agentId: agent.id,
+              distro: wslEntry.distro,
+            });
+            if (result && result.status === "ok") {
+              ops.showToast(result.message || t("agentInstanceUnpaired"));
+              if (typeof ops.fetchAgentInstallationHints === "function") {
+                ops.fetchAgentInstallationHints({ refreshWsl: true }).then(() => {
+                  ops.requestRender({ content: true });
+                }).catch(() => {
+                  // DOM may be torn down if user navigated away before refresh completes
+                });
+              }
+            } else {
+              ops.showToast((result && result.message) || "WSL unpair failed", { error: true });
+            }
+          }
+        } catch (err) {
+          ops.showToast(String(err && err.message ? err.message : err), { error: true });
+        } finally {
+          unpairBtn.disabled = false;
+          unpairBtn.textContent = t("agentInstanceUnpair");
+        }
+      });
+      ctrl.appendChild(unpairBtn);
+    }
+
     row.appendChild(ctrl);
 
     return row;

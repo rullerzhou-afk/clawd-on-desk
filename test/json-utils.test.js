@@ -5,6 +5,11 @@ const os = require("os");
 const path = require("path");
 const { buildPortableStatuslineCommand, extractExistingNodeBin, extractExistingNodeBinFromCommands, formatNodeHookCommand, writeJsonAtomicAsync, createBackup, writeJsonAtomicWithBackup, writeJsonAtomicWithBackupAsync, pruneOldBackups, pruneOldBackupsAsync, DEFAULT_BACKUP_KEEP } = require("../hooks/json-utils");
 
+// Hook command format depends on real-environment WSL signals; clear them so
+// assertions stay deterministic when the suite itself runs inside WSL.
+delete process.env.CLAWD_WSL_DISTRO;
+delete process.env.WSL_DISTRO_NAME;
+
 describe("extractExistingNodeBin", () => {
   it("extracts node path from flat command format", () => {
     const settings = {
@@ -163,8 +168,33 @@ describe("formatNodeHookCommand", () => {
     assert.strictEqual(
       formatNodeHookCommand("/usr/local/bin/node", "/app/hooks/codex-debug-hook.js", {
         platform: "linux",
+        wslDistro: null,
       }),
       '"/usr/local/bin/node" "/app/hooks/codex-debug-hook.js"'
+    );
+  });
+
+  it("formats WSL commands as plain (unquoted) node + script", () => {
+    // Quoted-without-shell breaks naive-split hook runners on WSL — the
+    // quotes become part of the executable name (silent hook failure).
+    assert.strictEqual(
+      formatNodeHookCommand("/usr/bin/node", "/home/u/.claude/hooks/gemini-hook.js", {
+        platform: "linux",
+        wslDistro: "Ubuntu",
+        args: ["Stop"],
+      }),
+      "/usr/bin/node /home/u/.claude/hooks/gemini-hook.js Stop"
+    );
+  });
+
+  it("ignores wslDistro on win32 — Windows wrappers keep their quoting", () => {
+    assert.strictEqual(
+      formatNodeHookCommand("C:\\nodejs\\node.exe", "D:/app/hooks/kiro-hook.js", {
+        platform: "win32",
+        windowsWrapper: "powershell",
+        wslDistro: "Ubuntu",
+      }),
+      '& "C:\\nodejs\\node.exe" "D:/app/hooks/kiro-hook.js"'
     );
   });
 

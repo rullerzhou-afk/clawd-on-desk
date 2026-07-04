@@ -15,6 +15,7 @@ const {
   asarUnpackedPath,
   extractExistingNodeBinFromCommands,
   readTextFileStripBom,
+  resolveWslDistroEnv,
   writeTextAtomicWithBackup,
 } = require("./json-utils");
 const MARKER = "kimi-hook.js";
@@ -312,7 +313,11 @@ function registerKimiHooksAtTarget(target, options = {}) {
     const configuredMode = providedMode || extractExistingPermissionMode(content);
     modePrefix = configuredMode ? `CLAWD_KIMI_PERMISSION_MODE=${configuredMode} ` : "";
   }
-  const desiredCommand = `${modePrefix}"${nodeBin}" "${hookScript}"`;
+  // WSL: plain unquoted form — quoted-without-shell breaks naive-split hook
+  // runners (see json-utils formatNodeHookCommand); WSL paths have no spaces.
+  const desiredCommand = resolveWslDistroEnv()
+    ? `${modePrefix}${nodeBin} ${hookScript}`
+    : `${modePrefix}"${nodeBin}" "${hookScript}"`;
 
   const hookBlocks = buildHookBlocks(target.events, desiredCommand);
   if (target.validateBlocks) validateKimiCodeHookBlocks(hookBlocks, target.events);

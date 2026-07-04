@@ -912,7 +912,18 @@
 
   function fetchAgentInstallationHints({ force = false, refreshWsl = false } = {}) {
     if (runtime.agentInstallationHintsPending) {
-      return runtime.agentInstallationHintsPromise || Promise.resolve(runtime.agentInstallationHints);
+      const inFlight = runtime.agentInstallationHintsPromise || Promise.resolve(runtime.agentInstallationHints);
+      // A manual WSL rescan must not be swallowed by a passive fetch that
+      // happens to be in flight (e.g. the tab's mount-time poll while
+      // wslPending) — chain one real rescan after it settles.
+      if (refreshWsl && !runtime.agentInstallationHintsWslRefreshQueued) {
+        runtime.agentInstallationHintsWslRefreshQueued = true;
+        return inFlight.then(() => {
+          runtime.agentInstallationHintsWslRefreshQueued = false;
+          return fetchAgentInstallationHints({ refreshWsl: true });
+        });
+      }
+      return inFlight;
     }
     // refreshWsl always re-fetches; plain force only if not already done
     if (!force && !refreshWsl && runtime.agentInstallationHintsFetched) {

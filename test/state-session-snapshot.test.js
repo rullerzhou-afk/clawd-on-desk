@@ -5,12 +5,49 @@ const assert = require("node:assert");
 
 const {
   deriveSessionBadge,
+  deriveSourceInfo,
   isSessionInProgress,
   buildSessionSnapshot,
   getActiveSessionAliasKeys,
   sessionSnapshotSignature,
   sessionDisplayTitle,
 } = require("../src/state-session-snapshot");
+
+describe("deriveSourceInfo", () => {
+  it("derives WSL source from the wsl: host prefix", () => {
+    assert.deepStrictEqual(deriveSourceInfo("wsl:Ubuntu"), {
+      sourceType: "wsl",
+      sourceLabel: "Ubuntu",
+      displayLabel: "WSL: Ubuntu",
+    });
+  });
+
+  it("falls back to a stable label for a bare wsl: prefix", () => {
+    assert.deepStrictEqual(deriveSourceInfo("wsl:"), {
+      sourceType: "wsl",
+      sourceLabel: "unknown",
+      displayLabel: "WSL: unknown",
+    });
+  });
+
+  it("treats any other non-local host as ssh", () => {
+    assert.deepStrictEqual(deriveSourceInfo("devbox"), {
+      sourceType: "ssh",
+      sourceLabel: "devbox",
+      displayLabel: "devbox",
+    });
+  });
+
+  it("treats empty, null, and 'local' hosts as local", () => {
+    for (const host of ["", null, undefined, "local"]) {
+      assert.deepStrictEqual(deriveSourceInfo(host), {
+        sourceType: "local",
+        sourceLabel: "",
+        displayLabel: "",
+      });
+    }
+  });
+});
 
 const STATE_PRIORITY = {
   error: 8,

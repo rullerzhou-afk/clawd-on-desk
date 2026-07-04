@@ -132,14 +132,11 @@ async function execInWsl(distro, command, options = {}) {
   const shellFlags = options.shellFlags || ["-c"];
   const args = ["-d", distro, "--", shell, ...shellFlags, command];
 
-  const result = await spawnWsl(args, { timeout: options.timeout });
-
-  // Detect stopped distro: wsl.exe exits 1 with a specific message
-  if (result.code === 1 && result.stderr && /(is not running|stopped|shutdown|terminated)/i.test(result.stderr)) {
-    result.distroStopped = true;
-  }
-
-  return result;
+  // Note: don't try to classify wsl.exe's own diagnostics by matching
+  // result.stderr — wsl.exe emits them UTF-16LE on stdout, so a utf8-decoded
+  // regex never matches (verified on a real machine). Callers treat any
+  // non-zero exit as failure.
+  return spawnWsl(args, { timeout: options.timeout });
 }
 
 // ── Filesystem helpers ────────────────────────────────────────────────

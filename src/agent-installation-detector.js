@@ -413,13 +413,6 @@ let _cachedDetected = process.platform !== "win32";
 let _wslRefreshGeneration = 0;
 let _wslRefreshCommitted = 0;
 
-function invalidateWslCache() {
-  _cachedWslAgents = [];
-  _cachedWslDistros = [];
-  _cachedDetected = process.platform !== "win32";
-  _wslRefreshCommitted = 0;
-}
-
 function detectAgentInstallations(options = {}) {
   const descriptors = Array.isArray(options.descriptors) ? options.descriptors : getAgentDescriptors();
   const skippedAgentIds = [];
@@ -594,6 +587,5 @@ module.exports = {
   detectAgentInstallation,
   detectAgentInstallations,
   refreshWslDetection,
-  invalidateWslCache,
   resolveAgentPaths,
 };

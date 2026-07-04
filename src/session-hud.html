@@ -149,6 +149,13 @@ body { padding: 2px 3px 8px; }
   background: var(--idle);
 }
 
+/* Compact source marker (🐧 WSL / 🔗 SSH) before the session title */
+.hud-source {
+  font-size: 11px;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
 .dot-running { background: var(--running); animation: dot-pulse 1.6s ease-in-out infinite; }
 .dot-done { background: var(--done); }
 .dot-interrupted { background: var(--interrupted); }
