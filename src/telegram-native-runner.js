@@ -37,31 +37,30 @@ const MAX_NOTIFY_RETRY_DELAY_MS = 30000;
 const DEFAULT_POLL_RETRY_INITIAL_MS = 1000;
 const DEFAULT_POLL_RETRY_MAX_MS = 30000;
 
-// Status lines appended to an approval card whose decision landed somewhere
+// Status line appended to an approval card whose decision landed somewhere
 // other than this Telegram chat, so the chat history shows the outcome
 // (issue #457). Keyed by the reason finishApproval received a null decision.
 // `elsewhere` is deliberately neutral: a signal abort covers more than a
 // desktop answer — the settings approval test arms a 60s abort, and DND /
 // dismissed interactive bubbles also abort without anything being "resolved".
-// Built from `t` (not module-level constants) so the labels follow the app's
-// current language, not whatever it was when this module first loaded.
-function buildApprovalResolvedElsewhereStatus(t) {
-  return Object.freeze({
-    elsewhere: t("telegramApprovalStatusResolvedElsewhere"),
-    timeout: t("telegramApprovalStatusTimedOut"),
-    stopped: t("telegramApprovalStatusSessionEnded"),
-  });
+// Reads from `t` at call time (not a module-level constant) so the label
+// follows the app's current language, not whatever it was when this module
+// first loaded.
+function approvalResolvedElsewhereStatusText(t, reason) {
+  if (reason === "elsewhere") return t("telegramApprovalStatusResolvedElsewhere");
+  if (reason === "timeout") return t("telegramApprovalStatusTimedOut");
+  if (reason === "stopped") return t("telegramApprovalStatusSessionEnded");
+  return undefined;
 }
 
-// Status lines for a decision taken on Telegram itself (a button tap). The
+// Status line for a decision taken on Telegram itself (a button tap). The
 // callback toast is instant but ephemeral; rewriting the card body leaves the
 // outcome in the chat history, symmetric with the resolved-elsewhere path.
-function buildApprovalDecidedStatus(t) {
-  return Object.freeze({
-    allow: t("telegramApprovalStatusAllowed"),
-    deny: t("telegramApprovalStatusDenied"),
-    suggestion: t("telegramApprovalStatusApplied"),
-  });
+function approvalDecidedStatusText(t, action) {
+  if (action === "allow") return t("telegramApprovalStatusAllowed");
+  if (action === "deny") return t("telegramApprovalStatusDenied");
+  if (action === "suggestion") return t("telegramApprovalStatusApplied");
+  return undefined;
 }
 
 function randomId() {
@@ -589,8 +588,8 @@ function createTelegramNativeRunner({
     // null decision (resolved elsewhere / timeout / polling stopped) shows the
     // neutral reason. Best-effort — appendApprovalStatus never throws.
     const status = normalized
-      ? buildApprovalDecidedStatus(t)[normalized.action]
-      : buildApprovalResolvedElsewhereStatus(t)[reason];
+      ? approvalDecidedStatusText(t, normalized.action)
+      : approvalResolvedElsewhereStatusText(t, reason);
     appendApprovalStatus(entry, status, messageIdOverride || entry.messageId);
   }
 
