@@ -590,7 +590,7 @@ function repositionBubbles() {
   const bw = getBubbleWidth(scale, wa);
   const hitRect = ctx.bubbleFollowPet ? ctx.getHitRectScreen(petBounds) : null;
 
-  const layoutPermissions = pendingPermissions.filter((perm) => !isHardwareBuddyTestPermission(perm));
+  const layoutPermissions = pendingPermissions.filter((perm) => !isHardwareBuddyTestPermission(perm) && !perm.remoteOnly);
   const bubbleHeights = layoutPermissions.map(perm =>
     clampBubbleHeight(
       // measuredHeight/estimate are CSS px; the window needs DIP.
@@ -1241,6 +1241,21 @@ function maybeStartRemoteApproval(permEntry) {
   const controllers = [];
   const remoteRequests = [];
   let started = false;
+  // Remote-only entries (bubble === null, from tryRemoteOnlyApproval when the
+  // desktop bubble is disabled) have no other UI waiting on the decision — if
+  // every remote client settles without ever producing one (send failure,
+  // invalid payload, client disconnect), the entry would otherwise sit in
+  // pendingPermissions holding the HTTP connection open until the hook's own
+  // timeout. Track settlements and fall back to a deny once none are left.
+  let settledWithoutDecision = 0;
+
+  function maybeFallBackRemoteOnlyEntry() {
+    if (!permEntry.remoteOnly) return;
+    if (settledWithoutDecision < remoteRequests.length) return;
+    if (pendingPermissions.indexOf(permEntry) === -1) return;
+    permLog(`remote-only approval: all remote requests settled without a decision, falling back (tool=${permEntry.toolName} session=${permEntry.sessionId})`);
+    resolvePermissionEntry(permEntry, "deny", "Remote approval unavailable; no client returned a decision");
+  }
 
   for (const { name, client } of clients) {
     const controller = typeof AbortController === "function" ? new AbortController() : null;
@@ -1275,12 +1290,16 @@ function maybeStartRemoteApproval(permEntry) {
       .then((decision) => {
         if (!isRemoteApprovalDecision(decision)) {
           if (decision) permLog(`${name} remote approval ignored decision=${compactRemoteApprovalText(decision, 40)}`);
+          settledWithoutDecision += 1;
+          maybeFallBackRemoteOnlyEntry();
           return;
         }
         handleRemoteApprovalDecision(permEntry, decision, name);
       })
       .catch((err) => {
         permLog(`${name} remote approval failed: ${compactRemoteApprovalText(err && err.message ? err.message : err, 200)}`);
+        settledWithoutDecision += 1;
+        maybeFallBackRemoteOnlyEntry();
       })
       .finally(() => {
         if (!controller || !Array.isArray(permEntry.remoteApprovalAbortControllers)) return;

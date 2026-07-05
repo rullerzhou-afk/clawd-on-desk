@@ -780,7 +780,7 @@
     if (configured && masked) {
       const current = document.createElement("span");
       current.className = "tg-approval-token-current";
-      current.textContent = t("telegramApprovalTokenCurrent").replace("{masked}", masked);
+      current.textContent = interpolate(t("telegramApprovalTokenCurrent"), "{masked}", masked);
       text.appendChild(current);
     }
     text.appendChild(desc);

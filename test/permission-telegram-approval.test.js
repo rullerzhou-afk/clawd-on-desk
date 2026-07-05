@@ -500,24 +500,28 @@ describe("permission telegram remote approval", () => {
     });
   });
 
-  it("does not send a Telegram card when the tool input lacks a description/summary/reason", () => {
+  it("sends an approvalSummaryUnavailable card when the tool input lacks a description/summary/reason and no fallback field", () => {
     const requests = [];
     const client = {
       isEnabled: () => true,
       requestApproval: (payload) => {
         requests.push(payload);
-        return Promise.resolve("allow");
+        return new Promise(() => {});
       },
     };
     const perm = initPermission(makeCtx({ getTelegramApprovalClient: () => client }));
-    // Bare Bash payload — only `command`. Local bubble shows the full command
-    // but Telegram would only get "Tool input hidden by Clawd.", so the guard
-    // must refuse to send.
+    // Bare Bash payload — only `command`, which is deliberately excluded from
+    // the fallback-detail fields (it can carry secrets a generic sanitizer
+    // can't reliably catch). With no description/summary/reason and no usable
+    // fallback field, the card still goes out, just with an explicit
+    // "no description" notice instead of a black-box "Tool input hidden".
     const entry = makePermEntry({
       toolInput: { command: "rm -rf /tmp/scratch" },
     });
-    assert.equal(perm.maybeStartRemoteApproval(entry), false);
-    assert.deepEqual(requests, []);
+    perm.pendingPermissions.push(entry);
+    assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    assert.equal(requests.length, 1);
+    assert.match(requests[0].detail, /No description available/);
   });
 
   it("does not send a Telegram card for headless sessions", () => {

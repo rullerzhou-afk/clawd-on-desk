@@ -292,6 +292,9 @@ function tryRemoteOnlyApproval(ctx, fields) {
     hideTimer: null,
     resolvedSuggestion: null,
     createdAt: Date.now(),
+    // Never gets a desktop bubble (that's the whole point of this path) —
+    // lets the bubble-stack layout skip it instead of reserving an empty slot.
+    remoteOnly: true,
   };
   const abortHandler = () => {
     if (res.writableFinished) return;
