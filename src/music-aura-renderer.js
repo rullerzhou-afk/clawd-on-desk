@@ -68,6 +68,8 @@
   let seedCount = 0;
   let rafId = null;
   let startedAt = performance.now();
+  let lastVisualFrameAt = 0;
+  let planetWaveClock = 0;
   let bass = 0;
   let mid = 0;
   let treble = 0;
@@ -368,6 +370,7 @@
       uniform float u_autoView;
       uniform vec2 u_auraOffset;
       uniform float u_auraScale;
+      uniform float u_planetWaveClock;
       varying vec3 v_color;
       varying float v_alpha;
       varying float v_glow;
@@ -391,6 +394,15 @@
         float s = sin(a);
         float c = cos(a);
         return vec3(p.x * c - p.y * s, p.x * s + p.y * c, p.z);
+      }
+      float hash1(float n) {
+        return fract(sin(n * 127.1 + 311.7) * 43758.5453123);
+      }
+      vec3 randomSpherePoint(float seed) {
+        float z = hash1(seed + 1.0) * 2.0 - 1.0;
+        float a = hash1(seed + 7.0) * TAU;
+        float r = sqrt(max(0.0, 1.0 - z * z));
+        return normalize(vec3(cos(a) * r, z, sin(a) * r));
       }
       vec3 applyAutoView(vec3 p, float preset, float view) {
         if (view <= 0.001) return p;
@@ -492,24 +504,32 @@
             cos(phi),
             sin(theta) * sin(phi)
           ));
-          float waveClock = u_time * (0.82 + u_mid * 0.85);
-          float travelWave = (
-            sin(theta * 5.0 + phi * 3.0 - waveClock)
-            + sin(theta * 3.0 - phi * 6.0 + waveClock * 0.72)
-          ) * 0.5;
-          float latWave = sin((phi - 1.5707963) * 9.0 + u_time * (1.08 + u_mid * 0.65));
-          float ringCenter = 0.5 + sin(u_time * 0.55) * 0.34;
-          float ringDistance = abs(phi / 3.1415926 - ringCenter);
-          float ringPulse = exp(-(ringDistance * ringDistance) / 0.0055) * (beat * 0.125 + u_bass * 0.055);
-          float waveLift = (travelWave * 0.086 + latWave * 0.042) * u_mid * u_intensity;
-          float bassBreath = (u_bass * 0.125 + beat * 0.085) * u_intensity;
-          float trebleShimmer = sin(theta * 13.0 + phi * 11.0 + u_time * 1.6) * u_treble * 0.018;
-          deformation = bassBreath + waveLift + ringPulse + trebleShimmer;
-          world = normal * (0.315 + deformation);
+          float waveSpeed = 0.82 + u_mid * 1.80 + u_treble * 0.35;
+          float waveClock = u_planetWaveClock;
+          float waveIndex = floor(waveClock);
+          float waveProgress = fract(waveClock);
+          vec3 source = randomSpherePoint(waveIndex);
+          vec3 antipode = -source;
+          float sourceDistance = acos(clamp(dot(normal, source), -1.0, 1.0));
+          float antipodeDistance = acos(clamp(dot(normal, antipode), -1.0, 1.0));
+          float waveFront = waveProgress * 3.1415926;
+          float wavePhase = sourceDistance - waveFront;
+          float primaryWave = exp(-(wavePhase * wavePhase) / 0.070);
+          float trailingTrough = -0.32 * exp(-((wavePhase + 0.26) * (wavePhase + 0.26)) / 0.090);
+          float cycleFade = smoothstep(0.02, 0.16, waveProgress) * (1.0 - smoothstep(0.88, 0.99, waveProgress));
+          float antipodeSoftness = 1.0 - exp(-(antipodeDistance * antipodeDistance) / 0.050) * smoothstep(0.86, 1.0, waveProgress) * 0.28;
+          float waveAmplitude = 0.040 + u_bass * 0.024 + u_mid * 0.018;
+          float travelWave = (primaryWave + trailingTrough) * waveAmplitude * cycleFade * antipodeSoftness;
+          float latWave = sin((phi - 1.5707963) * 5.0 - waveClock * 0.75) * 0.006;
+          float ringPulse = primaryWave * cycleFade * (beat * 0.018 + u_bass * 0.010);
+          float bassBreath = (u_bass * 0.030 + beat * 0.020) * u_intensity;
+          float trebleShimmer = sin(theta * 13.0 + phi * 11.0 + u_time * (1.4 + u_treble * 0.9)) * u_treble * 0.008;
+          deformation = bassBreath + travelWave * u_intensity + latWave * u_intensity + ringPulse + trebleShimmer;
+          world = normal * (0.365 + deformation);
           world = rotateY(world, u_time * 0.22 + u_mid * 0.12);
           world = rotateX(world, -0.20 + sin(u_time * 0.17) * 0.08);
-          styleAlpha = 0.72 + abs(waveLift) * 5.6 + ringPulse * 4.4 + u_treble * 0.22;
-          styleSize = 0.56 + abs(waveLift) * 4.8 + ringPulse * 3.8 + smoothstep(-0.22, 0.32, world.z) * 0.36;
+          styleAlpha = 0.74 + primaryWave * cycleFade * 0.18 + abs(travelWave) * 1.15 + ringPulse * 1.2 + u_treble * 0.22;
+          styleSize = 0.58 + ringPulse * 0.65 + smoothstep(-0.22, 0.32, world.z) * 0.34;
         } else if (u_visualStyle < 3.5) {
           float depth = fract(a_seed.y - u_time * (0.08 + u_bass * 0.075));
           float tunnelRadius = mix(0.09, 0.50, depth);
@@ -782,11 +802,18 @@
     sampleAudio();
     reportPlaybackProgress();
     syncCanvasVisibility({ schedule: false });
-    if (!lastVisible) {
-      if (gl) gl.clear(gl.COLOR_BUFFER_BIT);
-      return;
-    }
-    if (!ensureGl()) return;
+      if (!lastVisible) {
+        lastVisualFrameAt = 0;
+        if (gl) gl.clear(gl.COLOR_BUFFER_BIT);
+        return;
+      }
+      const elapsed = lastVisualFrameAt
+        ? Math.min(0.05, Math.max(0, (now - lastVisualFrameAt) / 1000))
+        : 1 / 60;
+      lastVisualFrameAt = now;
+      planetWaveClock += elapsed * (0.22 + mid * 0.44 + treble * 0.08);
+      if (planetWaveClock > 10000) planetWaveClock %= 1000;
+      if (!ensureGl()) return;
     const size = resizeCanvas();
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
@@ -795,8 +822,9 @@
     const seedLoc = gl.getAttribLocation(program, "a_seed");
     gl.enableVertexAttribArray(seedLoc);
     gl.vertexAttribPointer(seedLoc, 4, gl.FLOAT, false, 0, 0);
-    gl.uniform1f(gl.getUniformLocation(program, "u_time"), (now - startedAt) / 1000);
-    gl.uniform1f(gl.getUniformLocation(program, "u_bass"), bass);
+      gl.uniform1f(gl.getUniformLocation(program, "u_time"), (now - startedAt) / 1000);
+      gl.uniform1f(gl.getUniformLocation(program, "u_planetWaveClock"), planetWaveClock);
+      gl.uniform1f(gl.getUniformLocation(program, "u_bass"), bass);
     gl.uniform1f(gl.getUniformLocation(program, "u_mid"), mid);
     gl.uniform1f(gl.getUniformLocation(program, "u_treble"), treble);
     gl.uniform1f(gl.getUniformLocation(program, "u_state"), stateEnergy());
