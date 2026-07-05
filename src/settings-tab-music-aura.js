@@ -5,6 +5,7 @@
   let helpers = null;
   let ops = null;
   let runtime = null;
+  let playlistOpen = false;
 
   function t(key) {
     return helpers.t(key);
@@ -64,6 +65,7 @@
     parent.appendChild(subtitle);
 
     parent.appendChild(buildHero());
+    parent.appendChild(buildPlayerCard());
     parent.appendChild(helpers.buildSection(t("musicAuraSectionMain"), [
       buildButtonSwitchRow({
         field: "enabled",
@@ -88,7 +90,6 @@
     ]));
 
     parent.appendChild(helpers.buildSection(t("musicAuraSectionPlayback"), [
-      buildPlaybackControlRow(),
       buildVolumeRow(),
       buildButtonSwitchRow({
         field: "shuffle",
@@ -440,35 +441,111 @@
     return row;
   }
 
-  function buildPlaybackControlRow() {
+  function buildPlayerCard() {
+    const cfg = currentConfig();
     const info = getMusicRuntime();
     const status = info && info.status ? info.status : {};
-    const row = document.createElement("div");
-    row.className = "row music-aura-playback-row";
-    row.innerHTML =
-      `<div class="row-text">` +
-        `<span class="row-label"></span>` +
-        `<span class="row-desc"></span>` +
-      `</div>` +
-      `<div class="row-control music-aura-actions">` +
-        `<button type="button" class="soft-btn"></button>` +
-        `<button type="button" class="soft-btn accent"></button>` +
-        `<button type="button" class="soft-btn"></button>` +
-      `</div>`;
-    row.querySelector(".row-label").textContent = t("musicAuraPlayback");
-    row.querySelector(".row-desc").textContent = status.track && status.track.title
+    const library = info && info.library ? info.library : {};
+    const tracks = Array.isArray(library.tracks) ? library.tracks : [];
+    const count = Number(library.count) || tracks.length;
+    const current = Number.isFinite(status.trackIndex) && status.trackIndex >= 0 ? status.trackIndex + 1 : 0;
+    const card = document.createElement("div");
+    card.className = "music-aura-player-card";
+
+    const main = document.createElement("div");
+    main.className = "music-aura-player-main";
+    const title = document.createElement("div");
+    title.className = "music-aura-player-title";
+    title.textContent = t("musicAuraPlayerTitle");
+    const track = document.createElement("div");
+    track.className = "music-aura-player-track";
+    track.textContent = status.track && status.track.title
       ? status.track.title
-      : t("musicAuraPlaybackDesc");
-    const buttons = row.querySelectorAll("button");
-    const disabled = !currentConfig().enabled;
-    buttons[0].textContent = t("musicAuraPreviousShort");
-    buttons[1].textContent = status.playing ? t("musicAuraPause") : t("musicAuraPlay");
-    buttons[2].textContent = t("musicAuraNextShort");
-    buttons.forEach((button) => { button.disabled = disabled; });
-    buttons[0].addEventListener("click", () => sendCommand("previous"));
-    buttons[1].addEventListener("click", () => sendCommand("toggle"));
-    buttons[2].addEventListener("click", () => sendCommand("next"));
-    return row;
+      : t("musicAuraNoTrack");
+    const meta = document.createElement("div");
+    meta.className = "music-aura-player-meta";
+    meta.textContent = `${status.playing ? t("musicAuraStatusPlaying") : t("musicAuraStatusPaused")} · ${formatTrackPosition(current, count)}`;
+    main.appendChild(title);
+    main.appendChild(track);
+    main.appendChild(meta);
+
+    const controls = document.createElement("div");
+    controls.className = "music-aura-player-controls";
+    const disabled = !cfg.enabled || count <= 0;
+    const previousButton = buildPlayerButton(t("musicAuraPreviousShort"), disabled);
+    previousButton.setAttribute("data-command", "previous");
+    previousButton.addEventListener("click", () => sendCommand("previous"));
+    const toggleButton = buildPlayerButton(status.playing ? t("musicAuraPause") : t("musicAuraPlay"), disabled, true);
+    toggleButton.setAttribute("data-command", "toggle");
+    toggleButton.addEventListener("click", () => sendCommand("toggle"));
+    const nextButton = buildPlayerButton(t("musicAuraNextShort"), disabled);
+    nextButton.setAttribute("data-command", "next");
+    nextButton.addEventListener("click", () => sendCommand("next"));
+    controls.appendChild(previousButton);
+    controls.appendChild(toggleButton);
+    controls.appendChild(nextButton);
+
+    card.appendChild(main);
+    card.appendChild(controls);
+    card.appendChild(buildPlaylistPanel());
+    return card;
+  }
+
+  function buildPlayerButton(label, disabled, accent = false) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = accent ? "music-aura-player-btn accent" : "music-aura-player-btn";
+    button.textContent = label;
+    button.disabled = disabled;
+    return button;
+  }
+
+  function buildPlaylistPanel() {
+    const cfg = currentConfig();
+    const info = getMusicRuntime();
+    const status = info && info.status ? info.status : {};
+    const library = info && info.library ? info.library : {};
+    const tracks = Array.isArray(library.tracks) ? library.tracks : [];
+    const details = document.createElement("details");
+    details.className = "music-aura-playlist-panel";
+    details.open = playlistOpen;
+    details.addEventListener("toggle", () => {
+      playlistOpen = details.open;
+    });
+
+    const summary = document.createElement("summary");
+    summary.textContent = `${t("musicAuraPlaylistToggle")} · ${t("musicAuraTrackCount").replace("{count}", tracks.length)}`;
+    details.appendChild(summary);
+
+    if (!tracks.length) {
+      const empty = document.createElement("div");
+      empty.className = "music-aura-playlist-empty";
+      empty.textContent = t("musicAuraPlaylistEmpty");
+      details.appendChild(empty);
+      return details;
+    }
+
+    const list = document.createElement("div");
+    list.className = "music-aura-playlist";
+    tracks.forEach((item, fallbackIndex) => {
+      const index = Number.isFinite(item && item.index) ? item.index : fallbackIndex;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "music-aura-playlist-item";
+      if (status.trackIndex === index) button.classList.add("active");
+      button.disabled = !cfg.enabled;
+      button.textContent = item && (item.title || item.fileName) ? (item.title || item.fileName) : `${t("musicAuraPlaylist")} ${index + 1}`;
+      button.addEventListener("click", () => sendCommand("play-index", { index }));
+      list.appendChild(button);
+    });
+    details.appendChild(list);
+    return details;
+  }
+
+  function formatTrackPosition(current, count) {
+    return t("musicAuraTrackPosition")
+      .replace("{current}", current > 0 ? String(current) : "-")
+      .replace("{count}", String(count || 0));
   }
 
   function buildVolumeRow() {
@@ -654,9 +731,9 @@
     return row;
   }
 
-  function sendCommand(command) {
+  function sendCommand(command, payload = {}) {
     if (!window.settingsAPI || typeof window.settingsAPI.sendMusicAuraCommand !== "function") return;
-    window.settingsAPI.sendMusicAuraCommand({ command }).catch((err) => {
+    window.settingsAPI.sendMusicAuraCommand({ command, payload }).catch((err) => {
       ops.showToast(t("musicAuraCommandFailed") + (err && err.message ? ": " + err.message : ""), { error: true });
     });
   }

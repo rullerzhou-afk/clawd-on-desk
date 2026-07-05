@@ -152,6 +152,12 @@ function createMusicAuraMain(options = {}) {
         missingDirs: library.missingDirs || [],
         truncated: !!library.truncated,
         scannedAt: library.scannedAt || 0,
+        tracks: (library.tracks || []).map((track, index) => ({
+          id: track.id || "",
+          title: track.title || track.fileName || "",
+          fileName: track.fileName || "",
+          index,
+        })),
       },
       status: runtimeStatus,
     };

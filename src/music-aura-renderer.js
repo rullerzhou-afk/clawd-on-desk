@@ -339,6 +339,7 @@
     if (command === "next") return nextTrack();
     if (command === "previous") return previousTrack();
     if (command === "toggle") return togglePlayback();
+    if (command === "play-index") return playIndex(Number(payload.index));
   }
 
   function createShader(type, source) {

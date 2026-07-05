@@ -262,6 +262,34 @@ describe("createMusicAuraMain", () => {
     assert.strictEqual(aura.rendererBootstrap().status.playing, false);
   });
 
+  it("exposes compact library tracks to the settings player", () => {
+    const root = makeTempDir();
+    touch(path.join(root, "Alpha.mp3"));
+    touch(path.join(root, "Beta.flac"));
+    const aura = createMusicAuraMain({
+      fs,
+      path,
+      settingsController: {
+        get(key) {
+          return key === "musicAura" ? normalizeMusicAuraSettings({ libraryDirs: [root] }) : undefined;
+        },
+      },
+    });
+
+    const runtime = aura.getRuntime();
+
+    assert.strictEqual(runtime.library.count, 2);
+    assert.deepStrictEqual(runtime.library.tracks.map((track) => ({
+      title: track.title,
+      fileName: track.fileName,
+      index: track.index,
+    })), [
+      { title: "Alpha", fileName: "Alpha.mp3", index: 0 },
+      { title: "Beta", fileName: "Beta.flac", index: 1 },
+    ]);
+    assert.ok(runtime.library.tracks.every((track) => !("path" in track) && !("url" in track)));
+  });
+
   it("keeps enough playback state for renderer reload recovery", () => {
     const aura = createMusicAuraMain({
       fs,
@@ -362,6 +390,12 @@ describe("music aura renderer", () => {
     assert.doesNotMatch(source, /float patchB = [^;]*rnd/);
     assert.doesNotMatch(source, /treblePatch/);
     assert.doesNotMatch(source, /inwardDent/);
+  });
+
+  it("lets the settings playlist request a specific track index", () => {
+    const source = readRendererSource();
+
+    assert.match(source, /if \(command === "play-index"\) return playIndex\(Number\(payload\.index\)\);/);
   });
 
   it("anchors the aura independently from the raw window center", () => {
