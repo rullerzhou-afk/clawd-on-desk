@@ -371,6 +371,7 @@
       uniform vec2 u_auraOffset;
       uniform float u_auraScale;
       uniform float u_planetWaveClock;
+      uniform float u_musicActive;
       varying vec3 v_color;
       varying float v_alpha;
       varying float v_glow;
@@ -472,6 +473,7 @@
         vec3 world = vec3(0.0);
         float styleAlpha = 1.0;
         float styleSize = 1.0;
+        float styleGlow = 0.0;
         float deformation = 0.0;
         if (u_visualStyle < 0.5) {
           float arm = floor(rnd * 4.0);
@@ -504,7 +506,6 @@
             cos(phi),
             sin(theta) * sin(phi)
           ));
-          float waveSpeed = 0.82 + u_mid * 1.80 + u_treble * 0.35;
           float waveClock = u_planetWaveClock;
           float waveIndex = floor(waveClock);
           float waveProgress = fract(waveClock);
@@ -518,7 +519,7 @@
           float trailingTrough = -0.32 * exp(-((wavePhase + 0.26) * (wavePhase + 0.26)) / 0.090);
           float cycleFade = smoothstep(0.02, 0.16, waveProgress) * (1.0 - smoothstep(0.88, 0.99, waveProgress));
           float antipodeSoftness = 1.0 - exp(-(antipodeDistance * antipodeDistance) / 0.050) * smoothstep(0.86, 1.0, waveProgress) * 0.28;
-          float waveAmplitude = 0.040 + u_bass * 0.024 + u_mid * 0.018;
+          float waveAmplitude = 0.030 + u_bass * 0.014 + u_mid * 0.010;
           float travelWave = (primaryWave + trailingTrough) * waveAmplitude * cycleFade * antipodeSoftness;
           float latWave = sin((phi - 1.5707963) * 5.0 - waveClock * 0.75) * 0.006;
           float ringPulse = primaryWave * cycleFade * (beat * 0.018 + u_bass * 0.010);
@@ -528,7 +529,10 @@
           world = normal * (0.365 + deformation);
           world = rotateY(world, u_time * 0.22 + u_mid * 0.12);
           world = rotateX(world, -0.20 + sin(u_time * 0.17) * 0.08);
-          styleAlpha = 0.74 + primaryWave * cycleFade * 0.18 + abs(travelWave) * 1.15 + ringPulse * 1.2 + u_treble * 0.22;
+          float planetWake = mix(0.50, 0.88, u_musicActive);
+          float waveGlow = primaryWave * cycleFade * (0.48 + u_mid * 0.20 + u_treble * 0.36);
+          styleAlpha = planetWake + waveGlow * 0.32;
+          styleGlow = waveGlow * 1.35 + u_musicActive * 0.28;
           styleSize = 0.58 + ringPulse * 0.65 + smoothstep(-0.22, 0.32, world.z) * 0.34;
         } else if (u_visualStyle < 3.5) {
           float depth = fract(a_seed.y - u_time * (0.08 + u_bass * 0.075));
@@ -563,12 +567,15 @@
         pos = pos * u_auraScale + u_auraOffset;
         gl_Position = vec4(pos, 0.0, 1.0);
         float pointBase = 1.15 + rnd * 3.15 + band * 0.22;
-        gl_PointSize = pointBase * u_pixelRatio * u_pointScaleSetting * styleSize * perspective * (0.88 + u_intensity * 0.22 + audio * 1.18 + beat * 0.42 + abs(deformation) * 2.4);
+        float planetPointBoost = u_visualStyle > 1.5 && u_visualStyle < 2.5 ? abs(deformation) * 0.75 : abs(deformation) * 2.4;
+        gl_PointSize = pointBase * u_pixelRatio * u_pointScaleSetting * styleSize * perspective * (0.88 + u_intensity * 0.22 + audio * 1.18 + beat * 0.42 + planetPointBoost);
         float readable = smoothstep(0.45, 1.0, u_backgroundAdaptation);
         v_color = paletteColor(band, clamp((u_state - 0.8) * 0.48 + u_mid * 0.26 + beat * 0.18, 0.0, 0.78), readable);
         float depthAlpha = mix(0.62, 1.16, smoothstep(-0.48, 0.48, world.z));
-        v_alpha = (0.28 + u_treble * 0.32 + u_bass * 0.30 + beat * 0.18 + a_seed.y * 0.12 + abs(deformation) * 0.92) * styleAlpha * depthAlpha * u_particleOpacity;
-        v_glow = 0.68 + audio * 0.70 + beat * 0.46 + abs(deformation) * 1.8;
+        float audioAlpha = u_visualStyle > 1.5 && u_visualStyle < 2.5 ? u_musicActive * 0.24 : (u_treble * 0.32 + u_bass * 0.30 + beat * 0.18);
+        float audioGlow = u_visualStyle > 1.5 && u_visualStyle < 2.5 ? u_musicActive * 0.28 : (audio * 0.70 + beat * 0.46);
+        v_alpha = (0.28 + audioAlpha + a_seed.y * 0.12 + abs(deformation) * 0.92) * styleAlpha * depthAlpha * u_particleOpacity;
+        v_glow = 0.68 + audioGlow + abs(deformation) * 1.8 + styleGlow;
       }
     `);
     const fragment = createShader(gl.FRAGMENT_SHADER, `
@@ -630,6 +637,7 @@
     if (settings.performance === "high") base = 760;
     const dpr = Math.min(2, root.devicePixelRatio || 1);
     if (settings.performance === "auto") base = dpr > 1.5 ? 540 : 430;
+    base = settings.visualStyle === "planet" ? Math.round(base * 1.55) : base;
     return Math.max(120, Math.round(base * settings.particleDensity));
   }
 
@@ -802,18 +810,22 @@
     sampleAudio();
     reportPlaybackProgress();
     syncCanvasVisibility({ schedule: false });
-      if (!lastVisible) {
-        lastVisualFrameAt = 0;
-        if (gl) gl.clear(gl.COLOR_BUFFER_BIT);
-        return;
-      }
-      const elapsed = lastVisualFrameAt
-        ? Math.min(0.05, Math.max(0, (now - lastVisualFrameAt) / 1000))
-        : 1 / 60;
-      lastVisualFrameAt = now;
-      planetWaveClock += elapsed * (0.22 + mid * 0.44 + treble * 0.08);
-      if (planetWaveClock > 10000) planetWaveClock %= 1000;
-      if (!ensureGl()) return;
+    if (!lastVisible) {
+      lastVisualFrameAt = 0;
+      if (gl) gl.clear(gl.COLOR_BUFFER_BIT);
+      return;
+    }
+    const elapsed = lastVisualFrameAt
+      ? Math.min(0.05, Math.max(0, (now - lastVisualFrameAt) / 1000))
+      : 1 / 60;
+    lastVisualFrameAt = now;
+    const bassSpeed = bass * 0.22;
+    const midSpeed = mid * 1.05;
+    const trebleSpeed = treble * 0.68;
+    const planetWaveSpeed = clamp(0.10 + bassSpeed + midSpeed + trebleSpeed, 0.08, 1.55, 0.10);
+    planetWaveClock += elapsed * planetWaveSpeed;
+    if (planetWaveClock > 10000) planetWaveClock %= 1000;
+    if (!ensureGl()) return;
     const size = resizeCanvas();
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
@@ -822,9 +834,11 @@
     const seedLoc = gl.getAttribLocation(program, "a_seed");
     gl.enableVertexAttribArray(seedLoc);
     gl.vertexAttribPointer(seedLoc, 4, gl.FLOAT, false, 0, 0);
-      gl.uniform1f(gl.getUniformLocation(program, "u_time"), (now - startedAt) / 1000);
-      gl.uniform1f(gl.getUniformLocation(program, "u_planetWaveClock"), planetWaveClock);
-      gl.uniform1f(gl.getUniformLocation(program, "u_bass"), bass);
+    const musicActive = !audio.paused && !audio.ended ? 1 : 0;
+    gl.uniform1f(gl.getUniformLocation(program, "u_time"), (now - startedAt) / 1000);
+    gl.uniform1f(gl.getUniformLocation(program, "u_planetWaveClock"), planetWaveClock);
+    gl.uniform1f(gl.getUniformLocation(program, "u_musicActive"), musicActive);
+    gl.uniform1f(gl.getUniformLocation(program, "u_bass"), bass);
     gl.uniform1f(gl.getUniformLocation(program, "u_mid"), mid);
     gl.uniform1f(gl.getUniformLocation(program, "u_treble"), treble);
     gl.uniform1f(gl.getUniformLocation(program, "u_state"), stateEnergy());

@@ -309,11 +309,17 @@ describe("music aura renderer", () => {
 
     assert.match(source, /float travelWave =/);
     assert.match(source, /float latWave =/);
-    assert.match(source, /float waveSpeed =/);
+    assert.match(source, /uniform float u_musicActive;/);
     assert.match(source, /uniform float u_planetWaveClock;/);
     assert.match(source, /let planetWaveClock = 0;/);
-    assert.match(source, /planetWaveClock \+= elapsed \* \(0\.22 \+ mid \* 0\.44 \+ treble \* 0\.08\);/);
+    assert.match(source, /const bassSpeed = bass \* 0\.22;/);
+    assert.match(source, /const midSpeed = mid \* 1\.05;/);
+    assert.match(source, /const trebleSpeed = treble \* 0\.68;/);
+    assert.match(source, /const planetWaveSpeed = clamp\(0\.10 \+ bassSpeed \+ midSpeed \+ trebleSpeed, 0\.08, 1\.55, 0\.10\);/);
+    assert.match(source, /planetWaveClock \+= elapsed \* planetWaveSpeed;/);
+    assert.match(source, /const musicActive = !audio\.paused && !audio\.ended \? 1 : 0;/);
     assert.match(source, /gl\.uniform1f\(gl\.getUniformLocation\(program, "u_planetWaveClock"\), planetWaveClock\);/);
+    assert.match(source, /gl\.uniform1f\(gl\.getUniformLocation\(program, "u_musicActive"\), musicActive\);/);
     assert.match(source, /vec3 randomSpherePoint\(float seed\)/);
     assert.match(source, /float waveIndex = floor\(waveClock\);/);
     assert.match(source, /float waveProgress = fract\(waveClock\);/);
@@ -327,9 +333,13 @@ describe("music aura renderer", () => {
     assert.match(source, /float trailingTrough = -0\.32 \* exp\(-\(\(wavePhase \+ 0\.26\) \* \(wavePhase \+ 0\.26\)\) \/ 0\.090\);/);
     assert.match(source, /float ringPulse =/);
     assert.match(source, /float bassBreath =/);
+    assert.match(source, /float planetWake = mix\(0\.50, 0\.88, u_musicActive\);/);
+    assert.match(source, /float waveGlow = primaryWave \* cycleFade \* \(0\.48 \+ u_mid \* 0\.20 \+ u_treble \* 0\.36\);/);
+    assert.match(source, /float audioAlpha = u_visualStyle > 1\.5 && u_visualStyle < 2\.5 \? u_musicActive \* 0\.24 : \(u_treble \* 0\.32 \+ u_bass \* 0\.30 \+ beat \* 0\.18\);/);
+    assert.match(source, /base = settings\.visualStyle === "planet" \? Math\.round\(base \* 1\.55\) : base;/);
     assert.match(source, /0\.365 \+ deformation/);
-    assert.match(source, /u_mid \* 1\.80/);
-    assert.match(source, /float waveAmplitude = 0\.040 \+ u_bass \* 0\.024 \+ u_mid \* 0\.018;/);
+    assert.match(source, /float waveAmplitude = 0\.030 \+ u_bass \* 0\.014 \+ u_mid \* 0\.010;/);
+    assert.match(source, /float planetPointBoost = u_visualStyle > 1\.5 && u_visualStyle < 2\.5 \? abs\(deformation\) \* 0\.75 : abs\(deformation\) \* 2\.4;/);
     assert.doesNotMatch(source, /vec3 sourceA =/);
     assert.doesNotMatch(source, /vec3 sourceB =/);
     assert.doesNotMatch(source, /sourceWaveA/);
@@ -339,8 +349,10 @@ describe("music aura renderer", () => {
     assert.doesNotMatch(source, /crestWave/);
     assert.doesNotMatch(source, /surfaceWave/);
     assert.doesNotMatch(source, /innerRipple/);
+    assert.doesNotMatch(source, /float waveSpeed =/);
     assert.doesNotMatch(source, /float waveClock = u_time \* waveSpeed/);
     assert.doesNotMatch(source, /styleSize = .*crestEnvelope/);
+    assert.doesNotMatch(source, /styleAlpha = 0\.74 \+ primaryWave/);
     assert.doesNotMatch(source, /patchMask/);
     assert.doesNotMatch(source, /patchWave/);
     assert.doesNotMatch(source, /blockWave/);
