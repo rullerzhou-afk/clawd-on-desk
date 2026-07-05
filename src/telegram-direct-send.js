@@ -312,26 +312,32 @@ async function invokeFallbackAdapter(fallbackAdapter, payload) {
   return { status: "failed", delivered: false, errorClass: "fallback_adapter_missing" };
 }
 
+// Function-form replacement: shortId is dynamic and must not be parsed for
+// $$/$&/$`/$' replacement-pattern sequences.
+function interpolate(template, token, value) {
+  return template.replace(token, () => value);
+}
+
 function formatDeliveryAck(status, entry, deliveryResult, t) {
   const shortId = shortSessionId(entry && entry.id);
   switch (status) {
     case "sent_with_enter":
-      return t("directSendAckSent").replace("{session}", shortId);
+      return interpolate(t("directSendAckSent"), "{session}", shortId);
     case "pasted_without_enter":
       if (deliveryResult && deliveryResult.clipboardRestored === true) {
-        return t("directSendAckPastedRestored").replace("{session}", shortId);
+        return interpolate(t("directSendAckPastedRestored"), "{session}", shortId);
       }
-      return t("directSendAckPastedManual").replace("{session}", shortId);
+      return interpolate(t("directSendAckPastedManual"), "{session}", shortId);
     case "fallback_copied":
-      return t("directSendAckCopied").replace("{session}", shortId);
+      return interpolate(t("directSendAckCopied"), "{session}", shortId);
     case "failed":
       return t("directSendAckFailed");
     case "focus_only":
     default:
       if (deliveryResult && deliveryResult.errorClass === "delivery_not_implemented") {
-        return t("directSendAckFocusOnlyDogfood").replace("{session}", shortId);
+        return interpolate(t("directSendAckFocusOnlyDogfood"), "{session}", shortId);
       }
-      return t("directSendAckFocusOnly").replace("{session}", shortId);
+      return interpolate(t("directSendAckFocusOnly"), "{session}", shortId);
   }
 }
 
