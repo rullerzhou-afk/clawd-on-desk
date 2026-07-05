@@ -72,6 +72,8 @@ function createSettingsWindowRuntime(options = {}) {
   let readyToShowFallbackTimer = null;
   let liftTimer = null;
   let showPendingSettingsWindow = null;
+  let didFinishLoad = false;
+  let pendingSelectTabId = "";
 
   function getWindow() {
     return settingsWindow;
@@ -223,6 +225,33 @@ function createSettingsWindowRuntime(options = {}) {
     return true;
   }
 
+  function normalizeOpenOptions(value) {
+    if (typeof value === "string") return { tabId: value };
+    return value && typeof value === "object" ? value : {};
+  }
+
+  function rememberSelectTab(tabId) {
+    pendingSelectTabId = typeof tabId === "string" && tabId ? tabId : "";
+  }
+
+  function sendSelectTab(win, tabId) {
+    if (!tabId || !isLiveWindow(win)) return false;
+    const wc = win.webContents;
+    if (!wc || (typeof wc.isDestroyed === "function" && wc.isDestroyed())) return false;
+    if (typeof wc.send !== "function") return false;
+    try {
+      wc.send("settings:select-tab", { tabId });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function flushPendingSelectTab(win) {
+    if (!pendingSelectTabId) return;
+    if (sendSelectTab(win, pendingSelectTabId)) pendingSelectTabId = "";
+  }
+
   function openWhenReady() {
     if (app.isReady()) {
       open();
@@ -231,13 +260,16 @@ function createSettingsWindowRuntime(options = {}) {
     app.once("ready", open);
   }
 
-  function open() {
+  function open(openOptions = {}) {
+    const normalizedOpenOptions = normalizeOpenOptions(openOptions);
+    if (normalizedOpenOptions.tabId) rememberSelectTab(normalizedOpenOptions.tabId);
     if (settingsWindow && !settingsWindow.isDestroyed()) {
       if (typeof showPendingSettingsWindow === "function") {
         showPendingSettingsWindow({ restoreMinimized: true });
       } else {
         showAndFocusSettingsWindow(settingsWindow, { restoreMinimized: true });
       }
+      if (didFinishLoad) flushPendingSelectTab(settingsWindow);
       return;
     }
 
@@ -272,6 +304,7 @@ function createSettingsWindowRuntime(options = {}) {
     if (typeof options.onBeforeCreate === "function") options.onBeforeCreate();
     settingsWindow = new BrowserWindow(opts);
     const createdWindow = settingsWindow;
+    didFinishLoad = false;
     if (isWin && typeof createdWindow.setAppDetails === "function") {
       const taskbarDetails = getTaskbarDetails();
       if (taskbarDetails && taskbarDetails.appIconPath) {
@@ -282,7 +315,9 @@ function createSettingsWindowRuntime(options = {}) {
     createdWindow.loadFile(settingsHtmlPath);
     if (createdWindow.webContents && typeof createdWindow.webContents.once === "function") {
       createdWindow.webContents.once("did-finish-load", () => {
+        didFinishLoad = true;
         applyZoomToWindow(createdWindow, getTextScale());
+        flushPendingSelectTab(createdWindow);
       });
     }
     // textScale is per-display: re-resolve after the user drags the window
@@ -314,6 +349,8 @@ function createSettingsWindowRuntime(options = {}) {
       const isCurrentWindow = settingsWindow === createdWindow;
       if (isCurrentWindow) {
         showPendingSettingsWindow = null;
+        didFinishLoad = false;
+        pendingSelectTabId = "";
         clearReadyToShowFallbackTimer();
         clearLiftTimer();
       }

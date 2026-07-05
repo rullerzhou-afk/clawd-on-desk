@@ -1,0 +1,336 @@
+"use strict";
+
+const { describe, it, afterEach } = require("node:test");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+
+const {
+  normalizeMusicAuraSettings,
+  validateMusicAuraSettings,
+} = require("../src/music-aura-settings");
+const {
+  createMusicAuraMain,
+  MAX_SCAN_TRACKS,
+  scanLibrary,
+} = require("../src/music-aura-main");
+
+const tempDirs = [];
+
+function makeTempDir() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-music-aura-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+function touch(filePath) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, "");
+}
+
+afterEach(() => {
+  while (tempDirs.length) {
+    const dir = tempDirs.pop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+describe("music aura settings", () => {
+  it("normalizes defaults and constrained option values", () => {
+    const cfg = normalizeMusicAuraSettings({
+      enabled: true,
+      libraryDirs: [" /music ", "/music", "", "/other"],
+      volume: 3,
+      visualStyle: "planet",
+      particlesAlwaysOn: false,
+      backgroundAdaptation: "light",
+      intensity: "stage",
+      performance: "turbo",
+      particleOpacity: 1.7,
+      glowStrength: 0.35,
+      pointScale: 0.64,
+      particleDensity: 1.4,
+      particlePalette: "contrast",
+      autoViewMode: "strong",
+      auraOffsetX: 0.16,
+      auraOffsetY: -0.12,
+      auraScale: 1.08,
+      auraPlacementByTheme: {
+        clawd: { offsetX: 0.2, offsetY: -0.1, scale: 1.1 },
+        calico: { offsetX: 0.8, offsetY: -0.8, scale: 3 },
+      },
+      lowPerformanceProtection: false,
+      autoStart: true,
+    });
+    assert.strictEqual(cfg.enabled, true);
+    assert.deepStrictEqual(cfg.libraryDirs, ["/music", "/other"]);
+    assert.strictEqual(cfg.volume, 1);
+    assert.strictEqual(cfg.visualStyle, "planet");
+    assert.strictEqual(cfg.particlesAlwaysOn, false);
+    assert.strictEqual(cfg.backgroundAdaptation, "light");
+    assert.strictEqual(cfg.intensity, "stage");
+    assert.strictEqual(cfg.performance, "auto");
+    assert.strictEqual(cfg.particleOpacity, 1.7);
+    assert.strictEqual(cfg.glowStrength, 0.35);
+    assert.strictEqual(cfg.pointScale, 0.64);
+    assert.strictEqual(cfg.particleDensity, 1.4);
+    assert.strictEqual(cfg.particlePalette, "contrast");
+    assert.strictEqual(cfg.autoViewMode, "strong");
+    assert.strictEqual(cfg.auraOffsetX, 0.16);
+    assert.strictEqual(cfg.auraOffsetY, -0.12);
+    assert.strictEqual(cfg.auraScale, 1.08);
+    assert.deepStrictEqual(cfg.auraPlacementByTheme, {
+      clawd: { offsetX: 0.2, offsetY: -0.1, scale: 1.1 },
+      calico: { offsetX: 0, offsetY: 0, scale: 1 },
+    });
+    assert.strictEqual(cfg.lowPerformanceProtection, false);
+    assert.strictEqual(cfg.autoStart, true);
+    assert.strictEqual(cfg.shuffle, true);
+  });
+
+  it("falls back to safe visual defaults", () => {
+    const cfg = normalizeMusicAuraSettings({
+      visualStyle: "laser",
+      particlesAlwaysOn: "sometimes",
+      backgroundAdaptation: "invisible",
+      particleOpacity: 99,
+      glowStrength: -5,
+      pointScale: "huge",
+      particleDensity: 12,
+      particlePalette: "white",
+      autoViewMode: "wild",
+      auraOffsetX: 9,
+      auraOffsetY: -9,
+      auraScale: 3,
+      auraPlacementByTheme: {
+        bad: { offsetX: "far", offsetY: null, scale: 0.2 },
+      },
+      lowPerformanceProtection: "off",
+    });
+
+    assert.strictEqual(cfg.visualStyle, "galaxy");
+    assert.strictEqual(cfg.particlesAlwaysOn, true);
+    assert.strictEqual(cfg.backgroundAdaptation, "auto");
+    assert.strictEqual(cfg.particleOpacity, 1.18);
+    assert.strictEqual(cfg.glowStrength, 1.25);
+    assert.strictEqual(cfg.pointScale, 0.82);
+    assert.strictEqual(cfg.particleDensity, 1);
+    assert.strictEqual(cfg.particlePalette, "default");
+    assert.strictEqual(cfg.autoViewMode, "standard");
+    assert.strictEqual(cfg.auraOffsetX, 0);
+    assert.strictEqual(cfg.auraOffsetY, 0);
+    assert.strictEqual(cfg.auraScale, 1);
+    assert.deepStrictEqual(cfg.auraPlacementByTheme, {
+      bad: { offsetX: 0, offsetY: 0, scale: 1 },
+    });
+    assert.strictEqual(cfg.lowPerformanceProtection, true);
+  });
+
+  it("keeps legacy visual style values readable", () => {
+    assert.strictEqual(normalizeMusicAuraSettings({ visualStyle: "hologram" }).visualStyle, "galaxy");
+    assert.strictEqual(normalizeMusicAuraSettings({ visualStyle: "aurora" }).visualStyle, "aurora");
+    assert.strictEqual(normalizeMusicAuraSettings({ visualStyle: "vinyl" }).visualStyle, "vinyl");
+  });
+
+  it("keeps the old Mineradio palette value as a default palette alias", () => {
+    assert.strictEqual(normalizeMusicAuraSettings({ particlePalette: "mineradio" }).particlePalette, "default");
+  });
+
+  it("rejects unnormalized values in the settings write path", () => {
+    assert.deepStrictEqual(validateMusicAuraSettings(normalizeMusicAuraSettings({ enabled: true })), { status: "ok" });
+    assert.strictEqual(validateMusicAuraSettings({ enabled: "yes" }).status, "error");
+    assert.strictEqual(validateMusicAuraSettings({ enabled: true, unknown: 1 }).status, "error");
+  });
+});
+
+describe("scanLibrary", () => {
+  it("finds supported audio files and skips unsupported files", () => {
+    const root = makeTempDir();
+    touch(path.join(root, "A Song.mp3"));
+    touch(path.join(root, "nested", "B-Track.FLAC"));
+    touch(path.join(root, "notes.txt"));
+
+    const result = scanLibrary({ libraryDirs: [root] });
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.count, 2);
+    assert.deepStrictEqual(result.tracks.map((track) => track.title), ["A Song", "B Track"]);
+    assert.ok(result.tracks.every((track) => track.url.startsWith("file://")));
+  });
+
+  it("reports missing directories and caps very large libraries", () => {
+    const root = makeTempDir();
+    for (let i = 0; i < MAX_SCAN_TRACKS + 4; i += 1) {
+      touch(path.join(root, `track-${String(i).padStart(4, "0")}.mp3`));
+    }
+
+    const result = scanLibrary({ libraryDirs: [path.join(root, "missing"), root] });
+    assert.strictEqual(result.count, MAX_SCAN_TRACKS);
+    assert.strictEqual(result.truncated, true);
+    assert.deepStrictEqual(result.missingDirs, [path.join(root, "missing")]);
+  });
+});
+
+describe("createMusicAuraMain", () => {
+  it("does not rescan the library when non-directory settings change", () => {
+    const root = makeTempDir();
+    touch(path.join(root, "song.mp3"));
+    let settings = normalizeMusicAuraSettings({ libraryDirs: [root], volume: 0.4 });
+    let readdirCalls = 0;
+    const wrappedFs = {
+      ...fs,
+      readdirSync(...args) {
+        readdirCalls += 1;
+        return fs.readdirSync(...args);
+      },
+    };
+    const aura = createMusicAuraMain({
+      fs: wrappedFs,
+      path,
+      settingsController: {
+        get(key) {
+          return key === "musicAura" ? settings : undefined;
+        },
+      },
+    });
+
+    aura.refreshLibrary({ force: true });
+    const afterInitialScan = readdirCalls;
+    settings = normalizeMusicAuraSettings({
+      ...settings,
+      volume: 0.8,
+      intensity: "stage",
+      visualStyle: "planet",
+      particlesAlwaysOn: false,
+      backgroundAdaptation: "contrast",
+      particleOpacity: 1.35,
+      glowStrength: 1.45,
+      pointScale: 0.72,
+          particleDensity: 1.2,
+          particlePalette: "neon",
+          autoViewMode: "subtle",
+          auraOffsetX: -0.08,
+          auraOffsetY: 0.12,
+          auraScale: 0.94,
+          auraPlacementByTheme: {
+            clawd: { offsetX: 0.1, offsetY: -0.06, scale: 1.04 },
+          },
+          lowPerformanceProtection: false,
+        });
+    aura.applySettingsChange();
+
+    assert.strictEqual(readdirCalls, afterInitialScan);
+  });
+
+  it("keeps renderer visual diagnostics in runtime status", () => {
+    const aura = createMusicAuraMain({
+      fs,
+      path,
+      settingsController: {
+        get(key) {
+          return key === "musicAura" ? normalizeMusicAuraSettings({ enabled: true }) : undefined;
+        },
+      },
+    });
+
+    aura.updateStatus({
+      playing: false,
+      visual: {
+        active: true,
+        visible: true,
+        webglReady: true,
+        particleCount: 640,
+        style: "aurora",
+        backgroundAdaptation: "contrast",
+        error: "",
+      },
+      currentTime: 42.25,
+      duration: 180.5,
+    });
+
+    assert.deepStrictEqual(aura.getRuntime().status.visual, {
+      active: true,
+      visible: true,
+      webglReady: true,
+      particleCount: 640,
+      style: "aurora",
+      backgroundAdaptation: "contrast",
+      error: "",
+    });
+    assert.strictEqual(aura.getRuntime().status.currentTime, 42.25);
+    assert.strictEqual(aura.rendererBootstrap().status.currentTime, 42.25);
+    assert.strictEqual(aura.rendererBootstrap().status.playing, false);
+  });
+
+  it("keeps enough playback state for renderer reload recovery", () => {
+    const aura = createMusicAuraMain({
+      fs,
+      path,
+      settingsController: {
+        get(key) {
+          return key === "musicAura" ? normalizeMusicAuraSettings({ enabled: true }) : undefined;
+        },
+      },
+    });
+
+    aura.updateStatus({
+      playing: true,
+      track: { id: "abc", title: "Song", fileName: "song.mp3" },
+      trackIndex: 2,
+      count: 5,
+      currentTime: 12.75,
+      duration: 90,
+    });
+
+    assert.deepStrictEqual(aura.rendererBootstrap().status, {
+      playing: true,
+      track: { id: "abc", title: "Song", fileName: "song.mp3" },
+      trackIndex: 2,
+      count: 5,
+      error: "",
+      visual: null,
+      currentTime: 12.75,
+      duration: 90,
+    });
+  });
+});
+
+describe("music aura renderer", () => {
+  function readRendererSource() {
+    return fs.readFileSync(path.join(__dirname, "..", "src", "music-aura-renderer.js"), "utf8");
+  }
+
+  function readStylesSource() {
+    return fs.readFileSync(path.join(__dirname, "..", "src", "styles.css"), "utf8");
+  }
+
+  it("keeps planet deformation as coherent spherical waves", () => {
+    const source = readRendererSource();
+
+    assert.match(source, /float travelWave =/);
+    assert.match(source, /float latWave =/);
+    assert.match(source, /float ringPulse =/);
+    assert.match(source, /float bassBreath =/);
+    assert.doesNotMatch(source, /treblePatch/);
+    assert.doesNotMatch(source, /inwardDent/);
+  });
+
+  it("anchors the aura independently from the raw window center", () => {
+    const source = readRendererSource();
+
+    assert.match(source, /uniform vec2 u_auraOffset;/);
+    assert.match(source, /uniform float u_auraScale;/);
+    assert.match(source, /function computeAuraPlacement\(\)/);
+    assert.match(source, /function themePlacement\(\)/);
+    assert.match(source, /currentThemeId/);
+    assert.match(source, /gl\.uniform2f\(gl\.getUniformLocation\(program, "u_auraOffset"\)/);
+    assert.match(source, /gl\.uniform1f\(gl\.getUniformLocation\(program, "u_auraScale"\)/);
+  });
+
+  it("does not mirror the aura canvas in left mini mode", () => {
+    const source = readStylesSource();
+
+    assert.match(source, /#pet-container\.mini-left #music-aura-canvas\s*\{/);
+    assert.match(source, /scaleX\(-1\) scale\(1\.22\)/);
+  });
+});

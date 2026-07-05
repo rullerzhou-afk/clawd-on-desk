@@ -3625,3 +3625,195 @@ html, body {
 .mobile-action-btn:hover { background: var(--accent); color: #fff; }
 .mobile-action-danger { border-color: var(--red, #7f1d1d); color: var(--red, #fca5a5); }
 .mobile-action-danger:hover { background: var(--red, #7f1d1d); color: #fff; }
+
+/* === Music Aura Tab === */
+.music-aura-hero {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-height: 118px;
+  margin: 18px 0 22px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background:
+    radial-gradient(circle at 16% 22%, rgba(217, 119, 87, 0.24), transparent 34%),
+    radial-gradient(circle at 84% 30%, rgba(47, 158, 68, 0.16), transparent 30%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.52));
+  overflow: hidden;
+}
+@media (prefers-color-scheme: dark) {
+  .music-aura-hero {
+    background:
+      radial-gradient(circle at 16% 22%, rgba(217, 119, 87, 0.28), transparent 34%),
+      radial-gradient(circle at 84% 30%, rgba(56, 189, 248, 0.14), transparent 30%),
+      linear-gradient(135deg, rgba(38, 38, 43, 0.96), rgba(30, 30, 34, 0.78));
+  }
+}
+.music-aura-orb {
+  position: relative;
+  width: 78px;
+  height: 78px;
+  flex: 0 0 78px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.92) 0 18%, rgba(217, 119, 87, 0.42) 19% 42%, transparent 44%);
+  box-shadow: 0 0 28px rgba(217, 119, 87, 0.32);
+}
+.music-aura-orb span {
+  position: absolute;
+  inset: 10px;
+  border: 1px solid rgba(217, 119, 87, 0.56);
+  border-radius: 50%;
+  animation: music-aura-ring 2.4s ease-in-out infinite;
+}
+.music-aura-orb span:nth-child(2) {
+  inset: 2px;
+  border-color: rgba(47, 158, 68, 0.38);
+  animation-delay: -0.8s;
+}
+.music-aura-orb span:nth-child(3) {
+  inset: 19px;
+  border-color: rgba(56, 189, 248, 0.34);
+  animation-delay: -1.4s;
+}
+@keyframes music-aura-ring {
+  0%, 100% { transform: scale(0.88); opacity: 0.58; }
+  50% { transform: scale(1.08); opacity: 1; }
+}
+.music-aura-hero-copy {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.music-aura-kicker {
+  margin-bottom: 7px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.music-aura-track {
+  max-width: 100%;
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.music-aura-meta {
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.music-aura-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.music-aura-library-row,
+.music-aura-playback-row,
+.music-aura-volume-row,
+.music-aura-segment-row,
+.music-aura-dir-row {
+  align-items: flex-start;
+}
+.music-aura-dir-row .row-text {
+  width: 100%;
+}
+.music-aura-dir-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.music-aura-dir-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--row-border);
+  border-radius: 7px;
+  background: var(--sidebar-hover);
+}
+.music-aura-dir-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.music-aura-volume-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 210px;
+}
+.music-aura-volume-control input {
+  width: 150px;
+  accent-color: var(--accent);
+}
+.music-aura-volume-control span {
+  width: 42px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: right;
+}
+.music-aura-segment {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px;
+  max-width: 360px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--sidebar-hover);
+}
+.music-aura-segment-btn {
+  min-width: 58px;
+  border: 0;
+  border-radius: 5px;
+  padding: 5px 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.music-aura-segment-btn:hover {
+  color: var(--text-primary);
+}
+.music-aura-segment-btn.active {
+  background: var(--panel-bg);
+  color: var(--text-primary);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+@media (max-width: 720px) {
+  .music-aura-hero {
+    align-items: flex-start;
+  }
+  .music-aura-actions,
+  .music-aura-volume-control {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .music-aura-volume-control input {
+    flex: 1 1 auto;
+    width: auto;
+  }
+  .music-aura-segment {
+    width: 100%;
+  }
+  .music-aura-segment-btn {
+    flex: 1 1 0;
+  }
+}

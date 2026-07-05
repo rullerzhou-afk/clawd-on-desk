@@ -2,16 +2,18 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' file:; script-src 'self'; style-src 'self'; img-src 'self' file:; media-src 'self';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' file:; script-src 'self'; style-src 'self'; img-src 'self' file:; media-src 'self' file:;">
   <link rel="stylesheet" href="styles.css">
   <title>Clawd</title>
 </head>
 <body>
   <div id="pet-clip">
     <div id="pet-container">
+      <canvas id="music-aura-canvas" aria-hidden="true"></canvas>
       <object id="clawd" type="image/svg+xml"></object>
     </div>
   </div>
+  <script src="music-aura-renderer.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

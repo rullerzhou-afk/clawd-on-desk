@@ -65,6 +65,8 @@ function createThemeContext(theme, options = {}) {
       ? (theme.trustedRuntime.scriptedSvgFiles || [])
       : [];
     return {
+      themeId: theme._id,
+      variantId: theme._variantId || "default",
       viewBox: theme.viewBox,
       miniModeViewBox: theme.miniMode ? theme.miniMode.viewBox : null,
       fileViewBoxes: { ...(theme.fileViewBoxes || {}) },

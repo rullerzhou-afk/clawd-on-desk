@@ -52,6 +52,13 @@ const ICONS = {
     '<path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h12"/>' +
     '</svg>',
 
+  // waveform ring
+  "music-aura":
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
+    '<path d="M4 12a8 8 0 1 0 16 0 8 8 0 0 0-16 0Z"/>' +
+    '<path d="M8 12h.01M10 9v6M12 7v10M14 10v4M16 11v2"/>' +
+    '</svg>',
+
   // paper plane (send)
   "telegram-approval":
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +

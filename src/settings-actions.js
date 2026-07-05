@@ -133,6 +133,9 @@ const { EVENTS: TELEGRAM_MIGRATION_EVENTS } = require("./telegram-migration-stat
 const {
   validateHardwareBuddySettings,
 } = require("./hardware-buddy-settings");
+const {
+  validateMusicAuraSettings,
+} = require("./music-aura-settings");
 
 const TELEGRAM_MIGRATION_RENDERER_EVENTS = new Set([
   TELEGRAM_MIGRATION_EVENTS.USER_TEST_NATIVE,
@@ -494,6 +497,10 @@ const updateRegistry = {
 
   hardwareBuddy(value) {
     return validateHardwareBuddySettings(value);
+  },
+
+  musicAura(value) {
+    return validateMusicAuraSettings(value);
   },
 
   shortcuts: {

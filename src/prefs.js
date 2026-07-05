@@ -35,6 +35,10 @@ const {
   normalizeHardwareBuddySettings,
 } = require("./hardware-buddy-settings");
 const {
+  DEFAULT_MUSIC_AURA_SETTINGS,
+  normalizeMusicAuraSettings,
+} = require("./music-aura-settings");
+const {
   NOTIFICATION_DEFAULT_SECONDS,
   UPDATE_DEFAULT_SECONDS,
   PERMISSION_DEFAULT_SECONDS,
@@ -370,6 +374,11 @@ const SCHEMA = {
     type: "object",
     defaultFactory: () => ({ ...DEFAULT_HARDWARE_BUDDY_SETTINGS }),
     normalize: normalizeHardwareBuddySettings,
+  },
+  musicAura: {
+    type: "object",
+    defaultFactory: () => ({ ...DEFAULT_MUSIC_AURA_SETTINGS }),
+    normalize: normalizeMusicAuraSettings,
   },
   // Background update-check toggle. When true, the scheduler in updater.js
   // runs a quiet GitHub discovery on a 12-hour cycle (packaged builds only).

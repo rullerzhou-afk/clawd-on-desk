@@ -149,6 +149,7 @@ function registerSettingsIpc(options = {}) {
     status: "error",
     message: "Tutorial is unavailable",
   }));
+  const musicAuraMain = options.musicAuraMain || null;
   const now = options.now || (() => Date.now());
   const aboutHeroSvgPath = options.aboutHeroSvgPath
     || path.join(__dirname, "..", "assets", "svg", "clawd-about-hero.svg");
@@ -224,6 +225,32 @@ function registerSettingsIpc(options = {}) {
       return { status: "error", message: "settings:command payload must be { action, payload }" };
     }
     return settingsController.applyCommand(payload.action, payload.payload);
+  });
+
+  handle("musicAura:choose-directory", async () => {
+    if (!musicAuraMain || typeof musicAuraMain.chooseDirectory !== "function") {
+      return { status: "error", message: "Music Aura is unavailable" };
+    }
+    return musicAuraMain.chooseDirectory();
+  });
+  handle("musicAura:scan-library", () => {
+    if (!musicAuraMain || typeof musicAuraMain.refreshLibrary !== "function") {
+      return { status: "error", message: "Music Aura is unavailable" };
+    }
+    const library = musicAuraMain.refreshLibrary({ force: true });
+    return { status: "ok", library };
+  });
+  handle("musicAura:get-runtime", () => {
+    if (!musicAuraMain || typeof musicAuraMain.getRuntime !== "function") {
+      return { status: "error", message: "Music Aura is unavailable" };
+    }
+    return { status: "ok", runtime: musicAuraMain.getRuntime() };
+  });
+  handle("musicAura:command", (_event, payload = {}) => {
+    if (!musicAuraMain || typeof musicAuraMain.command !== "function") {
+      return { status: "error", message: "Music Aura is unavailable" };
+    }
+    return musicAuraMain.command(payload.command, payload.payload || {});
   });
 
   handle("settings:pick-sound-file", async (event, payload) => {

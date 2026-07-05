@@ -115,6 +115,47 @@ module.exports = function initMenu(ctx) {
     };
   }
 
+  function buildMusicAuraSubmenu() {
+    const enabled = !!ctx.musicAuraEnabled;
+    return {
+      label: t("musicAura"),
+      submenu: [
+        {
+          label: enabled ? t("musicAuraDisable") : t("musicAuraEnable"),
+          type: "checkbox",
+          checked: enabled,
+          click: (menuItem) => { ctx.musicAuraEnabled = menuItem.checked; },
+        },
+        {
+          label: t("musicAuraPlayPause"),
+          enabled,
+          click: () => {
+            if (typeof ctx.musicAuraCommand === "function") ctx.musicAuraCommand("toggle");
+          },
+        },
+        {
+          label: t("musicAuraPrevious"),
+          enabled,
+          click: () => {
+            if (typeof ctx.musicAuraCommand === "function") ctx.musicAuraCommand("previous");
+          },
+        },
+        {
+          label: t("musicAuraNext"),
+          enabled,
+          click: () => {
+            if (typeof ctx.musicAuraCommand === "function") ctx.musicAuraCommand("next");
+          },
+        },
+        { type: "separator" },
+        {
+          label: t("musicAuraSettings"),
+          click: () => ctx.openSettingsWindow("music-aura"),
+        },
+      ],
+    };
+  }
+
   function buildBringToPrimaryDisplayMenuItem() {
     return {
       label: t("bringPetToPrimaryDisplay"),
@@ -192,6 +233,7 @@ module.exports = function initMenu(ctx) {
         checked: !ctx.soundMuted,
         click: (menuItem) => { ctx.soundMuted = !menuItem.checked; },
       },
+      buildMusicAuraSubmenu(),
     ];
 
     // Dashboard + the danger auto-approve toggle (danger last, as in the
@@ -204,6 +246,10 @@ module.exports = function initMenu(ctx) {
         },
       },
       buildAutoApproveMenuItem(),
+    ];
+
+    const companionGroup = [
+      buildMusicAuraSubmenu(),
     ];
 
     // OS-integration / placement group: bring-to-primary, mac dock/menu-bar,
@@ -452,6 +498,10 @@ module.exports = function initMenu(ctx) {
       });
     }
 
+    const companionGroup = [
+      buildMusicAuraSubmenu(),
+    ];
+
     const appGroup = [
       {
         label: t("settings"),
@@ -476,7 +526,7 @@ module.exports = function initMenu(ctx) {
       { label: t("quit"), click: () => requestAppQuit() },
     ];
 
-    const template = joinGroups([stateGroup, workGroup, displayGroup, appGroup, quitGroup]);
+    const template = joinGroups([stateGroup, workGroup, companionGroup, displayGroup, appGroup, quitGroup]);
     ctx.contextMenu = Menu.buildFromTemplate(template);
   }
 

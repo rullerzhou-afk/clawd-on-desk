@@ -105,6 +105,7 @@ const initUpdateBubble = require("./update-bubble");
 const { registerUpdateBubbleIpc } = initUpdateBubble;
 const createSettingsAnimationOverridesMain = require("./settings-animation-overrides-main");
 const { registerSettingsAnimationOverridesIpc } = createSettingsAnimationOverridesMain;
+const { createMusicAuraMain } = require("./music-aura-main");
 const createShortcutRuntime = require("./shortcut-runtime");
 const {
   findNearestWorkArea,
@@ -3051,6 +3052,31 @@ unsubscribeHardwareBuddySettings = _settingsController.subscribeKey("hardwareBud
   }
 });
 
+const musicAuraMain = createMusicAuraMain({
+  fs,
+  path,
+  dialog: electronDialog,
+  settingsController: _settingsController,
+  getSettingsWindow,
+  sendToRenderer,
+  broadcastSettingsWindow,
+});
+
+_settingsController.subscribeKey("musicAura", () => {
+  try {
+    musicAuraMain.applySettingsChange();
+    rebuildAllMenus();
+  } catch (err) {
+    console.warn("Clawd: failed to apply Music Aura settings:", err && err.message);
+  }
+});
+
+ipcMain.handle("music-aura:get-bootstrap", () => musicAuraMain.rendererBootstrap());
+ipcMain.on("music-aura-status", (_event, payload) => {
+  musicAuraMain.updateStatus(payload);
+  rebuildAllMenus();
+});
+
 // ── Menu — delegated to src/menu.js ──
 //
 // Setters that previously assigned to module-level vars now route through
@@ -3198,6 +3224,15 @@ const _menuCtx = {
   get soundMuted() { return soundMuted; },
   set soundMuted(v) { _settingsController.applyUpdate("soundMuted", v); },
   get soundVolume() { return soundVolume; },
+  get musicAuraEnabled() {
+    const cfg = _settingsController.get("musicAura") || {};
+    return cfg.enabled === true;
+  },
+  set musicAuraEnabled(v) {
+    const cfg = _settingsController.get("musicAura") || {};
+    _settingsController.applyUpdate("musicAura", { ...cfg, enabled: !!v });
+  },
+  musicAuraCommand: (command, payload) => musicAuraMain.command(command, payload || {}),
   get pendingPermissions() { return pendingPermissions; },
   repositionBubbles: () => repositionFloatingBubbles(),
   get petHidden() { return petWindowRuntime.isPetHidden(); },
@@ -3317,7 +3352,9 @@ const _menuCtx = {
   getActiveThemeId: () => themeRuntime.getActiveThemeId("clawd"),
   getActiveThemeCapabilities: () => themeRuntime.getActiveThemeCapabilities(),
   ensureUserThemesDir: () => themeLoader.ensureUserThemesDir(),
-  openSettingsWindow: () => settingsWindowRuntime.open(),
+  openSettingsWindow: (tabId) => {
+    settingsWindowRuntime.open({ tabId });
+  },
   showTutorial: () => _tutorial.open(),
 };
 const _menu = require("./menu")(_menuCtx);
@@ -3610,6 +3647,7 @@ registerSettingsIpc({
   },
   aboutHeroSvgPath: path.join(__dirname, "..", "assets", "svg", "clawd-about-hero.svg"),
   getLanWsServer: () => _lanWss,
+  musicAuraMain,
 });
 
 registerSessionIpc({
@@ -3813,6 +3851,11 @@ function createWindow() {
     sendToRenderer("viewport-offset", petWindowRuntime.getViewportOffsetY());
     if (themeRuntime.isReloadInProgress()) return;
     syncRendererStateAfterLoad();
+    try {
+      musicAuraMain.applySettingsChange();
+    } catch (err) {
+      console.warn("Clawd: failed to sync Music Aura after renderer load:", err && err.message);
+    }
   });
 
   // ── Crash recovery: renderer process can die from <object> churn ──

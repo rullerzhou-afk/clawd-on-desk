@@ -12,6 +12,21 @@ class FakeBrowserWindow {
     this.destroyed = false;
     this.minimized = false;
     this.calls = [];
+    this.webContentsEvents = new Map();
+    this.webContentsOnceEvents = new Map();
+    this.webContentsSends = [];
+    this.webContents = {
+      once: (eventName, listener) => {
+        this.webContentsOnceEvents.set(eventName, listener);
+      },
+      on: (eventName, listener) => {
+        this.webContentsEvents.set(eventName, listener);
+      },
+      send: (channel, payload) => {
+        this.webContentsSends.push({ channel, payload });
+      },
+      isDestroyed: () => false,
+    };
     this.events = new Map();
     this.onceEvents = new Map();
     FakeBrowserWindow.instances.push(this);
@@ -78,6 +93,16 @@ class FakeBrowserWindow {
       onceListener();
     }
     const listener = this.events.get(eventName);
+    if (listener) listener();
+  }
+
+  emitWebContents(eventName) {
+    const onceListener = this.webContentsOnceEvents.get(eventName);
+    if (onceListener) {
+      this.webContentsOnceEvents.delete(eventName);
+      onceListener();
+    }
+    const listener = this.webContentsEvents.get(eventName);
     if (listener) listener();
   }
 }
@@ -216,6 +241,34 @@ test("settings window runtime reuses an existing non-destroyed Settings window",
     ["setAlwaysOnTop", true, undefined],
     "moveTop",
     "focus",
+  ]);
+});
+
+test("settings window runtime sends requested tab after first load", () => {
+  const { runtime } = createRuntime();
+
+  runtime.open({ tabId: "music-aura" });
+  const win = FakeBrowserWindow.instances[0];
+
+  assert.deepStrictEqual(win.webContentsSends, []);
+  win.emitWebContents("did-finish-load");
+
+  assert.deepStrictEqual(win.webContentsSends, [
+    { channel: "settings:select-tab", payload: { tabId: "music-aura" } },
+  ]);
+});
+
+test("settings window runtime sends requested tab immediately when reusing loaded window", () => {
+  const { runtime } = createRuntime();
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+  win.emitWebContents("did-finish-load");
+  win.webContentsSends = [];
+
+  runtime.open({ tabId: "music-aura" });
+
+  assert.deepStrictEqual(win.webContentsSends, [
+    { channel: "settings:select-tab", payload: { tabId: "music-aura" } },
   ]);
 });
 

@@ -30,6 +30,8 @@ const remoteSshProgressListeners = new Set();
 const hardwareBuddyStatusListeners = new Set();
 const remoteApprovalStatusListeners = new Set();
 const textScaleContextListeners = new Set();
+const musicAuraRuntimeListeners = new Set();
+const selectTabListeners = new Set();
 ipcRenderer.on("settings-changed", (_event, payload) => {
   for (const cb of listeners) {
     try { cb(payload); } catch (err) { console.warn("settings onChanged listener threw:", err); }
@@ -71,6 +73,16 @@ ipcRenderer.on("remoteApproval:status-changed", (_event, payload) => {
 ipcRenderer.on("settings:text-scale-context-changed", () => {
   for (const cb of textScaleContextListeners) {
     try { cb(); } catch (err) { console.warn("text scale context listener threw:", err); }
+  }
+});
+ipcRenderer.on("musicAura:runtime-changed", (_event, payload) => {
+  for (const cb of musicAuraRuntimeListeners) {
+    try { cb(payload); } catch (err) { console.warn("music aura runtime listener threw:", err); }
+  }
+});
+ipcRenderer.on("settings:select-tab", (_event, payload) => {
+  for (const cb of selectTabListeners) {
+    try { cb(payload); } catch (err) { console.warn("settings select-tab listener threw:", err); }
   }
 });
 
@@ -125,6 +137,20 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   getMobileConnectionInfo: () => ipcRenderer.invoke("settings:mobile-connection-info"),
   regenerateMobileToken: () => ipcRenderer.invoke("settings:regenerate-mobile-token"),
   resetMobileAccess: () => ipcRenderer.invoke("settings:reset-mobile-access"),
+  chooseMusicAuraDirectory: () => ipcRenderer.invoke("musicAura:choose-directory"),
+  scanMusicAuraLibrary: () => ipcRenderer.invoke("musicAura:scan-library"),
+  getMusicAuraRuntime: () => ipcRenderer.invoke("musicAura:get-runtime"),
+  sendMusicAuraCommand: (payload) => ipcRenderer.invoke("musicAura:command", payload || {}),
+  onMusicAuraRuntimeChanged: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    musicAuraRuntimeListeners.add(cb);
+    return () => musicAuraRuntimeListeners.delete(cb);
+  },
+  onSelectTab: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    selectTabListeners.add(cb);
+    return () => selectTabListeners.delete(cb);
+  },
   onChanged: (cb) => {
     if (typeof cb === "function") listeners.add(cb);
   },

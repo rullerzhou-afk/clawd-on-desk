@@ -31,6 +31,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   onPlaySound: (cb) => ipcRenderer.on("play-sound", (_, payload) => cb(payload)),
   onInvalidateSoundCache: (cb) => ipcRenderer.on("invalidate-sound-cache", (_, url) => cb(url)),
   reportSoundPlaybackError: (payload) => ipcRenderer.send("sound-playback-error", payload),
+  getMusicAuraBootstrap: () => ipcRenderer.invoke("music-aura:get-bootstrap"),
+  onMusicAuraSettings: (cb) => ipcRenderer.on("music-aura-settings", (_, payload) => cb(payload)),
+  onMusicAuraLibrary: (cb) => ipcRenderer.on("music-aura-library", (_, payload) => cb(payload)),
+  onMusicAuraCommand: (cb) => ipcRenderer.on("music-aura-command", (_, payload) => cb(payload)),
+  reportMusicAuraStatus: (payload) => ipcRenderer.send("music-aura-status", payload || {}),
   // Render window → main (cursor polling control during reactions)
   pauseCursorPolling: () => ipcRenderer.send("pause-cursor-polling"),
   resumeFromReaction: () => ipcRenderer.send("resume-from-reaction"),

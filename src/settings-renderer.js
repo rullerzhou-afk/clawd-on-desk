@@ -11,6 +11,7 @@ const SIDEBAR_TABS = [
   { id: "theme", labelKey: "sidebarTheme", available: true },
   { id: "animOverrides", labelKey: "sidebarAnimOverrides", available: true },
   { id: "shortcuts", labelKey: "sidebarShortcuts", available: true },
+  { id: "music-aura", labelKey: "sidebarMusicAura", available: true },
   { id: "telegram-approval", labelKey: "sidebarTelegramApproval", available: true },
   { id: "remote-ssh", labelKey: "sidebarRemoteSsh", available: true },
   { id: "mobile", labelKey: "sidebarMobile", available: true },
@@ -93,6 +94,7 @@ if (globalThis.ClawdSettingsTabTelegramApproval) globalThis.ClawdSettingsTabTele
 globalThis.ClawdSettingsTabAbout.init(core);
 if (globalThis.ClawdSettingsTabRemoteSsh) globalThis.ClawdSettingsTabRemoteSsh.init(core);
 if (globalThis.ClawdSettingsTabMobile) globalThis.ClawdSettingsTabMobile.init(core);
+if (globalThis.ClawdSettingsTabMusicAura) globalThis.ClawdSettingsTabMusicAura.init(core);
 
 if (window.settingsAPI && typeof window.settingsAPI.onChanged === "function") {
   window.settingsAPI.onChanged((payload) => core.ops.applyChanges(payload));
@@ -116,6 +118,13 @@ if (window.settingsAPI && typeof window.settingsAPI.onRemoteApprovalStatusChange
     if (tab && typeof tab.refreshRuntimeStatus === "function") {
       tab.refreshRuntimeStatus(payload);
     }
+  });
+}
+
+if (window.settingsAPI && typeof window.settingsAPI.onSelectTab === "function") {
+  window.settingsAPI.onSelectTab((payload) => {
+    const tabId = payload && payload.tabId;
+    if (typeof tabId === "string" && core.tabs[tabId]) core.ops.selectTab(tabId);
   });
 }
 
