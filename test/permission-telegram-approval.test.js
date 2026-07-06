@@ -563,6 +563,41 @@ describe("permission telegram remote approval", () => {
     assert.equal(res.destroyed, false);
   });
 
+  it("treats an unusable suggestion decision as settled-without-decision for remote-only entries", async () => {
+    // "suggestion:9" passes the isRemoteApprovalDecision shape check, but the
+    // entry has no suggestion at that index — handleRemoteApprovalDecision
+    // can't apply it. For a remote-only entry that must still count toward the
+    // fallback, or the hook connection would hang until its own timeout.
+    const client = {
+      isEnabled: () => true,
+      requestApproval: () => Promise.resolve("suggestion:9"),
+    };
+    const perm = initPermission(makeCtx({ getTelegramApprovalClient: () => client }));
+    const res = createMockResponse();
+    const entry = makePermEntry({ res, bubble: null, remoteOnly: true, suggestions: [] });
+    perm.pendingPermissions.push(entry);
+    assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    await flush();
+    assert.equal(perm.pendingPermissions.length, 0);
+    assert.equal(res.destroyed, true);
+    assert.equal(res.captured.body, "");
+  });
+
+  it("keeps bubble-having entries pending on an unusable suggestion decision", async () => {
+    const client = {
+      isEnabled: () => true,
+      requestApproval: () => Promise.resolve("suggestion:9"),
+    };
+    const perm = initPermission(makeCtx({ getTelegramApprovalClient: () => client }));
+    const res = createMockResponse();
+    const entry = makePermEntry({ res, bubble: { isDestroyed: () => true }, suggestions: [] });
+    perm.pendingPermissions.push(entry);
+    assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    await flush();
+    assert.equal(perm.pendingPermissions.length, 1);
+    assert.equal(res.destroyed, false);
+  });
+
   it("does not send a Telegram card for headless sessions", () => {
     const requests = [];
     const client = {

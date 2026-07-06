@@ -299,7 +299,11 @@ function tryRemoteOnlyApproval(ctx, fields) {
   const abortHandler = () => {
     if (res.writableFinished) return;
     ctx.permLog("abortHandler fired (remote-only, bubbles disabled)");
-    ctx.resolvePermissionEntry(permEntry, "deny", "Client disconnected");
+    // no-decision, not deny: the agent went away (timeout/exit) — nobody
+    // denied anything. The socket is already closed so no response is sent
+    // either way; this only keeps the remote-card status line honest
+    // ("no decision" instead of "denied") when the card is cancelled.
+    ctx.resolvePermissionEntry(permEntry, "no-decision", "Client disconnected");
   };
   permEntry.abortHandler = abortHandler;
   res.on("close", abortHandler);

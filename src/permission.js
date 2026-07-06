@@ -1297,7 +1297,13 @@ function maybeStartRemoteApproval(permEntry) {
           maybeFallBackRemoteOnlyEntry();
           return;
         }
-        handleRemoteApprovalDecision(permEntry, decision, name);
+        // A decision can pass the shape check above yet still be unusable
+        // (e.g. "suggestion:9" for an entry with no such suggestion). That is
+        // just as settled-without-a-decision as an invalid payload.
+        if (handleRemoteApprovalDecision(permEntry, decision, name) === false) {
+          settledWithoutDecision += 1;
+          maybeFallBackRemoteOnlyEntry();
+        }
       })
       .catch((err) => {
         permLog(`${name} remote approval failed: ${compactRemoteApprovalText(err && err.message ? err.message : err, 200)}`);
@@ -1351,8 +1357,13 @@ function setRemoteResolutionOutcome(permEntry, outcome, sourceName) {
   permEntry.remoteApprovalSkipClientName = sourceName || "";
 }
 
+// Returns false only when the decision passed isRemoteApprovalDecision but
+// could not actually be applied (an invalid suggestion index) and the entry is
+// still pending — the caller counts that as "settled without a decision" so a
+// remote-only entry can still fall back instead of hanging until the hook's
+// timeout. Every consumed/already-resolved path returns true.
 function handleRemoteApprovalDecision(permEntry, decision, sourceName) {
-  if (pendingPermissions.indexOf(permEntry) === -1) return;
+  if (pendingPermissions.indexOf(permEntry) === -1) return true;
   const source = remoteDecisionSource(sourceName);
   const normalizedLegacy = normalizeRemoteApprovalDecision(decision);
   if (normalizedLegacy) {
@@ -1375,10 +1386,10 @@ function handleRemoteApprovalDecision(permEntry, decision, sourceName) {
         // what "go to terminal" means here.
         resolvePermissionEntry(permEntry, "no-decision", "Go to terminal from remote approval");
         ctx.focusTerminalForSession(permEntry.sessionId, { fallbackEntry: buildPermissionFocusEntry(permEntry) });
-        return;
+        return true;
       }
       resolvePermissionEntry(permEntry, "deny", "User answered in terminal");
-      return;
+      return true;
     }
     if (permEntry.isCodex || permEntry.isQwenCode || permEntry.isAntigravity) {
       resolvePermissionEntry(permEntry, "no-decision", "Go to terminal from remote approval");
@@ -1386,7 +1397,7 @@ function handleRemoteApprovalDecision(permEntry, decision, sourceName) {
     } else {
       dismissPermissionForTerminal(permEntry);
     }
-    return;
+    return true;
   }
 
   if (permEntry.isElicitation && decision && typeof decision === "object" && decision.type === "elicitation-submit") {
@@ -1397,14 +1408,14 @@ function handleRemoteApprovalDecision(permEntry, decision, sourceName) {
       source,
     }, sourceName);
     resolvePermissionEntry(permEntry, "allow");
-    return;
+    return true;
   }
 
   if (typeof decision === "string" && decision.startsWith("suggestion:")) {
     const label = applyRemotePermissionSuggestion(permEntry, decision);
     if (!label) {
       permLog(`${sourceName || "remote"} remote approval ignored invalid suggestion decision=${compactRemoteApprovalText(decision, 40)}`);
-      return;
+      return false;
     }
     setRemoteResolutionOutcome(permEntry, {
       decision,
@@ -1412,7 +1423,7 @@ function handleRemoteApprovalDecision(permEntry, decision, sourceName) {
       source,
     }, sourceName);
     resolvePermissionEntry(permEntry, "allow");
-    return;
+    return true;
   }
 
   setRemoteResolutionOutcome(permEntry, {
@@ -1421,6 +1432,7 @@ function handleRemoteApprovalDecision(permEntry, decision, sourceName) {
     source,
   }, sourceName);
   resolvePermissionEntry(permEntry, decision);
+  return true;
 }
 
 function applyPermissionSuggestion(perm, index, options = {}) {
