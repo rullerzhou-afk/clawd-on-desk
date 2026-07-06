@@ -84,7 +84,10 @@ describe("Qoder hook installer", () => {
     }
   });
 
-  it("wraps the Windows command as PowerShell -EncodedCommand", () => {
+  // Qoder CLI executes command hooks through Git Bash on Windows (#597), so
+  // the command must be the bash/cmd-portable form, never -EncodedCommand
+  // (bash eats the unquoted backslash powershell.exe path → exit 127).
+  it("writes the portable bash/cmd form on Windows (space in node path → bare node)", () => {
     const settingsPath = makeTempSettingsFile({});
     registerQoderHooks({
       silent: true,
@@ -95,11 +98,54 @@ describe("Qoder hook installer", () => {
 
     const settings = readJson(settingsPath);
     const command = settings.hooks.Stop[0].hooks[0].command;
-    assert.match(command, /-EncodedCommand/);
-    const payload = commandPayload(command);
-    assert.ok(payload.includes(MARKER), payload);
-    assert.ok(payload.includes("node.exe"), payload);
-    assert.ok(payload.endsWith("'Stop'"), payload);
+    assert.doesNotMatch(command, /-EncodedCommand/);
+    assert.doesNotMatch(command, /\\/); // no backslashes anywhere — bash would eat them
+    // "C:\Program Files\..." contains a space, so the interpreter token falls
+    // back to a bare PATH lookup.
+    assert.ok(command.startsWith('node "'), command);
+    assert.ok(command.includes(MARKER), command);
+    assert.ok(command.endsWith('"Stop"'), command);
+  });
+
+  it("keeps an unquoted forward-slash node token when the path needs no quoting", () => {
+    const settingsPath = makeTempSettingsFile({});
+    registerQoderHooks({
+      silent: true,
+      settingsPath,
+      nodeBin: "C:\\nodejs\\node.exe",
+      platform: "win32",
+    });
+
+    const command = readJson(settingsPath).hooks.Stop[0].hooks[0].command;
+    assert.ok(command.startsWith('C:/nodejs/node.exe "'), command);
+    assert.ok(command.endsWith('"Stop"'), command);
+  });
+
+  it("migrates a legacy Windows -EncodedCommand entry to the portable form", () => {
+    const { buildWindowsEncodedNodeHookCommand } = require("../hooks/json-utils");
+    const legacy = buildWindowsEncodedNodeHookCommand(
+      "C:\\Program Files\\nodejs\\node.exe",
+      "D:/app/hooks/qoder-hook.js",
+      ["Stop"],
+    );
+    const settingsPath = makeTempSettingsFile({
+      hooks: { Stop: [{ matcher: "*", hooks: [{ name: "clawd", type: "command", command: legacy }] }] },
+    });
+
+    const result = registerQoderHooks({
+      silent: true,
+      settingsPath,
+      nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+      platform: "win32",
+    });
+    assert.ok(result.updated >= 1, JSON.stringify(result));
+
+    const stop = readJson(settingsPath).hooks.Stop;
+    assert.strictEqual(stop.length, 1);
+    const command = stop[0].hooks[0].command;
+    assert.doesNotMatch(command, /-EncodedCommand/);
+    assert.ok(command.startsWith('node "'), command);
+    assert.ok(command.endsWith('"Stop"'), command);
   });
 
   it("is idempotent on second run", () => {
@@ -164,12 +210,21 @@ describe("Qoder hook installer", () => {
     assert.strictEqual(fs.existsSync(path.join(fakeHome, ".qoder", "settings.json")), false);
   });
 
-  it("uninstall removes only clawd entries (incl. Windows-encoded) and keeps third-party", () => {
+  it("uninstall removes only clawd entries (incl. legacy Windows-encoded) and keeps third-party", () => {
+    const { buildWindowsEncodedNodeHookCommand } = require("../hooks/json-utils");
     const settingsPath = makeTempSettingsFile({});
-    // Install in the Windows-encoded form so uninstall must decode to detect the marker.
     registerQoderHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node", platform: "win32" });
 
     let settings = readJson(settingsPath);
+    // Seed one legacy encoded entry so uninstall must decode to detect the marker.
+    settings.hooks.Stop.push({
+      matcher: "*",
+      hooks: [{
+        name: "clawd",
+        type: "command",
+        command: buildWindowsEncodedNodeHookCommand("C:\\nodejs\\node.exe", "D:/app/hooks/qoder-hook.js", ["Stop"]),
+      }],
+    });
     settings.hooks.SessionStart.unshift({
       matcher: "*",
       hooks: [{ type: "command", command: "other-tool --flag", name: "other" }],

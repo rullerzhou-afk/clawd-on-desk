@@ -812,13 +812,36 @@ describe("checkAgentIntegrations", () => {
     assert.ok(seen.every((command) => command.includes("qoder-hook.js")));
   });
 
-  it("detects Windows EncodedCommand Qoder hooks even though the marker is base64-wrapped", () => {
+  it("detects portable Windows Qoder hooks (bash-safe form, marker in plain text)", () => {
     const descriptor = qoderDescriptor();
     const nodeBin = "C:\\Program Files\\nodejs\\node.exe";
     const scriptPath = "D:/app/hooks/qoder-hook.js";
     writeJson(descriptor.configPath, { hooks: qoderHooksConfig((event) =>
-      buildQoderHookCommand(nodeBin, scriptPath, event, {
-        platform: "win32",
+      buildQoderHookCommand(nodeBin, scriptPath, event, { platform: "win32" })
+    ) });
+
+    const seen = [];
+    const detail = runOne(descriptor, {
+      validateCommand: (command) => {
+        seen.push(command);
+        // Portable form keeps the marker in plain text and no backslashes.
+        assert.strictEqual(command.includes("qoder-hook.js"), true);
+        assert.strictEqual(command.includes("\\"), false);
+        return { ok: true, nodeBin, scriptPath };
+      },
+    });
+
+    assert.strictEqual(detail.status, "ok");
+    assert.strictEqual(detail.commandCount, QODER_HOOK_EVENTS.length);
+  });
+
+  it("detects legacy Windows EncodedCommand Qoder hooks even though the marker is base64-wrapped", () => {
+    const { buildWindowsEncodedNodeHookCommand } = require("../hooks/json-utils");
+    const descriptor = qoderDescriptor();
+    const nodeBin = "C:\\Program Files\\nodejs\\node.exe";
+    const scriptPath = "D:/app/hooks/qoder-hook.js";
+    writeJson(descriptor.configPath, { hooks: qoderHooksConfig((event) =>
+      buildWindowsEncodedNodeHookCommand(nodeBin, scriptPath, [event], {
         powerShellBin: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
       })
     ) });
