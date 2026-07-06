@@ -272,3 +272,24 @@ test("getRendererConfig reports hasRoamVisual only for a dedicated roam binding"
     fixture.cleanup();
   }
 });
+
+test("getRendererConfig passes roamFlipAssets through for left-facing roam art", () => {
+  const fixture = makeRoot();
+  try {
+    // Default: roam art is assumed right-facing, no inversion.
+    const ctxDefault = createThemeContext(makeTheme({
+      states: { idle: ["idle.svg"], roam: ["crabwalk.svg"] },
+    }), fixture);
+    assert.strictEqual(ctxDefault.getRendererConfig().roamFlipAssets, false);
+
+    // Theme declares its roam asset drawn facing left (e.g. calico) — the
+    // renderer inverts the heading mirror.
+    const ctxFlipped = createThemeContext(makeTheme({
+      roamFlipAssets: true,
+      states: { idle: ["idle.svg"], roam: ["crabwalk.apng"] },
+    }), fixture);
+    assert.strictEqual(ctxFlipped.getRendererConfig().roamFlipAssets, true);
+  } finally {
+    fixture.cleanup();
+  }
+});

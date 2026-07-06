@@ -70,9 +70,13 @@
       }
     }
   },
+  "roamFlipAssets": true,
   "states": {
     "idle": [
       "calico-idle-follow.svg"
+    ],
+    "roam": [
+      "calico-mini-crabwalk.apng"
     ],
     "yawning": [
       "calico-yawning.apng"

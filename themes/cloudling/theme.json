@@ -104,6 +104,9 @@
     "idle": [
       "cloudling-idle.svg"
     ],
+    "roam": [
+      "cloudling-mini-crabwalk.svg"
+    ],
     "yawning": [
       "cloudling-idle-to-dozing.svg"
     ],

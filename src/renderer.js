@@ -74,6 +74,7 @@ function initWithConfig(cfg) {
   _transitions = tc.transitions || {};
   _miniFlipAssets = !!tc.miniFlipAssets;
   _hasRoamVisual = !!tc.hasRoamVisual;
+  _roamFlipAssets = !!tc.roamFlipAssets;
 
   applyObjectScaleStyle(clawdEl, getObjectSvgName(clawdEl), null);
   applyObjectScaleStyle(pendingNext, getObjectSvgName(pendingNext), null);
@@ -378,6 +379,7 @@ let _fileOffsets = {};
 let _transitions = {};  // per-file fade config: { "file.apng": { in: 400, out: 400 } }
 let _miniFlipAssets = false; // theme's mini assets drawn in reverse direction
 let _hasRoamVisual = false;  // theme binds a dedicated roam visual (≠ idle)
+let _roamFlipAssets = false; // theme's roam visual is drawn facing left, not right
 let _roamHeadingLeft = false; // current walk direction; roam visuals are drawn facing right
 let _inMiniMode = false;
 let _miniPreEntryMode = false;
@@ -396,12 +398,16 @@ function setViewportOffset(offsetY) {
 function shouldApplyMiniAssetFlip(state) {
   // Free roam: the dedicated roam visual is drawn facing right; mirror it
   // while the walk heads left (heading pushed from main via roam-heading).
-  if (state === "roam") return _hasRoamVisual && _roamHeadingLeft;
+  // Themes whose roam asset faces left (roamFlipAssets) invert the mirror.
+  if (state === "roam") return _hasRoamVisual && (_roamHeadingLeft !== _roamFlipAssets);
   return _miniFlipAssets && (_inMiniMode || (_miniPreEntryMode && state === "mini-crabwalk"));
 }
 
 function applyMiniFlip(el, state = currentState) {
-  if (!el || el.tagName !== "IMG") return;
+  // OBJECT included: scripted roam SVGs (e.g. cloudling's crabwalk) render on
+  // the object channel; scaleX(-1) has el.style.transform to itself — the
+  // scale/layout helpers only write width/left/bottom.
+  if (!el || (el.tagName !== "IMG" && el.tagName !== "OBJECT")) return;
   el.style.transform = shouldApplyMiniAssetFlip(state) ? "scaleX(-1)" : "";
 }
 
@@ -839,6 +845,7 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
     next.id = "clawd";
     next.style.opacity = "0";
     applyObjectScaleStyle(next, file, state);
+    applyMiniFlip(next, state);
     let swapCallbackSettled = false;
     const finishSwapReady = () => {
       if (swapCallbackSettled) return;

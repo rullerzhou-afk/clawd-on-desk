@@ -173,6 +173,22 @@ These are common optional states you can add when you want distinct visuals for 
 | `sweeping` | Context compaction | |
 | `carrying` | Worktree creation | |
 | `juggling` | Subagent active | Declare this and/or `jugglingTiers` if you want a distinct juggling visual |
+| `roam` | Free roam walk | Bind a dedicated walk visual; see Free Roam Walk Visual below |
+
+### Free Roam Walk Visual
+
+While free roam moves the pet across the screen, themes without a `roam` binding show the idle visual with a synthetic walking bob. Bind a dedicated walk visual to replace it:
+
+```json
+"states": {
+  "roam": ["my-theme-walk.apng"]
+}
+```
+
+- Any playback format works (SVG with CSS/SMIL animations, GIF, APNG, WebP)
+- Draw the walk art **facing right** — the renderer mirrors it automatically while the pet walks left
+- If your art faces left instead, declare a top-level `"roamFlipAssets": true` to invert the mirror
+- Without a `roam` binding nothing breaks: the pet keeps the idle-visual-plus-bob fallback
 
 ### Optional Update Visuals
 

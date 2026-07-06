@@ -641,6 +641,11 @@ function mergeDefaults(raw, themeId, isBuiltin) {
 
   theme.sleepSequence = { mode: deriveSleepMode(raw) };
 
+  // Roam visuals are mirrored while walking left, assuming right-facing
+  // artwork; themes whose roam asset is drawn facing left set this to invert
+  // the mirror. Pure rendering flag — safe for external themes.
+  theme.roamFlipAssets = !!raw.roamFlipAssets;
+
   // miniMode
   if (raw.miniMode) {
     theme.miniMode = {

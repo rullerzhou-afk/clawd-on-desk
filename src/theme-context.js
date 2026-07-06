@@ -74,6 +74,7 @@ function createThemeContext(theme, options = {}) {
       eyeTracking: theme.eyeTracking,
       glyphFlips: theme.miniMode ? theme.miniMode.glyphFlips : {},
       miniFlipAssets: theme.miniMode ? !!theme.miniMode.flipAssets : false,
+      roamFlipAssets: !!theme.roamFlipAssets,
       dragSvg: theme.reactions && theme.reactions.drag ? theme.reactions.drag.file : null,
       dragSvgs: theme.reactions && theme.reactions.drag ? {
         left: theme.reactions.drag.fileLeft || null,
