@@ -626,6 +626,12 @@ describe("server-route-permission POST", () => {
   });
 
   it("keeps the per-agent gate authoritative over remote-only routing when both toggles are off", async () => {
+    // Recording stub, NOT a throwing one: tryRemoteOnlyApproval swallows
+    // exceptions from maybeStartRemoteApproval (started=false → destroy), so a
+    // throw here would leave every assertion below green even if the gate were
+    // bypassed. Returning true makes a bypass keep the connection open, which
+    // res.destroyed then catches — and the call log catches it directly.
+    const remoteCalls = [];
     const res = await callPermissionPost(JSON.stringify({
       agent_id: "claude-code",
       session_id: "sid",
@@ -638,12 +644,14 @@ describe("server-route-permission POST", () => {
         // agent entirely — its requests must never reach a remote channel,
         // even though the global bubble toggle alone would route there.
         isAgentPermissionsEnabled: () => false,
-        maybeStartRemoteApproval: () => {
-          throw new Error("per-agent gate must keep remote approval out of the loop");
+        maybeStartRemoteApproval: (entry) => {
+          remoteCalls.push(entry);
+          return true;
         },
       },
     });
 
+    assert.deepStrictEqual(remoteCalls, []);
     assert.strictEqual(res.destroyed, true);
     assert.deepStrictEqual(res.ctx.pendingPermissions, []);
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
