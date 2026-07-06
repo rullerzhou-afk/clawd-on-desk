@@ -1246,7 +1246,10 @@ function maybeStartRemoteApproval(permEntry) {
   // every remote client settles without ever producing one (send failure,
   // invalid payload, client disconnect), the entry would otherwise sit in
   // pendingPermissions holding the HTTP connection open until the hook's own
-  // timeout. Track settlements and fall back to a deny once none are left.
+  // timeout. Track settlements and fall back once none are left. The fallback
+  // is "no-decision" (drop the socket → the agent re-prompts in its own UI),
+  // NOT an explicit deny: nobody actually said no — answering deny here would
+  // decide on the user's behalf over a transient Telegram/Feishu failure.
   let settledWithoutDecision = 0;
 
   function maybeFallBackRemoteOnlyEntry() {
@@ -1254,7 +1257,7 @@ function maybeStartRemoteApproval(permEntry) {
     if (settledWithoutDecision < remoteRequests.length) return;
     if (pendingPermissions.indexOf(permEntry) === -1) return;
     permLog(`remote-only approval: all remote requests settled without a decision, falling back (tool=${permEntry.toolName} session=${permEntry.sessionId})`);
-    resolvePermissionEntry(permEntry, "deny", "Remote approval unavailable; no client returned a decision");
+    resolvePermissionEntry(permEntry, "no-decision", "Remote approval unavailable; no client returned a decision");
   }
 
   for (const { name, client } of clients) {

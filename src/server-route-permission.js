@@ -304,7 +304,6 @@ function tryRemoteOnlyApproval(ctx, fields) {
   permEntry.abortHandler = abortHandler;
   res.on("close", abortHandler);
   addPendingPermission(ctx, permEntry);
-  ctx.updateSession(fields.sessionId, "notification", "PermissionRequest", { agentId: fields.agentId });
 
   let started = false;
   if (typeof ctx.maybeStartRemoteApproval === "function") {
@@ -322,6 +321,11 @@ function tryRemoteOnlyApproval(ctx, fields) {
     return false;
   }
 
+  // Only after a remote client actually took the request: a card is on its
+  // way, so the pet's PermissionRequest notification animation has something
+  // to announce. Playing it before the `started` check meant a no-op flash
+  // when Telegram wasn't available and the caller fell back to res.destroy().
+  ctx.updateSession(fields.sessionId, "notification", "PermissionRequest", { agentId: fields.agentId });
   if (typeof ctx.syncPermissionShortcuts === "function") {
     try { ctx.syncPermissionShortcuts(); } catch {}
   }
@@ -1105,9 +1109,12 @@ function handlePermissionPost(req, res, options) {
         // "Permission bubbles disabled" (the global/local toggle) only means
         // no desktop window — it must not also drop Telegram remote approval.
         // "<agent> bubbles disabled" is the per-agent gate (isAgentPermissionsEnabled),
-        // a stronger opt-out that keeps Clawd fully out of that agent's loop,
-        // so it still falls straight back to the native chat prompt.
-        if (!arePermissionBubblesEnabled(ctx)) {
+        // a stronger opt-out that keeps Clawd fully out of that agent's loop —
+        // including remote channels — so it is checked first and falls straight
+        // back to the native chat prompt even when the global toggle is also off.
+        const agentGateOff = typeof ctx.isAgentPermissionsEnabled === "function"
+          && !ctx.isAgentPermissionsEnabled(permAgentId);
+        if (!agentGateOff && !arePermissionBubblesEnabled(ctx)) {
           const started = tryRemoteOnlyApproval(ctx, {
             res, sessionId, toolName, toolInput, toolUseId, toolInputFingerprint,
             agentId: permAgentId, subagentId, subagentType, suggestions,
@@ -1117,7 +1124,8 @@ function handlePermissionPost(req, res, options) {
           res.destroy();
           return;
         }
-        ctx.permLog(`${permAgentId} bubbles disabled → destroy connection, chat fallback (tool=${toolName})`);
+        const reason = agentGateOff ? `${permAgentId} bubbles disabled` : "permission bubbles disabled";
+        ctx.permLog(`${reason} → destroy connection, chat fallback (tool=${toolName})`);
         res.destroy();
         return;
       }

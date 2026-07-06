@@ -524,6 +524,45 @@ describe("permission telegram remote approval", () => {
     assert.match(requests[0].detail, /No description available/);
   });
 
+  it("falls back to no-decision when a remote-only entry's requests all settle without a decision", async () => {
+    const client = {
+      isEnabled: () => true,
+      requestApproval: () => Promise.reject(new Error("telegram send failed")),
+    };
+    const perm = initPermission(makeCtx({ getTelegramApprovalClient: () => client }));
+    const res = createMockResponse();
+    // bubble === null + remoteOnly: the tryRemoteOnlyApproval shape — no
+    // desktop UI exists to answer this entry if Telegram never comes back.
+    const entry = makePermEntry({ res, bubble: null, remoteOnly: true });
+    perm.pendingPermissions.push(entry);
+    assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    await flush();
+    // The entry must not linger holding the hook connection open...
+    assert.equal(perm.pendingPermissions.length, 0);
+    // ...and the fallback is a dropped socket (the agent re-prompts in its
+    // own UI), never an explicit deny answered on the user's behalf.
+    assert.equal(res.destroyed, true);
+    assert.equal(res.captured.statusCode, null);
+    assert.equal(res.captured.body, "");
+  });
+
+  it("leaves entries with a desktop bubble pending when remote requests settle without a decision", async () => {
+    const client = {
+      isEnabled: () => true,
+      requestApproval: () => Promise.reject(new Error("telegram send failed")),
+    };
+    const perm = initPermission(makeCtx({ getTelegramApprovalClient: () => client }));
+    const res = createMockResponse();
+    // A visible bubble is still on screen — a Telegram send failure must not
+    // tear it down; the user answers on the desktop.
+    const entry = makePermEntry({ res, bubble: { isDestroyed: () => true } });
+    perm.pendingPermissions.push(entry);
+    assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    await flush();
+    assert.equal(perm.pendingPermissions.length, 1);
+    assert.equal(res.destroyed, false);
+  });
+
   it("does not send a Telegram card for headless sessions", () => {
     const requests = [];
     const client = {
