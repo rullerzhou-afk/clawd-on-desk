@@ -510,8 +510,16 @@ async function refreshWslDetection(options = {}) {
         const escaped = c.wslParentDir.replace(/'/g, "'\\''");
         return `test -d '${escaped}' && echo "OK ${i}" || echo "NO ${i}"`;
       });
-      const deployedProbe = `${wslHome.replace(/\/$/, "")}/.claude/hooks/clawd-hook.js`;
-      batchLines.push(`test -f '${deployedProbe.replace(/'/g, "'\\''")}' && echo "DEP 1" || echo "DEP 0"`);
+      // DEP probes whether Clawd hooks are genuinely active: the hook script
+      // must exist AND settings.json must reference it. File-only checks give
+      // false positives after Unpair — removeFromWsl runs the uninstall script
+      // (which clears settings.json) but keeps shared hook files on disk.
+      const deployedFile = `${wslHome.replace(/\/$/, "")}/.claude/hooks/clawd-hook.js`;
+      const deployedFileEscaped = deployedFile.replace(/'/g, "'\\''");
+      const settingsPathEscaped = `${wslHome.replace(/\/$/, "")}/.claude/settings.json`.replace(/'/g, "'\\''");
+      batchLines.push(
+        `test -f '${deployedFileEscaped}' && grep -q clawd-hook.js '${settingsPathEscaped}' 2>/dev/null && echo "DEP 1" || echo "DEP 0"`
+      );
       const batchResult = await execInWsl(
         distro.name,
         batchLines.join("; "),
