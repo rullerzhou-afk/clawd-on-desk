@@ -1305,6 +1305,7 @@ async function registerHooksAsync(options = {}) {
 
 function unregisterHooks(options = {}) {
   const settingsPath = options.settingsPath || path.join(os.homedir(), ".claude", "settings.json");
+  const writePath = resolveWritePath(settingsPath);
   let settings = {};
   try {
     settings = readJsonFile(settingsPath);
@@ -1343,7 +1344,7 @@ function unregisterHooks(options = {}) {
 
   let backupPath = null;
   if (changed) {
-    backupPath = writeJsonAtomicWithBackup(settingsPath, settings, options);
+    backupPath = writeJsonAtomicWithBackup(writePath, settings, options);
   }
 
   const result = { removed, changed };
@@ -1353,6 +1354,7 @@ function unregisterHooks(options = {}) {
 
 async function unregisterHooksAsync(options = {}) {
   const settingsPath = options.settingsPath || path.join(os.homedir(), ".claude", "settings.json");
+  const writePath = resolveWritePath(settingsPath);
   let settings = {};
   try {
     settings = await readJsonFileAsync(settingsPath);
@@ -1391,7 +1393,7 @@ async function unregisterHooksAsync(options = {}) {
 
   let backupPath = null;
   if (changed) {
-    backupPath = await writeJsonAtomicWithBackupAsync(settingsPath, settings, options);
+    backupPath = await writeJsonAtomicWithBackupAsync(writePath, settings, options);
   }
 
   const result = { removed, changed };
@@ -1406,6 +1408,7 @@ async function unregisterHooksAsync(options = {}) {
  */
 function unregisterAutoStart() {
   const settingsPath = path.join(os.homedir(), ".claude", "settings.json");
+  const writePath = resolveWritePath(settingsPath);
   let settings;
   try {
     settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
@@ -1433,7 +1436,7 @@ function unregisterAutoStart() {
   });
 
   if (settings.hooks.SessionStart.length < before) {
-    writeJsonAtomic(settingsPath, settings);
+    writeJsonAtomic(writePath, settings);
     return true;
   }
   return false;
@@ -1477,6 +1480,7 @@ function hasClaudeSettingsDir(homeDir) {
 function registerClaudeStatusline(options = {}) {
   const homeDir = options.homeDir || os.homedir();
   const settingsPath = options.settingsPath || path.join(homeDir, ".claude", "settings.json");
+  const writePath = resolveWritePath(settingsPath);
 
   if (!options.settingsPath && !hasClaudeSettingsDir(homeDir)) {
     if (!options.silent) console.log("Clawd: Claude Code settings not found - skipping statusline registration");
@@ -1512,7 +1516,7 @@ function registerClaudeStatusline(options = {}) {
   const changed = !existing || JSON.stringify(existing) !== JSON.stringify(desired);
   if (changed) {
     settings.statusLine = desired;
-    writeJsonAtomic(settingsPath, settings);
+    writeJsonAtomic(writePath, settings);
   }
 
   if (!options.silent) {
@@ -1525,6 +1529,7 @@ function registerClaudeStatusline(options = {}) {
 function unregisterClaudeStatusline(options = {}) {
   const homeDir = options.homeDir || os.homedir();
   const settingsPath = options.settingsPath || path.join(homeDir, ".claude", "settings.json");
+  const writePath = resolveWritePath(settingsPath);
   let settings = {};
   try {
     settings = readJsonFile(settingsPath);
@@ -1541,7 +1546,7 @@ function unregisterClaudeStatusline(options = {}) {
   }
 
   delete settings.statusLine;
-  const backupPath = writeJsonAtomicWithBackup(settingsPath, settings, options);
+  const backupPath = writeJsonAtomicWithBackup(writePath, settings, options);
   if (!options.silent) console.log(`Clawd Claude Code statusline removed -> ${settingsPath}`);
   const result = { installed: true, removed: 1, changed: true, settingsPath };
   if (options.backup === true) result.backupPath = backupPath;
