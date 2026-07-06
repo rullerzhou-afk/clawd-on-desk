@@ -766,9 +766,11 @@
     label.textContent = `WSL: ${wslEntry.distro}`;
     text.appendChild(label);
 
-    // Distro-level marker: Clawd hook files are present in this distro.
+    // Distro-level marker: hook files are present AND claude-code's
+    // settings.json references them (hooksDeployed = DEPFILE && DEPREG).
     // Not per-agent pairing truth — that would require inspecting each
-    // agent's config inside WSL — but enough to show Pair took effect.
+    // agent's config inside WSL — but enough to show Pair took effect and
+    // to go dark after a claude-code Unpair.
     if (wslEntry.hooksDeployed) {
       const deployed = document.createElement("span");
       deployed.className = "agent-instance-deployed";
@@ -832,9 +834,13 @@
     });
     ctrl.appendChild(button);
 
-    // Unpair — only meaningful once hooks are deployed. Runs the agent's
-    // uninstall inside the distro; hook files stay (shared by other agents).
-    if (wslEntry.hooksDeployed) {
+    // Unpair — offered whenever hook FILES are present (hooksFilesPresent),
+    // not gated on the registration-based badge (hooksDeployed): a distro
+    // paired with only a non-claude agent registers in that agent's own
+    // config, so the claude-settings badge is off, yet the user still needs
+    // an unpair entry point. Runs the agent's uninstall inside the distro;
+    // hook files stay (shared by other agents).
+    if (wslEntry.hooksFilesPresent) {
       const unpairBtn = document.createElement("button");
       unpairBtn.className = "soft-btn agent-instance-action";
       unpairBtn.textContent = t("agentInstanceUnpair");

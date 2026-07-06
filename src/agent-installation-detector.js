@@ -506,23 +506,33 @@ async function refreshWslDetection(options = {}) {
       if (checks.length === 0) continue;
 
       // Batch all dir-exists checks into a single wsl.exe spawn.
-      // Each line emits "OK N" or "NO N" for the Nth check; the final DEP
-      // line reports whether Clawd hooks are already deployed to the distro
-      // (drives the "hooks deployed" badge on Pair rows).
+      // Each line emits "OK N" or "NO N" for the Nth check; two trailing
+      // DEPFILE/DEPREG lines report the distro's Clawd hook deployment
+      // state (see below).
       const batchLines = checks.map((c, i) => {
         const escaped = c.wslParentDir.replace(/'/g, "'\\''");
         return `test -d '${escaped}' && echo "OK ${i}" || echo "NO ${i}"`;
       });
-      // DEP probes whether Clawd hooks are genuinely active: the hook script
-      // must exist AND settings.json must reference it. File-only checks give
-      // false positives after Unpair — removeFromWsl runs the uninstall script
-      // (which clears settings.json) but keeps shared hook files on disk.
+      // Two independent deployment signals, because they answer different
+      // UI questions:
+      //   DEPFILE — hook files exist in the distro. Pairing ANY agent copies
+      //     them, and Unpair keeps them (shared dir). Drives the Unpair
+      //     button: there is something to clean up.
+      //   DEPREG — ~/.claude/settings.json references clawd-hook.js, i.e.
+      //     the claude-code registration is active. File-only checks give
+      //     false positives after a claude-code Unpair (uninstall clears
+      //     settings.json but keeps shared files). Together with DEPFILE it
+      //     drives the "hooks deployed" badge.
+      // Note DEPREG is claude-code truth only — other agents register in
+      // their own config files (e.g. ~/.codex/hooks.json). Per-agent pairing
+      // truth is a known follow-up; the badge must not gate the Unpair
+      // button, or distros paired with only a non-claude agent lose their
+      // unpair entry point.
       const deployedFile = `${wslHome.replace(/\/$/, "")}/.claude/hooks/clawd-hook.js`;
       const deployedFileEscaped = deployedFile.replace(/'/g, "'\\''");
       const settingsPathEscaped = `${wslHome.replace(/\/$/, "")}/.claude/settings.json`.replace(/'/g, "'\\''");
-      batchLines.push(
-        `test -f '${deployedFileEscaped}' && grep -q clawd-hook.js '${settingsPathEscaped}' 2>/dev/null && echo "DEP 1" || echo "DEP 0"`
-      );
+      batchLines.push(`test -f '${deployedFileEscaped}' && echo "DEPFILE 1" || echo "DEPFILE 0"`);
+      batchLines.push(`grep -q clawd-hook.js '${settingsPathEscaped}' 2>/dev/null && echo "DEPREG 1" || echo "DEPREG 0"`);
       const batchResult = await execInWsl(
         distro.name,
         batchLines.join("; "),
@@ -538,15 +548,17 @@ async function refreshWslDetection(options = {}) {
         continue;
       }
 
-      // Parse: collect indices of "OK" lines and the DEP marker.
+      // Parse: collect indices of "OK" lines and the two DEP markers.
       const foundIndices = new Set();
-      let hooksDeployed = false;
+      let hooksFilesPresent = false;
+      let hooksRegistered = false;
       const stdout = (batchResult && batchResult.stdout) || "";
       for (const line of stdout.split("\n")) {
         const trimmed = line.trim();
         const m = trimmed.match(/^OK (\d+)$/);
         if (m) foundIndices.add(parseInt(m[1], 10));
-        else if (trimmed === "DEP 1") hooksDeployed = true;
+        else if (trimmed === "DEPFILE 1") hooksFilesPresent = true;
+        else if (trimmed === "DEPREG 1") hooksRegistered = true;
       }
 
       for (let i = 0; i < checks.length; i++) {
@@ -564,7 +576,8 @@ async function refreshWslDetection(options = {}) {
             : `${wslParentDir} not found in WSL ${distro.name}`,
           wslHome,
           wslParentDir,
-          hooksDeployed,
+          hooksDeployed: hooksFilesPresent && hooksRegistered,
+          hooksFilesPresent,
         });
       }
     }

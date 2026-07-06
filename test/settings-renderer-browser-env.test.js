@@ -7087,6 +7087,69 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.core.runtime.agentInstallationHints.wslPending, false);
     assert.strictEqual(detectCalls.length, 2, "no further fetch after the scan settles");
   });
+
+  it("WSL row offers Unpair on hooksFilesPresent even when the deployed badge is dark", () => {
+    function buildHarness(wslEntryOverrides) {
+      const detectionResult = {
+        checkedAt: 2,
+        agents: [{ agentId: "qwen-code", detectedInstalled: true, confidence: "high" }],
+        skippedAgentIds: [],
+        wslAgents: [{
+          agentId: "qwen-code",
+          agentName: "Qwen Code",
+          distro: "Ubuntu",
+          detectedInstalled: true,
+          confidence: "high",
+          reason: "parent-dir",
+          detail: "",
+          wslHome: "/home/u",
+          wslParentDir: "/home/u/.qwen",
+          hooksDeployed: false,
+          hooksFilesPresent: false,
+          ...wslEntryOverrides,
+        }],
+        wslDistros: [{ name: "Ubuntu", default: true }],
+        wslPending: false,
+        wslSupported: true,
+      };
+      const harness = loadAgentsTabForTest({
+        snapshot: {
+          agents: { "qwen-code": { integrationInstalled: false, enabled: false } },
+          dismissedAgentInstallHints: {},
+        },
+        agentMetadata: [
+          { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+        ],
+        settingsAPI: {
+          detectAgentInstallations: () => Promise.resolve(detectionResult),
+        },
+      });
+      harness.core.runtime.agentInstallationHints = detectionResult;
+      harness.core.runtime.agentInstallationHintsFetched = true;
+      harness.core.ops.requestRender({ content: true });
+      return harness;
+    }
+
+    // Paired + registered: badge on, Pair + Unpair buttons.
+    let harness = buildHarness({ hooksDeployed: true, hooksFilesPresent: true });
+    assert.strictEqual(harness.content.querySelectorAll(".agent-instance-deployed").length, 1);
+    assert.strictEqual(harness.content.querySelectorAll(".agent-instance-action").length, 2);
+
+    // Files on disk but registration gone (post-Unpair, or the distro was
+    // paired with a non-claude agent that registers in its own config):
+    // the badge goes dark but the Unpair entry point must survive.
+    harness = buildHarness({ hooksDeployed: false, hooksFilesPresent: true });
+    assert.strictEqual(harness.content.querySelectorAll(".agent-instance-deployed").length, 0,
+      "badge dark without claude-settings registration");
+    assert.strictEqual(harness.content.querySelectorAll(".agent-instance-action").length, 2,
+      "Unpair stays available while hook files exist");
+
+    // Clean distro: no badge, Pair only.
+    harness = buildHarness({ hooksDeployed: false, hooksFilesPresent: false });
+    assert.strictEqual(harness.content.querySelectorAll(".agent-instance-deployed").length, 0);
+    assert.strictEqual(harness.content.querySelectorAll(".agent-instance-action").length, 1,
+      "only Pair when nothing is deployed");
+  });
 });
 
 describe("macOS platform detection (Settings shortcut labels)", () => {

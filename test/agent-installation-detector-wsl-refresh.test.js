@@ -45,9 +45,9 @@ const descriptors = [
 ];
 const scanOptions = { descriptors, homeDir, skipDefaultIntegrations: false };
 
-function stubHappyDistroProbes() {
+function stubHappyDistroProbes(depStdout = "DEPFILE 0\nDEPREG 0") {
   wslUtils.getWslHomeDir = async () => "/home/tester";
-  wslUtils.execInWsl = async () => ({ code: 0, stdout: "OK 0\nDEP 0\n", stderr: "" });
+  wslUtils.execInWsl = async () => ({ code: 0, stdout: `OK 0\n${depStdout}\n`, stderr: "" });
 }
 
 test("a failed newer scan does not discard a concurrent older scan's results", async () => {
@@ -100,4 +100,35 @@ test("a failed newer scan does not clobber previously committed results", async 
   assert.strictEqual(failedResult.wslAgents.length, 1,
     "failure must keep serving the previous committed results");
   assert.strictEqual(failedResult.wslAgents[0].distro, "TestDebian");
+});
+
+test("DEPFILE/DEPREG signals map to hooksFilesPresent and hooksDeployed", async () => {
+  wslUtils.getWslDistributions = async () => [{ name: "TestAlpine" }];
+
+  // Files present AND registered in claude settings → badge on.
+  stubHappyDistroProbes("DEPFILE 1\nDEPREG 1");
+  let entry = (await refreshWslDetection(scanOptions)).wslAgents[0];
+  assert.strictEqual(entry.hooksFilesPresent, true);
+  assert.strictEqual(entry.hooksDeployed, true);
+
+  // Files present but NOT registered — the post-Unpair / non-claude-agent
+  // pairing state. Unpair entry point must survive, badge must go dark.
+  stubHappyDistroProbes("DEPFILE 1\nDEPREG 0");
+  entry = (await refreshWslDetection(scanOptions)).wslAgents[0];
+  assert.strictEqual(entry.hooksFilesPresent, true,
+    "files on disk keep the unpair entry point");
+  assert.strictEqual(entry.hooksDeployed, false,
+    "registration gone means the deployed badge goes dark");
+
+  // Registration line without files (stale settings.json, files removed).
+  stubHappyDistroProbes("DEPFILE 0\nDEPREG 1");
+  entry = (await refreshWslDetection(scanOptions)).wslAgents[0];
+  assert.strictEqual(entry.hooksFilesPresent, false);
+  assert.strictEqual(entry.hooksDeployed, false);
+
+  // Clean distro.
+  stubHappyDistroProbes("DEPFILE 0\nDEPREG 0");
+  entry = (await refreshWslDetection(scanOptions)).wslAgents[0];
+  assert.strictEqual(entry.hooksFilesPresent, false);
+  assert.strictEqual(entry.hooksDeployed, false);
 });
