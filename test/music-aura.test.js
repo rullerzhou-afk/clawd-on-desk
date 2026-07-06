@@ -53,6 +53,7 @@ describe("music aura settings", () => {
       particleDensity: 1.4,
       particlePalette: "contrast",
       autoViewMode: "strong",
+      backplateStyle: "stage",
       auraOffsetX: 0.16,
       auraOffsetY: -0.12,
       auraScale: 1.08,
@@ -77,6 +78,7 @@ describe("music aura settings", () => {
     assert.strictEqual(cfg.particleDensity, 1.4);
     assert.strictEqual(cfg.particlePalette, "contrast");
     assert.strictEqual(cfg.autoViewMode, "strong");
+    assert.strictEqual(cfg.backplateStyle, "stage");
     assert.strictEqual(cfg.auraOffsetX, 0.16);
     assert.strictEqual(cfg.auraOffsetY, -0.12);
     assert.strictEqual(cfg.auraScale, 1.08);
@@ -100,6 +102,7 @@ describe("music aura settings", () => {
       particleDensity: 12,
       particlePalette: "white",
       autoViewMode: "wild",
+      backplateStyle: "glass",
       auraOffsetX: 9,
       auraOffsetY: -9,
       auraScale: 3,
@@ -118,6 +121,7 @@ describe("music aura settings", () => {
     assert.strictEqual(cfg.particleDensity, 1);
     assert.strictEqual(cfg.particlePalette, "default");
     assert.strictEqual(cfg.autoViewMode, "standard");
+    assert.strictEqual(cfg.backplateStyle, "dark");
     assert.strictEqual(cfg.auraOffsetX, 0);
     assert.strictEqual(cfg.auraOffsetY, 0);
     assert.strictEqual(cfg.auraScale, 1);
@@ -133,8 +137,8 @@ describe("music aura settings", () => {
     assert.strictEqual(normalizeMusicAuraSettings({ visualStyle: "vinyl" }).visualStyle, "vinyl");
   });
 
-  it("keeps the old Mineradio palette value as a default palette alias", () => {
-    assert.strictEqual(normalizeMusicAuraSettings({ particlePalette: "mineradio" }).particlePalette, "default");
+  it("keeps the old Mineradio palette value as a dedicated cold-white palette", () => {
+    assert.strictEqual(normalizeMusicAuraSettings({ particlePalette: "mineradio" }).particlePalette, "mineradio");
   });
 
   it("rejects unnormalized values in the settings write path", () => {
@@ -332,6 +336,17 @@ describe("music aura renderer", () => {
     return fs.readFileSync(path.join(__dirname, "..", "src", "styles.css"), "utf8");
   }
 
+  function readIndexSource() {
+    return fs.readFileSync(path.join(__dirname, "..", "src", "index.html"), "utf8");
+  }
+
+  function cssRule(source, selector) {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = source.match(new RegExp(`${escaped}\\s*\\{([\\s\\S]*?)\\n\\}`, "m"));
+    assert.ok(match, `Expected CSS rule for ${selector}`);
+    return match[1];
+  }
+
   it("keeps planet deformation as coherent spherical waves", () => {
     const source = readRendererSource();
 
@@ -395,7 +410,8 @@ describe("music aura renderer", () => {
   it("lets the settings playlist request a specific track index", () => {
     const source = readRendererSource();
 
-    assert.match(source, /if \(command === "play-index"\) return playIndex\(Number\(payload\.index\)\);/);
+    assert.match(source, /const commandPayload = payload && typeof payload\.payload === "object" \? payload\.payload : payload;/);
+    assert.match(source, /if \(command === "play-index"\) return playIndex\(Number\(commandPayload\.index\)\);/);
   });
 
   it("anchors the aura independently from the raw window center", () => {
@@ -408,6 +424,60 @@ describe("music aura renderer", () => {
     assert.match(source, /currentThemeId/);
     assert.match(source, /gl\.uniform2f\(gl\.getUniformLocation\(program, "u_auraOffset"\)/);
     assert.match(source, /gl\.uniform1f\(gl\.getUniformLocation\(program, "u_auraScale"\)/);
+  });
+
+  it("renders the dark aura backplate below the particle canvas and pet", () => {
+    const index = readIndexSource();
+    const styles = readStylesSource();
+
+    assert.match(index, /<div id="music-aura-backplate" aria-hidden="true"><\/div>\s*<canvas id="music-aura-canvas"/);
+    assert.match(styles, /#music-aura-backplate\s*\{[\s\S]*?z-index:\s*0;/);
+    assert.match(styles, /#music-aura-canvas\s*\{[\s\S]*?z-index:\s*1;/);
+    assert.match(styles, /#clawd\s*\{[\s\S]*?z-index:\s*2;/);
+    assert.match(styles, /#pet-container\.mini-left #music-aura-backplate\s*\{/);
+  });
+
+  it("draws the default aura backplate as a full-layer radial patch without a boxed shadow", () => {
+    const styles = readStylesSource();
+    const backplateRule = cssRule(styles, "#music-aura-backplate");
+    const darkRule = cssRule(styles, "#music-aura-backplate::before");
+
+    assert.match(backplateRule, /inset:\s*0;/);
+    assert.doesNotMatch(backplateRule, /\bwidth:\s*\d/);
+    assert.doesNotMatch(backplateRule, /\bheight:\s*\d/);
+    assert.doesNotMatch(backplateRule, /border-radius:\s*999px/);
+    assert.doesNotMatch(backplateRule, /translate\(/);
+
+    assert.match(darkRule, /radial-gradient\(/);
+    assert.match(darkRule, /at calc\(50% \+ var\(--music-aura-backplate-x\)\) calc\(50% \+ var\(--music-aura-backplate-y\)\)/);
+    assert.doesNotMatch(darkRule, /box-shadow:/);
+  });
+
+  it("syncs the aura backplate visibility and placement from the renderer", () => {
+    const source = readRendererSource();
+
+    assert.match(source, /document\.getElementById\("music-aura-backplate"\)/);
+    assert.match(source, /backplateStyle: "dark"/);
+    assert.match(source, /\["off", "dark", "stage"\]\.includes\(source\.backplateStyle\)/);
+    assert.match(source, /function syncBackplate\(visible, placement\)/);
+    assert.match(source, /backplate\.classList\.toggle\("active", visible && settings\.backplateStyle !== "off"\)/);
+    assert.match(source, /backplate\.classList\.toggle\("style-stage", settings\.backplateStyle === "stage"\)/);
+    assert.match(source, /backplate\.classList\.toggle\("style-dark", settings\.backplateStyle !== "stage"\)/);
+    assert.match(source, /backplate\.style\.setProperty\("--music-aura-backplate-x"/);
+    assert.match(source, /backplate\.style\.setProperty\("--music-aura-backplate-y"/);
+    assert.match(source, /backplate\.style\.setProperty\("--music-aura-backplate-radius-x"/);
+    assert.match(source, /backplate\.style\.setProperty\("--music-aura-backplate-radius-y"/);
+    assert.match(source, /backplate\.style\.setProperty\("--music-aura-backplate-scale"/);
+  });
+
+  it("renders the Mineradio palette as cold white with ice-blue and warm highlights", () => {
+    const source = readRendererSource();
+
+    assert.match(source, /settings\.particlePalette === "mineradio"/);
+    assert.match(source, /vec3\(0\.92,\s*0\.98,\s*1\.0\)/);
+    assert.match(source, /vec3\(0\.72,\s*0\.91,\s*1\.0\)/);
+    assert.match(source, /vec3\(1\.0,\s*0\.96,\s*0\.78\)/);
+    assert.doesNotMatch(source, /vec3\(0\.61,\s*1\.0,\s*0\.87\)/);
   });
 
   it("does not mirror the aura canvas in left mini mode", () => {

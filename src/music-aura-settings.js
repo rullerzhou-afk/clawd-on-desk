@@ -16,6 +16,7 @@ const DEFAULT_MUSIC_AURA_SETTINGS = Object.freeze({
   particleDensity: 1,
   particlePalette: "default",
   autoViewMode: "standard",
+  backplateStyle: "dark",
   auraOffsetX: 0,
   auraOffsetY: 0,
   auraScale: 1,
@@ -30,8 +31,9 @@ const DEFAULT_MUSIC_AURA_SETTINGS = Object.freeze({
 
 const MUSIC_AURA_VISUAL_STYLES = Object.freeze(["galaxy", "vinyl", "planet", "tunnel", "aurora"]);
 const MUSIC_AURA_BACKGROUND_ADAPTATIONS = Object.freeze(["auto", "dark", "light", "contrast"]);
-const MUSIC_AURA_PARTICLE_PALETTES = Object.freeze(["default", "contrast", "aurora", "neon", "warm"]);
+const MUSIC_AURA_PARTICLE_PALETTES = Object.freeze(["default", "mineradio", "contrast", "aurora", "neon", "warm"]);
 const MUSIC_AURA_AUTO_VIEW_MODES = Object.freeze(["off", "subtle", "standard", "strong"]);
+const MUSIC_AURA_BACKPLATE_STYLES = Object.freeze(["off", "dark", "stage"]);
 const MUSIC_AURA_INTENSITIES = Object.freeze(["subtle", "vivid", "stage"]);
 const MUSIC_AURA_PERFORMANCE_MODES = Object.freeze(["eco", "auto", "high"]);
 
@@ -56,9 +58,7 @@ function normalizeVisualStyle(value, fallback = DEFAULT_MUSIC_AURA_SETTINGS.visu
 }
 
 function normalizeParticlePalette(value, fallback = DEFAULT_MUSIC_AURA_SETTINGS.particlePalette) {
-  if (value === "mineradio") return "default";
   if (MUSIC_AURA_PARTICLE_PALETTES.includes(value)) return value;
-  if (fallback === "mineradio") return "default";
   if (MUSIC_AURA_PARTICLE_PALETTES.includes(fallback)) return fallback;
   return DEFAULT_MUSIC_AURA_SETTINGS.particlePalette;
 }
@@ -133,6 +133,11 @@ function normalizeMusicAuraSettings(value, defaultsValue = DEFAULT_MUSIC_AURA_SE
     : (MUSIC_AURA_AUTO_VIEW_MODES.includes(defaults.autoViewMode)
       ? defaults.autoViewMode
       : DEFAULT_MUSIC_AURA_SETTINGS.autoViewMode);
+  const backplateStyle = MUSIC_AURA_BACKPLATE_STYLES.includes(source.backplateStyle)
+    ? source.backplateStyle
+    : (MUSIC_AURA_BACKPLATE_STYLES.includes(defaults.backplateStyle)
+      ? defaults.backplateStyle
+      : DEFAULT_MUSIC_AURA_SETTINGS.backplateStyle);
   return {
     enabled: typeof source.enabled === "boolean" ? source.enabled : !!defaults.enabled,
     libraryDirs: normalizeLibraryDirs(source.libraryDirs),
@@ -171,6 +176,7 @@ function normalizeMusicAuraSettings(value, defaultsValue = DEFAULT_MUSIC_AURA_SE
     ),
     particlePalette,
     autoViewMode,
+    backplateStyle,
     auraOffsetX: normalizeAuraOffset(
       source.auraOffsetX,
       normalizeAuraOffset(defaults.auraOffsetX, DEFAULT_MUSIC_AURA_SETTINGS.auraOffsetX),
@@ -214,6 +220,7 @@ module.exports = {
   MUSIC_AURA_BACKGROUND_ADAPTATIONS,
   MUSIC_AURA_PARTICLE_PALETTES,
   MUSIC_AURA_AUTO_VIEW_MODES,
+  MUSIC_AURA_BACKPLATE_STYLES,
   MUSIC_AURA_INTENSITIES,
   MUSIC_AURA_PERFORMANCE_MODES,
   normalizeMusicAuraSettings,

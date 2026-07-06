@@ -48,6 +48,60 @@ html, body {
   z-index: 2;
 }
 
+#music-aura-backplate {
+  --music-aura-backplate-x: 0px;
+  --music-aura-backplate-y: 0px;
+  --music-aura-backplate-scale: 1;
+  --music-aura-backplate-radius-x: 42%;
+  --music-aura-backplate-radius-y: 30%;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  overflow: hidden;
+  transform: none;
+  transform-origin: center;
+  transition: opacity 220ms ease;
+  z-index: 0;
+}
+
+#music-aura-backplate::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse var(--music-aura-backplate-radius-x) var(--music-aura-backplate-radius-y)
+      at calc(50% + var(--music-aura-backplate-x)) calc(50% + var(--music-aura-backplate-y)),
+      rgba(15, 22, 36, 0.30) 0%,
+      rgba(8, 12, 20, 0.22) 36%,
+      rgba(5, 6, 8, 0) 74%),
+    radial-gradient(ellipse var(--music-aura-backplate-radius-x) var(--music-aura-backplate-radius-y)
+      at calc(50% + var(--music-aura-backplate-x)) calc(50% + var(--music-aura-backplate-y)),
+      rgba(5, 6, 8, 0.86) 0%,
+      rgba(5, 6, 8, 0.70) 30%,
+      rgba(5, 6, 8, 0.28) 56%,
+      rgba(5, 6, 8, 0) 78%);
+}
+
+#music-aura-backplate.active {
+  opacity: 1;
+}
+
+#music-aura-backplate.style-stage::before {
+  background:
+    radial-gradient(ellipse var(--music-aura-backplate-radius-x) var(--music-aura-backplate-radius-y)
+      at calc(50% + var(--music-aura-backplate-x)) calc(50% + var(--music-aura-backplate-y)),
+      rgba(255, 255, 255, 0.10) 0%,
+      rgba(90, 211, 255, 0.06) 26%,
+      rgba(255, 255, 255, 0) 62%),
+    radial-gradient(ellipse var(--music-aura-backplate-radius-x) var(--music-aura-backplate-radius-y)
+      at calc(50% + var(--music-aura-backplate-x)) calc(50% + var(--music-aura-backplate-y)),
+      rgba(5, 6, 8, 0.90) 0%,
+      rgba(5, 6, 8, 0.82) 42%,
+      rgba(5, 6, 8, 0.42) 66%,
+      rgba(5, 6, 8, 0) 86%);
+}
+
 #music-aura-canvas {
   position: absolute;
   inset: 0;
@@ -70,6 +124,10 @@ html, body {
 
 #pet-container.mini-left #music-aura-canvas {
   transform: scaleX(-1) scale(1.22);
+}
+
+#pet-container.mini-left #music-aura-backplate {
+  transform: scaleX(-1);
 }
 
 /* ── Roam walk animation ──

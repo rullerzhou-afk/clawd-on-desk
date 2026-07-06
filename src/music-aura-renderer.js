@@ -3,6 +3,7 @@
 (function initMusicAuraRenderer(root) {
   const api = root.electronAPI || null;
   const canvas = document.getElementById("music-aura-canvas");
+  const backplate = document.getElementById("music-aura-backplate");
   if (!api || !canvas) return;
 
   const DEFAULT_SETTINGS = Object.freeze({
@@ -21,6 +22,7 @@
     particleDensity: 1,
     particlePalette: "default",
     autoViewMode: "standard",
+    backplateStyle: "dark",
     auraOffsetX: 0,
     auraOffsetY: 0,
     auraScale: 1,
@@ -100,14 +102,15 @@
       glowStrength: clamp(Number(source.glowStrength), 0, 1.8, DEFAULT_SETTINGS.glowStrength),
       pointScale: clamp(Number(source.pointScale), 0.45, 1.4, DEFAULT_SETTINGS.pointScale),
       particleDensity: clamp(Number(source.particleDensity), 0.45, 1.5, DEFAULT_SETTINGS.particleDensity),
-      particlePalette: source.particlePalette === "mineradio"
-        ? "default"
-        : (["default", "contrast", "aurora", "neon", "warm"].includes(source.particlePalette)
-          ? source.particlePalette
-          : DEFAULT_SETTINGS.particlePalette),
+      particlePalette: ["default", "mineradio", "contrast", "aurora", "neon", "warm"].includes(source.particlePalette)
+        ? source.particlePalette
+        : DEFAULT_SETTINGS.particlePalette,
       autoViewMode: ["off", "subtle", "standard", "strong"].includes(source.autoViewMode)
         ? source.autoViewMode
         : DEFAULT_SETTINGS.autoViewMode,
+      backplateStyle: ["off", "dark", "stage"].includes(source.backplateStyle)
+        ? source.backplateStyle
+        : DEFAULT_SETTINGS.backplateStyle,
       auraOffsetX: boundedNumber(source.auraOffsetX, -0.35, 0.35, DEFAULT_SETTINGS.auraOffsetX),
       auraOffsetY: boundedNumber(source.auraOffsetY, -0.35, 0.35, DEFAULT_SETTINGS.auraOffsetY),
       auraScale: boundedNumber(source.auraScale, 0.7, 1.35, DEFAULT_SETTINGS.auraScale),
@@ -334,12 +337,13 @@
 
   function handleCommand(payload) {
     const command = payload && typeof payload === "object" ? payload.command : payload;
+    const commandPayload = payload && typeof payload.payload === "object" ? payload.payload : payload;
     if (command === "play") return playIndex(currentIndex >= 0 ? currentIndex : chooseNextIndex(1));
     if (command === "pause") return pausePlayback();
     if (command === "next") return nextTrack();
     if (command === "previous") return previousTrack();
     if (command === "toggle") return togglePlayback();
-    if (command === "play-index") return playIndex(Number(payload.index));
+    if (command === "play-index") return playIndex(Number(commandPayload.index));
   }
 
   function createShader(type, source) {
@@ -454,10 +458,14 @@
           c0 = vec3(0.0, 0.95, 1.0);
           c1 = vec3(1.0, 0.06, 0.86);
           c2 = vec3(0.75, 1.0, 0.10);
-        } else if (u_palette > 3.5) {
+        } else if (u_palette > 3.5 && u_palette < 4.5) {
           c0 = vec3(1.0, 0.42, 0.16);
           c1 = vec3(1.0, 0.78, 0.30);
           c2 = vec3(0.98, 0.20, 0.42);
+        } else if (u_palette > 4.5) {
+          c0 = vec3(0.92, 0.98, 1.0);
+          c1 = vec3(0.72, 0.91, 1.0);
+          c2 = vec3(1.0, 0.96, 0.78);
         }
         vec3 base = band < 1.0 ? c0 : (band < 2.0 ? c1 : c2);
         vec3 readableBase = mix(base, vec3(0.0), readable * 0.38);
@@ -694,6 +702,7 @@
   }
 
   function paletteValue() {
+    if (settings.particlePalette === "mineradio") return 5;
     if (settings.particlePalette === "contrast") return 1;
     if (settings.particlePalette === "aurora") return 2;
     if (settings.particlePalette === "neon") return 3;
@@ -763,6 +772,28 @@
     };
   }
 
+  function syncBackplate(visible, placement) {
+    if (!backplate) return;
+    const rect = canvas.getBoundingClientRect();
+    const target = placement || computeAuraPlacement();
+    const width = Math.max(1, rect.width || finiteNumber(root.innerWidth, 1));
+    const height = Math.max(1, rect.height || finiteNumber(root.innerHeight, 1));
+    const x = target.x * width * 0.5;
+    const y = -target.y * height * 0.5;
+    const radiusFactor = settings.backplateStyle === "stage" ? 0.95 : 1;
+    const radiusX = width * 0.42 * target.scale * radiusFactor;
+    const radiusY = height * 0.30 * target.scale * radiusFactor;
+
+    backplate.classList.toggle("active", visible && settings.backplateStyle !== "off");
+    backplate.classList.toggle("style-stage", settings.backplateStyle === "stage");
+    backplate.classList.toggle("style-dark", settings.backplateStyle !== "stage");
+    backplate.style.setProperty("--music-aura-backplate-x", `${x.toFixed(2)}px`);
+    backplate.style.setProperty("--music-aura-backplate-y", `${y.toFixed(2)}px`);
+    backplate.style.setProperty("--music-aura-backplate-radius-x", `${radiusX.toFixed(2)}px`);
+    backplate.style.setProperty("--music-aura-backplate-radius-y", `${radiusY.toFixed(2)}px`);
+    backplate.style.setProperty("--music-aura-backplate-scale", target.scale.toFixed(4));
+  }
+
   function stateEnergy() {
     if (!settings.stateReactive) return 0.76;
     return STATE_ENERGY[currentState] || (String(currentState || "").startsWith("mini-") ? 0.46 : 0.86);
@@ -799,6 +830,7 @@
 
   function syncCanvasVisibility({ schedule = true } = {}) {
     const visible = shouldShowVisual();
+    syncBackplate(visible, computeAuraPlacement());
     if (visible !== lastVisible) {
       lastVisible = visible;
       canvas.classList.toggle("active", visible);
@@ -854,6 +886,7 @@
     gl.uniform1f(gl.getUniformLocation(program, "u_palette"), paletteValue());
     gl.uniform1f(gl.getUniformLocation(program, "u_autoView"), autoViewValue());
     const auraPlacement = computeAuraPlacement();
+    syncBackplate(lastVisible, auraPlacement);
     gl.uniform2f(gl.getUniformLocation(program, "u_auraOffset"), auraPlacement.x, auraPlacement.y);
     gl.uniform1f(gl.getUniformLocation(program, "u_auraScale"), auraPlacement.scale);
     gl.drawArrays(gl.POINTS, 0, seedCount);

@@ -25,7 +25,8 @@ test("settings-tab-music-aura renders playback as a player card with collapsible
   assert.match(code, /function buildPlaylistPanel\(\)/);
   assert.match(code, /className = "music-aura-playlist-panel"/);
   assert.match(code, /details\.open = playlistOpen;/);
-  assert.match(code, /sendCommand\("play-index", \{ index \}\)/);
+  assert.match(code, /button\.addEventListener\("dblclick", \(\) => sendCommand\("play-index", \{ index \}\)\);/);
+  assert.doesNotMatch(code, /button\.addEventListener\("click", \(\) => sendCommand\("play-index"/);
 });
 
 test("settings-tab-music-aura keeps playback commands out of the settings-only rows", () => {
@@ -43,7 +44,51 @@ test("settings-tab-music-aura preserves playlist expanded state across runtime r
   assert.match(code, /let playlistOpen = false;/);
   assert.match(code, /details\.open = playlistOpen;/);
   assert.match(code, /details\.addEventListener\("toggle", \(\) => \{/);
+  assert.match(code, /if \(!details\.isConnected\) return;/);
   assert.match(code, /playlistOpen = details\.open;/);
+});
+
+test("settings-tab-music-aura defers runtime rerenders while the particle palette select is active", () => {
+  const code = readMusicAuraTab();
+
+  assert.match(code, /function requestRuntimeRender\(\)/);
+  assert.match(code, /function shouldDeferRuntimeRender\(\)/);
+  assert.match(code, /document\.activeElement/);
+  assert.match(code, /\.matches\("\.music-aura-select"\)/);
+  assert.match(code, /runtimeRenderDeferred = true;/);
+  assert.match(code, /function flushDeferredRuntimeRender\(\)/);
+  assert.match(code, /select\.addEventListener\("blur", flushDeferredRuntimeRender\);/);
+  assert.match(code, /if \(forceRender\) requestRuntimeRender\(\);/);
+  assert.match(code, /onMusicAuraRuntimeChanged[\s\S]*requestRuntimeRender\(\);/);
+});
+
+test("settings-tab-music-aura keeps playlist DOM stable during a double-click choice", () => {
+  const code = readMusicAuraTab();
+
+  assert.match(code, /function holdRuntimeRenderForDoubleClick\(\)/);
+  assert.match(code, /button\.addEventListener\("pointerdown", holdRuntimeRenderForDoubleClick\);/);
+  assert.match(code, /runtimeRenderHoldUntil = Math\.max\(runtimeRenderHoldUntil, Date\.now\(\) \+ 650\);/);
+});
+
+test("settings-tab-music-aura exposes the aura backplate style selector", () => {
+  const code = readMusicAuraTab();
+
+  assert.match(code, /field: "backplateStyle"/);
+  assert.match(code, /labelKey: "musicAuraBackplateStyle"/);
+  assert.match(code, /descKey: "musicAuraBackplateStyleDesc"/);
+  assert.match(code, /\["off", t\("musicAuraBackplateOff"\)\]/);
+  assert.match(code, /\["dark", t\("musicAuraBackplateDark"\)\]/);
+  assert.match(code, /\["stage", t\("musicAuraBackplateStage"\)\]/);
+});
+
+test("settings-tab-music-aura exposes the Mineradio cold-white particle palette", () => {
+  const code = readMusicAuraTab();
+
+  assert.match(code, /buildSelectRow\(\{[\s\S]*?field: "particlePalette"/);
+  assert.doesNotMatch(code, /buildSegmentRow\(\{[\s\S]{0,120}field: "particlePalette"/);
+  assert.match(code, /function buildSelectRow\(\{ field, labelKey, descKey, options \}\)/);
+  assert.match(code, /document\.createElement\("select"\)/);
+  assert.match(code, /\["mineradio", t\("musicAuraPaletteMineradio"\)\]/);
 });
 
 test("settings-i18n.js: all language packs include music aura player keys", () => {
@@ -54,6 +99,12 @@ test("settings-i18n.js: all language packs include music aura player keys", () =
     "musicAuraPlaylistEmpty",
     "musicAuraPlaylistToggle",
     "musicAuraTrackPosition",
+    "musicAuraBackplateStyle",
+    "musicAuraBackplateStyleDesc",
+    "musicAuraBackplateOff",
+    "musicAuraBackplateDark",
+    "musicAuraBackplateStage",
+    "musicAuraPaletteMineradio",
   ];
 
   for (const key of requiredKeys) {

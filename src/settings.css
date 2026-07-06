@@ -3831,6 +3831,7 @@ html, body {
 .music-aura-library-row,
 .music-aura-volume-row,
 .music-aura-segment-row,
+.music-aura-select-row,
 .music-aura-dir-row {
   align-items: flex-start;
 }
@@ -3879,6 +3880,25 @@ html, body {
   font-size: 12px;
   text-align: right;
 }
+.music-aura-select {
+  min-width: 170px;
+  max-width: 220px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 7px 32px 7px 10px;
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.music-aura-select:hover {
+  border-color: var(--accent);
+}
+.music-aura-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .music-aura-segment {
   display: inline-flex;
   flex-wrap: wrap;
@@ -3916,7 +3936,8 @@ html, body {
   }
   .music-aura-actions,
   .music-aura-player-card,
-  .music-aura-volume-control {
+  .music-aura-volume-control,
+  .music-aura-select {
     width: 100%;
   }
   .music-aura-player-card {

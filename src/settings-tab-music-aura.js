@@ -6,6 +6,9 @@
   let ops = null;
   let runtime = null;
   let playlistOpen = false;
+  let runtimeRenderDeferred = false;
+  let runtimeRenderTimer = null;
+  let runtimeRenderHoldUntil = 0;
 
   function t(key) {
     return helpers.t(key);
@@ -29,6 +32,7 @@
       particleDensity: 1,
       particlePalette: "default",
       autoViewMode: "standard",
+      backplateStyle: "dark",
       auraOffsetX: 0,
       auraOffsetY: 0,
       auraScale: 1,
@@ -52,6 +56,54 @@
 
   function getMusicRuntime() {
     return runtime.musicAura || null;
+  }
+
+  function shouldDeferRuntimeRender() {
+    const active = document.activeElement;
+    return !!(
+      Date.now() < runtimeRenderHoldUntil
+      || (active && typeof active.matches === "function" && active.matches(".music-aura-select"))
+    );
+  }
+
+  function scheduleDeferredRuntimeRender() {
+    if (runtimeRenderTimer) clearTimeout(runtimeRenderTimer);
+    const delay = Math.max(80, runtimeRenderHoldUntil - Date.now() + 80);
+    runtimeRenderTimer = setTimeout(() => {
+      runtimeRenderTimer = null;
+      flushDeferredRuntimeRender();
+    }, delay);
+  }
+
+  function flushDeferredRuntimeRender() {
+    if (!runtimeRenderDeferred) return;
+    if (shouldDeferRuntimeRender()) {
+      scheduleDeferredRuntimeRender();
+      return;
+    }
+    runtimeRenderDeferred = false;
+    if (state.activeTab === "music-aura") ops.requestRender({ content: true });
+  }
+
+  function requestRuntimeRender() {
+    if (state.activeTab !== "music-aura") return;
+    if (shouldDeferRuntimeRender()) {
+      runtimeRenderDeferred = true;
+      scheduleDeferredRuntimeRender();
+      return;
+    }
+    runtimeRenderDeferred = false;
+    ops.requestRender({ content: true });
+  }
+
+  function holdRuntimeRenderForDoubleClick() {
+    runtimeRenderHoldUntil = Math.max(runtimeRenderHoldUntil, Date.now() + 650);
+    if (runtimeRenderDeferred) scheduleDeferredRuntimeRender();
+  }
+
+  function holdRuntimeRenderForNativeSelect() {
+    runtimeRenderHoldUntil = Math.max(runtimeRenderHoldUntil, Date.now() + 1200);
+    if (runtimeRenderDeferred) scheduleDeferredRuntimeRender();
   }
 
   function render(parent) {
@@ -133,11 +185,22 @@
         ],
       }),
       buildSegmentRow({
+        field: "backplateStyle",
+        labelKey: "musicAuraBackplateStyle",
+        descKey: "musicAuraBackplateStyleDesc",
+        options: [
+          ["off", t("musicAuraBackplateOff")],
+          ["dark", t("musicAuraBackplateDark")],
+          ["stage", t("musicAuraBackplateStage")],
+        ],
+      }),
+      buildSelectRow({
         field: "particlePalette",
         labelKey: "musicAuraParticlePalette",
         descKey: "musicAuraParticlePaletteDesc",
         options: [
           ["default", t("musicAuraPaletteDefault")],
+          ["mineradio", t("musicAuraPaletteMineradio")],
           ["contrast", t("musicAuraPaletteContrast")],
           ["aurora", t("musicAuraPaletteAurora")],
           ["neon", t("musicAuraPaletteNeon")],
@@ -510,6 +573,7 @@
     details.className = "music-aura-playlist-panel";
     details.open = playlistOpen;
     details.addEventListener("toggle", () => {
+      if (!details.isConnected) return;
       playlistOpen = details.open;
     });
 
@@ -535,7 +599,8 @@
       if (status.trackIndex === index) button.classList.add("active");
       button.disabled = !cfg.enabled;
       button.textContent = item && (item.title || item.fileName) ? (item.title || item.fileName) : `${t("musicAuraPlaylist")} ${index + 1}`;
-      button.addEventListener("click", () => sendCommand("play-index", { index }));
+      button.addEventListener("pointerdown", holdRuntimeRenderForDoubleClick);
+      button.addEventListener("dblclick", () => sendCommand("play-index", { index }));
       list.appendChild(button);
     });
     details.appendChild(list);
@@ -731,6 +796,35 @@
     return row;
   }
 
+  function buildSelectRow({ field, labelKey, descKey, options }) {
+    const cfg = currentConfig();
+    const row = document.createElement("div");
+    row.className = "row music-aura-select-row";
+    row.innerHTML =
+      `<div class="row-text">` +
+        `<span class="row-label"></span>` +
+        `<span class="row-desc"></span>` +
+      `</div>` +
+      `<div class="row-control"></div>`;
+    row.querySelector(".row-label").textContent = t(labelKey);
+    row.querySelector(".row-desc").textContent = t(descKey);
+    const select = document.createElement("select");
+    select.className = "music-aura-select";
+    for (const [value, label] of options) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      select.appendChild(option);
+    }
+    select.value = options.some(([value]) => value === cfg[field]) ? cfg[field] : options[0][0];
+    select.addEventListener("pointerdown", holdRuntimeRenderForNativeSelect);
+    select.addEventListener("focus", holdRuntimeRenderForNativeSelect);
+    select.addEventListener("blur", flushDeferredRuntimeRender);
+    select.addEventListener("change", () => updateConfig({ [field]: select.value }));
+    row.querySelector(".row-control").appendChild(select);
+    return row;
+  }
+
   function sendCommand(command, payload = {}) {
     if (!window.settingsAPI || typeof window.settingsAPI.sendMusicAuraCommand !== "function") return;
     window.settingsAPI.sendMusicAuraCommand({ command, payload }).catch((err) => {
@@ -743,7 +837,7 @@
     window.settingsAPI.getMusicAuraRuntime().then((result) => {
       if (!result || result.status !== "ok") return;
       runtime.musicAura = result.runtime || null;
-      if (forceRender && state.activeTab === "music-aura") ops.requestRender({ content: true });
+      if (forceRender) requestRuntimeRender();
     }).catch(() => {});
   }
 
@@ -764,7 +858,7 @@
     if (window.settingsAPI && typeof window.settingsAPI.onMusicAuraRuntimeChanged === "function") {
       window.settingsAPI.onMusicAuraRuntimeChanged((payload) => {
         runtime.musicAura = payload || null;
-        if (state.activeTab === "music-aura") ops.requestRender({ content: true });
+        requestRuntimeRender();
       });
     }
     core.tabs["music-aura"] = { render, patchInPlace };
