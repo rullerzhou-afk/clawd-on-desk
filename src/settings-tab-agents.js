@@ -41,7 +41,7 @@
     parent.appendChild(subtitle);
 
     // Scan toolbar — always available on Windows (wslSupported) so a failed
-    // startup scan still leaves the user a manual retry path.
+    // auto scan still leaves the user a manual retry path.
     const hints = runtime.agentInstallationHints;
     const wslDistros = hints && Array.isArray(hints.wslDistros) ? hints.wslDistros : [];
     const wslPending = !!(hints && hints.wslPending);

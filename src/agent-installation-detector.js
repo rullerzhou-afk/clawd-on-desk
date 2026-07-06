@@ -405,7 +405,7 @@ function detectAgentInstallation(descriptor, options = {}) {
 // WSL detection is expensive (spawn per agent × distro). Cache permanently
 // in the module; invalidate on explicit refresh or after Pair.
 // Non-Windows platforms never need WSL detection — mark detected immediately
-// so the UI doesn't poll indefinitely.
+// so the UI never sees wslPending and never auto-triggers a scan.
 
 let _cachedWslAgents = [];
 let _cachedWslDistros = [];
@@ -427,8 +427,9 @@ function detectAgentInstallations(options = {}) {
     agents.push(detectAgentInstallation(descriptor, options));
   }
 
-  // WSL: return cached results (populated by async startup scan). First
-  // open returns empty WSL data with wslPending flag so UI can show a spinner.
+  // WSL: return cached results (populated by the Agents-tab scan). Before the
+  // first scan this is empty with wslPending set so the UI shows a spinner
+  // and triggers the scan.
   return {
     checkedAt: checkedAtValue(options.now),
     agents,
@@ -442,8 +443,10 @@ function detectAgentInstallations(options = {}) {
   };
 }
 
-// Async WSL scan — runs at startup and on explicit user action.
-// Populates module-level cache so subsequent reads are instant.
+// Async WSL scan — runs on the first Settings→Agents visit and on explicit
+// user action (Scan button, after Pair/Unpair). Deliberately NOT run at app
+// startup: probing a distro boots its VM, and launch must not wake every
+// stopped distro. Populates module-level cache so subsequent reads are instant.
 //
 // Uses a committed-generation counter: successful results are only
 // overwritten by a newer scan that actually completes. If a newer scan
@@ -581,7 +584,10 @@ async function refreshWslDetection(options = {}) {
 
     console.warn("Clawd: WSL detection scan failed:", err && err.message ? err.message : err);
     _cachedDetected = true;
-    _wslRefreshCommitted = generation;
+    // A failed scan must NOT claim the committed slot: _wslRefreshCommitted
+    // tracks the newest scan that committed DATA. If a failure bumped it, a
+    // concurrent older scan that later succeeds would see itself as outdated
+    // and discard valid results in favor of the stale/empty cache.
 
     const result = detectAgentInstallations(options);
     result.wslError = err && err.message ? err.message : String(err);

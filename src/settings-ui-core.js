@@ -957,13 +957,27 @@
         runtime.agentInstallationHintsFetched = true;
         runtime.agentInstallationHintsPromise = null;
         if (state.activeTab === "agents") requestRender({ content: true });
-        // If WSL data is still pending (startup scan hasn't finished),
-        // schedule a re-fetch so the UI updates when it lands.
-        if (runtime.agentInstallationHints && runtime.agentInstallationHints.wslPending) {
-          runtime.agentInstallationHintsFetched = false;
-          setTimeout(() => {
-            if (state.activeTab === "agents") fetchAgentInstallationHints();
-          }, 3000);
+        // wslPending means no WSL scan has ever completed. Startup does not
+        // pre-scan (running a command in each distro boots every stopped VM),
+        // so the first Agents-tab visit kicks off the real scan here. No loop:
+        // the scan marks the cache detected on success AND failure, so
+        // wslPending is false on the next fetch either way.
+        if (
+          !refreshWsl &&
+          runtime.agentInstallationHints &&
+          runtime.agentInstallationHints.wslPending &&
+          runtime.agentInstallationHints.wslSupported
+        ) {
+          if (state.activeTab === "agents") {
+            fetchAgentInstallationHints({ refreshWsl: true });
+          } else {
+            // User left the tab before this fetch resolved. Re-arm the
+            // fetched flag so the next Agents-tab visit takes the full
+            // fetch path again and reaches this trigger — otherwise the
+            // flag short-circuits every later plain fetch and the auto
+            // scan is permanently lost for this settings session.
+            runtime.agentInstallationHintsFetched = false;
+          }
         }
       });
     return runtime.agentInstallationHintsPromise;

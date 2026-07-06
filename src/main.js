@@ -3894,16 +3894,10 @@ if (!gotTheLock) {
       console.warn("Clawd: migration controller init failed:", err && err.message);
     });
     createWindow();
-    // Kick off async WSL agent detection so the Settings Agents tab shows
-    // WSL instances immediately when opened later. Non-blocking.
-    if (process.platform === "win32") {
-      try {
-        const { refreshWslDetection } = require("./agent-installation-detector");
-        refreshWslDetection({ skipDefaultIntegrations: false }).catch((err) => {
-          console.warn("Clawd: startup WSL detection failed:", err && err.message);
-        });
-      } catch (_) { /* best-effort */ }
-    }
+    // WSL agent detection is NOT started here: scanning runs a command inside
+    // every installed distro, which boots each stopped VM — too aggressive for
+    // app launch. The first Settings→Agents visit triggers the scan instead
+    // (see fetchAgentInstallationHints in settings-ui-core.js).
     systemWakeRecovery = createSystemWakeRecovery({
       powerMonitor,
       ipcMain,

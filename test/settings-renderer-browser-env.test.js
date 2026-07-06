@@ -7001,6 +7001,92 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(core.tabs.animOverrides.patchInPlace({ themeOverrides: { cloudling: { states: {} } } }), false);
     assert.strictEqual(fetchCount, 0);
   });
+
+  it("re-arms the WSL auto scan when the user leaves the Agents tab before the fetch resolves", async () => {
+    const detectCalls = [];
+    let resolveFirstFetch;
+    const firstFetch = new Promise((resolve) => { resolveFirstFetch = resolve; });
+    const pendingHints = {
+      checkedAt: 1,
+      agents: [],
+      skippedAgentIds: [],
+      wslAgents: [],
+      wslDistros: [],
+      wslPending: true,
+      wslSupported: true,
+    };
+    const scannedHints = { ...pendingHints, wslPending: false, wslDistros: [{ name: "Ubuntu", default: true }] };
+    const harness = loadAgentsTabForTest({
+      snapshot: { agents: {} },
+      settingsAPI: {
+        detectAgentInstallations: (opts) => {
+          detectCalls.push(opts || null);
+          if (detectCalls.length === 1) return firstFetch;
+          if (opts && opts.refreshWsl) return Promise.resolve(scannedHints);
+          return Promise.resolve(pendingHints);
+        },
+      },
+    });
+
+    // Mount fetch fires while the Agents tab is active…
+    const mountFetch = harness.core.ops.fetchAgentInstallationHints();
+    // …but the user switches away before it resolves.
+    harness.core.state.activeTab = "general";
+    resolveFirstFetch(pendingHints);
+    await mountFetch;
+    await Promise.resolve();
+
+    // The auto scan was (correctly) not fired for an absent user, but the
+    // fetched flag must be re-armed or the auto scan is lost for the session.
+    assert.strictEqual(detectCalls.length, 1, "no scan while the tab is not visible");
+    assert.strictEqual(harness.core.runtime.agentInstallationHintsFetched, false,
+      "fetched flag re-armed after the trigger was skipped");
+
+    // Returning to the tab re-fetches and kicks the real WSL scan.
+    harness.core.state.activeTab = "agents";
+    await harness.core.ops.fetchAgentInstallationHints();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const refreshCalls = detectCalls.filter((c) => c && c.refreshWsl === true);
+    assert.strictEqual(refreshCalls.length, 1, "returning to the tab fires the real WSL scan");
+    assert.strictEqual(harness.core.runtime.agentInstallationHints.wslPending, false);
+  });
+
+  it("first Agents-tab fetch that reports wslPending triggers exactly one WSL scan", async () => {
+    const detectCalls = [];
+    const pendingHints = {
+      checkedAt: 1,
+      agents: [],
+      skippedAgentIds: [],
+      wslAgents: [],
+      wslDistros: [],
+      wslPending: true,
+      wslSupported: true,
+    };
+    const scannedHints = { ...pendingHints, wslPending: false };
+    const harness = loadAgentsTabForTest({
+      snapshot: { agents: {} },
+      settingsAPI: {
+        detectAgentInstallations: (opts) => {
+          detectCalls.push(opts || null);
+          if (opts && opts.refreshWsl) return Promise.resolve(scannedHints);
+          return Promise.resolve(pendingHints);
+        },
+      },
+    });
+
+    await harness.core.ops.fetchAgentInstallationHints();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const refreshCalls = detectCalls.filter((c) => c && c.refreshWsl === true);
+    assert.strictEqual(refreshCalls.length, 1, "wslPending fetch on the active tab auto-triggers the scan once");
+    assert.strictEqual(harness.core.runtime.agentInstallationHints.wslPending, false);
+    assert.strictEqual(detectCalls.length, 2, "no further fetch after the scan settles");
+  });
 });
 
 describe("macOS platform detection (Settings shortcut labels)", () => {
