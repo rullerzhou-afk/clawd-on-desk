@@ -84,6 +84,27 @@ describe("theme schema validation", () => {
     assert.ok(errors.some((error) => error.includes("states.sleeping.fallbackTo forms a cycle")));
     assert.ok(errors.some((error) => error.includes("miniMode.supported=true requires miniMode.states.mini-enter")));
   });
+
+  it("rejects non-boolean roamFlipAssets (truthy strings would silently invert the roam mirror)", () => {
+    assert.deepStrictEqual(schema.validateTheme(validThemeJson({ roamFlipAssets: true })), []);
+    assert.deepStrictEqual(schema.validateTheme(validThemeJson({ roamFlipAssets: false })), []);
+
+    for (const bad of ["false", "0", 1, {}]) {
+      const errors = schema.validateTheme(validThemeJson({ roamFlipAssets: bad }));
+      assert.ok(
+        errors.some((error) => error.includes("roamFlipAssets must be a boolean")),
+        `expected a roamFlipAssets error for ${JSON.stringify(bad)}`
+      );
+    }
+  });
+
+  it("mergeDefaults carries roamFlipAssets and defaults it to false", () => {
+    assert.strictEqual(schema.mergeDefaults(validThemeJson()).roamFlipAssets, false);
+    assert.strictEqual(
+      schema.mergeDefaults(validThemeJson({ roamFlipAssets: true })).roamFlipAssets,
+      true
+    );
+  });
 });
 
 describe("theme schema defaults and normalization", () => {

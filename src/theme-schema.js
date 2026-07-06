@@ -179,6 +179,10 @@ function validateTheme(cfg) {
     }
   }
 
+  if (cfg.roamFlipAssets !== undefined && typeof cfg.roamFlipAssets !== "boolean") {
+    errors.push(`roamFlipAssets must be a boolean, got ${JSON.stringify(cfg.roamFlipAssets)}`);
+  }
+
   const fallbackStateKeys = Object.keys(normalizedStates);
   for (const stateKey of fallbackStateKeys) {
     const entry = normalizedStates[stateKey];

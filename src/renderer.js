@@ -400,6 +400,10 @@ function shouldApplyMiniAssetFlip(state) {
   // while the walk heads left (heading pushed from main via roam-heading).
   // Themes whose roam asset faces left (roamFlipAssets) invert the mirror.
   if (state === "roam") return _hasRoamVisual && (_roamHeadingLeft !== _roamFlipAssets);
+  // Only mini-family visuals mirror with flipAssets. mini-mode-change can land
+  // while a transitional visual (idle, drag reaction) is still on screen —
+  // those keep their orientation until the mini swap happens.
+  if (!state || !state.startsWith("mini-")) return false;
   return _miniFlipAssets && (_inMiniMode || (_miniPreEntryMode && state === "mini-crabwalk"));
 }
 
