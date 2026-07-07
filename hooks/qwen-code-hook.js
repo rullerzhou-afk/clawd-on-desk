@@ -10,6 +10,7 @@ const {
   postPermissionToRunningServer,
   postStateToRunningServer,
   readHostPrefix,
+  applyWslSourceFields,
 } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
 
@@ -167,7 +168,9 @@ function buildStateBody(hookName, payload, resolve, options = {}) {
 
   if (options.remote) {
     body.host = options.host || readHostPrefix();
+    applyWslSourceFields(body, { remote: true });
   } else {
+    applyWslSourceFields(body);
     applyLocalProcessFields(body, resolve);
   }
 
@@ -249,7 +252,9 @@ function buildPermissionBody(hookName, payload, resolve, options = {}) {
 
   if (options.remote) {
     body.host = options.host || readHostPrefix();
+    applyWslSourceFields(body, { remote: true });
   } else {
+    applyWslSourceFields(body);
     applyLocalProcessFields(body, resolve);
   }
   return body;

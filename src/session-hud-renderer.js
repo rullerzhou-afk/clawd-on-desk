@@ -234,6 +234,15 @@ function createRowForSession(session, now) {
     left.appendChild(img);
   }
 
+  // Source marker for non-local sessions (compact emoji indicator)
+  if (session.sourceType && session.sourceType !== "local") {
+    const sourceMarker = document.createElement("span");
+    sourceMarker.className = `hud-source hud-source-${session.sourceType}`;
+    sourceMarker.title = session.sourceDisplayLabel || session.sourceLabel || "";
+    sourceMarker.textContent = session.sourceType === "wsl" ? "🐧" : "🔗";
+    left.appendChild(sourceMarker);
+  }
+
   const title = document.createElement("span");
   const fullTitle = titleFor(session);
   const shortTitle = shortenHudTitle(fullTitle);

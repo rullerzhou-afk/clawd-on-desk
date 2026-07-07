@@ -149,6 +149,9 @@ function handleStatePost(req, res, options) {
       const agentIdentity = resolveHookAgentId(data);
       const agentId = agentIdentity.agentId;
       const host = typeof data.host === "string" ? data.host : null;
+      const wslDistro = typeof data.wsl_distro === "string" && data.wsl_distro.trim()
+        ? data.wsl_distro.trim()
+        : null;
       const headless = data.headless === true;
       const platform = typeof data.platform === "string" && data.platform.trim()
         ? data.platform.trim()
@@ -334,6 +337,7 @@ function handleStatePost(req, res, options) {
             agentPid,
             agentId,
             host,
+            wslDistro,
             headless: headless || codexHookState.headless === true,
             platform,
             model,

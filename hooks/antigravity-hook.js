@@ -5,7 +5,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { postPermissionToRunningServer, postStateToRunningServer, readHostPrefix } = require("./server-config");
+const { postPermissionToRunningServer, postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
 const { stdoutForAntigravityEvent } = require("./antigravity-stdout");
 
@@ -260,8 +260,10 @@ function buildStateBody(hookName, payload, options = {}) {
 
   if (options.remote) {
     body.host = options.host || readHostPrefix();
+    applyWslSourceFields(body, { remote: true });
     return body;
   }
+  applyWslSourceFields(body);
 
   const pidMeta = options.pidMeta;
   if (!pidMeta || typeof pidMeta !== "object") return body;
@@ -297,8 +299,10 @@ function buildPermissionBody(hookName, payload, options = {}) {
 
   if (options.remote) {
     body.host = options.host || readHostPrefix();
+    applyWslSourceFields(body, { remote: true });
     return body;
   }
+  applyWslSourceFields(body);
 
   const pidMeta = options.pidMeta;
   if (!pidMeta || typeof pidMeta !== "object") return body;

@@ -4,7 +4,7 @@
 // Reads stdin JSON (snake_case, identical shape across both generations) for
 // session_id, cwd, tool_name, etc.
 
-const { postStateToRunningServer, readHostPrefix } = require("./server-config");
+const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
 const { processNames: kimiProcessNames } = require("../agents/kimi-cli");
 const fs = require("fs");
@@ -321,7 +321,9 @@ function buildStateBody(event, payload, resolve) {
 
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();
+    applyWslSourceFields(body, { remote: true });
   } else {
+    applyWslSourceFields(body);
     const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve();
     body.source_pid = stablePid;
     if (detectedEditor) body.editor = detectedEditor;

@@ -401,6 +401,18 @@ function detectAgentInstallation(descriptor, options = {}) {
   };
 }
 
+// ── Detection cache ─────────────────────────────────────────────────
+// WSL detection is expensive (spawn per agent × distro). Cache permanently
+// in the module; invalidate on explicit refresh or after Pair.
+// Non-Windows platforms never need WSL detection — mark detected immediately
+// so the UI never sees wslPending and never auto-triggers a scan.
+
+let _cachedWslAgents = [];
+let _cachedWslDistros = [];
+let _cachedDetected = process.platform !== "win32";
+let _wslRefreshGeneration = 0;
+let _wslRefreshCommitted = 0;
+
 function detectAgentInstallations(options = {}) {
   const descriptors = Array.isArray(options.descriptors) ? options.descriptors : getAgentDescriptors();
   const skippedAgentIds = [];
@@ -414,19 +426,193 @@ function detectAgentInstallations(options = {}) {
     }
     agents.push(detectAgentInstallation(descriptor, options));
   }
+
+  // WSL: return cached results (populated by the Agents-tab scan). Before the
+  // first scan this is empty with wslPending set so the UI shows a spinner
+  // and triggers the scan.
   return {
     checkedAt: checkedAtValue(options.now),
     agents,
-    // Default integrations are deliberately omitted from agents[].
-    // Consumers must not treat an absent entry as "not detected"; use the
-    // explicit detector entry set or exclude skippedAgentIds when deriving
-    // stale/cleanup candidates.
     skippedAgentIds,
+    wslAgents: _cachedWslAgents,
+    wslDistros: _cachedWslDistros,
+    wslPending: !_cachedDetected,
+    // Lets the UI always offer a manual Scan on Windows, even after a failed
+    // startup scan left the cache empty (no rows, no pending flag).
+    wslSupported: process.platform === "win32",
   };
+}
+
+// Async WSL scan — runs on the first Settings→Agents visit and on explicit
+// user action (Scan button, after Pair/Unpair). Deliberately NOT run at app
+// startup: probing a distro boots its VM, and launch must not wake every
+// stopped distro. Populates module-level cache so subsequent reads are instant.
+//
+// Uses a committed-generation counter: successful results are only
+// overwritten by a newer scan that actually completes. If a newer scan
+// fails (timeout, broken wsl.exe), the previous results survive.
+// Also batches dir-exists checks into one wsl.exe spawn per distro
+// instead of one per (distro × agent).
+async function refreshWslDetection(options = {}) {
+  if (process.platform !== "win32") {
+    _cachedDetected = true;
+    return detectAgentInstallations(options);
+  }
+
+  const generation = ++_wslRefreshGeneration;
+
+  try {
+    const { getWslDistributions, getWslHomeDir, execInWsl, rebaseHomePathPosix } = require("./wsl-utils");
+    const { getAgentInstallScriptName } = require("./wsl-deploy");
+    const descriptors = Array.isArray(options.descriptors) ? options.descriptors : getAgentDescriptors();
+
+    const homeDir = options.homeDir || os.homedir();
+    const skipDefaultIntegrations = options.skipDefaultIntegrations !== false;
+    const distros = await getWslDistributions({ excludeDistros: options.excludeDistros });
+    // null = wsl.exe failed (as opposed to "no distros"). Throw so the catch
+    // branch below keeps the previous cache instead of committing emptiness.
+    if (distros === null) {
+      throw new Error("WSL distro enumeration failed (wsl.exe error or timeout)");
+    }
+    const wslAgents = [];
+
+    // Preserve a distro's previous entries when this scan cannot produce
+    // trustworthy results for it — a stopped distro or a mid-batch timeout
+    // must not demote previously detected agents to "not found".
+    const keepPreviousEntries = (distroName) => {
+      wslAgents.push(..._cachedWslAgents.filter((e) => e && e.distro === distroName));
+    };
+
+    for (const distro of distros) {
+      const wslHome = await getWslHomeDir(distro.name, options);
+      if (!wslHome) {
+        keepPreviousEntries(distro.name);
+        continue;
+      }
+
+      // Collect all directories to check for this distro. Only agents that
+      // WSL deploy actually supports get entries — the UI renders a Pair
+      // button per entry, and a guaranteed-to-fail Pair is worse than none.
+      const checks = [];
+      for (const descriptor of descriptors) {
+        if (!descriptor || typeof descriptor.agentId !== "string") continue;
+        if (skipDefaultIntegrations && DEFAULT_SKIPPED_AGENT_IDS.has(descriptor.agentId)) continue;
+        if (!getAgentInstallScriptName(descriptor.agentId)) continue;
+        const wslParentDir = rebaseHomePathPosix(descriptor.parentDir, wslHome, homeDir);
+        if (!wslParentDir) continue;
+        checks.push({ descriptor, wslParentDir });
+      }
+
+      if (checks.length === 0) continue;
+
+      // Batch all dir-exists checks into a single wsl.exe spawn.
+      // Each line emits "OK N" or "NO N" for the Nth check; two trailing
+      // DEPFILE/DEPREG lines report the distro's Clawd hook deployment
+      // state (see below).
+      const batchLines = checks.map((c, i) => {
+        const escaped = c.wslParentDir.replace(/'/g, "'\\''");
+        return `test -d '${escaped}' && echo "OK ${i}" || echo "NO ${i}"`;
+      });
+      // Two independent deployment signals, because they answer different
+      // UI questions:
+      //   DEPFILE — hook files exist in the distro. Pairing ANY agent copies
+      //     them, and Unpair keeps them (shared dir). Drives the Unpair
+      //     button: there is something to clean up.
+      //   DEPREG — ~/.claude/settings.json references clawd-hook.js, i.e.
+      //     the claude-code registration is active. File-only checks give
+      //     false positives after a claude-code Unpair (uninstall clears
+      //     settings.json but keeps shared files). Together with DEPFILE it
+      //     drives the "hooks deployed" badge.
+      // Note DEPREG is claude-code truth only — other agents register in
+      // their own config files (e.g. ~/.codex/hooks.json). Per-agent pairing
+      // truth is a known follow-up; the badge must not gate the Unpair
+      // button, or distros paired with only a non-claude agent lose their
+      // unpair entry point.
+      const deployedFile = `${wslHome.replace(/\/$/, "")}/.claude/hooks/clawd-hook.js`;
+      const deployedFileEscaped = deployedFile.replace(/'/g, "'\\''");
+      const settingsPathEscaped = `${wslHome.replace(/\/$/, "")}/.claude/settings.json`.replace(/'/g, "'\\''");
+      batchLines.push(`test -f '${deployedFileEscaped}' && echo "DEPFILE 1" || echo "DEPFILE 0"`);
+      batchLines.push(`grep -q clawd-hook.js '${settingsPathEscaped}' 2>/dev/null && echo "DEPREG 1" || echo "DEPREG 0"`);
+      const batchResult = await execInWsl(
+        distro.name,
+        batchLines.join("; "),
+        { timeout: 30000 }  // fixed 30s — test -d is sub-ms, only distro boot/hang justifies a timeout
+      );
+
+      // A failed or timed-out batch has no trustworthy per-agent results;
+      // keep whatever the previous scan knew about this distro.
+      if (!batchResult || batchResult.error || batchResult.code !== 0) {
+        console.warn("Clawd: WSL batch dir check failed in", distro.name, "—",
+          (batchResult && (batchResult.error ? batchResult.error.message : `exit ${batchResult.code}`)) || "no result");
+        keepPreviousEntries(distro.name);
+        continue;
+      }
+
+      // Parse: collect indices of "OK" lines and the two DEP markers.
+      const foundIndices = new Set();
+      let hooksFilesPresent = false;
+      let hooksRegistered = false;
+      const stdout = (batchResult && batchResult.stdout) || "";
+      for (const line of stdout.split("\n")) {
+        const trimmed = line.trim();
+        const m = trimmed.match(/^OK (\d+)$/);
+        if (m) foundIndices.add(parseInt(m[1], 10));
+        else if (trimmed === "DEPFILE 1") hooksFilesPresent = true;
+        else if (trimmed === "DEPREG 1") hooksRegistered = true;
+      }
+
+      for (let i = 0; i < checks.length; i++) {
+        const { descriptor, wslParentDir } = checks[i];
+        const hasParentDir = foundIndices.has(i);
+        wslAgents.push({
+          agentId: descriptor.agentId,
+          agentName: descriptor.agentName,
+          distro: distro.name,
+          detectedInstalled: hasParentDir,
+          confidence: hasParentDir ? "high" : "low",
+          reason: hasParentDir ? "parent-dir" : "not-found",
+          detail: hasParentDir
+            ? `${wslParentDir} exists in WSL ${distro.name}`
+            : `${wslParentDir} not found in WSL ${distro.name}`,
+          wslHome,
+          wslParentDir,
+          hooksDeployed: hooksFilesPresent && hooksRegistered,
+          hooksFilesPresent,
+        });
+      }
+    }
+
+    // Only overwrite cache if no newer scan has already committed.
+    // This preserves results from this scan even if a newer scan started
+    // concurrently and subsequently failed (generation > committed).
+    if (generation <= _wslRefreshCommitted) return detectAgentInstallations(options);
+
+    _cachedWslAgents = wslAgents;
+    _cachedWslDistros = distros;
+    _cachedDetected = true;
+    _wslRefreshCommitted = generation;
+  } catch (err) {
+    // If a newer scan already committed, don't touch the cache.
+    if (generation <= _wslRefreshCommitted) return detectAgentInstallations(options);
+
+    console.warn("Clawd: WSL detection scan failed:", err && err.message ? err.message : err);
+    _cachedDetected = true;
+    // A failed scan must NOT claim the committed slot: _wslRefreshCommitted
+    // tracks the newest scan that committed DATA. If a failure bumped it, a
+    // concurrent older scan that later succeeds would see itself as outdated
+    // and discard valid results in favor of the stale/empty cache.
+
+    const result = detectAgentInstallations(options);
+    result.wslError = err && err.message ? err.message : String(err);
+    return result;
+  }
+
+  return detectAgentInstallations(options);
 }
 
 module.exports = {
   detectAgentInstallation,
   detectAgentInstallations,
+  refreshWslDetection,
   resolveAgentPaths,
 };

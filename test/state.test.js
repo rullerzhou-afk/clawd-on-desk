@@ -2163,8 +2163,8 @@ describe("buildSessionSnapshot", () => {
     assert.deepStrictEqual(snapshot.orderedIds, ["latest-remote", "error-local", "old-working"]);
     assert.deepStrictEqual(snapshot.menuOrderedIds, ["error-local", "old-working", "latest-remote"]);
     assert.deepStrictEqual(snapshot.groups, [
-      { host: "", ids: ["error-local", "old-working"] },
-      { host: "remote-box", ids: ["latest-remote"] },
+      { host: "", ids: ["error-local", "old-working"], displayHost: "" },
+      { host: "remote-box", ids: ["latest-remote"], displayHost: "remote-box" },
     ]);
     assert.strictEqual(snapshot.hudTotalNonIdle, 2);
     assert.strictEqual(snapshot.hudLastSessionId, "error-local");

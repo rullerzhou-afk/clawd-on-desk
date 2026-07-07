@@ -9,7 +9,7 @@
 // state only and QoderWork's native permission flow stays in control.
 
 const crypto = require("crypto");
-const { postStateToRunningServer, readHostPrefix } = require("./server-config");
+const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
 
 const TOOL_MATCH_STRING_MAX = 240;
@@ -208,7 +208,9 @@ function buildStateBody(hookName, payload, options = {}) {
 
   if (options.remote) {
     body.host = options.host || readHostPrefix();
+    applyWslSourceFields(body, { remote: true });
   } else {
+    applyWslSourceFields(body);
     applyLocalProcessFields(body, options.pidMeta);
   }
 

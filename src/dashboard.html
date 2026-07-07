@@ -340,6 +340,23 @@ h1 {
 .badge-interrupted .dot { background: var(--interrupted); }
 .badge-idle .dot { background: var(--idle); }
 
+.source-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--surface-alt);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.source-badge.source-wsl {
+  background: rgba(76, 166, 79, 0.15);
+  color: #4ca64f;
+}
+.source-badge.source-ssh {
+  background: rgba(66, 133, 244, 0.15);
+  color: #4285f4;
+}
+
 .actions {
   display: flex;
   justify-content: flex-end;

@@ -419,8 +419,14 @@ function registerSettingsIpc(options = {}) {
     }
   });
 
-  handle("settings:detect-agent-installations", () => {
+  handle("settings:detect-agent-installations", async (_ev, opts) => {
     try {
+      const options = opts && typeof opts === "object" ? opts : {};
+      if (options.refreshWsl) {
+        const { refreshWslDetection } = require("./agent-installation-detector");
+        await refreshWslDetection({ fs, path, now, skipDefaultIntegrations: false });
+        return detectAgentInstallations({ fs, path, now });
+      }
       return detectAgentInstallations({ fs, path, now });
     } catch (err) {
       console.warn("Clawd: settings:detect-agent-installations failed:", err && err.message);
@@ -428,6 +434,10 @@ function registerSettingsIpc(options = {}) {
         checkedAt: now(),
         agents: [],
         skippedAgentIds: [],
+        wslAgents: [],
+        wslDistros: [],
+        // Keep the manual Scan entry point alive even on a hard failure.
+        wslSupported: process.platform === "win32",
         error: err && err.message ? err.message : String(err),
       };
     }

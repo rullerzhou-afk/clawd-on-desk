@@ -7,6 +7,11 @@
 // kept as a CLI fallback; HOOK_FILES below is the source of truth on the Node
 // side, and `test/remote-ssh-deploy.test.js` enforces both lists agree.
 //
+// Conceptually mirrors src/wsl-deploy.js: both deploy hook scripts to a
+// remote environment and run agent-specific install scripts. Step lists
+// differ (scp vs wsl.exe stdin pipe) but new deploy requirements should
+// be addressed in both paths.
+//
 // All ssh / scp invocations route through buildSshArgs / buildScpArgs from
 // remote-ssh-runtime so non-default `-i identityFile` / `-p port` profiles
 // also Deploy correctly (v7 fix). Progress reports flow through the

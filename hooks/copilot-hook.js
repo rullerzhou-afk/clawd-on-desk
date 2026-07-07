@@ -23,6 +23,7 @@ const {
   postStateToRunningServer,
   postPermissionToRunningServer,
   readHostPrefix,
+  applyWslSourceFields,
 } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
 
@@ -285,6 +286,7 @@ function buildPermissionBody(payload, resolve, options = {}) {
   if (process.env.CLAWD_REMOTE) {
     const readHost = options.readHostPrefix || readHostPrefix;
     body.host = readHost();
+    applyWslSourceFields(body, { remote: true });
   } else if (typeof resolve === "function") {
     const { stablePid, agentPid, pidChain, tmuxSocket, tmuxClient } = resolve();
     if (stablePid) body.source_pid = stablePid;
@@ -292,6 +294,9 @@ function buildPermissionBody(payload, resolve, options = {}) {
     if (Array.isArray(pidChain) && pidChain.length) body.pid_chain = pidChain;
     if (tmuxSocket) body.tmux_socket = tmuxSocket;
     if (tmuxClient) body.tmux_client = tmuxClient;
+    applyWslSourceFields(body);
+  } else {
+    applyWslSourceFields(body);
   }
 
   return body;
@@ -371,7 +376,9 @@ function buildStateBody(event, payload, resolve, options = {}) {
   if (process.env.CLAWD_REMOTE) {
     const readHost = options.readHostPrefix || readHostPrefix;
     body.host = readHost();
+    applyWslSourceFields(body, { remote: true });
   } else {
+    applyWslSourceFields(body);
     const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve();
     body.source_pid = stablePid;
     if (detectedEditor) body.editor = detectedEditor;

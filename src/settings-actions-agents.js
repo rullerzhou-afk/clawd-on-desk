@@ -528,13 +528,69 @@ dismissAgentCleanupHints.lockKey = "agentIntegration";
 clearAgentCleanupHints.lockKey = "agentIntegration";
 clearAgentInstallHints.lockKey = "agentIntegration";
 
+// ── WSL deploy / remove ──────────────────────────────────────────────
+
+const _validateWslDeployDistro = requireString("deployToWsl.distro");
+
+async function _wslCommand(payload, deps, { commandName, depName, action }) {
+  if (!payload || typeof payload !== "object") {
+    return { status: "error", message: `${commandName}: payload must be an object` };
+  }
+  const distroCheck = _validateWslDeployDistro(payload.distro);
+  if (distroCheck.status !== "ok") return distroCheck;
+  const distro = payload.distro;
+  const agentId = typeof payload.agentId === "string" ? payload.agentId : undefined;
+
+  if (!deps || typeof deps[depName] !== "function") {
+    return { status: "error", message: `${commandName}: ${depName} dep not available (Windows only)` };
+  }
+
+  try {
+    const result = await deps[depName](distro, agentId);
+    if (result && result.ok) {
+      const okResult = { status: "ok", message: `${action} WSL ${distro}` };
+      // deploy-only: false = hooks installed but Clawd is unreachable from
+      // the distro (NAT networking) — renderer shows a localized warning.
+      if (result.connectivity === false) okResult.wslConnectivity = false;
+      return okResult;
+    }
+    return {
+      status: "error",
+      message: (result && result.message) || `WSL ${commandName} failed for ${distro}`,
+    };
+  } catch (err) {
+    return { status: "error", message: `${commandName}: ${err && err.message}` };
+  }
+}
+
+async function deployToWsl(payload, deps = {}) {
+  return _wslCommand(payload, deps, {
+    commandName: "deployToWsl",
+    depName: "deployHooksToWsl",
+    action: "Deployed to",
+  });
+}
+
+async function removeFromWsl(payload, deps = {}) {
+  return _wslCommand(payload, deps, {
+    commandName: "removeFromWsl",
+    depName: "removeHooksFromWsl",
+    action: "Removed from",
+  });
+}
+
+deployToWsl.lockKey = "agentIntegration";
+removeFromWsl.lockKey = "agentIntegration";
+
 module.exports = {
   INSTALLABLE_AGENT_IDS,
   clearAgentCleanupHints,
   clearAgentInstallHints,
+  deployToWsl,
   dismissAgentCleanupHints,
   dismissAgentInstallHints,
   installAgentIntegration,
+  removeFromWsl,
   setAgentFlag,
   setAgentPermissionMode,
   uninstallAgentIntegration,

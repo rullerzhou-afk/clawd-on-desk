@@ -5,7 +5,7 @@
 
 const crypto = require("crypto");
 const fs = require("fs");
-const { postStateToRunningServer, readHostPrefix } = require("./server-config");
+const { postStateToRunningServer, readHostPrefix, resolveWslDistro } = require("./server-config");
 const { fitStateBodyToByteBudget } = require("./state-payload-size");
 const { extractClaudeContextUsageFromEntries } = require("./context-usage");
 const { createPidResolver, readStdinJsonDetailed, getPlatformConfig } = require("./shared-process");
@@ -427,8 +427,12 @@ function buildStateBody(event, payload, resolve) {
     if (cronCount > 0) body.session_crons_count = cronCount;
     if (payload.stop_hook_active === true) body.stop_hook_active = true;
   }
+  const wslDistro = resolveWslDistro();
   if (process.env.CLAWD_REMOTE) {
+    // Remote session: preserve existing host prefix, add WSL distro as
+    // separate metadata. Do NOT override the SSH host.
     body.host = readHostPrefix();
+    if (wslDistro) body.wsl_distro = wslDistro;
   } else {
     const { stablePid, agentPid, agentCommandLine, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient } = resolve();
     body.source_pid = stablePid;
@@ -443,6 +447,10 @@ function buildStateBody(event, payload, resolve) {
     if (pidChain.length) body.pid_chain = pidChain;
     if (tmuxSocket) body.tmux_socket = tmuxSocket;
     if (tmuxClient) body.tmux_client = tmuxClient;
+    if (wslDistro) {
+      body.wsl_distro = wslDistro;
+      body.host = `wsl:${wslDistro}`;
+    }
     if (shouldReportForegroundWtHwnd(event) && foregroundWtHwnd) {
       body.wt_hwnd = String(foregroundWtHwnd);
     }

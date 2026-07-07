@@ -377,6 +377,15 @@ function appendMeta(main, session, now) {
   if (session.headless) {
     meta.appendChild(document.createTextNode(` · ${t("dashboardHeadless")}`));
   }
+  // Source badge: show where this session runs (WSL, SSH)
+  if (session.sourceType && session.sourceType !== "local") {
+    meta.appendChild(document.createTextNode(" · "));
+    const sourceBadge = document.createElement("span");
+    sourceBadge.className = `source-badge source-${session.sourceType}`;
+    sourceBadge.title = session.sourceDisplayLabel || session.sourceLabel || "";
+    sourceBadge.textContent = session.sourceDisplayLabel || session.sourceLabel;
+    meta.appendChild(sourceBadge);
+  }
   main.appendChild(meta);
 }
 
@@ -565,7 +574,7 @@ function render(options = {}) {
 
     const section = document.createElement("section");
     section.className = "group";
-    const host = group.host || "";
+    const host = group.displayHost || group.host || "";
     section.appendChild(createText("h2", "group-title", host || t("sessionLocal")));
 
     const cards = document.createElement("div");

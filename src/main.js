@@ -349,6 +349,14 @@ const _settingsController = createSettingsController({
       agentRuntime ? agentRuntime.repairIntegrationForAgent(id, options) : false,
     stopIntegrationForAgent: (id) => agentRuntime ? agentRuntime.stopIntegrationForAgent(id) : false,
     uninstallIntegrationForAgent: (id) => agentRuntime ? agentRuntime.uninstallIntegrationForAgent(id) : false,
+    deployHooksToWsl: async (distro, agentId) => {
+      const { deployToWsl } = require("./wsl-deploy");
+      return deployToWsl(distro, { agentId, isPackaged: app.isPackaged });
+    },
+    removeHooksFromWsl: async (distro, agentId) => {
+      const { removeFromWsl } = require("./wsl-deploy");
+      return removeFromWsl(distro, { agentId });
+    },
     cleanupIntegrations: (options = {}) => {
       const { cleanupIntegrations } = require("../hooks/cleanup-integrations.js");
       return cleanupIntegrations({ ...options, backup: true, silent: true });
@@ -4155,6 +4163,10 @@ if (!gotTheLock) {
     });
     queueFeishuApprovalSync("startup");
     createWindow();
+    // WSL agent detection is NOT started here: scanning runs a command inside
+    // every installed distro, which boots each stopped VM — too aggressive for
+    // app launch. The first Settings→Agents visit triggers the scan instead
+    // (see fetchAgentInstallationHints in settings-ui-core.js).
     systemWakeRecovery = createSystemWakeRecovery({
       powerMonitor,
       ipcMain,

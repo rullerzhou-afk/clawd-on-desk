@@ -464,7 +464,18 @@ const AUTO_START_HOOK_TIMEOUT_SECONDS = 15;
 function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {
   const platform = options.platform || process.platform;
   const argSuffix = args ? ` ${args}` : "";
-  const quotedCommand = `"${nodeBin}" "${scriptPath}"${argSuffix}`;
+  // Shell-quoted form: used for PowerShell (& operator), remote POSIX (env-prefix
+  // syntax is shell syntax), and native macOS/Linux (paths may contain spaces in
+  // packaged apps). Quotes are part of the shell grammar.
+  const shellQuotedCommand = `"${nodeBin}" "${scriptPath}"${argSuffix}`;
+  // Plain (unquoted) form for WSL — Claude Code on WSL either defaults to
+  // sh -c or splits on spaces; both work without quotes. Quoting WITHOUT
+  // a shell field causes the hook runner to treat the quotes as part of the
+  // executable name, breaking WSL hook execution. WSL paths never contain
+  // spaces (/usr/bin/node, /home/…/.claude/hooks/…).
+  const plainCommand = `${nodeBin} ${scriptPath}${argSuffix}`;
+  const isWsl = !!options.wslDistro;
+
   const withHookOptions = (hook) => {
     if (Object.prototype.hasOwnProperty.call(options, "async")) {
       hook.async = options.async === true;
@@ -481,7 +492,7 @@ function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {
   if (options.remote) {
     return withHookOptions({
       type: "command",
-      command: `CLAWD_REMOTE=1 ${quotedCommand}`,
+      command: `CLAWD_REMOTE=1 ${shellQuotedCommand}`,
     });
   }
 
@@ -489,13 +500,27 @@ function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {
     return withHookOptions({
       type: "command",
       shell: "powershell",
-      command: `& ${quotedCommand}`,
+      command: `& ${shellQuotedCommand}`,
     });
   }
 
+  // WSL: plain (unquoted) POSIX format — no shell field. Claude Code on
+  // WSL/Linux splits on spaces or uses sh -c; both work without quotes.
+  // Quoting without a shell field was the root cause of silent WSL hook
+  // failures (quotes treated as part of executable name).
+  if (isWsl) {
+    return withHookOptions({
+      type: "command",
+      command: plainCommand,
+    });
+  }
+
+  // Native macOS/Linux: keep shell-quoted form. Paths in packaged apps
+  // may contain spaces, and the hook runner on these platforms handles
+  // quoted commands via the default sh -c.
   return withHookOptions({
     type: "command",
-    command: quotedCommand,
+    command: shellQuotedCommand,
   });
 }
 
@@ -774,11 +799,38 @@ function reconcileVersionedHooks(settings, supportedEvents, versionInfo) {
  * @param {{ version: string|null, source: string|null, status: "known"|"unknown" }} [options.claudeVersionInfo]
  * @returns {{ added: number, skipped: number, updated: number, removed: number, version: string|null, versionStatus: "known"|"unknown", versionSource: string|null }}
  */
+// WSL detection for the hook command format. CLAWD_WSL_DISTRO is injected
+// by the Windows-side one-click deploy; WSL_DISTRO_NAME is set by WSL init
+// itself, so a manual `node install.js` inside WSL also gets the plain
+// command format (the quoted form silently fails there — see
+// buildCommandHookSpec). Gated on linux so a stale variable in some other
+// environment cannot flip the format.
+function resolveInstallWslDistro(options = {}) {
+  if (options.wslDistro) return options.wslDistro;
+  if (process.env.CLAWD_WSL_DISTRO) return process.env.CLAWD_WSL_DISTRO;
+  if (process.platform === "linux" && process.env.WSL_DISTRO_NAME) {
+    return process.env.WSL_DISTRO_NAME;
+  }
+  return null;
+}
+
+function resolveWritePath(settingsPath) {
+  try { return fs.realpathSync(settingsPath); } catch (err) {
+    // ENOENT: new file, no symlink yet — use the unresolved path.
+    // Other errors (ELOOP, EACCES, EIO) — surface them rather than silently
+    // replacing a symlink with a regular file.
+    if (err && err.code === "ENOENT") return settingsPath;
+    throw err;
+  }
+}
+
 function registerHooks(options = {}) {
   const settingsPath = options.settingsPath || path.join(os.homedir(), ".claude", "settings.json");
+  const writePath = resolveWritePath(settingsPath);
   const hookPort = getHookServerPort(options.port);
   const hookScript = asarUnpackedPath(path.resolve(__dirname, "clawd-hook.js").replace(/\\/g, "/"));
   const platform = options.platform || process.platform;
+  const wslDistro = resolveInstallWslDistro(options);
 
   // Read existing settings
   let settings = {};
@@ -856,6 +908,7 @@ function registerHooks(options = {}) {
     const desiredHook = buildCommandHookSpec(nodeBin, hookScript, event, {
       platform,
       remote: options.remote,
+      wslDistro,
       async: true,
       timeout: options.remote ? REMOTE_STATE_HOOK_TIMEOUT_SECONDS : STATE_HOOK_TIMEOUT_SECONDS,
     });
@@ -889,6 +942,7 @@ function registerHooks(options = {}) {
 
     const autoStartHook = buildCommandHookSpec(nodeBin, autoStartScript, "", {
       platform,
+      wslDistro,
       async: true,
       timeout: AUTO_START_HOOK_TIMEOUT_SECONDS,
     });
@@ -971,7 +1025,7 @@ function registerHooks(options = {}) {
     // and we inject hooks into a shared global config the user did not author.
     // Only back up a file that already existed; opt out with `backup: false`.
     if (preExisting && options.backup !== false) {
-      backupPath = writeJsonAtomicWithBackup(settingsPath, settings, {
+      backupPath = writeJsonAtomicWithBackup(writePath, settings, {
         backup: true,
         backupPath: options.backupPath,
         backupKeep: options.backupKeep,
@@ -980,14 +1034,14 @@ function registerHooks(options = {}) {
         console.log(`  Backup: saved previous settings to ${backupPath}`);
       }
     } else {
-      writeJsonAtomic(settingsPath, settings);
+      writeJsonAtomic(writePath, settings);
     }
   }
 
   if (!options.silent) {
     const versionLabel = versionInfo.status === "known" ? versionInfo.version : "unknown";
     const versionSource = versionInfo.source || "unavailable";
-    console.log(`Clawd hooks installed to ${settingsPath}`);
+    console.log(`Clawd hooks installed to ${writePath}`);
     console.log(`  Claude Code version: ${versionLabel}`);
     console.log(`  Detection source: ${versionSource}`);
     if (versionInfo.status === "unknown") {
@@ -1023,9 +1077,11 @@ function registerHooks(options = {}) {
 
 async function registerHooksAsync(options = {}) {
   const settingsPath = options.settingsPath || path.join(os.homedir(), ".claude", "settings.json");
+  const writePath = resolveWritePath(settingsPath);
   const hookPort = getHookServerPort(options.port);
   const hookScript = asarUnpackedPath(path.resolve(__dirname, "clawd-hook.js").replace(/\\/g, "/"));
   const platform = options.platform || process.platform;
+  const wslDistro = resolveInstallWslDistro(options);
 
   let settings = {};
   let preExisting = false;
@@ -1092,6 +1148,7 @@ async function registerHooksAsync(options = {}) {
     const desiredHook = buildCommandHookSpec(nodeBin, hookScript, event, {
       platform,
       remote: options.remote,
+      wslDistro,
       async: true,
       timeout: options.remote ? REMOTE_STATE_HOOK_TIMEOUT_SECONDS : STATE_HOOK_TIMEOUT_SECONDS,
     });
@@ -1123,6 +1180,7 @@ async function registerHooksAsync(options = {}) {
 
     const autoStartHook = buildCommandHookSpec(nodeBin, autoStartScript, "", {
       platform,
+      wslDistro,
       async: true,
       timeout: AUTO_START_HOOK_TIMEOUT_SECONDS,
     });
@@ -1195,7 +1253,7 @@ async function registerHooksAsync(options = {}) {
     // See registerHooks(): back up the prior config before injecting hooks so
     // the change is recoverable. Only back up a pre-existing file; `backup: false` opts out.
     if (preExisting && options.backup !== false) {
-      backupPath = await writeJsonAtomicWithBackupAsync(settingsPath, settings, {
+      backupPath = await writeJsonAtomicWithBackupAsync(writePath, settings, {
         backup: true,
         backupPath: options.backupPath,
         backupKeep: options.backupKeep,
@@ -1204,14 +1262,14 @@ async function registerHooksAsync(options = {}) {
         console.log(`  Backup: saved previous settings to ${backupPath}`);
       }
     } else {
-      await writeJsonAtomicAsync(settingsPath, settings);
+      await writeJsonAtomicAsync(writePath, settings);
     }
   }
 
   if (!options.silent) {
     const versionLabel = versionInfo.status === "known" ? versionInfo.version : "unknown";
     const versionSource = versionInfo.source || "unavailable";
-    console.log(`Clawd hooks installed to ${settingsPath}`);
+    console.log(`Clawd hooks installed to ${writePath}`);
     console.log(`  Claude Code version: ${versionLabel}`);
     console.log(`  Detection source: ${versionSource}`);
     if (versionInfo.status === "unknown") {
@@ -1247,6 +1305,7 @@ async function registerHooksAsync(options = {}) {
 
 function unregisterHooks(options = {}) {
   const settingsPath = options.settingsPath || path.join(os.homedir(), ".claude", "settings.json");
+  const writePath = resolveWritePath(settingsPath);
   let settings = {};
   try {
     settings = readJsonFile(settingsPath);
@@ -1285,7 +1344,7 @@ function unregisterHooks(options = {}) {
 
   let backupPath = null;
   if (changed) {
-    backupPath = writeJsonAtomicWithBackup(settingsPath, settings, options);
+    backupPath = writeJsonAtomicWithBackup(writePath, settings, options);
   }
 
   const result = { removed, changed };
@@ -1295,6 +1354,7 @@ function unregisterHooks(options = {}) {
 
 async function unregisterHooksAsync(options = {}) {
   const settingsPath = options.settingsPath || path.join(os.homedir(), ".claude", "settings.json");
+  const writePath = resolveWritePath(settingsPath);
   let settings = {};
   try {
     settings = await readJsonFileAsync(settingsPath);
@@ -1333,7 +1393,7 @@ async function unregisterHooksAsync(options = {}) {
 
   let backupPath = null;
   if (changed) {
-    backupPath = await writeJsonAtomicWithBackupAsync(settingsPath, settings, options);
+    backupPath = await writeJsonAtomicWithBackupAsync(writePath, settings, options);
   }
 
   const result = { removed, changed };
@@ -1348,6 +1408,7 @@ async function unregisterHooksAsync(options = {}) {
  */
 function unregisterAutoStart() {
   const settingsPath = path.join(os.homedir(), ".claude", "settings.json");
+  const writePath = resolveWritePath(settingsPath);
   let settings;
   try {
     settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
@@ -1375,7 +1436,7 @@ function unregisterAutoStart() {
   });
 
   if (settings.hooks.SessionStart.length < before) {
-    writeJsonAtomic(settingsPath, settings);
+    writeJsonAtomic(writePath, settings);
     return true;
   }
   return false;
@@ -1419,6 +1480,7 @@ function hasClaudeSettingsDir(homeDir) {
 function registerClaudeStatusline(options = {}) {
   const homeDir = options.homeDir || os.homedir();
   const settingsPath = options.settingsPath || path.join(homeDir, ".claude", "settings.json");
+  const writePath = resolveWritePath(settingsPath);
 
   if (!options.settingsPath && !hasClaudeSettingsDir(homeDir)) {
     if (!options.silent) console.log("Clawd: Claude Code settings not found - skipping statusline registration");
@@ -1454,7 +1516,7 @@ function registerClaudeStatusline(options = {}) {
   const changed = !existing || JSON.stringify(existing) !== JSON.stringify(desired);
   if (changed) {
     settings.statusLine = desired;
-    writeJsonAtomic(settingsPath, settings);
+    writeJsonAtomic(writePath, settings);
   }
 
   if (!options.silent) {
@@ -1467,6 +1529,7 @@ function registerClaudeStatusline(options = {}) {
 function unregisterClaudeStatusline(options = {}) {
   const homeDir = options.homeDir || os.homedir();
   const settingsPath = options.settingsPath || path.join(homeDir, ".claude", "settings.json");
+  const writePath = resolveWritePath(settingsPath);
   let settings = {};
   try {
     settings = readJsonFile(settingsPath);
@@ -1483,7 +1546,7 @@ function unregisterClaudeStatusline(options = {}) {
   }
 
   delete settings.statusLine;
-  const backupPath = writeJsonAtomicWithBackup(settingsPath, settings, options);
+  const backupPath = writeJsonAtomicWithBackup(writePath, settings, options);
   if (!options.silent) console.log(`Clawd Claude Code statusline removed -> ${settingsPath}`);
   const result = { installed: true, removed: 1, changed: true, settingsPath };
   if (options.backup === true) result.backupPath = backupPath;

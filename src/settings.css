@@ -531,6 +531,50 @@ html, body {
 .agent-subgroup .collapsible-group-body .row:last-child {
   border-bottom: none;
 }
+.agent-scan-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 6px 0;
+}
+.agent-instance-scan-btn {
+  font-size: 10px;
+  padding: 2px 8px;
+}
+.agent-scan-status {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.agent-instance-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 6px;
+  padding-bottom: 2px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: none !important;
+}
+.agent-instance-row {
+  padding-left: 48px;
+}
+.agent-instance-row .row-desc {
+  font-family: monospace;
+  font-size: 11px;
+}
+.agent-instance-deployed {
+  font-size: 10px;
+  padding: 1px 6px;
+  margin-left: 8px;
+  border-radius: 8px;
+  background: rgba(76, 166, 79, 0.15);
+  color: #4ca64f;
+  white-space: nowrap;
+}
 .settings-option-list {
   display: grid;
   gap: 8px;

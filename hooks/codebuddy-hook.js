@@ -3,7 +3,7 @@
 // Registered in ~/.codebuddy/settings.json by hooks/codebuddy-install.js
 // CodeBuddy uses Claude Code-compatible hook format with identical event names.
 
-const { postStateToRunningServer, readHostPrefix } = require("./server-config");
+const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
 
 // CodeBuddy hook event → { state, event } for the Clawd state machine
@@ -90,7 +90,9 @@ readStdinJson()
     if (cwd) body.cwd = cwd;
     if (process.env.CLAWD_REMOTE) {
       body.host = readHostPrefix();
+      applyWslSourceFields(body, { remote: true });
     } else {
+      applyWslSourceFields(body);
       body.source_pid = stablePid;
       if (detectedEditor) body.editor = detectedEditor;
       if (agentPid) body.agent_pid = agentPid;
