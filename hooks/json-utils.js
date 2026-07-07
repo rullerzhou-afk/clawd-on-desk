@@ -390,8 +390,11 @@ function portableWindowsNodeToken(nodeBin) {
  * runs command hooks via Git Bash — see issue #597) need
  * windowsWrapper:"portable": an unquoted forward-slash interpreter token plus
  * double-quoted arguments, which parses under bash, cmd, and PowerShell-free
- * spawn paths alike. Callers choose the wrapper that matches the target agent
- * while sharing the quoting rules.
+ * spawn paths alike. Same known limit as buildPortableStatuslineCommand:
+ * inside double quotes bash/PowerShell still expand `$` and backticks, so an
+ * install path containing those is rewritten before node sees it — accepted,
+ * since no quoting form is inert in every target shell. Callers choose the
+ * wrapper that matches the target agent while sharing the quoting rules.
  */
 function formatNodeHookCommand(nodeBin, scriptPath, options = {}) {
   const platform = options.platform || process.platform;
