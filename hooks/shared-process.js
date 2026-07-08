@@ -154,7 +154,11 @@ function getWindowsProcessSnapshot(execFileSync) {
     const out = execFileSync(
       "powershell.exe",
       [
-        "-NoProfile", "-NonInteractive", "-Command",
+        // -WindowStyle Hidden is belt-and-suspenders alongside windowsHide:
+        // when Windows Terminal is the OS default terminal app, its console
+        // delegation does not always honor CREATE_NO_WINDOW (#627), and the
+        // in-process flag shortens any window that still leaks through.
+        "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command",
         WINDOWS_PROCESS_SNAPSHOT_SCRIPT,
       ],
       { encoding: "utf8", timeout: 3000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }
