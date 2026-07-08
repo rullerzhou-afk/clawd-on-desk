@@ -51,6 +51,7 @@ const HOOK_FILES = [
   "server-config.js",
   "json-utils.js",
   "shared-process.js",
+  "pid-cache.js",
   "context-usage.js",
   "antigravity-context-usage.js",
   "claude-rate-limits.js",

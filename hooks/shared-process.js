@@ -50,6 +50,31 @@ function normalizeTmuxClientTarget(value) {
   return /^[\w./:-]+$/.test(text) ? text : null;
 }
 
+// $TMUX is "<socket>,<serverPid>,<sessionN>"; the first field is the socket
+// path used for `tmux -S <socket>` focus. Pure env parse, no subprocess — safe
+// to call from a cache-hit path that skips the full resolve() walk.
+function tmuxSocketFromEnv() {
+  if (!process.env.TMUX) return null;
+  return normalizeTmuxSocketPath(process.env.TMUX.split(",")[0]);
+}
+
+// Liveness probe with ZERO subprocess spawn: process.kill(pid, 0) is a syscall,
+// not a spawn (so it never risks the WindowsTerminal console flash this whole
+// change exists to avoid). ESRCH => process gone; EPERM => alive but not ours.
+// Cannot detect PID reuse (same limitation as src/state.js isProcessAlive) —
+// callers pair it with session-scoped cache invalidation. See
+// docs/plans/plan-issue-627-hook-snapshot-flash-cache.md.
+function processAlive(pid) {
+  const n = Number(pid);
+  if (!Number.isFinite(n) || n <= 0) return false;
+  try {
+    process.kill(n, 0);
+    return true;
+  } catch (e) {
+    return !!(e && e.code === "EPERM");
+  }
+}
+
 // ── getPlatformConfig ────────────────────────────────────────────────────────
 // Returns { terminalNames: Set, systemBoundary: Set, editorMap: Object, editorPathChecks: Array }
 // Options:
@@ -334,13 +359,16 @@ function createPidResolver(options) {
       }
     }
 
-    let tmuxSocket = null;
-    if (process.env.TMUX) {
-      const socketPath = process.env.TMUX.split(",")[0];
-      tmuxSocket = normalizeTmuxSocketPath(socketPath);
-    }
+    const tmuxSocket = tmuxSocketFromEnv();
 
-    _cached = { stablePid: terminalPid || lastGoodPid, agentPid, agentCommandLine, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient };
+    // provenance for the cross-process pid cache (#627). snapshotOk = the
+    // Windows Get-CimInstance snapshot actually returned processes; terminalPid
+    // = the raw terminal match BEFORE the `|| lastGoodPid` fallback. Callers use
+    // these to refuse caching a degraded walk (empty snapshot → stablePid
+    // silently decays to process.ppid) instead of reverse-inferring from
+    // stablePid. Non-Windows has no snapshot step, so snapshotOk is trivially true.
+    const snapshotOk = isWin ? !!(winSnapshot && winSnapshot.size > 0) : true;
+    _cached = { stablePid: terminalPid || lastGoodPid, terminalPid, snapshotOk, agentPid, agentCommandLine, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient };
     return _cached;
   };
 }
@@ -445,4 +473,6 @@ module.exports = {
   readStdinJsonDetailed,
   DEFAULT_STDIN_READ_TIMEOUT_MS,
   buildElectronLaunchConfig,
+  tmuxSocketFromEnv,
+  processAlive,
 };

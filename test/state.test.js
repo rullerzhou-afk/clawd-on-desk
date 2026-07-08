@@ -857,6 +857,42 @@ describe("updateSession()", () => {
     assert.strictEqual(api.sessions.get("new1").state, "working");
   });
 
+  // #627 safety net: the pid-snapshot cache omits pid_chain on cache-hit events,
+  // relying on updateSession MERGING (keeping the last pidChain) rather than
+  // OVERWRITING it to null. If a future refactor flips this to overwrite, the
+  // cache would blank out terminal-tab focus — this test pins the behavior.
+  it("update omitting pidChain keeps the previously stored pidChain (MERGE)", () => {
+    update(api, { id: "merge1", event: "SessionStart", state: "idle", pidChain: [700, 800, 900], sourcePid: 900 });
+    assert.deepStrictEqual(api.sessions.get("merge1").pidChain, [700, 800, 900]);
+
+    // A high-frequency event that carries no pid_chain must not clear it.
+    update(api, { id: "merge1", event: "PreToolUse", state: "working", pidChain: null, sourcePid: 900 });
+    assert.deepStrictEqual(
+      api.sessions.get("merge1").pidChain,
+      [700, 800, 900],
+      "omitting pidChain must merge (keep old), not overwrite with null",
+    );
+  });
+
+  // Same MERGE guarantee on the PermissionRequest persistence path (state.js:1367),
+  // which is a separate code branch from the main update path. #627 does not cache
+  // this path (PermissionRequest is an HTTP hook), but plan §6 asks both branches
+  // be pinned so a future refactor cannot flip either to overwrite-with-null.
+  it("PermissionRequest path also merges pidChain when a later request omits it", () => {
+    const sid = "codex:merge-perm";
+    update(api, { id: sid, event: "PermissionRequest", state: "notification", agentId: "codex", sourcePid: 456, agentPid: 456, pidChain: [321, 456] });
+    assert.deepStrictEqual(api.sessions.get(sid).pidChain, [321, 456]);
+
+    // A later codex PermissionRequest that still persists focus (sourcePid set)
+    // but omits pidChain must keep the old chain, not blank it.
+    update(api, { id: sid, event: "PermissionRequest", state: "notification", agentId: "codex", sourcePid: 456, agentPid: 456, pidChain: null });
+    assert.deepStrictEqual(
+      api.sessions.get(sid).pidChain,
+      [321, 456],
+      "PermissionRequest path must merge, not overwrite with null",
+    );
+  });
+
   it("existing session_id → updates state and timestamp", () => {
     update(api, { id: "s1", state: "working" });
     const t1 = api.sessions.get("s1").updatedAt;

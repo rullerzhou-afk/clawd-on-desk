@@ -10,6 +10,8 @@ const {
   readStdinJsonDetailed,
   DEFAULT_STDIN_READ_TIMEOUT_MS,
   buildElectronLaunchConfig,
+  tmuxSocketFromEnv,
+  processAlive,
 } = require("../hooks/shared-process");
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -602,5 +604,106 @@ describe("readStdinJsonDetailed()", () => {
     assert.strictEqual(result.payload.session_id, "big-sid");
     assert.strictEqual(result.bytes, Buffer.byteLength(big));
     assert.strictEqual(result.parseError, null);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// #627 provenance: snapshotOk / terminalPid — the fields the pid cache uses to
+// refuse caching a degraded Windows snapshot instead of reverse-inferring from
+// stablePid. Uses the mock loader so it runs on any platform.
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("createPidResolver() — snapshot provenance (#627, mocked win32)", () => {
+  const { loadSharedProcessWithMock } = require("./helpers/load-shared-process-with-mock");
+
+  function snapshotJson(procs) {
+    return JSON.stringify(procs.map((p) => ({
+      ProcessId: p.pid,
+      Name: p.name,
+      ParentProcessId: p.ppid,
+      CommandLine: typeof p.cmd === "string" ? p.cmd : null,
+    })));
+  }
+
+  it("snapshotOk true + terminalPid set when the walk reaches a terminal", () => {
+    const { mod, cleanup } = loadSharedProcessWithMock({
+      execFileSyncMock: () => snapshotJson([
+        { pid: 500, name: "node.exe", ppid: 600, cmd: "node C:/x/claude-code/cli.js" },
+        { pid: 600, name: "windowsterminal.exe", ppid: 0 },
+      ]),
+      platform: "win32",
+    });
+    try {
+      const cfg = mod.getPlatformConfig();
+      const r = mod.createPidResolver({
+        platformConfig: cfg,
+        startPid: 500,
+        agentNames: { win: new Set(["claude.exe"]), mac: new Set(["claude"]) },
+        agentCmdlineCheck: (c) => c.includes("claude-code"),
+      })();
+      assert.strictEqual(r.snapshotOk, true);
+      assert.strictEqual(r.terminalPid, 600);
+      assert.strictEqual(r.stablePid, 600);
+      assert.strictEqual(r.agentPid, 500);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("snapshotOk false + terminalPid null + stablePid decays to startPid on empty snapshot", () => {
+    const { mod, cleanup } = loadSharedProcessWithMock({
+      execFileSyncMock: () => "", // empty PS output → getWindowsProcessSnapshot yields an empty Map
+      platform: "win32",
+    });
+    try {
+      const cfg = mod.getPlatformConfig();
+      const r = mod.createPidResolver({ platformConfig: cfg, startPid: 4242 })();
+      assert.strictEqual(r.snapshotOk, false);
+      assert.strictEqual(r.terminalPid, null);
+      assert.strictEqual(r.stablePid, 4242, "decays to the ephemeral start pid — must not be cached");
+      assert.strictEqual(r.agentPid, null);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("tmuxSocketFromEnv()", () => {
+  it("parses the socket path from $TMUX", () => {
+    const saved = process.env.TMUX;
+    process.env.TMUX = "/tmp/tmux-1000/work,200,5";
+    try {
+      assert.strictEqual(tmuxSocketFromEnv(), "/tmp/tmux-1000/work");
+    } finally {
+      if (saved === undefined) delete process.env.TMUX;
+      else process.env.TMUX = saved;
+    }
+  });
+
+  it("returns null when $TMUX is unset", () => {
+    const saved = process.env.TMUX;
+    delete process.env.TMUX;
+    try {
+      assert.strictEqual(tmuxSocketFromEnv(), null);
+    } finally {
+      if (saved !== undefined) process.env.TMUX = saved;
+    }
+  });
+});
+
+describe("processAlive()", () => {
+  it("true for the current process", () => {
+    assert.strictEqual(processAlive(process.pid), true);
+  });
+
+  it("false for a pid that does not exist", () => {
+    assert.strictEqual(processAlive(2147483646), false);
+  });
+
+  it("false for non-positive / non-numeric input", () => {
+    assert.strictEqual(processAlive(0), false);
+    assert.strictEqual(processAlive(-1), false);
+    assert.strictEqual(processAlive(null), false);
+    assert.strictEqual(processAlive("nope"), false);
   });
 });
