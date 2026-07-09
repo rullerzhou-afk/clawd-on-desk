@@ -114,6 +114,7 @@ class WavePetEngine {
     this.ticksInState = 0;
     this.stateEnteredMs = null;
     this.holdUntilMs = 0;
+    this.transientClosingBoost = 0;
 
     const initNow = Date.now();
     const initSignals = this._signals(initNow);
@@ -149,6 +150,7 @@ class WavePetEngine {
       previousState,
       changed
     );
+    this.transientClosingBoost = 0;
     return this.lastOutput;
   }
 
@@ -231,10 +233,8 @@ class WavePetEngine {
       if (["stop", "complete", "done"].includes(String(event.finish_reason || ""))) {
         this.current.finish_count += 1;
       }
-      const closingSnapshot = { ...this.current };
+      this.transientClosingBoost = this.current.finish_count;
       this._closeCurrentTurn();
-      this.current = closingSnapshot;
-      this.active = false;
     }
   }
 
@@ -286,7 +286,8 @@ class WavePetEngine {
     const commandStallPressure = Math.max(0, commandWaitLoad - 2) / 2;
     const closingSignal = Math.min(
       1,
-      this.current.finish_count * 0.8 + Math.max(0, -this._visibleLoadSlope()) * 0.2
+      (this.current.finish_count + this.transientClosingBoost) * 0.8 +
+        Math.max(0, -this._visibleLoadSlope()) * 0.2
     );
 
     return {
@@ -385,6 +386,15 @@ class WavePetEngine {
     }
   }
 
+  _strongEnoughImmediateSwitch(state, scores) {
+    const score = scores[state] || 0;
+    if (state === "overheat_debugging") return score >= this.thresholds.overheat_pressure;
+    if (state === "deep_output") return score >= 0.75;
+    if (state === "closing") return score >= this.thresholds.closing_signal;
+    if (state === "reading_understanding") return score >= 0.45;
+    return score >= 0.65;
+  }
+
   _smooth(rawState, scores, now) {
     const previousState = this.state;
     if (this.stateEnteredMs == null) this.stateEnteredMs = now;
@@ -399,6 +409,17 @@ class WavePetEngine {
     }
 
     const higherPriority = STATE_PRIORITY[rawState] > STATE_PRIORITY[this.state];
+    if (higherPriority && this._strongEnoughImmediateSwitch(rawState, scores)) {
+      this.state = rawState;
+      this.stateEnteredMs = now;
+      this._refreshHold(rawState, scores, now, true);
+      this.candidateState = null;
+      this.candidateTicks = 0;
+      this.ticksInState = 1;
+      this.rawState = rawState;
+      return { previousState, changed: previousState !== this.state };
+    }
+
     if (now < this.holdUntilMs && !higherPriority) {
       this.candidateState = rawState;
       this.candidateTicks = 1;
@@ -459,7 +480,8 @@ class WavePetEngine {
       current_test_count: this.current.test_count,
       current_edit_count: this.current.edit_count,
       current_tool_wait_ms: this.openToolStartMs == null ? 0 : now - this.openToolStartMs,
-      current_silent_wait_ms: this.lastActivityMs == null ? 0 : Math.max(0, now - this.lastActivityMs),
+      current_silent_wait_ms:
+        !this.active || this.lastActivityMs == null ? 0 : Math.max(0, now - this.lastActivityMs),
       open_tool_kind: this.openToolKind,
       open_tool_name: this.openToolName,
       goal_mode: this.goalMode,
