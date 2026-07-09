@@ -430,6 +430,122 @@ describe("agent-runtime-main", () => {
     assert.deepStrictEqual(updateCalls, []);
   });
 
+  it("suppresses delayed WavePet closing across all post-completion housekeeping events", () => {
+    const housekeepingEvents = ["event_msg:token_count", "session_meta", "Notification", "stale-cleanup"];
+
+    for (const housekeepingEvent of housekeepingEvents) {
+      const instances = [];
+      const updateCalls = [];
+      const FakeMonitor = makeFakeMonitorClass(instances);
+      const fakeWavePetRuntime = {
+        processCodexRecord(sessionId, record) {
+          if (record && record.type === "event_msg" && record.payload && record.payload.type === "task_complete") {
+            return {
+              sessionId,
+              state: "attention",
+              event: "wavepet:closing",
+              displayHint: null,
+              extra: {
+                agentId: "codex",
+                wavepet: { state: "closing" },
+              },
+            };
+          }
+          return null;
+        },
+      };
+      const sessions = new Map([
+        [`codex:${housekeepingEvent}`, {
+          agentId: "codex",
+          state: "idle",
+          awaitingInputSinceStop: true,
+          recentEvents: [
+            { event: "Stop", state: "attention", at: 1000 },
+            { event: housekeepingEvent, state: "idle", at: 1200 },
+          ],
+        }],
+      ]);
+      const runtime = createAgentRuntimeMain({
+        loadCodexLogMonitor: () => FakeMonitor,
+        loadCodexAgent: () => ({ id: "codex" }),
+        wavePetRuntime: fakeWavePetRuntime,
+        codexSubagentClassifier: {},
+        isAgentEnabled: (agentId) => agentId === "codex",
+        getStateRuntime: () => ({ sessions }),
+        updateSession: (...args) => updateCalls.push(args),
+      });
+      const monitor = runtime.startCodexLogMonitor();
+
+      runtime.markCodexOfficialHookSession(`codex:${housekeepingEvent}`);
+      monitor.emitRaw(`codex:${housekeepingEvent}`, {
+        timestamp: "2026-07-09T00:00:03.000Z",
+        type: "event_msg",
+        payload: { type: "task_complete" },
+      }, {
+        cwd: "/repo",
+        headless: false,
+      });
+
+      assert.deepStrictEqual(updateCalls, [], housekeepingEvent);
+    }
+  });
+
+  it("allows WavePet closing after real progress follows completion", () => {
+    const instances = [];
+    const updateCalls = [];
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const fakeWavePetRuntime = {
+      processCodexRecord(sessionId, record) {
+        if (record && record.type === "event_msg" && record.payload && record.payload.type === "task_complete") {
+          return {
+            sessionId,
+            state: "attention",
+            event: "wavepet:closing",
+            displayHint: null,
+            extra: {
+              agentId: "codex",
+              wavepet: { state: "closing" },
+            },
+          };
+        }
+        return null;
+      },
+    };
+    const sessions = new Map([
+      ["codex:s1", {
+        agentId: "codex",
+        state: "working",
+        recentEvents: [
+          { event: "Stop", state: "attention", at: 1000 },
+          { event: "UserPromptSubmit", state: "thinking", at: 1200 },
+        ],
+      }],
+    ]);
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      wavePetRuntime: fakeWavePetRuntime,
+      codexSubagentClassifier: {},
+      isAgentEnabled: (agentId) => agentId === "codex",
+      getStateRuntime: () => ({ sessions }),
+      updateSession: (...args) => updateCalls.push(args),
+    });
+    const monitor = runtime.startCodexLogMonitor();
+
+    runtime.markCodexOfficialHookSession("codex:s1");
+    monitor.emitRaw("codex:s1", {
+      timestamp: "2026-07-09T00:00:03.000Z",
+      type: "event_msg",
+      payload: { type: "task_complete" },
+    }, {
+      cwd: "/repo",
+      headless: false,
+    });
+
+    assert.equal(updateCalls.length, 1);
+    assert.equal(updateCalls[0][2], "wavepet:closing");
+  });
+
   it("starts and stops the Codex monitor through agent gate hooks and cleanup", () => {
     const instances = [];
     const FakeMonitor = makeFakeMonitorClass(instances);

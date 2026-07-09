@@ -26,6 +26,8 @@ const CODEX_LOG_EVENTS_COVERED_BY_OFFICIAL_HOOKS = new Set([
 const CODEX_WORKING_LIKE_STATES = new Set(["working", "thinking", "juggling"]);
 const CODEX_POST_COMPLETION_EVENTS = new Set(["Stop", "event_msg:task_complete"]);
 const CODEX_COMPLETION_HOUSEKEEPING_EVENTS = new Set([
+  "Notification",
+  "stale-cleanup",
   "event_msg:token_count",
   "session_meta",
 ]);
