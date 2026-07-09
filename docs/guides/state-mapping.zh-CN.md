@@ -6,6 +6,8 @@
 
 Subagent 事件仍映射到逻辑 `juggling` 状态，但 Clawd 主题现在会按 live 子代理数量选择分层素材：1 个子代理使用 `clawd-headphones-groove.svg`，2 个以上使用 `clawd-working-juggling.svg`。旧版 Clawd conducting 素材已退役；Calico 和云宝的 2+ 子代理分层仍使用各自的 conducting 动画。
 
+Codex sessions may also be refined by WavePet. WavePet consumes Codex JSONL assistant output, reasoning, tool, edit, test, error, and completion records, then maps them back to Clawd `thinking` / `working` / `attention` states with richer display hints. Permission and completion semantics remain owned by the existing Codex integration.
+
 | 事件 | 状态 | 动画 | Clawd | Calico | 云宝 |
 |---|---|---|---|---|---|
 | 无活动 | 待机 | 眼球跟踪 | <img src="../../assets/gif/clawd-idle.gif" width="160"> | <img src="../../assets/gif/calico-idle.gif" width="130"> | <img src="../../assets/gif/cloudling-idle.gif" width="140"> |

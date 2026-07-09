@@ -6,6 +6,8 @@ Most lifecycle events from agents (Claude Code hooks, Codex JSONL, Copilot hooks
 
 Subagent events still map to the logical `juggling` state, but Clawd now chooses a tiered asset by live subagent count: 1 subagent uses `clawd-headphones-groove.svg`, while 2+ subagents use `clawd-working-juggling.svg`. The old Clawd conducting asset is retired; Calico and Cloudling still use their conducting animations for their 2+ subagent tier.
 
+Codex sessions may also be refined by WavePet. WavePet consumes Codex JSONL assistant output, reasoning, tool, edit, test, error, and completion records, then maps them back to Clawd `thinking` / `working` / `attention` states with richer display hints. Permission and completion semantics remain owned by the existing Codex integration.
+
 | Agent Event | State | Animation | Clawd | Calico | Cloudling |
 |---|---|---|---|---|---|
 | Idle (no activity) | idle | Eye-tracking follow | <img src="../../assets/gif/clawd-idle.gif" width="160"> | <img src="../../assets/gif/calico-idle.gif" width="130"> | <img src="../../assets/gif/cloudling-idle.gif" width="140"> |
