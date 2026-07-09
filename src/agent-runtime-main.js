@@ -24,6 +24,11 @@ const CODEX_LOG_EVENTS_COVERED_BY_OFFICIAL_HOOKS = new Set([
 // Local Codex turns that are still in flight sit in one of these states. Kept in
 // sync with isWorkingLikeState() in state-stale-cleanup.js.
 const CODEX_WORKING_LIKE_STATES = new Set(["working", "thinking", "juggling"]);
+const CODEX_POST_COMPLETION_EVENTS = new Set(["Stop", "event_msg:task_complete"]);
+const CODEX_COMPLETION_HOUSEKEEPING_EVENTS = new Set([
+  "event_msg:token_count",
+  "session_meta",
+]);
 
 function createAgentRuntimeMain(options = {}) {
   const now = typeof options.now === "function" ? options.now : Date.now;
@@ -93,8 +98,13 @@ function createAgentRuntimeMain(options = {}) {
     const session = sessions && typeof sessions.get === "function" ? sessions.get(sessionId) : null;
     if (!session || session.agentId !== "codex") return false;
     const recent = Array.isArray(session.recentEvents) ? session.recentEvents : [];
-    const lastEvent = recent.length ? recent[recent.length - 1] : null;
-    return !!(lastEvent && (lastEvent.event === "Stop" || lastEvent.event === "event_msg:task_complete"));
+    for (let i = recent.length - 1; i >= 0; i -= 1) {
+      const event = recent[i] && recent[i].event;
+      if (CODEX_POST_COMPLETION_EVENTS.has(event)) return true;
+      if (!event || CODEX_COMPLETION_HOUSEKEEPING_EVENTS.has(event)) continue;
+      return false;
+    }
+    return false;
   }
 
   function updateSessionFromServer(sessionId, state, event, opts = {}) {
