@@ -114,3 +114,57 @@ Output:
 ## Concerns
 
 None beyond the normal follow-up work for the later monitor integration. I did not wire `monitor/state.js` into this task, per instructions.
+
+## Review fix follow-up
+
+### Fix summary
+
+Adjusted `src/wavepet/runtime.js` so the runtime now:
+
+- treats `options.hardFailure === true` and adapter-produced `error_feedback` with severity `high` or `fatal` as hard failure inputs to `mapWavePetToClawd`
+- preserves same-state hold refreshes by including `hold_until_ms` and `presentation.min_visible_ms` in the runtime suppression key
+- removes the unused `this.now` field from the constructor
+
+Added regression coverage in `test/wavepet-runtime.test.js` for:
+
+- high-severity tool-failure mapping to Clawd `error`
+- same-state deep-output refreshes that advance hold timing without changing the mapped state
+
+### TDD evidence
+
+RED run:
+
+```bash
+node --test test/wavepet-runtime.test.js
+```
+
+Observed failures:
+
+- `unchanged state can be suppressed unless display hold should refresh`
+- `high severity tool failure maps to a Clawd error state`
+
+GREEN run:
+
+```bash
+node --test test/wavepet-runtime.test.js
+```
+
+Result: 4/4 passed.
+
+### Test command and result
+
+- `node --test test/wavepet-runtime.test.js` -> pass
+- `node --test test/wavepet-clawd-mapper.test.js` -> pass
+- `node --test test/wavepet-engine.test.js` -> pass
+- `node --test test/wavepet-token-estimator.test.js` -> pass
+- `node --test test/wavepet-codex-event-adapter.test.js` -> pass
+
+### Files changed
+
+- `src/wavepet/runtime.js`
+- `test/wavepet-runtime.test.js`
+- `.superpowers/sdd/task-5-report.md`
+
+### Concerns
+
+None beyond the existing note that monitor/state integration remains out of scope for this task.

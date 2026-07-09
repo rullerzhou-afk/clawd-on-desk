@@ -7,7 +7,6 @@ const { mapWavePetToClawd } = require("./clawd-mapper");
 class WavePetRuntime {
   constructor(options = {}) {
     this.sessions = new Map();
-    this.now = typeof options.now === "function" ? options.now : Date.now;
   }
 
   _sessionKey(sessionId) {
@@ -29,6 +28,25 @@ class WavePetRuntime {
     return entry;
   }
 
+  _hardFailure(events, options = {}) {
+    if (options.hardFailure === true) return true;
+    return events.some(
+      (event) =>
+        event.event === "error_feedback" &&
+        ["high", "fatal"].includes(String(event.severity || ""))
+    );
+  }
+
+  _suppressionKey(mapped, latest) {
+    return JSON.stringify({
+      state: mapped.state,
+      displayHint: mapped.displayHint || null,
+      waveState: latest.state,
+      holdUntilMs: latest.smoothing ? latest.smoothing.hold_until_ms : null,
+      minVisibleMs: latest.presentation ? latest.presentation.min_visible_ms : null,
+    });
+  }
+
   processCodexRecord(sessionId, record, options = {}) {
     const entry = this._entry(sessionId);
     const events = entry.adapter.eventsFromRecord(record);
@@ -41,15 +59,9 @@ class WavePetRuntime {
     const completed = events.some(
       (event) => event.event === "assistant_end" && event.finish_reason === "stop"
     );
-    const hardFailure = events.some(
-      (event) => event.event === "error_feedback" && event.severity === "fatal"
-    );
+    const hardFailure = this._hardFailure(events, options);
     const mapped = mapWavePetToClawd(latest, { completed, hardFailure });
-    const mappedKey = JSON.stringify({
-      state: mapped.state,
-      displayHint: mapped.displayHint || null,
-      waveState: latest.state,
-    });
+    const mappedKey = this._suppressionKey(mapped, latest);
 
     if (mappedKey === entry.lastMappedKey && !(latest.smoothing && latest.smoothing.changed)) {
       entry.lastOutput = latest;
