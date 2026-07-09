@@ -86,6 +86,17 @@ function createAgentRuntimeMain(options = {}) {
     return true;
   }
 
+  function shouldSuppressWavePetCompletion(sessionId, mapped) {
+    if (!mapped || mapped.state !== "attention" || mapped.event !== "wavepet:closing") return false;
+    const stateRuntime = getStateRuntime();
+    const sessions = stateRuntime && stateRuntime.sessions;
+    const session = sessions && typeof sessions.get === "function" ? sessions.get(sessionId) : null;
+    if (!session || session.agentId !== "codex") return false;
+    const recent = Array.isArray(session.recentEvents) ? session.recentEvents : [];
+    const lastEvent = recent.length ? recent[recent.length - 1] : null;
+    return !!(lastEvent && (lastEvent.event === "Stop" || lastEvent.event === "event_msg:task_complete"));
+  }
+
   function updateSessionFromServer(sessionId, state, event, opts = {}) {
     if (opts && opts.agentId === "codex" && opts.hookSource === "codex-official") {
       markCodexOfficialHookSession(sessionId);
@@ -141,9 +152,13 @@ function createAgentRuntimeMain(options = {}) {
 
   function clearSessionsByAgent(agentId) {
     const state = getStateRuntime();
-    return state && typeof state.clearSessionsByAgent === "function"
+    const cleared = state && typeof state.clearSessionsByAgent === "function"
       ? state.clearSessionsByAgent(agentId)
       : 0;
+    if (agentId === "codex" && wavePetRuntime && typeof wavePetRuntime.clearAllSessions === "function") {
+      wavePetRuntime.clearAllSessions();
+    }
+    return cleared;
   }
 
   function dismissPermissionsByAgent(agentId, options) {
@@ -207,6 +222,7 @@ function createAgentRuntimeMain(options = {}) {
         onCodexRecord: (sid, record, meta) => {
           const mapped = wavePetRuntime.processCodexRecord(sid, record, meta);
           if (!mapped) return;
+          if (shouldSuppressWavePetCompletion(sid, mapped)) return;
           updateSession(sid, mapped.state, mapped.event, buildCodexMonitorUpdateOptions({
             ...(meta || {}),
             displayHint: mapped.displayHint,
@@ -226,6 +242,9 @@ function createAgentRuntimeMain(options = {}) {
   function cleanup() {
     if (codexMonitor && typeof codexMonitor.stop === "function") codexMonitor.stop();
     codexOfficialHookSessions.clear();
+    if (wavePetRuntime && typeof wavePetRuntime.clearAllSessions === "function") {
+      wavePetRuntime.clearAllSessions();
+    }
   }
 
   return {

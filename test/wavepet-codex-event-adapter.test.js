@@ -29,6 +29,16 @@ test("assistant message starts assistant and emits output delta", () => {
   assert.ok(events[1].delta_tokens_est > 0);
 });
 
+test("task_started falls back to assistant_start before assistant output exists", () => {
+  const adapter = new CodexWavePetAdapter({ sessionId: "codex:s1" });
+  const events = adapter.eventsFromRecord({
+    timestamp: "2026-07-09T00:00:00.500Z",
+    type: "event_msg",
+    payload: { type: "task_started" },
+  });
+  assert.deepEqual(events.map((event) => event.event), ["assistant_start"]);
+});
+
 test("task_complete clears assistant turn tracking for later assistant output", () => {
   const adapter = new CodexWavePetAdapter({ sessionId: "codex:s1" });
 
@@ -103,6 +113,42 @@ test("failed edit tool output emits error feedback alongside file edit", () => {
   assert.deepEqual(end.map((event) => event.event), ["tool_call_end", "file_edit", "error_feedback"]);
   assert.equal(end[0].success, false);
   assert.equal(end[2].error_kind, "tool_failure");
+});
+
+test("exec_command_end falls back to tool_call_end when no call id is open", () => {
+  const adapter = new CodexWavePetAdapter({ sessionId: "codex:s1" });
+  adapter.eventsFromRecord({
+    timestamp: "2026-07-09T00:00:01.000Z",
+    type: "event_msg",
+    payload: { type: "task_started" },
+  });
+
+  const events = adapter.eventsFromRecord({
+    timestamp: "2026-07-09T00:00:02.000Z",
+    type: "event_msg",
+    payload: { type: "exec_command_end", exit_code: 0, command: "npm test" },
+  });
+  assert.deepEqual(events.map((event) => event.event), ["tool_call_end", "test_run_end"]);
+  assert.equal(events[0].call_kind, "test");
+  assert.equal(events[0].success, true);
+});
+
+test("patch_apply_end emits file_edit and fallback tool_call_end", () => {
+  const adapter = new CodexWavePetAdapter({ sessionId: "codex:s1" });
+  adapter.eventsFromRecord({
+    timestamp: "2026-07-09T00:00:01.000Z",
+    type: "event_msg",
+    payload: { type: "task_started" },
+  });
+
+  const events = adapter.eventsFromRecord({
+    timestamp: "2026-07-09T00:00:02.000Z",
+    type: "event_msg",
+    payload: { type: "patch_apply_end", success: true },
+  });
+  assert.deepEqual(events.map((event) => event.event), ["file_edit", "tool_call_end"]);
+  assert.equal(events[1].call_kind, "edit");
+  assert.equal(events[1].success, true);
 });
 
 test("task_complete emits task end and assistant end", () => {

@@ -56,7 +56,7 @@ test("task_complete emits a completion update", () => {
   assert.equal(done.state, "attention");
 });
 
-test("high severity tool failure maps to a Clawd error state", () => {
+test("normal tool failure stays in WavePet debugging lane instead of Clawd error", () => {
   const runtime = new WavePetRuntime();
   runtime.processCodexRecord("codex:s1", {
     timestamp: "2026-07-09T00:00:01.000Z",
@@ -77,6 +77,36 @@ test("high severity tool failure maps to a Clawd error state", () => {
       call_id: "e1",
       output: "Exit code: 1\npatch failed",
     },
+  });
+
+  assert.ok(update);
+  assert.equal(update.state, "working");
+  assert.equal(update.extra.wavepet.state, "overheat_debugging");
+});
+
+test("hardFailure option still escalates WavePet debugging to Clawd error", () => {
+  const runtime = new WavePetRuntime();
+  runtime.processCodexRecord("codex:s1", {
+    timestamp: "2026-07-09T00:00:01.000Z",
+    type: "response_item",
+    payload: {
+      type: "function_call",
+      call_id: "e1",
+      name: "shell_command",
+      arguments: '{"command":"apply_patch"}',
+    },
+  });
+
+  const update = runtime.processCodexRecord("codex:s1", {
+    timestamp: "2026-07-09T00:00:03.000Z",
+    type: "response_item",
+    payload: {
+      type: "function_call_output",
+      call_id: "e1",
+      output: "Exit code: 1\npatch failed",
+    },
+  }, {
+    hardFailure: true,
   });
 
   assert.ok(update);

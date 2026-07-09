@@ -30,11 +30,7 @@ class WavePetRuntime {
 
   _hardFailure(events, options = {}) {
     if (options.hardFailure === true) return true;
-    return events.some(
-      (event) =>
-        event.event === "error_feedback" &&
-        ["high", "fatal"].includes(String(event.severity || ""))
-    );
+    return events.some((event) => event && event.clawd_hard_error === true);
   }
 
   _suppressionKey(mapped, latest) {
@@ -89,6 +85,12 @@ class WavePetRuntime {
 
   clearSession(sessionId) {
     return this.sessions.delete(this._sessionKey(sessionId));
+  }
+
+  clearAllSessions() {
+    const count = this.sessions.size;
+    this.sessions.clear();
+    return count;
   }
 }
 

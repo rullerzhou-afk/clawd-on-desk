@@ -314,6 +314,66 @@ describe("agent-runtime-main", () => {
     assert.deepStrictEqual(clearCalls, []);
   });
 
+  it("suppresses a delayed WavePet closing update after official Stop already completed the turn", () => {
+    const instances = [];
+    const updateCalls = [];
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const fakeWavePetRuntime = {
+      processCodexRecord(sessionId, record) {
+        if (record && record.type === "event_msg" && record.payload && record.payload.type === "task_complete") {
+          return {
+            sessionId,
+            state: "attention",
+            event: "wavepet:closing",
+            displayHint: null,
+            extra: {
+              agentId: "codex",
+              wavepet: { state: "closing" },
+            },
+          };
+        }
+        return null;
+      },
+    };
+    const sessions = new Map([
+      ["codex:s1", {
+        agentId: "codex",
+        state: "idle",
+        recentEvents: [{ event: "Stop", state: "attention", at: 1000 }],
+      }],
+    ]);
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      wavePetRuntime: fakeWavePetRuntime,
+      codexSubagentClassifier: {},
+      isAgentEnabled: (agentId) => agentId === "codex",
+      getStateRuntime: () => ({ sessions }),
+      updateSession: (...args) => updateCalls.push(args),
+    });
+    const monitor = runtime.startCodexLogMonitor();
+
+    runtime.updateSessionFromServer("codex:s1", "attention", "Stop", {
+      agentId: "codex",
+      hookSource: "codex-official",
+    });
+    monitor.emitRaw("codex:s1", {
+      timestamp: "2026-07-09T00:00:03.000Z",
+      type: "event_msg",
+      payload: { type: "task_complete" },
+    }, {
+      cwd: "/repo",
+      headless: false,
+    });
+
+    assert.deepStrictEqual(updateCalls, [[
+      "codex:s1",
+      "attention",
+      "Stop",
+      { agentId: "codex", hookSource: "codex-official" },
+    ]]);
+  });
+
   it("starts and stops the Codex monitor through agent gate hooks and cleanup", () => {
     const instances = [];
     const FakeMonitor = makeFakeMonitorClass(instances);

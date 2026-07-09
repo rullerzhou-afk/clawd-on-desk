@@ -69,6 +69,11 @@ class CodexWavePetAdapter {
   resetTurnTracking() {
     this.currentTurnId = null;
     this.seenAssistantTurns.clear();
+    this.openCalls.clear();
+  }
+
+  hasSeenAssistantTurn(turnId) {
+    return !!(turnId && this.seenAssistantTurns.has(String(turnId)));
   }
 
   base(event, timestampMs, extra = {}) {
@@ -83,6 +88,61 @@ class CodexWavePetAdapter {
       if (key !== "turn_id" && value !== undefined) out[key] = value;
     }
     return out;
+  }
+
+  buildFallbackToolEndEvents(timestampMs, extra = {}) {
+    const lastOpenCall = this.getLastOpenCall();
+    if (lastOpenCall && lastOpenCall.callId) this.openCalls.delete(lastOpenCall.callId);
+    const turnId = lastOpenCall && lastOpenCall.turnId ? lastOpenCall.turnId : this.resolveTurnId(extra);
+    const success = extra.success !== undefined ? extra.success : true;
+    const toolName = String(
+      (lastOpenCall && lastOpenCall.toolName)
+      || extra.tool_name
+      || extra.toolName
+      || extra.command
+      || extra.source
+      || "shell_command"
+    );
+    const command = (lastOpenCall && lastOpenCall.command)
+      || extractCommand(extra.arguments || extra.input || extra.command || "");
+    const callKind = (lastOpenCall && lastOpenCall.callKind) || classifyCall(toolName, command);
+    const output = String(extra.output || "");
+    const outputTokens = estimateTokens(output);
+    const events = [];
+
+    if (callKind === "edit" && extra.fileEditFirst === true) {
+      events.push(this.base("file_edit", timestampMs, { turn_id: turnId, edit_kind: "tool" }));
+    }
+
+    events.push(this.base("tool_call_end", timestampMs, {
+      turn_id: turnId,
+      tool_name: toolName,
+      call_kind: callKind,
+      success,
+      duration_ms: 0,
+      output_tokens_est: outputTokens,
+    }));
+
+    if (callKind === "edit" && extra.fileEditFirst !== true) {
+      events.push(this.base("file_edit", timestampMs, { turn_id: turnId, edit_kind: "tool" }));
+    } else if (callKind === "test") {
+      events.push(this.base("test_run_end", timestampMs, {
+        turn_id: turnId,
+        success,
+        duration_ms: 0,
+        output_tokens_est: outputTokens,
+        failure_count_est: success ? 0 : 1,
+      }));
+    }
+
+    return events;
+  }
+
+  getLastOpenCall() {
+    const entries = Array.from(this.openCalls.entries());
+    if (!entries.length) return null;
+    const [callId, call] = entries[entries.length - 1];
+    return { callId, ...call };
   }
 
   eventsFromRecord(record) {
@@ -100,6 +160,18 @@ class CodexWavePetAdapter {
         turn_id: turnId,
         text_chars: text.length,
         token_estimate: estimateTokens(text),
+      })];
+    }
+
+    if (recordType === "event_msg" && payloadType === "task_started") {
+      this.openCalls.clear();
+      const turnId = this.nextSyntheticTurnId();
+      this.currentTurnId = turnId;
+      if (this.hasSeenAssistantTurn(turnId)) return [];
+      this.seenAssistantTurns.add(turnId);
+      return [this.base("assistant_start", timestampMs, {
+        turn_id: turnId,
+        mode: "task_started_fallback",
       })];
     }
 
@@ -205,6 +277,27 @@ class CodexWavePetAdapter {
         token_estimate: Math.min(outputTokens, 600),
       }));
       return events;
+    }
+
+    if (recordType === "event_msg" && payloadType === "exec_command_end") {
+      return this.buildFallbackToolEndEvents(timestampMs, {
+        turn_id: this.currentTurnId,
+        tool_name: payload.command ? "shell_command" : "exec_command_end",
+        command: payload.command || payload.cmd || "",
+        output: payload.output || payload.stderr || payload.stdout || "",
+        success: payload.success !== undefined ? payload.success : Number(payload.exit_code || 0) === 0,
+      });
+    }
+
+    if (recordType === "event_msg" && payloadType === "patch_apply_end") {
+      return this.buildFallbackToolEndEvents(timestampMs, {
+        turn_id: this.currentTurnId,
+        tool_name: "apply_patch",
+        command: "apply_patch",
+        output: payload.output || payload.error || "",
+        success: payload.success !== undefined ? payload.success : inferSuccess(payload.output || ""),
+        fileEditFirst: true,
+      });
     }
 
     return [];
