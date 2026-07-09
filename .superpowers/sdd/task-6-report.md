@@ -78,3 +78,65 @@ Observed results:
 ## Any concerns
 
 - The raw record callback intentionally swallows callback exceptions to match the monitor's existing tolerance for non-critical emit paths. That keeps the monitor resilient, but it also means downstream callback faults are silent.
+
+## Review Fix Addendum (2026-07-09)
+
+### Fix summary
+
+- Added observable warning reporting for `onCodexRecord` failures in `CodexLogMonitor` while keeping monitor state callbacks alive.
+- Wired `agent-runtime-main`'s existing `logWarn` into `CodexLogMonitor` so production callback failures surface without killing the JSONL monitor.
+- Extended the runtime test to assert `wavepet` metadata survives the `buildCodexMonitorUpdateOptions(...)` path into `updateSession`.
+
+### TDD RED/GREEN evidence
+
+#### RED
+
+Commands run:
+
+```bash
+node --test test/codex-log-monitor.test.js
+node --test test/agent-runtime-main.test.js
+```
+
+Observed results:
+
+- `test/codex-log-monitor.test.js`: FAIL
+  - failing test: `reports onCodexRecord callback failures while keeping state callbacks flowing`
+  - assertion: `0 == 2`
+  - reason: callback exceptions were still swallowed silently, so no warning hook was called
+- `test/agent-runtime-main.test.js`: PASS
+  - the added `wavepet` metadata assertion was already satisfied by the existing runtime path
+
+#### GREEN
+
+Commands run:
+
+```bash
+node --test test/codex-log-monitor.test.js
+node --test test/agent-runtime-main.test.js
+node --test test/wavepet-runtime.test.js
+```
+
+Observed results:
+
+- `test/codex-log-monitor.test.js`: PASS, 46/46
+- `test/agent-runtime-main.test.js`: PASS, 16/16
+- `test/wavepet-runtime.test.js`: PASS, 4/4
+
+### Test command and result
+
+- `node --test test/codex-log-monitor.test.js` -> PASS
+- `node --test test/agent-runtime-main.test.js` -> PASS
+- `node --test test/wavepet-runtime.test.js` -> PASS
+
+### Files changed
+
+- `agents/codex-log-monitor.js`
+- `src/agent-runtime-main.js`
+- `test/codex-log-monitor.test.js`
+- `test/agent-runtime-main.test.js`
+- `.superpowers/sdd/task-6-report.md`
+
+### Concerns
+
+- Warning emission is best-effort through `logWarn`; if a caller does not supply one, callback failures remain non-fatal but unreported beyond the default runtime wiring.

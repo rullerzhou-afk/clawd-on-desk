@@ -91,6 +91,7 @@ class CodexLogMonitor {
     this._onStateChange = onStateChange;
     this._classifier = options.classifier || new CodexSubagentClassifier();
     this._onCodexRecord = typeof options.onCodexRecord === "function" ? options.onCodexRecord : null;
+    this._logWarn = typeof options.logWarn === "function" ? options.logWarn : null;
     this._interval = null;
     // Map<filePath, { offset, sessionId, cwd, lastEventTime, lastState, partial }>
     this._tracked = new Map();
@@ -436,7 +437,11 @@ class CodexLogMonitor {
           codexSource: tracked.codexSource || null,
           headless: this._isTrackedSubagent(tracked),
         });
-      } catch {}
+      } catch (err) {
+        if (this._logWarn) {
+          this._logWarn("Clawd: Codex raw record callback failed:", err);
+        }
+      }
     }
 
     const assistantText = extractAssistantTextFromRecord(obj);

@@ -186,6 +186,37 @@ describe("CodexLogMonitor", () => {
     assert.ok(states.some((entry) => entry.event === "session_meta"));
   });
 
+  it("reports onCodexRecord callback failures while keeping state callbacks flowing", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/tmp" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
+    ].join("\n") + "\n");
+
+    const config = makeConfig(tmpDir);
+    const states = [];
+    const warnings = [];
+    const failure = new Error("wavepet feed failed");
+    monitor = new CodexLogMonitor(config, (sid, state, event) => {
+      states.push({ sid, state, event });
+    }, {
+      onCodexRecord() {
+        throw failure;
+      },
+      logWarn: (...args) => warnings.push(args),
+    });
+
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    assert.deepStrictEqual(states.map((entry) => entry.event), [
+      "session_meta",
+      "event_msg:task_started",
+    ]);
+    assert.equal(warnings.length, 2);
+    assert.equal(warnings[0][0], "Clawd: Codex raw record callback failed:");
+    assert.equal(warnings[0][1], failure);
+  });
+
   it("should map task_started to thinking", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [

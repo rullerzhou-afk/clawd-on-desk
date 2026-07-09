@@ -310,6 +310,7 @@ describe("agent-runtime-main", () => {
     );
     assert.equal(updateCalls.length, 1, "mapped WavePet update reaches updateSession");
     assert.equal(updateCalls[0][3].displayHint, "clawd-working-ultrathink.svg");
+    assert.deepStrictEqual(updateCalls[0][3].wavepet, { state: "thinking_stream" });
     assert.deepStrictEqual(clearCalls, []);
   });
 

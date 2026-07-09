@@ -203,6 +203,7 @@ function createAgentRuntimeMain(options = {}) {
         }));
       }, {
         classifier: codexSubagentClassifier,
+        logWarn,
         onCodexRecord: (sid, record, meta) => {
           const mapped = wavePetRuntime.processCodexRecord(sid, record, meta);
           if (!mapped) return;
