@@ -5,6 +5,7 @@ const {
   buildCodexMonitorUpdateOptions,
   isCodexMonitorMetadataOnlyEvent,
 } = require("./codex-monitor-callback");
+const { WavePetRuntime } = require("./wavepet/runtime");
 
 const CODEX_OFFICIAL_LOG_SUPPRESS_TTL_MS = 10 * 60 * 1000;
 const CODEX_LOG_EVENTS_COVERED_BY_OFFICIAL_HOOKS = new Set([
@@ -35,6 +36,7 @@ function createAgentRuntimeMain(options = {}) {
   const getPermissionRuntime = options.getPermissionRuntime || (() => null);
   const isAgentEnabled = options.isAgentEnabled || (() => true);
   const updateSession = options.updateSession || (() => {});
+  const wavePetRuntime = options.wavePetRuntime || new WavePetRuntime({ now });
   const captureGhosttyTerminalId = options.captureGhosttyTerminalId || null;
   const clearCodexNotifyBubbles = options.clearCodexNotifyBubbles || (() => {});
 
@@ -199,7 +201,18 @@ function createAgentRuntimeMain(options = {}) {
         updateSession(sid, state, event, buildCodexMonitorUpdateOptions(extra, {
           includeHeadless: true,
         }));
-      }, { classifier: codexSubagentClassifier });
+      }, {
+        classifier: codexSubagentClassifier,
+        onCodexRecord: (sid, record, meta) => {
+          const mapped = wavePetRuntime.processCodexRecord(sid, record, meta);
+          if (!mapped) return;
+          updateSession(sid, mapped.state, mapped.event, buildCodexMonitorUpdateOptions({
+            ...(meta || {}),
+            displayHint: mapped.displayHint,
+            wavepet: mapped.extra && mapped.extra.wavepet,
+          }, { includeHeadless: true }));
+        },
+      });
       if (isAgentEnabled("codex")) {
         codexMonitor.start();
       }

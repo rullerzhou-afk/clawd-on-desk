@@ -34,6 +34,8 @@ function buildCodexMonitorUpdateOptions(extra, options = {}) {
   if (Object.prototype.hasOwnProperty.call(input, "pidChain")) out.pidChain = input.pidChain;
   if (Object.prototype.hasOwnProperty.call(input, "codexOriginator")) out.codexOriginator = input.codexOriginator;
   if (Object.prototype.hasOwnProperty.call(input, "codexSource")) out.codexSource = input.codexSource;
+  if (typeof input.displayHint === "string" && input.displayHint) out.displayHint = input.displayHint;
+  if (input.wavepet && typeof input.wavepet === "object") out.wavepet = input.wavepet;
   const contextUsage = normalizeContextUsage(input.contextUsage);
   if (contextUsage) out.contextUsage = contextUsage;
   if (options.includeHeadless) out.headless = input.headless === true;

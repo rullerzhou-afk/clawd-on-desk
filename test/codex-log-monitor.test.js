@@ -161,6 +161,31 @@ describe("CodexLogMonitor", () => {
     assert.strictEqual(events[1].extra.codexSource, "vscode");
   });
 
+  it("passes live raw records to onCodexRecord without changing existing state callback", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const lines = [
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/tmp" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "agent_message", message: "hello" } }),
+    ];
+    fs.writeFileSync(testFile, lines.join("\n") + "\n");
+
+    const config = makeConfig(tmpDir);
+    const raw = [];
+    const states = [];
+    monitor = new CodexLogMonitor(config, (sid, state, event) => {
+      states.push({ sid, state, event });
+    }, {
+      onCodexRecord: (sid, record) => raw.push({ sid, record }),
+    });
+
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    assert.equal(raw.length, 2);
+    assert.equal(raw[0].sid, EXPECTED_SID);
+    assert.equal(raw[1].record.payload.type, "agent_message");
+    assert.ok(states.some((entry) => entry.event === "session_meta"));
+  });
+
   it("should map task_started to thinking", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [

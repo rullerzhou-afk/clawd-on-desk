@@ -31,6 +31,13 @@ function makeFakeMonitorClass(instances) {
     emit(sessionId, state, event, extra) {
       return this.callback(sessionId, state, event, extra);
     }
+
+    emitRaw(sessionId, record, extra) {
+      if (this.options && typeof this.options.onCodexRecord === "function") {
+        return this.options.onCodexRecord(sessionId, record, extra);
+      }
+      return undefined;
+    }
   };
 }
 
@@ -250,6 +257,60 @@ describe("agent-runtime-main", () => {
         headless: true,
       }],
     ]);
+  });
+
+  it("feeds WavePet from raw Codex JSONL records even when lifecycle suppression stays active", () => {
+    const instances = [];
+    const updateCalls = [];
+    const clearCalls = [];
+    const fakeWavePetRuntime = {
+      calls: [],
+      processCodexRecord(sessionId, record, meta) {
+        this.calls.push({ sessionId, record, meta });
+        return {
+          sessionId,
+          state: "working",
+          event: "wavepet:thinking_stream",
+          displayHint: "clawd-working-ultrathink.svg",
+          extra: {
+            agentId: "codex",
+            wavepet: { state: "thinking_stream" },
+          },
+        };
+      },
+    };
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      wavePetRuntime: fakeWavePetRuntime,
+      codexSubagentClassifier: {},
+      isAgentEnabled: (agentId) => agentId === "codex",
+      updateSession: (...args) => updateCalls.push(args),
+      clearCodexNotifyBubbles: (...args) => clearCalls.push(args),
+    });
+    const monitor = runtime.startCodexLogMonitor();
+
+    runtime.markCodexOfficialHookSession("codex:abc");
+    monitor.emitRaw("codex:abc", {
+      type: "event_msg",
+      payload: { type: "agent_message", message: "x ".repeat(700) },
+    }, {
+      cwd: "D:\\repo",
+      headless: false,
+    });
+    monitor.emit("codex:abc", "idle", "session_meta", {
+      cwd: "D:\\repo",
+    });
+
+    assert.equal(
+      fakeWavePetRuntime.calls.length,
+      1,
+      "WavePet sees JSONL records even when old lifecycle update is suppressed"
+    );
+    assert.equal(updateCalls.length, 1, "mapped WavePet update reaches updateSession");
+    assert.equal(updateCalls[0][3].displayHint, "clawd-working-ultrathink.svg");
+    assert.deepStrictEqual(clearCalls, []);
   });
 
   it("starts and stops the Codex monitor through agent gate hooks and cleanup", () => {

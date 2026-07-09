@@ -90,6 +90,7 @@ class CodexLogMonitor {
     this._config = agentConfig;
     this._onStateChange = onStateChange;
     this._classifier = options.classifier || new CodexSubagentClassifier();
+    this._onCodexRecord = typeof options.onCodexRecord === "function" ? options.onCodexRecord : null;
     this._interval = null;
     // Map<filePath, { offset, sessionId, cwd, lastEventTime, lastState, partial }>
     this._tracked = new Map();
@@ -424,6 +425,18 @@ class CodexLogMonitor {
     if (obj && typeof obj.timestamp === "string") {
       const ts = Date.parse(obj.timestamp);
       if (!tracked.backfilling && Number.isFinite(ts) && ts < this._startedAtMs - 1500) return;
+    }
+
+    if (this._onCodexRecord && !tracked.backfilling) {
+      try {
+        this._onCodexRecord(tracked.sessionId, obj, {
+          cwd: tracked.cwd,
+          sessionTitle: tracked.sessionTitle,
+          codexOriginator: tracked.codexOriginator || null,
+          codexSource: tracked.codexSource || null,
+          headless: this._isTrackedSubagent(tracked),
+        });
+      } catch {}
     }
 
     const assistantText = extractAssistantTextFromRecord(obj);
