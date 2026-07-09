@@ -53,3 +53,36 @@
 ## Concerns
 - No blocking concerns.
 - The turn-id fallback logic is intentionally conservative when incoming records omit explicit turn metadata.
+
+## Fix summary
+- Reset assistant turn tracking on `event_msg:task_complete` and `event_msg:turn_aborted` so later assistant messages without explicit turn metadata are treated as a new turn.
+- Emit `error_feedback` for failed edit tool outputs while still preserving the `file_edit` signal.
+
+## TDD Evidence
+### RED
+- Command:
+  - `node --test test/wavepet-codex-event-adapter.test.js`
+- Result:
+  - Failed as expected in the new regression tests.
+  - `task_complete clears assistant turn tracking for later assistant output` failed because the second assistant message only emitted `assistant_token_delta`.
+  - `failed edit tool output emits error feedback alongside file edit` failed because the edit output only emitted `tool_call_end` and `file_edit`.
+
+### GREEN
+- Command:
+  - `node --test test/wavepet-codex-event-adapter.test.js`
+- Result:
+  - Pass
+  - 7 adapter tests passed, 0 failed.
+
+## Verification
+- `node --test test/wavepet-codex-event-adapter.test.js` - pass
+- `node --test test/wavepet-token-estimator.test.js` - pass
+
+## Files changed
+- `src/wavepet/codex-event-adapter.js`
+- `test/wavepet-codex-event-adapter.test.js`
+- `.superpowers/sdd/task-2-report.md`
+
+## Concerns
+- No blocking concerns.
+- After a terminal event, the adapter now clears turn tracking and synthesizes a new turn id only when a later record arrives without explicit metadata.

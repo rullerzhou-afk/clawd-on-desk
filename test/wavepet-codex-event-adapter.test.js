@@ -29,6 +29,31 @@ test("assistant message starts assistant and emits output delta", () => {
   assert.ok(events[1].delta_tokens_est > 0);
 });
 
+test("task_complete clears assistant turn tracking for later assistant output", () => {
+  const adapter = new CodexWavePetAdapter({ sessionId: "codex:s1" });
+
+  const first = adapter.eventsFromRecord({
+    timestamp: "2026-07-09T00:00:01.000Z",
+    type: "event_msg",
+    payload: { type: "agent_message", message: "我先看看文件。" },
+  });
+  assert.deepEqual(first.map((event) => event.event), ["assistant_start", "assistant_token_delta"]);
+
+  const end = adapter.eventsFromRecord({
+    timestamp: "2026-07-09T00:00:02.000Z",
+    type: "event_msg",
+    payload: { type: "task_complete" },
+  });
+  assert.deepEqual(end.map((event) => event.event), ["task_end_signal", "assistant_end"]);
+
+  const second = adapter.eventsFromRecord({
+    timestamp: "2026-07-09T00:00:03.000Z",
+    type: "event_msg",
+    payload: { type: "agent_message", message: "我继续看一下。" },
+  });
+  assert.deepEqual(second.map((event) => event.event), ["assistant_start", "assistant_token_delta"]);
+});
+
 test("reasoning records emit thinking deltas", () => {
   const adapter = new CodexWavePetAdapter({ sessionId: "codex:s1" });
   const events = adapter.eventsFromRecord({
@@ -58,6 +83,26 @@ test("tool call and output emit tool lifecycle and edit/test/error events", () =
   assert.deepEqual(end.map((event) => event.event), ["tool_call_end", "test_run_end"]);
   assert.equal(end[0].success, false);
   assert.equal(end[1].failure_count_est, 1);
+});
+
+test("failed edit tool output emits error feedback alongside file edit", () => {
+  const adapter = new CodexWavePetAdapter({ sessionId: "codex:s1" });
+  const start = adapter.eventsFromRecord({
+    timestamp: "2026-07-09T00:00:03.000Z",
+    type: "response_item",
+    payload: { type: "function_call", call_id: "e1", name: "shell_command", arguments: "{\"command\":\"apply_patch\"}" },
+  });
+  assert.equal(start[0].event, "tool_call_start");
+  assert.equal(start[0].call_kind, "edit");
+
+  const end = adapter.eventsFromRecord({
+    timestamp: "2026-07-09T00:00:05.000Z",
+    type: "response_item",
+    payload: { type: "function_call_output", call_id: "e1", output: "Exit code: 1\npatch failed" },
+  });
+  assert.deepEqual(end.map((event) => event.event), ["tool_call_end", "file_edit", "error_feedback"]);
+  assert.equal(end[0].success, false);
+  assert.equal(end[2].error_kind, "tool_failure");
 });
 
 test("task_complete emits task end and assistant end", () => {

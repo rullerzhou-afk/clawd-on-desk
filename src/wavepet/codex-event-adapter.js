@@ -52,6 +52,25 @@ class CodexWavePetAdapter {
     this.syntheticTurnCounter = 0;
   }
 
+  nextSyntheticTurnId() {
+    this.syntheticTurnCounter += 1;
+    return `turn_${this.syntheticTurnCounter}`;
+  }
+
+  resolveTurnId(payload) {
+    const explicitTurnId = extractTurnId(payload);
+    if (explicitTurnId) return String(explicitTurnId);
+    if (this.currentTurnId) return String(this.currentTurnId);
+    const nextTurnId = this.nextSyntheticTurnId();
+    this.currentTurnId = nextTurnId;
+    return nextTurnId;
+  }
+
+  resetTurnTracking() {
+    this.currentTurnId = null;
+    this.seenAssistantTurns.clear();
+  }
+
   base(event, timestampMs, extra = {}) {
     const turnId = extra.turn_id || this.currentTurnId;
     const out = {
@@ -71,14 +90,14 @@ class CodexWavePetAdapter {
     const payloadType = String(payload.type || "");
     const recordType = String((record && record.type) || "");
     const timestampMs = parseTimestampMs(record && record.timestamp);
-    const turnId = extractTurnId(payload) || this.currentTurnId;
 
     if (recordType === "event_msg" && payloadType === "user_message") {
       const text = String(payload.message || "");
-      this.syntheticTurnCounter += 1;
-      this.currentTurnId = `turn_${this.syntheticTurnCounter}`;
+      const turnId = this.nextSyntheticTurnId();
+      this.currentTurnId = turnId;
       this.seenAssistantTurns.delete(this.currentTurnId);
       return [this.base("user_message", timestampMs, {
+        turn_id: turnId,
         text_chars: text.length,
         token_estimate: estimateTokens(text),
       })];
@@ -86,16 +105,19 @@ class CodexWavePetAdapter {
 
     if (recordType === "event_msg" && (payloadType === "task_complete" || payloadType === "turn_aborted")) {
       const finishReason = payloadType === "task_complete" ? "stop" : "aborted";
-      return [
+      const events = [
         this.base("task_end_signal", timestampMs, { source: payloadType, confidence: 1.0 }),
         this.base("assistant_end", timestampMs, { finish_reason: finishReason }),
       ];
+      this.resetTurnTracking();
+      return events;
     }
 
     if (payloadType === "message" || payloadType === "agent_message") {
       const role = String(payload.role || "assistant");
       const text = extractMessageText(payload);
       const events = [];
+      const turnId = this.resolveTurnId(payload);
       if (role === "assistant" || payloadType === "agent_message") {
         if (!this.seenAssistantTurns.has(turnId)) {
           this.seenAssistantTurns.add(turnId);
@@ -116,6 +138,7 @@ class CodexWavePetAdapter {
     if (payloadType === "reasoning") {
       const thinkingChars = extractReasoningChars(payload);
       if (thinkingChars <= 0) return [];
+      const turnId = this.resolveTurnId(payload);
       this.currentTurnId = String(turnId);
       return [this.base("thinking_delta", timestampMs, {
         turn_id: turnId,
@@ -125,6 +148,7 @@ class CodexWavePetAdapter {
     }
 
     if (payloadType === "function_call" || payloadType === "custom_tool_call" || payloadType === "web_search_call") {
+      const turnId = this.resolveTurnId(payload);
       const callId = String(payload.call_id || payload.id || `${payloadType}:${timestampMs}`);
       const toolName = String(payload.name || payload.tool_name || payloadType);
       const command = extractCommand(payload.arguments || payload.input || "");
@@ -140,6 +164,7 @@ class CodexWavePetAdapter {
     }
 
     if (payloadType === "function_call_output" || payloadType === "custom_tool_call_output") {
+      const turnId = this.resolveTurnId(payload);
       const callId = String(payload.call_id || "");
       const call = this.openCalls.get(callId) || {};
       if (callId) this.openCalls.delete(callId);
@@ -158,8 +183,15 @@ class CodexWavePetAdapter {
         duration_ms: durationMs,
         output_tokens_est: outputTokens,
       })];
-      if (callKind === "edit") events.push(this.base("file_edit", timestampMs, { turn_id: effectiveTurnId, edit_kind: "tool" }));
-      else if (callKind === "test") events.push(this.base("test_run_end", timestampMs, {
+      if (callKind === "edit") {
+        events.push(this.base("file_edit", timestampMs, { turn_id: effectiveTurnId, edit_kind: "tool" }));
+        if (!success) events.push(this.base("error_feedback", timestampMs, {
+          turn_id: effectiveTurnId,
+          error_kind: "tool_failure",
+          severity: "high",
+          token_estimate: Math.min(outputTokens, 600),
+        }));
+      } else if (callKind === "test") events.push(this.base("test_run_end", timestampMs, {
         turn_id: effectiveTurnId,
         success,
         duration_ms: durationMs,
