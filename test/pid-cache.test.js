@@ -1,4 +1,5 @@
-// test/pid-cache.test.js — Unit tests for hooks/pid-cache.js (#627)
+// test/pid-cache.test.js — Unit tests for hooks/pid-cache.js
+// (#627, bounded sliding TTL §8)
 const { describe, it, afterEach } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
@@ -19,6 +20,8 @@ afterEach(() => {
   for (const sid of usedSids.splice(0)) pc.dropPidCache(sid, CWD);
 });
 
+// agentPid must be a positive integer: readPidCache now REQUIRES it (write
+// condition already needs snapshotOk && agentPid; the hit path liveness-checks it).
 const SUBSET = {
   stablePid: 1234,
   agentPid: 5678,
@@ -86,12 +89,8 @@ describe("pid-cache read/write/drop", () => {
     assert.doesNotThrow(() => pc.dropPidCache(freshSid(), CWD));
   });
 
-  it("readPidCache returns null past the TTL", () => {
-    const sid = freshSid();
-    const file = pc.cacheFilePath(sid, CWD);
-    // Write a file directly with a stale timestamp.
-    fs.writeFileSync(file, JSON.stringify({ ...SUBSET, cwd: CWD, ts: Date.now() - (pc.CACHE_TTL_MS + 1000) }));
-    assert.strictEqual(pc.readPidCache(sid, CWD), null);
+  it("readPidCache returns null on a missing file (no throw)", () => {
+    assert.strictEqual(pc.readPidCache(freshSid(), CWD), null);
   });
 
   it("readPidCache returns null when the stored cwd disagrees (second identity guard)", () => {
@@ -101,29 +100,106 @@ describe("pid-cache read/write/drop", () => {
     assert.strictEqual(pc.readPidCache(sid, CWD), null);
   });
 
-  it("readPidCache tolerates a corrupt file", () => {
+  it("readPidCache tolerates a corrupt file (null, no throw)", () => {
     const sid = freshSid();
     const file = pc.cacheFilePath(sid, CWD);
     fs.writeFileSync(file, "{ not json");
     assert.strictEqual(pc.readPidCache(sid, CWD), null);
   });
+
+  // agentPid shape tightened to REQUIRED positive integer (Codex NICE).
+  it("readPidCache returns null when agentPid is missing or non-positive", () => {
+    const sid = freshSid();
+    const file = pc.cacheFilePath(sid, CWD);
+    fs.writeFileSync(file, JSON.stringify({ stablePid: 1234, cwd: CWD, ts: Date.now() }));
+    assert.strictEqual(pc.readPidCache(sid, CWD), null, "missing agentPid → null");
+    fs.writeFileSync(file, JSON.stringify({ stablePid: 1234, agentPid: 0, cwd: CWD, ts: Date.now() }));
+    assert.strictEqual(pc.readPidCache(sid, CWD), null, "agentPid 0 → null");
+    fs.writeFileSync(file, JSON.stringify({ stablePid: 1234, agentPid: -5, cwd: CWD, ts: Date.now() }));
+    assert.strictEqual(pc.readPidCache(sid, CWD), null, "negative agentPid → null");
+  });
+});
+
+describe("pid-cache bounded sliding TTL (§8)", () => {
+  it("fresh mtime + fresh ts (within both clocks) → hit", () => {
+    const sid = freshSid();
+    pc.writePidCache(sid, CWD, SUBSET);
+    assert.ok(pc.readPidCache(sid, CWD));
+  });
+
+  it("idle-expired: mtime older than IDLE_TTL_MS → null (even with fresh ts)", () => {
+    const sid = freshSid();
+    pc.writePidCache(sid, CWD, SUBSET);
+    const file = pc.cacheFilePath(sid, CWD);
+    const old = (Date.now() - (pc.IDLE_TTL_MS + 1000)) / 1000;
+    fs.utimesSync(file, old, old); // age mtime; JSON ts stays fresh
+    assert.strictEqual(pc.readPidCache(sid, CWD), null);
+  });
+
+  it("absolute-cap-expired: ts older than ABSOLUTE_CAP_MS → null (even with fresh mtime)", () => {
+    const sid = freshSid();
+    const file = pc.cacheFilePath(sid, CWD);
+    // Stale ts, fresh mtime (writeFileSync stamps mtime = now).
+    fs.writeFileSync(file, JSON.stringify({ ...SUBSET, cwd: CWD, ts: Date.now() - (pc.ABSOLUTE_CAP_MS + 1000) }));
+    assert.strictEqual(pc.readPidCache(sid, CWD), null);
+  });
+
+  it("touchPidCache bumps mtime but leaves ts unchanged", () => {
+    const sid = freshSid();
+    pc.writePidCache(sid, CWD, SUBSET);
+    const file = pc.cacheFilePath(sid, CWD);
+    const tsBefore = JSON.parse(fs.readFileSync(file, "utf8")).ts;
+    const old = (Date.now() - (pc.IDLE_TTL_MS - 1000)) / 1000;
+    fs.utimesSync(file, old, old);
+    const mtimeAged = fs.statSync(file).mtimeMs;
+    pc.touchPidCache(sid, CWD);
+    assert.ok(fs.statSync(file).mtimeMs > mtimeAged, "touch must move mtime forward");
+    assert.strictEqual(JSON.parse(fs.readFileSync(file, "utf8")).ts, tsBefore, "touch must NOT change ts");
+  });
+
+  // NB: we deliberately do NOT test "touch revives an idle-expired file". Under
+  // utimesSync that mechanically works, but it is NOT the helper's contract:
+  // touch is only ever called ON A HIT (readPidCache already passed), so a
+  // genuinely-expired entry never reaches touch. Pinning revival as expected
+  // behavior would mislead future callers. The hit-path renewal contract is
+  // covered end-to-end in clawd-hook-pid-cache.test.js.
+
+  it("touchPidCache does not create a missing file (SessionEnd drop race)", () => {
+    const sid = freshSid();
+    const file = pc.cacheFilePath(sid, CWD);
+    assert.doesNotThrow(() => pc.touchPidCache(sid, CWD));
+    assert.strictEqual(fs.existsSync(file), false, "touch must not create a missing file");
+  });
+
+  it("touchPidCache is a no-op when caching is disabled", () => {
+    assert.doesNotThrow(() => pc.touchPidCache("default", CWD));
+    assert.doesNotThrow(() => pc.touchPidCache("sid", ""));
+  });
 });
 
 describe("pid-cache sweepStalePidCaches()", () => {
-  it("removes only our own prefix files older than 2x TTL, keeps fresh ones", () => {
+  it("removes only our prefix files idle past 2x IDLE_TTL_MS, keeps fresh ones", () => {
     const staleSid = freshSid();
     const freshSidId = freshSid();
     const staleFile = pc.cacheFilePath(staleSid, CWD);
     const freshFile = pc.cacheFilePath(freshSidId, CWD);
     pc.writePidCache(staleSid, CWD, SUBSET);
     pc.writePidCache(freshSidId, CWD, SUBSET);
-    // Age the stale one well past 2x TTL via mtime.
-    const old = (Date.now() - 3 * pc.CACHE_TTL_MS) / 1000;
+    const old = (Date.now() - 3 * pc.IDLE_TTL_MS) / 1000;
     fs.utimesSync(staleFile, old, old);
 
     pc.sweepStalePidCaches();
 
-    assert.strictEqual(fs.existsSync(staleFile), false, "stale file swept");
+    assert.strictEqual(fs.existsSync(staleFile), false, "stale (idle) file swept");
     assert.strictEqual(fs.existsSync(freshFile), true, "fresh file kept");
+  });
+
+  it("sweep keys off mtime, not ts: old ts + fresh mtime is kept", () => {
+    const sid = freshSid();
+    const file = pc.cacheFilePath(sid, CWD);
+    // Past absolute cap by ts, but mtime fresh (just written).
+    fs.writeFileSync(file, JSON.stringify({ ...SUBSET, cwd: CWD, ts: Date.now() - 10 * pc.ABSOLUTE_CAP_MS }));
+    pc.sweepStalePidCaches();
+    assert.strictEqual(fs.existsSync(file), true, "sweep must key off mtime, not ts");
   });
 });

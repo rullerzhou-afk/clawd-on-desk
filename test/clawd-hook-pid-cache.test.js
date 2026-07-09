@@ -1,9 +1,10 @@
-// test/clawd-hook-pid-cache.test.js — #627 cache wiring in buildStateBody.
-// clawd-hook.js captures `isWin` at module load, so we force process.platform
-// and re-require it to exercise both the Windows (cache) and non-Windows paths
-// deterministically on any host.
+// test/clawd-hook-pid-cache.test.js — #627 cache wiring in buildStateBody
+// (bounded sliding TTL §8). clawd-hook.js captures `isWin` at module load, so we
+// force process.platform and re-require it to exercise both the Windows (cache)
+// and non-Windows paths deterministically on any host.
 const { describe, it, before, after, afterEach } = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
 
 const pidCache = require("../hooks/pid-cache");
 
@@ -21,8 +22,10 @@ afterEach(() => {
   for (const sid of usedSids.splice(0)) pidCache.dropPidCache(sid, CWD);
 });
 
-// A healthy resolve() result. stablePid = this test process (guaranteed alive)
-// so the cache-hit liveness check passes.
+// A healthy resolve() result. stablePid = this test process (guaranteed alive).
+// agentPid = 4242 is a placeholder for the FRESH path (which does not
+// liveness-check agentPid); cache-HIT tests write their own subset with a LIVE
+// agentPid because the hit path now double-checks processAlive(agentPid).
 function goodResolved(extra = {}) {
   return {
     stablePid: process.pid,
@@ -35,6 +38,18 @@ function goodResolved(extra = {}) {
     foregroundWtHwnd: null,
     tmuxSocket: null,
     tmuxClient: null,
+    ...extra,
+  };
+}
+
+// A cached subset whose stablePid AND agentPid are both alive (this process),
+// so the hit path's double liveness check passes.
+function liveSubset(extra = {}) {
+  return {
+    stablePid: process.pid,
+    agentPid: process.pid,
+    agentCommandLine: "claude --print",
+    detectedEditor: "code",
     ...extra,
   };
 }
@@ -81,30 +96,51 @@ describe("buildStateBody pid cache — Windows", () => {
 
   it("cache hit → no resolve, replicates claude_pid + headless, omits pid_chain", () => {
     const sid = freshSid();
-    pidCache.writePidCache(sid, CWD, {
-      stablePid: process.pid, agentPid: 4242, agentCommandLine: "claude --print", detectedEditor: "code",
-    });
+    pidCache.writePidCache(sid, CWD, liveSubset());
     let calls = 0;
     const body = buildStateBody("PostToolUse", { session_id: sid, cwd: CWD }, () => { calls++; return goodResolved(); });
     assert.strictEqual(calls, 0, "cache hit must not spawn a resolve");
     assert.strictEqual(body.source_pid, process.pid);
-    assert.strictEqual(body.agent_pid, 4242);
-    assert.strictEqual(body.claude_pid, 4242, "M3: backward-compat alias must be present on the cache path");
+    assert.strictEqual(body.agent_pid, process.pid);
+    assert.strictEqual(body.claude_pid, process.pid, "M3: backward-compat alias must be present on the cache path");
     assert.strictEqual(body.headless, true, "M3: headless derivation must run on the cache path");
     assert.strictEqual(body.editor, "code");
     assert.strictEqual(body.pid_chain, undefined, "cache-hit body must omit pid_chain (server MERGE keeps SessionStart's)");
     assert.strictEqual(body.wt_hwnd, undefined);
   });
 
-  it("M1: dead cached stablePid → falls back to a fresh resolve, never ships the dead pid", () => {
+  it("cache hit refreshes the idle TTL: touches mtime, keeps ts, no resolve (sliding TTL §8)", () => {
     const sid = freshSid();
-    pidCache.writePidCache(sid, CWD, {
-      stablePid: DEAD_PID, agentPid: 4242, agentCommandLine: "claude", detectedEditor: "code",
-    });
+    pidCache.writePidCache(sid, CWD, liveSubset());
+    const file = pidCache.cacheFilePath(sid, CWD);
+    const tsBefore = JSON.parse(fs.readFileSync(file, "utf8")).ts;
+    // Age mtime toward idle expiry (but still within it) so the touch is observable.
+    const aged = (Date.now() - (pidCache.IDLE_TTL_MS - 2000)) / 1000;
+    fs.utimesSync(file, aged, aged);
+    const mtimeAged = fs.statSync(file).mtimeMs;
+    let calls = 0;
+    buildStateBody("PreToolUse", { session_id: sid, cwd: CWD }, () => { calls++; return goodResolved(); });
+    assert.strictEqual(calls, 0, "hit must not resolve");
+    assert.ok(fs.statSync(file).mtimeMs > mtimeAged, "hit must bump mtime = renew idle TTL");
+    assert.strictEqual(JSON.parse(fs.readFileSync(file, "utf8")).ts, tsBefore, "hit must not change ts (absolute-cap anchor)");
+  });
+
+  it("M1: dead cached stablePid → fresh resolve, never ships the dead pid", () => {
+    const sid = freshSid();
+    pidCache.writePidCache(sid, CWD, { stablePid: DEAD_PID, agentPid: process.pid, agentCommandLine: "claude", detectedEditor: "code" });
     let calls = 0;
     const body = buildStateBody("PreToolUse", { session_id: sid, cwd: CWD }, () => { calls++; return goodResolved(); });
     assert.strictEqual(calls, 1, "dead source_pid must trigger a fresh resolve");
     assert.strictEqual(body.source_pid, process.pid, "ships the fresh pid, not the dead cached one");
+  });
+
+  it("dead cached agentPid → fresh resolve (do not renew a dead session, sliding TTL §8)", () => {
+    const sid = freshSid();
+    pidCache.writePidCache(sid, CWD, { stablePid: process.pid, agentPid: DEAD_PID, agentCommandLine: "claude", detectedEditor: "code" });
+    let calls = 0;
+    const body = buildStateBody("PreToolUse", { session_id: sid, cwd: CWD }, () => { calls++; return goodResolved(); });
+    assert.strictEqual(calls, 1, "dead agentPid must trigger a fresh resolve");
+    assert.strictEqual(body.source_pid, process.pid);
   });
 
   it("M2: degraded resolve (snapshotOk false) is not cached", () => {
@@ -125,23 +161,19 @@ describe("buildStateBody pid cache — Windows", () => {
 
   it("M2: a degraded fresh resolve does not overwrite an existing good cache", () => {
     const sid = freshSid();
-    pidCache.writePidCache(sid, CWD, {
-      stablePid: process.pid, agentPid: 4242, agentCommandLine: "claude --print", detectedEditor: "code",
-    });
+    pidCache.writePidCache(sid, CWD, liveSubset());
     // UserPromptSubmit always re-resolves; feed it a degraded (snapshotOk:false) result.
     const degraded = { stablePid: 999, terminalPid: null, snapshotOk: false, agentPid: null, agentCommandLine: "", detectedEditor: null, pidChain: [], foregroundWtHwnd: null, tmuxSocket: null, tmuxClient: null };
     buildStateBody("UserPromptSubmit", { session_id: sid, cwd: CWD }, () => degraded);
     const after = pidCache.readPidCache(sid, CWD);
     assert.ok(after, "existing good cache must survive a degraded resolve");
     assert.strictEqual(after.stablePid, process.pid, "stablePid untouched");
-    assert.strictEqual(after.agentPid, 4242, "agentPid untouched");
+    assert.strictEqual(after.agentPid, process.pid, "agentPid untouched");
   });
 
   it("cache-hit path recomputes tmux_socket from the environment", () => {
     const sid = freshSid();
-    pidCache.writePidCache(sid, CWD, {
-      stablePid: process.pid, agentPid: 4242, agentCommandLine: "claude", detectedEditor: "code",
-    });
+    pidCache.writePidCache(sid, CWD, liveSubset());
     const saved = process.env.TMUX;
     process.env.TMUX = "/tmp/tmux-1000/win,200,5";
     try {
@@ -155,9 +187,7 @@ describe("buildStateBody pid cache — Windows", () => {
 
   it("M5: SessionEnd reads the cache, drops it, and does not resolve", () => {
     const sid = freshSid();
-    pidCache.writePidCache(sid, CWD, {
-      stablePid: process.pid, agentPid: 4242, agentCommandLine: "claude", detectedEditor: "code",
-    });
+    pidCache.writePidCache(sid, CWD, liveSubset());
     let calls = 0;
     const body = buildStateBody("SessionEnd", { session_id: sid, cwd: CWD }, () => { calls++; return goodResolved(); });
     assert.strictEqual(calls, 0, "SessionEnd hit uses the cache, no spawn");
@@ -197,9 +227,7 @@ describe("buildStateBody pid cache — non-Windows", () => {
 
   it("never consults or writes the cache; always resolves with pid_chain", () => {
     const sid = freshSid();
-    pidCache.writePidCache(sid, CWD, {
-      stablePid: process.pid, agentPid: 4242, agentCommandLine: "claude", detectedEditor: "code",
-    });
+    pidCache.writePidCache(sid, CWD, liveSubset());
     let calls = 0;
     const body = buildStateBody("PreToolUse", { session_id: sid, cwd: CWD }, () => { calls++; return goodResolved(); });
     assert.strictEqual(calls, 1, "non-Windows always resolves");

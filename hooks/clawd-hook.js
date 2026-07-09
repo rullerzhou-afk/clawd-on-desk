@@ -495,10 +495,17 @@ function buildStateBody(event, payload, resolve) {
       }
     } else if (canCacheSession && !wantsFresh) {
       const c = pidCache.readPidCache(sessionId, cwd);
-      // M1: validate the PID that BECOMES source_pid (stablePid), not
-      // agentPid — session-focus.js only checks source_pid's existence, so a
-      // dead stablePid must trigger a fresh resolve rather than ship downstream.
-      if (c && c.cwd === cwd && processAlive(c.stablePid)) cached = c;
+      // M1 + bounded sliding TTL (#627 plan §8): the PID that becomes source_pid
+      // (stablePid) must be alive — session-focus.js only checks source_pid's
+      // existence, so a dead stablePid must trigger a fresh resolve. agentPid
+      // (claude.exe) must ALSO be alive: it tracks session liveness, so a dead
+      // agentPid means the session ended and the cache must NOT be renewed. Both
+      // alive → hit and refresh the idle TTL (touch bumps mtime, not ts) so an
+      // active long turn never re-snapshots mid-session.
+      if (c && c.cwd === cwd && processAlive(c.stablePid) && processAlive(c.agentPid)) {
+        pidCache.touchPidCache(sessionId, cwd);
+        cached = c;
+      }
     }
 
     if (cached) {
