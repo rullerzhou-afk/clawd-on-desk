@@ -48,17 +48,17 @@ test("assistant end closes the turn once, preserves transient closing, and later
     engine.update(ev("assistant_end", 1200 + i * 1000, { finish_reason: "stop" }));
   }
 
-  engine.update(ev("assistant_start", 1000));
-  engine.update(ev("assistant_token_delta", 1500, { delta_tokens_est: 100 }));
-  engine.update(ev("task_end_signal", 2000, { confidence: 1.0 }));
-  const state = engine.update(ev("assistant_end", 2000, { finish_reason: "stop" }));
+  engine.update(ev("assistant_start", 3000));
+  engine.update(ev("assistant_token_delta", 3500, { delta_tokens_est: 100 }));
+  engine.update(ev("task_end_signal", 4000, { confidence: 1.0 }));
+  const state = engine.update(ev("assistant_end", 4000, { finish_reason: "stop" }));
   assert.equal(state.state, "closing");
   assert.equal(state.online_features.history_turn_index, 3);
   assert.equal(state.online_features.current_assistant_tokens_streamed, 0);
   assert.equal(state.online_features.recent_assistant_tokens_max, 100);
   assert.equal(state.online_features.recent_error_count_sum, 0);
 
-  const settled = engine.update(ev("tick", 11000));
+  const settled = engine.update(ev("tick", 13000));
   assert.equal(settled.state, "steady_work");
   assert.notEqual(settled.smoothing.raw_state, "closing");
 });
