@@ -77,3 +77,50 @@ Output:
 ## Concerns
 
 None for this task. The only verification performed was the focused Node test requested in the brief.
+
+## Fix update: review findings
+
+### Fix summary
+
+Hardened `classifyCall` so shell commands are no longer misclassified as `edit` because of loose substring matching, and tightened `inferSuccess` so common shell error messages now return `false` instead of falling through to the default success case.
+
+### TDD evidence
+
+RED:
+
+```text
+✖ classifyCall separates read edit test and command work
+AssertionError [ERR_ASSERTION]: 'edit' == 'command'
+
+✖ inferSuccess detects common command result text
+AssertionError [ERR_ASSERTION]: true == false
+```
+
+GREEN:
+
+```text
+✔ classifyCall separates read edit test and command work
+✔ inferSuccess detects common command result text
+ℹ tests 4
+ℹ fail 0
+```
+
+### Test command and result
+
+Command:
+
+```bash
+node --test test/wavepet-token-estimator.test.js
+```
+
+Result: passed, 4 tests green, 0 failures.
+
+### Files changed
+
+- `src/wavepet/token-estimator.js`
+- `test/wavepet-token-estimator.test.js`
+- `.superpowers/sdd/task-1-report.md`
+
+### Concerns
+
+`classifyCall` still uses heuristic matching, but the added guardrails keep the known false positives from the review out of the `edit` and `command` buckets without widening scope.

@@ -23,7 +23,16 @@ const TEST_COMMAND_HINTS = [
   "cargo test",
   "go test",
 ];
-const EDIT_COMMAND_HINTS = ["apply_patch", "patch", "write", "edit", "save"];
+const EDIT_COMMAND_HINTS = ["apply_patch", "patch", "write", "edit"];
+
+function matchesHint(text, hint) {
+  if (hint.includes(" ")) {
+    const escaped = hint.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`).test(text);
+  }
+
+  return text.split(/[^a-z0-9]+/).includes(hint);
+}
 
 function estimateTokens(text) {
   if (typeof text !== "string" || !text) return 0;
@@ -61,10 +70,10 @@ function classifyCall(toolName, command) {
   const tool = String(toolName || "").toLowerCase();
   const text = `${tool} ${command || ""}`.toLowerCase();
 
-  if (EDIT_COMMAND_HINTS.some((hint) => text.includes(hint))) return "edit";
-  if (TEST_COMMAND_HINTS.some((hint) => text.includes(hint))) return "test";
+  if (EDIT_COMMAND_HINTS.some((hint) => matchesHint(text, hint))) return "edit";
+  if (TEST_COMMAND_HINTS.some((hint) => matchesHint(text, hint))) return "test";
   if (tool.includes("web_search") || text.includes("web_search")) return "read";
-  if (READ_COMMAND_HINTS.some((hint) => text.includes(hint))) return "read";
+  if (READ_COMMAND_HINTS.some((hint) => matchesHint(text, hint))) return "read";
   if (tool.includes("shell") || tool.includes("command") || tool.includes("exec")) {
     return "command";
   }
@@ -79,7 +88,11 @@ function inferSuccess(output) {
   if (
     lowered.includes("traceback") ||
     lowered.includes("failed") ||
-    lowered.includes("error:")
+    lowered.includes("error:") ||
+    lowered.includes("command not found") ||
+    lowered.includes("permission denied") ||
+    lowered.includes("no such file or directory") ||
+    lowered.includes("not found")
   ) {
     return false;
   }

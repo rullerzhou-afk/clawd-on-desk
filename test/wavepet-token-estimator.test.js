@@ -25,6 +25,10 @@ test("classifyCall separates read edit test and command work", () => {
   assert.equal(classifyCall("shell_command", "npm test"), "test");
   assert.equal(classifyCall("shell_command", "git status"), "command");
   assert.equal(classifyCall("web_search_call", "query"), "read");
+  assert.equal(
+    classifyCall("shell_command", "npm install --save-dev eslint"),
+    "command"
+  );
 });
 
 test("inferSuccess detects common command result text", () => {
@@ -32,4 +36,7 @@ test("inferSuccess detects common command result text", () => {
   assert.equal(inferSuccess("Exit code: 1\nfailed"), false);
   assert.equal(inferSuccess("Traceback most recent call last"), false);
   assert.equal(inferSuccess("normal output"), true);
+  assert.equal(inferSuccess("bash: git: command not found"), false);
+  assert.equal(inferSuccess("Permission denied"), false);
+  assert.equal(inferSuccess("No such file or directory"), false);
 });
