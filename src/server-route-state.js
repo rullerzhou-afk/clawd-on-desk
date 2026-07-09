@@ -86,6 +86,12 @@ function normalizeContextUsage(value) {
   return out;
 }
 
+function normalizeWavepet(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : null;
+}
+
 // Account-wide rate-limit quota. Re-validated here rather than trusted from
 // the hook, matching normalizeContextUsage. Two independent sources - see
 // hooks/antigravity-context-usage.js and hooks/claude-rate-limits.js.
@@ -197,6 +203,7 @@ function handleStatePost(req, res, options) {
       const rawTitle = typeof data.session_title === "string" ? data.session_title.trim() : "";
       const sessionTitle = rawTitle || null;
       const contextUsage = normalizeContextUsage(data.context_usage);
+      const wavepet = normalizeWavepet(data.wavepet);
       const antigravityQuota = normalizeAntigravityQuota(data.antigravity_quota);
       const claudeQuota = normalizeClaudeQuota(data.claude_quota);
       const assistantLastOutput = normalizeAssistantLastOutput(data.assistant_last_output);
@@ -346,6 +353,7 @@ function handleStatePost(req, res, options) {
             codexSource,
             ghosttyTerminalId,
             displayHint: display_svg,
+            wavepet,
             sessionTitle,
             contextUsage,
             antigravityQuota,

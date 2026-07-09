@@ -91,6 +91,7 @@ function update(api, o = {}) {
       codexOriginator: o.codexOriginator ?? null,
       codexSource: o.codexSource ?? null,
       ghosttyTerminalId: o.ghosttyTerminalId ?? null,
+      wavepet: o.wavepet ?? null,
       assistantLastOutput: o.assistantLastOutput ?? null,
       assistantLastOutputTruncated: o.assistantLastOutputTruncated ?? false,
       toolName: o.toolName ?? null,
@@ -123,6 +124,7 @@ function rawSession(state, opts = {}) {
     codexOriginator: opts.codexOriginator || null,
     codexSource: opts.codexSource || null,
     ghosttyTerminalId: opts.ghosttyTerminalId || null,
+    wavepet: opts.wavepet || null,
     sessionTitle: opts.sessionTitle ?? null,
     recentEvents: opts.recentEvents || [],
     pidReachable: opts.pidReachable ?? false,
@@ -1664,6 +1666,25 @@ describe("updateSession()", () => {
     assert.strictEqual(api.sessions.get("s1").platform, "webui");
     assert.strictEqual(api.sessions.get("s1").model, "gpt-5.4");
     assert.strictEqual(api.sessions.get("s1").provider, "openai");
+  });
+
+  it("stores wavepet diagnostics and uses display hint for working session", () => {
+    const api = require("../src/state")(makeCtx());
+
+    api.updateSession("codex:s1", "working", "wavepet:deep_output", {
+      agentId: "codex",
+      displayHint: "clawd-working-ultrathink.svg",
+      wavepet: { state: "deep_output", intensity: 0.9 },
+    });
+
+    const session = api.sessions.get("codex:s1");
+    assert.equal(session.wavepet.state, "deep_output");
+    assert.equal(session.displayHint, "clawd-working-ultrathink.svg");
+    assert.deepStrictEqual(
+      api.buildSessionSnapshot().sessions.find((entry) => entry.id === "codex:s1").wavepet,
+      { state: "deep_output", intensity: 0.9 },
+    );
+    api.cleanup();
   });
 
   it("stores contextUsage from updateSession opts", () => {

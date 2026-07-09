@@ -163,6 +163,16 @@ function normalizeToolName(value) {
   return text;
 }
 
+function normalizeWavepetDiagnostics(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  try {
+    const serialized = JSON.stringify(value);
+    return serialized ? JSON.parse(serialized) : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Hit-test bounding boxes (from theme) ──
 let HIT_BOXES = {};
 let FILE_HIT_BOXES = {};
@@ -898,7 +908,7 @@ function getSessionAliases() {
 }
 
 function buildSessionSnapshot() {
-  return buildSessionSnapshotFromSessions(sessions, {
+  const snapshot = buildSessionSnapshotFromSessions(sessions, {
     sessionAliases: getSessionAliases(),
     getAgentIconUrl,
     statePriority: STATE_PRIORITY,
@@ -906,6 +916,14 @@ function buildSessionSnapshot() {
     focusHostPlatform: ctx.focusHostPlatform || process.platform,
     isProcessAlive,
   });
+  snapshot.sessions = snapshot.sessions.map((entry) => {
+    const session = sessions.get(entry.id);
+    return {
+      ...entry,
+      wavepet: normalizeWavepetDiagnostics(session && session.wavepet),
+    };
+  });
+  return snapshot;
 }
 
 function getActiveSessionAliasKeys() {
@@ -920,7 +938,10 @@ function broadcastSessionSnapshot(snapshot) {
 function emitSessionSnapshot(options = {}) {
   const force = !!options.force;
   const snapshot = buildSessionSnapshot();
-  const signature = sessionSnapshotSignature(snapshot);
+  const signature = `${sessionSnapshotSignature(snapshot)}|${JSON.stringify(snapshot.sessions.map((entry) => ({
+    id: entry.id,
+    wavepet: entry.wavepet,
+  })))}`;
   const changed = force || signature !== lastSessionSnapshotSignature;
   lastSessionSnapshot = snapshot;
   if (changed) {
@@ -1301,6 +1322,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     codexSource = null,
     ghosttyTerminalId = null,
     displayHint = undefined,
+    wavepet = null,
     sessionTitle = null,
     contextUsage = null,
     antigravityQuota = null,
@@ -1378,6 +1400,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       const srcCodexOriginator = codexOriginator || (existing && existing.codexOriginator) || null;
       const srcCodexSource = codexSource || (existing && existing.codexSource) || null;
       const srcGhosttyTerminalId = normalizeGhosttyTerminalId(ghosttyTerminalId) || (existing && existing.ghosttyTerminalId) || null;
+      const srcWavepet = normalizeWavepetDiagnostics(wavepet) || (existing && existing.wavepet) || null;
       const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
       const srcContextUsage = normalizeContextUsage(contextUsage) || (existing && existing.contextUsage) || null;
       // PermissionRequest should flash the pet via setState("notification"),
@@ -1411,6 +1434,7 @@ function updateSession(sessionId, state, event, opts = {}) {
         codexOriginator: srcCodexOriginator,
         codexSource: srcCodexSource,
         ghosttyTerminalId: srcGhosttyTerminalId,
+        wavepet: srcWavepet,
         sessionTitle: srcSessionTitle,
         contextUsage: srcContextUsage,
         recentEvents,
@@ -1445,6 +1469,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcCodexOriginator = codexOriginator || (existing && existing.codexOriginator) || null;
   const srcCodexSource = codexSource || (existing && existing.codexSource) || null;
   const srcGhosttyTerminalId = normalizeGhosttyTerminalId(ghosttyTerminalId) || (existing && existing.ghosttyTerminalId) || null;
+  const srcWavepet = normalizeWavepetDiagnostics(wavepet) || (existing && existing.wavepet) || null;
   // Sticky: empty input does not clear an existing title. A session that has
   // ever been named keeps that name until the user explicitly renames it.
   const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
@@ -1580,7 +1605,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   // silently reset its freshness stamp, or stale carried-over quota would
   // win display arbitration on updatedAt alone.
   const srcMetadataUpdatedAt = existing && Number.isFinite(existing.metadataUpdatedAt) ? existing.metadataUpdatedAt : null;
-  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, wslDistro: srcWslDistro, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, antigravityQuota: srcAntigravityQuota, claudeQuota: srcClaudeQuota, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
+  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, wslDistro: srcWslDistro, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, wavepet: srcWavepet, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, antigravityQuota: srcAntigravityQuota, claudeQuota: srcClaudeQuota, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
   if (preserveCompletionAck) base.requiresCompletionAck = true;
 
   // Evict oldest session if at capacity and this is a new session.

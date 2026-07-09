@@ -127,6 +127,7 @@ describe("server-route-state POST", () => {
       permission_suspect: true,
       preserve_state: true,
       hook_source: "codex-official",
+      wavepet: { state: "deep_output", intensity: 0.9 },
     }));
 
     assert.strictEqual(res.statusCode, 200);
@@ -154,6 +155,7 @@ describe("server-route-state POST", () => {
         codexSource: "vscode",
         ghosttyTerminalId: "ghostty-term-7",
         displayHint: "display.svg",
+        wavepet: { state: "deep_output", intensity: 0.9 },
         sessionTitle: "Work title",
         contextUsage: null,
         antigravityQuota: null,
@@ -173,6 +175,18 @@ describe("server-route-state POST", () => {
         stdinDiag: null,
       },
     ]]);
+  });
+
+  it("drops non-object wavepet payloads before updateSession", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "PreToolUse",
+      wavepet: ["deep_output"],
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession[0][3].wavepet, null);
   });
 
   it("forwards Kimi Code permission context to updateSession (#563)", async () => {
