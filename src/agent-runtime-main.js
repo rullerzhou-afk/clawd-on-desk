@@ -121,8 +121,10 @@ function createAgentRuntimeMain(options = {}) {
     return server && typeof server[method] === "function" ? server[method](...args) : false;
   }
 
-  function syncIntegrationForAgent(agentId) {
-    return callServer("syncIntegrationForAgent", agentId);
+  function syncIntegrationForAgent(agentId, optionsArg) {
+    return optionsArg === undefined
+      ? callServer("syncIntegrationForAgent", agentId)
+      : callServer("syncIntegrationForAgent", agentId, optionsArg);
   }
 
   function repairIntegrationForAgent(agentId, optionsArg) {
