@@ -50,6 +50,7 @@ const AGENT_INSTALL_SCRIPT = {
   "gemini-cli": "gemini-install.js",
   "antigravity-cli": "antigravity-install.js",
   codebuddy: "codebuddy-install.js",
+  workbuddy: "workbuddy-install.js",
   "kiro-cli": "kiro-install.js",
   "kimi-cli": "kimi-install.js",
   "qwen-code": "qwen-code-install.js",
