@@ -87,6 +87,65 @@ function pathForHome(homeDir, ...parts) {
   return path.join(homeDir || os.homedir(), ...parts);
 }
 
+function uniqueStrings(values) {
+  const out = [];
+  for (const value of values || []) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (!trimmed || out.includes(trimmed)) continue;
+    out.push(trimmed);
+  }
+  return out;
+}
+
+function pascalFromAgentId(agentId) {
+  return String(agentId || "")
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join("");
+}
+
+function commonWindowsAppPaths(descriptor, options) {
+  const platform = options.platform || process.platform;
+  if (platform !== "win32") return [];
+  const homeDir = options.homeDir || os.homedir();
+  const env = options.env || process.env;
+  const names = uniqueStrings([
+    descriptor.agentName,
+    descriptor.agentName && descriptor.agentName.replace(/\s+/g, ""),
+    descriptor.agentId,
+    pascalFromAgentId(descriptor.agentId),
+  ]);
+  const roots = uniqueStrings([
+    homeDir,
+    env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, "Programs"),
+    env.LOCALAPPDATA,
+    env.PROGRAMFILES,
+    env["PROGRAMFILES(X86)"],
+  ]);
+  const paths = [];
+  for (const root of roots) {
+    for (const name of names) {
+      paths.push(path.join(root, name, `${name}.exe`));
+    }
+  }
+  return uniqueStrings(paths);
+}
+
+function customDiscoveryPathsForAgent(options, agentId) {
+  const snapshotEntry = options.snapshot
+    && options.snapshot.agents
+    && options.snapshot.agents[agentId];
+  const snapshotPaths = snapshotEntry && Array.isArray(snapshotEntry.customDiscoveryPaths)
+    ? snapshotEntry.customDiscoveryPaths
+    : [];
+  const optionEntry = options.customDiscoveryPaths
+    && options.customDiscoveryPaths[agentId];
+  const optionPaths = Array.isArray(optionEntry) ? optionEntry : [];
+  return uniqueStrings([...snapshotPaths, ...optionPaths]);
+}
+
 function resolveOpenClawPaths(options) {
   const env = options.env || process.env;
   const stateDir = typeof env.OPENCLAW_STATE_DIR === "string" && env.OPENCLAW_STATE_DIR.trim()
@@ -141,6 +200,20 @@ function hermesCommandPaths(hermesHome, platform, env = {}) {
   return [path.join(hermesHome, "hermes-agent", "venv", "bin", "hermes")];
 }
 
+function finalizeAgentPaths(descriptor, paths, options) {
+  const homeDir = options.homeDir || os.homedir();
+  const env = options.env || process.env;
+  const platform = options.platform || process.platform;
+  return {
+    ...paths,
+    commandPaths: uniqueStrings([
+      ...(paths.commandPaths || []),
+      ...commonWindowsAppPaths(descriptor, { homeDir, env, platform }),
+    ]),
+    customDiscoveryPaths: customDiscoveryPathsForAgent(options, descriptor.agentId),
+  };
+}
+
 function resolveAgentPaths(descriptor, options) {
   const homeDir = options.homeDir || os.homedir();
   const env = options.env || process.env;
@@ -148,50 +221,52 @@ function resolveAgentPaths(descriptor, options) {
 
   if (descriptor.agentId === "copilot-cli") {
     const parentDir = copilot.resolveCopilotHome({ homeDir, env });
-    return {
+    return finalizeAgentPaths(descriptor, {
       parentDir,
       configPath: copilot.resolveCopilotHooksPath({ homeDir, env }),
       settingsPath: copilot.resolveCopilotSettingsPath({ homeDir, env }),
-    };
+    }, options);
   }
 
   if (descriptor.agentId === "openclaw") {
     const { stateDir, configPath } = resolveOpenClawPaths({ homeDir, env });
-    return {
+    return finalizeAgentPaths(descriptor, {
       parentDir: stateDir,
       stateDir,
       configPath,
-    };
+    }, options);
   }
 
   if (descriptor.agentId === "hermes") {
     const hermesHome = hermes.resolveHermesHome({ homeDir, env, platform });
-    return {
+    return finalizeAgentPaths(descriptor, {
       parentDir: hermesHome,
       hermesHome,
       configPath: path.join(hermesHome, "plugins", hermes.PLUGIN_ID),
       configFilePath: path.join(hermesHome, "config.yaml"),
       commandPaths: hermesCommandPaths(hermesHome, platform, env),
-    };
+    }, options);
   }
 
+  let paths;
   if (descriptor.agentId === "workbuddy") {
-    return resolveWorkBuddyPaths({ homeDir, env, platform });
+    paths = resolveWorkBuddyPaths({ homeDir, env, platform });
+  } else {
+    const parentDir = rebaseHomePath(descriptor.parentDir, homeDir);
+    const configPath = rebaseHomePath(descriptor.configPath, homeDir);
+    paths = { parentDir, configPath };
+    if (descriptor.settingsPath) paths.settingsPath = rebaseHomePath(descriptor.settingsPath, homeDir);
+    if (descriptor.configFilePath) paths.configFilePath = rebaseHomePath(descriptor.configFilePath, homeDir);
+    if (Array.isArray(descriptor.configTargets)) {
+      paths.configTargets = descriptor.configTargets.map((target) => ({
+        ...target,
+        parentDir: rebaseHomePath(target.parentDir, homeDir),
+        configPath: rebaseHomePath(target.configPath, homeDir),
+      }));
+    }
   }
 
-  const parentDir = rebaseHomePath(descriptor.parentDir, homeDir);
-  const configPath = rebaseHomePath(descriptor.configPath, homeDir);
-  const paths = { parentDir, configPath };
-  if (descriptor.settingsPath) paths.settingsPath = rebaseHomePath(descriptor.settingsPath, homeDir);
-  if (descriptor.configFilePath) paths.configFilePath = rebaseHomePath(descriptor.configFilePath, homeDir);
-  if (Array.isArray(descriptor.configTargets)) {
-    paths.configTargets = descriptor.configTargets.map((target) => ({
-      ...target,
-      parentDir: rebaseHomePath(target.parentDir, homeDir),
-      configPath: rebaseHomePath(target.configPath, homeDir),
-    }));
-  }
-  return paths;
+  return finalizeAgentPaths(descriptor, paths, options);
 }
 
 function installationResult(detectedInstalled, confidence, reason, detail) {
@@ -314,8 +389,31 @@ function detectWorkBuddyInstallation(paths, options) {
   return notFound();
 }
 
+function detectCustomDiscoveryPaths(paths, options) {
+  const fsImpl = options.fs;
+  for (const candidate of paths.customDiscoveryPaths || []) {
+    if (fileExists(fsImpl, candidate)) {
+      return installationResult(true, "high", "custom-path", `${candidate} exists`);
+    }
+    if (dirExists(fsImpl, candidate)) {
+      return installationResult(true, "high", "custom-path", `${candidate} exists`);
+    }
+  }
+  return null;
+}
+
+function detectGenericCommandPaths(paths, options, agentName) {
+  const fsImpl = options.fs;
+  if ((paths.commandPaths || []).some((candidate) => fileExists(fsImpl, candidate))) {
+    return installationResult(true, "high", "app-path", `${agentName} application was found`);
+  }
+  return null;
+}
+
 function detectInstallation(descriptor, paths, options) {
   const fsImpl = options.fs;
+  const customResult = detectCustomDiscoveryPaths(paths, options);
+  if (customResult) return customResult;
   switch (descriptor.agentId) {
     case "gemini-cli":
       return detectGeminiInstallation(descriptor, paths, options);
@@ -342,6 +440,10 @@ function detectInstallation(descriptor, paths, options) {
     case "opencode":
     case "qoder":
     case "qoderwork":
+      {
+        const appResult = detectGenericCommandPaths(paths, options, descriptor.agentName || descriptor.agentId);
+        if (appResult) return appResult;
+      }
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);
       return notFound();
     case "workbuddy":
