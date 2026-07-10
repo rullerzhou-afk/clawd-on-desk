@@ -31,6 +31,9 @@ function readStdin() {
 
 function parsePayload(raw) {
   if (!raw || !raw.trim()) return null;
+  // A PowerShell/.NET intermediary can prefix the payload with a UTF-8 BOM
+  // (#638), which JSON.parse rejects.
+  if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
   try {
     return JSON.parse(raw);
   } catch {

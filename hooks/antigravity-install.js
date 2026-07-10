@@ -169,14 +169,15 @@ function buildWindowsEncodedFailOpenNodeHookCommand(nodeBin, hookScript, event, 
     // #638: .NET Framework's Process.Start() eagerly creates the StandardInput
     // StreamWriter on Console.InputEncoding with AutoFlush=true, which flushes
     // the encoding's preamble into the pipe at Start() itself — under a
-    // CP-65001 console the hook's stdin starts with a 3-byte UTF-8 BOM that
-    // JSON.parse rejects (and an ANSI console mojibakes non-ASCII payloads
-    // written through that writer). Pre-set a BOM-less UTF-8 before Start()
-    // and restore right after; fail open where no console exists (ANSI has no
-    // preamble, so there is nothing to fix there).
-    "$origInputEncoding = $null",
-    ";",
-    "try { $origInputEncoding = [Console]::InputEncoding ; [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { $origInputEncoding = $null }",
+    // CP-65001 console the hook's stdin would start with a 3-byte UTF-8 BOM
+    // that JSON.parse rejects. Swap in a BOM-less UTF-8 before Start(), gated
+    // on the current encoding actually carrying a preamble: the swap then
+    // never changes the console codepage (65001 stays 65001), so there is no
+    // cross-process console state to restore — concurrent wrappers cannot
+    // race on it and a hard-killed wrapper leaves no residue. The swapped
+    // encoding object is process-local and dies with the wrapper. Fail open
+    // where no console exists (ANSI encodings carry no preamble anyway).
+    "try { if ([Console]::InputEncoding.GetPreamble().Length -gt 0) { [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false) } } catch {}",
     ";",
     "try {",
     "$psi = New-Object System.Diagnostics.ProcessStartInfo",
@@ -193,6 +194,14 @@ function buildWindowsEncodedFailOpenNodeHookCommand(nodeBin, hookScript, event, 
     ";",
     "$psi.RedirectStandardOutput = $true",
     ";",
+    // #638 read side: without this, the StandardOutput reader decodes the
+    // hook's UTF-8 stdout with Console.OutputEncoding — mojibake for any
+    // non-ASCII in the hook's response under an ANSI console. Available on
+    // .NET Framework 4.5+ (unlike StandardInputEncoding, which Framework
+    // never got, hence the InputEncoding swap above) and process-local by
+    // construction.
+    "$psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)",
+    ";",
     "$psi.RedirectStandardError = $true",
     ";",
     "$psi.CreateNoWindow = $true",
@@ -202,8 +211,6 @@ function buildWindowsEncodedFailOpenNodeHookCommand(nodeBin, hookScript, event, 
     "$proc.StartInfo = $psi",
     ";",
     "[void]$proc.Start()",
-    ";",
-    "if ($null -ne $origInputEncoding) { try { [Console]::InputEncoding = $origInputEncoding } catch {} }",
     ";",
     "$stdoutTask = $proc.StandardOutput.ReadToEndAsync()",
     ";",
@@ -244,7 +251,7 @@ function buildWindowsEncodedFailOpenNodeHookCommand(nodeBin, hookScript, event, 
     ";",
     "$text=''",
     "}",
-    "} catch { $text='' ; if ($null -ne $origInputEncoding) { try { [Console]::InputEncoding = $origInputEncoding } catch {} } }",
+    "} catch { $text='' }",
     ";",
     "if ($text.Length -gt 0) { $trimmed=$text.Trim(); if (($trimmed.Length -lt 2) -or ($trimmed[0] -ne '{') -or ($trimmed[$trimmed.Length - 1] -ne '}')) { $text='' } else { try { $null = ($text | ConvertFrom-Json -ErrorAction Stop) } catch { $text='' } } }",
     ";",

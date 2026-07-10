@@ -612,10 +612,15 @@ describe("Antigravity hook installer", () => {
     // other real-PowerShell tests must never observe the forced 65001.
     const before = spawnSync("cmd.exe", ["/d", "/s", "/c", "chcp"], { encoding: "utf8" });
     const cpMatch = (before.stdout || "").match(/\d+/);
+    assert.strictEqual(before.status, 0, "must be able to query the console codepage");
+    assert.ok(cpMatch, "must be able to parse the console codepage for restore");
     try {
+      // && (not &): if forcing 65001 fails, the wrapper must NOT run — under
+      // the original ANSI codepage this test would silently pass without ever
+      // exercising the BOM branch.
       const result = spawnSync(
         "cmd.exe",
-        ["/d", "/s", "/c", `chcp 65001>nul & ${command}`],
+        ["/d", "/s", "/c", `chcp 65001>nul && ${command}`],
         { input: payload, encoding: "utf8", timeout: 30000 }
       );
       assert.strictEqual(result.status, 0);
@@ -656,6 +661,15 @@ describe("Antigravity hook installer", () => {
     // stdin must be written as raw UTF-8 bytes, not through that writer.
     assert.ok(decoded.includes("[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)"));
     assert.ok(decoded.indexOf("UTF8Encoding($false)") < decoded.indexOf("$proc.Start()"), "encoding pre-set must precede Start()");
+    // The swap must stay gated on the current encoding carrying a preamble and
+    // must NOT save/restore console state: gated, SetConsoleCP only ever
+    // receives the codepage the console already has, so concurrent wrappers
+    // cannot race and a hard-killed wrapper leaves no residue.
+    assert.ok(decoded.includes("if ([Console]::InputEncoding.GetPreamble().Length -gt 0)"));
+    assert.ok(!decoded.includes("$origInputEncoding"), "no console-state save/restore — the gated swap never changes the console CP");
+    // #638 read side: the hook's UTF-8 stdout must be decoded process-locally,
+    // not with the console-global OutputEncoding.
+    assert.ok(decoded.includes("$psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)"));
     assert.ok(decoded.includes("[System.Text.Encoding]::UTF8.GetBytes($stdinText)"));
     assert.ok(!decoded.includes("$proc.StandardInput.Write"));
     assert.ok(decoded.includes("ConvertFrom-Json -ErrorAction Stop"));
