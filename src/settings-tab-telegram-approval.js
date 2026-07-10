@@ -776,6 +776,7 @@
     desc.innerHTML = configured
       ? escapeWithLink(t("telegramApprovalTokenReplaceHintHtml"))
       : escapeWithLink(t("telegramApprovalBotTokenHintHtml"));
+    bindExternalLinks(desc);
     text.appendChild(label);
     if (configured && masked) {
       const current = document.createElement("span");
@@ -860,6 +861,7 @@
     const desc = document.createElement("span");
     desc.className = "row-desc";
     desc.innerHTML = escapeWithLink(t("telegramApprovalRecipientHintHtml"));
+    bindExternalLinks(desc);
     text.appendChild(label);
     text.appendChild(desc);
     row.appendChild(text);
@@ -1225,6 +1227,7 @@
     desc.innerHTML = configured
       ? escapeWithLink(t("feishuApprovalSecretsReplaceHintHtml"))
       : escapeWithLink(t("feishuApprovalSecretsHintHtml"));
+    bindExternalLinks(desc);
     text.appendChild(label);
     if (configured && info) {
       const current = document.createElement("span");
@@ -1326,6 +1329,7 @@
     const desc = document.createElement("span");
     desc.className = "row-desc";
     desc.innerHTML = escapeWithLink(t("feishuApprovalApproverHintHtml"));
+    bindExternalLinks(desc);
     text.appendChild(label);
     text.appendChild(desc);
     row.appendChild(text);
@@ -1636,11 +1640,23 @@
     let match;
     while ((match = re.exec(raw)) !== null) {
       parts.push(escapeHtml(raw.slice(lastIdx, match.index)));
-      parts.push(`<a href="${escapeHtml(match[2])}" target="_blank" rel="noopener noreferrer">${escapeHtml(match[1])}</a>`);
+      parts.push(`<a href="${escapeHtml(match[2])}">${escapeHtml(match[1])}</a>`);
       lastIdx = match.index + match[0].length;
     }
     parts.push(escapeHtml(raw.slice(lastIdx)));
     return parts.join("");
+  }
+
+  // Route clicks through the main-process shell.openExternal; a plain
+  // target="_blank" would make Electron pop a bare BrowserWindow instead of
+  // the user's browser.
+  function bindExternalLinks(el) {
+    for (const a of el.querySelectorAll("a[href]")) {
+      a.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        helpers.openExternalSafe(a.href);
+      });
+    }
   }
 
   function init(core) {

@@ -21,6 +21,8 @@ const COARSE_LABEL = Object.freeze({
 
 const READY_TIMEOUT_MS = 5000;
 const RECONNECT_MAX_MS = 30000;
+// Discord rejects SET_ACTIVITY outright when state/details exceed 128 chars.
+const ACTIVITY_FIELD_MAX = 128;
 // Discord rate-limits SET_ACTIVITY (~5/20s); coalesce rapid flips.
 const MIN_SEND_INTERVAL_MS = 4000;
 
@@ -48,7 +50,10 @@ function buildPresencePayload(session, privacy = {}) {
   if (privacy.privacyShowProject && session && session.cwd) {
     // win32.basename splits on both \ and /, so a Windows cwd seen on a POSIX
     // host yields just the folder name instead of leaking the whole path.
-    activity.state = `${COARSE_LABEL[coarse]} · ${path.win32.basename(session.cwd)}`;
+    const state = `${COARSE_LABEL[coarse]} · ${path.win32.basename(session.cwd)}`;
+    // Truncate by code point: a long folder name would otherwise make Discord
+    // silently drop the whole activity update.
+    activity.state = Array.from(state).slice(0, ACTIVITY_FIELD_MAX).join("");
   }
   // Allowlist by design: the snapshot also carries sensitive fields
   // (sessionTitle, assistantLastOutput, ...) we deliberately never read.

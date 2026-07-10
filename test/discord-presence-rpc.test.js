@@ -82,6 +82,15 @@ test("buildPresencePayload publishes ONLY the folder name, never a full path, on
   assert.strictEqual(out.state.includes("/"), false);
 });
 
+test("buildPresencePayload truncates state to Discord's 128-char activity limit", () => {
+  // Discord rejects the whole SET_ACTIVITY frame when state exceeds 128 chars,
+  // so an extra-long folder name must not silently kill presence updates.
+  const session = { agentId: "claude-code", state: "working", cwd: `D:\\repos\\${"x".repeat(300)}` };
+  const out = buildPresencePayload(session, { privacyShowProject: true });
+  assert.ok(Array.from(out.state).length <= 128, `state too long: ${out.state.length}`);
+  assert.match(out.state, /^Working · x/); // prefix intact, tail truncated
+});
+
 test("pickDominantSession skips headless, sleeping, and hiddenFromHud sessions (HUD-aligned)", () => {
   const snapshot = { sessions: [
     { id: "a", agentId: "codex", state: "working", hiddenFromHud: true },  // superseded -> skip despite high priority

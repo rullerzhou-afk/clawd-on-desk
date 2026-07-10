@@ -93,12 +93,15 @@
     const desc = document.createElement("span");
     desc.className = "row-desc";
     desc.innerHTML = escapeWithLink(t("discordPresenceAppIdHintHtml"));
+    bindExternalLinks(desc);
     text.appendChild(label);
     text.appendChild(desc);
     row.appendChild(text);
 
+    // tg-approval-input-row keeps the Save button from being squeezed into a
+    // vertical label wrap by the flex-greedy input (same fix as the Telegram tab).
     const ctrl = document.createElement("div");
-    ctrl.className = "row-control";
+    ctrl.className = "row-control tg-approval-input-row";
     const input = document.createElement("input");
     input.type = "text";
     input.inputMode = "numeric";
@@ -180,6 +183,9 @@
     const cfg = currentConfig();
     const row = document.createElement("div");
     row.className = "row";
+    // Sub-option of the enable switch: grey it out while presence is off
+    // (the saved value still applies once presence is enabled).
+    if (!cfg.enabled) row.classList.add("tg-approval-row-disabled");
 
     const text = document.createElement("div");
     text.className = "row-text";
@@ -200,7 +206,7 @@
     sw.setAttribute("role", "switch");
     sw.setAttribute("tabindex", "0");
     helpers.setSwitchVisual(sw, cfg.privacyShowProject, { pending: view.configPending });
-    if (view.configPending) {
+    if (!cfg.enabled || view.configPending) {
       sw.classList.add("disabled");
       sw.setAttribute("aria-disabled", "true");
       sw.removeAttribute("tabindex");
@@ -235,11 +241,23 @@
     let match;
     while ((match = re.exec(raw)) !== null) {
       parts.push(escapeHtml(raw.slice(lastIdx, match.index)));
-      parts.push(`<a href="${escapeHtml(match[2])}" target="_blank" rel="noopener noreferrer">${escapeHtml(match[1])}</a>`);
+      parts.push(`<a href="${escapeHtml(match[2])}">${escapeHtml(match[1])}</a>`);
       lastIdx = match.index + match[0].length;
     }
     parts.push(escapeHtml(raw.slice(lastIdx)));
     return parts.join("");
+  }
+
+  // Route clicks through the main-process shell.openExternal; a plain
+  // target="_blank" would make Electron pop a bare BrowserWindow instead of
+  // the user's browser.
+  function bindExternalLinks(el) {
+    for (const a of el.querySelectorAll("a[href]")) {
+      a.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        helpers.openExternalSafe(a.href);
+      });
+    }
   }
 
   function init(core) {
