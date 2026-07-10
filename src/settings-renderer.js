@@ -14,7 +14,6 @@ const SIDEBAR_TABS = [
   { id: "telegram-approval", labelKey: "sidebarTelegramApproval", available: true },
   { id: "discord-presence", labelKey: "sidebarDiscordPresence", available: true },
   { id: "remote-ssh", labelKey: "sidebarRemoteSsh", available: true },
-  { id: "mobile", labelKey: "sidebarMobile", available: true },
   { id: "about", labelKey: "sidebarAbout", available: true },
 ];
 

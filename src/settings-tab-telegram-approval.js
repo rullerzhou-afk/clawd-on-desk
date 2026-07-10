@@ -331,6 +331,7 @@
     parent.appendChild(buildTelegramChannelCard());
     parent.appendChild(buildFeishuChannelCard());
     parent.appendChild(buildHardwareBuddyChannelCard());
+    parent.appendChild(buildMobileChannelCard());
   }
 
   function refreshRuntimeStatus(payload) {
@@ -617,6 +618,32 @@
       id: "remote-approval.hardware-buddy",
       activeTabId: "telegram-approval",
       className: "remote-approval-channel-card",
+    });
+  }
+
+  // Mobile Web channel: today a read-only LAN preview (no approval actions
+  // yet — #208 tracks that), but it lives with the approval channels because
+  // "I'm away from the desk" is the same user intent and that is where the
+  // approval console will land.
+  function buildMobileChannelCard() {
+    const enabled = !!(state.snapshot && state.snapshot.mobilePreviewEnabled === true);
+    const kind = enabled ? "running" : "ready";
+    const body = document.createElement("div");
+    const mobile = root.ClawdSettingsTabMobile;
+    if (mobile && typeof mobile.renderChannelBody === "function") {
+      mobile.renderChannelBody(body);
+    }
+    return helpers.buildCollapsibleGroup({
+      id: "remote-approval.mobile",
+      headerContent: buildChannelHeader(t("mobileChannelName"), kind),
+      // Never default-collapsed: while running the card shows the pair
+      // URL/token the user needs on their phone.
+      defaultCollapsed: false,
+      className: "remote-approval-channel-card mobile-channel-card",
+      children: [
+        buildChannelStatusRow(kind, t(enabled ? "mobileCardRunning" : "mobileCardReady")),
+        body,
+      ],
     });
   }
 

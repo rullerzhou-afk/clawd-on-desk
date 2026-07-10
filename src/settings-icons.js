@@ -74,13 +74,6 @@ const ICONS = {
     '<path d="M12 16v6"/>' +
     '</svg>',
 
-  // smartphone
-  mobile:
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
-    '<rect x="5" y="2" width="14" height="20" rx="2"/>' +
-    '<path d="M12 18h.01"/>' +
-    '</svg>',
-
   // info circle
   about:
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
