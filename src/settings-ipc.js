@@ -402,10 +402,11 @@ function registerSettingsIpc(options = {}) {
       const options = opts && typeof opts === "object" ? opts : {};
       if (options.refreshWsl) {
         const { refreshWslDetection } = require("./agent-installation-detector");
-        await refreshWslDetection({ fs, path, now, skipDefaultIntegrations: false });
-        return detectAgentInstallations({ fs, path, now });
+        const snapshot = settingsController.getSnapshot();
+        await refreshWslDetection({ fs, path, now, snapshot, skipDefaultIntegrations: false });
+        return detectAgentInstallations({ fs, path, now, snapshot });
       }
-      return detectAgentInstallations({ fs, path, now });
+      return detectAgentInstallations({ fs, path, now, snapshot: settingsController.getSnapshot() });
     } catch (err) {
       console.warn("Clawd: settings:detect-agent-installations failed:", err && err.message);
       return {
