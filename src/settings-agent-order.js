@@ -10,6 +10,7 @@ function buildSettingsAgentOrderExports() {
     "codewhale",
     "opencode",
     "codebuddy",
+    "workbuddy",
     "qoder",
     "qoderwork",
   ];
