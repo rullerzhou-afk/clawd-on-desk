@@ -748,6 +748,19 @@ html, body {
 .agent-custom-discovery-paths-control {
   min-width: min(360px, calc(46vw / var(--clawd-text-zoom, 1)));
 }
+.agent-custom-group-header {
+  background: transparent;
+  min-height: auto;
+  padding-top: 14px;
+  padding-bottom: 6px;
+}
+.agent-custom-group-header .row-label {
+  color: var(--text-primary);
+  font-weight: 650;
+}
+.agent-custom-group-header .row-desc {
+  max-width: 720px;
+}
 .agent-custom-hook-url-input,
 .agent-custom-discovery-paths-input {
   width: 100%;
