@@ -80,14 +80,18 @@ function normalizeOptionalHttpUrl(value, key) {
   }
 }
 
-function readWorkBuddyCustomPermissionUrl(snapshot) {
-  const entry = snapshot && snapshot.agents && snapshot.agents.workbuddy;
+const CUSTOM_PERMISSION_URL_AGENT_IDS = new Set(["codebuddy", "workbuddy"]);
+
+function readAgentCustomPermissionUrl(snapshot, agentId) {
+  const entry = snapshot && snapshot.agents && snapshot.agents[agentId];
   return entry && typeof entry.customPermissionUrl === "string" ? entry.customPermissionUrl : "";
 }
 
 function buildIntegrationOptions(snapshot, agentId) {
-  if (agentId !== "workbuddy") return {};
-  return { customPermissionUrl: readWorkBuddyCustomPermissionUrl(snapshot) };
+  const options = {};
+  const customPermissionUrl = readAgentCustomPermissionUrl(snapshot, agentId);
+  if (customPermissionUrl) options.customPermissionUrl = customPermissionUrl;
+  return options;
 }
 
 function setAgentFlag(payload, deps) {
@@ -462,21 +466,74 @@ async function repairAgentIntegration(payload, deps) {
   }
 }
 
-function setWorkBuddyCustomPermissionUrl(payload, deps = {}) {
+function setAgentCustomPermissionUrl(payload, deps = {}) {
   if (!payload || typeof payload !== "object") {
-    return { status: "error", message: "setWorkBuddyCustomPermissionUrl: payload must be an object" };
+    return { status: "error", message: "setAgentCustomPermissionUrl: payload must be an object" };
   }
-  const normalized = normalizeOptionalHttpUrl(payload.url, "setWorkBuddyCustomPermissionUrl.url");
+  const agentId = typeof payload.agentId === "string" ? payload.agentId : "workbuddy";
+  const idCheck = _validateAgentFlagId(agentId);
+  if (idCheck.status !== "ok") return idCheck;
+  if (!CUSTOM_PERMISSION_URL_AGENT_IDS.has(agentId)) {
+    return { status: "error", message: `setAgentCustomPermissionUrl does not support ${agentId}` };
+  }
+  const normalized = normalizeOptionalHttpUrl(payload.url, "setAgentCustomPermissionUrl.url");
   if (normalized.status !== "ok") return normalized;
 
   const snapshot = deps.snapshot || {};
-  const current = readWorkBuddyCustomPermissionUrl(snapshot);
+  const current = readAgentCustomPermissionUrl(snapshot, agentId);
   if (current === normalized.value) return { status: "ok", noop: true };
 
   return {
     status: "ok",
-    commit: buildAgentCommit(snapshot, "workbuddy", {
+    commit: buildAgentCommit(snapshot, agentId, {
       customPermissionUrl: normalized.value,
+    }),
+  };
+}
+
+function setWorkBuddyCustomPermissionUrl(payload, deps = {}) {
+  return setAgentCustomPermissionUrl({ ...(payload || {}), agentId: "workbuddy" }, deps);
+}
+
+function normalizeDiscoveryPathList(value) {
+  const raw = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/[;\n]/)
+      : [];
+  const out = [];
+  for (const entry of raw) {
+    if (typeof entry !== "string") continue;
+    const trimmed = entry.trim();
+    if (!trimmed || trimmed.includes("\0")) continue;
+    if (!out.includes(trimmed)) out.push(trimmed);
+  }
+  return out;
+}
+
+function setAgentCustomDiscoveryPaths(payload, deps = {}) {
+  if (!payload || typeof payload !== "object") {
+    return { status: "error", message: "setAgentCustomDiscoveryPaths: payload must be an object" };
+  }
+  const idCheck = _validateAgentFlagId(payload.agentId);
+  if (idCheck.status !== "ok") return idCheck;
+  if (!INSTALLABLE_AGENT_IDS.has(payload.agentId)) {
+    return { status: "error", message: `No automatic integration discovery is available for ${payload.agentId}` };
+  }
+  const paths = normalizeDiscoveryPathList(payload.paths);
+  const snapshot = deps.snapshot || {};
+  const current = snapshot.agents
+    && snapshot.agents[payload.agentId]
+    && Array.isArray(snapshot.agents[payload.agentId].customDiscoveryPaths)
+    ? snapshot.agents[payload.agentId].customDiscoveryPaths
+    : [];
+  if (current.length === paths.length && current.every((entry, index) => entry === paths[index])) {
+    return { status: "ok", noop: true };
+  }
+  return {
+    status: "ok",
+    commit: buildAgentCommit(snapshot, payload.agentId, {
+      customDiscoveryPaths: paths,
     }),
   };
 }
@@ -572,6 +629,8 @@ setAgentPermissionMode.lockKey = "agentIntegration";
 installAgentIntegration.lockKey = "agentIntegration";
 uninstallAgentIntegration.lockKey = "agentIntegration";
 repairAgentIntegration.lockKey = "agentIntegration";
+setAgentCustomPermissionUrl.lockKey = "agentIntegration";
+setAgentCustomDiscoveryPaths.lockKey = "agentIntegration";
 setWorkBuddyCustomPermissionUrl.lockKey = "agentIntegration";
 dismissAgentInstallHints.lockKey = "agentIntegration";
 dismissAgentCleanupHints.lockKey = "agentIntegration";
@@ -641,6 +700,8 @@ module.exports = {
   dismissAgentInstallHints,
   installAgentIntegration,
   removeFromWsl,
+  setAgentCustomDiscoveryPaths,
+  setAgentCustomPermissionUrl,
   setWorkBuddyCustomPermissionUrl,
   setAgentFlag,
   setAgentPermissionMode,
