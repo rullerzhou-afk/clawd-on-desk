@@ -12,10 +12,27 @@ function normalizePositiveInteger(value) {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
 }
 
-function getLocalCodexProcessKey(session) {
-  if (!session || session.agentId !== "codex" || session.host || session.headless) return null;
+const LOCAL_AGENT_PROCESS_DEDUPE_IDS = new Set(["codex", "workbuddy"]);
+
+function getLocalAgentProcessKey(session) {
+  if (
+    !session
+    || !LOCAL_AGENT_PROCESS_DEDUPE_IDS.has(session.agentId)
+    || session.host
+    || session.headless
+  ) return null;
   const agentPid = normalizePositiveInteger(session.agentPid);
-  return agentPid ? `codex-agent:${agentPid}` : null;
+  if (agentPid) return `${session.agentId}:agent:${agentPid}`;
+  if (session.agentId === "workbuddy") {
+    const sourcePid = normalizePositiveInteger(session.sourcePid);
+    if (sourcePid) return `${session.agentId}:source:${sourcePid}`;
+  }
+  return null;
+}
+
+function getLocalCodexProcessKey(session) {
+  if (!session || session.agentId !== "codex") return null;
+  return getLocalAgentProcessKey(session);
 }
 
 function sessionUpdatedAt(session) {
@@ -23,10 +40,10 @@ function sessionUpdatedAt(session) {
   return Number.isFinite(n) ? n : 0;
 }
 
-function buildLatestLocalCodexProcessIds(sessions) {
+function buildLatestLocalAgentProcessIds(sessions) {
   const latestByKey = new Map();
   for (const [id, session] of normalizeSessionsIterable(sessions)) {
-    const key = getLocalCodexProcessKey(session);
+    const key = getLocalAgentProcessKey(session);
     if (!key) continue;
     const updatedAt = sessionUpdatedAt(session);
     const current = latestByKey.get(key);
@@ -41,13 +58,29 @@ function buildLatestLocalCodexProcessIds(sessions) {
   return new Set(Array.from(latestByKey.values(), (entry) => entry.id));
 }
 
-function isSupersededLocalCodexProcessSession(id, session, latestIds) {
-  if (!getLocalCodexProcessKey(session)) return false;
+function buildLatestLocalCodexProcessIds(sessions) {
+  return buildLatestLocalAgentProcessIds(
+    Array.from(normalizeSessionsIterable(sessions)).filter(([, session]) =>
+      session && session.agentId === "codex"
+    )
+  );
+}
+
+function isSupersededLocalAgentProcessSession(id, session, latestIds) {
+  if (!getLocalAgentProcessKey(session)) return false;
   return latestIds instanceof Set && !latestIds.has(id);
 }
 
+function isSupersededLocalCodexProcessSession(id, session, latestIds) {
+  if (!getLocalCodexProcessKey(session)) return false;
+  return isSupersededLocalAgentProcessSession(id, session, latestIds);
+}
+
 module.exports = {
+  buildLatestLocalAgentProcessIds,
   buildLatestLocalCodexProcessIds,
+  getLocalAgentProcessKey,
   getLocalCodexProcessKey,
+  isSupersededLocalAgentProcessSession,
   isSupersededLocalCodexProcessSession,
 };
