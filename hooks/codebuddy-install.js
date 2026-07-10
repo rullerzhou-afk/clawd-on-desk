@@ -25,6 +25,7 @@ const {
 } = require("./json-utils");
 const MARKER = "codebuddy-hook.js";
 const HTTP_MARKER = "/permission";
+const HTTP_HOOK_NAME = "clawd-codebuddy-permission";
 const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".codebuddy");
 const DEFAULT_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, "settings.json");
 
@@ -54,6 +55,22 @@ function isManagedPermissionUrl(value) {
   } catch {
     return false;
   }
+}
+
+function isManagedPermissionHook(hook) {
+  if (!hook || hook.type !== "http") return false;
+  return hook.name === HTTP_HOOK_NAME || isManagedPermissionUrl(hook.url);
+}
+
+function normalizeCustomPermissionUrl(value) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const parsed = new URL(trimmed);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("CodeBuddy custom hook URL must use http or https");
+  }
+  return parsed.toString();
 }
 
 /**
@@ -157,7 +174,8 @@ function registerCodeBuddyHooks(options = {}) {
 
   // Register PermissionRequest HTTP hook (blocking, for permission bubble)
   const hookPort = readRuntimePort() || DEFAULT_SERVER_PORT;
-  const permissionUrl = buildPermissionUrl(hookPort);
+  const permissionUrl = normalizeCustomPermissionUrl(options.customPermissionUrl)
+    || buildPermissionUrl(hookPort);
   const permEvent = "PermissionRequest";
   if (!Array.isArray(settings.hooks[permEvent])) {
     settings.hooks[permEvent] = [];
@@ -170,22 +188,32 @@ function registerCodeBuddyHooks(options = {}) {
     if (Array.isArray(innerHooks)) {
       for (const h of innerHooks) {
         if (!h || h.type !== "http" || typeof h.url !== "string") continue;
-        if (!h.url.includes(HTTP_MARKER)) continue;
+        if (!isManagedPermissionHook(h)) continue;
         permFound = true;
-        if (h.url !== permissionUrl) { h.url = permissionUrl; updated++; changed = true; }
+        if (h.url !== permissionUrl || h.name !== HTTP_HOOK_NAME) {
+          h.url = permissionUrl;
+          h.name = HTTP_HOOK_NAME;
+          updated++;
+          changed = true;
+        }
         break;
       }
     }
-    if (!permFound && entry.type === "http" && typeof entry.url === "string" && entry.url.includes(HTTP_MARKER)) {
+    if (!permFound && isManagedPermissionHook(entry)) {
       permFound = true;
-      if (entry.url !== permissionUrl) { entry.url = permissionUrl; updated++; changed = true; }
+      if (entry.url !== permissionUrl || entry.name !== HTTP_HOOK_NAME) {
+        entry.url = permissionUrl;
+        entry.name = HTTP_HOOK_NAME;
+        updated++;
+        changed = true;
+      }
     }
     if (permFound) break;
   }
   if (!permFound) {
     settings.hooks[permEvent].push({
       matcher: "",
-      hooks: [{ type: "http", url: permissionUrl, timeout: 600 }],
+      hooks: [{ name: HTTP_HOOK_NAME, type: "http", url: permissionUrl, timeout: 600 }],
     });
     added++;
     changed = true;
@@ -233,7 +261,7 @@ function unregisterCodeBuddyHooks(options = {}) {
 
   if (Array.isArray(settings.hooks.PermissionRequest)) {
     const result = removeMatchingHttpHooks(settings.hooks.PermissionRequest, (hook) =>
-      hook && hook.type === "http" && isManagedPermissionUrl(hook.url)
+      isManagedPermissionHook(hook)
     );
     if (result.changed) {
       removed += result.removed;
@@ -257,7 +285,8 @@ module.exports = {
   registerCodeBuddyHooks,
   unregisterCodeBuddyHooks,
   CODEBUDDY_HOOK_EVENTS,
-  __test: { isManagedPermissionUrl },
+  normalizeCustomPermissionUrl,
+  __test: { isManagedPermissionHook, isManagedPermissionUrl, normalizeCustomPermissionUrl },
 };
 
 if (require.main === module) {
