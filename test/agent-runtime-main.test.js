@@ -283,8 +283,9 @@ describe("agent-runtime-main", () => {
     const runtime = createAgentRuntimeMain({
       codexSubagentClassifier: {},
       getServer: () => ({
-        syncIntegrationForAgent: (agentId) => {
-          calls.push(["sync", agentId]);
+        syncIntegrationForAgent: (agentId, options) => {
+          if (options === undefined) calls.push(["sync", agentId]);
+          else calls.push(["sync", agentId, options]);
           return "synced";
         },
         repairIntegrationForAgent: (agentId, options) => {
@@ -303,10 +304,12 @@ describe("agent-runtime-main", () => {
     });
 
     assert.equal(runtime.syncIntegrationForAgent("codex"), "synced");
+    assert.equal(runtime.syncIntegrationForAgent("workbuddy", { customPermissionUrl: "https://hooks.example.test/workbuddy" }), "synced");
     assert.equal(runtime.repairIntegrationForAgent("codex", { force: true }), "repaired");
     assert.equal(runtime.stopIntegrationForAgent("codex"), "stopped");
     assert.deepStrictEqual(calls, [
       ["sync", "codex"],
+      ["sync", "workbuddy", { customPermissionUrl: "https://hooks.example.test/workbuddy" }],
       ["repair", "codex", { force: true }],
       ["stop", "codex"],
     ]);
