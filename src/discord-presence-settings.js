@@ -3,8 +3,10 @@
 // Non-secret config: the Application ID is a public ID (not a token), stored in
 // clawd-prefs.json. Privacy fields default off.
 
-// Empty upstream = bring-your-own. Maintainer fills in the published ID.
-const DEFAULT_CLAWD_DISCORD_APP_ID = "";
+// Official "Clawd on Desk" Discord application (public ID, not a secret) —
+// the zero-friction default from #215. Users can still bring their own App ID
+// in Settings; a saved ID always wins over this default.
+const DEFAULT_CLAWD_DISCORD_APP_ID = "1525141423328854179";
 
 const DEFAULT_DISCORD_PRESENCE = Object.freeze({
   enabled: false,

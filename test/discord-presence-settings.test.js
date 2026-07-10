@@ -7,6 +7,7 @@ const {
   validateDiscordPresence,
   readiness,
   DEFAULT_DISCORD_PRESENCE,
+  DEFAULT_CLAWD_DISCORD_APP_ID,
 } = require("../src/discord-presence-settings");
 
 test("normalizeDiscordPresence coerces types and strips non-digits from the App ID", () => {
@@ -40,13 +41,25 @@ test("readiness gates on enabled + an effective App ID", () => {
   assert.strictEqual(off.ready, false);
   assert.strictEqual(off.reason, "disabled");
 
-  const noId = readiness({ enabled: true, applicationId: "" });
+  // Inject an empty default: the shipped constant is non-empty now, and this
+  // case guards the no-App-ID-at-all branch.
+  const noId = readiness({ enabled: true, applicationId: "" }, "");
   assert.strictEqual(noId.ready, false);
   assert.strictEqual(noId.reason, "no-app-id");
 
   const ok = readiness({ enabled: true, applicationId: "123456789012345678" });
   assert.strictEqual(ok.ready, true);
   assert.strictEqual(ok.appId, "123456789012345678");
+});
+
+test("shipped default App ID makes an empty config ready out of the box (#215)", () => {
+  assert.match(DEFAULT_CLAWD_DISCORD_APP_ID, /^[0-9]{17,20}$/, "shipped default must be a valid snowflake");
+  const r = readiness({ enabled: true, applicationId: "" });
+  assert.strictEqual(r.ready, true);
+  assert.strictEqual(r.appId, DEFAULT_CLAWD_DISCORD_APP_ID);
+  // A user-saved App ID still wins over the shipped default.
+  const saved = readiness({ enabled: true, applicationId: "111111111111111111" });
+  assert.strictEqual(saved.appId, "111111111111111111");
 });
 
 test("readiness honors an injected default App ID (the BYO handoff seam)", () => {
