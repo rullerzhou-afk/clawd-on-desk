@@ -373,7 +373,6 @@ const _settingsController = createSettingsController({
     getTelegramApprovalStatus: () => getTelegramApprovalStatus(),
     getTelegramApprovalTokenInfo: () => getTelegramApprovalTokenInfo(),
     sendTelegramApprovalTest: () => sendTelegramApprovalTest(),
-    deleteTelegramApprovalTokenFile: () => deleteTelegramApprovalTokenFile(),
     writeFeishuApprovalSecrets: (secrets) => writeFeishuApprovalSecrets(secrets),
     getFeishuApprovalStatus: () => getFeishuApprovalStatus(),
     getFeishuApprovalSecretInfo: () => getFeishuApprovalSecretInfo(),
@@ -2460,47 +2459,6 @@ function writeTelegramApprovalToken(token) {
     queueTelegramApprovalSidecarSync("token");
   }
   return result;
-}
-
-function isTelegramTokenFileRequiredByNative() {
-  const migration = getTelegramMigrationPrefs();
-  if (migration.transport === "native") return true;
-  const controller = _telegramMigrationController;
-  if (!controller || typeof controller.getSnapshot !== "function") return false;
-  const snap = controller.getSnapshot() || {};
-  const owner = snap.ownerSnapshot || {};
-  return snap.state === "NATIVE_ACTIVE"
-    || snap.state === "TESTING_NATIVE"
-    || owner.nativePolling === true;
-}
-
-async function deleteTelegramApprovalTokenFile() {
-  if (isTelegramTokenFileRequiredByNative()) {
-    return {
-      status: "error",
-      code: "TOKEN_FILE_IN_USE",
-      message: "Native Telegram currently uses the shared token file. Keep it until native token storage is split.",
-    };
-  }
-  const paths = getTelegramApprovalPaths();
-  if (telegramApprovalSidecar) {
-    await stopTelegramApprovalSidecar();
-  }
-  try {
-    fs.unlinkSync(paths.tokenEnvFilePath);
-    telegramApprovalTokenRevision += 1;
-    queueTelegramApprovalSidecarSync("token-delete");
-    return { status: "ok", deleted: true };
-  } catch (err) {
-    if (err && err.code === "ENOENT") {
-      return { status: "ok", deleted: false, noop: true };
-    }
-    return {
-      status: "error",
-      code: err && err.code ? err.code : "DELETE_FAILED",
-      message: `Telegram token file delete failed: ${err && err.message ? err.message : err}`,
-    };
-  }
 }
 
 // Bridge a freshly-created legacy sidecar's status-changed stream into the

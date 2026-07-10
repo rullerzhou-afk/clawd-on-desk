@@ -3160,65 +3160,6 @@ html, body {
   margin: 8px 0 14px;
 }
 
-/* v0.9.0 migration card — sits above the legacy Telegram setup card. */
-.tg-migration-card {
-  margin: 8px 0 14px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--card-bg, transparent);
-}
-.tg-migration-card h3 {
-  margin: 0 0 6px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-.tg-migration-state,
-.tg-migration-owner {
-  margin: 0;
-  font-size: 12px;
-  color: var(--text-secondary);
-  font-family: var(--mono-font, monospace);
-}
-.tg-migration-copy {
-  margin: 10px 0 6px;
-  font-size: 13px;
-  color: var(--text-primary);
-}
-.tg-migration-body {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 8px;
-}
-.tg-migration-banner {
-  padding: 8px 10px;
-  border-radius: 6px;
-  background: rgba(220, 53, 69, 0.12);
-  color: #b91c1c;
-  font-size: 12px;
-}
-.tg-migration-btn {
-  align-self: flex-start;
-  padding: 6px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--btn-bg, transparent);
-  color: var(--text-primary);
-  font-size: 13px;
-  cursor: pointer;
-}
-.tg-migration-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.tg-migration-pending {
-  margin: 6px 0 0;
-  font-size: 12px;
-  font-style: italic;
-  color: var(--text-secondary);
-}
 .tg-approval-channel-header {
   display: flex;
   align-items: center;

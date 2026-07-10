@@ -371,13 +371,13 @@
     return true;
   }
 
-  // ── v0.9.0 migration card ──────────────────────────────────────────────────
-  // UI entry removed 2026-07-10: the v0.9.0 native-transport migration window
-  // is over (native is the default; rollback no longer offered). Everything in
-  // this block plus the controller wiring in main.js/settings-actions.js is
-  // dead code pending a dedicated cleanup pass.
+  // ── Migration state plumbing (runtime, not UI) ────────────────────────────
+  // The v0.9.0 migration CARD is gone (window over, rollback no longer
+  // offered), but this block is alive: the Step-3 enable switch routes
+  // turn-on/off through migrationDispatch (USER_TEST_NATIVE / USER_DISABLE)
+  // and derives its visual state from the migration snapshot. The reducer +
+  // owner-manager in main own the actual sidecar/native runtime.
   let migrationSnapshot = null;
-  let migrationCardEl = null;
   let migrationPending = false;
   let migrationSnapshotSeq = 0;
 
@@ -431,14 +431,6 @@
     ].join("\x1f");
   }
 
-  function buildTelegramMigrationCard() {
-    migrationCardEl = document.createElement("div");
-    migrationCardEl.className = "tg-migration-card";
-    renderMigrationCard();
-    refreshMigrationSnapshot();
-    return migrationCardEl;
-  }
-
   function refreshMigrationSnapshot() {
     if (migrationPending) return;
     const seq = ++migrationSnapshotSeq;
@@ -447,7 +439,6 @@
       if (res && res.status === "ok") {
         const previousKey = migrationSnapshotRenderKey(migrationSnapshot);
         migrationSnapshot = res.snapshot;
-        renderMigrationCard();
         if (migrationSnapshotRenderKey(migrationSnapshot) !== previousKey
           && state.activeTab === "telegram-approval") {
           ops.requestRender({ content: true });
@@ -459,153 +450,14 @@
   function migrationDispatch(eventType, extra = {}) {
     if (migrationPending) return;
     migrationPending = true;
-    renderMigrationCard();
     callCommand("telegramMigration.dispatch", { type: eventType, ...extra }).then((res) => {
       migrationPending = false;
       if (res && res.snapshot) migrationSnapshot = res.snapshot;
       if (res && res.status !== "ok" && res.errorCode) {
         ops.showToast(interpolate(t("telegramMigrationErrorToast"), "{code}", res.errorCode), { error: true });
       }
-      renderMigrationCard();
       // Status of the legacy sidecar may change as a side-effect (start/stop).
       refreshStatus({ forceRender: true });
-    });
-  }
-
-  function renderMigrationCard() {
-    if (!migrationCardEl) return;
-    migrationCardEl.innerHTML = "";
-    const snap = migrationSnapshot;
-    if (!snap) {
-      migrationCardEl.textContent = t("telegramMigrationLoading");
-      return;
-    }
-    const state = snap.state;
-    const title = document.createElement("h3");
-    title.textContent = t("telegramMigrationTitle");
-    migrationCardEl.appendChild(title);
-
-    const stateLine = document.createElement("p");
-    stateLine.className = "tg-migration-state";
-    stateLine.textContent = `${t("telegramMigrationStateLabel")}: ${state}` +
-      (snap.runtimeStatus && snap.runtimeStatus.status === "failed"
-        ? interpolate(t("telegramMigrationRuntimeFailedSuffix"), "{reason}", snap.runtimeStatus.reason || t("telegramMigrationRuntimeUnknown"))
-        : "");
-    migrationCardEl.appendChild(stateLine);
-
-    const ownerLine = document.createElement("p");
-    ownerLine.className = "tg-migration-owner";
-    const o = snap.ownerSnapshot || {};
-    const runningLabel = t("telegramMigrationRunning");
-    const stoppedLabel = t("telegramMigrationStopped");
-    const pollingLabel = t("telegramMigrationPolling");
-    ownerLine.textContent = `${t("telegramMigrationOwnerLabel")}: sidecar=${o.sidecarRunning ? runningLabel : stoppedLabel}, native=${o.nativePolling ? pollingLabel : stoppedLabel}`;
-    migrationCardEl.appendChild(ownerLine);
-
-    const body = document.createElement("div");
-    body.className = "tg-migration-body";
-    migrationCardEl.appendChild(body);
-
-    const importErr = snap.migrationInfo && snap.migrationInfo.importError;
-    if (importErr && state === "LEGACY_ACTIVE") {
-      const banner = document.createElement("div");
-      banner.className = "tg-migration-banner";
-      banner.textContent = interpolate(t("telegramMigrationImportFailed"), "{error}", importErr);
-      body.appendChild(banner);
-      body.appendChild(migrationButton(t("telegramMigrationRetryImport"), () =>
-        migrationDispatch("USER_TEST_NATIVE")));
-    }
-
-    switch (state) {
-      case "IDLE":
-      case "NEEDS_SETUP":
-        body.appendChild(migrationCopy(
-          t("telegramMigrationConfigureBelow"),
-        ));
-        body.appendChild(migrationButton(t("telegramMigrationTestAndSwitch"), () =>
-          migrationDispatch("USER_TEST_NATIVE")));
-        body.appendChild(migrationButton(t("telegramMigrationEnableLegacy"), () =>
-          migrationDispatch("USER_ENABLE_LEGACY")));
-        break;
-      case "LEGACY_ACTIVE":
-        if (snap.runtimeStatus && snap.runtimeStatus.status === "failed") {
-          body.appendChild(migrationCopy(t("telegramMigrationLegacyNotRunning")));
-          body.appendChild(migrationButton(t("telegramMigrationRetryLegacy"), () =>
-            migrationDispatch("USER_ENABLE_LEGACY")));
-        }
-        if (!snap.nativeVerifiedAt) {
-          body.appendChild(migrationCopy(
-            t("telegramMigrationNativeAvailable"),
-          ));
-          body.appendChild(migrationButton(t("telegramMigrationTestAndSwitchShort"), () =>
-            migrationDispatch("USER_TEST_NATIVE")));
-        } else {
-          body.appendChild(migrationCopy(t("telegramMigrationLegacyActive")));
-        }
-        body.appendChild(migrationButton(t("telegramMigrationDisableApproval"), () =>
-          migrationDispatch("USER_DISABLE")));
-        break;
-      case "TESTING_NATIVE":
-        body.appendChild(migrationCopy(t("telegramMigrationWaitingTap")));
-        break;
-      case "NATIVE_ACTIVE":
-        body.appendChild(migrationCopy(
-          t("telegramMigrationNativeActive"),
-        ));
-        body.appendChild(migrationButton(t("telegramMigrationRollbackToLegacy"), () =>
-          migrationDispatch("USER_ROLLBACK_TO_LEGACY")));
-        body.appendChild(migrationButton(t("telegramMigrationDeleteLegacyToken"), deleteLegacyTokenFile));
-        body.appendChild(migrationButton(t("telegramMigrationDisableApproval"), () =>
-          migrationDispatch("USER_DISABLE")));
-        break;
-      case "SWITCHING_TO_LEGACY":
-        body.appendChild(migrationCopy(t("telegramMigrationSwitchingToLegacy")));
-        break;
-    }
-    if (migrationPending) {
-      const pending = document.createElement("p");
-      pending.className = "tg-migration-pending";
-      pending.textContent = t("telegramMigrationWorking");
-      migrationCardEl.appendChild(pending);
-    }
-  }
-
-  function migrationCopy(text) {
-    const p = document.createElement("p");
-    p.className = "tg-migration-copy";
-    p.textContent = text;
-    return p;
-  }
-
-  function migrationButton(label, handler) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "tg-migration-btn";
-    btn.textContent = label;
-    btn.disabled = migrationPending;
-    btn.addEventListener("click", handler);
-    return btn;
-  }
-
-  function deleteLegacyTokenFile() {
-    if (migrationPending) return;
-    migrationPending = true;
-    renderMigrationCard();
-    callCommand("telegramApproval.deleteTokenFile").then((res) => {
-      migrationPending = false;
-      if (res && res.status === "ok") {
-        ops.showToast(res.deleted === false
-          ? t("telegramMigrationTokenAlreadyRemoved")
-          : t("telegramMigrationTokenDeleted"));
-      } else {
-        ops.showToast((res && res.message) || t("telegramMigrationTokenDeleteFailed"), { error: true });
-      }
-      view.tokenInfo = null;
-      view.status = null;
-      renderMigrationCard();
-      refreshTokenInfo({ forceRender: true });
-      refreshStatus({ forceRender: true });
-      refreshMigrationSnapshot();
     });
   }
 
