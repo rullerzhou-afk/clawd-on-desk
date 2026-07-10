@@ -276,6 +276,7 @@ const SCHEMA = {
       // stale "true" implying bubbles are enabled.
       "antigravity-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: false },
       "codebuddy": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
+      "workbuddy": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true, customPermissionUrl: "" },
       "kiro-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "kimi-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "qwen-code": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
@@ -662,6 +663,19 @@ const AGENT_FLAGS = [
 ];
 const CODEX_PERMISSION_MODES = ["native", "intercept"];
 
+function normalizeOptionalHttpUrl(value) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
 function normalizeDismissedUpdateVersions(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const out = {};
@@ -732,6 +746,10 @@ function normalizeAgents(value, defaultsValue) {
     }
     if (id === "codex" && CODEX_PERMISSION_MODES.includes(entry.permissionMode)) {
       merged.permissionMode = entry.permissionMode;
+      touched = true;
+    }
+    if (id === "workbuddy" && typeof entry.customPermissionUrl === "string") {
+      merged.customPermissionUrl = normalizeOptionalHttpUrl(entry.customPermissionUrl);
       touched = true;
     }
     if (touched) out[id] = merged;
