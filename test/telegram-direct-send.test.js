@@ -254,7 +254,7 @@ test("direct send rejects sessions with an authoritative interactive pending per
   assert.equal(res.status, "permission_pending");
 });
 
-test("direct send does not treat passive notify or hardware test entries as pending permissions", async () => {
+test("direct send does not treat passive notify entries as pending permissions", async () => {
   const focused = [];
   const direct = createTelegramDirectSend({
     isEnabled: () => true,
@@ -262,7 +262,6 @@ test("direct send does not treat passive notify or hardware test entries as pend
     getPendingPermissions: () => [
       { sessionId: "sess-local-1", isCodexNotify: true },
       { sessionId: "sess-local-1", isKimiNotify: true },
-      { sessionId: "sess-local-1", isHardwareBuddyTest: true },
     ],
     focusSession: (sessionId) => {
       focused.push(sessionId);
