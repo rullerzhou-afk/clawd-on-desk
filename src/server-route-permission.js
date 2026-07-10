@@ -1146,7 +1146,7 @@ function handlePermissionPost(req, res, options) {
       if (toolName === "AskUserQuestion") {
         const elicitationInput = normalizeElicitationToolInput(toolInput);
         ctx.permLog(`ELICITATION: tool=${toolName} session=${sessionId}`);
-        ctx.updateSession(sessionId, "notification", "Elicitation", { agentId: "claude-code" });
+        ctx.updateSession(sessionId, "notification", "Elicitation", { agentId: permAgentId });
 
         const permEntry = {
           res,
