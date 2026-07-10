@@ -20,6 +20,7 @@ describe("doctor agent descriptors", () => {
         "gemini-cli",
         "antigravity-cli",
         "codebuddy",
+        "workbuddy",
         "kiro-cli",
         "kimi-cli",
         "qwen-code",
@@ -43,6 +44,7 @@ describe("doctor agent descriptors", () => {
     const gemini = require("../hooks/gemini-install");
     const antigravity = require("../hooks/antigravity-install");
     const codebuddy = require("../hooks/codebuddy-install");
+    const workbuddy = require("../hooks/workbuddy-install");
     const kiro = require("../hooks/kiro-install");
     const kimi = require("../hooks/kimi-install");
     const qwen = require("../hooks/qwen-code-install");
@@ -75,6 +77,11 @@ describe("doctor agent descriptors", () => {
 
     assert.strictEqual(getAgentDescriptor("codebuddy").parentDir, codebuddy.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("codebuddy").configPath, codebuddy.DEFAULT_CONFIG_PATH);
+
+    assert.strictEqual(getAgentDescriptor("workbuddy").parentDir, workbuddy.DEFAULT_PARENT_DIR);
+    assert.strictEqual(getAgentDescriptor("workbuddy").configPath, workbuddy.DEFAULT_CONFIG_PATH);
+    assert.strictEqual(getAgentDescriptor("workbuddy").marker, workbuddy.MARKER);
+    assert.deepStrictEqual(getAgentDescriptor("workbuddy").hookEvents, workbuddy.WORKBUDDY_HOOK_EVENTS);
 
     assert.strictEqual(getAgentDescriptor("kiro-cli").parentDir, kiro.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("kiro-cli").configPath, kiro.DEFAULT_AGENTS_DIR);
