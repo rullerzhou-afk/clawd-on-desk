@@ -19,6 +19,7 @@ test("settings agent actions expose the command surface", () => {
     "repairAgentIntegration",
     "setAgentFlag",
     "setAgentPermissionMode",
+    "setWorkBuddyCustomPermissionUrl",
     "uninstallAgentIntegration",
   ]);
 });
@@ -26,6 +27,7 @@ test("settings agent actions expose the command surface", () => {
 test("settings agent integration commands share a serialization lock", () => {
   assert.strictEqual(agentCommands.setAgentFlag.lockKey, "agentIntegration");
   assert.strictEqual(agentCommands.setAgentPermissionMode.lockKey, "agentIntegration");
+  assert.strictEqual(agentCommands.setWorkBuddyCustomPermissionUrl.lockKey, "agentIntegration");
   assert.strictEqual(agentCommands.installAgentIntegration.lockKey, "agentIntegration");
   assert.strictEqual(agentCommands.uninstallAgentIntegration.lockKey, "agentIntegration");
   assert.strictEqual(agentCommands.repairAgentIntegration.lockKey, "agentIntegration");
@@ -33,6 +35,30 @@ test("settings agent integration commands share a serialization lock", () => {
   assert.strictEqual(agentCommands.dismissAgentCleanupHints.lockKey, "agentIntegration");
   assert.strictEqual(agentCommands.clearAgentCleanupHints.lockKey, "agentIntegration");
   assert.strictEqual(agentCommands.clearAgentInstallHints.lockKey, "agentIntegration");
+});
+
+test("settings agent actions save WorkBuddy custom hook URL", () => {
+  const snapshot = prefs.getDefaults();
+
+  const result = agentCommands.setWorkBuddyCustomPermissionUrl({
+    url: "https://hooks.example.test/workbuddy",
+  }, { snapshot });
+
+  assert.strictEqual(result.status, "ok");
+  assert.strictEqual(
+    result.commit.agents.workbuddy.customPermissionUrl,
+    "https://hooks.example.test/workbuddy"
+  );
+  assert.strictEqual(result.commit.agents.workbuddy.enabled, false);
+});
+
+test("settings agent actions reject invalid WorkBuddy custom hook URL", () => {
+  const result = agentCommands.setWorkBuddyCustomPermissionUrl({
+    url: "file:///tmp/hook",
+  }, { snapshot: prefs.getDefaults() });
+
+  assert.strictEqual(result.status, "error");
+  assert.match(result.message, /http or https/);
 });
 
 test("settings agent actions enable an agent and preserve sibling flags", () => {
@@ -167,6 +193,29 @@ test("settings agent actions install an integration and enable ingress", async (
   assert.strictEqual(result.commit.agents["copilot-cli"].enabled, true);
   assert.deepStrictEqual(result.commit.dismissedAgentInstallHints, {});
   assert.deepStrictEqual(result.commit.dismissedAgentCleanupHints, {});
+});
+
+test("settings agent actions pass WorkBuddy custom hook URL to install", async () => {
+  const snapshot = prefs.getDefaults();
+  snapshot.agents.workbuddy.customPermissionUrl = "https://hooks.example.test/workbuddy";
+  const calls = [];
+  const deps = {
+    snapshot,
+    syncIntegrationForAgent: async (agentId, options) => {
+      calls.push({ agentId, options });
+      return { status: "ok", message: "WorkBuddy hooks installed" };
+    },
+  };
+
+  const result = await agentCommands.installAgentIntegration({ agentId: "workbuddy" }, deps);
+
+  assert.strictEqual(result.status, "ok");
+  assert.deepStrictEqual(calls, [
+    {
+      agentId: "workbuddy",
+      options: { customPermissionUrl: "https://hooks.example.test/workbuddy" },
+    },
+  ]);
 });
 
 test("settings agent actions install reasonix integration and enable ingress", async () => {
