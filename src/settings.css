@@ -3413,6 +3413,30 @@ html, body {
   border-radius: 50%;
   background: var(--text-secondary);
 }
+/* Small "Beta" pill next to a channel name (LAN Approval card). */
+.channel-beta-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel-bg));
+}
+/* Boxed limitation note at the top of a beta channel card. */
+.channel-beta-note {
+  margin: 10px 0 4px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
 @keyframes tg-approval-dot-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }

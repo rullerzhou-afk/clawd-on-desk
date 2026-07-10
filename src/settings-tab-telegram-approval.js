@@ -321,11 +321,6 @@
     subtitle.textContent = t("remoteApprovalSubtitle");
     parent.appendChild(subtitle);
 
-    // v0.9.0 migration: native vs sidecar transport selector. Lives ABOVE the
-    // legacy Telegram card so users see migration progress before the legacy
-    // setup steps.
-    parent.appendChild(buildTelegramMigrationCard());
-
     // Each remote approval channel renders as its own collapsible card so the
     // page can stay tidy as external approval channels grow.
     parent.appendChild(buildTelegramChannelCard());
@@ -341,6 +336,10 @@
   }
 
   // ── v0.9.0 migration card ──────────────────────────────────────────────────
+  // UI entry removed 2026-07-10: the v0.9.0 native-transport migration window
+  // is over (native is the default; rollback no longer offered). Everything in
+  // this block plus the controller wiring in main.js/settings-actions.js is
+  // dead code pending a dedicated cleanup pass.
   let migrationSnapshot = null;
   let migrationCardEl = null;
   let migrationPending = false;
@@ -633,14 +632,25 @@
     if (mobile && typeof mobile.renderChannelBody === "function") {
       mobile.renderChannelBody(body);
     }
+    // Named for its trajectory (#208 approval console); the Beta badge + note
+    // make the current read-only-preview limitation explicit.
+    const header = buildChannelHeader(t("mobileChannelName"), kind);
+    const beta = document.createElement("span");
+    beta.className = "channel-beta-badge";
+    beta.textContent = "Beta";
+    header.insertBefore(beta, header.children[1] || null);
+    const note = document.createElement("div");
+    note.className = "channel-beta-note";
+    note.textContent = t("mobileBetaNote");
     return helpers.buildCollapsibleGroup({
       id: "remote-approval.mobile",
-      headerContent: buildChannelHeader(t("mobileChannelName"), kind),
+      headerContent: header,
       // Never default-collapsed: while running the card shows the pair
       // URL/token the user needs on their phone.
       defaultCollapsed: false,
       className: "remote-approval-channel-card mobile-channel-card",
       children: [
+        note,
         buildChannelStatusRow(kind, t(enabled ? "mobileCardRunning" : "mobileCardReady")),
         body,
       ],
