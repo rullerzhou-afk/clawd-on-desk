@@ -10,6 +10,7 @@ const { unregisterAntigravityHooks, unregisterAntigravityStatusline } = require(
 const { unregisterCursorHooks } = require("./cursor-install");
 const { unregisterCopilotHooks } = require("./copilot-install");
 const { unregisterCodeBuddyHooks } = require("./codebuddy-install");
+const { unregisterWorkBuddyHooks } = require("./workbuddy-install");
 const { unregisterKiroHooks } = require("./kiro-install");
 const { unregisterKimiHooks } = require("./kimi-install");
 const { unregisterQwenCodeHooks } = require("./qwen-code-install");
@@ -32,6 +33,7 @@ const MANAGED_AGENT_IDS = Object.freeze([
   "cursor-agent",
   "copilot-cli",
   "codebuddy",
+  "workbuddy",
   "kiro-cli",
   "kimi-cli",
   "qwen-code",
@@ -53,6 +55,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   "cursor-agent": "Cursor Agent",
   "copilot-cli": "GitHub Copilot CLI",
   codebuddy: "CodeBuddy",
+  workbuddy: "WorkBuddy",
   "kiro-cli": "Kiro CLI",
   "kimi-cli": "Kimi Code",
   "qwen-code": "Qwen Code",
@@ -150,6 +153,10 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
         ...common,
         settingsPath: path.join(homeDir, ".codebuddy", "settings.json"),
       },
+      workbuddy: {
+        ...common,
+        settingsPath: path.join(homeDir, ".workbuddy", "settings.json"),
+      },
       "kiro-cli": {
         ...common,
         agentsDir: path.join(homeDir, ".kiro", "agents"),
@@ -245,6 +252,7 @@ const AGENT_CLEANERS = Object.freeze({
   "cursor-agent": unregisterCursorHooks,
   "copilot-cli": unregisterCopilotHooks,
   codebuddy: unregisterCodeBuddyHooks,
+  workbuddy: unregisterWorkBuddyHooks,
   "kiro-cli": unregisterKiroHooks,
   "kimi-cli": unregisterKimiHooks,
   "qwen-code": unregisterQwenCodeHooks,
