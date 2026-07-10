@@ -664,6 +664,9 @@
       codexHookNotifyRow.classList.add("row-sub");
       rows.push(codexHookNotifyRow);
     }
+    if (agent.id === "workbuddy") {
+      rows.push(buildWorkBuddyCustomPermissionUrlRow());
+    }
     if (caps.permissionApproval || caps.interactiveBubble) {
       rows.push(buildAgentSwitchRow({
         agent,
@@ -723,6 +726,64 @@
     // WSL instances: show detected agent installations across distros
     rows.push(...buildAgentInstanceRows(agent));
     return rows;
+  }
+
+  function buildWorkBuddyCustomPermissionUrlRow() {
+    const row = document.createElement("div");
+    row.className = "row row-sub workbuddy-hook-url-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("rowWorkBuddyHookUrl");
+    text.appendChild(label);
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("rowWorkBuddyHookUrlDesc");
+    text.appendChild(desc);
+    row.appendChild(text);
+
+    const ctrl = document.createElement("div");
+    ctrl.className = "row-control workbuddy-hook-url-control";
+    const input = document.createElement("input");
+    input.className = "workbuddy-hook-url-input";
+    input.type = "url";
+    input.placeholder = t("rowWorkBuddyHookUrlPlaceholder");
+    input.value = readers.readWorkBuddyCustomPermissionUrl ? readers.readWorkBuddyCustomPermissionUrl() : "";
+    input.addEventListener("click", (ev) => ev.stopPropagation());
+    input.addEventListener("keydown", (ev) => {
+      ev.stopPropagation();
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        input.blur();
+      }
+    });
+    input.addEventListener("blur", () => {
+      const value = input.value.trim();
+      const current = readers.readWorkBuddyCustomPermissionUrl ? readers.readWorkBuddyCustomPermissionUrl() : "";
+      if (value === current) return;
+      input.classList.add("pending");
+      input.disabled = true;
+      window.settingsAPI.command("setWorkBuddyCustomPermissionUrl", { url: value }).then((result) => {
+        if (!result || result.status !== "ok") {
+          const msg = (result && result.message) || "unknown error";
+          ops.showToast(t("toastSaveFailed") + msg, { error: true });
+          input.value = current;
+          return;
+        }
+        ops.showToast(t("shortcutToastSaved"));
+      }).catch((err) => {
+        ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+        input.value = current;
+      }).finally(() => {
+        input.disabled = false;
+        input.classList.remove("pending");
+      });
+    });
+    ctrl.appendChild(input);
+    row.appendChild(ctrl);
+    return row;
   }
 
   // ── WSL instance rows ─────────────────────────────────────────────
