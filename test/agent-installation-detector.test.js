@@ -114,6 +114,50 @@ describe("agent installation detector", () => {
     assert.strictEqual(workbuddy.reason, "app-path");
   });
 
+  it("uses custom discovery paths for any AI tool", () => {
+    const homeDir = makeHome();
+    const customQwenPath = path.join(homeDir, "portable", "qwen.exe");
+    writeText(customQwenPath, "");
+    const snapshot = {
+      agents: {
+        "qwen-code": {
+          customDiscoveryPaths: [customQwenPath],
+        },
+      },
+    };
+
+    const report = detectAgentInstallations({
+      homeDir,
+      now: 1,
+      env: {},
+      snapshot,
+    });
+    const qwen = byId(report, "qwen-code");
+
+    assert.strictEqual(qwen.detectedInstalled, true);
+    assert.strictEqual(qwen.confidence, "high");
+    assert.strictEqual(qwen.reason, "custom-path");
+    assert.deepStrictEqual(qwen.paths.customDiscoveryPaths, [customQwenPath]);
+  });
+
+  it("uses generic Windows app path discovery for non-WorkBuddy tools", () => {
+    const homeDir = makeHome();
+    const localAppData = path.join(homeDir, "AppData", "Local");
+    writeText(path.join(localAppData, "Programs", "CodeBuddy", "CodeBuddy.exe"), "");
+
+    const report = detectAgentInstallations({
+      homeDir,
+      now: 1,
+      platform: "win32",
+      env: { LOCALAPPDATA: localAppData },
+    });
+    const codebuddy = byId(report, "codebuddy");
+
+    assert.strictEqual(codebuddy.detectedInstalled, true);
+    assert.strictEqual(codebuddy.confidence, "high");
+    assert.strictEqual(codebuddy.reason, "app-path");
+  });
+
   it("does not confuse Antigravity's ~/.gemini/config with Gemini CLI", () => {
     const homeDir = makeHome();
     writeJson(path.join(homeDir, ".gemini", "config", "hooks.json"), {
