@@ -34,6 +34,8 @@
     "install:qwen-hooks": "node hooks/qwen-code-install.js",
     "install:codewhale-hooks": "node hooks/codewhale-install.js",
     "uninstall:codewhale-hooks": "node hooks/codewhale-install.js --uninstall",
+    "install:workbuddy-hooks": "node hooks/workbuddy-install.js",
+    "uninstall:workbuddy-hooks": "node hooks/workbuddy-install.js --uninstall",
     "install:pi-extension": "node hooks/pi-install.js",
     "uninstall:pi-extension": "node hooks/pi-install.js --uninstall",
     "install:openclaw-plugin": "node hooks/openclaw-install.js",
