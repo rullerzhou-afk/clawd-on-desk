@@ -22,6 +22,7 @@ const AUTO_REPAIRABLE_AGENT_IDS = new Set([
   "gemini-cli",
   "antigravity-cli",
   "codebuddy",
+  "workbuddy",
   "kiro-cli",
   "kimi-cli",
   "qwen-code",
@@ -41,6 +42,7 @@ const INSTALLABLE_AGENT_IDS = new Set([
   "gemini-cli",
   "antigravity-cli",
   "codebuddy",
+  "workbuddy",
   "kiro-cli",
   "kimi-cli",
   "qwen-code",
@@ -60,6 +62,33 @@ const SETTABLE_AGENT_FLAGS = AGENT_FLAGS.filter((flag) => flag !== "integrationI
 const _validateAgentFlagId = requireString("setAgentFlag.agentId");
 const _validateAgentFlagValue = requireBoolean("setAgentFlag.value");
 const _validateRepairAgentId = requireString("repairAgentIntegration.agentId");
+
+function normalizeOptionalHttpUrl(value, key) {
+  if (typeof value !== "string") {
+    return { status: "error", message: `${key} must be a string` };
+  }
+  const trimmed = value.trim();
+  if (!trimmed) return { status: "ok", value: "" };
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return { status: "error", message: `${key} must use http or https` };
+    }
+    return { status: "ok", value: parsed.toString() };
+  } catch {
+    return { status: "error", message: `${key} must be a valid URL` };
+  }
+}
+
+function readWorkBuddyCustomPermissionUrl(snapshot) {
+  const entry = snapshot && snapshot.agents && snapshot.agents.workbuddy;
+  return entry && typeof entry.customPermissionUrl === "string" ? entry.customPermissionUrl : "";
+}
+
+function buildIntegrationOptions(snapshot, agentId) {
+  if (agentId !== "workbuddy") return {};
+  return { customPermissionUrl: readWorkBuddyCustomPermissionUrl(snapshot) };
+}
 
 function setAgentFlag(payload, deps) {
   if (!payload || typeof payload !== "object") {
@@ -266,7 +295,7 @@ async function installAgentIntegration(payload, deps = {}) {
   }
 
   try {
-    const result = await deps.syncIntegrationForAgent(agentId);
+    const result = await deps.syncIntegrationForAgent(agentId, buildIntegrationOptions(snapshot, agentId));
     if (result === false) {
       return { status: "error", message: `No automatic integration install is available for ${agentId}` };
     }
@@ -407,6 +436,7 @@ async function repairAgentIntegration(payload, deps) {
 
   try {
     const result = await repairFn(agentId, {
+      ...buildIntegrationOptions(snapshot, agentId),
       forceCodexHooksFeature: agentId === "codex" && forceCodexHooksFeature,
     });
     if (result === false) {
@@ -430,6 +460,25 @@ async function repairAgentIntegration(payload, deps) {
       message: `repairAgentIntegration: ${err && err.message}`,
     };
   }
+}
+
+function setWorkBuddyCustomPermissionUrl(payload, deps = {}) {
+  if (!payload || typeof payload !== "object") {
+    return { status: "error", message: "setWorkBuddyCustomPermissionUrl: payload must be an object" };
+  }
+  const normalized = normalizeOptionalHttpUrl(payload.url, "setWorkBuddyCustomPermissionUrl.url");
+  if (normalized.status !== "ok") return normalized;
+
+  const snapshot = deps.snapshot || {};
+  const current = readWorkBuddyCustomPermissionUrl(snapshot);
+  if (current === normalized.value) return { status: "ok", noop: true };
+
+  return {
+    status: "ok",
+    commit: buildAgentCommit(snapshot, "workbuddy", {
+      customPermissionUrl: normalized.value,
+    }),
+  };
 }
 
 function normalizeDismissAgentHintPayload(payload, validateAgentId, commandName) {
@@ -523,6 +572,7 @@ setAgentPermissionMode.lockKey = "agentIntegration";
 installAgentIntegration.lockKey = "agentIntegration";
 uninstallAgentIntegration.lockKey = "agentIntegration";
 repairAgentIntegration.lockKey = "agentIntegration";
+setWorkBuddyCustomPermissionUrl.lockKey = "agentIntegration";
 dismissAgentInstallHints.lockKey = "agentIntegration";
 dismissAgentCleanupHints.lockKey = "agentIntegration";
 clearAgentCleanupHints.lockKey = "agentIntegration";
@@ -591,6 +641,7 @@ module.exports = {
   dismissAgentInstallHints,
   installAgentIntegration,
   removeFromWsl,
+  setWorkBuddyCustomPermissionUrl,
   setAgentFlag,
   setAgentPermissionMode,
   uninstallAgentIntegration,
