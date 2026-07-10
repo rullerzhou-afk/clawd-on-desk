@@ -83,6 +83,37 @@ describe("agent installation detector", () => {
     assert.strictEqual(codewhale.reason, "parent-dir");
   });
 
+  it("discovers WorkBuddy from settings.json and common Windows app paths", () => {
+    const homeDir = makeHome();
+    const localAppData = path.join(homeDir, "AppData", "Local");
+    writeJson(path.join(homeDir, ".workbuddy", "settings.json"), { hooks: {} });
+
+    let report = detectAgentInstallations({
+      homeDir,
+      now: 1,
+      platform: "win32",
+      env: { LOCALAPPDATA: localAppData },
+    });
+    let workbuddy = byId(report, "workbuddy");
+    assert.strictEqual(workbuddy.detectedInstalled, true);
+    assert.strictEqual(workbuddy.confidence, "high");
+    assert.strictEqual(workbuddy.reason, "config-file");
+
+    fs.rmSync(path.join(homeDir, ".workbuddy"), { recursive: true, force: true });
+    writeText(path.join(localAppData, "Programs", "WorkBuddy", "WorkBuddy.exe"), "");
+
+    report = detectAgentInstallations({
+      homeDir,
+      now: 2,
+      platform: "win32",
+      env: { LOCALAPPDATA: localAppData },
+    });
+    workbuddy = byId(report, "workbuddy");
+    assert.strictEqual(workbuddy.detectedInstalled, true);
+    assert.strictEqual(workbuddy.confidence, "high");
+    assert.strictEqual(workbuddy.reason, "app-path");
+  });
+
   it("does not confuse Antigravity's ~/.gemini/config with Gemini CLI", () => {
     const homeDir = makeHome();
     writeJson(path.join(homeDir, ".gemini", "config", "hooks.json"), {
