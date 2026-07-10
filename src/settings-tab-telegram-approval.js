@@ -311,6 +311,10 @@
     refreshTokenInfo();
     refreshFeishuStatus();
     refreshFeishuSecretInfo();
+    // The migration card UI is gone, but the Step-3 enable switch still routes
+    // turn-on through the native migration test flow based on this snapshot —
+    // keep it loading even though no card renders.
+    refreshMigrationSnapshot();
 
     const h1 = document.createElement("h1");
     h1.textContent = t("remoteApprovalTitle");
@@ -321,12 +325,46 @@
     subtitle.textContent = t("remoteApprovalSubtitle");
     parent.appendChild(subtitle);
 
+    // Two subtabs (same pattern as the anim-overrides page): IM channels vs
+    // the LAN approval bridge. Hardware Buddy's card was retired 2026-07-10
+    // (Clawstick not shipped); its panel module and adapter wiring are dead
+    // code pending the same cleanup pass as the migration card below.
+    parent.appendChild(buildSubtabSwitcher());
+    if (coreRef.runtime.remoteApprovalSubtab === "lan") {
+      parent.appendChild(buildMobileChannelCard());
+      return;
+    }
     // Each remote approval channel renders as its own collapsible card so the
     // page can stay tidy as external approval channels grow.
     parent.appendChild(buildTelegramChannelCard());
     parent.appendChild(buildFeishuChannelCard());
-    parent.appendChild(buildHardwareBuddyChannelCard());
-    parent.appendChild(buildMobileChannelCard());
+  }
+
+  function buildSubtabSwitcher() {
+    const wrap = document.createElement("div");
+    wrap.className = "anim-override-subtabs";
+    const group = document.createElement("div");
+    group.className = "segmented";
+    group.setAttribute("role", "tablist");
+    const current = coreRef.runtime.remoteApprovalSubtab === "lan" ? "lan" : "channels";
+    const entries = [
+      { key: "channels", label: t("remoteApprovalSubtabChannels") },
+      { key: "lan", label: t("remoteApprovalSubtabLan") },
+    ];
+    for (const entry of entries) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = entry.label;
+      if (entry.key === current) btn.classList.add("active");
+      btn.addEventListener("click", () => {
+        if (coreRef.runtime.remoteApprovalSubtab === entry.key) return;
+        coreRef.runtime.remoteApprovalSubtab = entry.key;
+        coreRef.ops.requestRender({ content: true });
+      });
+      group.appendChild(btn);
+    }
+    wrap.appendChild(group);
+    return wrap;
   }
 
   function refreshRuntimeStatus(payload) {
@@ -609,14 +647,6 @@
         helpers.buildSection(t("feishuApprovalStep2Title"), [buildFeishuApproverRow()]),
         buildFeishuStep3Section(),
       ],
-    });
-  }
-
-  function buildHardwareBuddyChannelCard() {
-    return root.ClawdSettingsHardwareBuddyPanel.build(coreRef, {
-      id: "remote-approval.hardware-buddy",
-      activeTabId: "telegram-approval",
-      className: "remote-approval-channel-card",
     });
   }
 
