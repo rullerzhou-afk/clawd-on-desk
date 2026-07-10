@@ -275,8 +275,8 @@ const SCHEMA = {
       // antigravity branch). Default kept as false so legacy reads don't see a
       // stale "true" implying bubbles are enabled.
       "antigravity-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: false },
-      "codebuddy": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
-      "workbuddy": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true, customPermissionUrl: "" },
+      "codebuddy": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true, customPermissionUrl: "", customDiscoveryPaths: [] },
+      "workbuddy": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true, customPermissionUrl: "", customDiscoveryPaths: [] },
       "kiro-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "kimi-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "qwen-code": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
@@ -676,6 +676,22 @@ function normalizeOptionalHttpUrl(value) {
   }
 }
 
+function normalizePathList(value) {
+  const raw = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/[;\n]/)
+      : [];
+  const out = [];
+  for (const entry of raw) {
+    if (typeof entry !== "string") continue;
+    const trimmed = entry.trim();
+    if (!trimmed || trimmed.includes("\0")) continue;
+    if (!out.includes(trimmed)) out.push(trimmed);
+  }
+  return out;
+}
+
 function normalizeDismissedUpdateVersions(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const out = {};
@@ -748,8 +764,13 @@ function normalizeAgents(value, defaultsValue) {
       merged.permissionMode = entry.permissionMode;
       touched = true;
     }
-    if (id === "workbuddy" && typeof entry.customPermissionUrl === "string") {
+    if (Object.prototype.hasOwnProperty.call(base, "customPermissionUrl") && typeof entry.customPermissionUrl === "string") {
       merged.customPermissionUrl = normalizeOptionalHttpUrl(entry.customPermissionUrl);
+      touched = true;
+    }
+    const paths = normalizePathList(entry.customDiscoveryPaths);
+    if (paths.length > 0 || Array.isArray(entry.customDiscoveryPaths)) {
+      merged.customDiscoveryPaths = paths;
       touched = true;
     }
     if (touched) out[id] = merged;
