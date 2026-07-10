@@ -15,6 +15,7 @@
     { id: "intercept", labelKey: "codexPermissionModeIntercept" },
   ];
   const INSTALL_HINT_CONFIDENCES = new Set(["high", "medium"]);
+  const CUSTOM_HOOK_URL_AGENT_IDS = new Set(["codebuddy", "workbuddy"]);
   let agentHintActionPending = false;
   let agentInstallHintResetPending = false;
   let agentCleanupHintResetPending = false;
@@ -102,6 +103,7 @@
     const agents = typeof sortAgentMetadataForSettings === "function"
       ? sortAgentMetadataForSettings(runtime.agentMetadata)
       : runtime.agentMetadata;
+    parent.appendChild(buildCustomAgentSection(agents));
     renderAgentSections(parent, agents);
   }
 
@@ -664,9 +666,6 @@
       codexHookNotifyRow.classList.add("row-sub");
       rows.push(codexHookNotifyRow);
     }
-    if (agent.id === "workbuddy") {
-      rows.push(buildWorkBuddyCustomPermissionUrlRow());
-    }
     if (caps.permissionApproval || caps.interactiveBubble) {
       rows.push(buildAgentSwitchRow({
         agent,
@@ -728,29 +727,41 @@
     return rows;
   }
 
-  function buildWorkBuddyCustomPermissionUrlRow() {
+  function buildAgentTextInputRow({
+    rowClass,
+    controlClass,
+    inputClass,
+    inputType = "text",
+    labelKey,
+    descKey,
+    placeholderKey,
+    initialValue,
+    command,
+    payload,
+    normalizeValue = (value) => value.trim(),
+  }) {
     const row = document.createElement("div");
-    row.className = "row row-sub workbuddy-hook-url-row";
+    row.className = `row row-sub ${rowClass}`;
 
     const text = document.createElement("div");
     text.className = "row-text";
     const label = document.createElement("span");
     label.className = "row-label";
-    label.textContent = t("rowWorkBuddyHookUrl");
+    label.textContent = t(labelKey);
     text.appendChild(label);
     const desc = document.createElement("span");
     desc.className = "row-desc";
-    desc.textContent = t("rowWorkBuddyHookUrlDesc");
+    desc.textContent = t(descKey);
     text.appendChild(desc);
     row.appendChild(text);
 
     const ctrl = document.createElement("div");
-    ctrl.className = "row-control workbuddy-hook-url-control";
+    ctrl.className = `row-control ${controlClass}`;
     const input = document.createElement("input");
-    input.className = "workbuddy-hook-url-input";
-    input.type = "url";
-    input.placeholder = t("rowWorkBuddyHookUrlPlaceholder");
-    input.value = readers.readWorkBuddyCustomPermissionUrl ? readers.readWorkBuddyCustomPermissionUrl() : "";
+    input.className = inputClass;
+    input.type = inputType;
+    input.placeholder = t(placeholderKey);
+    input.value = initialValue();
     input.addEventListener("click", (ev) => ev.stopPropagation());
     input.addEventListener("keydown", (ev) => {
       ev.stopPropagation();
@@ -760,12 +771,12 @@
       }
     });
     input.addEventListener("blur", () => {
-      const value = input.value.trim();
-      const current = readers.readWorkBuddyCustomPermissionUrl ? readers.readWorkBuddyCustomPermissionUrl() : "";
+      const value = normalizeValue(input.value);
+      const current = initialValue();
       if (value === current) return;
       input.classList.add("pending");
       input.disabled = true;
-      window.settingsAPI.command("setWorkBuddyCustomPermissionUrl", { url: value }).then((result) => {
+      window.settingsAPI.command(command, payload(value)).then((result) => {
         if (!result || result.status !== "ok") {
           const msg = (result && result.message) || "unknown error";
           ops.showToast(t("toastSaveFailed") + msg, { error: true });
@@ -786,7 +797,56 @@
     return row;
   }
 
+  function buildAgentCustomPermissionUrlRow(agent) {
+    return buildAgentTextInputRow({
+      rowClass: "agent-custom-hook-url-row",
+      controlClass: "agent-custom-hook-url-control",
+      inputClass: "agent-custom-hook-url-input",
+      inputType: "url",
+      labelKey: "rowAgentCustomHookUrl",
+      descKey: "rowAgentCustomHookUrlDesc",
+      placeholderKey: "rowAgentCustomHookUrlPlaceholder",
+      initialValue: () => readers.readAgentCustomPermissionUrl ? readers.readAgentCustomPermissionUrl(agent.id) : "",
+      command: "setAgentCustomPermissionUrl",
+      payload: (url) => ({ agentId: agent.id, url }),
+    });
+  }
+
+  function buildAgentCustomDiscoveryPathsRow(agent) {
+    return buildAgentTextInputRow({
+      rowClass: "agent-custom-discovery-paths-row",
+      controlClass: "agent-custom-discovery-paths-control",
+      inputClass: "agent-custom-discovery-paths-input",
+      labelKey: "rowAgentCustomDiscoveryPaths",
+      descKey: "rowAgentCustomDiscoveryPathsDesc",
+      placeholderKey: "rowAgentCustomDiscoveryPathsPlaceholder",
+      initialValue: () => {
+        const paths = readers.readAgentCustomDiscoveryPaths ? readers.readAgentCustomDiscoveryPaths(agent.id) : [];
+        return paths.join("; ");
+      },
+      command: "setAgentCustomDiscoveryPaths",
+      payload: (paths) => ({ agentId: agent.id, paths }),
+      normalizeValue: (value) => value.split(/[;\n]/).map((entry) => entry.trim()).filter(Boolean).join("; "),
+    });
+  }
+
   // ── WSL instance rows ─────────────────────────────────────────────
+
+  function buildCustomAgentSection(agents) {
+    const rows = [];
+    const list = Array.isArray(agents) ? agents : [];
+    for (const agent of list) {
+      if (agent && CUSTOM_HOOK_URL_AGENT_IDS.has(agent.id)) {
+        rows.push(buildAgentCustomPermissionUrlRow(agent));
+      }
+    }
+    for (const agent of list) {
+      if (agent && agent.id) rows.push(buildAgentCustomDiscoveryPathsRow(agent));
+    }
+    const section = helpers.buildSection(t("agentSectionCustom"), rows);
+    section.classList.add("agent-section", "agent-section-custom");
+    return section;
+  }
 
   function getWslAgentInstances(agentId) {
     const hints = runtime.agentInstallationHints;
