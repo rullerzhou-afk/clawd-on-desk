@@ -17,6 +17,8 @@ test("settings agent actions expose the command surface", () => {
     "installAgentIntegration",
     "removeFromWsl",
     "repairAgentIntegration",
+    "setAgentCustomDiscoveryPaths",
+    "setAgentCustomPermissionUrl",
     "setAgentFlag",
     "setAgentPermissionMode",
     "setWorkBuddyCustomPermissionUrl",
@@ -27,6 +29,8 @@ test("settings agent actions expose the command surface", () => {
 test("settings agent integration commands share a serialization lock", () => {
   assert.strictEqual(agentCommands.setAgentFlag.lockKey, "agentIntegration");
   assert.strictEqual(agentCommands.setAgentPermissionMode.lockKey, "agentIntegration");
+  assert.strictEqual(agentCommands.setAgentCustomDiscoveryPaths.lockKey, "agentIntegration");
+  assert.strictEqual(agentCommands.setAgentCustomPermissionUrl.lockKey, "agentIntegration");
   assert.strictEqual(agentCommands.setWorkBuddyCustomPermissionUrl.lockKey, "agentIntegration");
   assert.strictEqual(agentCommands.installAgentIntegration.lockKey, "agentIntegration");
   assert.strictEqual(agentCommands.uninstallAgentIntegration.lockKey, "agentIntegration");
@@ -50,6 +54,36 @@ test("settings agent actions save WorkBuddy custom hook URL", () => {
     "https://hooks.example.test/workbuddy"
   );
   assert.strictEqual(result.commit.agents.workbuddy.enabled, false);
+});
+
+test("settings agent actions save CodeBuddy/WorkBuddy custom hook URLs", () => {
+  const snapshot = prefs.getDefaults();
+
+  const result = agentCommands.setAgentCustomPermissionUrl({
+    agentId: "codebuddy",
+    url: "https://hooks.example.test/codebuddy",
+  }, { snapshot });
+
+  assert.strictEqual(result.status, "ok");
+  assert.strictEqual(
+    result.commit.agents.codebuddy.customPermissionUrl,
+    "https://hooks.example.test/codebuddy"
+  );
+});
+
+test("settings agent actions save custom discovery paths for any installable agent", () => {
+  const snapshot = prefs.getDefaults();
+
+  const result = agentCommands.setAgentCustomDiscoveryPaths({
+    agentId: "qwen-code",
+    paths: "C:\\Tools\\Qwen\\qwen.exe; C:\\Users\\me\\.qwen",
+  }, { snapshot });
+
+  assert.strictEqual(result.status, "ok");
+  assert.deepStrictEqual(result.commit.agents["qwen-code"].customDiscoveryPaths, [
+    "C:\\Tools\\Qwen\\qwen.exe",
+    "C:\\Users\\me\\.qwen",
+  ]);
 });
 
 test("settings agent actions reject invalid WorkBuddy custom hook URL", () => {
@@ -195,8 +229,9 @@ test("settings agent actions install an integration and enable ingress", async (
   assert.deepStrictEqual(result.commit.dismissedAgentCleanupHints, {});
 });
 
-test("settings agent actions pass WorkBuddy custom hook URL to install", async () => {
+test("settings agent actions pass CodeBuddy/WorkBuddy custom hook URLs to install", async () => {
   const snapshot = prefs.getDefaults();
+  snapshot.agents.codebuddy.customPermissionUrl = "https://hooks.example.test/codebuddy";
   snapshot.agents.workbuddy.customPermissionUrl = "https://hooks.example.test/workbuddy";
   const calls = [];
   const deps = {
@@ -207,7 +242,18 @@ test("settings agent actions pass WorkBuddy custom hook URL to install", async (
     },
   };
 
-  const result = await agentCommands.installAgentIntegration({ agentId: "workbuddy" }, deps);
+  let result = await agentCommands.installAgentIntegration({ agentId: "codebuddy" }, deps);
+
+  assert.strictEqual(result.status, "ok");
+  assert.deepStrictEqual(calls, [
+    {
+      agentId: "codebuddy",
+      options: { customPermissionUrl: "https://hooks.example.test/codebuddy" },
+    },
+  ]);
+
+  calls.length = 0;
+  result = await agentCommands.installAgentIntegration({ agentId: "workbuddy" }, deps);
 
   assert.strictEqual(result.status, "ok");
   assert.deepStrictEqual(calls, [
