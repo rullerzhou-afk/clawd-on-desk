@@ -75,8 +75,24 @@ function createIntegrationSyncRuntime(options = {}) {
   const shouldSyncAgentIntegration = typeof options.shouldSyncAgentIntegration === "function"
     ? options.shouldSyncAgentIntegration
     : isAgentEnabled;
+  const getAgentIntegrationOptions = typeof options.getAgentIntegrationOptions === "function"
+    ? options.getAgentIntegrationOptions
+    : (() => ({}));
   const startClaudeSettingsWatcher = options.startClaudeSettingsWatcher;
   const stopClaudeSettingsWatcher = options.stopClaudeSettingsWatcher;
+
+  function readAgentIntegrationOptions(agentId) {
+    try {
+      const result = getAgentIntegrationOptions(agentId);
+      return result && typeof result === "object" ? result : {};
+    } catch (err) {
+      console.warn(
+        `Clawd: failed to read ${agentId} integration options:`,
+        err && err.message ? err.message : err
+      );
+      return {};
+    }
+  }
 
   function syncClawdHooks() {
     try {
@@ -168,6 +184,24 @@ function createIntegrationSyncRuntime(options = {}) {
     } catch (err) {
       console.warn("Clawd: failed to sync CodeBuddy hooks:", err.message);
       return { status: "error", message: err && err.message ? err.message : "Failed to sync CodeBuddy hooks" };
+    }
+  }
+
+  function syncWorkBuddyHooks(options = {}) {
+    try {
+      if (typeof ctx.syncWorkBuddyHooksImpl === "function") return ctx.syncWorkBuddyHooksImpl(options);
+      const { registerWorkBuddyHooks } = require("../hooks/workbuddy-install.js");
+      const result = registerWorkBuddyHooks({
+        silent: true,
+        customPermissionUrl: options.customPermissionUrl,
+      });
+      if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
+        console.log(`Clawd: synced WorkBuddy hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      return normalizeCountSyncResult(result, "WorkBuddy", "workbuddy-not-installed");
+    } catch (err) {
+      console.warn("Clawd: failed to sync WorkBuddy hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync WorkBuddy hooks" };
     }
   }
 
@@ -460,6 +494,7 @@ function createIntegrationSyncRuntime(options = {}) {
     "cursor-agent": syncCursorHooks,
     "copilot-cli": syncCopilotHooks,
     codebuddy: syncCodeBuddyHooks,
+    workbuddy: syncWorkBuddyHooks,
     "kiro-cli": syncKiroHooks,
     "kimi-cli": syncKimiHooks,
     "qwen-code": syncQwenHooks,
@@ -480,7 +515,7 @@ function createIntegrationSyncRuntime(options = {}) {
     openclaw: repairOpenClawPlugin,
   });
 
-  function syncIntegrationForAgent(agentId) {
+  function syncIntegrationForAgent(agentId, options = {}) {
     if (agentId === "claude-code") {
       if (!shouldManageClaudeHooks()) return false;
       const result = syncClawdHooks();
@@ -489,7 +524,7 @@ function createIntegrationSyncRuntime(options = {}) {
     }
     const sync = AGENT_INTEGRATION_SYNCERS[agentId];
     if (typeof sync !== "function") return false;
-    const result = sync();
+    const result = sync(options);
     return result && typeof result === "object" ? result : true;
   }
 
@@ -549,7 +584,7 @@ function createIntegrationSyncRuntime(options = {}) {
       startClaudeSettingsWatcher();
     }
     for (const [agentId, sync] of Object.entries(AGENT_INTEGRATION_SYNCERS)) {
-      if (shouldSyncAgentIntegration(agentId)) sync();
+      if (shouldSyncAgentIntegration(agentId)) sync(readAgentIntegrationOptions(agentId));
     }
   }
 
@@ -560,6 +595,7 @@ function createIntegrationSyncRuntime(options = {}) {
     syncCursorHooks,
     syncCopilotHooks,
     syncCodeBuddyHooks,
+    syncWorkBuddyHooks,
     syncKiroHooks,
     syncKimiHooks,
     syncQwenHooks,
