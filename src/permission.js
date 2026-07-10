@@ -49,7 +49,7 @@ const BUBBLE_HEIGHT_RESERVE = 24;
 const BUBBLE_BASE_WIDTH = 340;
 // Hard cap so a scaled bubble can't swallow a small work area.
 const BUBBLE_MAX_WORK_AREA_WIDTH_RATIO = 0.9;
-const REMOTE_RICH_APPROVAL_AGENT_IDS = new Set(["claude-code", "codebuddy"]);
+const REMOTE_RICH_APPROVAL_AGENT_IDS = new Set(["claude-code", "codebuddy", "workbuddy"]);
 
 function requiredDependency(value, name, owner) {
   if (!value) throw new Error(`${owner} requires ${name}`);
