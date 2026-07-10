@@ -744,10 +744,12 @@ html, body {
   color: var(--text-secondary);
 }
 
-.workbuddy-hook-url-control {
+.agent-custom-hook-url-control,
+.agent-custom-discovery-paths-control {
   min-width: min(360px, calc(46vw / var(--clawd-text-zoom, 1)));
 }
-.workbuddy-hook-url-input {
+.agent-custom-hook-url-input,
+.agent-custom-discovery-paths-input {
   width: 100%;
   box-sizing: border-box;
   height: 32px;
@@ -760,16 +762,19 @@ html, body {
   padding: 0 9px;
   outline: none;
 }
-.workbuddy-hook-url-input:focus {
+.agent-custom-hook-url-input:focus,
+.agent-custom-discovery-paths-input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(217, 119, 87, 0.16);
 }
-.workbuddy-hook-url-input.pending {
+.agent-custom-hook-url-input.pending,
+.agent-custom-discovery-paths-input.pending {
   cursor: wait;
   opacity: 0.78;
 }
 @media (max-width: 720px) {
-  .workbuddy-hook-url-control {
+  .agent-custom-hook-url-control,
+  .agent-custom-discovery-paths-control {
     width: 100%;
     min-width: 0;
   }
