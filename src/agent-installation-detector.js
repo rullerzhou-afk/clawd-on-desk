@@ -98,6 +98,38 @@ function resolveOpenClawPaths(options) {
   return { stateDir, configPath };
 }
 
+function resolveWorkBuddyPaths(options) {
+  const homeDir = options.homeDir || os.homedir();
+  const env = options.env || process.env;
+  const platform = options.platform || process.platform;
+  const parentDir = typeof env.WORKBUDDY_HOME === "string" && env.WORKBUDDY_HOME.trim()
+    ? env.WORKBUDDY_HOME
+    : pathForHome(homeDir, ".workbuddy");
+  const configPath = typeof env.WORKBUDDY_CONFIG_PATH === "string" && env.WORKBUDDY_CONFIG_PATH.trim()
+    ? env.WORKBUDDY_CONFIG_PATH
+    : path.join(parentDir, "settings.json");
+  const commandPaths = [];
+  if (platform === "win32") {
+    const candidates = [
+      path.join(homeDir, "WorkBuddy", "WorkBuddy.exe"),
+    ];
+    if (typeof env.LOCALAPPDATA === "string" && env.LOCALAPPDATA.trim()) {
+      candidates.push(
+        path.join(env.LOCALAPPDATA, "Programs", "WorkBuddy", "WorkBuddy.exe"),
+        path.join(env.LOCALAPPDATA, "WorkBuddy", "WorkBuddy.exe")
+      );
+    }
+    if (typeof env.PROGRAMFILES === "string" && env.PROGRAMFILES.trim()) {
+      candidates.push(path.join(env.PROGRAMFILES, "WorkBuddy", "WorkBuddy.exe"));
+    }
+    if (typeof env["PROGRAMFILES(X86)"] === "string" && env["PROGRAMFILES(X86)"].trim()) {
+      candidates.push(path.join(env["PROGRAMFILES(X86)"], "WorkBuddy", "WorkBuddy.exe"));
+    }
+    commandPaths.push(...candidates);
+  }
+  return { parentDir, configPath, commandPaths };
+}
+
 function hermesCommandPaths(hermesHome, platform, env = {}) {
   if (platform === "win32") {
     const paths = [path.join(hermesHome, "hermes-agent", "venv", "Scripts", "hermes.exe")];
@@ -141,6 +173,10 @@ function resolveAgentPaths(descriptor, options) {
       configFilePath: path.join(hermesHome, "config.yaml"),
       commandPaths: hermesCommandPaths(hermesHome, platform, env),
     };
+  }
+
+  if (descriptor.agentId === "workbuddy") {
+    return resolveWorkBuddyPaths({ homeDir, env, platform });
   }
 
   const parentDir = rebaseHomePath(descriptor.parentDir, homeDir);
@@ -264,6 +300,20 @@ function detectHermesInstallation(paths, options) {
   return notFound();
 }
 
+function detectWorkBuddyInstallation(paths, options) {
+  const fsImpl = options.fs;
+  if (fileExists(fsImpl, paths.configPath)) {
+    return installationResult(true, "high", "config-file", `${paths.configPath} exists`);
+  }
+  if ((paths.commandPaths || []).some((candidate) => fileExists(fsImpl, candidate))) {
+    return installationResult(true, "high", "app-path", "WorkBuddy application was found");
+  }
+  if (dirExists(fsImpl, paths.parentDir)) {
+    return installationResult(true, "medium", "parent-dir", `${paths.parentDir} exists`);
+  }
+  return notFound();
+}
+
 function detectInstallation(descriptor, paths, options) {
   const fsImpl = options.fs;
   switch (descriptor.agentId) {
@@ -294,6 +344,8 @@ function detectInstallation(descriptor, paths, options) {
     case "qoderwork":
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);
       return notFound();
+    case "workbuddy":
+      return detectWorkBuddyInstallation(paths, options);
     case "kiro-cli":
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);
       if (dirExists(fsImpl, paths.configPath)) return installationResult(true, "medium", "config-dir", `${paths.configPath} exists`);
