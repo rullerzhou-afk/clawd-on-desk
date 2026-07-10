@@ -172,11 +172,14 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
-  function syncCodeBuddyHooks() {
+  function syncCodeBuddyHooks(options = {}) {
     try {
-      if (typeof ctx.syncCodeBuddyHooksImpl === "function") return ctx.syncCodeBuddyHooksImpl();
+      if (typeof ctx.syncCodeBuddyHooksImpl === "function") return ctx.syncCodeBuddyHooksImpl(options);
       const { registerCodeBuddyHooks } = require("../hooks/codebuddy-install.js");
-      const result = registerCodeBuddyHooks({ silent: true });
+      const result = registerCodeBuddyHooks({
+        silent: true,
+        customPermissionUrl: options.customPermissionUrl,
+      });
       if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
         console.log(`Clawd: synced CodeBuddy hooks (added ${result.added}, updated ${result.updated})`);
       }
