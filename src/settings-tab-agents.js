@@ -733,8 +733,11 @@
     inputClass,
     inputType = "text",
     labelKey,
+    labelText,
     descKey,
+    descText,
     placeholderKey,
+    placeholderText,
     initialValue,
     command,
     payload,
@@ -747,11 +750,11 @@
     text.className = "row-text";
     const label = document.createElement("span");
     label.className = "row-label";
-    label.textContent = t(labelKey);
+    label.textContent = labelText || t(labelKey);
     text.appendChild(label);
     const desc = document.createElement("span");
     desc.className = "row-desc";
-    desc.textContent = t(descKey);
+    desc.textContent = descText || t(descKey);
     text.appendChild(desc);
     row.appendChild(text);
 
@@ -760,7 +763,7 @@
     const input = document.createElement("input");
     input.className = inputClass;
     input.type = inputType;
-    input.placeholder = t(placeholderKey);
+    input.placeholder = placeholderText || t(placeholderKey);
     input.value = initialValue();
     input.addEventListener("click", (ev) => ev.stopPropagation());
     input.addEventListener("keydown", (ev) => {
@@ -798,12 +801,13 @@
   }
 
   function buildAgentCustomPermissionUrlRow(agent) {
+    const agentName = agent && (agent.name || agent.id) || "";
     return buildAgentTextInputRow({
       rowClass: "agent-custom-hook-url-row",
       controlClass: "agent-custom-hook-url-control",
       inputClass: "agent-custom-hook-url-input",
       inputType: "url",
-      labelKey: "rowAgentCustomHookUrl",
+      labelText: t("rowAgentCustomHookUrl").replace("{agent}", agentName),
       descKey: "rowAgentCustomHookUrlDesc",
       placeholderKey: "rowAgentCustomHookUrlPlaceholder",
       initialValue: () => readers.readAgentCustomPermissionUrl ? readers.readAgentCustomPermissionUrl(agent.id) : "",
@@ -813,11 +817,12 @@
   }
 
   function buildAgentCustomDiscoveryPathsRow(agent) {
+    const agentName = agent && (agent.name || agent.id) || "";
     return buildAgentTextInputRow({
       rowClass: "agent-custom-discovery-paths-row",
       controlClass: "agent-custom-discovery-paths-control",
       inputClass: "agent-custom-discovery-paths-input",
-      labelKey: "rowAgentCustomDiscoveryPaths",
+      labelText: t("rowAgentCustomDiscoveryPaths").replace("{agent}", agentName),
       descKey: "rowAgentCustomDiscoveryPathsDesc",
       placeholderKey: "rowAgentCustomDiscoveryPathsPlaceholder",
       initialValue: () => {
@@ -832,16 +837,38 @@
 
   // ── WSL instance rows ─────────────────────────────────────────────
 
+  function buildCustomGroupHeader(titleKey, descKey) {
+    const row = document.createElement("div");
+    row.className = "row-sub agent-custom-group-header";
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t(titleKey);
+    text.appendChild(label);
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t(descKey);
+    text.appendChild(desc);
+    row.appendChild(text);
+    return row;
+  }
+
   function buildCustomAgentSection(agents) {
     const rows = [];
     const list = Array.isArray(agents) ? agents : [];
-    for (const agent of list) {
-      if (agent && CUSTOM_HOOK_URL_AGENT_IDS.has(agent.id)) {
+    const hookAgents = list.filter((agent) => agent && CUSTOM_HOOK_URL_AGENT_IDS.has(agent.id));
+    if (hookAgents.length > 0) {
+      rows.push(buildCustomGroupHeader("rowAgentCustomHookGroup", "rowAgentCustomHookGroupDesc"));
+      for (const agent of hookAgents) {
         rows.push(buildAgentCustomPermissionUrlRow(agent));
       }
     }
-    for (const agent of list) {
-      if (agent && agent.id) rows.push(buildAgentCustomDiscoveryPathsRow(agent));
+    if (list.some((agent) => agent && agent.id)) {
+      rows.push(buildCustomGroupHeader("rowAgentCustomDiscoveryGroup", "rowAgentCustomDiscoveryGroupDesc"));
+      for (const agent of list) {
+        if (agent && agent.id) rows.push(buildAgentCustomDiscoveryPathsRow(agent));
+      }
     }
     const section = helpers.buildSection(t("agentSectionCustom"), rows);
     section.classList.add("agent-section", "agent-section-custom");
