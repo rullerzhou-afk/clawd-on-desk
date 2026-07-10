@@ -30,7 +30,6 @@ const TAB_MODULES = [
   path.join(SRC_DIR, "settings-tab-shortcuts.js"),
   path.join(SRC_DIR, "settings-tab-telegram-approval.js"),
   path.join(SRC_DIR, "settings-tab-about.js"),
-  path.join(SRC_DIR, "settings-hardware-buddy-panel.js"),
 ];
 const VERIFIED_GITHUB_CONTRIBUTORS = [
   "Bynlk",
@@ -1015,7 +1014,6 @@ function loadTelegramApprovalTabForTest({
   context.window = context;
   context.globalThis = context;
   vm.createContext(context);
-  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-hardware-buddy-panel.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-telegram-approval.js"), "utf8"), context);
 
   const core = {
@@ -1251,7 +1249,6 @@ describe("settings renderer browser environment", () => {
       "settings-anim-overrides-merge.js",
       "settings-ui-core.js",
       "settings-agent-order.js",
-      "settings-hardware-buddy-panel.js",
       "settings-tab-general.js",
       "settings-tab-agents.js",
       "settings-tab-theme.js",

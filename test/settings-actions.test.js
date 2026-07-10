@@ -279,25 +279,6 @@ describe("updateRegistry pure-data validators", () => {
     }, deps).status, "error");
   });
 
-  it("hardwareBuddy accepts only the normalized product settings shape", () => {
-    assert.strictEqual(updateRegistry.hardwareBuddy({
-      enabled: true,
-      backend: "bleak",
-      address: "00:4B:12:A1:9E:A6",
-      namePrefix: "Claude",
-      permissionsEnabled: false,
-      quickCommandsEnabled: true,
-    }).status, "ok");
-    assert.strictEqual(updateRegistry.hardwareBuddy({ enabled: true }).status, "error");
-    assert.strictEqual(updateRegistry.hardwareBuddy({
-      enabled: true,
-      backend: "serial",
-      address: "",
-      namePrefix: "Claude",
-      permissionsEnabled: false,
-      quickCommandsEnabled: false,
-    }).status, "error");
-  });
 
   it("sessionAliases requires a plain object of valid alias entries", () => {
     const deps = { snapshot: baseSnapshot };

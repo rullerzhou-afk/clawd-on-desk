@@ -38,7 +38,6 @@ const shortcutFailureListeners = new Set();
 const shortcutRecordKeyListeners = new Set();
 const remoteSshStatusListeners = new Set();
 const remoteSshProgressListeners = new Set();
-const hardwareBuddyStatusListeners = new Set();
 const remoteApprovalStatusListeners = new Set();
 const textScaleContextListeners = new Set();
 ipcRenderer.on("settings-changed", (_event, payload) => {
@@ -64,11 +63,6 @@ ipcRenderer.on("remoteSsh:status-changed", (_event, payload) => {
 ipcRenderer.on("remoteSsh:progress", (_event, payload) => {
   for (const cb of remoteSshProgressListeners) {
     try { cb(payload); } catch (err) { console.warn("remoteSsh progress listener threw:", err); }
-  }
-});
-ipcRenderer.on("hardwareBuddy:status-changed", (_event, payload) => {
-  for (const cb of hardwareBuddyStatusListeners) {
-    try { cb(payload); } catch (err) { console.warn("hardwareBuddy status listener threw:", err); }
   }
 });
 ipcRenderer.on("remoteApproval:status-changed", (_event, payload) => {
@@ -122,10 +116,6 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   getAboutInfo: () => ipcRenderer.invoke("settings:get-about-info"),
   checkForUpdates: () => ipcRenderer.invoke("settings:check-for-updates"),
   showTutorial: () => ipcRenderer.invoke("settings:show-tutorial"),
-  getHardwareBuddyStatus: () => ipcRenderer.invoke("settings:get-hardware-buddy-status"),
-  testHardwareBuddyApproval: () => ipcRenderer.invoke("settings:test-hardware-buddy-approval"),
-  getQuickCommandPresets: () => ipcRenderer.invoke("settings:get-quick-command-presets"),
-  sendQuickCommand: (payload) => ipcRenderer.invoke("settings:send-quick-command", payload),
   openExternal: (url) => ipcRenderer.invoke("settings:open-external", url),
   listThemes: () => ipcRenderer.invoke("settings:list-themes"),
   openUserThemesDir: () => ipcRenderer.invoke("settings:open-user-themes-dir"),
@@ -159,11 +149,6 @@ contextBridge.exposeInMainWorld("settingsAPI", {
     if (typeof cb !== "function") return () => {};
     shortcutRecordKeyListeners.add(cb);
     return () => shortcutRecordKeyListeners.delete(cb);
-  },
-  onHardwareBuddyStatusChanged: (cb) => {
-    if (typeof cb !== "function") return () => {};
-    hardwareBuddyStatusListeners.add(cb);
-    return () => hardwareBuddyStatusListeners.delete(cb);
   },
   onRemoteApprovalStatusChanged: (cb) => {
     if (typeof cb !== "function") return () => {};

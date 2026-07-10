@@ -326,9 +326,7 @@
     parent.appendChild(subtitle);
 
     // Two subtabs (same pattern as the anim-overrides page): IM channels vs
-    // the LAN approval bridge. Hardware Buddy's card was retired 2026-07-10
-    // (Clawstick not shipped); its panel module and adapter wiring are dead
-    // code pending the same cleanup pass as the migration card below.
+    // the LAN approval bridge.
     parent.appendChild(buildSubtabSwitcher());
     if (coreRef.runtime.remoteApprovalSubtab === "lan") {
       parent.appendChild(buildMobileChannelCard());

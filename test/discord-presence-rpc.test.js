@@ -212,7 +212,7 @@ test("encodeFrame/decodeFrames round-trips opcode + JSON across split chunks", (
 });
 
 test("before-quit stops the Discord presence bridge before tearing down session state", () => {
-  // Source-text guard mirroring hardware-buddy-adapter.test.js: a refactor that
+  // Source-text guard: a refactor that
   // drops this cleanup would otherwise silently strand presence on quit again.
   const source = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
   const start = source.indexOf('app.on("before-quit"');

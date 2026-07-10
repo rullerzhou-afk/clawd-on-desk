@@ -60,8 +60,7 @@ function isInteractivePermissionEntryForSession(permEntry, sessionId) {
   return !!permEntry
     && String(permEntry.sessionId || "") === String(sessionId || "")
     && permEntry.isCodexNotify !== true
-    && permEntry.isKimiNotify !== true
-    && permEntry.isHardwareBuddyTest !== true;
+    && permEntry.isKimiNotify !== true;
 }
 
 function hasInteractivePermissionPending(entry, getPendingPermissions) {

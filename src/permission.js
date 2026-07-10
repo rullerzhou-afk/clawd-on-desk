@@ -443,14 +443,9 @@ function verifyUnregister(accelerator) {
   return true;
 }
 
-function isHardwareBuddyTestPermission(perm) {
-  return !!(perm && perm.isHardwareBuddyTest);
-}
-
 function getActionablePermissions() {
   return pendingPermissions.filter(
-    p => !isHardwareBuddyTestPermission(p)
-      && !p.isElicitation
+    p => !p.isElicitation
       && !p.isCodexNotify
       && !p.isKimiNotify
       && p.toolName !== "ExitPlanMode"
@@ -594,7 +589,7 @@ function repositionBubbles() {
   const bw = getBubbleWidth(scale, wa);
   const hitRect = ctx.bubbleFollowPet ? ctx.getHitRectScreen(petBounds) : null;
 
-  const layoutPermissions = pendingPermissions.filter((perm) => !isHardwareBuddyTestPermission(perm) && !perm.remoteOnly);
+  const layoutPermissions = pendingPermissions.filter((perm) => !perm.remoteOnly);
   const bubbleHeights = layoutPermissions.map(perm =>
     clampBubbleHeight(
       // measuredHeight/estimate are CSS px; the window needs DIP.
@@ -633,8 +628,8 @@ function repositionBubbles() {
 // funnels through showPermissionBubble after its DND / per-agent / headless
 // gates have already run, so this is the single place to honor the
 // autoApproveAllPermissions toggle without auto-approving requests those gates
-// meant to drop. Passive notifications (codex/kimi) and the hardware-buddy
-// self-test are excluded — they are not approvals and carry no HTTP response
+// meant to drop. Passive notifications (codex/kimi) are excluded — they are
+// not approvals and carry no HTTP response
 // to satisfy. Returns true when it consumed the entry (caller must NOT build a
 // bubble), false otherwise.
 
@@ -664,7 +659,6 @@ function maybeAutoApprovePermission(permEntry) {
     return false;
   }
   if (permEntry.isCodexNotify || permEntry.isKimiNotify) return false;
-  if (isHardwareBuddyTestPermission(permEntry)) return false;
 
   // Elicitation (AskUserQuestion / Hermes clarify): a bare "allow" with no
   // resolvedUpdatedInput is sent as a DENY downstream (see resolvePermissionEntry).

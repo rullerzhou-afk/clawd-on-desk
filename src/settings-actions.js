@@ -133,9 +133,6 @@ const {
   validateFeishuApproval,
 } = require("./feishu-approval-settings");
 const { EVENTS: TELEGRAM_MIGRATION_EVENTS } = require("./telegram-migration-state");
-const {
-  validateHardwareBuddySettings,
-} = require("./hardware-buddy-settings");
 
 const TELEGRAM_MIGRATION_RENDERER_EVENTS = new Set([
   TELEGRAM_MIGRATION_EVENTS.USER_TEST_NATIVE,
@@ -496,10 +493,6 @@ const updateRegistry = {
       return { status: "error", message: "tgMigration.migration must be an object" };
     }
     return { status: "ok" };
-  },
-
-  hardwareBuddy(value) {
-    return validateHardwareBuddySettings(value);
   },
 
   shortcuts: {

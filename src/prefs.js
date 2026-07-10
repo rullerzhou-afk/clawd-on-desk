@@ -35,10 +35,6 @@ const {
   normalizeFeishuApproval,
 } = require("./feishu-approval-settings");
 const {
-  DEFAULT_HARDWARE_BUDDY_SETTINGS,
-  normalizeHardwareBuddySettings,
-} = require("./hardware-buddy-settings");
-const {
   NOTIFICATION_DEFAULT_SECONDS,
   UPDATE_DEFAULT_SECONDS,
   PERMISSION_DEFAULT_SECONDS,
@@ -374,11 +370,6 @@ const SCHEMA = {
           : { importedAt: null, importError: null },
       };
     },
-  },
-  hardwareBuddy: {
-    type: "object",
-    defaultFactory: () => ({ ...DEFAULT_HARDWARE_BUDDY_SETTINGS }),
-    normalize: normalizeHardwareBuddySettings,
   },
   // Background update-check toggle. When true, the scheduler in updater.js
   // runs a quiet GitHub discovery on a 12-hour cycle (packaged builds only).
