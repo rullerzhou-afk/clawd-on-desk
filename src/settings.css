@@ -3159,6 +3159,11 @@ html, body {
 .remote-approval-channel-card.collapsible-group {
   margin: 8px 0 14px;
 }
+/* Discord tab: the optional custom-App-ID group sits below the Activity
+   section as a collapsed advanced block. */
+.discord-appid-card.collapsible-group {
+  margin: 14px 0;
+}
 
 .tg-approval-channel-header {
   display: flex;

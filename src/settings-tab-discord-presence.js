@@ -73,11 +73,22 @@
     note.textContent = t("discordPresenceDesktopRequiredNote");
     parent.appendChild(note);
 
-    parent.appendChild(helpers.buildSection(t("discordPresenceSetupTitle"), [buildAppIdRow()]));
+    // Activity first: with the official App ID shipped as the default,
+    // presence works out of the box and the switches ARE the feature. The
+    // custom App ID is an optional override, so it lives at the bottom,
+    // collapsed by default.
     parent.appendChild(helpers.buildSection(t("discordPresenceActivityTitle"), [
       buildEnabledRow(),
       buildProjectPrivacyRow(),
     ]));
+    parent.appendChild(helpers.buildCollapsibleGroup({
+      id: "discord-presence.custom-app-id",
+      title: t("discordPresenceAppIdAdvancedTitle"),
+      desc: t("discordPresenceAppIdAdvancedDesc"),
+      defaultCollapsed: true,
+      className: "discord-appid-card",
+      children: [buildAppIdRow()],
+    }));
   }
 
   function buildAppIdRow() {
