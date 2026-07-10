@@ -20,6 +20,15 @@ const { resolveHookAgentId } = require("./server-agent-id");
 
 const MAX_PERMISSION_BODY_BYTES = 524288;
 
+function readQueryAgentId(req) {
+  try {
+    const parsed = new URL(req.url || "", "http://127.0.0.1");
+    return parsed.searchParams.get("agent_id") || "";
+  } catch {
+    return "";
+  }
+}
+
 // ExitPlanMode (Plan Review) and AskUserQuestion (elicitation) happen to
 // travel through /permission, but they're UX flows — not approvals the
 // sub-gate is named for. Silencing them would break plan-mode and leave
@@ -394,6 +403,10 @@ function handlePermissionPost(req, res, options) {
       res.writeHead(400);
       res.end("bad json");
       return;
+    }
+    const queryAgentId = readQueryAgentId(req);
+    if (queryAgentId && data && typeof data === "object" && !data.agent_id) {
+      data.agent_id = queryAgentId;
     }
     const recordRequestHookEvent = createRequestHookRecorder(data, "permission");
     const hookIdentity = resolveHookAgentId(data);
