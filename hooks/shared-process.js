@@ -424,7 +424,10 @@ function readStdinJsonDetailed(options = {}) {
       let payload = {};
       let parseError = null;
       try {
-        const text = raw.toString();
+        let text = raw.toString();
+        // A PowerShell/.NET intermediary can prefix the payload with a UTF-8
+        // BOM (#638); trim() below would hide it but JSON.parse rejects it.
+        if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
         if (text.trim()) payload = JSON.parse(text);
       } catch (err) {
         parseError = String((err && err.message) || "parse error").slice(0, 120);

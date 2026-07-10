@@ -596,6 +596,40 @@ describe("Antigravity hook installer", () => {
     assert.ok(result.stdoutCloseElapsedMs < 10000, "stdout must reach EOF promptly after exit");
   });
 
+  it("delivers the stdin payload BOM-free under a CP-65001 console (#638)", windowsOnly, () => {
+    const scriptPath = writeEchoHook("clawd-antigravity-winbom-");
+    const command = __test.buildAntigravityHookCommand(
+      process.execPath,
+      scriptPath,
+      "PreInvocation",
+      { platform: "win32" }
+    );
+    // CJK in the payload also pins the encoding half of #638: the old
+    // Console.InputEncoding writer would mojibake non-ASCII under an ANSI
+    // console, the raw UTF-8 write must round-trip it byte-exact.
+    const payload = JSON.stringify({ session_id: "bom-check", cwd: "D:\\动画工作台" });
+    // chcp mutates the shared console's codepage, so capture and restore it —
+    // other real-PowerShell tests must never observe the forced 65001.
+    const before = spawnSync("cmd.exe", ["/d", "/s", "/c", "chcp"], { encoding: "utf8" });
+    const cpMatch = (before.stdout || "").match(/\d+/);
+    try {
+      const result = spawnSync(
+        "cmd.exe",
+        ["/d", "/s", "/c", `chcp 65001>nul & ${command}`],
+        { input: payload, encoding: "utf8", timeout: 30000 }
+      );
+      assert.strictEqual(result.status, 0);
+      const parsed = JSON.parse(result.stdout);
+      // Pre-#638 the .NET StandardInput writer flushed a UTF-8 BOM preamble
+      // under CP 65001, so the hook saw "\uFEFF" + payload (or a lone BOM on
+      // the empty watchdog path).
+      assert.strictEqual(parsed.got.charCodeAt(0) === 0xFEFF, false, "hook stdin must not carry a BOM");
+      assert.deepStrictEqual(parsed, { got: payload });
+    } finally {
+      if (cpMatch) spawnSync("cmd.exe", ["/d", "/s", "/c", `chcp ${cpMatch[0]}`], { encoding: "utf8" });
+    }
+  });
+
   it("builds Windows PowerShell bridge commands with fail-open fallback", () => {
     const command = __test.buildAntigravityHookCommand(
       "C:\\Program Files\\nodejs\\node.exe",
@@ -616,6 +650,14 @@ describe("Antigravity hook installer", () => {
     assert.ok(decoded.includes("New-Object System.IO.StreamReader([Console]::OpenStandardInput())"));
     assert.ok(decoded.includes("$stdinTask.Wait(2000)"));
     assert.ok(!decoded.includes("[Console]::In.ReadToEnd()"));
+    // #638: Console.InputEncoding must be swapped to BOM-less UTF-8 BEFORE
+    // Start() — .NET Framework creates the StandardInput writer eagerly there
+    // and AutoFlush pushes the encoding preamble into the pipe at once — and
+    // stdin must be written as raw UTF-8 bytes, not through that writer.
+    assert.ok(decoded.includes("[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)"));
+    assert.ok(decoded.indexOf("UTF8Encoding($false)") < decoded.indexOf("$proc.Start()"), "encoding pre-set must precede Start()");
+    assert.ok(decoded.includes("[System.Text.Encoding]::UTF8.GetBytes($stdinText)"));
+    assert.ok(!decoded.includes("$proc.StandardInput.Write"));
     assert.ok(decoded.includes("ConvertFrom-Json -ErrorAction Stop"));
     assert.ok(decoded.includes("[Console]::Out.WriteLine( '{\"decision\":\"ask\"}' )"));
     assert.ok(decoded.endsWith("exit 0"));

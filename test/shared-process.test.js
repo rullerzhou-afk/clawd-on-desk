@@ -516,6 +516,26 @@ describe("readStdinJsonDetailed()", () => {
     assert.strictEqual(result.parseError, null);
   });
 
+  it("strips a leading UTF-8 BOM before parsing (#638)", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream });
+    stream.end('\uFEFF{"session_id":"bom-sid"}');
+
+    const result = await pending;
+    assert.strictEqual(result.payload.session_id, "bom-sid");
+    assert.strictEqual(result.parseError, null);
+  });
+
+  it("treats a lone UTF-8 BOM as an empty payload, not a parse error (#638)", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream });
+    stream.end("\uFEFF");
+
+    const result = await pending;
+    assert.deepStrictEqual(result.payload, {});
+    assert.strictEqual(result.parseError, null);
+  });
+
   it("concatenates chunked writes before parsing", async () => {
     const stream = new PassThrough();
     const pending = readStdinJsonDetailed({ stream });

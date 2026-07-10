@@ -166,6 +166,18 @@ function buildWindowsEncodedFailOpenNodeHookCommand(nodeBin, hookScript, event, 
     ";",
     "$text=''",
     ";",
+    // #638: .NET Framework's Process.Start() eagerly creates the StandardInput
+    // StreamWriter on Console.InputEncoding with AutoFlush=true, which flushes
+    // the encoding's preamble into the pipe at Start() itself — under a
+    // CP-65001 console the hook's stdin starts with a 3-byte UTF-8 BOM that
+    // JSON.parse rejects (and an ANSI console mojibakes non-ASCII payloads
+    // written through that writer). Pre-set a BOM-less UTF-8 before Start()
+    // and restore right after; fail open where no console exists (ANSI has no
+    // preamble, so there is nothing to fix there).
+    "$origInputEncoding = $null",
+    ";",
+    "try { $origInputEncoding = [Console]::InputEncoding ; [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { $origInputEncoding = $null }",
+    ";",
     "try {",
     "$psi = New-Object System.Diagnostics.ProcessStartInfo",
     ";",
@@ -191,6 +203,8 @@ function buildWindowsEncodedFailOpenNodeHookCommand(nodeBin, hookScript, event, 
     ";",
     "[void]$proc.Start()",
     ";",
+    "if ($null -ne $origInputEncoding) { try { [Console]::InputEncoding = $origInputEncoding } catch {} }",
+    ";",
     "$stdoutTask = $proc.StandardOutput.ReadToEndAsync()",
     ";",
     "$stderrTask = $proc.StandardError.ReadToEndAsync()",
@@ -204,9 +218,16 @@ function buildWindowsEncodedFailOpenNodeHookCommand(nodeBin, hookScript, event, 
     ";",
     `try { $stdinReader = New-Object System.IO.StreamReader([Console]::OpenStandardInput()) ; $stdinTask = $stdinReader.ReadToEndAsync() ; if ($stdinTask.Wait(${stdinTimeoutMs})) { $stdinText = $stdinTask.Result } } catch {}`,
     ";",
-    "$proc.StandardInput.Write($stdinText)",
+    // Write raw UTF-8 bytes through the base stream rather than the
+    // Console.InputEncoding StreamWriter, so this write stays correctly
+    // encoded even where the InputEncoding pre-set above failed (#638).
+    "$stdinBytes = [System.Text.Encoding]::UTF8.GetBytes($stdinText)",
     ";",
-    "$proc.StandardInput.Close()",
+    "$stdinStream = $proc.StandardInput.BaseStream",
+    ";",
+    "$stdinStream.Write($stdinBytes, 0, $stdinBytes.Length)",
+    ";",
+    "$stdinStream.Close()",
     ";",
     `if ($proc.WaitForExit(${timeoutMs})) {`,
     "$proc.WaitForExit()",
@@ -223,7 +244,7 @@ function buildWindowsEncodedFailOpenNodeHookCommand(nodeBin, hookScript, event, 
     ";",
     "$text=''",
     "}",
-    "} catch { $text='' }",
+    "} catch { $text='' ; if ($null -ne $origInputEncoding) { try { [Console]::InputEncoding = $origInputEncoding } catch {} } }",
     ";",
     "if ($text.Length -gt 0) { $trimmed=$text.Trim(); if (($trimmed.Length -lt 2) -or ($trimmed[0] -ne '{') -or ($trimmed[$trimmed.Length - 1] -ne '}')) { $text='' } else { try { $null = ($text | ConvertFrom-Json -ErrorAction Stop) } catch { $text='' } } }",
     ";",
