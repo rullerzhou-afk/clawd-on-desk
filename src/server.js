@@ -149,6 +149,7 @@ const integrationSync = createIntegrationSyncRuntime({
   shouldManageClaudeHooks,
   isAgentEnabled,
   shouldSyncAgentIntegration,
+  getAgentIntegrationOptions: ctx.getAgentIntegrationOptions,
   startClaudeSettingsWatcher,
   stopClaudeSettingsWatcher,
 });
@@ -158,6 +159,7 @@ const {
   syncAntigravityHooks,
   syncCursorHooks,
   syncCodeBuddyHooks,
+  syncWorkBuddyHooks,
   syncKiroHooks,
   syncKimiHooks,
   syncCodexHooks,
@@ -194,8 +196,8 @@ function clearClaudeHookGuardAfterClaudeSync(agentId, result) {
   return result;
 }
 
-function syncIntegrationForAgent(agentId) {
-  return clearClaudeHookGuardAfterClaudeSync(agentId, syncIntegrationForAgentBase(agentId));
+function syncIntegrationForAgent(agentId, options = {}) {
+  return clearClaudeHookGuardAfterClaudeSync(agentId, syncIntegrationForAgentBase(agentId, options));
 }
 
 function repairIntegrationForAgent(agentId, options = {}) {
@@ -350,6 +352,7 @@ return {
   syncAntigravityHooks,
   syncCursorHooks,
   syncCodeBuddyHooks,
+  syncWorkBuddyHooks,
   syncKiroHooks,
   syncKimiHooks,
   syncCodexHooks,
