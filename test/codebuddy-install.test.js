@@ -166,7 +166,7 @@ describe("CodeBuddy hook installer", () => {
       hooks: {
         PermissionRequest: [{
           matcher: "",
-          hooks: [{ type: "http", url: "http://127.0.0.1:99999/permission", timeout: 600 }],
+          hooks: [{ type: "http", url: "http://127.0.0.1:23334/permission", timeout: 600 }],
         }],
       },
     });
@@ -182,7 +182,25 @@ describe("CodeBuddy hook installer", () => {
     const permHook = settings.hooks.PermissionRequest[0].hooks[0];
     assert.ok(permHook.url.includes("/permission"));
     assert.ok(permHook.url.includes("127.0.0.1"));
-    assert.notStrictEqual(permHook.url, "http://127.0.0.1:99999/permission");
+    assert.notStrictEqual(permHook.url, "http://127.0.0.1:23334/permission");
+  });
+
+  it("can register a custom permission hook URL", () => {
+    const settingsPath = makeTempSettingsFile({});
+    const customPermissionUrl = "https://hooks.example.test/codebuddy/permission";
+
+    registerCodeBuddyHooks({
+      silent: true,
+      settingsPath,
+      nodeBin: "/usr/local/bin/node",
+      customPermissionUrl,
+    });
+
+    const settings = readJson(settingsPath);
+    const permHook = settings.hooks.PermissionRequest[0].hooks[0];
+    assert.strictEqual(permHook.type, "http");
+    assert.strictEqual(permHook.name, "clawd-codebuddy-permission");
+    assert.strictEqual(permHook.url, customPermissionUrl);
   });
 
   it("unregister removes only managed command hooks and managed PermissionRequest URLs", () => {
