@@ -148,6 +148,71 @@ describe("state-session-snapshot badges", () => {
 });
 
 describe("state-session-snapshot builder", () => {
+  it("hides older WorkBuddy sessions from the same local agent process", () => {
+    const sessions = new Map([
+      ["workbuddy:old", session("working", {
+        updatedAt: 1000,
+        agentId: "workbuddy",
+        cwd: "C:\\Projects\\app",
+        agentPid: 4242,
+      })],
+      ["workbuddy:new", session("thinking", {
+        updatedAt: 2000,
+        agentId: "workbuddy",
+        cwd: "C:\\Projects\\app",
+        agentPid: 4242,
+      })],
+    ]);
+
+    const snapshot = buildSessionSnapshot(sessions, {
+      statePriority: STATE_PRIORITY,
+    });
+    const oldEntry = snapshot.sessions.find((entry) => entry.id === "workbuddy:old");
+    const newEntry = snapshot.sessions.find((entry) => entry.id === "workbuddy:new");
+
+    assert.strictEqual(oldEntry.hiddenFromHud, true);
+    assert.strictEqual(newEntry.hiddenFromHud, false);
+    assert.strictEqual(snapshot.hudTotalNonIdle, 1);
+    assert.strictEqual(snapshot.hudLastSessionId, "workbuddy:new");
+  });
+
+  it("hides inactive WorkBuddy sessions from the HUD when no chat is running", () => {
+    const sessions = new Map([
+      ["workbuddy:start-only", session("idle", {
+        updatedAt: 1000,
+        agentId: "workbuddy",
+        cwd: "C:\\Projects\\idle",
+        agentPid: 4242,
+        recentEvents: [{ event: "SessionStart", state: "idle", at: 900 }],
+      })],
+      ["workbuddy:finished", session("idle", {
+        updatedAt: 2000,
+        agentId: "workbuddy",
+        cwd: "C:\\Projects\\done",
+        agentPid: 4343,
+        recentEvents: [{ event: "Stop", state: "attention", at: 1900 }],
+      })],
+      ["workbuddy:active", session("working", {
+        updatedAt: 3000,
+        agentId: "workbuddy",
+        cwd: "C:\\Projects\\active",
+        agentPid: 4444,
+        recentEvents: [{ event: "PreToolUse", state: "working", at: 2900 }],
+      })],
+    ]);
+
+    const snapshot = buildSessionSnapshot(sessions, {
+      statePriority: STATE_PRIORITY,
+    });
+
+    assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "workbuddy:start-only").hiddenFromHud, true);
+    assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "workbuddy:finished").hiddenFromHud, true);
+    assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "workbuddy:active").hiddenFromHud, false);
+    assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "workbuddy:finished").badge, "done");
+    assert.strictEqual(snapshot.hudTotalNonIdle, 1);
+    assert.strictEqual(snapshot.hudLastSessionId, "workbuddy:active");
+  });
+
   it("builds ordered dashboard/menu groups and HUD summary with injected deps", () => {
     const sessions = new Map([
       ["old-working", session("working", {
