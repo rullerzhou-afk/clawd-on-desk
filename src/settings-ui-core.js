@@ -171,9 +171,14 @@
     return "native";
   }
 
-  function readWorkBuddyCustomPermissionUrl() {
-    const entry = state.snapshot && state.snapshot.agents && state.snapshot.agents.workbuddy;
+  function readAgentCustomPermissionUrl(agentId) {
+    const entry = state.snapshot && state.snapshot.agents && state.snapshot.agents[agentId];
     return entry && typeof entry.customPermissionUrl === "string" ? entry.customPermissionUrl : "";
+  }
+
+  function readAgentCustomDiscoveryPaths(agentId) {
+    const entry = state.snapshot && state.snapshot.agents && state.snapshot.agents[agentId];
+    return entry && Array.isArray(entry.customDiscoveryPaths) ? entry.customDiscoveryPaths : [];
   }
 
   function getShortcutValue(actionId) {
@@ -1296,7 +1301,8 @@
     readAgentFlagValue,
     readAgentIntegrationInstalled,
     readAgentPermissionMode,
-    readWorkBuddyCustomPermissionUrl,
+    readAgentCustomDiscoveryPaths,
+    readAgentCustomPermissionUrl,
     getShortcutValue,
     getLang,
     readThemeOverrideMap,
