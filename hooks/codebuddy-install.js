@@ -8,10 +8,9 @@ const os = require("os");
 const {
   resolveNodeBin,
   buildPermissionUrl,
+  isManagedPermissionUrl,
   DEFAULT_SERVER_PORT,
-  PERMISSION_PATH,
   readRuntimePort,
-  SERVER_PORTS,
 } = require("./server-config");
 const {
   readJsonFile,
@@ -24,7 +23,6 @@ const {
   removeMatchingHttpHooks,
 } = require("./json-utils");
 const MARKER = "codebuddy-hook.js";
-const HTTP_MARKER = "/permission";
 const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".codebuddy");
 const DEFAULT_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, "settings.json");
 
@@ -39,22 +37,6 @@ const CODEBUDDY_HOOK_EVENTS = [
   "Notification",
   "PreCompact",
 ];
-
-function isManagedPermissionUrl(value) {
-  if (typeof value !== "string") return false;
-  try {
-    const parsed = new URL(value);
-    const port = Number(parsed.port);
-    return parsed.protocol === "http:"
-      && parsed.hostname === "127.0.0.1"
-      && parsed.pathname === PERMISSION_PATH
-      && parsed.search === ""
-      && parsed.hash === ""
-      && SERVER_PORTS.includes(port);
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Register Clawd hooks into ~/.codebuddy/settings.json
@@ -170,13 +152,15 @@ function registerCodeBuddyHooks(options = {}) {
     if (Array.isArray(innerHooks)) {
       for (const h of innerHooks) {
         if (!h || h.type !== "http" || typeof h.url !== "string") continue;
-        if (!h.url.includes(HTTP_MARKER)) continue;
+        // Only URLs we wrote ourselves are eligible for the in-place port
+        // refresh; foreign endpoints are skipped and we append our own entry.
+        if (!isManagedPermissionUrl(h.url)) continue;
         permFound = true;
         if (h.url !== permissionUrl) { h.url = permissionUrl; updated++; changed = true; }
         break;
       }
     }
-    if (!permFound && entry.type === "http" && typeof entry.url === "string" && entry.url.includes(HTTP_MARKER)) {
+    if (!permFound && entry.type === "http" && typeof entry.url === "string" && isManagedPermissionUrl(entry.url)) {
       permFound = true;
       if (entry.url !== permissionUrl) { entry.url = permissionUrl; updated++; changed = true; }
     }

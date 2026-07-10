@@ -161,12 +161,16 @@ describe("CodeBuddy hook installer", () => {
     assert.ok(settings.hooks.PostToolUse[0].command.includes("/home/user/.volta/bin/node"));
   });
 
-  it("updates stale PermissionRequest HTTP URL", () => {
+  it("updates a stale managed PermissionRequest HTTP URL in place", () => {
+    // 23337 is inside SERVER_PORTS, so this is a URL an older install could
+    // have written — eligible for the in-place refresh. Anything outside the
+    // managed set is foreign (see the zero-destruction tests below).
+    const stale = "http://127.0.0.1:23337/permission";
     const settingsPath = makeTempSettingsFile({
       hooks: {
         PermissionRequest: [{
           matcher: "",
-          hooks: [{ type: "http", url: "http://127.0.0.1:99999/permission", timeout: 600 }],
+          hooks: [{ type: "http", url: stale, timeout: 600 }],
         }],
       },
     });
@@ -177,12 +181,58 @@ describe("CodeBuddy hook installer", () => {
       nodeBin: "/usr/local/bin/node",
     });
 
-    assert.ok(result.updated >= 1);
     const settings = readJson(settingsPath);
     const permHook = settings.hooks.PermissionRequest[0].hooks[0];
-    assert.ok(permHook.url.includes("/permission"));
-    assert.ok(permHook.url.includes("127.0.0.1"));
-    assert.notStrictEqual(permHook.url, "http://127.0.0.1:99999/permission");
+    assert.ok(__test.isManagedPermissionUrl(permHook.url));
+    assert.strictEqual(settings.hooks.PermissionRequest.length, 1);
+    if (permHook.url !== stale) assert.ok(result.updated >= 1);
+  });
+
+  it("leaves foreign PermissionRequest URLs untouched and appends the managed hook", () => {
+    const foreign = { type: "http", url: "https://approval.corp.example/permission", timeout: 30 };
+    const settingsPath = makeTempSettingsFile({
+      hooks: {
+        PermissionRequest: [{ matcher: "", hooks: [{ ...foreign }] }],
+      },
+    });
+
+    const result = registerCodeBuddyHooks({
+      silent: true,
+      settingsPath,
+      nodeBin: "/usr/local/bin/node",
+    });
+
+    // 8 command hooks + appended managed HTTP hook
+    assert.strictEqual(result.added, 9);
+    const settings = readJson(settingsPath);
+    assert.deepStrictEqual(settings.hooks.PermissionRequest[0].hooks, [foreign]);
+    const managed = settings.hooks.PermissionRequest
+      .flatMap((entry) => entry.hooks || [])
+      .filter((hook) => __test.isManagedPermissionUrl(hook.url));
+    assert.strictEqual(managed.length, 1);
+
+    // Second run must not churn: managed entry matched, foreign still intact.
+    const contentBefore = fs.readFileSync(settingsPath, "utf8");
+    const again = registerCodeBuddyHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+    assert.strictEqual(again.added, 0);
+    assert.strictEqual(again.updated, 0);
+    assert.strictEqual(fs.readFileSync(settingsPath, "utf8"), contentBefore);
+  });
+
+  it("leaves a foreign flat-format PermissionRequest URL untouched", () => {
+    const settingsPath = makeTempSettingsFile({
+      hooks: {
+        PermissionRequest: [{ type: "http", url: "http://localhost:23333/permission", timeout: 600 }],
+      },
+    });
+
+    registerCodeBuddyHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    const settings = readJson(settingsPath);
+    assert.strictEqual(settings.hooks.PermissionRequest[0].url, "http://localhost:23333/permission");
+    const nested = settings.hooks.PermissionRequest.filter((entry) => Array.isArray(entry.hooks));
+    assert.strictEqual(nested.length, 1);
+    assert.ok(__test.isManagedPermissionUrl(nested[0].hooks[0].url));
   });
 
   it("unregister removes only managed command hooks and managed PermissionRequest URLs", () => {

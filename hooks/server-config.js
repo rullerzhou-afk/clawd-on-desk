@@ -162,6 +162,27 @@ function buildPermissionUrl(port) {
   return `http://127.0.0.1:${safePort}${PERMISSION_PATH}`;
 }
 
+// Ownership test for PermissionRequest HTTP hooks: true only for URLs that
+// buildPermissionUrl could have written (any bindable server port). Installers
+// must gate every update/remove of an HTTP hook on this — a user's own
+// approval endpoint (e.g. https://approval.corp.example/permission) merely
+// contains "/permission" and must never be rewritten or deleted.
+function isManagedPermissionUrl(value) {
+  if (typeof value !== "string") return false;
+  try {
+    const parsed = new URL(value);
+    const port = Number(parsed.port);
+    return parsed.protocol === "http:"
+      && parsed.hostname === "127.0.0.1"
+      && parsed.pathname === PERMISSION_PATH
+      && parsed.search === ""
+      && parsed.hash === ""
+      && SERVER_PORTS.includes(port);
+  } catch {
+    return false;
+  }
+}
+
 function readHeader(res, headerName) {
   const value = res.headers && res.headers[headerName];
   return Array.isArray(value) ? value[0] : value;
@@ -875,6 +896,7 @@ module.exports = {
   STATE_PATH,
   buildPermissionUrl,
   clearRuntimeConfig,
+  isManagedPermissionUrl,
   discoverClawdPort,
   getPortCandidates,
   getPermissionProbeTimeoutMs,
