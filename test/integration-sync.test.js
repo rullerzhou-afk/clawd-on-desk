@@ -33,6 +33,7 @@ function makeRuntime(overrides = {}) {
     syncCursorHooksImpl: () => calls.push({ name: "cursor" }),
     syncCopilotHooksImpl: () => calls.push({ name: "copilot" }),
     syncCodeBuddyHooksImpl: () => calls.push({ name: "codebuddy" }),
+    syncWorkBuddyHooksImpl: (options) => calls.push({ name: "workbuddy", options }),
     syncKiroHooksImpl: () => calls.push({ name: "kiro" }),
     syncKimiHooksImpl: () => calls.push({ name: "kimi" }),
     syncQwenHooksImpl: () => calls.push({ name: "qwen" }),
@@ -96,6 +97,7 @@ describe("integration sync runtime", () => {
       "antigravity",
       "copilot",
       "codebuddy",
+      "workbuddy",
       "kiro",
       "kimi",
       "qwen",
@@ -122,6 +124,7 @@ describe("integration sync runtime", () => {
       "antigravity",
       "cursor",
       "codebuddy",
+      "workbuddy",
       "kiro",
       "kimi",
       "qwen",
@@ -131,6 +134,25 @@ describe("integration sync runtime", () => {
       "openclaw",
       "hermes",
       "qoder",
+    ]);
+  });
+
+  it("startup sync passes saved agent-specific options to syncers", () => {
+    const { runtime, calls } = makeRuntime({
+      shouldManageClaudeHooks: () => false,
+      shouldSyncAgentIntegration: (agentId) => agentId === "workbuddy",
+      getAgentIntegrationOptions: (agentId) => agentId === "workbuddy"
+        ? { customPermissionUrl: "https://hooks.example.test/workbuddy" }
+        : {},
+    });
+
+    runtime.syncEnabledStartupIntegrations();
+
+    assert.deepStrictEqual(calls, [
+      {
+        name: "workbuddy",
+        options: { customPermissionUrl: "https://hooks.example.test/workbuddy" },
+      },
     ]);
   });
 
@@ -190,6 +212,13 @@ describe("integration sync runtime", () => {
         modulePath: "../hooks/codebuddy-install.js",
         exportName: "registerCodeBuddyHooks",
         reason: "codebuddy-not-installed",
+      },
+      {
+        agentId: "workbuddy",
+        ctxKey: "syncWorkBuddyHooksImpl",
+        modulePath: "../hooks/workbuddy-install.js",
+        exportName: "registerWorkBuddyHooks",
+        reason: "workbuddy-not-installed",
       },
       {
         agentId: "kiro-cli",
