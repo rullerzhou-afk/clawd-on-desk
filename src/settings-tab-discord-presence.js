@@ -83,7 +83,11 @@
   function buildAppIdRow() {
     const draft = appIdDraft();
     const row = document.createElement("div");
-    row.className = "row";
+    // tg-approval-token-edit-row stacks the row vertically (label above,
+    // input+button below). Both classes are required together: input-row's
+    // width:100% inside a default horizontal .row squeezes .row-text into a
+    // single-glyph column (see the settings.css note above that rule).
+    row.className = "row tg-approval-token-edit-row";
 
     const text = document.createElement("div");
     text.className = "row-text";
@@ -98,8 +102,6 @@
     text.appendChild(desc);
     row.appendChild(text);
 
-    // tg-approval-input-row keeps the Save button from being squeezed into a
-    // vertical label wrap by the flex-greedy input (same fix as the Telegram tab).
     const ctrl = document.createElement("div");
     ctrl.className = "row-control tg-approval-input-row";
     const input = document.createElement("input");
