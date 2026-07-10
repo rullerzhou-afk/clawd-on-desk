@@ -171,6 +171,11 @@
     return "native";
   }
 
+  function readWorkBuddyCustomPermissionUrl() {
+    const entry = state.snapshot && state.snapshot.agents && state.snapshot.agents.workbuddy;
+    return entry && typeof entry.customPermissionUrl === "string" ? entry.customPermissionUrl : "";
+  }
+
   function getShortcutValue(actionId) {
     const shortcuts = state.snapshot && state.snapshot.shortcuts;
     if (!shortcuts || typeof shortcuts !== "object") return null;
@@ -1291,6 +1296,7 @@
     readAgentFlagValue,
     readAgentIntegrationInstalled,
     readAgentPermissionMode,
+    readWorkBuddyCustomPermissionUrl,
     getShortcutValue,
     getLang,
     readThemeOverrideMap,
