@@ -561,3 +561,111 @@ describe("Kimi hook script", () => {
     }
   });
 });
+
+describe("Kimi Code native events (#563)", () => {
+  const resolve = () => ({
+    stablePid: 12345,
+    agentPid: 67890,
+    detectedEditor: null,
+    pidChain: [67890, 12345],
+  });
+
+  it("maps native PermissionRequest to notification with action and command", () => {
+    // Real payload shape captured on-machine from kimi-code 0.22.0.
+    const body = buildStateBody(
+      "PermissionRequest",
+      {
+        hook_event_name: "PermissionRequest",
+        session_id: "session_abc",
+        cwd: "D:/proj",
+        turn_id: 0,
+        tool_call_id: "Bash_0",
+        tool_name: "Bash",
+        action: "Running: echo test-approve",
+        tool_input: { command: "echo test-approve" },
+        display: { kind: "command", command: "echo test-approve", cwd: "D:/proj" },
+      },
+      resolve
+    );
+    assert.strictEqual(body.state, "notification");
+    assert.strictEqual(body.event, "PermissionRequest");
+    assert.strictEqual(body.session_id, "kimi-cli:session_abc");
+    assert.strictEqual(body.tool_name, "Bash");
+    assert.strictEqual(body.permission_action, "Running: echo test-approve");
+    assert.strictEqual(body.permission_command, "echo test-approve");
+  });
+
+  it("maps native PermissionResult to working and forwards the decision", () => {
+    for (const decision of ["approved", "rejected"]) {
+      const body = buildStateBody(
+        "PermissionResult",
+        {
+          hook_event_name: "PermissionResult",
+          session_id: "session_abc",
+          tool_call_id: "Bash_0",
+          tool_name: "Bash",
+          action: "Running: echo hi",
+          decision,
+        },
+        resolve
+      );
+      assert.strictEqual(body.state, "working", `decision ${decision}`);
+      assert.strictEqual(body.event, "PermissionResult");
+      assert.strictEqual(body.permission_decision, decision);
+    }
+  });
+
+  it("rejected PermissionResult preserves state (PostToolUseFailure owns the visual)", () => {
+    const rejected = buildStateBody(
+      "PermissionResult",
+      { session_id: "s", tool_name: "Bash", decision: "rejected" },
+      resolve
+    );
+    assert.strictEqual(rejected.preserve_state, true);
+
+    const approved = buildStateBody(
+      "PermissionResult",
+      { session_id: "s", tool_name: "Bash", decision: "approved" },
+      resolve
+    );
+    assert.strictEqual(approved.preserve_state, undefined);
+  });
+
+  it("maps Interrupt (user Esc) to idle", () => {
+    const body = buildStateBody(
+      "Interrupt",
+      { hook_event_name: "Interrupt", session_id: "session_abc", turn_id: 2, reason: "cancelled" },
+      resolve
+    );
+    assert.strictEqual(body.state, "idle");
+    assert.strictEqual(body.event, "Interrupt");
+  });
+
+  it("does not attach permission context to non-permission events", () => {
+    const body = buildStateBody(
+      "PostToolUse",
+      {
+        session_id: "s",
+        tool_name: "Bash",
+        tool_input: { command: "echo x" },
+        tool_output: "x",
+      },
+      resolve
+    );
+    assert.strictEqual(body.permission_action, undefined);
+    assert.strictEqual(body.permission_command, undefined);
+    assert.strictEqual(body.permission_decision, undefined);
+  });
+
+  it("legacy synthesized PermissionRequest still carries tool_name but no action", () => {
+    const body = buildStateBody(
+      "PreToolUse",
+      { session_id: "s", tool_name: "shell", permission_required: true },
+      resolve
+    );
+    assert.strictEqual(body.event, "PermissionRequest");
+    assert.strictEqual(body.tool_name, "shell");
+    assert.strictEqual(body.permission_action, undefined);
+    assert.strictEqual(body.permission_command, undefined);
+  });
+});

@@ -57,7 +57,7 @@
     "waking":       ["waking.gif"]
   },
 
-  "_comment_optional_states": "Optional extras. fallbackTo is only allowed on error / attention / notification / sweeping / carrying / sleeping. Omit other optional states only if you are okay with them visually degrading to idle.",
+  "_comment_optional_states": "Optional extras. fallbackTo is only allowed on error / attention / notification / sweeping / carrying / sleeping / roam. Omit other optional states only if you are okay with them visually degrading to idle. Bind states.roam to a dedicated right-facing walk visual to replace the default free-roam bob; add top-level roamFlipAssets: true if your walk art faces left.",
 
   "sleepSequence": {
     "_comment": "full = yawning/dozing/collapsing/waking all need real files. direct = go straight to sleeping after mouseSleepTimeout; waking becomes optional.",

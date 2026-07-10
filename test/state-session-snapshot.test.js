@@ -5,11 +5,49 @@ const assert = require("node:assert");
 
 const {
   deriveSessionBadge,
+  deriveSourceInfo,
   isSessionInProgress,
   buildSessionSnapshot,
   getActiveSessionAliasKeys,
   sessionSnapshotSignature,
+  sessionDisplayTitle,
 } = require("../src/state-session-snapshot");
+
+describe("deriveSourceInfo", () => {
+  it("derives WSL source from the wsl: host prefix", () => {
+    assert.deepStrictEqual(deriveSourceInfo("wsl:Ubuntu"), {
+      sourceType: "wsl",
+      sourceLabel: "Ubuntu",
+      displayLabel: "WSL: Ubuntu",
+    });
+  });
+
+  it("falls back to a stable label for a bare wsl: prefix", () => {
+    assert.deepStrictEqual(deriveSourceInfo("wsl:"), {
+      sourceType: "wsl",
+      sourceLabel: "unknown",
+      displayLabel: "WSL: unknown",
+    });
+  });
+
+  it("treats any other non-local host as ssh", () => {
+    assert.deepStrictEqual(deriveSourceInfo("devbox"), {
+      sourceType: "ssh",
+      sourceLabel: "devbox",
+      displayLabel: "devbox",
+    });
+  });
+
+  it("treats empty, null, and 'local' hosts as local", () => {
+    for (const host of ["", null, undefined, "local"]) {
+      assert.deepStrictEqual(deriveSourceInfo(host), {
+        sourceType: "local",
+        sourceLabel: "",
+        displayLabel: "",
+      });
+    }
+  });
+});
 
 const STATE_PRIORITY = {
   error: 8,
@@ -52,6 +90,33 @@ describe("isSessionInProgress state mapping", () => {
   it("returns false for nullish sessions", () => {
     assert.strictEqual(isSessionInProgress(null), false);
     assert.strictEqual(isSessionInProgress(undefined), false);
+  });
+});
+
+describe("sessionDisplayTitle cwd fallback", () => {
+  it("falls back to path.basename(cwd) for normal project paths", () => {
+    assert.strictEqual(
+      sessionDisplayTitle("qoderwork:abc123", session("working", { cwd: "/home/me/projects/myapp" })),
+      "myapp"
+    );
+  });
+
+  it("skips QoderWork internal workspace cwds so the HUD never shows a raw workspace id", () => {
+    assert.strictEqual(
+      sessionDisplayTitle("qoderwork:abc123", session("working", { agentId: "qoderwork", cwd: "/Users/me/.qoderwork/workspace/mqgw60jiigjsjcid" })),
+      "qoderw.."
+    );
+    assert.strictEqual(
+      sessionDisplayTitle("qoderwork:abc123", session("working", { agentId: "qoderwork", cwd: "C:\\Users\\me\\.qoderwork\\workspace\\abc123" })),
+      "qoderw.."
+    );
+  });
+
+  it("keeps the cwd basename for non-QoderWork agents even inside a QoderWork workspace dir", () => {
+    assert.strictEqual(
+      sessionDisplayTitle("claude:xyz789", session("working", { agentId: "claude-code", cwd: "/Users/me/.qoderwork/workspace/mqgw60jiigjsjcid" })),
+      "mqgw60jiigjsjcid"
+    );
   });
 });
 
@@ -118,8 +183,8 @@ describe("state-session-snapshot builder", () => {
     assert.deepStrictEqual(snapshot.orderedIds, ["latest-remote", "error-local", "old-working"]);
     assert.deepStrictEqual(snapshot.menuOrderedIds, ["error-local", "old-working", "latest-remote"]);
     assert.deepStrictEqual(snapshot.groups, [
-      { host: "", ids: ["error-local", "old-working"] },
-      { host: "remote-box", ids: ["latest-remote"] },
+      { host: "", ids: ["error-local", "old-working"], displayHost: "" },
+      { host: "remote-box", ids: ["latest-remote"], displayHost: "remote-box" },
     ]);
     assert.strictEqual(snapshot.hudTotalNonIdle, 2);
     assert.strictEqual(snapshot.hudLastSessionId, "error-local");
@@ -358,6 +423,64 @@ describe("state-session-snapshot builder", () => {
     });
   });
 
+  it("includes antigravityQuota in snapshot entries", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["antigravity:s1", session("idle", {
+        agentId: "antigravity-cli",
+        antigravityQuota: {
+          geminiFiveHour: { usedPercent: 100 },
+          geminiWeekly: { usedPercent: 98, resetAt: 1738831180000 },
+        },
+      })],
+    ]), { statePriority: STATE_PRIORITY });
+
+    assert.deepStrictEqual(snapshot.sessions[0].antigravityQuota, {
+      geminiFiveHour: { usedPercent: 100 },
+      geminiWeekly: { usedPercent: 98, resetAt: 1738831180000 },
+    });
+  });
+
+  it("snapshot signature changes when antigravityQuota changes", () => {
+    const withoutQuota = buildSessionSnapshot(new Map([
+      ["antigravity:s1", session("idle", { agentId: "antigravity-cli" })],
+    ]), { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+    const withQuota = buildSessionSnapshot(new Map([
+      ["antigravity:s1", session("idle", {
+        agentId: "antigravity-cli",
+        antigravityQuota: { geminiWeekly: { usedPercent: 98 } },
+      })],
+    ]), { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+
+    assert.notStrictEqual(sessionSnapshotSignature(withoutQuota), sessionSnapshotSignature(withQuota));
+  });
+
+  it("includes claudeQuota in snapshot entries", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["s1", session("idle", {
+        claudeQuota: {
+          claudeFiveHour: { usedPercent: 24, resetAt: 1738425600000 },
+          claudeWeekly: { usedPercent: 41 },
+        },
+      })],
+    ]), { statePriority: STATE_PRIORITY });
+
+    assert.deepStrictEqual(snapshot.sessions[0].claudeQuota, {
+      claudeFiveHour: { usedPercent: 24, resetAt: 1738425600000 },
+      claudeWeekly: { usedPercent: 41 },
+    });
+  });
+
+  it("snapshot signature changes when claudeQuota changes", () => {
+    const withoutQuota = buildSessionSnapshot(new Map([
+      ["s1", session("idle")],
+    ]), { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+    const withQuota = buildSessionSnapshot(new Map([
+      ["s1", session("idle", { claudeQuota: { claudeWeekly: { usedPercent: 41 } } })],
+    ]), { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+
+    assert.notStrictEqual(sessionSnapshotSignature(withoutQuota), sessionSnapshotSignature(withQuota));
+  });
+
   it("marks detached ended idle sessions hidden from HUD only when cleanup is enabled and pid is dead", () => {
     const sessions = new Map([
       ["done-local", session("idle", {
@@ -411,7 +534,7 @@ describe("state-session-snapshot builder", () => {
     assert.strictEqual(snapshot.hudTotalNonIdle, 1);
     assert.strictEqual(snapshot.hudLastSessionId, "codex:new");
     assert.deepStrictEqual(snapshot.orderedIds, ["codex:new", "codex:old"]);
-    assert.deepStrictEqual(snapshot.groups, [{ host: "", ids: ["codex:new", "codex:old"] }]);
+    assert.deepStrictEqual(snapshot.groups, [{ host: "", ids: ["codex:new", "codex:old"], displayHost: "" }]);
   });
 
   it("snapshot signatures include visible fields but ignore icon URL churn", () => {
@@ -448,6 +571,30 @@ describe("state-session-snapshot builder", () => {
 
     assert.strictEqual(sessionSnapshotSignature(base), sessionSnapshotSignature(sameExceptIcon));
     assert.notStrictEqual(sessionSnapshotSignature(base), sessionSnapshotSignature(differentTitle));
+  });
+
+  // #590 B2 — metadataUpdatedAt is a display-arbitration freshness stamp: it
+  // must reach renderers via the snapshot but stay out of the signature (like
+  // updatedAt), so stamping it can never re-trigger a broadcast by itself.
+  it("entry carries metadataUpdatedAt but the signature ignores it", () => {
+    const opts = { statePriority: STATE_PRIORITY, getAgentIconUrl: () => "icon:a" };
+    const stamped = buildSessionSnapshot(new Map([
+      ["s1", session("working", {
+        updatedAt: 1000,
+        metadataUpdatedAt: 5000,
+        recentEvents: [{ event: "PreToolUse", state: "working", at: 900 }],
+      })],
+    ]), opts);
+    const restamped = buildSessionSnapshot(new Map([
+      ["s1", session("working", {
+        updatedAt: 1000,
+        metadataUpdatedAt: 9000,
+        recentEvents: [{ event: "PreToolUse", state: "working", at: 900 }],
+      })],
+    ]), opts);
+
+    assert.strictEqual(stamped.sessions[0].metadataUpdatedAt, 5000);
+    assert.strictEqual(sessionSnapshotSignature(stamped), sessionSnapshotSignature(restamped));
   });
 
   // ── PR2: requiresCompletionAck exposure ──

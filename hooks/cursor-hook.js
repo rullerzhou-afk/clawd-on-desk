@@ -2,7 +2,7 @@
 // Clawd — Cursor Agent hook (stdin JSON, hook_event_name; stdout JSON for gating hooks)
 // Registered in ~/.cursor/hooks.json by hooks/cursor-install.js
 
-const { postStateToRunningServer, readHostPrefix } = require("./server-config");
+const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
 
 const HOOK_TO_STATE = {
@@ -110,7 +110,9 @@ readStdinJson()
     if (cwd) body.cwd = cwd;
     if (process.env.CLAWD_REMOTE) {
       body.host = readHostPrefix();
+      applyWslSourceFields(body, { remote: true });
     } else {
+      applyWslSourceFields(body);
       body.source_pid = stablePid;
       body.editor = detectedEditor || "cursor";
       if (agentPid) {

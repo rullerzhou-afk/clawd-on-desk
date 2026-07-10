@@ -1,9 +1,5 @@
 "use strict";
 
-function isCodexMonitorPermissionEvent(state) {
-  return state === "codex-permission";
-}
-
 function isCodexMonitorMetadataOnlyEvent(event, extra) {
   return event === "event_msg:token_count"
     && !!(extra && typeof extra === "object" && extra.contextUsage);
@@ -47,5 +43,4 @@ function buildCodexMonitorUpdateOptions(extra, options = {}) {
 module.exports = {
   buildCodexMonitorUpdateOptions,
   isCodexMonitorMetadataOnlyEvent,
-  isCodexMonitorPermissionEvent,
 };

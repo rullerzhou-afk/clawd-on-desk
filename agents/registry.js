@@ -18,6 +18,7 @@ const openclaw = require("./openclaw");
 const hermes = require("./hermes");
 const qoder = require("./qoder");
 const reasonix = require("./reasonix");
+const qoderwork = require("./qoderwork");
 
 const AGENTS = [
   claudeCode,
@@ -37,6 +38,7 @@ const AGENTS = [
   hermes,
   qoder,
   reasonix,
+  qoderwork,
 ];
 const AGENT_MAP = new Map(AGENTS.map((a) => [a.id, a]));
 

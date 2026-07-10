@@ -31,6 +31,24 @@ function buildStateBindings(nextTheme) {
       };
     }
   }
+  // Ensure "roam" binding exists — free-roam mode switches to this visual
+  // state while walking. Themes that provide roam SVGs get them; others
+  // fall back to idle so the pet at least shows the idle animation instead
+  // of being "dragged" with no visual change.
+  //
+  // Also inject a placeholder into nextTheme.states so that
+  // theme-variants.applyUserOverridesPatch can resolve the target collection
+  // for "roam" overrides (otherwise it skips states not present in raw.states).
+  if (!bindings.roam) {
+    bindings.roam = { files: [], fallbackTo: "idle" };
+  }
+  if (nextTheme && nextTheme.states && !Array.isArray(nextTheme.states.roam)) {
+    const idleDefault = (nextTheme.states.idle && Array.isArray(nextTheme.states.idle)
+      && nextTheme.states.idle.length > 0)
+      ? nextTheme.states.idle[0]
+      : "idle.svg";
+    nextTheme.states.roam = [idleDefault];
+  }
   return bindings;
 }
 

@@ -50,3 +50,20 @@ html, body {
 #pet-container.mini-left {
   transform: scaleX(-1);
 }
+
+/* ── Roam walk animation ──
+   When the pet is roaming (free-roam mode), add a subtle horizontal bob
+   to simulate walking even if the theme doesn't have a dedicated roam SVG.
+   The animation is a gentle sway that makes the idle pose look alive. */
+#pet-container.roam-walk #clawd {
+  animation: roam-walk-bob 0.4s ease-in-out infinite;
+}
+
+@keyframes roam-walk-bob {
+  0%, 100% {
+    transform: translateX(0);
+  }
+  50% {
+    transform: translateX(3px);
+  }
+}

@@ -101,7 +101,7 @@
     animationPreviewPosterCache: new Map(),
     pendingAnimationOverrideEdits: new Map(),
     nextAnimationOverrideEditSeq: 1,
-    animOverridesSubtab: "animations",
+    animOverridesSubtab: "map",
     expandedOverrideRowIds: new Set(),
     assetPicker: {
       state: null,
@@ -887,6 +887,10 @@
       checkedAt: Number.isFinite(source.checkedAt) ? source.checkedAt : null,
       agents: Array.isArray(source.agents) ? source.agents : [],
       skippedAgentIds: Array.isArray(source.skippedAgentIds) ? source.skippedAgentIds : [],
+      wslAgents: Array.isArray(source.wslAgents) ? source.wslAgents : [],
+      wslDistros: Array.isArray(source.wslDistros) ? source.wslDistros : [],
+      wslPending: source.wslPending === true,
+      wslSupported: source.wslSupported === true,
     };
     if (typeof source.error === "string" && source.error) normalized.error = source.error;
     return normalized;
@@ -897,16 +901,32 @@
       checkedAt: null,
       agents: [],
       skippedAgentIds: [],
+      wslAgents: [],
+      wslDistros: [],
+      wslPending: false,
+      wslSupported: false,
     };
     if (error) result.error = error;
     return result;
   }
 
-  function fetchAgentInstallationHints({ force = false } = {}) {
+  function fetchAgentInstallationHints({ force = false, refreshWsl = false } = {}) {
     if (runtime.agentInstallationHintsPending) {
-      return runtime.agentInstallationHintsPromise || Promise.resolve(runtime.agentInstallationHints);
+      const inFlight = runtime.agentInstallationHintsPromise || Promise.resolve(runtime.agentInstallationHints);
+      // A manual WSL rescan must not be swallowed by a passive fetch that
+      // happens to be in flight (e.g. the tab's mount-time poll while
+      // wslPending) — chain one real rescan after it settles.
+      if (refreshWsl && !runtime.agentInstallationHintsWslRefreshQueued) {
+        runtime.agentInstallationHintsWslRefreshQueued = true;
+        return inFlight.then(() => {
+          runtime.agentInstallationHintsWslRefreshQueued = false;
+          return fetchAgentInstallationHints({ refreshWsl: true });
+        });
+      }
+      return inFlight;
     }
-    if (!force && runtime.agentInstallationHintsFetched) {
+    // refreshWsl always re-fetches; plain force only if not already done
+    if (!force && !refreshWsl && runtime.agentInstallationHintsFetched) {
       return Promise.resolve(runtime.agentInstallationHints);
     }
     if (!window.settingsAPI || typeof window.settingsAPI.detectAgentInstallations !== "function") {
@@ -915,8 +935,12 @@
       return Promise.resolve(runtime.agentInstallationHints);
     }
 
+    // refreshWsl triggers a backend WSL re-scan; force just bypasses the
+    // frontend cache. The backend only inspects refreshWsl — passing force
+    // in the IPC payload would be dead weight.
+    const opts = refreshWsl ? { refreshWsl: true } : undefined;
     runtime.agentInstallationHintsPending = true;
-    runtime.agentInstallationHintsPromise = window.settingsAPI.detectAgentInstallations()
+    runtime.agentInstallationHintsPromise = window.settingsAPI.detectAgentInstallations(opts)
       .then((result) => {
         runtime.agentInstallationHints = normalizeAgentInstallationHints(result);
         return runtime.agentInstallationHints;
@@ -933,6 +957,28 @@
         runtime.agentInstallationHintsFetched = true;
         runtime.agentInstallationHintsPromise = null;
         if (state.activeTab === "agents") requestRender({ content: true });
+        // wslPending means no WSL scan has ever completed. Startup does not
+        // pre-scan (running a command in each distro boots every stopped VM),
+        // so the first Agents-tab visit kicks off the real scan here. No loop:
+        // the scan marks the cache detected on success AND failure, so
+        // wslPending is false on the next fetch either way.
+        if (
+          !refreshWsl &&
+          runtime.agentInstallationHints &&
+          runtime.agentInstallationHints.wslPending &&
+          runtime.agentInstallationHints.wslSupported
+        ) {
+          if (state.activeTab === "agents") {
+            fetchAgentInstallationHints({ refreshWsl: true });
+          } else {
+            // User left the tab before this fetch resolved. Re-arm the
+            // fetched flag so the next Agents-tab visit takes the full
+            // fetch path again and reaches this trigger — otherwise the
+            // flag short-circuits every later plain fetch and the auto
+            // scan is permanently lost for this settings session.
+            runtime.agentInstallationHintsFetched = false;
+          }
+        }
       });
     return runtime.agentInstallationHintsPromise;
   }
@@ -1213,10 +1259,9 @@
         });
         return;
       }
-      if (state.activeTab !== "animMap") {
-        requestRender({ sidebar: true, content: true });
-        return;
-      }
+      // Any other tab that surfaces theme-derived content: full re-render.
+      requestRender({ sidebar: true, content: true });
+      return;
     }
 
     if (needsAnimOverridesRefresh && (state.activeTab === "animOverrides" || runtime.assetPicker.state)) {
@@ -1251,8 +1296,79 @@
     hasAnyThemeOverride,
   };
 
+  function showSettingsConfirmModal({ title, detail, actions }) {
+    const rootNode = document.getElementById("modalRoot");
+    if (!rootNode) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      let settled = false;
+      const overlay = document.createElement("div");
+      overlay.className = "modal-backdrop settings-confirm-backdrop";
+
+      const modal = document.createElement("div");
+      modal.className = "settings-confirm-modal";
+      modal.setAttribute("role", "dialog");
+      modal.setAttribute("aria-modal", "true");
+
+      const icon = document.createElement("div");
+      icon.className = "settings-confirm-icon";
+      icon.textContent = "!";
+
+      const titleNode = document.createElement("h2");
+      titleNode.textContent = title;
+
+      const detailNode = document.createElement("p");
+      detailNode.textContent = detail;
+
+      const actionsNode = document.createElement("div");
+      actionsNode.className = "settings-confirm-actions";
+
+      function close(actionId) {
+        if (settled) return;
+        settled = true;
+        document.removeEventListener("keydown", onKeyDown, true);
+        rootNode.innerHTML = "";
+        resolve(actionId);
+      }
+
+      function onKeyDown(ev) {
+        if (ev.key === "Escape") close(null);
+      }
+
+      overlay.addEventListener("click", (ev) => {
+        if (ev.target === overlay) close(null);
+      });
+      const buttons = (Array.isArray(actions) ? actions : []).map((action) => {
+        const button = document.createElement("button");
+        const tone = action && typeof action.tone === "string" ? action.tone : "neutral";
+        const toneClass = tone === "accent"
+          ? "accent"
+          : (tone === "danger" ? "settings-confirm-danger" : "");
+        button.type = "button";
+        button.className = `soft-btn${toneClass ? ` ${toneClass}` : ""}`;
+        button.textContent = action && action.label ? action.label : "";
+        button.addEventListener("click", () => close(action && action.id ? action.id : null));
+        actionsNode.appendChild(button);
+        return { action, button };
+      });
+      document.addEventListener("keydown", onKeyDown, true);
+      modal.appendChild(icon);
+      modal.appendChild(titleNode);
+      modal.appendChild(detailNode);
+      modal.appendChild(actionsNode);
+      overlay.appendChild(modal);
+      rootNode.innerHTML = "";
+      rootNode.appendChild(overlay);
+      const focusTarget =
+        buttons.find((action) => action.action && action.action.defaultFocus)
+        || buttons[buttons.length - 1]
+        || null;
+      if (focusTarget) focusTarget.button.focus();
+    });
+  }
+
   core.helpers = {
     t,
+    showSettingsConfirmModal,
     escapeHtml,
     setSwitchVisual,
     attachAnimatedSwitch,

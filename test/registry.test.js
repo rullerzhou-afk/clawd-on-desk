@@ -24,6 +24,7 @@ describe("Agent Registry", () => {
       "hermes",
       "qoder",
       "reasonix",
+      "qoderwork",
     ]);
   });
 
@@ -42,7 +43,8 @@ describe("Agent Registry", () => {
     assert.strictEqual(registry.getAgent("openclaw").name, "OpenClaw");
     assert.strictEqual(registry.getAgent("hermes").name, "Hermes Agent");
     assert.strictEqual(registry.getAgent("qoder").name, "Qoder");
-    assert.strictEqual(registry.getAgent("reasonix").name, "Reasonix CLI");
+    assert.strictEqual(registry.getAgent("reasonix").name, "Reasonix");
+    assert.strictEqual(registry.getAgent("qoderwork").name, "QoderWork");
     assert.strictEqual(registry.getAgent("nonexistent"), undefined);
   });
 
@@ -87,6 +89,9 @@ describe("Agent Registry", () => {
 
     const reasonix = registry.getAgent("reasonix");
     assert.deepStrictEqual(reasonix.processNames.win, ["reasonix.exe"]);
+
+    const qoderwork = registry.getAgent("qoderwork");
+    assert.deepStrictEqual(qoderwork.processNames.win, ["QoderWork.exe"]);
   });
 
   it("should include explicit Linux process names", () => {
@@ -131,6 +136,9 @@ describe("Agent Registry", () => {
 
     const reasonix = registry.getAgent("reasonix");
     assert.deepStrictEqual(reasonix.processNames.linux, ["reasonix"]);
+
+    const qoderwork = registry.getAgent("qoderwork");
+    assert.deepStrictEqual(qoderwork.processNames.linux, ["QoderWork"]);
   });
 
   it("should keep Kiro CLI process names narrowed to kiro-cli only", () => {
@@ -262,6 +270,14 @@ describe("Agent Registry", () => {
     assert.strictEqual(reasonix.capabilities.notificationHook, true);
     assert.strictEqual(reasonix.capabilities.sessionEnd, true);
     assert.strictEqual(reasonix.capabilities.subagent, true);
+
+    const qoderwork = registry.getAgent("qoderwork");
+    assert.strictEqual(qoderwork.capabilities.httpHook, false);
+    assert.strictEqual(qoderwork.capabilities.permissionApproval, false);
+    assert.strictEqual(qoderwork.capabilities.interactiveBubble, false);
+    assert.strictEqual(qoderwork.capabilities.notificationHook, true);
+    assert.strictEqual(qoderwork.capabilities.sessionEnd, true);
+    assert.strictEqual(qoderwork.capabilities.subagent, false);
   });
 
   it("should have eventMap for hook-based agents", () => {
@@ -353,6 +369,19 @@ describe("Agent Registry", () => {
     assert.strictEqual(reasonix.eventMap.Notification, "notification");
     assert.strictEqual(reasonix.eventMap.PreCompact, "sweeping");
     assert.strictEqual(reasonix.eventMap.SessionEnd, "sleeping");
+
+    const qoderwork = registry.getAgent("qoderwork");
+    assert.strictEqual(qoderwork.eventSource, "hook");
+    assert.strictEqual(qoderwork.eventMap.SessionStart, "idle");
+    assert.strictEqual(qoderwork.eventMap.UserPromptSubmit, "thinking");
+    assert.strictEqual(qoderwork.eventMap.PreToolUse, "working");
+    assert.strictEqual(qoderwork.eventMap.PostToolUseFailure, "error");
+    assert.strictEqual(qoderwork.eventMap.Stop, "attention");
+    // Permission events map to "working" (not "notification") to avoid
+    // animation spam — QoderWork fires 40+ per task during normal tool use.
+    assert.strictEqual(qoderwork.eventMap.PermissionRequest, "working");
+    assert.strictEqual(qoderwork.eventMap.PermissionDenied, "working");
+    assert.strictEqual(qoderwork.eventMap.SessionEnd, "sleeping");
   });
 
   it("treats Gemini CLI as a hook-only agent", () => {

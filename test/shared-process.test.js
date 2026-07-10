@@ -2,11 +2,16 @@
 const { describe, it, beforeEach, mock } = require("node:test");
 const assert = require("node:assert");
 
+const { PassThrough } = require("node:stream");
+
 const {
   getPlatformConfig,
   createPidResolver,
-  readStdinJson,
+  readStdinJsonDetailed,
+  DEFAULT_STDIN_READ_TIMEOUT_MS,
   buildElectronLaunchConfig,
+  tmuxSocketFromEnv,
+  processAlive,
 } = require("../hooks/shared-process");
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -494,6 +499,211 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
   });
 });
 
-// readStdinJson() is not unit-tested here — it attaches listeners to
-// process.stdin (singleton) which prevents process exit. Validated by
-// real agent integration tests + the finishOnce/timeout logic is trivial.
+// ═════════════════════════════════════════════════════════════════════════════
+// readStdinJsonDetailed() — injectable stream + timeout (#583)
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("readStdinJsonDetailed()", () => {
+  it("parses a complete JSON payload on EOF and reports bytes", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream });
+    stream.end('{"session_id":"abc-123","cwd":"D:\\\\x"}');
+
+    const result = await pending;
+    assert.strictEqual(result.payload.session_id, "abc-123");
+    assert.strictEqual(result.bytes, Buffer.byteLength('{"session_id":"abc-123","cwd":"D:\\\\x"}'));
+    assert.strictEqual(result.timedOut, false);
+    assert.strictEqual(result.parseError, null);
+  });
+
+  it("concatenates chunked writes before parsing", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream });
+    stream.write('{"session_id":');
+    stream.write('"chunked"');
+    stream.end("}");
+
+    const result = await pending;
+    assert.strictEqual(result.payload.session_id, "chunked");
+    assert.strictEqual(result.timedOut, false);
+  });
+
+  it("returns empty payload with bytes:0 when stdin closes with no data", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream });
+    stream.end();
+
+    const result = await pending;
+    assert.deepStrictEqual(result.payload, {});
+    assert.strictEqual(result.bytes, 0);
+    assert.strictEqual(result.timedOut, false);
+    assert.strictEqual(result.parseError, null);
+  });
+
+  it("reports a parse error for malformed JSON but still resolves {}", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream });
+    stream.end('{"session_id":"broken"');
+
+    const result = await pending;
+    assert.deepStrictEqual(result.payload, {});
+    assert.strictEqual(result.bytes, 22);
+    assert.ok(typeof result.parseError === "string" && result.parseError.length > 0);
+  });
+
+  it("times out when EOF never arrives, keeping any bytes received so far", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream, timeoutMs: 40 });
+    stream.write('{"half":');
+    // no end() — simulates an intermediary swallowing EOF
+
+    const result = await pending;
+    assert.strictEqual(result.timedOut, true);
+    assert.strictEqual(result.bytes, 8);
+    assert.deepStrictEqual(result.payload, {});
+    assert.ok(typeof result.parseError === "string" && result.parseError.length > 0);
+  });
+
+  it("parses data that arrived in full even when EOF is swallowed", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream, timeoutMs: 40 });
+    stream.write('{"session_id":"no-eof"}');
+
+    const result = await pending;
+    assert.strictEqual(result.timedOut, true);
+    assert.strictEqual(result.payload.session_id, "no-eof");
+    assert.strictEqual(result.parseError, null);
+  });
+
+  it("keeps the shared default timeout at 400ms — other agent hooks run ~800ms stdout safety timers that must win the race", () => {
+    assert.strictEqual(DEFAULT_STDIN_READ_TIMEOUT_MS, 400);
+  });
+
+  it("resolves (instead of crashing) when the stream errors mid-read, reporting a stream error", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream });
+    stream.write('{"half":');
+    stream.emit("error", new Error("boom"));
+
+    const result = await pending;
+    assert.deepStrictEqual(result.payload, {});
+    assert.strictEqual(result.bytes, 8);
+    assert.strictEqual(result.timedOut, false);
+    assert.strictEqual(result.parseError, "stream error: boom");
+  });
+
+  it("handles multi-megabyte stdin without truncation", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream });
+    const big = JSON.stringify({ session_id: "big-sid", blob: "z".repeat(3 * 1024 * 1024) });
+    // write in 64KB slices like a real pipe would
+    for (let i = 0; i < big.length; i += 65536) stream.write(big.slice(i, i + 65536));
+    stream.end();
+
+    const result = await pending;
+    assert.strictEqual(result.payload.session_id, "big-sid");
+    assert.strictEqual(result.bytes, Buffer.byteLength(big));
+    assert.strictEqual(result.parseError, null);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// #627 provenance: snapshotOk / terminalPid — the fields the pid cache uses to
+// refuse caching a degraded Windows snapshot instead of reverse-inferring from
+// stablePid. Uses the mock loader so it runs on any platform.
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("createPidResolver() — snapshot provenance (#627, mocked win32)", () => {
+  const { loadSharedProcessWithMock } = require("./helpers/load-shared-process-with-mock");
+
+  function snapshotJson(procs) {
+    return JSON.stringify(procs.map((p) => ({
+      ProcessId: p.pid,
+      Name: p.name,
+      ParentProcessId: p.ppid,
+      CommandLine: typeof p.cmd === "string" ? p.cmd : null,
+    })));
+  }
+
+  it("snapshotOk true + terminalPid set when the walk reaches a terminal", () => {
+    const { mod, cleanup } = loadSharedProcessWithMock({
+      execFileSyncMock: () => snapshotJson([
+        { pid: 500, name: "node.exe", ppid: 600, cmd: "node C:/x/claude-code/cli.js" },
+        { pid: 600, name: "windowsterminal.exe", ppid: 0 },
+      ]),
+      platform: "win32",
+    });
+    try {
+      const cfg = mod.getPlatformConfig();
+      const r = mod.createPidResolver({
+        platformConfig: cfg,
+        startPid: 500,
+        agentNames: { win: new Set(["claude.exe"]), mac: new Set(["claude"]) },
+        agentCmdlineCheck: (c) => c.includes("claude-code"),
+      })();
+      assert.strictEqual(r.snapshotOk, true);
+      assert.strictEqual(r.terminalPid, 600);
+      assert.strictEqual(r.stablePid, 600);
+      assert.strictEqual(r.agentPid, 500);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("snapshotOk false + terminalPid null + stablePid decays to startPid on empty snapshot", () => {
+    const { mod, cleanup } = loadSharedProcessWithMock({
+      execFileSyncMock: () => "", // empty PS output → getWindowsProcessSnapshot yields an empty Map
+      platform: "win32",
+    });
+    try {
+      const cfg = mod.getPlatformConfig();
+      const r = mod.createPidResolver({ platformConfig: cfg, startPid: 4242 })();
+      assert.strictEqual(r.snapshotOk, false);
+      assert.strictEqual(r.terminalPid, null);
+      assert.strictEqual(r.stablePid, 4242, "decays to the ephemeral start pid — must not be cached");
+      assert.strictEqual(r.agentPid, null);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("tmuxSocketFromEnv()", () => {
+  it("parses the socket path from $TMUX", () => {
+    const saved = process.env.TMUX;
+    process.env.TMUX = "/tmp/tmux-1000/work,200,5";
+    try {
+      assert.strictEqual(tmuxSocketFromEnv(), "/tmp/tmux-1000/work");
+    } finally {
+      if (saved === undefined) delete process.env.TMUX;
+      else process.env.TMUX = saved;
+    }
+  });
+
+  it("returns null when $TMUX is unset", () => {
+    const saved = process.env.TMUX;
+    delete process.env.TMUX;
+    try {
+      assert.strictEqual(tmuxSocketFromEnv(), null);
+    } finally {
+      if (saved !== undefined) process.env.TMUX = saved;
+    }
+  });
+});
+
+describe("processAlive()", () => {
+  it("true for the current process", () => {
+    assert.strictEqual(processAlive(process.pid), true);
+  });
+
+  it("false for a pid that does not exist", () => {
+    assert.strictEqual(processAlive(2147483646), false);
+  });
+
+  it("false for non-positive / non-numeric input", () => {
+    assert.strictEqual(processAlive(0), false);
+    assert.strictEqual(processAlive(-1), false);
+    assert.strictEqual(processAlive(null), false);
+    assert.strictEqual(processAlive("nope"), false);
+  });
+});

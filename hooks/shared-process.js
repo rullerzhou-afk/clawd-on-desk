@@ -50,6 +50,31 @@ function normalizeTmuxClientTarget(value) {
   return /^[\w./:-]+$/.test(text) ? text : null;
 }
 
+// $TMUX is "<socket>,<serverPid>,<sessionN>"; the first field is the socket
+// path used for `tmux -S <socket>` focus. Pure env parse, no subprocess — safe
+// to call from a cache-hit path that skips the full resolve() walk.
+function tmuxSocketFromEnv() {
+  if (!process.env.TMUX) return null;
+  return normalizeTmuxSocketPath(process.env.TMUX.split(",")[0]);
+}
+
+// Liveness probe with ZERO subprocess spawn: process.kill(pid, 0) is a syscall,
+// not a spawn (so it never risks the WindowsTerminal console flash this whole
+// change exists to avoid). ESRCH => process gone; EPERM => alive but not ours.
+// Cannot detect PID reuse (same limitation as src/state.js isProcessAlive) —
+// callers pair it with session-scoped cache invalidation. See
+// docs/plans/plan-issue-627-hook-snapshot-flash-cache.md.
+function processAlive(pid) {
+  const n = Number(pid);
+  if (!Number.isFinite(n) || n <= 0) return false;
+  try {
+    process.kill(n, 0);
+    return true;
+  } catch (e) {
+    return !!(e && e.code === "EPERM");
+  }
+}
+
 // ── getPlatformConfig ────────────────────────────────────────────────────────
 // Returns { terminalNames: Set, systemBoundary: Set, editorMap: Object, editorPathChecks: Array }
 // Options:
@@ -154,7 +179,11 @@ function getWindowsProcessSnapshot(execFileSync) {
     const out = execFileSync(
       "powershell.exe",
       [
-        "-NoProfile", "-NonInteractive", "-Command",
+        // -WindowStyle Hidden is belt-and-suspenders alongside windowsHide:
+        // when Windows Terminal is the OS default terminal app, its console
+        // delegation does not always honor CREATE_NO_WINDOW (#627), and the
+        // in-process flag shortens any window that still leaks through.
+        "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command",
         WINDOWS_PROCESS_SNAPSHOT_SCRIPT,
       ],
       { encoding: "utf8", timeout: 3000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }
@@ -334,46 +363,91 @@ function createPidResolver(options) {
       }
     }
 
-    let tmuxSocket = null;
-    if (process.env.TMUX) {
-      const socketPath = process.env.TMUX.split(",")[0];
-      tmuxSocket = normalizeTmuxSocketPath(socketPath);
-    }
+    const tmuxSocket = tmuxSocketFromEnv();
 
-    _cached = { stablePid: terminalPid || lastGoodPid, agentPid, agentCommandLine, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient };
+    // provenance for the cross-process pid cache (#627). snapshotOk = the
+    // Windows Get-CimInstance snapshot actually returned processes; terminalPid
+    // = the raw terminal match BEFORE the `|| lastGoodPid` fallback. Callers use
+    // these to refuse caching a degraded walk (empty snapshot → stablePid
+    // silently decays to process.ppid) instead of reverse-inferring from
+    // stablePid. Non-Windows has no snapshot step, so snapshotOk is trivially true.
+    const snapshotOk = isWin ? !!(winSnapshot && winSnapshot.size > 0) : true;
+    _cached = { stablePid: terminalPid || lastGoodPid, terminalPid, snapshotOk, agentPid, agentCommandLine, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient };
     return _cached;
   };
 }
 
 // ── readStdinJson ────────────────────────────────────────────────────────────
-// Reads stdin, parses JSON, returns Promise<Object>.
-// 400ms timeout + finishOnce protection. Returns {} on parse failure or timeout.
+// Reads stdin until EOF, parses JSON. EOF-driven with a safety-net timer.
+// The default stays at 400ms: several agent hooks (cursor, codebuddy, gemini,
+// reasonix) run their own ~800ms stdout safety timers and non-async hot-path
+// registrations, so a longer shared default would let those timers win the
+// race and drop payloads that used to be parsed at 400ms. Callers whose agent
+// registration tolerates a longer stall (claude-code: async + 5s hook timeout)
+// opt in via options.timeoutMs. Returns {} on parse failure or timeout.
+//
+// readStdinJsonDetailed() additionally reports what the read saw (bytes
+// received, timed out, parse/stream error, duration) so a missing session_id
+// can be triaged from logs: "never arrived" (bytes:0, timeout) vs "arrived
+// broken" (bytes>0, parse error) point at entirely different culprits (#583).
 
-function readStdinJson() {
+const DEFAULT_STDIN_READ_TIMEOUT_MS = 400;
+
+function readStdinJsonDetailed(options = {}) {
+  const stream = options.stream || process.stdin;
+  const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+    ? options.timeoutMs
+    : DEFAULT_STDIN_READ_TIMEOUT_MS;
   return new Promise((resolve) => {
+    const startedAt = Date.now();
     const chunks = [];
     let done = false;
     let timer = null;
+    let streamError = null;
 
     const onData = (c) => chunks.push(c);
-    function finish() {
+    const onEnd = () => finish(false);
+    // Without this, an emitted 'error' would crash the hook (unhandled stream
+    // error) and the promise would never settle. Resolve with what we have.
+    const onError = (err) => {
+      streamError = String((err && err.message) || "stream error").slice(0, 120);
+      finish(false);
+    };
+    function finish(timedOut) {
       if (done) return;
       done = true;
       if (timer) clearTimeout(timer);
-      process.stdin.off("data", onData);
-      process.stdin.off("end", finish);
+      stream.off("data", onData);
+      stream.off("end", onEnd);
+      stream.off("error", onError);
+      const raw = Buffer.concat(chunks);
       let payload = {};
+      let parseError = null;
       try {
-        const raw = Buffer.concat(chunks).toString();
-        if (raw.trim()) payload = JSON.parse(raw);
-      } catch {}
-      resolve(payload);
+        const text = raw.toString();
+        if (text.trim()) payload = JSON.parse(text);
+      } catch (err) {
+        parseError = String((err && err.message) || "parse error").slice(0, 120);
+      }
+      if (streamError) parseError = `stream error: ${streamError}`;
+      resolve({
+        payload,
+        bytes: raw.length,
+        timedOut: timedOut === true,
+        parseError,
+        durationMs: Date.now() - startedAt,
+      });
     }
 
-    process.stdin.on("data", onData);
-    process.stdin.on("end", finish);
-    timer = setTimeout(finish, 400);
+    stream.on("data", onData);
+    stream.on("end", onEnd);
+    stream.on("error", onError);
+    timer = setTimeout(() => finish(true), timeoutMs);
   });
+}
+
+function readStdinJson() {
+  return readStdinJsonDetailed().then((result) => result.payload);
 }
 
 function buildElectronLaunchConfig(projectDir, options = {}) {
@@ -400,5 +474,9 @@ module.exports = {
   getPlatformConfig,
   createPidResolver,
   readStdinJson,
+  readStdinJsonDetailed,
+  DEFAULT_STDIN_READ_TIMEOUT_MS,
   buildElectronLaunchConfig,
+  tmuxSocketFromEnv,
+  processAlive,
 };

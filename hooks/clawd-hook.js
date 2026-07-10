@@ -5,11 +5,20 @@
 
 const crypto = require("crypto");
 const fs = require("fs");
-const { postStateToRunningServer, readHostPrefix } = require("./server-config");
+const { postStateToRunningServer, readHostPrefix, resolveWslDistro } = require("./server-config");
+const { fitStateBodyToByteBudget } = require("./state-payload-size");
 const { extractClaudeContextUsageFromEntries } = require("./context-usage");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJsonDetailed, getPlatformConfig, tmuxSocketFromEnv, processAlive } = require("./shared-process");
+const pidCache = require("./pid-cache");
+
+const isWin = process.platform === "win32";
 
 const TRANSCRIPT_TAIL_BYTES = 262144; // 256 KB
+// #583: claude-code registers this hook with async:true and a 5s timeout
+// (hooks/install.js), so a 2s stdin window never stalls the agent. Do NOT
+// raise the shared default in shared-process.js instead — other agent hooks
+// run ~800ms stdout safety timers that must win against a slow stdin read.
+const STDIN_READ_TIMEOUT_MS = 2000;
 const ASSISTANT_OUTPUT_MAX = 2200;
 // Observed in Claude Code 2.1.150 StopFailure hook schema (tyq enum).
 // Unknown values from future versions fall back to "unknown".
@@ -332,6 +341,45 @@ function isTaskToolStart(event, payload) {
     && payload.tool_name === "Task";
 }
 
+// #442-compat + #627: agent pid fields. Shared by the fresh-resolve and
+// cache-hit paths so the `headless` derivation and the `claude_pid` backward-
+// compat alias can never drift between them.
+function applyAgentPidFields(body, agentPid, agentCommandLine) {
+  if (!agentPid) return;
+  body.agent_pid = agentPid;
+  body.claude_pid = agentPid; // backward compat with older Clawd versions
+  if (agentCommandLine && /\s(-p|--print)(\s|$)/.test(agentCommandLine)) {
+    body.headless = true;
+  }
+}
+
+// Fresh-resolve path: preserves the exact pre-cache field output (#627).
+function applyResolvedFields(body, resolved, event) {
+  const { stablePid, agentPid, agentCommandLine, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient } = resolved;
+  body.source_pid = stablePid;
+  if (detectedEditor) body.editor = detectedEditor;
+  applyAgentPidFields(body, agentPid, agentCommandLine);
+  if (pidChain && pidChain.length) body.pid_chain = pidChain;
+  if (tmuxSocket) body.tmux_socket = tmuxSocket;
+  if (tmuxClient) body.tmux_client = tmuxClient;
+  if (shouldReportForegroundWtHwnd(event) && foregroundWtHwnd) {
+    body.wt_hwnd = String(foregroundWtHwnd);
+  }
+}
+
+// Cache-hit path (#627): stable subset only. Deliberately omits pid_chain — the
+// server MERGEs a missing pid_chain and keeps the SessionStart one, whereas the
+// cached chain's head would be a dead per-event PowerShell — and wt_hwnd, which
+// is only reported on the always-fresh SessionStart/UserPromptSubmit events.
+// tmux_socket is a pure-env value, recomputed so a tmux user still gets it.
+function applyCachedFields(body, cached) {
+  body.source_pid = cached.stablePid;
+  if (cached.detectedEditor) body.editor = cached.detectedEditor;
+  applyAgentPidFields(body, cached.agentPid, cached.agentCommandLine);
+  const tmuxSocket = tmuxSocketFromEnv();
+  if (tmuxSocket) body.tmux_socket = tmuxSocket;
+}
+
 function buildStateBody(event, payload, resolve) {
   const state = EVENT_TO_STATE[event];
   if (!state) return null;
@@ -366,6 +414,9 @@ function buildStateBody(event, payload, resolve) {
   if (toolName) body.tool_name = toolName;
   if (toolUseId) body.tool_use_id = toolUseId;
   if (toolInputFingerprint) body.tool_input_fingerprint = toolInputFingerprint;
+  if (event !== "Stop" && typeof payload.transcript_path === "string" && payload.transcript_path) {
+    body.transcript_path = payload.transcript_path;
+  }
   // Read transcript tail once and reuse for both session title extraction and
   // API error detection (Stop only). Avoids two file reads per hook invocation.
   const transcriptEntries = readTranscriptTailEntries(payload.transcript_path);
@@ -418,27 +469,90 @@ function buildStateBody(event, payload, resolve) {
     if (cronCount > 0) body.session_crons_count = cronCount;
     if (payload.stop_hook_active === true) body.stop_hook_active = true;
   }
+  const wslDistro = resolveWslDistro();
   if (process.env.CLAWD_REMOTE) {
+    // Remote session: preserve existing host prefix, add WSL distro as
+    // separate metadata. Do NOT override the SSH host.
     body.host = readHostPrefix();
+    if (wslDistro) body.wsl_distro = wslDistro;
   } else {
-    const { stablePid, agentPid, agentCommandLine, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient } = resolve();
-    body.source_pid = stablePid;
-    if (detectedEditor) body.editor = detectedEditor;
-    if (agentPid) {
-      body.agent_pid = agentPid;
-      body.claude_pid = agentPid; // backward compat with older Clawd versions
-      if (agentCommandLine && /\s(-p|--print)(\s|$)/.test(agentCommandLine)) {
-        body.headless = true;
+    // #627: on Windows every hook event otherwise cold-starts a PowerShell to
+    // snapshot the process tree, flashing a console window under Windows
+    // Terminal. The tree is stable within a session, so snapshot once on the
+    // always-fresh events and let high-frequency events read a per-session cache.
+    const canCacheSession = isWin && pidCache.canCache(sessionId, cwd);
+    // SessionStart populates the cache; UserPromptSubmit needs a live foreground
+    // window (wt_hwnd) so it also re-resolves (and refreshes the cache).
+    const wantsFresh = event === "SessionStart" || event === "UserPromptSubmit";
+
+    let cached = null;
+    if (event === "SessionEnd") {
+      // M5: read the last-known subset for the final body, then drop it. Never
+      // write back on SessionEnd.
+      if (canCacheSession) {
+        cached = pidCache.readPidCache(sessionId, cwd);
+        pidCache.dropPidCache(sessionId, cwd);
+      }
+    } else if (canCacheSession && !wantsFresh) {
+      const c = pidCache.readPidCache(sessionId, cwd);
+      // M1 + bounded sliding TTL (#627 plan §8): the PID that becomes source_pid
+      // (stablePid) must be alive — session-focus.js only checks source_pid's
+      // existence, so a dead stablePid must trigger a fresh resolve. agentPid
+      // (claude.exe) must ALSO be alive: it tracks session liveness, so a dead
+      // agentPid means the session ended and the cache must NOT be renewed. Both
+      // alive → hit and refresh the idle TTL (touch bumps mtime, not ts) so an
+      // active long turn never re-snapshots mid-session.
+      if (c && c.cwd === cwd && processAlive(c.stablePid) && processAlive(c.agentPid)) {
+        pidCache.touchPidCache(sessionId, cwd);
+        cached = c;
       }
     }
-    if (pidChain.length) body.pid_chain = pidChain;
-    if (tmuxSocket) body.tmux_socket = tmuxSocket;
-    if (tmuxClient) body.tmux_client = tmuxClient;
-    if (shouldReportForegroundWtHwnd(event) && foregroundWtHwnd) {
-      body.wt_hwnd = String(foregroundWtHwnd);
+
+    if (cached) {
+      applyCachedFields(body, cached);
+    } else {
+      if (event === "SessionStart" && canCacheSession) pidCache.sweepStalePidCaches();
+      const resolved = resolve();
+      applyResolvedFields(body, resolved, event);
+      // M2: only cache a non-degraded result. An empty Windows snapshot decays
+      // stablePid to process.ppid (a per-event ephemeral PID); snapshotOk rules
+      // that out, and a found agentPid proves the walk reached a real ancestor.
+      // Never write on SessionEnd.
+      if (canCacheSession && event !== "SessionEnd" && resolved.snapshotOk && resolved.agentPid) {
+        pidCache.writePidCache(sessionId, cwd, {
+          stablePid: resolved.stablePid,
+          agentPid: resolved.agentPid,
+          agentCommandLine: resolved.agentCommandLine,
+          detectedEditor: resolved.detectedEditor,
+        });
+      }
+    }
+
+    if (wslDistro) {
+      body.wsl_distro = wslDistro;
+      body.host = `wsl:${wslDistro}`;
     }
   }
 
+  return body;
+}
+
+// #583: a missing session_id means the agent's stdin JSON was lost or mangled
+// somewhere between the agent host and this process (every real session then
+// collapses to sid=default server-side). Attach what the stdin read actually
+// saw so session-debug.log can separate "never arrived" (bytes:0 + timeout)
+// from "arrived broken" (bytes>0 + parse error) without a repro rig.
+function attachStdinDiag(body, stdinRead) {
+  if (!body || !stdinRead) return body;
+  const payload = stdinRead.payload;
+  if (payload && payload.session_id) return body;
+  const diag = {
+    bytes: stdinRead.bytes,
+    timed_out: stdinRead.timedOut === true,
+    duration_ms: stdinRead.durationMs,
+  };
+  if (stdinRead.parseError) diag.parse_error = stdinRead.parseError;
+  body.stdin_diag = diag;
   return body;
 }
 
@@ -457,13 +571,27 @@ function main() {
   // Remote mode: skip PID collection — remote PIDs are meaningless on the local machine
   if (event === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
 
-  readStdinJson()
-    .then((payload) => {
+  readStdinJsonDetailed({ timeoutMs: STDIN_READ_TIMEOUT_MS })
+    .then((stdinRead) => {
+      const payload = stdinRead.payload;
       const body = buildStateBody(event, payload || {}, resolve);
       if (!body) process.exit(0);
+      attachStdinDiag(body, stdinRead);
+      // Completion events (Stop) fire the happy animation, are low-frequency,
+      // and matter more than a few ms of latency. Give them a generous POST
+      // timeout so a momentarily slow (but alive) Clawd still receives them;
+      // connection-refused (Clawd not running) still fails instantly, so an
+      // idle machine is never penalized. High-frequency events keep 100ms so
+      // they never stall the agent.
+      const isCompletionEvent = body.event === "Stop";
+      const statePostTimeoutMs = isCompletionEvent ? 1500 : 100;
+      // Byte-fit the body so a long CJK assistant_last_output can't push it past
+      // the server's /state cap and trigger a headerless 413 (read back as
+      // posted=false, dropping the happy completion). hooks/state-payload-size.js.
+      const fitted = fitStateBodyToByteBudget(body);
       postStateToRunningServer(
-        JSON.stringify(body),
-        { timeoutMs: 100 },
+        JSON.stringify(fitted.body),
+        { timeoutMs: statePostTimeoutMs },
         () => process.exit(0)
       );
     })
@@ -474,6 +602,8 @@ if (require.main === module) main();
 
 module.exports = {
   buildStateBody,
+  attachStdinDiag,
+  STDIN_READ_TIMEOUT_MS,
   extractSessionTitleFromTranscript,
   extractApiErrorFromEntries,
   extractLastAssistantTextFromEntries,

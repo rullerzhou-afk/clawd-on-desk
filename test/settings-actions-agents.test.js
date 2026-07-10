@@ -8,11 +8,14 @@ const agentCommands = require("../src/settings-actions-agents");
 
 test("settings agent actions expose the command surface", () => {
   assert.deepStrictEqual(Object.keys(agentCommands).sort(), [
+    "INSTALLABLE_AGENT_IDS",
     "clearAgentCleanupHints",
     "clearAgentInstallHints",
+    "deployToWsl",
     "dismissAgentCleanupHints",
     "dismissAgentInstallHints",
     "installAgentIntegration",
+    "removeFromWsl",
     "repairAgentIntegration",
     "setAgentFlag",
     "setAgentPermissionMode",

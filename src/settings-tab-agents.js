@@ -18,6 +18,7 @@
   let agentHintActionPending = false;
   let agentInstallHintResetPending = false;
   let agentCleanupHintResetPending = false;
+  let codexHookHealthRequestSeq = 0;
 
   function t(key) {
     return helpers.t(key);
@@ -38,6 +39,48 @@
     subtitle.className = "subtitle";
     subtitle.textContent = t("agentsSubtitle");
     parent.appendChild(subtitle);
+
+    // Scan toolbar — always available on Windows (wslSupported) so a failed
+    // auto scan still leaves the user a manual retry path.
+    const hints = runtime.agentInstallationHints;
+    const wslDistros = hints && Array.isArray(hints.wslDistros) ? hints.wslDistros : [];
+    const wslPending = !!(hints && hints.wslPending);
+    const wslSupported = !!(hints && hints.wslSupported);
+    if (wslSupported || wslDistros.length > 0 || wslPending) {
+      const toolbar = document.createElement("div");
+      toolbar.className = "agent-scan-toolbar";
+
+      const scanBtn = document.createElement("button");
+      scanBtn.type = "button";
+      scanBtn.className = "soft-btn agent-instance-scan-btn";
+      scanBtn.textContent = t("agentInstanceScanWsl");
+      scanBtn.title = t("agentInstanceScanWslDesc");
+      scanBtn.addEventListener("click", async () => {
+        scanBtn.disabled = true;
+        scanBtn.textContent = t("agentInstanceScanning");
+        try {
+          if (ops && typeof ops.fetchAgentInstallationHints === "function") {
+            await ops.fetchAgentInstallationHints({ refreshWsl: true });
+          }
+          ops.requestRender({ content: true });
+        } catch (err) {
+          console.warn("WSL scan failed:", err && err.message);
+        } finally {
+          scanBtn.disabled = false;
+          scanBtn.textContent = t("agentInstanceScanWsl");
+        }
+      });
+      toolbar.appendChild(scanBtn);
+
+      if (wslPending) {
+        const status = document.createElement("span");
+        status.className = "agent-scan-status";
+        status.textContent = t("agentInstanceScanning") + "...";
+        toolbar.appendChild(status);
+      }
+
+      parent.appendChild(toolbar);
+    }
 
     const recommendedHints = getRecommendedInstallHints();
     if (recommendedHints.length > 0) {
@@ -363,7 +406,7 @@
       ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
     } finally {
       agentHintActionPending = false;
-      refreshInstallationHints().finally(() => ops.requestRender({ content: true }));
+      refreshInstallationHints().finally(() => ops.requestRender({ content: true })).catch(() => {});
     }
   }
 
@@ -425,7 +468,7 @@
       ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
     } finally {
       agentHintActionPending = false;
-      refreshInstallationHints().finally(() => ops.requestRender({ content: true }));
+      refreshInstallationHints().finally(() => ops.requestRender({ content: true })).catch(() => {});
     }
   }
 
@@ -456,6 +499,73 @@
       .replace("{failed}", String(values.failed))
       .replace("{agents}", values.agents || "")
       .replace("{message}", values.message || "unknown error");
+  }
+
+  function showClaudeHooksDisableConfirmModal() {
+    return helpers.showSettingsConfirmModal({
+      title: t("claudeHooksDisableConfirmTitle"),
+      detail: t("claudeHooksDisableConfirmDetail"),
+      actions: [
+        { id: "disconnect", label: t("claudeHooksDisableConfirmDisconnect"), tone: "danger" },
+        { id: "disable", label: t("claudeHooksDisableConfirmDisableOnly"), tone: "neutral" },
+        { id: "keep", label: t("claudeHooksDisableConfirmKeep"), tone: "accent", defaultFocus: true },
+      ],
+    });
+  }
+
+  function showClaudeHooksDisconnectConfirmModal() {
+    return helpers.showSettingsConfirmModal({
+      title: t("claudeHooksDisconnectConfirmTitle"),
+      detail: t("claudeHooksDisconnectConfirmDetail"),
+      actions: [
+        { id: "disconnect", label: t("claudeHooksDisconnectConfirmAction"), tone: "danger" },
+        { id: "keep", label: t("claudeHooksDisconnectConfirmKeep"), tone: "accent", defaultFocus: true },
+      ],
+    });
+  }
+
+  function confirmDisableClaudeHookManagement(nextRaw) {
+    if (nextRaw) return window.settingsAPI.update("manageClaudeHooksAutomatically", true);
+    return showClaudeHooksDisableConfirmModal().then((actionId) => {
+      if (!actionId || actionId === "keep") return { status: "ok", noop: true };
+      if (actionId === "disconnect") return window.settingsAPI.command("uninstallHooks");
+      return window.settingsAPI.update("manageClaudeHooksAutomatically", false);
+    });
+  }
+
+  function runDisconnectClaudeHooks() {
+    if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") {
+      return Promise.resolve({ status: "error", message: "settings API unavailable" });
+    }
+    return showClaudeHooksDisconnectConfirmModal().then((actionId) => {
+      if (actionId !== "disconnect") return { status: "ok", noop: true };
+      return window.settingsAPI.command("uninstallHooks");
+    });
+  }
+
+  function buildClaudeHookManagementRows() {
+    const manageHooksEnabled = !!(state.snapshot && state.snapshot.manageClaudeHooksAutomatically);
+    const manageRow = helpers.buildSwitchRow({
+      key: "manageClaudeHooksAutomatically",
+      labelKey: "rowManageClaudeHooks",
+      descKey: "rowManageClaudeHooksDesc",
+      descExtraKey: "rowManageClaudeHooksOffNote",
+      onToggle: ({ nextRaw }) => confirmDisableClaudeHookManagement(nextRaw),
+      actionButton: {
+        labelKey: "actionDisconnectClaudeHooks",
+        invoke: () => runDisconnectClaudeHooks(),
+      },
+    });
+    manageRow.classList.add("row-sub");
+    const autoStartRow = helpers.buildSwitchRow({
+      key: "autoStartWithClaude",
+      labelKey: "rowStartWithClaude",
+      descKey: "rowStartWithClaudeDesc",
+      descExtraKey: manageHooksEnabled ? null : "rowStartWithClaudeDisabledDesc",
+      disabled: !manageHooksEnabled,
+    });
+    autoStartRow.classList.add("row-sub");
+    return [manageRow, autoStartRow];
   }
 
   function buildAgentGroup(agent) {
@@ -523,6 +633,9 @@
   function buildAgentDetailRows(agent) {
     const rows = [];
     const caps = agent.capabilities || {};
+    if (agent.id === "claude-code") {
+      rows.push(...buildClaudeHookManagementRows());
+    }
     if (agent.id === "codex") {
       rows.push(buildCodexPermissionModeRow(agent, computeAgentSubSwitchDisabled(agent.id, "permissionMode")));
       rows.push(buildAgentSwitchRow({
@@ -541,6 +654,15 @@
           text.appendChild(desc);
         },
       }));
+      // Startup nudge gate: warn (once per breakage) when the official hook —
+      // now the ONLY Codex approval path — is disabled / needs review / inactive.
+      const codexHookNotifyRow = helpers.buildSwitchRow({
+        key: "codexHookHealthNotifyEnabled",
+        labelKey: "rowCodexHookHealthNotify",
+        descKey: "rowCodexHookHealthNotifyDesc",
+      });
+      codexHookNotifyRow.classList.add("row-sub");
+      rows.push(codexHookNotifyRow);
     }
     if (caps.permissionApproval || caps.interactiveBubble) {
       rows.push(buildAgentSwitchRow({
@@ -598,7 +720,166 @@
         },
       }));
     }
+    // WSL instances: show detected agent installations across distros
+    rows.push(...buildAgentInstanceRows(agent));
     return rows;
+  }
+
+  // ── WSL instance rows ─────────────────────────────────────────────
+
+  function getWslAgentInstances(agentId) {
+    const hints = runtime.agentInstallationHints;
+    if (!hints || !Array.isArray(hints.wslAgents)) return [];
+    return hints.wslAgents.filter(
+      (entry) => entry && entry.agentId === agentId && entry.detectedInstalled === true
+    );
+  }
+
+  function buildAgentInstanceRows(agent) {
+    const rows = [];
+    const wslInstances = getWslAgentInstances(agent.id);
+    if (wslInstances.length === 0) return rows;
+
+    const headerRow = document.createElement("div");
+    headerRow.className = "row-sub agent-instance-section-header";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("agentInstanceSection");
+    headerRow.appendChild(label);
+    rows.push(headerRow);
+
+    for (const inst of wslInstances) {
+      rows.push(buildWslInstanceRow(agent, inst));
+    }
+    return rows;
+  }
+
+  function buildWslInstanceRow(agent, wslEntry) {
+    const row = document.createElement("div");
+    row.className = "row row-sub agent-instance-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = `WSL: ${wslEntry.distro}`;
+    text.appendChild(label);
+
+    // Distro-level marker: hook files are present AND claude-code's
+    // settings.json references them (hooksDeployed = DEPFILE && DEPREG).
+    // Not per-agent pairing truth — that would require inspecting each
+    // agent's config inside WSL — but enough to show Pair took effect and
+    // to go dark after a claude-code Unpair.
+    if (wslEntry.hooksDeployed) {
+      const deployed = document.createElement("span");
+      deployed.className = "agent-instance-deployed";
+      deployed.textContent = t("agentInstanceDeployedBadge");
+      label.appendChild(deployed);
+    }
+
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = wslEntry.wslParentDir || "";
+    text.appendChild(desc);
+
+    row.appendChild(text);
+
+    const ctrl = document.createElement("div");
+    ctrl.className = "row-control";
+
+    const button = document.createElement("button");
+    button.className = "soft-btn agent-instance-action";
+    button.textContent = t("agentInstancePair");
+    button.title = `WSL: ${wslEntry.distro}`;
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      button.textContent = t("agentInstancePairing");
+      try {
+        if (window.settingsAPI && typeof window.settingsAPI.command === "function") {
+          const result = await window.settingsAPI.command("deployToWsl", {
+            agentId: agent.id,
+            distro: wslEntry.distro,
+          });
+          if (result && result.status === "ok") {
+            if (result.wslConnectivity === false) {
+              // Hooks installed, but the distro cannot reach Clawd (NAT
+              // networking) — sessions would silently never appear.
+              ops.showToast(t("agentInstancePairedNoConnectivity"), { error: true });
+            } else {
+              ops.showToast(result.message || t("agentInstancePaired"));
+            }
+            // Refresh hints so the UI updates (and Pair button may disappear)
+            if (typeof ops.fetchAgentInstallationHints === "function") {
+              ops.fetchAgentInstallationHints({ refreshWsl: true }).then(() => {
+                ops.requestRender({ content: true });
+              }).catch(() => {
+                // DOM may be torn down if user navigated away before refresh completes
+              });
+            }
+          } else {
+            const msg = (result && result.message) || "WSL deploy failed";
+            ops.showToast(msg, { error: true });
+          }
+        }
+      } catch (err) {
+        ops.showToast(
+          String(err && err.message ? err.message : err),
+          { error: true }
+        );
+      } finally {
+        button.disabled = false;
+        button.textContent = t("agentInstancePair");
+      }
+    });
+    ctrl.appendChild(button);
+
+    // Unpair — offered whenever hook FILES are present (hooksFilesPresent),
+    // not gated on the registration-based badge (hooksDeployed): a distro
+    // paired with only a non-claude agent registers in that agent's own
+    // config, so the claude-settings badge is off, yet the user still needs
+    // an unpair entry point. Runs the agent's uninstall inside the distro;
+    // hook files stay (shared by other agents).
+    if (wslEntry.hooksFilesPresent) {
+      const unpairBtn = document.createElement("button");
+      unpairBtn.className = "soft-btn agent-instance-action";
+      unpairBtn.textContent = t("agentInstanceUnpair");
+      unpairBtn.title = `WSL: ${wslEntry.distro}`;
+      unpairBtn.addEventListener("click", async () => {
+        unpairBtn.disabled = true;
+        unpairBtn.textContent = t("agentInstanceUnpairing");
+        try {
+          if (window.settingsAPI && typeof window.settingsAPI.command === "function") {
+            const result = await window.settingsAPI.command("removeFromWsl", {
+              agentId: agent.id,
+              distro: wslEntry.distro,
+            });
+            if (result && result.status === "ok") {
+              ops.showToast(result.message || t("agentInstanceUnpaired"));
+              if (typeof ops.fetchAgentInstallationHints === "function") {
+                ops.fetchAgentInstallationHints({ refreshWsl: true }).then(() => {
+                  ops.requestRender({ content: true });
+                }).catch(() => {
+                  // DOM may be torn down if user navigated away before refresh completes
+                });
+              }
+            } else {
+              ops.showToast((result && result.message) || "WSL unpair failed", { error: true });
+            }
+          }
+        } catch (err) {
+          ops.showToast(String(err && err.message ? err.message : err), { error: true });
+        } finally {
+          unpairBtn.disabled = false;
+          unpairBtn.textContent = t("agentInstanceUnpair");
+        }
+      });
+      ctrl.appendChild(unpairBtn);
+    }
+
+    row.appendChild(ctrl);
+
+    return row;
   }
 
   function computeAgentSubSwitchDisabled(agentId, flag) {
@@ -720,6 +1001,32 @@
     const installed = readers.readAgentIntegrationInstalled(agentId);
     badge.classList.toggle("not-installed", !installed);
     badge.textContent = t(installed ? "agentIntegrationInstalled" : "agentIntegrationNotInstalled");
+    if (agentId === "codex") annotateCodexHookHealth(badge, installed);
+  }
+
+  // Codex approval awareness now depends ENTIRELY on the official PermissionRequest
+  // hook (JSONL no longer infers approvals). A hook that is registered but
+  // disabled / needs-review / mis-registered still reads as "Installed" from
+  // prefs, yet Codex never runs it — so the pet shows no approval prompts. Overlay
+  // an amber warning, sourced from the same check the Doctor uses (so they agree),
+  // with the specific reason in the tooltip. Async + best-effort: if the probe is
+  // unavailable or healthy, the badge keeps its base "Installed" state.
+  function annotateCodexHookHealth(badge, installed) {
+    if (!badge) return;
+    const seq = String(++codexHookHealthRequestSeq);
+    if (badge.dataset) badge.dataset.codexHookHealthSeq = seq;
+    badge.classList.remove("hook-warning");
+    badge.removeAttribute("title");
+    if (!installed || !window.doctor || typeof window.doctor.codexHookHealth !== "function") return;
+    window.doctor.codexHookHealth().then((health) => {
+      if (badge.isConnected === false) return;
+      if (badge.dataset && badge.dataset.codexHookHealthSeq !== seq) return;
+      if (!health || health.healthy || !health.signature) return;
+      if (!readers.readAgentIntegrationInstalled("codex")) return;
+      badge.classList.add("hook-warning");
+      badge.textContent = t("agentCodexHookNeedsAttention");
+      if (health.reasonKey) badge.title = t(health.reasonKey);
+    }).catch(() => {});
   }
 
   function syncAgentIntegrationAction(meta) {

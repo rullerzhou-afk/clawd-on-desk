@@ -623,7 +623,11 @@ test("native runner appends timeout status when an approval expires", async () =
   await runner.start();
   await tick();
 
-  const decision = await runner.requestApproval({ title: "claude-code requests Bash", detail: "Summary: Run tests" });
+  const decisionPromise = runner.requestApproval({ title: "claude-code requests Bash", detail: "Summary: Run tests" });
+  // The production approval timeout is unref'ed so it won't keep Clawd alive on
+  // shutdown. Keep this test alive with a normal timer until that timeout fires.
+  await delay(30);
+  const decision = await decisionPromise;
   assert.equal(decision, null);
   await tick();
 

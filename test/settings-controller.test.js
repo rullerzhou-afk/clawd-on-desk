@@ -241,9 +241,37 @@ describe("applyUpdate", () => {
     assert.match(r.message, /unknown settings key/);
   });
 
+  it("persists tutorialSeen through the normal update path", async () => {
+    const p = makeTempPath();
+    const ctrl = createSettingsController({ prefsPath: p });
+    const r = await ctrl.applyUpdate("tutorialSeen", true);
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(ctrl.get("tutorialSeen"), true);
+    assert.strictEqual(prefs.load(p).snapshot.tutorialSeen, true);
+  });
+
+
+  it("persists Codex hook health notification prefs through applyUpdate", async () => {
+    const p = makeTempPath();
+    const ctrl = createSettingsController({ prefsPath: p });
+    const r1 = await ctrl.applyUpdate("codexHookHealthLastNotified", "feature-disabled");
+    assert.strictEqual(r1.status, "ok");
+    assert.strictEqual(ctrl.get("codexHookHealthLastNotified"), "feature-disabled");
+    const r2 = await ctrl.applyUpdate("codexHookHealthNotifyEnabled", false);
+    assert.strictEqual(r2.status, "ok");
+    assert.strictEqual(ctrl.get("codexHookHealthNotifyEnabled"), false);
+    const loaded = prefs.load(p).snapshot;
+    assert.strictEqual(loaded.codexHookHealthLastNotified, "feature-disabled");
+    assert.strictEqual(loaded.codexHookHealthNotifyEnabled, false);
+  });
   it("enforces cross-field constraints (showTray/showDock)", async () => {
-    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
-    // Both default true; turning one off is allowed
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      // Seed both on explicitly — this guards the cross-field constraint, not
+      // the showDock default (which is off for fresh installs).
+      loadResult: { snapshot: { ...prefs.getDefaults(), showTray: true, showDock: true }, locked: false },
+    });
+    // Both seeded on; turning one off is allowed
     const r1 = await ctrl.applyUpdate("showTray", false);
     assert.strictEqual(r1.status, "ok");
     // Now showTray=false, showDock=true. Turning showDock off should fail.
@@ -314,8 +342,12 @@ describe("applyBulk", () => {
   });
 
   it("rejects bulk that would violate cross-field constraints (showTray + showDock)", async () => {
-    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
-    // Both start true. Trying to set both false in a single bulk should be
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      // Seed both on explicitly (showDock now defaults off for fresh installs).
+      loadResult: { snapshot: { ...prefs.getDefaults(), showTray: true, showDock: true }, locked: false },
+    });
+    // Both seeded on. Trying to set both false in a single bulk should be
     // caught by post-validation even though each individual validator only
     // sees the pre-bulk snapshot.
     const r = await ctrl.applyBulk({ showTray: false, showDock: false });
@@ -326,7 +358,11 @@ describe("applyBulk", () => {
   });
 
   it("allows bulk with only one of showTray/showDock set to false", async () => {
-    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      // Seed both on explicitly (showDock now defaults off for fresh installs).
+      loadResult: { snapshot: { ...prefs.getDefaults(), showTray: true, showDock: true }, locked: false },
+    });
     const r = await ctrl.applyBulk({ showTray: false });
     assert.strictEqual(r.status, "ok");
     assert.strictEqual(ctrl.get("showTray"), false);

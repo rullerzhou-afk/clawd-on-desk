@@ -726,6 +726,7 @@ function loadAgentsTabForTest({
   agentMetadata,
   collapsedGroups = {},
   settingsAPI = {},
+  doctor = null,
 } = {}) {
   const raf = createQueuedRaf();
   const body = new FakeElement("body");
@@ -763,6 +764,7 @@ function loadAgentsTabForTest({
       command: () => Promise.resolve({ status: "ok" }),
       ...settingsAPI,
     },
+    doctor,
     ClawdSettingsSizeSlider: {
       SIZE_UI_MIN: 1,
       SIZE_UI_MAX: 100,
@@ -801,6 +803,10 @@ function loadAgentsTabForTest({
           agentIntegrationInstalled: "Installed",
           agentIntegrationNotInstalled: "Not installed",
           agentIntegrationInstall: "Install",
+          agentCodexHookNeedsAttention: "Needs attention",
+          codexHookHealthReasonInactive: "Hook inactive",
+          codexHookHealthReasonDisabled: "Hooks disabled",
+          codexHookHealthReasonNeedsReview: "Needs review",
           agentIntegrationUninstall: "Uninstall",
           agentIntegrationWorking: "Working",
           agentIntegrationUninstallConfirm: "Confirm uninstall",
@@ -918,11 +924,15 @@ function loadAnimMapTabForTest({
   vm.runInContext(fs.readFileSync(SETTINGS_ANIM_OVERRIDES_MERGE, "utf8"), context);
   vm.runInContext(fs.readFileSync(SETTINGS_UI_CORE, "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-map.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-overrides.js"), "utf8"), context);
 
   const core = context.ClawdSettingsCore;
   core.state.snapshot = snapshot || { theme: "clawd", themeOverrides: {} };
-  core.state.activeTab = "animMap";
+  // The Animation Map now lives as the default "on / off" subtab of the
+  // Animation & Sound Overrides tab, so patching flows through that tab.
+  core.state.activeTab = "animOverrides";
   context.ClawdSettingsTabAnimMap.init(core);
+  context.ClawdSettingsTabAnimOverrides.init(core);
 
   let contentRenderCount = 0;
   core.ops.installRenderHooks({
@@ -950,6 +960,7 @@ function loadTelegramApprovalTabForTest({
   const updates = [];
   const commands = [];
   const renderRequests = [];
+  const timers = [];
 
   const document = {
     body,
@@ -972,6 +983,12 @@ function loadTelegramApprovalTabForTest({
       if (name === "telegramApproval.tokenInfo") {
         return Promise.resolve({ status: "ok", configured: false, masked: "" });
       }
+      if (name === "feishuApproval.status") {
+        return Promise.resolve({ status: "ok", state: { status: "stopped", secretsStored: false } });
+      }
+      if (name === "feishuApproval.secretInfo") {
+        return Promise.resolve({ status: "ok", configured: false });
+      }
       return Promise.resolve({ status: "ok" });
     },
     ...settingsAPI,
@@ -982,6 +999,13 @@ function loadTelegramApprovalTabForTest({
     requestAnimationFrame: (cb) => {
       cb();
       return 1;
+    },
+    setTimeout: (cb, ms) => {
+      timers.push({ cb, ms, cleared: false });
+      return timers.length;
+    },
+    clearTimeout: (id) => {
+      if (timers[id - 1]) timers[id - 1].cleared = true;
     },
     window: null,
     globalThis: null,
@@ -1001,6 +1025,12 @@ function loadTelegramApprovalTabForTest({
           enabled: false,
           allowedTgUserId: "123456789",
           targetSessionKey: "telegram:123456789",
+        },
+        feishuApproval: {
+          enabled: false,
+          idType: "open_id",
+          approverId: "",
+          connectionTimeoutSeconds: 15,
         },
       },
       activeTab: "telegram-approval",
@@ -1074,7 +1104,7 @@ function loadTelegramApprovalTabForTest({
   }
   render();
 
-  return { core, content, updates, commands, render, renderRequests };
+  return { core, content, updates, commands, render, renderRequests, timers };
 }
 
 function loadAnimOverridesTabForTest({
@@ -1232,6 +1262,7 @@ describe("settings renderer browser environment", () => {
       "settings-tab-about.js",
       "settings-tab-remote-ssh.js",
       "settings-doctor-modal.js",
+      "settings-icons.js",
       "settings-renderer.js",
     ];
 
@@ -1261,6 +1292,8 @@ describe("settings renderer browser environment", () => {
     const agentOrderSource = fs.readFileSync(path.join(SRC_DIR, "settings-agent-order.js"), "utf8");
 
     assert.ok(rendererSource.includes("globalThis.ClawdSettingsCore"));
+    assert.ok(rendererSource.includes("settingsAPI.onRemoteApprovalStatusChanged"));
+    assert.ok(rendererSource.includes("tab.refreshRuntimeStatus(payload)"));
     assert.ok(coreSource.includes("ClawdSettingsSizeSlider"));
     assert.ok(i18nSource.includes("globalThis"));
     assert.ok(doctorModalSource.includes("globalThis"));
@@ -1281,6 +1314,7 @@ describe("settings renderer browser environment", () => {
       assert.ok(!source.includes("settingsAPI.onChanged"), `${path.basename(file)} must not subscribe to settingsAPI.onChanged`);
       assert.ok(!source.includes("settingsAPI.onShortcutRecordKey"), `${path.basename(file)} must not subscribe to settingsAPI.onShortcutRecordKey`);
       assert.ok(!source.includes("settingsAPI.onShortcutFailuresChanged"), `${path.basename(file)} must not subscribe to settingsAPI.onShortcutFailuresChanged`);
+      assert.ok(!source.includes("settingsAPI.onRemoteApprovalStatusChanged"), `${path.basename(file)} must not subscribe to remote approval status directly`);
     }
   });
 
@@ -1990,6 +2024,260 @@ describe("settings renderer browser environment", () => {
     assert.equal(commandCalls.some((call) => call.name === "telegramApproval.test"), false);
   });
 
+  it("renders Feishu approval setup and saves secrets outside prefs", async () => {
+    const commandCalls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+        feishuApproval: {
+          enabled: false,
+          idType: "open_id",
+          approverId: "ou_1",
+          connectionTimeoutSeconds: 15,
+        },
+      },
+      settingsAPI: {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({ status: "ok", state: { status: "stopped", tokenStored: false } });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: false, masked: "" });
+          }
+          if (name === "feishuApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: { status: "stopped", configured: false, secretsStored: false },
+            });
+          }
+          if (name === "feishuApproval.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: false });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+
+    const feishuCard = harness.content.querySelector(".feishu-approval-channel-card");
+    assert.ok(feishuCard, "Feishu approval card should render");
+    const inputs = feishuCard.querySelectorAll("input");
+    inputs[0].value = "cli_123";
+    inputs[1].value = "app_secret";
+    inputs[2].value = "verify";
+    inputs[3].value = "encrypt";
+    feishuCard.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalSaveSecrets")
+      .dispatchEvent({ type: "click" });
+
+    await Promise.resolve();
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(commandCalls.find((call) => call.name === "feishuApproval.setSecrets"))), {
+      name: "feishuApproval.setSecrets",
+      payload: {
+        appId: "cli_123",
+        appSecret: "app_secret",
+        verificationToken: "verify",
+        encryptKey: "encrypt",
+      },
+    });
+    assert.equal(harness.updates.some((call) => call.key === "feishuApproval"), false);
+  });
+
+  it("saves Feishu approver config and enables testing only when runtime is configured", async () => {
+    const commandCalls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+        feishuApproval: {
+          enabled: false,
+          idType: "open_id",
+          approverId: "",
+          connectionTimeoutSeconds: 15,
+        },
+      },
+      settingsAPI: {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({ status: "ok", state: { status: "stopped", tokenStored: false } });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: false, masked: "" });
+          }
+          if (name === "feishuApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: { status: "running", configured: true, secretsStored: true },
+            });
+          }
+          if (name === "feishuApproval.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, appId: "cli_......abcd" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const feishuCard = harness.content.querySelector(".feishu-approval-channel-card");
+    const inputs = feishuCard.querySelectorAll("input");
+    const approverInput = inputs[inputs.length - 1];
+    approverInput.value = "ou_f1a6f7f520883298be9b9fb9488c1aef";
+    approverInput.dispatchEvent({ type: "input" });
+    feishuCard.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalSaveApprover")
+      .dispatchEvent({ type: "click" });
+
+    await Promise.resolve();
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates.find((call) => call.key === "feishuApproval"))), {
+      key: "feishuApproval",
+      value: {
+        enabled: false,
+        idType: "open_id",
+        approverId: "ou_f1a6f7f520883298be9b9fb9488c1aef",
+        connectionTimeoutSeconds: 15,
+      },
+    });
+
+    harness.core.state.snapshot.feishuApproval = {
+      enabled: true,
+      idType: "open_id",
+      approverId: "ou_f1a6f7f520883298be9b9fb9488c1aef",
+      connectionTimeoutSeconds: 15,
+    };
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    const testButton = harness.content.querySelector(".feishu-approval-channel-card")
+      .querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalSendTest");
+    assert.equal(testButton.disabled, false);
+    testButton.dispatchEvent({ type: "click" });
+    assert.equal(commandCalls.some((call) => call.name === "feishuApproval.test"), true);
+  });
+
+  it("saves Feishu long connection timeout from settings", async () => {
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+        feishuApproval: {
+          enabled: true,
+          idType: "open_id",
+          approverId: "ou_1",
+          connectionTimeoutSeconds: 15,
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({ status: "ok", state: { status: "stopped", tokenStored: false } });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: false, masked: "" });
+          }
+          if (name === "feishuApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: { status: "running", configured: true, secretsStored: true },
+            });
+          }
+          if (name === "feishuApproval.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, appId: "cli_......abcd" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const select = harness.content.querySelector(".feishu-approval-timeout-select");
+    assert.ok(select, "Feishu timeout select should render");
+    assert.equal(select.value, "15");
+    select.value = "30";
+    select.dispatchEvent({ type: "change" });
+
+    await Promise.resolve();
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates.find((call) => call.key === "feishuApproval"))), {
+      key: "feishuApproval",
+      value: {
+        enabled: true,
+        idType: "open_id",
+        approverId: "ou_1",
+        connectionTimeoutSeconds: 30,
+      },
+    });
+  });
+
+  it("refreshes Feishu status while long connection is starting", async () => {
+    let feishuStatusCalls = 0;
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+        feishuApproval: {
+          enabled: true,
+          idType: "open_id",
+          approverId: "ou_1",
+          connectionTimeoutSeconds: 15,
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({ status: "ok", state: { status: "stopped", tokenStored: false } });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: false, masked: "" });
+          }
+          if (name === "feishuApproval.status") {
+            feishuStatusCalls += 1;
+            return Promise.resolve({
+              status: "ok",
+              state: feishuStatusCalls === 1
+                ? { status: "starting", configured: true, secretsStored: true }
+                : { status: "failed", configured: true, secretsStored: true, message: "connection timeout" },
+            });
+          }
+          if (name === "feishuApproval.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, appId: "cli_......abcd" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(feishuStatusCalls, 1);
+    assert.equal(harness.timers.length, 1);
+    assert.equal(harness.timers[0].ms, 1000);
+
+    harness.timers[0].cb();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(feishuStatusCalls, 2);
+    assert.equal(harness.renderRequests.some((payload) => payload && payload.content === true), true);
+  });
+
   it("repaints Telegram approval after forced status refresh overlaps pending status", async () => {
     const staleStatus = createDeferred();
     const updatedStatus = createDeferred();
@@ -2104,7 +2392,7 @@ describe("settings renderer browser environment", () => {
 
     const deleteButton = harness.content
       .querySelectorAll("button")
-      .find((button) => button.textContent === "Delete legacy token file");
+      .find((button) => button.textContent === "telegramMigrationDeleteLegacyToken");
     assert.ok(deleteButton, "delete legacy token button should render for NATIVE_ACTIVE");
 
     deleteButton.dispatchEvent({ type: "click" });
@@ -2749,7 +3037,7 @@ describe("settings renderer browser environment", () => {
 
     const sections = generalHarness.content.querySelectorAll(".section");
     const sectionTitles = sections.map((section) => section.querySelector(".section-title").textContent);
-    assert.deepStrictEqual(sectionTitles, ["Appearance", "Session management", "System", "Startup", "Bubbles", "Permissions"]);
+    assert.deepStrictEqual(sectionTitles, ["Appearance", "Session management", "Alerts & feedback", "Behavior & position", "System & startup", "Permissions"]);
     assert.strictEqual(generalHarness.content.querySelector(".hardware-buddy-collapsible"), null);
 
     const remoteHarness = loadTelegramApprovalTabForTest({
@@ -2998,7 +3286,8 @@ describe("settings renderer browser environment", () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");
-    assert.ok(generalSource.includes("settings-confirm-modal"));
+    const uiCoreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
+    assert.ok(uiCoreSource.includes("settings-confirm-modal"));
     assert.ok(generalSource.includes("updateBubbleDisableConfirmAction"));
     assert.ok(css.includes(".settings-confirm-modal"));
     assert.ok(css.includes(".settings-confirm-backdrop"));
@@ -3011,8 +3300,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes('{ id: "confirm", label: t("updateBubbleDisableConfirmAction"), tone: "danger" }'));
     assert.ok(generalSource.includes('{ id: "cancel", label: t("updateBubbleDisableConfirmCancel"), tone: "accent", defaultFocus: true }'));
     assert.ok(generalSource.includes('if (actionId === "confirm") runToggleCommit(nextEnabled);'));
-    assert.ok(generalSource.includes('tone === "accent"'));
-    assert.ok(generalSource.includes('tone === "danger"'));
+    assert.ok(uiCoreSource.includes('tone === "accent"'));
+    assert.ok(uiCoreSource.includes('tone === "danger"'));
   });
 
   it("keeps Claude hooks confirmations inside the Settings renderer", () => {
@@ -3021,15 +3310,17 @@ describe("settings renderer browser environment", () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");
-    assert.ok(generalSource.includes("confirmDisableClaudeHookManagement"));
-    assert.ok(generalSource.includes("runDisconnectClaudeHooks"));
-    assert.ok(generalSource.includes("showSettingsConfirmModal({"));
-    assert.ok(generalSource.includes("claudeHooksDisableConfirmTitle"));
-    assert.ok(generalSource.includes("claudeHooksDisconnectConfirmTitle"));
-    assert.ok(generalSource.includes("buttons.find((action) => action.action && action.action.defaultFocus)"));
-    assert.ok(generalSource.includes('button.className = `soft-btn${toneClass ? ` ${toneClass}` : ""}`;'));
-    assert.ok(generalSource.includes('tone === "accent"'));
-    assert.ok(generalSource.includes('tone === "danger"'));
+    const agentsSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-agents.js"), "utf8");
+    const uiCoreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
+    assert.ok(agentsSource.includes("confirmDisableClaudeHookManagement"));
+    assert.ok(agentsSource.includes("runDisconnectClaudeHooks"));
+    assert.ok(agentsSource.includes("showSettingsConfirmModal({"));
+    assert.ok(agentsSource.includes("claudeHooksDisableConfirmTitle"));
+    assert.ok(agentsSource.includes("claudeHooksDisconnectConfirmTitle"));
+    assert.ok(uiCoreSource.includes("buttons.find((action) => action.action && action.action.defaultFocus)"));
+    assert.ok(uiCoreSource.includes('button.className = `soft-btn${toneClass ? ` ${toneClass}` : ""}`;'));
+    assert.ok(uiCoreSource.includes('tone === "accent"'));
+    assert.ok(uiCoreSource.includes('tone === "danger"'));
     assert.ok(css.includes(".settings-confirm-danger"));
     assert.ok(!preloadSource.includes("confirmDisableClaudeHooks"));
     assert.ok(!preloadSource.includes("confirmDisconnectClaudeHooks"));
@@ -3056,8 +3347,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(coreSource.includes("row-label-danger"));
     assert.ok(css.includes(".row-label.row-label-danger"));
     // Simple title + localized confirm strings exist.
-    assert.ok(i18nSource.includes('rowAutoApproveAll: "Auto-pilot"'));
-    assert.ok(i18nSource.includes('rowAutoApproveAll: "自动驾驶"'));
+    assert.ok(i18nSource.includes('rowAutoApproveAll: "Auto-approve all requests"'));
+    assert.ok(i18nSource.includes('rowAutoApproveAll: "自动放行所有请求"'));
     assert.ok(i18nSource.includes("autoApproveAllConfirmTitle"));
     // Lives in its own Permissions section, not under Bubbles.
     assert.ok(generalSource.includes('t("sectionPermissions")'));
@@ -3390,71 +3681,72 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.core.state.transientUiState.generalSwitches.has("soundMuted"), false);
   });
 
-  it("patches Claude hook management child switch state without rebuilding General content", async () => {
-    const updateCalls = [];
-    const initialSnapshot = {
-      lang: "en",
-      size: 50,
-      sessionHudEnabled: true,
-      sessionHudShowStateLabels: true,
-      sessionHudShowElapsed: true,
-      sessionHudCleanupDetached: true,
-      soundMuted: false,
-      soundVolume: 0.5,
-      lowPowerIdleMode: false,
-      allowEdgePinning: true,
-      keepSizeAcrossDisplays: true,
-      manageClaudeHooksAutomatically: false,
-      openAtLogin: false,
-      autoStartWithClaude: false,
-      hideBubbles: false,
-      bubbleFollowPet: true,
-      permissionBubblesEnabled: true,
-      notificationBubbleAutoCloseSeconds: 8,
-      updateBubbleAutoCloseSeconds: 12,
-    };
-    const harness = loadGeneralTabForTest({
-      snapshot: initialSnapshot,
-      settingsAPI: {
-        update: (key, value) => {
-          updateCalls.push({ key, value });
-          return Promise.resolve({ status: "ok" });
-        },
+  it("renders Claude hook management in the Agents claude-code group with autoStart gated", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        manageClaudeHooksAutomatically: false,
+        autoStartWithClaude: true,
+        agents: { "claude-code": { integrationInstalled: true, enabled: true } },
       },
+      agentMetadata: [
+        { id: "claude-code", name: "Claude Code", eventSource: "hook", capabilities: {} },
+      ],
     });
-    harness.renderContent();
 
-    const master = harness.getSwitch("manageClaudeHooksAutomatically");
-    const autoStart = harness.getSwitch("autoStartWithClaude");
-    const autoStartMeta = harness.getSwitchMeta("autoStartWithClaude");
-    assert.ok(master);
-    assert.ok(autoStart);
-    assert.ok(autoStartMeta.extraElement);
-    assert.strictEqual(autoStart.classList.contains("disabled"), true);
+    harness.core.ops.requestRender({ content: true });
 
-    const beforeRenderCount = harness.getContentRenderCount();
+    const manage = harness.core.state.mountedControls.generalSwitches.get("manageClaudeHooksAutomatically");
+    const autoStart = harness.core.state.mountedControls.generalSwitches.get("autoStartWithClaude");
+    assert.ok(manage, "manage-hooks switch should mount inside the Agents claude-code group");
+    assert.ok(autoStart, "autoStart switch should mount inside the Agents claude-code group");
+    // Master is off, so the child autoStart is disabled at render time (D2: Agents
+    // does a full rebuild on these keys instead of an in-place patch).
+    assert.strictEqual(autoStart.element.classList.contains("disabled"), true);
+    assert.ok(autoStart.extraElement, "autoStart shows the disabled note when management is off");
+  });
+
+  it("re-gates autoStart when Claude hook management toggles via applyChanges (D2 full rebuild)", () => {
+    const baseSnapshot = {
+      manageClaudeHooksAutomatically: true,
+      autoStartWithClaude: true,
+      agents: { "claude-code": { integrationInstalled: true, enabled: true } },
+    };
+    const harness = loadAgentsTabForTest({
+      snapshot: { ...baseSnapshot },
+      agentMetadata: [
+        { id: "claude-code", name: "Claude Code", eventSource: "hook", capabilities: {} },
+      ],
+    });
+
+    harness.core.ops.requestRender({ content: true });
+
+    // Master is on, so the child autoStart starts enabled with no disabled note.
+    let autoStart = harness.core.state.mountedControls.generalSwitches.get("autoStartWithClaude");
+    assert.ok(autoStart, "autoStart switch should mount inside the Agents claude-code group");
+    assert.strictEqual(autoStart.element.classList.contains("disabled"), false);
+    assert.strictEqual(autoStart.extraElement, null);
+
+    // Turning management off is not an `agents` patch, so Agents falls through to a
+    // full rebuild (D2) — the rebuilt child must come back disabled with the note.
+    harness.core.ops.applyChanges({
+      changes: { manageClaudeHooksAutomatically: false },
+      snapshot: { ...baseSnapshot, manageClaudeHooksAutomatically: false },
+    });
+
+    autoStart = harness.core.state.mountedControls.generalSwitches.get("autoStartWithClaude");
+    assert.ok(autoStart, "autoStart switch should remount after the rebuild");
+    assert.strictEqual(autoStart.element.classList.contains("disabled"), true);
+    assert.ok(autoStart.extraElement, "autoStart shows the disabled note after management is turned off");
+
+    // Turning management back on re-enables the child and drops the note.
     harness.core.ops.applyChanges({
       changes: { manageClaudeHooksAutomatically: true },
-      snapshot: { ...initialSnapshot, manageClaudeHooksAutomatically: true },
+      snapshot: { ...baseSnapshot, manageClaudeHooksAutomatically: true },
     });
 
-    assert.strictEqual(
-      harness.getContentRenderCount(),
-      beforeRenderCount,
-      "Claude hook management broadcasts should patch the mounted startup switches"
-    );
-    assert.strictEqual(harness.getSwitch("manageClaudeHooksAutomatically"), master);
-    assert.strictEqual(harness.getSwitch("autoStartWithClaude"), autoStart);
-    assert.strictEqual(master.classList.contains("on"), true);
-    assert.strictEqual(autoStart.classList.contains("disabled"), false);
-    assert.strictEqual(autoStart.attributes["aria-disabled"], undefined);
-    assert.strictEqual(autoStart.tabIndex, 0);
-    assert.strictEqual(autoStartMeta.extraElement, null);
-
-    autoStart.eventListeners.click[0]();
-    await Promise.resolve();
-    await Promise.resolve();
-    assert.deepStrictEqual(updateCalls, [{ key: "autoStartWithClaude", value: true }]);
+    autoStart = harness.core.state.mountedControls.generalSwitches.get("autoStartWithClaude");
+    assert.strictEqual(autoStart.element.classList.contains("disabled"), false);
+    assert.strictEqual(autoStart.extraElement, null);
   });
 
   it("patches hide-bubbles aggregate changes without rebuilding General content", () => {
@@ -3563,55 +3855,27 @@ describe("settings renderer browser environment", () => {
     assert.deepStrictEqual(updateCalls, []);
   });
 
-  it("patches Claude hook management off and restores the child disabled note", async () => {
-    const updateCalls = [];
-    const initialSnapshot = makeGeneralSnapshot({
-      manageClaudeHooksAutomatically: true,
-      autoStartWithClaude: true,
-    });
-    const harness = loadGeneralTabForTest({
-      snapshot: initialSnapshot,
-      settingsAPI: {
-        update: (key, value) => {
-          updateCalls.push({ key, value });
-          return Promise.resolve({ status: "ok" });
-        },
-      },
-    });
-    harness.renderContent();
-
-    const master = harness.getSwitch("manageClaudeHooksAutomatically");
-    const autoStart = harness.getSwitch("autoStartWithClaude");
-    const autoStartMeta = harness.getSwitchMeta("autoStartWithClaude");
-    assert.ok(master);
-    assert.ok(autoStart);
-    assert.ok(autoStartMeta);
-    assert.strictEqual(autoStart.classList.contains("disabled"), false);
-    assert.strictEqual(autoStartMeta.extraElement, null);
-
-    const beforeRenderCount = harness.getContentRenderCount();
-    harness.core.ops.applyChanges({
-      changes: { manageClaudeHooksAutomatically: false },
-      snapshot: { ...initialSnapshot, manageClaudeHooksAutomatically: false },
-    });
-
-    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
-    assert.strictEqual(harness.getSwitch("manageClaudeHooksAutomatically"), master);
-    assert.strictEqual(harness.getSwitch("autoStartWithClaude"), autoStart);
-    assert.strictEqual(master.classList.contains("on"), false);
-    assert.strictEqual(autoStart.classList.contains("disabled"), true);
-    assert.strictEqual(autoStart.attributes["aria-disabled"], "true");
-    assert.strictEqual(autoStart.tabIndex, -1);
-    assert.ok(autoStartMeta.extraElement);
-    assert.strictEqual(
-      autoStartMeta.extraElement.textContent,
-      harness.core.helpers.t("rowStartWithClaudeDisabledDesc")
-    );
-
-    autoStart.eventListeners.click[0]();
-    await Promise.resolve();
-    await Promise.resolve();
-    assert.deepStrictEqual(updateCalls, []);
+  it("moves Claude hook management out of General into the Agents claude-code group", () => {
+    const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
+    const agentsSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-agents.js"), "utf8");
+    // No longer rendered or patched by the General tab.
+    assert.ok(!generalSource.includes('key: "manageClaudeHooksAutomatically"'));
+    assert.ok(!generalSource.includes('key: "autoStartWithClaude"'));
+    assert.ok(!generalSource.includes("CLAUDE_HOOK_MANAGEMENT_CHILD_SWITCH_KEYS"));
+    assert.ok(!generalSource.includes("manageClaudeHooksAutomatically"));
+    // Built in the Agents claude-code group as top-level pref rows.
+    assert.ok(agentsSource.includes("buildClaudeHookManagementRows"));
+    assert.ok(agentsSource.includes('agent.id === "claude-code"'));
+    assert.ok(agentsSource.includes('key: "manageClaudeHooksAutomatically"'));
+    assert.ok(agentsSource.includes('key: "autoStartWithClaude"'));
+    assert.ok(agentsSource.includes("rowManageClaudeHooks"));
+    assert.ok(agentsSource.includes("rowStartWithClaude"));
+    // autoStart stays gated on the master (disabled + extra note computed at render).
+    assert.ok(agentsSource.includes("disabled: !manageHooksEnabled"));
+    assert.ok(agentsSource.includes('descExtraKey: manageHooksEnabled ? null : "rowStartWithClaudeDisabledDesc"'));
+    // Confirm/disconnect flows moved with the switches.
+    assert.ok(agentsSource.includes("confirmDisableClaudeHookManagement"));
+    assert.ok(agentsSource.includes("runDisconnectClaudeHooks"));
   });
 
   it("patches hide-bubbles aggregate off without rebuilding General content", () => {
@@ -3783,6 +4047,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(tabSource.includes("handleRemoveCodexPet"));
     assert.ok(tabSource.includes("themeUninstallPetLabel"));
     assert.ok(tabSource.includes('footer.className = "theme-card-footer";'));
+    assert.ok(tabSource.includes('caps.powerProfile === "scripted"'));
+    assert.ok(tabSource.includes("themeCapabilityFineMotion"));
     assert.ok(tabSource.includes('if (!theme.active) indicator.setAttribute("aria-hidden", "true");'));
     assert.ok(!tabSource.includes("if (theme.active || canDelete || canRemoveCodexPet)"));
     assert.ok(coreSource.includes("codexPetZipImportPending"));
@@ -3820,7 +4086,9 @@ describe("settings renderer browser environment", () => {
     assert.ok(strings.en.themeImportUserThemeZipHint.includes("theme.json"));
     assert.strictEqual(strings.en.themeOpenUserThemesFolder, "Open themes folder");
     assert.strictEqual(strings.en.themeRefreshThemes, "Refresh themes");
+    assert.strictEqual(strings.en.themeCapabilityFineMotion, "Fine motion");
     assert.strictEqual(strings.zh.themeImportPetZip, "导入 Codex Pet 包（.zip）");
+    assert.strictEqual(strings.zh.themeCapabilityFineMotion, "精细动效");
     assert.strictEqual(strings.zh.themeActionGroupCodexPets, "Codex Pets");
     assert.strictEqual(strings.zh.themeImportUserThemeZip, "导入 Clawd 主题包（.zip）");
     assert.ok(strings.zh.themeImportUserThemeZipHint.includes("theme.json"));
@@ -4797,6 +5065,56 @@ describe("settings renderer browser environment", () => {
     );
   });
 
+  it("ignores stale Codex hook health results after the badge becomes not installed", async () => {
+    let resolveHealth;
+    const healthPromise = new Promise((resolve) => { resolveHealth = resolve; });
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          codex: { integrationInstalled: true, enabled: true },
+        },
+      },
+      agentMetadata: [{
+        id: "codex",
+        name: "Codex",
+        eventSource: "hook",
+        capabilities: { permissionApproval: true },
+      }],
+      doctor: { codexHookHealth: () => healthPromise },
+    });
+
+    harness.core.ops.requestRender({ content: true });
+    const findIntegrationBadge = () => harness.content.querySelectorAll(".agent-badge")
+      .find((candidate) => candidate.classList.contains("integration"));
+    let badge = findIntegrationBadge();
+    assert.ok(badge);
+    assert.strictEqual(badge.textContent, "Installed");
+
+    harness.core.ops.applyChanges({
+      changes: {
+        agents: {
+          codex: { integrationInstalled: false, enabled: false },
+        },
+      },
+      snapshot: {
+        agents: {
+          codex: { integrationInstalled: false, enabled: false },
+        },
+      },
+    });
+    badge = findIntegrationBadge();
+    assert.ok(badge);
+    assert.strictEqual(badge.textContent, "Not installed");
+
+    resolveHealth({ healthy: false, signature: "not-registered", reasonKey: "codexHookHealthReasonInactive" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    badge = findIntegrationBadge();
+    assert.strictEqual(badge.textContent, "Not installed");
+    assert.strictEqual(badge.classList.contains("hook-warning"), false);
+    assert.strictEqual(badge.title, "");
+  });
   it("does not initialize an expanded agent group at 0px height during rerender", () => {
     const harness = loadAgentsTabForTest({
       snapshot: {
@@ -4830,20 +5148,37 @@ describe("settings renderer browser environment", () => {
     );
   });
 
-  it("uses animated switches and local theme override patching in Animation Map", () => {
+  it("uses animated switches and local theme override patching in the Animation Map subtab", () => {
     const animMapSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-map.js"), "utf8");
+    const overridesSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-overrides.js"), "utf8");
     const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
     assert.ok(animMapSource.includes("state.transientUiState.animMapSwitches"));
     assert.ok(animMapSource.includes("state.mountedControls.animMapSwitches"));
     assert.ok(animMapSource.includes("helpers.attachAnimatedSwitch(sw, {"));
     assert.ok(animMapSource.includes('command("setThemeOverrideDisabled"'));
     assert.ok(!animMapSource.includes("helpers.attachActivation(sw"));
-    assert.ok(animMapSource.includes("function patchInPlace(changes)"));
+    assert.ok(animMapSource.includes("function renderMapSubtab(parent)"));
+    assert.ok(animMapSource.includes("function patchMapInPlace(changes)"));
     assert.ok(animMapSource.includes('Object.prototype.hasOwnProperty.call(changes, "themeOverrides")'));
     assert.ok(animMapSource.includes("helpers.setSwitchVisual(meta.element, readAnimMapVisualOn(meta.themeId, meta.stateKey), { pending: false });"));
-    assert.ok(animMapSource.includes("patchInPlace,"));
-    assert.ok(coreSource.includes('if (state.activeTab !== "animMap") {'));
+    // Folded in: the Animation & Sound Overrides tab renders + patches the map subtab.
+    assert.ok(overridesSource.includes("ClawdSettingsTabAnimMap.renderMapSubtab"));
+    assert.ok(overridesSource.includes("ClawdSettingsTabAnimMap.patchMapInPlace"));
     assert.ok(coreSource.includes("activeTab.patchInPlace(changes"));
+  });
+
+  it("renders the Animation Map switches inside the Animation Overrides 'on / off' subtab", () => {
+    const harness = loadAnimMapTabForTest({
+      snapshot: { theme: "clawd", themeOverrides: {} },
+    });
+    // Map is the default subtab; rendering the overrides tab should mount the
+    // five interrupt on/off switches under it (folded in, not a standalone tab).
+    harness.core.tabs.animOverrides.render(harness.content);
+    assert.strictEqual(harness.core.state.mountedControls.animMapSwitches.size, 5);
+    assert.ok(
+      harness.core.state.mountedControls.animMapReset,
+      "the reset-all control should mount under the subtab"
+    );
   });
 
   it("keeps Animation Map theme override broadcasts in place and syncs the mounted switch", () => {
@@ -4940,6 +5275,37 @@ describe("settings renderer browser environment", () => {
       harness.getContentRenderCount(),
       before + 1,
       "theme changes should force a rebuild so Animation Map switches use the new theme id"
+    );
+  });
+
+  it("drops the cached animation/sound card data when the map subtab patches a theme-override change", () => {
+    const harness = loadAnimMapTabForTest({
+      snapshot: {
+        theme: "clawd",
+        themeOverrides: { clawd: { states: { error: { disabled: false } } } },
+      },
+    });
+    // Simulate having opened the Animations subtab earlier: its card data is cached.
+    harness.core.runtime.animationOverridesData = { theme: { id: "clawd" }, cards: [], sounds: [] };
+    // A mounted map switch so patchMapInPlace takes the in-place themeOverrides branch.
+    const sw = new FakeElement("div");
+    sw.className = "switch on";
+    harness.content.appendChild(sw);
+    harness.core.state.mountedControls.animMapSwitches.set("clawd:error", {
+      element: sw,
+      themeId: "clawd",
+      stateKey: "error",
+    });
+
+    harness.core.ops.applyChanges({
+      changes: { themeOverrides: { clawd: { states: { error: { disabled: true } } } } },
+      snapshot: { theme: "clawd", themeOverrides: { clawd: { states: { error: { disabled: true } } } } },
+    });
+
+    assert.strictEqual(
+      harness.core.runtime.animationOverridesData,
+      null,
+      "a map-subtab theme-override patch must invalidate the cached cards so Animations/Sounds refetch"
     );
   });
 
@@ -6911,6 +7277,155 @@ describe("settings renderer browser environment", () => {
 
     assert.strictEqual(core.tabs.animOverrides.patchInPlace({ themeOverrides: { cloudling: { states: {} } } }), false);
     assert.strictEqual(fetchCount, 0);
+  });
+
+  it("re-arms the WSL auto scan when the user leaves the Agents tab before the fetch resolves", async () => {
+    const detectCalls = [];
+    let resolveFirstFetch;
+    const firstFetch = new Promise((resolve) => { resolveFirstFetch = resolve; });
+    const pendingHints = {
+      checkedAt: 1,
+      agents: [],
+      skippedAgentIds: [],
+      wslAgents: [],
+      wslDistros: [],
+      wslPending: true,
+      wslSupported: true,
+    };
+    const scannedHints = { ...pendingHints, wslPending: false, wslDistros: [{ name: "Ubuntu", default: true }] };
+    const harness = loadAgentsTabForTest({
+      snapshot: { agents: {} },
+      settingsAPI: {
+        detectAgentInstallations: (opts) => {
+          detectCalls.push(opts || null);
+          if (detectCalls.length === 1) return firstFetch;
+          if (opts && opts.refreshWsl) return Promise.resolve(scannedHints);
+          return Promise.resolve(pendingHints);
+        },
+      },
+    });
+
+    // Mount fetch fires while the Agents tab is active…
+    const mountFetch = harness.core.ops.fetchAgentInstallationHints();
+    // …but the user switches away before it resolves.
+    harness.core.state.activeTab = "general";
+    resolveFirstFetch(pendingHints);
+    await mountFetch;
+    await Promise.resolve();
+
+    // The auto scan was (correctly) not fired for an absent user, but the
+    // fetched flag must be re-armed or the auto scan is lost for the session.
+    assert.strictEqual(detectCalls.length, 1, "no scan while the tab is not visible");
+    assert.strictEqual(harness.core.runtime.agentInstallationHintsFetched, false,
+      "fetched flag re-armed after the trigger was skipped");
+
+    // Returning to the tab re-fetches and kicks the real WSL scan.
+    harness.core.state.activeTab = "agents";
+    await harness.core.ops.fetchAgentInstallationHints();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const refreshCalls = detectCalls.filter((c) => c && c.refreshWsl === true);
+    assert.strictEqual(refreshCalls.length, 1, "returning to the tab fires the real WSL scan");
+    assert.strictEqual(harness.core.runtime.agentInstallationHints.wslPending, false);
+  });
+
+  it("first Agents-tab fetch that reports wslPending triggers exactly one WSL scan", async () => {
+    const detectCalls = [];
+    const pendingHints = {
+      checkedAt: 1,
+      agents: [],
+      skippedAgentIds: [],
+      wslAgents: [],
+      wslDistros: [],
+      wslPending: true,
+      wslSupported: true,
+    };
+    const scannedHints = { ...pendingHints, wslPending: false };
+    const harness = loadAgentsTabForTest({
+      snapshot: { agents: {} },
+      settingsAPI: {
+        detectAgentInstallations: (opts) => {
+          detectCalls.push(opts || null);
+          if (opts && opts.refreshWsl) return Promise.resolve(scannedHints);
+          return Promise.resolve(pendingHints);
+        },
+      },
+    });
+
+    await harness.core.ops.fetchAgentInstallationHints();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const refreshCalls = detectCalls.filter((c) => c && c.refreshWsl === true);
+    assert.strictEqual(refreshCalls.length, 1, "wslPending fetch on the active tab auto-triggers the scan once");
+    assert.strictEqual(harness.core.runtime.agentInstallationHints.wslPending, false);
+    assert.strictEqual(detectCalls.length, 2, "no further fetch after the scan settles");
+  });
+
+  it("WSL row offers Unpair on hooksFilesPresent even when the deployed badge is dark", () => {
+    function buildHarness(wslEntryOverrides) {
+      const detectionResult = {
+        checkedAt: 2,
+        agents: [{ agentId: "qwen-code", detectedInstalled: true, confidence: "high" }],
+        skippedAgentIds: [],
+        wslAgents: [{
+          agentId: "qwen-code",
+          agentName: "Qwen Code",
+          distro: "Ubuntu",
+          detectedInstalled: true,
+          confidence: "high",
+          reason: "parent-dir",
+          detail: "",
+          wslHome: "/home/u",
+          wslParentDir: "/home/u/.qwen",
+          hooksDeployed: false,
+          hooksFilesPresent: false,
+          ...wslEntryOverrides,
+        }],
+        wslDistros: [{ name: "Ubuntu", default: true }],
+        wslPending: false,
+        wslSupported: true,
+      };
+      const harness = loadAgentsTabForTest({
+        snapshot: {
+          agents: { "qwen-code": { integrationInstalled: false, enabled: false } },
+          dismissedAgentInstallHints: {},
+        },
+        agentMetadata: [
+          { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+        ],
+        settingsAPI: {
+          detectAgentInstallations: () => Promise.resolve(detectionResult),
+        },
+      });
+      harness.core.runtime.agentInstallationHints = detectionResult;
+      harness.core.runtime.agentInstallationHintsFetched = true;
+      harness.core.ops.requestRender({ content: true });
+      return harness;
+    }
+
+    // Paired + registered: badge on, Pair + Unpair buttons.
+    let harness = buildHarness({ hooksDeployed: true, hooksFilesPresent: true });
+    assert.strictEqual(harness.content.querySelectorAll(".agent-instance-deployed").length, 1);
+    assert.strictEqual(harness.content.querySelectorAll(".agent-instance-action").length, 2);
+
+    // Files on disk but registration gone (post-Unpair, or the distro was
+    // paired with a non-claude agent that registers in its own config):
+    // the badge goes dark but the Unpair entry point must survive.
+    harness = buildHarness({ hooksDeployed: false, hooksFilesPresent: true });
+    assert.strictEqual(harness.content.querySelectorAll(".agent-instance-deployed").length, 0,
+      "badge dark without claude-settings registration");
+    assert.strictEqual(harness.content.querySelectorAll(".agent-instance-action").length, 2,
+      "Unpair stays available while hook files exist");
+
+    // Clean distro: no badge, Pair only.
+    harness = buildHarness({ hooksDeployed: false, hooksFilesPresent: false });
+    assert.strictEqual(harness.content.querySelectorAll(".agent-instance-deployed").length, 0);
+    assert.strictEqual(harness.content.querySelectorAll(".agent-instance-action").length, 1,
+      "only Pair when nothing is deployed");
   });
 });
 

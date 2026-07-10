@@ -30,6 +30,7 @@ describe("doctor agent descriptors", () => {
         "hermes",
         "qoder",
         "reasonix",
+        "qoderwork",
       ]
     );
   });
@@ -120,6 +121,12 @@ describe("doctor agent descriptors", () => {
     assert.strictEqual(getAgentDescriptor("reasonix").configPath, reasonix.DEFAULT_CONFIG_PATH);
     assert.strictEqual(getAgentDescriptor("reasonix").marker, reasonix.MARKER);
     assert.deepStrictEqual(getAgentDescriptor("reasonix").hookEvents, reasonix.REASONIX_HOOK_EVENTS);
+
+    const qoderwork = require("../hooks/qoderwork-install");
+    assert.strictEqual(getAgentDescriptor("qoderwork").parentDir, qoderwork.DEFAULT_PARENT_DIR);
+    assert.strictEqual(getAgentDescriptor("qoderwork").configPath, qoderwork.DEFAULT_CONFIG_PATH);
+    assert.strictEqual(getAgentDescriptor("qoderwork").marker, qoderwork.MARKER);
+    assert.deepStrictEqual(getAgentDescriptor("qoderwork").hookEvents, qoderwork.QODERWORK_HOOK_EVENTS);
   });
 
   it("returns copies from public accessors", () => {
@@ -258,5 +265,17 @@ describe("doctor agent descriptors", () => {
     assert.strictEqual(descriptor.autoInstall, true);
     assert.strictEqual(descriptor.marker, reasonix.MARKER);
     assert.deepStrictEqual(descriptor.hookEvents, reasonix.REASONIX_HOOK_EVENTS);
+  });
+
+  it("checks QoderWork hooks as a state-only nested settings file", () => {
+    const qoderwork = require("../hooks/qoderwork-install");
+    const descriptor = getAgentDescriptor("qoderwork");
+
+    assert.strictEqual(descriptor.eventSource, "hook");
+    assert.strictEqual(descriptor.configMode, "file");
+    assert.strictEqual(descriptor.nested, true);
+    assert.strictEqual(descriptor.autoInstall, true);
+    assert.strictEqual(descriptor.marker, qoderwork.MARKER);
+    assert.deepStrictEqual(descriptor.hookEvents, qoderwork.QODERWORK_HOOK_EVENTS);
   });
 });

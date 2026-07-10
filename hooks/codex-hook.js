@@ -10,6 +10,7 @@ const {
   postPermissionToRunningServer,
   postStateToRunningServer,
   readHostPrefix,
+  applyWslSourceFields,
 } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
 const {
@@ -21,6 +22,7 @@ const {
   extractLastAssistantTextFromTranscript,
 } = require("./codex-assistant-output");
 const { readCodexThreadName } = require("./codex-session-index");
+const { fitStateBodyToByteBudget } = require("./state-payload-size");
 
 const TOOL_MATCH_STRING_MAX = 240;
 const TOOL_MATCH_ARRAY_MAX = 16;
@@ -309,7 +311,9 @@ function buildPermissionBody(payload, resolve) {
 
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();
+    applyWslSourceFields(body, { remote: true });
   } else {
+    applyWslSourceFields(body);
     applyLocalProcessFields(body, resolve, {
       preferAgentPid: isCodexDesktopSession(payload, sessionMeta),
       event,
@@ -375,7 +379,9 @@ function buildStateBody(payload, resolve) {
 
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();
+    applyWslSourceFields(body, { remote: true });
   } else {
+    applyWslSourceFields(body);
     applyLocalProcessFields(body, resolve, {
       preferAgentPid: isCodexDesktopSession(payload, sessionMeta),
       event,
@@ -418,7 +424,11 @@ function main() {
 
       const body = buildStateBody(payload || {}, resolve);
       if (!body) process.exit(0);
-      postStateToRunningServer(JSON.stringify(body), { timeoutMs: 100 }, () => process.exit(0));
+      // Byte-fit before POST so a long CJK assistant_last_output can't trip the
+      // server's headerless 413 (read back as posted=false). See
+      // hooks/state-payload-size.js.
+      const fitted = fitStateBodyToByteBudget(body);
+      postStateToRunningServer(JSON.stringify(fitted.body), { timeoutMs: 100 }, () => process.exit(0));
     })
     .catch(() => process.exit(0));
 }

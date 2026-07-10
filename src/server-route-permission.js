@@ -274,6 +274,69 @@ function sendHermesPermissionNoDecision(res) {
   res.end();
 }
 
+// Turning off the desktop permission bubble (arePermissionBubblesEnabled ===
+// false) means "don't show a window on this computer" — it must not also
+// silence Telegram remote approval, since that's a separate channel the user
+// may still be relying on. Builds a permEntry with no bubble (bubble stays
+// null forever) and hands it straight to Telegram. Returns true if Telegram
+// picked it up — caller must leave the HTTP connection open; it's answered
+// later via the normal resolvePermissionEntry path. Returns false if there's
+// nowhere to send it (Telegram not configured/enabled), in which case the
+// caller keeps the pre-existing destroy-connection/native-chat-fallback
+// behavior.
+function tryRemoteOnlyApproval(ctx, fields) {
+  const { res } = fields;
+  const permEntry = {
+    ...fields,
+    bubble: null,
+    hideTimer: null,
+    resolvedSuggestion: null,
+    createdAt: Date.now(),
+    // Never gets a desktop bubble (that's the whole point of this path) —
+    // lets the bubble-stack layout skip it instead of reserving an empty slot.
+    remoteOnly: true,
+  };
+  const abortHandler = () => {
+    if (res.writableFinished) return;
+    ctx.permLog("abortHandler fired (remote-only, bubbles disabled)");
+    // no-decision, not deny: the agent went away (timeout/exit) — nobody
+    // denied anything. The socket is already closed so no response is sent
+    // either way; this only keeps the remote-card status line honest
+    // ("no decision" instead of "denied") when the card is cancelled.
+    ctx.resolvePermissionEntry(permEntry, "no-decision", "Client disconnected");
+  };
+  permEntry.abortHandler = abortHandler;
+  res.on("close", abortHandler);
+  addPendingPermission(ctx, permEntry);
+
+  let started = false;
+  if (typeof ctx.maybeStartRemoteApproval === "function") {
+    try {
+      started = !!ctx.maybeStartRemoteApproval(permEntry);
+    } catch (err) {
+      ctx.permLog(`telegram remote approval start failed (remote-only): ${err && err.message ? err.message : err}`);
+      started = false;
+    }
+  }
+
+  if (!started) {
+    removePendingPermission(ctx, permEntry, "remote-only-approval-unavailable");
+    res.removeListener("close", abortHandler);
+    return false;
+  }
+
+  // Only after a remote client actually took the request: a card is on its
+  // way, so the pet's PermissionRequest notification animation has something
+  // to announce. Playing it before the `started` check meant a no-op flash
+  // when Telegram wasn't available and the caller fell back to res.destroy().
+  ctx.updateSession(fields.sessionId, "notification", "PermissionRequest", { agentId: fields.agentId });
+  if (typeof ctx.syncPermissionShortcuts === "function") {
+    try { ctx.syncPermissionShortcuts(); } catch {}
+  }
+  ctx.permLog(`permission bubbles disabled, routed to Telegram-only approval: tool=${fields.toolName} session=${fields.sessionId}`);
+  return true;
+}
+
 function startRemoteApproval(ctx, permEntry) {
   if (permEntry && permEntry.toolName === "ExitPlanMode") return;
   if (typeof ctx.maybeStartRemoteApproval !== "function") return;
@@ -921,6 +984,10 @@ function handlePermissionPost(req, res, options) {
             }
             permEntry.bubble = null;
             sendHermesPermissionNoDecision(res);
+            return;
+          }
+          if (Array.isArray(elicitationInput.questions) && elicitationInput.questions.length > 0) {
+            startRemoteApproval(ctx, permEntry);
           }
           return;
         }
@@ -1043,9 +1110,25 @@ function handlePermissionPost(req, res, options) {
 
       if (shouldBypassCCBubble(ctx, toolName, permAgentId)) {
         recordRequestHookEvent.accepted();
-        const reason = !arePermissionBubblesEnabled(ctx)
-          ? "permission bubbles disabled"
-          : `${permAgentId} bubbles disabled`;
+        // "Permission bubbles disabled" (the global/local toggle) only means
+        // no desktop window — it must not also drop Telegram remote approval.
+        // "<agent> bubbles disabled" is the per-agent gate (isAgentPermissionsEnabled),
+        // a stronger opt-out that keeps Clawd fully out of that agent's loop —
+        // including remote channels — so it is checked first and falls straight
+        // back to the native chat prompt even when the global toggle is also off.
+        const agentGateOff = typeof ctx.isAgentPermissionsEnabled === "function"
+          && !ctx.isAgentPermissionsEnabled(permAgentId);
+        if (!agentGateOff && !arePermissionBubblesEnabled(ctx)) {
+          const started = tryRemoteOnlyApproval(ctx, {
+            res, sessionId, toolName, toolInput, toolUseId, toolInputFingerprint,
+            agentId: permAgentId, subagentId, subagentType, suggestions,
+          });
+          if (started) return;
+          ctx.permLog(`permission bubbles disabled, no remote approval available → destroy connection, chat fallback (tool=${toolName})`);
+          res.destroy();
+          return;
+        }
+        const reason = agentGateOff ? `${permAgentId} bubbles disabled` : "permission bubbles disabled";
         ctx.permLog(`${reason} → destroy connection, chat fallback (tool=${toolName})`);
         res.destroy();
         return;
@@ -1105,6 +1188,10 @@ function handlePermissionPost(req, res, options) {
           }
           permEntry.bubble = null;
           ctx.sendPermissionResponse(res, "deny", "Elicitation bubble unavailable; answer in terminal", "Elicitation");
+          return;
+        }
+        if (Array.isArray(elicitationInput.questions) && elicitationInput.questions.length > 0) {
+          startRemoteApproval(ctx, permEntry);
         }
         return;
       }
@@ -1137,7 +1224,7 @@ function handlePermissionPost(req, res, options) {
       addPendingPermission(ctx, permEntry);
 
       // Play notification animation on the pet body so the bubble doesn't
-      // appear "silently". Mirrors the Codex path (main.js showCodexNotifyBubble)
+      // appear "silently". Mirrors the other permission-notification branches
       // and the Elicitation branch above. state.js:581 has a special
       // PermissionRequest branch that setStates notification without
       // mutating session state — so working/thinking is preserved for resolve.

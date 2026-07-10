@@ -1,4 +1,4 @@
-const { formatDetail, truncate, parseMcpToolName } = window.ClawdBubbleFormat;
+const { formatDetail, truncate, parseMcpToolName, detectIrreversible } = window.ClawdBubbleFormat;
 const card = document.getElementById("card");
 const toolPill = document.getElementById("toolPill");
 const toolPillText = document.getElementById("toolPillText");
@@ -15,6 +15,7 @@ function startMarqueeIfOverflowing() {
 toolPill.addEventListener("mouseenter", startMarqueeIfOverflowing);
 toolPill.addEventListener("mouseleave", stopMarquee);
 const commandBlock = document.getElementById("commandBlock");
+const irreversibleBadge = document.getElementById("irreversibleBadge");
 const elicitationForm = document.getElementById("elicitationForm");
 const elicitationProgress = document.getElementById("elicitationProgress");
 const planFeedbackForm = document.getElementById("planFeedbackForm");
@@ -54,6 +55,7 @@ function setSessionTag(data) {
 
 const BUBBLE_STRINGS = {
   en: {
+    irreversibleHint: "Destructive action \u2014 may not be recoverable",
     autoAcceptEdits: "Auto-accept edits",
     switchToPlanMode: "Switch to plan mode",
     allowInDir: "Allow {tool} in {dir}/",
@@ -89,6 +91,7 @@ const BUBBLE_STRINGS = {
     back: "Back",
   },
   zh: {
+    irreversibleHint: "\u7834\u574F\u6027\u64CD\u4F5C\u2014\u2014\u53EF\u80FD\u65E0\u6CD5\u6062\u590D",
     autoAcceptEdits: "\u81EA\u52A8\u63A5\u53D7\u7F16\u8F91",
     switchToPlanMode: "\u5207\u6362\u5230 Plan \u6A21\u5F0F",
     allowInDir: "\u5141\u8BB8 {tool} \u5728 {dir}/",
@@ -124,6 +127,7 @@ const BUBBLE_STRINGS = {
     back: "\u8FD4\u56DE",
   },
   "zh-TW": {
+    irreversibleHint: "\u7834\u58DE\u6027\u64CD\u4F5C\u2014\u2014\u53EF\u80FD\u7121\u6CD5\u5FA9\u539F",
     autoAcceptEdits: "自動接受編輯",
     switchToPlanMode: "切換到計劃模式",
     allowInDir: "允許 {tool} 在 {dir}/",
@@ -159,6 +163,7 @@ const BUBBLE_STRINGS = {
     back: "返回",
   },
   ko: {
+    irreversibleHint: "\uD30C\uAD34\uC801 \uC791\uC5C5 \u2014 \uBCF5\uAD6C\uB418\uC9C0 \uC54A\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4",
     autoAcceptEdits: "\uD3B8\uC9D1 \uC790\uB3D9 \uC2B9\uC778",
     switchToPlanMode: "Plan \uBAA8\uB4DC\uB85C \uC804\uD658",
     allowInDir: "{dir}/\uC5D0\uC11C {tool} \uD5C8\uC6A9",
@@ -194,6 +199,7 @@ const BUBBLE_STRINGS = {
     back: "\uB4A4\uB85C",
   },
   ja: {
+    irreversibleHint: "\u7834\u58CA\u7684\u306A\u64CD\u4F5C \u2014 \u5FA9\u5143\u3067\u304D\u306A\u3044\u53EF\u80FD\u6027\u304C\u3042\u308A\u307E\u3059",
     autoAcceptEdits: "編集を自動承認",
     switchToPlanMode: "Plan モードに切り替え",
     allowInDir: "{dir}/ で {tool} を許可",
@@ -340,6 +346,9 @@ function resetBubbleContent() {
   card.classList.remove("elicitation-scrollable");
   commandBlock.style.display = "";
   commandBlock.textContent = "";
+  irreversibleBadge.style.display = "none";
+  irreversibleBadge.textContent = "";
+  irreversibleBadge.removeAttribute("data-reason");
   elicitationForm.innerHTML = "";
   elicitationForm.style.maxHeight = "";
   elicitationForm.classList.remove("visible");
@@ -840,6 +849,20 @@ function show(data) {
   // Command block (textContent only — never innerHTML)
   commandBlock.textContent = formatDetail(data.toolName, data.toolInput, { isAntigravity: !!data.isAntigravity });
 
+  // Irreversible-action hint — display-only (like the MCP relabel above): routes the
+  // human's attention to destructive decisions. Allow/Deny semantics, the
+  // suggestion buttons, and the no-decision fallback are untouched. textContent only.
+  const irreversible = detectIrreversible(data.toolName, data.toolInput);
+  if (irreversible && !isPlanReview) {
+    irreversibleBadge.textContent = "\u26A0 " + bubbleText(data.lang, "irreversibleHint");
+    irreversibleBadge.setAttribute("data-reason", irreversible.tag);
+    irreversibleBadge.style.display = "";
+  } else {
+    irreversibleBadge.textContent = "";
+    irreversibleBadge.style.display = "none";
+    irreversibleBadge.removeAttribute("data-reason");
+  }
+
   // Button labels
   btnAllow.textContent = isPlanReview ? bubbleText(data.lang, "approve") : bubbleText(data.lang, "allow");
   btnDeny.textContent = isPlanReview ? bubbleText(data.lang, "reject") : bubbleText(data.lang, "deny");
@@ -1014,6 +1037,50 @@ planFeedbackSubmit.addEventListener("click", () => {
 planFeedbackBack.addEventListener("click", () => {
   exitPlanFeedbackMode();
 });
+
+// While a text input inside the bubble is focused, tell the main process so it
+// can drop the bubble out of always-on-top on macOS — otherwise the OS IME
+// candidate window (Chinese/Japanese/Korean input popup) is occluded by the
+// topmost bubble. focusin/focusout bubble up from any current or future text
+// field (elicitation "Other", ExitPlanMode feedback) without per-field wiring.
+function isTextInputElement(el) {
+  if (!el) return false;
+  if (el.tagName === "TEXTAREA") return true;
+  if (el.tagName === "INPUT") {
+    const type = (el.getAttribute("type") || "text").toLowerCase();
+    return type === "text" || type === "search";
+  }
+  return false;
+}
+
+if (window.bubbleAPI && typeof window.bubbleAPI.setImeEditing === "function") {
+  // Dedupe so redundant transitions don't spam the main process (and so the
+  // window-blur/focus net below only fires a real state change).
+  let imeEditing = false;
+  const setImeEditing = (active) => {
+    if (active === imeEditing) return;
+    imeEditing = active;
+    window.bubbleAPI.setImeEditing(active);
+  };
+  document.addEventListener("focusin", (e) => {
+    if (isTextInputElement(e.target)) setImeEditing(true);
+  });
+  document.addEventListener("focusout", (e) => {
+    if (isTextInputElement(e.target)) setImeEditing(false);
+  });
+  // focusin/focusout are element-level: they do NOT fire when the whole window
+  // loses/regains OS focus (e.g. Cmd-Tab away mid-composition to check a
+  // reference — a routine CJK move). Without this, the editing flag would stay
+  // set and reapplyMacVisibility() would strand the bubble out of always-on-top
+  // for good. Mirror the window-blur listener used elsewhere in the app
+  // (hit-renderer.js, tutorial-renderer.js): restore normal topmost while the
+  // window is backgrounded, and re-drop it on return if a text field still
+  // holds focus.
+  window.addEventListener("blur", () => setImeEditing(false));
+  window.addEventListener("focus", () => {
+    if (isTextInputElement(document.activeElement)) setImeEditing(true);
+  });
+}
 
 window.bubbleAPI.onPermissionShow(show);
 window.bubbleAPI.onPermissionHide(hide);

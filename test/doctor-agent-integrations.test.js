@@ -812,13 +812,36 @@ describe("checkAgentIntegrations", () => {
     assert.ok(seen.every((command) => command.includes("qoder-hook.js")));
   });
 
-  it("detects Windows EncodedCommand Qoder hooks even though the marker is base64-wrapped", () => {
+  it("detects portable Windows Qoder hooks (bash-safe form, marker in plain text)", () => {
     const descriptor = qoderDescriptor();
     const nodeBin = "C:\\Program Files\\nodejs\\node.exe";
     const scriptPath = "D:/app/hooks/qoder-hook.js";
     writeJson(descriptor.configPath, { hooks: qoderHooksConfig((event) =>
-      buildQoderHookCommand(nodeBin, scriptPath, event, {
-        platform: "win32",
+      buildQoderHookCommand(nodeBin, scriptPath, event, { platform: "win32" })
+    ) });
+
+    const seen = [];
+    const detail = runOne(descriptor, {
+      validateCommand: (command) => {
+        seen.push(command);
+        // Portable form keeps the marker in plain text and no backslashes.
+        assert.strictEqual(command.includes("qoder-hook.js"), true);
+        assert.strictEqual(command.includes("\\"), false);
+        return { ok: true, nodeBin, scriptPath };
+      },
+    });
+
+    assert.strictEqual(detail.status, "ok");
+    assert.strictEqual(detail.commandCount, QODER_HOOK_EVENTS.length);
+  });
+
+  it("detects legacy Windows EncodedCommand Qoder hooks even though the marker is base64-wrapped", () => {
+    const { buildWindowsEncodedNodeHookCommand } = require("../hooks/json-utils");
+    const descriptor = qoderDescriptor();
+    const nodeBin = "C:\\Program Files\\nodejs\\node.exe";
+    const scriptPath = "D:/app/hooks/qoder-hook.js";
+    writeJson(descriptor.configPath, { hooks: qoderHooksConfig((event) =>
+      buildWindowsEncodedNodeHookCommand(nodeBin, scriptPath, [event], {
         powerShellBin: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
       })
     ) });
@@ -982,6 +1005,85 @@ describe("checkAgentIntegrations", () => {
     assert.strictEqual(detail.hookCommandIssue, "scriptPath-missing");
   });
 
+  it("judges the kimi-code target when both generations exist (#563)", () => {
+    const root = makeTempDir();
+    const legacyDir = path.join(root, ".kimi");
+    const kimiCodeDir = path.join(root, ".kimi-code");
+    const descriptor = baseDescriptor({
+      agentId: "kimi-cli",
+      marker: "kimi-hook.js",
+      configMode: "toml-text",
+      parentDir: legacyDir,
+      configPath: path.join(legacyDir, "config.toml"),
+      configTargets: [
+        { label: "kimi-code", parentDir: kimiCodeDir, configPath: path.join(kimiCodeDir, "config.toml") },
+        { label: "legacy", parentDir: legacyDir, configPath: path.join(legacyDir, "config.toml") },
+      ],
+    });
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.mkdirSync(kimiCodeDir, { recursive: true });
+    // Legacy config carries a healthy hook; the kimi-code config is missing —
+    // doctor must judge the kimi-code (priority) target and say not-connected.
+    fs.writeFileSync(
+      path.join(legacyDir, "config.toml"),
+      '[[hooks]]\nevent = "Stop"\ncommand = \'"node" "/app/hooks/kimi-hook.js"\'\n',
+      "utf8"
+    );
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "not-connected");
+    assert.ok(String(detail.configPath).includes(".kimi-code"));
+  });
+
+  it("falls back to the legacy target when kimi-code is absent (#563)", () => {
+    const root = makeTempDir();
+    const legacyDir = path.join(root, ".kimi");
+    const kimiCodeDir = path.join(root, ".kimi-code");
+    const descriptor = baseDescriptor({
+      agentId: "kimi-cli",
+      marker: "kimi-hook.js",
+      configMode: "toml-text",
+      parentDir: legacyDir,
+      configPath: path.join(legacyDir, "config.toml"),
+      configTargets: [
+        { label: "kimi-code", parentDir: kimiCodeDir, configPath: path.join(kimiCodeDir, "config.toml") },
+        { label: "legacy", parentDir: legacyDir, configPath: path.join(legacyDir, "config.toml") },
+      ],
+    });
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(legacyDir, "config.toml"),
+      '[[hooks]]\nevent = "Stop"\ncommand = \'"node" "/app/hooks/kimi-hook.js"\'\n',
+      "utf8"
+    );
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "ok");
+    const judged = String(detail.configPath);
+    assert.ok(judged.includes(".kimi") && !judged.includes(".kimi-code"));
+  });
+
+  it("lists both generation dirs when neither exists (#563)", () => {
+    const root = makeTempDir();
+    const legacyDir = path.join(root, ".kimi");
+    const kimiCodeDir = path.join(root, ".kimi-code");
+    const descriptor = baseDescriptor({
+      agentId: "kimi-cli",
+      marker: "kimi-hook.js",
+      configMode: "toml-text",
+      parentDir: legacyDir,
+      configPath: path.join(legacyDir, "config.toml"),
+      configTargets: [
+        { label: "kimi-code", parentDir: kimiCodeDir, configPath: path.join(kimiCodeDir, "config.toml") },
+        { label: "legacy", parentDir: legacyDir, configPath: path.join(legacyDir, "config.toml") },
+      ],
+    });
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "not-installed");
+    assert.ok(detail.detail.includes(".kimi-code") && detail.detail.includes(".kimi"));
+  });
+
   it("turns Codex ok into warning when hooks=false", () => {
     const descriptor = codexDescriptor();
     writeJson(descriptor.configPath, codexHooksConfig(["Stop"]));
@@ -997,6 +1099,92 @@ describe("checkAgentIntegrations", () => {
     });
   });
 
+
+  // #544: Windows Clawd writes dual-field entries — commandWindows carries
+  // the PowerShell form codex actually runs on Windows, command carries a
+  // WSL-interop form only executable inside WSL. The doctor must validate
+  // the field THIS platform's codex resolves; blanket-validating `command`
+  // flagged every dual-field Windows install as broken-path, and Repair
+  // regenerated the same fields forever.
+  it("validates commandWindows on win32 for dual-field Codex entries (#544)", () => {
+    const descriptor = codexDescriptor();
+    const psForm = '& "C:\\Program Files\\nodejs\\node.exe" "D:/app/hooks/codex-hook.js"';
+    const interopForm = '"/mnt/c/Program Files/nodejs/node.exe" "D:/app/hooks/codex-hook.js"';
+    writeJson(descriptor.configPath, {
+      hooks: {
+        Stop: [{ hooks: [{ type: "command", command: interopForm, commandWindows: psForm, timeout: 30 }] }],
+      },
+    });
+    fs.writeFileSync(descriptor.supplementary.configPath, codexTrustState(descriptor, ["Stop"]), "utf8");
+
+    const seen = [];
+    const result = checkAgentIntegrations({
+      fs,
+      prefs: {},
+      descriptors: [descriptor],
+      server: null,
+      platform: "win32",
+      validateCommand: (command) => {
+        seen.push(command);
+        return {
+          ok: true,
+          nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+          scriptPath: "D:/app/hooks/codex-hook.js",
+        };
+      },
+    });
+
+    assert.deepStrictEqual(seen, [psForm]);
+    assert.strictEqual(result.details[0].status, "ok");
+  });
+
+  it("validates the POSIX command field for dual-field Codex entries off win32", () => {
+    const descriptor = codexDescriptor();
+    const psForm = '& "C:\\Program Files\\nodejs\\node.exe" "D:/app/hooks/codex-hook.js"';
+    const interopForm = '"/mnt/c/Program Files/nodejs/node.exe" "D:/app/hooks/codex-hook.js"';
+    writeJson(descriptor.configPath, {
+      hooks: {
+        Stop: [{ hooks: [{ type: "command", command: interopForm, commandWindows: psForm, timeout: 30 }] }],
+      },
+    });
+    fs.writeFileSync(descriptor.supplementary.configPath, codexTrustState(descriptor, ["Stop"]), "utf8");
+
+    const seen = [];
+    const result = checkAgentIntegrations({
+      fs,
+      prefs: {},
+      descriptors: [descriptor],
+      server: null,
+      platform: "linux",
+      validateCommand: (command) => {
+        seen.push(command);
+        return { ok: true, nodeBin: "/mnt/c/Program Files/nodejs/node.exe", scriptPath: "D:/app/hooks/codex-hook.js" };
+      },
+    });
+
+    assert.deepStrictEqual(seen, [interopForm]);
+    assert.strictEqual(result.details[0].status, "ok");
+  });
+
+  it("reports Codex hooks=false even when hook registration is missing", () => {
+    const descriptor = codexDescriptor();
+    writeJson(descriptor.configPath, { hooks: {} });
+    fs.writeFileSync(descriptor.supplementary.configPath, "[features]\nhooks = false\n", "utf8");
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.level, "warning");
+    assert.deepStrictEqual(detail.supplementary, {
+      key: "hooks",
+      value: "disabled",
+      detail: "hooks=false",
+    });
+    assert.deepStrictEqual(detail.fixAction, {
+      type: "agent-integration",
+      agentId: "codex",
+      forceCodexHooksFeature: true,
+    });
+  });
   it("turns Codex ok into warning when hooks need Codex review", () => {
     const descriptor = codexDescriptor();
     writeJson(descriptor.configPath, codexHooksConfig(["PermissionRequest", "Stop"]));

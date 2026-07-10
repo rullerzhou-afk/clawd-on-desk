@@ -145,6 +145,10 @@ function registerSettingsIpc(options = {}) {
     code: "quick_commands_unavailable",
     message: "Quick Commands are unavailable",
   }));
+  const showTutorial = options.showTutorial || (() => ({
+    status: "error",
+    message: "Tutorial is unavailable",
+  }));
   const now = options.now || (() => Date.now());
   const aboutHeroSvgPath = options.aboutHeroSvgPath
     || path.join(__dirname, "..", "assets", "svg", "clawd-about-hero.svg");
@@ -415,8 +419,14 @@ function registerSettingsIpc(options = {}) {
     }
   });
 
-  handle("settings:detect-agent-installations", () => {
+  handle("settings:detect-agent-installations", async (_ev, opts) => {
     try {
+      const options = opts && typeof opts === "object" ? opts : {};
+      if (options.refreshWsl) {
+        const { refreshWslDetection } = require("./agent-installation-detector");
+        await refreshWslDetection({ fs, path, now, skipDefaultIntegrations: false });
+        return detectAgentInstallations({ fs, path, now });
+      }
       return detectAgentInstallations({ fs, path, now });
     } catch (err) {
       console.warn("Clawd: settings:detect-agent-installations failed:", err && err.message);
@@ -424,6 +434,10 @@ function registerSettingsIpc(options = {}) {
         checkedAt: now(),
         agents: [],
         skippedAgentIds: [],
+        wslAgents: [],
+        wslDistros: [],
+        // Keep the manual Scan entry point alive even on a hard failure.
+        wslSupported: process.platform === "win32",
         error: err && err.message ? err.message : String(err),
       };
     }
@@ -459,6 +473,15 @@ function registerSettingsIpc(options = {}) {
     try {
       checkForUpdates(true);
       return { status: "ok" };
+    } catch (err) {
+      return { status: "error", message: (err && err.message) || String(err) };
+    }
+  });
+
+  handle("settings:show-tutorial", async () => {
+    try {
+      const result = await showTutorial();
+      return result || { status: "ok" };
     } catch (err) {
       return { status: "error", message: (err && err.message) || String(err) };
     }

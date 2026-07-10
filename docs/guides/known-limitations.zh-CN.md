@@ -5,13 +5,13 @@
 | 限制 | 说明 |
 |------|------|
 | **Codex CLI：无法跳转终端** | Codex official hooks 和 JSONL fallback 都不携带可用终端 PID，点击桌宠仍无法跳转到 Codex 终端。Claude Code 和 Copilot CLI 正常。 |
-| **Codex CLI：hook 覆盖仍不完整** | Official hooks 已覆盖实时状态和 `PermissionRequest` 观察 / intercept 模式，但不是所有运行时信号都有 hook。Clawd 会保留 JSONL 轮询，用于 hook 被禁用的会话，以及 web search、context compaction、turn aborted 等 fallback-only 事件；这些事件仍可能有轮询延迟。 |
+| **Codex CLI：hook 覆盖仍不完整** | Official hooks 已覆盖实时状态和 `PermissionRequest` 观察 / intercept 模式，但不是所有运行时信号都有 hook。Clawd 会保留 JSONL 轮询，用于 hook 被禁用的会话，以及 web search、context compaction、turn aborted 等 fallback-only 状态 / metadata 事件；这些事件仍可能有轮询延迟。审批不再从 JSONL 猜测，必须依赖 official `PermissionRequest` hook。 |
 | **Copilot CLI：暂无 Telegram 远程审批** | Copilot 的本地权限气泡已可用，v1 接入时主动排除了 Telegram 远程审批。`edit` 工具的 full diff 是最坏 payload，必须先做一套安全摘要 formatter 才能走桥接发出去。本地气泡链路不受影响。 |
 | **Gemini CLI：无权限气泡** | Gemini 仍在终端内处理工具审批。Clawd 会观察 Gemini hook 事件，但除非 Gemini 未来提供兼容的阻塞式审批协议，否则不显示权限气泡。 |
 | **Antigravity CLI：无权限气泡（仅状态同步）** | Clawd **不会为 agy 弹任何权限气泡**。所有 Allow / Deny / Always-allow 决策都在 agy 自己的 5 选项终端菜单里完成（同意 / 同意并持久 / 拒绝 / 永远拒绝 / 永远拒绝并持久）。想要永久规则就在 agy 菜单里选择标有「Persist to settings.json」的选项 —— 规则落到 `~/.gemini/antigravity-cli/settings.json`，你也可以在那里清理。dogfooding 显示在它之上再加 Clawd bubble 会让单次任务变 8-10 次确认，因此设计上让 agy 完全拥有权限流程。桌宠仍通过 PreInvocation / PostToolUse / Stop hook 反映 working / idle / attention 状态。 |
 | **Cursor Agent：无权限气泡** | Cursor 在 hook 的 stdout JSON 里处理权限，而不是走 HTTP 阻塞式审批，Clawd 无法接管这条审批链路。 |
 | **Cursor Agent：启动恢复能力有限** | 启动时不做进程检测，否则任意 Cursor 编辑器进程都可能误判为活跃会话。Clawd 会保持 idle，直到收到第一条 hook 事件。 |
-| **Hermes Agent：安装前可见但不生效** | Hermes 默认在 Settings 里开启，方便发现；但 Clawd 只有在检测到真实 Hermes 安装后才会写入 plugin 文件。安装 Hermes 后重启 Clawd，或执行 `npm run install:hermes-plugin`。 |
+| **Hermes Agent：使用前需要安装集成** | Hermes 会显示在 Settings 里，但新安装默认是 Not installed。Clawd 只有在你显式安装该集成、且检测到真实 Hermes 安装后才会写入 plugin 文件。安装 Hermes 后，在 **Settings -> Agents -> Install** 里安装，或执行 `npm run install:hermes-plugin`。 |
 | **Hermes Agent：暂不支持权限气泡和 subagent 动画** | 当前 Hermes plugin 覆盖状态、会话、SessionEnd、工具活动和终端聚焦。权限气泡需要上游提供阻塞式审批协议；subagent 动画需要成对的 subagent start/stop 生命周期事件。 |
 | **Hardware Buddy：需要外部 Clawstick runtime** | Clawd v0.8.1 把硬件 runtime 保持在独立的 [Clawstick 仓库](https://github.com/rullerzhou-afk/clawstick)。请单独安装 / checkout Clawstick，把它放到 Clawd 相邻目录 `../clawstick`，或设置 `CLAWD_HARDWARE_BUDDY_ROOT`。runtime 缺失时 Clawd 仍可正常使用，Settings 里的 Hardware Buddy 会提示「需安装 Clawstick」。 |
 | **Kiro CLI：无法区分会话** | Kiro CLI stdin JSON 不含 session_id，所有 Kiro 会话会被合并为单个追踪会话。 |

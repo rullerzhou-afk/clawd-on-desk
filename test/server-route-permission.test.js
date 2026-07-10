@@ -573,6 +573,91 @@ describe("server-route-permission POST", () => {
     assert.deepStrictEqual(res.ctx.calls.removePendingPermission.map((item) => item.reason), ["bubble-failed"]);
   });
 
+  it("routes to Telegram-only approval when permission bubbles are disabled but remote approval picks it up", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "sid",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      tool_use_id: "tool-1",
+    }), {
+      ctx: {
+        hideBubbles: true,
+        maybeStartRemoteApproval: () => true,
+      },
+    });
+
+    // Connection must stay open — it's answered later once Telegram responds.
+    assert.strictEqual(res.destroyed, false);
+    assert.strictEqual(res.statusCode, null);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.bubble, null);
+    assert.strictEqual(entry.sessionId, "sid");
+    assert.strictEqual(entry.agentId, "claude-code");
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
+    assert.deepStrictEqual(res.ctx.calls.updateSession, [[
+      "sid",
+      "notification",
+      "PermissionRequest",
+      { agentId: "claude-code" },
+    ]]);
+  });
+
+  it("falls back to destroying the connection when bubbles are disabled and remote approval has nowhere to send it", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "sid",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    }), {
+      ctx: {
+        hideBubbles: true,
+        maybeStartRemoteApproval: () => false,
+      },
+    });
+
+    assert.strictEqual(res.destroyed, true);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
+    // No card went out, so the pet must not play the PermissionRequest
+    // notification animation — there is nothing for the user to act on.
+    assert.deepStrictEqual(res.ctx.calls.updateSession, []);
+  });
+
+  it("keeps the per-agent gate authoritative over remote-only routing when both toggles are off", async () => {
+    // Recording stub, NOT a throwing one: tryRemoteOnlyApproval swallows
+    // exceptions from maybeStartRemoteApproval (started=false → destroy), so a
+    // throw here would leave every assertion below green even if the gate were
+    // bypassed. Returning true makes a bypass keep the connection open, which
+    // res.destroyed then catches — and the call log catches it directly.
+    const remoteCalls = [];
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "sid",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    }), {
+      ctx: {
+        hideBubbles: true,
+        // Stronger opt-out: the user disabled permission handling for this
+        // agent entirely — its requests must never reach a remote channel,
+        // even though the global bubble toggle alone would route there.
+        isAgentPermissionsEnabled: () => false,
+        maybeStartRemoteApproval: (entry) => {
+          remoteCalls.push(entry);
+          return true;
+        },
+      },
+    });
+
+    assert.deepStrictEqual(remoteCalls, []);
+    assert.strictEqual(res.destroyed, true);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
+    assert.deepStrictEqual(res.ctx.calls.updateSession, []);
+  });
+
   it("returns terminal fallback when an elicitation bubble fails", async () => {
     const res = await callPermissionPost(JSON.stringify({
       agent_id: "claude-code",
@@ -594,6 +679,22 @@ describe("server-route-permission POST", () => {
       behavior: "deny",
       message: "Elicitation bubble unavailable; answer in terminal",
     }]);
+  });
+
+  it("starts remote approval for Claude AskUserQuestion after the bubble is shown", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "sid",
+      tool_name: "AskUserQuestion",
+      tool_input: { questions: [{ question: "Continue?" }] },
+    }));
+
+    assert.strictEqual(res.statusCode, null);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.isElicitation, true);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
+    assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, [entry]);
   });
 
   it("keeps local Claude permission pending if remote approval startup throws", async () => {
@@ -1036,6 +1137,7 @@ describe("server-route-permission POST", () => {
     ]]);
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
     assert.deepStrictEqual(res.ctx.calls.addPendingPermission, [entry]);
+    assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, [entry]);
   });
 
   it("recovers via 204 when the Hermes bubble fails to construct", async () => {

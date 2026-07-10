@@ -1,13 +1,14 @@
 "use strict";
 
 // Integration tests for the /state endpoint's session_title handling
-// and the raised MAX_STATE_BODY_BYTES = 4096 cap.
+// and the MAX_STATE_BODY_BYTES cap.
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const { EventEmitter } = require("node:events");
 
 const initServer = require("../src/server");
+const { MAX_STATE_BODY_BYTES } = require("../src/server-route-state");
 
 function makeFakeHttp() {
   let capturedHandler = null;
@@ -190,7 +191,7 @@ describe("/state session_title handling", () => {
   });
 });
 
-describe("/state MAX_STATE_BODY_BYTES (4KB cap)", () => {
+describe("/state MAX_STATE_BODY_BYTES cap", () => {
   it("accepts a normal payload with session_title (returns 200)", async () => {
     const { handler, updateSessionCalls } = startServer();
     const req = makeReq("POST", "/state", JSON.stringify({
@@ -205,13 +206,13 @@ describe("/state MAX_STATE_BODY_BYTES (4KB cap)", () => {
     assert.strictEqual(updateSessionCalls.length, 1);
   });
 
-  it("returns 413 when body exceeds MAX_STATE_BODY_BYTES (4KB)", async () => {
+  it("returns 413 when the body exceeds MAX_STATE_BODY_BYTES", async () => {
     const { handler, updateSessionCalls } = startServer();
-    // 5KB of padding in session_title — well over the 4KB cap
+    // session_title padded past the cap — guarantees an over-limit body
     const hugePayload = JSON.stringify({
       state: "working",
       session_id: "sid-1",
-      session_title: "x".repeat(5000),
+      session_title: "x".repeat(MAX_STATE_BODY_BYTES + 1000),
     });
     const req = makeReq("POST", "/state", hugePayload);
     const res = await callHandler(handler, req);
@@ -219,16 +220,16 @@ describe("/state MAX_STATE_BODY_BYTES (4KB cap)", () => {
     assert.strictEqual(updateSessionCalls.length, 0);
   });
 
-  it("accepts a payload just under 4KB", async () => {
+  it("accepts a payload just under MAX_STATE_BODY_BYTES", async () => {
     const { handler, updateSessionCalls } = startServer();
-    // Construct a payload that fits under 4096 bytes total
+    // Construct a payload that fits just under the cap.
     const payload = {
       state: "working",
       session_id: "sid-1",
-      session_title: "t".repeat(3500),
+      session_title: "t".repeat(MAX_STATE_BODY_BYTES - 600),
     };
     const body = JSON.stringify(payload);
-    assert.ok(body.length < 4096, `test payload is ${body.length} bytes, should be < 4096`);
+    assert.ok(body.length < MAX_STATE_BODY_BYTES, `test payload is ${body.length} bytes, should be < ${MAX_STATE_BODY_BYTES}`);
     const req = makeReq("POST", "/state", body);
     const res = await callHandler(handler, req);
     assert.strictEqual(res.statusCode, 200);

@@ -1,6 +1,7 @@
 "use strict";
 
-const { spawn, execFileSync } = require("child_process");
+const { spawn, execFile } = require("child_process");
+const { promisify } = require("util");
 const { platform, homedir } = require("os");
 const path = require("path");
 const fs = require("fs");
@@ -91,19 +92,25 @@ function tryLaunch(bin, args, opts) {
   });
 }
 
-function findClaudeCmd(plat = platform(), deps = {}) {
-  const _execFileSync = deps.execFileSync || execFileSync;
+const execFileAsync = promisify(execFile);
+
+async function findClaudeCmd(plat = platform(), deps = {}) {
+  const _execFileAsync = deps.execFileAsync || execFileAsync;
   const _existsSync = deps.existsSync || fs.existsSync;
 
-  // 1. Try system PATH lookup
+  // 1. Try system PATH lookup. This runs async on purpose: the old
+  // execFileSync('where'/'which', {timeout:5000}) blocked the Electron main
+  // process event loop — which also drives rendering, drag, and topmost — so a
+  // slow PATH (huge PATH, mapped network drives) froze the pet for up to 5s on
+  // New Session. execFile lets the 5s timeout elapse without stalling the loop.
   try {
     const cmd = plat === "win32" ? "where" : "which";
-    const out = _execFileSync(cmd, ["claude"], {
+    const { stdout } = await _execFileAsync(cmd, ["claude"], {
       encoding: "utf8",
       timeout: 5000,
       windowsHide: true,
     });
-    const existing = out
+    const existing = stdout
       .trim()
       .split(/\r?\n/)
       .map((line) => line.trim())
@@ -338,7 +345,7 @@ async function launchClaudeSession(mode, cwd, sessionId, deps = {}) {
   const _tryLaunch = deps.tryLaunch || tryLaunch;
 
   const plat = _platform();
-  const claudePath = _findClaudeCmd(plat);
+  const claudePath = await _findClaudeCmd(plat);
   const claudeArgs = buildClaudeArgs(mode, sessionId);
   const workDir = cwd || homedir();
   const opts = { detached: true, stdio: "ignore", windowsHide: false, cwd: workDir };

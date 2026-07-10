@@ -25,11 +25,10 @@ function registerPetInteractionIpc(options = {}) {
   const checkMiniModeSnap = requiredDependency(options.checkMiniModeSnap, "checkMiniModeSnap");
   const hasPetWindow = requiredDependency(options.hasPetWindow, "hasPetWindow");
   const getPetWindowBounds = requiredDependency(options.getPetWindowBounds, "getPetWindowBounds");
-  const getKeepSizeAcrossDisplays = requiredDependency(
-    options.getKeepSizeAcrossDisplays,
-    "getKeepSizeAcrossDisplays"
-  );
   const getCurrentPixelSize = requiredDependency(options.getCurrentPixelSize, "getCurrentPixelSize");
+  // #408: prefer the effective (frozen, when keepSizeAcrossDisplays) size over
+  // re-reading live bounds; falls back to proportional when not provided.
+  const getEffectiveCurrentPixelSize = options.getEffectiveCurrentPixelSize || getCurrentPixelSize;
   const computeDragEndBounds = requiredDependency(options.computeDragEndBounds, "computeDragEndBounds");
   const applyPetWindowBounds = requiredDependency(options.applyPetWindowBounds, "applyPetWindowBounds");
   const flushRuntimeStateToPrefs = requiredDependency(
@@ -110,9 +109,7 @@ function registerPetInteractionIpc(options = {}) {
         if (isMiniMode() || isMiniTransitioning()) return;
         if (hasPetWindow()) {
           const virtualBounds = getPetWindowBounds();
-          const size = getKeepSizeAcrossDisplays()
-            ? { width: virtualBounds.width, height: virtualBounds.height }
-            : getCurrentPixelSize();
+          const size = getEffectiveCurrentPixelSize();
           const clamped = computeDragEndBounds(virtualBounds, size);
           if (clamped) {
             applyPetWindowBounds(clamped);

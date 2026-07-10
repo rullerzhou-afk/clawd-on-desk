@@ -7,6 +7,7 @@ const {
   deepMergeObject,
   basenameOnly,
   mergeFileHitBoxes,
+  VISUAL_FALLBACK_STATES,
 } = require("./theme-schema");
 
 // Allow-list of fields a variant may override. Anything else is ignored with a
@@ -155,11 +156,23 @@ function applyUserOverridesPatch(raw, overrides) {
       if (!isPlainObject(entry)) continue;
       const rawStateEntry = nextStates[stateKey];
       const rawMiniEntry = nextMiniStates ? nextMiniStates[stateKey] : undefined;
-      const targetCollection = rawStateEntry !== undefined
-        ? nextStates
-        : (rawMiniEntry !== undefined ? nextMiniStates : null);
-      if (!targetCollection) continue;
-      const currentState = getStateBindingEntry(targetCollection[stateKey]);
+      // Normally we only patch states that already exist in the raw theme.
+      // But synthetic states like "roam" are injected by buildStateBindings()
+      // at runtime — they don't exist in the raw JSON. Allow creating them
+      // here so user overrides can still apply (the state is validated
+      // against VISUAL_FALLBACK_STATES to guard against typos).
+      let targetCollection;
+      if (rawStateEntry !== undefined) {
+        targetCollection = nextStates;
+      } else if (rawMiniEntry !== undefined) {
+        targetCollection = nextMiniStates;
+      } else if (VISUAL_FALLBACK_STATES && VISUAL_FALLBACK_STATES.has(stateKey)) {
+        // Synthetic fallback state (e.g. "roam") — create in nextStates
+        targetCollection = nextStates;
+      } else {
+        continue;
+      }
+      const currentState = getStateBindingEntry(targetCollection[stateKey] || []);
       const currentFiles = currentState.files;
       if (currentFiles.length === 0 && !(typeof entry.file === "string" && entry.file)) continue;
       const nextFiles = [...currentFiles];

@@ -8,6 +8,36 @@ const {
   isSupersededLocalCodexProcessSession,
 } = require("./state-session-dedupe");
 const { readCodexThreadName } = require("../hooks/codex-session-index");
+const { normalizeQuotaGroup } = require("../hooks/quota-bucket");
+const { ANTIGRAVITY_QUOTA_FIELDS } = require("../hooks/antigravity-context-usage");
+const { CLAUDE_QUOTA_FIELDS } = require("../hooks/claude-rate-limits");
+
+// ── Session source derivation ────────────────────────────────────────
+
+const WSL_HOST_PREFIX = "wsl:";
+
+function deriveSourceInfo(host) {
+  if (typeof host === "string" && host.startsWith(WSL_HOST_PREFIX)) {
+    const distro = host.slice(WSL_HOST_PREFIX.length) || "unknown";
+    return {
+      sourceType: "wsl",
+      sourceLabel: distro,
+      displayLabel: `WSL: ${distro}`,
+    };
+  }
+  if (typeof host === "string" && host && host !== "local") {
+    return {
+      sourceType: "ssh",
+      sourceLabel: host,
+      displayLabel: host,
+    };
+  }
+  return {
+    sourceType: "local",
+    sourceLabel: "",
+    displayLabel: "",
+  };
+}
 
 const EVENT_LABEL_KEYS = {
   SessionStart: "eventLabelSessionStart",
@@ -144,7 +174,18 @@ function sessionDisplayTitle(id, sessionLike, sessionAliases = {}, options = {})
   const title = getEffectiveSessionTitle(id, sessionLike, options);
   if (title) return title;
   const cwd = sessionLike && sessionLike.cwd;
-  if (cwd) return path.basename(cwd);
+  if (cwd && typeof cwd === "string") {
+    // Skip the cwd fallback only for QoderWork sessions running inside a
+    // QoderWork internal workspace (~/.qoderwork/workspace/<id>) — the raw
+    // workspace ID like "mqgw60jiigjsjcid" is meaningless to the user. Other
+    // agents keep the basename fallback even under that path.
+    const isQoderWorkSession = (sessionLike && sessionLike.agentId === "qoderwork")
+      || (typeof id === "string" && id.startsWith("qoderwork:"));
+    const isQoderWorkWorkspaceCwd = /\/\.qoderwork\/workspace\/[^/]+$/.test(cwd.replace(/\\/g, "/"));
+    if (!(isQoderWorkSession && isQoderWorkWorkspaceCwd)) {
+      return path.basename(cwd);
+    }
+  }
   return id && id.length > 6 ? `${id.slice(0, 6)}..` : id;
 }
 
@@ -181,6 +222,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
       osPlatform: options.focusHostPlatform || options.osPlatform,
     })
     : { canFocus: false, type: null, url: null };
+  const source = deriveSourceInfo(session && session.host);
   return {
     id,
     agentId: (session && session.agentId) || null,
@@ -193,12 +235,19 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     displayTitle: sessionDisplayTitle(id, session, sessionAliases, options),
     cwd: (session && session.cwd) || "",
     updatedAt: sessionUpdatedAt(session),
+    // Quota/context freshness (statusline metadata POSTs, which do not bump
+    // updatedAt). Excluded from sessionSnapshotSignature, like updatedAt.
+    metadataUpdatedAt: (session && Number.isFinite(session.metadataUpdatedAt)) ? session.metadataUpdatedAt : null,
     sourcePid: (session && session.sourcePid) || null,
     wtHwnd: (session && session.wtHwnd) || null,
     editor: (session && session.editor) || null,
     canFocus: focusTarget.canFocus === true,
     focusTarget: focusTarget.type ? { type: focusTarget.type, url: focusTarget.url || null } : null,
     host: (session && session.host) || null,
+    wslDistro: (session && session.wslDistro) || null,
+    sourceType: source.sourceType,
+    sourceLabel: source.sourceLabel,
+    sourceDisplayLabel: source.displayLabel,
     headless: !!(session && session.headless),
     platform: (session && session.platform) || null,
     model: (session && session.model) || null,
@@ -206,6 +255,8 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     codexOriginator: (session && session.codexOriginator) || null,
     codexSource: (session && session.codexSource) || null,
     contextUsage: snapshotContextUsage(session),
+    antigravityQuota: normalizeQuotaGroup(session && session.antigravityQuota, ANTIGRAVITY_QUOTA_FIELDS),
+    claudeQuota: normalizeQuotaGroup(session && session.claudeQuota, CLAUDE_QUOTA_FIELDS),
     assistantLastOutput: (session && typeof session.assistantLastOutput === "string")
       ? session.assistantLastOutput
       : null,
@@ -231,7 +282,7 @@ function snapshotContextUsage(session) {
   if (Number.isFinite(limit) && limit > 0) out.limit = limit;
   const percent = Number(usage.percent);
   if (Number.isFinite(percent)) out.percent = Math.max(0, Math.min(100, Math.round(percent)));
-  if (usage.source === "claude" || usage.source === "codex") out.source = usage.source;
+  if (usage.source === "claude" || usage.source === "codex" || usage.source === "antigravity") out.source = usage.source;
   return out;
 }
 
@@ -266,16 +317,20 @@ function buildSessionSnapshot(sessions, options = {}) {
   const groupMap = new Map();
   for (const entry of dashboardEntries) {
     const host = entry.host || "";
-    if (!groupMap.has(host)) groupMap.set(host, []);
-    groupMap.get(host).push(entry.id);
+    if (!groupMap.has(host)) {
+      const displayHost = entry.sourceDisplayLabel || host;
+      groupMap.set(host, { ids: [], displayHost });
+    }
+    groupMap.get(host).ids.push(entry.id);
   }
   const groups = [];
   if (groupMap.has("")) {
-    groups.push({ host: "", ids: groupMap.get("") });
+    const g = groupMap.get("");
+    groups.push({ host: "", ids: g.ids, displayHost: "" });
   }
-  for (const [host, ids] of groupMap) {
+  for (const [host, g] of groupMap) {
     if (!host) continue;
-    groups.push({ host, ids });
+    groups.push({ host, ids: g.ids, displayHost: g.displayHost });
   }
 
   const lastSession = dashboardEntries[0] || null;
@@ -331,12 +386,15 @@ function sessionSnapshotSignature(snapshot) {
       headless: entry.headless,
       hiddenFromHud: !!entry.hiddenFromHud,
       host: entry.host,
+      wslDistro: entry.wslDistro,
       platform: entry.platform,
       model: entry.model,
       provider: entry.provider,
       codexOriginator: entry.codexOriginator,
       codexSource: entry.codexSource,
       contextUsage: entry.contextUsage,
+      antigravityQuota: entry.antigravityQuota,
+      claudeQuota: entry.claudeQuota,
       assistantLastOutput: entry.assistantLastOutput,
       assistantLastOutputTruncated: !!entry.assistantLastOutputTruncated,
       lastEventLabelKey: entry.lastEvent ? entry.lastEvent.labelKey : null,
@@ -350,6 +408,7 @@ function sessionSnapshotSignature(snapshot) {
 module.exports = {
   EVENT_LABEL_KEYS,
   SESSION_TITLE_MAX,
+  deriveSourceInfo,
   normalizeTitle,
   sessionUpdatedAt,
   isSessionInProgress,

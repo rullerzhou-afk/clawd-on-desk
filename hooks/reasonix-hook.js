@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Clawd — Reasonix state-only hook.
-// Registered in ~/.reasonix/settings.json by hooks/reasonix-install.js
+// Registered in <Reasonix home>/settings.json by hooks/reasonix-install.js
 //
 // All events: POST /state, fire-and-forget, exit immediately.
 // Reasonix owns its own permission flow natively (Gate + terminal prompt);
 // Clawd only observes state for the desktop pet animation.
 
-const { postStateToRunningServer, readHostPrefix } = require("./server-config");
+const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
 
 const EVENT_TO_STATE = {
@@ -96,7 +96,9 @@ readStdinJson()
 
     if (remote) {
       body.host = host;
+      applyWslSourceFields(body, { remote: true });
     } else {
+      applyWslSourceFields(body);
       const { stablePid, agentPid, detectedEditor, pidChain } = resolve();
       if (Number.isFinite(stablePid) && stablePid > 0) body.source_pid = Math.floor(stablePid);
       if (detectedEditor) body.editor = detectedEditor;
