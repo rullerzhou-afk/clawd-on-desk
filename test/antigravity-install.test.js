@@ -608,30 +608,38 @@ describe("Antigravity hook installer", () => {
     // Console.InputEncoding writer would mojibake non-ASCII under an ANSI
     // console, the raw UTF-8 write must round-trip it byte-exact.
     const payload = JSON.stringify({ session_id: "bom-check", cwd: "D:\\动画工作台" });
-    // chcp mutates the shared console's codepage, so capture and restore it —
-    // other real-PowerShell tests must never observe the forced 65001.
+    // chcp mutates the SHARED console codepage, and node --test runs test
+    // files concurrently on that console. When the console already sits at
+    // 65001 (systems with UTF-8 as the system codepage - increasingly the
+    // default) skip the mutation entirely: the BOM branch is exercised with
+    // zero cross-test pollution. Only legacy-ANSI consoles pay the (restore-
+    // bounded) mutation window; a spawnSync timeout still runs the finally,
+    // so only a hard kill of the test process itself skips the restore.
+    // (An isolated console via detached/windowsHide is not an option: it
+    // breaks stdio piping for this very test.)
     const before = spawnSync("cmd.exe", ["/d", "/s", "/c", "chcp"], { encoding: "utf8" });
     const cpMatch = (before.stdout || "").match(/\d+/);
     assert.strictEqual(before.status, 0, "must be able to query the console codepage");
     assert.ok(cpMatch, "must be able to parse the console codepage for restore");
+    const alreadyUtf8 = cpMatch && cpMatch[0] === "65001";
     try {
-      // && (not &): if forcing 65001 fails, the wrapper must NOT run — under
+      // && (not &): if forcing 65001 fails, the wrapper must NOT run - under
       // the original ANSI codepage this test would silently pass without ever
       // exercising the BOM branch.
       const result = spawnSync(
         "cmd.exe",
-        ["/d", "/s", "/c", `chcp 65001>nul && ${command}`],
+        ["/d", "/s", "/c", alreadyUtf8 ? command : `chcp 65001>nul && ${command}`],
         { input: payload, encoding: "utf8", timeout: 30000 }
       );
       assert.strictEqual(result.status, 0);
       const parsed = JSON.parse(result.stdout);
       // Pre-#638 the .NET StandardInput writer flushed a UTF-8 BOM preamble
-      // under CP 65001, so the hook saw "\uFEFF" + payload (or a lone BOM on
+      // under CP 65001, so the hook saw "﻿" + payload (or a lone BOM on
       // the empty watchdog path).
       assert.strictEqual(parsed.got.charCodeAt(0) === 0xFEFF, false, "hook stdin must not carry a BOM");
       assert.deepStrictEqual(parsed, { got: payload });
     } finally {
-      if (cpMatch) spawnSync("cmd.exe", ["/d", "/s", "/c", `chcp ${cpMatch[0]}`], { encoding: "utf8" });
+      if (cpMatch && !alreadyUtf8) spawnSync("cmd.exe", ["/d", "/s", "/c", `chcp ${cpMatch[0]}`], { encoding: "utf8" });
     }
   });
 
