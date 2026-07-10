@@ -4,8 +4,8 @@ const path = require("path");
 const { sessionAliasKey } = require("./session-alias");
 const { getSessionFocusTarget } = require("./session-focus");
 const {
-  buildLatestLocalCodexProcessIds,
-  isSupersededLocalCodexProcessSession,
+  buildLatestLocalAgentProcessIds,
+  isSupersededLocalAgentProcessSession,
 } = require("./state-session-dedupe");
 const { readCodexThreadName } = require("../hooks/codex-session-index");
 const { normalizeQuotaGroup } = require("../hooks/quota-bucket");
@@ -139,6 +139,12 @@ function shouldAutoClearDetachedSession(session, badge, options = {}) {
   return !isProcessAlive(session.sourcePid);
 }
 
+function shouldHideInactiveWorkBuddyHudSession(session, badge) {
+  if (!session || session.agentId !== "workbuddy" || session.host || session.headless) return false;
+  if (session.state !== "idle") return false;
+  return badge === "idle" || badge === "done";
+}
+
 function getSessionAliasEntry(id, sessionLike, sessionAliases = {}) {
   const scopedAliasKey = sessionAliasKey(
     sessionLike && sessionLike.host,
@@ -216,7 +222,8 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     : () => null;
   const state = (session && session.state) || "idle";
   const hiddenFromHud = shouldAutoClearDetachedSession(session, badge, options)
-    || isSupersededLocalCodexProcessSession(id, session, options.latestLocalCodexProcessIds);
+    || shouldHideInactiveWorkBuddyHudSession(session, badge)
+    || isSupersededLocalAgentProcessSession(id, session, options.latestLocalAgentProcessIds);
   const focusTarget = session && !session.headless && state !== "sleeping" && !hiddenFromHud
     ? getSessionFocusTarget({ ...(session || {}), id }, {
       osPlatform: options.focusHostPlatform || options.osPlatform,
@@ -298,11 +305,11 @@ function buildSessionSnapshot(sessions, options = {}) {
   const sessionAliases = options.sessionAliases && typeof options.sessionAliases === "object"
     ? options.sessionAliases
     : {};
-  const latestLocalCodexProcessIds = buildLatestLocalCodexProcessIds(sessions);
+  const latestLocalAgentProcessIds = buildLatestLocalAgentProcessIds(sessions);
   for (const [id, session] of normalizeSessionsIterable(sessions)) {
     entries.push(buildSessionSnapshotEntry(id, session, sessionAliases, {
       ...options,
-      latestLocalCodexProcessIds,
+      latestLocalAgentProcessIds,
     }));
   }
 
