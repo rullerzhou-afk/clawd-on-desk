@@ -93,6 +93,7 @@ const {
   removeFromWsl,
   setAgentFlag,
   setAgentPermissionMode,
+  setWorkBuddyCustomPermissionUrl,
   uninstallAgentIntegration,
   repairAgentIntegration,
 } = require("./settings-actions-agents");
@@ -134,10 +135,12 @@ const {
 } = require("./feishu-approval-settings");
 const { EVENTS: TELEGRAM_MIGRATION_EVENTS } = require("./telegram-migration-state");
 
+// Only the Step-3 enable switch dispatches from the renderer since the
+// migration card retired: turn-on tests native, turn-off disables. The
+// legacy-enable / rollback transitions stay in the reducer for main-side
+// integrity but are no longer renderer-callable.
 const TELEGRAM_MIGRATION_RENDERER_EVENTS = new Set([
   TELEGRAM_MIGRATION_EVENTS.USER_TEST_NATIVE,
-  TELEGRAM_MIGRATION_EVENTS.USER_ENABLE_LEGACY,
-  TELEGRAM_MIGRATION_EVENTS.USER_ROLLBACK_TO_LEGACY,
   TELEGRAM_MIGRATION_EVENTS.USER_DISABLE,
 ]);
 
@@ -149,6 +152,7 @@ const MANAGED_CLEANUP_AGENT_IDS = Object.freeze([
   "gemini-cli",
   "antigravity-cli",
   "codebuddy",
+  "workbuddy",
   "kiro-cli",
   "kimi-cli",
   "qwen-code",
@@ -1082,14 +1086,6 @@ async function telegramApprovalSetToken(payload, deps = {}) {
   return { status: "ok", tokenStored: true };
 }
 
-async function telegramApprovalDeleteTokenFile(_payload, deps = {}) {
-  if (!deps || typeof deps.deleteTelegramApprovalTokenFile !== "function") {
-    return { status: "error", message: "telegramApproval.deleteTokenFile requires deleteTelegramApprovalTokenFile dep" };
-  }
-  const result = await deps.deleteTelegramApprovalTokenFile();
-  return result || { status: "error", message: "Telegram token file delete returned no result" };
-}
-
 function telegramApprovalStatus(_payload, deps = {}) {
   if (!deps || typeof deps.getTelegramApprovalStatus !== "function") {
     return { status: "error", message: "telegramApproval.status requires getTelegramApprovalStatus dep" };
@@ -1147,7 +1143,6 @@ async function telegramMigrationDispatch(payload, deps = {}) {
 }
 
 telegramMigrationDispatch.lockKey = "tgApproval";
-telegramApprovalDeleteTokenFile.lockKey = "tgApproval";
 
 async function telegramApprovalSendTest(_payload, deps = {}) {
   if (!deps || typeof deps.sendTelegramApprovalTest !== "function") {
@@ -1357,6 +1352,7 @@ const commandRegistry = {
   installAgentIntegration,
   removeFromWsl,
   repairAgentIntegration,
+  setWorkBuddyCustomPermissionUrl,
   uninstallAgentIntegration,
   repairLocalServer,
   repairDoctorIssue,
@@ -1385,7 +1381,6 @@ const commandRegistry = {
   "remoteSsh.markDeployed": remoteSshMarkDeployed,
   "remoteSsh.markRemoteNode": remoteSshMarkRemoteNode,
   "telegramApproval.setToken": telegramApprovalSetToken,
-  "telegramApproval.deleteTokenFile": telegramApprovalDeleteTokenFile,
   "telegramApproval.status": telegramApprovalStatus,
   "telegramApproval.tokenInfo": telegramApprovalTokenInfo,
   "telegramApproval.test": telegramApprovalSendTest,
