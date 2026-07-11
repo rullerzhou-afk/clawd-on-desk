@@ -91,6 +91,9 @@ function initSkyLight() {
     "void *",
     "int",
   ]);
+  // #640 Phase 2: pulling a window back OUT of the private space (de-delegation).
+  const SLSRemoveWindowsFromSpaces = lib.func("SLSRemoveWindowsFromSpaces", "int", ["int", "void *", "void *"]);
+  const SLSGetActiveSpace = lib.func("SLSGetActiveSpace", "uint64", ["int"]);
 
   const connection = SLSMainConnectionID();
   const space = SLSSpaceCreate(connection, 1, 0);
@@ -99,6 +102,8 @@ function initSkyLight() {
     connection,
     space,
     SLSSpaceAddWindowsAndRemoveFromSpaces,
+    SLSRemoveWindowsFromSpaces,
+    SLSGetActiveSpace,
   };
 
   // Same strategy as Masko Code: create an absolute-level system Space that is
@@ -190,6 +195,60 @@ function applyStationaryCollectionBehavior(browserWindow) {
   }
 }
 
+// #640 Phase 2 — reverse of applyStationaryCollectionBehavior's space delegation.
+// While a text field is focused the editing bubble drops to the normal window
+// level (#626), but the pet stays in the private absolute-level-100 space and
+// keeps covering — and eating clicks over — that bubble. This pulls the given
+// window OUT of the private space so its normal window level applies again and
+// it sits BEHIND the bubble. Restore by re-running applyStationaryCollectionBehavior
+// (idempotent: re-adds to the private space and restores the assistive-tech level).
+//
+// Two non-obvious points, both confirmed by real-machine probing:
+//  - Adding the window to the active space is NOT enough; it stays a member of
+//    the private space (whose absolute level dominates) until it is explicitly
+//    removed via SLSRemoveWindowsFromSpaces.
+//  - The SkyLight calls return a non-zero status (6619136) even on success, so
+//    the return code is deliberately ignored.
+function deDelegateWindowFromStationarySpace(browserWindow, level = 0) {
+  if (!isMac || !browserWindow || browserWindow.isDestroyed()) return false;
+  try {
+    const { msgPtr, msgLong, msgVoidLong } = initObjc();
+    const nsView = nativeHandleToPointer(browserWindow.getNativeWindowHandle());
+    if (!nsView) return false;
+    const nsWindow = msgPtr(nsView, selWindow);
+    if (!nsWindow) return false;
+    const windowNumber = Number(msgLong(nsWindow, selWindowNumber)) || 0;
+    if (!windowNumber) return false;
+
+    const {
+      connection,
+      space,
+      SLSRemoveWindowsFromSpaces,
+      SLSSpaceAddWindowsAndRemoveFromSpaces,
+      SLSGetActiveSpace,
+    } = initSkyLight();
+
+    // 1. Explicitly leave the private absolute-level space.
+    SLSRemoveWindowsFromSpaces(connection, makeNSNumberArray(windowNumber), makeNSNumberArray(space));
+    // 2. Land in the current user space so the window keeps a valid on-screen home.
+    const activeSpace = Number(BigInt(SLSGetActiveSpace(connection))) || 0;
+    if (activeSpace) {
+      SLSSpaceAddWindowsAndRemoveFromSpaces(connection, activeSpace, makeNSNumberArray(windowNumber), 7);
+    }
+    // 3. Drop the native level applyStationaryCollectionBehavior raised to
+    //    CGAssistiveTechHighWindowLevel (Electron's setAlwaysOnTop can't undo it).
+    msgVoidLong(nsWindow, selSetLevel, level);
+    return true;
+  } catch (err) {
+    if (!warnedSkyLightFailure) {
+      console.warn("Clawd: failed to de-delegate window from stationary SkyLight space:", err.message);
+      warnedSkyLightFailure = true;
+    }
+    return false;
+  }
+}
+
 module.exports = {
   applyStationaryCollectionBehavior,
+  deDelegateWindowFromStationarySpace,
 };

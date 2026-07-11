@@ -834,11 +834,14 @@ describe("topmost runtime macOS visibility", () => {
 });
 
 describe("IME editing pet dodge (#640)", () => {
-  function makeDodgeSetup(overrides = {}) {
+  function makeDodgeSetup({ deDelegateResult = true, ...overrides } = {}) {
     const pet = new FakeWindow();
     const hit = new FakeWindow();
     const bubble = new FakeWindow({ bounds: { x: 100, y: 100, width: 300, height: 200 } });
-    bubble.__clawdMacImeEditing = true;
+    // #640 phase 2: the dodge triggers on overlapping a TEXT-INPUT bubble, set
+    // at bubble creation — NOT on a focused field (__clawdMacImeEditing). No ime
+    // flag here on purpose: the pet must step back the moment the bubble appears,
+    // before the user ever clicks into the box.
     bubble.__clawdMacTextInputBubble = true;
     const runtime = createTopmostRuntime({
       isMac: true,
@@ -850,21 +853,31 @@ describe("IME editing pet dodge (#640)", () => {
       // exactly what the first real-machine run caught the arbiter mishandling.
       getHitRectScreen: () => ({ left: 320, top: 240, right: 440, bottom: 360 }),
       imeEditingFadeMs: 0,
-      applyStationaryCollectionBehavior: () => true,
+      // Record which native primitive ran on each window: applyStationary
+      // re-delegates into the private space (on top); deDelegate pulls it out
+      // (behind). deDelegateResult toggles the fade-fallback path (#640 phase 2).
+      applyStationaryCollectionBehavior: (window) => {
+        window.calls.push(["applyStationary"]);
+        return true;
+      },
+      deDelegateWindowFromStationarySpace: (window, level) => {
+        window.calls.push(["deDelegate", level]);
+        return deDelegateResult;
+      },
       ...overrides,
     });
     return { pet, hit, bubble, runtime };
   }
 
-  it("fades the pet and lets clicks through while the editing bubble overlaps the sprite", () => {
+  it("drops the pet behind the bubble and lets clicks through while it overlaps the sprite", () => {
     const { pet, hit, runtime } = makeDodgeSetup();
 
     runtime.syncImeEditingPetDodge();
 
-    assert.deepStrictEqual(pet.calls, [
-      ["setOpacity", createTopmostRuntime.IME_EDIT_PET_FADE_OPACITY],
-    ]);
-    assert.deepStrictEqual(hit.calls, [["setIgnoreMouseEvents", true]]);
+    // Native path: both pet windows de-delegated out of the private space
+    // (behind the bubble); the render window stays fully opaque.
+    assert.deepStrictEqual(pet.calls, [["deDelegate", 0], ["setOpacity", 1]]);
+    assert.deepStrictEqual(hit.calls, [["deDelegate", 0], ["setIgnoreMouseEvents", true]]);
   });
 
   it("is edge-triggered: repeated syncs while overlapping do not repeat window calls", () => {
@@ -874,24 +887,39 @@ describe("IME editing pet dodge (#640)", () => {
     runtime.syncImeEditingPetDodge();
     runtime.syncImeEditingPetDodge();
 
-    assert.strictEqual(pet.calls.length, 1);
-    assert.strictEqual(hit.calls.length, 1);
+    assert.strictEqual(pet.calls.length, 2, "deDelegate + setOpacity, once");
+    assert.strictEqual(hit.calls.length, 2, "deDelegate + ignore-mouse, once");
   });
 
-  it("restores the pet when the text field blurs (flag cleared)", () => {
+  it("stays behind while the bubble is up regardless of field focus (blur does NOT restore)", () => {
+    const { pet, hit, bubble, runtime } = makeDodgeSetup();
+
+    runtime.syncImeEditingPetDodge();          // bubble overlaps → pet drops behind
+    bubble.__clawdMacImeEditing = true;        // user focuses the field
+    runtime.syncImeEditingPetDodge();
+    delete bubble.__clawdMacImeEditing;         // user blurs the field, bubble still up
+    runtime.syncImeEditingPetDodge();
+
+    // Focus/blur must not retrigger anything — the trigger is overlap, not focus.
+    // The pet stepped back exactly once and stays there while the bubble is up.
+    assert.deepStrictEqual(pet.calls, [["deDelegate", 0], ["setOpacity", 1]]);
+    assert.deepStrictEqual(hit.calls, [["deDelegate", 0], ["setIgnoreMouseEvents", true]]);
+  });
+
+  it("restores the pet when the text-input bubble goes away (flag cleared)", () => {
     const { pet, hit, bubble, runtime } = makeDodgeSetup();
 
     runtime.syncImeEditingPetDodge();
-    delete bubble.__clawdMacImeEditing;
+    delete bubble.__clawdMacTextInputBubble;
     runtime.syncImeEditingPetDodge();
 
     assert.deepStrictEqual(pet.calls, [
-      ["setOpacity", createTopmostRuntime.IME_EDIT_PET_FADE_OPACITY],
-      ["setOpacity", 1],
+      ["deDelegate", 0], ["setOpacity", 1],
+      ["applyStationary"], ["setOpacity", 1],
     ]);
     assert.deepStrictEqual(hit.calls, [
-      ["setIgnoreMouseEvents", true],
-      ["setIgnoreMouseEvents", false],
+      ["deDelegate", 0], ["setIgnoreMouseEvents", true],
+      ["applyStationary"], ["setIgnoreMouseEvents", false],
     ]);
   });
 
@@ -906,9 +934,12 @@ describe("IME editing pet dodge (#640)", () => {
     perms.length = 0;
     runtime.syncImeEditingPetDodge();
 
-    assert.deepStrictEqual(pet.calls.map((c) => c[0]), ["setOpacity", "setOpacity"]);
-    assert.deepStrictEqual(pet.calls[1], ["setOpacity", 1]);
-    assert.deepStrictEqual(hit.calls[1], ["setIgnoreMouseEvents", false]);
+    assert.deepStrictEqual(
+      pet.calls.map((c) => c[0]),
+      ["deDelegate", "setOpacity", "applyStationary", "setOpacity"]
+    );
+    assert.deepStrictEqual(pet.calls[pet.calls.length - 1], ["setOpacity", 1]);
+    assert.deepStrictEqual(hit.calls[hit.calls.length - 1], ["setIgnoreMouseEvents", false]);
   });
 
   it("does nothing while editing without geometric overlap", () => {
@@ -930,9 +961,7 @@ describe("IME editing pet dodge (#640)", () => {
 
     runtime.syncImeEditingPetDodge();
 
-    assert.deepStrictEqual(pet.calls, [
-      ["setOpacity", createTopmostRuntime.IME_EDIT_PET_FADE_OPACITY],
-    ]);
+    assert.deepStrictEqual(pet.calls, [["deDelegate", 0], ["setOpacity", 1]]);
   });
 
   it("does nothing off macOS", () => {
@@ -949,9 +978,15 @@ describe("IME editing pet dodge (#640)", () => {
 
     runtime.reapplyMacVisibility();
 
+    // The dodge fires at the end of the pass: the pet is de-delegated behind the
+    // bubble and left fully opaque, and the hit window goes click-through.
+    assert.deepStrictEqual(
+      pet.calls.filter((c) => c[0] === "deDelegate"),
+      [["deDelegate", 0]]
+    );
     assert.deepStrictEqual(
       pet.calls.filter((c) => c[0] === "setOpacity"),
-      [["setOpacity", createTopmostRuntime.IME_EDIT_PET_FADE_OPACITY]]
+      [["setOpacity", 1]]
     );
     assert.deepStrictEqual(
       hit.calls.filter((c) => c[0] === "setIgnoreMouseEvents"),
@@ -959,21 +994,36 @@ describe("IME editing pet dodge (#640)", () => {
     );
   });
 
+  it("keeps the pet de-delegated on later passes instead of re-delegating it on top", () => {
+    const { pet, hit, runtime } = makeDodgeSetup();
+
+    runtime.reapplyMacVisibility();  // establishes the overlap + de-delegation
+    pet.calls.length = 0;
+    hit.calls.length = 0;
+    runtime.reapplyMacVisibility();  // second pass while still overlapping
+
+    // apply() must re-de-delegate the pet windows, NOT re-run applyStationary
+    // (which would re-insert them into the private absolute-level space on top).
+    assert.deepStrictEqual(pet.calls, [["deDelegate", 0]]);
+    assert.deepStrictEqual(hit.calls, [["deDelegate", 0]]);
+  });
+
   // #640/F3: Electron's setIgnoreMouseEvents makes no promise about toggling
   // mid-gesture, so the click-through write is deferred while a drag is in
-  // flight; the fade is not (the mid-drag fade transition is the hands-on-
-  // verified experience). Drag-lock release re-runs the sync to apply it.
+  // flight; the space moves (de-delegate / applyStationary) are not — they are
+  // the same class of setLevel/space op the visibility pass already runs on
+  // these windows mid-drag, and dropping the pet behind is the hands-on-verified
+  // mid-drag experience. Drag-lock release re-runs the sync to apply the write.
   describe("drag-lock deferral", () => {
-    it("fades mid-drag but defers the click-through write", () => {
+    it("drops the pet behind mid-drag but defers the click-through write", () => {
       const { pet, hit, runtime } = makeDodgeSetup({ isDragLocked: () => true });
 
       runtime.syncImeEditingPetDodge();
 
-      assert.deepStrictEqual(pet.calls, [
-        ["setOpacity", createTopmostRuntime.IME_EDIT_PET_FADE_OPACITY],
-      ], "the fade still runs mid-drag");
-      assert.deepStrictEqual(hit.calls, [],
-        "the ignore-mouse write must wait until the drag ends");
+      assert.deepStrictEqual(pet.calls, [["deDelegate", 0], ["setOpacity", 1]],
+        "the render window steps back mid-drag");
+      assert.deepStrictEqual(hit.calls, [["deDelegate", 0]],
+        "the hit window drops behind, but the ignore-mouse write waits for drag end");
     });
 
     it("applies the deferred click-through on the first sync after the drag ends", () => {
@@ -984,51 +1034,92 @@ describe("IME editing pet dodge (#640)", () => {
       dragging = false;
       runtime.syncImeEditingPetDodge();
 
-      assert.deepStrictEqual(hit.calls, [["setIgnoreMouseEvents", true]]);
-      assert.strictEqual(pet.calls.length, 1,
-        "the fade already ran mid-drag; the post-drag sync only applies the write");
+      assert.deepStrictEqual(hit.calls, [["deDelegate", 0], ["setIgnoreMouseEvents", true]]);
+      assert.strictEqual(pet.calls.length, 2,
+        "the render step already ran mid-drag; the post-drag sync only applies the write");
 
       runtime.syncImeEditingPetDodge();
-      assert.strictEqual(hit.calls.length, 1, "the applied write is edge-triggered");
+      assert.strictEqual(hit.calls.length, 2, "the applied write is edge-triggered");
     });
 
     it("skips the write entirely when the overlap ended before the drag did", () => {
       let dragging = true;
       const { pet, hit, bubble, runtime } = makeDodgeSetup({ isDragLocked: () => dragging });
 
-      runtime.syncImeEditingPetDodge();       // overlap while dragging → fade only
-      delete bubble.__clawdMacImeEditing;     // edit ends mid-drag
-      runtime.syncImeEditingPetDodge();       // fade back, still no write
+      runtime.syncImeEditingPetDodge();       // overlap while dragging → step back
+      delete bubble.__clawdMacTextInputBubble; // bubble closes mid-drag
+      runtime.syncImeEditingPetDodge();       // restore, still no write
       dragging = false;
       runtime.syncImeEditingPetDodge();       // drag ends: nothing left to apply
 
-      assert.deepStrictEqual(pet.calls.map((c) => c[1]), [
-        createTopmostRuntime.IME_EDIT_PET_FADE_OPACITY, 1,
-      ]);
-      assert.deepStrictEqual(hit.calls, [],
+      assert.deepStrictEqual(pet.calls.map((c) => c[0]),
+        ["deDelegate", "setOpacity", "applyStationary", "setOpacity"]);
+      assert.ok(!hit.calls.some((c) => c[0] === "setIgnoreMouseEvents"),
         "never went click-through, so nothing to undo");
     });
   });
 
-  // #640: external opacity writers (theme-switch fade) restore to this value
-  // instead of a hardcoded 1, so a theme reload mid-edit lands back on the
-  // dodge baseline rather than planting an opaque pet over the input box.
-  it("getPetTargetOpacity tracks the dodge state", () => {
+  // #640 phase 2: when native de-delegation is unavailable (FFI load failure
+  // returns false) the pet falls back to fading in place instead of dropping
+  // behind, and stays in the private space (on top) so apply() keeps
+  // re-delegating rather than de-delegating it.
+  describe("fade fallback when native de-delegation is unavailable", () => {
+    it("fades the pet instead of dropping it behind when de-delegation returns false", () => {
+      const { pet, hit, runtime } = makeDodgeSetup({ deDelegateResult: false });
+
+      runtime.syncImeEditingPetDodge();
+
+      assert.deepStrictEqual(pet.calls, [
+        ["deDelegate", 0],
+        ["setOpacity", createTopmostRuntime.IME_EDIT_PET_FADE_OPACITY],
+      ]);
+      assert.deepStrictEqual(hit.calls, [["deDelegate", 0], ["setIgnoreMouseEvents", true]]);
+    });
+
+    it("does not de-delegate pet windows on later passes in fallback mode", () => {
+      const { pet, runtime } = makeDodgeSetup({ deDelegateResult: false });
+
+      runtime.reapplyMacVisibility();
+      pet.calls.length = 0;
+      runtime.reapplyMacVisibility();
+
+      // Faded-in-place → the pet must stay in the private space, so apply()
+      // re-delegates it and never de-delegates.
+      assert.ok(!pet.calls.some((c) => c[0] === "deDelegate"));
+      assert.ok(pet.calls.some((c) => c[0] === "applyStationary"));
+    });
+
+    it("getPetTargetOpacity reports the faded baseline in fallback mode", () => {
+      const { bubble, runtime } = makeDodgeSetup({ deDelegateResult: false });
+
+      runtime.syncImeEditingPetDodge();
+      assert.strictEqual(
+        runtime.getPetTargetOpacity(),
+        createTopmostRuntime.IME_EDIT_PET_FADE_OPACITY,
+        "while fading in place, the baseline is the faded value"
+      );
+
+      delete bubble.__clawdMacTextInputBubble;
+      runtime.syncImeEditingPetDodge();
+      assert.strictEqual(runtime.getPetTargetOpacity(), 1);
+    });
+  });
+
+  // #640 phase 2: external opacity writers (theme-switch fade) restore to this
+  // value instead of a hardcoded 1. On the native path the de-delegated pet is
+  // fully opaque (just behind), so the baseline stays 1 throughout.
+  it("getPetTargetOpacity stays 1 when the pet is de-delegated behind the bubble", () => {
     const { bubble, runtime } = makeDodgeSetup();
 
     assert.strictEqual(runtime.getPetTargetOpacity(), 1,
       "before any sync the baseline is full opacity");
 
     runtime.syncImeEditingPetDodge();
-    assert.strictEqual(
-      runtime.getPetTargetOpacity(),
-      createTopmostRuntime.IME_EDIT_PET_FADE_OPACITY,
-      "while dodging, the baseline is the faded value"
-    );
-
-    delete bubble.__clawdMacImeEditing;
-    runtime.syncImeEditingPetDodge();
     assert.strictEqual(runtime.getPetTargetOpacity(), 1,
-      "after the edit ends the baseline returns to full opacity");
+      "de-delegated behind the bubble, the pet is fully opaque");
+
+    delete bubble.__clawdMacTextInputBubble;
+    runtime.syncImeEditingPetDodge();
+    assert.strictEqual(runtime.getPetTargetOpacity(), 1);
   });
 });

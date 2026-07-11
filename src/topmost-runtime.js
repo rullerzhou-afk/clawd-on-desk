@@ -2,6 +2,7 @@
 
 const {
   applyStationaryCollectionBehavior: defaultApplyStationaryCollectionBehavior,
+  deDelegateWindowFromStationarySpace: defaultDeDelegateWindowFromStationarySpace,
 } = require("./mac-window");
 const { animateWindowOpacity } = require("./window-opacity-transition");
 
@@ -77,6 +78,11 @@ function createTopmostRuntime(options = {}) {
   const isMiniTransitioning = options.isMiniTransitioning || (() => false);
   const applyStationaryCollectionBehavior = options.applyStationaryCollectionBehavior
     || defaultApplyStationaryCollectionBehavior;
+  // #640 phase 2: pulls a pet window OUT of the SkyLight private space so it
+  // drops to a normal window level and sits BEHIND the editing bubble instead
+  // of merely fading. Restore is applyStationaryCollectionBehavior (idempotent).
+  const deDelegateWindowFromStationarySpace = options.deDelegateWindowFromStationarySpace
+    || defaultDeDelegateWindowFromStationarySpace;
   const keepOutOfTaskbar = options.keepOutOfTaskbar || (() => {});
   // Windows-only: when a fullscreen app/game owns the foreground, the watchdog
   // and always-on-top guard stand down so we stop clawing the pet back over it
@@ -117,9 +123,15 @@ function createTopmostRuntime(options = {}) {
   let focusablePoll = null;
   let hwndRecoveryTimer = null;
   let pendingNudgeRestore = null;
-  // #640 editing-overlap dodge state: true while the pet is faded +
-  // click-through because it overlaps the bubble being typed into.
+  // #640 editing-overlap dodge state: true while the pet is stepped back
+  // (de-delegated behind, or faded as fallback) + click-through because it
+  // overlaps the bubble being typed into.
   let imeEditingPetDodge = false;
+  // #640 phase 2: true only while the dodge is active AND native de-delegation
+  // was unavailable, so we're falling back to fading the pet rather than
+  // dropping it behind the bubble. Drives getPetTargetOpacity so external
+  // opacity writers (theme-switch fade) restore the right baseline.
+  let imeEditingFadeFallback = false;
   // Tracked separately from the dodge boolean: the hit window's click-through
   // write is deferred while a drag is in flight (see syncImeEditingPetDodge),
   // so "what we want" and "what we last wrote" can legitimately differ.
@@ -144,6 +156,34 @@ function createTopmostRuntime(options = {}) {
     if (isLiveWindow(hitWin)) hitWin.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
   }
 
+  // The pet is drawn by two stacked windows: the render window (getWin) and the
+  // transparent hit window above it (getHitWin). The #640 dodge acts on both.
+  function isPetWindow(win) {
+    return win === getWin() || win === getHitWin();
+  }
+
+  // #640 phase 2: pull both pet windows out of the SkyLight private space so
+  // they fall to a normal level and sit behind the editing bubble. Success is
+  // judged by the render window (that's what determines visibility / whether the
+  // fade fallback is needed); the hit window is de-delegated for click ordering.
+  function applyPetDeDelegate() {
+    const win = getWin();
+    const hitWin = getHitWin();
+    let renderDeDelegated = false;
+    if (isLiveWindow(win)) renderDeDelegated = deDelegateWindowFromStationarySpace(win, 0);
+    if (isLiveWindow(hitWin)) deDelegateWindowFromStationarySpace(hitWin, 0);
+    return renderDeDelegated;
+  }
+
+  // #640 phase 2: reverse of applyPetDeDelegate — re-delegate both pet windows
+  // back into the private space at the assistive-tech level (idempotent).
+  function restorePetDelegate() {
+    const win = getWin();
+    const hitWin = getHitWin();
+    if (isLiveWindow(win)) applyStationaryCollectionBehavior(win);
+    if (isLiveWindow(hitWin)) applyStationaryCollectionBehavior(hitWin);
+  }
+
   function reapplyMacVisibility() {
     if (!isMac) return;
     const applyElectronCrossSpace = (win) => {
@@ -166,6 +206,16 @@ function createTopmostRuntime(options = {}) {
       if (win.__clawdMacImeEditing) {
         win.setAlwaysOnTop(false);
         if (win.__clawdMacTextInputBubble) applyElectronCrossSpace(win);
+        return;
+      }
+      // #640 phase 2: while the editing-overlap dodge is active, the pet's
+      // render + hit windows must stay OUT of the private space so they sit
+      // behind the bubble. Re-running applyStationaryCollectionBehavior below
+      // would re-delegate them to the absolute-level space (back on top) every
+      // pass; syncImeEditingPetDodge is edge-triggered and wouldn't undo that
+      // until the overlap state changed. deDelegate is idempotent, so re-run it.
+      if (imeEditingPetDodge && !imeEditingFadeFallback && isPetWindow(win)) {
+        deDelegateWindowFromStationarySpace(win, 0);
         return;
       }
       win.setAlwaysOnTop(true, MAC_TOPMOST_LEVEL);
@@ -197,12 +247,36 @@ function createTopmostRuntime(options = {}) {
     syncImeEditingPetDodge();
   }
 
-  function findImeEditingBubble() {
+  // #640 Phase 2: the dodge triggers on the pet OVERLAPPING a text-input bubble
+  // (permission.js flags elicitation / ExitPlanMode bubbles __clawdMacTextInputBubble
+  // at creation) — NOT merely on a focused text field (__clawdMacImeEditing).
+  // Why: #626 deliberately keeps text-input bubbles OUT of the SkyLight private
+  // space so the OS IME candidate window can surface, but that same treatment
+  // leaves the pet (private space, assistive-tech level) sitting ON TOP of them
+  // from the moment they appear — covering the options and the input box before
+  // the user ever focuses it. #626 unified both bubble kinds under one model, so
+  // the pet must step back for the whole overlapping bubble, not just while
+  // typing. (A focused field is a strict subset: those bubbles are text-input
+  // bubbles too.) Permission (options-only) bubbles get the same private-space
+  // treatment as the pet, so they coexist in one level band and are unaffected.
+  function petOverlapsTextInputBubble() {
+    let petRect = null;
+    let petRectComputed = false;
     for (const perm of getPendingPermissions() || []) {
       const bubble = perm && perm.bubble;
-      if (isLiveWindow(bubble) && bubble.__clawdMacImeEditing) return bubble;
+      if (!isLiveWindow(bubble) || !bubble.__clawdMacTextInputBubble) continue;
+      if (typeof bubble.getBounds !== "function") continue;
+      if (!petRectComputed) {
+        const petBounds = getPetWindowBounds();
+        try { petRect = getHitRectScreen(petBounds); } catch { petRect = null; }
+        if (!petRect) petRect = petBounds;
+        petRectComputed = true;
+      }
+      let bubbleRect = null;
+      try { bubbleRect = bubble.getBounds(); } catch { bubbleRect = null; }
+      if (rectsIntersect(petRect, bubbleRect)) return true;
     }
-    return null;
+    return false;
   }
 
   function fadePetWindow(targetOpacity) {
@@ -219,14 +293,17 @@ function createTopmostRuntime(options = {}) {
     });
   }
 
-  // #640: while a bubble text field is focused (permission.js handleImeEditing,
-  // macOS only) AND the pet sprite overlaps that bubble, the pet politely steps
-  // back: its render window fades to IME_EDIT_PET_FADE_OPACITY and the hit
-  // window stops intercepting clicks, so the box being typed into stays
-  // readable and clickable underneath. The pet stays in the SkyLight private
-  // space — always above the editing bubble, which #626 drops to the normal
-  // level — so until a native space de-delegation exists (#640 phase 2) this
-  // fade is the mitigation. Edge-triggered on the overlap state; every
+  // #640: while the pet sprite overlaps a text-input bubble (macOS; see
+  // petOverlapsTextInputBubble for why the trigger is overlap, not focus) the
+  // pet politely steps back so the bubble — its options AND the box being typed
+  // into — stays readable and clickable underneath.
+  // Phase 2 (#640): the primary path pulls both pet windows OUT of the SkyLight
+  // private space (deDelegateWindowFromStationarySpace) so they drop to a normal
+  // level and sit genuinely BEHIND the bubble — fully opaque, just behind. The
+  // fade to IME_EDIT_PET_FADE_OPACITY is kept only as a FALLBACK for when native
+  // de-delegation is unavailable (FFI load failure returns false). Either way
+  // the hit window stops intercepting clicks. Edge-triggered on the overlap
+  // state; every
   // transition path funnels here: handleImeEditing calls reapplyMacVisibility,
   // pet moves call this directly (main.js), and every pendingPermissions
   // add/remove calls this via notifyPermissionsChanged (permission.js) — that
@@ -241,20 +318,20 @@ function createTopmostRuntime(options = {}) {
   // faded value rather than snapping the pet opaque over the input box.
   function syncImeEditingPetDodge() {
     if (!isMac) return;
-    const editingBubble = findImeEditingBubble();
-    let overlap = false;
-    if (editingBubble && typeof editingBubble.getBounds === "function") {
-      const petBounds = getPetWindowBounds();
-      let petRect = null;
-      try { petRect = getHitRectScreen(petBounds); } catch { petRect = null; }
-      if (!petRect) petRect = petBounds;
-      let bubbleRect = null;
-      try { bubbleRect = editingBubble.getBounds(); } catch { bubbleRect = null; }
-      overlap = rectsIntersect(petRect, bubbleRect);
-    }
+    const overlap = petOverlapsTextInputBubble();
     if (overlap !== imeEditingPetDodge) {
       imeEditingPetDodge = overlap;
-      fadePetWindow(overlap ? IME_EDIT_PET_FADE_OPACITY : 1);
+      if (overlap) {
+        // Native path: drop the pet behind the bubble. If it works the pet stays
+        // opaque (it's simply behind now); only fall back to fading when
+        // de-delegation is unavailable.
+        imeEditingFadeFallback = !applyPetDeDelegate();
+      } else {
+        // Restore the pet to the private space + assistive-tech level.
+        restorePetDelegate();
+        imeEditingFadeFallback = false;
+      }
+      fadePetWindow(imeEditingFadeFallback ? IME_EDIT_PET_FADE_OPACITY : 1);
     }
     // The click-through write is deferred while a drag is in flight: an
     // established macOS mouse-tracking session keeps delivering the drag's
@@ -275,9 +352,11 @@ function createTopmostRuntime(options = {}) {
 
   // #640: the render window's baseline opacity as far as the dodge is
   // concerned. External opacity writers that restore "full" opacity (the
-  // theme-switch fade) must ask this instead of hardcoding 1.
+  // theme-switch fade) must ask this instead of hardcoding 1. Phase 2: only the
+  // fade FALLBACK lowers opacity; when the pet is de-delegated behind the bubble
+  // it stays fully opaque, so the baseline is 1.
   function getPetTargetOpacity() {
-    return imeEditingPetDodge ? IME_EDIT_PET_FADE_OPACITY : 1;
+    return imeEditingFadeFallback ? IME_EDIT_PET_FADE_OPACITY : 1;
   }
 
   function isNearWorkAreaEdge(bounds, tolerance = 2) {
