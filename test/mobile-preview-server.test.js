@@ -740,6 +740,98 @@ describe("Rotate-on-use", () => {
     await new Promise((r) => setTimeout(r, 200));
   });
 
+  it("24h timer with a stale client → defers rotation until the client reconnects", async () => {
+    const testToken = "aabbccdd".repeat(4);
+    fs.writeFileSync(tokenFile, JSON.stringify({
+      token: testToken,
+      previous: null,
+      graceUntil: null,
+      rotatedAt: Date.now() - (24 * 60 * 60 * 1000) + 250,
+      rotationPending: false,
+    }, null, 2));
+
+    const server = initMobilePreviewServer({
+      sessions,
+      tokenPath: tokenFile,
+      clientTimeoutMs: 100,
+    });
+    let client;
+    try {
+      const port = await server.start();
+      client = connectClient(port, testToken);
+      await waitForOpen(client.ws);
+      await new Promise((r) => setTimeout(r, 350));
+
+      const persisted = JSON.parse(fs.readFileSync(tokenFile, "utf8"));
+      assert.strictEqual(persisted.rotationPending, true);
+      assert.strictEqual(persisted.token, testToken);
+    } finally {
+      if (client) client.close();
+      server.cleanup();
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  });
+
+  it("24h timer with an active client → rotates immediately", async () => {
+    const testToken = "bbccddee".repeat(4);
+    fs.writeFileSync(tokenFile, JSON.stringify({
+      token: testToken,
+      previous: null,
+      graceUntil: null,
+      rotatedAt: Date.now() - (24 * 60 * 60 * 1000) + 250,
+      rotationPending: false,
+    }, null, 2));
+
+    const server = initMobilePreviewServer({
+      sessions,
+      tokenPath: tokenFile,
+      clientTimeoutMs: 1000,
+    });
+    let client;
+    try {
+      const port = await server.start();
+      client = connectClient(port, testToken);
+      await waitForOpen(client.ws);
+
+      const rotateMsg = await client.waitFor("token_rotate");
+      const persisted = JSON.parse(fs.readFileSync(tokenFile, "utf8"));
+      assert.notStrictEqual(rotateMsg.newToken, testToken);
+      assert.strictEqual(persisted.rotationPending, false);
+      assert.strictEqual(persisted.token, rotateMsg.newToken);
+    } finally {
+      if (client) client.close();
+      server.cleanup();
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  });
+
+  it("rotationPending=true + invalid token connection leaves pending unchanged", async () => {
+    const testToken = "ccddeeff".repeat(4);
+    fs.writeFileSync(tokenFile, JSON.stringify({
+      token: testToken,
+      previous: null,
+      graceUntil: null,
+      rotatedAt: Date.now(),
+      rotationPending: true,
+    }, null, 2));
+
+    const server = initMobilePreviewServer({ sessions, tokenPath: tokenFile });
+    let client;
+    try {
+      const port = await server.start();
+      client = connectClient(port, "deadbeef".repeat(4));
+      assert.strictEqual(await waitForClose(client.ws), 1008);
+
+      const persisted = JSON.parse(fs.readFileSync(tokenFile, "utf8"));
+      assert.strictEqual(persisted.rotationPending, true);
+      assert.strictEqual(persisted.token, testToken);
+    } finally {
+      if (client) client.close();
+      server.cleanup();
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  });
+
   it("rotationPending=true + client connects → receives token_rotate", async () => {
     const testToken = "11223344".repeat(4);
     const setupRotatedAt = Date.now();

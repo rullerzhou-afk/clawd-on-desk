@@ -87,6 +87,9 @@ function isPathInside(parent, child) {
 function initMobilePreviewServer(ctx) {
   const tokenPath = (ctx && ctx.tokenPath) || TOKEN_PATH;
   const now = () => (ctx && ctx.now && ctx.now()) || Date.now();
+  const clientTimeoutMs = ctx && typeof ctx.clientTimeoutMs === "number"
+    ? ctx.clientTimeoutMs
+    : CLIENT_TIMEOUT_MS;
   const writeTokenState = ctx && typeof ctx.writeTokenState === "function"
     ? ctx.writeTokenState
     : atomicWrite;
@@ -148,13 +151,21 @@ function initMobilePreviewServer(ctx) {
     return true;
   }
 
+  function hasActiveClients() {
+    const nowMs = Date.now();
+    for (const meta of clientMeta.values()) {
+      if (nowMs - meta.lastPong < clientTimeoutMs) return true;
+    }
+    return false;
+  }
+
   function scheduleRotation() {
     if (tokenState.rotationPending) return;
     if (rotationTimer) clearTimeout(rotationTimer);
     const msUntilRotate = Math.max(0, (tokenState.rotatedAt + ROTATION_INTERVAL_MS) - now());
     rotationTimer = setTimeout(() => {
       rotationTimer = null;
-      if (clients.size > 0) {
+      if (hasActiveClients()) {
         if (!performRotation()) {
           scheduleRotationRetry();
           return;
@@ -356,7 +367,7 @@ function initMobilePreviewServer(ctx) {
       const nowMs = Date.now();
       for (const c of clients) {
         const meta = clientMeta.get(c);
-        if (c.isAlive === false || (meta && nowMs - meta.lastPong > CLIENT_TIMEOUT_MS)) {
+        if (c.isAlive === false || (meta && nowMs - meta.lastPong > clientTimeoutMs)) {
           c.terminate();
           clients.delete(c);
           clientMeta.delete(c);
