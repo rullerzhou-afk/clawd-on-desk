@@ -90,6 +90,10 @@ function initMobilePreviewServer(ctx) {
   const clientTimeoutMs = ctx && typeof ctx.clientTimeoutMs === "number"
     ? ctx.clientTimeoutMs
     : CLIENT_TIMEOUT_MS;
+  const rotationProbeMs = ctx && typeof ctx.rotationProbeMs === "number"
+    ? ctx.rotationProbeMs
+    : 5000;
+  const requestedPort = ctx && Number.isInteger(ctx.port) ? ctx.port : null;
   const writeTokenState = ctx && typeof ctx.writeTokenState === "function"
     ? ctx.writeTokenState
     : atomicWrite;
@@ -102,6 +106,7 @@ function initMobilePreviewServer(ctx) {
   let activePort = null;
   let heartbeatTimer = null;
   let rotationTimer = null;
+  let rotationProbeCancel = null;
   let closed = false;
 
   // ── Token rotation ──
@@ -151,12 +156,40 @@ function initMobilePreviewServer(ctx) {
     return true;
   }
 
-  function hasActiveClients() {
-    const nowMs = Date.now();
-    for (const meta of clientMeta.values()) {
-      if (nowMs - meta.lastPong < clientTimeoutMs) return true;
-    }
-    return false;
+  function probeClientsBeforeRotation() {
+    const candidates = [...clients].filter((c) => c.readyState === WebSocket.OPEN);
+    if (candidates.length === 0) return Promise.resolve(false);
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const responders = new Set();
+      const handlers = new Map();
+      const finish = (allResponded) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        for (const [client, handler] of handlers) client.removeListener("pong", handler);
+        rotationProbeCancel = null;
+        resolve(allResponded && responders.size === candidates.length);
+      };
+      const timer = setTimeout(() => finish(false), rotationProbeMs);
+      rotationProbeCancel = () => finish(false);
+      const probePayload = Buffer.from(`rotation-probe:${crypto.randomBytes(8).toString("hex")}`);
+
+      for (const client of candidates) {
+        const handler = (data) => {
+          const pongPayload = Buffer.isBuffer(data) ? data : Buffer.from(data || "");
+          if (!pongPayload.equals(probePayload)) return;
+          responders.add(client);
+          if (responders.size === candidates.length) finish(true);
+        };
+        handlers.set(client, handler);
+        client.once("pong", handler);
+      }
+      for (const client of candidates) {
+        try { client.ping(probePayload); } catch { finish(false); }
+      }
+    });
   }
 
   function scheduleRotation() {
@@ -165,11 +198,25 @@ function initMobilePreviewServer(ctx) {
     const msUntilRotate = Math.max(0, (tokenState.rotatedAt + ROTATION_INTERVAL_MS) - now());
     rotationTimer = setTimeout(() => {
       rotationTimer = null;
-      if (hasActiveClients()) {
-        if (!performRotation()) {
-          scheduleRotationRetry();
-          return;
-        }
+      if (clients.size > 0) {
+        probeClientsBeforeRotation().then((allResponded) => {
+          if (closed) return;
+          if (allResponded) {
+            if (!performRotation()) {
+              scheduleRotationRetry();
+              return;
+            }
+          } else {
+            const nextState = { ...tokenState, rotationPending: true };
+            if (!persistTokenState(nextState)) {
+              console.error("[mobile-preview] pending token rotation skipped: failed to persist token state");
+              scheduleRotationRetry();
+              return;
+            }
+          }
+          scheduleRotation();
+        });
+        return;
       } else {
         const nextState = { ...tokenState, rotationPending: true };
         if (!persistTokenState(nextState)) {
@@ -472,8 +519,10 @@ function initMobilePreviewServer(ctx) {
   function start() {
     closed = false;
     createServers();
-    const ports = [];
-    for (let i = 0; i < PORT_RANGE; i++) ports.push(DEFAULT_PORT + i);
+    const ports = requestedPort === null ? [] : [requestedPort];
+    if (requestedPort === null) {
+      for (let i = 0; i < PORT_RANGE; i++) ports.push(DEFAULT_PORT + i);
+    }
     let idx = 0;
 
     const ready = new Promise((resolve, reject) => {
@@ -489,7 +538,7 @@ function initMobilePreviewServer(ctx) {
         reject(err);
       };
       const onListening = () => {
-        activePort = ports[idx];
+        activePort = ports[idx] === 0 ? httpServer.address().port : ports[idx];
         console.log(`[mobile-preview] started on 0.0.0.0:${activePort}`);
         httpServer.removeListener("error", onError);
         httpServer.removeListener("listening", onListening);
@@ -510,6 +559,7 @@ function initMobilePreviewServer(ctx) {
     sessionCache.clear();
     stopHeartbeat();
     if (rotationTimer) { clearTimeout(rotationTimer); rotationTimer = null; }
+    if (rotationProbeCancel) rotationProbeCancel();
     for (const c of clients) { try { c.close(1001, "Server shutting down"); } catch {} }
     clients.clear();
     clientMeta.clear();

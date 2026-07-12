@@ -740,7 +740,7 @@ describe("Rotate-on-use", () => {
     await new Promise((r) => setTimeout(r, 200));
   });
 
-  it("24h timer with a stale client → defers rotation until the client reconnects", async () => {
+  it("24h timer with a stale lastPong but responsive client → rotates after probe", async () => {
     const testToken = "aabbccdd".repeat(4);
     fs.writeFileSync(tokenFile, JSON.stringify({
       token: testToken,
@@ -754,6 +754,8 @@ describe("Rotate-on-use", () => {
       sessions,
       tokenPath: tokenFile,
       clientTimeoutMs: 100,
+      rotationProbeMs: 50,
+      port: 0,
     });
     let client;
     try {
@@ -763,10 +765,85 @@ describe("Rotate-on-use", () => {
       await new Promise((r) => setTimeout(r, 350));
 
       const persisted = JSON.parse(fs.readFileSync(tokenFile, "utf8"));
+      assert.strictEqual(persisted.rotationPending, false);
+      assert.notStrictEqual(persisted.token, testToken);
+    } finally {
+      if (client) client.close();
+      server.cleanup();
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  });
+
+  it("24h timer with a frozen client → probes before rotating", async () => {
+    const testToken = "fedcba98".repeat(4);
+    fs.writeFileSync(tokenFile, JSON.stringify({
+      token: testToken,
+      previous: null,
+      graceUntil: null,
+      rotatedAt: Date.now() - (24 * 60 * 60 * 1000) + 200,
+      rotationPending: false,
+    }, null, 2));
+
+    const server = initMobilePreviewServer({
+      sessions,
+      tokenPath: tokenFile,
+      clientTimeoutMs: 90000,
+      rotationProbeMs: 50,
+      port: 0,
+    });
+    let client;
+    try {
+      const port = await server.start();
+      client = connectClient(port, testToken);
+      await waitForOpen(client.ws);
+      // Keep the TCP connection open but stop the client from answering ping.
+      client.ws._socket.pause();
+      await new Promise((r) => setTimeout(r, 350));
+
+      const persisted = JSON.parse(fs.readFileSync(tokenFile, "utf8"));
       assert.strictEqual(persisted.rotationPending, true);
       assert.strictEqual(persisted.token, testToken);
     } finally {
-      if (client) client.close();
+      if (client) {
+        client.ws._socket.resume();
+        client.ws.terminate();
+      }
+      server.cleanup();
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  });
+
+  it("production defaults defer rotation for a frozen client", async () => {
+    const testToken = "01234567".repeat(4);
+    fs.writeFileSync(tokenFile, JSON.stringify({
+      token: testToken,
+      previous: null,
+      graceUntil: null,
+      rotatedAt: Date.now() - (24 * 60 * 60 * 1000) + 200,
+      rotationPending: false,
+    }, null, 2));
+
+    const server = initMobilePreviewServer({
+      sessions,
+      tokenPath: tokenFile,
+      port: 0,
+    });
+    let client;
+    try {
+      const port = await server.start();
+      client = connectClient(port, testToken);
+      await waitForOpen(client.ws);
+      client.ws._socket.pause();
+      await new Promise((r) => setTimeout(r, 6200));
+
+      const persisted = JSON.parse(fs.readFileSync(tokenFile, "utf8"));
+      assert.strictEqual(persisted.rotationPending, true);
+      assert.strictEqual(persisted.token, testToken);
+    } finally {
+      if (client) {
+        client.ws._socket.resume();
+        client.ws.terminate();
+      }
       server.cleanup();
       await new Promise((r) => setTimeout(r, 200));
     }
@@ -786,6 +863,7 @@ describe("Rotate-on-use", () => {
       sessions,
       tokenPath: tokenFile,
       clientTimeoutMs: 1000,
+      port: 0,
     });
     let client;
     try {
