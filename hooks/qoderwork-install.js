@@ -52,14 +52,17 @@ function buildQoderWorkHookEntry(command) {
   };
 }
 
-// QoderWork shares Qoder / Qwen Code / Antigravity's Windows launcher hazard:
-// the command can be re-parsed by cmd.exe, which strips quotes off any node
-// path with a space. Wrap as PowerShell -EncodedCommand on Windows.
+// QoderWork shares Qoder's qodercli backend, which executes command hooks
+// through a POSIX shell (Git Bash) on Windows — the same executor that made
+// the PowerShell -EncodedCommand form fail with exit 127 for issue #597
+// (bash eats the unquoted backslashes in the powershell.exe path, so no hook
+// event ever reaches Clawd). Use the portable form (unquoted forward-slash
+// node token + double-quoted args), which parses under bash and cmd alike.
 function buildQoderWorkHookCommand(nodeBin, hookScript, event, options = {}) {
   return formatNodeHookCommand(nodeBin, hookScript, {
     ...options,
     args: [event],
-    windowsWrapper: "encoded",
+    windowsWrapper: "portable",
   });
 }
 

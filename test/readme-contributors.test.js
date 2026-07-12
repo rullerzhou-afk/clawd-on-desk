@@ -31,6 +31,14 @@ const VERIFIED_GITHUB_CONTRIBUTORS = [
   "Git-creat7",
   "undownding",
   "chrono-meta",
+  "Yike-Ye",
+  "xiaoshidefeng",
+  "yanguibao1997",
+  "JasonZH6600",
+  "V1staz",
+  "royhuang91",
+  "Schlaflied",
+  "KaiC5504",
 ];
 
 function extractContributorTable(markdown, filename) {

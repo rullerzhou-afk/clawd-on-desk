@@ -52,6 +52,22 @@ describe("bubble-format formatDetail builtin tools", () => {
     assert.strictEqual(formatDetail("Bash", null), "");
     assert.strictEqual(formatDetail("Bash", undefined), "");
   });
+
+  it("coerces non-string tool-input fields instead of crashing (M9)", () => {
+    // Truthy non-string command/file_path/pattern used to reach String.slice
+    // and throw, taking down the whole bubble render (and the irreversible
+    // badge with it). They must now fall through safely.
+    assert.doesNotThrow(() => formatDetail("Bash", { command: 12345 }));
+    assert.doesNotThrow(() => formatDetail("Edit", { file_path: { nested: true } }));
+    assert.doesNotThrow(() => formatDetail("Write", { file_path: true }));
+    assert.doesNotThrow(() => formatDetail("Glob", { pattern: 999 }));
+    assert.doesNotThrow(() => formatDetail("Grep", { pattern: ["a", "b"] }));
+    // A non-string primary field falls through to the generic string search.
+    assert.strictEqual(formatDetail("Bash", { command: 5, note: "hi there" }), "hi there");
+    // truncate itself coerces, so no caller can crash it.
+    assert.strictEqual(truncate(12345, 120), "12345");
+    assert.strictEqual(truncate(null, 120), "");
+  });
 });
 
 describe("bubble-format formatDetail antigravity gating", () => {

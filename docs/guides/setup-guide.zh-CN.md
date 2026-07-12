@@ -39,9 +39,6 @@
 **Hermes Agent** — 从 [hermes-agent.org](https://hermes-agent.org/) 或 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) 安装 Hermes。需要本机 Hermes 追踪时，先到 **Settings → Agents** 安装 Clawd 集成；安装且 Hermes 存在后，Clawd 会把 plugin 复制到 Hermes 的托管 plugin 目录，并通过 `hermes plugins enable clawd-on-desk` 启用它。也可以手动执行 `npm run install:hermes-plugin` 强制同步，或执行 `npm run uninstall:hermes-plugin` 移除 Clawd 的 Hermes plugin。
 
 **Qoder** — hooks 写入 `~/.qoder/settings.json`。需要本机 Qoder 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步 hooks。也可以手动执行 `npm run install:qoder-hooks`。Phase 1 是 state-only：hook 恒返回 `{}`，`PermissionRequest` / `PermissionDenied` 只作为通知观察——Clawd 不弹权限气泡、不代答权限决策，权限流程由 Qoder 原生接管。启动恢复只识别 Qoder CLI 进程（`qodercli` / `qoder-cli`），闲置打开的 Qoder IDE 不会被当成进行中的 agent 工作。
-
-**Hardware Buddy** — 可选的本地审批伙伴集成，对应 [Clawstick 硬件仓库](https://github.com/rullerzhou-afk/clawstick)。Clawd v0.8.1 不内置 Clawstick runtime；请单独安装 / checkout Clawstick，把它放到本仓库相邻目录 `../clawstick`，或通过 `CLAWD_HARDWARE_BUDDY_ROOT` 指向实际路径。Hardware Buddy 默认关闭；只有准备好受支持的 BLE / fake backend 后才需要在 Settings 里启用。默认只发送会话状态快照；要允许它回复权限审批，还需要单独打开 Hardware Buddy 的 permission toggle。
-
 ## 远程 SSH 模式（Claude Code, Codex CLI & Copilot CLI）
 
 <img src="../../assets/screenshot-remote-ssh.png" width="560" alt="远程 SSH — 来自树莓派的权限气泡">

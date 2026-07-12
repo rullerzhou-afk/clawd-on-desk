@@ -15,10 +15,12 @@ or prompt-submission path.
 - Claude Code and CodeBuddy normal permission requests.
 - Codex CLI official `PermissionRequest` hooks when Codex permission handling is
   in intercept mode.
+- AskUserQuestion elicitation prompts (beta) — rendered as an interactive card
+  with option buttons and a quote-safe Other reply.
 
 Telegram cards are not sent for DND/native-fallback cases, disabled agents,
-hidden permission bubbles, opencode, elicitation prompts, passive notifications,
-or headless sessions.
+hidden permission bubbles, opencode, passive notifications, or headless
+sessions.
 
 ## Setup
 

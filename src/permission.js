@@ -8,6 +8,7 @@ const { clampTextScale, scaleWidth, scaleHeight, applyZoomToWindow } = require("
 const { createTranslator } = require("./i18n");
 const { firstStringValue } = require("./bubble-format");
 const { MAC_TOPMOST_LEVEL } = require("./topmost-runtime");
+const { redactSecrets } = require("./secret-redact");
 const path = require("path");
 const http = require("http");
 const {
@@ -932,11 +933,7 @@ function basenameForDisplay(value) {
 function compactRemoteApprovalText(value, maxLen = 200) {
   let text = typeof value === "string" ? value : String(value == null ? "" : value);
   text = text.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
-  text = text.replace(/\b\d+:[A-Za-z0-9_-]{20,}\b/g, "<redacted:telegram-token>");
-  text = text.replace(/\b(?:Bearer|Token)\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, "Bearer <redacted>");
-  text = text.replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,})\b/g, "<redacted:token>");
-  text = text.replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|cookie|password|secret)\s*[:=]\s*\S+/gi, "$1=<redacted>");
-  text = text.replace(/\b(?:telegram:)?-?\d{7,}(?::\d+){0,2}\b/g, "<redacted:id>");
+  text = redactSecrets(text);
   if (text.length > maxLen) text = `${text.slice(0, Math.max(0, maxLen - 1))}…`;
   return text;
 }

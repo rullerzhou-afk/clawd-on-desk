@@ -1,11 +1,46 @@
 "use strict";
 
 const crypto = require("crypto");
+const { redactSecrets } = require("./secret-redact");
 
 const ACTION_ROW_SIZE = 3;
 const MAX_ELICITATION_QUESTIONS = 5;
 const MAX_ELICITATION_OPTIONS = 5;
 const MAX_CARD_TEXT = 600;
+
+// Agent-controlled strings (agentId, tool, folder, summary, question text,
+// option/button labels, answers) are rendered into approval/elicitation cards.
+// Guard them before they enter a card element:
+//   safeLarkMd    — for lark_md elements: redact secrets, strip invisibles, then
+//                   strip Markdown / structural chars so a value can't forge a
+//                   status line, inject bold/links/mentions, or break layout.
+//   safePlainText — for plain_text elements (headers, option/button labels):
+//                   redact secrets + strip invisibles. plain_text does not parse
+//                   Markdown, but newlines/bidi still render and secrets leak.
+function stripInvisible(value) {
+  // Line/paragraph separators (LF/CR/VT/FF/NEL/LS/PS) -> space, and bidi /
+  // zero-width controls -> drop: an agent could use these to forge a standalone
+  // status line or visually reorder the card text. Compared by code point so
+  // the source stays ASCII (a literal U+2028/2029 would break JS parsing).
+  let out = "";
+  for (const ch of String(value == null ? "" : value)) {
+    const cp = ch.codePointAt(0);
+    if (cp === 0x0a || cp === 0x0d || cp === 0x0b || cp === 0x0c || cp === 0x85 || cp === 0x2028 || cp === 0x2029) { out += " "; continue; }
+    if (cp === 0x180e || cp === 0x061c || (cp >= 0x200b && cp <= 0x200f) || (cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2060 && cp <= 0x206f) || cp === 0xfeff) { continue; }
+    out += ch;
+  }
+  return out;
+}
+
+function sanitizeLarkMdStructure(value) {
+  return stripInvisible(value).replace(/[*_~`[\]()<>#|]/g, "");
+}
+function safeLarkMd(value) {
+  return sanitizeLarkMdStructure(redactSecrets(value));
+}
+function safePlainText(value) {
+  return stripInvisible(redactSecrets(value == null ? "" : String(value)));
+}
 
 function loadLarkSdk() {
   try {
@@ -123,20 +158,20 @@ function buildActionRows(actions) {
 function buildApprovalDetail(normalized) {
   if (normalized.agentId || normalized.toolName || normalized.folder || normalized.summary) {
     return [
-      normalized.agentId ? `**智能体**：${normalized.agentId}` : null,
-      normalized.toolName ? `**工具**：${normalized.toolName}` : null,
-      normalized.folder ? `**目录**：${normalized.folder}` : null,
-      normalized.summary ? `**摘要**：${normalized.summary}` : null,
+      normalized.agentId ? `**智能体**：${safeLarkMd(normalized.agentId)}` : null,
+      normalized.toolName ? `**工具**：${safeLarkMd(normalized.toolName)}` : null,
+      normalized.folder ? `**目录**：${safeLarkMd(normalized.folder)}` : null,
+      normalized.summary ? `**摘要**：${safeLarkMd(normalized.summary)}` : null,
     ].filter(Boolean).join("\n");
   }
-  return normalized.detail || normalized.title;
+  return safeLarkMd(normalized.detail || normalized.title);
 }
 
 function buildElicitationDetail(normalized) {
   const lines = [];
-  if (normalized.agentId) lines.push(`**智能体**：${normalized.agentId}`);
-  if (normalized.folder) lines.push(`**目录**：${normalized.folder}`);
-  if (normalized.detail) lines.push(`**说明**：${normalized.detail}`);
+  if (normalized.agentId) lines.push(`**智能体**：${safeLarkMd(normalized.agentId)}`);
+  if (normalized.folder) lines.push(`**目录**：${safeLarkMd(normalized.folder)}`);
+  if (normalized.detail) lines.push(`**说明**：${safeLarkMd(normalized.detail)}`);
   return lines.join("\n");
 }
 
@@ -152,10 +187,14 @@ function optionValue(label) {
   return String(label || "");
 }
 
-function selectOption(option) {
+// The option value sent to Feishu is the option INDEX, not the raw label: the
+// label can carry a secret the agent quoted, and the value rides the wire in the
+// card JSON (and comes back on submit). buildQuestionAnswer maps the index back
+// to the raw label locally, so the raw secret never leaves the desktop.
+function selectOption(option, optionIndex) {
   return {
-    text: { tag: "plain_text", content: option.label },
-    value: optionValue(option.label),
+    text: { tag: "plain_text", content: safePlainText(option.label) },
+    value: String(optionIndex),
   };
 }
 
@@ -167,7 +206,7 @@ function buildQuestionText(question, index, total = 1) {
       ? `\n\n请选择一个或多个选项，也可以填写其他答案。`
       : `\n\n请选择一个选项，也可以填写其他答案。`
     : `\n\n请在输入框填写答案。`;
-  return `${progress}**${title}**\n${question.question}${optionText}`;
+  return `${progress}**${safeLarkMd(title)}**\n${safeLarkMd(question.question)}${optionText}`;
 }
 
 function buildAnsweredSummaries(questions, answers, activeQuestionIndex) {
@@ -178,26 +217,29 @@ function buildAnsweredSummaries(questions, answers, activeQuestionIndex) {
     const questionText = question && question.question;
     if (!questionText || !answers || !answers[questionText]) continue;
     const title = question.header || `问题 ${i + 1}`;
-    lines.push(`**${title}**：${answers[questionText]}`);
+    lines.push(`**${safeLarkMd(title)}**：${safeLarkMd(answers[questionText])}`);
   }
   return lines.join("\n");
 }
 
 function buildQuestionInput(question, questionIndex, answers = {}) {
   if (!question.options.length) return null;
-  const selected = parseAnswerParts(answers[question.question]);
+  const selectedLabels = parseAnswerParts(answers[question.question]);
+  const labelToIndex = new Map(question.options.map((option, oi) => [optionValue(option.label), String(oi)]));
   const component = {
     tag: question.multiSelect ? "multi_select_static" : "select_static",
     name: questionFormName(questionIndex),
     placeholder: { tag: "plain_text", content: question.multiSelect ? "选择一个或多个选项" : "选择一个选项" },
-    options: question.options.map(selectOption),
+    options: question.options.map((option, oi) => selectOption(option, oi)),
   };
-  const optionValues = new Set(question.options.map((option) => optionValue(option.label)));
-  const selectedValues = selected.filter((value) => optionValues.has(value));
-  if (question.multiSelect && selectedValues.length) {
-    component.selected_values = selectedValues;
-  } else if (!question.multiSelect && selectedValues.length) {
-    component.initial_option = selectedValues[0];
+  // Re-select prior answers by mapping their raw labels back to option indices.
+  const selectedIndices = selectedLabels
+    .map((label) => labelToIndex.get(optionValue(label)))
+    .filter((v) => v !== undefined);
+  if (question.multiSelect && selectedIndices.length) {
+    component.selected_values = selectedIndices;
+  } else if (!question.multiSelect && selectedIndices.length) {
+    component.initial_option = selectedIndices[0];
   }
   return component;
 }
@@ -210,7 +252,7 @@ function buildOtherInput(question, questionIndex, answers = {}) {
     tag: "input",
     name: questionOtherFormName(questionIndex),
     placeholder: { tag: "plain_text", content: question.options.length ? "输入其他答案" : "输入答案" },
-    default_value: otherText,
+    default_value: safePlainText(otherText),
   };
 }
 
@@ -281,14 +323,14 @@ function buildApprovalCard(payload, options = {}) {
     button("拒绝", { requestId, decision: "deny" }, "danger"),
     button("前往终端", { requestId, decision: "terminal" }, "default"),
     ...normalized.suggestions.map((entry) => (
-      button(entry.label, { requestId, decision: `suggestion:${entry.index}` }, "default")
+      button(safePlainText(entry.label), { requestId, decision: `suggestion:${entry.index}` }, "default")
     )),
   ];
   return {
     config: { wide_screen_mode: true, update_multi: true },
     header: {
       template: "orange",
-      title: { tag: "plain_text", content: `权限确认：${normalized.agentId || normalized.title}` },
+      title: { tag: "plain_text", content: `权限确认：${safePlainText(normalized.agentId || normalized.title)}` },
     },
     elements: [
       {
@@ -365,7 +407,7 @@ function buildElicitationCard(payload, options = {}) {
     config: { wide_screen_mode: true, update_multi: true },
     header: {
       template: "orange",
-      title: { tag: "plain_text", content: `需要输入：${normalized.agentId || normalized.title}` },
+      title: { tag: "plain_text", content: `需要输入：${safePlainText(normalized.agentId || normalized.title)}` },
     },
     elements,
   };
@@ -378,7 +420,7 @@ function buildStatusCard(payload, outcome) {
   const detail = [
     buildApprovalDetail(normalized),
     "",
-    `**处理结果**：${status.result}`,
+    `**处理结果**：${safeLarkMd(status.result)}`,
     source ? `**处理来源**：${source}` : null,
   ].filter((line) => line !== null).join("\n");
   return {
@@ -501,7 +543,15 @@ function parseAnswerParts(value) {
 
 function buildQuestionAnswer(question, questionIndex, formValue) {
   if (!question || typeof question.question !== "string" || !question.question) return "";
-  const selected = normalizeFormArrayValue(formValue[questionFormName(questionIndex)]);
+  const options = Array.isArray(question.options) ? question.options : [];
+  // Feishu returns the option INDICES we set in selectOption; map them back to
+  // raw labels so the answer delivered to the agent is the real option text.
+  const selected = normalizeFormArrayValue(formValue[questionFormName(questionIndex)])
+    .map((idx) => {
+      const i = Number(idx);
+      return Number.isInteger(i) && i >= 0 && i < options.length ? optionValue(options[i].label) : "";
+    })
+    .filter(Boolean);
   const other = normalizeFormScalar(formValue[questionOtherFormName(questionIndex)] || formValue.input_value);
   const parts = [...selected];
   if (other) parts.push(other);

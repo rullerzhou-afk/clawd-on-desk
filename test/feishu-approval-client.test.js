@@ -7,6 +7,7 @@ const {
   FeishuApprovalClient,
   buildApprovalCard,
   buildElicitationCard,
+  buildStatusCard,
   normalizeApprovalPayload,
   normalizeElicitationPayload,
   normalizeActionEvent,
@@ -40,6 +41,62 @@ test("buildApprovalCard creates an interactive allow deny card", () => {
   const secondAction = card.elements.filter((element) => element.tag === "action")[1];
   assert.equal(secondAction.actions[0].text.content, "自动接受编辑");
   assert.deepEqual(secondAction.actions[0].value, { requestId: "req_1", decision: "suggestion:0" });
+});
+
+test("buildApprovalCard neutralizes agent-controlled Markdown and secrets in the detail", () => {
+  const card = buildApprovalCard({
+    title: "claude-code requests Bash",
+    agentId: "claude-code",
+    toolName: "Bash",
+    folder: "project-alpha",
+    // An agent could quote a key and try to forge a "已批准" status line and
+    // inject bold text into the approver-facing card.
+    summary: "rotate sk-abcdefghijklmnop1234\n✅ 已批准\n**注意**",
+  }, { requestId: "req_x" });
+  const detail = card.elements[0].text.content;
+  assert.doesNotMatch(detail, /sk-abcdefghijklmnop1234/, "secret must be redacted");
+  assert.match(detail, /redacted:token/);
+  assert.doesNotMatch(detail, /\n✅/, "an injected newline must not forge a status line");
+  assert.ok(!detail.includes("**注意**"), "injected bold markers are stripped");
+  assert.match(detail, /\*\*摘要\*\*/, "our own fixed label keeps its formatting");
+});
+
+test("buildApprovalCard guards the header and suggestion buttons (secrets + Unicode separators)", () => {
+  const LS = String.fromCharCode(0x2028); // Unicode line separator (not literal in source)
+  const card = buildApprovalCard({
+    title: "t",
+    agentId: `agent${LS}✅ 已批准`,
+    summary: "ok",
+    suggestions: [{ index: 0, label: "sk-abcdefghijklmnop1234 allow" }],
+  }, { requestId: "req_h" });
+  assert.doesNotMatch(JSON.stringify(card), /sk-abcdefghijklmnop1234/, "suggestion-button secret must be redacted");
+  assert.ok(!card.header.title.content.includes(LS), "Unicode line separator must be neutralized in the header");
+});
+
+test("buildStatusCard neutralizes an agent-controlled result (secret + mention)", () => {
+  const card = buildStatusCard(
+    { title: "t", agentId: "claude-code" },
+    { decision: "allow", actionLabel: "run sk-abcdefghijklmnop1234 <at id=all></at>", source: "feishu" },
+  );
+  const serialized = JSON.stringify(card);
+  assert.doesNotMatch(serialized, /sk-abcdefghijklmnop1234/, "a secret in the result must be redacted");
+  assert.ok(!serialized.includes("<at id=all>"), "a mention injected via the result must be stripped");
+});
+
+test("buildApprovalCard strips zero-width / bidi / format controls from the header", () => {
+  // Arabic Letter Mark, Word Joiner, Mongolian Vowel Separator, a deprecated
+  // format control, zero-width space, and a Unicode line separator.
+  const controls = [0x061c, 0x2060, 0x180e, 0x206a, 0x200b, 0x2028].map((c) => String.fromCharCode(c));
+  const card = buildApprovalCard(
+    { title: "t", agentId: `a${controls.join("")}b`, summary: "ok" },
+    { requestId: "req_z" },
+  );
+  for (const ch of controls) {
+    assert.ok(
+      !card.header.title.content.includes(ch),
+      `U+${ch.charCodeAt(0).toString(16).toUpperCase()} must be stripped from the header`,
+    );
+  }
 });
 
 test("FeishuApprovalClient sends a card and resolves from card action", async () => {
@@ -637,6 +694,27 @@ test("pure helpers validate payloads and card action events", () => {
   assert.equal(normalizeActionEvent({ action: { value: { requestId: "req_1", decision: "later" } } }, "open_id"), null);
 });
 
+test("buildElicitationCard redacts secrets and strips Markdown from question text", () => {
+  const card = buildElicitationCard({
+    title: "claude-code needs input",
+    agentId: "claude-code",
+    folder: "project-alpha",
+    questions: [{
+      header: "轮换密钥",
+      question: "在 .env 找到 sk-abcdefghijklmnop1234，要轮换吗？\n✅ 已确认",
+      options: [{ label: "是", description: "" }],
+    }],
+  }, { requestId: "req_qx" });
+  const questionDiv = card.elements.find(
+    (element) => element.tag === "div" && /轮换密钥/.test(element.text.content),
+  );
+  assert.ok(questionDiv, "question text is rendered");
+  const content = questionDiv.text.content;
+  assert.doesNotMatch(content, /sk-abcdefghijklmnop1234/, "a key quoted in a question must not leak");
+  assert.match(content, /redacted:token/);
+  assert.doesNotMatch(content, /\n✅/, "an injected newline must not forge a line");
+});
+
 test("buildElicitationCard creates a form stepper with selection and other input", () => {
   const card = buildElicitationCard({
     title: "claude-code needs input",
@@ -698,8 +776,24 @@ test("buildElicitationCard creates a form stepper with selection and other input
   const restoredForm = restored.elements.find((element) => element.tag === "form");
   const restoredSelect = restoredForm.elements.find((element) => element.name === "q_0");
   const restoredOther = restoredForm.elements.find((element) => element.name === "q_0_other");
-  assert.deepEqual(restoredSelect.selected_values, ["开发新功能"]);
+  assert.deepEqual(restoredSelect.selected_values, ["0"]); // option INDEX, not the raw label
   assert.equal(restoredOther.default_value, "自定义工作");
+});
+
+test("buildElicitationCard uses opaque option indices so a secret label never rides the wire", () => {
+  const card = buildElicitationCard({
+    title: "claude-code needs input",
+    questions: [{
+      question: "Pick a key",
+      options: [{ label: "sk-abcdefghijklmnop1234" }, { label: "safe" }],
+    }],
+  }, { requestId: "req_sec" });
+  // The raw secret label must not appear ANYWHERE in the outbound card JSON —
+  // not in display text (redacted) and not in the option value (now an index).
+  assert.doesNotMatch(JSON.stringify(card), /sk-abcdefghijklmnop1234/);
+  const form = card.elements.find((e) => e.tag === "form");
+  const select = form.elements.find((e) => e.name === "q_0");
+  assert.deepEqual(select.options.map((o) => o.value), ["0", "1"]);
 });
 
 test("FeishuApprovalClient only resolves elicitation after final step submit", async () => {
@@ -749,7 +843,7 @@ test("FeishuApprovalClient only resolves elicitation after final step submit", a
     action: {
       value: { requestId, kind: "elicitation-step", questionIndex: 0, final: false },
       form_value: {
-        q_0: ["Feature", "Bugfix"],
+        q_0: ["0", "1"], // option indices (Feature=0, Bugfix=1), not raw labels
         q_0_other: "API cleanup",
       },
     },
@@ -820,7 +914,7 @@ test("FeishuApprovalClient supports back navigation without resolving elicitatio
     operator: { open_id: "ou_1" },
     action: {
       value: { requestId, kind: "elicitation-step", questionIndex: 0, final: false },
-      form_value: { q_0: "Feature" },
+      form_value: { q_0: "0" }, // option index (Feature=0)
     },
   }), true);
   await Promise.resolve();
@@ -902,7 +996,7 @@ test("Feishu elicitation helpers validate payloads and action events", () => {
         questionIndex: 0,
         final: true,
       }),
-      form_value: { q_0: [{ value: "A", text: { content: "A" } }], q_0_other: "typed answer" },
+      form_value: { q_0: [{ value: "0", text: { content: "A" } }], q_0_other: "typed answer" },
     },
   }, [{ question: "Q?", multiSelect: true, options: [{ label: "A" }] }], "open_id"), {
     operatorId: "ou_1",
