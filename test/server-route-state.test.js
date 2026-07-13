@@ -57,6 +57,7 @@ function callStatePost(body, overrides = {}) {
         "mini-idle": "x.svg",
       },
       pendingPermissions: [],
+      sessions: new Map(),
       isAgentEnabled: () => true,
       setState: (...args) => calls.setState.push(args),
       updateSession: (...args) => calls.updateSession.push(args),
@@ -500,6 +501,225 @@ describe("server-route-state POST", () => {
 
     assert.strictEqual(res.statusCode, 400);
     assert.strictEqual(res.body, "bad json");
+  });
+});
+
+// #627 residual: server-side wt_hwnd sampling on UserPromptSubmit. The probe
+// is always injected here so these tests never load the real koffi FFI.
+describe("server-route-state wt_hwnd sampling (#627 residual)", () => {
+  function samplingBody(overrides = {}) {
+    return JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "UserPromptSubmit",
+      source_pid: 111,
+      ...overrides,
+    });
+  }
+
+  it("incoming hook wt_hwnd wins and the probe is never called", async () => {
+    let probeCalls = 0;
+    const res = await callStatePost(samplingBody({ wt_hwnd: "222333" }), {
+      options: {
+        isWinHost: true,
+        captureForegroundWindowsTerminal: () => { probeCalls++; return "999999"; },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession[0][3].wtHwnd, "222333");
+    assert.strictEqual(probeCalls, 0, "an incoming wt_hwnd must short-circuit sampling");
+  });
+
+  it("samples the foreground WT window when incoming wt_hwnd is missing and all preconditions hold", async () => {
+    let probeCalls = 0;
+    const res = await callStatePost(samplingBody(), {
+      options: {
+        isWinHost: true,
+        captureForegroundWindowsTerminal: () => { probeCalls++; return "654321"; },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(probeCalls, 1);
+    assert.strictEqual(res.calls.updateSession[0][3].wtHwnd, "654321");
+  });
+
+  it("a null sample passes null through (server MERGE in state.js keeps the old value)", async () => {
+    const res = await callStatePost(samplingBody(), {
+      options: {
+        isWinHost: true,
+        captureForegroundWindowsTerminal: () => null,
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession[0][3].wtHwnd, null);
+  });
+
+  it("does not sample on a non-UserPromptSubmit event", async () => {
+    let probeCalls = 0;
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "PreToolUse",
+      source_pid: 111,
+    }), {
+      options: {
+        isWinHost: true,
+        captureForegroundWindowsTerminal: () => { probeCalls++; return "1"; },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(probeCalls, 0);
+  });
+
+  it("does not sample when the server host is not Windows", async () => {
+    let probeCalls = 0;
+    const res = await callStatePost(samplingBody(), {
+      options: {
+        isWinHost: false,
+        captureForegroundWindowsTerminal: () => { probeCalls++; return "1"; },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(probeCalls, 0);
+  });
+
+  it("effective metadata: an existing session's headless flag blocks sampling even though this body omits it", async () => {
+    let probeCalls = 0;
+    const sessions = new Map([["sid", { headless: true, sourcePid: 111 }]]);
+    const res = await callStatePost(samplingBody(), {
+      ctx: { sessions },
+      options: {
+        isWinHost: true,
+        captureForegroundWindowsTerminal: () => { probeCalls++; return "1"; },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(probeCalls, 0, "an existing headless session must not be sampled just because this body is missing the flag");
+  });
+
+  it("effective metadata: an existing session's host (remote) blocks sampling", async () => {
+    let probeCalls = 0;
+    const sessions = new Map([["sid", { host: "remote-host", sourcePid: 111 }]]);
+    const res = await callStatePost(samplingBody(), {
+      ctx: { sessions },
+      options: {
+        isWinHost: true,
+        captureForegroundWindowsTerminal: () => { probeCalls++; return "1"; },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(probeCalls, 0);
+  });
+
+  it("effective metadata: an existing session's wslDistro blocks sampling", async () => {
+    let probeCalls = 0;
+    const sessions = new Map([["sid", { wslDistro: "Ubuntu", sourcePid: 111 }]]);
+    const res = await callStatePost(samplingBody(), {
+      ctx: { sessions },
+      options: {
+        isWinHost: true,
+        captureForegroundWindowsTerminal: () => { probeCalls++; return "1"; },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(probeCalls, 0);
+  });
+
+  it("effective metadata: an existing session's webui platform blocks sampling", async () => {
+    let probeCalls = 0;
+    const sessions = new Map([["sid", { platform: "webui", sourcePid: 111 }]]);
+    const res = await callStatePost(samplingBody(), {
+      ctx: { sessions },
+      options: {
+        isWinHost: true,
+        captureForegroundWindowsTerminal: () => { probeCalls++; return "1"; },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(probeCalls, 0);
+  });
+
+  it("effectiveSourcePid gate: no incoming source_pid and no existing session skips sampling", async () => {
+    let probeCalls = 0;
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "brand-new-sid",
+      event: "UserPromptSubmit",
+    }), {
+      options: {
+        isWinHost: true,
+        captureForegroundWindowsTerminal: () => { probeCalls++; return "1"; },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(probeCalls, 0, "a completely unknown session must not be sampled");
+  });
+
+  it("effectiveSourcePid gate: a cache miss (no incoming source_pid) still samples when the existing session already has one", async () => {
+    let probeCalls = 0;
+    const sessions = new Map([["sid", { sourcePid: 4242 }]]);
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "UserPromptSubmit",
+      // no source_pid in this body — simulates a prompt cache-miss
+    }), {
+      ctx: { sessions },
+      options: {
+        isWinHost: true,
+        captureForegroundWindowsTerminal: () => { probeCalls++; return "777"; },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(probeCalls, 1, "a known session should still be sampled on a prompt cache-miss");
+    assert.strictEqual(res.calls.updateSession[0][3].wtHwnd, "777");
+  });
+
+  it("provenance: hook | server | previous | none are each distinguishable via debugLog", async () => {
+    const logs = [];
+    const debugLog = (msg) => logs.push(msg);
+
+    // hook: incoming wt_hwnd present.
+    await callStatePost(samplingBody({ wt_hwnd: "111" }), {
+      ctx: { debugLog },
+      options: { isWinHost: true, captureForegroundWindowsTerminal: () => "999" },
+    });
+    // server: no incoming, probe returns a value.
+    await callStatePost(samplingBody(), {
+      ctx: { debugLog },
+      options: { isWinHost: true, captureForegroundWindowsTerminal: () => "222" },
+    });
+    // previous: no incoming, probe null, but the existing session already has a wt_hwnd.
+    await callStatePost(samplingBody(), {
+      ctx: { debugLog, sessions: new Map([["sid", { wtHwnd: "333", sourcePid: 111 }]]) },
+      options: { isWinHost: true, captureForegroundWindowsTerminal: () => null },
+    });
+    // none: no incoming, probe null, no existing session at all.
+    await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "totally-new-sid",
+      event: "UserPromptSubmit",
+    }), {
+      ctx: { debugLog },
+      options: { isWinHost: true, captureForegroundWindowsTerminal: () => null },
+    });
+
+    assert.strictEqual(logs.length, 4);
+    assert.match(logs[0], /source=hook/);
+    assert.match(logs[1], /source=server/);
+    assert.match(logs[2], /source=previous/);
+    assert.match(logs[3], /source=none/);
   });
 });
 

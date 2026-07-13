@@ -170,6 +170,18 @@ const _isForegroundFullscreen = createForegroundFullscreenProbe({
   onError: (err) => console.warn("Clawd: win-fullscreen-detect not available:", err && err.message),
 });
 
+// ── Windows: foreground Windows Terminal probe (server-side wt_hwnd sample,
+// #627 residual) ──
+// Best-effort; degrades to "never sampled" (always null) if koffi/user32 is
+// unavailable, so a broken probe never blocks a /state POST — wt_hwnd just
+// falls back to the session's last-known value (state.js merge). Never spawns
+// a subprocess, so it cannot reproduce the console flash it exists to avoid.
+const { createForegroundWindowsTerminalProbe } = require("./win-foreground-terminal");
+const _captureForegroundWindowsTerminal = createForegroundWindowsTerminalProbe({
+  isWin,
+  onError: (err) => console.warn("Clawd: win-foreground-terminal not available:", err && err.message),
+});
+
 // ── Windows: switch the dev console to UTF-8 ──
 //
 // `npm start` attaches Clawd to a parent PowerShell/cmd console. That
@@ -1908,6 +1920,11 @@ const _serverCtx = {
   get PASSTHROUGH_TOOLS() { return PASSTHROUGH_TOOLS; },
   get STATE_SVGS() { return _state.STATE_SVGS; },
   get sessions() { return sessions; },
+  // #627 residual: synchronous server-side wt_hwnd sample for UserPromptSubmit
+  // (src/server-route-state.js). Initialized once above; never re-created per
+  // request.
+  captureForegroundWindowsTerminal: _captureForegroundWindowsTerminal,
+  debugLog: (msg) => sessionLog(msg),
   isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
   shouldSyncAgentIntegration: (agentId) =>
     _shouldSyncAgentIntegration({ agents: _settingsController.get("agents") }, agentId),

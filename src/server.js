@@ -252,6 +252,7 @@ function startHttpServer() {
         createRequestHookRecorder,
         shouldDropForDnd,
         codexOfficialTurns,
+        captureForegroundWindowsTerminal: ctx.captureForegroundWindowsTerminal,
       });
     } else if (req.method === "POST" && req.url === "/permission") {
       handlePermissionPost(req, res, {
