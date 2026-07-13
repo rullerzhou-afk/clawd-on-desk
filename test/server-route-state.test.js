@@ -722,6 +722,46 @@ describe("server-route-state wt_hwnd sampling (#627 residual)", () => {
     assert.match(logs[3], /source=none/);
   });
 
+  it("codex subagent prompt (classified headless server-side) is never sampled, even without incoming wt_hwnd", async () => {
+    // P3 (codex review): the sampling block sits AFTER
+    // resolveCodexOfficialHookState so its subagent→headless verdict joins the
+    // effective metadata. A first-seen subagent prompt has no existing session
+    // and no incoming headless flag — the classifier verdict is the only thing
+    // standing between it and sampling the user's foreground WT window.
+    let probeCalls = 0;
+    const res = await callStatePost(samplingBody({
+      agent_id: "codex",
+      hook_source: "codex-official",
+    }), {
+      ctx: { codexSubagentClassifier: { registerSession: () => "subagent" } },
+      options: {
+        isWinHost: true,
+        captureForegroundWindowsTerminal: () => { probeCalls++; return "555"; },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(probeCalls, 0, "a codex subagent prompt must never sample the local foreground WT");
+  });
+
+  it("codex main-session prompt still samples normally after the reorder", async () => {
+    let probeCalls = 0;
+    const res = await callStatePost(samplingBody({
+      agent_id: "codex",
+      hook_source: "codex-official",
+    }), {
+      ctx: { codexSubagentClassifier: { registerSession: () => "primary" } },
+      options: {
+        isWinHost: true,
+        captureForegroundWindowsTerminal: () => { probeCalls++; return "555"; },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(probeCalls, 1, "a non-subagent codex prompt keeps normal sampling eligibility");
+    assert.strictEqual(res.calls.updateSession[0][3].wtHwnd, "555");
+  });
+
   it("provenance log fires only on UserPromptSubmit — high-frequency events stay silent", async () => {
     const logs = [];
     const debugLog = (msg) => logs.push(msg);

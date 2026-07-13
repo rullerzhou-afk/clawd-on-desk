@@ -260,6 +260,23 @@ function handleStatePost(req, res, options) {
       }
       if (ctx.STATE_SVGS[state]) {
         const sid = session_id || "default";
+        const codexHookState = resolveCodexOfficialHookState(
+          data,
+          state,
+          codexOfficialTurns,
+          ctx.codexSubagentClassifier
+        );
+        if (codexHookState.drop) {
+          res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+          res.end();
+          return;
+        }
+        state = codexHookState.state;
+        if (state.startsWith("mini-") && !svg) {
+          res.writeHead(400);
+          res.end("mini states require svg override");
+          return;
+        }
         // #627 residual: UserPromptSubmit no longer carries a fresh wt_hwnd
         // from the hook (cache-only prompt path, hooks/clawd-hook.js) — sample
         // the foreground Windows Terminal window synchronously here instead
@@ -269,6 +286,14 @@ function handleStatePost(req, res, options) {
         // pre-#627-residual sample) > this sample > existing session's last
         // value (state.js:1431 MERGE, handled automatically by passing null
         // through when we have nothing new).
+        //
+        // Placed AFTER resolveCodexOfficialHookState on purpose: a codex
+        // subagent prompt is classified headless THERE, and that verdict must
+        // join the effective metadata below — otherwise a first-seen subagent
+        // prompt arriving without a hook wt_hwnd could sample the local
+        // foreground WT before anything knows the session is headless
+        // (matters most once PR2/#634 makes the codex hook cache-only too).
+        // Dropped/invalid requests above never reach the probe at all.
         //
         // The eligibility check below MUST use "effective" metadata —
         // incoming body fields merged with the existing session's known
@@ -284,7 +309,9 @@ function handleStatePost(req, res, options) {
         const effHost = host || (existingSession && existingSession.host) || null;
         const effWslDistro = wslDistro || (existingSession && existingSession.wslDistro) || null;
         const effPlatform = platform || (existingSession && existingSession.platform) || null;
-        const effHeadless = headless === true || (existingSession && existingSession.headless) === true;
+        const effHeadless = headless === true
+          || codexHookState.headless === true
+          || (existingSession && existingSession.headless) === true;
         const effSourcePid = source_pid || (existingSession && existingSession.sourcePid) || null;
         // effectiveSourcePid gate: the focus entry point is a hard sourcePid
         // requirement (src/session-focus.js:41, src/main.js:1668) — sampling
@@ -317,23 +344,6 @@ function handleStatePost(req, res, options) {
         // (sessionLog is unconditionally enabled once the app is ready).
         if (event === "UserPromptSubmit" && typeof ctx.debugLog === "function") {
           ctx.debugLog(`wt-hwnd sid=${sid} event=${event} source=${wtHwndSource}`);
-        }
-        const codexHookState = resolveCodexOfficialHookState(
-          data,
-          state,
-          codexOfficialTurns,
-          ctx.codexSubagentClassifier
-        );
-        if (codexHookState.drop) {
-          res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
-          res.end();
-          return;
-        }
-        state = codexHookState.state;
-        if (state.startsWith("mini-") && !svg) {
-          res.writeHead(400);
-          res.end("mini states require svg override");
-          return;
         }
         if (event === "PostToolUse" || event === "PostToolUseFailure" || event === "Stop") {
           const perm = findPendingPermissionForStateEvent(ctx.pendingPermissions, {
