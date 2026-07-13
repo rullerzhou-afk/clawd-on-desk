@@ -721,6 +721,20 @@ describe("server-route-state wt_hwnd sampling (#627 residual)", () => {
     assert.match(logs[2], /source=previous/);
     assert.match(logs[3], /source=none/);
   });
+
+  it("provenance log fires only on UserPromptSubmit — high-frequency events stay silent", async () => {
+    const logs = [];
+    const debugLog = (msg) => logs.push(msg);
+    await callStatePost(samplingBody({ event: "PreToolUse" }), {
+      ctx: { debugLog, sessions: new Map([["sid", { wtHwnd: "333", sourcePid: 111 }]]) },
+      options: { isWinHost: true, captureForegroundWindowsTerminal: () => "999" },
+    });
+    assert.strictEqual(
+      logs.filter((l) => l.includes("wt-hwnd")).length,
+      0,
+      "PreToolUse must not append a wt-hwnd provenance line to session-debug.log"
+    );
+  });
 });
 
 describe("server-route-state ExitPlanMode stale sweep", () => {

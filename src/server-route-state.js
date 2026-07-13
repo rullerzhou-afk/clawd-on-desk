@@ -312,7 +312,10 @@ function handleStatePost(req, res, options) {
           : (sampledWtHwnd
             ? "server"
             : ((existingSession && existingSession.wtHwnd) ? "previous" : "none"));
-        if (typeof ctx.debugLog === "function") {
+        // Provenance is only meaningful where sampling can happen; logging it
+        // on every PreToolUse/PostToolUse would flood session-debug.log
+        // (sessionLog is unconditionally enabled once the app is ready).
+        if (event === "UserPromptSubmit" && typeof ctx.debugLog === "function") {
           ctx.debugLog(`wt-hwnd sid=${sid} event=${event} source=${wtHwndSource}`);
         }
         const codexHookState = resolveCodexOfficialHookState(
