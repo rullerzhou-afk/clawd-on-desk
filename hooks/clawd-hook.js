@@ -500,7 +500,13 @@ function buildStateBody(event, payload, resolve) {
     // See docs/plans/plan-issue-627-residual-userprompt-flash.md §4.3.
     const canCacheSession = isWin && pidCache.canCache(sessionId, cwd);
     const wantsFresh = event === "SessionStart";
-    const cacheOnlyNoFallback = event === "UserPromptSubmit" || event === "SessionEnd";
+    // The no-fallback contract is a WINDOWS contract, not a cache-availability
+    // one: it must hold even when caching is disabled (session_id "default" /
+    // empty cwd, #583) — otherwise those degenerate sessions keep flashing a
+    // console once per prompt, which is the exact symptom this fix removes.
+    // Non-Windows keeps resolving fresh on every event (the ps path neither
+    // flashes nor pays a cold start), unchanged.
+    const cacheOnlyNoFallback = isWin && (event === "UserPromptSubmit" || event === "SessionEnd");
 
     let cached = null;
     if (canCacheSession && event === "SessionEnd") {
@@ -532,13 +538,14 @@ function buildStateBody(event, payload, resolve) {
 
     if (cached) {
       applyCachedFields(body, cached);
-    } else if (!canCacheSession || wantsFresh || !cacheOnlyNoFallback) {
-      // Fresh resolve: caching unavailable (non-Windows, or session_id
-      // "default" / no cwd — unchanged, always resolves), OR SessionStart
-      // (still the one event that spawns once, prewarmed during stdin
-      // buffering — see main() below), OR an ordinary cache-only event
-      // (PreToolUse/PostToolUse/Stop/etc.) whose cache was a miss — #630's
-      // original one-time repopulate fallback, unchanged by this plan.
+    } else if (!cacheOnlyNoFallback) {
+      // Fresh resolve: non-Windows (always resolves on every event,
+      // unchanged), SessionStart (still the one event that spawns once,
+      // prewarmed during stdin buffering — see main() below), or an ordinary
+      // cache-only event (PreToolUse/PostToolUse/Stop/etc.) on a miss or with
+      // caching unavailable — #630's original repopulate fallback, unchanged.
+      // On Windows, UserPromptSubmit/SessionEnd can NEVER reach this branch,
+      // cacheable session or not (see cacheOnlyNoFallback above).
       if (event === "SessionStart" && canCacheSession) {
         pidCache.sweepStalePidCaches({ isProcessAlive: processAlive });
       }
@@ -559,10 +566,10 @@ function buildStateBody(event, payload, resolve) {
         });
       }
     }
-    // else: cache-only MISS on UserPromptSubmit/SessionEnd with no usable
-    // cache entry — zero spawn, no fallback. Body gets no source_pid/
-    // agent_pid/etc.; server MERGE keeps whatever the session already had.
-    // Never degrade to process.ppid — that would ship a
+    // else: Windows UserPromptSubmit/SessionEnd with no usable cache entry
+    // (cacheable miss OR caching unavailable) — zero spawn, no fallback. Body
+    // gets no source_pid/agent_pid/etc.; server MERGE keeps whatever the
+    // session already had. Never degrade to process.ppid — that would ship a
     // wrong-but-plausible-looking pid (#627 residual plan §4.3).
 
     if (wslDistro) {

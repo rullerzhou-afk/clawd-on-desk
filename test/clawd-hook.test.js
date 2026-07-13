@@ -250,7 +250,17 @@ describe("buildStateBody", () => {
     const stopBody = buildStateBody("Stop", { session_id: "s" }, resolveWithWtHwnd);
 
     assert.strictEqual(startBody.wt_hwnd, "123456");
-    assert.strictEqual(promptBody.wt_hwnd, "123456");
+    // This file loads clawd-hook natively (host platform). On Windows,
+    // UserPromptSubmit is cache-only/no-fallback (#627 residual) — it never
+    // resolves, so the hook no longer reports wt_hwnd (the server samples it
+    // instead, src/server-route-state.js). Off Windows the prompt still
+    // resolves fresh and reports it. Deterministic both-platform coverage
+    // lives in test/clawd-hook-pid-cache.test.js (platform-forced reloads).
+    if (process.platform === "win32") {
+      assert.ok(!("wt_hwnd" in promptBody), "Windows prompt is zero-spawn; wt_hwnd is the server's job now");
+    } else {
+      assert.strictEqual(promptBody.wt_hwnd, "123456");
+    }
     assert.ok(!("wt_hwnd" in stopBody));
   });
 

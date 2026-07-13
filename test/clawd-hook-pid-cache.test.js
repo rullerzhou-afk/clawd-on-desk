@@ -292,6 +292,43 @@ describe("buildStateBody pid cache — Windows", () => {
     assert.strictEqual(calls, 1);
     assert.deepStrictEqual(body.pid_chain, [111, 222]);
   });
+
+  // P1 (codex review): the no-fallback contract is a Windows contract, not a
+  // cache-availability one. Even when caching is disabled (session_id
+  // "default" per #583, or an empty cwd), UserPromptSubmit/SessionEnd must
+  // never spawn — otherwise those degenerate sessions keep flashing once per
+  // prompt, the exact symptom this fix removes. Ordinary events (PreToolUse,
+  // above) still resolve fresh for them, which is what keeps their server-side
+  // fields populated.
+  it("P1: UserPromptSubmit with session_id 'default' (caching disabled) never resolves", () => {
+    let calls = 0;
+    const body = buildStateBody("UserPromptSubmit", { session_id: "default", cwd: CWD }, () => { calls++; return goodResolved(); });
+    assert.strictEqual(calls, 0, "non-cacheable UserPromptSubmit must not spawn on Windows");
+    assert.strictEqual(body.source_pid, undefined);
+  });
+
+  it("P1: UserPromptSubmit with an empty cwd (caching disabled) never resolves", () => {
+    const sid = freshSid();
+    let calls = 0;
+    const body = buildStateBody("UserPromptSubmit", { session_id: sid, cwd: "" }, () => { calls++; return goodResolved(); });
+    assert.strictEqual(calls, 0, "non-cacheable UserPromptSubmit must not spawn on Windows");
+    assert.strictEqual(body.source_pid, undefined);
+  });
+
+  it("P1: SessionEnd with session_id 'default' (caching disabled) never resolves", () => {
+    let calls = 0;
+    const body = buildStateBody("SessionEnd", { session_id: "default", cwd: CWD }, () => { calls++; return goodResolved(); });
+    assert.strictEqual(calls, 0, "non-cacheable SessionEnd must not spawn on Windows");
+    assert.strictEqual(body.source_pid, undefined);
+  });
+
+  it("P1: SessionEnd with an empty cwd (caching disabled) never resolves", () => {
+    const sid = freshSid();
+    let calls = 0;
+    const body = buildStateBody("SessionEnd", { session_id: sid, cwd: "" }, () => { calls++; return goodResolved(); });
+    assert.strictEqual(calls, 0, "non-cacheable SessionEnd must not spawn on Windows");
+    assert.strictEqual(body.source_pid, undefined);
+  });
 });
 
 describe("buildStateBody pid cache — non-Windows", () => {
@@ -306,5 +343,13 @@ describe("buildStateBody pid cache — non-Windows", () => {
     const body = buildStateBody("PreToolUse", { session_id: sid, cwd: CWD }, () => { calls++; return goodResolved(); });
     assert.strictEqual(calls, 1, "non-Windows always resolves");
     assert.deepStrictEqual(body.pid_chain, [111, 222], "fresh path includes pid_chain");
+  });
+
+  it("UserPromptSubmit and SessionEnd still resolve fresh (the no-fallback contract is Windows-only)", () => {
+    const sid = freshSid();
+    let calls = 0;
+    buildStateBody("UserPromptSubmit", { session_id: sid, cwd: CWD }, () => { calls++; return goodResolved(); });
+    buildStateBody("SessionEnd", { session_id: sid, cwd: CWD }, () => { calls++; return goodResolved(); });
+    assert.strictEqual(calls, 2, "the ps path neither flashes nor pays a cold start — semantics unchanged");
   });
 });
