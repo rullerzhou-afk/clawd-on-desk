@@ -2270,15 +2270,16 @@ describe("settings renderer browser environment", () => {
 
     const feishuCard = harness.content.querySelector(".feishu-approval-channel-card");
     const guideRow = feishuCard.querySelector(".feishu-approval-event-sub-row");
-    assert.ok(guideRow, "Feishu event subscription guide row should render");
+    assert.ok(guideRow, "Feishu event subscription guide group should render");
     assert.equal(guideRow.querySelector(".row-label").textContent, "feishuApprovalEventSubLabel");
-    assert.ok(guideRow.querySelector(".row-desc"), "guide row should carry the hint description");
+    assert.equal(guideRow.querySelector(".row-desc").textContent, "feishuApprovalEventSubDesc");
+    assert.equal(guideRow.querySelectorAll(".feishu-approval-event-sub-step").length, 4);
 
-    // The hint's link only renders if it stays on a host whitelisted by
+    // The guide's link only renders if it stays on a host whitelisted by
     // escapeWithLink — keep the i18n string and the whitelist in sync.
-    const guideHint = loadSettingsI18nForTest().en.feishuApprovalEventSubHintHtml;
-    const guideLink = guideHint.match(/\[[^\]]+\]\((https:\/\/[^)]+)\)/);
-    assert.ok(guideLink, "en guide hint should contain a [text](url) link token");
+    const guideStep1 = loadSettingsI18nForTest().en.feishuApprovalEventSubStep1Html;
+    const guideLink = guideStep1.match(/\[[^\]]+\]\((https:\/\/[^)]+)\)/);
+    assert.ok(guideLink, "en guide step 1 should contain a [text](url) link token");
     assert.ok(guideLink[1].startsWith("https://open.feishu.cn/"), "guide link must stay on open.feishu.cn");
     const approvalTabSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-telegram-approval.js"), "utf8");
     assert.ok(approvalTabSource.includes("open\\.feishu\\.cn"), "escapeWithLink whitelist should allow open.feishu.cn");

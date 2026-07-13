@@ -1234,24 +1234,36 @@
 
   // ── Feishu: approver ──
 
-  // Static guide row: the Feishu app must subscribe to card.action.trigger
-  // over a long connection, or button presses never reach Clawd (#493).
+  // The Feishu app must subscribe to card.action.trigger over a long
+  // connection, or button presses never reach Clawd (#493). The header states
+  // the requirement; the step-by-step guide stays collapsed by default.
   function buildFeishuEventSubRow() {
-    const row = document.createElement("div");
-    row.className = "row feishu-approval-event-sub-row";
-    const text = document.createElement("div");
-    text.className = "row-text";
-    const label = document.createElement("span");
-    label.className = "row-label";
-    label.textContent = t("feishuApprovalEventSubLabel");
-    const desc = document.createElement("span");
-    desc.className = "row-desc";
-    desc.innerHTML = escapeWithLink(t("feishuApprovalEventSubHintHtml"));
-    bindExternalLinks(desc);
-    text.appendChild(label);
-    text.appendChild(desc);
-    row.appendChild(text);
-    return row;
+    const steps = [
+      "feishuApprovalEventSubStep1Html",
+      "feishuApprovalEventSubStep2",
+      "feishuApprovalEventSubStep3",
+      "feishuApprovalEventSubStep4",
+    ].map((key) => {
+      const row = document.createElement("div");
+      row.className = "row feishu-approval-event-sub-step";
+      const text = document.createElement("div");
+      text.className = "row-text";
+      const desc = document.createElement("span");
+      desc.className = "row-desc";
+      desc.innerHTML = escapeWithLink(t(key));
+      bindExternalLinks(desc);
+      text.appendChild(desc);
+      row.appendChild(text);
+      return row;
+    });
+    return helpers.buildCollapsibleGroup({
+      id: "remote-approval.feishu.event-sub",
+      title: t("feishuApprovalEventSubLabel"),
+      desc: t("feishuApprovalEventSubDesc"),
+      defaultCollapsed: true,
+      className: "feishu-approval-event-sub-row",
+      children: steps,
+    });
   }
 
   function buildFeishuApproverRow() {
