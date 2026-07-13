@@ -69,6 +69,7 @@ function defaultInstalledFlagSkipMessage(agentName, reason) {
 
 function createIntegrationSyncRuntime(options = {}) {
   const ctx = options.ctx || {};
+  const setImmediateFn = options.setImmediate || ctx.setImmediate || setImmediate;
   const getHookServerPort = options.getHookServerPort;
   const shouldManageClaudeHooks = options.shouldManageClaudeHooks;
   const isAgentEnabled = typeof options.isAgentEnabled === "function" ? options.isAgentEnabled : (() => true);
@@ -544,13 +545,23 @@ function createIntegrationSyncRuntime(options = {}) {
   }
 
   function syncEnabledStartupIntegrations() {
+    const startupSyncs = [];
     if (shouldManageClaudeHooks() && shouldSyncAgentIntegration("claude-code")) {
-      syncClawdHooks();
-      startClaudeSettingsWatcher();
+      startupSyncs.push(() => {
+        syncClawdHooks();
+        startClaudeSettingsWatcher();
+      });
     }
     for (const [agentId, sync] of Object.entries(AGENT_INTEGRATION_SYNCERS)) {
-      if (shouldSyncAgentIntegration(agentId)) sync();
+      if (shouldSyncAgentIntegration(agentId)) startupSyncs.push(sync);
     }
+
+    let index = 0;
+    function runNext() {
+      startupSyncs[index++]();
+      if (index < startupSyncs.length) setImmediateFn(runNext);
+    }
+    if (startupSyncs.length) runNext();
   }
 
   return {
