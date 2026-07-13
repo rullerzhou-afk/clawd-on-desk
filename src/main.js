@@ -2338,11 +2338,13 @@ async function sendFeishuApprovalTest() {
     const decision = await client.requestApproval({
       title: "Clawd Feishu approval test",
       detail: "This is a settings test message. It is not attached to any agent permission request.",
-    }, { signal: controller.signal });
+    }, { signal: controller.signal, rejectOnSendError: true });
     if (decision === "allow" || decision === "deny") {
       return { status: "ok", decision };
     }
     return { status: "error", code: "no-button-response", message: "Feishu test did not receive a button response" };
+  } catch (err) {
+    return { status: "error", code: "card-send-failed", message: err && err.message ? err.message : String(err) };
   } finally {
     clearTimeout(timer);
   }

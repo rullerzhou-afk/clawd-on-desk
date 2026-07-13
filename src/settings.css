@@ -369,10 +369,13 @@ html, body {
   color: var(--text-secondary);
   opacity: 0.95;
 }
-.collapsible-group.collapsed .collapsible-group-chevron {
+/* Child selectors, not descendant: guide groups nest inside channel cards,
+   and a descendant match would let the outer group's state style the inner
+   group's chevron/summary/body. */
+.collapsible-group.collapsed > .collapsible-group-header > .collapsible-group-chevron {
   transform: translateX(-6px) rotate(0deg);
 }
-.collapsible-group:not(.collapsed) .collapsible-group-chevron {
+.collapsible-group:not(.collapsed) > .collapsible-group-header > .collapsible-group-chevron {
   transform: translateX(-6px) rotate(90deg);
   color: var(--accent);
   opacity: 1;
@@ -429,7 +432,7 @@ html, body {
   flex-wrap: nowrap;
   max-width: none;
 }
-.collapsible-group:not(.collapsed) .collapsible-group-summary {
+.collapsible-group:not(.collapsed) > .collapsible-group-header > .collapsible-group-summary {
   opacity: 0.72;
   transform: translateX(2px);
 }
@@ -513,7 +516,7 @@ html, body {
   transition: max-height 0.22s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.16s ease, transform 0.18s ease, padding 0.18s ease, border-color 0.18s ease;
   will-change: max-height, opacity, transform;
 }
-.collapsible-group.collapsed .collapsible-group-body {
+.collapsible-group.collapsed > .collapsible-group-body {
   max-height: 0;
   border-top-color: transparent;
   padding-top: 0;

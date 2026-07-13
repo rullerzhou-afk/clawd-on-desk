@@ -493,9 +493,12 @@
       className: "remote-approval-channel-card feishu-approval-channel-card",
       children: [
         buildChannelStatusRow(kind, deriveFeishuCardMessage(kind)),
+        // Order matters: Feishu only saves the long-connection subscription
+        // mode while a long connection is live, so the enable switch (step 3)
+        // must come before the callback-subscription guide (step 4).
         helpers.buildSection(t("feishuApprovalStep1Title"), [buildFeishuSecretsRow()]),
-        helpers.buildSection(t("feishuApprovalStep2Title"), [buildFeishuEventSubRow()]),
-        helpers.buildSection(t("feishuApprovalStep3Title"), [buildFeishuApproverRow()]),
+        helpers.buildSection(t("feishuApprovalStep2Title"), [buildFeishuApproverRow()]),
+        buildFeishuStep3Section(),
         buildFeishuStep4Section(),
       ],
     });
@@ -1232,7 +1235,7 @@
     return input;
   }
 
-  // ── Feishu: approver ──
+  // ── Feishu: approver + event subscription ──
 
   // The Feishu app must subscribe to card.action.trigger over a long
   // connection, or button presses never reach Clawd (#493). The header states
@@ -1345,21 +1348,31 @@
 
   // ── Feishu: Enable + Test ──
 
-  function buildFeishuStep4Section() {
+  function feishuSetupProgress() {
     const secretsConfigured = !!(feishuView.secretInfo && feishuView.secretInfo.configured)
       || (feishuView.status && feishuView.status.secretsStored === true);
     const cfg = currentFeishuConfig();
     const approverConfigured = !!cfg.approverId;
-    const ready = secretsConfigured && approverConfigured;
+    return { secretsConfigured, approverConfigured, ready: secretsConfigured && approverConfigured };
+  }
 
+  function buildFeishuStep3Section() {
+    const { secretsConfigured, approverConfigured, ready } = feishuSetupProgress();
     const rows = [];
     if (!ready) {
       rows.push(buildFeishuPrerequisitesRow({ secretsConfigured, approverConfigured }));
     }
     rows.push(buildFeishuEnabledRow({ ready }));
     rows.push(buildFeishuTimeoutRow());
-    rows.push(buildFeishuTestRow({ ready }));
-    return helpers.buildSection(t("feishuApprovalStep4Title"), rows);
+    return helpers.buildSection(t("feishuApprovalStep3Title"), rows);
+  }
+
+  function buildFeishuStep4Section() {
+    const { ready } = feishuSetupProgress();
+    return helpers.buildSection(t("feishuApprovalStep4Title"), [
+      buildFeishuEventSubRow(),
+      buildFeishuTestRow({ ready }),
+    ]);
   }
 
   function buildFeishuPrerequisitesRow({ secretsConfigured, approverConfigured }) {
@@ -1504,10 +1517,16 @@
         if (result && result.status === "ok") {
           ops.showToast(t("feishuApprovalTestSent"));
         } else {
-          const codeKey = result && result.code === "no-button-response" ? "feishuApprovalTestNoResponse"
-            : result && result.code === "not-connected" ? "feishuApprovalTestNotConnected"
+          const code = result && result.code;
+          const codeKey = code === "no-button-response" ? "feishuApprovalTestNoResponse"
+            : code === "not-connected" ? "feishuApprovalTestNotConnected"
+            : code === "card-send-failed" ? "feishuApprovalTestSendFailed"
             : "";
-          ops.showToast(codeKey ? t(codeKey) : ((result && result.message) || t("feishuApprovalTestFailed")), { error: true });
+          let text = codeKey ? t(codeKey) : ((result && result.message) || t("feishuApprovalTestFailed"));
+          // Surface the SDK error for send failures — it usually names the
+          // culprit directly (e.g. invalid receive_id for a bad approver id).
+          if (code === "card-send-failed" && result.message) text += ` (${result.message})`;
+          ops.showToast(text, { error: true });
         }
         feishuView.status = null;
         refreshFeishuStatus({ forceRender: true });

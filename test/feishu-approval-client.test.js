@@ -1008,3 +1008,35 @@ test("Feishu elicitation helpers validate payloads and action events", () => {
     action: { value: { requestId: "req_q", kind: "elicitation-step", questionIndex: 0 }, form_value: {} },
   }, [{ question: "Q?", options: [] }], "open_id"), null);
 });
+
+test("FeishuApprovalClient resolves null on send failure by default but rejects with rejectOnSendError", async () => {
+  const sendError = new Error("invalid receive_id");
+  const fakeClient = {
+    im: { v1: { message: {
+      create: async () => { throw sendError; },
+      patch: async () => ({ data: {} }),
+    } } },
+  };
+  const logs = [];
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_bad",
+    idType: "open_id",
+    larkClient: fakeClient,
+    log: (level, message, meta) => logs.push({ level, message, meta }),
+  });
+
+  // Approval callers keep the null contract so they can fall back to the
+  // local permission bubble.
+  assert.equal(await client.requestApproval({ title: "Run", detail: "Summary" }), null);
+
+  // The settings test path opts into rejection so a send failure is not
+  // misreported as "card sent but nobody pressed a button" (#493 review).
+  await assert.rejects(
+    client.requestApproval({ title: "Run", detail: "Summary" }, { rejectOnSendError: true }),
+    /invalid receive_id/
+  );
+  assert.equal(client.pending.size, 0);
+  assert.equal(logs.filter((entry) => entry.level === "warn" && entry.message === "send failed").length, 2);
+});

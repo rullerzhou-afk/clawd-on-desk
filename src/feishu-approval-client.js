@@ -956,14 +956,19 @@ class FeishuApprovalClient {
     const signal = options.signal;
     if (signal && signal.aborted) return Promise.resolve(null);
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       let settled = false;
-      const finish = (decision) => {
+      // Send failures resolve to null by default so approval callers fall
+      // back to the local bubble; opting into rejectOnSendError lets the
+      // settings test path tell "card never sent" apart from "nobody
+      // pressed a button" (#493 misdiagnosis).
+      const finish = (decision, sendError) => {
         if (settled) return;
         settled = true;
         if (signal && onAbort) signal.removeEventListener("abort", onAbort);
         this.pending.delete(requestId);
-        resolve(isValidDecisionValue(decision) ? decision : null);
+        if (sendError && options.rejectOnSendError) reject(sendError);
+        else resolve(isValidDecisionValue(decision) ? decision : null);
       };
       const onAbort = () => finish(null);
       if (signal) signal.addEventListener("abort", onAbort, { once: true });
@@ -984,7 +989,7 @@ class FeishuApprovalClient {
         })
         .catch((err) => {
           this.log("warn", "send failed", { error: err && err.message ? err.message : String(err) });
-          finish(null);
+          finish(null, err instanceof Error ? err : new Error(String(err)));
           return entry;
         });
     });
