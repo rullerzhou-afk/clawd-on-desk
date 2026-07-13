@@ -482,4 +482,6 @@ module.exports = {
   buildElectronLaunchConfig,
   tmuxSocketFromEnv,
   processAlive,
+  WINDOWS_TERMINAL_WINDOW_CLASS,
+  WINDOWS_TERMINAL_PROCESS_NAMES,
 };
