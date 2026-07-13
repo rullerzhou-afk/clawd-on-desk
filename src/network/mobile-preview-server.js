@@ -90,6 +90,9 @@ function initMobilePreviewServer(ctx) {
   const clientTimeoutMs = ctx && typeof ctx.clientTimeoutMs === "number"
     ? ctx.clientTimeoutMs
     : CLIENT_TIMEOUT_MS;
+  const heartbeatMs = ctx && typeof ctx.heartbeatMs === "number"
+    ? ctx.heartbeatMs
+    : HEARTBEAT_MS;
   const rotationProbeMs = ctx && typeof ctx.rotationProbeMs === "number"
     ? ctx.rotationProbeMs
     : 5000;
@@ -157,39 +160,78 @@ function initMobilePreviewServer(ctx) {
   }
 
   function probeClientsBeforeRotation() {
-    const candidates = [...clients].filter((c) => c.readyState === WebSocket.OPEN);
-    if (candidates.length === 0) return Promise.resolve(false);
+    const probeToken = tokenState.token;
+    const initialCandidates = [...clients].filter((c) => c.readyState === WebSocket.OPEN);
+    if (initialCandidates.length === 0) return Promise.resolve({ allResponded: false, probeToken });
 
     return new Promise((resolve) => {
       let settled = false;
+      const candidates = new Set();
       const responders = new Set();
       const handlers = new Map();
+      const probePayload = Buffer.from(`rotation-probe:${crypto.randomBytes(8).toString("hex")}`);
       const finish = (allResponded) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        for (const [client, handler] of handlers) client.removeListener("pong", handler);
+        for (const [client, listener] of handlers) {
+          client.removeListener("pong", listener.onPong);
+          client.removeListener("close", listener.onLeave);
+          client.removeListener("error", listener.onLeave);
+        }
         rotationProbeCancel = null;
-        resolve(allResponded && responders.size === candidates.length);
+        resolve({ allResponded, probeToken });
       };
-      const timer = setTimeout(() => finish(false), rotationProbeMs);
-      rotationProbeCancel = () => finish(false);
-      const probePayload = Buffer.from(`rotation-probe:${crypto.randomBytes(8).toString("hex")}`);
-
-      for (const client of candidates) {
-        const handler = (data) => {
+      const check = () => {
+        if (candidates.size === 0) return finish(false);
+        for (const client of candidates) {
+          if (!responders.has(client)) return;
+        }
+        finish(true);
+      };
+      const removeCandidate = (client) => {
+        const listener = handlers.get(client);
+        if (!listener) return;
+        client.removeListener("pong", listener.onPong);
+        client.removeListener("close", listener.onLeave);
+        client.removeListener("error", listener.onLeave);
+        handlers.delete(client);
+        candidates.delete(client);
+        responders.delete(client);
+        check();
+      };
+      const addCandidate = (client, sendPing) => {
+        if (settled || candidates.has(client) || client.readyState !== WebSocket.OPEN) return;
+        const onPong = (data) => {
           const pongPayload = Buffer.isBuffer(data) ? data : Buffer.from(data || "");
           if (!pongPayload.equals(probePayload)) return;
           responders.add(client);
-          if (responders.size === candidates.length) finish(true);
+          check();
         };
-        handlers.set(client, handler);
-        client.once("pong", handler);
+        const onLeave = () => removeCandidate(client);
+        candidates.add(client);
+        handlers.set(client, { onPong, onLeave });
+        client.on("pong", onPong);
+        client.once("close", onLeave);
+        client.once("error", onLeave);
+        if (!sendPing) return;
+        try { client.ping(probePayload); } catch { removeCandidate(client); }
+      };
+      const timer = setTimeout(() => finish(false), rotationProbeMs);
+      rotationProbeCancel = () => finish(false);
+      rotationProbeCancel.addClient = (client) => addCandidate(client, true);
+
+      for (const client of initialCandidates) addCandidate(client, false);
+      for (const client of [...candidates]) {
+        if (settled) break;
+        try { client.ping(probePayload); } catch { removeCandidate(client); }
       }
-      for (const client of candidates) {
-        try { client.ping(probePayload); } catch { finish(false); }
-      }
+      check();
     });
+  }
+
+  function addClientToRotationProbe(client) {
+    if (rotationProbeCancel && rotationProbeCancel.addClient) rotationProbeCancel.addClient(client);
   }
 
   function scheduleRotation() {
@@ -199,8 +241,8 @@ function initMobilePreviewServer(ctx) {
     rotationTimer = setTimeout(() => {
       rotationTimer = null;
       if (clients.size > 0) {
-        probeClientsBeforeRotation().then((allResponded) => {
-          if (closed) return;
+        probeClientsBeforeRotation().then(({ allResponded, probeToken }) => {
+          if (closed || tokenState.token !== probeToken) return;
           if (allResponded) {
             if (!performRotation()) {
               scheduleRotationRetry();
@@ -242,6 +284,7 @@ function initMobilePreviewServer(ctx) {
     if (!persistTokenState(nextState)) {
       throw new Error("Failed to persist mobile token state");
     }
+    if (rotationProbeCancel) rotationProbeCancel();
     // Kick all connected clients (they have stale tokens)
     for (const c of clients) {
       try { c.close(1008, "Token regenerated"); } catch {}
@@ -379,6 +422,7 @@ function initMobilePreviewServer(ctx) {
         const meta = clientMeta.get(ws);
         if (meta) meta.lastPong = Date.now();
       });
+      addClientToRotationProbe(ws);
 
       ws.on("message", (data) => {
         if (closed) return;
@@ -440,7 +484,7 @@ function initMobilePreviewServer(ctx) {
         try { c.ping(); } catch {}
       }
       if (clients.size === 0) stopHeartbeat();
-    }, HEARTBEAT_MS);
+    }, heartbeatMs);
   }
 
   function stopHeartbeat() {

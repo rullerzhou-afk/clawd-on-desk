@@ -746,7 +746,7 @@ describe("Rotate-on-use", () => {
       token: testToken,
       previous: null,
       graceUntil: null,
-      rotatedAt: Date.now() - (24 * 60 * 60 * 1000) + 250,
+      rotatedAt: Date.now() - (24 * 60 * 60 * 1000) + 1000,
       rotationPending: false,
     }, null, 2));
 
@@ -761,8 +761,10 @@ describe("Rotate-on-use", () => {
     try {
       const port = await server.start();
       client = connectClient(port, testToken);
+      const probe = new Promise((resolve) => client.ws.once("ping", resolve));
       await waitForOpen(client.ws);
-      await new Promise((r) => setTimeout(r, 350));
+      await probe;
+      await new Promise((r) => setTimeout(r, 50));
 
       const persisted = JSON.parse(fs.readFileSync(tokenFile, "utf8"));
       assert.strictEqual(persisted.rotationPending, false);
@@ -844,6 +846,143 @@ describe("Rotate-on-use", () => {
         client.ws._socket.resume();
         client.ws.terminate();
       }
+      server.cleanup();
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  });
+
+  it("probe ignores an unrelated pong before its matching pong", async () => {
+    const testToken = "13579bdf".repeat(4);
+    fs.writeFileSync(tokenFile, JSON.stringify({
+      token: testToken,
+      previous: null,
+      graceUntil: null,
+      rotatedAt: Date.now() - (24 * 60 * 60 * 1000) + 450,
+      rotationPending: false,
+    }, null, 2));
+
+    const server = initMobilePreviewServer({
+      sessions,
+      tokenPath: tokenFile,
+      heartbeatMs: 100,
+      rotationProbeMs: 200,
+      port: 0,
+    });
+    let client;
+    try {
+      const port = await server.start();
+      client = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${testToken}`, { autoPong: false });
+      await waitForOpen(client);
+      client.on("ping", (payload) => setTimeout(() => client.pong(payload), 60));
+      await new Promise((r) => setTimeout(r, 900));
+
+      const persisted = JSON.parse(fs.readFileSync(tokenFile, "utf8"));
+      assert.strictEqual(persisted.rotationPending, false);
+      assert.notStrictEqual(persisted.token, testToken);
+    } finally {
+      if (client) client.terminate();
+      server.cleanup();
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  });
+
+  it("probe does not defer rotation when a silent client closes mid-probe", async () => {
+    const testToken = "2468ace0".repeat(4);
+    fs.writeFileSync(tokenFile, JSON.stringify({
+      token: testToken,
+      previous: null,
+      graceUntil: null,
+      rotatedAt: Date.now() - (24 * 60 * 60 * 1000) + 150,
+      rotationPending: false,
+    }, null, 2));
+
+    const server = initMobilePreviewServer({ sessions, tokenPath: tokenFile, rotationProbeMs: 150, port: 0 });
+    let healthy;
+    let leaver;
+    try {
+      const port = await server.start();
+      healthy = connectClient(port, testToken);
+      leaver = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${testToken}`, { autoPong: false });
+      await waitForOpen(healthy.ws);
+      await waitForOpen(leaver);
+      leaver.on("ping", () => leaver.close());
+      await new Promise((r) => setTimeout(r, 500));
+
+      const persisted = JSON.parse(fs.readFileSync(tokenFile, "utf8"));
+      assert.strictEqual(persisted.rotationPending, false);
+      assert.notStrictEqual(persisted.token, testToken);
+    } finally {
+      if (healthy) healthy.close();
+      if (leaver) leaver.terminate();
+      server.cleanup();
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  });
+
+  it("probe includes a client that connects during the probe window", async () => {
+    const testToken = "89abcdef".repeat(4);
+    fs.writeFileSync(tokenFile, JSON.stringify({
+      token: testToken,
+      previous: null,
+      graceUntil: null,
+      rotatedAt: Date.now() - (24 * 60 * 60 * 1000) + 150,
+      rotationPending: false,
+    }, null, 2));
+
+    const server = initMobilePreviewServer({ sessions, tokenPath: tokenFile, rotationProbeMs: 200, port: 0 });
+    let first;
+    let joiner;
+    try {
+      const port = await server.start();
+      first = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${testToken}`, { autoPong: false });
+      await waitForOpen(first);
+      const probeStarted = new Promise((resolve) => {
+        first.once("ping", (payload) => {
+          setTimeout(() => first.pong(payload), 100);
+          resolve();
+        });
+      });
+      await probeStarted;
+      joiner = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${testToken}`, { autoPong: false });
+      await waitForOpen(joiner);
+      await new Promise((r) => setTimeout(r, 350));
+
+      const persisted = JSON.parse(fs.readFileSync(tokenFile, "utf8"));
+      assert.strictEqual(persisted.rotationPending, true);
+      assert.strictEqual(persisted.token, testToken);
+    } finally {
+      if (first) first.terminate();
+      if (joiner) joiner.terminate();
+      server.cleanup();
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  });
+
+  it("regenerating a token invalidates an in-flight probe", async () => {
+    const testToken = "deadbeef".repeat(4);
+    fs.writeFileSync(tokenFile, JSON.stringify({
+      token: testToken,
+      previous: null,
+      graceUntil: null,
+      rotatedAt: Date.now() - (24 * 60 * 60 * 1000) + 100,
+      rotationPending: false,
+    }, null, 2));
+
+    const server = initMobilePreviewServer({ sessions, tokenPath: tokenFile, rotationProbeMs: 200, port: 0 });
+    let frozen;
+    try {
+      const port = await server.start();
+      frozen = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${testToken}`, { autoPong: false });
+      await waitForOpen(frozen);
+      await new Promise((r) => setTimeout(r, 150));
+      const regenerated = server.regenerateToken();
+      await new Promise((r) => setTimeout(r, 300));
+
+      const persisted = JSON.parse(fs.readFileSync(tokenFile, "utf8"));
+      assert.strictEqual(persisted.token, regenerated);
+      assert.strictEqual(persisted.rotationPending, false);
+    } finally {
+      if (frozen) frozen.terminate();
       server.cleanup();
       await new Promise((r) => setTimeout(r, 200));
     }
