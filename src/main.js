@@ -2304,22 +2304,32 @@ function feishuApprovalUnavailableMessage(status) {
   return "Feishu approval client is not running";
 }
 
+// The `code` field lets the renderer map failures to localized, actionable
+// toasts; `message` stays as the untranslated fallback.
+function feishuApprovalUnavailableResult(status) {
+  return {
+    status: "error",
+    code: (status && status.reason) || "not-running",
+    message: feishuApprovalUnavailableMessage(status),
+  };
+}
+
 async function sendFeishuApprovalTest() {
   const beforeStatus = getFeishuApprovalStatus();
   if (beforeStatus.configured !== true) {
-    return { status: "error", message: feishuApprovalUnavailableMessage(beforeStatus) };
+    return feishuApprovalUnavailableResult(beforeStatus);
   }
   await queueFeishuApprovalSync("test");
   const client = getConfiguredFeishuApprovalClient();
   if (!client || typeof client.requestApproval !== "function") {
-    return { status: "error", message: feishuApprovalUnavailableMessage(getFeishuApprovalStatus()) };
+    return feishuApprovalUnavailableResult(getFeishuApprovalStatus());
   }
   if (typeof client.waitUntilConnected === "function") {
     const config = getFeishuApprovalPrefs();
     const timeoutMs = Math.max(1, Number(config.connectionTimeoutSeconds) || 15) * 1000;
     const connected = await client.waitUntilConnected(timeoutMs);
     if (!connected) {
-      return { status: "error", message: feishuApprovalUnavailableMessage(getFeishuApprovalStatus()) };
+      return { ...feishuApprovalUnavailableResult(getFeishuApprovalStatus()), code: "not-connected" };
     }
   }
   const controller = new AbortController();
@@ -2332,7 +2342,7 @@ async function sendFeishuApprovalTest() {
     if (decision === "allow" || decision === "deny") {
       return { status: "ok", decision };
     }
-    return { status: "error", message: "Feishu test did not receive a button response" };
+    return { status: "error", code: "no-button-response", message: "Feishu test did not receive a button response" };
   } finally {
     clearTimeout(timer);
   }

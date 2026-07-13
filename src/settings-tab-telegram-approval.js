@@ -494,8 +494,9 @@
       children: [
         buildChannelStatusRow(kind, deriveFeishuCardMessage(kind)),
         helpers.buildSection(t("feishuApprovalStep1Title"), [buildFeishuSecretsRow()]),
-        helpers.buildSection(t("feishuApprovalStep2Title"), [buildFeishuApproverRow()]),
-        buildFeishuStep3Section(),
+        helpers.buildSection(t("feishuApprovalStep2Title"), [buildFeishuEventSubRow()]),
+        helpers.buildSection(t("feishuApprovalStep3Title"), [buildFeishuApproverRow()]),
+        buildFeishuStep4Section(),
       ],
     });
   }
@@ -1233,6 +1234,26 @@
 
   // ── Feishu: approver ──
 
+  // Static guide row: the Feishu app must subscribe to card.action.trigger
+  // over a long connection, or button presses never reach Clawd (#493).
+  function buildFeishuEventSubRow() {
+    const row = document.createElement("div");
+    row.className = "row feishu-approval-event-sub-row";
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("feishuApprovalEventSubLabel");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.innerHTML = escapeWithLink(t("feishuApprovalEventSubHintHtml"));
+    bindExternalLinks(desc);
+    text.appendChild(label);
+    text.appendChild(desc);
+    row.appendChild(text);
+    return row;
+  }
+
   function buildFeishuApproverRow() {
     const draft = getFeishuFormDraft();
     const row = document.createElement("div");
@@ -1312,7 +1333,7 @@
 
   // ── Feishu: Enable + Test ──
 
-  function buildFeishuStep3Section() {
+  function buildFeishuStep4Section() {
     const secretsConfigured = !!(feishuView.secretInfo && feishuView.secretInfo.configured)
       || (feishuView.status && feishuView.status.secretsStored === true);
     const cfg = currentFeishuConfig();
@@ -1326,7 +1347,7 @@
     rows.push(buildFeishuEnabledRow({ ready }));
     rows.push(buildFeishuTimeoutRow());
     rows.push(buildFeishuTestRow({ ready }));
-    return helpers.buildSection(t("feishuApprovalStep3Title"), rows);
+    return helpers.buildSection(t("feishuApprovalStep4Title"), rows);
   }
 
   function buildFeishuPrerequisitesRow({ secretsConfigured, approverConfigured }) {
@@ -1471,7 +1492,10 @@
         if (result && result.status === "ok") {
           ops.showToast(t("feishuApprovalTestSent"));
         } else {
-          ops.showToast((result && result.message) || t("feishuApprovalTestFailed"), { error: true });
+          const codeKey = result && result.code === "no-button-response" ? "feishuApprovalTestNoResponse"
+            : result && result.code === "not-connected" ? "feishuApprovalTestNotConnected"
+            : "";
+          ops.showToast(codeKey ? t(codeKey) : ((result && result.message) || t("feishuApprovalTestFailed")), { error: true });
         }
         feishuView.status = null;
         refreshFeishuStatus({ forceRender: true });
@@ -1547,13 +1571,13 @@
 
   // i18n hint strings use a constrained mini-syntax: literal text plus
   // [text](https://...) link tokens. We escape the literal text and only
-  // expand whitelisted https://t.me/* links so a malicious translation can't
-  // inject arbitrary HTML.
+  // expand whitelisted https://t.me/* and https://open.feishu.cn/* links so a
+  // malicious translation can't inject arbitrary HTML.
   function escapeWithLink(text) {
     const raw = String(text == null ? "" : text);
     const parts = [];
     let lastIdx = 0;
-    const re = /\[([^\]]+)\]\((https:\/\/t\.me\/[A-Za-z0-9_./?#=&-]+)\)/g;
+    const re = /\[([^\]]+)\]\((https:\/\/(?:t\.me|open\.feishu\.cn)\/[A-Za-z0-9_./?#=&-]+)\)/g;
     let match;
     while ((match = re.exec(raw)) !== null) {
       parts.push(escapeHtml(raw.slice(lastIdx, match.index)));

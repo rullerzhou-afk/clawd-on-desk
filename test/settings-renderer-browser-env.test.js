@@ -2221,6 +2221,81 @@ describe("settings renderer browser environment", () => {
     });
   });
 
+  it("renders the Feishu event subscription guide and maps test failure codes to localized toasts", async () => {
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+        feishuApproval: {
+          enabled: true,
+          idType: "open_id",
+          approverId: "ou_1",
+          connectionTimeoutSeconds: 15,
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({ status: "ok", state: { status: "stopped", tokenStored: false } });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: false, masked: "" });
+          }
+          if (name === "feishuApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: { status: "running", configured: true, secretsStored: true },
+            });
+          }
+          if (name === "feishuApproval.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, appId: "cli_......abcd" });
+          }
+          if (name === "feishuApproval.test") {
+            return Promise.resolve({
+              status: "error",
+              code: "no-button-response",
+              message: "Feishu test did not receive a button response",
+            });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const feishuCard = harness.content.querySelector(".feishu-approval-channel-card");
+    const guideRow = feishuCard.querySelector(".feishu-approval-event-sub-row");
+    assert.ok(guideRow, "Feishu event subscription guide row should render");
+    assert.equal(guideRow.querySelector(".row-label").textContent, "feishuApprovalEventSubLabel");
+    assert.ok(guideRow.querySelector(".row-desc"), "guide row should carry the hint description");
+
+    // The hint's link only renders if it stays on a host whitelisted by
+    // escapeWithLink — keep the i18n string and the whitelist in sync.
+    const guideHint = loadSettingsI18nForTest().en.feishuApprovalEventSubHintHtml;
+    const guideLink = guideHint.match(/\[[^\]]+\]\((https:\/\/[^)]+)\)/);
+    assert.ok(guideLink, "en guide hint should contain a [text](url) link token");
+    assert.ok(guideLink[1].startsWith("https://open.feishu.cn/"), "guide link must stay on open.feishu.cn");
+    const approvalTabSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-telegram-approval.js"), "utf8");
+    assert.ok(approvalTabSource.includes("open\\.feishu\\.cn"), "escapeWithLink whitelist should allow open.feishu.cn");
+
+    const toasts = [];
+    harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+    const testButton = feishuCard.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalSendTest");
+    assert.equal(testButton.disabled, false);
+    testButton.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(toasts)), [
+      { message: "feishuApprovalTestNoResponse", options: { error: true } },
+    ]);
+  });
+
   it("refreshes Feishu status while long connection is starting", async () => {
     let feishuStatusCalls = 0;
     const harness = loadTelegramApprovalTabForTest({
