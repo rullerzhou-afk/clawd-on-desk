@@ -204,12 +204,23 @@ function sweepStalePidCaches(options = {}) {
       } catch {
         dead = true; // unreadable/corrupt — treated as a damaged shape
       }
-      // Narrow stat-then-unlink TOCTOU: if a session touched/rewrote this
-      // exact file between the statSync and the unlinkSync, we could delete a
-      // just-refreshed entry. Harmless and self-healing — the next
-      // readPidCache misses and rebuilds via one fresh resolve — so not worth
-      // a lock.
-      if (dead) fs.unlinkSync(full);
+      if (dead) {
+        // Re-check right before unlink: a concurrent SessionStart's
+        // writePidCache (atomic tmp+rename) may have REPLACED this file after
+        // we judged the OLD one dead. Deleting the replacement used to be
+        // self-healing ("next read misses → one fresh resolve"), but under
+        // the no-fallback contract UserPromptSubmit/SessionEnd never
+        // re-resolve — the session would stay field-less until the next
+        // ordinary event's miss-fallback, i.e. one avoidable flash. A changed
+        // mtime means we judged a file that no longer exists; skip it. This
+        // narrows the race window from stat→read→liveness→unlink down to
+        // stat→unlink (microseconds); a strict guarantee would need
+        // cross-process write/sweep coordination, which the residual window
+        // does not justify.
+        const st2 = fs.statSync(full);
+        if (st2.mtimeMs !== st.mtimeMs) continue;
+        fs.unlinkSync(full);
+      }
     } catch {
       /* raced with a writer/other sweeper — skip */
     }

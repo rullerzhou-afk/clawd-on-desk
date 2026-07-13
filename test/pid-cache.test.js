@@ -253,6 +253,32 @@ describe("pid-cache sweepStalePidCaches() — age floor + injected liveness (§4
     assert.strictEqual(fs.existsSync(file), false, "corrupt shape is always treated as dead, even if isProcessAlive would say alive");
   });
 
+  it("P2 race: a file replaced between the death verdict and the unlink survives", () => {
+    // Simulates: sweep judges the OLD file dead, but a concurrent
+    // SessionStart's writePidCache atomically replaces it before the unlink.
+    // The injected liveness callback runs exactly in that window (after the
+    // sweep has read the old JSON, before it deletes), so replacing the file
+    // inside it reproduces the race deterministically. The pre-unlink mtime
+    // re-check must notice the replacement and keep the NEW file — deleting
+    // it would strand a cache-only prompt/end (they never re-resolve) until
+    // the next ordinary event's miss-fallback, i.e. one avoidable flash.
+    const sid = freshSid();
+    const file = pc.cacheFilePath(sid, CWD);
+    pc.writePidCache(sid, CWD, SUBSET);
+    const old = new Date(Date.now() - (pc.SWEEP_AGE_MS + 60_000));
+    fs.utimesSync(file, old, old);
+
+    pc.sweepStalePidCaches({
+      isProcessAlive: () => {
+        pc.writePidCache(sid, CWD, SUBSET); // concurrent SessionStart rewrite (fresh mtime)
+        return false; // and the old file's PIDs report dead
+      },
+    });
+
+    assert.strictEqual(fs.existsSync(file), true, "the replacement written mid-sweep must survive the unlink");
+    assert.ok(pc.readPidCache(sid, CWD), "the new cache entry must still be readable after the sweep");
+  });
+
   it("defaults isProcessAlive to always-alive when not injected (never deletes purely on age)", () => {
     const sid = freshSid();
     const file = pc.cacheFilePath(sid, CWD);
