@@ -593,6 +593,167 @@ describe("Kimi Code native events (#563)", () => {
     assert.strictEqual(body.tool_name, "Bash");
     assert.strictEqual(body.permission_action, "Running: echo test-approve");
     assert.strictEqual(body.permission_command, "echo test-approve");
+    assert.deepStrictEqual(body.permission_tool_input, { command: "echo test-approve" });
+  });
+
+  it("forwards a whitelisted tool_input subset for file tools (path → file_path)", () => {
+    // Real tool_input shapes captured on-machine from kimi-code 0.14.3:
+    // Write sends { path, content }, Edit sends { path, old_string, new_string }.
+    // The 0.23.6 bundle's Write/Edit input schemas are unchanged (`path`,
+    // not `file_path`).
+    const write = buildStateBody(
+      "PermissionRequest",
+      {
+        hook_event_name: "PermissionRequest",
+        session_id: "session_abc",
+        cwd: "D:/proj",
+        tool_call_id: "Write_0",
+        tool_name: "Write",
+        action: "Writing: cue-probe.txt",
+        tool_input: { path: "cue-probe.txt", content: "hello cue" },
+      },
+      resolve
+    );
+    assert.deepStrictEqual(write.permission_tool_input, { file_path: "cue-probe.txt" });
+
+    const edit = buildStateBody(
+      "PermissionRequest",
+      {
+        hook_event_name: "PermissionRequest",
+        session_id: "session_abc",
+        tool_name: "Edit",
+        tool_input: { path: "cue-probe.txt", old_string: "hello", new_string: "goodbye" },
+      },
+      resolve
+    );
+    assert.deepStrictEqual(edit.permission_tool_input, { file_path: "cue-probe.txt" });
+
+    // An explicit Claude-style file_path wins over path.
+    const explicit = buildStateBody(
+      "PermissionRequest",
+      {
+        hook_event_name: "PermissionRequest",
+        session_id: "session_abc",
+        tool_name: "Write",
+        tool_input: { file_path: "D:/proj/a.txt", path: "b.txt" },
+      },
+      resolve
+    );
+    assert.deepStrictEqual(explicit.permission_tool_input, { file_path: "D:/proj/a.txt" });
+  });
+
+  it("clamps forwarded tool_input strings and drops empty or non-string values", () => {
+    const body = buildStateBody(
+      "PermissionRequest",
+      {
+        hook_event_name: "PermissionRequest",
+        session_id: "session_abc",
+        tool_name: "Bash",
+        tool_input: { command: "x".repeat(10000), file_path: 42, pattern: "" },
+      },
+      resolve
+    );
+    assert.strictEqual(body.permission_tool_input.command.length, 500);
+    assert.strictEqual(body.permission_tool_input.file_path, undefined);
+    assert.strictEqual(body.permission_tool_input.pattern, undefined);
+
+    const empty = buildStateBody(
+      "PermissionRequest",
+      {
+        hook_event_name: "PermissionRequest",
+        session_id: "session_abc",
+        tool_name: "Write",
+        tool_input: { content: "only heavy fields" },
+      },
+      resolve
+    );
+    assert.strictEqual(empty.permission_tool_input, undefined);
+  });
+
+  it("trims tool_input values before clamping so padded content survives", () => {
+    // Slice-before-trim would clamp 600 chars of leading whitespace down to
+    // whitespace only, and the server's own trim would then drop the field.
+    const body = buildStateBody(
+      "PermissionRequest",
+      {
+        hook_event_name: "PermissionRequest",
+        session_id: "session_abc",
+        tool_name: "Bash",
+        tool_input: { command: " ".repeat(600) + "rm -rf build" },
+      },
+      resolve
+    );
+    assert.strictEqual(body.permission_tool_input.command, "rm -rf build");
+  });
+
+  it("never forwards description — model-authored text would mask the real command", () => {
+    // kimi-code 0.23.6's Bash schema has an optional model-written
+    // `description`, and formatDetail prefers it over `command`; forwarding
+    // it would let generated text replace the ground truth on the card.
+    const body = buildStateBody(
+      "PermissionRequest",
+      {
+        hook_event_name: "PermissionRequest",
+        session_id: "session_abc",
+        tool_name: "Bash",
+        tool_input: { command: "rm -rf build", description: "Tidy workspace" },
+      },
+      resolve
+    );
+    assert.deepStrictEqual(body.permission_tool_input, { command: "rm -rf build" });
+  });
+
+  it("forwards pattern for search tools", () => {
+    const body = buildStateBody(
+      "PermissionRequest",
+      {
+        hook_event_name: "PermissionRequest",
+        session_id: "session_abc",
+        tool_name: "Grep",
+        tool_input: { pattern: "TODO(kimi)", path: "src" },
+      },
+      resolve
+    );
+    assert.deepStrictEqual(body.permission_tool_input, { file_path: "src", pattern: "TODO(kimi)" });
+  });
+
+  it("clamps action, display.command and tool_name so a huge command can't 413 the /state POST", () => {
+    // A heredoc-sized Bash command embeds itself in action AND display.command;
+    // unclamped, the body blows the server's 16KB cap and the headerless 413
+    // silently drops the whole notification.
+    const big = "x".repeat(20000);
+    const body = buildStateBody(
+      "PermissionRequest",
+      {
+        hook_event_name: "PermissionRequest",
+        session_id: "session_abc",
+        tool_name: `Bash${big}`,
+        action: `Running: ${big}`,
+        display: { command: big },
+        tool_input: { command: big },
+      },
+      resolve
+    );
+    assert.strictEqual(body.permission_action.length, 300);
+    assert.strictEqual(body.permission_command.length, 500);
+    assert.strictEqual(body.tool_name.length, 200);
+    assert.ok(Buffer.byteLength(JSON.stringify(body), "utf8") < 14 * 1024);
+  });
+
+  it("ignores garbage tool_input shapes at the hook layer", () => {
+    for (const garbage of ["text", [1, 2], 7, true, null]) {
+      const body = buildStateBody(
+        "PermissionRequest",
+        {
+          hook_event_name: "PermissionRequest",
+          session_id: "session_abc",
+          tool_name: "Bash",
+          tool_input: garbage,
+        },
+        resolve
+      );
+      assert.strictEqual(body.permission_tool_input, undefined, `shape: ${JSON.stringify(garbage)}`);
+    }
   });
 
   it("maps native PermissionResult to working and forwards the decision", () => {
@@ -605,6 +766,7 @@ describe("Kimi Code native events (#563)", () => {
           tool_call_id: "Bash_0",
           tool_name: "Bash",
           action: "Running: echo hi",
+          tool_input: { command: "echo hi" },
           decision,
         },
         resolve
@@ -612,6 +774,7 @@ describe("Kimi Code native events (#563)", () => {
       assert.strictEqual(body.state, "working", `decision ${decision}`);
       assert.strictEqual(body.event, "PermissionResult");
       assert.strictEqual(body.permission_decision, decision);
+      assert.strictEqual(body.permission_tool_input, undefined);
     }
   });
 
@@ -655,6 +818,7 @@ describe("Kimi Code native events (#563)", () => {
     assert.strictEqual(body.permission_action, undefined);
     assert.strictEqual(body.permission_command, undefined);
     assert.strictEqual(body.permission_decision, undefined);
+    assert.strictEqual(body.permission_tool_input, undefined);
   });
 
   it("legacy synthesized PermissionRequest still carries tool_name but no action", () => {
@@ -667,5 +831,26 @@ describe("Kimi Code native events (#563)", () => {
     assert.strictEqual(body.tool_name, "shell");
     assert.strictEqual(body.permission_action, undefined);
     assert.strictEqual(body.permission_command, undefined);
+    assert.strictEqual(body.permission_tool_input, undefined);
+  });
+
+  it("synthesized PermissionRequest forwards the cue when the PreToolUse payload carries tool_input", () => {
+    // The PreToolUse→PermissionRequest rewrite happens before cue extraction
+    // on purpose: immediate mode fires on the raw PreToolUse, whose payload
+    // has the real tool_input, and the same whitelist/clamps apply — an
+    // accurate cue, not a trust change.
+    const body = buildStateBody(
+      "PreToolUse",
+      {
+        session_id: "s",
+        tool_name: "shell",
+        permission_required: true,
+        tool_input: { command: "npm test" },
+      },
+      resolve
+    );
+    assert.strictEqual(body.event, "PermissionRequest");
+    assert.strictEqual(body.state, "notification");
+    assert.deepStrictEqual(body.permission_tool_input, { command: "npm test" });
   });
 });

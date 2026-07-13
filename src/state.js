@@ -1312,6 +1312,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     permissionSuspect = false,
     permissionAction = null,
     permissionCommand = null,
+    permissionToolInput = null,
     preserveState = false,
     hookSource = null,
     agentIdDefaulted = false,
@@ -1421,7 +1422,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     }
     setState("notification", undefined, { muteNotificationSound: muteNotificationSound === true });
     if (permAgentId === "kimi-cli") {
-      startKimiPermissionPoll(sessionId, { toolName, permissionAction, permissionCommand });
+      startKimiPermissionPoll(sessionId, { toolName, permissionAction, permissionCommand, permissionToolInput });
     }
     return;
   }
@@ -2064,9 +2065,13 @@ function startKimiPermissionPoll(sessionId, permissionDetail = null) {
     timer,
     until: maxMs > 0 ? Date.now() + maxMs : null,
   });
-  // Avoid stacking duplicate passive bubbles for the same pending request.
-  // Refreshing the hold timer should not create extra UI noise.
-  if (!existing && typeof ctx.showKimiNotifyBubble === "function") {
+  // Refreshing the hold must still forward fresh detail: with the rich cue,
+  // showing request #1's command while the terminal blocks on request #2
+  // would be authoritatively wrong. showKimiNotifyBubble dedupes per session
+  // and refreshes the existing card in place (codex idiom), so no bubble
+  // stacking. Suspect promotions carry no detail object and skip the
+  // refresh — a heuristic re-affirmation must not downgrade a rich card.
+  if (typeof ctx.showKimiNotifyBubble === "function" && (!existing || permissionDetail)) {
     // #563: Kimi Code native PermissionRequest carries what actually needs
     // approval; the bubble shows the real command instead of generic copy.
     // Legacy synthesized requests pass null detail and keep the old text.
@@ -2075,6 +2080,7 @@ function startKimiPermissionPoll(sessionId, permissionDetail = null) {
       toolName: permissionDetail && permissionDetail.toolName ? permissionDetail.toolName : null,
       permissionAction: permissionDetail && permissionDetail.permissionAction ? permissionDetail.permissionAction : null,
       permissionCommand: permissionDetail && permissionDetail.permissionCommand ? permissionDetail.permissionCommand : null,
+      permissionToolInput: permissionDetail && permissionDetail.permissionToolInput ? permissionDetail.permissionToolInput : null,
     });
   }
 }

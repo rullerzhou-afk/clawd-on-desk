@@ -166,6 +166,7 @@ describe("server-route-state POST", () => {
         permissionSuspect: true,
         permissionAction: null,
         permissionCommand: null,
+        permissionToolInput: null,
         preserveState: true,
         hookSource: "codex-official",
         backgroundTasksCount: 0,
@@ -185,6 +186,7 @@ describe("server-route-state POST", () => {
       tool_name: "Bash",
       permission_action: "Running: echo hi",
       permission_command: "echo hi",
+      permission_tool_input: { command: "echo hi" },
     }), { ctx: { STATE_SVGS: { notification: "x.svg" } } });
 
     assert.strictEqual(res.statusCode, 200);
@@ -192,6 +194,48 @@ describe("server-route-state POST", () => {
     assert.strictEqual(opts.toolName, "Bash");
     assert.strictEqual(opts.permissionAction, "Running: echo hi");
     assert.strictEqual(opts.permissionCommand, "echo hi");
+    assert.deepStrictEqual(opts.permissionToolInput, { command: "echo hi" });
+  });
+
+  it("re-validates permission_tool_input instead of trusting the hook", async () => {
+    const post = (permissionToolInput) => callStatePost(JSON.stringify({
+      state: "notification",
+      session_id: "kimi-cli:session_abc",
+      event: "PermissionRequest",
+      agent_id: "kimi-cli",
+      tool_name: "Write",
+      permission_tool_input: permissionToolInput,
+    }), { ctx: { STATE_SVGS: { notification: "x.svg" } } });
+
+    // Non-whitelisted and non-string fields are dropped; strings re-clamped.
+    const mixed = await post({
+      file_path: ` ${"p".repeat(600)} `,
+      content: "never forwarded",
+      command: 42,
+    });
+    const forwarded = mixed.calls.updateSession[0][3].permissionToolInput;
+    assert.deepStrictEqual(Object.keys(forwarded), ["file_path"]);
+    assert.strictEqual(forwarded.file_path.length, 500);
+
+    // description is deliberately outside the whitelist: formatDetail prefers
+    // it over command, so a model-authored string could mask the real command.
+    const masked = await post({ command: "rm -rf /tmp/x", description: "Tidy workspace" });
+    assert.deepStrictEqual(
+      masked.calls.updateSession[0][3].permissionToolInput,
+      { command: "rm -rf /tmp/x" }
+    );
+
+    const pattern = await post({ pattern: "TODO(kimi)" });
+    assert.deepStrictEqual(
+      pattern.calls.updateSession[0][3].permissionToolInput,
+      { pattern: "TODO(kimi)" }
+    );
+
+    // Nothing whitelisted survives -> null, same as an absent field.
+    for (const garbage of [{ content: "x" }, "text", [1, 2], 7]) {
+      const res = await post(garbage);
+      assert.strictEqual(res.calls.updateSession[0][3].permissionToolInput, null);
+    }
   });
 
   it("passes assistant last output metadata to updateSession", async () => {

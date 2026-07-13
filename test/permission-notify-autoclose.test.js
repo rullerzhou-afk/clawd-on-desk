@@ -42,7 +42,13 @@ function createPermissionHarness({ logPath = null } = {}) {
       this._didFinishLoad = null;
       this.webContents = {
         once: (event, cb) => {
-          if (event === "did-finish-load") this._didFinishLoad = cb;
+          if (event === "did-finish-load") {
+            // permission.js registers this after calling loadFile; fire
+            // immediately in that case so bubbleReady is set and
+            // syncPermissionBubbleContent really sends.
+            if (this._loadFileCalled) { cb(); return; }
+            this._didFinishLoad = cb;
+          }
         },
         on: (event, cb) => {
           if (event === "render-process-gone") this._renderGoneHandler = cb;
@@ -57,6 +63,7 @@ function createPermissionHarness({ logPath = null } = {}) {
     setAlwaysOnTop() {}
     setBounds(bounds) { this.bounds = bounds; }
     loadFile() {
+      this._loadFileCalled = true;
       if (typeof this._didFinishLoad === "function") this._didFinishLoad();
     }
     showInactive() {}
@@ -308,6 +315,95 @@ describe("permission passive notify auto-close refresh", () => {
     mock.timers.tick(9_999);
     assert.strictEqual(api.pendingPermissions.length, 1);
 
+    mock.timers.tick(1);
+    assert.strictEqual(api.pendingPermissions.length, 0);
+  });
+
+  it("Kimi passive entry carries the display-only tool cue fields", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    mock.timers.setTime(100_000);
+    const harness = createPermissionHarness();
+    const { api } = harness;
+
+    api.showKimiNotifyBubble({
+      sessionId: "kimi-a",
+      toolName: "Write",
+      permissionAction: "Writing: cue-probe.txt",
+      permissionToolInput: { file_path: "cue-probe.txt" },
+    });
+    assert.strictEqual(api.pendingPermissions.length, 1);
+    const entry = api.pendingPermissions[0];
+    // Passive identity untouched — the cue fields are display-only extras.
+    assert.strictEqual(entry.toolName, "KimiPermission");
+    assert.strictEqual(entry.isKimiNotify, true);
+    assert.strictEqual(entry.kimiToolName, "Write");
+    assert.deepStrictEqual(entry.kimiToolInput, { file_path: "cue-probe.txt" });
+
+    // Legacy pulse: no structured input -> null cue fields, generic copy.
+    api.clearKimiNotifyBubbles("kimi-a", "test-reset");
+    assert.strictEqual(api.pendingPermissions.length, 0);
+    api.showKimiNotifyBubble({ sessionId: "kimi-b", toolName: "shell" });
+    const legacy = api.pendingPermissions[0];
+    assert.strictEqual(legacy.kimiToolName, "shell");
+    assert.strictEqual(legacy.kimiToolInput, null);
+    assert.strictEqual(legacy.toolInput.command, "Approve or reject in Kimi terminal.");
+  });
+
+  it("deduplicates Kimi passive notifications by session and refreshes the cue in place", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    mock.timers.setTime(100_000);
+    const harness = createPermissionHarness();
+    const { api } = harness;
+
+    api.showKimiNotifyBubble({
+      sessionId: "kimi-a",
+      toolName: "Bash",
+      permissionCommand: "ls -la",
+      permissionToolInput: { command: "ls -la" },
+    });
+    assert.strictEqual(api.pendingPermissions.length, 1);
+    const existing = api.pendingPermissions[0];
+    const originalBubble = existing.bubble;
+    const firstCreatedAt = existing.createdAt;
+
+    // Request #2 for the same session: the stale cue must be replaced, not
+    // kept (the terminal now blocks on the NEW command) and not stacked.
+    mock.timers.tick(500);
+    api.showKimiNotifyBubble({
+      sessionId: "kimi-a",
+      toolName: "Bash",
+      permissionCommand: "rm -rf build",
+      permissionToolInput: { command: "rm -rf build" },
+    });
+
+    assert.strictEqual(api.pendingPermissions.length, 1);
+    assert.strictEqual(api.pendingPermissions[0], existing);
+    assert.strictEqual(existing.bubble, originalBubble);
+    assert.strictEqual(existing.toolInput.command, "rm -rf build");
+    assert.strictEqual(existing.kimiToolName, "Bash");
+    assert.deepStrictEqual(existing.kimiToolInput, { command: "rm -rf build" });
+    assert.ok(existing.createdAt > firstCreatedAt);
+
+    // The refresh reaches the renderer: the last permission-show payload
+    // carries the new cue fields.
+    const shows = originalBubble.sentEvents.filter(([channel]) => channel === "permission-show");
+    assert.ok(shows.length >= 2, "refresh should re-send permission-show");
+    const lastShow = shows[shows.length - 1];
+    const payload = lastShow[1];
+    assert.strictEqual(payload.toolName, "KimiPermission");
+    assert.strictEqual(payload.kimiToolName, "Bash");
+    assert.deepStrictEqual(payload.kimiToolInput, { command: "rm -rf build" });
+
+    // A legacy-shaped refresh downgrades to the generic copy — the generic
+    // line can't be wrong; a stale rich cue can.
+    api.showKimiNotifyBubble({ sessionId: "kimi-a", toolName: "shell" });
+    assert.strictEqual(api.pendingPermissions.length, 1);
+    assert.strictEqual(existing.kimiToolInput, null);
+    assert.strictEqual(existing.toolInput.command, "Approve or reject in Kimi terminal.");
+
+    // The refresh re-arms auto-expire from the last request.
+    mock.timers.tick(9_999);
+    assert.strictEqual(api.pendingPermissions.length, 1);
     mock.timers.tick(1);
     assert.strictEqual(api.pendingPermissions.length, 0);
   });

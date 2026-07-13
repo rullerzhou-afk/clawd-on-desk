@@ -15,6 +15,7 @@ const { normalizeTranscriptPath } = require("./transcript-path");
 const { normalizeQuotaGroup } = require("../hooks/quota-bucket");
 const { ANTIGRAVITY_QUOTA_FIELDS } = require("../hooks/antigravity-context-usage");
 const { CLAUDE_QUOTA_FIELDS } = require("../hooks/claude-rate-limits");
+const { extractPermissionToolInput } = require("../hooks/kimi-hook");
 
 // /state POST body size cap. Raised 1024 → 4096 → 16384: a CJK
 // assistant_last_output (3 UTF-8 bytes/char) on a Stop completion blew past
@@ -216,6 +217,11 @@ function handleStatePost(req, res, options) {
       const permissionCommand = typeof data.permission_command === "string" && data.permission_command.trim()
         ? data.permission_command.trim().slice(0, 500)
         : null;
+      // Whitelisted tool_input subset from a Kimi Code native
+      // PermissionRequest. Same validator the hook runs before POSTing —
+      // re-run here at the trust boundary rather than trusted from the hook,
+      // matching normalizeContextUsage.
+      const permissionToolInput = extractPermissionToolInput(data.permission_tool_input);
       const preserveState = data.preserve_state === true;
       // Statusline refresh POSTs are metadata, not lifecycle (#590 B2): they
       // may only annotate an existing session with quota/context and must
@@ -429,6 +435,7 @@ function handleStatePost(req, res, options) {
             permissionSuspect,
             permissionAction,
             permissionCommand,
+            permissionToolInput,
             preserveState,
             hookSource,
             backgroundTasksCount,

@@ -814,10 +814,35 @@ function show(data) {
   // Kimi notify mode — informational bubble with Dismiss button only
   if (data.toolName === "KimiPermission") {
     headerTitle.textContent = bubbleText(data.lang, "kimiPermission");
-    toolPillText.textContent = "KIMI";
-    toolPill.setAttribute("data-tool", "KimiPermission");
+    // A native Kimi Code request forwards the real tool name plus a
+    // whitelisted tool_input subset. When both are present, reuse the
+    // standard cue path (formatDetail / detectIrreversible / real tool pill)
+    // — display-only, the card stays dismiss-only. Without them (legacy
+    // Python CLI, shape drift) this renders exactly the old generic card.
+    const kimiTool = typeof data.kimiToolName === "string" && data.kimiToolName ? data.kimiToolName : null;
+    const kimiInput = data.kimiToolInput && typeof data.kimiToolInput === "object" ? data.kimiToolInput : null;
+    if (kimiTool && kimiInput) {
+      const kimiMcp = parseMcpToolName(kimiTool);
+      toolPillText.textContent = kimiMcp ? kimiMcp.display : kimiTool;
+      toolPill.setAttribute("data-tool", kimiTool);
+      // The fallbacks are defense-in-depth only: formatDetail's generic
+      // last-resort loop returns non-empty for any server-normalized input.
+      commandBlock.textContent = formatDetail(kimiTool, kimiInput)
+        || (data.toolInput && data.toolInput.command)
+        || bubbleText(data.lang, "checkKimiTerminal");
+      const kimiIrreversible = detectIrreversible(kimiTool, kimiInput);
+      if (kimiIrreversible) {
+        irreversibleBadge.textContent = "\u26A0 " + bubbleText(data.lang, "irreversibleHint");
+        irreversibleBadge.setAttribute("data-reason", kimiIrreversible.tag);
+        irreversibleBadge.style.display = "";
+      }
+      // No else branch: resetBubbleContent() above already hid the badge.
+    } else {
+      toolPillText.textContent = "KIMI";
+      toolPill.setAttribute("data-tool", "KimiPermission");
+      commandBlock.textContent = (data.toolInput && data.toolInput.command) || bubbleText(data.lang, "checkKimiTerminal");
+    }
     toolPill.style.display = "";
-    commandBlock.textContent = (data.toolInput && data.toolInput.command) || bubbleText(data.lang, "checkKimiTerminal");
     btnAllow.textContent = bubbleText(data.lang, "gotIt");
     btnAllow.disabled = false;
     btnDeny.style.display = "none";

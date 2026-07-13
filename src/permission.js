@@ -909,6 +909,11 @@ function buildPermissionBubblePayload(permEntry) {
     // Provenance for the renderer: lets the bubble relabel Codex MCP tool calls
     // (issue #445) without touching approval semantics. Mirrors the flags above.
     isCodex: permEntry.isCodex || false,
+    // Display-only detail for the passive Kimi notify card: the real tool
+    // name plus the whitelisted tool_input subset let the renderer reuse the
+    // standard cue path (formatDetail) while the card stays dismiss-only.
+    kimiToolName: permEntry.kimiToolName || null,
+    kimiToolInput: permEntry.kimiToolInput || null,
     opencodeAlways: permEntry.opencodeAlwaysCandidates || [],
     opencodePatterns: permEntry.opencodePatterns || [],
     sessionFolder,
@@ -2066,7 +2071,7 @@ function showCodexNotifyBubble({ sessionId, command }) {
   schedulePassiveNotifyAutoExpire(permEntry, policy.autoCloseMs);
 }
 
-function showKimiNotifyBubble({ sessionId, command, toolName, permissionAction, permissionCommand }) {
+function showKimiNotifyBubble({ sessionId, command, toolName, permissionAction, permissionCommand, permissionToolInput }) {
   if (shouldSuppressKimiNotifyBubble(ctx)) {
     const policy = getPolicy(ctx, "notification");
     permLog(`kimi notify suppressed: session=${sessionId} dnd=${ctx.doNotDisturb} notificationEnabled=${policy.enabled}`);
@@ -2078,6 +2083,24 @@ function showKimiNotifyBubble({ sessionId, command, toolName, permissionAction, 
   // requests carry neither and keep the generic copy.
   const bubbleCommand = permissionCommand || permissionAction || command
     || "Approve or reject in Kimi terminal.";
+  // A newer request for the same session replaces the stale cue in place
+  // (codex idiom above): the terminal now blocks on the NEW command, and
+  // keeping request #1's pill/command/badge would show a wrong answer with
+  // authority. A legacy-shaped refresh downgrades to the generic copy — the
+  // generic line can't be wrong.
+  const existing = findKimiNotifyEntryBySession(sessionId);
+  if (existing) {
+    existing.toolInput = { command: bubbleCommand };
+    existing.kimiToolName = typeof toolName === "string" && toolName ? toolName : null;
+    existing.kimiToolInput = permissionToolInput && typeof permissionToolInput === "object"
+      ? permissionToolInput
+      : null;
+    existing.createdAt = Date.now();
+    permLog(`passive notify refresh: agent=kimi-cli session=${sessionId} autoCloseMs=${policy.autoCloseMs}`);
+    syncPermissionBubbleContent(existing);
+    schedulePassiveNotifyAutoExpire(existing, policy.autoCloseMs);
+    return;
+  }
   const permEntry = {
     res: null,
     abortHandler: null, suggestions: [],
@@ -2085,6 +2108,13 @@ function showKimiNotifyBubble({ sessionId, command, toolName, permissionAction, 
     toolName: "KimiPermission",
     toolInput: { command: bubbleCommand },
     kimiToolName: typeof toolName === "string" && toolName ? toolName : null,
+    // Whitelisted subset of the native request's tool_input (see
+    // extractPermissionToolInput in hooks/kimi-hook.js — the server re-runs
+    // it at the trust boundary). Display-only: it feeds the bubble's
+    // tool-aware cue and never touches approval semantics.
+    kimiToolInput: permissionToolInput && typeof permissionToolInput === "object"
+      ? permissionToolInput
+      : null,
     resolvedSuggestion: null, createdAt: Date.now(),
     isElicitation: false, isKimiNotify: true,
     agentId: "kimi-cli",
@@ -2105,6 +2135,11 @@ function getPassiveNotifyAgentId(permEntry) {
 function findCodexNotifyEntryBySession(sessionId) {
   if (!sessionId) return null;
   return pendingPermissions.find((permEntry) => permEntry && permEntry.isCodexNotify && permEntry.sessionId === sessionId) || null;
+}
+
+function findKimiNotifyEntryBySession(sessionId) {
+  if (!sessionId) return null;
+  return pendingPermissions.find((permEntry) => permEntry && permEntry.isKimiNotify && permEntry.sessionId === sessionId) || null;
 }
 
 function dismissPassiveNotify(permEntry, reason = "unknown") {
