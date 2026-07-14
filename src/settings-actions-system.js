@@ -21,10 +21,24 @@ const autoStartWithClaude = {
         message: "autoStartWithClaude effect requires installAutoStart/uninstallAutoStart deps",
       };
     }
+    // installAutoStart/uninstallAutoStart go through the server-owned Claude
+    // hook operation queue and return a Promise. Wrap in Promise.resolve() so
+    // a synchronous (e.g. test-injected) dep still works, then only commit
+    // once the queue result actually confirms success — never on the Promise
+    // object itself.
     try {
-      if (value) deps.installAutoStart();
-      else deps.uninstallAutoStart();
-      return { status: "ok" };
+      const action = value ? deps.installAutoStart() : deps.uninstallAutoStart();
+      return Promise.resolve(action)
+        .then((result) => {
+          if (result && typeof result === "object" && result.status === "error") {
+            return { status: "error", message: result.message || "autoStartWithClaude: operation failed" };
+          }
+          return { status: "ok" };
+        })
+        .catch((err) => ({
+          status: "error",
+          message: `autoStartWithClaude: ${err && err.message}`,
+        }));
     } catch (err) {
       return {
         status: "error",
@@ -65,7 +79,13 @@ const manageClaudeHooksAutomatically = {
     }
     return Promise.resolve()
       .then(() => deps.syncClaudeHooksNow())
-      .then(() => {
+      .then((result) => {
+        // The queue never rejects on failure — it resolves { status: "error" }
+        // — so success must be read from the resolved value, not inferred
+        // from the Promise settling without throwing.
+        if (result && typeof result === "object" && result.status === "error") {
+          return { status: "error", message: result.message || "manageClaudeHooksAutomatically: sync failed" };
+        }
         deps.startClaudeSettingsWatcher();
         return { status: "ok" };
       })
@@ -107,7 +127,10 @@ async function installHooks(_payload, deps) {
     };
   }
   try {
-    await deps.syncClaudeHooksNow();
+    const result = await deps.syncClaudeHooksNow();
+    if (result && typeof result === "object" && result.status === "error") {
+      return { status: "error", message: result.message || "installHooks: sync failed" };
+    }
     return { status: "ok" };
   } catch (err) {
     return { status: "error", message: `installHooks: ${err && err.message}` };
@@ -129,7 +152,13 @@ async function uninstallHooks(_payload, deps) {
   const shouldRestoreWatcher = !!(deps.snapshot && deps.snapshot.manageClaudeHooksAutomatically);
   try {
     deps.stopClaudeSettingsWatcher();
-    await deps.uninstallClaudeHooksNow();
+    const result = await deps.uninstallClaudeHooksNow();
+    if (result && typeof result === "object" && result.status === "error") {
+      if (shouldRestoreWatcher && typeof deps.startClaudeSettingsWatcher === "function") {
+        try { deps.startClaudeSettingsWatcher(); } catch {}
+      }
+      return { status: "error", message: result.message || "uninstallHooks: operation failed" };
+    }
     return { status: "ok", commit: { manageClaudeHooksAutomatically: false } };
   } catch (err) {
     if (shouldRestoreWatcher && typeof deps.startClaudeSettingsWatcher === "function") {

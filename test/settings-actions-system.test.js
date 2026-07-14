@@ -33,6 +33,34 @@ test("settings system actions keep auto-start inert when hook management is disa
   assert.deepStrictEqual(calls, []);
 });
 
+test("settings system actions await the auto-start queue Promise before reporting success", async () => {
+  const calls = [];
+  const result = await systemActions.autoStartWithClaude.effect(true, {
+    snapshot: prefs.getDefaults(),
+    installAutoStart: async () => {
+      calls.push("install");
+      return { status: "ok", enabled: true };
+    },
+    uninstallAutoStart: () => calls.push("uninstall"),
+  });
+
+  assert.deepStrictEqual(result, { status: "ok" });
+  assert.deepStrictEqual(calls, ["install"]);
+});
+
+test("settings system actions do not report auto-start success when the queue resolves an error", async () => {
+  const result = await systemActions.autoStartWithClaude.effect(false, {
+    snapshot: prefs.getDefaults(),
+    installAutoStart: () => {
+      throw new Error("should not run");
+    },
+    uninstallAutoStart: async () => ({ status: "error", message: "queue disposed" }),
+  });
+
+  assert.strictEqual(result.status, "error");
+  assert.match(result.message, /queue disposed/);
+});
+
 test("settings system actions sync hooks before starting the watcher", async () => {
   const calls = [];
   const result = await systemActions.manageClaudeHooksAutomatically.effect(true, {
@@ -46,6 +74,46 @@ test("settings system actions sync hooks before starting the watcher", async () 
 
   assert.strictEqual(result.status, "ok");
   assert.deepStrictEqual(calls, ["sync", "start"]);
+});
+
+test("settings system actions do not start the watcher when the queued Claude sync resolves an error", async () => {
+  const calls = [];
+  const result = await systemActions.manageClaudeHooksAutomatically.effect(true, {
+    snapshot: prefs.getDefaults(),
+    syncClaudeHooksNow: async () => ({ status: "error", message: "write failed" }),
+    startClaudeSettingsWatcher: () => calls.push("start"),
+    stopClaudeSettingsWatcher: () => calls.push("stop"),
+  });
+
+  assert.strictEqual(result.status, "error");
+  assert.match(result.message, /write failed/);
+  assert.deepStrictEqual(calls, []);
+});
+
+test("settings system actions report installHooks failure when the queue resolves an error, without throwing", async () => {
+  const result = await systemActions.installHooks(null, {
+    syncClaudeHooksNow: async () => ({ status: "error", message: "disposed" }),
+  });
+
+  assert.strictEqual(result.status, "error");
+  assert.match(result.message, /disposed/);
+});
+
+test("settings system actions restore the watcher when uninstallHooks resolves a queue error", async () => {
+  const calls = [];
+  const result = await systemActions.uninstallHooks(null, {
+    snapshot: { ...prefs.getDefaults(), manageClaudeHooksAutomatically: true },
+    stopClaudeSettingsWatcher: () => calls.push("stop"),
+    uninstallClaudeHooksNow: async () => {
+      calls.push("uninstall");
+      return { status: "error", message: "queue disposed" };
+    },
+    startClaudeSettingsWatcher: () => calls.push("start"),
+  });
+
+  assert.strictEqual(result.status, "error");
+  assert.match(result.message, /queue disposed/);
+  assert.deepStrictEqual(calls, ["stop", "uninstall", "start"]);
 });
 
 test("settings system actions restore the watcher when hook uninstall fails", async () => {

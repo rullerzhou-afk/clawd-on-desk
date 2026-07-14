@@ -80,7 +80,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - 桌宠采用双窗口模型：渲染窗口只负责显示；输入窗口负责 pointer 事件和拖拽
 - 多会话 UI 主路径：`src/state.js` 生成 session snapshot → Dashboard / Session HUD；HUD 贴近桌宠显示当前 live session，Dashboard 负责详情、别名和跳转终端
 - `src/server.js` 启动后会为已安装且已启用的 agent 异步同步缺失 hooks / plugins；Codex official hooks 为 primary，JSONL 轮询保留为 fallback
-- `src/server.js` 只在 Claude Code 已安装、已启用且 `manageClaudeHooksAutomatically` 打开时 watch `~/.claude/settings.json`，并在 hook 被抹掉时自动重装
+- `src/server.js` 只在 Claude Code 已安装、已启用且 `manageClaudeHooksAutomatically` 打开时 watch `~/.claude/settings.json`（盯目录非文件），并在 hook 被抹掉时自动重装；`src/claude-settings-watcher.js` 同时跑一个低频（默认 5 分钟）只读健康巡检，不依赖任何 settings.json fs 事件——脚本在其他目录被删除也能发现。巡检用 `src/claude-hook-health.js` 判定，可自动修复的问题经统一的 `src/claude-hook-operations.js` 队列串行 repair 并重新读盘验证；同一问题连续 3 次修复失败后进入 `manual-fix-required`，转为只读复查，交给 Doctor 提示手动处理。当前安装包的 hook 源脚本本身缺失时不会尝试改写配置，Doctor 会提示重装/重新解压
 - `src/agent-gate.js` 控制各 agent 的安装意图、启用状态、权限气泡开关和 wait-for-input notification 子开关
 - 设置系统主链路是 `src/prefs.js` → `src/settings-controller.js` → `src/settings-store.js`，写入 side effects 收敛在 `src/settings-actions.js`
 - 启动时还会尝试自动安装 VS Code / Cursor terminal-focus extension，并初始化 updater
@@ -179,6 +179,8 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - Windows 前台窗口锁依赖 ALT trick + `koffi` FFI；相关回归通常不是单点逻辑 bug
 - `~/.claude/settings.json` 的 hook 恢复 watcher 必须盯目录而不是文件；原子替换会让文件级 watch 在 Windows 上静默失效
 - Claude watcher 必须同时受 `manageClaudeHooksAutomatically`、`claude-code.integrationInstalled` 和 `claude-code.enabled` 保护；不要让未安装或禁用 Claude Code 后的 watcher 重新写回 hooks
+- 所有进程内对 `~/.claude/settings.json` 的 mutation（启动 reconcile、watcher 自动恢复、周期健康自愈、Settings Install/Enable、Doctor Fix、auto-start 开关、卸载、About 清理）必须经过 `src/claude-hook-operations.js` 的 server-owned 队列；不要绕开队列直接 `require("../hooks/install.js")` 写文件，否则会与其他来源的写入竞态
+- 周期健康巡检（`src/claude-settings-watcher.js`）只读判断用 `src/claude-hook-health.js`；同一 repair signature 连续 3 次修复+复验失败后必须停在 `manual-fix-required`，不再自动 mutation，只保留 5 分钟只读复查；suspicious-shrink 通知同一持续问题只弹一次，不要每轮重复
 - opencode 的 `permission.ask` hook 目前不可用，权限只能走 event hook + bridge
 - Codex CLI official hooks 已接入；JSONL 轮询仍是 fallback，用于 hook 不可用、hook 未覆盖事件（如 WebSearch / compaction / abort）和历史兼容。Windows command 必须用 PowerShell `& "node" ...` 格式，裸 `"node" "hook.js"` 会 exit 1
 - Kiro 没有 global hooks，只能注入到 `~/.kiro/agents/*.json`

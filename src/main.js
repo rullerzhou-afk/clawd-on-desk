@@ -235,17 +235,19 @@ const _initialPrefsLoad = prefsModule.load(PREFS_PATH);
 // Lazy helpers — these run inside the action `effect` callbacks at click time,
 // long after server.js / hooks/install.js are loaded. Wrapping them in closures
 // avoids a chicken-and-egg require order at module load.
+//
+// All of these route through _server's Claude hook operation queue rather than
+// requiring hooks/install.js directly: every process-internal settings.json
+// mutation must be serialized against the fs watcher, periodic health audit,
+// and other Settings actions (#657).
 function _installAutoStartHook() {
-  const { registerHooks } = require("../hooks/install.js");
-  registerHooks({ silent: true, autoStart: true, port: getHookServerPort() });
+  return _server.setClaudeAutoStart({ enabled: true, source: "auto-start" });
 }
 function _uninstallAutoStartHook() {
-  const { unregisterAutoStart } = require("../hooks/install.js");
-  unregisterAutoStart();
+  return _server.setClaudeAutoStart({ enabled: false, source: "auto-start" });
 }
 async function _uninstallClaudeHooksNow() {
-  const { unregisterHooksAsync } = require("../hooks/install.js");
-  await unregisterHooksAsync();
+  return _server.uninstallClaudeHooks({ source: "settings", automatic: false });
 }
 
 // Cross-platform "open at login" writer used by both the openAtLogin effect
@@ -331,17 +333,14 @@ const _settingsController = createSettingsController({
     installAutoStart: _installAutoStartHook,
     uninstallAutoStart: _uninstallAutoStartHook,
     resolveTextScaleDisplayKey: () => getSettingsDisplayKey(),
-    syncClaudeHooksNow: () => {
-      const { registerHooksAsync } = require("../hooks/install.js");
-      return registerHooksAsync({ silent: true, autoStart: autoStartWithClaude, port: getHookServerPort() });
-    },
+    syncClaudeHooksNow: () => _server.syncClawdHooks({ source: "settings", automatic: false }),
     uninstallClaudeHooksNow: _uninstallClaudeHooksNow,
     startClaudeSettingsWatcher: () => _server.startClaudeSettingsWatcher(),
     stopClaudeSettingsWatcher: () => _server.stopClaudeSettingsWatcher(),
     setOpenAtLogin: _writeSystemOpenAtLogin,
     startMonitorForAgent: (id) => agentRuntime && agentRuntime.startMonitorForAgent(id),
     stopMonitorForAgent: (id) => agentRuntime && agentRuntime.stopMonitorForAgent(id),
-    syncIntegrationForAgent: (id) => agentRuntime ? agentRuntime.syncIntegrationForAgent(id) : false,
+    syncIntegrationForAgent: (id, options) => agentRuntime ? agentRuntime.syncIntegrationForAgent(id, options) : false,
     repairIntegrationForAgent: (id, options) =>
       agentRuntime ? agentRuntime.repairIntegrationForAgent(id, options) : false,
     stopIntegrationForAgent: (id) => agentRuntime ? agentRuntime.stopIntegrationForAgent(id) : false,
@@ -354,9 +353,14 @@ const _settingsController = createSettingsController({
       const { removeFromWsl } = require("./wsl-deploy");
       return removeFromWsl(distro, { agentId });
     },
-    cleanupIntegrations: (options = {}) => {
+    cleanupIntegrations: async (options = {}) => {
+      // Claude hooks + statusline unregister as one queue task, awaited here so
+      // it settles (and any in-flight repair drains) before the generic cleaner
+      // runs. hooks/cleanup-integrations.js records this precomputed result
+      // instead of unregistering Claude a second time outside the queue.
+      const claudeCleanupResult = await _server.uninstallClaudeHooks({ source: "cleanup", automatic: false });
       const { cleanupIntegrations } = require("../hooks/cleanup-integrations.js");
-      return cleanupIntegrations({ ...options, backup: true, silent: true });
+      return cleanupIntegrations({ ...options, backup: true, silent: true, claudeCleanupResult });
     },
     repairLocalServer: () => _server && typeof _server.repairRuntimeStatus === "function"
       ? _server.repairRuntimeStatus()

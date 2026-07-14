@@ -90,21 +90,85 @@ function getClaudeHookGuardStatus(options) {
   }
 }
 
+function getClaudeHookHealthStatus(options) {
+  const server = options && options.server;
+  if (!server || typeof server.getClaudeHookHealthStatus !== "function") return null;
+  try {
+    return server.getClaudeHookHealthStatus();
+  } catch {
+    return null;
+  }
+}
+
+// Explains *why* Claude Code's hook config hasn't self-healed, using the
+// periodic health supervisor's runtime status (#657) — the disk inspector
+// above remains the source of truth for whether it's currently broken; this
+// only annotates that verdict. Covers not-connected, broken-path,
+// source-script-missing, and manual-fix-required per the #657 plan §6.9.
 function withClaudeHookGuardNotice(detail, descriptor, options) {
-  if (descriptor.agentId !== "claude-code") return detail;
-  if (!detail || detail.status !== "not-connected") return detail;
+  if (descriptor.agentId !== "claude-code" || !detail) return detail;
+  if (!REPAIRABLE_AGENT_STATUSES.has(detail.status)) return detail;
+
+  const runtimeHealth = getClaudeHookHealthStatus(options);
+
+  // Reconcile can never fix a missing source script, so this must never
+  // offer a configuration Repair — overriding the status keeps it out of
+  // REPAIRABLE_AGENT_STATUSES for the withAgentFixAction() check below.
+  if (runtimeHealth && runtimeHealth.status === "degraded" && runtimeHealth.degradedReason === "source-script-missing") {
+    return {
+      ...detail,
+      status: "source-script-missing",
+      level: "warning",
+      detail: "The current Clawd installation's Claude hook script is missing. Reinstall or re-extract Clawd to restore automatic hook repair.",
+      claudeHookRuntimeStatus: {
+        status: runtimeHealth.status,
+        degradedReason: runtimeHealth.degradedReason,
+        at: runtimeHealth.at || null,
+      },
+    };
+  }
+
   const guard = getClaudeHookGuardStatus(options);
-  if (!guard || guard.type !== "suspicious-shrink") return detail;
-  return {
-    ...detail,
-    detail: "Clawd paused automatic Claude hook repair after settings.json shrank during an external rewrite. Use Fix or restart Clawd to reinstall Clawd hooks.",
-    claudeHookGuard: {
-      type: guard.type,
-      at: guard.at || null,
-      before: guard.before || null,
-      after: guard.after || null,
-    },
-  };
+  if (guard && guard.type === "suspicious-shrink") {
+    return {
+      ...detail,
+      detail: "Clawd paused automatic Claude hook repair after settings.json shrank during an external rewrite. Use Fix or restart Clawd to reinstall Clawd hooks.",
+      claudeHookGuard: {
+        type: guard.type,
+        at: guard.at || null,
+        before: guard.before || null,
+        after: guard.after || null,
+      },
+    };
+  }
+
+  if (runtimeHealth && runtimeHealth.status === "guarded") {
+    return {
+      ...detail,
+      detail: "Clawd paused automatic Claude hook repair because settings.json shrank suspiciously. Use Fix or restart Clawd to reinstall Clawd hooks.",
+      claudeHookRuntimeStatus: {
+        status: runtimeHealth.status,
+        issueSignature: runtimeHealth.issueSignature || null,
+        at: runtimeHealth.at || null,
+      },
+    };
+  }
+
+  if (runtimeHealth && runtimeHealth.status === "manual-fix-required") {
+    return {
+      ...detail,
+      detail: "Clawd's automatic Claude hook repair failed 3 times in a row and stopped retrying. Use Fix to try once more, or check the hook script manually.",
+      claudeHookRuntimeStatus: {
+        status: runtimeHealth.status,
+        issueSignature: runtimeHealth.issueSignature || null,
+        attempt: runtimeHealth.attempt || null,
+        message: runtimeHealth.message || null,
+        at: runtimeHealth.at || null,
+      },
+    };
+  }
+
+  return detail;
 }
 
 function withAgentFixAction(detail, descriptor) {
