@@ -270,6 +270,64 @@ describe("Codex permission response sanitizer", () => {
     assert.strictEqual(api.pendingPermissions.length, 0);
   });
 
+  it("focuses the originating terminal when the Kimi cue's Got it button is clicked", () => {
+    const { api, focusCalls } = createCodexDecisionHarness();
+    const bubble = createFakeBubble();
+    const permEntry = {
+      res: null,
+      abortHandler: null,
+      suggestions: [],
+      sessionId: "kimi-cli:s1",
+      bubble,
+      hideTimer: null,
+      toolName: "KimiPermission",
+      toolInput: { command: "rm -rf build" },
+      createdAt: Date.now(),
+      agentId: "kimi-cli",
+      isKimiNotify: true,
+    };
+    api.pendingPermissions.push(permEntry);
+
+    // The renderer sends "allow" for the relabeled "Got it" button; the passive
+    // branch dismisses regardless of the behavior value, and Kimi additionally
+    // brings the terminal forward so the native approve/reject prompt is in view.
+    api.handleDecide({ sender: { __window: bubble } }, "allow");
+
+    assert.deepStrictEqual(focusCalls, [[
+      "kimi-cli:s1",
+      { fallbackEntry: { id: "kimi-cli:s1", agentId: "kimi-cli" } },
+    ]]);
+    assert.strictEqual(bubble.hidden, true);
+    assert.strictEqual(api.pendingPermissions.length, 0);
+  });
+
+  it("dismisses a Codex passive notify without focusing the terminal", () => {
+    const { api, focusCalls } = createCodexDecisionHarness();
+    const bubble = createFakeBubble();
+    api.pendingPermissions.push({
+      res: null,
+      abortHandler: null,
+      suggestions: [],
+      sessionId: "codex:s1",
+      bubble,
+      hideTimer: null,
+      toolName: "CodexExec",
+      toolInput: { command: "npm test" },
+      createdAt: Date.now(),
+      agentId: "codex",
+      isCodexNotify: true,
+    });
+
+    api.handleDecide({ sender: { __window: bubble } }, "allow");
+
+    // The focus-on-dismiss affordance is Kimi-only: Codex notify stays a plain
+    // acknowledge. Pins the shared passive-notify branch against accidental
+    // scope creep.
+    assert.deepStrictEqual(focusCalls, []);
+    assert.strictEqual(bubble.hidden, true);
+    assert.strictEqual(api.pendingPermissions.length, 0);
+  });
+
   it("does not let Codex take suggestion or opencode-only decision paths", () => {
     for (const behavior of ["suggestion:0", "opencode-always"]) {
       const { api } = createCodexDecisionHarness();

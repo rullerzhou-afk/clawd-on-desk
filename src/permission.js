@@ -1929,6 +1929,13 @@ function handleDecide(event, behavior) {
   if (!perm) return;
   if (perm.isCodexNotify || perm.isKimiNotify) {
     dismissPassiveNotify(perm, "ipc-decide");
+    // Kimi Code's cue is a heads-up that its terminal is blocking on a native
+    // approve/reject prompt, so "Got it" doubles as "take me there": focus the
+    // originating terminal after dismissing. Codex's passive notify is
+    // informational-only, so it stays a plain acknowledge.
+    if (perm.isKimiNotify) {
+      ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
+    }
     return;
   }
   if (perm.isCodex) {
