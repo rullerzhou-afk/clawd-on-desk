@@ -226,6 +226,128 @@ function getWindowsProcessSnapshot(execFileSync) {
   }
 }
 
+// ── PR2 (#634) lifecycle-context helpers ──────────────────────────────────────
+// These service the resolve({ namespace, sessionId, cacheCwd, lifecycle,
+// cacheable }) overload. They are module-level (they need neither the walk nor
+// the per-resolver closure state) and are NEVER reached by the compatibility
+// no-arg resolve() path, so the 12 not-yet-migrated adapters are untouched.
+//
+// A cache-HIT / promotion / empty-MISS result must never carry pidChain,
+// foregroundWtHwnd, or tmuxClient — none are cached, and faking them would ship
+// a dead per-event PID or a stale window handle (plan §6.1). tmuxSocket is a
+// pure-env value recomputed on a hit. `cacheSource` (fresh|v2|v1|none) is
+// observability only; the compatibility no-arg shape never gains it.
+
+function emptyMetadata() {
+  return {
+    stablePid: null, terminalPid: null, snapshotOk: false, agentPid: null,
+    agentCommandLine: "", detectedEditor: null, pidChain: [], foregroundWtHwnd: null,
+    tmuxSocket: null, tmuxClient: null, cacheSource: "none",
+  };
+}
+
+function cacheHitMetadata(cached, source) {
+  return {
+    stablePid: cached.stablePid, terminalPid: null, snapshotOk: true,
+    agentPid: cached.agentPid, agentCommandLine: cached.agentCommandLine || "",
+    detectedEditor: cached.detectedEditor || null, pidChain: [], foregroundWtHwnd: null,
+    tmuxSocket: tmuxSocketFromEnv(), tmuxClient: null, cacheSource: source,
+  };
+}
+
+// A cached v2 entry is a HIT only when BOTH cached PIDs are still alive: the
+// stablePid that becomes source_pid AND the agentPid that tracks session
+// liveness. This double check is the ONLY defense against a dead session's
+// cache lingering — no clock participates.
+function readLiveV2(pidCache, namespace, sessionId, cacheCwd) {
+  const c = pidCache.readPidCacheV2(namespace, sessionId, cacheCwd);
+  if (c && processAlive(c.stablePid) && processAlive(c.agentPid)) return c;
+  return null;
+}
+
+// v1 was Claude-only, so only the claude-code namespace ever reads it. The v1
+// key uses Claude's RAW session id + RAW payload cwd — which for Claude ARE the
+// sessionId + cacheCwd passed here, so we reuse them directly (never a prefixed
+// or renormalized value). Returns the SINGLE-observation entry ({ subset,
+// identity }) so a caller that conditionally deletes the file binds its
+// delete-guard to exactly the bytes it consumed — never a version a concurrent
+// writer swapped in between two reads (plan §5.5). null when absent/dead/shape-
+// invalid or not the Claude namespace.
+function claudeReadLiveV1Entry(pidCache, namespace, sessionId, cacheCwd) {
+  if (namespace !== "claude-code") return null;
+  const entry = pidCache.readPidCacheEntry(sessionId, cacheCwd);
+  if (!entry) return null;
+  const v1 = entry.subset;
+  if (!processAlive(v1.stablePid) || !processAlive(v1.agentPid)) return null;
+  return entry;
+}
+
+function claudeDropV1SameKey(pidCache, namespace, sessionId, cacheCwd) {
+  if (namespace !== "claude-code") return;
+  pidCache.dropPidCache(sessionId, cacheCwd);
+}
+
+// Delete a v1 file ONLY if its mtimeMs + size + raw content are all unchanged
+// since `identity` was taken (plan §5.5). Any change means a concurrent
+// SessionStart replaced it; leave it for the sweep rather than strand a live
+// cache. No identity recorded → never delete.
+function deleteV1IfUnchanged(v1File, identity) {
+  if (!identity) return;
+  const fs = require("fs");
+  try {
+    const st = fs.statSync(v1File);
+    if (st.mtimeMs !== identity.mtimeMs || st.size !== identity.size) return;
+    if (fs.readFileSync(v1File, "utf8") !== identity.raw) return;
+    fs.unlinkSync(v1File);
+  } catch {
+    /* gone / raced — fine */
+  }
+}
+
+// v1→v2 in-place promotion on a v2 miss (Claude only). Returns cache-hit
+// metadata (ZERO spawn) on success, or null to fall through to the lifecycle's
+// normal miss handling. Failure ordering is pinned (plan §5.5):
+//   - a v2 write failure still returns the validated v1, never fresh-spawns, and
+//     never deletes v1;
+//   - v1 is deleted only AFTER a confirmed v2 write, and only when its
+//     mtimeMs + size + raw content are all unchanged (deleteV1IfUnchanged);
+//   - recheck v2 first, then write no-clobber, so a concurrent fresh
+//     SessionStart v2 is preferred and never overwritten (recheck-is-not-CAS
+//     residual closed, plan §6.10).
+function claudePromote(pidCache, namespace, sessionId, cacheCwd) {
+  // The subset we promote AND the identity we later delete-guard on both come
+  // from this ONE read, so a v1 a concurrent writer swaps in after we read is
+  // never promoted-over and deleted (High: identity must bind the read).
+  const entry = claudeReadLiveV1Entry(pidCache, namespace, sessionId, cacheCwd);
+  if (!entry) return null;
+  const v1 = entry.subset;
+  const v1File = pidCache.cacheFilePath(sessionId, cacheCwd);
+
+  // A concurrent SessionStart may already have written a fresher v2.
+  const existing = readLiveV2(pidCache, namespace, sessionId, cacheCwd);
+  if (existing) return cacheHitMetadata(existing, "v2");
+
+  const subset = {
+    stablePid: v1.stablePid, agentPid: v1.agentPid,
+    agentCommandLine: v1.agentCommandLine, detectedEditor: v1.detectedEditor,
+  };
+  const writeResult = pidCache.writePidCacheV2IfAbsent(namespace, sessionId, cacheCwd, subset);
+  if (writeResult === "exists") {
+    // A concurrent writer won: prefer their live v2, else fall back to our
+    // validated v1 (still zero spawn). Either way, do NOT delete v1.
+    const raced = readLiveV2(pidCache, namespace, sessionId, cacheCwd);
+    return raced ? cacheHitMetadata(raced, "v2") : cacheHitMetadata(v1, "v1");
+  }
+  if (writeResult === "created") {
+    // Delete ONLY the exact v1 we read+promoted; a concurrently-replaced file
+    // has a different identity and is kept (deleteV1IfUnchanged).
+    deleteV1IfUnchanged(v1File, entry.identity);
+  }
+  // "created" or false (write failed) → return the validated v1 metadata, zero
+  // spawn. On false we deliberately keep v1 for a later attempt / the sweep.
+  return cacheHitMetadata(v1, "v1");
+}
+
 function createPidResolver(options) {
   const { platformConfig } = options;
   const { terminalNames, systemBoundary, editorMap, editorPathChecks } = platformConfig;
@@ -242,9 +364,12 @@ function createPidResolver(options) {
 
   let _cached = null;
 
-  return function resolve() {
-    if (_cached) return _cached;
-
+  // The platform process-tree snapshot. Extracted so the compatibility no-arg
+  // resolve() and the PR2 lifecycle context share ONE implementation and ONE
+  // spawn. Returns the exact 5c2b1f0 10-field shape (NO cacheSource): the no-arg
+  // path must stay byte-for-byte, so this object is what the 12 not-yet-migrated
+  // adapters keep destructuring.
+  function computeFreshSnapshot() {
     const { execFileSync } = require("child_process");
     const winSnapshotResult = isWin ? getWindowsProcessSnapshot(execFileSync) : null;
     const winSnapshot = winSnapshotResult ? winSnapshotResult.processes : null;
@@ -372,8 +497,167 @@ function createPidResolver(options) {
     // silently decays to process.ppid) instead of reverse-inferring from
     // stablePid. Non-Windows has no snapshot step, so snapshotOk is trivially true.
     const snapshotOk = isWin ? !!(winSnapshot && winSnapshot.size > 0) : true;
-    _cached = { stablePid: terminalPid || lastGoodPid, terminalPid, snapshotOk, agentPid, agentCommandLine, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient };
+    return { stablePid: terminalPid || lastGoodPid, terminalPid, snapshotOk, agentPid, agentCommandLine, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient };
+  }
+
+  // Compatibility no-arg path (SessionStart prewarm + the 12 not-yet-migrated
+  // adapters): byte-for-byte with 5c2b1f0 — first call snapshots, later calls
+  // return the SAME cached object. It performs ZERO cache
+  // read/write/touch/drop/promotion/sweep and never produces a clawd-pidcache2-*
+  // file; all disk-cache orchestration lives behind the context overload below.
+  function freshResolve() {
+    if (_cached) return _cached;
+    _cached = computeFreshSnapshot();
     return _cached;
+  }
+
+  // ── PR2 (#634) lifecycle context ──
+  // Reuses the prewarmed in-process _cached (SessionStart) so a `start` context
+  // after a no-arg prewarm never spawns a second time. Spreads into a NEW object
+  // (never mutates _cached) so the no-arg shape stays pristine.
+  function freshMetadata() {
+    return { ...freshResolve(), cacheSource: "fresh" };
+  }
+
+  // Low-frequency orphan sweep, AT MOST ONCE per resolver instance = per hook
+  // process (plan §5.4). Triggered by `start`, or — for adapters that have no
+  // start (Antigravity etc., later slices) — by the first successful `event`
+  // fresh→v2 population, so every adapter has a cleanup entry point. Zero spawn
+  // (kill(pid,0) liveness).
+  let _swept = false;
+  function maybeSweep(pidCache) {
+    if (_swept) return;
+    _swept = true;
+    pidCache.sweepStalePidCaches({ isProcessAlive: processAlive });
+  }
+
+  // start: fresh snapshot (reusing the prewarm), write v2 only when the walk is
+  // non-degraded (snapshotOk && agentPid). Low-frequency orphan sweep first,
+  // gated on cacheability (matching PR1: SessionStart only swept a cacheable
+  // session). Cleans a stale same-key v1 ONLY after a CONFIRMED v2 write — a
+  // failed write must keep v1 so the next prompt/event can still promote it
+  // (else the session loses its cache and re-freshes, i.e. flashes). No extra
+  // fresh for the cleanup.
+  function startLifecycle(pidCache, namespace, sessionId, cacheCwd, canDisk) {
+    if (canDisk) maybeSweep(pidCache);
+    const meta = freshMetadata();
+    if (canDisk && meta.snapshotOk && meta.agentPid) {
+      if (pidCache.writePidCacheV2(namespace, sessionId, cacheCwd, {
+        stablePid: meta.stablePid, agentPid: meta.agentPid,
+        agentCommandLine: meta.agentCommandLine, detectedEditor: meta.detectedEditor,
+      }) === true) {
+        claudeDropV1SameKey(pidCache, namespace, sessionId, cacheCwd);
+      }
+    }
+    return meta;
+  }
+
+  // prompt: cache-only, NO fallback. A hit (or a v1→v2 promotion) returns the
+  // stable subset; a miss/corrupt/dead/non-cacheable prompt returns empty
+  // metadata and NEVER spawns — even when caching is disabled. The foreground WT
+  // handle it used to fresh-resolve for is sampled server-side now.
+  function promptLifecycle(pidCache, namespace, sessionId, cacheCwd, canDisk) {
+    if (canDisk) {
+      const hit = readLiveV2(pidCache, namespace, sessionId, cacheCwd);
+      if (hit) {
+        pidCache.touchPidCacheV2(namespace, sessionId, cacheCwd);
+        return cacheHitMetadata(hit, "v2");
+      }
+      const promoted = claudePromote(pidCache, namespace, sessionId, cacheCwd);
+      if (promoted) return promoted;
+    }
+    return emptyMetadata();
+  }
+
+  // event: a hit (or promotion) is zero spawn; a miss is at most ONE fresh, then
+  // repopulate v2 if the walk was usable. Non-cacheable events may fresh (the
+  // no-fallback contract is prompt/end only).
+  function eventLifecycle(pidCache, namespace, sessionId, cacheCwd, canDisk) {
+    if (canDisk) {
+      const hit = readLiveV2(pidCache, namespace, sessionId, cacheCwd);
+      if (hit) {
+        pidCache.touchPidCacheV2(namespace, sessionId, cacheCwd);
+        return cacheHitMetadata(hit, "v2");
+      }
+      const promoted = claudePromote(pidCache, namespace, sessionId, cacheCwd);
+      if (promoted) return promoted;
+    }
+    const meta = freshMetadata();
+    if (canDisk && meta.snapshotOk && meta.agentPid) {
+      if (pidCache.writePidCacheV2(namespace, sessionId, cacheCwd, {
+        stablePid: meta.stablePid, agentPid: meta.agentPid,
+        agentCommandLine: meta.agentCommandLine, detectedEditor: meta.detectedEditor,
+      }) === true) {
+        claudeDropV1SameKey(pidCache, namespace, sessionId, cacheCwd);
+        // First successful population is a sweep entry point for no-start
+        // adapters (§5.4); the once-per-process guard makes it a no-op when
+        // `start` already swept.
+        maybeSweep(pidCache);
+      }
+    }
+    return meta;
+  }
+
+  // end: cache-only. Fill the final body from a live v2 (or a valid v1 — used to
+  // construct the body but NOT re-promoted into a short-lived v2), then drop the
+  // cache for this ending session. v2 is dropped defensively (Claude's own key);
+  // a VALID v1 is deleted ONLY via its own read-identity so a v1 a concurrent
+  // writer swapped in after we read is not blindly deleted (Medium). An
+  // absent/dead/corrupt v1 is defensively cleaned. NEVER fresh, NEVER write back.
+  function endLifecycle(pidCache, namespace, sessionId, cacheCwd, canDisk) {
+    let meta = emptyMetadata();
+    if (canDisk) {
+      const hit = readLiveV2(pidCache, namespace, sessionId, cacheCwd);
+      const v1Entry = claudeReadLiveV1Entry(pidCache, namespace, sessionId, cacheCwd);
+      if (hit) meta = cacheHitMetadata(hit, "v2");
+      else if (v1Entry) meta = cacheHitMetadata(v1Entry.subset, "v1");
+
+      pidCache.dropPidCacheV2(namespace, sessionId, cacheCwd);
+      if (v1Entry) {
+        // Delete only the exact v1 we read; a concurrently-replaced one survives.
+        deleteV1IfUnchanged(pidCache.cacheFilePath(sessionId, cacheCwd), v1Entry.identity);
+      } else {
+        // No valid v1 (absent/dead/corrupt) → defensive cleanup of any garbage.
+        claudeDropV1SameKey(pidCache, namespace, sessionId, cacheCwd);
+      }
+    }
+    return meta;
+  }
+
+  function resolveWithContext(ctx) {
+    const namespace = ctx.namespace;
+    const sessionId = ctx.sessionId;
+    const cacheCwd = ctx.cacheCwd;
+    const lifecycle = ctx.lifecycle;
+    const cacheable = ctx.cacheable === true;
+
+    // Non-Windows: runtime behavior unchanged — every lifecycle does a fresh
+    // (in-process cached) snapshot and no disk cache is ever consulted. Keeps
+    // the ps-based path identical to 5c2b1f0 for mac/linux.
+    if (!isWin) return { ...freshResolve(), cacheSource: "fresh" };
+
+    // Lazy require: the no-arg path never loads pid-cache. pid-cache never
+    // requires shared-process, so there is no cycle.
+    const pidCache = require("./pid-cache");
+    // canDisk gates every disk read/write/touch/drop/promotion/sweep. cacheable
+    // is the adapter's declaration; the path check guards a stray empty
+    // ingredient. It never relaxes the prompt/end no-fallback contract below.
+    const canDisk = cacheable && !!pidCache.cacheFilePathV2(namespace, sessionId, cacheCwd);
+
+    switch (lifecycle) {
+      case "start":  return startLifecycle(pidCache, namespace, sessionId, cacheCwd, canDisk);
+      case "prompt": return promptLifecycle(pidCache, namespace, sessionId, cacheCwd, canDisk);
+      case "end":    return endLifecycle(pidCache, namespace, sessionId, cacheCwd, canDisk);
+      case "event":
+      default:       return eventLifecycle(pidCache, namespace, sessionId, cacheCwd, canDisk);
+    }
+  }
+
+  // Single entry point. No argument → the strict compatibility path. A context
+  // object → the PR2 lifecycle path. Nothing else changes for existing callers.
+  return function resolve(ctx) {
+    if (ctx === undefined || ctx === null) return freshResolve();
+    return resolveWithContext(ctx);
   };
 }
 

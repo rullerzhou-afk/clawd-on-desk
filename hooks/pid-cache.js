@@ -38,22 +38,38 @@
 // swept out from under it.
 //
 // Liveness for the sweep is dependency-injected (isProcessAlive) rather than
-// required from shared-process.js: PR2 (#634) will have shared-process.js
-// require this module for its shared resolver cache, and a reverse require
-// here would create a cycle. clawd-hook.js injects processAlive from
-// shared-process.js; tests inject a fake.
+// required from shared-process.js: PR2 (#634) has shared-process.js require this
+// module for its shared resolver cache, and a reverse require here would create a
+// cycle. The shared resolver (PR2) / clawd-hook.js (PR1) injects processAlive
+// from shared-process.js; tests inject a fake.
 //
-// Design constraints (see docs/plans/plan-issue-627-residual-userprompt-flash.md §4.4,
+// Cache v2 (#634): PR2 sinks the per-session cache into the shared resolver and
+// namespaces it by agent. v2 lives ALONGSIDE v1 (untouched) for at least one
+// release cycle so a session already running across the upgrade keeps hitting
+// its v1 file until it is promoted (hooks/shared-process.js). The two schemes
+// differ only in prefix, key input, and shape:
+//   - v1: prefix `clawd-pidcache-`, key sha1(sessionId\0cwd), no version/namespace.
+//   - v2: prefix `clawd-pidcache2-`, key sha1("2\0namespace\0sessionId\0cwd"),
+//     shape adds `version` + `namespace`. The two prefixes are deliberately
+//     non-overlapping under startsWith() ("clawd-pidcache2-" does NOT start with
+//     "clawd-pidcache-": index 14 is "2" vs "-"), so the sweep classifies every
+//     file with a single startsWith() and never double-counts (plan §5.2/§5.4).
+// The lease read semantics (no clock, double-PID liveness by the caller) are
+// identical for both.
+//
+// Design constraints (see docs/plans/plan-issue-627-residual-userprompt-flash.md §4.4/§5,
 // and docs/plans/plan-issue-627-hook-snapshot-flash-cache.md for the original shape):
 //   - Cache ONLY the stable subset: stablePid, agentPid, agentCommandLine,
 //     detectedEditor. NOT pidChain (its head is the per-event ephemeral hook
 //     PowerShell; server MERGEs a missing pid_chain, keeping the SessionStart one).
-//   - Key by session_id + cwd; disabled entirely when session_id is missing/
-//     "default" or cwd is empty (a shared "default" cache would cross sessions).
+//   - v1 keys by session_id + cwd; v2 keys by namespace + session_id + cacheCwd.
+//     Both are disabled when an identity ingredient is missing (a shared cache
+//     would cross sessions); the CALLER declares cacheability (an agent's
+//     "default" session id / empty cwd is non-cacheable).
 //   - Reuse json-utils.writeJsonAtomic (tmp + rename) so a concurrent reader
-//     never sees a half-written file.
-//   - File format/prefix unchanged in this PR (still v1, `clawd-pidcache-`) —
-//     namespacing + a v2 shape/prefix + v1→v2 promotion are PR2 (#634) scope.
+//     never sees a half-written file. The promotion no-clobber path additionally
+//     uses tmp + linkSync (atomic create-if-absent) so a stale v1→v2 promotion
+//     never overwrites a concurrent fresh v2 (plan §5.5/§6.10).
 //   - Zero third-party deps. Zero require of ./shared-process.js (see above).
 
 const fs = require("fs");
@@ -63,6 +79,11 @@ const crypto = require("crypto");
 const { writeJsonAtomic } = require("./json-utils");
 
 const CACHE_PREFIX = "clawd-pidcache-";
+// v2 (#634): a DISTINCT, non-overlapping prefix (see module doc). CACHE_PREFIX_V2
+// deliberately does not startsWith CACHE_PREFIX and vice versa, so sweep
+// classification is unambiguous.
+const CACHE_PREFIX_V2 = "clawd-pidcache2-";
+const CACHE_VERSION_V2 = 2;
 // Sweep-only age floor: a file must be idle (mtime) at least this long before
 // it is even considered for cleanup. This is NOT a read-validity clock (see
 // module doc above) — it only bounds how eagerly the low-frequency
@@ -70,6 +91,21 @@ const CACHE_PREFIX = "clawd-pidcache-";
 // enough that no realistically long-running session's cache is a candidate
 // while it is still being touched (every cache HIT calls touchPidCache).
 const SWEEP_AGE_MS = 24 * 60 * 60 * 1000;
+
+// The directory every cache file lives in. Production always uses os.tmpdir().
+// Tests inject an isolated directory (__setCacheDirForTests) so a fake-liveness
+// sweep can never scan the real temp dir — which would both interfere with
+// concurrently-running test PROCESSES and delete a developer's genuine >24h
+// session caches (the sweep does not spawn, so it happily walks everything under
+// the shared prefix). No production env surface: the override is an in-process
+// test seam only.
+let _cacheDirOverride = null;
+function cacheDir() {
+  return _cacheDirOverride || os.tmpdir();
+}
+function __setCacheDirForTests(dir) {
+  _cacheDirOverride = dir || null;
+}
 
 // A session_id of "default" is the placeholder clawd-hook.js falls back to when
 // the agent's stdin JSON lacked one (#583): caching under it would let unrelated
@@ -89,32 +125,62 @@ function cacheFilePath(sessionId, cwd) {
     .update(`${sessionId}\0${cwd}`)
     .digest("hex")
     .slice(0, 16);
-  return path.join(os.tmpdir(), `${CACHE_PREFIX}${hash}.json`);
+  return path.join(cacheDir(), `${CACHE_PREFIX}${hash}.json`);
+}
+
+// The v1 shape guard, shared by readPidCache and readPidCacheEntry so they can
+// never drift. NO clock participates (lease rewrite, §4.4). Liveness of the
+// cached PIDs is the CALLER's job — it must check BOTH the PID that becomes
+// source_pid (stablePid) AND agentPid are alive before treating this as a hit.
+// agentPid is REQUIRED (the write condition needs snapshotOk && agentPid, and
+// the hit path liveness-checks it), so both are pinned to positive integers and
+// a corrupt/hand-edited file can't ship a bad PID.
+function isValidV1Shape(obj, cwd) {
+  return !!obj && typeof obj === "object"
+    && typeof obj.ts === "number" // ts itself is debug-only, but its presence is a shape guard
+    && obj.cwd === cwd
+    && isPositivePid(obj.stablePid)
+    && isPositivePid(obj.agentPid);
 }
 
 // Returns the cached subset, or null on: caching disabled, no file,
-// unreadable/unparseable file, shape guard failure, or cwd mismatch. NO clock
-// participates in this decision (lease rewrite, §4.4). Liveness of the cached
-// PIDs is entirely the caller's job: it must check that BOTH the PID that
-// becomes source_pid (stablePid) AND agentPid are alive before treating this
-// as a real hit.
+// unreadable/unparseable file, shape guard failure, or cwd mismatch.
 function readPidCache(sessionId, cwd) {
   const file = cacheFilePath(sessionId, cwd);
   if (!file) return null;
   try {
     const obj = JSON.parse(fs.readFileSync(file, "utf8"));
-    if (!obj || typeof obj !== "object") return null;
-    if (typeof obj.ts !== "number") return null; // shape guard; ts itself is debug-only
-    if (obj.cwd !== cwd) return null;
-    // Shape guard. Liveness is re-validated by the caller. agentPid is
-    // REQUIRED (the write condition needs snapshotOk && agentPid, and the hit
-    // path does its own processAlive(agentPid)) — pin both to positive
-    // integers so a corrupt/hand-edited file can't ship a bad PID.
-    if (!isPositivePid(obj.stablePid)) return null;
-    if (!isPositivePid(obj.agentPid)) return null;
-    return obj;
+    return isValidV1Shape(obj, cwd) ? obj : null;
   } catch {
     return null;
+  }
+}
+
+// Read the v1 file in a SINGLE observation and return BOTH the validated subset
+// AND the file identity (mtimeMs + size + raw content) from that same read. A
+// caller that later conditionally deletes the file (promotion / end) MUST bind
+// its delete-guard to this identity so it never deletes bytes it did not read
+// (plan §5.5). This closes the race where readPidCache and a separate identity
+// read straddle a concurrent replacement — the parsed subset and the identity
+// then describe different files, and the fresh replacement gets promoted-over
+// and deleted. Using ONE fd means the fstat and the read see the same inode even
+// if a concurrent writer renames a replacement over the path mid-call. Returns
+// null on caching disabled / missing / unreadable / shape-invalid.
+function readPidCacheEntry(sessionId, cwd) {
+  const file = cacheFilePath(sessionId, cwd);
+  if (!file) return null;
+  let fd;
+  try {
+    fd = fs.openSync(file, "r");
+    const st = fs.fstatSync(fd);
+    const raw = fs.readFileSync(fd).toString("utf8"); // same inode as the fstat above
+    const obj = JSON.parse(raw);
+    if (!isValidV1Shape(obj, cwd)) return null;
+    return { subset: obj, identity: { mtimeMs: st.mtimeMs, size: st.size, raw } };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
   }
 }
 
@@ -162,13 +228,160 @@ function dropPidCache(sessionId, cwd) {
   }
 }
 
+// ── Cache v2 (#634): namespaced + versioned ────────────────────────────────────
+// The v2 surface mirrors v1 read/write/touch/drop but keys by
+// namespace + sessionId + cacheCwd and stamps version + namespace into the file.
+// Read validity is the same lease model as v1: NO clock, shape + identity only;
+// liveness (double processAlive) stays the caller's job.
+
+// v2 key input pins version + namespace + sessionId + cacheCwd with NUL
+// separators (so "a"+"bc" and "ab"+"c" can't collide) before the same 16-char
+// SHA-1 truncation v1 uses. namespace MUST be in the key so two agents that
+// happen to share a session_id + cwd never read each other's cache. Returns null
+// (caching off) when any identity ingredient is empty.
+function cacheFilePathV2(namespace, sessionId, cacheCwd) {
+  if (!namespace || !sessionId || !cacheCwd) return null;
+  const hash = crypto
+    .createHash("sha1")
+    .update(`2\0${namespace}\0${sessionId}\0${cacheCwd}`)
+    .digest("hex")
+    .slice(0, 16);
+  return path.join(cacheDir(), `${CACHE_PREFIX_V2}${hash}.json`);
+}
+
+// The v2 on-disk shape. `cwd` stores the cacheCwd (not necessarily an adapter's
+// body cwd). pidChain / foregroundWtHwnd / tmuxClient are deliberately NOT
+// cached (a cache hit must never fake them); tmuxSocket is recomputed from env
+// by the resolver, zero spawn.
+function v2Payload(namespace, cacheCwd, subset) {
+  return {
+    version: CACHE_VERSION_V2,
+    namespace,
+    cwd: cacheCwd,
+    stablePid: subset.stablePid,
+    agentPid: subset.agentPid,
+    agentCommandLine: subset.agentCommandLine,
+    detectedEditor: subset.detectedEditor,
+    ts: Date.now(),
+  };
+}
+
+// Returns the cached v2 subset, or null on: caching disabled, no file,
+// unreadable/unparseable, version/namespace/cwd mismatch, or a non-positive
+// stablePid/agentPid. NO clock participates (lease model, §4.4). The caller
+// re-validates liveness of BOTH cached PIDs before treating this as a hit.
+function readPidCacheV2(namespace, sessionId, cacheCwd) {
+  const file = cacheFilePathV2(namespace, sessionId, cacheCwd);
+  if (!file) return null;
+  try {
+    const obj = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (!obj || typeof obj !== "object") return null;
+    if (obj.version !== CACHE_VERSION_V2) return null;
+    if (obj.namespace !== namespace) return null; // defense-in-depth; key already encodes it
+    if (typeof obj.ts !== "number") return null; // shape guard, mirrors v1; ts is debug-only
+    if (obj.cwd !== cacheCwd) return null;
+    if (!isPositivePid(obj.stablePid)) return null;
+    if (!isPositivePid(obj.agentPid)) return null;
+    return obj;
+  } catch {
+    return null;
+  }
+}
+
+// Overwriting atomic write (tmp + rename), for the authoritative `start`/`event`
+// fresh path. Callers MUST only pass a non-degraded subset (snapshotOk &&
+// agentPid). Returns false when caching is disabled or the write fails.
+function writePidCacheV2(namespace, sessionId, cacheCwd, subset) {
+  const file = cacheFilePathV2(namespace, sessionId, cacheCwd);
+  if (!file) return false;
+  try {
+    writeJsonAtomic(file, v2Payload(namespace, cacheCwd, subset));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Atomic create-if-absent v2 write for v1→v2 promotion (plan §5.5/§6.10).
+// Returns:
+//   "created" — we wrote the v2 (we won the race);
+//   "exists"  — a concurrent writer already placed a v2 here. This is NOT a
+//               failure: the caller prefers that (fresher) file and must not
+//               overwrite it. This is exactly what keeps a stale promotion from
+//               clobbering a concurrent fresh SessionStart v2 — the documented
+//               recheck-is-not-CAS residual (plan §6.10) is closed by it;
+//   false     — the write/link failed for another reason (e.g. a filesystem
+//               without hard-link support). The caller falls back to returning
+//               the validated v1 WITHOUT deleting it, and never spawns.
+// Uses a sibling temp + linkSync: link is an atomic O_EXCL-style create, so a
+// concurrent fresh v2 (written via writePidCacheV2's tmp+rename) is never
+// overwritten. Never throws.
+function writePidCacheV2IfAbsent(namespace, sessionId, cacheCwd, subset) {
+  const file = cacheFilePathV2(namespace, sessionId, cacheCwd);
+  if (!file) return false;
+  const dir = path.dirname(file);
+  const base = path.basename(file);
+  const tmpPath = path.join(
+    dir,
+    `.${base}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString("hex")}.nc.tmp`
+  );
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(v2Payload(namespace, cacheCwd, subset), null, 2), "utf-8");
+  } catch {
+    try { fs.unlinkSync(tmpPath); } catch {}
+    return false;
+  }
+  try {
+    fs.linkSync(tmpPath, file); // atomic create-if-absent; throws EEXIST if file exists
+    return "created";
+  } catch (err) {
+    return err && err.code === "EEXIST" ? "exists" : false;
+  } finally {
+    // On success the inode survives via `file`; on any failure this removes the
+    // orphan temp. Either way the temp name never lingers.
+    try { fs.unlinkSync(tmpPath); } catch {}
+  }
+}
+
+function touchPidCacheV2(namespace, sessionId, cacheCwd) {
+  const file = cacheFilePathV2(namespace, sessionId, cacheCwd);
+  if (!file) return;
+  try {
+    const now = new Date();
+    fs.utimesSync(file, now, now);
+  } catch {
+    /* file gone (SessionEnd drop) / race — fine */
+  }
+}
+
+function dropPidCacheV2(namespace, sessionId, cacheCwd) {
+  const file = cacheFilePathV2(namespace, sessionId, cacheCwd);
+  if (!file) return;
+  try {
+    fs.unlinkSync(file);
+  } catch {
+    /* already gone / race — fine */
+  }
+}
+
+// Classify a temp-dir entry as a v1/v2 cache file or neither. The prefixes are
+// non-overlapping under startsWith (see module doc), so this is unambiguous.
+function classifyPidCacheName(name) {
+  if (!name.endsWith(".json")) return null;
+  if (name.startsWith(CACHE_PREFIX_V2)) return "v2";
+  if (name.startsWith(CACHE_PREFIX)) return "v1";
+  return null;
+}
+
 // Best-effort sweep of orphaned cache files (sessions that crashed without a
-// SessionEnd). Deletes a file only when BOTH hold:
+// SessionEnd). Scans BOTH the v1 and v2 prefixes (#634, plan §5.4) so v1 files
+// keep getting collected for at least one release cycle after PR2. Deletes a
+// file only when BOTH hold:
 //   1. age floor:  now - mtime > SWEEP_AGE_MS (mtime is bumped by every hit,
 //      so an actively-used session's file is never even considered), AND
-//   2. death proof: the file's shape is corrupt, OR either cached PID
-//      (stablePid / agentPid) is no longer alive per the injected
-//      isProcessAlive.
+//   2. death proof: the file's shape is corrupt (a v2-prefixed file must also
+//      carry version === 2), OR either cached PID (stablePid / agentPid) is no
+//      longer alive per the injected isProcessAlive.
 // Age alone NEVER deletes — a long-idle-but-still-alive session's cache
 // survives indefinitely, by design (the read-side lease has no clock either;
 // see module doc above).
@@ -176,12 +389,12 @@ function dropPidCache(sessionId, cwd) {
 // isProcessAlive is dependency-injected (kill(pid,0) semantics, e.g.
 // hooks/shared-process.js processAlive) rather than required directly, to
 // avoid a reverse-require cycle once PR2 makes shared-process.js depend on
-// this module. Called once per session from SessionStart (low frequency);
-// silent on any error.
+// this module. Called at low frequency from the shared resolver (SessionStart
+// for adapters that have one); silent on any error.
 function sweepStalePidCaches(options = {}) {
   const now = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
   const checkAlive = typeof options.isProcessAlive === "function" ? options.isProcessAlive : () => true;
-  const dir = os.tmpdir();
+  const dir = cacheDir();
   let names;
   try {
     names = fs.readdirSync(dir);
@@ -189,7 +402,8 @@ function sweepStalePidCaches(options = {}) {
     return;
   }
   for (const name of names) {
-    if (!name.startsWith(CACHE_PREFIX) || !name.endsWith(".json")) continue;
+    const kind = classifyPidCacheName(name);
+    if (!kind) continue;
     const full = path.join(dir, name);
     try {
       const st = fs.statSync(full);
@@ -198,8 +412,17 @@ function sweepStalePidCaches(options = {}) {
       let dead;
       try {
         const obj = JSON.parse(fs.readFileSync(full, "utf8"));
-        const shapeOk = !!obj && typeof obj === "object"
+        let shapeOk = !!obj && typeof obj === "object"
           && isPositivePid(obj.stablePid) && isPositivePid(obj.agentPid);
+        // A v2-prefixed file must carry the full v2 shape (version + namespace +
+        // cwd + ts); any missing/malformed field is corrupt → dead. (A normal
+        // atomic write never produces this; a hand-edited/partial file can.)
+        if (shapeOk && kind === "v2") {
+          shapeOk = obj.version === CACHE_VERSION_V2
+            && typeof obj.namespace === "string" && obj.namespace.length > 0
+            && typeof obj.cwd === "string" && obj.cwd.length > 0
+            && typeof obj.ts === "number";
+        }
         dead = !shapeOk || !checkAlive(obj.stablePid) || !checkAlive(obj.agentPid);
       } catch {
         dead = true; // unreadable/corrupt — treated as a damaged shape
@@ -231,10 +454,22 @@ module.exports = {
   canCache,
   cacheFilePath,
   readPidCache,
+  readPidCacheEntry,
   writePidCache,
   touchPidCache,
   dropPidCache,
   sweepStalePidCaches,
   SWEEP_AGE_MS,
   CACHE_PREFIX,
+  // v2 (#634) — namespaced, versioned; lives alongside v1 for the migration.
+  CACHE_PREFIX_V2,
+  CACHE_VERSION_V2,
+  cacheFilePathV2,
+  readPidCacheV2,
+  writePidCacheV2,
+  writePidCacheV2IfAbsent,
+  touchPidCacheV2,
+  dropPidCacheV2,
+  // Test-only seam (no production env surface); see cacheDir() above.
+  __setCacheDirForTests,
 };

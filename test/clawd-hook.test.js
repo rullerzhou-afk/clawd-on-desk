@@ -236,32 +236,30 @@ describe("buildStateBody", () => {
     assert.ok(!("pid_chain" in body));
   });
 
-  it("includes foreground WT HWND only on foreground-safe events", () => {
-    const resolveWithWtHwnd = () => ({
+  it("applies the foreground WT HWND only on foreground-safe events, and only when the resolver surfaces one", () => {
+    // #634: buildStateBody is now the Claude adapter — the shared resolver
+    // decides whether a foreground WT handle exists (only a fresh SessionStart
+    // snapshot carries one; a prompt is cache-only and never does, the server
+    // samples it), and buildStateBody applies it only on a foreground-safe
+    // event. The fake models the resolver contract: null foregroundWtHwnd for
+    // the prompt lifecycle. This is now platform-independent — the resolver
+    // owns the Windows/non-Windows behavior; deterministic both-platform
+    // coverage lives in test/clawd-hook-pid-cache.test.js (forced reloads).
+    const resolveByLifecycle = (ctx) => ({
       stablePid: 1,
       agentPid: null,
       detectedEditor: null,
       pidChain: [],
-      foregroundWtHwnd: "123456",
+      foregroundWtHwnd: ctx && ctx.lifecycle === "prompt" ? null : "123456",
     });
 
-    const startBody = buildStateBody("SessionStart", { session_id: "s" }, resolveWithWtHwnd);
-    const promptBody = buildStateBody("UserPromptSubmit", { session_id: "s" }, resolveWithWtHwnd);
-    const stopBody = buildStateBody("Stop", { session_id: "s" }, resolveWithWtHwnd);
+    const startBody = buildStateBody("SessionStart", { session_id: "s" }, resolveByLifecycle);
+    const promptBody = buildStateBody("UserPromptSubmit", { session_id: "s" }, resolveByLifecycle);
+    const stopBody = buildStateBody("Stop", { session_id: "s" }, resolveByLifecycle);
 
-    assert.strictEqual(startBody.wt_hwnd, "123456");
-    // This file loads clawd-hook natively (host platform). On Windows,
-    // UserPromptSubmit is cache-only/no-fallback (#627 residual) — it never
-    // resolves, so the hook no longer reports wt_hwnd (the server samples it
-    // instead, src/server-route-state.js). Off Windows the prompt still
-    // resolves fresh and reports it. Deterministic both-platform coverage
-    // lives in test/clawd-hook-pid-cache.test.js (platform-forced reloads).
-    if (process.platform === "win32") {
-      assert.ok(!("wt_hwnd" in promptBody), "Windows prompt is zero-spawn; wt_hwnd is the server's job now");
-    } else {
-      assert.strictEqual(promptBody.wt_hwnd, "123456");
-    }
-    assert.ok(!("wt_hwnd" in stopBody));
+    assert.strictEqual(startBody.wt_hwnd, "123456", "SessionStart (start) surfaces the fresh handle");
+    assert.ok(!("wt_hwnd" in promptBody), "prompt is cache-only; the hook never reports wt_hwnd (server samples it)");
+    assert.ok(!("wt_hwnd" in stopBody), "Stop is not a foreground-safe event even when a handle is present");
   });
 
   describe("agentPid and headless detection", () => {
