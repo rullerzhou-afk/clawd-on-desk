@@ -25,7 +25,16 @@ function makeServer({
   writeRuntimeConfig = () => true,
   readRuntimePort = () => 23333,
   identity = { ok: true, reason: null, port: 23333, ownerPid: process.pid },
+  readRuntimeIdentity = () => identity,
+  isProcessAlive = () => true,
   addressPort = 23333,
+  runtimeConfigPath = undefined,
+  // Production's listen() emits 'listening' from a LATER tick. The synchronous
+  // mock below is close enough for the boolean-contract tests, but not for the
+  // throw ones: a sync emit still runs inside httpServer.listen()'s own
+  // try/catch, which converts a stranded promise into settle(null). Only the
+  // async form reproduces a throw with nothing above it.
+  asyncListen = false,
 } = {}) {
   const warnings = [];
   const origWarn = console.warn;
@@ -34,7 +43,9 @@ function makeServer({
   function createHttpServer() {
     const server = new EventEmitter();
     server.listening = true;
-    server.listen = function () { this.emit("listening"); };
+    server.listen = asyncListen
+      ? function () { setImmediate(() => this.emit("listening")); }
+      : function () { this.emit("listening"); };
     server.close = function () {};
     server.address = function () { return { address: "127.0.0.1", port: addressPort }; };
     return server;
@@ -47,8 +58,9 @@ function makeServer({
     clearRuntimeConfig: () => true,
     writeRuntimeConfig,
     readRuntimePort,
-    readRuntimeIdentity: () => identity,
-    isProcessAlive: () => true,
+    readRuntimeIdentity,
+    isProcessAlive,
+    runtimeConfigPath,
   });
   return { api, warnings, restore: () => { console.warn = origWarn; } };
 }
@@ -69,7 +81,12 @@ describe("#681 — startHttpServer always settles, however the runtime write goe
     } finally { h.restore(); }
   });
 
-  // The actual regression. Pre-#681 this awaited forever.
+  // The regression itself. What catches it here is the port assertion, not the
+  // timeout: under this file's synchronous listen() mock an unguarded throw is
+  // still caught by httpServer.listen()'s try/catch, which settles null. The
+  // 2s race is not decoration either — it is what would catch a settle() that
+  // is never called at all. The async-listen block below covers the shape this
+  // mock cannot reach.
   it("settles with the bound port even when writeRuntimeConfig THROWS", async () => {
     const h = makeServer({
       writeRuntimeConfig: () => { throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }); },
@@ -113,6 +130,67 @@ describe("#681 — startHttpServer always settles, however the runtime write goe
     try {
       await h.api.startHttpServer();
       assert.deepStrictEqual(h.warnings.filter((w) => /runtime file/i.test(w)), []);
+    } finally { h.restore(); }
+  });
+});
+
+// The same hazard one layer out, and the reason the guard above is not enough on
+// its own. Guarding writeRuntimeConfig leaves everything BETWEEN it and settle()
+// unguarded, and the warning branch it enables used to call getRuntimeStatus()
+// purely to read a path — reaching three more ctx seams (readRuntimePort,
+// readRuntimeIdentity, isProcessAlive) to build fields it then discarded. Two of
+// those three are seams #681 itself introduced.
+//
+// Nothing here is reachable in today's production: src/main.js injects none of
+// the three, and the real implementations catch internally. This pins the shape
+// so that adding an injection later — which #681 just did twice — cannot arm it.
+describe("#681 — the warning branch must not reach the runtime file to log its path", () => {
+  const SEAMS = [
+    ["readRuntimePort", { readRuntimePort: () => { throw new Error("EACCES: readRuntimePort"); } }],
+    ["readRuntimeIdentity", { readRuntimeIdentity: () => { throw new Error("EACCES: readRuntimeIdentity"); } }],
+    ["isProcessAlive", { isProcessAlive: () => { throw new Error("EPERM: isProcessAlive"); } }],
+  ];
+
+  // The control. Three "settles fine" results below mean nothing unless the same
+  // async mock is known to settle at all.
+  it("the async listen mock settles normally with no seam throwing", async () => {
+    const h = makeServer({ asyncListen: true, writeRuntimeConfig: () => false });
+    try {
+      assert.strictEqual(await h.api.startHttpServer(), 23333);
+    } finally { h.restore(); }
+  });
+
+  for (const [name, seam] of SEAMS) {
+    it(`settles with the bound port when the write fails and ${name} throws`, async () => {
+      const h = makeServer({ writeRuntimeConfig: () => false, asyncListen: true, ...seam });
+      try {
+        const port = await Promise.race([
+          h.api.startHttpServer(),
+          new Promise((r) => setTimeout(() => r("TIMED-OUT"), 2000)),
+        ]);
+        assert.strictEqual(port, 23333,
+          `logging a failed runtime write must not depend on ${name}: it sits above settle(), `
+          + "and in Electron main a throw from this handler has no uncaughtException handler to catch it");
+      } finally { h.restore(); }
+    });
+  }
+
+  it("still names the runtime path it could not write", async () => {
+    // The path must survive the refactor: it is the one field the warning
+    // actually wanted from getRuntimeStatus(), and it is a pure expression —
+    // derivable without reading anything, which is the entire point.
+    const h = makeServer({
+      writeRuntimeConfig: () => false,
+      asyncListen: true,
+      runtimeConfigPath: "D:/fake-home/.clawd/runtime.json",
+      readRuntimePort: () => { throw new Error("EACCES: readRuntimePort"); },
+    });
+    try {
+      await h.api.startHttpServer();
+      const hits = h.warnings.filter((w) => /runtime file was not written/i.test(w));
+      assert.strictEqual(hits.length, 1);
+      assert.match(hits[0], /D:\/fake-home\/\.clawd\/runtime\.json/,
+        "the warning is useless without the path, so the cheap derivation must produce the same one");
     } finally { h.restore(); }
   });
 });

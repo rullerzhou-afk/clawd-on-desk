@@ -72,6 +72,14 @@ const writeRuntimeConfigFn = ctx.writeRuntimeConfig || writeRuntimeConfig;
 const readRuntimeIdentityFn = ctx.readRuntimeIdentity
   || (() => readRuntimeIdentity({ runtimeConfigPath: ctx.runtimeConfigPath }));
 const isProcessAliveFn = ctx.isProcessAlive || processAlive;
+// #681: where the runtime file lives is a pure expression — answering it must
+// not read the file, probe a PID, or touch any of the seams above. Callers that
+// only want the path used to reach it through getRuntimeStatus(), which costs
+// two reads, two JSON.parses and a kill() syscall to build a string that ignores
+// all of them, and which drags three throw-capable seams into the callsite.
+function runtimeConfigFilePath() {
+  return typeof ctx.runtimeConfigPath === "string" ? ctx.runtimeConfigPath : RUNTIME_CONFIG_PATH;
+}
 const CLAUDE_HOOK_GUARD_NOTICE_TTL_MS = 30 * 60 * 1000;
 
 let httpServer = null;
@@ -148,7 +156,7 @@ function getRuntimeStatus() {
   return {
     listening: !!port && (!httpServer || httpServer.listening !== false),
     port,
-    runtimePath: typeof ctx.runtimeConfigPath === "string" ? ctx.runtimeConfigPath : RUNTIME_CONFIG_PATH,
+    runtimePath: runtimeConfigFilePath(),
     runtimePort,
     runtimeFileExists: Number.isInteger(runtimePort),
     runtimeMatches: Number.isInteger(port) && runtimePort === port,
@@ -594,11 +602,14 @@ function startHttpServer() {
 
     httpServer.on("listening", () => {
       activeServerPort = listenPorts[listenIndex];
-      // #681: writeRuntimeConfig owes a boolean contract, but settle() is below
-      // this line — so a throw here (its mkdirSync used to sit outside its own
-      // try; a ctx-injected implementation can throw for any reason) would
-      // strand startHttpServer's promise forever, and every caller that awaits
-      // the bound port hangs with it. Report, never propagate.
+      // #681: settle() is at the bottom of this handler, and this is an event
+      // callback with no main-process uncaughtException handler behind it — so a
+      // throw from here takes the Electron main process down, and under a host
+      // that does catch (the test runner) it instead strands startHttpServer's
+      // promise and every caller awaiting the port. writeRuntimeConfig owes a
+      // boolean contract (its mkdirSync used to sit outside its own try), but a
+      // ctx-injected implementation can throw for any reason. Report, never
+      // propagate.
       let runtimeWritten = false;
       try {
         runtimeWritten = writeRuntimeConfigFn(activeServerPort) === true;
@@ -612,8 +623,12 @@ function startHttpServer() {
         // readable runtime identity the hook fail-closes and OMITS process
         // metadata (no terminal focus for new sessions) rather than snapshot the
         // machine to guess it. Surfaced in Doctor → Local server.
+        // runtimeConfigFilePath(), not getRuntimeStatus().runtimePath: the status
+        // object reads the runtime file twice and probes the owner PID to build
+        // fields this log line discards, and each of those is a throw-capable
+        // ctx seam sitting above settle().
         console.warn(
-          `Clawd runtime file was not written (${getRuntimeStatus().runtimePath}) — `
+          `Clawd runtime file was not written (${runtimeConfigFilePath()}) — `
           + "hook process metadata will be omitted until this is repaired (see Doctor → Local server)"
         );
       }
