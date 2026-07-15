@@ -35,6 +35,16 @@ const DEAD_PID = 2147483646;
 const AGENT_OPTS = {
   agentNames: { win: new Set(["claude.exe"]), mac: new Set(["claude"]) },
   agentCmdlineCheck: (c) => c.includes("claude-code"),
+  // #681: the resolver derives `headless` in memory and caches only the boolean,
+  // so the fixtures below use "--print" vs plain "claude" as the discriminator
+  // where they used to compare raw command lines.
+  headlessCheck: (c) => /\s(-p|--print)(\s|$)/.test(c || ""),
+  // #681: without a passing gate the Windows resolver refuses to spawn at all,
+  // and every lifecycle assertion below would pass for the wrong reason (zero
+  // spawn because Clawd looks offline, not because the cache was hit). Injected,
+  // never read from the real ~/.clawd. See test/shared-process.test.js LIVE_GATE.
+  readRuntimeIdentity: () => ({ ok: true, reason: null, port: 23333, ownerPid: process.pid }),
+  env: {},
 };
 
 let seq = 0;
@@ -60,15 +70,21 @@ function liveProcs() {
     { pid: 600, name: "windowsterminal.exe", ppid: 0 },
   ];
 }
-// A cached subset whose BOTH pids are this (alive) process, so the resolver's
-// double-liveness check treats it as a hit.
+// A cached LEGACY (v1) subset whose BOTH pids are this (alive) process, so the
+// resolver's double-liveness check treats it as a hit. v1 is the shape that
+// still carries a raw command line — nothing writes it any more (#681), so this
+// only ever authors migration fixtures.
 function liveSubset(extra = {}) {
   return { stablePid: process.pid, agentPid: process.pid, agentCommandLine: "claude --print", detectedEditor: "code", ...extra };
+}
+// The SANITIZED (v2) subset: a derived boolean where v1 had the command line.
+function liveV2Subset(extra = {}) {
+  return { stablePid: process.pid, agentPid: process.pid, headless: true, detectedEditor: "code", ...extra };
 }
 
 // Build a resolver over a mock-loaded shared-process. `snapshot` is returned by
 // every execFileSync (the Windows snapshot); `spawns()` counts calls.
-function mkResolver({ platform = "win32", procs, startPid, snapshot } = {}) {
+function mkResolver({ platform = "win32", procs, startPid, snapshot, identity } = {}) {
   let spawns = 0;
   const out = snapshot !== undefined ? snapshot : snapshotJson(procs || liveProcs());
   const { mod, cleanup } = loadSharedProcessWithMock({
@@ -76,7 +92,14 @@ function mkResolver({ platform = "win32", procs, startPid, snapshot } = {}) {
     platform,
   });
   const cfg = mod.getPlatformConfig();
-  const resolve = mod.createPidResolver({ platformConfig: cfg, startPid: startPid || process.pid, ...AGENT_OPTS });
+  const resolve = mod.createPidResolver({
+    platformConfig: cfg,
+    startPid: startPid || process.pid,
+    ...AGENT_OPTS,
+    // #681: AGENT_OPTS declares a live gate by default; `identity` overrides it
+    // for the cases that need Clawd to look offline.
+    ...(identity ? { readRuntimeIdentity: () => identity } : {}),
+  });
   return { mod, resolve, cleanup, spawns: () => spawns };
 }
 
@@ -160,6 +183,8 @@ describe("resolver no-arg compatibility (§5.1 red line)", () => {
         platformConfig: cfg, startPid: process.pid,
         agentNames: { win: new Set(["node.exe"]), mac: new Set(["node"]) },
         agentCmdlineCheck: (c) => c.includes("gemini"),
+        readRuntimeIdentity: () => ({ ok: true, reason: null, port: 23333, ownerPid: process.pid }),
+        env: {},
       });
       const r1 = resolve();
       const r2 = resolve();
@@ -385,7 +410,13 @@ describe("resolver v1→v2 promotion (Claude only)", () => {
     } finally { cleanup(); }
   });
 
-  it("v2 write FAILURE: returns the validated v1, does NOT spawn, does NOT delete v1", (t) => {
+  // BASELINE INVERTED BY #681. #634 kept the v1 on a failed v2 write, so a later
+  // event could retry the promotion instead of re-resolving. That trade assumed
+  // v1 and v2 hold the same data. They no longer do — v1 is the only file with
+  // the raw command line — so the raw line would sit in %TEMP% for the rest of
+  // the session to save a possible future flash. #681 chooses privacy: drop v1,
+  // serve this event from memory, accept at most one later re-resolve.
+  it("v2 write FAILURE: serves from memory, does NOT spawn, and STILL deletes the legacy v1", (t) => {
     const { resolve, cleanup, spawns } = mkResolver();
     const sid = freshSid();
     pc.writePidCache(sid, CWD, liveSubset());
@@ -393,10 +424,32 @@ describe("resolver v1→v2 promotion (Claude only)", () => {
     try {
       const meta = resolve(ctx(sid, "prompt"));
       assert.strictEqual(spawns(), 0, "a v2 write failure must not trigger a fresh resolve");
-      assert.strictEqual(meta.cacheSource, "v1", "still returns the validated v1 metadata");
+      assert.strictEqual(meta.cacheSource, "v1", "the current event is still served, from memory");
       assert.strictEqual(meta.stablePid, process.pid);
-      assert.ok(pc.readPidCache(sid, CWD), "v1 must NOT be deleted when the v2 write failed");
+      assert.strictEqual(meta.headless, true, "derived in memory from the v1 we read");
+      assert.strictEqual(meta.agentCommandLine, "", "and the raw line never rides along");
+      assert.strictEqual(pc.readPidCache(sid, CWD), null,
+        "the legacy v1 must be gone even though no v2 replaced it — privacy over one avoidable re-resolve");
     } finally { cleanup(); }
+  });
+
+  it("after a v2 write failure dropped v1, the next OFFLINE event is still zero spawn", (t) => {
+    // The cost of the privacy choice above is bounded: the next event misses and
+    // re-resolves — but only if Clawd is actually running. Offline, the #681 gate
+    // still refuses, so the failure mode this whole issue is about cannot return.
+    const sid = freshSid();
+    pc.writePidCache(sid, CWD, liveSubset());
+    const offline = mkResolver({
+      identity: { ok: false, reason: "runtime-missing", port: null, ownerPid: null },
+    });
+    t.mock.method(pc, "writePidCacheV2IfAbsent", () => false);
+    try {
+      offline.resolve(ctx(sid, "prompt"));
+      assert.strictEqual(pc.readPidCache(sid, CWD), null, "v1 dropped");
+      const second = offline.resolve(ctx(freshSid(), "event")); // a miss → would fresh, if allowed
+      assert.strictEqual(offline.spawns(), 0, "still zero spawn while Clawd is offline");
+      assert.strictEqual(second.stablePid, null);
+    } finally { offline.cleanup(); }
   });
 
   it("v1 identity changed between read and delete: v1 is kept (deleted only when unchanged)", (t) => {
@@ -419,16 +472,21 @@ describe("resolver v1→v2 promotion (Claude only)", () => {
     } finally { cleanup(); }
   });
 
-  it("recheck finds a concurrent v2 already present: prefer it, do not overwrite", () => {
+  it("recheck finds a concurrent v2 already present: prefer it, do not overwrite — and still drop the legacy v1", () => {
     const { resolve, cleanup, spawns } = mkResolver();
     const sid = freshSid();
-    pc.writePidCache(sid, CWD, liveSubset());
-    pc.writePidCacheV2(NS, sid, CWD, liveSubset({ agentCommandLine: "claude --FRESH-V2" }));
+    // The v1 says headless; the concurrent v2 says NOT headless. Whichever value
+    // comes back names the file that was actually used.
+    pc.writePidCache(sid, CWD, liveSubset({ agentCommandLine: "claude --print" }));
+    pc.writePidCacheV2(NS, sid, CWD, liveV2Subset({ headless: false, detectedEditor: "cursor" }));
     try {
       const meta = resolve(ctx(sid, "prompt"));
       assert.strictEqual(spawns(), 0);
       assert.strictEqual(meta.cacheSource, "v2", "recheck prefers the existing v2");
-      assert.strictEqual(meta.agentCommandLine, "claude --FRESH-V2");
+      assert.strictEqual(meta.headless, false, "the fresher v2 wins, not the stale v1");
+      assert.strictEqual(meta.detectedEditor, "cursor");
+      assert.strictEqual(pc.readPidCache(sid, CWD), null,
+        "#681: yielding to the concurrent v2 must not leave the legacy raw command line behind");
     } finally { cleanup(); }
   });
 
@@ -436,13 +494,15 @@ describe("resolver v1→v2 promotion (Claude only)", () => {
     // A concurrent SessionStart writes a FRESH v2 AFTER promotion's recheck saw
     // none, right before promotion's no-clobber link. The link then fails EEXIST
     // ("exists"), so promotion uses the fresh v2 and the stale v1 never
-    // overwrites it (plan §6.10).
+    // overwrites it (plan §6.10). Verified on Windows NTFS: fs.linkSync onto an
+    // existing path throws EEXIST and does not clobber.
     const { resolve, cleanup, spawns } = mkResolver();
     const sid = freshSid();
-    pc.writePidCache(sid, CWD, liveSubset({ agentCommandLine: "claude --STALE-V1" }));
+    pc.writePidCache(sid, CWD, liveSubset({ agentCommandLine: "claude --print" })); // stale v1: headless
     const realIfAbsent = pc.writePidCacheV2IfAbsent;
     t.mock.method(pc, "writePidCacheV2IfAbsent", (...a) => {
-      pc.writePidCacheV2(NS, sid, CWD, liveSubset({ agentCommandLine: "claude --FRESH-CONCURRENT" }));
+      // fresh concurrent v2: NOT headless, distinct editor → identifiable
+      pc.writePidCacheV2(NS, sid, CWD, liveV2Subset({ headless: false, detectedEditor: "cursor" }));
       return realIfAbsent(...a); // real no-clobber now sees the fresh v2 → "exists"
     });
     try {
@@ -450,7 +510,8 @@ describe("resolver v1→v2 promotion (Claude only)", () => {
       assert.strictEqual(spawns(), 0, "no fresh spawn");
       assert.strictEqual(meta.cacheSource, "v2", "promotion yields to the concurrent fresh v2");
       const surviving = pc.readPidCacheV2(NS, sid, CWD);
-      assert.strictEqual(surviving.agentCommandLine, "claude --FRESH-CONCURRENT", "the fresh v2 must NOT be overwritten by the stale v1");
+      assert.strictEqual(surviving.headless, false, "the fresh v2 must NOT be overwritten by the stale v1");
+      assert.strictEqual(surviving.detectedEditor, "cursor");
     } finally { cleanup(); }
   });
 
@@ -586,9 +647,14 @@ describe("resolver v1→v2 promotion — identity binds the exact bytes read (Hi
     // and the delete-guard then deleted it while promoting the OLD content
     // ({returned:OLD, survivingV1:null}). Now the subset AND identity come from
     // ONE observation, so the NEW v1 survives and the OLD is promoted.
+    // #681 note: the raw command line no longer rides on the metadata, so OLD vs
+    // NEW is discriminated by what each one DERIVES to. OLD is `claude --print`
+    // (headless), NEW is plain `claude` (interactive) — so meta.headless === true
+    // proves the promotion derived from the bytes it actually read, which is a
+    // strictly sharper assertion than comparing the line back out.
     const { resolve, cleanup, spawns } = mkResolver();
     const sid = freshSid();
-    pc.writePidCache(sid, CWD, liveSubset({ agentCommandLine: "claude --OLD" }));
+    pc.writePidCache(sid, CWD, liveSubset({ agentCommandLine: "claude --print --OLD" }));
     const realIfAbsent = pc.writePidCacheV2IfAbsent;
     t.mock.method(pc, "writePidCacheV2IfAbsent", (...a) => {
       // fires AFTER the single-observation read, BEFORE the delete-guard.
@@ -598,7 +664,7 @@ describe("resolver v1→v2 promotion — identity binds the exact bytes read (Hi
     try {
       const meta = resolve(ctx(sid, "prompt"));
       assert.strictEqual(spawns(), 0);
-      assert.match(meta.agentCommandLine, /OLD/, "promoted the content it actually read");
+      assert.strictEqual(meta.headless, true, "promoted the content it actually read (OLD was --print)");
       const surviving = pc.readPidCache(sid, CWD);
       assert.ok(surviving, "the concurrently-written NEW v1 must SURVIVE");
       assert.match(surviving.agentCommandLine, /NEW/, "and it is the NEW content, not deleted");
@@ -611,9 +677,11 @@ describe("resolver end — v1 delete is identity-verified, not blind (Medium, §
     // Codex's repro: end read the OLD v1, a concurrent writer wrote a NEW v1,
     // and the blind drop deleted it ({returned:OLD-END, survivingV1:null}). Now
     // the valid v1 is deleted only via its own read-identity.
+    // As above: OLD-END is `--print` (headless), NEW-END is not, so the derived
+    // boolean identifies which bytes the final body came from.
     const { resolve, cleanup, spawns } = mkResolver();
     const sid = freshSid();
-    pc.writePidCache(sid, CWD, liveSubset({ agentCommandLine: "claude --OLD-END" }));
+    pc.writePidCache(sid, CWD, liveSubset({ agentCommandLine: "claude --print --OLD-END" }));
     const realDropV2 = pc.dropPidCacheV2;
     t.mock.method(pc, "dropPidCacheV2", (...a) => {
       // end reads the v1 entry, then drops v2, then delete-guards v1 — replace in
@@ -624,7 +692,8 @@ describe("resolver end — v1 delete is identity-verified, not blind (Medium, §
     try {
       const meta = resolve(ctx(sid, "end"));
       assert.strictEqual(spawns(), 0);
-      assert.match(meta.agentCommandLine, /OLD-END/, "end used the v1 it read for the final body");
+      assert.strictEqual(meta.headless, true, "end used the v1 it read for the final body (OLD-END was --print)");
+      assert.strictEqual(meta.agentCommandLine, "", "#681: not even the last event of a session ships the raw line");
       const surviving = pc.readPidCache(sid, CWD);
       assert.ok(surviving, "the concurrently-written NEW v1 must SURVIVE end's identity-verified delete");
       assert.match(surviving.agentCommandLine, /NEW-END/);

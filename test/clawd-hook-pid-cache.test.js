@@ -130,7 +130,10 @@ describe("buildStateBody adapter → shared resolver context (#634)", () => {
   });
 
   it("applies a hit's stable subset (source_pid/agent_pid/headless/editor), omitting pid_chain", () => {
-    const hit = { stablePid: 4242, terminalPid: null, snapshotOk: true, agentPid: 4242, agentCommandLine: "node claude-code --print", detectedEditor: "code", pidChain: [], foregroundWtHwnd: null, tmuxSocket: null, tmuxClient: null, cacheSource: "v2" };
+    // #681: a hit carries the DERIVED boolean and an empty agentCommandLine —
+    // v2 does not store the raw line, so this is exactly what the resolver hands
+    // the adapter on a cache hit.
+    const hit = { stablePid: 4242, terminalPid: null, snapshotOk: true, agentPid: 4242, agentCommandLine: "", headless: true, detectedEditor: "code", pidChain: [], foregroundWtHwnd: null, tmuxSocket: null, tmuxClient: null, cacheSource: "v2" };
     const body = buildStateBody("PostToolUse", { session_id: "s", cwd: CWD }, capture(hit));
     assert.strictEqual(body.source_pid, 4242);
     assert.strictEqual(body.agent_pid, 4242);
@@ -138,6 +141,15 @@ describe("buildStateBody adapter → shared resolver context (#634)", () => {
     assert.strictEqual(body.headless, true);
     assert.strictEqual(body.editor, "code");
     assert.ok(!("pid_chain" in body), "a hit omits pid_chain (server MERGE keeps the SessionStart one)");
+  });
+
+  it("a raw agentCommandLine on the resolver result can no longer conjure headless by itself", () => {
+    // Pins the contract direction after #681: the adapter reads `headless` and
+    // does NOT re-derive. If it still parsed the line, a cache hit (whose line is
+    // always "") would report every headless session as interactive.
+    const hit = { stablePid: 1, terminalPid: null, snapshotOk: true, agentPid: 1, agentCommandLine: "node claude-code --print", headless: false, detectedEditor: null, pidChain: [], foregroundWtHwnd: null, tmuxSocket: null, tmuxClient: null, cacheSource: "v2" };
+    const body = buildStateBody("PostToolUse", { session_id: "s", cwd: CWD }, capture(hit));
+    assert.ok(!("headless" in body), "the resolver's boolean is authoritative, not the line");
   });
 
   it("empty metadata (prompt/end miss) applies NO pid fields — never a degraded process.ppid", () => {
@@ -180,8 +192,11 @@ const HEADLESS_PROCS = [
   { pid: PPID, name: "node.exe", ppid: 600, cmd: "node C:/x/claude-code/cli.js --print" },
   { pid: 600, name: "windowsterminal.exe", ppid: 0 },
 ];
+// #681: the v2 subset is sanitized — a derived boolean, never the command line
+// that HEADLESS_PROCS above carries. `headless: true` mirrors what the real
+// resolver would derive from that `--print` snapshot.
 function liveSubset(extra = {}) {
-  return { stablePid: process.pid, agentPid: process.pid, agentCommandLine: "node claude-code --print", detectedEditor: "code", ...extra };
+  return { stablePid: process.pid, agentPid: process.pid, headless: true, detectedEditor: "code", ...extra };
 }
 
 // Loads clawd-hook wired to the REAL shared resolver: patches child_process for a
@@ -199,13 +214,20 @@ function loadRealResolver({ platform }) {
   const hadRemote = process.env.CLAWD_REMOTE;
   delete process.env.CLAWD_REMOTE;
 
-  const state = { snapshot: snapshotJson(HEADLESS_PROCS), spawns: 0 };
+  // psComm / psCommand default to the original "bash" for every `ps` query, so
+  // the pre-existing non-Windows cases are byte-for-byte unchanged. A test that
+  // needs the POSIX walk to actually FIND an agent (and therefore to derive
+  // headless from a real command line) overrides them — without that seam the
+  // non-Windows suite can only ever see "bash", which is exactly why it never
+  // noticed headless breaking there.
+  const state = { snapshot: snapshotJson(HEADLESS_PROCS), spawns: 0, psComm: "bash", psCommand: "bash" };
   const execFileSyncMock = (cmd, args) => {
     state.spawns++;
     if (cmd === "powershell.exe") return state.snapshot;
     const key = `${cmd} ${(args || []).join(" ")}`;
     if (key.includes("ppid=")) return "1\n";
-    return "bash\n";
+    if (key.includes("command=")) return `${state.psCommand}\n`;
+    return `${state.psComm}\n`;
   };
 
   const realCp = require("child_process");
@@ -220,8 +242,22 @@ function loadRealResolver({ platform }) {
   const CLAUDE_OPTS = {
     agentNames: { win: new Set(["claude.exe"]), mac: new Set(["claude"]) },
     agentCmdlineCheck: (cmd) => cmd.includes("claude-code") || cmd.includes("@anthropic-ai"),
+    // #681: mirror production — clawd-hook.js hands the resolver the same
+    // predicate. Reuse the module's own export rather than restating the regex,
+    // so this harness cannot drift from what actually ships.
+    headlessCheck: ch.isClaudeHeadlessCommandLine,
   };
-  const makeResolve = () => sp.createPidResolver({ ...CLAUDE_OPTS, platformConfig: sp.getPlatformConfig() });
+  // #681: inject a passing runtime gate whose owner is this (alive) test
+  // process. Without it the Windows resolver short-circuits to the offline
+  // shape, and every "cache hit = zero spawn" assertion below would pass
+  // vacuously — zero spawn because the gate refused, not because the cache
+  // worked. Never reads the developer's real ~/.clawd/runtime.json.
+  const makeResolve = () => sp.createPidResolver({
+    ...CLAUDE_OPTS,
+    platformConfig: sp.getPlatformConfig(),
+    readRuntimeIdentity: () => ({ ok: true, reason: null, port: 23333, ownerPid: process.pid }),
+    env: {},
+  });
 
   const restore = () => {
     Object.defineProperty(process, "platform", origPlatform);
@@ -268,7 +304,7 @@ describe("clawd-hook end-to-end with the real resolver — Windows", () => {
     assert.strictEqual(spawns, 0, "prompt hit never spawns");
     assert.strictEqual(body.source_pid, process.pid);
     assert.strictEqual(body.agent_pid, process.pid);
-    assert.strictEqual(body.headless, true, "headless derives from the cached agentCommandLine");
+    assert.strictEqual(body.headless, true, "headless comes from the cached BOOLEAN (#681), not a cached command line");
     assert.ok(!("wt_hwnd" in body), "prompt body never carries a hook-side wt_hwnd (server samples it)");
   });
 
@@ -338,11 +374,47 @@ describe("clawd-hook end-to-end with the real resolver — Windows", () => {
     assert.ok(pidCache.readPidCacheV2(NS, sid, CWD), "event miss repopulated the cache");
   });
 
-  it("agentCommandLine / headless are preserved on the fresh path", () => {
+  it("headless is derived correctly on the fresh path, through the REAL resolver", () => {
+    // HEADLESS_PROCS anchors a `--print` command line in the mocked snapshot.
+    // The whole in-memory derivation chain runs here: walk → agentCommandLine →
+    // headlessCheck → boolean → body. Nothing between them persists the line.
     const sid = freshSid();
     const { body } = run("PreToolUse", { session_id: sid, cwd: CWD });
-    assert.strictEqual(body.headless, true, "the --print cmdline sets headless");
+    assert.strictEqual(body.headless, true, "the --print cmdline still sets headless (#681 §4.4.10)");
     assert.strictEqual(body.agent_pid, PPID);
+  });
+
+  it("the v2 the fresh path just wrote holds the boolean and NOT the command line", () => {
+    const sid = freshSid();
+    run("PreToolUse", { session_id: sid, cwd: CWD });
+    const raw = fs.readFileSync(pidCache.cacheFilePathV2(NS, sid, CWD), "utf8");
+    assert.ok(!raw.includes("--print"), "the raw command line must never reach disk (#681)");
+    assert.ok(!raw.includes("agentCommandLine"), "not even the key");
+    assert.strictEqual(JSON.parse(raw).headless, true, "only the derived boolean");
+  });
+
+  it("the HTTP body ships the boolean and no command line — fresh path", () => {
+    // The third leg of the #681 privacy boundary (file / body / logs). The body
+    // is what actually leaves the hook process, so assert on the serialized
+    // bytes rather than on named fields — a future field called anything at all
+    // would still be caught. HEADLESS_PROCS puts `--print` in the snapshot, so
+    // the line genuinely exists in memory during this call.
+    const sid = freshSid();
+    const { body, spawns } = run("PreToolUse", { session_id: sid, cwd: CWD });
+    assert.strictEqual(spawns, 1, "precondition: a real walk, with a real command line in hand");
+    assert.strictEqual(body.headless, true);
+    assert.ok(!JSON.stringify(body).includes("--print"),
+      "the body must carry the derived boolean, never the line it came from");
+    assert.ok(!JSON.stringify(body).includes("claude-code/cli.js"), "nor any other fragment of it");
+  });
+
+  it("the HTTP body ships the boolean and no command line — cache-hit path", () => {
+    const sid = freshSid();
+    pidCache.writePidCacheV2(NS, sid, CWD, liveSubset());
+    const { body, spawns } = run("PostToolUse", { session_id: sid, cwd: CWD });
+    assert.strictEqual(spawns, 0, "precondition: this is a cache hit");
+    assert.strictEqual(body.headless, true, "headless survives the cache round-trip");
+    assert.ok(!JSON.stringify(body).includes("--print"));
   });
 
   it("tmux_socket is recomputed from the environment on a cache hit", () => {
@@ -396,5 +468,62 @@ describe("clawd-hook end-to-end with the real resolver — non-Windows", () => {
     const resolve = env.makeResolve();
     env.buildStateBody("PreToolUse", { session_id: sid, cwd: CWD }, resolve);
     assert.strictEqual(pidCache.readPidCacheV2(NS, sid, CWD), null, "non-Windows must not disk-cache");
+  });
+
+  // REGRESSION. #681 moved the headless derivation out of the adapter and into
+  // the resolver, but resolveWithContext's non-Windows early-return went through
+  // freshResolve() (the raw walk, no `headless`) instead of freshMetadata() (the
+  // derivation). The adapter had just stopped re-parsing agentCommandLine, so
+  // every `claude -p` on macOS/Linux reported as interactive — and the Session
+  // HUD lists exactly the non-headless live sessions, so a one-shot headless run
+  // would have shown up there as a live session.
+  //
+  // This suite could not have caught it before: its ps mock answered "bash" to
+  // every query, so no command line ever reached the derivation.
+  describe("headless derivation on POSIX (#681 regression)", () => {
+    // A `claude -p` run under node, the way it actually looks on macOS/Linux.
+    const asHeadlessClaude = () => {
+      env.state.psComm = "/usr/bin/node";
+      env.state.psCommand = "node /opt/claude-code/cli.js --print";
+    };
+    const asInteractiveClaude = () => {
+      env.state.psComm = "/usr/bin/node";
+      env.state.psCommand = "node /opt/claude-code/cli.js";
+    };
+    const restoreDefaults = () => { env.state.psComm = "bash"; env.state.psCommand = "bash"; };
+    after(restoreDefaults);
+
+    it("a --print session reports headless", () => {
+      asHeadlessClaude();
+      const body = env.buildStateBody("PreToolUse", { session_id: freshSid(), cwd: CWD }, env.makeResolve());
+      assert.ok(body.agent_pid, "precondition: the POSIX walk found the agent");
+      assert.strictEqual(body.headless, true,
+        "macOS/Linux must derive headless too — the resolver owns it now, on every platform");
+    });
+
+    it("an interactive session does not", () => {
+      asInteractiveClaude();
+      const body = env.buildStateBody("PreToolUse", { session_id: freshSid(), cwd: CWD }, env.makeResolve());
+      assert.ok(body.agent_pid);
+      assert.ok(!("headless" in body));
+    });
+
+    it("every lifecycle derives it, not just the ordinary event path", () => {
+      // The bug lived in resolveWithContext's shared non-Windows early-return,
+      // so it hit start / prompt / event / end alike.
+      asHeadlessClaude();
+      for (const event of ["SessionStart", "UserPromptSubmit", "PreToolUse", "SessionEnd"]) {
+        const body = env.buildStateBody(event, { session_id: freshSid(), cwd: CWD }, env.makeResolve());
+        assert.strictEqual(body.headless, true, `${event} must derive headless on POSIX`);
+      }
+    });
+
+    it("the POSIX body still carries no raw command line", () => {
+      // The privacy boundary is platform-independent, even though the cache that
+      // motivated it is Windows-only.
+      asHeadlessClaude();
+      const body = env.buildStateBody("PreToolUse", { session_id: freshSid(), cwd: CWD }, env.makeResolve());
+      assert.ok(!JSON.stringify(body).includes("--print"));
+    });
   });
 });

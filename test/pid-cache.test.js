@@ -402,10 +402,13 @@ afterEach(() => {
   for (const sid of usedV2.splice(0)) pc.dropPidCacheV2(NS, sid, CWD);
 });
 
+// #681: v2 is the SANITIZED shape — a derived `headless` boolean where v1 kept
+// the agent's raw command line. See test/pid-cache-sanitized.test.js for the
+// privacy assertions; this file covers mechanics.
 const SUBSET_V2 = {
   stablePid: 4321,
   agentPid: 8765,
-  agentCommandLine: "claude --print",
+  headless: true,
   detectedEditor: "code",
 };
 
@@ -454,13 +457,14 @@ describe("pid-cache v2 — read/write/shape", () => {
     assert.strictEqual(got.cwd, CWD);
     assert.strictEqual(got.stablePid, 4321);
     assert.strictEqual(got.agentPid, 8765);
-    assert.strictEqual(got.agentCommandLine, "claude --print");
+    assert.strictEqual(got.headless, true);
     assert.strictEqual(got.detectedEditor, "code");
     assert.strictEqual(typeof got.ts, "number");
     // Only the stable subset is cached — the volatile fields never touch disk.
     assert.ok(!("pidChain" in got), "pidChain must never be cached");
     assert.ok(!("foregroundWtHwnd" in got), "foregroundWtHwnd must never be cached");
     assert.ok(!("tmuxClient" in got), "tmuxClient must never be cached");
+    assert.ok(!("agentCommandLine" in got), "#681: the raw command line is not part of v2");
   });
 
   it("different namespaces never read each other's cache (even at the same sid+cwd)", () => {
@@ -492,7 +496,7 @@ describe("pid-cache v2 — read/write/shape", () => {
   it("v2 read consults NO clock (ancient mtime + ts is still a hit)", () => {
     const sid = freshSidV2();
     const file = pc.cacheFilePathV2(NS, sid, CWD);
-    fs.writeFileSync(file, JSON.stringify({ version: 2, namespace: NS, cwd: CWD, stablePid: 1, agentPid: 2, ts: Date.now() - 365 * 24 * 60 * 60 * 1000 }));
+    fs.writeFileSync(file, JSON.stringify({ version: 2, namespace: NS, cwd: CWD, stablePid: 1, agentPid: 2, headless: false, ts: Date.now() - 365 * 24 * 60 * 60 * 1000 }));
     const ancient = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000);
     fs.utimesSync(file, ancient, ancient);
     assert.ok(pc.readPidCacheV2(NS, sid, CWD), "age must never expire a v2 read under the lease model");
@@ -525,12 +529,13 @@ describe("pid-cache v2 — writePidCacheV2IfAbsent (no-clobber promotion, §5.5/
     const sid = freshSidV2();
     pc.writePidCacheV2(NS, sid, CWD, SUBSET_V2); // pre-existing (the 'fresh' one)
     const result = pc.writePidCacheV2IfAbsent(NS, sid, CWD, {
-      stablePid: 111, agentPid: 222, agentCommandLine: "STALE", detectedEditor: "vim",
+      stablePid: 111, agentPid: 222, headless: false, detectedEditor: "vim",
     });
     assert.strictEqual(result, "exists", "must report the file already exists");
     const got = pc.readPidCacheV2(NS, sid, CWD);
-    assert.strictEqual(got.agentCommandLine, "claude --print", "the pre-existing file must NOT be overwritten");
-    assert.strictEqual(got.agentPid, 8765);
+    assert.strictEqual(got.agentPid, 8765, "the pre-existing file must NOT be overwritten");
+    assert.strictEqual(got.detectedEditor, "code");
+    assert.strictEqual(got.headless, true);
   });
 
   it("returns false (no throw) when caching is disabled", () => {

@@ -353,16 +353,28 @@ function isTaskToolStart(event, payload) {
     && payload.tool_name === "Task";
 }
 
-// #442-compat + #627: agent pid fields. Shared by the fresh-resolve and
-// cache-hit paths so the `headless` derivation and the `claude_pid` backward-
-// compat alias can never drift between them.
-function applyAgentPidFields(body, agentPid, agentCommandLine) {
+// Claude headless detection: `claude -p` / `claude --print` is a one-shot,
+// non-interactive run, which the HUD must not show as a live session.
+//
+// #681: this predicate is now handed to the resolver (createPidResolver's
+// headlessCheck) instead of being applied to a command line here. The reason is
+// storage, not tidiness — the pid cache used to persist the whole command line
+// so a later cache hit could re-run this regex, which meant every Claude
+// session's full argv sat in a %TEMP% file for the life of the session to
+// answer one yes/no question. The resolver derives the boolean in memory and
+// caches only that, so this function is the single source of truth for both a
+// fresh walk and a cache hit.
+function isClaudeHeadlessCommandLine(cmdline) {
+  return /\s(-p|--print)(\s|$)/.test(cmdline || "");
+}
+
+// #442-compat + #627: agent pid fields. `headless` comes from the resolver for
+// both the fresh and cache-hit paths, so they cannot drift.
+function applyAgentPidFields(body, agentPid, headless) {
   if (!agentPid) return;
   body.agent_pid = agentPid;
   body.claude_pid = agentPid; // backward compat with older Clawd versions
-  if (agentCommandLine && /\s(-p|--print)(\s|$)/.test(agentCommandLine)) {
-    body.headless = true;
-  }
+  if (headless === true) body.headless = true;
 }
 
 // Applies the shared resolver's process metadata to the body. Works for all
@@ -376,10 +388,10 @@ function applyAgentPidFields(body, agentPid, agentCommandLine) {
 //     agent_pid, pid_chain, etc. are all left off (never a degraded
 //     process.ppid). source_pid is guarded so an empty result ships no null pid.
 function applyResolvedFields(body, resolved, event) {
-  const { stablePid, agentPid, agentCommandLine, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient } = resolved;
+  const { stablePid, agentPid, headless, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient } = resolved;
   if (stablePid) body.source_pid = stablePid;
   if (detectedEditor) body.editor = detectedEditor;
-  applyAgentPidFields(body, agentPid, agentCommandLine);
+  applyAgentPidFields(body, agentPid, headless);
   if (pidChain && pidChain.length) body.pid_chain = pidChain;
   if (tmuxSocket) body.tmux_socket = tmuxSocket;
   if (tmuxClient) body.tmux_client = tmuxClient;
@@ -551,6 +563,10 @@ function main() {
   const resolve = createPidResolver({
     agentNames: { win: new Set(["claude.exe"]), mac: new Set(["claude"]) },
     agentCmdlineCheck: (cmd) => cmd.includes("claude-code") || cmd.includes("@anthropic-ai"),
+    // #681: Claude is the only adapter that derives anything from the agent's
+    // command line, so it is the only one that passes this. The resolver applies
+    // it in memory and caches the boolean instead of the line.
+    headlessCheck: isClaudeHeadlessCommandLine,
     platformConfig: config,
   });
 
@@ -589,6 +605,7 @@ if (require.main === module) main();
 
 module.exports = {
   buildStateBody,
+  isClaudeHeadlessCommandLine,
   attachStdinDiag,
   STDIN_READ_TIMEOUT_MS,
   extractSessionTitleFromTranscript,

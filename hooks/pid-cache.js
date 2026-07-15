@@ -57,11 +57,23 @@
 // The lease read semantics (no clock, double-PID liveness by the caller) are
 // identical for both.
 //
+// #681: v2 is also the SANITIZED shape. v1 persisted the agent's raw command
+// line; v2 stores only the one boolean (`headless`) anything ever derived from
+// it. Nothing writes v1 any more — writePidCache has no callers left, kept only
+// so the migration tests can author legacy fixtures — so once a session's v1 is
+// promoted or dropped, no raw command line survives on disk anywhere. The
+// resolver promotes v1→v2 by deriving the boolean in memory and then deleting
+// the v1, INCLUDING when the v2 write fails: the sanitized data is already in
+// hand for the current event, and keeping the raw line around to save a possible
+// future re-resolve is not a trade this project wants to make (plan §4.4.5/6).
+//
 // Design constraints (see docs/plans/plan-issue-627-residual-userprompt-flash.md §4.4/§5,
 // and docs/plans/plan-issue-627-hook-snapshot-flash-cache.md for the original shape):
-//   - Cache ONLY the stable subset: stablePid, agentPid, agentCommandLine,
-//     detectedEditor. NOT pidChain (its head is the per-event ephemeral hook
-//     PowerShell; server MERGEs a missing pid_chain, keeping the SessionStart one).
+//   - Cache ONLY the stable subset: stablePid, agentPid, detectedEditor, and
+//     (v2 only) the derived `headless` boolean. v1 also cached agentCommandLine;
+//     v2 does not, and nothing writes v1 any more (#681, see above). NOT pidChain
+//     (its head is the per-event ephemeral hook PowerShell; server MERGEs a
+//     missing pid_chain, keeping the SessionStart one).
 //   - v1 keys by session_id + cwd; v2 keys by namespace + session_id + cacheCwd.
 //     Both are disabled when an identity ingredient is missing (a shared cache
 //     would cross sessions); the CALLER declares cacheability (an agent's
@@ -184,10 +196,18 @@ function readPidCacheEntry(sessionId, cwd) {
   }
 }
 
-// Persist the stable subset. Callers MUST only pass a subset from a non-degraded
-// resolve() (snapshotOk && agentPid) — a failed snapshot decays stablePid to
-// process.ppid, and caching that would poison the whole session. Stamps ts =
-// write time — kept for debug/forensics only; no read path consults it.
+// LEGACY v1 writer. No production caller remains (#681): the resolver writes v2
+// only, and v1 exists solely to be read once and promoted. This is kept so the
+// migration tests can author pre-#681 fixtures — if production code starts
+// calling it again, v1 files (and the raw command lines in them) come back.
+// test/pid-cache-sanitized.test.js asserts it stays caller-free.
+//
+// Historic contract, still true of the shape: callers MUST only pass a subset
+// from a non-degraded resolve(). The resolver now enforces that at the source —
+// a Windows walk that reads nothing returns an unavailable shape rather than
+// decaying stablePid to process.ppid — so a degraded subset can no longer reach
+// a writer in the first place. Stamps ts = write time, debug/forensics only; no
+// read path consults it.
 function writePidCache(sessionId, cwd, subset) {
   const file = cacheFilePath(sessionId, cwd);
   if (!file) return false;
@@ -253,6 +273,18 @@ function cacheFilePathV2(namespace, sessionId, cacheCwd) {
 // body cwd). pidChain / foregroundWtHwnd / tmuxClient are deliberately NOT
 // cached (a cache hit must never fake them); tmuxSocket is recomputed from env
 // by the resolver, zero spawn.
+//
+// #681 privacy boundary: `agentCommandLine` is GONE from this shape. v1 cached
+// the agent's raw command line, but the only thing anything ever did with it was
+// derive one boolean — `headless` (Claude's -p/--print). Persisting the raw line
+// to a world-readable %TEMP% file for the life of a session, to answer a yes/no
+// question, is data we have no reason to keep. The resolver derives the boolean
+// in memory from the live walk and stores only that (plan §4.4).
+//
+// Adding a field back here is a privacy decision, not a refactor: everything in
+// this object lands on disk, outlives the hook process, and survives until the
+// session ends or the 24h sweep. test/pid-cache-sanitized.test.js pins the exact
+// key set for that reason.
 function v2Payload(namespace, cacheCwd, subset) {
   return {
     version: CACHE_VERSION_V2,
@@ -260,16 +292,23 @@ function v2Payload(namespace, cacheCwd, subset) {
     cwd: cacheCwd,
     stablePid: subset.stablePid,
     agentPid: subset.agentPid,
-    agentCommandLine: subset.agentCommandLine,
+    headless: subset.headless === true,
     detectedEditor: subset.detectedEditor,
     ts: Date.now(),
   };
 }
 
 // Returns the cached v2 subset, or null on: caching disabled, no file,
-// unreadable/unparseable, version/namespace/cwd mismatch, or a non-positive
-// stablePid/agentPid. NO clock participates (lease model, §4.4). The caller
-// re-validates liveness of BOTH cached PIDs before treating this as a hit.
+// unreadable/unparseable, version/namespace/cwd mismatch, a non-positive
+// stablePid/agentPid, or a missing headless boolean. NO clock participates
+// (lease model, §4.4). The caller re-validates liveness of BOTH cached PIDs
+// before treating this as a hit.
+//
+// The return is an explicit PROJECTION, not the parsed object: a file that
+// somehow carries agentCommandLine (a hand-edited file, or one written by a
+// pre-#681 build of this branch) can never leak it back into a body, a log, or
+// a promotion. The `headless` boolean guard rejects that pre-#681 shape outright
+// — it costs one fresh re-resolve and the file is rewritten sanitized.
 function readPidCacheV2(namespace, sessionId, cacheCwd) {
   const file = cacheFilePathV2(namespace, sessionId, cacheCwd);
   if (!file) return null;
@@ -282,7 +321,17 @@ function readPidCacheV2(namespace, sessionId, cacheCwd) {
     if (obj.cwd !== cacheCwd) return null;
     if (!isPositivePid(obj.stablePid)) return null;
     if (!isPositivePid(obj.agentPid)) return null;
-    return obj;
+    if (typeof obj.headless !== "boolean") return null; // sanitized shape, or nothing
+    return {
+      version: obj.version,
+      namespace: obj.namespace,
+      cwd: obj.cwd,
+      stablePid: obj.stablePid,
+      agentPid: obj.agentPid,
+      headless: obj.headless,
+      detectedEditor: typeof obj.detectedEditor === "string" ? obj.detectedEditor : null,
+      ts: obj.ts,
+    };
   } catch {
     return null;
   }
@@ -415,13 +464,17 @@ function sweepStalePidCaches(options = {}) {
         let shapeOk = !!obj && typeof obj === "object"
           && isPositivePid(obj.stablePid) && isPositivePid(obj.agentPid);
         // A v2-prefixed file must carry the full v2 shape (version + namespace +
-        // cwd + ts); any missing/malformed field is corrupt → dead. (A normal
-        // atomic write never produces this; a hand-edited/partial file can.)
+        // cwd + ts + the sanitized headless boolean); any missing/malformed
+        // field is corrupt → dead. (A normal atomic write never produces this; a
+        // hand-edited/partial file can.) headless is included so a file in the
+        // pre-#681 v2 shape — the one that still carried agentCommandLine — is
+        // treated as garbage and collected rather than left sitting in %TEMP%.
         if (shapeOk && kind === "v2") {
           shapeOk = obj.version === CACHE_VERSION_V2
             && typeof obj.namespace === "string" && obj.namespace.length > 0
             && typeof obj.cwd === "string" && obj.cwd.length > 0
-            && typeof obj.ts === "number";
+            && typeof obj.ts === "number"
+            && typeof obj.headless === "boolean";
         }
         dead = !shapeOk || !checkAlive(obj.stablePid) || !checkAlive(obj.agentPid);
       } catch {

@@ -9,9 +9,11 @@ const {
   buildPermissionUrl,
   clearRuntimeConfig,
   getPortCandidates,
+  readRuntimeIdentity,
   readRuntimePort,
   writeRuntimeConfig,
 } = require("../hooks/server-config");
+const { processAlive } = require("../hooks/shared-process");
 const {
   getClaudeHookScriptPath,
   getClaudeAutoStartScriptPath,
@@ -65,6 +67,11 @@ const clearRuntimeConfigFn = ctx.clearRuntimeConfig || clearRuntimeConfig;
 const getPortCandidatesFn = ctx.getPortCandidates || getPortCandidates;
 const readRuntimePortFn = ctx.readRuntimePort || readRuntimePort;
 const writeRuntimeConfigFn = ctx.writeRuntimeConfig || writeRuntimeConfig;
+// #681. Injectable so tests never read the developer's real ~/.clawd/runtime.json
+// (whose contents depend on whether Clawd happens to be running right now).
+const readRuntimeIdentityFn = ctx.readRuntimeIdentity
+  || (() => readRuntimeIdentity({ runtimeConfigPath: ctx.runtimeConfigPath }));
+const isProcessAliveFn = ctx.isProcessAlive || processAlive;
 const CLAUDE_HOOK_GUARD_NOTICE_TTL_MS = 30 * 60 * 1000;
 
 let httpServer = null;
@@ -131,6 +138,13 @@ function getRuntimeStatus() {
     : null;
   const port = activeServerPort || addressPort || null;
   const runtimePort = readRuntimePortFn();
+  // #681: the runtime file is now the hook resolver's offline gate, so its
+  // identity — not just its port — decides whether hooks can report process
+  // metadata at all. A stale ownerPid (a crashed instance's leftover file) reads
+  // as "Clawd offline" to every hook even while this server is happily
+  // listening, which is exactly the state Doctor must surface.
+  const identity = readRuntimeIdentityFn();
+  const runtimeOwnerPid = identity && identity.ok ? identity.ownerPid : null;
   return {
     listening: !!port && (!httpServer || httpServer.listening !== false),
     port,
@@ -138,6 +152,9 @@ function getRuntimeStatus() {
     runtimePort,
     runtimeFileExists: Number.isInteger(runtimePort),
     runtimeMatches: Number.isInteger(port) && runtimePort === port,
+    runtimeOwnerPid,
+    runtimeOwnerAlive: runtimeOwnerPid ? isProcessAliveFn(runtimeOwnerPid) : false,
+    runtimeIdentityValid: !!(identity && identity.ok),
   };
 }
 
@@ -577,7 +594,29 @@ function startHttpServer() {
 
     httpServer.on("listening", () => {
       activeServerPort = listenPorts[listenIndex];
-      writeRuntimeConfigFn(activeServerPort);
+      // #681: writeRuntimeConfig owes a boolean contract, but settle() is below
+      // this line — so a throw here (its mkdirSync used to sit outside its own
+      // try; a ctx-injected implementation can throw for any reason) would
+      // strand startHttpServer's promise forever, and every caller that awaits
+      // the bound port hangs with it. Report, never propagate.
+      let runtimeWritten = false;
+      try {
+        runtimeWritten = writeRuntimeConfigFn(activeServerPort) === true;
+      } catch (err) {
+        runtimeWritten = false;
+        console.warn("Failed to write the Clawd runtime file:", (err && err.message) || err);
+      }
+      if (!runtimeWritten) {
+        // Hooks fall back to probing the port range, so state/permission POSTs
+        // still land. What is lost is the resolver's offline gate input: with no
+        // readable runtime identity the hook fail-closes and OMITS process
+        // metadata (no terminal focus for new sessions) rather than snapshot the
+        // machine to guess it. Surfaced in Doctor → Local server.
+        console.warn(
+          `Clawd runtime file was not written (${getRuntimeStatus().runtimePath}) — `
+          + "hook process metadata will be omitted until this is repaired (see Doctor → Local server)"
+        );
+      }
       console.log(`Clawd state server listening on 127.0.0.1:${activeServerPort}`);
       // Defer hook/plugin registration off the startup path. Each sync call
       // reads+parses+writes a config JSON (50-150ms cumulative on slow disks),

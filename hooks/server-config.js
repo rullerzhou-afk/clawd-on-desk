@@ -63,36 +63,106 @@ function applyWslSourceFields(body, options = {}) {
   return body;
 }
 
-function readRuntimeConfig() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
-    if (!raw || typeof raw !== "object") return null;
-    const port = normalizePort(raw.port);
-    return port ? { port } : null;
-  } catch {
-    return null;
-  }
+// ── runtime.json identity (#681) ─────────────────────────────────────────────
+// The file carries app + port + ownerPid. `app` has always been written but was
+// never validated on read; `ownerPid` is new in #681 and is the liveness anchor
+// that lets a hook decide "Clawd is gone" WITHOUT spawning anything.
+//
+// Two readers with deliberately different strictness:
+//   - readRuntimePort()     — the PORT reader every POST path already uses.
+//     Stays permissive about ownerPid so a runtime.json written by an older
+//     Clawd (no ownerPid) keeps routing state/permission POSTs. It DOES now
+//     require a matching `app`, which every Clawd that ever wrote this file
+//     stamped, so no released shape regresses.
+//   - readRuntimeIdentity() — the strict gate for hooks/shared-process.js.
+//     Requires app + port + ownerPid. Missing ownerPid is fail-closed: the hook
+//     omits process metadata rather than spawn a PowerShell to guess it.
+//
+// Liveness is NOT checked here on purpose. os/fs are this module's only
+// dependencies; processAlive lives in shared-process.js, and requiring it back
+// from here would create a cycle now that shared-process.js requires this
+// module. Callers that own a liveness probe (the resolver gate, src/server.js's
+// Doctor status) apply it to the returned ownerPid themselves.
+
+const RUNTIME_REASON_MISSING = "runtime-missing";
+const RUNTIME_REASON_APP_MISMATCH = "runtime-app-mismatch";
+const RUNTIME_REASON_PORT_INVALID = "runtime-port-invalid";
+const RUNTIME_REASON_OWNER_INVALID = "runtime-owner-invalid";
+
+function normalizeOwnerPid(value) {
+  return Number.isInteger(value) && value > 0 ? value : null;
 }
 
-function readRuntimePort() {
-  const config = readRuntimeConfig();
+// Parse + validate in one place so readRuntimePort and readRuntimeIdentity can
+// never disagree about what a well-formed file looks like. Returns a
+// discriminated result rather than throwing; `reason` is diagnostic only.
+function parseRuntimeConfig(options = {}) {
+  const readFileSync = options.readFileSync || fs.readFileSync;
+  const filePath = options.runtimeConfigPath || RUNTIME_CONFIG_PATH;
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync(filePath, "utf8"));
+  } catch {
+    return { ok: false, reason: RUNTIME_REASON_MISSING, port: null, ownerPid: null };
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ok: false, reason: RUNTIME_REASON_MISSING, port: null, ownerPid: null };
+  }
+  if (raw.app !== CLAWD_SERVER_ID) {
+    return { ok: false, reason: RUNTIME_REASON_APP_MISMATCH, port: null, ownerPid: null };
+  }
+  const port = normalizePort(raw.port);
+  if (!port) {
+    return { ok: false, reason: RUNTIME_REASON_PORT_INVALID, port: null, ownerPid: null };
+  }
+  return { ok: true, reason: null, port, ownerPid: normalizeOwnerPid(raw.ownerPid) };
+}
+
+function readRuntimeConfig(options = {}) {
+  const parsed = parseRuntimeConfig(options);
+  return parsed.ok ? { port: parsed.port } : null;
+}
+
+function readRuntimePort(options = {}) {
+  const config = readRuntimeConfig(options);
   return config ? config.port : null;
 }
 
-function writeRuntimeConfig(port) {
+// Strict identity for the zero-spawn resolver gate. ok=true means the file is a
+// well-formed Clawd runtime with a usable ownerPid — it does NOT mean Clawd is
+// alive (the caller checks that) and it is NOT an authentication or ownership
+// proof: any process running as this user can write this file, and a PID can be
+// reused. It is a liveness hint inside an existing trust boundary, nothing more.
+function readRuntimeIdentity(options = {}) {
+  const parsed = parseRuntimeConfig(options);
+  if (!parsed.ok) return { ok: false, reason: parsed.reason, port: null, ownerPid: null };
+  if (!parsed.ownerPid) {
+    return { ok: false, reason: RUNTIME_REASON_OWNER_INVALID, port: parsed.port, ownerPid: null };
+  }
+  return { ok: true, reason: null, port: parsed.port, ownerPid: parsed.ownerPid };
+}
+
+// Boolean contract: returns true on success, false on ANY failure, and never
+// throws. mkdirSync is INSIDE the try (#681) — it used to sit outside, so an
+// EACCES on ~/.clawd escaped as an exception into src/server.js's 'listening'
+// handler and stranded startHttpServer's promise before it could settle.
+function writeRuntimeConfig(port, options = {}) {
   const safePort = normalizePort(port);
   if (!safePort) return false;
 
-  const dir = path.dirname(RUNTIME_CONFIG_PATH);
+  const fsApi = options.fs || fs;
+  const filePath = options.runtimeConfigPath || RUNTIME_CONFIG_PATH;
+  const ownerPid = normalizeOwnerPid(options.ownerPid) || process.pid;
+  const dir = path.dirname(filePath);
   const tmpPath = path.join(dir, `.runtime.${process.pid}.${Date.now()}.tmp`);
-  const body = JSON.stringify({ app: CLAWD_SERVER_ID, port: safePort }, null, 2);
-  fs.mkdirSync(dir, { recursive: true });
+  const body = JSON.stringify({ app: CLAWD_SERVER_ID, port: safePort, ownerPid }, null, 2);
   try {
-    fs.writeFileSync(tmpPath, body, "utf8");
-    fs.renameSync(tmpPath, RUNTIME_CONFIG_PATH);
+    fsApi.mkdirSync(dir, { recursive: true });
+    fsApi.writeFileSync(tmpPath, body, "utf8");
+    fsApi.renameSync(tmpPath, filePath);
     return true;
   } catch {
-    try { fs.unlinkSync(tmpPath); } catch {}
+    try { fsApi.unlinkSync(tmpPath); } catch {}
     return false;
   }
 }
@@ -897,6 +967,7 @@ module.exports = {
   buildPermissionUrl,
   clearRuntimeConfig,
   isManagedPermissionUrl,
+  isRemoteHookMode,
   discoverClawdPort,
   getPortCandidates,
   getPermissionProbeTimeoutMs,
@@ -908,6 +979,8 @@ module.exports = {
   readHostPrefix,
   resolveWslDistro,
   applyWslSourceFields,
+  readRuntimeConfig,
+  readRuntimeIdentity,
   readRuntimePort,
   resolveNodeBin,
   resolveNodeBinAsync,
