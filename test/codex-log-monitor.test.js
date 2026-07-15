@@ -487,6 +487,50 @@ describe("CodexLogMonitor", () => {
     });
   });
 
+  it("does not replay attention from a metadata-only token_count write (#535)", () => {
+    // token_count is a metadata refresh, not a turn boundary — Codex Desktop
+    // rewrites it on focus, long after a session went idle. Carrying lastState
+    // verbatim re-announces the finished turn's one-shot `attention`, and the
+    // pet celebrates work the user already watched complete.
+    //
+    // The consumer's preserveState does not save us: it pins the stored state
+    // only, while state.js's one-shot branch plays whatever state it is handed
+    // (`attention` is in ONESHOT_STATE_NAMES). So a stored-idle session still
+    // animates unless the carry is filtered here.
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      '{"type":"event_msg","payload":{"type":"task_started"}}',
+      '{"type":"response_item","payload":{"type":"function_call","name":"shell_command","arguments":"{}"}}',
+      '{"type":"event_msg","payload":{"type":"task_complete"}}',
+    ].join("\n") + "\n");
+
+    const config = makeConfig(tmpDir);
+    const events = [];
+    monitor = new CodexLogMonitor(config, (sid, state, event) => {
+      events.push({ state, event });
+    });
+
+    monitor._pollFile(testFile, path.basename(testFile));
+    assert.strictEqual(events[events.length - 1].state, "attention",
+      "the real turn end must still celebrate once");
+
+    // Desktop refreshes token_count against the now-idle session.
+    fs.appendFileSync(testFile, JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: { last_token_usage: { total_tokens: 2000 }, model_context_window: 200000 },
+      },
+    }) + "\n");
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    const last = events[events.length - 1];
+    assert.strictEqual(last.event, "event_msg:token_count");
+    assert.strictEqual(last.state, "idle",
+      `token_count must not re-emit the one-shot attention, got: ${last.state}`);
+  });
+
   it("does not treat cumulative Codex total_token_usage as context-window usage", () => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [

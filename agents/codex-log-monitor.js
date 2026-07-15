@@ -38,7 +38,11 @@ const ACTIVE_SESSION_WINDOW_MS = 5 * 60 * 1000;
 // replay it silently (backfill) instead of emitting stale transitions. A
 // file written within the grace window is a live session and emits normally.
 const BACKFILL_GRACE_MS = 5 * 1000;
-const BACKFILL_SNAPSHOT_STATES = new Set(["thinking", "working"]);
+// States that are ongoing rather than one-shot. Safe to re-synthesize from a
+// backfill snapshot, and safe for a metadata-only token_count write to carry
+// forward. A one-shot (attention, sweeping, …) must never be carried by
+// either: re-emitting it replays a finished turn's celebration.
+const SUSTAINED_ACTIVE_STATES = new Set(["thinking", "working"]);
 
 function finiteNonnegativeNumber(value) {
   const n = Number(value);
@@ -438,7 +442,23 @@ class CodexLogMonitor {
       if (contextUsage) {
         tracked.contextUsage = contextUsage;
         if (!tracked.backfilling) {
-          this._emitStateChange(tracked, tracked.lastState || "idle", key);
+          // token_count is a metadata refresh, not a turn boundary: Codex
+          // Desktop rewrites it on focus long after a session went idle.
+          // Carrying lastState verbatim therefore re-announces whatever the
+          // session last did, and for a finished turn that is the one-shot
+          // `attention` — the pet celebrates a turn the user already saw
+          // complete, with no new work behind it (#535).
+          //
+          // preserveState does NOT cover this. It only pins the *stored*
+          // state (src/state.js: `preservedState = preserveState && existing
+          // ? existing.state : null`); the one-shot branch keys off the state
+          // passed in and plays it regardless, bypassing resolveDisplayState.
+          // So a stored-idle session still animates. The carry has to be
+          // filtered here.
+          const carry = SUSTAINED_ACTIVE_STATES.has(tracked.lastState)
+            ? tracked.lastState
+            : "idle";
+          this._emitStateChange(tracked, carry, key);
         }
       }
       return;
@@ -635,7 +655,7 @@ class CodexLogMonitor {
 
   _emitBackfillSnapshot(tracked) {
     const snapshotState = tracked.lastState;
-    if (!BACKFILL_SNAPSHOT_STATES.has(snapshotState)) {
+    if (!SUSTAINED_ACTIVE_STATES.has(snapshotState)) {
       if (tracked.contextUsage) {
         this._emitStateChange(tracked, "idle", "event_msg:token_count");
       }
