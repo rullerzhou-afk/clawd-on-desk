@@ -323,7 +323,34 @@ function cleanupIntegrations(options = {}) {
     };
 
     try {
-      if (!cleanOptions) {
+      // Claude hooks + statusline may already have been unregistered through
+      // the server-owned operation queue (see main.js's cleanupIntegrations
+      // wrapper for #657) before this function runs. When that precomputed
+      // result is provided, record it instead of unregistering Claude a
+      // second time here, outside the queue.
+      if (agentId === "claude-code" && Object.prototype.hasOwnProperty.call(options, "claudeCleanupResult")) {
+        const result = options.claudeCleanupResult;
+        if (result && result.status === "error") {
+          agent.status = "failed";
+          agent.error = result.message || "Claude hook queue cleanup failed";
+          failed++;
+        } else {
+          const removed = removedCountFromResult(result);
+          const changed = changedFromResult(result);
+          agent.removed = removed;
+          agent.changed = changed;
+          agent.backupPaths = backupPathsFromResult(result);
+          agent.result = result;
+          if (changed || removed > 0) {
+            agent.status = "applied";
+            agentsAffected++;
+          } else {
+            agent.status = "skipped";
+            skipped++;
+          }
+          entriesRemoved += removed;
+        }
+      } else if (!cleanOptions) {
         agent.status = "failed";
         agent.error = "Missing cleanup path overrides";
         failed++;

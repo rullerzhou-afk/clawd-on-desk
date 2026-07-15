@@ -9,6 +9,10 @@ const {
   MAX_CODEX_OFFICIAL_TURNS,
   resolveCodexOfficialHookState,
 } = require("../src/server-codex-official-turns");
+const { getClaudeHookScriptPath, getClaudeAutoStartScriptPath } = require("../hooks/install");
+
+const EXPECTED_HOOK_SCRIPT_PATH = getClaudeHookScriptPath();
+const EXPECTED_AUTO_START_SCRIPT_PATH = getClaudeAutoStartScriptPath();
 
 class FakeWatcher extends EventEmitter {
   constructor(callback) {
@@ -49,37 +53,64 @@ function makeFakeHttpFactory() {
   return { createHttpServer, servers };
 }
 
-function makeFakeTimers() {
-  const pending = [];
-  return {
-    setTimeout(fn) {
-      const token = { fn, cleared: false };
-      pending.push(token);
-      return token;
-    },
-    clearTimeout(token) {
-      if (token) token.cleared = true;
-    },
-    flush() {
-      while (pending.length) {
-        const token = pending.shift();
-        if (!token.cleared) token.fn();
+// Delay-aware fake clock — see test/claude-settings-watcher.test.js for the
+// rationale. The Claude settings supervisor's periodic health audit (#657)
+// self-reschedules on every tick, so a naive "flush everything until empty"
+// fake timer would loop forever; advance(ms) only fires what's actually due
+// within the window, in due-time order.
+function makeFakeClock(initialNow = 0) {
+  let now = initialNow;
+  let nextId = 1;
+  const pending = new Map();
+
+  function setTimeoutFn(fn, delay) {
+    const id = nextId++;
+    pending.set(id, { fn, dueAt: now + (Number.isFinite(delay) ? delay : 0) });
+    return id;
+  }
+  function clearTimeoutFn(id) {
+    pending.delete(id);
+  }
+  function flushMicrotasks() {
+    return new Promise((resolve) => setImmediate(resolve));
+  }
+  async function advance(ms) {
+    const target = now + (Number.isFinite(ms) ? ms : 0);
+    for (;;) {
+      let dueId = null;
+      let dueAt = null;
+      for (const [id, entry] of pending) {
+        if (entry.dueAt > target) continue;
+        if (dueAt === null || entry.dueAt < dueAt) {
+          dueAt = entry.dueAt;
+          dueId = id;
+        }
       }
-    },
-  };
+      if (dueId === null) break;
+      const entry = pending.get(dueId);
+      pending.delete(dueId);
+      now = entry.dueAt;
+      entry.fn();
+      await flushMicrotasks();
+      await flushMicrotasks();
+    }
+    now = target;
+  }
+  return { setTimeout: setTimeoutFn, clearTimeout: clearTimeoutFn, now: () => now, advance };
 }
 
 function makeServer(overrides = {}) {
   const httpFactory = makeFakeHttpFactory();
-  const timers = makeFakeTimers();
+  const timers = makeFakeClock();
   const syncCalls = [];
   let lastWatcher = null;
+  const existingPaths = new Set([EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH]);
   let settingsRaw = JSON.stringify({
     hooks: {
       Stop: [
         {
           matcher: "",
-          hooks: [{ type: "command", command: 'node "/tmp/clawd-hook.js" Stop' }],
+          hooks: [{ type: "command", command: `node "${EXPECTED_HOOK_SCRIPT_PATH}" Stop` }],
         },
       ],
       PermissionRequest: [
@@ -98,10 +129,12 @@ function makeServer(overrides = {}) {
     setImmediate: (fn) => fn(),
     setTimeout: timers.setTimeout,
     clearTimeout: timers.clearTimeout,
+    now: timers.now,
     getPortCandidates: () => [23333],
     readRuntimePort: () => null,
     writeRuntimeConfig: () => true,
     clearRuntimeConfig: () => true,
+    platform: "win32",
     fs: {
       watch(_dir, callback) {
         lastWatcher = new FakeWatcher(callback);
@@ -109,6 +142,9 @@ function makeServer(overrides = {}) {
       },
       readFileSync() {
         return settingsRaw;
+      },
+      existsSync(p) {
+        return existingPaths.has(p);
       },
     },
     syncClawdHooksImpl: () => syncCalls.push("claude"),
@@ -153,7 +189,7 @@ function healthyClaudeSettingsWithThirdPartyHook() {
       Stop: [{
         matcher: "",
         hooks: [
-          { type: "command", command: 'node "/tmp/clawd-hook.js" Stop' },
+          { type: "command", command: `node "${EXPECTED_HOOK_SCRIPT_PATH}" Stop` },
           { type: "command", command: "node /home/u/.claude/hooks/third-party.js" },
         ],
       }],
@@ -247,48 +283,52 @@ describe("server Claude hook management", () => {
     assert.strictEqual(watcher.closeCalls, 1);
   });
 
-  it("watcher no longer re-syncs after it has been stopped", () => {
+  it("watcher no longer re-syncs after it has been stopped", async () => {
     const { api, syncCalls, timers, getWatcher, setSettingsRaw } = makeServer();
 
     api.startClaudeSettingsWatcher();
     api.stopClaudeSettingsWatcher();
     setSettingsRaw('{"hooks":{}}');
     getWatcher().emitChange("settings.json");
-    timers.flush();
+    await timers.advance(10_000);
 
     assert.deepStrictEqual(syncCalls, []);
   });
 
-  it("watcher re-syncs when PermissionRequest hook disappears but command hooks remain", () => {
+  it("watcher re-syncs when PermissionRequest hook disappears but command hooks remain", async () => {
     const { api, syncCalls, timers, getWatcher, setSettingsRaw } = makeServer();
 
     api.startClaudeSettingsWatcher();
+    await timers.advance(0); // consume the initial (healthy) startup check first
+
     setSettingsRaw(JSON.stringify({
       hooks: {
         Stop: [
           {
             matcher: "",
-            hooks: [{ type: "command", command: 'node "/tmp/clawd-hook.js" Stop' }],
+            hooks: [{ type: "command", command: `node "${EXPECTED_HOOK_SCRIPT_PATH}" Stop` }],
           },
         ],
       },
     }));
     getWatcher().emitChange("settings.json");
-    timers.flush();
+    await timers.advance(1000);
 
     assert.deepStrictEqual(syncCalls, ["claude"]);
   });
 
-  it("watcher re-syncs when PermissionRequest hook points to the wrong port", () => {
+  it("watcher re-syncs when PermissionRequest hook points to the wrong port", async () => {
     const { api, syncCalls, timers, getWatcher, setSettingsRaw } = makeServer();
 
     api.startClaudeSettingsWatcher();
+    await timers.advance(0);
+
     setSettingsRaw(JSON.stringify({
       hooks: {
         Stop: [
           {
             matcher: "",
-            hooks: [{ type: "command", command: 'node "/tmp/clawd-hook.js" Stop' }],
+            hooks: [{ type: "command", command: `node "${EXPECTED_HOOK_SCRIPT_PATH}" Stop` }],
           },
         ],
         PermissionRequest: [
@@ -300,24 +340,24 @@ describe("server Claude hook management", () => {
       },
     }));
     getWatcher().emitChange("settings.json");
-    timers.flush();
+    await timers.advance(1000);
 
     assert.deepStrictEqual(syncCalls, ["claude"]);
   });
 
-  it("records suspicious-shrink guard status when watcher skips automatic Claude repair", () => {
+  it("records suspicious-shrink guard status when watcher skips automatic Claude repair", async () => {
     const notices = [];
-    let now = 10_000;
     const { api, syncCalls, timers, getWatcher, setSettingsRaw } = makeServer({
-      now: () => now,
       notifySuspiciousShrink: (before, after, notice) => notices.push({ before, after, notice }),
     });
     setSettingsRaw(JSON.stringify(healthyClaudeSettingsWithThirdPartyHook()));
 
     api.startClaudeSettingsWatcher();
+    await timers.advance(0); // seeds the trusted baseline from the rich healthy fixture
+
     setSettingsRaw(JSON.stringify({ skipDangerousModePermissionPrompt: true }));
     getWatcher().emitChange("settings.json");
-    timers.flush();
+    await timers.advance(1000);
 
     assert.deepStrictEqual(syncCalls, []);
     assert.strictEqual(notices.length, 1);
@@ -326,30 +366,34 @@ describe("server Claude hook management", () => {
     assert.strictEqual(notices[0].after.keyCount, 1);
     assert.deepStrictEqual(api.getClaudeHookGuardStatus(), notices[0].notice);
 
-    api.repairIntegrationForAgent("claude-code");
+    await api.repairIntegrationForAgent("claude-code");
     assert.strictEqual(api.getClaudeHookGuardStatus(), null);
 
-    setSettingsRaw(JSON.stringify({ skipDangerousModePermissionPrompt: true }));
-    getWatcher().emitChange("settings.json");
-    timers.flush();
-    now += 31 * 60 * 1000;
-    assert.strictEqual(api.getClaudeHookGuardStatus(), null);
+    // The underlying file is still shrunk (the stub above never actually
+    // fixed it) — periodic ticks must keep skipping auto-repair but must NOT
+    // re-pop the same notification every cycle (#657 plan §4.6). The guard
+    // notice then goes stale on its own TTL once nothing new is happening.
+    await timers.advance(31 * 60 * 1000);
+    assert.strictEqual(notices.length, 1, "must not re-notify every periodic cycle for the same persisting shrink");
+    assert.strictEqual(api.getClaudeHookGuardStatus(), null, "the notice must go stale via its own TTL once nothing new re-triggers it");
   });
 
-  it("keeps suspicious-shrink guard status when Claude repair fails and clears it on cleanup", () => {
+  it("keeps suspicious-shrink guard status when Claude repair fails and clears it on cleanup", async () => {
     const { api, timers, getWatcher, setSettingsRaw } = makeServer({
       syncClawdHooksImpl: () => ({ status: "error", message: "write failed" }),
     });
     setSettingsRaw(JSON.stringify(healthyClaudeSettingsWithThirdPartyHook()));
 
     api.startClaudeSettingsWatcher();
+    await timers.advance(0);
+
     setSettingsRaw(JSON.stringify({ skipDangerousModePermissionPrompt: true }));
     getWatcher().emitChange("settings.json");
-    timers.flush();
+    await timers.advance(1000);
     const guard = api.getClaudeHookGuardStatus();
     assert.ok(guard);
 
-    const repairResult = api.repairIntegrationForAgent("claude-code");
+    const repairResult = await api.repairIntegrationForAgent("claude-code");
     assert.deepStrictEqual(repairResult, { status: "error", message: "write failed" });
     assert.deepStrictEqual(api.getClaudeHookGuardStatus(), guard);
 
@@ -357,17 +401,18 @@ describe("server Claude hook management", () => {
     assert.strictEqual(api.getClaudeHookGuardStatus(), null);
   });
 
-  it("watcher ignores settings changes when both command and PermissionRequest hooks are intact", () => {
+  it("watcher ignores settings changes when both command and PermissionRequest hooks are intact", async () => {
     const { api, syncCalls, timers, getWatcher } = makeServer();
 
     api.startClaudeSettingsWatcher();
+    await timers.advance(0);
     getWatcher().emitChange("settings.json");
-    timers.flush();
+    await timers.advance(1000);
 
     assert.deepStrictEqual(syncCalls, []);
   });
 
-  it("watcher does not re-sync missing Claude hooks while Claude Code is disabled", () => {
+  it("watcher does not re-sync missing Claude hooks while Claude Code is disabled", async () => {
     let claudeEnabled = true;
     const { api, syncCalls, timers, getWatcher, setSettingsRaw } = makeServer({
       isAgentEnabled: (agentId) => agentId !== "claude-code" || claudeEnabled,
@@ -377,12 +422,12 @@ describe("server Claude hook management", () => {
     claudeEnabled = false;
     setSettingsRaw('{"hooks":{}}');
     getWatcher().emitChange("settings.json");
-    timers.flush();
+    await timers.advance(1000);
 
     assert.deepStrictEqual(syncCalls, []);
   });
 
-  it("watcher does not re-sync missing Claude hooks after Claude integration is uninstalled", () => {
+  it("watcher does not re-sync missing Claude hooks after Claude integration is uninstalled", async () => {
     let shouldSyncClaude = true;
     const { api, syncCalls, timers, getWatcher, setSettingsRaw } = makeServer({
       shouldSyncAgentIntegration: (agentId) => (
@@ -394,9 +439,20 @@ describe("server Claude hook management", () => {
     shouldSyncClaude = false;
     setSettingsRaw('{"hooks":{}}');
     getWatcher().emitChange("settings.json");
-    timers.flush();
+    await timers.advance(1000);
 
     assert.deepStrictEqual(syncCalls, []);
+  });
+
+  it("getClaudeHookHealthStatus reflects the periodic supervisor's own state, distinct from the guard notice", async () => {
+    const { api, timers } = makeServer();
+
+    api.startClaudeSettingsWatcher();
+    await timers.advance(0);
+
+    const status = api.getClaudeHookHealthStatus();
+    assert.strictEqual(status.status, "healthy");
+    assert.ok(Array.isArray(status.issues));
   });
 
   it("disconnect-style restart does not reinstall Claude hooks when management stays disabled", () => {
@@ -455,6 +511,424 @@ describe("server Claude hook management", () => {
 
     assert.strictEqual(repaired.status, "error");
     assert.match(repaired.message, /permission denied/);
+  });
+});
+
+function withPatchedInstallModule(patches, run) {
+  const installModule = require("../hooks/install.js");
+  const originals = {};
+  for (const key of Object.keys(patches)) {
+    originals[key] = installModule[key];
+    installModule[key] = patches[key];
+  }
+  const restore = () => {
+    for (const key of Object.keys(patches)) {
+      installModule[key] = originals[key];
+    }
+  };
+  return Promise.resolve()
+    .then(run)
+    .then((value) => { restore(); return value; }, (err) => { restore(); throw err; });
+}
+
+// These exercise server.js's OWN default queue-backed implementation — every
+// other test in this file injects ctx.syncClawdHooksImpl and so never reaches
+// it. Passing syncClawdHooksImpl: undefined opts back into the real
+// hooks/install.js-backed path (server.js only fills in its queued default
+// when the caller hasn't already provided a seam).
+describe("server Claude hook operation queue (default, non-injected implementation)", () => {
+  it("syncClawdHooks registers hooks and, for startup, also registers the statusline", async () => {
+    const calls = [];
+    await withPatchedInstallModule({
+      registerHooksAsync: async (opts) => { calls.push(["register", opts]); return { added: 1, updated: 0, removed: 0 }; },
+      registerClaudeStatusline: (opts) => { calls.push(["statusline", opts]); return { changed: true }; },
+    }, async () => {
+      const { api } = makeServer({ syncClawdHooksImpl: undefined });
+      const result = await api.syncClawdHooks({ source: "startup", automatic: true });
+      assert.strictEqual(result.status, "ok");
+      assert.deepStrictEqual(calls.map((c) => c[0]), ["register", "statusline"]);
+    });
+  });
+
+  it("syncClawdHooks skips the statusline for legacy/periodic/doctor/watch sources", async () => {
+    for (const source of ["settings", "doctor", "settings-watch", "periodic-health"]) {
+      const calls = [];
+      await withPatchedInstallModule({
+        registerHooksAsync: async () => { calls.push("register"); return { added: 0, updated: 0, removed: 0 }; },
+        registerClaudeStatusline: () => { calls.push("statusline"); return { changed: false }; },
+      }, async () => {
+        const { api } = makeServer({ syncClawdHooksImpl: undefined });
+        await api.syncClawdHooks({ source, automatic: false });
+        assert.deepStrictEqual(calls, ["register"], source);
+      });
+    }
+  });
+
+  it("syncClawdHooks (Doctor Fix / Settings Install path) does not write when the current source script is missing", async () => {
+    const calls = [];
+    await withPatchedInstallModule({
+      registerHooksAsync: async () => { calls.push("register"); return { added: 1, updated: 0, removed: 0 }; },
+    }, async () => {
+      const { api } = makeServer({
+        syncClawdHooksImpl: undefined,
+        fs: {
+          watch() { return new FakeWatcher(() => {}); },
+          readFileSync() { return "{}"; },
+          existsSync() { return false; }, // current packaged source script itself is gone
+        },
+      });
+
+      const result = await api.syncClawdHooks({ source: "doctor", automatic: false });
+
+      assert.strictEqual(result.status, "error");
+      assert.strictEqual(result.reason, "source-script-missing");
+      assert.deepStrictEqual(calls, [], "must never write toward a source path that does not exist");
+    });
+  });
+
+  it("syncClawdHooks (Doctor Fix / Settings Install path) reports failure instead of a blind ok when the write does not verify healthy", async () => {
+    await withPatchedInstallModule({
+      // The installer "succeeds" (no throw) but structurally can't fix
+      // anything — e.g. a permission error silently no-ops the write, or the
+      // on-disk command still doesn't match after registerHooksAsync claims
+      // success. The fixture is left exactly as broken as it started.
+      registerHooksAsync: async () => ({ added: 0, updated: 0, removed: 0 }),
+    }, async () => {
+      const { api } = makeServer({
+        syncClawdHooksImpl: undefined,
+        fs: {
+          watch() { return new FakeWatcher(() => {}); },
+          readFileSync() { return JSON.stringify({ hooks: {} }); }, // no managed hooks at all, before or after
+          existsSync(p) { return p === EXPECTED_HOOK_SCRIPT_PATH || p === EXPECTED_AUTO_START_SCRIPT_PATH; },
+        },
+      });
+
+      const result = await api.syncClawdHooks({ source: "doctor", automatic: false });
+
+      assert.strictEqual(result.status, "error");
+      assert.match(result.message, /did not verify healthy/);
+      assert.ok(Array.isArray(result.verifyIssues) && result.verifyIssues.length > 0);
+    });
+  });
+
+  it("syncClawdHooks (Doctor Fix / Settings Install path) reports ok once the write actually verifies healthy", async () => {
+    await withPatchedInstallModule({
+      registerHooksAsync: async () => ({ added: 1, updated: 0, removed: 0 }),
+    }, async () => {
+      // Default makeServer() fixture is already healthy for core hooks.
+      const { api } = makeServer({ syncClawdHooksImpl: undefined });
+
+      const result = await api.syncClawdHooks({ source: "doctor", automatic: false });
+
+      assert.deepStrictEqual(result, { status: "ok", added: 1, updated: 0, removed: 0 });
+    });
+  });
+
+  it("syncClawdHooks (Doctor Fix / Settings Install path) reports failure, not a blind ok, when an unparseable Clawd command remains after write", async () => {
+    await withPatchedInstallModule({
+      // The installer runs but — like the real installer — never rewrites a
+      // Clawd-owned command it could not parse in the first place (blindly
+      // rewriting it risks stomping something Clawd does not actually own).
+      // Nothing automatically repairable remains, but the config is still
+      // visibly broken — must not be reported as a successful Fix/Install.
+      registerHooksAsync: async () => ({ added: 0, updated: 0, removed: 0 }),
+    }, async () => {
+      const { api } = makeServer({
+        syncClawdHooksImpl: undefined,
+        fs: {
+          watch() { return new FakeWatcher(() => {}); },
+          readFileSync() {
+            return JSON.stringify({
+              hooks: {
+                Stop: [{ matcher: "", hooks: [{ type: "command", command: '"clawd-hook.js"' }] }],
+                PermissionRequest: [{ matcher: "", hooks: [{ type: "http", url: "http://127.0.0.1:23333/permission", timeout: 600 }] }],
+              },
+            });
+          },
+          existsSync(p) { return p === EXPECTED_HOOK_SCRIPT_PATH || p === EXPECTED_AUTO_START_SCRIPT_PATH; },
+        },
+      });
+
+      const result = await api.syncClawdHooks({ source: "doctor", automatic: false });
+
+      assert.strictEqual(result.status, "error");
+      assert.match(result.message, /did not verify healthy/);
+      assert.ok(
+        result.verifyIssues.some((issue) => issue.code === "command-unparseable"),
+        JSON.stringify(result.verifyIssues)
+      );
+    });
+  });
+
+  it("uninstallClaudeHooks removes the statusline only for settings-agent-uninstall/cleanup, not legacy settings", async () => {
+    for (const [source, expectStatusline] of [["settings-agent-uninstall", true], ["cleanup", true], ["settings", false]]) {
+      const calls = [];
+      await withPatchedInstallModule({
+        unregisterHooksAsync: async () => { calls.push("unregister"); return { removed: 1, changed: true }; },
+        unregisterClaudeStatusline: () => { calls.push("statusline-remove"); return { removed: 1, changed: true }; },
+      }, async () => {
+        const { api } = makeServer({ syncClawdHooksImpl: undefined });
+        const result = await api.uninstallClaudeHooks({ source, automatic: false });
+        assert.strictEqual(result.status, "ok");
+        assert.deepStrictEqual(calls, expectStatusline ? ["unregister", "statusline-remove"] : ["unregister"], source);
+      });
+    }
+  });
+
+  it("a statusline failure does not fail the overall hooks-sync result", async () => {
+    await withPatchedInstallModule({
+      registerHooksAsync: async () => ({ added: 1, updated: 0, removed: 0 }),
+      registerClaudeStatusline: () => { throw new Error("statusline boom"); },
+    }, async () => {
+      const { api } = makeServer({ syncClawdHooksImpl: undefined });
+      const result = await api.syncClawdHooks({ source: "startup", automatic: true });
+      assert.strictEqual(result.status, "ok");
+    });
+  });
+
+  it("setClaudeAutoStart registers (async, not the sync installer) or unregisters through the same queue", async () => {
+    const calls = [];
+    let setSettingsRawRef = () => {};
+    await withPatchedInstallModule({
+      registerHooksAsync: async (opts) => {
+        calls.push(["register", opts]);
+        // Simulate the installer actually writing a valid auto-start entry —
+        // enabling requires requireAutoStart:true in the post-write verify,
+        // so it needs to find one on the re-read.
+        setSettingsRawRef(JSON.stringify({
+          hooks: {
+            Stop: [{ matcher: "", hooks: [{ type: "command", command: `node "${EXPECTED_HOOK_SCRIPT_PATH}" Stop` }] }],
+            SessionStart: [{ matcher: "", hooks: [{ type: "command", command: `node "${EXPECTED_AUTO_START_SCRIPT_PATH}"` }] }],
+            PermissionRequest: [{ matcher: "", hooks: [{ type: "http", url: "http://127.0.0.1:23333/permission", timeout: 600 }] }],
+          },
+        }));
+        return {};
+      },
+      registerHooks: () => {
+        throw new Error("enabling auto-start must use the async installer, not the sync one (blocks the main thread)");
+      },
+      unregisterAutoStart: () => { calls.push(["unregister"]); return true; },
+    }, async () => {
+      const { api, setSettingsRaw } = makeServer({ syncClawdHooksImpl: undefined });
+      setSettingsRawRef = setSettingsRaw;
+      const onResult = await api.setClaudeAutoStart({ enabled: true, source: "auto-start" });
+      const offResult = await api.setClaudeAutoStart({ enabled: false, source: "auto-start" });
+      assert.deepStrictEqual(onResult, { status: "ok", enabled: true });
+      assert.deepStrictEqual(offResult, { status: "ok", enabled: false });
+      assert.deepStrictEqual(calls.map((c) => c[0]), ["register", "unregister"]);
+    });
+  });
+
+  it("setClaudeAutoStart enable does not write when the current packaged source script is missing", async () => {
+    const calls = [];
+    await withPatchedInstallModule({
+      registerHooksAsync: async (opts) => { calls.push(["register", opts]); return {}; },
+    }, async () => {
+      const { api } = makeServer({
+        syncClawdHooksImpl: undefined,
+        fs: {
+          watch() { return new FakeWatcher(() => {}); },
+          readFileSync() { return "{}"; },
+          existsSync() { return false; }, // current source script itself is gone
+        },
+      });
+
+      const result = await api.setClaudeAutoStart({ enabled: true, source: "auto-start" });
+
+      assert.strictEqual(result.status, "error");
+      assert.strictEqual(result.reason, "source-script-missing");
+      assert.deepStrictEqual(calls, [], "must not attempt a write when the source script is missing");
+    });
+  });
+
+  it("setClaudeAutoStart enable does not write when only the auto-start source script is missing (core script present)", async () => {
+    const calls = [];
+    await withPatchedInstallModule({
+      registerHooksAsync: async (opts) => { calls.push(["register", opts]); return {}; },
+    }, async () => {
+      const { api } = makeServer({
+        syncClawdHooksImpl: undefined,
+        fs: {
+          watch() { return new FakeWatcher(() => {}); },
+          readFileSync() { return "{}"; },
+          existsSync(p) { return p === EXPECTED_HOOK_SCRIPT_PATH; }, // auto-start.js itself is gone
+        },
+      });
+
+      const result = await api.setClaudeAutoStart({ enabled: true, source: "auto-start" });
+
+      assert.strictEqual(result.status, "error");
+      assert.strictEqual(result.reason, "source-script-missing");
+      assert.deepStrictEqual(calls, [], "must not write a SessionStart auto-start command toward a script that does not exist");
+    });
+  });
+
+  it("setClaudeAutoStart enable reports failure when the write does not verify healthy", async () => {
+    await withPatchedInstallModule({
+      // registerHooksAsync "succeeds" but never actually adds the auto-start
+      // entry — the settings fixture is left exactly as before.
+      registerHooksAsync: async () => ({}),
+    }, async () => {
+      const { api } = makeServer({ syncClawdHooksImpl: undefined });
+
+      const result = await api.setClaudeAutoStart({ enabled: true, source: "auto-start" });
+
+      assert.strictEqual(result.status, "error");
+      assert.match(result.message, /did not verify healthy/);
+    });
+  });
+
+  it("serializes syncClawdHooks and setClaudeAutoStart onto the same queue (max concurrency 1)", async () => {
+    const order = [];
+    await withPatchedInstallModule({
+      registerHooksAsync: async () => {
+        order.push("hooks-start");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        order.push("hooks-end");
+        return { added: 0, updated: 0, removed: 0 };
+      },
+    }, async () => {
+      const { api } = makeServer({ syncClawdHooksImpl: undefined });
+      const p1 = api.syncClawdHooks({ source: "settings", automatic: false });
+      const p2 = api.setClaudeAutoStart({ enabled: true, source: "auto-start" });
+      await Promise.all([p1, p2]);
+      // Both enable's registerHooksAsync call and the plain sync call go
+      // through the same underlying installer function now (#657 review:
+      // enabling must use the async installer, not a separate sync one) —
+      // the queue still only ever runs one at a time, so the second call's
+      // hooks-start never interleaves with the first's hooks-end.
+      assert.deepStrictEqual(order, ["hooks-start", "hooks-end", "hooks-start", "hooks-end"]);
+    });
+  });
+
+  it("cleanup() disposes the operation queue so further Claude mutations are rejected", async () => {
+    const { api } = makeServer({ syncClawdHooksImpl: undefined });
+    api.cleanup();
+    const result = await api.syncClawdHooks({ source: "settings", automatic: false });
+    assert.strictEqual(result.status, "error");
+  });
+
+  it("uninstallIntegrationForAgent('claude-code') routes through the queue-backed default, not a second bare unregister", async () => {
+    const calls = [];
+    await withPatchedInstallModule({
+      unregisterHooksAsync: async () => { calls.push("unregister"); return { removed: 2, changed: true }; },
+      unregisterClaudeStatusline: () => { calls.push("statusline-remove"); return { removed: 0, changed: false }; },
+    }, async () => {
+      const { api } = makeServer({ syncClawdHooksImpl: undefined });
+      const result = await api.uninstallIntegrationForAgent("claude-code");
+      assert.strictEqual(result.status, "ok");
+      assert.strictEqual(result.removed, 2);
+      assert.deepStrictEqual(calls, ["unregister", "statusline-remove"]);
+    });
+  });
+});
+
+// main.js exposes autoStartWithClaude as a live getter on the ctx object it
+// hands to initServer() (see main.js's _serverCtx) — a runtime Settings
+// toggle just flips the underlying variable the getter reads. makeServer()'s
+// fixture uses a plain boolean for autoStartWithClaude everywhere else in
+// this file, which cannot exercise this: a static boolean is identical
+// whether or not the surrounding {...ctx} spread preserved live binding.
+// These tests build ctx by hand with a real getter, exactly like main.js, so
+// they can actually catch a regression of "{...ctx} freezes the getter."
+function makeServerWithLiveAutoStart(initialValue) {
+  let liveAutoStart = initialValue;
+  const httpFactory = makeFakeHttpFactory();
+  const timers = makeFakeClock();
+  let lastWatcher = null;
+  let settingsRaw = JSON.stringify({
+    hooks: {
+      Stop: [{ matcher: "", hooks: [{ type: "command", command: `node "${EXPECTED_HOOK_SCRIPT_PATH}" Stop` }] }],
+      PermissionRequest: [{ matcher: "", hooks: [{ type: "http", url: "http://127.0.0.1:23333/permission", timeout: 600 }] }],
+    },
+  });
+  const existingPaths = new Set([EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH]);
+
+  const ctx = {
+    manageClaudeHooksAutomatically: true,
+    get autoStartWithClaude() { return liveAutoStart; },
+    createHttpServer: httpFactory.createHttpServer,
+    setImmediate: (fn) => fn(),
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    now: timers.now,
+    getPortCandidates: () => [23333],
+    readRuntimePort: () => null,
+    writeRuntimeConfig: () => true,
+    clearRuntimeConfig: () => true,
+    platform: "win32",
+    fs: {
+      watch(_dir, callback) {
+        lastWatcher = new FakeWatcher(callback);
+        return lastWatcher;
+      },
+      readFileSync() { return settingsRaw; },
+      existsSync(p) { return existingPaths.has(p); },
+    },
+  };
+
+  return {
+    api: initServer(ctx),
+    timers,
+    setLiveAutoStart: (v) => { liveAutoStart = v; },
+    getWatcher: () => lastWatcher,
+    setSettingsRaw: (raw) => { settingsRaw = raw; },
+    removeExisting: (p) => existingPaths.delete(p),
+  };
+}
+
+describe("server Claude hook management — live autoStartWithClaude ctx (#657 follow-up)", () => {
+  it("regular sync (Doctor Fix / Settings Install) reflects a runtime autoStartWithClaude toggle, not the value frozen at server startup", async () => {
+    const calls = [];
+    await withPatchedInstallModule({
+      registerHooksAsync: async (opts) => {
+        calls.push(opts.autoStart);
+        return { added: 0, updated: 0, removed: 0 };
+      },
+    }, async () => {
+      const { api, setLiveAutoStart } = makeServerWithLiveAutoStart(false);
+
+      await api.syncClawdHooks({ source: "doctor", automatic: false });
+      assert.deepStrictEqual(calls, [false], "reflects the startup value before any toggle");
+
+      setLiveAutoStart(true); // simulates the user flipping the Settings toggle at runtime
+      await api.syncClawdHooks({ source: "doctor", automatic: false });
+      assert.deepStrictEqual(calls, [false, true], "must track the CURRENT setting, not the value frozen when the server started");
+
+      setLiveAutoStart(false);
+      await api.syncClawdHooks({ source: "doctor", automatic: false });
+      assert.deepStrictEqual(calls, [false, true, false], "must track a toggle back off just as well");
+    });
+  });
+
+  it("watcher's periodic health check reflects a runtime autoStartWithClaude toggle instead of the value frozen at startup", async () => {
+    await withPatchedInstallModule({
+      // Never actually writes the auto-start entry into settingsRaw — this
+      // isolates the assertion to "did the watcher decide requireAutoStart
+      // should be true," not "did some other repair side effect also work."
+      registerHooksAsync: async () => ({ added: 0, updated: 0, removed: 0 }),
+    }, async () => {
+      const { api, timers, setLiveAutoStart } = makeServerWithLiveAutoStart(false);
+
+      api.startClaudeSettingsWatcher();
+      await timers.advance(0); // consume the startup check: auto-start not required yet, fixture is otherwise healthy
+      assert.strictEqual(api.getClaudeHookHealthStatus().status, "healthy");
+
+      // User turns auto-start ON at runtime. No SessionStart auto-start
+      // command has ever been written, which the watcher must now notice —
+      // proving requireAutoStart tracked the live toggle instead of staying
+      // frozen at the startup value (false), which would stay "healthy"
+      // forever and never flag or repair a missing/broken auto-start entry.
+      setLiveAutoStart(true);
+      await timers.advance(5 * 60 * 1000);
+
+      const status = api.getClaudeHookHealthStatus();
+      assert.notStrictEqual(status.status, "healthy");
+      assert.ok(
+        status.issues.some((issue) => issue.code === "auto-start-path-missing"),
+        JSON.stringify(status.issues)
+      );
+    });
   });
 });
 

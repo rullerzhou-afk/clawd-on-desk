@@ -2221,6 +2221,110 @@ describe("settings renderer browser environment", () => {
     });
   });
 
+  it("renders the Feishu event subscription guide and maps test failure codes to localized toasts", async () => {
+    const testResults = [
+      { status: "error", code: "no-button-response", message: "Feishu test did not receive a button response" },
+      { status: "error", code: "not-connected", message: "Feishu approval client is not running" },
+      { status: "error", code: "card-send-failed", message: "invalid receive_id" },
+    ];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+        feishuApproval: {
+          enabled: true,
+          idType: "open_id",
+          approverId: "ou_1",
+          connectionTimeoutSeconds: 15,
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({ status: "ok", state: { status: "stopped", tokenStored: false } });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: false, masked: "" });
+          }
+          if (name === "feishuApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: { status: "running", configured: true, secretsStored: true },
+            });
+          }
+          if (name === "feishuApproval.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, appId: "cli_......abcd" });
+          }
+          if (name === "feishuApproval.test") {
+            return Promise.resolve(testResults.shift());
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const feishuCard = harness.content.querySelector(".feishu-approval-channel-card");
+    const guideRow = feishuCard.querySelector(".feishu-approval-event-sub-row");
+    assert.ok(guideRow, "Feishu event subscription guide group should render");
+    assert.equal(guideRow.querySelector(".row-label").textContent, "feishuApprovalEventSubLabel");
+    assert.equal(guideRow.querySelector(".row-desc").textContent, "feishuApprovalEventSubDesc");
+    assert.equal(guideRow.querySelectorAll(".feishu-approval-event-sub-step").length, 4);
+
+    // The subscription can only be saved after the long connection is up, so
+    // the guide must live in the same step section as the test button, after
+    // the enable switch — not before it (#493 review).
+    const testButton = feishuCard.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalSendTest");
+    assert.ok(guideRow.parentNode.contains(testButton), "guide and test button share the step-4 section");
+
+    const toasts = [];
+    harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+    assert.equal(testButton.disabled, false);
+    for (let i = 0; i < 3; i += 1) {
+      testButton.dispatchEvent({ type: "click" });
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(toasts)), [
+      { message: "feishuApprovalTestNoResponse", options: { error: true } },
+      { message: "feishuApprovalTestNotConnected", options: { error: true } },
+      { message: "feishuApprovalTestSendFailed (invalid receive_id)", options: { error: true } },
+    ]);
+  });
+
+  it("expands only whitelisted hosts in Feishu guide links", async () => {
+    const harness = loadTelegramApprovalTabForTest({});
+    const probe = [
+      "[evil](https://open.feishu.cn.evil.com/x)",
+      "[good](https://open.feishu.cn/app)",
+      "[tg](https://t.me/x)",
+      "[userinfo](https://evil.com@open.feishu.cn/app)",
+      "[html <b>label</b>](https://open.feishu.cn/lbl)",
+    ].join(" ");
+    const originalT = harness.core.helpers.t;
+    harness.core.helpers.t = (key) => (key === "feishuApprovalEventSubStep1Html" ? probe : originalT(key));
+    harness.render();
+
+    const guideRow = harness.content.querySelector(".feishu-approval-event-sub-row");
+    const hrefs = guideRow.querySelectorAll("a").map((a) => a.getAttribute("href"));
+    assert.deepStrictEqual(hrefs, ["https://open.feishu.cn/app", "https://t.me/x", "https://open.feishu.cn/lbl"]);
+
+    // The en string itself must stay on a whitelisted host, and the source
+    // whitelist must keep allowing it.
+    const guideStep1 = loadSettingsI18nForTest().en.feishuApprovalEventSubStep1Html;
+    const guideLink = guideStep1.match(/\[[^\]]+\]\((https:\/\/[^)]+)\)/);
+    assert.ok(guideLink, "en guide step 1 should contain a [text](url) link token");
+    assert.ok(guideLink[1].startsWith("https://open.feishu.cn/"), "guide link must stay on open.feishu.cn");
+    const approvalTabSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-telegram-approval.js"), "utf8");
+    assert.ok(approvalTabSource.includes("open\\.feishu\\.cn"), "escapeWithLink whitelist should allow open.feishu.cn");
+  });
+
   it("refreshes Feishu status while long connection is starting", async () => {
     let feishuStatusCalls = 0;
     const harness = loadTelegramApprovalTabForTest({
@@ -3732,8 +3836,11 @@ describe("settings renderer browser environment", () => {
     assert.ok(/\.collapsible-group-chevron svg,\s*\.anim-override-chevron svg\s*\{[\s\S]*width:\s*16px;[\s\S]*height:\s*16px;[\s\S]*overflow:\s*visible;/.test(css));
     assert.ok(/\.collapsible-group-chevron path,\s*\.anim-override-chevron path\s*\{[\s\S]*fill:\s*none;[\s\S]*stroke:\s*currentColor;[\s\S]*stroke-width:\s*2\.2;[\s\S]*stroke-linecap:\s*round;[\s\S]*stroke-linejoin:\s*round;/.test(css));
     assert.ok(/\.collapsible-group-header:hover\s+\.collapsible-group-chevron\s*\{[\s\S]*color:\s*var\(--text-secondary\);[\s\S]*opacity:\s*0\.95;/.test(css));
-    assert.ok(/\.collapsible-group\.collapsed\s+\.collapsible-group-chevron\s*\{[\s\S]*transform:\s*translateX\(-6px\) rotate\(0deg\);/.test(css));
-    assert.ok(/\.collapsible-group:not\(\.collapsed\)\s+\.collapsible-group-chevron\s*\{[\s\S]*transform:\s*translateX\(-6px\) rotate\(90deg\);[\s\S]*color:\s*var\(--accent\);[\s\S]*opacity:\s*1;/.test(css));
+    // Child selectors, not descendant: nested groups (Feishu event-sub guide
+    // inside the channel card) must not inherit the outer group's chevron state.
+    assert.ok(/\.collapsible-group\.collapsed\s*>\s*\.collapsible-group-header\s*>\s*\.collapsible-group-chevron\s*\{[\s\S]*transform:\s*translateX\(-6px\) rotate\(0deg\);/.test(css));
+    assert.ok(/\.collapsible-group:not\(\.collapsed\)\s*>\s*\.collapsible-group-header\s*>\s*\.collapsible-group-chevron\s*\{[\s\S]*transform:\s*translateX\(-6px\) rotate\(90deg\);[\s\S]*color:\s*var\(--accent\);[\s\S]*opacity:\s*1;/.test(css));
+    assert.ok(!/\.collapsible-group\.collapsed\s+\.collapsible-group-chevron/.test(css), "descendant chevron selector would leak outer state into nested groups");
     assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.collapsible-group-chevron,[\s\S]*\.anim-override-chevron,[\s\S]*transition:\s*none;/.test(css));
     assert.ok(i18nSource.includes("collapsibleExpand"));
     assert.ok(i18nSource.includes("collapsibleCollapse"));
@@ -3879,7 +3986,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(!coreSource.includes("body.hidden = collapsed;"));
     assert.ok(/\.collapsible-group-body\s*\{[\s\S]*max-height:\s*var\(--collapsible-body-height,\s*0px\);/.test(css));
     assert.ok(/\.collapsible-group-body\s*\{[\s\S]*transition:\s*max-height 0\.22s cubic-bezier\(0\.22,\s*1,\s*0\.36,\s*1\),\s*opacity 0\.16s ease,\s*transform 0\.18s ease,\s*padding 0\.18s ease,\s*border-color 0\.18s ease;/.test(css));
-    assert.ok(/\.collapsible-group\.collapsed\s+\.collapsible-group-body\s*\{[\s\S]*opacity:\s*0;[\s\S]*transform:\s*translateY\(-4px\);/.test(css));
+    assert.ok(/\.collapsible-group\.collapsed\s*>\s*\.collapsible-group-body\s*\{[\s\S]*opacity:\s*0;[\s\S]*transform:\s*translateY\(-4px\);/.test(css));
     assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.collapsible-group-body/.test(css));
   });
 

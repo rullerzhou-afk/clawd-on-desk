@@ -170,6 +170,18 @@ const _isForegroundFullscreen = createForegroundFullscreenProbe({
   onError: (err) => console.warn("Clawd: win-fullscreen-detect not available:", err && err.message),
 });
 
+// ── Windows: foreground Windows Terminal probe (server-side wt_hwnd sample,
+// #627 residual) ──
+// Best-effort; degrades to "never sampled" (always null) if koffi/user32 is
+// unavailable, so a broken probe never blocks a /state POST — wt_hwnd just
+// falls back to the session's last-known value (state.js merge). Never spawns
+// a subprocess, so it cannot reproduce the console flash it exists to avoid.
+const { createForegroundWindowsTerminalProbe } = require("./win-foreground-terminal");
+const _captureForegroundWindowsTerminal = createForegroundWindowsTerminalProbe({
+  isWin,
+  onError: (err) => console.warn("Clawd: win-foreground-terminal not available:", err && err.message),
+});
+
 // ── Windows: switch the dev console to UTF-8 ──
 //
 // `npm start` attaches Clawd to a parent PowerShell/cmd console. That
@@ -235,17 +247,19 @@ const _initialPrefsLoad = prefsModule.load(PREFS_PATH);
 // Lazy helpers — these run inside the action `effect` callbacks at click time,
 // long after server.js / hooks/install.js are loaded. Wrapping them in closures
 // avoids a chicken-and-egg require order at module load.
+//
+// All of these route through _server's Claude hook operation queue rather than
+// requiring hooks/install.js directly: every process-internal settings.json
+// mutation must be serialized against the fs watcher, periodic health audit,
+// and other Settings actions (#657).
 function _installAutoStartHook() {
-  const { registerHooks } = require("../hooks/install.js");
-  registerHooks({ silent: true, autoStart: true, port: getHookServerPort() });
+  return _server.setClaudeAutoStart({ enabled: true, source: "auto-start" });
 }
 function _uninstallAutoStartHook() {
-  const { unregisterAutoStart } = require("../hooks/install.js");
-  unregisterAutoStart();
+  return _server.setClaudeAutoStart({ enabled: false, source: "auto-start" });
 }
 async function _uninstallClaudeHooksNow() {
-  const { unregisterHooksAsync } = require("../hooks/install.js");
-  await unregisterHooksAsync();
+  return _server.uninstallClaudeHooks({ source: "settings", automatic: false });
 }
 
 // Cross-platform "open at login" writer used by both the openAtLogin effect
@@ -331,17 +345,14 @@ const _settingsController = createSettingsController({
     installAutoStart: _installAutoStartHook,
     uninstallAutoStart: _uninstallAutoStartHook,
     resolveTextScaleDisplayKey: () => getSettingsDisplayKey(),
-    syncClaudeHooksNow: () => {
-      const { registerHooksAsync } = require("../hooks/install.js");
-      return registerHooksAsync({ silent: true, autoStart: autoStartWithClaude, port: getHookServerPort() });
-    },
+    syncClaudeHooksNow: () => _server.syncClawdHooks({ source: "settings", automatic: false }),
     uninstallClaudeHooksNow: _uninstallClaudeHooksNow,
     startClaudeSettingsWatcher: () => _server.startClaudeSettingsWatcher(),
     stopClaudeSettingsWatcher: () => _server.stopClaudeSettingsWatcher(),
     setOpenAtLogin: _writeSystemOpenAtLogin,
     startMonitorForAgent: (id) => agentRuntime && agentRuntime.startMonitorForAgent(id),
     stopMonitorForAgent: (id) => agentRuntime && agentRuntime.stopMonitorForAgent(id),
-    syncIntegrationForAgent: (id) => agentRuntime ? agentRuntime.syncIntegrationForAgent(id) : false,
+    syncIntegrationForAgent: (id, options) => agentRuntime ? agentRuntime.syncIntegrationForAgent(id, options) : false,
     repairIntegrationForAgent: (id, options) =>
       agentRuntime ? agentRuntime.repairIntegrationForAgent(id, options) : false,
     stopIntegrationForAgent: (id) => agentRuntime ? agentRuntime.stopIntegrationForAgent(id) : false,
@@ -354,9 +365,14 @@ const _settingsController = createSettingsController({
       const { removeFromWsl } = require("./wsl-deploy");
       return removeFromWsl(distro, { agentId });
     },
-    cleanupIntegrations: (options = {}) => {
+    cleanupIntegrations: async (options = {}) => {
+      // Claude hooks + statusline unregister as one queue task, awaited here so
+      // it settles (and any in-flight repair drains) before the generic cleaner
+      // runs. hooks/cleanup-integrations.js records this precomputed result
+      // instead of unregistering Claude a second time outside the queue.
+      const claudeCleanupResult = await _server.uninstallClaudeHooks({ source: "cleanup", automatic: false });
       const { cleanupIntegrations } = require("../hooks/cleanup-integrations.js");
-      return cleanupIntegrations({ ...options, backup: true, silent: true });
+      return cleanupIntegrations({ ...options, backup: true, silent: true, claudeCleanupResult });
     },
     repairLocalServer: () => _server && typeof _server.repairRuntimeStatus === "function"
       ? _server.repairRuntimeStatus()
@@ -1908,6 +1924,11 @@ const _serverCtx = {
   get PASSTHROUGH_TOOLS() { return PASSTHROUGH_TOOLS; },
   get STATE_SVGS() { return _state.STATE_SVGS; },
   get sessions() { return sessions; },
+  // #627 residual: synchronous server-side wt_hwnd sample for UserPromptSubmit
+  // (src/server-route-state.js). Initialized once above; never re-created per
+  // request.
+  captureForegroundWindowsTerminal: _captureForegroundWindowsTerminal,
+  debugLog: (msg) => sessionLog(msg),
   isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
   shouldSyncAgentIntegration: (agentId) =>
     _shouldSyncAgentIntegration({ agents: _settingsController.get("agents") }, agentId),
@@ -2304,22 +2325,32 @@ function feishuApprovalUnavailableMessage(status) {
   return "Feishu approval client is not running";
 }
 
+// The `code` field lets the renderer map failures to localized, actionable
+// toasts; `message` stays as the untranslated fallback.
+function feishuApprovalUnavailableResult(status) {
+  return {
+    status: "error",
+    code: (status && status.reason) || "not-running",
+    message: feishuApprovalUnavailableMessage(status),
+  };
+}
+
 async function sendFeishuApprovalTest() {
   const beforeStatus = getFeishuApprovalStatus();
   if (beforeStatus.configured !== true) {
-    return { status: "error", message: feishuApprovalUnavailableMessage(beforeStatus) };
+    return feishuApprovalUnavailableResult(beforeStatus);
   }
   await queueFeishuApprovalSync("test");
   const client = getConfiguredFeishuApprovalClient();
   if (!client || typeof client.requestApproval !== "function") {
-    return { status: "error", message: feishuApprovalUnavailableMessage(getFeishuApprovalStatus()) };
+    return feishuApprovalUnavailableResult(getFeishuApprovalStatus());
   }
   if (typeof client.waitUntilConnected === "function") {
     const config = getFeishuApprovalPrefs();
     const timeoutMs = Math.max(1, Number(config.connectionTimeoutSeconds) || 15) * 1000;
     const connected = await client.waitUntilConnected(timeoutMs);
     if (!connected) {
-      return { status: "error", message: feishuApprovalUnavailableMessage(getFeishuApprovalStatus()) };
+      return { ...feishuApprovalUnavailableResult(getFeishuApprovalStatus()), code: "not-connected" };
     }
   }
   const controller = new AbortController();
@@ -2328,11 +2359,13 @@ async function sendFeishuApprovalTest() {
     const decision = await client.requestApproval({
       title: "Clawd Feishu approval test",
       detail: "This is a settings test message. It is not attached to any agent permission request.",
-    }, { signal: controller.signal });
+    }, { signal: controller.signal, rejectOnSendError: true });
     if (decision === "allow" || decision === "deny") {
       return { status: "ok", decision };
     }
-    return { status: "error", message: "Feishu test did not receive a button response" };
+    return { status: "error", code: "no-button-response", message: "Feishu test did not receive a button response" };
+  } catch (err) {
+    return { status: "error", code: "card-send-failed", message: err && err.message ? err.message : String(err) };
   } finally {
     clearTimeout(timer);
   }

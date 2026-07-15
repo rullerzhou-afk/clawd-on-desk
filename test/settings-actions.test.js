@@ -308,27 +308,29 @@ describe("updateRegistry pure-data validators", () => {
 });
 
 describe("object-form effects (autoStartWithClaude / manageClaudeHooksAutomatically / openAtLogin)", () => {
-  it("autoStartWithClaude effect calls installAutoStart on true", () => {
+  it("autoStartWithClaude effect calls installAutoStart on true", async () => {
+    // installAutoStart/uninstallAutoStart go through the server-owned Claude
+    // hook operation queue (#657) and now return a Promise.
     let installCalls = 0;
     let uninstallCalls = 0;
     const deps = {
       installAutoStart: () => installCalls++,
       uninstallAutoStart: () => uninstallCalls++,
     };
-    const r = updateRegistry.autoStartWithClaude.effect(true, deps);
+    const r = await updateRegistry.autoStartWithClaude.effect(true, deps);
     assert.strictEqual(r.status, "ok");
     assert.strictEqual(installCalls, 1);
     assert.strictEqual(uninstallCalls, 0);
   });
 
-  it("autoStartWithClaude effect calls uninstallAutoStart on false", () => {
+  it("autoStartWithClaude effect calls uninstallAutoStart on false", async () => {
     let installCalls = 0;
     let uninstallCalls = 0;
     const deps = {
       installAutoStart: () => installCalls++,
       uninstallAutoStart: () => uninstallCalls++,
     };
-    const r = updateRegistry.autoStartWithClaude.effect(false, deps);
+    const r = await updateRegistry.autoStartWithClaude.effect(false, deps);
     assert.strictEqual(r.status, "ok");
     assert.strictEqual(installCalls, 0);
     assert.strictEqual(uninstallCalls, 1);

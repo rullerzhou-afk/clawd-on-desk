@@ -1,8 +1,9 @@
 // test/pid-cache.test.js — Unit tests for hooks/pid-cache.js
-// (#627, bounded sliding TTL §8)
+// (#627; lease rewrite #627-residual §4.4)
 const { describe, it, afterEach } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
+const path = require("node:path");
 
 const pc = require("../hooks/pid-cache");
 
@@ -107,7 +108,7 @@ describe("pid-cache read/write/drop", () => {
     assert.strictEqual(pc.readPidCache(sid, CWD), null);
   });
 
-  // agentPid shape tightened to REQUIRED positive integer (Codex NICE).
+  // agentPid shape tightened to REQUIRED positive integer (Codex NICE, 630 plan §8).
   it("readPidCache returns null when agentPid is missing or non-positive", () => {
     const sid = freshSid();
     const file = pc.cacheFilePath(sid, CWD);
@@ -120,28 +121,40 @@ describe("pid-cache read/write/drop", () => {
   });
 });
 
-describe("pid-cache bounded sliding TTL (§8)", () => {
-  it("fresh mtime + fresh ts (within both clocks) → hit", () => {
+describe("pid-cache lease semantics (#627 residual §4.4): reads consult NO clock", () => {
+  it("a freshly-written entry is a hit", () => {
     const sid = freshSid();
     pc.writePidCache(sid, CWD, SUBSET);
     assert.ok(pc.readPidCache(sid, CWD));
   });
 
-  it("idle-expired: mtime older than IDLE_TTL_MS → null (even with fresh ts)", () => {
+  it("an ancient mtime does not expire the read (mtime is not consulted at all)", () => {
     const sid = freshSid();
     pc.writePidCache(sid, CWD, SUBSET);
     const file = pc.cacheFilePath(sid, CWD);
-    const old = (Date.now() - (pc.IDLE_TTL_MS + 1000)) / 1000;
-    fs.utimesSync(file, old, old); // age mtime; JSON ts stays fresh
-    assert.strictEqual(pc.readPidCache(sid, CWD), null);
+    const ancient = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // 30 days
+    fs.utimesSync(file, ancient, ancient);
+    assert.ok(pc.readPidCache(sid, CWD), "mtime age must never expire a read under the lease model");
   });
 
-  it("absolute-cap-expired: ts older than ABSOLUTE_CAP_MS → null (even with fresh mtime)", () => {
+  it("an ancient ts does not expire the read (ts is debug-only, not a validity clock)", () => {
     const sid = freshSid();
     const file = pc.cacheFilePath(sid, CWD);
-    // Stale ts, fresh mtime (writeFileSync stamps mtime = now).
-    fs.writeFileSync(file, JSON.stringify({ ...SUBSET, cwd: CWD, ts: Date.now() - (pc.ABSOLUTE_CAP_MS + 1000) }));
-    assert.strictEqual(pc.readPidCache(sid, CWD), null);
+    fs.writeFileSync(file, JSON.stringify({ ...SUBSET, cwd: CWD, ts: Date.now() - 30 * 24 * 60 * 60 * 1000 }));
+    assert.ok(pc.readPidCache(sid, CWD), "ts age must never expire a read under the lease model");
+  });
+
+  it("both mtime and ts ancient simultaneously is still a hit (shape + cwd only)", () => {
+    const sid = freshSid();
+    const file = pc.cacheFilePath(sid, CWD);
+    const veryOld = Date.now() - 365 * 24 * 60 * 60 * 1000;
+    fs.writeFileSync(file, JSON.stringify({ ...SUBSET, cwd: CWD, ts: veryOld }));
+    const oldDate = new Date(veryOld);
+    fs.utimesSync(file, oldDate, oldDate);
+    const got = pc.readPidCache(sid, CWD);
+    assert.ok(got);
+    assert.strictEqual(got.stablePid, 1234);
+    assert.strictEqual(got.agentPid, 5678);
   });
 
   it("touchPidCache bumps mtime but leaves ts unchanged", () => {
@@ -149,20 +162,13 @@ describe("pid-cache bounded sliding TTL (§8)", () => {
     pc.writePidCache(sid, CWD, SUBSET);
     const file = pc.cacheFilePath(sid, CWD);
     const tsBefore = JSON.parse(fs.readFileSync(file, "utf8")).ts;
-    const old = (Date.now() - (pc.IDLE_TTL_MS - 1000)) / 1000;
+    const old = new Date(Date.now() - 10_000);
     fs.utimesSync(file, old, old);
     const mtimeAged = fs.statSync(file).mtimeMs;
     pc.touchPidCache(sid, CWD);
     assert.ok(fs.statSync(file).mtimeMs > mtimeAged, "touch must move mtime forward");
     assert.strictEqual(JSON.parse(fs.readFileSync(file, "utf8")).ts, tsBefore, "touch must NOT change ts");
   });
-
-  // NB: we deliberately do NOT test "touch revives an idle-expired file". Under
-  // utimesSync that mechanically works, but it is NOT the helper's contract:
-  // touch is only ever called ON A HIT (readPidCache already passed), so a
-  // genuinely-expired entry never reaches touch. Pinning revival as expected
-  // behavior would mislead future callers. The hit-path renewal contract is
-  // covered end-to-end in clawd-hook-pid-cache.test.js.
 
   it("touchPidCache does not create a missing file (SessionEnd drop race)", () => {
     const sid = freshSid();
@@ -175,31 +181,158 @@ describe("pid-cache bounded sliding TTL (§8)", () => {
     assert.doesNotThrow(() => pc.touchPidCache("default", CWD));
     assert.doesNotThrow(() => pc.touchPidCache("sid", ""));
   });
+
+  it("no longer exports IDLE_TTL_MS / ABSOLUTE_CAP_MS (deleted per the lease rewrite)", () => {
+    assert.strictEqual(pc.IDLE_TTL_MS, undefined);
+    assert.strictEqual(pc.ABSOLUTE_CAP_MS, undefined);
+    assert.strictEqual(typeof pc.SWEEP_AGE_MS, "number");
+  });
 });
 
-describe("pid-cache sweepStalePidCaches()", () => {
-  it("removes only our prefix files idle past 2x IDLE_TTL_MS, keeps fresh ones", () => {
-    const staleSid = freshSid();
-    const freshSidId = freshSid();
-    const staleFile = pc.cacheFilePath(staleSid, CWD);
-    const freshFile = pc.cacheFilePath(freshSidId, CWD);
-    pc.writePidCache(staleSid, CWD, SUBSET);
-    pc.writePidCache(freshSidId, CWD, SUBSET);
-    const old = (Date.now() - 3 * pc.IDLE_TTL_MS) / 1000;
-    fs.utimesSync(staleFile, old, old);
+describe("pid-cache sweepStalePidCaches() — age floor + injected liveness (§4.4)", () => {
+  function alwaysAlive() { return true; }
+  function neverAlive() { return false; }
 
-    pc.sweepStalePidCaches();
-
-    assert.strictEqual(fs.existsSync(staleFile), false, "stale (idle) file swept");
-    assert.strictEqual(fs.existsSync(freshFile), true, "fresh file kept");
-  });
-
-  it("sweep keys off mtime, not ts: old ts + fresh mtime is kept", () => {
+  it("young file (mtime within SWEEP_AGE_MS) is skipped without even consulting liveness", () => {
     const sid = freshSid();
     const file = pc.cacheFilePath(sid, CWD);
-    // Past absolute cap by ts, but mtime fresh (just written).
-    fs.writeFileSync(file, JSON.stringify({ ...SUBSET, cwd: CWD, ts: Date.now() - 10 * pc.ABSOLUTE_CAP_MS }));
-    pc.sweepStalePidCaches();
-    assert.strictEqual(fs.existsSync(file), true, "sweep must key off mtime, not ts");
+    pc.writePidCache(sid, CWD, SUBSET); // fresh mtime
+    let livenessCalls = 0;
+    pc.sweepStalePidCaches({ isProcessAlive: () => { livenessCalls++; return false; } });
+    assert.strictEqual(fs.existsSync(file), true, "young file must be skipped regardless of liveness");
+    assert.strictEqual(livenessCalls, 0, "the age floor must short-circuit before liveness is ever checked");
+  });
+
+  it("old + both PIDs alive → kept", () => {
+    const sid = freshSid();
+    const file = pc.cacheFilePath(sid, CWD);
+    pc.writePidCache(sid, CWD, SUBSET);
+    const old = new Date(Date.now() - (pc.SWEEP_AGE_MS + 60_000));
+    fs.utimesSync(file, old, old);
+
+    pc.sweepStalePidCaches({ isProcessAlive: alwaysAlive });
+
+    assert.strictEqual(fs.existsSync(file), true, "old-but-alive file must survive — age alone never deletes");
+  });
+
+  it("old + either PID dead → deleted", () => {
+    const sid = freshSid();
+    const file = pc.cacheFilePath(sid, CWD);
+    pc.writePidCache(sid, CWD, SUBSET);
+    const old = new Date(Date.now() - (pc.SWEEP_AGE_MS + 60_000));
+    fs.utimesSync(file, old, old);
+
+    pc.sweepStalePidCaches({ isProcessAlive: neverAlive });
+
+    assert.strictEqual(fs.existsSync(file), false, "old + dead PID must be swept");
+  });
+
+  it("old + stablePid alive but agentPid dead → deleted (either death is enough)", () => {
+    const sid = freshSid();
+    const file = pc.cacheFilePath(sid, CWD);
+    pc.writePidCache(sid, CWD, SUBSET);
+    const old = new Date(Date.now() - (pc.SWEEP_AGE_MS + 60_000));
+    fs.utimesSync(file, old, old);
+
+    pc.sweepStalePidCaches({
+      isProcessAlive: (pid) => pid === SUBSET.stablePid, // agentPid (5678) reports dead
+    });
+
+    assert.strictEqual(fs.existsSync(file), false);
+  });
+
+  it("old + corrupt shape → deleted regardless of liveness", () => {
+    const sid = freshSid();
+    const file = pc.cacheFilePath(sid, CWD);
+    fs.writeFileSync(file, "{ not json");
+    const old = new Date(Date.now() - (pc.SWEEP_AGE_MS + 60_000));
+    fs.utimesSync(file, old, old);
+
+    pc.sweepStalePidCaches({ isProcessAlive: alwaysAlive });
+
+    assert.strictEqual(fs.existsSync(file), false, "corrupt shape is always treated as dead, even if isProcessAlive would say alive");
+  });
+
+  it("P2 race: a file replaced between the death verdict and the unlink survives", () => {
+    // Simulates: sweep judges the OLD file dead, but a concurrent
+    // SessionStart's writePidCache atomically replaces it before the unlink.
+    // The injected liveness callback runs exactly in that window (after the
+    // sweep has read the old JSON, before it deletes), so replacing the file
+    // inside it reproduces the race deterministically. The pre-unlink mtime
+    // re-check must notice the replacement and keep the NEW file — deleting
+    // it would strand a cache-only prompt/end (they never re-resolve) until
+    // the next ordinary event's miss-fallback, i.e. one avoidable flash.
+    const sid = freshSid();
+    const file = pc.cacheFilePath(sid, CWD);
+    pc.writePidCache(sid, CWD, SUBSET);
+    const old = new Date(Date.now() - (pc.SWEEP_AGE_MS + 60_000));
+    fs.utimesSync(file, old, old);
+
+    pc.sweepStalePidCaches({
+      isProcessAlive: () => {
+        pc.writePidCache(sid, CWD, SUBSET); // concurrent SessionStart rewrite (fresh mtime)
+        return false; // and the old file's PIDs report dead
+      },
+    });
+
+    assert.strictEqual(fs.existsSync(file), true, "the replacement written mid-sweep must survive the unlink");
+    assert.ok(pc.readPidCache(sid, CWD), "the new cache entry must still be readable after the sweep");
+  });
+
+  it("defaults isProcessAlive to always-alive when not injected (never deletes purely on age)", () => {
+    const sid = freshSid();
+    const file = pc.cacheFilePath(sid, CWD);
+    pc.writePidCache(sid, CWD, SUBSET);
+    const old = new Date(Date.now() - (pc.SWEEP_AGE_MS + 60_000));
+    fs.utimesSync(file, old, old);
+
+    pc.sweepStalePidCaches({}); // no isProcessAlive passed
+
+    assert.strictEqual(fs.existsSync(file), true, "without injected liveness, age-only can never delete a shape-valid file");
+  });
+
+  it("ignores files outside our prefix", () => {
+    const dir = require("os").tmpdir();
+    const foreignFile = path.join(dir, `not-clawd-${process.pid}-${seq++}.json`);
+    fs.writeFileSync(foreignFile, "{}");
+    const old = new Date(Date.now() - (pc.SWEEP_AGE_MS + 60_000));
+    fs.utimesSync(foreignFile, old, old);
+    try {
+      pc.sweepStalePidCaches({ isProcessAlive: neverAlive });
+      assert.strictEqual(fs.existsSync(foreignFile), true, "sweep must not touch files outside its own prefix");
+    } finally {
+      try { fs.unlinkSync(foreignFile); } catch {}
+    }
+  });
+
+  it("accepts an explicit nowMs for deterministic age-floor math", () => {
+    const sid = freshSid();
+    const file = pc.cacheFilePath(sid, CWD);
+    pc.writePidCache(sid, CWD, SUBSET);
+    const writtenMtime = fs.statSync(file).mtimeMs;
+    // "now" far enough in the future that the file looks old relative to it.
+    const future = writtenMtime + pc.SWEEP_AGE_MS + 60_000;
+    pc.sweepStalePidCaches({ nowMs: future, isProcessAlive: neverAlive });
+    assert.strictEqual(fs.existsSync(file), false);
+  });
+});
+
+describe("pid-cache module boundary (#627 residual §4.4)", () => {
+  it("does not require ./shared-process (would create a PR2 circular dependency)", () => {
+    const src = fs.readFileSync(require.resolve("../hooks/pid-cache.js"), "utf8");
+    assert.ok(
+      !/require\(["']\.\/shared-process["']\)/.test(src),
+      "pid-cache.js must stay independent of shared-process.js — liveness is dependency-injected instead"
+    );
+    // Cross-check via the actual module graph too, not just source text.
+    const key = require.resolve("../hooks/pid-cache.js");
+    delete require.cache[key];
+    require("../hooks/pid-cache.js");
+    const sharedProcessKey = require.resolve("../hooks/shared-process.js");
+    const loadedChildren = (require.cache[key].children || []).map((c) => c.id);
+    assert.ok(
+      !loadedChildren.includes(sharedProcessKey),
+      "pid-cache.js's module.children must not include shared-process.js"
+    );
   });
 });

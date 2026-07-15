@@ -478,30 +478,58 @@ function buildStateBody(event, payload, resolve) {
   } else {
     // #627: on Windows every hook event otherwise cold-starts a PowerShell to
     // snapshot the process tree, flashing a console window under Windows
-    // Terminal. The tree is stable within a session, so snapshot once on the
-    // always-fresh events and let high-frequency events read a per-session cache.
+    // Terminal. The tree is stable within a session, so snapshot once on
+    // SessionStart; every other event reads a per-session cache instead of
+    // spawning. Ordinary high-frequency events (PreToolUse/PostToolUse/Stop/
+    // etc.) keep #630's original miss behavior: a miss still falls back to
+    // one fresh resolve (and may repopulate the cache) — that fallback is
+    // what gets the cache warm again after a PID dies mid-session, and it's
+    // rare in steady state once SessionStart has populated the cache.
+    //
+    // #627 residual: two events get a STRICTER "miss = zero spawn, no
+    // fallback" contract instead:
+    //   - UserPromptSubmit used to be an always-fresh event (it needed a live
+    //     foreground WT window handle). That handle is now sampled
+    //     server-side (src/main.js's koffi probe, wired through
+    //     src/server-route-state.js), so UserPromptSubmit no longer has any
+    //     reason to spawn — cache hit or miss, it never calls resolve().
+    //   - SessionEnd reads the cache to fill the final body, then drops it;
+    //     a miss no longer falls back to a fresh resolve either (see below).
+    // A miss on either ships a body with no process-metadata fields; the
+    // server's MERGE (state.js) keeps whatever the session already had.
+    // See docs/plans/plan-issue-627-residual-userprompt-flash.md §4.3.
     const canCacheSession = isWin && pidCache.canCache(sessionId, cwd);
-    // SessionStart populates the cache; UserPromptSubmit needs a live foreground
-    // window (wt_hwnd) so it also re-resolves (and refreshes the cache).
-    const wantsFresh = event === "SessionStart" || event === "UserPromptSubmit";
+    const wantsFresh = event === "SessionStart";
+    // The no-fallback contract is a WINDOWS contract, not a cache-availability
+    // one: it must hold even when caching is disabled (session_id "default" /
+    // empty cwd, #583) — otherwise those degenerate sessions keep flashing a
+    // console once per prompt, which is the exact symptom this fix removes.
+    // Non-Windows keeps resolving fresh on every event (the ps path neither
+    // flashes nor pays a cold start), unchanged.
+    const cacheOnlyNoFallback = isWin && (event === "UserPromptSubmit" || event === "SessionEnd");
 
     let cached = null;
-    if (event === "SessionEnd") {
-      // M5: read the last-known subset for the final body, then drop it. Never
-      // write back on SessionEnd.
-      if (canCacheSession) {
-        cached = pidCache.readPidCache(sessionId, cwd);
-        pidCache.dropPidCache(sessionId, cwd);
-      }
+    if (canCacheSession && event === "SessionEnd") {
+      // Cache-only + drop: read the last-known subset for the final body (if
+      // any), then drop — and, per the #627 residual plan, a MISS no longer
+      // falls back to a fresh resolve. That resolve was itself the
+      // console-flashing spawn this cache exists to avoid, and by SessionEnd
+      // the session is already ending: an incomplete final body (server
+      // MERGE keeps whatever the session already had) beats a guaranteed
+      // flash. This reverses the #630-shipped SessionEnd-miss fallback (630
+      // plan §3.2) — test/clawd-hook-pid-cache.test.js's "SessionEnd on a
+      // miss" case is inverted to match.
+      cached = pidCache.readPidCache(sessionId, cwd);
+      pidCache.dropPidCache(sessionId, cwd);
     } else if (canCacheSession && !wantsFresh) {
       const c = pidCache.readPidCache(sessionId, cwd);
-      // M1 + bounded sliding TTL (#627 plan §8): the PID that becomes source_pid
-      // (stablePid) must be alive — session-focus.js only checks source_pid's
-      // existence, so a dead stablePid must trigger a fresh resolve. agentPid
-      // (claude.exe) must ALSO be alive: it tracks session liveness, so a dead
-      // agentPid means the session ended and the cache must NOT be renewed. Both
-      // alive → hit and refresh the idle TTL (touch bumps mtime, not ts) so an
-      // active long turn never re-snapshots mid-session.
+      // M1 (630 plan §5) + lease rewrite (#627 residual §4.4): the PID that
+      // becomes source_pid (stablePid) must be alive — session-focus.js only
+      // checks source_pid's existence, so a dead stablePid must trigger a
+      // fresh resolve. agentPid (claude.exe) must ALSO be alive: it tracks
+      // session liveness, so a dead agentPid means the session ended and the
+      // cache must NOT be treated as a hit. Both alive → hit, no clock
+      // consulted (pid-cache.js's readPidCache no longer expires by time).
       if (c && c.cwd === cwd && processAlive(c.stablePid) && processAlive(c.agentPid)) {
         pidCache.touchPidCache(sessionId, cwd);
         cached = c;
@@ -510,14 +538,25 @@ function buildStateBody(event, payload, resolve) {
 
     if (cached) {
       applyCachedFields(body, cached);
-    } else {
-      if (event === "SessionStart" && canCacheSession) pidCache.sweepStalePidCaches();
+    } else if (!cacheOnlyNoFallback) {
+      // Fresh resolve: non-Windows (always resolves on every event,
+      // unchanged), SessionStart (still the one event that spawns once,
+      // prewarmed during stdin buffering — see main() below), or an ordinary
+      // cache-only event (PreToolUse/PostToolUse/Stop/etc.) on a miss or with
+      // caching unavailable — #630's original repopulate fallback, unchanged.
+      // On Windows, UserPromptSubmit/SessionEnd can NEVER reach this branch,
+      // cacheable session or not (see cacheOnlyNoFallback above).
+      if (event === "SessionStart" && canCacheSession) {
+        pidCache.sweepStalePidCaches({ isProcessAlive: processAlive });
+      }
       const resolved = resolve();
       applyResolvedFields(body, resolved, event);
-      // M2: only cache a non-degraded result. An empty Windows snapshot decays
-      // stablePid to process.ppid (a per-event ephemeral PID); snapshotOk rules
-      // that out, and a found agentPid proves the walk reached a real ancestor.
-      // Never write on SessionEnd.
+      // M2 (630 plan §5): only cache a non-degraded result. An empty Windows
+      // snapshot decays stablePid to process.ppid (a per-event ephemeral
+      // PID); snapshotOk rules that out, and a found agentPid proves the walk
+      // reached a real ancestor. Never write on SessionEnd (unreachable here
+      // since SessionEnd never takes this branch, but keep the guard as
+      // defense in depth).
       if (canCacheSession && event !== "SessionEnd" && resolved.snapshotOk && resolved.agentPid) {
         pidCache.writePidCache(sessionId, cwd, {
           stablePid: resolved.stablePid,
@@ -527,6 +566,11 @@ function buildStateBody(event, payload, resolve) {
         });
       }
     }
+    // else: Windows UserPromptSubmit/SessionEnd with no usable cache entry
+    // (cacheable miss OR caching unavailable) — zero spawn, no fallback. Body
+    // gets no source_pid/agent_pid/etc.; server MERGE keeps whatever the
+    // session already had. Never degrade to process.ppid — that would ship a
+    // wrong-but-plausible-looking pid (#627 residual plan §4.3).
 
     if (wslDistro) {
       body.wsl_distro = wslDistro;
