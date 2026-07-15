@@ -14,6 +14,7 @@ const {
   extractCodexSessionIdFromTranscriptPath,
   normalizeCodexSessionId,
   readFirstSessionMeta,
+  runCodexHook,
   sanitizeCodexPermissionOutput,
 } = require("../hooks/codex-hook");
 const { readCodexThreadName } = require("../hooks/codex-session-index");
@@ -507,6 +508,51 @@ describe("Codex official hook", () => {
 
     assert.strictEqual(result.status, 0);
     assert.strictEqual(result.stdout, "");
+  });
+
+  it("reuses the runtime port for state and permission hooks", async () => {
+    let resolveCalls = 0;
+    let identityReads = 0;
+    const options = {
+      readRuntimeIdentity() {
+        identityReads += 1;
+        return { ok: true, reason: null, port: 23335, ownerPid: process.pid };
+      },
+      createPidResolver(resolverOptions) {
+        return () => {
+          resolveCalls += 1;
+          resolverOptions.readRuntimeIdentity();
+          return mockResolve();
+        };
+      },
+      postState(_body, options, callback) {
+        assert.strictEqual(options.preferredPort, 23335);
+        assert.strictEqual(options.runtimePort, 23335);
+        callback(true, 23335);
+      },
+      postPermission(_body, requestOptions, callback) {
+        assert.strictEqual(requestOptions.preferredPort, 23335);
+        assert.strictEqual(requestOptions.runtimePort, 23335);
+        callback(true, 23335, JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "PermissionRequest",
+            decision: { behavior: "allow" },
+          },
+        }));
+      },
+    };
+    const stateResult = await runCodexHook({ hook_event_name: "SessionStart", session_id: "s1" }, options);
+    const permissionResult = await runCodexHook({
+      hook_event_name: "PermissionRequest",
+      session_id: "s1",
+    }, options);
+
+    assert.strictEqual(resolveCalls, 2);
+    assert.strictEqual(identityReads, 2);
+    assert.strictEqual(stateResult.posted, true);
+    assert.strictEqual(stateResult.port, 23335);
+    assert.strictEqual(permissionResult.posted, true);
+    assert.strictEqual(permissionResult.port, 23335);
   });
 
   describe("remote mode", () => {
