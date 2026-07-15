@@ -41,10 +41,17 @@ const PROBE = path.resolve(__dirname, "helpers", "hook-offline-probe.js");
 // writeStdoutOnce(outLine + "\n"), because that newline is part of what the
 // agent parses. Empty string = this adapter gates on exit code and must stay
 // silent. null = not asserted here (its own suite owns the stdout contract).
+//
+// `argv` matters more than it looks. clawd-hook.js and copilot-hook.js take the
+// event name from process.argv[2], NOT from the stdin payload — omit it and they
+// exit before resolving anything, so a "zero spawn" assertion passes for the
+// wrong reason. A real-machine audit caught exactly that: copilot spawned 0
+// PowerShells whether Clawd was up or down, because it was never really running.
+// The vacuity guard at the bottom of this file exists to stop that recurring.
 const ADAPTERS = [
-  { name: "clawd-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "" },
+  { name: "clawd-hook.js", argv: ["PreToolUse"], payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "" },
   { name: "codex-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "" },
-  { name: "copilot-hook.js", payload: { hook_event_name: "sessionStart", session_id: "s-681", cwd: "D:/repo" }, stdout: "" },
+  { name: "copilot-hook.js", argv: ["sessionStart"], payload: { hook_event_name: "sessionStart", session_id: "s-681", cwd: "D:/repo" }, stdout: "" },
   { name: "cursor-hook.js", payload: { hook_event_name: "beforeSubmitPrompt", cwd: "D:/repo" }, stdout: `${JSON.stringify({ continue: true })}\n` },
   { name: "gemini-hook.js", payload: { hook_event_name: "SessionStart", cwd: "D:/repo" }, stdout: null },
   { name: "kimi-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "" },
@@ -72,6 +79,10 @@ after(() => {
   try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch { /* best effort */ }
 });
 
+// A live runtime naming THIS process, which is trivially alive. Used only by the
+// vacuity guard below — every other case here wants Clawd to look gone.
+const LIVE_RUNTIME = () => ({ app: "clawd-on-desk", port: 23333, ownerPid: process.pid });
+
 function runHookOffline(adapter, { runtimeJson } = {}) {
   const clawdDir = path.join(fakeHome, ".clawd");
   fs.rmSync(clawdDir, { recursive: true, force: true });
@@ -84,7 +95,8 @@ function runHookOffline(adapter, { runtimeJson } = {}) {
   const env = { ...process.env, USERPROFILE: fakeHome, HOME: fakeHome, CLAWD_PROBE_OUT: probeOut };
   delete env.CLAWD_REMOTE;
 
-  const result = spawnSync(process.execPath, ["--require", PROBE, path.join(HOOKS_DIR, adapter.name)], {
+  const argv = ["--require", PROBE, path.join(HOOKS_DIR, adapter.name), ...(adapter.argv || [])];
+  const result = spawnSync(process.execPath, argv, {
     input: `${JSON.stringify(adapter.payload)}\n`,
     encoding: "utf8",
     windowsHide: true,
@@ -116,6 +128,29 @@ describe("#681 — every adapter survives a clean offline with zero spawn", { sk
       }
     });
   }
+
+  // VACUITY GUARD. "Zero spawn" only means something if the adapter would
+  // otherwise have spawned. Every row above must therefore attempt exactly one
+  // spawn when Clawd looks ALIVE — if it attempts zero either way, the row is
+  // decoration and the offline assertion proves nothing about it.
+  //
+  // This is not hypothetical: a real-machine audit found copilot-hook.js
+  // reporting zero spawns online AND offline, because it takes its event from
+  // argv[2] and the harness only fed it stdin. It had been passing this suite
+  // without ever running.
+  describe("the offline assertions are not vacuous", () => {
+    for (const adapter of ADAPTERS) {
+      it(`${adapter.name}: attempts exactly one spawn when Clawd is alive`, () => {
+        const r = runHookOffline(adapter, { runtimeJson: LIVE_RUNTIME() });
+        assert.ok(Array.isArray(r.spawns), `${adapter.name} did not report — stderr=${r.stderr}`);
+        assert.strictEqual(r.spawns.length, 1,
+          `${adapter.name} must attempt exactly one snapshot with a live Clawd — got `
+          + `${JSON.stringify(r.spawns)}. Zero here means this adapter never runs, so its `
+          + `offline case above proves nothing.`);
+        assert.match(r.spawns[0], /powershell/i, "and it is the snapshot PowerShell");
+      });
+    }
+  });
 
   it("covers every createPidResolver consumer in hooks/ (fails when a 14th adapter lands)", () => {
     const consumers = fs.readdirSync(HOOKS_DIR)
