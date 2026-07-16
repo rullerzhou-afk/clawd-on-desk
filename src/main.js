@@ -4079,9 +4079,8 @@ if (!gotTheLock) {
   app.on("before-quit", () => {
     isQuitting = true;
     if (systemWakeRecovery) systemWakeRecovery.dispose();
-    // #525: release the IVirtualDesktopManager COM ref. (CoUninitialize is
-    // deliberately NOT called — the main thread's COM lifetime belongs to
-    // Chromium; see win-cloak-recovery.js.)
+    // #525: release the IVirtualDesktopManager COM ref and pay back our own
+    // CoInitializeEx count (see win-cloak-recovery.js dispose()).
     _cloakInspector.dispose();
     try { stopUpdateScheduler(); } catch {}
     releasePowerSaveBlocker();

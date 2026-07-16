@@ -32,9 +32,11 @@
 //
 // COM lifetime: CoInitializeEx may report S_OK, S_FALSE, or RPC_E_CHANGED_MODE
 // depending on what Chromium already did on this thread — none of those block
-// CoCreateInstance, so success is judged solely by CoCreateInstance. We Release
-// the manager on dispose() but deliberately never CoUninitialize: the main
-// thread's COM lifetime belongs to Chromium.
+// CoCreateInstance, so success is judged solely by CoCreateInstance. dispose()
+// Releases the manager and then pays back OUR CoInitializeEx count (S_OK and
+// S_FALSE both add one; RPC_E_CHANGED_MODE adds none) — balancing our own
+// count is required by the CoInitializeEx contract and never disturbs
+// Chromium's own counts on the thread.
 
 const DWMWA_CLOAK = 13;
 const DWMWA_CLOAKED = 14;
@@ -92,9 +94,17 @@ function createCloakInspector(options = {}) {
   // probe (reporter logs show "vdesk probe ready" + per-window vdesk=CURRENT).
   let vdeskQuery = null;
   let vdeskRelease = null;
+  let coUninitialize = null;
+  // COM init is reference-counted per thread: our CoInitializeEx adds exactly
+  // one count that dispose() pays back with one CoUninitialize (same thread —
+  // module load and before-quit both run on the main thread). Balancing our
+  // own count never disturbs Chromium's. RPC_E_CHANGED_MODE adds no count, so
+  // nothing is owed in that case.
+  let owesCoUninitialize = false;
   try {
     const ole32 = koffi.load("ole32.dll");
     const CoInitializeEx = ole32.func("int __stdcall CoInitializeEx(void *pvReserved, uint dwCoInit)");
+    coUninitialize = ole32.func("void __stdcall CoUninitialize()");
     const CoCreateInstance = ole32.func(
       "int __stdcall CoCreateInstance(void *rclsid, void *pUnkOuter, uint dwClsContext, void *riid, _Out_ void **ppv)"
     );
@@ -109,6 +119,7 @@ function createCloakInspector(options = {}) {
       return b;
     };
     const coInitHr = CoInitializeEx(null, 0x2 /* COINIT_APARTMENTTHREADED */);
+    owesCoUninitialize = coInitHr === 0 || coInitHr === 1; // S_OK / S_FALSE
     const ppv = [null];
     const ccHr = CoCreateInstance(
       guidBuf("AA509086-5CA9-4C25-8F95-589D3C07B48A"), // CLSID_VirtualDesktopManager
@@ -192,9 +203,15 @@ function createCloakInspector(options = {}) {
     },
 
     dispose() {
+      // Order matters: release the COM object before paying back the COM
+      // init count that keeps its apartment alive.
       if (vdeskRelease) vdeskRelease();
       vdeskQuery = null;
       vdeskRelease = null;
+      if (owesCoUninitialize && coUninitialize) {
+        try { coUninitialize(); } catch {}
+        owesCoUninitialize = false;
+      }
     },
   };
 }

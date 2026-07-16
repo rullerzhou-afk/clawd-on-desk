@@ -793,9 +793,32 @@ describe("pet-window-runtime cloak self-heal (#525)", () => {
     const before = renderWin.calls.length;
     assert.equal(h.runtime.recoverIfCloaked(), "failed");
     assert.ok(inspector.calls.includes("uncloak"));
-    // No showInactive/keepOutOfTaskbar on the window after a failed native call.
+    // No showInactive/keepOutOfTaskbar on the window after a failed native call...
     assert.deepStrictEqual(renderWin.calls.slice(before), []);
     assert.ok(!h.calls.some(([name]) => name === "keepOutOfTaskbar"));
+    // ...and no global topmost re-assert either — an all-failed round must be
+    // a complete no-op on the windows (codex round-3 finding).
+    assert.ok(!h.calls.some(([name]) => name === "reassertWinTopmost"));
+  });
+
+  it("recoverIfCloaked still re-asserts topmost in a mixed round where one window did recover", () => {
+    const flags = new Map();
+    const renderWin = makeWindow();
+    const hitWin = makeWindow();
+    flags.set(renderWin, 1);
+    flags.set(hitWin, 1);
+    const inspector = makeCloakInspector({
+      flag: (win) => flags.get(win) ?? 0,
+      onUncloak: (win) => {
+        if (win === renderWin) { flags.set(renderWin, 0); return true; }
+        return false; // hit window's native un-cloak fails
+      },
+    });
+    const h = createRuntime({ cloakInspector: inspector, renderWin, hitWin });
+    assert.equal(h.runtime.recoverIfCloaked(), "failed");
+    // The recovered window was shown, so the topmost re-assert must run.
+    assert.ok(renderWin.calls.some(([n]) => n === "showInactive"));
+    assert.ok(h.calls.some(([name]) => name === "reassertWinTopmost"));
   });
 
   it("a clean round resets the backoff so the next independent fault starts fresh", () => {

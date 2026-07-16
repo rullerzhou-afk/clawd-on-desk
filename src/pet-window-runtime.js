@@ -350,6 +350,7 @@ function createPetWindowRuntime(options = {}) {
     if (!targets.length) return "no-window";
 
     let attempted = false;
+    let touched = false;
     let stillCloaked = false;
     for (const win of targets) {
       const flag = cloakInspector.readCloakState(win);
@@ -368,6 +369,7 @@ function createPetWindowRuntime(options = {}) {
       }
       win.showInactive();
       keepOutOfTaskbar(win);
+      touched = true;
       if (cloakInspector.readCloakState(win) !== 0) stillCloaked = true;
     }
     if (!attempted) {
@@ -379,7 +381,10 @@ function createPetWindowRuntime(options = {}) {
       return "clean";
     }
 
-    reassertWinTopmost();
+    // Same fail-open contract as above, second exit: a round where every
+    // un-cloak call failed must not re-assert topmost either — that would
+    // setAlwaysOnTop both windows on a path where native calls are failing.
+    if (touched) reassertWinTopmost();
     if (!stillCloaked) {
       cloakFailStreak = 0;
       cloakCooldownUntil = 0;
