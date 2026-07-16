@@ -625,16 +625,22 @@ function makeCloakInspector(overrides = {}) {
   const inspector = {
     calls: [],
     available: overrides.available ?? true,
+    // number, or (win) => number for per-window flags (mixed-verdict tests).
     flag: overrides.flag ?? 0,
     // "onCurrent: null" must survive as null (= COM probe down), so ?? is wrong here.
     onCurrent: "onCurrent" in overrides ? overrides.onCurrent : true,
     uncloakClears: overrides.uncloakClears ?? true,
-    readCloakState() { inspector.calls.push("read"); return inspector.flag; },
+    uncloakResult: overrides.uncloakResult ?? true,
+    flagFor(win) {
+      return typeof inspector.flag === "function" ? inspector.flag(win) : inspector.flag;
+    },
+    readCloakState(win) { inspector.calls.push("read"); return inspector.flagFor(win); },
     isOnCurrentVirtualDesktop() { inspector.calls.push("vdesk"); return inspector.onCurrent; },
-    uncloak() {
+    uncloak(win) {
       inspector.calls.push("uncloak");
-      if (inspector.uncloakClears) inspector.flag = 0;
-      return true;
+      if (overrides.onUncloak) return overrides.onUncloak(win);
+      if (inspector.uncloakClears && typeof inspector.flag !== "function") inspector.flag = 0;
+      return inspector.uncloakResult;
     },
     dispose() {},
   };
@@ -746,15 +752,64 @@ describe("pet-window-runtime cloak self-heal (#525)", () => {
     assert.equal(down.runtime.recoverIfCloaked(), "unavailable");
   });
 
-  it("showPetWindows un-cloaks an abnormally cloaked window before showing", () => {
-    const inspector = makeCloakInspector({ flag: 1, onCurrent: true });
-    const h = createRuntime({ cloakInspector: inspector });
+  it("showPetWindows un-cloaks an abnormally cloaked window BEFORE showInactive (order-sensitive)", () => {
+    // Shared timeline so the uncloak/showInactive relative order is provable —
+    // a swapped implementation must fail this test.
+    const timeline = [];
+    const renderWin = makeWindow();
+    const origShowInactive = renderWin.showInactive;
+    renderWin.showInactive = () => { timeline.push("showInactive"); origShowInactive(); };
+    const inspector = makeCloakInspector({ flag: 1, onCurrent: true, onUncloak: () => { timeline.push("uncloak"); return true; } });
+    const h = createRuntime({ cloakInspector: inspector, renderWin });
     h.runtime.setPetHidden(true);
-    inspector.calls.length = 0;
+    timeline.length = 0;
     h.runtime.setPetHidden(false);
+    const uncloakIdx = timeline.indexOf("uncloak");
+    const showIdx = timeline.indexOf("showInactive");
+    assert.ok(uncloakIdx >= 0 && showIdx >= 0);
+    assert.ok(uncloakIdx < showIdx, `expected uncloak before showInactive, got ${JSON.stringify(timeline)}`);
+  });
+
+  it("recoverIfCloaked fails the round when one window recovers and the other stays cloaked", () => {
+    const flags = new Map();
+    const renderWin = makeWindow();
+    const hitWin = makeWindow();
+    flags.set(renderWin, 1); // recovers on uncloak
+    flags.set(hitWin, 1);    // stays cloaked forever
+    const inspector = makeCloakInspector({
+      flag: (win) => flags.get(win) ?? 0,
+      onUncloak: (win) => { if (win === renderWin) flags.set(renderWin, 0); return true; },
+    });
+    const h = createRuntime({ cloakInspector: inspector, renderWin, hitWin });
+    assert.equal(h.runtime.recoverIfCloaked(), "failed");
+    // Shared cooldown: the healthy window's success must not clear the streak.
+    assert.equal(h.runtime.recoverIfCloaked(), "backoff");
+  });
+
+  it("recoverIfCloaked does not touch the window when the un-cloak call itself fails (fail-open)", () => {
+    const inspector = makeCloakInspector({ flag: 1, uncloakResult: false, uncloakClears: false });
+    const renderWin = makeWindow();
+    const h = createRuntime({ cloakInspector: inspector, renderWin });
+    const before = renderWin.calls.length;
+    assert.equal(h.runtime.recoverIfCloaked(), "failed");
     assert.ok(inspector.calls.includes("uncloak"));
-    const win = h.renderWin;
-    const uncloakBeforeShow = win.calls.findIndex(([n]) => n === "showInactive") >= 0;
-    assert.ok(uncloakBeforeShow);
+    // No showInactive/keepOutOfTaskbar on the window after a failed native call.
+    assert.deepStrictEqual(renderWin.calls.slice(before), []);
+    assert.ok(!h.calls.some(([name]) => name === "keepOutOfTaskbar"));
+  });
+
+  it("a clean round resets the backoff so the next independent fault starts fresh", () => {
+    let clock = 1_000_000;
+    const inspector = makeCloakInspector({ flag: 1, uncloakClears: false });
+    const h = createRuntime({ cloakInspector: inspector, now: () => clock });
+
+    assert.equal(h.runtime.recoverIfCloaked(), "failed");   // streak=1, cooldown 10s
+    clock += 10_001;
+    inspector.flag = 0;                                      // fault resolves on its own
+    assert.equal(h.runtime.recoverIfCloaked(), "clean");     // must reset the streak
+    inspector.flag = 1;                                      // NEW independent fault
+    assert.equal(h.runtime.recoverIfCloaked(), "failed");    // streak must restart at 1
+    clock += 10_001;                                         // fresh 10s window, not 20s
+    assert.equal(h.runtime.recoverIfCloaked(), "failed");
   });
 });

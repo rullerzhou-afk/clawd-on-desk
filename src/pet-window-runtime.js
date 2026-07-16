@@ -357,12 +357,27 @@ function createPetWindowRuntime(options = {}) {
       const verdict = classifyCloakState(flag, cloakInspector.isOnCurrentVirtualDesktop(win));
       if (verdict !== "recover") continue;
       attempted = true;
-      cloakInspector.uncloak(win);
+      // Fail-open contract: if the DWM un-cloak call itself fails, do NOT go
+      // on to touch the window (show/taskbar/topmost would be a behavior
+      // change over the pre-#525 no-op, and a fail-open re-read of 0 could
+      // then mislabel the round "recovered"). Count it as a failure and let
+      // the backoff decide when to try again.
+      if (!cloakInspector.uncloak(win)) {
+        stillCloaked = true;
+        continue;
+      }
       win.showInactive();
       keepOutOfTaskbar(win);
       if (cloakInspector.readCloakState(win) !== 0) stillCloaked = true;
     }
-    if (!attempted) return "clean";
+    if (!attempted) {
+      // Nothing abnormal this round: the previous fault (if any) resolved on
+      // its own, so the NEXT independent fault must start from a fresh 10s
+      // backoff instead of inheriting an escalated cooldown.
+      cloakFailStreak = 0;
+      cloakCooldownUntil = 0;
+      return "clean";
+    }
 
     reassertWinTopmost();
     if (!stillCloaked) {
