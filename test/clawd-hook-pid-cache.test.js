@@ -525,5 +525,36 @@ describe("clawd-hook end-to-end with the real resolver — non-Windows", () => {
       const body = env.buildStateBody("PreToolUse", { session_id: freshSid(), cwd: CWD }, env.makeResolve());
       assert.ok(!JSON.stringify(body).includes("--print"));
     });
+
+    // The fixtures above model a node-hosted install (`comm=` → node, so the
+    // walk matches via agentCmdlineCheck). A native-binary install — the macOS
+    // default now — takes a DIFFERENT branch: `comm=` basename is `claude`, so
+    // agentNameSet matches by NAME and the resolver re-queries `ps -o command=`
+    // for the line it derives headless from. Both shapes below are pasted from
+    // a real Apple Silicon run (#687 verification comment), not guessed.
+    describe("native-binary install (the shape a real Mac actually has)", () => {
+      it("claude -p reports headless via the agent-name branch", () => {
+        env.state.psComm = "claude";
+        env.state.psCommand = "claude -p hi";
+        const body = env.buildStateBody("PreToolUse", { session_id: freshSid(), cwd: CWD }, env.makeResolve());
+        assert.ok(body.agent_pid, "precondition: the NAME branch found the agent");
+        assert.strictEqual(body.headless, true,
+          "the command= re-query must reach the derivation on the name branch too");
+      });
+
+      it("interactive: --permission-* flags start with --p but must not read as headless", () => {
+        // Real interactive comm= is an absolute path; the walk must basename it
+        // before the name-set lookup. The command line is the real stream-json
+        // invocation whose --permission-prompt-tool/--permission-mode both open
+        // with --p yet trip neither regex alternative.
+        env.state.psComm = "/Users/u/.local/share/claude-code/2.1.209/claude.app/Contents/MacOS/claude";
+        env.state.psCommand = "/Users/u/.local/share/claude-code/2.1.209/claude.app/Contents/MacOS/claude"
+          + " --output-format stream-json --verbose --input-format stream-json"
+          + " --permission-prompt-tool stdio --permission-mode auto";
+        const body = env.buildStateBody("PreToolUse", { session_id: freshSid(), cwd: CWD }, env.makeResolve());
+        assert.ok(body.agent_pid, "precondition: the absolute-path comm= still matches after basename");
+        assert.ok(!("headless" in body), "interactive must stay absent-not-false on the wire");
+      });
+    });
   });
 });
