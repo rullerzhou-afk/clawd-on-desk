@@ -151,13 +151,35 @@ applyWindowsAppUserModelId(app, process.platform);
 
 // ── Windows: AllowSetForegroundWindow via FFI ──
 let _allowSetForeground = null;
+let _isWindowCloaked = null;
 if (isWin) {
   try {
     const koffi = require("koffi");
     const user32 = koffi.load("user32.dll");
     _allowSetForeground = user32.func("bool __stdcall AllowSetForegroundWindow(int dwProcessId)");
+    const dwmapi = koffi.load("dwmapi.dll");
+    const dwmGetWindowAttribute = dwmapi.func("int __stdcall DwmGetWindowAttribute(void *hwnd, uint dwAttribute, void *pvAttribute, uint cbAttribute)");
+    _isWindowCloaked = (targetWin) => {
+      if (!targetWin || targetWin.isDestroyed()) return false;
+      let handle;
+      try {
+        handle = targetWin.getNativeWindowHandle();
+      } catch {
+        return false;
+      }
+      if (!handle || handle.length < 8) return false;
+      const hwnd = handle.readBigUInt64LE(0);
+      if (hwnd === 0n) return false;
+      const out = Buffer.alloc(4);
+      try {
+        const hr = dwmGetWindowAttribute(hwnd, 14, out, 4);
+        return hr === 0 && out.readInt32LE(0) !== 0;
+      } catch {
+        return false;
+      }
+    };
   } catch (err) {
-    console.warn("Clawd: koffi/AllowSetForegroundWindow not available:", err.message);
+    console.warn("Clawd: koffi/Windows window helpers not available:", err.message);
   }
 }
 
@@ -745,6 +767,7 @@ const petWindowRuntime = createPetWindowRuntime({
   reapplyMacVisibility: () => reapplyMacVisibility(),
   reassertWinTopmost: () => reassertWinTopmost(),
   scheduleHwndRecovery: () => scheduleHwndRecovery(),
+  isWindowCloaked: (targetWin) => _isWindowCloaked ? _isWindowCloaked(targetWin) : false,
   isNearWorkAreaEdge: (bounds) => isNearWorkAreaEdge(bounds),
   flushRuntimeStateToPrefs: () => flushRuntimeStateToPrefs(),
   handleMiniDisplayChange: () => _mini.handleDisplayChange(),

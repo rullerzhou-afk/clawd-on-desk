@@ -133,6 +133,7 @@ function createPetWindowRuntime(options = {}) {
   const syncImeEditingPetDodge = options.syncImeEditingPetDodge || noop;
   const reassertWinTopmost = options.reassertWinTopmost || noop;
   const scheduleHwndRecovery = options.scheduleHwndRecovery || noop;
+  const isWindowCloaked = options.isWindowCloaked || (() => false);
   const isNearWorkAreaEdge = options.isNearWorkAreaEdge || (() => false);
   const flushRuntimeStateToPrefs = options.flushRuntimeStateToPrefs || noop;
   const handleMiniDisplayChange = options.handleMiniDisplayChange || noop;
@@ -251,14 +252,27 @@ function createPetWindowRuntime(options = {}) {
     return petHidden;
   }
 
+  function isActuallyVisible(win) {
+    return isLiveWindow(win)
+      && (typeof win.isVisible !== "function" || win.isVisible())
+      && !isWindowCloaked(win);
+  }
+
+  function recoverCloakedWindow(win) {
+    if (!isLiveWindow(win) || !isWindowCloaked(win)) return;
+    try { win.hide(); } catch {}
+  }
+
   function showPetWindows() {
     const win = getRenderWindow();
     if (isLiveWindow(win)) {
+      recoverCloakedWindow(win);
       win.showInactive();
       keepOutOfTaskbar(win);
     }
     const hitWin = getHitWindow();
     if (isLiveWindow(hitWin)) {
+      recoverCloakedWindow(hitWin);
       hitWin.showInactive();
       keepOutOfTaskbar(hitWin);
     }
@@ -281,13 +295,18 @@ function createPetWindowRuntime(options = {}) {
     const win = getRenderWindow();
     if (!isLiveWindow(win)) return { applied: false, deferred: false, changed: false };
     if (getMiniTransitioning()) return { applied: false, deferred: true, changed: false };
-    if (target === petHidden) return { applied: true, deferred: false, changed: false };
-    if (petHidden) {
+    const needsVisibleRecovery = !target && !isActuallyVisible(win);
+    if (target === petHidden && !needsVisibleRecovery) return { applied: true, deferred: false, changed: false };
+    const changed = target !== petHidden;
+    if (!target) {
       // becoming visible
       showPetWindows();
       showFloatingSurfacesForPet();
       reapplyMacVisibility();
       petHidden = false;
+      syncHitWin();
+      reassertWinTopmost();
+      scheduleHwndRecovery();
     } else {
       // becoming hidden
       hidePetWindows();
@@ -298,11 +317,12 @@ function createPetWindowRuntime(options = {}) {
     syncPermissionShortcuts();
     buildTrayMenu();
     buildContextMenu();
-    return { applied: true, deferred: false, changed: true };
+    return { applied: true, deferred: false, changed };
   }
 
   function togglePetVisibility() {
-    return setPetHidden(!petHidden);
+    const win = getRenderWindow();
+    return setPetHidden(!(petHidden || !isActuallyVisible(win)));
   }
 
   function bringPetToPrimaryDisplay() {
@@ -544,7 +564,7 @@ function createPetWindowRuntime(options = {}) {
     if (typeof optionsArg.setRenderWindow === "function") {
       optionsArg.setRenderWindow(renderWin);
     }
-    renderWin.setFocusable(false);
+    if (!isWin) renderWin.setFocusable(false);
 
     if (isLinux) {
       renderWin.on("close", (event) => {

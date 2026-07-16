@@ -148,7 +148,7 @@ Mini 状态映射：
 
 ## Electron And Platform Notes
 
-- `win.setFocusable(false)`：渲染窗口永不抢焦点
+- `win.setFocusable(false)`：非 Windows 渲染窗口不抢焦点；Windows 保持 focusable 以避免透明置顶窗口被 DWM cloaking 后不可见
 - `hitWin.focusable: true`：输入窗口允许激活，这是修复拖拽 bug 的关键
 - `win.showInactive()`：显示时不打断用户输入
 - 渲染 / 输入窗口都依赖 `backgroundThrottling: false`；unfocused 节流会放大眼球追踪和输入恢复的时序问题
