@@ -21,6 +21,7 @@ const {
   needsFinalClampAdjustment: needsFinalClampAdjustmentRaw,
   materializeVirtualBounds: materializeVirtualBoundsRaw,
 } = require("./drag-position");
+const { classifyCloakState } = require("./win-cloak-recovery");
 
 const noop = () => {};
 const DEFAULT_CRASH_RELOAD_LIMIT = 5;
@@ -133,6 +134,11 @@ function createPetWindowRuntime(options = {}) {
   const syncImeEditingPetDodge = options.syncImeEditingPetDodge || noop;
   const reassertWinTopmost = options.reassertWinTopmost || noop;
   const scheduleHwndRecovery = options.scheduleHwndRecovery || noop;
+  // #525: DWM cloak probe + un-cloak primitives (win-cloak-recovery.js).
+  // Absent/unavailable inspector degrades every cloak path to a no-op.
+  const cloakInspector = options.cloakInspector || null;
+  const isMiniAnimating = options.isMiniAnimating || (() => false);
+  const now = options.now || (() => Date.now());
   const isNearWorkAreaEdge = options.isNearWorkAreaEdge || (() => false);
   const flushRuntimeStateToPrefs = options.flushRuntimeStateToPrefs || noop;
   const handleMiniDisplayChange = options.handleMiniDisplayChange || noop;
@@ -251,14 +257,28 @@ function createPetWindowRuntime(options = {}) {
     return petHidden;
   }
 
+  // #525: clear an abnormal DWM cloak before showing. showInactive() alone
+  // does NOT un-cloak (hide/show cycling is unreliable for that — plan §1.2-B);
+  // DwmSetWindowAttribute(DWMWA_CLOAK, FALSE) is the direct primitive. Windows
+  // parked on another virtual desktop are deliberately left alone.
+  function uncloakIfAbnormal(win) {
+    if (!cloakInspector || !cloakInspector.available || !isLiveWindow(win)) return false;
+    const flag = cloakInspector.readCloakState(win);
+    const verdict = classifyCloakState(flag, flag === 0 ? true : cloakInspector.isOnCurrentVirtualDesktop(win));
+    if (verdict !== "recover") return false;
+    return cloakInspector.uncloak(win);
+  }
+
   function showPetWindows() {
     const win = getRenderWindow();
     if (isLiveWindow(win)) {
+      uncloakIfAbnormal(win);
       win.showInactive();
       keepOutOfTaskbar(win);
     }
     const hitWin = getHitWindow();
     if (isLiveWindow(hitWin)) {
+      uncloakIfAbnormal(hitWin);
       hitWin.showInactive();
       keepOutOfTaskbar(hitWin);
     }
@@ -303,6 +323,61 @@ function createPetWindowRuntime(options = {}) {
 
   function togglePetVisibility() {
     return setPetHidden(!petHidden);
+  }
+
+  // ── #525: self-healing for cloaked-yet-supposedly-visible windows ──
+  //
+  // Called from the 5s topmost watchdog, powerMonitor resume/unlock, and the
+  // second-instance handler. Deliberately NOT wired into togglePetVisibility:
+  // hide must always mean hide (a cloak-aware toggle polarity degenerates into
+  // "can never hide" on machines whose cloak flag reads permanently non-zero —
+  // the exact regression review round 2026-07-16 blocked in the external
+  // patch). Recovery failures back off exponentially so a stubborn cloak never
+  // turns the watchdog into a 5s hide/show strobe.
+  const CLOAK_BACKOFF_BASE_MS = 5_000;
+  const CLOAK_BACKOFF_MAX_MS = 300_000;
+  let cloakFailStreak = 0;
+  let cloakCooldownUntil = 0;
+
+  function recoverIfCloaked() {
+    if (!cloakInspector || !cloakInspector.available) return "unavailable";
+    if (petHidden) return "hidden";
+    if (getMiniTransitioning() || isMiniAnimating() || dragLocked) return "busy";
+    if (settingsSizePreviewSyncFrozen) return "frozen";
+    if (now() < cloakCooldownUntil) return "backoff";
+
+    const targets = [getRenderWindow(), getHitWindow()].filter(isLiveWindow);
+    if (!targets.length) return "no-window";
+
+    let attempted = false;
+    let stillCloaked = false;
+    for (const win of targets) {
+      const flag = cloakInspector.readCloakState(win);
+      if (flag === 0) continue;
+      const verdict = classifyCloakState(flag, cloakInspector.isOnCurrentVirtualDesktop(win));
+      if (verdict !== "recover") continue;
+      attempted = true;
+      cloakInspector.uncloak(win);
+      win.showInactive();
+      keepOutOfTaskbar(win);
+      if (cloakInspector.readCloakState(win) !== 0) stillCloaked = true;
+    }
+    if (!attempted) return "clean";
+
+    reassertWinTopmost();
+    if (!stillCloaked) {
+      cloakFailStreak = 0;
+      cloakCooldownUntil = 0;
+      scheduleHwndRecovery();
+      return "recovered";
+    }
+    cloakFailStreak += 1;
+    const backoff = Math.min(
+      CLOAK_BACKOFF_BASE_MS * 2 ** cloakFailStreak,
+      CLOAK_BACKOFF_MAX_MS
+    );
+    cloakCooldownUntil = now() + backoff;
+    return "failed";
   }
 
   function bringPetToPrimaryDisplay() {
@@ -886,6 +961,7 @@ function createPetWindowRuntime(options = {}) {
     isPetHidden,
     setPetHidden,
     togglePetVisibility,
+    recoverIfCloaked,
     bringPetToPrimaryDisplay,
     getViewportOffsetY,
     setViewportOffsetY,

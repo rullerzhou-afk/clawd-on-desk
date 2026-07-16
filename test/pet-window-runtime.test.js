@@ -117,6 +117,9 @@ function createRuntime(overrides = {}) {
       : {}),
     reassertWinTopmost: () => calls.push(["reassertWinTopmost"]),
     scheduleHwndRecovery: () => calls.push(["scheduleHwndRecovery"]),
+    ...(overrides.cloakInspector ? { cloakInspector: overrides.cloakInspector } : {}),
+    ...(overrides.isMiniAnimating ? { isMiniAnimating: overrides.isMiniAnimating } : {}),
+    ...(overrides.now ? { now: overrides.now } : {}),
     isNearWorkAreaEdge: () => overrides.nearEdge || false,
     flushRuntimeStateToPrefs: () => calls.push(["flushRuntimeStateToPrefs"]),
     handleMiniDisplayChange: () => calls.push(["handleMiniDisplayChange"]),
@@ -606,5 +609,152 @@ describe("pet-window-runtime setPetHidden contract (#416)", () => {
     assert.equal(h.runtime.isPetHidden(), true);
     h.runtime.togglePetVisibility();
     assert.equal(h.runtime.isPetHidden(), false);
+  });
+});
+
+// ── #525: DWM cloak self-heal ──
+//
+// The review of the external cef717d patch (2026-07-16, three independent
+// reviewers) blocked a cloak-aware toggle polarity: on a machine whose cloak
+// flag reads permanently non-zero (the #496 reporter's machine did, SHELL=2
+// while visibly fine), "toggle by actual visibility" degenerates into
+// setPetHidden(false) forever — tray/context-menu/shortcut all lose the
+// ability to hide. These tests pin the survivors: hide always means hide;
+// recovery lives on its own path with guards and backoff.
+function makeCloakInspector(overrides = {}) {
+  const inspector = {
+    calls: [],
+    available: overrides.available ?? true,
+    flag: overrides.flag ?? 0,
+    // "onCurrent: null" must survive as null (= COM probe down), so ?? is wrong here.
+    onCurrent: "onCurrent" in overrides ? overrides.onCurrent : true,
+    uncloakClears: overrides.uncloakClears ?? true,
+    readCloakState() { inspector.calls.push("read"); return inspector.flag; },
+    isOnCurrentVirtualDesktop() { inspector.calls.push("vdesk"); return inspector.onCurrent; },
+    uncloak() {
+      inspector.calls.push("uncloak");
+      if (inspector.uncloakClears) inspector.flag = 0;
+      return true;
+    },
+    dispose() {},
+  };
+  return inspector;
+}
+
+describe("pet-window-runtime cloak self-heal (#525)", () => {
+  it("toggle hides on the FIRST press even when the cloak flag reads permanently non-zero", () => {
+    const inspector = makeCloakInspector({ flag: 2, uncloakClears: false });
+    const h = createRuntime({ cloakInspector: inspector });
+    assert.equal(h.runtime.isPetHidden(), false);
+    h.runtime.togglePetVisibility();
+    // The blocked external patch returned false here (show-forever). Hide must win.
+    assert.equal(h.runtime.isPetHidden(), true);
+    h.runtime.togglePetVisibility();
+    assert.equal(h.runtime.isPetHidden(), false);
+  });
+
+  it("recoverIfCloaked un-cloaks a cloaked window on the current desktop and reports recovered", () => {
+    const inspector = makeCloakInspector({ flag: 1, onCurrent: true });
+    const h = createRuntime({ cloakInspector: inspector });
+    const res = h.runtime.recoverIfCloaked();
+    assert.equal(res, "recovered");
+    assert.ok(inspector.calls.includes("uncloak"));
+    assert.ok(h.calls.some(([name]) => name === "reassertWinTopmost"));
+    assert.ok(h.calls.some(([name]) => name === "scheduleHwndRecovery"));
+  });
+
+  it("recoverIfCloaked leaves a window parked on another virtual desktop alone", () => {
+    const inspector = makeCloakInspector({ flag: 2, onCurrent: false });
+    const h = createRuntime({ cloakInspector: inspector });
+    const res = h.runtime.recoverIfCloaked();
+    assert.equal(res, "clean");
+    assert.ok(!inspector.calls.includes("uncloak"));
+  });
+
+  it("recoverIfCloaked degrades to APP-only when the virtual-desktop probe is down", () => {
+    const shell = makeCloakInspector({ flag: 2, onCurrent: null });
+    const hShell = createRuntime({ cloakInspector: shell });
+    assert.equal(hShell.runtime.recoverIfCloaked(), "clean");
+    assert.ok(!shell.calls.includes("uncloak"));
+
+    const app = makeCloakInspector({ flag: 1, onCurrent: null });
+    const hApp = createRuntime({ cloakInspector: app });
+    assert.equal(hApp.runtime.recoverIfCloaked(), "recovered");
+    assert.ok(app.calls.includes("uncloak"));
+  });
+
+  it("recoverIfCloaked guard matrix: hidden/mini/drag/preview each stand down before probing", () => {
+    const mkH = (overrides) => {
+      const inspector = makeCloakInspector({ flag: 1 });
+      return { inspector, h: createRuntime({ cloakInspector: inspector, ...overrides }) };
+    };
+
+    const hidden = mkH({});
+    hidden.h.runtime.setPetHidden(true);
+    hidden.inspector.calls.length = 0;
+    assert.equal(hidden.h.runtime.recoverIfCloaked(), "hidden");
+    assert.equal(hidden.inspector.calls.length, 0);
+
+    const mini = mkH({ miniTransitioning: true });
+    assert.equal(mini.h.runtime.recoverIfCloaked(), "busy");
+    assert.equal(mini.inspector.calls.length, 0);
+
+    const anim = mkH({ isMiniAnimating: () => true });
+    assert.equal(anim.h.runtime.recoverIfCloaked(), "busy");
+    assert.equal(anim.inspector.calls.length, 0);
+
+    const drag = mkH({});
+    drag.h.runtime.setDragLocked(true);
+    assert.equal(drag.h.runtime.recoverIfCloaked(), "busy");
+    assert.equal(drag.inspector.calls.length, 0);
+
+    const preview = mkH({});
+    preview.h.runtime.beginSettingsSizePreviewProtection();
+    assert.equal(preview.h.runtime.recoverIfCloaked(), "frozen");
+    assert.equal(preview.inspector.calls.length, 0);
+  });
+
+  it("recoverIfCloaked backs off exponentially after a failed recovery and resets on success", () => {
+    let clock = 1_000_000;
+    const inspector = makeCloakInspector({ flag: 1, uncloakClears: false });
+    const h = createRuntime({ cloakInspector: inspector, now: () => clock });
+
+    assert.equal(h.runtime.recoverIfCloaked(), "failed");
+    // Cooldown = 5000 * 2^1 = 10s: immediate retry must be suppressed.
+    assert.equal(h.runtime.recoverIfCloaked(), "backoff");
+    clock += 9_999;
+    assert.equal(h.runtime.recoverIfCloaked(), "backoff");
+    clock += 2;
+    assert.equal(h.runtime.recoverIfCloaked(), "failed");
+    // Second failure doubles the cooldown window (20s).
+    clock += 10_001;
+    assert.equal(h.runtime.recoverIfCloaked(), "backoff");
+    clock += 10_000;
+    // Un-cloak starts working: recovery succeeds and the streak resets.
+    inspector.uncloakClears = true;
+    assert.equal(h.runtime.recoverIfCloaked(), "recovered");
+    inspector.flag = 1;
+    inspector.uncloakClears = false;
+    assert.equal(h.runtime.recoverIfCloaked(), "failed");
+    assert.equal(h.runtime.recoverIfCloaked(), "backoff");
+  });
+
+  it("recoverIfCloaked reports unavailable without an inspector (non-Windows / FFI down)", () => {
+    const none = createRuntime();
+    assert.equal(none.runtime.recoverIfCloaked(), "unavailable");
+    const down = createRuntime({ cloakInspector: makeCloakInspector({ available: false }) });
+    assert.equal(down.runtime.recoverIfCloaked(), "unavailable");
+  });
+
+  it("showPetWindows un-cloaks an abnormally cloaked window before showing", () => {
+    const inspector = makeCloakInspector({ flag: 1, onCurrent: true });
+    const h = createRuntime({ cloakInspector: inspector });
+    h.runtime.setPetHidden(true);
+    inspector.calls.length = 0;
+    h.runtime.setPetHidden(false);
+    assert.ok(inspector.calls.includes("uncloak"));
+    const win = h.renderWin;
+    const uncloakBeforeShow = win.calls.findIndex(([n]) => n === "showInactive") >= 0;
+    assert.ok(uncloakBeforeShow);
   });
 });

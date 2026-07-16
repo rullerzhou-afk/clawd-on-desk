@@ -170,6 +170,15 @@ const _isForegroundFullscreen = createForegroundFullscreenProbe({
   onError: (err) => console.warn("Clawd: win-fullscreen-detect not available:", err && err.message),
 });
 
+// ── Windows: DWM cloak inspection + un-cloak (#525 self-heal) ──
+// Best-effort; degrades to "never cloaked / recovery no-op" when koffi/dwmapi
+// or the virtual-desktop COM manager is unavailable.
+const { createCloakInspector } = require("./win-cloak-recovery");
+const _cloakInspector = createCloakInspector({
+  isWin,
+  log: (line) => console.warn(`Clawd: ${line}`),
+});
+
 // ── Windows: foreground Windows Terminal probe (server-side wt_hwnd sample,
 // #627 residual) ──
 // Best-effort; degrades to "never sampled" (always null) if koffi/user32 is
@@ -745,6 +754,8 @@ const petWindowRuntime = createPetWindowRuntime({
   reapplyMacVisibility: () => reapplyMacVisibility(),
   reassertWinTopmost: () => reassertWinTopmost(),
   scheduleHwndRecovery: () => scheduleHwndRecovery(),
+  cloakInspector: _cloakInspector,
+  isMiniAnimating: () => _mini.getIsAnimating(),
   isNearWorkAreaEdge: (bounds) => isNearWorkAreaEdge(bounds),
   flushRuntimeStateToPrefs: () => flushRuntimeStateToPrefs(),
   handleMiniDisplayChange: () => _mini.handleDisplayChange(),
@@ -1297,6 +1308,7 @@ const topmostRuntime = createTopmostRuntime({
   isMac,
   getWin: () => win,
   getHitWin: () => hitWin,
+  recoverCloakedPet: () => petWindowRuntime.recoverIfCloaked(),
   getPendingPermissions: () => pendingPermissions,
   getUpdateBubbleWindow: () => _updateBubble.getBubbleWindow(),
   getSessionHudWindow: () => getSessionHudWindow(),
@@ -3866,6 +3878,10 @@ if (!gotTheLock) {
         hitWin.showInactive();
         keepOutOfTaskbar(hitWin);
       }
+      // #525: relaunching while the pet is nominally visible is a "where is my
+      // pet?" signal — showInactive() alone cannot clear a DWM cloak, so run
+      // the cloak recovery path too.
+      petWindowRuntime.recoverIfCloaked();
     }
     if (shouldOpenSettingsWindowFromArgv(commandLine)) {
       settingsWindowRuntime.openWhenReady();
@@ -3988,6 +4004,16 @@ if (!gotTheLock) {
       ),
     });
     systemWakeRecovery.start();
+    // #525: sleep/wake and lock/unlock are prime DWM-cloak moments. Hang the
+    // cloak recovery directly on powerMonitor rather than onRecovered above:
+    // onRecovered only fires after a renderer round-trip and is skipped on
+    // timeout (system-wake-recovery.js finishWithTimeout), while un-cloaking is
+    // a main-process concern that must not depend on renderer health. The two
+    // paths coexist; recoverIfCloaked() is a no-op when nothing is cloaked.
+    if (isWin) {
+      powerMonitor.on("resume", () => petWindowRuntime.recoverIfCloaked());
+      powerMonitor.on("unlock-screen", () => petWindowRuntime.recoverIfCloaked());
+    }
     // macOS: bridge the OS app-hidden state (⌘H / Dock right-click → 隐藏) to the
     // pet. Pet windows are setCanHide:NO, so the OS marks the app hidden but the
     // windows refuse to vanish, and an inactive-app Dock Hide fires no

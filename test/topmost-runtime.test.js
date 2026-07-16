@@ -468,6 +468,51 @@ describe("topmost runtime Windows recovery", () => {
     assert.deepStrictEqual(hitWin.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]]);
   });
 
+  it("watchdog tick runs the cloak self-heal hook on every normal tick (#525)", () => {
+    const timers = makeTimers();
+    const recoveries = [];
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => new FakeWindow(),
+      getHitWin: () => new FakeWindow(),
+      isForegroundFullscreen: () => false,
+      recoverCloakedPet: () => recoveries.push("tick"),
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    });
+
+    runtime.startTopmostWatchdog();
+    timers.intervals[0].fn();
+    timers.intervals[0].fn();
+
+    assert.equal(recoveries.length, 2);
+  });
+
+  it("watchdog skips the cloak self-heal while standing down for a fullscreen app (#525/§8.3)", () => {
+    const timers = makeTimers();
+    const recoveries = [];
+    let overlay = false;
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => new FakeWindow(),
+      getHitWin: () => new FakeWindow(),
+      isForegroundFullscreen: () => true,
+      getFullscreenOverlay: () => overlay,
+      recoverCloakedPet: () => recoveries.push("tick"),
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    });
+
+    runtime.startTopmostWatchdog();
+    // Stand-down (fullscreen + overlay off): recovery must not fire.
+    timers.intervals[0].fn();
+    assert.equal(recoveries.length, 0);
+    // Overlay mode keeps re-asserting, so recovery may run again.
+    overlay = true;
+    timers.intervals[0].fn();
+    assert.equal(recoveries.length, 1);
+  });
+
   it("focusable poll drops hit-window activation under fullscreen and restores it otherwise (#538/#562)", () => {
     const timers = makeTimers();
     const win = new FakeWindow();

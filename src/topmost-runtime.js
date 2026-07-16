@@ -98,6 +98,11 @@ function createTopmostRuntime(options = {}) {
   // fullscreen ends because dragging needs it (#545). No-op off Windows / when
   // unset. (#538 drag focus-steal)
   const setHitWinFocusable = options.setHitWinFocusable || (() => {});
+  // #525: cloak self-heal hook, run at the tail of each watchdog tick. The
+  // callee (pet-window-runtime recoverIfCloaked) carries its own guards and
+  // exponential backoff; the watchdog only decides WHEN it's appropriate to
+  // try at all (see the fullscreen stand-down at the call site).
+  const recoverCloakedPet = options.recoverCloakedPet || (() => {});
   const setForceEyeResend = options.setForceEyeResend || (() => {});
   const applyPetWindowPosition = options.applyPetWindowPosition || (() => {});
   const syncHitWin = options.syncHitWin || (() => {});
@@ -406,6 +411,11 @@ function createTopmostRuntime(options = {}) {
       const skipTopmost = fsForeground && !getFullscreenOverlay();
       reassertWindowAndTaskbar(getWin(), { skipTopmost });
       reassertWindowAndTaskbar(getHitWin(), { skipTopmost });
+
+      // #525: periodic cloak self-heal. Skipped while standing down for a
+      // fullscreen app — recovery calls showInactive()/setAlwaysOnTop, exactly
+      // the interference stand-down exists to avoid (§8.3).
+      if (!skipTopmost) recoverCloakedPet();
 
       for (const perm of getPendingPermissions()) {
         const bubble = perm && perm.bubble;
