@@ -84,6 +84,7 @@ scripts/*
 !scripts/create-theme.js
 !scripts/zoom_phone_sync.py
 !scripts/sync_kancho.py
+!scripts/revenue_weekly_diff.py
 
 # oh-my-cursor state
 .omc/
