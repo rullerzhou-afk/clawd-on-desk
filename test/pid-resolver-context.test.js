@@ -543,10 +543,13 @@ describe("resolver v1→v2 promotion (Claude only)", () => {
     } finally { cleanup(); }
   });
 
-  it("start v2 write FAILURE keeps a pre-existing v1 (never drops it on a failed write)", (t) => {
-    // Regression for the High finding: a failed start v2 write must NOT delete
-    // the valid v1 — else the session loses its only cache and the next event
-    // re-freshes (flashes). v1 stays promotable on the next prompt/event.
+  it("start v2 write FAILURE still drops a pre-existing v1 (privacy-first, like promotion)", (t) => {
+    // REVERSED baseline. The earlier High finding pinned the opposite ("keep v1
+    // promotable"), and that was re-judged in review: a DEAD v1 can never be
+    // promoted, the sweep has a 24h age floor, and nothing writes v1 any more —
+    // so keeping it on a failed start write left a crashed session's raw
+    // command line on disk with NO collector. The v1 goes in all outcomes, the
+    // same trade claudePromote makes; the session's worst case is one re-fresh.
     const { resolve, cleanup } = mkResolver();
     const sid = freshSid();
     pc.writePidCache(sid, CWD, liveSubset());
@@ -554,7 +557,25 @@ describe("resolver v1→v2 promotion (Claude only)", () => {
     try {
       resolve(ctx(sid, "start"));
       assert.strictEqual(pc.readPidCacheV2(NS, sid, CWD), null, "the v2 write failed, so no v2 exists");
-      assert.ok(pc.readPidCache(sid, CWD), "a failed start v2 write must KEEP the valid v1");
+      assert.strictEqual(pc.readPidCache(sid, CWD), null, "the v1 must be dropped even on a failed v2 write");
+    } finally { cleanup(); }
+  });
+
+  it("event fresh + v2 write FAILURE drops a DEAD v1 — the resumed-crash scenario", (t) => {
+    // The exact hole the review's P1 described: a crashed session leaves a
+    // <24h v1 whose PIDs are dead. Dead ⇒ readLiveV1 never returns it, so
+    // promotion (and promotion's delete) never runs; <24h ⇒ the sweep skips it.
+    // A usable fresh walk on the SAME key is the only collector left — it must
+    // drop the v1 even when its own v2 write fails.
+    const { resolve, cleanup } = mkResolver();
+    const sid = freshSid();
+    pc.writePidCache(sid, CWD, liveSubset({ stablePid: DEAD_PID, agentPid: DEAD_PID }));
+    t.mock.method(pc, "writePidCacheV2", () => false);
+    try {
+      const meta = resolve(ctx(sid, "event"));
+      assert.strictEqual(meta.cacheSource, "fresh", "dead v1 cannot promote — event went fresh");
+      assert.strictEqual(pc.readPidCache(sid, CWD), null,
+        "the dead v1's raw command line must not outlive a usable fresh walk");
     } finally { cleanup(); }
   });
 
@@ -610,18 +631,6 @@ describe("resolver v1→v2 promotion (Claude only)", () => {
     } finally { cleanup(); }
   });
 
-  it("event fresh write FAILURE keeps a pre-existing (dead) v1 — the v1 drop is gated on write success", (t) => {
-    // A DEAD v1 is skipped by promotion, so the event reaches the fresh path with
-    // a v1 still on disk. A failed write must NOT drop it (gated on === true).
-    const { resolve, cleanup } = mkResolver();
-    const sid = freshSid();
-    pc.writePidCache(sid, CWD, { stablePid: DEAD_PID, agentPid: DEAD_PID, agentCommandLine: "x", detectedEditor: "code" });
-    t.mock.method(pc, "writePidCacheV2", () => false);
-    try {
-      resolve(ctx(sid, "event"));
-      assert.ok(pc.readPidCache(sid, CWD), "a failed event write must not drop the (dead) v1");
-    } finally { cleanup(); }
-  });
 });
 
 describe("resolver v1→v2 promotion — identity binds the exact bytes read (High, §5.5)", () => {

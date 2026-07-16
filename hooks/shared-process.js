@@ -718,17 +718,24 @@ function createPidResolver(options) {
   // start: fresh snapshot (reusing the prewarm), write v2 only when the walk is
   // non-degraded (snapshotOk && agentPid). Low-frequency orphan sweep first,
   // gated on cacheability (matching PR1: SessionStart only swept a cacheable
-  // session). Cleans a stale same-key v1 ONLY after a CONFIRMED v2 write — a
-  // failed write must keep v1 so the next prompt/event can still promote it
-  // (else the session loses its cache and re-freshes, i.e. flashes). No extra
-  // fresh for the cleanup.
+  // session). The same-key v1 is dropped whether or not the v2 write landed —
+  // the same "privacy-first, in all three outcomes" trade claudePromote makes.
+  // This REVERSES an earlier baseline that kept v1 on a failed write so the
+  // next prompt/event could still promote it: a DEAD v1 (crashed session,
+  // resumed sid/cwd) can never be promoted — readLiveV1 wants both PIDs alive —
+  // and the sweep has a 24h age floor, so a failed-write start was the only
+  // collector its raw command line had. A LIVE v1's promote would have deleted
+  // it on the very next event anyway (all three outcomes), so the most this
+  // costs the session is one re-fresh — the bounded cost §3 already accepts.
+  // The walk-usable condition stays: a degraded walk writes nothing and keeps
+  // v1, since promotion is then the session's only remaining cache path. No
+  // extra fresh for the cleanup.
   function startLifecycle(pidCache, namespace, sessionId, cacheCwd, canDisk) {
     if (canDisk) maybeSweep(pidCache);
     const meta = freshMetadata();
     if (canDisk && meta.snapshotOk && meta.agentPid) {
-      if (pidCache.writePidCacheV2(namespace, sessionId, cacheCwd, v2SubsetFrom(meta)) === true) {
-        claudeDropV1SameKey(pidCache, namespace, sessionId, cacheCwd);
-      }
+      pidCache.writePidCacheV2(namespace, sessionId, cacheCwd, v2SubsetFrom(meta));
+      claudeDropV1SameKey(pidCache, namespace, sessionId, cacheCwd);
     }
     return meta;
   }
@@ -783,8 +790,11 @@ function createPidResolver(options) {
     }
     const meta = freshMetadata();
     if (canDisk && meta.snapshotOk && meta.agentPid) {
-      if (pidCache.writePidCacheV2(namespace, sessionId, cacheCwd, v2SubsetFrom(meta)) === true) {
-        claudeDropV1SameKey(pidCache, namespace, sessionId, cacheCwd);
+      // v1 drop mirrors start: unconditional once a usable fresh walk is in
+      // hand (privacy-first even when the v2 write fails — see startLifecycle).
+      const wrote = pidCache.writePidCacheV2(namespace, sessionId, cacheCwd, v2SubsetFrom(meta)) === true;
+      claudeDropV1SameKey(pidCache, namespace, sessionId, cacheCwd);
+      if (wrote) {
         // First successful population is a sweep entry point for no-start
         // adapters (§5.4); the once-per-process guard makes it a no-op when
         // `start` already swept.
