@@ -1,6 +1,6 @@
 # 已知限制
 
-[返回 README](../README.zh-CN.md)
+[返回 README](../../README.zh-CN.md)
 
 | 限制 | 说明 |
 |------|------|
@@ -12,7 +12,7 @@
 | **Cursor Agent：无权限气泡** | Cursor 在 hook 的 stdout JSON 里处理权限，而不是走 HTTP 阻塞式审批，Clawd 无法接管这条审批链路。 |
 | **Cursor Agent：启动恢复能力有限** | 启动时不做进程检测，否则任意 Cursor 编辑器进程都可能误判为活跃会话。Clawd 会保持 idle，直到收到第一条 hook 事件。 |
 | **Hermes Agent：使用前需要安装集成** | Hermes 会显示在 Settings 里，但新安装默认是 Not installed。Clawd 只有在你显式安装该集成、且检测到真实 Hermes 安装后才会写入 plugin 文件。安装 Hermes 后，在 **Settings -> Agents -> Install** 里安装，或执行 `npm run install:hermes-plugin`。 |
-| **Hermes Agent：暂不支持权限气泡和 subagent 动画** | 当前 Hermes plugin 覆盖状态、会话、SessionEnd、工具活动和终端聚焦。权限气泡需要上游提供阻塞式审批协议；subagent 动画需要成对的 subagent start/stop 生命周期事件。 |
+| **Hermes Agent：部分支持权限气泡** | Hermes plugin 事件已覆盖状态、会话、SessionEnd、工具活动、终端聚焦、clarify 交互提问气泡，以及 plugin 发起的权限气泡。Clawd 尚未完全取代 Hermes 原生审批菜单：在上游提供阻塞式审批结果 hook 前，`once` / `session` / `always` 的持久化仍由 Hermes 处理。Subagent 生命周期仍需上游提供成对的 start/stop 事件。 |
 | **Kiro CLI：无法区分会话** | Kiro CLI stdin JSON 不含 session_id，所有 Kiro 会话会被合并为单个追踪会话。 |
 | **Kiro CLI：无 SessionEnd 事件** | Kiro CLI 没有 SessionEnd 事件，Clawd 无法检测 Kiro 会话结束。 |
 | **Kiro CLI：无 subagent 检测** | Kiro CLI 没有 subagent 事件，不会触发杂耍/指挥动画。 |
@@ -32,6 +32,7 @@
 | **Windows：hook 的进程信息需要 Clawd 正在运行** | 终端聚焦和会话 PID 来自一次进程树查询，hook 只在 Clawd 真正运行时才做。从 **vNEXT** 起，退出 Clawd 后残留的 CLI hook 不再查询进程树——它只上报已有信息就结束。可见影响是：在 Clawd 关闭期间开始的会话，要等到 Clawd 运行后的下一个事件才有可点击聚焦的目标；Clawd 已经认识的会话会保留此前学到的 PID。强杀 Clawd 后的几秒内、以及 `~/.clawd/runtime.json` 不可读时（Doctor → Local server 会给出警告）同理。升级到 vNEXT 后首次重启 Clawd 之前，旧版 `runtime.json` 没有 owner 字段，hook 会按"Clawd 未运行"处理并省略这些信息——重启一次即可恢复。 |
 | **Windows：Clawd 在线时部分 agent 仍会跑一次 PowerShell 进程查询** | 上面那次查询目前仍是一个隐藏的 PowerShell，会读取进程列表，安全软件可能因此告警。**vNEXT** 已经做到：Clawd 未运行时不再执行它，且临时缓存不再保存 agent 的命令行（只保存 `headless` 是/否）。在线路径暂时未变，跟踪于 [#681](https://github.com/rullerzhou-afk/clawd-on-desk/issues/681)、[#627](https://github.com/rullerzhou-afk/clawd-on-desk/issues/627) 和 [#634](https://github.com/rullerzhou-afk/clawd-on-desk/issues/634)。 |
 | **macOS/Linux 安装包自动更新** | DMG/AppImage/deb 安装包无法自动更新——使用 `git clone` + `npm start` 可通过 `git pull` 自动更新，或从 GitHub Releases 手动下载。 |
+| **Linux/Wayland：拖动和鼠标跟踪受限** | 原生 Wayland 禁止客户端定位窗口和查询全局光标，因此桌宠会居中出现、无法拖动，也无法跟踪鼠标。若 Wayland 会话中存在可用的 X server，Clawd 会在 XWayland 下自动重启一次（`--ozone-platform=x11`），以恢复窗口定位和拖动；此时鼠标跟踪仍仅限桌宠自身窗口。普通应用无法在 Wayland 下实现全屏光标跟踪；如需此能力，请使用原生 X11（Xorg）登录会话。`CLAWD_OZONE_PLATFORM` 可控制自动重启：`x11` 强制使用 XWayland，`wayland` / `auto` 保持原生 Wayland；命令行显式传入的 `--ozone-platform=…` 始终优先。详见 [#441](https://github.com/rullerzhou-afk/clawd-on-desk/issues/441)。 |
 | **Electron 主进程无自动化测试** | 单元测试覆盖了 agent 配置和日志轮询，但状态机、窗口管理、托盘等 Electron 逻辑暂无自动化测试。 |
 | **Claude Code：桌宠未运行时工具被自动拒绝** | 桌宠 HTTP 服务未运行时，Clawd 注册的 `PermissionRequest` hook 因 `ECONNREFUSED` 失败，Claude Code 当前会把这种失败当作"用户拒绝"，影响 `Edit`、`Write`、`Bash` 等所有需要权限的工具。这违反 CC 自己的 hooks 文档（声明 HTTP hook 失败应 non-blocking） —— 见 [anthropics/claude-code#46193](https://github.com/anthropics/claude-code/issues/46193)。绕过：保持桌宠运行（推荐），或临时把 `~/.claude/settings.json` 里的 `PermissionRequest` key 重命名以禁用该 hook。 |
 | **Claude Code + CC Switch：受保护的自动修复暂停** | Clawd 通常会在其他工具重写 `~/.claude/settings.json` 后自动补回 Claude hooks。但如果文件突然缩水到看起来不安全，Clawd 会暂停自动修复，避免把外部工具的半成品配置固化；Doctor 会把 Claude Code 标为需要 Fix。可通过 **Settings -> Doctor -> Fix**、重启 Clawd，或重新打开「自动管理 Claude hooks」修复。CC Switch 的 Shared Config Snippet 可在同一台机器上携带 Clawd hooks，但这些 hooks 含本机路径和端口，不建议当作跨设备通用片段同步。 |
