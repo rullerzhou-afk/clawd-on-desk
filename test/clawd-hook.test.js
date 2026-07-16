@@ -13,6 +13,7 @@ const path = require("path");
 
 const {
   buildStateBody,
+  isClaudeHeadlessCommandLine,
   attachStdinDiag,
   STDIN_READ_TIMEOUT_MS: CLAWD_HOOK_STDIN_TIMEOUT_MS,
   extractSessionTitleFromTranscript,
@@ -236,27 +237,60 @@ describe("buildStateBody", () => {
     assert.ok(!("pid_chain" in body));
   });
 
-  it("includes foreground WT HWND only on foreground-safe events", () => {
-    const resolveWithWtHwnd = () => ({
+  it("applies the foreground WT HWND only on foreground-safe events, and only when the resolver surfaces one", () => {
+    // #634: buildStateBody is now the Claude adapter — the shared resolver
+    // decides whether a foreground WT handle exists (only a fresh SessionStart
+    // snapshot carries one; a prompt is cache-only and never does, the server
+    // samples it), and buildStateBody applies it only on a foreground-safe
+    // event. The fake models the resolver contract: null foregroundWtHwnd for
+    // the prompt lifecycle. This is now platform-independent — the resolver
+    // owns the Windows/non-Windows behavior; deterministic both-platform
+    // coverage lives in test/clawd-hook-pid-cache.test.js (forced reloads).
+    const resolveByLifecycle = (ctx) => ({
       stablePid: 1,
       agentPid: null,
       detectedEditor: null,
       pidChain: [],
-      foregroundWtHwnd: "123456",
+      foregroundWtHwnd: ctx && ctx.lifecycle === "prompt" ? null : "123456",
     });
 
-    const startBody = buildStateBody("SessionStart", { session_id: "s" }, resolveWithWtHwnd);
-    const promptBody = buildStateBody("UserPromptSubmit", { session_id: "s" }, resolveWithWtHwnd);
-    const stopBody = buildStateBody("Stop", { session_id: "s" }, resolveWithWtHwnd);
+    const startBody = buildStateBody("SessionStart", { session_id: "s" }, resolveByLifecycle);
+    const promptBody = buildStateBody("UserPromptSubmit", { session_id: "s" }, resolveByLifecycle);
+    const stopBody = buildStateBody("Stop", { session_id: "s" }, resolveByLifecycle);
 
-    assert.strictEqual(startBody.wt_hwnd, "123456");
-    assert.strictEqual(promptBody.wt_hwnd, "123456");
-    assert.ok(!("wt_hwnd" in stopBody));
+    assert.strictEqual(startBody.wt_hwnd, "123456", "SessionStart (start) surfaces the fresh handle");
+    assert.ok(!("wt_hwnd" in promptBody), "prompt is cache-only; the hook never reports wt_hwnd (server samples it)");
+    assert.ok(!("wt_hwnd" in stopBody), "Stop is not a foreground-safe event even when a handle is present");
   });
 
-  describe("agentPid and headless detection", () => {
-    const makeResolve = (agentPid, agentCommandLine = "") =>
-      () => ({ stablePid: 1, agentPid, agentCommandLine, detectedEditor: null, pidChain: [] });
+  // #681 split this in two. The -p/--print predicate moved out of the adapter
+  // and into the resolver (createPidResolver's headlessCheck), because the pid
+  // cache must store the derived boolean rather than the raw command line it was
+  // derived from. So the regex is now tested directly, and the adapter is tested
+  // for wiring — that it applies the resolver's boolean and does not re-derive.
+  describe("isClaudeHeadlessCommandLine — the -p/--print predicate", () => {
+    const cases = [
+      ["node claude-code -p", true, "-p at end of line"],
+      ["node claude-code -p some-prompt", true, "-p followed by a space"],
+      ["node claude-code --print", true, "--print"],
+      ["node claude-code --print > out.txt", true, "--print mid-line"],
+      ["node claude-code --port 3000", false, "-p must not match a longer option's prefix"],
+      ["node claude-code --printer", false, "--print must not match a longer option's prefix"],
+      ["node claude-code", false, "plain interactive"],
+      ["", false, "empty"],
+      [null, false, "null"],
+      [undefined, false, "undefined"],
+    ];
+    for (const [cmdline, expected, label] of cases) {
+      it(`${label} ⇒ ${expected}`, () => {
+        assert.strictEqual(isClaudeHeadlessCommandLine(cmdline), expected);
+      });
+    }
+  });
+
+  describe("agentPid and headless wiring", () => {
+    const makeResolve = (agentPid, extra = {}) =>
+      () => ({ stablePid: 1, agentPid, agentCommandLine: "", detectedEditor: null, pidChain: [], ...extra });
 
     it("sets agent_pid and claude_pid when agentPid is present", () => {
       const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(42));
@@ -270,37 +304,34 @@ describe("buildStateBody", () => {
       assert.ok(!("claude_pid" in body));
     });
 
-    it("sets headless when agentCommandLine ends with -p", () => {
-      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99, "node claude-code -p"));
+    it("sets headless from the resolver's derived boolean", () => {
+      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99, { headless: true }));
       assert.strictEqual(body.headless, true);
     });
 
-    it("sets headless when agentCommandLine has -p followed by a space", () => {
-      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99, "node claude-code -p some-prompt"));
-      assert.strictEqual(body.headless, true);
-    });
-
-    it("sets headless when agentCommandLine contains --print", () => {
-      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99, "node claude-code --print"));
-      assert.strictEqual(body.headless, true);
-    });
-
-    it("does not set headless when -p is a prefix of a longer option", () => {
-      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99, "node claude-code --port 3000"));
+    it("omits headless when the resolver says false", () => {
+      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99, { headless: false }));
       assert.ok(!("headless" in body));
     });
 
-    it("does not set headless when agentCommandLine is empty", () => {
-      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99, ""));
-      assert.ok(!("headless" in body));
-    });
-
-    it("does not set headless when agentCommandLine is missing from resolve()", () => {
-      // Backward compat: a resolver that never populates agentCommandLine must
-      // not crash and must not set headless.
-      const resolve = () => ({ stablePid: 1, agentPid: 77, detectedEditor: null, pidChain: [] });
-      const body = buildStateBody("PreToolUse", { session_id: "s" }, resolve);
+    it("omits headless when the resolver omits it entirely (no-arg / legacy shape)", () => {
+      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(77));
       assert.strictEqual(body.agent_pid, 77);
+      assert.ok(!("headless" in body), "must not crash, must not guess");
+    });
+
+    it("never re-derives from agentCommandLine — the boolean is authoritative", () => {
+      // A cache hit always carries agentCommandLine:"" (#681). If the adapter
+      // still parsed the line, headless would be lost on every cached event; if
+      // it parsed a line that IS present on a fresh result, the two paths could
+      // disagree. Only the resolver decides.
+      const body = buildStateBody("PreToolUse", { session_id: "s" },
+        () => ({ stablePid: 1, agentPid: 99, agentCommandLine: "node claude-code --print", headless: false, detectedEditor: null, pidChain: [] }));
+      assert.ok(!("headless" in body));
+    });
+
+    it("headless needs an agentPid — no agent, no claim about how it runs", () => {
+      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(null, { headless: true }));
       assert.ok(!("headless" in body));
     });
   });

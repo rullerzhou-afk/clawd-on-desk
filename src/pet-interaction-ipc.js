@@ -55,6 +55,10 @@ function registerPetInteractionIpc(options = {}) {
     options.setLowPowerIdlePaused,
     "setLowPowerIdlePaused"
   );
+  // #640: the editing-overlap dodge defers its hit-window click-through write
+  // while a drag is in flight; drag-lock release must re-run the sync so the
+  // state the drag ended in (overlapping or not) gets applied.
+  const syncImeEditingPetDodge = options.syncImeEditingPetDodge || (() => {});
   const statPath = requiredDependency(options.statPath, "statPath");
   const openTerminalAt = requiredDependency(options.openTerminalAt, "openTerminalAt");
   const dropLog = options.dropLog || (() => {});
@@ -91,6 +95,7 @@ function registerPetInteractionIpc(options = {}) {
     } else {
       clearDragSnapshot();
       syncHitWin();
+      syncImeEditingPetDodge();
     }
   });
 
@@ -124,6 +129,11 @@ function registerPetInteractionIpc(options = {}) {
     } finally {
       setDragLocked(false);
       clearDragSnapshot();
+      // Normally the preceding drag-lock(false) already re-ran the dodge, but
+      // this handler also releases the lock defensively — mirror the re-run so
+      // a drag-end without a paired drag-lock(false) can't strand the deferred
+      // click-through write.
+      syncImeEditingPetDodge();
     }
   });
 

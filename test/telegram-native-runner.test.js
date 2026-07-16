@@ -181,6 +181,100 @@ test("native runner requestApproval resolves allow for matching callback", async
   await runner.stop();
 });
 
+test("native runner does not send an approval card when allowedTgUserId is blank (fail-closed)", async () => {
+  const server = createFakeTelegramServer();
+  let sendCalled = false;
+
+  server.enqueue("getUpdates", () => new Promise(() => {})); // hold the poll open
+  server.enqueue("sendMessage", () => {
+    sendCalled = true;
+    return { ok: true, result: { message_id: 88, chat: { id: 123 } } };
+  });
+
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "", // blank — must authorize nobody, not everybody
+  });
+
+  await runner.start();
+  await tick();
+  // A blank allowedTgUserId used to fall open (any chat member could decide). It
+  // now fails closed at the ENTRY: no actionable card is sent, and the request
+  // resolves to no-decision so the hook falls back to its own prompt.
+  const decision = await runner.requestApproval({
+    title: "claude-code requests Bash",
+    detail: "Summary: Run tests",
+  });
+  assert.equal(decision, null, "a blank allowed user resolves to no-decision");
+  assert.equal(sendCalled, false, "no actionable card is sent");
+  await runner.stop();
+});
+
+test("native runner rejects a tap on a card whose allowed user was changed after send", async () => {
+  const server = createFakeTelegramServer();
+  let releaseFirstPoll;
+  let allowData = "";
+  let currentAllowed = "777"; // config in effect when the card is sent
+
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueue("sendMessage", (payload) => {
+    allowData = payload.reply_markup.inline_keyboard[0][0].callback_data;
+    return { ok: true, result: { message_id: 90, chat: { id: 123 } } };
+  });
+  server.enqueue("getUpdates", () => ({
+    ok: true,
+    result: [{
+      update_id: 1,
+      callback_query: {
+        id: "cb-allow",
+        from: { id: 777 }, // the ORIGINAL allowed user, revoked below
+        message: { message_id: 90, chat: { id: 123 } },
+        data: allowData,
+      },
+    }],
+  }));
+  server.enqueueOk("answerCallbackQuery", true);
+
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => currentAllowed, // live config, changes below
+  });
+
+  await runner.start();
+  await tick();
+  const decisionPromise = runner.requestApproval({ title: "t", detail: "d" });
+  await tick();
+  assert.match(allowData, /^cp:[a-z0-9]+:a$/); // card was sent under user 777
+
+  // The user changes the allowed Telegram user AFTER the card is out.
+  currentAllowed = "888";
+
+  releaseFirstPoll({ ok: true, result: [] });
+  await tick();
+  await tick();
+
+  // User 777 (now revoked) taps the stale card. The callback checks the CURRENT
+  // config, not just the entry snapshot, so the tap is rejected — the decision
+  // never resolves and the card is never rewritten with an outcome.
+  const settled = await Promise.race([
+    decisionPromise.then(() => "RESOLVED"),
+    delay(20).then(() => "PENDING"),
+  ]);
+  assert.equal(settled, "PENDING", "a revoked user must not decide on an in-flight card");
+  assert.equal(
+    server.calls.some((call) => call.method === "editMessageText"),
+    false,
+    "no outcome should be written to the card",
+  );
+  await runner.stop();
+});
+
 test("native runner claims a Telegram tap atomically so a racing abort can't drop it", async () => {
   const server = createFakeTelegramServer();
   let releaseFirstPoll;

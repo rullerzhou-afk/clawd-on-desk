@@ -53,6 +53,26 @@ function loadBubbleStrings() {
   return context.result;
 }
 
+// Renderers outside the settings window resolve t() against src/i18n.js, and t() falls
+// back to returning the key itself, so a string filed under settings-i18n.js by mistake
+// renders its own name into the UI instead of failing loudly.
+function runtimeDictRenderers() {
+  const dir = path.join(ROOT, "src");
+  const renderers = new Set();
+  for (const html of fs.readdirSync(dir).filter((f) => f.endsWith(".html"))) {
+    const markup = fs.readFileSync(path.join(dir, html), "utf8");
+    const scripts = Array.from(markup.matchAll(/<script[^>]+src="\.?\/?([^"]+\.js)"/g), (m) => m[1]);
+    if (scripts.includes("settings-i18n.js")) continue;
+    for (const script of scripts) {
+      const file = path.join(dir, script);
+      if (!fs.existsSync(file)) continue;
+      const source = fs.readFileSync(file, "utf8");
+      if (/function t\(key\)/.test(source) && /getI18n\(/.test(source)) renderers.add(script);
+    }
+  }
+  return Array.from(renderers);
+}
+
 describe("i18n locales", () => {
   it("lists all selectable languages in supported languages", () => {
     assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja"]);
@@ -89,6 +109,47 @@ describe("i18n locales", () => {
       for (const lang of SUPPORTED_LANGS) {
         const escapedLang = regexEscape(lang);
         assert.match(block, new RegExp(`\\n\\s*(?:"${escapedLang}"|${escapedLang}):`), `${name} missing ${lang}`);
+      }
+    }
+  });
+
+  it("keeps every renderer t(\"key\") literal resolvable in the runtime locale", () => {
+    const renderers = runtimeDictRenderers();
+    for (const known of ["session-hud-renderer.js", "dashboard-renderer.js"]) {
+      assert.ok(renderers.includes(known), `renderer discovery missed ${known}`);
+    }
+    for (const file of renderers) {
+      const source = fs.readFileSync(path.join(ROOT, "src", file), "utf8");
+      // the lookbehind drops method calls like obj.t("x")
+      const keys = new Set(
+        Array.from(source.matchAll(/(?<![\w$.])t\(\s*"([A-Za-z0-9_]+)"\s*\)/g), (m) => m[1])
+      );
+      // a key picked by a ternary reaches t() as t(tipKey), never as a literal, so pull the
+      // strings out of any *Key identifier that t() is actually called with
+      for (const [, ident, rhs] of source.matchAll(/\b(\w+Key)\b\s*=\s*([^;]+);/g)) {
+        if (!new RegExp(`(?<![\\w$.])t\\(\\s*${ident}\\s*\\)`).test(source)) continue;
+        for (const [, key] of rhs.matchAll(/"([A-Za-z0-9_]+)"/g)) keys.add(key);
+      }
+      assert.ok(keys.size, `${file} should call t() with literal keys`);
+      for (const key of keys) {
+        assert.ok(key in i18n.en, `${file}: i18n key "${key}" is missing from src/i18n.js`);
+      }
+    }
+  });
+
+  // Keys reached through a lookup table (t(entry.key)) are invisible to the scan above, so
+  // rather than trace dataflow, treat any Settings-only key name appearing in a runtime
+  // renderer as misfiled. Keys resolved purely at runtime from main-process payloads never
+  // appear as literals here, so they stay out of scope.
+  it("keeps renderers clear of keys that only exist in the Settings locale", () => {
+    const settings = loadSettingsI18nStrings();
+    for (const file of runtimeDictRenderers()) {
+      const source = fs.readFileSync(path.join(ROOT, "src", file), "utf8");
+      const literals = new Set(Array.from(source.matchAll(/"([A-Za-z][A-Za-z0-9_]{2,})"/g), (m) => m[1]));
+      for (const literal of literals) {
+        if (literal in settings.en && !(literal in i18n.en)) {
+          assert.fail(`${file}: "${literal}" resolves only in settings-i18n.js, which this window never loads`);
+        }
       }
     }
   });

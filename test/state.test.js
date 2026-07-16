@@ -859,6 +859,42 @@ describe("updateSession()", () => {
     assert.strictEqual(api.sessions.get("new1").state, "working");
   });
 
+  // #627 safety net: the pid-snapshot cache omits pid_chain on cache-hit events,
+  // relying on updateSession MERGING (keeping the last pidChain) rather than
+  // OVERWRITING it to null. If a future refactor flips this to overwrite, the
+  // cache would blank out terminal-tab focus — this test pins the behavior.
+  it("update omitting pidChain keeps the previously stored pidChain (MERGE)", () => {
+    update(api, { id: "merge1", event: "SessionStart", state: "idle", pidChain: [700, 800, 900], sourcePid: 900 });
+    assert.deepStrictEqual(api.sessions.get("merge1").pidChain, [700, 800, 900]);
+
+    // A high-frequency event that carries no pid_chain must not clear it.
+    update(api, { id: "merge1", event: "PreToolUse", state: "working", pidChain: null, sourcePid: 900 });
+    assert.deepStrictEqual(
+      api.sessions.get("merge1").pidChain,
+      [700, 800, 900],
+      "omitting pidChain must merge (keep old), not overwrite with null",
+    );
+  });
+
+  // Same MERGE guarantee on the PermissionRequest persistence path (state.js:1367),
+  // which is a separate code branch from the main update path. #627 does not cache
+  // this path (PermissionRequest is an HTTP hook), but plan §6 asks both branches
+  // be pinned so a future refactor cannot flip either to overwrite-with-null.
+  it("PermissionRequest path also merges pidChain when a later request omits it", () => {
+    const sid = "codex:merge-perm";
+    update(api, { id: sid, event: "PermissionRequest", state: "notification", agentId: "codex", sourcePid: 456, agentPid: 456, pidChain: [321, 456] });
+    assert.deepStrictEqual(api.sessions.get(sid).pidChain, [321, 456]);
+
+    // A later codex PermissionRequest that still persists focus (sourcePid set)
+    // but omits pidChain must keep the old chain, not blank it.
+    update(api, { id: sid, event: "PermissionRequest", state: "notification", agentId: "codex", sourcePid: 456, agentPid: 456, pidChain: null });
+    assert.deepStrictEqual(
+      api.sessions.get(sid).pidChain,
+      [321, 456],
+      "PermissionRequest path must merge, not overwrite with null",
+    );
+  });
+
   it("existing session_id → updates state and timestamp", () => {
     update(api, { id: "s1", state: "working" });
     const t1 = api.sessions.get("s1").updatedAt;
@@ -1719,6 +1755,48 @@ describe("updateSession()", () => {
       used: 1000,
       source: "claude",
     });
+  });
+
+  it("preserveState does not stop a one-shot visual from playing (cross-file contract)", () => {
+    // Characterization, not endorsement. preserveState pins the STORED state;
+    // the one-shot branch plays whatever `state` it is handed and bypasses
+    // resolveDisplayState() entirely. So a metadata-only update that carries a
+    // one-shot still animates the pet, even though the session stays idle.
+    //
+    // agents/codex-log-monitor.js depends on this: it filters `token_count`'s
+    // carried state down to sustained ones precisely because preserveState
+    // would not save it. If this test ever fails because preserveState grew to
+    // cover one-shots, that filter becomes redundant (harmless) — update it
+    // there rather than deleting it blind.
+    const stateChanges = [];
+    api.cleanup();
+    ctx = makeCtx({
+      processKill: () => true,
+      sendToRenderer: (channel, state) => {
+        if (channel === "state-change") stateChanges.push(state);
+      },
+    });
+    api = require("../src/state")(ctx);
+
+    // Turn is long over; pet is back to idle. This is what Codex Desktop's
+    // focus-triggered token_count refresh actually lands on.
+    api.updateSession("codex:s1", "idle", "event_msg:task_complete", {
+      agentId: "codex",
+      cwd: "/tmp",
+    });
+    stateChanges.length = 0;
+
+    api.updateSession("codex:s1", "attention", "event_msg:token_count", {
+      agentId: "codex",
+      cwd: "/tmp",
+      preserveState: true,
+      contextUsage: { used: 2000, limit: 200000, percent: 1, source: "codex" },
+    });
+
+    assert.strictEqual(api.sessions.get("codex:s1").state, "idle",
+      "preserveState must pin the stored state");
+    assert.deepStrictEqual(stateChanges, ["attention"],
+      "and yet the one-shot visual still plays — this is why the monitor filters the carry");
   });
 
   it("updates contextUsage without changing state when preserveState is true", () => {

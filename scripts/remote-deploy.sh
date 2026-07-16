@@ -133,6 +133,7 @@ FILES=(
   "$HOOKS_DIR/server-config.js"
   "$HOOKS_DIR/json-utils.js"
   "$HOOKS_DIR/shared-process.js"
+  "$HOOKS_DIR/pid-cache.js"
   "$HOOKS_DIR/context-usage.js"
   "$HOOKS_DIR/antigravity-context-usage.js"
   "$HOOKS_DIR/claude-rate-limits.js"

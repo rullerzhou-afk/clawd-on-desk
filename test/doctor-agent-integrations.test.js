@@ -391,6 +391,103 @@ describe("checkAgentIntegrations", () => {
     assert.strictEqual(detail.claudeHookGuard, undefined);
   });
 
+  it("reports source-script-missing without a configuration Repair when the runtime health says the source is gone", () => {
+    const descriptor = baseDescriptor({
+      agentId: "claude-code",
+      agentName: "Claude Code",
+      marker: "clawd-hook.js",
+      nested: true,
+    });
+    writeJson(descriptor.configPath, { hooks: {} });
+
+    const detail = runOne(descriptor, {
+      server: {
+        getClaudeHookHealthStatus: () => ({
+          status: "degraded",
+          degradedReason: "source-script-missing",
+          at: 5000,
+        }),
+      },
+    });
+
+    assert.strictEqual(detail.status, "source-script-missing");
+    assert.match(detail.detail, /reinstall or re-extract/i);
+    assert.strictEqual(detail.claudeHookRuntimeStatus.degradedReason, "source-script-missing");
+    assert.strictEqual(detail.fixAction, undefined, "source-script-missing must not offer a configuration Repair");
+  });
+
+  it("explains manual-fix-required while still offering an explicit Fix that can bypass the automatic cap", () => {
+    const descriptor = baseDescriptor({
+      agentId: "claude-code",
+      agentName: "Claude Code",
+      marker: "clawd-hook.js",
+      nested: true,
+    });
+    writeJson(descriptor.configPath, { hooks: {} });
+
+    const detail = runOne(descriptor, {
+      server: {
+        getClaudeHookHealthStatus: () => ({
+          status: "manual-fix-required",
+          issueSignature: "v1:core-script-path",
+          attempt: 3,
+          message: "Claude hook repair did not verify healthy",
+          at: 9000,
+        }),
+      },
+    });
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.match(detail.detail, /failed 3 times/);
+    assert.strictEqual(detail.claudeHookRuntimeStatus.status, "manual-fix-required");
+    assert.strictEqual(detail.claudeHookRuntimeStatus.issueSignature, "v1:core-script-path");
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "claude-code" });
+  });
+
+  it("explains a guarded state reported only through getClaudeHookHealthStatus (no legacy guard notice)", () => {
+    const descriptor = baseDescriptor({
+      agentId: "claude-code",
+      agentName: "Claude Code",
+      marker: "clawd-hook.js",
+      nested: true,
+    });
+    writeJson(descriptor.configPath, { hooks: {} });
+
+    const detail = runOne(descriptor, {
+      server: {
+        getClaudeHookHealthStatus: () => ({ status: "guarded", issueSignature: "v1:managed-hooks", at: 3000 }),
+      },
+    });
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.match(detail.detail, /paused automatic Claude hook repair/);
+    assert.strictEqual(detail.claudeHookRuntimeStatus.status, "guarded");
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "claude-code" });
+  });
+
+  it("does not annotate a healthy disk state even if a stale runtime notice exists", () => {
+    const descriptor = baseDescriptor({
+      agentId: "claude-code",
+      agentName: "Claude Code",
+      marker: "clawd-hook.js",
+      nested: true,
+    });
+    writeJson(descriptor.configPath, {
+      hooks: {
+        Stop: [{ matcher: "", hooks: [{ command: '"/node" "/app/hooks/clawd-hook.js" Stop' }] }],
+      },
+    });
+
+    const detail = runOne(descriptor, {
+      server: {
+        getClaudeHookHealthStatus: () => ({ status: "manual-fix-required", issueSignature: "v1:core-script-path", at: 1000 }),
+      },
+    });
+
+    assert.strictEqual(detail.status, "ok");
+    assert.strictEqual(detail.claudeHookRuntimeStatus, undefined);
+  });
+
   it("returns config-corrupt when JSON parsing fails", () => {
     const descriptor = baseDescriptor();
     fs.mkdirSync(descriptor.parentDir, { recursive: true });

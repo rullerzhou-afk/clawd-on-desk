@@ -22,6 +22,7 @@ const {
 
 const { EVENTS } = require("./telegram-migration-state");
 const { createTranslator } = require("./i18n");
+const { redactSecrets } = require("./secret-redact");
 
 const APPROVAL_CALLBACK_RE = /^cp:([a-z0-9]+):(a|d|s(\d+))$/;
 const LEGACY_APPROVAL_CALLBACK_RE = /^clawdperm:([a-z0-9]+):(allow|deny)$/;
@@ -215,8 +216,11 @@ function buildElicitationQuestionText(payload, questionIndex, t) {
     String(total),
   );
   const questionLines = [progress];
-  if (question.header) questionLines.push(question.header);
-  questionLines.push(question.question);
+  // Redact secrets from the DISPLAYED question text only (the raw text stays the
+  // answer-map key elsewhere, so this can't desync answer round-tripping): an
+  // agent that quotes a key in its question must not leak it into the chat log.
+  if (question.header) questionLines.push(redactSecrets(question.header));
+  questionLines.push(redactSecrets(question.question));
   return `${header}\n\n${questionLines.join("\n")}`;
 }
 
@@ -233,7 +237,10 @@ function buildElicitationKeyboard(payload, questionIndex, selectedSet, t) {
   const callbackBase = `cq:${payload._id}`;
   const rows = question.options.map((option, optionIndex) => {
     const checked = selectedSet && selectedSet.has(optionIndex);
-    const label = question.multiSelect ? `${checked ? "☑" : "☐"} ${option.label}` : option.label;
+    // Redact the DISPLAYED label only; the answer value still uses the raw
+    // option.label (keyed by option index in the callback), so this is safe.
+    const safeLabel = redactSecrets(option.label);
+    const label = question.multiSelect ? `${checked ? "☑" : "☐"} ${safeLabel}` : safeLabel;
     return [{ text: compactMessageText(label, MAX_BUTTON_TEXT), callback_data: `${callbackBase}:o${questionIndex}_${optionIndex}` }];
   });
   rows.push([{ text: t("telegramElicitationOtherButton"), callback_data: `${callbackBase}:x${questionIndex}` }]);
@@ -285,13 +292,21 @@ function findNextUnansweredQuestionIndex(payload, answers) {
   return payload.questions.findIndex((question) => !Object.prototype.hasOwnProperty.call(answers, question.question));
 }
 
-// Deliberately stricter than the approval flow's equivalent check (which
-// treats an unset allowedUser/chatId as "skip this check", inherited from
-// requestApproval/handleApprovalCallback): an elicitation answer feeds
-// directly back into the agent's next step, so a misconfigured (blank)
-// allowedUser/chatId must fail closed here rather than silently accept
-// input from anyone who can reach the chat.
-function isElicitationCallerAuthorized(entry, fromId, chatId) {
+// Shared fail-closed authorization for both remote approval and elicitation
+// callbacks. A blank allowedUser/chatId is treated as "authorize nobody", not
+// "skip the check": both an Allow/Deny decision and an elicitation answer feed
+// straight back into the agent, so a misconfigured (blank) recipient must
+// never let anyone who can reach the chat drive the decision. Approval
+// previously used a fail-open variant that let any chat member decide once
+// allowedTgUserId was blank; it now shares this check.
+//
+// Validates against BOTH the entry snapshot AND the current live config
+// (currentAllowedUser/currentChatId): if the allowed user was revoked or changed
+// after the card was sent, the stale card can no longer be acted on — the click
+// must match the config in effect right now, not just the one at send time.
+function isCallerAuthorized(entry, fromId, chatId, currentAllowedUser, currentChatId) {
+  if (!currentAllowedUser || !currentChatId) return false;
+  if (fromId !== String(currentAllowedUser) || chatId !== String(currentChatId)) return false;
   if (!entry.allowedUser || !entry.chatId) return false;
   return fromId === String(entry.allowedUser) && chatId === String(entry.chatId);
 }
@@ -598,8 +613,14 @@ function createTelegramNativeRunner({
   }
 
   async function handleTestCallback(cb, { fromId, chatId }) {
-    const isAllowedUser = !pendingTest.allowedUser || fromId === String(pendingTest.allowedUser);
-    const isExpectedChat = !pendingTest.chatId || chatId === String(pendingTest.chatId);
+    // Fail closed against the CURRENT config: a blank allowed user must not let
+    // any chat member mark a broken config as native-verified (codex finding 3).
+    const currentUser = getAllowedUserId();
+    const currentChat = getChatId();
+    const isAllowedUser = !!currentUser && fromId === String(currentUser)
+      && !!pendingTest.allowedUser && fromId === String(pendingTest.allowedUser);
+    const isExpectedChat = !!currentChat && chatId === String(currentChat)
+      && (!pendingTest.chatId || chatId === String(pendingTest.chatId));
     if (cb.data !== `clawd-test:${pendingTest.nonce}` || !isAllowedUser || !isExpectedChat) {
       if (typeof cb.data !== "string" || !cb.data.startsWith("clawd-test:")) return false;
       // Acknowledge stray callbacks so the Telegram client closes its spinner.
@@ -629,9 +650,7 @@ function createTelegramNativeRunner({
       try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramApprovalToastExpired") }); } catch {}
       return true;
     }
-    const isAllowedUser = !entry.allowedUser || fromId === String(entry.allowedUser);
-    const isExpectedChat = !entry.chatId || chatId === String(entry.chatId);
-    if (!isAllowedUser || !isExpectedChat) {
+    if (!isCallerAuthorized(entry, fromId, chatId, getAllowedUserId(), getChatId())) {
       try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramApprovalToastNotAllowed") }); } catch {}
       return true;
     }
@@ -792,9 +811,9 @@ function createTelegramNativeRunner({
     const text = buildApprovalText(payload);
     const suggestions = normalizeApprovalSuggestions(payload && payload.suggestions);
     const signal = options && options.signal;
-    if (!polling || !chatId || !text || (signal && signal.aborted)) {
+    if (!polling || !chatId || !allowedUser || !text || (signal && signal.aborted)) {
       const reason = !polling ? "not polling"
-        : (!chatId ? "missing chat" : (!text ? "missing text" : "aborted"));
+        : (!chatId ? "missing chat" : (!allowedUser ? "missing allowed user" : (!text ? "missing text" : "aborted")));
       log("debug", `native approval skipped: ${reason}`);
       return Promise.resolve(null);
     }
@@ -951,7 +970,7 @@ function createTelegramNativeRunner({
     if (!entry.messageId) {
       entry.messageId = (cb.message && cb.message.message_id) || entry.messageId;
     }
-    if (!isElicitationCallerAuthorized(entry, fromId, chatId)) {
+    if (!isCallerAuthorized(entry, fromId, chatId, getAllowedUserId(), getChatId())) {
       try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramElicitationToastNotAllowed") }); } catch {}
       return true;
     }
@@ -1068,7 +1087,7 @@ function createTelegramNativeRunner({
     // equivalent "not allowed" `true`) would let an unauthorized reply fall
     // through to the generic Direct Send text pipeline instead of being
     // dropped here.
-    if (!isElicitationCallerAuthorized(entry, fromId, chatId)) return true;
+    if (!isCallerAuthorized(entry, fromId, chatId, getAllowedUserId(), getChatId())) return true;
     const question = entry.payload.questions[entry.awaitingOtherFor];
     const answer = compactMessageText(text, 500);
     if (!question || !answer) return true;
@@ -1082,9 +1101,9 @@ function createTelegramNativeRunner({
     const allowedUser = getAllowedUserId();
     const normalized = normalizeElicitationPayload(payload);
     const signal = options && options.signal;
-    if (!polling || !chatId || !normalized || (signal && signal.aborted)) {
+    if (!polling || !chatId || !allowedUser || !normalized || (signal && signal.aborted)) {
       const reason = !polling ? "not polling"
-        : (!chatId ? "missing chat" : (!normalized ? "invalid payload" : "aborted"));
+        : (!chatId ? "missing chat" : (!allowedUser ? "missing allowed user" : (!normalized ? "invalid payload" : "aborted")));
       log("debug", `native elicitation skipped: ${reason}`);
       return Promise.resolve(null);
     }

@@ -30,7 +30,6 @@ const TAB_MODULES = [
   path.join(SRC_DIR, "settings-tab-shortcuts.js"),
   path.join(SRC_DIR, "settings-tab-telegram-approval.js"),
   path.join(SRC_DIR, "settings-tab-about.js"),
-  path.join(SRC_DIR, "settings-hardware-buddy-panel.js"),
 ];
 const VERIFIED_GITHUB_CONTRIBUTORS = [
   "Bynlk",
@@ -1015,7 +1014,6 @@ function loadTelegramApprovalTabForTest({
   context.window = context;
   context.globalThis = context;
   vm.createContext(context);
-  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-hardware-buddy-panel.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-telegram-approval.js"), "utf8"), context);
 
   const core = {
@@ -1251,7 +1249,6 @@ describe("settings renderer browser environment", () => {
       "settings-anim-overrides-merge.js",
       "settings-ui-core.js",
       "settings-agent-order.js",
-      "settings-hardware-buddy-panel.js",
       "settings-tab-general.js",
       "settings-tab-agents.js",
       "settings-tab-theme.js",
@@ -2224,6 +2221,110 @@ describe("settings renderer browser environment", () => {
     });
   });
 
+  it("renders the Feishu event subscription guide and maps test failure codes to localized toasts", async () => {
+    const testResults = [
+      { status: "error", code: "no-button-response", message: "Feishu test did not receive a button response" },
+      { status: "error", code: "not-connected", message: "Feishu approval client is not running" },
+      { status: "error", code: "card-send-failed", message: "invalid receive_id" },
+    ];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+        feishuApproval: {
+          enabled: true,
+          idType: "open_id",
+          approverId: "ou_1",
+          connectionTimeoutSeconds: 15,
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({ status: "ok", state: { status: "stopped", tokenStored: false } });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: false, masked: "" });
+          }
+          if (name === "feishuApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: { status: "running", configured: true, secretsStored: true },
+            });
+          }
+          if (name === "feishuApproval.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, appId: "cli_......abcd" });
+          }
+          if (name === "feishuApproval.test") {
+            return Promise.resolve(testResults.shift());
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const feishuCard = harness.content.querySelector(".feishu-approval-channel-card");
+    const guideRow = feishuCard.querySelector(".feishu-approval-event-sub-row");
+    assert.ok(guideRow, "Feishu event subscription guide group should render");
+    assert.equal(guideRow.querySelector(".row-label").textContent, "feishuApprovalEventSubLabel");
+    assert.equal(guideRow.querySelector(".row-desc").textContent, "feishuApprovalEventSubDesc");
+    assert.equal(guideRow.querySelectorAll(".feishu-approval-event-sub-step").length, 4);
+
+    // The subscription can only be saved after the long connection is up, so
+    // the guide must live in the same step section as the test button, after
+    // the enable switch — not before it (#493 review).
+    const testButton = feishuCard.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalSendTest");
+    assert.ok(guideRow.parentNode.contains(testButton), "guide and test button share the step-4 section");
+
+    const toasts = [];
+    harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+    assert.equal(testButton.disabled, false);
+    for (let i = 0; i < 3; i += 1) {
+      testButton.dispatchEvent({ type: "click" });
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(toasts)), [
+      { message: "feishuApprovalTestNoResponse", options: { error: true } },
+      { message: "feishuApprovalTestNotConnected", options: { error: true } },
+      { message: "feishuApprovalTestSendFailed (invalid receive_id)", options: { error: true } },
+    ]);
+  });
+
+  it("expands only whitelisted hosts in Feishu guide links", async () => {
+    const harness = loadTelegramApprovalTabForTest({});
+    const probe = [
+      "[evil](https://open.feishu.cn.evil.com/x)",
+      "[good](https://open.feishu.cn/app)",
+      "[tg](https://t.me/x)",
+      "[userinfo](https://evil.com@open.feishu.cn/app)",
+      "[html <b>label</b>](https://open.feishu.cn/lbl)",
+    ].join(" ");
+    const originalT = harness.core.helpers.t;
+    harness.core.helpers.t = (key) => (key === "feishuApprovalEventSubStep1Html" ? probe : originalT(key));
+    harness.render();
+
+    const guideRow = harness.content.querySelector(".feishu-approval-event-sub-row");
+    const hrefs = guideRow.querySelectorAll("a").map((a) => a.getAttribute("href"));
+    assert.deepStrictEqual(hrefs, ["https://open.feishu.cn/app", "https://t.me/x", "https://open.feishu.cn/lbl"]);
+
+    // The en string itself must stay on a whitelisted host, and the source
+    // whitelist must keep allowing it.
+    const guideStep1 = loadSettingsI18nForTest().en.feishuApprovalEventSubStep1Html;
+    const guideLink = guideStep1.match(/\[[^\]]+\]\((https:\/\/[^)]+)\)/);
+    assert.ok(guideLink, "en guide step 1 should contain a [text](url) link token");
+    assert.ok(guideLink[1].startsWith("https://open.feishu.cn/"), "guide link must stay on open.feishu.cn");
+    const approvalTabSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-telegram-approval.js"), "utf8");
+    assert.ok(approvalTabSource.includes("open\\.feishu\\.cn"), "escapeWithLink whitelist should allow open.feishu.cn");
+  });
+
   it("refreshes Feishu status while long connection is starting", async () => {
     let feishuStatusCalls = 0;
     const harness = loadTelegramApprovalTabForTest({
@@ -2341,72 +2442,6 @@ describe("settings renderer browser environment", () => {
     await Promise.resolve();
     await Promise.resolve();
     assert.equal(harness.renderRequests.length, beforeStatusResolve + 2);
-  });
-
-  it("wires the native migration delete-token button to a real command", async () => {
-    const commandCalls = [];
-    const toastMessages = [];
-    const harness = loadTelegramApprovalTabForTest({
-      snapshot: {
-        tgApproval: {
-          enabled: false,
-          allowedTgUserId: "123456789",
-          targetSessionKey: "telegram:123456789",
-        },
-      },
-      settingsAPI: {
-        command: (name, payload) => {
-          commandCalls.push({ name, payload });
-          if (name === "telegramMigration.snapshot") {
-            return Promise.resolve({
-              status: "ok",
-              snapshot: {
-                state: "NATIVE_ACTIVE",
-                runtimeStatus: { status: "running" },
-                ownerSnapshot: { sidecarRunning: false, nativePolling: true },
-                migrationInfo: {},
-                nativeVerifiedAt: 123,
-              },
-            });
-          }
-          if (name === "telegramApproval.status") {
-            return Promise.resolve({ status: "ok", state: { status: "stopped", tokenStored: true } });
-          }
-          if (name === "telegramApproval.tokenInfo") {
-            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
-          }
-          if (name === "telegramApproval.deleteTokenFile") {
-            return Promise.resolve({ status: "ok", deleted: true });
-          }
-          return Promise.resolve({ status: "ok" });
-        },
-      },
-    });
-    harness.core.ops.showToast = (message, options = {}) => {
-      toastMessages.push({ message, options });
-    };
-
-    await Promise.resolve();
-    await Promise.resolve();
-    harness.render();
-
-    const deleteButton = harness.content
-      .querySelectorAll("button")
-      .find((button) => button.textContent === "telegramMigrationDeleteLegacyToken");
-    assert.ok(deleteButton, "delete legacy token button should render for NATIVE_ACTIVE");
-
-    deleteButton.dispatchEvent({ type: "click" });
-    await Promise.resolve();
-    await Promise.resolve();
-
-    assert.equal(
-      commandCalls.some((call) => call.name === "telegramApproval.deleteTokenFile"),
-      true,
-    );
-    assert.equal(
-      toastMessages.some((toast) => /deleted/i.test(toast.message)),
-      true,
-    );
   });
 
   it("wires Clawd Doctor through Settings with Step 2 connection actions", () => {
@@ -3029,224 +3064,6 @@ describe("settings renderer browser environment", () => {
     assert.ok(/\.sound-summary-control \.collapsible-summary-chip\s*\{[\s\S]*flex:\s*0 0 auto;/.test(css));
     assert.ok(/\.sound-collapsible \.collapsible-group-text \.row-desc\s*\{[\s\S]*white-space:\s*normal;[\s\S]*-webkit-line-clamp:\s*2;/.test(css));
     assert.ok(i18nSource.includes("rowSoundEnabled"));
-  });
-
-  it("places Hardware Buddy on the Remote Approval tab instead of General", () => {
-    const generalHarness = loadGeneralTabForTest({ snapshot: makeGeneralSnapshot() });
-    generalHarness.renderContent();
-
-    const sections = generalHarness.content.querySelectorAll(".section");
-    const sectionTitles = sections.map((section) => section.querySelector(".section-title").textContent);
-    assert.deepStrictEqual(sectionTitles, ["Appearance", "Session management", "Alerts & feedback", "Behavior & position", "System & startup", "Permissions"]);
-    assert.strictEqual(generalHarness.content.querySelector(".hardware-buddy-collapsible"), null);
-
-    const remoteHarness = loadTelegramApprovalTabForTest({
-      snapshot: {
-        tgApproval: {
-          enabled: false,
-          allowedTgUserId: "123456789",
-          targetSessionKey: "telegram:123456789",
-        },
-        hardwareBuddy: {
-          enabled: false,
-          backend: "bleak",
-          address: "",
-          namePrefix: "Clawstick",
-          permissionsEnabled: false,
-        },
-      },
-    });
-    const telegramCard = remoteHarness.content.querySelector(".tg-approval-channel-card");
-    const hardwareBuddy = remoteHarness.content.querySelector(".hardware-buddy-collapsible");
-    assert.ok(hardwareBuddy, "Hardware Buddy panel should render");
-    assert.ok(telegramCard, "Telegram approval card should render");
-    assert.ok(remoteHarness.content.children.indexOf(telegramCard) < remoteHarness.content.children.indexOf(hardwareBuddy));
-    assert.strictEqual(hardwareBuddy.dataset.groupId, "remote-approval.hardware-buddy");
-  });
-
-  it("renders Hardware Buddy with the same remote approval channel header style", () => {
-    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
-    const harness = loadTelegramApprovalTabForTest({
-      snapshot: {
-        tgApproval: {
-          enabled: false,
-          allowedTgUserId: "123456789",
-          targetSessionKey: "telegram:123456789",
-        },
-        hardwareBuddy: {
-          enabled: true,
-          backend: "bleak",
-          address: "",
-          namePrefix: "Clawstick",
-          permissionsEnabled: true,
-        },
-      },
-    });
-    harness.core.runtime.hardwareBuddyStatus = {
-      started: true,
-      connected: true,
-      secure: true,
-      lastStatus: { data: { name: "Clawstick" } },
-    };
-    harness.render();
-
-    const hardwareBuddy = harness.content.querySelector(".hardware-buddy-collapsible");
-    const header = hardwareBuddy.querySelector(".hardware-buddy-channel-header");
-    const badge = header.querySelector(".hardware-buddy-channel-badge");
-    const replyBadge = hardwareBuddy.querySelector(".hardware-buddy-reply-badge");
-    const testButton = hardwareBuddy.querySelector(".hardware-buddy-test-button");
-    assert.strictEqual(header.querySelector(".tg-approval-channel-name").textContent, "hardwareBuddyTitle");
-    assert.strictEqual(badge.querySelectorAll("span")[1].textContent, "hardwareBuddyStatus_secure");
-    assert.ok(badge.classList.contains("tg-approval-badge-running"));
-    assert.strictEqual(replyBadge.textContent, "hardwareBuddyRepliesOn");
-    assert.strictEqual(hardwareBuddy.querySelector(".hardware-buddy-repo-button"), null);
-    assert.strictEqual(testButton.textContent, "hardwareBuddyTestButton");
-    assert.strictEqual(hardwareBuddy.querySelector(".hardware-buddy-summary-control"), null);
-    assert.strictEqual(hardwareBuddy.querySelector(".hardware-buddy-quick-command-row"), null);
-    assert.strictEqual(hardwareBuddy.textContent.includes("hardwareBuddyQuickCommands"), false);
-    assert.ok(/\.remote-approval-channel-card\.collapsible-group\s*\{[\s\S]*margin:\s*8px 0 14px;/.test(css));
-    assert.ok(/\.tg-approval-channel-header\s*\{[\s\S]*justify-content:\s*space-between;/.test(css));
-    assert.ok(/\.hardware-buddy-status-control\s*\{[\s\S]*display:\s*inline-flex;/.test(css));
-    assert.ok(/\.hardware-buddy-test-button\s*\{[\s\S]*border:\s*1px solid var\(--accent\);/.test(css));
-  });
-
-  it("sends a Hardware Buddy test approval from the settings panel", async () => {
-    const calls = [];
-    const harness = loadTelegramApprovalTabForTest({
-      snapshot: {
-        tgApproval: {
-          enabled: false,
-          allowedTgUserId: "123456789",
-          targetSessionKey: "telegram:123456789",
-        },
-        hardwareBuddy: {
-          enabled: true,
-          backend: "bleak",
-          address: "",
-          namePrefix: "Clawstick",
-          permissionsEnabled: true,
-        },
-      },
-      settingsAPI: {
-        testHardwareBuddyApproval: () => {
-          calls.push("test");
-          return Promise.resolve({ status: "ok", decision: "allow" });
-        },
-      },
-    });
-    harness.core.runtime.hardwareBuddyStatus = {
-      started: true,
-      connected: true,
-      secure: true,
-      lastStatus: { data: { name: "Clawstick" } },
-    };
-    harness.render();
-
-    const button = harness.content.querySelector(".hardware-buddy-test-button");
-    assert.strictEqual(button.disabled, false);
-    button.dispatchEvent({ type: "click" });
-    assert.deepStrictEqual(calls, ["test"]);
-    assert.equal(harness.renderRequests[harness.renderRequests.length - 1].content, true);
-
-    await Promise.resolve();
-    await Promise.resolve();
-    assert.deepStrictEqual(harness.core.runtime.hardwareBuddyTest.result, {
-      status: "ok",
-      decision: "allow",
-    });
-  });
-
-  it("renders Hardware Buddy test error codes and clears stale results when config changes", () => {
-    const harness = loadTelegramApprovalTabForTest({
-      snapshot: {
-        tgApproval: {
-          enabled: false,
-          allowedTgUserId: "123456789",
-          targetSessionKey: "telegram:123456789",
-        },
-        hardwareBuddy: {
-          enabled: true,
-          backend: "bleak",
-          address: "",
-          namePrefix: "Clawstick",
-          permissionsEnabled: true,
-        },
-      },
-      settingsAPI: {
-        testHardwareBuddyApproval: () => Promise.resolve({ status: "error", code: "timeout" }),
-      },
-    });
-    harness.core.runtime.hardwareBuddyStatus = {
-      started: true,
-      connected: true,
-      secure: true,
-      lastStatus: { data: { name: "Clawstick" } },
-    };
-    harness.core.runtime.hardwareBuddyTest = {
-      pending: false,
-      result: { status: "error", code: "timeout", message: "raw english fallback" },
-      contextKey: "",
-    };
-    harness.core.helpers.t = (key) => key === "hardwareBuddyTestErr_timeout" ? "timeout translated" : key;
-    harness.render();
-
-    let desc = harness.content.querySelector(".hardware-buddy-test-row .row-desc");
-    assert.strictEqual(desc.textContent, "timeout translated");
-
-    harness.core.state.snapshot.hardwareBuddy.enabled = false;
-    harness.render();
-
-    desc = harness.content.querySelector(".hardware-buddy-test-row .row-desc");
-    assert.strictEqual(harness.core.runtime.hardwareBuddyTest.result, null);
-    assert.strictEqual(desc.textContent, "hardwareBuddyTestDisabled");
-  });
-
-  it("does not render Hardware Buddy Quick Command controls", () => {
-    const calls = [];
-    const harness = loadTelegramApprovalTabForTest({
-      snapshot: {
-        tgApproval: {
-          enabled: false,
-          allowedTgUserId: "123456789",
-          targetSessionKey: "telegram:123456789",
-        },
-        hardwareBuddy: {
-          enabled: false,
-          backend: "bleak",
-          address: "",
-          namePrefix: "Clawstick",
-          permissionsEnabled: false,
-          quickCommandsEnabled: true,
-        },
-      },
-      settingsAPI: {
-        getQuickCommandPresets: () => {
-          calls.push("presets");
-          return Promise.resolve({
-            enabled: true,
-            presets: [{ id: "plan_first", label: "先列计划" }],
-          });
-        },
-        sendQuickCommand: (payload) => {
-          calls.push(payload);
-          return Promise.resolve({ status: "ok", quickCommand: { id: payload.id } });
-        },
-      },
-    });
-    harness.core.runtime.quickCommandPresets = {
-      enabled: true,
-      presets: [
-        { id: "plan_first", label: "先列计划" },
-        { id: "show_diff", label: "show diff" },
-      ],
-    };
-    harness.render();
-
-    assert.strictEqual(harness.content.querySelector(".hardware-buddy-quick-command-row"), null);
-    assert.strictEqual(harness.content.querySelector(".hardware-buddy-quick-command-button"), null);
-    assert.strictEqual(harness.content.textContent.includes("hardwareBuddyQuickCommands"), false);
-    assert.strictEqual(harness.content.textContent.includes("先列计划"), false);
-    assert.strictEqual(calls.length, 0);
   });
 
   it("adds hover affordance to General sliders via the shared volume-style classes", () => {
@@ -4019,8 +3836,11 @@ describe("settings renderer browser environment", () => {
     assert.ok(/\.collapsible-group-chevron svg,\s*\.anim-override-chevron svg\s*\{[\s\S]*width:\s*16px;[\s\S]*height:\s*16px;[\s\S]*overflow:\s*visible;/.test(css));
     assert.ok(/\.collapsible-group-chevron path,\s*\.anim-override-chevron path\s*\{[\s\S]*fill:\s*none;[\s\S]*stroke:\s*currentColor;[\s\S]*stroke-width:\s*2\.2;[\s\S]*stroke-linecap:\s*round;[\s\S]*stroke-linejoin:\s*round;/.test(css));
     assert.ok(/\.collapsible-group-header:hover\s+\.collapsible-group-chevron\s*\{[\s\S]*color:\s*var\(--text-secondary\);[\s\S]*opacity:\s*0\.95;/.test(css));
-    assert.ok(/\.collapsible-group\.collapsed\s+\.collapsible-group-chevron\s*\{[\s\S]*transform:\s*translateX\(-6px\) rotate\(0deg\);/.test(css));
-    assert.ok(/\.collapsible-group:not\(\.collapsed\)\s+\.collapsible-group-chevron\s*\{[\s\S]*transform:\s*translateX\(-6px\) rotate\(90deg\);[\s\S]*color:\s*var\(--accent\);[\s\S]*opacity:\s*1;/.test(css));
+    // Child selectors, not descendant: nested groups (Feishu event-sub guide
+    // inside the channel card) must not inherit the outer group's chevron state.
+    assert.ok(/\.collapsible-group\.collapsed\s*>\s*\.collapsible-group-header\s*>\s*\.collapsible-group-chevron\s*\{[\s\S]*transform:\s*translateX\(-6px\) rotate\(0deg\);/.test(css));
+    assert.ok(/\.collapsible-group:not\(\.collapsed\)\s*>\s*\.collapsible-group-header\s*>\s*\.collapsible-group-chevron\s*\{[\s\S]*transform:\s*translateX\(-6px\) rotate\(90deg\);[\s\S]*color:\s*var\(--accent\);[\s\S]*opacity:\s*1;/.test(css));
+    assert.ok(!/\.collapsible-group\.collapsed\s+\.collapsible-group-chevron/.test(css), "descendant chevron selector would leak outer state into nested groups");
     assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.collapsible-group-chevron,[\s\S]*\.anim-override-chevron,[\s\S]*transition:\s*none;/.test(css));
     assert.ok(i18nSource.includes("collapsibleExpand"));
     assert.ok(i18nSource.includes("collapsibleCollapse"));
@@ -4166,7 +3986,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(!coreSource.includes("body.hidden = collapsed;"));
     assert.ok(/\.collapsible-group-body\s*\{[\s\S]*max-height:\s*var\(--collapsible-body-height,\s*0px\);/.test(css));
     assert.ok(/\.collapsible-group-body\s*\{[\s\S]*transition:\s*max-height 0\.22s cubic-bezier\(0\.22,\s*1,\s*0\.36,\s*1\),\s*opacity 0\.16s ease,\s*transform 0\.18s ease,\s*padding 0\.18s ease,\s*border-color 0\.18s ease;/.test(css));
-    assert.ok(/\.collapsible-group\.collapsed\s+\.collapsible-group-body\s*\{[\s\S]*opacity:\s*0;[\s\S]*transform:\s*translateY\(-4px\);/.test(css));
+    assert.ok(/\.collapsible-group\.collapsed\s*>\s*\.collapsible-group-body\s*\{[\s\S]*opacity:\s*0;[\s\S]*transform:\s*translateY\(-4px\);/.test(css));
     assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.collapsible-group-body/.test(css));
   });
 

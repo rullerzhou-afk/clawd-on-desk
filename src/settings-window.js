@@ -65,6 +65,7 @@ function createSettingsWindowRuntime(options = {}) {
   const appDir = options.appDir || path.join(__dirname, "..");
   const settingsHtmlPath = options.settingsHtmlPath || path.join(__dirname, "settings.html");
   const preloadPath = options.preloadPath || path.join(__dirname, "preload-settings.js");
+  const discordDefaultAppIdPresent = !!options.discordDefaultAppIdPresent;
   const scheduleLater = typeof options.setTimeout === "function" ? options.setTimeout : setTimeout;
   const clearScheduled = typeof options.clearTimeout === "function" ? options.clearTimeout : clearTimeout;
 
@@ -265,6 +266,10 @@ function createSettingsWindowRuntime(options = {}) {
         preload: preloadPath,
         nodeIntegration: false,
         contextIsolation: true,
+        // Sandboxed preloads can't require app modules; pass build-time flags by value.
+        additionalArguments: [
+          `--discord-default-app-id-present=${discordDefaultAppIdPresent ? "1" : "0"}`,
+        ],
       },
     };
     if (iconPath) opts.icon = iconPath;

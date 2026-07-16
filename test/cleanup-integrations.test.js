@@ -170,4 +170,58 @@ describe("cleanupIntegrations", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("records a precomputed Claude cleanup result instead of unregistering Claude a second time", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cleanup-claude-"));
+    const homeDir = path.join(root, "home");
+    const claudeSettingsPath = path.join(homeDir, ".claude", "settings.json");
+    // A real Clawd hook that WOULD be removed if the generic claude-code
+    // cleaner ran — asserting it survives proves the precomputed result path
+    // is taken instead of a second, queue-external unregister.
+    writeJson(claudeSettingsPath, {
+      hooks: {
+        Stop: [{ matcher: "", hooks: [{ type: "command", command: 'node "C:/clawd/hooks/clawd-hook.js" Stop' }] }],
+      },
+    });
+
+    try {
+      const result = cleanupIntegrations({
+        homeDir,
+        backup: true,
+        silent: true,
+        hermesCommand: false,
+        claudeCleanupResult: { status: "ok", removed: 3, changed: true, backupPaths: ["/fake/backup.bak"] },
+      });
+
+      const claudeAgent = result.agents.find((agent) => agent.agentId === "claude-code");
+      assert.strictEqual(claudeAgent.status, "applied");
+      assert.strictEqual(claudeAgent.removed, 3);
+      assert.deepStrictEqual(claudeAgent.backupPaths, ["/fake/backup.bak"]);
+      assert.strictEqual(result.summary.entriesRemoved >= 3, true);
+
+      const settingsAfter = readJson(claudeSettingsPath);
+      assert.ok(
+        settingsAfter.hooks.Stop.some((entry) => entry.hooks.some((h) => h.command.includes("clawd-hook.js"))),
+        "the real settings.json must be untouched — the precomputed result replaces a second unregister call"
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("marks the claude-code agent failed when the precomputed cleanup result is an error", () => {
+    const homeDir = path.join(os.tmpdir(), "clawd-cleanup-claude-error-home");
+    const result = cleanupIntegrations({
+      homeDir,
+      backup: true,
+      silent: true,
+      hermesCommand: false,
+      claudeCleanupResult: { status: "error", message: "queue disposed" },
+    });
+
+    const claudeAgent = result.agents.find((agent) => agent.agentId === "claude-code");
+    assert.strictEqual(claudeAgent.status, "failed");
+    assert.strictEqual(claudeAgent.error, "queue disposed");
+    assert.strictEqual(result.summary.failed >= 1, true);
+  });
 });

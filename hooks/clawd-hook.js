@@ -9,6 +9,9 @@ const { postStateToRunningServer, readHostPrefix, resolveWslDistro } = require("
 const { fitStateBodyToByteBudget } = require("./state-payload-size");
 const { extractClaudeContextUsageFromEntries } = require("./context-usage");
 const { createPidResolver, readStdinJsonDetailed, getPlatformConfig } = require("./shared-process");
+// #634: the pid cache + lifecycle orchestration is owned by the shared resolver
+// now (hooks/shared-process.js); this adapter no longer touches pid-cache,
+// processAlive, or isWin directly.
 
 const TRANSCRIPT_TAIL_BYTES = 262144; // 256 KB
 // #583: claude-code registers this hook with async:true and a 5s timeout
@@ -327,6 +330,18 @@ const EVENT_TO_STATE = {
   WorktreeCreate: "carrying",
 };
 
+// #634: maps a Claude hook event to a shared-resolver cache lifecycle. Only the
+// three boundary events are special; every other state event is an ordinary
+// `event` (cache hit = zero spawn, miss = one fresh). Stop is deliberately NOT
+// end — it is turn completion, and dropping the cache on it would force a
+// re-resolve (flash) on the next event. SessionEnd with source=clear still maps
+// to end, so the cache is dropped on /clear too (matrix §5.0).
+const EVENT_TO_LIFECYCLE = {
+  SessionStart: "start",
+  UserPromptSubmit: "prompt",
+  SessionEnd: "end",
+};
+
 function isTaskToolStart(event, payload) {
   // Claude Code may report subagent launches as PreToolUse(Task) without a
   // matching SubagentStart. Keep PostToolUse(Task) as a normal working update:
@@ -336,6 +351,53 @@ function isTaskToolStart(event, payload) {
     && payload
     && typeof payload.tool_name === "string"
     && payload.tool_name === "Task";
+}
+
+// Claude headless detection: `claude -p` / `claude --print` is a one-shot,
+// non-interactive run, which the HUD must not show as a live session.
+//
+// #681: this predicate is now handed to the resolver (createPidResolver's
+// headlessCheck) instead of being applied to a command line here. The reason is
+// storage, not tidiness — the pid cache used to persist the whole command line
+// so a later cache hit could re-run this regex, which meant every Claude
+// session's full argv sat in a %TEMP% file for the life of the session to
+// answer one yes/no question. The resolver derives the boolean in memory and
+// caches only that, so this function is the single source of truth for both a
+// fresh walk and a cache hit.
+function isClaudeHeadlessCommandLine(cmdline) {
+  return /\s(-p|--print)(\s|$)/.test(cmdline || "");
+}
+
+// #442-compat + #627: agent pid fields. `headless` comes from the resolver for
+// both the fresh and cache-hit paths, so they cannot drift.
+function applyAgentPidFields(body, agentPid, headless) {
+  if (!agentPid) return;
+  body.agent_pid = agentPid;
+  body.claude_pid = agentPid; // backward compat with older Clawd versions
+  if (headless === true) body.headless = true;
+}
+
+// Applies the shared resolver's process metadata to the body. Works for all
+// three resolver result shapes (#634):
+//   - fresh          → full fields, including pid_chain and (on SessionStart)
+//     the foreground WT handle;
+//   - cache hit / v1→v2 promotion → the stable subset only (pidChain is [],
+//     foregroundWtHwnd/tmuxClient are null in the returned object, so they are
+//     naturally omitted — the server MERGE keeps the SessionStart pid_chain);
+//   - empty (prompt/end miss) → every pid field is null/[], so source_pid,
+//     agent_pid, pid_chain, etc. are all left off (never a degraded
+//     process.ppid). source_pid is guarded so an empty result ships no null pid.
+function applyResolvedFields(body, resolved, event) {
+  const { stablePid, agentPid, headless, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient } = resolved;
+  if (stablePid) body.source_pid = stablePid;
+  if (detectedEditor) body.editor = detectedEditor;
+  applyAgentPidFields(body, agentPid, headless);
+  if (pidChain && pidChain.length) body.pid_chain = pidChain;
+  if (tmuxSocket) body.tmux_socket = tmuxSocket;
+  if (tmuxClient) body.tmux_client = tmuxClient;
+  if (shouldReportForegroundWtHwnd(event) && foregroundWtHwnd) {
+    body.wt_hwnd = String(foregroundWtHwnd);
+  }
 }
 
 function buildStateBody(event, payload, resolve) {
@@ -434,25 +496,40 @@ function buildStateBody(event, payload, resolve) {
     body.host = readHostPrefix();
     if (wslDistro) body.wsl_distro = wslDistro;
   } else {
-    const { stablePid, agentPid, agentCommandLine, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient } = resolve();
-    body.source_pid = stablePid;
-    if (detectedEditor) body.editor = detectedEditor;
-    if (agentPid) {
-      body.agent_pid = agentPid;
-      body.claude_pid = agentPid; // backward compat with older Clawd versions
-      if (agentCommandLine && /\s(-p|--print)(\s|$)/.test(agentCommandLine)) {
-        body.headless = true;
-      }
-    }
-    if (pidChain.length) body.pid_chain = pidChain;
-    if (tmuxSocket) body.tmux_socket = tmuxSocket;
-    if (tmuxClient) body.tmux_client = tmuxClient;
+    // #627/#634: the per-session pid cache + lifecycle orchestration now lives
+    // in the shared resolver (hooks/shared-process.js). This hook is the Claude
+    // adapter — it maps the event to a resolver lifecycle, declares the cache
+    // identity, and applies whatever process metadata the resolver returns:
+    //   - SessionStart → start (fresh once, prewarmed during stdin buffering;
+    //     writes the v2 cache),
+    //   - UserPromptSubmit → prompt (cache-only, NEVER spawns — even for a
+    //     non-cacheable session; the foreground WT handle it used to fresh for
+    //     is sampled server-side now, src/server-route-state.js),
+    //   - SessionEnd → end (cache-only, fills the final body then drops; never
+    //     spawns, never writes back),
+    //   - everything else → event (cache hit = zero spawn; a miss falls back to
+    //     one fresh resolve and repopulates).
+    // The Windows zero-spawn contracts, the double-PID liveness check, and the
+    // v1→v2 promotion all live in the resolver; mac/linux keep the
+    // fresh-every-event runtime behavior. The cache identity is Claude's raw
+    // session id + payload cwd (matrix §5.0): a "default" session id (#583) or
+    // an empty cwd is non-cacheable, which the resolver honors WITHOUT relaxing
+    // the prompt/end no-spawn contract. A miss ships a body with no
+    // process-metadata fields; the server MERGE (state.js) keeps whatever the
+    // session already had — never a degraded process.ppid.
+    const cacheCwd = cwd;
+    const resolved = resolve({
+      namespace: "claude-code",
+      sessionId,
+      cacheCwd,
+      lifecycle: EVENT_TO_LIFECYCLE[event] || "event",
+      cacheable: sessionId !== "default" && !!cacheCwd,
+    });
+    applyResolvedFields(body, resolved, event);
+
     if (wslDistro) {
       body.wsl_distro = wslDistro;
       body.host = `wsl:${wslDistro}`;
-    }
-    if (shouldReportForegroundWtHwnd(event) && foregroundWtHwnd) {
-      body.wt_hwnd = String(foregroundWtHwnd);
     }
   }
 
@@ -486,6 +563,10 @@ function main() {
   const resolve = createPidResolver({
     agentNames: { win: new Set(["claude.exe"]), mac: new Set(["claude"]) },
     agentCmdlineCheck: (cmd) => cmd.includes("claude-code") || cmd.includes("@anthropic-ai"),
+    // #681: Claude is the only adapter that derives anything from the agent's
+    // command line, so it is the only one that passes this. The resolver applies
+    // it in memory and caches the boolean instead of the line.
+    headlessCheck: isClaudeHeadlessCommandLine,
     platformConfig: config,
   });
 
@@ -524,6 +605,7 @@ if (require.main === module) main();
 
 module.exports = {
   buildStateBody,
+  isClaudeHeadlessCommandLine,
   attachStdinDiag,
   STDIN_READ_TIMEOUT_MS,
   extractSessionTitleFromTranscript,

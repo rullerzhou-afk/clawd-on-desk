@@ -164,17 +164,6 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.agents.codex.nativeNotificationSoundEnabled, false);
   });
 
-  it("defaults Hardware Buddy to disabled state-only BLE", () => {
-    const d = prefs.getDefaults();
-    assert.deepStrictEqual(d.hardwareBuddy, {
-      enabled: false,
-      backend: "bleak",
-      address: "",
-      namePrefix: "Clawstick",
-      permissionsEnabled: false,
-      quickCommandsEnabled: false,
-    });
-  });
 });
 
 describe("prefs.validate", () => {
@@ -782,27 +771,6 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.workingStaleMs, 600_000);
   });
 
-  it("normalizes Hardware Buddy settings", () => {
-    const v = prefs.validate({
-      hardwareBuddy: {
-        enabled: true,
-        backend: "fake",
-        address: "  FAKE:CLAWSTICK  ",
-        namePrefix: "  Claude  ",
-        permissionsEnabled: true,
-        quickCommandsEnabled: true,
-      },
-    });
-    assert.deepStrictEqual(v.hardwareBuddy, {
-      enabled: true,
-      backend: "fake",
-      address: "FAKE:CLAWSTICK",
-      namePrefix: "Claude",
-      permissionsEnabled: true,
-      quickCommandsEnabled: true,
-    });
-    assert.deepStrictEqual(prefs.validate({ hardwareBuddy: "bad" }).hardwareBuddy, prefs.getDefaults().hardwareBuddy);
-  });
 });
 
 describe("prefs.migrate", () => {

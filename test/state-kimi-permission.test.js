@@ -9,6 +9,7 @@ const defaultTheme = themeLoader.loadTheme("clawd");
 
 function makeCtx() {
   const kimiNotifyShown = [];
+  const kimiNotifyDetails = [];
   const kimiNotifyCleared = [];
   const ctx = {
     lang: "en",
@@ -33,12 +34,16 @@ function makeCtx() {
     pendingPermissions: [],
     resolvePermissionEntry: () => {},
     focusTerminalWindow: () => {},
-    showKimiNotifyBubble: ({ sessionId }) => { kimiNotifyShown.push(sessionId); },
+    showKimiNotifyBubble: (entry) => {
+      kimiNotifyShown.push(entry.sessionId);
+      kimiNotifyDetails.push(entry);
+    },
     clearKimiNotifyBubbles: (sessionId) => { kimiNotifyCleared.push(sessionId || "__all__"); },
     processKill: () => { const e = new Error("ESRCH"); e.code = "ESRCH"; throw e; },
     getCursorScreenPoint: () => ({ x: 100, y: 100 }),
   };
   ctx._kimiNotifyShown = kimiNotifyShown;
+  ctx._kimiNotifyDetails = kimiNotifyDetails;
   ctx._kimiNotifyCleared = kimiNotifyCleared;
   ctx.t = createTranslator(() => ctx.lang);
   return ctx;
@@ -149,10 +154,55 @@ describe("Kimi permission hold by session", () => {
     assert.deepStrictEqual(ctx._kimiNotifyCleared, ["kimi-a"]);
   });
 
-  it("does not show duplicate Kimi notify bubble for repeated permission pulses", () => {
+  it("forwards repeated permission pulses so the bubble layer can refresh in place", () => {
+    // Anti-stacking lives in showKimiNotifyBubble (per-session refresh, codex
+    // idiom) — the state layer must keep forwarding so request #2's detail
+    // replaces request #1's stale cue.
     api.updateSession("kimi-a", "notification", "PermissionRequest", { agentId: "kimi-cli" });
     api.updateSession("kimi-a", "notification", "PermissionRequest", { agentId: "kimi-cli" });
-    assert.deepStrictEqual(ctx._kimiNotifyShown, ["kimi-a"]);
+    assert.deepStrictEqual(ctx._kimiNotifyShown, ["kimi-a", "kimi-a"]);
+  });
+
+  it("forwards fresh detail while a hold is active so the cue never goes stale", () => {
+    api.updateSession("kimi-a", "notification", "PermissionRequest", {
+      agentId: "kimi-cli",
+      toolName: "Bash",
+      permissionCommand: "ls -la",
+      permissionToolInput: { command: "ls -la" },
+    });
+    api.updateSession("kimi-a", "notification", "PermissionRequest", {
+      agentId: "kimi-cli",
+      toolName: "Bash",
+      permissionCommand: "rm -rf build",
+      permissionToolInput: { command: "rm -rf build" },
+    });
+    assert.strictEqual(ctx._kimiNotifyDetails.length, 2);
+    const second = ctx._kimiNotifyDetails[1];
+    assert.strictEqual(second.permissionCommand, "rm -rf build");
+    assert.deepStrictEqual(second.permissionToolInput, { command: "rm -rf build" });
+  });
+
+  it("forwards native permission detail incl. structured tool_input to the notify bubble", () => {
+    api.updateSession("kimi-a", "notification", "PermissionRequest", {
+      agentId: "kimi-cli",
+      toolName: "Write",
+      permissionAction: "Writing: cue-probe.txt",
+      permissionToolInput: { file_path: "cue-probe.txt" },
+    });
+    assert.strictEqual(ctx._kimiNotifyDetails.length, 1);
+    const detail = ctx._kimiNotifyDetails[0];
+    assert.strictEqual(detail.toolName, "Write");
+    assert.strictEqual(detail.permissionAction, "Writing: cue-probe.txt");
+    assert.deepStrictEqual(detail.permissionToolInput, { file_path: "cue-probe.txt" });
+  });
+
+  it("legacy permission pulses pass null tool_input to the notify bubble", () => {
+    api.updateSession("kimi-a", "notification", "PermissionRequest", {
+      agentId: "kimi-cli",
+      toolName: "shell",
+    });
+    assert.strictEqual(ctx._kimiNotifyDetails.length, 1);
+    assert.strictEqual(ctx._kimiNotifyDetails[0].permissionToolInput, null);
   });
 
   it("clears Kimi notify bubble when clearSessionsByAgent disposes the hold", () => {

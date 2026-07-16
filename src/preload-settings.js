@@ -4,6 +4,8 @@
 //
 // Surface: window.settingsAPI
 //
+//   discordDefaultAppIdPresent          boolean — a default Discord App ID is
+//                                       hardcoded (maintainer-shipped)
 //   getSnapshot()                       Promise<snapshot>
 //   update(key, value)                  Promise<{ status, message? }>
 //   command(action, payload)            Promise<{ status, message? }>
@@ -22,12 +24,20 @@
 
 const { contextBridge, ipcRenderer } = require("electron");
 
+// A sandboxed preload (Electron's default since 20) may only require "electron"
+// plus a few Node builtins — never an app module. The "is a default Discord App
+// ID baked in?" flag is therefore injected by value from main, via
+// webPreferences.additionalArguments, and read off process.argv here.
+const DISCORD_DEFAULT_APP_ID_FLAG = "--discord-default-app-id-present=";
+const discordDefaultAppIdArg = process.argv.find((a) => a.startsWith(DISCORD_DEFAULT_APP_ID_FLAG));
+const discordDefaultAppIdPresent =
+  !!discordDefaultAppIdArg && discordDefaultAppIdArg.slice(DISCORD_DEFAULT_APP_ID_FLAG.length) === "1";
+
 const listeners = new Set();
 const shortcutFailureListeners = new Set();
 const shortcutRecordKeyListeners = new Set();
 const remoteSshStatusListeners = new Set();
 const remoteSshProgressListeners = new Set();
-const hardwareBuddyStatusListeners = new Set();
 const remoteApprovalStatusListeners = new Set();
 const textScaleContextListeners = new Set();
 ipcRenderer.on("settings-changed", (_event, payload) => {
@@ -55,11 +65,6 @@ ipcRenderer.on("remoteSsh:progress", (_event, payload) => {
     try { cb(payload); } catch (err) { console.warn("remoteSsh progress listener threw:", err); }
   }
 });
-ipcRenderer.on("hardwareBuddy:status-changed", (_event, payload) => {
-  for (const cb of hardwareBuddyStatusListeners) {
-    try { cb(payload); } catch (err) { console.warn("hardwareBuddy status listener threw:", err); }
-  }
-});
 ipcRenderer.on("remoteApproval:status-changed", (_event, payload) => {
   for (const cb of remoteApprovalStatusListeners) {
     try { cb(payload); } catch (err) { console.warn("remote approval status listener threw:", err); }
@@ -75,6 +80,9 @@ ipcRenderer.on("settings:text-scale-context-changed", () => {
 });
 
 contextBridge.exposeInMainWorld("settingsAPI", {
+  // Capability flag: true when a default Discord App ID is hardcoded (maintainer-
+  // shipped), so the presence enable switch can be ready without a user-saved App ID.
+  discordDefaultAppIdPresent,
   getSnapshot: () => ipcRenderer.invoke("settings:get-snapshot"),
   getShortcutFailures: () => ipcRenderer.invoke("settings:getShortcutFailures"),
   getAnimationOverridesData: () => ipcRenderer.invoke("settings:get-animation-overrides-data"),
@@ -108,10 +116,6 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   getAboutInfo: () => ipcRenderer.invoke("settings:get-about-info"),
   checkForUpdates: () => ipcRenderer.invoke("settings:check-for-updates"),
   showTutorial: () => ipcRenderer.invoke("settings:show-tutorial"),
-  getHardwareBuddyStatus: () => ipcRenderer.invoke("settings:get-hardware-buddy-status"),
-  testHardwareBuddyApproval: () => ipcRenderer.invoke("settings:test-hardware-buddy-approval"),
-  getQuickCommandPresets: () => ipcRenderer.invoke("settings:get-quick-command-presets"),
-  sendQuickCommand: (payload) => ipcRenderer.invoke("settings:send-quick-command", payload),
   openExternal: (url) => ipcRenderer.invoke("settings:open-external", url),
   listThemes: () => ipcRenderer.invoke("settings:list-themes"),
   openUserThemesDir: () => ipcRenderer.invoke("settings:open-user-themes-dir"),
@@ -145,11 +149,6 @@ contextBridge.exposeInMainWorld("settingsAPI", {
     if (typeof cb !== "function") return () => {};
     shortcutRecordKeyListeners.add(cb);
     return () => shortcutRecordKeyListeners.delete(cb);
-  },
-  onHardwareBuddyStatusChanged: (cb) => {
-    if (typeof cb !== "function") return () => {};
-    hardwareBuddyStatusListeners.add(cb);
-    return () => hardwareBuddyStatusListeners.delete(cb);
   },
   onRemoteApprovalStatusChanged: (cb) => {
     if (typeof cb !== "function") return () => {};

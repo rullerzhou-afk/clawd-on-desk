@@ -10,7 +10,23 @@ const {
   readStdinJsonDetailed,
   DEFAULT_STDIN_READ_TIMEOUT_MS,
   buildElectronLaunchConfig,
+  tmuxSocketFromEnv,
+  processAlive,
 } = require("../hooks/shared-process");
+
+// #681: the Windows resolver refuses to spawn unless it can read a runtime.json
+// naming a LIVE Clawd. Every test below that exercises the WALK (rather than the
+// gate itself) must therefore declare a passing gate — otherwise it silently
+// stops testing the walk and starts testing the gate.
+//
+// ownerPid is this test process, which is trivially alive, and the identity is
+// injected rather than read: a test must never depend on the developer's real
+// ~/.clawd/runtime.json (whose contents change with whether Clawd is running).
+// env:{} keeps a CLAWD_REMOTE in the developer's shell from skipping the walk.
+const LIVE_GATE = {
+  readRuntimeIdentity: () => ({ ok: true, reason: null, port: 23333, ownerPid: process.pid }),
+  env: {},
+};
 
 // ═════════════════════════════════════════════════════════════════════════════
 // getPlatformConfig()
@@ -87,13 +103,13 @@ describe("getPlatformConfig()", () => {
 describe("createPidResolver()", () => {
   it("returns a function", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg });
     assert.strictEqual(typeof resolve, "function");
   });
 
   it("caches result after first call", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: process.pid });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: process.pid });
     const r1 = resolve();
     const r2 = resolve();
     assert.strictEqual(r1, r2, "should return same object reference");
@@ -101,7 +117,7 @@ describe("createPidResolver()", () => {
 
   it("result has expected shape", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: process.pid });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: process.pid });
     const result = resolve();
     assert.ok("stablePid" in result);
     assert.ok("agentPid" in result);
@@ -111,7 +127,7 @@ describe("createPidResolver()", () => {
 
   it("walks from startPid and populates pidChain", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: process.pid });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: process.pid });
     const { pidChain } = resolve();
     // pidChain should contain at least the start PID (our own process)
     assert.ok(pidChain.length >= 1);
@@ -120,7 +136,7 @@ describe("createPidResolver()", () => {
 
   it("respects maxDepth", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: process.pid, maxDepth: 1 });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: process.pid, maxDepth: 1 });
     const { pidChain } = resolve();
     assert.ok(pidChain.length <= 1);
   });
@@ -169,7 +185,7 @@ describe("createPidResolver() — tmux bridge (mocked)", () => {
     });
     try {
       const cfg = mod.getPlatformConfig();
-      const resolve = mod.createPidResolver({ platformConfig: cfg, startPid: 100 });
+      const resolve = mod.createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 100 });
       const { stablePid, pidChain, tmuxSocket, tmuxClient } = resolve();
       assert.strictEqual(stablePid, 300, "stablePid should be the terminal pid");
       assert.ok(pidChain.includes(200), "pidChain should include tmux server pid");
@@ -193,7 +209,7 @@ describe("createPidResolver() — tmux bridge (mocked)", () => {
     });
     try {
       const cfg = mod.getPlatformConfig();
-      const { stablePid, pidChain } = mod.createPidResolver({
+      const { stablePid, pidChain } = mod.createPidResolver({ ...LIVE_GATE,
         platformConfig: cfg, startPid: 100, maxDepth: 1,
       })();
       assert.strictEqual(stablePid, 100);
@@ -218,7 +234,7 @@ describe("createPidResolver() — tmux bridge (mocked)", () => {
     });
     try {
       const cfg = mod.getPlatformConfig();
-      const { stablePid, pidChain } = mod.createPidResolver({
+      const { stablePid, pidChain } = mod.createPidResolver({ ...LIVE_GATE,
         platformConfig: cfg, startPid: 100,
       })();
       assert.ok(!pidChain.some(p => p > 200), "no client pids appended past tmux server");
@@ -243,7 +259,7 @@ describe("createPidResolver() — tmux bridge (mocked)", () => {
     });
     try {
       const cfg = mod.getPlatformConfig();
-      const result = mod.createPidResolver({ platformConfig: cfg, startPid: 100 })();
+      const result = mod.createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 100 })();
       assert.strictEqual(result.tmuxSocket, "/tmp/tmux-1000/work");
     } finally {
       cleanup();
@@ -262,7 +278,7 @@ describe("createPidResolver() — tmux bridge (mocked)", () => {
     });
     try {
       const cfg = mod.getPlatformConfig();
-      const result = mod.createPidResolver({
+      const result = mod.createPidResolver({ ...LIVE_GATE,
         platformConfig: cfg, startPid: 100, maxDepth: 1,
       })();
       assert.strictEqual(result.tmuxSocket, "/tmp/tmux-1000/default");
@@ -347,7 +363,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
 
   it("populates pidChain by walking the snapshot Map", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: 1000 });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 1000 });
     withMockedExec(() => snapshotJson([
       { pid: 1000, name: "cmd.exe", ppid: 1001 },
       { pid: 1001, name: "explorer.exe", ppid: 0 },
@@ -360,7 +376,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
 
   it("breaks the walk immediately when the snapshot is empty", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: 9999 });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 9999 });
     withMockedExec(() => "", () => {
       const { pidChain } = resolve();
       assert.strictEqual(pidChain.length, 0);
@@ -369,7 +385,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
 
   it("breaks the walk cleanly when ConvertTo-Json outputs 'null'", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: 9000 });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 9000 });
     withMockedExec(() => "null", () => {
       const { pidChain } = resolve();
       assert.strictEqual(pidChain.length, 0, "'null' PS output must abort the walk");
@@ -378,7 +394,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
 
   it("sets stablePid to the terminal PID when a terminal process is found", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: 500 });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 500 });
     withMockedExec(() => snapshotJson([
       { pid: 500, name: "windowsterminal.exe", ppid: 0 },
     ]), () => {
@@ -389,7 +405,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
 
   it("captures the foreground Windows Terminal HWND from the same snapshot", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: 500 });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 500 });
     withMockedExec(() => snapshotEnvelopeJson([
       { pid: 500, name: "powershell.exe", ppid: 501 },
       { pid: 501, name: "explorer.exe", ppid: 0 },
@@ -406,7 +422,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
 
   it("rejects foreground HWNDs that are not Windows Terminal host windows", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: 500 });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 500 });
     withMockedExec(() => snapshotEnvelopeJson([
       { pid: 500, name: "powershell.exe", ppid: 501 },
       { pid: 501, name: "explorer.exe", ppid: 0 },
@@ -423,7 +439,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
 
   it("detects editor from process name", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: 200 });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 200 });
     withMockedExec(() => snapshotJson([
       { pid: 200, name: "code.exe", ppid: 0 },
     ]), () => {
@@ -434,7 +450,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
 
   it("stops the walk at a system boundary process (explorer.exe)", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: 300 });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 300 });
     withMockedExec(() => snapshotJson([
       { pid: 300, name: "cmd.exe", ppid: 301 },
       { pid: 301, name: "explorer.exe", ppid: 302 },
@@ -448,7 +464,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
 
   it("uses a single PowerShell spawn for the snapshot regardless of chain depth", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: 100 });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 100 });
     let spawnCount = 0;
     withMockedExec(() => {
       spawnCount++;
@@ -465,7 +481,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
 
   it("detects agentPid when agentNameSet matches a process name", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({
+    const resolve = createPidResolver({ ...LIVE_GATE,
       platformConfig: cfg,
       startPid: 400,
       agentNames: { win: new Set(["claude.exe"]), mac: new Set(["claude"]) },
@@ -482,7 +498,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
 
   it("detects agentPid via agentCmdlineCheck on node.exe using snapshot CommandLine", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({
+    const resolve = createPidResolver({ ...LIVE_GATE,
       platformConfig: cfg,
       startPid: 600,
       agentCmdlineCheck: (cmdline) => cmdline.includes("claude-code"),
@@ -511,6 +527,26 @@ describe("readStdinJsonDetailed()", () => {
     assert.strictEqual(result.payload.session_id, "abc-123");
     assert.strictEqual(result.bytes, Buffer.byteLength('{"session_id":"abc-123","cwd":"D:\\\\x"}'));
     assert.strictEqual(result.timedOut, false);
+    assert.strictEqual(result.parseError, null);
+  });
+
+  it("strips a leading UTF-8 BOM before parsing (#638)", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream });
+    stream.end('\uFEFF{"session_id":"bom-sid"}');
+
+    const result = await pending;
+    assert.strictEqual(result.payload.session_id, "bom-sid");
+    assert.strictEqual(result.parseError, null);
+  });
+
+  it("treats a lone UTF-8 BOM as an empty payload, not a parse error (#638)", async () => {
+    const stream = new PassThrough();
+    const pending = readStdinJsonDetailed({ stream });
+    stream.end("\uFEFF");
+
+    const result = await pending;
+    assert.deepStrictEqual(result.payload, {});
     assert.strictEqual(result.parseError, null);
   });
 
@@ -602,5 +638,118 @@ describe("readStdinJsonDetailed()", () => {
     assert.strictEqual(result.payload.session_id, "big-sid");
     assert.strictEqual(result.bytes, Buffer.byteLength(big));
     assert.strictEqual(result.parseError, null);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// #627 provenance: snapshotOk / terminalPid — the fields the pid cache uses to
+// refuse caching a degraded Windows snapshot instead of reverse-inferring from
+// stablePid. Uses the mock loader so it runs on any platform.
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("createPidResolver() — snapshot provenance (#627, mocked win32)", () => {
+  const { loadSharedProcessWithMock } = require("./helpers/load-shared-process-with-mock");
+
+  function snapshotJson(procs) {
+    return JSON.stringify(procs.map((p) => ({
+      ProcessId: p.pid,
+      Name: p.name,
+      ParentProcessId: p.ppid,
+      CommandLine: typeof p.cmd === "string" ? p.cmd : null,
+    })));
+  }
+
+  it("snapshotOk true + terminalPid set when the walk reaches a terminal", () => {
+    const { mod, cleanup } = loadSharedProcessWithMock({
+      execFileSyncMock: () => snapshotJson([
+        { pid: 500, name: "node.exe", ppid: 600, cmd: "node C:/x/claude-code/cli.js" },
+        { pid: 600, name: "windowsterminal.exe", ppid: 0 },
+      ]),
+      platform: "win32",
+    });
+    try {
+      const cfg = mod.getPlatformConfig();
+      const r = mod.createPidResolver({ ...LIVE_GATE,
+        platformConfig: cfg,
+        startPid: 500,
+        agentNames: { win: new Set(["claude.exe"]), mac: new Set(["claude"]) },
+        agentCmdlineCheck: (c) => c.includes("claude-code"),
+      })();
+      assert.strictEqual(r.snapshotOk, true);
+      assert.strictEqual(r.terminalPid, 600);
+      assert.strictEqual(r.stablePid, 600);
+      assert.strictEqual(r.agentPid, 500);
+    } finally {
+      cleanup();
+    }
+  });
+
+  // BASELINE INVERTED BY #681. This case used to assert stablePid === startPid
+  // ("decays to the ephemeral start pid — must not be cached"). Refusing to
+  // CACHE that pid was never enough: the degraded pid was still SHIPPED as
+  // source_pid on that very event, so terminal focus targeted the per-event hook
+  // wrapper, which is dead by the time anyone clicks. An attempted-but-failed
+  // snapshot now yields the same unavailable shape as the offline gate, with
+  // attempted:true to distinguish "tried and failed" from "never tried".
+  it("snapshotOk false + NO degraded pid on an empty snapshot (attempted, but nothing to report)", () => {
+    const { mod, cleanup } = loadSharedProcessWithMock({
+      execFileSyncMock: () => "", // empty PS output → getWindowsProcessSnapshot yields an empty Map
+      platform: "win32",
+    });
+    try {
+      const cfg = mod.getPlatformConfig();
+      const r = mod.createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 4242 })();
+      assert.strictEqual(r.snapshotOk, false);
+      assert.strictEqual(r.terminalPid, null);
+      assert.strictEqual(r.stablePid, null, "must NOT decay to the ephemeral start pid (#681)");
+      assert.notStrictEqual(r.stablePid, 4242);
+      assert.strictEqual(r.agentPid, null);
+      assert.strictEqual(r.detectedEditor, null);
+      assert.deepStrictEqual(r.pidChain, [], "must be [] — six adapters do a bare pidChain.length");
+      assert.strictEqual(r.attempted, true, "the snapshot DID run; it just came back empty");
+      assert.strictEqual(r.skipReason, "snapshot-failed");
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("tmuxSocketFromEnv()", () => {
+  it("parses the socket path from $TMUX", () => {
+    const saved = process.env.TMUX;
+    process.env.TMUX = "/tmp/tmux-1000/work,200,5";
+    try {
+      assert.strictEqual(tmuxSocketFromEnv(), "/tmp/tmux-1000/work");
+    } finally {
+      if (saved === undefined) delete process.env.TMUX;
+      else process.env.TMUX = saved;
+    }
+  });
+
+  it("returns null when $TMUX is unset", () => {
+    const saved = process.env.TMUX;
+    delete process.env.TMUX;
+    try {
+      assert.strictEqual(tmuxSocketFromEnv(), null);
+    } finally {
+      if (saved !== undefined) process.env.TMUX = saved;
+    }
+  });
+});
+
+describe("processAlive()", () => {
+  it("true for the current process", () => {
+    assert.strictEqual(processAlive(process.pid), true);
+  });
+
+  it("false for a pid that does not exist", () => {
+    assert.strictEqual(processAlive(2147483646), false);
+  });
+
+  it("false for non-positive / non-numeric input", () => {
+    assert.strictEqual(processAlive(0), false);
+    assert.strictEqual(processAlive(-1), false);
+    assert.strictEqual(processAlive(null), false);
+    assert.strictEqual(processAlive("nope"), false);
   });
 });

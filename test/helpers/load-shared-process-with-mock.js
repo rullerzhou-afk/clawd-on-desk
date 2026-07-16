@@ -1,7 +1,8 @@
 // test/helpers/load-shared-process-with-mock.js
 //
-// Patches child_process.execFileSync, process.env (TMUX/TMUX_PANE), and
-// process.platform before requiring shared-process.js. This is the
+// Patches child_process.execFileSync, process.env (TMUX/TMUX_PANE plus any
+// keys passed via `env`), and process.platform before requiring
+// shared-process.js. This is the
 // equivalent of load-focus-with-mock.js but for the hook-side resolver.
 
 function loadSharedProcessWithMock({ execFileSyncMock, env, platform }) {
@@ -12,7 +13,7 @@ function loadSharedProcessWithMock({ execFileSyncMock, env, platform }) {
   const origSp = require.cache[spKey];
   const origPlatform = Object.getOwnPropertyDescriptor(process, "platform");
 
-  const envKeys = ["TMUX", "TMUX_PANE"];
+  const envKeys = [...new Set(["TMUX", "TMUX_PANE", ...(env ? Object.keys(env) : [])])];
   const savedEnv = {};
   for (const k of envKeys) savedEnv[k] = process.env[k];
 

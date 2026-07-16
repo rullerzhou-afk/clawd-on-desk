@@ -59,19 +59,19 @@ const ICONS = {
     '<path d="M22 2 15 22l-4-9-9-4 20-7Z"/>' +
     '</svg>',
 
+  // gamepad (Discord presence)
+  "discord-presence":
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
+    '<path d="M6 11h4M8 9v4M15 12h.01M18 10h.01"/>' +
+    '<path d="M17.32 5H6.68a4 4 0 0 0-3.98 3.59C2.6 9.42 2 14.46 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.41-1.41A2 2 0 0 1 9.83 16h4.34a2 2 0 0 1 1.42.59L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.54-.6-6.58-.68-7.26A4 4 0 0 0 17.32 5Z"/>' +
+    '</svg>',
+
   // plug
   "remote-ssh":
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
     '<path d="M9 2v6M15 2v6"/>' +
     '<path d="M7 8h10v3a5 5 0 0 1-5 5 5 5 0 0 1-5-5V8Z"/>' +
     '<path d="M12 16v6"/>' +
-    '</svg>',
-
-  // smartphone
-  mobile:
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
-    '<rect x="5" y="2" width="14" height="20" rx="2"/>' +
-    '<path d="M12 18h.01"/>' +
     '</svg>',
 
   // info circle

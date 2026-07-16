@@ -25,8 +25,9 @@ function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
 
-// On win32 the installer wraps commands in PowerShell -EncodedCommand; decode
-// before asserting on substrings inside the command.
+// Current win32 installs write the portable bash/cmd form (#597, M6). Legacy
+// entries were PowerShell -EncodedCommand; decode those before asserting on
+// substrings. Portable commands pass through unchanged.
 function commandPayload(command) {
   return decodeWindowsEncodedCommand(command) || command;
 }
@@ -84,7 +85,10 @@ describe("QoderWork hook installer", () => {
     }
   });
 
-  it("wraps the Windows command as PowerShell -EncodedCommand", () => {
+  // QoderWork shares Qoder's qodercli Git Bash executor on Windows (#597, M6),
+  // so the command must be the bash/cmd-portable form, never -EncodedCommand
+  // (bash eats the unquoted backslash powershell.exe path → exit 127).
+  it("writes the portable bash/cmd form on Windows (space in node path → bare node)", () => {
     const settingsPath = makeTempSettingsFile({});
     registerQoderWorkHooks({
       silent: true,
@@ -95,11 +99,11 @@ describe("QoderWork hook installer", () => {
 
     const settings = readJson(settingsPath);
     const command = settings.hooks.Stop[0].hooks[0].command;
-    assert.match(command, /-EncodedCommand/);
-    const payload = commandPayload(command);
-    assert.ok(payload.includes(MARKER), payload);
-    assert.ok(payload.includes("node.exe"), payload);
-    assert.ok(payload.endsWith("'Stop'"), payload);
+    assert.doesNotMatch(command, /-EncodedCommand/);
+    assert.doesNotMatch(command, /\\/); // no backslashes — bash would eat them
+    assert.ok(command.startsWith('node "'), command);
+    assert.ok(command.includes(MARKER), command);
+    assert.ok(command.endsWith('"Stop"'), command);
   });
 
   it("is idempotent on second run", () => {
@@ -164,9 +168,8 @@ describe("QoderWork hook installer", () => {
     assert.strictEqual(fs.existsSync(path.join(fakeHome, ".qoderwork", "settings.json")), false);
   });
 
-  it("uninstall removes only clawd entries (incl. Windows-encoded) and keeps third-party", () => {
+  it("uninstall removes only clawd entries and keeps third-party", () => {
     const settingsPath = makeTempSettingsFile({});
-    // Install in the Windows-encoded form so uninstall must decode to detect the marker.
     registerQoderWorkHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node", platform: "win32" });
 
     let settings = readJson(settingsPath);
@@ -194,5 +197,35 @@ describe("QoderWork hook installer", () => {
         }
       }
     }
+  });
+
+  // Back-compat: a user upgrading from a build that wrote the -EncodedCommand
+  // form must have that entry migrated in place to the portable form (#597, M6),
+  // not left broken. register decodes the marker to detect its own stale entry.
+  it("migrates a legacy Windows -EncodedCommand entry to the portable form", () => {
+    const { buildWindowsEncodedNodeHookCommand } = require("../hooks/json-utils");
+    const legacy = buildWindowsEncodedNodeHookCommand(
+      "C:\\Program Files\\nodejs\\node.exe",
+      "D:/app/hooks/qoderwork-hook.js",
+      ["Stop"],
+    );
+    const settingsPath = makeTempSettingsFile({
+      hooks: { Stop: [{ matcher: "*", hooks: [{ name: "clawd", type: "command", command: legacy }] }] },
+    });
+
+    const result = registerQoderWorkHooks({
+      silent: true,
+      settingsPath,
+      nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+      platform: "win32",
+    });
+    assert.ok(result.updated >= 1, JSON.stringify(result));
+
+    const stop = readJson(settingsPath).hooks.Stop;
+    assert.strictEqual(stop.length, 1);
+    const command = stop[0].hooks[0].command;
+    assert.doesNotMatch(command, /-EncodedCommand/);
+    assert.ok(command.startsWith('node "'), command);
+    assert.ok(command.endsWith('"Stop"'), command);
   });
 });

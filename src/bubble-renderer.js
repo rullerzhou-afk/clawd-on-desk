@@ -814,10 +814,35 @@ function show(data) {
   // Kimi notify mode — informational bubble with Dismiss button only
   if (data.toolName === "KimiPermission") {
     headerTitle.textContent = bubbleText(data.lang, "kimiPermission");
-    toolPillText.textContent = "KIMI";
-    toolPill.setAttribute("data-tool", "KimiPermission");
+    // A native Kimi Code request forwards the real tool name plus a
+    // whitelisted tool_input subset. When both are present, reuse the
+    // standard cue path (formatDetail / detectIrreversible / real tool pill)
+    // — display-only, the card stays dismiss-only. Without them (legacy
+    // Python CLI, shape drift) this renders exactly the old generic card.
+    const kimiTool = typeof data.kimiToolName === "string" && data.kimiToolName ? data.kimiToolName : null;
+    const kimiInput = data.kimiToolInput && typeof data.kimiToolInput === "object" ? data.kimiToolInput : null;
+    if (kimiTool && kimiInput) {
+      const kimiMcp = parseMcpToolName(kimiTool);
+      toolPillText.textContent = kimiMcp ? kimiMcp.display : kimiTool;
+      toolPill.setAttribute("data-tool", kimiTool);
+      // The fallbacks are defense-in-depth only: formatDetail's generic
+      // last-resort loop returns non-empty for any server-normalized input.
+      commandBlock.textContent = formatDetail(kimiTool, kimiInput)
+        || (data.toolInput && data.toolInput.command)
+        || bubbleText(data.lang, "checkKimiTerminal");
+      const kimiIrreversible = detectIrreversible(kimiTool, kimiInput);
+      if (kimiIrreversible) {
+        irreversibleBadge.textContent = "\u26A0 " + bubbleText(data.lang, "irreversibleHint");
+        irreversibleBadge.setAttribute("data-reason", kimiIrreversible.tag);
+        irreversibleBadge.style.display = "";
+      }
+      // No else branch: resetBubbleContent() above already hid the badge.
+    } else {
+      toolPillText.textContent = "KIMI";
+      toolPill.setAttribute("data-tool", "KimiPermission");
+      commandBlock.textContent = (data.toolInput && data.toolInput.command) || bubbleText(data.lang, "checkKimiTerminal");
+    }
     toolPill.style.display = "";
-    commandBlock.textContent = (data.toolInput && data.toolInput.command) || bubbleText(data.lang, "checkKimiTerminal");
     btnAllow.textContent = bubbleText(data.lang, "gotIt");
     btnAllow.disabled = false;
     btnDeny.style.display = "none";
@@ -1037,6 +1062,50 @@ planFeedbackSubmit.addEventListener("click", () => {
 planFeedbackBack.addEventListener("click", () => {
   exitPlanFeedbackMode();
 });
+
+// While a text input inside the bubble is focused, tell the main process so it
+// can drop the bubble out of always-on-top on macOS — otherwise the OS IME
+// candidate window (Chinese/Japanese/Korean input popup) is occluded by the
+// topmost bubble. focusin/focusout bubble up from any current or future text
+// field (elicitation "Other", ExitPlanMode feedback) without per-field wiring.
+function isTextInputElement(el) {
+  if (!el) return false;
+  if (el.tagName === "TEXTAREA") return true;
+  if (el.tagName === "INPUT") {
+    const type = (el.getAttribute("type") || "text").toLowerCase();
+    return type === "text" || type === "search";
+  }
+  return false;
+}
+
+if (window.bubbleAPI && typeof window.bubbleAPI.setImeEditing === "function") {
+  // Dedupe so redundant transitions don't spam the main process (and so the
+  // window-blur/focus net below only fires a real state change).
+  let imeEditing = false;
+  const setImeEditing = (active) => {
+    if (active === imeEditing) return;
+    imeEditing = active;
+    window.bubbleAPI.setImeEditing(active);
+  };
+  document.addEventListener("focusin", (e) => {
+    if (isTextInputElement(e.target)) setImeEditing(true);
+  });
+  document.addEventListener("focusout", (e) => {
+    if (isTextInputElement(e.target)) setImeEditing(false);
+  });
+  // focusin/focusout are element-level: they do NOT fire when the whole window
+  // loses/regains OS focus (e.g. Cmd-Tab away mid-composition to check a
+  // reference — a routine CJK move). Without this, the editing flag would stay
+  // set and reapplyMacVisibility() would strand the bubble out of always-on-top
+  // for good. Mirror the window-blur listener used elsewhere in the app
+  // (hit-renderer.js, tutorial-renderer.js): restore normal topmost while the
+  // window is backgrounded, and re-drop it on return if a text field still
+  // holds focus.
+  window.addEventListener("blur", () => setImeEditing(false));
+  window.addEventListener("focus", () => {
+    if (isTextInputElement(document.activeElement)) setImeEditing(true);
+  });
+}
 
 window.bubbleAPI.onPermissionShow(show);
 window.bubbleAPI.onPermissionHide(hide);

@@ -128,18 +128,18 @@ const {
   validateTelegramApproval,
   validateTelegramBotToken,
 } = require("./telegram-approval-settings");
+const { validateDiscordPresence } = require("./discord-presence-settings");
 const {
   validateFeishuApproval,
 } = require("./feishu-approval-settings");
 const { EVENTS: TELEGRAM_MIGRATION_EVENTS } = require("./telegram-migration-state");
-const {
-  validateHardwareBuddySettings,
-} = require("./hardware-buddy-settings");
 
+// Only the Step-3 enable switch dispatches from the renderer since the
+// migration card retired: turn-on tests native, turn-off disables. The
+// legacy-enable / rollback transitions stay in the reducer for main-side
+// integrity but are no longer renderer-callable.
 const TELEGRAM_MIGRATION_RENDERER_EVENTS = new Set([
   TELEGRAM_MIGRATION_EVENTS.USER_TEST_NATIVE,
-  TELEGRAM_MIGRATION_EVENTS.USER_ENABLE_LEGACY,
-  TELEGRAM_MIGRATION_EVENTS.USER_ROLLBACK_TO_LEGACY,
   TELEGRAM_MIGRATION_EVENTS.USER_DISABLE,
 ]);
 
@@ -463,6 +463,9 @@ const updateRegistry = {
   tgApproval(value) {
     return validateTelegramApproval(value);
   },
+  discordPresence(value) {
+    return validateDiscordPresence(value);
+  },
   feishuApproval(value) {
     return validateFeishuApproval(value);
   },
@@ -492,10 +495,6 @@ const updateRegistry = {
       return { status: "error", message: "tgMigration.migration must be an object" };
     }
     return { status: "ok" };
-  },
-
-  hardwareBuddy(value) {
-    return validateHardwareBuddySettings(value);
   },
 
   shortcuts: {
@@ -1085,14 +1084,6 @@ async function telegramApprovalSetToken(payload, deps = {}) {
   return { status: "ok", tokenStored: true };
 }
 
-async function telegramApprovalDeleteTokenFile(_payload, deps = {}) {
-  if (!deps || typeof deps.deleteTelegramApprovalTokenFile !== "function") {
-    return { status: "error", message: "telegramApproval.deleteTokenFile requires deleteTelegramApprovalTokenFile dep" };
-  }
-  const result = await deps.deleteTelegramApprovalTokenFile();
-  return result || { status: "error", message: "Telegram token file delete returned no result" };
-}
-
 function telegramApprovalStatus(_payload, deps = {}) {
   if (!deps || typeof deps.getTelegramApprovalStatus !== "function") {
     return { status: "error", message: "telegramApproval.status requires getTelegramApprovalStatus dep" };
@@ -1150,7 +1141,6 @@ async function telegramMigrationDispatch(payload, deps = {}) {
 }
 
 telegramMigrationDispatch.lockKey = "tgApproval";
-telegramApprovalDeleteTokenFile.lockKey = "tgApproval";
 
 async function telegramApprovalSendTest(_payload, deps = {}) {
   if (!deps || typeof deps.sendTelegramApprovalTest !== "function") {
@@ -1388,7 +1378,6 @@ const commandRegistry = {
   "remoteSsh.markDeployed": remoteSshMarkDeployed,
   "remoteSsh.markRemoteNode": remoteSshMarkRemoteNode,
   "telegramApproval.setToken": telegramApprovalSetToken,
-  "telegramApproval.deleteTokenFile": telegramApprovalDeleteTokenFile,
   "telegramApproval.status": telegramApprovalStatus,
   "telegramApproval.tokenInfo": telegramApprovalTokenInfo,
   "telegramApproval.test": telegramApprovalSendTest,

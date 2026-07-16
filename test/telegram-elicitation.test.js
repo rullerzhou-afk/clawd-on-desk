@@ -114,6 +114,52 @@ test("requestElicitation resolves elicitation-submit when a single-select questi
   await runner.stop();
 });
 
+test("requestElicitation redacts secrets from the displayed question but keeps the raw answer key", async () => {
+  const server = createFakeTelegramServer();
+  let releaseFirstPoll;
+  let sentText = "";
+  let optionData = "";
+
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueue("sendMessage", (payload) => {
+    sentText = payload.text;
+    optionData = payload.reply_markup.inline_keyboard[0][0].callback_data;
+    return { ok: true, result: { message_id: 601, chat: { id: 123 } } };
+  });
+  server.enqueue("getUpdates", () => ({
+    ok: true,
+    result: [callbackUpdate({ id: 1, messageId: 601, fromId: 777, data: optionData })],
+  }));
+  server.enqueueOk("answerCallbackQuery", true);
+  server.enqueueOk("editMessageText", { message_id: 601 });
+
+  const runner = makeRunner(server);
+  await runner.start();
+  await tick();
+  const decisionPromise = runner.requestElicitation({
+    title: "claude-code needs input",
+    questions: [
+      { question: "Rotate sk-abcdefghijklmnop1234 from .env?", options: [{ label: "Yes" }, { label: "No" }] },
+    ],
+  });
+  await tick();
+
+  // The card text sent to Telegram must not carry the key the agent quoted...
+  assert.doesNotMatch(sentText, /sk-abcdefghijklmnop1234/);
+  assert.match(sentText, /redacted:token/);
+
+  releaseFirstPoll({ ok: true, result: [] });
+  const decision = await decisionPromise;
+  // ...but the answer still round-trips under the RAW question text as its key,
+  // so redaction of the display never desyncs answer delivery to the agent.
+  assert.deepEqual(decision, {
+    type: "elicitation-submit",
+    answers: { "Rotate sk-abcdefghijklmnop1234 from .env?": "Yes" },
+  });
+
+  await runner.stop();
+});
+
 test("requestElicitation advances through multiple questions and submits once all are answered", async () => {
   const server = createFakeTelegramServer();
   let releaseFirstPoll;
@@ -473,46 +519,26 @@ test("requestElicitation still answers an Other reply that looks like a slash co
   await runner.stop();
 });
 
-test("requestElicitation fails closed (not open) when allowedUser is unset - both a tap and an Other reply are rejected", async () => {
+test("requestElicitation does not send a card when allowedUser is unset (fail-closed)", async () => {
   const server = createFakeTelegramServer();
-  let releaseFirstPoll;
-  let optionData = "";
+  let sendCalled = false;
 
-  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
-  server.enqueue("sendMessage", (msg) => {
-    optionData = msg.reply_markup.inline_keyboard[0][0].callback_data;
+  server.enqueue("getUpdates", () => new Promise(() => {})); // hold the poll open
+  server.enqueue("sendMessage", () => {
+    sendCalled = true;
     return { ok: true, result: { message_id: 1301, chat: { id: 123 } } };
   });
-  // Unlike the approval flow's "unset allowedUser skips the check" convention,
-  // an elicitation answer must not be acceptable from just anyone in the chat
-  // when allowedUser is blank (misconfigured) - it feeds straight back into
-  // the agent's next step.
-  server.enqueue("getUpdates", () => ({
-    ok: true,
-    result: [callbackUpdate({ id: 1, messageId: 1301, fromId: 555, data: optionData })],
-  }));
-  server.enqueueOk("answerCallbackQuery", true);
-  server.enqueue("getUpdates", () => ({
-    ok: true,
-    result: [textUpdate({ id: 2, fromId: 555, text: "should also be rejected", replyToMessageId: 1301 })],
-  }));
 
   const runner = makeRunner(server, { getAllowedUserId: () => "" });
   await runner.start();
   await tick();
-  const decisionPromise = runner.requestElicitation(singleQuestionPayload());
-  await tick();
-
-  releaseFirstPoll({ ok: true, result: [] });
-  await tick();
-  await tick();
-  await tick();
-
-  let resolved = false;
-  decisionPromise.then(() => { resolved = true; });
-  await tick();
-  assert.equal(resolved, false, "neither the tap nor the Other-style reply may answer the question when allowedUser is unset");
-
+  // An elicitation answer feeds straight into the agent's next step, so a blank
+  // (misconfigured) allowedUser must not send an actionable card at all — it
+  // fails closed at the entry and resolves to no-decision. (Rejection of a tap
+  // from a DIFFERENT user is covered by the next test, where allowedUser is set.)
+  const decision = await runner.requestElicitation(singleQuestionPayload());
+  assert.equal(decision, null, "a blank allowedUser resolves to no-decision");
+  assert.equal(sendCalled, false, "no elicitation card is sent");
   await runner.stop();
 });
 

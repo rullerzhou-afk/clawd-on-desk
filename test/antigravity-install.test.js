@@ -596,6 +596,53 @@ describe("Antigravity hook installer", () => {
     assert.ok(result.stdoutCloseElapsedMs < 10000, "stdout must reach EOF promptly after exit");
   });
 
+  it("delivers the stdin payload BOM-free under a CP-65001 console (#638)", windowsOnly, () => {
+    const scriptPath = writeEchoHook("clawd-antigravity-winbom-");
+    const command = __test.buildAntigravityHookCommand(
+      process.execPath,
+      scriptPath,
+      "PreInvocation",
+      { platform: "win32" }
+    );
+    // CJK in the payload also pins the encoding half of #638: the old
+    // Console.InputEncoding writer would mojibake non-ASCII under an ANSI
+    // console, the raw UTF-8 write must round-trip it byte-exact.
+    const payload = JSON.stringify({ session_id: "bom-check", cwd: "D:\\动画工作台" });
+    // chcp mutates the SHARED console codepage, and node --test runs test
+    // files concurrently on that console. When the console already sits at
+    // 65001 (systems with UTF-8 as the system codepage - increasingly the
+    // default) skip the mutation entirely: the BOM branch is exercised with
+    // zero cross-test pollution. Only legacy-ANSI consoles pay the (restore-
+    // bounded) mutation window; a spawnSync timeout still runs the finally,
+    // so only a hard kill of the test process itself skips the restore.
+    // (An isolated console via detached/windowsHide is not an option: it
+    // breaks stdio piping for this very test.)
+    const before = spawnSync("cmd.exe", ["/d", "/s", "/c", "chcp"], { encoding: "utf8" });
+    const cpMatch = (before.stdout || "").match(/\d+/);
+    assert.strictEqual(before.status, 0, "must be able to query the console codepage");
+    assert.ok(cpMatch, "must be able to parse the console codepage for restore");
+    const alreadyUtf8 = cpMatch && cpMatch[0] === "65001";
+    try {
+      // && (not &): if forcing 65001 fails, the wrapper must NOT run - under
+      // the original ANSI codepage this test would silently pass without ever
+      // exercising the BOM branch.
+      const result = spawnSync(
+        "cmd.exe",
+        ["/d", "/s", "/c", alreadyUtf8 ? command : `chcp 65001>nul && ${command}`],
+        { input: payload, encoding: "utf8", timeout: 30000 }
+      );
+      assert.strictEqual(result.status, 0);
+      const parsed = JSON.parse(result.stdout);
+      // Pre-#638 the .NET StandardInput writer flushed a UTF-8 BOM preamble
+      // under CP 65001, so the hook saw "﻿" + payload (or a lone BOM on
+      // the empty watchdog path).
+      assert.strictEqual(parsed.got.charCodeAt(0) === 0xFEFF, false, "hook stdin must not carry a BOM");
+      assert.deepStrictEqual(parsed, { got: payload });
+    } finally {
+      if (cpMatch && !alreadyUtf8) spawnSync("cmd.exe", ["/d", "/s", "/c", `chcp ${cpMatch[0]}`], { encoding: "utf8" });
+    }
+  });
+
   it("builds Windows PowerShell bridge commands with fail-open fallback", () => {
     const command = __test.buildAntigravityHookCommand(
       "C:\\Program Files\\nodejs\\node.exe",
@@ -616,6 +663,23 @@ describe("Antigravity hook installer", () => {
     assert.ok(decoded.includes("New-Object System.IO.StreamReader([Console]::OpenStandardInput())"));
     assert.ok(decoded.includes("$stdinTask.Wait(2000)"));
     assert.ok(!decoded.includes("[Console]::In.ReadToEnd()"));
+    // #638: Console.InputEncoding must be swapped to BOM-less UTF-8 BEFORE
+    // Start() — .NET Framework creates the StandardInput writer eagerly there
+    // and AutoFlush pushes the encoding preamble into the pipe at once — and
+    // stdin must be written as raw UTF-8 bytes, not through that writer.
+    assert.ok(decoded.includes("[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)"));
+    assert.ok(decoded.indexOf("UTF8Encoding($false)") < decoded.indexOf("$proc.Start()"), "encoding pre-set must precede Start()");
+    // The swap must stay gated on the current encoding carrying a preamble and
+    // must NOT save/restore console state: gated, SetConsoleCP only ever
+    // receives the codepage the console already has, so concurrent wrappers
+    // cannot race and a hard-killed wrapper leaves no residue.
+    assert.ok(decoded.includes("if ([Console]::InputEncoding.GetPreamble().Length -gt 0)"));
+    assert.ok(!decoded.includes("$origInputEncoding"), "no console-state save/restore — the gated swap never changes the console CP");
+    // #638 read side: the hook's UTF-8 stdout must be decoded process-locally,
+    // not with the console-global OutputEncoding.
+    assert.ok(decoded.includes("$psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)"));
+    assert.ok(decoded.includes("[System.Text.Encoding]::UTF8.GetBytes($stdinText)"));
+    assert.ok(!decoded.includes("$proc.StandardInput.Write"));
     assert.ok(decoded.includes("ConvertFrom-Json -ErrorAction Stop"));
     assert.ok(decoded.includes("[Console]::Out.WriteLine( '{\"decision\":\"ask\"}' )"));
     assert.ok(decoded.endsWith("exit 0"));

@@ -166,6 +166,19 @@ function buildWindowsEncodedFailOpenNodeHookCommand(nodeBin, hookScript, event, 
     ";",
     "$text=''",
     ";",
+    // #638: .NET Framework's Process.Start() eagerly creates the StandardInput
+    // StreamWriter on Console.InputEncoding with AutoFlush=true, which flushes
+    // the encoding's preamble into the pipe at Start() itself — under a
+    // CP-65001 console the hook's stdin would start with a 3-byte UTF-8 BOM
+    // that JSON.parse rejects. Swap in a BOM-less UTF-8 before Start(), gated
+    // on the current encoding actually carrying a preamble: the swap then
+    // never changes the console codepage (65001 stays 65001), so there is no
+    // cross-process console state to restore — concurrent wrappers cannot
+    // race on it and a hard-killed wrapper leaves no residue. The swapped
+    // encoding object is process-local and dies with the wrapper. Fail open
+    // where no console exists (ANSI encodings carry no preamble anyway).
+    "try { if ([Console]::InputEncoding.GetPreamble().Length -gt 0) { [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false) } } catch {}",
+    ";",
     "try {",
     "$psi = New-Object System.Diagnostics.ProcessStartInfo",
     ";",
@@ -180,6 +193,14 @@ function buildWindowsEncodedFailOpenNodeHookCommand(nodeBin, hookScript, event, 
     "$psi.RedirectStandardInput = $true",
     ";",
     "$psi.RedirectStandardOutput = $true",
+    ";",
+    // #638 read side: without this, the StandardOutput reader decodes the
+    // hook's UTF-8 stdout with Console.OutputEncoding — mojibake for any
+    // non-ASCII in the hook's response under an ANSI console. Available on
+    // .NET Framework 4.5+ (unlike StandardInputEncoding, which Framework
+    // never got, hence the InputEncoding swap above) and process-local by
+    // construction.
+    "$psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)",
     ";",
     "$psi.RedirectStandardError = $true",
     ";",
@@ -204,9 +225,16 @@ function buildWindowsEncodedFailOpenNodeHookCommand(nodeBin, hookScript, event, 
     ";",
     `try { $stdinReader = New-Object System.IO.StreamReader([Console]::OpenStandardInput()) ; $stdinTask = $stdinReader.ReadToEndAsync() ; if ($stdinTask.Wait(${stdinTimeoutMs})) { $stdinText = $stdinTask.Result } } catch {}`,
     ";",
-    "$proc.StandardInput.Write($stdinText)",
+    // Write raw UTF-8 bytes through the base stream rather than the
+    // Console.InputEncoding StreamWriter, so this write stays correctly
+    // encoded even where the InputEncoding pre-set above failed (#638).
+    "$stdinBytes = [System.Text.Encoding]::UTF8.GetBytes($stdinText)",
     ";",
-    "$proc.StandardInput.Close()",
+    "$stdinStream = $proc.StandardInput.BaseStream",
+    ";",
+    "$stdinStream.Write($stdinBytes, 0, $stdinBytes.Length)",
+    ";",
+    "$stdinStream.Close()",
     ";",
     `if ($proc.WaitForExit(${timeoutMs})) {`,
     "$proc.WaitForExit()",

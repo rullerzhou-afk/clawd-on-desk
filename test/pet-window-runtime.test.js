@@ -112,6 +112,9 @@ function createRuntime(overrides = {}) {
     buildTrayMenu: () => calls.push(["buildTrayMenu"]),
     buildContextMenu: () => calls.push(["buildContextMenu"]),
     reapplyMacVisibility: () => calls.push(["reapplyMacVisibility"]),
+    ...(overrides.syncImeEditingPetDodge
+      ? { syncImeEditingPetDodge: overrides.syncImeEditingPetDodge }
+      : {}),
     reassertWinTopmost: () => calls.push(["reassertWinTopmost"]),
     scheduleHwndRecovery: () => calls.push(["scheduleHwndRecovery"]),
     isNearWorkAreaEdge: () => overrides.nearEdge || false,
@@ -361,6 +364,20 @@ describe("pet-window-runtime", () => {
     harness.runtime.syncHitWin();
 
     assert.deepStrictEqual(harness.hitWin.calls, []);
+  });
+
+  it("re-answers the editing overlap after each hit geometry sync (#640)", () => {
+    const dodgeSyncs = [];
+    const harness = createRuntime({ syncImeEditingPetDodge: () => dodgeSyncs.push(true) });
+
+    harness.runtime.syncHitWin();
+    assert.strictEqual(dodgeSyncs.length, 1,
+      "hitbox changes without a window move (state switch, theme reload) must re-run the dodge");
+
+    harness.runtime.setDragLocked(true);
+    harness.runtime.syncHitWin();
+    assert.strictEqual(dodgeSyncs.length, 1,
+      "the drag-locked early-return precedes the hook; drag unlock re-runs it via pet-interaction-ipc");
   });
 
   it("clips the hit window to a right-side internal monitor seam", () => {

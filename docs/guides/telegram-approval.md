@@ -15,10 +15,12 @@ or prompt-submission path.
 - Claude Code and CodeBuddy normal permission requests.
 - Codex CLI official `PermissionRequest` hooks when Codex permission handling is
   in intercept mode.
+- AskUserQuestion elicitation prompts (beta) — rendered as an interactive card
+  with option buttons and a quote-safe Other reply.
 
 Telegram cards are not sent for DND/native-fallback cases, disabled agents,
-hidden permission bubbles, opencode, elicitation prompts, passive notifications,
-or headless sessions.
+hidden permission bubbles, opencode, passive notifications, or headless
+sessions.
 
 ## Setup
 
@@ -71,36 +73,20 @@ button stay disabled until token and recipient are in place.
 - Sidecar logs and Clawd logs redact Telegram tokens, chat ids, and token-like
   values.
 
-## Native Migration Dogfood
+## Native Transport (v0.9.0+)
 
-Use this checklist before marking the v0.9.0 native Telegram migration as
-ready. Run it on Windows with a dedicated Telegram bot token, and capture the
-commit hash, Settings screenshots, Telegram test-card screenshots, and redacted
-Clawd logs as evidence.
+The native (in-process) Telegram transport has been the default since the
+v0.9.0 migration window closed; the Go sidecar remains in the tree as the
+legacy fallback runtime. The migration-era Settings card — test-and-switch,
+enable-legacy, rollback, and delete-legacy-token buttons — was retired with
+it: the Step-3 enable switch is now the only user entry point, routing
+turn-on through the native test flow (`USER_TEST_NATIVE`) and turn-off
+through `USER_DISABLE`. Native still reads the shared
+`telegram-approval.env` token file.
 
-1. Back up the current user-data `clawd-prefs.json`,
-   `telegram-approval.env`, and sidecar bridge config. Stop any other
-   `getUpdates` owner or webhook for the test bot.
-2. Seed the legacy upgrade path with `tgApproval.enabled=true`, a stored token,
-   and a valid recipient. Start Clawd and verify Settings shows
-   `LEGACY_ACTIVE`, the sidecar owner is running, and the legacy Telegram test
-   still resolves a real approval card.
-3. Click **Test native and switch**. Verify the sidecar stops, Telegram receives
-   the nonce test card, tapping it from the allowed user moves Settings to
-   `NATIVE_ACTIVE`, and the owner line is `sidecar=stopped, native=polling`.
-   Restart Clawd and verify it returns to `NATIVE_ACTIVE`.
-4. Force failures separately: invalid token, missing/incorrect recipient, and a
-   competing `getUpdates` owner. The test should fail or time out without
-   auto-approving a real permission, and legacy users should return to
-   `LEGACY_ACTIVE`.
-5. Exercise disable, enable legacy, and rollback. **Disable Telegram approval**
-   must persist `IDLE` without restarting the sidecar. **Enable legacy sidecar**
-   must start the sidecar. **Roll back to legacy** from native must end in
-   `LEGACY_ACTIVE`.
-6. Confirm **Delete legacy token file** is wired to the main process. While
-   native still reads the shared `telegram-approval.env` token file, deletion
-   must be refused with `TOKEN_FILE_IN_USE`; only mark unconditional deletion
-   done after native has separate token storage.
+The one-time dogfood checklist that validated the migration itself lived in
+this section until the card was retired; recover it from git history if a
+future transport migration needs a template.
 
 ## Release Notes
 

@@ -369,10 +369,13 @@ html, body {
   color: var(--text-secondary);
   opacity: 0.95;
 }
-.collapsible-group.collapsed .collapsible-group-chevron {
+/* Child selectors, not descendant: guide groups nest inside channel cards,
+   and a descendant match would let the outer group's state style the inner
+   group's chevron/summary/body. */
+.collapsible-group.collapsed > .collapsible-group-header > .collapsible-group-chevron {
   transform: translateX(-6px) rotate(0deg);
 }
-.collapsible-group:not(.collapsed) .collapsible-group-chevron {
+.collapsible-group:not(.collapsed) > .collapsible-group-header > .collapsible-group-chevron {
   transform: translateX(-6px) rotate(90deg);
   color: var(--accent);
   opacity: 1;
@@ -429,7 +432,7 @@ html, body {
   flex-wrap: nowrap;
   max-width: none;
 }
-.collapsible-group:not(.collapsed) .collapsible-group-summary {
+.collapsible-group:not(.collapsed) > .collapsible-group-header > .collapsible-group-summary {
   opacity: 0.72;
   transform: translateX(2px);
 }
@@ -513,7 +516,7 @@ html, body {
   transition: max-height 0.22s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.16s ease, transform 0.18s ease, padding 0.18s ease, border-color 0.18s ease;
   will-change: max-height, opacity, transform;
 }
-.collapsible-group.collapsed .collapsible-group-body {
+.collapsible-group.collapsed > .collapsible-group-body {
   max-height: 0;
   border-top-color: transparent;
   padding-top: 0;
@@ -744,169 +747,6 @@ html, body {
   color: var(--text-secondary);
 }
 
-.hardware-buddy-status-row .row-desc {
-  max-width: 420px;
-}
-.hardware-buddy-status-control {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-.hardware-buddy-status-badge,
-.hardware-buddy-status-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-}
-.hardware-buddy-status-badge {
-  padding: 3px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg);
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 600;
-}
-.hardware-buddy-status-badge::before,
-.hardware-buddy-status-chip::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  flex: 0 0 auto;
-}
-.hardware-buddy-status-off,
-.hardware-buddy-status-idle {
-  color: var(--text-tertiary);
-}
-.hardware-buddy-status-searching,
-.hardware-buddy-status-connected {
-  color: #b45309;
-  background: rgba(245, 158, 11, 0.1);
-  border-color: rgba(245, 158, 11, 0.28);
-}
-.hardware-buddy-status-secure {
-  color: #047857;
-  background: rgba(16, 185, 129, 0.1);
-  border-color: rgba(16, 185, 129, 0.28);
-}
-.hardware-buddy-status-error {
-  color: var(--toast-error);
-  background: rgba(185, 28, 28, 0.08);
-  border-color: rgba(185, 28, 28, 0.24);
-}
-.hardware-buddy-reply-on {
-  color: #047857;
-  background: rgba(16, 185, 129, 0.1);
-  border-color: rgba(16, 185, 129, 0.28);
-}
-.hardware-buddy-reply-blocked {
-  color: #b45309;
-  background: rgba(245, 158, 11, 0.1);
-  border-color: rgba(245, 158, 11, 0.28);
-}
-.hardware-buddy-reply-off {
-  color: var(--text-tertiary);
-}
-.hardware-buddy-test-button {
-  min-width: 78px;
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--accent);
-  border-radius: 7px;
-  background: transparent;
-  color: var(--accent);
-  font: inherit;
-  font-size: 11px;
-  font-weight: 700;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.hardware-buddy-test-button:hover:not(:disabled) {
-  background: var(--accent);
-  color: #ffffff;
-}
-.hardware-buddy-test-button:disabled {
-  cursor: default;
-  opacity: 0.52;
-}
-.hardware-buddy-quick-command-row {
-  align-items: flex-start;
-}
-.hardware-buddy-quick-command-control {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 6px;
-  max-width: min(440px, calc(52vw / var(--clawd-text-zoom, 1)));
-}
-.hardware-buddy-quick-command-button {
-  min-height: 28px;
-  padding: 0 9px;
-  font-size: 11px;
-  line-height: 1.2;
-}
-.hardware-buddy-quick-command-button.pending {
-  cursor: wait;
-}
-.hardware-buddy-quick-command-empty {
-  color: var(--text-tertiary);
-  font-size: 11px;
-  white-space: nowrap;
-}
-.hardware-buddy-text-control {
-  min-width: min(260px, calc(42vw / var(--clawd-text-zoom, 1)));
-}
-.hardware-buddy-text-input {
-  width: 100%;
-  box-sizing: border-box;
-  height: 32px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel-bg);
-  color: var(--text-primary);
-  font: inherit;
-  font-size: 12px;
-  padding: 0 9px;
-  outline: none;
-}
-.hardware-buddy-text-input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(217, 119, 87, 0.16);
-}
-.hardware-buddy-text-input.pending {
-  cursor: wait;
-  opacity: 0.78;
-}
-@media (prefers-color-scheme: dark) {
-  .hardware-buddy-status-searching,
-  .hardware-buddy-status-connected { color: #fbbf24; }
-  .hardware-buddy-status-secure { color: #34d399; }
-  .hardware-buddy-status-error { color: #f87171; }
-  .hardware-buddy-reply-on { color: #34d399; }
-  .hardware-buddy-reply-blocked { color: #fbbf24; }
-}
-@media (max-width: 720px) {
-  .hardware-buddy-field-row {
-    align-items: stretch;
-  }
-  .hardware-buddy-status-control {
-    justify-content: flex-start;
-  }
-  .hardware-buddy-quick-command-control {
-    justify-content: flex-start;
-    max-width: 100%;
-  }
-  .hardware-buddy-field-row .row-control,
-  .hardware-buddy-text-control {
-    width: 100%;
-    min-width: 0;
-  }
-}
 
 /* ── Switch (iOS-style) ── */
 .switch {
@@ -3322,66 +3162,12 @@ html, body {
 .remote-approval-channel-card.collapsible-group {
   margin: 8px 0 14px;
 }
+/* Discord tab: the optional custom-App-ID group sits below the Activity
+   section as a collapsed advanced block. */
+.discord-appid-card.collapsible-group {
+  margin: 14px 0;
+}
 
-/* v0.9.0 migration card — sits above the legacy Telegram setup card. */
-.tg-migration-card {
-  margin: 8px 0 14px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--card-bg, transparent);
-}
-.tg-migration-card h3 {
-  margin: 0 0 6px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-.tg-migration-state,
-.tg-migration-owner {
-  margin: 0;
-  font-size: 12px;
-  color: var(--text-secondary);
-  font-family: var(--mono-font, monospace);
-}
-.tg-migration-copy {
-  margin: 10px 0 6px;
-  font-size: 13px;
-  color: var(--text-primary);
-}
-.tg-migration-body {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 8px;
-}
-.tg-migration-banner {
-  padding: 8px 10px;
-  border-radius: 6px;
-  background: rgba(220, 53, 69, 0.12);
-  color: #b91c1c;
-  font-size: 12px;
-}
-.tg-migration-btn {
-  align-self: flex-start;
-  padding: 6px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--btn-bg, transparent);
-  color: var(--text-primary);
-  font-size: 13px;
-  cursor: pointer;
-}
-.tg-migration-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.tg-migration-pending {
-  margin: 6px 0 0;
-  font-size: 12px;
-  font-style: italic;
-  color: var(--text-secondary);
-}
 .tg-approval-channel-header {
   display: flex;
   align-items: center;
@@ -3412,6 +3198,30 @@ html, body {
   height: 8px;
   border-radius: 50%;
   background: var(--text-secondary);
+}
+/* Small "Beta" pill next to a channel name (LAN Approval card). */
+.channel-beta-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel-bg));
+}
+/* Boxed limitation note at the top of a beta channel card. */
+.channel-beta-note {
+  margin: 10px 0 4px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
 }
 @keyframes tg-approval-dot-pulse {
   0%, 100% { opacity: 1; }

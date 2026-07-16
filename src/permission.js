@@ -7,6 +7,8 @@ const { keepOutOfTaskbar } = require("./taskbar");
 const { clampTextScale, scaleWidth, scaleHeight, applyZoomToWindow } = require("./text-scale");
 const { createTranslator } = require("./i18n");
 const { firstStringValue } = require("./bubble-format");
+const { MAC_TOPMOST_LEVEL } = require("./topmost-runtime");
+const { redactSecrets } = require("./secret-redact");
 const path = require("path");
 const http = require("http");
 const {
@@ -69,6 +71,9 @@ function registerPermissionIpc(options = {}) {
 
   on("bubble-height", (event, height) => permission.handleBubbleHeight(event, height));
   on("permission-decide", (event, behavior) => permission.handleDecide(event, behavior));
+  if (typeof permission.handleImeEditing === "function") {
+    on("bubble-ime-editing", (event, editing) => permission.handleImeEditing(event, editing));
+  }
 
   return {
     dispose() {
@@ -439,14 +444,9 @@ function verifyUnregister(accelerator) {
   return true;
 }
 
-function isHardwareBuddyTestPermission(perm) {
-  return !!(perm && perm.isHardwareBuddyTest);
-}
-
 function getActionablePermissions() {
   return pendingPermissions.filter(
-    p => !isHardwareBuddyTestPermission(p)
-      && !p.isElicitation
+    p => !p.isElicitation
       && !p.isCodexNotify
       && !p.isKimiNotify
       && p.toolName !== "ExitPlanMode"
@@ -590,7 +590,7 @@ function repositionBubbles() {
   const bw = getBubbleWidth(scale, wa);
   const hitRect = ctx.bubbleFollowPet ? ctx.getHitRectScreen(petBounds) : null;
 
-  const layoutPermissions = pendingPermissions.filter((perm) => !isHardwareBuddyTestPermission(perm) && !perm.remoteOnly);
+  const layoutPermissions = pendingPermissions.filter((perm) => !perm.remoteOnly);
   const bubbleHeights = layoutPermissions.map(perm =>
     clampBubbleHeight(
       // measuredHeight/estimate are CSS px; the window needs DIP.
@@ -620,6 +620,11 @@ function repositionBubbles() {
       // with a different textScale (applyZoomToWindow memoizes, so this is
       // a no-op when nothing changed).
       applyZoomToWindow(perm.bubble, scale);
+      // #640: a bubble whose text field is being typed into holds its
+      // position — followPet anchoring must not yank the input box around
+      // mid-composition (pet drag; roam is separately paused while editing).
+      // Fresh bubbles never carry the flag, so they still get placed.
+      if (perm.bubble.__clawdMacImeEditing) continue;
       perm.bubble.setBounds(bounds[i]);
     }
   }
@@ -629,8 +634,8 @@ function repositionBubbles() {
 // funnels through showPermissionBubble after its DND / per-agent / headless
 // gates have already run, so this is the single place to honor the
 // autoApproveAllPermissions toggle without auto-approving requests those gates
-// meant to drop. Passive notifications (codex/kimi) and the hardware-buddy
-// self-test are excluded — they are not approvals and carry no HTTP response
+// meant to drop. Passive notifications (codex/kimi) are excluded — they are
+// not approvals and carry no HTTP response
 // to satisfy. Returns true when it consumed the entry (caller must NOT build a
 // bubble), false otherwise.
 
@@ -660,7 +665,6 @@ function maybeAutoApprovePermission(permEntry) {
     return false;
   }
   if (permEntry.isCodexNotify || permEntry.isKimiNotify) return false;
-  if (isHardwareBuddyTestPermission(permEntry)) return false;
 
   // Elicitation (AskUserQuestion / Hermes clarify): a bare "allow" with no
   // resolvedUpdatedInput is sent as a DENY downstream (see resolvePermissionEntry).
@@ -690,6 +694,12 @@ function showPermissionBubble(permEntry) {
   // Temporary position — repositionBubbles() will finalize after renderer reports real height
   const pos = { x: 0, y: 0, width: getBubbleWidth(scale, wa), height: bh };
 
+  // Bubbles that host a text input (elicitation "Other", ExitPlanMode
+  // feedback) need keyboard focus. On macOS, the topmost level is dropped
+  // per-edit at runtime instead (see handleImeEditing) so the IME candidate
+  // window isn't occluded.
+  const needsTextInput = !!(permEntry.isElicitation || permEntry.toolName === "ExitPlanMode");
+
   const bub = new BrowserWindow({
     width: pos.width,
     height: pos.height,
@@ -709,7 +719,7 @@ function showPermissionBubble(permEntry) {
     // while acceptFirstMouse lets the first click hit the inactive panel.
     // ExitPlanMode needs keyboard focus for the "Tell Claude what to change"
     // textarea feedback path on other platforms.
-    focusable: isMac ? true : !!(permEntry.isElicitation || permEntry.toolName === "ExitPlanMode"),
+    focusable: isMac ? true : needsTextInput,
     webPreferences: {
       preload: path.join(__dirname, "preload-bubble.js"),
       nodeIntegration: false,
@@ -719,6 +729,11 @@ function showPermissionBubble(permEntry) {
 
   permEntry.bubble = bub;
   permEntry.bubbleReady = false;
+  // macOS: text-input bubbles skip the native stationary treatment (SkyLight
+  // private space) that occludes the OS IME candidate window. They stay
+  // cross-space visible via Electron and drop out of always-on-top while a text
+  // field is focused (handleImeEditing) so CJK input popups can surface.
+  if (isMac && needsTextInput) bub.__clawdMacTextInputBubble = true;
 
   if (isWin) {
     bub.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
@@ -740,9 +755,12 @@ function showPermissionBubble(permEntry) {
     }
   });
 
-  // macOS: set alwaysOnTop BEFORE showInactive to prevent bubble from sinking
+  // macOS: set alwaysOnTop BEFORE showInactive to prevent bubble from sinking.
+  // (Text-input bubbles later drop out of always-on-top per-edit — and skip the
+  // native SkyLight path — so their IME candidate window can surface; that's
+  // handled by handleImeEditing + reapplyMacVisibility, not a lower level here.)
   if (isMac) {
-    bub.setAlwaysOnTop(true, "screen-saver");
+    bub.setAlwaysOnTop(true, MAC_TOPMOST_LEVEL);
   }
 
   repositionBubbles();
@@ -764,6 +782,12 @@ function showPermissionBubble(permEntry) {
       resolvePermissionEntry(permEntry, behavior, "Bubble window closed by user");
     }
   });
+
+  // #640: a dead renderer can never send the focusout/window-blur IPC that
+  // clears the editing flag — without this, a crash while a text field was
+  // focused leaves the flag stuck and the pet faded + click-through for as
+  // long as the entry lives.
+  bub.webContents.on("render-process-gone", () => handleBubbleRendererGone(bub));
 
   ctx.guardAlwaysOnTop(bub);
   syncPermissionShortcuts();
@@ -803,6 +827,20 @@ function dismissPermissionWithoutDecision(permEntry, message) {
 }
 
 function notifyPermissionsChanged(reason) {
+  // #640: every path that adds or removes a pendingPermissions entry funnels
+  // through here — including resolvePermissionEntry's inline splice, which is
+  // what Allow/Deny clicks, Enter submits, and the auto-close timer all use.
+  // A bubble can leave the list while its text field still holds focus (no
+  // blur ever fires, and handleImeEditing can't match a spliced entry), so
+  // this is the one reliable place to re-run the editing-overlap dodge scan
+  // and restore the pet. Cheap + edge-triggered; platform gate lives inside.
+  if (typeof ctx.syncImeEditingPetDodge === "function") {
+    try {
+      ctx.syncImeEditingPetDodge();
+    } catch (err) {
+      permLog(`syncImeEditingPetDodge failed: ${err && err.message ? err.message : err}`);
+    }
+  }
   if (typeof ctx.onPermissionsChanged !== "function") return;
   try {
     ctx.onPermissionsChanged(reason);
@@ -871,6 +909,11 @@ function buildPermissionBubblePayload(permEntry) {
     // Provenance for the renderer: lets the bubble relabel Codex MCP tool calls
     // (issue #445) without touching approval semantics. Mirrors the flags above.
     isCodex: permEntry.isCodex || false,
+    // Display-only detail for the passive Kimi notify card: the real tool
+    // name plus the whitelisted tool_input subset let the renderer reuse the
+    // standard cue path (formatDetail) while the card stays dismiss-only.
+    kimiToolName: permEntry.kimiToolName || null,
+    kimiToolInput: permEntry.kimiToolInput || null,
     opencodeAlways: permEntry.opencodeAlwaysCandidates || [],
     opencodePatterns: permEntry.opencodePatterns || [],
     sessionFolder,
@@ -895,11 +938,7 @@ function basenameForDisplay(value) {
 function compactRemoteApprovalText(value, maxLen = 200) {
   let text = typeof value === "string" ? value : String(value == null ? "" : value);
   text = text.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
-  text = text.replace(/\b\d+:[A-Za-z0-9_-]{20,}\b/g, "<redacted:telegram-token>");
-  text = text.replace(/\b(?:Bearer|Token)\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, "Bearer <redacted>");
-  text = text.replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,})\b/g, "<redacted:token>");
-  text = text.replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|cookie|password|secret)\s*[:=]\s*\S+/gi, "$1=<redacted>");
-  text = text.replace(/\b(?:telegram:)?-?\d{7,}(?::\d+){0,2}\b/g, "<redacted:id>");
+  text = redactSecrets(text);
   if (text.length > maxLen) text = `${text.slice(0, Math.max(0, maxLen - 1))}…`;
   return text;
 }
@@ -1853,6 +1892,35 @@ function handleBubbleHeight(event, height) {
   }
 }
 
+// macOS only: while a text input inside the bubble is focused, the bubble must
+// drop out of always-on-top so the OS IME candidate window (Chinese/Japanese/
+// Korean input popup) can surface — it floats above normal windows only, so any
+// always-on-top level (and the native SkyLight stationary path) occludes it.
+// We only flip the __clawdMacImeEditing flag here and let reapplyMacVisibility()
+// apply the actual editing-vs-normal window state, so both directions round-trip
+// through one place (topmost-runtime.js) instead of being hand-rolled twice.
+// The renderer clears the flag on element blur AND on window blur (e.g. Cmd-Tab
+// away mid-composition), so it can't get stuck and strand the bubble.
+function handleImeEditing(event, editing) {
+  if (!isMac) return;
+  const senderWin = BrowserWindow.fromWebContents(event.sender);
+  const perm = pendingPermissions.find(p => p.bubble === senderWin);
+  if (!perm || !perm.bubble || perm.bubble.isDestroyed()) return;
+  if (editing) perm.bubble.__clawdMacImeEditing = true;
+  else delete perm.bubble.__clawdMacImeEditing;
+  if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
+}
+
+// #640: the editing flag is normally cleared by renderer focusout/window-blur
+// IPC (see handleImeEditing) — a crashed renderer can't send either, so the
+// flag would stay stuck and keep the pet faded + click-through. Called from
+// the bubble's render-process-gone listener.
+function handleBubbleRendererGone(bubble) {
+  if (!bubble || !bubble.__clawdMacImeEditing) return;
+  delete bubble.__clawdMacImeEditing;
+  if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
+}
+
 function handleDecide(event, behavior) {
   // Identify which permission this bubble belongs to via sender webContents
   const senderWin = BrowserWindow.fromWebContents(event.sender);
@@ -2003,7 +2071,7 @@ function showCodexNotifyBubble({ sessionId, command }) {
   schedulePassiveNotifyAutoExpire(permEntry, policy.autoCloseMs);
 }
 
-function showKimiNotifyBubble({ sessionId, command, toolName, permissionAction, permissionCommand }) {
+function showKimiNotifyBubble({ sessionId, command, toolName, permissionAction, permissionCommand, permissionToolInput }) {
   if (shouldSuppressKimiNotifyBubble(ctx)) {
     const policy = getPolicy(ctx, "notification");
     permLog(`kimi notify suppressed: session=${sessionId} dnd=${ctx.doNotDisturb} notificationEnabled=${policy.enabled}`);
@@ -2015,6 +2083,24 @@ function showKimiNotifyBubble({ sessionId, command, toolName, permissionAction, 
   // requests carry neither and keep the generic copy.
   const bubbleCommand = permissionCommand || permissionAction || command
     || "Approve or reject in Kimi terminal.";
+  // A newer request for the same session replaces the stale cue in place
+  // (codex idiom above): the terminal now blocks on the NEW command, and
+  // keeping request #1's pill/command/badge would show a wrong answer with
+  // authority. A legacy-shaped refresh downgrades to the generic copy — the
+  // generic line can't be wrong.
+  const existing = findKimiNotifyEntryBySession(sessionId);
+  if (existing) {
+    existing.toolInput = { command: bubbleCommand };
+    existing.kimiToolName = typeof toolName === "string" && toolName ? toolName : null;
+    existing.kimiToolInput = permissionToolInput && typeof permissionToolInput === "object"
+      ? permissionToolInput
+      : null;
+    existing.createdAt = Date.now();
+    permLog(`passive notify refresh: agent=kimi-cli session=${sessionId} autoCloseMs=${policy.autoCloseMs}`);
+    syncPermissionBubbleContent(existing);
+    schedulePassiveNotifyAutoExpire(existing, policy.autoCloseMs);
+    return;
+  }
   const permEntry = {
     res: null,
     abortHandler: null, suggestions: [],
@@ -2022,6 +2108,13 @@ function showKimiNotifyBubble({ sessionId, command, toolName, permissionAction, 
     toolName: "KimiPermission",
     toolInput: { command: bubbleCommand },
     kimiToolName: typeof toolName === "string" && toolName ? toolName : null,
+    // Whitelisted subset of the native request's tool_input (see
+    // extractPermissionToolInput in hooks/kimi-hook.js — the server re-runs
+    // it at the trust boundary). Display-only: it feeds the bubble's
+    // tool-aware cue and never touches approval semantics.
+    kimiToolInput: permissionToolInput && typeof permissionToolInput === "object"
+      ? permissionToolInput
+      : null,
     resolvedSuggestion: null, createdAt: Date.now(),
     isElicitation: false, isKimiNotify: true,
     agentId: "kimi-cli",
@@ -2042,6 +2135,11 @@ function getPassiveNotifyAgentId(permEntry) {
 function findCodexNotifyEntryBySession(sessionId) {
   if (!sessionId) return null;
   return pendingPermissions.find((permEntry) => permEntry && permEntry.isCodexNotify && permEntry.sessionId === sessionId) || null;
+}
+
+function findKimiNotifyEntryBySession(sessionId) {
+  if (!sessionId) return null;
+  return pendingPermissions.find((permEntry) => permEntry && permEntry.isKimiNotify && permEntry.sessionId === sessionId) || null;
 }
 
 function dismissPassiveNotify(permEntry, reason = "unknown") {
@@ -2241,7 +2339,7 @@ return {
   addPendingPermission, removePendingPermission,
   maybeStartRemoteApproval,
   dismissPermissionForTerminal,
-  handleBubbleHeight, handleDecide, cleanup,
+  handleBubbleHeight, handleDecide, handleImeEditing, handleBubbleRendererGone, cleanup,
   showCodexNotifyBubble, clearCodexNotifyBubbles,
   showKimiNotifyBubble, clearKimiNotifyBubbles,
   refreshPassiveNotifyAutoClose,

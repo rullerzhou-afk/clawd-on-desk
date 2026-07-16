@@ -279,25 +279,6 @@ describe("updateRegistry pure-data validators", () => {
     }, deps).status, "error");
   });
 
-  it("hardwareBuddy accepts only the normalized product settings shape", () => {
-    assert.strictEqual(updateRegistry.hardwareBuddy({
-      enabled: true,
-      backend: "bleak",
-      address: "00:4B:12:A1:9E:A6",
-      namePrefix: "Claude",
-      permissionsEnabled: false,
-      quickCommandsEnabled: true,
-    }).status, "ok");
-    assert.strictEqual(updateRegistry.hardwareBuddy({ enabled: true }).status, "error");
-    assert.strictEqual(updateRegistry.hardwareBuddy({
-      enabled: true,
-      backend: "serial",
-      address: "",
-      namePrefix: "Claude",
-      permissionsEnabled: false,
-      quickCommandsEnabled: false,
-    }).status, "error");
-  });
 
   it("sessionAliases requires a plain object of valid alias entries", () => {
     const deps = { snapshot: baseSnapshot };
@@ -327,27 +308,29 @@ describe("updateRegistry pure-data validators", () => {
 });
 
 describe("object-form effects (autoStartWithClaude / manageClaudeHooksAutomatically / openAtLogin)", () => {
-  it("autoStartWithClaude effect calls installAutoStart on true", () => {
+  it("autoStartWithClaude effect calls installAutoStart on true", async () => {
+    // installAutoStart/uninstallAutoStart go through the server-owned Claude
+    // hook operation queue (#657) and now return a Promise.
     let installCalls = 0;
     let uninstallCalls = 0;
     const deps = {
       installAutoStart: () => installCalls++,
       uninstallAutoStart: () => uninstallCalls++,
     };
-    const r = updateRegistry.autoStartWithClaude.effect(true, deps);
+    const r = await updateRegistry.autoStartWithClaude.effect(true, deps);
     assert.strictEqual(r.status, "ok");
     assert.strictEqual(installCalls, 1);
     assert.strictEqual(uninstallCalls, 0);
   });
 
-  it("autoStartWithClaude effect calls uninstallAutoStart on false", () => {
+  it("autoStartWithClaude effect calls uninstallAutoStart on false", async () => {
     let installCalls = 0;
     let uninstallCalls = 0;
     const deps = {
       installAutoStart: () => installCalls++,
       uninstallAutoStart: () => uninstallCalls++,
     };
-    const r = updateRegistry.autoStartWithClaude.effect(false, deps);
+    const r = await updateRegistry.autoStartWithClaude.effect(false, deps);
     assert.strictEqual(r.status, "ok");
     assert.strictEqual(installCalls, 0);
     assert.strictEqual(uninstallCalls, 1);
@@ -540,31 +523,6 @@ describe("telegram approval commands", () => {
     assert.deepStrictEqual(empty, { status: "ok", configured: false, masked: "" });
 
     const missing = await commandRegistry["telegramApproval.tokenInfo"](null, {});
-    assert.equal(missing.status, "error");
-  });
-
-  it("telegramApproval.deleteTokenFile proxies the guarded main-process helper", async () => {
-    const calls = [];
-    const result = await commandRegistry["telegramApproval.deleteTokenFile"](null, {
-      deleteTelegramApprovalTokenFile: async () => {
-        calls.push(true);
-        return { status: "ok", deleted: true };
-      },
-    });
-    assert.deepStrictEqual(result, { status: "ok", deleted: true });
-    assert.deepStrictEqual(calls, [true]);
-
-    const guarded = await commandRegistry["telegramApproval.deleteTokenFile"](null, {
-      deleteTelegramApprovalTokenFile: async () => ({
-        status: "error",
-        code: "TOKEN_FILE_IN_USE",
-        message: "Native Telegram currently uses the shared token file.",
-      }),
-    });
-    assert.strictEqual(guarded.status, "error");
-    assert.strictEqual(guarded.code, "TOKEN_FILE_IN_USE");
-
-    const missing = await commandRegistry["telegramApproval.deleteTokenFile"](null, {});
     assert.equal(missing.status, "error");
   });
 

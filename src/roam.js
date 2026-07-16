@@ -44,6 +44,12 @@ module.exports = function initRoam(ctx) {
     // Allow roaming when idle (about to start) or already roaming (mid-animation)
     if (state !== "idle" && state !== "roam") return false;
     if (ctx.miniTransitioning) return false;
+    // #640: while the user is typing into a bubble's text field (macOS IME
+    // editing), the pet must hold still — a wandering pet either drags the
+    // bubble along (followPet anchoring) or walks over the box being typed
+    // into. Checked per-frame like the state gate, so an editing start
+    // cancels a walk mid-stride.
+    if (typeof ctx.isImeEditingActive === "function" && ctx.isImeEditingActive()) return false;
     return true;
   }
 
@@ -155,10 +161,12 @@ module.exports = function initRoam(ctx) {
       // Re-check state on every frame: if the pet is no longer idle/roam (e.g. a
       // working/notification event arrived), stop the animation immediately.
       if (!isRoamAllowed()) {
-        roamActive = false;
-        cleanupTimers();
-        // State changed away from idle/roam — next idle entry should wait full delay
+        // Next idle entry should wait the full delay again
         firstRoam = true;
+        // cancelRoam also restores "idle" when the state is still "roam" —
+        // gates with no incoming state of their own (IME editing #640, mini
+        // mode) would otherwise strand the pet frozen in its walk pose.
+        cancelRoam();
         return;
       }
 

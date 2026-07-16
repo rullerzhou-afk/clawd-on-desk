@@ -172,6 +172,9 @@ test("settings window runtime creates the Settings BrowserWindow with taskbar id
   assert.strictEqual(win.options.webPreferences.preload, "C:\\app\\src\\preload-settings.js");
   assert.strictEqual(win.options.webPreferences.nodeIntegration, false);
   assert.strictEqual(win.options.webPreferences.contextIsolation, true);
+  assert.deepStrictEqual(win.options.webPreferences.additionalArguments, [
+    "--discord-default-app-id-present=0",
+  ]);
   assert.match(win.options.icon, /assets[\\/]icons[\\/]256x256\.png$/);
   assert.strictEqual(win.menuBarVisible, false);
   assert.strictEqual(win.loadedFile, "C:\\app\\src\\settings.html");
@@ -196,6 +199,25 @@ test("settings window runtime creates the Settings BrowserWindow with taskbar id
   win.emit("closed");
   assert.deepStrictEqual(events, ["before-create", "before-closed", "after-closed-null"]);
   assert.strictEqual(runtime.getWindow(), null);
+});
+
+test("settings window injects the Discord default-App-ID flag into the sandboxed preload", () => {
+  // The flag can't be require()'d in a sandboxed preload, so it must ride
+  // additionalArguments. A missing/drifted injection here blanked the entire
+  // Settings window once — this guards both the presence and the "1"/"0" value.
+  const present = createRuntime({ runtime: { discordDefaultAppIdPresent: true } });
+  present.runtime.open();
+  assert.deepStrictEqual(
+    FakeBrowserWindow.instances[0].options.webPreferences.additionalArguments,
+    ["--discord-default-app-id-present=1"],
+  );
+
+  const absent = createRuntime({ runtime: { discordDefaultAppIdPresent: false } });
+  absent.runtime.open();
+  assert.deepStrictEqual(
+    FakeBrowserWindow.instances[0].options.webPreferences.additionalArguments,
+    ["--discord-default-app-id-present=0"],
+  );
 });
 
 test("settings window runtime reuses an existing non-destroyed Settings window", () => {

@@ -9,8 +9,8 @@
 // agent-specific: some agents get no-decision/native fallback, opencode gets
 // silent TUI fallback, and Claude/CodeBuddy keep their existing auto-deny.
 //
-// Exclusions: passive codex/kimi notifications and the hardware-buddy self
-// test are not approvals and must NOT be auto-resolved.
+// Exclusions: passive codex/kimi notifications are not approvals and must
+// NOT be auto-resolved.
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
@@ -146,16 +146,6 @@ describe("auto-pilot: showPermissionBubble auto-approve chokepoint", () => {
     // Passive notify entries route to dismissPassiveNotify on resolve, never
     // to an allow. Auto-approve must skip them: with win=null the subsequent
     // bubble build throws, proving the early-return did not consume it.
-    assert.throws(() => perm.showPermissionBubble(permEntry));
-    assert.equal(perm.pendingPermissions.indexOf(permEntry), 0);
-  });
-
-  it("does NOT auto-approve the hardware-buddy self test", () => {
-    const ctx = makeCtx();
-    const perm = initPermission(ctx);
-    const permEntry = makePermEntry({ isHardwareBuddyTest: true });
-    perm.pendingPermissions.push(permEntry);
-
     assert.throws(() => perm.showPermissionBubble(permEntry));
     assert.equal(perm.pendingPermissions.indexOf(permEntry), 0);
   });

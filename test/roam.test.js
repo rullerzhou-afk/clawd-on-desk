@@ -644,3 +644,59 @@ describe("roam module", () => {
     assert.deepEqual(headings, [], "vertical walk must not change the heading");
   });
 });
+
+describe("roam pauses during IME editing (#640)", () => {
+  beforeEach(() => {
+    const randomValues = [0.9, 0.9, 0.9, 0.1];
+    let randomIndex = 0;
+    mock.method(Math, "random", () => randomValues[randomIndex++ % randomValues.length]);
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  });
+
+  afterEach(() => {
+    mock.timers.reset();
+    mock.reset();
+  });
+
+  it("does not start a roam while a bubble text field is being edited", () => {
+    const ctx = makeCtx({ isImeEditingActive: () => true });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(200);
+
+    assert.equal(ctx._realBounds.x, 400, "pet must hold still while editing");
+    assert.equal(ctx._realBounds.y, 300, "pet must hold still while editing");
+    assert.equal(ctx._stateLog.length, 0, "no roam state change while editing");
+  });
+
+  it("cancels a roam mid-walk when editing starts and restores idle", () => {
+    let editing = false;
+    const ctx = makeCtx({ isImeEditingActive: () => editing });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8000); // pause timer fires, walk starts
+    mock.timers.tick(160);  // a few frames in
+    const midWalk = { x: ctx._realBounds.x, y: ctx._realBounds.y };
+    assert.ok(midWalk.x !== 400 || midWalk.y !== 300, "walk should be underway");
+
+    editing = true;
+    mock.timers.tick(64); // next frame hits the gate
+
+    assert.ok(
+      ctx._stateLog.some((e) => e.type === "setState" && e.state === "idle"),
+      "gate with no incoming state must restore idle instead of freezing the walk pose"
+    );
+    const stopped = { x: ctx._realBounds.x, y: ctx._realBounds.y };
+    mock.timers.tick(320);
+    assert.deepEqual(
+      { x: ctx._realBounds.x, y: ctx._realBounds.y },
+      stopped,
+      "no further movement after the editing gate cancels the walk"
+    );
+  });
+});

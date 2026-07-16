@@ -2,6 +2,10 @@
 
 (function (root) {
   function truncate(s, max) {
+    // Callers pass tool-input fields that are *usually* strings but can be any
+    // JSON type when an agent (or a third-party integration) mis-shapes them.
+    // Coerce so a numeric/object field can never crash the bubble renderer.
+    if (typeof s !== "string") s = String(s == null ? "" : s);
     if (s.length <= max) return s;
     return s.slice(0, max - 1) + "…";
   }
@@ -66,10 +70,10 @@
   function formatDetail(name, input, options) {
     if (!input || typeof input !== "object") return "";
     if (typeof input.description === "string" && input.description.trim()) return truncate(input.description.trim(), 120);
-    if (name === "Bash" && input.command) return truncate(input.command, 120);
-    if ((name === "Edit" || name === "Write" || name === "Read") && input.file_path)
+    if (name === "Bash" && typeof input.command === "string") return truncate(input.command, 120);
+    if ((name === "Edit" || name === "Write" || name === "Read") && typeof input.file_path === "string")
       return truncate(input.file_path, 120);
-    if ((name === "Glob" || name === "Grep") && input.pattern)
+    if ((name === "Glob" || name === "Grep") && typeof input.pattern === "string")
       return truncate(input.pattern, 120);
     if (options && options.isAntigravity) {
       const antigravityDetail = formatAntigravityDetail(name, input);

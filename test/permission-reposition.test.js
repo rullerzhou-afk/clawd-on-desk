@@ -295,7 +295,7 @@ describe("permission bubble stack layout", () => {
       bubble: null,
       measuredHeight: 200,
       suggestions: [],
-      isHardwareBuddyTest: true,
+      remoteOnly: true,
     }, "test");
     runtime.addPendingPermission({ bubble: bubble("new"), measuredHeight: 200, suggestions: [] }, "test");
 

@@ -697,6 +697,30 @@ describe("server-route-permission POST", () => {
     assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, [entry]);
   });
 
+  it("stamps elicitation session updates with the resolved agent id", async () => {
+    // The shared CC path also serves codebuddy (and future CC-compatible
+    // agents). The Elicitation session update must carry the resolved agent
+    // id, not a hardcoded claude-code, or the session gets relabeled.
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "codebuddy",
+      session_id: "cb-elicit",
+      tool_name: "AskUserQuestion",
+      tool_input: { questions: [{ question: "Continue?" }] },
+    }));
+
+    assert.strictEqual(res.statusCode, null);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.isElicitation, true);
+    assert.strictEqual(entry.agentId, "codebuddy");
+    assert.deepStrictEqual(res.ctx.calls.updateSession, [[
+      "cb-elicit",
+      "notification",
+      "Elicitation",
+      { agentId: "codebuddy" },
+    ]]);
+  });
+
   it("keeps local Claude permission pending if remote approval startup throws", async () => {
     const res = await callPermissionPost(JSON.stringify({
       agent_id: "claude-code",

@@ -461,6 +461,18 @@ const STATE_HOOK_TIMEOUT_SECONDS = 5;
 const REMOTE_STATE_HOOK_TIMEOUT_SECONDS = Math.ceil(REMOTE_HOOK_HTTP_TIMEOUT_MS / 1000) + 5;
 const AUTO_START_HOOK_TIMEOUT_SECONDS = 15;
 
+// Authoritative script paths — the single source of truth for both what
+// registerHooks()/registerHooksAsync() write and what runtime health checks
+// (src/claude-hook-health.js) compare against. Computing this in two places
+// would let the installer and the health inspector silently drift apart.
+function getClaudeHookScriptPath() {
+  return asarUnpackedPath(path.resolve(__dirname, "clawd-hook.js").replace(/\\/g, "/"));
+}
+
+function getClaudeAutoStartScriptPath() {
+  return asarUnpackedPath(path.resolve(__dirname, "auto-start.js").replace(/\\/g, "/"));
+}
+
 function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {
   const platform = options.platform || process.platform;
   const argSuffix = args ? ` ${args}` : "";
@@ -828,7 +840,7 @@ function registerHooks(options = {}) {
   const settingsPath = options.settingsPath || path.join(os.homedir(), ".claude", "settings.json");
   const writePath = resolveWritePath(settingsPath);
   const hookPort = getHookServerPort(options.port);
-  const hookScript = asarUnpackedPath(path.resolve(__dirname, "clawd-hook.js").replace(/\\/g, "/"));
+  const hookScript = getClaudeHookScriptPath();
   const platform = options.platform || process.platform;
   const wslDistro = resolveInstallWslDistro(options);
 
@@ -933,7 +945,7 @@ function registerHooks(options = {}) {
 
   // Register auto-start hook for SessionStart (launches app if not running)
   if (options.autoStart) {
-    const autoStartScript = asarUnpackedPath(path.resolve(__dirname, "auto-start.js").replace(/\\/g, "/"));
+    const autoStartScript = getClaudeAutoStartScriptPath();
 
     if (!Array.isArray(settings.hooks.SessionStart)) {
       settings.hooks.SessionStart = [];
@@ -1075,11 +1087,43 @@ function registerHooks(options = {}) {
   };
 }
 
+// #317: an explicit options.nodeBin is the caller's authoritative choice
+// (Remote/WSL/test injection) and must never be re-validated against this
+// machine's filesystem. A Node path already extracted from the user's existing
+// config only needs one lightweight existence check — not a full resolver
+// probe — to avoid reintroducing the shell/version spawn #317 removed.
+// Resolution only escalates to the async resolver (which may spawn a shell)
+// when there is no existing path, or the existing path fails that check.
+async function resolveConfiguredNodeBinAsync(options, settings) {
+  if (options.nodeBin !== undefined) return options.nodeBin;
+
+  const existing = extractExistingNodeBin(settings, MARKER, { nested: true });
+  if (existing) {
+    const access = options.access || fs.promises.access.bind(fs.promises);
+    // Match the doctor validator and resolver: POSIX requires the execute
+    // bit (X_OK) — a Node path that merely exists but lost its executable
+    // permission would otherwise be preserved here, then judged broken by
+    // the health inspector on the very next check, forcing pointless repair
+    // cycles. Windows has no equivalent executable-bit semantics, so F_OK
+    // (existence) matches resolveWindowsNodeBinSync/Async's own checks.
+    const platform = options.platform || process.platform;
+    const mode = platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK;
+    try {
+      await access(existing, mode);
+      return existing;
+    } catch {
+      // existing path is gone/inaccessible — fall through to the resolver
+    }
+  }
+
+  return (await resolveNodeBinAsync(options)) || "node";
+}
+
 async function registerHooksAsync(options = {}) {
   const settingsPath = options.settingsPath || path.join(os.homedir(), ".claude", "settings.json");
   const writePath = resolveWritePath(settingsPath);
   const hookPort = getHookServerPort(options.port);
-  const hookScript = asarUnpackedPath(path.resolve(__dirname, "clawd-hook.js").replace(/\\/g, "/"));
+  const hookScript = getClaudeHookScriptPath();
   const platform = options.platform || process.platform;
   const wslDistro = resolveInstallWslDistro(options);
 
@@ -1096,12 +1140,7 @@ async function registerHooksAsync(options = {}) {
 
   if (!settings.hooks) settings.hooks = {};
 
-  const configuredNodeBin = options.nodeBin !== undefined
-    ? options.nodeBin
-    : extractExistingNodeBin(settings, MARKER, { nested: true });
-  const nodeBin = configuredNodeBin
-    || await resolveNodeBinAsync(options)
-    || "node";
+  const nodeBin = await resolveConfiguredNodeBinAsync(options, settings);
 
   let added = 0;
   let skipped = 0;
@@ -1171,7 +1210,7 @@ async function registerHooksAsync(options = {}) {
   }
 
   if (options.autoStart) {
-    const autoStartScript = asarUnpackedPath(path.resolve(__dirname, "auto-start.js").replace(/\\/g, "/"));
+    const autoStartScript = getClaudeAutoStartScriptPath();
 
     if (!Array.isArray(settings.hooks.SessionStart)) {
       settings.hooks.SessionStart = [];
@@ -1558,6 +1597,9 @@ module.exports = {
   DEFAULT_PARENT_DIR,
   DEFAULT_CONFIG_PATH,
   STATUSLINE_MARKER,
+  CLAUDE_CORE_HOOK_EVENTS: Object.freeze([...CORE_HOOKS]),
+  getClaudeHookScriptPath,
+  getClaudeAutoStartScriptPath,
   registerHooks,
   registerHooksAsync,
   unregisterHooks,

@@ -70,15 +70,101 @@ function makeRuntime(overrides = {}) {
 }
 
 describe("integration sync runtime", () => {
-  it("syncClawdHooks passes auto-start and the current server port", () => {
+  it("syncClawdHooks passes auto-start, the current server port, and sync provenance", () => {
     const { runtime, calls } = makeRuntime();
 
     const result = runtime.syncClawdHooks();
 
     assert.deepStrictEqual(result, { status: "ok", source: "claude" });
     assert.deepStrictEqual(calls, [
-      { name: "claude", options: { autoStart: true, port: 24444 } },
+      { name: "claude", options: { autoStart: true, port: 24444, source: null, automatic: true } },
     ]);
+  });
+
+  it("syncClawdHooks forwards an explicit source/automatic pair unchanged", () => {
+    const { runtime, calls } = makeRuntime();
+
+    runtime.syncClawdHooks({ source: "doctor", automatic: false });
+
+    assert.deepStrictEqual(calls, [
+      { name: "claude", options: { autoStart: true, port: 24444, source: "doctor", automatic: false } },
+    ]);
+  });
+
+  it("repairIntegrationForAgent('claude-code') syncs as an explicit, non-automatic doctor repair", () => {
+    const { runtime, calls } = makeRuntime();
+
+    const result = runtime.repairIntegrationForAgent("claude-code");
+
+    assert.deepStrictEqual(result, { status: "ok", source: "claude" });
+    // watcher:start appears twice: once from syncIntegrationForAgent's own
+    // success path, once from repairIntegrationForAgent's unconditional
+    // ensure-started call (Doctor Fix's enabled precondition holds regardless
+    // of this repair's outcome). start() is idempotent in production; the
+    // fake watcher stub here just isn't, so both calls show up.
+    assert.deepStrictEqual(calls.map((entry) => entry.name), ["claude", "watcher:start", "watcher:start"]);
+    assert.deepStrictEqual(calls[0].options, { autoStart: true, port: 24444, source: "doctor", automatic: false });
+  });
+
+  it("syncIntegrationForAgent waits for an async Claude sync to settle before starting the watcher", async () => {
+    let resolveSync;
+    const { runtime, calls } = makeRuntime({
+      ctx: {
+        syncClawdHooksImpl: (options) => {
+          calls.push({ name: "claude", options });
+          return new Promise((resolve) => { resolveSync = resolve; });
+        },
+      },
+    });
+
+    const pending = runtime.syncIntegrationForAgent("claude-code");
+    assert.deepStrictEqual(calls.map((entry) => entry.name), ["claude"], "watcher must not start before the async sync settles");
+
+    resolveSync({ status: "ok" });
+    const result = await pending;
+
+    assert.deepStrictEqual(result, { status: "ok" });
+    assert.deepStrictEqual(calls.map((entry) => entry.name), ["claude", "watcher:start"]);
+  });
+
+  it("does not start the Claude watcher when a synchronous sync result is an error (Settings Enable failure)", () => {
+    const { runtime, calls } = makeRuntime({
+      ctx: {
+        syncClawdHooksImpl: (options) => {
+          calls.push({ name: "claude", options });
+          return { status: "error", message: "write failed" };
+        },
+      },
+    });
+
+    const result = runtime.syncIntegrationForAgent("claude-code", { source: "settings-agent-enable", automatic: false });
+
+    assert.deepStrictEqual(result, { status: "error", message: "write failed" });
+    assert.deepStrictEqual(
+      calls.map((entry) => entry.name),
+      ["claude"],
+      "a failed Settings Enable sync must not leave the directory watcher running for a still-disabled agent"
+    );
+  });
+
+  it("does not start the Claude watcher when an async sync resolves an error (Settings Install failure)", async () => {
+    const { runtime, calls } = makeRuntime({
+      ctx: {
+        syncClawdHooksImpl: async (options) => {
+          calls.push({ name: "claude", options });
+          return { status: "error", message: "source script missing" };
+        },
+      },
+    });
+
+    const result = await runtime.syncIntegrationForAgent("claude-code", { source: "settings-agent-install", automatic: false });
+
+    assert.deepStrictEqual(result, { status: "error", message: "source script missing" });
+    assert.deepStrictEqual(
+      calls.map((entry) => entry.name),
+      ["claude"],
+      "a failed Settings Install sync must not leave the directory watcher running for a not-yet-installed agent"
+    );
   });
 
   it("startup syncs enabled integrations in the server order and starts the Claude watcher after Claude sync", () => {

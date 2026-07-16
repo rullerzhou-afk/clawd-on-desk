@@ -177,6 +177,39 @@ function readToolName(payload) {
   return "";
 }
 
+const PERMISSION_TOOL_INPUT_MAX_CHARS = 500;
+
+// Whitelisted subset of a native PermissionRequest's structured tool_input,
+// forwarded so the bubble can render tool-aware cues (command for Bash, file
+// path for Write/Edit) through the same formatter Claude bubbles use. Kimi
+// Code's file tools say `path` where Claude says `file_path` (captured from
+// kimi-code 0.14.3, unchanged in the 0.23.6 bundle's Write/Edit schemas);
+// map it so the formatter finds it. src/server-route-state.js re-runs this
+// exact function at the trust boundary rather than trusting the hook.
+// Everything else is dropped by construction: content / old_string /
+// new_string can be arbitrarily large (an oversized /state body is rejected
+// whole), and Bash's optional `description` is model-authored text that
+// formatDetail would show instead of the real command — the card must show
+// what actually runs, not what the model says about it.
+function extractPermissionToolInput(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const out = {};
+  const take = (target, value) => {
+    // First writer wins: an explicit file_path beats the mapped `path` alias.
+    if (typeof value !== "string" || out[target] !== undefined) return;
+    // Trim first, matching the server's trim-then-clamp order: a value with
+    // ≥500 chars of leading whitespace would otherwise clamp to whitespace
+    // only and be dropped server-side.
+    const trimmed = value.trim();
+    if (trimmed) out[target] = trimmed.slice(0, PERMISSION_TOOL_INPUT_MAX_CHARS);
+  };
+  take("command", raw.command);
+  take("file_path", raw.file_path);
+  take("file_path", raw.path);
+  take("pattern", raw.pattern);
+  return Object.keys(out).length ? out : null;
+}
+
 function isExplicitPermissionSignal(payload) {
   if (!payload || typeof payload !== "object") return false;
   const topLevelFlags = [
@@ -289,20 +322,39 @@ function buildStateBody(event, payload, resolve) {
   // Permission context for the bubble. Native Kimi Code payloads carry a
   // human-readable action ("Running: echo hi") and a display block with the
   // real command; forward them so the bubble can show what actually needs
-  // approval instead of the generic "check the Kimi terminal" line. The
-  // legacy synthesized PermissionRequest (rewritten PreToolUse) has none of
-  // these fields, so it degrades to tool_name only — same behavior as before.
+  // approval instead of the generic "check the Kimi terminal" line. A
+  // synthesized PermissionRequest (rewritten PreToolUse) usually has neither
+  // and degrades to tool_name only — but when its payload does carry
+  // tool_input (immediate mode fires on the raw PreToolUse), the same
+  // whitelist applies and the cue stays accurate.
+  //
+  // Action/command/tool_name are clamped to the server's own limits
+  // (trim().slice at 300/500, src/server-route-state.js): a heredoc Bash
+  // call embeds the command in both action and display.command, and
+  // unclamped they could push the body past the 16KB /state cap — that 413
+  // is headerless and silently drops the whole notification. Clamps keep
+  // realistic bodies well under the cap. The hooks that carry
+  // assistant_last_output (clawd, codex) byte-fit via
+  // fitStateBodyToByteBudget instead, but that helper only sacrifices
+  // assistant_last_output, which this body never has, so deterministic
+  // clamps are the fit here.
   if (event === "PermissionRequest" || event === "PermissionResult") {
-    const toolName = readToolName(payload);
-    if (toolName) body.tool_name = toolName;
-    if (typeof payload.action === "string" && payload.action) {
-      body.permission_action = payload.action;
+    const toolName = readToolName(payload).trim();
+    if (toolName) body.tool_name = toolName.slice(0, 200);
+    if (typeof payload.action === "string" && payload.action.trim()) {
+      body.permission_action = payload.action.trim().slice(0, 300);
     }
     if (
       payload.display && typeof payload.display === "object"
-      && typeof payload.display.command === "string" && payload.display.command
+      && typeof payload.display.command === "string" && payload.display.command.trim()
     ) {
-      body.permission_command = payload.display.command;
+      body.permission_command = payload.display.command.trim().slice(0, 500);
+    }
+    // PermissionRequest only: a PermissionResult just clears the bubble —
+    // there is nothing left to render a cue for.
+    if (event === "PermissionRequest") {
+      const permissionToolInput = extractPermissionToolInput(payload.tool_input);
+      if (permissionToolInput) body.permission_tool_input = permissionToolInput;
     }
     if (typeof payload.decision === "string" && payload.decision) {
       body.permission_decision = payload.decision;
@@ -388,6 +440,7 @@ function main() {
 if (require.main === module) main();
 module.exports = {
   buildStateBody,
+  extractPermissionToolInput,
   PERMISSION_TOOLS,
   DEFAULT_PERMISSION_TOOLS,
   resolvePermissionTools,
