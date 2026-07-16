@@ -106,6 +106,7 @@ scripts/*
 !scripts/export-agent-icons.js
 !scripts/verify-sidecar-binaries.js
 !scripts/fetch-sidecar-binaries.js
+!scripts/revenue_weekly_diff.py
 
 # oh-my-cursor state
 .omc/
