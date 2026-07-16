@@ -660,6 +660,17 @@ function renderElicitationTerminalFallback() {
   suggestionsContainer.appendChild(btn);
 }
 
+function renderRegularTerminalFallback(lang) {
+  const btn = document.createElement("button");
+  btn.className = "btn-suggestion";
+  btn.textContent = bubbleText(lang, "goToTerminal");
+  btn.addEventListener("click", () => {
+    disableAll();
+    window.bubbleAPI.decide("deny-and-focus");
+  });
+  suggestionsContainer.appendChild(btn);
+}
+
 function renderElicitationStep() {
   const total = elicitationQuestions.length;
   if (total === 0) {
@@ -780,7 +791,7 @@ function show(data) {
       });
       suggestionsContainer.appendChild(btn);
     }
-
+    renderRegularTerminalFallback(data.lang);
     revealCard();
     return;
   }
@@ -910,21 +921,24 @@ function show(data) {
       window.bubbleAPI.decide("deny-and-focus");
     });
     suggestionsContainer.appendChild(btn);
-  } else if (Array.isArray(data.suggestions)) {
-    const seenLabels = new Set();
-    data.suggestions.forEach((s, i) => {
-      const label = getSuggestionLabel(s, data.lang);
-      if (seenLabels.has(label)) return;
-      seenLabels.add(label);
-      const btn = document.createElement("button");
-      btn.className = "btn-suggestion";
-      btn.textContent = label;
-      btn.addEventListener("click", () => {
-        disableAll();
-        window.bubbleAPI.decide("suggestion:" + i);
+  } else {
+    if (Array.isArray(data.suggestions)) {
+      const seenLabels = new Set();
+      data.suggestions.forEach((s, i) => {
+        const label = getSuggestionLabel(s, data.lang);
+        if (seenLabels.has(label)) return;
+        seenLabels.add(label);
+        const btn = document.createElement("button");
+        btn.className = "btn-suggestion";
+        btn.textContent = label;
+        btn.addEventListener("click", () => {
+          disableAll();
+          window.bubbleAPI.decide("suggestion:" + i);
+        });
+        suggestionsContainer.appendChild(btn);
       });
-      suggestionsContainer.appendChild(btn);
-    });
+    }
+    renderRegularTerminalFallback(data.lang);
   }
   // Re-enable buttons
   btnAllow.disabled = false;
