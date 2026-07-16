@@ -167,7 +167,28 @@ function writeRuntimeConfig(port, options = {}) {
   }
 }
 
-function clearRuntimeConfig(filePath = RUNTIME_CONFIG_PATH) {
+// Owner-guarded (#681 review P2-2). Two live instances share this ONE file —
+// an installed build and a dev build hold different user-data-dir singleton
+// locks, so both can run, and whoever started LAST owns the current bytes. An
+// earlier instance quitting later must not tear down the survivor's identity:
+// with the #681 gate that would blind every Windows hook (offline shape, no
+// focus metadata) until the survivor restarts, where pre-gate the cost was
+// one port-probe fallback. So the unlink happens only when the file's
+// ownerPid is ours. Legacy (no ownerPid) and corrupt files are residue and
+// still get cleaned. A foreign ownerPid is deliberately NOT liveness-checked:
+// a dead foreign owner's file is already harmless (the gate's own liveness
+// probe fails it) and the next start overwrites it — not worth coupling this
+// module to a kill(pid,0) helper it otherwise never needs.
+function clearRuntimeConfig(filePath = RUNTIME_CONFIG_PATH, options = {}) {
+  const ownPid = normalizeOwnerPid(options.ownerPid) || process.pid;
+  try {
+    const raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    const filePid = normalizeOwnerPid(raw && raw.ownerPid);
+    if (filePid && filePid !== ownPid) return false;
+  } catch {
+    // Missing: the unlink below reports false, as before. Corrupt/unreadable:
+    // residue — fall through and clean it.
+  }
   try {
     fs.unlinkSync(filePath);
     return true;

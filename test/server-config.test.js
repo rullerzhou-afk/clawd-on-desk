@@ -214,6 +214,42 @@ describe("server-config helpers", () => {
     assert.strictEqual(fs.existsSync(runtimePath), false);
   });
 
+  it("clearRuntimeConfig removes a file this process owns", () => {
+    const runtimeDir = path.join(makeTempHome(), ".clawd");
+    fs.mkdirSync(runtimeDir, { recursive: true });
+    const runtimePath = path.join(runtimeDir, "runtime.json");
+    fs.writeFileSync(runtimePath, JSON.stringify({ app: "clawd-on-desk", port: 23333, ownerPid: process.pid }));
+
+    assert.strictEqual(serverConfig.clearRuntimeConfig(runtimePath), true);
+    assert.strictEqual(fs.existsSync(runtimePath), false);
+  });
+
+  it("clearRuntimeConfig refuses to remove another instance's identity (#681 P2-2)", () => {
+    // Installed + dev builds hold different user-data-dir singleton locks, so
+    // both can run while sharing this one file. The LAST writer owns the bytes;
+    // an earlier instance quitting later must leave them alone — post-gate,
+    // deleting them would blind every Windows hook until the survivor restarts.
+    // The guard keys on pid inequality alone (no liveness check), so any
+    // foreign pid must be refused, dead or alive.
+    const runtimeDir = path.join(makeTempHome(), ".clawd");
+    fs.mkdirSync(runtimeDir, { recursive: true });
+    const runtimePath = path.join(runtimeDir, "runtime.json");
+    fs.writeFileSync(runtimePath, JSON.stringify({ app: "clawd-on-desk", port: 23334, ownerPid: process.pid + 1 }));
+
+    assert.strictEqual(serverConfig.clearRuntimeConfig(runtimePath), false);
+    assert.strictEqual(fs.existsSync(runtimePath), true, "the survivor's identity must stay on disk");
+  });
+
+  it("clearRuntimeConfig still removes a corrupt runtime.json (residue, not identity)", () => {
+    const runtimeDir = path.join(makeTempHome(), ".clawd");
+    fs.mkdirSync(runtimeDir, { recursive: true });
+    const runtimePath = path.join(runtimeDir, "runtime.json");
+    fs.writeFileSync(runtimePath, "not-json{");
+
+    assert.strictEqual(serverConfig.clearRuntimeConfig(runtimePath), true);
+    assert.strictEqual(fs.existsSync(runtimePath), false);
+  });
+
   it("splitPortCandidates prioritizes preferred and runtime ports", () => {
     const result = serverConfig.splitPortCandidates(23335, { runtimePort: 23334 });
     assert.deepStrictEqual(result.direct, [23335, 23334]);
