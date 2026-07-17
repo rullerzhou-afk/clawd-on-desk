@@ -80,7 +80,11 @@ function createPermissionHarness({ logPath = null } = {}) {
 
   const fakeElectron = {
     BrowserWindow: Object.assign(FakeBrowserWindow, {
-      fromWebContents() { return null; },
+      // Same convention as the codex-response harness: an ipc event whose
+      // sender carries __window resolves to that window, so handleDecide can
+      // pair the event with its bubble entry. Events without it keep the old
+      // null behavior.
+      fromWebContents(sender) { return (sender && sender.__window) || null; },
     }),
     globalShortcut: {
       register() { return true; },
@@ -406,5 +410,86 @@ describe("permission passive notify auto-close refresh", () => {
     assert.strictEqual(api.pendingPermissions.length, 1);
     mock.timers.tick(1);
     assert.strictEqual(api.pendingPermissions.length, 0);
+  });
+});
+
+// Gate-ledger joint lifecycle (batched approvals): after the FIRST cue is
+// gone — dismissed via the real ipc-decide path or auto-expired — state.js
+// re-arms a cue for the next queued approval by calling showKimiNotifyBubble
+// again. The permission layer must build a brand-new working card each time;
+// stale dedupe/bookkeeping from the dead entry must not swallow the re-show.
+describe("Kimi passive cue rebuild after dismissal (gate-ledger joint lifecycle)", () => {
+  afterEach(() => {
+    mock.timers.reset();
+    delete require.cache[PERMISSION_MODULE_PATH];
+    for (const logPath of tempLogPaths) {
+      try { fs.unlinkSync(logPath); } catch {}
+    }
+    tempLogPaths.clear();
+  });
+
+  it("rebuilds a fresh card after the previous cue was dismissed via Got it (ipc-decide)", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    mock.timers.setTime(100_000);
+    const harness = createPermissionHarness();
+    const { api } = harness;
+
+    api.showKimiNotifyBubble({
+      sessionId: "kimi-a",
+      toolName: "write_file",
+      permissionToolInput: { file_path: "a.txt" },
+    });
+    assert.strictEqual(api.pendingPermissions.length, 1);
+    const first = api.pendingPermissions[0];
+    assert.ok(first.bubble, "first cue should own a bubble window");
+
+    // "Got it" travels the production ipc-decide path.
+    api.handleDecide({ sender: { __window: first.bubble } }, "allow");
+    assert.strictEqual(api.pendingPermissions.length, 0);
+
+    // state.js re-arms ~800ms later with the next gate's detail.
+    mock.timers.tick(800);
+    api.showKimiNotifyBubble({
+      sessionId: "kimi-a",
+      toolName: "shell",
+      permissionToolInput: { command: "Remove-Item a.txt" },
+    });
+    assert.strictEqual(api.pendingPermissions.length, 1);
+    const second = api.pendingPermissions[0];
+    assert.notStrictEqual(second, first, "re-armed cue must be a fresh entry, not the dismissed one");
+    assert.strictEqual(second.isKimiNotify, true);
+    assert.strictEqual(second.kimiToolName, "shell");
+    assert.deepStrictEqual(second.kimiToolInput, { command: "Remove-Item a.txt" });
+    assert.ok(second.bubble && !second.bubble.destroyed, "re-armed cue should own a live bubble window");
+  });
+
+  it("rebuilds a fresh card after the previous cue auto-expired", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    mock.timers.setTime(100_000);
+    const harness = createPermissionHarness();
+    const { api } = harness;
+
+    api.showKimiNotifyBubble({
+      sessionId: "kimi-a",
+      toolName: "write_file",
+      permissionToolInput: { file_path: "a.txt" },
+    });
+    assert.strictEqual(api.pendingPermissions.length, 1);
+    const first = api.pendingPermissions[0];
+
+    // Default notification auto-close is 10s in this harness — let it expire.
+    mock.timers.tick(10_000);
+    assert.strictEqual(api.pendingPermissions.length, 0);
+
+    api.showKimiNotifyBubble({
+      sessionId: "kimi-a",
+      toolName: "shell",
+      permissionToolInput: { command: "Remove-Item a.txt" },
+    });
+    assert.strictEqual(api.pendingPermissions.length, 1);
+    const second = api.pendingPermissions[0];
+    assert.notStrictEqual(second, first);
+    assert.strictEqual(second.kimiToolName, "shell");
+    assert.ok(second.bubble && !second.bubble.destroyed);
   });
 });

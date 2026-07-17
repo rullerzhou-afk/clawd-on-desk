@@ -177,6 +177,35 @@ function readToolName(payload) {
   return "";
 }
 
+const PERMISSION_GATE_ID_MAX_CHARS = 100;
+
+// Legacy kimi-cli threads the same tool_call_id through PreToolUse /
+// PostToolUse / PostToolUseFailure (verified against 1.37 site-packages and
+// current upstream events.py/toolset.py), which lets state.js pair a gated
+// PreToolUse with the Post that settles it. Tolerate shape drift like the
+// other payload readers; null just downgrades that gate to FIFO matching.
+function readToolCallId(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const candidates = [
+    payload.tool_call_id,
+    payload.toolCallId,
+    payload.tool_call && typeof payload.tool_call === "object" ? payload.tool_call.id : undefined,
+    payload.toolCall && typeof payload.toolCall === "object" ? payload.toolCall.id : undefined,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim().slice(0, PERMISSION_GATE_ID_MAX_CHARS);
+    }
+    if (typeof candidate === "number" && Number.isFinite(candidate)) return String(candidate);
+  }
+  return null;
+}
+
+function isGatedPostEvent(event, payload) {
+  if (event !== "PostToolUse" && event !== "PostToolUseFailure") return false;
+  return PERMISSION_TOOLS.has(normalizeToolName(readToolName(payload)));
+}
+
 const PERMISSION_TOOL_INPUT_MAX_CHARS = 500;
 
 // Whitelisted subset of a native PermissionRequest's structured tool_input,
@@ -319,6 +348,25 @@ function buildStateBody(event, payload, resolve) {
   if (permissionSuspect) body.permission_suspect = true;
   if (cwd) body.cwd = cwd;
 
+  // Gate-ledger markers (legacy kimi-cli heuristic only). state.js keeps a
+  // per-session ledger of outstanding permission-gated tool calls so batched
+  // approvals (kimi-cli fires every queued PreToolUse up front) re-surface
+  // the passive cue after each one is answered. Both classified PreToolUse
+  // shapes open a gate — the suspect path on its raw PreToolUse, the
+  // immediate path on the PermissionRequest it was rewritten into. Native
+  // Kimi Code PermissionRequests never take the rewrite branch, so they stay
+  // out of the ledger by construction. Gated PostToolUse/PostToolUseFailure
+  // close a gate again, paired by tool_call_id when present, FIFO otherwise.
+  if (classification === "suspect" || classification === "immediate") {
+    body.permission_gate_open = true;
+    const gateId = readToolCallId(payload);
+    if (gateId) body.permission_gate_id = gateId;
+  } else if (isGatedPostEvent(event, payload)) {
+    body.permission_gated = true;
+    const gateId = readToolCallId(payload);
+    if (gateId) body.permission_gate_id = gateId;
+  }
+
   // Permission context for the bubble. Native Kimi Code payloads carry a
   // human-readable action ("Running: echo hi") and a display block with the
   // real command; forward them so the bubble can show what actually needs
@@ -326,7 +374,10 @@ function buildStateBody(event, payload, resolve) {
   // synthesized PermissionRequest (rewritten PreToolUse) usually has neither
   // and degrades to tool_name only — but when its payload does carry
   // tool_input (immediate mode fires on the raw PreToolUse), the same
-  // whitelist applies and the cue stays accurate.
+  // whitelist applies and the cue stays accurate. A gated suspect PreToolUse
+  // forwards the same fields: state.js stores them in the gate ledger so the
+  // re-armed cue after a batched approval shows the NEXT pending tool rather
+  // than the generic line.
   //
   // Action/command/tool_name are clamped to the server's own limits
   // (trim().slice at 300/500, src/server-route-state.js): a heredoc Bash
@@ -338,7 +389,7 @@ function buildStateBody(event, payload, resolve) {
   // fitStateBodyToByteBudget instead, but that helper only sacrifices
   // assistant_last_output, which this body never has, so deterministic
   // clamps are the fit here.
-  if (event === "PermissionRequest" || event === "PermissionResult") {
+  if (event === "PermissionRequest" || event === "PermissionResult" || classification === "suspect") {
     const toolName = readToolName(payload).trim();
     if (toolName) body.tool_name = toolName.slice(0, 200);
     if (typeof payload.action === "string" && payload.action.trim()) {
@@ -350,9 +401,9 @@ function buildStateBody(event, payload, resolve) {
     ) {
       body.permission_command = payload.display.command.trim().slice(0, 500);
     }
-    // PermissionRequest only: a PermissionResult just clears the bubble —
-    // there is nothing left to render a cue for.
-    if (event === "PermissionRequest") {
+    // Not on PermissionResult: it just clears the bubble — there is nothing
+    // left to render a cue for.
+    if (event === "PermissionRequest" || classification === "suspect") {
       const permissionToolInput = extractPermissionToolInput(payload.tool_input);
       if (permissionToolInput) body.permission_tool_input = permissionToolInput;
     }
@@ -441,6 +492,9 @@ if (require.main === module) main();
 module.exports = {
   buildStateBody,
   extractPermissionToolInput,
+  readToolCallId,
+  isGatedPostEvent,
+  PERMISSION_GATE_ID_MAX_CHARS,
   PERMISSION_TOOLS,
   DEFAULT_PERMISSION_TOOLS,
   resolvePermissionTools,

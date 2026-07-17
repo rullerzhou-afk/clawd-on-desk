@@ -222,6 +222,14 @@ function handleStatePost(req, res, options) {
       // re-run here at the trust boundary rather than trusted from the hook,
       // matching normalizeContextUsage.
       const permissionToolInput = extractPermissionToolInput(data.permission_tool_input);
+      // Kimi legacy gate-ledger markers (batched-approvals fix). Booleans plus
+      // a clamped opaque tool_call_id, re-validated at the trust boundary like
+      // permission_suspect above — the hook's word alone is not enough.
+      const permissionGateOpen = data.permission_gate_open === true;
+      const permissionGated = data.permission_gated === true;
+      const permissionGateId = typeof data.permission_gate_id === "string" && data.permission_gate_id.trim()
+        ? data.permission_gate_id.trim().slice(0, 100)
+        : null;
       const preserveState = data.preserve_state === true;
       // Statusline refresh POSTs are metadata, not lifecycle (#590 B2): they
       // may only annotate an existing session with quota/context and must
@@ -436,6 +444,9 @@ function handleStatePost(req, res, options) {
             permissionAction,
             permissionCommand,
             permissionToolInput,
+            permissionGateOpen,
+            permissionGated,
+            permissionGateId,
             preserveState,
             hookSource,
             backgroundTasksCount,

@@ -167,6 +167,9 @@ describe("server-route-state POST", () => {
         permissionAction: null,
         permissionCommand: null,
         permissionToolInput: null,
+        permissionGateOpen: false,
+        permissionGated: false,
+        permissionGateId: null,
         preserveState: true,
         hookSource: "codex-official",
         backgroundTasksCount: 0,
@@ -195,6 +198,52 @@ describe("server-route-state POST", () => {
     assert.strictEqual(opts.permissionAction, "Running: echo hi");
     assert.strictEqual(opts.permissionCommand, "echo hi");
     assert.deepStrictEqual(opts.permissionToolInput, { command: "echo hi" });
+  });
+
+  it("forwards Kimi gate-ledger markers and re-validates their types", async () => {
+    const post = (extra) => callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "kimi-cli:session_abc",
+      event: "PreToolUse",
+      agent_id: "kimi-cli",
+      ...extra,
+    }));
+
+    // Well-formed markers pass through; the id is trimmed and clamped.
+    const open = await post({
+      permission_suspect: true,
+      permission_gate_open: true,
+      permission_gate_id: `  ${"g".repeat(150)}  `,
+    });
+    const openOpts = open.calls.updateSession[0][3];
+    assert.strictEqual(openOpts.permissionGateOpen, true);
+    assert.strictEqual(openOpts.permissionGated, false);
+    assert.strictEqual(openOpts.permissionGateId, "g".repeat(100));
+
+    const gated = await post({
+      event: "PostToolUse",
+      permission_gated: true,
+      permission_gate_id: "call_1",
+    });
+    const gatedOpts = gated.calls.updateSession[0][3];
+    assert.strictEqual(gatedOpts.permissionGated, true);
+    assert.strictEqual(gatedOpts.permissionGateOpen, false);
+    assert.strictEqual(gatedOpts.permissionGateId, "call_1");
+
+    // Wrong types are dropped at the trust boundary — truthiness is not enough.
+    const junk = await post({
+      permission_gate_open: "yes",
+      permission_gated: 1,
+      permission_gate_id: { id: "x" },
+    });
+    const junkOpts = junk.calls.updateSession[0][3];
+    assert.strictEqual(junkOpts.permissionGateOpen, false);
+    assert.strictEqual(junkOpts.permissionGated, false);
+    assert.strictEqual(junkOpts.permissionGateId, null);
+
+    // Whitespace-only id degrades to null, same as an absent field.
+    const blank = await post({ permission_gate_id: "   " });
+    assert.strictEqual(blank.calls.updateSession[0][3].permissionGateId, null);
   });
 
   it("re-validates permission_tool_input instead of trusting the hook", async () => {
