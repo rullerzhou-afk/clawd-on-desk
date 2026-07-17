@@ -100,27 +100,46 @@ function setArgvPermissionMode(value) {
   return argvPermissionMode;
 }
 
-// Splits argv tail into { event, mode } — the event name is the first
-// non-flag token (kimi-cli itself passes none; the event then comes from the
-// stdin payload), `--permission-mode=<x>` sets the persistent mode, and any
-// other `--` flag is ignored so a future installer flag can never be
-// misparsed as an event name and silently kill the hook.
+// Splits argv tail into { event, mode }. `--permission-mode=<x>` (and the
+// space-separated `--permission-mode <x>` form, whose value is consumed so it
+// can never be misread as an event) set the persistent mode; other `--` flags
+// are ignored. A positional token may claim the event slot ONLY when it is a
+// known event name: kimi-cli itself passes no event argv (the real event
+// arrives as hook_event_name on stdin), and an arbitrary token promoted to
+// eventFromArgv would override that stdin event and make main() exit(0) on
+// the unknown name — a silently dead hook. Residual corner: the value of an
+// UNKNOWN flag that happens to spell a valid event name is still taken as the
+// event; unknowable without a registry of which flags take values.
 function parseHookArgv(argvTail) {
   const parsed = { event: "", mode: null, ignoredFlags: [] };
-  for (const arg of Array.isArray(argvTail) ? argvTail : []) {
+  const args = Array.isArray(argvTail) ? argvTail : [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
     if (typeof arg !== "string" || !arg) continue;
     if (arg.startsWith("--")) {
-      const modeMatch = arg.match(/^--permission-mode=(.*)$/);
-      if (modeMatch) {
-        const normalized = normalizePermissionModeValue(modeMatch[1]);
+      const eqMatch = arg.match(/^--permission-mode=(.*)$/);
+      if (eqMatch) {
+        const normalized = normalizePermissionModeValue(eqMatch[1]);
         if (normalized) parsed.mode = normalized;
         else parsed.ignoredFlags.push(arg);
-      } else {
-        parsed.ignoredFlags.push(arg);
+        continue;
       }
+      if (arg === "--permission-mode") {
+        const value = typeof args[i + 1] === "string" ? args[i + 1] : "";
+        i += 1;
+        const normalized = normalizePermissionModeValue(value);
+        if (normalized) parsed.mode = normalized;
+        else parsed.ignoredFlags.push(value ? `${arg} ${value}` : arg);
+        continue;
+      }
+      parsed.ignoredFlags.push(arg);
       continue;
     }
-    if (!parsed.event) parsed.event = arg;
+    if (!parsed.event && EVENT_TO_STATE[arg]) {
+      parsed.event = arg;
+    } else {
+      parsed.ignoredFlags.push(arg);
+    }
   }
   return parsed;
 }

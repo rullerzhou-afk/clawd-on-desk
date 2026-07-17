@@ -1893,17 +1893,20 @@ function withKimiLegacyPermissionModeSupplement(detail, descriptor, options) {
   if (missingEvents.length) {
     issues.push(`missing hook events: ${missingEvents.join(", ")}`);
   }
+  // The retired env prefix is checked UNCONDITIONALLY: a command carrying
+  // both the prefix and a valid argv flag is still dead on Windows (the
+  // leading `VAR=x` form never executes under a real shell there), yet its
+  // node/script substrings would pass the generic command validation.
+  if (/CLAWD_KIMI_PERMISSION_MODE=/.test(commands.join("\n"))) {
+    issues.push("hook commands carry the retired env-prefix mode form (never executed on Windows)");
+  }
   const modes = commands.map((command) => {
     const argvMatch = command.match(/--permission-mode=([A-Za-z]+)/);
     return argvMatch ? normalizeKimiPermissionMode(argvMatch[1]) : null;
   });
   const missingModeCount = modes.filter((mode) => !mode).length;
   if (missingModeCount > 0) {
-    issues.push(
-      /CLAWD_KIMI_PERMISSION_MODE=/.test(commands.join("\n"))
-        ? "hook commands still use the retired env-prefix mode form (never executed on Windows)"
-        : `${missingModeCount} hook command(s) missing the --permission-mode flag`
-    );
+    issues.push(`${missingModeCount} hook command(s) missing the --permission-mode flag`);
   }
   const distinctModes = new Set(modes.filter(Boolean));
   if (distinctModes.size > 1) {

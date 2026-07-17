@@ -1060,6 +1060,40 @@ describe("Kimi hook argv permission-mode flag", () => {
     assert.deepStrictEqual(parseHookArgv(undefined), { event: "", mode: null, ignoredFlags: [] });
   });
 
+  it("space-separated mode values and unknown-flag values never claim the event slot", () => {
+    // `--permission-mode suspect`: the value is consumed by the flag — it must
+    // not become the event (which would override the stdin hook_event_name
+    // and silently kill the hook on the unknown name).
+    assert.deepStrictEqual(
+      parseHookArgv(["--permission-mode", "suspect"]),
+      { event: "", mode: "suspect", ignoredFlags: [] }
+    );
+    assert.deepStrictEqual(
+      parseHookArgv(["--permission-mode", "chaotic"]),
+      { event: "", mode: null, ignoredFlags: ["--permission-mode chaotic"] }
+    );
+    assert.deepStrictEqual(
+      parseHookArgv(["--permission-mode"]),
+      { event: "", mode: null, ignoredFlags: ["--permission-mode"] }
+    );
+    // Unknown flag with a non-event value: both tokens are ignored; the event
+    // stays empty so the stdin payload's hook_event_name wins.
+    assert.deepStrictEqual(
+      parseHookArgv(["--future-flag", "future-value"]),
+      { event: "", mode: null, ignoredFlags: ["--future-flag", "future-value"] }
+    );
+    // A bare positional that is not a known event name is ignored too.
+    assert.deepStrictEqual(
+      parseHookArgv(["banana"]),
+      { event: "", mode: null, ignoredFlags: ["banana"] }
+    );
+    // Space form still coexists with a real positional event.
+    assert.deepStrictEqual(
+      parseHookArgv(["--permission-mode", "explicit", "PreToolUse"]),
+      { event: "PreToolUse", mode: "explicit", ignoredFlags: [] }
+    );
+  });
+
   it("argv suspect mode drives classifyPreTool when no env override exists", () => {
     cleanEnv(() => {
       setArgvPermissionMode("suspect");

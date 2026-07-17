@@ -1840,6 +1840,21 @@ describe("kimi legacy permission-mode supplement", () => {
     assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "kimi-cli" });
   });
 
+  it("flags a command carrying BOTH the retired prefix and a valid argv flag (dead on Windows despite the flag)", () => {
+    const { descriptor, legacyDir } = kimiDescriptor();
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(
+      descriptor.configPath,
+      kimiLegacyToml({ command: 'CLAWD_KIMI_PERMISSION_MODE=explicit "node" "/app/hooks/kimi-hook.js" --permission-mode=suspect' }),
+      "utf8"
+    );
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "needs-review");
+    assert.ok(detail.detail.includes("retired env-prefix"));
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "kimi-cli" });
+  });
+
   it("flags missing --permission-mode flags on an otherwise valid legacy install", () => {
     const { descriptor, legacyDir } = kimiDescriptor();
     fs.mkdirSync(legacyDir, { recursive: true });
