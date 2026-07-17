@@ -537,6 +537,26 @@ command = '"/usr/bin/node" "/some/path/kimi-hook.js" --permission-mode=explicit'
     assert.ok(!after.includes("CLAWD_KIMI_PERMISSION_MODE="));
   });
 
+  it("WSL form: unquoted command still carries the argv mode flag", () => {
+    const { settingsPath } = makeTempKimiHome();
+    const prevDistro = process.env.CLAWD_WSL_DISTRO;
+    process.env.CLAWD_WSL_DISTRO = "Ubuntu";
+    try {
+      registerKimiHooks({
+        silent: true,
+        settingsPath,
+        nodeBin: "node",
+        permissionMode: MODE_SUSPECT,
+      });
+    } finally {
+      if (prevDistro === undefined) delete process.env.CLAWD_WSL_DISTRO;
+      else process.env.CLAWD_WSL_DISTRO = prevDistro;
+    }
+    const content = fs.readFileSync(settingsPath, "utf8");
+    // Unquoted (naive-split hook runners) + the flag as a plain trailing arg.
+    assert.ok(/command = 'node [^'"]*kimi-hook\.js --permission-mode=suspect'/.test(content));
+  });
+
   it("re-sync of an argv-form install is byte-stable (no churn)", () => {
     const { settingsPath } = makeTempKimiHome();
     registerKimiHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node", permissionMode: MODE_SUSPECT });
