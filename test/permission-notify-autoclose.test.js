@@ -493,3 +493,107 @@ describe("Kimi passive cue rebuild after dismissal (gate-ledger joint lifecycle)
     assert.ok(second.bubble && !second.bubble.destroyed);
   });
 });
+
+// Joint state ↔ permission coverage (codex review request): drive the REAL
+// state-machine scheduling into the REAL permission bubble layer and assert
+// what the user actually sees. Batched synthesized PermissionRequests must
+// keep the visible card on the queue head (t1) until Post(t1) settles it,
+// and only then advance to t2.
+describe("state ↔ permission joint: batched immediate cues stay on the queue head", () => {
+  afterEach(() => {
+    mock.timers.reset();
+    delete require.cache[PERMISSION_MODULE_PATH];
+    for (const logPath of tempLogPaths) {
+      try { fs.unlinkSync(logPath); } catch {}
+    }
+    tempLogPaths.clear();
+  });
+
+  it("visible card stays on t1 until Post(t1), then advances to t2", () => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    mock.timers.setTime(100_000);
+    const harness = createPermissionHarness();
+    const permApi = harness.api;
+
+    const themeLoader = require("../src/theme-loader");
+    themeLoader.init(path.join(__dirname, "..", "src"));
+    const { createTranslator } = require("../src/i18n");
+    const stateCtx = {
+      lang: "en",
+      theme: themeLoader.loadTheme("clawd"),
+      doNotDisturb: false,
+      miniTransitioning: false,
+      miniMode: false,
+      mouseOverPet: false,
+      idlePaused: false,
+      forceEyeResend: false,
+      eyePauseUntil: 0,
+      mouseStillSince: Date.now(),
+      miniSleepPeeked: false,
+      playSound: () => {},
+      sendToRenderer: () => {},
+      syncHitWin: () => {},
+      sendToHitWin: () => {},
+      miniPeekIn: () => {},
+      miniPeekOut: () => {},
+      buildContextMenu: () => {},
+      buildTrayMenu: () => {},
+      processKill: () => { const e = new Error("ESRCH"); e.code = "ESRCH"; throw e; },
+      getCursorScreenPoint: () => ({ x: 100, y: 100 }),
+      // The wiring under test: state's cue scheduling drives the real
+      // permission layer instead of a recording stub.
+      showKimiNotifyBubble: (entry) => permApi.showKimiNotifyBubble(entry),
+      clearKimiNotifyBubbles: (sessionId, reason) => permApi.clearKimiNotifyBubbles(sessionId, reason),
+    };
+    stateCtx.t = createTranslator(() => stateCtx.lang);
+    const stateApi = require("../src/state")(stateCtx);
+
+    try {
+      // Batched immediate mode: t1 and t2 land back-to-back while the
+      // terminal blocks on t1.
+      stateApi.updateSession("kimi-cli:s1", "notification", "PermissionRequest", {
+        agentId: "kimi-cli",
+        permissionGateOpen: true,
+        permissionGateId: "t1",
+        toolName: "shell",
+        permissionToolInput: { command: "npm install" },
+      });
+      stateApi.updateSession("kimi-cli:s1", "notification", "PermissionRequest", {
+        agentId: "kimi-cli",
+        permissionGateOpen: true,
+        permissionGateId: "t2",
+        toolName: "write_file",
+        permissionToolInput: { file_path: "b.txt" },
+      });
+      assert.strictEqual(permApi.pendingPermissions.length, 1);
+      assert.strictEqual(permApi.pendingPermissions[0].kimiToolName, "shell");
+      assert.deepStrictEqual(permApi.pendingPermissions[0].kimiToolInput, { command: "npm install" });
+
+      // User approves t1: the card drops with the settled gate...
+      stateApi.updateSession("kimi-cli:s1", "working", "PostToolUse", {
+        agentId: "kimi-cli",
+        permissionGated: true,
+        permissionGateId: "t1",
+      });
+      assert.strictEqual(permApi.pendingPermissions.length, 0);
+
+      // ...and the re-armed cue advances to t2.
+      mock.timers.tick(800);
+      assert.strictEqual(permApi.pendingPermissions.length, 1);
+      assert.strictEqual(permApi.pendingPermissions[0].isKimiNotify, true);
+      assert.strictEqual(permApi.pendingPermissions[0].kimiToolName, "write_file");
+      assert.deepStrictEqual(permApi.pendingPermissions[0].kimiToolInput, { file_path: "b.txt" });
+
+      // t2 answered: everything settles, nothing re-arms.
+      stateApi.updateSession("kimi-cli:s1", "working", "PostToolUse", {
+        agentId: "kimi-cli",
+        permissionGated: true,
+        permissionGateId: "t2",
+      });
+      mock.timers.tick(5000);
+      assert.strictEqual(permApi.pendingPermissions.length, 0);
+    } finally {
+      stateApi.cleanup();
+    }
+  });
+});
