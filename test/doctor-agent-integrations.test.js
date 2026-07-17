@@ -14,6 +14,20 @@ const { ANTIGRAVITY_HOOK_EVENTS, __test: antigravityInstallTest } = require("../
 const { QWEN_CODE_HOOK_EVENTS, buildQwenCodeHookCommand } = require("../hooks/qwen-code-install");
 const { HOOK_ENTRIES: CODEWHALE_HOOK_ENTRIES } = require("../hooks/codewhale-install");
 const { QODER_HOOK_EVENTS, buildQoderHookCommand } = require("../hooks/qoder-install");
+const { KIMI_HOOK_EVENTS } = require("../hooks/kimi-install");
+
+// Complete healthy legacy Kimi config: every event registered, every command
+// carrying the canonical argv mode flag.
+function kimiLegacyToml({ events = KIMI_HOOK_EVENTS, command = '"node" "/app/hooks/kimi-hook.js" --permission-mode=suspect' } = {}) {
+  return events.map((event) => [
+    "[[hooks]]",
+    `event = "${event}"`,
+    `command = '${command}'`,
+    'matcher = ""',
+    "timeout = 30",
+    "",
+  ].join("\n")).join("\n");
+}
 
 const tempDirs = [];
 
@@ -1148,11 +1162,10 @@ describe("checkAgentIntegrations", () => {
       ],
     });
     fs.mkdirSync(legacyDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(legacyDir, "config.toml"),
-      '[[hooks]]\nevent = "Stop"\ncommand = \'"node" "/app/hooks/kimi-hook.js"\'\n',
-      "utf8"
-    );
+    // A COMPLETE healthy legacy install (all events + mode flag) — this test
+    // is about target selection; completeness itself is covered by the
+    // legacy-supplement suite below.
+    fs.writeFileSync(path.join(legacyDir, "config.toml"), kimiLegacyToml(), "utf8");
 
     const detail = runOne(descriptor);
     assert.strictEqual(detail.status, "ok");
@@ -1762,5 +1775,132 @@ describe("findOpenClawPluginEntry", () => {
       findOpenClawPluginEntry(["vendor/openclaw-plugin", absEntry], "openclaw-plugin"),
       absEntry
     );
+  });
+});
+
+// Legacy-supplement checks: the generic command check only asserts "some
+// command exists and its script resolves"; these pin the completeness layer
+// (13 events + consistent --permission-mode flag) that the suspect-default
+// work depends on.
+describe("kimi legacy permission-mode supplement", () => {
+  function kimiDescriptor() {
+    const root = makeTempDir();
+    const legacyDir = path.join(root, ".kimi");
+    const kimiCodeDir = path.join(root, ".kimi-code");
+    return {
+      descriptor: baseDescriptor({
+        agentId: "kimi-cli",
+        marker: "kimi-hook.js",
+        configMode: "toml-text",
+        parentDir: legacyDir,
+        configPath: path.join(legacyDir, "config.toml"),
+        configTargets: [
+          { label: "kimi-code", parentDir: kimiCodeDir, configPath: path.join(kimiCodeDir, "config.toml") },
+          { label: "legacy", parentDir: legacyDir, configPath: path.join(legacyDir, "config.toml") },
+        ],
+      }),
+      legacyDir,
+      kimiCodeDir,
+    };
+  }
+
+  it("a complete argv-mode legacy install stays ok (explicit is a valid user choice too)", () => {
+    const { descriptor, legacyDir } = kimiDescriptor();
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(descriptor.configPath, kimiLegacyToml(), "utf8");
+    assert.strictEqual(runOne(descriptor).status, "ok");
+
+    fs.writeFileSync(
+      descriptor.configPath,
+      kimiLegacyToml({ command: '"node" "/app/hooks/kimi-hook.js" --permission-mode=explicit' }),
+      "utf8"
+    );
+    assert.strictEqual(runOne(descriptor).status, "ok");
+  });
+
+  it("flags the retired env-prefix form even when the active kimi-code target is healthy", () => {
+    const { descriptor, legacyDir, kimiCodeDir } = kimiDescriptor();
+    fs.mkdirSync(kimiCodeDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(kimiCodeDir, "config.toml"),
+      '[[hooks]]\nevent = "PermissionRequest"\ncommand = \'"node" "/app/hooks/kimi-hook.js"\'\nmatcher = ""\ntimeout = 30\n',
+      "utf8"
+    );
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(
+      descriptor.configPath,
+      kimiLegacyToml({ command: 'CLAWD_KIMI_PERMISSION_MODE=suspect "node" "/app/hooks/kimi-hook.js"' }),
+      "utf8"
+    );
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "needs-review");
+    assert.ok(detail.detail.includes("retired env-prefix"));
+    assert.deepStrictEqual(detail.supplementary, { key: "kimi_legacy_mode", value: "stale" });
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "kimi-cli" });
+  });
+
+  it("flags missing --permission-mode flags on an otherwise valid legacy install", () => {
+    const { descriptor, legacyDir } = kimiDescriptor();
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(
+      descriptor.configPath,
+      kimiLegacyToml({ command: '"node" "/app/hooks/kimi-hook.js"' }),
+      "utf8"
+    );
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "needs-review");
+    assert.ok(detail.detail.includes("--permission-mode flag"));
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "kimi-cli" });
+  });
+
+  it("flags an incomplete event set — only-Stop-registered no longer passes as healthy", () => {
+    const { descriptor, legacyDir } = kimiDescriptor();
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(
+      descriptor.configPath,
+      kimiLegacyToml({ events: ["Stop"] }),
+      "utf8"
+    );
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "needs-review");
+    assert.ok(detail.detail.includes("missing hook events"));
+    assert.ok(detail.detail.includes("PreToolUse"));
+  });
+
+  it("flags inconsistent mode values across commands", () => {
+    const { descriptor, legacyDir } = kimiDescriptor();
+    fs.mkdirSync(legacyDir, { recursive: true });
+    const mixed = kimiLegacyToml().replace(
+      "--permission-mode=suspect'",
+      "--permission-mode=explicit'"
+    );
+    fs.writeFileSync(descriptor.configPath, mixed, "utf8");
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "needs-review");
+    assert.ok(detail.detail.includes("inconsistent --permission-mode"));
+  });
+
+  it("never masks a primary finding and skips when legacy carries no Clawd hooks", () => {
+    const { descriptor, legacyDir, kimiCodeDir } = kimiDescriptor();
+    // Primary finding: legacy active, config missing entirely.
+    fs.mkdirSync(legacyDir, { recursive: true });
+    const missing = runOne(descriptor);
+    assert.strictEqual(missing.status, "not-connected");
+
+    // kimi-code healthy + legacy dir exists but has no Clawd hooks: the
+    // supplement must not invent a warning for a deliberate non-install.
+    fs.mkdirSync(kimiCodeDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(kimiCodeDir, "config.toml"),
+      '[[hooks]]\nevent = "PermissionRequest"\ncommand = \'"node" "/app/hooks/kimi-hook.js"\'\nmatcher = ""\ntimeout = 30\n',
+      "utf8"
+    );
+    fs.writeFileSync(descriptor.configPath, 'default_model = "kimi-for-coding"\n', "utf8");
+    const clean = runOne(descriptor);
+    assert.strictEqual(clean.status, "ok");
   });
 });

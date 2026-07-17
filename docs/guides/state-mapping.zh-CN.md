@@ -33,7 +33,7 @@ Kimi Code CLI（Kimi-CLI）现已采用 hook-only 集成（`~/.kimi/config.toml`
 | SessionStart | idle |
 | SessionEnd | 删除会话；无其他 live 会话时回到 idle |
 | UserPromptSubmit | thinking |
-| PreToolUse | 默认映射到 working。只有在 payload 中出现明确审批信号（`permission_required` / `requires_approval` / `waiting_for_approval` / `is_permission_request`）时，才会切到 permission 类动画。持久化模式开关：`CLAWD_KIMI_PERMISSION_MODE=explicit`（默认，仅显式信号触发 notification）或 `CLAWD_KIMI_PERMISSION_MODE=suspect`（对 gated tool 使用延迟启发式判断）。安装脚本（`npm run install:kimi-hooks` 以及启动时自动同步）会把这个值写进 `~/.kimi/config.toml` 中每个 Kimi hook 的 `command` 字段，所以重启 Clawd 后仍会保留。其他可选开关：`CLAWD_KIMI_PERMISSION_IMMEDIATE=1` 可对权限工具强制立即映射；`CLAWD_KIMI_PERMISSION_SUSPECT=1`（旧别名）只对当前进程开启 suspect mode；`CLAWD_KIMI_PERMISSION_SUSPECT_MS=<ms>` 可调 suspect 窗口；`CLAWD_KIMI_DISABLE_PRETOOL_PERMISSION=1` 会在开启可选模式时仍保持 explicit-only 行为。 |
+| PreToolUse | 默认映射到 working。payload 携带明确审批信号（`permission_required` / `requires_approval` / `waiting_for_approval` / `is_permission_request`）时始终立即切到 permission 类动画。在此之外，持久化模式决定门控工具的处理方式：**`suspect`（安装器默认）**启用延迟启发式——suspect 窗口内没等到 `PostToolUse` 就认定 Kimi 阻塞在审批 TUI 上并弹出提示；`explicit` 仅响应显式信号（现行 kimi-cli 从不发出，等于不弹卡）。安装脚本（`npm run install:kimi-hooks` 及启动时自动同步）把模式以 `--permission-mode=<mode>` 参数持久化到 `~/.kimi/config.toml` 的 `command` 字段，重新同步时保留既有选择。运行时环境变量优先级高于持久化参数：`CLAWD_KIMI_PERMISSION_MODE=explicit\|suspect`（最高优先级）；`CLAWD_KIMI_PERMISSION_IMMEDIATE=1` 对门控工具强制立即映射；`CLAWD_KIMI_PERMISSION_SUSPECT=1`（旧别名）只对当前进程开启 suspect；`CLAWD_KIMI_PERMISSION_SUSPECT_MS=<ms>` 可调 suspect 窗口；`CLAWD_KIMI_DISABLE_PRETOOL_PERMISSION=1` 无论其他开关如何都保持 explicit-only。排队的门控调用由每会话的门控台账跟踪：每答复一个审批，就会为下一个待审批重新弹卡。 |
 | PostToolUse | working |
 | PostToolUseFailure | error |
 | Stop | attention |

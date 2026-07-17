@@ -89,11 +89,18 @@ function normalizePermissionMode(value) {
   return null;
 }
 
-// Extract any existing CLAWD_KIMI_PERMISSION_MODE=... prefix from Clawd-owned
-// hook command lines in config.toml. Used as a fallback when the caller did
-// not pass an explicit mode AND no env var is set — without this, the startup
-// auto-sync would silently strip the prefix written by a previous install,
-// breaking the "persistent mode" promise documented in setup-guide.md.
+// Extract any persisted permission mode from Clawd-owned hook command lines
+// in config.toml. Two historical forms are recognized:
+//   - current:  `... kimi-hook.js" --permission-mode=<mode>` (argv suffix)
+//   - legacy:   `CLAWD_KIMI_PERMISSION_MODE=<mode> "node" "...kimi-hook.js"`
+//     (POSIX env prefix — silently dead on Windows, where both Kimi
+//     generations execute hooks through a real shell; kept ONLY as an
+//     extraction source so migration preserves the user's choice while the
+//     writer below re-emits the argv form).
+// Used as a fallback when the caller did not pass an explicit mode AND no env
+// var is set — without this, the startup auto-sync would silently strip the
+// mode written by a previous install, breaking the "persistent mode" promise
+// documented in setup-guide.md.
 function extractExistingPermissionMode(content) {
   if (typeof content !== "string" || !content) return null;
   // Match both quoting styles. The double-quoted branch must allow `\"` inside
@@ -108,9 +115,14 @@ function extractExistingPermissionMode(content) {
       ? unescapeTomlDoubleQuotedCommand(match[1])
       : (match[2] || "");
     if (!value.includes(MARKER)) continue;
-    const modeMatch = value.match(/CLAWD_KIMI_PERMISSION_MODE=([A-Za-z]+)/);
-    if (modeMatch) {
-      const normalized = normalizePermissionMode(modeMatch[1]);
+    const argvMatch = value.match(/--permission-mode=([A-Za-z]+)/);
+    if (argvMatch) {
+      const normalized = normalizePermissionMode(argvMatch[1]);
+      if (normalized) return normalized;
+    }
+    const prefixMatch = value.match(/CLAWD_KIMI_PERMISSION_MODE=([A-Za-z]+)/);
+    if (prefixMatch) {
+      const normalized = normalizePermissionMode(prefixMatch[1]);
       if (normalized) return normalized;
     }
   }
@@ -131,6 +143,38 @@ function findKimiHookCommands(content, marker = MARKER) {
     if (value.includes(marker)) commands.push(value);
   }
   return commands;
+}
+
+// List the event names of every Clawd-owned [[hooks]] block (command carries
+// the marker). Doctor uses this to assert the legacy install is COMPLETE —
+// "some command exists and parses" is not enough when a partial write or a
+// hand-edit dropped half the events (a config where only Stop survives would
+// otherwise pass as healthy).
+function listClawdKimiHookEvents(content, marker = MARKER) {
+  if (typeof content !== "string" || !content) return [];
+  const HEADER_RE = /^\s*\[\[?[^\]]+\]\]?\s*(?:#.*)?$/;
+  const HOOKS_HEADER_RE = /^\s*\[\[hooks\]\]\s*(?:#.*)?$/;
+  const markerRegex = new RegExp(
+    `command\\s*=\\s*"(?:\\\\.|[^"\\\\])*${marker}(?:\\\\.|[^"\\\\])*"|command\\s*=\\s*'[^']*${marker}[^']*'`
+  );
+  const events = [];
+  const lines = content.split("\n");
+  let i = 0;
+  while (i < lines.length) {
+    if (HOOKS_HEADER_RE.test(lines[i])) {
+      let j = i + 1;
+      while (j < lines.length && !HEADER_RE.test(lines[j])) j++;
+      const block = lines.slice(i, j).join("\n");
+      if (markerRegex.test(block)) {
+        const eventMatch = block.match(/^\s*event\s*=\s*"([^"]*)"/m);
+        if (eventMatch) events.push(eventMatch[1]);
+      }
+      i = j;
+    } else {
+      i++;
+    }
+  }
+  return events;
 }
 
 // Remove every [[hooks]] block whose command references Clawd's kimi-hook.js.
@@ -242,10 +286,9 @@ function targetDefinition(flavor, settingsPath) {
       parentDir: path.dirname(configPath),
       events: KIMI_CODE_HOOK_EVENTS,
       // Native PermissionRequest/PermissionResult events replace the
-      // suspect/explicit heuristic, and the POSIX `VAR=x cmd` prefix does not
-      // execute under cmd.exe (kimi-code runs hooks via `spawn(shell:true)`,
-      // i.e. %COMSPEC% on Windows) — so no mode prefix on this target, ever.
-      supportsModePrefix: false,
+      // suspect/explicit heuristic entirely — no permission-mode flag on this
+      // target, ever (the hook's classifyPreTool stays "none" without one).
+      supportsPermissionMode: false,
       // hooks-only file. MUST NOT contain default_model: a dangling model
       // alias makes the CLI's next session-create fail.
       createConfigContent: "",
@@ -258,7 +301,7 @@ function targetDefinition(flavor, settingsPath) {
     settingsPath: configPath,
     parentDir: path.dirname(configPath),
     events: KIMI_HOOK_EVENTS,
-    supportsModePrefix: true,
+    supportsPermissionMode: true,
     createConfigContent: 'default_model = "kimi-for-coding"\n',
     validateBlocks: false,
   };
@@ -297,27 +340,38 @@ function registerKimiHooksAtTarget(target, options = {}) {
     || extractExistingNodeBinFromCommands(findKimiHookCommands(content, MARKER), MARKER)
     || "node";
 
-  // Priority: explicit caller option → env var → mode already baked into the
-  // existing config.toml hook command. The fallback is critical for the
-  // startup auto-sync path: Clawd launches without the env var, sees an
-  // existing install that was done with CLAWD_KIMI_PERMISSION_MODE=suspect,
-  // and MUST preserve that prefix so the user's persistent choice survives.
+  // Priority: explicit caller option → env var → mode already persisted in
+  // the existing config.toml hook command (either the current argv form or
+  // the retired env-prefix form) → DEFAULT SUSPECT. The persisted fallback is
+  // critical for the startup auto-sync path: Clawd launches without the env
+  // var, sees an existing install whose user chose a mode, and MUST preserve
+  // that choice — an explicit-mode user is never flipped to suspect. The
+  // suspect default exists because current kimi-cli emits no explicit
+  // permission fields on PreToolUse (verified on 1.37 and 1.49): without the
+  // heuristic the passive cue never fires at all for legacy users.
   // (Legacy target only — see targetDefinition for why kimi-code never gets one.)
-  let modePrefix = "";
-  if (target.supportsModePrefix) {
+  let modeSuffix = "";
+  if (target.supportsPermissionMode) {
     const providedMode = normalizePermissionMode(
       options.permissionMode !== undefined
         ? options.permissionMode
         : process.env.CLAWD_KIMI_PERMISSION_MODE
     );
-    const configuredMode = providedMode || extractExistingPermissionMode(content);
-    modePrefix = configuredMode ? `CLAWD_KIMI_PERMISSION_MODE=${configuredMode} ` : "";
+    const configuredMode = providedMode
+      || extractExistingPermissionMode(content)
+      || MODE_SUSPECT;
+    // argv suffix, never a POSIX env prefix: both Kimi generations execute
+    // hooks through a real shell on Windows (create_subprocess_shell /
+    // %COMSPEC%), where `VAR=x cmd` silently does not execute. Any legacy
+    // prefix in the existing config is consumed by extractExistingPermissionMode
+    // above and re-emitted in this form.
+    modeSuffix = ` --permission-mode=${configuredMode}`;
   }
   // WSL: plain unquoted form — quoted-without-shell breaks naive-split hook
   // runners (see json-utils formatNodeHookCommand); WSL paths have no spaces.
   const desiredCommand = resolveWslDistroEnv()
-    ? `${modePrefix}${nodeBin} ${hookScript}`
-    : `${modePrefix}"${nodeBin}" "${hookScript}"`;
+    ? `${nodeBin} ${hookScript}${modeSuffix}`
+    : `"${nodeBin}" "${hookScript}"${modeSuffix}`;
 
   const hookBlocks = buildHookBlocks(target.events, desiredCommand);
   if (target.validateBlocks) validateKimiCodeHookBlocks(hookBlocks, target.events);
@@ -502,6 +556,7 @@ module.exports = {
   normalizePermissionMode,
   extractExistingPermissionMode,
   findKimiHookCommands,
+  listClawdKimiHookEvents,
   stripClawdKimiHookBlocks,
   validateKimiCodeHookBlocks,
   aggregateRegisterResults,

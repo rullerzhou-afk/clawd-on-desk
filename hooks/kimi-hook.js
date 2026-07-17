@@ -77,12 +77,52 @@ function resolvePermissionTools() {
 
 const PERMISSION_TOOLS = resolvePermissionTools();
 
-function readPermissionMode() {
-  const raw = typeof process.env.CLAWD_KIMI_PERMISSION_MODE === "string"
-    ? process.env.CLAWD_KIMI_PERMISSION_MODE.trim().toLowerCase()
-    : "";
+function normalizePermissionModeValue(value) {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (raw === MODE_EXPLICIT || raw === MODE_SUSPECT) return raw;
   return null;
+}
+
+function readPermissionMode() {
+  return normalizePermissionModeValue(process.env.CLAWD_KIMI_PERMISSION_MODE);
+}
+
+// Persistent mode switch written into the hook command line by the installer
+// (`--permission-mode=suspect`). argv instead of an env prefix because both
+// Kimi generations execute hooks through a real shell on Windows
+// (create_subprocess_shell / %COMSPEC%), where the POSIX `VAR=x cmd` form
+// silently does not execute. Runtime env vars stay the higher-priority escape
+// hatch — see classifyPreTool.
+let argvPermissionMode = null;
+
+function setArgvPermissionMode(value) {
+  argvPermissionMode = normalizePermissionModeValue(value);
+  return argvPermissionMode;
+}
+
+// Splits argv tail into { event, mode } — the event name is the first
+// non-flag token (kimi-cli itself passes none; the event then comes from the
+// stdin payload), `--permission-mode=<x>` sets the persistent mode, and any
+// other `--` flag is ignored so a future installer flag can never be
+// misparsed as an event name and silently kill the hook.
+function parseHookArgv(argvTail) {
+  const parsed = { event: "", mode: null, ignoredFlags: [] };
+  for (const arg of Array.isArray(argvTail) ? argvTail : []) {
+    if (typeof arg !== "string" || !arg) continue;
+    if (arg.startsWith("--")) {
+      const modeMatch = arg.match(/^--permission-mode=(.*)$/);
+      if (modeMatch) {
+        const normalized = normalizePermissionModeValue(modeMatch[1]);
+        if (normalized) parsed.mode = normalized;
+        else parsed.ignoredFlags.push(arg);
+      } else {
+        parsed.ignoredFlags.push(arg);
+      }
+      continue;
+    }
+    if (!parsed.event) parsed.event = arg;
+  }
+  return parsed;
 }
 
 function isTruthySignal(value) {
@@ -300,14 +340,21 @@ function classifyPreTool(event, payload) {
   // Legacy behavior: any permission-gated PreToolUse flips notification
   // instantly. Useful for folks who want the visual cue no matter what.
   if (process.env.CLAWD_KIMI_PERMISSION_IMMEDIATE === "1") return "immediate";
-  // Persistent mode switch (written into ~/.kimi/config.toml hook command).
-  const mode = readPermissionMode();
-  if (mode === MODE_SUSPECT) return "suspect";
-  if (mode === MODE_EXPLICIT) return "none";
-  // Optional suspect mode: manual opt-in.
+  // Runtime env escape hatch: always beats the persisted argv mode.
+  const envMode = readPermissionMode();
+  if (envMode === MODE_SUSPECT) return "suspect";
+  if (envMode === MODE_EXPLICIT) return "none";
+  // Optional suspect mode: manual opt-in (env level, still beats argv).
   if (process.env.CLAWD_KIMI_PERMISSION_SUSPECT === "1") return "suspect";
-  // Default: explicit-only mode to avoid false positives for long-running
-  // auto-approved tools (sleep/npm/network I/O).
+  // Persistent mode switch baked into the hook command line by the installer
+  // (legacy flavor defaults to `--permission-mode=suspect` since the
+  // batched-approvals work — current kimi-cli never emits explicit permission
+  // fields, so explicit-only was a cue that never fired).
+  if (argvPermissionMode === MODE_SUSPECT) return "suspect";
+  if (argvPermissionMode === MODE_EXPLICIT) return "none";
+  // Default without any switch: explicit-only mode to avoid false positives
+  // for long-running auto-approved tools (sleep/npm/network I/O). Kimi Code
+  // installs carry no mode flag and land here by design.
   return "none";
 }
 
@@ -443,7 +490,12 @@ function buildStateBody(event, payload, resolve) {
 }
 
 function main() {
-  const eventFromArgv = process.argv[2];
+  const parsedArgv = parseHookArgv(process.argv.slice(2));
+  if (parsedArgv.mode) setArgvPermissionMode(parsedArgv.mode);
+  if (parsedArgv.ignoredFlags.length) {
+    appendHookDebug({ at: new Date().toISOString(), ignored_flags: parsedArgv.ignoredFlags });
+  }
+  const eventFromArgv = parsedArgv.event;
 
   const config = getPlatformConfig();
   const agentNames = {
@@ -504,6 +556,8 @@ module.exports = {
   readToolName,
   hasKeywordPermissionSignal,
   readPermissionMode,
+  parseHookArgv,
+  setArgvPermissionMode,
   MODE_EXPLICIT,
   MODE_SUSPECT,
   readHookDebugMaxBytes,

@@ -18,7 +18,12 @@ const {
   hasUserPermissionHookInSettingsJson,
   isCopilotPermissionRegistrable,
 } = require("../../hooks/copilot-install");
-const { findKimiHookCommands } = require("../../hooks/kimi-install");
+const {
+  findKimiHookCommands,
+  listClawdKimiHookEvents,
+  normalizePermissionMode: normalizeKimiPermissionMode,
+  KIMI_HOOK_EVENTS,
+} = require("../../hooks/kimi-install");
 const { parseTomlSections: parseCodewhaleTomlSections } = require("../../hooks/codewhale-install");
 const { getAgentDescriptors } = require("./agent-descriptors");
 const { commandContainsFragment, validateHookCommand } = require("./agent-node-bin-parser");
@@ -172,6 +177,17 @@ function withClaudeHookGuardNotice(detail, descriptor, options) {
 }
 
 function withAgentFixAction(detail, descriptor) {
+  if (
+    descriptor.agentId === "kimi-cli"
+    && detail.status === "needs-review"
+    && detail.supplementary
+    && detail.supplementary.key === "kimi_legacy_mode"
+  ) {
+    // Stale legacy install (missing events / retired env-prefix mode /
+    // missing --permission-mode flag): re-running the integration installer
+    // strips and rewrites every Clawd block in the current canonical form.
+    return { ...detail, fixAction: { type: "agent-integration", agentId: descriptor.agentId } };
+  }
   if (!descriptor.autoInstall || !REPAIRABLE_AGENT_STATUSES.has(detail.status)) return detail;
   if (
     descriptor.agentId === "gemini-cli"
@@ -1832,8 +1848,76 @@ function checkAgent(descriptor, options) {
     });
   }
 
+  if (descriptor.agentId === "kimi-cli") {
+    detail = withKimiLegacyPermissionModeSupplement(detail, descriptor, options);
+  }
   detail = withClaudeHookGuardNotice(detail, descriptor, options);
   return withAgentFixAction(withAgentBubbleNote(detail, prefs, descriptor.agentId), descriptor);
+}
+
+// #563 follow-up: with both Kimi generations installed, the primary check
+// judges the first existing configTarget (kimi-code) and the legacy
+// ~/.kimi/config.toml is never inspected — yet that is the config the Python
+// kimi-cli actually reads. And even when legacy IS the active target, the
+// generic command check only asserts "some command exists and its script
+// resolves". Since the suspect default ships as an argv flag on the hook
+// command (--permission-mode), a stale legacy install — retired env-prefix
+// form (not executed on Windows), missing flag, or missing events — silently
+// means "no cues at all" for legacy sessions. Assert completeness here
+// whenever the legacy directory carries Clawd hooks, whichever target the
+// primary check judged.
+function withKimiLegacyPermissionModeSupplement(detail, descriptor, options) {
+  // Never mask a primary finding — the supplement only tightens an "ok".
+  if (detail.status !== "ok") return detail;
+  const targets = Array.isArray(descriptor.configTargets) ? descriptor.configTargets : [];
+  const legacyTarget = targets.find((target) => target.label === "legacy");
+  if (!legacyTarget || !dirExists(options.fs, legacyTarget.parentDir)) return detail;
+  if (!fileExists(options.fs, legacyTarget.configPath)) return detail;
+  let text;
+  try {
+    text = options.fs.readFileSync(legacyTarget.configPath, "utf8");
+  } catch {
+    // Unreadable legacy config: if legacy is the active target the primary
+    // check already surfaced it; if kimi-code is active, don't turn a read
+    // hiccup into a warning.
+    return detail;
+  }
+  const commands = findKimiHookCommands(text, descriptor.marker);
+  // No Clawd hooks on legacy at all: connection status is the primary
+  // check's business (when legacy is active) or a deliberate non-install.
+  if (!commands.length) return detail;
+
+  const issues = [];
+  const registeredEvents = new Set(listClawdKimiHookEvents(text, descriptor.marker));
+  const missingEvents = KIMI_HOOK_EVENTS.filter((event) => !registeredEvents.has(event));
+  if (missingEvents.length) {
+    issues.push(`missing hook events: ${missingEvents.join(", ")}`);
+  }
+  const modes = commands.map((command) => {
+    const argvMatch = command.match(/--permission-mode=([A-Za-z]+)/);
+    return argvMatch ? normalizeKimiPermissionMode(argvMatch[1]) : null;
+  });
+  const missingModeCount = modes.filter((mode) => !mode).length;
+  if (missingModeCount > 0) {
+    issues.push(
+      /CLAWD_KIMI_PERMISSION_MODE=/.test(commands.join("\n"))
+        ? "hook commands still use the retired env-prefix mode form (never executed on Windows)"
+        : `${missingModeCount} hook command(s) missing the --permission-mode flag`
+    );
+  }
+  const distinctModes = new Set(modes.filter(Boolean));
+  if (distinctModes.size > 1) {
+    issues.push(`inconsistent --permission-mode values: ${[...distinctModes].join(", ")}`);
+  }
+  if (!issues.length) return detail;
+  return {
+    ...detail,
+    status: "needs-review",
+    level: "warning",
+    detail: `${legacyTarget.configPath}: ${issues.join("; ")} — Fix rewrites Clawd's Kimi hooks in the current format`,
+    supplementary: { key: "kimi_legacy_mode", value: "stale" },
+    kimiLegacyConfigPath: legacyTarget.configPath,
+  };
 }
 
 function summarize(details) {
