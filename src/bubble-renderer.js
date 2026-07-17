@@ -938,7 +938,10 @@ function show(data) {
         suggestionsContainer.appendChild(btn);
       });
     }
-    renderRegularTerminalFallback(data.lang);
+    // Hermes cards get no terminal fallback: its protocol can't express
+    // "no decision, user answers in the terminal" — our 204 fails open
+    // (= allow) past the plugin's permission gate. See handleDecide/isHermes.
+    if (!data.isHermes) renderRegularTerminalFallback(data.lang);
   }
   // Re-enable buttons
   btnAllow.disabled = false;

@@ -114,13 +114,13 @@ function createHarness() {
 }
 
 describe("permission bubble terminal fallback (issue #689)", () => {
+  // The bubble payload (buildPermissionBubblePayload) only forwards the
+  // provenance flags isElicitation/isOpencode/isAntigravity/isCodex/isHermes.
+  // Claude Code, CodeBuddy, Qwen, Copilot and other CC-protocol forks all
+  // reach the renderer as a flagless default card — one case covers them.
   for (const [name, data] of [
-    ["Claude Code", { toolName: "Bash" }],
-    ["CodeBuddy", { toolName: "Bash" }],
-    ["Codex", { toolName: "Bash", isCodex: true }],
-    ["Qwen", { toolName: "Bash", isQwenCode: true }],
-    ["Copilot", { toolName: "Bash", isCopilotCli: true }],
-    ["Hermes", { toolName: "Bash", isHermes: true }],
+    ["default cards (Claude Code / CC-protocol forks)", { toolName: "Bash" }],
+    ["Codex interactive", { toolName: "Bash", isCodex: true }],
   ]) {
     it(`shows exactly one fallback for ${name} and emits only deny-and-focus`, () => {
       const harness = createHarness();
@@ -133,6 +133,14 @@ describe("permission bubble terminal fallback (issue #689)", () => {
       assert.deepStrictEqual(harness.decisions, ["deny-and-focus"]);
     });
   }
+
+  it("does not offer the fallback on Hermes cards (204 no-decision fails open = allow)", () => {
+    const harness = createHarness();
+    harness.show({ toolName: "Bash", isHermes: true });
+
+    assert.strictEqual(harness.terminalButtons().length, 0);
+    assert.deepStrictEqual(harness.decisions, []);
+  });
 
   it("shows exactly one fallback for opencode and preserves its Always action", () => {
     const harness = createHarness();

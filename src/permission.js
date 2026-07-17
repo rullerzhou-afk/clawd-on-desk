@@ -909,6 +909,11 @@ function buildPermissionBubblePayload(permEntry) {
     // Provenance for the renderer: lets the bubble relabel Codex MCP tool calls
     // (issue #445) without touching approval semantics. Mirrors the flags above.
     isCodex: permEntry.isCodex || false,
+    // Hermes must NOT get the go-to-terminal fallback: its wire protocol has
+    // no "no decision, user answers in the terminal" shape — the plugin treats
+    // our 204 no-decision exactly like allow (fail-open past the opt-in
+    // CLAWD_HERMES_PERMISSION_TOOLS gate). See handleDecide's isHermes branch.
+    isHermes: permEntry.isHermes || false,
     // Display-only detail for the passive Kimi notify card: the real tool
     // name plus the whitelisted tool_input subset let the renderer reuse the
     // standard cue path (formatDetail) while the card stays dismiss-only.
@@ -1232,14 +1237,17 @@ function cancelRemoteApproval(permEntry, options = {}) {
 }
 
 // "Go to terminal" path: drop the bubble, abort any in-flight Telegram prompt,
-// hand focus back to the agent terminal. The HTTP res is intentionally NOT
-// answered here — the original socket-close abortHandler stays registered so
-// the agent's own disconnect drives final cleanup. That assumption only holds
-// when there's a desktop bubble the user is looking at; a remote-only entry
-// (bubbles disabled, decided over Feishu/Telegram) has no local UI to fall
-// back on, so leaving res unanswered would hang the hook until its own
-// timeout. Route those through the same no-decision/destroy path the other
-// remote-only "go to terminal" branches already use.
+// destroy the hook socket WITHOUT writing a decision, hand focus back to the
+// agent terminal. The destroy is what actually frees the terminal: CC and
+// CodeBuddy block on the PermissionRequest HTTP hook (600s) and show nothing
+// in the terminal until it finishes — a dropped connection is a non-blocking
+// hook error, so they immediately fall back to their native chat prompt
+// without treating it as a deny (same mechanism as the autoclose no-decision
+// path and the bypass gate in server-route-permission.js). For opencode the
+// destroy is a no-op behind the writableEnded guard: its fire-and-forget POST
+// was 200-ACKed on arrival and the native TUI prompt owns the request.
+// A remote-only entry (bubbles disabled, decided over Feishu/Telegram) has no
+// desktop bubble to drop — route it through the shared no-decision path.
 function dismissPermissionForTerminal(perm) {
   if (!perm) return;
   if (perm.remoteOnly) {
@@ -1263,6 +1271,13 @@ function dismissPermissionForTerminal(perm) {
     pendingPermissions.splice(idx, 1);
     notifyPermissionsChanged("deny-and-focus");
     notifyPermissionResolved(perm, "deny-and-focus");
+  }
+  const { res, abortHandler } = perm;
+  if (res && abortHandler) {
+    try { res.removeListener("close", abortHandler); } catch {}
+  }
+  if (res && !res.writableEnded && !res.destroyed) {
+    try { res.destroy(); } catch {}
   }
   if (perm.bubble && !perm.bubble.isDestroyed()) {
     perm.bubble.webContents.send("permission-hide");
@@ -1989,6 +2004,13 @@ function handleDecide(event, behavior) {
       resolvePermissionEntry(perm, "allow");
       return;
     }
+    // ⚠ Hermes no-decision is NOT neutral: the plugin maps our 204 to None,
+    // which its pre_tool_call gate treats exactly like allow — the tool runs
+    // (fail-open past CLAWD_HERMES_PERMISSION_TOOLS). The renderer therefore
+    // never offers deny-and-focus on Hermes cards (isHermes in the bubble
+    // payload); this branch only backstops unknown/legacy actions. Do not add
+    // a Hermes UI entry point for deny-and-focus until the plugin protocol
+    // grows a real "hand back to terminal" answer.
     resolvePermissionEntry(perm, "no-decision", `Unsupported Hermes bubble action: ${String(behavior)}`);
     if (behavior === "deny-and-focus") {
       ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
@@ -2339,6 +2361,9 @@ return {
   addPendingPermission, removePendingPermission,
   maybeStartRemoteApproval,
   dismissPermissionForTerminal,
+  // Test seam: lets wire-level tests pin which provenance flags reach the
+  // renderer (isHermes suppresses the go-to-terminal action — issue #689).
+  buildPermissionBubblePayload,
   handleBubbleHeight, handleDecide, handleImeEditing, handleBubbleRendererGone, cleanup,
   showCodexNotifyBubble, clearCodexNotifyBubbles,
   showKimiNotifyBubble, clearKimiNotifyBubbles,
