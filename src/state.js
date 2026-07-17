@@ -1494,8 +1494,22 @@ function updateSession(sessionId, state, event, opts = {}) {
           permissionGateId,
           buildKimiGateDetail(toolName, permissionAction, permissionCommand, permissionToolInput)
         );
+        // Same invariant as the suspect path: the cue must describe what the
+        // terminal actually blocks on — the OLDEST outstanding gate. Batched
+        // synthesized requests all land up front, so refreshing the card with
+        // the newest arrival would show a tool whose prompt hasn't appeared
+        // yet.
+        const gates = kimiPermissionGateLedgers.get(sessionId);
+        const headDetail = gates && gates.length
+          ? gates[0].detail
+          : buildKimiGateDetail(toolName, permissionAction, permissionCommand, permissionToolInput);
+        startKimiPermissionPoll(sessionId, headDetail);
+      } else {
+        // Native Kimi Code: a PermissionRequest fires when its prompt really
+        // is on screen, so the newest request IS what the terminal blocks on —
+        // refresh-to-newest stays correct here.
+        startKimiPermissionPoll(sessionId, { toolName, permissionAction, permissionCommand, permissionToolInput });
       }
-      startKimiPermissionPoll(sessionId, { toolName, permissionAction, permissionCommand, permissionToolInput });
     }
     return;
   }
@@ -2087,6 +2101,12 @@ function clearSessionsByAgent(agentId) {
         ctx.clearKimiNotifyBubbles(id, "kimi-orphan-suspect-cleared");
       }
     }
+    // Gate ledgers can hold the same orphans (immediate-mode sessions never
+    // enter the `sessions` Map either). Today's callers pair this function
+    // with dismissPermissionsByAgent → disposeAllKimiPermissionState, which
+    // would clear them anyway — but this function must not depend on that
+    // pairing to keep the ledger from re-arming a cue for a dead session.
+    kimiPermissionGateLedgers.clear();
   }
   if (removed > 0) {
     const resolved = resolveDisplayState();

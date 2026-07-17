@@ -469,7 +469,7 @@ describe("Kimi permission gate ledger (batched approvals)", () => {
     assert.notStrictEqual(api.getCurrentState(), "notification");
   });
 
-  it("synthesized immediate PermissionRequests join the ledger and re-arm after each answer", () => {
+  it("synthesized immediate PermissionRequests join the ledger, keep the cue on the queue head, and re-arm after each answer", () => {
     api.updateSession("kimi-a", "notification", "PermissionRequest", {
       agentId: "kimi-cli",
       permissionGateOpen: true,
@@ -477,25 +477,49 @@ describe("Kimi permission gate ledger (batched approvals)", () => {
       toolName: "shell",
       permissionCommand: "npm install",
     });
+    assert.strictEqual(ctx._kimiNotifyShown.length, 1);
+    assert.strictEqual(ctx._kimiNotifyDetails[0].toolName, "shell");
+
+    // Batched request #2 lands while the terminal still blocks on #1: the
+    // refreshed card must KEEP describing the queue head (t1), not flip to
+    // the newest arrival.
     api.updateSession("kimi-a", "notification", "PermissionRequest", {
       agentId: "kimi-cli",
       permissionGateOpen: true,
       permissionGateId: "t2",
       toolName: "write_file",
     });
-    // Immediate mode shows right away (dedupe/refresh is the bubble layer's
-    // job — here we just count show calls).
     assert.strictEqual(ctx._kimiNotifyShown.length, 2);
+    assert.strictEqual(ctx._kimiNotifyDetails[1].toolName, "shell");
+    assert.strictEqual(ctx._kimiNotifyDetails[1].permissionCommand, "npm install");
 
     gatedPost("kimi-a", "t1");
     mock.timers.tick(1000);
-    // Re-armed cue carries the remaining gate's detail.
+    // Re-armed cue advances to the remaining gate's detail.
     assert.strictEqual(ctx._kimiNotifyShown.length, 3);
     assert.strictEqual(ctx._kimiNotifyDetails[2].toolName, "write_file");
 
     gatedPost("kimi-a", "t2");
     mock.timers.tick(5000);
     assert.strictEqual(ctx._kimiNotifyShown.length, 3);
+  });
+
+  it("native Kimi Code PermissionRequests keep refresh-to-newest semantics (no gate marker)", () => {
+    api.updateSession("kimi-a", "notification", "PermissionRequest", {
+      agentId: "kimi-cli",
+      toolName: "Bash",
+      permissionCommand: "echo one",
+    });
+    // Native events fire when their prompt is really on screen — a second
+    // request means the terminal moved on, so the card follows the newest.
+    api.updateSession("kimi-a", "notification", "PermissionRequest", {
+      agentId: "kimi-cli",
+      toolName: "Write",
+      permissionAction: "Writing: b.txt",
+    });
+    assert.strictEqual(ctx._kimiNotifyShown.length, 2);
+    assert.strictEqual(ctx._kimiNotifyDetails[1].toolName, "Write");
+    assert.strictEqual(ctx._kimiNotifyDetails[1].permissionAction, "Writing: b.txt");
   });
 
   it("native Kimi Code PermissionRequests (no gate marker) stay out of the ledger", () => {
