@@ -3047,6 +3047,10 @@ const _menuCtx = {
   set contextMenuOwner(v) { contextMenuOwner = v; },
   get contextMenu() { return contextMenu; },
   set contextMenu(v) { contextMenu = v; },
+  // Gravity checkbox: reads the committed pref; writes go through the
+  // settings controller so validation and effects stay in one path.
+  get gravityEnabled() { return _settingsController.get("gravity") === true; },
+  set gravityEnabled(v) { _settingsController.applyUpdate("gravity", !!v); },
   enableDoNotDisturb: () => enableDoNotDisturb(),
   disableDoNotDisturb: () => disableDoNotDisturb(),
   enterMiniViaMenu: () => {
@@ -3177,6 +3181,14 @@ const SETTINGS_MIRROR_SETTERS = {
   allowEdgePinning: (v) => { allowEdgePinningCached = v; }, disableMiniMode: (v) => { disableMiniModeCached = v; }, keepSizeAcrossDisplays: (v) => { keepSizeAcrossDisplaysCached = v; resetKeepSizeFrozen(); },
   fullscreenOverlay: (v) => { fullscreenOverlayCached = v; },
   freeRoam: (v) => { _roam.setEnabled(v); },
+  // One switch for toss physics + the ledge system. Validation lives in
+  // settings-actions.js updateRegistry; this mirror setter runs post-commit
+  // like the others (idempotent alongside the subscribeKey handler).
+  gravity: (v) => {
+    const on = v === true;
+    _gravity.setEnabled(on);
+    if (on) { _ledges.start(); } else { _ledges.setStanding(null); _ledges.stop(); }
+  },
   textScale: (v) => { textScale = v; textScalePreview = null; },
   textScaleByDisplay: (v) => { textScaleByDisplay = v; textScalePreview = null; },
 };
@@ -3603,6 +3615,9 @@ function createWindow() {
     statPath: (p) => fs.promises.stat(p),
     openTerminalAt: (dir) => openTerminalAt(dir),
     dropLog: (message) => console.log(`Clawd: ${message}`),
+    // Lazy: _gravity is composed later in this scope, after the roam/ledges
+    // modules it collaborates with.
+    getGravity: () => _gravity,
   });
 
   registerPermissionIpc({
@@ -3759,6 +3774,11 @@ const _miniCtx = {
       ? probe.assetCycleMs
       : null;
   },
+  // The exit parabola restores the pre-mini position, which may be mid-air —
+  // drop the pet once it settles. The drag-end IPC path can't do this: it
+  // early-returns while isMiniTransitioning() is still true. (_gravity is
+  // composed later in this scope; the callback only fires long after startup.)
+  onMiniExitSettled: () => setTimeout(() => _gravity.dropIfAirborne(), 60),
 };
 const _mini = require("./mini")(_miniCtx);
 const { enterMiniMode, exitMiniMode, enterMiniViaMenu, miniPeekIn, miniPeekOut,
@@ -3785,12 +3805,84 @@ const _roamCtx = {
   applyState: (state, svgOverride, opts) => _state.applyState(state, svgOverride, opts),
   setState: (state, svgOverride, opts) => _state.setState(state, svgOverride, opts),
   setRoamHeading: (headingLeft) => sendToRenderer("roam-heading", !!headingLeft),
+  // With gravity on, roam becomes a ground walk (floor targets only) so idle
+  // wandering doesn't undo the toss physics; a perched pet strolls along the
+  // ledge segments of the window he is standing on instead.
+  isGroundWalkOnly: () => _gravity.enabled,
+  getStandingLedgeSegs: () => _ledges.getStandingSegs(),
   // #640: hold still while the user types into a bubble text field (macOS)
   isImeEditingActive: () => pendingPermissions.some(
     (p) => p && p.bubble && !p.bubble.isDestroyed() && p.bubble.__clawdMacImeEditing
   ),
 };
 const _roam = require("./roam")(_roamCtx);
+
+// ── Ledges — window top edges the pet can land on (macOS sidecar) ──
+const _ledges = require("./ledges")({
+  getPetWindowBounds,
+  applyPetWindowBounds,
+  syncHitWin: () => syncHitWin(),
+  repositionAnchoredSurfaces: () => repositionAnchoredFloatingSurfaces(),
+  isDragLocked: () => petWindowRuntime.isDragLocked(),
+  getMiniMode: () => _mini.getMiniMode(),
+  getEffectiveCurrentPixelSize,
+});
+
+// ── Gravity — toss physics after drag release ──
+const _gravityCtx = {
+  get win() { return win; },
+  getPetWindowBounds,
+  applyPetWindowBounds,
+  getEffectiveCurrentPixelSize,
+  getNearestWorkArea,
+  getMiniMode: () => _mini.getMiniMode(),
+  get miniTransitioning() { return _mini.getMiniTransitioning(); },
+  isDragLocked: () => petWindowRuntime.isDragLocked(),
+  syncHitWin: () => syncHitWin(),
+  repositionAnchoredSurfaces: () => repositionAnchoredFloatingSurfaces(),
+  repositionBubbles: () => repositionFloatingBubbles(),
+  get bubbleFollowPet() { return bubbleFollowPet; },
+  get pendingPermissions() { return pendingPermissions; },
+  flushRuntimeStateToPrefs: () => flushRuntimeStateToPrefs(),
+  reassertWinTopmost: () => reassertWinTopmost(),
+  sendToRenderer,
+  getLedges: () => _ledges.getLedges(),
+  setStandingLedge: (ledge) => _ledges.setStanding(ledge),
+  isImeEditingActive: () => pendingPermissions.some(
+    (p) => p && p.bubble && !p.bubble.isDestroyed() && p.bubble.__clawdMacImeEditing
+  ),
+};
+const _gravity = require("./gravity")(_gravityCtx);
+_ledges.bindGravity(_gravity);
+
+// Gravity: initialize from prefs and react to toggle changes (mirrors the
+// freeRoam wiring below). The menu checkbox refresh rides the settings effect
+// router's MENU_AFFECTING_KEYS rebuild — no manual buildTrayMenu here.
+_gravity.setEnabled(_settingsController.get("gravity") === true);
+if (_gravity.enabled) {
+  _ledges.start();
+  // Startup: if the pet was left hovering (prefs restored a mid-air
+  // position), drop him once the window exists and the ledge sidecar has had
+  // a first poll — a perched pet adopts his ledge instead of falling through.
+  setTimeout(() => _gravity.dropIfAirborne(), 1500);
+}
+try {
+  _settingsController.subscribeKey("gravity", (value) => {
+    const on = value === true;
+    _gravity.setEnabled(on);
+    if (on) {
+      _ledges.start();
+      // Fall NOW if hovering — small delay so the fresh sidecar can report
+      // ledges first (a perched pet adopts his ledge instead of falling through).
+      setTimeout(() => _gravity.dropIfAirborne(), 450);
+    } else {
+      _ledges.setStanding(null);
+      _ledges.stop();
+    }
+  });
+} catch (err) {
+  console.warn("Clawd: gravity subscribeKey failed:", err && err.message);
+}
 
 // Free roam: initialize from prefs and react to toggle changes
 _roam.setEnabled(_settingsController.get("freeRoam") === true);

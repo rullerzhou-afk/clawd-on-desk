@@ -62,6 +62,9 @@ function registerPetInteractionIpc(options = {}) {
   const statPath = requiredDependency(options.statPath, "statPath");
   const openTerminalAt = requiredDependency(options.openTerminalAt, "openTerminalAt");
   const dropLog = options.dropLog || (() => {});
+  // Lazy accessor: the gravity module is composed after this registration in
+  // main.js.
+  const getGravity = options.getGravity || (() => null);
   const isMacPlatform = options.isMacPlatform != null
     ? !!options.isMacPlatform
     : process.platform === "darwin";
@@ -73,7 +76,11 @@ function registerPetInteractionIpc(options = {}) {
   }
 
   on("show-context-menu", showContextMenu);
-  on("drag-move", () => moveWindowForDrag());
+  on("drag-move", () => {
+    moveWindowForDrag();
+    const gravity = getGravity();
+    if (gravity) gravity.onDragMove();   // sample gesture for throw velocity
+  });
 
   on("pause-cursor-polling", () => {
     setIdlePaused(true);
@@ -90,6 +97,8 @@ function registerPetInteractionIpc(options = {}) {
   on("drag-lock", (_event, locked) => {
     setDragLocked(!!locked);
     if (locked) {
+      const gravity = getGravity();
+      if (gravity) gravity.onDragStart();   // catches a falling pet mid-air
       setMouseOverPet(true);
       beginDragSnapshot();
     } else {
@@ -118,6 +127,12 @@ function registerPetInteractionIpc(options = {}) {
           const clamped = computeDragEndBounds(virtualBounds, size);
           if (clamped) {
             applyPetWindowBounds(clamped);
+          }
+          // A started fall owns the window until the pet rests (gravity
+          // flushes prefs itself on settle); otherwise flush as before.
+          const gravity = getGravity();
+          const fallStarted = !!(gravity && gravity.onDragEnd());
+          if (clamped && !fallStarted) {
             flushRuntimeStateToPrefs();
           }
           reassertWinTopmost();

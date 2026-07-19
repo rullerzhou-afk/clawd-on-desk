@@ -145,6 +145,26 @@ function getRestClampMargins({ height, visibleMargins, allowEdgePinning, bottomI
   return { top: topMargin, bottom: bottomMargin };
 }
 
+// Feet-on-surface inset: theme SVGs reserve a bottom band under the visual
+// feet (drop shadow / breathing room), so a window whose bottom edge rests on
+// a surface leaves the character hovering. Sinking the window by this inset
+// puts the feet visually on the line. Deliberately larger than the content
+// envelope's bottom margin (computeStableVisibleContentMargins), which
+// measures to the shadow's lowest drawn pixel rather than the feet baseline;
+// ratio tuned visually on the built-in themes and clamped so very small /
+// very large pets stay sane.
+const FOOT_REST_RATIO = 0.16;
+const FOOT_REST_MIN_PX = 4;
+const FOOT_REST_MAX_PX = 20;
+
+function getFootRestInset(heightPx) {
+  if (!Number.isFinite(heightPx) || heightPx <= 0) return 0;
+  return Math.min(
+    FOOT_REST_MAX_PX,
+    Math.max(FOOT_REST_MIN_PX, Math.round(heightPx * FOOT_REST_RATIO))
+  );
+}
+
 module.exports = {
   getThemeMarginBox,
   computeThemeAnchorRect,
@@ -152,4 +172,5 @@ module.exports = {
   computeStableVisibleContentMargins,
   getLooseDragMargins,
   getRestClampMargins,
+  getFootRestInset,
 };

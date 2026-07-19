@@ -24,6 +24,7 @@ const ROAM_MIN_DIST = 100;
 const ROAM_MARGIN_RATIO = 0.15;
 const ROAM_FRAME_MS = 16;
 const ROAM_TARGET_ATTEMPTS = 8;
+const { getFootRestInset } = require("./visible-margins");
 
 module.exports = function initRoam(ctx) {
   let enabled = false;
@@ -61,6 +62,46 @@ module.exports = function initRoam(ctx) {
       bounds.y + bounds.height / 2
     );
     if (!wa) return null;
+    // With gravity on, roam is a ground walk — targets sit on the work-area
+    // floor so the pet strolls along the bottom edge instead of drifting
+    // through mid-air (which would undo the toss physics).
+    if (typeof ctx.isGroundWalkOnly === "function" && ctx.isGroundWalkOnly()) {
+      // Perched on a window ledge? Stroll along THAT ledge's widest visible
+      // segment instead of the floor (never walks off — ledges.js drops him
+      // when the window itself moves away).
+      const segs = typeof ctx.getStandingLedgeSegs === "function"
+        ? ctx.getStandingLedgeSegs() : null;
+      if (segs && segs.length) {
+        let seg = segs[0];
+        for (const s of segs) { if (s.x2 - s.x > seg.x2 - seg.x) seg = s; }
+        const lxMin = seg.x + 4;
+        const lxMax = seg.x2 - bounds.width - 4;
+        if (lxMax <= lxMin) return null;   // too narrow: perch instead
+        const ledgeY = seg.y - bounds.height + getFootRestInset(bounds.height);
+        for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
+          const targetX = lxMin + Math.floor(Math.random() * (lxMax - lxMin));
+          if (Math.abs(targetX - bounds.x) >= Math.min(ROAM_MIN_DIST, (lxMax - lxMin) / 2)) {
+            return { x: targetX, y: ledgeY };
+          }
+        }
+        return null;
+      }
+      const floorY = wa.y + wa.height - bounds.height + getFootRestInset(bounds.height);
+      const gMarginX = Math.round(wa.width * ROAM_MARGIN_RATIO);
+      const gxMin = wa.x + gMarginX;
+      const gxMax = wa.x + wa.width - bounds.width - gMarginX;
+      if (gxMax <= gxMin) return null;
+      for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
+        const targetX = gxMin + Math.floor(Math.random() * (gxMax - gxMin));
+        if (Math.abs(targetX - bounds.x) >= ROAM_MIN_DIST) {
+          return { x: targetX, y: floorY };
+        }
+      }
+      const farEdge = Math.abs(gxMin - bounds.x) > Math.abs(gxMax - bounds.x) ? gxMin : gxMax;
+      return Math.abs(farEdge - bounds.x) >= ROAM_MIN_DIST
+        ? { x: farEdge, y: floorY }
+        : null;
+    }
     const marginX = Math.round(wa.width * ROAM_MARGIN_RATIO);
     const marginY = Math.round(wa.height * ROAM_MARGIN_RATIO);
     const xMin = wa.x + marginX;

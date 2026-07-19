@@ -448,6 +448,12 @@ function exitMiniMode() {
     if (typeof ctx.notifyUpdaterSilentExit === "function") {
       try { ctx.notifyUpdaterSilentExit(); } catch {}
     }
+    // The exit parabola restores the pre-mini position, which may be mid-air
+    // — hand off to gravity (the drag-end IPC path early-returns while the
+    // mini transition is still in flight, so it can't do this itself).
+    if (typeof ctx.onMiniExitSettled === "function") {
+      try { ctx.onMiniExitSettled(); } catch {}
+    }
   });
 }
 

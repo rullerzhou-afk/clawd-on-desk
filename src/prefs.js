@@ -223,6 +223,10 @@ const SCHEMA = {
   keepSizeAcrossDisplays: { type: "boolean", default: false },
   // Free roam: when enabled and the pet is idle, it will wander around the screen
   freeRoam: { type: "boolean", default: false },
+  // Gravity: drag releases keep the gesture's velocity and the pet falls,
+  // bounces, and lands on the floor or (macOS) other windows' top edges;
+  // idle roam becomes a ground walk while enabled.
+  gravity: { type: "boolean", default: false },
   // #562: Windows-only. When ON, the pet floats ON TOP of a foreground
   // fullscreen app (e.g. a borderless game) and stays draggable, instead of
   // standing down below it (#538). Default ON — most users want to glance at

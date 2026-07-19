@@ -11,6 +11,7 @@ const {
   computeStableVisibleContentMargins,
   getLooseDragMargins,
   getRestClampMargins,
+  getFootRestInset,
 } = require("../src/visible-margins");
 
 themeLoader.init(path.join(__dirname, "..", "src"));
@@ -298,5 +299,20 @@ describe("edge pinning margin policy", () => {
       }),
       { top: 168, bottom: 70 }
     );
+  });
+});
+
+describe("foot-rest inset", () => {
+  it("scales with pet height and clamps to the sane band", () => {
+    assert.strictEqual(getFootRestInset(120), 19);   // 16% of height
+    assert.strictEqual(getFootRestInset(20), 4);     // floor of the clamp
+    assert.strictEqual(getFootRestInset(280), 20);   // ceiling of the clamp
+  });
+
+  it("returns 0 for degenerate heights", () => {
+    assert.strictEqual(getFootRestInset(0), 0);
+    assert.strictEqual(getFootRestInset(-50), 0);
+    assert.strictEqual(getFootRestInset(NaN), 0);
+    assert.strictEqual(getFootRestInset(undefined), 0);
   });
 });

@@ -20,6 +20,7 @@
     "allowEdgePinning",
     "disableMiniMode",
     "freeRoam",
+    "gravity",
     "keepSizeAcrossDisplays",
     "openAtLogin",
     "hideBubbles",
@@ -132,6 +133,11 @@
         key: "freeRoam",
         labelKey: "rowFreeRoam",
         descKey: "rowFreeRoamDesc",
+      }),
+      helpers.buildSwitchRow({
+        key: "gravity",
+        labelKey: "rowGravity",
+        descKey: "rowGravityDesc",
       }),
       helpers.buildSwitchRow({
         key: "allowEdgePinning",

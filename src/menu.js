@@ -70,6 +70,19 @@ module.exports = function initMenu(ctx) {
     };
   }
 
+  // Gravity quick toggle: toss physics, window-ledge landing, and ground-walk
+  // roam as one switch. The click writes through ctx into the settings
+  // controller; the committed value comes back via the settings effect
+  // router's menu rebuild, so the checkbox always reflects the stored pref.
+  function buildGravityMenuItem() {
+    return {
+      label: t("gravity"),
+      type: "checkbox",
+      checked: !!ctx.gravityEnabled,
+      click: (menuItem) => { ctx.gravityEnabled = menuItem.checked; },
+    };
+  }
+
   // DANGER "auto-pilot" quick toggle. Enabling auto-approves EVERY agent
   // permission request with no prompt, so the enable path is gated behind a
   // native modal confirm. Disabling is immediate. After either decision we
@@ -176,6 +189,7 @@ module.exports = function initMenu(ctx) {
         click: () => ctx.doNotDisturb ? ctx.disableDoNotDisturb() : ctx.enableDoNotDisturb(),
       },
       buildMiniModeMenuItem(),
+      buildGravityMenuItem(),
     ];
 
     // Quick noise toggles (bubbles + sound) kept together.
@@ -407,6 +421,7 @@ module.exports = function initMenu(ctx) {
         label: ctx.doNotDisturb ? t("wake") : t("sleep"),
         click: () => ctx.doNotDisturb ? ctx.disableDoNotDisturb() : ctx.enableDoNotDisturb(),
       },
+      buildGravityMenuItem(),
     ];
 
     const workGroup = [

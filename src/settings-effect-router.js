@@ -19,6 +19,7 @@ const MENU_AFFECTING_KEYS = new Set([
   "size",
   "sessionAliases",
   "disableMiniMode",
+  "gravity",
 ]);
 
 function requiredDependency(value, name) {

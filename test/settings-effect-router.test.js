@@ -417,6 +417,17 @@ describe("settings-effect-router", () => {
     }
   });
 
+  it("rebuilds menus when the gravity toggle changes", () => {
+    const { calls, emit } = createHarness();
+
+    emit({ gravity: true });
+
+    assert.deepStrictEqual(calls, [
+      ["updateMirrors", { gravity: true }],
+      ["rebuildAllMenus"],
+    ]);
+  });
+
   it("dispose unsubscribes both settings routes", () => {
     const { calls, emit, router } = createHarness();
 
