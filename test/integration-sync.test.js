@@ -86,6 +86,7 @@ function makeRuntime(overrides = {}) {
     getHookServerPort: () => 24444,
     shouldManageClaudeHooks: () => true,
     isAgentEnabled: () => true,
+    setImmediate: (fn) => fn(),
     startClaudeSettingsWatcher: () => calls.push({ name: "watcher:start" }),
     stopClaudeSettingsWatcher: () => {
       calls.push({ name: "watcher:stop" });
@@ -285,6 +286,23 @@ describe("integration sync runtime", () => {
       "reasonix",
       "qoderwork",
     ]);
+  });
+
+  it("yields to the event loop between synchronous startup integration syncs", () => {
+    const pending = [];
+    const enabled = new Set(["claude-code", "gemini-cli", "codex"]);
+    const { runtime, calls } = makeRuntime({
+      setImmediate: (fn) => pending.push(fn),
+      shouldSyncAgentIntegration: (agentId) => enabled.has(agentId),
+    });
+
+    runtime.syncEnabledStartupIntegrations();
+    assert.deepStrictEqual(calls.map((entry) => entry.name), ["claude", "watcher:start", "gemini"]);
+    assert.strictEqual(pending.length, 1);
+
+    pending.shift()();
+    assert.deepStrictEqual(calls.map((entry) => entry.name), ["claude", "watcher:start", "gemini", "codex"]);
+    assert.strictEqual(pending.length, 0);
   });
 
   it("startup sync uses installed-and-enabled intent instead of enabled alone", () => {

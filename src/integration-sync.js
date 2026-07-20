@@ -69,6 +69,7 @@ function defaultInstalledFlagSkipMessage(agentName, reason) {
 
 function createIntegrationSyncRuntime(options = {}) {
   const ctx = options.ctx || {};
+  const setImmediateFn = options.setImmediate || ctx.setImmediate || setImmediate;
   const getHookServerPort = options.getHookServerPort;
   const shouldManageClaudeHooks = options.shouldManageClaudeHooks;
   const isAgentEnabled = typeof options.isAgentEnabled === "function" ? options.isAgentEnabled : (() => true);
@@ -627,11 +628,18 @@ function createIntegrationSyncRuntime(options = {}) {
         startClaudeSettingsWatcher();
       }
     }
-    // Other agents' syncs are independent files and run in parallel — they do
-    // not wait for Claude's (possibly queued/async) sync to settle.
+    // Claude is already queued/async; spread the remaining synchronous installers across turns.
+    const startupSyncs = [];
     for (const [agentId, sync] of Object.entries(AGENT_INTEGRATION_SYNCERS)) {
-      if (shouldSyncAgentIntegration(agentId)) sync();
+      if (shouldSyncAgentIntegration(agentId)) startupSyncs.push(sync);
     }
+
+    let index = 0;
+    function runNext() {
+      startupSyncs[index++]();
+      if (index < startupSyncs.length) setImmediateFn(runNext);
+    }
+    if (startupSyncs.length) runNext();
   }
 
   return {
