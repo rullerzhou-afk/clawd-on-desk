@@ -251,6 +251,7 @@ describe("agent installation detector", () => {
     const homeDir = makeHome();
     const executablePath = path.join(homeDir, "NovaAI.exe");
     writeText(executablePath, "");
+    if (process.platform !== "win32") fs.chmodSync(executablePath, 0o755);
     const application = {
       id: "custom-nova-ai-0123456789ab",
       executablePath,
@@ -273,6 +274,44 @@ describe("agent installation detector", () => {
       snapshot: { customApplications: [application], customToolDiscoveryPaths: [] },
     });
     assert.strictEqual(missing.customAgents[0].detectedInstalled, false);
+  });
+
+  it("does not treat a directory at a registered executable path as installed", () => {
+    const homeDir = makeHome();
+    const executablePath = path.join(homeDir, "NovaAI.exe");
+    mkdirp(executablePath);
+    const application = { id: "custom-nova-ai-0123456789ab", executablePath };
+    const report = detectAgentInstallations({
+      homeDir,
+      now: 1,
+      snapshot: { customApplications: [application], customToolDiscoveryPaths: [] },
+    });
+
+    assert.strictEqual(report.customAgents[0].detectedInstalled, false);
+  });
+
+  it("requires executable permissions for registered POSIX files", { skip: process.platform === "win32" }, () => {
+    const homeDir = makeHome();
+    const executablePath = path.join(homeDir, "NovaAI.bin");
+    writeText(executablePath, "");
+    fs.chmodSync(executablePath, 0o644);
+    const application = { id: "custom-nova-ai-0123456789ab", executablePath };
+    const missing = detectAgentInstallations({
+      homeDir,
+      platform: "linux",
+      now: 1,
+      snapshot: { customApplications: [application], customToolDiscoveryPaths: [] },
+    });
+    assert.strictEqual(missing.customAgents[0].detectedInstalled, false);
+
+    fs.chmodSync(executablePath, 0o755);
+    const present = detectAgentInstallations({
+      homeDir,
+      platform: "linux",
+      now: 2,
+      snapshot: { customApplications: [application], customToolDiscoveryPaths: [] },
+    });
+    assert.strictEqual(present.customAgents[0].detectedInstalled, true);
   });
 
   it("does not infer built-in agent installs from generic Windows app-name guesses", () => {

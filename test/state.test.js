@@ -959,6 +959,24 @@ describe("updateSession()", () => {
     assert.strictEqual(api.sessions.get("shared-s1").agentId, "claude-code");
   });
 
+  it("custom attribution cannot replace or end another custom session owner", () => {
+    const sid = "custom-shared-s1";
+    api.updateSession(sid, "thinking", "UserPromptSubmit", {
+      agentId: "custom-nova-ai-0123456789ab",
+    });
+    api.updateSession(sid, "working", "PreToolUse", {
+      agentId: "custom-orbit-ai-0123456789ab",
+    });
+    assert.strictEqual(api.sessions.get(sid).agentId, "custom-nova-ai-0123456789ab");
+    assert.strictEqual(api.sessions.get(sid).state, "thinking");
+
+    api.updateSession(sid, "idle", "SessionEnd", {
+      agentId: "custom-orbit-ai-0123456789ab",
+    });
+    assert.ok(api.sessions.has(sid));
+    assert.strictEqual(api.sessions.get(sid).agentId, "custom-nova-ai-0123456789ab");
+  });
+
   it("defaulted Claude attribution is still used for new legacy sessions", () => {
     api.updateSession("legacy-s1", "working", "PreToolUse", {
       agentId: "claude-code",

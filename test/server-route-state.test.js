@@ -78,6 +78,7 @@ function callStatePost(body, overrides = {}) {
           droppedByDisabled: () => calls.recorder.push({ outcome: "disabled" }),
           droppedByDnd: () => calls.recorder.push({ outcome: "dnd" }),
           droppedInvalidAgent: () => calls.recorder.push({ outcome: "invalid-agent" }),
+          droppedUnsupported: () => calls.recorder.push({ outcome: "unsupported" }),
         };
       },
       shouldDropForDnd: () => false,
@@ -584,6 +585,43 @@ describe("server-route-state POST", () => {
     }), { ctx: { getCustomAgentIds: () => [id] } });
     assert.strictEqual(res.statusCode, 200);
     assert.strictEqual(res.calls.updateSession[0][3].agentId, id);
+  });
+
+  it("rejects custom events that collide with another agent session", async () => {
+    const id = "custom-nova-ai-0123456789ab";
+    const pending = { agentId: "claude-code", sessionId: "shared", toolName: "Bash", res: {} };
+    const res = await callStatePost(JSON.stringify({
+      state: "attention",
+      session_id: "shared",
+      event: "Stop",
+      agent_id: id,
+    }), {
+      ctx: {
+        getCustomAgentIds: () => [id],
+        sessions: new Map([["shared", { agentId: "claude-code" }]]),
+        pendingPermissions: [pending],
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.calls.updateSession.length, 0);
+    assert.strictEqual(res.calls.resolved.length, 0);
+    assert.deepStrictEqual(
+      res.calls.recorder.map((entry) => entry.outcome).filter(Boolean),
+      ["unsupported"]
+    );
+  });
+
+  it("rejects custom events without a session id instead of using the shared default", async () => {
+    const id = "custom-nova-ai-0123456789ab";
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      event: "PreToolUse",
+      agent_id: id,
+    }), { ctx: { getCustomAgentIds: () => [id] } });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.calls.updateSession.length, 0);
   });
 
   it("rejects stale custom ids before hook_source fallback", async () => {

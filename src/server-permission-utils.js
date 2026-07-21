@@ -153,7 +153,12 @@ function findPendingPermissionForStateEvent(pendingPermissions, options) {
     ? options.sessionId
     : "default";
   const sessionPending = pendingPermissions.filter((perm) => (
-    perm && perm.res && perm.sessionId === sessionId
+    perm
+      && perm.res
+      && perm.sessionId === sessionId
+      && (options.requireAgentOwnership === true
+        ? perm.agentId === options.agentId
+        : (!options.agentId || !perm.agentId || perm.agentId === options.agentId))
   ));
   if (!sessionPending.length) return null;
 
