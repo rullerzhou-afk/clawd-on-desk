@@ -162,6 +162,31 @@ function handleStatePost(req, res, options) {
       const rawAgentPid = data.agent_pid ?? data.claude_pid ?? data.cursor_pid;
       const agentPid = Number.isFinite(rawAgentPid) && rawAgentPid > 0 ? Math.floor(rawAgentPid) : null;
       const agentId = agentIdentity.agentId;
+      const sid = session_id || "default";
+      const isCustomAgent = agentIdentity.source === "custom";
+      if (isCustomAgent && (typeof session_id !== "string" || !session_id.trim())) {
+        recordRequestHookEvent.droppedUnsupported();
+        res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+        res.end();
+        return;
+      }
+      const existingSession = ctx.sessions && typeof ctx.sessions.get === "function"
+        ? ctx.sessions.get(sid)
+        : null;
+      // Custom agents are state-only and must not take over a session owned by
+      // another agent. Keep the legacy raw session key for built-in agents, but
+      // reject custom collisions before any permission/session side effects.
+      if (
+        isCustomAgent
+        && existingSession
+        && existingSession.agentId
+        && existingSession.agentId !== agentId
+      ) {
+        recordRequestHookEvent.droppedUnsupported();
+        res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+        res.end();
+        return;
+      }
       const host = typeof data.host === "string" ? data.host : null;
       const wslDistro = typeof data.wsl_distro === "string" && data.wsl_distro.trim()
         ? data.wsl_distro.trim()
@@ -266,7 +291,6 @@ function handleStatePost(req, res, options) {
         return;
       }
       if (agentId === "codex" && codexUserInput) {
-        const sid = session_id || "default";
         if (codexUserInput.phase === "resolved") {
           if (typeof ctx.clearCodexUserInputBubbles === "function") {
             ctx.clearCodexUserInputBubbles(sid, codexUserInput.callId, "codex-user-input-resolved");
@@ -309,10 +333,11 @@ function handleStatePost(req, res, options) {
         // statusline script never reads the response, and "session unknown"
         // is the designed drop, not an error.
         if (typeof ctx.updateSessionMetadata === "function") {
-          ctx.updateSessionMetadata(session_id || "default", {
+          ctx.updateSessionMetadata(sid, {
             contextUsage,
             antigravityQuota,
             claudeQuota,
+            ...(isCustomAgent ? { agentId } : {}),
           });
         }
         res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
@@ -320,7 +345,6 @@ function handleStatePost(req, res, options) {
         return;
       }
       if (ctx.STATE_SVGS[state]) {
-        const sid = session_id || "default";
         const codexHookState = resolveCodexOfficialHookState(
           data,
           state,
@@ -409,6 +433,8 @@ function handleStatePost(req, res, options) {
         if (event === "PostToolUse" || event === "PostToolUseFailure" || event === "Stop") {
           const perm = findPendingPermissionForStateEvent(ctx.pendingPermissions, {
             sessionId: sid,
+            agentId,
+            requireAgentOwnership: isCustomAgent,
             toolName,
             toolUseId,
             toolInputFingerprint,
@@ -428,6 +454,7 @@ function handleStatePost(req, res, options) {
               stale !== perm
               && stale.res
               && stale.sessionId === sid
+              && (!isCustomAgent || stale.agentId === agentId)
               && (stale.isElicitation || stale.toolName === "ExitPlanMode")
             ) {
               ctx.resolvePermissionEntry(stale, "deny", "User answered in terminal");
@@ -448,6 +475,7 @@ function handleStatePost(req, res, options) {
               stale
               && stale.res
               && stale.sessionId === sid
+              && (!isCustomAgent || stale.agentId === agentId)
               && stale.toolName === "ExitPlanMode"
             ) {
               ctx.resolvePermissionEntry(stale, "deny", "Plan dialog dismissed in terminal");

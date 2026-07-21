@@ -399,6 +399,7 @@ function detectCustomTools(options = {}) {
 
 function detectCustomAgents(options = {}) {
   const fsImpl = options.fs || fs;
+  const platform = options.platform || process.platform;
   const applications = Array.isArray(options.snapshot && options.snapshot.customApplications)
     ? options.snapshot.customApplications
     : [];
@@ -408,13 +409,22 @@ function detectCustomAgents(options = {}) {
       ? application.executablePath
       : "";
     const kind = executablePath ? statPath(fsImpl, executablePath) : null;
+    let launchable = false;
+    if (kind === "file") {
+      try {
+        const stat = fsImpl.statSync(executablePath);
+        launchable = platform === "win32"
+          ? /\.(exe|cmd|bat|com)$/i.test(path.extname(executablePath))
+          : (stat.mode & 0o111) !== 0;
+      } catch {}
+    }
     return {
       agentId,
       executablePath,
-      detectedInstalled: !!kind,
-      confidence: kind ? "high" : LOW_CONFIDENCE,
-      reason: kind ? "registered-executable" : "not-found",
-      detail: kind
+      detectedInstalled: launchable,
+      confidence: launchable ? "high" : LOW_CONFIDENCE,
+      reason: launchable ? "registered-executable" : "not-found",
+      detail: launchable
         ? `Registered executable exists: ${executablePath} (${kind})`
         : `Registered executable was not found: ${executablePath}`,
     };

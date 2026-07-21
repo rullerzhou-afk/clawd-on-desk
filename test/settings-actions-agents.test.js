@@ -168,6 +168,41 @@ test("settings agent actions sync an installed custom permission URL change imme
   );
 });
 
+test("settings agent actions do not commit a custom permission URL when sync fails", () => {
+  const snapshot = prefs.getDefaults();
+  snapshot.agents.codebuddy.integrationInstalled = true;
+  snapshot.agents.codebuddy.customPermissionUrl = "https://old.example.test/permission";
+  const result = agentCommands.setAgentCustomPermissionUrl({
+    agentId: "codebuddy",
+    value: "https://new.example.test/permission",
+  }, {
+    snapshot,
+    syncIntegrationForAgent: () => ({ status: "error", message: "disk denied" }),
+  });
+
+  assert.strictEqual(result.status, "error");
+  assert.match(result.message, /disk denied/);
+  assert.strictEqual(result.commit, undefined);
+  assert.strictEqual(snapshot.agents.codebuddy.customPermissionUrl, "https://old.example.test/permission");
+});
+
+test("settings agent actions handle an async custom permission URL sync failure", async () => {
+  const snapshot = prefs.getDefaults();
+  snapshot.agents.codebuddy.integrationInstalled = true;
+  snapshot.agents.codebuddy.customPermissionUrl = "https://old.example.test/permission";
+  const result = await agentCommands.setAgentCustomPermissionUrl({
+    agentId: "codebuddy",
+    value: "https://new.example.test/permission",
+  }, {
+    snapshot,
+    syncIntegrationForAgent: async () => ({ status: "error", message: "async disk denied" }),
+  });
+
+  assert.strictEqual(result.status, "error");
+  assert.match(result.message, /async disk denied/);
+  assert.strictEqual(result.commit, undefined);
+});
+
 test("settings agent actions sync clearing an installed custom permission URL immediately", () => {
   const snapshot = prefs.getDefaults();
   snapshot.agents.codebuddy.integrationInstalled = true;

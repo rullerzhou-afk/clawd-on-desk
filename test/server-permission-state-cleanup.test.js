@@ -166,6 +166,18 @@ describe("findPendingPermissionForStateEvent", () => {
     assert.strictEqual(match, null);
   });
 
+  it("requires exact ownership for custom state-event cleanup", () => {
+    const pending = [
+      { id: "claude", agentId: "claude-code", sessionId: "sid", toolName: "Bash", res: {} },
+    ];
+    assert.strictEqual(findPendingPermissionForStateEvent(pending, {
+      sessionId: "sid",
+      agentId: "custom-nova-ai-0123456789ab",
+      requireAgentOwnership: true,
+      allowSingletonFallback: true,
+    }), null);
+  });
+
   it("does not use singleton fallback for unrelated PostToolUse events", () => {
     const pending = [
       { id: "only", sessionId: "sid", toolName: "Bash", res: {} },

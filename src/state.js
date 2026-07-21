@@ -35,6 +35,7 @@ const {
   sessionSnapshotSignature,
 } = require("./state-session-snapshot");
 const { getAgentIconUrl } = require("./state-agent-icons");
+const { isCustomApplicationNamespace } = require("./custom-applications");
 const { normalizeTranscriptPath } = require("./transcript-path");
 const { normalizeQuotaGroup } = require("../hooks/quota-bucket");
 const { ANTIGRAVITY_QUOTA_FIELDS } = require("../hooks/antigravity-context-usage");
@@ -1190,6 +1191,14 @@ function updateSessionMetadata(sessionId, opts = {}) {
     debugSession(`metadata-only drop sid=${id} reason=no-session`);
     return false;
   }
+  if (
+    isCustomApplicationNamespace(opts.agentId)
+    && session.agentId
+    && session.agentId !== opts.agentId
+  ) {
+    debugSession(`metadata-only drop sid=${id} reason=agent-owner-mismatch`);
+    return false;
+  }
   const contextUsage = normalizeContextUsage(opts.contextUsage);
   const antigravityQuota = normalizeAntigravityQuota(opts.antigravityQuota);
   const claudeQuota = normalizeClaudeQuota(opts.claudeQuota);
@@ -1391,6 +1400,15 @@ function updateSession(sessionId, state, event, opts = {}) {
     stopHookActive = false,
     stdinDiag = null,
   } = opts;
+  if (
+    isCustomApplicationNamespace(agentId)
+    && sessions.has(sessionId)
+    && sessions.get(sessionId).agentId
+    && sessions.get(sessionId).agentId !== agentId
+  ) {
+    debugSession(`state drop sid=${sessionId} reason=agent-owner-mismatch incoming=${agentId}`);
+    return;
+  }
   if (startupRecoveryActive) {
     startupRecoveryActive = false;
     if (startupRecoveryTimer) { clearTimeout(startupRecoveryTimer); startupRecoveryTimer = null; }
