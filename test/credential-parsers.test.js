@@ -86,3 +86,23 @@ test("maskToken masks short and long tokens", () => {
   assert.strictEqual(p.maskToken("short"), "••••••");
   assert.strictEqual(p.maskToken("sk-ant-abcdef123456"), "sk-a…3456");
 });
+
+test("extractTomlBaseUrl prefers the active model_provider's section", () => {
+  const toml = [
+    'model_provider = "custom"',
+    'model = "gpt-5.6-sol"',
+    "[model_providers.openai]",
+    'base_url = "https://api.openai.com/v1"',
+    "[model_providers.custom]",
+    'base_url = "https://custom.host/v1"',
+  ].join("\n");
+  // active provider is "custom" — chosen even though openai's section is first.
+  assert.strictEqual(p.extractTomlBaseUrl(toml), "https://custom.host/v1");
+  // section-scoped scalar lookup targets exactly one table.
+  assert.strictEqual(
+    p.extractTomlScalar(toml, "base_url", { section: "model_providers.openai" }),
+    "https://api.openai.com/v1"
+  );
+  // no model_provider -> first base_url anywhere (legacy fallback preserved).
+  assert.strictEqual(p.extractTomlBaseUrl('[model_providers.x]\nbase_url = "https://only/v1"'), "https://only/v1");
+});

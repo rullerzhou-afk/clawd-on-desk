@@ -39,13 +39,50 @@ function firstNonEmpty(obj, keys) {
   return null;
 }
 
-function extractTomlScalar(text, key) {
+function escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+// The body of a TOML table: everything from `[name]` to the next `[` header (or
+// EOF). Returns null when the section is absent. Used to scope a scalar lookup
+// to one table instead of matching a same-named key elsewhere in the file.
+function tomlSection(text, name) {
+  if (typeof text !== "string" || !name) return null;
+  const header = new RegExp(`^[ \\t]*\\[${escapeRegExp(name)}\\][ \\t]*$`, "m");
+  const h = text.match(header);
+  if (!h) return null;
+  const rest = text.slice(h.index + h[0].length);
+  const next = rest.search(/^[ \t]*\[/m);
+  return next === -1 ? rest : rest.slice(0, next);
+}
+
+// Read a `key = value` scalar (quoted or bare). Without opts.section this matches
+// the first occurrence anywhere (legacy behavior); with a section it only looks
+// inside that table's block.
+function extractTomlScalar(text, key, opts = {}) {
   if (typeof text !== "string" || !key) return null;
-  const re = new RegExp(`^\\s*${key}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s#]+))`, "m");
-  const m = text.match(re);
+  let region = text;
+  if (opts.section) {
+    region = tomlSection(text, opts.section);
+    if (region == null) return null;
+  }
+  const re = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s#]+))`, "m");
+  const m = region.match(re);
   if (!m) return null;
   const value = m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3];
   return value && value.trim() !== "" ? value.trim() : null;
+}
+
+// Codex keeps base_url under [model_providers.<active>], where <active> is the
+// top-level `model_provider`. Prefer that provider's section so a multi-provider
+// config resolves the ACTIVE base URL; fall back to the first base_url anywhere
+// for flat / single-provider configs (and anything without a model_provider).
+function extractTomlBaseUrl(text, key = "base_url") {
+  if (typeof text !== "string") return null;
+  const provider = extractTomlScalar(text, "model_provider");
+  if (provider) {
+    const scoped = extractTomlScalar(text, key, { section: `model_providers.${provider}` });
+    if (scoped) return scoped;
+  }
+  return extractTomlScalar(text, key);
 }
 
 function extractYamlScalar(text, key) {
@@ -100,6 +137,7 @@ module.exports = {
   parseDotenv,
   firstNonEmpty,
   extractTomlScalar,
+  extractTomlBaseUrl,
   extractYamlScalar,
   extractFromProviderJson,
   resolveEnvRef,

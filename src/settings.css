@@ -3796,6 +3796,12 @@ html, body {
 .usage-tab.active {
   background: var(--accent); color: #fff;
 }
+.usage-empty {
+  padding: 30px 16px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
 .usage-hero {
   background: var(--panel-bg);
   border: 1px solid var(--border);

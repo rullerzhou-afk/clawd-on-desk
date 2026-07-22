@@ -2,7 +2,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 const path = require("path");
-const { loadRecords, saveRecords, loadSyncState, saveSyncState } = require("../src/usage-records");
+const { loadRecords, saveRecords, loadSyncState, saveSyncState, pruneRecords } = require("../src/usage-records");
 
 function makeFs(seed = {}) {
   const files = new Map(Object.entries(seed).map(([k, v]) => [path.resolve(k), v]));
@@ -30,4 +30,13 @@ test("sync state round-trips with a files map", () => {
   assert.deepStrictEqual(loadSyncState({ fs, homeDir: HOME }), { files: {} });
   saveSyncState({ files: { "/a/b.jsonl": { mtime: 5, offset: 12 } } }, { fs, homeDir: HOME });
   assert.strictEqual(loadSyncState({ fs, homeDir: HOME }).files["/a/b.jsonl"].offset, 12);
+});
+
+test("pruneRecords keeps the newest maxCount by ts; no-op under cap", () => {
+  const recs = {};
+  for (let i = 0; i < 10; i += 1) recs["k" + i] = { ts: i, input: 1 };
+  const kept = pruneRecords(recs, 3);
+  assert.strictEqual(Object.keys(kept).length, 3);
+  assert.ok(kept.k9 && kept.k8 && kept.k7 && !kept.k0);
+  assert.strictEqual(pruneRecords(recs, 100), recs); // same ref returned when under the cap
 });

@@ -46,4 +46,20 @@ function saveSyncState(state, { fs = fsDefault, homeDir = os.homedir() } = {}) {
   saveJson(fs, syncPath(homeDir), { files: (state && state.files) || {} });
 }
 
-module.exports = { loadRecords, saveRecords, loadSyncState, saveSyncState, recordsPath, syncPath };
+// Cap the record store so it can't grow without bound. Keeps the newest
+// MAX_RECORDS entries by timestamp; older ones drop out of the store (and the
+// "all" range). The ceiling is far above any realistic history, so it only ever
+// trims genuinely ancient data. Returns the same object untouched when under the
+// cap (so callers can cheaply detect whether a trim happened).
+const MAX_RECORDS = 200000;
+function pruneRecords(records, maxCount = MAX_RECORDS) {
+  if (!records || typeof records !== "object") return {};
+  const keys = Object.keys(records);
+  if (keys.length <= maxCount) return records;
+  keys.sort((a, b) => Number(records[b].ts || 0) - Number(records[a].ts || 0));
+  const kept = {};
+  for (let i = 0; i < maxCount; i += 1) kept[keys[i]] = records[keys[i]];
+  return kept;
+}
+
+module.exports = { loadRecords, saveRecords, loadSyncState, saveSyncState, pruneRecords, recordsPath, syncPath, MAX_RECORDS };

@@ -85,7 +85,10 @@
   // Render the hero card + mini-stat grid + breakdown tables for one range.
   function renderRangeBody(body, r) {
     body.innerHTML = "";
-    if (!r) return;
+    if (!r || !r.requests) {
+      body.appendChild(el("div", "usage-empty", t("usageEmpty")));
+      return;
+    }
 
     const hero = el("div", "usage-hero");
     const top = el("div", "usage-hero-top");

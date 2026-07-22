@@ -16,6 +16,7 @@ const {
   parseDotenv,
   firstNonEmpty,
   extractTomlScalar,
+  extractTomlBaseUrl,
   extractYamlScalar,
   extractFromProviderJson,
   resolveEnvRef,
@@ -109,7 +110,7 @@ function extractCandidate(candidate, text, o) {
         const tokenKey = (candidate.tokenKeys || [])[0];
         return {
           token: tokenKey ? extractTomlScalar(text, tokenKey) : null,
-          baseUrl: candidate.baseUrlKey ? normalizeBaseUrl(extractTomlScalar(text, candidate.baseUrlKey)) : null,
+          baseUrl: candidate.baseUrlKey ? normalizeBaseUrl(extractTomlBaseUrl(text, candidate.baseUrlKey)) : null,
           model: candidate.modelKey ? extractTomlScalar(text, candidate.modelKey) : null,
           error: null,
         };

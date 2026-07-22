@@ -44,10 +44,12 @@ function syncAndAggregate({ fs, homeDir = os.homedir(), now } = {}) {
   const syncState = records.loadSyncState(opts);
   const a = scanClaudeUsage({ ...opts, records: recMap, syncState });
   const b = scanCodexUsage({ ...opts, records: a.records, syncState: a.syncState });
-  if (a.imported > 0 || b.imported > 0) records.saveRecords(b.records, opts);
+  const merged = records.pruneRecords(b.records); // same ref when under the cap
+  const trimmed = merged !== b.records;
+  if (a.imported > 0 || b.imported > 0 || trimmed) records.saveRecords(merged, opts);
   records.saveSyncState(b.syncState, opts);
   const nowEpoch = Number.isFinite(now) ? now : Math.floor(Date.now() / 1000);
-  return { ranges: buildRanges(Object.values(b.records), nowEpoch) };
+  return { ranges: buildRanges(Object.values(merged), nowEpoch) };
 }
 
 // Inline (main-thread) scan — the fallback path and what the worker itself runs.
