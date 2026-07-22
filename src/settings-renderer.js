@@ -8,6 +8,7 @@ const core = globalThis.ClawdSettingsCore;
 const SIDEBAR_TABS = [
   { id: "general", labelKey: "sidebarGeneral", available: true },
   { id: "agents", labelKey: "sidebarAgents", available: true },
+  { id: "credentials", labelKey: "sidebarCredentials", available: true },
   { id: "theme", labelKey: "sidebarTheme", available: true },
   { id: "animOverrides", labelKey: "sidebarAnimOverrides", available: true },
   { id: "shortcuts", labelKey: "sidebarShortcuts", available: true },
@@ -83,6 +84,7 @@ core.ops.installRenderHooks({
 
 globalThis.ClawdSettingsTabGeneral.init(core);
 globalThis.ClawdSettingsTabAgents.init(core);
+if (globalThis.ClawdSettingsTabCredentials) globalThis.ClawdSettingsTabCredentials.init(core);
 globalThis.ClawdSettingsTabTheme.init(core);
 // Not a top-level tab anymore — it provides the "on / off" subtab that
 // ClawdSettingsTabAnimOverrides renders. init() just wires up the core refs.

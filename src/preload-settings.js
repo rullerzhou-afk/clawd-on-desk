@@ -179,6 +179,24 @@ contextBridge.exposeInMainWorld("doctor", {
   codexHookHealth: () => ipcRenderer.invoke("doctor:codex-hook-health"),
 });
 
+// ── Platform Tokens (read-only) ──
+//
+// Surface: window.credentials
+//
+//   readAll()          Promise<Array<{ agentId, agentName, found, hasToken,
+//                      tokenMasked, baseUrl, sourcePath, error }>>  — masked only
+//   reveal(agentId)    Promise<{ agentId, token, found }>  — raw token
+//   copy(agentId)      Promise<{ ok }>  — routes raw token to OS clipboard
+contextBridge.exposeInMainWorld("credentials", {
+  readAll: () => ipcRenderer.invoke("credentials:read-all"),
+  reveal: (agentId) => ipcRenderer.invoke("credentials:reveal", agentId),
+  copy: (agentId) => ipcRenderer.invoke("credentials:copy", agentId),
+});
+
+contextBridge.exposeInMainWorld("usage", {
+  stats: () => ipcRenderer.invoke("usage:stats"),
+});
+
 // ── Remote SSH (Phase 2) ──
 //
 // Surface: window.remoteSsh

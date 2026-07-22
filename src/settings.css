@@ -3775,3 +3775,97 @@ html, body {
 .mobile-action-btn:hover { background: var(--accent); color: #fff; }
 .mobile-action-danger { border-color: var(--red, #7f1d1d); color: var(--red, #fca5a5); }
 .mobile-action-danger:hover { background: var(--red, #7f1d1d); color: #fff; }
+
+/* ── Usage dashboard (Tokens tab) ─────────────────────────────── */
+.usage-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 10px;
+}
+.usage-head h3 { margin: 0; }
+.usage-tabs {
+  display: inline-flex; gap: 2px; padding: 3px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+}
+.usage-tab {
+  border: none; background: transparent; cursor: pointer;
+  font: inherit; font-size: 12px; font-weight: 600;
+  color: var(--text-secondary); padding: 5px 12px; border-radius: 8px;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.usage-tab:hover { color: var(--text-primary); }
+.usage-tab.active {
+  background: var(--accent); color: #fff;
+}
+.usage-hero {
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px 18px;
+  margin: 4px 0 16px;
+}
+.usage-hero-top {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap;
+}
+.usage-hero-total .lbl { font-size: 12px; color: var(--text-secondary); margin-bottom: 2px; }
+.usage-hero-total .num {
+  font-size: 30px; font-weight: 700; letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums; line-height: 1;
+}
+.usage-hero-total .approx {
+  font-size: 12px; color: var(--text-secondary); margin-left: 8px;
+  background: var(--sidebar-hover); padding: 2px 8px; border-radius: 8px;
+  vertical-align: middle;
+}
+.usage-hero-pill {
+  display: flex; align-items: center; gap: 18px;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 12px; padding: 8px 16px;
+}
+.usage-hero-pill .col { display: flex; flex-direction: column; }
+.usage-hero-pill .k {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+}
+.usage-hero-pill .v { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.usage-hero-pill .v.cost { color: #16a34a; }
+.usage-hero-pill .sep { width: 1px; height: 28px; background: var(--border); }
+
+.usage-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 14px; }
+@media (min-width: 560px) { .usage-grid { grid-template-columns: repeat(5, 1fr); } }
+.usage-stat {
+  border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px;
+  background: var(--bg); display: flex; flex-direction: column; gap: 5px;
+}
+.usage-stat .k { font-size: 11px; color: var(--text-secondary); display: flex; align-items: center; gap: 6px; }
+.usage-stat .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.usage-stat .v { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.usage-rate { grid-column: span 2; justify-content: center; }
+@media (min-width: 560px) { .usage-rate { grid-column: span 1; } }
+.usage-rate .rt { display: flex; align-items: center; justify-content: space-between; font-size: 11px; }
+.usage-rate .rt .pct { font-weight: 700; color: #10b981; font-variant-numeric: tabular-nums; }
+.usage-rate .bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; margin-top: 7px; }
+.usage-rate .fill { height: 100%; background: #10b981; border-radius: 3px; transition: width 0.5s ease; }
+
+.usage-sub { font-size: 12px; color: var(--text-secondary); font-weight: 600; margin: 16px 2px 6px; }
+.usage-table { display: flex; flex-direction: column; }
+.usage-trow {
+  position: relative; display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 8px 10px; border-radius: 8px; overflow: hidden;
+}
+.usage-trow + .usage-trow { margin-top: 2px; }
+.usage-trow .barbg {
+  position: absolute; left: 0; top: 0; bottom: 0; z-index: 0;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: 8px;
+}
+.usage-trow .name {
+  position: relative; z-index: 1; font-size: 13px; font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.usage-trow .nums {
+  position: relative; z-index: 1; display: flex; gap: 14px; flex: none;
+  color: var(--text-secondary); font-size: 12px; font-variant-numeric: tabular-nums;
+}
+.usage-trow .nums .c { color: #16a34a; font-weight: 600; }
+
