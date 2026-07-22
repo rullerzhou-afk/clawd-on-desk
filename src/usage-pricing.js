@@ -67,13 +67,22 @@ const PRICING_TABLE = Object.freeze([
   ["gemini", { input: 1.25, output: 10, cacheRead: 0.125, cacheCreation: 0 }],
 ]);
 
+// Memoized by lowercased model id. The table is static and frozen, so a cache
+// hit is always correct; this turns the ~50-entry prefix scan into an O(1)
+// lookup once a model has been seen. Cost is still computed live from the table
+// (never baked into stored records), so a later price edit fixes history too.
+const _priceCache = new Map();
 function priceFor(model) {
   const m = typeof model === "string" ? model.toLowerCase().trim() : "";
   if (!m) return null;
+  const cached = _priceCache.get(m);
+  if (cached !== undefined) return cached;
+  let found = null;
   for (const [key, pricing] of PRICING_TABLE) {
-    if (m === key || m.startsWith(key)) return pricing;
+    if (m === key || m.startsWith(key)) { found = pricing; break; }
   }
-  return null;
+  _priceCache.set(m, found);
+  return found;
 }
 
 function num(v) { const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : 0; }

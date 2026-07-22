@@ -3434,10 +3434,11 @@ const { registerCredentialIpc } = require("./credential-ipc");
 registerCredentialIpc({ ipcMain, clipboard });
 
 // Usage statistics read straight from each CLI's own session logs (no proxy).
-const { registerUsageIpc, syncAndAggregate } = require("./usage-ipc");
+const { registerUsageIpc, syncAndAggregateOffThread } = require("./usage-ipc");
 registerUsageIpc({ ipcMain });
-// Warm the usage store at boot so the first dashboard open is instant.
-setImmediate(() => { try { syncAndAggregate(); } catch {} });
+// Warm the usage store at boot so the first dashboard open is instant. Runs in
+// a worker thread (with an inline fallback), so it never blocks the main thread.
+setImmediate(() => { syncAndAggregateOffThread().catch(() => {}); });
 
 // ── Remote SSH (Phase 2) ──
 //
