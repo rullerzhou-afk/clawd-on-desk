@@ -174,6 +174,7 @@ describe("Codex official hook installer", () => {
       nodeBin: "/usr/local/bin/node",
       platform: "linux",
       remote: true,
+      sshRemote: true,
     });
 
     assert.strictEqual(result.added, CODEX_OFFICIAL_HOOK_EVENTS.length);
@@ -181,8 +182,24 @@ describe("Codex official hook installer", () => {
     const command = settings.hooks.SessionStart[0].hooks[0].command;
     assert.strictEqual(
       command,
-      "CLAWD_REMOTE='1' \"/usr/local/bin/node\" \"" + path.resolve(__dirname, "..", "hooks", "codex-hook.js").replace(/\\/g, "/") + "\""
+      "CLAWD_REMOTE='1' CLAWD_SSH_REMOTE='1' \"/usr/local/bin/node\" \"" + path.resolve(__dirname, "..", "hooks", "codex-hook.js").replace(/\\/g, "/") + "\""
     );
+  });
+
+  it("keeps legacy WSL --remote on CLAWD_REMOTE without the SSH secure marker", () => {
+    const codexDir = makeTempCodexDir({});
+    registerCodexHooks({
+      silent: true,
+      codexDir,
+      nodeBin: "/usr/local/bin/node",
+      platform: "linux",
+      remote: true,
+      processEnv: {},
+    });
+    const command = readJson(path.join(codexDir, "hooks.json"))
+      .hooks.SessionStart[0].hooks[0].command;
+    assert.match(command, /^CLAWD_REMOTE='1' /);
+    assert.doesNotMatch(command, /CLAWD_SSH_REMOTE|CLAWD_REMOTE_IDENTITY_PATH/);
   });
 
   it("registers Windows remote hooks with a PowerShell env prefix on commandWindows only", () => {
@@ -193,6 +210,7 @@ describe("Codex official hook installer", () => {
       nodeBin: "C:\\node.exe",
       platform: "win32",
       remote: true,
+      sshRemote: true,
     });
 
     assert.strictEqual(result.added, CODEX_OFFICIAL_HOOK_EVENTS.length);
@@ -202,7 +220,7 @@ describe("Codex official hook installer", () => {
     // PowerShell env prefix lives on commandWindows (what Windows codex runs).
     assert.strictEqual(
       hook.commandWindows,
-      `$env:CLAWD_REMOTE='1'; & "C:\\node.exe" "${hookScript}"`
+      `$env:CLAWD_REMOTE='1'; $env:CLAWD_SSH_REMOTE='1'; & "C:\\node.exe" "${hookScript}"`
     );
     // The POSIX command must NOT carry an env prefix: env vars don't cross
     // the WSL interop boundary, so a prefix would only mislead readers.

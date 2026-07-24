@@ -1,9 +1,10 @@
 # Remote SSH Guide
 
-The default entry point for Remote SSH is **Settings → Remote SSH** inside the
-Clawd app. The older `scripts/remote-deploy.sh` is now only a fallback for
-source checkout / debugging, and is no longer the primary flow for DMG /
-installer users.
+The only supported entry point for Remote SSH deployment is **Settings →
+Remote SSH** inside the Clawd app. `scripts/remote-deploy.sh` is intentionally
+disabled: a standalone shell script cannot create the profile-bound local
+ingress, installation identity, durable deployment transaction, and
+ownership-fenced cleanup required by the secure transport.
 
 ## Prerequisites
 
@@ -26,9 +27,10 @@ the system `ssh` and your system terminal.
    - **Remote forward port**: defaults to `23333`; only change to `23334-23337` when you run multiple profiles against the same remote
    - **Host prefix**: optional, used in Sessions / Dashboard to disambiguate the remote
 3. If SSH needs first-time host-key confirmation, a passphrase, or an ssh-agent load, click **Authenticate**. Clawd opens your system terminal to run a plain `ssh` once.
-4. Click **One-click deploy**.
-   - Clawd opens and maintains the `ssh -R` reverse tunnel
-   - Then it copies hook files from the currently installed Clawd to the remote's `~/.claude/hooks/`
+4. Click **Deploy / Repair Hooks**, then connect the profile.
+   - Clawd creates a dedicated local ingress for this profile and maintains an `ssh -R` reverse tunnel to that ingress
+   - It writes a profile identity atomically, pins hooks and the static Claude permission URL to the profile's exact remote port, and never exposes the general local `/state` or `/permission` routes to the tunnel
+   - Then it copies hook files from the currently installed Clawd to the resolved remote runtime layout
    - Then it registers Claude Code hooks, Codex official hooks, and Copilot CLI hooks in remote mode when the matching remote agent is installed
    - Connection / deployment logs are shown directly below the profile
 5. Start Claude Code, Codex CLI, or Copilot CLI on the remote. The Dashboard will show the session once the first remote hook event arrives.
@@ -54,7 +56,8 @@ The actual chain is:
 Remote Claude/Codex/Copilot hook
   -> POST http://127.0.0.1:<remote forward port>
   -> SSH reverse tunnel
-  -> Local Clawd http://127.0.0.1:<local runtime port>
+  -> Profile-bound local ingress (routing nonce verified)
+  -> Local Clawd state / permission handlers (canonical profile session ID)
   -> Dashboard / Session HUD / pet state
 ```
 
@@ -66,6 +69,38 @@ appear in the Dashboard, you still need:
 - For Codex, the remote Codex TUI has reviewed the hooks via `/hooks` if your version requires it
 - For remote-only Copilot CLI on a fresh local install, local **Settings → Agents → Copilot CLI** is turned on
 
+## Shared-server isolation and upgrade boundary
+
+Each connected profile has its own local ingress and routing nonce. Secure
+remote hooks use one pinned port and never scan `23333-23337`. The receiver
+also validates the nonce before state or permission data reaches Clawd.
+Sessions are keyed by profile internally, so equal raw session IDs cannot
+overwrite one another.
+
+For **different Unix accounts on the same server**, this fixes the cross-user
+route after every participating desktop has upgraded and successfully run
+**Deploy / Repair Hooks**. Installing only the new app is not enough: an old
+remote hook can still scan into another old receiver. During migration,
+prefer a dropped event over delivery to the wrong desktop.
+
+The default `account-default` mode does **not** support two profiles sharing
+the same Unix account. If Clawd finds an owner conflict, an ownerless legacy
+deployment, or a live remote Clawd using that account's default config, it
+stops before mutation. Ownerless legacy traces always require explicit
+confirmation; a local “deployed before” timestamp is not ownership proof.
+
+An experimental `profile-isolated` runtime exists for validation builds only
+and is hidden unless
+`CLAWD_ENABLE_EXPERIMENTAL_REMOTE_ISOLATION=1` is set. It gives each profile
+separate Claude/Codex/Copilot user config roots, sessions, Clawd files, and
+wrapper commands. It is not released as supported shared-account isolation
+until the real SSH/CLI matrix passes. It does not virtualize all of `HOME`:
+the same Unix UID can read every profile, project-local config and some
+caches remain shared, and Claude subscription auth on macOS remains shared
+through Keychain. Only sessions launched through the displayed profile
+wrapper are covered; bare `claude`, `codex`, or `copilot` keeps using the
+account-default roots.
+
 ## Doctor vs. remote boundary
 
 Doctor's **Agent integration** check only diagnoses local config — e.g. the
@@ -76,18 +111,10 @@ or `~/.copilot/hooks/hooks.json`.
 So a local `broken path` only means your local Claude hook path is off; it
 does not imply the remote SSH deployment failed. Check the **Hook status** and
 deployment log inside the Remote SSH profile for the remote-side state.
-
-## Source-checkout fallback
-
-Only when running from a source checkout, you can fall back to:
-
-```bash
-bash scripts/remote-deploy.sh user@remote-host
-```
-
-This script copies `hooks/` from your current source tree and prints manual SSH
-config suggestions. DMG / installer users don't need a source checkout and
-should use **Settings → Remote SSH → One-click deploy** instead.
+Doctor also reports rejected Remote SSH ingress events and makes the
+experimental isolation boundary visible, including inactive wrappers and an
+interrupted runtime-mode transaction. It still does not treat local checks as
+proof of a real remote CLI run.
 
 ## Troubleshooting
 
@@ -95,7 +122,7 @@ should use **Settings → Remote SSH → One-click deploy** instead.
 
 Check the Remote SSH profile first:
 
-- If Hook status is "Never deployed", click **One-click deploy**
+- If Hook status is "Never deployed", click **Deploy / Repair Hooks**
 - If status is "Connected" but Dashboard is empty, send a message in the remote agent to trigger a hook
 - For Codex, the remote Codex may still need `/hooks` review
 
@@ -107,15 +134,14 @@ If the connection fails with a "remote port in use" error, change the profile's
 ### Remote has no Node.js
 
 Deployment fails at the `check-node` step. Install Node.js on the remote first,
-then redeploy.
+then redeploy. Changing the port avoids a bind conflict; the security boundary
+comes from the pinned identity and dedicated ingress, not from port secrecy.
 
-### Still want to open the SSH tunnel manually
+### Can I open the SSH tunnel manually?
 
-You can run the equivalent reverse forward yourself:
-
-```bash
-ssh -R 127.0.0.1:23333:127.0.0.1:23333 user@remote-host
-```
-
-But this only opens the tunnel — it does not deploy hooks. You still need to
-finish remote hook deployment via Remote SSH or the source script.
+Not for the secure Remote SSH transport. The local target is a temporary,
+profile-bound ingress rather than Clawd's general HTTP port. Use **Connect**
+in the profile so Clawd can create and tear down that ingress together with
+the tunnel. A hand-written `ssh -R ...:23333` to the general server port does
+not implement the profile binding; secure nonce-bearing requests that arrive
+there are rejected with 404.

@@ -12,7 +12,7 @@
 
 **Codex CLI** — 开箱即用。Clawd 会在检测到 Codex 时自动注册 official hooks 到 `~/.codex/hooks.json`，并在用户没有显式关闭 hooks 时启用 `[features].hooks = true`。Installer 会把已废弃的 `[features].codex_hooks` 迁移到 `hooks`，同时保留用户显式设置的 false。Official hooks 提供实时状态和真实 Allow/Deny 权限气泡；`~/.codex/sessions/` JSONL 轮询只保留为状态 / metadata fallback，用于 hook 被禁用或 hook 未覆盖事件；审批不再从 JSONL 猜测。Codex 发出 `request_user_input` 时，Clawd 会从 transcript 中识别该调用，播放通知反应并显示问题/选项的只读预览。回答仍在 Codex 原生界面中完成，卡片不会注入选择；匹配的工具输出写入后会自动关闭。
 
-**Copilot CLI** — 需要本机 Copilot CLI 追踪时，先到 **Settings → Agents** 安装。安装且启用后，Clawd 启动时会自动在 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json` 注册 hooks（marker-based 合并，你已有的 hook 条目和其他 `hooks/*.json` 文件原样保留）。SSH 远程部署走应用内 **Settings → 远程 SSH → 一键部署** 自动配置。`hooks.json` 或 `settings.json` 顶层 `disableAllHooks: true` 时 doctor 会报 warning 并不挂 Fix 按钮。详见 [copilot-setup.zh-CN.md](copilot-setup.zh-CN.md)（含手动备选与 `COPILOT_HOME` 说明）。
+**Copilot CLI** — 需要本机 Copilot CLI 追踪时，先到 **Settings → Agents** 安装。安装且启用后，Clawd 启动时会自动在 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json` 注册 hooks（marker-based 合并，你已有的 hook 条目和其他 `hooks/*.json` 文件原样保留）。SSH 远程部署走应用内 **Settings → 远程 SSH → 部署 / 修复 Hook** 自动配置。`hooks.json` 或 `settings.json` 顶层 `disableAllHooks: true` 时 doctor 会报 warning 并不挂 Fix 按钮。详见 [copilot-setup.zh-CN.md](copilot-setup.zh-CN.md)（含手动备选与 `COPILOT_HOME` 说明）。
 
 **Gemini CLI** — hooks 配置在 `~/.gemini/settings.json`。需要本机 Gemini 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步 hooks。也可以手动执行 `npm run install:gemini-hooks`。
 
@@ -49,28 +49,28 @@
 
 Clawd 支持通过 SSH 反向端口转发感知远程服务器上的 AI Agent 状态。Hook 事件和权限请求通过 SSH 隧道传回本地 Clawd，无需修改 Clawd 本体代码。
 
-**主流程：应用内 Settings → 远程 SSH → 一键部署**
+**受支持流程：应用内 Settings → 远程 SSH → 部署 / 修复 Hook**
 
-DMG / 安装包用户的入口是 Clawd 应用内的 **Settings → 远程 SSH**：新增 profile（填 `user@host`、可选私钥、转发端口），点 **一键部署**，Clawd 会自动建立 `ssh -R` 反向隧道并把 hooks 部署到远端。完整步骤、Doctor 边界和故障排查（端口冲突 / 没 Node.js / 远端 session 不显示等）见专门指南：
+DMG / 安装包用户的入口是 Clawd 应用内的 **Settings → 远程 SSH**：新增 profile（填 `user@host`、可选私钥、转发端口），点 **部署 / 修复 Hook** 后再连接。Clawd 会创建 profile 专属本地入口、建立指向它的 `ssh -R` 反向隧道，并部署带身份 pin 的 hooks。完整步骤、多用户升级边界、Doctor 边界和故障排查见专门指南：
 
 **→ [docs/guides/guide-remote-ssh.zh-CN.md](guide-remote-ssh.zh-CN.md)**
 
 **工作原理：**
-- **Claude Code** — 远程 hook 将状态 POST 到 `localhost:23333`，SSH 隧道转发回本地 Clawd。权限气泡也能正常弹出——HTTP 往返通过隧道完成。
-- **Codex CLI** — 远程 official hooks 通过同一隧道 POST 状态和权限请求；fallback 日志监控也会转发 `request_user_input` 提醒。由于本机 Clawd 无法聚焦远端窗口，卡片会提示你回到远端 Codex 终端回答。如果远程 Codex hooks 不可用或被禁用，再运行：`node ~/.claude/hooks/codex-remote-monitor.js --port 23333`
-- **Copilot CLI** — 一键部署会自动写入远程的 `~/.copilot/hooks/hooks.json`（前提是远程已安装 Copilot CLI，即 `~/.copilot/` 存在）。Hook 通过同一隧道 POST 状态和 session title。
+- **Claude Code** — command hook 和静态 PermissionRequest URL 都使用 profile 的精确远端端口；专属本地入口校验 routing nonce 后才转发状态或权限决定。
+- **Codex CLI** — official hooks 和 layout 内的 fallback monitor 使用同一条 pin 住的 transport；本机无法聚焦远端窗口，所以 `request_user_input` 卡片会提示回到远端终端。
+- **Copilot CLI** — 部署会在 Copilot 存在时写入解析后的 `<COPILOT_HOME>/hooks/hooks.json`；hook 使用同一条带身份校验的 transport。
 
 全新本机安装下，如果只是接收远程 Copilot CLI 事件，请到 **Settings → Agents** 打开 **Copilot CLI**，这样 Clawd 才会接收远程 hook 事件；不需要点 **Install / 安装**，除非你也想在本机安装 Copilot hooks。
 
-远程 hook 以 `CLAWD_REMOTE` 模式运行，跳过 PID 采集（远程 PID 在本地无意义）。远程会话不支持终端聚焦。
+Remote SSH hook 同时携带一般 remote 标记和专用 secure marker；身份缺失或损坏会
+fail closed，绝不回退端口扫描。远端 PID 不会当作本机终端身份，因此远程会话不支持
+终端聚焦。
 
-**源码用户备选：** 从源码目录运行（`npm start` 调试场景）才需要老脚本：
-
-```bash
-bash scripts/remote-deploy.sh user@远程主机
-```
-
-它复制源码树里的 hooks 文件并打印手动 SSH 配置（`~/.ssh/config` 加 `RemoteForward 127.0.0.1:23333 127.0.0.1:23333`）。DMG / 安装包用户不需要源码目录，请用应用内一键部署。
+共享服务器上的所有桌面都必须升级并成功重新部署，不同 Unix 账号的修复才完整生效。
+`scripts/remote-deploy.sh` 已停用，因为它无法参与安全 profile 事务。同 Unix 账号的
+`profile-isolated` 仍是带发布门的实验能力：隔离用户级 CLI roots 与 Clawd 路由，
+不隔离整个 `HOME`、project 文件、部分 cache、同 UID 读取能力或 macOS Claude
+Keychain 登录。准确边界见专门指南。
 
 > 感谢 [@Magic-Bytes](https://github.com/Magic-Bytes) 提出 SSH 隧道方案（[#9](https://github.com/rullerzhou-afk/clawd-on-desk/issues/9)）。
 
@@ -97,13 +97,6 @@ node ~/.claude/hooks/codex-install.js --remote
 
 # 如果 WSL 中安装了 Copilot CLI，也以远程模式注册 Copilot CLI hooks
 node ~/.claude/hooks/copilot-install.js --remote
-```
-
-如果你的 WSL 里开启了 SSH 服务，也可以用源码备选脚本：
-
-```bash
-# 从 Windows 侧执行（Git Bash / PowerShell）：
-bash scripts/remote-deploy.sh 你的用户名@localhost
 ```
 
 配置完成后，在 Windows 上启动 Clawd，在 WSL 里运行 Claude Code —— Clawd 会自动感知你的会话。权限气泡也能正常弹出。

@@ -215,6 +215,7 @@ function createBackup(filePath, options = {}) {
   if (typeof options.backupPath === "string" && options.backupPath) {
     const backupPath = uniqueBackupPath(filePath, options);
     fs.copyFileSync(filePath, backupPath);
+    try { fs.chmodSync(backupPath, 0o600); } catch {}
     return backupPath;
   }
   // Auto-named path: COPYFILE_EXCL makes the copy fail if the destination
@@ -226,6 +227,7 @@ function createBackup(filePath, options = {}) {
     const backupPath = uniqueBackupPath(filePath, options);
     try {
       fs.copyFileSync(filePath, backupPath, fs.constants.COPYFILE_EXCL);
+      try { fs.chmodSync(backupPath, 0o600); } catch {}
       return backupPath;
     } catch (err) {
       lastErr = err;
@@ -241,6 +243,7 @@ async function createBackupAsync(filePath, options = {}) {
   if (typeof options.backupPath === "string" && options.backupPath) {
     const backupPath = uniqueBackupPath(filePath, options);
     await fs.promises.copyFile(filePath, backupPath);
+    try { await fs.promises.chmod(backupPath, 0o600); } catch {}
     return backupPath;
   }
   let lastErr;
@@ -248,6 +251,7 @@ async function createBackupAsync(filePath, options = {}) {
     const backupPath = uniqueBackupPath(filePath, options);
     try {
       await fs.promises.copyFile(filePath, backupPath, fs.constants.COPYFILE_EXCL);
+      try { await fs.promises.chmod(backupPath, 0o600); } catch {}
       return backupPath;
     } catch (err) {
       lastErr = err;

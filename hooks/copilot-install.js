@@ -106,6 +106,30 @@ function quote(value) {
   return `"${String(value).replace(/"/g, '\\"')}"`;
 }
 
+function quoteBashEnv(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function remoteHookEnvironment(options = {}) {
+  const env = options.env || process.env;
+  const out = {
+    CLAWD_REMOTE: "1",
+  };
+  const sshSecureRemote = options.sshRemote === true || env.CLAWD_SSH_REMOTE === "1";
+  if (!sshSecureRemote) return out;
+  out.CLAWD_SSH_REMOTE = "1";
+  for (const key of [
+    "CLAWD_REMOTE_IDENTITY_PATH",
+    "CLAWD_SSH_SECURE_MARKER_PATH",
+    "CLAWD_HOST_PREFIX_PATH",
+    "CLAWD_REMOTE_LAST_LOG_PATH",
+    "COPILOT_HOME",
+  ]) {
+    if (typeof env[key] === "string" && env[key]) out[key] = env[key];
+  }
+  return out;
+}
+
 /**
  * Build the per-event bash + powershell command strings Copilot CLI expects.
  * Both fields go into the same hook entry; Copilot picks the right one for
@@ -114,11 +138,16 @@ function quote(value) {
 function buildCopilotHookCommands(nodeBin, hookScript, eventName, options = {}) {
   const tail = `${quote(hookScript)} ${quote(eventName)}`;
   const command = `${quote(nodeBin)} ${tail}`;
-  const bash = options.remote ? `CLAWD_REMOTE=1 ${command}` : command;
+  const remoteEnv = options.remote ? remoteHookEnvironment(options) : null;
+  const bash = remoteEnv
+    ? `${Object.entries(remoteEnv).map(([key, value]) => (
+        value === "1" ? `${key}=1` : `${key}=${quoteBashEnv(value)}`
+      )).join(" ")} ${command}`
+    : command;
   // PowerShell needs `&` to invoke a quoted exe path as a command, otherwise
   // the quoted string is parsed as a literal.
-  const powershell = options.remote
-    ? `$env:CLAWD_REMOTE='1'; & ${command}`
+  const powershell = remoteEnv
+    ? `${Object.entries(remoteEnv).map(([key, value]) => `$env:${key}='${String(value).replace(/'/g, "''")}'`).join("; ")}; & ${command}`
     : `& ${command}`;
   return { bash, powershell };
 }
@@ -354,6 +383,8 @@ function registerCopilotHooks(options = {}) {
 
     const desired = buildCopilotHookEntry(nodeBin, hookScript, event, {
       remote: options.remote === true,
+      sshRemote: options.sshRemote === true,
+      env: options.env || process.env,
     });
 
     const idx = arr.findIndex(entryHasMarker);

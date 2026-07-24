@@ -133,6 +133,8 @@
       "agent-integrations": "doctorCheckAgentIntegrations",
       "permission-bubble-policy": "doctorCheckPermissionBubbles",
       "theme-health": "doctorCheckTheme",
+      "remote-ssh-ingress": "doctorCheckRemoteSshIngress",
+      "remote-ssh-isolation": "doctorCheckRemoteSshIsolation",
     };
     return t(core, map[check.id] || "doctorCheckUnknown");
   }

@@ -325,21 +325,29 @@ async function resolveRemoteNodeBin(options = {}) {
   return probed;
 }
 
-function remoteHookPath(scriptName) {
+function remoteHookPath(scriptName, hooksDir = null) {
   if (typeof scriptName !== "string" || !/^[a-zA-Z0-9._-]+$/.test(scriptName)) {
     throw new Error("remoteHookPath: unsafe script name");
+  }
+  if (hooksDir != null) {
+    if (typeof hooksDir !== "string"
+      || !hooksDir.startsWith("/")
+      || /[\x00-\x1f\x7f]/.test(hooksDir)) {
+      throw new Error("remoteHookPath: hooksDir must be an absolute POSIX path");
+    }
+    return quoteForPosixShellArg(`${hooksDir}/${scriptName}`);
   }
   return `"$HOME/.claude/hooks/${scriptName}"`;
 }
 
-function buildRemoteHookNodeCommand(nodeBin, scriptName, args = []) {
+function buildRemoteHookNodeCommand(nodeBin, scriptName, args = [], options = {}) {
   if (!isValidRemoteNodeBin(nodeBin)) {
     throw new Error("buildRemoteHookNodeCommand: nodeBin must be an absolute POSIX path");
   }
   const tail = Array.isArray(args) ? args : [];
   return [
     quoteForPosixShellArg(nodeBin),
-    remoteHookPath(scriptName),
+    remoteHookPath(scriptName, options.hooksDir),
     ...tail.map((arg) => quoteForPosixShellArg(String(arg))),
   ].join(" ");
 }

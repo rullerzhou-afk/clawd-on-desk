@@ -50,7 +50,10 @@ Copilot CLI 支持 `COPILOT_HOME` 环境变量重定向整个配置目录（参�
 
 ## Remote SSH
 
-`scripts/remote-deploy.sh user@host` 会自动注册 Copilot CLI hooks：`copilot-hook.js` 复制到远端 `~/.claude/hooks/`，远端 `~/.copilot/hooks/hooks.json` 注册（与 Claude Code / Codex CLI 一致）。无需手动步骤。
+**Settings → Remote SSH → 部署 / 修复 Hook** 会在 profile 解析出的 layout
+中自动注册 Copilot CLI hooks：`copilot-hook.js` 随安全 hook manifest 部署，
+`<COPILOT_HOME>/hooks/hooks.json` 与 Claude Code / Codex CLI 一起配置。
+已停用的 `scripts/remote-deploy.sh` 不是受支持的备选路径。
 
 若远端未装 Copilot CLI（`~/.copilot/` 缺失），注册步骤跳过并打 warning，部署其余流程继续。
 

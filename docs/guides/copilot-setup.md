@@ -50,7 +50,11 @@ Copilot CLI supports a `COPILOT_HOME` environment variable that redirects the en
 
 ## Remote SSH
 
-`scripts/remote-deploy.sh user@host` registers Copilot CLI hooks automatically: `copilot-hook.js` is copied to `~/.claude/hooks/` on the remote, and the remote `~/.copilot/hooks/hooks.json` is wired up alongside Claude Code and Codex CLI. No manual step required.
+**Settings → Remote SSH → Deploy / Repair Hooks** registers Copilot CLI
+hooks automatically in the profile's resolved layout: `copilot-hook.js` is
+deployed with the secure hook manifest, and `<COPILOT_HOME>/hooks/hooks.json`
+is wired up alongside Claude Code and Codex CLI. The disabled
+`scripts/remote-deploy.sh` path is not a supported fallback.
 
 If Copilot CLI is not installed on the remote (`~/.copilot/` missing), the registration step is skipped with a warning and the rest of the deploy continues.
 

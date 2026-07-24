@@ -382,6 +382,8 @@ function beginTitleEdit(session) {
   if (!session || !session.id) return;
   activeEdit = {
     sessionId: session.id,
+    rawSessionId: session.rawSessionId || session.id,
+    profileId: session.profileId || "local",
     agentId: session.agentId || null,
     host: session.host || null,
     cwd: session.cwd || "",
@@ -412,6 +414,8 @@ async function commitTitleEdit() {
       host: edit.host,
       agentId: edit.agentId,
       sessionId: edit.sessionId,
+      rawSessionId: edit.rawSessionId,
+      profileId: edit.profileId,
       cwd: edit.cwd,
       alias: edit.draft,
     });

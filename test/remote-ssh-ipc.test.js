@@ -4,7 +4,19 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("events");
 
-const { registerRemoteSshIpc } = require("../src/remote-ssh-ipc");
+const { registerRemoteSshIpc: registerRemoteSshIpcReal } = require("../src/remote-ssh-ipc");
+const { commandRegistry } = require("../src/settings-actions");
+const { REMOTE_IDENTITY_STEP_NAMES } = require("../src/remote-ssh-profile");
+
+const TEST_INSTALL_ID = "a".repeat(64);
+function registerRemoteSshIpc(options) {
+  return registerRemoteSshIpcReal({
+    getInstallationIdentity: () => ({ installId: TEST_INSTALL_ID }),
+    enableProfileIsolation: true,
+    finalizeRetiredRemoteLayoutFn: async () => ({ ok: true }),
+    ...options,
+  });
+}
 
 // Build a fake child that emulates the new tryLaunch contract: it emits
 // 'spawn' on the next tick by default; pass { error: <Error> } to make it
@@ -61,12 +73,112 @@ function mockBrowserWindow() {
 
 function mockSettingsController(profiles = [], applyCommandImpl = null) {
   const commandCalls = [];
+  let currentProfiles = profiles.map((profile) => ({ ...profile }));
   return {
-    getSnapshot: () => ({ remoteSsh: { profiles } }),
+    getSnapshot: () => ({ remoteSsh: { installId: TEST_INSTALL_ID, profiles: currentProfiles } }),
     applyCommand: async (action, args) => {
       commandCalls.push({ action, args });
+      if (action === "remoteSsh.beginIdentityRotation") {
+        currentProfiles = currentProfiles.map((profile) => profile.id === args.id
+          ? {
+              ...profile,
+              runtimeMode: profile.runtimeMode || "account-default",
+              runtimeKey: profile.runtimeKey || "account-default",
+              layoutVersion: profile.layoutVersion || 1,
+              identityTxn: {
+                runtimeKey: profile.runtimeKey || "account-default",
+                layoutVersion: profile.layoutVersion || 1,
+                phase: "rotating",
+                fromNonce: null,
+                toNonce: "b".repeat(32),
+                startedAt: 1,
+                previousExpiresAt: 900001,
+                steps: {},
+              },
+            }
+          : profile);
+        return { status: "ok" };
+      }
+      if (action === "remoteSsh.updateIdentityStep"
+        || action === "remoteSsh.commitIdentityRotation") {
+        return { status: "ok" };
+      }
+      if (action === "remoteSsh.beginRuntimeModeSwitch") {
+        currentProfiles = currentProfiles.map((profile) => {
+          if (profile.id !== args.id || profile.runtimeModeTxn) return profile;
+          return {
+            ...profile,
+            runtimeModeTxn: {
+              fromMode: profile.runtimeMode || "account-default",
+              fromKey: profile.runtimeKey || "account-default",
+              toMode: args.runtimeMode,
+              toKey: args.runtimeKey,
+              layoutVersion: 1,
+              phase: "prepared",
+              startedAt: 1,
+            },
+          };
+        });
+        return { status: "ok" };
+      }
+      if (action === "remoteSsh.advanceRuntimeModeSwitch") {
+        currentProfiles = currentProfiles.map((profile) => profile.id === args.id
+          ? {
+              ...profile,
+              runtimeModeTxn: {
+                ...profile.runtimeModeTxn,
+                phase: args.phase,
+              },
+            }
+          : profile);
+        return { status: "ok" };
+      }
+      if (action === "remoteSsh.switchRuntimeMode") {
+        currentProfiles = currentProfiles.map((profile) => {
+          if (profile.id !== args.id || !profile.runtimeModeTxn) return profile;
+          const next = {
+            ...profile,
+            runtimeMode: profile.runtimeModeTxn.toMode,
+            runtimeKey: profile.runtimeModeTxn.toKey,
+            managedDeployTargets: [],
+            isolatedActive: false,
+          };
+          delete next.runtimeModeTxn;
+          return next;
+        });
+        return { status: "ok" };
+      }
       if (applyCommandImpl) return applyCommandImpl(action, args);
       return { status: "ok" };
+    },
+    _commandCalls: commandCalls,
+  };
+}
+
+function actionBackedSettingsController(profiles = [], { failOnce = null } = {}) {
+  let snapshot = {
+    remoteSsh: {
+      installId: TEST_INSTALL_ID,
+      profiles: profiles.map((profile) => ({ ...profile })),
+    },
+  };
+  const commandCalls = [];
+  let failed = false;
+  return {
+    getSnapshot: () => snapshot,
+    applyCommand: async (action, args) => {
+      commandCalls.push({ action, args });
+      if (!failed && typeof failOnce === "function" && failOnce(action, args)) {
+        failed = true;
+        return { status: "error", message: "injected durable-write failure" };
+      }
+      const command = commandRegistry[action];
+      if (typeof command !== "function") return { status: "ok" };
+      const result = command(args, { snapshot });
+      if (result && result.commit) {
+        snapshot = { ...snapshot, ...result.commit };
+      }
+      return result;
     },
     _commandCalls: commandCalls,
   };
@@ -90,6 +202,21 @@ const baseProfile = {
   autoStartCodexMonitor: false,
   connectOnLaunch: false,
 };
+
+function ownedTarget(overrides = {}) {
+  return {
+    host: "user@pi",
+    remoteForwardPort: 23333,
+    deployedAt: 12345,
+    profileId: "p1",
+    installId: TEST_INSTALL_ID,
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    layoutVersion: 1,
+    remoteHome: "/home/user",
+    ...overrides,
+  };
+}
 
 // ── Required deps ──
 
@@ -156,6 +283,10 @@ test("remoteSsh:list-statuses returns runtime list", async () => {
   const r = await ipcMain.invoke("remoteSsh:list-statuses", null);
   assert.equal(r.status, "ok");
   assert.equal(r.statuses[0].status, "connected");
+  assert.deepEqual(r.bindingSecurity, {
+    strongStorage: false,
+    storageBackend: "unknown",
+  });
   ipc.dispose();
 });
 
@@ -315,28 +446,22 @@ test("remoteSsh:disconnect calls runtime.disconnect with id", async () => {
 
 // ── Cleanup (profile deletion) ──
 
-test("remoteSsh:cleanup disconnects, stops the monitor and uninstalls remote integrations", async () => {
+test("remoteSsh:cleanup disconnects and runs one ownership-gated uninstall transaction", async () => {
   const ipcMain = mockIpcMain();
   const { BrowserWindow } = mockBrowserWindow();
   const rt = mockRuntime();
   let disconnectId = null;
   rt.disconnect = (id) => { disconnectId = id; return { profileId: id, status: "idle" }; };
-  const stopped = [];
   const uninstalled = [];
   const ipc = registerRemoteSshIpc({
     ipcMain,
     settingsController: mockSettingsController([{
       ...baseProfile,
-      managedDeployTargets: [{
-        host: "user@pi",
-        remoteForwardPort: 23333,
-        deployedAt: 12345,
-      }],
+      managedDeployTargets: [ownedTarget()],
     }]),
     remoteSshRuntime: rt,
     BrowserWindow,
     spawn: makeSucceedingSpawn().spawn,
-    stopCodexMonitorFn: async ({ profile }) => { stopped.push(profile.id); return { ok: true }; },
     uninstallRemoteIntegrationsFn: async ({ profile }) => { uninstalled.push(profile.id); return { ok: true }; },
   });
 
@@ -345,7 +470,6 @@ test("remoteSsh:cleanup disconnects, stops the monitor and uninstalls remote int
   assert.equal(r.status, "ok");
   assert.equal(r.uninstalled, true);
   assert.equal(disconnectId, "p1");
-  assert.deepEqual(stopped, ["p1"]);
   assert.deepEqual(uninstalled, ["p1"]);
   ipc.dispose();
 });
@@ -357,11 +481,7 @@ test("remoteSsh:cleanup stays ok when the remote uninstall fails (best-effort)",
     ipcMain,
     settingsController: mockSettingsController([{
       ...baseProfile,
-      managedDeployTargets: [{
-        host: "user@pi",
-        remoteForwardPort: 23333,
-        deployedAt: 12345,
-      }],
+      managedDeployTargets: [ownedTarget()],
     }]),
     remoteSshRuntime: mockRuntime(),
     BrowserWindow,
@@ -401,7 +521,7 @@ test("remoteSsh:cleanup never mutates a never-deployed remote", async () => {
 });
 
 test("remoteSsh:cleanup preserves a shared remote still owned by another profile", async () => {
-  const target = { host: "user@pi", remoteForwardPort: 23333, deployedAt: 12345 };
+  const target = ownedTarget();
   const sibling = {
     ...baseProfile,
     id: "p2",
@@ -431,6 +551,59 @@ test("remoteSsh:cleanup preserves a shared remote still owned by another profile
   ipc.dispose();
 });
 
+test("remoteSsh:cleanup treats different isolated runtime keys on one account as separate ownership domains", async () => {
+  const targetA = ownedTarget({
+    runtimeMode: "profile-isolated",
+    runtimeKey: "runtime_a",
+    remoteHome: "/home/shared",
+  });
+  const targetB = ownedTarget({
+    profileId: "p2",
+    runtimeMode: "profile-isolated",
+    runtimeKey: "runtime_b",
+    remoteHome: "/home/shared",
+    deployedAt: 23456,
+  });
+  const cleaned = [];
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController: mockSettingsController([
+      {
+        ...baseProfile,
+        runtimeMode: "profile-isolated",
+        runtimeKey: "runtime_a",
+        layoutVersion: 1,
+        managedDeployTargets: [targetA],
+      },
+      {
+        ...baseProfile,
+        id: "p2",
+        label: "Same account, another isolated root",
+        runtimeMode: "profile-isolated",
+        runtimeKey: "runtime_b",
+        layoutVersion: 1,
+        managedDeployTargets: [targetB],
+      },
+    ]),
+    remoteSshRuntime: mockRuntime(),
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+    uninstallRemoteIntegrationsFn: async ({ profile }) => {
+      cleaned.push(profile.runtimeKey);
+      return { ok: true };
+    },
+  });
+
+  const result = await ipcMain.invoke("remoteSsh:cleanup", "p1");
+  assert.equal(result.status, "ok");
+  assert.equal(result.attempted, 1);
+  assert.equal(result.shared, 0);
+  assert.deepEqual(cleaned, ["runtime_a"]);
+  ipc.dispose();
+});
+
 test("remoteSsh:cleanup uses the deployed target after the profile was edited", async () => {
   const ipcMain = mockIpcMain();
   const { BrowserWindow } = mockBrowserWindow();
@@ -440,11 +613,7 @@ test("remoteSsh:cleanup uses the deployed target after the profile was edited", 
     settingsController: mockSettingsController([{
       ...baseProfile,
       host: "user@new-host",
-      managedDeployTargets: [{
-        host: "user@old-host",
-        remoteForwardPort: 23333,
-        deployedAt: 12345,
-      }],
+      managedDeployTargets: [ownedTarget({ host: "user@old-host" })],
     }]),
     remoteSshRuntime: mockRuntime(),
     BrowserWindow,
@@ -477,6 +646,465 @@ test("remoteSsh:cleanup errors on unknown profile", async () => {
   ipc.dispose();
 });
 
+test("remoteSsh:cleanup rejects an active identity transaction before remote mutation", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  let disconnected = false;
+  const runtime = mockRuntime();
+  runtime.disconnect = () => { disconnected = true; };
+  const profile = {
+    ...baseProfile,
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    layoutVersion: 1,
+    managedDeployTargets: [ownedTarget()],
+    identityTxn: {
+      runtimeKey: "account-default",
+      layoutVersion: 1,
+      phase: "rotating",
+      fromNonce: null,
+      toNonce: "b".repeat(32),
+      startedAt: 1,
+      previousExpiresAt: 100,
+      steps: {},
+    },
+  };
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController: mockSettingsController([profile]),
+    remoteSshRuntime: runtime,
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+  });
+  const result = await ipcMain.invoke("remoteSsh:cleanup", "p1");
+  assert.equal(result.reason, "identity_transaction_in_progress");
+  assert.equal(disconnected, false);
+  ipc.dispose();
+});
+
+test("remoteSsh:cleanup never treats a copied deployment ledger as current-install authority", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  let uninstalled = 0;
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController: mockSettingsController([{
+      ...baseProfile,
+      managedDeployTargets: [ownedTarget({ installId: "d".repeat(64) })],
+    }]),
+    remoteSshRuntime: mockRuntime(),
+    BrowserWindow,
+    uninstallRemoteIntegrationsFn: async () => {
+      uninstalled += 1;
+      return { ok: true };
+    },
+  });
+
+  const result = await ipcMain.invoke("remoteSsh:cleanup", "p1");
+  assert.equal(result.status, "ok");
+  assert.equal(result.uninstalled, false);
+  assert.equal(result.attempted, 1);
+  assert.equal(uninstalled, 0);
+  ipc.dispose();
+});
+
+test("remoteSsh:force-revoke disconnects first, persists revocation, and refreshes runtime state", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const runtime = mockRuntime();
+  const disconnected = [];
+  const refreshed = [];
+  runtime.disconnect = (id) => { disconnected.push(id); };
+  runtime.refreshProfile = (profile) => { refreshed.push(profile); return true; };
+  const controller = actionBackedSettingsController([{
+    ...baseProfile,
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    layoutVersion: 1,
+    routingNonce: "b".repeat(32),
+    previousNonce: "a".repeat(32),
+    previousExpiresAt: Date.now() + 60_000,
+    identityTxn: {
+      runtimeKey: "account-default",
+      layoutVersion: 1,
+      phase: "rotating",
+      fromNonce: "a".repeat(32),
+      toNonce: "b".repeat(32),
+      startedAt: 1,
+      previousExpiresAt: Date.now() + 60_000,
+      steps: {},
+    },
+  }]);
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController: controller,
+    remoteSshRuntime: runtime,
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+  });
+  const denied = await ipcMain.invoke("remoteSsh:force-revoke", {
+    profileId: "p1",
+    mode: "old",
+    confirmed: false,
+  });
+  assert.equal(denied.status, "error");
+  const result = await ipcMain.invoke("remoteSsh:force-revoke", {
+    profileId: "p1",
+    mode: "old",
+    confirmed: true,
+  });
+  assert.equal(result.status, "ok");
+  assert.deepEqual(disconnected, ["p1"]);
+  assert.equal(refreshed.length, 1);
+  assert.equal(refreshed[0].previousNonce, undefined);
+  assert.equal(refreshed[0].identityTxn.fromNonce, null);
+  ipc.dispose();
+});
+
+test("runtime mode switch cleans the owned old layout, bootstraps a fresh isolated root, then persists", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const settingsController = mockSettingsController([{
+    ...baseProfile,
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    layoutVersion: 1,
+    managedDeployTargets: [ownedTarget()],
+  }]);
+  const runtime = mockRuntime();
+  const disconnected = [];
+  runtime.disconnect = (id) => {
+    disconnected.push(id);
+    return { profileId: id, status: "idle" };
+  };
+  const cleanups = [];
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController,
+    remoteSshRuntime: runtime,
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+    uninstallRemoteIntegrationsFn: async (options) => {
+      cleanups.push(options.profile);
+      return { ok: true };
+    },
+    bootstrapIsolatedRuntimeFn: async ({ runtimeKey }) => ({
+      ok: true,
+      layout: {
+        runtimeRoot: `/home/user/.clawd/profiles/${runtimeKey}`,
+      },
+    }),
+  });
+
+  const result = await ipcMain.invoke("remoteSsh:set-runtime-mode", {
+    profileId: "p1",
+    runtimeMode: "profile-isolated",
+    confirmed: true,
+  });
+  assert.equal(result.status, "ok");
+  assert.match(result.runtimeKey, /^rt_[a-f0-9]{24}$/);
+  assert.equal(result.runtimeRoot, `/home/user/.clawd/profiles/${result.runtimeKey}`);
+  assert.deepEqual(disconnected, ["p1"]);
+  assert.equal(cleanups.length, 1);
+  assert.equal(cleanups[0].runtimeKey, "account-default");
+  const switchCall = settingsController._commandCalls.find(
+    (call) => call.action === "remoteSsh.switchRuntimeMode",
+  );
+  assert.deepEqual(switchCall.args, {
+    id: "p1",
+  });
+  ipc.dispose();
+});
+
+test("runtime mode switch is confirmation-gated, transaction-gated, and single-flight", async () => {
+  const profile = {
+    ...baseProfile,
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    layoutVersion: 1,
+    managedDeployTargets: [ownedTarget()],
+  };
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const settingsController = mockSettingsController([profile]);
+  let finishBootstrap;
+  const bootstrapStarted = new Promise((resolve) => {
+    finishBootstrap = resolve;
+  });
+  let notifyStarted;
+  const started = new Promise((resolve) => { notifyStarted = resolve; });
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController,
+    remoteSshRuntime: mockRuntime(),
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+    uninstallRemoteIntegrationsFn: async () => ({ ok: true }),
+    bootstrapIsolatedRuntimeFn: async ({ runtimeKey }) => {
+      notifyStarted();
+      await bootstrapStarted;
+      return {
+        ok: true,
+        layout: { runtimeRoot: `/home/user/.clawd/profiles/${runtimeKey}` },
+      };
+    },
+  });
+
+  const unconfirmed = await ipcMain.invoke("remoteSsh:set-runtime-mode", {
+    profileId: "p1",
+    runtimeMode: "profile-isolated",
+    confirmed: false,
+  });
+  assert.equal(unconfirmed.status, "error");
+
+  const firstPromise = ipcMain.invoke("remoteSsh:set-runtime-mode", {
+    profileId: "p1",
+    runtimeMode: "profile-isolated",
+    confirmed: true,
+  });
+  await started;
+  const concurrent = await ipcMain.invoke("remoteSsh:set-runtime-mode", {
+    profileId: "p1",
+    runtimeMode: "profile-isolated",
+    confirmed: true,
+  });
+  assert.equal(concurrent.reason, "runtime_mode_switch_in_progress");
+  finishBootstrap();
+  assert.equal((await firstPromise).status, "ok");
+  ipc.dispose();
+
+  const txnIpcMain = mockIpcMain();
+  const txnController = mockSettingsController([{
+    ...profile,
+    identityTxn: { phase: "rotating" },
+  }]);
+  const txnIpc = registerRemoteSshIpc({
+    ipcMain: txnIpcMain,
+    settingsController: txnController,
+    remoteSshRuntime: mockRuntime(),
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+  });
+  const blocked = await txnIpcMain.invoke("remoteSsh:set-runtime-mode", {
+    profileId: "p1",
+    runtimeMode: "profile-isolated",
+    confirmed: true,
+  });
+  assert.equal(blocked.status, "error");
+  assert.match(blocked.message, /transaction/i);
+  txnIpc.dispose();
+});
+
+test("runtime mode switch refuses to orphan an old layout without an ownership ledger", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  let bootstrapCalls = 0;
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController: mockSettingsController([{
+      ...baseProfile,
+      runtimeMode: "account-default",
+      runtimeKey: "account-default",
+      layoutVersion: 1,
+    }]),
+    remoteSshRuntime: mockRuntime(),
+    BrowserWindow,
+    bootstrapIsolatedRuntimeFn: async () => {
+      bootstrapCalls += 1;
+      return { ok: true };
+    },
+  });
+
+  const result = await ipcMain.invoke("remoteSsh:set-runtime-mode", {
+    profileId: "p1",
+    runtimeMode: "profile-isolated",
+    confirmed: true,
+  });
+  assert.equal(result.status, "error");
+  assert.equal(result.reason, "old_layout_ownership_missing");
+  assert.equal(bootstrapCalls, 0);
+  ipc.dispose();
+});
+
+test("runtime mode switch resumes the same runtimeKey after bootstrap-to-prefs interruption", async () => {
+  const target = ownedTarget();
+  const profile = {
+    ...baseProfile,
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    layoutVersion: 1,
+    managedDeployTargets: [target],
+  };
+  const settingsController = actionBackedSettingsController([profile], {
+    failOnce: (action, args) =>
+      action === "remoteSsh.advanceRuntimeModeSwitch"
+      && args.phase === "bootstrap-done",
+  });
+  let cleanupCalls = 0;
+  const bootstrapKeys = [];
+  const common = {
+    settingsController,
+    remoteSshRuntime: mockRuntime(),
+    BrowserWindow: mockBrowserWindow().BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+    uninstallRemoteIntegrationsFn: async ({ preserveIdentity }) => {
+      cleanupCalls += 1;
+      assert.equal(preserveIdentity, true);
+      return { ok: true };
+    },
+    finalizeRetiredRemoteLayoutFn: async () => ({ ok: true }),
+    bootstrapIsolatedRuntimeFn: async ({ runtimeKey }) => {
+      bootstrapKeys.push(runtimeKey);
+      return {
+        ok: true,
+        layout: { runtimeRoot: `/home/user/.clawd/profiles/${runtimeKey}` },
+      };
+    },
+  };
+
+  const firstIpcMain = mockIpcMain();
+  const firstIpc = registerRemoteSshIpc({ ipcMain: firstIpcMain, ...common });
+  const first = await firstIpcMain.invoke("remoteSsh:set-runtime-mode", {
+    profileId: "p1",
+    runtimeMode: "profile-isolated",
+    confirmed: true,
+  });
+  assert.equal(first.status, "error");
+  assert.match(first.message, /durable-write failure/i);
+  const pending = settingsController.getSnapshot().remoteSsh.profiles[0].runtimeModeTxn;
+  assert.equal(pending.phase, "cleanup-done");
+  assert.match(pending.toKey, /^rt_[a-f0-9]{24}$/);
+  firstIpc.dispose();
+
+  const secondIpcMain = mockIpcMain();
+  const secondIpc = registerRemoteSshIpc({ ipcMain: secondIpcMain, ...common });
+  const second = await secondIpcMain.invoke("remoteSsh:set-runtime-mode", {
+    profileId: "p1",
+    runtimeMode: "profile-isolated",
+    confirmed: true,
+  });
+  assert.equal(second.status, "ok");
+  assert.deepEqual(bootstrapKeys, [pending.toKey, pending.toKey]);
+  assert.equal(cleanupCalls, 1, "durably completed cleanup must not rerun");
+  const switched = settingsController.getSnapshot().remoteSsh.profiles[0];
+  assert.equal(switched.runtimeMode, "profile-isolated");
+  assert.equal(switched.runtimeKey, pending.toKey);
+  assert.equal(switched.runtimeModeTxn, undefined);
+  assert.equal(
+    settingsController._commandCalls.filter((call) =>
+      call.action === "remoteSsh.beginRuntimeModeSwitch").length,
+    1,
+    "retry must resume instead of minting a second transaction",
+  );
+  secondIpc.dispose();
+});
+
+test("isolated to account-default cleanup never deletes the retained runtime root", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const target = ownedTarget({
+    runtimeMode: "profile-isolated",
+    runtimeKey: "rt_existing",
+    remoteHome: "/home/user",
+  });
+  const settingsController = mockSettingsController([{
+    ...baseProfile,
+    runtimeMode: "profile-isolated",
+    runtimeKey: "rt_existing",
+    layoutVersion: 1,
+    isolatedActive: true,
+    managedDeployTargets: [target],
+  }]);
+  const seen = [];
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController,
+    remoteSshRuntime: mockRuntime(),
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+    uninstallRemoteIntegrationsFn: async ({ profile }) => {
+      seen.push(profile);
+      return { ok: true };
+    },
+    bootstrapIsolatedRuntimeFn: async () => {
+      throw new Error("account-default switch must not bootstrap or delete an isolated root");
+    },
+  });
+  const result = await ipcMain.invoke("remoteSsh:set-runtime-mode", {
+    profileId: "p1",
+    runtimeMode: "account-default",
+    confirmed: true,
+  });
+  assert.equal(result.status, "ok");
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].runtimeKey, "rt_existing");
+  assert.equal(result.runtimeRoot, null);
+  ipc.dispose();
+});
+
+test("profile isolation stays release-gated until the real SSH and CLI matrix is enabled", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const profile = {
+    ...baseProfile,
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    layoutVersion: 1,
+  };
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController: mockSettingsController([profile]),
+    remoteSshRuntime: mockRuntime(),
+    BrowserWindow,
+    enableProfileIsolation: false,
+  });
+  const statuses = await ipcMain.invoke("remoteSsh:list-statuses");
+  assert.equal(statuses.profileIsolationAvailable, false);
+  const result = await ipcMain.invoke("remoteSsh:set-runtime-mode", {
+    profileId: profile.id,
+    runtimeMode: "profile-isolated",
+    confirmed: true,
+  });
+  assert.equal(result.status, "error");
+  assert.equal(result.reason, "profile_isolation_validation_pending");
+  ipc.dispose();
+
+  const isolatedIpcMain = mockIpcMain();
+  const isolatedRuntime = mockRuntime();
+  let connects = 0;
+  let deploys = 0;
+  isolatedRuntime.connect = () => { connects += 1; };
+  const isolated = {
+    ...profile,
+    runtimeMode: "profile-isolated",
+    runtimeKey: "runtime_a",
+    isolatedActive: true,
+    connectOnLaunch: true,
+  };
+  const isolatedIpc = registerRemoteSshIpc({
+    ipcMain: isolatedIpcMain,
+    settingsController: mockSettingsController([isolated]),
+    remoteSshRuntime: isolatedRuntime,
+    BrowserWindow,
+    enableProfileIsolation: false,
+    deployFn: async () => {
+      deploys += 1;
+      return { ok: true };
+    },
+  });
+  const connect = await isolatedIpcMain.invoke("remoteSsh:connect", isolated.id);
+  assert.equal(connect.status, "error");
+  assert.match(connect.message, /validation matrix/i);
+  isolatedIpc.connectOnLaunchProfiles();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(connects, 0);
+  const deploy = await isolatedIpcMain.invoke("remoteSsh:deploy", isolated.id);
+  assert.equal(deploy.status, "error");
+  assert.equal(deploy.reason, "profile_isolation_validation_pending");
+  assert.equal(deploys, 0);
+  isolatedIpc.dispose();
+});
+
 // ── Deploy stamp ──
 
 test("remoteSsh:deploy stamps via markDeployed (not full update) on success", async () => {
@@ -503,12 +1131,20 @@ test("remoteSsh:deploy stamps via markDeployed (not full update) on success", as
   });
   const r = await ipcMain.invoke("remoteSsh:deploy", "p1");
   assert.equal(r.status, "ok");
-  // Exactly one command fired, and it must be markDeployed (NOT update,
-  // which would be the lost-update bug we just fixed).
-  assert.equal(settingsController._commandCalls.length, 1);
-  assert.equal(settingsController._commandCalls[0].action, "remoteSsh.markDeployed",
+  const markCall = settingsController._commandCalls.find((call) => call.action === "remoteSsh.markDeployed");
+  assert.ok(markCall, "secure deploy must stamp with markDeployed before transaction commit");
+  const markIndex = settingsController._commandCalls.findIndex(
+    (call) => call.action === "remoteSsh.markDeployed"
+  );
+  const commitIndex = settingsController._commandCalls.findIndex(
+    (call) => call.action === "remoteSsh.commitIdentityRotation"
+  );
+  assert.ok(markIndex >= 0 && commitIndex > markIndex,
+    "deployment ownership must be durable before the identity transaction commits");
+  assert.equal(settingsController._commandCalls.some((call) => call.action === "remoteSsh.update"), false);
+  assert.equal(markCall.action, "remoteSsh.markDeployed",
     "deploy stamp must use markDeployed, not full-profile update");
-  const args = settingsController._commandCalls[0].args;
+  const args = markCall.args;
   assert.equal(args.id, "p1");
   assert.ok(Number.isFinite(args.deployedAt));
   assert.ok(args.deployedAt >= before);
@@ -523,6 +1159,43 @@ test("remoteSsh:deploy stamps via markDeployed (not full update) on success", as
   // the lost-update fix.
   assert.equal(args.label, undefined,
     "markDeployed args must not carry full profile fields like label");
+  ipc.dispose();
+});
+
+test("a real deploy reducer preserves installation binding so connect works without restart", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const settingsController = actionBackedSettingsController([{
+    ...baseProfile,
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    layoutVersion: 1,
+  }]);
+  const runtime = mockRuntime();
+  let connects = 0;
+  runtime.connect = () => { connects += 1; };
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController,
+    remoteSshRuntime: runtime,
+    BrowserWindow,
+    deployFn: async ({ deps }) => {
+      for (const step of REMOTE_IDENTITY_STEP_NAMES) {
+        await deps.onIdentityStep(step, { status: "done" });
+      }
+      return {
+        ok: true,
+        layout: { remoteHome: "/home/remote-user" },
+      };
+    },
+  });
+
+  const deployed = await ipcMain.invoke("remoteSsh:deploy", "p1");
+  assert.equal(deployed.status, "ok");
+  assert.equal(settingsController.getSnapshot().remoteSsh.installId, TEST_INSTALL_ID);
+  const connected = await ipcMain.invoke("remoteSsh:connect", "p1");
+  assert.equal(connected.status, "ok");
+  assert.equal(connects, 1);
   ipc.dispose();
 });
 
@@ -550,7 +1223,9 @@ test("remoteSsh:deploy expectedTarget carries every deploy-target field (chainSt
 
   assert.equal(r.status, "ok");
   assert.equal(r.warning, undefined, "unchanged profile must not report drift");
-  const args = settingsController._commandCalls[0].args;
+  const args = settingsController._commandCalls.find(
+    (call) => call.action === "remoteSsh.markDeployed"
+  ).args;
   for (const f of DEPLOY_TARGET_FIELDS) {
     assert.ok(
       Object.prototype.hasOwnProperty.call(args.expectedTarget, f),
@@ -632,7 +1307,7 @@ test("remoteSsh:deploy returns target_drift warning when markDeployed sees drift
   ipc.dispose();
 });
 
-test("remoteSsh:deploy returns stamp_failed warning when markDeployed returns error", async () => {
+test("remoteSsh:deploy keeps the identity transaction resumable when markDeployed returns error", async () => {
   // applyCommand returns { status:"error" } for validator/persist failures
   // WITHOUT throwing — easy to miss. If we don't surface this, the UI shows
   // "Deploy succeeded" but lastDeployedAt is silently never written, so the
@@ -654,14 +1329,18 @@ test("remoteSsh:deploy returns stamp_failed warning when markDeployed returns er
     deployFn: async () => ({ ok: true }),
   });
   const r = await ipcMain.invoke("remoteSsh:deploy", "p1");
-  assert.equal(r.status, "ok", "deploy itself ran");
-  assert.equal(r.warning, "stamp_failed",
-    "non-throw stamp errors must surface as warning, not silent success");
+  assert.equal(r.status, "error");
+  assert.equal(r.step, "deployment-stamp");
   assert.match(r.message, /persist failed/);
+  assert.equal(
+    settingsController._commandCalls.some((call) => call.action === "remoteSsh.commitIdentityRotation"),
+    false,
+    "A→B must not commit until deployment ownership is durable"
+  );
   ipc.dispose();
 });
 
-test("remoteSsh:deploy returns stamp_failed warning when markDeployed throws", async () => {
+test("remoteSsh:deploy keeps the identity transaction resumable when markDeployed throws", async () => {
   const ipcMain = mockIpcMain();
   const { BrowserWindow } = mockBrowserWindow();
   const settingsController = mockSettingsController([baseProfile], async () => {
@@ -676,9 +1355,68 @@ test("remoteSsh:deploy returns stamp_failed warning when markDeployed throws", a
     deployFn: async () => ({ ok: true }),
   });
   const r = await ipcMain.invoke("remoteSsh:deploy", "p1");
-  assert.equal(r.status, "ok");
-  assert.equal(r.warning, "stamp_failed");
+  assert.equal(r.status, "error");
+  assert.equal(r.step, "deployment-stamp");
   assert.match(r.message, /controller exploded/);
+  assert.equal(
+    settingsController._commandCalls.some((call) => call.action === "remoteSsh.commitIdentityRotation"),
+    false
+  );
+  ipc.dispose();
+});
+
+test("remoteSsh:deploy retries the same nonce after deployment ownership persistence fails", async () => {
+  const { REMOTE_IDENTITY_STEP_NAMES } = require("../src/remote-ssh-profile");
+  const profile = {
+    ...baseProfile,
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    layoutVersion: 1,
+    routingNonce: "a".repeat(32),
+  };
+  const settingsController = actionBackedSettingsController([profile], {
+    failOnce: (action) => action === "remoteSsh.markDeployed",
+  });
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const attemptedNonces = [];
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController,
+    remoteSshRuntime: mockRuntime(),
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+    deployFn: async (options) => {
+      attemptedNonces.push(options.identityTxn.toNonce);
+      for (const step of REMOTE_IDENTITY_STEP_NAMES) {
+        await options.deps.onIdentityStep(step, {
+          status: "done",
+          evidence: `${step} verified`,
+        });
+      }
+      return {
+        ok: true,
+        layout: { remoteHome: "/home/user" },
+      };
+    },
+  });
+
+  const first = await ipcMain.invoke("remoteSsh:deploy", "p1");
+  assert.equal(first.status, "error");
+  assert.equal(first.step, "deployment-stamp");
+  let persisted = settingsController.getSnapshot().remoteSsh.profiles[0];
+  assert.equal(persisted.identityTxn.phase, "verifying");
+  assert.equal(persisted.routingNonce, "a".repeat(32));
+
+  const second = await ipcMain.invoke("remoteSsh:deploy", "p1");
+  assert.equal(second.status, "ok");
+  assert.equal(attemptedNonces.length, 2);
+  assert.equal(attemptedNonces[1], attemptedNonces[0], "retry must resume A→B instead of minting C");
+  persisted = settingsController.getSnapshot().remoteSsh.profiles[0];
+  assert.equal(persisted.routingNonce, attemptedNonces[0]);
+  assert.equal(persisted.identityTxn.phase, "committed");
+  assert.equal(persisted.remoteHome, "/home/user");
+  assert.equal(persisted.managedDeployTargets.length, 1);
   ipc.dispose();
 });
 
@@ -697,8 +1435,45 @@ test("remoteSsh:deploy on failure does NOT stamp lastDeployedAt", async () => {
   const r = await ipcMain.invoke("remoteSsh:deploy", "p1");
   assert.equal(r.status, "error");
   assert.equal(r.step, "scp");
-  // No update command was fired — failed deploys must not stamp.
-  assert.equal(settingsController._commandCalls.length, 0);
+  // The persisted identity transaction remains resumable, but no deploy stamp
+  // may be written until every component verifies.
+  assert.equal(
+    settingsController._commandCalls.some((call) => call.action === "remoteSsh.markDeployed"),
+    false,
+  );
+  ipc.dispose();
+});
+
+test("remoteSsh:deploy forwards legacy migration confirmation only from the structured payload", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const settingsController = mockSettingsController([baseProfile]);
+  const seen = [];
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController,
+    remoteSshRuntime: mockRuntime(),
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+    deployFn: async (options) => {
+      seen.push(options.legacyMigrationConfirmed);
+      return {
+        ok: false,
+        step: "preflight",
+        reason: "legacy_deployment_confirmation_required",
+        message: "confirmation required",
+      };
+    },
+  });
+
+  const first = await ipcMain.invoke("remoteSsh:deploy", "p1");
+  const second = await ipcMain.invoke("remoteSsh:deploy", {
+    profileId: "p1",
+    legacyMigrationConfirmed: true,
+  });
+  assert.equal(first.reason, "legacy_deployment_confirmation_required");
+  assert.equal(second.reason, "legacy_deployment_confirmation_required");
+  assert.deepEqual(seen, [false, true]);
   ipc.dispose();
 });
 
@@ -995,8 +1770,8 @@ test("dispose unregisters all handlers and detaches event listeners", () => {
     BrowserWindow,
     spawn: makeSucceedingSpawn().spawn,
   });
-  // Pre-dispose: 8 channels are registered.
-  assert.equal(ipcMain.handlers.size, 8);
+  // Pre-dispose: runtime-mode switching has its own guarded channel.
+  assert.equal(ipcMain.handlers.size, 10);
   ipc.dispose();
   assert.equal(ipcMain.handlers.size, 0);
   // After dispose, status-changed events should NOT broadcast.

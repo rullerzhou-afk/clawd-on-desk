@@ -10,6 +10,12 @@ const {
   buildToolInputFingerprint,
   findPendingPermissionForStateEvent,
 } = require("../src/server-permission-utils");
+const { makeSessionKey } = require("../src/session-key");
+
+const localSessionKey = (rawSessionId) => makeSessionKey({
+  profileId: "local",
+  rawSessionId,
+});
 
 function makeFakeHttp() {
   let capturedHandler = null;
@@ -215,7 +221,7 @@ describe("/state permission cleanup", () => {
     const pendingPermissions = [
       {
         id: "a",
-        sessionId: "sid",
+        sessionId: localSessionKey("sid"),
         toolUseId: "toolu_a",
         toolName: "Read",
         toolInputFingerprint: buildToolInputFingerprint({ file_path: "src/a.js" }),
@@ -223,7 +229,7 @@ describe("/state permission cleanup", () => {
       },
       {
         id: "b",
-        sessionId: "sid",
+        sessionId: localSessionKey("sid"),
         toolUseId: "toolu_b",
         toolName: "Read",
         toolInputFingerprint: buildToolInputFingerprint({ file_path: "src/b.js" }),
@@ -250,7 +256,7 @@ describe("/state permission cleanup", () => {
     const pendingPermissions = [
       {
         id: "qwen",
-        sessionId: "qwen-code:sid",
+        sessionId: localSessionKey("qwen-code:sid"),
         toolUseId: "toolu_qwen",
         toolName: "Bash",
         toolInputFingerprint: buildToolInputFingerprint({ command: "npm test" }),
@@ -277,8 +283,8 @@ describe("/state permission cleanup", () => {
 
   it("keeps concurrent pending requests untouched when Stop is ambiguous", async () => {
     const pendingPermissions = [
-      { id: "a", sessionId: "sid", toolName: "Bash", res: {} },
-      { id: "b", sessionId: "sid", toolName: "Bash", res: {} },
+      { id: "a", sessionId: localSessionKey("sid"), toolName: "Bash", res: {} },
+      { id: "b", sessionId: localSessionKey("sid"), toolName: "Bash", res: {} },
     ];
     const { handler, resolved } = startServer({ pendingPermissions });
 
@@ -294,7 +300,7 @@ describe("/state permission cleanup", () => {
 
   it("does not clear a single pending Bash request when another tool finishes", async () => {
     const pendingPermissions = [
-      { id: "bash", sessionId: "sid", toolName: "Bash", res: {} },
+      { id: "bash", sessionId: localSessionKey("sid"), toolName: "Bash", res: {} },
     ];
     const { handler, resolved } = startServer({ pendingPermissions });
 
@@ -313,7 +319,7 @@ describe("/state permission cleanup", () => {
     const pendingPermissions = [
       {
         id: "pending-bash",
-        sessionId: "sid",
+        sessionId: localSessionKey("sid"),
         toolUseId: "toolu_pending",
         toolName: "Bash",
         toolInputFingerprint: buildToolInputFingerprint({ command: "stat -c '%n %y' src/server.js" }),
@@ -339,7 +345,7 @@ describe("/state permission cleanup", () => {
     const pendingPermissions = [
       {
         id: "pending-bash",
-        sessionId: "sid",
+        sessionId: localSessionKey("sid"),
         toolUseId: "toolu_pending",
         toolName: "Bash",
         toolInputFingerprint: buildToolInputFingerprint({ command: "stat -c '%n %y' src/server.js" }),
@@ -365,7 +371,7 @@ describe("/state permission cleanup", () => {
     const pendingPermissions = [
       {
         id: "elicit",
-        sessionId: "sid",
+        sessionId: localSessionKey("sid"),
         toolName: "AskUserQuestion",
         toolUseId: "toolu_elicit",
         toolInputFingerprint: buildToolInputFingerprint({ questions: [{ question: "Pick one" }] }),
@@ -393,7 +399,7 @@ describe("/state permission cleanup", () => {
     const pendingPermissions = [
       {
         id: "elicit",
-        sessionId: "other-sid",
+        sessionId: localSessionKey("other-sid"),
         toolName: "AskUserQuestion",
         toolUseId: "toolu_elicit",
         isElicitation: true,
@@ -401,7 +407,7 @@ describe("/state permission cleanup", () => {
       },
       {
         id: "bash-perm",
-        sessionId: "sid",
+        sessionId: localSessionKey("sid"),
         toolUseId: "toolu_bash_perm",
         toolName: "Bash",
         res: {},
@@ -426,7 +432,7 @@ describe("/state permission cleanup", () => {
     const pendingPermissions = [
       {
         id: "pending-bash",
-        sessionId: "sid",
+        sessionId: localSessionKey("sid"),
         toolName: "Bash",
         toolInputFingerprint: buildToolInputFingerprint({ command }),
         res: {},

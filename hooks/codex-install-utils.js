@@ -12,9 +12,12 @@ const {
   formatNodeHookCommand,
 } = require("./json-utils");
 
-const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".codex");
-const DEFAULT_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, "hooks.json");
-const DEFAULT_FEATURES_CONFIG = path.join(DEFAULT_PARENT_DIR, "config.toml");
+function resolveCodexHome(options = {}) {
+  if (typeof options.codexDir === "string" && options.codexDir.trim()) return options.codexDir.trim();
+  const env = options.env || process.env;
+  if (typeof env.CODEX_HOME === "string" && env.CODEX_HOME.trim()) return env.CODEX_HOME.trim();
+  return path.join(options.homeDir || os.homedir(), ".codex");
+}
 
 const CODEX_HOOK_EVENTS = [
   "SessionStart",
@@ -32,8 +35,7 @@ function timeoutForCodexEvent(event) {
 }
 
 function getCodexPaths(options = {}) {
-  const homeDir = options.homeDir || os.homedir();
-  const codexDir = options.codexDir || path.join(homeDir, ".codex");
+  const codexDir = resolveCodexHome(options);
   return {
     codexDir,
     hooksPath: options.hooksPath || path.join(codexDir, "hooks.json"),
@@ -474,9 +476,31 @@ function registerCodexCommandHooks(options = {}) {
       ? extractExistingWindowsNodeBin(settings, marker)
       : extractExistingNodeBin(settings, marker, { nested: true }))
     || "node";
+  const processEnv = options.processEnv || process.env;
+  const sshSecureRemote = options.remote === true
+    && (options.sshRemote === true || processEnv.CLAWD_SSH_REMOTE === "1");
+  const remoteSecureEnv = options.remote ? {
+    CLAWD_REMOTE: "1",
+    ...(sshSecureRemote ? {
+      CLAWD_SSH_REMOTE: "1",
+      ...(processEnv.CLAWD_REMOTE_IDENTITY_PATH
+        ? { CLAWD_REMOTE_IDENTITY_PATH: processEnv.CLAWD_REMOTE_IDENTITY_PATH }
+        : {}),
+      ...(processEnv.CLAWD_SSH_SECURE_MARKER_PATH
+        ? { CLAWD_SSH_SECURE_MARKER_PATH: processEnv.CLAWD_SSH_SECURE_MARKER_PATH }
+        : {}),
+      ...(processEnv.CLAWD_HOST_PREFIX_PATH
+        ? { CLAWD_HOST_PREFIX_PATH: processEnv.CLAWD_HOST_PREFIX_PATH }
+        : {}),
+      ...(processEnv.CLAWD_REMOTE_LAST_LOG_PATH
+        ? { CLAWD_REMOTE_LAST_LOG_PATH: processEnv.CLAWD_REMOTE_LAST_LOG_PATH }
+        : {}),
+      ...(processEnv.CODEX_HOME ? { CODEX_HOME: processEnv.CODEX_HOME } : {}),
+    } : {}),
+  } : {};
   const commandEnv = {
     ...(options.env || {}),
-    ...(options.remote ? { CLAWD_REMOTE: "1" } : {}),
+    ...remoteSecureEnv,
   };
   // On a Windows host, a WSL session may consume this hooks.json through a
   // shared CODEX_HOME (#544). Codex resolves `commandWindows` on Windows and
@@ -634,9 +658,6 @@ function unregisterCodexCommandHooks(options = {}) {
 }
 
 module.exports = {
-  DEFAULT_PARENT_DIR,
-  DEFAULT_CONFIG_PATH,
-  DEFAULT_FEATURES_CONFIG,
   CODEX_HOOK_EVENTS,
   CODEX_HOOKS_FEATURE_KEY,
   LEGACY_CODEX_HOOKS_FEATURE_KEY,
@@ -651,4 +672,18 @@ module.exports = {
   unregisterCodexCommandHooks,
   windowsPathToWslPath,
   withCommandEnv,
+  resolveCodexHome,
 };
+
+Object.defineProperty(module.exports, "DEFAULT_PARENT_DIR", {
+  enumerable: true,
+  get() { return resolveCodexHome(); },
+});
+Object.defineProperty(module.exports, "DEFAULT_CONFIG_PATH", {
+  enumerable: true,
+  get() { return path.join(resolveCodexHome(), "hooks.json"); },
+});
+Object.defineProperty(module.exports, "DEFAULT_FEATURES_CONFIG", {
+  enumerable: true,
+  get() { return path.join(resolveCodexHome(), "config.toml"); },
+});

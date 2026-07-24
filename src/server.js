@@ -5,12 +5,13 @@ const fs = require("fs");
 const http = require("http");
 const {
   DEFAULT_SERVER_PORT,
-  RUNTIME_CONFIG_PATH,
+  defaultRuntimeConfigPath,
   buildPermissionUrl,
   clearRuntimeConfig,
   getPortCandidates,
   readRuntimeIdentity,
   readRuntimePort,
+  ROUTING_NONCE_HEADER,
   writeRuntimeConfig,
 } = require("../hooks/server-config");
 const { processAlive } = require("../hooks/shared-process");
@@ -18,7 +19,7 @@ const {
   getClaudeHookScriptPath,
   getClaudeAutoStartScriptPath,
   CLAUDE_CORE_HOOK_EVENTS,
-  DEFAULT_CONFIG_PATH: CLAUDE_DEFAULT_CONFIG_PATH,
+  resolveClaudeSettingsPath,
 } = require("../hooks/install");
 const { inspectClaudeHookHealth, isExplicitRepairVerified } = require("./claude-hook-health");
 const {
@@ -39,6 +40,7 @@ const {
   shouldBypassCodexBubble,
   shouldBypassFamilyBubble,
 } = require("./server-route-permission");
+const { createRemoteSshIngress } = require("./remote-ssh-ingress");
 const {
   getCodexOfficialTurnKey,
   resolveCodexOfficialHookState,
@@ -78,7 +80,9 @@ const isProcessAliveFn = ctx.isProcessAlive || processAlive;
 // two reads, two JSON.parses and a kill() syscall to build a string that ignores
 // all of them, and which drags three throw-capable seams into the callsite.
 function runtimeConfigFilePath() {
-  return typeof ctx.runtimeConfigPath === "string" ? ctx.runtimeConfigPath : RUNTIME_CONFIG_PATH;
+  return typeof ctx.runtimeConfigPath === "string"
+    ? ctx.runtimeConfigPath
+    : defaultRuntimeConfigPath();
 }
 const CLAUDE_HOOK_GUARD_NOTICE_TTL_MS = 30 * 60 * 1000;
 
@@ -226,7 +230,7 @@ const claudeCoreEventsForHealth = Array.isArray(ctx.coreEvents) ? ctx.coreEvents
 const claudeHookPlatformForHealth = ctx.platform || process.platform;
 const claudeSettingsVerifyPath = typeof ctx.claudeSettingsPath === "string"
   ? ctx.claudeSettingsPath
-  : CLAUDE_DEFAULT_CONFIG_PATH;
+  : resolveClaudeSettingsPath();
 
 function claudeHookSourceMissing({ requireAutoStart = false } = {}) {
   try {
@@ -599,8 +603,19 @@ function stopClaudeSettingsWatcher() {
   return claudeSettingsWatcher.stop();
 }
 
-function startHttpServer() {
-  httpServer = createHttpServer((req, res) => {
+function routeHttpRequest(req, res, remoteProfile = null) {
+    // Secure Remote SSH traffic must terminate at its profile-bound ingress,
+    // never at the compatibility-oriented local main server. Rejecting the
+    // nonce header here makes stale manual RemoteForward/proxy rules fail
+    // closed instead of silently dropping trusted profile stamping.
+    if (!remoteProfile
+      && req
+      && req.headers
+      && Object.prototype.hasOwnProperty.call(req.headers, ROUTING_NONCE_HEADER)) {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("not found");
+      return;
+    }
     if (req.method === "GET" && req.url === "/state") {
       sendStateHealthResponse(res, { getHookServerPort });
     } else if (req.method === "POST" && req.url === "/state") {
@@ -610,16 +625,32 @@ function startHttpServer() {
         shouldDropForDnd,
         codexOfficialTurns,
         captureForegroundWindowsTerminal: ctx.captureForegroundWindowsTerminal,
+        remoteProfile,
       });
     } else if (req.method === "POST" && req.url === "/permission") {
       handlePermissionPost(req, res, {
         ctx,
         createRequestHookRecorder,
+        remoteProfile,
       });
     } else {
       res.writeHead(404);
       res.end();
     }
+}
+
+function openRemoteSshIngress({ remoteProfile, getAcceptedNonces, createServer } = {}) {
+  return createRemoteSshIngress({
+    remoteProfile,
+    getAcceptedNonces,
+    routeRequest: routeHttpRequest,
+    ...(createServer ? { createServer } : {}),
+  });
+}
+
+function startHttpServer() {
+  httpServer = createHttpServer((req, res) => {
+    routeHttpRequest(req, res, null);
   });
 
   const listenPorts = getPortCandidatesFn();
@@ -731,6 +762,7 @@ function cleanup() {
 
 return {
   startHttpServer,
+  openRemoteSshIngress,
   getHookServerPort,
   getRuntimeStatus,
   getClaudeHookGuardStatus,

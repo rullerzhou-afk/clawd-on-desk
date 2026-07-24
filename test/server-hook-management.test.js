@@ -9,6 +9,7 @@ const {
   MAX_CODEX_OFFICIAL_TURNS,
   resolveCodexOfficialHookState,
 } = require("../src/server-codex-official-turns");
+const { makeSessionKey } = require("../src/session-key");
 const { getClaudeHookScriptPath, getClaudeAutoStartScriptPath } = require("../hooks/install");
 
 const EXPECTED_HOOK_SCRIPT_PATH = getClaudeHookScriptPath();
@@ -1225,6 +1226,60 @@ describe("Codex official hook turn tracking", () => {
 
     assert.deepStrictEqual(subStop, { state: "idle", drop: false });
     assert.deepStrictEqual(rootStop, { state: "attention", drop: false });
+    assert.strictEqual(turns.size, 0);
+  });
+
+  it("uses the canonical profile session for turns and classifier state when raw ids overlap", () => {
+    const turns = new Map();
+    const roles = new Map();
+    const classifier = {
+      registerSession(sessionId, { hookRole }) {
+        if (hookRole === "subagent" || hookRole === "root") roles.set(sessionId, hookRole);
+        return roles.get(sessionId) || "unknown";
+      },
+    };
+    const raw = "copied-session";
+    const a = makeSessionKey({ profileId: "profile-a", rawSessionId: raw });
+    const b = makeSessionKey({ profileId: "profile-b", rawSessionId: raw });
+    const base = {
+      agent_id: "codex",
+      hook_source: "codex-official",
+      session_id: raw,
+      turn_id: "same-turn",
+    };
+
+    resolveCodexOfficialHookState({
+      ...base,
+      event: "UserPromptSubmit",
+      codex_session_role: "subagent",
+    }, "thinking", turns, classifier, a);
+    resolveCodexOfficialHookState({
+      ...base,
+      event: "PreToolUse",
+      codex_session_role: "subagent",
+    }, "working", turns, classifier, a);
+    resolveCodexOfficialHookState({
+      ...base,
+      event: "UserPromptSubmit",
+      codex_session_role: "root",
+    }, "thinking", turns, classifier, b);
+
+    const bStop = resolveCodexOfficialHookState({
+      ...base,
+      event: "Stop",
+      codex_session_role: "root",
+    }, "idle", turns, classifier, b);
+    assert.strictEqual(turns.has(`${a}|same-turn`), true);
+    assert.strictEqual(turns.has(`${b}|same-turn`), false);
+    const aStop = resolveCodexOfficialHookState({
+      ...base,
+      event: "Stop",
+      codex_session_role: "subagent",
+    }, "idle", turns, classifier, a);
+
+    assert.deepStrictEqual(bStop, { state: "idle", drop: false });
+    assert.deepStrictEqual(aStop, { state: "idle", drop: false, headless: true });
+    assert.deepStrictEqual([...roles.keys()].sort(), [a, b].sort());
     assert.strictEqual(turns.size, 0);
   });
 

@@ -128,9 +128,14 @@ Fallback monitor에서 `~`는 현재 실행 중인 프로세스의 `os.homedir()
 
 ### 원격/우회 패턴은 이미 있지만 WSL 기본 지원과는 다릅니다
 
-이 저장소에는 [`scripts/remote-deploy.sh`](../../scripts/remote-deploy.sh)가 있으며, Codex hook 파일을 복사하고 원격에서 `node ~/.claude/hooks/codex-install.js --remote`를 실행해 official hooks가 SSH reverse tunnel을 통해 `CLAWD_REMOTE=1`로 로컬 Clawd에 POST하게 합니다.
+이 저장소의 원격 배포는 앱의 **Settings → Remote SSH → Deploy / Repair
+Hooks**에서 수행합니다. profile별 runtime layout과 전용 ingress, routing
+identity를 사용합니다. [`scripts/remote-deploy.sh`](../../scripts/remote-deploy.sh)는
+이 보안 transaction에 참여할 수 없으므로 의도적으로 비활성화되었습니다.
 
-또한 [`hooks/codex-remote-monitor.js`](../../hooks/codex-remote-monitor.js)도 유지합니다. 반대편 환경에서 `~/.codex/sessions`를 폴링한 뒤 상태를 Windows의 Clawd로 POST할 수 있으며, official hooks가 불가능하거나 꺼진 경우의 fallback입니다.
+또한 [`hooks/codex-remote-monitor.js`](../../hooks/codex-remote-monitor.js)도
+유지합니다. 반대편 환경에서 확인된 `<CODEX_HOME>/sessions`를 폴링하며,
+Remote SSH에서는 같은 identity-pinned layout 안에서만 실행됩니다.
 
 현재 이 스크립트는 문서상 원격 SSH 시나리오에 맞춰 설명되어 있습니다. 즉, "로그는 다른 쪽에 있고 상태만 돌려보낸다"는 패턴은 이미 있지만, 이것이 곧 "Clawd가 WSL 안의 Codex를 기본값으로 자동 감지한다"는 뜻은 아닙니다.
 

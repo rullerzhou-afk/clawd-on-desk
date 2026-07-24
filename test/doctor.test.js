@@ -34,13 +34,15 @@ describe("doctor aggregate checks", () => {
     );
   });
 
-  it("runs all four Step 1 checks through injectable dependencies", () => {
+  it("runs all checks through injectable dependencies", () => {
     const result = runDoctorChecks({
       prefs: { theme: "clawd" },
       checkLocalServer: () => ({ id: "local-server", status: "pass", level: null }),
       checkAgentIntegrations: () => ({ id: "agent-integrations", status: "pass", level: null, details: [] }),
       checkPermissionBubblePolicy: () => ({ id: "permission-bubble-policy", status: "pass", level: null }),
       checkThemeHealth: () => ({ id: "theme-health", status: "pass", level: null }),
+      checkRemoteSshIngress: () => ({ id: "remote-ssh-ingress", status: "pass", level: null, rejectedCount: 0 }),
+      checkRemoteSshIsolation: () => ({ id: "remote-ssh-isolation", status: "pass", level: null }),
     });
 
     assert.strictEqual(result.overall.status, "pass");
@@ -49,6 +51,52 @@ describe("doctor aggregate checks", () => {
       "agent-integrations",
       "permission-bubble-policy",
       "theme-health",
+      "remote-ssh-ingress",
+      "remote-ssh-isolation",
     ]);
+  });
+
+  it("surfaces the numeric Remote SSH ingress rejection count", () => {
+    const result = runDoctorChecks({
+      checkLocalServer: () => ({ id: "local-server", status: "pass" }),
+      checkAgentIntegrations: () => ({ id: "agent-integrations", status: "pass" }),
+      checkPermissionBubblePolicy: () => ({ id: "permission-bubble-policy", status: "pass" }),
+      checkThemeHealth: () => ({ id: "theme-health", status: "pass" }),
+      getRemoteSshStatuses: () => [
+        { profileId: "a", ingressRejectedCount: 2 },
+        { profileId: "b", ingressRejectedCount: 3 },
+      ],
+    });
+    const ingress = result.checks.find((check) => check.id === "remote-ssh-ingress");
+    assert.strictEqual(ingress.rejectedCount, 5);
+    assert.strictEqual(ingress.status, "warning");
+    assert.match(ingress.detail, /5/);
+    assert.strictEqual(result.overall.status, "warning");
+  });
+
+  it("surfaces experimental isolation boundaries and interrupted mode switches", () => {
+    const result = runDoctorChecks({
+      prefs: {
+        remoteSsh: {
+          profiles: [{
+            id: "p1",
+            runtimeMode: "profile-isolated",
+            isolatedActive: false,
+            runtimeModeTxn: { phase: "cleanup-done" },
+          }],
+        },
+      },
+      checkLocalServer: () => ({ id: "local-server", status: "pass" }),
+      checkAgentIntegrations: () => ({ id: "agent-integrations", status: "pass" }),
+      checkPermissionBubblePolicy: () => ({ id: "permission-bubble-policy", status: "pass" }),
+      checkThemeHealth: () => ({ id: "theme-health", status: "pass" }),
+    });
+    const isolation = result.checks.find((check) => check.id === "remote-ssh-isolation");
+    assert.strictEqual(isolation.status, "warning");
+    assert.strictEqual(isolation.inactiveCount, 1);
+    assert.strictEqual(isolation.pendingSwitchCount, 1);
+    assert.match(isolation.detail, /same Unix UID/i);
+    assert.match(isolation.detail, /project-local config/i);
+    assert.match(isolation.detail, /Keychain/i);
   });
 });

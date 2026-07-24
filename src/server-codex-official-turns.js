@@ -29,9 +29,11 @@ function resolveCodexOfficialStopState(current, data) {
   return hasCodexAssistantCompletionOutput(data) ? "attention" : "idle";
 }
 
-function classifyCodexOfficialSession(data, classifier) {
+function classifyCodexOfficialSession(data, classifier, sessionIdOverride = null) {
   if (!classifier || typeof classifier.registerSession !== "function") return "unknown";
-  const sessionId = typeof data.session_id === "string" && data.session_id ? data.session_id : "default";
+  const sessionId = typeof sessionIdOverride === "string" && sessionIdOverride
+    ? sessionIdOverride
+    : (typeof data.session_id === "string" && data.session_id ? data.session_id : "default");
   try {
     return classifier.registerSession(sessionId, {
       hookPayload: data,
@@ -42,15 +44,23 @@ function classifyCodexOfficialSession(data, classifier) {
   }
 }
 
-function resolveCodexOfficialHookState(data, requestedState, turns, classifier = null) {
+function resolveCodexOfficialHookState(
+  data,
+  requestedState,
+  turns,
+  classifier = null,
+  sessionIdOverride = null,
+) {
   if (!data || data.agent_id !== "codex" || data.hook_source !== CODEX_OFFICIAL_HOOK_SOURCE) {
     return { state: requestedState, drop: false };
   }
 
   const event = typeof data.event === "string" ? data.event : "";
   const turnId = typeof data.turn_id === "string" && data.turn_id ? data.turn_id : null;
-  const sessionId = typeof data.session_id === "string" && data.session_id ? data.session_id : "default";
-  const sessionRole = classifyCodexOfficialSession(data, classifier);
+  const sessionId = typeof sessionIdOverride === "string" && sessionIdOverride
+    ? sessionIdOverride
+    : (typeof data.session_id === "string" && data.session_id ? data.session_id : "default");
+  const sessionRole = classifyCodexOfficialSession(data, classifier, sessionId);
   const isSubagent = sessionRole === CODEX_SESSION_ROLE_SUBAGENT;
   const headless = isSubagent ? { headless: true } : {};
   const turnKey = getCodexOfficialTurnKey(sessionId, turnId);

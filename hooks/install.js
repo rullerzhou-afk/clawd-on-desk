@@ -7,7 +7,20 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const childProcess = require("child_process");
-const { buildPermissionUrl, DEFAULT_SERVER_PORT, PERMISSION_PATH, readRuntimePort, REMOTE_HOOK_HTTP_TIMEOUT_MS, resolveNodeBin, resolveNodeBinAsync, SERVER_PORTS } = require("./server-config");
+const {
+  buildPermissionUrl,
+  DEFAULT_SERVER_PORT,
+  isManagedPermissionUrl,
+  PERMISSION_PATH,
+  readRuntimePort,
+  readRemoteIdentity,
+  resolveRemoteIdentityPath,
+  resolveSshSecureMarkerPath,
+  REMOTE_HOOK_HTTP_TIMEOUT_MS,
+  resolveNodeBin,
+  resolveNodeBinAsync,
+  SERVER_PORTS,
+} = require("./server-config");
 const {
   readJsonFile,
   readJsonFileAsync,
@@ -20,8 +33,24 @@ const {
   extractExistingNodeBin,
 } = require("./json-utils");
 
-const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".claude");
-const DEFAULT_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, "settings.json");
+function resolveClaudeHome(options = {}) {
+  const env = options.env || process.env;
+  const configured = typeof options.claudeHome === "string"
+    ? options.claudeHome
+    : env.CLAUDE_CONFIG_DIR;
+  if (typeof configured === "string" && configured.trim()) {
+    return configured.trim();
+  }
+  return path.join(options.homeDir || os.homedir(), ".claude");
+}
+
+function resolveClaudeSettingsPath(options = {}) {
+  return options.settingsPath || path.join(resolveClaudeHome(options), "settings.json");
+}
+
+function resolveClaudeHooksDir(options = {}) {
+  return options.hooksDir || path.join(resolveClaudeHome(options), "hooks");
+}
 
 // Hooks supported by all Claude Code versions
 const CORE_HOOKS = [
@@ -504,7 +533,7 @@ function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {
   if (options.remote) {
     return withHookOptions({
       type: "command",
-      command: `CLAWD_REMOTE=1 ${shellQuotedCommand}`,
+      command: `${buildRemoteHookEnvPrefix(options)} ${shellQuotedCommand}`,
     });
   }
 
@@ -534,6 +563,60 @@ function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {
     type: "command",
     command: shellQuotedCommand,
   });
+}
+
+function quotePosixEnvValue(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function isSshSecureRemoteInstall(options = {}) {
+  const env = options.env || process.env;
+  return options.remote === true
+    && (options.sshRemote === true || env.CLAWD_SSH_REMOTE === "1");
+}
+
+function buildRemoteHookEnvPrefix(options = {}) {
+  if (!isSshSecureRemoteInstall(options)) return "CLAWD_REMOTE=1";
+  const identityPath = resolveRemoteIdentityPath(options);
+  const markerPath = resolveSshSecureMarkerPath(options);
+  const hostPrefixPath = options.hostPrefixPath
+    || (options.env || process.env).CLAWD_HOST_PREFIX_PATH
+    || path.join(path.dirname(identityPath), "clawd-host-prefix");
+  const remoteLastLogPath = options.remoteLastLogPath
+    || (options.env || process.env).CLAWD_REMOTE_LAST_LOG_PATH
+    || path.join(path.dirname(identityPath), "clawd-remote-last-error.log");
+  const statuslineSidecarPath = options.statuslineSidecarPath
+    || (options.env || process.env).CLAWD_STATUSLINE_SIDECAR_PATH
+    || path.join(path.dirname(identityPath), "clawd-statusline-chain.json");
+  return [
+    "CLAWD_REMOTE=1",
+    "CLAWD_SSH_REMOTE=1",
+    `CLAWD_REMOTE_IDENTITY_PATH=${quotePosixEnvValue(identityPath)}`,
+    `CLAWD_SSH_SECURE_MARKER_PATH=${quotePosixEnvValue(markerPath)}`,
+    `CLAWD_HOST_PREFIX_PATH=${quotePosixEnvValue(hostPrefixPath)}`,
+    `CLAWD_REMOTE_LAST_LOG_PATH=${quotePosixEnvValue(remoteLastLogPath)}`,
+    `CLAWD_STATUSLINE_SIDECAR_PATH=${quotePosixEnvValue(statuslineSidecarPath)}`,
+  ].join(" ");
+}
+
+function requireRemoteInstallIdentity(options = {}) {
+  if (!isSshSecureRemoteInstall(options)) return null;
+  const identity = options.remoteIdentity && options.remoteIdentity.ok !== undefined
+    ? options.remoteIdentity
+    : readRemoteIdentity(options);
+  if (!identity || identity.ok !== true) {
+    const reason = identity && identity.reason ? identity.reason : "identity-invalid";
+    throw new Error(`Secure Remote SSH identity is required before installing hooks (${reason})`);
+  }
+  return identity;
+}
+
+function resolveRemotePermissionTransport(options = {}) {
+  if (options.remote !== true) return "path";
+  const value = options.remotePermissionTransport
+    || (options.env || process.env).CLAWD_REMOTE_PERMISSION_TRANSPORT
+    || "path";
+  return value === "query" || value === "native" ? value : "path";
 }
 
 function forEachCommandHook(entries, visitor) {
@@ -585,22 +668,7 @@ function syncCommandHook(entries, marker, expectedHook) {
 }
 
 function isClawdPermissionUrl(url) {
-  if (typeof url !== "string" || !url) return false;
-  try {
-    const parsed = new URL(url);
-    const port = Number(parsed.port);
-    return parsed.protocol === "http:"
-      && parsed.hostname === "127.0.0.1"
-      && parsed.pathname === HTTP_MARKER
-      && parsed.search === ""
-      && parsed.hash === ""
-      && parsed.username === ""
-      && parsed.password === ""
-      && Number.isInteger(port)
-      && SERVER_PORTS.includes(port);
-  } catch {
-    return false;
-  }
+  return isManagedPermissionUrl(url);
 }
 
 function isClawdPermissionHook(entry) {
@@ -837,9 +905,11 @@ function resolveWritePath(settingsPath) {
 }
 
 function registerHooks(options = {}) {
-  const settingsPath = options.settingsPath || path.join(os.homedir(), ".claude", "settings.json");
+  const settingsPath = resolveClaudeSettingsPath(options);
   const writePath = resolveWritePath(settingsPath);
-  const hookPort = getHookServerPort(options.port);
+  const remoteIdentity = requireRemoteInstallIdentity(options);
+  const remotePermissionTransport = resolveRemotePermissionTransport(options);
+  const hookPort = remoteIdentity ? remoteIdentity.remotePort : getHookServerPort(options.port);
   const hookScript = getClaudeHookScriptPath();
   const platform = options.platform || process.platform;
   const wslDistro = resolveInstallWslDistro(options);
@@ -920,9 +990,13 @@ function registerHooks(options = {}) {
     const desiredHook = buildCommandHookSpec(nodeBin, hookScript, event, {
       platform,
       remote: options.remote,
+      sshRemote: options.sshRemote,
       wslDistro,
       async: true,
       timeout: options.remote ? REMOTE_STATE_HOOK_TIMEOUT_SECONDS : STATE_HOOK_TIMEOUT_SECONDS,
+      remoteIdentityPath: options.remoteIdentityPath || (remoteIdentity && remoteIdentity.filePath),
+      secureMarkerPath: options.secureMarkerPath,
+      hostPrefixPath: options.hostPrefixPath,
     });
     const commandSync = syncCommandHook(settings.hooks[event], MARKER, desiredHook);
     if (commandSync.found) {
@@ -1005,12 +1079,31 @@ function registerHooks(options = {}) {
 
   // Register HTTP hooks (permission decision collection)
   for (const [event, { matcher, hook }] of Object.entries(HTTP_HOOKS)) {
+    if (remotePermissionTransport === "native") {
+      const removedHttp = removeMatchingHttpHooks(
+        settings.hooks[event],
+        (entry) => isManagedPermissionUrl(entry && entry.url),
+      );
+      if (removedHttp.changed) {
+        settings.hooks[event] = removedHttp.entries;
+        removed += removedHttp.removed;
+        changed = true;
+      }
+      continue;
+    }
     if (!Array.isArray(settings.hooks[event])) {
       settings.hooks[event] = [];
       changed = true;
     }
 
-    const desiredHook = { ...hook, url: buildPermissionUrl(hookPort) };
+    const desiredHook = {
+      ...hook,
+      url: buildPermissionUrl(
+        hookPort,
+        remoteIdentity && remoteIdentity.routingNonce,
+        remotePermissionTransport,
+      ),
+    };
     const httpSync = syncHttpHook(settings.hooks[event], desiredHook.url);
     if (httpSync.found) {
       if (httpSync.changed) {
@@ -1120,9 +1213,11 @@ async function resolveConfiguredNodeBinAsync(options, settings) {
 }
 
 async function registerHooksAsync(options = {}) {
-  const settingsPath = options.settingsPath || path.join(os.homedir(), ".claude", "settings.json");
+  const settingsPath = resolveClaudeSettingsPath(options);
   const writePath = resolveWritePath(settingsPath);
-  const hookPort = getHookServerPort(options.port);
+  const remoteIdentity = requireRemoteInstallIdentity(options);
+  const remotePermissionTransport = resolveRemotePermissionTransport(options);
+  const hookPort = remoteIdentity ? remoteIdentity.remotePort : getHookServerPort(options.port);
   const hookScript = getClaudeHookScriptPath();
   const platform = options.platform || process.platform;
   const wslDistro = resolveInstallWslDistro(options);
@@ -1187,9 +1282,13 @@ async function registerHooksAsync(options = {}) {
     const desiredHook = buildCommandHookSpec(nodeBin, hookScript, event, {
       platform,
       remote: options.remote,
+      sshRemote: options.sshRemote,
       wslDistro,
       async: true,
       timeout: options.remote ? REMOTE_STATE_HOOK_TIMEOUT_SECONDS : STATE_HOOK_TIMEOUT_SECONDS,
+      remoteIdentityPath: options.remoteIdentityPath || (remoteIdentity && remoteIdentity.filePath),
+      secureMarkerPath: options.secureMarkerPath,
+      hostPrefixPath: options.hostPrefixPath,
     });
     const commandSync = syncCommandHook(settings.hooks[event], MARKER, desiredHook);
     if (commandSync.found) {
@@ -1263,12 +1362,31 @@ async function registerHooksAsync(options = {}) {
   }
 
   for (const [event, { matcher, hook }] of Object.entries(HTTP_HOOKS)) {
+    if (remotePermissionTransport === "native") {
+      const removedHttp = removeMatchingHttpHooks(
+        settings.hooks[event],
+        (entry) => isManagedPermissionUrl(entry && entry.url),
+      );
+      if (removedHttp.changed) {
+        settings.hooks[event] = removedHttp.entries;
+        removed += removedHttp.removed;
+        changed = true;
+      }
+      continue;
+    }
     if (!Array.isArray(settings.hooks[event])) {
       settings.hooks[event] = [];
       changed = true;
     }
 
-    const desiredHook = { ...hook, url: buildPermissionUrl(hookPort) };
+    const desiredHook = {
+      ...hook,
+      url: buildPermissionUrl(
+        hookPort,
+        remoteIdentity && remoteIdentity.routingNonce,
+        remotePermissionTransport,
+      ),
+    };
     const httpSync = syncHttpHook(settings.hooks[event], desiredHook.url);
     if (httpSync.found) {
       if (httpSync.changed) {
@@ -1343,7 +1461,7 @@ async function registerHooksAsync(options = {}) {
 }
 
 function unregisterHooks(options = {}) {
-  const settingsPath = options.settingsPath || path.join(os.homedir(), ".claude", "settings.json");
+  const settingsPath = resolveClaudeSettingsPath(options);
   const writePath = resolveWritePath(settingsPath);
   let settings = {};
   try {
@@ -1392,7 +1510,7 @@ function unregisterHooks(options = {}) {
 }
 
 async function unregisterHooksAsync(options = {}) {
-  const settingsPath = options.settingsPath || path.join(os.homedir(), ".claude", "settings.json");
+  const settingsPath = resolveClaudeSettingsPath(options);
   const writePath = resolveWritePath(settingsPath);
   let settings = {};
   try {
@@ -1445,8 +1563,8 @@ async function unregisterHooksAsync(options = {}) {
  * Also removes legacy auto-start.sh entries.
  * @returns {boolean} true if a hook was removed
  */
-function unregisterAutoStart() {
-  const settingsPath = path.join(os.homedir(), ".claude", "settings.json");
+function unregisterAutoStart(options = {}) {
+  const settingsPath = resolveClaudeSettingsPath(options);
   const writePath = resolveWritePath(settingsPath);
   let settings;
   try {
@@ -1485,8 +1603,8 @@ function unregisterAutoStart() {
  * Check if the auto-start hook is currently registered in settings.json.
  * @returns {boolean}
  */
-function isAutoStartRegistered() {
-  const settingsPath = path.join(os.homedir(), ".claude", "settings.json");
+function isAutoStartRegistered(options = {}) {
+  const settingsPath = resolveClaudeSettingsPath(options);
   try {
     const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
     const arr = settings.hooks && settings.hooks.SessionStart;
@@ -1507,8 +1625,8 @@ function isAutoStartRegistered() {
 const STATUSLINE_MARKER = "claude-statusline.js";
 const STATUSLINE_CHAIN_FLAG = "--chain";
 
-function hasClaudeSettingsDir(homeDir) {
-  return fs.existsSync(path.join(homeDir, ".claude"));
+function hasClaudeSettingsDir(homeDir, options = {}) {
+  return fs.existsSync(resolveClaudeHome({ ...options, homeDir }));
 }
 
 // Chain mode sidecar: holds the user's original statusLine object verbatim
@@ -1519,7 +1637,7 @@ function hasClaudeSettingsDir(homeDir) {
 // one-liners - embedding one inside another quoted command is exactly the
 // escaping swamp buildPortableStatuslineCommand exists to avoid.
 function statuslineChainSidecarPath(homeDir) {
-  return path.join(homeDir, ".claude", "hooks", "clawd-statusline-chain.json");
+  return path.join(resolveClaudeHooksDir({ homeDir }), "clawd-statusline-chain.json");
 }
 
 function readChainSidecarStatusLine(sidecarPath) {
@@ -1542,10 +1660,11 @@ function readChainSidecarStatusLine(sidecarPath) {
 // hooks/antigravity-install.js registerAntigravityStatusline.
 function registerClaudeStatusline(options = {}) {
   const homeDir = options.homeDir || os.homedir();
-  const settingsPath = options.settingsPath || path.join(homeDir, ".claude", "settings.json");
+  const settingsPath = resolveClaudeSettingsPath({ ...options, homeDir });
   const writePath = resolveWritePath(settingsPath);
+  const remoteIdentity = requireRemoteInstallIdentity(options);
 
-  if (!options.settingsPath && !hasClaudeSettingsDir(homeDir)) {
+  if (!options.settingsPath && !hasClaudeSettingsDir(homeDir, options)) {
     if (!options.silent) console.log("Clawd: Claude Code settings not found - skipping statusline registration");
     return { installed: false, changed: false, skippedExisting: false, settingsPath };
   }
@@ -1566,7 +1685,8 @@ function registerClaudeStatusline(options = {}) {
   // runner - the exact swamp buildPortableStatuslineCommand crawled out of.
   const chainRequested = options.remote === true && options.chainExisting === true;
   const chainExplicitlyDisabled = options.remote === true && options.chainExisting === false;
-  const sidecarPath = options.chainSidecarPath || statuslineChainSidecarPath(homeDir);
+  const sidecarPath = options.chainSidecarPath
+    || path.join(resolveClaudeHooksDir({ ...options, homeDir }), "clawd-statusline-chain.json");
 
   if (existing && !existingIsOurs && !chainRequested) {
     if (!options.silent) console.log(`Clawd: existing Claude Code statusline detected at ${settingsPath} - leaving it in place`);
@@ -1626,7 +1746,12 @@ function registerClaudeStatusline(options = {}) {
   // nodeBin needs no remote resolution here: this code already runs under
   // the remote's own node, so resolveNodeBin() IS the remote path.
   const portableCommand = buildPortableStatuslineCommand(nodeBin, scriptPath, { platform });
-  const prefixed = options.remote === true ? `CLAWD_REMOTE=1 ${portableCommand}` : portableCommand;
+  const prefixed = options.remote === true
+    ? `${buildRemoteHookEnvPrefix({
+        ...options,
+        remoteIdentityPath: options.remoteIdentityPath || (remoteIdentity && remoteIdentity.filePath),
+      })} ${portableCommand}`
+    : portableCommand;
   const command = chainActive ? `${prefixed} ${STATUSLINE_CHAIN_FLAG}` : prefixed;
   const desired = { type: "command", command, padding: 0 };
 
@@ -1645,7 +1770,7 @@ function registerClaudeStatusline(options = {}) {
 
 function unregisterClaudeStatusline(options = {}) {
   const homeDir = options.homeDir || os.homedir();
-  const settingsPath = options.settingsPath || path.join(homeDir, ".claude", "settings.json");
+  const settingsPath = resolveClaudeSettingsPath({ ...options, homeDir });
   const writePath = resolveWritePath(settingsPath);
   let settings = {};
   try {
@@ -1665,7 +1790,8 @@ function unregisterClaudeStatusline(options = {}) {
   // A chained slot restores the user's original statusLine object from the
   // sidecar instead of leaving the slot empty; the sidecar is consumed
   // either way so no stale copy outlives the registration it served.
-  const sidecarPath = options.chainSidecarPath || statuslineChainSidecarPath(homeDir);
+  const sidecarPath = options.chainSidecarPath
+    || path.join(resolveClaudeHooksDir({ ...options, homeDir }), "clawd-statusline-chain.json");
   const chained = existing.command.includes(STATUSLINE_CHAIN_FLAG)
     ? readChainSidecarStatusLine(sidecarPath)
     : null;
@@ -1698,12 +1824,13 @@ function parseClaudeInstallCliOptions(argv = []) {
 
 // Export for use by main.js
 module.exports = {
-  DEFAULT_PARENT_DIR,
-  DEFAULT_CONFIG_PATH,
   STATUSLINE_MARKER,
   CLAUDE_CORE_HOOK_EVENTS: Object.freeze([...CORE_HOOKS]),
   getClaudeHookScriptPath,
   getClaudeAutoStartScriptPath,
+  resolveClaudeHome,
+  resolveClaudeSettingsPath,
+  resolveClaudeHooksDir,
   registerHooks,
   registerHooksAsync,
   unregisterHooks,
@@ -1733,9 +1860,22 @@ module.exports = {
     reconcileVersionedHooks,
     shouldReconcileVersionedHooks,
     buildCommandHookSpec,
+    buildRemoteHookEnvPrefix,
+    isSshSecureRemoteInstall,
     parseClaudeInstallCliOptions,
   },
 };
+
+// Lazy getters preserve the public API without freezing HOME or
+// CLAUDE_CONFIG_DIR when this remote-capable module is loaded.
+Object.defineProperty(module.exports, "DEFAULT_PARENT_DIR", {
+  enumerable: true,
+  get() { return resolveClaudeHome(); },
+});
+Object.defineProperty(module.exports, "DEFAULT_CONFIG_PATH", {
+  enumerable: true,
+  get() { return resolveClaudeSettingsPath(); },
+});
 
 // CLI: run directly with `node hooks/install.js [--remote] [--statusline]`
 if (require.main === module) {

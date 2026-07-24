@@ -36,7 +36,20 @@ const STATE_POST_TIMEOUT_MS = 150;
 // siphon rate_limits. Their original statusLine object lives verbatim in a
 // sidecar written by hooks/install.js (a file, not a CLI argument - real
 // statusline commands are arbitrarily-quoted shell one-liners).
-const CHAIN_SIDECAR_PATH = path.join(os.homedir(), ".claude", "hooks", "clawd-statusline-chain.json");
+function resolveChainSidecarPath(options = {}) {
+  const env = options.env || process.env;
+  if (typeof options.chainSidecarPath === "string" && options.chainSidecarPath) {
+    return options.chainSidecarPath;
+  }
+  if (typeof env.CLAWD_STATUSLINE_SIDECAR_PATH === "string"
+    && env.CLAWD_STATUSLINE_SIDECAR_PATH) {
+    return env.CLAWD_STATUSLINE_SIDECAR_PATH;
+  }
+  const claudeConfigDir = typeof env.CLAUDE_CONFIG_DIR === "string" && env.CLAUDE_CONFIG_DIR
+    ? env.CLAUDE_CONFIG_DIR
+    : path.join(os.homedir(), ".claude");
+  return path.join(claudeConfigDir, "hooks", "clawd-statusline-chain.json");
+}
 // A hung chained script must not accumulate orphan processes across
 // statusline refreshes: Claude Code refreshes sub-second and nothing
 // serializes overlapping invocations, so the worst-case concurrent orphan
@@ -186,7 +199,7 @@ async function main(deps = {}) {
   let chainPromise = null;
   if (argv.includes("--chain")) {
     const chainedCommand = (deps.readChainedCommand || readChainedCommand)(
-      deps.chainSidecarPath || CHAIN_SIDECAR_PATH
+      resolveChainSidecarPath(deps)
     );
     if (chainedCommand) {
       let stdinText = "";
@@ -240,6 +253,7 @@ module.exports = {
     buildStateBody,
     postStateBody,
     readChainedCommand,
+    resolveChainSidecarPath,
     runChainedStatusLine,
     main,
   },

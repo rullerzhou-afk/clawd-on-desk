@@ -12,6 +12,8 @@ const {
   sessionSnapshotSignature,
   sessionDisplayTitle,
 } = require("../src/state-session-snapshot");
+const { makeSessionKey } = require("../src/session-key");
+const { sessionAliasKey } = require("../src/session-alias");
 
 describe("deriveSourceInfo", () => {
   it("derives WSL source from the wsl: host prefix", () => {
@@ -87,6 +89,51 @@ describe("startup-recovered session snapshots", () => {
     assert.strictEqual(recovered.sessions[0].focusTarget, null);
     assert.strictEqual(live.sessions[0].startupRecovered, false);
     assert.notStrictEqual(sessionSnapshotSignature(recovered), sessionSnapshotSignature(live));
+  });
+});
+
+describe("remote profile action ids", () => {
+  it("keeps canonical ids for actions while rendering raw ids and profile-scoped aliases", () => {
+    const rawSessionId = "same-visible-id";
+    const aId = makeSessionKey({ profileId: "profile-a", rawSessionId });
+    const bId = makeSessionKey({ profileId: "profile-b", rawSessionId });
+    const aliases = {
+      [sessionAliasKey("shared-host", "codex", rawSessionId, { profileId: "profile-a" })]: {
+        title: "Alpha",
+        updatedAt: 1000,
+      },
+      [sessionAliasKey("shared-host", "codex", rawSessionId, { profileId: "profile-b" })]: {
+        title: "Beta",
+        updatedAt: 1000,
+      },
+    };
+    const snapshot = buildSessionSnapshot(new Map([
+      [aId, session("working", {
+        profileId: "profile-a",
+        rawSessionId,
+        host: "shared-host",
+        agentId: "codex",
+      })],
+      [bId, session("thinking", {
+        profileId: "profile-b",
+        rawSessionId,
+        host: "shared-host",
+        agentId: "codex",
+      })],
+    ]), {
+      statePriority: STATE_PRIORITY,
+      sessionAliases: aliases,
+    });
+
+    assert.deepStrictEqual(snapshot.sessions.map((entry) => entry.id).sort(), [aId, bId].sort());
+    assert.deepStrictEqual(snapshot.sessions.map((entry) => entry.rawSessionId), [
+      rawSessionId,
+      rawSessionId,
+    ]);
+    assert.deepStrictEqual(
+      Object.fromEntries(snapshot.sessions.map((entry) => [entry.profileId, entry.displayTitle])),
+      { "profile-a": "Alpha", "profile-b": "Beta" },
+    );
   });
 });
 

@@ -10,9 +10,8 @@
 //   node codex-remote-monitor.js --once     # single scan then exit (debug)
 //   node codex-remote-monitor.js --port 23334  # custom server port
 //
-// Designed to keep running even when the SSH tunnel is down — failed POSTs
-// are silently ignored, and the monitor resumes syncing as soon as the
-// tunnel comes back up.
+// A bounded delivery watchdog allows temporary tunnel outages, but exits an
+// orphaned monitor after 24 hours of attempted delivery with no success.
 
 const fs = require("fs");
 const path = require("path");
@@ -31,9 +30,45 @@ const { parseCodexUserInputRecord } = require("./codex-user-input");
 
 // ── Inline config from agents/codex.js (zero-dependency requirement) ──
 
-const SESSION_DIR = path.join(os.homedir(), ".codex", "sessions");
+function resolveCodexSessionDir(options = {}) {
+  const env = options.env || process.env;
+  const codexHome = typeof env.CODEX_HOME === "string" && env.CODEX_HOME.trim()
+    ? env.CODEX_HOME.trim()
+    : path.join(options.homeDir || os.homedir(), ".codex");
+  return path.join(codexHome, "sessions");
+}
 const POLL_INTERVAL_MS = 1500;
 const STALE_MS = 300000;
+const DELIVERY_FAILURE_EXIT_MS = 24 * 60 * 60 * 1000;
+
+function createDeliveryWatchdog(options = {}) {
+  const now = typeof options.now === "function" ? options.now : Date.now;
+  const exit = typeof options.exit === "function" ? options.exit : () => process.exit(0);
+  const thresholdMs = Number.isFinite(options.thresholdMs) && options.thresholdMs > 0
+    ? options.thresholdMs
+    : DELIVERY_FAILURE_EXIT_MS;
+  let lastSuccessAt = now();
+  let exitTriggered = false;
+  return {
+    record(ok) {
+      if (ok === true) {
+        lastSuccessAt = now();
+        return false;
+      }
+      if (!exitTriggered && now() - lastSuccessAt >= thresholdMs) {
+        exitTriggered = true;
+        exit();
+        return true;
+      }
+      return false;
+    },
+    getLastSuccessAt() {
+      return lastSuccessAt;
+    },
+  };
+}
+
+const deliveryWatchdog = createDeliveryWatchdog();
 // Startup recovery sweep bounds (see recoverStalePendingUserInputEntry).
 // Bounded head+tail reads, never a full readFileSync of an arbitrarily large
 // rollout file. session_meta (cwd / subagent role) is always Codex's first
@@ -103,6 +138,7 @@ let didInitialRecoveryScan = false;
 
 function getSessionDirs() {
   const dirs = [];
+  const sessionDir = resolveCodexSessionDir();
   const now = new Date();
   for (let daysAgo = 0; daysAgo <= 1; daysAgo++) {
     const d = new Date(now);
@@ -110,7 +146,7 @@ function getSessionDirs() {
     const yyyy = d.getFullYear();
     const mm = String(d.getMonth() + 1).padStart(2, "0");
     const dd = String(d.getDate()).padStart(2, "0");
-    dirs.push(path.join(SESSION_DIR, String(yyyy), mm, dd));
+    dirs.push(path.join(sessionDir, String(yyyy), mm, dd));
   }
   return dirs;
 }
@@ -158,7 +194,7 @@ function postState(sessionId, state, event, cwd, isSubagent, extra = null) {
   postStateToRunningServer(
     body,
     { timeoutMs: 100, preferredPort, remote: true },
-    () => {} // fire and forget — tunnel may be down
+    (ok) => deliveryWatchdog.record(ok)
   );
 }
 
@@ -184,7 +220,7 @@ function postQuota(sessionId, codexQuota) {
   postStateToRunningServer(
     buildPostQuotaBody(sessionId, codexQuota, undefined),
     { timeoutMs: 100, preferredPort, remote: true },
-    () => {} // fire and forget — tunnel may be down
+    (ok) => deliveryWatchdog.record(ok)
   );
 }
 
@@ -712,7 +748,7 @@ function poll() {
 
 function main() {
   console.log(`Clawd Codex remote monitor started`);
-  console.log(`  Session dir: ${SESSION_DIR}`);
+  console.log(`  Session dir: ${resolveCodexSessionDir()}`);
   console.log(`  Poll interval: ${POLL_INTERVAL_MS}ms`);
   if (preferredPort) console.log(`  Preferred port: ${preferredPort}`);
   console.log(`  Press Ctrl+C to stop\n`);
@@ -737,6 +773,7 @@ function main() {
 if (require.main === module) main();
 
 module.exports.__test = {
+  resolveCodexSessionDir,
   buildPostStateBody,
   buildPostQuotaBody,
   processLine,
@@ -749,4 +786,6 @@ module.exports.__test = {
   pruneTrackedOutOfWindow,
   tracked,
   STALE_MS,
+  DELIVERY_FAILURE_EXIT_MS,
+  createDeliveryWatchdog,
 };

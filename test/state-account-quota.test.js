@@ -31,6 +31,29 @@ describe("account quota store", () => {
     assert.strictEqual(snapshot[0].claudeQuota.updatedAt, 1000000, "no-op refresh must not look fresher");
   });
 
+  it("keeps trusted remote profile sources separate when display hosts match", () => {
+    const store = createAccountQuotaStore({ persistPath: null, now: () => 1000 });
+    store.update("remote:profile-a", {
+      displayHost: "shared.example",
+      claudeQuota: { claudeWeekly: { usedPercent: 10, resetAt: 5000 } },
+    });
+    store.update("remote:profile-b", {
+      displayHost: "shared.example",
+      claudeQuota: { claudeWeekly: { usedPercent: 90, resetAt: 5000 } },
+    });
+
+    const snapshot = store.snapshot();
+    assert.strictEqual(snapshot.length, 2);
+    assert.deepStrictEqual(snapshot.map((entry) => entry.host), [
+      "shared.example",
+      "shared.example",
+    ]);
+    assert.deepStrictEqual(
+      snapshot.map((entry) => entry.claudeQuota.group.claudeWeekly.usedPercent).sort(),
+      [10, 90],
+    );
+  });
+
   it("normalizes empty/whitespace hosts to the local source and sorts local first", () => {
     const store = createAccountQuotaStore({ persistPath: null, now: () => 1000 });
     store.update("zeta", { codexQuota: { codexWeekly: { usedPercent: 43, resetAt: 5000 } } });

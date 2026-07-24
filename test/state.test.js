@@ -11,6 +11,7 @@ themeLoader.init(path.join(__dirname, "..", "src"));
 const _defaultTheme = themeLoader.loadTheme("clawd");
 const _calicoTheme = themeLoader.loadTheme("calico");
 const { createTranslator } = require("../src/i18n");
+const { makeSessionKey } = require("../src/session-key");
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -78,6 +79,8 @@ function update(api, o = {}) {
       pidChain: o.pidChain || null,
       agentPid: o.agentPid ?? null,
       agentId: o.agentId || "claude-code",
+      profileId: o.profileId,
+      rawSessionId: o.rawSessionId,
       host: o.host || null,
       headless: o.headless || false,
       displayHint: o.displayHint,
@@ -102,6 +105,89 @@ function update(api, o = {}) {
     },
   );
 }
+
+describe("remote profile session namespace", () => {
+  let api;
+
+  afterEach(() => { if (api) api.cleanup(); });
+
+  it("keeps identical raw ids independent through update, permission, stale cleanup, ack, and end", () => {
+    api = require("../src/state")(makeCtx());
+    const rawSessionId = "same-raw-session";
+    const aId = makeSessionKey({ profileId: "profile-a", rawSessionId });
+    const bId = makeSessionKey({ profileId: "profile-b", rawSessionId });
+
+    update(api, {
+      id: aId,
+      state: "working",
+      event: "PreToolUse",
+      profileId: "profile-a",
+      rawSessionId,
+      host: "shared-host",
+      agentId: "codex",
+    });
+    update(api, {
+      id: bId,
+      state: "thinking",
+      event: "UserPromptSubmit",
+      profileId: "profile-b",
+      rawSessionId,
+      host: "shared-host",
+      agentId: "codex",
+    });
+    assert.strictEqual(api.sessions.size, 2);
+    assert.strictEqual(api.sessions.get(aId).profileId, "profile-a");
+    assert.strictEqual(api.sessions.get(bId).profileId, "profile-b");
+
+    update(api, {
+      id: aId,
+      state: "notification",
+      event: "PermissionRequest",
+      transientPermissionEvent: true,
+      profileId: "profile-a",
+      rawSessionId,
+      host: "shared-host",
+      agentId: "codex",
+    });
+    assert.strictEqual(api.sessions.get(aId).state, "working");
+    assert.strictEqual(api.sessions.get(bId).state, "thinking");
+
+    update(api, {
+      id: aId,
+      state: "sleeping",
+      event: "stale-cleanup",
+      profileId: "profile-a",
+      rawSessionId,
+      host: "shared-host",
+      agentId: "codex",
+    });
+    assert.ok(api.sessions.has(bId), "A stale cleanup cannot remove B");
+
+    update(api, {
+      id: bId,
+      state: "idle",
+      event: "Stop",
+      profileId: "profile-b",
+      rawSessionId,
+      host: "shared-host",
+      agentId: "codex",
+    });
+    assert.strictEqual(api.ackSessionCompletion(bId), true);
+    assert.notStrictEqual(api.sessions.get(aId).completionAcknowledged, true);
+
+    update(api, {
+      id: aId,
+      state: "idle",
+      event: "SessionEnd",
+      profileId: "profile-a",
+      rawSessionId,
+      host: "shared-host",
+      agentId: "codex",
+    });
+    assert.strictEqual(api.sessions.has(aId), false);
+    assert.strictEqual(api.sessions.has(bId), true);
+  });
+});
 
 /** Create a raw session object for direct Map insertion */
 function rawSession(state, opts = {}) {

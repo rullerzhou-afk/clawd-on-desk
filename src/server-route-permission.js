@@ -18,6 +18,7 @@ const {
 } = require("./server-permission-utils");
 const { resolveHookAgentId } = require("./server-agent-id");
 const { isOpencodeFamily } = require("../agents/opencode-family");
+const { resolveSessionIdentity } = require("./session-key");
 
 const MAX_PERMISSION_BODY_BYTES = 524288;
 
@@ -377,6 +378,7 @@ function handlePermissionPost(req, res, options) {
   const {
     ctx,
     createRequestHookRecorder,
+    remoteProfile = null,
   } = options;
   ctx.permLog(`/permission hit | DND=${ctx.doNotDisturb} pending=${ctx.pendingPermissions.length}`);
   let body = "";
@@ -418,6 +420,21 @@ function handlePermissionPost(req, res, options) {
       return;
     }
     const { agentId } = hookIdentity;
+    const trustedProfileId = remoteProfile && typeof remoteProfile.profileId === "string"
+      ? remoteProfile.profileId
+      : "local";
+    const trustedDisplayHost = remoteProfile && typeof remoteProfile.displayHost === "string"
+      ? remoteProfile.displayHost
+      : null;
+    const resolvePermissionSession = (value, fallback) =>
+      resolveSessionIdentity(value, trustedProfileId, fallback);
+    const remoteSessionFields = (sessionIdentity) => trustedProfileId === "local"
+      ? {}
+      : {
+          profileId: sessionIdentity.profileId,
+          rawSessionId: sessionIdentity.rawSessionId,
+          ...(trustedDisplayHost ? { host: trustedDisplayHost } : {}),
+        };
 
     try {
       // ── opencode-family branch (opencode + opencode-derived runtimes) ──
@@ -448,7 +465,8 @@ function handlePermissionPost(req, res, options) {
         const toolName = typeof data.tool_name === "string" && data.tool_name ? data.tool_name : "unknown";
         const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
         const toolInput = truncateDeep(rawInput);
-        const sessionId = typeof data.session_id === "string" ? data.session_id : "default";
+        const sessionIdentity = resolvePermissionSession(data.session_id, "default");
+        const sessionId = sessionIdentity.sessionId;
         const requestId = typeof data.request_id === "string" ? data.request_id : null;
         const bridgeUrl = typeof data.bridge_url === "string" ? data.bridge_url : "";
         const bridgeToken = typeof data.bridge_token === "string" ? data.bridge_token : "";
@@ -498,6 +516,7 @@ function handlePermissionPost(req, res, options) {
           abortHandler: null,
           suggestions: [],
           sessionId,
+          ...remoteSessionFields(sessionIdentity),
           bubble: null,
           hideTimer: null,
           toolName,
@@ -521,7 +540,10 @@ function handlePermissionPost(req, res, options) {
         // and the Elicitation branch below. state.js:581 has a special
         // PermissionRequest branch that setStates notification without
         // mutating session state — so working/thinking is preserved for resolve.
-        ctx.updateSession(sessionId, "notification", "PermissionRequest", { agentId });
+        ctx.updateSession(sessionId, "notification", "PermissionRequest", {
+          agentId,
+          ...remoteSessionFields(sessionIdentity),
+        });
         ctx.permLog(`${agentId} showing bubble: tool=${toolName} session=${sessionId}`);
         recordRequestHookEvent.accepted();
         try {
@@ -574,14 +596,18 @@ function handlePermissionPost(req, res, options) {
           ? data.tool_input_description
           : (typeof rawInput.description === "string" ? rawInput.description : "");
         const toolInput = normalizeCodexPermissionToolInput(rawInput, description);
-        const sessionId = typeof data.session_id === "string" && data.session_id ? data.session_id : "codex:default";
+        const sessionIdentity = resolvePermissionSession(data.session_id, "codex:default");
+        const sessionId = sessionIdentity.sessionId;
         const toolUseId = normalizeHookToolUseId(
           data.tool_use_id ?? data.toolUseId ?? data.toolUseID
         );
         const toolInputFingerprint = typeof data.tool_input_fingerprint === "string" && data.tool_input_fingerprint
           ? data.tool_input_fingerprint
           : buildToolInputFingerprint(rawInput);
-        const codexSessionOptions = buildCodexPermissionSessionOptions(data);
+        const codexSessionOptions = {
+          ...buildCodexPermissionSessionOptions(data),
+          ...remoteSessionFields(sessionIdentity),
+        };
 
         if (ctx.doNotDisturb) {
           recordRequestHookEvent.droppedByDnd();
@@ -632,6 +658,7 @@ function handlePermissionPost(req, res, options) {
           abortHandler: null,
           suggestions: [],
           sessionId,
+          ...remoteSessionFields(sessionIdentity),
           bubble: null,
           hideTimer: null,
           toolName,
@@ -688,14 +715,18 @@ function handlePermissionPost(req, res, options) {
         const toolName = typeof data.tool_name === "string" && data.tool_name ? data.tool_name : "Unknown";
         const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
         const toolInput = truncateDeep(rawInput);
-        const sessionId = typeof data.session_id === "string" && data.session_id ? data.session_id : "qwen-code:default";
+        const sessionIdentity = resolvePermissionSession(data.session_id, "qwen-code:default");
+        const sessionId = sessionIdentity.sessionId;
         const toolUseId = normalizeHookToolUseId(
           data.tool_use_id ?? data.toolUseId ?? data.toolUseID
         );
         const toolInputFingerprint = typeof data.tool_input_fingerprint === "string" && data.tool_input_fingerprint
           ? data.tool_input_fingerprint
           : buildToolInputFingerprint(rawInput);
-        const qwenSessionOptions = buildQwenCodePermissionSessionOptions(data);
+        const qwenSessionOptions = {
+          ...buildQwenCodePermissionSessionOptions(data),
+          ...remoteSessionFields(sessionIdentity),
+        };
 
         if (ctx.doNotDisturb) {
           recordRequestHookEvent.droppedByDnd();
@@ -733,6 +764,7 @@ function handlePermissionPost(req, res, options) {
           abortHandler: null,
           suggestions: [],
           sessionId,
+          ...remoteSessionFields(sessionIdentity),
           bubble: null,
           hideTimer: null,
           toolName,
@@ -796,14 +828,18 @@ function handlePermissionPost(req, res, options) {
         const toolName = typeof data.tool_name === "string" && data.tool_name ? data.tool_name : "Unknown";
         const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
         const toolInput = truncateDeep(rawInput);
-        const sessionId = typeof data.session_id === "string" && data.session_id ? data.session_id : "copilot-cli:default";
+        const sessionIdentity = resolvePermissionSession(data.session_id, "copilot-cli:default");
+        const sessionId = sessionIdentity.sessionId;
         const toolUseId = normalizeHookToolUseId(
           data.tool_use_id ?? data.toolUseId ?? data.toolUseID
         );
         const toolInputFingerprint = typeof data.tool_input_fingerprint === "string" && data.tool_input_fingerprint
           ? data.tool_input_fingerprint
           : buildToolInputFingerprint(rawInput);
-        const copilotSessionOptions = buildCopilotPermissionSessionOptions(data);
+        const copilotSessionOptions = {
+          ...buildCopilotPermissionSessionOptions(data),
+          ...remoteSessionFields(sessionIdentity),
+        };
 
         if (ctx.doNotDisturb) {
           recordRequestHookEvent.droppedByDnd();
@@ -841,6 +877,7 @@ function handlePermissionPost(req, res, options) {
           abortHandler: null,
           suggestions: [],
           sessionId,
+          ...remoteSessionFields(sessionIdentity),
           bubble: null,
           hideTimer: null,
           toolName,
@@ -916,7 +953,8 @@ function handlePermissionPost(req, res, options) {
         const toolName = typeof data.tool_name === "string" && data.tool_name ? data.tool_name : "Unknown";
         const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
         const toolInput = truncateDeep(rawInput);
-        const sessionId = typeof data.session_id === "string" && data.session_id ? data.session_id : "hermes:default";
+        const sessionIdentity = resolvePermissionSession(data.session_id, "hermes:default");
+        const sessionId = sessionIdentity.sessionId;
         const toolUseId = normalizeHookToolUseId(
           data.tool_use_id ?? data.toolUseId ?? data.toolUseID
         );
@@ -957,7 +995,10 @@ function handlePermissionPost(req, res, options) {
 
         if (isElicitation) {
           const elicitationInput = normalizeElicitationToolInput(toolInput);
-          const hermesSessionOptions = buildHermesPermissionSessionOptions(data);
+          const hermesSessionOptions = {
+            ...buildHermesPermissionSessionOptions(data),
+            ...remoteSessionFields(sessionIdentity),
+          };
           ctx.permLog(`HERMES ELICITATION: tool=${toolName} session=${sessionId}`);
           ctx.updateSession(sessionId, "notification", "Elicitation", hermesSessionOptions);
 
@@ -966,6 +1007,7 @@ function handlePermissionPost(req, res, options) {
             abortHandler: null,
             suggestions: [],
             sessionId,
+            ...remoteSessionFields(sessionIdentity),
             bubble: null,
             hideTimer: null,
             toolName,
@@ -1016,7 +1058,10 @@ function handlePermissionPost(req, res, options) {
         }
 
         // General permission request
-        const hermesSessionOptions = buildHermesPermissionSessionOptions(data);
+        const hermesSessionOptions = {
+          ...buildHermesPermissionSessionOptions(data),
+          ...remoteSessionFields(sessionIdentity),
+        };
         ctx.permLog(`HERMES PERMISSION: tool=${toolName} session=${sessionId}`);
         ctx.updateSession(sessionId, "notification", "PermissionRequest", hermesSessionOptions);
 
@@ -1025,6 +1070,7 @@ function handlePermissionPost(req, res, options) {
           abortHandler: null,
           suggestions: [],
           sessionId,
+          ...remoteSessionFields(sessionIdentity),
           bubble: null,
           hideTimer: null,
           toolName,
@@ -1101,7 +1147,8 @@ function handlePermissionPost(req, res, options) {
         data.tool_use_id ?? data.toolUseId ?? data.toolUseID
       );
       const toolInputFingerprint = buildToolInputFingerprint(rawInput);
-      const sessionId = data.session_id || "default";
+      const sessionIdentity = resolvePermissionSession(data.session_id, "default");
+      const sessionId = sessionIdentity.sessionId;
       // Tag the permEntry with the source agent. Clawd's HTTP permission
       // path is shared between Claude Code and codebuddy (both set
       // capabilities.permissionApproval=true and POST here). Stamping lets
@@ -1145,6 +1192,7 @@ function handlePermissionPost(req, res, options) {
           const started = tryRemoteOnlyApproval(ctx, {
             res, sessionId, toolName, toolInput, toolUseId, toolInputFingerprint,
             agentId: permAgentId, subagentId, subagentType, suggestions,
+            ...remoteSessionFields(sessionIdentity),
           });
           if (started) return;
           ctx.permLog(`permission bubbles disabled, no remote approval available → destroy connection, chat fallback (tool=${toolName})`);
@@ -1169,13 +1217,17 @@ function handlePermissionPost(req, res, options) {
       if (toolName === "AskUserQuestion") {
         const elicitationInput = normalizeElicitationToolInput(toolInput);
         ctx.permLog(`ELICITATION: tool=${toolName} session=${sessionId}`);
-        ctx.updateSession(sessionId, "notification", "Elicitation", { agentId: permAgentId });
+        ctx.updateSession(sessionId, "notification", "Elicitation", {
+          agentId: permAgentId,
+          ...remoteSessionFields(sessionIdentity),
+        });
 
         const permEntry = {
           res,
           abortHandler: null,
           suggestions: [],
           sessionId,
+          ...remoteSessionFields(sessionIdentity),
           bubble: null,
           hideTimer: null,
           toolName,
@@ -1224,6 +1276,7 @@ function handlePermissionPost(req, res, options) {
         abortHandler: null,
         suggestions,
         sessionId,
+        ...remoteSessionFields(sessionIdentity),
         bubble: null,
         hideTimer: null,
         toolName,
@@ -1251,7 +1304,10 @@ function handlePermissionPost(req, res, options) {
       // and the Elicitation branch above. state.js:581 has a special
       // PermissionRequest branch that setStates notification without
       // mutating session state — so working/thinking is preserved for resolve.
-      ctx.updateSession(sessionId, "notification", "PermissionRequest", { agentId: permAgentId });
+      ctx.updateSession(sessionId, "notification", "PermissionRequest", {
+        agentId: permAgentId,
+        ...remoteSessionFields(sessionIdentity),
+      });
 
       ctx.permLog(`showing bubble: tool=${toolName} session=${sessionId} suggestions=${suggestions.length} stack=${ctx.pendingPermissions.length}`);
       recordRequestHookEvent.accepted();

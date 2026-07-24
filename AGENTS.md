@@ -54,7 +54,7 @@ node hooks/codebuddy-install.js
 node hooks/opencode-install.js
 node hooks/mimocode-install.js
 
-bash scripts/remote-deploy.sh user@host
+# scripts/remote-deploy.sh 已停用；远程部署必须走 Settings → Remote SSH
 bash test-demo.sh [seconds]
 bash test-mini.sh [seconds]
 bash test-macos.sh
@@ -90,7 +90,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - `src/agent-gate.js` 控制各 agent 的安装意图、启用状态、权限气泡开关和 wait-for-input notification 子开关
 - 设置系统主链路是 `src/prefs.js` → `src/settings-controller.js` → `src/settings-store.js`，写入 side effects 收敛在 `src/settings-actions.js`
 - 启动时还会尝试自动安装 VS Code / Cursor terminal-focus extension，并初始化 updater
-- 远程场景依赖 Settings Remote SSH runtime / deploy 路径、`scripts/remote-deploy.sh` CLI 备选和 SSH 反向端口转发
+- 远程场景依赖 Settings Remote SSH controller、profile 专属 ingress 和 SSH 反向端口转发；`scripts/remote-deploy.sh` 已 fail-fast 停用，不是备选部署路径
 
 ## Core Files
 
@@ -122,7 +122,9 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 | `src/focus.js` | 终端聚焦 |
 | `src/hit-renderer.js` + `src/hit-geometry.js` | 输入窗口命中、拖拽、连击反应 |
 | `src/remote-ssh-runtime.js` | Remote SSH 连接状态机、SSH / health probe、重试、Codex monitor 生命周期 |
-| `src/remote-ssh-deploy.js` | Settings 里的 Remote SSH Deploy / Repair Hooks 流程，与 CLI 脚本保持等价 |
+| `src/remote-ssh-deploy.js` | Settings 里的 Remote SSH Deploy / Repair Hooks，负责 layout、身份事务、lease/fencing、ownership、wrapper 与 cleanup |
+| `src/remote-ssh-layout.js` | `runtimeKey → remote layout` 唯一路径解析，覆盖 identity/marker/lock/staging/PID/log/config/session/wrapper |
+| `src/remote-ssh-ingress.js` | 每个已连接 profile 的独立本地 HTTP ingress，校验 routing nonce 后才进入 state/permission 路由 |
 | `src/remote-ssh-node.js` | 远端 Node 探测、缓存、验证和远端 `node -e` 命令构造 |
 | `src/remote-ssh-profile.js` | Remote SSH profile schema、校验、默认值和持久化规范化 |
 | `src/remote-ssh-ipc.js` | Remote SSH runtime / deploy 的 IPC handler 和状态 / 进度广播 |
@@ -146,7 +148,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - Claude Code / CodeBuddy 的阻塞式权限审批走 `POST /permission` HTTP hook；普通状态事件走 command hook
 - WorkBuddy 通过 `~/.workbuddy/settings.json` 的 Claude Code 兼容 command hooks 做 **state + Notification only** 集成：不注册 `/permission`，审批始终留在 WorkBuddy 原生沙箱与 GUI；无 `session_id` 的事件返回合法 stdout 后直接丢弃。当前只支持 macOS/Windows 桌面应用，没有已验证的 Linux/WSL CLI；不要把裸 `Electron` 当 WorkBuddy 进程。
 - Codex 的阻塞式权限审批走 official `PermissionRequest` command hook：hook 脚本长连接 `POST /permission`，只允许 stdout 返回 sanitized `behavior/message`，`updatedInput` / `updatedPermissions` / `interrupt` 必须 omit
-- hook 脚本只允许依赖 Node 内置模块，以及同目录 `hooks/` 下、且登记在两套部署清单（`scripts/remote-deploy.sh` 的 `FILES` 与 `src/remote-ssh-deploy.js` 的 `HOOK_FILES`）的纯 Node helper（如 `server-config.js` / `shared-process.js` / `json-utils.js` / `codex-originator.js` / `codex-subagent-fields.js` / `context-usage.js` / `state-payload-size.js` / `quota-bucket.js` / `claude-rate-limits.js` / `codex-rate-limits.js` / `antigravity-context-usage.js`）；两套清单由 manifest-consistency 测试强制同步，新增 helper 必须同时登记
+- hook 脚本只允许依赖 Node 内置模块，以及同目录 `hooks/` 下、且登记在 `src/remote-ssh-deploy.js` 的 `HOOK_FILES` 部署清单中的纯 Node helper（如 `server-config.js` / `shared-process.js` / `json-utils.js` / `codex-originator.js` / `codex-subagent-fields.js` / `context-usage.js` / `state-payload-size.js` / `quota-bucket.js` / `claude-rate-limits.js` / `codex-rate-limits.js` / `antigravity-context-usage.js`）；manifest-consistency 测试强制检查依赖闭包，新增 helper 必须登记
 - hook 脚本需要稳定终端 PID 时，必须走 `getStablePid()` 进程树解析；不要用 `process.ppid` 做简化替代
 - opencode 权限不走 `permission.ask` hook，而是 event hook + reverse bridge
 - Pi 通过 `~/.pi/agent/extensions/clawd-on-desk` 的 global extension 推送状态；Clawd 对 Pi 是 **state-only**，不接管权限、不弹权限气泡，也不把 Pi 的默认 YOLO 流程改成手动确认
@@ -157,10 +159,13 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - HTTP 服务端口范围固定为 `127.0.0.1:23333-23337`；运行时端口写入 `~/.clawd/runtime.json`
 - 自定义 HTTP Agent 的 sender 必须读取 `~/.clawd/runtime.json`，不能把 23333 写死；注册不等于已连接。custom v1 只支持 `/state`，不支持 `/permission`
 - CodeBuddy PermissionRequest hook 的所有权只认本机 managed URL 或 marker `clawd-on-desk.permission.v1`；纯 `name:"clawd"` 不能触发改写/删除。裸 CLI 和 WSL 默认 preserve，Settings/startup/repair 必须显式传 local/custom permission target
-- Remote SSH 的远端 Node 探测要求 Node >= 14；`scripts/remote-deploy.sh` 与 `src/remote-ssh-node.js` 的 probe 顺序、候选路径、版本判断和输出字段必须保持行为对齐
+- Remote SSH 的远端 Node 探测要求 Node >= 14；唯一生产 probe 在 `src/remote-ssh-node.js`，不得从已停用脚本复制出第二套行为
 - 注册 Claude Code hook 时只能追加，不能覆盖用户已有 hook 数组
 - 注册 Claude Code statusLine 时只接管空槽或自己的槽（marker `claude-statusline.js`）；远程部署可用 profile 的 `chainStatusline` opt-in 串联既有第三方 statusline（`--chain-existing`），显式关闭时必须从 sidecar 恢复原 statusLine。订阅配额通过 `metadata_only` POST 进入 session-independent `updateAccountQuota` per-source store；不要把 quota 塞进 `updateSession` opts，也不要以 session 存活作为摄入前提
-- Copilot CLI hooks 走按需自动同步：`hooks/copilot-install.js` 在本地启动仅当 Copilot CLI 已安装且已启用时调用；`scripts/remote-deploy.sh --remote` 仍会在远端部署路径里调用。路径解析尊重 `COPILOT_HOME` env（trimmed 非空才生效，否则 fallback 到 `~/.copilot`）；`hooks/copilot-hook.js` 的 session-state resolver 同样走 env
+- Copilot CLI hooks 走按需自动同步：`hooks/copilot-install.js` 在本地启动仅当 Copilot CLI 已安装且已启用时调用；远端由 Settings Remote SSH deploy controller 调用。路径解析尊重 `COPILOT_HOME` env（trimmed 非空才生效，否则 fallback 到 `~/.copilot`）；`hooks/copilot-hook.js` 的 session-state resolver 同样走 env
+- Remote SSH secure hook 必须同时携带 `CLAWD_REMOTE=1` 与 `CLAWD_SSH_REMOTE=1`，只读 layout identity 并 pin 精确端口；identity 缺失/损坏/不可读必须 fail closed，禁止回退端口扫描
+- Remote SSH 所有 live mutation 必须先取 layout-scoped lease，并在同一远端命令内 fencing 校验；cleanup 还必须锁内重读 installId/profileId/runtimeKey/layoutVersion 所有权。无身份、冲突、ownerless/corrupt lock 均不得自动接管
+- 默认 `account-default` 只支持不同 Unix 账号；同 Unix 账号冲突必须阻止。`profile-isolated` 在真实 SSH/CLI 矩阵完成前由 `CLAWD_ENABLE_EXPERIMENTAL_REMOTE_ISOLATION=1` 发布门隐藏；它只隔离用户级 CLI config/session/runtime 与 Clawd 路由，不代表完整 HOME 或同 UID 安全隔离，project 配置/部分 cache/macOS Claude Keychain auth 仍可能共享
 - 禁用 agent 不应卸载 hooks / plugins / extensions：只停止对应 monitor、清理 session / bubble、让 HTTP hook 入口快速 fallback；重新启用未安装 agent 不触发本机 integration sync。卸载集成必须走 Settings Agent 页的 Uninstall / 对应 uninstall 命令，并同时清掉 `integrationInstalled`
 - Kiro 的 `sessionId="default"` 会复用；session alias key 必须按 cwd scope 区分，同时保留旧 `local|kiro-cli|default` 只读 fallback
 - Windows NSIS release 必须产出明确架构的 x64 / ARM64 安装包：`win.artifactName` 保留 `${arch}`，`nsis.buildUniversalInstaller` 保持 `false`

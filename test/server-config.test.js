@@ -203,6 +203,128 @@ describe("runtime.json identity (#681)", () => {
 });
 
 describe("server-config helpers", () => {
+  it("fails closed for every secure predicate and malformed identity without scanning fallback ports", () => {
+    const dir = makeTempHome();
+    const identityPath = path.join(dir, "clawd-remote.json");
+    const markerPath = path.join(dir, "clawd-ssh-secure-v1");
+    const lastLogPath = path.join(dir, "remote-last-error.log");
+    const valid = {
+      version: 2,
+      layoutVersion: 1,
+      runtimeKey: "account-default",
+      profileId: "profile-a",
+      installId: "a".repeat(64),
+      remotePort: 23335,
+      routingNonce: "b".repeat(32),
+      deployedAt: 12345,
+    };
+    const badReaders = {
+      missing: () => {
+        const err = new Error("ENOENT");
+        err.code = "ENOENT";
+        throw err;
+      },
+      truncated: () => "{\"version\":2",
+      "field-missing": () => JSON.stringify({ ...valid, routingNonce: undefined }),
+      "version-unknown": () => JSON.stringify({ ...valid, version: 99 }),
+      unreadable: () => {
+        const err = new Error("EACCES");
+        err.code = "EACCES";
+        throw err;
+      },
+    };
+    const predicates = {
+      env: {
+        env: { CLAWD_SSH_REMOTE: "1" },
+        existsSync: () => false,
+      },
+      marker: {
+        env: {},
+        existsSync: (candidate) => candidate === markerPath,
+      },
+      identity: {
+        env: {},
+        existsSync: (candidate) => candidate === identityPath,
+      },
+    };
+
+    for (const [predicateName, predicate] of Object.entries(predicates)) {
+      for (const [badName, readFileSync] of Object.entries(badReaders)) {
+        const ports = serverConfig.getPortCandidates(undefined, {
+          ...predicate,
+          remoteIdentityPath: identityPath,
+          secureMarkerPath: markerPath,
+          remoteLastLogPath: lastLogPath,
+          readFileSync,
+          runtimePort: 23333,
+        });
+        assert.deepStrictEqual(
+          ports,
+          [],
+          `${predicateName} + ${badName} must fail closed instead of scanning`,
+        );
+      }
+    }
+
+    assert.deepStrictEqual(serverConfig.getPortCandidates(undefined, {
+      env: { CLAWD_REMOTE: "1" },
+      existsSync: () => false,
+      runtimePort: null,
+    }), serverConfig.SERVER_PORTS, "ordinary WSL/remote timeout mode remains legacy-compatible");
+  });
+
+  it("pins a valid secure identity to one exact port", () => {
+    const identity = {
+      ok: true,
+      version: 2,
+      layoutVersion: 1,
+      runtimeKey: "account-default",
+      profileId: "profile-a",
+      installId: "a".repeat(64),
+      remotePort: 23336,
+      routingNonce: "b".repeat(32),
+      deployedAt: 12345,
+    };
+    assert.deepStrictEqual(serverConfig.getPortCandidates(undefined, {
+      sshSecure: true,
+      remoteIdentity: identity,
+      runtimePort: 23333,
+    }), [23336]);
+  });
+
+  it("writes a bounded 0600 secure transport diagnostic without secret-shaped input", () => {
+    const dir = makeTempHome();
+    const logPath = path.join(dir, "nested", "remote-last-error.log");
+    const firstAt = 1_800_000_000_000;
+    assert.strictEqual(serverConfig.recordSecureTransportFailure(
+      "state-delivery-failed",
+      { remoteLastLogPath: logPath, now: () => firstAt },
+    ), true);
+    assert.match(fs.readFileSync(logPath, "utf8"), /state-delivery-failed/);
+    assert.strictEqual(fs.statSync(logPath).mode & 0o777, 0o600);
+    fs.utimesSync(logPath, firstAt / 1000, firstAt / 1000);
+
+    assert.strictEqual(serverConfig.recordSecureTransportFailure(
+      "permission-delivery-failed",
+      {
+        remoteLastLogPath: logPath,
+        now: () => firstAt + serverConfig.REMOTE_FAILURE_LOG_INTERVAL_MS - 1,
+      },
+    ), false);
+    assert.doesNotMatch(fs.readFileSync(logPath, "utf8"), /permission-delivery-failed/);
+
+    assert.strictEqual(serverConfig.recordSecureTransportFailure(
+      `nonce-${"a".repeat(32)}`,
+      {
+        remoteLastLogPath: logPath,
+        now: () => firstAt + serverConfig.REMOTE_FAILURE_LOG_INTERVAL_MS,
+      },
+    ), true);
+    const after = fs.readFileSync(logPath, "utf8");
+    assert.match(after, /transport-failed/);
+    assert.doesNotMatch(after, /a{32}/);
+  });
+
   it("clearRuntimeConfig removes runtime.json when present", () => {
     const tmpHome = makeTempHome();
     const runtimeDir = path.join(tmpHome, ".clawd");

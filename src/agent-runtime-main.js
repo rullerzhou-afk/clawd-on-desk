@@ -5,6 +5,7 @@ const {
   buildCodexMonitorUpdateOptions,
   isCodexMonitorMetadataOnlyEvent,
 } = require("./codex-monitor-callback");
+const { makeSessionKey } = require("./session-key");
 
 const CODEX_OFFICIAL_LOG_SUPPRESS_TTL_MS = 10 * 60 * 1000;
 const CODEX_LOG_EVENTS_COVERED_BY_OFFICIAL_HOOKS = new Set([
@@ -173,6 +174,7 @@ function createAgentRuntimeMain(options = {}) {
       const CodexLogMonitor = loadCodexLogMonitor();
       const codexAgent = loadCodexAgent();
       codexMonitor = new CodexLogMonitor(codexAgent, (sid, state, event, extra) => {
+        const sessionId = makeSessionKey({ profileId: "local", rawSessionId: sid });
         // Subscription quota is account state, not session state: it goes
         // to the session-independent per-source store (null host = this
         // machine), never into updateSession opts — see state.js
@@ -189,7 +191,7 @@ function createAgentRuntimeMain(options = {}) {
         };
         if (isCodexMonitorMetadataOnlyEvent(event, extra)) {
           if (sessionOptions.contextUsage) {
-            updateSession(sid, state, event, {
+            updateSession(sessionId, state, event, {
               ...sessionOptions,
               preserveState: true,
             });
@@ -197,9 +199,9 @@ function createAgentRuntimeMain(options = {}) {
           annotateCodexQuota();
           return;
         }
-        if (shouldSuppressCodexLogEvent(sid, state, event)) {
+        if (shouldSuppressCodexLogEvent(sessionId, state, event)) {
           if (sessionOptions.contextUsage) {
-            updateSession(sid, state, event, {
+            updateSession(sessionId, state, event, {
               ...sessionOptions,
               preserveState: true,
             });
@@ -207,27 +209,29 @@ function createAgentRuntimeMain(options = {}) {
           annotateCodexQuota();
           return;
         }
-        clearCodexNotifyBubbles(sid, `codex-state-transition:${state}`);
-        updateSession(sid, state, event, sessionOptions);
+        clearCodexNotifyBubbles(sessionId, `codex-state-transition:${state}`);
+        updateSession(sessionId, state, event, sessionOptions);
         annotateCodexQuota();
       }, {
         classifier: codexSubagentClassifier,
         onUserInputRequest: (sid, request, extra) => {
+          const sessionId = makeSessionKey({ profileId: "local", rawSessionId: sid });
           const shown = showCodexUserInputBubble({
-            sessionId: sid,
+            sessionId,
             callId: request.callId,
             questions: request.questions,
             autoResolutionMs: request.autoResolutionMs,
             ...extra,
           });
           if (!shown) return;
-          updateSession(sid, "notification", "CodexUserInputRequest", {
+          updateSession(sessionId, "notification", "CodexUserInputRequest", {
             ...buildCodexMonitorUpdateOptions(extra, { includeHeadless: true }),
             transientPermissionEvent: true,
           });
         },
         onUserInputResolved: (sid, callId) => {
-          clearCodexUserInputBubbles(sid, callId, "codex-user-input-resolved");
+          const sessionId = makeSessionKey({ profileId: "local", rawSessionId: sid });
+          clearCodexUserInputBubbles(sessionId, callId, "codex-user-input-resolved");
         },
       });
       if (isAgentEnabled("codex")) {

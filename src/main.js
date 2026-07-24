@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker, powerMonitor, clipboard } = require("electron");
+const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker, powerMonitor, clipboard, safeStorage } = require("electron");
 // ── Linux/Wayland: relaunch under XWayland so the pet is draggable (issue #441) ──
 // Native Wayland ignores client-side window positioning and blocks global cursor
 // queries, so the pet spawns centered, can't be dragged, and has no tracking;
@@ -253,6 +253,7 @@ const SIZES = {
 // `_settingsController.applyUpdate()`, which auto-persists.
 const prefsModule = require("./prefs");
 const { createSettingsController } = require("./settings-controller");
+const { loadOrCreateInstallationIdentity } = require("./remote-ssh-identity");
 const { createTranslator, i18n, SUPPORTED_LANGS } = require("./i18n");
 const {
   getBubblePolicy,
@@ -461,6 +462,42 @@ const _settingsController = createSettingsController({
     },
   },
 });
+let _remoteSshInstallationIdentity = null;
+
+async function initializeRemoteSshInstallationIdentity() {
+  const remoteSsh = _settingsController.get("remoteSsh") || {};
+  const persistedAuthorityPresent = Array.isArray(remoteSsh.profiles)
+    && remoteSsh.profiles.some((profile) => profile && (
+      typeof profile.routingNonce === "string"
+      || typeof profile.previousNonce === "string"
+      || !!profile.identityTxn
+      || profile.isolatedActive === true
+      || !!profile.isolatedRuntime
+      || (Array.isArray(profile.managedDeployTargets) && profile.managedDeployTargets.length > 0)
+      || (Number.isFinite(profile.lastDeployedAt) && profile.lastDeployedAt > 0)
+    ));
+  const identity = loadOrCreateInstallationIdentity({
+    userDataDir: app.getPath("userData"),
+    expectedInstallId: remoteSsh.installId,
+    persistedAuthorityPresent,
+    safeStorage,
+  });
+  const result = await _settingsController.applyCommand("remoteSsh.applyInstallationIdentity", {
+    installId: identity.installId,
+    cloneRecoveryRequired: identity.cloneRecoveryRequired === true,
+  });
+  if (!result || result.status !== "ok") {
+    throw new Error((result && result.message) || "failed to bind Remote SSH installation identity");
+  }
+  _remoteSshInstallationIdentity = Object.freeze(identity);
+  if (identity.cloneRecoveryRequired) {
+    console.warn("Clawd remote-ssh: local installation identity changed; remote profiles require redeploy");
+  }
+  if (!identity.strongStorage) {
+    console.warn(`Clawd remote-ssh: installation binding uses weak storage backend (${identity.storageBackend})`);
+  }
+  return identity;
+}
 
 // Mirror of `_settingsController.get("lang")` so existing sync read sites in
 // menu.js / state.js / etc. don't have to round-trip through the controller.
@@ -3462,6 +3499,7 @@ try {
 
 // ── Doctor tab IPC ──
 const { registerDoctorIpc } = require("./doctor-ipc");
+let _remoteSshRuntime = null;
 registerDoctorIpc({
   ipcMain,
   app,
@@ -3471,6 +3509,9 @@ registerDoctorIpc({
   getDoNotDisturb: () => doNotDisturb,
   getLocale: () => _settingsController.get("lang") || "en",
   resolveAgentDisplayName: _resolveAgentDisplayName,
+  getRemoteSshStatuses: () => _remoteSshRuntime
+    ? _remoteSshRuntime.listStatuses()
+    : [],
 });
 
 // ── Remote SSH (Phase 2) ──
@@ -3482,8 +3523,9 @@ registerDoctorIpc({
 // any spawned ssh / scp children.
 const { createRemoteSshRuntime } = require("./remote-ssh-runtime");
 const { registerRemoteSshIpc } = require("./remote-ssh-ipc");
-const _remoteSshRuntime = createRemoteSshRuntime({
+_remoteSshRuntime = createRemoteSshRuntime({
   getHookServerPort: () => getHookServerPort(),
+  createProfileIngress: (options) => _server.openRemoteSshIngress(options),
   log: (...args) => console.warn("Clawd remote-ssh:", ...args),
 });
 const _remoteSshIpc = registerRemoteSshIpc({
@@ -3492,6 +3534,8 @@ const _remoteSshIpc = registerRemoteSshIpc({
   remoteSshRuntime: _remoteSshRuntime,
   BrowserWindow,
   isPackaged: app.isPackaged,
+  getInstallationIdentity: () => _remoteSshInstallationIdentity,
+  enableProfileIsolation: process.env.CLAWD_ENABLE_EXPERIMENTAL_REMOTE_ISOLATION === "1",
 });
 
 // ── Settings panel window ──
@@ -4113,7 +4157,7 @@ if (!gotTheLock) {
     }
   }
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     // macOS: override the dock icon with a version padded to the macOS icon
     // grid (~80.5% of the canvas, ~100px transparent margin per side) so the
     // Dock tile matches neighbor apps. The build-time icon.png sits ~72.6%
@@ -4141,6 +4185,12 @@ if (!gotTheLock) {
     // First-run only: seed UI language from the device locale, before createWindow
     // so the very first menu/tray render is already in the user's language.
     hydrateFreshInstallLanguage();
+    try {
+      await initializeRemoteSshInstallationIdentity();
+    } catch (err) {
+      _remoteSshInstallationIdentity = null;
+      console.error("Clawd remote-ssh: installation identity initialization failed:", err && err.message);
+    }
 
     permDebugLog = path.join(app.getPath("userData"), "permission-debug.log");
     updateDebugLog = path.join(app.getPath("userData"), "update-debug.log");

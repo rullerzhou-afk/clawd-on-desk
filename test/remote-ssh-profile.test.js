@@ -6,6 +6,8 @@ const path = require("path");
 
 const {
   REMOTE_FORWARD_PORTS,
+  REMOTE_LAYOUT_VERSION,
+  REMOTE_IDENTITY_STEP_NAMES,
   isValidHost,
   isValidPort,
   isValidRemoteForwardPort,
@@ -18,18 +20,45 @@ const {
   sanitizeProfile,
   normalizeRemoteSsh,
   getDefaults,
+  sanitizeIdentityTxn,
+  sanitizeRuntimeModeTxn,
+  remoteOwnershipDomainKey,
 } = require("../src/remote-ssh-profile");
 
 // ── remoteForwardPort ↔ SERVER_PORTS invariant ──
 
-// Remote hooks and the remotely registered Claude statusline discover the
-// tunnel by walking hooks/server-config.js SERVER_PORTS on the remote's
-// 127.0.0.1 (no ~/.clawd/runtime.json exists there). If the profile schema
-// ever allowed a forward port outside that set, those POSTs would silently
-// stop reaching the desktop.
+// Secure remote hooks pin one exact port. Keep the profile validator aligned
+// with server-config's historical range so migration/downgrade diagnostics
+// stay deterministic.
 test("REMOTE_FORWARD_PORTS stays equal to hooks/server-config SERVER_PORTS", () => {
   const { SERVER_PORTS } = require("../hooks/server-config");
   assert.deepEqual(REMOTE_FORWARD_PORTS, SERVER_PORTS);
+});
+
+test("remote ownership domains share account-default but separate isolated runtime keys", () => {
+  const account = {
+    host: "user@example.test",
+    port: 22,
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    layoutVersion: 1,
+  };
+  assert.equal(
+    remoteOwnershipDomainKey(account),
+    remoteOwnershipDomainKey({ ...account, profileId: "another-profile" }),
+  );
+  assert.notEqual(
+    remoteOwnershipDomainKey({
+      ...account,
+      runtimeMode: "profile-isolated",
+      runtimeKey: "runtime_a",
+    }),
+    remoteOwnershipDomainKey({
+      ...account,
+      runtimeMode: "profile-isolated",
+      runtimeKey: "runtime_b",
+    }),
+  );
 });
 
 // ── isValidHost ──
@@ -200,6 +229,7 @@ test("isValidId accepts alnum / underscore / dash", () => {
 
 test("isValidId rejects empty / too long / special chars", () => {
   assert.equal(isValidId(""), false);
+  assert.equal(isValidId("local"), false);
   assert.equal(isValidId("a".repeat(65)), false);
   assert.equal(isValidId("has space"), false);
   assert.equal(isValidId("dot.id"), false);
@@ -364,6 +394,166 @@ test("sanitizeProfile returns null on invalid input", () => {
   assert.equal(sanitizeProfile({ id: "p1" }), null);
 });
 
+test("sanitizeProfile migrates old profiles into the account-default layout domain", () => {
+  const out = sanitizeProfile(basicProfile());
+  assert.equal(out.runtimeMode, "account-default");
+  assert.equal(out.runtimeKey, "account-default");
+  assert.equal(out.layoutVersion, REMOTE_LAYOUT_VERSION);
+  assert.equal(out.isolatedActive, false);
+});
+
+test("sanitizeProfile validates profile-isolated runtime keys", () => {
+  const ok = sanitizeProfile(basicProfile({
+    runtimeMode: "profile-isolated",
+    runtimeKey: "runtime_A7",
+  }));
+  assert.equal(ok.runtimeKey, "runtime_A7");
+  assert.equal(sanitizeProfile(basicProfile({
+    runtimeMode: "profile-isolated",
+    runtimeKey: "../escape",
+  })), null);
+  assert.equal(sanitizeProfile(basicProfile({
+    runtimeMode: "profile-isolated",
+    runtimeKey: "account-default",
+  })), null);
+});
+
+test("sanitizeProfile derives isolated activation only from matching verified evidence", () => {
+  const raw = basicProfile({
+    runtimeMode: "profile-isolated",
+    runtimeKey: "runtime_A7",
+    remoteHome: "/home/shared",
+    isolatedActive: true,
+  });
+  assert.equal(sanitizeProfile(raw).isolatedActive, false);
+
+  const runtimeRoot = "/home/shared/.clawd/profiles/runtime_A7";
+  const capabilities = {
+    claude: {
+      present: true,
+      versionVerified: true,
+      artifactVerified: true,
+      wrapperInvoked: true,
+      executablePath: "/opt/tools/claude",
+      wrapperPath: `${runtimeRoot}/bin/claude`,
+      version: "2.1.211",
+    },
+    codex: {
+      present: false,
+      versionVerified: false,
+      artifactVerified: false,
+      wrapperInvoked: false,
+    },
+    copilot: {
+      present: false,
+      versionVerified: false,
+      artifactVerified: false,
+      wrapperInvoked: false,
+    },
+  };
+  const matching = sanitizeProfile({
+    ...raw,
+    isolatedRuntime: {
+      runtimeRoot,
+      binDir: `${runtimeRoot}/bin`,
+      active: true,
+      verifiedAt: 1,
+      capabilities,
+    },
+  });
+  assert.equal(matching.isolatedActive, true);
+
+  const mismatched = sanitizeProfile({
+    ...raw,
+    isolatedRuntime: {
+      runtimeRoot: "/home/shared/.clawd/profiles/another_runtime",
+      binDir: "/home/shared/.clawd/profiles/another_runtime/bin",
+      active: true,
+      verifiedAt: 1,
+      capabilities,
+    },
+  });
+  assert.equal(mismatched.isolatedActive, false);
+});
+
+test("normalizeRemoteSsh blocks duplicate isolated runtime keys without dropping profiles", () => {
+  const out = normalizeRemoteSsh({
+    profiles: [
+      basicProfile({
+        id: "a",
+        runtimeMode: "profile-isolated",
+        runtimeKey: "same_root",
+        isolatedActive: true,
+      }),
+      basicProfile({
+        id: "b",
+        runtimeMode: "profile-isolated",
+        runtimeKey: "same_root",
+        isolatedActive: true,
+      }),
+    ],
+  });
+  assert.equal(out.profiles.length, 2);
+  for (const profile of out.profiles) {
+    assert.equal(profile.isolatedActive, false);
+    assert.equal(profile.runtimeKeyConflict, true);
+  }
+});
+
+test("identity transaction is layout-bound and requires evidence for N/A steps", () => {
+  const steps = Object.fromEntries(
+    REMOTE_IDENTITY_STEP_NAMES.map((name) => [name, { status: "pending" }]),
+  );
+  steps.installCopilot = { status: "not-applicable", evidence: "agent-not-installed" };
+  const raw = {
+    runtimeKey: "account-default",
+    layoutVersion: REMOTE_LAYOUT_VERSION,
+    phase: "rotating",
+    fromNonce: null,
+    toNonce: "a".repeat(32),
+    startedAt: 1000,
+    previousExpiresAt: 901000,
+    steps,
+  };
+  assert.ok(sanitizeIdentityTxn(raw, {
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    layoutVersion: REMOTE_LAYOUT_VERSION,
+  }));
+  const invalid = structuredClone(raw);
+  invalid.steps.installCopilot = { status: "not-applicable" };
+  assert.equal(sanitizeIdentityTxn(invalid, {
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    layoutVersion: REMOTE_LAYOUT_VERSION,
+  }), null);
+});
+
+test("runtime mode transaction is layout-bound, survives normalization, and rejects target drift", () => {
+  const txn = {
+    fromMode: "account-default",
+    fromKey: "account-default",
+    toMode: "profile-isolated",
+    toKey: "rt_resume",
+    layoutVersion: 1,
+    phase: "cleanup-done",
+    startedAt: 123,
+  };
+  assert.deepEqual(sanitizeRuntimeModeTxn(txn), txn);
+  const profile = sanitizeProfile(basicProfile({ runtimeModeTxn: txn }));
+  assert.deepEqual(profile.runtimeModeTxn, txn);
+  assert.equal(sanitizeRuntimeModeTxn({ ...txn, toKey: "../escape" }), null);
+  assert.equal(sanitizeRuntimeModeTxn({ ...txn, phase: "invented" }), null);
+  assert.equal(
+    sanitizeProfile(basicProfile({
+      runtimeMode: "profile-isolated",
+      runtimeKey: "different",
+      runtimeModeTxn: txn,
+    })).runtimeModeTxn,
+    undefined,
+  );
+});
+
 // ── normalizeRemoteSsh (load path) ──
 
 test("normalizeRemoteSsh drops invalid profiles silently", () => {
@@ -495,13 +685,28 @@ test("deployTargetDrift detects each field change deterministically", () => {
   const baseFp = deployTargetFingerprint(base);
   for (const f of DEPLOY_TARGET_FIELDS) {
     const changed = { ...base };
+    let comparisonBase = baseFp;
     if (f === "host") changed.host = "pi2";
     else if (f === "port") changed.port = 2222;
     else if (f === "identityFile") changed.identityFile = "/k";
     else if (f === "remoteForwardPort") changed.remoteForwardPort = 23335;
     else if (f === "hostPrefix") changed.hostPrefix = "pi-prefix";
     else if (f === "chainStatusline") changed.chainStatusline = true;
-    const drift = deployTargetDrift(baseFp, deployTargetFingerprint(changed));
+    else if (f === "runtimeMode") {
+      changed.runtimeMode = "profile-isolated";
+      changed.runtimeKey = "runtime_changed";
+    } else if (f === "runtimeKey") {
+      changed.runtimeMode = "profile-isolated";
+      changed.runtimeKey = "runtime_changed";
+      comparisonBase = deployTargetFingerprint({
+        ...base,
+        runtimeMode: "profile-isolated",
+        runtimeKey: "runtime_base",
+      });
+    } else if (f === "layoutVersion") {
+      changed.layoutVersion = 2;
+    }
+    const drift = deployTargetDrift(comparisonBase, deployTargetFingerprint(changed));
     assert.equal(drift, f, `expected drift on ${f}`);
   }
 });
@@ -530,9 +735,10 @@ test("settings-actions: remoteSsh.markDeployed stamps lastDeployedAt without tou
   const cmd = commandRegistry["remoteSsh.markDeployed"];
   const original = basicProfile({ label: "Pi" });
   const r = cmd({ id: "p1", deployedAt: 12345 }, {
-    snapshot: { remoteSsh: { profiles: [original] } },
+    snapshot: { remoteSsh: { installId: "a".repeat(64), profiles: [original] } },
   });
   assert.equal(r.status, "ok");
+  assert.equal(r.commit.remoteSsh.installId, "a".repeat(64));
   assert.equal(r.commit.remoteSsh.profiles[0].lastDeployedAt, 12345);
   // Other fields preserved.
   assert.equal(r.commit.remoteSsh.profiles[0].label, "Pi");
@@ -604,7 +810,7 @@ test("settings-actions: remoteSsh.markDeployed noop when expectedTarget host dri
         hostPrefix: undefined,
       },
     },
-    { snapshot: { remoteSsh: { profiles: [editedProfile] } } }
+    { snapshot: { remoteSsh: { installId: "a".repeat(64), profiles: [editedProfile] } } }
   );
   // Current-target stamp is still a no-op: deploy landed on old host, but the
   // ownership ledger must retain that old host so delete can clean it later.
@@ -612,6 +818,7 @@ test("settings-actions: remoteSsh.markDeployed noop when expectedTarget host dri
   assert.equal(r.noop, true);
   assert.equal(r.reason, "target_drift");
   assert.equal(r.targetDrift, "host");
+  assert.equal(r.commit.remoteSsh.installId, "a".repeat(64));
   assert.equal(r.commit.remoteSsh.profiles[0].lastDeployedAt, undefined);
   assert.equal(r.commit.remoteSsh.profiles[0].managedDeployTargets[0].host, "user@pi.local");
   assert.equal(editedProfile.lastDeployedAt, undefined,
@@ -659,9 +866,10 @@ test("settings-actions: remoteSsh.markRemoteNode stamps detected node without to
     source: "path",
     detectedAt: 555,
   }, {
-    snapshot: { remoteSsh: { profiles: [original] } },
+    snapshot: { remoteSsh: { installId: "a".repeat(64), profiles: [original] } },
   });
   assert.equal(r.status, "ok");
+  assert.equal(r.commit.remoteSsh.installId, "a".repeat(64));
   const profile = r.commit.remoteSsh.profiles[0];
   assert.equal(profile.label, "Pi");
   assert.equal(profile.detectedRemoteNodeBin, "/usr/local/bin/node");
@@ -893,6 +1101,30 @@ test("settings-actions: remoteSsh.delete rejects empty / non-string id", () => {
   assert.equal(cmd("", { snapshot: {} }).status, "error");
   assert.equal(cmd(null, { snapshot: {} }).status, "error");
   assert.equal(cmd({}, { snapshot: {} }).status, "error");
+});
+
+test("settings-actions: remoteSsh.delete rejects an active identity transaction", () => {
+  const cmd = commandRegistry["remoteSsh.delete"];
+  const r = cmd("p1", {
+    snapshot: {
+      remoteSsh: {
+        profiles: [basicProfile({
+          identityTxn: {
+            runtimeKey: "account-default",
+            layoutVersion: 1,
+            phase: "rotating",
+            fromNonce: null,
+            toNonce: "b".repeat(32),
+            startedAt: 1,
+            previousExpiresAt: 100,
+            steps: {},
+          },
+        })],
+      },
+    },
+  });
+  assert.equal(r.status, "error");
+  assert.match(r.message, /identity transaction/i);
 });
 
 // ── prefs.js: schema integration ──

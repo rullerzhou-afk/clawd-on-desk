@@ -140,7 +140,23 @@ const {
   normalizeManagedDeployTargets,
   sanitizeManagedDeployTarget,
   remoteAccountKey,
+  isValidInstallId,
+  isValidRoutingNonce,
+  sanitizeIsolatedRuntime,
+  sanitizeRuntimeModeTxn,
+  REMOTE_RUNTIME_MODE_ACCOUNT_DEFAULT,
+  REMOTE_RUNTIME_MODE_PROFILE_ISOLATED,
+  ACCOUNT_DEFAULT_RUNTIME_KEY,
+  REMOTE_LAYOUT_VERSION,
 } = require("./remote-ssh-profile");
+const {
+  createIdentityTxn,
+  updateIdentityTxnStep,
+  commitIdentityTxn,
+  cloneRecoverRemoteSsh,
+  forceRevokeOldIdentity,
+  abortIdentityTxnToEmergencyNonce,
+} = require("./remote-ssh-identity");
 const {
   validateTelegramApproval,
   validateTelegramBotToken,
@@ -546,6 +562,9 @@ const updateRegistry = {
     if (!Array.isArray(value.profiles)) {
       return { status: "error", message: "remoteSsh.profiles must be an array" };
     }
+    if (value.installId !== undefined && !isValidInstallId(value.installId)) {
+      return { status: "error", message: "remoteSsh.installId must be a SHA-256 hex id" };
+    }
     for (let i = 0; i < value.profiles.length; i++) {
       const r = validateRemoteSshProfile(value.profiles[i]);
       if (r.status !== "ok") {
@@ -764,8 +783,14 @@ function setSessionAlias(payload, deps) {
   if (!payload || typeof payload !== "object") {
     return { status: "error", message: "setSessionAlias: payload must be an object" };
   }
-  const { host, agentId, sessionId, cwd, alias } = payload;
-  const key = sessionAliasKey(host, agentId, sessionId, { cwd });
+  const { host, agentId, sessionId, rawSessionId, profileId, cwd, alias } = payload;
+  // sessionId is the canonical action id for remote sessions. Alias storage
+  // is keyed by the trusted profile scope plus the separately transported raw
+  // id so the opaque action id never leaks into visible/legacy alias keys.
+  const aliasSessionId = typeof rawSessionId === "string" && rawSessionId.trim()
+    ? rawSessionId
+    : sessionId;
+  const key = sessionAliasKey(host, agentId, aliasSessionId, { cwd, profileId });
   if (!key) {
     return { status: "error", message: "setSessionAlias.sessionId must be a non-empty string" };
   }
@@ -994,7 +1019,41 @@ function _remoteSshSnapshot(deps) {
   const snap = (deps && deps.snapshot) || {};
   const cur = snap.remoteSsh && typeof snap.remoteSsh === "object" ? snap.remoteSsh : {};
   const profiles = Array.isArray(cur.profiles) ? cur.profiles.slice() : [];
-  return { profiles };
+  const out = { profiles };
+  if (isValidInstallId(cur.installId)) out.installId = cur.installId;
+  return out;
+}
+
+const REMOTE_SSH_TRUSTED_PROFILE_FIELDS = Object.freeze([
+  "routingNonce",
+  "previousNonce",
+  "previousExpiresAt",
+  "identityTxn",
+  "runtimeModeTxn",
+  "isolatedActive",
+  "runtimeKeyConflict",
+  "isolatedRuntime",
+]);
+const REMOTE_SSH_DEPLOYMENT_METADATA_FIELDS = Object.freeze([
+  "lastDeployedAt",
+  "managedDeployTargets",
+  "detectedRemoteNodeBin",
+  "detectedRemoteNodeVersion",
+  "detectedRemoteNodeSource",
+  "detectedRemoteNodeAt",
+  "remoteHome",
+]);
+
+function stripTrustedRemoteProfileFields(profile) {
+  for (const field of [...REMOTE_SSH_TRUSTED_PROFILE_FIELDS, ...REMOTE_SSH_DEPLOYMENT_METADATA_FIELDS]) {
+    delete profile[field];
+  }
+}
+
+function preserveTrustedRemoteProfileFields(target, source) {
+  for (const field of REMOTE_SSH_TRUSTED_PROFILE_FIELDS) {
+    if (source && source[field] !== undefined) target[field] = source[field];
+  }
 }
 
 function normalizeRemoteNodeDetection(input, detectedAtFallback = Date.now()) {
@@ -1051,8 +1110,7 @@ function remoteSshAddProfile(payload, deps) {
   }
   // Ownership metadata is server-issued only after a successful deploy.
   // Renderer input must never be able to manufacture cleanup authority.
-  delete profile.managedDeployTargets;
-  delete profile.lastDeployedAt;
+  stripTrustedRemoteProfileFields(profile);
   next.profiles.push(profile);
   return { status: "ok", commit: { remoteSsh: next } };
 }
@@ -1076,6 +1134,12 @@ function remoteSshUpdateProfile(payload, deps) {
   }
   // Preserve original createdAt if caller didn't supply one new.
   const prev = next.profiles[idx];
+  if (prev.runtimeModeTxn) {
+    return {
+      status: "error",
+      message: "remoteSsh.update: finish the runtime mode transaction before editing this profile",
+    };
+  }
   if (Number.isFinite(prev.createdAt) && !Number.isFinite(payload.createdAt)) {
     profile.createdAt = prev.createdAt;
   }
@@ -1091,8 +1155,8 @@ function remoteSshUpdateProfile(payload, deps) {
   // Deployment stamps and cleanup ownership are server-issued metadata.
   // Ignore anything supplied by the renderer, then restore only the trusted
   // values already present in the current settings snapshot.
-  delete profile.lastDeployedAt;
-  delete profile.managedDeployTargets;
+  stripTrustedRemoteProfileFields(profile);
+  preserveTrustedRemoteProfileFields(profile, prev);
   // Ownership history is independent of whether the current form still
   // points at the deployed target. Preserve it across A → B edits so delete
   // later cleans the actual managed account(s), never the current guess.
@@ -1105,9 +1169,233 @@ function remoteSshUpdateProfile(payload, deps) {
     if (profile.detectedRemoteNodeBin === undefined) {
       copyRemoteNodeDetection(profile, prev);
     }
+    if (typeof prev.remoteHome === "string") profile.remoteHome = prev.remoteHome;
   }
   next.profiles[idx] = profile;
   return { status: "ok", commit: { remoteSsh: next } };
+}
+
+function remoteSshApplyInstallationIdentity(payload, deps) {
+  const installId = payload && payload.installId;
+  if (!isValidInstallId(installId)) {
+    return { status: "error", message: "remoteSsh.applyInstallationIdentity.installId is invalid" };
+  }
+  const current = _remoteSshSnapshot(deps);
+  if (payload.cloneRecoveryRequired === true) {
+    return {
+      status: "ok",
+      commit: { remoteSsh: cloneRecoverRemoteSsh(current, installId) },
+      cloneRecovered: true,
+    };
+  }
+  return {
+    status: "ok",
+    commit: { remoteSsh: { ...current, installId } },
+  };
+}
+
+function remoteSshBeginIdentityRotation(payload, deps) {
+  const id = payload && payload.id;
+  const next = _remoteSshSnapshot(deps);
+  const idx = next.profiles.findIndex((profile) => profile.id === id);
+  if (idx === -1) return { status: "error", message: "remoteSsh.beginIdentityRotation: profile not found" };
+  const current = next.profiles[idx];
+  if (current.identityTxn && current.identityTxn.phase !== "committed") {
+    return { status: "ok", noop: true, identityTxn: current.identityTxn };
+  }
+  // Randomness and time sources are main-process authority. Never accept
+  // renderer-supplied options here, even though the IPC boundary also blocks
+  // this internal command.
+  const txn = createIdentityTxn(current);
+  next.profiles[idx] = { ...current, identityTxn: txn };
+  return { status: "ok", commit: { remoteSsh: next }, identityTxn: txn };
+}
+
+function remoteSshUpdateIdentityStep(payload, deps) {
+  const { id, step, value } = payload || {};
+  const next = _remoteSshSnapshot(deps);
+  const idx = next.profiles.findIndex((profile) => profile.id === id);
+  if (idx === -1) return { status: "error", message: "remoteSsh.updateIdentityStep: profile not found" };
+  const current = next.profiles[idx];
+  if (!current.identityTxn) return { status: "error", message: "remoteSsh.updateIdentityStep: no active transaction" };
+  const txn = updateIdentityTxnStep(current.identityTxn, step, value, current);
+  next.profiles[idx] = { ...current, identityTxn: txn };
+  return { status: "ok", commit: { remoteSsh: next }, identityTxn: txn };
+}
+
+function remoteSshCommitIdentityRotation(payload, deps) {
+  const id = payload && payload.id;
+  const next = _remoteSshSnapshot(deps);
+  const idx = next.profiles.findIndex((profile) => profile.id === id);
+  if (idx === -1) return { status: "error", message: "remoteSsh.commitIdentityRotation: profile not found" };
+  const current = next.profiles[idx];
+  if (!current.identityTxn) return { status: "error", message: "remoteSsh.commitIdentityRotation: no active transaction" };
+  const committed = commitIdentityTxn(current, current.identityTxn);
+  next.profiles[idx] = committed;
+  return { status: "ok", commit: { remoteSsh: next }, routingNonce: committed.routingNonce };
+}
+
+function remoteSshForceRevoke(payload, deps) {
+  const id = payload && payload.id;
+  const next = _remoteSshSnapshot(deps);
+  const idx = next.profiles.findIndex((profile) => profile.id === id);
+  if (idx === -1) return { status: "error", message: "remoteSsh.forceRevoke: profile not found" };
+  const current = next.profiles[idx];
+  if (!payload || payload.confirmed !== true) {
+    return { status: "error", message: "remoteSsh.forceRevoke requires confirmed:true" };
+  }
+  const mode = payload.mode || "old";
+  if (mode !== "old" && mode !== "all") {
+    return { status: "error", message: "remoteSsh.forceRevoke.mode must be old or all" };
+  }
+  const updated = mode === "old"
+    ? forceRevokeOldIdentity(current)
+    : abortIdentityTxnToEmergencyNonce(current);
+  next.profiles[idx] = updated;
+  return {
+    status: "ok",
+    commit: { remoteSsh: next },
+    identityTxn: updated.identityTxn || null,
+  };
+}
+
+function remoteSshBeginRuntimeModeSwitch(payload, deps) {
+  const { id, runtimeMode } = payload || {};
+  const next = _remoteSshSnapshot(deps);
+  const idx = next.profiles.findIndex((profile) => profile.id === id);
+  if (idx === -1) return { status: "error", message: "remoteSsh.beginRuntimeModeSwitch: profile not found" };
+  if (runtimeMode !== REMOTE_RUNTIME_MODE_ACCOUNT_DEFAULT
+    && runtimeMode !== REMOTE_RUNTIME_MODE_PROFILE_ISOLATED) {
+    return { status: "error", message: "remoteSsh.beginRuntimeModeSwitch.runtimeMode is invalid" };
+  }
+  const current = next.profiles[idx];
+  if (current.identityTxn && current.identityTxn.phase !== "committed") {
+    return {
+      status: "error",
+      message: "remoteSsh.beginRuntimeModeSwitch: identity transaction is active",
+    };
+  }
+  if (current.runtimeModeTxn) {
+    if (current.runtimeModeTxn.toMode === runtimeMode) {
+      return { status: "ok", noop: true, runtimeModeTxn: current.runtimeModeTxn };
+    }
+    return {
+      status: "error",
+      message: "remoteSsh.beginRuntimeModeSwitch: another target mode is already pending",
+    };
+  }
+  const currentMode = current.runtimeMode || REMOTE_RUNTIME_MODE_ACCOUNT_DEFAULT;
+  const currentKey = current.runtimeKey || ACCOUNT_DEFAULT_RUNTIME_KEY;
+  if (currentMode === runtimeMode) {
+    return { status: "ok", noop: true };
+  }
+  const runtimeKey = runtimeMode === REMOTE_RUNTIME_MODE_ACCOUNT_DEFAULT
+    ? ACCOUNT_DEFAULT_RUNTIME_KEY
+    : payload.runtimeKey;
+  const txn = sanitizeRuntimeModeTxn({
+    fromMode: currentMode,
+    fromKey: currentKey,
+    toMode: runtimeMode,
+    toKey: runtimeKey,
+    layoutVersion: REMOTE_LAYOUT_VERSION,
+    phase: "prepared",
+    startedAt: Date.now(),
+  });
+  if (!txn) {
+    return { status: "error", message: "remoteSsh.beginRuntimeModeSwitch target is invalid" };
+  }
+  if (txn.toMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED
+    && next.profiles.some((profile, profileIndex) =>
+      profileIndex !== idx
+      && profile.runtimeMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED
+      && profile.runtimeKey === txn.toKey)) {
+    return {
+      status: "error",
+      message: "remoteSsh.beginRuntimeModeSwitch runtime key is already owned by another profile",
+    };
+  }
+  next.profiles[idx] = { ...current, runtimeModeTxn: txn };
+  return { status: "ok", commit: { remoteSsh: next }, runtimeModeTxn: txn };
+}
+
+function remoteSshAdvanceRuntimeModeSwitch(payload, deps) {
+  const { id, phase } = payload || {};
+  const next = _remoteSshSnapshot(deps);
+  const idx = next.profiles.findIndex((profile) => profile.id === id);
+  if (idx === -1) return { status: "error", message: "remoteSsh.advanceRuntimeModeSwitch: profile not found" };
+  const current = next.profiles[idx];
+  const txn = sanitizeRuntimeModeTxn(current.runtimeModeTxn);
+  if (!txn) {
+    return { status: "error", message: "remoteSsh.advanceRuntimeModeSwitch: no valid transaction" };
+  }
+  const allowed = (txn.phase === "prepared" && phase === "cleanup-done")
+    || (txn.phase === "cleanup-done"
+      && txn.toMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED
+      && phase === "bootstrap-done");
+  if (!allowed) {
+    if (txn.phase === phase) return { status: "ok", noop: true, runtimeModeTxn: txn };
+    return {
+      status: "error",
+      message: `remoteSsh.advanceRuntimeModeSwitch cannot advance ${txn.phase} to ${String(phase)}`,
+    };
+  }
+  const advanced = { ...txn, phase };
+  next.profiles[idx] = { ...current, runtimeModeTxn: advanced };
+  return { status: "ok", commit: { remoteSsh: next }, runtimeModeTxn: advanced };
+}
+
+function remoteSshSwitchRuntimeMode(payload, deps) {
+  const { id } = payload || {};
+  const next = _remoteSshSnapshot(deps);
+  const idx = next.profiles.findIndex((profile) => profile.id === id);
+  if (idx === -1) return { status: "error", message: "remoteSsh.switchRuntimeMode: profile not found" };
+  const current = next.profiles[idx];
+  const txn = sanitizeRuntimeModeTxn(current.runtimeModeTxn);
+  if (!txn) return { status: "error", message: "remoteSsh.switchRuntimeMode: no valid transaction" };
+  const ready = txn.toMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED
+    ? txn.phase === "bootstrap-done"
+    : txn.phase === "cleanup-done";
+  if (!ready) {
+    return {
+      status: "error",
+      message: `remoteSsh.switchRuntimeMode: transaction phase ${txn.phase} is not ready`,
+    };
+  }
+  const rawCandidate = {
+    ...current,
+    runtimeMode: txn.toMode,
+    runtimeKey: txn.toKey,
+    layoutVersion: REMOTE_LAYOUT_VERSION,
+    isolatedActive: false,
+    runtimeKeyConflict: false,
+    managedDeployTargets: [],
+  };
+  for (const field of [
+    "routingNonce",
+    "previousNonce",
+    "previousExpiresAt",
+    "identityTxn",
+    "runtimeModeTxn",
+    "lastDeployedAt",
+    "remoteHome",
+    "isolatedRuntime",
+  ]) {
+    delete rawCandidate[field];
+  }
+  const candidate = sanitizeRemoteSshProfile(rawCandidate);
+  if (!candidate) return { status: "error", message: "remoteSsh.switchRuntimeMode target is invalid" };
+  if (candidate.runtimeMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED
+    && next.profiles.some((profile, profileIndex) =>
+      profileIndex !== idx
+      && profile.runtimeMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED
+      && profile.runtimeKey === candidate.runtimeKey)) {
+    return {
+      status: "error",
+      message: "remoteSsh.switchRuntimeMode runtime key is already owned by another profile",
+    };
+  }
+  next.profiles[idx] = candidate;
+  return { status: "ok", commit: { remoteSsh: next }, profile: candidate };
 }
 
 // Stamp deploy completion onto a profile WITHOUT touching any other field.
@@ -1147,6 +1435,13 @@ function remoteSshMarkDeployed(payload, deps) {
   const ownedTarget = sanitizeManagedDeployTarget({
     ...deployTargetFingerprint(targetAtDeployStart),
     ...(remoteNode || {}),
+    ...(isValidInstallId(payload.installId) && typeof payload.remoteHome === "string"
+      ? {
+          profileId: id,
+          installId: payload.installId,
+          remoteHome: payload.remoteHome,
+        }
+      : {}),
     deployedAt,
   });
   if (!ownedTarget) {
@@ -1173,7 +1468,7 @@ function remoteSshMarkDeployed(payload, deps) {
       newProfiles[idx] = updatedProfile;
       return {
         status: "ok",
-        commit: { remoteSsh: { profiles: newProfiles } },
+        commit: { remoteSsh: { ...next, profiles: newProfiles } },
         noop: true,
         reason: "target_drift",
         targetDrift: drift,
@@ -1190,9 +1485,31 @@ function remoteSshMarkDeployed(payload, deps) {
     managedDeployTargets: ownedTargets,
   };
   if (remoteNode) copyRemoteNodeDetection(updatedProfile, remoteNode);
+  if (typeof payload.remoteHome === "string") updatedProfile.remoteHome = payload.remoteHome;
+  if (payload.isolation && current.runtimeMode === "profile-isolated") {
+    const isolatedRuntime = sanitizeIsolatedRuntime({
+      ...payload.isolation,
+      verifiedAt: deployedAt,
+    });
+    if (!isolatedRuntime) {
+      return { status: "error", message: "remoteSsh.markDeployed: invalid isolated runtime evidence" };
+    }
+    updatedProfile.isolatedRuntime = isolatedRuntime;
+    const normalizedProfile = sanitizeRemoteSshProfile(updatedProfile);
+    if (!normalizedProfile) {
+      return { status: "error", message: "remoteSsh.markDeployed: isolation evidence does not match the profile layout" };
+    }
+    updatedProfile.isolatedActive = normalizedProfile.isolatedActive === true;
+  } else if (current.runtimeMode !== "profile-isolated") {
+    delete updatedProfile.isolatedRuntime;
+    updatedProfile.isolatedActive = false;
+  }
   const newProfiles = next.profiles.slice();
   newProfiles[idx] = updatedProfile;
-  return { status: "ok", commit: { remoteSsh: { profiles: newProfiles } } };
+  return {
+    status: "ok",
+    commit: { remoteSsh: { ...next, profiles: newProfiles } },
+  };
 }
 
 function remoteSshMarkRemoteNode(payload, deps) {
@@ -1232,7 +1549,10 @@ function remoteSshMarkRemoteNode(payload, deps) {
   copyRemoteNodeDetection(updatedProfile, remoteNode);
   const newProfiles = next.profiles.slice();
   newProfiles[idx] = updatedProfile;
-  return { status: "ok", commit: { remoteSsh: { profiles: newProfiles } } };
+  return {
+    status: "ok",
+    commit: { remoteSsh: { ...next, profiles: newProfiles } },
+  };
 }
 
 function remoteSshDeleteProfile(payload, deps) {
@@ -1247,6 +1567,19 @@ function remoteSshDeleteProfile(payload, deps) {
   if (idx === -1) {
     // No-op rather than error — UI may have raced with a re-render.
     return { status: "ok", noop: true };
+  }
+  if (next.profiles[idx].runtimeModeTxn) {
+    return {
+      status: "error",
+      message: "remoteSsh.delete: finish the runtime mode transaction before deleting this profile",
+    };
+  }
+  if (next.profiles[idx].identityTxn
+    && next.profiles[idx].identityTxn.phase !== "committed") {
+    return {
+      status: "error",
+      message: "remoteSsh.delete: finish or force-revoke the identity transaction before deleting this profile",
+    };
   }
   next.profiles.splice(idx, 1);
   return { status: "ok", commit: { remoteSsh: next } };
@@ -1485,6 +1818,14 @@ remoteSshUpdateProfile.lockKey = "remoteSsh";
 remoteSshDeleteProfile.lockKey = "remoteSsh";
 remoteSshMarkDeployed.lockKey = "remoteSsh";
 remoteSshMarkRemoteNode.lockKey = "remoteSsh";
+remoteSshApplyInstallationIdentity.lockKey = "remoteSsh";
+remoteSshBeginIdentityRotation.lockKey = "remoteSsh";
+remoteSshUpdateIdentityStep.lockKey = "remoteSsh";
+remoteSshCommitIdentityRotation.lockKey = "remoteSsh";
+remoteSshForceRevoke.lockKey = "remoteSsh";
+remoteSshBeginRuntimeModeSwitch.lockKey = "remoteSsh";
+remoteSshAdvanceRuntimeModeSwitch.lockKey = "remoteSsh";
+remoteSshSwitchRuntimeMode.lockKey = "remoteSsh";
 telegramApprovalSetToken.lockKey = "tgApproval";
 telegramApprovalSendTest.lockKey = "tgApproval";
 feishuApprovalSetSecrets.lockKey = "feishuApproval";
@@ -1570,6 +1911,14 @@ const commandRegistry = {
   "remoteSsh.delete": remoteSshDeleteProfile,
   "remoteSsh.markDeployed": remoteSshMarkDeployed,
   "remoteSsh.markRemoteNode": remoteSshMarkRemoteNode,
+  "remoteSsh.applyInstallationIdentity": remoteSshApplyInstallationIdentity,
+  "remoteSsh.beginIdentityRotation": remoteSshBeginIdentityRotation,
+  "remoteSsh.updateIdentityStep": remoteSshUpdateIdentityStep,
+  "remoteSsh.commitIdentityRotation": remoteSshCommitIdentityRotation,
+  "remoteSsh.forceRevoke": remoteSshForceRevoke,
+  "remoteSsh.beginRuntimeModeSwitch": remoteSshBeginRuntimeModeSwitch,
+  "remoteSsh.advanceRuntimeModeSwitch": remoteSshAdvanceRuntimeModeSwitch,
+  "remoteSsh.switchRuntimeMode": remoteSshSwitchRuntimeMode,
   "telegramApproval.setToken": telegramApprovalSetToken,
   "telegramApproval.status": telegramApprovalStatus,
   "telegramApproval.tokenInfo": telegramApprovalTokenInfo,

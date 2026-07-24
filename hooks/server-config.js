@@ -10,21 +10,188 @@ const SERVER_PORT_COUNT = 5;
 const SERVER_PORTS = Array.from({ length: SERVER_PORT_COUNT }, (_, i) => DEFAULT_SERVER_PORT + i);
 const STATE_PATH = "/state";
 const PERMISSION_PATH = "/permission";
-const RUNTIME_CONFIG_PATH = path.join(os.homedir(), ".clawd", "runtime.json");
 const DEFAULT_HOOK_HTTP_TIMEOUT_MS = 100;
 const REMOTE_HOOK_HTTP_TIMEOUT_MS = 5000;
+const REMOTE_IDENTITY_FILENAME = "clawd-remote.json";
+const SSH_SECURE_MARKER_FILENAME = "clawd-ssh-secure-v1";
+const HOST_PREFIX_FILENAME = "clawd-host-prefix";
+const REMOTE_LAST_LOG_FILENAME = "clawd-remote-last-error.log";
+const REMOTE_FAILURE_LOG_INTERVAL_MS = 5 * 60 * 1000;
+const ROUTING_NONCE_HEADER = "x-clawd-routing-nonce";
+const REMOTE_IDENTITY_VERSION = 2;
+const ROUTING_NONCE_RE = /^[a-f0-9]{32}$/;
+const INSTALL_ID_RE = /^[a-f0-9]{64}$/;
+const SAFE_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+const SECURE_TRANSPORT_FAILURE_REASONS = new Set([
+  "identity-unreadable",
+  "identity-invalid",
+  "state-delivery-failed",
+  "permission-discovery-failed",
+  "permission-delivery-failed",
+]);
 
 function normalizePort(value) {
   const port = Number(value);
   return Number.isInteger(port) && SERVER_PORTS.includes(port) ? port : null;
 }
 
-const HOST_PREFIX_PATH = path.join(os.homedir(), ".claude", "hooks", "clawd-host-prefix");
+function defaultRuntimeConfigPath(options = {}) {
+  const homeDir = typeof options.homeDir === "string" ? options.homeDir : os.homedir();
+  return path.join(homeDir, ".clawd", "runtime.json");
+}
 
-function readHostPrefix() {
+function resolveCoLocatedPath(filename, options = {}, optionKey, envKey) {
+  if (typeof options[optionKey] === "string" && options[optionKey]) return options[optionKey];
+  const env = options.env || process.env;
+  if (env && typeof env[envKey] === "string" && env[envKey]) return env[envKey];
+  return path.join(__dirname, filename);
+}
+
+function resolveRemoteIdentityPath(options = {}) {
+  return resolveCoLocatedPath(
+    REMOTE_IDENTITY_FILENAME,
+    options,
+    "remoteIdentityPath",
+    "CLAWD_REMOTE_IDENTITY_PATH",
+  );
+}
+
+function resolveSshSecureMarkerPath(options = {}) {
+  return resolveCoLocatedPath(
+    SSH_SECURE_MARKER_FILENAME,
+    options,
+    "secureMarkerPath",
+    "CLAWD_SSH_SECURE_MARKER_PATH",
+  );
+}
+
+function resolveRemoteLastLogPath(options = {}) {
+  return resolveCoLocatedPath(
+    REMOTE_LAST_LOG_FILENAME,
+    options,
+    "remoteLastLogPath",
+    "CLAWD_REMOTE_LAST_LOG_PATH",
+  );
+}
+
+function recordSecureTransportFailure(reason, options = {}) {
+  const now = typeof options.now === "function" ? options.now() : Date.now();
+  const fsApi = options.fs || fs;
+  const filePath = resolveRemoteLastLogPath(options);
+  const safeReason = SECURE_TRANSPORT_FAILURE_REASONS.has(reason)
+    ? reason
+    : "transport-failed";
+  try {
+    const stat = fsApi.statSync(filePath);
+    if (Number.isFinite(stat.mtimeMs) && now - stat.mtimeMs < REMOTE_FAILURE_LOG_INTERVAL_MS) {
+      return false;
+    }
+  } catch {}
+  const tmpPath = `${filePath}.tmp-${process.pid}`;
+  try {
+    fsApi.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+    fsApi.writeFileSync(tmpPath, `${new Date(now).toISOString()} ${safeReason}\n`, {
+      mode: 0o600,
+    });
+    try { fsApi.chmodSync(tmpPath, 0o600); } catch {}
+    fsApi.renameSync(tmpPath, filePath);
+    try { fsApi.chmodSync(filePath, 0o600); } catch {}
+    return true;
+  } catch {
+    try { fsApi.unlinkSync(tmpPath); } catch {}
+    return false;
+  }
+}
+
+function readHostPrefix(options = {}) {
+  const hostPrefixPath = resolveCoLocatedPath(
+    HOST_PREFIX_FILENAME,
+    options,
+    "hostPrefixPath",
+    "CLAWD_HOST_PREFIX_PATH",
+  );
   let prefix = null;
-  try { prefix = fs.readFileSync(HOST_PREFIX_PATH, "utf8").trim(); } catch {}
+  try { prefix = (options.readFileSync || fs.readFileSync)(hostPrefixPath, "utf8").trim(); } catch {}
   return prefix || os.hostname().split(".")[0];
+}
+
+function envFlagEnabled(value) {
+  return !!value && !/^(0|false)$/i.test(String(value));
+}
+
+function isSshSecureMode(options = {}) {
+  if (options.sshSecure === true) return true;
+  if (options.sshSecure === false) return false;
+  const env = options.env || process.env;
+  if (envFlagEnabled(env && env.CLAWD_SSH_REMOTE)) return true;
+  const existsSync = options.existsSync || fs.existsSync;
+  try {
+    if (existsSync(resolveSshSecureMarkerPath(options))) return true;
+  } catch {
+    // An unreadable marker path is still a reason to avoid legacy scanning
+    // when the explicit path was supplied by a managed remote registration.
+    if ((options.env || process.env).CLAWD_SSH_SECURE_MARKER_PATH) return true;
+  }
+  try {
+    if (existsSync(resolveRemoteIdentityPath(options))) return true;
+  } catch {
+    if ((options.env || process.env).CLAWD_REMOTE_IDENTITY_PATH) return true;
+  }
+  return false;
+}
+
+function readRemoteIdentity(options = {}) {
+  const readFileSync = options.readFileSync || fs.readFileSync;
+  const filePath = resolveRemoteIdentityPath(options);
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync(filePath, "utf8"));
+  } catch {
+    return { ok: false, reason: "identity-unreadable", filePath };
+  }
+  const port = normalizePort(raw && raw.remotePort);
+  if (!raw
+    || typeof raw !== "object"
+    || Array.isArray(raw)
+    || raw.version !== REMOTE_IDENTITY_VERSION
+    || !Number.isInteger(raw.layoutVersion)
+    || raw.layoutVersion <= 0
+    || !SAFE_ID_RE.test(raw.runtimeKey || "")
+    || !SAFE_ID_RE.test(raw.profileId || "")
+    || !INSTALL_ID_RE.test(raw.installId || "")
+    || !port
+    || !ROUTING_NONCE_RE.test(raw.routingNonce || "")
+    || !Number.isFinite(raw.deployedAt)
+    || raw.deployedAt <= 0) {
+    return { ok: false, reason: "identity-invalid", filePath };
+  }
+  return {
+    ok: true,
+    reason: null,
+    filePath,
+    version: raw.version,
+    layoutVersion: raw.layoutVersion,
+    runtimeKey: raw.runtimeKey,
+    profileId: raw.profileId,
+    installId: raw.installId,
+    remotePort: port,
+    routingNonce: raw.routingNonce,
+    deployedAt: raw.deployedAt,
+  };
+}
+
+function resolveSecureTransport(options = {}) {
+  if (!isSshSecureMode(options)) return { secure: false, identity: null };
+  const identity = options.remoteIdentity && options.remoteIdentity.ok !== undefined
+    ? options.remoteIdentity
+    : readRemoteIdentity(options);
+  const result = {
+    secure: true,
+    identity: identity && identity.ok ? identity : null,
+    reason: identity && identity.reason ? identity.reason : "identity-invalid",
+  };
+  if (!result.identity) recordSecureTransportFailure(result.reason, options);
+  return result;
 }
 
 // WSL detection shared by all agent hooks. WSL_DISTRO_NAME is set by WSL
@@ -98,7 +265,7 @@ function normalizeOwnerPid(value) {
 // discriminated result rather than throwing; `reason` is diagnostic only.
 function parseRuntimeConfig(options = {}) {
   const readFileSync = options.readFileSync || fs.readFileSync;
-  const filePath = options.runtimeConfigPath || RUNTIME_CONFIG_PATH;
+  const filePath = options.runtimeConfigPath || defaultRuntimeConfigPath(options);
   let raw;
   try {
     raw = JSON.parse(readFileSync(filePath, "utf8"));
@@ -151,7 +318,7 @@ function writeRuntimeConfig(port, options = {}) {
   if (!safePort) return false;
 
   const fsApi = options.fs || fs;
-  const filePath = options.runtimeConfigPath || RUNTIME_CONFIG_PATH;
+  const filePath = options.runtimeConfigPath || defaultRuntimeConfigPath(options);
   const ownerPid = normalizeOwnerPid(options.ownerPid) || process.pid;
   const dir = path.dirname(filePath);
   const tmpPath = path.join(dir, `.runtime.${process.pid}.${Date.now()}.tmp`);
@@ -179,10 +346,11 @@ function writeRuntimeConfig(port, options = {}) {
 // a dead foreign owner's file is already harmless (the gate's own liveness
 // probe fails it) and the next start overwrites it — not worth coupling this
 // module to a kill(pid,0) helper it otherwise never needs.
-function clearRuntimeConfig(filePath = RUNTIME_CONFIG_PATH, options = {}) {
+function clearRuntimeConfig(filePath, options = {}) {
+  const targetPath = filePath || defaultRuntimeConfigPath(options);
   const ownPid = normalizeOwnerPid(options.ownerPid) || process.pid;
   try {
-    const raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    const raw = JSON.parse(fs.readFileSync(targetPath, "utf8"));
     const filePid = normalizeOwnerPid(raw && raw.ownerPid);
     if (filePid && filePid !== ownPid) return false;
   } catch {
@@ -190,7 +358,7 @@ function clearRuntimeConfig(filePath = RUNTIME_CONFIG_PATH, options = {}) {
     // residue — fall through and clean it.
   }
   try {
-    fs.unlinkSync(filePath);
+    fs.unlinkSync(targetPath);
     return true;
   } catch {
     return false;
@@ -198,6 +366,10 @@ function clearRuntimeConfig(filePath = RUNTIME_CONFIG_PATH, options = {}) {
 }
 
 function getPortCandidates(preferredPort, options = {}) {
+  const secureTransport = resolveSecureTransport(options);
+  if (secureTransport.secure) {
+    return secureTransport.identity ? [secureTransport.identity.remotePort] : [];
+  }
   const ports = [];
   const seen = new Set();
   const runtimePort = normalizePort(
@@ -220,6 +392,11 @@ function getPortCandidates(preferredPort, options = {}) {
 }
 
 function splitPortCandidates(preferredPort, options = {}) {
+  const secureTransport = resolveSecureTransport(options);
+  if (secureTransport.secure) {
+    const direct = secureTransport.identity ? [secureTransport.identity.remotePort] : [];
+    return { direct, fallback: [], all: direct.slice() };
+  }
   const runtimePort = normalizePort(
     Object.prototype.hasOwnProperty.call(options, "runtimePort")
       ? options.runtimePort
@@ -248,9 +425,14 @@ function splitPortCandidates(preferredPort, options = {}) {
   return { direct, fallback, all };
 }
 
-function buildPermissionUrl(port) {
+function buildPermissionUrl(port, routingNonce, transport = "path") {
   const safePort = normalizePort(port) || DEFAULT_SERVER_PORT;
-  return `http://127.0.0.1:${safePort}${PERMISSION_PATH}`;
+  const nonce = ROUTING_NONCE_RE.test(routingNonce || "") ? routingNonce : "";
+  if (nonce && transport === "query") {
+    return `http://127.0.0.1:${safePort}${PERMISSION_PATH}?nonce=${nonce}`;
+  }
+  const suffix = nonce ? `/${nonce}` : "";
+  return `http://127.0.0.1:${safePort}${PERMISSION_PATH}${suffix}`;
 }
 
 // Ownership test for PermissionRequest HTTP hooks: true only for URLs that
@@ -265,9 +447,14 @@ function isManagedPermissionUrl(value) {
     const port = Number(parsed.port);
     return parsed.protocol === "http:"
       && parsed.hostname === "127.0.0.1"
-      && parsed.pathname === PERMISSION_PATH
-      && parsed.search === ""
+      && (parsed.pathname === PERMISSION_PATH
+        || new RegExp(`^${PERMISSION_PATH}/[a-f0-9]{32}$`).test(parsed.pathname))
+      && (parsed.search === ""
+        || (parsed.pathname === PERMISSION_PATH
+          && /^\?nonce=[a-f0-9]{32}$/.test(parsed.search)))
       && parsed.hash === ""
+      && parsed.username === ""
+      && parsed.password === ""
       && SERVER_PORTS.includes(port);
   } catch {
     return false;
@@ -290,13 +477,19 @@ function isClawdResponse(res, body) {
   }
 }
 
+function secureRequestHeaders(options = {}) {
+  const secureTransport = resolveSecureTransport(options);
+  if (!secureTransport.secure || !secureTransport.identity) return {};
+  return {
+    [ROUTING_NONCE_HEADER]: secureTransport.identity.routingNonce,
+  };
+}
+
 function isRemoteHookMode(options = {}) {
   if (options.remote === true) return true;
   if (options.remote === false) return false;
   const env = options.env || process.env;
-  const value = env && env.CLAWD_REMOTE;
-  if (!value) return false;
-  return !/^(0|false)$/i.test(String(value));
+  return envFlagEnabled(env && env.CLAWD_REMOTE);
 }
 
 function normalizeHookHttpTimeout(value, fallback, options = {}) {
@@ -327,9 +520,23 @@ function getPermissionProbeTimeoutMs(options = {}) {
 }
 
 function probePort(port, timeoutMs, callback, options = {}) {
+  const secureTransport = resolveSecureTransport(options);
+  if (secureTransport.secure && !secureTransport.identity) {
+    callback(false);
+    return;
+  }
   const httpGet = options.httpGet || http.get;
   const req = httpGet(
-    { hostname: "127.0.0.1", port, path: STATE_PATH, timeout: timeoutMs },
+    {
+      hostname: "127.0.0.1",
+      port,
+      path: STATE_PATH,
+      timeout: timeoutMs,
+      headers: secureRequestHeaders({
+        ...options,
+        remoteIdentity: secureTransport.identity || options.remoteIdentity,
+      }),
+    },
     (res) => {
       let body = "";
       res.setEncoding("utf8");
@@ -348,6 +555,11 @@ function probePort(port, timeoutMs, callback, options = {}) {
 }
 
 function postStateToPort(port, payload, timeoutMs, callback, options = {}) {
+  const secureTransport = resolveSecureTransport(options);
+  if (secureTransport.secure && !secureTransport.identity) {
+    callback(false, port);
+    return;
+  }
   const httpRequest = options.httpRequest || http.request;
   const req = httpRequest(
     {
@@ -358,6 +570,10 @@ function postStateToPort(port, payload, timeoutMs, callback, options = {}) {
       headers: {
         "Content-Type": "application/json",
         "Content-Length": Buffer.byteLength(payload),
+        ...secureRequestHeaders({
+          ...options,
+          remoteIdentity: secureTransport.identity || options.remoteIdentity,
+        }),
       },
       timeout: timeoutMs,
     },
@@ -421,6 +637,9 @@ function postStateToRunningServer(body, options, callback) {
 
   const tryFallback = () => {
     if (fallbackIndex >= fallback.length) {
+      if (resolveSecureTransport(options || {}).secure) {
+        recordSecureTransportFailure("state-delivery-failed", options || {});
+      }
       callback(false, null);
       return;
     }
@@ -461,6 +680,11 @@ function postStateToRunningServer(body, options, callback) {
 }
 
 function postPermissionToPort(port, payload, timeoutMs, callback, options = {}) {
+  const secureTransport = resolveSecureTransport(options);
+  if (secureTransport.secure && !secureTransport.identity) {
+    callback(false, port, "", 0);
+    return;
+  }
   const httpRequest = options.httpRequest || http.request;
   let settled = false;
   const finish = (ok, responseBody = "", statusCode = 0) => {
@@ -478,6 +702,10 @@ function postPermissionToPort(port, payload, timeoutMs, callback, options = {}) 
       headers: {
         "Content-Type": "application/json",
         "Content-Length": Buffer.byteLength(payload),
+        ...secureRequestHeaders({
+          ...options,
+          remoteIdentity: secureTransport.identity || options.remoteIdentity,
+        }),
       },
       timeout: timeoutMs,
     },
@@ -510,10 +738,16 @@ function postPermissionToRunningServer(body, options, callback) {
 
   discover({ ...options, timeoutMs: probeTimeoutMs }, (port) => {
     if (!port) {
+      if (resolveSecureTransport(options || {}).secure) {
+        recordSecureTransportFailure("permission-discovery-failed", options || {});
+      }
       callback(false, null, "", 0);
       return;
     }
     post(port, payload, timeoutMs, (ok, confirmedPort, responseBody, statusCode) => {
+      if (!ok && resolveSecureTransport(options || {}).secure) {
+        recordSecureTransportFailure("permission-delivery-failed", options || {});
+      }
       callback(ok, confirmedPort, responseBody, statusCode);
     }, options);
   });
@@ -980,15 +1214,25 @@ module.exports = {
   CLAWD_SERVER_ID,
   DEFAULT_HOOK_HTTP_TIMEOUT_MS,
   DEFAULT_SERVER_PORT,
+  HOST_PREFIX_FILENAME,
+  REMOTE_LAST_LOG_FILENAME,
+  REMOTE_FAILURE_LOG_INTERVAL_MS,
+  INSTALL_ID_RE,
   PERMISSION_PATH,
   REMOTE_HOOK_HTTP_TIMEOUT_MS,
-  RUNTIME_CONFIG_PATH,
+  REMOTE_IDENTITY_FILENAME,
+  REMOTE_IDENTITY_VERSION,
+  ROUTING_NONCE_HEADER,
+  ROUTING_NONCE_RE,
   SERVER_PORTS,
+  SSH_SECURE_MARKER_FILENAME,
   STATE_PATH,
   buildPermissionUrl,
   clearRuntimeConfig,
+  defaultRuntimeConfigPath,
   isManagedPermissionUrl,
   isRemoteHookMode,
+  isSshSecureMode,
   discoverClawdPort,
   getPortCandidates,
   getPermissionProbeTimeoutMs,
@@ -998,6 +1242,12 @@ module.exports = {
   postStateToRunningServer,
   probePort,
   readHostPrefix,
+  readRemoteIdentity,
+  resolveRemoteIdentityPath,
+  resolveRemoteLastLogPath,
+  recordSecureTransportFailure,
+  resolveSecureTransport,
+  resolveSshSecureMarkerPath,
   resolveWslDistro,
   applyWslSourceFields,
   readRuntimeConfig,

@@ -282,6 +282,13 @@ test("classifyProbeExit 4 → transient (HTTP timeout — req.setTimeout)", () =
   assert.equal(c.reason, "probe_http_timeout");
 });
 
+test("classifyProbeExit 5 → permanent (secure identity missing or invalid)", () => {
+  const c = classifyProbeExit(5);
+  assert.equal(c.kind, "permanent");
+  assert.equal(c.reason, "probe_secure_identity_invalid");
+  assert.equal(c.hint, "remoteSshErrSecureIdentityMissing");
+});
+
 test("classifyProbeExit 126 → permanent (node not executable)", () => {
   assert.equal(classifyProbeExit(126).kind, "permanent");
 });
@@ -341,6 +348,57 @@ test("buildProbeCommand returns valid JS that exits with each code under expecte
   const statusIdx = raw.indexOf("statusCode===200");
   assert.ok(headerIdx >= 0 && statusIdx >= 0);
   assert.ok(headerIdx < statusIdx, "header check must precede status check");
+});
+
+test("secure probe reads the exact resolved identity path and never carries the nonce in argv", () => {
+  const nonce = "a".repeat(32);
+  const account = buildProbeCommand(23334, "node", {
+    profile: {
+      id: "profile-a",
+      installId: "b".repeat(64),
+      runtimeMode: "account-default",
+      runtimeKey: "account-default",
+      layoutVersion: 1,
+      remoteHome: "/home/alice",
+      routingNonce: nonce,
+    },
+  });
+  assert.match(account, /\/home\/alice\/\.claude\/hooks\/clawd-remote\.json/);
+  assert.doesNotMatch(account, /process\.env\.HOME/);
+  assert.doesNotMatch(account, new RegExp(nonce));
+  assert.match(account, /i\.version!==2/);
+  assert.match(account, /i\.remotePort!==23334/);
+  assert.match(account, /Number\.isFinite\(i\.deployedAt\)/);
+
+  const isolated = buildProbeCommand(23335, "node", {
+    profile: {
+      id: "profile-b",
+      installId: "c".repeat(64),
+      runtimeMode: "profile-isolated",
+      runtimeKey: "runtime_b",
+      layoutVersion: 1,
+      remoteHome: "/srv/shared",
+      routingNonce: nonce,
+    },
+  });
+  assert.match(
+    isolated,
+    /\/srv\/shared\/\.clawd\/profiles\/runtime_b\/claude\/hooks\/clawd-remote\.json/,
+  );
+  assert.doesNotMatch(isolated, /\/srv\/shared\/\.claude/);
+  assert.doesNotMatch(isolated, new RegExp(nonce));
+
+  const missingLayout = buildProbeCommand(23335, "node", {
+    profile: {
+      id: "profile-b",
+      installId: "c".repeat(64),
+      runtimeMode: "profile-isolated",
+      runtimeKey: "runtime_b",
+      layoutVersion: 1,
+    },
+  });
+  assert.match(missingLayout, /process\.exit\(5\)/);
+  assert.doesNotMatch(missingLayout, /process\.env\.HOME/);
 });
 
 // ── looksLikeWindowsCmdStderr ──
@@ -464,6 +522,46 @@ test("connect fails fast on legacy Windows OpenSSH before spawning tunnel", () =
   assert.equal(failed.hint, "remoteSshErrWindowsOpenSshLegacy");
   assert.match(failed.message, /Upgrade Windows OpenSSH to 8\.x or newer/);
   assert.equal(spawned, false);
+});
+
+test("secure runtime refuses inactive isolated profiles and missing resolved layouts before ingress or tunnel", () => {
+  let ingressCalls = 0;
+  let spawnCalls = 0;
+  const rt = createRemoteSshRuntime({
+    spawn: () => {
+      spawnCalls += 1;
+      return makeMockChild();
+    },
+    getHookServerPort: () => 23333,
+    createProfileIngress: () => {
+      ingressCalls += 1;
+      return { start: async () => 31234, close: async () => {} };
+    },
+  });
+  const base = {
+    id: "p1",
+    host: "user@host",
+    remoteForwardPort: 23334,
+    installId: "a".repeat(64),
+    runtimeMode: "profile-isolated",
+    runtimeKey: "runtime_p1",
+    layoutVersion: 1,
+    routingNonce: "b".repeat(32),
+  };
+
+  rt.connect({ ...base, remoteHome: "/home/shared", isolatedActive: false });
+  assert.equal(rt.getProfileStatus("p1").status, "failed");
+  assert.equal(rt.getProfileStatus("p1").lastErrorReason, "isolated_runtime_inactive");
+  assert.equal(ingressCalls, 0);
+  assert.equal(spawnCalls, 0);
+
+  rt.disconnect("p1");
+  rt.connect({ ...base, isolatedActive: true });
+  assert.equal(rt.getProfileStatus("p1").status, "failed");
+  assert.equal(rt.getProfileStatus("p1").lastErrorReason, "secure_layout_missing");
+  assert.equal(ingressCalls, 0);
+  assert.equal(spawnCalls, 0);
+  rt.cleanup();
 });
 
 test("manual reconnect reruns ssh detection after legacy Windows OpenSSH failure", () => {

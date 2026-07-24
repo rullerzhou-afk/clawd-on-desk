@@ -12,6 +12,7 @@ const {
   recordHookEventInBuffer,
   getRecentHookEventsFromBuffer,
 } = require("../src/server-hook-events");
+const { makeSessionKey } = require("../src/session-key");
 
 function makeFakeHttp() {
   let capturedHandler = null;
@@ -25,10 +26,11 @@ function makeFakeHttp() {
   return { createHttpServer, getHandler: () => capturedHandler };
 }
 
-function makeReq(method, url, body) {
+function makeReq(method, url, body, headers = {}) {
   const req = new EventEmitter();
   req.method = method;
   req.url = url;
+  req.headers = headers;
   setImmediate(() => {
     if (body != null) req.emit("data", Buffer.from(body));
     req.emit("end");
@@ -62,9 +64,9 @@ function makeRes(resolve) {
   return res;
 }
 
-function callHandler(handler, method, url, body) {
+function callHandler(handler, method, url, body, headers) {
   return new Promise((resolve) => {
-    handler(makeReq(method, url, JSON.stringify(body)), makeRes(resolve));
+    handler(makeReq(method, url, JSON.stringify(body), headers), makeRes(resolve));
   });
 }
 
@@ -127,6 +129,23 @@ function startServer(overrides = {}) {
 }
 
 describe("server hook event ringbuffer", () => {
+  it("main server rejects misrouted secure Remote SSH requests before state or permission routing", async () => {
+    const { api, handler, ctx } = startServer();
+
+    const res = await callHandler(handler, "POST", "/state", {
+      agent_id: "codex",
+      state: "working",
+      session_id: "sid",
+    }, {
+      "x-clawd-routing-nonce": "a".repeat(32),
+    });
+
+    assert.strictEqual(res.statusCode, 404);
+    assert.strictEqual(res.headers["x-clawd-server"], undefined);
+    assert.strictEqual(ctx._test.updateSessionCalls.length, 0);
+    assert.deepStrictEqual(api.getRecentHookEvents(), []);
+  });
+
   it("records /state disabled gate once", async () => {
     const { api, handler } = startServer({
       isAgentEnabled: (agentId) => agentId !== "codex",
@@ -246,7 +265,10 @@ describe("server hook event ringbuffer", () => {
 
     assert.strictEqual(res.statusCode, 200);
     assert.strictEqual(ctx._test.updateSessionCalls.length, 1);
-    assert.strictEqual(ctx._test.updateSessionCalls[0][0], "gemini:s1");
+    assert.strictEqual(
+      ctx._test.updateSessionCalls[0][0],
+      makeSessionKey({ profileId: "local", rawSessionId: "gemini:s1" }),
+    );
     assert.strictEqual(ctx._test.updateSessionCalls[0][1], "idle");
     assert.strictEqual(ctx._test.updateSessionCalls[0][2], "PreCompress");
     assert.strictEqual(ctx._test.updateSessionCalls[0][3].preserveState, true);

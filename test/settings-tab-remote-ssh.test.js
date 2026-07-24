@@ -53,6 +53,11 @@ test("settings-i18n.js: all language packs include remote-ssh keys", () => {
     "remoteSshStatus_connected",
     "remoteSshStatus_failed",
     "remoteSshStep_install-copilot",
+    "remoteSshErrSecureIdentityMissing",
+    "remoteSshErrIsolatedInactive",
+    "remoteSshForceRevokeOld",
+    "remoteSshForceRevokeAll",
+    "remoteSshForceRevokeSecondConfirm",
   ];
   // Each key should appear at least once per language pack.
   for (const key of REQUIRED_KEYS) {
@@ -162,6 +167,14 @@ test("settings-tab-remote-ssh.js translates runtime status hints before raw mess
   assert.match(code, /status\.hint/);
   assert.match(code, /translated\s*!==\s*status\.hint/);
   assert.match(code, /msg\.title\s*=\s*status\.message/);
+});
+
+test("settings-tab-remote-ssh.js exposes force revoke only through the dedicated IPC with two confirmations", () => {
+  const code = fs.readFileSync(path.join(SRC_DIR, "settings-tab-remote-ssh.js"), "utf8");
+  assert.match(code, /window\.remoteSsh\.forceRevoke\(profile\.id,\s*mode,\s*true\)/);
+  assert.match(code, /confirm\(t\(firstConfirmKey\)\)/);
+  assert.match(code, /confirm\(t\("remoteSshForceRevokeSecondConfirm"\)\)/);
+  assert.doesNotMatch(code, /callCommand\("remoteSsh\.forceRevoke"/);
 });
 
 test("settings-i18n.js: codexHookReviewReminder defined in every supported language (B2 followup)", () => {

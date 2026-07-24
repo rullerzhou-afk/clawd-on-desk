@@ -5,6 +5,12 @@ const { EventEmitter } = require("node:events");
 const { describe, it } = require("node:test");
 
 const initServer = require("../src/server");
+const { makeSessionKey } = require("../src/session-key");
+
+const localSessionKey = (rawSessionId) => makeSessionKey({
+  profileId: "local",
+  rawSessionId,
+});
 
 function makeFakeHttp() {
   let capturedHandler = null;
@@ -160,7 +166,7 @@ describe("Codex official /permission path", () => {
     assert.strictEqual(pendingPermissions.length, 1);
     assert.strictEqual(shown.length, 1);
     assert.deepStrictEqual(updates[0], [
-      "codex:s1",
+      localSessionKey("codex:s1"),
       "notification",
       "PermissionRequest",
       { agentId: "codex", hookSource: "codex-official" },
@@ -193,7 +199,7 @@ describe("Codex official /permission path", () => {
     assert.strictEqual(pendingPermissions.length, 0);
     assert.strictEqual(shown.length, 0);
     assert.deepStrictEqual(updates[0], [
-      "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+      localSessionKey("codex:019e115a-4df2-7ed0-b90e-8e6345aca777"),
       "notification",
       "PermissionRequest",
       {
@@ -255,7 +261,7 @@ describe("Codex official /permission path", () => {
     const entry = pendingPermissions[0];
     assert.strictEqual(entry.isCodex, true);
     assert.strictEqual(entry.agentId, "codex");
-    assert.strictEqual(entry.sessionId, "codex:s1");
+    assert.strictEqual(entry.sessionId, localSessionKey("codex:s1"));
     assert.strictEqual(entry.toolName, "Bash");
     assert.deepStrictEqual(entry.suggestions, []);
     assert.strictEqual(entry.isElicitation || false, false);
@@ -263,7 +269,7 @@ describe("Codex official /permission path", () => {
     assert.strictEqual(entry.toolInput.command, "npm test");
     assert.strictEqual(entry.toolInputFingerprint, "abc123");
     assert.deepStrictEqual(updates[0], [
-      "codex:s1",
+      localSessionKey("codex:s1"),
       "notification",
       "PermissionRequest",
       { agentId: "codex", hookSource: "codex-official" },

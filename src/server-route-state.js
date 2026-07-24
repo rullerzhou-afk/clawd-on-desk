@@ -1,6 +1,7 @@
 "use strict";
 
 const path = require("path");
+const { resolveSessionIdentity } = require("./session-key");
 const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
@@ -124,6 +125,7 @@ function handleStatePost(req, res, options) {
     // Defaults to the real host OS check / a probe that never samples.
     isWinHost = process.platform === "win32",
     captureForegroundWindowsTerminal = () => null,
+    remoteProfile = null,
   } = options;
   let body = "";
   let bodySize = 0;
@@ -181,7 +183,14 @@ function handleStatePost(req, res, options) {
           ? rawCustomSessionId
           : `${customSessionPrefix}${rawCustomSessionId}`;
       }
-      const host = typeof data.host === "string" ? data.host : null;
+      const trustedProfileId = remoteProfile && typeof remoteProfile.profileId === "string"
+        ? remoteProfile.profileId
+        : "local";
+      const sessionIdentity = resolveSessionIdentity(session_id, trustedProfileId, "default");
+      session_id = sessionIdentity.sessionId;
+      const host = remoteProfile && typeof remoteProfile.displayHost === "string"
+        ? remoteProfile.displayHost
+        : (typeof data.host === "string" ? data.host : null);
       const wslDistro = typeof data.wsl_distro === "string" && data.wsl_distro.trim()
         ? data.wsl_distro.trim()
         : null;
@@ -296,7 +305,13 @@ function handleStatePost(req, res, options) {
       // deployed Clawd hooks to. The store shape-sanitizes the label.
       if (typeof ctx.updateAccountQuota === "function"
         && (antigravityQuota || claudeQuota || codexQuota)) {
-        ctx.updateAccountQuota(host, { antigravityQuota, claudeQuota, codexQuota });
+        const quotaSource = trustedProfileId === "local" ? host : `remote:${trustedProfileId}`;
+        ctx.updateAccountQuota(quotaSource, {
+          antigravityQuota,
+          claudeQuota,
+          codexQuota,
+          ...(trustedProfileId === "local" ? {} : { displayHost: host }),
+        });
       }
       if (agentId === "codex" && codexUserInput) {
         const sid = session_id || "default";
@@ -354,7 +369,8 @@ function handleStatePost(req, res, options) {
           data,
           state,
           codexOfficialTurns,
-          ctx.codexSubagentClassifier
+          ctx.codexSubagentClassifier,
+          sid,
         );
         if (codexHookState.drop) {
           res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
@@ -498,6 +514,10 @@ function handleStatePost(req, res, options) {
             tmuxClient,
             agentPid,
             agentId,
+            ...(trustedProfileId === "local" ? {} : {
+              profileId: sessionIdentity.profileId,
+              rawSessionId: sessionIdentity.rawSessionId,
+            }),
             host,
             wslDistro,
             headless: headless || codexHookState.headless === true,

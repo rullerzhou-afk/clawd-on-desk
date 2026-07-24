@@ -14,9 +14,19 @@
 // — same pattern as settings-changed broadcasts.
 
 const childProcess = require("child_process");
-const { deploy, startCodexMonitor, stopCodexMonitor, uninstallRemoteIntegrations } = require("./remote-ssh-deploy");
+const crypto = require("crypto");
+const {
+  deploy,
+  startCodexMonitor,
+  stopCodexMonitor,
+  uninstallRemoteIntegrations,
+  finalizeRetiredRemoteLayout,
+  bootstrapIsolatedRuntime,
+} = require("./remote-ssh-deploy");
 const { buildSshArgs } = require("./remote-ssh-runtime");
-const { remoteAccountKey } = require("./remote-ssh-profile");
+const {
+  remoteOwnershipDomainKey,
+} = require("./remote-ssh-profile");
 const {
   quoteForCmd,
   quoteForPosixShellArg,
@@ -62,14 +72,39 @@ function registerRemoteSshIpc(options = {}) {
   const spawn = options.spawn || childProcess.spawn;
   const log = options.log || (() => {});
   const isPackaged = !!options.isPackaged;
+  const enableProfileIsolation = options.enableProfileIsolation === true;
   const hooksDir = options.hooksDir;
+  const getInstallationIdentity = typeof options.getInstallationIdentity === "function"
+    ? options.getInstallationIdentity
+    : () => null;
   // Test-only injection points. Production main.js never overrides these.
   const deployFn = options.deployFn || deploy;
   const startCodexMonitorFn = options.startCodexMonitorFn || startCodexMonitor;
   const stopCodexMonitorFn = options.stopCodexMonitorFn || stopCodexMonitor;
   const uninstallRemoteIntegrationsFn = options.uninstallRemoteIntegrationsFn || uninstallRemoteIntegrations;
+  const finalizeRetiredRemoteLayoutFn = options.finalizeRetiredRemoteLayoutFn || finalizeRetiredRemoteLayout;
+  const bootstrapIsolatedRuntimeFn = options.bootstrapIsolatedRuntimeFn || bootstrapIsolatedRuntime;
 
   const disposers = [];
+  const runtimeModeSwitches = new Set();
+
+  function requireVerifiedInstallationBinding() {
+    const identity = getInstallationIdentity();
+    const snapshot = settingsController.getSnapshot();
+    const expected = snapshot.remoteSsh && snapshot.remoteSsh.installId;
+    if (!identity || typeof identity.installId !== "string" || identity.installId !== expected) {
+      throw new Error("Remote SSH installation identity is unavailable or mismatched; redeploy is required");
+    }
+    return identity;
+  }
+
+  function refreshRuntimeProfile(profileId) {
+    const profile = findProfile(settingsController, profileId);
+    if (profile && typeof remoteSshRuntime.refreshProfile === "function") {
+      remoteSshRuntime.refreshProfile(profile);
+    }
+    return profile;
+  }
 
   function handle(channel, listener) {
     ipcMain.handle(channel, listener);
@@ -108,7 +143,21 @@ function registerRemoteSshIpc(options = {}) {
   // ── Status / list ──
 
   handle("remoteSsh:list-statuses", () => {
-    return { status: "ok", statuses: remoteSshRuntime.listStatuses() };
+    const identity = getInstallationIdentity();
+    return {
+      status: "ok",
+      statuses: remoteSshRuntime.listStatuses(),
+      profileIsolationAvailable: enableProfileIsolation,
+      bindingSecurity: identity ? {
+        strongStorage: identity.strongStorage === true,
+        storageBackend: typeof identity.storageBackend === "string"
+          ? identity.storageBackend
+          : "unknown",
+      } : {
+        strongStorage: false,
+        storageBackend: "unavailable",
+      },
+    };
   });
 
   handle("remoteSsh:status", (_event, payload) => {
@@ -126,9 +175,21 @@ function registerRemoteSshIpc(options = {}) {
   // connect-on-launch sweep so they behave identically. Throws if
   // runtime.connect throws; the codex monitor is best-effort and never blocks.
   function connectProfile(profile) {
-    remoteSshRuntime.connect(profile);
+    const binding = requireVerifiedInstallationBinding();
+    if (profile.runtimeMode === "profile-isolated" && !enableProfileIsolation) {
+      throw new Error(
+        "Profile-isolated runtime is gated until the real SSH and CLI validation matrix is complete."
+      );
+    }
+    if (profile.runtimeMode === "profile-isolated" && profile.isolatedActive !== true) {
+      throw new Error(
+        "This isolated runtime is not active yet. Run every applicable CLI through its wrapper, then Deploy / Repair Hooks again."
+      );
+    }
+    const runtimeProfile = { ...profile, installId: binding.installId };
+    remoteSshRuntime.connect(runtimeProfile);
     if (profile.autoStartCodexMonitor === true) {
-      startCodexMonitorFn({ profile, runtime: remoteSshRuntime, deps: { spawn } })
+      startCodexMonitorFn({ profile: runtimeProfile, runtime: remoteSshRuntime, deps: { spawn } })
         .catch((err) => log("codex monitor start failed:", err && err.message));
     }
   }
@@ -154,8 +215,13 @@ function registerRemoteSshIpc(options = {}) {
       const profile = findProfile(settingsController, id);
       remoteSshRuntime.disconnect(id);
       // Best-effort cleanup of remote codex monitor if profile had it on.
-      if (profile && profile.autoStartCodexMonitor === true) {
-        stopCodexMonitorFn({ profile, runtime: remoteSshRuntime, deps: { spawn } })
+      if (profile && profile.autoStartCodexMonitor === true && profile.remoteHome) {
+        const binding = requireVerifiedInstallationBinding();
+        stopCodexMonitorFn({
+          profile: { ...profile, installId: binding.installId },
+          runtime: remoteSshRuntime,
+          deps: { spawn },
+        })
           .catch((err) => log("codex monitor stop failed:", err && err.message));
       }
       return { status: "ok", state: remoteSshRuntime.getProfileStatus(id) };
@@ -177,6 +243,14 @@ function registerRemoteSshIpc(options = {}) {
     const profile = findProfile(settingsController, id);
     if (!profile) return { status: "error", message: "profile not found" };
     try {
+      const binding = requireVerifiedInstallationBinding();
+      if (profile.identityTxn && profile.identityTxn.phase !== "committed") {
+        return {
+          status: "error",
+          reason: "identity_transaction_in_progress",
+          message: "Finish or force-revoke the current identity transaction before cleanup",
+        };
+      }
       remoteSshRuntime.disconnect(id);
       const ownedTargets = Array.isArray(profile.managedDeployTargets)
         ? profile.managedDeployTargets
@@ -184,19 +258,19 @@ function registerRemoteSshIpc(options = {}) {
       if (!ownedTargets.length) {
         return { status: "ok", uninstalled: true, skipped: "not-owned" };
       }
-      const siblingAccounts = new Set(
+      const siblingOwnershipDomains = new Set(
         listProfiles(settingsController)
           .filter((candidate) => candidate.id !== id)
           .flatMap((candidate) => Array.isArray(candidate.managedDeployTargets)
             ? candidate.managedDeployTargets
             : [])
-          .map(remoteAccountKey)
+          .map(remoteOwnershipDomainKey)
       );
       let uninstalled = true;
       let attempted = 0;
       let shared = 0;
       for (const target of ownedTargets) {
-        if (siblingAccounts.has(remoteAccountKey(target))) {
+        if (siblingOwnershipDomains.has(remoteOwnershipDomainKey(target))) {
           shared += 1;
           continue;
         }
@@ -206,11 +280,13 @@ function registerRemoteSshIpc(options = {}) {
           id: profile.id,
           autoStartCodexMonitor: profile.autoStartCodexMonitor === true,
         };
-        await stopCodexMonitorFn({
-          profile: cleanupProfile,
-          runtime: remoteSshRuntime,
-          deps: { spawn },
-        }).catch((err) => log("codex monitor stop failed:", err && err.message));
+        if (!cleanupProfile.installId
+          || cleanupProfile.installId !== binding.installId
+          || !cleanupProfile.remoteHome) {
+          uninstalled = false;
+          log("remote uninstall skipped: deployment ownership does not match this installation");
+          continue;
+        }
         const result = await uninstallRemoteIntegrationsFn({
           profile: cleanupProfile,
           runtime: remoteSshRuntime,
@@ -237,25 +313,296 @@ function registerRemoteSshIpc(options = {}) {
     }
   });
 
+  handle("remoteSsh:force-revoke", async (_event, payload) => {
+    const id = payload && payload.profileId;
+    const mode = payload && payload.mode;
+    if (typeof id !== "string"
+      || (mode !== "old" && mode !== "all")
+      || payload.confirmed !== true) {
+      return {
+        status: "error",
+        message: "remoteSsh:force-revoke requires profileId, mode old|all, and confirmed:true",
+      };
+    }
+    const profile = findProfile(settingsController, id);
+    if (!profile) return { status: "error", message: "profile not found" };
+    try {
+      requireVerifiedInstallationBinding();
+      remoteSshRuntime.disconnect(id);
+      const revoked = await settingsController.applyCommand("remoteSsh.forceRevoke", {
+        id,
+        mode,
+        confirmed: true,
+      });
+      if (!revoked || revoked.status !== "ok") {
+        return revoked || { status: "error", message: "Identity revocation failed" };
+      }
+      const refreshed = refreshRuntimeProfile(id);
+      if (!refreshed) {
+        return { status: "error", message: "Profile disappeared while revoking its identity" };
+      }
+      return {
+        status: "ok",
+        mode,
+        identityTxn: refreshed.identityTxn || null,
+      };
+    } catch (err) {
+      return { status: "error", message: (err && err.message) || "identity revocation failed" };
+    }
+  });
+
+  handle("remoteSsh:set-runtime-mode", async (_event, payload) => {
+    const id = payload && payload.profileId;
+    const runtimeMode = payload && payload.runtimeMode;
+    if (typeof id !== "string"
+      || (runtimeMode !== "account-default" && runtimeMode !== "profile-isolated")
+      || payload.confirmed !== true) {
+      return {
+        status: "error",
+        message: "remoteSsh:set-runtime-mode requires profileId, a valid runtimeMode, and confirmed:true",
+      };
+    }
+    const profile = findProfile(settingsController, id);
+    if (!profile) return { status: "error", message: "profile not found" };
+    if (!profile.runtimeModeTxn
+      && (profile.runtimeMode || "account-default") === runtimeMode) {
+      return { status: "ok", noop: true };
+    }
+    if (runtimeMode === "profile-isolated" && !enableProfileIsolation) {
+      return {
+        status: "error",
+        reason: "profile_isolation_validation_pending",
+        message: "Profile-isolated runtime is gated until the real SSH and CLI validation matrix is complete.",
+      };
+    }
+    if (runtimeModeSwitches.has(id)) {
+      return {
+        status: "error",
+        reason: "runtime_mode_switch_in_progress",
+        message: "A runtime mode switch is already in progress for this profile",
+      };
+    }
+    if (profile.identityTxn && profile.identityTxn.phase !== "committed") {
+      return {
+        status: "error",
+        message: "Finish or force-revoke the current identity transaction before switching runtime mode",
+      };
+    }
+    runtimeModeSwitches.add(id);
+    try {
+      const binding = requireVerifiedInstallationBinding();
+      remoteSshRuntime.disconnect(id);
+      let workingProfile = profile;
+      if (!workingProfile.runtimeModeTxn) {
+        const proposedRuntimeKey = runtimeMode === "profile-isolated"
+          ? `rt_${crypto.randomBytes(12).toString("hex")}`
+          : "account-default";
+        const begun = await settingsController.applyCommand("remoteSsh.beginRuntimeModeSwitch", {
+          id,
+          runtimeMode,
+          runtimeKey: proposedRuntimeKey,
+        });
+        if (!begun || begun.status !== "ok") {
+          return {
+            status: "error",
+            message: (begun && begun.message) || "Could not persist the runtime mode transaction",
+          };
+        }
+        workingProfile = refreshRuntimeProfile(id) || findProfile(settingsController, id);
+      }
+      const txn = workingProfile && workingProfile.runtimeModeTxn;
+      if (!txn || txn.toMode !== runtimeMode) {
+        return {
+          status: "error",
+          reason: "runtime_mode_transaction_invalid",
+          message: "The persisted runtime mode transaction is missing or targets another mode",
+        };
+      }
+      const ownedTargets = Array.isArray(workingProfile.managedDeployTargets)
+        ? workingProfile.managedDeployTargets.filter((target) =>
+          (target.runtimeMode || "account-default") === txn.fromMode
+          && (target.runtimeKey || "account-default") === txn.fromKey)
+        : [];
+      if (workingProfile.runtimeModeTxn.phase === "prepared" && ownedTargets.length === 0) {
+        return {
+          status: "error",
+          reason: "old_layout_ownership_missing",
+          message: "The current runtime has no verifiable ownership ledger. Deploy / Repair Hooks in the current mode before switching layouts.",
+        };
+      }
+      if (txn.phase === "prepared") {
+        for (const target of ownedTargets) {
+          const cleanup = await uninstallRemoteIntegrationsFn({
+            profile: { ...target, id: workingProfile.id, installId: binding.installId },
+            runtime: remoteSshRuntime,
+            deps: { spawn },
+            // Keep the ownership record until the local cleanup-done phase is
+            // durable. This makes a crash between remote cleanup and prefs
+            // persistence safely retryable.
+            preserveIdentity: true,
+          });
+          if (!cleanup || cleanup.ok !== true) {
+            return {
+              status: "error",
+              reason: (cleanup && cleanup.reason) || "old_layout_cleanup_failed",
+              message: (cleanup && cleanup.stderr) || "Old runtime layout cleanup did not complete",
+            };
+          }
+        }
+        const advanced = await settingsController.applyCommand("remoteSsh.advanceRuntimeModeSwitch", {
+          id,
+          phase: "cleanup-done",
+        });
+        if (!advanced || advanced.status !== "ok") {
+          return {
+            status: "error",
+            message: (advanced && advanced.message) || "Could not persist cleanup completion",
+          };
+        }
+        workingProfile = refreshRuntimeProfile(id) || findProfile(settingsController, id);
+      }
+
+      if (workingProfile.runtimeModeTxn.phase === "cleanup-done") {
+        for (const target of ownedTargets) {
+          const finalized = await finalizeRetiredRemoteLayoutFn({
+            profile: { ...target, id: workingProfile.id, installId: binding.installId },
+            runtime: remoteSshRuntime,
+            deps: { spawn },
+          });
+          if (!finalized || finalized.ok !== true) {
+            return {
+              status: "error",
+              reason: (finalized && finalized.reason) || "old_layout_finalize_failed",
+              message: (finalized && finalized.stderr) || "Old runtime ownership retirement did not complete",
+            };
+          }
+        }
+      }
+
+      const runtimeKey = txn.toKey;
+      let bootstrap = null;
+      if (runtimeMode === "profile-isolated"
+        && workingProfile.runtimeModeTxn.phase === "cleanup-done") {
+        bootstrap = await bootstrapIsolatedRuntimeFn({
+          profile: workingProfile,
+          installId: binding.installId,
+          runtimeKey,
+          runtime: remoteSshRuntime,
+          deps: { spawn },
+        });
+        if (!bootstrap || bootstrap.ok !== true) {
+          return {
+            status: "error",
+            reason: (bootstrap && bootstrap.reason) || "isolated_bootstrap_failed",
+            message: (bootstrap && bootstrap.stderr) || "Could not prepare the isolated runtime root",
+          };
+        }
+        const advanced = await settingsController.applyCommand("remoteSsh.advanceRuntimeModeSwitch", {
+          id,
+          phase: "bootstrap-done",
+        });
+        if (!advanced || advanced.status !== "ok") {
+          return {
+            status: "error",
+            message: (advanced && advanced.message) || "Could not persist isolated bootstrap completion",
+            orphanedRuntimeRoot: bootstrap && bootstrap.layout && bootstrap.layout.runtimeRoot,
+          };
+        }
+        workingProfile = refreshRuntimeProfile(id) || findProfile(settingsController, id);
+      }
+
+      const switched = await settingsController.applyCommand("remoteSsh.switchRuntimeMode", {
+        id,
+      });
+      if (!switched || switched.status !== "ok") {
+        return {
+          status: "error",
+          message: (switched && switched.message) || "Could not persist runtime mode",
+          orphanedRuntimeRoot: bootstrap && bootstrap.layout && bootstrap.layout.runtimeRoot,
+        };
+      }
+      refreshRuntimeProfile(id);
+      return {
+        status: "ok",
+        runtimeMode,
+        runtimeKey,
+        runtimeRoot: bootstrap && bootstrap.layout && bootstrap.layout.runtimeRoot,
+      };
+    } catch (err) {
+      return { status: "error", message: (err && err.message) || "runtime mode switch failed" };
+    } finally {
+      runtimeModeSwitches.delete(id);
+    }
+  });
+
   // ── Deploy ──
 
   handle("remoteSsh:deploy", async (_event, payload) => {
     const id = typeof payload === "string" ? payload : (payload && payload.profileId);
+    const legacyMigrationConfirmed = !!(
+      payload
+      && typeof payload === "object"
+      && payload.legacyMigrationConfirmed === true
+    );
     const profile = id ? findProfile(settingsController, id) : null;
     if (!profile) return { status: "error", message: "profile not found" };
+    if (profile.runtimeMode === "profile-isolated" && !enableProfileIsolation) {
+      return {
+        status: "error",
+        reason: "profile_isolation_validation_pending",
+        message: "Profile-isolated runtime is gated until the real SSH and CLI validation matrix is complete.",
+      };
+    }
     try {
+      const installationIdentity = requireVerifiedInstallationBinding();
+      const begin = await settingsController.applyCommand("remoteSsh.beginIdentityRotation", {
+        id: profile.id,
+      });
+      if (!begin || begin.status !== "ok") {
+        return {
+          status: "error",
+          message: (begin && begin.message) || "could not start secure identity transaction",
+        };
+      }
+      const deployProfile = refreshRuntimeProfile(profile.id) || findProfile(settingsController, profile.id);
+      if (!deployProfile || !deployProfile.identityTxn) {
+        return { status: "error", message: "secure identity transaction was not persisted" };
+      }
       const result = await deployFn({
-        profile,
+        profile: deployProfile,
+        installId: installationIdentity.installId,
+        identityTxn: deployProfile.identityTxn,
+        legacyMigrationConfirmed,
         runtime: remoteSshRuntime,
-        deps: { spawn, hooksDir, isPackaged },
+        deps: {
+          spawn,
+          hooksDir,
+          isPackaged,
+          onIdentityStep: async (step, value) => {
+            const updated = await settingsController.applyCommand("remoteSsh.updateIdentityStep", {
+              id: profile.id,
+              step,
+              value,
+            });
+            if (!updated || updated.status !== "ok") {
+              throw new Error((updated && updated.message) || `failed to persist ${step}`);
+            }
+            refreshRuntimeProfile(profile.id);
+          },
+        },
       });
       if (result.ok) {
+        // Persist the verified target and cleanup ownership BEFORE committing
+        // A → B. If this durable write fails, the transaction must remain in
+        // its verifying phase so Retry resumes the same B instead of minting
+        // C and stranding a remotely valid but locally unowned deployment.
+        //
         // Stamp via remoteSsh.markDeployed (NOT remoteSsh.update with a full
         // profile snapshot). Deploy can take 30+ seconds, during which the
         // user might edit the profile via Settings — full-snapshot update
         // would clobber those edits with the pre-deploy state (lost-update
         // race). markDeployed reads the current profile by id and only
-        // mutates lastDeployedAt.
+        // mutates deployment metadata.
         //
         // expectedTarget is a fingerprint captured at deploy start. If the
         // user changed a deploy-target field mid-deploy, the deploy ran
@@ -271,38 +618,48 @@ function registerRemoteSshIpc(options = {}) {
           remoteForwardPort: profile.remoteForwardPort,
           hostPrefix: profile.hostPrefix,
           chainStatusline: profile.chainStatusline,
+          runtimeMode: profile.runtimeMode,
+          runtimeKey: profile.runtimeKey,
+          layoutVersion: profile.layoutVersion,
         };
+        let stampWarning = null;
         try {
           const stamp = await settingsController.applyCommand("remoteSsh.markDeployed", {
             id: profile.id,
             deployedAt: Date.now(),
             expectedTarget,
             remoteNode: result.remoteNode,
+            installId: installationIdentity.installId,
+            remoteHome: result.layout && result.layout.remoteHome,
+            isolation: result.isolation,
           });
           if (stamp && stamp.noop && stamp.reason === "target_drift") {
             log("remote-ssh: deploy stamp skipped due to target drift on", stamp.targetDrift);
-            // Surface drift to caller so the UI can prompt the user to redeploy
-            // against the new target. We still return "ok" because the deploy
-            // itself succeeded — only the lastDeployedAt stamp was skipped to
-            // avoid mislabeling the new (drifted) config as "deployed".
-            return { status: "ok", warning: "target_drift", driftedField: stamp.targetDrift };
+            stampWarning = { warning: "target_drift", driftedField: stamp.targetDrift };
           }
           if (!stamp || stamp.status !== "ok") {
-            // Stamp returned an error object (validator / persist failed) —
-            // applyCommand doesn't throw for these, it returns { status:"error" }.
-            // Without this branch the UI would falsely show "Deploy succeeded"
-            // while lastDeployedAt was never persisted. Surface as warning so
-            // the user knows the deploy ran but the timestamp is stale.
             const msg = (stamp && stamp.message) || "stamp returned non-ok";
             log("remote-ssh: failed to stamp lastDeployedAt:", msg);
-            return { status: "ok", warning: "stamp_failed", message: msg };
+            return { status: "error", step: "deployment-stamp", message: msg };
           }
         } catch (err) {
           const msg = (err && err.message) || "stamp threw";
           log("remote-ssh: failed to stamp lastDeployedAt:", msg);
-          return { status: "ok", warning: "stamp_failed", message: msg };
+          return { status: "error", step: "deployment-stamp", message: msg };
         }
-        return { status: "ok" };
+
+        const committed = await settingsController.applyCommand("remoteSsh.commitIdentityRotation", {
+          id: profile.id,
+        });
+        if (!committed || committed.status !== "ok") {
+          return {
+            status: "error",
+            step: "identity-commit",
+            message: (committed && committed.message) || "identity transaction was not committed",
+          };
+        }
+        refreshRuntimeProfile(profile.id);
+        return { status: "ok", ...(stampWarning || {}) };
       }
       return {
         status: "error",

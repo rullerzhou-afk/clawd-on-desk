@@ -7,6 +7,23 @@ const settingsThemeImporter = require("./settings-theme-importer");
 const { listPetTintOptions } = require("./pet-customization-catalog");
 
 const SOUND_OVERRIDE_ASSET_EXTS = new Set([".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"]);
+// These commands mutate trust material or persist facts learned from an SSH
+// transaction. They are main-process capabilities, not renderer commands.
+// Keeping the check at the IPC boundary means an injected/compromised Settings
+// renderer cannot mint a trusted install binding, advance a deployment
+// transaction, or claim that a remote profile was verified.
+const INTERNAL_SETTINGS_COMMANDS = new Set([
+  "remoteSsh.applyInstallationIdentity",
+  "remoteSsh.beginIdentityRotation",
+  "remoteSsh.updateIdentityStep",
+  "remoteSsh.commitIdentityRotation",
+  "remoteSsh.forceRevoke",
+  "remoteSsh.beginRuntimeModeSwitch",
+  "remoteSsh.advanceRuntimeModeSwitch",
+  "remoteSsh.switchRuntimeMode",
+  "remoteSsh.markDeployed",
+  "remoteSsh.markRemoteNode",
+]);
 const SOUND_OVERRIDE_DIALOG_STRINGS = {
   en: { title: "Choose a sound file", filterName: "Audio" },
   zh: { title: "选择音效文件", filterName: "音频" },
@@ -250,6 +267,9 @@ function registerSettingsIpc(options = {}) {
   handle("settings:command", async (_event, payload) => {
     if (!payload || typeof payload !== "object") {
       return { status: "error", message: "settings:command payload must be { action, payload }" };
+    }
+    if (INTERNAL_SETTINGS_COMMANDS.has(payload.action)) {
+      return { status: "error", message: `settings command "${payload.action}" is internal` };
     }
     return settingsController.applyCommand(payload.action, payload.payload);
   });

@@ -17,6 +17,11 @@ const {
   shouldBypassCopilotBubble,
   shouldBypassFamilyBubble,
 } = require("../src/server-route-permission");
+const { makeSessionKey } = require("../src/session-key");
+
+function localSessionKey(rawSessionId) {
+  return makeSessionKey({ profileId: "local", rawSessionId });
+}
 
 function makeReq(body) {
   const req = new EventEmitter();
@@ -170,6 +175,45 @@ describe("server-route-permission helpers", () => {
 });
 
 describe("server-route-permission POST", () => {
+  it("keeps identical remote raw ids in separate permission queues with trusted profile metadata", async () => {
+    const body = JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "same-raw",
+      host: "spoofed-by-hook",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    });
+    const postFor = (profileId) => callPermissionPost(body, {
+      options: {
+        remoteProfile: {
+          profileId,
+          displayHost: "same-display-host",
+        },
+      },
+    });
+    const [a, b] = await Promise.all([postFor("profile-a"), postFor("profile-b")]);
+    const aId = makeSessionKey({ profileId: "profile-a", rawSessionId: "same-raw" });
+    const bId = makeSessionKey({ profileId: "profile-b", rawSessionId: "same-raw" });
+    assert.strictEqual(a.ctx.pendingPermissions[0].sessionId, aId);
+    assert.strictEqual(b.ctx.pendingPermissions[0].sessionId, bId);
+    assert.notStrictEqual(a.ctx.pendingPermissions[0].sessionId, b.ctx.pendingPermissions[0].sessionId);
+    assert.deepStrictEqual({
+      profileId: a.ctx.pendingPermissions[0].profileId,
+      rawSessionId: a.ctx.pendingPermissions[0].rawSessionId,
+      host: a.ctx.pendingPermissions[0].host,
+    }, {
+      profileId: "profile-a",
+      rawSessionId: "same-raw",
+      host: "same-display-host",
+    });
+    assert.deepStrictEqual(a.ctx.calls.updateSession[0].slice(0, 3), [
+      aId, "notification", "PermissionRequest",
+    ]);
+    assert.deepStrictEqual(b.ctx.calls.updateSession[0].slice(0, 3), [
+      bId, "notification", "PermissionRequest",
+    ]);
+  });
+
   it("returns 400 for invalid JSON", async () => {
     const res = await callPermissionPost("{not json");
 
@@ -224,7 +268,7 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.statusCode, null);
     assert.strictEqual(res.ctx.pendingPermissions.length, 1);
     const entry = res.ctx.pendingPermissions[0];
-    assert.strictEqual(entry.sessionId, sessionId);
+    assert.strictEqual(entry.sessionId, localSessionKey(sessionId));
     assert.strictEqual(entry.agentId, "codex");
     assert.strictEqual(entry.isCodex, true);
     assert.strictEqual(entry.sourcePid, 456);
@@ -238,7 +282,7 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(entry.codexOriginator, "Codex Desktop");
     assert.strictEqual(entry.codexSource, "vscode");
     assert.deepStrictEqual(res.ctx.calls.updateSession, [[
-      sessionId,
+      localSessionKey(sessionId),
       "notification",
       "PermissionRequest",
       {
@@ -270,7 +314,7 @@ describe("server-route-permission POST", () => {
       tool_input: { command: "npm test" },
     }), {
       ctx: {
-        sessions: new Map([[sessionId, { agentId: "codex", headless: true }]]),
+        sessions: new Map([[localSessionKey(sessionId), { agentId: "codex", headless: true }]]),
       },
     });
 
@@ -321,7 +365,7 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(entry.agentId, "opencode");
     assert.strictEqual(entry.familyRequestId, "req-1");
     assert.deepStrictEqual(res.ctx.calls.updateSession, [[
-      "opencode:s1",
+      localSessionKey("opencode:s1"),
       "notification",
       "PermissionRequest",
       { agentId: "opencode" },
@@ -341,7 +385,7 @@ describe("server-route-permission POST", () => {
       bridge_token: "token",
     }), {
       ctx: {
-        sessions: new Map([[sessionId, { agentId: "opencode", headless: true }]]),
+        sessions: new Map([[localSessionKey(sessionId), { agentId: "opencode", headless: true }]]),
       },
     });
 
@@ -573,12 +617,12 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.ctx.pendingPermissions.length, 1);
     const entry = res.ctx.pendingPermissions[0];
     assert.strictEqual(entry.res, res);
-    assert.strictEqual(entry.sessionId, "sid");
+    assert.strictEqual(entry.sessionId, localSessionKey("sid"));
     assert.strictEqual(entry.toolName, "Bash");
     assert.strictEqual(entry.toolUseId, "tool-1");
     assert.strictEqual(entry.agentId, "claude-code");
     assert.deepStrictEqual(res.ctx.calls.updateSession, [[
-      "sid",
+      localSessionKey("sid"),
       "notification",
       "PermissionRequest",
       { agentId: "claude-code" },
@@ -675,15 +719,46 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.ctx.pendingPermissions.length, 1);
     const entry = res.ctx.pendingPermissions[0];
     assert.strictEqual(entry.bubble, null);
-    assert.strictEqual(entry.sessionId, "sid");
+    assert.strictEqual(entry.sessionId, localSessionKey("sid"));
     assert.strictEqual(entry.agentId, "claude-code");
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
     assert.deepStrictEqual(res.ctx.calls.updateSession, [[
-      "sid",
+      localSessionKey("sid"),
       "notification",
       "PermissionRequest",
       { agentId: "claude-code" },
     ]]);
+  });
+
+  it("keeps trusted remote profile metadata on Telegram-only approval entries", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "same-raw",
+      host: "spoofed-by-hook",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      tool_use_id: "tool-remote",
+    }), {
+      ctx: {
+        hideBubbles: true,
+        maybeStartRemoteApproval: () => true,
+      },
+      options: {
+        remoteProfile: {
+          profileId: "profile-a",
+          displayHost: "trusted-host",
+        },
+      },
+    });
+
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(
+      entry.sessionId,
+      makeSessionKey({ profileId: "profile-a", rawSessionId: "same-raw" }),
+    );
+    assert.strictEqual(entry.profileId, "profile-a");
+    assert.strictEqual(entry.rawSessionId, "same-raw");
+    assert.strictEqual(entry.host, "trusted-host");
   });
 
   it("falls back to destroying the connection when bubbles are disabled and remote approval has nowhere to send it", async () => {
@@ -796,7 +871,7 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(entry.isElicitation, true);
     assert.strictEqual(entry.agentId, "codebuddy");
     assert.deepStrictEqual(res.ctx.calls.updateSession, [[
-      "cb-elicit",
+      localSessionKey("cb-elicit"),
       "notification",
       "Elicitation",
       { agentId: "codebuddy" },
@@ -941,7 +1016,7 @@ describe("server-route-permission POST", () => {
       tool_input: { filePath: "a.txt" },
     }), {
       ctx: {
-        sessions: new Map([[sessionId, { agentId: "copilot-cli", headless: true }]]),
+        sessions: new Map([[localSessionKey(sessionId), { agentId: "copilot-cli", headless: true }]]),
       },
     });
 
@@ -973,7 +1048,7 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.ctx.pendingPermissions.length, 1);
     const entry = res.ctx.pendingPermissions[0];
     assert.strictEqual(entry.res, res);
-    assert.strictEqual(entry.sessionId, sessionId);
+    assert.strictEqual(entry.sessionId, localSessionKey(sessionId));
     assert.strictEqual(entry.agentId, "copilot-cli");
     assert.strictEqual(entry.isCopilotCli, true);
     assert.strictEqual(entry.toolName, "edit");
@@ -984,7 +1059,7 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(entry.cwd, "D:/repo");
     assert.strictEqual(entry.host, "devbox");
     assert.deepStrictEqual(res.ctx.calls.updateSession, [[
-      sessionId,
+      localSessionKey(sessionId),
       "notification",
       "PermissionRequest",
       {
@@ -1152,7 +1227,7 @@ describe("server-route-permission POST", () => {
       tool_input: { command: "rm -rf /tmp/test" },
     }), {
       ctx: {
-        sessions: new Map([[sessionId, { agentId: "hermes", headless: true }]]),
+        sessions: new Map([[localSessionKey(sessionId), { agentId: "hermes", headless: true }]]),
       },
     });
 
@@ -1184,7 +1259,7 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.ctx.pendingPermissions.length, 1);
     const entry = res.ctx.pendingPermissions[0];
     assert.strictEqual(entry.res, res);
-    assert.strictEqual(entry.sessionId, sessionId);
+    assert.strictEqual(entry.sessionId, localSessionKey(sessionId));
     assert.strictEqual(entry.agentId, "hermes");
     assert.strictEqual(entry.isHermes, true);
     assert.strictEqual(entry.toolName, "execute_bash");
@@ -1195,7 +1270,7 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(entry.cwd, "/home/user/repo");
     assert.strictEqual(entry.editor, "cursor");
     assert.deepStrictEqual(res.ctx.calls.updateSession, [[
-      sessionId,
+      localSessionKey(sessionId),
       "notification",
       "PermissionRequest",
       {
@@ -1232,7 +1307,7 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(entry.toolName, "clarify");
     // updateSession should be called with "Elicitation" kind, not "PermissionRequest"
     assert.deepStrictEqual(res.ctx.calls.updateSession, [[
-      sessionId,
+      localSessionKey(sessionId),
       "notification",
       "Elicitation",
       {
@@ -1319,7 +1394,7 @@ describe("server-route-permission POST — CC subagent requests (#451)", () => {
     assert.strictEqual(entry.subagentId, SUBAGENT_UUID);
     assert.strictEqual(entry.subagentType, "code-reviewer");
     assert.deepStrictEqual(res.ctx.calls.updateSession, [[
-      "sid",
+      localSessionKey("sid"),
       "notification",
       "PermissionRequest",
       { agentId: "claude-code" },
@@ -1467,7 +1542,7 @@ describe("server-route-permission POST — CC subagent requests (#451)", () => {
   it("lets the headless guard win over the subagent sub-gate (auto-deny, no destroy)", async () => {
     const res = await callPermissionPost(subagentBody(), {
       ctx: {
-        sessions: new Map([["sid", { headless: true }]]),
+        sessions: new Map([[localSessionKey("sid"), { headless: true }]]),
         isAgentSubagentPermissionsEnabled: () => false,
       },
     });

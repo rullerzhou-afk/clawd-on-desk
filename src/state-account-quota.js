@@ -190,6 +190,9 @@ function createAccountQuotaStore(options = {}) {
       if (!entry || typeof entry !== "object") continue;
       if (sources.size >= MAX_SOURCES) break;
       const host = normalizeSourceHost(entry.host);
+      const sourceKey = typeof entry.sourceKey === "string"
+        ? normalizeSourceHost(entry.sourceKey)
+        : host;
       const record = { host };
       let hasAny = false;
       for (const providerKey of QUOTA_PROVIDER_KEYS) {
@@ -229,7 +232,7 @@ function createAccountQuotaStore(options = {}) {
         };
         hasAny = true;
       }
-      if (hasAny) sources.set(host || "", record);
+      if (hasAny) sources.set(sourceKey || "", record);
     }
     pruneStale(nowMs);
   }
@@ -276,8 +279,11 @@ function createAccountQuotaStore(options = {}) {
   function persistNow() {
     if (!persistPath) return;
     const body = JSON.stringify({
-      version: 3,
-      sources: Array.from(sources.values()),
+      version: 4,
+      sources: Array.from(sources.entries()).map(([sourceKey, record]) => ({
+        sourceKey,
+        ...record,
+      })),
     }, null, 2);
     const dir = path.dirname(persistPath);
     const tmpPath = path.join(dir, `.account-quota.${process.pid}.tmp`);
@@ -308,17 +314,22 @@ function createAccountQuotaStore(options = {}) {
   // or lastSeenAt crossed a minute boundary (so freshness labels stay
   // honest for a reporter that keeps confirming the same numbers, at a
   // bounded ≤1 broadcast/min instead of one per statusline tick).
-  function update(host, quotas = {}) {
+  function update(source, quotas = {}) {
     const nowMs = now();
-    const sourceHost = normalizeSourceHost(host);
-    const key = sourceHost || "";
+    const sourceKey = normalizeSourceHost(source);
+    const key = sourceKey || "";
+    const requestedDisplayHost = Object.prototype.hasOwnProperty.call(quotas, "displayHost")
+      ? normalizeSourceHost(quotas.displayHost)
+      : sourceKey;
+    const sourceHost = requestedDisplayHost;
     let record = sources.get(key);
     if (!record && sources.size >= MAX_SOURCES) {
       logWarn("Clawd: account-quota source cap reached, dropping report from:", key || "(local)");
       return false;
     }
-    let changed = false;
+    let changed = !!record && record.host !== sourceHost;
     let seenAdvanced = false;
+    if (record && record.host !== sourceHost) record.host = sourceHost;
     for (const providerKey of QUOTA_PROVIDER_KEYS) {
       const group = normalizeQuotaGroup(quotas[providerKey], QUOTA_PROVIDER_FIELDS[providerKey]);
       if (!group) continue;

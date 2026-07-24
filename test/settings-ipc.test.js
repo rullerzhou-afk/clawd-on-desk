@@ -325,6 +325,20 @@ test("settings IPC delegates controller and size preview handlers", async () => 
   assert.deepStrictEqual(await ipcMain.invoke("settings:command", { action: "resizePet", payload: "P:30" }), {
     status: "ok",
   });
+  for (const action of [
+    "remoteSsh.applyInstallationIdentity",
+    "remoteSsh.beginIdentityRotation",
+    "remoteSsh.updateIdentityStep",
+    "remoteSsh.commitIdentityRotation",
+    "remoteSsh.forceRevoke",
+    "remoteSsh.markDeployed",
+    "remoteSsh.markRemoteNode",
+  ]) {
+    assert.deepStrictEqual(
+      await ipcMain.invoke("settings:command", { action, payload: { forged: true } }),
+      { status: "error", message: `settings command "${action}" is internal` }
+    );
+  }
   assert.deepStrictEqual(await ipcMain.invoke("settings:begin-size-preview"), {
     status: "ok",
     phase: "begin",

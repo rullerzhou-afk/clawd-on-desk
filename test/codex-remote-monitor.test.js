@@ -28,6 +28,29 @@ const COMPLETE = { type: "event_msg", payload: { type: "task_complete" } };
 const FUNC = { type: "response_item", payload: { type: "function_call" } };
 
 describe("Codex remote monitor", () => {
+  it("exits only after the bounded delivery-failure threshold and resets on success", () => {
+    let now = 1_000;
+    let exits = 0;
+    const watchdog = __test.createDeliveryWatchdog({
+      now: () => now,
+      exit: () => { exits += 1; },
+      thresholdMs: 100,
+    });
+    now = 1_099;
+    assert.strictEqual(watchdog.record(false), false);
+    assert.strictEqual(exits, 0);
+    assert.strictEqual(watchdog.record(true), false);
+    now = 1_198;
+    assert.strictEqual(watchdog.record(false), false);
+    now = 1_199;
+    assert.strictEqual(watchdog.record(false), true);
+    assert.strictEqual(exits, 1);
+    now = 2_000;
+    assert.strictEqual(watchdog.record(false), false);
+    assert.strictEqual(exits, 1);
+    assert.strictEqual(__test.DELIVERY_FAILURE_EXIT_MS, 24 * 60 * 60 * 1000);
+  });
+
   it("builds root state bodies with headless false", () => {
     const body = JSON.parse(__test.buildPostStateBody(
       "codex:s1",

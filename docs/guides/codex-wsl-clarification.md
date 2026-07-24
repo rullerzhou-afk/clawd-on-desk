@@ -126,9 +126,18 @@ The last point is an inference from OpenAI's documented `CODEX_HOME` sharing flo
 
 ### Clawd has remote-side hooks and a monitor fallback, but not WSL auto-discovery
 
-This repo includes remote deployment through [`scripts/remote-deploy.sh`](../../scripts/remote-deploy.sh). It copies Codex hook files, runs `node ~/.claude/hooks/codex-install.js --remote`, and registers official Codex hooks that POST back through an SSH reverse tunnel with `CLAWD_REMOTE=1`.
+This repo includes app-controlled deployment through **Settings → Remote SSH
+→ Deploy / Repair Hooks**. It resolves the profile runtime layout, installs
+Codex hooks there, and routes official hook traffic through a profile-bound
+SSH ingress with a dedicated secure marker and routing identity.
+[`scripts/remote-deploy.sh`](../../scripts/remote-deploy.sh) is intentionally
+disabled because it cannot create or persist that secure profile transaction.
 
-It also ships [`hooks/codex-remote-monitor.js`](../../hooks/codex-remote-monitor.js), which can poll `~/.codex/sessions` on the other side and POST state changes back when official hooks are unavailable or disabled.
+It also ships [`hooks/codex-remote-monitor.js`](../../hooks/codex-remote-monitor.js),
+which can poll the resolved `<CODEX_HOME>/sessions` on the other side and POST
+state changes back when official hooks are unavailable or disabled. Remote SSH
+starts it under the same identity-pinned layout; it must not be launched as a
+free-standing scanner for the secure SSH flow.
 
 So the repo already contains "state lives somewhere else, send events back" patterns, but that is not the same as automatic WSL discovery in the desktop app.
 

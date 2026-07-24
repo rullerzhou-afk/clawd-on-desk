@@ -38,6 +38,8 @@ const {
   buildRemoteNodeEvalCommand,
 } = require("./remote-ssh-node");
 const { decodeShellBytes } = require("./remote-ssh-decode");
+const { acceptedRoutingNonces } = require("./remote-ssh-identity");
+const { resolveRemoteRuntimeLayout } = require("./remote-ssh-layout");
 
 const SSH_BASE_OPTS = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
 const SCP_BASE_OPTS = ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
@@ -71,6 +73,7 @@ const UNKNOWN_STRIKES_LIMIT = 3;
 
 const CLAWD_SERVER_HEADER = "x-clawd-server";
 const CLAWD_SERVER_ID = "clawd-on-desk";
+const ROUTING_NONCE_HEADER = "x-clawd-routing-nonce";
 
 // ── Detect ssh client ──
 //
@@ -260,6 +263,7 @@ function classifyProbeExit(code) {
   if (code === 2) return { kind: "permanent", reason: "probe_unresponsive", hint: "remoteSshProbeUnresponsive" };
   if (code === 3) return { kind: "permanent", reason: "probe_port_hijack", hint: "remoteSshProbePortHijack" };
   if (code === 4) return { kind: "transient", reason: "probe_http_timeout", hint: "remoteSshProbeHttpTimeout" };
+  if (code === 5) return { kind: "permanent", reason: "probe_secure_identity_invalid", hint: "remoteSshErrSecureIdentityMissing" };
   if (code === 126) return { kind: "permanent", reason: "probe_node_not_exec", hint: "remoteSshProbeNodeNotExec" };
   if (code === 127) return { kind: "permanent", reason: "probe_node_missing", hint: "remoteSshProbeNodeMissing" };
   if (code === 130 || code === 137 || code === 143 || code === 255) {
@@ -274,7 +278,7 @@ function classifyProbeExit(code) {
 // argument: the remoteForwardPort (NOT localRuntimePort — probe runs from
 // remote and hits 127.0.0.1:<remoteForwardPort> which is the bound side of
 // the reverse tunnel).
-function buildProbeCommand(remoteForwardPort, nodeBin = "node") {
+function buildProbeCommand(remoteForwardPort, nodeBin = "node", options = {}) {
   if (!Number.isInteger(remoteForwardPort)) {
     throw new TypeError("buildProbeCommand: remoteForwardPort must be an integer");
   }
@@ -282,8 +286,31 @@ function buildProbeCommand(remoteForwardPort, nodeBin = "node") {
   // double quotes get backslash-escaped so the whole thing fits on a single
   // ssh remote-command argument once forwarded as one shell token.
   const url = `http://127.0.0.1:${remoteForwardPort}/state`;
+  const profile = options.profile;
+  let securePrefix = "";
+  let requestOptions = JSON.stringify(url);
+  if (profile && profile.runtimeKey && profile.installId && profile.id) {
+    let layout = null;
+    try {
+      layout = resolveRemoteRuntimeLayout({
+        runtimeMode: profile.runtimeMode,
+        runtimeKey: profile.runtimeKey,
+        remoteHome: profile.remoteHome,
+      });
+    } catch {}
+    if (!layout) {
+      securePrefix = "process.exit(5);";
+    } else {
+      securePrefix =
+        `const p=${JSON.stringify(layout.identityFile)};` +
+        "let i;try{i=JSON.parse(require('fs').readFileSync(p,'utf8'))}catch{process.exit(5)};" +
+        `if(i.version!==2||i.installId!==${JSON.stringify(profile.installId)}||i.profileId!==${JSON.stringify(profile.id)}||i.runtimeKey!==${JSON.stringify(profile.runtimeKey)}||i.layoutVersion!==${JSON.stringify(profile.layoutVersion || 1)}||i.remotePort!==${JSON.stringify(remoteForwardPort)}||!Number.isFinite(i.deployedAt)||i.deployedAt<=0||!/^[a-f0-9]{32}$/.test(i.routingNonce||''))process.exit(5);`;
+      requestOptions = `{hostname:'127.0.0.1',port:${remoteForwardPort},path:'/state',headers:{${JSON.stringify(ROUTING_NONCE_HEADER)}:i.routingNonce}}`;
+    }
+  }
   const js =
-    `const r=require('http').get(${JSON.stringify(url)},res=>{` +
+    securePrefix +
+    `const r=require('http').get(${requestOptions},res=>{` +
       `const m=res.headers[${JSON.stringify(CLAWD_SERVER_HEADER)}]===${JSON.stringify(CLAWD_SERVER_ID)};` +
       `if(!m)process.exit(3);` +
       `process.exit(res.statusCode===200?0:1);` +
@@ -306,6 +333,7 @@ function backoffMsForAttempt(attempt) {
 function createRemoteSshRuntime(deps = {}) {
   const spawn = deps.spawn || childProcess.spawn;
   const getHookServerPort = deps.getHookServerPort;
+  const createProfileIngress = deps.createProfileIngress;
   const log = deps.log || (() => {});
   const setTimeoutFn = deps.setTimeout || setTimeout;
   const clearTimeoutFn = deps.clearTimeout || clearTimeout;
@@ -331,6 +359,8 @@ function createRemoteSshRuntime(deps = {}) {
       lastError: null,
       lastErrorReason: null,
       sshChild: null,
+      ingress: null,
+      ingressStartGeneration: 0,
       // Accumulated raw stderr bytes — decoded once on read so a GBK/CP936
       // remote (Windows cmd, zh-locale Linux) doesn't show up as mojibake.
       stderrBuf: Buffer.alloc(0),
@@ -373,6 +403,9 @@ function createRemoteSshRuntime(deps = {}) {
   }
 
   function snapshotState(state) {
+    const ingressStatus = state.ingress && typeof state.ingress.getStatus === "function"
+      ? state.ingress.getStatus()
+      : null;
     return {
       profileId: state.profile.id,
       status: state.status,
@@ -381,6 +414,10 @@ function createRemoteSshRuntime(deps = {}) {
       lastError: state.lastError,
       lastErrorReason: state.lastErrorReason,
       retryAttempt: state.retryAttempt,
+      ...(ingressStatus ? {
+        ingressPort: ingressStatus.port,
+        ingressRejectedCount: ingressStatus.rejectedCount,
+      } : {}),
     };
   }
 
@@ -394,6 +431,20 @@ function createRemoteSshRuntime(deps = {}) {
     const out = [];
     for (const state of states.values()) out.push(snapshotState(state));
     return out;
+  }
+
+  function refreshProfile(profile) {
+    if (!profile || !profile.id) throw new Error("refreshProfile: profile.id required");
+    const state = states.get(profile.id);
+    if (!state) return false;
+    state.profile = {
+      ...profile,
+      ...(state.profile && state.profile.installId && !profile.installId
+        ? { installId: state.profile.installId }
+        : {}),
+    };
+    emitStatus(state);
+    return true;
   }
 
   // ── Connect ──
@@ -445,6 +496,45 @@ function createRemoteSshRuntime(deps = {}) {
       return;
     }
 
+    if (typeof createProfileIngress === "function") {
+      if (state.profile.runtimeMode === "profile-isolated"
+        && state.profile.isolatedActive !== true) {
+        finishFailure(state, {
+          kind: "permanent",
+          reason: "isolated_runtime_inactive",
+          hint: "remoteSshErrIsolatedInactive",
+          message: "This isolated runtime is not active; run each CLI through its profile wrapper and repair the deployment.",
+        });
+        return;
+      }
+      try {
+        resolveRemoteRuntimeLayout({
+          runtimeMode: state.profile.runtimeMode,
+          runtimeKey: state.profile.runtimeKey,
+          remoteHome: state.profile.remoteHome,
+        });
+      } catch {
+        finishFailure(state, {
+          kind: "permanent",
+          reason: "secure_layout_missing",
+          hint: "remoteSshErrSecureIdentityMissing",
+          message: "The verified remote runtime layout is missing; deploy or repair hooks before connecting.",
+        });
+        return;
+      }
+      if (!acceptedRoutingNonces(state.profile).length) {
+        finishFailure(state, {
+          kind: "permanent",
+          reason: "secure_identity_missing",
+          hint: "remoteSshErrSecureIdentityMissing",
+          message: "Secure Remote SSH identity is missing; deploy or repair hooks before connecting.",
+        });
+        return;
+      }
+      ensureProfileIngress(state);
+      return;
+    }
+
     let localPort;
     try {
       localPort = getHookServerPort();
@@ -468,6 +558,49 @@ function createRemoteSshRuntime(deps = {}) {
       return;
     }
 
+    spawnTunnel(state, localPort);
+  }
+
+  function ensureProfileIngress(state) {
+    const generation = ++state.ingressStartGeneration;
+    if (!state.ingress) {
+      try {
+        state.ingress = createProfileIngress({
+          remoteProfile: {
+            profileId: state.profile.id,
+            displayHost: state.profile.label || state.profile.host,
+          },
+          getAcceptedNonces: () => acceptedRoutingNonces(state.profile),
+        });
+      } catch (err) {
+        finishFailure(state, {
+          kind: "permanent",
+          reason: "ingress_create_failed",
+          hint: "remoteSshErrNoLocalPort",
+          message: (err && err.message) || "Failed to create secure Remote SSH ingress",
+        });
+        return;
+      }
+    }
+    Promise.resolve(state.ingress.start()).then((localPort) => {
+      if (state.stopped || state.ingressStartGeneration !== generation) return;
+      if (!Number.isInteger(localPort)) {
+        throw new Error("Secure Remote SSH ingress did not bind a local port");
+      }
+      spawnTunnel(state, localPort);
+    }).catch((err) => {
+      if (state.stopped || state.ingressStartGeneration !== generation) return;
+      finishFailure(state, {
+        kind: "permanent",
+        reason: "ingress_listen_failed",
+        hint: "remoteSshErrNoLocalPort",
+        message: (err && err.message) || "Secure Remote SSH ingress failed to listen",
+      });
+    });
+  }
+
+  function spawnTunnel(state, localPort) {
+    if (state.stopped) return;
     const profile = state.profile;
     const forwardOpt = `127.0.0.1:${profile.remoteForwardPort}:127.0.0.1:${localPort}`;
     const extraOpts = [
@@ -849,7 +982,7 @@ function createRemoteSshRuntime(deps = {}) {
       });
       return;
     }
-    const probeCmd = buildProbeCommand(profile.remoteForwardPort, nodeBin);
+    const probeCmd = buildProbeCommand(profile.remoteForwardPort, nodeBin, { profile });
     // No extraOpts override for ConnectTimeout: ssh -o is first-wins, so the
     // base's ConnectTimeout=15 would always win anyway. PROBE_CHILD_TIMEOUT_MS
     // (5s) is the real upper bound on each probe attempt.
@@ -1078,6 +1211,7 @@ function createRemoteSshRuntime(deps = {}) {
       state.backoffTimer = null;
     }
     state.remoteNodeResolveInFlight = false;
+    closeProfileIngress(state);
     state.stopped = true;
     setStatus(state, "failed", {
       message: message || hint || reason,
@@ -1105,6 +1239,7 @@ function createRemoteSshRuntime(deps = {}) {
     state.retryAttempt = 0;
     state.unknownStrikes = 0;
     state.remoteNodeResolveInFlight = false;
+    closeProfileIngress(state);
     clearRemoteShellCache(state);
     setStatus(state, "idle", {
       message: null,
@@ -1141,6 +1276,7 @@ function createRemoteSshRuntime(deps = {}) {
       if (state.backoffTimer) clearTimeoutFn(state.backoffTimer);
       state.backoffTimer = null;
       state.remoteNodeResolveInFlight = false;
+      closeProfileIngress(state);
       if (state.sshChild) killChild(state.sshChild);
       state.sshChild = null;
     }
@@ -1149,12 +1285,22 @@ function createRemoteSshRuntime(deps = {}) {
     auxChildren.clear();
   }
 
+  function closeProfileIngress(state) {
+    if (!state) return;
+    state.ingressStartGeneration += 1;
+    if (state.ingress && typeof state.ingress.close === "function") {
+      try { state.ingress.close(); } catch {}
+    }
+    state.ingress = null;
+  }
+
   return {
     connect,
     disconnect,
     cleanup,
     getProfileStatus,
     listStatuses,
+    refreshProfile,
     registerChild,
     unregisterChild,
     on: (event, cb) => emitter.on(event, cb),

@@ -123,9 +123,16 @@ Fallback 监控会把 `~` 展开成当前进程自己的 `os.homedir()`。也就
 
 ### 3. Clawd 仓库里有远程/旁路方案，但不是 WSL 开箱即用方案
 
-仓库里已有 [`scripts/remote-deploy.sh`](../../scripts/remote-deploy.sh)，会复制 Codex hook 文件，在远端执行 `node ~/.claude/hooks/codex-install.js --remote`，让 official hooks 通过 SSH 反向隧道带着 `CLAWD_REMOTE=1` POST 回本地 Clawd。
+仓库的远程部署入口是应用内 **Settings → 远程 SSH → 部署 / 修复 Hook**。
+它会解析 profile runtime layout，在对应目录安装 Codex hooks，并通过带专用 secure
+marker 与 routing identity 的 profile 专属 SSH 入口回传 official hook 流量。
+[`scripts/remote-deploy.sh`](../../scripts/remote-deploy.sh) 已明确停用，因为它无法
+创建和持久化这套安全 profile 事务。
 
-仓库里也保留 [`hooks/codex-remote-monitor.js`](../../hooks/codex-remote-monitor.js)，它会在另一端轮询 `~/.codex/sessions`，再把状态 POST 回本地 Clawd，用于 official hooks 不可用或被禁用时的 fallback。
+仓库里也保留 [`hooks/codex-remote-monitor.js`](../../hooks/codex-remote-monitor.js)，
+它会在另一端轮询解析后的 `<CODEX_HOME>/sessions`，再把状态 POST 回本地 Clawd，
+用于 official hooks 不可用或被禁用时的 fallback。Remote SSH 会让它运行在同一条
+带身份 pin 的 layout 中；安全 SSH 流程不支持把它当作自由扫描器单独启动。
 
 这个方案当前在文档里主要用于“远程 SSH 模式”，见 [`docs/guides/setup-guide.zh-CN.md`](./setup-guide.zh-CN.md)。
 

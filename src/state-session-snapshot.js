@@ -137,18 +137,23 @@ function shouldAutoClearDetachedSession(session, badge, options = {}) {
 }
 
 function getSessionAliasEntry(id, sessionLike, sessionAliases = {}) {
+  const rawSessionId = (sessionLike && sessionLike.rawSessionId) || id;
   const scopedAliasKey = sessionAliasKey(
     sessionLike && sessionLike.host,
     sessionLike && sessionLike.agentId,
-    id,
-    { cwd: sessionLike && sessionLike.cwd }
+    rawSessionId,
+    {
+      cwd: sessionLike && sessionLike.cwd,
+      profileId: sessionLike && sessionLike.profileId,
+    }
   );
   if (scopedAliasKey && sessionAliases[scopedAliasKey]) return sessionAliases[scopedAliasKey];
 
+  // Read-only fallback for aliases written before profile-scoped keys.
   const legacyAliasKey = sessionAliasKey(
     sessionLike && sessionLike.host,
     sessionLike && sessionLike.agentId,
-    id
+    rawSessionId
   );
   if (legacyAliasKey && legacyAliasKey !== scopedAliasKey) return sessionAliases[legacyAliasKey] || null;
   return legacyAliasKey ? sessionAliases[legacyAliasKey] : null;
@@ -159,7 +164,7 @@ function getEffectiveSessionTitle(id, sessionLike, options = {}) {
     ? options.readCodexThreadName
     : readCodexThreadName;
   if (sessionLike && sessionLike.agentId === "codex" && !sessionLike.host) {
-    const threadName = normalizeTitle(readThreadName(id));
+    const threadName = normalizeTitle(readThreadName((sessionLike && sessionLike.rawSessionId) || id));
     if (threadName) return threadName;
   }
   return normalizeTitle(sessionLike && sessionLike.sessionTitle);
@@ -183,7 +188,10 @@ function sessionDisplayTitle(id, sessionLike, sessionAliases = {}, options = {})
       return path.basename(cwd);
     }
   }
-  return id && id.length > 6 ? `${id.slice(0, 6)}..` : id;
+  const rawSessionId = (sessionLike && sessionLike.rawSessionId) || id;
+  return rawSessionId && rawSessionId.length > 6
+    ? `${rawSessionId.slice(0, 6)}..`
+    : rawSessionId;
 }
 
 function sessionMenuComparator(a, b, statePriority = {}) {
@@ -227,6 +235,8 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
   const source = deriveSourceInfo(session && session.host);
   return {
     id,
+    profileId: (session && session.profileId) || "local",
+    rawSessionId: (session && session.rawSessionId) || id,
     agentId,
     agentName: resolveAgentDisplayName(agentId),
     iconUrl: getAgentIconUrl(agentId),
@@ -376,8 +386,11 @@ function getActiveSessionAliasKeys(sessions) {
     const key = sessionAliasKey(
       session && session.host,
       session && session.agentId,
-      id,
-      { cwd: session && session.cwd }
+      (session && session.rawSessionId) || id,
+      {
+        cwd: session && session.cwd,
+        profileId: session && session.profileId,
+      }
     );
     if (key) keys.add(key);
   }
@@ -413,6 +426,8 @@ function sessionSnapshotSignature(snapshot) {
     })),
     sessions: snapshot.sessions.map((entry) => ({
       id: entry.id,
+      profileId: entry.profileId,
+      rawSessionId: entry.rawSessionId,
       state: entry.state,
       startupRecovered: !!entry.startupRecovered,
       badge: entry.badge,

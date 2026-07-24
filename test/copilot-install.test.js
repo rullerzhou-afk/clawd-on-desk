@@ -381,16 +381,29 @@ describe("buildCopilotHookCommands", () => {
       "/usr/bin/node",
       "/home/u/.claude/hooks/copilot-hook.js",
       "sessionStart",
-      { remote: true }
+      { remote: true, sshRemote: true }
     );
     assert.strictEqual(
       bash,
-      'CLAWD_REMOTE=1 "/usr/bin/node" "/home/u/.claude/hooks/copilot-hook.js" "sessionStart"'
+      'CLAWD_REMOTE=1 CLAWD_SSH_REMOTE=1 "/usr/bin/node" "/home/u/.claude/hooks/copilot-hook.js" "sessionStart"'
     );
     assert.strictEqual(
       powershell,
-      '$env:CLAWD_REMOTE=\'1\'; & "/usr/bin/node" "/home/u/.claude/hooks/copilot-hook.js" "sessionStart"'
+      '$env:CLAWD_REMOTE=\'1\'; $env:CLAWD_SSH_REMOTE=\'1\'; & "/usr/bin/node" "/home/u/.claude/hooks/copilot-hook.js" "sessionStart"'
     );
+  });
+
+  it("keeps legacy WSL --remote free of SSH secure identity variables", () => {
+    const { bash, powershell } = buildCopilotHookCommands(
+      "/usr/bin/node",
+      "/home/u/.claude/hooks/copilot-hook.js",
+      "sessionStart",
+      { remote: true, env: {} },
+    );
+    assert.match(bash, /^CLAWD_REMOTE=1 /);
+    assert.doesNotMatch(bash, /CLAWD_SSH_REMOTE|CLAWD_REMOTE_IDENTITY_PATH/);
+    assert.match(powershell, /^\$env:CLAWD_REMOTE='1'; & /);
+    assert.doesNotMatch(powershell, /CLAWD_SSH_REMOTE|CLAWD_REMOTE_IDENTITY_PATH/);
   });
 });
 
@@ -455,6 +468,7 @@ describe("registerCopilotHooks", () => {
       nodeBin: "/usr/local/bin/node",
       hookScript: "/srv/clawd/hooks/copilot-hook.js",
       remote: true,
+      sshRemote: true,
     });
 
     assert.strictEqual(result.added, COPILOT_HOOK_EVENTS.length);
@@ -462,9 +476,9 @@ describe("registerCopilotHooks", () => {
     const settings = readJson(hooksPath);
     for (const event of COPILOT_HOOK_EVENTS) {
       const entry = settings.hooks[event][0];
-      assert.ok(entry.bash.startsWith("CLAWD_REMOTE=1 "));
+      assert.ok(entry.bash.startsWith("CLAWD_REMOTE=1 CLAWD_SSH_REMOTE=1 "));
       assert.ok(entry.bash.includes(event));
-      assert.ok(entry.powershell.startsWith("$env:CLAWD_REMOTE='1'; & "));
+      assert.ok(entry.powershell.startsWith("$env:CLAWD_REMOTE='1'; $env:CLAWD_SSH_REMOTE='1'; & "));
       assert.ok(entry.powershell.includes(event));
     }
   });

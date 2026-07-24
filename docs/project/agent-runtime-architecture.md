@@ -134,8 +134,12 @@ MiMo Code 权限气泡（event hook + 反向 bridge，非阻塞，与 opencode �
 
 远程 SSH 状态同步（反向端口转发）：
   远程服务器上的 Claude Code / Codex CLI
-    → hooks 通过 SSH 隧道 POST 到本地 127.0.0.1:23333
-    → 同上状态机（CLAWD_REMOTE=1 模式跳过 PID 收集）
+    → secure hooks 只 POST 到 profile pin 住的远端转发端口
+    → SSH 隧道落到该 profile 的临时本地 ingress
+    → ingress 校验 routing nonce 并写入 profileId canonical namespace
+    → 同上状态机（CLAWD_REMOTE=1 + CLAWD_SSH_REMOTE=1，跳过远端 PID 聚焦）
+  secure identity 缺失/损坏时 fail closed，不回退 23333-23337 扫描；
+  通用本地 /state 与 /permission 不作为 SSH 隧道目标
 
 权限决策流（Claude Code HTTP hook，阻塞）：
   Claude Code PermissionRequest
@@ -278,7 +282,12 @@ opencode、MiMo Code、OpenClaw 和 Hermes 是 plugin 形式集成的 agent；Op
 - 不要用 `process.ppid` 做轻量替代：Claude Code / hook 进程链里它通常只是临时 shell PID，不稳定也不可持久化
 - `source_pid` 跟随状态更新送到 `main.js`，用于 Sessions 菜单聚焦
 - 右键 Sessions 子菜单点击后，`focusTerminalWindow()` 会用 PowerShell（Windows）或 `osascript`（macOS）聚焦终端
-- 远程场景通过 `scripts/remote-deploy.sh` + SSH 反向端口转发，把远端 hook 事件回送到本地 Clawd
+- 远程场景只通过 Settings Remote SSH controller 部署：`runtimeKey → layout` 解析、
+  installId/profileId/nonce 身份、原子 lease/fencing、持久部署事务和 profile 专属 ingress
+  共同把远端 hook 事件回送到本地 Clawd；`scripts/remote-deploy.sh` 已 fail-fast 停用
+- `account-default` 用于不同 Unix 账号；同 Unix 账号默认冲突阻止。实验
+  `profile-isolated` 仅在显式验证开关下出现，分开 Claude/Codex/Copilot 用户级
+  config/session/runtime roots 与 wrapper，不虚拟化整个 HOME，也不是同 UID 安全边界
 
 ## Context Menu Owner Window
 

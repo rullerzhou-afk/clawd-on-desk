@@ -9,6 +9,12 @@ const { EventEmitter } = require("node:events");
 
 const initServer = require("../src/server");
 const { MAX_STATE_BODY_BYTES } = require("../src/server-route-state");
+const { makeSessionKey } = require("../src/session-key");
+
+const localSessionKey = (rawSessionId) => makeSessionKey({
+  profileId: "local",
+  rawSessionId,
+});
 
 function makeFakeHttp() {
   let capturedHandler = null;
@@ -266,7 +272,7 @@ describe("/state Codex subagent role handling", () => {
 
     assert.strictEqual(res.statusCode, 200);
     const last = updateSessionCalls[updateSessionCalls.length - 1];
-    assert.strictEqual(last[0], "codex:sub");
+    assert.strictEqual(last[0], localSessionKey("codex:sub"));
     assert.strictEqual(last[1], "idle");
     assert.strictEqual(last[2], "Stop");
     assert.strictEqual(last[3].headless, true);

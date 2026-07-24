@@ -5,6 +5,12 @@ const { EventEmitter } = require("node:events");
 const { describe, it } = require("node:test");
 
 const initServer = require("../src/server");
+const { makeSessionKey } = require("../src/session-key");
+
+const localSessionKey = (rawSessionId) => makeSessionKey({
+  profileId: "local",
+  rawSessionId,
+});
 
 function makeFakeHttp() {
   let capturedHandler = null;
@@ -157,7 +163,7 @@ describe("Qwen Code /permission path", () => {
   it("returns no-decision for headless Qwen sessions before auto-pilot can allow", async () => {
     const sessionId = "qwen-code:headless";
     const { handler, pendingPermissions, shown } = startServer({
-      sessions: new Map([[sessionId, { agentId: "qwen-code", headless: true }]]),
+      sessions: new Map([[localSessionKey(sessionId), { agentId: "qwen-code", headless: true }]]),
     });
 
     const res = await callPermission(handler, {
@@ -206,7 +212,7 @@ describe("Qwen Code /permission path", () => {
     assert.strictEqual(entry.toolUseId, "tool-1");
     assert.strictEqual(entry.model, "qwen3-coder-plus");
     assert.deepStrictEqual(updates[0], [
-      "qwen-code:s1",
+      localSessionKey("qwen-code:s1"),
       "notification",
       "PermissionRequest",
       {
