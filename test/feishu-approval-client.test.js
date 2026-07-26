@@ -15,6 +15,7 @@ const {
   normalizeElicitationActionEvent,
   createLarkClient,
   createWsClient,
+  lookupOpenIdByEmail,
 } = require("../src/feishu-approval-client");
 const { createTranslator, i18n, SUPPORTED_LANGS } = require("../src/i18n");
 
@@ -654,10 +655,14 @@ test("FeishuApprovalClient can update card after local decision before send reso
 });
 
 test("FeishuApprovalClient ignores non-approver actions and aborts pending request", async () => {
+  const updated = [];
   const fakeClient = {
     im: { v1: { message: {
       create: async () => ({ data: { message_id: "om_1" } }),
-      patch: async () => ({ data: {} }),
+      patch: async (payload) => {
+        updated.push(payload);
+        return { data: {} };
+      },
     } } },
   };
   const client = new FeishuApprovalClient({
@@ -679,6 +684,85 @@ test("FeishuApprovalClient ignores non-approver actions and aborts pending reque
   ac.abort();
   assert.equal(await promise, null);
   assert.equal(client.pending.size, 0);
+  await flush();
+  assert.equal(updated.length, 0, "normal approval aborts must not patch the card");
+});
+
+test("FeishuApprovalClient aborts immediately then expires a test card asynchronously", async () => {
+  let resolveCreate;
+  const updated = [];
+  const fakeClient = {
+    im: { v1: { message: {
+      create: async () => new Promise((resolve) => { resolveCreate = resolve; }),
+      patch: async (payload) => {
+        updated.push(payload);
+        return { data: {} };
+      },
+    } } },
+  };
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    larkClient: fakeClient,
+  });
+  const ac = new AbortController();
+  const promise = client.requestApproval(
+    { title: "Test", detail: "Waiting for a response" },
+    { signal: ac.signal, abortOutcome: { decision: "no-decision" } },
+  );
+  await Promise.resolve();
+
+  ac.abort();
+  assert.equal(await promise, null, "abort result must not wait for card sending");
+  assert.equal(client.pending.size, 0, "abort must clear pending immediately");
+  assert.equal(updated.length, 0);
+
+  resolveCreate({ data: { message_id: "om_late" } });
+  await flush();
+  await flush();
+  assert.equal(updated.length, 1);
+  assert.equal(updated[0].path.message_id, "om_late");
+  const card = JSON.parse(updated[0].data.content);
+  assert.ok(!card.elements.some((element) => element.tag === "action"));
+  assert.match(card.header.title.content, /Cancelled/);
+});
+
+test("FeishuApprovalClient keeps the abort result when async expiry update fails", async () => {
+  const logs = [];
+  const fakeClient = {
+    im: { v1: { message: {
+      create: async () => ({ data: { message_id: "om_1" } }),
+      patch: async () => { throw new Error("patch failed with private payload"); },
+    } } },
+  };
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    larkClient: fakeClient,
+    log: (level, message, meta) => logs.push({ level, message, meta }),
+  });
+  const ac = new AbortController();
+  const promise = client.requestApproval(
+    { title: "Test", detail: "Waiting" },
+    { signal: ac.signal, abortOutcome: { decision: "no-decision" } },
+  );
+  await Promise.resolve();
+
+  ac.abort();
+  assert.equal(await promise, null);
+  assert.equal(client.pending.size, 0);
+  await flush();
+  await flush();
+  assert.deepEqual(logs.find((entry) => entry.message === "abort card update failed"), {
+    level: "warn",
+    message: "abort card update failed",
+    meta: { stage: "update-card" },
+  });
+  assert.ok(!JSON.stringify(logs).includes("private payload"));
 });
 
 test("pure helpers validate payloads and card action events", () => {
@@ -1325,6 +1409,107 @@ test("createLarkClient sends the REST client to the Lark domain", () => {
   createLarkClient({ appId: "cli_1", appSecret: "s", lark: sdk, platform: "lark" });
   assert.strictEqual(captured.client[0].domain, sdk.Domain.Lark);
   assert.strictEqual(captured.client[0].domain, 1);
+});
+
+test("lookupOpenIdByEmail resolves an email to open_id on the selected platform", async () => {
+  const requests = [];
+  const { sdk, captured } = fakeSdk({
+    Client: function Client(params) {
+      captured.client.push(params);
+      this.contact = { v3: { user: {
+        batchGetId: async (payload) => {
+          requests.push(payload);
+          return { code: 0, data: { user_list: [{ email: "person@example.com", user_id: "ou_123" }] } };
+        },
+      } } };
+    },
+  });
+
+  const result = await lookupOpenIdByEmail({
+    platform: "lark",
+    appId: "cli_transient",
+    appSecret: "transient-secret",
+    email: "person@example.com",
+    lark: sdk,
+  });
+
+  assert.deepEqual(result, { status: "ok", approverId: "ou_123" });
+  assert.deepEqual(requests, [{
+    data: { emails: ["person@example.com"] },
+    params: { user_id_type: "open_id" },
+  }]);
+  assert.strictEqual(captured.client[0].domain, sdk.Domain.Lark);
+});
+
+test("lookupOpenIdByEmail maps stable business failures without leaking sensitive input", async () => {
+  const sensitive = {
+    email: "private@example.com",
+    appSecret: "super-secret-value",
+  };
+  const cases = [
+    [{ code: 99991672, msg: `scope denied for ${sensitive.email}` }, "missing-contact-scope"],
+    [{ code: 0, data: { user_list: [] } }, "approver-not-found"],
+    [{ code: 12345, msg: sensitive.appSecret }, "lookup-failed"],
+  ];
+
+  for (const [response, expectedCode] of cases) {
+    const logs = [];
+    const { sdk } = fakeSdk({
+      Client: function Client() {
+        this.contact = { v3: { user: { batchGetId: async () => response } } };
+      },
+    });
+    const result = await lookupOpenIdByEmail({
+      platform: "feishu",
+      appId: "cli_test",
+      appSecret: sensitive.appSecret,
+      email: sensitive.email,
+      lark: sdk,
+      log: (level, message, meta) => logs.push({ level, message, meta }),
+    });
+
+    assert.deepEqual(result, { status: "error", code: expectedCode });
+    const serialized = JSON.stringify({ result, logs });
+    assert.ok(!serialized.includes(sensitive.email));
+    assert.ok(!serialized.includes(sensitive.appSecret));
+    assert.ok(!serialized.includes("scope denied"));
+    assert.ok(!serialized.includes("request"));
+  }
+});
+
+test("lookupOpenIdByEmail maps rejected SDK calls using only safe diagnostic metadata", async () => {
+  const logs = [];
+  const error = new Error("private@example.com super-secret-value");
+  error.response = {
+    status: 403,
+    data: { code: 99991672, msg: "private@example.com" },
+    config: { data: { emails: ["private@example.com"] }, headers: { authorization: "Bearer token" } },
+  };
+  const { sdk } = fakeSdk({
+    Client: function Client() {
+      this.contact = { v3: { user: { batchGetId: async () => { throw error; } } } };
+    },
+  });
+
+  const result = await lookupOpenIdByEmail({
+    platform: "feishu",
+    appId: "cli_test",
+    appSecret: "super-secret-value",
+    email: "private@example.com",
+    lark: sdk,
+    log: (level, message, meta) => logs.push({ level, message, meta }),
+  });
+
+  assert.deepEqual(result, { status: "error", code: "missing-contact-scope" });
+  assert.deepEqual(logs, [{
+    level: "warn",
+    message: "email lookup failed",
+    meta: { stage: "request", httpStatus: 403, businessCode: 99991672 },
+  }]);
+  const serialized = JSON.stringify(logs);
+  assert.ok(!serialized.includes("private@example.com"));
+  assert.ok(!serialized.includes("super-secret-value"));
+  assert.ok(!serialized.includes("Bearer token"));
 });
 
 test("createWsClient sends the long connection to the domain matching the platform", () => {

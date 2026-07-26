@@ -617,6 +617,116 @@ describe("telegram approval commands", () => {
 });
 
 describe("feishu approval commands", () => {
+  it("feishuApproval.resolveApprover uses complete transient credentials", async () => {
+    const calls = [];
+    const result = await commandRegistry["feishuApproval.resolveApprover"]({
+      platform: "lark",
+      appId: " cli_transient ",
+      appSecret: " transient-secret ",
+      email: " person@example.com ",
+    }, {
+      getFeishuApprovalPrefs: () => ({ platform: "feishu" }),
+      getFeishuApprovalSecrets: () => ({ appId: "cli_saved", appSecret: "saved-secret" }),
+      lookupFeishuApproverByEmail: async (payload) => {
+        calls.push(payload);
+        return { status: "ok", approverId: "ou_123" };
+      },
+    });
+
+    assert.deepEqual(calls, [{
+      platform: "lark",
+      appId: "cli_transient",
+      appSecret: "transient-secret",
+      email: "person@example.com",
+    }]);
+    assert.deepEqual(result, { status: "ok", idType: "open_id", approverId: "ou_123" });
+  });
+
+  it("feishuApproval.resolveApprover falls back only to same-platform persisted credentials", async () => {
+    const calls = [];
+    const deps = {
+      getFeishuApprovalPrefs: () => ({ platform: "feishu" }),
+      getFeishuApprovalSecrets: () => ({ appId: "cli_saved", appSecret: "saved-secret" }),
+      lookupFeishuApproverByEmail: async (payload) => {
+        calls.push(payload);
+        return { status: "ok", approverId: "ou_saved" };
+      },
+    };
+
+    const samePlatform = await commandRegistry["feishuApproval.resolveApprover"]({
+      platform: "feishu",
+      appId: "",
+      appSecret: "",
+      email: "person@example.com",
+    }, deps);
+    assert.deepEqual(samePlatform, { status: "ok", idType: "open_id", approverId: "ou_saved" });
+    assert.deepEqual(calls[0], {
+      platform: "feishu",
+      appId: "cli_saved",
+      appSecret: "saved-secret",
+      email: "person@example.com",
+    });
+
+    const wrongPlatform = await commandRegistry["feishuApproval.resolveApprover"]({
+      platform: "lark",
+      appId: "",
+      appSecret: "",
+      email: "person@example.com",
+    }, deps);
+    assert.deepEqual(wrongPlatform, { status: "error", code: "missing-credentials" });
+    assert.equal(calls.length, 1);
+  });
+
+  it("feishuApproval.resolveApprover validates payload and never mixes credentials", async () => {
+    const deps = {
+      getFeishuApprovalPrefs: () => ({ platform: "feishu" }),
+      getFeishuApprovalSecrets: () => ({ appId: "cli_saved", appSecret: "saved-secret" }),
+      lookupFeishuApproverByEmail: async () => {
+        throw new Error("lookup must not run");
+      },
+    };
+    const cases = [
+      [{ platform: "other", appId: "", appSecret: "", email: "person@example.com" }, "invalid-platform"],
+      [{ platform: "feishu", appId: "", appSecret: "", email: "not-an-email" }, "invalid-email"],
+      [{ platform: "feishu", appId: "cli_only", appSecret: "", email: "person@example.com" }, "incomplete-credentials"],
+      [{ platform: "feishu", appId: "", appSecret: "secret-only", email: "person@example.com" }, "incomplete-credentials"],
+    ];
+    for (const [payload, code] of cases) {
+      assert.deepEqual(
+        await commandRegistry["feishuApproval.resolveApprover"](payload, deps),
+        { status: "error", code },
+      );
+    }
+  });
+
+  it("feishuApproval.resolveApprover returns only stable error codes", async () => {
+    const result = await commandRegistry["feishuApproval.resolveApprover"]({
+      platform: "feishu",
+      appId: "cli_test",
+      appSecret: "secret",
+      email: "person@example.com",
+    }, {
+      lookupFeishuApproverByEmail: async () => ({
+        status: "error",
+        code: "lookup-failed",
+        message: "SDK leaked private@example.com secret",
+      }),
+    });
+    assert.deepEqual(result, { status: "error", code: "lookup-failed" });
+
+    const persistedReadFailure = await commandRegistry["feishuApproval.resolveApprover"]({
+      platform: "feishu",
+      appId: "",
+      appSecret: "",
+      email: "person@example.com",
+    }, {
+      getFeishuApprovalPrefs: () => {
+        throw new Error("private filesystem path");
+      },
+    });
+    assert.deepEqual(persistedReadFailure, { status: "error", code: "lookup-failed" });
+  });
+
   it("feishuApproval.setSecrets delegates storage without writing secrets to prefs", async () => {
     const calls = [];
     const secrets = {

@@ -797,6 +797,45 @@ function createLarkClient(config = {}) {
   });
 }
 
+async function lookupOpenIdByEmail(config = {}) {
+  const log = typeof config.log === "function" ? config.log : () => {};
+  try {
+    const client = createLarkClient(config);
+    const response = await client.contact.v3.user.batchGetId({
+      data: { emails: [config.email] },
+      params: { user_id_type: "open_id" },
+    });
+    const businessCode = Number(response && response.code);
+    if (businessCode !== 0) {
+      log("warn", "email lookup failed", {
+        stage: "response",
+        businessCode: Number.isFinite(businessCode) ? businessCode : 0,
+      });
+      return {
+        status: "error",
+        code: businessCode === 99991672 ? "missing-contact-scope" : "lookup-failed",
+      };
+    }
+    const users = response && response.data && Array.isArray(response.data.user_list)
+      ? response.data.user_list
+      : [];
+    const user = users.find((item) => item && typeof item.user_id === "string" && item.user_id.trim());
+    if (!user) return { status: "error", code: "approver-not-found" };
+    return { status: "ok", approverId: user.user_id.trim() };
+  } catch (err) {
+    const httpStatus = Number(err && err.response && err.response.status);
+    const businessCode = Number(err && err.response && err.response.data && err.response.data.code);
+    const meta = { stage: "request" };
+    if (Number.isFinite(httpStatus)) meta.httpStatus = httpStatus;
+    if (Number.isFinite(businessCode)) meta.businessCode = businessCode;
+    log("warn", "email lookup failed", meta);
+    return {
+      status: "error",
+      code: businessCode === 99991672 ? "missing-contact-scope" : "lookup-failed",
+    };
+  }
+}
+
 function createWsClient(config = {}) {
   const lark = config.lark || loadLarkSdk();
   const dispatcher = new lark.EventDispatcher({
@@ -1130,7 +1169,22 @@ class FeishuApprovalClient {
         if (sendError && options.rejectOnSendError) reject(sendError);
         else resolve(isValidDecisionValue(decision) ? decision : null);
       };
-      const onAbort = () => finish(null);
+      const onAbort = () => {
+        // Preserve the approval contract: abort clears pending state and
+        // resolves immediately. The settings test may additionally expire its
+        // already-sent card, but that work is deliberately detached.
+        finish(null);
+        if (!options.abortOutcome) return;
+        Promise.resolve(entry.sendReady)
+          .then((sentEntry) => {
+            const messageId = sentEntry && sentEntry.messageId;
+            if (!messageId) return null;
+            return this.updateCard(messageId, entry.payload, options.abortOutcome);
+          })
+          .catch(() => {
+            this.log("warn", "abort card update failed", { stage: "update-card" });
+          });
+      };
       if (signal) signal.addEventListener("abort", onAbort, { once: true });
       const entry = {
         payload: normalized,
@@ -1420,4 +1474,5 @@ module.exports = {
   normalizeElicitationActionEvent,
   createLarkClient,
   createWsClient,
+  lookupOpenIdByEmail,
 };

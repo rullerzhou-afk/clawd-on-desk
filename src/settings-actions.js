@@ -1785,6 +1785,82 @@ async function feishuApprovalSetSecrets(payload, deps = {}) {
   return { status: "ok", secretsStored: true };
 }
 
+function isFeishuApproverEmail(value) {
+  if (!value || /\s/.test(value)) return false;
+  const parts = value.split("@");
+  return parts.length === 2 && !!parts[0] && !!parts[1];
+}
+
+async function feishuApprovalResolveApprover(payload, deps = {}) {
+  const input = payload && typeof payload === "object" ? payload : {};
+  const platform = typeof input.platform === "string" ? input.platform.trim() : "";
+  const appId = typeof input.appId === "string" ? input.appId.trim() : "";
+  const appSecret = typeof input.appSecret === "string" ? input.appSecret.trim() : "";
+  const email = typeof input.email === "string" ? input.email.trim() : "";
+  if (platform !== "feishu" && platform !== "lark") {
+    return { status: "error", code: "invalid-platform" };
+  }
+  if (!isFeishuApproverEmail(email)) {
+    return { status: "error", code: "invalid-email" };
+  }
+  if (!!appId !== !!appSecret) {
+    return { status: "error", code: "incomplete-credentials" };
+  }
+
+  let resolvedAppId = appId;
+  let resolvedAppSecret = appSecret;
+  if (!resolvedAppId && !resolvedAppSecret) {
+    try {
+      const persistedConfig = typeof deps.getFeishuApprovalPrefs === "function"
+        ? deps.getFeishuApprovalPrefs()
+        : null;
+      if (!persistedConfig || persistedConfig.platform !== platform) {
+        return { status: "error", code: "missing-credentials" };
+      }
+      const persistedSecrets = typeof deps.getFeishuApprovalSecrets === "function"
+        ? deps.getFeishuApprovalSecrets()
+        : null;
+      resolvedAppId = persistedSecrets && typeof persistedSecrets.appId === "string"
+        ? persistedSecrets.appId.trim()
+        : "";
+      resolvedAppSecret = persistedSecrets && typeof persistedSecrets.appSecret === "string"
+        ? persistedSecrets.appSecret.trim()
+        : "";
+      if (!resolvedAppId || !resolvedAppSecret) {
+        return { status: "error", code: "missing-credentials" };
+      }
+    } catch {
+      return { status: "error", code: "lookup-failed" };
+    }
+  }
+
+  if (typeof deps.lookupFeishuApproverByEmail !== "function") {
+    return { status: "error", code: "lookup-failed" };
+  }
+  try {
+    const result = await deps.lookupFeishuApproverByEmail({
+      platform,
+      appId: resolvedAppId,
+      appSecret: resolvedAppSecret,
+      email,
+    });
+    if (result && result.status === "ok" && typeof result.approverId === "string" && result.approverId.trim()) {
+      return { status: "ok", idType: "open_id", approverId: result.approverId.trim() };
+    }
+    const allowedCodes = new Set([
+      "missing-contact-scope",
+      "approver-not-found",
+      "lookup-failed",
+    ]);
+    return {
+      status: "error",
+      code: allowedCodes.has(result && result.code) ? result.code : "lookup-failed",
+    };
+  } catch {
+    return { status: "error", code: "lookup-failed" };
+  }
+}
+
 function feishuApprovalStatus(_payload, deps = {}) {
   if (!deps || typeof deps.getFeishuApprovalStatus !== "function") {
     return { status: "error", message: "feishuApproval.status requires getFeishuApprovalStatus dep" };
@@ -2028,6 +2104,7 @@ const commandRegistry = {
   "telegramApproval.tokenInfo": telegramApprovalTokenInfo,
   "telegramApproval.test": telegramApprovalSendTest,
   "feishuApproval.setSecrets": feishuApprovalSetSecrets,
+  "feishuApproval.resolveApprover": feishuApprovalResolveApprover,
   "feishuApproval.status": feishuApprovalStatus,
   "feishuApproval.secretInfo": feishuApprovalSecretInfo,
   "feishuApproval.test": feishuApprovalSendTest,

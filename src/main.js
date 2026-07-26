@@ -102,7 +102,7 @@ const telegramApprovalSettings = require("./telegram-approval-settings");
 const discordPresenceSettings = require("./discord-presence-settings");
 const { createDiscordPresenceBridge } = require("./discord-presence-rpc");
 const { resolveAgentDisplayName } = require("./agent-display-name");
-const { FeishuApprovalClient } = require("./feishu-approval-client");
+const { FeishuApprovalClient, lookupOpenIdByEmail } = require("./feishu-approval-client");
 const feishuApprovalSettings = require("./feishu-approval-settings");
 const {
   buildTelegramApprovalStatus,
@@ -439,6 +439,12 @@ const _settingsController = createSettingsController({
     getTelegramApprovalTokenInfo: () => getTelegramApprovalTokenInfo(),
     sendTelegramApprovalTest: () => sendTelegramApprovalTest(),
     writeFeishuApprovalSecrets: (secrets) => writeFeishuApprovalSecrets(secrets),
+    getFeishuApprovalPrefs: () => getFeishuApprovalPrefs(),
+    getFeishuApprovalSecrets: () => getFeishuApprovalSecrets(),
+    lookupFeishuApproverByEmail: (params) => lookupOpenIdByEmail({
+      ...params,
+      log: feishuApprovalLog,
+    }),
     getFeishuApprovalStatus: () => getFeishuApprovalStatus(),
     getFeishuApprovalSecretInfo: () => getFeishuApprovalSecretInfo(),
     sendFeishuApprovalTest: () => sendFeishuApprovalTest(),
@@ -2224,7 +2230,7 @@ function feishuApprovalLog(level, message, meta = {}) {
   const parts = [`feishu approval ${level}: ${message}`];
   if (meta && meta.text) parts.push(String(meta.text).trim());
   if (meta && meta.error) parts.push(String(meta.error).trim());
-  for (const key of ["requestId", "messageId", "decision", "matched"]) {
+  for (const key of ["requestId", "messageId", "decision", "matched", "stage", "httpStatus", "businessCode"]) {
     const value = meta && meta[key];
     if (value !== undefined && value !== null && value !== "") {
       parts.push(`${key}=${String(value).trim()}`);
@@ -2550,7 +2556,11 @@ async function sendFeishuApprovalTest() {
     const decision = await client.requestApproval({
       title: translate("feishuCardTestTitle"),
       detail: translate("feishuCardTestDetail"),
-    }, { signal: controller.signal, rejectOnSendError: true });
+    }, {
+      signal: controller.signal,
+      rejectOnSendError: true,
+      abortOutcome: { decision: "no-decision" },
+    });
     if (decision === "allow" || decision === "deny") {
       return { status: "ok", decision };
     }
