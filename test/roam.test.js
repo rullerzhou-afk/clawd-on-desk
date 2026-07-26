@@ -50,6 +50,7 @@ function makeCtx(overrides = {}) {
     getNearestWorkArea() { return { x: 0, y: 0, width: 1920, height: 1080 }; },
     clampToScreenVisual(x, y, w, h) { return { x, y, width: w, height: h }; },
     getMiniMode() { return false; },
+    isDragLocked() { return false; },
     getCurrentState() { return currentState; },
     setCurrentState(s) { currentState = s; },
     miniTransitioning: false,
@@ -484,6 +485,66 @@ describe("roam module", () => {
     ctx.setCurrentState("roam");
     roam.tick();
     assert.ok(true, "tick should not throw when in roam state");
+  });
+
+  it("does not start a scheduled roam while drag-locked and restarts the full idle delay (#716)", () => {
+    let dragLocked = false;
+    const ctx = makeCtx({ isDragLocked: () => dragLocked });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(3000);
+    dragLocked = true;
+    mock.timers.tick(5000);
+
+    assert.equal(ctx._stateLog.length, 0, "the scheduled roam must not start while held");
+    assert.deepEqual(
+      { x: ctx._realBounds.x, y: ctx._realBounds.y },
+      { x: 400, y: 300 },
+      "the pet must not move while held"
+    );
+
+    dragLocked = false;
+    roam.tick();
+    mock.timers.tick(7999);
+    assert.equal(ctx._stateLog.length, 0, "release must restart the full 8s idle delay");
+
+    mock.timers.tick(1);
+    assert.ok(
+      ctx._stateLog.some((event) => event.type === "applyState" && event.state === "roam"),
+      "roam may start after the fresh idle delay"
+    );
+  });
+
+  it("cancels an active roam when the drag lock engages (#716)", () => {
+    let dragLocked = false;
+    const ctx = makeCtx({ isDragLocked: () => dragLocked });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(160);
+    assert.ok(
+      ctx._realBounds.x !== 400 || ctx._realBounds.y !== 300,
+      "the walk should be active before the grab"
+    );
+
+    dragLocked = true;
+    mock.timers.tick(16);
+    assert.ok(
+      ctx._stateLog.some((event) => event.type === "setState" && event.state === "idle"),
+      "grabbing must cancel the walk and restore idle"
+    );
+
+    const stopped = { x: ctx._realBounds.x, y: ctx._realBounds.y };
+    mock.timers.tick(320);
+    assert.deepEqual(
+      { x: ctx._realBounds.x, y: ctx._realBounds.y },
+      stopped,
+      "no roam frame may move the window after drag lock engages"
+    );
   });
 
   it("falls back to the farthest work-area corner when every random target is too close", () => {

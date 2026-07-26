@@ -4016,6 +4016,7 @@ const _roamCtx = {
   getNearestWorkArea,
   clampToScreenVisual,
   getMiniMode: () => _mini.getMiniMode(),
+  isDragLocked: () => petWindowRuntime.isDragLocked(),
   getCurrentState: () => _state.getCurrentState(),
   get miniTransitioning() { return _mini.getMiniTransitioning(); },
   applyState: (state, svgOverride, opts) => _state.applyState(state, svgOverride, opts),

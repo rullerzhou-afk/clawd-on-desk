@@ -40,6 +40,7 @@ module.exports = function initRoam(ctx) {
   function isRoamAllowed() {
     if (!enabled) return false;
     if (ctx.getMiniMode && ctx.getMiniMode()) return false;
+    if (typeof ctx.isDragLocked === "function" && ctx.isDragLocked()) return false;
     const state = ctx.getCurrentState ? ctx.getCurrentState() : "idle";
     // Allow roaming when idle (about to start) or already roaming (mid-animation)
     if (state !== "idle" && state !== "roam") return false;
@@ -210,7 +211,10 @@ module.exports = function initRoam(ctx) {
     firstRoam = false;
     roamPauseTimer = setTimeout(() => {
       roamPauseTimer = null;
-      if (!isRoamAllowed()) return;
+      if (!isRoamAllowed()) {
+        firstRoam = true;
+        return;
+      }
       const target = pickRandomTarget();
       if (!target) { scheduleNextRoam(); return; }
       animateTo(target.x, target.y);
