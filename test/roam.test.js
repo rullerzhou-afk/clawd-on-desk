@@ -517,6 +517,34 @@ describe("roam module", () => {
     );
   });
 
+  it("restarts the full idle delay when a short drag cancels a pending roam (#716)", () => {
+    let dragLocked = false;
+    const ctx = makeCtx({ isDragLocked: () => dragLocked });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(3000);
+
+    dragLocked = true;
+    roam.cancelRoam();
+    dragLocked = false;
+    roam.tick();
+
+    mock.timers.tick(7999);
+    assert.equal(
+      ctx._stateLog.length,
+      0,
+      "even a short drag must restart the full 8s idle delay"
+    );
+
+    mock.timers.tick(1);
+    assert.ok(
+      ctx._stateLog.some((event) => event.type === "applyState" && event.state === "roam"),
+      "roam may start after the fresh idle delay"
+    );
+  });
+
   it("cancels an active roam when the drag lock engages (#716)", () => {
     let dragLocked = false;
     const ctx = makeCtx({ isDragLocked: () => dragLocked });

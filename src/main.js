@@ -3788,6 +3788,7 @@ function createWindow() {
       petWindowRuntime.recoverVisiblePetAfterRendererLoad();
     },
     setDragLocked: (value) => { petWindowRuntime.setDragLocked(value); },
+    cancelRoam: () => _roam.cancelRoam(),
     setMouseOverPet: (value) => { mouseOverPet = !!value; },
     beginDragSnapshot: () => beginDragSnapshot(),
     clearDragSnapshot: () => clearDragSnapshot(),

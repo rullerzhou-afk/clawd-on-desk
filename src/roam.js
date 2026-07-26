@@ -239,6 +239,7 @@ module.exports = function initRoam(ctx) {
       && ctx.getCurrentState() === "roam"
       && typeof ctx.setState === "function";
     cleanupTimers();
+    firstRoam = true;
     roamActive = false;
     if (shouldRestoreIdle) ctx.setState("idle");
   }

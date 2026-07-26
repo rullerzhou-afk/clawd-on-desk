@@ -21,6 +21,7 @@ function registerPetInteractionIpc(options = {}) {
     "recoverVisiblePetAfterRendererLoad"
   );
   const setDragLocked = requiredDependency(options.setDragLocked, "setDragLocked");
+  const cancelRoam = requiredDependency(options.cancelRoam, "cancelRoam");
   const setMouseOverPet = requiredDependency(options.setMouseOverPet, "setMouseOverPet");
   const beginDragSnapshot = requiredDependency(options.beginDragSnapshot, "beginDragSnapshot");
   const clearDragSnapshot = requiredDependency(options.clearDragSnapshot, "clearDragSnapshot");
@@ -95,6 +96,7 @@ function registerPetInteractionIpc(options = {}) {
   on("drag-lock", (_event, locked) => {
     setDragLocked(!!locked);
     if (locked) {
+      cancelRoam();
       setMouseOverPet(true);
       beginDragSnapshot();
     } else {

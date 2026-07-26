@@ -57,6 +57,7 @@ function createHarness(overrides = {}) {
     sendToRenderer: (...args) => calls.push(["sendToRenderer", ...args]),
     recoverVisiblePetAfterRendererLoad: (event) => calls.push(["recoverVisiblePetAfterRendererLoad", event.sender]),
     setDragLocked: (value) => calls.push(["setDragLocked", value]),
+    cancelRoam: () => calls.push(["cancelRoam"]),
     setMouseOverPet: (value) => calls.push(["setMouseOverPet", value]),
     beginDragSnapshot: () => calls.push(["beginDragSnapshot"]),
     clearDragSnapshot: () => calls.push(["clearDragSnapshot"]),
@@ -213,6 +214,7 @@ test("pet interaction IPC preserves drag lock lifecycle", () => {
 
   assert.deepStrictEqual(calls, [
     ["setDragLocked", true],
+    ["cancelRoam"],
     ["setMouseOverPet", true],
     ["beginDragSnapshot"],
     ["setDragLocked", false],
