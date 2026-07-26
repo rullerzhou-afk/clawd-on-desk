@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker, powerMonitor, clipboard, safeStorage } = require("electron");
+const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker, powerMonitor, clipboard } = require("electron");
 // ── Linux/Wayland: relaunch under XWayland so the pet is draggable (issue #441) ──
 // Native Wayland ignores client-side window positioning and blocks global cursor
 // queries, so the pet spawns centered, can't be dragged, and has no tracking;
@@ -81,12 +81,6 @@ const {
 } = require("./settings-size-preview-session");
 const { registerSettingsIpc } = require("./settings-ipc");
 const createSettingsEffectRouter = require("./settings-effect-router");
-const {
-  getPetTintIdForTheme,
-  resolvePetTintPayload,
-  getPetAccessoryIdForTheme,
-  resolvePetAccessoryPayload,
-} = require("./pet-customization-catalog");
 const { registerSessionIpc } = require("./session-ipc");
 const { createSessionFolderOpener } = require("./session-open-folder");
 const { registerPetInteractionIpc } = require("./pet-interaction-ipc");
@@ -143,9 +137,7 @@ const {
 } = require("./session-focus");
 const { focusCodexThreadTarget } = require("./session-focus-handoff");
 const { isSessionInProgress } = require("./state-session-snapshot");
-const { restoreSessionsFromRecoveryLeases } = require("./session-recovery-loader");
 const { getAllAgents, getAgent } = require("../agents/registry");
-const { getAgentIconUrl } = require("./state-agent-icons");
 // ── Autoplay policy: allow sound playback without user gesture ──
 // MUST be set before any BrowserWindow is created (before app.whenReady)
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
@@ -256,7 +248,6 @@ const SIZES = {
 // `_settingsController.applyUpdate()`, which auto-persists.
 const prefsModule = require("./prefs");
 const { createSettingsController } = require("./settings-controller");
-const { loadOrCreateInstallationIdentity } = require("./remote-ssh-identity");
 const { createTranslator, i18n, SUPPORTED_LANGS } = require("./i18n");
 const {
   getBubblePolicy,
@@ -388,10 +379,6 @@ const _settingsController = createSettingsController({
     uninstallAutoStart: _uninstallAutoStartHook,
     resolveTextScaleDisplayKey: () => getSettingsDisplayKey(),
     syncClaudeHooksNow: () => _server.syncClawdHooks({ source: "settings", automatic: false }),
-    setClaudeQuotaCollectionEnabled: (enabled) => _server.setClaudeQuotaCollectionEnabled({
-      enabled,
-      source: "settings-quota-collection",
-    }),
     uninstallClaudeHooksNow: _uninstallClaudeHooksNow,
     startClaudeSettingsWatcher: () => _server.startClaudeSettingsWatcher(),
     stopClaudeSettingsWatcher: () => _server.stopClaudeSettingsWatcher(),
@@ -465,42 +452,6 @@ const _settingsController = createSettingsController({
     },
   },
 });
-let _remoteSshInstallationIdentity = null;
-
-async function initializeRemoteSshInstallationIdentity() {
-  const remoteSsh = _settingsController.get("remoteSsh") || {};
-  const persistedAuthorityPresent = Array.isArray(remoteSsh.profiles)
-    && remoteSsh.profiles.some((profile) => profile && (
-      typeof profile.routingNonce === "string"
-      || typeof profile.previousNonce === "string"
-      || !!profile.identityTxn
-      || profile.isolatedActive === true
-      || !!profile.isolatedRuntime
-      || (Array.isArray(profile.managedDeployTargets) && profile.managedDeployTargets.length > 0)
-      || (Number.isFinite(profile.lastDeployedAt) && profile.lastDeployedAt > 0)
-    ));
-  const identity = loadOrCreateInstallationIdentity({
-    userDataDir: app.getPath("userData"),
-    expectedInstallId: remoteSsh.installId,
-    persistedAuthorityPresent,
-    safeStorage,
-  });
-  const result = await _settingsController.applyCommand("remoteSsh.applyInstallationIdentity", {
-    installId: identity.installId,
-    cloneRecoveryRequired: identity.cloneRecoveryRequired === true,
-  });
-  if (!result || result.status !== "ok") {
-    throw new Error((result && result.message) || "failed to bind Remote SSH installation identity");
-  }
-  _remoteSshInstallationIdentity = Object.freeze(identity);
-  if (identity.cloneRecoveryRequired) {
-    console.warn("Clawd remote-ssh: local installation identity changed; remote profiles require redeploy");
-  }
-  if (!identity.strongStorage) {
-    console.warn(`Clawd remote-ssh: installation binding uses weak storage backend (${identity.storageBackend})`);
-  }
-  return identity;
-}
 
 // Mirror of `_settingsController.get("lang")` so existing sync read sites in
 // menu.js / state.js / etc. don't have to round-trip through the controller.
@@ -848,7 +799,7 @@ function getAssetPointerPayload(bounds, point) {
 }
 
 let win;
-let hitWin;  // input window — small opaque rect over hitbox, receives all pointer events
+let hitWin = null;  // input window — DISABLED in merged single-window build
 
 // Tray icon flash state
 let trayFlashTimer = null;
@@ -960,9 +911,6 @@ let sessionHudEnabled = _settingsController.get("sessionHudEnabled");
 let sessionHudShowStateLabels = _settingsController.get("sessionHudShowStateLabels");
 let sessionHudShowElapsed = _settingsController.get("sessionHudShowElapsed");
 let sessionHudShowContextUsage = _settingsController.get("sessionHudShowContextUsage");
-let sessionHudShowQuota = _settingsController.get("sessionHudShowQuota");
-let claudeQuotaCollectionEnabled = _settingsController.get("claudeQuotaCollectionEnabled");
-let quotaMergeSources = _settingsController.get("quotaMergeSources");
 let sessionHudCleanupDetached = _settingsController.get("sessionHudCleanupDetached");
 let sessionHudPinned = _settingsController.get("sessionHudPinned");
 let sessionStaleMs = _settingsController.get("sessionStaleMs");
@@ -972,8 +920,6 @@ let soundMuted = _settingsController.get("soundMuted");
 let soundVolume = _settingsController.get("soundVolume");
 let lowPowerIdleMode = _settingsController.get("lowPowerIdleMode");
 let keepAwakeWhileWorking = _settingsController.get("keepAwakeWhileWorking");
-let petTint = _settingsController.get("petTint");
-let petAccessory = _settingsController.get("petAccessory");
 let allowEdgePinningCached = _settingsController.get("allowEdgePinning");
 let disableMiniModeCached = _settingsController.get("disableMiniMode");
 let keepSizeAcrossDisplaysCached = _settingsController.get("keepSizeAcrossDisplays");
@@ -1111,7 +1057,8 @@ function sendToRenderer(channel, ...args) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, ...args);
 }
 function sendToHitWin(channel, ...args) {
-  if (hitWin && !hitWin.isDestroyed()) hitWin.webContents.send(channel, ...args);
+  // Hit window disabled in merged single-window build — redirect to renderer
+  sendToRenderer(channel, ...args);
 }
 function broadcastSettingsWindow(channel, payload) {
   try {
@@ -1152,11 +1099,6 @@ function syncHitStateAfterLoad() {
 
 function syncRendererStateAfterLoad({ includeStartupRecovery = true } = {}) {
   syncSoundPreloads();
-  const activeTheme = getActiveTheme();
-  const tintId = getPetTintIdForTheme(petTint, activeTheme && activeTheme._id);
-  sendToRenderer("pet-tint-change", resolvePetTintPayload(tintId, activeTheme));
-  const accessoryId = getPetAccessoryIdForTheme(petAccessory, activeTheme && activeTheme._id);
-  sendToRenderer("pet-accessory-change", resolvePetAccessoryPayload(accessoryId, activeTheme));
   sendToRenderer("low-power-idle-mode-change", lowPowerIdleMode);
   if (_mini.getMiniMode()) {
     sendToRenderer("mini-mode-change", true, _mini.getMiniEdge());
@@ -1325,7 +1267,6 @@ let broadcastSessionHudSnapshot = () => {};
 let sendSessionHudI18n = () => {};
 let getSessionHudReservedOffset = () => 0;
 let getSessionHudWindow = () => null;
-let getQuotaRingWindow = () => null;
 const themeFadeSequencer = createThemeFadeSequencer({
   getRenderWindow: () => win,
   getHitWindow: () => hitWin,
@@ -1397,7 +1338,6 @@ const topmostRuntime = createTopmostRuntime({
   getPendingPermissions: () => pendingPermissions,
   getUpdateBubbleWindow: () => _updateBubble.getBubbleWindow(),
   getSessionHudWindow: () => getSessionHudWindow(),
-  getQuotaRingWindow: () => getQuotaRingWindow(),
   getContextMenuOwner: () => contextMenuOwner,
   getNearestWorkArea,
   getPetWindowBounds,
@@ -1427,7 +1367,6 @@ const {
 
 // ── Permission bubble — delegated to src/permission.js ──
 const {
-  isAgentIntegrationInstalled: _isAgentIntegrationInstalled,
   isAgentEnabled: _isAgentEnabled,
   isAgentPermissionsEnabled: _isAgentPermissionsEnabled,
   isAgentSubagentPermissionsEnabled: _isAgentSubagentPermissionsEnabled,
@@ -1459,10 +1398,13 @@ const _permCtx = {
   syncImeEditingPetDodge: () => topmostRuntime.syncImeEditingPetDodge(),
   isAgentPermissionsEnabled: (agentId) =>
     _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
-  // The permission layer consumes one normalized runtime mode. DND,
-  // headless, per-agent and bubble gates run before this chokepoint.
-  getPermissionAutomationMode: () =>
-    _settingsController.get("permissionAutomationMode") || "off",
+  // DANGER "auto-pilot": when true, showPermissionBubble auto-approves every
+  // request instead of rendering a bubble. DND / per-agent / headless gates
+  // run earlier in the route, so they still win — this only fires once a
+  // bubble would otherwise show. Headless fallback stays agent-specific
+  // (no-decision/native fallback, opencode silent TUI fallback, or CC deny).
+  isAutoApproveAllEnabled: () =>
+    _settingsController.get("autoApproveAllPermissions") === true,
   focusTerminalForSession: (sessionId, options = {}) => {
     focusDashboardSession(sessionId, {
       requestSource: options.requestSource || "permission-bubble",
@@ -1476,7 +1418,6 @@ const _permCtx = {
   reportShortcutFailure: (actionId, reason) => shortcutRuntime.reportFailure(actionId, reason),
   clearShortcutFailure: (actionId) => shortcutRuntime.clearFailure(actionId),
   repositionUpdateBubble: () => repositionUpdateBubble(),
-  repositionSessionHud: () => repositionSessionHud(),
   getTelegramApprovalClient: () => getTelegramApprovalClient(),
   getRemoteApprovalClients: () => {
     const client = getFeishuApprovalClient();
@@ -1532,7 +1473,6 @@ const _updateBubbleCtx = {
   getTextScale: () => getTextScaleForPetWindows(),
   guardAlwaysOnTop,
   reapplyMacVisibility,
-  repositionSessionHud: () => repositionSessionHud(),
 };
 const _updateBubble = initUpdateBubble(_updateBubbleCtx);
 const {
@@ -1589,25 +1529,12 @@ function getIdleVisualChoice() {
   return resolveIdleVisualChoice(getActiveTheme(), _settingsController.get("idleVisual"));
 }
 
-// Renderer theme config with pre-IPC choices stamped on — the first media load
-// should already use the selected idle visual and tint instead of briefly
-// showing theme defaults. getRendererConfig() returns a fresh object, safe to
-// extend.
+// Renderer theme config with the idle choice stamped on — the renderer's
+// pre-IPC first frame should already show the selected visual, not flash the
+// follow sprite. getRendererConfig() returns a fresh object, safe to extend.
 function buildRendererThemeConfig() {
   const cfg = themeRuntime.getRendererConfig();
-  if (cfg) {
-    const activeTheme = getActiveTheme();
-    const tintSelections = _settingsController.get("petTint");
-    const tintId = getPetTintIdForTheme(tintSelections, activeTheme && activeTheme._id);
-    const accessorySelections = _settingsController.get("petAccessory");
-    const accessoryId = getPetAccessoryIdForTheme(
-      accessorySelections,
-      activeTheme && activeTheme._id
-    );
-    cfg.idleDefaultVisual = getIdleVisualChoice();
-    cfg.petTintPayload = resolvePetTintPayload(tintId, activeTheme);
-    cfg.accessoryPayload = resolvePetAccessoryPayload(accessoryId, activeTheme);
-  }
+  if (cfg) cfg.idleDefaultVisual = getIdleVisualChoice();
   return cfg;
 }
 
@@ -1615,9 +1542,6 @@ const _stateCtx = {
   get theme() { return getActiveTheme(); },
   get win() { return win; },
   get hitWin() { return hitWin; },
-  // Last-known account quota survives app restarts (state-account-quota.js).
-  accountQuotaPersistPath: require("./state-account-quota").DEFAULT_PERSIST_PATH,
-  get quotaMergeSources() { return quotaMergeSources; },
   get doNotDisturb() { return doNotDisturb; },
   set doNotDisturb(v) { doNotDisturb = v; },
   get miniMode() { return _mini.getMiniMode(); },
@@ -1698,7 +1622,6 @@ const _stateCtx = {
   }),
   getSessionAliases: () => _settingsController.get("sessionAliases"),
   getIdleVisualChoice,
-  isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
   hasAnyEnabledAgent: () => {
     // `get("agents")` returns the live reference (no clone) — we're only
     // reading. Missing agents field falls back to "assume enabled" (the
@@ -1925,7 +1848,6 @@ function buildTutorialAgentOnboardingState() {
     detectionAgents: detection.agents,
     agentsPref: _settingsController.get("agents") || {},
     installableIds: INSTALLABLE_AGENT_IDS,
-    getAgentIconUrl,
   });
 }
 
@@ -2022,7 +1944,6 @@ const _sessionHud = require("./session-hud")({
   get sessionHudShowStateLabels() { return sessionHudShowStateLabels; },
   get sessionHudShowElapsed() { return sessionHudShowElapsed; },
   get sessionHudShowContextUsage() { return sessionHudShowContextUsage; },
-  get sessionHudShowQuota() { return sessionHudShowQuota; },
   get sessionHudPinned() { return sessionHudPinned; },
   get lowPowerIdleMode() { return lowPowerIdleMode; },
   getMiniMode: () => _mini.getMiniMode(),
@@ -2034,8 +1955,6 @@ const _sessionHud = require("./session-hud")({
   getSessionHudAnchorRect,
   getNearestWorkArea,
   getTextScale: () => getTextScaleForPetWindows(),
-  getPermissionBubbleBounds: () => _perm.getVisibleBubbleBounds(),
-  getUpdateBubbleWindow: () => _updateBubble.getBubbleWindow(),
   guardAlwaysOnTop,
   reapplyMacVisibility,
   onReservedOffsetChange: () => repositionFloatingBubbles(),
@@ -2046,7 +1965,6 @@ broadcastSessionHudSnapshot = _sessionHud.broadcastSessionSnapshot;
 sendSessionHudI18n = _sessionHud.sendI18n;
 getSessionHudReservedOffset = _sessionHud.getHudReservedOffset;
 getSessionHudWindow = _sessionHud.getWindow;
-getQuotaRingWindow = _sessionHud.getQuotaRingWindow;
 
 agentRuntime = createAgentRuntimeMain({
   getServer: () => _server,
@@ -2064,7 +1982,6 @@ agentRuntime = createAgentRuntimeMain({
 const _serverCtx = {
   get manageClaudeHooksAutomatically() { return manageClaudeHooksAutomatically; },
   get autoStartWithClaude() { return autoStartWithClaude; },
-  get claudeQuotaCollectionEnabled() { return claudeQuotaCollectionEnabled; },
   get doNotDisturb() { return doNotDisturb; },
   shouldDropForDnd: () => _state.shouldDropForDnd ? _state.shouldDropForDnd() : doNotDisturb,
   get hideBubbles() { return getAllBubblesHidden(); },
@@ -2104,7 +2021,6 @@ const _serverCtx = {
   setState,
   updateSession: agentRuntime.updateSessionFromServer,
   updateSessionMetadata: (sessionId, opts) => _state.updateSessionMetadata(sessionId, opts),
-  updateAccountQuota: (host, quotas) => _state.updateAccountQuota(host, quotas),
   resolvePermissionEntry,
   sendPermissionResponse,
   addPendingPermission,
@@ -3187,25 +3103,14 @@ const _menuCtx = {
   set hideBubbles(v) { _settingsController.applyCommand("setAllBubblesHidden", { hidden: !!v }).catch((err) => {
     console.warn("Clawd: setAllBubblesHidden failed:", err && err.message);
   }); },
-  get permissionAutomationMode() {
-    return _settingsController.get("permissionAutomationMode") || "off";
-  },
-  isPermissionAutomationWarningDismissed(mode) {
-    const key = mode === "auto-tools"
-      ? "permissionAutomationAutoToolsWarningDismissed"
-      : (mode === "unattended"
-        ? "permissionAutomationUnattendedWarningDismissed"
-        : null);
-    return key ? _settingsController.get(key) === true : false;
-  },
-  setPermissionAutomationMode(mode, options = {}) {
-    return _settingsController.applyCommand("setPermissionAutomationMode", {
-      mode,
-      confirmed: options.confirmed === true,
-      suppressFutureConfirmation: options.suppressFutureConfirmation === true,
-    }).catch((err) => {
-      console.warn("Clawd: setPermissionAutomationMode failed:", err && err.message);
-      return { status: "error", message: err && err.message };
+  get autoApproveAllPermissions() { return _settingsController.get("autoApproveAllPermissions") === true; },
+  // Route through the gated command. The menu shows its own native danger
+  // confirm before setting true, so it passes confirmed:true; disabling needs
+  // no confirmation. applyUpdate is intentionally NOT used — the field is
+  // gated so the confirm dialog is a real boundary, not UI-only.
+  set autoApproveAllPermissions(v) {
+    _settingsController.applyCommand("setAutoApproveAll", { enabled: !!v, confirmed: true }).catch((err) => {
+      console.warn("Clawd: setAutoApproveAll failed:", err && err.message);
     });
   },
   get soundMuted() { return soundMuted; },
@@ -3347,17 +3252,12 @@ const SETTINGS_MIRROR_SETTERS = {
   sessionHudShowStateLabels: (v) => { sessionHudShowStateLabels = v; },
   sessionHudShowElapsed: (v) => { sessionHudShowElapsed = v; },
   sessionHudShowContextUsage: (v) => { sessionHudShowContextUsage = v; },
-  sessionHudShowQuota: (v) => { sessionHudShowQuota = v; },
-  claudeQuotaCollectionEnabled: (v) => { claudeQuotaCollectionEnabled = v; },
-  quotaMergeSources: (v) => { quotaMergeSources = v; },
   sessionHudCleanupDetached: (v) => { sessionHudCleanupDetached = v; },
   sessionHudPinned: (v) => { sessionHudPinned = v; },
   sessionStaleMs: (v) => { sessionStaleMs = v; }, workingStaleMs: (v) => { workingStaleMs = v; },
   detachedIdleStaleMs: (v) => { detachedIdleStaleMs = v; },
   soundMuted: (v) => { soundMuted = v; }, soundVolume: (v) => { soundVolume = v; }, lowPowerIdleMode: (v) => { lowPowerIdleMode = v; },
   keepAwakeWhileWorking: (v) => { keepAwakeWhileWorking = v; },
-  petTint: (v) => { petTint = v; },
-  petAccessory: (v) => { petAccessory = v; },
   allowEdgePinning: (v) => { allowEdgePinningCached = v; }, disableMiniMode: (v) => { disableMiniModeCached = v; }, keepSizeAcrossDisplays: (v) => { keepSizeAcrossDisplaysCached = v; resetKeepSizeFrozen(); },
   fullscreenOverlay: (v) => { fullscreenOverlayCached = v; },
   freeRoam: (v) => { _roam.setEnabled(v); },
@@ -3408,7 +3308,6 @@ const settingsEffectRouter = createSettingsEffectRouter({
   reclampPetAfterEdgePinningChange,
   exitMiniMode: () => exitMiniMode(),
   getMiniMode: () => _mini.getMiniMode(),
-  getActiveTheme: () => getActiveTheme(),
   // #509: re-rest the pet on the newly selected idle visual right away, but
   // only while actually idle — task/sleep/mini states pick it up on their
   // next natural revert instead.
@@ -3521,7 +3420,6 @@ try {
 
 // ── Doctor tab IPC ──
 const { registerDoctorIpc } = require("./doctor-ipc");
-let _remoteSshRuntime = null;
 registerDoctorIpc({
   ipcMain,
   app,
@@ -3531,9 +3429,6 @@ registerDoctorIpc({
   getDoNotDisturb: () => doNotDisturb,
   getLocale: () => _settingsController.get("lang") || "en",
   resolveAgentDisplayName: _resolveAgentDisplayName,
-  getRemoteSshStatuses: () => _remoteSshRuntime
-    ? _remoteSshRuntime.listStatuses()
-    : [],
 });
 
 // ── Remote SSH (Phase 2) ──
@@ -3545,9 +3440,8 @@ registerDoctorIpc({
 // any spawned ssh / scp children.
 const { createRemoteSshRuntime } = require("./remote-ssh-runtime");
 const { registerRemoteSshIpc } = require("./remote-ssh-ipc");
-_remoteSshRuntime = createRemoteSshRuntime({
+const _remoteSshRuntime = createRemoteSshRuntime({
   getHookServerPort: () => getHookServerPort(),
-  createProfileIngress: (options) => _server.openRemoteSshIngress(options),
   log: (...args) => console.warn("Clawd remote-ssh:", ...args),
 });
 const _remoteSshIpc = registerRemoteSshIpc({
@@ -3556,8 +3450,6 @@ const _remoteSshIpc = registerRemoteSshIpc({
   remoteSshRuntime: _remoteSshRuntime,
   BrowserWindow,
   isPackaged: app.isPackaged,
-  getInstallationIdentity: () => _remoteSshInstallationIdentity,
-  enableProfileIsolation: process.env.CLAWD_ENABLE_EXPERIMENTAL_REMOTE_ISOLATION === "1",
 });
 
 // ── Settings panel window ──
@@ -3612,7 +3504,6 @@ registerSettingsIpc({
   fs,
   path,
   settingsController: _settingsController,
-  getQuotaSourceCount: () => _state.getQuotaSourceCount(),
   themeLoader,
   codexPetMain,
   getSettingsWindow,
@@ -3734,27 +3625,31 @@ function createWindow() {
   if (!isMac || showTray) createTray();
   ensureContextMenuOwner();
 
-  // ── Create input window (hitWin) — small rect over hitbox, receives all pointer events ──
-  hitWin = petWindowRuntime.createHitWindow({
-    BrowserWindow,
-    preloadPath: path.join(__dirname, "preload-hit.js"),
-    loadFilePath: path.join(__dirname, "hit.html"),
-    hitThemeConfig: themeRuntime.getHitRendererConfig(),
-    guardAlwaysOnTop,
-    onDidFinishLoad: () => {
-      sendToHitWin("theme-config", themeRuntime.getHitRendererConfig());
-      if (themeRuntime.isReloadInProgress()) return;
-      syncHitStateAfterLoad();
-    },
-    onRenderProcessGone: (details, ownedHitWin) => {
-      safeConsoleError("hitWin renderer crashed:", details.reason);
-      petWindowRuntime.setDragLocked(false);
-      petWindowRuntime.clearDragSnapshot();
-      idlePaused = false;
-      mouseOverPet = false;
-      petWindowRuntime.reloadWindowWebContents(ownedHitWin, { crashKey: "hitWin", details });
-    },
-  });
+  // ── Hit window disabled in merged single-window build ──
+  // All input is handled directly in the render window.
+  // hit window creation and its onDidFinishLoad/onRenderProcessGone
+  // are kept as comments for reference:
+  //
+  // hitWin = petWindowRuntime.createHitWindow({
+  //   BrowserWindow,
+  //   preloadPath: path.join(__dirname, "preload-hit.js"),
+  //   loadFilePath: path.join(__dirname, "hit.html"),
+  //   hitThemeConfig: themeRuntime.getHitRendererConfig(),
+  //   guardAlwaysOnTop,
+  //   onDidFinishLoad: () => {
+  //     sendToHitWin("theme-config", themeRuntime.getHitRendererConfig());
+  //     if (themeRuntime.isReloadInProgress()) return;
+  //     syncHitStateAfterLoad();
+  //   },
+  //   onRenderProcessGone: (details, ownedHitWin) => {
+  //     safeConsoleError("hitWin renderer crashed:", details.reason);
+  //     petWindowRuntime.setDragLocked(false);
+  //     petWindowRuntime.clearDragSnapshot();
+  //     idlePaused = false;
+  //     mouseOverPet = false;
+  //     petWindowRuntime.reloadWindowWebContents(ownedHitWin, { crashKey: "hitWin", details });
+  //   },
+  // });
 
   // Event-level safety net for position sync
   win.on("move", () => petWindowRuntime.syncFloatingWindowsAfterPetBoundsChange());
@@ -3837,24 +3732,6 @@ function createWindow() {
   // never block startup.
   startHttpServer().then((port) => {
     if (port == null) return;
-    const restoredSessionIds = restoreSessionsFromRecoveryLeases(_state, {
-      isAgentEnabled: (agentId) => {
-        const snapshot = { agents: _settingsController.get("agents") };
-        return _isAgentEnabled(snapshot, agentId)
-          && _isAgentIntegrationInstalled(snapshot, agentId);
-      },
-    });
-    if (restoredSessionIds.length > 0) {
-      const recoveredSnapshot = _state.buildSessionSnapshot();
-      reconcilePowerSaveBlocker();
-      broadcastDashboardSessionSnapshot(recoveredSnapshot);
-      broadcastSessionHudSnapshot(recoveredSnapshot);
-      if (!doNotDisturb && !_mini.getMiniMode()) {
-        const recoveredState = resolveDisplayState();
-        applyState(recoveredState, getSvgOverride(recoveredState));
-      }
-      sessionLog(`startup recovery restored sessions=${restoredSessionIds.join(",")}`);
-    }
     try { _remoteSshIpc.connectOnLaunchProfiles(); } catch {}
   }).catch(() => {});
   if (_settingsController.get("mobilePreviewEnabled") === true) _lanWss.start();
@@ -4179,7 +4056,7 @@ if (!gotTheLock) {
     }
   }
 
-  app.whenReady().then(async () => {
+  app.whenReady().then(() => {
     // macOS: override the dock icon with a version padded to the macOS icon
     // grid (~80.5% of the canvas, ~100px transparent margin per side) so the
     // Dock tile matches neighbor apps. The build-time icon.png sits ~72.6%
@@ -4207,12 +4084,6 @@ if (!gotTheLock) {
     // First-run only: seed UI language from the device locale, before createWindow
     // so the very first menu/tray render is already in the user's language.
     hydrateFreshInstallLanguage();
-    try {
-      await initializeRemoteSshInstallationIdentity();
-    } catch (err) {
-      _remoteSshInstallationIdentity = null;
-      console.error("Clawd remote-ssh: installation identity initialization failed:", err && err.message);
-    }
 
     permDebugLog = path.join(app.getPath("userData"), "permission-debug.log");
     updateDebugLog = path.join(app.getPath("userData"), "update-debug.log");
