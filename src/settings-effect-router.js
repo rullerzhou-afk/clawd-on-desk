@@ -149,6 +149,14 @@ function createSettingsEffectRouter(options = {}) {
         { force: true }
       );
     }
+    if ("permissionAutomationMode" in changes) {
+      safeCall(
+        logWarn,
+        "Clawd: session automation effective-mode snapshot refresh failed:",
+        emitSessionSnapshot,
+        { force: true }
+      );
+    }
 
     // 2. Reactive side effects.
     if ("hideBubbles" in changes || "permissionBubblesEnabled" in changes) {

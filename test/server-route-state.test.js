@@ -393,6 +393,10 @@ describe("server-route-state POST", () => {
         sessionCronsCount: 0,
         stopHookActive: false,
         stdinDiag: null,
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "non-authoritative-codex-session-id",
+        },
       },
     ]]);
   });
@@ -839,6 +843,56 @@ describe("server-route-state POST", () => {
     const opts = res.calls.updateSession[0][3];
     assert.strictEqual(opts.agentId, "claude-code");
     assert.strictEqual(opts.agentIdDefaulted, true);
+  });
+
+  it("assesses the raw state session id before fallback and ignores sender eligibility", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "default",
+      event: "PreToolUse",
+      agent_id: "claude-code",
+      sessionAutomationEligible: true,
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession[0][0], localSessionKey("default"));
+    assert.deepStrictEqual(
+      res.calls.updateSession[0][3].sessionAutomationIdentity,
+      { eligible: false, reason: "placeholder-session-id" }
+    );
+  });
+
+  it("marks only local process-bound Codex TUI state identities eligible", async () => {
+    const sessionId = "codex:019f9c87-23a9-7d03-a7ac-c11e3270c3b8";
+    const body = {
+      state: "working",
+      session_id: sessionId,
+      event: "PreToolUse",
+      agent_id: "codex",
+      hook_source: "codex-official",
+      agent_pid: 777,
+      codex_originator: "codex-tui",
+      codex_source: "cli",
+    };
+
+    const local = await callStatePost(JSON.stringify(body));
+    assert.deepStrictEqual(
+      local.calls.updateSession[0][3].sessionAutomationIdentity,
+      { eligible: true, reason: "eligible" }
+    );
+
+    const remote = await callStatePost(JSON.stringify(body), {
+      options: {
+        remoteProfile: { profileId: "ssh-work", displayHost: "workbox" },
+      },
+    });
+    assert.deepStrictEqual(
+      remote.calls.updateSession[0][3].sessionAutomationIdentity,
+      {
+        eligible: false,
+        reason: "remote-session-lifecycle-not-authoritative",
+      }
+    );
   });
 
   it("routes state events to a currently registered custom AI", async () => {

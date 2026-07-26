@@ -222,6 +222,10 @@ describe("Qwen Code /permission path", () => {
         pidChain: [789, 456, 123],
         cwd: "/repo",
         model: "qwen3-coder-plus",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "identity-verification-required",
+        },
       },
     ]);
 

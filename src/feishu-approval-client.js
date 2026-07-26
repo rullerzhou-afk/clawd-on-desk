@@ -1,8 +1,14 @@
 "use strict";
 
 const crypto = require("crypto");
+const { AsyncLocalStorage } = require("node:async_hooks");
 const { redactSecrets } = require("./secret-redact");
 const { createTranslator } = require("./i18n");
+const {
+  buildSessionGrantRevokeAction,
+  parseSessionGrantRevokeAction,
+  createRemoteCardWorkRegistry,
+} = require("./session-automation-remote");
 
 const ACTION_ROW_SIZE = 3;
 const MAX_ELICITATION_QUESTIONS = 5;
@@ -102,6 +108,7 @@ function normalizeApprovalPayload(payload) {
     folder: String((payload && payload.folder) || "").trim(),
     summary: String((payload && payload.summary) || "").trim(),
     suggestions,
+    canOfferSessionTrust: payload && payload.canOfferSessionTrust === true,
   };
 }
 
@@ -173,6 +180,20 @@ function isValidDecisionValue(value) {
     || value === "deny"
     || value === "terminal"
     || /^suggestion:\d+$/.test(String(value || ""));
+}
+
+function normalizeApprovalDecision(value) {
+  if (isValidDecisionValue(value)) return value;
+  if (
+    value
+    && typeof value === "object"
+    && value.action === "session-trust"
+    && value.cardHandle
+    && typeof value.cardHandle === "object"
+  ) {
+    return { action: "session-trust", cardHandle: value.cardHandle };
+  }
+  return null;
 }
 
 function isValidElicitationDecision(value) {
@@ -374,6 +395,13 @@ function buildApprovalCard(payload, options = {}, context = {}) {
       button(safePlainText(entry.label), { requestId, decision: `suggestion:${entry.index}` }, "default")
     )),
   ];
+  if (normalized.canOfferSessionTrust) {
+    actions.push(button(
+      ctx.t("feishuSessionTrustButton"),
+      { requestId, kind: "session-trust-open" },
+      "default"
+    ));
+  }
   return {
     config: { wide_screen_mode: true, update_multi: true },
     header: {
@@ -390,6 +418,87 @@ function buildApprovalCard(payload, options = {}, context = {}) {
       },
       ...buildActionRows(actions),
     ],
+  };
+}
+
+function buildSessionTrustConfirmCard(payload, options = {}, context = {}) {
+  const ctx = renderContext(context);
+  const normalized = normalizeApprovalPayload(payload);
+  const requestId = String(options.requestId || "");
+  return {
+    config: { wide_screen_mode: true, update_multi: true },
+    header: {
+      template: "orange",
+      title: {
+        tag: "plain_text",
+        content: ctx.t("feishuSessionTrustConfirmTitle"),
+      },
+    },
+    elements: [
+      {
+        tag: "div",
+        text: { tag: "lark_md", content: buildApprovalDetail(normalized, ctx) },
+      },
+      {
+        tag: "div",
+        text: { tag: "lark_md", content: ctx.t("feishuSessionTrustConfirmDetail") },
+      },
+      {
+        tag: "action",
+        actions: [
+          button(
+            ctx.t("feishuSessionTrustConfirmButton"),
+            { requestId, kind: "session-trust-confirm" },
+            "primary"
+          ),
+          button(
+            ctx.t("feishuSessionTrustCancelButton"),
+            { requestId, kind: "session-trust-cancel" },
+            "default"
+          ),
+        ],
+      },
+    ],
+  };
+}
+
+function buildSessionTrustStatusCard(payload, options = {}, context = {}) {
+  const ctx = renderContext(context);
+  const normalized = normalizeApprovalPayload(payload);
+  const grantId = String(options.grantId || "");
+  const statusKey = options.statusKey || "feishuSessionTrustPreparingStatus";
+  const elements = [
+    {
+      tag: "div",
+      text: { tag: "lark_md", content: buildApprovalDetail(normalized, ctx) },
+    },
+    {
+      tag: "div",
+      text: { tag: "lark_md", content: ctx.t(statusKey) },
+    },
+  ];
+  if (grantId) {
+    elements.push({
+      tag: "action",
+      actions: [button(
+        ctx.t("feishuSessionTrustRevokeButton"),
+        { action: buildSessionGrantRevokeAction(grantId) },
+        "danger"
+      )],
+    });
+  }
+  return {
+    config: { wide_screen_mode: true, update_multi: true },
+    header: {
+      template: options.terminal ? "grey" : "green",
+      title: {
+        tag: "plain_text",
+        content: ctx.t(options.terminal
+          ? "feishuSessionTrustTerminalTitle"
+          : "feishuSessionTrustActiveTitle"),
+      },
+    },
+    elements,
   };
 }
 
@@ -642,58 +751,65 @@ function countAnsweredQuestions(questions, answers) {
   }, 0);
 }
 
+function actionOperatorId(source, idType) {
+  const operator = source.operator && typeof source.operator === "object" ? source.operator : {};
+  const aliases = idType === "user_id"
+    ? ["user_id", "userId"]
+    : idType === "union_id"
+      ? ["union_id", "unionId"]
+      : ["open_id", "openId"];
+  for (const key of aliases) {
+    if (typeof operator[key] === "string" && operator[key]) return operator[key];
+    if (typeof source[key] === "string" && source[key]) return source[key];
+  }
+  return "";
+}
+
+function normalizeSessionAutomationActionEvent(event, idType = "open_id") {
+  const source = event && typeof event === "object" ? event : {};
+  const action = source.action && typeof source.action === "object" ? source.action : {};
+  const value = parseMaybeJsonObject(action.value);
+  if (!value) return null;
+  const operatorId = actionOperatorId(source, idType);
+  const persistentGrantId = parseSessionGrantRevokeAction(value.action);
+  if (persistentGrantId) {
+    return { operatorId, kind: "persistent-revoke", grantId: persistentGrantId };
+  }
+  const requestId = typeof value.requestId === "string" ? value.requestId : "";
+  const kind = typeof value.kind === "string" ? value.kind : "";
+  if (
+    requestId
+    && (
+      kind === "session-trust-open"
+      || kind === "session-trust-confirm"
+      || kind === "session-trust-cancel"
+    )
+  ) {
+    return { operatorId, requestId, kind };
+  }
+  return null;
+}
+
 function normalizeActionEvent(event, idType = "open_id") {
   const source = event && typeof event === "object" ? event : {};
-  const operator = source.operator && typeof source.operator === "object" ? source.operator : {};
   const action = source.action && typeof source.action === "object" ? source.action : {};
   const value = parseMaybeJsonObject(action.value);
   if (!value) return null;
   const requestId = typeof value.requestId === "string" ? value.requestId : "";
   const decision = isValidDecisionValue(value.decision) ? String(value.decision) : "";
   if (!requestId || !decision) return null;
-  const aliases = idType === "user_id"
-    ? ["user_id", "userId"]
-    : idType === "union_id"
-      ? ["union_id", "unionId"]
-      : ["open_id", "openId"];
-  let operatorId = "";
-  for (const key of aliases) {
-    if (typeof operator[key] === "string" && operator[key]) {
-      operatorId = operator[key];
-      break;
-    }
-    if (typeof source[key] === "string" && source[key]) {
-      operatorId = source[key];
-      break;
-    }
-  }
+  const operatorId = actionOperatorId(source, idType);
   return { operatorId, requestId, decision };
 }
 
 function normalizeElicitationActionEvent(event, questions, idType = "open_id") {
   const source = event && typeof event === "object" ? event : {};
-  const operator = source.operator && typeof source.operator === "object" ? source.operator : {};
   const action = source.action && typeof source.action === "object" ? source.action : {};
   const value = parseMaybeJsonObject(action.value);
   if (!value) return null;
   const requestId = typeof value.requestId === "string" ? value.requestId : "";
   if (!requestId) return null;
-  const aliases = idType === "user_id"
-    ? ["user_id", "userId"]
-    : idType === "union_id"
-      ? ["union_id", "unionId"]
-      : ["open_id", "openId"];
-  let operatorId = "";
-  for (const key of aliases) {
-    if (typeof operator[key] === "string" && operator[key]) {
-      operatorId = operator[key];
-      break;
-    }
-    if (typeof source[key] === "string" && source[key]) {
-      operatorId = source[key];
-      break;
-    }
-  }
+  const operatorId = actionOperatorId(source, idType);
 
   if (value.decision === "terminal") return { operatorId, requestId, decision: "terminal" };
 
@@ -786,14 +902,50 @@ function resolveSdkDomain(lark, platform) {
   return domain;
 }
 
+function createDeadlineHttpInstance(base, timeoutMs) {
+  if (!base || (typeof base !== "object" && typeof base !== "function")) return undefined;
+  const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Math.round(timeoutMs) : 10_000;
+  const signalContext = new AsyncLocalStorage();
+  const withTimeout = (options) => ({
+    ...(options && typeof options === "object" ? options : {}),
+    timeout: Math.min(
+      Number.isFinite(options && options.timeout) && options.timeout > 0 ? options.timeout : timeout,
+      timeout
+    ),
+    ...(signalContext.getStore() ? { signal: signalContext.getStore() } : {}),
+  });
+  const wrapper = {
+    runWithSignal(signal, task) {
+      return signalContext.run(signal, task);
+    },
+  };
+  for (const method of ["get", "delete", "head", "options"]) {
+    if (typeof base[method] !== "function") continue;
+    wrapper[method] = (url, options) => base[method](url, withTimeout(options));
+  }
+  for (const method of ["post", "put", "patch"]) {
+    if (typeof base[method] !== "function") continue;
+    wrapper[method] = (url, data, options) => base[method](url, data, withTimeout(options));
+  }
+  if (typeof base.request === "function") {
+    wrapper.request = (options) => base.request(withTimeout(options));
+  }
+  return wrapper;
+}
+
 function createLarkClient(config = {}) {
   const lark = config.lark || loadLarkSdk();
+  const httpInstance = config.httpInstance || createDeadlineHttpInstance(
+    lark.defaultHttpInstance,
+    config.requestTimeoutMs
+  );
   return new lark.Client({
     appId: config.appId,
     appSecret: config.appSecret,
     appType: lark.AppType ? lark.AppType.SelfBuild : undefined,
     domain: resolveSdkDomain(lark, config.platform),
     loggerLevel: lark.LoggerLevel ? lark.LoggerLevel.warn : undefined,
+    httpInstance,
   });
 }
 
@@ -873,6 +1025,7 @@ class FeishuApprovalClient {
     this.t = createTranslator(typeof options.getLang === "function" ? options.getLang : () => "en");
     this.lark = options.lark || null;
     this.larkClient = options.larkClient || null;
+    this.cardHttpInstance = options.cardHttpInstance || null;
     this.wsFactory = options.wsFactory || createWsClient;
     this.wsClient = options.wsClient || null;
     this.dispatcher = options.dispatcher || null;
@@ -888,6 +1041,22 @@ class FeishuApprovalClient {
     // with no key to map it to, and dropping it would remove the only clue.
     this.lastErrorCode = "";
     this.connectionTimeoutMs = normalizeConnectionTimeoutMs(options.connectionTimeoutSeconds);
+    this.cardRequestTimeoutMs = Number.isFinite(options.cardRequestTimeoutMs)
+      && options.cardRequestTimeoutMs > 0
+      ? Math.round(options.cardRequestTimeoutMs)
+      : 10_000;
+    this.onSessionGrantRevoke = typeof options.onSessionGrantRevoke === "function"
+      ? options.onSessionGrantRevoke
+      : null;
+    this.issuedSessionTrustCardHandles = new WeakSet();
+    this.sessionAutomationCardWork = options.sessionAutomationCardWork
+      || createRemoteCardWorkRegistry({
+        deadlineMs: this.cardRequestTimeoutMs,
+        log: (err) => this.log("warn", "session automation card update failed", {
+          error: err && err.message ? err.message : String(err),
+        }),
+      });
+    this.sessionAutomationRouteCurrent = true;
     this.connectionTimer = null;
     this.connectionTimerMode = "";
     this.lastStatusNotifyKey = "";
@@ -1093,12 +1262,22 @@ class FeishuApprovalClient {
   }
 
   messageApi() {
-    const client = this.larkClient || (this.larkClient = createLarkClient({
-      appId: this.appId,
-      appSecret: this.appSecret,
-      lark: this.lark,
-      platform: this.platform,
-    }));
+    if (!this.larkClient) {
+      const lark = this.lark || loadLarkSdk();
+      this.cardHttpInstance = this.cardHttpInstance || createDeadlineHttpInstance(
+        lark.defaultHttpInstance,
+        this.cardRequestTimeoutMs
+      );
+      this.larkClient = createLarkClient({
+        appId: this.appId,
+        appSecret: this.appSecret,
+        lark,
+        platform: this.platform,
+        requestTimeoutMs: this.cardRequestTimeoutMs,
+        httpInstance: this.cardHttpInstance,
+      });
+    }
+    const client = this.larkClient;
     return client && client.im && client.im.v1 && client.im.v1.message
       ? client.im.v1.message
       : client && client.im && client.im.message;
@@ -1128,7 +1307,7 @@ class FeishuApprovalClient {
         if (signal && onAbort) signal.removeEventListener("abort", onAbort);
         this.pending.delete(requestId);
         if (sendError && options.rejectOnSendError) reject(sendError);
-        else resolve(isValidDecisionValue(decision) ? decision : null);
+        else resolve(normalizeApprovalDecision(decision));
       };
       const onAbort = () => finish(null);
       if (signal) signal.addEventListener("abort", onAbort, { once: true });
@@ -1138,6 +1317,7 @@ class FeishuApprovalClient {
         signal: signal || null,
         resolve: finish,
         sendReady: null,
+        trustConfirming: false,
       };
       this.pending.set(requestId, entry);
       entry.sendReady = this.sendCard(requestId, normalized)
@@ -1250,6 +1430,262 @@ class FeishuApprovalClient {
     });
   }
 
+  async patchCard(messageId, card, options = {}) {
+    if (!messageId) throw new Error("card message id is unavailable");
+    const message = this.messageApi();
+    if (!message || typeof message.patch !== "function") {
+      throw new Error("message.patch is unavailable");
+    }
+    const patch = () => message.patch({
+      path: { message_id: messageId },
+      data: { content: JSON.stringify(card) },
+    });
+    if (
+      options.signal
+      && this.cardHttpInstance
+      && typeof this.cardHttpInstance.runWithSignal === "function"
+    ) {
+      await this.cardHttpInstance.runWithSignal(options.signal, patch);
+      return;
+    }
+    await patch();
+  }
+
+  supportsSessionAutomation() {
+    const message = this.messageApi();
+    return this.sessionAutomationRouteCurrent
+      && this.isEnabled()
+      && typeof this.onSessionGrantRevoke === "function"
+      && !!(message && typeof message.patch === "function");
+  }
+
+  beginSessionTrustCandidate({ grantId, cardHandle } = {}) {
+    if (!this.issuedSessionTrustCardHandles.has(cardHandle)) return null;
+    this.issuedSessionTrustCardHandles.delete(cardHandle);
+    const cardWork = cardHandle.cardWork;
+    if (
+      !this.supportsSessionAutomation()
+      || !this.sessionAutomationCardWork.bindCandidateGrant(cardWork, grantId)
+    ) {
+      // Confirmation already consumed the one-shot handle. Remove the stale
+      // controls best-effort, while the registry deadline guarantees that a
+      // dead route cannot retain this card-work slot indefinitely.
+      this.sessionAutomationCardWork.enqueue(cardWork, (cardRef, { signal }) => (
+        this.renderSessionTrustTerminal(
+          cardRef,
+          "feishuSessionTrustFailedStatus",
+          { signal }
+        )
+      ), { terminal: true, outcome: "terminal" });
+      return null;
+    }
+    return cardWork;
+  }
+
+  discardSessionTrustCardHandle(cardHandle, { reason } = {}) {
+    if (!this.issuedSessionTrustCardHandles.has(cardHandle)) return false;
+    this.issuedSessionTrustCardHandles.delete(cardHandle);
+    const cardWork = cardHandle && cardHandle.cardWork;
+    const statusKey = reason === "remote-revoke"
+      ? "feishuSessionTrustRevokedStatus"
+      : "feishuSessionTrustResolvedStatus";
+    this.sessionAutomationCardWork.enqueue(cardWork, (cardRef, { signal }) => (
+      this.renderSessionTrustTerminal(cardRef, statusKey, { signal })
+    ), { terminal: true, outcome: "terminal" });
+    return true;
+  }
+
+  prepareSessionTrustCandidate(cardWork, { grantId } = {}) {
+    return this.sessionAutomationCardWork.enqueue(cardWork, (cardRef, { signal }) => (
+      this.patchCard(cardRef.messageId, buildSessionTrustStatusCard(
+        cardRef.payload,
+        { grantId, statusKey: "feishuSessionTrustPreparingStatus" },
+        this.cardContext()
+      ), { signal })
+    ), { outcome: "preparing" });
+  }
+
+  activateSessionTrustCandidate(cardWork, { grantId } = {}) {
+    return this.sessionAutomationCardWork.activate(cardWork, grantId);
+  }
+
+  renderActiveSessionTrust(cardWork, { grantId, outcome } = {}) {
+    return this.sessionAutomationCardWork.enqueue(cardWork, (cardRef, { signal }) => (
+      this.patchCard(cardRef.messageId, buildSessionTrustStatusCard(
+        cardRef.payload,
+        {
+          grantId,
+          statusKey: outcome === "already-active"
+            ? "feishuSessionTrustAlreadyActiveStatus"
+            : "feishuSessionTrustActiveStatus",
+        },
+        this.cardContext()
+      ), { signal })
+    ), { outcome: "active" });
+  }
+
+  renderSessionTrustTerminal(cardRef, statusKey, options = {}) {
+    return this.patchCard(cardRef.messageId, buildSessionTrustStatusCard(
+      cardRef.payload,
+      { statusKey, terminal: true },
+      this.cardContext()
+    ), options);
+  }
+
+  cancelSessionTrustCandidate(cardWork, { reason, activeGrantId } = {}) {
+    if (activeGrantId && this.sessionAutomationCardWork.activate(cardWork, activeGrantId)) {
+      this.renderActiveSessionTrust(cardWork, {
+        grantId: activeGrantId,
+        outcome: "already-active",
+      });
+      return true;
+    }
+    const statusKey = reason === "remote-revoke"
+      ? "feishuSessionTrustRevokedStatus"
+      : reason === "permission-resolved"
+        ? "feishuSessionTrustResolvedStatus"
+        : "feishuSessionTrustFailedStatus";
+    this.sessionAutomationCardWork.enqueue(cardWork, (cardRef, { signal }) => (
+      this.renderSessionTrustTerminal(cardRef, statusKey, { signal })
+    ), { terminal: true, outcome: "terminal" });
+    return true;
+  }
+
+  handleSessionAutomationChanges(changes) {
+    for (const change of Array.isArray(changes) ? changes : []) {
+      const previous = change && change.previous;
+      const next = change && change.next;
+      if (!previous || !previous.grantId || (next && next.grantId === previous.grantId)) continue;
+      const statusKey = change.reason === "remote-revoke"
+        ? "feishuSessionTrustRevokedStatus"
+        : "feishuSessionTrustExpiredStatus";
+      this.sessionAutomationCardWork.deactivateGrant(previous.grantId, (cardRef, _id, { signal }) => (
+        this.renderSessionTrustTerminal(cardRef, statusKey, { signal })
+      ));
+    }
+  }
+
+  listActiveSessionAutomationGrantIds() {
+    return this.sessionAutomationCardWork.activeGrantIds();
+  }
+
+  retireSessionAutomationGrant(grantId, options = {}) {
+    const statusKey = options.reason === "stale"
+      ? "feishuSessionTrustStaleStatus"
+      : "feishuSessionTrustExpiredStatus";
+    return this.sessionAutomationCardWork.deactivateGrant(grantId, (cardRef, _id, { signal }) => (
+      this.renderSessionTrustTerminal(cardRef, statusKey, { signal })
+    ));
+  }
+
+  markSessionAutomationRouteStale() {
+    this.sessionAutomationRouteCurrent = false;
+  }
+
+  markSessionAutomationRouteCurrent() {
+    this.sessionAutomationRouteCurrent = true;
+  }
+
+  handleSessionAutomationAction(action) {
+    if (!action) return false;
+    if (
+      !this.sessionAutomationRouteCurrent
+      || !action.operatorId
+      || action.operatorId !== this.approverId
+    ) {
+      return false;
+    }
+    if (action.kind === "persistent-revoke") {
+      if (
+        !this.sessionAutomationCardWork.hasCard(action.grantId)
+        || typeof this.onSessionGrantRevoke !== "function"
+      ) {
+        return false;
+      }
+      let result;
+      try {
+        result = this.onSessionGrantRevoke(action.grantId);
+      } catch {
+        result = { status: "invalid" };
+      }
+      if (result && typeof result.then === "function") result = { status: "invalid" };
+      if (!result || (result.status !== "applied" && result.status !== "candidate-cancelled")) {
+        this.retireSessionAutomationGrant(action.grantId, { reason: "stale" });
+      }
+      return true;
+    }
+
+    const entry = action.requestId ? this.pending.get(action.requestId) : null;
+    if (!entry || entry.kind === "elicitation" || entry.payload.canOfferSessionTrust !== true) {
+      return false;
+    }
+    if (action.kind === "session-trust-open") {
+      entry.trustConfirming = true;
+      Promise.resolve(entry.sendReady)
+        .then(() => this.patchCard(entry.messageId, buildSessionTrustConfirmCard(
+          entry.payload,
+          { requestId: action.requestId },
+          this.cardContext()
+        )))
+        .catch((err) => {
+          entry.trustConfirming = false;
+          this.log("warn", "session trust confirmation patch failed", {
+            error: err && err.message ? err.message : String(err),
+          });
+        });
+      return true;
+    }
+    if (action.kind === "session-trust-cancel") {
+      entry.trustConfirming = false;
+      Promise.resolve(entry.sendReady)
+        .then(() => this.patchCard(entry.messageId, buildApprovalCard(
+          entry.payload,
+          { requestId: action.requestId },
+          this.cardContext()
+        )))
+        .catch((err) => {
+          this.log("warn", "session trust cancellation patch failed", {
+            error: err && err.message ? err.message : String(err),
+          });
+        });
+      return true;
+    }
+    if (
+      action.kind !== "session-trust-confirm"
+      || entry.trustConfirming !== true
+      || !entry.messageId
+    ) {
+      return false;
+    }
+    const cardWork = this.sessionAutomationCardWork.reserve(`pending:${action.requestId}`, {
+      messageId: entry.messageId,
+      payload: entry.payload,
+    });
+    if (!cardWork) {
+      entry.trustConfirming = false;
+      Promise.resolve(entry.sendReady)
+        .then(() => this.patchCard(entry.messageId, buildApprovalCard(
+          entry.payload,
+          { requestId: action.requestId },
+          this.cardContext()
+        )))
+        .catch((err) => {
+          this.log("warn", "session trust capacity fallback patch failed", {
+            error: err && err.message ? err.message : String(err),
+          });
+        });
+      return true;
+    }
+    const cardHandle = Object.freeze({
+      messageId: entry.messageId,
+      payload: entry.payload,
+      cardWork,
+    });
+    this.issuedSessionTrustCardHandles.add(cardHandle);
+    entry.resolve({ action: "session-trust", cardHandle });
+    return true;
+  }
+
   async updateElicitationCard(messageId, payload, outcome) {
     if (!messageId) return;
     const message = this.messageApi();
@@ -1307,6 +1743,10 @@ class FeishuApprovalClient {
   }
 
   handleCardAction(event) {
+    const sessionAutomationAction = normalizeSessionAutomationActionEvent(event, this.idType);
+    if (sessionAutomationAction) {
+      return this.handleSessionAutomationAction(sessionAutomationAction);
+    }
     const action = normalizeActionEvent(event, this.idType);
     const requestId = action && action.requestId
       ? action.requestId
@@ -1326,6 +1766,7 @@ class FeishuApprovalClient {
     });
     if (!normalizedAction || normalizedAction.operatorId !== this.approverId) return false;
     if (!entry) return false;
+    if (entry.trustConfirming === true) return false;
 
     if (entry.kind === "elicitation" && normalizedAction.decision !== "terminal") {
       const decision = normalizedAction.decision;
@@ -1411,13 +1852,17 @@ class FeishuApprovalClient {
 module.exports = {
   FeishuApprovalClient,
   buildApprovalCard,
+  buildSessionTrustConfirmCard,
+  buildSessionTrustStatusCard,
   buildElicitationCard,
   buildStatusCard,
   buildElicitationStatusCard,
   normalizeApprovalPayload,
   normalizeElicitationPayload,
   normalizeActionEvent,
+  normalizeSessionAutomationActionEvent,
   normalizeElicitationActionEvent,
   createLarkClient,
+  createDeadlineHttpInstance,
   createWsClient,
 };

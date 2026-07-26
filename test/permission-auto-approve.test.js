@@ -219,6 +219,49 @@ describe("permission automation: showPermissionBubble chokepoint", () => {
     }
   });
 
+  it("rechecks live gates before an immediate session override can auto-allow", () => {
+    const res = makeCapturingRes();
+    const base = {
+      res,
+      sessionAutomationIdentity: { eligible: true, reason: "verified" },
+    };
+    const ctx = makeCtx({
+      getEffectivePermissionAutomationMode: () => "auto-tools",
+      hasSessionAutomationOverride: () => true,
+      isAgentEnabled: () => true,
+      isAgentPermissionsEnabled: () => false,
+      isAgentSubagentPermissionsEnabled: () => true,
+    });
+    const perm = initPermission(ctx);
+    const entry = makePermEntry(base);
+    perm.pendingPermissions.push(entry);
+
+    assert.throws(() => perm.showPermissionBubble(entry));
+    assert.equal(perm.pendingPermissions.includes(entry), true);
+    assert.equal(res.captured.statusCode, null);
+  });
+
+  it("allows an immediate session override only after the shared live gate passes", () => {
+    const res = makeCapturingRes();
+    const ctx = makeCtx({
+      getEffectivePermissionAutomationMode: () => "auto-tools",
+      hasSessionAutomationOverride: () => true,
+      isAgentEnabled: () => true,
+      isAgentPermissionsEnabled: () => true,
+      isAgentSubagentPermissionsEnabled: () => true,
+    });
+    const perm = initPermission(ctx);
+    const entry = makePermEntry({
+      res,
+      sessionAutomationIdentity: { eligible: true, reason: "verified" },
+    });
+    perm.pendingPermissions.push(entry);
+
+    perm.showPermissionBubble(entry);
+    assert.equal(perm.pendingPermissions.includes(entry), false);
+    assert.equal(res.captured.statusCode, 200);
+  });
+
   it("fails safe when an entry reaches the chokepoint without a valid interaction", () => {
     const ctx = makeCtx({ getPermissionAutomationMode: () => "unattended" });
     const perm = initPermission(ctx);

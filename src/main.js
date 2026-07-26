@@ -88,6 +88,8 @@ const {
   resolvePetAccessoryPayload,
 } = require("./pet-customization-catalog");
 const { registerSessionIpc } = require("./session-ipc");
+const { createSessionAutomationStore } = require("./session-automation-store");
+const { createSessionAutomationCoordinator } = require("./session-automation-coordinator");
 const { createSessionFolderOpener } = require("./session-open-folder");
 const { registerPetInteractionIpc } = require("./pet-interaction-ipc");
 const { createSystemWakeRecovery } = require("./system-wake-recovery");
@@ -359,6 +361,8 @@ function _restartClawdNow() {
 let shortcutRuntime = null;
 let themeRuntime = null;
 let agentRuntime = null;
+let sessionAutomationCoordinator = null;
+let sessionAutomationStore = null;
 let systemWakeRecovery = null;
 let floatingWindowRuntime = null;
 let codexPetMain = null;
@@ -375,6 +379,7 @@ let suppressTelegramApprovalSidecarSync = 0;
 let feishuApprovalClient = null;
 let feishuApprovalSyncPromise = Promise.resolve();
 let feishuApprovalConfigSignature = "";
+let feishuSessionAutomationRouteSignature = "";
 let feishuApprovalSecretsRevision = 0;
 const shortcutHandlers = {
   togglePet: () => togglePetVisibility(),
@@ -425,6 +430,8 @@ const _settingsController = createSettingsController({
       : false,
     restartClawd: _restartClawdNow,
     clearSessionsByAgent: (id) => agentRuntime ? agentRuntime.clearSessionsByAgent(id) : 0,
+    clearSessionAutomationByAgent: (id) =>
+      sessionAutomationCoordinator ? sessionAutomationCoordinator.clearAgent(id) : [],
     dismissPermissionsByAgent: (id, options) => agentRuntime ? agentRuntime.dismissPermissionsByAgent(id, options) : 0,
     clearRecentHookEvents: (id) => _server.clearRecentHookEvents(id),
     identifyCustomApplication: (sourcePath) => require("./custom-applications").identifyCustomApplication(sourcePath),
@@ -1456,12 +1463,51 @@ const _permCtx = {
   // pendingPermissions list changes (notifyPermissionsChanged), so a bubble
   // that leaves the list mid-edit can't strand the pet faded + click-through.
   syncImeEditingPetDodge: () => topmostRuntime.syncImeEditingPetDodge(),
+  isAgentEnabled: (agentId) =>
+    _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
   isAgentPermissionsEnabled: (agentId) =>
     _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
+  isAgentSubagentPermissionsEnabled: (agentId) =>
+    _isAgentSubagentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
+  isCodexPermissionInterceptEnabled: () =>
+    _isCodexPermissionInterceptEnabled({ agents: _settingsController.get("agents") }),
   // The permission layer consumes one normalized runtime mode. DND,
   // headless, per-agent and bubble gates run before this chokepoint.
   getPermissionAutomationMode: () =>
     _settingsController.get("permissionAutomationMode") || "off",
+  getEffectivePermissionAutomationMode: (entry, options) =>
+    sessionAutomationCoordinator
+      ? sessionAutomationCoordinator.getEffectiveMode(entry, options)
+      : (_settingsController.get("permissionAutomationMode") || "off"),
+  hasSessionAutomationOverride: (entry) =>
+    !!(
+      sessionAutomationCoordinator
+      && sessionAutomationCoordinator.getRecordForEntry(entry)
+    ),
+  canOfferSessionTrust: (entry) =>
+    !!(sessionAutomationCoordinator && sessionAutomationCoordinator.canOfferSessionTrust(entry)),
+  translate: (key) => translate(key),
+  canOfferRemoteSessionTrust: (entry, remote) => {
+    const client = remote && remote.client;
+    return !!(
+      sessionAutomationCoordinator
+      && sessionAutomationCoordinator.canOfferSessionTrust(entry)
+      && client
+      && typeof client.supportsSessionAutomation === "function"
+      && client.supportsSessionAutomation()
+    );
+  },
+  requestSessionTrust: (entry) =>
+    sessionAutomationCoordinator
+      ? sessionAutomationCoordinator.requestEntryTrust(entry)
+      : Promise.resolve({ status: "unavailable" }),
+  requestRemoteSessionTrust: (entry, remote) =>
+    sessionAutomationCoordinator
+      ? sessionAutomationCoordinator.requestRemoteSessionTrust(entry, remote)
+      : Promise.resolve({ status: "unavailable" }),
+  cancelSessionTrustCandidate: (entry, options) =>
+    !!(sessionAutomationCoordinator
+      && sessionAutomationCoordinator.cancelSessionTrustCandidate(entry, options)),
   focusTerminalForSession: (sessionId, options = {}) => {
     focusDashboardSession(sessionId, {
       requestSource: options.requestSource || "permission-bubble",
@@ -1489,7 +1535,7 @@ const _permCtx = {
   },
 };
 const _perm = initPermission(_permCtx);
-const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, maybeStartRemoteApproval, clearCodexNotifyBubbles, showCodexUserInputBubble, clearCodexUserInputBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodeFamilyPermission } = _perm;
+const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, isPermissionEntryLive, canAutoResolvePendingPermission, beginSessionTrustConfirmation, endSessionTrustConfirmation, syncPermissionBubbleContent, maybeStartRemoteApproval, clearCodexNotifyBubbles, showCodexUserInputBubble, clearCodexUserInputBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodeFamilyPermission } = _perm;
 const pendingPermissions = _perm.pendingPermissions;
 let permDebugLog = null; // set after app.whenReady()
 let updateDebugLog = null; // set after app.whenReady()
@@ -1696,6 +1742,13 @@ const _stateCtx = {
     detachedIdleStaleMs,
   }),
   getSessionAliases: () => _settingsController.get("sessionAliases"),
+  getSessionAutomationRecords: () =>
+    sessionAutomationStore ? sessionAutomationStore.list() : [],
+  getPermissionAutomationMode: () =>
+    _settingsController.get("permissionAutomationMode") || "off",
+  onSessionAutomationLifecycleEnd: (payload) => {
+    if (sessionAutomationCoordinator) sessionAutomationCoordinator.onSessionLifecycleEnd(payload);
+  },
   getIdleVisualChoice,
   isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
   hasAnyEnabledAgent: () => {
@@ -1720,6 +1773,59 @@ const { setState, applyState, updateSession, resolveDisplayState, getSvgOverride
         startWakePoll, stopWakePoll, detectRunningAgentProcesses,
         startStartupRecovery: _startStartupRecovery } = _state;
 const sessions = _state.sessions;
+
+async function showSessionAutomationWarning(entry) {
+  const bubble = entry && entry.bubble && !entry.bubble.isDestroyed()
+    ? entry.bubble
+    : null;
+  const parent = bubble || (win && !win.isDestroyed() ? win : null);
+  const result = await electronDialog.showMessageBox(parent, {
+    type: "warning",
+    buttons: [
+      translate("sessionAutomationConfirmEnable"),
+      translate("permissionAutomationCancel"),
+    ],
+    defaultId: 1,
+    cancelId: 1,
+    title: translate("sessionAutomationConfirmTitle"),
+    message: translate("sessionAutomationConfirmMessage"),
+    detail: translate("sessionAutomationConfirmDetail"),
+    checkboxLabel: translate("permissionAutomationAutoToolsDontShowAgain"),
+    checkboxChecked: false,
+  });
+  return {
+    confirmed: result.response === 0,
+    suppressFutureConfirmation: result.response === 0 && result.checkboxChecked === true,
+  };
+}
+
+sessionAutomationStore = createSessionAutomationStore({
+  onChange: (changes) => {
+    try { _state.emitSessionSnapshot({ force: true }); } catch {}
+    for (const client of [telegramNativeRunner, feishuApprovalClient]) {
+      if (client && typeof client.handleSessionAutomationChanges === "function") {
+        try { client.handleSessionAutomationChanges(changes); } catch {}
+      }
+    }
+  },
+});
+sessionAutomationCoordinator = createSessionAutomationCoordinator({
+  store: sessionAutomationStore,
+  getSession: (sessionId) => sessions.get(sessionId) || null,
+  listPending: () => pendingPermissions,
+  getGlobalMode: () => _settingsController.get("permissionAutomationMode") || "off",
+  canAutoResolvePendingPermission,
+  resolvePermissionEntry,
+  beginConfirmation: beginSessionTrustConfirmation,
+  endConfirmation: endSessionTrustConfirmation,
+  restoreBubble: syncPermissionBubbleContent,
+  isWarningDismissed: () =>
+    _settingsController.get("permissionAutomationAutoToolsWarningDismissed") === true,
+  showWarning: showSessionAutomationWarning,
+  rememberWarning: () =>
+    _settingsController.applyUpdate("permissionAutomationAutoToolsWarningDismissed", true),
+  translate: (key, fallback) => translate(key) || fallback,
+});
 
 // ── Keep-awake: block OS sleep while any agent task is in progress ──
 // State→in-progress mapping lives in state-session-snapshot.isSessionInProgress
@@ -2107,6 +2213,11 @@ const _serverCtx = {
   sendPermissionResponse,
   addPendingPermission,
   removePendingPermission,
+  isPermissionEntryLive,
+  canAutoResolvePendingPermission,
+  maybeAutoResolveSessionPermission: (entry, options) =>
+    !!(sessionAutomationCoordinator
+      && sessionAutomationCoordinator.resolveIfAllowed(entry, options)),
   showPermissionBubble,
   showCodexUserInputBubble,
   clearCodexUserInputBubbles,
@@ -2244,6 +2355,21 @@ function getTelegramApprovalPrefs() {
   return telegramApprovalSettings.normalizeTelegramApproval(_settingsController.get("tgApproval"));
 }
 
+function getTelegramSessionAutomationRoute() {
+  const config = getTelegramApprovalPrefs();
+  const token = getTelegramApprovalTokenStatus();
+  const key = config && config.targetSessionKey;
+  const match = typeof key === "string" ? key.match(/^telegram:(-?\d+)/) : null;
+  return {
+    enabled: config && config.enabled === true,
+    allowedUserId: (config && config.allowedTgUserId) || "",
+    chatId: match ? match[1] : "",
+    tokenStored: !!(token && token.tokenStored),
+    tokenFileMtimeMs: (token && token.tokenFileMtimeMs) || 0,
+    tokenRevision: telegramApprovalTokenRevision,
+  };
+}
+
 function getFeishuApprovalPrefs() {
   return feishuApprovalSettings.normalizeFeishuApproval(_settingsController.get("feishuApproval"));
 }
@@ -2370,6 +2496,38 @@ function buildFeishuApprovalSignature(config, paths, secrets) {
   });
 }
 
+function buildFeishuSessionAutomationRouteSignature(config, secrets, revision = feishuApprovalSecretsRevision) {
+  return JSON.stringify({
+    enabled: config.enabled === true,
+    platform: config.platform,
+    idType: config.idType,
+    approverId: config.approverId,
+    appId: secrets.appId,
+    appSecret: secrets.appSecret ? "set" : "",
+    verificationToken: secrets.verificationToken ? "set" : "",
+    encryptKey: secrets.encryptKey ? "set" : "",
+    secretsRevision: revision,
+  });
+}
+
+function prepareFeishuSessionAutomationRouteChange(nextRouteSignature) {
+  const client = feishuApprovalClient;
+  if (
+    !client
+    || !feishuSessionAutomationRouteSignature
+    || nextRouteSignature === feishuSessionAutomationRouteSignature
+  ) {
+    return false;
+  }
+  if (typeof client.markSessionAutomationRouteStale === "function") {
+    client.markSessionAutomationRouteStale();
+  }
+  if (sessionAutomationCoordinator) {
+    sessionAutomationCoordinator.onRemoteClientRouteChange(client);
+  }
+  return true;
+}
+
 function getFeishuApprovalStatus() {
   const config = getFeishuApprovalPrefs();
   const secrets = getFeishuApprovalSecrets();
@@ -2406,6 +2564,11 @@ function broadcastFeishuApprovalStatus() {
 
 function writeFeishuApprovalSecrets(secrets) {
   const paths = getFeishuApprovalPaths();
+  prepareFeishuSessionAutomationRouteChange(buildFeishuSessionAutomationRouteSignature(
+    getFeishuApprovalPrefs(),
+    secrets && typeof secrets === "object" ? secrets : {},
+    feishuApprovalSecretsRevision + 1
+  ));
   const result = feishuApprovalSettings.writeSecretsEnvFile({
     fs,
     path,
@@ -2416,6 +2579,11 @@ function writeFeishuApprovalSecrets(secrets) {
   if (result && result.status === "ok") {
     feishuApprovalSecretsRevision += 1;
     queueFeishuApprovalSync("secrets");
+  } else if (
+    feishuApprovalClient
+    && typeof feishuApprovalClient.markSessionAutomationRouteCurrent === "function"
+  ) {
+    feishuApprovalClient.markSessionAutomationRouteCurrent();
   }
   return result;
 }
@@ -2435,6 +2603,7 @@ async function startFeishuApprovalClient() {
     return false;
   }
   const signature = buildFeishuApprovalSignature(config, paths, secrets);
+  const routeSignature = buildFeishuSessionAutomationRouteSignature(config, secrets);
   if (feishuApprovalClient && feishuApprovalConfigSignature === signature) {
     try {
       await feishuApprovalClient.start();
@@ -2444,7 +2613,12 @@ async function startFeishuApprovalClient() {
       return false;
     }
   }
-  stopFeishuApprovalClient();
+  const handoffCardWork = feishuApprovalClient
+    && feishuSessionAutomationRouteSignature === routeSignature
+    ? feishuApprovalClient.sessionAutomationCardWork
+    : null;
+  prepareFeishuSessionAutomationRouteChange(routeSignature);
+  stopFeishuApprovalClient({ routeChanging: false, preserveRouteSignature: !!handoffCardWork });
   feishuApprovalClient = new FeishuApprovalClient({
     appId: secrets.appId,
     appSecret: secrets.appSecret,
@@ -2457,8 +2631,14 @@ async function startFeishuApprovalClient() {
     getLang: () => _settingsController.get("lang") || lang || "en",
     log: feishuApprovalLog,
     onStatusChange: () => broadcastFeishuApprovalStatus(),
+    sessionAutomationCardWork: handoffCardWork,
+    onSessionGrantRevoke: (grantId) =>
+      sessionAutomationCoordinator
+        ? sessionAutomationCoordinator.revokeRemoteGrant({ grantId })
+        : { status: "stale" },
   });
   feishuApprovalConfigSignature = signature;
+  feishuSessionAutomationRouteSignature = routeSignature;
   try {
     await feishuApprovalClient.start();
     feishuApprovalLog("info", "starting");
@@ -2469,10 +2649,16 @@ async function startFeishuApprovalClient() {
   }
 }
 
-function stopFeishuApprovalClient() {
+function stopFeishuApprovalClient(options = {}) {
   const client = feishuApprovalClient;
+  if (options.routeChanging !== false) {
+    prepareFeishuSessionAutomationRouteChange("");
+  }
   feishuApprovalClient = null;
   feishuApprovalConfigSignature = "";
+  if (options.preserveRouteSignature !== true) {
+    feishuSessionAutomationRouteSignature = "";
+  }
   if (client && typeof client.close === "function") {
     try { client.close(); } catch (err) {
       feishuApprovalLog("warn", "stop failed", { error: err && err.message ? err.message : String(err) });
@@ -2683,6 +2869,12 @@ function handleTelegramNativeCommand({ command, args } = {}) {
 
 function writeTelegramApprovalToken(token) {
   const paths = getTelegramApprovalPaths();
+  if (telegramNativeRunner && typeof telegramNativeRunner.syncSessionAutomationRoute === "function") {
+    telegramNativeRunner.syncSessionAutomationRoute({
+      ...getTelegramSessionAutomationRoute(),
+      tokenRevision: telegramApprovalTokenRevision + 1,
+    });
+  }
   const result = telegramApprovalSettings.writeTokenEnvFile({
     fs,
     path,
@@ -2692,7 +2884,23 @@ function writeTelegramApprovalToken(token) {
   });
   if (result && result.status === "ok") {
     telegramApprovalTokenRevision += 1;
+    if (
+      telegramNativeRunner
+      && typeof telegramNativeRunner.syncSessionAutomationRoute === "function"
+    ) {
+      // The pre-write signature intentionally used the old file metadata so
+      // active grants were tightened before the credential changed. Settle the
+      // runner on the actual post-write mtime/revision before a new grant can
+      // be created, otherwise an unrelated later settings update would look
+      // like a second credential change and revoke that newer grant.
+      telegramNativeRunner.syncSessionAutomationRoute(getTelegramSessionAutomationRoute());
+    }
     queueTelegramApprovalSidecarSync("token");
+  } else if (
+    telegramNativeRunner
+    && typeof telegramNativeRunner.syncSessionAutomationRoute === "function"
+  ) {
+    telegramNativeRunner.syncSessionAutomationRoute(getTelegramSessionAutomationRoute());
   }
   return result;
 }
@@ -2885,7 +3093,17 @@ async function initTelegramMigrationController() {
     onTextMessage: (payload) => telegramDirectSend && telegramDirectSend.handleTextMessage(payload),
     getLang: () => _settingsController.get("lang") || lang || "en",
     log: telegramApprovalLog,
+    onSessionGrantRevoke: (grantId) =>
+      sessionAutomationCoordinator
+        ? sessionAutomationCoordinator.revokeRemoteGrant({ grantId })
+        : { status: "stale" },
+    onSessionAutomationRouteChange: (client) => {
+      if (sessionAutomationCoordinator) {
+        sessionAutomationCoordinator.onRemoteClientRouteChange(client);
+      }
+    },
   });
+  nativeRunner.syncSessionAutomationRoute(getTelegramSessionAutomationRoute());
   telegramNativeRunner = nativeRunner;
 
   // R1a: completion notifications ride the existing snapshot fanout. The
@@ -3420,6 +3638,9 @@ const settingsEffectRouter = createSettingsEffectRouter({
 });
 settingsEffectRouter.start();
 _settingsController.subscribeKey("tgApproval", () => {
+  if (telegramNativeRunner && typeof telegramNativeRunner.syncSessionAutomationRoute === "function") {
+    telegramNativeRunner.syncSessionAutomationRoute(getTelegramSessionAutomationRoute());
+  }
   if (suppressTelegramApprovalSidecarSync > 0) return;
   queueTelegramApprovalSidecarSync("settings");
 });
@@ -3427,6 +3648,10 @@ _settingsController.subscribeKey("discordPresence", () => {
   syncDiscordPresence("settings");
 });
 _settingsController.subscribeKey("feishuApproval", () => {
+  prepareFeishuSessionAutomationRouteChange(buildFeishuSessionAutomationRouteSignature(
+    getFeishuApprovalPrefs(),
+    getFeishuApprovalSecrets()
+  ));
   queueFeishuApprovalSync("settings");
 });
 _settingsController.subscribeKey("mobilePreviewEnabled", async (enabled) => {
@@ -3650,6 +3875,10 @@ registerSessionIpc({
   openSessionFolder: (sessionId) => openDashboardSessionFolder(sessionId),
   ackSessionCompletion: (sessionId) => _state.ackSessionCompletion(sessionId),
   setSessionAlias: (payload) => _settingsController.applyCommand("setSessionAlias", payload),
+  setSessionAutomationOverride: (payload) =>
+    sessionAutomationCoordinator.setSessionAutomationOverride(payload),
+  clearSessionAutomationGrant: (payload) =>
+    sessionAutomationCoordinator.clearSessionAutomationGrant(payload),
   showDashboard: (options) => showDashboard(options),
   setSessionHudPinned: (value) => {
     const result = _settingsController.applyUpdate("sessionHudPinned", !!value);

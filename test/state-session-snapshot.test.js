@@ -212,6 +212,78 @@ describe("state-session-snapshot badges", () => {
 });
 
 describe("state-session-snapshot builder", () => {
+  it("derives session automation fields and keeps hidden-session grants revocable as orphans", () => {
+    const records = [
+      {
+        agentId: "claude-code",
+        sessionId: "eligible",
+        mode: "auto-tools",
+        grantId: "g-current",
+        displayLabel: "project",
+        createdAt: 10,
+      },
+      {
+        agentId: "claude-code",
+        sessionId: "hidden",
+        mode: "off",
+        grantId: "g-orphan",
+        displayLabel: "hidden project",
+        createdAt: 20,
+      },
+      {
+        agentId: "opencode",
+        sessionId: "blocked",
+        mode: "off",
+        grantId: "g-blocked",
+        displayLabel: "blocked project",
+        createdAt: 30,
+      },
+    ];
+    const snapshot = buildSessionSnapshot(new Map([
+      ["eligible", session("working", {
+        agentId: "claude-code",
+        sessionAutomationIdentity: { eligible: true, reason: "verified" },
+      })],
+      ["blocked", session("working", {
+        agentId: "opencode",
+        sessionAutomationIdentity: { eligible: false, reason: "association-unverified" },
+      })],
+    ]), {
+      permissionAutomationMode: "off",
+      sessionAutomationRecords: records,
+    });
+    const byId = new Map(snapshot.sessions.map((entry) => [entry.id, entry]));
+    assert.deepStrictEqual({
+      mode: byId.get("eligible").sessionAutomationMode,
+      grantId: byId.get("eligible").sessionAutomationGrantId,
+      effective: byId.get("eligible").sessionAutomationEffectiveMode,
+      canConfigure: byId.get("eligible").canConfigureSessionAutomation,
+      disabledReason: byId.get("eligible").sessionAutomationDisabledReason,
+    }, {
+      mode: "auto-tools",
+      grantId: "g-current",
+      effective: "auto-tools",
+      canConfigure: true,
+      disabledReason: null,
+    });
+    assert.equal(byId.get("blocked").canConfigureSessionAutomation, false);
+    assert.equal(byId.get("blocked").sessionAutomationDisabledReason, "association-unverified");
+    assert.equal(
+      byId.get("blocked").sessionAutomationEffectiveMode,
+      "off",
+      "an existing record remains the displayed effective mode even if the identity later becomes ineligible"
+    );
+    assert.deepStrictEqual(snapshot.sessionAutomationOrphans, [{
+      agentId: "claude-code",
+      sessionId: "hidden",
+      mode: "off",
+      sessionAutomationGrantId: "g-orphan",
+      displayLabel: "hidden project",
+      createdAt: 20,
+    }]);
+    assert.match(sessionSnapshotSignature(snapshot), /g-orphan/);
+  });
+
   it("builds ordered dashboard/menu groups and HUD summary with injected deps", () => {
     const sessions = new Map([
       ["old-working", session("working", {

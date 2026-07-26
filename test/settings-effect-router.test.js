@@ -295,6 +295,18 @@ describe("settings-effect-router", () => {
     ]);
   });
 
+  it("refreshes session effective modes immediately when global automation changes", () => {
+    const { calls, emit } = createHarness();
+
+    emit({ permissionAutomationMode: "auto-tools" });
+
+    assert.deepStrictEqual(calls, [
+      ["updateMirrors", { permissionAutomationMode: "auto-tools" }],
+      ["emitSessionSnapshot", { force: true }],
+      ["rebuildAllMenus"],
+    ]);
+  });
+
   it("orders combined HUD changes as handlePinnedChanged before generic sync", () => {
     const { calls, emit } = createHarness();
 

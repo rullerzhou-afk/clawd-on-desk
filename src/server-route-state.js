@@ -3,6 +3,9 @@
 const path = require("path");
 const { resolveSessionIdentity } = require("./session-key");
 const {
+  assessSessionAutomationIdentity,
+} = require("./session-automation-identity");
+const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
 } = require("../hooks/server-config");
@@ -179,6 +182,23 @@ function handleStatePost(req, res, options) {
       const rawAgentPid = data.agent_pid ?? data.claude_pid ?? data.cursor_pid;
       const agentPid = Number.isFinite(rawAgentPid) && rawAgentPid > 0 ? Math.floor(rawAgentPid) : null;
       const agentId = agentIdentity.agentId;
+      const trustedProfileId = remoteProfile && typeof remoteProfile.profileId === "string"
+        ? remoteProfile.profileId
+        : "local";
+      const sessionAutomationIdentity = assessSessionAutomationIdentity({
+        agentId,
+        channel: "state",
+        event,
+        // Preserve the actual wire value. The custom-agent namespace and the
+        // resolveSessionIdentity fallback below must not manufacture evidence
+        // of a stable session.
+        rawSessionId: session_id,
+        profileId: trustedProfileId,
+        hookSource: data.hook_source,
+        codexOriginator: data.codex_originator,
+        codexSource: data.codex_source,
+        agentPid,
+      });
       const reportedSubagentId = agentId === "claude-code"
         ? normalizeSubagentMetadata(data.subagent_id, MAX_SUBAGENT_ID_LENGTH)
         : null;
@@ -205,9 +225,6 @@ function handleStatePost(req, res, options) {
           ? rawCustomSessionId
           : `${customSessionPrefix}${rawCustomSessionId}`;
       }
-      const trustedProfileId = remoteProfile && typeof remoteProfile.profileId === "string"
-        ? remoteProfile.profileId
-        : "local";
       const sessionIdentity = resolveSessionIdentity(session_id, trustedProfileId, "default");
       session_id = sessionIdentity.sessionId;
       const host = remoteProfile && typeof remoteProfile.displayHost === "string"
@@ -615,6 +632,7 @@ function handleStatePost(req, res, options) {
             sessionCronsCount,
             stopHookActive,
             stdinDiag,
+            sessionAutomationIdentity,
             ...(codexUserInput ? { transientPermissionEvent: true } : {}),
             ...(agentIdentity.defaulted ? { agentIdDefaulted: true } : {}),
           });

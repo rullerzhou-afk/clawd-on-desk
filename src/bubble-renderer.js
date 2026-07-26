@@ -62,6 +62,7 @@ const BUBBLE_STRINGS = {
     allowInDir: "Allow {tool} in {dir}/",
     alwaysAllowRule: "Always allow `{rule}`",
     alwaysAllow: "Always allow",
+    sessionTrust: "Don’t ask again in this session",
     permissionRequest: "Permission Request",
     allow: "Allow",
     deny: "Deny",
@@ -103,6 +104,7 @@ const BUBBLE_STRINGS = {
     allowInDir: "\u5141\u8BB8 {tool} \u5728 {dir}/",
     alwaysAllowRule: "\u59CB\u7EC8\u5141\u8BB8 `{rule}`",
     alwaysAllow: "\u59CB\u7EC8\u5141\u8BB8",
+    sessionTrust: "\u672C\u4F1A\u8BDD\u4E0D\u518D\u8BE2\u95EE",
     permissionRequest: "\u6743\u9650\u8BF7\u6C42",
     allow: "\u6279\u51C6",
     deny: "\u62D2\u7EDD",
@@ -144,6 +146,7 @@ const BUBBLE_STRINGS = {
     allowInDir: "允許 {tool} 在 {dir}/",
     alwaysAllowRule: "一律允許 `{rule}`",
     alwaysAllow: "一律允許",
+    sessionTrust: "本工作階段不再詢問",
     permissionRequest: "權限請求",
     allow: "允許",
     deny: "拒絕",
@@ -185,6 +188,7 @@ const BUBBLE_STRINGS = {
     allowInDir: "{dir}/\uC5D0\uC11C {tool} \uD5C8\uC6A9",
     alwaysAllowRule: "\uD56D\uC0C1 \uD5C8\uC6A9 `{rule}`",
     alwaysAllow: "\uD56D\uC0C1 \uD5C8\uC6A9",
+    sessionTrust: "\uC774 \uC138\uC158\uC5D0\uC11C\uB294 \uB2E4\uC2DC \uBB3B\uC9C0 \uC54A\uAE30",
     permissionRequest: "\uAD8C\uD55C \uC694\uCCAD",
     allow: "\uD5C8\uC6A9",
     deny: "\uAC70\uBD80",
@@ -226,6 +230,7 @@ const BUBBLE_STRINGS = {
     allowInDir: "{dir}/ で {tool} を許可",
     alwaysAllowRule: "`{rule}` を常に許可",
     alwaysAllow: "常に許可",
+    sessionTrust: "このセッションでは今後確認しない",
     permissionRequest: "権限リクエスト",
     allow: "許可",
     deny: "拒否",
@@ -1111,6 +1116,23 @@ function show(data) {
         });
         suggestionsContainer.appendChild(btn);
       });
+    }
+    if (data.canOfferSessionTrust === true) {
+      const trustBtn = document.createElement("button");
+      trustBtn.className = "btn-suggestion";
+      trustBtn.textContent = bubbleText(data.lang, "sessionTrust");
+      trustBtn.addEventListener("click", () => {
+        disableAll();
+        window.bubbleAPI.decide("session-trust");
+      });
+      suggestionsContainer.appendChild(trustBtn);
+    }
+    if (typeof data.sessionTrustError === "string" && data.sessionTrustError) {
+      const error = document.createElement("div");
+      error.className = "session-trust-error";
+      error.textContent = data.sessionTrustError;
+      error.setAttribute("role", "alert");
+      suggestionsContainer.appendChild(error);
     }
     // Hermes permission cards get no terminal fallback: the protocol has no
     // native approval prompt to hand back to, so no-decision becomes a

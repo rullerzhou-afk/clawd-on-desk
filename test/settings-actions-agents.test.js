@@ -118,13 +118,19 @@ test("settings agent actions reject unidentified paths and clean up removed cust
       customApplications: [{ id }],
       agents: { [id]: { enabled: true } },
     },
+    clearSessionAutomationByAgent: (agentId) => calls.push(["automation", agentId]),
     clearSessionsByAgent: (agentId) => calls.push(["sessions", agentId]),
     dismissPermissionsByAgent: (agentId) => calls.push(["permissions", agentId]),
     clearRecentHookEvents: (agentId) => calls.push(["ring", agentId]),
   });
   assert.deepStrictEqual(result.commit.customApplications, []);
   assert.strictEqual(result.commit.agents[id], undefined);
-  assert.deepStrictEqual(calls, [["sessions", id], ["permissions", id], ["ring", id]]);
+  assert.deepStrictEqual(calls, [
+    ["automation", id],
+    ["sessions", id],
+    ["permissions", id],
+    ["ring", id],
+  ]);
 });
 
 test("settings agent actions enforce the persisted custom AI limit", () => {
@@ -289,6 +295,34 @@ test("settings agent actions enable an agent and preserve sibling flags", () => 
   assert.strictEqual(result.commit.agents.codex.permissionsEnabled, false);
   assert.strictEqual(result.commit.agents.codex.notificationHookEnabled, true);
   assert.strictEqual(result.commit.agents.codex.permissionMode, "intercept");
+});
+
+test("disabling an agent clears session automation before sessions and permissions", () => {
+  const snapshot = prefs.getDefaults();
+  snapshot.agents["qwen-code"] = {
+    integrationInstalled: true,
+    enabled: true,
+    permissionsEnabled: true,
+    notificationHookEnabled: true,
+  };
+  const calls = [];
+  const result = agentCommands.setAgentFlag(
+    { agentId: "qwen-code", flag: "enabled", value: false },
+    {
+      snapshot,
+      stopMonitorForAgent: (id) => calls.push(`stop:${id}`),
+      clearSessionAutomationByAgent: (id) => calls.push(`automation:${id}`),
+      clearSessionsByAgent: (id) => calls.push(`sessions:${id}`),
+      dismissPermissionsByAgent: (id) => calls.push(`permissions:${id}`),
+    }
+  );
+  assert.strictEqual(result.status, "ok");
+  assert.deepStrictEqual(calls, [
+    "stop:qwen-code",
+    "automation:qwen-code",
+    "sessions:qwen-code",
+    "permissions:qwen-code",
+  ]);
 });
 
 test("settings agent actions do not install files when enabling an uninstalled agent", () => {
@@ -628,6 +662,7 @@ test("settings agent actions uninstall an integration and disable ingress", asyn
       return { removed: 0, changed: false };
     },
     stopMonitorForAgent: (agentId) => calls.push(`stop:${agentId}`),
+    clearSessionAutomationByAgent: (agentId) => calls.push(`automation:${agentId}`),
     clearSessionsByAgent: (agentId) => calls.push(`clear:${agentId}`),
     dismissPermissionsByAgent: (agentId) => calls.push(`dismiss:${agentId}`),
   };
@@ -635,7 +670,13 @@ test("settings agent actions uninstall an integration and disable ingress", asyn
   const result = await agentCommands.uninstallAgentIntegration({ agentId: "copilot-cli" }, deps);
 
   assert.strictEqual(result.status, "ok");
-  assert.deepStrictEqual(calls, ["copilot-cli", "stop:copilot-cli", "clear:copilot-cli", "dismiss:copilot-cli"]);
+  assert.deepStrictEqual(calls, [
+    "copilot-cli",
+    "stop:copilot-cli",
+    "automation:copilot-cli",
+    "clear:copilot-cli",
+    "dismiss:copilot-cli",
+  ]);
   assert.strictEqual(result.commit.agents["copilot-cli"].integrationInstalled, false);
   assert.strictEqual(result.commit.agents["copilot-cli"].enabled, false);
   assert.deepStrictEqual(result.commit.dismissedAgentInstallHints, { "copilot-cli": true });

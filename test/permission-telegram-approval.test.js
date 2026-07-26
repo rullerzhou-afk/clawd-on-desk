@@ -738,4 +738,137 @@ describe("permission telegram remote approval", () => {
     assert.equal(perm.pendingPermissions.indexOf(entry), -1);
     assert.equal(entry.res.destroyed, true);
   });
+
+  it("routes a remote session-trust decision to the main coordinator with an opaque client handle", async () => {
+    const cardHandle = Object.freeze({});
+    const calls = [];
+    const client = {
+      isEnabled: () => true,
+      requestApproval: (payload) => {
+        calls.push(["payload", payload]);
+        return Promise.resolve({ action: "session-trust", cardHandle });
+      },
+    };
+    const perm = initPermission(makeCtx({
+      getRemoteApprovalClients: () => [{ name: "telegram", client }],
+      canOfferRemoteSessionTrust: () => true,
+      requestRemoteSessionTrust: (entry, remote) => {
+        calls.push(["coordinator", entry, remote]);
+        return Promise.resolve({ status: "applied" });
+      },
+    }));
+    const entry = makePermEntry();
+    perm.pendingPermissions.push(entry);
+
+    assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    await flush();
+
+    assert.equal(calls[0][1].canOfferSessionTrust, true);
+    assert.equal(calls[1][0], "coordinator");
+    assert.equal(calls[1][1], entry);
+    assert.equal(calls[1][2].clientName, "telegram");
+    assert.equal(calls[1][2].client, client);
+    assert.equal(calls[1][2].cardHandle, cardHandle);
+    assert.equal(perm.pendingPermissions.includes(entry), true,
+      "only the coordinator may commit and resolve after the preparing edit");
+  });
+
+  it("does not advertise session trust when the aggregate remote capability gate is closed", async () => {
+    const payloads = [];
+    const client = {
+      isEnabled: () => true,
+      requestApproval: (payload) => {
+        payloads.push(payload);
+        return Promise.resolve(null);
+      },
+    };
+    const perm = initPermission(makeCtx({
+      getRemoteApprovalClients: () => [{ name: "feishu", client }],
+      canOfferRemoteSessionTrust: () => false,
+    }));
+    const entry = makePermEntry();
+    perm.pendingPermissions.push(entry);
+
+    assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    await flush();
+
+    assert.equal(payloads.length, 1);
+    assert.equal(payloads[0].canOfferSessionTrust, false);
+  });
+
+  it("falls back instead of hanging when remote-only session trust cannot commit", async () => {
+    const cardHandle = Object.freeze({});
+    const discarded = [];
+    const client = {
+      isEnabled: () => true,
+      requestApproval: () => Promise.resolve({ action: "session-trust", cardHandle }),
+      discardSessionTrustCardHandle: (handle, options) => {
+        discarded.push([handle, options]);
+        return true;
+      },
+    };
+    const perm = initPermission(makeCtx({
+      getRemoteApprovalClients: () => [{ name: "telegram", client }],
+      canOfferRemoteSessionTrust: () => true,
+      requestRemoteSessionTrust: () => Promise.resolve({ status: "full" }),
+    }));
+    const entry = makePermEntry({ bubble: null, remoteOnly: true });
+    perm.pendingPermissions.push(entry);
+
+    assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    await flush();
+    await flush();
+
+    assert.equal(perm.pendingPermissions.includes(entry), false);
+    assert.equal(entry.res.destroyed, true);
+    assert.equal(entry.res.captured.body, "");
+    assert.deepStrictEqual(discarded, [[cardHandle, {
+      reason: "session-trust-unavailable",
+    }]]);
+  });
+
+  it("releases an unconsumed session-trust card handle when another source wins first", async () => {
+    const cardHandle = Object.freeze({});
+    const discarded = [];
+    const client = {
+      isEnabled: () => true,
+      requestApproval: () => Promise.resolve({ action: "session-trust", cardHandle }),
+      discardSessionTrustCardHandle: (handle, options) => {
+        discarded.push([handle, options]);
+        return true;
+      },
+    };
+    const perm = initPermission(makeCtx({
+      getRemoteApprovalClients: () => [{ name: "feishu", client }],
+      canOfferRemoteSessionTrust: () => true,
+      requestRemoteSessionTrust: () => {
+        throw new Error("the coordinator must not run after the entry is resolved");
+      },
+    }));
+    const entry = makePermEntry();
+    perm.pendingPermissions.push(entry);
+
+    assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    perm.resolvePermissionEntry(entry, "deny");
+    await flush();
+
+    assert.deepStrictEqual(discarded, [[cardHandle, {
+      reason: "permission-resolved",
+    }]]);
+  });
+
+  it("cancels an entry-local remote candidate before ordinary resolution aborts siblings", () => {
+    const calls = [];
+    const perm = initPermission(makeCtx({
+      cancelSessionTrustCandidate: (entry, options) => calls.push([entry, options]),
+    }));
+    const entry = makePermEntry({ sessionTrustCandidate: { grantId: "candidate" } });
+    perm.pendingPermissions.push(entry);
+
+    perm.resolvePermissionEntry(entry, "deny");
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], entry);
+    assert.equal(calls[0][1].reason, "permission-resolved");
+  });
 });

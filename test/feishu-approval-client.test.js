@@ -6,17 +6,22 @@ const test = require("node:test");
 const {
   FeishuApprovalClient,
   buildApprovalCard,
+  buildSessionTrustConfirmCard,
+  buildSessionTrustStatusCard,
   buildElicitationCard,
   buildStatusCard,
   buildElicitationStatusCard,
   normalizeApprovalPayload,
   normalizeElicitationPayload,
   normalizeActionEvent,
+  normalizeSessionAutomationActionEvent,
   normalizeElicitationActionEvent,
   createLarkClient,
+  createDeadlineHttpInstance,
   createWsClient,
 } = require("../src/feishu-approval-client");
 const { createTranslator, i18n, SUPPORTED_LANGS } = require("../src/i18n");
+const { createRemoteCardWorkRegistry } = require("../src/session-automation-remote");
 
 function flush() {
   return new Promise((resolve) => setImmediate(resolve));
@@ -66,6 +71,464 @@ test("buildApprovalCard creates an interactive allow deny card", () => {
   const secondAction = card.elements.filter((element) => element.tag === "action")[1];
   assert.equal(secondAction.actions[0].text.content, "自动接受编辑");
   assert.deepEqual(secondAction.actions[0].value, { requestId: "req_1", decision: "suggestion:0" });
+  const allActions = card.elements
+    .filter((element) => element.tag === "action")
+    .flatMap((element) => element.actions);
+  assert.equal(
+    allActions.some((button) => button.value && button.value.kind === "session-trust-open"),
+    false,
+    "the initial card must not expose session trust without the explicit capability"
+  );
+});
+
+test("Feishu session automation actions use a namespace disjoint from ordinary decisions", () => {
+  const card = buildApprovalCard({
+    title: "Run",
+    canOfferSessionTrust: true,
+  }, { requestId: "req_trust" });
+  const actions = card.elements
+    .filter((element) => element.tag === "action")
+    .flatMap((element) => element.actions);
+  const trust = actions.find((action) => action.value && action.value.kind === "session-trust-open");
+  assert.ok(trust);
+  assert.equal(normalizeActionEvent({
+    operator: { open_id: "ou_1" },
+    action: { value: trust.value },
+  }, "open_id"), null, "session trust must never parse as a one-time decision");
+  assert.deepEqual(normalizeSessionAutomationActionEvent({
+    operator: { open_id: "ou_1" },
+    action: { value: trust.value },
+  }, "open_id"), {
+    operatorId: "ou_1",
+    requestId: "req_trust",
+    kind: "session-trust-open",
+  });
+  assert.deepEqual(normalizeSessionAutomationActionEvent({
+    operator: { open_id: "ou_1" },
+    action: { value: { action: "session-grant:revoke:grant-1" } },
+  }, "open_id"), {
+    operatorId: "ou_1",
+    kind: "persistent-revoke",
+    grantId: "grant-1",
+  });
+  assert.equal(normalizeSessionAutomationActionEvent({
+    operator: { open_id: "ou_1" },
+    action: { value: { requestId: "req_trust", decision: "allow" } },
+  }, "open_id"), null);
+});
+
+test("FeishuApprovalClient confirms session trust, prepares before activation, and revokes from the old card", async () => {
+  const sent = [];
+  const patched = [];
+  let client;
+  const fakeClient = {
+    im: { v1: { message: {
+      create: async (payload) => {
+        sent.push(payload);
+        return { data: { message_id: "om_trust" } };
+      },
+      patch: async (payload) => {
+        patched.push(payload);
+        return { data: {} };
+      },
+    } } },
+  };
+  const grantId = "grant-feishu-1";
+  client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    larkClient: fakeClient,
+    onSessionGrantRevoke: (clickedGrantId) => {
+      assert.equal(clickedGrantId, grantId);
+      client.handleSessionAutomationChanges([{
+        previous: { grantId },
+        next: { grantId: "off-replacement", mode: "off" },
+        reason: "remote-revoke",
+      }]);
+      return { status: "applied" };
+    },
+  });
+
+  const decisionPromise = client.requestApproval({
+    title: "Run",
+    detail: "Summary: Run tests",
+    canOfferSessionTrust: true,
+  });
+  await flush();
+  const original = JSON.parse(sent[0].data.content);
+  const actions = original.elements
+    .filter((element) => element.tag === "action")
+    .flatMap((element) => element.actions);
+  const trustOpen = actions.find((action) => action.value && action.value.kind === "session-trust-open");
+  assert.ok(trustOpen);
+  const requestId = trustOpen.value.requestId;
+
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: trustOpen.value },
+  }), true);
+  await flush();
+  const confirmCard = JSON.parse(patched.at(-1).data.content);
+  const confirmAction = confirmCard.elements
+    .find((element) => element.tag === "action")
+    .actions.find((action) => action.value.kind === "session-trust-confirm");
+  assert.deepEqual(confirmAction.value, { requestId, kind: "session-trust-confirm" });
+
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: confirmAction.value },
+  }), true);
+  const decision = await decisionPromise;
+  assert.equal(decision.action, "session-trust");
+  const work = client.beginSessionTrustCandidate({
+    grantId,
+    cardHandle: decision.cardHandle,
+  });
+  assert.ok(work);
+  assert.equal(await client.prepareSessionTrustCandidate(work, { grantId }), true);
+  const preparing = JSON.parse(patched.at(-1).data.content);
+  const preparingAction = preparing.elements
+    .find((element) => element.tag === "action")
+    .actions[0];
+  assert.deepEqual(preparingAction.value, {
+    action: `session-grant:revoke:${grantId}`,
+  });
+  assert.equal(client.activateSessionTrustCandidate(work, { grantId }), true);
+  assert.equal(await client.renderActiveSessionTrust(work, {
+    grantId,
+    outcome: "activated",
+  }), true);
+
+  const firstClient = client;
+  client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    larkClient: fakeClient,
+    sessionAutomationCardWork: firstClient.sessionAutomationCardWork,
+    onSessionGrantRevoke: (clickedGrantId) => {
+      assert.equal(clickedGrantId, grantId);
+      client.handleSessionAutomationChanges([{
+        previous: { grantId },
+        next: { grantId: "off-replacement", mode: "off" },
+        reason: "remote-revoke",
+      }]);
+      return { status: "applied" };
+    },
+  });
+  assert.deepEqual(client.listActiveSessionAutomationGrantIds(), [grantId],
+    "same-route client rebuild must hand off the active-card index");
+
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "not-current" },
+    action: { value: preparingAction.value },
+  }), false);
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: preparingAction.value },
+  }), true);
+  await flush();
+  await flush();
+  const revoked = JSON.parse(patched.at(-1).data.content);
+  assert.match(revoked.elements[1].text.content, /revoked/i);
+  assert.equal(revoked.elements.some((element) => element.tag === "action"), false);
+});
+
+test("Feishu keeps one-time approval usable when the session card-work cap is full", async () => {
+  const sent = [];
+  const patched = [];
+  const registry = createRemoteCardWorkRegistry({ limit: 1 });
+  assert.ok(registry.reserve("occupied", { messageId: "om_occupied" }));
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    sessionAutomationCardWork: registry,
+    onSessionGrantRevoke: () => ({ status: "stale" }),
+    larkClient: {
+      im: { v1: { message: {
+        create: async (payload) => {
+          sent.push(payload);
+          return { data: { message_id: "om_cap" } };
+        },
+        patch: async (payload) => {
+          patched.push(payload);
+          return { data: {} };
+        },
+      } } },
+    },
+  });
+  const decisionPromise = client.requestApproval({
+    title: "Run",
+    detail: "Summary: Run tests",
+    canOfferSessionTrust: true,
+  });
+  await flush();
+  const initial = JSON.parse(sent[0].data.content);
+  const initialActions = initial.elements
+    .filter((element) => element.tag === "action")
+    .flatMap((element) => element.actions);
+  const trustOpen = initialActions.find((action) => action.value.kind === "session-trust-open");
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: trustOpen.value },
+  }), true);
+  await flush();
+  const confirmCard = JSON.parse(patched.at(-1).data.content);
+  const confirm = confirmCard.elements
+    .find((element) => element.tag === "action")
+    .actions.find((action) => action.value.kind === "session-trust-confirm");
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: confirm.value },
+  }), true);
+  await flush();
+  const fallback = JSON.parse(patched.at(-1).data.content);
+  const fallbackActions = fallback.elements
+    .filter((element) => element.tag === "action")
+    .flatMap((element) => element.actions);
+  const allow = fallbackActions.find((action) => action.value.decision === "allow");
+  assert.ok(allow, "the original one-time Allow/Deny controls must be restored");
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: allow.value },
+  }), true);
+  assert.equal(await decisionPromise, "allow");
+  assert.equal(registry.size(), 1, "the failed trust attempt must not consume another slot");
+});
+
+test("Feishu releases an issued session-trust handle that main never consumes", async () => {
+  const sent = [];
+  const patched = [];
+  const registry = createRemoteCardWorkRegistry({ limit: 1 });
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    sessionAutomationCardWork: registry,
+    onSessionGrantRevoke: () => ({ status: "stale" }),
+    larkClient: {
+      im: { v1: { message: {
+        create: async (payload) => {
+          sent.push(payload);
+          return { data: { message_id: "om_unused" } };
+        },
+        patch: async (payload) => {
+          patched.push(payload);
+          return { data: {} };
+        },
+      } } },
+    },
+  });
+  const decisionPromise = client.requestApproval({
+    title: "Run",
+    detail: "Summary: Run tests",
+    canOfferSessionTrust: true,
+  });
+  await flush();
+  const original = JSON.parse(sent[0].data.content);
+  const open = original.elements
+    .filter((element) => element.tag === "action")
+    .flatMap((element) => element.actions)
+    .find((action) => action.value.kind === "session-trust-open");
+  client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: open.value },
+  });
+  await flush();
+  const confirmation = JSON.parse(patched.at(-1).data.content);
+  const confirm = confirmation.elements
+    .find((element) => element.tag === "action")
+    .actions.find((action) => action.value.kind === "session-trust-confirm");
+  client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: confirm.value },
+  });
+  const decision = await decisionPromise;
+
+  assert.equal(registry.size(), 1);
+  assert.equal(client.discardSessionTrustCardHandle(decision.cardHandle, {
+    reason: "permission-resolved",
+  }), true);
+  await flush();
+  assert.equal(registry.size(), 0);
+  const terminal = JSON.parse(patched.at(-1).data.content);
+  assert.equal(terminal.elements.some((element) => element.tag === "action"), false);
+  assert.equal(client.discardSessionTrustCardHandle(decision.cardHandle), false);
+});
+
+test("Feishu terminalizes a consumed trust confirmation after its route turns stale", async () => {
+  const sent = [];
+  const patched = [];
+  const registry = createRemoteCardWorkRegistry({ limit: 1 });
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    sessionAutomationCardWork: registry,
+    onSessionGrantRevoke: () => ({ status: "stale" }),
+    larkClient: {
+      im: { v1: { message: {
+        create: async (payload) => {
+          sent.push(payload);
+          return { data: { message_id: "om_route_stale" } };
+        },
+        patch: async (payload) => {
+          patched.push(payload);
+          return { data: {} };
+        },
+      } } },
+    },
+  });
+  const decisionPromise = client.requestApproval({
+    title: "Run",
+    detail: "Summary: Run tests",
+    canOfferSessionTrust: true,
+  });
+  await flush();
+  const original = JSON.parse(sent[0].data.content);
+  const open = original.elements
+    .filter((element) => element.tag === "action")
+    .flatMap((element) => element.actions)
+    .find((action) => action.value.kind === "session-trust-open");
+  client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: open.value },
+  });
+  await flush();
+  const confirmation = JSON.parse(patched.at(-1).data.content);
+  const confirm = confirmation.elements
+    .find((element) => element.tag === "action")
+    .actions.find((action) => action.value.kind === "session-trust-confirm");
+  client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: confirm.value },
+  });
+  const decision = await decisionPromise;
+
+  client.markSessionAutomationRouteStale();
+  assert.equal(client.beginSessionTrustCandidate({
+    grantId: "grant-after-route-change",
+    cardHandle: decision.cardHandle,
+  }), null);
+  assert.equal(registry.size(), 1, "terminal cleanup owns the slot until patch settles");
+  await flush();
+  await flush();
+  assert.equal(registry.size(), 0);
+  const terminal = JSON.parse(patched.at(-1).data.content);
+  assert.match(terminal.elements[1].text.content, /not enabled/i);
+  assert.equal(terminal.elements.some((element) => element.tag === "action"), false);
+  assert.equal(client.discardSessionTrustCardHandle(decision.cardHandle), false);
+});
+
+test("Feishu REST deadline wrapper applies a finite timeout without mutating the shared SDK client", async () => {
+  const seen = [];
+  const base = {
+    request: async (options) => { seen.push(options); return {}; },
+    post: async (_url, _data, options) => { seen.push(options); return {}; },
+  };
+  const wrapped = createDeadlineHttpInstance(base, 4321);
+  await wrapped.request({ url: "/x" });
+  await wrapped.post("/x", {}, { timeout: 9000 });
+  assert.deepEqual(seen.map((options) => options.timeout), [4321, 4321]);
+  assert.equal(Object.prototype.hasOwnProperty.call(base, "timeout"), false);
+  const controller = new AbortController();
+  await wrapped.runWithSignal(controller.signal, () => wrapped.request({ url: "/signal" }));
+  assert.equal(seen.at(-1).signal, controller.signal);
+
+  const confirm = buildSessionTrustConfirmCard(
+    { title: "Run" },
+    { requestId: "r" }
+  );
+  const active = buildSessionTrustStatusCard(
+    { title: "Run" },
+    { grantId: "g", statusKey: "feishuSessionTrustActiveStatus" }
+  );
+  assert.ok(confirm.elements.some((element) => element.tag === "action"));
+  assert.deepEqual(
+    active.elements.find((element) => element.tag === "action").actions[0].value,
+    { action: "session-grant:revoke:g" }
+  );
+});
+
+test("Feishu REST deadline wrapper accepts the callable Axios shape used by the real SDK", async () => {
+  const seen = [];
+  const axiosLike = function axiosLike() {};
+  axiosLike.request = async (options) => {
+    seen.push(options);
+    return {};
+  };
+  axiosLike.post = async (_url, _data, options) => {
+    seen.push(options);
+    return {};
+  };
+
+  const wrapped = createDeadlineHttpInstance(axiosLike, 1234);
+  assert.ok(wrapped);
+  await wrapped.request({ url: "/callable" });
+  await wrapped.post("/callable", {}, {});
+  assert.deepEqual(seen.map((options) => options.timeout), [1234, 1234]);
+});
+
+test("Feishu terminal card timeout aborts the injected HTTP request and releases its work slot", async () => {
+  let aborted = false;
+  let seenTimeout = null;
+  const baseHttp = {
+    request: (options) => new Promise((resolve, reject) => {
+      seenTimeout = options.timeout;
+      const onAbort = () => {
+        aborted = true;
+        reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+      };
+      if (options.signal && options.signal.aborted) {
+        onAbort();
+        return;
+      }
+      options.signal.addEventListener("abort", onAbort, { once: true });
+    }),
+  };
+  const cardHttpInstance = createDeadlineHttpInstance(baseHttp, 1000);
+  const registry = createRemoteCardWorkRegistry({ limit: 1, deadlineMs: 10 });
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    cardHttpInstance,
+    sessionAutomationCardWork: registry,
+    larkClient: {
+      im: { v1: { message: {
+        patch: (payload) => cardHttpInstance.request({
+          url: `/messages/${payload.path.message_id}`,
+          method: "PATCH",
+          data: payload.data,
+        }),
+      } } },
+    },
+  });
+  const handle = registry.reserve("grant-timeout", {
+    messageId: "om_timeout",
+    payload: { title: "Run" },
+  });
+  assert.ok(handle);
+  assert.equal(registry.activate(handle, "grant-timeout"), true);
+
+  assert.equal(client.retireSessionAutomationGrant("grant-timeout"), 1);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  assert.equal(seenTimeout, 1000);
+  assert.equal(aborted, true, "the card-work deadline must abort the SDK HTTP request");
+  assert.equal(registry.size(), 0);
+  assert.ok(registry.reserve("grant-after-timeout", {
+    messageId: "om_after_timeout",
+    payload: { title: "Next" },
+  }));
 });
 
 test("buildApprovalCard neutralizes agent-controlled Markdown and secrets in the detail", () => {
@@ -690,6 +1153,7 @@ test("pure helpers validate payloads and card action events", () => {
     folder: "",
     summary: "",
     suggestions: [],
+    canOfferSessionTrust: false,
   });
   assert.throws(() => normalizeApprovalPayload({ title: "" }), /title/);
   assert.deepEqual(normalizeActionEvent({

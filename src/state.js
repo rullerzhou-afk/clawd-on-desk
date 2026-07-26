@@ -960,6 +960,12 @@ function buildSessionSnapshot() {
     focusHostPlatform: ctx.focusHostPlatform || process.platform,
     isProcessAlive,
     accountQuota: accountQuota.snapshot({ mergeSources: ctx.quotaMergeSources === true }),
+    sessionAutomationRecords: typeof ctx.getSessionAutomationRecords === "function"
+      ? ctx.getSessionAutomationRecords()
+      : [],
+    permissionAutomationMode: typeof ctx.getPermissionAutomationMode === "function"
+      ? ctx.getPermissionAutomationMode()
+      : "off",
   });
 }
 
@@ -1330,6 +1336,24 @@ function promoteCompletion(sessionId) {
 // Session-related fields go through `opts`. Earlier versions took 13
 // positional params — refactored in B2 to an options bag so new fields
 // (sessionTitle, etc.) don't keep extending the argument list.
+function normalizeSessionAutomationIdentity(value) {
+  if (!value || typeof value !== "object") return null;
+  if (
+    typeof value.eligible !== "boolean"
+    || typeof value.reason !== "string"
+    || !value.reason.trim()
+  ) {
+    return Object.freeze({
+      eligible: false,
+      reason: "invalid-route-assessment",
+    });
+  }
+  return Object.freeze({
+    eligible: value.eligible === true,
+    reason: value.reason.trim().slice(0, 120),
+  });
+}
+
 function updateSession(sessionId, state, event, opts = {}) {
   try {
   const {
@@ -1376,6 +1400,9 @@ function updateSession(sessionId, state, event, opts = {}) {
     sessionCronsCount = 0,
     stopHookActive = false,
     stdinDiag = null,
+    sessionAutomationIdentity = null,
+    subagentId = null,
+    subagentType = null,
   } = opts;
   if (startupRecoveryActive) {
     startupRecoveryActive = false;
@@ -1393,10 +1420,26 @@ function updateSession(sessionId, state, event, opts = {}) {
 
   const sessionForPerm = sessions.get(sessionId);
   const permAgentId = resolveIncomingAgentId(sessionForPerm, agentId, agentIdDefaulted);
+  const normalizedSessionAutomationIdentity = normalizeSessionAutomationIdentity(
+    sessionAutomationIdentity
+  );
 
   const isTransientAttentionRequest = event === "PermissionRequest" || event === "CodexUserInputRequest";
   if (isTransientAttentionRequest) {
     if (permAgentId === "codex") cancelCodexExitProbe(sessionId, event);
+    // A transient route event owns its identity assessment just as ordinary
+    // state traffic does. Merge it only into an existing session for the same agent:
+    // PermissionRequest must not create a ghost session, and a raw-id collision
+    // from another agent must not relabel an existing Dashboard row.
+    const shouldStorePermissionAutomationIdentity = !!(
+      normalizedSessionAutomationIdentity
+      && sessionForPerm
+      && permAgentId
+      && sessionForPerm.agentId === permAgentId
+    );
+    if (shouldStorePermissionAutomationIdentity) {
+      sessionForPerm.sessionAutomationIdentity = normalizedSessionAutomationIdentity;
+    }
     // Kimi-only gate: startKimiPermissionPoll suppresses the passive bubble
     // when the user disabled Kimi permissions in Settings, but the setState
     // ran first and flashed notification anyway — leaving a silent animation
@@ -1461,6 +1504,9 @@ function updateSession(sessionId, state, event, opts = {}) {
         agentId: srcAgentId,
         profileId: (existing && existing.profileId) || profileId || "local",
         rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId,
+        sessionAutomationIdentity: normalizedSessionAutomationIdentity
+          || (existing && existing.sessionAutomationIdentity)
+          || null,
         host: srcHost,
         wslDistro: srcWslDistro,
         headless: srcHeadless,
@@ -1507,6 +1553,12 @@ function updateSession(sessionId, state, event, opts = {}) {
         startKimiPermissionPoll(sessionId, { toolName, permissionAction, permissionCommand, permissionToolInput });
       }
     }
+    if (
+      shouldStorePermissionAutomationIdentity
+      || (shouldPersistCodexPermissionFocus && normalizedSessionAutomationIdentity)
+    ) {
+      emitSessionSnapshot();
+    }
     return;
   }
 
@@ -1525,6 +1577,9 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcTmuxClient = tmuxClient || (existing && existing.tmuxClient) || null;
   const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
   const srcAgentId = resolveIncomingAgentId(existing, agentId, agentIdDefaulted);
+  const srcSessionAutomationIdentity = normalizedSessionAutomationIdentity
+    || (existing && existing.sessionAutomationIdentity)
+    || null;
   const srcHost = host || (existing && existing.host) || null;
   const srcWslDistro = wslDistro || (existing && existing.wslDistro) || null;
   const srcHeadless = headless || (existing && existing.headless) || false;
@@ -1666,7 +1721,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   // (contextUsage): a lifecycle event that carries it forward from
   // `existing` must not silently reset the freshness stamp.
   const srcMetadataUpdatedAt = existing && Number.isFinite(existing.metadataUpdatedAt) ? existing.metadataUpdatedAt : null;
-  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, host: srcHost, wslDistro: srcWslDistro, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
+  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
   if (preserveCompletionAck) base.requiresCompletionAck = true;
 
   // Evict oldest session if at capacity and this is a new session.
@@ -1707,6 +1762,17 @@ function updateSession(sessionId, state, event, opts = {}) {
   if (event === "SessionEnd") {
     const endingSession = sessions.get(sessionId);
     cancelCodexExitProbe(sessionId, "SessionEnd");
+    if (
+      !subagentId
+      && !subagentType
+      && typeof ctx.onSessionAutomationLifecycleEnd === "function"
+    ) {
+      ctx.onSessionAutomationLifecycleEnd({
+        agentId: (endingSession && endingSession.agentId) || srcAgentId,
+        sessionId,
+        reason: "session-end",
+      });
+    }
     sessions.delete(sessionId);
     debugSession(`session-end delete ${describeSession(sessionId, endingSession)}`);
     cleanStaleSessions();
@@ -2019,6 +2085,13 @@ function cleanStaleSessions() {
       debugSession(`stale-delete ${decision.reason} ${describeSession(id, s)}${badgeSuffix}`);
       if (s && s.agentId === "codex") cancelCodexExitProbe(id, `stale-delete-${decision.reason}`);
       if (s && s.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-disposed");
+      if (s && s.agentId && typeof ctx.onSessionAutomationLifecycleEnd === "function") {
+        ctx.onSessionAutomationLifecycleEnd({
+          agentId: s.agentId,
+          sessionId: id,
+          reason: `stale-delete-${decision.reason}`,
+        });
+      }
       sessions.delete(id); changed = true;
       continue;
     }

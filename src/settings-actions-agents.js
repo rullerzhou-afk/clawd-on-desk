@@ -158,6 +158,9 @@ function setAgentFlag(payload, deps) {
           deps.stopIntegrationForAgent(agentId);
         }
         if (typeof deps.stopMonitorForAgent === "function") deps.stopMonitorForAgent(agentId);
+        if (typeof deps.clearSessionAutomationByAgent === "function") {
+          deps.clearSessionAutomationByAgent(agentId);
+        }
         if (typeof deps.clearSessionsByAgent === "function") deps.clearSessionsByAgent(agentId);
         if (typeof deps.dismissPermissionsByAgent === "function") deps.dismissPermissionsByAgent(agentId);
       } else {
@@ -452,6 +455,9 @@ function removeCustomApplication(payload, deps = {}) {
   const snapshot = deps.snapshot || {};
   const current = Array.isArray(snapshot.customApplications) ? snapshot.customApplications : [];
   if (!current.some((entry) => entry && entry.id === id)) return { status: "ok", noop: true };
+  if (typeof deps.clearSessionAutomationByAgent === "function") {
+    deps.clearSessionAutomationByAgent(id);
+  }
   if (typeof deps.clearSessionsByAgent === "function") deps.clearSessionsByAgent(id);
   if (typeof deps.dismissPermissionsByAgent === "function") deps.dismissPermissionsByAgent(id);
   if (typeof deps.clearRecentHookEvents === "function") deps.clearRecentHookEvents(id);
@@ -572,6 +578,9 @@ async function uninstallAgentIntegration(payload, deps = {}) {
       };
     }
     if (typeof deps.stopMonitorForAgent === "function") deps.stopMonitorForAgent(agentId);
+    if (typeof deps.clearSessionAutomationByAgent === "function") {
+      deps.clearSessionAutomationByAgent(agentId);
+    }
     if (typeof deps.clearSessionsByAgent === "function") deps.clearSessionsByAgent(agentId);
     if (typeof deps.dismissPermissionsByAgent === "function") deps.dismissPermissionsByAgent(agentId);
     return {

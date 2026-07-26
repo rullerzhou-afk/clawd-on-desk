@@ -101,6 +101,15 @@ function translations() {
     sessionHrAgo: "{n}h",
     sessionBadgeIdle: "Idle",
     sessionLocal: "Local",
+    sessionAutomationLabel: "Session automation",
+    sessionAutomationFollowGlobal: "Follow global",
+    sessionAutomationAsk: "Always ask",
+    sessionAutomationAutoTools: "Auto-allow tools",
+    sessionAutomationUnavailable: "Unavailable",
+    sessionAutomationChangeFailed: "Could not update session automation.",
+    sessionAutomationOrphansTitle: "Ended or hidden sessions",
+    sessionAutomationOrphansHint: "These overrides remain active until revoked.",
+    sessionAutomationRevoke: "Revoke",
   };
 }
 
@@ -120,15 +129,25 @@ function session(id, overrides = {}) {
   };
 }
 
-async function loadDashboard(sessions, openResult = { status: "ok" }) {
+async function loadDashboard(
+  sessions,
+  openResult = { status: "ok" },
+  snapshotOverrides = {},
+  automationResult = { status: "applied" }
+) {
   const document = createDocument(["title", "count", "content", "quotaSummary"]);
   const openCalls = [];
+  const automationCalls = [];
   let renderInterval = null;
   const api = {
     onLangChange: () => {},
     onSessionSnapshot: () => {},
     getI18n: async () => ({ lang: "en", translations: translations() }),
-    getSnapshot: async () => ({ sessions, groups: [{ host: "", ids: sessions.map((s) => s.id) }] }),
+    getSnapshot: async () => ({
+      sessions,
+      groups: [{ host: "", ids: sessions.map((s) => s.id) }],
+      ...snapshotOverrides,
+    }),
     openSessionFolder: async (...args) => {
       openCalls.push(args);
       return typeof openResult === "function" ? openResult(...args) : openResult;
@@ -136,6 +155,18 @@ async function loadDashboard(sessions, openResult = { status: "ok" }) {
     focusSession: () => {},
     ackCompletion: async () => ({ status: "noop" }),
     hideSession: async () => ({ status: "ok" }),
+    setSessionAutomationOverride: async (payload) => {
+      automationCalls.push(["set", payload]);
+      return typeof automationResult === "function"
+        ? automationResult("set", payload)
+        : automationResult;
+    },
+    clearSessionAutomationGrant: async (payload) => {
+      automationCalls.push(["clear", payload]);
+      return typeof automationResult === "function"
+        ? automationResult("clear", payload)
+        : automationResult;
+    },
   };
   const context = vm.createContext({
     window: { dashboardAPI: api }, document, console, Intl, Date,
@@ -148,6 +179,7 @@ async function loadDashboard(sessions, openResult = { status: "ok" }) {
   return {
     root: document.elements.get("content"),
     openCalls,
+    automationCalls,
     tickRender: () => { if (renderInterval) renderInterval(); },
   };
 }
@@ -271,6 +303,68 @@ test("Dashboard preserves folder pending and failure state across interval rende
     "Could not open folder: slow denial"
   );
   assert.strictEqual(byClass(root, "open-folder-button")[0].disabled, false);
+});
+
+test("Dashboard session automation sends only sessionId/mode and exact grantId", async () => {
+  const configurable = session("configurable", {
+    canConfigureSessionAutomation: true,
+    sessionAutomationMode: "inherit",
+  });
+  const activeButIneligible = session("active", {
+    canConfigureSessionAutomation: false,
+    sessionAutomationMode: "auto-tools",
+    sessionAutomationGrantId: "grant-current",
+  });
+  const { root, automationCalls } = await loadDashboard([configurable, activeButIneligible]);
+  const selects = byClass(root, "session-automation-select");
+
+  selects[0].value = "off";
+  await selects[0].dispatch("change");
+  selects[1].value = "inherit";
+  await selects[1].dispatch("change");
+
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(automationCalls)), [
+    ["set", { sessionId: "configurable", mode: "off" }],
+    ["clear", { grantId: "grant-current" }],
+  ]);
+});
+
+test("Dashboard renders and revokes an orphan grant by exact grantId", async () => {
+  const { root, automationCalls } = await loadDashboard([], { status: "ok" }, {
+    sessionAutomationOrphans: [{
+      agentId: "claude-code",
+      sessionId: "ended",
+      mode: "auto-tools",
+      displayLabel: "Ended project",
+      sessionAutomationGrantId: "grant-orphan",
+    }],
+  });
+
+  assert.strictEqual(byClass(root, "automation-orphan-card").length, 1);
+  assert.strictEqual(byClass(root, "automation-orphan-title")[0].textContent, "Ended project");
+  const revoke = byClass(root, "automation-orphan-card")[0].children[1];
+  await revoke.dispatch("click");
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(automationCalls)), [
+    ["clear", { grantId: "grant-orphan" }],
+  ]);
+});
+
+test("Dashboard keeps session automation failure feedback visible after rerender", async () => {
+  const { root } = await loadDashboard([
+    session("configurable", {
+      canConfigureSessionAutomation: true,
+      sessionAutomationMode: "inherit",
+    }),
+  ], { status: "ok" }, {}, { status: "full" });
+  const select = byClass(root, "session-automation-select")[0];
+  select.value = "auto-tools";
+  await select.dispatch("change");
+
+  assert.strictEqual(byClass(root, "session-automation-select")[0].value, "inherit");
+  assert.strictEqual(
+    byClass(root, "session-automation-feedback")[0].textContent,
+    "Could not update session automation."
+  );
 });
 
 test("HUD unfocusable click explains why and offers folder only for local non-webui", async () => {

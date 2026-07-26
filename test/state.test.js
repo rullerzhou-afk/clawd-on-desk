@@ -102,6 +102,9 @@ function update(api, o = {}) {
       sessionCronsCount: o.sessionCronsCount ?? 0,
       stopHookActive: o.stopHookActive ?? false,
       transientPermissionEvent: o.transientPermissionEvent === true,
+      sessionAutomationIdentity: o.sessionAutomationIdentity ?? null,
+      subagentId: o.subagentId ?? null,
+      subagentType: o.subagentType ?? null,
     },
   );
 }
@@ -848,6 +851,26 @@ describe("cleanStaleSessions()", () => {
     assert.strictEqual(api.sessions.size, 0);
   });
 
+  it("clears the exact session automation identity before stale deletion", () => {
+    const lifecycle = [];
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set()),
+      onSessionAutomationLifecycleEnd: (payload) => lifecycle.push(payload),
+    }));
+    api.sessions.set("s1", rawSession("working", {
+      agentId: "claude-code",
+      agentPid: 9999,
+      pidReachable: true,
+    }));
+    api.cleanStaleSessions();
+    assert.deepStrictEqual(lifecycle, [{
+      agentId: "claude-code",
+      sessionId: "s1",
+      reason: "stale-delete-agent-exit",
+    }]);
+    assert.strictEqual(api.sessions.size, 0);
+  });
+
   it("empty-session return rests on the user-selected idle visual", () => {
     const changes = [];
     api = require("../src/state")(makeCtx({
@@ -1048,6 +1071,35 @@ describe("updateSession()", () => {
     assert.strictEqual(api.sessions.get("new1").state, "working");
   });
 
+  it("stores only a normalized route-owned session automation assessment", () => {
+    update(api, {
+      id: "automation-identity",
+      sessionAutomationIdentity: {
+        eligible: false,
+        reason: "  placeholder-session-id  ",
+        senderControlledExtra: true,
+      },
+    });
+
+    const stored = api.sessions.get("automation-identity").sessionAutomationIdentity;
+    assert.deepStrictEqual(stored, {
+      eligible: false,
+      reason: "placeholder-session-id",
+    });
+    assert.strictEqual(Object.isFrozen(stored), true);
+
+    update(api, {
+      id: "automation-identity",
+      event: "PostToolUse",
+      sessionAutomationIdentity: { eligible: "yes", reason: "malformed" },
+    });
+    assert.deepStrictEqual(
+      api.sessions.get("automation-identity").sessionAutomationIdentity,
+      { eligible: false, reason: "invalid-route-assessment" },
+      "malformed internal input must fail closed instead of preserving eligibility"
+    );
+  });
+
   // #627 safety net: the pid-snapshot cache omits pid_chain on cache-hit events,
   // relying on updateSession MERGING (keeping the last pidChain) rather than
   // OVERWRITING it to null. If a future refactor flips this to overwrite, the
@@ -1176,6 +1228,34 @@ describe("updateSession()", () => {
     assert.ok(!api.sessions.has("s1"));
   });
 
+  it("clears session automation before a main SessionEnd but not a subagent lifecycle event", () => {
+    api.cleanup();
+    const lifecycle = [];
+    api = require("../src/state")(makeCtx({
+      onSessionAutomationLifecycleEnd: (payload) => lifecycle.push(payload),
+    }));
+    update(api, { id: "main", agentId: "claude-code", state: "working" });
+    update(api, {
+      id: "main",
+      agentId: "claude-code",
+      state: "sleeping",
+      event: "SessionEnd",
+    });
+    update(api, { id: "sub", agentId: "claude-code", state: "working" });
+    update(api, {
+      id: "sub",
+      agentId: "claude-code",
+      state: "sleeping",
+      event: "SessionEnd",
+      subagentId: "child-1",
+    });
+    assert.deepStrictEqual(lifecycle, [{
+      agentId: "claude-code",
+      sessionId: "main",
+      reason: "session-end",
+    }]);
+  });
+
   it("dismissSession removes only Clawd bookkeeping for that session", () => {
     update(api, { id: "s1", state: "working" });
     update(api, { id: "s2", state: "thinking" });
@@ -1188,9 +1268,79 @@ describe("updateSession()", () => {
   });
 
   it("PermissionRequest → notification state, no session creation", () => {
-    update(api, { id: "perm1", state: "notification", event: "PermissionRequest" });
+    update(api, {
+      id: "perm1",
+      state: "notification",
+      event: "PermissionRequest",
+      sessionAutomationIdentity: { eligible: true, reason: "eligible" },
+    });
     assert.ok(!api.sessions.has("perm1"));
     assert.strictEqual(api.getCurrentState(), "notification");
+  });
+
+  it("PermissionRequest refreshes identity only on an existing same-agent session", () => {
+    update(api, {
+      id: "perm-existing",
+      state: "working",
+      event: "PreToolUse",
+      agentId: "claude-code",
+    });
+    const existing = api.sessions.get("perm-existing");
+    existing.startupRecovered = true;
+    assert.strictEqual(existing.sessionAutomationIdentity, null);
+
+    update(api, {
+      id: "perm-existing",
+      state: "notification",
+      event: "PermissionRequest",
+      agentId: "claude-code",
+      sessionAutomationIdentity: { eligible: true, reason: "eligible" },
+    });
+
+    assert.strictEqual(api.sessions.get("perm-existing").state, "working");
+    assert.strictEqual(api.sessions.get("perm-existing").startupRecovered, true);
+    assert.deepStrictEqual(
+      api.sessions.get("perm-existing").sessionAutomationIdentity,
+      { eligible: true, reason: "eligible" }
+    );
+
+    update(api, {
+      id: "perm-existing",
+      state: "notification",
+      event: "PermissionRequest",
+      agentId: "claude-code",
+      sessionAutomationIdentity: { eligible: false, reason: "placeholder-session-id" },
+    });
+    assert.deepStrictEqual(
+      api.sessions.get("perm-existing").sessionAutomationIdentity,
+      { eligible: false, reason: "placeholder-session-id" },
+      "a later fail-closed route assessment must replace stale eligibility"
+    );
+  });
+
+  it("PermissionRequest never writes an identity across an agent collision", () => {
+    update(api, {
+      id: "shared-session-id",
+      state: "working",
+      event: "PreToolUse",
+      agentId: "codex",
+      sessionAutomationIdentity: { eligible: false, reason: "codex-unverified" },
+    });
+
+    update(api, {
+      id: "shared-session-id",
+      state: "notification",
+      event: "PermissionRequest",
+      agentId: "claude-code",
+      sessionAutomationIdentity: { eligible: true, reason: "eligible" },
+    });
+
+    const session = api.sessions.get("shared-session-id");
+    assert.strictEqual(session.agentId, "codex");
+    assert.deepStrictEqual(
+      session.sessionAutomationIdentity,
+      { eligible: false, reason: "codex-unverified" }
+    );
   });
 
   it("Codex user-input request flashes notification while preserving session state", () => {
@@ -2407,6 +2557,7 @@ describe("buildSessionSnapshot", () => {
       lastSessionId: null,
       lastTitle: null,
       accountQuota: [],
+      sessionAutomationOrphans: [],
     });
     assert.doesNotThrow(() => JSON.stringify(snapshot));
   });

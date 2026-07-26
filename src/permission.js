@@ -259,6 +259,20 @@ function computePassiveNotifyRemainingMs(createdAt, autoCloseMs, now = Date.now(
   return Math.max(0, totalMs - Math.max(0, now - startedAt));
 }
 
+function computePermissionAutoCloseRemainingMs(entry, autoCloseMs, now = Date.now()) {
+  const timeout = Number(autoCloseMs);
+  if (!(timeout > 0)) return 0;
+  const createdAt = Number.isFinite(entry && entry.createdAt) ? entry.createdAt : now;
+  const completedPause = Number.isFinite(entry && entry.autoClosePausedTotalMs)
+    ? Math.max(0, entry.autoClosePausedTotalMs)
+    : 0;
+  const activePause = Number.isFinite(entry && entry.autoClosePauseStartedAt)
+    ? Math.max(0, now - entry.autoClosePauseStartedAt)
+    : 0;
+  const elapsed = Math.max(0, now - createdAt - completedPause - activePause);
+  return Math.max(0, timeout - elapsed);
+}
+
 // Pure layout calculator for the permission bubble stack. Extracted out of
 // repositionBubbles() so the geometry can be unit-tested without spinning up
 // real Electron BrowserWindows. Returns one bounds object per height in the
@@ -752,6 +766,94 @@ function repositionBubbles() {
 // to satisfy. Returns true when it consumed the entry (caller must NOT build a
 // bubble), false otherwise.
 
+// Session-scoped automation can run after the route has returned (for example,
+// when a grant sweeps an already-queued request). Re-check the live permission
+// object instead of trusting a snapshot captured at route time.
+function isPermissionEntryLive(permEntry) {
+  if (!permEntry || !pendingPermissions.includes(permEntry)) return false;
+  if (permEntry._delayedResolve === true) return false;
+  if (permEntry._sessionTrustLifecycleCancelled === true) return false;
+  if (isPassiveNotifyEntry(permEntry)) return false;
+
+  // opencode/MiMo ACK the inbound HTTP request immediately and reply through a
+  // reverse bridge. Until that adapter exposes a positive, request-specific
+  // bridge-liveness signal, membership in pendingPermissions is not enough to
+  // prove that an automated decision can still reach the real request.
+  if (isOpencodeFamilyEntry(permEntry)) return false;
+
+  const res = permEntry.res;
+  if (!res || typeof res !== "object") return false;
+  if (res.destroyed === true) return false;
+  if (res.writableEnded === true) return false;
+  if (res.writableFinished === true) return false;
+  return true;
+}
+
+function canAutoResolvePendingPermission(permEntry, options = {}) {
+  if (!isPermissionEntryLive(permEntry)) return false;
+  if (ctx.doNotDisturb) return false;
+
+  const agentId = typeof permEntry.agentId === "string"
+    ? permEntry.agentId.trim()
+    : "";
+  if (!agentId) return false;
+  if (typeof ctx.isAgentEnabled !== "function" || !ctx.isAgentEnabled(agentId)) {
+    return false;
+  }
+  if (
+    typeof ctx.isAgentPermissionsEnabled !== "function"
+    || !ctx.isAgentPermissionsEnabled(agentId)
+  ) {
+    return false;
+  }
+  if (
+    (permEntry.subagentId || permEntry.subagentType)
+    && (
+      typeof ctx.isAgentSubagentPermissionsEnabled !== "function"
+      || !ctx.isAgentSubagentPermissionsEnabled(agentId)
+    )
+  ) {
+    return false;
+  }
+
+  const session = ctx.sessions && typeof ctx.sessions.get === "function"
+    ? ctx.sessions.get(permEntry.sessionId)
+    : null;
+  if (permEntry.headless === true || (session && session.headless === true)) {
+    return false;
+  }
+
+  if (
+    permEntry.isCodex
+    && (
+      typeof ctx.isCodexPermissionInterceptEnabled !== "function"
+      || !ctx.isCodexPermissionInterceptEnabled()
+    )
+  ) {
+    return false;
+  }
+
+  const identity = permEntry.sessionAutomationIdentity;
+  if (!identity || identity.eligible !== true) return false;
+
+  let mode = options.mode;
+  if (mode === undefined) {
+    mode = options.sessionOnly === true
+      ? PERMISSION_AUTOMATION_MODE.OFF
+      : (
+          typeof ctx.getPermissionAutomationMode === "function"
+            ? ctx.getPermissionAutomationMode()
+            : PERMISSION_AUTOMATION_MODE.OFF
+        );
+  }
+
+  return evaluatePermissionAutomation({
+    mode,
+    interaction: permEntry.interaction,
+    entry: permEntry,
+  }) === AUTOMATION_ACTION.AUTO_ALLOW;
+}
+
 // Default reply used to answer AskUserQuestion / clarify prompts while
 // auto-pilot is on. The user isn't present to type, so we explicitly defer the
 // choice back to the agent rather than sending blank answers.
@@ -775,9 +877,13 @@ function buildAutoApproveElicitationAnswers(toolInput) {
 function maybeAutoApprovePermission(permEntry) {
   if (!permEntry) return false;
   if (isPassiveNotifyEntry(permEntry)) return false;
-  const mode = typeof ctx.getPermissionAutomationMode === "function"
-    ? ctx.getPermissionAutomationMode()
-    : PERMISSION_AUTOMATION_MODE.OFF;
+  const mode = typeof ctx.getEffectivePermissionAutomationMode === "function"
+    ? ctx.getEffectivePermissionAutomationMode(permEntry, { sessionOnly: false })
+    : (
+        typeof ctx.getPermissionAutomationMode === "function"
+          ? ctx.getPermissionAutomationMode()
+          : PERMISSION_AUTOMATION_MODE.OFF
+      );
   const action = evaluatePermissionAutomation({
     mode,
     interaction: permEntry.interaction,
@@ -792,6 +898,19 @@ function maybeAutoApprovePermission(permEntry) {
     ) {
       permLog(`automation defer: unknown interaction mode=${mode} tool=${permEntry.toolName || "(missing)"} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
     }
+    return false;
+  }
+
+  // Global automation keeps its existing adapter-wide behavior. A session
+  // override, however, may be consumed after the route has created the entry,
+  // so it must pass the same current liveness/gate/identity chokepoint used by
+  // warning returns, remote commit, and sweep.
+  if (
+    action === AUTOMATION_ACTION.AUTO_ALLOW
+    && typeof ctx.hasSessionAutomationOverride === "function"
+    && ctx.hasSessionAutomationOverride(permEntry)
+    && !canAutoResolvePendingPermission(permEntry, { mode })
+  ) {
     return false;
   }
 
@@ -812,7 +931,9 @@ function showPermissionBubble(permEntry) {
   // Auto-pilot: if enabled, approve immediately and never render a bubble.
   if (maybeAutoApprovePermission(permEntry)) return;
 
-  const sugCount = (permEntry.suggestions || []).length;
+  const canOfferSessionTrust = typeof ctx.canOfferSessionTrust === "function"
+    && ctx.canOfferSessionTrust(permEntry) === true;
+  const sugCount = (permEntry.suggestions || []).length + (canOfferSessionTrust ? 1 : 0);
   const scale = getTextScale();
   const wa = getAnchorWorkArea();
   const bh = clampBubbleHeight(scaleHeight(estimateBubbleHeight(sugCount), scale), wa.height);
@@ -979,11 +1100,15 @@ function armPermissionAutoCloseTimer(permEntry) {
     clearTimeout(permEntry.autoCloseTimer);
     permEntry.autoCloseTimer = null;
   }
-  if (isDecisionInteraction(permEntry.interaction)) return;
+  if (!pendingPermissions.includes(permEntry)) return;
+  if (permEntry.trustConfirming === true || isDecisionInteraction(permEntry.interaction)) return;
   const policy = getPolicy(ctx, "permission");
   if (!policy.enabled || !(policy.autoCloseMs > 0)) return;
-  const elapsed = Math.max(0, Date.now() - (permEntry.createdAt || Date.now()));
-  const remaining = Math.max(0, policy.autoCloseMs - elapsed);
+  const remaining = computePermissionAutoCloseRemainingMs(
+    permEntry,
+    policy.autoCloseMs,
+    Date.now()
+  );
   if (remaining === 0) {
     dismissPermissionWithoutDecision(permEntry, "Auto-closed before timer armed");
     return;
@@ -1077,6 +1202,11 @@ function buildPermissionBubblePayload(permEntry) {
     toolName: permEntry.toolName,
     toolInput: permEntry.toolInput,
     suggestions: permEntry.suggestions || [],
+    canOfferSessionTrust: typeof ctx.canOfferSessionTrust === "function"
+      && ctx.canOfferSessionTrust(permEntry) === true,
+    sessionTrustError: typeof permEntry.sessionTrustError === "string"
+      ? permEntry.sessionTrustError
+      : null,
     lang: ctx.lang,
     interaction: isValidInteraction(permEntry.interaction) ? permEntry.interaction : null,
     isElicitation: permEntry.isElicitation || false,
@@ -1115,6 +1245,33 @@ function syncPermissionBubbleContent(permEntry) {
   const bub = permEntry && permEntry.bubble;
   if (!bub || bub.isDestroyed() || !permEntry.bubbleReady) return false;
   bub.webContents.send("permission-show", buildPermissionBubblePayload(permEntry));
+  return true;
+}
+
+function beginSessionTrustConfirmation(permEntry) {
+  if (!isPermissionEntryLive(permEntry) || permEntry.trustConfirming === true) return false;
+  permEntry.trustConfirming = true;
+  permEntry.autoClosePauseStartedAt = Date.now();
+  if (permEntry.autoCloseTimer) {
+    clearTimeout(permEntry.autoCloseTimer);
+    permEntry.autoCloseTimer = null;
+  }
+  return true;
+}
+
+function endSessionTrustConfirmation(permEntry, options = {}) {
+  if (!permEntry) return false;
+  const now = Date.now();
+  if (Number.isFinite(permEntry.autoClosePauseStartedAt)) {
+    const elapsed = Math.max(0, now - permEntry.autoClosePauseStartedAt);
+    permEntry.autoClosePausedTotalMs = Math.max(
+      0,
+      Number(permEntry.autoClosePausedTotalMs) || 0
+    ) + elapsed;
+  }
+  permEntry.autoClosePauseStartedAt = null;
+  permEntry.trustConfirming = false;
+  if (options.rearm === true) armPermissionAutoCloseTimer(permEntry);
   return true;
 }
 
@@ -1410,6 +1567,13 @@ function notifyRemoteApprovalResolved(permEntry, outcome = {}, options = {}) {
 }
 
 function cancelRemoteApproval(permEntry, options = {}) {
+  if (permEntry && permEntry.sessionTrustCandidate && typeof ctx.cancelSessionTrustCandidate === "function") {
+    try {
+      ctx.cancelSessionTrustCandidate(permEntry, {
+        reason: options.reason || "permission-resolved",
+      });
+    } catch {}
+  }
   if (options.outcome) {
     notifyRemoteApprovalResolved(permEntry, options.outcome, {
       skipClientName: options.skipClientName,
@@ -1583,8 +1747,13 @@ function maybeStartRemoteApproval(permEntry) {
           controller ? { signal: controller.signal } : {}
         );
       } else {
+        const clientPayload = {
+          ...payload,
+          canOfferSessionTrust: typeof ctx.canOfferRemoteSessionTrust === "function"
+            && ctx.canOfferRemoteSessionTrust(permEntry, { name, client }) === true,
+        };
         request = client.requestApproval(
-          payload,
+          clientPayload,
           controller ? { signal: controller.signal } : {}
         );
       }
@@ -1611,7 +1780,16 @@ function maybeStartRemoteApproval(permEntry) {
         // A decision can pass the shape check above yet still be unusable
         // (e.g. "suggestion:9" for an entry with no such suggestion). That is
         // just as settled-without-a-decision as an invalid payload.
-        if (handleRemoteApprovalDecision(permEntry, decision, name) === false) {
+        if (handleRemoteApprovalDecision(
+          permEntry,
+          decision,
+          name,
+          client,
+          () => {
+            settledWithoutDecision += 1;
+            maybeFallBackRemoteOnlyEntry();
+          }
+        ) === false) {
           settledWithoutDecision += 1;
           maybeFallBackRemoteOnlyEntry();
         }
@@ -1641,6 +1819,7 @@ function isRemoteApprovalDecision(decision) {
     || decision === "deny"
     || decision === "terminal"
     || (decision && typeof decision === "object" && decision.type === "elicitation-submit")
+    || (decision && typeof decision === "object" && decision.action === "session-trust")
     || (typeof decision === "string" && /^suggestion:\d+$/.test(decision))
     || !!normalizeRemoteApprovalDecision(decision);
 }
@@ -1673,9 +1852,67 @@ function setRemoteResolutionOutcome(permEntry, outcome, sourceName) {
 // still pending — the caller counts that as "settled without a decision" so a
 // remote-only entry can still fall back instead of hanging until the hook's
 // timeout. Every consumed/already-resolved path returns true.
-function handleRemoteApprovalDecision(permEntry, decision, sourceName) {
-  if (pendingPermissions.indexOf(permEntry) === -1) return true;
+function handleRemoteApprovalDecision(
+  permEntry,
+  decision,
+  sourceName,
+  sourceClient,
+  onSessionTrustSettledWithoutDecision
+) {
+  const isSessionTrustDecision = !!(
+    decision
+    && typeof decision === "object"
+    && decision.action === "session-trust"
+  );
+  const discardUnusedSessionTrustHandle = (reason) => {
+    if (
+      !isSessionTrustDecision
+      || !sourceClient
+      || typeof sourceClient.discardSessionTrustCardHandle !== "function"
+    ) {
+      return false;
+    }
+    try {
+      return sourceClient.discardSessionTrustCardHandle(decision.cardHandle, { reason }) === true;
+    } catch {
+      return false;
+    }
+  };
+  if (pendingPermissions.indexOf(permEntry) === -1) {
+    discardUnusedSessionTrustHandle("permission-resolved");
+    return true;
+  }
   const source = remoteDecisionSource(sourceName);
+  if (
+    isSessionTrustDecision
+    && typeof ctx.requestRemoteSessionTrust === "function"
+  ) {
+    let reportedUnresolved = false;
+    const reportUnresolved = () => {
+      if (reportedUnresolved || pendingPermissions.indexOf(permEntry) === -1) return;
+      reportedUnresolved = true;
+      if (typeof onSessionTrustSettledWithoutDecision === "function") {
+        onSessionTrustSettledWithoutDecision();
+      }
+    };
+    Promise.resolve(ctx.requestRemoteSessionTrust(permEntry, {
+      clientName: sourceName,
+      client: sourceClient,
+      cardHandle: decision.cardHandle,
+    })).then((result) => {
+      const status = result && result.status;
+      if (status !== "applied" && status !== "equivalent") {
+        discardUnusedSessionTrustHandle("session-trust-unavailable");
+        reportUnresolved();
+      }
+    }).catch((err) => {
+      permLog(`${sourceName || "remote"} session trust failed: ${compactRemoteApprovalText(err && err.message ? err.message : err, 200)}`);
+      discardUnusedSessionTrustHandle("session-trust-failed");
+      reportUnresolved();
+    });
+    return true;
+  }
+  if (isSessionTrustDecision) discardUnusedSessionTrustHandle("session-trust-unavailable");
   const normalizedLegacy = normalizeRemoteApprovalDecision(decision);
   if (normalizedLegacy) {
     if (normalizedLegacy.action === "suggestion") {
@@ -2222,6 +2459,19 @@ function handleDecide(event, behavior) {
     // informational-only, so it stays a plain acknowledge.
     if (perm.isKimiNotify) {
       ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
+    }
+    return;
+  }
+  if (behavior === "session-trust") {
+    if (typeof ctx.requestSessionTrust === "function") {
+      Promise.resolve(ctx.requestSessionTrust(perm)).catch((err) => {
+        permLog(`session trust request failed: ${err && err.message ? err.message : err}`);
+        perm.sessionTrustError = typeof ctx.translate === "function"
+          ? ctx.translate("sessionAutomationFailedRetry")
+          : "Session automation failed. Please try again.";
+        endSessionTrustConfirmation(perm, { rearm: true });
+        syncPermissionBubbleContent(perm);
+      });
     }
     return;
   }
@@ -2778,6 +3028,9 @@ return {
   pendingPermissions, PASSTHROUGH_TOOLS,
   getVisibleBubbleBounds,
   addPendingPermission, removePendingPermission,
+  isPermissionEntryLive, canAutoResolvePendingPermission,
+  beginSessionTrustConfirmation, endSessionTrustConfirmation,
+  syncPermissionBubbleContent,
   maybeStartRemoteApproval,
   dismissPermissionForTerminal,
   // Test seam: lets wire-level tests pin which provenance flags reach the
@@ -2807,6 +3060,7 @@ module.exports.registerPermissionIpc = registerPermissionIpc;
 module.exports.__test = {
   computeBubbleStackLayout,
   computePassiveNotifyRemainingMs,
+  computePermissionAutoCloseRemainingMs,
   clampBubbleHeight,
   shouldSuppressCodexNotifyBubble,
   sanitizeCodexPermissionDecision,

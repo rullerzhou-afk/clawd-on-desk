@@ -169,7 +169,14 @@ describe("Codex official /permission path", () => {
       localSessionKey("codex:s1"),
       "notification",
       "PermissionRequest",
-      { agentId: "codex", hookSource: "codex-official" },
+      {
+        agentId: "codex",
+        hookSource: "codex-official",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "non-authoritative-codex-session-id",
+        },
+      },
     ]);
 
     res.destroy();
@@ -212,6 +219,10 @@ describe("Codex official /permission path", () => {
         model: "gpt-5.4",
         codexOriginator: "Codex Desktop",
         codexSource: "vscode",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "unsupported-codex-session-source",
+        },
         transientPermissionEvent: true,
       },
     ]);
@@ -272,9 +283,46 @@ describe("Codex official /permission path", () => {
       localSessionKey("codex:s1"),
       "notification",
       "PermissionRequest",
-      { agentId: "codex", hookSource: "codex-official" },
+      {
+        agentId: "codex",
+        hookSource: "codex-official",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "non-authoritative-codex-session-id",
+        },
+      },
     ]);
 
+    res.destroy();
+  });
+
+  it("marks an audited local process-bound Codex TUI permission eligible", async () => {
+    const sessionId = "codex:019f9c87-23a9-7d03-a7ac-c11e3270c3b8";
+    const { handler, pendingPermissions, updates } = startServer();
+    const req = makeReq({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      session_id: sessionId,
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      source_pid: 778,
+      agent_pid: 777,
+      codex_originator: "codex-tui",
+      codex_source: "cli",
+    });
+    const res = makeRes();
+
+    handler(req, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepStrictEqual(
+      pendingPermissions[0].sessionAutomationIdentity,
+      { eligible: true, reason: "eligible" }
+    );
+    assert.deepStrictEqual(
+      updates[0][3].sessionAutomationIdentity,
+      pendingPermissions[0].sessionAutomationIdentity
+    );
     res.destroy();
   });
 

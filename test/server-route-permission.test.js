@@ -274,7 +274,34 @@ describe("server-route-permission POST", () => {
       const entry = res.ctx.pendingPermissions[0];
       assert.strictEqual(isValidInteraction(entry.interaction), true, agentId);
       assert.strictEqual(entry.interaction.intent, INTERACTION_INTENT.TOOL_APPROVAL, agentId);
+      assert.strictEqual(entry.sessionAutomationIdentity.eligible, false, agentId);
+      assert.strictEqual(Object.isFrozen(entry.sessionAutomationIdentity), true, agentId);
+      assert.deepStrictEqual(
+        res.ctx.calls.updateSession.at(-1)[3].sessionAutomationIdentity,
+        entry.sessionAutomationIdentity,
+        `${agentId} permission identity must reach the main-owned session path`
+      );
     }
+  });
+
+  it("uses the raw permission session id and ignores sender eligibility claims", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "default",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      sessionAutomationEligible: true,
+    }));
+
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    assert.deepStrictEqual(
+      res.ctx.pendingPermissions[0].sessionAutomationIdentity,
+      { eligible: false, reason: "placeholder-session-id" }
+    );
+    assert.deepStrictEqual(
+      res.ctx.calls.updateSession[0][3].sessionAutomationIdentity,
+      { eligible: false, reason: "placeholder-session-id" }
+    );
   });
 
   it("runs ordinary CodeBuddy tools, including Hermes-only clarify names, through auto-tools end to end", async () => {
@@ -522,6 +549,7 @@ describe("server-route-permission POST", () => {
       model: "gpt-5.4",
       codex_originator: "Codex Desktop",
       codex_source: "vscode",
+      hook_source: "codex-official",
     }));
 
     assert.strictEqual(res.statusCode, null);
@@ -557,6 +585,10 @@ describe("server-route-permission POST", () => {
         model: "gpt-5.4",
         codexOriginator: "Codex Desktop",
         codexSource: "vscode",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "unsupported-codex-session-source",
+        },
       },
     ]]);
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
@@ -627,7 +659,13 @@ describe("server-route-permission POST", () => {
       localSessionKey("opencode:s1"),
       "notification",
       "PermissionRequest",
-      { agentId: "opencode" },
+      {
+        agentId: "opencode",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "permission-session-association-not-authoritative",
+        },
+      },
     ]]);
     assert.deepStrictEqual(res.recorder.map((item) => item.outcome).filter(Boolean), ["accepted"]);
   });
@@ -907,7 +945,13 @@ describe("server-route-permission POST", () => {
       localSessionKey("sid"),
       "notification",
       "PermissionRequest",
-      { agentId: "claude-code" },
+      {
+        agentId: "claude-code",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "identity-verification-required",
+        },
+      },
     ]]);
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
     assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, [entry]);
@@ -1022,8 +1066,48 @@ describe("server-route-permission POST", () => {
       localSessionKey("sid"),
       "notification",
       "PermissionRequest",
-      { agentId: "claude-code" },
+      {
+        agentId: "claude-code",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "identity-verification-required",
+        },
+      },
     ]]);
+  });
+
+  it("resolves a remote-only entry from the session override before sending a remote card", async () => {
+    let sawSessionOnly = false;
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "sid",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      tool_use_id: "tool-session-auto",
+    }), {
+      ctx: {
+        hideBubbles: true,
+        maybeAutoResolveSessionPermission(entry, options) {
+          assert.strictEqual(this.pendingPermissions.includes(entry), true);
+          assert.deepStrictEqual(options, { sessionOnly: true });
+          sawSessionOnly = true;
+          this.resolvePermissionEntry(entry, "allow", "session automation");
+          this.removePendingPermission(entry, "resolved-by-session-automation");
+          entry.res.writeHead(200);
+          entry.res.end("allow");
+          return true;
+        },
+        maybeStartRemoteApproval: () => {
+          throw new Error("remote client must not run after session automation");
+        },
+      },
+    });
+
+    assert.strictEqual(sawSessionOnly, true);
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body, "allow");
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    assert.deepStrictEqual(res.ctx.calls.updateSession, []);
   });
 
   it("keeps trusted remote profile metadata on Telegram-only approval entries", async () => {
@@ -1364,6 +1448,10 @@ describe("server-route-permission POST", () => {
         pidChain: [9999, 1234],
         cwd: "D:/repo",
         host: "devbox",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "session-lifecycle-not-authoritative",
+        },
       },
     ]]);
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
@@ -1575,6 +1663,10 @@ describe("server-route-permission POST", () => {
         pidChain: [9999, 1234],
         cwd: "/home/user/repo",
         editor: "cursor",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "session-lifecycle-not-authoritative",
+        },
       },
     ]]);
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
@@ -1609,6 +1701,10 @@ describe("server-route-permission POST", () => {
         agentId: "hermes",
         cwd: "/home/user/repo",
         agentPid: 5678,
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "session-lifecycle-not-authoritative",
+        },
       },
     ]]);
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
@@ -1692,7 +1788,13 @@ describe("server-route-permission POST — CC subagent requests (#451)", () => {
       localSessionKey("sid"),
       "notification",
       "PermissionRequest",
-      { agentId: "claude-code" },
+      {
+        agentId: "claude-code",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "identity-verification-required",
+        },
+      },
     ]]);
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
   });
@@ -1745,6 +1847,25 @@ describe("server-route-permission POST — CC subagent requests (#451)", () => {
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
     assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, []);
     assert.deepStrictEqual(res.recorder.map((item) => item.outcome).filter(Boolean), ["accepted"]);
+  });
+
+  it("checks the subagent gate before the remote-only path", async () => {
+    const remoteCalls = [];
+    const res = await callPermissionPost(subagentBody(), {
+      ctx: {
+        hideBubbles: true,
+        isAgentSubagentPermissionsEnabled: () => false,
+        maybeStartRemoteApproval: (entry) => {
+          remoteCalls.push(entry);
+          return true;
+        },
+      },
+    });
+
+    assert.strictEqual(res.destroyed, true);
+    assert.deepStrictEqual(remoteCalls, []);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
   });
 
   it("keeps bubbling main-thread requests while the subagent sub-gate is off", async () => {
