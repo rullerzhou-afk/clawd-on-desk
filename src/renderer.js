@@ -939,6 +939,7 @@ function releaseImg(el) {
 // --- Reaction state (visual side) ---
 let isReacting = false;
 let isDragReacting = false;
+let deferredStateDuringDrag = null;
 let reactTimer = null;
 let currentIdleSvg = null;    // tracks which SVG is currently showing
 let currentState = null;      // last state name received from main (for re-pulse)
@@ -1235,6 +1236,7 @@ function startDragReaction(direction) {
   if (!dragSvg) return;
   if (isDragReacting && currentDragSvg === dragSvg) return;
 
+  if (!isDragReacting) deferredStateDuringDrag = null;
   if (!isDragReacting && isReacting) {
     if (reactTimer) { clearTimeout(reactTimer); reactTimer = null; }
     isReacting = false;
@@ -1252,6 +1254,11 @@ function endDragReaction() {
   if (!isDragReacting) return;
   isDragReacting = false;
   currentDragSvg = null;
+  const deferredState = deferredStateDuringDrag;
+  deferredStateDuringDrag = null;
+  if (deferredState) {
+    renderStateFile(deferredState.state, deferredState.svg);
+  }
   window.electronAPI.resumeFromReaction();
 }
 
@@ -1562,6 +1569,10 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
 }
 
 function renderStateFile(state, svg) {
+  if (isDragReacting) {
+    deferredStateDuringDrag = { state, svg };
+    return;
+  }
   // Main process state change → cancel any active click reaction
   cancelReaction();
   // Track the latest state name so the Kimi permission pulse can re-trigger

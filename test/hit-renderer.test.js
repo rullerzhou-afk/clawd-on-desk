@@ -234,6 +234,20 @@ describe("hit-renderer input layer", () => {
       ]
     );
   });
+
+  it("keeps the drag reaction owned until pointerup when a state refresh cancels other reactions", () => {
+    const h = createHarness();
+    h.pointerdown({ clientX: 100, clientY: 100 });
+    h.pointermove({ clientX: 90, clientY: 100 });
+
+    h.apiHandlers.cancelReaction();
+    h.pointerup({});
+
+    assert.deepStrictEqual(
+      h.apiCalls.filter((call) => call[0] === "startDragReaction" || call[0] === "endDragReaction"),
+      [["startDragReaction", "left"], ["endDragReaction"]]
+    );
+  });
 });
 
 describe("hit-renderer OS file drop (#459)", () => {

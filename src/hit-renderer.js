@@ -52,8 +52,10 @@ let isDragReacting = false;
 window.hitAPI.onCancelReaction(() => {
   if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; clickCount = 0; firstClickDir = null; }
   isReacting = false;
-  isDragReacting = false;
-  dragReactionDirection = null;
+  if (!isDragging) {
+    isDragReacting = false;
+    dragReactionDirection = null;
+  }
 });
 
 function queueDragMove() {

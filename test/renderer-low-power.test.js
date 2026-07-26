@@ -288,6 +288,7 @@ globalThis.__rendererTest = {
   get activeSwapToken() { return activeSwapToken; },
   get clawdEl() { return clawdEl; },
   get currentDisplayedState() { return currentDisplayedState; },
+  get isDragReacting() { return isDragReacting; },
   get accessoryAssetLoadTimer() { return _accessoryAssetLoadTimer; },
   get accessoryAssetSettled() { return _accessoryAssetSettled; },
   get lowPowerSvgPaused() { return lowPowerSvgPaused; },
@@ -1813,5 +1814,37 @@ describe("renderer glyph flip compensation", () => {
     assert.ok(source.includes("typeof svgWindow.__clawdSetGlyphFlipCompensation === \"function\""));
     assert.ok(source.includes("svgWindow.__clawdSetGlyphFlipCompensation(true);"));
     assert.ok(source.includes("svgWindow.__clawdSetGlyphFlipCompensation(false);"));
+  });
+});
+
+describe("renderer drag reaction state handoff", () => {
+  it("keeps the drag visual through state refreshes and applies only the latest state on release", () => {
+    const harness = createRendererHarness({
+      themeConfig: { dragSvg: "drag.svg" },
+    });
+
+    harness.electronHandlers.onStartDragReaction("left");
+    assert.strictEqual(harness.api.isDragReacting, true);
+    assert.strictEqual(harness.api.pendingSvgFile, "drag.svg");
+
+    harness.electronHandlers.onStateChange("attention", "happy.svg");
+    harness.electronHandlers.onStateChange("idle", "idle-next.svg");
+
+    assert.strictEqual(harness.api.isDragReacting, true);
+    assert.strictEqual(
+      harness.api.pendingSvgFile,
+      "drag.svg",
+      "background state changes must not replace the held drag visual"
+    );
+
+    harness.electronHandlers.onEndDragReaction();
+
+    assert.strictEqual(harness.api.isDragReacting, false);
+    assert.strictEqual(
+      harness.api.pendingSvgFile,
+      "idle-next.svg",
+      "pointerup should render the latest deferred state, not an older intermediate state"
+    );
+    assert.ok(harness.electronCalls.some((call) => call.name === "resumeFromReaction"));
   });
 });
