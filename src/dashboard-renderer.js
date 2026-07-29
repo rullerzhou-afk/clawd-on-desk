@@ -950,8 +950,22 @@ function appendSessionAutomationOrphans(fragment) {
   fragment.appendChild(section);
 }
 
+function hasFocusedSessionAutomationSelect() {
+  const active = document.activeElement;
+  return !!(
+    active
+    && active.tagName === "SELECT"
+    && active.classList
+    && active.classList.contains("session-automation-select")
+    && contentEl.contains(active)
+  );
+}
+
 function render(options = {}) {
-  if (activeEdit && !options.force) return;
+  // The one-second elapsed-time tick normally rebuilds the entire card tree.
+  // Replacing a focused native <select> closes its open menu on Windows, so
+  // defer ordinary snapshot/timer renders until the user finishes choosing.
+  if ((activeEdit || hasFocusedSessionAutomationSelect()) && !options.force) return;
   const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
   const count = sessions.length;
   const now = Date.now();

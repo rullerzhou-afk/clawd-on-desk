@@ -295,4 +295,16 @@ describe("dashboard window", () => {
     assert.match(rendererSource, /if \(signature === lastQuotaSummarySignature\) return;/);
     assert.match(rendererSource, /resetDateFormatterLang !== lang/);
   });
+
+  it("does not replace an open session automation select on the one-second render tick", () => {
+    const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "dashboard-renderer.js"), "utf8");
+
+    assert.match(rendererSource, /function hasFocusedSessionAutomationSelect\(\)/);
+    assert.match(rendererSource, /active\.tagName === "SELECT"/);
+    assert.match(rendererSource, /active\.classList\.contains\("session-automation-select"\)/);
+    assert.match(
+      rendererSource,
+      /\(activeEdit \|\| hasFocusedSessionAutomationSelect\(\)\) && !options\.force/
+    );
+  });
 });
