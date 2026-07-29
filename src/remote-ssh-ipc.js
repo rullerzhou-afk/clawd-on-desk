@@ -698,8 +698,8 @@ function registerRemoteSshIpc(options = {}) {
   // synchronously on ENOENT — it returns a child that emits an async
   // 'error' event. If we returned `{ ok: true }` after a synchronous spawn
   // call and never listened for that error, two bad things happen:
-  //   1. The fallback chain (wt → cmd, gnome → konsole → xterm) is never
-  //      triggered when the first candidate is missing.
+  //   1. A terminal candidate fallback chain is never triggered when the
+  //      first candidate is missing.
   //   2. An EventEmitter 'error' with no listener becomes an
   //      `uncaughtException` and crashes the Electron main process.
   //
@@ -755,13 +755,12 @@ function registerRemoteSshIpc(options = {}) {
   }
 
   async function spawnWindowsTerminal(sshArgs) {
-    // wt.exe is preferred but not on every box (Win10 LTSC, stripped images,
-    // pre-1903 builds). cmd.exe is always present. We try wt first, fall back
-    // to cmd on real spawn failure (verified via the error event).
+    // Launch the interactive command through cmd.exe instead of handing it to
+    // `wt.exe --` directly. Windows Terminal can spawn successfully while its
+    // requested command later fails (notably with globally elevated profiles),
+    // and the wt client gives us no failure signal to trigger a fallback.
+    // Windows routes cmd through the user's configured default terminal host.
     const opts = { detached: true, stdio: "ignore", windowsHide: false };
-    const wt = await tryLaunch("wt.exe", ["--", "ssh", ...sshArgs], opts);
-    if (wt.ok) return { ok: true, terminal: "wt" };
-
     const quoted = sshArgs.map(quoteForCmd).join(" ");
     const cmd = await tryLaunch("cmd.exe", ["/d", "/v:off", "/s", "/k", `ssh ${quoted}`], {
       ...opts,
