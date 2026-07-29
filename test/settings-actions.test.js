@@ -81,7 +81,7 @@ describe("updateRegistry pure-data validators", () => {
       "sessionHudEnabled", "sessionHudShowElapsed", "sessionHudShowContextUsage", "sessionHudCleanupDetached",
       "sessionHudShowStateLabels", "sessionHudPinned",
       "miniMode", "openAtLoginHydrated", "soundMuted", "bubbleFollowPet",
-      "hideBubbles", "permissionBubblesEnabled", "lowPowerIdleMode",
+      "hideBubbles", "permissionBubblesEnabled", "elicitationBubblesEnabled", "lowPowerIdleMode",
       "allowEdgePinning", "disableMiniMode", "keepSizeAcrossDisplays", "codexHookHealthNotifyEnabled",
     ]) {
       assert.strictEqual(updateRegistry[key](true, deps).status, "ok", `${key}(true)`);

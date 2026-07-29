@@ -25,6 +25,7 @@
     "hideBubbles",
     "bubbleFollowPet",
     "permissionBubblesEnabled",
+    "elicitationBubblesEnabled",
     "autoApproveAllPermissions",
     "notificationBubbleAutoCloseSeconds",
     "updateBubbleAutoCloseSeconds",
@@ -118,6 +119,11 @@
         onToggle: ({ nextRaw }) => window.settingsAPI.command("setAllBubblesHidden", { hidden: nextRaw }),
       }),
       buildBubblePolicyRow(),
+      helpers.buildSwitchRow({
+        key: "elicitationBubblesEnabled",
+        labelKey: "rowElicitationBubbles",
+        descKey: "rowElicitationBubblesDesc",
+      }),
       helpers.buildSwitchRow({
         key: "bubbleFollowPet",
         labelKey: "rowBubbleFollow",

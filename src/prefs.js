@@ -161,6 +161,9 @@ const SCHEMA = {
   },
   hideBubbles: { type: "boolean", default: false },
   permissionBubblesEnabled: { type: "boolean", default: true },
+  // AskUserQuestion cards bypass every other bubble gate so elicitations never
+  // hang. Turn this off to keep them in the agent's own terminal instead.
+  elicitationBubblesEnabled: { type: "boolean", default: true },
   // DANGER: "auto-pilot". When true, every agent permission request is
   // auto-approved without showing a bubble or asking the user. Default false;
   // the only way to flip it on is the explicit, confirmation-gated toggle in

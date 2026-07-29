@@ -1919,6 +1919,7 @@ const _serverCtx = {
   get doNotDisturb() { return doNotDisturb; },
   shouldDropForDnd: () => _state.shouldDropForDnd ? _state.shouldDropForDnd() : doNotDisturb,
   get hideBubbles() { return getAllBubblesHidden(); },
+  get elicitationBubblesEnabled() { return _settingsController.get("elicitationBubblesEnabled") !== false; },
   getBubblePolicy: getRuntimeBubblePolicy,
   get pendingPermissions() { return pendingPermissions; },
   get PASSTHROUGH_TOOLS() { return PASSTHROUGH_TOOLS; },
