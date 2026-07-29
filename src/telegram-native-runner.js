@@ -452,7 +452,7 @@ function createTelegramNativeRunner({
     polling = true;
     const controller = new AbortController();
     abortController = controller;
-    // First poll uses retry to absorb 409 from a still-releasing sidecar.
+    // First poll uses retry to absorb 409 from a still-releasing bot consumer.
     loopFirst(controller.signal).catch((err) => {
       log("warn", "native polling stopped", { error: err && err.message });
     }).finally(() => {
@@ -481,11 +481,13 @@ function createTelegramNativeRunner({
   }
 
   async function loopFirst(signal) {
+    let updates;
     try {
-      await pollWithConflictRetry(
+      const firstPoll = await pollWithConflictRetry(
         () => client.getUpdates({ timeout: 0, signal }),
         { signal, sleep },
       );
+      updates = firstPoll && firstPoll.result;
     } catch (err) {
       const cls = classifyError(err);
       if (cls === ERROR_CLASSES.TIMEOUT) return; // aborted
@@ -501,6 +503,7 @@ function createTelegramNativeRunner({
       return loop(signal);
     }
     resetPollRetryDelay();
+    await handleUpdateBatch(updates);
     return loop(signal);
   }
 
@@ -523,14 +526,18 @@ function createTelegramNativeRunner({
         continue;
       }
       resetPollRetryDelay();
-      const batch = Array.isArray(updates) ? updates : [];
-      for (const u of batch) {
-        try {
-          await handleUpdate(u);
-        } catch (err) {
-          noteError("update", "handler_error");
-          safeLog("warn", "native update handler failed", { error: err && err.message });
-        }
+      await handleUpdateBatch(updates);
+    }
+  }
+
+  async function handleUpdateBatch(updates) {
+    const batch = Array.isArray(updates) ? updates : [];
+    for (const u of batch) {
+      try {
+        await handleUpdate(u);
+      } catch (err) {
+        noteError("update", "handler_error");
+        safeLog("warn", "native update handler failed", { error: err && err.message });
       }
     }
   }

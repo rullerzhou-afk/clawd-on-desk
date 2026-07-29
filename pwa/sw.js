@@ -1,4 +1,4 @@
-const CACHE_NAME = "clawd-mobile-v5";
+const CACHE_NAME = "clawd-mobile-v6";
 const STATIC_ASSETS = [
   "/mobile/",
   "/mobile/index.html",
@@ -6,6 +6,8 @@ const STATIC_ASSETS = [
   "/mobile/icons.js",
   "/mobile/app.js",
   "/mobile/manifest.json",
+  "/mobile/icons/icon-256.png",
+  "/mobile/icons/icon-512.png",
 ];
 
 self.addEventListener("install", (event) => {

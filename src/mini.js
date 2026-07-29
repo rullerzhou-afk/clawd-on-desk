@@ -2,6 +2,7 @@
 // Extracted from main.js L315-331, L2700-2911
 
 const { screen } = require("electron");
+const { resolveHorizontalEdgeContext } = require("./display-edge");
 
 module.exports = function initMini(ctx) {
 
@@ -163,26 +164,15 @@ function animateWindowParabola(targetX, targetY, durationMs, onDone) {
 // is the physical boundary the neighbouring monitor begins at (and the same
 // place a single-display mini gets physically cut off by the screen edge).
 // Returns null at an outer screen edge (single display, or no neighbour at
-// the pet's vertical band). The 4px tolerance absorbs OS-side rounding.
+// the pet's vertical band). Delegates the actual topology judgment to the
+// shared src/display-edge.js helper so mini's internal-seam clip and the
+// Linux edge-virtualization materializer can't disagree about which edges
+// are seams — see docs/plans/plan-issue-690-gnome-mini-edge-snap.md §4.1.
 function seamBoundary(wa, yMid, edge) {
   const displays = screen.getAllDisplays();
-  const cx = wa.x + wa.width / 2;
-  const cy = wa.y + wa.height / 2;
-  const local = displays.find((d) =>
-    cx >= d.workArea.x && cx <= d.workArea.x + d.workArea.width &&
-    cy >= d.workArea.y && cy <= d.workArea.y + d.workArea.height);
-  const lb = local ? local.bounds : wa;
-  const seam = edge === "right" ? lb.x + lb.width : lb.x;
-  const overlapsY = (d) => {
-    if (!Number.isFinite(yMid)) return false;
-    return yMid >= d.bounds.y && yMid <= d.bounds.y + d.bounds.height;
-  };
-  const hasNeighbour = displays.some((d) => {
-    if (d === local || !overlapsY(d)) return false;
-    const dEdge = edge === "right" ? d.bounds.x : d.bounds.x + d.bounds.width;
-    return Math.abs(dEdge - seam) <= 4;
-  });
-  return hasNeighbour ? seam : null;
+  const context = resolveHorizontalEdgeContext({ displays, workArea: wa, yMid });
+  const side = edge === "right" ? context.right : context.left;
+  return side.hasAdjacentDisplay ? side.physicalBoundary : null;
 }
 
 // Multi-monitor seam state: when the mini pet sits at an internal seam, the

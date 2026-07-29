@@ -2,336 +2,429 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-
 const {
   createTelegramMigrationController,
 } = require("../src/telegram-migration-controller");
-const { STATES, EVENTS } = require("../src/telegram-migration-state");
-const { buildTelegramStatusDiagnostic } = require("../src/telegram-approval-runtime-status");
-
-class FakeSidecar {
-  constructor() { this.running = false; this.stopCalls = []; this.failStart = false; }
-  isRunning() { return this.running; }
-  async start() {
-    if (this.failStart) {
-      const err = new Error("fake sidecar start failed");
-      err.code = "SIDECAR_START_FAILED";
-      throw err;
-    }
-    this.running = true;
-  }
-  async stop() { this.stopCalls.push(true); this.running = false; }
-}
+const {
+  STATES,
+  EVENTS,
+  TEST_ORIGINS,
+} = require("../src/telegram-migration-state");
 
 class FakeNative {
-  constructor() { this.polling = false; this.cards = []; }
+  constructor() {
+    this.polling = false;
+    this.startCalls = 0;
+    this.stopCalls = 0;
+    this.cards = 0;
+    this.failStart = null;
+    this.failStop = null;
+    this.failCard = null;
+  }
   isPolling() { return this.polling; }
-  async start() { this.polling = true; }
-  async stop() { this.polling = false; }
-  async sendTestCard(payload) { this.cards.push(payload); }
+  async start() {
+    this.startCalls += 1;
+    if (this.failStart) throw this.failStart;
+    this.polling = true;
+  }
+  async stop() {
+    this.stopCalls += 1;
+    if (this.failStop) throw this.failStop;
+    this.polling = false;
+  }
+  async sendTestCard() {
+    this.cards += 1;
+    if (this.failCard) throw this.failCard;
+  }
 }
 
 function makeController(overrides = {}) {
-  const sidecar = new FakeSidecar();
-  const native = new FakeNative();
-  let prefsState = { ...overrides.initialPrefs };
-  let filesState = { ...overrides.initialFiles };
-  const persisted = [];
+  const native = overrides.native || new FakeNative();
+  let prefsState = { ...(overrides.initialPrefs || {}) };
+  let filesState = {
+    nativeConfigComplete: overrides.nativeConfigComplete === true,
+  };
+  const writes = [];
   const timers = [];
+  const revisions = [];
+  let clock = 1000;
   const ctrl = createTelegramMigrationController({
-    sidecar,
     native,
-    readPrefs: () => prefsState,
-    writePrefs: async (patch) => { prefsState = { ...prefsState, ...patch }; persisted.push(patch); },
-    readFiles: () => filesState,
-    settleMs: 0,
-    stopGraceMs: 0,
-    setTimer: (cb, ms) => { const t = { cb, ms, cancelled: false }; timers.push(t); return t; },
-    clearTimer: (t) => { if (t) t.cancelled = true; },
-    log: () => {},
-    ...overrides.opts,
-  });
-  return { ctrl, sidecar, native, persisted,
-    setFiles(f) { filesState = { ...filesState, ...f }; },
-    setPrefs(p) { prefsState = { ...prefsState, ...p }; },
-    getPrefs: () => prefsState,
-    fireTimer: async () => {
-      const t = timers.find((x) => !x.cancelled && !x.fired);
-      if (!t) throw new Error("no pending timer");
-      t.fired = true;
-      t.cb();
-      // Let async dispatch + manager.apply chain settle.
-      await new Promise((r) => setImmediate(r));
-      await new Promise((r) => setImmediate(r));
-      await new Promise((r) => setImmediate(r));
+    readPrefs: () => ({ ...prefsState }),
+    writePrefs: overrides.writePrefs || (async (patch) => {
+      prefsState = { ...prefsState, ...patch };
+      writes.push({ ...patch });
+    }),
+    readFiles: () => ({ ...filesState }),
+    setTimer: (cb, ms) => {
+      const timer = { cb, ms, cancelled: false, fired: false };
+      timers.push(timer);
+      return timer;
     },
-    pendingTimer: () => timers.find((x) => !x.cancelled && !x.fired) || null,
+    clearTimer: (timer) => { if (timer) timer.cancelled = true; },
+    now: () => ++clock,
+    onSnapshotChanged: ({ revision }) => revisions.push(revision),
+    log: () => {},
+  });
+  return {
+    ctrl,
+    native,
+    writes,
+    revisions,
+    getPrefs: () => ({ ...prefsState }),
+    setPrefs: (patch) => { prefsState = { ...prefsState, ...patch }; },
+    setFiles: (patch) => { filesState = { ...filesState, ...patch }; },
+    pendingTimer: () => timers.find((entry) => !entry.cancelled && !entry.fired) || null,
+    fireTimer: async () => {
+      const timer = timers.find((entry) => !entry.cancelled && !entry.fired);
+      assert.ok(timer, "expected pending timer");
+      timer.fired = true;
+      timer.cb();
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+    },
   };
 }
 
-test("init: legacy user with full env → LEGACY_ACTIVE + starts sidecar", async () => {
-  const env = makeController({
-    initialFiles: { hasLegacyEnvFile: true, legacyConfigComplete: true },
+test("controller requires only a native handle, never a sidecar", () => {
+  const native = new FakeNative();
+  const ctrl = createTelegramMigrationController({
+    native,
+    readPrefs: () => ({}),
+    writePrefs: async () => {},
+    readFiles: () => ({}),
   });
-  const state = await env.ctrl.init();
-  assert.equal(state, STATES.LEGACY_ACTIVE);
-  assert.equal(env.sidecar.running, true);
+  assert.equal(typeof ctrl.init, "function");
 });
 
-test("init: fresh user → IDLE, nothing started", async () => {
-  const env = makeController({ initialFiles: {} });
-  const state = await env.ctrl.init();
-  assert.equal(state, STATES.IDLE);
-  assert.equal(env.sidecar.running, false);
+test("legacy init lands at migration-required with no runtime", async () => {
+  const env = makeController({
+    initialPrefs: { transport: "legacy", legacyEnabled: true },
+    nativeConfigComplete: true,
+  });
+  assert.equal(await env.ctrl.init(), STATES.NATIVE_MIGRATION_REQUIRED);
+  assert.equal(env.native.startCalls, 0);
   assert.equal(env.native.polling, false);
 });
 
-test("init: v0.8 opt-out user (legacyEnabled=false) → IDLE NOT re-activated", async () => {
-  const env = makeController({
-    initialPrefs: { legacyEnabled: false },
-    initialFiles: { hasLegacyEnvFile: true, legacyConfigComplete: true },
-  });
-  const state = await env.ctrl.init();
-  assert.equal(state, STATES.IDLE);
-  assert.equal(env.sidecar.running, false);
-});
-
-test("dispatch USER_TEST_NATIVE from LEGACY_ACTIVE: stops sidecar, starts native, sends test card", async () => {
-  const env = makeController({
-    initialFiles: { hasLegacyEnvFile: true, legacyConfigComplete: true, nativeConfigComplete: true },
-  });
-  await env.ctrl.init();
-  assert.equal(env.sidecar.running, true);
-
-  const res = await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
-  assert.equal(res.ok, true);
-  assert.equal(res.state, STATES.TESTING_NATIVE);
-  assert.equal(env.sidecar.running, false);
-  assert.equal(env.native.polling, true);
-  assert.equal(env.native.cards.length, 1);
-});
-
-test("dispatch TEST_SUCCESS from TESTING_NATIVE: persists transport=native + clears test timer", async () => {
-  const env = makeController({
-    initialFiles: { nativeConfigComplete: true },
-  });
-  await env.ctrl.init();
-  await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
-  const res = await env.ctrl.dispatch({ type: EVENTS.TEST_SUCCESS, at: 12345 });
-  assert.equal(res.ok, true);
-  assert.equal(res.state, STATES.NATIVE_ACTIVE);
-  const persistedPatches = env.persisted;
-  const lastPatch = persistedPatches[persistedPatches.length - 1];
-  assert.equal(lastPatch.transport, "native");
-  assert.equal(lastPatch.nativeVerifiedAt, 12345);
-});
-
-test("dispatch USER_ROLLBACK_TO_LEGACY auto-finalizes after sidecar start", async () => {
+test("verified native init starts polling", async () => {
   const env = makeController({
     initialPrefs: { transport: "native", nativeVerifiedAt: 1 },
-    initialFiles: { hasLegacyEnvFile: true, legacyConfigComplete: true, nativeConfigComplete: true },
+    nativeConfigComplete: true,
   });
-  await env.ctrl.init();
-  assert.equal(env.native.polling, true);
-
-  const res = await env.ctrl.dispatch({ type: EVENTS.USER_ROLLBACK_TO_LEGACY });
-  assert.equal(res.ok, true);
-  assert.equal(res.state, STATES.LEGACY_ACTIVE);
-  assert.equal(env.native.polling, false);
-  assert.equal(env.sidecar.running, true);
-  assert.equal(env.persisted.at(-1).transport, "legacy");
+  assert.equal(await env.ctrl.init(), STATES.NATIVE_ACTIVE);
+  assert.equal(env.native.startCalls, 1);
 });
 
-test("dispatch USER_ROLLBACK_TO_LEGACY records failed legacy runtime when sidecar start returns false", async () => {
+test("repaired setup can test without restarting the app", async () => {
   const env = makeController({
-    initialPrefs: { transport: "native", nativeVerifiedAt: 1 },
-    initialFiles: { hasLegacyEnvFile: true, legacyConfigComplete: true, nativeConfigComplete: true },
+    initialPrefs: { transport: "legacy" },
+    nativeConfigComplete: false,
   });
-  env.sidecar.start = async () => false;
-  await env.ctrl.init();
-
-  const res = await env.ctrl.dispatch({ type: EVENTS.USER_ROLLBACK_TO_LEGACY });
-  assert.equal(res.ok, false);
-  assert.equal(res.state, STATES.LEGACY_ACTIVE);
-  assert.equal(env.native.polling, false);
-  const snap = env.ctrl.getSnapshot();
-  assert.equal(snap.runtimeStatus.status, "failed");
-  assert.equal(env.persisted.at(-1).transport, "legacy");
+  assert.equal(await env.ctrl.init(), STATES.NEEDS_SETUP);
+  env.setFiles({ nativeConfigComplete: true });
+  await env.ctrl.reconcileConfiguration();
+  assert.equal(env.ctrl.getSnapshot().state, STATES.NATIVE_MIGRATION_REQUIRED);
+  const result = await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
+  assert.equal(result.ok, true);
+  assert.equal(result.state, STATES.TESTING_NATIVE);
+  assert.equal(env.native.cards, 1);
 });
 
-test("dispatch: illegal event returns ok:false + errorCode + state unchanged", async () => {
+test("USER_TEST_NATIVE reads live config even before reconcile runs", async () => {
   const env = makeController({
-    initialFiles: { hasLegacyEnvFile: true, legacyConfigComplete: true },
+    initialPrefs: { transport: "legacy" },
+    nativeConfigComplete: false,
   });
   await env.ctrl.init();
-  const res = await env.ctrl.dispatch({ type: EVENTS.TEST_SUCCESS });
-  assert.equal(res.ok, false);
-  assert.equal(res.errorCode, "ILLEGAL_TRANSITION");
-  assert.equal(res.state, STATES.LEGACY_ACTIVE);
+  env.setFiles({ nativeConfigComplete: true });
+  const result = await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
+  assert.equal(result.ok, true);
+  assert.equal(result.state, STATES.TESTING_NATIVE);
 });
 
-test("test timer is armed on entering TESTING_NATIVE and cancelled on success", async () => {
+test("successful callback persists native only after write resolves", async () => {
+  let releaseWrite;
+  let writeEntered;
+  const entered = new Promise((resolve) => { writeEntered = resolve; });
+  const gate = new Promise((resolve) => { releaseWrite = resolve; });
+  let prefsState = { transport: "legacy" };
+  const native = new FakeNative();
+  const ctrl = createTelegramMigrationController({
+    native,
+    readPrefs: () => ({ ...prefsState }),
+    writePrefs: async (patch) => {
+      writeEntered();
+      await gate;
+      prefsState = { ...prefsState, ...patch };
+    },
+    readFiles: () => ({ nativeConfigComplete: true }),
+    log: () => {},
+  });
+  await ctrl.init();
+  await ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
+  const pending = ctrl.dispatch({ type: EVENTS.TEST_SUCCESS, at: 42 });
+  await entered;
+  assert.equal(ctrl.getSnapshot().state, STATES.TESTING_NATIVE);
+  releaseWrite();
+  const result = await pending;
+  assert.equal(result.ok, true);
+  assert.equal(ctrl.getSnapshot().state, STATES.NATIVE_ACTIVE);
+  assert.equal(prefsState.transport, "native");
+});
+
+test("a failed native persistence never publishes NATIVE_ACTIVE in memory", async () => {
   const env = makeController({
-    initialFiles: { hasLegacyEnvFile: true, legacyConfigComplete: true, nativeConfigComplete: true },
+    initialPrefs: { transport: "legacy" },
+    nativeConfigComplete: true,
+    writePrefs: async () => {
+      const err = new Error("disk full");
+      err.code = "PREFS_WRITE_FAILED";
+      throw err;
+    },
   });
   await env.ctrl.init();
   await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
-  assert.ok(env.pendingTimer(), "timer should be armed in TESTING_NATIVE");
+  const result = await env.ctrl.dispatch({ type: EVENTS.TEST_SUCCESS, at: 42 });
+  const snap = env.ctrl.getSnapshot();
 
-  await env.ctrl.dispatch({ type: EVENTS.TEST_SUCCESS, at: 1 });
-  assert.equal(env.pendingTimer(), null, "successful test should cancel timer");
+  assert.equal(result.ok, false);
+  assert.equal(snap.state, STATES.NATIVE_MIGRATION_REQUIRED);
+  assert.notEqual(snap.transport, "native");
+  assert.equal(snap.lastTestResult.outcome, "native-start-failed");
+  assert.equal(snap.lastError.code, "PREFS_WRITE_FAILED");
 });
 
-test("test timer firing dispatches TEST_TIMEOUT → falls back to LEGACY_ACTIVE", async () => {
+test("a failed disable persistence keeps the active runtime selected", async () => {
+  const native = new FakeNative();
   const env = makeController({
-    initialFiles: { hasLegacyEnvFile: true, legacyConfigComplete: true, nativeConfigComplete: true },
+    native,
+    initialPrefs: { transport: "native", nativeVerifiedAt: 99 },
+    nativeConfigComplete: true,
+    writePrefs: async () => {
+      const err = new Error("read only");
+      err.code = "PREFS_WRITE_FAILED";
+      throw err;
+    },
   });
   await env.ctrl.init();
-  await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
-  await env.fireTimer();
-  const snap = env.ctrl.getSnapshot();
-  assert.equal(snap.state, STATES.LEGACY_ACTIVE);
-  assert.equal(env.sidecar.running, true);
-});
+  const result = await env.ctrl.dispatch({ type: EVENTS.USER_DISABLE });
 
-test("getSnapshot exposes state + runtime status + owner snapshot", async () => {
-  const env = makeController({});
-  await env.ctrl.init();
-  const snap = env.ctrl.getSnapshot();
-  assert.equal(snap.state, STATES.IDLE);
-  assert.equal(typeof snap.ownerSnapshot.sidecarRunning, "boolean");
-  assert.equal(typeof snap.ownerSnapshot.nativePolling, "boolean");
-  // Undecided prefs surface as transport=undefined, not "off" (we distinguish
-  // "user explicitly disabled" from "v0.8 user with no transport key yet").
-  assert.equal(snap.transport, undefined);
-});
-
-test("init: legacy sidecar start failure → LEGACY_ACTIVE but runtimeStatus failed", async () => {
-  const env = makeController({
-    initialFiles: { hasLegacyEnvFile: true, legacyConfigComplete: true },
-  });
-  env.sidecar.failStart = true;
-  const state = await env.ctrl.init();
-  // Selected transport stays legacy; the failure must surface as runtime status,
-  // not by snapping the state away (issue #430).
-  assert.equal(state, STATES.LEGACY_ACTIVE);
-  const snap = env.ctrl.getSnapshot();
-  assert.equal(snap.ownerSnapshot.sidecarRunning, false);
-  assert.equal(snap.runtimeStatus.transport, "legacy");
-  assert.equal(snap.runtimeStatus.status, "failed");
-});
-
-test("dispatch SIDECAR_RUNTIME_FAILED @ LEGACY_ACTIVE records failure without lifecycle change", async () => {
-  const env = makeController({
-    initialFiles: { hasLegacyEnvFile: true, legacyConfigComplete: true },
-  });
-  await env.ctrl.init();
-  assert.equal(env.sidecar.running, true);
-  const res = await env.ctrl.dispatch({
-    type: EVENTS.SIDECAR_RUNTIME_FAILED,
-    reason: "died",
-    message: "sidecar exited (signal SIGTERM)",
-  });
-  assert.equal(res.ok, true);
-  assert.equal(res.state, STATES.LEGACY_ACTIVE);
-  const snap = env.ctrl.getSnapshot();
-  assert.equal(snap.runtimeStatus.status, "failed");
-  assert.equal(snap.runtimeStatus.message, "sidecar exited (signal SIGTERM)");
-});
-
-test("dispatch SIDECAR_RUNTIME_RECOVERED clears a prior failure incl. message", async () => {
-  const env = makeController({
-    initialFiles: { hasLegacyEnvFile: true, legacyConfigComplete: true },
-  });
-  env.sidecar.failStart = true;
-  await env.ctrl.init();
-  assert.equal(env.ctrl.getSnapshot().runtimeStatus.status, "failed");
-  // Manual retry / auto-restart reaching "running" → bridge dispatches recovered.
-  const res = await env.ctrl.dispatch({ type: EVENTS.SIDECAR_RUNTIME_RECOVERED });
-  assert.equal(res.ok, true);
-  const snap = env.ctrl.getSnapshot();
-  assert.equal(snap.runtimeStatus.status, "running");
-  assert.equal(snap.runtimeStatus.message, "");
-});
-
-test("SIDECAR_RUNTIME_FAILED is rejected outside LEGACY_ACTIVE", async () => {
-  const env = makeController({ initialFiles: {} });
-  await env.ctrl.init(); // IDLE
-  const res = await env.ctrl.dispatch({ type: EVENTS.SIDECAR_RUNTIME_FAILED, reason: "x" });
-  assert.equal(res.ok, false);
-  assert.equal(env.ctrl.getSnapshot().runtimeStatus.status, "stopped");
-});
-
-test("USER_DISABLE clears a stale legacy runtime failure (no leak after disable)", async () => {
-  const env = makeController({
-    initialFiles: { hasLegacyEnvFile: true, legacyConfigComplete: true },
-  });
-  await env.ctrl.init(); // LEGACY_ACTIVE, sidecar running
-  await env.ctrl.dispatch({ type: EVENTS.SIDECAR_RUNTIME_FAILED, reason: "died", message: "boom" });
-  assert.equal(env.ctrl.getSnapshot().runtimeStatus.status, "failed");
-
-  const res = await env.ctrl.dispatch({ type: EVENTS.USER_DISABLE });
-  assert.equal(res.ok, true);
-  assert.equal(res.state, STATES.IDLE);
-  const rs = env.ctrl.getSnapshot().runtimeStatus;
-  assert.equal(rs.status, "stopped");
-  assert.equal(rs.transport, "off");
-  assert.equal(rs.message, "");
-});
-
-test("switching legacy→native clears stale legacy runtime failure (no /status leak)", async () => {
-  const env = makeController({
-    initialFiles: { hasLegacyEnvFile: true, legacyConfigComplete: true, nativeConfigComplete: true },
-  });
-  await env.ctrl.init(); // LEGACY_ACTIVE
-  await env.ctrl.dispatch({ type: EVENTS.SIDECAR_RUNTIME_FAILED, reason: "died", message: "boom" });
-  assert.equal(env.ctrl.getSnapshot().runtimeStatus.status, "failed");
-
-  await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE }); // → TESTING_NATIVE
-  await env.ctrl.dispatch({ type: EVENTS.TEST_SUCCESS, at: 1 }); // → NATIVE_ACTIVE
+  assert.equal(result.ok, false);
   assert.equal(env.ctrl.getSnapshot().state, STATES.NATIVE_ACTIVE);
-  const rs = env.ctrl.getSnapshot().runtimeStatus;
-  assert.equal(rs.status, "stopped");
-  assert.equal(rs.transport, "off");
+  assert.equal(native.polling, true);
+  assert.equal(native.stopCalls, 0);
 });
 
-test("/status diagnostic does not leak a stale legacy failure after switching to native", async () => {
+test("TEST_SUCCESS wins a queued timeout race", async () => {
+  let releaseWrite;
+  let writeEntered;
+  const entered = new Promise((resolve) => { writeEntered = resolve; });
+  const gate = new Promise((resolve) => { releaseWrite = resolve; });
+  let prefsState = { transport: "legacy" };
+  const timers = [];
+  const ctrl = createTelegramMigrationController({
+    native: new FakeNative(),
+    readPrefs: () => ({ ...prefsState }),
+    writePrefs: async (patch) => {
+      writeEntered();
+      await gate;
+      prefsState = { ...prefsState, ...patch };
+    },
+    readFiles: () => ({ nativeConfigComplete: true }),
+    setTimer: (cb) => {
+      const timer = { cb, cancelled: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: (timer) => { if (timer) timer.cancelled = true; },
+    log: () => {},
+  });
+  await ctrl.init();
+  await ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
+  const success = ctrl.dispatch({ type: EVENTS.TEST_SUCCESS, at: 42 });
+  await entered;
+  timers[0].cb();
+  releaseWrite();
+  await success;
+  await new Promise((resolve) => setImmediate(resolve));
+  const snap = ctrl.getSnapshot();
+  assert.equal(snap.state, STATES.NATIVE_ACTIVE);
+  assert.equal(snap.lastTestResult, null);
+});
+
+for (const origin of [TEST_ORIGINS.LEGACY, TEST_ORIGINS.NATIVE_UNVERIFIED]) {
+  for (const eventType of [EVENTS.TEST_FAILED, EVENTS.TEST_TIMEOUT]) {
+    test(`${origin} ${eventType} never starts a legacy fallback`, async () => {
+      const env = makeController({
+        initialPrefs: origin === TEST_ORIGINS.LEGACY
+          ? { transport: "legacy" }
+          : { transport: "native", nativeVerifiedAt: null },
+        nativeConfigComplete: true,
+      });
+      await env.ctrl.init();
+      await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
+      const result = await env.ctrl.dispatch({
+        type: eventType,
+        errorClass: "401",
+      });
+      assert.equal(result.state, STATES.NATIVE_MIGRATION_REQUIRED);
+      assert.equal(env.native.polling, false);
+      assert.equal(env.ctrl.getSnapshot().testOrigin, origin);
+    });
+  }
+}
+
+for (const origin of [TEST_ORIGINS.LEGACY, TEST_ORIGINS.NATIVE_UNVERIFIED]) {
+  test(`${origin} native start failure has a terminal required state`, async () => {
+    const native = new FakeNative();
+    const err = new Error("start exploded");
+    err.code = "START_FAILED";
+    native.failStart = err;
+    const env = makeController({
+      native,
+      initialPrefs: origin === TEST_ORIGINS.LEGACY
+        ? { transport: "legacy" }
+        : { transport: "native", nativeVerifiedAt: null },
+      nativeConfigComplete: true,
+    });
+    await env.ctrl.init();
+    const result = await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
+    assert.equal(result.ok, false);
+    const snap = env.ctrl.getSnapshot();
+    assert.equal(snap.state, STATES.NATIVE_MIGRATION_REQUIRED);
+    assert.equal(snap.lastTestResult.outcome, "native-start-failed");
+    assert.equal(env.native.polling, false);
+  });
+}
+
+test("timer records timeout and clears pending timer", async () => {
   const env = makeController({
-    initialFiles: { hasLegacyEnvFile: true, legacyConfigComplete: true, nativeConfigComplete: true },
+    initialPrefs: { transport: "legacy" },
+    nativeConfigComplete: true,
   });
   await env.ctrl.init();
-  await env.ctrl.dispatch({ type: EVENTS.SIDECAR_RUNTIME_FAILED, reason: "died", message: "boom" });
   await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
-  await env.ctrl.dispatch({ type: EVENTS.TEST_SUCCESS, at: 1 });
-
-  // Feed the real post-flow snapshot into the Telegram /status builder.
-  const diagnostic = buildTelegramStatusDiagnostic({
-    config: { enabled: true, allowedTgUserId: "1", targetSessionKey: "telegram:1" },
-    token: { tokenConfigured: true, tokenStored: true },
-    approvalStatus: { status: "stopped", transport: "native" },
-    migrationSnapshot: env.ctrl.getSnapshot(),
-    nativeRunnerStatus: { polling: true },
-    pendingApprovalCount: 0,
-    sessionSnapshot: { sessions: [] },
-    now: 1000,
-  });
-  assert.equal(diagnostic.lastError, null);
+  assert.ok(env.pendingTimer());
+  await env.fireTimer();
+  assert.equal(env.pendingTimer(), null);
+  assert.equal(env.ctrl.getSnapshot().lastTestResult.outcome, "timeout");
 });
 
-test("Retry legacy (USER_ENABLE_LEGACY) failing again refreshes the stale runtime message", async () => {
+test("a stop cleanup failure still reaches a deterministic terminal state", async () => {
+  const native = new FakeNative();
+  native.failStop = Object.assign(new Error("abort cleanup failed"), { code: "STOP_FAILED" });
   const env = makeController({
-    initialFiles: { hasLegacyEnvFile: true, legacyConfigComplete: true },
+    native,
+    initialPrefs: { transport: "legacy" },
+    nativeConfigComplete: true,
   });
-  await env.ctrl.init(); // LEGACY_ACTIVE, sidecar running
-  await env.ctrl.dispatch({ type: EVENTS.SIDECAR_RUNTIME_FAILED, reason: "old", message: "old failure" });
-  assert.equal(env.ctrl.getSnapshot().runtimeStatus.message, "old failure");
+  await env.ctrl.init();
+  await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
+  const result = await env.ctrl.dispatch({ type: EVENTS.TEST_FAILED, errorClass: "network" });
 
-  env.sidecar.failStart = true; // retry will fail again
-  const res = await env.ctrl.dispatch({ type: EVENTS.USER_ENABLE_LEGACY });
-  assert.equal(res.ok, false);
-  assert.equal(res.state, STATES.LEGACY_ACTIVE); // stays legacy-selected
-  const rs = env.ctrl.getSnapshot().runtimeStatus;
-  assert.equal(rs.status, "failed");
-  assert.equal(rs.reason, "SIDECAR_START_FAILED");
-  assert.notEqual(rs.message, "old failure"); // refreshed, not stale
+  assert.equal(result.ok, true);
+  assert.equal(result.state, STATES.NATIVE_MIGRATION_REQUIRED);
+  assert.equal(env.ctrl.getSnapshot().lastTestResult.outcome, "failed");
+  assert.equal(env.pendingTimer(), null);
+});
+
+test("unknown error classes are sanitized", async () => {
+  const env = makeController({
+    initialPrefs: { transport: "legacy" },
+    nativeConfigComplete: true,
+  });
+  await env.ctrl.init();
+  await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
+  await env.ctrl.dispatch({
+    type: EVENTS.TEST_FAILED,
+    errorClass: "token=secret raw body",
+  });
+  assert.deepEqual(env.ctrl.getSnapshot().lastTestResult.errorClass, "unknown");
+  assert.doesNotMatch(JSON.stringify(env.ctrl.getSnapshot()), /secret raw/);
+});
+
+test("late terminal events do not overwrite a successful result", async () => {
+  const env = makeController({
+    initialPrefs: { transport: "legacy" },
+    nativeConfigComplete: true,
+  });
+  await env.ctrl.init();
+  await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
+  await env.ctrl.dispatch({ type: EVENTS.TEST_SUCCESS, at: 42 });
+  const revision = env.ctrl.getSnapshot().revision;
+  const result = await env.ctrl.dispatch({ type: EVENTS.TEST_FAILED, errorClass: "401" });
+  assert.equal(result.ok, false);
+  assert.equal(env.ctrl.getSnapshot().state, STATES.NATIVE_ACTIVE);
+  assert.equal(env.ctrl.getSnapshot().lastTestResult, null);
+  assert.equal(env.ctrl.getSnapshot().revision, revision);
+});
+
+test("identity change clears verification and requires a new test", async () => {
+  const env = makeController({
+    initialPrefs: { transport: "native", nativeVerifiedAt: 99 },
+    nativeConfigComplete: true,
+  });
+  await env.ctrl.init();
+  await env.ctrl.reconcileConfiguration({ identityChanged: true });
+  const snap = env.ctrl.getSnapshot();
+  assert.equal(snap.state, STATES.NATIVE_MIGRATION_REQUIRED);
+  assert.equal(snap.nativeVerifiedAt, null);
+  assert.equal(env.getPrefs().nativeVerifiedAt, null);
+  assert.equal(env.native.polling, false);
+});
+
+test("verified native repairs a temporarily missing config without re-verification", async () => {
+  const env = makeController({
+    initialPrefs: { transport: "native", nativeVerifiedAt: 99 },
+    nativeConfigComplete: false,
+  });
+  await env.ctrl.init();
+  assert.equal(env.ctrl.getSnapshot().state, STATES.NEEDS_SETUP);
+  env.setFiles({ nativeConfigComplete: true });
+  await env.ctrl.reconcileConfiguration();
+  assert.equal(env.ctrl.getSnapshot().state, STATES.NATIVE_ACTIVE);
+  assert.equal(env.native.polling, true);
+});
+
+test("non-identity reconcile does not restart an active native poller", async () => {
+  const env = makeController({
+    initialPrefs: { transport: "native", nativeVerifiedAt: 99 },
+    nativeConfigComplete: true,
+  });
+  await env.ctrl.init();
+  assert.equal(env.native.startCalls, 1);
+  await env.ctrl.reconcileConfiguration({ identityChanged: false });
+  assert.equal(env.native.startCalls, 1);
+  assert.equal(env.ctrl.getSnapshot().state, STATES.NATIVE_ACTIVE);
+});
+
+test("non-identity reconcile cannot settle an in-flight legacy migration test", async () => {
+  const env = makeController({
+    initialPrefs: { transport: "legacy" },
+    nativeConfigComplete: true,
+  });
+  await env.ctrl.init();
+  await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
+  const revision = env.ctrl.getSnapshot().revision;
+
+  await env.ctrl.reconcileConfiguration({ identityChanged: false });
+
+  assert.equal(env.ctrl.getSnapshot().state, STATES.TESTING_NATIVE);
+  assert.equal(env.ctrl.getSnapshot().revision, revision);
+  assert.equal(env.native.startCalls, 1);
+  assert.equal(env.native.stopCalls, 0);
+  assert.ok(env.pendingTimer());
+});
+
+test("revision notifications are strictly increasing and secret-free", async () => {
+  const env = makeController({
+    initialPrefs: { transport: "legacy" },
+    nativeConfigComplete: true,
+  });
+  await env.ctrl.init();
+  await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE, token: "do-not-forward" });
+  await env.ctrl.dispatch({ type: EVENTS.TEST_FAILED, errorClass: "network" });
+  assert.deepEqual(env.revisions, [1, 2, 3]);
+  assert.doesNotMatch(JSON.stringify(env.ctrl.getSnapshot()), /do-not-forward/);
 });

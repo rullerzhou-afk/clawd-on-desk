@@ -38,7 +38,7 @@ function makeNativeImage({ empty = false, addRepresentationThrows = false } = {}
 
 const PATHS = {
   templatePath: "/assets/tray-iconTemplate.png",
-  iconPath: "/assets/tray-icon.png",
+  iconPath: "/assets/icon.png",
   flashPath: "/assets/tray-icon-flash.png",
 };
 

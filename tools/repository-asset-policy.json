@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "owners": {
+    "build-release": "Electron packaging and release engineering",
+    "design-assets": "Editable source artwork and retained design inputs",
+    "docs-readme": "Localized README and product documentation media",
+    "legal": "Licensing and distribution notices",
+    "test-suite": "Automated test fixtures and regression coverage",
+    "theme-runtime": "Built-in theme runtime assets"
+  },
+  "classes": {
+    "runtime-required": "Runtime files directly or dynamically consumed by the product",
+    "target-specific-runtime": "Runtime payload that belongs to exactly one OS/architecture target",
+    "source-of-truth": "Editable or retained source used to produce runtime assets",
+    "docs-marketing": "Documentation, README, screenshot, or demonstration media",
+    "compatibility-bridge": "Versioned migration, rollback, or legacy-format support",
+    "tests-fixtures": "Regression tests and deterministic fixtures",
+    "generated-cache": "Deterministically generated or cached content that must remain ignored",
+    "safety-tombstone": "Minimal fail-fast replacement for a retired unsafe entry point",
+    "legal": "License or distribution notice with permanent retention requirements"
+  },
+  "thresholds": {
+    "trackedTreeWarningBytes": 52428800,
+    "trackedTreeHardBytes": 57671680,
+    "largeTrackedBinaryMediaBytes": 1048576,
+    "duplicatePackagedPayloadWarningBytes": 262144,
+    "artifactGrowthWarningBytes": 5242880,
+    "artifactGrowthWarningRatio": 0.05
+  },
+  "pathRules": [
+    {
+      "pattern": "themes/**",
+      "class": "runtime-required",
+      "owner": "theme-runtime",
+      "packaged": true,
+      "retentionReason": "Built-in themes are runtime product capabilities."
+    },
+    {
+      "pattern": "assets/gif/**",
+      "class": "docs-marketing",
+      "owner": "docs-readme",
+      "packaged": false,
+      "retentionReason": "README and state-guide previews; repository references and external raw links must be audited before retirement."
+    },
+    {
+      "pattern": "assets/videos/**",
+      "class": "docs-marketing",
+      "owner": "docs-readme",
+      "packaged": false,
+      "retentionReason": "Localized README demonstration media."
+    },
+    {
+      "pattern": "assets/source/cloudling-pointer-bridge/**",
+      "class": "source-of-truth",
+      "owner": "design-assets",
+      "packaged": false,
+      "retention": "permanent",
+      "retentionReason": "Retained Cloudling pointer-bridge source files; runtime logic is inlined into theme SVGs."
+    },
+    {
+      "pattern": "assets/source/**",
+      "class": "source-of-truth",
+      "owner": "design-assets",
+      "packaged": false,
+      "retentionReason": "Editable or retained source artwork; never a packaging input."
+    },
+    {
+      "pattern": "test/fixtures/**",
+      "class": "tests-fixtures",
+      "owner": "test-suite",
+      "packaged": false,
+      "retentionReason": "Deterministic regression fixtures; test count or age is not retirement evidence."
+    }
+  ],
+  "entries": [
+    {
+      "path": "assets/LICENSE",
+      "class": "legal",
+      "owner": "legal",
+      "packaged": false,
+      "retention": "permanent",
+      "retentionReason": "Asset license must be retained regardless of code references."
+    },
+    {
+      "path": "assets/hero.gif",
+      "class": "docs-marketing",
+      "owner": "docs-readme",
+      "packaged": false,
+      "retentionReason": "Hero animation linked by localized READMEs.",
+      "reviewAfter": "2026-10-01"
+    },
+    {
+      "path": "assets/icon.png",
+      "class": "runtime-required",
+      "owner": "build-release",
+      "packaged": true,
+      "retentionReason": "Canonical application icon used by packaging, Windows/Linux trays, localized READMEs, and runtime integrations."
+    },
+    {
+      "path": "assets/icon.ico",
+      "class": "runtime-required",
+      "owner": "build-release",
+      "packaged": true,
+      "retentionReason": "Canonical Windows build and shell icon; packaged once as a physical extraResource and embedded into Windows executables by electron-builder."
+    },
+    {
+      "path": "assets/icons/256x256.png",
+      "class": "runtime-required",
+      "owner": "build-release",
+      "packaged": true,
+      "retentionReason": "Canonical 256px runtime icon used by Settings and served at the stable PWA icon URL."
+    },
+    {
+      "path": "assets/icons/512x512.png",
+      "class": "runtime-required",
+      "owner": "build-release",
+      "packaged": true,
+      "retentionReason": "Canonical 512px runtime icon used by Linux packaging and served at the stable PWA icon URL."
+    }
+  ],
+  "duplicatePayloadExemptions": [
+    {
+      "paths": [
+        "themes/calico/assets/calico-mini-crabwalk.apng",
+        "themes/calico/assets/calico-roam-crabwalk.apng"
+      ],
+      "owner": "theme-runtime",
+      "reason": "The states currently require different file-keyed offsets; consolidation is blocked pending a renderer and hit-geometry design."
+    }
+  ]
+}

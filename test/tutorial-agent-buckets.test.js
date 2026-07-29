@@ -33,9 +33,9 @@ describe("bucketAgentsForTutorial", () => {
       },
     });
 
-    assert.deepStrictEqual(result.active, [{ agentId: "claude-code", label: "Claude Code" }]);
-    assert.deepStrictEqual(result.cleanup, [{ agentId: "codex", label: "Codex" }]);
-    assert.deepStrictEqual(result.install, [{ agentId: "gemini-cli", label: "Gemini CLI" }]);
+    assert.deepStrictEqual(result.active, [{ agentId: "claude-code", label: "Claude Code", iconUrl: null }]);
+    assert.deepStrictEqual(result.cleanup, [{ agentId: "codex", label: "Codex", iconUrl: null }]);
+    assert.deepStrictEqual(result.install, [{ agentId: "gemini-cli", label: "Gemini CLI", iconUrl: null }]);
   });
 
   it("offers medium-confidence detections for install but never low", () => {
@@ -58,7 +58,7 @@ describe("bucketAgentsForTutorial", () => {
       detectionAgents: [detect("pi", undefined, true, "high")],
       agentsPref: {},
     });
-    assert.deepStrictEqual(result.install, [{ agentId: "pi", label: "pi" }]);
+    assert.deepStrictEqual(result.install, [{ agentId: "pi", label: "pi", iconUrl: null }]);
   });
 
   it("treats an installable agent with no detector entry as not detected", () => {
@@ -69,7 +69,7 @@ describe("bucketAgentsForTutorial", () => {
       detectionAgents: [],
       agentsPref: { codex: { integrationInstalled: true } },
     });
-    assert.deepStrictEqual(result.cleanup, [{ agentId: "codex", label: "codex" }]);
+    assert.deepStrictEqual(result.cleanup, [{ agentId: "codex", label: "codex", iconUrl: null }]);
     assert.strictEqual(result.install.length, 0);
     assert.strictEqual(result.active.length, 0);
   });
@@ -83,5 +83,36 @@ describe("bucketAgentsForTutorial", () => {
       bucketAgentsForTutorial({ installableIds: ["codex"], detectionAgents: null, agentsPref: null }),
       { install: [], cleanup: [], active: [] },
     );
+  });
+
+  it("attaches the resolved icon URL to every bucket", () => {
+    const result = bucketAgentsForTutorial({
+      installableIds: ["codex"],
+      detectionAgents: [detect("codex", "Codex", true, "high")],
+      agentsPref: {},
+      getAgentIconUrl: (agentId) => `file:///icons/${agentId}.png`,
+    });
+
+    assert.deepStrictEqual(result.install, [{
+      agentId: "codex",
+      label: "Codex",
+      iconUrl: "file:///icons/codex.png",
+    }]);
+  });
+
+  it("fails closed when icon resolution throws or returns a non-string", () => {
+    const throwing = bucketAgentsForTutorial({
+      installableIds: ["codex"],
+      detectionAgents: [detect("codex", "Codex", true, "high")],
+      getAgentIconUrl: () => { throw new Error("icon lookup failed"); },
+    });
+    const invalid = bucketAgentsForTutorial({
+      installableIds: ["gemini-cli"],
+      detectionAgents: [detect("gemini-cli", "Gemini CLI", true, "high")],
+      getAgentIconUrl: () => 42,
+    });
+
+    assert.strictEqual(throwing.install[0].iconUrl, null);
+    assert.strictEqual(invalid.install[0].iconUrl, null);
   });
 });

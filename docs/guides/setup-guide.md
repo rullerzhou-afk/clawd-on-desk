@@ -103,6 +103,12 @@ bot, so you can Allow or Deny from Telegram while the local desktop bubble
 remains available. See [telegram-approval.md](telegram-approval.md) for setup,
 token ownership, supported agents, and fallback behavior.
 
+v0.14.0 retires the old Go sidecar transport. Existing legacy users keep their
+saved bot token, allowed user, and target chat, but must complete one real
+Telegram verification callback from the blocking Settings migration panel
+before remote approval is active again. A failed or timed-out check never
+deletes those settings and never falls back to the retired runtime.
+
 ## Feishu / Lark Approval
 
 Clawd can also mirror permission bubbles to a Feishu (China) or Lark

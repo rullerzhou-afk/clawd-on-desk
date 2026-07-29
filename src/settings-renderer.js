@@ -24,6 +24,7 @@ function getTabIcon(tabId) {
 }
 
 function renderSidebar() {
+  document.title = core.helpers.t("settingsWindowTitle");
   const sidebar = document.getElementById("sidebar");
   if (!sidebar) return;
   sidebar.innerHTML = "";

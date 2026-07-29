@@ -3,7 +3,7 @@ const assert = require("node:assert");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { spawnSync } = require("child_process");
+const { runSpawnedHook } = require("./helpers/spawned-hook");
 const {
   appendDebugEntry,
   buildDebugEntry,
@@ -83,11 +83,11 @@ describe("Codex debug hook", () => {
     const tmpDir = makeTempDir();
     const logPath = path.join(tmpDir, "debug.jsonl");
     const scriptPath = path.resolve(__dirname, "..", "hooks", "codex-debug-hook.js");
-    const result = spawnSync(process.execPath, [scriptPath], {
-      input: JSON.stringify({ hook_event_name: "Stop", session_id: "session-1" }),
-      encoding: "utf8",
-      env: { ...process.env, CLAWD_CODEX_DEBUG_LOG: logPath },
-      windowsHide: true,
+    const result = runSpawnedHook({
+      script: scriptPath,
+      payload: { hook_event_name: "Stop", session_id: "session-1" },
+      httpContract: "expect-none",
+      env: { CLAWD_CODEX_DEBUG_LOG: logPath },
     });
 
     assert.strictEqual(result.status, 0);

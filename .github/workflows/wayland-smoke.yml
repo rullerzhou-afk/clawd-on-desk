@@ -49,9 +49,8 @@ jobs:
 
       - name: Build the AppImage from this ref
         run: |
-          npm run fetch:sidecars -- --target linux-x64
-          node scripts/verify-sidecar-binaries.js prebuild:linux
           npx electron-builder --linux AppImage --publish never
+          node scripts/assert-no-retired-telegram-sidecar.js --resources-root dist/linux-unpacked/resources --output dist/telegram-retirement-manifest.json
           ls -l dist/*.AppImage
 
       - name: Upload AppImage for isolated smoke jobs

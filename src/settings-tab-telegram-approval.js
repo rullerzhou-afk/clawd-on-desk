@@ -407,9 +407,9 @@
     refreshTokenInfo();
     refreshFeishuStatus();
     refreshFeishuSecretInfo();
-    // The migration card UI is gone, but the Step-3 enable switch still routes
-    // turn-on through the native migration test flow based on this snapshot —
-    // keep it loading even though no card renders.
+    // The native-only snapshot controls both the upgrade gate and the Step-3
+    // enable switch, so keep it live even while another status request is in
+    // flight.
     refreshMigrationSnapshot();
 
     const h1 = document.createElement("h1");
@@ -462,17 +462,22 @@
   }
 
   function refreshRuntimeStatus(payload) {
-    if (!payload || payload.channel !== "feishu") return false;
-    refreshFeishuStatus({ forceRender: true });
-    return true;
+    if (!payload) return false;
+    if (payload.channel === "feishu") {
+      refreshFeishuStatus({ forceRender: true });
+      return true;
+    }
+    if (payload.channel === "telegram") {
+      refreshMigrationSnapshot();
+      refreshStatus({ forceRender: true });
+      return true;
+    }
+    return false;
   }
 
   // ── Migration state plumbing (runtime, not UI) ────────────────────────────
-  // The v0.9.0 migration CARD is gone (window over, rollback no longer
-  // offered), but this block is alive: the Step-3 enable switch routes
-  // turn-on/off through migrationDispatch (USER_TEST_NATIVE / USER_DISABLE)
-  // and derives its visual state from the migration snapshot. The reducer +
-  // owner-manager in main own the actual sidecar/native runtime.
+  // v0.14 retires the legacy transport. Historical prefs route to an explicit
+  // native-verification gate; there is no legacy runtime or fallback.
   let migrationSnapshot = null;
   let migrationPending = false;
   let migrationSnapshotSeq = 0;
@@ -486,8 +491,7 @@
   function isNativeMigrationSelected() {
     const s = migrationState();
     return s === "NATIVE_ACTIVE"
-      || s === "TESTING_NATIVE"
-      || !!(migrationSnapshot && migrationSnapshot.transport === "native");
+      || s === "TESTING_NATIVE";
   }
 
   function isNativeMigrationActive() {
@@ -500,7 +504,7 @@
 
   function canStartNativeFromSwitch() {
     const s = migrationState();
-    return s === "IDLE" || s === "NEEDS_SETUP" || s === "LEGACY_ACTIVE";
+    return s === "IDLE" || s === "NEEDS_SETUP" || s === "NATIVE_MIGRATION_REQUIRED";
   }
 
   function statusIndicatesNativeApprovalActive() {
@@ -510,7 +514,11 @@
   }
 
   function effectiveTelegramApprovalEnabled(cfg) {
-    return !!(cfg && cfg.enabled) || isNativeMigrationActive() || statusIndicatesNativeApprovalActive();
+    const s = migrationState();
+    if (s === "NATIVE_MIGRATION_REQUIRED" || s === "NEEDS_SETUP") return false;
+    return isNativeMigrationActive()
+      || statusIndicatesNativeApprovalActive()
+      || (!migrationSnapshot && !!(cfg && cfg.enabled));
   }
 
   function migrationSnapshotRenderKey(snapshot) {
@@ -521,9 +529,11 @@
     return [
       snap.state || "",
       snap.transport || "",
+      snap.revision || 0,
+      snap.testOrigin || "",
       owner.nativePolling === true ? "1" : "0",
-      owner.sidecarRunning === true ? "1" : "0",
       snap.nativeVerifiedAt || "",
+      snap.lastTestResult ? JSON.stringify(snap.lastTestResult) : "",
     ].join("\x1f");
   }
 
@@ -543,26 +553,27 @@
     });
   }
 
-  function migrationDispatch(eventType, extra = {}) {
+  function migrationDispatch(eventType) {
     if (migrationPending) return;
     migrationPending = true;
-    callCommand("telegramMigration.dispatch", { type: eventType, ...extra }).then((res) => {
+    callCommand("telegramMigration.dispatch", { type: eventType }).then((res) => {
       migrationPending = false;
       if (res && res.snapshot) migrationSnapshot = res.snapshot;
       if (res && res.status !== "ok" && res.errorCode) {
         ops.showToast(interpolate(t("telegramMigrationErrorToast"), "{code}", res.errorCode), { error: true });
       }
-      // Status of the legacy sidecar may change as a side-effect (start/stop).
       refreshStatus({ forceRender: true });
+      ops.requestRender({ content: true });
     });
   }
 
   function buildTelegramChannelCard() {
     const kind = deriveCardKind();
-    // Default-collapse the card once the sidecar is actually running — the
-    // user no longer needs to see the setup steps. localStorage persists any
-    // manual expand/collapse from there.
-    const defaultCollapsed = kind === "running";
+    // Default-collapse the card once native polling is running — the user no
+    // longer needs to see the setup steps. localStorage persists any manual
+    // expand/collapse from there.
+    const migrationGate = buildTelegramMigrationGate();
+    const defaultCollapsed = migrationGate ? false : kind === "running";
 
     return helpers.buildCollapsibleGroup({
       id: "remote-approval.telegram",
@@ -571,11 +582,89 @@
       className: "remote-approval-channel-card tg-approval-channel-card",
       children: [
         buildChannelStatusRow(kind),
+        migrationGate,
         helpers.buildSection(t("telegramApprovalStep1Title"), [buildTokenRow()]),
         helpers.buildSection(t("telegramApprovalStep2Title"), [buildRecipientRow()]),
         buildStep3Section(),
-      ],
+      ].filter(Boolean),
     });
+  }
+
+  function buildTelegramMigrationGate() {
+    const stateName = migrationState();
+    const origin = migrationSnapshot && migrationSnapshot.testOrigin;
+    const required = stateName === "NATIVE_MIGRATION_REQUIRED";
+    const testingFromRequired = stateName === "TESTING_NATIVE" && origin !== "idle";
+    if (!required && !testingFromRequired) return null;
+
+    const wrap = document.createElement("div");
+    wrap.className = "tg-native-migration-gate";
+    const eyebrow = document.createElement("div");
+    eyebrow.className = "tg-native-migration-gate-eyebrow";
+    eyebrow.textContent = t("telegramNativeMigrationEyebrow");
+    const title = document.createElement("div");
+    title.className = "tg-native-migration-gate-title";
+    const needsNativeReverification = origin === "native-unverified"
+      || origin === "native-verified-repair";
+    title.textContent = t(needsNativeReverification
+      ? "telegramNativeReverifyTitle"
+      : "telegramLegacyRetiredTitle");
+    const body = document.createElement("div");
+    body.className = "tg-native-migration-gate-body";
+    body.textContent = t(needsNativeReverification
+      ? "telegramNativeReverifyBody"
+      : "telegramLegacyRetiredBody");
+    wrap.appendChild(eyebrow);
+    wrap.appendChild(title);
+    wrap.appendChild(body);
+
+    const lastResult = migrationSnapshot && migrationSnapshot.lastTestResult;
+    if (lastResult) {
+      const result = document.createElement("div");
+      result.className = "tg-native-migration-gate-result";
+      if (lastResult.outcome === "timeout") {
+        result.textContent = t("telegramNativeMigrationTimeout");
+      } else if (lastResult.outcome === "native-start-failed") {
+        result.textContent = t("telegramNativeMigrationStartFailed");
+      } else {
+        result.textContent = t("telegramNativeMigrationFailed");
+      }
+      wrap.appendChild(result);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "tg-native-migration-gate-actions";
+    const verify = document.createElement("button");
+    verify.type = "button";
+    verify.className = "soft-btn accent";
+    verify.textContent = testingFromRequired
+      ? t("telegramNativeMigrationWaiting")
+      : t("telegramNativeMigrationVerify");
+    verify.disabled = migrationPending || testingFromRequired;
+    verify.addEventListener("click", () => {
+      if (verify.disabled) return;
+      migrationDispatch("USER_TEST_NATIVE");
+    });
+    const disable = document.createElement("button");
+    disable.type = "button";
+    disable.className = "soft-btn";
+    disable.textContent = t("telegramNativeMigrationDisable");
+    disable.disabled = migrationPending;
+    disable.addEventListener("click", () => migrationDispatch("USER_DISABLE"));
+    const guide = document.createElement("button");
+    guide.type = "button";
+    guide.className = "soft-btn";
+    guide.textContent = t("telegramNativeMigrationGuide");
+    guide.addEventListener("click", () => {
+      helpers.openExternalSafe(
+        "https://github.com/rullerzhou-afk/clawd-on-desk/blob/main/docs/guides/telegram-approval.md"
+      );
+    });
+    actions.appendChild(verify);
+    actions.appendChild(disable);
+    actions.appendChild(guide);
+    wrap.appendChild(actions);
+    return wrap;
   }
 
   function buildFeishuChannelCard() {
@@ -998,7 +1087,11 @@
     sw.setAttribute("role", "switch");
     sw.setAttribute("tabindex", "0");
     helpers.setSwitchVisual(sw, effectiveEnabled, { pending: view.configPending || migrationPending });
-    const canToggle = ready && !migrationPending && (effectiveEnabled || migrationSnapshot);
+    const migrationRequired = migrationState() === "NATIVE_MIGRATION_REQUIRED";
+    const canToggle = ready
+      && !migrationPending
+      && !migrationRequired
+      && (effectiveEnabled || migrationSnapshot);
     if (!canToggle) {
       sw.classList.add("disabled");
       sw.setAttribute("aria-disabled", "true");
@@ -1006,14 +1099,9 @@
     } else {
       const toggle = () => {
         const turningOff = effectiveEnabled === true;
-        // Stop-the-bleed (zombie switch — see docs audit-r1a-notification-switch-2026-05-30):
-        // this toggle only writes tgApproval.enabled, but v0.9.0 native runtime
-        // (completion notifications + approval transport) is owned by the migration
-        // state machine and never reads that field. Turning the switch OFF must also
-        // dispatch USER_DISABLE, otherwise the native poller + completion pings keep
-        // running and the user thinks they switched it off when they didn't. The
-        // ON path now goes through the same native Test flow as the migration
-        // card instead of reviving the legacy sidecar flag.
+        // Runtime ownership lives in the migration controller. OFF dispatches
+        // USER_DISABLE; fresh/explicit-off users turn ON through the native
+        // verification flow. Required legacy users use the blocking gate CTA.
         if (turningOff) {
           if (cfg.enabled === true) {
             saveConfig({ ...cfg, enabled: false }, { resetDraft: false });
@@ -1138,8 +1226,9 @@
   function buildTestRow({ ready }) {
     const s = view.status || {};
     const runtimeReady = s.configured === true;
-    const nativeStatus = s.transport === "native" || isNativeMigrationSelected();
-    const nativeReady = !nativeStatus || (migrationState() === "NATIVE_ACTIVE" && s.status === "running");
+    const nativeReady = migrationState() === "NATIVE_ACTIVE"
+      && s.transport === "native"
+      && s.status === "running";
     const testDisabled = view.testPending || !ready || !runtimeReady || !nativeReady;
     const row = document.createElement("div");
     row.className = "row";

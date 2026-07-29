@@ -9,6 +9,8 @@ const vm = require("node:vm");
 const SRC_DIR = path.join(__dirname, "..", "src");
 const SETTINGS_HTML = path.join(SRC_DIR, "settings.html");
 const SETTINGS_CSS = path.join(SRC_DIR, "settings.css");
+const LANGUAGE_PICKER_JS = path.join(SRC_DIR, "language-picker.js");
+const LANGUAGE_PICKER_CSS = path.join(SRC_DIR, "language-picker.css");
 const SETTINGS_TAB_GENERAL = path.join(SRC_DIR, "settings-tab-general.js");
 const SETTINGS_RENDERER = path.join(SRC_DIR, "settings-renderer.js");
 const SETTINGS_UI_CORE = path.join(SRC_DIR, "settings-ui-core.js");
@@ -191,6 +193,7 @@ class FakeElement {
     this.title = "";
     this.type = "";
     this.disabled = false;
+    this.focused = false;
     this.open = false;
     this.parentNode = null;
     this.scrollTop = 0;
@@ -252,6 +255,10 @@ class FakeElement {
   addEventListener(type, cb) {
     if (!this.eventListeners[type]) this.eventListeners[type] = [];
     this.eventListeners[type].push(cb);
+  }
+
+  focus() {
+    this.focused = true;
   }
 
   dispatchEvent(event) {
@@ -369,6 +376,98 @@ class FakeElement {
   }
 }
 
+function loadSharedLanguagePickerForTest({
+  value = "en",
+  options = ["en", "zh", "ja"],
+  onChange = () => Promise.resolve(true),
+  innerHeight = 600,
+} = {}) {
+  const body = new FakeElement("body");
+  const boundary = new FakeElement("div");
+  boundary.setAttribute("data-language-picker-boundary", "");
+  body.appendChild(boundary);
+  const documentListeners = new Map();
+  const windowListeners = new Map();
+  const animationFrames = new Map();
+  let nextAnimationFrameId = 1;
+  const document = {
+    body,
+    documentElement: { clientHeight: innerHeight },
+    createElement: (tagName) => new FakeElement(tagName),
+    addEventListener(type, cb) {
+      if (!documentListeners.has(type)) documentListeners.set(type, []);
+      documentListeners.get(type).push(cb);
+    },
+    removeEventListener(type, cb) {
+      const listeners = documentListeners.get(type);
+      if (!listeners) return;
+      const index = listeners.indexOf(cb);
+      if (index !== -1) listeners.splice(index, 1);
+    },
+  };
+  const context = {
+    console,
+    document,
+    innerHeight,
+    addEventListener(type, cb) {
+      if (!windowListeners.has(type)) windowListeners.set(type, []);
+      windowListeners.get(type).push(cb);
+    },
+    removeEventListener(type, cb) {
+      const listeners = windowListeners.get(type);
+      if (!listeners) return;
+      const index = listeners.indexOf(cb);
+      if (index !== -1) listeners.splice(index, 1);
+    },
+    requestAnimationFrame(cb) {
+      const id = nextAnimationFrameId++;
+      animationFrames.set(id, cb);
+      return id;
+    },
+    cancelAnimationFrame(id) {
+      animationFrames.delete(id);
+    },
+    window: null,
+    globalThis: null,
+  };
+  context.window = context;
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(LANGUAGE_PICKER_JS, "utf8"), context);
+
+  const control = context.ClawdLanguagePicker.createLanguagePicker({
+    value,
+    options: options.map((option) => ({ value: option, label: option.toUpperCase() })),
+    ariaLabel: "Language",
+    onChange,
+  });
+  boundary.appendChild(control.element);
+
+  return {
+    boundary,
+    control,
+    picker: control.element,
+    trigger: control.element.querySelector(".language-picker-trigger"),
+    menu: control.element.querySelector(".language-picker-menu"),
+    optionElements: control.element.querySelectorAll(".language-picker-option"),
+    valueElement: control.element.querySelector(".language-picker-value"),
+    dispatchWindowEvent(type, event = {}) {
+      for (const listener of [...(windowListeners.get(type) || [])]) {
+        listener({ ...event, type });
+      }
+    },
+    flushAnimationFrames() {
+      while (animationFrames.size > 0) {
+        const pending = [...animationFrames.values()];
+        animationFrames.clear();
+        for (const callback of pending) callback();
+      }
+    },
+    getPendingAnimationFrameCount: () => animationFrames.size,
+    getWindowListenerCount: (type) => (windowListeners.get(type) || []).length,
+  };
+}
+
 function loadGeneralLanguageRowForTest({
   snapshot,
   update = () => Promise.resolve({ status: "ok" }),
@@ -462,6 +561,7 @@ function loadGeneralLanguageRowForTest({
   context.window = context;
   context.globalThis = context;
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(LANGUAGE_PICKER_JS, "utf8"), context);
   vm.runInContext(fs.readFileSync(SETTINGS_ANIM_OVERRIDES_MERGE, "utf8"), context);
   vm.runInContext(fs.readFileSync(SETTINGS_UI_CORE, "utf8"), context);
   const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8")
@@ -500,6 +600,11 @@ function loadGeneralLanguageRowForTest({
     getDocumentListenerCount: (type) => {
       const listeners = documentListeners.get(type);
       return listeners ? listeners.length : 0;
+    },
+    dispatchDocumentEvent: (type, event = {}) => {
+      const listeners = documentListeners.get(type) || [];
+      const payload = { ...event, type };
+      for (const listener of [...listeners]) listener(payload);
     },
     getToastText: () => {
       const toast = toastStack.querySelector(".toast");
@@ -581,6 +686,7 @@ function loadGeneralTabForTest({
   context.window = context;
   context.globalThis = context;
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(LANGUAGE_PICKER_JS, "utf8"), context);
   vm.runInContext(fs.readFileSync(SETTINGS_ANIM_OVERRIDES_MERGE, "utf8"), context);
   vm.runInContext(fs.readFileSync(SETTINGS_UI_CORE, "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8"), context);
@@ -1658,6 +1764,318 @@ describe("settings renderer browser environment", () => {
     }
   });
 
+  it("keeps every Telegram retirement gate string in all supported languages", () => {
+    const strings = loadSettingsI18nForTest();
+    const keys = [
+      "telegramNativeMigrationEyebrow",
+      "telegramLegacyRetiredTitle",
+      "telegramLegacyRetiredBody",
+      "telegramNativeReverifyTitle",
+      "telegramNativeReverifyBody",
+      "telegramNativeMigrationVerify",
+      "telegramNativeMigrationWaiting",
+      "telegramNativeMigrationDisable",
+      "telegramNativeMigrationGuide",
+      "telegramNativeMigrationFailed",
+      "telegramNativeMigrationTimeout",
+      "telegramNativeMigrationStartFailed",
+    ];
+    assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja"]);
+    for (const lang of SUPPORTED_LANGS) {
+      for (const key of keys) {
+        assert.equal(
+          typeof strings[lang][key],
+          "string",
+          `${lang}.${key} must exist`,
+        );
+        assert.notEqual(strings[lang][key].trim(), "", `${lang}.${key} must not be empty`);
+      }
+    }
+  });
+
+  it("renders a blocking retired-legacy gate and dispatches only the verified native action", async () => {
+    const commandCalls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: true,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+      },
+      settingsAPI: {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
+          if (name === "telegramMigration.snapshot") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: {
+                state: "NATIVE_MIGRATION_REQUIRED",
+                transport: "legacy",
+                testOrigin: "legacy",
+                ownerSnapshot: { nativePolling: false },
+                revision: 1,
+              },
+            });
+          }
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: {
+                status: "stopped",
+                transport: "off",
+                configured: true,
+                tokenStored: true,
+                reason: "native-migration-required",
+              },
+            });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          if (name === "telegramMigration.dispatch") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: {
+                state: "TESTING_NATIVE",
+                testOrigin: "legacy",
+                revision: 2,
+              },
+            });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const gate = harness.content.querySelector(".tg-native-migration-gate");
+    assert.ok(gate, "legacy users must see the blocking retirement gate");
+    assert.equal(
+      gate.querySelector(".tg-native-migration-gate-title").textContent,
+      "telegramLegacyRetiredTitle",
+    );
+    assert.equal(
+      harness.content.querySelector(".switch").getAttribute("aria-disabled"),
+      "true",
+      "the ordinary enable switch must not bypass migration verification",
+    );
+    const ordinaryTest = harness.content.querySelectorAll("button")
+      .find((button) => button.textContent === "telegramApprovalSendTest");
+    assert.equal(ordinaryTest.disabled, true, "ordinary Send test must not become a second migration entry");
+    const buttons = gate.querySelectorAll("button");
+    const verify = buttons.find((button) => button.textContent === "telegramNativeMigrationVerify");
+    assert.ok(verify);
+    assert.equal(
+      buttons.some((button) => /Later|legacy|rollback/i.test(button.textContent)),
+      false,
+      "the retired runtime must not expose Later, rollback, or enable-legacy actions",
+    );
+
+    verify.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    const dispatch = commandCalls.find((call) =>
+      call.name === "telegramMigration.dispatch"
+      && call.payload
+      && call.payload.type === "USER_TEST_NATIVE");
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(dispatch && dispatch.payload)),
+      { type: "USER_TEST_NATIVE" },
+      "renderer must not attach timestamps, tokens, or arbitrary fields",
+    );
+  });
+
+  it("renders distinct native migration failure outcomes and hides the gate elsewhere", async () => {
+    for (const [outcome, expectedKey] of [
+      ["failed", "telegramNativeMigrationFailed"],
+      ["timeout", "telegramNativeMigrationTimeout"],
+      ["native-start-failed", "telegramNativeMigrationStartFailed"],
+    ]) {
+      const harness = loadTelegramApprovalTabForTest({
+        snapshot: {
+          tgApproval: {
+            enabled: true,
+            allowedTgUserId: "123456789",
+            targetSessionKey: "telegram:123456789",
+          },
+        },
+        settingsAPI: {
+          command: (name) => {
+            if (name === "telegramMigration.snapshot") {
+              return Promise.resolve({
+                status: "ok",
+                snapshot: {
+                  state: "NATIVE_MIGRATION_REQUIRED",
+                  transport: "legacy",
+                  testOrigin: "legacy",
+                  lastTestResult: { outcome, at: 1 },
+                  revision: 2,
+                  ownerSnapshot: { nativePolling: false },
+                },
+              });
+            }
+            if (name === "telegramApproval.status") {
+              return Promise.resolve({
+                status: "ok",
+                state: { status: "failed", transport: "off", configured: true, tokenStored: true },
+              });
+            }
+            if (name === "telegramApproval.tokenInfo") {
+              return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+            }
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      harness.render();
+      assert.equal(
+        harness.content.querySelector(".tg-native-migration-gate-result").textContent,
+        expectedKey,
+      );
+    }
+
+    for (const migrationSnapshot of [
+      { state: "IDLE", transport: "off", revision: 1, ownerSnapshot: {} },
+      { state: "NATIVE_ACTIVE", transport: "native", revision: 1, ownerSnapshot: { nativePolling: true } },
+    ]) {
+      const harness = loadTelegramApprovalTabForTest({
+        settingsAPI: {
+          command: (name) => {
+            if (name === "telegramMigration.snapshot") {
+              return Promise.resolve({ status: "ok", snapshot: migrationSnapshot });
+            }
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      harness.render();
+      assert.equal(harness.content.querySelector(".tg-native-migration-gate"), null);
+    }
+  });
+
+  it("uses native re-verification copy when a previously verified setup is repaired", async () => {
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramMigration.snapshot") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: {
+                state: "NATIVE_MIGRATION_REQUIRED",
+                transport: "native",
+                testOrigin: "native-verified-repair",
+                revision: 2,
+                ownerSnapshot: { nativePolling: false },
+              },
+            });
+          }
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: { status: "stopped", transport: "native", configured: true, tokenStored: true },
+            });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    assert.equal(
+      harness.content.querySelector(".tg-native-migration-gate-title").textContent,
+      "telegramNativeReverifyTitle",
+    );
+    assert.equal(
+      harness.content.querySelector(".tg-native-migration-gate-body").textContent,
+      "telegramNativeReverifyBody",
+    );
+  });
+
+  it("refreshes Telegram migration state from the scoped async revision signal", async () => {
+    const commandCalls = [];
+    let revision = 1;
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: true,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+      },
+      settingsAPI: {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
+          if (name === "telegramMigration.snapshot") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: {
+                state: "NATIVE_MIGRATION_REQUIRED",
+                transport: "legacy",
+                testOrigin: "legacy",
+                lastTestResult: revision > 1 ? { outcome: "timeout", at: 1 } : null,
+                revision,
+                ownerSnapshot: { nativePolling: false },
+              },
+            });
+          }
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: { status: "stopped", transport: "off", configured: true, tokenStored: true },
+            });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    const beforeSnapshots = commandCalls.filter((call) => call.name === "telegramMigration.snapshot").length;
+    revision = 2;
+
+    assert.equal(
+      harness.core.tabs["telegram-approval"].refreshRuntimeStatus({
+        channel: "telegram",
+        revision: 2,
+      }),
+      true,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.ok(
+      commandCalls.filter((call) => call.name === "telegramMigration.snapshot").length > beforeSnapshots,
+      "the scoped signal must pull a fresh secret-free snapshot",
+    );
+    assert.ok(harness.renderRequests.some((request) => request.content === true));
+    harness.render();
+    assert.equal(
+      harness.content.querySelector(".tg-native-migration-gate-result").textContent,
+      "telegramNativeMigrationTimeout",
+    );
+  });
+
   it("keeps Telegram approval drafts local across toggles and rerenders", async () => {
     const commandCalls = [];
     const harness = loadTelegramApprovalTabForTest({
@@ -1744,7 +2162,7 @@ describe("settings renderer browser environment", () => {
           if (name === "telegramMigration.snapshot") {
             return Promise.resolve({
               status: "ok",
-              snapshot: { state: "LEGACY_ACTIVE", transport: "legacy", ownerSnapshot: { sidecarRunning: true } },
+              snapshot: { state: "NATIVE_ACTIVE", transport: "native", ownerSnapshot: { nativePolling: true } },
             });
           }
           if (name === "telegramApproval.status") {
@@ -1801,7 +2219,7 @@ describe("settings renderer browser environment", () => {
           if (name === "telegramMigration.snapshot") {
             return Promise.resolve({
               status: "ok",
-              snapshot: { state: "LEGACY_ACTIVE", transport: "legacy", ownerSnapshot: { sidecarRunning: true } },
+              snapshot: { state: "NATIVE_ACTIVE", transport: "native", ownerSnapshot: { nativePolling: true } },
             });
           }
           if (name === "telegramApproval.status") {
@@ -1857,7 +2275,7 @@ describe("settings renderer browser environment", () => {
           if (name === "telegramMigration.snapshot") {
             return Promise.resolve({
               status: "ok",
-              snapshot: { state: "LEGACY_ACTIVE", transport: "legacy", ownerSnapshot: { sidecarRunning: true } },
+              snapshot: { state: "NATIVE_ACTIVE", transport: "native", ownerSnapshot: { nativePolling: true } },
             });
           }
           if (name === "telegramApproval.status") {
@@ -1879,7 +2297,7 @@ describe("settings renderer browser environment", () => {
 
     harness.content.querySelector(".switch").dispatchEvent({ type: "click" });
 
-    // The legacy switch still writes tgApproval.enabled = false…
+    // The native switch writes tgApproval.enabled = false…
     assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates)), [{
       key: "tgApproval",
       value: {
@@ -3601,29 +4019,50 @@ describe("settings renderer browser environment", () => {
   it("renders the Settings language picker as a dropdown over all supported langs", () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
-    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    const pickerSource = fs.readFileSync(LANGUAGE_PICKER_JS, "utf8");
+    const pickerCss = fs.readFileSync(LANGUAGE_PICKER_CSS, "utf8");
+    const settingsHtml = fs.readFileSync(SETTINGS_HTML, "utf8");
 
     assert.ok(new RegExp(
       String.raw`const LANGUAGE_OPTIONS = \[` +
       SUPPORTED_LANGS.map((lang) => String.raw`"${lang}"`).join(String.raw`,\s*`) +
       String.raw`\];`
     ).test(generalSource));
-    assert.ok(generalSource.includes(`class="language-picker"`));
-    assert.ok(generalSource.includes(`aria-haspopup="listbox"`));
-    assert.ok(generalSource.includes(`role="listbox"`));
-    assert.ok(generalSource.includes(`aria-hidden="true"`));
-    assert.ok(generalSource.includes(`role", "option"`));
-    assert.ok(!generalSource.includes(`<select class="language-select"`));
+    assert.ok(generalSource.includes("createLanguagePicker"));
+    assert.ok(pickerSource.includes(`className = "language-picker"`));
+    assert.ok(pickerSource.includes(`aria-haspopup", "listbox"`));
+    assert.ok(pickerSource.includes(`role", "listbox"`));
+    assert.ok(pickerSource.includes(`aria-hidden", "true"`));
+    assert.ok(pickerSource.includes(`role", "option"`));
+    assert.ok(settingsHtml.includes(`href="language-picker.css"`));
+    assert.ok(settingsHtml.includes(`src="language-picker.js"`));
     assert.ok(!generalSource.includes("language-segmented"));
     assert.ok(!generalSource.includes("runtime.languageTransition"));
     assert.ok(!generalSource.includes("--language-active-index"));
     assert.ok(!coreSource.includes("languageTransition"));
-    assert.ok(/\.language-picker-menu\s*\{[\s\S]*box-shadow:/.test(css));
-    assert.ok(/\.language-picker-option:hover,[\s\S]*\.language-picker-option:focus-visible\s*\{[\s\S]*background:/.test(css));
-    assert.ok(/\.language-picker-option\.selected\s*\{[\s\S]*color:\s*var\(--accent\);/.test(css));
-    assert.ok(/@media \(prefers-color-scheme:\s*dark\)\s*\{[\s\S]*\.language-picker-menu/.test(css));
-    assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.language-picker-trigger,[\s\S]*\.language-picker-chevron,[\s\S]*\.language-picker-menu[\s\S]*transition:\s*none;/.test(css));
-    assert.ok(!css.includes(".language-segmented"));
+    assert.ok(/\.language-picker-menu\s*\{[\s\S]*box-shadow:/.test(pickerCss));
+    assert.ok(/\.language-picker-option:hover\s*\{[\s\S]*background:/.test(pickerCss));
+    assert.ok(/\.language-picker-option:focus-visible\s*\{[\s\S]*outline:\s*2px solid var\(--text-primary,\s*var\(--text\)\);[\s\S]*outline-offset:\s*-2px;[\s\S]*background:/.test(pickerCss));
+    assert.ok(/\.language-picker-option\.selected\s*\{[\s\S]*color:\s*var\(--accent\);/.test(pickerCss));
+    assert.ok(/@media \(prefers-color-scheme:\s*dark\)\s*\{[\s\S]*\.language-picker-menu/.test(pickerCss));
+    assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.language-picker-trigger,[\s\S]*\.language-picker-chevron,[\s\S]*\.language-picker-menu[\s\S]*transition:\s*none;/.test(pickerCss));
+    assert.ok(/@media \(forced-colors:\s*active\)\s*\{[\s\S]*\.language-picker-trigger:focus-visible,[\s\S]*\.language-picker-option:focus-visible\s*\{[\s\S]*outline-color:\s*Highlight;/.test(pickerCss));
+    assert.ok(!pickerCss.includes(".language-segmented"));
+  });
+
+  it("lets the open language picker escape its section without changing closed-card clipping", () => {
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    const sectionRowsRule = css.match(/\.section-rows\s*\{([^}]*)\}/);
+    const openSectionRule = css.match(/\.section:has\(\.language-picker\.open\)\s*\{([^}]*)\}/);
+    const openRowsRule = css.match(/\.section-rows:has\(\.language-picker\.open\)\s*\{([^}]*)\}/);
+
+    assert.ok(sectionRowsRule, "settings cards should retain their base clipping rule");
+    assert.match(sectionRowsRule[1], /overflow:\s*hidden;/);
+    assert.ok(openSectionRule, "the section containing an open language picker should be raised");
+    assert.match(openSectionRule[1], /position:\s*relative;/);
+    assert.match(openSectionRule[1], /z-index:\s*1;/);
+    assert.ok(openRowsRule, "the open language picker should escape the settings card");
+    assert.match(openRowsRule[1], /overflow:\s*visible;/);
   });
 
   it("populates the language picker with current selection and propagates click changes", () => {
@@ -3638,6 +4077,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(picker, "language picker should be rendered");
     assert.ok(trigger, "language picker trigger should be rendered");
     assert.strictEqual(harness.getLangValue().textContent, "English");
+    assert.strictEqual(trigger.attributes["aria-label"], "Language: English");
     assert.strictEqual(harness.getLangMenu().attributes["aria-hidden"], "true");
     const options = harness.getLangOptions();
     assert.strictEqual(options.length, SUPPORTED_LANGS.length);
@@ -3659,9 +4099,11 @@ describe("settings renderer browser environment", () => {
       "clicking a language option should call settingsAPI.update with the new lang"
     );
     assert.strictEqual(picker.classList.contains("open"), false);
+    assert.strictEqual(trigger.focused, true);
     assert.strictEqual(harness.getLangMenu().attributes["aria-hidden"], "true");
     for (const option of options) assert.strictEqual(option.tabIndex, -1);
     assert.strictEqual(harness.getLangValue().textContent, "Chinese");
+    assert.strictEqual(trigger.attributes["aria-label"], "Language: Chinese");
 
     trigger.dispatchEvent({ type: "click" });
     options[1].dispatchEvent({ type: "click" });
@@ -3679,6 +4121,7 @@ describe("settings renderer browser environment", () => {
       "clicking back to the committed language while pending should not submit a duplicate update"
     );
     assert.strictEqual(harness.getLangValue().textContent, "English");
+    assert.strictEqual(trigger.attributes["aria-label"], "Language: English");
     assert.strictEqual(options[0].attributes["aria-selected"], "true");
 
     harness.core.ops.applyChanges({
@@ -3687,6 +4130,7 @@ describe("settings renderer browser environment", () => {
     });
     assert.strictEqual(harness.getContentRenderCount(), 2);
     assert.strictEqual(harness.getLangValue().textContent, "Chinese");
+    assert.strictEqual(harness.getLangTrigger().attributes["aria-label"], "Language: Chinese");
     assert.strictEqual(harness.getLangOptions()[1].attributes["aria-selected"], "true");
   });
 
@@ -3702,11 +4146,212 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.getLangPicker().classList.contains("open"), true);
     const options = harness.getLangOptions();
     options[1].dispatchEvent(createKeyboardEventForTest("Enter"));
-    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
 
     assert.deepStrictEqual(harness.updateCalls, [{ key: "lang", value: "zh" }]);
     assert.strictEqual(harness.getLangValue().textContent, "English");
+    assert.strictEqual(trigger.focused, true);
     assert.strictEqual(harness.getToastText(), "Failed: synthetic failure");
+  });
+
+  it("rolls concurrent failed language saves back to the last committed value", async () => {
+    const saves = [];
+    const changes = [];
+    const harness = loadSharedLanguagePickerForTest({
+      onChange: (next, previous) => {
+        const deferred = createDeferred();
+        saves.push(deferred);
+        changes.push({ next, previous });
+        return deferred.promise;
+      },
+    });
+
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.optionElements[1].dispatchEvent({ type: "click" });
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.optionElements[2].dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.valueElement.textContent, "JA");
+    assert.deepStrictEqual(changes, [
+      { next: "zh", previous: "en" },
+      { next: "ja", previous: "en" },
+    ]);
+
+    saves[0].resolve(false);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(harness.valueElement.textContent, "JA", "stale failure keeps the latest optimistic value");
+
+    saves[1].resolve(false);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(harness.valueElement.textContent, "EN", "latest failure restores the committed value");
+  });
+
+  it("advances the rollback baseline after a concurrent language save succeeds", async () => {
+    const saves = [];
+    const harness = loadSharedLanguagePickerForTest({
+      onChange: () => {
+        const deferred = createDeferred();
+        saves.push(deferred);
+        return deferred.promise;
+      },
+    });
+
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.optionElements[1].dispatchEvent({ type: "click" });
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.optionElements[2].dispatchEvent({ type: "click" });
+
+    saves[0].resolve(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(harness.valueElement.textContent, "JA", "newer optimistic choice remains visible");
+
+    saves[1].resolve(false);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(harness.valueElement.textContent, "ZH", "failed latest choice restores the successful save");
+  });
+
+  it("flips and bounds the tutorial picker at minimum-size enlarged-text geometry", () => {
+    const harness = loadSharedLanguagePickerForTest({
+      options: ["en", "zh", "zh-TW", "ko", "ja"],
+      innerHeight: 450,
+    });
+    harness.boundary.getBoundingClientRect = () => ({ top: 52, bottom: 400 });
+    harness.trigger.getBoundingClientRect = () => ({ top: 220, bottom: 274 });
+    Object.defineProperty(harness.menu, "scrollHeight", { value: 240 });
+    Object.defineProperty(harness.menu, "offsetHeight", { value: 242 });
+    Object.defineProperty(harness.menu, "clientHeight", { value: 240 });
+
+    harness.trigger.dispatchEvent({ type: "click" });
+
+    assert.strictEqual(harness.picker.classList.contains("open-up"), true);
+    assert.strictEqual(harness.picker.classList.contains("menu-scrollable"), true);
+    assert.strictEqual(harness.menu.style.maxHeight, "162px");
+    assert.ok(parseInt(harness.menu.style.maxHeight, 10) < harness.menu.scrollHeight);
+    const css = fs.readFileSync(LANGUAGE_PICKER_CSS, "utf8");
+    assert.match(css, /\.language-picker\.menu-scrollable \.language-picker-menu\s*\{[\s\S]*overflow-y:\s*auto;/);
+    assert.match(css, /\.language-picker\.open-up \.language-picker-menu\s*\{[\s\S]*bottom:\s*calc\(100% \+ 6px\);/);
+  });
+
+  it("initially reveals and bounds the tutorial picker at 150% and 160% text scale", () => {
+    const layouts = [
+      { scale: "150%", boundaryBottom: 313.7, triggerTop: 317.1, triggerBottom: 353.1 },
+      { scale: "160%", boundaryBottom: 290.3, triggerTop: 316.6, triggerBottom: 352.6 },
+    ];
+
+    for (const layout of layouts) {
+      const harness = loadSharedLanguagePickerForTest({
+        options: ["en", "zh", "zh-TW", "ko", "ja"],
+        innerHeight: 400,
+      });
+      harness.boundary.getBoundingClientRect = () => ({ top: 52, bottom: layout.boundaryBottom });
+      harness.trigger.getBoundingClientRect = () => ({
+        top: layout.triggerTop - harness.boundary.scrollTop,
+        bottom: layout.triggerBottom - harness.boundary.scrollTop,
+      });
+      Object.defineProperty(harness.menu, "scrollHeight", { value: 160 });
+      Object.defineProperty(harness.menu, "offsetHeight", { value: 162 });
+      Object.defineProperty(harness.menu, "clientHeight", { value: 160 });
+
+      assert.ok(
+        harness.trigger.getBoundingClientRect().top > layout.boundaryBottom,
+        `${layout.scale}: regression setup must start with the trigger behind the footer`,
+      );
+
+      harness.control.ensureVisible();
+      const visibleTrigger = harness.trigger.getBoundingClientRect();
+      assert.ok(visibleTrigger.top >= 52, `${layout.scale}: trigger top stays inside the body`);
+      assert.ok(
+        visibleTrigger.bottom <= layout.boundaryBottom,
+        `${layout.scale}: trigger bottom stays inside the body`,
+      );
+
+      harness.trigger.dispatchEvent({ type: "click" });
+      assert.strictEqual(
+        harness.picker.classList.contains("open-up"),
+        true,
+        `${layout.scale}: menu flips upward`,
+      );
+      const menuBottom = visibleTrigger.top - 6;
+      const menuTop = menuBottom - parseInt(harness.menu.style.maxHeight, 10);
+      const firstOption = { top: menuTop + 6, bottom: menuTop + 36 };
+      const lastOption = { top: menuBottom - 36, bottom: menuBottom - 6 };
+      assert.ok(firstOption.top >= 52, `${layout.scale}: first option stays inside the body`);
+      assert.ok(
+        lastOption.bottom <= layout.boundaryBottom,
+        `${layout.scale}: last option stays inside the body`,
+      );
+    }
+  });
+
+  it("reflows an open tutorial picker after the window is resized", () => {
+    const harness = loadSharedLanguagePickerForTest({
+      options: ["en", "zh", "zh-TW", "ko", "ja"],
+      innerHeight: 450,
+    });
+    const layout = {
+      boundaryTop: 52,
+      boundaryBottom: 352.8,
+      triggerTop: 295.7,
+      triggerBottom: 331.7,
+    };
+    harness.boundary.getBoundingClientRect = () => ({
+      top: layout.boundaryTop,
+      bottom: layout.boundaryBottom,
+    });
+    harness.trigger.getBoundingClientRect = () => ({
+      top: layout.triggerTop - harness.boundary.scrollTop,
+      bottom: layout.triggerBottom - harness.boundary.scrollTop,
+    });
+    Object.defineProperty(harness.menu, "scrollHeight", { value: 160 });
+    Object.defineProperty(harness.menu, "offsetHeight", { value: 162 });
+    Object.defineProperty(harness.menu, "clientHeight", { value: 160 });
+
+    harness.trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.picker.classList.contains("open"), true);
+    assert.strictEqual(harness.getWindowListenerCount("resize"), 1);
+
+    layout.boundaryBottom = 290.3;
+    layout.triggerTop = 316.6;
+    layout.triggerBottom = 352.6;
+    assert.ok(
+      harness.trigger.getBoundingClientRect().top > layout.boundaryBottom,
+      "regression setup must put the trigger behind the fixed footer",
+    );
+
+    harness.dispatchWindowEvent("resize");
+    harness.dispatchWindowEvent("resize");
+    assert.strictEqual(
+      harness.getPendingAnimationFrameCount(),
+      1,
+      "resize work is coalesced into one animation frame",
+    );
+    harness.flushAnimationFrames();
+
+    const visibleTrigger = harness.trigger.getBoundingClientRect();
+    assert.ok(visibleTrigger.top >= layout.boundaryTop);
+    assert.ok(visibleTrigger.bottom <= layout.boundaryBottom);
+    assert.strictEqual(harness.picker.classList.contains("open-up"), true);
+    assert.strictEqual(harness.menu.style.maxHeight, "162px");
+
+    harness.control.dispose();
+    assert.strictEqual(harness.getWindowListenerCount("resize"), 0);
+  });
+
+  it("does not show a scrollbar when an upward menu fits all language options", () => {
+    const harness = loadSharedLanguagePickerForTest({
+      options: ["en", "zh", "zh-TW", "ko", "ja"],
+      innerHeight: 600,
+    });
+    harness.boundary.getBoundingClientRect = () => ({ top: 72, bottom: 502 });
+    harness.trigger.getBoundingClientRect = () => ({ top: 445, bottom: 499 });
+    Object.defineProperty(harness.menu, "scrollHeight", { value: 160 });
+    Object.defineProperty(harness.menu, "offsetHeight", { value: 162 });
+    Object.defineProperty(harness.menu, "clientHeight", { value: 160 });
+
+    harness.trigger.dispatchEvent({ type: "click" });
+
+    assert.strictEqual(harness.picker.classList.contains("open-up"), true);
+    assert.strictEqual(harness.picker.classList.contains("menu-scrollable"), false);
+    assert.strictEqual(harness.menu.style.maxHeight, "162px");
   });
 
   it("cleans up language picker document listeners across re-renders", () => {
@@ -3715,12 +4360,36 @@ describe("settings renderer browser environment", () => {
     });
 
     harness.core.ops.requestRender({ content: true });
+    const staleOption = harness.getLangOptions()[1];
     assert.strictEqual(harness.getDocumentListenerCount("click"), 1);
     assert.strictEqual(harness.getDocumentListenerCount("keydown"), 1);
 
     harness.core.ops.requestRender({ content: true });
     assert.strictEqual(harness.getDocumentListenerCount("click"), 1);
     assert.strictEqual(harness.getDocumentListenerCount("keydown"), 1);
+
+    staleOption.dispatchEvent({ type: "click" });
+    assert.deepStrictEqual(harness.updateCalls, []);
+  });
+
+  it("closes the language picker from outside clicks and Escape", () => {
+    const harness = loadGeneralLanguageRowForTest({
+      snapshot: { lang: "en" },
+    });
+
+    harness.core.ops.requestRender({ content: true });
+    harness.getLangTrigger().dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.getLangPicker().classList.contains("open"), true);
+
+    harness.dispatchDocumentEvent("click", { target: new FakeElement("body") });
+    assert.strictEqual(harness.getLangPicker().classList.contains("open"), false);
+
+    harness.getLangTrigger().dispatchEvent({ type: "click" });
+    harness.dispatchDocumentEvent("keydown", {
+      key: "Escape",
+      preventDefault() { this.defaultPrevented = true; },
+    });
+    assert.strictEqual(harness.getLangPicker().classList.contains("open"), false);
   });
 
   it("exposes aggregate and split bubble controls in the General tab", () => {

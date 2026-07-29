@@ -98,6 +98,18 @@ describe("windows shell icon path", () => {
     });
     assert.strictEqual(actual, expected);
   });
+
+  it("falls back to the packaged executable when the extra resource icon is unavailable", () => {
+    const resourcesPath = "C:\\Program Files\\Clawd on Desk\\resources";
+    const execPath = "C:\\Program Files\\Clawd on Desk\\Clawd on Desk.exe";
+    const actual = getWindowsShellIconPath({
+      isPackaged: true,
+      resourcesPath,
+      execPath,
+      existsSync: (candidate) => candidate === execPath,
+    });
+    assert.strictEqual(actual, execPath);
+  });
 });
 
 describe("settings window taskbar details", () => {
@@ -141,6 +153,20 @@ describe("settings window taskbar details", () => {
       relaunchCommand: `"${execPath}" "${SETTINGS_WINDOW_LAUNCH_ARG}"`,
       relaunchDisplayName: SETTINGS_WINDOW_TITLE,
     });
+  });
+
+  it("propagates the packaged executable fallback into Windows taskbar metadata", () => {
+    const resourcesPath = "C:\\Program Files\\Clawd on Desk\\resources";
+    const execPath = "C:\\Program Files\\Clawd on Desk\\Clawd on Desk.exe";
+    const actual = getSettingsWindowTaskbarDetails({
+      platform: "win32",
+      isPackaged: true,
+      resourcesPath,
+      execPath,
+      existsSync: (candidate) => candidate === execPath,
+    });
+    assert.strictEqual(actual.appIconPath, execPath);
+    assert.strictEqual(actual.appIconIndex, 0);
   });
 
   it("returns null on non-Windows platforms", () => {

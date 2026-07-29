@@ -214,7 +214,7 @@ module.exports = function initMenu(ctx) {
       nativeImage,
       platform: process.platform,
       templatePath: path.join(__dirname, "../assets/tray-iconTemplate.png"),
-      iconPath: path.join(__dirname, "../assets/tray-icon.png"),
+      iconPath: path.join(__dirname, "../assets/icon.png"),
     });
     ctx.tray = new Tray(icon);
     ctx.tray.setToolTip("Clawd Desktop Pet");

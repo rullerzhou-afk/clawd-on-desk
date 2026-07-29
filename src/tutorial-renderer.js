@@ -27,6 +27,8 @@
   let shortcutFeedback = null;
 
   const shortcutActions = window.ClawdShortcutActions || {};
+  const languagePickerApi = window.ClawdLanguagePicker || {};
+  let languagePickerControl = null;
 
   // Native language names — never translated, so a user who can't read the
   // current UI language can still find their own.
@@ -192,13 +194,24 @@
     const langs = (STATE.langs && STATE.langs.length) ? STATE.langs : ["en"];
     const row = el("div", { class: "lang-picker" });
     row.appendChild(el("span", { class: "lang-label" }, i18n("tutorialWelcomeLangLabel", "Language")));
-    const sel = el("select", {
-      class: "lang-select",
-      onchange: (e) => { if (api.setLang) api.setLang(e.target.value); },
+    if (typeof languagePickerApi.createLanguagePicker !== "function") {
+      throw new Error("language-picker.js failed to load before tutorial-renderer.js");
+    }
+    languagePickerControl = languagePickerApi.createLanguagePicker({
+      value: STATE.lang,
+      options: langs.map((code) => ({ value: code, label: LANG_LABELS[code] || code })),
+      ariaLabel: i18n("tutorialWelcomeLangLabel", "Language"),
+      onChange: (next) => {
+        if (typeof api.setLang !== "function") return false;
+        try {
+          return api.setLang(next);
+        } catch (err) {
+          console.warn("tutorial: set language failed:", err && err.message);
+          return false;
+        }
+      },
     });
-    for (const code of langs) sel.appendChild(el("option", { value: code }, LANG_LABELS[code] || code));
-    sel.value = STATE.lang;
-    row.appendChild(sel);
+    row.appendChild(languagePickerControl.element);
     return row;
   }
 
@@ -220,13 +233,6 @@
     }, label);
   }
 
-  function initials(name) {
-    const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
-    if (!parts.length) return "?";
-    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-    return (parts[0][0] + parts[1][0]).toUpperCase();
-  }
-
   function statusBadge(kind) {
     if (kind === "active") return el("span", { class: "ag-tag ok" }, i18n("tutorialAgentsActiveTag", "On"));
     if (kind === "install") return el("span", { class: "ag-tag info" }, i18n("tutorialAgentsInstallTag", "Found"));
@@ -240,7 +246,34 @@
   }
 
   function agentAvatar(a, kind) {
-    return el("span", { class: "ag-avatar " + kind }, initials(agentLabel(a)));
+    const avatar = el("span", { class: "ag-avatar " + kind });
+    const iconUrl = a && typeof a.iconUrl === "string" ? a.iconUrl : "";
+    const fallbackUrl = typeof STATE.heroSrc === "string" ? STATE.heroSrc : "";
+    let showingFallback = !iconUrl;
+    const initialUrl = iconUrl || fallbackUrl;
+
+    if (!initialUrl) {
+      avatar.classList.add("fallback");
+      return avatar;
+    }
+
+    const image = el("img", {
+      class: "ag-avatar-icon",
+      src: initialUrl,
+      alt: "",
+      draggable: "false",
+    });
+    image.addEventListener("error", () => {
+      if (!showingFallback && fallbackUrl && fallbackUrl !== iconUrl) {
+        showingFallback = true;
+        image.setAttribute("src", fallbackUrl);
+        return;
+      }
+      image.setAttribute("hidden", "");
+      avatar.classList.add("fallback");
+    });
+    avatar.appendChild(image);
+    return avatar;
   }
 
   function selectableAgentRow(a, kind) {
@@ -746,11 +779,29 @@
   }
 
   function render() {
+    if (languagePickerControl && typeof languagePickerControl.dispose === "function") {
+      languagePickerControl.dispose();
+      languagePickerControl = null;
+    }
+    document.title = i18n("tutorialWindowTitle", "Welcome to Clawd on Desk");
     renderSteps();
     const body = document.getElementById("body");
     body.className = "body step-" + STEPS[step];
     body.textContent = "";
     body.appendChild((BODY_RENDERERS[STEPS[step]] || renderWelcome)());
+    const mountedLanguagePicker = languagePickerControl;
+    if (mountedLanguagePicker && typeof mountedLanguagePicker.ensureVisible === "function") {
+      const ensureMountedPickerVisible = () => {
+        if (languagePickerControl === mountedLanguagePicker) {
+          mountedLanguagePicker.ensureVisible();
+        }
+      };
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(ensureMountedPickerVisible);
+      } else {
+        ensureMountedPickerVisible();
+      }
+    }
     renderFooter();
   }
 

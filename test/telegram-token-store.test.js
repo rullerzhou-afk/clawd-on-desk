@@ -44,7 +44,7 @@ test("parseTokenFromEnvFileText rejects malformed contents", () => {
   assert.equal(parseTokenFromEnvFileText("CLAWD_TG_BOT_TOKEN=garbage"), null);
 });
 
-test("buildEnvFileText produces the line the sidecar expects", () => {
+test("buildEnvFileText produces the canonical native token-store line", () => {
   assert.equal(buildEnvFileText(VALID), `CLAWD_TG_BOT_TOKEN=${VALID}\n`);
 });
 

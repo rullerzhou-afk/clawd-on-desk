@@ -1481,12 +1481,8 @@ function buildRemoteApprovalPayload(permEntry) {
     basenameForDisplay((session && session.cwd) || permEntry.cwd || ""),
     80
   );
-  // Label is "Folder" (not "Session") on purpose, in every language: the pinned
-  // cc-connect-clawd sidecar redacts any "<sensitive_key>: <value>" pair it
-  // recognises against an English keyword list, and "session" is in that set —
-  // even though the value here is just the cwd basename, not a session id.
-  // Translated "Folder" labels don't match that English keyword list either,
-  // so they stay just as un-redacted as the English one.
+  // Label this value "Folder" (not "Session"): it is only the cwd basename,
+  // never a session id or full local path.
   const detail = [
     `${t("approvalDetailAgent")}: ${agentId}`,
     `${t("approvalDetailTool")}: ${toolName}`,

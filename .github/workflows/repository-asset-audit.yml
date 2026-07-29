@@ -1,0 +1,43 @@
+name: Repository Asset Audit
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: npm install
+      - name: Test audit and spawned-hook isolation
+        run: >-
+          node --test
+          test/assert-no-retired-telegram-sidecar.test.js
+          test/package-build-config.test.js
+          test/preload-settings.test.js
+          test/repository-asset-audit.test.js
+          test/telegram-legacy-retirement.test.js
+          test/telegram-migration-state.test.js
+          test/telegram-migration-controller.test.js
+          test/telegram-migration-user-data.test.js
+          test/spawned-hook-helper.test.js
+          test/claude-recovery-lease-hook.test.js
+          test/codex-hook.test.js
+          test/qwen-code-hook.test.js
+          test/workbuddy-hook.test.js
+      - run: npm run audit:assets
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: repository-asset-audit
+          path: dist/repository-asset-audit/*.json

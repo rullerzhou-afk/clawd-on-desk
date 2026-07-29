@@ -49,7 +49,7 @@ function registerSessionIpc(options = {}) {
     return openSessionFolder(sessionId);
   });
   handle("dashboard:set-session-alias", (_event, payload) => setSessionAlias(payload));
-  handle("dashboard:set-session-automation", (_event, payload) => {
+  handle("dashboard:set-session-automation", (event, payload) => {
     const keys = payload && typeof payload === "object" && !Array.isArray(payload)
       ? Object.keys(payload).sort()
       : [];
@@ -63,10 +63,13 @@ function registerSessionIpc(options = {}) {
     ) {
       return { status: "invalid" };
     }
-    return setSessionAutomationOverride({
-      sessionId: payload.sessionId,
-      mode: payload.mode,
-    });
+    return setSessionAutomationOverride(
+      {
+        sessionId: payload.sessionId,
+        mode: payload.mode,
+      },
+      { sender: event && event.sender }
+    );
   });
   handle("dashboard:clear-session-automation-grant", (_event, payload) => {
     const keys = payload && typeof payload === "object" && !Array.isArray(payload)

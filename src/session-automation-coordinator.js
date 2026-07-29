@@ -392,7 +392,7 @@ function createSessionAutomationCoordinator(options = {}) {
     return result;
   }
 
-  async function setSessionAutomationOverride(payload) {
+  async function setSessionAutomationOverride(payload, context = {}) {
     const sessionId = payload && typeof payload.sessionId === "string" ? payload.sessionId.trim() : "";
     const mode = payload && payload.mode;
     if (!sessionId || (mode !== MODE_OFF && mode !== MODE_AUTO_TOOLS)) {
@@ -407,7 +407,9 @@ function createSessionAutomationCoordinator(options = {}) {
     if (mode === MODE_AUTO_TOOLS && !isWarningDismissed()) {
       let warningResult;
       try {
-        warningResult = await showWarning(null);
+        warningResult = await showWarning({
+          warningParent: context && context.warningParent,
+        });
       } catch {
         warningResult = { confirmed: false };
       }

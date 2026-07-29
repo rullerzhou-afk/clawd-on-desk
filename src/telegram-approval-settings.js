@@ -7,8 +7,8 @@ const DEFAULT_TG_APPROVAL = Object.freeze({
   allowedTgUserId: "",
   targetSessionKey: "",
   // R1a bare ping gate: when false, Clawd will not send a "finished" message.
-  // Native-only (legacy sidecar users silently lack it — see
-  // getTelegramCompanionClient in main.js).
+  // Native-only; getTelegramCompanionClient in main.js gates delivery on the
+  // verified in-process transport.
   notifyOnComplete: false,
   // R1b privacy default: do not send assistant output unless the user
   // explicitly opts into "Full answer" from Settings.
@@ -133,39 +133,8 @@ function validateTelegramBotToken(token) {
   return { status: "ok", token: value };
 }
 
-function defaultBridgeConfigPath(userDataDir) {
-  return userDataDir ? path.join(userDataDir, "cc-connect-clawd", "clawd-bridge.toml") : "";
-}
-
 function defaultTokenEnvFilePath(userDataDir) {
   return userDataDir ? path.join(userDataDir, "telegram-approval.env") : "";
-}
-
-function quoteTomlString(value) {
-  return String(value == null ? "" : value)
-    .replace(/\\/g, "\\\\")
-    .replace(/"/g, "\\\"")
-    .replace(/\r/g, "\\r")
-    .replace(/\n/g, "\\n")
-    .replace(/\t/g, "\\t");
-}
-
-function buildBridgeConfigToml(config, options = {}) {
-  const normalized = normalizeTelegramApproval(config);
-  const ttlSeconds = Number.isInteger(options.ttlSeconds) && options.ttlSeconds > 0
-    ? options.ttlSeconds
-    : 90;
-  const listenAddr = typeof options.listenAddr === "string" && options.listenAddr.trim()
-    ? options.listenAddr.trim()
-    : "127.0.0.1:0";
-  return [
-    "enabled = true",
-    `allowed_tg_user_id = "${quoteTomlString(normalized.allowedTgUserId)}"`,
-    `target_session_key = "${quoteTomlString(normalized.targetSessionKey)}"`,
-    `ttl_seconds = ${ttlSeconds}`,
-    `listen_addr = "${quoteTomlString(listenAddr)}"`,
-    "",
-  ].join("\n");
 }
 
 function buildTokenEnvFile(token) {
@@ -219,34 +188,6 @@ function writeTokenEnvFile({ fs, path: pathModule = path, filePath, token, platf
     return { status: "ok", tokenStored: true, filePath };
   } catch (err) {
     return { status: "error", message: `Telegram token write failed: ${err && err.message}` };
-  }
-}
-
-function writeBridgeConfigFile({ fs, path: pathModule = path, filePath, config } = {}) {
-  if (!fs || typeof fs.writeFileSync !== "function") {
-    return { status: "error", message: "writeBridgeConfigFile requires fs" };
-  }
-  if (!filePath || typeof filePath !== "string") {
-    return { status: "error", message: "Telegram sidecar config path is required" };
-  }
-  const normalized = normalizeTelegramApproval(config);
-  const validated = validateTelegramApproval({ ...normalized, enabled: true });
-  if (validated.status !== "ok") return validated;
-  if (!normalized.allowedTgUserId) {
-    return { status: "error", message: "tgApproval.allowedTgUserId is required" };
-  }
-  if (!normalized.targetSessionKey) {
-    return { status: "error", message: "tgApproval.targetSessionKey is required" };
-  }
-  try {
-    fs.mkdirSync(pathModule.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, buildBridgeConfigToml(normalized), { encoding: "utf8", mode: 0o600 });
-    if (process.platform !== "win32" && typeof fs.chmodSync === "function") {
-      try { fs.chmodSync(filePath, 0o600); } catch {}
-    }
-    return { status: "ok", filePath };
-  } catch (err) {
-    return { status: "error", message: `Telegram sidecar config write failed: ${err && err.message}` };
   }
 }
 
@@ -353,12 +294,9 @@ module.exports = {
   normalizeTelegramSessionKey,
   isValidTelegramUserId,
   isValidTelegramSessionKey,
-  defaultBridgeConfigPath,
   defaultTokenEnvFilePath,
-  buildBridgeConfigToml,
   buildTokenEnvFile,
   writeTokenEnvFile,
-  writeBridgeConfigFile,
   tokenStatus,
   maskTelegramBotToken,
   readMaskedBotToken,

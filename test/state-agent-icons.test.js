@@ -8,6 +8,7 @@ const path = require("path");
 const { fileURLToPath } = require("url");
 
 const { getAllAgents } = require("../agents/registry");
+const { INSTALLABLE_AGENT_IDS } = require("../src/settings-actions-agents");
 const {
   getElectronBinary,
   hashSvgSource,
@@ -98,6 +99,17 @@ describe("state agent icons", () => {
       assert.ok(
         runtimeIconFiles.has(`${agent.id}.png`),
         `Missing exact runtime PNG icon for ${agent.id}`
+      );
+    }
+  });
+
+  it("resolves an icon URL for every installable tutorial agent", () => {
+    for (const agentId of INSTALLABLE_AGENT_IDS) {
+      const iconUrl = getAgentIconUrl(agentId);
+      assert.ok(iconUrl, `Missing tutorial icon URL for ${agentId}`);
+      assert.strictEqual(
+        path.normalize(fileURLToPath(iconUrl)),
+        path.join(AGENT_ICON_DIR, `${agentId}.png`),
       );
     }
   });

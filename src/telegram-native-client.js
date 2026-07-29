@@ -176,9 +176,8 @@ class TelegramNativeClient {
   }
 }
 
-// Plan §116: when starting the native poller right after stopping the sidecar
-// (or starting fresh while another consumer is still releasing its long-poll
-// session), Telegram returns 409 Conflict. Retry with exponential backoff:
+// When starting while another consumer is still releasing its long-poll
+// session, Telegram returns 409 Conflict. Retry with exponential backoff:
 // 1s start, ×2, capped at 5s, total deadline 35s. While in conflict we MUST
 // NOT persist transport=native — that is the caller's responsibility; this
 // helper only governs the retry loop itself.

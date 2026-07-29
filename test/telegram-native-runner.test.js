@@ -119,6 +119,69 @@ test("native runner sends nonce card and dispatches TEST_SUCCESS for matching ca
   assert.equal(runner.isPolling(), false);
 });
 
+test("native runner processes a matching test callback returned by the initial poll", async () => {
+  const server = createFakeTelegramServer();
+  const events = [];
+  let runner;
+  let releaseFirstPoll;
+  let callbackData = "";
+
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueue("sendMessage", (payload) => {
+    callbackData = payload.reply_markup.inline_keyboard[0][0].callback_data;
+    return { ok: true, result: { message_id: 43, chat: { id: 123 } } };
+  });
+  server.enqueueOk("answerCallbackQuery", true);
+  server.enqueueOk("editMessageReplyMarkup", { message_id: 43 });
+
+  runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async (event) => {
+      events.push(event);
+      await runner.stop();
+    },
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+  });
+
+  try {
+    await runner.start();
+    await tick();
+    assert.equal(server.calls.filter((call) => call.method === "getUpdates").length, 1);
+
+    await runner.sendTestCard();
+    assert.match(callbackData, /^clawd-test:[a-z0-9]+$/);
+
+    releaseFirstPoll({
+      ok: true,
+      result: [{
+        update_id: 1,
+        callback_query: {
+          id: "cb-initial-poll",
+          from: { id: 777 },
+          message: { message_id: 43, chat: { id: 123 } },
+          data: callbackData,
+        },
+      }],
+    });
+    await tick();
+    await tick();
+
+    assert.deepEqual(events.map((event) => event.type), [EVENTS.TEST_SUCCESS]);
+    assert.equal(server.calls.some((call) => call.method === "answerCallbackQuery"), true);
+    assert.equal(server.calls.some((call) => call.method === "editMessageReplyMarkup"), true);
+    assert.equal(
+      server.calls.filter((call) => call.method === "getUpdates").length,
+      1,
+      "the callback must be handled from the initial response without a second poll",
+    );
+    assert.equal(runner.isPolling(), false);
+  } finally {
+    await runner.stop();
+  }
+});
+
 test("native runner requestApproval resolves allow for matching callback", async () => {
   const server = createFakeTelegramServer();
   let releaseFirstPoll;

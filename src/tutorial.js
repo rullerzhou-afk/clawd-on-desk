@@ -44,6 +44,13 @@ function computeCenteredBounds() {
 module.exports = function initTutorial(ctx = {}) {
   let win = null;
   let ipcReady = false;
+  // Re-entrancy guard: when the tutorial's own language picker calls
+  // ctx.setLang, the settings-controller effect fires syncLocalization
+  // synchronously inside that call. The picker handler sends fresh state
+  // itself right after, so the effect's invocation must skip to avoid a
+  // duplicate state push. External language changes (Settings/tray) do not
+  // set this flag, so their effect-driven syncLocalization sends once.
+  let _langChangeFromPicker = false;
 
   function t(key) {
     return typeof ctx.t === "function" ? ctx.t(key) : key;
@@ -76,6 +83,24 @@ module.exports = function initTutorial(ctx = {}) {
     if (!win || win.isDestroyed()) return;
     if (!win.webContents || win.webContents.isDestroyed()) return;
     win.webContents.send("tutorial:state", buildState());
+  }
+
+  function applyTitleToWindow() {
+    if (!win || win.isDestroyed() || typeof win.setTitle !== "function") return;
+    win.setTitle(t("tutorialWindowTitle"));
+  }
+
+  // Centralized localization sync: native title + renderer state.
+  // Called both by the external language effect (syncWindowTitles in
+  // settings-effect-router via main.js) and by the tutorial:set-lang picker
+  // handler. When the picker triggers ctx.setLang, the controller effect
+  // fires this synchronously; the picker handler then calls this itself, so
+  // the effect's call is suppressed by _langChangeFromPicker to avoid a
+  // duplicate state push. External changes leave the flag false and sync once.
+  function syncLocalization() {
+    if (_langChangeFromPicker) return;
+    applyTitleToWindow();
+    sendState();
   }
 
   function applyZoom() {
@@ -141,11 +166,16 @@ module.exports = function initTutorial(ctx = {}) {
 
     ipcMain.removeAllListeners("tutorial:set-lang");
     ipcMain.on("tutorial:set-lang", (_e, value) => {
+      // Setting the flag prevents the centralized syncLocalization (fired
+      // synchronously by the settings-controller effect inside ctx.setLang)
+      // from pushing state here — the handler sends once itself below.
+      _langChangeFromPicker = true;
       try { if (typeof ctx.setLang === "function") ctx.setLang(value); } catch (err) {
         console.warn("Clawd: tutorial setLang failed:", err && err.message);
       }
+      _langChangeFromPicker = false;
       // Re-push so the wizard re-renders in the newly chosen language.
-      sendState();
+      syncLocalization();
     });
 
     ipcMain.removeAllListeners("tutorial:open-shortcuts");
@@ -200,6 +230,7 @@ module.exports = function initTutorial(ctx = {}) {
     win.loadFile(path.join(__dirname, "tutorial.html"));
     win.webContents.once("did-finish-load", () => {
       applyZoom();
+      applyTitleToWindow();
       sendState();
     });
     win.once("ready-to-show", () => {
@@ -221,6 +252,7 @@ module.exports = function initTutorial(ctx = {}) {
       if (win.isMinimized()) win.restore();
       win.show();
       win.focus();
+      applyTitleToWindow();
       sendState();
       return win;
     }
@@ -243,6 +275,8 @@ module.exports = function initTutorial(ctx = {}) {
     open,
     close,
     sendState,
+    applyTitleToWindow,
+    syncLocalization,
     getWindow: () => win,
   };
 };

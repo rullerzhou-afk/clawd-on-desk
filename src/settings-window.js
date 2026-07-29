@@ -159,6 +159,22 @@ function createSettingsWindowRuntime(options = {}) {
     return clampTextScale(typeof options.getTextScale === "function" ? options.getTextScale() : 1);
   }
 
+  function getTitle() {
+    if (typeof options.getTitle !== "function") return SETTINGS_WINDOW_TITLE;
+    try {
+      const title = options.getTitle();
+      return typeof title === "string" && title ? title : SETTINGS_WINDOW_TITLE;
+    } catch {
+      return SETTINGS_WINDOW_TITLE;
+    }
+  }
+
+  function applyTitleToWindow() {
+    const win = getWindow();
+    if (!isLiveWindow(win) || typeof win.setTitle !== "function") return;
+    win.setTitle(getTitle());
+  }
+
   // The text-scale slider shows the committed percent of the display this
   // window sits on, which it can only learn via getTextScaleContext() — a
   // display change never goes through the settings store, so without this
@@ -257,7 +273,7 @@ function createSettingsWindowRuntime(options = {}) {
       maximizable: true,
       skipTaskbar: false,
       alwaysOnTop: false,
-      title: SETTINGS_WINDOW_TITLE,
+      title: getTitle(),
       // Match settings.html's dark-mode palette to avoid a white flash before
       // CSS media query kicks in. Hex values must stay in sync with the
       // `--bg` CSS variable in settings.html for each theme.
@@ -288,6 +304,7 @@ function createSettingsWindowRuntime(options = {}) {
     if (createdWindow.webContents && typeof createdWindow.webContents.once === "function") {
       createdWindow.webContents.once("did-finish-load", () => {
         applyZoomToWindow(createdWindow, getTextScale());
+        applyTitleToWindow();
       });
     }
     // textScale is per-display: re-resolve after the user drags the window
@@ -335,6 +352,7 @@ function createSettingsWindowRuntime(options = {}) {
     open,
     openWhenReady,
     applyTextScaleToWindow,
+    applyTitleToWindow,
   };
 }
 

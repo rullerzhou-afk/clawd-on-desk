@@ -26,13 +26,11 @@
 
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert");
-const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
+const { createSpawnedHookHarness } = require("./helpers/spawned-hook");
 
 const HOOKS_DIR = path.resolve(__dirname, "..", "hooks");
-const PROBE = path.resolve(__dirname, "helpers", "hook-offline-probe.js");
 
 // Every createPidResolver consumer. Cross-checked against
 // `grep -l createPidResolver hooks/*.js` — if a 15th adapter appears without a
@@ -72,49 +70,31 @@ const ADAPTERS = [
   { name: "workbuddy-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "{}\n" },
 ];
 
-let fakeHome;
-let probeOut;
+let hookHarness;
 
 before(() => {
   // An empty home: server-config's RUNTIME_CONFIG_PATH resolves under it, finds
   // nothing, and the resolver gate reads "Clawd is offline". Verified upfront
   // that Node's os.homedir() honors USERPROFILE on Windows.
-  fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-681-offline-home-"));
-  probeOut = path.join(fakeHome, "spawns.json");
+  hookHarness = createSpawnedHookHarness({ prefix: "clawd-681-offline-home-" });
 });
 
-after(() => {
-  try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch { /* best effort */ }
-});
+after(() => hookHarness.cleanup());
 
 // A live runtime naming THIS process, which is trivially alive. Used only by the
 // vacuity guard below — every other case here wants Clawd to look gone.
 const LIVE_RUNTIME = () => ({ app: "clawd-on-desk", port: 23333, ownerPid: process.pid });
 
-function runHookOffline(adapter, { runtimeJson } = {}) {
-  const clawdDir = path.join(fakeHome, ".clawd");
-  fs.rmSync(clawdDir, { recursive: true, force: true });
-  if (runtimeJson !== undefined) {
-    fs.mkdirSync(clawdDir, { recursive: true });
-    fs.writeFileSync(path.join(clawdDir, "runtime.json"), JSON.stringify(runtimeJson), "utf8");
-  }
-  try { fs.unlinkSync(probeOut); } catch { /* first run */ }
-
-  const env = { ...process.env, USERPROFILE: fakeHome, HOME: fakeHome, CLAWD_PROBE_OUT: probeOut };
-  delete env.CLAWD_REMOTE;
-
-  const argv = ["--require", PROBE, path.join(HOOKS_DIR, adapter.name), ...(adapter.argv || [])];
-  const result = spawnSync(process.execPath, argv, {
-    input: `${JSON.stringify(adapter.payload)}\n`,
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 20000,
+function runHookOffline(adapter, { runtimeJson, env } = {}) {
+  return hookHarness.run({
+    script: path.join(HOOKS_DIR, adapter.name),
+    args: adapter.argv || [],
+    payload: adapter.payload,
+    runtimeJson,
     env,
+    httpContract: "block",
+    probeProcessSpawns: true,
   });
-
-  let spawns = null;
-  try { spawns = JSON.parse(fs.readFileSync(probeOut, "utf8")); } catch { /* hook never exited cleanly */ }
-  return { ...result, spawns };
 }
 
 describe("#681 — every adapter survives a clean offline with zero spawn", { skip: process.platform !== "win32" }, () => {
@@ -198,27 +178,13 @@ describe("#681 — a stale runtime.json is not a live Clawd", { skip: process.pl
   }
 
   it("CLAWD_REMOTE suppresses the local walk even with a perfectly live runtime.json", () => {
-    const clawdDir = path.join(fakeHome, ".clawd");
-    fs.mkdirSync(clawdDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(clawdDir, "runtime.json"),
-      JSON.stringify({ app: "clawd-on-desk", port: 23333, ownerPid: process.pid }),
-      "utf8"
-    );
-    try { fs.unlinkSync(probeOut); } catch { /* first run */ }
-
     const adapter = ADAPTERS.find((a) => a.name === "kiro-hook.js");
-    const r = spawnSync(process.execPath, ["--require", PROBE, path.join(HOOKS_DIR, adapter.name)], {
-      input: `${JSON.stringify(adapter.payload)}\n`,
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: 20000,
-      env: { ...process.env, USERPROFILE: fakeHome, HOME: fakeHome, CLAWD_PROBE_OUT: probeOut, CLAWD_REMOTE: "1" },
+    const r = runHookOffline(adapter, {
+      runtimeJson: { app: "clawd-on-desk", port: 23333, ownerPid: process.pid },
+      env: { CLAWD_REMOTE: "1" },
     });
 
-    let spawns = null;
-    try { spawns = JSON.parse(fs.readFileSync(probeOut, "utf8")); } catch { /* ignore */ }
-    assert.deepStrictEqual(spawns, [], "a remote hook must never walk THIS machine's process tree");
+    assert.deepStrictEqual(r.spawns, [], "a remote hook must never walk THIS machine's process tree");
     assert.strictEqual(r.status, 0);
   });
 });

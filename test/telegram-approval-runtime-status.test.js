@@ -41,11 +41,10 @@ function sessionSnapshot() {
   };
 }
 
-test("native active status ignores the legacy enabled flag and sidecar stopped state", () => {
+test("native active status ignores the historical enabled flag", () => {
   const status = buildTelegramApprovalStatus({
     config: COMPLETE_CONFIG_OUTPUT_FULL,
     token: TOKEN_STORED,
-    sidecarStatus: { status: "stopped" },
     migrationSnapshot: { state: "NATIVE_ACTIVE", transport: "native" },
     nativePolling: true,
   });
@@ -64,11 +63,10 @@ test("native active status ignores the legacy enabled flag and sidecar stopped s
   });
 });
 
-test("native active status reports native inactive instead of legacy sidecar unavailable", () => {
+test("native active status reports native inactive when polling is stopped", () => {
   const status = buildTelegramApprovalStatus({
     config: COMPLETE_CONFIG_OUTPUT_FULL,
     token: TOKEN_STORED,
-    sidecarStatus: { status: "stopped" },
     migrationSnapshot: { state: "NATIVE_ACTIVE", transport: "native" },
     nativePolling: false,
   });
@@ -80,11 +78,10 @@ test("native active status reports native inactive instead of legacy sidecar una
   assert.equal(status.message, "Native Telegram approval is not active");
 });
 
-test("native testing status carries a native reason instead of falling through to sidecar copy", () => {
+test("native testing status carries a native reason", () => {
   const status = buildTelegramApprovalStatus({
     config: COMPLETE_CONFIG_OUTPUT_FULL,
     token: TOKEN_STORED,
-    sidecarStatus: { status: "stopped" },
     migrationSnapshot: { state: "TESTING_NATIVE" },
     nativePolling: true,
   });
@@ -97,69 +94,57 @@ test("native testing status carries a native reason instead of falling through t
   assert.equal(status.message, "Native Telegram approval test is already in progress");
 });
 
-test("native transport setup debt uses native copy without showing as enabled", () => {
+test("native setup debt is reported as inactive until verification can run", () => {
   const status = buildTelegramApprovalStatus({
     config: COMPLETE_CONFIG_OUTPUT_FULL,
     token: TOKEN_STORED,
-    sidecarStatus: { status: "stopped" },
     migrationSnapshot: { state: "NEEDS_SETUP", transport: "native" },
     nativePolling: false,
   });
 
   assert.equal(status.status, "stopped");
-  assert.equal(status.transport, "native");
+  assert.equal(status.transport, "off");
   assert.equal(status.enabled, false);
   assert.equal(status.configured, true);
-  assert.equal(status.reason, "native-inactive");
-  assert.equal(status.message, "Native Telegram approval is not active");
-});
-
-test("off transport keeps the legacy disabled reason after USER_DISABLE", () => {
-  const status = buildTelegramApprovalStatus({
-    config: COMPLETE_CONFIG_OUTPUT_FULL,
-    token: TOKEN_STORED,
-    sidecarStatus: { status: "stopped" },
-    migrationSnapshot: { state: "IDLE", transport: "off" },
-    nativePolling: false,
-  });
-
-  assert.equal(status.transport, "legacy");
-  assert.equal(status.configured, false);
   assert.equal(status.reason, "disabled");
   assert.equal(status.message, "");
 });
 
-test("legacy runtime-failure overlay keeps the badge failed even if live sidecar is stopped", () => {
+test("off transport stays off after USER_DISABLE", () => {
+  const status = buildTelegramApprovalStatus({
+    config: COMPLETE_CONFIG_OUTPUT_FULL,
+    token: TOKEN_STORED,
+    migrationSnapshot: { state: "IDLE", transport: "off" },
+    nativePolling: false,
+  });
+
+  assert.equal(status.transport, "off");
+  assert.equal(status.configured, true);
+  assert.equal(status.reason, "disabled");
+  assert.equal(status.message, "");
+});
+
+test("retired legacy snapshots can only report migration required", () => {
   const status = buildTelegramApprovalStatus({
     config: COMPLETE_CONFIG_ENABLED,
     token: TOKEN_STORED,
-    // Live handle already torn down / cleared — without the overlay this would
-    // read back as "ready" and contradict the migration card (issue #430).
-    sidecarStatus: { status: "stopped" },
     migrationSnapshot: {
-      state: "LEGACY_ACTIVE",
+      state: "NATIVE_MIGRATION_REQUIRED",
       transport: "legacy",
-      runtimeStatus: {
-        transport: "legacy",
-        status: "failed",
-        reason: "sidecar_runtime_failed",
-        message: "sidecar exited (signal SIGTERM)",
-      },
     },
     nativePolling: false,
   });
 
-  assert.equal(status.transport, "legacy");
-  assert.equal(status.status, "failed");
-  assert.equal(status.reason, "sidecar_runtime_failed");
-  assert.equal(status.message, "sidecar exited (signal SIGTERM)");
+  assert.equal(status.transport, "off");
+  assert.equal(status.status, "stopped");
+  assert.equal(status.reason, "native-migration-required");
+  assert.equal(status.nativePolling, false);
 });
 
-test("legacy runtime overlay never forges running from a stale runtime-status", () => {
+test("stale legacy runtime fields cannot forge a running status", () => {
   const status = buildTelegramApprovalStatus({
     config: COMPLETE_CONFIG_ENABLED,
     token: TOKEN_STORED,
-    sidecarStatus: { status: "stopped" },
     migrationSnapshot: {
       state: "LEGACY_ACTIVE",
       transport: "legacy",
@@ -168,15 +153,14 @@ test("legacy runtime overlay never forges running from a stale runtime-status", 
     nativePolling: false,
   });
 
-  // Overlay only honours "failed"; "running" must come from the live sidecar.
+  assert.equal(status.transport, "off");
   assert.equal(status.status, "stopped");
 });
 
-test("legacy runtime overlay is dropped once the owner left legacy (stale failed after disable)", () => {
+test("stale legacy failure fields are ignored after disable", () => {
   const status = buildTelegramApprovalStatus({
     config: COMPLETE_CONFIG_DISABLED,
     token: TOKEN_STORED,
-    sidecarStatus: { status: "stopped" },
     migrationSnapshot: {
       // User disabled after a failure: state moved to IDLE/off, but a stale
       // legacy failed runtimeStatus lingers. It must NOT keep the badge red.
@@ -191,10 +175,11 @@ test("legacy runtime overlay is dropped once the owner left legacy (stale failed
   assert.notEqual(status.status, "failed");
 });
 
-test("native selection includes persisted native transport while excluding off", () => {
+test("native selection only includes live native states", () => {
   assert.equal(isNativeTelegramApprovalSelected({ state: "NATIVE_ACTIVE" }), true);
   assert.equal(isNativeTelegramApprovalSelected({ state: "TESTING_NATIVE" }), true);
-  assert.equal(isNativeTelegramApprovalSelected({ state: "NEEDS_SETUP", transport: "native" }), true);
+  assert.equal(isNativeTelegramApprovalSelected({ state: "NATIVE_MIGRATION_REQUIRED", transport: "legacy" }), false);
+  assert.equal(isNativeTelegramApprovalSelected({ state: "NEEDS_SETUP", transport: "native" }), false);
   assert.equal(isNativeTelegramApprovalSelected({ state: "IDLE", transport: "off" }), false);
 });
 
@@ -202,7 +187,6 @@ test("R2 diagnostic reports native active healthy without exposing recipient ids
   const approvalStatus = buildTelegramApprovalStatus({
     config: COMPLETE_CONFIG_OUTPUT_FULL,
     token: TOKEN_STORED,
-    sidecarStatus: { status: "stopped" },
     migrationSnapshot: {
       state: "NATIVE_ACTIVE",
       transport: "native",
@@ -251,7 +235,6 @@ test("R3 diagnostic formatter follows the Clawd language setting", () => {
   const approvalStatus = buildTelegramApprovalStatus({
     config: COMPLETE_CONFIG_OUTPUT_FULL,
     token: TOKEN_STORED,
-    sidecarStatus: { status: "stopped" },
     migrationSnapshot: {
       state: "NATIVE_ACTIVE",
       transport: "native",
@@ -310,7 +293,7 @@ test("R3 diagnostic formatter localizes status all and falls back to English", (
   assert.match(fallback, /Latest session: none/);
 });
 
-test("R2 diagnostic reports native inactive when token/config are missing", () => {
+test("R2 diagnostic reports setup debt without claiming an active transport", () => {
   const incomplete = {
     enabled: false,
     allowedTgUserId: "",
@@ -320,7 +303,6 @@ test("R2 diagnostic reports native inactive when token/config are missing", () =
   const approvalStatus = buildTelegramApprovalStatus({
     config: incomplete,
     token: TOKEN_MISSING,
-    sidecarStatus: { status: "stopped" },
     migrationSnapshot: { state: "NEEDS_SETUP", transport: "native" },
     nativePolling: false,
   });
@@ -332,8 +314,8 @@ test("R2 diagnostic reports native inactive when token/config are missing", () =
     nativeRunnerStatus: { polling: false, pendingApprovalCount: 0 },
   });
 
-  assert.equal(diagnostic.transport, "native");
-  assert.equal(diagnostic.health, "setup-needed");
+  assert.equal(diagnostic.transport, "off");
+  assert.equal(diagnostic.health, "off");
   assert.equal(diagnostic.nativePolling, false);
   assert.equal(diagnostic.approvalAvailable, false);
   assert.equal(diagnostic.tokenStored, false);
@@ -349,7 +331,6 @@ test("R2 diagnostic distinguishes off transport from legacy stopped", () => {
   const approvalStatus = buildTelegramApprovalStatus({
     config: COMPLETE_CONFIG_DISABLED,
     token: TOKEN_STORED,
-    sidecarStatus: { status: "stopped" },
     migrationSnapshot: { state: "IDLE", transport: "off" },
     nativePolling: false,
   });
@@ -374,13 +355,12 @@ test("R2 diagnostic distinguishes off transport from legacy stopped", () => {
   assert.doesNotMatch(text, /inactive until native is running/);
 });
 
-test("R2 diagnostic reports legacy fallback without pretending native is polling", () => {
+test("R2 diagnostic never reports the retired legacy fallback as available", () => {
   const approvalStatus = buildTelegramApprovalStatus({
     config: COMPLETE_CONFIG_ENABLED,
     token: TOKEN_STORED,
-    sidecarStatus: { status: "running" },
     migrationSnapshot: {
-      state: "LEGACY_ACTIVE",
+      state: "NATIVE_MIGRATION_REQUIRED",
       transport: "legacy",
       ownerSnapshot: { sidecarRunning: true, nativePolling: false },
     },
@@ -391,16 +371,16 @@ test("R2 diagnostic reports legacy fallback without pretending native is polling
     token: TOKEN_STORED,
     approvalStatus,
     migrationSnapshot: {
-      state: "LEGACY_ACTIVE",
+      state: "NATIVE_MIGRATION_REQUIRED",
       transport: "legacy",
       ownerSnapshot: { sidecarRunning: true, nativePolling: false },
     },
   });
 
-  assert.equal(diagnostic.transport, "legacy");
-  assert.equal(diagnostic.health, "healthy");
+  assert.equal(diagnostic.transport, "off");
+  assert.equal(diagnostic.health, "off");
   assert.equal(diagnostic.nativePolling, false);
-  assert.equal(diagnostic.approvalAvailable, true);
+  assert.equal(diagnostic.approvalAvailable, false);
   assert.equal(diagnostic.completionNotifications.enabled, false);
   assert.equal(diagnostic.completionNotifications.effective, false);
   assert.equal(diagnostic.completionNotifications.outputMode, "off");

@@ -5,6 +5,12 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      artifact_validation_only:
+        description: "Use focused package tests for Windows while retaining full macOS/Linux tests"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   build-windows:
@@ -16,15 +22,29 @@ jobs:
           node-version-file: .nvmrc
       - run: npm install
       - run: npm test
-      - run: npm run fetch:sidecars -- --target windows-x64,windows-arm64
-      - run: node scripts/verify-sidecar-binaries.js prebuild:win:all
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.artifact_validation_only }}
+      - name: Run package validation tests
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_validation_only }}
+        run: node --test test/assert-no-retired-telegram-sidecar.test.js test/package-build-config.test.js test/telegram-legacy-retirement.test.js test/telegram-migration-state.test.js test/telegram-migration-controller.test.js test/telegram-migration-user-data.test.js
       - run: npx electron-builder --win --publish never
+      - name: Assert retired Telegram sidecar is absent
+        run: |
+          node scripts/assert-no-retired-telegram-sidecar.js --resources-root dist/win-unpacked/resources --output dist/telegram-retirement-manifests/windows-x64.json
+          node scripts/assert-no-retired-telegram-sidecar.js --resources-root dist/win-arm64-unpacked/resources --output dist/telegram-retirement-manifests/windows-arm64.json
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: windows-installer
           path: |
             dist/*.exe
             dist/latest.yml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-telegram-retirement-manifests
+          path: |
+            dist/telegram-retirement-manifests/*.json
+          if-no-files-found: warn
 
   build-mac:
     runs-on: macos-latest
@@ -35,15 +55,25 @@ jobs:
           node-version-file: .nvmrc
       - run: npm install
       - run: npm test
-      - run: npm run fetch:sidecars -- --target darwin-x64,darwin-arm64
-      - run: node scripts/verify-sidecar-binaries.js prebuild:mac
       - run: npx electron-builder --mac --publish never
+      - name: Assert retired Telegram sidecar is absent
+        run: |
+          node scripts/assert-no-retired-telegram-sidecar.js --resources-root "dist/mac/Clawd on Desk.app/Contents/Resources" --output dist/telegram-retirement-manifests/darwin-x64.json
+          node scripts/assert-no-retired-telegram-sidecar.js --resources-root "dist/mac-arm64/Clawd on Desk.app/Contents/Resources" --output dist/telegram-retirement-manifests/darwin-arm64.json
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: mac-installer
           path: |
             dist/*.dmg
             dist/latest-mac.yml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-telegram-retirement-manifests
+          path: |
+            dist/telegram-retirement-manifests/*.json
+          if-no-files-found: warn
 
   build-linux:
     runs-on: ubuntu-latest
@@ -54,16 +84,25 @@ jobs:
           node-version-file: .nvmrc
       - run: npm install
       - run: npm test
-      - run: npm run fetch:sidecars -- --target linux-x64
-      - run: node scripts/verify-sidecar-binaries.js prebuild:linux
       - run: npx electron-builder --linux --publish never
+      - name: Assert retired Telegram sidecar is absent
+        run: |
+          node scripts/assert-no-retired-telegram-sidecar.js --resources-root dist/linux-unpacked/resources --output dist/telegram-retirement-manifests/linux-x64.json
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: linux-installer
           path: |
             dist/*.AppImage
             dist/*.deb
             dist/latest-linux.yml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-telegram-retirement-manifests
+          path: |
+            dist/telegram-retirement-manifests/*.json
+          if-no-files-found: warn
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -76,6 +115,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: "*-installer"
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:

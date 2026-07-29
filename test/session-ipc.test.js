@@ -74,8 +74,8 @@ function createHarness(overrides = {}) {
       calls.push(["openSessionFolder", sessionId]);
       return { status: "ok" };
     }),
-    setSessionAutomationOverride: overrides.setSessionAutomationOverride || (async (payload) => {
-      calls.push(["setSessionAutomationOverride", payload]);
+    setSessionAutomationOverride: overrides.setSessionAutomationOverride || (async (payload, context) => {
+      calls.push(["setSessionAutomationOverride", payload, context]);
       return { status: "applied" };
     }),
     clearSessionAutomationGrant: overrides.clearSessionAutomationGrant || ((payload) => {
@@ -219,7 +219,11 @@ test("session automation IPC accepts only the two narrow renderer payloads", asy
     { status: "invalid" }
   );
   assert.deepStrictEqual(calls, [
-    ["setSessionAutomationOverride", { sessionId: "s1", mode: "auto-tools" }],
+    [
+      "setSessionAutomationOverride",
+      { sessionId: "s1", mode: "auto-tools" },
+      { sender: "sender-web-contents" },
+    ],
     ["clearSessionAutomationGrant", { grantId: "g1" }],
   ]);
 });

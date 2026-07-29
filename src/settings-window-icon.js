@@ -48,14 +48,14 @@ function getWindowsShellIconPath({
   isPackaged,
   resourcesPath,
   appDir,
+  execPath,
   existsSync,
 }) {
   const hasFile = typeof existsSync === "function" ? existsSync : () => true;
   const candidates = isPackaged
     ? [
         path.join(resourcesPath || "", "icon.ico"),
-        path.join(resourcesPath || "", "app.asar.unpacked", "assets", "icon.ico"),
-        path.join(resourcesPath || "", "app.asar", "assets", "icon.ico"),
+        execPath,
       ]
     : [
         path.join(appDir || "", "assets", "icon.ico"),
@@ -79,6 +79,7 @@ function getSettingsWindowTaskbarDetails({
     isPackaged,
     resourcesPath,
     appDir,
+    execPath,
     existsSync,
   }) || getSettingsWindowIconPath({
     platform,

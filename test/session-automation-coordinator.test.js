@@ -272,6 +272,29 @@ test("Dashboard derives identity from the current session and clear uses exact g
   assert.equal(h.store.list().length, 0);
 });
 
+test("Dashboard forwards its warning parent without trusting renderer payload fields", async () => {
+  const warningParent = { isDestroyed: () => false };
+  const warnings = [];
+  const h = createHarness({
+    showWarning: async (entry) => {
+      warnings.push(entry);
+      return { confirmed: false };
+    },
+  });
+
+  const result = await h.coordinator.setSessionAutomationOverride(
+    {
+      sessionId: "local|claude-code|s1",
+      mode: "auto-tools",
+      warningParent: { spoofed: true },
+    },
+    { warningParent }
+  );
+
+  assert.equal(result.status, "cancelled");
+  assert.deepEqual(warnings, [{ warningParent }]);
+});
+
 test("session lifecycle and agent cleanup cancel candidates and clear memory records", async () => {
   const h = createHarness({ warningDismissed: true });
   const cancelled = [];

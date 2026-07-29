@@ -2,10 +2,14 @@
 
 const assert = require("node:assert");
 const EventEmitter = require("node:events");
+const fs = require("node:fs");
 const Module = require("node:module");
+const path = require("node:path");
 const { describe, it } = require("node:test");
 
 const TUTORIAL_MODULE_PATH = require.resolve("../src/tutorial");
+const TUTORIAL_RENDERER_PATH = path.join(__dirname, "..", "src", "tutorial-renderer.js");
+const TUTORIAL_HTML_PATH = path.join(__dirname, "..", "src", "tutorial.html");
 
 function loadTutorialWithElectron(fakeElectron) {
   delete require.cache[TUTORIAL_MODULE_PATH];
@@ -65,6 +69,7 @@ function createHarness(ctxOverrides = {}) {
     setMenuBarVisibility() {}
     loadFile(file) { this.loadedFile = file; }
     setBackgroundColor(color) { this.backgroundColors.push(color); }
+    setTitle(title) { this.title = title; }
     once(event, cb) { this.onceCallbacks.set(event, cb); }
     on(event, cb) { this.onCallbacks.set(event, cb); }
     close() {
@@ -108,7 +113,7 @@ function createHarness(ctxOverrides = {}) {
     getDoneHeroSvg: () => "<svg id=\"done-hero\"></svg>",
     setLang: (lang) => { calls.setLang.push(lang); },
     getShortcutsSummary: () => [{ id: "permissionAllow", label: "Allow", accelerator: "CommandOrControl+Shift+Y" }],
-    getAgentOnboardingState: () => ({ install: [{ agentId: "gemini-cli", label: "Gemini CLI" }], cleanup: [], active: [] }),
+    getAgentOnboardingState: () => ({ install: [{ agentId: "gemini-cli", label: "Gemini CLI", iconUrl: "file:///icons/gemini-cli.png" }], cleanup: [], active: [] }),
     installAgent: (agentId) => { calls.installAgent.push(agentId); return Promise.resolve({ status: "ok" }); },
     uninstallAgent: (agentId) => { calls.uninstallAgent.push(agentId); return Promise.resolve({ status: "ok" }); },
     registerShortcut: (payload) => { calls.registerShortcut.push(payload); return Promise.resolve({ status: "ok" }); },
@@ -140,6 +145,27 @@ function createHarness(ctxOverrides = {}) {
 }
 
 describe("tutorial window shell", () => {
+  it("uses the shared custom language picker in the welcome step", () => {
+    const renderer = fs.readFileSync(TUTORIAL_RENDERER_PATH, "utf8");
+    const html = fs.readFileSync(TUTORIAL_HTML_PATH, "utf8");
+
+    assert.ok(renderer.includes("createLanguagePicker"));
+    assert.ok(renderer.includes("LANG_LABELS"));
+    assert.ok(renderer.includes("api.setLang(next)"));
+    assert.ok(renderer.includes("languagePickerControl.dispose()"));
+    assert.ok(renderer.includes("mountedLanguagePicker.ensureVisible()"));
+    assert.ok(!renderer.includes("<select"));
+    assert.ok(!renderer.includes("lang-select"));
+    assert.ok(html.includes(`href="language-picker.css"`));
+    assert.ok(html.includes(`src="language-picker.js"`));
+    assert.match(html, /\.body\.step-welcome \{[^}]*padding:\s*18px 26px 106px;[^}]*scrollbar-width:\s*none;/s);
+    assert.match(html, /\.body\.step-welcome::-webkit-scrollbar \{[^}]*width:\s*0;[^}]*height:\s*0;/);
+    assert.doesNotMatch(html, /\.step-welcome \.welcome \{[^}]*transform:/);
+    assert.match(html, /id="body" data-language-picker-boundary/);
+    assert.match(html, /\.body\.step-welcome \{[^}]*overflow-y: auto;[^}]*align-items: safe center;/s);
+    assert.match(html, /style-src 'self' 'unsafe-inline'/);
+  });
+
   it("opens a centered, framed window and loads tutorial.html", () => {
     const h = createHarness();
     h.tutorial.open();
@@ -178,7 +204,11 @@ describe("tutorial window shell", () => {
     assert.deepStrictEqual(stateSend.payload.langs, ["en", "zh", "ja"]);
     assert.strictEqual(stateSend.payload.heroSrc, "data:image/png;base64,hero");
     assert.strictEqual(stateSend.payload.doneHeroSvg, "<svg id=\"done-hero\"></svg>");
-    assert.deepStrictEqual(stateSend.payload.agents.install, [{ agentId: "gemini-cli", label: "Gemini CLI" }]);
+    assert.deepStrictEqual(stateSend.payload.agents.install, [{
+      agentId: "gemini-cli",
+      label: "Gemini CLI",
+      iconUrl: "file:///icons/gemini-cli.png",
+    }]);
     assert.strictEqual(stateSend.payload.shortcuts[0].accelerator, "CommandOrControl+Shift+Y");
   });
 
@@ -191,6 +221,20 @@ describe("tutorial window shell", () => {
     assert.deepStrictEqual(h.calls.setLang, ["zh"]);
     const after = h.sends.filter((s) => s.channel === "tutorial:state").length;
     assert.strictEqual(after, before + 1, "state re-pushed after language change");
+  });
+
+  it("refreshes the native title when the selected language changes", () => {
+    let lang = "en";
+    const titles = { en: "Welcome to Clawd on Desk", zh: "欢迎使用 Clawd on Desk" };
+    const h = createHarness({
+      t: (key) => key === "tutorialWindowTitle" ? titles[lang] : key,
+      setLang: (value) => { lang = value; h.calls.setLang.push(value); },
+    });
+
+    h.tutorial.open();
+    assert.strictEqual(h.getCreatedWindow().opts.title, titles.en);
+    h.listeners.get("tutorial:set-lang")({}, "zh");
+    assert.strictEqual(h.getCreatedWindow().title, titles.zh);
   });
 
   it("get-state handler returns the live state", () => {
@@ -279,5 +323,72 @@ describe("tutorial window shell", () => {
     h.nativeTheme.shouldUseDarkColors = true;
     h.nativeTheme.emit("updated");
     assert.ok(win.backgroundColors.includes("#1c1c1f"), "dark background applied on theme change");
+  });
+
+  it("syncLocalization pushes fresh state, dictionary, and native title for external language changes", () => {
+    // Reproduces the review-reported gap: when the language changes through
+    // Settings/tray (not the tutorial's own picker), the centralized language
+    // effect must push fresh renderer state — not just the native title — so
+    // the tutorial body, buttons, and document.title follow the new language.
+    let lang = "en";
+    const titles = { en: "Welcome to Clawd on Desk", zh: "欢迎使用 Clawd on Desk" };
+    const i18nByLang = {
+      en: { tutorialWelcomeTitle: "Welcome to Clawd on Desk" },
+      zh: { tutorialWelcomeTitle: "欢迎使用 Clawd on Desk" },
+    };
+    const h = createHarness({
+      t: (key) => (key === "tutorialWindowTitle" ? titles[lang] : key),
+      getLang: () => lang,
+      getI18n: () => i18nByLang[lang],
+    });
+
+    h.tutorial.open();
+    h.getCreatedWindow().emitWebContents("did-finish-load");
+    const before = h.sends.filter((s) => s.channel === "tutorial:state").length;
+
+    // Simulate the external path: Settings/tray → effect → syncLocalization.
+    lang = "zh";
+    h.tutorial.syncLocalization();
+
+    const stateSends = h.sends.filter((s) => s.channel === "tutorial:state");
+    assert.strictEqual(stateSends.length, before + 1, "state pushed once for external change");
+    const last = stateSends[stateSends.length - 1];
+    assert.strictEqual(last.payload.lang, "zh", "state carries the new lang");
+    assert.strictEqual(
+      last.payload.i18n.tutorialWelcomeTitle,
+      "欢迎使用 Clawd on Desk",
+      "state carries the new dictionary",
+    );
+    assert.strictEqual(h.getCreatedWindow().title, titles.zh, "native title updated to new language");
+  });
+
+  it("tutorial:set-lang does not double-push state when the language effect fires synchronously", () => {
+    // The tutorial's own language picker calls ctx.setLang, which in production
+    // synchronously triggers the centralized effect (syncWindowTitles →
+    // syncLocalization). The re-entrancy guard must suppress that effect-driven
+    // push so the picker handler's own syncLocalization is the only one.
+    let lang = "en";
+    const titles = { en: "Welcome to Clawd on Desk", zh: "欢迎使用 Clawd on Desk" };
+    const h = createHarness({
+      t: (key) => (key === "tutorialWindowTitle" ? titles[lang] : key),
+      getLang: () => lang,
+      setLang: (value) => {
+        lang = value;
+        h.calls.setLang.push(value);
+        // Simulate the settings-controller firing the centralized effect.
+        h.tutorial.syncLocalization();
+      },
+    });
+
+    h.tutorial.open();
+    h.getCreatedWindow().emitWebContents("did-finish-load");
+    const before = h.sends.filter((s) => s.channel === "tutorial:state").length;
+
+    h.listeners.get("tutorial:set-lang")({}, "zh");
+
+    assert.deepStrictEqual(h.calls.setLang, ["zh"]);
+    const after = h.sends.filter((s) => s.channel === "tutorial:state").length;
+    assert.strictEqual(after, before + 1, "state pushed exactly once despite synchronous effect");
+    assert.strictEqual(h.getCreatedWindow().title, titles.zh, "native title updated");
   });
 });

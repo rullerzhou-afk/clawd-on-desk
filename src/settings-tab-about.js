@@ -110,18 +110,19 @@
     button.textContent = t("aboutCleanupButton");
     const status = document.createElement("div");
     status.className = "about-cleanup-status";
+    let confirmationPending = false;
 
-    button.addEventListener("click", () => {
-      if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") return;
-      if (typeof window.confirm !== "function") {
-        status.textContent = t("aboutCleanupFailed");
-        return;
-      }
-      if (!window.confirm(t("aboutCleanupConfirm"))) return;
+    function resetCleanupButton() {
+      button.disabled = false;
+      button.textContent = t("aboutCleanupButton");
+    }
+
+    function runCleanup() {
       button.disabled = true;
       button.textContent = t("aboutCleanupRunning");
       status.textContent = "";
-      window.settingsAPI.command("cleanupIntegrations")
+      return Promise.resolve()
+        .then(() => window.settingsAPI.command("cleanupIntegrations"))
         .then((result) => {
           if (!result || result.status !== "ok") {
             throw new Error((result && result.message) || t("aboutCleanupFailed"));
@@ -135,9 +136,37 @@
           status.textContent = message;
           ops.showToast(message, { ttl: 7000 });
         })
+        .finally(resetCleanupButton);
+    }
+
+    button.addEventListener("click", () => {
+      if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") return;
+      if (confirmationPending || button.disabled) return;
+      if (!helpers || typeof helpers.showSettingsConfirmModal !== "function") {
+        status.textContent = t("aboutCleanupFailed");
+        return;
+      }
+      confirmationPending = true;
+      Promise.resolve()
+        .then(() => helpers.showSettingsConfirmModal({
+          title: t("aboutCleanupConfirmTitle"),
+          detail: t("aboutCleanupConfirmDetail"),
+          actions: [
+            { id: "confirm", label: t("aboutCleanupConfirmAction"), tone: "danger" },
+            { id: "cancel", label: t("aboutCleanupConfirmCancel"), tone: "accent", defaultFocus: true },
+          ],
+        }))
+        .then((actionId) => {
+          if (actionId !== "confirm") return null;
+          return runCleanup();
+        })
+        .catch((err) => {
+          const message = t("aboutCleanupFailed") + (err && err.message ? ": " + err.message : "");
+          status.textContent = message;
+          ops.showToast(message, { ttl: 7000 });
+        })
         .finally(() => {
-          button.disabled = false;
-          button.textContent = t("aboutCleanupButton");
+          confirmationPending = false;
         });
     });
 

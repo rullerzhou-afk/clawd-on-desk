@@ -52,14 +52,13 @@ button stay disabled until token and recipient are in place.
    `chat_id` is the same as the user's id). Before testing, send `/start` to
    your own bot at least once so it can initiate the private chat.
 
-3. **Step 3 — Enable & Test.** Flip **Enable Telegram approval**, then click
-   **Send test**.
+3. **Step 3 — Enable & Verify.** Flip **Enable Telegram approval**.
 
-   The test sends a standalone approval card. Tap either Allow or Deny in
+   Clawd sends a standalone verification card. Tap either Allow or Deny in
    Telegram within 60 seconds. It is not attached to any agent permission
-   request. The status card at the top of the tab shows live sidecar state
-   (Setup incomplete / Ready / Starting / Running / Failed) and surfaces any
-   sidecar error message in plain text.
+   request. A successful callback activates the native Telegram transport.
+   After activation, **Send test** remains available for an ordinary
+   connectivity check.
 
 ## Runtime Behavior
 
@@ -70,32 +69,37 @@ button stay disabled until token and recipient are in place.
   approval request.
 - Repeated Telegram taps after a request is already handled do not resolve the
   permission twice.
-- Sidecar logs and Clawd logs redact Telegram tokens, chat ids, and token-like
-  values.
+- Clawd logs redact Telegram tokens, chat ids, and token-like values.
 
-## Native Transport (v0.9.0+)
+## Legacy Upgrade (v0.14.0)
 
-The native (in-process) Telegram transport has been the default since the
-v0.9.0 migration window closed; the Go sidecar remains in the tree as the
-legacy fallback runtime. The migration-era Settings card — test-and-switch,
-enable-legacy, rollback, and delete-legacy-token buttons — was retired with
-it: the Step-3 enable switch is now the only user entry point, routing
-turn-on through the native test flow (`USER_TEST_NATIVE`) and turn-off
-through `USER_DISABLE`. Native still reads the shared
-`telegram-approval.env` token file.
+The old Go sidecar transport is retired in v0.14.0. It is no longer started,
+shipped, or offered as a fallback. Existing users whose preferences still
+select the old transport see a blocking **Legacy Telegram mode was retired**
+panel in Settings.
 
-The one-time dogfood checklist that validated the migration itself lived in
-this section until the card was retired; recover it from git history if a
-future transport migration needs a template.
+Choose **Verify native and switch**. Clawd reuses the existing bot token,
+allowed user id, and target chat; no Telegram fields need to be entered again.
+The token stays in the same `telegram-approval.env` file and the migration does
+not rewrite or delete it. Only the real nonce callback from the configured
+Telegram user completes the switch.
 
-## Release Notes
+If verification fails or times out, Clawd remains in the migration-required
+state and does not revive the retired runtime. **Turn off Telegram approval**
+is available when you do not want to migrate yet. Users already on verified
+native transport continue without interruption.
 
-Packaged builds ship the pinned `cc-connect-clawd` sidecar binary from
-`bin/cc-connect-clawd/`. Source runs use the same directory layout, or the
-`CLAWD_CC_CONNECT_CLAWD_PATH` override for development.
+If verification reports a Telegram `409` conflict, another process is polling
+the same bot token. Fully exit the other Clawd instance or bot integration,
+wait a few seconds for Telegram to release `getUpdates`, then retry. One bot
+token can have only one active poller.
 
-Before release, verify sidecar binaries with:
+## Release Verification
+
+Packaged builds must contain neither the retired executable nor its runtime
+source modules. Inspect each unpacked target with:
 
 ```bash
-node scripts/verify-sidecar-binaries.js prebuild:all
+node scripts/assert-no-retired-telegram-sidecar.js \
+  --resources-root <unpacked-resources-directory>
 ```

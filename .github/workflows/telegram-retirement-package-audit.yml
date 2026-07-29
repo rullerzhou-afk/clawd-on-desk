@@ -1,0 +1,115 @@
+name: Telegram Legacy Retirement Package Audit
+
+on:
+  pull_request:
+    paths:
+      - ".gitignore"
+      - "package.json"
+      - "package-lock.json"
+      - "src/main.js"
+      - "src/settings-actions.js"
+      - "src/settings-i18n.js"
+      - "src/telegram-*"
+      - "src/settings-tab-telegram-approval.js"
+      - "src/settings.css"
+      - "scripts/assert-no-retired-telegram-sidecar.js"
+      - "scripts/audit-repository-assets.js"
+      - "test/assert-no-retired-telegram-sidecar.test.js"
+      - "test/package-build-config.test.js"
+      - "test/settings-renderer-browser-env.test.js"
+      - "test/telegram-legacy-retirement.test.js"
+      - "test/telegram-migration-*.test.js"
+      - ".github/workflows/build.yml"
+      - ".github/workflows/telegram-retirement-package-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: npm install
+      - run: |
+          node --test \
+            test/assert-no-retired-telegram-sidecar.test.js \
+            test/package-build-config.test.js \
+            test/telegram-legacy-retirement.test.js \
+            test/telegram-migration-state.test.js \
+            test/telegram-migration-controller.test.js \
+            test/telegram-migration-user-data.test.js
+
+  package:
+    needs: unit
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x64
+            runner: windows-latest
+            build_script: build:win:x64
+            resources_root: dist/win-unpacked/resources
+            artifact_check_glob: dist/Clawd-on-Desk-Setup-*-x64.exe
+            artifact_glob: dist/Clawd-on-Desk-Setup-*-x64.exe
+          - target: windows-arm64
+            runner: windows-latest
+            build_script: build:win:arm64
+            resources_root: dist/win-arm64-unpacked/resources
+            artifact_check_glob: dist/Clawd-on-Desk-Setup-*-arm64.exe
+            artifact_glob: dist/Clawd-on-Desk-Setup-*-arm64.exe
+          - target: darwin-x64
+            runner: macos-latest
+            build_script: build:mac:x64
+            resources_root: dist/mac/Clawd on Desk.app/Contents/Resources
+            artifact_check_glob: dist/Clawd-on-Desk-*-x64.dmg
+            artifact_glob: dist/Clawd-on-Desk-*-x64.dmg
+          - target: darwin-arm64
+            runner: macos-latest
+            build_script: build:mac:arm64
+            resources_root: dist/mac-arm64/Clawd on Desk.app/Contents/Resources
+            artifact_check_glob: dist/Clawd-on-Desk-*-arm64.dmg
+            artifact_glob: dist/Clawd-on-Desk-*-arm64.dmg
+          - target: linux-x64
+            runner: ubuntu-latest
+            build_script: build:linux:x64
+            resources_root: dist/linux-unpacked/resources
+            artifact_check_glob: dist/Clawd-on-Desk-*-x86_64.AppImage
+            artifact_glob: |
+              dist/Clawd-on-Desk-*-x86_64.AppImage
+              dist/Clawd-on-Desk-*-amd64.deb
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: npm install
+      - run: npm run ${{ matrix.build_script }} -- --publish never
+      - name: Assert installer exists
+        shell: bash
+        run: |
+          shopt -s nullglob
+          matches=( ${{ matrix.artifact_check_glob }} )
+          if (( ${#matches[@]} == 0 )); then
+            echo "Missing built artifact: ${{ matrix.artifact_check_glob }}" >&2
+            exit 1
+          fi
+      - run: >-
+          node scripts/assert-no-retired-telegram-sidecar.js
+          --resources-root "${{ matrix.resources_root }}"
+          --output "dist/telegram-retirement-manifests/${{ matrix.target }}.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: telegram-retirement-${{ matrix.target }}
+          path: |
+            ${{ matrix.artifact_glob }}
+            dist/telegram-retirement-manifests/*.json
+          if-no-files-found: error
+          retention-days: 7

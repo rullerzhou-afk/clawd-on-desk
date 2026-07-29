@@ -2,8 +2,8 @@ const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");
 const os = require("os");
-const { spawnSync } = require("child_process");
 const path = require("path");
+const { runSpawnedHook } = require("./helpers/spawned-hook");
 const {
   buildCodexNoDecisionOutput,
   buildCodexPermissionOutput,
@@ -506,19 +506,20 @@ describe("Codex official hook", () => {
 
   it("writes no stdout and exits 0 when stop_hook_active=true", () => {
     const scriptPath = path.resolve(__dirname, "..", "hooks", "codex-hook.js");
-    const result = spawnSync(process.execPath, [scriptPath], {
-      input: JSON.stringify({
+    const result = runSpawnedHook({
+      script: scriptPath,
+      payload: {
         hook_event_name: "Stop",
         session_id: "s1",
         turn_id: "turn-1",
         stop_hook_active: true,
-      }),
-      encoding: "utf8",
-      windowsHide: true,
+      },
+      httpContract: "expect-none",
     });
 
     assert.strictEqual(result.status, 0);
     assert.strictEqual(result.stdout, "");
+    assert.strictEqual(result.stderr, "");
   });
 
   it("reuses the runtime port for state and permission hooks", async () => {

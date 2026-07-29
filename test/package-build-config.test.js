@@ -12,6 +12,38 @@ function matchedByAnyGlob(globs, target) {
 }
 
 describe("package build config", () => {
+  describe("repository asset audit", () => {
+    it("exposes a Windows-compatible npm audit command", () => {
+      assert.strictEqual(
+        pkg.scripts["audit:assets"],
+        "node scripts/audit-repository-assets.js"
+      );
+    });
+
+    it("does not match retained source artwork with package globs", () => {
+      assert.strictEqual(
+        matchedByAnyGlob(pkg.build.files, "assets/source/dock-icon-fullbleed.png"),
+        false,
+        "assets/source/** must stay outside build.files"
+      );
+    });
+
+    it("runs in pull-request CI and uploads stable JSON manifests", () => {
+      const workflowPath = path.join(ROOT, ".github", "workflows", "repository-asset-audit.yml");
+      assert.ok(fs.existsSync(workflowPath), "repository asset audit workflow should exist");
+      const workflow = fs.readFileSync(workflowPath, "utf8");
+      assert.match(workflow, /pull_request:/);
+      assert.match(workflow, /npm run audit:assets/);
+      assert.match(workflow, /test\/preload-settings\.test\.js/);
+      assert.match(workflow, /dist\/repository-asset-audit\/\*\.json/);
+      assert.match(
+        workflow,
+        /^permissions:\r?\n\s+contents: read$/m,
+        "repository asset audit should use a read-only GitHub token",
+      );
+    });
+  });
+
   it("ships project window icons in packaged builds", () => {
     assert.ok(
       pkg.build.files.includes("assets/icons/**/*"),
@@ -188,13 +220,9 @@ describe("package build config", () => {
     });
   });
 
-  // getWindowsShellIconPath has a three-step fallback:
-  //   1. resourcesPath/icon.ico            ← extraResources copy
-  //   2. resourcesPath/app.asar.unpacked/assets/icon.ico
-  //   3. resourcesPath/app.asar/assets/icon.ico
-  // Fallback 1 only works if extraResources actually copies icon.ico, and
-  // fallback 3 only works if icon.ico is inside build.files. Guard both so a
-  // future refactor to either array can't silently drop the shell icon.
+  // Windows shell consumers need a physical icon resource outside app.asar.
+  // extraResources provides that canonical runtime copy; the packaged EXE
+  // embeds the same build.win.icon and is the fallback if the copy is missing.
   describe("Windows shell icon fallback chain", () => {
     it("has the source icon.ico on disk", () => {
       const src = path.join(ROOT, "assets", "icon.ico");
@@ -215,66 +243,122 @@ describe("package build config", () => {
         "assets/icon.ico",
         "build.win.icon should point at the same file the shell icon chain expects"
       );
+      for (const key of ["installerIcon", "uninstallerIcon", "installerHeaderIcon"]) {
+        assert.strictEqual(
+          pkg.build.nsis && pkg.build.nsis[key],
+          "assets/icon.ico",
+          `build.nsis.${key} should use the canonical Windows icon`
+        );
+      }
     });
 
-    it("packs icon.ico into the asar so fallback 3 resolves", () => {
-      // getWindowsShellIconPath's third fallback reads
-      // resourcesPath/app.asar/assets/icon.ico — which only exists if the
-      // file survives the build.files glob filter. Earlier versions listed
-      // only assets/icons/**/* (subdir), which does NOT match assets/icon.ico
-      // at the root, so fallback 3 was dead. Guard against that regression.
-      assert.ok(
+    it("does not duplicate the shell icon inside app.asar", () => {
+      assert.strictEqual(
         matchedByAnyGlob(pkg.build.files, "assets/icon.ico"),
-        "build.files must include a glob covering assets/icon.ico (fallback 3)"
+        false,
+        "assets/icon.ico should be packaged only once via extraResources"
       );
     });
   });
 
-  describe("Telegram approval sidecar packaging", () => {
-    it("preflights sidecar binaries before source launches", () => {
-      assert.match(pkg.scripts.start, /node scripts\/ensure-sidecar-binaries\.js && node launch\.js/);
+  describe("Telegram legacy retirement packaging", () => {
+    it("starts directly without fetching a retired executable", () => {
+      assert.strictEqual(pkg.scripts.start, "node launch.js");
     });
 
-    it("copies cc-connect-clawd sidecars into packaged resources", () => {
-      const extra = pkg.build.extraResources || [];
-      const copied = extra.some(
-        (e) => e && e.from === "bin/cc-connect-clawd" && e.to === "sidecars/cc-connect-clawd"
-      );
-      assert.ok(
-        copied,
-        "build.extraResources must copy bin/cc-connect-clawd -> sidecars/cc-connect-clawd"
-      );
+    it("contains no retired scripts, prebuild hooks, or extraResources", () => {
+      for (const key of [
+        "fetch:sidecars",
+        "verify:sidecars",
+        "assert:packaged-sidecar",
+        "prebuild",
+        "prebuild:win:x64",
+        "prebuild:win:arm64",
+        "prebuild:win:all",
+        "prebuild:mac",
+        "prebuild:linux",
+        "prebuild:all",
+      ]) {
+        assert.equal(pkg.scripts[key], undefined, key);
+      }
+      for (const platform of ["win", "mac", "linux"]) {
+        const entries = pkg.build[platform] && pkg.build[platform].extraResources;
+        assert.equal(entries, undefined, `${platform} should not package a Telegram sidecar`);
+      }
+      assert.deepEqual(pkg.build.extraResources, [{ from: "assets/icon.ico", to: "icon.ico" }]);
     });
 
-    it("documents the expected sidecar binary names in the README", () => {
-      const readme = path.join(ROOT, "bin", "cc-connect-clawd", "README.md");
-      assert.ok(fs.existsSync(readme), "bin/cc-connect-clawd/README.md should document release binary names");
-      const text = fs.readFileSync(readme, "utf8");
-      assert.match(text, /windows-x64\/cc-connect-clawd\.exe/);
-      assert.match(text, /darwin-arm64\/cc-connect-clawd/);
-      assert.match(text, /linux-x64\/cc-connect-clawd/);
+    it("declares the asar inspector directly and keeps five target build commands", () => {
+      assert.match(pkg.devDependencies["@electron/asar"], /^\^3\./);
+      assert.strictEqual(pkg.scripts["build:mac:x64"], "electron-builder --mac dmg:x64");
+      assert.strictEqual(pkg.scripts["build:mac:arm64"], "electron-builder --mac dmg:arm64");
+      assert.strictEqual(pkg.scripts["build:linux:x64"], "electron-builder --linux AppImage:x64 deb:x64");
     });
 
-    it("fetches and verifies pinned sidecars before release builds", () => {
+    it("release builds assert the retired sidecar is absent from every unpacked tree", () => {
       const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
-      assertWorkflowOrder(
-        workflow,
-        "npm run fetch:sidecars -- --target windows-x64,windows-arm64",
-        "node scripts/verify-sidecar-binaries.js prebuild:win:all",
-        "npx electron-builder --win --publish never"
+      for (const root of [
+        "dist/win-unpacked/resources",
+        "dist/win-arm64-unpacked/resources",
+        "dist/mac/Clawd on Desk.app/Contents/Resources",
+        "dist/mac-arm64/Clawd on Desk.app/Contents/Resources",
+        "dist/linux-unpacked/resources",
+      ]) {
+        assert.match(workflow, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      }
+      assert.doesNotMatch(workflow, /fetch:sidecars|verify-sidecar|assert:packaged-sidecar/);
+    });
+
+    it("keeps full tag tests while allowing a manual packaging-only evidence run", () => {
+      const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
+      assert.match(workflow, /artifact_validation_only:/);
+      assert.strictEqual(
+        (workflow.match(/github\.event_name != 'workflow_dispatch' \|\| !inputs\.artifact_validation_only/g) || []).length,
+        1,
+        "the Windows release job must keep npm test for tag pushes and normal manual runs"
       );
-      assertWorkflowOrder(
-        workflow,
-        "npm run fetch:sidecars -- --target darwin-x64,darwin-arm64",
-        "node scripts/verify-sidecar-binaries.js prebuild:mac",
-        "npx electron-builder --mac --publish never"
+      assert.strictEqual(
+        (workflow.match(/github\.event_name == 'workflow_dispatch' && inputs\.artifact_validation_only/g) || []).length,
+        1,
+        "only the Windows job should substitute the package-validation tests in evidence mode"
       );
-      assertWorkflowOrder(
-        workflow,
-        "npm run fetch:sidecars -- --target linux-x64",
-        "node scripts/verify-sidecar-binaries.js prebuild:linux",
-        "npx electron-builder --linux --publish never"
+      assert.strictEqual(
+        (workflow.match(/node --test test\/assert-no-retired-telegram-sidecar\.test\.js test\/package-build-config\.test\.js test\/telegram-legacy-retirement\.test\.js test\/telegram-migration-state\.test\.js test\/telegram-migration-controller\.test\.js test\/telegram-migration-user-data\.test\.js/g) || []).length,
+        1
       );
+      assert.strictEqual(
+        (workflow.match(/      - run: npm test/g) || []).length,
+        3,
+        "Windows, macOS, and Linux release jobs must all retain their npm test step"
+      );
+    });
+
+    it("builds and uploads all five target artifacts in pull-request CI", () => {
+      const workflowPath = path.join(ROOT, ".github", "workflows", "telegram-retirement-package-audit.yml");
+      assert.ok(fs.existsSync(workflowPath), "Telegram retirement package audit workflow should exist");
+      const workflow = fs.readFileSync(workflowPath, "utf8");
+      assert.match(workflow, /pull_request:/);
+      assert.match(workflow, /name: Assert installer exists/);
+      assert.match(workflow, /Missing built artifact:/);
+      assert.match(workflow, /if-no-files-found: error/);
+      for (const target of [
+        "windows-x64",
+        "windows-arm64",
+        "darwin-x64",
+        "darwin-arm64",
+        "linux-x64",
+      ]) {
+        assert.match(workflow, new RegExp(`target: ${target}`));
+        assert.match(
+          workflow,
+          new RegExp(`telegram-retirement-\\$\\{\\{ matrix\\.target \\}\\}`),
+          "five-target CI should upload target-specific artifacts and manifests"
+        );
+      }
+      assert.match(workflow, /scripts\/assert-no-retired-telegram-sidecar\.js/);
+      assert.doesNotMatch(workflow, /fetch:sidecars|verify-sidecar|assert:packaged-sidecar/);
+      assert.match(workflow, /Clawd-on-Desk-\*-x86_64\.AppImage/);
+      assert.match(workflow, /Clawd-on-Desk-\*-amd64\.deb/);
     });
 
     it("publishes GitHub releases only for version tags", () => {
@@ -305,15 +389,4 @@ describe("package build config", () => {
 function findWorkflowJobIndex(workflow, jobName) {
   const match = String(workflow || "").match(new RegExp(`(?:^|\\r?\\n)  ${jobName}:\\r?\\n`));
   return match ? match.index : -1;
-}
-
-function assertWorkflowOrder(workflow, fetchCommand, verifyCommand, buildCommand) {
-  const fetchIndex = workflow.indexOf(fetchCommand);
-  const verifyIndex = workflow.indexOf(verifyCommand);
-  const buildIndex = workflow.indexOf(buildCommand);
-  assert.ok(fetchIndex >= 0, `workflow should run: ${fetchCommand}`);
-  assert.ok(verifyIndex >= 0, `workflow should run: ${verifyCommand}`);
-  assert.ok(buildIndex >= 0, `workflow should run: ${buildCommand}`);
-  assert.ok(fetchIndex < verifyIndex, `${fetchCommand} should run before ${verifyCommand}`);
-  assert.ok(verifyIndex < buildIndex, `${verifyCommand} should run before ${buildCommand}`);
 }

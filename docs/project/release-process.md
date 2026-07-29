@@ -10,13 +10,13 @@ Use this flow when preparing a Clawd app release.
 
 ```bash
 npm test
-node scripts/verify-sidecar-binaries.js prebuild:all
+npm run audit:assets
 ```
 
 4. Run the `Build & Release` workflow manually on `main`.
 
-Manual workflow dispatch builds Windows, macOS, and Linux artifacts, fetches the
-pinned `cc-connect-clawd` sidecar release, verifies source-pinned checksums, and
+Manual workflow dispatch builds Windows, macOS, and Linux artifacts, checks
+each unpacked resources tree for retired Telegram sidecar binaries/source, and
 uploads build artifacts. It does not publish a GitHub Release.
 
 ## Draft Release
@@ -50,7 +50,9 @@ Before launching:
 - Confirm the packaged app shows `0.13.0` metadata.
 - Confirm packaged resources include `app.asar.unpacked/hooks`,
   `app.asar.unpacked/agents`, `app.asar.unpacked/extensions`,
-  `app.asar.unpacked/themes`, and `sidecars/cc-connect-clawd`.
+  and `app.asar.unpacked/themes`.
+- Confirm the retirement assertion passes and neither
+  `sidecars/cc-connect-clawd` nor any `cc-connect-clawd(.exe)` exists.
 - Confirm Windows artifacts are architecture-specific x64 / ARM64 installers,
   not a universal NSIS installer.
 - For migration smoke, install v0.12.0 first and save a copy of the old
@@ -170,12 +172,10 @@ and Linux items must pass when those machines are available. If any required
 item fails, fix it and create a new draft release; do not publish a known-bad
 draft.
 
-## Sidecar Dependency
+## Retired Telegram Sidecar Guard
 
-Clawd release builds do not consume upstream `cc-connect` latest artifacts. They
-download the fixed `cc-connect-clawd` fork release pinned by
-`scripts/fetch-sidecar-binaries.js`, verify SHA256 values pinned in that script,
-and package those binaries into app resources.
-
-When the sidecar needs an upstream update, publish a new fixed sidecar release
-from the fork first, then update the Clawd pin and rerun the fetch/verify tests.
+The legacy Telegram sidecar was removed in v0.14.0. Release builds must run
+`scripts/assert-no-retired-telegram-sidecar.js` against every unpacked target:
+Windows x64/arm64, macOS x64/arm64, and Linux x64. The assertion scans both the
+outer resources tree and the real `app.asar`; a retired executable or runtime
+module is a hard failure.
