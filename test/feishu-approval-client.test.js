@@ -16,6 +16,7 @@ const {
   normalizeActionEvent,
   normalizeSessionAutomationActionEvent,
   normalizeElicitationActionEvent,
+  SILENT_LARK_LOGGER,
   createLarkClient,
   createDeadlineHttpInstance,
   createWsClient,
@@ -32,11 +33,13 @@ function flush() {
 // the factories pass down. Domain.Feishu is 0 and Domain.Lark is 1 in the real
 // SDK — the 0 is the whole point of these tests.
 function fakeSdk(overrides = {}) {
-  const captured = { client: [], ws: [], dispatcher: [] };
+  const captured = { client: [], ws: [], dispatcher: [], cache: [] };
   const sdk = {
     Domain: { Feishu: 0, Lark: 1 },
     AppType: { SelfBuild: 0, ISV: 1 },
     LoggerLevel: { warn: 2 },
+    defaultHttpInstance: {},
+    DefaultCache: function DefaultCache() { captured.cache.push(this); },
     Client: function Client(params) { captured.client.push(params); this.im = { v1: { message: {} } }; },
     WSClient: function WSClient(params) { captured.ws.push(params); this.start = async () => {}; this.close = () => {}; },
     EventDispatcher: function EventDispatcher(params) {
@@ -759,7 +762,8 @@ test("FeishuApprovalClient marks WS error failed and recreates on restart", asyn
   await client.start();
   created[0].params.onError(new Error("long connection disabled"));
   assert.equal(client.getStatus().status, "failed");
-  assert.match(client.getStatus().message, /long connection disabled/);
+  assert.equal(client.getStatus().errorCode, "sdk-request-failed");
+  assert.equal(client.getStatus().message, "Feishu/Lark long connection failed.");
   assert.equal(client.isConnected(), false);
 
   await client.start();
@@ -1968,7 +1972,12 @@ test("lookupOpenIdByEmail maps rejected SDK calls using only safe diagnostic met
   assert.deepEqual(logs, [{
     level: "warn",
     message: "email lookup failed",
-    meta: { stage: "request", httpStatus: 403, businessCode: 99991672 },
+    meta: {
+      code: "missing-contact-scope",
+      stage: "lookup",
+      httpStatus: 403,
+      businessCode: 99991672,
+    },
   }]);
   const serialized = JSON.stringify(logs);
   assert.ok(!serialized.includes("private@example.com"));
@@ -2041,6 +2050,121 @@ test("a fake SDK without Domain still works for Feishu but fails loudly for Lark
     () => createWsClient({ appId: "cli_1", appSecret: "s", lark: partial, platform: "lark" }),
     /Domain\.Lark/
   );
+});
+
+test("REST WS and EventDispatcher factories receive the complete safe logger and isolated caches", () => {
+  const { sdk, captured } = fakeSdk();
+  const restHttpInstance = { request: async () => ({}), post: async () => ({}) };
+  const wsHttpInstance = { request: async () => ({}) };
+
+  createLarkClient({
+    appId: "cli_factory_security",
+    appSecret: "synthetic_factory_secret",
+    lark: sdk,
+    platform: "feishu",
+    httpInstance: restHttpInstance,
+  });
+  createWsClient({
+    appId: "cli_factory_security",
+    appSecret: "synthetic_factory_secret",
+    lark: sdk,
+    platform: "feishu",
+    httpInstance: wsHttpInstance,
+  });
+
+  assert.strictEqual(captured.client[0].logger, SILENT_LARK_LOGGER);
+  assert.ok(captured.client[0].cache);
+  assert.strictEqual(captured.client[0].httpInstance, restHttpInstance);
+  assert.strictEqual(captured.dispatcher[0].logger, SILENT_LARK_LOGGER);
+  assert.ok(captured.dispatcher[0].cache);
+  assert.notStrictEqual(captured.dispatcher[0].cache, captured.client[0].cache);
+  assert.strictEqual(captured.ws[0].logger, SILENT_LARK_LOGGER);
+  assert.strictEqual(captured.ws[0].httpInstance, wsHttpInstance);
+  assert.equal(Object.prototype.hasOwnProperty.call(captured.ws[0], "cache"), false);
+  assert.equal(captured.cache.length, 2);
+});
+
+test("lookup and runtime REST clients retain deadline timeout and abort signal after logger/cache injection", async () => {
+  const lookupRequests = [];
+  const lookupBaseHttp = {
+    request: async (options) => {
+      lookupRequests.push(options);
+      return { code: 0, data: { user_list: [{ user_id: "ou_deadline_lookup" }] } };
+    },
+  };
+  const lookupHarness = fakeSdk({
+    defaultHttpInstance: lookupBaseHttp,
+    Client: function Client(params) {
+      lookupHarness.captured.client.push(params);
+      this.contact = { v3: { user: {
+        batchGetId: (payload) => params.httpInstance.request({
+          url: "/contact/v3/users/batch_get_id",
+          method: "POST",
+          data: payload.data,
+          params: payload.params,
+        }),
+      } } };
+    },
+  });
+  const lookupAbort = new AbortController();
+  const lookupResult = await lookupOpenIdByEmail({
+    appId: "cli_lookup_deadline",
+    appSecret: "synthetic_lookup_deadline_secret",
+    email: "lookup-deadline@example.invalid",
+    lark: lookupHarness.sdk,
+    platform: "feishu",
+    requestTimeoutMs: 2468,
+    signal: lookupAbort.signal,
+  });
+  assert.deepEqual(lookupResult, { status: "ok", approverId: "ou_deadline_lookup" });
+  assert.equal(lookupRequests.length, 1);
+  assert.equal(lookupRequests[0].timeout, 2468);
+  assert.strictEqual(lookupRequests[0].signal, lookupAbort.signal);
+  assert.ok(lookupHarness.captured.client[0].httpInstance);
+  assert.equal(typeof lookupHarness.captured.client[0].httpInstance.runWithSignal, "function");
+  assert.strictEqual(lookupHarness.captured.client[0].logger, SILENT_LARK_LOGGER);
+  assert.ok(lookupHarness.captured.client[0].cache);
+
+  const runtimeRequests = [];
+  const runtimeBaseHttp = {
+    request: async (options) => {
+      runtimeRequests.push(options);
+      return { code: 0, data: {} };
+    },
+  };
+  const runtimeHarness = fakeSdk({
+    defaultHttpInstance: runtimeBaseHttp,
+    Client: function Client(params) {
+      runtimeHarness.captured.client.push(params);
+      this.im = { v1: { message: {
+        patch: (payload) => params.httpInstance.request({
+          url: `/messages/${payload.path.message_id}`,
+          method: "PATCH",
+          data: payload.data,
+        }),
+      } } };
+    },
+  });
+  const client = new FeishuApprovalClient({
+    appId: "cli_runtime_deadline",
+    appSecret: "synthetic_runtime_deadline_secret",
+    approverId: "ou_runtime_deadline",
+    lark: runtimeHarness.sdk,
+    platform: "lark",
+    cardRequestTimeoutMs: 3579,
+  });
+  const runtimeApi = client.messageApi();
+  assert.ok(runtimeApi);
+  assert.ok(client.cardHttpInstance);
+  assert.ok(client.larkClient);
+  assert.strictEqual(runtimeHarness.captured.client[0].httpInstance, client.cardHttpInstance);
+  assert.strictEqual(runtimeHarness.captured.client[0].logger, SILENT_LARK_LOGGER);
+  assert.ok(runtimeHarness.captured.client[0].cache);
+  const runtimeAbort = new AbortController();
+  await client.patchCard("om_runtime_deadline", { type: "card" }, { signal: runtimeAbort.signal });
+  assert.equal(runtimeRequests.length, 1);
+  assert.equal(runtimeRequests[0].timeout, 3579);
+  assert.strictEqual(runtimeRequests[0].signal, runtimeAbort.signal);
 });
 
 // Assembly, not just the helper: the platform has to survive the trip from the
@@ -2161,48 +2285,60 @@ test("approval decisions still log as plain strings", async () => {
 // `code=1000040351, msg=Incorrect domain name`. That is the #493 shape exactly
 // (cards send, callbacks never arrive) and the most likely user mistake, so it
 // gets a stable code instead of leaking "pullConnectConfig failed: …".
-test("a wrong-platform gateway rejection is tagged so the UI can explain it", async () => {
+test("a wrong-platform gateway rejection is tagged without exposing raw SDK diagnostics", async () => {
+  const sensitive = "sensitive_app_secret_123";
+  const logs = [];
   const client = new FeishuApprovalClient({
     appId: "cli_1",
     appSecret: "s",
     approverId: "ou_1",
     platform: "feishu",
     wsFactory: (params) => {
-      setImmediate(() => params.onError(new Error("pullConnectConfig failed: code=1000040351, msg=Incorrect domain name")));
+      setImmediate(() => params.onError(new Error(
+        `pullConnectConfig failed: code=1000040351, msg=Incorrect domain name, secret=${sensitive}`
+      )));
       return { wsClient: { start: async () => {}, close: () => {} }, dispatcher: {} };
     },
+    log: (level, message, meta) => logs.push({ level, message, meta }),
   });
   await client.start();
   await flush();
   const status = client.getStatus();
   assert.equal(status.status, "failed");
   assert.equal(status.errorCode, "wrong-platform");
-  assert.match(status.message, /Incorrect domain name/, "the raw diagnostic is kept for logs");
+  assert.match(status.message, /Incorrect domain name/);
+  assert.equal(JSON.stringify({ status, logs }).includes(sensitive), false);
+  assert.equal(JSON.stringify({ status, logs }).includes("pullConnectConfig"), false);
   client.close();
 });
 
-test("an unrelated SDK failure keeps an empty code so its raw text still shows", async () => {
+test("an unrelated SDK failure becomes a stable sanitized classification", async () => {
+  const sensitive = "secret-review@example.com sensitive_app_secret_123";
+  const logs = [];
   const client = new FeishuApprovalClient({
     appId: "cli_1",
     appSecret: "s",
     approverId: "ou_1",
     platform: "lark",
     wsFactory: (params) => {
-      setImmediate(() => params.onError(new Error("app ticket is invalid")));
+      setImmediate(() => params.onError(new Error(`app ticket is invalid ${sensitive}`)));
       return { wsClient: { start: async () => {}, close: () => {} }, dispatcher: {} };
     },
+    log: (level, message, meta) => logs.push({ level, message, meta }),
   });
   await client.start();
   await flush();
   const status = client.getStatus();
   assert.equal(status.status, "failed");
-  assert.equal(status.errorCode, "", "no code -> the renderer shows the upstream string");
-  assert.equal(status.message, "app ticket is invalid");
+  assert.equal(status.errorCode, "sdk-request-failed");
+  assert.equal(status.message, "Feishu/Lark long connection failed.");
+  assert.equal(JSON.stringify({ status, logs }).includes(sensitive), false);
   client.close();
 });
 
 test("FeishuApprovalClient resolves null on send failure by default but rejects with rejectOnSendError", async () => {
-  const sendError = new Error("invalid receive_id");
+  const sensitive = "secret-review@example.com sensitive_app_secret_123";
+  const sendError = new Error(`invalid receive_id ${sensitive}`);
   const fakeClient = {
     im: { v1: { message: {
       create: async () => { throw sendError; },
@@ -2227,8 +2363,10 @@ test("FeishuApprovalClient resolves null on send failure by default but rejects 
   // misreported as "card sent but nobody pressed a button" (#493 review).
   await assert.rejects(
     client.requestApproval({ title: "Run", detail: "Summary" }, { rejectOnSendError: true }),
-    /invalid receive_id/
+    (error) => error && error.code === "sdk-request-failed"
+      && error.message === "Feishu/Lark SDK request failed."
   );
   assert.equal(client.pending.size, 0);
   assert.equal(logs.filter((entry) => entry.level === "warn" && entry.message === "send failed").length, 2);
+  assert.equal(JSON.stringify(logs).includes(sensitive), false);
 });

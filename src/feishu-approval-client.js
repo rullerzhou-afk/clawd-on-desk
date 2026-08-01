@@ -15,6 +15,33 @@ const MAX_ELICITATION_QUESTIONS = 5;
 const MAX_ELICITATION_OPTIONS = 5;
 const MAX_CARD_TEXT = 600;
 
+const silentLarkLog = () => {};
+const SILENT_LARK_LOGGER = Object.freeze({
+  error: silentLarkLog,
+  warn: silentLarkLog,
+  info: silentLarkLog,
+  debug: silentLarkLog,
+  trace: silentLarkLog,
+});
+
+const SAFE_LARK_NETWORK_CODES = new Set([
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EAI_AGAIN",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+  "ERR_CANCELED",
+]);
+const SAFE_LARK_ERROR_STAGES = new Set([
+  "lookup",
+  "send-card",
+  "send-elicitation",
+  "session-automation-card",
+  "update-card",
+  "ws-connect",
+]);
+
 // Agent-controlled strings (agentId, tool, folder, summary, question text,
 // option/button labels, answers) are rendered into approval/elicitation cards.
 // Guard them before they enter a card element:
@@ -902,6 +929,87 @@ function resolveSdkDomain(lark, platform) {
   return domain;
 }
 
+function finiteErrorNumber(value) {
+  if (value === null || value === undefined || value === "") return undefined;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : undefined;
+}
+
+function classifyFeishuSdkError(error, stage) {
+  const safeStage = SAFE_LARK_ERROR_STAGES.has(stage) ? stage : "sdk";
+  const httpStatus = finiteErrorNumber(
+    error && error.response ? error.response.status : error && error.status
+  );
+  let businessCode = finiteErrorNumber(
+    error && error.response && error.response.data
+      ? error.response.data.code
+      : error && error.statusCode
+  );
+  if (businessCode === undefined && error && typeof error.message === "string") {
+    const match = error.message.match(/(?:^|\b)code\s*[:=]\s*(-?\d+)\b/i);
+    if (match) businessCode = finiteErrorNumber(match[1]);
+  }
+  const rawNetworkCode = error && typeof error.code === "string" ? error.code : "";
+  const networkCode = SAFE_LARK_NETWORK_CODES.has(rawNetworkCode)
+    ? rawNetworkCode
+    : undefined;
+  const code = businessCode === 99991672
+    ? "missing-contact-scope"
+    : businessCode === 1000040351
+      ? "wrong-platform"
+      : safeStage === "lookup"
+        ? "lookup-failed"
+        : "sdk-request-failed";
+  return {
+    code,
+    stage: safeStage,
+    ...(httpStatus === undefined ? {} : { httpStatus }),
+    ...(businessCode === undefined ? {} : { businessCode }),
+    ...(networkCode === undefined ? {} : { networkCode }),
+  };
+}
+
+function createSanitizedSdkError(classification) {
+  const error = new Error("Feishu/Lark SDK request failed.");
+  error.code = classification.code;
+  error.stage = classification.stage;
+  if (classification.httpStatus !== undefined) error.httpStatus = classification.httpStatus;
+  if (classification.businessCode !== undefined) error.businessCode = classification.businessCode;
+  if (classification.networkCode !== undefined) error.networkCode = classification.networkCode;
+  return error;
+}
+
+function createIsolatedLarkCache({ lark, platform, appId } = {}) {
+  if (!lark || typeof lark.DefaultCache !== "function") {
+    throw new Error("Installed Lark SDK does not expose DefaultCache");
+  }
+  const ownedCache = new lark.DefaultCache();
+  const namespacePrefix = [
+    "clawd",
+    "feishu-approval",
+    normalizePlatform(platform),
+    String(appId || "").trim(),
+  ].join(":");
+  const namespaceOptions = (options) => {
+    const source = options && typeof options === "object" ? options : {};
+    const sdkNamespace = typeof source.namespace === "string" && source.namespace
+      ? source.namespace
+      : "";
+    return {
+      ...source,
+      namespace: sdkNamespace ? `${namespacePrefix}:${sdkNamespace}` : namespacePrefix,
+    };
+  };
+  return Object.freeze({
+    get(key, options) {
+      return ownedCache.get(key, namespaceOptions(options));
+    },
+    set(key, value, expire, options) {
+      return ownedCache.set(key, value, expire, namespaceOptions(options));
+    },
+  });
+}
+
 function createDeadlineHttpInstance(base, timeoutMs) {
   if (!base || (typeof base !== "object" && typeof base !== "function")) return undefined;
   const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Math.round(timeoutMs) : 10_000;
@@ -939,12 +1047,19 @@ function createLarkClient(config = {}) {
     lark.defaultHttpInstance,
     config.requestTimeoutMs
   );
+  const cache = createIsolatedLarkCache({
+    lark,
+    platform: config.platform,
+    appId: config.appId,
+  });
   return new lark.Client({
     appId: config.appId,
     appSecret: config.appSecret,
     appType: lark.AppType ? lark.AppType.SelfBuild : undefined,
     domain: resolveSdkDomain(lark, config.platform),
     loggerLevel: lark.LoggerLevel ? lark.LoggerLevel.warn : undefined,
+    logger: SILENT_LARK_LOGGER,
+    cache,
     httpInstance,
   });
 }
@@ -952,20 +1067,30 @@ function createLarkClient(config = {}) {
 async function lookupOpenIdByEmail(config = {}) {
   const log = typeof config.log === "function" ? config.log : () => {};
   try {
-    const client = createLarkClient(config);
-    const response = await client.contact.v3.user.batchGetId({
+    const lark = config.lark || loadLarkSdk();
+    const httpInstance = config.httpInstance || createDeadlineHttpInstance(
+      lark.defaultHttpInstance,
+      config.requestTimeoutMs
+    );
+    const client = createLarkClient({ ...config, lark, httpInstance });
+    const request = () => client.contact.v3.user.batchGetId({
       data: { emails: [config.email] },
       params: { user_id_type: "open_id" },
     });
+    const response = config.signal && httpInstance && typeof httpInstance.runWithSignal === "function"
+      ? await httpInstance.runWithSignal(config.signal, request)
+      : await request();
     const businessCode = Number(response && response.code);
     if (businessCode !== 0) {
-      log("warn", "email lookup failed", {
-        stage: "response",
+      const classification = {
+        code: businessCode === 99991672 ? "missing-contact-scope" : "lookup-failed",
+        stage: "lookup",
         businessCode: Number.isFinite(businessCode) ? businessCode : 0,
-      });
+      };
+      log("warn", "email lookup failed", classification);
       return {
         status: "error",
-        code: businessCode === 99991672 ? "missing-contact-scope" : "lookup-failed",
+        code: classification.code,
       };
     }
     const users = response && response.data && Array.isArray(response.data.user_list)
@@ -975,15 +1100,11 @@ async function lookupOpenIdByEmail(config = {}) {
     if (!user) return { status: "error", code: "approver-not-found" };
     return { status: "ok", approverId: user.user_id.trim() };
   } catch (err) {
-    const httpStatus = Number(err && err.response && err.response.status);
-    const businessCode = Number(err && err.response && err.response.data && err.response.data.code);
-    const meta = { stage: "request" };
-    if (Number.isFinite(httpStatus)) meta.httpStatus = httpStatus;
-    if (Number.isFinite(businessCode)) meta.businessCode = businessCode;
-    log("warn", "email lookup failed", meta);
+    const classification = classifyFeishuSdkError(err, "lookup");
+    log("warn", "email lookup failed", classification);
     return {
       status: "error",
-      code: businessCode === 99991672 ? "missing-contact-scope" : "lookup-failed",
+      code: classification.code,
     };
   }
 }
@@ -994,6 +1115,12 @@ function createWsClient(config = {}) {
     verificationToken: config.verificationToken || "",
     encryptKey: config.encryptKey || "",
     loggerLevel: lark.LoggerLevel ? lark.LoggerLevel.warn : undefined,
+    logger: SILENT_LARK_LOGGER,
+    cache: createIsolatedLarkCache({
+      lark,
+      platform: config.platform,
+      appId: config.appId,
+    }),
   }).register({
     "card.action.trigger": async (event) => {
       if (typeof config.onCardAction === "function") await config.onCardAction(event);
@@ -1007,6 +1134,8 @@ function createWsClient(config = {}) {
     appSecret: config.appSecret,
     domain: resolveSdkDomain(lark, config.platform),
     loggerLevel: lark.LoggerLevel ? lark.LoggerLevel.warn : undefined,
+    logger: SILENT_LARK_LOGGER,
+    httpInstance: config.httpInstance || lark.defaultHttpInstance,
     autoReconnect: true,
     handshakeTimeoutMs: config.handshakeTimeoutMs || 15000,
     onReady: config.onReady,
@@ -1091,9 +1220,11 @@ class FeishuApprovalClient {
     this.sessionAutomationCardWork = options.sessionAutomationCardWork
       || createRemoteCardWorkRegistry({
         deadlineMs: this.cardRequestTimeoutMs,
-        log: (err) => this.log("warn", "session automation card update failed", {
-          error: err && err.message ? err.message : String(err),
-        }),
+        log: (err) => this.log(
+          "warn",
+          "session automation card update failed",
+          classifyFeishuSdkError(err, "session-automation-card")
+        ),
       });
     this.sessionAutomationRouteCurrent = true;
     this.connectionTimer = null;
@@ -1214,7 +1345,7 @@ class FeishuApprovalClient {
       onError: ifCurrent((err) => {
         this.clearConnectionTimer();
         this.connectionState = "failed";
-        const raw = err && err.message ? err.message : String(err || "Long connection failed");
+        const classification = classifyFeishuSdkError(err, "ws-connect");
         // Gateway code 1000040351 ("Incorrect domain name") is the platform
         // rejecting an app that lives on the other deployment — i.e. the
         // platform picker is set wrong. It is the single most likely
@@ -1223,12 +1354,13 @@ class FeishuApprovalClient {
         // settings page can turn into an actionable sentence. Verified against
         // a real Lark app pointed at open.feishu.cn (2026-07-15).
         //
-        // Matched on the numeric code, not the English text, which is the
-        // stabler half of the response. Anything else keeps an empty code and
-        // falls back to showing the SDK's raw string.
-        this.lastErrorCode = /\b1000040351\b/.test(raw) ? "wrong-platform" : "";
-        this.lastErrorMessage = raw;
-        this.log("warn", "connection failed", { error: this.lastErrorMessage });
+        // Only the numeric code is retained. The arbitrary SDK message is
+        // never returned or logged because it may contain request credentials.
+        this.lastErrorCode = classification.code;
+        this.lastErrorMessage = classification.code === "wrong-platform"
+          ? "Incorrect domain name."
+          : "Feishu/Lark long connection failed.";
+        this.log("warn", "connection failed", classification);
         this.notifyStatusChange();
       }),
       onReconnecting: ifCurrent(() => {
@@ -1382,8 +1514,9 @@ class FeishuApprovalClient {
           return current || entry;
         })
         .catch((err) => {
-          this.log("warn", "send failed", { error: err && err.message ? err.message : String(err) });
-          finish(null, err instanceof Error ? err : new Error(String(err)));
+          const classification = classifyFeishuSdkError(err, "send-card");
+          this.log("warn", "send failed", classification);
+          finish(null, createSanitizedSdkError(classification));
           return entry;
         });
     });
@@ -1431,7 +1564,11 @@ class FeishuApprovalClient {
           return current || entry;
         })
         .catch((err) => {
-          this.log("warn", "send elicitation failed", { error: err && err.message ? err.message : String(err) });
+          this.log(
+            "warn",
+            "send elicitation failed",
+            classifyFeishuSdkError(err, "send-elicitation")
+          );
           finish(null);
           return entry;
         });
@@ -1683,9 +1820,11 @@ class FeishuApprovalClient {
         )))
         .catch((err) => {
           entry.trustConfirming = false;
-          this.log("warn", "session trust confirmation patch failed", {
-            error: err && err.message ? err.message : String(err),
-          });
+          this.log(
+            "warn",
+            "session trust confirmation patch failed",
+            classifyFeishuSdkError(err, "session-automation-card")
+          );
         });
       return true;
     }
@@ -1698,9 +1837,11 @@ class FeishuApprovalClient {
           this.cardContext()
         )))
         .catch((err) => {
-          this.log("warn", "session trust cancellation patch failed", {
-            error: err && err.message ? err.message : String(err),
-          });
+          this.log(
+            "warn",
+            "session trust cancellation patch failed",
+            classifyFeishuSdkError(err, "session-automation-card")
+          );
         });
       return true;
     }
@@ -1724,9 +1865,11 @@ class FeishuApprovalClient {
           this.cardContext()
         )))
         .catch((err) => {
-          this.log("warn", "session trust capacity fallback patch failed", {
-            error: err && err.message ? err.message : String(err),
-          });
+          this.log(
+            "warn",
+            "session trust capacity fallback patch failed",
+            classifyFeishuSdkError(err, "session-automation-card")
+          );
         });
       return true;
     }
@@ -1790,7 +1933,7 @@ class FeishuApprovalClient {
         return this.updateCard(entry.messageId, entry.payload, nextOutcome);
       })
       .catch((err) => {
-        this.log("warn", "external update failed", { error: err && err.message ? err.message : String(err) });
+        this.log("warn", "external update failed", classifyFeishuSdkError(err, "update-card"));
       })
       .finally(() => entry.resolve(null));
     return true;
@@ -1833,7 +1976,7 @@ class FeishuApprovalClient {
         Promise.resolve(entry.sendReady)
           .then(() => this.updateElicitationQuestionCard(entry.messageId, entry.payload, requestId, nextIndex, entry.answers))
           .catch((err) => {
-            this.log("warn", "update failed", { error: err && err.message ? err.message : String(err) });
+            this.log("warn", "update failed", classifyFeishuSdkError(err, "update-card"));
           });
         return true;
       }
@@ -1851,7 +1994,7 @@ class FeishuApprovalClient {
         Promise.resolve(entry.sendReady)
           .then(() => this.updateElicitationQuestionCard(entry.messageId, entry.payload, requestId, nextIndex, entry.answers))
           .catch((err) => {
-            this.log("warn", "update failed", { error: err && err.message ? err.message : String(err) });
+            this.log("warn", "update failed", classifyFeishuSdkError(err, "update-card"));
           });
         return true;
       }
@@ -1867,7 +2010,7 @@ class FeishuApprovalClient {
         Promise.resolve(entry.sendReady)
           .then(() => this.updateElicitationQuestionCard(entry.messageId, entry.payload, requestId, nextIndex, entry.answers))
           .catch((err) => {
-            this.log("warn", "update failed", { error: err && err.message ? err.message : String(err) });
+            this.log("warn", "update failed", classifyFeishuSdkError(err, "update-card"));
           });
         return true;
       }
@@ -1897,7 +2040,7 @@ class FeishuApprovalClient {
         });
       })
       .catch((err) => {
-        this.log("warn", "update failed", { error: err && err.message ? err.message : String(err) });
+        this.log("warn", "update failed", classifyFeishuSdkError(err, "update-card"));
       });
     return true;
   }
@@ -1916,6 +2059,9 @@ module.exports = {
   normalizeActionEvent,
   normalizeSessionAutomationActionEvent,
   normalizeElicitationActionEvent,
+  SILENT_LARK_LOGGER,
+  classifyFeishuSdkError,
+  createIsolatedLarkCache,
   createLarkClient,
   createDeadlineHttpInstance,
   createWsClient,
