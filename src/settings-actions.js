@@ -167,7 +167,10 @@ const {
 } = require("./telegram-approval-settings");
 const { validateDiscordPresence } = require("./discord-presence-settings");
 const {
+  normalizeFeishuApproval,
   validateFeishuApproval,
+  evaluateFeishuApprovalConfiguration,
+  planFeishuCredentialWrite,
 } = require("./feishu-approval-settings");
 const { EVENTS: TELEGRAM_MIGRATION_EVENTS } = require("./telegram-migration-state");
 
@@ -653,7 +656,19 @@ const updateRegistry = {
   discordPresence(value) {
     return validateDiscordPresence(value);
   },
-  feishuApproval(value) {
+  feishuApproval(value, deps = {}) {
+    const current = normalizeFeishuApproval(deps.snapshot && deps.snapshot.feishuApproval);
+    for (const key of [
+      "idType",
+      "approverId",
+      "approverSource",
+      "approverBoundPlatform",
+      "approverBoundAppId",
+    ]) {
+      if (!value || value[key] !== current[key]) {
+        return { status: "error", code: "approver-command-required" };
+      }
+    }
     return validateFeishuApproval(value);
   },
 
@@ -1817,17 +1832,68 @@ async function telegramApprovalSendTest(_payload, deps = {}) {
 }
 
 async function feishuApprovalSetSecrets(payload, deps = {}) {
-  const secrets = payload && typeof payload === "object" ? payload : {};
   if (!deps || typeof deps.writeFeishuApprovalSecrets !== "function") {
     return { status: "error", message: "feishuApproval.setSecrets requires writeFeishuApprovalSecrets dep" };
   }
+  if (typeof deps.getFeishuApprovalSecrets !== "function") {
+    return { status: "error", message: "feishuApproval.setSecrets requires getFeishuApprovalSecrets dep" };
+  }
+  const config = normalizeFeishuApproval(deps.snapshot && deps.snapshot.feishuApproval);
+  let current;
+  try {
+    current = deps.getFeishuApprovalSecrets();
+  } catch {
+    return { status: "error", code: "credentials-read-failed" };
+  }
+  const planned = planFeishuCredentialWrite(current, config.platform, payload);
+  if (!planned.ok) return { status: "error", code: planned.code };
   // Pass the writer's result through untouched: it carries the `code` the
   // settings page localizes and the English detail naming the real cause.
-  const result = await deps.writeFeishuApprovalSecrets(secrets);
+  const result = await deps.writeFeishuApprovalSecrets(planned.nextBundle);
   if (!result || result.status !== "ok") {
     return result || { status: "error", code: "write-failed", message: "Secrets write returned no result" };
   }
   return { status: "ok", secretsStored: true };
+}
+
+function feishuApprovalSaveManualApprover(payload, deps = {}) {
+  const input = payload && typeof payload === "object" ? payload : {};
+  const idType = typeof input.idType === "string" ? input.idType.trim() : "";
+  const approverId = typeof input.approverId === "string" ? input.approverId.trim() : "";
+  if (!new Set(["open_id", "user_id", "union_id"]).has(idType)) {
+    return { status: "error", code: "invalid-id-type" };
+  }
+  if (!approverId || approverId.length > 128) {
+    return { status: "error", code: "missing-approver" };
+  }
+  if (typeof deps.getFeishuApprovalSecrets !== "function") {
+    return { status: "error", code: "missing-credentials" };
+  }
+  const config = normalizeFeishuApproval(deps.snapshot && deps.snapshot.feishuApproval);
+  let secrets;
+  try {
+    secrets = deps.getFeishuApprovalSecrets();
+  } catch {
+    return { status: "error", code: "credentials-read-failed" };
+  }
+  const saved = evaluateFeishuApprovalConfiguration(config, secrets, {
+    requireEnabled: false,
+    requireApprover: false,
+  });
+  if (!saved.ok) return { status: "error", code: saved.code };
+  return {
+    status: "ok",
+    commit: {
+      feishuApproval: {
+        ...saved.config,
+        idType,
+        approverId,
+        approverSource: "manual",
+        approverBoundPlatform: saved.identity.platform,
+        approverBoundAppId: saved.identity.appId,
+      },
+    },
+  };
 }
 
 function isFeishuApproverEmail(value) {
@@ -1836,74 +1902,168 @@ function isFeishuApproverEmail(value) {
   return parts.length === 2 && !!parts[0] && !!parts[1];
 }
 
+function isFeishuLookupToken(value, maxLength) {
+  return !!value && value.length <= maxLength && !/\s/.test(value);
+}
+
 async function feishuApprovalResolveApprover(payload, deps = {}) {
   const input = payload && typeof payload === "object" ? payload : {};
-  const platform = typeof input.platform === "string" ? input.platform.trim() : "";
-  const appId = typeof input.appId === "string" ? input.appId.trim() : "";
-  const appSecret = typeof input.appSecret === "string" ? input.appSecret.trim() : "";
+  const requestId = typeof input.requestId === "string" ? input.requestId.trim() : "";
   const email = typeof input.email === "string" ? input.email.trim() : "";
-  if (platform !== "feishu" && platform !== "lark") {
-    return { status: "error", code: "invalid-platform" };
-  }
+  if (!isFeishuLookupToken(requestId, 128)) return { status: "error", code: "invalid-request-id" };
   if (!isFeishuApproverEmail(email)) {
     return { status: "error", code: "invalid-email" };
   }
-  if (!!appId !== !!appSecret) {
-    return { status: "error", code: "incomplete-credentials" };
+  if (input.hasUnsavedCredentialDrafts === true) {
+    return { status: "error", code: "unsaved-credentials" };
   }
 
-  let resolvedAppId = appId;
-  let resolvedAppSecret = appSecret;
-  if (!resolvedAppId && !resolvedAppSecret) {
-    try {
-      const persistedConfig = typeof deps.getFeishuApprovalPrefs === "function"
-        ? deps.getFeishuApprovalPrefs()
-        : null;
-      if (!persistedConfig || persistedConfig.platform !== platform) {
-        return { status: "error", code: "missing-credentials" };
-      }
-      const persistedSecrets = typeof deps.getFeishuApprovalSecrets === "function"
-        ? deps.getFeishuApprovalSecrets()
-        : null;
-      resolvedAppId = persistedSecrets && typeof persistedSecrets.appId === "string"
-        ? persistedSecrets.appId.trim()
-        : "";
-      resolvedAppSecret = persistedSecrets && typeof persistedSecrets.appSecret === "string"
-        ? persistedSecrets.appSecret.trim()
-        : "";
-      if (!resolvedAppId || !resolvedAppSecret) {
-        return { status: "error", code: "missing-credentials" };
-      }
-    } catch {
-      return { status: "error", code: "lookup-failed" };
-    }
-  }
-
-  if (typeof deps.lookupFeishuApproverByEmail !== "function") {
+  let config;
+  let secrets;
+  let secretsRevision;
+  try {
+    config = normalizeFeishuApproval(typeof deps.getFeishuApprovalPrefs === "function"
+      ? deps.getFeishuApprovalPrefs()
+      : deps.snapshot && deps.snapshot.feishuApproval);
+    secrets = typeof deps.getFeishuApprovalSecrets === "function"
+      ? deps.getFeishuApprovalSecrets()
+      : null;
+    secretsRevision = typeof deps.getFeishuApprovalSecretsRevision === "function"
+      ? deps.getFeishuApprovalSecretsRevision()
+      : 0;
+  } catch {
     return { status: "error", code: "lookup-failed" };
   }
+  const saved = evaluateFeishuApprovalConfiguration(config, secrets, {
+    requireEnabled: false,
+    requireApprover: false,
+  });
+  if (!saved.ok) return { status: "error", code: saved.code };
+
+  const coordinator = deps.feishuApprovalLookupCoordinator;
+  if (
+    !coordinator
+    || typeof coordinator.begin !== "function"
+    || typeof coordinator.succeed !== "function"
+    || typeof coordinator.fail !== "function"
+    || typeof deps.lookupFeishuApproverByEmail !== "function"
+  ) {
+    return { status: "error", code: "lookup-failed" };
+  }
+  let started;
   try {
+    started = coordinator.begin({
+      requestId,
+      identity: saved.identity,
+      secretsRevision,
+    });
+    if (!started || started.status !== "ok" || !started.lookupId || !started.signal) {
+      return { status: "error", code: "lookup-failed" };
+    }
     const result = await deps.lookupFeishuApproverByEmail({
-      platform,
-      appId: resolvedAppId,
-      appSecret: resolvedAppSecret,
+      platform: saved.identity.platform,
+      appId: saved.identity.appId,
+      appSecret: secrets.appSecret,
       email,
+      signal: started.signal,
     });
     if (result && result.status === "ok" && typeof result.approverId === "string" && result.approverId.trim()) {
-      return { status: "ok", idType: "open_id", approverId: result.approverId.trim() };
+      const retained = coordinator.succeed({
+        lookupId: started.lookupId,
+        approverId: result.approverId.trim(),
+      });
+      return retained && retained.status === "ok"
+        ? { status: "ok", lookupId: started.lookupId }
+        : { status: "error", code: retained && retained.code || "lookup-stale" };
     }
     const allowedCodes = new Set([
       "missing-contact-scope",
       "approver-not-found",
       "lookup-failed",
     ]);
+    const failed = coordinator.fail({ lookupId: started.lookupId });
+    if (failed && failed.status === "error") {
+      return { status: "error", code: failed.code || "lookup-stale" };
+    }
     return {
       status: "error",
       code: allowedCodes.has(result && result.code) ? result.code : "lookup-failed",
     };
   } catch {
+    if (started && started.lookupId) {
+      const failed = coordinator.fail({ lookupId: started.lookupId });
+      if (failed && failed.status === "error") {
+        return { status: "error", code: failed.code || "lookup-stale" };
+      }
+    }
     return { status: "error", code: "lookup-failed" };
   }
+}
+
+function feishuApprovalCancelApproverLookup(payload, deps = {}) {
+  const input = payload && typeof payload === "object" ? payload : {};
+  const requestId = typeof input.requestId === "string" ? input.requestId.trim() : "";
+  if (!isFeishuLookupToken(requestId, 128)) return { status: "error", code: "invalid-request-id" };
+  const coordinator = deps.feishuApprovalLookupCoordinator;
+  if (!coordinator || typeof coordinator.cancel !== "function") {
+    return { status: "error", code: "lookup-stale" };
+  }
+  return coordinator.cancel({ requestId });
+}
+
+function feishuApprovalCommitApprover(payload, deps = {}) {
+  const input = payload && typeof payload === "object" ? payload : {};
+  const lookupId = typeof input.lookupId === "string" ? input.lookupId.trim() : "";
+  if (!isFeishuLookupToken(lookupId, 256)) return { status: "error", code: "lookup-stale" };
+  const coordinator = deps.feishuApprovalLookupCoordinator;
+  if (!coordinator || typeof coordinator.consume !== "function") {
+    return { status: "error", code: "lookup-stale" };
+  }
+  const config = normalizeFeishuApproval(deps.snapshot && deps.snapshot.feishuApproval);
+  let secrets;
+  let secretsRevision;
+  try {
+    secrets = typeof deps.getFeishuApprovalSecrets === "function"
+      ? deps.getFeishuApprovalSecrets()
+      : null;
+    secretsRevision = typeof deps.getFeishuApprovalSecretsRevision === "function"
+      ? deps.getFeishuApprovalSecretsRevision()
+      : 0;
+  } catch {
+    return { status: "error", code: "credentials-read-failed" };
+  }
+  if (
+    secrets && typeof secrets.then === "function"
+    || secretsRevision && typeof secretsRevision.then === "function"
+  ) {
+    return { status: "error", code: "credentials-read-failed" };
+  }
+  const saved = evaluateFeishuApprovalConfiguration(config, secrets, {
+    requireEnabled: false,
+    requireApprover: false,
+  });
+  if (!saved.ok) return { status: "error", code: saved.code };
+  const consumed = coordinator.consume({
+    lookupId,
+    identity: saved.identity,
+    secretsRevision,
+  });
+  if (!consumed || consumed.status !== "ok") {
+    return { status: "error", code: consumed && consumed.code || "lookup-stale" };
+  }
+  return {
+    status: "ok",
+    commit: {
+      feishuApproval: {
+        ...saved.config,
+        idType: "open_id",
+        approverId: consumed.approverId,
+        approverSource: "lookup",
+        approverBoundPlatform: saved.identity.platform,
+        approverBoundAppId: saved.identity.appId,
+      },
+    },
+  };
 }
 
 function feishuApprovalStatus(_payload, deps = {}) {
@@ -1926,7 +2086,28 @@ async function feishuApprovalSendTest(_payload, deps = {}) {
   if (!deps || typeof deps.sendFeishuApprovalTest !== "function") {
     return { status: "error", message: "feishuApproval.test requires sendFeishuApprovalTest dep" };
   }
-  const result = await deps.sendFeishuApprovalTest();
+  let secrets;
+  let secretsRevision;
+  try {
+    secrets = typeof deps.getFeishuApprovalSecrets === "function"
+      ? deps.getFeishuApprovalSecrets()
+      : null;
+    secretsRevision = typeof deps.getFeishuApprovalSecretsRevision === "function"
+      ? deps.getFeishuApprovalSecretsRevision()
+      : 0;
+  } catch {
+    return { status: "error", code: "credentials-read-failed" };
+  }
+  const evaluated = evaluateFeishuApprovalConfiguration(
+    deps.snapshot && deps.snapshot.feishuApproval,
+    secrets,
+  );
+  if (!evaluated.ok) return { status: "error", code: evaluated.code };
+  const result = await deps.sendFeishuApprovalTest({
+    config: evaluated.config,
+    secrets,
+    secretsRevision,
+  });
   // Defensive only, but the renderer shows a code-less `message` verbatim — so
   // it stays brand-neutral like every other user-visible string on this path.
   return result || { status: "error", message: "Remote approval test returned no result" };
@@ -2053,7 +2234,10 @@ remoteSshAdvanceRuntimeModeSwitch.lockKey = "remoteSsh";
 remoteSshSwitchRuntimeMode.lockKey = "remoteSsh";
 telegramApprovalSetToken.lockKey = "tgApproval";
 telegramApprovalSendTest.lockKey = "tgApproval";
+updateRegistry.feishuApproval.lockKey = "feishuApproval";
 feishuApprovalSetSecrets.lockKey = "feishuApproval";
+feishuApprovalSaveManualApprover.lockKey = "feishuApproval";
+feishuApprovalCommitApprover.lockKey = "feishuApproval";
 feishuApprovalSendTest.lockKey = "feishuApproval";
 cleanupIntegrationsCommand.lockKey = "agentIntegration";
 
@@ -2149,7 +2333,10 @@ const commandRegistry = {
   "telegramApproval.tokenInfo": telegramApprovalTokenInfo,
   "telegramApproval.test": telegramApprovalSendTest,
   "feishuApproval.setSecrets": feishuApprovalSetSecrets,
+  "feishuApproval.saveManualApprover": feishuApprovalSaveManualApprover,
   "feishuApproval.resolveApprover": feishuApprovalResolveApprover,
+  "feishuApproval.cancelApproverLookup": feishuApprovalCancelApproverLookup,
+  "feishuApproval.commitApprover": feishuApprovalCommitApprover,
   "feishuApproval.status": feishuApprovalStatus,
   "feishuApproval.secretInfo": feishuApprovalSecretInfo,
   "feishuApproval.test": feishuApprovalSendTest,

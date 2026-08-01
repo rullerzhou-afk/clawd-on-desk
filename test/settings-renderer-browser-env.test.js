@@ -1327,6 +1327,7 @@ function loadTelegramApprovalTabForTest({
   const commands = [];
   const renderRequests = [];
   const timers = [];
+  let coreRef = null;
 
   const document = {
     body,
@@ -1345,6 +1346,7 @@ function loadTelegramApprovalTabForTest({
     },
   };
   const api = {
+    getSnapshot: () => Promise.resolve(coreRef ? coreRef.state.snapshot : snapshot || {}),
     update: (key, value) => {
       updates.push({ key, value });
       return Promise.resolve({ status: "ok" });
@@ -1555,6 +1557,7 @@ function loadTelegramApprovalTabForTest({
     },
     tabs: {},
   };
+  coreRef = core;
   context.ClawdSettingsTabTelegramApproval.init(core);
   function render() {
     content.innerHTML = "";
@@ -3432,20 +3435,29 @@ describe("settings renderer browser environment", () => {
     assert.equal(harness.updates.some((call) => call.key === "feishuApproval"), false);
   });
 
-  it("resolves a transient Feishu approver email and preserves unsaved credentials across save rerender", async () => {
+  it("resolves with a saved-only payload, blocks every control through commit, and never renders the open_id", async () => {
     const commandCalls = [];
-    const harness = loadTelegramApprovalTabForTest({
-      snapshot: {
-        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
-        feishuApproval: {
-          enabled: false,
-          platform: "lark",
-          idType: "open_id",
-          approverId: "",
-          connectionTimeoutSeconds: 15,
-        },
+    const lookup = createDeferred();
+    const commit = createDeferred();
+    const authoritativeSnapshot = createDeferred();
+    const toasts = [];
+    const initialSnapshot = {
+      tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+      feishuApproval: {
+        enabled: false,
+        platform: "lark",
+        idType: "open_id",
+        approverId: "",
+        approverSource: "none",
+        approverBoundPlatform: "",
+        approverBoundAppId: "",
+        connectionTimeoutSeconds: 15,
       },
+    };
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: initialSnapshot,
       settingsAPI: {
+        getSnapshot: () => authoritativeSnapshot.promise,
         command: (name, payload) => {
           commandCalls.push({ name, payload });
           if (name === "telegramApproval.status") {
@@ -3455,81 +3467,287 @@ describe("settings renderer browser environment", () => {
             return Promise.resolve({ status: "ok", configured: false, masked: "" });
           }
           if (name === "feishuApproval.status") {
-            return Promise.resolve({ status: "ok", state: { status: "stopped", secretsStored: false } });
+            return Promise.resolve({
+              status: "ok",
+              state: { status: "stopped", configured: false, secretsStored: true },
+            });
           }
           if (name === "feishuApproval.secretInfo") {
-            return Promise.resolve({ status: "ok", configured: false });
+            return Promise.resolve({ status: "ok", configured: true, appId: "cli_......saved" });
           }
-          if (name === "feishuApproval.resolveApprover") {
-            return Promise.resolve({ status: "ok", idType: "open_id", approverId: "ou_resolved" });
+          if (name === "feishuApproval.resolveApprover") return lookup.promise;
+          if (name === "feishuApproval.commitApprover") return commit.promise;
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    let card = harness.content.querySelector(".feishu-approval-channel-card");
+    let inputs = card.querySelectorAll("input");
+    const approverInput = inputs[inputs.length - 1];
+    approverInput.value = "  person@example.com  ";
+    approverInput.dispatchEvent({ type: "input" });
+    const lookupButton = card.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalSaveApprover");
+    lookupButton.dispatchEvent({ type: "click" });
+    lookupButton.dispatchEvent({ type: "click" });
+
+    assert.equal(commandCalls.filter((call) => call.name === "feishuApproval.resolveApprover").length, 1);
+    const resolveCall = commandCalls.find((call) => call.name === "feishuApproval.resolveApprover");
+    assert.deepStrictEqual(Object.keys(resolveCall.payload).sort(), [
+      "email",
+      "hasUnsavedCredentialDrafts",
+      "requestId",
+    ]);
+    assert.equal(resolveCall.payload.email, "person@example.com");
+    assert.equal(resolveCall.payload.hasUnsavedCredentialDrafts, false);
+    assert.equal(typeof resolveCall.payload.requestId, "string");
+    assert.ok(resolveCall.payload.requestId.length > 0);
+
+    harness.render();
+    card = harness.content.querySelector(".feishu-approval-channel-card");
+    assert.equal(card.querySelectorAll("button").filter((button) => button.dataset.platform).every((button) => button.disabled), true);
+    assert.equal(card.querySelectorAll("button").find((button) => button.textContent === "feishuApprovalReplaceSecrets").disabled, true);
+    assert.equal(card.querySelectorAll("button").filter((button) => button.dataset.idType).every((button) => button.disabled), true);
+    assert.equal(card.querySelectorAll("input").every((input) => input.disabled), true);
+    assert.equal(card.querySelector(".switch").getAttribute("aria-disabled"), "true");
+    assert.equal(card.querySelector(".feishu-approval-timeout-select .language-picker-trigger").disabled, true);
+    assert.equal(card.querySelectorAll("button").find((button) => button.textContent === "feishuApprovalSendTest").disabled, true);
+
+    const header = card.querySelector(".collapsible-group-header");
+    header.dispatchEvent({ type: "click" });
+    header.dispatchEvent({ type: "click" });
+    assert.equal(commandCalls.some((call) => call.name === "feishuApproval.cancelApproverLookup"), false);
+
+    lookup.resolve({ status: "ok", lookupId: "lookup-opaque" });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(commandCalls.find((call) => call.name === "feishuApproval.commitApprover"))),
+      { name: "feishuApproval.commitApprover", payload: { lookupId: "lookup-opaque" } },
+    );
+    assert.equal(collectText(harness.content).includes("ou_resolved"), false);
+
+    harness.render();
+    card = harness.content.querySelector(".feishu-approval-channel-card");
+    assert.equal(card.querySelectorAll("input").every((input) => input.disabled), true);
+    assert.equal(card.querySelector(".feishu-approval-timeout-select .language-picker-trigger").disabled, true);
+
+    commit.resolve({ status: "ok" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(harness.updates.length, 0);
+    assert.equal(toasts.some((toast) => toast.message === "feishuApprovalConfigSaved"), false);
+
+    authoritativeSnapshot.resolve({
+      ...initialSnapshot,
+      feishuApproval: {
+        ...initialSnapshot.feishuApproval,
+        approverId: "ou_authoritative",
+        approverSource: "lookup",
+        approverBoundPlatform: "lark",
+        approverBoundAppId: "cli_saved",
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(toasts.some((toast) => toast.message === "feishuApprovalConfigSaved"), true);
+    assert.equal(harness.core.state.snapshot.feishuApproval.approverId, "ou_authoritative");
+  });
+
+  it("preserves the lookup email and shows only fixed copy when commit returns false or rejects", async () => {
+    for (const commitResult of [
+      () => Promise.resolve({ status: "error", code: "write-failed", message: "raw disk detail" }),
+      () => Promise.reject(new Error("raw rejected detail")),
+    ]) {
+      const toasts = [];
+      const harness = loadTelegramApprovalTabForTest({
+        snapshot: {
+          tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+          feishuApproval: {
+            enabled: false,
+            platform: "feishu",
+            idType: "open_id",
+            approverId: "",
+            approverSource: "none",
+            approverBoundPlatform: "",
+            approverBoundAppId: "",
+            connectionTimeoutSeconds: 15,
+          },
+        },
+        settingsAPI: {
+          command: (name) => {
+            if (name === "feishuApproval.status") {
+              return Promise.resolve({ status: "ok", state: { status: "stopped", secretsStored: true } });
+            }
+            if (name === "feishuApproval.secretInfo") {
+              return Promise.resolve({ status: "ok", configured: true, appId: "cli_......saved" });
+            }
+            if (name === "feishuApproval.resolveApprover") {
+              return Promise.resolve({ status: "ok", lookupId: "lookup-failing-commit" });
+            }
+            if (name === "feishuApproval.commitApprover") return commitResult();
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+      await Promise.resolve();
+      await Promise.resolve();
+      harness.render();
+      let card = harness.content.querySelector(".feishu-approval-channel-card");
+      const input = card.querySelectorAll("input").at(-1);
+      input.value = "keep@example.com";
+      input.dispatchEvent({ type: "input" });
+      card.querySelectorAll("button")
+        .find((button) => button.textContent === "feishuApprovalSaveApprover")
+        .dispatchEvent({ type: "click" });
+      await new Promise((resolve) => setImmediate(resolve));
+      harness.render();
+      card = harness.content.querySelector(".feishu-approval-channel-card");
+      assert.equal(card.querySelectorAll("input").at(-1).value, "keep@example.com");
+      assert.deepStrictEqual(JSON.parse(JSON.stringify(toasts.at(-1))), {
+        message: "feishuApprovalPersistenceFailed",
+        options: { error: true },
+      });
+      assert.equal(toasts.some((toast) => toast.message === "feishuApprovalConfigSaved"), false);
+      assert.equal(collectText(harness.content).includes("raw disk detail"), false);
+      assert.equal(collectText(harness.content).includes("raw rejected detail"), false);
+    }
+  });
+
+  it("cancels and invalidates network lookup on tab exit and Channels to LAN navigation", async () => {
+    for (const navigate of ["tab-exit", "lan"]) {
+      const lookup = createDeferred();
+      const calls = [];
+      const harness = loadTelegramApprovalTabForTest({
+        snapshot: {
+          tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+          feishuApproval: {
+            enabled: false,
+            platform: "feishu",
+            idType: "open_id",
+            approverId: "",
+            connectionTimeoutSeconds: 15,
+          },
+        },
+        settingsAPI: {
+          command: (name, payload) => {
+            calls.push({ name, payload });
+            if (name === "feishuApproval.status") {
+              return Promise.resolve({ status: "ok", state: { status: "stopped", secretsStored: true } });
+            }
+            if (name === "feishuApproval.secretInfo") {
+              return Promise.resolve({ status: "ok", configured: true, appId: "cli_......saved" });
+            }
+            if (name === "feishuApproval.resolveApprover") return lookup.promise;
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      harness.render();
+      const card = harness.content.querySelector(".feishu-approval-channel-card");
+      const input = card.querySelectorAll("input").at(-1);
+      input.value = "leave@example.com";
+      input.dispatchEvent({ type: "input" });
+      card.querySelectorAll("button")
+        .find((button) => button.textContent === "feishuApprovalSaveApprover")
+        .dispatchEvent({ type: "click" });
+      const requestId = calls.find((call) => call.name === "feishuApproval.resolveApprover").payload.requestId;
+
+      if (navigate === "tab-exit") {
+        harness.core.tabs["telegram-approval"].onExit();
+      } else {
+        harness.content.querySelectorAll("button")
+          .find((button) => button.textContent === "remoteApprovalSubtabLan")
+          .dispatchEvent({ type: "click" });
+      }
+      assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(calls.find((call) => call.name === "feishuApproval.cancelApproverLookup"))),
+        { name: "feishuApproval.cancelApproverLookup", payload: { requestId } },
+      );
+      lookup.resolve({ status: "ok", lookupId: "lookup-after-navigation" });
+      await Promise.resolve();
+      await Promise.resolve();
+      assert.equal(calls.some((call) => call.name === "feishuApproval.commitApprover"), false);
+    }
+  });
+
+  it("blocks every Feishu mutation while Test is pending", async () => {
+    const testCall = createDeferred();
+    let testCalls = 0;
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+        feishuApproval: {
+          enabled: true,
+          platform: "feishu",
+          idType: "open_id",
+          approverId: "ou_saved",
+          approverSource: "lookup",
+          approverBoundPlatform: "feishu",
+          approverBoundAppId: "cli_saved",
+          connectionTimeoutSeconds: 15,
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "feishuApproval.status") {
+            return Promise.resolve({ status: "ok", state: { status: "running", configured: true, secretsStored: true } });
+          }
+          if (name === "feishuApproval.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, appId: "cli_......saved" });
+          }
+          if (name === "feishuApproval.test") {
+            testCalls += 1;
+            return testCall.promise;
           }
           return Promise.resolve({ status: "ok" });
         },
       },
     });
-
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    harness.render();
     let card = harness.content.querySelector(".feishu-approval-channel-card");
-    let inputs = card.querySelectorAll("input");
-    for (const [input, value] of [
-      [inputs[0], "cli_transient"],
-      [inputs[1], "transient-secret"],
-      [inputs[2], "verification"],
-      [inputs[3], "encrypt-key"],
-    ]) {
-      input.value = value;
-      input.dispatchEvent({ type: "input" });
-    }
-    const approverInput = inputs[inputs.length - 1];
-    approverInput.value = "  person@example.com  ";
-    approverInput.dispatchEvent({ type: "input" });
-    card.querySelectorAll("button")
-      .find((button) => button.textContent === "feishuApprovalSaveApprover")
-      .dispatchEvent({ type: "click" });
+    const testButton = card.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalSendTest");
+    testButton.dispatchEvent({ type: "click" });
+    testButton.dispatchEvent({ type: "click" });
+    assert.equal(testCalls, 1);
+    harness.render();
+    card = harness.content.querySelector(".feishu-approval-channel-card");
+    assert.equal(card.querySelectorAll("button").filter((button) => button.dataset.platform).every((button) => button.disabled), true);
+    assert.equal(card.querySelectorAll("button").find((button) => button.textContent === "feishuApprovalReplaceSecrets").disabled, true);
+    assert.equal(card.querySelectorAll("button").filter((button) => button.dataset.idType).every((button) => button.disabled), true);
+    assert.equal(card.querySelectorAll("input").every((input) => input.disabled), true);
+    assert.equal(card.querySelector(".switch").getAttribute("aria-disabled"), "true");
+    assert.equal(card.querySelector(".feishu-approval-timeout-select .language-picker-trigger").disabled, true);
+    testCall.resolve({ status: "ok", decision: "deny" });
+    await Promise.resolve();
+  });
 
-    await Promise.resolve();
-    await Promise.resolve();
-    assert.deepStrictEqual(
-      JSON.parse(JSON.stringify(commandCalls.find((call) => call.name === "feishuApproval.resolveApprover"))),
-      {
-        name: "feishuApproval.resolveApprover",
-        payload: {
-          platform: "lark",
-          appId: "cli_transient",
-          appSecret: "transient-secret",
-          email: "person@example.com",
-        },
-      },
-    );
-    assert.deepStrictEqual(
-      JSON.parse(JSON.stringify(harness.updates.find((call) => call.key === "feishuApproval"))),
-      {
-        key: "feishuApproval",
-        value: {
+  it("keeps a legacy approver visible with a reconfirmation warning", () => {
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+        feishuApproval: {
           enabled: false,
-          platform: "lark",
+          platform: "feishu",
           idType: "open_id",
-          approverId: "ou_resolved",
+          approverId: "ou_legacy_visible",
           connectionTimeoutSeconds: 15,
         },
       },
-    );
-
-    harness.render();
-    card = harness.content.querySelector(".feishu-approval-channel-card");
-    inputs = card.querySelectorAll("input");
-    assert.deepStrictEqual(
-      inputs.slice(0, 4).map((input) => input.value),
-      ["cli_transient", "transient-secret", "verification", "encrypt-key"],
-    );
-
-    card.querySelectorAll("button")
-      .find((button) => button.textContent === "feishuApprovalSaveSecrets")
-      .dispatchEvent({ type: "click" });
-    await Promise.resolve();
-    await Promise.resolve();
-    harness.render();
-    inputs = harness.content.querySelector(".feishu-approval-channel-card").querySelectorAll("input");
-    assert.deepStrictEqual(inputs.slice(0, 4).map((input) => input.value), ["", "", "", ""]);
+    });
+    const card = harness.content.querySelector(".feishu-approval-channel-card");
+    assert.equal(card.querySelectorAll("input").at(-1).value, "ou_legacy_visible");
+    assert.equal(collectText(card).includes("feishuApprovalApproverReconfirmationWarning"), true);
   });
 
   it("keeps transient Feishu fields after lookup failure, localizes the stable code, and expands fallback help", async () => {
@@ -3588,6 +3806,13 @@ describe("settings renderer browser environment", () => {
 
     await Promise.resolve();
     await Promise.resolve();
+    const lookupCall = commandCalls.find((call) => call.name === "feishuApproval.resolveApprover");
+    assert.deepStrictEqual(Object.keys(lookupCall.payload).sort(), [
+      "email",
+      "hasUnsavedCredentialDrafts",
+      "requestId",
+    ]);
+    assert.equal(lookupCall.payload.hasUnsavedCredentialDrafts, true);
     assert.equal(harness.updates.length, 0);
     assert.equal(inputs[0].value, "cli_transient");
     assert.equal(inputs[1].value, "transient-secret");
@@ -3657,8 +3882,9 @@ describe("settings renderer browser environment", () => {
     }
   });
 
-  it("discards a stale Feishu email lookup after the transient form changes", async () => {
+  it("cancels by requestId, preserves the email, and ignores the late resolve", async () => {
     const lookup = createDeferred();
+    const commandCalls = [];
     const harness = loadTelegramApprovalTabForTest({
       snapshot: {
         tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
@@ -3671,7 +3897,8 @@ describe("settings renderer browser environment", () => {
         },
       },
       settingsAPI: {
-        command: (name) => {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
           if (name === "feishuApproval.status") {
             return Promise.resolve({ status: "ok", state: { status: "stopped", secretsStored: false } });
           }
@@ -3692,17 +3919,33 @@ describe("settings renderer browser environment", () => {
       .find((button) => button.textContent === "feishuApprovalSaveApprover")
       .dispatchEvent({ type: "click" });
 
-    approverInput.value = "second@example.com";
-    approverInput.dispatchEvent({ type: "input" });
-    lookup.resolve({ status: "ok", idType: "open_id", approverId: "ou_stale" });
+    harness.render();
+    const pendingCard = harness.content.querySelector(".feishu-approval-channel-card");
+    const cancel = pendingCard.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalLookupCancel");
+    assert.ok(cancel);
+    cancel.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    const resolveCall = commandCalls.find((call) => call.name === "feishuApproval.resolveApprover");
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(commandCalls.find((call) => call.name === "feishuApproval.cancelApproverLookup"))),
+      {
+        name: "feishuApproval.cancelApproverLookup",
+        payload: { requestId: resolveCall.payload.requestId },
+      },
+    );
+
+    lookup.resolve({ status: "ok", lookupId: "lookup-too-late" });
     await Promise.resolve();
     await Promise.resolve();
 
     assert.equal(harness.updates.length, 0, "a stale lookup must not overwrite the new form value");
+    assert.equal(commandCalls.some((call) => call.name === "feishuApproval.commitApprover"), false);
     harness.render();
     const rerenderedCard = harness.content.querySelector(".feishu-approval-channel-card");
     const rerenderedInputs = rerenderedCard.querySelectorAll("input");
-    assert.equal(rerenderedInputs[rerenderedInputs.length - 1].value, "second@example.com");
+    assert.equal(rerenderedInputs[rerenderedInputs.length - 1].value, "first@example.com");
     assert.equal(
       rerenderedCard.querySelectorAll("button")
         .find((button) => button.textContent === "feishuApprovalSaveApprover").disabled,
@@ -3710,7 +3953,7 @@ describe("settings renderer browser environment", () => {
     );
   });
 
-  it("keeps ou_ open_id and manual user_id/union_id on the existing save path", async () => {
+  it("keeps manual open_id, user_id, and union_id on the authoritative manual command", async () => {
     for (const [idType, approverId] of [
       ["open_id", "ou_manual"],
       ["user_id", "user_id_manual"],
@@ -3752,8 +3995,11 @@ describe("settings renderer browser environment", () => {
       await Promise.resolve();
 
       assert.equal(commandCalls.some((call) => call.name === "feishuApproval.resolveApprover"), false);
-      assert.equal(harness.updates[0].value.idType, idType);
-      assert.equal(harness.updates[0].value.approverId, approverId);
+      assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(commandCalls.find((call) => call.name === "feishuApproval.saveManualApprover"))),
+        { name: "feishuApproval.saveManualApprover", payload: { idType, approverId } },
+      );
+      assert.equal(harness.updates.length, 0);
     }
   });
 
@@ -3872,7 +4118,7 @@ describe("settings renderer browser environment", () => {
     assert.equal(inputs[0].value, "");
   });
 
-  it("saves Feishu approver config and enables testing only when runtime is configured", async () => {
+  it("saves Feishu approver through the authoritative command and enables testing only when runtime is configured", async () => {
     const commandCalls = [];
     const harness = loadTelegramApprovalTabForTest({
       snapshot: {
@@ -3924,18 +4170,17 @@ describe("settings renderer browser environment", () => {
       .dispatchEvent({ type: "click" });
 
     await Promise.resolve();
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates.find((call) => call.key === "feishuApproval"))), {
-      key: "feishuApproval",
-      value: {
-        enabled: false,
-        // The snapshot in this test predates the platform field; the save must
-        // still carry the migrated value rather than dropping it.
-        platform: "feishu",
-        idType: "open_id",
-        approverId: "ou_f1a6f7f520883298be9b9fb9488c1aef",
-        connectionTimeoutSeconds: 15,
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(commandCalls.find((call) => call.name === "feishuApproval.saveManualApprover"))),
+      {
+        name: "feishuApproval.saveManualApprover",
+        payload: {
+          idType: "open_id",
+          approverId: "ou_f1a6f7f520883298be9b9fb9488c1aef",
+        },
       },
-    });
+    );
+    assert.equal(harness.updates.length, 0);
 
     harness.core.state.snapshot.feishuApproval = {
       enabled: true,
@@ -3945,6 +4190,7 @@ describe("settings renderer browser environment", () => {
     };
     await Promise.resolve();
     await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
     harness.render();
     const testButton = harness.content.querySelector(".feishu-approval-channel-card")
       .querySelectorAll("button")
@@ -4013,6 +4259,9 @@ describe("settings renderer browser environment", () => {
         platform: "feishu",
         idType: "open_id",
         approverId: "ou_1",
+        approverSource: "unknown",
+        approverBoundPlatform: "",
+        approverBoundAppId: "",
         connectionTimeoutSeconds: 30,
       },
     });
@@ -4122,6 +4371,9 @@ describe("settings renderer browser environment", () => {
         platform: "lark",
         idType: "open_id",
         approverId: "ou_1",
+        approverSource: "unknown",
+        approverBoundPlatform: "",
+        approverBoundAppId: "",
         connectionTimeoutSeconds: 15,
       },
     });
@@ -4239,10 +4491,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(!testButton.title.includes("App ID format is invalid"), "the raw English diagnostic must not surface");
   });
 
-  it("shows a localized secrets-save failure with the underlying cause as detail", async () => {
-    // A disk failure has nothing to do with the platform, and the writer's
-    // English diagnostic used to be shown verbatim — Feishu-branded, to a Lark
-    // user. Localized sentence first, real cause appended.
+  it("shows a fixed localized secrets-save failure without raw rejection detail", async () => {
     const strings = loadSettingsI18nForTest().en;
     const harness = loadTelegramApprovalTabForTest({
       snapshot: {
@@ -4283,12 +4532,14 @@ describe("settings renderer browser environment", () => {
       .dispatchEvent({ type: "click" });
     await Promise.resolve();
     await Promise.resolve();
+    await Promise.resolve();
 
     assert.equal(toasts.length, 1);
     assert.equal(
       toasts[0].message,
-      "Could not save Lark secrets. (Secrets write failed: EACCES: permission denied, mkdir)"
+      "Could not save Lark secrets."
     );
+    assert.ok(!toasts[0].message.includes("EACCES"));
     assert.ok(!toasts[0].message.includes("Feishu"), "a Lark user must not be shown Feishu branding");
   });
 

@@ -383,6 +383,17 @@ test("settings IPC delegates controller and size preview handlers", async () => 
   assert.deepStrictEqual(await ipcMain.invoke("settings:command", { action: "resizePet", payload: "P:30" }), {
     status: "ok",
   });
+  for (const [action, payload] of [
+    ["feishuApproval.resolveApprover", { email: "person@example.com", hasUnsavedCredentialDrafts: false, requestId: "request-1" }],
+    ["feishuApproval.cancelApproverLookup", { requestId: "request-1" }],
+    ["feishuApproval.commitApprover", { lookupId: "lookup-opaque" }],
+    ["feishuApproval.saveManualApprover", { idType: "union_id", approverId: "union-saved" }],
+  ]) {
+    assert.deepStrictEqual(
+      await ipcMain.invoke("settings:command", { action, payload }),
+      { status: "ok" },
+    );
+  }
   for (const action of [
     "remoteSsh.applyInstallationIdentity",
     "remoteSsh.beginIdentityRotation",
@@ -415,6 +426,10 @@ test("settings IPC delegates controller and size preview handlers", async () => 
   assert.deepStrictEqual(calls, [
     ["applyUpdate", "size", "P:20"],
     ["applyCommand", "resizePet", "P:30"],
+    ["applyCommand", "feishuApproval.resolveApprover", { email: "person@example.com", hasUnsavedCredentialDrafts: false, requestId: "request-1" }],
+    ["applyCommand", "feishuApproval.cancelApproverLookup", { requestId: "request-1" }],
+    ["applyCommand", "feishuApproval.commitApprover", { lookupId: "lookup-opaque" }],
+    ["applyCommand", "feishuApproval.saveManualApprover", { idType: "union_id", approverId: "union-saved" }],
     ["sizeBegin"],
     ["sizePreview", "P:35"],
     ["sizeEnd", "P:35"],

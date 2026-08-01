@@ -7,6 +7,7 @@ const path = require("node:path");
 const util = require("node:util");
 const vm = require("node:vm");
 const { classifyFeishuSdkError } = require("../src/feishu-approval-client");
+const feishuApprovalSettings = require("../src/feishu-approval-settings");
 
 // main.js cannot be required here (it pulls in electron), so this follows the
 // existing main-*.test.js convention of reading the source. Where behavior can
@@ -24,6 +25,15 @@ function extractFnSource(name) {
 }
 
 function loadFn(name, extraContext = {}) {
+  if (
+    (name === "buildFeishuApprovalSignature" || name === "buildFeishuSessionAutomationRouteSignature")
+    && typeof extraContext.buildFeishuApprovalBindingSignatureFields !== "function"
+  ) {
+    extraContext.buildFeishuApprovalBindingSignatureFields = loadFn(
+      "buildFeishuApprovalBindingSignatureFields",
+      extraContext,
+    );
+  }
   const block = extractFnSource(name);
   const context = extraContext;
   context.globalThis = context;
@@ -85,12 +95,21 @@ function assertAllowlistedSdkMetadata(meta, expectedStage) {
 }
 
 const PATHS = { secretsEnvFilePath: "/tmp/feishu-approval.env" };
-const SECRETS = { appId: "cli_1", appSecret: "s", verificationToken: "", encryptKey: "" };
+const SECRETS = {
+  credentialPlatform: "feishu",
+  appId: "cli_1",
+  appSecret: "s",
+  verificationToken: "",
+  encryptKey: "",
+};
 const CONFIG = {
   enabled: true,
   platform: "feishu",
   idType: "open_id",
   approverId: "ou_1",
+  approverSource: "lookup",
+  approverBoundPlatform: "feishu",
+  approverBoundAppId: "cli_1",
   connectionTimeoutSeconds: 15,
 };
 
@@ -129,6 +148,168 @@ describe("main Feishu/Lark approval platform wiring", () => {
         `${JSON.stringify(patch)} should change the signature`
       );
     }
+  });
+
+  it("binds runtime and route signatures to credential and approver provenance without Secrets", () => {
+    const context = { feishuApprovalSecretsRevision: 4 };
+    const buildRuntime = loadFn("buildFeishuApprovalSignature", context);
+    const buildRoute = loadFn("buildFeishuSessionAutomationRouteSignature", context);
+    const secretSentinels = {
+      ...SECRETS,
+      appSecret: "runtime-signature-secret-sentinel",
+      verificationToken: "runtime-signature-token-sentinel",
+      encryptKey: "runtime-signature-encrypt-sentinel",
+    };
+    const runtime = buildRuntime(CONFIG, PATHS, secretSentinels);
+    const route = buildRoute(CONFIG, secretSentinels, 4);
+
+    for (const signature of [runtime, route]) {
+      assert.match(signature, /"credentialPlatform":"feishu"/);
+      assert.match(signature, /"approverSource":"lookup"/);
+      assert.match(signature, /"approverBoundPlatform":"feishu"/);
+      assert.match(signature, /"approverBoundAppId":"cli_1"/);
+      assert.doesNotMatch(signature, /runtime-signature-(?:secret|token|encrypt)-sentinel/);
+    }
+    for (const patch of [
+      { approverSource: "manual" },
+      { approverBoundPlatform: "lark" },
+      { approverBoundAppId: "cli_other" },
+    ]) {
+      assert.notEqual(buildRuntime(CONFIG, PATHS, SECRETS), buildRuntime({ ...CONFIG, ...patch }, PATHS, SECRETS));
+      assert.notEqual(buildRoute(CONFIG, SECRETS, 4), buildRoute({ ...CONFIG, ...patch }, SECRETS, 4));
+    }
+    assert.notEqual(
+      buildRuntime(CONFIG, PATHS, SECRETS),
+      buildRuntime(CONFIG, PATHS, { ...SECRETS, credentialPlatform: "lark" }),
+    );
+  });
+
+  it("Secret-only rotation rebuilds runtime without invalidating the bound approver", () => {
+    const context = { feishuApprovalSecretsRevision: 8 };
+    const buildRuntime = loadFn("buildFeishuApprovalSignature", context);
+    const before = buildRuntime(CONFIG, PATHS, SECRETS);
+    context.feishuApprovalSecretsRevision = 9;
+    const rotatedSecrets = { ...SECRETS, appSecret: "rotated-secret" };
+    const after = buildRuntime(CONFIG, PATHS, rotatedSecrets);
+
+    assert.notEqual(before, after);
+    assert.equal(feishuApprovalSettings.readiness(CONFIG, SECRETS).ready, true);
+    assert.equal(feishuApprovalSettings.readiness(CONFIG, rotatedSecrets).ready, true);
+  });
+
+  it("status, start, sync, and Test all fail closed on the same saved identity mismatch", async () => {
+    const mismatchedSecrets = { ...SECRETS, credentialPlatform: "lark" };
+    const status = loadFn("getFeishuApprovalStatus", {
+      getFeishuApprovalPrefs: () => CONFIG,
+      getFeishuApprovalSecrets: () => mismatchedSecrets,
+      feishuApprovalSettings,
+      feishuApprovalClient: null,
+    })();
+    assert.equal(status.configured, false);
+    assert.equal(status.reason, "credential-platform-mismatch");
+
+    let constructed = 0;
+    class ForbiddenClient { constructor() { constructed += 1; } }
+    const startContext = {
+      getFeishuApprovalPrefs: () => CONFIG,
+      getFeishuApprovalPaths: () => PATHS,
+      getFeishuApprovalSecrets: () => mismatchedSecrets,
+      feishuApprovalSettings,
+      feishuApprovalClient: null,
+      FeishuApprovalClient: ForbiddenClient,
+      feishuApprovalLog: () => {},
+    };
+    assert.equal(await loadFn("startFeishuApprovalClient", startContext)(), false);
+    assert.equal(constructed, 0);
+
+    let syncStarts = 0;
+    let syncStops = 0;
+    const sync = loadFn("syncFeishuApproval", {
+      getFeishuApprovalPrefs: () => CONFIG,
+      getFeishuApprovalSecrets: () => mismatchedSecrets,
+      feishuApprovalSettings,
+      stopFeishuApprovalClient: () => { syncStops += 1; },
+      startFeishuApprovalClient: async () => { syncStarts += 1; return true; },
+      feishuApprovalLog: () => {},
+    });
+    assert.equal(await sync("test"), false);
+    assert.equal(syncStarts, 0);
+    assert.equal(syncStops, 1);
+
+    let queued = 0;
+    let cards = 0;
+    const sendTest = loadFn("sendFeishuApprovalTest", {
+      getFeishuApprovalStatus: () => status,
+      feishuApprovalUnavailableResult: (snapshot) => ({
+        status: "error",
+        code: snapshot.reason,
+      }),
+      queueFeishuApprovalSync: async () => { queued += 1; return true; },
+      getConfiguredFeishuApprovalClient: () => ({
+        requestApproval: async () => { cards += 1; return "allow"; },
+      }),
+    });
+    const result = await sendTest();
+    assert.equal(result.status, "error");
+    assert.equal(result.code, "credential-platform-mismatch");
+    assert.equal(queued, 0);
+    assert.equal(cards, 0);
+  });
+
+  it("legacy approver provenance constructs no runtime client and sends no Test card", async () => {
+    const legacy = { ...CONFIG };
+    delete legacy.approverSource;
+    delete legacy.approverBoundPlatform;
+    delete legacy.approverBoundAppId;
+    const ready = feishuApprovalSettings.readiness(legacy, SECRETS);
+    assert.equal(ready.ready, false);
+    assert.equal(ready.reason, "approver-provenance-unknown");
+
+    let constructed = 0;
+    class ForbiddenClient { constructor() { constructed += 1; } }
+    const context = {
+      getFeishuApprovalPrefs: () => legacy,
+      getFeishuApprovalPaths: () => PATHS,
+      getFeishuApprovalSecrets: () => SECRETS,
+      feishuApprovalSettings,
+      feishuApprovalClient: null,
+      FeishuApprovalClient: ForbiddenClient,
+      feishuApprovalLog: () => {},
+    };
+    assert.equal(await loadFn("startFeishuApprovalClient", context)(), false);
+    assert.equal(constructed, 0);
+  });
+
+  it("route provenance changes still invalidate old work while exact routes hand card work off", async () => {
+    const routeChanges = [];
+    let constructedOptions;
+    class FakeClient {
+      constructor(options) { constructedOptions = options; }
+      async start() { return true; }
+    }
+    const cardWork = { retained: true };
+    const context = {
+      getFeishuApprovalPrefs: () => CONFIG,
+      getFeishuApprovalPaths: () => PATHS,
+      getFeishuApprovalSecrets: () => SECRETS,
+      feishuApprovalSettings,
+      buildFeishuApprovalSignature: () => "new-runtime",
+      buildFeishuSessionAutomationRouteSignature: () => "same-route",
+      feishuApprovalClient: { sessionAutomationCardWork: cardWork },
+      feishuApprovalConfigSignature: "old-runtime",
+      feishuSessionAutomationRouteSignature: "same-route",
+      prepareFeishuSessionAutomationRouteChange: (value) => routeChanges.push(value),
+      stopFeishuApprovalClient: () => {},
+      FeishuApprovalClient: FakeClient,
+      _settingsController: { get: () => "en" },
+      lang: "en",
+      sessionAutomationCoordinator: null,
+      broadcastFeishuApprovalStatus: () => {},
+      feishuApprovalLog: () => {},
+    };
+    assert.equal(await loadFn("startFeishuApprovalClient", context)(), true);
+    assert.deepEqual(routeChanges, ["same-route"]);
+    assert.equal(constructedOptions.sessionAutomationCardWork, cardWork);
   });
 
   it("does not put the language in the signature", () => {

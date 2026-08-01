@@ -8,6 +8,7 @@ const os = require("os");
 
 const prefs = require("../src/prefs");
 const { createSettingsController } = require("../src/settings-controller");
+const { createFeishuApprovalLookupCoordinator } = require("../src/feishu-approval-lookup");
 
 const tempDirs = [];
 function makeTempPath() {
@@ -906,6 +907,90 @@ describe("applyCommand", () => {
     assert.deepStrictEqual(onDisk.sessionAliases, {
       "local|codex|s1": { title: "Codex main", updatedAt: 1000 },
     });
+  });
+});
+
+describe("Feishu approval settings domain", () => {
+  it("serializes ordinary Feishu updates behind the Test command", async () => {
+    let releaseTest;
+    let testStarted;
+    const started = new Promise((resolve) => { testStarted = resolve; });
+    const blocked = new Promise((resolve) => { releaseTest = resolve; });
+    const snapshot = prefs.getDefaults();
+    snapshot.feishuApproval = {
+      ...snapshot.feishuApproval,
+      enabled: true,
+      approverId: "ou_saved",
+      approverSource: "lookup",
+      approverBoundPlatform: "feishu",
+      approverBoundAppId: "cli_saved",
+    };
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      loadResult: { snapshot, locked: false },
+      injectedDeps: {
+        getFeishuApprovalSecrets: () => ({
+          credentialPlatform: "feishu",
+          appId: "cli_saved",
+          appSecret: "saved-secret",
+        }),
+        sendFeishuApprovalTest: async () => {
+          testStarted();
+          await blocked;
+          return { status: "ok", decision: "deny" };
+        },
+      },
+    });
+
+    const testResult = ctrl.applyCommand("feishuApproval.test", {});
+    await started;
+    const next = { ...ctrl.get("feishuApproval"), connectionTimeoutSeconds: 30 };
+    const updateResult = ctrl.applyUpdate("feishuApproval", next);
+    await Promise.resolve();
+
+    assert.strictEqual(ctrl.get("feishuApproval").connectionTimeoutSeconds, 15);
+    releaseTest();
+    assert.strictEqual((await testResult).status, "ok");
+    assert.strictEqual((await updateResult).status, "ok");
+    assert.strictEqual(ctrl.get("feishuApproval").connectionTimeoutSeconds, 30);
+  });
+
+  it("keeps the store unchanged and the lookup handle consumed when persistence fails", async () => {
+    const snapshot = prefs.getDefaults();
+    const coordinator = createFeishuApprovalLookupCoordinator({ createLookupId: () => "lookup-once" });
+    const started = coordinator.begin({
+      requestId: "renderer-request",
+      identity: { platform: "feishu", appId: "cli_saved" },
+      secretsRevision: 2,
+    });
+    coordinator.succeed({ lookupId: started.lookupId, approverId: "ou_resolved" });
+    const ctrl = createSettingsController({
+      prefsPath: "unused-failing-path",
+      prefs: {
+        load: () => ({ snapshot, locked: false }),
+        save: () => { throw new Error("disk full"); },
+      },
+      injectedDeps: {
+        feishuApprovalLookupCoordinator: coordinator,
+        getFeishuApprovalSecrets: () => ({
+          credentialPlatform: "feishu",
+          appId: "cli_saved",
+          appSecret: "saved-secret",
+        }),
+        getFeishuApprovalSecretsRevision: () => 2,
+      },
+    });
+    let subscriberCalls = 0;
+    ctrl.subscribe(() => { subscriberCalls += 1; });
+
+    const first = await ctrl.applyCommand("feishuApproval.commitApprover", { lookupId: "lookup-once" });
+    assert.equal(first.status, "error");
+    assert.equal(ctrl.get("feishuApproval").approverId, "");
+    assert.equal(subscriberCalls, 0);
+
+    const second = await ctrl.applyCommand("feishuApproval.commitApprover", { lookupId: "lookup-once" });
+    assert.deepEqual(second, { status: "error", code: "lookup-result-consumed" });
+    assert.equal(ctrl.get("feishuApproval").approverId, "");
   });
 });
 

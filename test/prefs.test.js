@@ -89,6 +89,9 @@ describe("prefs.getDefaults", () => {
       platform: "feishu",
       idType: "open_id",
       approverId: "",
+      approverSource: "none",
+      approverBoundPlatform: "",
+      approverBoundAppId: "",
       connectionTimeoutSeconds: 15,
     });
   });
@@ -187,6 +190,68 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.agents.codex.nativeNotificationSoundEnabled, false);
   });
 
+});
+
+describe("prefs Feishu approval provenance migration", () => {
+  it("normalizes legacy approver provenance lazily without rewriting the file", () => {
+    const p = makeTempPath();
+    const raw = {
+      version: prefs.CURRENT_VERSION,
+      feishuApproval: {
+        enabled: true,
+        platform: "feishu",
+        idType: "union_id",
+        approverId: "legacy-union-id",
+        connectionTimeoutSeconds: 30,
+      },
+    };
+    const original = JSON.stringify(raw, null, 2);
+    fs.writeFileSync(p, original);
+
+    const loaded = prefs.load(p);
+
+    assert.equal(fs.readFileSync(p, "utf8"), original);
+    assert.deepStrictEqual(loaded.snapshot.feishuApproval, {
+      enabled: true,
+      platform: "feishu",
+      idType: "union_id",
+      approverId: "legacy-union-id",
+      approverSource: "unknown",
+      approverBoundPlatform: "",
+      approverBoundAppId: "",
+      connectionTimeoutSeconds: 30,
+    });
+  });
+
+  it("serializes canonical unknown provenance on the next normal save without any App Secret", () => {
+    const p = makeTempPath();
+    fs.writeFileSync(p, JSON.stringify({
+      version: prefs.CURRENT_VERSION,
+      feishuApproval: {
+        enabled: true,
+        platform: "lark",
+        idType: "user_id",
+        approverId: "legacy-user-id",
+      },
+    }));
+
+    const loaded = prefs.load(p);
+    prefs.save(p, loaded.snapshot);
+    const serialized = JSON.parse(fs.readFileSync(p, "utf8"));
+
+    assert.deepStrictEqual(serialized.feishuApproval, {
+      enabled: true,
+      platform: "lark",
+      idType: "user_id",
+      approverId: "legacy-user-id",
+      approverSource: "unknown",
+      approverBoundPlatform: "",
+      approverBoundAppId: "",
+      connectionTimeoutSeconds: 15,
+    });
+    assert.equal("appSecret" in serialized.feishuApproval, false);
+    assert.equal(JSON.stringify(serialized.feishuApproval).includes("FEISHU_APP_SECRET"), false);
+  });
 });
 
 describe("prefs.validate", () => {

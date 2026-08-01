@@ -32,18 +32,21 @@
     secretInfoSeq: 0,
     secretInfoLoading: false,
     secretInfoForceRenderPending: false,
-    secretPending: false,
     secretEditing: false,
-    configPending: false,
+    configPersistencePending: false,
+    configPersistenceKind: null,
     testPending: false,
     refreshTimer: null,
     formDraft: null,
     formDirty: false,
     secretDraft: null,
-    approverLookupPending: false,
-    approverLookupSeq: 0,
+    networkLookupPending: false,
+    lookupCancelPending: false,
+    lookupRequestId: null,
+    lookupUiEpoch: 0,
     expandApproverFallbackGuide: false,
   };
+  let feishuLookupRequestSeq = 0;
 
   // Feishu (China) and Lark (International) are one channel, one component —
   // only the SDK domain, the console URL and the brand word differ. The list is
@@ -63,7 +66,21 @@
   // (disabled / missing-secret / invalid-config / invalid-secret / not-running)
   // used to fall through to main's raw English message, which named Feishu and
   // so read as nonsense to a correctly configured Lark user.
+  const FEISHU_CONFIGURATION_ERROR_KEYS = Object.freeze({
+    "missing-credentials": "feishuApprovalLookupMissingCredentials",
+    "invalid-app-id": "feishuApprovalLookupInvalidAppId",
+    "credential-provenance-unknown": "feishuApprovalLookupCredentialProvenanceUnknown",
+    "credential-platform-mismatch": "feishuApprovalLookupCredentialPlatformMismatch",
+    "missing-approver": "feishuApprovalLookupApproverNotFound",
+    "approver-provenance-unknown": "feishuApprovalLookupApproverProvenanceUnknown",
+    "approver-binding-incomplete": "feishuApprovalLookupApproverBindingIncomplete",
+    "approver-platform-mismatch": "feishuApprovalLookupApproverPlatformMismatch",
+    "approver-app-mismatch": "feishuApprovalLookupApproverAppMismatch",
+    "lookup-requires-open-id": "feishuApprovalLookupRequiresOpenId",
+  });
+
   const FEISHU_TEST_ERROR_KEYS = Object.freeze({
+    ...FEISHU_CONFIGURATION_ERROR_KEYS,
     "no-button-response": "feishuApprovalTestNoResponse",
     "not-connected": "feishuApprovalTestNotConnected",
     "card-send-failed": "feishuApprovalTestSendFailed",
@@ -75,12 +92,19 @@
   });
 
   const FEISHU_APPROVER_LOOKUP_ERROR_KEYS = Object.freeze({
+    ...FEISHU_CONFIGURATION_ERROR_KEYS,
     "invalid-platform": "feishuApprovalLookupInvalidPlatform",
+    "invalid-request-id": "feishuApprovalLookupInvalidRequestId",
     "invalid-email": "feishuApprovalLookupInvalidEmail",
-    "missing-credentials": "feishuApprovalLookupMissingCredentials",
+    "unsaved-credentials": "feishuApprovalLookupUnsavedCredentials",
     "incomplete-credentials": "feishuApprovalLookupIncompleteCredentials",
     "missing-contact-scope": "feishuApprovalLookupMissingContactScope",
     "approver-not-found": "feishuApprovalLookupApproverNotFound",
+    "lookup-cancelled": "feishuApprovalLookupCancelled",
+    "lookup-superseded": "feishuApprovalLookupSuperseded",
+    "lookup-stale": "feishuApprovalLookupStale",
+    "lookup-result-consumed": "feishuApprovalLookupResultConsumed",
+    "lookup-credentials-changed": "feishuApprovalLookupCredentialsChanged",
     "lookup-failed": "feishuApprovalLookupFailed",
   });
 
@@ -107,8 +131,9 @@
   function feishuBlockingReasonMessage() {
     const s = feishuView.status || {};
     if (s.configured === true) return "";
-    if (s.reason !== "invalid-secret" && s.reason !== "invalid-config") return "";
-    return tBrand(FEISHU_TEST_ERROR_KEYS[s.reason]);
+    if (s.reason === "disabled") return "";
+    const key = FEISHU_TEST_ERROR_KEYS[s.reason];
+    return key ? tBrand(key) : "";
   }
 
   function feishuRuntimeErrorMessage() {
@@ -193,8 +218,34 @@
       platform: cfg && cfg.platform === "lark" ? "lark" : "feishu",
       idType: cfg && typeof cfg.idType === "string" ? cfg.idType : "open_id",
       approverId: cfg && typeof cfg.approverId === "string" ? cfg.approverId : "",
+      approverSource: cfg && (cfg.approverSource === "lookup" || cfg.approverSource === "manual")
+        ? cfg.approverSource
+        : cfg && cfg.approverId
+          ? "unknown"
+          : "none",
+      approverBoundPlatform: cfg && typeof cfg.approverBoundPlatform === "string"
+        ? cfg.approverBoundPlatform
+        : "",
+      approverBoundAppId: cfg && typeof cfg.approverBoundAppId === "string"
+        ? cfg.approverBoundAppId
+        : "",
       connectionTimeoutSeconds: [5, 10, 15, 30, 60].includes(timeout) ? timeout : 15,
     };
+  }
+
+  function feishuLookupResultPersistencePending() {
+    return feishuView.configPersistencePending
+      && feishuView.configPersistenceKind === "lookup-approver";
+  }
+
+  function feishuLookupPending() {
+    return feishuView.networkLookupPending || feishuLookupResultPersistencePending();
+  }
+
+  function allFeishuControlsBlocked() {
+    return feishuLookupPending()
+      || feishuView.configPersistencePending
+      || feishuView.testPending;
   }
 
   function getFormDraft() {
@@ -225,10 +276,10 @@
   }
 
   function setFeishuFormDraftValue(key, value) {
+    if (allFeishuControlsBlocked()) return;
     const draft = getFeishuFormDraft();
     draft[key] = value;
     feishuView.formDirty = true;
-    if (key === "idType" || key === "approverId") invalidateFeishuApproverLookup();
   }
 
   function resetFeishuFormDraft() {
@@ -252,9 +303,11 @@
     feishuView.secretDraft = null;
   }
 
-  function invalidateFeishuApproverLookup() {
-    feishuView.approverLookupSeq += 1;
-    feishuView.approverLookupPending = false;
+  function hasUnsavedFeishuCredentialDrafts() {
+    if (!feishuView.secretEditing && feishuView.secretInfo && feishuView.secretInfo.configured) return false;
+    const draft = getFeishuSecretDraft();
+    return [draft.appId, draft.appSecret, draft.verificationToken, draft.encryptKey]
+      .some((value) => !!String(value || "").trim());
   }
 
   function callCommand(action, payload) {
@@ -498,6 +551,7 @@
       if (entry.key === current) btn.classList.add("active");
       btn.addEventListener("click", () => {
         if (coreRef.runtime.remoteApprovalSubtab === entry.key) return;
+        if (entry.key === "lan") leaveFeishuLookupUi();
         coreRef.runtime.remoteApprovalSubtab = entry.key;
         coreRef.ops.requestRender({ content: true });
       });
@@ -1361,9 +1415,9 @@
       // it controls can never drift apart.
       btn.textContent = feishuBrand(platform);
       btn.classList.toggle("active", cfg.platform === platform);
-      btn.disabled = feishuView.configPending || feishuView.approverLookupPending;
+      btn.disabled = allFeishuControlsBlocked();
       btn.addEventListener("click", () => {
-        if (feishuView.configPending || feishuView.approverLookupPending || cfg.platform === platform) return;
+        if (allFeishuControlsBlocked() || cfg.platform === platform) return;
         saveFeishuConfig({ ...cfg, platform }, { resetDraft: false });
       });
       segmented.appendChild(btn);
@@ -1410,9 +1464,9 @@
     btn.type = "button";
     btn.className = "soft-btn";
     btn.textContent = t("feishuApprovalReplaceSecrets");
-    btn.disabled = feishuView.approverLookupPending;
+    btn.disabled = allFeishuControlsBlocked();
     btn.addEventListener("click", () => {
-      if (feishuView.approverLookupPending) return;
+      if (allFeishuControlsBlocked()) return;
       resetFeishuSecretDraft();
       feishuView.secretEditing = true;
       ops.requestRender({ content: true });
@@ -1461,10 +1515,12 @@
     const saveBtn = document.createElement("button");
     saveBtn.type = "button";
     saveBtn.className = "soft-btn accent";
-    saveBtn.textContent = feishuView.secretPending ? t("feishuApprovalSaving") : t("feishuApprovalSaveSecrets");
-    saveBtn.disabled = feishuView.secretPending || feishuView.approverLookupPending;
+    const credentialPersistencePending = feishuView.configPersistencePending
+      && feishuView.configPersistenceKind === "credentials";
+    saveBtn.textContent = credentialPersistencePending ? t("feishuApprovalSaving") : t("feishuApprovalSaveSecrets");
+    saveBtn.disabled = allFeishuControlsBlocked();
     saveBtn.addEventListener("click", () => {
-      if (feishuView.secretPending || feishuView.approverLookupPending) return;
+      if (allFeishuControlsBlocked()) return;
       const payload = {
         appId: appIdInput.value.trim(),
         appSecret: appSecretInput.value.trim(),
@@ -1479,32 +1535,20 @@
         ops.showToast(tBrand("feishuApprovalSecretsEmpty"), { error: true });
         return;
       }
-      feishuView.secretPending = true;
       for (const input of [appIdInput, appSecretInput, verificationInput, encryptInput]) {
         input.disabled = true;
       }
       saveBtn.disabled = true;
-      ops.requestRender({ content: true });
-      callCommand("feishuApproval.setSecrets", payload).then((result) => {
-        feishuView.secretPending = false;
-        if (!result || result.status !== "ok") {
-          // Localized copy first, with the writer's English diagnostic appended
-          // as detail — it names the actual cause (EACCES, ENOSPC…), which the
-          // translated sentence deliberately does not try to guess.
-          let text = tBrand("feishuApprovalSecretsSaveFailed");
-          const detail = result && result.message ? String(result.message) : "";
-          if (detail) text += ` (${detail})`;
-          ops.showToast(text, { error: true });
-          ops.requestRender({ content: true });
-          return;
-        }
-        ops.showToast(tBrand("feishuApprovalSecretsSaved"));
-        resetFeishuSecretDraft();
-        feishuView.secretEditing = false;
-        feishuView.secretInfo = null;
-        feishuView.status = null;
-        refreshFeishuSecretInfo({ forceRender: true });
-        refreshFeishuStatus({ forceRender: true });
+      saveFeishuCommand("feishuApproval.setSecrets", payload, {
+        kind: "credentials",
+        failureKey: "feishuApprovalSecretsSaveFailed",
+        successKey: "feishuApprovalSecretsSaved",
+        onSuccess() {
+          resetFeishuSecretDraft();
+          feishuView.secretEditing = false;
+          feishuView.secretInfo = null;
+          refreshFeishuSecretInfo({ forceRender: true });
+        },
       });
     });
 
@@ -1518,9 +1562,9 @@
       cancelBtn.type = "button";
       cancelBtn.className = "soft-btn";
       cancelBtn.textContent = t("telegramApprovalCancel");
-      cancelBtn.disabled = feishuView.secretPending || feishuView.approverLookupPending;
+      cancelBtn.disabled = allFeishuControlsBlocked();
       cancelBtn.addEventListener("click", () => {
-        if (feishuView.secretPending || feishuView.approverLookupPending) return;
+        if (allFeishuControlsBlocked()) return;
         resetFeishuSecretDraft();
         feishuView.secretEditing = false;
         ops.requestRender({ content: true });
@@ -1538,12 +1582,12 @@
     input.spellcheck = false;
     input.placeholder = t(placeholderKey);
     input.className = "tg-approval-input";
-    input.disabled = feishuView.secretPending || feishuView.approverLookupPending;
+    input.disabled = allFeishuControlsBlocked();
     const draft = getFeishuSecretDraft();
     input.value = draft[draftKey] || "";
     input.addEventListener("input", () => {
+      if (allFeishuControlsBlocked()) return;
       getFeishuSecretDraft()[draftKey] = input.value;
-      invalidateFeishuApproverLookup();
     });
     return input;
   }
@@ -1583,6 +1627,7 @@
   }
 
   function buildFeishuApproverRow() {
+    const cfg = currentFeishuConfig();
     const draft = getFeishuFormDraft();
     const row = document.createElement("div");
     row.className = "row tg-approval-recipient-row feishu-approval-approver-row";
@@ -1607,6 +1652,12 @@
       note.textContent = t("feishuApprovalIdTypeUserIdNote");
       text.appendChild(note);
     }
+    if (cfg.approverId && cfg.approverSource === "unknown") {
+      const warning = document.createElement("span");
+      warning.className = "row-desc feishu-approval-reconfirmation-warning";
+      warning.textContent = tBrand("feishuApprovalApproverReconfirmationWarning");
+      text.appendChild(warning);
+    }
     row.appendChild(text);
 
     const ctrl = document.createElement("div");
@@ -1625,9 +1676,9 @@
       btn.dataset.idType = item.id;
       btn.textContent = item.label;
       btn.classList.toggle("active", draft.idType === item.id);
-      btn.disabled = feishuView.configPending || feishuView.approverLookupPending;
+      btn.disabled = allFeishuControlsBlocked();
       btn.addEventListener("click", () => {
-        if (feishuView.configPending || feishuView.approverLookupPending) return;
+        if (allFeishuControlsBlocked()) return;
         setFeishuFormDraftValue("idType", item.id);
         ops.requestRender({ content: true });
       });
@@ -1641,18 +1692,29 @@
     input.placeholder = t("feishuApprovalApproverPlaceholder");
     input.className = "tg-approval-input";
     input.value = draft.approverId || "";
-    input.disabled = feishuView.configPending || feishuView.approverLookupPending;
+    input.disabled = allFeishuControlsBlocked();
     input.addEventListener("input", () => setFeishuFormDraftValue("approverId", input.value));
 
     const saveBtn = document.createElement("button");
+    const renderedAsLookupCancel = feishuView.networkLookupPending;
     saveBtn.type = "button";
     saveBtn.className = "soft-btn accent";
-    saveBtn.textContent = feishuView.configPending || feishuView.approverLookupPending
-      ? t("feishuApprovalSaving")
-      : t("feishuApprovalSaveApprover");
-    saveBtn.disabled = feishuView.configPending || feishuView.approverLookupPending;
+    saveBtn.textContent = renderedAsLookupCancel
+      ? feishuView.lookupCancelPending
+        ? t("feishuApprovalLookupCancelling")
+        : t("feishuApprovalLookupCancel")
+      : feishuLookupResultPersistencePending()
+        ? t("feishuApprovalSaving")
+        : t("feishuApprovalSaveApprover");
+    saveBtn.disabled = renderedAsLookupCancel
+      ? feishuView.lookupCancelPending
+      : allFeishuControlsBlocked();
     saveBtn.addEventListener("click", () => {
-      if (feishuView.configPending || feishuView.approverLookupPending) return;
+      if (renderedAsLookupCancel) {
+        if (!feishuView.lookupCancelPending) cancelFeishuApproverLookup();
+        return;
+      }
+      if (allFeishuControlsBlocked()) return;
       const nextDraft = getFeishuFormDraft();
       const approverId = String(nextDraft.approverId || "").trim();
       const idType = ["open_id", "user_id", "union_id"].includes(nextDraft.idType) ? nextDraft.idType : "open_id";
@@ -1661,19 +1723,24 @@
         return;
       }
       if (idType === "open_id" && !approverId.startsWith("ou_")) {
-        const secrets = getFeishuSecretDraft();
-        const lookupSeq = ++feishuView.approverLookupSeq;
-        feishuView.approverLookupPending = true;
+        const requestId = `feishu-approver-${++feishuLookupRequestSeq}`;
+        const lookupEpoch = ++feishuView.lookupUiEpoch;
+        feishuView.networkLookupPending = true;
+        feishuView.lookupCancelPending = false;
+        feishuView.lookupRequestId = requestId;
         ops.requestRender({ content: true });
         callCommand("feishuApproval.resolveApprover", {
-          platform: currentFeishuConfig().platform,
-          appId: String(secrets.appId || "").trim(),
-          appSecret: String(secrets.appSecret || "").trim(),
           email: approverId,
+          hasUnsavedCredentialDrafts: hasUnsavedFeishuCredentialDrafts(),
+          requestId,
         }).then((result) => {
-          if (lookupSeq !== feishuView.approverLookupSeq) return;
-          feishuView.approverLookupPending = false;
-          if (!result || result.status !== "ok" || !result.approverId) {
+          if (
+            lookupEpoch !== feishuView.lookupUiEpoch
+            || requestId !== feishuView.lookupRequestId
+          ) return;
+          if (!result || result.status !== "ok" || !result.lookupId) {
+            feishuView.networkLookupPending = false;
+            feishuView.lookupRequestId = null;
             const code = result && result.code;
             const key = FEISHU_APPROVER_LOOKUP_ERROR_KEYS[code]
               || "feishuApprovalLookupFailed";
@@ -1684,18 +1751,27 @@
             ops.requestRender({ content: true });
             return;
           }
-          saveFeishuConfig({
-            ...currentFeishuConfig(),
-            idType: "open_id",
-            approverId: String(result.approverId).trim(),
+          feishuView.networkLookupPending = false;
+          saveFeishuCommand("feishuApproval.commitApprover", {
+            lookupId: result.lookupId,
+          }, {
+            kind: "lookup-approver",
+            resetDraft: true,
+            uiEpoch: lookupEpoch,
+          }).then(() => {
+            if (lookupEpoch !== feishuView.lookupUiEpoch) return;
+            feishuView.lookupRequestId = null;
+            ops.requestRender({ content: true });
           });
         });
         return;
       }
-      saveFeishuConfig({
-        ...currentFeishuConfig(),
+      saveFeishuCommand("feishuApproval.saveManualApprover", {
         idType,
         approverId,
+      }, {
+        kind: "manual-approver",
+        resetDraft: true,
       });
     });
 
@@ -1804,6 +1880,7 @@
 
   function buildFeishuEnabledRow({ ready }) {
     const cfg = currentFeishuConfig();
+    const blocked = allFeishuControlsBlocked();
     const row = document.createElement("div");
     row.className = "row";
     if (!ready) row.classList.add("tg-approval-row-disabled");
@@ -1826,13 +1903,16 @@
     sw.className = "switch";
     sw.setAttribute("role", "switch");
     sw.setAttribute("tabindex", "0");
-    helpers.setSwitchVisual(sw, cfg.enabled, { pending: feishuView.configPending });
-    if (!ready) {
+    helpers.setSwitchVisual(sw, cfg.enabled, { pending: feishuView.configPersistencePending });
+    if (!ready || blocked) {
       sw.classList.add("disabled");
       sw.setAttribute("aria-disabled", "true");
       sw.removeAttribute("tabindex");
     } else {
-      const toggle = () => saveFeishuConfig({ ...cfg, enabled: !cfg.enabled }, { resetDraft: false });
+      const toggle = () => {
+        if (allFeishuControlsBlocked()) return;
+        saveFeishuConfig({ ...cfg, enabled: !cfg.enabled }, { resetDraft: false });
+      };
       sw.addEventListener("click", toggle);
       sw.addEventListener("keydown", (ev) => {
         if (ev.key === " " || ev.key === "Enter") {
@@ -1873,8 +1953,9 @@
       })),
       ariaLabel: t("feishuApprovalConnectionTimeout"),
       className: "feishu-approval-timeout-select",
-      disabled: feishuView.configPending,
+      disabled: allFeishuControlsBlocked(),
       onChange(value) {
+        if (allFeishuControlsBlocked()) return false;
         const nextTimeout = Number(value);
         if (![5, 10, 15, 30, 60].includes(nextTimeout)) return false;
         if (nextTimeout === cfg.connectionTimeoutSeconds) return true;
@@ -1889,7 +1970,11 @@
   function buildFeishuTestRow({ ready }) {
     const s = feishuView.status || {};
     const runtimeReady = s.configured === true;
-    const testDisabled = feishuView.testPending || !ready || !runtimeReady;
+    const testDisabled = feishuView.testPending
+      || feishuLookupPending()
+      || feishuView.configPersistencePending
+      || !ready
+      || !runtimeReady;
     const row = document.createElement("div");
     row.className = "row";
     if (!ready) row.classList.add("tg-approval-row-disabled");
@@ -1922,7 +2007,7 @@
         || t("feishuApprovalCardMissingBoth");
     }
     btn.addEventListener("click", () => {
-      if (testDisabled) return;
+      if (testDisabled || feishuView.testPending) return;
       feishuView.testPending = true;
       ops.requestRender({ content: true });
       callCommand("feishuApproval.test").then((result) => {
@@ -1948,6 +2033,64 @@
   }
 
   // ── Save / shared ──
+
+  function cancelFeishuApproverLookup({ bestEffort = false } = {}) {
+    const requestId = feishuView.lookupRequestId;
+    if (!feishuView.networkLookupPending || !requestId) return Promise.resolve(false);
+    const cancelEpoch = ++feishuView.lookupUiEpoch;
+    if (bestEffort) {
+      feishuView.networkLookupPending = false;
+      feishuView.lookupCancelPending = false;
+      feishuView.lookupRequestId = null;
+      callCommand("feishuApproval.cancelApproverLookup", { requestId });
+      return Promise.resolve(true);
+    }
+    feishuView.lookupCancelPending = true;
+    ops.requestRender({ content: true });
+    return callCommand("feishuApproval.cancelApproverLookup", { requestId }).then((result) => {
+      if (cancelEpoch !== feishuView.lookupUiEpoch) return false;
+      feishuView.networkLookupPending = false;
+      feishuView.lookupCancelPending = false;
+      feishuView.lookupRequestId = null;
+      const ok = !!(result && result.status === "ok");
+      if (!ok) {
+        ops.showToast(t("feishuApprovalLookupCancelFailed"), { error: true });
+      }
+      ops.requestRender({ content: true });
+      return ok;
+    });
+  }
+
+  function leaveFeishuLookupUi() {
+    if (feishuView.networkLookupPending) {
+      cancelFeishuApproverLookup({ bestEffort: true });
+    } else if (feishuLookupResultPersistencePending()) {
+      feishuView.lookupUiEpoch += 1;
+    }
+    resetFeishuFormDraft();
+  }
+
+  function refreshAuthoritativeFeishuSnapshot() {
+    if (!window.settingsAPI || typeof window.settingsAPI.getSnapshot !== "function") {
+      return Promise.resolve(false);
+    }
+    let pending;
+    try {
+      pending = window.settingsAPI.getSnapshot();
+    } catch {
+      return Promise.resolve(false);
+    }
+    return Promise.resolve(pending).then((snapshot) => {
+      if (
+        !snapshot
+        || typeof snapshot !== "object"
+        || !snapshot.feishuApproval
+        || typeof snapshot.feishuApproval !== "object"
+      ) return false;
+      state.snapshot = snapshot;
+      return true;
+    }).catch(() => false);
+  }
 
   function saveConfig(next, options = {}) {
     if (!window.settingsAPI || typeof window.settingsAPI.update !== "function") {
@@ -1976,31 +2119,88 @@
     });
   }
 
-  function saveFeishuConfig(next, options = {}) {
-    if (!window.settingsAPI || typeof window.settingsAPI.update !== "function") {
-      ops.showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
+  function persistFeishuChange(request, options = {}) {
+    if (feishuView.configPersistencePending || feishuView.testPending) {
       return Promise.resolve(false);
     }
-    feishuView.configPending = true;
+    feishuView.configPersistencePending = true;
+    feishuView.configPersistenceKind = options.kind || "ordinary";
     ops.requestRender({ content: true });
-    return window.settingsAPI.update("feishuApproval", next).then((result) => {
-      feishuView.configPending = false;
+    let pending;
+    try {
+      pending = request();
+    } catch {
+      pending = Promise.resolve({ status: "error" });
+    }
+    return Promise.resolve(pending).then((result) => {
       if (!result || result.status !== "ok") {
-        ops.showToast((result && result.message) || t("toastSaveFailed"), { error: true });
-        ops.requestRender({ content: true });
+        feishuView.configPersistencePending = false;
+        feishuView.configPersistenceKind = null;
+        const uiCurrent = options.uiEpoch === undefined
+          || options.uiEpoch === feishuView.lookupUiEpoch;
+        if (uiCurrent) {
+          ops.showToast(tBrand(options.failureKey || "feishuApprovalPersistenceFailed"), { error: true });
+          ops.requestRender({ content: true });
+        }
         return false;
       }
-      ops.showToast(tBrand("feishuApprovalConfigSaved"));
-      if (options.resetDraft !== false) resetFeishuFormDraft();
-      feishuView.status = null;
-      refreshFeishuStatus({ forceRender: true });
-      return true;
-    }).catch((err) => {
-      feishuView.configPending = false;
-      ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
-      ops.requestRender({ content: true });
+      return refreshAuthoritativeFeishuSnapshot().then((refreshed) => {
+        feishuView.configPersistencePending = false;
+        feishuView.configPersistenceKind = null;
+        const uiCurrent = options.uiEpoch === undefined
+          || options.uiEpoch === feishuView.lookupUiEpoch;
+        if (!refreshed) {
+          if (uiCurrent) {
+            ops.showToast(tBrand(options.failureKey || "feishuApprovalPersistenceFailed"), { error: true });
+            ops.requestRender({ content: true });
+          }
+          return false;
+        }
+        if (!uiCurrent) return true;
+        if (options.successKey !== false) {
+          ops.showToast(tBrand(options.successKey || "feishuApprovalConfigSaved"));
+        }
+        if (options.resetDraft === true || (options.resetDraft !== false && options.kind === "ordinary")) {
+          resetFeishuFormDraft();
+        }
+        if (typeof options.onSuccess === "function") options.onSuccess(result);
+        feishuView.status = null;
+        refreshFeishuStatus({ forceRender: true });
+        return true;
+      });
+    }).catch(() => {
+      feishuView.configPersistencePending = false;
+      feishuView.configPersistenceKind = null;
+      const uiCurrent = options.uiEpoch === undefined
+        || options.uiEpoch === feishuView.lookupUiEpoch;
+      if (uiCurrent) {
+        ops.showToast(tBrand(options.failureKey || "feishuApprovalPersistenceFailed"), { error: true });
+        ops.requestRender({ content: true });
+      }
       return false;
     });
+  }
+
+  function saveFeishuConfig(next, options = {}) {
+    if (!window.settingsAPI || typeof window.settingsAPI.update !== "function") {
+      ops.showToast(t("feishuApprovalPersistenceFailed"), { error: true });
+      return Promise.resolve(false);
+    }
+    return persistFeishuChange(
+      () => window.settingsAPI.update("feishuApproval", next),
+      { ...options, kind: options.kind || "ordinary" },
+    );
+  }
+
+  function saveFeishuCommand(name, payload, options = {}) {
+    if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") {
+      ops.showToast(t("feishuApprovalPersistenceFailed"), { error: true });
+      return Promise.resolve(false);
+    }
+    return persistFeishuChange(
+      () => callCommand(name, payload),
+      options,
+    );
   }
 
   // ── Helpers ──
@@ -2058,7 +2258,11 @@
     state = core.state;
     helpers = core.helpers;
     ops = core.ops;
-    core.tabs["telegram-approval"] = { render, refreshRuntimeStatus };
+    core.tabs["telegram-approval"] = {
+      render,
+      refreshRuntimeStatus,
+      onExit: leaveFeishuLookupUi,
+    };
   }
 
   root.ClawdSettingsTabTelegramApproval = { init };

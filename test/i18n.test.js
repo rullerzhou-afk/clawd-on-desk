@@ -90,6 +90,38 @@ describe("i18n locales", () => {
     assertLocaleObjectParity(loadSettingsI18nStrings(), "settings");
   });
 
+  it("localizes every Feishu provenance, lookup lifecycle, and persistence outcome", () => {
+    const strings = loadSettingsI18nStrings();
+    const keys = [
+      "feishuApprovalApproverReconfirmationWarning",
+      "feishuApprovalPersistenceFailed",
+      "feishuApprovalLookupCancel",
+      "feishuApprovalLookupCancelling",
+      "feishuApprovalLookupCancelFailed",
+      "feishuApprovalLookupInvalidRequestId",
+      "feishuApprovalLookupUnsavedCredentials",
+      "feishuApprovalLookupInvalidAppId",
+      "feishuApprovalLookupCredentialProvenanceUnknown",
+      "feishuApprovalLookupCredentialPlatformMismatch",
+      "feishuApprovalLookupApproverProvenanceUnknown",
+      "feishuApprovalLookupApproverBindingIncomplete",
+      "feishuApprovalLookupApproverPlatformMismatch",
+      "feishuApprovalLookupApproverAppMismatch",
+      "feishuApprovalLookupRequiresOpenId",
+      "feishuApprovalLookupCancelled",
+      "feishuApprovalLookupSuperseded",
+      "feishuApprovalLookupStale",
+      "feishuApprovalLookupResultConsumed",
+      "feishuApprovalLookupCredentialsChanged",
+    ];
+    for (const lang of SUPPORTED_LANGS) {
+      for (const key of keys) {
+        assert.equal(typeof strings[lang][key], "string", `${lang}.${key} must exist`);
+        assert.notEqual(strings[lang][key].trim(), "", `${lang}.${key} must not be empty`);
+      }
+    }
+  });
+
   it("keeps permission bubble locale keysets aligned with English", () => {
     assertLocaleObjectParity(loadBubbleStrings(), "bubble");
   });
