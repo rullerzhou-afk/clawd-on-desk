@@ -111,7 +111,11 @@ const telegramApprovalSettings = require("./telegram-approval-settings");
 const discordPresenceSettings = require("./discord-presence-settings");
 const { createDiscordPresenceBridge } = require("./discord-presence-rpc");
 const { resolveAgentDisplayName } = require("./agent-display-name");
-const { FeishuApprovalClient, lookupOpenIdByEmail } = require("./feishu-approval-client");
+const {
+  FeishuApprovalClient,
+  classifyFeishuSdkError,
+  lookupOpenIdByEmail,
+} = require("./feishu-approval-client");
 const feishuApprovalSettings = require("./feishu-approval-settings");
 const {
   buildTelegramApprovalStatus,
@@ -2434,7 +2438,7 @@ function feishuApprovalLog(level, message, meta = {}) {
   const parts = [`feishu approval ${level}: ${message}`];
   if (meta && meta.text) parts.push(String(meta.text).trim());
   if (meta && meta.error) parts.push(String(meta.error).trim());
-  for (const key of ["requestId", "messageId", "decision", "matched", "stage", "httpStatus", "businessCode"]) {
+  for (const key of ["requestId", "messageId", "decision", "matched", "code", "stage", "httpStatus", "businessCode", "networkCode"]) {
     const value = meta && meta[key];
     if (value !== undefined && value !== null && value !== "") {
       parts.push(`${key}=${String(value).trim()}`);
@@ -2715,7 +2719,7 @@ async function startFeishuApprovalClient() {
       await feishuApprovalClient.start();
       return true;
     } catch (err) {
-      feishuApprovalLog("warn", "start failed", { error: err && err.message ? err.message : String(err) });
+      feishuApprovalLog("warn", "start failed", classifyFeishuSdkError(err, "runtime-start"));
       return false;
     }
   }
@@ -2750,7 +2754,7 @@ async function startFeishuApprovalClient() {
     feishuApprovalLog("info", "starting");
     return true;
   } catch (err) {
-    feishuApprovalLog("warn", "start failed", { error: err && err.message ? err.message : String(err) });
+    feishuApprovalLog("warn", "start failed", classifyFeishuSdkError(err, "runtime-start"));
     return false;
   }
 }
@@ -2767,7 +2771,7 @@ function stopFeishuApprovalClient(options = {}) {
   }
   if (client && typeof client.close === "function") {
     try { client.close(); } catch (err) {
-      feishuApprovalLog("warn", "stop failed", { error: err && err.message ? err.message : String(err) });
+      feishuApprovalLog("warn", "stop failed", classifyFeishuSdkError(err, "runtime-stop"));
     }
   }
 }
@@ -2850,7 +2854,8 @@ async function sendFeishuApprovalTest() {
     }
     return { status: "error", code: "no-button-response", message: "Test card did not receive a button response" };
   } catch (err) {
-    return { status: "error", code: "card-send-failed", message: err && err.message ? err.message : String(err) };
+    feishuApprovalLog("warn", "test card send failed", classifyFeishuSdkError(err, "send-card"));
+    return { status: "error", code: "card-send-failed" };
   } finally {
     clearTimeout(timer);
   }

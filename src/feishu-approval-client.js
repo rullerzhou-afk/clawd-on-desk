@@ -35,6 +35,8 @@ const SAFE_LARK_NETWORK_CODES = new Set([
 ]);
 const SAFE_LARK_ERROR_STAGES = new Set([
   "lookup",
+  "runtime-start",
+  "runtime-stop",
   "send-card",
   "send-elicitation",
   "session-automation-card",
@@ -1201,12 +1203,9 @@ class FeishuApprovalClient {
     this.log = typeof options.log === "function" ? options.log : () => {};
     this.onStatusChange = typeof options.onStatusChange === "function" ? options.onStatusChange : () => {};
     this.connectionState = "idle";
+    // Only stable, allowlisted application codes/messages are retained here.
+    // Raw SDK diagnostics are never stored, logged, or returned.
     this.lastErrorMessage = "";
-    this.lastErrorCode = "";
-    // Stable code for failures WE raise, so the settings page can show a
-    // translated string instead of our English diagnostic. Empty when the
-    // failure came from the SDK: that message is an arbitrary upstream string
-    // with no key to map it to, and dropping it would remove the only clue.
     this.lastErrorCode = "";
     this.connectionTimeoutMs = normalizeConnectionTimeoutMs(options.connectionTimeoutSeconds);
     this.cardRequestTimeoutMs = Number.isFinite(options.cardRequestTimeoutMs)
