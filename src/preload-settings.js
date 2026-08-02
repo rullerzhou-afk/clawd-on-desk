@@ -45,6 +45,7 @@ const remoteSshProgressListeners = new Set();
 const remoteApprovalStatusListeners = new Set();
 const textScaleContextListeners = new Set();
 const agentActivityListeners = new Set();
+const updateCheckStatusListeners = new Set();
 ipcRenderer.on("settings-changed", (_event, payload) => {
   for (const cb of listeners) {
     try { cb(payload); } catch (err) { console.warn("settings onChanged listener threw:", err); }
@@ -88,6 +89,11 @@ ipcRenderer.on("settings:agent-activity", (_event, payload) => {
     try { cb(payload); } catch (err) { console.warn("agent activity listener threw:", err); }
   }
 });
+ipcRenderer.on("settings:update-check-status", (_event, payload) => {
+  for (const cb of updateCheckStatusListeners) {
+    try { cb(payload); } catch (err) { console.warn("update check status listener threw:", err); }
+  }
+});
 
 contextBridge.exposeInMainWorld("settingsAPI", {
   // Capability flag: true when a default Discord App ID is hardcoded (maintainer-
@@ -129,6 +135,8 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   detectAgentInstallations: (opts) => ipcRenderer.invoke("settings:detect-agent-installations", opts),
   getAboutInfo: () => ipcRenderer.invoke("settings:get-about-info"),
   checkForUpdates: () => ipcRenderer.invoke("settings:check-for-updates"),
+  clearUpdateError: () => ipcRenderer.invoke("settings:clear-update-error"),
+  copyUpdateError: (copyText) => ipcRenderer.invoke("settings:copy-update-error", copyText),
   showTutorial: () => ipcRenderer.invoke("settings:show-tutorial"),
   openExternal: (url) => ipcRenderer.invoke("settings:open-external", url),
   listThemes: () => ipcRenderer.invoke("settings:list-themes"),
@@ -173,6 +181,11 @@ contextBridge.exposeInMainWorld("settingsAPI", {
     if (typeof cb !== "function") return () => {};
     remoteApprovalStatusListeners.add(cb);
     return () => remoteApprovalStatusListeners.delete(cb);
+  },
+  onUpdateCheckStatus: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    updateCheckStatusListeners.add(cb);
+    return () => updateCheckStatusListeners.delete(cb);
   },
 });
 

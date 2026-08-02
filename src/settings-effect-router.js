@@ -3,9 +3,11 @@
 const {
   getPetTintIdForTheme,
   resolvePetTintPayload,
-  getPetAccessoryIdForTheme,
   resolvePetAccessoryPayload,
 } = require("./pet-customization-catalog");
+const {
+  getEffectivePetAccessoryIdForTheme,
+} = require("./holiday-accessory");
 
 const MENU_AFFECTING_KEYS = new Set([
   "lang",
@@ -62,6 +64,7 @@ function createSettingsEffectRouter(options = {}) {
   const sendToRenderer = options.sendToRenderer || noop;
   const sendDashboardI18n = options.sendDashboardI18n || noop;
   const sendSessionHudI18n = options.sendSessionHudI18n || noop;
+  const syncWindowTitles = options.syncWindowTitles || noop;
   const emitSessionSnapshot = options.emitSessionSnapshot || noop;
   const cleanStaleSessions = options.cleanStaleSessions || noop;
   const syncPermissionShortcuts = options.syncPermissionShortcuts || noop;
@@ -84,6 +87,7 @@ function createSettingsEffectRouter(options = {}) {
   const refreshIdleVisual = options.refreshIdleVisual || noop;
   const rebuildAllMenus = options.rebuildAllMenus || noop;
   const reconcilePowerSaveBlocker = options.reconcilePowerSaveBlocker || noop;
+  const now = options.now || (() => new Date());
 
   let started = false;
   let unsubscribeSettings = null;
@@ -123,12 +127,15 @@ function createSettingsEffectRouter(options = {}) {
       const tintId = getPetTintIdForTheme(changes.petTint, activeTheme && activeTheme._id);
       sendToRenderer("pet-tint-change", resolvePetTintPayload(tintId, activeTheme));
     }
-    if ("petAccessory" in changes) {
+    if ("petAccessory" in changes || "holidayAccessoryEnabled" in changes) {
       const activeTheme = getActiveTheme();
-      const accessoryId = getPetAccessoryIdForTheme(
-        changes.petAccessory,
-        activeTheme && activeTheme._id
-      );
+      const snapshot = settingsController.getSnapshot();
+      const accessoryId = getEffectivePetAccessoryIdForTheme({
+        petAccessory: snapshot.petAccessory,
+        holidayAccessoryEnabled: snapshot.holidayAccessoryEnabled,
+        themeId: activeTheme && activeTheme._id,
+        date: now(),
+      });
       sendToRenderer(
         "pet-accessory-change",
         resolvePetAccessoryPayload(accessoryId, activeTheme)
@@ -140,11 +147,20 @@ function createSettingsEffectRouter(options = {}) {
     if ("lang" in changes) {
       safeCall(logWarn, "Clawd: dashboard lang broadcast failed:", sendDashboardI18n);
       safeCall(logWarn, "Clawd: session HUD lang broadcast failed:", sendSessionHudI18n);
+      safeCall(logWarn, "Clawd: window title sync failed:", syncWindowTitles);
     }
     if ("sessionAliases" in changes) {
       safeCall(
         logWarn,
         "Clawd: session alias snapshot broadcast failed:",
+        emitSessionSnapshot,
+        { force: true }
+      );
+    }
+    if ("permissionAutomationMode" in changes) {
+      safeCall(
+        logWarn,
+        "Clawd: session automation effective-mode snapshot refresh failed:",
         emitSessionSnapshot,
         { force: true }
       );

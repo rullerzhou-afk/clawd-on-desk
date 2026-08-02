@@ -32,13 +32,14 @@ describe("floating-window-runtime", () => {
       getPendingPermissions: () => pending,
       repositionPermissionBubbles: () => calls.push("permission"),
       repositionUpdateBubble: () => calls.push("update"),
+      repositionQuotaRing: () => calls.push("ring"),
     });
 
     runtime.repositionFloatingBubbles();
     pending.push({ bubble: {} });
     runtime.repositionFloatingBubbles();
 
-    assert.deepStrictEqual(calls, ["update", "permission", "update"]);
+    assert.deepStrictEqual(calls, ["update", "ring", "permission", "update", "ring"]);
   });
 
   it("keeps anchored surface ordering as HUD first, then permission/update bubbles", () => {
@@ -48,11 +49,12 @@ describe("floating-window-runtime", () => {
       repositionSessionHud: () => calls.push("hud"),
       repositionPermissionBubbles: () => calls.push("permission"),
       repositionUpdateBubble: () => calls.push("update"),
+      repositionQuotaRing: () => calls.push("ring"),
     });
 
     runtime.repositionAnchoredSurfaces();
 
-    assert.deepStrictEqual(calls, ["hud", "permission", "update"]);
+    assert.deepStrictEqual(calls, ["hud", "permission", "update", "ring"]);
   });
 
   it("syncs Session HUD visibility before repositioning dependent bubbles", () => {
@@ -62,11 +64,12 @@ describe("floating-window-runtime", () => {
       syncSessionHudVisibility: () => calls.push("syncHud"),
       repositionPermissionBubbles: () => calls.push("permission"),
       repositionUpdateBubble: () => calls.push("update"),
+      repositionQuotaRing: () => calls.push("ring"),
     });
 
     runtime.syncSessionHudVisibilityAndBubbles();
 
-    assert.deepStrictEqual(calls, ["syncHud", "permission", "update"]);
+    assert.deepStrictEqual(calls, ["syncHud", "permission", "update", "ring"]);
   });
 
   it("restores live permission bubbles and update bubble visibility when the pet is shown", () => {

@@ -17,6 +17,12 @@ const { normalizeQuotaGroup, anchorRelativeResetAt } = require("./quota-bucket")
 const CODEX_QUOTA_FIELDS = ["codexFiveHour", "codexWeekly"];
 const RATE_LIMIT_KEYS = ["primary", "secondary"];
 const LONG_WINDOW_THRESHOLD_MINUTES = 24 * 60;
+const CODEX_MAIN_LIMIT_ID = "codex";
+const CODEX_SPARK_LIMIT_ID = "codex_bengalfox";
+const CODEX_SPARK_LIMIT_NAME = "GPT-5.3-Codex-Spark";
+const CODEX_SPARK_MODEL = "gpt-5.3-codex-spark";
+const CODEX_MAIN_QUOTA_PROVIDER = "codexQuota";
+const CODEX_SPARK_QUOTA_PROVIDER = "codexSparkQuota";
 
 // Rollout files are re-read from offset 0 after a monitor restart, so an old
 // token_count line can be parsed long after it was written. Posting it would
@@ -72,18 +78,102 @@ function convertCodexRateLimitsPayload(rateLimits, nowMs, capturedAt) {
   return out;
 }
 
-function resolveCodexRateLimitQuota(payload, options = {}) {
+function normalizedIdentity(value) {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+// Current Codex CLI builds can report limit_id="codex" even while the active
+// turn is using Spark. turn_context.model is therefore classified inside the
+// monitor and retained only as this fixed provider hint — the raw model never
+// enters quota payloads, persistence, IPC, or the remote wire format.
+function resolveCodexModelQuotaProvider(model) {
+  const normalizedModel = normalizedIdentity(model);
+  if (!normalizedModel) return null;
+  return normalizedModel === normalizedIdentity(CODEX_SPARK_MODEL)
+    ? CODEX_SPARK_QUOTA_PROVIDER
+    : CODEX_MAIN_QUOTA_PROVIDER;
+}
+
+function resolveProviderHint(options) {
+  if (options && options.providerHint === CODEX_SPARK_QUOTA_PROVIDER) {
+    return CODEX_SPARK_QUOTA_PROVIDER;
+  }
+  if (options && options.providerHint === CODEX_MAIN_QUOTA_PROVIDER) {
+    return CODEX_MAIN_QUOTA_PROVIDER;
+  }
+  return resolveCodexModelQuotaProvider(options && options.model);
+}
+
+// A token_count report carries one quota identity at rate_limits scope. Keep
+// that identity until after routing: flattening both the generic Codex quota
+// and Spark's independent quota into the same codexQuota group is what caused
+// alternating reports to overwrite each other.
+function resolveCodexRateLimitProvider(rateLimits, options = {}) {
+  if (!rateLimits || typeof rateLimits !== "object") return null;
+  const providerHint = resolveProviderHint(options);
+  const rawLimitId = rateLimits.limit_id;
+  if (rawLimitId != null && typeof rawLimitId !== "string") {
+    // A malformed-but-present identity is not the same as a legacy report
+    // with no identity. Fail closed so it cannot overwrite the main quota.
+    return null;
+  }
+  const limitId = normalizedIdentity(rawLimitId);
+  if (limitId) {
+    if (limitId === CODEX_SPARK_LIMIT_ID) return CODEX_SPARK_QUOTA_PROVIDER;
+    if (limitId === CODEX_MAIN_LIMIT_ID) {
+      // "codex" is now a generic family id, not proof that this is the main
+      // quota. The active turn's exact Spark model is the only allowed
+      // override; absent that evidence, preserve the generic main behavior.
+      return providerHint === CODEX_SPARK_QUOTA_PROVIDER
+        ? CODEX_SPARK_QUOTA_PROVIDER
+        : CODEX_MAIN_QUOTA_PROVIDER;
+    }
+    // A new named quota must never silently become the main quota. Support it
+    // only after its semantics and UI have been intentionally designed.
+    return null;
+  }
+
+  // Narrow compatibility fallback: real Spark reports observed before this
+  // fix consistently carry both this exact name and the id above. If a future
+  // CLI omits only the id, keep Spark isolated. No substring/fuzzy matching.
+  if (normalizedIdentity(rateLimits.limit_name) === normalizedIdentity(CODEX_SPARK_LIMIT_NAME)) {
+    return CODEX_SPARK_QUOTA_PROVIDER;
+  }
+
+  if (providerHint === CODEX_SPARK_QUOTA_PROVIDER) {
+    return CODEX_SPARK_QUOTA_PROVIDER;
+  }
+
+  // Older Codex token_count payloads had no identity fields. Preserve their
+  // established generic-quota behavior.
+  return CODEX_MAIN_QUOTA_PROVIDER;
+}
+
+function resolveCodexRateLimitReport(payload, options = {}) {
   const rateLimits = payload && typeof payload.rate_limits === "object" ? payload.rate_limits : null;
   if (!rateLimits) return null;
+  const providerKey = resolveCodexRateLimitProvider(rateLimits, options);
+  if (!providerKey) return null;
   const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
   // options.capturedAt: the rollout line's own timestamp (epoch-ms), stamped
   // onto every bucket so the account store can order writes by observation
   // time instead of receive time (see quota-bucket.js normalizeQuotaBucket).
   const capturedAt = Number(options.capturedAt);
-  return normalizeQuotaGroup(
+  const quota = normalizeQuotaGroup(
     convertCodexRateLimitsPayload(rateLimits, nowMs, capturedAt),
     CODEX_QUOTA_FIELDS
   );
+  return quota ? { providerKey, quota } : null;
+}
+
+// Compatibility helper for callers interested in the generic account quota
+// only. Production monitors use resolveCodexRateLimitReport so identity can
+// never be discarded before routing.
+function resolveCodexRateLimitQuota(payload, options = {}) {
+  const report = resolveCodexRateLimitReport(payload, options);
+  return report && report.providerKey === CODEX_MAIN_QUOTA_PROVIDER
+    ? report.quota
+    : null;
 }
 
 // Freshness gate for the rollout line's own envelope timestamp.
@@ -96,8 +186,17 @@ function isFreshCodexQuotaTimestamp(timestamp, nowMs = Date.now()) {
 
 module.exports = {
   resolveCodexRateLimitQuota,
+  resolveCodexRateLimitReport,
+  resolveCodexRateLimitProvider,
+  resolveCodexModelQuotaProvider,
   isFreshCodexQuotaTimestamp,
   CODEX_QUOTA_FIELDS,
+  CODEX_MAIN_LIMIT_ID,
+  CODEX_SPARK_LIMIT_ID,
+  CODEX_SPARK_LIMIT_NAME,
+  CODEX_SPARK_MODEL,
+  CODEX_MAIN_QUOTA_PROVIDER,
+  CODEX_SPARK_QUOTA_PROVIDER,
   CODEX_QUOTA_MAX_AGE_MS,
   CODEX_QUOTA_MAX_FUTURE_SKEW_MS,
 };

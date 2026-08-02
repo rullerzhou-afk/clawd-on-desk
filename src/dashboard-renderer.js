@@ -25,6 +25,7 @@ let activeEdit = null;
 
 const SESSION_FOLDER_FEEDBACK_MS = 4000;
 const sessionFolderActionState = new Map();
+const sessionAutomationActionState = new Map();
 
 const titleEl = document.getElementById("title");
 const countEl = document.getElementById("count");
@@ -74,9 +75,9 @@ function contextUsageText(session) {
 // grouped per reporting source (this machine + one group per remote host;
 // snapshot.accountQuota, fed by src/state-account-quota.js), because local
 // and remote can be different subscriptions. Freshest-wins applies within
-// a source only. Three providers, each its own section: Antigravity's own
-// /usage (Gemini + Claude/GPT-via-agy), Claude Code's rate_limits and
-// Codex's rollout rate_limits.
+// a source only. Provider sections cover Antigravity's own /usage (Gemini +
+// Claude/GPT-via-agy), Claude Code's rate_limits, Codex's generic rollout
+// rate_limits, and Dashboard-only Codex Spark quota.
 const QUOTA_WARNING_THRESHOLD = 90;
 // A source that has not confirmed its numbers recently gets an explicit
 // "as of N ago" label instead of presenting old numbers as live.
@@ -328,6 +329,22 @@ function renderQuotaSummary(snapshot) {
   });
   const codexSection = buildQuotaSection("dashboardQuotaSectionCodex", codexRows);
   if (codexSection) sections.push(codexSection);
+
+  const codexSparkRows = sources.map((source) => {
+    const provider = source.codexSparkQuota;
+    const group = provider && provider.group;
+    if (!group) return null;
+    return buildQuotaGroupRow(
+      buildQuotaSourceHeader(source, provider, null),
+      liveBucket(group, "codexFiveHour"),
+      liveBucket(group, "codexWeekly")
+    );
+  });
+  const codexSparkSection = buildQuotaSection(
+    "dashboardQuotaSectionCodexSpark",
+    codexSparkRows
+  );
+  if (codexSparkSection) sections.push(codexSparkSection);
 
   if (!sections.length) {
     quotaSummaryEl.hidden = true;
@@ -643,6 +660,7 @@ function createCard(session, now) {
   appendPath(main, session);
   appendEvent(main, session, now);
   appendContextUsage(main, session);
+  appendSessionAutomation(main, session);
   card.appendChild(main);
 
   const actions = document.createElement("div");
@@ -725,6 +743,107 @@ function createCard(session, now) {
   return card;
 }
 
+function automationActionKey(session) {
+  return session && session.id ? `session:${session.id}` : "";
+}
+
+function automationActionState(key) {
+  const state = key ? sessionAutomationActionState.get(key) : null;
+  return state && typeof state === "object"
+    ? state
+    : { pending: false, feedbackText: "" };
+}
+
+function appendSessionAutomation(container, session) {
+  if (!container || !session) return;
+  const row = document.createElement("div");
+  row.className = "session-automation-row";
+  const label = createText("span", "session-automation-label", t("sessionAutomationLabel"));
+  const select = document.createElement("select");
+  select.className = "session-automation-select";
+  select.setAttribute("aria-label", t("sessionAutomationLabel"));
+
+  const values = [
+    ["inherit", t("sessionAutomationFollowGlobal")],
+    ["off", t("sessionAutomationAsk")],
+    ["auto-tools", t("sessionAutomationAutoTools")],
+  ];
+  for (const [value, text] of values) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    if (
+      session.canConfigureSessionAutomation !== true
+      && value !== "inherit"
+    ) {
+      option.disabled = true;
+    }
+    select.appendChild(option);
+  }
+  select.value = session.sessionAutomationMode || "inherit";
+  const key = automationActionKey(session);
+  const actionState = automationActionState(key);
+  select.disabled = actionState.pending === true
+    || (
+      session.canConfigureSessionAutomation !== true
+      && !session.sessionAutomationGrantId
+    );
+  if (session.canConfigureSessionAutomation !== true) {
+    select.title = t("sessionAutomationUnavailable");
+  }
+  const feedback = createText(
+    "span",
+    "session-automation-feedback",
+    actionState.feedbackText
+  );
+  select.addEventListener("change", async () => {
+    if (!window.dashboardAPI) return;
+    const previousValue = session.sessionAutomationMode || "inherit";
+    const nextValue = select.value;
+    sessionAutomationActionState.set(key, {
+      pending: true,
+      feedbackText: "",
+    });
+    select.disabled = true;
+    feedback.textContent = "";
+    let result;
+    try {
+      if (nextValue === "inherit") {
+        result = session.sessionAutomationGrantId
+          ? await window.dashboardAPI.clearSessionAutomationGrant({
+            grantId: session.sessionAutomationGrantId,
+          })
+          : { status: "equivalent" };
+      } else {
+        result = await window.dashboardAPI.setSessionAutomationOverride({
+          sessionId: session.id,
+          mode: nextValue,
+        });
+      }
+    } catch (err) {
+      result = { status: "error", message: err && err.message };
+    }
+    if (!result || !["applied", "equivalent"].includes(result.status)) {
+      select.value = previousValue;
+      if (result && result.status === "cancelled") {
+        sessionAutomationActionState.delete(key);
+      } else {
+        sessionAutomationActionState.set(key, {
+          pending: false,
+          feedbackText: t("sessionAutomationChangeFailed"),
+        });
+      }
+    } else {
+      sessionAutomationActionState.delete(key);
+    }
+    render();
+  });
+  row.appendChild(label);
+  row.appendChild(select);
+  row.appendChild(feedback);
+  container.appendChild(row);
+}
+
 function createMarkReadButton(session) {
   const button = document.createElement("button");
   button.type = "button";
@@ -766,18 +885,129 @@ function renderEmpty() {
   contentEl.replaceChildren(empty);
 }
 
+function createSessionAutomationOrphan(record) {
+  const card = document.createElement("article");
+  card.className = "automation-orphan-card";
+  const main = document.createElement("div");
+  main.className = "automation-orphan-main";
+  main.appendChild(createText(
+    "div",
+    "automation-orphan-title",
+    record.displayLabel || record.sessionId || record.agentId
+  ));
+  main.appendChild(createText(
+    "div",
+    "automation-orphan-meta",
+    `${AGENT_LABELS[record.agentId] || record.agentId} · ${
+      record.mode === "auto-tools"
+        ? t("sessionAutomationAutoTools")
+        : t("sessionAutomationAsk")
+    }`
+  ));
+  card.appendChild(main);
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = t("sessionAutomationRevoke");
+  const key = `grant:${record.sessionAutomationGrantId}`;
+  const actionState = automationActionState(key);
+  button.disabled = actionState.pending === true;
+  main.appendChild(createText(
+    "div",
+    "session-automation-feedback",
+    actionState.feedbackText
+  ));
+  button.addEventListener("click", async () => {
+    if (!record.sessionAutomationGrantId) return;
+    sessionAutomationActionState.set(key, {
+      pending: true,
+      feedbackText: "",
+    });
+    button.disabled = true;
+    let result;
+    try {
+      result = await window.dashboardAPI.clearSessionAutomationGrant({
+        grantId: record.sessionAutomationGrantId,
+      });
+    } catch (err) {
+      console.warn("clear orphan session automation grant threw:", err);
+      result = { status: "error" };
+    }
+    if (result && ["applied", "equivalent"].includes(result.status)) {
+      sessionAutomationActionState.delete(key);
+    } else {
+      sessionAutomationActionState.set(key, {
+        pending: false,
+        feedbackText: t("sessionAutomationChangeFailed"),
+      });
+    }
+    render();
+  });
+  card.appendChild(button);
+  return card;
+}
+
+function appendSessionAutomationOrphans(fragment) {
+  const orphans = Array.isArray(snapshot.sessionAutomationOrphans)
+    ? snapshot.sessionAutomationOrphans
+    : [];
+  if (!orphans.length) return;
+  const section = document.createElement("section");
+  section.className = "group automation-orphans";
+  section.appendChild(createText("h2", "group-title", t("sessionAutomationOrphansTitle")));
+  section.appendChild(createText(
+    "p",
+    "automation-orphans-hint",
+    t("sessionAutomationOrphansHint")
+  ));
+  const cards = document.createElement("div");
+  cards.className = "cards";
+  for (const record of orphans) cards.appendChild(createSessionAutomationOrphan(record));
+  section.appendChild(cards);
+  fragment.appendChild(section);
+}
+
+function hasFocusedSessionAutomationSelect() {
+  const active = document.activeElement;
+  return !!(
+    active
+    && active.tagName === "SELECT"
+    && active.classList
+    && active.classList.contains("session-automation-select")
+    && contentEl.contains(active)
+  );
+}
+
 function render(options = {}) {
-  if (activeEdit && !options.force) return;
+  // The one-second elapsed-time tick normally rebuilds the entire card tree.
+  // Replacing a focused native <select> closes its open menu on Windows, so
+  // defer ordinary snapshot/timer renders until the user finishes choosing.
+  if ((activeEdit || hasFocusedSessionAutomationSelect()) && !options.force) return;
   const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
   const count = sessions.length;
   const now = Date.now();
+  const liveAutomationActionKeys = new Set(
+    sessions.map((session) => automationActionKey(session)).filter(Boolean)
+  );
+  for (const record of Array.isArray(snapshot.sessionAutomationOrphans)
+    ? snapshot.sessionAutomationOrphans
+    : []) {
+    if (record && record.sessionAutomationGrantId) {
+      liveAutomationActionKeys.add(`grant:${record.sessionAutomationGrantId}`);
+    }
+  }
+  for (const key of sessionAutomationActionState.keys()) {
+    if (!liveAutomationActionKeys.has(key)) sessionAutomationActionState.delete(key);
+  }
   pruneSessionFolderActionState(sessions, now);
   titleEl.textContent = t("dashboardWindowTitle");
   countEl.textContent = t("dashboardCount").replace("{n}", count);
   document.title = t("dashboardWindowTitle");
   renderQuotaSummary(snapshot);
 
-  if (count === 0) {
+  const orphanCount = Array.isArray(snapshot.sessionAutomationOrphans)
+    ? snapshot.sessionAutomationOrphans.length
+    : 0;
+  if (count === 0 && orphanCount === 0) {
     renderEmpty();
     return;
   }
@@ -803,6 +1033,7 @@ function render(options = {}) {
     section.appendChild(cards);
     fragment.appendChild(section);
   }
+  appendSessionAutomationOrphans(fragment);
 
   contentEl.replaceChildren(fragment);
 }

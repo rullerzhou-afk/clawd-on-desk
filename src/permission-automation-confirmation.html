@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clawd</title>
+  <link rel="stylesheet" href="permission-automation-confirmation.css">
+</head>
+<body>
+  <main id="dialog" class="dialog" data-kind="confirm" role="dialog" aria-modal="true" aria-labelledby="title" aria-describedby="detail">
+    <header class="titlebar">
+      <span class="brand">Clawd on Desk</span>
+      <button id="close" class="icon-button" type="button" aria-label="Close" title="Close">&times;</button>
+    </header>
+    <section class="content">
+      <div class="warning-icon" aria-hidden="true">!</div>
+      <div class="copy">
+        <h1 id="title"></h1>
+        <p id="message" class="message" hidden></p>
+        <p id="detail"></p>
+        <label id="checkbox-row" class="checkbox-row">
+          <input id="suppress" type="checkbox">
+          <span id="checkbox-label"></span>
+        </label>
+      </div>
+    </section>
+    <footer class="actions">
+      <button id="cancel" type="button"></button>
+      <button id="confirm" type="button"></button>
+    </footer>
+  </main>
+  <script src="permission-automation-confirmation-renderer.js"></script>
+</body>
+</html>

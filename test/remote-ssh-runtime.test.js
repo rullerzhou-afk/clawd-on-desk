@@ -2,6 +2,7 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
+const childProcess = require("node:child_process");
 const { EventEmitter } = require("events");
 
 const {
@@ -35,6 +36,14 @@ function createRemoteSshRuntime(deps = {}) {
     resolveRemoteNodeBin: () => ({ ok: true, nodeBin: "/usr/bin/node", version: "v20.0.0", source: "test" }),
     ...deps,
   });
+}
+
+function extractBareProbeJs(command) {
+  assert.ok(command.startsWith("node -e "));
+  const loader = JSON.parse(command.slice("node -e ".length));
+  const match = /^eval\(Buffer\.from\('([A-Za-z0-9+/=]+)','base64'\)\.toString\('utf8'\)\)$/.exec(loader);
+  assert.ok(match, "bare node probe must use the cross-shell base64 loader");
+  return Buffer.from(match[1], "base64").toString("utf8");
 }
 
 // ── ssh detection ──
@@ -317,16 +326,16 @@ test("buildProbeCommand requires integer port", () => {
 test("buildProbeCommand embeds remoteForwardPort + clawd header check", () => {
   const cmd = buildProbeCommand(23335);
   assert.ok(cmd.startsWith("node -e "));
-  // The JSON-quoted JS body should reference the port.
-  assert.ok(cmd.includes("23335"));
-  assert.ok(cmd.includes(CLAWD_SERVER_HEADER));
-  assert.ok(cmd.includes(CLAWD_SERVER_ID));
+  const raw = extractBareProbeJs(cmd);
+  assert.ok(raw.includes("23335"));
+  assert.ok(raw.includes(CLAWD_SERVER_HEADER));
+  assert.ok(raw.includes(CLAWD_SERVER_ID));
   // Must contain the v7-required exit codes.
-  assert.ok(cmd.includes("process.exit(3)"), "header mismatch exit");
-  assert.ok(cmd.includes("process.exit(2)"), "http error event exit");
-  assert.ok(cmd.includes("process.exit(4)"), "req.setTimeout exit");
+  assert.ok(raw.includes("process.exit(3)"), "header mismatch exit");
+  assert.ok(raw.includes("process.exit(2)"), "http error event exit");
+  assert.ok(raw.includes("process.exit(4)"), "req.setTimeout exit");
   // setTimeout for HTTP layer (not just ssh ConnectTimeout).
-  assert.ok(cmd.includes("setTimeout(2000"));
+  assert.ok(raw.includes("setTimeout(2000"));
 });
 
 test("buildProbeCommand can use a resolved absolute remote Node path", () => {
@@ -336,11 +345,8 @@ test("buildProbeCommand can use a resolved absolute remote Node path", () => {
 });
 
 test("buildProbeCommand returns valid JS that exits with each code under expected condition", () => {
-  // Smoke: parse the embedded JS — it should not be syntactically broken.
   const cmd = buildProbeCommand(23333);
-  const jsBody = cmd.slice("node -e ".length);
-  // jsBody is a JSON-encoded string; parse to get raw JS.
-  const raw = JSON.parse(jsBody);
+  const raw = extractBareProbeJs(cmd);
   // Verify the raw JS starts with the expected request creation.
   assert.match(raw, /^const r=require\('http'\)\.get/);
   // Header check appears before status check (v7 order fix).
@@ -363,12 +369,13 @@ test("secure probe reads the exact resolved identity path and never carries the 
       routingNonce: nonce,
     },
   });
-  assert.match(account, /\/home\/alice\/\.claude\/hooks\/clawd-remote\.json/);
-  assert.doesNotMatch(account, /process\.env\.HOME/);
+  const accountJs = extractBareProbeJs(account);
+  assert.match(accountJs, /\/home\/alice\/\.claude\/hooks\/clawd-remote\.json/);
+  assert.doesNotMatch(accountJs, /process\.env\.HOME/);
   assert.doesNotMatch(account, new RegExp(nonce));
-  assert.match(account, /i\.version!==2/);
-  assert.match(account, /i\.remotePort!==23334/);
-  assert.match(account, /Number\.isFinite\(i\.deployedAt\)/);
+  assert.match(accountJs, /i\.version!==2/);
+  assert.match(accountJs, /i\.remotePort!==23334/);
+  assert.match(accountJs, /Number\.isFinite\(i\.deployedAt\)/);
 
   const isolated = buildProbeCommand(23335, "node", {
     profile: {
@@ -381,11 +388,12 @@ test("secure probe reads the exact resolved identity path and never carries the 
       routingNonce: nonce,
     },
   });
+  const isolatedJs = extractBareProbeJs(isolated);
   assert.match(
-    isolated,
+    isolatedJs,
     /\/srv\/shared\/\.clawd\/profiles\/runtime_b\/claude\/hooks\/clawd-remote\.json/,
   );
-  assert.doesNotMatch(isolated, /\/srv\/shared\/\.claude/);
+  assert.doesNotMatch(isolatedJs, /\/srv\/shared\/\.claude/);
   assert.doesNotMatch(isolated, new RegExp(nonce));
 
   const missingLayout = buildProbeCommand(23335, "node", {
@@ -397,8 +405,33 @@ test("secure probe reads the exact resolved identity path and never carries the 
       layoutVersion: 1,
     },
   });
-  assert.match(missingLayout, /process\.exit\(5\)/);
-  assert.doesNotMatch(missingLayout, /process\.env\.HOME/);
+  const missingLayoutJs = extractBareProbeJs(missingLayout);
+  assert.match(missingLayoutJs, /process\.exit\(5\)/);
+  assert.doesNotMatch(missingLayoutJs, /process\.env\.HOME/);
+});
+
+test("bare node secure probe keeps remoteHome shell metacharacters opaque", {
+  skip: process.platform === "win32",
+}, () => {
+  const command = buildProbeCommand(23335, "node", {
+    profile: {
+      id: "profile-a",
+      installId: "b".repeat(64),
+      runtimeMode: "account-default",
+      runtimeKey: "account-default",
+      layoutVersion: 1,
+      remoteHome: "/tmp/$HOME/$(printf SHELL_EXPANDED)/`printf BACKTICK_EXPANDED`",
+    },
+  });
+  const raw = extractBareProbeJs(command);
+  assert.match(raw, /\$HOME/);
+  assert.match(raw, /\$\(printf SHELL_EXPANDED\)/);
+  assert.match(raw, /`printf BACKTICK_EXPANDED`/);
+  assert.doesNotMatch(command, /\$HOME|SHELL_EXPANDED|BACKTICK_EXPANDED/);
+
+  const result = childProcess.spawnSync("/bin/sh", ["-c", command], { encoding: "utf8" });
+  assert.strictEqual(result.status, 5, result.stderr);
+  assert.doesNotMatch(result.stdout + result.stderr, /SHELL_EXPANDED|BACKTICK_EXPANDED/);
 });
 
 // ── looksLikeWindowsCmdStderr ──

@@ -1,17 +1,17 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const path = require("path");
-const { spawnSync } = require("child_process");
+const { runSpawnedHook } = require("./helpers/spawned-hook");
 const { __test } = require("../hooks/gemini-hook");
 
 function runGeminiHook(argvEvent, payload = {}) {
   const scriptPath = path.resolve(__dirname, "..", "hooks", "gemini-hook.js");
-  const httpBlockerPath = path.resolve(__dirname, "hook-http-blocker.js");
-  return spawnSync(process.execPath, ["--require", httpBlockerPath, scriptPath, argvEvent], {
-    env: { ...process.env, CLAWD_REMOTE: "1" },
-    input: JSON.stringify(payload),
-    encoding: "utf8",
-    windowsHide: true,
+  return runSpawnedHook({
+    script: scriptPath,
+    args: [argvEvent],
+    payload,
+    httpContract: "block",
+    env: { CLAWD_REMOTE: "1" },
   });
 }
 
@@ -143,7 +143,11 @@ describe("Gemini hook script", () => {
       session_id: "s1",
       cwd: process.cwd(),
     }, "AfterAgent", {
-      env: { CLAWD_REMOTE: "1" },
+      env: {
+        CLAWD_REMOTE: "1",
+        CLAWD_SSH_REMOTE: "1",
+        ORCA_PANE_KEY: "8ce1fff7-tab:9813824b-leaf",
+      },
       readHostPrefix: () => "remote-host",
       resolvePid: () => {
         resolveCalls++;
@@ -162,6 +166,7 @@ describe("Gemini hook script", () => {
     assert.strictEqual(postedBodies[0].session_id, "gemini:s1");
     assert.strictEqual(postedBodies[0].event, "AfterAgent");
     assert.strictEqual(postedBodies[0].host, "remote-host");
+    assert.strictEqual(postedBodies[0].orca_pane_key, "8ce1fff7-tab:9813824b-leaf");
     assert.ok(!Object.prototype.hasOwnProperty.call(postedBodies[0], "source_pid"));
   });
 

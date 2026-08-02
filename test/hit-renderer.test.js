@@ -234,6 +234,37 @@ describe("hit-renderer input layer", () => {
       ]
     );
   });
+
+  for (const [terminalEvent, finishDrag] of [
+    ["pointerup", (h) => h.pointerup({ clientX: 90 })],
+    ["pointercancel", (h) => h.area.listeners.get("pointercancel")()],
+    ["lostpointercapture", (h) => h.area.listeners.get("lostpointercapture")()],
+  ]) {
+    it(`ends an actual drag on ${terminalEvent} after a late cancel cleared the local reaction flag`, () => {
+      const h = createHarness();
+      h.pointerdown({ clientX: 100, clientY: 100 });
+      h.pointermove({ clientX: 90, clientY: 100 });
+
+      h.apiHandlers.cancelReaction();
+      finishDrag(h);
+
+      assert.deepStrictEqual(
+        h.apiCalls.filter((call) => call[0] === "endDragReaction"),
+        [["endDragReaction"]]
+      );
+    });
+  }
+
+  it("does not send a drag-reaction end for a click below the drag threshold", () => {
+    const h = createHarness();
+    h.pointerdown({ clientX: 100, clientY: 100 });
+    h.pointerup({ clientX: 100 });
+
+    assert.deepStrictEqual(
+      h.apiCalls.filter((call) => call[0] === "endDragReaction"),
+      []
+    );
+  });
 });
 
 describe("hit-renderer OS file drop (#459)", () => {

@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; img-src 'self' data: file:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: file:">
 <title>Getting started</title>
+<link rel="stylesheet" href="language-picker.css">
 <style>
 * { box-sizing: border-box; }
 
@@ -106,12 +107,15 @@ body { user-select: none; }
   padding: 22px 26px;
 }
 .body.step-welcome {
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   display: flex;
-  align-items: center;
+  align-items: safe center;
   justify-content: center;
-  padding: 18px 26px;
+  padding: 18px 26px 106px;
+  scrollbar-width: none;
 }
+.body.step-welcome::-webkit-scrollbar { width: 0; height: 0; }
 .step-title { margin: 0 0 4px; font-size: 19px; font-weight: 700; }
 .step-sub { margin: 0 0 18px; color: var(--muted); font-size: 13.5px; line-height: 1.55; }
 
@@ -150,7 +154,7 @@ body { user-select: none; }
 
 /* Welcome */
 .welcome { text-align: center; padding-top: 8px; }
-.step-welcome .welcome { width: 100%; padding-top: 0; transform: translateY(-4px); }
+.step-welcome .welcome { width: 100%; padding-top: 0; }
 .welcome .hero-art { margin-bottom: 10px; }
 .step-welcome .hero-icon,
 .step-welcome .hero-fallback {
@@ -160,22 +164,12 @@ body { user-select: none; }
 .welcome .step-title { font-size: 22px; }
 .welcome .step-sub { max-width: 380px; margin: 8px auto 0; }
 
-/* Language picker */
+/* Language picker layout */
 .lang-picker {
   display: flex; align-items: center; justify-content: center; gap: 10px;
   margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border);
 }
 .lang-label { font-size: 13px; color: var(--muted); font-weight: 600; }
-.lang-select {
-  font: inherit; font-size: 13.5px; font-weight: 600; color: var(--text);
-  padding: 7px 30px 7px 12px; border-radius: 9px;
-  border: 1px solid var(--border); background: var(--surface);
-  cursor: pointer; appearance: none; -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239b9ba0' stroke-width='3' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat; background-position: right 10px center;
-}
-.lang-select:hover { border-color: var(--accent); }
-.lang-select:focus { outline: none; border-color: var(--accent); }
 
 /* Agent setup */
 .ag-panel {
@@ -494,10 +488,11 @@ body { user-select: none; }
 <body>
 <div class="app">
   <div class="steps" id="steps"></div>
-  <div class="body" id="body"></div>
+  <div class="body" id="body" data-language-picker-boundary></div>
   <div class="footer" id="footer"></div>
 </div>
 <script src="shortcut-actions.js"></script>
+<script src="language-picker.js"></script>
 <script src="tutorial-renderer.js"></script>
 </body>
 </html>

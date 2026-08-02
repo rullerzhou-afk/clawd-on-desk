@@ -15,6 +15,8 @@ const {
   isOpencodeFamilyEntry,
 } = require("../agents/opencode-family");
 
+const { NESTED_TERMINAL_ENV } = require("../hooks/shared-process");
+
 const HOOKS_DIR = path.join(__dirname, "..", "hooks");
 
 async function loadCore() {
@@ -286,5 +288,36 @@ describe("opencode-family registry", () => {
       opencodeInstall.DEFAULT_CONFIG_PATH,
       path.join(os.homedir(), ...cfg.configDirSegments, cfg.configFileName)
     );
+  });
+});
+
+describe("opencode-family Orca pane key", () => {
+  it("derives the pane key from the environment alone", async () => {
+    const { orcaPaneKeyFromEnv } = await loadCore();
+    assert.strictEqual(orcaPaneKeyFromEnv({ TERM_PROGRAM: "Orca", ORCA_PANE_KEY: "tab-1:leaf-1" }), "tab-1:leaf-1");
+    // Inherited by a child shell without the TERM_PROGRAM confirmation.
+    assert.strictEqual(orcaPaneKeyFromEnv({ ORCA_PANE_KEY: "tab-1:leaf-1" }), null);
+    assert.strictEqual(orcaPaneKeyFromEnv({ TERM_PROGRAM: "Orca", ORCA_PANE_KEY: "no-separator" }), null);
+    for (const marker of NESTED_TERMINAL_ENV) {
+      assert.strictEqual(
+        orcaPaneKeyFromEnv({ TERM_PROGRAM: "Orca", ORCA_PANE_KEY: "tab-1:leaf-1", [marker]: "1" }),
+        null,
+        `${marker} must veto the pane key`
+      );
+    }
+  });
+
+  it("emits the pane key outside the process-walk gate", () => {
+    const src = fs.readFileSync(path.join(HOOKS_DIR, "opencode-family-plugin", "core.mjs"), "utf8");
+    const lines = src.split(/\r?\n/);
+    const gate = lines.findIndex((line) => line.includes("if (_stablePid) {"));
+    assert.ok(gate > 0, "expected the process-walk gate");
+    const gateEnd = lines.findIndex((line, i) => i > gate && line.trim() === "}");
+    const emit = lines.findIndex((line) => line.includes("body.orca_pane_key"));
+    // Orca's detached daemon is exactly the case where the walk reports no
+    // terminal, so a pane key emitted inside that gate would never ship for the
+    // sessions the feature exists to focus.
+    assert.ok(gateEnd > gate && emit > gateEnd,
+      "the pane key must be emitted outside the _stablePid gate");
   });
 });

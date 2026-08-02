@@ -114,7 +114,11 @@ function stopDrag() {
   if (didDrag) {
     window.hitAPI.dragEnd();
   }
-  endDragReaction();
+  // A state-change cancel can arrive after pointer movement and clear the
+  // input window's local reaction flag. The render window may already have
+  // received startDragReaction, so an actual drag must still complete the
+  // end handshake on pointerup/cancel/lost capture/blur.
+  endDragReaction(didDrag);
 }
 
 document.addEventListener("pointerup", (e) => {
@@ -244,8 +248,8 @@ function startDragReaction(direction) {
   window.hitAPI.startDragReaction(direction);
 }
 
-function endDragReaction() {
-  if (!isDragReacting) return;
+function endDragReaction(force = false) {
+  if (!isDragReacting && !force) return;
   isDragReacting = false;
   dragReactionDirection = null;
   window.hitAPI.endDragReaction();

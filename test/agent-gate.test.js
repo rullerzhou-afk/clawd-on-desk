@@ -307,6 +307,7 @@ describe("setAgentFlag command", () => {
       dismissPermissionsByAgent: [],
       syncIntegrationForAgent: [],
       stopIntegrationForAgent: [],
+      writeCodexAutoStartGate: [],
     };
     return {
       calls,
@@ -318,6 +319,10 @@ describe("setAgentFlag command", () => {
         dismissPermissionsByAgent: (id) => calls.dismissPermissionsByAgent.push(id),
         syncIntegrationForAgent: (id) => calls.syncIntegrationForAgent.push(id),
         stopIntegrationForAgent: (id) => calls.stopIntegrationForAgent.push(id),
+        writeCodexAutoStartGate: (enabled) => {
+          calls.writeCodexAutoStartGate.push(enabled);
+          return true;
+        },
         ...overrides,
       },
     };

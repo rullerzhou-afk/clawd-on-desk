@@ -349,14 +349,22 @@
     row.className = "row-sub custom-tool-discovery-row";
     const text = document.createElement("div");
     text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("customToolDiscoveryTitle");
     const desc = document.createElement("span");
     desc.className = "row-desc";
     desc.textContent = t("rowCustomToolsDiscoveryPathsDesc");
+    const scanStatus = document.createElement("span");
+    scanStatus.className = "custom-tool-scan-status";
+    scanStatus.textContent = getCustomToolScanStatusText();
+    text.appendChild(label);
     text.appendChild(desc);
+    text.appendChild(scanStatus);
     row.appendChild(text);
 
     const control = document.createElement("div");
-    control.className = "custom-tool-discovery-control";
+    control.className = "custom-tool-discovery-control custom-tool-discovery-actions";
     const addButton = document.createElement("button");
     addButton.type = "button";
     addButton.className = "soft-btn accent custom-tool-path-picker";
@@ -367,9 +375,6 @@
     scanButton.type = "button";
     scanButton.className = "soft-btn custom-tool-scan";
     scanButton.textContent = t("customToolRescan");
-    const scanStatus = document.createElement("span");
-    scanStatus.className = "custom-tool-scan-status";
-    scanStatus.textContent = getCustomToolScanStatusText();
     scanButton.addEventListener("click", async () => {
       const scanStartedAt = Date.now();
       scanButton.disabled = true;
@@ -394,7 +399,6 @@
       }
     });
     control.appendChild(scanButton);
-    control.appendChild(scanStatus);
     row.appendChild(control);
     const rows = [row, ...buildCustomToolResultRows()];
     // No section title: the subtab pill already names this half of the tab.

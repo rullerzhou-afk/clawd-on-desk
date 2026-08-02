@@ -111,6 +111,26 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(updateRegistry.petAccessory(null, deps).status, "error");
   });
 
+  it("holidayAccessoryEnabled accepts only canonical per-theme true entries", () => {
+    const deps = { snapshot: baseSnapshot };
+    assert.strictEqual(updateRegistry.holidayAccessoryEnabled({}, deps).status, "ok");
+    assert.strictEqual(
+      updateRegistry.holidayAccessoryEnabled({ clawd: true, cloudling: true }, deps).status,
+      "ok"
+    );
+    assert.strictEqual(
+      updateRegistry.holidayAccessoryEnabled({ clawd: false }, deps).status,
+      "error"
+    );
+    assert.strictEqual(
+      updateRegistry.holidayAccessoryEnabled({ "../unsafe": true }, deps).status,
+      "error"
+    );
+    assert.strictEqual(updateRegistry.holidayAccessoryEnabled(true, deps).status, "error");
+    assert.strictEqual(updateRegistry.holidayAccessoryEnabled([], deps).status, "error");
+    assert.strictEqual(updateRegistry.holidayAccessoryEnabled(null, deps).status, "error");
+  });
+
   it("x/y/preMiniX/preMiniY require finite numbers", () => {
     const deps = { snapshot: baseSnapshot };
     assert.strictEqual(updateRegistry.x(0, deps).status, "ok");
@@ -126,6 +146,7 @@ describe("updateRegistry pure-data validators", () => {
       "sessionHudShowStateLabels", "sessionHudPinned",
       "miniMode", "openAtLoginHydrated", "soundMuted", "bubbleFollowPet",
       "hideBubbles", "permissionBubblesEnabled", "lowPowerIdleMode",
+      "testReactionsEnabled",
       "allowEdgePinning", "disableMiniMode", "keepSizeAcrossDisplays", "codexHookHealthNotifyEnabled",
       "quotaMergeSources",
     ]) {
@@ -141,6 +162,14 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(updateRegistry.codexHookHealthLastNotified("needs-review", deps).status, "ok");
     assert.strictEqual(updateRegistry.codexHookHealthLastNotified(null, deps).status, "error");
     assert.strictEqual(updateRegistry.codexHookHealthLastNotified(42, deps).status, "error");
+  });
+
+  it("telegramMigrationLastNotified accepts signatures and empty reset", () => {
+    const deps = { snapshot: baseSnapshot };
+    assert.strictEqual(updateRegistry.telegramMigrationLastNotified("", deps).status, "ok");
+    assert.strictEqual(updateRegistry.telegramMigrationLastNotified("legacy-migration", deps).status, "ok");
+    assert.strictEqual(updateRegistry.telegramMigrationLastNotified(null, deps).status, "error");
+    assert.strictEqual(updateRegistry.telegramMigrationLastNotified(42, deps).status, "error");
   });
 
   it("Claude quota collection validates booleans and delegates the opt-in mutation", async () => {
@@ -183,6 +212,24 @@ describe("updateRegistry pure-data validators", () => {
       assert.strictEqual(updateRegistry[key](286, deps).status, "ok", `${key}(286)`);
       assert.strictEqual(updateRegistry[key](-1, deps).status, "error", `${key}(-1)`);
       assert.strictEqual(updateRegistry[key](Infinity, deps).status, "error", `${key}(Infinity)`);
+    }
+  });
+
+  it("Settings window bounds accept normal integer geometry or null", () => {
+    const validate = updateRegistry.settingsWindowBounds;
+    assert.strictEqual(validate(null).status, "ok");
+    assert.strictEqual(
+      validate({ x: -1200, y: 80, width: 900, height: 640 }).status,
+      "ok",
+    );
+    for (const value of [
+      { x: 0.5, y: 0, width: 800, height: 560 },
+      { x: 0, y: 0, width: 0, height: 560 },
+      { x: 0, y: 0, width: 800 },
+      [],
+      "800x560",
+    ]) {
+      assert.strictEqual(validate(value).status, "error");
     }
   });
 
@@ -1167,6 +1214,7 @@ describe("hook commands", () => {
       stopMonitorForAgent: (agentId) => calls.push(["stopMonitor", agentId]),
       clearSessionsByAgent: (agentId) => calls.push(["clearSessions", agentId]),
       dismissPermissionsByAgent: (agentId) => calls.push(["dismissPermissions", agentId]),
+      writeCodexAutoStartGate: () => true,
       cleanupIntegrations: (options) => {
         calls.push(["cleanup", options.source]);
         return {
@@ -1819,11 +1867,12 @@ describe("removeTheme command", () => {
     assert.deepStrictEqual(r.commit.idleVisual, { clawd: "clawd-idle-reading.svg" });
   });
 
-  it("strips pet tint and accessory entries on success when they exist", async () => {
+  it("strips pet tint, accessory, and holiday opt-in entries on success when they exist", async () => {
     const snapshotWithCustomization = {
       ...baseSnapshot,
       petTint: { cat: "matcha", clawd: "gold" },
       petAccessory: { cat: "halo", clawd: "wizard-hat" },
+      holidayAccessoryEnabled: { cat: true, clawd: true },
     };
     const { deps } = makeDeps({ snapshot: snapshotWithCustomization });
     const r = await commandRegistry.removeTheme("cat", deps);
@@ -1831,6 +1880,7 @@ describe("removeTheme command", () => {
     assert.ok(r.commit, "commit field expected");
     assert.deepStrictEqual(r.commit.petTint, { clawd: "gold" });
     assert.deepStrictEqual(r.commit.petAccessory, { clawd: "wizard-hat" });
+    assert.deepStrictEqual(r.commit.holidayAccessoryEnabled, { clawd: true });
   });
 
   it("surfaces removeThemeDir throws as error status", async () => {

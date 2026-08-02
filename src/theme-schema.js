@@ -764,6 +764,94 @@ function deriveAccessoryCapability(cfg) {
   return true;
 }
 
+/**
+ * Resolve an already-authorized accessory wardrobe against the effective
+ * runtime visuals. The authored theme owns the capability decision; user
+ * animation overrides only choose the descriptor for each reachable file.
+ *
+ * Runtime descriptors are materialized per file instead of retaining the
+ * authored default/mini fallbacks. That makes an unknown or geometrically
+ * unsafe frame fail closed locally without disabling the whole wardrobe, and
+ * prevents mini artwork from ever falling through to root coordinates.
+ */
+function resolveEffectiveAccessoryAttachments(authoredCfg, effectiveCfg) {
+  if (!deriveAccessoryCapability(authoredCfg)) return null;
+
+  const parsed = normalizeAccessoryAttachments(
+    authoredCfg && authoredCfg.customization && authoredCfg.customization.accessories,
+    authoredCfg
+  );
+  if (parsed.errors.length > 0 || !parsed.value) return null;
+
+  const authored = parsed.value;
+  const usagesByFile = new Map();
+  for (const usage of projectThemeVisualUsages(effectiveCfg)) {
+    const entries = usagesByFile.get(usage.file) || [];
+    entries.push(usage);
+    usagesByFile.set(usage.file, entries);
+  }
+
+  const resolved = { files: {} };
+  for (const [file, usages] of usagesByFile) {
+    const viewBoxes = new Map();
+    for (const usage of usages) {
+      viewBoxes.set(viewBoxKey(usage.effectiveViewBox), usage.effectiveViewBox);
+    }
+    if (viewBoxes.size !== 1 || ![...viewBoxes.values()][0]) {
+      resolved.files[file] = { visibility: "hidden" };
+      continue;
+    }
+    const effectiveViewBox = [...viewBoxes.values()][0];
+
+    const exact = authored.files[file];
+    if (exact) {
+      const errors = [];
+      const descriptor = normalizeAccessoryFileDescriptor(
+        exact,
+        effectiveViewBox,
+        `effective customization.accessories.files["${file}"]`,
+        errors
+      );
+      resolved.files[file] = errors.length === 0 && descriptor
+        ? descriptor
+        : { visibility: "hidden" };
+      continue;
+    }
+
+    const miniFlags = new Set(
+      usages.map((usage) => usage.stateFamily.startsWith("mini:"))
+    );
+    if (miniFlags.size !== 1) {
+      resolved.files[file] = { visibility: "hidden" };
+      continue;
+    }
+
+    const isMini = [...miniFlags][0];
+    const expectedViewBoxSource = isMini ? "mini" : "root";
+    const fallback = isMini ? authored.mini : authored.default;
+    if (
+      !fallback
+      || usages.some((usage) => usage.viewBoxSource !== expectedViewBoxSource)
+    ) {
+      resolved.files[file] = { visibility: "hidden" };
+      continue;
+    }
+
+    const errors = [];
+    const descriptor = normalizeAccessoryStaticSection(
+      fallback,
+      effectiveViewBox,
+      `effective customization.accessories.files["${file}"]`,
+      errors
+    );
+    resolved.files[file] = errors.length === 0 && descriptor
+      ? descriptor
+      : { visibility: "hidden" };
+  }
+
+  return resolved;
+}
+
 function buildCapabilities(cfg, options = {}) {
   return {
     eyeTracking: !!(
@@ -1174,6 +1262,7 @@ module.exports = {
   projectThemeVisualUsages,
   normalizeAccessoryAttachments,
   deriveAccessoryCapability,
+  resolveEffectiveAccessoryAttachments,
   collectRequiredAssetFiles,
   deepMergeObject,
   basenameOnly,

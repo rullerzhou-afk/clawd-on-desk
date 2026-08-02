@@ -21,10 +21,68 @@ function matchSource(source, pattern, message) {
   return match;
 }
 
+// PR #751 Codex review #12 (rework batch B-8, §6.6): loads the REAL
+// src/preload.js against a minimal mocked electron module (same
+// require.cache-swap technique as test/mini.test.js's loadMiniWithElectron),
+// so its own onViewportOffset/onViewportOffsetX normalization can be
+// exercised directly — createRendererHarness() below's electronAPI is a
+// hand-written Proxy that stores the renderer's callback straight into
+// electronHandlers, never touching preload.js's real ipcRenderer.on(...)
+// wrapping at all, so it cannot prove anything about THIS boundary.
+function loadPreloadWithElectron() {
+  const electronPath = require.resolve("electron");
+  const preloadPath = require.resolve("../src/preload");
+  const previousElectron = Object.prototype.hasOwnProperty.call(require.cache, electronPath)
+    ? require.cache[electronPath]
+    : null;
+  const previousPreload = Object.prototype.hasOwnProperty.call(require.cache, preloadPath)
+    ? require.cache[preloadPath]
+    : null;
+
+  const ipcListeners = new Map();
+  const exposed = {};
+
+  require.cache[electronPath] = {
+    id: electronPath,
+    filename: electronPath,
+    loaded: true,
+    exports: {
+      contextBridge: {
+        exposeInMainWorld: (name, api) => { exposed[name] = api; },
+      },
+      ipcRenderer: {
+        on: (event, handler) => { ipcListeners.set(event, handler); },
+      },
+    },
+  };
+  delete require.cache[preloadPath];
+  require("../src/preload"); // runs preload.js's top-level contextBridge.exposeInMainWorld call
+
+  return {
+    electronAPI: exposed.electronAPI,
+    // Simulates main.js's ipcRenderer send arriving at whatever handler
+    // preload.js registered for `event` via ipcRenderer.on(event, ...).
+    emitFromMain: (event, ...args) => {
+      const handler = ipcListeners.get(event);
+      if (handler) handler(null, ...args);
+    },
+    restore() {
+      if (previousElectron) require.cache[electronPath] = previousElectron;
+      else delete require.cache[electronPath];
+      if (previousPreload) require.cache[preloadPath] = previousPreload;
+      else delete require.cache[preloadPath];
+    },
+  };
+}
+
 class FakeElement {
   constructor(tagName) {
     this.tagName = tagName.toUpperCase();
-    this.style = {};
+    this.style = {
+      setProperty(name, value) { this[name] = String(value); },
+      removeProperty(name) { delete this[name]; },
+      getPropertyValue(name) { return this[name] || ""; },
+    };
     this.attributes = new Map();
     this.children = [];
     this.parentNode = null;
@@ -298,10 +356,12 @@ globalThis.__rendererTest = {
   return {
     context,
     container,
+    facingStage,
     mediaLayer,
     accessoryLayer,
     assetDirectionStage,
     accessory,
+    particleLayer,
     clawd,
     timers,
     audioInstances,
@@ -356,6 +416,74 @@ function attachFakeSvgDocument(objectEl, { withEyes = false } = {}) {
   objectEl.contentDocument = svgDoc;
   return { root, svgDoc, elements };
 }
+
+describe("renderer test-result reactions", () => {
+  it("replaces pass bursts instead of accumulating confetti nodes", () => {
+    const harness = createRendererHarness();
+
+    harness.electronHandlers.onPlayTestReaction("pass");
+    assert.strictEqual(harness.particleLayer.children.length, 18);
+    assert.ok(harness.particleLayer.children.every((node) => node.className === "clawd-test-confetti"));
+    const firstBurst = [...harness.particleLayer.children];
+
+    harness.electronHandlers.onPlayTestReaction("pass");
+    assert.strictEqual(harness.particleLayer.children.length, 18);
+    assert.ok(firstBurst.every((node) => node.isConnected === false));
+    assert.strictEqual(
+      harness.activeTimers().filter((timer) => timer.ms >= 1500 && timer.ms <= 1700).length,
+      18
+    );
+  });
+
+  it("clears confetti, shakes only the facing layer, and cleans up after 650ms", () => {
+    const harness = createRendererHarness();
+    harness.electronHandlers.onPlayTestReaction("pass");
+
+    harness.electronHandlers.onPlayTestReaction("fail");
+    assert.strictEqual(harness.particleLayer.children.length, 0);
+    assert.strictEqual(harness.facingStage.classList.contains("clawd-test-shake"), true);
+    assert.strictEqual(harness.container.classList.contains("clawd-test-shake"), false);
+
+    const shakeTimer = harness.activeTimers().find((timer) => timer.ms === 650);
+    assert.ok(shakeTimer);
+    shakeTimer.cleared = true;
+    shakeTimer.callback();
+    assert.strictEqual(harness.facingStage.classList.contains("clawd-test-shake"), false);
+  });
+
+  it("suppresses new reactions and clears an active one when DND turns on", () => {
+    const harness = createRendererHarness();
+    harness.electronHandlers.onPlayTestReaction("pass");
+    assert.strictEqual(harness.particleLayer.children.length, 18);
+
+    harness.electronHandlers.onDndChange(true);
+    assert.strictEqual(harness.particleLayer.children.length, 0);
+    harness.electronHandlers.onPlayTestReaction("fail");
+    assert.strictEqual(harness.facingStage.classList.contains("clawd-test-shake"), false);
+  });
+
+  it("keeps mini mirroring and viewport translation independent from failure shake", () => {
+    const css = readNormalized(path.join(__dirname, "..", "src", "styles.css"));
+    assert.match(css, /#pet-facing-stage\.clawd-test-shake\s*\{[^}]*animation:/);
+    assert.match(css, /@keyframes clawd-test-shake\s*\{[\s\S]*translate:[\s\S]*rotate:/);
+    assert.ok(!/#pet-container\.clawd-test-shake/.test(css));
+    assert.match(css, /#pet-container\.mini-left #pet-facing-stage\s*\{[^}]*scale:\s*-1 1;/);
+  });
+
+  it("preload forwards only pass/fail wire values", () => {
+    const harness = loadPreloadWithElectron();
+    try {
+      const seen = [];
+      harness.electronAPI.onPlayTestReaction((result) => seen.push(result));
+      harness.emitFromMain("play-test-reaction", "pass");
+      harness.emitFromMain("play-test-reaction", "unexpected");
+      harness.emitFromMain("play-test-reaction", "fail");
+      assert.deepStrictEqual(seen, ["pass", "fail"]);
+    } finally {
+      harness.restore();
+    }
+  });
+});
 
 describe("renderer low-power idle mode", () => {
   it("waits for an animation boundary before pausing the current SVG", () => {
@@ -1813,5 +1941,194 @@ describe("renderer glyph flip compensation", () => {
     assert.ok(source.includes("typeof svgWindow.__clawdSetGlyphFlipCompensation === \"function\""));
     assert.ok(source.includes("svgWindow.__clawdSetGlyphFlipCompensation(true);"));
     assert.ok(source.includes("svgWindow.__clawdSetGlyphFlipCompensation(false);"));
+  });
+});
+
+// Issue #690 Phase 2 item 3: renderer applies a composite-only signed X
+// translate to the existing #pet-container for the Linux outer-edge viewport
+// offset. §6.5 of docs/plans/plan-issue-690-gnome-mini-edge-snap.md: the
+// harness here is node:vm + a hand-written DOM stub with no real layout
+// engine, so these tests can only prove translate is written to the right
+// element/layer and that the handler is composite-only — the actual visual
+// direction under the mini-left mirror needs the real-machine QA in §7.
+describe("renderer viewport offset X (#690)", () => {
+  it("writes a signed composite-only translate to #pet-container", () => {
+    const harness = createRendererHarness();
+
+    harness.electronHandlers.onViewportOffsetX(99);
+    assert.strictEqual(harness.container.style.translate, "99px 0");
+
+    harness.electronHandlers.onViewportOffsetX(-99);
+    assert.strictEqual(harness.container.style.translate, "-99px 0");
+  });
+
+  it("does not touch per-asset bottom, applyObjectScaleStyle(), or refreshAccessoryLayout() (composite-only)", () => {
+    const harness = createRendererHarness();
+    harness.clawd.style.bottom = "calc(5% + 3px)";
+    harness.accessory.style.transform = "matrix(1,0,0,1,4,5)";
+    const bottomBefore = harness.clawd.style.bottom;
+    const accessoryTransformBefore = harness.accessory.style.transform;
+
+    harness.electronHandlers.onViewportOffsetX(40);
+
+    assert.strictEqual(
+      harness.clawd.style.bottom,
+      bottomBefore,
+      "X offset must never touch per-asset bottom — that is the Y-offset layout path (plan §4.4 point 4)"
+    );
+    assert.strictEqual(
+      harness.accessory.style.transform,
+      accessoryTransformBefore,
+      "X offset must not trigger an accessory layout refresh"
+    );
+  });
+
+  it("keeps the setViewportOffsetX handler source strictly composite-only", () => {
+    const source = readNormalized(RENDERER);
+    const match = source.match(/function setViewportOffsetX\(offsetX\) \{[\s\S]*?\n\}/);
+    assert.ok(match, "setViewportOffsetX() must exist in the renderer");
+    const body = match[0];
+
+    assert.ok(!body.includes("applyObjectScaleStyle"), "must not call applyObjectScaleStyle()");
+    assert.ok(!body.includes("refreshAccessoryLayout"), "must not call refreshAccessoryLayout()");
+    assert.ok(!body.includes(".bottom"), "must not write any element's bottom");
+    assert.ok(!body.includes(".left"), "must not write any element's left");
+    assert.ok(body.includes("container.style.translate"), "must write the composite-only translate property");
+  });
+
+  it("writes the translate on #pet-container only, not on any descendant layer", () => {
+    const harness = createRendererHarness();
+
+    harness.electronHandlers.onViewportOffsetX(30);
+
+    assert.strictEqual(harness.container.id, "pet-container");
+    assert.strictEqual(harness.container.style.translate, "30px 0");
+    // #pet-facing-stage (mini-left's mirror layer) and #pet-effect-stage are
+    // both direct children of #pet-container in the real DOM (src/index.html)
+    // and in this harness (container.appendChild(facingStage) /
+    // container.appendChild(effectStage)). Neither should receive its own
+    // translate from this handler — the shift must come from the parent
+    // alone so descendants inherit it "for free".
+    for (const child of harness.container.children) {
+      assert.strictEqual(
+        child.style.translate,
+        undefined,
+        `${child.id} must not receive its own translate from the X-offset handler`
+      );
+    }
+  });
+
+  it("leaves non-composite properties of media, accessory, and effect layers alone across repeated offset changes", () => {
+    const harness = createRendererHarness();
+    const clawdBottomBefore = harness.clawd.style.bottom;
+    const accessoryDisplayBefore = harness.accessory.style.display;
+
+    harness.electronHandlers.onViewportOffsetX(12);
+    harness.electronHandlers.onViewportOffsetX(-7);
+    harness.electronHandlers.onViewportOffsetX(0);
+
+    assert.strictEqual(harness.container.style.translate, "0px 0");
+    assert.strictEqual(harness.clawd.style.bottom, clawdBottomBefore);
+    assert.strictEqual(harness.accessory.style.display, accessoryDisplayBefore);
+  });
+
+  it("restores the current offset through the same did-finish-load resend path as viewport-offset (Y)", () => {
+    const preload = readNormalized(PRELOAD);
+    const main = readNormalized(MAIN);
+    const runtime = readNormalized(path.join(__dirname, "..", "src", "pet-window-runtime.js"));
+
+    // PR #751 Codex review #12 (rework batch B-8): preload's bridge now
+    // normalizes a non-finite value to 0 (see the "§6.6" behavioral test
+    // below for the actual proof) — this string check just confirms the
+    // bridge still exists and still forwards to cb(...) at all.
+    assert.ok(preload.includes(
+      'onViewportOffsetX: (cb) => ipcRenderer.on("viewport-offset-x", (_, offsetX) => cb(Number.isFinite(offsetX) ? offsetX : 0))'
+    ));
+    // PR #751 Codex review #11 (rework batch B-6): main.js's did-finish-load
+    // used to send both offsets unconditionally via two separate
+    // sendToRenderer calls; it now delegates to a single runtime method,
+    // which is what actually decides whether X is worth sending at all (see
+    // the behavioral test below).
+    assert.ok(main.includes("petWindowRuntime.resendViewportOffsets();"));
+    assert.ok(runtime.includes("getViewportOffsetX,"));
+    assert.ok(runtime.includes("setViewportOffsetX,"));
+    assert.ok(runtime.includes("resendViewportOffsets,"));
+  });
+
+  // PR #751 Codex review #11 (rework batch B-6, non-blocking): the old
+  // version of the test above only checked that main.js's SOURCE TEXT
+  // contained two particular sendToRenderer call strings — it could not
+  // distinguish "always sends viewport-offset-x, even at 0" from "only sends
+  // it when non-zero", because it never actually ran the function. This
+  // constructs the real runtime (createPetWindowRuntime has a safe default
+  // for every option, so an empty/minimal options object is enough) and
+  // drives resendViewportOffsets() directly, proving the actual conditional
+  // behavior: a Windows/macOS-shaped reload (offsetX always 0) never
+  // receives viewport-offset-x at all, while a context with a genuine
+  // non-zero X offset (Linux edge-virtualization) does.
+  it("resendViewportOffsets() behaviorally sends Y unconditionally and X only when non-zero", () => {
+    const createPetWindowRuntime = require(path.join(__dirname, "..", "src", "pet-window-runtime.js"));
+    const sent = [];
+    const runtime = createPetWindowRuntime({
+      sendToRenderer: (...args) => sent.push(args),
+    });
+
+    // Windows/macOS reload shape: offsetX was never touched, stays at its
+    // cold-start default of 0.
+    runtime.resendViewportOffsets();
+    assert.deepStrictEqual(
+      sent, [["viewport-offset", 0]],
+      "a reload with X at 0 must resend Y but must NOT send viewport-offset-x at all"
+    );
+
+    // Linux edge-virtualization reload shape: a genuine non-zero X offset is
+    // already in effect (set directly here — legality/clamping is
+    // guardOffsetXLegalDomain's concern, not setViewportOffsetX's own, so
+    // this is a faithful way to put the runtime in that state without
+    // reconstructing a full Mutter-clamp scenario in this renderer-focused
+    // test file; see test/pet-window-runtime.test.js for that scenario).
+    sent.length = 0;
+    runtime.setViewportOffsetX(51);
+    sent.length = 0; // isolate the resend call from setViewportOffsetX's own initial send
+
+    runtime.resendViewportOffsets();
+    assert.deepStrictEqual(
+      sent,
+      [["viewport-offset", 0], ["viewport-offset-x", 51]],
+      "a reload with a genuine non-zero X offset must resend both"
+    );
+  });
+
+  // PR #751 Codex review #12 (rework batch B-8, §6.6, non-blocking): loads
+  // the REAL src/preload.js (not createRendererHarness()'s hand-written
+  // electronAPI Proxy, which bypasses preload.js's real ipcRenderer.on(...)
+  // wrapping entirely) and proves the bridge itself zeroes a non-finite
+  // value before it ever reaches the renderer's callback — a defense-in-depth
+  // layer independent of whatever the renderer side does with the value.
+  it("§6.6: preload's onViewportOffset/onViewportOffsetX zero a non-finite value at the bridge boundary", () => {
+    const loader = loadPreloadWithElectron();
+    try {
+      const receivedY = [];
+      const receivedX = [];
+      loader.electronAPI.onViewportOffset((offsetY) => receivedY.push(offsetY));
+      loader.electronAPI.onViewportOffsetX((offsetX) => receivedX.push(offsetX));
+
+      loader.emitFromMain("viewport-offset", NaN);
+      loader.emitFromMain("viewport-offset", Infinity);
+      loader.emitFromMain("viewport-offset", -Infinity);
+      loader.emitFromMain("viewport-offset", undefined);
+      loader.emitFromMain("viewport-offset", 20); // legal value must still pass through untouched
+
+      loader.emitFromMain("viewport-offset-x", NaN);
+      loader.emitFromMain("viewport-offset-x", Infinity);
+      loader.emitFromMain("viewport-offset-x", -Infinity);
+      loader.emitFromMain("viewport-offset-x", undefined);
+      loader.emitFromMain("viewport-offset-x", -51); // legal negative value must still pass through untouched
+
+      assert.deepStrictEqual(receivedY, [0, 0, 0, 0, 20], "every non-finite Y value must be zeroed; a legal value must pass through unchanged");
+      assert.deepStrictEqual(receivedX, [0, 0, 0, 0, -51], "every non-finite X value must be zeroed; a legal negative value must pass through unchanged");
+    } finally {
+      loader.restore();
+    }
   });
 });

@@ -679,43 +679,68 @@
       return wrap;
     }
 
-    function selectField(labelKey, key, options) {
+    function selectField(labelKey, key, options, attrs = {}) {
       const wrap = document.createElement("div");
       wrap.className = "remote-ssh-field";
       const label = document.createElement("label");
       label.className = "remote-ssh-field-label";
       label.textContent = t(labelKey);
-      const select = document.createElement("select");
-      for (const opt of options) {
-        const optEl = document.createElement("option");
-        optEl.value = String(opt);
-        optEl.textContent = String(opt);
-        if (formData[key] === opt) optEl.selected = true;
-        select.appendChild(optEl);
-      }
-      select.addEventListener("change", () => {
-        const n = parseInt(select.value, 10);
-        formData[key] = Number.isFinite(n) ? n : select.value;
+      const picker = helpers.buildSettingsSelect({
+        value: String(formData[key]),
+        options: options.map((option) => ({ value: String(option), label: String(option) })),
+        ariaLabel: t(labelKey),
+        className: "remote-ssh-port-select",
+        onChange(value) {
+          const parsed = parseInt(value, 10);
+          formData[key] = Number.isFinite(parsed) ? parsed : value;
+          return true;
+        },
       });
       wrap.appendChild(label);
-      wrap.appendChild(select);
+      wrap.appendChild(picker.element);
+      if (attrs.hint) {
+        const hint = document.createElement("div");
+        hint.className = "remote-ssh-field-hint";
+        hint.textContent = attrs.hint;
+        wrap.appendChild(hint);
+      }
       return wrap;
     }
 
-    function checkbox(labelKey, key) {
-      const wrap = document.createElement("div");
-      wrap.className = "remote-ssh-field remote-ssh-field-check";
-      const label = document.createElement("label");
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.checked = !!formData[key];
-      cb.addEventListener("change", () => { formData[key] = cb.checked; });
-      label.appendChild(cb);
-      const span = document.createElement("span");
-      span.textContent = t(labelKey);
-      label.appendChild(span);
-      wrap.appendChild(label);
-      return wrap;
+    function optionCard(labelKey, descKey, key) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "remote-ssh-option-card";
+      button.setAttribute("role", "switch");
+
+      const text = document.createElement("span");
+      text.className = "remote-ssh-option-card-text";
+      const label = document.createElement("span");
+      label.className = "remote-ssh-option-card-label";
+      label.textContent = t(labelKey);
+      const desc = document.createElement("span");
+      desc.className = "remote-ssh-option-card-desc";
+      desc.textContent = t(descKey);
+      text.appendChild(label);
+      text.appendChild(desc);
+
+      const sw = document.createElement("span");
+      sw.className = "switch remote-ssh-option-card-switch";
+      sw.setAttribute("aria-hidden", "true");
+
+      function sync() {
+        const checked = !!formData[key];
+        button.setAttribute("aria-checked", checked ? "true" : "false");
+        sw.classList.toggle("on", checked);
+      }
+      button.addEventListener("click", () => {
+        formData[key] = !formData[key];
+        sync();
+      });
+      button.appendChild(text);
+      button.appendChild(sw);
+      sync();
+      return button;
     }
 
     section.appendChild(input("remoteSshFieldLabel", "label", { placeholder: "My Raspberry Pi" }));
@@ -725,14 +750,34 @@
       placeholder: "/home/me/.ssh/id_rsa",
       hint: t("remoteSshFieldIdentityFileHint"),
     }));
-    section.appendChild(selectField("remoteSshFieldRemoteForwardPort", "remoteForwardPort", REMOTE_FORWARD_PORTS));
+    section.appendChild(selectField(
+      "remoteSshFieldRemoteForwardPort",
+      "remoteForwardPort",
+      REMOTE_FORWARD_PORTS,
+      { hint: t("remoteSshFieldRemoteForwardPortHint") }
+    ));
     section.appendChild(input("remoteSshFieldHostPrefix", "hostPrefix", {
       placeholder: "raspberrypi",
       hint: t("remoteSshFieldHostPrefixHint"),
     }));
-    section.appendChild(checkbox("remoteSshFieldAutoStartCodex", "autoStartCodexMonitor"));
-    section.appendChild(checkbox("remoteSshFieldChainStatusline", "chainStatusline"));
-    section.appendChild(checkbox("remoteSshFieldConnectOnLaunch", "connectOnLaunch"));
+    const optionCards = document.createElement("div");
+    optionCards.className = "remote-ssh-option-cards";
+    optionCards.appendChild(optionCard(
+      "remoteSshFieldAutoStartCodex",
+      "remoteSshFieldAutoStartCodexDesc",
+      "autoStartCodexMonitor"
+    ));
+    optionCards.appendChild(optionCard(
+      "remoteSshFieldChainStatusline",
+      "remoteSshFieldChainStatuslineDesc",
+      "chainStatusline"
+    ));
+    optionCards.appendChild(optionCard(
+      "remoteSshFieldConnectOnLaunch",
+      "remoteSshFieldConnectOnLaunchDesc",
+      "connectOnLaunch"
+    ));
+    section.appendChild(optionCards);
 
     // Submit / cancel
     const formActions = document.createElement("div");

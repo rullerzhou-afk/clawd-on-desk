@@ -356,7 +356,7 @@ function buildRemoteNodeEvalCommand(nodeBin, js) {
   if (!isValidRemoteNodeBin(nodeBin)) {
     throw new Error("buildRemoteNodeEvalCommand: nodeBin must be an absolute POSIX path");
   }
-  return `${quoteForPosixShellArg(nodeBin)} -e ${JSON.stringify(String(js))}`;
+  return `${quoteForPosixShellArg(nodeBin)} -e ${quoteForPosixShellArg(String(js))}`;
 }
 
 function summarizeStderr(text) {

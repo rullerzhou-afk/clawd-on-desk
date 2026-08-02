@@ -6,14 +6,33 @@ const createSettingsWindowRuntime = require("../src/settings-window");
 
 class FakeBrowserWindow {
   static instances = [];
+  static constructorBoundsOffset = null;
+  static setBoundsOffset = null;
 
   constructor(options) {
+    const offset = FakeBrowserWindow.constructorBoundsOffset || {};
     this.options = options;
+    this.bounds = {
+      x: options.x + (offset.x || 0),
+      y: options.y + (offset.y || 0),
+      width: options.width + (offset.width || 0),
+      height: options.height + (offset.height || 0),
+    };
+    this.normalBounds = { ...this.bounds };
     this.destroyed = false;
     this.minimized = false;
     this.calls = [];
     this.events = new Map();
     this.onceEvents = new Map();
+    // Minimal webContents so the production-critical did-finish-load title
+    // reapply callback (settings-window.js) is exercisable. insertCSS is
+    // intentionally absent — applyZoomToWindow bails safely without it.
+    this.webContents = {
+      isDestroyed: () => false,
+      onceCallbacks: new Map(),
+      once: (event, cb) => this.webContents.onceCallbacks.set(event, cb),
+      send: () => {},
+    };
     FakeBrowserWindow.instances.push(this);
   }
 
@@ -58,6 +77,36 @@ class FakeBrowserWindow {
     this.menuBarVisible = value;
   }
 
+  setTitle(value) {
+    this.calls.push(["setTitle", value]);
+    this.title = value;
+  }
+
+  getBounds() {
+    return { ...this.bounds };
+  }
+
+  getNormalBounds() {
+    return { ...this.normalBounds };
+  }
+
+  setBounds(bounds) {
+    this.calls.push(["setBounds", bounds]);
+    const offset = FakeBrowserWindow.setBoundsOffset || {};
+    this.bounds = {
+      x: bounds.x + (offset.x || 0),
+      y: bounds.y + (offset.y || 0),
+      width: bounds.width + (offset.width || 0),
+      height: bounds.height + (offset.height || 0),
+    };
+    this.normalBounds = { ...this.bounds };
+  }
+
+  setMinimumSize(width, height) {
+    this.calls.push(["setMinimumSize", width, height]);
+    this.minimumSize = { width, height };
+  }
+
   loadFile(filePath) {
     this.calls.push(["loadFile", filePath]);
     this.loadedFile = filePath;
@@ -79,6 +128,14 @@ class FakeBrowserWindow {
     }
     const listener = this.events.get(eventName);
     if (listener) listener();
+  }
+
+  emitWebContents(eventName) {
+    const cb = this.webContents.onceCallbacks.get(eventName);
+    if (cb) {
+      this.webContents.onceCallbacks.delete(eventName);
+      cb();
+    }
   }
 }
 
@@ -118,6 +175,8 @@ function findPendingTimer(timers, delay) {
 
 function createRuntime(options = {}) {
   FakeBrowserWindow.instances = [];
+  FakeBrowserWindow.constructorBoundsOffset = options.constructorBoundsOffset || null;
+  FakeBrowserWindow.setBoundsOffset = options.setBoundsOffset || null;
   const { app, listeners } = createFakeApp(options.app);
   const fakeTimers = createFakeTimers();
   const fs = {
@@ -201,6 +260,42 @@ test("settings window runtime creates the Settings BrowserWindow with taskbar id
   assert.strictEqual(runtime.getWindow(), null);
 });
 
+test("settings window uses and refreshes the localized title", () => {
+  let title = "Clawd 设置";
+  const { runtime } = createRuntime({ runtime: { getTitle: () => title } });
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+  assert.strictEqual(win.options.title, "Clawd 设置");
+
+  title = "Clawd 設定";
+  runtime.applyTitleToWindow();
+  assert.strictEqual(win.title, "Clawd 設定");
+});
+
+test("did-finish-load reapplies the localized title after the HTML <title> loads", () => {
+  // The HTML page ships a fixed English <title>, which Electron applies once
+  // the document loads. The did-finish-load callback must reapply the localized
+  // native title so the title bar never reverts to English mid-session.
+  let title = "Clawd 设置";
+  const { runtime } = createRuntime({ runtime: { getTitle: () => title } });
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+  assert.strictEqual(win.options.title, "Clawd 设置");
+
+  // Simulate the page finishing load with a new localized title in effect.
+  win.calls = [];
+  title = "Clawd 設定";
+  win.emitWebContents("did-finish-load");
+
+  assert.deepStrictEqual(
+    win.calls.at(-1),
+    ["setTitle", "Clawd 設定"],
+    "localized title reapplied after did-finish-load",
+  );
+});
+
 test("settings window injects the Discord default-App-ID flag into the sandboxed preload", () => {
   // The flag can't be require()'d in a sandboxed preload, so it must ride
   // additionalArguments. A missing/drifted injection here blanked the entire
@@ -274,6 +369,160 @@ test("settings window runtime places the first Settings window on the pet displa
   assert.strictEqual(win.options.y, 210);
   assert.strictEqual(win.options.width, 800);
   assert.strictEqual(win.options.height, 560);
+});
+
+test("settings window runtime restores saved bounds on the saved display", () => {
+  let nearestArgs = null;
+  let petBoundsReads = 0;
+  const scaleBounds = [];
+  const saved = { x: 1480, y: 90, width: 900, height: 650 };
+  const { runtime } = createRuntime({
+    runtime: {
+      getSavedBounds: () => saved,
+      getPetWindowBounds: () => {
+        petBoundsReads += 1;
+        return { x: 10, y: 10, width: 100, height: 100 };
+      },
+      getNearestWorkArea: (cx, cy) => {
+        nearestArgs = { cx, cy };
+        return { x: 1280, y: 40, width: 1600, height: 900 };
+      },
+      getTextScale: (bounds) => {
+        scaleBounds.push(bounds);
+        return 1;
+      },
+    },
+  });
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+
+  assert.deepStrictEqual(nearestArgs, { cx: 1930, cy: 415 });
+  assert.strictEqual(petBoundsReads, 0);
+  assert.deepStrictEqual(
+    { x: win.options.x, y: win.options.y, width: win.options.width, height: win.options.height },
+    saved,
+  );
+  assert.deepStrictEqual(scaleBounds, [saved, saved]);
+});
+
+test("saved outer bounds override native constructor frame drift", () => {
+  const saved = { x: 120, y: 90, width: 960, height: 720 };
+  const { runtime } = createRuntime({
+    constructorBoundsOffset: { width: 2 },
+    runtime: {
+      getSavedBounds: () => saved,
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 1920, height: 1040 }),
+    },
+  });
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+
+  assert.deepStrictEqual(win.getBounds(), saved);
+  assert.deepStrictEqual(
+    win.calls.find((call) => Array.isArray(call) && call[0] === "setBounds"),
+    ["setBounds", saved],
+  );
+});
+
+test("an untouched window does not persist native frame quantization on close", () => {
+  const saved = { x: 120, y: 90, width: 960, height: 720 };
+  const writes = [];
+  const { runtime } = createRuntime({
+    constructorBoundsOffset: { width: 2 },
+    // Simulate a WM that cannot adopt the requested outer width exactly even
+    // when the runtime follows up with setBounds().
+    setBoundsOffset: { width: 1 },
+    runtime: {
+      getSavedBounds: () => saved,
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 1920, height: 1040 }),
+      onSaveBounds: (bounds) => {
+        writes.push(bounds);
+        return { status: "ok" };
+      },
+    },
+  });
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+  assert.deepStrictEqual(win.getNormalBounds(), { ...saved, width: 961 });
+
+  win.emit("close");
+  assert.deepStrictEqual(writes, []);
+});
+
+test("saved Settings bounds are clamped to a live work area and current scaled minimum", () => {
+  const { runtime } = createRuntime({
+    runtime: {
+      getSavedBounds: () => ({ x: 2800, y: 900, width: 600, height: 400 }),
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 1200, height: 700 }),
+      getTextScale: () => 1.25,
+    },
+  });
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+
+  assert.deepStrictEqual(
+    { x: win.options.x, y: win.options.y, width: win.options.width, height: win.options.height },
+    { x: 400, y: 100, width: 800, height: 600 },
+  );
+  assert.strictEqual(win.options.minWidth, 800);
+  assert.strictEqual(win.options.minHeight, 600);
+});
+
+test("saved Settings bounds clamp correctly on a negative-origin display", () => {
+  const { runtime } = createRuntime({
+    runtime: {
+      getSavedBounds: () => ({ x: -2600, y: -180, width: 900, height: 650 }),
+      getNearestWorkArea: () => ({ x: -1920, y: 0, width: 1920, height: 1040 }),
+      getTextScale: () => 1,
+    },
+  });
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+  assert.deepStrictEqual(
+    { x: win.options.x, y: win.options.y, width: win.options.width, height: win.options.height },
+    { x: -1920, y: 0, width: 900, height: 650 },
+  );
+});
+
+test("a tiny work area caps both restored bounds and BrowserWindow minimums", () => {
+  const { runtime } = createRuntime({
+    runtime: {
+      getSavedBounds: () => ({ x: 1000, y: 800, width: 900, height: 700 }),
+      getNearestWorkArea: () => ({ x: 50, y: 60, width: 500, height: 400 }),
+      getTextScale: () => 1.6,
+    },
+  });
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+  assert.deepStrictEqual(
+    { x: win.options.x, y: win.options.y, width: win.options.width, height: win.options.height },
+    { x: 50, y: 60, width: 500, height: 400 },
+  );
+  assert.strictEqual(win.options.minWidth, 500);
+  assert.strictEqual(win.options.minHeight, 400);
+});
+
+test("invalid saved Settings bounds fall back to pet-display centering", () => {
+  const { runtime } = createRuntime({
+    runtime: {
+      getSavedBounds: () => ({ x: "bad", y: 0, width: 900, height: 650 }),
+      getPetWindowBounds: () => ({ x: 1700, y: 100, width: 280, height: 280 }),
+      getNearestWorkArea: () => ({ x: 1280, y: 40, width: 1600, height: 900 }),
+    },
+  });
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+  assert.deepStrictEqual(
+    { x: win.options.x, y: win.options.y, width: win.options.width, height: win.options.height },
+    { x: 1680, y: 210, width: 800, height: 560 },
+  );
 });
 
 test("settings window runtime shows from timeout if ready-to-show never fires", () => {
@@ -356,6 +605,190 @@ test("settings window move re-applies text scale and pokes the slider context (d
 
   moveTimers[1].callback();
   assert.deepStrictEqual(sends, ["settings:text-scale-context-changed"]);
+});
+
+test("settings window move and resize persist normal bounds with a shared debounce", () => {
+  const saved = [];
+  const { runtime, timers } = createRuntime({
+    runtime: {
+      onSaveBounds: (bounds) => {
+        saved.push(bounds);
+        return { status: "ok" };
+      },
+    },
+  });
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+  win.normalBounds = { x: 310, y: 220, width: 880, height: 620 };
+  win.emit("move");
+  win.emit("resize");
+
+  const saveTimers = timers.filter((timer) => timer.delay === 500);
+  assert.strictEqual(saveTimers.length, 2);
+  assert.strictEqual(saveTimers[0].cleared, true);
+  assert.strictEqual(saveTimers[1].cleared, false);
+  assert.deepStrictEqual(saved, []);
+
+  saveTimers[1].callback();
+  assert.deepStrictEqual(saved, [
+    { x: 310, y: 220, width: 880, height: 620 },
+  ]);
+
+  // A duplicate native event after the same geometry must not rewrite prefs.
+  win.emit("resize");
+  timers.filter((timer) => timer.delay === 500).at(-1).callback();
+  assert.strictEqual(saved.length, 1);
+});
+
+test("persisted Settings bounds are used when the window is recreated", () => {
+  let persisted = null;
+  const { runtime } = createRuntime({
+    runtime: {
+      getSavedBounds: () => persisted,
+      onSaveBounds: (bounds) => {
+        persisted = bounds;
+        return { status: "ok" };
+      },
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 1920, height: 1040 }),
+    },
+  });
+
+  runtime.open();
+  const first = FakeBrowserWindow.instances[0];
+  first.normalBounds = { x: 420, y: 230, width: 940, height: 700 };
+  first.emit("close");
+  first.emit("closed");
+
+  runtime.open();
+  const reopened = FakeBrowserWindow.instances[1];
+  assert.deepStrictEqual(
+    { x: reopened.options.x, y: reopened.options.y, width: reopened.options.width, height: reopened.options.height },
+    persisted,
+  );
+});
+
+test("settings window close flushes pending geometry and saves normal, not maximized, bounds", () => {
+  const saved = [];
+  const { runtime, timers } = createRuntime({
+    runtime: {
+      onSaveBounds: (bounds) => {
+        saved.push(bounds);
+        return { status: "ok" };
+      },
+    },
+  });
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+  win.bounds = { x: 0, y: 0, width: 1920, height: 1040 };
+  win.normalBounds = { x: 260, y: 180, width: 920, height: 680 };
+  win.emit("resize");
+  const pendingSave = findPendingTimer(timers, 500);
+  assert.ok(pendingSave);
+
+  win.emit("close");
+  assert.strictEqual(pendingSave.cleared, true);
+  assert.deepStrictEqual(saved, [
+    { x: 260, y: 180, width: 920, height: 680 },
+  ]);
+
+  win.emit("closed");
+  assert.strictEqual(runtime.getWindow(), null);
+});
+
+test("a synchronous persistence error remains retryable", () => {
+  const attempts = [];
+  const { runtime, timers } = createRuntime({
+    runtime: {
+      onSaveBounds: (bounds) => {
+        attempts.push(bounds);
+        return attempts.length === 1
+          ? { status: "error", message: "read only" }
+          : { status: "ok" };
+      },
+    },
+  });
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+  win.normalBounds = { x: 310, y: 220, width: 880, height: 620 };
+  win.emit("resize");
+  timers.filter((timer) => timer.delay === 500).at(-1).callback();
+  win.emit("resize");
+  timers.filter((timer) => timer.delay === 500).at(-1).callback();
+
+  assert.strictEqual(attempts.length, 2);
+});
+
+test("an asynchronous persistence error remains retryable", async () => {
+  const attempts = [];
+  const { runtime, timers } = createRuntime({
+    runtime: {
+      onSaveBounds: (bounds) => {
+        attempts.push(bounds);
+        return Promise.resolve(attempts.length === 1
+          ? { status: "error", message: "disk full" }
+          : { status: "ok" });
+      },
+    },
+  });
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+  win.normalBounds = { x: 310, y: 220, width: 880, height: 620 };
+  win.emit("resize");
+  timers.filter((timer) => timer.delay === 500).at(-1).callback();
+  await Promise.resolve();
+  await Promise.resolve();
+  win.emit("resize");
+  timers.filter((timer) => timer.delay === 500).at(-1).callback();
+
+  assert.strictEqual(attempts.length, 2);
+});
+
+test("destroyed windows and closed cleanup cannot fire a pending bounds save", () => {
+  const writes = [];
+  const { runtime, timers } = createRuntime({
+    runtime: {
+      onSaveBounds: (bounds) => {
+        writes.push(bounds);
+        return { status: "ok" };
+      },
+    },
+  });
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+  win.normalBounds = { x: 310, y: 220, width: 880, height: 620 };
+  win.emit("resize");
+  const pendingSave = timers.filter((timer) => timer.delay === 500).at(-1);
+  win.destroyed = true;
+  win.emit("closed");
+
+  assert.strictEqual(pendingSave.cleared, true);
+  pendingSave.callback();
+  assert.deepStrictEqual(writes, []);
+});
+
+test("normal-bounds lookup falls back to current bounds when unavailable", () => {
+  const writes = [];
+  const { runtime } = createRuntime({
+    runtime: {
+      onSaveBounds: (bounds) => {
+        writes.push(bounds);
+        return { status: "ok" };
+      },
+    },
+  });
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+  win.bounds = { x: 330, y: 240, width: 860, height: 610 };
+  win.getNormalBounds = () => { throw new Error("unsupported"); };
+  win.emit("close");
+
+  assert.deepStrictEqual(writes, [{ x: 330, y: 240, width: 860, height: 610 }]);
 });
 
 test("applyTextScaleToWindow pokes the slider context even when zoom injection is unavailable", () => {

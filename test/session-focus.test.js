@@ -21,6 +21,13 @@ describe("session focus helpers", () => {
         { id: "sleeping", sourcePid: 1002, state: "sleeping" },
         { id: "hidden", sourcePid: 1003, state: "idle", hiddenFromHud: true },
         { id: "remote", sourcePid: 1004, state: "working", host: "remote-box" },
+        {
+          id: "remote-orca",
+          sourcePid: null,
+          state: "working",
+          host: "remote-box",
+          orcaPaneKey: "tab-remote:leaf-remote",
+        },
         { id: "webui", sourcePid: 1005, state: "working", platform: "webui" },
         {
           id: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
@@ -109,6 +116,26 @@ describe("session focus helpers", () => {
       "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
     ]);
     assert.strictEqual(isFocusableLocalHudSession(noTerminalEntry, { osPlatform: "win32" }), false);
+  });
+
+  it("allows only supported Orca pane targets to cross the remote boundary", () => {
+    const remoteOrca = {
+      id: "remote-orca",
+      host: "remote-box",
+      orcaPaneKey: "tab-remote:leaf-remote",
+    };
+    const terminalTarget = { canFocus: true, type: "terminal", url: null };
+    const unavailable = { canFocus: false, type: null, url: null };
+
+    assert.deepStrictEqual(getSessionFocusTarget(remoteOrca, { osPlatform: "darwin" }), terminalTarget);
+    assert.deepStrictEqual(getSessionFocusTarget(remoteOrca, { osPlatform: "win32" }), terminalTarget);
+    assert.deepStrictEqual(getSessionFocusTarget(remoteOrca, { osPlatform: "linux" }), unavailable);
+    assert.deepStrictEqual(getSessionFocusTarget({ ...remoteOrca, orcaPaneKey: "bad" }, { osPlatform: "darwin" }), unavailable);
+    assert.deepStrictEqual(getSessionFocusTarget({ ...remoteOrca, platform: "webui" }, { osPlatform: "darwin" }), unavailable);
+
+    // The HUD/Dashboard click target is enabled, but local-only consumers such
+    // as pet-body focus and Telegram Direct Send must not absorb remote sessions.
+    assert.strictEqual(isFocusableLocalHudSession(remoteOrca, { osPlatform: "darwin" }), false);
   });
 
   it("rejects malformed entries defensively", () => {

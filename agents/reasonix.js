@@ -6,8 +6,11 @@
 module.exports = {
   id: "reasonix",
   name: "Reasonix",
-  processNames: { win: ["reasonix.exe"], mac: ["reasonix"], linux: ["reasonix"] },
-  startupRecoveryProcessNames: { win: ["reasonix.exe"], mac: ["reasonix"], linux: ["reasonix"] },
+  processNames: { win: ["reasonix.exe", "reasonix-desktop.exe", "reasonix-cli.exe"], mac: ["reasonix", "reasonix-desktop"], linux: ["reasonix", "reasonix-desktop"] },
+  // reasonix-desktop(.exe) is a resident GUI: valid for process detection and
+  // hook PID attribution, but its mere presence is not turn activity. Keep it
+  // out of startup recovery, matching the Qoder/QoderWork/WorkBuddy boundary.
+  startupRecoveryProcessNames: { win: ["reasonix.exe", "reasonix-cli.exe"], mac: ["reasonix"], linux: ["reasonix"] },
   eventSource: "hook",
   eventMap: {
     SessionStart: "idle",

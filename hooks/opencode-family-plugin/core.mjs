@@ -57,6 +57,23 @@ const STATE_PATH = "/state";
 // (main → renderer → main) ran under load and silently timed out.
 const POST_TIMEOUT_MS = 1000;
 
+// Orca hosts its terminals in a detached daemon that the process walk below can
+// never reach, so the pane key from the environment is the only handle on the tab
+// that has to come forward. Derived per POST rather than during the walk so it
+// survives the events where the walk has not finished or failed. Duplicated
+// rather than imported because this plugin ships standalone; NESTED_TERMINAL_ENV
+// in hooks/shared-process.js carries the reasoning for each entry.
+const NESTED_TERMINAL_ENV = ["WT_SESSION", "ALACRITTY_WINDOW_ID", "WEZTERM_PANE", "KITTY_WINDOW_ID",
+  "KONSOLE_VERSION", "GNOME_TERMINAL_SCREEN", "ConEmuPID", "TMUX", "STY", "ZELLIJ"];
+
+export function orcaPaneKeyFromEnv(env = process.env) {
+  if (!env || env.TERM_PROGRAM !== "Orca") return null;
+  if (NESTED_TERMINAL_ENV.some((key) => env[key])) return null;
+  const paneKey = String(env.ORCA_PANE_KEY || "").trim();
+  if (!paneKey || paneKey.length > 256 || !/^[\w-]+:[\w-]+$/.test(paneKey)) return null;
+  return paneKey;
+}
+
 // Process tree walk config — mirrors hooks/clawd-hook.js exactly, minus the
 // Claude-specific detection. See docs/plans/plan-opencode-integration.md Phase 4.
 // Spike confirmed (2026-04-05): plugin runs in-process with the host, so walk
@@ -365,6 +382,11 @@ export function createOpencodeFamilyPlugin(config) {
       if (_tmuxSocket) body.tmux_socket = _tmuxSocket;
       if (_tmuxClient) body.tmux_client = _tmuxClient;
     }
+    // Outside the _stablePid gate on purpose: the pane key owes nothing to the
+    // process walk, and Orca's detached daemon is precisely the case where the
+    // walk finds no terminal to report.
+    const orcaPaneKey = orcaPaneKeyFromEnv();
+    if (orcaPaneKey) body.orca_pane_key = orcaPaneKey;
     if (_cwd) body.cwd = _cwd;
     body.agent_pid = process.pid;
     const payload = JSON.stringify(body);

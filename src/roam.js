@@ -37,8 +37,20 @@ module.exports = function initRoam(ctx) {
     if (roamPauseTimer) { clearTimeout(roamPauseTimer); roamPauseTimer = null; }
   }
 
+  // Issue #690 plan §4.3.10's roam protection-period release point. Roam's
+  // per-frame applyPetWindowBounds() (ROAM_FRAME_MS=16) is a continuous
+  // native-write period the reconcile state machine must not fight — every
+  // exit from that period (walk finishing naturally below, or being
+  // cancelled) must tell the runtime so a reconcile that was only "marked
+  // dirty" during the walk gets its one terminal pass. No-op when the
+  // runtime hasn't wired this in (e.g. plain unit tests of roam.js alone).
+  function notifyRoamProtectionReleased() {
+    if (typeof ctx.releaseReconcileProtection === "function") ctx.releaseReconcileProtection();
+  }
+
   function isRoamAllowed() {
     if (!enabled) return false;
+    if (ctx.dragLocked) return false;
     if (ctx.getMiniMode && ctx.getMiniMode()) return false;
     const state = ctx.getCurrentState ? ctx.getCurrentState() : "idle";
     // Allow roaming when idle (about to start) or already roaming (mid-animation)
@@ -157,12 +169,22 @@ module.exports = function initRoam(ctx) {
     function step() {
       // ── Per-frame cancellation checks ──
       if (!roamActive) return;
-      if (!win || win.isDestroyed()) { roamActive = false; return; }
+      if (!win || win.isDestroyed()) {
+        // PR #751 Codex review (rework batch B-1, non-blocking #3): this
+        // exception exit used to leave the reconcile protection period
+        // un-released — isRoamAnimating() correctly flips false immediately,
+        // but nothing then requeues a check for whatever reconcile went dirty
+        // while roam was active, same class of gap as mini.js's exit points.
+        roamActive = false;
+        notifyRoamProtectionReleased();
+        return;
+      }
       // Re-check state on every frame: if the pet is no longer idle/roam (e.g. a
       // working/notification event arrived), stop the animation immediately.
       if (!isRoamAllowed()) {
-        // Next idle entry should wait the full delay again
-        firstRoam = true;
+        // A drag only pauses the current roam phase; other gates still mean the
+        // pet left normal idle eligibility and reset the next wait to 8s.
+        if (!ctx.dragLocked) firstRoam = true;
         // cancelRoam also restores "idle" when the state is still "roam" —
         // gates with no incoming state of their own (IME editing #640, mini
         // mode) would otherwise strand the pet frozen in its walk pose.
@@ -175,7 +197,13 @@ module.exports = function initRoam(ctx) {
       const eased = t * (2 - t);
       const vx = Math.round(startX + (finalX - startX) * eased);
       const vy = Math.round(startY + (finalY - startY) * eased);
-      if (!Number.isFinite(vx) || !Number.isFinite(vy)) { roamActive = false; return; }
+      if (!Number.isFinite(vx) || !Number.isFinite(vy)) {
+        // Same reconcile-protection release gap as the destroyed-window exit
+        // above.
+        roamActive = false;
+        notifyRoamProtectionReleased();
+        return;
+      }
 
       // ── Per-frame sync ──
       // Write the anchored size, never a re-read of live bounds (#569).
@@ -191,6 +219,7 @@ module.exports = function initRoam(ctx) {
         roamAnimTimer = setTimeout(step, ROAM_FRAME_MS);
       } else {
         roamActive = false;
+        notifyRoamProtectionReleased();
         // ── Return to idle via setState (respects priority) ──
         // If a higher-priority state was set while the last frame was in
         // flight, setState("idle") won't downgrade it.
@@ -234,16 +263,24 @@ module.exports = function initRoam(ctx) {
       && typeof ctx.getCurrentState === "function"
       && ctx.getCurrentState() === "roam"
       && typeof ctx.setState === "function";
+    const wasActive = roamActive;
     cleanupTimers();
     roamActive = false;
-    if (shouldRestoreIdle) ctx.setState("idle");
+    if (wasActive) notifyRoamProtectionReleased();
+    // Roam is an interruptible movement state. A user theme may define
+    // timings.minDisplay.roam, but cancelling a walk must restore idle now so
+    // a delayed idle broadcast cannot overwrite a drag reaction mid-hold.
+    if (shouldRestoreIdle) {
+      ctx.setState("idle", undefined, { bypassMinDisplay: true });
+    }
   }
 
   function tick() {
     if (!enabled) return;
     if (!isRoamAllowed()) {
-      // State changed away from idle/roam — next idle entry should wait full delay
-      firstRoam = true;
+      // Preserve the already-consumed 4s/8s phase while drag owns movement.
+      // Existing non-drag gates still reset the next idle entry to 8s.
+      if (!ctx.dragLocked) firstRoam = true;
       cancelRoam();
       return;
     }
@@ -252,5 +289,16 @@ module.exports = function initRoam(ctx) {
     scheduleNextRoam();
   }
 
-  return { setEnabled, cancelRoam, tick, get enabled() { return enabled; } };
+  // Issue #690 plan §4.3.10's protection-period predicate: pet-window-runtime's
+  // runReconcile() polls this (isRoamAnimating()) alongside dragLocked /
+  // getMiniTransitioning() / isMiniAnimating() / settingsSizePreviewSyncFrozen
+  // so a reconcile pass never fights roam's own per-frame writes.
+  function isRoamAnimating() {
+    return roamActive;
+  }
+
+  return {
+    setEnabled, cancelRoam, tick, isRoamAnimating,
+    get enabled() { return enabled; },
+  };
 };

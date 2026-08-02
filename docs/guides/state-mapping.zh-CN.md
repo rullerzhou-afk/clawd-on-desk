@@ -47,6 +47,21 @@ Kimi Code CLI（Kimi-CLI）现已采用 hook-only 集成（`~/.kimi/config.toml`
 | PostCompact | attention |
 | Notification | notification |
 
+## ZCode Hook 事件
+
+ZCode 使用 `~/.zcode/cli/config.json` 下的 state-only config-file hooks：
+
+| ZCode Hook Event | 状态 |
+|---|---|
+| SessionStart | idle |
+| UserPromptSubmit | thinking |
+| PreToolUse | working |
+| PostToolUse | working |
+| PostToolUseFailure | error |
+| Stop | attention |
+
+当前集成没有 ZCode `SessionEnd` 事件，会话完成依赖 `Stop` 和 Clawd 原有的进程存活 / stale session 清理。`PermissionRequest` 有意不注册，权限决定始终只在 ZCode 中完成。
+
 ## Pi Extension 事件
 
 Pi 使用全局 extension（`~/.pi/agent/extensions/clawd-on-desk`），会把交互式会话生命周期事件映射到 Clawd 的共享状态：

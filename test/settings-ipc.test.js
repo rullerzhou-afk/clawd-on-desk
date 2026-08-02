@@ -196,7 +196,16 @@ function createHarness(overrides = {}) {
     getRecentHookEvents: overrides.getRecentHookEvents,
     getQuotaSourceCount: overrides.getQuotaSourceCount,
     detectAgentInstallations: overrides.detectAgentInstallations,
-    checkForUpdates: (manual) => calls.push(["checkForUpdates", manual]),
+    checkForUpdates: overrides.checkForUpdates || ((manual) => {
+      calls.push(["checkForUpdates", manual]);
+      return { state: "up-to-date", version: "1.2.3" };
+    }),
+    getUpdateCheckSnapshot: overrides.getUpdateCheckSnapshot || (() => ({ state: "idle" })),
+    clearUpdateError: overrides.clearUpdateError || (() => ({ state: "idle" })),
+    copyUpdateError: overrides.copyUpdateError || ((text) => {
+      calls.push(["copyUpdateError", text]);
+      return { status: "ok" };
+    }),
     showTutorial: overrides.showTutorial || (() => {
       calls.push(["showTutorial"]);
       return { status: "ok" };
@@ -219,6 +228,7 @@ test("settings IPC registers owned channels and leaves animation override channe
   assert.ok(ipcMain.handlers.has("settings:list-themes"));
   assert.ok(ipcMain.handlers.has("settings:detect-agent-installations"));
   assert.ok(ipcMain.handlers.has("settings:show-tutorial"));
+  assert.ok(ipcMain.handlers.has("settings:clear-update-error"));
   assert.ok(ipcMain.handlers.has("settings:open-user-themes-dir"));
   assert.ok(ipcMain.handlers.has("settings:import-user-theme-zip"));
   assert.ok(ipcMain.handlers.has("settings:refresh-codex-pets"));
@@ -754,13 +764,19 @@ test("settings IPC serves agent/about/update/external and remove-theme dialog he
       heroSvgContent: "<svg id=\"hero\"></svg>",
       pendingUpdateVersion: "",
       autoUpdateCheck: true,
+      updateCheckSnapshot: { state: "idle" },
     });
     assert.deepStrictEqual(await ipcMain.invoke("settings:confirm-remove-theme", "user-theme"), {
       confirmed: true,
     });
     assert.deepStrictEqual(messageBoxParent, { id: "parent", sender: "sender-web-contents" });
     assert.strictEqual(messageBoxOptions.message, 'Delete theme "Theme user-theme"?');
-    assert.deepStrictEqual(await ipcMain.invoke("settings:check-for-updates"), { status: "ok" });
+    assert.deepStrictEqual(await ipcMain.invoke("settings:check-for-updates"), {
+      state: "up-to-date",
+      version: "1.2.3",
+    });
+    assert.deepStrictEqual(await ipcMain.invoke("settings:clear-update-error"), { state: "idle" });
+    assert.deepStrictEqual(await ipcMain.invoke("settings:copy-update-error", "safe report"), { status: "ok" });
     assert.deepStrictEqual(await ipcMain.invoke("settings:open-external", "file:///tmp"), {
       status: "error",
       message: "Invalid URL",
@@ -770,6 +786,7 @@ test("settings IPC serves agent/about/update/external and remove-theme dialog he
     });
     assert.deepStrictEqual(calls, [
       ["checkForUpdates", true],
+      ["copyUpdateError", "safe report"],
       ["openExternal", "https://example.test"],
     ]);
   } finally {

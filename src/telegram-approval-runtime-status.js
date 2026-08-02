@@ -38,7 +38,7 @@ const STATUS_LOCALES = Object.freeze({
       complete: "complete",
       incomplete: "incomplete",
     },
-    transport: { native: "native", legacy: "legacy", off: "off" },
+    transport: { native: "native", off: "off" },
     health: {
       off: "off",
       failed: "failed",
@@ -100,7 +100,7 @@ const STATUS_LOCALES = Object.freeze({
       complete: "完整",
       incomplete: "未完成",
     },
-    transport: { native: "原生", legacy: "旧版", off: "关闭" },
+    transport: { native: "原生", off: "关闭" },
     health: {
       off: "关闭",
       failed: "失败",
@@ -162,7 +162,7 @@ const STATUS_LOCALES = Object.freeze({
       complete: "完整",
       incomplete: "未完成",
     },
-    transport: { native: "原生", legacy: "舊版", off: "關閉" },
+    transport: { native: "原生", off: "關閉" },
     health: {
       off: "關閉",
       failed: "失敗",
@@ -224,7 +224,7 @@ const STATUS_LOCALES = Object.freeze({
       complete: "완료",
       incomplete: "미완료",
     },
-    transport: { native: "네이티브", legacy: "레거시", off: "꺼짐" },
+    transport: { native: "네이티브", off: "꺼짐" },
     health: {
       off: "꺼짐",
       failed: "실패",
@@ -286,7 +286,7 @@ const STATUS_LOCALES = Object.freeze({
       complete: "完了",
       incomplete: "未完了",
     },
-    transport: { native: "ネイティブ", legacy: "レガシー", off: "オフ" },
+    transport: { native: "ネイティブ", off: "オフ" },
     health: {
       off: "オフ",
       failed: "失敗",
@@ -321,8 +321,7 @@ const STATUS_LOCALES = Object.freeze({
 function isNativeTelegramApprovalSelected(snapshot) {
   if (!snapshot || typeof snapshot !== "object") return false;
   return snapshot.state === "NATIVE_ACTIVE"
-    || snapshot.state === "TESTING_NATIVE"
-    || snapshot.transport === "native";
+    || snapshot.state === "TESTING_NATIVE";
 }
 
 function buildNativeTelegramApprovalStatus({ config, token, migrationSnapshot, nativePolling }) {
@@ -373,7 +372,6 @@ function buildNativeTelegramApprovalStatus({ config, token, migrationSnapshot, n
 function buildTelegramApprovalStatus({
   config,
   token,
-  sidecarStatus,
   migrationSnapshot,
   nativePolling,
 }) {
@@ -385,38 +383,24 @@ function buildTelegramApprovalStatus({
   });
   if (nativeStatus) return nativeStatus;
 
-  const ready = telegramApprovalSettings.readiness(config, token);
-  const legacyStatus = sidecarStatus || { status: "stopped" };
-  // Reverse-divergence guard: once the controller knows the legacy sidecar
-  // failed, keep the badge "failed" even if the live sidecar handle has since
-  // gone "stopped" or been torn down (which would otherwise read as "ready").
-  // Only the failure overlay is honoured — "running" must still come from the
-  // live sidecar status, never from a stale runtime-status snapshot.
-  const runtimeStatus = migrationSnapshot && migrationSnapshot.runtimeStatus;
-  // Only overlay while legacy is the *current* owner. A stale legacy failure
-  // (e.g. user disabled or switched after a failure) must not keep the badge
-  // red; the controller also reconciles runtimeStatus on those transitions.
-  if (migrationSnapshot && migrationSnapshot.state === "LEGACY_ACTIVE"
-    && runtimeStatus && runtimeStatus.transport === "legacy" && runtimeStatus.status === "failed") {
-    return {
-      ...legacyStatus,
-      status: "failed",
-      transport: "legacy",
-      enabled: config && config.enabled === true,
-      configured: ready.ready === true,
-      reason: runtimeStatus.reason || legacyStatus.reason || "failed",
-      message: runtimeStatus.message || legacyStatus.message || ready.message || "",
-      tokenStored: token && token.tokenStored === true,
-    };
-  }
+  const ready = telegramApprovalSettings.readiness({ ...config, enabled: true }, token);
+  const migrationState = migrationSnapshot && migrationSnapshot.state
+    ? migrationSnapshot.state
+    : "IDLE";
+  const required = migrationState === "NATIVE_MIGRATION_REQUIRED";
+  const lastTestResult = migrationSnapshot && migrationSnapshot.lastTestResult;
   return {
-    ...legacyStatus,
-    transport: "legacy",
-    enabled: config && config.enabled === true,
+    status: lastTestResult ? "failed" : "stopped",
+    transport: "off",
+    native: false,
+    enabled: false,
     configured: ready.ready === true,
-    reason: ready.reason || "",
-    message: legacyStatus.message || ready.message || "",
+    reason: required ? "native-migration-required" : (ready.reason || "disabled"),
+    message: ready.message || "",
     tokenStored: token && token.tokenStored === true,
+    nativePolling: false,
+    migrationState,
+    lastTestResult: lastTestResult || null,
   };
 }
 
@@ -441,12 +425,8 @@ function sanitizeStatusText(value, maxLen = 160) {
 function normalizeTransport({ approvalStatus, migrationSnapshot, config } = {}) {
   const snap = migrationSnapshot && typeof migrationSnapshot === "object" ? migrationSnapshot : {};
   const state = typeof snap.state === "string" ? snap.state : "";
-  const transport = typeof snap.transport === "string" ? snap.transport : "";
-  if (state === "NATIVE_ACTIVE" || state === "TESTING_NATIVE" || transport === "native") return "native";
-  if (state === "LEGACY_ACTIVE" || state === "SWITCHING_TO_LEGACY" || transport === "legacy") return "legacy";
-  if (transport === "off" || state === "IDLE") return "off";
+  if (state === "NATIVE_ACTIVE" || state === "TESTING_NATIVE") return "native";
   if (approvalStatus && approvalStatus.transport === "native") return "native";
-  if (approvalStatus && approvalStatus.transport === "legacy" && config && config.enabled === true) return "legacy";
   return "off";
 }
 
@@ -484,16 +464,6 @@ function normalizeLastError({ approvalStatus, migrationSnapshot, nativeRunnerSta
       code: sanitizeStatusText(snap.lastError.code || "unknown", 64),
       eventType: sanitizeStatusText(snap.lastError.eventType || "", 64),
       message: sanitizeStatusText(snap.lastError.message || "", 160),
-    };
-  }
-  const runtimeStatus = snap.runtimeStatus && typeof snap.runtimeStatus === "object"
-    ? snap.runtimeStatus
-    : null;
-  if (runtimeStatus && runtimeStatus.status === "failed") {
-    return {
-      source: sanitizeStatusText(runtimeStatus.transport || "runtime", 32),
-      code: sanitizeStatusText(runtimeStatus.reason || "failed", 64),
-      message: sanitizeStatusText(runtimeStatus.message || "", 160),
     };
   }
   if (approvalStatus && approvalStatus.status === "failed") {
@@ -593,21 +563,13 @@ function summarizeSessions(sessionSnapshot, { now, all = false, limit = DEFAULT_
 }
 
 function buildHealth({ transport, approvalStatus, migrationSnapshot, nativePolling, configured } = {}) {
-  const status = approvalStatus && approvalStatus.status ? approvalStatus.status : "stopped";
-  const runtimeStatus = migrationSnapshot && migrationSnapshot.runtimeStatus
-    ? migrationSnapshot.runtimeStatus
-    : null;
   const state = migrationSnapshot && migrationSnapshot.state ? migrationSnapshot.state : "";
   if (transport === "off") return "off";
-  if (runtimeStatus && runtimeStatus.status === "failed") return "failed";
   if (!configured) return "setup-needed";
   if (transport === "native") {
     if (state === "TESTING_NATIVE") return "testing";
     return nativePolling ? "healthy" : "inactive";
   }
-  if (status === "running") return "healthy";
-  if (status === "starting") return "starting";
-  if (status === "failed") return "failed";
   return "inactive";
 }
 
@@ -648,9 +610,7 @@ function buildTelegramStatusDiagnostic({
     nativePolling: polling,
     configured,
   });
-  const approvalAvailable = transport === "native"
-    ? (health === "healthy")
-    : (transport === "legacy" && health === "healthy");
+  const approvalAvailable = transport === "native" && health === "healthy";
   const pendingCount = Number.isFinite(pendingApprovalCount)
     ? Math.max(0, Math.floor(pendingApprovalCount))
     : 0;

@@ -139,6 +139,81 @@ describe("account quota store", () => {
     });
   });
 
+  it("keeps generic and Spark providers isolated while replacing each complete snapshot independently", () => {
+    const store = createAccountQuotaStore({ persistPath: null, now: () => 1000 });
+    const dual = (fiveHour, weekly, capturedAt) => ({
+      codexFiveHour: {
+        usedPercent: fiveHour,
+        windowMinutes: 300,
+        resetAt: 999999,
+        capturedAt,
+      },
+      codexWeekly: {
+        usedPercent: weekly,
+        windowMinutes: 10080,
+        resetAt: 999999,
+        capturedAt,
+      },
+    });
+    store.update(null, {
+      codexQuota: dual(4, 43, 100),
+      codexSparkQuota: dual(1, 8, 100),
+    });
+
+    store.update(null, {
+      codexSparkQuota: {
+        codexWeekly: {
+          usedPercent: 12,
+          windowMinutes: 10080,
+          resetAt: 999999,
+          capturedAt: 200,
+        },
+      },
+    });
+    let snapshot = store.snapshot()[0];
+    assert.strictEqual(snapshot.codexQuota.group.codexFiveHour.usedPercent, 4);
+    assert.strictEqual(snapshot.codexQuota.group.codexWeekly.usedPercent, 43);
+    assert.strictEqual(snapshot.codexSparkQuota.group.codexFiveHour, undefined);
+    assert.strictEqual(snapshot.codexSparkQuota.group.codexWeekly.usedPercent, 12);
+
+    store.update(null, {
+      codexQuota: {
+        codexWeekly: {
+          usedPercent: 17,
+          windowMinutes: 10080,
+          resetAt: 999999,
+          capturedAt: 300,
+        },
+      },
+    });
+    snapshot = store.snapshot()[0];
+    assert.strictEqual(snapshot.codexQuota.group.codexFiveHour, undefined);
+    assert.strictEqual(snapshot.codexQuota.group.codexWeekly.usedPercent, 17);
+    assert.strictEqual(snapshot.codexSparkQuota.group.codexWeekly.usedPercent, 12);
+  });
+
+  it("rejects out-of-order complete Spark snapshots without affecting generic quota", () => {
+    const store = createAccountQuotaStore({ persistPath: null, now: () => 1000 });
+    store.update(null, {
+      codexQuota: {
+        codexWeekly: { usedPercent: 20, windowMinutes: 10080, resetAt: 999999, capturedAt: 300 },
+      },
+      codexSparkQuota: {
+        codexWeekly: { usedPercent: 8, windowMinutes: 10080, resetAt: 999999, capturedAt: 200 },
+      },
+    });
+
+    assert.strictEqual(store.update(null, {
+      codexSparkQuota: {
+        codexFiveHour: { usedPercent: 99, windowMinutes: 300, resetAt: 999999, capturedAt: 100 },
+      },
+    }), false);
+    const snapshot = store.snapshot()[0];
+    assert.strictEqual(snapshot.codexQuota.group.codexWeekly.usedPercent, 20);
+    assert.strictEqual(snapshot.codexSparkQuota.group.codexFiveHour, undefined);
+    assert.strictEqual(snapshot.codexSparkQuota.group.codexWeekly.usedPercent, 8);
+  });
+
   it("rejects an older complete Codex snapshot before it can relocate newer windows", () => {
     const store = createAccountQuotaStore({ persistPath: null, now: () => 1000 });
     store.update(null, {
@@ -218,6 +293,27 @@ describe("account quota store", () => {
     assert.strictEqual(store.snapshot({ mergeSources: true })[0].claudeQuota.updatedAt, 1000);
   });
 
+  it("mergeSources arbitrates generic and Spark independently", () => {
+    let nowMs = 1000;
+    const store = createAccountQuotaStore({ persistPath: null, now: () => nowMs });
+    store.update("remote", {
+      codexQuota: { codexWeekly: { usedPercent: 40, resetAt: 999999 } },
+      codexSparkQuota: { codexWeekly: { usedPercent: 5, resetAt: 999999 } },
+    });
+    nowMs = 2000;
+    store.update(null, {
+      codexQuota: { codexWeekly: { usedPercent: 10, resetAt: 999999 } },
+    });
+    nowMs = 3000;
+    store.update("remote", {
+      codexSparkQuota: { codexWeekly: { usedPercent: 9, resetAt: 999999 } },
+    });
+
+    const merged = store.snapshot({ mergeSources: true })[0];
+    assert.strictEqual(merged.codexQuota.group.codexWeekly.usedPercent, 10);
+    assert.strictEqual(merged.codexSparkQuota.group.codexWeekly.usedPercent, 9);
+  });
+
   it("persists on flush and reloads last-known numbers (app-restart survival)", () => {
     const persistPath = tempPersistPath();
     const group = { claudeWeekly: { usedPercent: 41, resetAt: 9999999 } };
@@ -235,14 +331,53 @@ describe("account quota store", () => {
     assert.strictEqual(snapshot[0].claudeQuota.updatedAt, 1234, "persisted stamp survives reload");
   });
 
-  it("drops only unlabelable v1 Codex cache buckets on upgrade", () => {
+  it("persists Spark quota in schema v6 and reloads it independently", () => {
+    const persistPath = tempPersistPath();
+    const store = createAccountQuotaStore({ persistPath, now: () => 1234 });
+    store.update("pi", {
+      codexQuota: { codexWeekly: { usedPercent: 41, resetAt: 9999999 } },
+      codexSparkQuota: { codexWeekly: { usedPercent: 7, resetAt: 9999999 } },
+    });
+    store.flush();
+
+    const persisted = JSON.parse(fs.readFileSync(persistPath, "utf8"));
+    assert.strictEqual(persisted.version, 6);
+    assert.strictEqual(persisted.sources[0].codexSparkQuota.group.codexWeekly.usedPercent, 7);
+    const snapshot = createAccountQuotaStore({ persistPath, now: () => 5678 }).snapshot()[0];
+    assert.strictEqual(snapshot.codexQuota.group.codexWeekly.usedPercent, 41);
+    assert.strictEqual(snapshot.codexSparkQuota.group.codexWeekly.usedPercent, 7);
+  });
+
+  it("drops ambiguous pre-v6 Codex cache while preserving Spark and unrelated providers", () => {
     const persistPath = tempPersistPath();
     fs.writeFileSync(persistPath, JSON.stringify({
-      version: 1,
+      version: 5,
       sources: [{
         host: null,
         codexQuota: {
-          group: { codexFiveHour: { usedPercent: 12, resetAt: 9999999 } },
+          group: {
+            codexFiveHour: {
+              usedPercent: 7,
+              windowMinutes: 300,
+              resetAt: 9999999,
+            },
+            codexWeekly: {
+              usedPercent: 19,
+              windowMinutes: 10080,
+              resetAt: 9999999,
+            },
+          },
+          updatedAt: 1000,
+          lastSeenAt: 1000,
+        },
+        codexSparkQuota: {
+          group: {
+            codexWeekly: {
+              usedPercent: 7,
+              windowMinutes: 10080,
+              resetAt: 9999999,
+            },
+          },
           updatedAt: 1000,
           lastSeenAt: 1000,
         },
@@ -257,6 +392,7 @@ describe("account quota store", () => {
     const snapshot = createAccountQuotaStore({ persistPath, now: () => 2000 }).snapshot();
     assert.strictEqual(snapshot.length, 1);
     assert.strictEqual(snapshot[0].codexQuota, undefined);
+    assert.strictEqual(snapshot[0].codexSparkQuota.group.codexWeekly.usedPercent, 7);
     assert.strictEqual(snapshot[0].claudeQuota.group.claudeWeekly.usedPercent, 41);
   });
 

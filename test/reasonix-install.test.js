@@ -83,7 +83,72 @@ describe("Reasonix hook installer", () => {
         },
         userHomeDir,
       }),
-      path.resolve("")
+      ""
+    );
+  });
+
+  it("fails closed when REASONIX_HOME contains a fallback-less unresolved variable", () => {
+    const options = {
+      platform: "linux",
+      env: { REASONIX_HOME: "${MISSING}" },
+      userHomeDir: path.join(os.tmpdir(), "reasonix-user"),
+    };
+
+    assert.deepStrictEqual(__test.resolveReasonixHome(options), "");
+    assert.deepStrictEqual(__test.selectReasonixSettingsPath(options), "");
+    assert.deepStrictEqual(
+      require("../hooks/reasonix-install").resolveReasonixConfigTargets(options),
+      []
+    );
+
+    const result = registerReasonixHooks({ ...options, silent: true });
+    assert.strictEqual(result.status, "skipped");
+    assert.strictEqual(result.reason, "reasonix-home-invalid");
+    assert.strictEqual(result.added, 0);
+    assert.throws(
+      () => registerReasonixHooks(options),
+      /REASONIX_HOME contains an unresolved variable/
+    );
+
+    const uninstall = unregisterReasonixHooks({ ...options, silent: true });
+    assert.strictEqual(uninstall.status, "skipped");
+    assert.deepStrictEqual(uninstall.settingsPaths, []);
+  });
+
+  it("rejects unresolved variables even when a suffix would otherwise become an absolute path", () => {
+    const base = {
+      platform: "linux",
+      userHomeDir: path.join(os.tmpdir(), "reasonix-user"),
+    };
+    for (const configuredHome of ["${MISSING}/tmp", "$MISSING/tmp"]) {
+      const options = { ...base, env: { REASONIX_HOME: configuredHome } };
+      assert.strictEqual(__test.resolveReasonixHome(options), "", configuredHome);
+      assert.deepStrictEqual(
+        require("../hooks/reasonix-install").resolveReasonixConfigTargets(options),
+        [],
+        configuredHome,
+      );
+    }
+  });
+
+  it("expands a present bare variable while retaining the braced fallback contract", () => {
+    const userHomeDir = path.join(os.tmpdir(), "reasonix-user");
+    const portable = path.join(userHomeDir, "portable");
+    assert.strictEqual(
+      __test.resolveReasonixHome({
+        platform: "linux",
+        userHomeDir,
+        env: { REASONIX_HOME: "$PORTABLE/reasonix", PORTABLE: portable },
+      }),
+      path.join(portable, "reasonix"),
+    );
+    assert.strictEqual(
+      __test.resolveReasonixHome({
+        platform: "linux",
+        userHomeDir,
+        env: { REASONIX_HOME: "${MISSING:-fallback}/reasonix" },
+      }),
+      path.resolve("fallback/reasonix"),
     );
   });
 

@@ -83,6 +83,52 @@ html, body {
   pointer-events: none;
 }
 
+/* ── Test-result reactions ── */
+/* Pass: a short pixel-confetti burst from the character's head area. */
+.clawd-test-confetti {
+  position: absolute;
+  top: 34%;
+  width: 7px;
+  height: 7px;
+  border-radius: 1px;
+  pointer-events: none;
+  opacity: 0;
+  animation: clawd-test-confetti-fall 1.2s ease-out forwards;
+}
+
+@keyframes clawd-test-confetti-fall {
+  0% {
+    opacity: 1;
+    transform: translate(0, 0) rotate(0deg) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--test-confetti-dx, 20px), 90px) rotate(540deg) scale(0.6);
+  }
+}
+
+/* Fail: wobble the facing layer. Individual translate/rotate properties keep
+   mini-left's independent `scale` and the outer viewport offset intact. */
+#pet-facing-stage.clawd-test-shake {
+  animation: clawd-test-shake 0.6s ease-in-out;
+}
+
+@keyframes clawd-test-shake {
+  0%, 100% { translate: 0 0; rotate: 0deg; }
+  15% { translate: -6px 0; rotate: -3deg; }
+  30% { translate: 6px 0; rotate: 3deg; }
+  45% { translate: -5px 0; rotate: -2deg; }
+  60% { translate: 5px 0; rotate: 2deg; }
+  75% { translate: -3px 0; rotate: -1deg; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .clawd-test-confetti,
+  #pet-facing-stage.clawd-test-shake {
+    animation: none;
+  }
+}
+
 #pet-container.mini-left #pet-facing-stage {
   scale: -1 1;
 }

@@ -23,8 +23,11 @@ const {
   extractAssistantTextFromRecord,
 } = require("./codex-assistant-output");
 const {
-  resolveCodexRateLimitQuota,
+  resolveCodexRateLimitReport,
+  resolveCodexModelQuotaProvider,
   isFreshCodexQuotaTimestamp,
+  CODEX_MAIN_QUOTA_PROVIDER,
+  CODEX_SPARK_QUOTA_PROVIDER,
 } = require("./codex-rate-limits");
 const { parseCodexUserInputRecord } = require("./codex-user-input");
 
@@ -199,12 +202,17 @@ function postState(sessionId, state, event, cwd, isSubagent, extra = null) {
 }
 
 // Subscription quota is telemetry, not lifecycle: it goes out as a
-// metadata_only POST (same contract as the statusline scripts) so the
-// server can only annotate the session this monitor's lifecycle posts
-// already created — never create/resurrect one, never touch recentEvents
-// or updatedAt. Same session_id namespace ("codex:<uuid>") as the
-// lifecycle posts, or the annotation would silently miss.
-function buildPostQuotaBody(sessionId, codexQuota, host) {
+// metadata_only POST (same contract as the statusline scripts). The desktop
+// stores it independently from session lifecycle and must never
+// create/resurrect a session or touch its recentEvents/updatedAt. Keep the
+// normal session_id namespace for the shared metadata-only transport contract.
+function buildPostQuotaBody(sessionId, quotaReport, host) {
+  const wireField = quotaReport && quotaReport.providerKey === CODEX_MAIN_QUOTA_PROVIDER
+    ? "codex_quota"
+    : (quotaReport && quotaReport.providerKey === CODEX_SPARK_QUOTA_PROVIDER
+      ? "codex_spark_quota"
+      : null);
+  if (!wireField || !quotaReport.quota) return null;
   return JSON.stringify({
     state: "idle",
     preserve_state: true,
@@ -212,13 +220,15 @@ function buildPostQuotaBody(sessionId, codexQuota, host) {
     session_id: sessionId,
     agent_id: "codex",
     host: host || hostPrefix,
-    codex_quota: codexQuota,
+    [wireField]: quotaReport.quota,
   });
 }
 
-function postQuota(sessionId, codexQuota) {
+function postQuota(sessionId, quotaReport) {
+  const body = buildPostQuotaBody(sessionId, quotaReport, undefined);
+  if (!body) return;
   postStateToRunningServer(
-    buildPostQuotaBody(sessionId, codexQuota, undefined),
+    body,
     { timeoutMs: 100, preferredPort, remote: true },
     (ok) => deliveryWatchdog.record(ok)
   );
@@ -242,6 +252,10 @@ function processLine(line, entry, options = {}) {
   if (type === "session_meta" && payload) {
     entry.cwd = payload.cwd || "";
     entry.isSubagent = classifySessionMeta(payload) === "subagent";
+  }
+  if (type === "turn_context" && payload && typeof payload === "object") {
+    const providerHint = resolveCodexModelQuotaProvider(payload.model);
+    if (providerHint) entry.codexQuotaProviderHint = providerHint;
   }
 
   const userInputRecord = parseCodexUserInputRecord(obj);
@@ -305,12 +319,15 @@ function processLine(line, entry, options = {}) {
   if (key === "event_msg:token_count") {
     // capturedAt = the line's own timestamp: lets the desktop's account
     // store order this report by observation time, not tunnel arrival time.
-    const codexQuota = isFreshCodexQuotaTimestamp(obj.timestamp)
-      ? resolveCodexRateLimitQuota(payload, { capturedAt: Date.parse(obj.timestamp) })
+    const quotaReport = isFreshCodexQuotaTimestamp(obj.timestamp)
+      ? resolveCodexRateLimitReport(payload, {
+        capturedAt: Date.parse(obj.timestamp),
+        providerHint: entry.codexQuotaProviderHint,
+      })
       : null;
-    if (codexQuota) {
+    if (quotaReport) {
       const postQuotaFn = typeof options.postQuota === "function" ? options.postQuota : postQuota;
-      postQuotaFn(entry.sessionId, codexQuota);
+      postQuotaFn(entry.sessionId, quotaReport);
     }
     return;
   }
@@ -554,6 +571,7 @@ function recoverStalePendingUserInputEntry(filePath, fileName, options = {}) {
     lastState: "notification",
     assistantLastOutput: null,
     assistantLastOutputTruncated: false,
+    codexQuotaProviderHint: null,
     pendingUserInputs: pending,
     initializing: false,
     partial: trailingPartial,
@@ -592,6 +610,7 @@ function pollFile(filePath, fileName, options = {}) {
       lastState: null,
       assistantLastOutput: null,
       assistantLastOutputTruncated: false,
+      codexQuotaProviderHint: null,
       pendingUserInputs: new Map(),
       initializing: true,
       partial: "",

@@ -78,6 +78,15 @@ function hasInteractivePermissionPending(entry, getPendingPermissions) {
   return entry.state === "notification";
 }
 
+function normalizeOrcaPaneOutcome(value) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    ok: value.ok === true,
+    match: value.match === "exact" || value.match === "cwd" ? value.match : null,
+    reason: typeof value.reason === "string" && value.reason ? value.reason : "unknown",
+  };
+}
+
 function normalizeFocusGateResult(value) {
   if (value && typeof value === "object") {
     return {
@@ -87,6 +96,10 @@ function normalizeFocusGateResult(value) {
       foregroundHwnd: value.foregroundHwnd || null,
       confirmed: value.confirmed === true,
       status: value.confirmed === true ? "confirmed" : "unconfirmed",
+      // This normalizer is a whitelist: without a line here the pane outcome is
+      // dropped between focusSession and the adapter, and the gate reads undefined
+      // on every real delivery while hand-built test payloads still pass.
+      orcaPane: normalizeOrcaPaneOutcome(value.orcaPane),
     };
   }
   return {
@@ -96,6 +109,7 @@ function normalizeFocusGateResult(value) {
     foregroundHwnd: null,
     confirmed: false,
     status: "unconfirmed",
+    orcaPane: null,
   };
 }
 
@@ -177,8 +191,28 @@ function defaultDelay(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 }
 
-function isEditorHostedEntry(entry) {
-  return !!entry && (entry.editor === "code" || entry.editor === "cursor");
+// These hosts complete their terminal-tab switch asynchronously, after the window
+// focus has already been confirmed. On the default ready delay the paste lands in
+// whichever tab was previously active — dropping the user's reply into another
+// session's prompt, and losing it from the one they answered. For Orca the switch
+// is now awaited outright (see isOrcaPaneConfirmed), so this delay only covers the
+// composer settling after the tab is already in front.
+// The field arrives via buildSessionSnapshotEntry, which is a whitelist — a host
+// added here needs its identifier carried there too or this stays dead code.
+function isAsyncTabSwitchEntry(entry) {
+  if (!entry) return false;
+  return entry.editor === "code" || entry.editor === "cursor" || !!entry.orcaPaneKey;
+}
+
+// A confirmed focus only means Orca's window came forward; the pane switch is a
+// separate CLI round-trip that can miss, time out, or land on a worktree guess.
+// Pasting on anything short of an exact pane match types the reply into a composer
+// the user never chose, so the delivery has to fail into the clipboard fallback
+// instead of reporting success.
+function isOrcaPaneConfirmed(payload) {
+  if (!payload || !payload.entry || !payload.entry.orcaPaneKey) return true;
+  const pane = payload.focusResult && payload.focusResult.orcaPane;
+  return !!(pane && pane.ok === true && pane.match === "exact");
 }
 
 function createWindowsPasteOnlyDeliveryAdapter({
@@ -209,6 +243,12 @@ function createWindowsPasteOnlyDeliveryAdapter({
       if (!clipboard || typeof clipboard.writeText !== "function") {
         return { status: "failed", delivered: false, errorClass: "clipboard_unavailable" };
       }
+      // Ahead of the clipboard write: the fallback adapter owns the clipboard on
+      // this path, and overwriting it here would clobber what the user gets told
+      // was copied for them.
+      if (!isOrcaPaneConfirmed(payload)) {
+        return { status: "failed", delivered: false, errorClass: "orca_pane_unconfirmed" };
+      }
 
       let previousText = null;
       let canRestore = false;
@@ -226,7 +266,7 @@ function createWindowsPasteOnlyDeliveryAdapter({
       }
 
       try {
-        const effectiveReadyDelayMs = isEditorHostedEntry(payload.entry)
+        const effectiveReadyDelayMs = isAsyncTabSwitchEntry(payload.entry)
           ? Math.max(readyDelayMs, WINDOWS_EDITOR_PASTE_READY_DELAY_MS)
           : readyDelayMs;
         await delay(effectiveReadyDelayMs);

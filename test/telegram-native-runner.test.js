@@ -5,6 +5,7 @@ const test = require("node:test");
 
 const { createTelegramNativeRunner } = require("../src/telegram-native-runner");
 const { EVENTS } = require("../src/telegram-migration-state");
+const { createRemoteCardWorkRegistry } = require("../src/session-automation-remote");
 const { createFakeTelegramServer } = require("./fakes/telegram-server");
 
 const VALID_TOKEN = "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi_jklmnop";
@@ -118,6 +119,69 @@ test("native runner sends nonce card and dispatches TEST_SUCCESS for matching ca
   assert.equal(runner.isPolling(), false);
 });
 
+test("native runner processes a matching test callback returned by the initial poll", async () => {
+  const server = createFakeTelegramServer();
+  const events = [];
+  let runner;
+  let releaseFirstPoll;
+  let callbackData = "";
+
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueue("sendMessage", (payload) => {
+    callbackData = payload.reply_markup.inline_keyboard[0][0].callback_data;
+    return { ok: true, result: { message_id: 43, chat: { id: 123 } } };
+  });
+  server.enqueueOk("answerCallbackQuery", true);
+  server.enqueueOk("editMessageReplyMarkup", { message_id: 43 });
+
+  runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async (event) => {
+      events.push(event);
+      await runner.stop();
+    },
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+  });
+
+  try {
+    await runner.start();
+    await tick();
+    assert.equal(server.calls.filter((call) => call.method === "getUpdates").length, 1);
+
+    await runner.sendTestCard();
+    assert.match(callbackData, /^clawd-test:[a-z0-9]+$/);
+
+    releaseFirstPoll({
+      ok: true,
+      result: [{
+        update_id: 1,
+        callback_query: {
+          id: "cb-initial-poll",
+          from: { id: 777 },
+          message: { message_id: 43, chat: { id: 123 } },
+          data: callbackData,
+        },
+      }],
+    });
+    await tick();
+    await tick();
+
+    assert.deepEqual(events.map((event) => event.type), [EVENTS.TEST_SUCCESS]);
+    assert.equal(server.calls.some((call) => call.method === "answerCallbackQuery"), true);
+    assert.equal(server.calls.some((call) => call.method === "editMessageReplyMarkup"), true);
+    assert.equal(
+      server.calls.filter((call) => call.method === "getUpdates").length,
+      1,
+      "the callback must be handled from the initial response without a second poll",
+    );
+    assert.equal(runner.isPolling(), false);
+  } finally {
+    await runner.stop();
+  }
+});
+
 test("native runner requestApproval resolves allow for matching callback", async () => {
   const server = createFakeTelegramServer();
   let releaseFirstPoll;
@@ -128,6 +192,14 @@ test("native runner requestApproval resolves allow for matching callback", async
   server.enqueue("sendMessage", (payload) => {
     assert.match(payload.text, /claude-code requests Bash/);
     assert.match(payload.text, /Summary: Run tests/);
+    const allCallbackData = payload.reply_markup.inline_keyboard
+      .flatMap((row) => row)
+      .map((button) => button.callback_data);
+    assert.equal(
+      allCallbackData.some((value) => typeof value === "string" && value.startsWith("ct:")),
+      false,
+      "the initial card must not expose session trust without the explicit capability"
+    );
     allowData = payload.reply_markup.inline_keyboard[0][0].callback_data;
     denyData = payload.reply_markup.inline_keyboard[0][1].callback_data;
     return { ok: true, result: { message_id: 99, chat: { id: 123 } } };
@@ -179,6 +251,519 @@ test("native runner requestApproval resolves allow for matching callback", async
   );
   assert.equal(allowEdit.payload.reply_markup, undefined);
   await runner.stop();
+});
+
+test("native runner session trust uses two-step confirmation and keeps a persistent revoke button", async () => {
+  const calls = [];
+  let releaseFirstPoll;
+  let releaseRevokePoll;
+  let trustOpenData = "";
+  let grantId = "grant-telegram-1";
+  let runner;
+  let pollCount = 0;
+  const routeChangeGrantIds = [];
+  const transport = async ({ method, payload, signal }) => {
+    calls.push({ method, payload, signal });
+    if (method === "sendMessage") {
+      const trustRow = payload.reply_markup.inline_keyboard.at(-1);
+      trustOpenData = trustRow[0].callback_data;
+      return { ok: true, result: { message_id: 501, chat: { id: 123 } } };
+    }
+    if (method === "getUpdates") {
+      pollCount += 1;
+      if (pollCount === 1) {
+        return new Promise((resolve) => { releaseFirstPoll = resolve; });
+      }
+      if (pollCount === 2) {
+        const id = trustOpenData.match(/^ct:([a-z0-9]+):open$/)[1];
+        return {
+          ok: true,
+          result: [
+            {
+              update_id: 1,
+              callback_query: {
+                id: "trust-open",
+                from: { id: 777 },
+                message: { message_id: 501, chat: { id: 123 } },
+                data: trustOpenData,
+              },
+            },
+            {
+              update_id: 2,
+              callback_query: {
+                id: "trust-confirm",
+                from: { id: 777 },
+                message: { message_id: 501, chat: { id: 123 } },
+                data: `ct:${id}:yes`,
+              },
+            },
+          ],
+        };
+      }
+      if (pollCount === 3) {
+        return new Promise((resolve) => { releaseRevokePoll = resolve; });
+      }
+      return new Promise(() => {});
+    }
+    return { ok: true, result: method === "editMessageText" ? { message_id: 501 } : true };
+  };
+
+  runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+    onSessionGrantRevoke: (clickedGrantId) => {
+      assert.equal(clickedGrantId, grantId);
+      runner.handleSessionAutomationChanges([{
+        previous: { grantId },
+        next: { grantId: "replacement-off", mode: "off" },
+        reason: "remote-revoke",
+      }]);
+      return { status: "applied" };
+    },
+    onSessionAutomationRouteChange: (client) => {
+      routeChangeGrantIds.push([...client.listActiveSessionAutomationGrantIds()]);
+    },
+  });
+  runner.syncSessionAutomationRoute({
+    enabled: true,
+    allowedUserId: "777",
+    chatId: "123",
+    tokenRevision: 1,
+  });
+
+  await runner.start();
+  await tick();
+  const decisionPromise = runner.requestApproval({
+    title: "claude-code requests Bash",
+    detail: "Summary: Run tests",
+    canOfferSessionTrust: true,
+  });
+  await tick();
+  assert.match(trustOpenData, /^ct:[a-z0-9]+:open$/);
+  releaseFirstPoll({ ok: true, result: [] });
+  const decision = await decisionPromise;
+  assert.equal(decision.action, "session-trust");
+  assert.ok(decision.cardHandle);
+
+  const cardWork = runner.beginSessionTrustCandidate({
+    grantId,
+    cardHandle: decision.cardHandle,
+  });
+  assert.ok(cardWork);
+  assert.equal(await runner.prepareSessionTrustCandidate(cardWork, { grantId }), true);
+  assert.equal(runner.activateSessionTrustCandidate(cardWork, { grantId }), true);
+  assert.equal(await runner.renderActiveSessionTrust(cardWork, {
+    grantId,
+    outcome: "activated",
+  }), true);
+
+  const editsBeforeRevoke = calls.filter((call) => call.method === "editMessageText");
+  assert.equal(
+    editsBeforeRevoke.every((call) => call.signal && typeof call.signal.aborted === "boolean"),
+    true,
+    "every session-trust edit must carry a cancellable deadline signal"
+  );
+  assert.match(editsBeforeRevoke[0].payload.text, /Confirm:/);
+  const preparing = editsBeforeRevoke.find((call) => /Enabling session trust/.test(call.payload.text));
+  assert.ok(preparing, "preparing edit must succeed before activation");
+  assert.equal(
+    preparing.payload.reply_markup.inline_keyboard[0][0].callback_data,
+    `session-grant:revoke:${grantId}`,
+  );
+  const active = editsBeforeRevoke.find((call) => /Session trust is active/.test(call.payload.text));
+  assert.ok(active);
+  assert.equal(
+    active.payload.reply_markup.inline_keyboard[0][0].callback_data,
+    `session-grant:revoke:${grantId}`,
+  );
+  runner.syncSessionAutomationRoute({
+    enabled: true,
+    allowedUserId: "888",
+    chatId: "123",
+    tokenRevision: 1,
+  });
+  assert.deepEqual(
+    routeChangeGrantIds,
+    [[grantId]],
+    "route-changing notification must enumerate the exact active grant before client state is lost"
+  );
+
+  releaseRevokePoll({
+    ok: true,
+    result: [{
+      update_id: 3,
+      callback_query: {
+        id: "trust-revoke",
+        from: { id: 777 },
+        message: { message_id: 501, chat: { id: 123 } },
+        data: `session-grant:revoke:${grantId}`,
+      },
+    }],
+  });
+  await tick();
+  await tick();
+  const terminal = calls
+    .filter((call) => call.method === "editMessageText")
+    .find((call) => /Session trust was revoked/.test(call.payload.text));
+  assert.ok(terminal);
+  assert.equal(terminal.payload.reply_markup, undefined);
+  await runner.stop();
+});
+
+test("native runner keeps one-time approval usable when the session card-work cap is full", async () => {
+  const registry = createRemoteCardWorkRegistry({ limit: 1 });
+  assert.ok(registry.reserve("occupied", { messageId: 900 }));
+  const calls = [];
+  let releaseFirstPoll;
+  let trustOpenData = "";
+  let pollCount = 0;
+  const transport = async ({ method, payload }) => {
+    calls.push({ method, payload });
+    if (method === "sendMessage") {
+      trustOpenData = payload.reply_markup.inline_keyboard.at(-1)[0].callback_data;
+      return { ok: true, result: { message_id: 502, chat: { id: 123 } } };
+    }
+    if (method === "getUpdates") {
+      pollCount += 1;
+      if (pollCount === 1) {
+        return new Promise((resolve) => { releaseFirstPoll = resolve; });
+      }
+      if (pollCount === 2) {
+        const id = trustOpenData.match(/^ct:([a-z0-9]+):open$/)[1];
+        const message = { message_id: 502, chat: { id: 123 } };
+        const from = { id: 777 };
+        return {
+          ok: true,
+          result: [
+            {
+              update_id: 1,
+              callback_query: {
+                id: "cap-open",
+                from,
+                message,
+                data: trustOpenData,
+              },
+            },
+            {
+              update_id: 2,
+              callback_query: {
+                id: "cap-confirm",
+                from,
+                message,
+                data: `ct:${id}:yes`,
+              },
+            },
+            {
+              update_id: 3,
+              callback_query: {
+                id: "cap-allow",
+                from,
+                message,
+                data: `cp:${id}:a`,
+              },
+            },
+          ],
+        };
+      }
+      return new Promise(() => {});
+    }
+    return { ok: true, result: method === "editMessageText" ? { message_id: 502 } : true };
+  };
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+    onSessionGrantRevoke: () => ({ status: "stale" }),
+    sessionAutomationCardWorkRegistry: registry,
+  });
+
+  await runner.start();
+  await tick();
+  const decisionPromise = runner.requestApproval({
+    title: "claude-code requests Bash",
+    detail: "Summary: Run tests",
+    canOfferSessionTrust: true,
+  });
+  await tick();
+  releaseFirstPoll({ ok: true, result: [] });
+  assert.deepEqual(await decisionPromise, { action: "allow" });
+  const fallback = calls
+    .filter((call) => call.method === "editMessageText")
+    .find((call) => (
+      call.payload.reply_markup
+      && call.payload.reply_markup.inline_keyboard[0][0].callback_data.startsWith("cp:")
+    ));
+  assert.ok(fallback, "the original one-time Allow/Deny controls must be restored");
+  assert.equal(registry.size(), 1, "the failed trust attempt must not consume another slot");
+  await runner.stop();
+});
+
+test("native runner releases an issued session-trust handle that main never consumes", async () => {
+  const registry = createRemoteCardWorkRegistry({ limit: 1 });
+  const calls = [];
+  let releaseFirstPoll;
+  let trustOpenData = "";
+  let pollCount = 0;
+  const transport = async ({ method, payload, signal }) => {
+    calls.push({ method, payload, signal });
+    if (method === "sendMessage") {
+      trustOpenData = payload.reply_markup.inline_keyboard.at(-1)[0].callback_data;
+      return { ok: true, result: { message_id: 504, chat: { id: 123 } } };
+    }
+    if (method === "getUpdates") {
+      pollCount += 1;
+      if (pollCount === 1) {
+        return new Promise((resolve) => { releaseFirstPoll = resolve; });
+      }
+      if (pollCount === 2) {
+        const id = trustOpenData.match(/^ct:([a-z0-9]+):open$/)[1];
+        const message = { message_id: 504, chat: { id: 123 } };
+        const from = { id: 777 };
+        return {
+          ok: true,
+          result: [
+            {
+              update_id: 1,
+              callback_query: {
+                id: "unused-open",
+                from,
+                message,
+                data: trustOpenData,
+              },
+            },
+            {
+              update_id: 2,
+              callback_query: {
+                id: "unused-confirm",
+                from,
+                message,
+                data: `ct:${id}:yes`,
+              },
+            },
+          ],
+        };
+      }
+      return new Promise(() => {});
+    }
+    return { ok: true, result: method === "editMessageText" ? { message_id: 504 } : true };
+  };
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+    onSessionGrantRevoke: () => ({ status: "stale" }),
+    sessionAutomationCardWorkRegistry: registry,
+  });
+
+  await runner.start();
+  await tick();
+  const decisionPromise = runner.requestApproval({
+    title: "claude-code requests Bash",
+    detail: "Summary: Run tests",
+    canOfferSessionTrust: true,
+  });
+  await tick();
+  releaseFirstPoll({ ok: true, result: [] });
+  const decision = await decisionPromise;
+
+  assert.equal(registry.size(), 1);
+  assert.equal(runner.discardSessionTrustCardHandle(decision.cardHandle, {
+    reason: "permission-resolved",
+  }), true);
+  await tick();
+  assert.equal(registry.size(), 0);
+  const terminal = calls
+    .filter((call) => call.method === "editMessageText")
+    .find((call) => /handled elsewhere/i.test(call.payload.text));
+  assert.ok(terminal);
+  assert.equal(runner.discardSessionTrustCardHandle(decision.cardHandle), false);
+  await runner.stop();
+});
+
+test("native runner rejects an issued session-trust handle after its route changes", async () => {
+  const registry = createRemoteCardWorkRegistry({ limit: 1 });
+  const edits = [];
+  let releaseFirstPoll;
+  let trustOpenData = "";
+  let pollCount = 0;
+  const transport = async ({ method, payload }) => {
+    if (method === "sendMessage") {
+      trustOpenData = payload.reply_markup.inline_keyboard.at(-1)[0].callback_data;
+      return { ok: true, result: { message_id: 505, chat: { id: 123 } } };
+    }
+    if (method === "getUpdates") {
+      pollCount += 1;
+      if (pollCount === 1) {
+        return new Promise((resolve) => { releaseFirstPoll = resolve; });
+      }
+      if (pollCount === 2) {
+        const id = trustOpenData.match(/^ct:([a-z0-9]+):open$/)[1];
+        const message = { message_id: 505, chat: { id: 123 } };
+        const from = { id: 777 };
+        return {
+          ok: true,
+          result: [
+            {
+              update_id: 1,
+              callback_query: {
+                id: "route-open",
+                from,
+                message,
+                data: trustOpenData,
+              },
+            },
+            {
+              update_id: 2,
+              callback_query: {
+                id: "route-confirm",
+                from,
+                message,
+                data: `ct:${id}:yes`,
+              },
+            },
+          ],
+        };
+      }
+      return new Promise(() => {});
+    }
+    if (method === "editMessageText") edits.push(payload);
+    return { ok: true, result: method === "editMessageText" ? { message_id: 505 } : true };
+  };
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+    onSessionGrantRevoke: () => ({ status: "stale" }),
+    onSessionAutomationRouteChange: () => {},
+    sessionAutomationCardWorkRegistry: registry,
+  });
+  runner.syncSessionAutomationRoute({
+    enabled: true,
+    allowedUserId: "777",
+    chatId: "123",
+    tokenRevision: 1,
+  });
+
+  await runner.start();
+  await tick();
+  const decisionPromise = runner.requestApproval({
+    title: "claude-code requests Bash",
+    detail: "Summary: Run tests",
+    canOfferSessionTrust: true,
+  });
+  await tick();
+  releaseFirstPoll({ ok: true, result: [] });
+  const decision = await decisionPromise;
+
+  assert.equal(registry.size(), 1);
+  runner.syncSessionAutomationRoute({
+    enabled: true,
+    allowedUserId: "888",
+    chatId: "123",
+    tokenRevision: 1,
+  });
+  assert.equal(runner.beginSessionTrustCandidate({
+    grantId: "grant-after-route-change",
+    cardHandle: decision.cardHandle,
+  }), null);
+  assert.equal(registry.size(), 1, "terminal cleanup owns the slot until its edit settles");
+  await tick();
+  await tick();
+  assert.equal(registry.size(), 0);
+  const terminal = edits.find((payload) => /not enabled/i.test(payload.text));
+  assert.ok(terminal, "the consumed confirmation card must be terminalized");
+  assert.strictEqual(terminal.reply_markup, undefined);
+  assert.equal(runner.discardSessionTrustCardHandle(decision.cardHandle), false);
+  await runner.stop();
+});
+
+test("native runner aborts a hung session-trust confirmation edit at its deadline", async () => {
+  let releaseFirstPoll;
+  let trustOpenData = "";
+  let pollCount = 0;
+  let editAborted = false;
+  const transport = async ({ method, payload, signal }) => {
+    if (method === "sendMessage") {
+      trustOpenData = payload.reply_markup.inline_keyboard.at(-1)[0].callback_data;
+      return { ok: true, result: { message_id: 503, chat: { id: 123 } } };
+    }
+    if (method === "getUpdates") {
+      pollCount += 1;
+      if (pollCount === 1) {
+        return new Promise((resolve) => { releaseFirstPoll = resolve; });
+      }
+      if (pollCount === 2) {
+        return {
+          ok: true,
+          result: [{
+            update_id: 1,
+            callback_query: {
+              id: "hung-open",
+              from: { id: 777 },
+              message: { message_id: 503, chat: { id: 123 } },
+              data: trustOpenData,
+            },
+          }],
+        };
+      }
+      return new Promise((resolve, reject) => {
+        if (signal.aborted) {
+          reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          return;
+        }
+        signal.addEventListener("abort", () => {
+          reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        }, { once: true });
+      });
+    }
+    if (method === "editMessageText") {
+      return new Promise((resolve, reject) => {
+        const onAbort = () => {
+          editAborted = true;
+          reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        };
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+    }
+    return { ok: true, result: true };
+  };
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+    sessionAutomationEditTimeoutMs: 5,
+  });
+
+  await runner.start();
+  await tick();
+  const decisionPromise = runner.requestApproval({
+    title: "claude-code requests Bash",
+    detail: "Summary: Run tests",
+    canOfferSessionTrust: true,
+  });
+  await tick();
+  releaseFirstPoll({ ok: true, result: [] });
+  await delay(20);
+
+  assert.equal(editAborted, true);
+  assert.equal(runner._pendingApprovals.size, 1, "the ordinary approval remains pending");
+  await runner.stop();
+  assert.equal(await decisionPromise, null);
 });
 
 test("native runner does not send an approval card when allowedTgUserId is blank (fail-closed)", async () => {
@@ -1365,6 +1950,7 @@ test("native runner stops polling on fatal webhook conflicts", async () => {
   const server = createFakeTelegramServer();
   let releaseFirstPoll;
   const events = [];
+  let routeChanges = 0;
 
   server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
   server.enqueueError("getUpdates", {
@@ -1378,6 +1964,7 @@ test("native runner stops polling on fatal webhook conflicts", async () => {
     getDispatch: () => async (event) => { events.push(event); },
     getChatId: () => "123",
     getAllowedUserId: () => "777",
+    onSessionAutomationRouteChange: () => { routeChanges += 1; },
   });
 
   await runner.start();
@@ -1389,6 +1976,7 @@ test("native runner stops polling on fatal webhook conflicts", async () => {
   assert.equal(runner.isPolling(), false);
   assert.equal(runner.getStatus().lastError.errorClass, "409_webhook");
   assert.deepEqual(events, [], "active polling failures should not dispatch TEST_FAILED without a pending test");
+  assert.equal(routeChanges, 1, "losing the callback route must tighten active session grants");
 });
 
 test("native runner reports initial webhook conflict during migration test setup", async () => {

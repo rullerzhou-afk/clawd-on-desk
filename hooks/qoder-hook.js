@@ -10,7 +10,7 @@
 
 const crypto = require("crypto");
 const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
 const TOOL_MATCH_STRING_MAX = 240;
 const TOOL_MATCH_ARRAY_MAX = 16;
@@ -120,6 +120,9 @@ function shouldResolvePid(hookName, env = process.env) {
 }
 
 function applyLocalProcessFields(body, pidMeta) {
+  // Before the pidMeta gate: the pane key comes from the environment, so it has
+  // to survive the events where shouldResolvePid skips the process snapshot.
+  applyOrcaPaneKey(body);
   if (!pidMeta || typeof pidMeta !== "object") return;
   if (Number.isFinite(pidMeta.stablePid) && pidMeta.stablePid > 0) body.source_pid = Math.floor(pidMeta.stablePid);
   if (pidMeta.detectedEditor) body.editor = pidMeta.detectedEditor;
@@ -136,6 +139,32 @@ const TOOL_METADATA_EVENTS = new Set([
   "PermissionRequest",
   "PermissionDenied",
 ]);
+
+// #634: lifecycle for the shared resolver's cross-process pid cache. Stop is
+// deliberately NOT "end" (turn completion); SessionEnd IS a true session end
+// (registered by qoder-install.js) and drops the cache. cacheable keys off the
+// RAW session id — normalizeSessionId prefixes, so its "qoder:default"
+// fallback would defeat the #583 same-key guard — and rejects a literal
+// "default" id for the same reason.
+const EVENT_TO_LIFECYCLE = {
+  SessionStart: "start",
+  UserPromptSubmit: "prompt",
+  SessionEnd: "end",
+};
+
+function pidCacheContext(hookName, payload) {
+  const raw = payload && payload.session_id != null && payload.session_id !== ""
+    ? String(payload.session_id)
+    : "";
+  const cwd = payload && typeof payload.cwd === "string" ? payload.cwd : "";
+  return {
+    namespace: "qoder",
+    sessionId: normalizeSessionId(payload && payload.session_id),
+    cacheCwd: cwd,
+    lifecycle: EVENT_TO_LIFECYCLE[hookName] || "event",
+    cacheable: !!raw && raw !== "default" && !!cwd,
+  };
+}
 
 function maybeAddToolMetadata(body, payload) {
   const toolName = typeof payload.tool_name === "string" && payload.tool_name ? payload.tool_name : null;
@@ -173,6 +202,7 @@ function buildStateBody(hookName, payload, options = {}) {
   if (options.remote) {
     body.host = options.host || readHostPrefix();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body, options.env);
   } else {
     applyWslSourceFields(body);
     applyLocalProcessFields(body, options.pidMeta);
@@ -189,7 +219,7 @@ function sendHookEvent(payload, argvEvent, deps = {}) {
     remote,
     host: remote && deps.readHostPrefix ? deps.readHostPrefix() : undefined,
     pidMeta: shouldResolvePid(hookName, env)
-      ? (deps.resolvePid ? deps.resolvePid() : undefined)
+      ? (deps.resolvePid ? deps.resolvePid(pidCacheContext(hookName, payload)) : undefined)
       : undefined,
   });
 

@@ -3,6 +3,9 @@
 const path = require("path");
 const { resolveSessionIdentity } = require("./session-key");
 const {
+  assessSessionAutomationIdentity,
+} = require("./session-automation-identity");
+const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
 } = require("../hooks/server-config");
@@ -65,6 +68,13 @@ function normalizeTmuxClient(value) {
   const text = value.trim();
   if (!text || text.length > 256 || text.startsWith("-")) return null;
   return /^[\w./:-]+$/.test(text) ? text : null;
+}
+
+function normalizeOrcaPaneKey(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text || text.length > 256) return null;
+  return /^[\w-]+:[\w-]+$/.test(text) ? text : null;
 }
 
 function normalizeAssistantLastOutput(value) {
@@ -176,9 +186,27 @@ function handleStatePost(req, res, options) {
       const pidChain = Array.isArray(data.pid_chain) ? data.pid_chain.filter(n => Number.isFinite(n) && n > 0) : null;
       const tmuxSocket = normalizeTmuxSocket(data.tmux_socket);
       const tmuxClient = normalizeTmuxClient(data.tmux_client);
+      const orcaPaneKey = normalizeOrcaPaneKey(data.orca_pane_key);
       const rawAgentPid = data.agent_pid ?? data.claude_pid ?? data.cursor_pid;
       const agentPid = Number.isFinite(rawAgentPid) && rawAgentPid > 0 ? Math.floor(rawAgentPid) : null;
       const agentId = agentIdentity.agentId;
+      const trustedProfileId = remoteProfile && typeof remoteProfile.profileId === "string"
+        ? remoteProfile.profileId
+        : "local";
+      const sessionAutomationIdentity = assessSessionAutomationIdentity({
+        agentId,
+        channel: "state",
+        event,
+        // Preserve the actual wire value. The custom-agent namespace and the
+        // resolveSessionIdentity fallback below must not manufacture evidence
+        // of a stable session.
+        rawSessionId: session_id,
+        profileId: trustedProfileId,
+        hookSource: data.hook_source,
+        codexOriginator: data.codex_originator,
+        codexSource: data.codex_source,
+        agentPid,
+      });
       const reportedSubagentId = agentId === "claude-code"
         ? normalizeSubagentMetadata(data.subagent_id, MAX_SUBAGENT_ID_LENGTH)
         : null;
@@ -205,9 +233,6 @@ function handleStatePost(req, res, options) {
           ? rawCustomSessionId
           : `${customSessionPrefix}${rawCustomSessionId}`;
       }
-      const trustedProfileId = remoteProfile && typeof remoteProfile.profileId === "string"
-        ? remoteProfile.profileId
-        : "local";
       const sessionIdentity = resolveSessionIdentity(session_id, trustedProfileId, "default");
       session_id = sessionIdentity.sessionId;
       const host = remoteProfile && typeof remoteProfile.displayHost === "string"
@@ -264,6 +289,7 @@ function handleStatePost(req, res, options) {
       const antigravityQuota = normalizeAntigravityQuota(data.antigravity_quota);
       const claudeQuota = normalizeClaudeQuota(data.claude_quota);
       const codexQuota = normalizeCodexQuota(data.codex_quota);
+      const codexSparkQuota = normalizeCodexQuota(data.codex_spark_quota);
       const assistantLastOutput = normalizeAssistantLastOutput(data.assistant_last_output);
       const assistantLastOutputTruncated = data.assistant_last_output_truncated === true;
       const transcriptPath = normalizeTranscriptPath(data.transcript_path);
@@ -291,6 +317,11 @@ function handleStatePost(req, res, options) {
         ? data.permission_gate_id.trim().slice(0, 100)
         : null;
       const preserveState = data.preserve_state === true;
+      const testResult = (
+        (agentId === "claude-code" || agentId === "cursor-agent")
+        && (event === "PostToolUse" || event === "PostToolUseFailure")
+        && (data.test_result === "pass" || data.test_result === "fail")
+      ) ? data.test_result : null;
       // Statusline refresh POSTs are metadata, not lifecycle (#590 B2): they
       // may only annotate an existing session with quota/context and must
       // never create one, touch recentEvents, or bump updatedAt. state.js
@@ -326,12 +357,13 @@ function handleStatePost(req, res, options) {
       // model as the session cards' host grouping: machines the user
       // deployed Clawd hooks to. The store shape-sanitizes the label.
       if (typeof ctx.updateAccountQuota === "function"
-        && (antigravityQuota || claudeQuota || codexQuota)) {
+        && (antigravityQuota || claudeQuota || codexQuota || codexSparkQuota)) {
         const quotaSource = trustedProfileId === "local" ? host : `remote:${trustedProfileId}`;
         ctx.updateAccountQuota(quotaSource, {
           antigravityQuota,
           claudeQuota,
           codexQuota,
+          ...(codexSparkQuota ? { codexSparkQuota } : {}),
           ...(trustedProfileId === "local" ? {} : { displayHost: host }),
         });
       }
@@ -578,14 +610,13 @@ function handleStatePost(req, res, options) {
             pidChain,
             tmuxSocket,
             tmuxClient,
+            orcaPaneKey,
             agentPid,
             agentId,
             ...(subagentId ? { subagentId } : {}),
             ...(subagentType ? { subagentType } : {}),
-            ...(trustedProfileId === "local" ? {} : {
-              profileId: sessionIdentity.profileId,
-              rawSessionId: sessionIdentity.rawSessionId,
-            }),
+            profileId: sessionIdentity.profileId,
+            rawSessionId: sessionIdentity.rawSessionId,
             host,
             wslDistro,
             headless: headless || codexHookState.headless === true,
@@ -615,9 +646,23 @@ function handleStatePost(req, res, options) {
             sessionCronsCount,
             stopHookActive,
             stdinDiag,
+            sessionAutomationIdentity,
             ...(codexUserInput ? { transientPermissionEvent: true } : {}),
             ...(agentIdentity.defaulted ? { agentIdDefaulted: true } : {}),
           });
+        }
+        // Decorative only: the lifecycle update above remains authoritative.
+        // Main owns the opt-in / DND / visibility / mini / drag gate; a visual
+        // failure must never turn a valid hook state POST into a 400.
+        if (testResult && typeof ctx.handleTestResult === "function") {
+          try {
+            ctx.handleTestResult(testResult, {
+              sessionId: sid,
+              agentId,
+              event,
+              headless: effHeadless,
+            });
+          } catch {}
         }
         res.writeHead(200, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
         res.end("ok");

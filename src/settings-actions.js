@@ -51,6 +51,7 @@
 const {
   CURRENT_VERSION,
   MAX_CUSTOM_DISCOVERY_PATHS,
+  isValidSettingsWindowBounds,
   normalizePathList,
 } = require("./prefs");
 const {
@@ -191,6 +192,7 @@ const MANAGED_CLEANUP_AGENT_IDS = Object.freeze([
   "kiro-cli",
   "kimi-cli",
   "qwen-code",
+  "zcode",
   "codewhale",
   "opencode",
   "mimocode",
@@ -238,6 +240,13 @@ const updateRegistry = {
   },
   savedPixelWidth: requireNonNegativeFiniteNumber("savedPixelWidth"),
   savedPixelHeight: requireNonNegativeFiniteNumber("savedPixelHeight"),
+  settingsWindowBounds: (value) => {
+    if (value === null || isValidSettingsWindowBounds(value)) return { status: "ok" };
+    return {
+      status: "error",
+      message: "settingsWindowBounds must be null or integer { x, y, width, height } with positive dimensions",
+    };
+  },
   // #408: frozen-origin work area for keepSizeAcrossDisplays. null = unknown
   // (legacy prefs / never seeded); otherwise positive width+height.
   savedPixelWorkArea: (value) => {
@@ -279,8 +288,10 @@ const updateRegistry = {
   flashTaskbarOnComplete: requireBoolean("flashTaskbarOnComplete"),
   flashIntervalMs: requireNumberInRange("flashIntervalMs", 200, 2000),
   flashDurationMs: requireNumberInRange("flashDurationMs", 0, 60000),
+  testReactionsEnabled: requireBoolean("testReactionsEnabled"),
   codexHookHealthNotifyEnabled: requireBoolean("codexHookHealthNotifyEnabled"),
   codexHookHealthLastNotified: requireString("codexHookHealthLastNotified", { allowEmpty: true }),
+  telegramMigrationLastNotified: requireString("telegramMigrationLastNotified", { allowEmpty: true }),
   lowPowerIdleMode: requireBoolean("lowPowerIdleMode"),
   keepAwakeWhileWorking: requireBoolean("keepAwakeWhileWorking"),
   petTint(value) {
@@ -314,6 +325,23 @@ const updateRegistry = {
         return {
           status: "error",
           message: `petAccessory entry "${themeId}" must map a safe theme id to a non-default catalog accessory id`,
+        };
+      }
+    }
+    return { status: "ok" };
+  },
+  holidayAccessoryEnabled(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { status: "error", message: "holidayAccessoryEnabled must be a theme-to-boolean object" };
+    }
+    for (const [themeId, enabled] of Object.entries(value)) {
+      if (
+        !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)
+        || enabled !== true
+      ) {
+        return {
+          status: "error",
+          message: `holidayAccessoryEnabled entry "${themeId}" must map a safe theme id to true`,
         };
       }
     }
@@ -950,6 +978,7 @@ async function removeTheme(payload, deps) {
   const currentIdleVisual = snapshot.idleVisual || {};
   const currentPetTint = snapshot.petTint || {};
   const currentPetAccessory = snapshot.petAccessory || {};
+  const currentHolidayAccessoryEnabled = snapshot.holidayAccessoryEnabled || {};
   const nextCommit = {};
   if (currentOverrides[themeId]) {
     const nextOverrides = { ...currentOverrides };
@@ -975,6 +1004,11 @@ async function removeTheme(payload, deps) {
     const nextPetAccessory = { ...currentPetAccessory };
     delete nextPetAccessory[themeId];
     nextCommit.petAccessory = nextPetAccessory;
+  }
+  if (currentHolidayAccessoryEnabled[themeId] !== undefined) {
+    const nextHolidayAccessoryEnabled = { ...currentHolidayAccessoryEnabled };
+    delete nextHolidayAccessoryEnabled[themeId];
+    nextCommit.holidayAccessoryEnabled = nextHolidayAccessoryEnabled;
   }
   if (Object.keys(nextCommit).length > 0) {
     return { status: "ok", commit: nextCommit };
@@ -1247,6 +1281,17 @@ function remoteSshUpdateProfile(payload, deps) {
   if (Number.isFinite(prev.createdAt) && !Number.isFinite(payload.createdAt)) {
     profile.createdAt = prev.createdAt;
   }
+  // Runtime identity is server-owned. A normal profile edit must not switch
+  // layouts merely because the renderer omits these hidden fields, and a
+  // forged settings command must not bypass the dedicated, confirmation-gated
+  // runtime-mode transaction.
+  profile.runtimeMode = prev.runtimeMode || REMOTE_RUNTIME_MODE_ACCOUNT_DEFAULT;
+  profile.runtimeKey = profile.runtimeMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED
+    ? prev.runtimeKey
+    : ACCOUNT_DEFAULT_RUNTIME_KEY;
+  profile.layoutVersion = Number.isInteger(prev.layoutVersion)
+    ? prev.layoutVersion
+    : REMOTE_LAYOUT_VERSION;
   // Preserve lastDeployedAt across cosmetic edits (label, autoStartCodexMonitor,
   // connectOnLaunch). Only clear it when deploy target fields drifted — those
   // changes mean the previous deploy is no longer valid for the new target,
@@ -1725,9 +1770,9 @@ function telegramApprovalTokenInfo(_payload, deps = {}) {
   };
 }
 
-// v0.9.0 migration: native-vs-sidecar transport controller.
+// Telegram approval transport migration controller.
 // All telegramMigration.* commands lock on the same `tgApproval` domain as the
-// legacy approval commands so they can't race against token writes.
+// approval commands so they can't race against token writes.
 function telegramMigrationSnapshot(_payload, deps = {}) {
   if (!deps || !deps.telegramMigration) {
     return { status: "error", message: "telegramMigration.snapshot requires controller dep" };
@@ -1750,7 +1795,7 @@ async function telegramMigrationDispatch(payload, deps = {}) {
       snapshot: deps.telegramMigration.getSnapshot(),
     };
   }
-  const res = await deps.telegramMigration.dispatch(payload);
+  const res = await deps.telegramMigration.dispatch({ type: payload.type });
   return res && res.ok
     ? { status: "ok", state: res.state, snapshot: deps.telegramMigration.getSnapshot() }
     : {

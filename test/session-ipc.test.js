@@ -74,6 +74,14 @@ function createHarness(overrides = {}) {
       calls.push(["openSessionFolder", sessionId]);
       return { status: "ok" };
     }),
+    setSessionAutomationOverride: overrides.setSessionAutomationOverride || (async (payload, context) => {
+      calls.push(["setSessionAutomationOverride", payload, context]);
+      return { status: "applied" };
+    }),
+    clearSessionAutomationGrant: overrides.clearSessionAutomationGrant || ((payload) => {
+      calls.push(["clearSessionAutomationGrant", payload]);
+      return { status: "applied" };
+    }),
   });
   return { ipcMain, runtime, calls };
 }
@@ -82,11 +90,13 @@ test("session IPC registers owned channels and disposes them", () => {
   const { ipcMain, runtime } = createHarness();
 
   assert.deepStrictEqual([...ipcMain.handlers.keys()].sort(), [
+    "dashboard:clear-session-automation-grant",
     "dashboard:get-i18n",
     "dashboard:get-snapshot",
     "dashboard:hide-session",
     "dashboard:open-session-folder",
     "dashboard:set-session-alias",
+    "dashboard:set-session-automation",
     "session-hud:get-i18n",
     "session-hud:open-session-folder",
     "session:ack-completion",
@@ -178,6 +188,46 @@ test("session IPC owns dashboard open bridges", () => {
   ]);
 });
 
+test("session automation IPC accepts only the two narrow renderer payloads", async () => {
+  const { ipcMain, calls } = createHarness();
+  assert.deepStrictEqual(
+    await ipcMain.invoke("dashboard:set-session-automation", {
+      sessionId: "s1",
+      mode: "auto-tools",
+    }),
+    { status: "applied" }
+  );
+  assert.deepStrictEqual(
+    await ipcMain.invoke("dashboard:clear-session-automation-grant", { grantId: "g1" }),
+    { status: "applied" }
+  );
+  for (const payload of [
+    { sessionId: "s1", mode: "auto-tools", agentId: "claude-code" },
+    { sessionId: "s1", mode: "unattended" },
+    { mode: "off" },
+  ]) {
+    assert.deepStrictEqual(
+      await ipcMain.invoke("dashboard:set-session-automation", payload),
+      { status: "invalid" }
+    );
+  }
+  assert.deepStrictEqual(
+    await ipcMain.invoke("dashboard:clear-session-automation-grant", {
+      grantId: "g1",
+      target: "remote-revoke",
+    }),
+    { status: "invalid" }
+  );
+  assert.deepStrictEqual(calls, [
+    [
+      "setSessionAutomationOverride",
+      { sessionId: "s1", mode: "auto-tools" },
+      { sender: "sender-web-contents" },
+    ],
+    ["clearSessionAutomationGrant", { grantId: "g1" }],
+  ]);
+});
+
 test("session:ack-completion returns {status:ok} when ack lands", async () => {
   const { ipcMain, calls } = createHarness({
     ackSessionCompletion: (sessionId) => {
@@ -227,6 +277,8 @@ test("registerSessionIpc requires ackSessionCompletion dep", () => {
       showDashboard: () => {},
       setSessionHudPinned: () => {},
       openSessionFolder: () => {},
+      setSessionAutomationOverride: () => {},
+      clearSessionAutomationGrant: () => {},
       // ackSessionCompletion intentionally absent
     }),
     /ackSessionCompletion/

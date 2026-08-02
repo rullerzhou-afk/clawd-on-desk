@@ -2,13 +2,22 @@
 
 const { unregisterHooks, unregisterClaudeStatusline } = require("./install.js");
 
-try {
+function main() {
   const { removed, changed } = unregisterHooks();
   unregisterClaudeStatusline();
   console.log("Clawd Claude hooks uninstall complete");
   console.log(`  Removed: ${removed}`);
   console.log(`  Changed: ${changed}`);
-} catch (err) {
-  console.error(err.message);
-  process.exit(1);
+  return { removed, changed };
 }
+
+if (require.main === module) {
+  try {
+    main();
+  } catch (err) {
+    console.error(err.message);
+    process.exitCode = 1;
+  }
+}
+
+module.exports = { main };

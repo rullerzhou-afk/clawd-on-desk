@@ -48,6 +48,7 @@ function createHarness(options = {}) {
     sendToRenderer: (...args) => calls.push(["sendToRenderer", ...args]),
     sendDashboardI18n: () => calls.push(["sendDashboardI18n"]),
     sendSessionHudI18n: () => calls.push(["sendSessionHudI18n"]),
+    syncWindowTitles: () => calls.push(["syncWindowTitles"]),
     emitSessionSnapshot: (...args) => calls.push(["emitSessionSnapshot", ...args]),
     cleanStaleSessions: () => calls.push(["cleanStaleSessions"]),
     syncPermissionShortcuts: () => calls.push(["syncPermissionShortcuts"]),
@@ -222,6 +223,7 @@ describe("settings-effect-router", () => {
       ["updateMirrors", { lang: "zh", sessionAliases: { "local|claude|1": "work" } }],
       ["sendDashboardI18n"],
       ["sendSessionHudI18n"],
+      ["syncWindowTitles"],
       ["emitSessionSnapshot", { force: true }],
       ["rebuildAllMenus"],
     ]);
@@ -292,6 +294,18 @@ describe("settings-effect-router", () => {
     assert.deepStrictEqual(calls, [
       ["updateMirrors", { sessionHudPinned: false }],
       ["handleSessionHudPinnedChanged", false],
+    ]);
+  });
+
+  it("refreshes session effective modes immediately when global automation changes", () => {
+    const { calls, emit } = createHarness();
+
+    emit({ permissionAutomationMode: "auto-tools" });
+
+    assert.deepStrictEqual(calls, [
+      ["updateMirrors", { permissionAutomationMode: "auto-tools" }],
+      ["emitSessionSnapshot", { force: true }],
+      ["rebuildAllMenus"],
     ]);
   });
 
@@ -477,6 +491,46 @@ describe("settings-effect-router", () => {
         offsetY: 0,
       }],
     ]);
+    assert.strictEqual(calls.some((call) => call[0] === "rebuildAllMenus"), false);
+  });
+
+  it("temporarily resolves the holiday accessory from an independent opt-in", () => {
+    const clawd = {
+      _id: "clawd",
+      _builtin: true,
+      _capabilities: { accessories: true },
+    };
+    const { calls, emit } = createHarness({
+      initialSnapshot: {
+        petAccessory: { clawd: "wizard-hat" },
+        holidayAccessoryEnabled: {},
+      },
+      routerOptions: {
+        getActiveTheme: () => clawd,
+        now: () => new Date(2026, 11, 24, 12, 0, 0, 0),
+      },
+    });
+
+    emit({ holidayAccessoryEnabled: { clawd: true } });
+    assert.deepStrictEqual(calls[1], [
+      "sendToRenderer",
+      "pet-accessory-change",
+      {
+        id: "santa-hat",
+        assetFile: "santa-hat.svg",
+        aspect: 16 / 9,
+        widthScale: 1,
+        offsetY: 0.2,
+      },
+    ]);
+
+    calls.length = 0;
+    emit({ petAccessory: { clawd: "halo" } });
+    assert.strictEqual(calls[1][2].id, "santa-hat");
+
+    calls.length = 0;
+    emit({ holidayAccessoryEnabled: {} });
+    assert.strictEqual(calls[1][2].id, "halo");
     assert.strictEqual(calls.some((call) => call[0] === "rebuildAllMenus"), false);
   });
 

@@ -178,8 +178,8 @@ function resolveAgentPaths(descriptor, options) {
     });
     const primary = configTargets[0];
     return finalizeAgentPaths(descriptor, {
-      parentDir: primary.parentDir,
-      configPath: primary.configPath,
+      parentDir: primary ? primary.parentDir : "",
+      configPath: primary ? primary.configPath : "",
       configTargets,
     }, options);
   }
@@ -373,6 +373,7 @@ function detectInstallation(descriptor, paths, options) {
     case "cursor-agent":
     case "codebuddy":
     case "qwen-code":
+    case "zcode":
     case "codewhale":
     case "opencode":
     case "mimocode":

@@ -131,7 +131,7 @@
 
     <!-- Pixel Laptop (inside rotation group so it leans with Clawd) -->
     <g id="laptop" transform="translate(3, 11)">
-      <!-- Laptop Base --> 
+      <!-- Laptop Base -->
       <rect x="-0.5" y="4" width="8" height="1" fill="#546E7A" rx="0.5"/>
       <!-- Screen Back -->
       <rect x="0" y="0" width="7" height="4.5" fill="#78909C" rx="0.5"/>

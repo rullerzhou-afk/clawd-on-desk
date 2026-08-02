@@ -79,7 +79,6 @@ describe("built-in accessory capability contracts", () => {
     for (const hidden of [
       "clawd-error.svg",
       "clawd-collapse-sleep.svg",
-      "clawd-sleeping.svg",
       "clawd-wake.svg",
       "clawd-mini-enter-sleep.svg",
       "clawd-mini-sleep.svg",
@@ -87,6 +86,11 @@ describe("built-in accessory capability contracts", () => {
       assert.strictEqual(raw.customization.accessories.files[hidden].visibility, "hidden");
       assert.ok(usages.some((usage) => usage.file === hidden), `${hidden} should be reachable`);
     }
+
+    const sleeping = raw.customization.accessories.files["clawd-sleeping.svg"];
+    assert.deepStrictEqual(sleeping.staticFrame, { cx: 7.5, baseY: 10, width: 16 });
+    assert.strictEqual(sleeping.followTarget.id, "torso-sploot");
+    assert.deepStrictEqual(sleeping.followTarget.frame, sleeping.staticFrame);
   });
 
   it("anchors Clawd idle accessories inside the breathing transform", () => {

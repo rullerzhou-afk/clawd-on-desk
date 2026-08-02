@@ -1,16 +1,532 @@
 {
   "svgSources": {
+    "claude-code": {
+      "sourceFilename": "claude-code.svg",
+      "sourceType": "svg",
+      "sha256": "670b3d8d749d0815ad8f7e62a59d51cb5e2053cb19403f3541a8aed7036a877f",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
+    },
+    "codex": {
+      "sourceFilename": "codex.svg",
+      "sourceType": "svg",
+      "sha256": "a595df6b423920c67a7f8f73c063e4bfb72d415948097b6cac063a2366bb5186",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
+    },
+    "copilot-cli": {
+      "sourceFilename": "copilot-cli.svg",
+      "sourceType": "svg",
+      "sha256": "bbc7fddc13448236e5edea8c399d2072dc40aa5da5bca07f7a2f412405c500a3",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
+    },
+    "gemini-cli": {
+      "sourceFilename": "gemini-cli.svg",
+      "sourceType": "svg",
+      "sha256": "c2f54ebaa4c3b9191c6a07f7b0c66bc78e4abe486003dc564469cf650672663e",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
+    },
+    "antigravity-cli": {
+      "sourceFilename": "antigravity-cli.svg",
+      "sourceType": "svg",
+      "sha256": "652128cf55a28bb958563ee372d0bd00208d9e6fd446f523f77aafd811eef8ca",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
+    },
+    "cursor-agent": {
+      "sourceFilename": "cursor-agent.svg",
+      "sourceType": "svg",
+      "sha256": "0cb51bddf264ae108926fd554c063ef40fc1aac3c5c921ddb39ad184e4e5d0ef",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
+    },
+    "codebuddy": {
+      "sourceFilename": "codebuddy.svg",
+      "sourceType": "svg",
+      "sha256": "033d5da624460e686046f22b4e242b6b86484ad84ec4877e4efa15a9fb642b97",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
+    },
     "kiro-cli": {
-      "sha256": "dbc80a624ee4904e0fadca3c5e6c0fa78bfa9019d09ed1acec9f3e4fffa7b059"
+      "sourceFilename": "kiro-cli.svg",
+      "sourceType": "svg",
+      "sha256": "4eae4d6e818da7342c32c7d443ab7c97b93c544db9af379d5b5bf7f0a3127d66",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
+    },
+    "kimi-cli": {
+      "sourceFilename": "kimi-cli.svg",
+      "sourceType": "svg",
+      "sha256": "74a7292aeb0220445d14c5d397d75760e2e8c6ed6a9e5fe4f3023471bf62a9ff",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
     },
     "qwen-code": {
-      "sha256": "59f5a92726beaaaac32a8224926fae063a7931edf8caecf7f50d6cfc96a7acae"
+      "sourceFilename": "qwen-code.svg",
+      "sourceType": "svg",
+      "sha256": "77f5768c66d08ce1d3d14e73373975c1bc0454be88c81523ddd0ffd7e2974029",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
+    },
+    "opencode": {
+      "sourceFilename": "opencode.svg",
+      "sourceType": "svg",
+      "sha256": "7cfa6e9d6726f7c9fa26c7d9aef0dfec52d20a137380454340f30f12ccbfd302",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
+    },
+    "mimocode": {
+      "sourceFilename": "mimocode.svg",
+      "sourceType": "svg",
+      "sha256": "b04ad7dad52af2212c4567daf0ee6856f2c4625c92c680a27f9880295d558b71",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
     },
     "pi": {
-      "sha256": "a5624bc3b8cac94de75f6f13701eca2ad3ef67bbeba286c4af3f398806f0858a"
+      "sourceFilename": "pi.svg",
+      "sourceType": "svg",
+      "sha256": "d82978781b824273c55473822c1f243a6ed34fc6e8c2dbfe1a90dfc66ae43ee8",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
     },
     "openclaw": {
-      "sha256": "ca1aac700af8356d82964ed64d2417e143c685dbda0fbdf69c70360ff96cf057"
+      "sourceFilename": "openclaw.svg",
+      "sourceType": "svg",
+      "sha256": "4123c0c75dda5b28e3e0d38075514085bf546178a620776344813c08fa41277c",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
+    },
+    "hermes": {
+      "sourceFilename": "hermes.svg",
+      "sourceType": "svg",
+      "sha256": "02d43c0a91fc2ee41f2684fc39613ff6687de29a4b079665bace5303671dd63b",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
+    },
+    "qoder": {
+      "sourceFilename": "qoder.svg",
+      "sourceType": "svg",
+      "sha256": "396596d247477e2a036c141a16ec266df7b14c0130b777a68fd04bc89af50bc8",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
+    }
+  },
+  "sources": {
+    "claude-code": {
+      "agentId": "claude-code",
+      "originalFilename": "claudecode-color.png",
+      "sourceFilename": "claude-code.png",
+      "sourceType": "png",
+      "sha256": "9ef1d98492f68c5c7766162af827dd4e0c9cb0d76b78fce22798985a792fca63",
+      "fallback": false,
+      "upstreamPackage": "@lobehub/icons-static-png",
+      "upstreamVersion": "1.95.0",
+      "license": "MIT",
+      "variant": "light"
+    },
+    "codex": {
+      "agentId": "codex",
+      "originalFilename": "openai.png",
+      "sourceFilename": "codex.png",
+      "sourceType": "png",
+      "sha256": "8a33312f6bb17c1edddf8f9d7fbac09ce1d1d697d6601f37227afa879e94c52e",
+      "fallback": false,
+      "upstreamPackage": "@lobehub/icons-static-png",
+      "upstreamVersion": "1.95.0",
+      "license": "MIT",
+      "variant": "light",
+      "contrastTreatment": "neutral-light-tile"
+    },
+    "copilot-cli": {
+      "agentId": "copilot-cli",
+      "originalFilename": "githubcopilot.png",
+      "sourceFilename": "copilot-cli.png",
+      "sourceType": "png",
+      "sha256": "984fc3fb2708c83fcc870eabfb2a9a4cd4a2a059ac18f78200119dc37f95ce8c",
+      "fallback": false,
+      "upstreamPackage": "@lobehub/icons-static-png",
+      "upstreamVersion": "1.95.0",
+      "license": "MIT",
+      "variant": "light",
+      "contrastTreatment": "neutral-light-tile"
+    },
+    "gemini-cli": {
+      "agentId": "gemini-cli",
+      "originalFilename": "geminicli-color.png",
+      "sourceFilename": "gemini-cli.png",
+      "sourceType": "png",
+      "sha256": "ef72d48ebab74c96296d34c8ad5d87685f90765d21f31d0884049bb45a8b62e5",
+      "fallback": false,
+      "upstreamPackage": "@lobehub/icons-static-png",
+      "upstreamVersion": "1.95.0",
+      "license": "MIT",
+      "variant": "light"
+    },
+    "antigravity-cli": {
+      "agentId": "antigravity-cli",
+      "originalFilename": "antigravity-color.png",
+      "sourceFilename": "antigravity-cli.png",
+      "sourceType": "png",
+      "sha256": "ac20d11802a405491048957d68c84f7303ceaf682a95cf890263452ccdd97897",
+      "fallback": false,
+      "upstreamPackage": "@lobehub/icons-static-png",
+      "upstreamVersion": "1.95.0",
+      "license": "MIT",
+      "variant": "light"
+    },
+    "cursor-agent": {
+      "agentId": "cursor-agent",
+      "originalFilename": "cursor.png",
+      "sourceFilename": "cursor-agent.png",
+      "sourceType": "png",
+      "sha256": "783ac5ded2079c86a2741af24f1d168ea1b7d12846feea4bac54d79ffb061062",
+      "fallback": false,
+      "upstreamPackage": "@lobehub/icons-static-png",
+      "upstreamVersion": "1.95.0",
+      "license": "MIT",
+      "variant": "light",
+      "contrastTreatment": "neutral-light-tile"
+    },
+    "codebuddy": {
+      "agentId": "codebuddy",
+      "originalFilename": "codebuddy-color.png",
+      "sourceFilename": "codebuddy.png",
+      "sourceType": "png",
+      "sha256": "ea1fc6c6d24e0519e17504b16444fb64484d33f23e2c501f9af15e41adc3aaad",
+      "fallback": false,
+      "upstreamPackage": "@lobehub/icons-static-png",
+      "upstreamVersion": "1.95.0",
+      "license": "MIT",
+      "variant": "light"
+    },
+    "kiro-cli": {
+      "agentId": "kiro-cli",
+      "originalFilename": "kiro-color.png",
+      "sourceFilename": "kiro-cli.png",
+      "sourceType": "png",
+      "sha256": "98922033d598cf8eb280c0deb7088ecd04608517909d7e15e1f5c1ba5a22896b",
+      "fallback": false,
+      "upstreamPackage": "@lobehub/icons-static-png",
+      "upstreamVersion": "1.95.0",
+      "license": "MIT",
+      "variant": "light"
+    },
+    "kimi-cli": {
+      "agentId": "kimi-cli",
+      "originalFilename": "kimi-cli.png",
+      "sourceFilename": "kimi-cli-legacy.png",
+      "sourceType": "png",
+      "sha256": "f2df6353abdcccb3aca6512f04c64c3934a35361b92a0f2e475cdb9f8efe5351",
+      "fallback": true,
+      "exportMode": "passthrough",
+      "archivedSources": [
+        {
+          "originalFilename": "kimi-color.png",
+          "sourceFilename": "kimi-cli.png",
+          "sourceType": "png",
+          "sha256": "fb460178c19cd28fc953fb446eb200b4050f4046eae3d84d1a15189eb50f717c",
+          "upstreamPackage": "@lobehub/icons-static-png",
+          "upstreamVersion": "1.95.0",
+          "license": "MIT",
+          "variant": "light"
+        },
+        {
+          "originalFilename": "kimi-color.svg",
+          "sourceFilename": "kimi-cli.svg",
+          "sourceType": "svg",
+          "sha256": "74a7292aeb0220445d14c5d397d75760e2e8c6ed6a9e5fe4f3023471bf62a9ff",
+          "upstreamPackage": "lobe-icons",
+          "upstreamVersion": "1.95.0",
+          "license": "MIT",
+          "variant": "light"
+        }
+      ]
+    },
+    "qwen-code": {
+      "agentId": "qwen-code",
+      "originalFilename": "qwen-color.png",
+      "sourceFilename": "qwen-code.png",
+      "sourceType": "png",
+      "sha256": "de9bc7e285164e0d284a7b9555511c7f7767af7699d6272b3b67b376eeddbfb3",
+      "fallback": false,
+      "upstreamPackage": "@lobehub/icons-static-png",
+      "upstreamVersion": "1.95.0",
+      "license": "MIT",
+      "variant": "light",
+      "contrastTreatment": "neutral-light-tile"
+    },
+    "zcode": {
+      "agentId": "zcode",
+      "originalFilename": "zcode.png",
+      "sourceFilename": "zcode.png",
+      "sourceType": "png",
+      "sha256": "491802e3a5b169006b3c56e400d051c0cca9cc8c47c5eedfd0bbe958faacc5b7",
+      "fallback": true,
+      "exportMode": "passthrough"
+    },
+    "codewhale": {
+      "agentId": "codewhale",
+      "originalFilename": "codewhale.png",
+      "sourceFilename": "codewhale.png",
+      "sourceType": "png",
+      "sha256": "0cc676b830e334fea805f394c7399dc0e4b06a481a86f3b5784d2af5d20cfc52",
+      "fallback": true
+    },
+    "opencode": {
+      "agentId": "opencode",
+      "originalFilename": "opencode.png",
+      "sourceFilename": "opencode.png",
+      "sourceType": "png",
+      "sha256": "8dd736cfa2628863a6e008a134d2094da69727d7359caca5bd05fe322ab13905",
+      "fallback": false,
+      "upstreamPackage": "@lobehub/icons-static-png",
+      "upstreamVersion": "1.95.0",
+      "license": "MIT",
+      "variant": "light",
+      "contrastTreatment": "neutral-light-tile"
+    },
+    "mimocode": {
+      "agentId": "mimocode",
+      "originalFilename": "xiaomimimo.png",
+      "sourceFilename": "mimocode.png",
+      "sourceType": "png",
+      "sha256": "04f78ad5b2ebd628ddaa59261c3696971dc54799c1ae3401454977810ca1f63b",
+      "fallback": false,
+      "upstreamPackage": "@lobehub/icons-static-png",
+      "upstreamVersion": "1.95.0",
+      "license": "MIT",
+      "variant": "light",
+      "contrastTreatment": "neutral-light-tile"
+    },
+    "pi": {
+      "agentId": "pi",
+      "originalFilename": "pi.png",
+      "sourceFilename": "pi.png",
+      "sourceType": "png",
+      "sha256": "debf685b16716a4df4b212185c58416cf6a1eecfec7a8b69f4f9421e7e707b48",
+      "fallback": false,
+      "upstreamPackage": "@lobehub/icons-static-png",
+      "upstreamVersion": "1.95.0",
+      "license": "MIT",
+      "variant": "light",
+      "contrastTreatment": "neutral-light-tile"
+    },
+    "openclaw": {
+      "agentId": "openclaw",
+      "originalFilename": "openclaw-color.png",
+      "sourceFilename": "openclaw.png",
+      "sourceType": "png",
+      "sha256": "c6b3eaf0a8f21c343e9af8fa20b8d75523308b01917a5c5775420f8b118b6251",
+      "fallback": false,
+      "upstreamPackage": "@lobehub/icons-static-png",
+      "upstreamVersion": "1.95.0",
+      "license": "MIT",
+      "variant": "light"
+    },
+    "hermes": {
+      "agentId": "hermes",
+      "originalFilename": "hermesagent.png",
+      "sourceFilename": "hermes.png",
+      "sourceType": "png",
+      "sha256": "a4eacd7022af9551688a573cb2cccc5baa3ceb5fcb22728658ce444ef7449567",
+      "fallback": false,
+      "upstreamPackage": "@lobehub/icons-static-png",
+      "upstreamVersion": "1.95.0",
+      "license": "MIT",
+      "variant": "light",
+      "contrastTreatment": "neutral-light-tile"
+    },
+    "qoder": {
+      "agentId": "qoder",
+      "originalFilename": "qoder-color.png",
+      "sourceFilename": "qoder.png",
+      "sourceType": "png",
+      "sha256": "707778741a50bac7bf8d8153b466f04a23fd404b5d8d1e5cfdb01b2a76a66196",
+      "fallback": false,
+      "upstreamPackage": "@lobehub/icons-static-png",
+      "upstreamVersion": "1.95.0",
+      "license": "MIT",
+      "variant": "light"
+    },
+    "reasonix": {
+      "agentId": "reasonix",
+      "originalFilename": "reasonix.png",
+      "sourceFilename": "reasonix.png",
+      "sourceType": "png",
+      "sha256": "0d81663e1e4d28bb5bc487ada62b8ff94a24d2174b44deeab0245d7f994e27f9",
+      "fallback": true
+    },
+    "qoderwork": {
+      "agentId": "qoderwork",
+      "originalFilename": "qoderwork.png",
+      "sourceFilename": "qoderwork-legacy.png",
+      "sourceType": "png",
+      "sha256": "e354f670f8b7310a7bbcb9ca7d313221fb87131aa5d3fef05747718af44b81cf",
+      "fallback": true,
+      "exportMode": "passthrough",
+      "archivedSources": [
+        {
+          "originalFilename": "qoderwork.png",
+          "sourceFilename": "qoderwork.png",
+          "sourceType": "png",
+          "sha256": "31e3cec21e8d99e01208f1fd2a62f2ee5c690eee8210efce011e6de87fa24d92"
+        }
+      ]
+    },
+    "workbuddy": {
+      "agentId": "workbuddy",
+      "originalFilename": "workbuddy.png",
+      "sourceFilename": "workbuddy.png",
+      "sourceType": "png",
+      "sha256": "3c2bc7d338c9eacc027af2b27693056b7cbea3a6c0a09225cf87020afe57fd7b",
+      "fallback": false,
+      "contrastTreatment": "neutral-dark-tile"
+    }
+  },
+  "outputs": {
+    "claude-code": {
+      "agentId": "claude-code",
+      "outputFilename": "claude-code.png",
+      "outputSha256": "4880214367435ab457515addeecc8b412ef6ae8d211409564a272722253f0dbe",
+      "generatedFromSourceSha256": "9ef1d98492f68c5c7766162af827dd4e0c9cb0d76b78fce22798985a792fca63"
+    },
+    "codex": {
+      "agentId": "codex",
+      "outputFilename": "codex.png",
+      "outputSha256": "7a2af0a53cfacf3a61bee27801834e908814f49b5e602f1b7f1849ea4d54f1fd",
+      "generatedFromSourceSha256": "8a33312f6bb17c1edddf8f9d7fbac09ce1d1d697d6601f37227afa879e94c52e"
+    },
+    "copilot-cli": {
+      "agentId": "copilot-cli",
+      "outputFilename": "copilot-cli.png",
+      "outputSha256": "d2896e1d01c6d12d01ad50b43799ae367efb5d401b00b07705d1741a614130aa",
+      "generatedFromSourceSha256": "984fc3fb2708c83fcc870eabfb2a9a4cd4a2a059ac18f78200119dc37f95ce8c"
+    },
+    "gemini-cli": {
+      "agentId": "gemini-cli",
+      "outputFilename": "gemini-cli.png",
+      "outputSha256": "f15baec3568da63431b685dc4d22cfbc27b8da9b681089c598dbc465b9709a8b",
+      "generatedFromSourceSha256": "ef72d48ebab74c96296d34c8ad5d87685f90765d21f31d0884049bb45a8b62e5"
+    },
+    "antigravity-cli": {
+      "agentId": "antigravity-cli",
+      "outputFilename": "antigravity-cli.png",
+      "outputSha256": "a3bbef62666fe8d7dcc7760af6398fd73c2e79176b0d91a368910f0cc3a826ed",
+      "generatedFromSourceSha256": "ac20d11802a405491048957d68c84f7303ceaf682a95cf890263452ccdd97897"
+    },
+    "cursor-agent": {
+      "agentId": "cursor-agent",
+      "outputFilename": "cursor-agent.png",
+      "outputSha256": "27ed207985a330e18c44750365c878ba957cb605445968fde621e81b0bfc0440",
+      "generatedFromSourceSha256": "783ac5ded2079c86a2741af24f1d168ea1b7d12846feea4bac54d79ffb061062"
+    },
+    "codebuddy": {
+      "agentId": "codebuddy",
+      "outputFilename": "codebuddy.png",
+      "outputSha256": "fd6db488daecf6161a7000ea5d0e81cae864f48511546ab36dd806a00fdaa49b",
+      "generatedFromSourceSha256": "ea1fc6c6d24e0519e17504b16444fb64484d33f23e2c501f9af15e41adc3aaad"
+    },
+    "kiro-cli": {
+      "agentId": "kiro-cli",
+      "outputFilename": "kiro-cli.png",
+      "outputSha256": "22004c531a24751064dae7c54c9285837c4a5e1b6dab1d663336771077eaa069",
+      "generatedFromSourceSha256": "98922033d598cf8eb280c0deb7088ecd04608517909d7e15e1f5c1ba5a22896b"
+    },
+    "kimi-cli": {
+      "agentId": "kimi-cli",
+      "outputFilename": "kimi-cli.png",
+      "outputSha256": "f2df6353abdcccb3aca6512f04c64c3934a35361b92a0f2e475cdb9f8efe5351",
+      "generatedFromSourceSha256": "f2df6353abdcccb3aca6512f04c64c3934a35361b92a0f2e475cdb9f8efe5351"
+    },
+    "qwen-code": {
+      "agentId": "qwen-code",
+      "outputFilename": "qwen-code.png",
+      "outputSha256": "f0b63d0e612d5194d0771e164a64864a5d17fe96097f799741021852c44951ef",
+      "generatedFromSourceSha256": "de9bc7e285164e0d284a7b9555511c7f7767af7699d6272b3b67b376eeddbfb3"
+    },
+    "zcode": {
+      "agentId": "zcode",
+      "outputFilename": "zcode.png",
+      "outputSha256": "491802e3a5b169006b3c56e400d051c0cca9cc8c47c5eedfd0bbe958faacc5b7",
+      "generatedFromSourceSha256": "491802e3a5b169006b3c56e400d051c0cca9cc8c47c5eedfd0bbe958faacc5b7"
+    },
+    "codewhale": {
+      "agentId": "codewhale",
+      "outputFilename": "codewhale.png",
+      "outputSha256": "fd8f8ff532d1b00da77946876e34a5cf56ca1cabbbe5b2e6d98fa435f0864770",
+      "generatedFromSourceSha256": "0cc676b830e334fea805f394c7399dc0e4b06a481a86f3b5784d2af5d20cfc52"
+    },
+    "opencode": {
+      "agentId": "opencode",
+      "outputFilename": "opencode.png",
+      "outputSha256": "4c6cdcdbedccd7426f49b6950a2d629cb3018f75f1edf76ec230a83cd66b84c2",
+      "generatedFromSourceSha256": "8dd736cfa2628863a6e008a134d2094da69727d7359caca5bd05fe322ab13905"
+    },
+    "mimocode": {
+      "agentId": "mimocode",
+      "outputFilename": "mimocode.png",
+      "outputSha256": "01dce8bc538095fd33fb04195b13612bdee3fa60398f35747a4bd5e6bba73dc1",
+      "generatedFromSourceSha256": "04f78ad5b2ebd628ddaa59261c3696971dc54799c1ae3401454977810ca1f63b"
+    },
+    "pi": {
+      "agentId": "pi",
+      "outputFilename": "pi.png",
+      "outputSha256": "1155ec3374aeda5a446c60693db9f01a9819e1ea968b86f9a0214f6a9477221d",
+      "generatedFromSourceSha256": "debf685b16716a4df4b212185c58416cf6a1eecfec7a8b69f4f9421e7e707b48"
+    },
+    "openclaw": {
+      "agentId": "openclaw",
+      "outputFilename": "openclaw.png",
+      "outputSha256": "e3ece522be436c14887f84215462393fe1c8458ebb21b313682a4d3230ccbdb3",
+      "generatedFromSourceSha256": "c6b3eaf0a8f21c343e9af8fa20b8d75523308b01917a5c5775420f8b118b6251"
+    },
+    "hermes": {
+      "agentId": "hermes",
+      "outputFilename": "hermes.png",
+      "outputSha256": "bda0f858adc2fe904ab5358b0f574642975cb98fadd838b2b5d8534e2bcc62f9",
+      "generatedFromSourceSha256": "a4eacd7022af9551688a573cb2cccc5baa3ceb5fcb22728658ce444ef7449567"
+    },
+    "qoder": {
+      "agentId": "qoder",
+      "outputFilename": "qoder.png",
+      "outputSha256": "50aa82c096d187ab34a23c63a0c654b9bc7d7535ed32cab88b3b504914d6ab36",
+      "generatedFromSourceSha256": "707778741a50bac7bf8d8153b466f04a23fd404b5d8d1e5cfdb01b2a76a66196"
+    },
+    "reasonix": {
+      "agentId": "reasonix",
+      "outputFilename": "reasonix.png",
+      "outputSha256": "4f180e470b272cabf5867e2fef238d61766330ba22abdafca12b6984df6c155f",
+      "generatedFromSourceSha256": "0d81663e1e4d28bb5bc487ada62b8ff94a24d2174b44deeab0245d7f994e27f9"
+    },
+    "qoderwork": {
+      "agentId": "qoderwork",
+      "outputFilename": "qoderwork.png",
+      "outputSha256": "e354f670f8b7310a7bbcb9ca7d313221fb87131aa5d3fef05747718af44b81cf",
+      "generatedFromSourceSha256": "e354f670f8b7310a7bbcb9ca7d313221fb87131aa5d3fef05747718af44b81cf"
+    },
+    "workbuddy": {
+      "agentId": "workbuddy",
+      "outputFilename": "workbuddy.png",
+      "outputSha256": "70498230774e6cbb47d18ca78acacac5e7f8a1b8e30a434f7ceb9080420589f1",
+      "generatedFromSourceSha256": "3c2bc7d338c9eacc027af2b27693056b7cbea3a6c0a09225cf87020afe57fd7b"
     }
   }
 }

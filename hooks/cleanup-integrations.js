@@ -13,6 +13,7 @@ const { unregisterCodeBuddyHooks } = require("./codebuddy-install");
 const { unregisterKiroHooks } = require("./kiro-install");
 const { unregisterKimiHooks } = require("./kimi-install");
 const { unregisterQwenCodeHooks } = require("./qwen-code-install");
+const { unregisterZcodeHooks } = require("./zcode-install");
 const { unregisterCodewhaleHooks } = require("./codewhale-install");
 const { unregisterCodexCommandHooks } = require("./codex-install-utils");
 const { unregisterOpencodePlugin } = require("./opencode-install");
@@ -37,6 +38,7 @@ const MANAGED_AGENT_IDS = Object.freeze([
   "kiro-cli",
   "kimi-cli",
   "qwen-code",
+  "zcode",
   "codewhale",
   "codex",
   "opencode",
@@ -61,6 +63,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   "kiro-cli": "Kiro CLI",
   "kimi-cli": "Kimi Code",
   "qwen-code": "Qwen Code",
+  zcode: "ZCode",
   codewhale: "CodeWhale",
   codex: "Codex CLI",
   opencode: "opencode",
@@ -178,6 +181,10 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
         ...common,
         settingsPath: path.join(homeDir, ".qwen", "settings.json"),
       },
+      zcode: {
+        ...common,
+        settingsPath: path.join(homeDir, ".zcode", "cli", "config.json"),
+      },
       codewhale: {
         ...common,
         configPath: path.join(homeDir, ".codewhale", "config.toml"),
@@ -275,6 +282,7 @@ const AGENT_CLEANERS = Object.freeze({
   "kiro-cli": unregisterKiroHooks,
   "kimi-cli": unregisterKimiHooks,
   "qwen-code": unregisterQwenCodeHooks,
+  zcode: unregisterZcodeHooks,
   codewhale: unregisterCodewhaleHooks,
   codex: unregisterCodexCommandHooks,
   opencode: unregisterOpencodePlugin,

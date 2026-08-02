@@ -16,6 +16,14 @@ function registerSessionIpc(options = {}) {
   const setSessionHudPinned = requiredDependency(options.setSessionHudPinned, "setSessionHudPinned");
   const ackSessionCompletion = requiredDependency(options.ackSessionCompletion, "ackSessionCompletion");
   const openSessionFolder = requiredDependency(options.openSessionFolder, "openSessionFolder");
+  const setSessionAutomationOverride = requiredDependency(
+    options.setSessionAutomationOverride,
+    "setSessionAutomationOverride"
+  );
+  const clearSessionAutomationGrant = requiredDependency(
+    options.clearSessionAutomationGrant,
+    "clearSessionAutomationGrant"
+  );
   const disposers = [];
 
   function handle(channel, listener) {
@@ -41,6 +49,42 @@ function registerSessionIpc(options = {}) {
     return openSessionFolder(sessionId);
   });
   handle("dashboard:set-session-alias", (_event, payload) => setSessionAlias(payload));
+  handle("dashboard:set-session-automation", (event, payload) => {
+    const keys = payload && typeof payload === "object" && !Array.isArray(payload)
+      ? Object.keys(payload).sort()
+      : [];
+    if (
+      keys.length !== 2
+      || keys[0] !== "mode"
+      || keys[1] !== "sessionId"
+      || typeof payload.sessionId !== "string"
+      || !payload.sessionId
+      || (payload.mode !== "off" && payload.mode !== "auto-tools")
+    ) {
+      return { status: "invalid" };
+    }
+    return setSessionAutomationOverride(
+      {
+        sessionId: payload.sessionId,
+        mode: payload.mode,
+      },
+      { sender: event && event.sender }
+    );
+  });
+  handle("dashboard:clear-session-automation-grant", (_event, payload) => {
+    const keys = payload && typeof payload === "object" && !Array.isArray(payload)
+      ? Object.keys(payload)
+      : [];
+    if (
+      keys.length !== 1
+      || keys[0] !== "grantId"
+      || typeof payload.grantId !== "string"
+      || !payload.grantId
+    ) {
+      return { status: "invalid" };
+    }
+    return clearSessionAutomationGrant({ grantId: payload.grantId });
+  });
 
   handle("session-hud:get-i18n", () => getI18n());
   handle("session-hud:open-session-folder", (_event, sessionId) => {

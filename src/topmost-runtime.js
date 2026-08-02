@@ -113,6 +113,12 @@ function createTopmostRuntime(options = {}) {
   const setForceEyeResend = options.setForceEyeResend || (() => {});
   const applyPetWindowPosition = options.applyPetWindowPosition || (() => {});
   const syncHitWin = options.syncHitWin || (() => {});
+  // I5 (plan §3): the hit window's ignore-mouse state has exactly one writer,
+  // pet-window-runtime's applyHitInputState() — this module reports its
+  // overlap-dodge intent through the flag instead of calling
+  // hitWin.setIgnoreMouseEvents() directly, so a suppressed/petHidden hit
+  // window can never be un-suppressed by this path racing a different one.
+  const setImeEditingPetDodge = options.setImeEditingPetDodge || (() => {});
   const setIntervalFn = options.setInterval || setInterval;
   const clearIntervalFn = options.clearInterval || clearInterval;
   const setTimeoutFn = options.setTimeout || setTimeout;
@@ -138,10 +144,11 @@ function createTopmostRuntime(options = {}) {
   // dropping it behind the bubble. Drives getPetTargetOpacity so external
   // opacity writers (theme-switch fade) restore the right baseline.
   let imeEditingFadeFallback = false;
-  // Tracked separately from the dodge boolean: the hit window's click-through
-  // write is deferred while a drag is in flight (see syncImeEditingPetDodge),
-  // so "what we want" and "what we last wrote" can legitimately differ.
-  let imeEditingHitIgnoreApplied = false;
+  // I5 (plan §3): the local imeEditingHitIgnoreApplied cache this used to
+  // keep ("what we want" vs "what we last wrote can legitimately differ
+  // while a drag is in flight") is gone — pet-window-runtime's
+  // applyHitInputState() is now the single writer with the single cache, so
+  // there is nothing left for a second cache to disagree with.
   let imeEditingFadeCancel = null;
 
   function reassertWinTopmost() {
@@ -349,12 +356,11 @@ function createTopmostRuntime(options = {}) {
     // is applied on the next sync after the drag ends (pet-interaction-ipc
     // re-runs this on drag-lock release).
     if (isDragLocked()) return;
-    if (imeEditingHitIgnoreApplied === imeEditingPetDodge) return;
-    const hitWin = getHitWin();
-    if (isLiveWindow(hitWin) && typeof hitWin.setIgnoreMouseEvents === "function") {
-      hitWin.setIgnoreMouseEvents(imeEditingPetDodge);
-      imeEditingHitIgnoreApplied = imeEditingPetDodge;
-    }
+    // I5: report intent through the single writer (pet-window-runtime's
+    // applyHitInputState()) instead of calling hitWin.setIgnoreMouseEvents()
+    // here directly — that function has its own dedup cache, so there's
+    // nothing left for this call to do when the value hasn't changed.
+    setImeEditingPetDodge(imeEditingPetDodge);
   }
 
   // #640: the render window's baseline opacity as far as the dodge is
@@ -421,8 +427,14 @@ function createTopmostRuntime(options = {}) {
   function applyFreshNudge(bounds) {
     if (!bounds) return false;
     pendingNudgeRestore = { x: bounds.x, y: bounds.y, nudgedX: bounds.x + 1 };
-    applyPetWindowPosition(bounds.x + 1, bounds.y);
-    applyPetWindowPosition(bounds.x, bounds.y);
+    // force:true is the safety line plan §12.12 calls for: the whole point of
+    // a nudge is a real native write. Today the two positions always differ
+    // physically (Windows-only path, no X virtualization), so the same-rect
+    // skip can't swallow them — but if this ever runs where logical X
+    // materializes onto a clamped boundary, x+1 and x could collapse to the
+    // same physical rect and a non-forced nudge would silently no-op.
+    applyPetWindowPosition(bounds.x + 1, bounds.y, { force: true });
+    applyPetWindowPosition(bounds.x, bounds.y, { force: true });
     return true;
   }
 

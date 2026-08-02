@@ -4,6 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
 const core = require("../hooks/pi-extension-core");
+const { NESTED_TERMINAL_ENV } = require("../hooks/shared-process");
 
 function makeCtx(overrides = {}) {
   return {
@@ -52,6 +53,9 @@ describe("pi-extension-core", () => {
         toolCallId: "tool-1",
       },
       ctx: makeCtx(),
+      // Hermetic env: the payload picks up Orca's pane key from the environment,
+      // so a real one would leak the developer's own terminal into this check.
+      env: {},
       metadata: {
         cwd: "D:/work/project",
         sourcePid: 1234,
@@ -75,6 +79,34 @@ describe("pi-extension-core", () => {
       tool_name: "bash",
       tool_use_id: "tool-1",
     });
+  });
+
+  it("carries the Orca pane key from the injected env, and vetoes an inherited one", () => {
+    // This module keeps its own copy of the validator and the marker list because
+    // it ships inside the Pi extension, and until now nothing exercised either —
+    // lowercasing "Orca" or inverting the guard would have kept the suite green
+    // while Pi shipped a key belonging to a pane it does not live in.
+    const build = (env) => core.buildPayload({
+      state: "working",
+      event: "PreToolUse",
+      ctx: makeCtx(),
+      env,
+      metadata: { cwd: "D:/work/project", sourcePid: 1234, pidChain: [3333, 1234] },
+      agentPid: 3333,
+    });
+    const KEY = "8ce1fff7-tab:9813824b-leaf";
+
+    assert.strictEqual(build({ TERM_PROGRAM: "Orca", ORCA_PANE_KEY: KEY }).orca_pane_key, KEY);
+    // Without the TERM_PROGRAM confirmation the key was inherited by a child shell.
+    assert.strictEqual(build({ ORCA_PANE_KEY: KEY }).orca_pane_key, undefined);
+    assert.strictEqual(build({ TERM_PROGRAM: "Orca", ORCA_PANE_KEY: "no-separator" }).orca_pane_key, undefined);
+    for (const marker of NESTED_TERMINAL_ENV) {
+      assert.strictEqual(
+        build({ TERM_PROGRAM: "Orca", ORCA_PANE_KEY: KEY, [marker]: "1" }).orca_pane_key,
+        undefined,
+        `${marker} must veto the pane key`
+      );
+    }
   });
 
   it("falls back to a default session id when Pi session metadata is unavailable", () => {

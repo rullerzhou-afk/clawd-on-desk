@@ -52,9 +52,13 @@ function makeCtx(overrides = {}) {
     getMiniMode() { return false; },
     getCurrentState() { return currentState; },
     setCurrentState(s) { currentState = s; },
+    dragLocked: false,
     miniTransitioning: false,
     applyState(state) { stateLog.push({ type: "applyState", state }); currentState = state; },
-    setState(state) { stateLog.push({ type: "setState", state }); currentState = state; },
+    setState(state, svgOverride, options) {
+      stateLog.push({ type: "setState", state, svgOverride, options });
+      currentState = state;
+    },
     _syncLog: syncLog,
     _stateLog: stateLog,
     _bounds: bounds,
@@ -83,6 +87,86 @@ describe("roam module", () => {
     const roam = roamModule(ctx);
     roam.tick();
     assert.equal(roam.enabled, false);
+  });
+
+  it("does not schedule the first roam while drag is already locked and preserves the 8s phase", () => {
+    const ctx = makeCtx({ dragLocked: true });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(9000);
+
+    assert.equal(ctx._stateLog.length, 0, "drag lock must block the roam state");
+    assert.equal(ctx._appliedBounds.length, 0, "drag lock must block all roam position writes");
+
+    ctx.dragLocked = false;
+    roam.tick();
+    mock.timers.tick(7999);
+    assert.equal(ctx._stateLog.length, 0, "an unconsumed first roam must still wait 8s");
+
+    mock.timers.tick(1);
+    assert.ok(
+      ctx._stateLog.some((event) => event.type === "applyState" && event.state === "roam"),
+      "first roam should start after the full 8s delay once drag unlocks"
+    );
+  });
+
+  it("does not re-arm a consumed roam timer during a static drag and resumes on the 4s phase", () => {
+    const ctx = makeCtx();
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick(); // schedules the first 8s timer and consumes firstRoam
+    ctx.dragLocked = true;
+    roam.cancelRoam(); // mirrors the synchronous drag-lock handler
+
+    // The real main loop keeps ticking during a static hold because no drag
+    // reaction has paused cursor polling. Old code re-armed a 4s timer here.
+    for (let elapsed = 0; elapsed < 6000; elapsed += 1000) {
+      roam.tick();
+      mock.timers.tick(1000);
+    }
+
+    assert.equal(ctx._stateLog.length, 0, "static drag must not re-enter roam");
+    assert.equal(ctx._appliedBounds.length, 0, "static drag must not write pet bounds");
+
+    ctx.dragLocked = false;
+    roam.tick();
+    mock.timers.tick(3999);
+    assert.equal(ctx._stateLog.length, 0, "consumed roam phase should wait 4s after unlock");
+
+    mock.timers.tick(1);
+    assert.ok(
+      ctx._stateLog.some((event) => event.type === "applyState" && event.state === "roam"),
+      "consumed roam phase should resume after 4s, not reset to 8s"
+    );
+  });
+
+  it("preserves the existing 4s cadence when plain mouse movement cancels a pending roam", () => {
+    const ctx = makeCtx();
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick(); // schedules the first 8s timer and consumes firstRoam
+    mock.timers.tick(3000);
+    roam.cancelRoam(); // mirrors tick.js when normal cursor movement is observed
+    roam.tick(); // tick.js re-enters roam.tick() in the same main-loop pass
+
+    assert.equal(ctx._stateLog.length, 0,
+      "plain mouse movement must not broadcast an idle state");
+    assert.equal(ctx._appliedBounds.length, 0,
+      "plain mouse movement must clear the pending roam timer");
+
+    mock.timers.tick(3999);
+    assert.equal(ctx._stateLog.length, 0,
+      "the existing between-roam cadence must still wait 4s after movement");
+
+    mock.timers.tick(1);
+    assert.ok(
+      ctx._stateLog.some((event) => event.type === "applyState" && event.state === "roam"),
+      "plain mouse movement should preserve the established 4s cadence"
+    );
   });
 
   it("schedules first roam after ROAM_IDLE_DELAY_MS (8s), not ROAM_BETWEEN_DELAY_MS (4s)", () => {
@@ -170,6 +254,14 @@ describe("roam module", () => {
     mock.timers.tick(500);
     assert.equal(ctx._realBounds.x, posBeforeCancel.x,
       "pet should stop after cancelRoam");
+    const idleRestore = ctx._stateLog.find(
+      (event) => event.type === "setState" && event.state === "idle"
+    );
+    assert.deepStrictEqual(
+      idleRestore && idleRestore.options,
+      { bypassMinDisplay: true },
+      "cancelling active roam must bypass a user-defined roam min-display hold"
+    );
   });
 
   it("does not roam in mini mode", () => {

@@ -9,6 +9,10 @@ const CODEX_DESKTOP_ORIGINATORS = new Set([
   "codex desktop",
   "codex_work_desktop",
 ]);
+const CODEX_CLI_ORIGINATORS = new Set([
+  "codex-tui",
+  "codex_cli_rs",
+]);
 
 function normalizeCodexOriginator(value) {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
@@ -18,6 +22,11 @@ function isCodexDesktopOriginator(value) {
   return CODEX_DESKTOP_ORIGINATORS.has(normalizeCodexOriginator(value));
 }
 
+function isCodexCliOriginator(value) {
+  return CODEX_CLI_ORIGINATORS.has(normalizeCodexOriginator(value));
+}
+
 module.exports = {
+  isCodexCliOriginator,
   isCodexDesktopOriginator,
 };

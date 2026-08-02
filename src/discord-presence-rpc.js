@@ -10,8 +10,30 @@ const { normalizeDiscordPresence, DEFAULT_CLAWD_DISCORD_APP_ID } = require("./di
 
 const OP = Object.freeze({ HANDSHAKE: 0, FRAME: 1, CLOSE: 2, PING: 3, PONG: 4 });
 
-// External URL works for large_image, so BYO users needn't upload an asset.
+// Legacy image used by the original coarse Presence opt-in. Keep this path
+// byte-for-byte stable unless the separate animation-mirror opt-in is enabled.
 const CLAWD_ICON_URL = "https://raw.githubusercontent.com/rullerzhou-afk/clawd-on-desk/main/assets/icon.png";
+
+// External GIF URLs animate in large_image (uploaded portal assets can't), so the
+// presence mirrors the live clawd sprite without anyone uploading art. These are the
+// enlarged variants (assets/discord-presence, built by tools/build-discord-presence-gifs.py)
+// that fill the card instead of floating tiny in the source canvas. Served from a branch
+// ref like CLAWD_ICON_URL so the link outlives any fork or feature branch; Discord's
+// media proxy may cache stale bytes for a while after a sprite is regenerated.
+const GIF_BASE_URL = "https://raw.githubusercontent.com/rullerzhou-afk/clawd-on-desk/main/assets/discord-presence";
+
+// Clawd sprite per resolved image fallback state (see resolvePresenceState).
+// Mirror fallback path: used when no on-screen visual is known yet (bridge just
+// started), or the current theme/svg cannot use the exact Clawd mapping.
+const STATE_GIF = Object.freeze({
+  idle: "clawd-idle.gif",
+  sleeping: "clawd-sleeping.gif",
+  thinking: "clawd-thinking.gif",
+  working: "clawd-typing.gif",
+  juggling: "clawd-juggling.gif",
+  attention: "clawd-happy.gif",
+  error: "clawd-error.gif",
+});
 
 const COARSE_LABEL = Object.freeze({
   idle: "Idle",
@@ -20,14 +42,56 @@ const COARSE_LABEL = Object.freeze({
   waiting: "Waiting for input",
 });
 
+// State-animation mirror, keyed by the svg file main.js pushes on "state-change"
+// (see bridge.onVisual). Covers the clawd theme's state animations: idle
+// variants, session-count working tiers, displayHint overrides, one-shots, sleep
+// chain, roam and mini mode. Animations that don't travel through state-change
+// (click/drag reactions, low-power pauses, tint/accessories) are out of scope;
+// svgs with no gif counterpart (look/yawn/wake/dizzy, mini-typing, the sleep
+// transitions) map to the nearest sprite.
+const SVG_GIF = Object.freeze({
+  "clawd-idle-follow.svg": "clawd-idle.gif",
+  "clawd-idle-look.svg": "clawd-idle.gif",
+  "clawd-idle-bubble.svg": "clawd-bubble.gif",
+  "clawd-idle-reading.svg": "clawd-idle-reading.gif",
+  "clawd-idle-yawn.svg": "clawd-idle.gif",
+  "clawd-idle-doze.svg": "clawd-sleeping.gif",
+  "clawd-collapse-sleep.svg": "clawd-sleeping.gif",
+  "clawd-sleeping.svg": "clawd-sleeping.gif",
+  "clawd-wake.svg": "clawd-idle.gif",
+  "clawd-dizzy.svg": "clawd-idle.gif",
+  "clawd-working-thinking.svg": "clawd-thinking.gif",
+  "clawd-working-typing.svg": "clawd-typing.gif",
+  "clawd-working-building.svg": "clawd-building.gif",
+  "clawd-headphones-groove.svg": "clawd-headphones-groove.gif",
+  "clawd-working-juggling.svg": "clawd-juggling.gif",
+  "clawd-working-debugger.svg": "clawd-debugger.gif",
+  "clawd-working-sweeping.svg": "clawd-sweeping.gif",
+  "clawd-working-carrying.svg": "clawd-carrying.gif",
+  "clawd-error.svg": "clawd-error.gif",
+  "clawd-happy.svg": "clawd-happy.gif",
+  "clawd-notification.svg": "clawd-notification.gif",
+  "clawd-mini-idle.svg": "clawd-mini-idle.gif",
+  "clawd-mini-alert.svg": "clawd-mini-alert.gif",
+  "clawd-mini-happy.svg": "clawd-mini-happy.gif",
+  "clawd-mini-enter.svg": "clawd-mini-enter.gif",
+  "clawd-mini-peek.svg": "clawd-mini-peek.gif",
+  "clawd-mini-typing.svg": "clawd-typing.gif",
+  "clawd-mini-crabwalk.svg": "clawd-mini-crabwalk.gif",
+  "clawd-mini-sleep.svg": "clawd-sleeping.gif",
+  "clawd-mini-enter-sleep.svg": "clawd-sleeping.gif",
+});
+
 const READY_TIMEOUT_MS = 5000;
 const RECONNECT_MAX_MS = 30000;
 // Discord rejects SET_ACTIVITY outright when state/details exceed 128 chars.
 const ACTIVITY_FIELD_MAX = 128;
-// Discord rate-limits SET_ACTIVITY (~5/20s); coalesce rapid flips.
-const MIN_SEND_INTERVAL_MS = 4000;
+// Coalesce rapid flips and keep headroom below Discord's IPC throttling.
+const MIN_SEND_INTERVAL_MS = 5000;
 
-// Canonical session.state, never currentState (mini-mode remaps it).
+// Original Presence privacy contract. In particular, juggling/carrying/
+// sweeping remain the single coarse "working" bucket, while transient or
+// badge-only detail never expands what an existing user opted into.
 function toCoarseState(state) {
   const s = String(state || "").replace(/^mini-/, "");
   if (s === "thinking") return "thinking";
@@ -36,31 +100,88 @@ function toCoarseState(state) {
   return "idle";
 }
 
+// The snapshot only persists active states (idle/thinking/working/juggling);
+// finished + failed turns collapse to idle, so the badge recovers "done" /
+// "interrupted" for the image fallback. In the normal Clawd bridge path,
+// sleeping and one-shots are represented by the exact visual mapping instead.
+// mini-* shares its base sprite.
+function resolvePresenceState(session) {
+  if (!session) return "idle";
+  const s = String(session.state || "").replace(/^mini-/, "");
+  if (s === "thinking") return "thinking";
+  if (s === "juggling") return "juggling";
+  if (s === "working" || s === "carrying" || s === "sweeping") return "working";
+  if (session.badge === "interrupted") return "error";
+  if (session.badge === "done" || session.requiresCompletionAck === true) return "attention";
+  if (s === "sleeping") return "sleeping";
+  return "idle";
+}
+
+function normalizeGifBaseUrl(value) {
+  const raw = typeof value === "string" ? value.trim().replace(/\/+$/, "") : "";
+  if (!raw) return GIF_BASE_URL;
+  try {
+    const parsed = new URL(raw);
+    if (
+      parsed.protocol !== "https:"
+      || parsed.username
+      || parsed.password
+      || parsed.search
+      || parsed.hash
+    ) return GIF_BASE_URL;
+    return `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return GIF_BASE_URL;
+  }
+}
+
+function presenceImageUrl(presenceState, gifBaseUrl = GIF_BASE_URL) {
+  return `${normalizeGifBaseUrl(gifBaseUrl)}/${STATE_GIF[presenceState] || STATE_GIF.idle}`;
+}
+
 function agentLabel(agentId) {
   const agent = agentId ? getAgent(agentId) : null;
   return (agent && agent.name) || "Clawd";
 }
 
-function buildPresencePayload(session, privacy = {}) {
-  const coarse = toCoarseState(session && session.state);
+function buildPresencePayload(session, cfg = {}, visual = null, runtime = {}) {
+  // The mirror changes only the image. Text retains the exact pre-mirror coarse
+  // contract even after the separate opt-in, so a sticky completion/error badge
+  // never turns into a long-lived public status string.
+  const mirrorEnabled = cfg.mirrorPetAnimation === true;
+  const coarseState = toCoarseState(session && session.state);
+  const presenceState = resolvePresenceState(session);
+  const label = COARSE_LABEL[coarseState];
+  const gifBaseUrl = normalizeGifBaseUrl(runtime.gifBaseUrl);
+  const mirroredGif = mirrorEnabled
+    && visual
+    && visual.themeId === "clawd"
+    && Object.prototype.hasOwnProperty.call(SVG_GIF, visual.svg)
+    ? SVG_GIF[visual.svg]
+    : "";
+  const imageUrl = !mirrorEnabled
+    ? CLAWD_ICON_URL
+    : (mirroredGif
+      ? `${gifBaseUrl}/${mirroredGif}`
+      : presenceImageUrl(presenceState, gifBaseUrl));
   const agentId = session && session.agentId;
   const activity = {
     details: isCustomApplicationNamespace(agentId)
       ? "Custom agent"
       : ((session && session.agentName) || agentLabel(agentId)),
-    state: COARSE_LABEL[coarse],
-    assets: { large_image: CLAWD_ICON_URL, large_text: "Clawd on Desk" },
+    state: label,
+    assets: { large_image: imageUrl, large_text: "Clawd on Desk" },
   };
-  if (privacy.privacyShowProject && session && session.cwd) {
+  if (cfg.privacyShowProject && session && session.cwd) {
     // win32.basename splits on both \ and /, so a Windows cwd seen on a POSIX
     // host yields just the folder name instead of leaking the whole path.
-    const state = `${COARSE_LABEL[coarse]} · ${path.win32.basename(session.cwd)}`;
+    const state = `${label} · ${path.win32.basename(session.cwd)}`;
     // Truncate by code point: a long folder name would otherwise make Discord
     // silently drop the whole activity update.
     activity.state = Array.from(state).slice(0, ACTIVITY_FIELD_MAX).join("");
   }
-  // Allowlist by design: the snapshot also carries sensitive fields
-  // (sessionTitle, assistantLastOutput, ...) we deliberately never read.
+  // Allowlist by design: only status fields (state, badge, completion flag) are
+  // read; sensitive snapshot fields (sessionTitle, assistantLastOutput, ...) never are.
   return activity;
 }
 
@@ -118,11 +239,12 @@ function pickDominantSession(snapshot) {
 }
 
 // Presence bridge over Discord's local IPC pipe. Offline is non-fatal.
-function createDiscordPresenceBridge({ getConfig, log, createConnection, ipcPaths } = {}) {
+function createDiscordPresenceBridge({ getConfig, log, createConnection, ipcPaths, gifBaseUrl } = {}) {
   const logFn = typeof log === "function" ? log : () => {};
   // Injectable for tests; defaults dial the real Discord IPC pipe.
   const dialSocket = typeof createConnection === "function" ? createConnection : (p) => net.connect({ path: p });
   const listCandidates = typeof ipcPaths === "function" ? ipcPaths : ipcCandidatePaths;
+  const runtime = { gifBaseUrl: normalizeGifBaseUrl(gifBaseUrl) };
 
   let socket = null;
   let pendingSocket = null; // in-flight candidate, not yet adopted as `socket`
@@ -133,6 +255,10 @@ function createDiscordPresenceBridge({ getConfig, log, createConnection, ipcPath
   let presenceStartEpoch = 0; // minted once, reused across updates + reconnects
   let lastPayloadSig = ""; // publish-on-change gate
   let lastActivity = null; // latest activity, replayed after reconnect
+  let lastVisual = null; // pet's state animation, pushed by main on state-change
+  let lastSnapshot = null; // latest session snapshot, reused when only the visual changes
+  let reconcileQueued = false; // one same-turn snapshot/visual reconcile at a time
+  let reconcileGeneration = 0; // invalidates a queued reconcile across stop/start
   let appId = "";
   let reconnectAttempts = 0;
   let lastSendAt = 0;
@@ -325,6 +451,23 @@ function createDiscordPresenceBridge({ getConfig, log, createConnection, ipcPath
     tryCandidate(listCandidates(), 0);
   }
 
+  function queueReconcile() {
+    if (stopped || reconcileQueued) return;
+    reconcileQueued = true;
+    const generation = ++reconcileGeneration;
+    queueMicrotask(() => {
+      if (generation !== reconcileGeneration) return;
+      reconcileQueued = false;
+      if (stopped) return;
+      try {
+        const cfg = readConfig();
+        publish(buildPresencePayload(pickDominantSession(lastSnapshot), cfg, lastVisual, runtime));
+      } catch {
+        // Never throw into either the snapshot fan-out or renderer state path.
+      }
+    });
+  }
+
   return {
     start() {
       stopped = false;
@@ -346,18 +489,32 @@ function createDiscordPresenceBridge({ getConfig, log, createConnection, ipcPath
       buf = Buffer.alloc(0);
       lastPayloadSig = "";
       lastActivity = null;
+      lastVisual = null;
+      lastSnapshot = null;
+      reconcileGeneration += 1;
+      reconcileQueued = false;
       lastSendAt = 0;
       presenceStartEpoch = 0;
     },
     onSnapshot(snapshot) {
       if (stopped) return;
-      try {
-        const cfg = readConfig();
-        const session = pickDominantSession(snapshot);
-        publish(buildPresencePayload(session, cfg));
-      } catch {
-        // Never throw into the snapshot fan-out.
-      }
+      lastSnapshot = snapshot;
+      queueReconcile();
+    },
+    // Pet visual changed (any "state-change" send to the renderer). Keeps the
+    // presence image in lockstep with the pet's state animation.
+    // Both inputs reconcile in one microtask. Most updates are visual→snapshot,
+    // while completion promotion is snapshot→visual; batching both orders avoids
+    // a leading-edge send that combines one new half with one stale half.
+    // Standalone snapshot or idle-rotation visual changes still publish.
+    onVisual(state, svg, themeId) {
+      if (stopped) return;
+      lastVisual = {
+        state: String(state || ""),
+        svg: String(svg || ""),
+        themeId: String(themeId || ""),
+      };
+      queueReconcile();
     },
   };
 }
@@ -365,7 +522,13 @@ function createDiscordPresenceBridge({ getConfig, log, createConnection, ipcPath
 module.exports = {
   OP,
   CLAWD_ICON_URL,
+  GIF_BASE_URL,
+  STATE_GIF,
+  SVG_GIF,
   toCoarseState,
+  resolvePresenceState,
+  normalizeGifBaseUrl,
+  presenceImageUrl,
   buildPresencePayload,
   encodeFrame,
   decodeFrames,

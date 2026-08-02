@@ -233,6 +233,17 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     })
     : { canFocus: false, type: null, url: null };
   const source = deriveSourceInfo(session && session.host);
+  const automationRecord = options.sessionAutomationRecord || null;
+  const automationIdentity = session && session.sessionAutomationIdentity;
+  const canConfigureSessionAutomation = !!(
+    automationIdentity
+    && automationIdentity.eligible === true
+    && agentId
+  );
+  const globalAutomationMode = options.permissionAutomationMode === "auto-tools"
+    || options.permissionAutomationMode === "unattended"
+    ? options.permissionAutomationMode
+    : "off";
   return {
     id,
     profileId: (session && session.profileId) || "local",
@@ -255,6 +266,10 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     sourcePid: (session && session.sourcePid) || null,
     wtHwnd: (session && session.wtHwnd) || null,
     editor: (session && session.editor) || null,
+    // Beside editor because it feeds the same decision: both mark a host whose
+    // terminal-tab switch lands after the window focus is confirmed, which
+    // src/telegram-direct-send.js has to wait out before pasting.
+    orcaPaneKey: (session && session.orcaPaneKey) || null,
     canFocus: focusTarget.canFocus === true,
     focusTarget: focusTarget.type ? { type: focusTarget.type, url: focusTarget.url || null } : null,
     host: (session && session.host) || null,
@@ -281,6 +296,19 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     // Lifecycle flag for the Dashboard "Mark read" button visibility (PR2).
     // ackedAt stays internal — only the boolean reaches renderers.
     requiresCompletionAck: !!(session && session.requiresCompletionAck === true),
+    sessionAutomationMode: automationRecord ? automationRecord.mode : null,
+    sessionAutomationGrantId: automationRecord ? automationRecord.grantId : null,
+    sessionAutomationEffectiveMode: automationRecord
+      ? automationRecord.mode
+      : globalAutomationMode,
+    canConfigureSessionAutomation,
+    sessionAutomationDisabledReason: canConfigureSessionAutomation
+      ? null
+      : (
+          automationIdentity && typeof automationIdentity.reason === "string"
+            ? automationIdentity.reason
+            : "identity-not-verified"
+        ),
   };
 }
 
@@ -311,10 +339,23 @@ function buildSessionSnapshot(sessions, options = {}) {
     ? options.sessionAliases
     : {};
   const latestLocalCodexProcessIds = buildLatestLocalCodexProcessIds(sessions);
+  const automationRecords = Array.isArray(options.sessionAutomationRecords)
+    ? options.sessionAutomationRecords
+    : [];
+  const automationByIdentity = new Map(automationRecords.map((record) => [
+    `${record.agentId}\u0000${record.sessionId}`,
+    record,
+  ]));
+  const matchedAutomationGrantIds = new Set();
   for (const [id, session] of normalizeSessionsIterable(sessions)) {
+    const automationRecord = automationByIdentity.get(
+      `${session && session.agentId ? session.agentId : ""}\u0000${id}`
+    ) || null;
+    if (automationRecord) matchedAutomationGrantIds.add(automationRecord.grantId);
     entries.push(buildSessionSnapshotEntry(id, session, sessionAliases, {
       ...options,
       latestLocalCodexProcessIds,
+      sessionAutomationRecord: automationRecord,
     }));
   }
 
@@ -377,6 +418,16 @@ function buildSessionSnapshot(sessions, options = {}) {
         codexQuota: iconFor("codex"),
       };
     })(),
+    sessionAutomationOrphans: automationRecords
+      .filter((record) => !matchedAutomationGrantIds.has(record.grantId))
+      .map((record) => ({
+        agentId: record.agentId,
+        sessionId: record.sessionId,
+        mode: record.mode,
+        sessionAutomationGrantId: record.grantId,
+        displayLabel: record.displayLabel || record.sessionId.slice(-24),
+        createdAt: record.createdAt,
+      })),
   };
 }
 
@@ -423,6 +474,9 @@ function sessionSnapshotSignature(snapshot) {
       codexQuota: entry.codexQuota
         ? { group: entry.codexQuota.group, lastSeenAt: entry.codexQuota.lastSeenAt }
         : null,
+      codexSparkQuota: entry.codexSparkQuota
+        ? { group: entry.codexSparkQuota.group, lastSeenAt: entry.codexSparkQuota.lastSeenAt }
+        : null,
     })),
     sessions: snapshot.sessions.map((entry) => ({
       id: entry.id,
@@ -457,7 +511,13 @@ function sessionSnapshotSignature(snapshot) {
       lastEventRawEvent: entry.lastEvent ? entry.lastEvent.rawEvent : null,
       lastEventAt: entry.lastEvent ? entry.lastEvent.at : null,
       requiresCompletionAck: !!entry.requiresCompletionAck,
+      sessionAutomationMode: entry.sessionAutomationMode,
+      sessionAutomationGrantId: entry.sessionAutomationGrantId,
+      sessionAutomationEffectiveMode: entry.sessionAutomationEffectiveMode,
+      canConfigureSessionAutomation: entry.canConfigureSessionAutomation,
+      sessionAutomationDisabledReason: entry.sessionAutomationDisabledReason,
     })),
+    sessionAutomationOrphans: snapshot.sessionAutomationOrphans || [],
   });
 }
 

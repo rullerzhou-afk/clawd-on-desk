@@ -58,6 +58,7 @@ const AGENT_INSTALL_SCRIPT = {
   "kiro-cli": "kiro-install.js",
   "kimi-cli": "kimi-install.js",
   "qwen-code": "qwen-code-install.js",
+  zcode: "zcode-install.js",
   codewhale: "codewhale-install.js",
   // opencode / mimocode / pi / openclaw / hermes are intentionally absent: their
   // install scripts need non-.js assets (pi-extension.ts, hermes-plugin/,

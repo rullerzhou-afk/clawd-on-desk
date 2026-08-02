@@ -256,6 +256,55 @@ function basicProfile(over = {}) {
   };
 }
 
+function revocableProfile(over = {}) {
+  return basicProfile({
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    layoutVersion: REMOTE_LAYOUT_VERSION,
+    routingNonce: "a".repeat(32),
+    previousNonce: "9".repeat(32),
+    previousExpiresAt: Date.now() + 60_000,
+    ...over,
+  });
+}
+
+function verifiedIsolatedProfile(over = {}) {
+  const runtimeKey = "runtime_A7";
+  const runtimeRoot = `/home/shared/.clawd/profiles/${runtimeKey}`;
+  const absentCapability = {
+    present: false,
+    versionVerified: false,
+    artifactVerified: false,
+    wrapperInvoked: false,
+  };
+  return sanitizeProfile(basicProfile({
+    runtimeMode: "profile-isolated",
+    runtimeKey,
+    layoutVersion: REMOTE_LAYOUT_VERSION,
+    remoteHome: "/home/shared",
+    isolatedRuntime: {
+      runtimeRoot,
+      binDir: `${runtimeRoot}/bin`,
+      active: true,
+      verifiedAt: 1,
+      capabilities: {
+        claude: {
+          present: true,
+          versionVerified: true,
+          artifactVerified: true,
+          wrapperInvoked: true,
+          executablePath: "/opt/tools/claude",
+          wrapperPath: `${runtimeRoot}/bin/claude`,
+          version: "2.1.211",
+        },
+        codex: absentCapability,
+        copilot: absentCapability,
+      },
+    },
+    ...over,
+  }));
+}
+
 test("validateProfile accepts minimal valid profile", () => {
   assert.equal(validateProfile(basicProfile()).status, "ok");
 });
@@ -646,6 +695,23 @@ test("settings-actions: remoteSsh.add rejects invalid input", () => {
   assert.equal(r.status, "error");
 });
 
+test("settings-actions: remoteSsh.forceRevoke all creates a schema-valid C transaction", () => {
+  const cmd = commandRegistry["remoteSsh.forceRevoke"];
+  const current = revocableProfile({ lastDeployedAt: 12345 });
+  const r = cmd({ id: "p1", mode: "all", confirmed: true }, {
+    snapshot: { remoteSsh: { profiles: [current] } },
+  });
+  const updated = r.commit.remoteSsh.profiles[0];
+
+  assert.equal(r.status, "ok");
+  assert.equal(validateProfile(updated).status, "ok");
+  assert.ok(sanitizeIdentityTxn(updated.identityTxn, updated));
+  assert.ok(updated.identityTxn.previousExpiresAt > updated.identityTxn.startedAt);
+  assert.equal(updated.routingNonce, undefined);
+  assert.equal(updated.previousNonce, undefined);
+  assert.equal(updated.previousExpiresAt, undefined);
+});
+
 // ── deployTargetFingerprint / deployTargetDrift ──
 
 const {
@@ -912,6 +978,69 @@ test("settings-actions: remoteSsh.update preserves lastDeployedAt when only cosm
     "cosmetic edit must keep deploy stamp");
 });
 
+test("settings-actions: remoteSsh.update preserves isolated runtime identity and evidence when UI omits hidden fields", () => {
+  const cmd = commandRegistry["remoteSsh.update"];
+  const current = verifiedIsolatedProfile({
+    label: "Isolated Pi",
+    lastDeployedAt: 12345,
+    detectedRemoteNodeBin: "/usr/local/bin/node",
+    detectedRemoteNodeVersion: "v22.1.0",
+  });
+  const uiEdit = {
+    id: current.id,
+    label: "Renamed Pi",
+    host: current.host,
+    remoteForwardPort: current.remoteForwardPort,
+    autoStartCodexMonitor: current.autoStartCodexMonitor,
+    chainStatusline: current.chainStatusline,
+    connectOnLaunch: current.connectOnLaunch,
+    createdAt: current.createdAt,
+  };
+  const r = cmd(uiEdit, {
+    snapshot: { remoteSsh: { profiles: [current] } },
+  });
+  const updated = r.commit.remoteSsh.profiles[0];
+
+  assert.equal(r.status, "ok");
+  assert.equal(updated.runtimeMode, "profile-isolated");
+  assert.equal(updated.runtimeKey, current.runtimeKey);
+  assert.equal(updated.layoutVersion, current.layoutVersion);
+  assert.equal(updated.isolatedActive, true);
+  assert.deepEqual(updated.isolatedRuntime, current.isolatedRuntime);
+  assert.equal(updated.lastDeployedAt, 12345);
+  assert.equal(updated.detectedRemoteNodeBin, "/usr/local/bin/node");
+  assert.equal(updated.label, "Renamed Pi");
+});
+
+test("settings-actions: remoteSsh.update ignores forged runtime identity in both directions", () => {
+  const cmd = commandRegistry["remoteSsh.update"];
+  const isolated = verifiedIsolatedProfile({ lastDeployedAt: 12345 });
+  const forgedDisable = basicProfile({
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    layoutVersion: REMOTE_LAYOUT_VERSION,
+  });
+  const keptIsolated = cmd(forgedDisable, {
+    snapshot: { remoteSsh: { profiles: [isolated] } },
+  }).commit.remoteSsh.profiles[0];
+  assert.equal(keptIsolated.runtimeMode, "profile-isolated");
+  assert.equal(keptIsolated.runtimeKey, isolated.runtimeKey);
+  assert.equal(keptIsolated.lastDeployedAt, 12345);
+
+  const accountDefault = sanitizeProfile(basicProfile({ lastDeployedAt: 67890 }));
+  const forgedEnable = basicProfile({
+    runtimeMode: "profile-isolated",
+    runtimeKey: "runtime_attacker",
+    layoutVersion: REMOTE_LAYOUT_VERSION,
+  });
+  const keptDefault = cmd(forgedEnable, {
+    snapshot: { remoteSsh: { profiles: [accountDefault] } },
+  }).commit.remoteSsh.profiles[0];
+  assert.equal(keptDefault.runtimeMode, "account-default");
+  assert.equal(keptDefault.runtimeKey, "account-default");
+  assert.equal(keptDefault.lastDeployedAt, 67890);
+});
+
 test("settings-actions: remoteSsh.update ignores renderer-supplied deployment ownership", () => {
   const cmd = commandRegistry["remoteSsh.update"];
   const owned = {
@@ -1150,6 +1279,33 @@ test("prefs.validate keeps valid remoteSsh profiles", () => {
   const out = validate({ remoteSsh: { profiles: [profile] } });
   assert.equal(out.remoteSsh.profiles.length, 1);
   assert.equal(out.remoteSsh.profiles[0].id, "p1");
+});
+
+test("real controller: remoteSsh.forceRevoke all persists a schema-valid C transaction", async () => {
+  const { createSettingsController } = require("../src/settings-controller");
+  const prefs = require("../src/prefs");
+  const ctrl = createSettingsController({
+    loadResult: {
+      snapshot: {
+        ...prefs.getDefaults(),
+        remoteSsh: { profiles: [revocableProfile()] },
+      },
+      locked: false,
+    },
+  });
+
+  const result = await ctrl.applyCommand("remoteSsh.forceRevoke", {
+    id: "p1",
+    mode: "all",
+    confirmed: true,
+  });
+  const updated = ctrl.getSnapshot().remoteSsh.profiles[0];
+
+  assert.equal(result.status, "ok");
+  assert.equal(validateProfile(updated).status, "ok");
+  assert.ok(updated.identityTxn.previousExpiresAt > updated.identityTxn.startedAt);
+  assert.equal(updated.routingNonce, undefined);
+  assert.equal(updated.previousNonce, undefined);
 });
 
 // ── Integration: real controller serializes remoteSsh.* commands ──

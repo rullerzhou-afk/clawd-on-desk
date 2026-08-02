@@ -51,6 +51,18 @@ describe("quota ring — coin counting", () => {
     assert.strictEqual(countQuotaCoins({}, true), 0);
   });
 
+  it("does not count Dashboard-only Spark quota as an Orbit coin", () => {
+    const sparkOnly = {
+      accountQuota: [{
+        codexSparkQuota: {
+          group: { codexWeekly: bucket(7) },
+          updatedAt: 1,
+        },
+      }],
+    };
+    assert.strictEqual(countQuotaCoins(sparkOnly, true), 0);
+  });
+
   it("counts Antigravity third-party-only quota without creating another agent coin", () => {
     const thirdPartyOnly = {
       accountQuota: [{ antigravityQuota: { group: { thirdPartyWeekly: bucket(52) }, updatedAt: 1 } }],

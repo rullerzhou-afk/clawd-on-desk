@@ -73,11 +73,13 @@ function callStatePost(body, overrides = {}) {
       logs: [],
       userInputShown: [],
       userInputCleared: [],
+      testResults: [],
     };
     const ctx = {
       STATE_SVGS: {
         idle: "x.svg",
         working: "x.svg",
+        error: "x.svg",
         attention: "x.svg",
         notification: "x.svg",
         sleeping: "x.svg",
@@ -93,6 +95,7 @@ function callStatePost(body, overrides = {}) {
       permLog: (message) => calls.logs.push(message),
       showCodexUserInputBubble: (input) => { calls.userInputShown.push(input); return true; },
       clearCodexUserInputBubbles: (...args) => calls.userInputCleared.push(args),
+      handleTestResult: (...args) => calls.testResults.push(args),
       ...overrides.ctx,
     };
     handleStatePost(makeReq(body), res, {
@@ -132,6 +135,71 @@ describe("server-route-state health", () => {
 });
 
 describe("server-route-state POST", () => {
+  it("relays a normalized test result after the lifecycle update", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "test-session",
+      event: "PostToolUse",
+      agent_id: "claude-code",
+      tool_name: "Bash",
+      test_result: "pass",
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession.length, 1);
+    assert.deepStrictEqual(res.calls.testResults, [["pass", {
+      sessionId: localSessionKey("test-session"),
+      agentId: "claude-code",
+      event: "PostToolUse",
+      headless: false,
+    }]]);
+  });
+
+  it("drops malformed or out-of-lifecycle test-result tags", async () => {
+    for (const body of [
+      {
+        state: "working",
+        session_id: "bad-value",
+        event: "PostToolUse",
+        agent_id: "claude-code",
+        test_result: "PASS",
+      },
+      {
+        state: "idle",
+        session_id: "bad-event",
+        event: "Stop",
+        agent_id: "claude-code",
+        test_result: "pass",
+      },
+      {
+        state: "working",
+        session_id: "unsupported-source",
+        event: "PostToolUse",
+        agent_id: "codex",
+        test_result: "pass",
+      },
+    ]) {
+      const res = await callStatePost(JSON.stringify(body));
+      assert.strictEqual(res.statusCode, 200);
+      assert.deepStrictEqual(res.calls.testResults, []);
+    }
+  });
+
+  it("keeps a visual handler failure from failing the state POST", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "error",
+      session_id: "visual-failure",
+      event: "PostToolUseFailure",
+      agent_id: "claude-code",
+      test_result: "fail",
+    }), {
+      ctx: { handleTestResult: () => { throw new Error("renderer gone"); } },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession.length, 1);
+  });
+
   it("settles only the matching Claude subagent decision from the real hook body", async () => {
     const matching = {
       ...makePlanPermission("subagent-session"),
@@ -331,6 +399,7 @@ describe("server-route-state POST", () => {
       pid_chain: [1, "bad", 3],
       tmux_socket: "/tmp/tmux-1000/work",
       tmux_client: "/dev/pts/7",
+      orca_pane_key: "tab-9:leaf-3",
       agent_pid: 99.8,
       agent_id: "codex",
       host: "remote-host",
@@ -362,8 +431,11 @@ describe("server-route-state POST", () => {
         pidChain: [1, 3],
         tmuxSocket: "/tmp/tmux-1000/work",
         tmuxClient: "/dev/pts/7",
+        orcaPaneKey: "tab-9:leaf-3",
         agentPid: 99,
         agentId: "codex",
+        profileId: "local",
+        rawSessionId: "sid",
         host: "remote-host",
         wslDistro: null,
         headless: true,
@@ -393,6 +465,10 @@ describe("server-route-state POST", () => {
         sessionCronsCount: 0,
         stopHookActive: false,
         stdinDiag: null,
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "non-authoritative-codex-session-id",
+        },
       },
     ]]);
   });
@@ -792,6 +868,72 @@ describe("server-route-state POST", () => {
     assert.strictEqual(metadataCalls.length, 0);
   });
 
+  it("routes remote metadata_only Spark quota through its independent provider", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      preserve_state: true,
+      metadata_only: true,
+      session_id: "codex:abc",
+      agent_id: "codex",
+      host: "raspberrypi",
+      codex_spark_quota: {
+        codexWeekly: { usedPercent: 7, windowMinutes: 10080, resetAt: 1784256370000 },
+      },
+    }));
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.calls.updateSession.length, 0);
+    assert.strictEqual(res.calls.updateAccountQuota.length, 1);
+    assert.strictEqual(res.calls.updateAccountQuota[0][0], "raspberrypi");
+    assert.deepStrictEqual(res.calls.updateAccountQuota[0][1].codexSparkQuota, {
+      codexWeekly: { usedPercent: 7, windowMinutes: 10080, resetAt: 1784256370000 },
+    });
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(res.calls.updateAccountQuota[0][1], "codexSparkQuota"),
+      true
+    );
+  });
+
+  it("keeps valid generic quota when a sibling Spark payload is invalid", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "codex:abc",
+      agent_id: "codex",
+      codex_quota: {
+        codexWeekly: { usedPercent: 12, windowMinutes: 10080 },
+      },
+      codex_spark_quota: {
+        codexWeekly: { usedPercent: "not-a-number" },
+      },
+    }));
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.calls.updateAccountQuota.length, 1);
+    assert.deepStrictEqual(res.calls.updateAccountQuota[0][1].codexQuota, {
+      codexWeekly: { usedPercent: 12, windowMinutes: 10080 },
+    });
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(res.calls.updateAccountQuota[0][1], "codexSparkQuota"),
+      false
+    );
+  });
+
+  it("does not update account quota for an invalid Spark-only payload", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "codex:abc",
+      agent_id: "codex",
+      codex_spark_quota: {
+        codexWeekly: { usedPercent: "not-a-number" },
+      },
+    }));
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.calls.updateAccountQuota.length, 0);
+  });
+
   it("metadata_only still respects the disabled-agent gate", async () => {
     const metadataCalls = [];
     const res = await callStatePost(JSON.stringify({
@@ -839,6 +981,56 @@ describe("server-route-state POST", () => {
     const opts = res.calls.updateSession[0][3];
     assert.strictEqual(opts.agentId, "claude-code");
     assert.strictEqual(opts.agentIdDefaulted, true);
+  });
+
+  it("assesses the raw state session id before fallback and ignores sender eligibility", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "default",
+      event: "PreToolUse",
+      agent_id: "claude-code",
+      sessionAutomationEligible: true,
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession[0][0], localSessionKey("default"));
+    assert.deepStrictEqual(
+      res.calls.updateSession[0][3].sessionAutomationIdentity,
+      { eligible: false, reason: "placeholder-session-id" }
+    );
+  });
+
+  it("marks only local process-bound Codex TUI state identities eligible", async () => {
+    const sessionId = "codex:019f9c87-23a9-7d03-a7ac-c11e3270c3b8";
+    const body = {
+      state: "working",
+      session_id: sessionId,
+      event: "PreToolUse",
+      agent_id: "codex",
+      hook_source: "codex-official",
+      agent_pid: 777,
+      codex_originator: "codex-tui",
+      codex_source: "cli",
+    };
+
+    const local = await callStatePost(JSON.stringify(body));
+    assert.deepStrictEqual(
+      local.calls.updateSession[0][3].sessionAutomationIdentity,
+      { eligible: true, reason: "eligible" }
+    );
+
+    const remote = await callStatePost(JSON.stringify(body), {
+      options: {
+        remoteProfile: { profileId: "ssh-work", displayHost: "workbox" },
+      },
+    });
+    assert.deepStrictEqual(
+      remote.calls.updateSession[0][3].sessionAutomationIdentity,
+      {
+        eligible: false,
+        reason: "remote-session-lifecycle-not-authoritative",
+      }
+    );
   });
 
   it("routes state events to a currently registered custom AI", async () => {

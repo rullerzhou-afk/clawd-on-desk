@@ -118,13 +118,19 @@ test("settings agent actions reject unidentified paths and clean up removed cust
       customApplications: [{ id }],
       agents: { [id]: { enabled: true } },
     },
+    clearSessionAutomationByAgent: (agentId) => calls.push(["automation", agentId]),
     clearSessionsByAgent: (agentId) => calls.push(["sessions", agentId]),
     dismissPermissionsByAgent: (agentId) => calls.push(["permissions", agentId]),
     clearRecentHookEvents: (agentId) => calls.push(["ring", agentId]),
   });
   assert.deepStrictEqual(result.commit.customApplications, []);
   assert.strictEqual(result.commit.agents[id], undefined);
-  assert.deepStrictEqual(calls, [["sessions", id], ["permissions", id], ["ring", id]]);
+  assert.deepStrictEqual(calls, [
+    ["automation", id],
+    ["sessions", id],
+    ["permissions", id],
+    ["ring", id],
+  ]);
 });
 
 test("settings agent actions enforce the persisted custom AI limit", () => {
@@ -270,11 +276,16 @@ test("settings agent actions enable an agent and preserve sibling flags", () => 
   const calls = {
     syncIntegrationForAgent: [],
     startMonitorForAgent: [],
+    writeCodexAutoStartGate: [],
   };
   const deps = {
     snapshot,
     syncIntegrationForAgent: (agentId) => calls.syncIntegrationForAgent.push(agentId),
     startMonitorForAgent: (agentId) => calls.startMonitorForAgent.push(agentId),
+    writeCodexAutoStartGate: (enabled) => {
+      calls.writeCodexAutoStartGate.push(enabled);
+      return true;
+    },
   };
 
   const result = agentCommands.setAgentFlag(
@@ -285,10 +296,93 @@ test("settings agent actions enable an agent and preserve sibling flags", () => 
   assert.strictEqual(result.status, "ok");
   assert.deepStrictEqual(calls.syncIntegrationForAgent, ["codex"]);
   assert.deepStrictEqual(calls.startMonitorForAgent, ["codex"]);
+  assert.deepStrictEqual(
+    calls.writeCodexAutoStartGate,
+    [],
+    "the post-commit agents subscriber publishes the enabled gate"
+  );
   assert.strictEqual(result.commit.agents.codex.enabled, true);
   assert.strictEqual(result.commit.agents.codex.permissionsEnabled, false);
   assert.strictEqual(result.commit.agents.codex.notificationHookEnabled, true);
   assert.strictEqual(result.commit.agents.codex.permissionMode, "intercept");
+});
+
+test("settings agent actions fail closed when the Codex auto-start gate cannot sync", () => {
+  const snapshot = prefs.getDefaults();
+  const calls = [];
+  const result = agentCommands.setAgentFlag(
+    { agentId: "codex", flag: "enabled", value: false },
+    {
+      snapshot,
+      writeCodexAutoStartGate: (enabled) => {
+        calls.push(enabled);
+        return false;
+      },
+      stopMonitorForAgent: () => calls.push("stop"),
+    }
+  );
+
+  assert.strictEqual(result.status, "error");
+  assert.match(result.message, /auto-start gate/);
+  assert.deepStrictEqual(calls, [false]);
+  assert.strictEqual(result.commit, undefined);
+});
+
+test("settings agent actions persist the disabled Codex gate before runtime cleanup", () => {
+  const snapshot = prefs.getDefaults();
+  const calls = [];
+  const result = agentCommands.setAgentFlag(
+    { agentId: "codex", flag: "enabled", value: false },
+    {
+      snapshot,
+      writeCodexAutoStartGate: (enabled) => {
+        calls.push(`gate:${enabled}`);
+        return true;
+      },
+      stopMonitorForAgent: () => calls.push("stop"),
+      clearSessionAutomationByAgent: () => calls.push("automation"),
+      clearSessionsByAgent: () => calls.push("sessions"),
+      dismissPermissionsByAgent: () => calls.push("permissions"),
+    }
+  );
+
+  assert.strictEqual(result.status, "ok");
+  assert.deepStrictEqual(calls, [
+    "gate:false",
+    "stop",
+    "automation",
+    "sessions",
+    "permissions",
+  ]);
+  assert.strictEqual(result.commit.agents.codex.enabled, false);
+});
+
+test("disabling an agent clears session automation before sessions and permissions", () => {
+  const snapshot = prefs.getDefaults();
+  snapshot.agents["qwen-code"] = {
+    integrationInstalled: true,
+    enabled: true,
+    permissionsEnabled: true,
+    notificationHookEnabled: true,
+  };
+  const calls = [];
+  const result = agentCommands.setAgentFlag(
+    { agentId: "qwen-code", flag: "enabled", value: false },
+    {
+      snapshot,
+      stopMonitorForAgent: (id) => calls.push(`stop:${id}`),
+      clearSessionAutomationByAgent: (id) => calls.push(`automation:${id}`),
+      clearSessionsByAgent: (id) => calls.push(`sessions:${id}`),
+      dismissPermissionsByAgent: (id) => calls.push(`permissions:${id}`),
+    }
+  );
+  assert.strictEqual(result.status, "ok");
+  assert.deepStrictEqual(calls, [
+    "stop:qwen-code",
+    "automation:qwen-code",
+    "sessions:qwen-code",
+    "permissions:qwen-code",
+  ]);
 });
 
 test("settings agent actions do not install files when enabling an uninstalled agent", () => {
@@ -530,6 +624,36 @@ test("settings agent actions install an integration and enable ingress", async (
   assert.deepStrictEqual(result.commit.dismissedAgentCleanupHints, {});
 });
 
+test("settings agent actions defer the enabled Codex gate on install but disable it before uninstall", async () => {
+  const installSnapshot = prefs.getDefaults();
+  installSnapshot.agents.codex.integrationInstalled = false;
+  installSnapshot.agents.codex.enabled = false;
+  const calls = [];
+  const installed = await agentCommands.installAgentIntegration({ agentId: "codex" }, {
+    snapshot: installSnapshot,
+    syncIntegrationForAgent: async () => ({ status: "ok" }),
+    writeCodexAutoStartGate: (enabled) => {
+      calls.push(`install:${enabled}`);
+      return true;
+    },
+  });
+  assert.strictEqual(installed.status, "ok");
+  assert.strictEqual(installed.commit.agents.codex.enabled, true);
+
+  const uninstallSnapshot = prefs.getDefaults();
+  const uninstalled = await agentCommands.uninstallAgentIntegration({ agentId: "codex" }, {
+    snapshot: uninstallSnapshot,
+    writeCodexAutoStartGate: (enabled) => {
+      calls.push(`uninstall:${enabled}`);
+      return true;
+    },
+    uninstallIntegrationForAgent: async () => ({ status: "ok" }),
+  });
+  assert.strictEqual(uninstalled.status, "ok");
+  assert.strictEqual(uninstalled.commit.agents.codex.enabled, false);
+  assert.deepStrictEqual(calls, ["uninstall:false"]);
+});
+
 test("settings agent actions pass CodeBuddy custom hook URL during install", async () => {
   const snapshot = prefs.getDefaults();
   snapshot.agents.codebuddy.customPermissionUrl = "https://approval.example.test/permission";
@@ -628,6 +752,7 @@ test("settings agent actions uninstall an integration and disable ingress", asyn
       return { removed: 0, changed: false };
     },
     stopMonitorForAgent: (agentId) => calls.push(`stop:${agentId}`),
+    clearSessionAutomationByAgent: (agentId) => calls.push(`automation:${agentId}`),
     clearSessionsByAgent: (agentId) => calls.push(`clear:${agentId}`),
     dismissPermissionsByAgent: (agentId) => calls.push(`dismiss:${agentId}`),
   };
@@ -635,7 +760,13 @@ test("settings agent actions uninstall an integration and disable ingress", asyn
   const result = await agentCommands.uninstallAgentIntegration({ agentId: "copilot-cli" }, deps);
 
   assert.strictEqual(result.status, "ok");
-  assert.deepStrictEqual(calls, ["copilot-cli", "stop:copilot-cli", "clear:copilot-cli", "dismiss:copilot-cli"]);
+  assert.deepStrictEqual(calls, [
+    "copilot-cli",
+    "stop:copilot-cli",
+    "automation:copilot-cli",
+    "clear:copilot-cli",
+    "dismiss:copilot-cli",
+  ]);
   assert.strictEqual(result.commit.agents["copilot-cli"].integrationInstalled, false);
   assert.strictEqual(result.commit.agents["copilot-cli"].enabled, false);
   assert.deepStrictEqual(result.commit.dismissedAgentInstallHints, { "copilot-cli": true });
@@ -755,6 +886,71 @@ test("settings agent actions report repair payload errors with the repair comman
 
   assert.strictEqual(result.status, "error");
   assert.match(result.message, /repairAgentIntegration\.agentId/);
+});
+
+test("settings agent actions install, uninstall, and repair ZCode through the real action gates", async () => {
+  const installSnapshot = prefs.getDefaults();
+  const installCalls = [];
+  const installed = await agentCommands.installAgentIntegration({ agentId: "zcode" }, {
+    snapshot: installSnapshot,
+    syncIntegrationForAgent: async (agentId, options) => {
+      installCalls.push({ agentId, options });
+      return { status: "ok", message: "ZCode hooks installed" };
+    },
+    startMonitorForAgent: (agentId) => installCalls.push({ start: agentId }),
+  });
+
+  assert.strictEqual(installed.status, "ok");
+  assert.deepStrictEqual(installCalls, [
+    {
+      agentId: "zcode",
+      options: { source: "settings-agent-install", automatic: false },
+    },
+    { start: "zcode" },
+  ]);
+  assert.strictEqual(installed.commit.agents.zcode.integrationInstalled, true);
+  assert.strictEqual(installed.commit.agents.zcode.enabled, true);
+
+  const activeSnapshot = {
+    ...installSnapshot,
+    agents: installed.commit.agents,
+  };
+  const repairCalls = [];
+  const repaired = await agentCommands.repairAgentIntegration({ agentId: "zcode" }, {
+    snapshot: activeSnapshot,
+    repairIntegrationForAgent: async (agentId, options) => {
+      repairCalls.push({ agentId, options });
+      return { status: "ok", message: "ZCode hooks repaired" };
+    },
+  });
+
+  assert.strictEqual(repaired.status, "ok");
+  assert.deepStrictEqual(repairCalls, [{
+    agentId: "zcode",
+    options: { forceCodexHooksFeature: false },
+  }]);
+
+  const uninstallCalls = [];
+  const uninstalled = await agentCommands.uninstallAgentIntegration({ agentId: "zcode" }, {
+    snapshot: activeSnapshot,
+    uninstallIntegrationForAgent: async (agentId) => {
+      uninstallCalls.push(["uninstall", agentId]);
+      return { status: "ok" };
+    },
+    stopMonitorForAgent: (agentId) => uninstallCalls.push(["stop", agentId]),
+    clearSessionsByAgent: (agentId) => uninstallCalls.push(["clear", agentId]),
+    dismissPermissionsByAgent: (agentId) => uninstallCalls.push(["dismiss", agentId]),
+  });
+
+  assert.strictEqual(uninstalled.status, "ok");
+  assert.deepStrictEqual(uninstallCalls, [
+    ["uninstall", "zcode"],
+    ["stop", "zcode"],
+    ["clear", "zcode"],
+    ["dismiss", "zcode"],
+  ]);
+  assert.strictEqual(uninstalled.commit.agents.zcode.integrationInstalled, false);
+  assert.strictEqual(uninstalled.commit.agents.zcode.enabled, false);
 });
 
 test("every opencode-family member is installable AND auto-repairable (R10 P3)", () => {

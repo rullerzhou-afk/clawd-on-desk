@@ -2,16 +2,38 @@
 
 This project includes third-party materials.
 
-## OpenClaw Pixel Lobster Icon
+## Lobe Icons
 
-`assets/icons/agents/openclaw.svg` is adapted from OpenClaw's
-`docs/assets/pixel-lobster.svg`.
+Selected Agent icon source assets come from
+`@lobehub/icons-static-png@1.95.0` (`light/` variant), with editable SVG
+companions obtained from the official Lobe Icons website at
+`https://lobehub.com/icons`. Generated runtime PNGs derived from these sources
+are stored under `assets/icons/agents/`.
 
-OpenClaw is licensed under the MIT License:
+The included package assets are:
+
+- `antigravity-color.png`
+- `claudecode-color.png`
+- `codebuddy-color.png`
+- `openai.png`
+- `githubcopilot.png`
+- `cursor.png`
+- `geminicli-color.png`
+- `hermesagent.png`
+- `kimi-color.png` (archived source candidate)
+- `kiro-color.png`
+- `xiaomimimo.png`
+- `openclaw-color.png`
+- `opencode.png`
+- `pi.png`
+- `qoder-color.png`
+- `qwen-color.png`
+
+Lobe Icons is licensed under the MIT License:
 
 MIT License
 
-Copyright (c) 2025 Peter Steinberger
+Copyright (c) 2023 LobeHub
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

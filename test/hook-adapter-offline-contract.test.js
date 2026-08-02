@@ -1,7 +1,7 @@
 // test/hook-adapter-offline-contract.test.js — #681 Slice A1, adapter contract.
 //
 // The claim this file has to earn: tightening the SHARED resolver to return an
-// unavailable shape is safe for all 14 adapters WITHOUT touching any of them.
+// unavailable shape is safe for all 15 adapters WITHOUT touching any of them.
 //
 // It is not enough to assert the shape in isolation. Seven adapters (codex,
 // copilot, cursor, kimi, kiro, codebuddy, workbuddy) do a bare `pidChain.length`
@@ -26,16 +26,14 @@
 
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert");
-const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
+const { createSpawnedHookHarness } = require("./helpers/spawned-hook");
 
 const HOOKS_DIR = path.resolve(__dirname, "..", "hooks");
-const PROBE = path.resolve(__dirname, "helpers", "hook-offline-probe.js");
 
 // Every createPidResolver consumer. Cross-checked against
-// `grep -l createPidResolver hooks/*.js` — if a 15th adapter appears without a
+// `grep -l createPidResolver hooks/*.js` — if a 16th adapter appears without a
 // row here, the count assertion at the bottom fails.
 //
 // `stdout` is the EXACT bytes the agent must still receive while Clawd is
@@ -54,7 +52,11 @@ const ADAPTERS = [
   { name: "clawd-hook.js", argv: ["PreToolUse"], payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "" },
   { name: "codex-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "" },
   { name: "copilot-hook.js", argv: ["sessionStart"], payload: { hook_event_name: "sessionStart", session_id: "s-681", cwd: "D:/repo" }, stdout: "" },
-  { name: "cursor-hook.js", payload: { hook_event_name: "beforeSubmitPrompt", cwd: "D:/repo" }, stdout: `${JSON.stringify({ continue: true })}\n` },
+  // #634: cursor's beforeSubmitPrompt now maps to the "prompt" lifecycle,
+  // which is cache-only and deliberately spawn-free — it can no longer anchor
+  // the one-spawn vacuity guard. preToolUse ("event" lifecycle: fresh on cache
+  // miss) keeps the guard meaningful, matching the other adapters' rows.
+  { name: "cursor-hook.js", payload: { hook_event_name: "preToolUse", cwd: "D:/repo" }, stdout: "{}\n" },
   { name: "gemini-hook.js", payload: { hook_event_name: "SessionStart", cwd: "D:/repo" }, stdout: null },
   { name: "kimi-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "" },
   { name: "kiro-hook.js", payload: { hook_event_name: "preToolUse", cwd: "D:/repo" }, stdout: "" },
@@ -63,7 +65,13 @@ const ADAPTERS = [
   { name: "qoder-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: null },
   { name: "qoderwork-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: null },
   { name: "qwen-code-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: null },
-  { name: "reasonix-hook.js", payload: { event: "PreToolUse", cwd: "D:/repo", toolName: "bash" }, stdout: "" },
+  // zcode-hook.js is state-only: stdout is always "{}\n" on every path
+  // (offline, online, error). session_id is required for state POSTing and
+  // avoids the early-drop seen on other adapters.
+  { name: "zcode-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "{}\n" },
+  // Reasonix blocking hooks are intentionally cache-only/zero-spawn even when
+  // Clawd is live. PostToolUse keeps this offline gate assertion non-vacuous.
+  { name: "reasonix-hook.js", payload: { event: "PostToolUse", sessionId: "s-681", cwd: "D:/repo", toolName: "bash" }, stdout: "" },
   // WorkBuddy reads pidChain.length bare too, so the tightened resolver's
   // []-not-null offline shape is still load-bearing here. session_id is
   // REQUIRED: workbuddy-hook.js
@@ -72,49 +80,31 @@ const ADAPTERS = [
   { name: "workbuddy-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "{}\n" },
 ];
 
-let fakeHome;
-let probeOut;
+let hookHarness;
 
 before(() => {
   // An empty home: server-config's RUNTIME_CONFIG_PATH resolves under it, finds
   // nothing, and the resolver gate reads "Clawd is offline". Verified upfront
   // that Node's os.homedir() honors USERPROFILE on Windows.
-  fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-681-offline-home-"));
-  probeOut = path.join(fakeHome, "spawns.json");
+  hookHarness = createSpawnedHookHarness({ prefix: "clawd-681-offline-home-" });
 });
 
-after(() => {
-  try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch { /* best effort */ }
-});
+after(() => hookHarness.cleanup());
 
 // A live runtime naming THIS process, which is trivially alive. Used only by the
 // vacuity guard below — every other case here wants Clawd to look gone.
 const LIVE_RUNTIME = () => ({ app: "clawd-on-desk", port: 23333, ownerPid: process.pid });
 
-function runHookOffline(adapter, { runtimeJson } = {}) {
-  const clawdDir = path.join(fakeHome, ".clawd");
-  fs.rmSync(clawdDir, { recursive: true, force: true });
-  if (runtimeJson !== undefined) {
-    fs.mkdirSync(clawdDir, { recursive: true });
-    fs.writeFileSync(path.join(clawdDir, "runtime.json"), JSON.stringify(runtimeJson), "utf8");
-  }
-  try { fs.unlinkSync(probeOut); } catch { /* first run */ }
-
-  const env = { ...process.env, USERPROFILE: fakeHome, HOME: fakeHome, CLAWD_PROBE_OUT: probeOut };
-  delete env.CLAWD_REMOTE;
-
-  const argv = ["--require", PROBE, path.join(HOOKS_DIR, adapter.name), ...(adapter.argv || [])];
-  const result = spawnSync(process.execPath, argv, {
-    input: `${JSON.stringify(adapter.payload)}\n`,
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 20000,
+function runHookOffline(adapter, { runtimeJson, env } = {}) {
+  return hookHarness.run({
+    script: path.join(HOOKS_DIR, adapter.name),
+    args: adapter.argv || [],
+    payload: adapter.payload,
+    runtimeJson,
     env,
+    httpContract: "block",
+    probeProcessSpawns: true,
   });
-
-  let spawns = null;
-  try { spawns = JSON.parse(fs.readFileSync(probeOut, "utf8")); } catch { /* hook never exited cleanly */ }
-  return { ...result, spawns };
 }
 
 describe("#681 — every adapter survives a clean offline with zero spawn", { skip: process.platform !== "win32" }, () => {
@@ -167,7 +157,7 @@ describe("#681 — every adapter survives a clean offline with zero spawn", { sk
       .sort();
     assert.deepStrictEqual(consumers, ADAPTERS.map((a) => a.name).sort(),
       "a new createPidResolver adapter must be added to ADAPTERS above and proven offline-safe");
-    assert.strictEqual(consumers.length, 14, "the plan and AGENTS.md both say 14 (workbuddy joined in #618)");
+    assert.strictEqual(consumers.length, 15, "zcode-hook.js joined the createPidResolver consumers");
   });
 });
 
@@ -198,27 +188,13 @@ describe("#681 — a stale runtime.json is not a live Clawd", { skip: process.pl
   }
 
   it("CLAWD_REMOTE suppresses the local walk even with a perfectly live runtime.json", () => {
-    const clawdDir = path.join(fakeHome, ".clawd");
-    fs.mkdirSync(clawdDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(clawdDir, "runtime.json"),
-      JSON.stringify({ app: "clawd-on-desk", port: 23333, ownerPid: process.pid }),
-      "utf8"
-    );
-    try { fs.unlinkSync(probeOut); } catch { /* first run */ }
-
     const adapter = ADAPTERS.find((a) => a.name === "kiro-hook.js");
-    const r = spawnSync(process.execPath, ["--require", PROBE, path.join(HOOKS_DIR, adapter.name)], {
-      input: `${JSON.stringify(adapter.payload)}\n`,
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: 20000,
-      env: { ...process.env, USERPROFILE: fakeHome, HOME: fakeHome, CLAWD_PROBE_OUT: probeOut, CLAWD_REMOTE: "1" },
+    const r = runHookOffline(adapter, {
+      runtimeJson: { app: "clawd-on-desk", port: 23333, ownerPid: process.pid },
+      env: { CLAWD_REMOTE: "1" },
     });
 
-    let spawns = null;
-    try { spawns = JSON.parse(fs.readFileSync(probeOut, "utf8")); } catch { /* ignore */ }
-    assert.deepStrictEqual(spawns, [], "a remote hook must never walk THIS machine's process tree");
+    assert.deepStrictEqual(r.spawns, [], "a remote hook must never walk THIS machine's process tree");
     assert.strictEqual(r.status, 0);
   });
 });

@@ -317,7 +317,15 @@ function buildProbeCommand(remoteForwardPort, nodeBin = "node", options = {}) {
     `});` +
     `r.on('error',()=>process.exit(2));` +
     `r.setTimeout(2000,()=>{r.destroy();process.exit(4);});`;
-  if (nodeBin === "node") return `node -e ${JSON.stringify(js)}`;
+  if (nodeBin === "node") {
+    // The PATH fallback must work under both POSIX shells and Windows cmd.exe.
+    // A JSON/double-quoted raw program still expands $, $(), and backticks on
+    // POSIX; POSIX single quotes in turn are not argument quotes under cmd.
+    // Base64 keeps the remote-owned identity path opaque to either shell.
+    const encoded = Buffer.from(js, "utf8").toString("base64");
+    const loader = `eval(Buffer.from('${encoded}','base64').toString('utf8'))`;
+    return `node -e ${JSON.stringify(loader)}`;
+  }
   return buildRemoteNodeEvalCommand(nodeBin, js);
 }
 

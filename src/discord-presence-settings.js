@@ -13,6 +13,10 @@ const DEFAULT_DISCORD_PRESENCE = Object.freeze({
   applicationId: "",
   // Only opt-in. Payload is a strict allowlist (see buildPresencePayload).
   privacyShowProject: false,
+  // The animation mirror discloses more than the coarse-state contract of
+  // `enabled` (working tiers reveal session counts, mini/sleep/error variants
+  // are finer-grained), so it is its own opt-in rather than a silent upgrade.
+  mirrorPetAnimation: false,
 });
 
 const APP_ID_RE = /^[0-9]{17,20}$/;
@@ -30,6 +34,7 @@ function normalizeDiscordPresence(value) {
       ? value.applicationId.trim().replace(/[^0-9]/g, "").slice(0, 32)
       : "";
   base.privacyShowProject = value.privacyShowProject === true;
+  base.mirrorPetAnimation = value.mirrorPetAnimation === true;
   return base;
 }
 

@@ -190,6 +190,9 @@ function registerSettingsIpc(options = {}) {
   const getHookServerPort = options.getHookServerPort || (() => null);
   const getRecentHookEvents = options.getRecentHookEvents || (() => []);
   const checkForUpdates = options.checkForUpdates || (() => {});
+  const getUpdateCheckSnapshot = options.getUpdateCheckSnapshot || (() => ({ state: "idle" }));
+  const clearUpdateError = options.clearUpdateError || (() => ({ state: "idle" }));
+  const copyUpdateError = options.copyUpdateError || (() => ({ status: "error", message: "clipboard unavailable" }));
   const showTutorial = options.showTutorial || (() => ({
     status: "error",
     message: "Tutorial is unavailable",
@@ -573,16 +576,25 @@ function registerSettingsIpc(options = {}) {
       heroSvgContent,
       pendingUpdateVersion,
       autoUpdateCheck,
+      updateCheckSnapshot: getUpdateCheckSnapshot(),
     };
   });
 
-  handle("settings:check-for-updates", () => {
+  handle("settings:check-for-updates", async () => {
     try {
-      checkForUpdates(true);
-      return { status: "ok" };
+      const snapshot = await checkForUpdates(true);
+      return snapshot || getUpdateCheckSnapshot();
     } catch (err) {
       return { status: "error", message: (err && err.message) || String(err) };
     }
+  });
+
+  handle("settings:clear-update-error", () => clearUpdateError());
+
+  handle("settings:copy-update-error", (_event, copyText) => {
+    const boundedText = String(copyText == null ? "" : copyText).slice(0, 8 * 1024);
+    if (!boundedText) return { status: "error", message: "empty update error report" };
+    return copyUpdateError(boundedText);
   });
 
   handle("settings:show-tutorial", async () => {

@@ -38,6 +38,7 @@ const AUTO_REPAIRABLE_AGENT_IDS = new Set([
   "kiro-cli",
   "kimi-cli",
   "qwen-code",
+  "zcode",
   "codewhale",
   "opencode",
   "mimocode",
@@ -59,6 +60,7 @@ const INSTALLABLE_AGENT_IDS = new Set([
   "kiro-cli",
   "kimi-cli",
   "qwen-code",
+  "zcode",
   "codewhale",
   "opencode",
   "mimocode",
@@ -77,6 +79,24 @@ const CUSTOM_DISCOVERY_AGENT_IDS = new Set([...INSTALLABLE_AGENT_IDS, "custom"])
 const _validateAgentFlagId = requireString("setAgentFlag.agentId");
 const _validateAgentFlagValue = requireBoolean("setAgentFlag.value");
 const _validateRepairAgentId = requireString("repairAgentIntegration.agentId");
+
+function disableCodexAutoStartGate(agentId, deps, actionName) {
+  if (agentId !== "codex") return null;
+  if (!deps || typeof deps.writeCodexAutoStartGate !== "function") {
+    return { status: "error", message: `${actionName}: writeCodexAutoStartGate is required` };
+  }
+  try {
+    if (deps.writeCodexAutoStartGate(false) !== true) {
+      return { status: "error", message: `${actionName}: failed to persist Codex auto-start gate` };
+    }
+  } catch (err) {
+    return {
+      status: "error",
+      message: `${actionName}: failed to persist Codex auto-start gate: ${err && err.message}`,
+    };
+  }
+  return null;
+}
 
 function setAgentFlag(payload, deps) {
   if (!payload || typeof payload !== "object") {
@@ -122,6 +142,10 @@ function setAgentFlag(payload, deps) {
   const nextEntry = { ...(currentEntry || {}), [flag]: value };
   const nextAgents = { ...currentAgents, [agentId]: nextEntry };
   const commitResult = { status: "ok", commit: { agents: nextAgents } };
+  if (agentId === "codex" && flag === "enabled" && value === false) {
+    const gateError = disableCodexAutoStartGate(agentId, deps, "setAgentFlag");
+    if (gateError) return gateError;
+  }
 
   // Claude Code enable is the one branch with an awaited external mutation:
   // hooks must actually land (via the server-owned operation queue, #657)
@@ -158,6 +182,9 @@ function setAgentFlag(payload, deps) {
           deps.stopIntegrationForAgent(agentId);
         }
         if (typeof deps.stopMonitorForAgent === "function") deps.stopMonitorForAgent(agentId);
+        if (typeof deps.clearSessionAutomationByAgent === "function") {
+          deps.clearSessionAutomationByAgent(agentId);
+        }
         if (typeof deps.clearSessionsByAgent === "function") deps.clearSessionsByAgent(agentId);
         if (typeof deps.dismissPermissionsByAgent === "function") deps.dismissPermissionsByAgent(agentId);
       } else {
@@ -452,6 +479,9 @@ function removeCustomApplication(payload, deps = {}) {
   const snapshot = deps.snapshot || {};
   const current = Array.isArray(snapshot.customApplications) ? snapshot.customApplications : [];
   if (!current.some((entry) => entry && entry.id === id)) return { status: "ok", noop: true };
+  if (typeof deps.clearSessionAutomationByAgent === "function") {
+    deps.clearSessionAutomationByAgent(id);
+  }
   if (typeof deps.clearSessionsByAgent === "function") deps.clearSessionsByAgent(id);
   if (typeof deps.dismissPermissionsByAgent === "function") deps.dismissPermissionsByAgent(id);
   if (typeof deps.clearRecentHookEvents === "function") deps.clearRecentHookEvents(id);
@@ -559,6 +589,8 @@ async function uninstallAgentIntegration(payload, deps = {}) {
   if (!deps || typeof deps.uninstallIntegrationForAgent !== "function") {
     return { status: "error", message: "uninstallAgentIntegration requires uninstallIntegrationForAgent dep" };
   }
+  const gateError = disableCodexAutoStartGate(agentId, deps, "uninstallAgentIntegration");
+  if (gateError) return gateError;
 
   try {
     const result = await deps.uninstallIntegrationForAgent(agentId);
@@ -572,6 +604,9 @@ async function uninstallAgentIntegration(payload, deps = {}) {
       };
     }
     if (typeof deps.stopMonitorForAgent === "function") deps.stopMonitorForAgent(agentId);
+    if (typeof deps.clearSessionAutomationByAgent === "function") {
+      deps.clearSessionAutomationByAgent(agentId);
+    }
     if (typeof deps.clearSessionsByAgent === "function") deps.clearSessionsByAgent(agentId);
     if (typeof deps.dismissPermissionsByAgent === "function") deps.dismissPermissionsByAgent(agentId);
     return {

@@ -10,6 +10,7 @@ const {
   CODEX_LOCAL_WORKING_STALE_FLOOR_MS,
   isWorkingLikeState,
   isLocalCodexWorkingLikeSession,
+  isLocalZcodeDesktopIdleSession,
   getStaleSessionDecision,
 } = require("../src/state-stale-cleanup");
 
@@ -30,6 +31,15 @@ function desktopSession(overrides = {}) {
     codexOriginator: "codex_work_desktop",
     agentPid: 10,
     sourcePid: 10,
+    ...overrides,
+  });
+}
+
+function zcodeDesktopSession(overrides = {}) {
+  return session({
+    agentId: "zcode",
+    agentPid: 30,
+    sourcePid: 31,
     ...overrides,
   });
 }
@@ -231,6 +241,50 @@ describe("state stale cleanup decisions", () => {
 
     for (const target of cases) {
       assert.deepStrictEqual(decision(target, { alivePids, staleConfig }).result, { action: null });
+    }
+  });
+
+  it("deletes an idle local ZCode conversation after timeout even while shared pids are alive", () => {
+    const { result, calls } = decision(zcodeDesktopSession({
+      updatedAt: 1000000 - 60_001,
+    }), {
+      alivePids: new Set([30, 31]),
+      staleConfig: { sessionStaleMs: 60_000 },
+    });
+
+    assert.strictEqual(isLocalZcodeDesktopIdleSession(zcodeDesktopSession()), true);
+    assert.deepStrictEqual(result, { action: "delete", reason: "zcode-desktop-idle-timeout" });
+    assert.deepStrictEqual(calls, [30]);
+  });
+
+  it("keeps ZCode conversations before the cutoff or when the cutoff is disabled", () => {
+    const alivePids = new Set([30, 31]);
+    assert.deepStrictEqual(decision(zcodeDesktopSession({
+      updatedAt: 1000000 - 59_999,
+    }), {
+      alivePids,
+      staleConfig: { sessionStaleMs: 60_000 },
+    }).result, { action: null });
+    assert.deepStrictEqual(decision(zcodeDesktopSession({
+      updatedAt: 1000000 - 24 * 60 * 60 * 1000,
+    }), {
+      alivePids,
+      staleConfig: { sessionStaleMs: 0 },
+    }).result, { action: null });
+  });
+
+  it("does not apply the ZCode idle timeout to remote, headless, or working sessions", () => {
+    const updatedAt = 1000000 - 60_001;
+    const alivePids = new Set([30, 31]);
+    const staleConfig = { sessionStaleMs: 60_000 };
+    const cases = [
+      zcodeDesktopSession({ host: "remote-box", updatedAt }),
+      zcodeDesktopSession({ headless: true, updatedAt }),
+      zcodeDesktopSession({ state: "working", updatedAt }),
+    ];
+    for (const target of cases) {
+      const result = decision(target, { alivePids, staleConfig }).result;
+      assert.notStrictEqual(result.reason, "zcode-desktop-idle-timeout");
     }
   });
 

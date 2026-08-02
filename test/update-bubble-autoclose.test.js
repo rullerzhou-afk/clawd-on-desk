@@ -19,12 +19,13 @@ class FakeBrowserWindow {
     this.visible = false;
     this.bounds = null;
     this.listeners = new Map();
+    this.sent = [];
     this.webContents = {
       _loading: false,
       isDestroyed: () => false,
       isLoading: () => false,
       once: () => {},
-      send: () => {},
+      send: (channel, payload) => this.sent.push({ channel, payload }),
     };
     FakeBrowserWindow.instances.push(this);
   }
@@ -62,6 +63,7 @@ function createHarness() {
   FakeBrowserWindow.instances = [];
   let updateAutoCloseMs = 9_000;
   const orbitRepositions = [];
+  const clipboardWrites = [];
   const initUpdateBubble = loadUpdateBubbleWithElectron({ BrowserWindow: FakeBrowserWindow });
   const api = initUpdateBubble({
     win: { isDestroyed: () => false },
@@ -80,10 +82,14 @@ function createHarness() {
     guardAlwaysOnTop: () => {},
     reapplyMacVisibility: () => {},
     repositionSessionHud: () => orbitRepositions.push("reposition"),
+    clipboard: {
+      writeText(value) { clipboardWrites.push(value); },
+    },
   });
   return {
     api,
     orbitRepositions,
+    clipboardWrites,
     setUpdateAutoCloseMs(value) {
       updateAutoCloseMs = value;
     },
@@ -168,5 +174,35 @@ describe("update bubble auto-close refresh", () => {
     assert.strictEqual(harness.orbitRepositions.length, 2, "Orbit must keep avoiding the fade-out window");
     mock.timers.tick(250);
     assert.strictEqual(harness.orbitRepositions.length, 3, "hidden window should release Orbit avoidance");
+  });
+
+  it("copies error details without closing or resolving the update bubble", async () => {
+    const harness = createHarness();
+    const pending = harness.api.showUpdateBubble({
+      mode: "error",
+      title: "Update failed",
+      message: "Network unavailable",
+      copyText: "NETWORK_OFFLINE\nredacted detail",
+      copyFeedback: { copied: "Copied", failed: "Copy failed" },
+      requireAction: true,
+      defaultAction: "dismiss",
+    });
+    const bubble = harness.api.getBubbleWindow();
+    let settled = false;
+    pending.then(() => { settled = true; });
+
+    harness.api.handleUpdateBubbleAction({ sender: bubble.webContents }, "copy-error");
+    await Promise.resolve();
+
+    assert.deepStrictEqual(harness.clipboardWrites, ["NETWORK_OFFLINE\nredacted detail"]);
+    assert.equal(settled, false);
+    assert.equal(bubble.isVisible(), true);
+    assert.deepStrictEqual(bubble.sent.at(-1), {
+      channel: "update-bubble-copy-result",
+      payload: { status: "ok", label: "Copied" },
+    });
+
+    harness.api.handleUpdateBubbleAction({ sender: bubble.webContents }, "dismiss");
+    assert.deepStrictEqual(await pending, { action: "dismiss", source: "user" });
   });
 });

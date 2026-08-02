@@ -81,6 +81,8 @@ The status line is visible and Claude Code provides a single user-level slot. Cl
 
 **Qwen Code** — hooks live in `~/.qwen/settings.json`. Install it from **Settings → Agents** when you want local Qwen tracking; after that Clawd keeps the hooks synced on launch while Qwen remains enabled. You can also run `npm run install:qwen-hooks` manually. Qwen Code support is hook-only: state updates and blocking `PermissionRequest` approvals come from Qwen hook events. If `disableAllHooks: true` is present in Qwen settings, Clawd can register entries but Qwen will not fire them until the flag is removed.
 
+**ZCode** — config-file hooks live under `hooks.events.*` in `~/.zcode/cli/config.json`. Install it from **Settings → Agents** when you want local ZCode tracking; after that Clawd keeps its six state-only events synced while ZCode remains enabled. You can also run `npm run install:zcode-hooks` manually. Start a new ZCode session after installing so it loads the current hook configuration. ZCode requires `hooks.enabled: true` to run config-file hooks: Clawd supplies that value when it is absent, but preserves an explicit global `hooks.enabled: false` and any per-hook `enabled: false`. Doctor reports those explicit opt-outs without offering a Fix that would override them. The integration never registers `PermissionRequest`; approval stays in ZCode. If ZCode imported an older Claude configuration, Clawd removes only imported commands that clearly reference its own `clawd-hook.js` from the ZCode config and never edits `~/.claude/settings.json`.
+
 **CodeWhale** — lifecycle hooks live in `~/.codewhale/config.toml` (`[[hooks.hooks]]` entries). Install it from **Settings → Agents** when you want local CodeWhale tracking; after that Clawd keeps the hooks synced on launch while CodeWhale remains enabled. You can also run `npm run install:codewhale-hooks` manually. Phase 1 is state-only: Clawd drives lifecycle/tool/mode animations but does not show permission bubbles or track subagents. See [codewhale-setup.md](codewhale-setup.md) for details and troubleshooting.
 
 **Reasonix CLI** — hooks live in `<Reasonix home>/settings.json` (`~/.reasonix/settings.json` on macOS/Linux, `%APPDATA%\reasonix\settings.json` on current Windows releases). On Windows, Clawd also follows Reasonix's compatibility fallback to the legacy `~/.reasonix/settings.json`; uninstall removes only Clawd-managed entries from both locations. Install it from **Settings → Agents** when you want local Reasonix tracking; after that Clawd keeps the active hooks synced on launch while Reasonix remains enabled. You can also run `npm run install:reasonix-hooks` manually. Phase 1 is state-only: Clawd drives lifecycle, tool, notification, compaction, and subagent-stop animations but leaves permission decisions in Reasonix's own terminal flow.
@@ -102,6 +104,12 @@ Clawd can optionally mirror supported permission bubbles to a dedicated Telegram
 bot, so you can Allow or Deny from Telegram while the local desktop bubble
 remains available. See [telegram-approval.md](telegram-approval.md) for setup,
 token ownership, supported agents, and fallback behavior.
+
+v0.14.0 retires the old Go sidecar transport. Existing legacy users keep their
+saved bot token, allowed user, and target chat, but must complete one real
+Telegram verification callback from the blocking Settings migration panel
+before remote approval is active again. A failed or timed-out check never
+deletes those settings and never falls back to the retired runtime.
 
 ## Feishu / Lark Approval
 

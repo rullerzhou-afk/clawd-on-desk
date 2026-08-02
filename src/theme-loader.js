@@ -32,6 +32,8 @@ const {
   deriveIdleMode: _deriveIdleMode,
   deriveSleepMode: _deriveSleepMode,
   buildCapabilities: _buildCapabilities,
+  deriveAccessoryCapability: _deriveAccessoryCapability,
+  resolveEffectiveAccessoryAttachments: _resolveEffectiveAccessoryAttachments,
   collectRequiredAssetFiles: _collectRequiredAssetFiles,
   basenameOnly: _basenameOnly,
 } = require("./theme-schema");
@@ -179,6 +181,11 @@ function loadTheme(themeId, opts = {}) {
   // basename sanitization all run on the patched raw.
   const { resolvedId, spec: variantSpec } = _resolveVariant(raw, requestedVariant);
   const afterVariant = variantSpec ? _applyVariantPatch(raw, variantSpec, themeId, resolvedId) : raw;
+  // Wardrobe support belongs to the authored, selected variant. User animation
+  // overrides may replace a described file, but must not disable the theme-wide
+  // customization capability merely by making that authored descriptor stale
+  // in the effective visual projection.
+  const authoredAccessorySupported = _deriveAccessoryCapability(afterVariant);
   const patchedRaw = userOverrides ? _applyUserOverridesPatch(afterVariant, userOverrides) : afterVariant;
 
   // Merge defaults for optional fields
@@ -202,6 +209,10 @@ function loadTheme(themeId, opts = {}) {
     ? [...new Set(afterVariant.wideHitboxFiles.map((file) => _basenameOnly(file)).filter(Boolean))]
     : [];
   theme._capabilities = _buildCapabilities(theme, { trustedRuntimeAllowed: !!theme._builtin });
+  theme._capabilities.accessories = authoredAccessorySupported;
+  theme.customization.accessories = authoredAccessorySupported
+    ? _resolveEffectiveAccessoryAttachments(afterVariant, theme)
+    : null;
 
   // For external themes: sanitize SVGs + resolve asset paths
   if (!isBuiltin) {

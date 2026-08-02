@@ -853,6 +853,26 @@ module.exports = function initSessionHud(ctx) {
     notifyReservedOffsetIfChanged();
   }
 
+  function syncQuotaRing(snapshot, scale, hudContentBounds, options = {}) {
+    const ring = shouldShow(snapshot)
+      ? computeRingBounds(snapshot, scale, collectRingAvoidRects(hudContentBounds))
+      : null;
+    if (!ring) {
+      hideQuotaRing();
+      return;
+    }
+    const rwin = ensureQuotaRing();
+    if (!rwin || rwin.isDestroyed()) return;
+    applyZoomToWindow(rwin, scale);
+    rwin.setBounds(ring.bounds);
+    // Send the side whenever it flips (edge crossing) even on a
+    // reposition-only sync, or the renderer keeps the stale layout.
+    const sideChanged = ring.side !== ringSide;
+    ringSide = ring.side;
+    if (options.sendSnapshot !== false || sideChanged) sendRingSnapshot(snapshot, ring.side);
+    showQuotaRing(rwin);
+  }
+
   function syncSessionHud(snapshot = latestSnapshot || getCurrentSnapshot(), options = {}) {
     latestSnapshot = snapshot;
     // Defend against stale reveal: if base eligibility dropped (last session
@@ -887,28 +907,7 @@ module.exports = function initSessionHud(ctx) {
     }
 
     // ── Quota ring (quota only; attached beside the pet) ──
-    const ring = show
-      ? computeRingBounds(
-        snapshot,
-        scale,
-        collectRingAvoidRects(hudComputed ? hudComputed.contentBounds : null)
-      )
-      : null;
-    if (!ring) {
-      hideQuotaRing();
-    } else {
-      const rwin = ensureQuotaRing();
-      if (rwin && !rwin.isDestroyed()) {
-        applyZoomToWindow(rwin, scale);
-        rwin.setBounds(ring.bounds);
-        // Send the side whenever it flips (edge crossing) even on a
-        // reposition-only sync, or the renderer keeps the stale layout.
-        const sideChanged = ring.side !== ringSide;
-        ringSide = ring.side;
-        if (options.sendSnapshot !== false || sideChanged) sendRingSnapshot(snapshot, ring.side);
-        showQuotaRing(rwin);
-      }
-    }
+    syncQuotaRing(snapshot, scale, hudComputed ? hudComputed.contentBounds : null, options);
   }
 
   function broadcastSessionSnapshot(snapshot) {
@@ -917,6 +916,19 @@ module.exports = function initSessionHud(ctx) {
 
   function repositionSessionHud() {
     syncSessionHud(latestSnapshot || getCurrentSnapshot(), { sendSnapshot: false });
+  }
+
+  function repositionQuotaRing() {
+    const snapshot = latestSnapshot || getCurrentSnapshot();
+    const scale = getTextScale();
+    const hudComputed = shouldShow(snapshot)
+      && ctx.sessionHudEnabled !== false
+      && snapshotHasVisibleSessions(snapshot)
+      ? computeBounds(snapshot, scale)
+      : null;
+    syncQuotaRing(snapshot, scale, hudComputed ? hudComputed.contentBounds : null, {
+      sendSnapshot: false,
+    });
   }
 
   function getHudReservedOffset() {
@@ -956,6 +968,7 @@ module.exports = function initSessionHud(ctx) {
     ensureSessionHud,
     broadcastSessionSnapshot,
     repositionSessionHud,
+    repositionQuotaRing,
     syncSessionHud,
     sendI18n,
     getHudReservedOffset,

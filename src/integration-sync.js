@@ -261,6 +261,21 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncZcodeHooks() {
+    try {
+      if (typeof ctx.syncZcodeHooksImpl === "function") return ctx.syncZcodeHooksImpl();
+      const { registerZcodeHooks } = require("../hooks/zcode-install.js");
+      const result = registerZcodeHooks({ silent: true });
+      if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
+        console.log(`Clawd: synced ZCode hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      return normalizeCountSyncResult(result, "ZCode", "zcode-not-installed");
+    } catch (err) {
+      console.warn("Clawd: failed to sync ZCode hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync ZCode hooks" };
+    }
+  }
+
   function syncCodexHooks() {
     try {
       if (typeof ctx.syncCodexHooksImpl === "function") return ctx.syncCodexHooksImpl();
@@ -527,6 +542,7 @@ function createIntegrationSyncRuntime(options = {}) {
     "kiro-cli": syncKiroHooks,
     "kimi-cli": syncKimiHooks,
     "qwen-code": syncQwenHooks,
+    zcode: syncZcodeHooks,
     codewhale: syncCodewhaleHooks,
     codex: syncCodexHooks,
     opencode: syncOpencodePlugin,
@@ -671,6 +687,7 @@ function createIntegrationSyncRuntime(options = {}) {
     syncKiroHooks,
     syncKimiHooks,
     syncQwenHooks,
+    syncZcodeHooks,
     syncCodewhaleHooks,
     syncCodexHooks,
     syncOpencodePlugin,

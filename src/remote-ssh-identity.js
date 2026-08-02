@@ -17,6 +17,14 @@ const INSTALLATION_IDENTITY_FILENAME = "clawd-installation-identity.json";
 const INSTALLATION_IDENTITY_VERSION = 1;
 const REMOTE_IDENTITY_VERSION = 2;
 const DEFAULT_PREVIOUS_NONCE_TTL_MS = 15 * 60 * 1000;
+const IDENTITY_STORAGE_UNAVAILABLE = "CLAWD_IDENTITY_STORAGE_UNAVAILABLE";
+
+function storageUnavailableError(message, cause) {
+  const err = new Error(message);
+  err.code = IDENTITY_STORAGE_UNAVAILABLE;
+  if (cause !== undefined) err.cause = cause;
+  return err;
+}
 
 function deriveInstallId(bindingSecret) {
   if (!Buffer.isBuffer(bindingSecret) || bindingSecret.length !== 32) {
@@ -57,13 +65,18 @@ function decodeBindingSecret(record, safeStorage) {
   if (record.storageBackend === "plaintext") {
     encoded = record.encryptedBindingSecret;
   } else {
-    if (!safeStorage
-      || typeof safeStorage.isEncryptionAvailable !== "function"
-      || !safeStorage.isEncryptionAvailable()
-      || typeof safeStorage.decryptString !== "function") {
-      throw new Error("safe storage is unavailable");
+    try {
+      if (!safeStorage
+        || typeof safeStorage.isEncryptionAvailable !== "function"
+        || !safeStorage.isEncryptionAvailable()
+        || typeof safeStorage.decryptString !== "function") {
+        throw storageUnavailableError("safe storage is unavailable");
+      }
+      encoded = safeStorage.decryptString(Buffer.from(record.encryptedBindingSecret, "base64"));
+    } catch (err) {
+      if (err && err.code === IDENTITY_STORAGE_UNAVAILABLE) throw err;
+      throw storageUnavailableError("safe storage could not decrypt the installation identity", err);
     }
-    encoded = safeStorage.decryptString(Buffer.from(record.encryptedBindingSecret, "base64"));
   }
   const bindingSecret = Buffer.from(encoded, "base64");
   if (bindingSecret.length !== 32) throw new Error("binding secret length is invalid");
@@ -160,6 +173,16 @@ function loadOrCreateInstallationIdentity({
     };
   } catch (err) {
     const missing = err && err.code === "ENOENT";
+    // A temporarily locked keyring, unavailable safeStorage backend, or an
+    // unreadable identity file must never be treated as a cloned/corrupt
+    // installation. Preserve the only binding record and let startup disable
+    // Remote SSH until a later retry can read it successfully.
+    if (!missing && err && (
+      err.code === IDENTITY_STORAGE_UNAVAILABLE
+      || (typeof err.code === "string" && err.code.length > 0)
+    )) {
+      throw err;
+    }
     const identity = mintInstallationIdentity({
       recordPath,
       safeStorage,
@@ -245,7 +268,9 @@ function abortIdentityTxnToEmergencyNonce(profile, {
       fromNonce: null,
       toNonce,
       startedAt,
-      previousExpiresAt: startedAt,
+      // The schema requires a strictly positive expiry window even though an
+      // emergency C transaction has no previous nonce left to accept.
+      previousExpiresAt: startedAt + 1,
       steps: Object.fromEntries(
         REMOTE_IDENTITY_STEP_NAMES.map((name) => [name, { status: "pending" }]),
       ),
@@ -392,6 +417,7 @@ module.exports = {
   INSTALLATION_IDENTITY_VERSION,
   REMOTE_IDENTITY_VERSION,
   DEFAULT_PREVIOUS_NONCE_TTL_MS,
+  IDENTITY_STORAGE_UNAVAILABLE,
   deriveInstallId,
   installationIdentityPath,
   selectedSafeStorageBackend,

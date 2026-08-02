@@ -29,10 +29,12 @@ describe("main default idle visual wiring", () => {
   });
 
   it("stamps pre-IPC visual choices on both renderer theme-config delivery paths", () => {
-    assert.match(
+    const rendererConfig = sectionBetween(
       mainSource,
-      /function buildRendererThemeConfig\(\) \{[^}]*idleDefaultVisual = getIdleVisualChoice\(\);/
+      "function buildRendererThemeConfig()",
+      "const _stateCtx = {"
     );
+    assert.ok(rendererConfig.includes("cfg.idleDefaultVisual = getIdleVisualChoice();"));
     assert.match(
       mainSource,
       /cfg\.petTintPayload = resolvePetTintPayload\(tintId, activeTheme\);/
@@ -56,6 +58,14 @@ describe("main default idle visual wiring", () => {
       !mainSource.includes("themeConfig: themeRuntime.getRendererConfig()"),
       "an un-stamped renderer config must not reach the render window"
     );
+    assert.ok(mainSource.includes("getEffectivePetAccessoryIdForTheme({"));
+    assert.ok(mainSource.includes('_settingsController.get("holidayAccessoryEnabled")'));
+  });
+
+  it("starts and disposes the holiday accessory runtime with the app lifecycle", () => {
+    assert.ok(mainSource.includes("const holidayAccessoryRuntime = createHolidayAccessoryRuntime({"));
+    assert.ok(mainSource.includes("holidayAccessoryRuntime.start();"));
+    assert.ok(mainSource.includes("holidayAccessoryRuntime.dispose();"));
   });
 
   it("re-rests the pet through the effect-router hook only while idle", () => {

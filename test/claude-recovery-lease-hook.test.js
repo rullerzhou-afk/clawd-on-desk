@@ -2,10 +2,10 @@
 
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert");
-const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { createSpawnedHookHarness } = require("./helpers/spawned-hook");
 const {
   getLeaseFilePath,
   readLeaseFile,
@@ -17,9 +17,11 @@ const HOOK = path.join(__dirname, "..", "hooks", "clawd-hook.js");
 describe("Claude hook recovery lease ordering", () => {
   let home;
   let recoveryDir;
+  let hookHarness;
 
   beforeEach(() => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-hook-recovery-"));
+    hookHarness = createSpawnedHookHarness({ home });
     recoveryDir = path.join(home, ".clawd", "session-recovery-v1");
     updateRecoveryLeaseFromStateBody({
       agent_id: "claude-code",
@@ -42,14 +44,11 @@ describe("Claude hook recovery lease ordering", () => {
   afterEach(() => fs.rmSync(home, { recursive: true, force: true }));
 
   function run(event, payload = {}) {
-    const env = { ...process.env, HOME: home, USERPROFILE: home };
-    delete env.CLAWD_REMOTE;
-    return spawnSync(process.execPath, [HOOK, event], {
-      input: `${JSON.stringify({ session_id: "offline-session", cwd: "C:/work/project", ...payload })}\n`,
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: 20000,
-      env,
+    return hookHarness.run({
+      script: HOOK,
+      args: [event],
+      payload: { session_id: "offline-session", cwd: "C:/work/project", ...payload },
+      httpContract: "expect-attempt",
     });
   }
 

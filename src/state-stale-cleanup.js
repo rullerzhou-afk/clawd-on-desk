@@ -27,6 +27,14 @@ function isLocalCodexDesktopIdleSession(session) {
     && isCodexDesktopOriginator(session.codexOriginator);
 }
 
+function isLocalZcodeDesktopIdleSession(session) {
+  return !!session
+    && session.agentId === "zcode"
+    && !session.host
+    && !session.headless
+    && session.state === "idle";
+}
+
 function getStaleSessionDecision(session, options = {}) {
   const now = options.now;
   const config = options.staleConfig || {};
@@ -78,6 +86,18 @@ function getStaleSessionDecision(session, options = {}) {
     && isLocalCodexDesktopIdleSession(session)
   ) {
     return { action: "delete", reason: "codex-desktop-idle-timeout" };
+  }
+
+  // ZCode desktop conversations have no SessionEnd event and can share the
+  // app's long-lived app-server PID. Once source_pid is correctly anchored to
+  // ZCode.exe, process liveness alone cannot retire an individual closed
+  // conversation, so apply the same configured idle cutoff as Codex Desktop.
+  if (
+    sessionStaleMs > 0
+    && age > sessionStaleMs
+    && isLocalZcodeDesktopIdleSession(session)
+  ) {
+    return { action: "delete", reason: "zcode-desktop-idle-timeout" };
   }
 
   // NOTE: requiresCompletionAck does NOT hold a session out of stale cleanup.
@@ -136,5 +156,6 @@ module.exports = {
   CODEX_LOCAL_WORKING_STALE_FLOOR_MS,
   isWorkingLikeState,
   isLocalCodexWorkingLikeSession,
+  isLocalZcodeDesktopIdleSession,
   getStaleSessionDecision,
 };

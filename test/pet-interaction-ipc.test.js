@@ -58,6 +58,9 @@ function createHarness(overrides = {}) {
     recoverVisiblePetAfterRendererLoad: (event) => calls.push(["recoverVisiblePetAfterRendererLoad", event.sender]),
     setDragLocked: (value) => calls.push(["setDragLocked", value]),
     setMouseOverPet: (value) => calls.push(["setMouseOverPet", value]),
+    cancelRoam: Object.prototype.hasOwnProperty.call(overrides, "cancelRoam")
+      ? overrides.cancelRoam
+      : (() => calls.push(["cancelRoam"])),
     beginDragSnapshot: () => calls.push(["beginDragSnapshot"]),
     clearDragSnapshot: () => calls.push(["clearDragSnapshot"]),
     syncHitWin: () => calls.push(["syncHitWin"]),
@@ -214,6 +217,7 @@ test("pet interaction IPC preserves drag lock lifecycle", () => {
   assert.deepStrictEqual(calls, [
     ["setDragLocked", true],
     ["setMouseOverPet", true],
+    ["cancelRoam"],
     ["beginDragSnapshot"],
     ["setDragLocked", false],
     ["clearDragSnapshot"],
@@ -222,6 +226,13 @@ test("pet interaction IPC preserves drag lock lifecycle", () => {
     // is in flight — releasing the lock must re-run the sync.
     ["syncImeEditingPetDodge"],
   ]);
+});
+
+test("pet interaction IPC requires the roam cancel dependency", () => {
+  assert.throws(
+    () => createHarness({ cancelRoam: null }),
+    /registerPetInteractionIpc requires cancelRoam/,
+  );
 });
 
 test("pet interaction IPC finalizes drag end and always clears drag state", () => {

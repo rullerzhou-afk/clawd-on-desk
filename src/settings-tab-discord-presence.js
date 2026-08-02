@@ -23,6 +23,7 @@
       enabled: !!(cfg && cfg.enabled),
       applicationId: cfg && typeof cfg.applicationId === "string" ? cfg.applicationId : "",
       privacyShowProject: !!(cfg && cfg.privacyShowProject === true),
+      mirrorPetAnimation: !!(cfg && cfg.mirrorPetAnimation === true),
     };
   }
 
@@ -79,6 +80,7 @@
     // collapsed by default.
     parent.appendChild(helpers.buildSection(t("discordPresenceActivityTitle"), [
       buildEnabledRow(),
+      buildMirrorAnimationRow(),
       buildProjectPrivacyRow(),
     ]));
     parent.appendChild(helpers.buildCollapsibleGroup({
@@ -182,6 +184,48 @@
       sw.removeAttribute("tabindex");
     } else {
       const toggle = () => saveConfig({ ...cfg, enabled: !cfg.enabled });
+      sw.addEventListener("click", toggle);
+      sw.addEventListener("keydown", (ev) => {
+        if (ev.key === " " || ev.key === "Enter") { ev.preventDefault(); toggle(); }
+      });
+    }
+    ctrl.appendChild(sw);
+    row.appendChild(ctrl);
+    return row;
+  }
+
+  function buildMirrorAnimationRow() {
+    const cfg = currentConfig();
+    const row = document.createElement("div");
+    row.className = "row";
+    // Sub-option of the enable switch, same pattern as the project-name row.
+    if (!cfg.enabled) row.classList.add("tg-approval-row-disabled");
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("discordPresenceMirrorAnimation");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("discordPresenceMirrorAnimationDesc");
+    text.appendChild(label);
+    text.appendChild(desc);
+    row.appendChild(text);
+
+    const ctrl = document.createElement("div");
+    ctrl.className = "row-control";
+    const sw = document.createElement("div");
+    sw.className = "switch";
+    sw.setAttribute("role", "switch");
+    sw.setAttribute("tabindex", "0");
+    helpers.setSwitchVisual(sw, cfg.mirrorPetAnimation, { pending: view.configPending });
+    if (!cfg.enabled || view.configPending) {
+      sw.classList.add("disabled");
+      sw.setAttribute("aria-disabled", "true");
+      sw.removeAttribute("tabindex");
+    } else {
+      const toggle = () => saveConfig({ ...cfg, mirrorPetAnimation: !cfg.mirrorPetAnimation });
       sw.addEventListener("click", toggle);
       sw.addEventListener("keydown", (ev) => {
         if (ev.key === " " || ev.key === "Enter") { ev.preventDefault(); toggle(); }

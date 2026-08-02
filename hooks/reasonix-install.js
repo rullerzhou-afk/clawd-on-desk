@@ -21,16 +21,31 @@ const {
 const MARKER = "reasonix-hook.js";
 const SETTINGS_DIRNAME = ".reasonix";
 const SETTINGS_FILENAME = "settings.json";
-const ENV_VAR_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}/g;
+const BRACED_ENV_VAR_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}/g;
+const BARE_ENV_VAR_PATTERN = /\$([A-Za-z_][A-Za-z0-9_]*)/g;
 
 function expandHomePath(value, homeDir, env = process.env) {
-  const raw = String(value || "").trim().replace(
-    ENV_VAR_PATTERN,
+  let unresolved = false;
+  const expandedBraced = String(value || "").trim().replace(
+    BRACED_ENV_VAR_PATTERN,
     (_match, name, fallbackClause, fallbackValue) => {
       const envValue = env && env[name] != null ? String(env[name]) : "";
-      return envValue || (fallbackClause ? fallbackValue : "");
+      if (envValue) return envValue;
+      if (fallbackClause) return fallbackValue;
+      unresolved = true;
+      return "";
     }
   );
+  const raw = expandedBraced.replace(BARE_ENV_VAR_PATTERN, (_match, name) => {
+    const envValue = env && env[name] != null ? String(env[name]) : "";
+    if (envValue) return envValue;
+    unresolved = true;
+    return "";
+  });
+  // An authoritative override containing any missing, fallback-less variable
+  // is invalid as a whole. Otherwise `${MISSING}/tmp` would silently become
+  // `/tmp`, which is worse than the original cwd fallback.
+  if (unresolved) return "";
   if (!raw) return "";
   const home = homeDir || os.homedir();
   if (raw === "~") return home;
@@ -51,6 +66,10 @@ function resolveReasonixHome(options = {}) {
   const configuredHome = String(env.REASONIX_HOME || "").trim();
   if (configuredHome) {
     const explicit = expandHomePath(configuredHome, options.userHomeDir || os.homedir(), env);
+    // A configured override is authoritative. If any fallback-less variable
+    // is unresolved, fail closed instead of collapsing the remaining suffix
+    // into a different absolute path (or the launch cwd).
+    if (!explicit) return "";
     return path.resolve(explicit);
   }
 
@@ -104,6 +123,7 @@ function resolveReasonixConfigTargets(options = {}) {
 function selectReasonixSettingsPath(options = {}) {
   if (options.settingsPath) return options.settingsPath;
   const targets = resolveReasonixConfigTargets(options);
+  if (targets.length === 0) return "";
 
   // Mirror Reasonix's own loader: an existing current settings file wins; when
   // it is absent, the legacy ~/.reasonix/settings.json remains active.
@@ -114,7 +134,9 @@ function selectReasonixSettingsPath(options = {}) {
 }
 
 const DEFAULT_PARENT_DIR = resolveReasonixHome();
-const DEFAULT_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, SETTINGS_FILENAME);
+const DEFAULT_CONFIG_PATH = DEFAULT_PARENT_DIR
+  ? path.join(DEFAULT_PARENT_DIR, SETTINGS_FILENAME)
+  : "";
 const DEFAULT_CONFIG_TARGETS = Object.freeze(
   resolveReasonixConfigTargets().map((target) => Object.freeze(target))
 );
@@ -215,6 +237,19 @@ function normalizeReasonixHookEntries(entries, desiredCommand) {
  */
 function registerReasonixHooks(options = {}) {
   const settingsPath = selectReasonixSettingsPath(options);
+  if (!settingsPath) {
+    const message = "REASONIX_HOME contains an unresolved variable or expands to an empty path; refusing to register hooks";
+    if (!options.silent) throw new Error(message);
+    console.warn(`Clawd: ${message}`);
+    return {
+      status: "skipped",
+      reason: "reasonix-home-invalid",
+      message,
+      added: 0,
+      skipped: 0,
+      updated: 0,
+    };
+  }
 
   // Skip if Reasonix home doesn't exist (Reasonix not installed/initialized).
   const reasonixDir = path.dirname(settingsPath);
@@ -328,6 +363,32 @@ function unregisterReasonixHooks(options = {}) {
       ? [options.settingsPath]
       : resolveReasonixConfigTargets(options).map((target) => target.configPath);
   const settingsPaths = [...new Set(requestedPaths)];
+  if (settingsPaths.length === 0) {
+    const message = "REASONIX_HOME contains an unresolved variable or expands to an empty path; refusing to unregister hooks";
+    if (!options.silent) {
+      return {
+        status: "error",
+        reason: "reasonix-home-invalid",
+        message,
+        removed: 0,
+        changed: false,
+        settingsPath: "",
+        settingsPaths: [],
+        results: [],
+      };
+    }
+    console.warn(`Clawd: ${message}`);
+    return {
+      status: "skipped",
+      reason: "reasonix-home-invalid",
+      message,
+      removed: 0,
+      changed: false,
+      settingsPath: "",
+      settingsPaths: [],
+      results: [],
+    };
+  }
   let removed = 0;
   let changed = false;
   const backupPaths = [];

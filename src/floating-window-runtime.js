@@ -17,6 +17,7 @@ function createFloatingWindowRuntime(options = {}) {
   const repositionPermissionBubbles = options.repositionPermissionBubbles || noop;
   const repositionUpdateBubble = options.repositionUpdateBubble || noop;
   const repositionSessionHud = options.repositionSessionHud || noop;
+  const repositionQuotaRing = options.repositionQuotaRing || noop;
   const syncSessionHudVisibility = options.syncSessionHudVisibility || noop;
   const syncUpdateBubbleVisibility = options.syncUpdateBubbleVisibility || noop;
   const hideUpdateBubble = options.hideUpdateBubble || noop;
@@ -24,6 +25,9 @@ function createFloatingWindowRuntime(options = {}) {
   function repositionFloatingBubbles() {
     if (getPendingList(getPendingPermissions).length) repositionPermissionBubbles();
     repositionUpdateBubble();
+    // Orbit reads both permission and update-bubble bounds. Reposition it last
+    // so it never avoids the previous update-bubble position.
+    repositionQuotaRing();
   }
 
   function repositionAnchoredSurfaces() {

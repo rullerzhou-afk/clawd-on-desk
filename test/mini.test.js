@@ -45,6 +45,7 @@ function loadMiniWithElectron(screenExports) {
 
 function makeCtx(theme, stateLog, initialX = 160) {
   const bounds = { x: initialX, y: 180, width: 120, height: 120 };
+  const applyBoundsCallLog = [];
   return {
     theme,
     currentState: "idle",
@@ -70,6 +71,26 @@ function makeCtx(theme, stateLog, initialX = 160) {
     SIZES: { m: { width: 120, height: 120 } },
     getCurrentPixelSize() { return { width: 120, height: 120 }; },
     getPetWindowBounds() { return { ...bounds }; },
+    // Issue #690 Phase 3: mini.js's per-frame/placement writes now go through
+    // this instead of raw ctx.win.setBounds()/setPosition(). This harness has
+    // no Linux/Mutter clamp model (none of these tests set isLinux or mock a
+    // WM clamp — that cross-module scenario lives in
+    // test/edge-virtualization.test.js), so physical always equals logical
+    // here: write straight into the same `bounds` closure win.getBounds()/
+    // getBoundsSnapshot() read, exactly reproducing the old setBounds()
+    // behaviour byte-for-byte for every existing assertion.
+    applyPetWindowBounds(next, opts) {
+      applyBoundsCallLog.push({ next: { ...next }, opts: opts ? { ...opts } : undefined });
+      bounds.x = next.x;
+      bounds.y = next.y;
+      bounds.width = next.width;
+      bounds.height = next.height;
+      return { ...bounds };
+    },
+    // Test-only introspection (not part of the real ctx contract) for the
+    // §4.5 point 3 / §12.8 automated thresholds: every mini animation frame
+    // must go through applyMiniFrameBounds() with assertNoYOffset:true.
+    getApplyBoundsCallLog() { return applyBoundsCallLog.map((c) => ({ ...c })); },
     getAnimationAssetCycleMs(file) {
       if (file && file.includes("mini-enter")) return 1000;
       return null;
@@ -210,6 +231,106 @@ describe("mini mode entry timing", () => {
     assert.deepStrictEqual(stateLog, ["mini-enter", "mini-idle"]);
     assert.equal(mini.getMiniTransitioning(), false);
     assert.equal(mini.getMiniMode(), true);
+  });
+});
+
+// PR #751 Codex review #10 (rework batch B-5, non-blocking): every
+// getAllDisplaysCalls assertion in this describe block only ever counts
+// mini.js's OWN direct screen.getAllDisplays() call sites (resolveMiniTopology
+// / checkMiniModeSnap) — makeCtx()'s mock ctx.applyPetWindowBounds never
+// reaches the real pet-window-runtime.js, so it cannot see that runtime's OWN
+// internal enumeration (materializeVirtualBounds -> resolveHorizontalClampBounds
+// -> findDisplayIdForPoint(), plus syncHitWin()), which used to re-run on
+// every single per-frame write/drag-move regardless of these budgets. See
+// test/edge-virtualization.test.js's "B-5 (Codex #10): a full drag +
+// mini-entry animation..." test for the real-runtime-assembled version that
+// actually exercises (and, post-fix, bounds) that call count.
+describe("mini entry animation composite-only guardrails (#690 Phase 3 item 6)", () => {
+  let loader;
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  });
+
+  afterEach(() => {
+    if (loader) loader.restore();
+    mock.timers.reset();
+    loader = null;
+  });
+
+  it("drag-snap entry never sends a Y viewport-offset IPC, resolves topology at most once, and every frame asserts no Y offset", () => {
+    let getAllDisplaysCalls = 0;
+    loader = loadMiniWithElectron({
+      getAllDisplays() {
+        getAllDisplaysCalls++;
+        return [{ bounds: { x: 0, y: 0, width: 800, height: 600 }, workArea: { x: 0, y: 0, width: 800, height: 600 } }];
+      },
+    });
+    const stateLog = [];
+    const rendererEvents = [];
+    const theme = cloneTheme(_defaultTheme);
+    const ctx = makeCtx(theme, stateLog, 600);
+    ctx.sendToRenderer = (...args) => rendererEvents.push(args);
+    const mini = loader.initMini(ctx);
+
+    mini.enterMiniMode({ x: 0, y: 0, width: 800, height: 600 }, false, "right");
+    mock.timers.tick(120);
+
+    const yOffsetSends = rendererEvents.filter((e) => e[0] === "viewport-offset");
+    assert.deepStrictEqual(yOffsetSends, [], "mini's per-frame writes must never trigger a Y viewport-offset IPC");
+
+    const boundsCalls = ctx.getApplyBoundsCallLog();
+    assert.ok(boundsCalls.length > 0, "expected at least one applyPetWindowBounds call from the entry animation");
+    assert.ok(
+      boundsCalls.every((c) => c.opts && c.opts.assertNoYOffset === true),
+      "every mini animation frame must go through applyMiniFrameBounds() with assertNoYOffset:true"
+    );
+
+    // §12.8: "动画是否只缓存单次 workArea/topology" — enterMiniMode() resolves
+    // the whole transition's topology exactly once (reused for the seam clip
+    // and every animation frame via animCtx), so this must be exactly 1, not
+    // just under some looser bound.
+    assert.equal(
+      getAllDisplaysCalls, 1,
+      `expected screen.getAllDisplays() to be called exactly once for the whole entry animation, got ${getAllDisplaysCalls}`
+    );
+  });
+
+  it("via-menu crabwalk + settle each resolve topology at most once and never send a Y viewport-offset IPC", () => {
+    let getAllDisplaysCalls = 0;
+    loader = loadMiniWithElectron({
+      getAllDisplays() {
+        getAllDisplaysCalls++;
+        return [{ bounds: { x: 0, y: 0, width: 800, height: 600 }, workArea: { x: 0, y: 0, width: 800, height: 600 } }];
+      },
+    });
+    const stateLog = [];
+    const rendererEvents = [];
+    const theme = cloneTheme(_defaultTheme);
+    const ctx = makeCtx(theme, stateLog, 710);
+    ctx.sendToRenderer = (...args) => rendererEvents.push(args);
+    const mini = loader.initMini(ctx);
+
+    mini.enterMiniViaMenu();
+    // Crabwalk phase resolves its own topology once.
+    assert.ok(getAllDisplaysCalls <= 1, `crabwalk phase: expected <=1 getAllDisplays() call, got ${getAllDisplaysCalls}`);
+
+    mock.timers.tick(2500); // walk + jump + preload + mini-enter settle, generously
+
+    const yOffsetSends = rendererEvents.filter((e) => e[0] === "viewport-offset");
+    assert.deepStrictEqual(yOffsetSends, [], "menu-triggered mini entry must never trigger a Y viewport-offset IPC");
+    const boundsCalls = ctx.getApplyBoundsCallLog();
+    assert.ok(
+      boundsCalls.every((c) => c.opts && c.opts.assertNoYOffset === true),
+      "every mini animation frame (crabwalk + settle) must assert no Y offset"
+    );
+    // Crabwalk (enterMiniViaMenu) and the mini handoff (enterMiniMode) each
+    // resolve topology once independently — two separate, non-per-frame
+    // transitions, not one shared animation.
+    assert.ok(
+      getAllDisplaysCalls <= 2,
+      `expected at most 2 total getAllDisplays() calls (crabwalk + mini handoff), got ${getAllDisplaysCalls}`
+    );
   });
 });
 

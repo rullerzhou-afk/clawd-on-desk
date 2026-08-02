@@ -76,6 +76,24 @@ describe("settings agent order", () => {
     assert.deepStrictEqual(sorted.map((agent) => agent.id), ["claude-code", "codebuddy", "qoder"]);
   });
 
+  it("places ZCode (state-only) in the non-collapsible group after reasonix", () => {
+    // Regression: zcode was absent from both priority tables, so it fell to
+    // Infinity and landed after every known agent by name — unstable. It is
+    // state-only (no permission/notification hooks) → non-collapsible.
+    const sorted = sortAgentMetadataForSettings([
+      { id: "zcode", name: "ZCode", capabilities: {} },
+      { id: "reasonix", name: "Reasonix", capabilities: {} },
+      { id: "antigravity-cli", name: "Antigravity CLI", capabilities: {} },
+      { id: "claude-code", name: "Claude Code", capabilities: { permissionApproval: true } },
+    ]);
+    assert.deepStrictEqual(sorted.map((agent) => agent.id), [
+      "claude-code",
+      "antigravity-cli",
+      "reasonix",
+      "zcode",
+    ]);
+  });
+
   it("keeps unknown agents in their group but appends them after known priorities by name", () => {
     const sorted = sortAgentMetadataForSettings([
       { id: "zeta-hook", name: "Zeta Hook", capabilities: { notificationHook: true } },

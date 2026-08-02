@@ -761,6 +761,61 @@ test("remoteSsh:force-revoke disconnects first, persists revocation, and refresh
   ipc.dispose();
 });
 
+test("remoteSsh:force-revoke all commits through the real controller and drops both old generations", async () => {
+  const { createSettingsController } = require("../src/settings-controller");
+  const prefs = require("../src/prefs");
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const disconnected = [];
+  const refreshed = [];
+  const runtime = mockRuntime();
+  runtime.disconnect = (id) => { disconnected.push(id); };
+  runtime.refreshProfile = (profile) => { refreshed.push(profile); return true; };
+  const controller = createSettingsController({
+    loadResult: {
+      snapshot: {
+        ...prefs.getDefaults(),
+        remoteSsh: {
+          installId: TEST_INSTALL_ID,
+          profiles: [{
+            ...baseProfile,
+            runtimeMode: "account-default",
+            runtimeKey: "account-default",
+            layoutVersion: 1,
+            routingNonce: "b".repeat(32),
+            previousNonce: "a".repeat(32),
+            previousExpiresAt: Date.now() + 60_000,
+          }],
+        },
+      },
+      locked: false,
+    },
+  });
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController: controller,
+    remoteSshRuntime: runtime,
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+  });
+
+  const result = await ipcMain.invoke("remoteSsh:force-revoke", {
+    profileId: "p1",
+    mode: "all",
+    confirmed: true,
+  });
+  const updated = controller.getSnapshot().remoteSsh.profiles[0];
+
+  assert.equal(result.status, "ok");
+  assert.deepEqual(disconnected, ["p1"]);
+  assert.equal(refreshed.length, 1);
+  assert.equal(updated.routingNonce, undefined);
+  assert.equal(updated.previousNonce, undefined);
+  assert.ok(updated.identityTxn.previousExpiresAt > updated.identityTxn.startedAt);
+  assert.equal(refreshed[0].identityTxn.toNonce, updated.identityTxn.toNonce);
+  ipc.dispose();
+});
+
 test("runtime mode switch cleans the owned old layout, bootstraps a fresh isolated root, then persists", async () => {
   const ipcMain = mockIpcMain();
   const { BrowserWindow } = mockBrowserWindow();

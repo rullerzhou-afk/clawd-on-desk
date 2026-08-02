@@ -4,7 +4,7 @@
 // WorkBuddy uses Claude Code-compatible hook format with identical event names.
 
 const { postStateToRunningServer, readHostPrefix } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
 // WorkBuddy hook event → { state, event } for the Clawd state machine
 const HOOK_MAP = {
@@ -181,6 +181,7 @@ function run() {
 
       if (process.env.CLAWD_REMOTE) {
         body.host = readHostPrefix();
+        applyOrcaPaneKey(body);
       } else {
         body.source_pid = stablePid;
         if (detectedEditor) body.editor = detectedEditor;
@@ -188,6 +189,7 @@ function run() {
         if (pidChain.length) body.pid_chain = pidChain;
         if (tmuxSocket) body.tmux_socket = tmuxSocket;
         if (tmuxClient) body.tmux_client = tmuxClient;
+        applyOrcaPaneKey(body);
       }
 
       // Answer WorkBuddy immediately so it never sees empty stdout, but don't

@@ -22,7 +22,9 @@ const { __test: deployTest } = require("../src/remote-ssh-deploy");
 
 const REPO_ROOT = path.join(__dirname, "..");
 
-test("synthetic isolated env resolves every mutable hook path away from poison HOME", () => {
+test("synthetic isolated env resolves every mutable hook path away from poison HOME", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem semantics" : false,
+}, () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-path-isolation-"));
   const poison = path.join(temp, "poison-home");
   const remoteHome = path.join(temp, "remote-home");
@@ -96,7 +98,9 @@ test("synthetic isolated env resolves every mutable hook path away from poison H
   }
 });
 
-test("remote hook modules execute in a fresh process without reading or writing poison HOME", () => {
+test("remote hook modules execute in a fresh process without reading or writing poison HOME", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem semantics" : false,
+}, () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-path-child-"));
   const poison = path.join(temp, "poison-home");
   const remoteHome = path.join(temp, "remote-home");

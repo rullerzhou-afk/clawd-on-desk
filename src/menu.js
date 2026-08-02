@@ -1,6 +1,6 @@
 "use strict";
 
-const { app, BrowserWindow, screen, Menu, Tray, nativeImage, dialog } = require("electron");
+const { app, BrowserWindow, screen, Menu, Tray, nativeImage } = require("electron");
 const path = require("path");
 const { keepOutOfTaskbar } = require("./taskbar");
 const { loadTrayNormalIcon } = require("./tray-flash-icon");
@@ -93,19 +93,16 @@ module.exports = function initMenu(ctx) {
       : (typeof reason === "string" ? reason : "Unknown error");
     console.warn("Clawd: permission automation mode change failed:", message);
     try {
-      return Promise.resolve(dialog.showMessageBox({
-        type: "error",
-        buttons: ["OK"],
-        defaultId: 0,
-        cancelId: 0,
+      return Promise.resolve(ctx.showPermissionAutomationError({
+        lang: ctx.lang,
         title: t("menuPermissionAutomation"),
-        message: t("menuPermissionAutomation"),
         detail: message,
+        dismissLabel: t("dismiss"),
       })).catch((err) => {
-        console.warn("Clawd: permission automation error dialog failed:", err && err.message);
+        console.warn("Clawd: permission automation error window failed:", err && err.message);
       });
     } catch (err) {
-      console.warn("Clawd: permission automation error dialog failed:", err && err.message);
+      console.warn("Clawd: permission automation error window failed:", err && err.message);
       return Promise.resolve();
     }
   }
@@ -142,20 +139,10 @@ module.exports = function initMenu(ctx) {
         return;
       }
       Promise.resolve(
-        dialog.showMessageBox({
-          type: "warning",
-          buttons: [
-            t(unattended
-              ? "permissionAutomationEnableUnattended"
-              : "permissionAutomationEnableAutoTools"),
-            t("permissionAutomationCancel"),
-          ],
-          defaultId: 1,
-          cancelId: 1,
+        ctx.confirmPermissionAutomation({
+          mode,
+          lang: ctx.lang,
           title: t(unattended
-            ? "permissionAutomationUnattendedConfirmTitle"
-            : "permissionAutomationAutoToolsConfirmTitle"),
-          message: t(unattended
             ? "permissionAutomationUnattendedConfirmTitle"
             : "permissionAutomationAutoToolsConfirmTitle"),
           detail: t(unattended
@@ -164,13 +151,16 @@ module.exports = function initMenu(ctx) {
           checkboxLabel: t(unattended
             ? "permissionAutomationUnattendedDontShowAgain"
             : "permissionAutomationAutoToolsDontShowAgain"),
-          checkboxChecked: false,
+          confirmLabel: t(unattended
+            ? "permissionAutomationEnableUnattended"
+            : "permissionAutomationEnableAutoTools"),
+          cancelLabel: t("permissionAutomationCancel"),
         })
       ).then((res) => {
-        if (res && res.response === 0) {
+        if (res && res.confirmed === true) {
           return applyPermissionAutomationMode(mode, {
             confirmed: true,
-            suppressFutureConfirmation: res.checkboxChecked === true,
+            suppressFutureConfirmation: res.suppressFutureConfirmation === true,
           });
         }
         return undefined;
@@ -214,7 +204,7 @@ module.exports = function initMenu(ctx) {
       nativeImage,
       platform: process.platform,
       templatePath: path.join(__dirname, "../assets/tray-iconTemplate.png"),
-      iconPath: path.join(__dirname, "../assets/tray-icon.png"),
+      iconPath: path.join(__dirname, "../assets/icon.png"),
     });
     ctx.tray = new Tray(icon);
     ctx.tray.setToolTip("Clawd Desktop Pet");

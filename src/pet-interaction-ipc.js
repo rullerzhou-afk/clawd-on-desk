@@ -22,6 +22,7 @@ function registerPetInteractionIpc(options = {}) {
   );
   const setDragLocked = requiredDependency(options.setDragLocked, "setDragLocked");
   const setMouseOverPet = requiredDependency(options.setMouseOverPet, "setMouseOverPet");
+  const cancelRoam = requiredDependency(options.cancelRoam, "cancelRoam");
   const beginDragSnapshot = requiredDependency(options.beginDragSnapshot, "beginDragSnapshot");
   const clearDragSnapshot = requiredDependency(options.clearDragSnapshot, "clearDragSnapshot");
   const syncHitWin = requiredDependency(options.syncHitWin, "syncHitWin");
@@ -96,6 +97,7 @@ function registerPetInteractionIpc(options = {}) {
     setDragLocked(!!locked);
     if (locked) {
       setMouseOverPet(true);
+      cancelRoam();
       beginDragSnapshot();
     } else {
       clearDragSnapshot();

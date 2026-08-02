@@ -56,6 +56,21 @@ Gemini CLI stays on hook-only integration, but two Gemini-native events are inte
 | AfterAgent | Recorded as `AfterAgent` and the session returns to `idle`. It does not remap to shared `Stop`, so Gemini turns no longer auto-show the `attention` / done animation. |
 | PreCompress | Recorded as `PreCompress` in session history, but does not switch the pet to `sweeping`. The current visible state (usually `thinking` or `working`) stays in place. |
 
+## ZCode Hook Events
+
+ZCode uses state-only config-file hooks under `~/.zcode/cli/config.json`:
+
+| ZCode Hook Event | State |
+|---|---|
+| SessionStart | idle |
+| UserPromptSubmit | thinking |
+| PreToolUse | working |
+| PostToolUse | working |
+| PostToolUseFailure | error |
+| Stop | attention |
+
+ZCode does not provide a `SessionEnd` hook in this integration, so completion relies on `Stop` plus Clawd's normal process-liveness and stale-session cleanup. `PermissionRequest` is intentionally not registered; ZCode remains the only permission decision surface.
+
 ## Pi Extension Events
 
 Pi uses a global extension (`~/.pi/agent/extensions/clawd-on-desk`) and maps interactive-session lifecycle events to shared Clawd states:

@@ -181,6 +181,14 @@ function buildCoinModel(source, def, now, multiSource) {
   for (const w of bindingCandidates) {
     if (!binding || w.pct > binding.pct) binding = w;
   }
+  // The compact readout answers the common "what is my rolling-window
+  // usage?" question. Keep it independent from binding: the weekly window
+  // can still own warning/pulse when it is more constrained. Prefer the
+  // rolling window while it is fresh, but never present an old rolling
+  // number as live when the weekly window has a newer confirmation.
+  const displayWindow = (outer && !outer.stale)
+    ? outer
+    : ((inner && !inner.stale) ? inner : (outer || inner));
   const stale = windows.every((w) => w.stale);
   const state = allReset ? "reset" : (stale ? "stale" : "live");
   const near = state === "live" && binding && binding.pct > 85;
@@ -196,6 +204,7 @@ function buildCoinModel(source, def, now, multiSource) {
     glyphUrl: payload.quotaAgentIcons && payload.quotaAgentIcons[def.key],
     windows,
     binding,
+    displayWindow,
     state,
     near: !!near,
   };
@@ -334,12 +343,12 @@ function buildCoinRow(model, now) {
   pct.className = "pct";
   const win = document.createElement("span");
   win.className = "win";
-  if (model.state === "reset") {
+  if (model.displayWindow && model.displayWindow.reset) {
     pct.textContent = "0%";
     win.textContent = t("quotaRingReset");
-  } else if (model.binding) {
-    pct.textContent = `${Math.round(model.binding.pct)}%`;
-    win.textContent = model.binding.label;
+  } else if (model.displayWindow) {
+    pct.textContent = `${Math.round(model.displayWindow.pct)}%`;
+    win.textContent = model.displayWindow.label;
   } else {
     pct.textContent = "—";
     win.textContent = model.windows[0] ? model.windows[0].label : "";

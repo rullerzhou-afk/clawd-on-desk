@@ -47,6 +47,12 @@ const VERIFIED_GITHUB_CONTRIBUTORS = [
   "lurui1997",
   "JesmonX",
   "chen86860",
+  "LinYsssss",
+  "He-wei-gui",
+  "liugou27",
+  "YOOGOMJA",
+  "anupamme",
+  "anthonyonazure",
 ];
 
 function loadSettingsContributors() {

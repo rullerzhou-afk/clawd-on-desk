@@ -18,14 +18,22 @@ test("normalizeDiscordPresence coerces types and strips non-digits from the App 
     enabled: 1,                                 // only strict true enables
     applicationId: " 123-456-789-012-345-678 ", // digits only
     privacyShowProject: "yes",                  // only strict true
+    mirrorPetAnimation: "yes",                  // only strict true
   });
   assert.strictEqual(n.enabled, false);
   assert.strictEqual(n.applicationId, "123456789012345678");
   assert.strictEqual(n.privacyShowProject, false);
+  assert.strictEqual(n.mirrorPetAnimation, false);
 
-  const on = normalizeDiscordPresence({ enabled: true, privacyShowProject: true });
+  const on = normalizeDiscordPresence({ enabled: true, privacyShowProject: true, mirrorPetAnimation: true });
   assert.strictEqual(on.enabled, true);
   assert.strictEqual(on.privacyShowProject, true);
+  assert.strictEqual(on.mirrorPetAnimation, true);
+});
+
+test("the animation mirror defaults off (its richer disclosure is a separate opt-in)", () => {
+  assert.strictEqual(DEFAULT_DISCORD_PRESENCE.mirrorPetAnimation, false);
+  assert.strictEqual(normalizeDiscordPresence({ enabled: true }).mirrorPetAnimation, false);
 });
 
 test("validateDiscordPresence accepts empty or a 17-20 digit snowflake, rejects others", () => {

@@ -17,6 +17,7 @@ describe("Agent Registry", () => {
       "kiro-cli",
       "kimi-cli",
       "qwen-code",
+      "zcode",
       "codewhale",
       "opencode",
       "mimocode",
@@ -91,7 +92,7 @@ describe("Agent Registry", () => {
     assert.deepStrictEqual(qoder.processNames.win, ["qoder.exe", "qodercli.exe", "qoder-cli.exe"]);
 
     const reasonix = registry.getAgent("reasonix");
-    assert.deepStrictEqual(reasonix.processNames.win, ["reasonix.exe"]);
+    assert.deepStrictEqual(reasonix.processNames.win, ["reasonix.exe", "reasonix-desktop.exe", "reasonix-cli.exe"]);
 
     const qoderwork = registry.getAgent("qoderwork");
     assert.deepStrictEqual(qoderwork.processNames.win, ["QoderWork.exe"]);
@@ -145,7 +146,7 @@ describe("Agent Registry", () => {
     assert.deepStrictEqual(qoder.processNames.linux, ["qoder", "qodercli", "qoder-cli"]);
 
     const reasonix = registry.getAgent("reasonix");
-    assert.deepStrictEqual(reasonix.processNames.linux, ["reasonix"]);
+    assert.deepStrictEqual(reasonix.processNames.linux, ["reasonix", "reasonix-desktop"]);
 
     const qoderwork = registry.getAgent("qoderwork");
     assert.deepStrictEqual(qoderwork.processNames.linux, ["QoderWork"]);
@@ -204,6 +205,17 @@ describe("Agent Registry", () => {
     assert.ok(!startupAgentIds.has("cursor-agent"));
     assert.ok(!startupAgentIds.has("qoderwork"));
     assert.ok(!startupAgentIds.has("workbuddy"));
+
+    // ZCode keeps only the unambiguous legacy `zcode-cli` in pure-name startup
+    // recovery. Current macOS/Windows Electron Node-mode runtimes are matched
+    // separately by the `zcode.cjs` command-line marker, never by the bare GUI
+    // executable name.
+    const zcode = registry.getAgent("zcode");
+    assert.deepStrictEqual(zcode.startupRecoveryProcessNames, {
+      win: [],
+      mac: ["zcode-cli"],
+      linux: ["zcode-cli"],
+    });
   });
 
   it("keeps ambiguous GUI and POSIX process names out of startup recovery", () => {
@@ -226,6 +238,10 @@ describe("Agent Registry", () => {
     assert.deepStrictEqual(
       registry.getAgent("qoder").startupRecoveryProcessNames.win,
       ["qodercli.exe", "qoder-cli.exe"]
+    );
+    assert.deepStrictEqual(
+      registry.getAgent("reasonix").startupRecoveryProcessNames,
+      { win: ["reasonix.exe", "reasonix-cli.exe"], mac: ["reasonix"], linux: ["reasonix"] }
     );
   });
 

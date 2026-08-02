@@ -40,6 +40,7 @@ const QUOTA_PROVIDER_FIELDS = {
   antigravityQuota: ANTIGRAVITY_QUOTA_FIELDS,
   claudeQuota: CLAUDE_QUOTA_FIELDS,
   codexQuota: CODEX_QUOTA_FIELDS,
+  codexSparkQuota: CODEX_QUOTA_FIELDS,
 };
 const QUOTA_PROVIDER_KEYS = Object.keys(QUOTA_PROVIDER_FIELDS);
 
@@ -106,6 +107,10 @@ function comparableGroup(group) {
 function hasReportedWindow(group) {
   return Object.values(group || {}).some((bucket) =>
     Number.isFinite(bucket && bucket.windowMinutes) && bucket.windowMinutes > 0);
+}
+
+function isWindowAwareCodexProvider(providerKey) {
+  return providerKey === "codexQuota" || providerKey === "codexSparkQuota";
 }
 
 function newestCapture(group) {
@@ -184,7 +189,7 @@ function createAccountQuotaStore(options = {}) {
     }
     const nowMs = now();
     const persistVersion = Number(raw && raw.version);
-    const legacyPersist = !Number.isFinite(persistVersion) || persistVersion < 2;
+    const preModelRoutingPersist = !Number.isFinite(persistVersion) || persistVersion < 6;
     const entries = raw && Array.isArray(raw.sources) ? raw.sources : [];
     for (const entry of entries) {
       if (!entry || typeof entry !== "object") continue;
@@ -198,17 +203,14 @@ function createAccountQuotaStore(options = {}) {
       for (const providerKey of QUOTA_PROVIDER_KEYS) {
         const stored = entry[providerKey];
         if (!stored || typeof stored !== "object") continue;
+        // Before v6, even the first identity-aware schema could still route a
+        // current Spark turn's generic limit_id="codex" into codexQuota. The
+        // persisted shape contains neither raw identity nor turn model (by
+        // design), so it is impossible to relabel safely during migration.
+        // Drop only that ambiguous cache; the next real main report restores
+        // it, while known Spark and unrelated provider caches remain intact.
+        if (providerKey === "codexQuota" && preModelRoutingPersist) continue;
         let group = normalizeQuotaGroup(stored.group, QUOTA_PROVIDER_FIELDS[providerKey]);
-        // v1 Codex buckets were assigned by primary/secondary position and
-        // did not retain window_minutes. After Codex removed the short
-        // window, that cache could resurrect a fabricated "5h" label on
-        // every app restart. Keep other providers intact, but discard only
-        // those unlabelable legacy Codex buckets.
-        if (providerKey === "codexQuota" && legacyPersist && group) {
-          group = Object.fromEntries(Object.entries(group).filter(([, bucket]) =>
-            Number.isFinite(bucket.windowMinutes) && bucket.windowMinutes > 0));
-          if (!Object.keys(group).length) group = null;
-        }
         if (!group) continue;
         const updatedAt = Number(stored.updatedAt);
         const lastSeenAt = Number(stored.lastSeenAt);
@@ -279,7 +281,7 @@ function createAccountQuotaStore(options = {}) {
   function persistNow() {
     if (!persistPath) return;
     const body = JSON.stringify({
-      version: 4,
+      version: 6,
       sources: Array.from(sources.entries()).map(([sourceKey, record]) => ({
         sourceKey,
         ...record,
@@ -334,7 +336,7 @@ function createAccountQuotaStore(options = {}) {
       const group = normalizeQuotaGroup(quotas[providerKey], QUOTA_PROVIDER_FIELDS[providerKey]);
       if (!group) continue;
       const existing = record && record[providerKey];
-      const windowAwareCodex = providerKey === "codexQuota" && hasReportedWindow(group);
+      const windowAwareCodex = isWindowAwareCodexProvider(providerKey) && hasReportedWindow(group);
       // A window-aware Codex payload is a complete rate_limits snapshot. A
       // newer single 7-day primary must retire the old short-window bucket,
       // not merge with it. Reject an older complete snapshot at provider

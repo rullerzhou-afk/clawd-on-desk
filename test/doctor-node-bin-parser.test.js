@@ -2,7 +2,10 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const { formatNodeHookCommand } = require("../hooks/json-utils");
 const { withCommandEnv } = require("../hooks/codex-install-utils");
-const { validateHookCommand } = require("../src/doctor-detectors/agent-node-bin-parser");
+const {
+  validateHookCommand,
+  validateHookTarget,
+} = require("../src/doctor-detectors/agent-node-bin-parser");
 const { __test: antigravityInstallTest } = require("../hooks/antigravity-install");
 
 function fakeFs(existingPaths) {
@@ -57,6 +60,53 @@ describe("doctor hook command parser", () => {
         fs: fakeFs([nodeBin, scriptPath]),
       }),
       { ok: true, nodeBin, scriptPath }
+    );
+  });
+
+  it("validates direct process executor node/script targets without shell parsing", () => {
+    const nodeBin = "C:\\Program Files\\nodejs\\node.exe";
+    const scriptPath = "D:/Program Files/Clawd/hooks/zcode-hook.js";
+
+    assert.deepStrictEqual(
+      validateHookTarget({ nodeBin, scriptPath }, {
+        platform: "win32",
+        fs: fakeFs([nodeBin, scriptPath]),
+      }),
+      { ok: true, nodeBin, scriptPath }
+    );
+  });
+
+  it("rejects non-Node and bare executables for strict process targets", () => {
+    const cmdBin = "C:\\Windows\\System32\\cmd.exe";
+    const scriptPath = "D:/Program Files/Clawd/hooks/zcode-hook.js";
+
+    assert.deepStrictEqual(
+      validateHookTarget({ nodeBin: cmdBin, scriptPath }, {
+        platform: "win32",
+        fs: fakeFs([cmdBin, scriptPath]),
+        requireAbsoluteNode: true,
+        requireNodeExecutable: true,
+      }),
+      {
+        ok: false,
+        issue: "nodeBin-invalid",
+        nodeBin: cmdBin,
+        scriptPath,
+      }
+    );
+    assert.deepStrictEqual(
+      validateHookTarget({ nodeBin: "node", scriptPath }, {
+        platform: "win32",
+        fs: fakeFs([scriptPath]),
+        requireAbsoluteNode: true,
+        requireNodeExecutable: true,
+      }),
+      {
+        ok: false,
+        issue: "nodeBin-invalid",
+        nodeBin: "node",
+        scriptPath,
+      }
     );
   });
 

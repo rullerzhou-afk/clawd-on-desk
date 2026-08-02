@@ -133,6 +133,58 @@ describe("opencode-family reverse bridge (plugin side, real handler)", () => {
     assert.notStrictEqual(permPost.body.bridge_url, "", "bridge_url must not be empty (dead bubble path)");
   });
 
+  it("proves lastSeen can mis-associate an interleaved permission for opencode and MiMo", async () => {
+    for (const params of [OC, MC]) {
+      const instance = await initInstance(params);
+      await instance.hooks.event({
+        event: {
+          type: "session.created",
+          properties: { sessionID: "root-a", info: {} },
+        },
+      });
+      await instance.hooks.event({
+        event: {
+          type: "session.created",
+          properties: { sessionID: "root-b", info: {} },
+        },
+      });
+      await instance.hooks.event({
+        event: {
+          type: "session.created",
+          properties: { sessionID: "child-c", info: { parentID: "root-a" } },
+        },
+      });
+
+      fetchCalls.length = 0;
+      await instance.hooks.event({
+        event: {
+          type: "permission.asked",
+          properties: {
+            id: `permission-for-root-a-${params.agentId}`,
+            permission: "bash",
+            metadata: { command: "echo root-a" },
+          },
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      const permissionPost = fetchCalls.find((call) => (
+        call.url.endsWith("/permission")
+        && call.body.request_id === `permission-for-root-a-${params.agentId}`
+      ));
+      assert.ok(permissionPost, params.agentId);
+      assert.strictEqual(
+        permissionPost.body.session_id,
+        `${params.sessionIdPrefix}child-c`,
+        `${params.agentId} currently guesses from the most recent unrelated event`
+      );
+      assert.notStrictEqual(
+        permissionPost.body.session_id,
+        `${params.sessionIdPrefix}root-a`
+      );
+    }
+  });
+
   it("rejects missing/wrong/malformed tokens with 401 and never touches the SDK", async () => {
     const oc = await initInstance(OC);
     const cases = [

@@ -35,6 +35,7 @@ const {
   sessionSnapshotSignature,
 } = require("./state-session-snapshot");
 const { getAgentIconUrl } = require("./state-agent-icons");
+const { resolveSessionIdentity } = require("./session-key");
 const { normalizeTranscriptPath } = require("./transcript-path");
 const { createAccountQuotaStore } = require("./state-account-quota");
 const { normalizeQuotaGroup } = require("../hooks/quota-bucket");
@@ -308,6 +309,46 @@ function hasConfirmedPermissionAnimationLock() {
   return [...kimiPermissionHolds.values()].some((hold) => hold && hold.source === "confirmed");
 }
 
+// Later events legitimately omit the pane key, so it has to be sticky — but a
+// session start means the agent just (re)attached to a terminal, and then the key
+// must come from that event's own environment or not at all. `--resume` of the
+// same session id from a different terminal would otherwise keep the old Orca
+// key and, because the pane key outranks the Windows window cache and the hook's
+// wt_hwnd, raise Orca instead of the terminal the agent actually moved to.
+//
+// Producers spell the session start three ways: most post "SessionStart",
+// copilot-hook.js posts its raw argv name "sessionStart", and kiro-hook.js posts
+// "agentSpawn". Kiro is the one that matters most — its stdin carries no session
+// id, so it merges every session into "default" and a pane key stored there would
+// otherwise never be cleared.
+//
+// antigravity-hook.js has no session-start event at all, so the event name alone
+// can never clear one of its keys. Its id normalizes payload.conversationId
+// (falling back to the transcript directory), so resuming the same conversation
+// from a different terminal lands back on the same entry — which is why the
+// identity check below exists rather than a longer list of event names.
+const SESSION_START_EVENTS = new Set(["SessionStart", "sessionStart", "agentSpawn"]);
+
+// A pane key names one specific Orca pane, and focus consults it before the
+// sourcePid/wtHwnd that would otherwise be authoritative. So an event reporting a
+// terminal identity that differs from the stored one means the session moved, and
+// keeping the key would send the user to the old pane instead of the terminal that
+// just reported in. Only values present on BOTH sides count: most events carry no
+// process metadata, and reading "absent" as "moved" would blank the key immediately.
+// Producers disagree on the wire type of the pid, so compare as strings.
+function terminalIdentityChanged(existing, incoming) {
+  if (!existing || !incoming) return false;
+  const differs = (next, stored) => !!next && !!stored && String(next) !== String(stored);
+  return differs(incoming.sourcePid, existing.sourcePid) || differs(incoming.wtHwnd, existing.wtHwnd);
+}
+
+function mergeOrcaPaneKey(orcaPaneKey, existing, event, incoming) {
+  if (orcaPaneKey) return orcaPaneKey;
+  if (SESSION_START_EVENTS.has(event)) return null;
+  if (terminalIdentityChanged(existing, incoming)) return null;
+  return (existing && existing.orcaPaneKey) || null;
+}
+
 function resolveAwaitingInputSinceStop(existing, event) {
   if (POST_COMPLETION_EVENTS.has(event)) return true;
   if (!event || COMPLETION_HOUSEKEEPING_EVENTS.has(event)) return !!(existing && existing.awaitingInputSinceStop === true);
@@ -508,7 +549,12 @@ function setState(newState, svgOverride, options = {}) {
     clearPendingStateTimer();
   }
 
-  const minTime = MIN_DISPLAY_MS[currentState] || 0;
+  // Internal movement states such as free roam must be interruptible by direct
+  // user interaction. Callers may bypass only the current state's display
+  // hold; DND and pending-state priority checks above still apply unchanged.
+  const minTime = options.bypassMinDisplay === true
+    ? 0
+    : (MIN_DISPLAY_MS[currentState] || 0);
   const elapsed = Date.now() - stateChangedAt;
   const remaining = minTime - elapsed;
 
@@ -960,6 +1006,12 @@ function buildSessionSnapshot() {
     focusHostPlatform: ctx.focusHostPlatform || process.platform,
     isProcessAlive,
     accountQuota: accountQuota.snapshot({ mergeSources: ctx.quotaMergeSources === true }),
+    sessionAutomationRecords: typeof ctx.getSessionAutomationRecords === "function"
+      ? ctx.getSessionAutomationRecords()
+      : [],
+    permissionAutomationMode: typeof ctx.getPermissionAutomationMode === "function"
+      ? ctx.getPermissionAutomationMode()
+      : "off",
   });
 }
 
@@ -1330,6 +1382,24 @@ function promoteCompletion(sessionId) {
 // Session-related fields go through `opts`. Earlier versions took 13
 // positional params — refactored in B2 to an options bag so new fields
 // (sessionTitle, etc.) don't keep extending the argument list.
+function normalizeSessionAutomationIdentity(value) {
+  if (!value || typeof value !== "object") return null;
+  if (
+    typeof value.eligible !== "boolean"
+    || typeof value.reason !== "string"
+    || !value.reason.trim()
+  ) {
+    return Object.freeze({
+      eligible: false,
+      reason: "invalid-route-assessment",
+    });
+  }
+  return Object.freeze({
+    eligible: value.eligible === true,
+    reason: value.reason.trim().slice(0, 120),
+  });
+}
+
 function updateSession(sessionId, state, event, opts = {}) {
   try {
   const {
@@ -1340,6 +1410,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     pidChain = null,
     tmuxSocket = null,
     tmuxClient = null,
+    orcaPaneKey = null,
     agentPid = null,
     agentId = null,
     profileId = "local",
@@ -1376,6 +1447,9 @@ function updateSession(sessionId, state, event, opts = {}) {
     sessionCronsCount = 0,
     stopHookActive = false,
     stdinDiag = null,
+    sessionAutomationIdentity = null,
+    subagentId = null,
+    subagentType = null,
   } = opts;
   if (startupRecoveryActive) {
     startupRecoveryActive = false;
@@ -1393,10 +1467,26 @@ function updateSession(sessionId, state, event, opts = {}) {
 
   const sessionForPerm = sessions.get(sessionId);
   const permAgentId = resolveIncomingAgentId(sessionForPerm, agentId, agentIdDefaulted);
+  const normalizedSessionAutomationIdentity = normalizeSessionAutomationIdentity(
+    sessionAutomationIdentity
+  );
 
   const isTransientAttentionRequest = event === "PermissionRequest" || event === "CodexUserInputRequest";
   if (isTransientAttentionRequest) {
     if (permAgentId === "codex") cancelCodexExitProbe(sessionId, event);
+    // A transient route event owns its identity assessment just as ordinary
+    // state traffic does. Merge it only into an existing session for the same agent:
+    // PermissionRequest must not create a ghost session, and a raw-id collision
+    // from another agent must not relabel an existing Dashboard row.
+    const shouldStorePermissionAutomationIdentity = !!(
+      normalizedSessionAutomationIdentity
+      && sessionForPerm
+      && permAgentId
+      && sessionForPerm.agentId === permAgentId
+    );
+    if (shouldStorePermissionAutomationIdentity) {
+      sessionForPerm.sessionAutomationIdentity = normalizedSessionAutomationIdentity;
+    }
     // Kimi-only gate: startKimiPermissionPoll suppresses the passive bubble
     // when the user disabled Kimi permissions in Settings, but the setState
     // ran first and flashed notification anyway — leaving a silent animation
@@ -1412,7 +1502,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     const shouldPersistCodexPermissionFocus = permAgentId === "codex" && (
       sourcePid || wtHwnd || agentPid || (pidChain && pidChain.length) || cwd || host || wslDistro ||
       model || provider || codexOriginator || codexSource || platform || ghosttyTerminalId ||
-      tmuxSocket || tmuxClient
+      tmuxSocket || tmuxClient || orcaPaneKey
     );
     if (shouldPersistCodexPermissionFocus) {
       const existing = sessions.get(sessionId);
@@ -1424,6 +1514,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
       const srcTmuxSocket = tmuxSocket || (existing && existing.tmuxSocket) || null;
       const srcTmuxClient = tmuxClient || (existing && existing.tmuxClient) || null;
+      const srcOrcaPaneKey = mergeOrcaPaneKey(orcaPaneKey, existing, event, { sourcePid, wtHwnd });
       const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
       const srcAgentId = resolveIncomingAgentId(existing, agentId, agentIdDefaulted);
       const srcHost = host || (existing && existing.host) || null;
@@ -1457,10 +1548,14 @@ function updateSession(sessionId, state, event, opts = {}) {
         pidChain: srcPidChain,
         tmuxSocket: srcTmuxSocket,
         tmuxClient: srcTmuxClient,
+        orcaPaneKey: srcOrcaPaneKey,
         agentPid: srcAgentPid,
         agentId: srcAgentId,
         profileId: (existing && existing.profileId) || profileId || "local",
         rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId,
+        sessionAutomationIdentity: normalizedSessionAutomationIdentity
+          || (existing && existing.sessionAutomationIdentity)
+          || null,
         host: srcHost,
         wslDistro: srcWslDistro,
         headless: srcHeadless,
@@ -1507,6 +1602,12 @@ function updateSession(sessionId, state, event, opts = {}) {
         startKimiPermissionPoll(sessionId, { toolName, permissionAction, permissionCommand, permissionToolInput });
       }
     }
+    if (
+      shouldStorePermissionAutomationIdentity
+      || (shouldPersistCodexPermissionFocus && normalizedSessionAutomationIdentity)
+    ) {
+      emitSessionSnapshot();
+    }
     return;
   }
 
@@ -1523,8 +1624,12 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
   const srcTmuxSocket = tmuxSocket || (existing && existing.tmuxSocket) || null;
   const srcTmuxClient = tmuxClient || (existing && existing.tmuxClient) || null;
+  const srcOrcaPaneKey = mergeOrcaPaneKey(orcaPaneKey, existing, event, { sourcePid, wtHwnd });
   const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
   const srcAgentId = resolveIncomingAgentId(existing, agentId, agentIdDefaulted);
+  const srcSessionAutomationIdentity = normalizedSessionAutomationIdentity
+    || (existing && existing.sessionAutomationIdentity)
+    || null;
   const srcHost = host || (existing && existing.host) || null;
   const srcWslDistro = wslDistro || (existing && existing.wslDistro) || null;
   const srcHeadless = headless || (existing && existing.headless) || false;
@@ -1666,7 +1771,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   // (contextUsage): a lifecycle event that carries it forward from
   // `existing` must not silently reset the freshness stamp.
   const srcMetadataUpdatedAt = existing && Number.isFinite(existing.metadataUpdatedAt) ? existing.metadataUpdatedAt : null;
-  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, host: srcHost, wslDistro: srcWslDistro, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
+  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, orcaPaneKey: srcOrcaPaneKey, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
   if (preserveCompletionAck) base.requiresCompletionAck = true;
 
   // Evict oldest session if at capacity and this is a new session.
@@ -1707,6 +1812,17 @@ function updateSession(sessionId, state, event, opts = {}) {
   if (event === "SessionEnd") {
     const endingSession = sessions.get(sessionId);
     cancelCodexExitProbe(sessionId, "SessionEnd");
+    if (
+      !subagentId
+      && !subagentType
+      && typeof ctx.onSessionAutomationLifecycleEnd === "function"
+    ) {
+      ctx.onSessionAutomationLifecycleEnd({
+        agentId: (endingSession && endingSession.agentId) || srcAgentId,
+        sessionId,
+        reason: "session-end",
+      });
+    }
     sessions.delete(sessionId);
     debugSession(`session-end delete ${describeSession(sessionId, endingSession)}`);
     cleanStaleSessions();
@@ -1934,11 +2050,13 @@ function updateSession(sessionId, state, event, opts = {}) {
 
 function restoreSessionFromLease(lease) {
   if (!lease || typeof lease !== "object") return false;
-  const sessionId = typeof lease.sessionId === "string" ? lease.sessionId : "";
+  const rawSessionId = typeof lease.sessionId === "string" ? lease.sessionId : "";
   const agentId = typeof lease.agentId === "string" ? lease.agentId : "";
-  if (!sessionId || sessionId === "default" || agentId !== "claude-code" || lease.active !== true) return false;
+  if (!rawSessionId || rawSessionId === "default" || agentId !== "claude-code" || lease.active !== true) return false;
   if (!Number.isFinite(lease.eventAt) || lease.eventAt <= 0 || lease.validUntil !== null) return false;
   if (lease.state !== "thinking" && lease.state !== "working" && lease.state !== "juggling") return false;
+  const sessionIdentity = resolveSessionIdentity(rawSessionId, "local");
+  const sessionId = sessionIdentity.sessionId;
   if (sessions.has(sessionId)) return false;
   if (sessions.size >= MAX_SESSIONS) return false;
   const pid = Number.isInteger(lease.pid) && lease.pid > 0 ? lease.pid : null;
@@ -1955,10 +2073,11 @@ function restoreSessionFromLease(lease) {
     pidChain: null,
     tmuxSocket: null,
     tmuxClient: null,
+    orcaPaneKey: null,
     agentPid: pid,
     agentId,
-    profileId: "local",
-    rawSessionId: sessionId,
+    profileId: sessionIdentity.profileId,
+    rawSessionId: sessionIdentity.rawSessionId,
     host: null,
     wslDistro: null,
     headless: false,
@@ -2019,6 +2138,13 @@ function cleanStaleSessions() {
       debugSession(`stale-delete ${decision.reason} ${describeSession(id, s)}${badgeSuffix}`);
       if (s && s.agentId === "codex") cancelCodexExitProbe(id, `stale-delete-${decision.reason}`);
       if (s && s.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-disposed");
+      if (s && s.agentId && typeof ctx.onSessionAutomationLifecycleEnd === "function") {
+        ctx.onSessionAutomationLifecycleEnd({
+          agentId: s.agentId,
+          sessionId: id,
+          reason: `stale-delete-${decision.reason}`,
+        });
+      }
       sessions.delete(id); changed = true;
       continue;
     }
@@ -2196,12 +2322,20 @@ function detectRunningAgentProcesses(callback) {
     .filter((entry) => entry && entry.name && entry.agentId && isEnabled(entry.agentId));
   // Preserve node-shaped CLI detection only as a weak keep-awake fallback.
   // A match here never creates a session or publishes a task-level state.
+  // An optional `processName` overrides the default `node.exe` host for an
+  // entry — used by agents whose Windows runtime is a different binary (e.g.
+  // ZCode reuses the desktop executable to run `zcode.cjs`). On POSIX the
+  // same marker is matched with pgrep -f, covering current macOS builds without
+  // treating the always-running GUI shell as active work.
   const commandLineNeedles = [
     { agentId: "claude-code", needle: "claude-code" },
     { agentId: "codex", needle: "codex" },
     { agentId: "copilot-cli", needle: "copilot" },
     { agentId: "codebuddy", needle: "codebuddy" },
     { agentId: "kimi-cli", needle: "kimi-code" },
+    // Current ZCode runtimes use resources/glm/zcode.cjs app-server; only the
+    // cmdline token disambiguates the working process from the GUI shell.
+    { agentId: "zcode", needle: "zcode.cjs", processName: "zcode.exe" },
   ].filter((entry) => isEnabled(entry.agentId));
   const platformCommandLineNeedles = process.platform === "win32" || !isEnabled("pi")
     ? commandLineNeedles
@@ -2226,8 +2360,11 @@ function detectRunningAgentProcesses(callback) {
     const psScript =
       `$names = @(${quotedNames}); ` +
       `$nodeNeedles = @(${quotedNeedles}); ` +
+      // Each needle may carry its own host process name (default node.exe) so a
+      // non-node runtime like ZCode.exe can be matched by name+cmdline jointly.
+      `$nodeNeedleNames = @(${platformCommandLineNeedles.map((entry) => `'${String(entry.processName || "node.exe").replace(/'/g, "''")}'`).join(",")}); ` +
       "$nameFilters = $names | ForEach-Object { \"Name='$_'\" }; " +
-      "$nodeFilters = $nodeNeedles | ForEach-Object { \"(Name='node.exe' AND CommandLine LIKE '%$_%')\" }; " +
+      "$nodeFilters = for ($i = 0; $i -lt $nodeNeedles.Length; $i++) { \"(Name='$($nodeNeedleNames[$i])' AND CommandLine LIKE '%$($nodeNeedles[$i])%')\" }; " +
       "$filter = (@($nameFilters) + @($nodeFilters)) -join ' OR '; " +
       "$match = Get-CimInstance Win32_Process -Filter $filter | Select-Object -First 1; " +
       "if ($match) { $match.ProcessId }";

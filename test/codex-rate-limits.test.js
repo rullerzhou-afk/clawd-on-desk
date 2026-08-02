@@ -5,6 +5,7 @@ const assert = require("node:assert");
 
 const {
   resolveCodexRateLimitQuota,
+  resolveCodexRateLimitReport,
   isFreshCodexQuotaTimestamp,
   CODEX_QUOTA_MAX_AGE_MS,
 } = require("../hooks/codex-rate-limits");
@@ -25,6 +26,130 @@ describe("Codex rate limit quota parser", () => {
       codexFiveHour: { usedPercent: 1, windowMinutes: 300, resetAt: 1783669570 * 1000 },
       codexWeekly: { usedPercent: 43, windowMinutes: 10080, resetAt: 1784256370 * 1000 },
     });
+  });
+
+  it("routes a real Spark dual-window shape to its independent provider", () => {
+    // Sanitized shape captured from a real event_msg:token_count report.
+    const report = resolveCodexRateLimitReport({
+      rate_limits: {
+        limit_id: "codex_bengalfox",
+        limit_name: "GPT-5.3-Codex-Spark",
+        primary: { used_percent: 7, window_minutes: 300, resets_at: 1783669570 },
+        secondary: { used_percent: 19, window_minutes: 10080, resets_at: 1784256370 },
+      },
+    });
+
+    assert.deepStrictEqual(report, {
+      providerKey: "codexSparkQuota",
+      quota: {
+        codexFiveHour: { usedPercent: 7, windowMinutes: 300, resetAt: 1783669570 * 1000 },
+        codexWeekly: { usedPercent: 19, windowMinutes: 10080, resetAt: 1784256370 * 1000 },
+      },
+    });
+    assert.strictEqual(resolveCodexRateLimitQuota({
+      rate_limits: {
+        limit_id: "codex_bengalfox",
+        primary: { used_percent: 7, window_minutes: 300 },
+      },
+    }), null, "generic-only compatibility helper must not flatten Spark");
+  });
+
+  it("routes a real Spark lone-weekly shape without fabricating a short window", () => {
+    const report = resolveCodexRateLimitReport({
+      rate_limits: {
+        limit_id: "codex_bengalfox",
+        limit_name: "GPT-5.3-Codex-Spark",
+        primary: { used_percent: 0, window_minutes: 10080, resets_at: 1785284243 },
+        secondary: null,
+      },
+    });
+
+    assert.deepStrictEqual(report, {
+      providerKey: "codexSparkQuota",
+      quota: {
+        codexWeekly: {
+          usedPercent: 0,
+          windowMinutes: 10080,
+          resetAt: 1785284243 * 1000,
+        },
+      },
+    });
+  });
+
+  it("uses the active turn model to disambiguate the generic codex limit id", () => {
+    const payload = {
+      rate_limits: {
+        limit_id: "codex",
+        primary: { used_percent: 0, window_minutes: 10080 },
+      },
+    };
+
+    assert.strictEqual(resolveCodexRateLimitReport(payload, {
+      model: "gpt-5.3-codex-spark",
+    }).providerKey, "codexSparkQuota");
+    assert.strictEqual(resolveCodexRateLimitReport(payload, {
+      model: "gpt-5.6-sol",
+    }).providerKey, "codexQuota");
+    assert.strictEqual(resolveCodexRateLimitReport(payload).providerKey, "codexQuota");
+
+    assert.strictEqual(resolveCodexRateLimitReport({
+      rate_limits: {
+        limit_id: "codex_future_model",
+        primary: { used_percent: 99, window_minutes: 10080 },
+      },
+    }, {
+      model: "gpt-5.3-codex-spark",
+    }), null, "a Spark model hint must not bypass an unknown explicit id");
+
+    assert.strictEqual(resolveCodexRateLimitReport({
+      rate_limits: {
+        limit_id: "codex_bengalfox",
+        primary: { used_percent: 7, window_minutes: 10080 },
+      },
+    }, {
+      model: "gpt-5.6-sol",
+    }).providerKey, "codexSparkQuota", "the explicit Spark id remains authoritative");
+  });
+
+  it("uses exact Spark name only as a missing-id fallback", () => {
+    const report = resolveCodexRateLimitReport({
+      rate_limits: {
+        limit_name: "  gpt-5.3-codex-spark  ",
+        primary: { used_percent: 5, window_minutes: 10080 },
+      },
+    });
+    assert.strictEqual(report.providerKey, "codexSparkQuota");
+
+    const generic = resolveCodexRateLimitReport({
+      rate_limits: {
+        limit_name: "Codex",
+        primary: { used_percent: 5, window_minutes: 10080 },
+      },
+    });
+    assert.strictEqual(generic.providerKey, "codexQuota");
+  });
+
+  it("ignores an unknown non-empty limit id instead of polluting the main quota", () => {
+    assert.strictEqual(resolveCodexRateLimitReport({
+      rate_limits: {
+        limit_id: "codex_future_model",
+        limit_name: "GPT-Next",
+        primary: { used_percent: 99, window_minutes: 10080 },
+      },
+    }), null);
+    assert.strictEqual(resolveCodexRateLimitReport({
+      rate_limits: {
+        limit_id: "codex_future_model",
+        limit_name: "GPT-5.3-Codex-Spark",
+        primary: { used_percent: 99, window_minutes: 10080 },
+      },
+    }), null, "a known name must not override an unknown present id");
+    assert.strictEqual(resolveCodexRateLimitReport({
+      rate_limits: {
+        limit_id: 42,
+        primary: { used_percent: 99, window_minutes: 10080 },
+      },
+    }), null, "a malformed present id must also fail closed");
   });
 
   it("maps a lone 7-day primary to the long slot instead of fabricating a 5h limit", () => {

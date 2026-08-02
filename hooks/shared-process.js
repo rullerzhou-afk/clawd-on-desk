@@ -67,6 +67,76 @@ function tmuxSocketFromEnv() {
   return normalizeTmuxSocketPath(process.env.TMUX.split(",")[0]);
 }
 
+function normalizeOrcaPaneKey(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text || text.length > 256) return null;
+  return /^[\w-]+:[\w-]+$/.test(text) ? text : null;
+}
+
+// Orca runs every terminal under a detached daemon, so no ancestor of the agent
+// identifies the IDE and no window title carries the cwd — the process-tree
+// strategy in src/focus.js cannot see it at all. ORCA_PANE_KEY ("<tabId>:<leafId>")
+// survives Orca runtime restarts; ORCA_TERMINAL_HANDLE does not (`orca terminal
+// switch` rejects it with terminal_handle_stale), so the pane key is the only
+// durable identifier worth shipping. Orca is a third-party CLI with no stability
+// guarantee: both env vars and the `terminal list` JSON shape were observed on
+// Orca 1.4.156, 2026-07-27.
+//
+// Both local checks in orcaPaneKeyFromEnv are load-bearing. TERM_PROGRAM alone
+// is not enough: launch another terminal from inside an Orca pane and the child
+// inherits TERM_PROGRAM and ORCA_PANE_KEY while genuinely living in that
+// terminal's own window. On Windows a pane key outranks the title-matched window
+// cache and the hook's wt_hwnd, so the inherited copy would raise Orca and
+// report it as a success. Reject the key whenever an inner terminal advertises
+// itself.
+//
+// Orca's managed SSH PTY is different: upstream forwards ORCA_PANE_KEY but does
+// not forward TERM_PROGRAM. Accept that shape only under Clawd's secure Remote
+// SSH pair (CLAWD_REMOTE + CLAWD_SSH_REMOTE), never for a generic remote/manual
+// hook. The nested-terminal veto still applies on the remote host.
+//
+// The multiplexers are on the list because their server outlives the pane that
+// started it: re-attaching a session from another terminal would carry the stale
+// pane key. tmux >= 3.2 sets TERM_PROGRAM=tmux and is already excluded by the
+// first check, so its entry only covers older versions; screen and zellij set no
+// TERM_PROGRAM at all, so for them the marker is the only thing that catches it.
+//
+// Known residual: a bare conhost / pwsh window sets no marker of its own, so an
+// agent started that way from an Orca pane still looks like the pane itself.
+const NESTED_TERMINAL_ENV = [
+  "WT_SESSION",            // Windows Terminal
+  "ALACRITTY_WINDOW_ID",   // Alacritty
+  "WEZTERM_PANE",          // WezTerm
+  "KITTY_WINDOW_ID",       // kitty
+  "KONSOLE_VERSION",       // Konsole
+  "GNOME_TERMINAL_SCREEN", // gnome-terminal
+  "ConEmuPID",             // ConEmu / Cmder
+  "TMUX",                  // tmux — server env outlives the pane
+  "STY",                   // GNU screen — same, and sets no TERM_PROGRAM
+  "ZELLIJ",                // zellij — same
+];
+
+function orcaPaneKeyFromEnv(env = process.env) {
+  if (!env) return null;
+  const secureRemoteOrca = isRemoteHookMode({ env }) && env.CLAWD_SSH_REMOTE === "1";
+  if (env.TERM_PROGRAM !== "Orca" && !secureRemoteOrca) return null;
+  if (NESTED_TERMINAL_ENV.some((key) => env[key])) return null;
+  return normalizeOrcaPaneKey(env.ORCA_PANE_KEY);
+}
+
+// Deliberately NOT part of the resolver result: the #674 red line freezes the
+// no-arg resolve() shape, and this value owes nothing to the process walk
+// anyway. Reading it per body instead also means it survives a cache hit or a
+// failed snapshot, both of which return a walk-derived object with no room for
+// it. `env` is injectable so a body-shape assertion stays hermetic instead of
+// depending on whether the suite happens to be running inside Orca.
+function applyOrcaPaneKey(body, env = process.env) {
+  const orcaPaneKey = orcaPaneKeyFromEnv(env);
+  if (orcaPaneKey) body.orca_pane_key = orcaPaneKey;
+  return body;
+}
+
 // Liveness probe with ZERO subprocess spawn: process.kill(pid, 0) is a syscall,
 // not a spawn (so it never risks the WindowsTerminal console flash this whole
 // change exists to avoid). ESRCH => process gone; EPERM => alive but not ours.
@@ -1016,6 +1086,9 @@ module.exports = {
   DEFAULT_STDIN_READ_TIMEOUT_MS,
   buildElectronLaunchConfig,
   tmuxSocketFromEnv,
+  orcaPaneKeyFromEnv,
+  applyOrcaPaneKey,
+  NESTED_TERMINAL_ENV,
   processAlive,
   WINDOWS_TERMINAL_WINDOW_CLASS,
   WINDOWS_TERMINAL_PROCESS_NAMES,

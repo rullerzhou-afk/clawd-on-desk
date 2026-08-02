@@ -30,6 +30,7 @@
     || ((data) => data);
   const applyAnimationPosterPayloadToRuntime = animMergeApi.applyAnimationPosterPayload
     || (() => ({ valid: false, stored: false, applied: false }));
+  const selectPickerApi = root.ClawdLanguagePicker || {};
 
   const shortcutApi = root.ClawdShortcutActions || {};
   const SHORTCUT_ACTIONS = shortcutApi.SHORTCUT_ACTIONS || {};
@@ -44,6 +45,12 @@
   // startsWith("Mac") not /\bMac\b/ — "MacIntel" has \w after "c", fails \b (regression #135).
   const IS_MAC = (navigator.platform || "").startsWith("Mac");
   const COLLAPSED_GROUPS_STORAGE_KEY = "clawd.settings.collapsedGroups.v1";
+  const NAVIGATION_STORAGE_KEY = "clawd.settings.navigation.v1";
+  const MAX_PERSISTED_SCROLL_TOP = 10_000_000;
+  // Runtime-only geometry belongs in the snapshot for consistency, but has no
+  // mounted Settings control. Re-rendering for it would destroy focused inputs
+  // and reset the active tab's scroll position after every window move/resize.
+  const RENDERER_INERT_SETTINGS_KEYS = new Set(["settingsWindowBounds"]);
 
   const state = {
     snapshot: null,
@@ -77,6 +84,10 @@
       soundSummary: null,
       soundVolume: null,
       textScale: null,
+      settingsSelects: new Set(),
+      segmentedRadios: new Set(),
+      aboutAutoUpdate: null,
+      aboutUpdateStatus: null,
     },
     shortcutRecordingActionId: null,
     shortcutRecordingError: "",
@@ -105,6 +116,7 @@
     pendingAnimationOverrideEdits: new Map(),
     nextAnimationOverrideEditSeq: 1,
     animOverridesSubtab: "map",
+    settingsTabScrollPositions: new Map(),
     // null = not chosen yet; the Agents tab resolves it from what is connected.
     agentsSubtab: null,
     agentsUnavailableQuery: "",
@@ -119,6 +131,7 @@
     about: {
       infoCache: null,
       clickCount: 0,
+      updateCheckSnapshot: { state: "idle" },
     },
   };
 
@@ -350,6 +363,155 @@
     return section;
   }
 
+  function buildSettingsSelect(config = {}) {
+    const factory = selectPickerApi.createSettingsSelect || selectPickerApi.createLanguagePicker;
+    if (typeof factory !== "function") {
+      throw new Error("language-picker.js failed to load before settings-ui-core.js");
+    }
+    const className = ["settings-select", config.className || ""].filter(Boolean).join(" ");
+    const control = factory({
+      ...config,
+      className,
+      lockWhilePending: config.lockWhilePending !== false,
+    });
+    state.mountedControls.settingsSelects.add(control);
+    return control;
+  }
+
+  function buildSegmentedRadio(config = {}) {
+    const options = Array.isArray(config.options)
+      ? config.options.filter((option) => option && option.value != null)
+      : [];
+    const values = options.map((option) => String(option.value));
+    let currentValue = values.includes(String(config.value))
+      ? String(config.value)
+      : (values[0] || "");
+    let disabled = config.disabled === true;
+    let pending = false;
+    let disposed = false;
+
+    const element = document.createElement("div");
+    element.className = ["segmented", "settings-segmented-radio", config.className || ""]
+      .filter(Boolean)
+      .join(" ");
+    element.setAttribute("role", "radiogroup");
+    if (config.ariaLabel) element.setAttribute("aria-label", config.ariaLabel);
+
+    const buttons = options.map((option) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute("role", "radio");
+      button.dataset.value = String(option.value);
+
+      const label = document.createElement("span");
+      label.className = "settings-segmented-radio-label";
+      label.textContent = option.label == null ? String(option.value) : String(option.label);
+      button.appendChild(label);
+
+      if (option.description) {
+        const description = document.createElement("span");
+        description.className = "settings-segmented-radio-description";
+        description.textContent = String(option.description);
+        button.appendChild(description);
+      }
+      element.appendChild(button);
+      return button;
+    });
+
+    function syncVisualState() {
+      element.classList.toggle("pending", pending);
+      element.classList.toggle("disabled", disabled);
+      element.setAttribute("aria-busy", pending ? "true" : "false");
+      for (const button of buttons) {
+        const selected = button.dataset.value === currentValue;
+        button.classList.toggle("active", selected);
+        button.setAttribute("aria-checked", selected ? "true" : "false");
+        button.tabIndex = selected ? 0 : -1;
+        button.disabled = disabled || pending;
+      }
+    }
+
+    async function selectValue(nextValue) {
+      const next = String(nextValue);
+      if (disposed || disabled || pending || !values.includes(next)) return false;
+      if (next === currentValue) return true;
+      const previous = currentValue;
+      currentValue = next;
+      pending = true;
+      syncVisualState();
+      let accepted = true;
+      try {
+        if (typeof config.onChange === "function") {
+          accepted = (await Promise.resolve(config.onChange(next))) !== false;
+        }
+      } catch (_) {
+        accepted = false;
+      }
+      if (!accepted) currentValue = previous;
+      pending = false;
+      syncVisualState();
+      return accepted;
+    }
+
+    function onClick(event) {
+      const button = event && event.currentTarget;
+      if (button) void selectValue(button.dataset.value);
+    }
+
+    function onKeyDown(event) {
+      if (disabled || pending || buttons.length === 0) return;
+      const currentIndex = Math.max(0, buttons.indexOf(event.currentTarget));
+      let nextIndex = currentIndex;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+        nextIndex = (currentIndex + 1) % buttons.length;
+      } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+        nextIndex = (currentIndex - 1 + buttons.length) % buttons.length;
+      } else if (event.key === "Home") {
+        nextIndex = 0;
+      } else if (event.key === "End") {
+        nextIndex = buttons.length - 1;
+      } else if (event.key !== "Enter" && event.key !== " ") {
+        return;
+      }
+      event.preventDefault();
+      const target = buttons[nextIndex];
+      if (target && typeof target.focus === "function") target.focus();
+      void selectValue(target.dataset.value);
+    }
+
+    for (const button of buttons) {
+      button.addEventListener("click", onClick);
+      button.addEventListener("keydown", onKeyDown);
+    }
+    syncVisualState();
+
+    const control = {
+      element,
+      getValue: () => currentValue,
+      setValue(value) {
+        const next = String(value);
+        if (!values.includes(next)) return false;
+        currentValue = next;
+        syncVisualState();
+        return true;
+      },
+      setDisabled(value) {
+        disabled = value === true;
+        syncVisualState();
+      },
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        for (const button of buttons) {
+          button.removeEventListener("click", onClick);
+          button.removeEventListener("keydown", onKeyDown);
+        }
+      },
+    };
+    state.mountedControls.segmentedRadios.add(control);
+    return control;
+  }
+
   function readCollapsedGroupState() {
     try {
       const raw = localStorage.getItem(COLLAPSED_GROUPS_STORAGE_KEY);
@@ -393,6 +555,7 @@
     children = [],
     defaultCollapsed = false,
     className = "",
+    animateExpansion = true,
   }) {
     const storedState = readCollapsedGroupState();
     let collapsed = Object.prototype.hasOwnProperty.call(storedState, id)
@@ -452,6 +615,44 @@
       body.style.setProperty("--collapsible-body-height", measureCollapsibleBodyHeight());
     }
 
+    function refreshCollapsibleHeight() {
+      if (collapsed || !group.classList.contains("expanding")) return;
+      requestAnimationFrame(() => {
+        if (!collapsed && group.classList.contains("expanding")) setExpandedBodyHeight();
+      });
+    }
+
+    function mutateCollapsibleBody(mutate) {
+      if (typeof mutate !== "function") return;
+      if (collapsed || group.classList.contains("collapsing")) {
+        mutate();
+        return;
+      }
+      if (group.classList.contains("expanding")) {
+        mutate();
+        refreshCollapsibleHeight();
+        return;
+      }
+
+      const beforeHeight = body.scrollHeight;
+      mutate();
+      const afterHeight = body.scrollHeight;
+      const prefersReducedMotion = typeof window.matchMedia === "function"
+        && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (beforeHeight === afterHeight || prefersReducedMotion) return;
+
+      // The settled-open body normally uses max-height:none so reflow can grow
+      // freely. Pin its pre-mutation height for one frame, then animate to the
+      // new measured height instead of letting async rows cause a layout jump.
+      body.style.setProperty("--collapsible-body-height", `${beforeHeight}px`);
+      group.classList.add("resizing");
+      void body.offsetHeight;
+      requestAnimationFrame(() => {
+        if (collapsed || !group.classList.contains("resizing")) return;
+        body.style.setProperty("--collapsible-body-height", `${afterHeight}px`);
+      });
+    }
+
     function setBodyInteractivity(isCollapsed) {
       body.setAttribute("aria-hidden", isCollapsed ? "true" : "false");
       if ("inert" in body) {
@@ -483,7 +684,7 @@
     function applyCollapsedState({ animate = false } = {}) {
       header.setAttribute("aria-expanded", collapsed ? "false" : "true");
       header.setAttribute("aria-label", collapsed ? t("collapsibleExpand") : t("collapsibleCollapse"));
-      group.classList.remove("expanding", "collapsing");
+      group.classList.remove("expanding", "collapsing", "resizing");
       if (!animate) {
         group.classList.toggle("collapsed", collapsed);
         setBodyInteractivity(collapsed);
@@ -524,7 +725,7 @@
       const nextState = readCollapsedGroupState();
       nextState[id] = collapsed;
       writeCollapsedGroupState(nextState);
-      preserveScrollAnchor(() => applyCollapsedState({ animate: true }));
+      preserveScrollAnchor(() => applyCollapsedState({ animate: animateExpansion }));
     }
 
     header.addEventListener("click", toggleCollapsed);
@@ -539,7 +740,7 @@
     group.appendChild(body);
     body.addEventListener("transitionend", (ev) => {
       if (ev.target !== body || ev.propertyName !== "max-height") return;
-      group.classList.remove("expanding", "collapsing");
+      group.classList.remove("expanding", "collapsing", "resizing");
       // Release the pinned height once settled so later reflows (text zoom,
       // window resize) can grow the body instead of clipping at the bottom.
       if (!collapsed) body.style.setProperty("--collapsible-body-height", "none");
@@ -548,6 +749,8 @@
     requestAnimationFrame(() => {
       if (!collapsed) body.style.setProperty("--collapsible-body-height", "none");
     });
+    group.refreshCollapsibleHeight = refreshCollapsibleHeight;
+    group.mutateCollapsibleBody = mutateCollapsibleBody;
     return group;
   }
 
@@ -858,6 +1061,14 @@
     if (state.mountedControls.textScale && typeof state.mountedControls.textScale.dispose === "function") {
       state.mountedControls.textScale.dispose();
     }
+    for (const control of state.mountedControls.settingsSelects) {
+      if (control && typeof control.dispose === "function") control.dispose();
+    }
+    state.mountedControls.settingsSelects.clear();
+    for (const control of state.mountedControls.segmentedRadios) {
+      if (control && typeof control.dispose === "function") control.dispose();
+    }
+    state.mountedControls.segmentedRadios.clear();
     state.mountedControls.generalSwitches.clear();
     state.mountedControls.bubblePolicyControls.clear();
     state.mountedControls.sessionCleanupControls.clear();
@@ -875,6 +1086,8 @@
     state.mountedControls.soundSummary = null;
     state.mountedControls.soundVolume = null;
     state.mountedControls.textScale = null;
+    state.mountedControls.aboutAutoUpdate = null;
+    state.mountedControls.aboutUpdateStatus = null;
   }
 
   function syncMountedSizeControl({ fromBroadcast = false } = {}) {
@@ -903,20 +1116,99 @@
     if (modal && typeof renderHooks.modal === "function") renderHooks.modal();
   }
 
+  function normalizePersistedScrollTop(value) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null;
+    return Math.min(value, MAX_PERSISTED_SCROLL_TOP);
+  }
+
+  function captureActiveTabScrollPosition() {
+    const content = document.getElementById("content");
+    if (!content || !tabs[state.activeTab]) return;
+    const scrollTop = normalizePersistedScrollTop(Number(content.scrollTop));
+    if (scrollTop !== null) runtime.settingsTabScrollPositions.set(state.activeTab, scrollTop);
+  }
+
+  function writeNavigationState() {
+    const scrollPositions = {};
+    for (const [tabId, value] of runtime.settingsTabScrollPositions) {
+      const scrollTop = normalizePersistedScrollTop(value);
+      if (tabs[tabId] && scrollTop !== null) scrollPositions[tabId] = scrollTop;
+    }
+    try {
+      localStorage.setItem(NAVIGATION_STORAGE_KEY, JSON.stringify({
+        activeTab: tabs[state.activeTab] ? state.activeTab : "general",
+        scrollPositions,
+      }));
+    } catch (_) {}
+  }
+
+  function persistNavigationState() {
+    captureActiveTabScrollPosition();
+    writeNavigationState();
+  }
+
+  function restoreNavigationState() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(NAVIGATION_STORAGE_KEY) || "null");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+      if (typeof parsed.activeTab === "string" && tabs[parsed.activeTab]) {
+        state.activeTab = parsed.activeTab;
+      }
+      const scrollPositions = parsed.scrollPositions;
+      if (scrollPositions && typeof scrollPositions === "object" && !Array.isArray(scrollPositions)) {
+        for (const [tabId, value] of Object.entries(scrollPositions)) {
+          const scrollTop = normalizePersistedScrollTop(value);
+          if (tabs[tabId] && scrollTop !== null) {
+            runtime.settingsTabScrollPositions.set(tabId, scrollTop);
+          }
+        }
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function restoreActiveTabScrollPosition() {
+    const content = document.getElementById("content");
+    if (!content) return;
+    const tabId = state.activeTab;
+    const targetScrollTop = runtime.settingsTabScrollPositions.get(tabId) || 0;
+    content.scrollTop = targetScrollTop;
+    requestAnimationFrame(() => {
+      if (state.activeTab !== tabId) return;
+      if (document.getElementById("content") !== content) return;
+      content.scrollTop = targetScrollTop;
+    });
+  }
+
   function selectTab(nextTab) {
     const prevTabId = state.activeTab;
     if (prevTabId === nextTab) return;
+    captureActiveTabScrollPosition();
+    const content = document.getElementById("content");
     const prevTab = tabs[prevTabId];
     if (prevTab && typeof prevTab.onExit === "function") {
       prevTab.onExit(core);
     }
     state.activeTab = nextTab;
+    writeNavigationState();
     requestRender({ sidebar: true, content: true, modal: true });
+    if (!content) return;
+
+    const targetScrollTop = runtime.settingsTabScrollPositions.get(nextTab) || 0;
+    content.scrollTop = targetScrollTop;
+    requestAnimationFrame(() => {
+      if (state.activeTab !== nextTab) return;
+      if (document.getElementById("content") !== content) return;
+      content.scrollTop = targetScrollTop;
+    });
   }
 
   function applyBootstrap(snapshotValue) {
     state.snapshot = snapshotValue || {};
     requestRender({ sidebar: true, content: true, modal: true });
+    restoreActiveTabScrollPosition();
   }
 
   function applyAgentMetadata(list) {
@@ -1256,6 +1548,13 @@
     if (!state.snapshot) return;
 
     const changes = payload && payload.changes;
+    const changeKeys = changes && typeof changes === "object" ? Object.keys(changes) : [];
+    if (
+      changeKeys.length > 0
+      && changeKeys.every((key) => RENDERER_INERT_SETTINGS_KEYS.has(key))
+    ) {
+      return;
+    }
     clearTransientStateForChanges(changes);
     const needsAnimOverridesRefresh = !!(changes && (
       "theme" in changes || "themeVariant" in changes || "themeOverrides" in changes
@@ -1461,6 +1760,8 @@
     attachAnimatedSwitch,
     buildSwitchRow,
     buildSection,
+    buildSettingsSelect,
+    buildSegmentedRadio,
     buildCollapsibleGroup,
     createDisclosureChevron,
     attachActivation,
@@ -1492,6 +1793,8 @@
     installRenderHooks,
     requestRender,
     selectTab,
+    persistNavigationState,
+    restoreNavigationState,
     applyBootstrap,
     applyAgentMetadata,
     applyChanges,

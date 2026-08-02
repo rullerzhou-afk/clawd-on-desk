@@ -2,9 +2,11 @@ const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");
 const os = require("os");
-const { spawnSync } = require("child_process");
 const path = require("path");
+const { EventEmitter } = require("events");
+const { runSpawnedHook } = require("./helpers/spawned-hook");
 const {
+  CODEX_AUTO_START_TIMEOUT_MS,
   buildCodexNoDecisionOutput,
   buildCodexPermissionOutput,
   buildPermissionBody,
@@ -16,8 +18,10 @@ const {
   readFirstSessionMeta,
   runCodexHook,
   sanitizeCodexPermissionOutput,
+  startClawdAndWait,
 } = require("../hooks/codex-hook");
 const { readCodexThreadName } = require("../hooks/codex-session-index");
+const { CODEX_WSL_INTEROP_ARG } = require("../hooks/server-config");
 
 const mockResolve = () => ({
   stablePid: 123,
@@ -438,12 +442,21 @@ describe("Codex official hook", () => {
     });
   });
 
-  it("classifies subagent PermissionRequest payloads so the headless gate fires without a state event", () => {
+  it("carries interactive subagent provenance without classifying the permission as headless", () => {
     withTempTranscript([
       JSON.stringify({
         type: "session_meta",
         payload: {
-          source: { subagent: { thread_spawn: { agent_role: "worker" } } },
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: "parent-1",
+                agent_role: "worker",
+                agent_nickname: "Halley",
+              },
+            },
+          },
+          originator: "codex-tui",
           agent_role: "worker",
         },
       }),
@@ -458,7 +471,66 @@ describe("Codex official hook", () => {
 
       assert.strictEqual(body.agent_id, "codex");
       assert.strictEqual(body.codex_session_role, "subagent");
+      assert.strictEqual(body.codex_originator, "codex-tui");
+      assert.strictEqual(body.codex_source, "cli");
+      assert.strictEqual(body.codex_agent_nickname, "Halley");
+      assert.strictEqual(body.codex_agent_role, "worker");
+      assert.strictEqual(body.codex_parent_thread_id, "parent-1");
+      assert.strictEqual(Object.prototype.hasOwnProperty.call(body, "headless"), false);
     });
+  });
+
+  it("preserves an explicit process-level headless signal on PermissionRequest", () => {
+    const body = buildPermissionBody({
+      hook_event_name: "PermissionRequest",
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      headless: true,
+    }, mockResolve);
+
+    assert.strictEqual(body.headless, true);
+  });
+
+  it("forwards a resolver-derived headless signal on PermissionRequest", () => {
+    const body = buildPermissionBody({
+      hook_event_name: "PermissionRequest",
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    }, () => ({
+      stablePid: 123,
+      agentPid: 456,
+      pidChain: [456, 123],
+      headless: true,
+    }));
+
+    assert.strictEqual(body.headless, true);
+  });
+
+  it("does not synthesize CLI provenance for exec, Desktop, or unknown subagents", () => {
+    for (const originator of ["codex_exec", "codex_work_desktop", "unknown-client"]) {
+      withTempTranscript([
+        JSON.stringify({
+          type: "session_meta",
+          payload: {
+            source: { subagent: { thread_spawn: { agent_role: "worker" } } },
+            originator,
+          },
+        }),
+      ], (transcriptPath) => {
+        const body = buildPermissionBody({
+          hook_event_name: "PermissionRequest",
+          session_id: "s1",
+          transcript_path: transcriptPath,
+          tool_name: "Bash",
+          tool_input: { command: "npm test" },
+        }, mockResolve);
+
+        assert.strictEqual(body.codex_originator, originator);
+        assert.strictEqual(Object.prototype.hasOwnProperty.call(body, "codex_source"), false);
+      });
+    }
   });
 
   it("does not build a state payload for PermissionRequest", () => {
@@ -506,19 +578,20 @@ describe("Codex official hook", () => {
 
   it("writes no stdout and exits 0 when stop_hook_active=true", () => {
     const scriptPath = path.resolve(__dirname, "..", "hooks", "codex-hook.js");
-    const result = spawnSync(process.execPath, [scriptPath], {
-      input: JSON.stringify({
+    const result = runSpawnedHook({
+      script: scriptPath,
+      payload: {
         hook_event_name: "Stop",
         session_id: "s1",
         turn_id: "turn-1",
         stop_hook_active: true,
-      }),
-      encoding: "utf8",
-      windowsHide: true,
+      },
+      httpContract: "expect-none",
     });
 
     assert.strictEqual(result.status, 0);
     assert.strictEqual(result.stdout, "");
+    assert.strictEqual(result.stderr, "");
   });
 
   it("reuses the runtime port for state and permission hooks", async () => {
@@ -568,6 +641,238 @@ describe("Codex official hook", () => {
     assert.strictEqual(permissionResult.port, 23335);
   });
 
+  it("starts Clawd and retries a local SessionStart when the server is offline", async () => {
+    const posts = [];
+    let autoStarts = 0;
+    const result = await runCodexHook({
+      hook_event_name: "SessionStart",
+      session_id: "s1",
+    }, {
+      resolvePid: mockResolve,
+      readCodexAutoStartGate: () => true,
+      readRuntimeIdentity: () => null,
+      postState(_body, options, callback) {
+        posts.push(options);
+        if (posts.length === 1) callback(false, null);
+        else callback(true, 23334);
+      },
+      async runAutoStart() {
+        autoStarts += 1;
+      },
+    });
+
+    assert.strictEqual(autoStarts, 1);
+    assert.strictEqual(posts.length, 2);
+    assert.deepStrictEqual(posts[1], { timeoutMs: 100 });
+    assert.strictEqual(result.posted, true);
+    assert.strictEqual(result.port, 23334);
+  });
+
+  it("does not start Clawd for an offline non-SessionStart event", async () => {
+    let autoStarts = 0;
+    const result = await runCodexHook({
+      hook_event_name: "UserPromptSubmit",
+      session_id: "s1",
+    }, {
+      resolvePid: mockResolve,
+      postState(_body, _options, callback) {
+        callback(false, null);
+      },
+      async runAutoStart() {
+        autoStarts += 1;
+      },
+    });
+
+    assert.strictEqual(autoStarts, 0);
+    assert.strictEqual(result.posted, false);
+  });
+
+  it("fails closed without an enabled Codex auto-start gate", async () => {
+    for (const readGate of [
+      () => false,
+      () => { throw new Error("corrupt gate"); },
+    ]) {
+      let autoStarts = 0;
+      const result = await runCodexHook({
+        hook_event_name: "SessionStart",
+        session_id: "s1",
+      }, {
+        resolvePid: mockResolve,
+        readCodexAutoStartGate: readGate,
+        postState(_body, _options, callback) {
+          callback(false, null);
+        },
+        async runAutoStart() {
+          autoStarts += 1;
+        },
+      });
+
+      assert.strictEqual(autoStarts, 0);
+      assert.strictEqual(result.posted, false);
+    }
+  });
+
+  it("does not start a desktop app for a WSL SessionStart", async () => {
+    let autoStarts = 0;
+    const result = await runCodexHook({
+      hook_event_name: "SessionStart",
+      session_id: "s1",
+    }, {
+      env: { WSL_DISTRO_NAME: "Ubuntu" },
+      resolveWslDistro: () => "Ubuntu",
+      resolvePid: mockResolve,
+      readCodexAutoStartGate: () => true,
+      postState(_body, _options, callback) {
+        callback(false, null);
+      },
+      async runAutoStart() {
+        autoStarts += 1;
+      },
+    });
+
+    assert.strictEqual(autoStarts, 0);
+    assert.strictEqual(result.posted, false);
+  });
+
+  it("does not start a desktop app for Windows-node WSL interop", async () => {
+    let autoStarts = 0;
+    const result = await runCodexHook({
+      hook_event_name: "SessionStart",
+      session_id: "s1",
+    }, {
+      argv: ["node.exe", "codex-hook.js", CODEX_WSL_INTEROP_ARG],
+      env: {},
+      resolveWslDistro: () => null,
+      resolvePid: mockResolve,
+      readCodexAutoStartGate: () => true,
+      postState(_body, _options, callback) {
+        callback(false, null);
+      },
+      async runAutoStart() {
+        autoStarts += 1;
+      },
+    });
+
+    assert.strictEqual(autoStarts, 0);
+    assert.strictEqual(result.posted, false);
+  });
+
+  it("rebuilds the retry with fresh PID metadata and runtime port", async () => {
+    let resolverCreations = 0;
+    let identityReads = 0;
+    const postedBodies = [];
+    const postedOptions = [];
+    const result = await runCodexHook({
+      hook_event_name: "SessionStart",
+      session_id: "s1",
+    }, {
+      createPidResolver(resolverOptions) {
+        resolverCreations += 1;
+        const stablePid = resolverCreations === 1 ? 111 : 222;
+        return () => {
+          resolverOptions.readRuntimeIdentity();
+          return { stablePid, agentPid: 333, pidChain: [333, stablePid] };
+        };
+      },
+      readRuntimeIdentity() {
+        identityReads += 1;
+        return identityReads >= 2 ? { ok: true, port: 23335, ownerPid: 999 } : null;
+      },
+      readCodexAutoStartGate: () => true,
+      postState(body, options, callback) {
+        postedBodies.push(JSON.parse(body));
+        postedOptions.push(options);
+        callback(postedBodies.length === 2, postedBodies.length === 2 ? 23335 : null);
+      },
+      async runAutoStart() {},
+    });
+
+    assert.strictEqual(resolverCreations, 2);
+    assert.strictEqual(postedBodies[0].source_pid, 111);
+    assert.strictEqual(postedBodies[1].source_pid, 222);
+    assert.deepStrictEqual(postedBodies[1].pid_chain, [333, 222]);
+    assert.deepStrictEqual(postedOptions[1], {
+      timeoutMs: 100,
+      preferredPort: 23335,
+      runtimePort: 23335,
+    });
+    assert.strictEqual(result.body.source_pid, 222);
+    assert.strictEqual(result.port, 23335);
+  });
+
+  describe("startClawdAndWait", () => {
+    it("spawns the production helper and cleans up after exit", async () => {
+      const child = new EventEmitter();
+      const cleared = [];
+      let timeoutCallback = null;
+      let spawnCall = null;
+      const pending = startClawdAndWait({
+        spawn(command, args, options) {
+          spawnCall = { command, args, options };
+          return child;
+        },
+        setTimeout(callback, timeoutMs) {
+          timeoutCallback = callback;
+          assert.strictEqual(timeoutMs, CODEX_AUTO_START_TIMEOUT_MS);
+          return 42;
+        },
+        clearTimeout(timer) {
+          cleared.push(timer);
+        },
+      });
+
+      assert.strictEqual(spawnCall.command, process.execPath);
+      assert.deepStrictEqual(spawnCall.args, [path.join(__dirname, "..", "hooks", "auto-start.js")]);
+      assert.deepStrictEqual(spawnCall.options, { stdio: "ignore", windowsHide: true });
+      assert.strictEqual(child.listenerCount("error"), 1);
+      assert.strictEqual(child.listenerCount("exit"), 1);
+      child.emit("exit", 0);
+      await pending;
+      assert.deepStrictEqual(cleared, [42]);
+      assert.strictEqual(child.listenerCount("error"), 0);
+      assert.strictEqual(child.listenerCount("exit"), 0);
+      assert.strictEqual(typeof timeoutCallback, "function");
+    });
+
+    it("settles on child error and synchronous spawn failure", async () => {
+      const child = new EventEmitter();
+      const pending = startClawdAndWait({
+        spawn: () => child,
+        setTimeout: () => 7,
+        clearTimeout() {},
+      });
+      child.emit("error", new Error("spawn failed"));
+      await pending;
+
+      await startClawdAndWait({
+        spawn() { throw new Error("sync spawn failed"); },
+      });
+    });
+
+    it("kills a hung helper and removes listeners at the bounded timeout", async () => {
+      const child = new EventEmitter();
+      let timeoutCallback = null;
+      let killed = 0;
+      child.kill = () => { killed += 1; };
+      const pending = startClawdAndWait({
+        spawn: () => child,
+        timeoutMs: 25,
+        setTimeout(callback, timeoutMs) {
+          assert.strictEqual(timeoutMs, 25);
+          timeoutCallback = callback;
+          return 9;
+        },
+        clearTimeout() {},
+      });
+
+      timeoutCallback();
+      await pending;
+      assert.strictEqual(killed, 1);
+      assert.strictEqual(child.listenerCount("error"), 0);
+      assert.strictEqual(child.listenerCount("exit"), 0);
+    });
+  });
+
   describe("remote mode", () => {
     before(() => { process.env.CLAWD_REMOTE = "1"; });
     after(() => { delete process.env.CLAWD_REMOTE; });
@@ -580,6 +885,24 @@ describe("Codex official hook", () => {
       assert.strictEqual(typeof body.host, "string");
       assert.strictEqual(Object.prototype.hasOwnProperty.call(body, "source_pid"), false);
       assert.strictEqual(Object.prototype.hasOwnProperty.call(body, "pid_chain"), false);
+    });
+
+    it("does not start a desktop app when remote SessionStart delivery fails", async () => {
+      let autoStarts = 0;
+      const result = await runCodexHook({
+        hook_event_name: "SessionStart",
+        session_id: "s1",
+      }, {
+        postState(_body, _options, callback) {
+          callback(false, null);
+        },
+        async runAutoStart() {
+          autoStarts += 1;
+        },
+      });
+
+      assert.strictEqual(autoStarts, 0);
+      assert.strictEqual(result.posted, false);
     });
   });
 });

@@ -238,6 +238,54 @@ describe("CodexLogMonitor", () => {
     }, 300);
   });
 
+  it("recovers and routes fresh Spark quota from an active Windows rollout whose mtime stayed old", (_, done) => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const timestamp = new Date().toISOString();
+    const resetAt = Math.floor((Date.now() + 60 * 60 * 1000) / 1000);
+    fs.writeFileSync(testFile, [
+      JSON.stringify({ timestamp, type: "session_meta", payload: { cwd: "/projects/live-frozen-mtime" } }),
+      JSON.stringify({
+        timestamp,
+        type: "turn_context",
+        payload: { model: "gpt-5.3-codex-spark", effort: "low" },
+      }),
+      JSON.stringify({
+        timestamp,
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          rate_limits: {
+            limit_id: "codex",
+            primary: {
+              used_percent: 0,
+              window_minutes: 10080,
+              resets_at: resetAt,
+            },
+          },
+        },
+      }),
+    ].join("\n") + "\n");
+    const frozenTime = new Date(Date.now() - 10 * 60 * 1000);
+    fs.utimesSync(testFile, frozenTime, frozenTime);
+
+    const states = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event, extra) => {
+      states.push({ sid, state, event, extra });
+    });
+    monitor.start();
+
+    setTimeout(() => {
+      const quotaEvent = states.find((entry) => entry.event === "event_msg:token_count");
+      assert.ok(quotaEvent, "fresh embedded activity must override a frozen old mtime");
+      assert.strictEqual(quotaEvent.sid, EXPECTED_SID);
+      assert.strictEqual(quotaEvent.extra.cwd, "/projects/live-frozen-mtime");
+      assert.strictEqual(quotaEvent.extra.codexQuota, undefined);
+      assert.strictEqual(quotaEvent.extra.codexSparkQuota.codexWeekly.usedPercent, 0);
+      assert.ok(monitor._tracked.has(testFile), "the recovered active file must stay tracked");
+      done();
+    }, 300);
+  });
+
   it("only sweeps for stale pending questions once, on the first poll after start", (_, done) => {
     const requests = [];
     monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {
@@ -344,7 +392,22 @@ describe("CodexLogMonitor", () => {
         type: "event_msg",
         payload: {
           type: "token_count",
-          rate_limits: { primary: { used_percent: 12, resets_at: resetAt } },
+          rate_limits: {
+            limit_id: "codex",
+            primary: { used_percent: 12, resets_at: resetAt },
+          },
+        },
+      }),
+      JSON.stringify({
+        timestamp,
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          rate_limits: {
+            limit_id: "codex_bengalfox",
+            limit_name: "GPT-5.3-Codex-Spark",
+            primary: { used_percent: 7, window_minutes: 10080, resets_at: resetAt },
+          },
         },
       }),
       JSON.stringify({
@@ -375,6 +438,7 @@ describe("CodexLogMonitor", () => {
     assert.strictEqual(states[0].event, "event_msg:token_count");
     assert.strictEqual(states[0].state, "idle");
     assert.strictEqual(states[0].extra.codexQuota.codexFiveHour.usedPercent, 12);
+    assert.strictEqual(states[0].extra.codexSparkQuota.codexWeekly.usedPercent, 7);
   });
 
   it("keeps a subagent's normal headless backfill snapshot when it has a pending question within the active window", (_, done) => {
@@ -1967,6 +2031,99 @@ describe("CodexLogMonitor", () => {
         capturedAt,
       },
     });
+  });
+
+  it("routes fresh Spark quota separately without attaching it as generic quota", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const lineTimestamp = new Date().toISOString();
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      JSON.stringify({
+        type: "event_msg",
+        timestamp: lineTimestamp,
+        payload: {
+          type: "token_count",
+          rate_limits: {
+            limit_id: "codex_bengalfox",
+            limit_name: "GPT-5.3-Codex-Spark",
+            primary: { used_percent: 7, window_minutes: 10080, resets_at: 1784256370 },
+          },
+        },
+      }),
+    ].join("\n") + "\n");
+
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event, extra) => {
+      events.push({ sid, state, event, extra });
+    });
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    const tokenEvent = events.find((entry) => entry.event === "event_msg:token_count");
+    assert.ok(tokenEvent);
+    assert.strictEqual(tokenEvent.extra.codexQuota, undefined);
+    assert.deepStrictEqual(tokenEvent.extra.codexSparkQuota, {
+      codexWeekly: {
+        usedPercent: 7,
+        windowMinutes: 10080,
+        resetAt: 1784256370000,
+        capturedAt: Date.parse(lineTimestamp),
+      },
+    });
+  });
+
+  it("routes generic codex quota by the current turn model and follows model switches", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const sparkTimestamp = new Date(Date.now() - 1000).toISOString();
+    const mainTimestamp = new Date().toISOString();
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      JSON.stringify({
+        type: "turn_context",
+        timestamp: sparkTimestamp,
+        payload: { model: "gpt-5.3-codex-spark", effort: "low" },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        timestamp: sparkTimestamp,
+        payload: {
+          type: "token_count",
+          rate_limits: {
+            limit_id: "codex",
+            primary: { used_percent: 0, window_minutes: 10080 },
+          },
+        },
+      }),
+      JSON.stringify({
+        type: "turn_context",
+        timestamp: mainTimestamp,
+        payload: { model: "gpt-5.6-sol", effort: "xhigh" },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        timestamp: mainTimestamp,
+        payload: {
+          type: "token_count",
+          rate_limits: {
+            limit_id: "codex",
+            primary: { used_percent: 14, window_minutes: 10080 },
+          },
+        },
+      }),
+    ].join("\n") + "\n");
+
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event, extra) => {
+      if (event === "event_msg:token_count") events.push(extra);
+    });
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    assert.strictEqual(events.length, 2);
+    assert.strictEqual(events[0].codexQuota, undefined);
+    assert.strictEqual(events[0].codexSparkQuota.codexWeekly.usedPercent, 0);
+    assert.strictEqual(events[1].codexSparkQuota, undefined);
+    assert.strictEqual(events[1].codexQuota.codexWeekly.usedPercent, 14);
+    const tracked = monitor._tracked.get(testFile);
+    assert.strictEqual(tracked.codexQuotaProviderHint, "codexQuota");
   });
 
   it("drops token_count subscription quota from stale backfill replays but keeps context usage", () => {

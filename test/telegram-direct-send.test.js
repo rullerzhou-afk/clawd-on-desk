@@ -218,6 +218,12 @@ test("direct send copies fallback when the mapped session is no longer live", as
 test("direct send never focuses remote, headless, sleeping, or permission-pending sessions", async () => {
   const blocked = [
     localTerminalEntry({ id: "remote", host: "server" }),
+    localTerminalEntry({
+      id: "remote-orca",
+      host: "server",
+      sourcePid: null,
+      orcaPaneKey: "tab-remote:leaf-remote",
+    }),
     localTerminalEntry({ id: "headless", headless: true }),
     localTerminalEntry({ id: "sleeping", state: "sleeping" }),
     localTerminalEntry({ id: "permission", state: "notification" }),
@@ -634,6 +640,100 @@ test("Windows paste-only adapter waits longer for editor-hosted terminals", asyn
   assert.deepEqual(delays, [1200]);
 });
 
+test("Windows paste-only adapter pastes into Orca only after an exact pane match", async () => {
+  const delays = [];
+  const adapter = createWindowsPasteOnlyDeliveryAdapter({
+    osPlatform: "win32",
+    clipboard: {
+      readText: () => "previous",
+      writeText: () => {},
+    },
+    execFile: (cmd, args, opts, cb) => cb(null, "", ""),
+    delay: async (ms) => { delays.push(ms); },
+    readyDelayMs: 25,
+  });
+
+  const res = await adapter.deliver({
+    promptText: "continue please",
+    focusResult: confirmedFocusResult({
+      orcaPane: { ok: true, match: "exact", reason: "orca-pane-switched" },
+    }),
+    entry: localTerminalEntry({ orcaPaneKey: "8ce1fff7-tab:9813824b-leaf" }),
+  });
+
+  assert.equal(res.status, "pasted_without_enter");
+  // The switch is confirmed by now, so this is only the composer settling — the
+  // old 1200ms was a blind guess at how long two CLI spawns would take.
+  assert.deepEqual(delays, [1200]);
+});
+
+test("Windows paste-only adapter refuses to paste when the Orca pane is unconfirmed", async () => {
+  // Orca confirms focus as soon as its window is raised, but the tab switch is two
+  // further CLI spawns. Every one of these cases used to paste anyway and report
+  // delivered, dropping the reply into whichever pane was previously active.
+  const cases = [
+    ["no outcome at all (cold CLI outlasting the wait)", undefined],
+    ["a pane that is gone", { ok: false, match: null, reason: "orca-pane-not-found" }],
+    ["a CLI that never answered", { ok: false, match: null, reason: "orca-cli-timeout" }],
+    ["a rejected switch", { ok: false, match: null, reason: "orca-switch-failed" }],
+    ["an ambiguous worktree", { ok: false, match: null, reason: "orca-pane-ambiguous" }],
+    // Switched, but only to the right project — not provably the right composer.
+    ["a worktree-only match", { ok: true, match: "cwd", reason: "orca-pane-switched" }],
+  ];
+
+  for (const [label, orcaPane] of cases) {
+    const writes = [];
+    const execCalls = [];
+    const adapter = createWindowsPasteOnlyDeliveryAdapter({
+      osPlatform: "win32",
+      clipboard: {
+        readText: () => "previous",
+        writeText: (value) => writes.push(value),
+      },
+      execFile: (cmd, args, opts, cb) => { execCalls.push(args); cb(null, "", ""); },
+      delay: async () => {},
+      readyDelayMs: 25,
+    });
+
+    const res = await adapter.deliver({
+      promptText: "continue please",
+      focusResult: confirmedFocusResult({ orcaPane }),
+      entry: localTerminalEntry({ orcaPaneKey: "8ce1fff7-tab:9813824b-leaf" }),
+    });
+
+    assert.equal(res.status, "failed", `${label} must not report a delivery`);
+    assert.equal(res.delivered, false, `${label} must not report delivered`);
+    assert.equal(res.errorClass, "orca_pane_unconfirmed", label);
+    assert.deepEqual(execCalls, [], `${label} must not press Ctrl+V`);
+    // The clipboard is the fallback surface, so it must be left untouched here for
+    // the caller's clipboard fallback to own it.
+    assert.deepEqual(writes, [], `${label} must not overwrite the clipboard`);
+  }
+});
+
+test("Windows paste-only adapter ignores the pane gate for non-Orca sessions", async () => {
+  const adapter = createWindowsPasteOnlyDeliveryAdapter({
+    osPlatform: "win32",
+    clipboard: {
+      readText: () => "previous",
+      writeText: () => {},
+    },
+    execFile: (cmd, args, opts, cb) => cb(null, "", ""),
+    delay: async () => {},
+    readyDelayMs: 25,
+  });
+
+  // A plain terminal has no pane to confirm; gating it would break every non-Orca
+  // Direct Send.
+  const res = await adapter.deliver({
+    promptText: "continue please",
+    focusResult: confirmedFocusResult(),
+    entry: localTerminalEntry({ editor: "code" }),
+  });
+
+  assert.equal(res.status, "pasted_without_enter");
+});
+
 test("direct send preserves editor metadata from real session snapshots for paste timing", async () => {
   const deliveredEntries = [];
   const direct = createTelegramDirectSend({
@@ -663,6 +763,125 @@ test("direct send preserves editor metadata from real session snapshots for past
   assert.equal(res.status, "pasted_without_enter");
   assert.equal(deliveredEntries.length, 1);
   assert.equal(deliveredEntries[0].editor, "code");
+});
+
+test("direct send gates the Orca paste using a real session snapshot", async () => {
+  // The adapter test above hand-builds its entry, so it cannot see whether the
+  // field survives buildSessionSnapshotEntry — which is a whitelist. Drive the
+  // real adapter through the real snapshot builder instead: if the pane key is not
+  // carried there, the gate never fires and an unconfirmed pane pastes anyway.
+  const delays = [];
+  const adapter = createWindowsPasteOnlyDeliveryAdapter({
+    osPlatform: "win32",
+    clipboard: {
+      readText: () => "previous",
+      writeText: () => {},
+    },
+    execFile: (cmd, args, opts, cb) => cb(null, "", ""),
+    delay: async (ms) => { delays.push(ms); },
+    readyDelayMs: 25,
+  });
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => buildSessionSnapshot(new Map([
+      ["sess-local-1", {
+        agentId: "claude-code",
+        state: "idle",
+        updatedAt: 1000,
+        sourcePid: 1234,
+        orcaPaneKey: "8ce1fff7-tab:9813824b-leaf",
+      }],
+    ])),
+    focusSession: () => confirmedFocusResult({
+      orcaPane: { ok: true, match: "exact", reason: "orca-pane-switched" },
+    }),
+    deliveryAdapter: adapter,
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({ messageId: 43, sessionId: "sess-local-1" });
+  const res = await direct.handleTextMessage({ text: "continue", replyToMessageId: 43 });
+
+  assert.equal(res.status, "pasted_without_enter");
+  assert.deepEqual(delays, [1200]);
+});
+
+test("direct send falls back to the clipboard when the Orca pane is unconfirmed", async () => {
+  const writes = [];
+  const execCalls = [];
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => buildSessionSnapshot(new Map([
+      ["sess-local-1", {
+        agentId: "claude-code",
+        state: "idle",
+        updatedAt: 1000,
+        sourcePid: 1234,
+        orcaPaneKey: "8ce1fff7-tab:9813824b-leaf",
+      }],
+    ])),
+    // The window came forward, so the focus itself is genuinely confirmed; only the
+    // pane switch is not.
+    focusSession: () => confirmedFocusResult({
+      orcaPane: { ok: false, match: null, reason: "orca-cli-timeout" },
+    }),
+    deliveryAdapter: createWindowsPasteOnlyDeliveryAdapter({
+      osPlatform: "win32",
+      clipboard: { readText: () => "previous", writeText: () => {} },
+      execFile: (cmd, args, opts, cb) => { execCalls.push(args); cb(null, "", ""); },
+      delay: async () => {},
+    }),
+    fallbackAdapter: createClipboardFallbackDeliveryAdapter({
+      clipboard: {
+        writeText: (value, type) => writes.push({ value, type }),
+        readText: () => "continue",
+      },
+    }),
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({ messageId: 44, sessionId: "sess-local-1" });
+  const res = await direct.handleTextMessage({ text: "continue", replyToMessageId: 44 });
+
+  assert.equal(res.status, "fallback_copied");
+  assert.equal(direct._deliveries.get(res.deliveryId).fallbackReason, "orca_pane_unconfirmed");
+  assert.deepEqual(execCalls, [], "no paste may be attempted");
+  assert.deepEqual(writes, [{ value: "continue", type: "clipboard" }]);
+});
+
+test("the focus gate carries the Orca pane outcome through to the adapter", async () => {
+  // normalizeFocusGateResult is a whitelist: a field it does not name is dropped
+  // between focusSession and the adapter, which would leave the gate reading
+  // undefined on every real delivery while every hand-built test still passed.
+  const seen = [];
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => buildSessionSnapshot(new Map([
+      ["sess-local-1", {
+        agentId: "claude-code",
+        state: "idle",
+        updatedAt: 1000,
+        sourcePid: 1234,
+        orcaPaneKey: "8ce1fff7-tab:9813824b-leaf",
+      }],
+    ])),
+    focusSession: () => confirmedFocusResult({
+      orcaPane: { ok: true, match: "exact", reason: "orca-pane-switched" },
+    }),
+    deliveryAdapter: {
+      deliver: async (payload) => {
+        seen.push(payload.focusResult);
+        return { status: "pasted_without_enter", delivered: true, autoEnter: false };
+      },
+    },
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({ messageId: 45, sessionId: "sess-local-1" });
+  await direct.handleTextMessage({ text: "continue", replyToMessageId: 45 });
+
+  assert.equal(seen.length, 1);
+  assert.deepEqual(seen[0].orcaPane, { ok: true, match: "exact", reason: "orca-pane-switched" });
 });
 
 test("Windows paste-only adapter refuses multiline text before touching clipboard or keyboard", async () => {

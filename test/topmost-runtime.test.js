@@ -3,8 +3,11 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const { EventEmitter } = require("node:events");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const createTopmostRuntime = require("../src/topmost-runtime");
+const createPetWindowRuntime = require("../src/pet-window-runtime");
 
 class FakeWindow extends EventEmitter {
   constructor(options = {}) {
@@ -33,6 +36,16 @@ class FakeWindow extends EventEmitter {
 
   getBounds() {
     return this.bounds ? { ...this.bounds } : { x: 0, y: 0, width: 0, height: 0 };
+  }
+
+  // PR #751 Codex review #12 (rework batch B-7): added so a real
+  // pet-window-runtime instance can be assembled against this same fake
+  // window (see the "assembly: main.js's real applyPetWindowPosition wrapper
+  // shape..." test below) — genuinely mutates .bounds like a real
+  // BrowserWindow, unlike the other methods here which only log a call.
+  setBounds(next) {
+    this.calls.push(["setBounds", next]);
+    this.bounds = { ...next };
   }
 
   setOpacity(value) {
@@ -104,6 +117,17 @@ describe("topmost runtime Windows recovery", () => {
     assert.deepStrictEqual(hitWin.calls, []);
   });
 
+  // PR #751 Codex review #12 (rework batch B-7, non-blocking): every
+  // applyPetWindowPosition spy in this file now captures the 3rd argument
+  // too (opts), not just (x, y). applyFreshNudge() (src/topmost-runtime.js)
+  // deliberately passes {force:true} on both its calls — plan §12.12's
+  // safety line, since the whole point of a nudge is a real native write —
+  // and main.js's real applyPetWindowPosition wrapper used to silently drop
+  // a 3rd argument entirely (found and fixed earlier in this same PR #751
+  // rework, batch A: it broke this exact force:true). A spy that only ever
+  // recorded (x, y) could never have caught that regression. restorePendingNudge()'s
+  // own call (src/topmost-runtime.js:418) passes no options at all — expect
+  // `undefined` there, not force:true, to keep that distinction visible.
   it("guards main-window topmost loss by nudging input routing and scheduling recovery", () => {
     const timers = makeTimers();
     const win = new FakeWindow();
@@ -114,7 +138,7 @@ describe("topmost runtime Windows recovery", () => {
       isWin: true,
       getWin: () => win,
       getPetWindowBounds: () => ({ x: 10, y: 20, width: 100, height: 100 }),
-      applyPetWindowPosition: (x, y) => positions.push([x, y]),
+      applyPetWindowPosition: (x, y, opts) => positions.push([x, y, opts]),
       setForceEyeResend: (value) => forceEye.push(value),
       syncHitWin: () => { syncCount += 1; },
       setTimeout: timers.setTimeout,
@@ -125,7 +149,7 @@ describe("topmost runtime Windows recovery", () => {
     win.emit("always-on-top-changed", null, false);
 
     assert.deepStrictEqual(win.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]]);
-    assert.deepStrictEqual(positions, [[11, 20], [10, 20]]);
+    assert.deepStrictEqual(positions, [[11, 20, { force: true }], [10, 20, { force: true }]]);
     assert.deepStrictEqual(forceEye, [true]);
     assert.strictEqual(syncCount, 1);
     assert.strictEqual(timers.timeouts.length, 1);
@@ -134,7 +158,7 @@ describe("topmost runtime Windows recovery", () => {
     timers.timeouts[0].fn();
     assert.deepStrictEqual(forceEye, [true, true]);
     assert.strictEqual(win.calls.length, 2);
-    assert.deepStrictEqual(positions, [[11, 20], [10, 20]]);
+    assert.deepStrictEqual(positions, [[11, 20, { force: true }], [10, 20, { force: true }]]);
   });
 
   it("re-tops the hit window when the render window loses topmost (no z-order inversion)", () => {
@@ -187,7 +211,7 @@ describe("topmost runtime Windows recovery", () => {
       isWin: true,
       getWin: () => win,
       getPetWindowBounds: () => ({ x: 10, y: 20, width: 100, height: 100 }),
-      applyPetWindowPosition: (x, y) => positions.push([x, y]),
+      applyPetWindowPosition: (x, y, opts) => positions.push([x, y, opts]),
       setTimeout: timers.setTimeout,
       clearTimeout: timers.clearTimeout,
     });
@@ -197,14 +221,14 @@ describe("topmost runtime Windows recovery", () => {
     win.emit("always-on-top-changed", null, false);
 
     assert.deepStrictEqual(positions, [
-      [11, 20],
-      [10, 20],
+      [11, 20, { force: true }],
+      [10, 20, { force: true }],
     ]);
 
     timers.timeouts.at(-1).fn();
     assert.deepStrictEqual(positions, [
-      [11, 20],
-      [10, 20],
+      [11, 20, { force: true }],
+      [10, 20, { force: true }],
     ]);
   });
 
@@ -218,8 +242,8 @@ describe("topmost runtime Windows recovery", () => {
       isWin: true,
       getWin: () => win,
       getPetWindowBounds: () => ({ ...current }),
-      applyPetWindowPosition: (x, y) => {
-        positions.push([x, y]);
+      applyPetWindowPosition: (x, y, opts) => {
+        positions.push([x, y, opts]);
         if (swallowImmediateRestore && x === 10 && y === 20) return;
         current.x = x;
         current.y = y;
@@ -235,7 +259,10 @@ describe("topmost runtime Windows recovery", () => {
     swallowImmediateRestore = false;
     timers.timeouts[0].fn();
 
-    assert.deepStrictEqual(positions, [[11, 20], [10, 20], [10, 20]]);
+    // The third entry is restorePendingNudge()'s own call
+    // (src/topmost-runtime.js:418) — it passes no options at all (undefined),
+    // unlike applyFreshNudge()'s two force:true calls above it.
+    assert.deepStrictEqual(positions, [[11, 20, { force: true }], [10, 20, { force: true }], [10, 20, undefined]]);
     assert.deepStrictEqual(current, { x: 10, y: 20, width: 100, height: 100 });
   });
 
@@ -248,8 +275,8 @@ describe("topmost runtime Windows recovery", () => {
       isWin: true,
       getWin: () => win,
       getPetWindowBounds: () => ({ ...current }),
-      applyPetWindowPosition: (x, y) => {
-        positions.push([x, y]);
+      applyPetWindowPosition: (x, y, opts) => {
+        positions.push([x, y, opts]);
         current.x = x;
         current.y = y;
       },
@@ -263,7 +290,7 @@ describe("topmost runtime Windows recovery", () => {
     current.y = 500;
     timers.timeouts[0].fn();
 
-    assert.deepStrictEqual(positions, [[11, 20], [10, 20]]);
+    assert.deepStrictEqual(positions, [[11, 20, { force: true }], [10, 20, { force: true }]]);
     assert.deepStrictEqual(current, { x: 500, y: 500, width: 100, height: 100 });
   });
 
@@ -276,8 +303,8 @@ describe("topmost runtime Windows recovery", () => {
       isWin: true,
       getWin: () => win,
       getPetWindowBounds: () => ({ ...current }),
-      applyPetWindowPosition: (x, y) => {
-        positions.push([x, y]);
+      applyPetWindowPosition: (x, y, opts) => {
+        positions.push([x, y, opts]);
         current.x = x;
         current.y = y;
       },
@@ -292,10 +319,10 @@ describe("topmost runtime Windows recovery", () => {
     win.emit("always-on-top-changed", null, false);
 
     assert.deepStrictEqual(positions, [
-      [11, 20],
-      [10, 20],
-      [501, 500],
-      [500, 500],
+      [11, 20, { force: true }],
+      [10, 20, { force: true }],
+      [501, 500, { force: true }],
+      [500, 500, { force: true }],
     ]);
     assert.deepStrictEqual(current, { x: 500, y: 500, width: 100, height: 100 });
   });
@@ -309,7 +336,7 @@ describe("topmost runtime Windows recovery", () => {
       isWin: true,
       getWin: () => win,
       getPetWindowBounds: () => ({ x: 10, y: 20, width: 100, height: 100 }),
-      applyPetWindowPosition: (x, y) => positions.push([x, y]),
+      applyPetWindowPosition: (x, y, opts) => positions.push([x, y, opts]),
       isDragLocked: () => dragging,
       setTimeout: timers.setTimeout,
       clearTimeout: timers.clearTimeout,
@@ -320,7 +347,7 @@ describe("topmost runtime Windows recovery", () => {
     dragging = true;
     timers.timeouts[0].fn();
 
-    assert.deepStrictEqual(positions, [[11, 20], [10, 20]]);
+    assert.deepStrictEqual(positions, [[11, 20, { force: true }], [10, 20, { force: true }]]);
   });
 
   it("skips the nudge path while dragging or mini transitions own movement", () => {
@@ -330,7 +357,7 @@ describe("topmost runtime Windows recovery", () => {
       isWin: true,
       getWin: () => win,
       isDragLocked: () => true,
-      applyPetWindowPosition: (x, y) => positions.push([x, y]),
+      applyPetWindowPosition: (x, y, opts) => positions.push([x, y, opts]),
     });
 
     runtime.guardAlwaysOnTop(win);
@@ -338,6 +365,63 @@ describe("topmost runtime Windows recovery", () => {
 
     assert.deepStrictEqual(win.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]]);
     assert.deepStrictEqual(positions, []);
+  });
+
+  // PR #751 Codex review #12 (rework batch B-7): every test above injects
+  // applyPetWindowPosition as a bare spy — none of them can catch a bug in
+  // the SEAM between topmost-runtime.js and the real main.js wrapper itself.
+  // That seam is exactly where this PR's own predecessor bug lived (src/main.js
+  // ~line 1163's applyPetWindowPosition(x, y, opts) wrapper used to be
+  // (x, y) only, silently dropping force:true — found and fixed earlier in
+  // this same PR #751 rework, batch A). This assembles a REAL
+  // pet-window-runtime instance behind a function with that exact
+  // (x, y, opts) => petWindowRuntime.applyPetWindowPosition(x, y, opts)
+  // shape, standing in for main.js's actual wrapper, and proves force:true
+  // survives the full chain end to end: a second nudge call landing on a
+  // rect the window is ALREADY at still issues a native setBounds (the
+  // runtime's own same-rect skip — applyPetWindowBounds's
+  // `if (opts.force || !sameRect(cur, m.bounds)) win.setBounds(...)` — would
+  // otherwise swallow it). A 2-param wrapper shape would silently drop
+  // force:true and make the second setBounds never happen.
+  it("assembly: a main.js-shaped 3-arg applyPetWindowPosition wrapper forwards force:true through to a real runtime's same-rect setBounds", () => {
+    const win = new FakeWindow({ bounds: { x: 10, y: 20, width: 100, height: 100 } });
+    const petWindowRuntime = createPetWindowRuntime({
+      isWin: true,
+      getRenderWindow: () => win,
+      getPrimaryWorkAreaSafe: () => ({ x: 0, y: 0, width: 1000, height: 800 }),
+    });
+
+    // Mirrors src/main.js's actual current wrapper shape verbatim (see the
+    // structural cross-check against the real file below) — NOT topmost.js's
+    // own injected option, which is always correct by construction. The
+    // point is to prove THIS shape, standing in for main.js, doesn't drop opts.
+    function applyPetWindowPosition(x, y, opts) {
+      return petWindowRuntime.applyPetWindowPosition(x, y, opts);
+    }
+
+    applyPetWindowPosition(50, 60, { force: true });
+    assert.deepStrictEqual(win.getBounds(), { x: 50, y: 60, width: 100, height: 100 });
+    const setBoundsCallsAfterFirst = win.calls.filter((c) => c[0] === "setBounds").length;
+    assert.strictEqual(setBoundsCallsAfterFirst, 1, "sanity: the first call is a genuine rect change (10,20 -> 50,60)");
+
+    // Same exact (x, y, opts) again: the window is ALREADY at (50, 60), so
+    // this is now a genuine same-rect case. Without force:true reaching the
+    // runtime (the batch-A regression), this second call would be silently
+    // skipped — win.setBounds() would not fire again.
+    applyPetWindowPosition(50, 60, { force: true });
+    const setBoundsCallsAfterSecond = win.calls.filter((c) => c[0] === "setBounds").length;
+    assert.strictEqual(
+      setBoundsCallsAfterSecond, 2,
+      "force:true must reach the runtime through this wrapper shape and still issue a native setBounds on a same-rect call"
+    );
+  });
+
+  it("main.js's actual applyPetWindowPosition wrapper still has the 3-arg (x, y, opts) shape the assembly test above mirrors", () => {
+    const mainSource = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
+    assert.ok(
+      mainSource.includes("function applyPetWindowPosition(x, y, opts) { return petWindowRuntime.applyPetWindowPosition(x, y, opts); }"),
+      "src/main.js's applyPetWindowPosition wrapper must keep forwarding all 3 arguments — a silent regression back to (x, y) would make force:true a no-op again, invisibly to every spy-based test in this file"
+    );
   });
 
   it("watchdog reasserts visible helper windows and keeps them out of the taskbar", () => {
@@ -892,6 +976,16 @@ describe("IME editing pet dodge (#640)", () => {
     // flag here on purpose: the pet must step back the moment the bubble appears,
     // before the user ever clicks into the box.
     bubble.__clawdMacTextInputBubble = true;
+    // I5: syncImeEditingPetDodge() now reports its intent through this
+    // injected setter (pet-window-runtime's single ignore-mouse writer)
+    // instead of calling hit.setIgnoreMouseEvents() directly. The real
+    // setImeEditingPetDodge() dedupes against its own `imeEditingPetDodge`
+    // flag, which STARTS AT false (not an unset sentinel) and short-circuits
+    // before ever touching applyHitInputState() — mirror both the dedup and
+    // its false starting value here, or a false->false call after a drag
+    // (nothing ever actually went click-through) would wrongly still reach
+    // hit.setIgnoreMouseEvents() in this test double.
+    let lastAppliedDodge = false;
     const runtime = createTopmostRuntime({
       isMac: true,
       getWin: () => pet,
@@ -912,6 +1006,12 @@ describe("IME editing pet dodge (#640)", () => {
       deDelegateWindowFromStationarySpace: (window, level) => {
         window.calls.push(["deDelegate", level]);
         return deDelegateResult;
+      },
+      setImeEditingPetDodge: (value) => {
+        const next = !!value;
+        if (next === lastAppliedDodge) return;
+        lastAppliedDodge = next;
+        hit.setIgnoreMouseEvents(next);
       },
       ...overrides,
     });

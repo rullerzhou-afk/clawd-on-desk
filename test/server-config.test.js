@@ -19,6 +19,89 @@ afterEach(() => {
   }
 });
 
+describe("Codex auto-start gate", () => {
+  function gatePath() {
+    return path.join(makeTempHome(), ".clawd", "codex-auto-start.json");
+  }
+
+  it("round-trips explicit enabled and disabled values", () => {
+    const file = gatePath();
+    assert.strictEqual(serverConfig.writeCodexAutoStartGate(true, { gatePath: file }), true);
+    assert.strictEqual(serverConfig.readCodexAutoStartGate({ gatePath: file }), true);
+    assert.strictEqual(serverConfig.writeCodexAutoStartGate(false, { gatePath: file }), true);
+    assert.strictEqual(serverConfig.readCodexAutoStartGate({ gatePath: file }), false);
+  });
+
+  it("fails closed for missing, corrupt, foreign, and unsupported gate files", () => {
+    const file = gatePath();
+    assert.strictEqual(serverConfig.readCodexAutoStartGate({ gatePath: file }), false);
+
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    for (const value of [
+      "{not json",
+      JSON.stringify({ app: "other", version: 1, enabled: true }),
+      JSON.stringify({ app: "clawd-on-desk", version: 2, enabled: true }),
+      JSON.stringify({ app: "clawd-on-desk", version: 1, enabled: "true" }),
+    ]) {
+      fs.writeFileSync(file, value, "utf8");
+      assert.strictEqual(serverConfig.readCodexAutoStartGate({ gatePath: file }), false);
+    }
+  });
+
+  it("cleans up its temporary file when an atomic write fails", () => {
+    const file = gatePath();
+    const calls = [];
+    const fakeFs = {
+      mkdirSync() {},
+      writeFileSync(tmpPath) { calls.push(["write", tmpPath]); },
+      renameSync() { throw new Error("rename failed"); },
+      unlinkSync(tmpPath) { calls.push(["unlink", tmpPath]); },
+    };
+
+    assert.strictEqual(serverConfig.writeCodexAutoStartGate(true, {
+      gatePath: file,
+      fs: fakeFs,
+    }), false);
+    assert.strictEqual(calls.length, 2);
+    assert.strictEqual(calls[0][0], "write");
+    assert.deepStrictEqual(calls[1], ["unlink", calls[0][1]]);
+  });
+});
+
+describe("native WSL detection", () => {
+  it("uses WSL_DISTRO_NAME for a Linux hook process", () => {
+    assert.strictEqual(serverConfig.detectWslDistro({
+      platform: "linux",
+      env: { WSL_DISTRO_NAME: "Ubuntu-24.04" },
+      fs: {
+        readFileSync() {
+          throw new Error("/proc/version should not be needed");
+        },
+      },
+    }), "Ubuntu-24.04");
+  });
+
+  it("falls back to /proc/version without the env signal", () => {
+    assert.strictEqual(serverConfig.detectWslDistro({
+      platform: "linux",
+      env: {},
+      fs: {
+        readFileSync(filePath) {
+          assert.strictEqual(filePath, "/proc/version");
+          return "Linux version 6.6.87.2-microsoft-standard-WSL2";
+        },
+      },
+    }), "wsl");
+  });
+
+  it("does not classify Windows node interop as native WSL", () => {
+    assert.strictEqual(serverConfig.detectWslDistro({
+      platform: "win32",
+      env: { WSL_DISTRO_NAME: "Ubuntu-24.04" },
+    }), null);
+  });
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // runtime.json identity (#681)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -301,7 +384,9 @@ describe("server-config helpers", () => {
       { remoteLastLogPath: logPath, now: () => firstAt },
     ), true);
     assert.match(fs.readFileSync(logPath, "utf8"), /state-delivery-failed/);
-    assert.strictEqual(fs.statSync(logPath).mode & 0o777, 0o600);
+    if (process.platform !== "win32") {
+      assert.strictEqual(fs.statSync(logPath).mode & 0o777, 0o600);
+    }
     fs.utimesSync(logPath, firstAt / 1000, firstAt / 1000);
 
     assert.strictEqual(serverConfig.recordSecureTransportFailure(

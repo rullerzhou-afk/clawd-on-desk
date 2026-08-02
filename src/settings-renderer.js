@@ -24,6 +24,7 @@ function getTabIcon(tabId) {
 }
 
 function renderSidebar() {
+  document.title = core.helpers.t("settingsWindowTitle");
   const sidebar = document.getElementById("sidebar");
   if (!sidebar) return;
   sidebar.innerHTML = "";
@@ -95,6 +96,11 @@ globalThis.ClawdSettingsTabAbout.init(core);
 if (globalThis.ClawdSettingsTabRemoteSsh) globalThis.ClawdSettingsTabRemoteSsh.init(core);
 if (globalThis.ClawdSettingsTabMobile) globalThis.ClawdSettingsTabMobile.init(core);
 
+core.ops.restoreNavigationState();
+if (typeof window.addEventListener === "function") {
+  window.addEventListener("beforeunload", () => core.ops.persistNavigationState());
+}
+
 if (window.settingsAPI && typeof window.settingsAPI.onChanged === "function") {
   window.settingsAPI.onChanged((payload) => core.ops.applyChanges(payload));
 }
@@ -123,6 +129,16 @@ if (window.settingsAPI && typeof window.settingsAPI.onRemoteApprovalStatusChange
     const tab = core.tabs[core.state.activeTab];
     if (tab && typeof tab.refreshRuntimeStatus === "function") {
       tab.refreshRuntimeStatus(payload);
+    }
+  });
+}
+
+if (window.settingsAPI && typeof window.settingsAPI.onUpdateCheckStatus === "function") {
+  window.settingsAPI.onUpdateCheckStatus((snapshot) => {
+    core.runtime.about.updateCheckSnapshot = snapshot || { state: "idle" };
+    const tab = core.tabs.about;
+    if (tab && typeof tab.applyUpdateCheckStatus === "function") {
+      tab.applyUpdateCheckStatus(core.runtime.about.updateCheckSnapshot);
     }
   });
 }

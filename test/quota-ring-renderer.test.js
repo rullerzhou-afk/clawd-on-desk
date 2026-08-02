@@ -166,6 +166,92 @@ describe("quota ring renderer model", () => {
     assert.strictEqual(fills.length, 2);
     assert.doesNotMatch(fills[0].attributes.class, /is-near/);
     assert.match(fills[1].attributes.class, /sev-hot is-near/);
+    assert.strictEqual(model.displayWindow.field, "claudeFiveHour");
+    context.__model = model;
+    context.__now = now;
+    const row = vm.runInContext("buildCoinRow(__model, __now)", context);
+    const readout = row.children[0];
+    assert.strictEqual(readout.children[0].textContent, "20%");
+    assert.strictEqual(readout.children[1].textContent, "5h");
+  });
+
+  it("falls back to the weekly readout when the short window is absent", () => {
+    const context = loadRenderer();
+    const now = 1_000_000;
+    const model = modelFor(context, {
+      codexQuota: {
+        group: {
+          codexWeekly: { usedPercent: 12, resetAt: now + 3_600_000, windowMinutes: 10080 },
+        },
+        lastSeenAt: now,
+      },
+    }, 2, now);
+    context.__model = model;
+    context.__now = now;
+    const row = vm.runInContext("buildCoinRow(__model, __now)", context);
+    const readout = row.children[0];
+
+    assert.strictEqual(model.displayWindow.field, "codexWeekly");
+    assert.strictEqual(readout.children[0].textContent, "12%");
+    assert.strictEqual(readout.children[1].textContent, "7d");
+  });
+
+  it("uses a fresh weekly readout instead of presenting a stale short window as live", () => {
+    const context = loadRenderer();
+    const now = 1_000_000;
+    const model = modelFor(context, {
+      codexQuota: {
+        group: {
+          codexFiveHour: {
+            usedPercent: 3,
+            resetAt: now + 3_600_000,
+            windowMinutes: 300,
+            lastSeenAt: now - 6 * 60_000,
+          },
+          codexWeekly: {
+            usedPercent: 88,
+            resetAt: now + 3_600_000,
+            windowMinutes: 10080,
+            lastSeenAt: now,
+          },
+        },
+        lastSeenAt: now - 6 * 60_000,
+      },
+    }, 2, now);
+    context.__model = model;
+    context.__now = now;
+    const row = vm.runInContext("buildCoinRow(__model, __now)", context);
+    const readout = row.children[0];
+
+    assert.strictEqual(model.state, "live");
+    assert.strictEqual(model.binding.field, "codexWeekly");
+    assert.strictEqual(model.displayWindow.field, "codexWeekly");
+    assert.strictEqual(readout.children[0].textContent, "88%");
+    assert.strictEqual(readout.children[1].textContent, "7d");
+  });
+
+  it("keeps an existing reset short window as the readout while weekly remains live", () => {
+    const context = loadRenderer();
+    const now = 1_000_000;
+    const model = modelFor(context, {
+      codexQuota: {
+        group: {
+          codexFiveHour: { usedPercent: 90, resetAt: now - 1, windowMinutes: 300 },
+          codexWeekly: { usedPercent: 40, resetAt: now + 3_600_000, windowMinutes: 10080 },
+        },
+        lastSeenAt: now,
+      },
+    }, 2, now);
+    context.__model = model;
+    context.__now = now;
+    const row = vm.runInContext("buildCoinRow(__model, __now)", context);
+    const readout = row.children[0];
+
+    assert.strictEqual(model.state, "live");
+    assert.strictEqual(model.displayWindow.field, "codexFiveHour");
+    assert.strictEqual(model.displayWindow.reset, true);
+    assert.strictEqual(readout.children[0].textContent, "0%");
+    assert.strictEqual(readout.children[1].textContent, "reset");
   });
 
   it("shows a compact source marker when more than one machine contributes quota", () => {
@@ -219,5 +305,20 @@ describe("quota ring renderer model", () => {
     const staleMinuteA = vm.runInContext("fingerprint(1000000)", context);
     const staleMinuteB = vm.runInContext("fingerprint(1060000)", context);
     assert.notStrictEqual(staleMinuteA, staleMinuteB);
+  });
+
+  it("never collects Dashboard-only Spark quota into an Orbit coin", () => {
+    const context = loadRenderer();
+    context.__accountQuota = [{
+      codexSparkQuota: {
+        group: {
+          codexWeekly: { usedPercent: 7, resetAt: 2_000_000, windowMinutes: 10080 },
+        },
+        lastSeenAt: 1_000_000,
+      },
+    }];
+    vm.runInContext("payload.accountQuota = __accountQuota", context);
+    const coins = vm.runInContext("collectCoins(1000000)", context);
+    assert.strictEqual(coins.length, 0);
   });
 });

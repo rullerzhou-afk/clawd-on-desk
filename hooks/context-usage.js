@@ -9,7 +9,7 @@ const CLAUDE_1M_CONTEXT_LIMIT = 1000000;
 // Source: https://platform.claude.com/docs/en/build-with-claude/context-windows
 // ("Context window sizes by model") — update this list as new models ship.
 const CLAUDE_1M_CONTEXT_MODEL_TOKENS = [
-  "opus-4-6", "opus-4-7", "opus-4-8",
+  "opus-4-6", "opus-4-7", "opus-4-8", "opus-5",
   "sonnet-4-6", "sonnet-5",
   "fable-5", "mythos-5", "mythos-preview",
 ];

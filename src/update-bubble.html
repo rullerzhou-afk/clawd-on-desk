@@ -88,6 +88,14 @@ body { padding: 6px; }
 .card[data-mode="available"] {
   min-height: 134px;
 }
+.card[data-mode="error"] {
+  border-color: rgba(209, 90, 90, 0.72);
+  box-shadow: 0 6px 22px rgba(153, 27, 27, 0.2), var(--card-inset, none);
+}
+.card[data-mode="error"] .title {
+  color: #d15a5a;
+  font-weight: 700;
+}
 .card.visible {
   opacity: 1;
   transform: translateX(0);
@@ -301,6 +309,10 @@ function disableButtons() {
   for (const btn of actionsEl.querySelectorAll("button")) btn.disabled = true;
 }
 
+function enableButtons() {
+  for (const btn of actionsEl.querySelectorAll("button")) btn.disabled = false;
+}
+
 function show(payload) {
   const mode = payload.mode || "checking";
 
@@ -321,6 +333,7 @@ function show(payload) {
     const variant = action.variant || "secondary";
     btn.className = `btn btn-${variant}`;
     btn.textContent = action.label;
+    btn.dataset.actionId = action.id;
     btn.addEventListener("click", () => {
       disableButtons();
       window.updateBubbleAPI.choose(action.id);
@@ -340,6 +353,12 @@ function hide() {
 
 window.updateBubbleAPI.onShow(show);
 window.updateBubbleAPI.onHide(hide);
+window.updateBubbleAPI.onCopyResult((result) => {
+  const copyButton = actionsEl.querySelector('[data-action-id="copy-error"]');
+  if (copyButton && result && result.label) copyButton.textContent = result.label;
+  enableButtons();
+  reportHeight();
+});
 </script>
 </body>
 </html>

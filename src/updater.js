@@ -3,9 +3,99 @@ const { execFile } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const electron = require("electron");
+const { redactSecrets } = require("./secret-redact");
 
 const RELEASES_LATEST_URL = "https://github.com/rullerzhou-afk/clawd-on-desk/releases/latest";
 const DEPENDENCY_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+const UPDATE_ERROR_DETAIL_MAX_LENGTH = 8 * 1024;
+
+const UPDATE_ERROR_COPY = Object.freeze({
+  NETWORK_OFFLINE: {
+    suffix: "NetworkOffline",
+    message: "Clawd could not reach the update service because the network appears to be offline.",
+    nextStep: "Reconnect to the internet, then check for updates again.",
+  },
+  DNS_FAILED: {
+    suffix: "DnsFailed",
+    message: "The update service address could not be resolved.",
+    nextStep: "Check DNS, VPN, or proxy settings, then try again.",
+  },
+  CONNECTION_TIMEOUT: {
+    suffix: "ConnectionTimeout",
+    message: "The update request timed out before the service responded.",
+    nextStep: "Check the connection or proxy and retry in a moment.",
+  },
+  TLS_OR_PROXY: {
+    suffix: "TlsOrProxy",
+    message: "A TLS certificate or proxy prevented a secure connection to the update service.",
+    nextStep: "Review proxy and certificate settings, then try again.",
+  },
+  GITHUB_RATE_LIMIT: {
+    suffix: "RateLimit",
+    message: "GitHub temporarily limited update requests.",
+    nextStep: "Wait a few minutes before checking again.",
+  },
+  HTTP_SERVICE_ERROR: {
+    suffix: "Service",
+    message: "The update service returned a temporary server error.",
+    nextStep: "Try again later or open the releases page manually.",
+  },
+  GIT_DIRTY_WORKTREE: {
+    suffix: "DirtyWorktree",
+    message: "Local files have uncommitted changes, so the source checkout cannot be updated safely.",
+    nextStep: "Commit or stash your changes, then try the update again.",
+  },
+  GIT_FETCH_FAILED: {
+    suffix: "GitFetch",
+    message: "Clawd could not fetch the latest source revision.",
+    nextStep: "Check the Git remote and network connection, then try again.",
+  },
+  GIT_REMOTE_OR_BRANCH: {
+    suffix: "GitRemote",
+    message: "The configured Git remote or branch is unavailable.",
+    nextStep: "Verify the current branch and its origin remote before retrying.",
+  },
+  GIT_UPDATE_FAILED: {
+    suffix: "GitUpdate",
+    message: "The source checkout could not apply the latest update.",
+    nextStep: "Resolve the reported Git error, then try again.",
+  },
+  UPDATER_UNAVAILABLE: {
+    suffix: "UpdaterUnavailable",
+    message: "The packaged updater is unavailable in this installation.",
+    nextStep: "Restart Clawd or reinstall it from the latest official package.",
+  },
+  NO_COMPATIBLE_ASSET: {
+    suffix: "NoAsset",
+    message: "A newer release exists, but it has no compatible package for this platform and architecture.",
+    nextStep: "Open the releases page and check whether a matching installer is available.",
+  },
+  DOWNLOAD_FAILED: {
+    suffix: "Download",
+    message: "The update package could not be downloaded.",
+    nextStep: "Check the network and available disk space, then try again.",
+  },
+  INTEGRITY_FAILED: {
+    suffix: "Integrity",
+    message: "The downloaded update failed its integrity check.",
+    nextStep: "Retry the download. If it repeats, install the release manually.",
+  },
+  DISK_OR_PERMISSION: {
+    suffix: "DiskPermission",
+    message: "Clawd could not write the update because of disk space or file permissions.",
+    nextStep: "Free disk space or check install-folder permissions, then retry.",
+  },
+  DEPENDENCY_INSTALL_FAILED: {
+    suffix: "Dependency",
+    message: "Updated dependencies could not be installed.",
+    nextStep: "Run npm install in the Clawd repository, then restart Clawd.",
+  },
+  UNKNOWN: {
+    suffix: "Unknown",
+    message: "Clawd encountered an unexpected error while updating.",
+    nextStep: "Copy the error details and try again later.",
+  },
+});
 
 function makeTranslate(ctx) {
   return (key, fallback) => {
@@ -42,28 +132,68 @@ function getErrorMessage(err) {
   return String(err.message || err).trim() || "Unknown error";
 }
 
-function classifyFailureType(reason, fallback = "Update Failed") {
-  const text = String(reason || "").toLowerCase();
-  if (text.includes("dirty worktree") || text.includes("uncommitted") || text.includes("modified")) return "Dirty Worktree";
-  if (text.includes("timed out") || text.includes("network") || text.includes("github api")) return "Network Error";
-  if (text.includes("npm install")) return "Dependency Install Failed";
-  if (text.includes("git pull")) return "Git Pull Failed";
-  if (text.includes("download")) return "Update Download Failed";
-  if (text.includes("autoupdater")) return "Updater Unavailable";
-  return fallback;
+function sanitizeUpdateErrorDetail(value, maxLength = UPDATE_ERROR_DETAIL_MAX_LENGTH) {
+  let text = redactSecrets(value);
+  const tokenBoundary = String.raw`(^|[\s"'(<\[{=:,;\x60])`;
+  text = text.replace(
+    new RegExp(`${tokenBoundary}([a-z][a-z0-9+.-]*:\\/\\/)(?:[^/\\s?#"'<>]*@)`, "gim"),
+    "$1$2[REDACTED]@"
+  );
+  text = text.replace(
+    new RegExp(`${tokenBoundary}([a-z][a-z0-9+.-]*:\\/\\/[^\\s?#"'<>]+)(?:\\?[^\\s#"'<>]*)?(?:#[^\\s"'<>]*)?`, "gim"),
+    "$1$2"
+  );
+  text = text.replace(/\b(authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*[^\r\n]+/gi, "$1: [REDACTED]");
+  // Copied updater diagnostics use a stricter policy than user-facing approval
+  // summaries: redact even custom lower-case names such as company_api_token.
+  text = text.replace(
+    /(^|[\s"'(<\[{=:,;\x60])([a-z0-9_.-]+)["']?\s*[:=]\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,;\r\n}]+)/gim,
+    (match, prefix, key) => /(?:token|password|passwd|secret|api[_-]?key|cookie|credential)/i.test(key)
+      ? `${prefix}${key}=[REDACTED]`
+      : match
+  );
+  if (text.length <= maxLength) return text.trim();
+  const suffix = "\n... [truncated]";
+  return (text.slice(0, Math.max(0, maxLength - suffix.length)) + suffix).trim();
 }
 
-function buildErrorDetail({ failureType, operation, reason, nextStep, detail }) {
-  const lines = [];
-  if (failureType) lines.push(`Failure Type: ${failureType}`);
-  if (operation) lines.push(`Operation: ${operation}`);
-  if (reason) lines.push(`Reason: ${reason}`);
-  if (nextStep) lines.push(`Next Step: ${nextStep}`);
-  if (detail && detail !== reason) {
-    lines.push("");
-    lines.push(detail);
+function classifyUpdateError(err, meta = {}) {
+  const code = String(err && err.code || "").toUpperCase();
+  const status = Number(err && (err.statusCode || err.status || (err.response && err.response.status)));
+  const text = getErrorMessage(err).toLowerCase();
+  const phase = String(meta.phase || "").toLowerCase();
+  const mode = String(meta.mode || "").toLowerCase();
+
+  if ((meta.releaseConfirmed === true) && (status === 404 || isUpdate404Error(err))) return "NO_COMPATIBLE_ASSET";
+  if (["ENETDOWN", "ENETUNREACH", "ERR_INTERNET_DISCONNECTED", "ERR_NETWORK_CHANGED"].includes(code)
+      || text.includes("network is offline") || text.includes("network down") || text.includes("offline")) return "NETWORK_OFFLINE";
+  if (["ENOTFOUND", "EAI_AGAIN", "ERR_NAME_NOT_RESOLVED"].includes(code)
+      || text.includes("getaddrinfo") || text.includes("name not resolved")) return "DNS_FAILED";
+  if (["ETIMEDOUT", "ESOCKETTIMEDOUT", "ERR_TIMED_OUT"].includes(code)
+      || text.includes("timed out") || text.includes("timeout")) return "CONNECTION_TIMEOUT";
+  if (code.startsWith("ERR_TLS") || code.includes("CERT") || text.includes("certificate")
+      || text.includes("self signed") || text.includes("proxy")) return "TLS_OR_PROXY";
+  if (status === 429 || (status === 403 && (text.includes("rate") || text.includes("github")))) return "GITHUB_RATE_LIMIT";
+  if (status >= 500) return "HTTP_SERVICE_ERROR";
+  if (text.includes("dirty worktree") || text.includes("uncommitted") || text.includes("local files have been modified")) {
+    return "GIT_DIRTY_WORKTREE";
   }
-  return lines.join("\n").trim();
+  if (code === "ENOSPC" || code === "EACCES" || code === "EPERM" || text.includes("no space left")
+      || text.includes("permission denied") || text.includes("access denied")) return "DISK_OR_PERMISSION";
+  if (phase === "integrity" || text.includes("checksum") || text.includes("sha512") || text.includes("integrity")) {
+    return "INTEGRITY_FAILED";
+  }
+  if (phase === "dependency-install" || text.includes("npm install")) return "DEPENDENCY_INSTALL_FAILED";
+  if (mode === "git" && (text.includes("couldn't find remote ref") || text.includes("unknown revision")
+      || text.includes("not a git repository") || text.includes("no such remote") || text.includes("remote branch"))) {
+    return "GIT_REMOTE_OR_BRANCH";
+  }
+  if (phase === "git-fetch") return "GIT_FETCH_FAILED";
+  if (phase === "git-apply") return "GIT_UPDATE_FAILED";
+  if (phase === "download" || text.includes("download")) return "DOWNLOAD_FAILED";
+  if (text.includes("autoupdater not available") || text.includes("updater unavailable")) return "UPDATER_UNAVAILABLE";
+  if (status >= 400) return "HTTP_SERVICE_ERROR";
+  return "UNKNOWN";
 }
 
 function formatVersionForMessage(version) {
@@ -94,12 +224,14 @@ function initUpdater(ctx, deps = {}) {
   const httpsGet = deps.httpsGetImpl || https.get;
   const execFileFn = deps.execFileImpl || execFile;
   const fsApi = deps.fsImpl || fs;
+  const now = deps.now || (() => Date.now());
   const t = makeTranslate(ctx);
   const runtimePlatform = deps.platform || process.platform;
   const runtimeArch = deps.arch || process.arch;
   const isMac = runtimePlatform === "darwin";
 
   let updateStatus = "idle";
+  let updateCheckSnapshot = Object.freeze({ state: "idle" });
   // activeCheck carries the current in-flight check context. trigger:
   // 'manual' | 'scheduled' | 'arm64-startup'. intent: 'check' | 'download'.
   // The scheduled discovery path (quietDiscover) intentionally does NOT
@@ -120,6 +252,81 @@ function initUpdater(ctx, deps = {}) {
   let pendingUpdateRelease = null;
   let pendingPromptDeferred = null;
 
+  function cloneUpdateCheckSnapshot() {
+    return {
+      ...updateCheckSnapshot,
+      ...(updateCheckSnapshot.error ? { error: { ...updateCheckSnapshot.error } } : {}),
+    };
+  }
+
+  function publishUpdateCheckSnapshot(stateName, details = {}) {
+    updateStatus = stateName;
+    const next = { state: stateName };
+    if (details.version) next.version = String(details.version);
+    if (details.error) next.error = { ...details.error };
+    updateCheckSnapshot = Object.freeze(next);
+    if (typeof ctx.onUpdateCheckStatusChanged === "function") {
+      try { ctx.onUpdateCheckStatusChanged(cloneUpdateCheckSnapshot()); } catch {}
+    }
+    return cloneUpdateCheckSnapshot();
+  }
+
+  function getUpdateCheckSnapshot() {
+    return cloneUpdateCheckSnapshot();
+  }
+
+  function buildUpdateErrorReport(err, meta = {}) {
+    const code = meta.code || classifyUpdateError(err, meta);
+    const copy = UPDATE_ERROR_COPY[code] || UPDATE_ERROR_COPY.UNKNOWN;
+    const message = t(`updateError${copy.suffix}Msg`, copy.message);
+    const nextStep = t(`updateError${copy.suffix}Next`, copy.nextStep);
+    const rawDetail = [meta.detail, getErrorMessage(err)]
+      .filter((value, index, values) => value && values.indexOf(value) === index)
+      .join("\n\n");
+    const detail = sanitizeUpdateErrorDetail(rawDetail);
+    const timestamp = new Date(now()).toISOString();
+    const phase = meta.phase || "availability-check";
+    const mode = meta.mode || (getRepoRoot() ? "git" : "packaged");
+    const report = {
+      code,
+      phase,
+      title: t("updateError", "Update Error"),
+      message,
+      nextStep,
+      detail,
+      copyText: "",
+      timestamp,
+      appVersion: String(app.getVersion()),
+      platform: runtimePlatform,
+      arch: runtimeArch,
+      mode,
+    };
+    report.copyText = sanitizeUpdateErrorDetail([
+      report.title,
+      report.message,
+      report.nextStep,
+      "",
+      `Code: ${report.code}`,
+      `Phase: ${report.phase}`,
+      `Time: ${report.timestamp}`,
+      `App: ${report.appVersion}`,
+      `Platform: ${report.platform}/${report.arch}`,
+      `Mode: ${report.mode}`,
+      report.detail ? "" : null,
+      report.detail || null,
+    ].filter((line) => line != null).join("\n"));
+    return report;
+  }
+
+  function clearUpdateError() {
+    if (updateStatus === "error") {
+      publishUpdateCheckSnapshot("idle");
+      clearOverlay();
+      rebuildMenus();
+    }
+    return getUpdateCheckSnapshot();
+  }
+
   function isManualCheck() {
     return !!activeCheck && activeCheck.trigger === "manual";
   }
@@ -133,6 +340,7 @@ function initUpdater(ctx, deps = {}) {
       trigger: opts.trigger || "manual",
       intent: opts.intent || "check",
       version: opts.version || null,
+      releaseConfirmed: opts.releaseConfirmed === true,
     };
   }
 
@@ -349,24 +557,26 @@ function initUpdater(ctx, deps = {}) {
   }
 
   async function showErrorBubble(detailOrReport, messageOverride = null) {
-    const report = typeof detailOrReport === "object" && detailOrReport !== null && !Array.isArray(detailOrReport)
+    const candidate = typeof detailOrReport === "object" && detailOrReport !== null && !Array.isArray(detailOrReport)
       ? detailOrReport
       : { detail: detailOrReport, message: messageOverride };
-    const reason = report.reason || getErrorMessage(report.detail);
-    const detail = buildErrorDetail({
-      failureType: report.failureType || classifyFailureType(reason),
-      operation: report.operation || "Check for Updates",
-      reason,
-      nextStep: report.nextStep || "",
-      detail: typeof report.detail === "string" ? report.detail : "",
-    });
+    const report = candidate.code && candidate.copyText
+      ? candidate
+      : buildUpdateErrorReport(candidate.error || candidate.reason || candidate.detail, candidate);
+    publishUpdateCheckSnapshot("error", { error: report });
     pulseState("error");
     return showBubble({
       mode: "error",
-      title: t("updateError", "Update Error"),
-      message: report.message || t("updateErrorMsg", "Failed to check for updates. Please try again later."),
-      detail,
+      title: report.title,
+      message: report.message,
+      detail: [report.nextStep, `Code: ${report.code}`, report.detail].filter(Boolean).join("\n\n"),
+      copyText: report.copyText,
+      copyFeedback: {
+        copied: t("updateErrorCopied", "Copied"),
+        failed: t("updateErrorCopyFailed", "Copy failed"),
+      },
       actions: [
+        { id: "copy-error", label: t("updateErrorCopy", "Copy Error"), variant: "secondary" },
         { id: "dismiss", label: t("dismiss", "Dismiss"), variant: "secondary" },
       ],
       defaultAction: "dismiss",
@@ -728,7 +938,7 @@ function initUpdater(ctx, deps = {}) {
     if (action === "primary") return onPrimary();
     hideBubble();
     dismissToResolvedState();
-    updateStatus = "idle";
+    publishUpdateCheckSnapshot("idle");
     rebuildMenus();
     clearActiveCheck();
     return null;
@@ -754,7 +964,7 @@ function initUpdater(ctx, deps = {}) {
     if (action === "primary") return onPrimary();
     hideBubble();
     dismissToResolvedState();
-    updateStatus = "idle";
+    publishUpdateCheckSnapshot("idle");
     rebuildMenus();
     return null;
   }
@@ -773,7 +983,7 @@ function initUpdater(ctx, deps = {}) {
     const promptToken = nativeArm64PromptToken + 1;
     nativeArm64PromptToken = promptToken;
 
-    updateStatus = "available";
+    publishUpdateCheckSnapshot("available", { version });
     setOverlay("available");
     rebuildMenus();
 
@@ -798,7 +1008,7 @@ function initUpdater(ctx, deps = {}) {
 
     if (action === "primary") {
       shell.openExternal(asset.browser_download_url || RELEASES_LATEST_URL);
-      updateStatus = "idle";
+      publishUpdateCheckSnapshot("idle");
       clearActiveCheck();
       rebuildMenus();
       await showSuccessBubble({
@@ -818,14 +1028,14 @@ function initUpdater(ctx, deps = {}) {
     nativeArm64PromptDismissed = true;
     hideBubble();
     dismissToResolvedState();
-    updateStatus = "idle";
+    publishUpdateCheckSnapshot("idle");
     clearActiveCheck();
     rebuildMenus();
     return true;
   }
 
   async function runGitUpdate(repoRoot, branch, localHead) {
-    updateStatus = "downloading";
+    publishUpdateCheckSnapshot("downloading");
     setOverlay("downloading");
     rebuildMenus();
     await showInfoBubble(
@@ -837,9 +1047,7 @@ function initUpdater(ctx, deps = {}) {
     try {
       await gitCmd(["pull", "origin", branch], repoRoot, 60000);
     } catch (err) {
-      err.updateOperation = "Apply Git Update";
-      err.updateFailureType = "Git Pull Failed";
-      err.updateNextStep = "Resolve the Git error, then try the update again.";
+      err.updatePhase = "git-apply";
       throw err;
     }
     const diff = await gitCmd(["diff", "--name-only", localHead, "HEAD"], repoRoot);
@@ -853,9 +1061,7 @@ function initUpdater(ctx, deps = {}) {
           }, (err) => (err ? reject(err) : resolve()));
         });
       } catch (err) {
-        err.updateOperation = "Install Updated Dependencies";
-        err.updateFailureType = "Dependency Install Failed";
-        err.updateNextStep = "Run npm install in the Clawd repository, then restart Clawd.";
+        err.updatePhase = "dependency-install";
         throw err;
       }
     }
@@ -871,7 +1077,7 @@ function initUpdater(ctx, deps = {}) {
   }
 
   async function gitCheckForUpdates(repoRoot, manual) {
-    updateStatus = "checking";
+    publishUpdateCheckSnapshot("checking");
     beginActiveCheck({ trigger: manual ? "manual" : "scheduled", intent: "check" });
     setOverlay("checking");
     rebuildMenus();
@@ -889,12 +1095,12 @@ function initUpdater(ctx, deps = {}) {
       const remoteHead = await gitCmd(["rev-parse", `origin/${branch}`], repoRoot);
 
       if (localHead === remoteHead) {
-        updateStatus = "idle";
+        publishUpdateCheckSnapshot("up-to-date", { version: app.getVersion() });
         clearActiveCheck();
         rebuildMenus();
-        if (manual) await showUpToDateBubble(app.getVersion());
+        if (manual) void showUpToDateBubble(app.getVersion());
         else dismissToResolvedState();
-        return;
+        return getUpdateCheckSnapshot();
       }
 
       let remoteVersion;
@@ -907,53 +1113,59 @@ function initUpdater(ctx, deps = {}) {
 
       if (!manual && isSilentMode()) {
         hideBubble();
-        updateStatus = "idle";
+        publishUpdateCheckSnapshot("idle");
         clearActiveCheck();
         dismissToResolvedState();
-        return;
+        return getUpdateCheckSnapshot();
       }
 
-      updateStatus = "available";
+      publishUpdateCheckSnapshot("available", { version: remoteVersion });
       setOverlay("available");
       rebuildMenus();
 
-      await promptAvailableUpdate({
+      void promptAvailableUpdate({
         mode: "git",
         version: remoteVersion,
         onPrimary: async () => {
           const dirty = await gitCmd(["status", "--porcelain"], repoRoot);
           if (dirty) {
-            updateStatus = "error";
             clearActiveCheck();
             rebuildMenus();
             clearOverlay();
-            await showErrorBubble({
-              failureType: "Dirty Worktree",
-              operation: "Apply Git Update",
-              reason: "Local files have uncommitted changes.",
-              nextStep: "Commit or stash your changes, then try the update again.",
+            await showErrorBubble(buildUpdateErrorReport(new Error("Local files have uncommitted changes."), {
+              code: "GIT_DIRTY_WORKTREE",
+              phase: "git-apply",
+              mode: "git",
               detail: dirty,
-              message: t("updateDirtyMsg", "Local files have been modified. Please commit or stash your changes before updating."),
-            });
+            }));
             return;
           }
           await runGitUpdate(repoRoot, branch, localHead);
         },
+      }).catch(async (err) => {
+        clearActiveCheck();
+        rebuildMenus();
+        clearOverlay();
+        await showErrorBubble(buildUpdateErrorReport(err, {
+          phase: err && err.updatePhase || "git-apply",
+          mode: "git",
+        }));
       });
+      return getUpdateCheckSnapshot();
     } catch (err) {
-      updateStatus = "error";
       clearActiveCheck();
       rebuildMenus();
       clearOverlay();
+      const report = buildUpdateErrorReport(err, {
+        phase: err && err.updatePhase || "git-fetch",
+        mode: "git",
+      });
       if (manual) {
-        await showErrorBubble({
-          failureType: err.updateFailureType,
-          operation: err.updateOperation || "Check for Updates",
-          reason: getErrorMessage(err),
-          nextStep: err.updateNextStep || "",
-          detail: getErrorMessage(err),
-        });
+        void showErrorBubble(report);
+      } else {
+        publishUpdateCheckSnapshot("error", { error: report });
       }
+      return getUpdateCheckSnapshot();
     }
   }
 
@@ -1043,23 +1255,23 @@ function initUpdater(ctx, deps = {}) {
     autoUpdater.on("update-available", async (info) => {
       const wasManual = isManualCheck();
       const wantsAutoPrimary = isDownloadIntent();
-      clearActiveCheck();
 
       if (!wasManual && isSilentMode()) {
+        clearActiveCheck();
         hideBubble();
-        updateStatus = "idle";
+        publishUpdateCheckSnapshot("idle");
         dismissToResolvedState();
         return;
       }
 
-      updateStatus = "available";
+      publishUpdateCheckSnapshot("available", { version: info.version });
       setOverlay("available");
       rebuildMenus();
 
       const onPrimary = async () => {
         if (isMac) {
           shell.openExternal(RELEASES_LATEST_URL);
-          updateStatus = "idle";
+          publishUpdateCheckSnapshot("idle");
           clearActiveCheck();
           rebuildMenus();
           await showSuccessBubble({
@@ -1076,7 +1288,7 @@ function initUpdater(ctx, deps = {}) {
           return;
         }
 
-        updateStatus = "downloading";
+        publishUpdateCheckSnapshot("downloading", { version: info.version });
         setOverlay("downloading");
         rebuildMenus();
         await showInfoBubble(
@@ -1104,18 +1316,20 @@ function initUpdater(ctx, deps = {}) {
     });
 
     autoUpdater.on("update-not-available", async () => {
-      updateStatus = "idle";
+      const wasManual = isManualCheck();
+      clearActiveCheck();
+      publishUpdateCheckSnapshot("up-to-date", { version: app.getVersion() });
       rebuildMenus();
-      if (isManualCheck()) {
-        clearActiveCheck();
-        await showUpToDateBubble(app.getVersion());
+      if (wasManual) {
+        void showUpToDateBubble(app.getVersion());
         return;
       }
       dismissToResolvedState();
     });
 
     autoUpdater.on("update-downloaded", async (info) => {
-      updateStatus = "ready";
+      clearActiveCheck();
+      publishUpdateCheckSnapshot("ready", { version: info.version });
       rebuildMenus();
       clearOverlay();
       await promptReadyUpdate(info.version, async () => {
@@ -1127,31 +1341,32 @@ function initUpdater(ctx, deps = {}) {
       log(`ERROR: AutoUpdater error: ${err.message}`);
       const shouldShowErrorBubble = isManualCheck() || updateStatus === "downloading";
       const failedWhileDownloading = updateStatus === "downloading";
+      const releaseConfirmed = !!(activeCheck && activeCheck.releaseConfirmed);
+      clearActiveCheck();
       if (!shouldShowErrorBubble) {
-        updateStatus = "error";
+        const report = buildUpdateErrorReport(err, {
+          phase: failedWhileDownloading ? "download" : "availability-check",
+          mode: "packaged",
+          releaseConfirmed,
+        });
+        publishUpdateCheckSnapshot("error", { error: report });
         rebuildMenus();
         clearOverlay();
         return;
       }
 
-      clearActiveCheck();
-      if (isUpdate404Error(err)) {
-        updateStatus = "idle";
+      if (isUpdate404Error(err) && !releaseConfirmed) {
+        publishUpdateCheckSnapshot("up-to-date", { version: app.getVersion() });
         rebuildMenus();
-        await showUpToDateBubble(app.getVersion());
+        void showUpToDateBubble(app.getVersion());
       } else {
-        updateStatus = "error";
         rebuildMenus();
         clearOverlay();
-        await showErrorBubble({
-          failureType: classifyFailureType(err.message),
-          operation: failedWhileDownloading ? "Download Update" : "Check for Updates",
-          reason: getErrorMessage(err),
-          nextStep: failedWhileDownloading
-            ? "Check your network connection and try downloading again."
-            : "Check your network connection and try again.",
-          detail: getErrorMessage(err),
-        });
+        await showErrorBubble(buildUpdateErrorReport(err, {
+          phase: failedWhileDownloading ? "download" : "availability-check",
+          mode: "packaged",
+          releaseConfirmed,
+        }));
       }
     });
   }
@@ -1174,9 +1389,10 @@ function initUpdater(ctx, deps = {}) {
   }
 
   async function checkForUpdates(arg = true) {
-    if (updateStatus === "checking" || updateStatus === "downloading") {
+    const hasActiveAvailableFlow = updateStatus === "available" && !!activeCheck;
+    if (["checking", "downloading", "ready"].includes(updateStatus) || hasActiveAvailableFlow) {
       log(`Check skipped: already ${updateStatus}`);
-      return;
+      return getUpdateCheckSnapshot();
     }
 
     invalidateNativeArm64Prompt();
@@ -1190,7 +1406,7 @@ function initUpdater(ctx, deps = {}) {
 
     const currentVersion = app.getVersion();
     beginActiveCheck({ trigger: opts.trigger, intent: opts.intent });
-    updateStatus = "checking";
+    publishUpdateCheckSnapshot("checking");
     // intent='download' is a round-trip from a scheduler-discovered bubble:
     // user already saw and acted, so we skip the "checking…" bubble and the
     // up-to-date toast. The overlay still flashes briefly via setOverlay so
@@ -1211,26 +1427,31 @@ function initUpdater(ctx, deps = {}) {
       latestRelease = await fetchLatestRelease();
       latestVersion = latestRelease.tag_name;
     } catch (err) {
-      updateStatus = "error";
       clearActiveCheck();
       rebuildMenus();
       clearOverlay();
+      const report = buildUpdateErrorReport(err, {
+        phase: "release-lookup",
+        mode: "packaged",
+      });
       if (manual) {
-        await showErrorBubble({
-          failureType: classifyFailureType(err.message),
-          operation: "Check for Updates",
-          reason: getErrorMessage(err),
-          nextStep: "Check your network connection and try again.",
-          detail: getErrorMessage(err),
-        });
+        void showErrorBubble(report);
+      } else {
+        publishUpdateCheckSnapshot("error", { error: report });
       }
-      return;
+      return getUpdateCheckSnapshot();
     }
 
-    if (await maybePromptNativeArm64Installer(latestRelease, { manual, currentVersion })) return;
+    if (compareVersions(currentVersion, latestVersion) <= 0 &&
+        isRunningX64OnWindowsArm64() &&
+        findWindowsArm64InstallerAsset(latestRelease)) {
+      publishUpdateCheckSnapshot("available", { version: latestVersion });
+      void maybePromptNativeArm64Installer(latestRelease, { manual, currentVersion });
+      return getUpdateCheckSnapshot();
+    }
 
     if (compareVersions(currentVersion, latestVersion) >= 0) {
-      updateStatus = "idle";
+      publishUpdateCheckSnapshot("up-to-date", { version: currentVersion });
       clearActiveCheck();
       rebuildMenus();
       // intent='download' originated from a scheduler bubble that the
@@ -1240,64 +1461,61 @@ function initUpdater(ctx, deps = {}) {
       // marker so the tray badge / About hint don't keep advertising a
       // version we just confirmed isn't available.
       if (downloadIntent) clearPendingUpdate();
-      if (manual && !downloadIntent) await showUpToDateBubble(currentVersion);
+      if (manual && !downloadIntent) void showUpToDateBubble(currentVersion);
       else dismissToResolvedState();
-      return;
+      return getUpdateCheckSnapshot();
+    }
+
+    if (activeCheck) {
+      activeCheck.version = latestVersion;
+      activeCheck.releaseConfirmed = true;
     }
 
     const autoUpdater = getAutoUpdater();
     if (!autoUpdater) {
-      updateStatus = "error";
       clearActiveCheck();
       rebuildMenus();
       clearOverlay();
+      const report = buildUpdateErrorReport(new Error("AutoUpdater not available"), {
+        code: "UPDATER_UNAVAILABLE",
+        phase: "availability-check",
+        mode: "packaged",
+        releaseConfirmed: true,
+      });
       if (manual) {
-        await showErrorBubble({
-          failureType: "Updater Unavailable",
-          operation: "Check for Updates",
-          reason: "AutoUpdater not available",
-          nextStep: "Restart Clawd or reinstall the packaged app, then try again.",
-          detail: "AutoUpdater not available",
-        });
+        void showErrorBubble(report);
+      } else {
+        publishUpdateCheckSnapshot("error", { error: report });
       }
-      return;
+      return getUpdateCheckSnapshot();
     }
 
     try {
       const result = await autoUpdater.checkForUpdates();
-      if (!result) {
-        updateStatus = "idle";
-        clearActiveCheck();
+      if (updateStatus === "checking") {
         rebuildMenus();
-        dismissToResolvedState();
-      }
-    } catch (err) {
-      if (isUpdate404Error(err)) {
-        updateStatus = "idle";
-        clearActiveCheck();
-        rebuildMenus();
-        // Same reasoning as the comparison branch above: drop the stale
-        // pending marker when a download round-trip finds the release
-        // has been yanked since discovery.
-        if (downloadIntent) clearPendingUpdate();
-        if (manual && !downloadIntent) await showUpToDateBubble(currentVersion);
-        else dismissToResolvedState();
-      } else {
-        updateStatus = "error";
-        clearActiveCheck();
-        rebuildMenus();
-        clearOverlay();
-        if (manual) {
-          await showErrorBubble({
-            failureType: classifyFailureType(err.message),
-            operation: "Check for Updates",
-            reason: getErrorMessage(err),
-            nextStep: "Check your network connection and try again.",
-            detail: getErrorMessage(err),
-          });
+        if (result && result.updateInfo && result.updateInfo.version) {
+          publishUpdateCheckSnapshot("available", { version: result.updateInfo.version });
+        } else {
+          publishUpdateCheckSnapshot("available", { version: latestVersion });
         }
       }
+    } catch (err) {
+      clearActiveCheck();
+      rebuildMenus();
+      clearOverlay();
+      const report = buildUpdateErrorReport(err, {
+        phase: "availability-check",
+        mode: "packaged",
+        releaseConfirmed: true,
+      });
+      if (manual) {
+        void showErrorBubble(report);
+      } else {
+        publishUpdateCheckSnapshot("error", { error: report });
+      }
     }
+    return getUpdateCheckSnapshot();
   }
 
   function getUpdateMenuLabel() {
@@ -1320,9 +1538,10 @@ function initUpdater(ctx, deps = {}) {
   }
 
   function getUpdateMenuItem() {
+    const hasActiveAvailableFlow = updateStatus === "available" && !!activeCheck;
     return {
       label: getUpdateMenuLabel(),
-      enabled: updateStatus !== "checking" && updateStatus !== "downloading",
+      enabled: !["checking", "downloading"].includes(updateStatus) && !hasActiveAvailableFlow,
       click: () => updateStatus === "ready"
         ? getAutoUpdater()?.quitAndInstall(false, true)
         : checkForUpdates(true),
@@ -1332,6 +1551,8 @@ function initUpdater(ctx, deps = {}) {
   return {
     setupAutoUpdater,
     checkForUpdates,
+    getUpdateCheckSnapshot,
+    clearUpdateError,
     getUpdateMenuItem,
     getUpdateMenuLabel,
     // ── #329 scheduler hooks (Phase 2+3) ──
@@ -1353,5 +1574,8 @@ module.exports.__test = {
   findWindowsArm64InstallerAsset,
   formatVersionForMessage,
   isUpdate404Error,
+  classifyUpdateError,
+  sanitizeUpdateErrorDetail,
   shouldPromptNativeArm64,
+  UPDATE_ERROR_DETAIL_MAX_LENGTH,
 };

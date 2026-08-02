@@ -212,6 +212,78 @@ describe("state-session-snapshot badges", () => {
 });
 
 describe("state-session-snapshot builder", () => {
+  it("derives session automation fields and keeps hidden-session grants revocable as orphans", () => {
+    const records = [
+      {
+        agentId: "claude-code",
+        sessionId: "eligible",
+        mode: "auto-tools",
+        grantId: "g-current",
+        displayLabel: "project",
+        createdAt: 10,
+      },
+      {
+        agentId: "claude-code",
+        sessionId: "hidden",
+        mode: "off",
+        grantId: "g-orphan",
+        displayLabel: "hidden project",
+        createdAt: 20,
+      },
+      {
+        agentId: "opencode",
+        sessionId: "blocked",
+        mode: "off",
+        grantId: "g-blocked",
+        displayLabel: "blocked project",
+        createdAt: 30,
+      },
+    ];
+    const snapshot = buildSessionSnapshot(new Map([
+      ["eligible", session("working", {
+        agentId: "claude-code",
+        sessionAutomationIdentity: { eligible: true, reason: "verified" },
+      })],
+      ["blocked", session("working", {
+        agentId: "opencode",
+        sessionAutomationIdentity: { eligible: false, reason: "association-unverified" },
+      })],
+    ]), {
+      permissionAutomationMode: "off",
+      sessionAutomationRecords: records,
+    });
+    const byId = new Map(snapshot.sessions.map((entry) => [entry.id, entry]));
+    assert.deepStrictEqual({
+      mode: byId.get("eligible").sessionAutomationMode,
+      grantId: byId.get("eligible").sessionAutomationGrantId,
+      effective: byId.get("eligible").sessionAutomationEffectiveMode,
+      canConfigure: byId.get("eligible").canConfigureSessionAutomation,
+      disabledReason: byId.get("eligible").sessionAutomationDisabledReason,
+    }, {
+      mode: "auto-tools",
+      grantId: "g-current",
+      effective: "auto-tools",
+      canConfigure: true,
+      disabledReason: null,
+    });
+    assert.equal(byId.get("blocked").canConfigureSessionAutomation, false);
+    assert.equal(byId.get("blocked").sessionAutomationDisabledReason, "association-unverified");
+    assert.equal(
+      byId.get("blocked").sessionAutomationEffectiveMode,
+      "off",
+      "an existing record remains the displayed effective mode even if the identity later becomes ineligible"
+    );
+    assert.deepStrictEqual(snapshot.sessionAutomationOrphans, [{
+      agentId: "claude-code",
+      sessionId: "hidden",
+      mode: "off",
+      sessionAutomationGrantId: "g-orphan",
+      displayLabel: "hidden project",
+      createdAt: 20,
+    }]);
+    assert.match(sessionSnapshotSignature(snapshot), /g-orphan/);
+  });
+
   it("builds ordered dashboard/menu groups and HUD summary with injected deps", () => {
     const sessions = new Map([
       ["old-working", session("working", {
@@ -324,18 +396,24 @@ describe("state-session-snapshot builder", () => {
     const snapshot = buildSessionSnapshot(new Map([
       ["terminal", session("working", { sourcePid: 123 })],
       ["webui", session("working", { sourcePid: 456, platform: "webui" })],
+      ["remote-orca", session("working", {
+        host: "remote-box",
+        orcaPaneKey: "tab-remote:leaf-remote",
+      })],
       ["codex:019e115a-4df2-7ed0-b90e-8e6345aca777", session("working", {
         agentId: "codex",
         codexOriginator: "codex_work_desktop",
         codexSource: "vscode",
       })],
-    ]));
+    ]), { focusHostPlatform: "darwin" });
 
     const byId = new Map(snapshot.sessions.map((entry) => [entry.id, entry]));
     assert.strictEqual(byId.get("terminal").canFocus, true);
     assert.deepStrictEqual(byId.get("terminal").focusTarget, { type: "terminal", url: null });
     assert.strictEqual(byId.get("webui").canFocus, false);
     assert.strictEqual(byId.get("webui").focusTarget, null);
+    assert.strictEqual(byId.get("remote-orca").canFocus, true);
+    assert.deepStrictEqual(byId.get("remote-orca").focusTarget, { type: "terminal", url: null });
     assert.strictEqual(byId.get("codex:019e115a-4df2-7ed0-b90e-8e6345aca777").canFocus, true);
     assert.deepStrictEqual(byId.get("codex:019e115a-4df2-7ed0-b90e-8e6345aca777").focusTarget, {
       type: "codex-thread",
@@ -421,23 +499,32 @@ describe("state-session-snapshot builder", () => {
   });
 
   it("applies aliases, Codex thread names, and Kiro cwd-scoped alias keys", () => {
+    const claudeId = makeSessionKey({ profileId: "local", rawSessionId: "claude-local" });
+    const codexId = makeSessionKey({ profileId: "local", rawSessionId: "codex:abc" });
+    const kiroId = makeSessionKey({ profileId: "local", rawSessionId: "default" });
     const sessions = new Map([
-      ["claude-local", session("working", {
+      [claudeId, session("working", {
         updatedAt: 3000,
         cwd: "/repo/a",
         agentId: "claude-code",
+        profileId: "local",
+        rawSessionId: "claude-local",
         sessionTitle: "Raw title",
       })],
-      ["codex:abc", session("thinking", {
+      [codexId, session("thinking", {
         updatedAt: 2000,
         cwd: "/repo/b",
         agentId: "codex",
+        profileId: "local",
+        rawSessionId: "codex:abc",
         sessionTitle: "Auto Summary",
       })],
-      ["default", session("working", {
+      [kiroId, session("working", {
         updatedAt: 1000,
         cwd: "/repo/c",
         agentId: "kiro-cli",
+        profileId: "local",
+        rawSessionId: "default",
       })],
     ]);
 
@@ -451,11 +538,11 @@ describe("state-session-snapshot builder", () => {
       readCodexThreadName: (id) => id === "codex:abc" ? "Thread name" : null,
     });
 
-    assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "claude-local").displayTitle, "Claude review");
-    const codex = snapshot.sessions.find((entry) => entry.id === "codex:abc");
+    assert.strictEqual(snapshot.sessions.find((entry) => entry.id === claudeId).displayTitle, "Claude review");
+    const codex = snapshot.sessions.find((entry) => entry.id === codexId);
     assert.strictEqual(codex.sessionTitle, "Thread name");
     assert.strictEqual(codex.displayTitle, "Thread name");
-    assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "default").displayTitle, "Kiro repo C");
+    assert.strictEqual(snapshot.sessions.find((entry) => entry.id === kiroId).displayTitle, "Kiro repo C");
 
     assert.deepStrictEqual(
       [...getActiveSessionAliasKeys(sessions)].sort(),
@@ -538,6 +625,29 @@ describe("state-session-snapshot builder", () => {
     // lastSeenAt is minute-quantized in the store snapshot; when it moves,
     // the freshness labels changed and the broadcast must go out.
     assert.notStrictEqual(sessionSnapshotSignature(a), sessionSnapshotSignature(newerSeen));
+  });
+
+  it("snapshot signature tracks Spark group and lastSeenAt changes", () => {
+    const base = { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null };
+    const build = (usedPercent, updatedAt, lastSeenAt) => buildSessionSnapshot(new Map(), {
+      ...base,
+      accountQuota: [{
+        host: null,
+        codexSparkQuota: {
+          group: { codexWeekly: { usedPercent, windowMinutes: 10080 } },
+          updatedAt,
+          lastSeenAt,
+        },
+      }],
+    });
+    const original = build(7, 1, 60000);
+    const stampOnly = build(7, 2, 60000);
+    const changedValue = build(9, 2, 60000);
+    const changedSeen = build(7, 1, 120000);
+
+    assert.strictEqual(sessionSnapshotSignature(original), sessionSnapshotSignature(stampOnly));
+    assert.notStrictEqual(sessionSnapshotSignature(original), sessionSnapshotSignature(changedValue));
+    assert.notStrictEqual(sessionSnapshotSignature(original), sessionSnapshotSignature(changedSeen));
   });
 
   it("marks detached ended idle sessions hidden from HUD only when cleanup is enabled and pid is dead", () => {

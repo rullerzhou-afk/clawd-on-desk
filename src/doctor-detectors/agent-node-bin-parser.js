@@ -270,13 +270,25 @@ function isAbsoluteAnyPlatform(value) {
   return path.posix.isAbsolute(value) || path.win32.isAbsolute(value);
 }
 
-function validateHookCommand(command, options = {}) {
+function validateHookTarget(target, options = {}) {
   const platform = options.platform || process.platform;
   const fsImpl = options.fs || fs;
-  const parsed = parseHookCommand(command);
-  if (!parsed.ok) return parsed;
-
-  const { nodeBin, scriptPath } = parsed;
+  const nodeBin = target && target.nodeBin;
+  const scriptPath = target && target.scriptPath;
+  if (typeof nodeBin !== "string" || typeof scriptPath !== "string") {
+    return {
+      ok: false,
+      issue: "parse-failed",
+      nodeBin: typeof nodeBin === "string" ? nodeBin : null,
+      scriptPath: typeof scriptPath === "string" ? scriptPath : null,
+    };
+  }
+  if (options.requireNodeExecutable === true && !looksLikeNodeCandidate(nodeBin)) {
+    return { ok: false, issue: "nodeBin-invalid", nodeBin, scriptPath };
+  }
+  if (options.requireAbsoluteNode === true && !isAbsoluteAnyPlatform(nodeBin)) {
+    return { ok: false, issue: "nodeBin-invalid", nodeBin, scriptPath };
+  }
   if (platform === "win32") {
     if (String(nodeBin).toLowerCase() !== "node") {
       if (!isAbsoluteAnyPlatform(nodeBin) || !fsImpl.existsSync(nodeBin)) {
@@ -301,11 +313,18 @@ function validateHookCommand(command, options = {}) {
   return { ok: true, nodeBin, scriptPath };
 }
 
+function validateHookCommand(command, options = {}) {
+  const parsed = parseHookCommand(command);
+  if (!parsed.ok) return parsed;
+  return validateHookTarget(parsed, options);
+}
+
 module.exports = {
   commandContainsFragment,
   decodePowerShellEncodedCommand,
   parseHookCommand,
   validateHookCommand,
+  validateHookTarget,
   __test: {
     decodePowerShellEncodedArgument,
     isPowerShellExecutable,

@@ -156,6 +156,49 @@ test("Codex Pet main runtime records sync summaries and normalizes adapter failu
   assert.strictEqual(failingRuntime.getLastSyncSummary(), failed);
 });
 
+test("Codex Pet theme metadata carries the versioned atlas grid into Settings previews", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-pet-main-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const themesRoot = path.join(root, "themes");
+  const themeId = "codex-pet-v2";
+  const assetsDir = path.join(themesRoot, themeId, "assets");
+  fs.mkdirSync(assetsDir, { recursive: true });
+  fs.writeFileSync(path.join(assetsDir, "spritesheet.webp"), "fixture");
+
+  const runtime = createCodexPetMain({
+    app: {
+      getPath: () => root,
+      isReady: () => false,
+    },
+    dialog: {},
+    shell: {},
+    settingsController: {
+      get: () => "clawd",
+    },
+    themeLoader: {
+      ensureUserThemesDir: () => themesRoot,
+    },
+    codexPetAdapter: {
+      syncCodexPetThemes: () => ({ themes: [] }),
+      readManagedMarker: () => ({
+        sourcePetId: "v2",
+        sourcePackagePath: path.join(root, "pets", "v2"),
+        sourceSpritesheetPath: "spritesheet.webp",
+        sourceAtlasColumns: 8,
+        sourceAtlasRows: 11,
+        adapterVersion: 4,
+      }),
+    },
+    codexPetImporter: {},
+  });
+
+  const decorated = runtime.decorateThemeMetadata({ id: themeId, name: "V2" });
+  assert.strictEqual(decorated.managedCodexPet, true);
+  assert.strictEqual(decorated.codexPet.atlasColumns, 8);
+  assert.strictEqual(decorated.codexPet.atlasRows, 11);
+  assert.match(decorated.codexPet.previewAtlasUrl, /spritesheet\.webp$/);
+});
+
 test("Codex Pet settings refresh hot reloads an updated active managed theme", async () => {
   let reloadCalls = 0;
   let syncCalls = 0;
@@ -339,6 +382,7 @@ test("Codex Pet removal clears every preference scoped to the removed theme", as
     idleVisual: { [themeId]: "idle.png", clawd: "clawd-idle-follow.svg" },
     petTint: { [themeId]: "matcha", clawd: "gold" },
     petAccessory: { [themeId]: "halo", clawd: "wizard-hat" },
+    holidayAccessoryEnabled: { [themeId]: true, clawd: true },
   };
   const bulkPatches = [];
   const runtime = createCodexPetMain({
@@ -387,6 +431,7 @@ test("Codex Pet removal clears every preference scoped to the removed theme", as
     "idleVisual",
     "petTint",
     "petAccessory",
+    "holidayAccessoryEnabled",
   ]) {
     assert.strictEqual(
       Object.prototype.hasOwnProperty.call(bulkPatches[0][key], themeId),

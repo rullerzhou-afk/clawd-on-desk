@@ -242,7 +242,7 @@ function psSingleQuotedString(value) {
   return `'${String(value || "").replace(/'/g, "''")}'`;
 }
 
-function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = null, focusToken = "", cacheCwdCandidates = cwdCandidates) {
+function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = null, focusToken = "", cacheCwdCandidates = cwdCandidates, orcaHosted = false) {
   // Walk up the process tree (same proven logic as before).
   // Windows Terminal needs title matching because one WT process can represent
   // multiple tabs/windows. Other parent windows keep direct PID focus.
@@ -261,6 +261,9 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
   const cacheKey = focusCacheKey ? psUtf8Expression(focusCacheKey) : "$null";
   const wtHwndLiteral = normalizeHwndString(wtHwnd) || "0";
   const tokenLiteral = psSingleQuotedString(focusToken);
+  // A bool, not the pane key itself: the script only needs the gate, and the
+  // pane key never has to cross into PowerShell to get it.
+  const orcaHostedLiteral = orcaHosted ? "$true" : "$false";
   const parentWindowBlock = psNames ? `
         if ($wtProcessNames -contains $proc.ProcessName) {
             $matches = @([WinFocus]::FindByPidTitles([uint32]$curPid, [string[]]$titleNames))
@@ -374,6 +377,8 @@ $titleNames = ${titleNames}
 $cacheTitleNames = ${cacheTitleNames}
 $wtProcessNames = @('WindowsTerminal', 'WindowsTerminalPreview')
 $editorProcessNames = @('Code', 'Cursor')
+$orcaProcessNames = @('Orca')
+$orcaHosted = ${orcaHostedLiteral}
 $chainWindowsTerminalPids = @()
 $focusCacheKey = ${cacheKey}
 $focusCacheSourcePid = [int64]${sourcePid}
@@ -463,6 +468,17 @@ function Get-ClawdWindowsTerminalWindows() {
     }
     return @(Get-ClawdVisiblePidWindows -pids $wtPids)
 }
+function Get-ClawdOrcaWindows() {
+    $orcaPids = @()
+    foreach ($orcaName in $orcaProcessNames) {
+        foreach ($orcaProc in @(Get-Process -Name $orcaName -ErrorAction SilentlyContinue)) {
+            if ($orcaProc -and $orcaProc.Id -gt 0 -and -not ($orcaPids -contains [int]$orcaProc.Id)) {
+                $orcaPids += [int]$orcaProc.Id
+            }
+        }
+    }
+    return @(Get-ClawdVisiblePidWindows -pids $orcaPids)
+}
 $curPid = ${sourcePid}
 $focused = $false
 $reason = 'no-parent-window'
@@ -470,14 +486,50 @@ $selectedTargetHwnd = [IntPtr]::Zero
 $pendingConsoleHwnd = [IntPtr]::Zero
 $consoleShimSkipped = $false
 $wtHwndFromHookInvalid = $false
-$cachedHwnd = Get-ClawdCachedWindow
-if ($cachedHwnd -ne [IntPtr]::Zero) {
-    [WinFocus]::Focus($cachedHwnd)
-    $selectedTargetHwnd = $cachedHwnd
-    $focused = $true
-    $reason = 'cached-window'
+# Orca runs every terminal under a detached daemon whose own parent is already
+# dead, and Orca.exe itself descends from explorer — so it is NEVER an ancestor
+# of the agent and the walk below cannot reach it. Its window title is just
+# "Orca" (no cwd), so title matching cannot find it either. Resolve it by process
+# name instead, and try it FIRST: on 'orca-window-missing' the guesswork branches
+# would report an unrelated window as a *successful* focus, since
+# $wtHwndFromHook is only whatever happened to be foreground when the hook fired.
+# So the cache and $wtHwndFromHook are gated off outright rather than merely
+# ordered after; the WT title cascade further down is already unreachable through
+# its own 'no-parent-window' guard. The ancestry walk and the console recovery
+# stay reachable because they key off the agent's own process chain, not a guess.
+# Nothing here saves to the focus cache: a cached entry is re-validated against
+# the cwd candidates on read, and the live text "Orca" never satisfies it.
+if ($orcaHosted) {
+    $orcaWindows = @(Get-ClawdOrcaWindows)
+    if ($orcaWindows.Count -eq 1) {
+        [WinFocus]::Focus($orcaWindows[0])
+        $selectedTargetHwnd = $orcaWindows[0]
+        $focused = $true
+        $reason = 'orca-window'
+    } elseif ($orcaWindows.Count -gt 1) {
+        # Known limitation: "Orca" is the whole window title, so with more than one
+        # window open there is nothing to pick by — unlike the Windows Terminal
+        # cascade, which still has a cwd to match. Refuse rather than guess. The
+        # conhost recovery below can still rescue this (its whitelist accepts this
+        # reason), but when it cannot, scheduleOrcaPaneFocus has already moved the
+        # tab in a window that never comes forward.
+        $reason = 'orca-window-ambiguous'
+    } else {
+        $reason = 'orca-window-missing'
+    }
 }
-if (-not $focused -and $wtHwndFromHook -ne [IntPtr]::Zero) {
+if (-not $focused -and -not $orcaHosted) {
+    # Called inside the gate, not before it: on a validation miss this evicts the
+    # stored entry, and an Orca focus has no business dropping another path's cache.
+    $cachedHwnd = Get-ClawdCachedWindow
+    if ($cachedHwnd -ne [IntPtr]::Zero) {
+        [WinFocus]::Focus($cachedHwnd)
+        $selectedTargetHwnd = $cachedHwnd
+        $focused = $true
+        $reason = 'cached-window'
+    }
+}
+if (-not $focused -and -not $orcaHosted -and $wtHwndFromHook -ne [IntPtr]::Zero) {
     if ([WinFocus]::IsUsableWindowsTerminalWindow($wtHwndFromHook)) {
         [WinFocus]::Focus($wtHwndFromHook)
         $selectedTargetHwnd = $wtHwndFromHook
@@ -525,7 +577,9 @@ if (-not $focused -and $pendingConsoleHwnd -ne [IntPtr]::Zero) {
         $reason -eq 'wt-title-ambiguous' -or
         $reason -eq 'wt-title-mismatch-pid-window-ambiguous' -or
         $reason -eq 'wt-title-mismatch-single-wt-window-ambiguous' -or
-        $reason -eq 'wt-title-mismatch-no-pid-window') {
+        $reason -eq 'wt-title-mismatch-no-pid-window' -or
+        $reason -eq 'orca-window-missing' -or
+        $reason -eq 'orca-window-ambiguous') {
         [WinFocus]::Focus($pendingConsoleHwnd)
         $selectedTargetHwnd = $pendingConsoleHwnd
         $focused = $true
@@ -541,7 +595,9 @@ if (-not $focused -and $consoleShimSkipped) {
         $reason -eq 'wt-title-ambiguous' -or
         $reason -eq 'wt-title-mismatch-pid-window-ambiguous' -or
         $reason -eq 'wt-title-mismatch-single-wt-window-ambiguous' -or
-        $reason -eq 'wt-title-mismatch-no-pid-window') {
+        $reason -eq 'wt-title-mismatch-no-pid-window' -or
+        $reason -eq 'orca-window-missing' -or
+        $reason -eq 'orca-window-ambiguous') {
         $reason = 'console-window-shim-skip'
     }
 }
@@ -576,6 +632,7 @@ const WINDOWS_FOCUS_DEDUP_MS = 400;
 const WINDOWS_FOCUS_RESULT_TIMEOUT_MS = 3000;
 const WINDOWS_FOCUS_POSITIVE_REASONS = new Set([
   "legacy-conhost-window",
+  "orca-window",
   "parent-direct",
   "parent-direct-no-title",
   "editor-parent-title-match",
@@ -628,6 +685,16 @@ function normalizeTmuxClient(value) {
   return /^[\w./:-]+$/.test(trimmed) ? trimmed : null;
 }
 
+// "<tabId>:<leafId>" from $ORCA_PANE_KEY. Doubles as the "this session lives in
+// Orca" flag, so the shape check is also the gate that decides whether focus is
+// allowed to raise an Orca window at all — keep it strict.
+function normalizeOrcaPaneKey(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 256) return null;
+  return /^[\w-]+:[\w-]+$/.test(trimmed) ? trimmed : null;
+}
+
 function normalizeFocusRequest(sourcePidOrRequest, cwd, editor, pidChain, meta = {}) {
   if (sourcePidOrRequest && typeof sourcePidOrRequest === "object" && !Array.isArray(sourcePidOrRequest)) {
     const request = sourcePidOrRequest;
@@ -643,6 +710,7 @@ function normalizeFocusRequest(sourcePidOrRequest, cwd, editor, pidChain, meta =
       ghosttyTerminalId: normalizeGhosttyTerminalId(request.ghosttyTerminalId ?? request.ghostty_terminal_id),
       tmuxSocket: normalizeTmuxSocket(request.tmuxSocket ?? request.tmux_socket),
       tmuxClient: normalizeTmuxClient(request.tmuxClient ?? request.tmux_client),
+      orcaPaneKey: normalizeOrcaPaneKey(request.orcaPaneKey ?? request.orca_pane_key),
     };
   }
 
@@ -658,6 +726,7 @@ function normalizeFocusRequest(sourcePidOrRequest, cwd, editor, pidChain, meta =
     ghosttyTerminalId: normalizeGhosttyTerminalId(meta && (meta.ghosttyTerminalId ?? meta.ghostty_terminal_id)),
     tmuxSocket: normalizeTmuxSocket(meta && (meta.tmuxSocket ?? meta.tmux_socket)),
     tmuxClient: normalizeTmuxClient(meta && (meta.tmuxClient ?? meta.tmux_client)),
+    orcaPaneKey: normalizeOrcaPaneKey(meta && (meta.orcaPaneKey ?? meta.orca_pane_key)),
   };
 }
 
@@ -822,6 +891,7 @@ function logFocusRequest(request) {
     `chain=${formatPidChain(request.pidChain)}`,
     `wtHwnd=${request.wtHwnd ? "1" : "-"}`,
     `ghosttyId=${summarizeOpaqueId(request.ghosttyTerminalId)}`,
+    `orcaPane=${summarizeOpaqueId(request.orcaPaneKey)}`,
   ].join(" "));
 }
 
@@ -899,6 +969,245 @@ function scheduleTerminalTabFocus(editor, pidChain) {
       tabReq.end(body);
     }
   }, 800);
+}
+
+// ── Orca pane focus ──────────────────────────────────────────────────────────
+// Orca is not a VS Code fork, so the extension route above cannot serve it, and
+// its terminals live in a detached daemon so the process walk cannot either.
+// What it does ship is a first-class CLI: `orca terminal switch` brings a
+// specific tab to the front. That only moves the tab *inside* Orca, so a focus
+// only lands if a window raise runs too — on Windows the $orcaHosted branch in
+// makeFocusCmd, on macOS raiseOrcaMacWindow below. Linux has no raise it can
+// trust, so it does not dispatch this at all.
+// Warm round-trips measure 330-420ms, but the first call after Orca has been idle
+// has been observed to blow past 2.5s — and a killed call is indistinguishable
+// from a missing pane unless it is reported separately, which is what
+// orca-cli-timeout is for. It is the ceiling on how long Telegram Direct Send
+// waits before giving up on the pane and falling back to the clipboard, so it is
+// generous on purpose: a slow answer is recoverable, a wrong paste is not.
+const ORCA_CLI_TIMEOUT_MS = 6000;
+// Keeps the CLI round-trip off the click's synchronous path. The window raise has
+// already been dispatched by then — it happens inside the generated script.
+const ORCA_PANE_FOCUS_DELAY_MS = 150;
+// paneKey → live handle. Purely a fast path: handles are reissued per Orca
+// runtime session, and a switch against an old one fails with
+// terminal_handle_stale, which triggers exactly one re-resolve.
+const orcaHandleCache = new Map();
+
+function orcaCliCandidates() {
+  // A normal install puts `orca` on PATH; the explicit paths cover a GUI-launched
+  // Electron process that never saw a login shell. On Windows that means one started
+  // before the installer's PATH entry existed; on macOS, LaunchServices hands the app
+  // launchd's default PATH (/usr/bin:/bin:/usr/sbin:/sbin), which contains neither
+  // location Orca's installer registers, so PATH alone finds nothing at all.
+  const candidates = ["orca"];
+  if (isWin) {
+    if (process.env.LOCALAPPDATA) {
+      candidates.push(path.join(process.env.LOCALAPPDATA, "Programs", "orca", "resources", "bin", "orca.exe"));
+    }
+    return candidates;
+  }
+  if (isMac) {
+    // Homebrew's prefix is /opt/homebrew on Apple Silicon and /usr/local on
+    // Intel. LaunchServices does not add either one to a Finder-launched app's
+    // PATH, so both must be explicit. The official cask also bundles the CLI
+    // inside Orca.app; that path covers direct DMG installs and a cask whose
+    // bin symlink is missing or stale.
+    candidates.push("/opt/homebrew/bin/orca", "/usr/local/bin/orca");
+    for (const appPath of orcaMacAppCandidates()) {
+      candidates.push(path.posix.join(appPath, "Contents", "Resources", "bin", "orca"));
+    }
+    const home = typeof os.homedir === "function" ? os.homedir() : "";
+    if (home) candidates.push(path.posix.join(home.replace(/\\/g, "/"), ".local", "bin", "orca"));
+  }
+  return candidates;
+}
+
+function runOrcaCli(args, callback) {
+  const candidates = orcaCliCandidates();
+  const tryNext = (idx) => {
+    if (idx >= candidates.length) return callback(new Error("orca-cli-not-found"), null);
+    execFile(candidates[idx], args, {
+      timeout: ORCA_CLI_TIMEOUT_MS,
+      encoding: "utf8",
+      windowsHide: true,
+    }, (err, stdout) => {
+      // A missing binary means "try the next candidate"; anything else came
+      // from a CLI that really ran, so surface it instead of masking it.
+      if (err && (err.code === "ENOENT" || err.code === 127)) return tryNext(idx + 1);
+      // `--json` reports command failures as {"ok":false,...} on stdout with a
+      // non-zero exit, so parse before treating an error as fatal.
+      let parsed = null;
+      try { parsed = JSON.parse(stdout); } catch {}
+      if (parsed) return callback(null, parsed);
+      // A timeout kill has to be its own reason: focus-debug.log is the only
+      // surface for this, and "the pane is gone" would send the reader looking in
+      // entirely the wrong place for a CLI that simply had not warmed up yet.
+      if (err && err.killed) return callback(new Error("orca-cli-timeout"), null);
+      return callback(err || new Error("orca-cli-bad-json"), null);
+    });
+  };
+  tryNext(0);
+}
+
+// Orca reports worktreePath with either separator depending on how the worktree
+// was registered — "D:/repo" and "D:\repo" both occur in one `terminal list` — so
+// settle on forward slashes. Case-fold only where the filesystem does: on Linux
+// ~/work/Repo and ~/work/repo are different directories, and folding them makes
+// the fallback below pick whichever terminal happens to be listed first.
+function normalizeOrcaWorktreePath(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const text = value.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  return isWin ? text.toLowerCase() : text;
+}
+
+function orcaMacAppCandidates() {
+  const candidates = ["/Applications/Orca.app"];
+  const home = typeof os.homedir === "function" ? os.homedir() : "";
+  if (home) candidates.push(path.posix.join(home.replace(/\\/g, "/"), "Applications", "Orca.app"));
+  return candidates;
+}
+
+// Activation by absolute bundle path, mirroring focusMacApp's `open <bundle>`
+// preference above: it carries Dock-click reopen semantics so a minimized window
+// comes back, and it needs no Automation consent. Deliberately NOT `open -a Orca` —
+// LaunchServices resolves a bare name loosely enough to land on another Orca-named
+// app, and activating the wrong window while logging a success is the failure this
+// whole branch exists to avoid. A missing bundle just exits non-zero, so the
+// candidate list doubles as the existence check.
+function raiseOrcaMacWindow(callback) {
+  const candidates = orcaMacAppCandidates();
+  const tryNext = (idx) => {
+    if (idx >= candidates.length) {
+      logFocusResult("branch=orca reason=orca-app-not-found");
+      return callback();
+    }
+    execFile("/usr/bin/open", [candidates[idx]], { timeout: MAC_OPEN_TIMEOUT_MS }, (err) => {
+      if (err) return tryNext(idx + 1);
+      logFocusResult("branch=orca reason=orca-app-raised");
+      return callback();
+    });
+  };
+  tryNext(0);
+}
+
+// Reports HOW the handle was found, not just that it was: an exact pane match
+// identifies one specific composer, while the worktree fallback is a best-effort
+// guess at the right project. Telegram Direct Send types into whatever is focused,
+// so it is only allowed to paste on the former.
+function orcaHandleResult(handle, match, failure) {
+  return { handle: handle || null, match: handle ? match : null, failure: failure || null };
+}
+
+function resolveOrcaHandle(orcaPaneKey, cwd, callback) {
+  runOrcaCli(["terminal", "list", "--json"], (err, data) => {
+    // Distinguish "no CLI" and "the CLI never answered" from "no such pane":
+    // focus-debug.log is the only surface for diagnosing this, and all three have
+    // different fixes.
+    if (err && (err.message === "orca-cli-not-found" || err.message === "orca-cli-timeout")) {
+      return callback(orcaHandleResult(null, null, err.message));
+    }
+    if (err || !data || data.ok !== true || !data.result) return callback(orcaHandleResult(null));
+    const terminals = Array.isArray(data.result.terminals) ? data.result.terminals : [];
+    // normalizeOrcaPaneKey already guarantees the tabId:leafId shape upstream, but
+    // this function is also an exported test seam: without the guard a colon-less
+    // string would silently match on nonsense ids instead of falling through.
+    const sep = typeof orcaPaneKey === "string" ? orcaPaneKey.indexOf(":") : -1;
+    const tabId = sep > 0 ? orcaPaneKey.slice(0, sep) : "";
+    const leafId = sep > 0 ? orcaPaneKey.slice(sep + 1) : "";
+    const byPane = tabId && leafId
+      ? terminals.find((t) => t && t.tabId === tabId && t.leafId === leafId)
+      : null;
+    if (byPane && byPane.handle) return callback(orcaHandleResult(byPane.handle, "exact"));
+    // The pane itself is gone (tab reopened, split rearranged). Falling back to
+    // the worktree still lands the user in the right project.
+    const target = normalizeOrcaWorktreePath(cwd);
+    if (!target) return callback(orcaHandleResult(null));
+    // Prefix, not equality: an agent's cwd is routinely a subdirectory of the
+    // worktree root, which an exact match would report as orca-pane-not-found.
+    // Longest wins, because nested worktrees both match and the shorter one is
+    // someone else's session — picking the first would switch their tab and still
+    // log a successful focus.
+    let byCwd = null;
+    let bestLength = -1;
+    let tied = false;
+    for (const t of terminals) {
+      const worktree = normalizeOrcaWorktreePath(t && t.worktreePath);
+      if (!worktree || !t.handle) continue;
+      if (target !== worktree && !target.startsWith(`${worktree}/`)) continue;
+      if (worktree.length > bestLength) {
+        bestLength = worktree.length;
+        byCwd = t;
+        tied = false;
+      } else if (worktree.length === bestLength) {
+        // Equal length means the same worktree: two distinct paths of equal
+        // length cannot both be prefixes of one cwd. So this is one project open
+        // in several panes, and nothing in the list says which one the agent runs
+        // in — the old strict > silently kept whichever Orca happened to list
+        // first and still reported a successful switch.
+        tied = true;
+      }
+    }
+    if (tied) return callback(orcaHandleResult(null, null, "orca-pane-ambiguous"));
+    return callback(byCwd ? orcaHandleResult(byCwd.handle, "cwd") : orcaHandleResult(null));
+  });
+}
+
+// Dispatched from executeWindowsFocusRequest and executeMacFocusRequest, never the
+// Linux branch. The pane switch alone never brings Orca's window forward, so it is
+// only half a focus without a raise — and the raise cannot reuse the platform
+// helpers, which resolve a window from the agent's pid chain that Orca's detached
+// daemon is absent from. Windows raises by name inside the generated script
+// ($orcaProcessNames); macOS activates the bundle by absolute path below. Linux is
+// left out because its only handle is WM_CLASS "orca", a substring match that also
+// hits GNOME's screen reader and OrcaSlicer.
+// Resolves — never rejects — with { ok, match, reason }. Callers that only want
+// the side effect can ignore it, but Telegram Direct Send has to wait for it:
+// pressing Ctrl+V before the switch lands types the reply into whichever pane was
+// previously active, and a fixed delay cannot cover a cold CLI.
+function scheduleOrcaPaneFocus(orcaPaneKey, cwd) {
+  if (!orcaPaneKey) return Promise.resolve({ ok: false, match: null, reason: "no-pane-key" });
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      const done = (ok, match, reason) => {
+        logFocusResult(`branch=orca reason=${reason}`);
+        resolve({ ok, match, reason });
+      };
+      const switchTo = (handle, match, mayReresolve) => {
+        runOrcaCli(["terminal", "switch", "--terminal", handle, "--json"], (err, data) => {
+          if (!err && data && data.ok === true) {
+            // Only an exact match is cached. A worktree guess replayed as a cache
+            // hit would arrive indistinguishable from a real pane match, which is
+            // the one thing the Direct Send gate must be able to tell apart.
+            if (match === "exact") orcaHandleCache.set(orcaPaneKey, handle);
+            // Raise last, and only here: Windows raises from inside the generated
+            // script, but macOS has no such step, and raising before the switch
+            // resolves would pull Orca forward showing the wrong tab — or pull it
+            // forward for a pane that turned out not to be ours at all.
+            if (isMac) return raiseOrcaMacWindow(() => done(true, match, "orca-pane-switched"));
+            return done(true, match, "orca-pane-switched");
+          }
+          orcaHandleCache.delete(orcaPaneKey);
+          const stale = !!(data && data.error && data.error.code === "terminal_handle_stale");
+          if (stale && mayReresolve) return resolveThenSwitch();
+          const timedOut = !!(err && err.message === "orca-cli-timeout");
+          return done(false, null, stale ? "orca-handle-stale" : timedOut ? "orca-cli-timeout" : "orca-switch-failed");
+        });
+      };
+      // Never re-resolves from here: the handle just came out of `terminal list`, so
+      // a stale rejection means the pane really is gone rather than the cache lying.
+      const resolveThenSwitch = () => {
+        resolveOrcaHandle(orcaPaneKey, cwd, (res) => {
+          if (!res.handle) return done(false, null, res.failure || "orca-pane-not-found");
+          switchTo(res.handle, res.match, false);
+        });
+      };
+      const cached = orcaHandleCache.get(orcaPaneKey);
+      // A cache entry only ever holds an exact match, so a hit is one too.
+      if (cached) switchTo(cached, "exact", true);
+      else resolveThenSwitch();
+    }, ORCA_PANE_FOCUS_DELAY_MS);
+  });
 }
 
 function findFirstValidTty(psOutput) {
@@ -1243,7 +1552,7 @@ function findCmuxPanelMatch(sessionData, ttyName) {
     const tm = win?.tabManager;
     if (!tm) continue;
     for (const ws of tm.workspaces ?? []) {
-      const workspaceId = typeof ws?.id === "string" ? ws.id : null;
+      const workspaceId = typeof ws?.workspaceId === "string" ? ws.workspaceId : null;
       if (!workspaceId) continue;
       for (const p of ws.panels ?? []) {
         if (p?.ttyName === ttyName && typeof p.id === "string" && p.id) {
@@ -1495,11 +1804,14 @@ function flushQueuedMacFocus() {
   executeMacFocusRequest(nextRequest);
 }
 
-function getMacFocusRequestKey(sourcePid, pidChain) {
-  const chain = Array.isArray(pidChain)
-    ? pidChain.filter(p => Number.isFinite(p) && p > 0).join(",")
+function getMacFocusRequestKey(request) {
+  if (!request) return "";
+  if (request.sessionId) return `${request.agentId || "agent"}|${request.sessionId}`;
+  if (request.orcaPaneKey) return `orca|${request.orcaPaneKey}`;
+  const chain = Array.isArray(request.pidChain)
+    ? request.pidChain.filter(p => Number.isFinite(p) && p > 0).join(",")
     : "";
-  return `${sourcePid || ""}|${chain}`;
+  return `${request.sourcePid || ""}|${chain}`;
 }
 
 function getWindowsFocusRequestKey(request) {
@@ -1539,6 +1851,7 @@ function requestWindowsFocus(request) {
   // VS Code / Cursor: request precise terminal tab switch via extension's HTTP server.
   // Delayed so legacy PowerShell focus completes first (it's fire-and-forget via stdin).
   scheduleTerminalTabFocus(request.editor, request.pidChain);
+  const orcaPanePromise = scheduleOrcaPaneFocus(request.orcaPaneKey, request.cwd);
   if (!submitted) {
     completeWindowsFocusRequest(token, {
       token,
@@ -1547,7 +1860,15 @@ function requestWindowsFocus(request) {
       foregroundHwnd: null,
     });
   }
-  return { submitted: true, token, promise };
+  // The raise is confirmed as soon as Orca's window is foreground, but the pane
+  // switch is still in flight then, so a consumer that acts on the raise alone acts
+  // on the wrong tab. Only Orca sessions pay the wait, and only consumers that
+  // await this promise: the pet and dashboard callers drop it (session-ipc.js,
+  // pet-interaction-ipc.js), so nothing on the click path gets slower.
+  const settled = request.orcaPaneKey
+    ? Promise.all([promise, orcaPanePromise]).then(([result, orcaPane]) => ({ ...result, orcaPane }))
+    : promise;
+  return { submitted: true, token, promise: settled };
 }
 
 function executeMacFocusRequest(request) {
@@ -1560,13 +1881,28 @@ function executeMacFocusRequest(request) {
     if (macQueuedFocusRequest) flushQueuedMacFocus();
   };
 
-  focusTerminalWindowLegacy(request, finalize);
+  // The generic raise resolves its bundle from the source process's `ps` comm, and
+  // Orca packages its terminal daemon inside Orca.app — so for an Orca session it
+  // activates the IDE immediately, before the switch has said which tab (or whether
+  // the pane still exists). `open` also launches Orca, and the daemon outlives its
+  // window, so a sticky key for a dead session would cold-start the IDE on a click.
+  // Hand the raise to the Orca path, which does it only after a confirmed switch.
+  const orcaOwnsRaise = !!request.orcaPaneKey;
+  if (!orcaOwnsRaise) focusTerminalWindowLegacy(request, finalize);
+
   scheduleTerminalTabFocus(request.editor, request.pidChain);
   scheduleITermTabFocus(request.sourcePid, request.pidChain);
   scheduleTmuxPaneFocus(request.pidChain, request.tmuxSocket, request.tmuxClient);
   scheduleCmuxWorkspaceSwitch(request.pidChain);
   scheduleSupersetFocus(request.sourcePid, request.cwd);
   scheduleGhosttyFocus(request.sourcePid, request.cwd, request.pidChain, request.ghosttyTerminalId);
+  // Unlike the siblings above, this one needs no `ps` comm check to know its host:
+  // the pane key is only ever set by an Orca-hosted session, and the ten-marker env
+  // gate has already rejected the shells that merely inherited it.
+  const orcaPane = scheduleOrcaPaneFocus(request.orcaPaneKey, request.cwd);
+  // The guard must span the CLI hops as well as the raise: released early, the next
+  // request starts a second pane switch while this one is still in flight.
+  if (orcaOwnsRaise) orcaPane.then(finalize, finalize);
 }
 
 function scheduleSupersetFocus(sourcePid, cwd) {
@@ -1764,7 +2100,7 @@ function captureGhosttyTerminalId(sourcePidOrRequest, callback) {
 function requestMacFocus(request) {
   const elapsed = Date.now() - macFocusLastRunAt;
   const inCooldown = elapsed < MAC_FOCUS_THROTTLE_MS;
-  const key = getMacFocusRequestKey(request.sourcePid, request.pidChain);
+  const key = getMacFocusRequestKey(request);
   if (inCooldown && macFocusLastRequestKey === key) return "dropped-duplicate";
 
   request = { ...request, key };
@@ -1788,7 +2124,11 @@ function requestMacFocus(request) {
 function focusTerminalWindow(sourcePidOrRequest, cwd, editor, pidChain, meta) {
   const request = normalizeFocusRequest(sourcePidOrRequest, cwd, editor, pidChain, meta);
   logFocusRequest(request);
-  if (!request.sourcePid) {
+  // A local source PID is the authority for every traditional terminal path.
+  // Orca is the one exception: its pane key names a local IDE pane even when
+  // the agent process itself runs through Orca's SSH PTY on another host.
+  const paneOnlyOrcaFocus = !!request.orcaPaneKey && (isMac || isWin);
+  if (!request.sourcePid && !paneOnlyOrcaFocus) {
     logFocusResult("branch=none reason=no-source-pid");
     return normalizeFocusResultPayload({ reason: "no-source-pid" });
   }
@@ -1884,7 +2224,10 @@ function focusTerminalWindowLegacy(request, onDone) {
   const cwd = request.cwd;
   const pidChain = request.pidChain;
 
-  if (!sourcePid) {
+  // Windows can raise Orca by its own process name without walking from the
+  // agent PID. macOS pane-only focus is raised by raiseOrcaMacWindow after a
+  // successful switch; every other legacy path still requires a local PID.
+  if (!sourcePid && !(isWin && request.orcaPaneKey)) {
     if (onDone) onDone();
     return false;
   }
@@ -1960,7 +2303,7 @@ function focusTerminalWindowLegacy(request, onDone) {
 
   // Windows: send command to persistent PowerShell process (near-instant)
   const titleCandidates = buildWindowsTitleCandidates(request, cwdCandidates);
-  const cmd = makeFocusCmd(sourcePid, titleCandidates, buildFocusCacheKey(request), request.wtHwnd, request.focusToken, cwdCandidates);
+  const cmd = makeFocusCmd(sourcePid || 0, titleCandidates, buildFocusCacheKey(request), request.wtHwnd, request.focusToken, cwdCandidates, !!request.orcaPaneKey);
   if (psProc && psProc.stdin.writable) {
     psProc.stdin.write(cmd + "\n");
     return true;
@@ -2020,6 +2363,13 @@ return {
     buildGhosttyPidFocusScript,
     buildGhosttyCwdFocusScript,
     scheduleTmuxPaneFocus,
+    scheduleOrcaPaneFocus,
+    resolveOrcaHandle,
+    normalizeOrcaPaneKey,
+    normalizeOrcaWorktreePath,
+    orcaCliCandidates,
+    orcaHandleCache,
+    ORCA_PANE_FOCUS_DELAY_MS,
     __setTmuxBin,
     resolveTmuxBin,
     buildGhosttyIdProbeScript,

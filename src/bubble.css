@@ -482,6 +482,13 @@ body { padding: 6px; }
 .btn-suggestion:active:not(:disabled) { transform: scale(0.98); }
 .btn-suggestion:disabled { opacity: 0.4; cursor: not-allowed; }
 
+.session-trust-error {
+  color: var(--deny-color);
+  font-size: 11px;
+  line-height: 1.35;
+  padding: 2px 4px;
+}
+
 /* ── Plan feedback form ── */
 .plan-feedback-form {
   display: none;

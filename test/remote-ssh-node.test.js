@@ -2,6 +2,7 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
+const childProcess = require("child_process");
 const { EventEmitter } = require("events");
 
 const {
@@ -190,4 +191,16 @@ test("buildRemoteNodeEvalCommand embeds absolute node path for health probe", ()
   const command = buildRemoteNodeEvalCommand("/opt/homebrew/bin/node", "process.exit(0)");
   assert.ok(command.startsWith("'/opt/homebrew/bin/node' -e "));
   assert.ok(command.includes("process.exit(0)"));
+});
+
+test("buildRemoteNodeEvalCommand keeps JavaScript opaque to a real POSIX shell", {
+  skip: process.platform === "win32",
+}, () => {
+  const literal = "literal:$HOME:${BROKEN}:$(printf substituted):`printf substituted`:don't";
+  const js = `process.stdout.write(${JSON.stringify(literal)})`;
+  const command = buildRemoteNodeEvalCommand(process.execPath, js);
+  const result = childProcess.spawnSync("/bin/sh", ["-c", command], { encoding: "utf8" });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, literal);
 });

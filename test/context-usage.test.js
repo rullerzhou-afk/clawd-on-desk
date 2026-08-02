@@ -64,6 +64,7 @@ describe("Claude context usage parser", () => {
       "claude-opus-4-6",
       "claude-opus-4-7",
       "claude-opus-4-8-20250929",
+      "claude-opus-5",
       "claude-sonnet-4-6",
       "claude-sonnet-5",
       "claude-fable-5",
@@ -95,8 +96,37 @@ describe("Claude context usage parser", () => {
     });
   });
 
+  it("uses the 1M Opus 5 limit for a real issue #631 usage shape", () => {
+    const usage = extractClaudeContextUsageFromEntries([
+      {
+        type: "assistant",
+        message: {
+          model: "claude-opus-5",
+          usage: {
+            input_tokens: 406987,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+        },
+      },
+    ]);
+
+    assert.deepStrictEqual(usage, {
+      used: 406987,
+      limit: 1000000,
+      percent: 41,
+      source: "claude",
+    });
+  });
+
   it("keeps the 200k limit for models without a 1M context window", () => {
     for (const model of ["claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-5"]) {
+      assert.strictEqual(resolveClaudeContextLimit(model), 200000, model);
+    }
+  });
+
+  it("requires token boundaries when matching 1M model ids", () => {
+    for (const model of ["claude-opus-50", "claude-xopus-5"]) {
       assert.strictEqual(resolveClaudeContextLimit(model), 200000, model);
     }
   });

@@ -50,6 +50,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.autoStartWithClaude, false);
     assert.deepStrictEqual(d.petTint, {});
     assert.deepStrictEqual(d.petAccessory, {});
+    assert.strictEqual(d.testReactionsEnabled, false);
     assert.strictEqual(d.lowPowerIdleMode, false);
     assert.strictEqual(d.allowEdgePinning, false);
     assert.strictEqual(d.disableMiniMode, false);
@@ -61,12 +62,14 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.sessionHudShowQuota, true);
     assert.strictEqual(d.claudeQuotaCollectionEnabled, false);
     assert.strictEqual(d.quotaMergeSources, false);
+    assert.strictEqual(d.telegramMigrationLastNotified, "");
     assert.strictEqual(d.sessionHudCleanupDetached, true);
     assert.strictEqual("sessionHudAutoHide" in d, false);
     assert.strictEqual(d.sessionHudPinned, false);
     assert.strictEqual(d.savedPixelWidth, 0);
     assert.strictEqual(d.savedPixelHeight, 0);
     assert.strictEqual(d.savedPixelWorkArea, null);
+    assert.strictEqual(d.settingsWindowBounds, null);
     assert.strictEqual(d.permissionBubblesEnabled, true);
     assert.strictEqual(d.notificationBubbleAutoCloseSeconds, 6);
     assert.strictEqual(d.updateBubbleAutoCloseSeconds, 9);
@@ -1238,6 +1241,23 @@ describe("prefs.migrate v11 → v12 (showDock default off for fresh installs)", 
   });
 });
 
+describe("prefs.migrate v12 → v13 (Settings window bounds)", () => {
+  it("advances the schema without inventing geometry for existing users", () => {
+    const upgraded = prefs.validate(prefs.migrate({ version: 12, lang: "zh" }));
+    assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
+    assert.strictEqual(upgraded.settingsWindowBounds, null);
+  });
+
+  it("preserves valid geometry from an early v12 build or hand-edited file", () => {
+    const bounds = { x: -1180, y: 90, width: 920, height: 680 };
+    const upgraded = prefs.validate(prefs.migrate({
+      version: 12,
+      settingsWindowBounds: bounds,
+    }));
+    assert.deepStrictEqual(upgraded.settingsWindowBounds, bounds);
+  });
+});
+
 describe("prefs permission automation safe startup persistence", () => {
   it("defaults to off, preserves auto-tools, and downgrades unattended", () => {
     assert.strictEqual(prefs.getDefaults().permissionAutomationMode, "off");
@@ -1327,8 +1347,10 @@ describe("prefs permission automation safe startup persistence", () => {
 describe("prefs.load", () => {
   it("returns defaults for missing file (ENOENT) without backup", () => {
     const p = makeTempPath();
-    const { snapshot, locked } = prefs.load(p);
+    const { snapshot, locked, fresh, recovered } = prefs.load(p);
     assert.strictEqual(locked, false);
+    assert.strictEqual(fresh, true);
+    assert.strictEqual(recovered, undefined);
     assert.deepStrictEqual(snapshot, prefs.getDefaults());
     // Should NOT have created a backup since file never existed
     assert.strictEqual(fs.existsSync(p + ".bak"), false);
@@ -1337,14 +1359,68 @@ describe("prefs.load", () => {
   it("backs up corrupt JSON and returns defaults", () => {
     const p = makeTempPath();
     fs.writeFileSync(p, "{ this is not valid json", "utf8");
-    const { snapshot, locked } = prefs.load(p);
+    const { snapshot, locked, recovered } = prefs.load(p);
     assert.strictEqual(locked, false);
+    assert.strictEqual(recovered, true);
     assert.deepStrictEqual(snapshot, prefs.getDefaults());
     assert.strictEqual(fs.existsSync(p + ".bak"), true);
     assert.strictEqual(
       fs.readFileSync(p + ".bak", "utf8"),
       "{ this is not valid json"
     );
+  });
+
+  it("marks a non-object prefs root as a recovered defaults snapshot", () => {
+    const p = makeTempPath();
+    fs.writeFileSync(p, "null", "utf8");
+    const { snapshot, locked, fresh, recovered } = prefs.load(p);
+    assert.strictEqual(locked, false);
+    assert.strictEqual(fresh, undefined);
+    assert.strictEqual(recovered, true);
+    assert.deepStrictEqual(snapshot, prefs.getDefaults());
+  });
+
+  it("marks an array prefs root as a recovered defaults snapshot", () => {
+    const p = makeTempPath();
+    fs.writeFileSync(p, "[]", "utf8");
+    const { snapshot, locked, fresh, recovered } = prefs.load(p);
+    assert.strictEqual(locked, false);
+    assert.strictEqual(fresh, undefined);
+    assert.strictEqual(recovered, true);
+    assert.deepStrictEqual(snapshot, prefs.getDefaults());
+  });
+
+  it("marks explicitly malformed Codex gate fields as non-authoritative", () => {
+    for (const raw of [
+      { version: prefs.CURRENT_VERSION, agents: [] },
+      { version: prefs.CURRENT_VERSION, agents: "broken" },
+      { version: prefs.CURRENT_VERSION, agents: { codex: null } },
+      { version: prefs.CURRENT_VERSION, agents: { codex: [] } },
+      { version: prefs.CURRENT_VERSION, agents: { codex: { enabled: "yes" } } },
+    ]) {
+      const p = makeTempPath();
+      fs.writeFileSync(p, JSON.stringify(raw), "utf8");
+      const result = prefs.load(p);
+      assert.strictEqual(result.locked, false);
+      assert.strictEqual(result.recovered, undefined);
+      assert.strictEqual(result.codexAutoStartAuthoritative, false);
+      assert.strictEqual(result.snapshot.agents.codex.enabled, true);
+    }
+  });
+
+  it("keeps missing legacy Codex gate fields authoritative", () => {
+    for (const raw of [
+      { lang: "zh" },
+      { version: prefs.CURRENT_VERSION },
+      { version: prefs.CURRENT_VERSION, agents: {} },
+      { version: prefs.CURRENT_VERSION, agents: { codex: {} } },
+    ]) {
+      const p = makeTempPath();
+      fs.writeFileSync(p, JSON.stringify(raw), "utf8");
+      const result = prefs.load(p);
+      assert.strictEqual(result.codexAutoStartAuthoritative, undefined);
+      assert.strictEqual(result.snapshot.agents.codex.enabled, true);
+    }
   });
 
   it("migrates a v0 file (no version field) on load", () => {
@@ -1406,6 +1482,28 @@ describe("prefs.load", () => {
       console.warn = originalWarn;
     }
   });
+
+  it("accepts the restored v13 schema and locks an explicit v14 file", () => {
+    const currentPath = makeTempPath("v13.json");
+    fs.writeFileSync(currentPath, JSON.stringify({ version: 13, lang: "zh" }), "utf8");
+    const current = prefs.load(currentPath);
+    assert.strictEqual(current.locked, false);
+    assert.strictEqual(current.snapshot.version, 13);
+    assert.strictEqual(current.snapshot.lang, "zh");
+
+    const futurePath = makeTempPath("v14.json");
+    fs.writeFileSync(futurePath, JSON.stringify({ version: 14, lang: "ja" }), "utf8");
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      const future = prefs.load(futurePath);
+      assert.strictEqual(future.locked, true);
+      assert.strictEqual(future.snapshot.version, 14);
+      assert.strictEqual(future.snapshot.lang, "ja");
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
 });
 
 describe("prefs.save", () => {
@@ -1415,12 +1513,45 @@ describe("prefs.save", () => {
     snap.lang = "zh";
     snap.bubbleFollowPet = true;
     snap.x = 42;
+    snap.settingsWindowBounds = { x: -1200, y: 80, width: 900, height: 640 };
     prefs.save(p, snap);
     const { snapshot } = prefs.load(p);
     assert.strictEqual(snapshot.lang, "zh");
     assert.strictEqual(snapshot.bubbleFollowPet, true);
     assert.strictEqual(snapshot.x, 42);
+    assert.deepStrictEqual(snapshot.settingsWindowBounds, {
+      x: -1200,
+      y: 80,
+      width: 900,
+      height: 640,
+    });
     assert.strictEqual(snapshot.version, prefs.CURRENT_VERSION);
+  });
+
+  it("normalizes Settings window bounds and drops invalid geometry", () => {
+    assert.deepStrictEqual(
+      prefs.validate({
+        settingsWindowBounds: {
+          x: 10.4,
+          y: -20.6,
+          width: 801.7,
+          height: 559.8,
+          ignored: true,
+        },
+      }).settingsWindowBounds,
+      { x: 10, y: -21, width: 802, height: 560 },
+    );
+
+    for (const value of [
+      { x: 0, y: 0, width: 0, height: 560 },
+      { x: Infinity, y: 0, width: 800, height: 560 },
+      { x: "0", y: 0, width: 800, height: 560 },
+      { x: 0, y: 0, width: 800 },
+      [],
+      "800x560",
+    ]) {
+      assert.strictEqual(prefs.validate({ settingsWindowBounds: value }).settingsWindowBounds, null);
+    }
   });
 
   it("round-trips per-theme pet tints and drops invalid entries before writing", () => {
@@ -1470,6 +1601,27 @@ describe("prefs.save", () => {
     });
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(p, "utf8")).petAccessory, {});
     assert.deepStrictEqual(prefs.validate({ petAccessory: "wizard-hat" }).petAccessory, {});
+  });
+
+  it("round-trips per-theme holiday accessory opt-ins and stores only true entries", () => {
+    const p = makeTempPath();
+    prefs.save(p, {
+      ...prefs.getDefaults(),
+      holidayAccessoryEnabled: {
+        clawd: true,
+        cloudling: false,
+        "../unsafe": true,
+        calico: "true",
+      },
+    });
+    assert.deepStrictEqual(
+      prefs.load(p).snapshot.holidayAccessoryEnabled,
+      { clawd: true }
+    );
+    assert.deepStrictEqual(
+      prefs.validate({ holidayAccessoryEnabled: true }).holidayAccessoryEnabled,
+      {}
+    );
   });
 
   it("validates before writing — bad fields fall back to defaults on disk", () => {

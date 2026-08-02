@@ -1,0 +1,85 @@
+const test = require("node:test");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const MAIN_PATH = path.join(__dirname, "..", "src", "main.js");
+
+test("only the single-instance winner publishes the startup Codex auto-start gate", () => {
+  const source = fs.readFileSync(MAIN_PATH, "utf8").replace(/\r\n/g, "\n");
+  const lockIndex = source.indexOf("const gotTheLock = app.requestSingleInstanceLock();");
+  const loserBranchIndex = source.indexOf("if (!gotTheLock)", lockIndex);
+  const winnerBranchIndex = source.indexOf("} else {", loserBranchIndex);
+  const startupSnapshotIndex = source.indexOf(
+    "const startupGateSnapshot =",
+    winnerBranchIndex
+  );
+  const startupSyncIndex = source.indexOf(
+    '_syncCodexAutoStartGate(startupGateSnapshot, "startup")'
+  );
+
+  assert.ok(lockIndex >= 0, "main.js should request the single-instance lock");
+  assert.ok(loserBranchIndex > lockIndex, "main.js should branch on the lock result");
+  assert.ok(winnerBranchIndex > loserBranchIndex, "main.js should have a winner branch");
+  assert.ok(
+    startupSnapshotIndex > winnerBranchIndex
+      && startupSyncIndex > startupSnapshotIndex,
+    "startup gate sync must run only inside the single-instance winner branch"
+  );
+});
+
+test("non-authoritative startup prefs publish a fail-closed Codex gate", () => {
+  const source = fs.readFileSync(MAIN_PATH, "utf8").replace(/\r\n/g, "\n");
+  const startupSnapshotIndex = source.indexOf("const startupGateSnapshot =");
+  const lockedGuardIndex = source.indexOf(
+    "_initialPrefsLoad.locked === true",
+    startupSnapshotIndex
+  );
+  const recoveredGuardIndex = source.indexOf(
+    "_initialPrefsLoad.recovered === true",
+    startupSnapshotIndex
+  );
+  const codexAuthorityGuardIndex = source.indexOf(
+    "_initialPrefsLoad.codexAutoStartAuthoritative === false",
+    startupSnapshotIndex
+  );
+  const failClosedIndex = source.indexOf(
+    ") ? null : _initialPrefsLoad.snapshot;",
+    startupSnapshotIndex
+  );
+  const startupSyncIndex = source.indexOf(
+    '_syncCodexAutoStartGate(startupGateSnapshot, "startup")',
+    startupSnapshotIndex
+  );
+
+  assert.ok(startupSnapshotIndex >= 0, "main.js should derive a startup gate snapshot");
+  assert.ok(
+    lockedGuardIndex > startupSnapshotIndex
+      && recoveredGuardIndex > lockedGuardIndex
+      && codexAuthorityGuardIndex > recoveredGuardIndex
+      && failClosedIndex > codexAuthorityGuardIndex
+      && startupSyncIndex > failClosedIndex,
+    "locked, recovered, or gate-invalid prefs must become a null fail-closed startup snapshot"
+  );
+});
+
+test("future-version locked settings cannot publish an ephemeral Codex gate", () => {
+  const source = fs.readFileSync(MAIN_PATH, "utf8").replace(/\r\n/g, "\n");
+  const subscriptionIndex = source.indexOf(
+    '_settingsController.subscribeKey("agents", (_agents, snapshot) => {'
+  );
+  const lockedGuardIndex = source.indexOf(
+    "if (_settingsController.isLocked()) return;",
+    subscriptionIndex
+  );
+  const settingsSyncIndex = source.indexOf(
+    '_syncCodexAutoStartGate(snapshot, "settings")',
+    subscriptionIndex
+  );
+
+  assert.ok(subscriptionIndex >= 0, "main.js should subscribe to agents changes");
+  assert.ok(
+    lockedGuardIndex > subscriptionIndex && lockedGuardIndex < settingsSyncIndex,
+    "locked settings must return before publishing the settings gate"
+  );
+});

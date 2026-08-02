@@ -1,29 +1,25 @@
 {
   "name": "clawd-on-desk",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "A desktop pet that reacts to your Claude Code sessions in real-time.",
   "main": "src/main.js",
   "scripts": {
-    "start": "node scripts/ensure-sidecar-binaries.js && node launch.js",
+    "start": "node launch.js",
     "build": "electron-builder --win",
     "build:win:x64": "electron-builder --win nsis:x64",
     "build:win:arm64": "electron-builder --win nsis:arm64",
     "build:win:all": "electron-builder --win nsis:x64 nsis:arm64",
     "build:mac": "electron-builder --mac",
+    "build:mac:x64": "electron-builder --mac dmg:x64",
+    "build:mac:arm64": "electron-builder --mac dmg:arm64",
     "build:linux": "electron-builder --linux",
+    "build:linux:x64": "electron-builder --linux AppImage:x64 deb:x64",
     "build:all": "electron-builder --win --mac --linux",
-    "fetch:sidecars": "node scripts/fetch-sidecar-binaries.js",
     "verify:electron": "node scripts/verify-electron-install.js",
-    "verify:sidecars": "node scripts/verify-sidecar-binaries.js",
     "postinstall": "node scripts/verify-electron-install.js --context postinstall",
-    "prebuild": "node scripts/verify-sidecar-binaries.js",
-    "prebuild:win:x64": "node scripts/verify-sidecar-binaries.js",
-    "prebuild:win:arm64": "node scripts/verify-sidecar-binaries.js",
-    "prebuild:win:all": "node scripts/verify-sidecar-binaries.js",
-    "prebuild:mac": "node scripts/verify-sidecar-binaries.js",
-    "prebuild:linux": "node scripts/verify-sidecar-binaries.js",
-    "prebuild:all": "node scripts/verify-sidecar-binaries.js",
     "test": "node test/run-tests.js",
+    "audit:assets": "node scripts/audit-repository-assets.js",
+    "verify:release": "node scripts/verify-release-version.js",
     "create-theme": "node scripts/create-theme.js",
     "export-agent-icons": "node scripts/export-agent-icons.js",
     "install:claude-hooks": "node hooks/install.js",
@@ -34,6 +30,8 @@
     "install:kiro-hooks": "node hooks/kiro-install.js",
     "install:kimi-hooks": "node hooks/kimi-install.js",
     "install:qwen-hooks": "node hooks/qwen-code-install.js",
+    "install:zcode-hooks": "node hooks/zcode-install.js",
+    "uninstall:zcode-hooks": "node hooks/zcode-install.js --uninstall",
     "install:codewhale-hooks": "node hooks/codewhale-install.js",
     "uninstall:codewhale-hooks": "node hooks/codewhale-install.js --uninstall",
     "install:pi-extension": "node hooks/pi-install.js",
@@ -141,7 +139,6 @@
     "files": [
       "NOTICE.md",
       "src/**/*",
-      "assets/icon.ico",
       "assets/icon.png",
       "assets/icons/**/*",
       "assets/icons/agents/**/*",
@@ -169,10 +166,6 @@
       {
         "from": "assets/icon.ico",
         "to": "icon.ico"
-      },
-      {
-        "from": "bin/cc-connect-clawd",
-        "to": "sidecars/cc-connect-clawd"
       }
     ],
     "publish": [
@@ -187,6 +180,7 @@
     "node": ">=22.12.0"
   },
   "devDependencies": {
+    "@electron/asar": "^3.4.1",
     "electron": "^41.10.2",
     "electron-builder": "^26.8.1"
   },

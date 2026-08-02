@@ -70,7 +70,7 @@ describe("Remote SSH secure hook manifest", () => {
   });
 
   it("keeps the retired shell entry point fail-closed", () => {
-    const script = fs.readFileSync(SCRIPT_PATH, "utf8");
+    const script = fs.readFileSync(SCRIPT_PATH, "utf8").replace(/\r\n/g, "\n");
 
     assert.match(script, /Settings -> Remote SSH -> Deploy \/ Repair Hooks/);
     assert.match(script, /\nexit 2\n$/);

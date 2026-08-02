@@ -32,7 +32,10 @@ afterEach(() => {
 });
 
 test("scripts/remote-deploy.sh is a fail-fast tombstone with no legacy transport", () => {
-  const sh = fs.readFileSync(path.join(REPO_ROOT, "scripts", "remote-deploy.sh"), "utf8");
+  const sh = fs.readFileSync(
+    path.join(REPO_ROOT, "scripts", "remote-deploy.sh"),
+    "utf8",
+  ).replace(/\r\n/g, "\n");
   assert.match(sh, /^#!\/usr\/bin\/env bash\n(?:echo .+\n)exit 2\n$/);
   assert.match(sh, /Settings -> Remote SSH/);
   assert.doesNotMatch(sh, /\bssh\b|\bscp\b|RemoteForward|23333|FILES=\(/);
@@ -642,7 +645,9 @@ test("ownerless lock and stale release are diagnosed without takeover or broad d
   assert.match(releaseCommand, /&& rm -rf/);
 });
 
-test("lease fencing gates every command in a multiline mutation block", () => {
+test("lease fencing gates every command in a multiline mutation block", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem and shell semantics" : false,
+}, () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-fence-exec-"));
   const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
     runtimeMode: "account-default",
@@ -676,7 +681,9 @@ test("lease fencing gates every command in a multiline mutation block", () => {
   }
 });
 
-test("ownership preflight detects managed config traces even when hook files are gone", () => {
+test("ownership preflight detects managed config traces even when hook files are gone", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem and shell semantics" : false,
+}, () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-config-trace-"));
   const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
     runtimeMode: "account-default",
@@ -705,7 +712,9 @@ test("ownership preflight detects managed config traces even when hook files are
   }
 });
 
-test("installer verification reads back the secure managed command shape", () => {
+test("installer verification reads back the secure managed command shape", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem and shell semantics" : false,
+}, () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-installer-readback-"));
   const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
     runtimeMode: "profile-isolated",
@@ -776,7 +785,9 @@ test("secure scp target is one raw argv token without literal shell quotes", () 
   );
 });
 
-test("monitor verification requires a live PID with the exact layout script path", async () => {
+test("monitor verification requires a live PID with the exact layout script path", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem and shell semantics" : false,
+}, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-monitor-readback-"));
   const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
     runtimeMode: "account-default",
@@ -823,7 +834,9 @@ test("monitor verification requires a live PID with the exact layout script path
   }
 });
 
-test("isolated CLI probe survives the real remote shell and discovers PATH executables", async () => {
+test("isolated CLI probe survives the real remote shell and discovers PATH executables", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem and shell semantics" : false,
+}, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-isolated-cli-probe-"));
   const fakeBin = path.join(temp, "fake-bin");
   const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
@@ -881,7 +894,9 @@ test("isolated CLI probe survives the real remote shell and discovers PATH execu
   }
 });
 
-test("isolated wrapper records exact evidence only after the CLI exits successfully", () => {
+test("isolated wrapper records exact evidence only after the CLI exits successfully", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem and shell semantics" : false,
+}, () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-wrapper-evidence-"));
   const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
     runtimeMode: "profile-isolated",
@@ -929,7 +944,9 @@ test("isolated wrapper records exact evidence only after the CLI exits successfu
   }
 });
 
-test("legacy monitor cleanup kills only the exact account-default monitor command", async () => {
+test("legacy monitor cleanup kills only the exact account-default monitor command", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem and shell semantics" : false,
+}, async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-legacy-monitor-"));
   const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
     runtimeMode: "account-default",
@@ -1128,7 +1145,7 @@ test("profile-isolated deploy writes root-specific wrappers and activates only a
   );
   const cliProbeCommand = String(recorder.calls[4].args.at(-1));
   assert.ok(cliProbeCommand.includes(
-    'const wrapperBin=\\"/home/shared/.clawd/profiles/rt_profile_a/bin\\"'
+    'const wrapperBin="/home/shared/.clawd/profiles/rt_profile_a/bin"'
   ));
   assert.match(cliProbeCommand, /real\(x\)!==wrapperReal/);
 

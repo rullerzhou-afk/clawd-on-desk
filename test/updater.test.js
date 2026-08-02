@@ -7,6 +7,66 @@ it("allows ten minutes for git-source dependency installation", () => {
   assert.strictEqual(initUpdater.__test.DEPENDENCY_INSTALL_TIMEOUT_MS, 10 * 60 * 1000);
 });
 
+it("classifies stable update error codes from codes, HTTP status, phase, and confirmed releases", () => {
+  const classify = initUpdater.__test.classifyUpdateError;
+  assert.equal(classify(Object.assign(new Error("offline"), { code: "ENETUNREACH" })), "NETWORK_OFFLINE");
+  assert.equal(classify(Object.assign(new Error("dns"), { code: "ENOTFOUND" })), "DNS_FAILED");
+  assert.equal(classify(Object.assign(new Error("slow"), { code: "ETIMEDOUT" })), "CONNECTION_TIMEOUT");
+  assert.equal(classify(Object.assign(new Error("rate"), { statusCode: 429 })), "GITHUB_RATE_LIMIT");
+  assert.equal(classify(new Error("fetch failed"), { phase: "git-fetch", mode: "git" }), "GIT_FETCH_FAILED");
+  assert.equal(classify(new Error("checksum mismatch"), { phase: "integrity" }), "INTEGRITY_FAILED");
+  assert.equal(classify(new Error("Cannot find latest.yml (404)"), {
+    phase: "availability-check",
+    releaseConfirmed: true,
+  }), "NO_COMPATIBLE_ASSET");
+});
+
+it("redacts credentials and URL queries and bounds copied update details", () => {
+  const sanitize = initUpdater.__test.sanitizeUpdateErrorDetail;
+  const secret = "super-secret-value";
+  const output = sanitize([
+    "Authorization: Bearer abc123",
+    "Cookie: session=abc123",
+    `token=${secret}`,
+    "GITHUB_TOKEN=ghp_SUPERSECRET",
+    "OPENAI_API_KEY=sk-supersecret",
+    "AWS_SECRET_ACCESS_KEY=aws-supersecret",
+    '"company_api_token": "quoted secret with spaces"',
+    "customCredential='single quoted credential'",
+    "raw provider token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "remote=https://alice:password123@example.test/repo.git",
+    "proxy=socks5://bob:p@ssword@proxy.example.test:1080",
+    "`https://carol:backtick-password@example.test/private?token=hidden#fragment`",
+    '`company_api_token="backticked secret phrase"`',
+    "https://example.test/releases/latest?token=abc123#private",
+    "x".repeat(20_000),
+  ].join("\n"));
+  assert.doesNotMatch(
+    output,
+    /Bearer abc123|session=abc123|super-secret-value|ghp_SUPERSECRET|sk-supersecret|aws-supersecret|quoted secret with spaces|single quoted credential|backticked secret phrase|ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ|alice|password123|bob|p@ssword|carol|backtick-password|\?token=|#private|#fragment/
+  );
+  assert.match(output, /\[REDACTED\]/);
+  assert.match(output, /GITHUB_TOKEN=\[REDACTED\]/);
+  assert.match(output, /OPENAI_API_KEY=\[REDACTED\]/);
+  assert.match(output, /AWS_SECRET_ACCESS_KEY=\[REDACTED\]/);
+  assert.match(output, /company_api_token=\[REDACTED\]/);
+  assert.match(output, /customCredential=\[REDACTED\]/);
+  assert.match(output, /https:\/\/\[REDACTED\]@example\.test\/repo\.git/);
+  assert.match(output, /socks5:\/\/\[REDACTED\]@proxy\.example\.test:1080/);
+  assert.match(output, /https:\/\/example\.test\/releases\/latest/);
+  assert.ok(output.length <= initUpdater.__test.UPDATE_ERROR_DETAIL_MAX_LENGTH);
+  assert.match(output, /truncated/);
+});
+
+it("sanitizes punctuation-heavy diagnostics without pathological backtracking", { timeout: 250 }, () => {
+  const sanitize = initUpdater.__test.sanitizeUpdateErrorDetail;
+  for (const input of ["a-".repeat(10_000), "a.".repeat(10_000)]) {
+    const output = sanitize(input);
+    assert.ok(output.length <= initUpdater.__test.UPDATE_ERROR_DETAIL_MAX_LENGTH);
+    assert.match(output, /truncated/);
+  }
+});
+
 function makeCtx(overrides = {}) {
   return {
     doNotDisturb: false,
@@ -265,6 +325,52 @@ describe("updater visual flow", () => {
     assert.ok(applied.some((entry) => entry.state === "notification" && entry.svgOverride == null));
   });
 
+  it("does not let a repeated check replace a pending available-update flow", async () => {
+    const handlers = {};
+    let releaseLookups = 0;
+    let updaterChecks = 0;
+    let resolveAvailable;
+    const availableResult = new Promise((resolve) => { resolveAvailable = resolve; });
+    const updater = initUpdater(makeCtx({
+      showUpdateBubble: (payload) => {
+        if (payload.mode === "available") return availableResult;
+        return payload.defaultAction || null;
+      },
+    }), makeDeps({
+      autoUpdaterFactory: () => ({
+        autoDownload: false,
+        autoInstallOnAppQuit: true,
+        on(event, handler) { handlers[event] = handler; },
+        checkForUpdates: async () => {
+          updaterChecks += 1;
+          return { updateInfo: { version: "0.5.11" } };
+        },
+        quitAndInstall() {},
+        downloadUpdate() {},
+      }),
+      httpsGetImpl: (options, cb) => {
+        releaseLookups += 1;
+        return makeLatestReleaseResponse({ tag_name: "v0.5.11" })(options, cb);
+      },
+    }));
+
+    updater.setupAutoUpdater();
+    await updater.checkForUpdates(true);
+    const prompt = handlers["update-available"]({ version: "0.5.11" });
+    await Promise.resolve();
+
+    assert.equal(updater.getUpdateCheckSnapshot().state, "available");
+    assert.equal(updater.getUpdateMenuItem().enabled, false);
+    const repeated = await updater.checkForUpdates(true);
+    assert.equal(repeated.state, "available");
+    assert.equal(releaseLookups, 1);
+    assert.equal(updaterChecks, 1);
+
+    resolveAvailable("later");
+    await prompt;
+    assert.equal(updater.getUpdateCheckSnapshot().state, "idle");
+  });
+
   it("does not flash available overlay for non-manual checks during mini mode", async () => {
     const visualStates = [];
     const bubbles = [];
@@ -392,9 +498,11 @@ describe("updater visual flow", () => {
       "api.github.com/repos/rullerzhou-afk/clawd-on-desk/releases/latest",
     ]);
     assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "error"]);
-    assert.match(bubbles[1].detail, /Operation: Check for Updates/);
-    assert.match(bubbles[1].detail, /Reason: network down/);
+    assert.match(bubbles[1].detail, /Code: NETWORK_OFFLINE/);
     assert.match(bubbles[1].detail, /network down/);
+    assert.deepStrictEqual(bubbles[1].actions.map((action) => action.id), ["copy-error", "dismiss"]);
+    assert.match(bubbles[1].copyText, /NETWORK_OFFLINE/);
+    assert.equal(updater.getUpdateCheckSnapshot().error.code, "NETWORK_OFFLINE");
   });
 
   it("falls back to releases/latest redirect when GitHub API is rate-limited", async () => {
@@ -531,7 +639,36 @@ describe("updater visual flow", () => {
       "api.github.com/repos/rullerzhou-afk/clawd-on-desk/releases/latest",
     ]);
     assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "error"]);
-    assert.match(bubbles[1].detail, /Reason: No releases found/);
+    assert.match(bubbles[1].detail, /Code: UNKNOWN/);
+    assert.match(bubbles[1].detail, /No releases found/);
+  });
+
+  it("reports a confirmed newer release with missing updater metadata as no compatible asset", async () => {
+    const bubbles = [];
+    const updater = initUpdater(makeCtx({
+      showUpdateBubble: (payload) => bubbles.push(payload),
+    }), makeDeps({
+      autoUpdaterFactory: () => ({
+        autoDownload: false,
+        autoInstallOnAppQuit: true,
+        on() {},
+        checkForUpdates: async () => {
+          const err = new Error("Cannot find latest.yml (404)");
+          err.code = "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND";
+          throw err;
+        },
+        quitAndInstall() {},
+        downloadUpdate() {},
+      }),
+      httpsGetImpl: makeLatestReleaseResponse({ tag_name: "v0.5.11" }),
+    }));
+
+    const snapshot = await updater.checkForUpdates(true);
+
+    assert.equal(snapshot.state, "error");
+    assert.equal(snapshot.error.code, "NO_COMPATIBLE_ASSET");
+    assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "error"]);
+    assert.match(bubbles[1].detail, /NO_COMPATIBLE_ASSET/);
   });
 
   it("shows a real error bubble when packaged download fails after user starts it", async () => {
@@ -579,6 +716,49 @@ describe("updater visual flow", () => {
 
     assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "available", "downloading", "error"]);
     assert.match(bubbles[3].detail, /download exploded/);
+  });
+
+  it("keeps confirmed-release context when a packaged download fails with 404", async () => {
+    const bubbles = [];
+    const handlers = {};
+    const updater = initUpdater(makeCtx({
+      showUpdateBubble: async (payload) => {
+        bubbles.push(payload);
+        if (payload.mode === "available") return "primary";
+        return payload.defaultAction || null;
+      },
+    }), makeDeps({
+      platform: "win32",
+      autoUpdaterFactory: () => ({
+        autoDownload: false,
+        autoInstallOnAppQuit: true,
+        on(event, handler) { handlers[event] = handler; },
+        checkForUpdates: async () => ({ updateInfo: { version: "0.5.11" } }),
+        quitAndInstall() {},
+        downloadUpdate() {
+          return Promise.resolve().then(() => {
+            const err = new Error("Cannot find latest.yml (404)");
+            err.code = "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND";
+            return handlers.error(err);
+          });
+        },
+      }),
+      httpsGetImpl: makeLatestReleaseResponse({ tag_name: "v0.5.11" }),
+    }));
+
+    updater.setupAutoUpdater();
+    await updater.checkForUpdates(true);
+    await handlers["update-available"]({ version: "0.5.11" });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), [
+      "checking",
+      "available",
+      "downloading",
+      "error",
+    ]);
+    assert.equal(updater.getUpdateCheckSnapshot().state, "error");
+    assert.equal(updater.getUpdateCheckSnapshot().error.code, "NO_COMPATIBLE_ASSET");
   });
 
   it("prompts x64 Windows-on-ARM users to download the native ARM64 installer", async () => {
@@ -634,7 +814,9 @@ describe("updater visual flow", () => {
       }),
     }));
 
-    await updater.checkForUpdates(true);
+    const snapshot = await updater.checkForUpdates(true);
+    assert.equal(snapshot.state, "available");
+    await new Promise((resolve) => setImmediate(resolve));
 
     assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "available", "ready"]);
     assert.match(bubbles[1].title, /ARM64/);
@@ -643,6 +825,44 @@ describe("updater visual flow", () => {
     assert.doesNotMatch(bubbles[1].message, /vv0\.6\.1/);
     assert.strictEqual(openedUrls[0], "https://example.invalid/arm64.exe");
     assert.strictEqual(autoUpdateChecks, 0);
+  });
+
+  it("does not advertise an older ARM64 release to a newer x64-on-ARM build", async () => {
+    const bubbles = [];
+    const openedUrls = [];
+    const updater = initUpdater(makeCtx({
+      showUpdateBubble: async (payload) => {
+        bubbles.push(payload);
+        return payload.defaultAction || null;
+      },
+    }), makeDeps({
+      platform: "win32",
+      arch: "x64",
+      app: {
+        isPackaged: true,
+        runningUnderARM64Translation: true,
+        getVersion: () => "0.6.2",
+        relaunch() {},
+        exit() {},
+      },
+      shell: {
+        openExternal(url) { openedUrls.push(url); },
+      },
+      httpsGetImpl: makeLatestReleaseResponse({
+        tag_name: "v0.6.1",
+        assets: [{
+          name: "Clawd-on-Desk-Setup-0.6.1-arm64.exe",
+          browser_download_url: "https://example.invalid/arm64.exe",
+        }],
+      }),
+    }));
+
+    const snapshot = await updater.checkForUpdates(true);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(snapshot.state, "up-to-date");
+    assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "up-to-date"]);
+    assert.deepStrictEqual(openedUrls, []);
   });
 
   it("falls back to normal up-to-date handling when no ARM64 installer asset exists", async () => {
@@ -1063,12 +1283,13 @@ describe("updater visual flow", () => {
       },
     }));
 
-    await updater.checkForUpdates(true);
+    const snapshot = await updater.checkForUpdates(true);
+    assert.equal(snapshot.state, "available");
+    await new Promise((resolve) => setImmediate(resolve));
 
     assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "available", "error"]);
     assert.match(bubbles[2].message, /modified|commit|stash/i);
-    assert.match(bubbles[2].detail, /Failure Type: Dirty Worktree/i);
-    assert.match(bubbles[2].detail, /Operation: Apply Git Update/i);
+    assert.match(bubbles[2].detail, /GIT_DIRTY_WORKTREE/);
     assert.match(bubbles[2].detail, /package-lock\.json/);
   });
 

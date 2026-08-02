@@ -56,7 +56,7 @@ const {
   PET_ACCESSORY_IDS,
 } = require("./pet-customization-catalog");
 
-const CURRENT_VERSION = 12;
+const CURRENT_VERSION = 13;
 const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
 const DEFAULT_INTEGRATION_INSTALLED_SET = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 
@@ -72,7 +72,7 @@ const SCHEMA = {
     type: "number",
     default: CURRENT_VERSION,
   },
-  // Window state
+  // Pet window state
   x: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
   y: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
   positionSaved: { type: "boolean", default: false },
@@ -101,6 +101,15 @@ const SCHEMA = {
     type: "object",
     defaultFactory: () => null,
     normalize: normalizeSavedPixelWorkArea,
+  },
+  // Normal-state geometry for the resizable Settings window. `null` means the
+  // user has not placed it yet, so the runtime centers it on the pet display.
+  // The Settings runtime prefers Electron's normal bounds so maximized,
+  // minimized, and fullscreen rectangles are not stored here.
+  settingsWindowBounds: {
+    type: "object",
+    defaultFactory: () => null,
+    normalize: normalizeSettingsWindowBounds,
   },
   size: {
     type: "string",
@@ -134,6 +143,10 @@ const SCHEMA = {
   // per distinct breakage, not every launch. See codex-hook-health.js.
   codexHookHealthNotifyEnabled: { type: "boolean", default: true },
   codexHookHealthLastNotified: { type: "string", default: "" },
+  // Edge-triggered startup nudge for users whose retired Telegram sidecar
+  // requires native verification. Cleared after native activation or an
+  // explicit switch-off so a future migration requirement can warn once.
+  telegramMigrationLastNotified: { type: "string", default: "" },
   // System-backed: actual truth lives in OS login items / autostart files.
   // `openAtLoginHydrated` starts false; main.js's startup hydrate helper imports
   // the current system value into prefs on first run, then flips this flag.
@@ -224,6 +237,9 @@ const SCHEMA = {
     default: 5000,
     validate: (v) => Number.isInteger(v) && v >= 0 && v <= 60000,
   },
+  // Opt-in decorative feedback for recognized Claude Code Bash test runs.
+  // The hook sends only pass/fail, never the command or full test output.
+  testReactionsEnabled: { type: "boolean", default: false },
   lowPowerIdleMode: { type: "boolean", default: false },
   mobilePreviewEnabled: { type: "boolean", default: false },
   // When true, prevent the OS from sleeping while any agent task is in
@@ -289,6 +305,14 @@ const SCHEMA = {
     defaultFactory: () => ({}),
     normalize: normalizePetAccessory,
   },
+  // Per-theme opt-in for temporary date-based holiday accessories. Missing
+  // entries mean disabled; the saved manual petAccessory choice remains the
+  // source restored outside a holiday window.
+  holidayAccessoryEnabled: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizeHolidayAccessoryEnabled,
+  },
   // Phase 2/3 placeholders — schema reserves the keys so future migrations don't need v2.
   agents: {
     type: "object",
@@ -318,6 +342,10 @@ const SCHEMA = {
       "kiro-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "kimi-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "qwen-code": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
+      // ZCode (智谱/Z.ai desktop ADE) is state-only (Phase 1), so permission
+      // bubbles default off. Its ~/.zcode/cli/config.json schema is distinct:
+      // config-file hooks live under hooks.events.* and use timeoutMs.
+      "zcode": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       "codewhale": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       "opencode": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "mimocode": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
@@ -718,6 +746,11 @@ function migrate(raw) {
     if (!("showDock" in out)) out.showDock = true;
     out.version = 12;
   }
+  // v12 -> v13: Settings-window geometry persistence. No backfill is needed:
+  // an absent/null value intentionally keeps the existing centered placement.
+  if (out.version < 13) {
+    out.version = 13;
+  }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;
   }
@@ -796,6 +829,37 @@ function normalizeSavedPixelWorkArea(value) {
   if (!Number.isFinite(w) || w <= 0) return null;
   if (!Number.isFinite(h) || h <= 0) return null;
   return { width: w, height: h };
+}
+
+function isValidSettingsWindowBounds(value) {
+  return !!value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Number.isSafeInteger(value.x)
+    && Number.isSafeInteger(value.y)
+    && Number.isSafeInteger(value.width)
+    && Number.isSafeInteger(value.height)
+    && value.width > 0
+    && value.height > 0;
+}
+
+function normalizeSettingsWindowBounds(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (
+    !Number.isFinite(value.x)
+    || !Number.isFinite(value.y)
+    || !Number.isFinite(value.width)
+    || !Number.isFinite(value.height)
+  ) {
+    return null;
+  }
+  const normalized = {
+    x: Math.round(value.x),
+    y: Math.round(value.y),
+    width: Math.round(value.width),
+    height: Math.round(value.height),
+  };
+  return isValidSettingsWindowBounds(normalized) ? normalized : null;
 }
 
 function normalizePositionDisplay(value) {
@@ -1117,6 +1181,16 @@ function normalizePetAccessory(value, defaultsValue) {
   return out;
 }
 
+function normalizeHolidayAccessoryEnabled(value, defaultsValue) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return defaultsValue;
+  const out = {};
+  for (const [themeId, enabled] of Object.entries(value)) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)) continue;
+    if (enabled === true) out[themeId] = true;
+  }
+  return out;
+}
+
 function normalizeIdleVisual(value, defaultsValue) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return defaultsValue;
   const out = {};
@@ -1133,7 +1207,8 @@ function normalizeIdleVisual(value, defaultsValue) {
 
 // ── Disk I/O ──
 
-// Read prefs from disk. Returns `{ snapshot, locked, fresh? }`:
+// Read prefs from disk. Returns
+// `{ snapshot, locked, fresh?, recovered?, codexAutoStartAuthoritative? }`:
 //   - snapshot: a valid prefs object (always — falls back to defaults on any error)
 //   - locked: true if the file came from a future version; save() should be a no-op
 //             to avoid clobbering it.
@@ -1142,6 +1217,13 @@ function normalizeIdleVisual(value, defaultsValue) {
 //            the device locale) without ever overriding an existing user's choices.
 //            Absent/falsy on every other path — a corrupt or unreadable file is
 //            NOT treated as fresh, so we never clobber a returning user's language.
+//   - recovered: true when an existing file could not supply authoritative prefs
+//                and the snapshot is only a fail-safe defaults fallback. Callers
+//                must not publish permissive external gates from that snapshot.
+//   - codexAutoStartAuthoritative: false when the prefs root is otherwise
+//                recoverable but an explicitly-present Codex gate field has an
+//                invalid type. Missing legacy fields retain their historical
+//                default/migration behavior.
 function load(prefsPath) {
   let raw;
   try {
@@ -1161,11 +1243,31 @@ function load(prefsPath) {
     } catch (bakErr) {
       console.warn("Clawd: prefs file unreadable and backup failed:", err.message, bakErr.message);
     }
-    return { snapshot: getDefaults(), locked: false };
+    return { snapshot: getDefaults(), locked: false, recovered: true };
   }
-  if (!raw || typeof raw !== "object") {
-    return { snapshot: getDefaults(), locked: false };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { snapshot: getDefaults(), locked: false, recovered: true };
   }
+  const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+  const isObjectRecord = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+  let codexAutoStartAuthoritative = true;
+  if (hasOwn(raw, "agents")) {
+    if (!isObjectRecord(raw.agents)) {
+      codexAutoStartAuthoritative = false;
+    } else if (hasOwn(raw.agents, "codex")) {
+      if (!isObjectRecord(raw.agents.codex)) {
+        codexAutoStartAuthoritative = false;
+      } else if (
+        hasOwn(raw.agents.codex, "enabled")
+        && typeof raw.agents.codex.enabled !== "boolean"
+      ) {
+        codexAutoStartAuthoritative = false;
+      }
+    }
+  }
+  const codexAuthorityMeta = codexAutoStartAuthoritative
+    ? {}
+    : { codexAutoStartAuthoritative: false };
   // Future-version guard: refuse to overwrite a prefs file written by a newer version.
   const incomingVersion = typeof raw.version === "number" ? raw.version : 0;
   if (incomingVersion > CURRENT_VERSION) {
@@ -1173,10 +1275,10 @@ function load(prefsPath) {
       `Clawd: prefs file version ${incomingVersion} is newer than supported (${CURRENT_VERSION}). ` +
       `Settings will be readable but not saved to avoid data loss.`
     );
-    return { snapshot: validate(raw), locked: true };
+    return { snapshot: validate(raw), locked: true, ...codexAuthorityMeta };
   }
   const migrated = migrate(raw);
-  return { snapshot: validate(migrated), locked: false };
+  return { snapshot: validate(migrated), locked: false, ...codexAuthorityMeta };
 }
 
 function save(prefsPath, snapshot) {
@@ -1231,6 +1333,7 @@ module.exports = {
   normalizeShortcuts,
   normalizeOptionalHttpUrl,
   normalizePathList,
+  isValidSettingsWindowBounds,
   MAX_CUSTOM_DISCOVERY_PATHS,
   MAX_CUSTOM_DISCOVERY_PATH_LENGTH,
 };

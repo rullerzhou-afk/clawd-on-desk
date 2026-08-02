@@ -4,7 +4,7 @@
 // CodeBuddy uses Claude Code-compatible hook format with identical event names.
 
 const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
 // CodeBuddy hook event → { state, event } for the Clawd state machine
 const HOOK_MAP = {
@@ -17,6 +17,15 @@ const HOOK_MAP = {
   // PermissionRequest: handled by HTTP hook (blocking), not this command hook
   Notification:     { state: "notification", event: "Notification" },
   PreCompact:       { state: "sweeping",     event: "PreCompact" },
+};
+
+// #634: lifecycle for the shared resolver's cross-process pid cache. Stop is
+// deliberately NOT "end" (turn completion, not session end — dropping the
+// cache there would force a fresh snapshot flash on the next tool event).
+const EVENT_TO_LIFECYCLE = {
+  SessionStart: "start",
+  UserPromptSubmit: "prompt",
+  SessionEnd: "end",
 };
 
 const config = getPlatformConfig({
@@ -83,7 +92,13 @@ readStdinJson()
     const sessionId = (payload && payload.session_id) || "default";
     const cwd = (payload && payload.cwd) || "";
 
-    const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve();
+    const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve({
+      namespace: "codebuddy",
+      sessionId,
+      cacheCwd: cwd,
+      lifecycle: EVENT_TO_LIFECYCLE[hookName] || "event",
+      cacheable: sessionId !== "default" && !!cwd,
+    });
 
     const body = { state, session_id: sessionId, event };
     body.agent_id = "codebuddy";
@@ -91,6 +106,7 @@ readStdinJson()
     if (process.env.CLAWD_REMOTE) {
       body.host = readHostPrefix();
       applyWslSourceFields(body, { remote: true });
+      applyOrcaPaneKey(body);
     } else {
       applyWslSourceFields(body);
       body.source_pid = stablePid;
@@ -99,6 +115,7 @@ readStdinJson()
       if (pidChain.length) body.pid_chain = pidChain;
       if (tmuxSocket) body.tmux_socket = tmuxSocket;
       if (tmuxClient) body.tmux_client = tmuxClient;
+      applyOrcaPaneKey(body);
     }
 
     // Answer CodeBuddy immediately so it never sees empty stdout, but don't

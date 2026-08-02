@@ -3,7 +3,7 @@
 // Registered in ~/.kiro/agents/clawd.json by hooks/kiro-install.js
 
 const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
 // Kiro CLI hook event → { state, event } for the Clawd state machine
 const HOOK_MAP = {
@@ -36,7 +36,19 @@ readStdinJson()
     const sessionId = "default";
     const cwd = (payload && payload.cwd) || "";
 
-    const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve();
+    // #634: no stable session id → cacheable stays false (never key a
+    // cross-process cache under the shared "default" sid, cf. #583) and no
+    // "prompt" mapping (cache-only would ship empty fields where today's
+    // per-event fresh snapshot ships real ones). agentSpawn→"start" still
+    // reuses the existing in-process prewarm; with cacheable:false it does no
+    // disk sweep/write/drop. Everything else stays a plain fresh snapshot.
+    const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve({
+      namespace: "kiro-cli",
+      sessionId,
+      cacheCwd: cwd,
+      lifecycle: hookName === "agentSpawn" ? "start" : "event",
+      cacheable: false,
+    });
 
     const body = { state, session_id: sessionId, event };
     body.agent_id = "kiro-cli";
@@ -44,6 +56,7 @@ readStdinJson()
     if (process.env.CLAWD_REMOTE) {
       body.host = readHostPrefix();
       applyWslSourceFields(body, { remote: true });
+      applyOrcaPaneKey(body);
     } else {
       applyWslSourceFields(body);
       body.source_pid = stablePid;
@@ -52,6 +65,7 @@ readStdinJson()
       if (pidChain.length) body.pid_chain = pidChain;
       if (tmuxSocket) body.tmux_socket = tmuxSocket;
       if (tmuxClient) body.tmux_client = tmuxClient;
+      applyOrcaPaneKey(body);
     }
 
     postStateToRunningServer(JSON.stringify(body), { timeoutMs: 100 }, () => {

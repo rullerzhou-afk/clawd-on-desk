@@ -24,7 +24,8 @@ const {
   extractAssistantTextFromRecord,
 } = require("../hooks/codex-assistant-output");
 const {
-  resolveCodexRateLimitQuota,
+  resolveCodexRateLimitReport,
+  resolveCodexModelQuotaProvider,
   isFreshCodexQuotaTimestamp,
 } = require("../hooks/codex-rate-limits");
 const { parseCodexUserInputRecord } = require("../hooks/codex-user-input");
@@ -335,13 +336,13 @@ class CodexLogMonitor {
     }
   }
 
-  // Bounded, standalone pass over an otherwise-ignored old file — does not
-  // run the normal state-mapping pipeline (_processLine) and never reads
-  // more than a fixed head+tail window, regardless of file size. Used only
-  // by _runRecoverySweep. Returns a ready-to-track entry (offset already
-  // caught up, so normal polling only reads NEW bytes from here on) or null
-  // if nothing is genuinely still pending or the file's role can't be
-  // confirmed safely.
+  // Bounded, standalone pass over an otherwise-ignored old-mtime file. Used
+  // only by _runRecoverySweep and never reads more than a fixed head+tail
+  // window, regardless of file size. It recovers either a genuinely pending
+  // request or a file whose embedded timestamps prove it is still active.
+  // The latter matters on Windows: LastWriteTime can remain frozen while
+  // Codex keeps an append handle open, so an app restart would otherwise
+  // skip the current long-running conversation until the handle closes.
   //
   // A request is "still pending" only up to the next task_complete/
   // turn_aborted for this file — those end the turn that asked, so any
@@ -354,7 +355,9 @@ class CodexLogMonitor {
     } catch {
       return null;
     }
-    if (stat.size === 0 || Date.now() - stat.mtimeMs > RECOVERY_MAX_AGE_MS) return null;
+    if (stat.size === 0) return null;
+    const nowMs = Date.now();
+    const tooOldForPendingRecovery = nowMs - stat.mtimeMs > RECOVERY_MAX_AGE_MS;
     const sessionId = this._extractSessionId(fileName);
     if (!sessionId) return null;
 
@@ -416,6 +419,7 @@ class CodexLogMonitor {
 
     const pending = new Map();
     const pendingTimestampMs = new Map();
+    let latestEmbeddedTimestampMs = null;
     for (const line of rawLines) {
       if (!line.trim()) continue;
       let obj;
@@ -423,6 +427,14 @@ class CodexLogMonitor {
         obj = JSON.parse(line);
       } catch {
         continue;
+      }
+      const embeddedTimestampMs = typeof obj.timestamp === "string"
+        ? Date.parse(obj.timestamp)
+        : NaN;
+      if (Number.isFinite(embeddedTimestampMs)) {
+        latestEmbeddedTimestampMs = latestEmbeddedTimestampMs === null
+          ? embeddedTimestampMs
+          : Math.max(latestEmbeddedTimestampMs, embeddedTimestampMs);
       }
       const payload = obj && typeof obj === "object" ? obj.payload : null;
       const subtype = payload && typeof payload === "object" ? payload.type || "" : "";
@@ -443,7 +455,9 @@ class CodexLogMonitor {
         pendingTimestampMs.delete(record.callId);
       }
     }
-    if (pending.size === 0) return null;
+    const recentlyActive = latestEmbeddedTimestampMs !== null
+      && latestEmbeddedTimestampMs >= nowMs - ACTIVE_SESSION_WINDOW_MS
+      && latestEmbeddedTimestampMs <= nowMs + ACTIVE_SESSION_WINDOW_MS;
 
     // mtime alone isn't a reliable age signal — Codex Desktop can refresh a
     // dormant file's mtime (e.g. on focus) without the pending question
@@ -451,11 +465,13 @@ class CodexLogMonitor {
     // timestamp where we have one; a stale question must not survive just
     // because something else touched the file.
     const knownTimestamps = [...pendingTimestampMs.values()].filter((ts) => ts !== null);
-    if (knownTimestamps.length > 0 && Date.now() - Math.min(...knownTimestamps) > RECOVERY_MAX_AGE_MS) {
-      return null;
+    if (knownTimestamps.length > 0 && nowMs - Math.min(...knownTimestamps) > RECOVERY_MAX_AGE_MS) {
+      pending.clear();
+      pendingTimestampMs.clear();
     }
+    if (!recentlyActive && (pending.size === 0 || tooOldForPendingRecovery)) return null;
 
-    return {
+    const recovered = {
       // Stops at the last complete newline, not true EOF — matches
       // _pollFile's own offset convention. A still-growing final line is
       // simply left on disk and reread whole by the next normal poll,
@@ -473,24 +489,42 @@ class CodexLogMonitor {
       sessionTitle: null,
       codexOriginator: null,
       codexSource: null,
-      lastEventTime: Date.now(),
-      lastState: "notification",
+      codexQuotaProviderHint: null,
+      lastEventTime: nowMs,
+      lastState: recentlyActive ? null : "notification",
       lastStateEvent: null,
       // We're about to emit (or would, if not a subagent) — bookkeeping must
       // reflect that now, not stay at "never emitted" defaults, or this
       // entry becomes a first-priority eviction candidate under
       // MAX_TRACKED_FILES pressure despite genuinely being live.
-      hasEmittedState: true,
+      hasEmittedState: !recentlyActive,
       hadToolUse: false,
       isSubagent,
       agentPid: null,
       assistantLastOutput: null,
       assistantLastOutputTruncated: false,
       contextUsage: null,
-      pendingUserInputs: pending,
-      initializingUserInputs: false,
-      backfilling: false,
+      codexQuota: null,
+      codexSparkQuota: null,
+      pendingUserInputs: recentlyActive ? new Map() : pending,
+      initializingUserInputs: recentlyActive,
+      backfilling: recentlyActive,
     };
+    if (!recentlyActive) return recovered;
+
+    // Reconstruct only the bounded tail in backfill mode. Historical
+    // lifecycle events stay silent, while fresh token_count captures seed
+    // the session-independent quota store. Head metadata was read separately
+    // above so subagent/cwd classification does not depend on the tail window.
+    this._applySessionMeta(sessionMeta.payload, recovered);
+    for (const line of rawLines) {
+      if (!line.trim()) continue;
+      this._processLine(line, recovered);
+    }
+    this._emitBackfillSnapshot(recovered);
+    recovered.backfilling = false;
+    recovered.initializingUserInputs = false;
+    return recovered;
   }
 
   _getSessionDirs() {
@@ -696,6 +730,7 @@ class CodexLogMonitor {
         sessionTitle: retired ? retired.sessionTitle : null,
         codexOriginator: retired ? retired.codexOriginator : null,
         codexSource: retired ? retired.codexSource : null,
+        codexQuotaProviderHint: retired ? retired.codexQuotaProviderHint || null : null,
         lastEventTime: Date.now(),
         lastState: retired ? retired.lastState : null,
         lastStateEvent: retired ? retired.lastStateEvent : null,
@@ -707,6 +742,7 @@ class CodexLogMonitor {
         assistantLastOutputTruncated: retired ? retired.assistantLastOutputTruncated === true : false,
         contextUsage: retired ? retired.contextUsage || null : null,
         codexQuota: retired ? retired.codexQuota || null : null,
+        codexSparkQuota: retired ? retired.codexSparkQuota || null : null,
         pendingUserInputs: retired && retired.pendingUserInputs instanceof Map
           ? new Map(retired.pendingUserInputs)
           : new Map(),
@@ -837,6 +873,10 @@ class CodexLogMonitor {
     if (type === "session_meta") {
       this._applySessionMeta(payload, tracked);
     }
+    if (type === "turn_context" && payload && typeof payload === "object") {
+      const providerHint = resolveCodexModelQuotaProvider(payload.model);
+      if (providerHint) tracked.codexQuotaProviderHint = providerHint;
+    }
 
     // request_user_input/function_call_output correlation must survive the
     // timestamp guard below: Codex Desktop can rewrite event_msg:token_count
@@ -870,11 +910,17 @@ class CodexLogMonitor {
       // account store can reject out-of-order writes — with two live
       // sessions, one session's older observation must never overwrite the
       // other's newer one.
-      const codexQuota = isFreshCodexQuotaTimestamp(obj && obj.timestamp)
-        ? resolveCodexRateLimitQuota(payload, { capturedAt: Date.parse(obj.timestamp) })
+      const quotaReport = isFreshCodexQuotaTimestamp(obj && obj.timestamp)
+        ? resolveCodexRateLimitReport(payload, {
+          capturedAt: Date.parse(obj.timestamp),
+          providerHint: tracked.codexQuotaProviderHint,
+        })
         : null;
-      if (codexQuota) tracked.codexQuota = codexQuota;
-      if ((contextUsage || codexQuota) && !tracked.backfilling) {
+      const quotaExtra = quotaReport
+        ? { [quotaReport.providerKey]: quotaReport.quota }
+        : null;
+      if (quotaReport) tracked[quotaReport.providerKey] = quotaReport.quota;
+      if ((contextUsage || quotaReport) && !tracked.backfilling) {
         // token_count is a metadata refresh, not a turn boundary: Codex
         // Desktop rewrites it on focus long after a session went idle. Never
         // replay one-shot states such as attention (#535).
@@ -886,7 +932,7 @@ class CodexLogMonitor {
         // per-session cache on ordinary lifecycle events, which would keep
         // replaying a session's last-seen value as if it were a new report.
         this._emitStateChange(tracked, carry, key,
-          codexQuota ? { codexQuota } : null);
+          quotaExtra);
       }
       return;
     }
@@ -1073,6 +1119,7 @@ class CodexLogMonitor {
       sessionTitle: tracked.sessionTitle || null,
       codexOriginator: tracked.codexOriginator || null,
       codexSource: tracked.codexSource || null,
+      codexQuotaProviderHint: tracked.codexQuotaProviderHint || null,
       lastState: tracked.lastState || null,
       lastStateEvent: tracked.lastStateEvent || null,
       hasEmittedState: tracked.hasEmittedState === true,
@@ -1083,6 +1130,7 @@ class CodexLogMonitor {
       assistantLastOutputTruncated: tracked.assistantLastOutputTruncated === true,
       contextUsage: tracked.contextUsage || null,
       codexQuota: tracked.codexQuota || null,
+      codexSparkQuota: tracked.codexSparkQuota || null,
       pendingUserInputs: tracked.pendingUserInputs instanceof Map
         ? new Map(tracked.pendingUserInputs)
         : new Map(),
@@ -1097,7 +1145,11 @@ class CodexLogMonitor {
     // The backfill snapshot is the one non-capture emission that carries the
     // cached quota: it is how a restart re-seeds the account store with the
     // last-known (still freshness-gated) numbers parsed from history.
-    const quotaExtra = tracked.codexQuota ? { codexQuota: tracked.codexQuota } : null;
+    const quotaExtra = {
+      ...(tracked.codexQuota ? { codexQuota: tracked.codexQuota } : {}),
+      ...(tracked.codexSparkQuota ? { codexSparkQuota: tracked.codexSparkQuota } : {}),
+    };
+    const hasQuota = Object.keys(quotaExtra).length > 0;
     // A pending question already gets its own card via
     // _emitPendingUserInputRequests, so a root session's redundant sustained-
     // state snapshot is skipped here. Subagents never get that card
@@ -1110,14 +1162,14 @@ class CodexLogMonitor {
     ) {
       // The question callback does not carry account quota. Seed the
       // session-independent store without replaying the sustained state.
-      if (tracked.codexQuota) {
+      if (hasQuota) {
         this._emitStateChange(tracked, "idle", "event_msg:token_count", quotaExtra);
       }
       return;
     }
     const snapshotState = tracked.lastState;
     if (!SUSTAINED_ACTIVE_STATES.has(snapshotState)) {
-      if (tracked.contextUsage || tracked.codexQuota) {
+      if (tracked.contextUsage || hasQuota) {
         this._emitStateChange(tracked, "idle", "event_msg:token_count", quotaExtra);
       }
       return;
@@ -1126,7 +1178,7 @@ class CodexLogMonitor {
       tracked,
       snapshotState,
       tracked.lastStateEvent || "session_meta",
-      quotaExtra
+      hasQuota ? quotaExtra : null
     );
   }
 
@@ -1210,12 +1262,12 @@ class CodexLogMonitor {
     };
   }
 
-  // contextUsage only, deliberately NOT tracked.codexQuota: context usage is
-  // a per-session property (re-attaching the cached value to lifecycle
-  // events keeps the session card current), but account quota is not — the
-  // cached copy goes stale the moment another session reports, and blindly
-  // re-attaching it would replay old numbers into the account store on every
-  // lifecycle event (see the token_count branch in _processLine).
+  // contextUsage only, deliberately NOT either tracked account-quota
+  // provider: context usage is a per-session property (re-attaching the
+  // cached value to lifecycle events keeps the session card current), but
+  // account quota is not — a cached copy goes stale the moment another
+  // session reports, and blindly re-attaching it would replay old numbers
+  // into the account store on every lifecycle event (see token_count above).
   _withTrackedContextUsage(tracked, extra = null) {
     if (!tracked || !tracked.contextUsage) return extra;
     return { ...(extra || {}), contextUsage: tracked.contextUsage };

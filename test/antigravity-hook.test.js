@@ -3,17 +3,20 @@ const assert = require("node:assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { spawnSync } = require("child_process");
+const {
+  createSpawnedHookHarness,
+  runSpawnedHook,
+} = require("./helpers/spawned-hook");
 const { __test } = require("../hooks/antigravity-hook");
 
 function runAntigravityHook(argvEvent, payload = {}) {
   const scriptPath = path.resolve(__dirname, "..", "hooks", "antigravity-hook.js");
-  const httpBlockerPath = path.resolve(__dirname, "hook-http-blocker.js");
-  return spawnSync(process.execPath, ["--require", httpBlockerPath, scriptPath, argvEvent], {
-    env: { ...process.env, CLAWD_REMOTE: "1" },
-    input: JSON.stringify(payload),
-    encoding: "utf8",
-    windowsHide: true,
+  return runSpawnedHook({
+    script: scriptPath,
+    args: [argvEvent],
+    payload,
+    httpContract: "block",
+    env: { CLAWD_REMOTE: "1" },
   });
 }
 
@@ -48,6 +51,60 @@ describe("Antigravity hook script", () => {
     assert.strictEqual(postedBodies[0].cwd, process.cwd());
   });
 
+  it("threads the resolved env into the bodies it builds", async () => {
+    const postedBodies = [];
+    await __test.sendHookEvent({
+      conversationId: "c1",
+      workspacePaths: [process.cwd()],
+    }, "PreInvocation", {
+      // sendHookEvent resolves deps.env for its own reads, and the body builders
+      // have to receive that same object: otherwise every env-derived field is
+      // read from the real process environment and an injected env is a no-op.
+      env: { TERM_PROGRAM: "Orca", ORCA_PANE_KEY: "8ce1fff7-tab:9813824b-leaf" },
+      postState: (body, _options, callback) => {
+        postedBodies.push(JSON.parse(body));
+        callback(true, 23333);
+      },
+    });
+
+    assert.strictEqual(postedBodies.length, 1);
+    assert.strictEqual(postedBodies[0].orca_pane_key, "8ce1fff7-tab:9813824b-leaf");
+  });
+
+  it("preserves Orca's local pane identity without remote PID metadata", () => {
+    const env = {
+      CLAWD_REMOTE: "1",
+      CLAWD_SSH_REMOTE: "1",
+      ORCA_PANE_KEY: "8ce1fff7-tab:9813824b-leaf",
+    };
+    const stateBody = __test.buildStateBody("PreInvocation", {
+      conversationId: "remote-c1",
+      workspacePaths: ["/remote/project"],
+    }, {
+      remote: true,
+      host: "remote-host",
+      env,
+      pidMeta: { stablePid: 4242, pidChain: [4242] },
+    });
+    const permissionBody = __test.buildPermissionBody("PreToolUse", {
+      conversationId: "remote-c1",
+      workspacePaths: ["/remote/project"],
+      toolCall: { name: "run_command", args: { CommandLine: "npm test" } },
+    }, {
+      remote: true,
+      host: "remote-host",
+      env,
+      pidMeta: { stablePid: 4242, pidChain: [4242] },
+    });
+
+    for (const body of [stateBody, permissionBody]) {
+      assert.strictEqual(body.host, "remote-host");
+      assert.strictEqual(body.orca_pane_key, "8ce1fff7-tab:9813824b-leaf");
+      assert.ok(!Object.prototype.hasOwnProperty.call(body, "source_pid"));
+      assert.ok(!Object.prototype.hasOwnProperty.call(body, "pid_chain"));
+    }
+  });
+
   it("uses tool Cwd before workspace paths", () => {
     assert.strictEqual(
       __test.resolveCwd({
@@ -73,6 +130,9 @@ describe("Antigravity hook script", () => {
         },
       },
     }, {
+      // Hermetic env: the body carries env-derived terminal fields, so a real
+      // one would leak the developer's own terminal into this exact-shape check.
+      env: {},
       pidMeta: {
         stablePid: 123.9,
         agentPid: 456,
@@ -292,31 +352,37 @@ describe("Antigravity hook script", () => {
 
   it("fails open when local hook setup throws", () => {
     const scriptPath = path.resolve(__dirname, "..", "hooks", "antigravity-hook.js");
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-antigravity-hook-"));
-    const preloadPath = path.join(tmpDir, "preload.js");
-    const preload = `
-      const Module = require("module");
-      const original = Module._load;
-      Module._load = function(request, parent, isMain) {
-        if (request.endsWith("./shared-process") || request.endsWith("/shared-process")) {
-          return {
-            getPlatformConfig: () => ({}),
-            readStdinJson: () => Promise.reject(new Error("stdin failed")),
-            createPidResolver: () => () => { throw new Error("pid failed"); },
-          };
-        }
-        return original.apply(this, arguments);
-      };
-    `;
-    fs.writeFileSync(preloadPath, preload);
-    const result = spawnSync(process.execPath, ["--require", preloadPath, scriptPath, "PreToolUse"], {
-      input: JSON.stringify({ conversationId: "c1" }),
-      encoding: "utf8",
-      windowsHide: true,
-    });
+    const harness = createSpawnedHookHarness({ prefix: "clawd-antigravity-hook-" });
+    try {
+      const preloadPath = path.join(harness.home, "preload.js");
+      const preload = `
+        const Module = require("module");
+        const original = Module._load;
+        Module._load = function(request, parent, isMain) {
+          if (request.endsWith("./shared-process") || request.endsWith("/shared-process")) {
+            return {
+              getPlatformConfig: () => ({}),
+              readStdinJson: () => Promise.reject(new Error("stdin failed")),
+              createPidResolver: () => () => { throw new Error("pid failed"); },
+            };
+          }
+          return original.apply(this, arguments);
+        };
+      `;
+      fs.writeFileSync(preloadPath, preload);
+      const result = harness.run({
+        script: scriptPath,
+        args: ["PreToolUse"],
+        payload: { conversationId: "c1" },
+        preloads: [preloadPath],
+        httpContract: "expect-none",
+      });
 
-    assert.strictEqual(result.status, 0);
-    assert.strictEqual(result.stderr, "");
-    assert.deepStrictEqual(JSON.parse(result.stdout), { decision: "ask" });
+      assert.strictEqual(result.status, 0);
+      assert.strictEqual(result.stderr, "");
+      assert.deepStrictEqual(JSON.parse(result.stdout), { decision: "ask" });
+    } finally {
+      harness.cleanup();
+    }
   });
 });

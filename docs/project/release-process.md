@@ -9,14 +9,15 @@ Use this flow when preparing a Clawd app release.
 3. Run the local tests that match the change scope. For full release prep, run:
 
 ```bash
+npm run verify:release
 npm test
-node scripts/verify-sidecar-binaries.js prebuild:all
+npm run audit:assets
 ```
 
 4. Run the `Build & Release` workflow manually on `main`.
 
-Manual workflow dispatch builds Windows, macOS, and Linux artifacts, fetches the
-pinned `cc-connect-clawd` sidecar release, verifies source-pinned checksums, and
+Manual workflow dispatch builds Windows, macOS, and Linux artifacts, checks
+each unpacked resources tree for retired Telegram sidecar binaries/source, and
 uploads build artifacts. It does not publish a GitHub Release.
 
 ## Draft Release
@@ -37,7 +38,7 @@ Download and smoke-test the draft release assets before publishing the draft.
 If the draft is wrong, fix the issue before publishing; do not publish a known
 bad draft release.
 
-### v0.13.0 Draft Smoke Checklist
+### v0.14.0 Draft Smoke Checklist
 
 Use the draft release installer or package artifact, not `npm start`. Windows
 required items are the primary publish gate. If macOS or Linux hardware is not
@@ -47,13 +48,15 @@ notes.
 Before launching:
 
 - Download the draft release asset for the platform being tested.
-- Confirm the packaged app shows `0.13.0` metadata.
+- Confirm the packaged app shows `0.14.0` metadata.
 - Confirm packaged resources include `app.asar.unpacked/hooks`,
   `app.asar.unpacked/agents`, `app.asar.unpacked/extensions`,
-  `app.asar.unpacked/themes`, and `sidecars/cc-connect-clawd`.
+  and `app.asar.unpacked/themes`.
+- Confirm the retirement assertion passes and neither
+  `sidecars/cc-connect-clawd` nor any `cc-connect-clawd(.exe)` exists.
 - Confirm Windows artifacts are architecture-specific x64 / ARM64 installers,
   not a universal NSIS installer.
-- For migration smoke, install v0.12.0 first and save a copy of the old
+- For migration smoke, install v0.13.0 first and save a copy of the old
   `clawd-prefs.json` before upgrading.
 - For Reasonix smoke, prepare a machine with Reasonix initialized so
   `<Reasonix home>/` exists (`%APPDATA%\reasonix` on Windows,
@@ -65,9 +68,9 @@ Before launching:
 Required all-platform checks:
 
 - Fresh install, launch, pet appears, no error dialog.
-- Upgrade install over v0.12.0, launch, pet appears, no error dialog. Existing
+- Upgrade install over v0.13.0, launch, pet appears, no error dialog. Existing
   agent installation/enabled flags and user theme/animation choices remain intact.
-- Settings -> About shows `v0.13.0`, sourced from `app.getVersion()`.
+- Settings -> About shows `v0.14.0`, sourced from `app.getVersion()`.
 - First-run tutorial opens once for a fresh profile; Finish, Skip, and OS close
   each persist `tutorialSeen=true` and do not reopen on restart.
 - Upgrade profile with no `tutorialSeen` sees the tutorial once; an already-seen
@@ -76,13 +79,28 @@ Required all-platform checks:
   macOS installs default to pet + menu-bar accessory with no Dock tile.
 - Settings -> General / Agents / Animation & Sound render correctly in all five
   languages, including sidebar SVG icons and the folded Animation Map subtab.
-- Settings -> About contributors include the seven v0.13.0 first-time
-  contributors: `jiaxuan1101`, `kkirito16`, `200780381`, `Dxy2326`,
-  `lurui1997`, `JesmonX`, and `chen86860`.
+- Settings -> About contributors include the six v0.14.0 first-time
+  contributors: `LinYsssss`, `He-wei-gui`, `liugou27`, `YOOGOMJA`,
+  `anupamme`, and `anthonyonazure`.
 - Reinstall one existing hook-based agent, such as Codex, and confirm the
   packaged hook script can `require()` its dependencies.
 - Run one real Claude Code or Codex session and confirm the pet reacts to state
   changes and still plays completion happy on Stop.
+- Restart Clawd during an active Claude session, then let the real hook resume
+  and end it. Dashboard/HUD must keep one canonical session throughout and
+  remove it cleanly on SessionEnd, with no duplicate or ghost recovery row.
+- Exercise manual accessories on normal, interrupt, sleep, idle, reaction, and
+  mini animations. Animation Map overrides must keep the wardrobe available;
+  a frame without safe geometry hides only that frame's accessory. Toggle the
+  holiday option and confirm it temporarily overrides, then restores, the
+  saved manual accessory.
+- Exercise Ask every time, Question prompts only, and Auto-approve at both the
+  global and live-session scopes. Confirmation gates must appear where required,
+  and the unattended runtime elevation must downgrade after restart.
+- Feed Claude and Codex quota data from local plus Remote SSH sources. Confirm
+  per-source values appear in Dashboard and the configurable pet Orbit ring,
+  merge-across-machines can be turned both on and off, and an occupied third-party
+  Claude statusline is preserved unless explicit chaining is enabled.
 - Trigger a long CJK Claude or Codex completion and confirm the Stop event reaches
   Clawd without a 413 and the happy animation is not dropped.
 - Codex official hook health: disable hooks / leave hooks unreviewed, confirm
@@ -100,9 +118,28 @@ Required all-platform checks:
   Allow/Always/Deny and DND fallback, then uninstall and confirm user config is preserved.
 - Settings -> Agents -> Install Reasonix succeeds on Windows when paths contain
   spaces, and the written command uses the EncodedCommand path when needed.
+- Set `REASONIX_HOME` to an unresolved variable and confirm install/sync fails
+  closed without writing `settings.json` into the launch directory.
+- Install ZCode and confirm its state-only events reach Clawd without replacing
+  ZCode's native permission flow. From an Orca pane, jump back to the session
+  and confirm the validated pane key focuses the correct pane locally and over
+  managed Remote SSH.
 - Remote SSH profile with connect-on-launch connects after startup; repeat with
   local port 23333 occupied so the server binds a later port and the tunnel still
   targets the real bound port.
+- Upgrade a Remote SSH target that still has the legacy Codex monitor PID file;
+  deploy/cleanup must complete without shell `bad substitution`. Confirm
+  revoke-all invalidates both current and previous routing nonces, and a normal
+  edit of a profile-isolated profile preserves its runtime mode/key/layout.
+- Upgrade a profile that used the retired Telegram sidecar. Confirm the one-time
+  startup reminder points to Settings -> Remote Approval, saved token/recipient
+  values remain, and approval plus completion notifications stay disabled until
+  a real native verification callback succeeds. Failure/timeout must not restart
+  the retired sidecar.
+- Enable Discord Rich Presence without animation mirroring, then opt into the
+  animation mirror. Confirm coarse status text remains stable, supported Clawd
+  animations use the repository-hosted GIFs, and disabling the option returns
+  to state-based presence.
 
 Recommended all-platform checks:
 
@@ -115,7 +152,7 @@ Recommended all-platform checks:
 - Right-click Hide pet / Show pet still works; while hidden, a newly arriving
   permission request still shows a bubble, by design.
 - Settings -> About -> Check for updates completes without an error.
-- Update labels never show a duplicated prefix such as `vv0.13.0`.
+- Update labels never show a duplicated prefix such as `vv0.14.0`.
 - Telegram approval cards show the final outcome for decisions made on Telegram
   and for approvals resolved elsewhere.
 - Scan the mobile PWA pairing URL on a phone and confirm session cards appear.
@@ -170,12 +207,10 @@ and Linux items must pass when those machines are available. If any required
 item fails, fix it and create a new draft release; do not publish a known-bad
 draft.
 
-## Sidecar Dependency
+## Retired Telegram Sidecar Guard
 
-Clawd release builds do not consume upstream `cc-connect` latest artifacts. They
-download the fixed `cc-connect-clawd` fork release pinned by
-`scripts/fetch-sidecar-binaries.js`, verify SHA256 values pinned in that script,
-and package those binaries into app resources.
-
-When the sidecar needs an upstream update, publish a new fixed sidecar release
-from the fork first, then update the Clawd pin and rerun the fetch/verify tests.
+The legacy Telegram sidecar was removed in v0.14.0. Release builds must run
+`scripts/assert-no-retired-telegram-sidecar.js` against every unpacked target:
+Windows x64/arm64, macOS x64/arm64, and Linux x64. The assertion scans both the
+outer resources tree and the real `app.asar`; a retired executable or runtime
+module is a hard failure.

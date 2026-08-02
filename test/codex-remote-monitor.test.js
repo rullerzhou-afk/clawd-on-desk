@@ -204,8 +204,11 @@ describe("Codex remote monitor", () => {
     const body = JSON.parse(__test.buildPostQuotaBody(
       "codex:s1",
       {
-        codexFiveHour: { usedPercent: 1, resetAt: 1783669570000 },
-        codexWeekly: { usedPercent: 43, resetAt: 1784256370000 },
+        providerKey: "codexQuota",
+        quota: {
+          codexFiveHour: { usedPercent: 1, resetAt: 1783669570000 },
+          codexWeekly: { usedPercent: 43, resetAt: 1784256370000 },
+        },
       },
       "remote-box"
     ));
@@ -221,6 +224,40 @@ describe("Codex remote monitor", () => {
       codexWeekly: { usedPercent: 43, resetAt: 1784256370000 },
     });
     assert.strictEqual(body.event, undefined);
+    assert.strictEqual(body.codex_spark_quota, undefined);
+  });
+
+  it("builds Spark-only quota bodies without forwarding raw identity metadata", () => {
+    const body = JSON.parse(__test.buildPostQuotaBody(
+      "codex:s1",
+      {
+        providerKey: "codexSparkQuota",
+        quota: {
+          codexWeekly: { usedPercent: 7, windowMinutes: 10080 },
+        },
+      },
+      "remote-box"
+    ));
+
+    assert.deepStrictEqual(body.codex_spark_quota, {
+      codexWeekly: { usedPercent: 7, windowMinutes: 10080 },
+    });
+    assert.strictEqual(body.codex_quota, undefined);
+    assert.strictEqual(body.limit_id, undefined);
+    assert.strictEqual(body.limit_name, undefined);
+    assert.strictEqual(body.plan_type, undefined);
+    assert.strictEqual(body.model, undefined);
+  });
+
+  it("fails closed when asked to serialize an unknown quota provider", () => {
+    assert.strictEqual(__test.buildPostQuotaBody(
+      "codex:s1",
+      {
+        providerKey: "codexFutureQuota",
+        quota: { codexWeekly: { usedPercent: 99, windowMinutes: 10080 } },
+      },
+      "remote-box"
+    ), null);
   });
 
   it("posts quota for fresh token_count lines and drops stale replays", () => {
@@ -260,20 +297,117 @@ describe("Codex remote monitor", () => {
     const capturedAt = Date.parse(lineTimestamp);
     assert.deepStrictEqual(quotaCalls, [
       ["codex:s1", {
-        codexFiveHour: {
-          usedPercent: 1,
-          windowMinutes: 300,
-          resetAt: 1783669570000,
-          capturedAt,
-        },
-        codexWeekly: {
-          usedPercent: 43,
-          windowMinutes: 10080,
-          resetAt: 1784256370000,
-          capturedAt,
+        providerKey: "codexQuota",
+        quota: {
+          codexFiveHour: {
+            usedPercent: 1,
+            windowMinutes: 300,
+            resetAt: 1783669570000,
+            capturedAt,
+          },
+          codexWeekly: {
+            usedPercent: 43,
+            windowMinutes: 10080,
+            resetAt: 1784256370000,
+            capturedAt,
+          },
         },
       }],
     ]);
+  });
+
+  it("posts fresh Spark reports through the independent provider envelope", () => {
+    const entry = {
+      sessionId: "codex:s1",
+      cwd: "/repo",
+      isSubagent: false,
+      lastEventTime: 0,
+      lastState: null,
+    };
+    const quotaCalls = [];
+    const lineTimestamp = new Date().toISOString();
+    __test.processLine(JSON.stringify({
+      type: "event_msg",
+      timestamp: lineTimestamp,
+      payload: {
+        type: "token_count",
+        rate_limits: {
+          limit_id: "codex_bengalfox",
+          limit_name: "GPT-5.3-Codex-Spark",
+          primary: { used_percent: 7, window_minutes: 10080 },
+        },
+      },
+    }), entry, { postQuota: (...args) => quotaCalls.push(args) });
+
+    assert.deepStrictEqual(quotaCalls, [[
+      "codex:s1",
+      {
+        providerKey: "codexSparkQuota",
+        quota: {
+          codexWeekly: {
+            usedPercent: 7,
+            windowMinutes: 10080,
+            capturedAt: Date.parse(lineTimestamp),
+          },
+        },
+      },
+    ]]);
+  });
+
+  it("routes a generic codex id by turn model and follows remote model switches", () => {
+    const entry = {
+      sessionId: "codex:s1",
+      cwd: "/repo",
+      isSubagent: false,
+      lastEventTime: 0,
+      lastState: null,
+    };
+    const quotaCalls = [];
+    const options = { postQuota: (...args) => quotaCalls.push(args) };
+    const sparkTimestamp = new Date(Date.now() - 1000).toISOString();
+    const mainTimestamp = new Date().toISOString();
+
+    __test.processLine(JSON.stringify({
+      type: "turn_context",
+      timestamp: sparkTimestamp,
+      payload: { model: "gpt-5.3-codex-spark", effort: "low" },
+    }), entry, options);
+    __test.processLine(JSON.stringify({
+      type: "event_msg",
+      timestamp: sparkTimestamp,
+      payload: {
+        type: "token_count",
+        rate_limits: {
+          limit_id: "codex",
+          primary: { used_percent: 0, window_minutes: 10080 },
+        },
+      },
+    }), entry, options);
+    __test.processLine(JSON.stringify({
+      type: "turn_context",
+      timestamp: mainTimestamp,
+      payload: { model: "gpt-5.6-sol", effort: "xhigh" },
+    }), entry, options);
+    __test.processLine(JSON.stringify({
+      type: "event_msg",
+      timestamp: mainTimestamp,
+      payload: {
+        type: "token_count",
+        rate_limits: {
+          limit_id: "codex",
+          primary: { used_percent: 14, window_minutes: 10080 },
+        },
+      },
+    }), entry, options);
+
+    assert.deepStrictEqual(quotaCalls.map(([, report]) => ({
+      providerKey: report.providerKey,
+      usedPercent: report.quota.codexWeekly.usedPercent,
+    })), [
+      { providerKey: "codexSparkQuota", usedPercent: 0 },
+      { providerKey: "codexQuota", usedPercent: 14 },
+    ]);
+    assert.strictEqual(entry.codexQuotaProviderHint, "codexQuota");
   });
 });
 

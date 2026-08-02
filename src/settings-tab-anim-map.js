@@ -74,8 +74,8 @@
     return row;
   }
 
-  // Rendered as the "on / off" subtab of the Animation & Sound Overrides tab,
-  // so the parent tab already supplies the <h1> — we start at the subtitle.
+  // The parent tab supplies the stable title, subtitle, and subtab switcher.
+  // This module only renders the map-specific explanation and controls.
   function renderMapSubtab(parent) {
     const subtitle = document.createElement("p");
     subtitle.className = "subtitle";

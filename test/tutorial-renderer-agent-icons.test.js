@@ -169,6 +169,12 @@ function createHarness(state) {
     Promise,
     setTimeout,
     clearTimeout,
+    ClawdLanguagePicker: {
+      createLanguagePicker: () => ({
+        element: new FakeElement("div"),
+        dispose() {},
+      }),
+    },
     tutorialAPI: api,
     addEventListener: () => {},
   };

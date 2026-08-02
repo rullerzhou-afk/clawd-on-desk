@@ -3,6 +3,7 @@ const { spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const { describe, it } = require("node:test");
+const { NESTED_TERMINAL_ENV } = require("../hooks/shared-process");
 
 const pluginDir = path.join(__dirname, "..", "hooks", "hermes-plugin");
 
@@ -26,13 +27,28 @@ function readManifestHooks() {
   return hooks;
 }
 
-function runPluginPython(code) {
+// Terminal-identity env consulted by _resolve_process_metadata and
+// _orca_pane_key_from_env. Tests asserting an exact shape have to strip all of it
+// or they only pass for a developer whose own terminal sets none of it — the
+// nested-terminal markers alone cover gnome-terminal, Konsole, WezTerm, kitty,
+// Alacritty, ConEmu, Windows Terminal and tmux. Taken from shared-process.js so a
+// marker added there cannot silently make these tests machine-dependent again.
+const TERMINAL_IDENTITY_ENV = [...NESTED_TERMINAL_ENV, "TMUX_PANE", "TERM_PROGRAM", "ORCA_PANE_KEY"];
+
+function envWithoutTerminalIdentity() {
+  const env = { ...process.env };
+  for (const key of TERMINAL_IDENTITY_ENV) delete env[key];
+  return env;
+}
+
+function runPluginPython(code, env = null) {
   const pythonCmd = process.platform === "win32" ? "python" : "python3";
   const result = spawnSync(pythonCmd, ["-"], {
     cwd: path.join(__dirname, ".."),
     input: code,
     encoding: "utf8",
     windowsHide: true,
+    ...(env ? { env } : {}),
   });
   assert.strictEqual(
     result.status,
@@ -308,7 +324,7 @@ cases["wrapper_only"] = run_case({
 cases["failure"] = run_case({}, 10)
 
 print(json.dumps(cases, sort_keys=True))
-`);
+`, envWithoutTerminalIdentity());
     const cases = JSON.parse(output);
     assert.strictEqual(cases.terminal.source_pid, 50);
     assert.deepStrictEqual(cases.terminal.pid_chain, [10, 20, 30, 40, 50, 60]);
@@ -318,6 +334,75 @@ print(json.dumps(cases, sort_keys=True))
     assert.strictEqual(cases.wrapper_only.source_pid, undefined);
     assert.deepStrictEqual(cases.wrapper_only.pid_chain, [10, 20, 30, 40]);
     assert.deepStrictEqual(cases.failure, {});
+  });
+
+  it("carries the Orca pane key from the environment through to the payload", () => {
+    // Orca's terminals hang off a detached daemon, so no ancestor in the walk
+    // above identifies it and the env is the only source for the pane key.
+    const script = String.raw`
+import importlib.util
+import json
+import sys
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("hermes_plugin", r"hooks/hermes-plugin/__init__.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+mod._platform_key = lambda: "win32"
+tree = {10: ("python.exe", 20), 20: ("hermes.exe", 30), 30: ("pwsh.exe", 40), 40: ("explorer.exe", 4)}
+
+def fake_query(pid):
+    row = tree.get(pid)
+    if not row:
+        return None
+    name, parent = row
+    return {"pid": pid, "parent_pid": parent, "name": name, "path": "", "cmdline": ""}
+
+mod._query_process_info = fake_query
+meta = mod._resolve_process_metadata(10)
+mod._process_meta = dict(meta)
+mod._process_meta_resolved = True
+payload = {}
+mod._add_process_meta(payload)
+
+# Background walk unfinished (or raised): _cached_process_meta() returns {} and
+# every walk-derived field drops out of the payload.
+mod._process_meta = {}
+mod._process_meta_resolved = False
+unresolved = {}
+mod._add_process_meta(unresolved)
+
+print(json.dumps({"meta": meta, "payload": payload, "unresolved": unresolved}, sort_keys=True))
+`;
+    const orcaEnv = {
+      ...envWithoutTerminalIdentity(),
+      TERM_PROGRAM: "Orca",
+      ORCA_PANE_KEY: "8ce1fff7-tab:9813824b-leaf",
+    };
+
+    const inOrca = JSON.parse(runPluginPython(script, orcaEnv));
+    assert.strictEqual(inOrca.payload.orca_pane_key, "8ce1fff7-tab:9813824b-leaf");
+    // Deliberately NOT a product of the walk: that result is cached and resolved
+    // on a background thread, so a walk-derived key would be missing from every
+    // event posted before the thread finishes and from all of them if it raised.
+    assert.strictEqual(inOrca.meta.orca_pane_key, undefined);
+    assert.strictEqual(inOrca.unresolved.orca_pane_key, "8ce1fff7-tab:9813824b-leaf");
+    assert.strictEqual(inOrca.unresolved.source_pid, undefined);
+
+    // A Windows Terminal shell launched from an Orca pane inherits the key while
+    // genuinely living in WT; only WT sets WT_SESSION.
+    const nested = JSON.parse(runPluginPython(script, { ...orcaEnv, WT_SESSION: "b3e1-nested" }));
+    assert.strictEqual(nested.payload.orca_pane_key, undefined);
+    assert.strictEqual(nested.unresolved.orca_pane_key, undefined);
+
+    // A tmux server outlives the pane it was started from, so its inherited copy
+    // of the key cannot be trusted either.
+    const inTmux = JSON.parse(runPluginPython(script, { ...orcaEnv, TMUX: "/tmp/tmux-1000/default,7,0" }));
+    assert.strictEqual(inTmux.payload.orca_pane_key, undefined);
+
+    const malformed = JSON.parse(runPluginPython(script, { ...orcaEnv, ORCA_PANE_KEY: "no-separator" }));
+    assert.strictEqual(malformed.payload.orca_pane_key, undefined);
   });
 
   it("uses one PowerShell CIM snapshot for Windows process metadata", () => {

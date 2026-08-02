@@ -473,7 +473,19 @@
           "visibility": "hidden"
         },
         "clawd-sleeping.svg": {
-          "visibility": "hidden"
+          "staticFrame": {
+            "cx": 7.5,
+            "baseY": 10,
+            "width": 16
+          },
+          "followTarget": {
+            "id": "torso-sploot",
+            "frame": {
+              "cx": 7.5,
+              "baseY": 10,
+              "width": 16
+            }
+          }
         },
         "clawd-wake.svg": {
           "visibility": "hidden"

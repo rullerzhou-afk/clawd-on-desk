@@ -389,6 +389,25 @@ describe("session HUD layout", () => {
     assert.strictEqual(evaluateBaseEligible({ snapshot, showQuota: true }), true);
   });
 
+  it("does not make the Orbit eligible for Dashboard-only Spark quota", () => {
+    const snapshot = {
+      sessions: [],
+      accountQuota: [{
+        codexSparkQuota: {
+          group: {
+            codexWeekly: {
+              usedPercent: 7,
+              resetAt: Date.now() + 3600000,
+            },
+          },
+          updatedAt: 1,
+        },
+      }],
+    };
+    assert.strictEqual(countQuotaCoins(snapshot, true), 0);
+    assert.strictEqual(evaluateBaseEligible({ snapshot, showQuota: true }), false);
+  });
+
   it("the quota ring is base-eligible independently of the Session HUD master", () => {
     const quotaOnly = {
       sessions: [],
@@ -618,6 +637,11 @@ describe("session HUD v5 three-state runtime contracts (source-level)", () => {
   it("exposes v5 three-state API surface", () => {
     assert.ok(/revealFromPet,\s*\n\s*handlePinnedChanged,\s*\n\s*clearReveal/.test(src),
       "module return must expose revealFromPet/handlePinnedChanged/clearReveal");
+  });
+
+  it("exposes a ring-only reposition path for post-bubble avoidance", () => {
+    assert.match(src, /function repositionQuotaRing\(\)/);
+    assert.match(src, /repositionSessionHud,\s*\n\s*repositionQuotaRing,/);
   });
 
   it("snapshot to renderer no longer includes hudAutoHide", () => {
