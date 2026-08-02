@@ -3971,6 +3971,171 @@ describe("settings renderer browser environment", () => {
     assert.equal(harness.core.state.snapshot.feishuApproval.approverId, "ou_authoritative");
   });
 
+  it("maps lookup commit lifecycle failures to fixed localized messages without exposing result details", async () => {
+    const strings = loadSettingsI18nForTest().en;
+    const localize = (key) => String(strings[key]).split("{brand}").join("Feishu");
+    const initialSnapshot = {
+      tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+      feishuApproval: {
+        enabled: false,
+        platform: "feishu",
+        idType: "open_id",
+        approverId: "",
+        approverSource: "none",
+        approverBoundPlatform: "",
+        approverBoundAppId: "",
+        connectionTimeoutSeconds: 15,
+      },
+    };
+
+    function makeHarness({ commitResult = { status: "ok" }, updateResult = { status: "ok" } } = {}) {
+      const commandCalls = [];
+      const toasts = [];
+      const harness = loadTelegramApprovalTabForTest({
+        snapshot: JSON.parse(JSON.stringify(initialSnapshot)),
+        settingsAPI: {
+          command: (name, payload) => {
+            commandCalls.push({ name, payload });
+            if (name === "feishuApproval.status") {
+              return Promise.resolve({
+                status: "ok",
+                state: {
+                  status: "stopped",
+                  secretsStored: true,
+                  secretsConfigured: true,
+                  credentialReady: true,
+                  credentialReason: "",
+                  configurationReady: false,
+                  setupReason: "missing-approver",
+                },
+              });
+            }
+            if (name === "feishuApproval.secretInfo") {
+              return Promise.resolve({
+                status: "ok",
+                configured: true,
+                credentialPlatform: "feishu",
+                appId: "cli_saved",
+              });
+            }
+            if (name === "feishuApproval.resolveApprover") {
+              return Promise.resolve({ status: "ok", lookupId: "lookup-lifecycle" });
+            }
+            if (name === "feishuApproval.commitApprover") {
+              return Promise.resolve(commitResult);
+            }
+            if (name === "feishuApproval.updateConfig") {
+              return Promise.resolve(updateResult);
+            }
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      harness.core.helpers.t = (key) => (key in strings ? strings[key] : key);
+      harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+      return { harness, commandCalls, toasts };
+    }
+
+    function snapshotToasts(toasts) {
+      return JSON.parse(JSON.stringify(toasts));
+    }
+
+    async function runLookupFailure(commitResult) {
+      const result = makeHarness({ commitResult });
+      await Promise.resolve();
+      await Promise.resolve();
+      result.harness.render();
+      const card = result.harness.content.querySelector(".feishu-approval-channel-card");
+      const input = card.querySelectorAll("input").at(-1);
+      input.value = "person@example.com";
+      input.dispatchEvent({ type: "input" });
+      card.querySelectorAll("button")
+        .find((button) => button.textContent === strings.feishuApprovalSaveApprover)
+        .dispatchEvent({ type: "click" });
+      await new Promise((resolve) => setImmediate(resolve));
+      result.harness.render();
+      assert.equal(
+        result.harness.content.querySelectorAll("input").at(-1).value,
+        "person@example.com",
+        "lookup draft must survive a failed commit",
+      );
+      assert.equal(
+        result.harness.content.querySelectorAll("input").some((field) => field.value === "ou_resolved"),
+        false,
+        "the resolved open_id must never be inserted into renderer inputs",
+      );
+      assert.equal(
+        result.commandCalls.filter((call) => call.name === "feishuApproval.commitApprover").length,
+        1,
+      );
+      return result;
+    }
+
+    for (const [code, key] of [
+      ["lookup-cancelled", "feishuApprovalLookupCancelled"],
+      ["lookup-superseded", "feishuApprovalLookupSuperseded"],
+      ["lookup-stale", "feishuApprovalLookupStale"],
+      ["lookup-result-consumed", "feishuApprovalLookupResultConsumed"],
+      ["lookup-credentials-changed", "feishuApprovalLookupCredentialsChanged"],
+    ]) {
+      const resultMessage = `raw lifecycle detail ${code} ou_resolved`;
+      const result = await runLookupFailure({ status: "error", code, message: resultMessage });
+      assert.deepStrictEqual(snapshotToasts(result.toasts), [{ message: localize(key), options: { error: true } }], code);
+      assert.equal(result.toasts.some((toast) => toast.message === localize("feishuApprovalConfigSaved")), false);
+      assert.equal(result.toasts.some((toast) => toast.message.includes(resultMessage)), false);
+      assert.equal(result.harness.content.querySelectorAll("input").at(-1).value, "person@example.com");
+      assert.equal(collectText(result.harness.content).includes("ou_resolved"), false);
+      assert.equal(collectText(result.harness.content).includes(resultMessage), false);
+    }
+
+    for (const code of ["unexpected-code", "toString"]) {
+      const unknownMessage = `raw unknown lifecycle detail ${code} ou_unknown`;
+      const unknown = await runLookupFailure({ status: "error", code, message: unknownMessage });
+      assert.deepStrictEqual(snapshotToasts(unknown.toasts), [{ message: localize("feishuApprovalPersistenceFailed"), options: { error: true } }]);
+      assert.equal(unknown.toasts.some((toast) => toast.message.includes(unknownMessage)), false);
+      assert.equal(collectText(unknown.harness.content).includes(unknownMessage), false);
+    }
+
+    const rejectionText = "raw rejected lifecycle detail ou_rejected";
+    const rejected = await runLookupFailure(Promise.reject(new Error(rejectionText)));
+    assert.deepStrictEqual(snapshotToasts(rejected.toasts), [{ message: localize("feishuApprovalPersistenceFailed"), options: { error: true } }]);
+    assert.equal(rejected.toasts.some((toast) => toast.message.includes(rejectionText)), false);
+    assert.equal(collectText(rejected.harness.content).includes(rejectionText), false);
+
+    const ordinary = makeHarness({
+      updateResult: { status: "error", code: "lookup-cancelled", message: "raw ordinary save detail" },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    ordinary.harness.render();
+    ordinary.harness.content.querySelectorAll("button")
+      .find((button) => button.dataset.platform === "lark")
+      .dispatchEvent({ type: "click" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepStrictEqual(snapshotToasts(ordinary.toasts), [{ message: localize("feishuApprovalPersistenceFailed"), options: { error: true } }]);
+    assert.equal(ordinary.toasts.some((toast) => toast.message.includes("raw ordinary save detail")), false);
+    assert.equal(collectText(ordinary.harness.content).includes("raw ordinary save detail"), false);
+
+    const commit = createDeferred();
+    const stale = makeHarness({ commitResult: commit.promise });
+    await Promise.resolve();
+    await Promise.resolve();
+    stale.harness.render();
+    const staleCard = stale.harness.content.querySelector(".feishu-approval-channel-card");
+    const staleInput = staleCard.querySelectorAll("input").at(-1);
+    staleInput.value = "stale@example.com";
+    staleInput.dispatchEvent({ type: "input" });
+    staleCard.querySelectorAll("button")
+      .find((button) => button.textContent === strings.feishuApprovalSaveApprover)
+      .dispatchEvent({ type: "click" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(stale.commandCalls.some((call) => call.name === "feishuApproval.commitApprover"), true);
+    stale.harness.core.tabs["telegram-approval"].onExit();
+    commit.resolve({ status: "error", code: "lookup-cancelled", message: "raw obsolete toast detail" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepStrictEqual(stale.toasts, [], "an obsolete UI epoch must suppress the late toast");
+  });
+
   it("preserves the lookup email and shows only fixed copy when commit returns false or rejects", async () => {
     for (const commitResult of [
       () => Promise.resolve({ status: "error", code: "write-failed", message: "raw disk detail" }),

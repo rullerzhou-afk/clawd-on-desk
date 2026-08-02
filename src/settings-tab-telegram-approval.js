@@ -2232,12 +2232,18 @@
     }
     return Promise.resolve(pending).then((result) => {
       if (!result || result.status !== "ok") {
+        const lookupFailureKey = options.kind === "lookup-approver"
+          && result
+          && typeof result.code === "string"
+          && Object.prototype.hasOwnProperty.call(FEISHU_APPROVER_LOOKUP_ERROR_KEYS, result.code)
+          ? FEISHU_APPROVER_LOOKUP_ERROR_KEYS[result.code]
+          : "";
         feishuView.configPersistencePending = false;
         feishuView.configPersistenceKind = null;
         const uiCurrent = options.uiEpoch === undefined
           || options.uiEpoch === feishuView.lookupUiEpoch;
         if (uiCurrent) {
-          ops.showToast(tBrand(options.failureKey || "feishuApprovalPersistenceFailed"), { error: true });
+          ops.showToast(tBrand(lookupFailureKey || options.failureKey || "feishuApprovalPersistenceFailed"), { error: true });
           ops.requestRender({ content: true });
         }
         return false;
