@@ -360,14 +360,16 @@ describe("updateRegistry pure-data validators", () => {
     }, deps).status, "error");
   });
 
-  it("feishuApproval allows ordinary fields but requires commands for the approver tuple", () => {
+  it("feishuApproval is command-only while its validator remains available for defensive checks", () => {
     const current = baseSnapshot.feishuApproval;
     const deps = { snapshot: baseSnapshot };
-    assert.strictEqual(updateRegistry.feishuApproval({
+    assert.strictEqual(updateRegistry.feishuApproval.commandOnly, true);
+    assert.strictEqual(typeof updateRegistry.feishuApproval.validate, "function");
+    assert.strictEqual(updateRegistry.feishuApproval.validate({
       ...current,
       enabled: true,
     }, deps).status, "ok");
-    assert.strictEqual(updateRegistry.feishuApproval({
+    assert.strictEqual(updateRegistry.feishuApproval.validate({
       ...current,
       platform: "lark",
       connectionTimeoutSeconds: 30,
@@ -380,11 +382,11 @@ describe("updateRegistry pure-data validators", () => {
       { approverBoundPlatform: "lark" },
       { approverBoundAppId: "cli_forged" },
     ]) {
-      const result = updateRegistry.feishuApproval({ ...current, ...patch }, deps);
+      const result = updateRegistry.feishuApproval.validate({ ...current, ...patch }, deps);
       assert.strictEqual(result.status, "error");
       assert.strictEqual(result.code, "approver-command-required");
     }
-    assert.strictEqual(updateRegistry.feishuApproval({
+    assert.strictEqual(updateRegistry.feishuApproval.validate({
       ...current,
       connectionTimeoutSeconds: 999,
       appSecret: "should-not-live-in-prefs",

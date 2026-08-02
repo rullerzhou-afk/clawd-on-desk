@@ -12,6 +12,9 @@ const {
   listPetTintOptions,
   listPetAccessoryOptions,
 } = require("../src/pet-customization-catalog");
+const prefs = require("../src/prefs");
+const { createSettingsController } = require("../src/settings-controller");
+const { commandRegistry } = require("../src/settings-actions");
 
 class FakeIpcMain {
   constructor() {
@@ -434,6 +437,29 @@ test("settings IPC delegates controller and size preview handlers", async () => 
     ["sizePreview", "P:35"],
     ["sizeEnd", "P:35"],
   ]);
+});
+
+test("settings:update cannot bypass the Feishu command-only boundary", async () => {
+  const controller = createSettingsController({
+    loadResult: { snapshot: prefs.getDefaults(), locked: false },
+    commands: commandRegistry,
+  });
+  const { ipcMain, runtime } = createHarness({ settingsController: controller });
+  const staleObject = { ...controller.get("feishuApproval") };
+
+  assert.deepStrictEqual(
+    await controller.applyCommand("feishuApproval.updateConfig", { connectionTimeoutSeconds: 30 }),
+    { status: "ok", message: undefined },
+  );
+  const result = await ipcMain.invoke("settings:update", {
+    key: "feishuApproval",
+    value: staleObject,
+  });
+
+  assert.equal(result.status, "error");
+  assert.match(result.message, /command-only/);
+  assert.equal(controller.get("feishuApproval").connectionTimeoutSeconds, 30);
+  runtime.dispose();
 });
 
 test("settings IPC delegates Codex Pet theme channels and decorates metadata", async () => {

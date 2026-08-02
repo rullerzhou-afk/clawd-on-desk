@@ -1259,6 +1259,25 @@ describe("applyCommand", () => {
 });
 
 describe("Feishu approval settings domain", () => {
+  function createCountingFeishuController() {
+    const snapshot = prefs.getDefaults();
+    const metrics = { persistCalls: 0, subscriberCalls: 0 };
+    const ctrl = createSettingsController({
+      prefsPath: "in-memory-path",
+      prefs: {
+        save: () => {
+          metrics.persistCalls += 1;
+        },
+      },
+      loadResult: { snapshot, locked: false },
+      commands: commandRegistry,
+    });
+    ctrl.subscribe(() => {
+      metrics.subscriberCalls += 1;
+    });
+    return { ctrl, metrics };
+  }
+
   function createLookupOverlapFixture() {
     const transport = {
       a: createDeferred(),
@@ -1532,10 +1551,101 @@ describe("Feishu approval settings domain", () => {
     });
 
     assert.equal(result.firstResult.status, "ok");
-    assert.deepEqual(result.secondResult, { status: "error", code: "approver-command-required" });
+    assert.deepEqual(result.secondResult, {
+      status: "error",
+      message: "feishuApproval: command-only setting cannot be changed via applyUpdate",
+    });
     assert.equal(result.finalSnapshot.enabled, false);
     assert.equal(result.finalSnapshot.approverId, "ou_new");
     assert.equal(result.finalSnapshot.approverSource, "lookup");
+  });
+
+  it("rejects a matching-tuple stale timeout update after the authoritative patch", async () => {
+    const { ctrl, metrics } = createCountingFeishuController();
+    const staleObject = { ...ctrl.get("feishuApproval") };
+    const tupleKeys = [
+      "idType",
+      "approverId",
+      "approverSource",
+      "approverBoundPlatform",
+      "approverBoundAppId",
+    ];
+
+    const patchResult = await ctrl.applyCommand(
+      "feishuApproval.updateConfig",
+      { connectionTimeoutSeconds: 30 },
+    );
+    assert.equal(patchResult.status, "ok");
+    assert.equal(ctrl.get("feishuApproval").connectionTimeoutSeconds, 30);
+    assert.equal(metrics.persistCalls, 1);
+    assert.equal(metrics.subscriberCalls, 1);
+
+    const genericResult = ctrl.applyUpdate("feishuApproval", staleObject);
+
+    assert.equal(genericResult.status, "error");
+    assert.match(genericResult.message, /command-only/);
+    assert.equal(ctrl.get("feishuApproval").connectionTimeoutSeconds, 30);
+    for (const key of tupleKeys) {
+      assert.equal(ctrl.get("feishuApproval")[key], staleObject[key], key);
+    }
+    assert.equal(metrics.persistCalls, 1);
+    assert.equal(metrics.subscriberCalls, 1);
+  });
+
+  it("rejects a matching-tuple stale enabled update after the authoritative patch", async () => {
+    const { ctrl, metrics } = createCountingFeishuController();
+    const staleObject = { ...ctrl.get("feishuApproval") };
+    assert.equal(staleObject.enabled, false);
+
+    const patchResult = await ctrl.applyCommand(
+      "feishuApproval.updateConfig",
+      { enabled: true },
+    );
+    assert.equal(patchResult.status, "ok");
+    assert.equal(ctrl.get("feishuApproval").enabled, true);
+
+    const genericResult = ctrl.applyUpdate("feishuApproval", staleObject);
+
+    assert.equal(genericResult.status, "error");
+    assert.equal(ctrl.get("feishuApproval").enabled, true);
+    assert.equal(metrics.persistCalls, 1);
+    assert.equal(metrics.subscriberCalls, 1);
+  });
+
+  it("rejects a generic Feishu bulk update atomically with unrelated settings", () => {
+    const { ctrl, metrics } = createCountingFeishuController();
+    const before = ctrl.getSnapshot();
+    const staleObject = { ...before.feishuApproval };
+
+    const result = ctrl.applyBulk({
+      feishuApproval: staleObject,
+      lang: "zh",
+    });
+
+    assert.equal(result.status, "error");
+    assert.match(result.message, /command-only/);
+    assert.deepStrictEqual(ctrl.get("feishuApproval"), before.feishuApproval);
+    assert.equal(ctrl.get("lang"), before.lang);
+    assert.equal(metrics.persistCalls, 0);
+    assert.equal(metrics.subscriberCalls, 0);
+  });
+
+  it("rejects a generic Feishu hydrate atomically with unrelated settings", () => {
+    const { ctrl, metrics } = createCountingFeishuController();
+    const before = ctrl.getSnapshot();
+    const staleObject = { ...before.feishuApproval };
+
+    const result = ctrl.hydrate({
+      feishuApproval: staleObject,
+      lang: "zh",
+    });
+
+    assert.equal(result.status, "error");
+    assert.match(result.message, /command-only/);
+    assert.deepStrictEqual(ctrl.get("feishuApproval"), before.feishuApproval);
+    assert.equal(ctrl.get("lang"), before.lang);
+    assert.equal(metrics.persistCalls, 0);
+    assert.equal(metrics.subscriberCalls, 0);
   });
 
   it("lets lookup B start before lookup A settles and only B can commit when B resolves first", async () => {
@@ -1923,8 +2033,10 @@ describe("Feishu approval settings domain", () => {
 
     const testResult = ctrl.applyCommand("feishuApproval.test", {});
     await started;
-    const next = { ...ctrl.get("feishuApproval"), connectionTimeoutSeconds: 30 };
-    const updateResult = ctrl.applyUpdate("feishuApproval", next);
+    const updateResult = ctrl.applyCommand(
+      "feishuApproval.updateConfig",
+      { connectionTimeoutSeconds: 30 },
+    );
     await Promise.resolve();
 
     assert.strictEqual(ctrl.get("feishuApproval").connectionTimeoutSeconds, 15);

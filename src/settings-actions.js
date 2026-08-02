@@ -210,6 +210,24 @@ const MANAGED_CLEANUP_AGENT_IDS = Object.freeze([
 // ── updateRegistry ──
 // Maps prefs field name → validator. Controller looks up by key and runs.
 
+function validateFeishuApprovalUpdate(value, deps = {}) {
+  const current = normalizeFeishuApproval(
+    deps.snapshot && deps.snapshot.feishuApproval
+  );
+  for (const key of [
+    "idType",
+    "approverId",
+    "approverSource",
+    "approverBoundPlatform",
+    "approverBoundAppId",
+  ]) {
+    if (!value || value[key] !== current[key]) {
+      return { status: "error", code: "approver-command-required" };
+    }
+  }
+  return validateFeishuApproval(value);
+}
+
 const updateRegistry = {
   // ── Window state ──
   x: requireFiniteNumber("x"),
@@ -656,20 +674,9 @@ const updateRegistry = {
   discordPresence(value) {
     return validateDiscordPresence(value);
   },
-  feishuApproval(value, deps = {}) {
-    const current = normalizeFeishuApproval(deps.snapshot && deps.snapshot.feishuApproval);
-    for (const key of [
-      "idType",
-      "approverId",
-      "approverSource",
-      "approverBoundPlatform",
-      "approverBoundAppId",
-    ]) {
-      if (!value || value[key] !== current[key]) {
-        return { status: "error", code: "approver-command-required" };
-      }
-    }
-    return validateFeishuApproval(value);
+  feishuApproval: {
+    validate: validateFeishuApprovalUpdate,
+    commandOnly: true,
   },
 
   // v0.9.0 spike: persisted migration state across restarts. Shape:
