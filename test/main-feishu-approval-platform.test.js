@@ -8,6 +8,9 @@ const util = require("node:util");
 const vm = require("node:vm");
 const { classifyFeishuSdkError } = require("../src/feishu-approval-client");
 const feishuApprovalSettings = require("../src/feishu-approval-settings");
+const { createSettingsController } = require("../src/settings-controller");
+const { commandRegistry } = require("../src/settings-actions");
+const { createFeishuApprovalLookupCoordinator } = require("../src/feishu-approval-lookup");
 
 // main.js cannot be required here (it pulls in electron), so this follows the
 // existing main-*.test.js convention of reading the source. Where behavior can
@@ -39,6 +42,15 @@ function loadFn(name, extraContext = {}) {
   context.globalThis = context;
   vm.runInNewContext(`${block}\nresult = ${name};`, context);
   return context.result;
+}
+
+function createDeferred() {
+  const deferred = {};
+  deferred.promise = new Promise((resolve, reject) => {
+    deferred.resolve = resolve;
+    deferred.reject = reject;
+  });
+  return deferred;
 }
 
 const SENTINELS = Object.freeze([
@@ -695,6 +707,159 @@ describe("main Feishu/Lark approval platform wiring", () => {
     assert.equal(logs[0].message, "test card send failed");
     assertAllowlistedSdkMetadata(logs[0].meta, "send-card");
     assertNoSentinels(logs, "test-card application log");
+  });
+
+  it("lookup pending and direct Test use one coherent persisted snapshot", async () => {
+    const persistedConfig = {
+      enabled: true,
+      platform: "lark",
+      idType: "open_id",
+      approverId: "ou_persisted",
+      approverSource: "lookup",
+      approverBoundPlatform: "lark",
+      approverBoundAppId: "cli_persisted",
+      connectionTimeoutSeconds: 15,
+    };
+    const persistedSecrets = {
+      credentialPlatform: "lark",
+      appId: "cli_persisted",
+      appSecret: "persisted-secret-sentinel",
+      verificationToken: "persisted-verification-sentinel",
+      encryptKey: "persisted-encrypt-sentinel",
+    };
+    const pendingApproverId = "ou_pending_lookup";
+    const requestId = "lookup-request-pending-test";
+    const lookupStarted = createDeferred();
+    const releaseLookup = createDeferred();
+    let lookupTransportSettled = false;
+    let controller;
+    let commitCalls = 0;
+    const persistedWrites = [];
+    const lookupCoordinator = createFeishuApprovalLookupCoordinator({
+      createLookupId: () => "lookup-pending-test",
+    });
+    const lookupFeishuApproverByEmail = async ({ platform, appId, email, signal }) => {
+      assert.equal(platform, persistedConfig.platform);
+      assert.equal(appId, persistedConfig.approverBoundAppId);
+      assert.equal(email, "persisted@example.com");
+      assert.equal(signal.aborted, false);
+      lookupStarted.resolve();
+      await releaseLookup.promise;
+      lookupTransportSettled = true;
+      assert.equal(signal.aborted, false);
+      return { status: "ok", approverId: pendingApproverId };
+    };
+    const cardSends = [];
+    const mainTestInputs = [];
+    const syncInputs = [];
+    const logs = [];
+    const assertNoPersistedSensitiveValues = (value, label) => {
+      const rendered = util.inspect(value, { depth: 12, showHidden: true });
+      for (const sensitive of [
+        persistedSecrets.appSecret,
+        persistedSecrets.verificationToken,
+        persistedSecrets.encryptKey,
+      ]) {
+        assert.ok(!rendered.includes(sensitive), `${label} must not contain ${sensitive}`);
+      }
+    };
+    const client = {
+      requestApproval: async (card) => {
+        cardSends.push(card);
+        return "allow";
+      },
+    };
+    const sendFeishuApprovalTest = loadFn("sendFeishuApprovalTest", {
+      feishuApprovalSettings,
+      getFeishuApprovalStatus: () => ({ configured: true }),
+      queueFeishuApprovalSync: async (reason, persisted) => {
+        syncInputs.push({ reason, persisted });
+        return true;
+      },
+      getConfiguredFeishuApprovalClient: () => client,
+      feishuApprovalUnavailableResult: () => ({ status: "error", code: "not-connected" }),
+      AbortController,
+      setTimeout,
+      clearTimeout,
+      translate: (key) => key,
+      classifyFeishuSdkError,
+      feishuApprovalLog: (level, message, meta) => logs.push({ level, message, meta }),
+    });
+    const commands = { ...commandRegistry };
+    const commitAction = commands["feishuApproval.commitApprover"];
+    commands["feishuApproval.commitApprover"] = (...args) => {
+      commitCalls += 1;
+      return commitAction(...args);
+    };
+    commands["feishuApproval.commitApprover"].lockKey = commitAction.lockKey;
+
+    const sharedDeps = {
+      getFeishuApprovalPrefs: () => controller.get("feishuApproval"),
+      getFeishuApprovalSecrets: () => ({ ...persistedSecrets }),
+      getFeishuApprovalSecretsRevision: () => 23,
+      feishuApprovalLookupCoordinator: lookupCoordinator,
+      lookupFeishuApproverByEmail,
+    };
+    controller = createSettingsController({
+      prefsPath: "in-memory-settings",
+      prefs: {
+        load: () => ({ snapshot: { feishuApproval: persistedConfig }, locked: false }),
+        save: (_path, snapshot) => persistedWrites.push(snapshot),
+      },
+      commands,
+      injectedDeps: {
+        ...sharedDeps,
+        sendFeishuApprovalTest: async (persisted) => {
+          mainTestInputs.push(persisted);
+          return sendFeishuApprovalTest(persisted);
+        },
+      },
+      concurrentDeps: sharedDeps,
+    });
+
+    const resolvePromise = controller.applyCommand("feishuApproval.resolveApprover", {
+      email: "persisted@example.com",
+      hasUnsavedCredentialDrafts: false,
+      requestId,
+    });
+    await lookupStarted.promise;
+    try {
+      assert.equal(lookupTransportSettled, false, "the lookup transport must remain pending before Test starts");
+
+      const testResult = await controller.applyCommand("feishuApproval.test");
+      assert.equal(lookupTransportSettled, false, "Test must evaluate its tuple while lookup transport is pending");
+      assert.ok(
+        testResult.status === "ok" || testResult.status === "error",
+        "direct Test must either use the saved tuple or fail closed",
+      );
+      assert.equal(commitCalls, 0, "pending lookup must not trigger commitApprover");
+      assert.equal(persistedWrites.length, 0, "pending lookup must not persist partial lookup state");
+      assert.deepStrictEqual(JSON.parse(JSON.stringify(controller.get("feishuApproval"))), persistedConfig);
+      assert.equal(mainTestInputs.length, 1, "the direct Test command must reach the main-process test path");
+      assert.deepStrictEqual(JSON.parse(JSON.stringify(mainTestInputs[0].config)), persistedConfig);
+      assert.deepStrictEqual(JSON.parse(JSON.stringify(mainTestInputs[0].secrets)), persistedSecrets);
+      assert.equal(mainTestInputs[0].secretsRevision, 23);
+      assert.equal(syncInputs.length, 1, "Test must synchronize the same persisted tuple before card delivery");
+      assert.deepStrictEqual(JSON.parse(JSON.stringify(syncInputs[0].persisted.config)), persistedConfig);
+      assert.deepStrictEqual(JSON.parse(JSON.stringify(syncInputs[0].persisted.secrets)), persistedSecrets);
+      assert.equal(syncInputs[0].persisted.secretsRevision, 23);
+      assert.notEqual(persistedConfig.approverId, pendingApproverId);
+      assert.equal(cardSends.length, testResult.status === "ok" ? 1 : 0, "a failed-closed Test must send no card");
+      assertNoSentinels(testResult, "direct Test result");
+      assertNoSentinels(logs, "direct Test logs");
+      assertNoPersistedSensitiveValues(testResult, "direct Test result");
+      assertNoPersistedSensitiveValues(logs, "direct Test logs");
+    } finally {
+      releaseLookup.resolve();
+      const resolveResult = await resolvePromise;
+      assert.equal(resolveResult.status, "ok");
+      assert.equal(resolveResult.lookupId, "lookup-pending-test");
+      const cancelResult = await controller.applyCommand("feishuApproval.cancelApproverLookup", { requestId });
+      assert.equal(cancelResult.status, "ok");
+      assert.equal(lookupTransportSettled, true, "the deferred lookup must be settled before the test exits");
+      assert.equal(commitCalls, 0);
+      assert.deepStrictEqual(JSON.parse(JSON.stringify(controller.get("feishuApproval"))), persistedConfig);
+    }
   });
 
   it("Feishu main-process runtime block contains no raw error forwarding", () => {
