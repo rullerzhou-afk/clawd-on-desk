@@ -733,6 +733,90 @@ describe("feishu approval commands", () => {
     assert.equal("approverId" in result, false);
   });
 
+  it("completes saved Feishu and Lark lookup and commit with one bound identity", async () => {
+    for (const [platform, appId, appSecret] of [
+      ["feishu", "cli_feishu_saved", "feishu-saved-secret"],
+      ["lark", "cli_lark_saved", "lark-saved-secret"],
+    ]) {
+      let consumed = false;
+      const transportCalls = [];
+      const current = {
+        ...prefs.getDefaults().feishuApproval,
+        enabled: false,
+        platform,
+        idType: "open_id",
+        approverId: "",
+        approverSource: "none",
+        approverBoundPlatform: "",
+        approverBoundAppId: "",
+      };
+      const coordinator = {
+        begin: ({ requestId }) => ({
+          status: "ok",
+          lookupId: `opaque-${platform}-${requestId}`,
+          signal: new AbortController().signal,
+        }),
+        succeed: ({ lookupId }) => ({ status: "ok", lookupId }),
+        fail: () => ({ status: "ok" }),
+        consume: ({ lookupId, identity, secretsRevision }) => {
+          if (consumed) return { status: "error", code: "lookup-result-consumed" };
+          consumed = true;
+          return {
+            status: "ok",
+            approverId: `ou_${platform}_${identity.appId}_${secretsRevision}`,
+          };
+        },
+      };
+      const { deps } = lookupDeps({
+        snapshot: { ...prefs.getDefaults(), feishuApproval: current },
+        getFeishuApprovalPrefs: () => current,
+        getFeishuApprovalSecrets: () => ({ credentialPlatform: platform, appId, appSecret }),
+        feishuApprovalLookupCoordinator: coordinator,
+        lookupFeishuApproverByEmail: async (payload) => {
+          transportCalls.push(payload);
+          return { status: "ok", approverId: `ou_${platform}_resolved` };
+        },
+      });
+      const resolveResult = await commandRegistry["feishuApproval.resolveApprover"]({
+        requestId: `renderer-${platform}`,
+        hasUnsavedCredentialDrafts: false,
+        email: "saved-identity@example.com",
+        platform: platform === "feishu" ? "lark" : "feishu",
+        appId: "cli_renderer_must_be_ignored",
+        appSecret: "renderer-secret-must-be-ignored",
+      }, deps);
+
+      assert.deepEqual({ ...transportCalls[0], signal: undefined }, {
+        platform,
+        appId,
+        appSecret,
+        email: "saved-identity@example.com",
+        signal: undefined,
+      });
+      assert.deepEqual(resolveResult, { status: "ok", lookupId: `opaque-${platform}-renderer-${platform}` });
+      assert.equal("approverId" in resolveResult, false);
+
+      const commitResult = commandRegistry["feishuApproval.commitApprover"]({
+        lookupId: resolveResult.lookupId,
+      }, deps);
+      assert.deepEqual(commitResult.commit.feishuApproval, {
+        ...current,
+        idType: "open_id",
+        approverId: `ou_${platform}_${appId}_7`,
+        approverSource: "lookup",
+        approverBoundPlatform: platform,
+        approverBoundAppId: appId,
+      });
+      assert.equal(JSON.stringify({ resolveResult, commitResult }).includes(appSecret), false);
+      assert.equal(JSON.stringify({ resolveResult, commitResult }).includes("saved-identity@example.com"), false);
+
+      const repeated = commandRegistry["feishuApproval.commitApprover"]({
+        lookupId: resolveResult.lookupId,
+      }, deps);
+      assert.deepEqual(repeated, { status: "error", code: "lookup-result-consumed" });
+    }
+  });
+
   it("feishuApproval.resolveApprover blocks unsaved drafts and invalid saved identity before transport", async () => {
     const { calls, deps } = lookupDeps();
     const unsaved = await commandRegistry["feishuApproval.resolveApprover"]({

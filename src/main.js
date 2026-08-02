@@ -2647,6 +2647,22 @@ function getFeishuApprovalStatus() {
   const config = getFeishuApprovalPrefs();
   const secrets = getFeishuApprovalSecrets();
   const ready = feishuApprovalSettings.readiness(config, secrets);
+  const credentialEvaluation = feishuApprovalSettings.evaluateFeishuApprovalConfiguration(
+    config,
+    secrets,
+    {
+      requireEnabled: false,
+      requireApprover: false,
+    },
+  );
+  const setupEvaluation = feishuApprovalSettings.evaluateFeishuApprovalConfiguration(
+    config,
+    secrets,
+    {
+      requireEnabled: false,
+      requireApprover: true,
+    },
+  );
   const clientStatus = feishuApprovalClient && typeof feishuApprovalClient.getStatus === "function"
     ? feishuApprovalClient.getStatus()
     : { status: "stopped" };
@@ -2659,6 +2675,10 @@ function getFeishuApprovalStatus() {
     configured: ready.ready === true,
     reason: ready.reason || "",
     message: clientStatus.message || ready.message || "",
+    credentialReady: credentialEvaluation.ok === true,
+    credentialReason: credentialEvaluation.ok ? "" : credentialEvaluation.code || "invalid-config",
+    configurationReady: setupEvaluation.ok === true,
+    setupReason: setupEvaluation.ok ? "" : setupEvaluation.code || "invalid-config",
     connectionTimeoutSeconds: config.connectionTimeoutSeconds,
     // Two different questions, deliberately two fields:
     //   secretsStored     — is ANY secret on disk? (drives render gating only)

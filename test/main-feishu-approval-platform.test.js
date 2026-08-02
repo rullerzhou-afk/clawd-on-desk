@@ -394,6 +394,44 @@ describe("main Feishu/Lark approval platform wiring", () => {
     assert.equal(cards, 0);
   });
 
+  it("exposes independent credential and setup readiness from the shared evaluator", () => {
+    const disabled = loadFn("getFeishuApprovalStatus", {
+      getFeishuApprovalPrefs: () => ({ ...CONFIG, enabled: false }),
+      getFeishuApprovalSecrets: () => SECRETS,
+      feishuApprovalSettings,
+      feishuApprovalClient: null,
+    })();
+    assert.equal(disabled.credentialReady, true);
+    assert.equal(disabled.credentialReason, "");
+    assert.equal(disabled.configurationReady, true);
+    assert.equal(disabled.setupReason, "");
+    assert.equal(disabled.configured, false);
+    assert.equal(disabled.reason, "disabled");
+
+    const legacy = { ...CONFIG };
+    delete legacy.approverSource;
+    delete legacy.approverBoundPlatform;
+    delete legacy.approverBoundAppId;
+    const legacyStatus = loadFn("getFeishuApprovalStatus", {
+      getFeishuApprovalPrefs: () => legacy,
+      getFeishuApprovalSecrets: () => SECRETS,
+      feishuApprovalSettings,
+      feishuApprovalClient: null,
+    })();
+    assert.equal(legacyStatus.credentialReady, true);
+    assert.equal(legacyStatus.configurationReady, false);
+    assert.equal(legacyStatus.setupReason, "approver-provenance-unknown");
+
+    const appMismatchStatus = loadFn("getFeishuApprovalStatus", {
+      getFeishuApprovalPrefs: () => ({ ...CONFIG, approverBoundAppId: "cli_other" }),
+      getFeishuApprovalSecrets: () => SECRETS,
+      feishuApprovalSettings,
+      feishuApprovalClient: null,
+    })();
+    assert.equal(appMismatchStatus.configurationReady, false);
+    assert.equal(appMismatchStatus.setupReason, "approver-app-mismatch");
+  });
+
   it("legacy approver provenance constructs no runtime client and sends no Test card", async () => {
     const legacy = { ...CONFIG };
     delete legacy.approverSource;
