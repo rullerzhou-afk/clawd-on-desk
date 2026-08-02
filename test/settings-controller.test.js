@@ -944,6 +944,120 @@ describe("applyCommand", () => {
     assert.equal(subscriberCalls, 0);
   });
 
+  it("rejects a deceptive Proxy commit from a concurrent command without writing", async () => {
+    const prefsPath = makeTempPath();
+    prefs.save(prefsPath, prefs.getDefaults());
+    const saves = [];
+    const recordingPrefs = {
+      load: (target) => prefs.load(target),
+      save: (target, snapshot) => {
+        saves.push(snapshot);
+        return prefs.save(target, snapshot);
+      },
+    };
+    let invoked = 0;
+    let subscriberCalls = 0;
+    const deceptiveResult = new Proxy(
+      { status: "ok" },
+      {
+        has(target, key) {
+          if (key === "commit") return false;
+          return Reflect.has(target, key);
+        },
+        get(target, key, receiver) {
+          if (key === "commit") return { lang: "zh" };
+          return Reflect.get(target, key, receiver);
+        },
+      },
+    );
+    const deceptiveCommand = () => {
+      invoked += 1;
+      return deceptiveResult;
+    };
+    deceptiveCommand.concurrent = true;
+    const ctrl = createSettingsController({
+      prefsPath,
+      prefs: recordingPrefs,
+      commands: { deceptiveCommand },
+    });
+    ctrl.subscribe(() => { subscriberCalls += 1; });
+    const beforeDisk = fs.readFileSync(prefsPath, "utf8");
+
+    const result = await ctrl.applyCommand("deceptiveCommand", {});
+
+    assert.deepStrictEqual(result, {
+      status: "error",
+      code: "concurrent-command-commit-forbidden",
+    });
+    assert.equal(invoked, 1);
+    assert.equal(ctrl.get("lang"), "en");
+    assert.equal(saves.length, 0);
+    assert.equal(fs.readFileSync(prefsPath, "utf8"), beforeDisk);
+    assert.equal(subscriberCalls, 0);
+  });
+
+  it("fails closed when a concurrent commit property cannot be inspected", async () => {
+    const prefsPath = makeTempPath();
+    prefs.save(prefsPath, prefs.getDefaults());
+    const saves = [];
+    const recordingPrefs = {
+      load: (target) => prefs.load(target),
+      save: (target, snapshot) => {
+        saves.push(snapshot);
+        return prefs.save(target, snapshot);
+      },
+    };
+    let invoked = 0;
+    let subscriberCalls = 0;
+    const throwingResult = new Proxy(
+      { status: "ok" },
+      {
+        has(target, key) {
+          if (key === "commit") return false;
+          return Reflect.has(target, key);
+        },
+        get(target, key, receiver) {
+          if (key === "commit") {
+            throw new Error("raw commit getter failure");
+          }
+          return Reflect.get(target, key, receiver);
+        },
+      },
+    );
+    const throwingCommand = () => {
+      invoked += 1;
+      return throwingResult;
+    };
+    throwingCommand.concurrent = true;
+    const ctrl = createSettingsController({
+      prefsPath,
+      prefs: recordingPrefs,
+      commands: { throwingCommand },
+    });
+    ctrl.subscribe(() => { subscriberCalls += 1; });
+    const beforeDisk = fs.readFileSync(prefsPath, "utf8");
+
+    let result;
+    let rejected;
+    try {
+      result = await ctrl.applyCommand("throwingCommand", {});
+    } catch (err) {
+      rejected = err;
+    }
+
+    assert.equal(rejected, undefined);
+    assert.deepStrictEqual(result, {
+      status: "error",
+      code: "concurrent-command-commit-forbidden",
+    });
+    assert.equal(JSON.stringify(result).includes("raw commit getter failure"), false);
+    assert.equal(invoked, 1);
+    assert.equal(ctrl.get("lang"), "en");
+    assert.equal(saves.length, 0);
+    assert.equal(fs.readFileSync(prefsPath, "utf8"), beforeDisk);
+    assert.equal(subscriberCalls, 0);
+  });
+
   it("gives concurrent commands only explicit dependencies while ordinary commands keep the full set", async () => {
     const normalWriter = () => ({ status: "ok" });
     const allowedLookup = () => ({ status: "ok" });
