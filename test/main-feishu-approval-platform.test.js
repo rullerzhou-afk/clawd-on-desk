@@ -197,6 +197,144 @@ describe("main Feishu/Lark approval platform wiring", () => {
     assert.equal(feishuApprovalSettings.readiness(CONFIG, rotatedSecrets).ready, true);
   });
 
+  it("failed credential persistence preserves the current route and session automation state", () => {
+    const events = [];
+    const failure = Object.freeze({ status: "error", code: "write-failed" });
+    const prospectiveSecrets = { credentialPlatform: "feishu", appId: "cli_2" };
+    const routeState = {
+      current: true,
+      pendingCandidates: ["candidate-current"],
+      activeGrants: ["grant-current"],
+      cardWork: ["card-current"],
+    };
+    const client = {
+      markSessionAutomationRouteStale() {
+        events.push("route-stale");
+        routeState.current = false;
+      },
+      markSessionAutomationRouteCurrent() {
+        events.push("route-current");
+        routeState.current = true;
+      },
+    };
+    const context = {
+      getFeishuApprovalPaths: () => PATHS,
+      getFeishuApprovalPrefs: () => CONFIG,
+      buildFeishuSessionAutomationRouteSignature: (_config, secrets, revision) => {
+        assert.strictEqual(secrets, prospectiveSecrets);
+        assert.equal(revision, 12);
+        return "prospective-route-r12";
+      },
+      feishuApprovalSecretsRevision: 11,
+      feishuApprovalSettings: {
+        writeSecretsEnvFile: ({ secrets }) => {
+          events.push("write");
+          assert.strictEqual(secrets, prospectiveSecrets);
+          return failure;
+        },
+      },
+      fs: {},
+      path: {},
+      process: { platform: "test" },
+      feishuApprovalClient: client,
+      feishuSessionAutomationRouteSignature: "current-route-r11",
+      sessionAutomationCoordinator: {
+        onRemoteClientRouteChange(receivedClient) {
+          events.push("coordinator-route-change");
+          assert.strictEqual(receivedClient, client);
+          routeState.pendingCandidates.length = 0;
+          routeState.activeGrants.length = 0;
+          routeState.cardWork.length = 0;
+        },
+      },
+      queueFeishuApprovalSync: () => events.push("sync"),
+    };
+    context.prepareFeishuSessionAutomationRouteChange = loadFn(
+      "prepareFeishuSessionAutomationRouteChange",
+      context,
+    );
+    const writeFeishuApprovalSecrets = loadFn("writeFeishuApprovalSecrets", context);
+
+    const result = writeFeishuApprovalSecrets(prospectiveSecrets);
+
+    assert.strictEqual(result, failure, "the writer result must be returned unchanged");
+    assert.deepEqual(events, ["write"]);
+    assert.equal(context.feishuApprovalSecretsRevision, 11);
+    assert.equal(context.feishuSessionAutomationRouteSignature, "current-route-r11");
+    assert.deepEqual(routeState, {
+      current: true,
+      pendingCandidates: ["candidate-current"],
+      activeGrants: ["grant-current"],
+      cardWork: ["card-current"],
+    });
+  });
+
+  it("successful credential persistence writes before invalidating the prospective route and syncing once", () => {
+    const events = [];
+    const success = Object.freeze({ status: "ok" });
+    const prospectiveSecrets = { credentialPlatform: "feishu", appId: "cli_2" };
+    const client = {
+      routeCurrent: true,
+      cardWork: { pending: true },
+      markSessionAutomationRouteStale() {
+        events.push("route-stale");
+        this.routeCurrent = false;
+      },
+    };
+    const context = {
+      getFeishuApprovalPaths: () => PATHS,
+      getFeishuApprovalPrefs: () => CONFIG,
+      buildFeishuSessionAutomationRouteSignature: (_config, secrets, revision) => {
+        events.push(`signature:${revision}`);
+        assert.strictEqual(secrets, prospectiveSecrets);
+        return `prospective-route-r${revision}`;
+      },
+      feishuApprovalSecretsRevision: 20,
+      feishuApprovalSettings: {
+        writeSecretsEnvFile: ({ secrets }) => {
+          events.push("write");
+          assert.strictEqual(secrets, prospectiveSecrets);
+          return success;
+        },
+      },
+      fs: {},
+      path: {},
+      process: { platform: "test" },
+      feishuApprovalClient: client,
+      feishuSessionAutomationRouteSignature: "current-route-r20",
+      sessionAutomationCoordinator: {
+        onRemoteClientRouteChange(receivedClient) {
+          events.push("coordinator-route-change");
+          assert.strictEqual(receivedClient, client);
+          assert.deepEqual(receivedClient.cardWork, { pending: true });
+        },
+      },
+      queueFeishuApprovalSync: (reason) => {
+        events.push(`sync:${reason}:r${context.feishuApprovalSecretsRevision}`);
+      },
+    };
+    const prepareRouteChange = loadFn("prepareFeishuSessionAutomationRouteChange", context);
+    context.prepareFeishuSessionAutomationRouteChange = (signature) => {
+      events.push(`invalidate:${signature}`);
+      return prepareRouteChange(signature);
+    };
+    const writeFeishuApprovalSecrets = loadFn("writeFeishuApprovalSecrets", context);
+
+    const result = writeFeishuApprovalSecrets(prospectiveSecrets);
+
+    assert.strictEqual(result, success);
+    assert.deepEqual(events, [
+      "signature:21",
+      "write",
+      "invalidate:prospective-route-r21",
+      "route-stale",
+      "coordinator-route-change",
+      "sync:secrets:r21",
+    ]);
+    assert.equal(context.feishuApprovalSecretsRevision, 21);
+    assert.equal(client.routeCurrent, false);
+  });
+
   it("status, start, sync, and Test all fail closed on the same saved identity mismatch", async () => {
     const mismatchedSecrets = { ...SECRETS, credentialPlatform: "lark" };
     const status = loadFn("getFeishuApprovalStatus", {

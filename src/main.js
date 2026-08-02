@@ -2679,11 +2679,11 @@ function broadcastFeishuApprovalStatus() {
 
 function writeFeishuApprovalSecrets(secrets) {
   const paths = getFeishuApprovalPaths();
-  prepareFeishuSessionAutomationRouteChange(buildFeishuSessionAutomationRouteSignature(
+  const nextRouteSignature = buildFeishuSessionAutomationRouteSignature(
     getFeishuApprovalPrefs(),
     secrets && typeof secrets === "object" ? secrets : {},
     feishuApprovalSecretsRevision + 1
-  ));
+  );
   const result = feishuApprovalSettings.writeSecretsEnvFile({
     fs,
     path,
@@ -2692,13 +2692,9 @@ function writeFeishuApprovalSecrets(secrets) {
     platform: process.platform,
   });
   if (result && result.status === "ok") {
+    prepareFeishuSessionAutomationRouteChange(nextRouteSignature);
     feishuApprovalSecretsRevision += 1;
     queueFeishuApprovalSync("secrets");
-  } else if (
-    feishuApprovalClient
-    && typeof feishuApprovalClient.markSessionAutomationRouteCurrent === "function"
-  ) {
-    feishuApprovalClient.markSessionAutomationRouteCurrent();
   }
   return result;
 }
