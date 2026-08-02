@@ -6,7 +6,6 @@ function createFeishuApprovalLookupCoordinator(options = {}) {
   const createLookupId = typeof options.createLookupId === "function"
     ? options.createLookupId
     : randomUUID;
-  let generation = 0;
   let current = null;
   let tombstone = null;
 
@@ -50,7 +49,6 @@ function createFeishuApprovalLookupCoordinator(options = {}) {
       abortController,
       appId: identity.appId,
       approverId: "",
-      generation: ++generation,
       lookupId: createLookupId(),
       phase: "pending",
       platform: identity.platform,
@@ -136,7 +134,7 @@ function createFeishuApprovalLookupCoordinator(options = {}) {
         ? { keys: Object.keys(current), hasApproverId: !!current.approverId }
         : null,
       tombstone: tombstone
-        ? { phase: tombstone.phase, generationRetained: true }
+        ? { phase: tombstone.phase }
         : null,
     };
   }

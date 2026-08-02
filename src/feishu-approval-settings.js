@@ -390,8 +390,6 @@ function planFeishuCredentialWrite(current, requestedPlatform, patch) {
         verificationToken: trimString(incoming.verificationToken, 512),
         encryptKey: trimString(incoming.encryptKey, 512),
       },
-      identityChanged: true,
-      secretOnlyRotation: false,
     };
   }
 
@@ -402,14 +400,9 @@ function planFeishuCredentialWrite(current, requestedPlatform, patch) {
     verificationToken: trimString(incoming.verificationToken, 512) || trimString(saved.verificationToken, 512),
     encryptKey: trimString(incoming.encryptKey, 512) || trimString(saved.encryptKey, 512),
   };
-  const secretChanged = nextBundle.appSecret !== trimString(saved.appSecret, 512);
-  const optionalChanged = nextBundle.verificationToken !== trimString(saved.verificationToken, 512)
-    || nextBundle.encryptKey !== trimString(saved.encryptKey, 512);
   return {
     ok: true,
     nextBundle,
-    identityChanged: false,
-    secretOnlyRotation: secretChanged && !optionalChanged,
   };
 }
 

@@ -287,9 +287,13 @@ test("planFeishuCredentialWrite distinguishes same-identity merge, Secret-only r
     appSecret: "rotated-secret",
   }), {
     ok: true,
-    nextBundle: { ...current, appSecret: "rotated-secret" },
-    identityChanged: false,
-    secretOnlyRotation: true,
+    nextBundle: {
+      credentialPlatform: "feishu",
+      appId: "cli_current",
+      appSecret: "rotated-secret",
+      verificationToken: "old-verify",
+      encryptKey: "old-encrypt",
+    },
   });
 
   assert.deepEqual(settings.planFeishuCredentialWrite(current, "lark", {
@@ -304,8 +308,6 @@ test("planFeishuCredentialWrite distinguishes same-identity merge, Secret-only r
       verificationToken: "",
       encryptKey: "",
     },
-    identityChanged: true,
-    secretOnlyRotation: false,
   });
 
   assert.deepEqual(settings.planFeishuCredentialWrite(
@@ -321,8 +323,6 @@ test("planFeishuCredentialWrite distinguishes same-identity merge, Secret-only r
       verificationToken: "new-verify",
       encryptKey: "",
     },
-    identityChanged: true,
-    secretOnlyRotation: false,
   });
 
   for (const patch of [

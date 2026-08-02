@@ -40,7 +40,6 @@ test("coordinator retains only bounded lookup metadata and the ready approver", 
     "abortController",
     "appId",
     "approverId",
-    "generation",
     "lookupId",
     "phase",
     "platform",
@@ -111,7 +110,7 @@ test("credential identity or revision mismatch takes precedence over terminal st
   }
 });
 
-test("unknown handles are stale and a newer generation supersedes the previous handle", () => {
+test("unknown handles are stale and a newer lookup supersedes the previous handle", () => {
   const coordinator = createCoordinator();
   const first = coordinator.begin({ requestId: "request-a", identity: IDENTITY, secretsRevision: 1 });
   coordinator.succeed({ lookupId: first.lookupId, approverId: "ou_first" });
