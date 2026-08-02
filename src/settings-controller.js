@@ -66,6 +66,7 @@ function createSettingsController({
   updates = defaultActions.updateRegistry,
   commands = defaultActions.commandRegistry,
   injectedDeps = {},
+  concurrentDeps = {},
   loadResult = null, // optional pre-loaded { snapshot, locked } for tests
 } = {}) {
   if (!prefsPath && !loadResult) {
@@ -103,6 +104,13 @@ function createSettingsController({
   function buildDeps() {
     return {
       ...injectedDeps,
+      snapshot: store.getSnapshot(),
+    };
+  }
+
+  function buildConcurrentDeps() {
+    return {
+      ...concurrentDeps,
       snapshot: store.getSnapshot(),
     };
   }
@@ -424,7 +432,7 @@ function createSettingsController({
           code: "concurrent-command-lock-forbidden",
         });
       }
-      return _doApplyCommand(name, payload, { commitForbidden: true });
+      return _doApplyCommand(name, payload, { commitForbidden: true, concurrent: true });
     }
     const lockKey = resolveCommandLockKey(name);
     const prev = _asyncLocks.get(lockKey);
@@ -444,14 +452,22 @@ function createSettingsController({
     }
     let result;
     try {
-      result = await command(payload, buildDeps());
+      result = await command(
+        payload,
+        options.concurrent ? buildConcurrentDeps() : buildDeps(),
+      );
     } catch (err) {
       return {
         status: "error",
         message: `${name} command threw: ${err && err.message}`,
       };
     }
-    if (options.commitForbidden && result && Object.prototype.hasOwnProperty.call(result, "commit")) {
+    if (
+      options.commitForbidden
+      && result !== null
+      && (typeof result === "object" || typeof result === "function")
+      && "commit" in result
+    ) {
       return {
         status: "error",
         code: "concurrent-command-commit-forbidden",

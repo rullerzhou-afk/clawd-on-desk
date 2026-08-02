@@ -913,6 +913,74 @@ describe("applyCommand", () => {
     assert.equal(subscriberCalls, 0);
   });
 
+  it("forbids inherited settings commits returned by concurrent commands", async () => {
+    const prefsPath = makeTempPath();
+    prefs.save(prefsPath, prefs.getDefaults());
+    let invoked = 0;
+    let subscriberCalls = 0;
+    const inheritedCommit = () => {
+      invoked += 1;
+      const result = Object.create({ commit: { lang: "zh" } });
+      result.status = "ok";
+      return result;
+    };
+    inheritedCommit.concurrent = true;
+    const ctrl = createSettingsController({
+      prefsPath,
+      commands: { inheritedCommit },
+    });
+    ctrl.subscribe(() => { subscriberCalls += 1; });
+    const beforeDisk = fs.readFileSync(prefsPath, "utf8");
+
+    const result = await ctrl.applyCommand("inheritedCommit", {});
+
+    assert.deepStrictEqual(result, {
+      status: "error",
+      code: "concurrent-command-commit-forbidden",
+    });
+    assert.equal(invoked, 1);
+    assert.equal(ctrl.get("lang"), "en");
+    assert.equal(fs.readFileSync(prefsPath, "utf8"), beforeDisk);
+    assert.equal(subscriberCalls, 0);
+  });
+
+  it("gives concurrent commands only explicit dependencies while ordinary commands keep the full set", async () => {
+    const normalWriter = () => ({ status: "ok" });
+    const allowedLookup = () => ({ status: "ok" });
+    let concurrentSeen;
+    let ordinarySeen;
+    const concurrentProbe = (_payload, deps) => {
+      concurrentSeen = deps;
+      return { status: "ok" };
+    };
+    concurrentProbe.concurrent = true;
+    const ordinaryProbe = (_payload, deps) => {
+      ordinarySeen = deps;
+      return { status: "ok" };
+    };
+    const ctrl = createSettingsController({
+      loadResult: { snapshot: prefs.getDefaults(), locked: false },
+      commands: { concurrentProbe, ordinaryProbe },
+      injectedDeps: {
+        writeFeishuApprovalSecrets: normalWriter,
+        ordinaryOnlyDependency: normalWriter,
+      },
+      concurrentDeps: {
+        lookupFeishuApproverByEmail: allowedLookup,
+      },
+    });
+
+    assert.equal((await ctrl.applyCommand("concurrentProbe", {})).status, "ok");
+    assert.equal((await ctrl.applyCommand("ordinaryProbe", {})).status, "ok");
+
+    assert.equal("writeFeishuApprovalSecrets" in concurrentSeen, false);
+    assert.equal(concurrentSeen.lookupFeishuApproverByEmail, allowedLookup);
+    assert.deepEqual(concurrentSeen.snapshot, ctrl.getSnapshot());
+    assert.equal(ordinarySeen.writeFeishuApprovalSecrets, normalWriter);
+    assert.equal(ordinarySeen.ordinaryOnlyDependency, normalWriter);
+    assert.deepEqual(ordinarySeen.snapshot, ctrl.getSnapshot());
+  });
+
   it("rejects concurrent commands that also declare a lockKey before invocation", async () => {
     let invoked = 0;
     const invalidConcurrent = () => {
@@ -1096,24 +1164,26 @@ describe("Feishu approval settings domain", () => {
       approverBoundPlatform: "",
       approverBoundAppId: "",
     };
+    const lookupDeps = {
+      getFeishuApprovalPrefs: () => snapshot.feishuApproval,
+      getFeishuApprovalSecrets: () => ({
+        credentialPlatform: "feishu",
+        appId: "cli_saved",
+        appSecret: "saved-secret",
+      }),
+      getFeishuApprovalSecretsRevision: () => 1,
+      feishuApprovalLookupCoordinator: coordinator,
+      lookupFeishuApproverByEmail: ({ email }) => {
+        transportCalls.push(email);
+        const key = email.startsWith("a-") ? "a" : "b";
+        return transport[key].promise;
+      },
+    };
     const ctrl = createSettingsController({
       loadResult: { snapshot, locked: false },
       commands: commandRegistry,
-      injectedDeps: {
-        getFeishuApprovalPrefs: () => snapshot.feishuApproval,
-        getFeishuApprovalSecrets: () => ({
-          credentialPlatform: "feishu",
-          appId: "cli_saved",
-          appSecret: "saved-secret",
-        }),
-        getFeishuApprovalSecretsRevision: () => 1,
-        feishuApprovalLookupCoordinator: coordinator,
-        lookupFeishuApproverByEmail: ({ email }) => {
-          transportCalls.push(email);
-          const key = email.startsWith("a-") ? "a" : "b";
-          return transport[key].promise;
-        },
-      },
+      injectedDeps: lookupDeps,
+      concurrentDeps: lookupDeps,
     });
     return { ctrl, coordinator, transport, transportCalls };
   }
@@ -1180,6 +1250,76 @@ describe("Feishu approval settings domain", () => {
       finalSnapshot: first.fixture.ctrl.get("feishuApproval"),
     };
   }
+
+  it("wires real Feishu resolve and cancel through only the concurrent lookup dependencies", async () => {
+    const snapshot = prefs.getDefaults();
+    snapshot.feishuApproval = {
+      ...snapshot.feishuApproval,
+      platform: "feishu",
+      approverId: "",
+      approverSource: "none",
+      approverBoundPlatform: "",
+      approverBoundAppId: "",
+    };
+    const coordinator = createFeishuApprovalLookupCoordinator({
+      createLookupId: () => "lookup-allowlisted",
+    });
+    const transportStarted = createDeferred();
+    const transportRelease = createDeferred();
+    let controller;
+    let resolveDeps;
+    const lookupFeishuApproverByEmail = function (payload) {
+      resolveDeps = this;
+      transportStarted.resolve(payload);
+      return transportRelease.promise;
+    };
+    const concurrentDeps = {
+      getFeishuApprovalPrefs: () => controller.get("feishuApproval"),
+      getFeishuApprovalSecrets: () => ({
+        credentialPlatform: "feishu",
+        appId: "cli_saved",
+        appSecret: "stored-value",
+      }),
+      getFeishuApprovalSecretsRevision: () => 1,
+      feishuApprovalLookupCoordinator: coordinator,
+      lookupFeishuApproverByEmail,
+    };
+    controller = createSettingsController({
+      loadResult: { snapshot, locked: false },
+      commands: commandRegistry,
+      injectedDeps: {
+        writeFeishuApprovalSecrets: () => ({ status: "ok" }),
+      },
+      concurrentDeps,
+    });
+
+    const lookup = controller.applyCommand("feishuApproval.resolveApprover", {
+      requestId: "request-allowlisted",
+      email: "person@example.com",
+      hasUnsavedCredentialDrafts: false,
+    });
+    await transportStarted.promise;
+
+    assert.equal(resolveDeps.getFeishuApprovalPrefs, concurrentDeps.getFeishuApprovalPrefs);
+    assert.equal(resolveDeps.getFeishuApprovalSecrets, concurrentDeps.getFeishuApprovalSecrets);
+    assert.equal(
+      resolveDeps.getFeishuApprovalSecretsRevision,
+      concurrentDeps.getFeishuApprovalSecretsRevision,
+    );
+    assert.equal(resolveDeps.feishuApprovalLookupCoordinator, coordinator);
+    assert.equal(resolveDeps.lookupFeishuApproverByEmail, lookupFeishuApproverByEmail);
+    assert.equal("writeFeishuApprovalSecrets" in resolveDeps, false);
+    assert.deepEqual(resolveDeps.snapshot, controller.getSnapshot());
+
+    assert.deepEqual(
+      await controller.applyCommand("feishuApproval.cancelApproverLookup", {
+        requestId: "request-allowlisted",
+      }),
+      { status: "ok", code: "lookup-cancelled", message: undefined },
+    );
+    transportRelease.resolve({ status: "ok", approverId: "ou_late" });
+    assert.deepEqual(await lookup, { status: "error", code: "lookup-cancelled" });
+  });
 
   it("preserves enabled and new approver when the field-level save queues before commit", async () => {
     const fixture = createQueuedFeishuMutationFixture();
@@ -1381,19 +1521,22 @@ describe("Feishu approval settings domain", () => {
       appSecret: "saved-secret",
     };
     let secretsRevision = 1;
+    const lookupDeps = {
+      getFeishuApprovalPrefs: () => ctrl.get("feishuApproval"),
+      getFeishuApprovalSecrets: () => savedSecrets,
+      getFeishuApprovalSecretsRevision: () => secretsRevision,
+      feishuApprovalLookupCoordinator: coordinator,
+      lookupFeishuApproverByEmail: ({ signal }) => {
+        transportStarted.resolve(signal);
+        return transportRelease.promise;
+      },
+    };
     const ctrl = createSettingsController({
       prefsPath,
       loadResult: { snapshot, locked: false },
       commands: commandRegistry,
       injectedDeps: {
-        getFeishuApprovalPrefs: () => ctrl.get("feishuApproval"),
-        getFeishuApprovalSecrets: () => savedSecrets,
-        getFeishuApprovalSecretsRevision: () => secretsRevision,
-        feishuApprovalLookupCoordinator: coordinator,
-        lookupFeishuApproverByEmail: ({ signal }) => {
-          transportStarted.resolve(signal);
-          return transportRelease.promise;
-        },
+        ...lookupDeps,
         writeFeishuApprovalSecrets: async (nextSecrets) => {
           credentialStarted.resolve();
           await credentialRelease.promise;
@@ -1402,6 +1545,7 @@ describe("Feishu approval settings domain", () => {
           return { status: "ok", secretsStored: true };
         },
       },
+      concurrentDeps: lookupDeps,
     });
     let subscriberCalls = 0;
     ctrl.subscribe(() => { subscriberCalls += 1; });
@@ -1455,19 +1599,22 @@ describe("Feishu approval settings domain", () => {
       appSecret: "saved-secret",
     };
     let secretsRevision = 1;
+    const lookupDeps = {
+      getFeishuApprovalPrefs: () => ctrl.get("feishuApproval"),
+      getFeishuApprovalSecrets: () => savedSecrets,
+      getFeishuApprovalSecretsRevision: () => secretsRevision,
+      feishuApprovalLookupCoordinator: coordinator,
+      lookupFeishuApproverByEmail: ({ signal }) => {
+        transportStarted.resolve(signal);
+        return transportRelease.promise;
+      },
+    };
     const ctrl = createSettingsController({
       prefsPath,
       loadResult: { snapshot, locked: false },
       commands: commandRegistry,
       injectedDeps: {
-        getFeishuApprovalPrefs: () => ctrl.get("feishuApproval"),
-        getFeishuApprovalSecrets: () => savedSecrets,
-        getFeishuApprovalSecretsRevision: () => secretsRevision,
-        feishuApprovalLookupCoordinator: coordinator,
-        lookupFeishuApproverByEmail: ({ signal }) => {
-          transportStarted.resolve(signal);
-          return transportRelease.promise;
-        },
+        ...lookupDeps,
         writeFeishuApprovalSecrets: async (nextSecrets) => {
           credentialStarted.resolve();
           await credentialRelease.promise;
@@ -1476,6 +1623,7 @@ describe("Feishu approval settings domain", () => {
           return { status: "ok", secretsStored: true };
         },
       },
+      concurrentDeps: lookupDeps,
     });
     let subscriberCalls = 0;
     ctrl.subscribe(() => { subscriberCalls += 1; });
@@ -1523,24 +1671,26 @@ describe("Feishu approval settings domain", () => {
     const coordinator = createFeishuApprovalLookupCoordinator({
       createLookupId: () => "lookup-cancel",
     });
+    const lookupDeps = {
+      getFeishuApprovalPrefs: () => ctrl.get("feishuApproval"),
+      getFeishuApprovalSecrets: () => ({
+        credentialPlatform: "feishu",
+        appId: "cli_saved",
+        appSecret: "saved-secret",
+      }),
+      getFeishuApprovalSecretsRevision: () => 1,
+      feishuApprovalLookupCoordinator: coordinator,
+      lookupFeishuApproverByEmail: ({ signal }) => {
+        transportStarted.resolve(signal);
+        return transportRelease.promise;
+      },
+    };
     const ctrl = createSettingsController({
       prefsPath,
       loadResult: { snapshot, locked: false },
       commands: commandRegistry,
-      injectedDeps: {
-        getFeishuApprovalPrefs: () => ctrl.get("feishuApproval"),
-        getFeishuApprovalSecrets: () => ({
-          credentialPlatform: "feishu",
-          appId: "cli_saved",
-          appSecret: "saved-secret",
-        }),
-        getFeishuApprovalSecretsRevision: () => 1,
-        feishuApprovalLookupCoordinator: coordinator,
-        lookupFeishuApproverByEmail: ({ signal }) => {
-          transportStarted.resolve(signal);
-          return transportRelease.promise;
-        },
-      },
+      injectedDeps: lookupDeps,
+      concurrentDeps: lookupDeps,
     });
     let subscriberCalls = 0;
     ctrl.subscribe(() => { subscriberCalls += 1; });
@@ -1582,24 +1732,26 @@ describe("Feishu approval settings domain", () => {
     const coordinator = createFeishuApprovalLookupCoordinator({
       createLookupId: () => "lookup-error",
     });
+    const lookupDeps = {
+      getFeishuApprovalPrefs: () => ctrl.get("feishuApproval"),
+      getFeishuApprovalSecrets: () => ({
+        credentialPlatform: "feishu",
+        appId: "cli_saved",
+        appSecret: "saved-secret",
+      }),
+      getFeishuApprovalSecretsRevision: () => 1,
+      feishuApprovalLookupCoordinator: coordinator,
+      lookupFeishuApproverByEmail: ({ signal }) => {
+        transportStarted.resolve(signal);
+        return transportRelease.promise;
+      },
+    };
     const ctrl = createSettingsController({
       prefsPath,
       loadResult: { snapshot, locked: false },
       commands: commandRegistry,
-      injectedDeps: {
-        getFeishuApprovalPrefs: () => ctrl.get("feishuApproval"),
-        getFeishuApprovalSecrets: () => ({
-          credentialPlatform: "feishu",
-          appId: "cli_saved",
-          appSecret: "saved-secret",
-        }),
-        getFeishuApprovalSecretsRevision: () => 1,
-        feishuApprovalLookupCoordinator: coordinator,
-        lookupFeishuApproverByEmail: ({ signal }) => {
-          transportStarted.resolve(signal);
-          return transportRelease.promise;
-        },
-      },
+      injectedDeps: lookupDeps,
+      concurrentDeps: lookupDeps,
     });
     let subscriberCalls = 0;
     ctrl.subscribe(() => { subscriberCalls += 1; });
@@ -1815,6 +1967,9 @@ describe("Feishu approval settings domain", () => {
           appSecret: "saved-secret",
         }),
         getFeishuApprovalSecretsRevision: () => 1,
+      },
+      concurrentDeps: {
+        feishuApprovalLookupCoordinator: coordinator,
       },
     });
     let subscriberCalls = 0;

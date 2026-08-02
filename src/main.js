@@ -510,6 +510,16 @@ const _settingsController = createSettingsController({
       if (shortcutRuntime) shortcutRuntime.clearFailure(actionId);
     },
   },
+  concurrentDeps: {
+    getFeishuApprovalPrefs: () => getFeishuApprovalPrefs(),
+    getFeishuApprovalSecrets: () => getFeishuApprovalSecrets(),
+    getFeishuApprovalSecretsRevision: () => feishuApprovalSecretsRevision,
+    feishuApprovalLookupCoordinator: feishuApprovalLookupCoordinator,
+    lookupFeishuApproverByEmail: (params) => lookupOpenIdByEmail({
+      ...params,
+      log: feishuApprovalLog,
+    }),
+  },
 });
 _settingsController.subscribeKey("agents", (_agents, snapshot) => {
   // A future-version prefs file is intentionally read-only. Settings may still

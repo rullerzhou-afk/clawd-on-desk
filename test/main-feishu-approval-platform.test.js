@@ -505,6 +505,34 @@ describe("main Feishu/Lark approval platform wiring", () => {
     assert.match(block, /getLang:\s*\(\)\s*=>/, "a dynamic getLang must be injected for card i18n");
   });
 
+  it("supplies an explicit non-writing dependency allowlist to concurrent Feishu commands", () => {
+    const controllerStart = MAIN_SOURCE.indexOf("const _settingsController = createSettingsController({");
+    const controllerEnd = MAIN_SOURCE.indexOf("\n});\n_settingsController.subscribeKey", controllerStart);
+    assert.notEqual(controllerStart, -1, "main.js should create the settings controller");
+    assert.notEqual(controllerEnd, -1, "main.js settings controller block should be terminated");
+    const controllerBlock = MAIN_SOURCE.slice(controllerStart, controllerEnd);
+    const concurrentStart = controllerBlock.indexOf("concurrentDeps:");
+    assert.notEqual(concurrentStart, -1, "main.js should provide concurrent Feishu dependencies");
+    const concurrentEnd = controllerBlock.indexOf("\n  },", concurrentStart);
+    assert.notEqual(concurrentEnd, -1, "concurrent dependency object should be terminated");
+    const concurrentBlock = controllerBlock.slice(concurrentStart, concurrentEnd);
+
+    for (const dependency of [
+      "getFeishuApprovalPrefs",
+      "getFeishuApprovalSecrets",
+      "getFeishuApprovalSecretsRevision",
+      "feishuApprovalLookupCoordinator",
+      "lookupFeishuApproverByEmail",
+    ]) {
+      assert.match(concurrentBlock, new RegExp(`\\b${dependency}\\s*:`), dependency);
+    }
+    assert.doesNotMatch(
+      concurrentBlock,
+      /writeFeishuApprovalSecrets|_settingsController|applyUpdate|applyBulk|persist|store|commit|save|update/,
+      "concurrent Feishu dependencies must not include settings writers",
+    );
+  });
+
   it("reports the resolved platform in the status snapshot", () => {
     const start = MAIN_SOURCE.indexOf("function getFeishuApprovalStatus(");
     assert.notEqual(start, -1);
