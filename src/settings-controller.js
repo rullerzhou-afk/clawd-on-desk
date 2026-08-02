@@ -416,6 +416,16 @@ function createSettingsController({
   // Serialize commands by name/domain — same-name rapid toggles would otherwise
   // race and the later-resolving one would commit over the earlier.
   function applyCommand(name, payload) {
+    const command = commands[name];
+    if (command && command.concurrent === true) {
+      if (typeof command.lockKey === "string" && command.lockKey) {
+        return Promise.resolve({
+          status: "error",
+          code: "concurrent-command-lock-forbidden",
+        });
+      }
+      return _doApplyCommand(name, payload, { commitForbidden: true });
+    }
     const lockKey = resolveCommandLockKey(name);
     const prev = _asyncLocks.get(lockKey);
     const run = () => _doApplyCommand(name, payload);
@@ -424,7 +434,7 @@ function createSettingsController({
     return next;
   }
 
-  async function _doApplyCommand(name, payload) {
+  async function _doApplyCommand(name, payload, options = {}) {
     const command = commands[name];
     if (!command) {
       return {
@@ -439,6 +449,12 @@ function createSettingsController({
       return {
         status: "error",
         message: `${name} command threw: ${err && err.message}`,
+      };
+    }
+    if (options.commitForbidden && result && Object.prototype.hasOwnProperty.call(result, "commit")) {
+      return {
+        status: "error",
+        code: "concurrent-command-commit-forbidden",
       };
     }
     if (!result || result.status !== "ok") {

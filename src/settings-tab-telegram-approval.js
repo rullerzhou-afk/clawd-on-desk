@@ -213,9 +213,7 @@
     return {
       enabled: !!(cfg && cfg.enabled),
       // Configs written before the platform field existed carry no value here.
-      // They were implicitly Feishu, so that is what they must keep rendering
-      // as — and every saveFeishuConfig() spreads this object, so the field is
-      // carried along instead of being dropped on the next save.
+      // They were implicitly Feishu, so that is what they must keep rendering.
       platform: cfg && cfg.platform === "lark" ? "lark" : "feishu",
       idType: cfg && typeof cfg.idType === "string" ? cfg.idType : "open_id",
       approverId: cfg && typeof cfg.approverId === "string" ? cfg.approverId : "",
@@ -1483,7 +1481,7 @@
       btn.disabled = allFeishuControlsBlocked();
       btn.addEventListener("click", () => {
         if (allFeishuControlsBlocked() || cfg.platform === platform) return;
-        saveFeishuConfig({ ...cfg, platform }, { resetDraft: false });
+        saveFeishuConfig({ platform }, { resetDraft: false });
       });
       segmented.appendChild(btn);
     }
@@ -2011,7 +2009,7 @@
     } else {
       const toggle = () => {
         if (allFeishuControlsBlocked()) return;
-        saveFeishuConfig({ ...cfg, enabled: !cfg.enabled }, { resetDraft: false });
+        saveFeishuConfig({ enabled: !cfg.enabled }, { resetDraft: false });
       };
       sw.addEventListener("click", toggle);
       sw.addEventListener("keydown", (ev) => {
@@ -2059,7 +2057,7 @@
         const nextTimeout = Number(value);
         if (![5, 10, 15, 30, 60].includes(nextTimeout)) return false;
         if (nextTimeout === cfg.connectionTimeoutSeconds) return true;
-        return saveFeishuConfig({ ...cfg, connectionTimeoutSeconds: nextTimeout }, { resetDraft: false });
+        return saveFeishuConfig({ connectionTimeoutSeconds: nextTimeout }, { resetDraft: false });
       },
     });
     ctrl.appendChild(picker.element);
@@ -2282,12 +2280,12 @@
   }
 
   function saveFeishuConfig(next, options = {}) {
-    if (!window.settingsAPI || typeof window.settingsAPI.update !== "function") {
+    if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") {
       ops.showToast(t("feishuApprovalPersistenceFailed"), { error: true });
       return Promise.resolve(false);
     }
     return persistFeishuChange(
-      () => window.settingsAPI.update("feishuApproval", next),
+      () => callCommand("feishuApproval.updateConfig", next),
       { ...options, kind: options.kind || "ordinary" },
     );
   }

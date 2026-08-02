@@ -1896,6 +1896,30 @@ function feishuApprovalSaveManualApprover(payload, deps = {}) {
   };
 }
 
+function feishuApprovalUpdateConfig(payload, deps = {}) {
+  const patch = payload && typeof payload === "object" && !Array.isArray(payload)
+    ? payload
+    : null;
+  const allowed = new Set(["enabled", "platform", "connectionTimeoutSeconds"]);
+  if (!patch || Object.keys(patch).length === 0) {
+    return { status: "error", code: "invalid-config-patch" };
+  }
+  for (const key of Object.keys(patch)) {
+    if (!allowed.has(key)) return { status: "error", code: "invalid-config-patch" };
+  }
+
+  const current = normalizeFeishuApproval(deps.snapshot && deps.snapshot.feishuApproval);
+  const next = { ...current, ...patch };
+  const validated = validateFeishuApproval(next);
+  if (!validated || validated.status !== "ok") {
+    return { status: "error", code: "invalid-config-patch" };
+  }
+  return {
+    status: "ok",
+    commit: { feishuApproval: next },
+  };
+}
+
 function isFeishuApproverEmail(value) {
   if (!value || /\s/.test(value)) return false;
   const parts = value.split("@");
@@ -2238,7 +2262,10 @@ updateRegistry.feishuApproval.lockKey = "feishuApproval";
 feishuApprovalSetSecrets.lockKey = "feishuApproval";
 feishuApprovalSaveManualApprover.lockKey = "feishuApproval";
 feishuApprovalCommitApprover.lockKey = "feishuApproval";
+feishuApprovalUpdateConfig.lockKey = "feishuApproval";
 feishuApprovalSendTest.lockKey = "feishuApproval";
+feishuApprovalResolveApprover.concurrent = true;
+feishuApprovalCancelApproverLookup.concurrent = true;
 cleanupIntegrationsCommand.lockKey = "agentIntegration";
 
 const repairDoctorIssue = createRepairDoctorIssue({
@@ -2334,6 +2361,7 @@ const commandRegistry = {
   "telegramApproval.test": telegramApprovalSendTest,
   "feishuApproval.setSecrets": feishuApprovalSetSecrets,
   "feishuApproval.saveManualApprover": feishuApprovalSaveManualApprover,
+  "feishuApproval.updateConfig": feishuApprovalUpdateConfig,
   "feishuApproval.resolveApprover": feishuApprovalResolveApprover,
   "feishuApproval.cancelApproverLookup": feishuApprovalCancelApproverLookup,
   "feishuApproval.commitApprover": feishuApprovalCommitApprover,

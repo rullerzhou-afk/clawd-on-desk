@@ -2120,11 +2120,12 @@ describe("settings renderer browser environment", () => {
         connectionTimeoutSeconds: 15,
       },
     };
-    const enabled = [];
+    const commandCalls = [];
     const harness = loadTelegramApprovalTabForTest({
       snapshot: base,
       settingsAPI: {
-        command: (name) => {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
           if (name === "feishuApproval.status") return Promise.resolve({
             status: "ok",
             state: {
@@ -2144,10 +2145,6 @@ describe("settings renderer browser environment", () => {
           });
           return Promise.resolve({ status: "ok" });
         },
-        update: (key, value) => {
-          enabled.push({ key, value });
-          return Promise.resolve({ status: "ok" });
-        },
       },
     });
     await Promise.resolve();
@@ -2157,7 +2154,10 @@ describe("settings renderer browser environment", () => {
     assert.equal(sw.getAttribute("aria-disabled"), undefined);
     sw.dispatchEvent({ type: "click" });
     await Promise.resolve();
-    assert.equal(enabled[0].value.enabled, true);
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(commandCalls.find((call) => call.name === "feishuApproval.updateConfig"))),
+      { name: "feishuApproval.updateConfig", payload: { enabled: true } },
+    );
 
   });
 
@@ -2254,6 +2254,7 @@ describe("settings renderer browser environment", () => {
       assert.equal(harness.updates.length, 0, `${setupReason}: no update may be sent`);
     }
 
+    const commandCalls = [];
     const harness = loadTelegramApprovalTabForTest({
       snapshot: {
         tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
@@ -2269,7 +2270,8 @@ describe("settings renderer browser environment", () => {
         },
       },
       settingsAPI: {
-        command: (name) => {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
           if (name === "feishuApproval.status") return Promise.resolve({
             status: "ok",
             state: {
@@ -2293,7 +2295,10 @@ describe("settings renderer browser environment", () => {
     assert.equal(sw.getAttribute("aria-disabled"), undefined, "an invalid enabled setup must remain disable-able");
     sw.dispatchEvent({ type: "click" });
     await Promise.resolve();
-    assert.equal(harness.updates.at(-1).value.enabled, false);
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(commandCalls.find((call) => call.name === "feishuApproval.updateConfig"))),
+      { name: "feishuApproval.updateConfig", payload: { enabled: false } },
+    );
   });
 
   it("loads browser scripts in dependency order and keeps CommonJS helpers out of settings.html", () => {
@@ -4668,6 +4673,7 @@ describe("settings renderer browser environment", () => {
   });
 
   it("saves Feishu long connection timeout from settings", async () => {
+    const commandCalls = [];
     const harness = loadTelegramApprovalTabForTest({
       snapshot: {
         tgApproval: {
@@ -4683,7 +4689,8 @@ describe("settings renderer browser environment", () => {
         },
       },
       settingsAPI: {
-        command: (name) => {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
           if (name === "telegramApproval.status") {
             return Promise.resolve({ status: "ok", state: { status: "stopped", tokenStored: false } });
           }
@@ -4723,19 +4730,66 @@ describe("settings renderer browser environment", () => {
     choosePickerOption(select, "30");
 
     await Promise.resolve();
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates.find((call) => call.key === "feishuApproval"))), {
-      key: "feishuApproval",
-      value: {
-        enabled: true,
-        platform: "feishu",
-        idType: "open_id",
-        approverId: "ou_1",
-        approverSource: "unknown",
-        approverBoundPlatform: "",
-        approverBoundAppId: "",
-        connectionTimeoutSeconds: 30,
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(commandCalls.find((call) => call.name === "feishuApproval.updateConfig"))), {
+      name: "feishuApproval.updateConfig",
+      payload: { connectionTimeoutSeconds: 30 },
+    });
+    assert.equal(harness.updates.some((call) => call.key === "feishuApproval"), false);
+  });
+
+  it("saves Feishu Enable through an authoritative field-level patch", async () => {
+    const commandCalls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+        feishuApproval: {
+          enabled: false,
+          platform: "feishu",
+          idType: "open_id",
+          approverId: "ou_1",
+          approverSource: "manual",
+          approverBoundPlatform: "feishu",
+          approverBoundAppId: "cli_saved",
+          connectionTimeoutSeconds: 15,
+        },
+      },
+      settingsAPI: {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
+          if (name === "feishuApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: {
+                status: "stopped", configured: true, secretsStored: true,
+                secretsConfigured: true, credentialReady: true, credentialReason: "",
+                configurationReady: true, setupReason: "",
+              },
+            });
+          }
+          if (name === "feishuApproval.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, credentialPlatform: "feishu", appId: "cli_saved" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
       },
     });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    harness.content.querySelector(".feishu-approval-channel-card .switch")
+      .dispatchEvent({ type: "click" });
+    await Promise.resolve();
+
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(commandCalls.find((call) => call.name === "feishuApproval.updateConfig"))), {
+      name: "feishuApproval.updateConfig",
+      payload: { enabled: true },
+    });
+    assert.equal(harness.updates.some((call) => call.key === "feishuApproval"), false);
   });
 
   it("renders the Feishu event subscription guide and maps test failure codes to localized toasts", async () => {
@@ -4837,28 +4891,20 @@ describe("settings renderer browser environment", () => {
     buttons[1].dispatchEvent({ type: "click" });
     await Promise.resolve();
 
-    // Saved via settings-controller (window.settingsAPI.update), not written
-    // directly, and carrying the whole normalized config.
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates.find((call) => call.key === "feishuApproval"))), {
-      key: "feishuApproval",
-      value: {
-        enabled: true,
-        platform: "lark",
-        idType: "open_id",
-        approverId: "ou_1",
-        approverSource: "unknown",
-        approverBoundPlatform: "",
-        approverBoundAppId: "",
-        connectionTimeoutSeconds: 15,
-      },
+    // Ordinary platform saves use the authoritative field-level command, not
+    // a renderer-captured full approval snapshot.
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.commands.find((call) => call.name === "feishuApproval.updateConfig"))), {
+      name: "feishuApproval.updateConfig",
+      payload: { platform: "lark" },
     });
+    assert.equal(harness.updates.some((call) => call.key === "feishuApproval"), false);
 
     // Clicking the already-active platform must not churn a save.
-    const before = harness.updates.length;
+    const before = harness.commands.length;
     harness.content.querySelector(".feishu-approval-platform").querySelectorAll("button")[0]
       .dispatchEvent({ type: "click" });
     await Promise.resolve();
-    assert.equal(harness.updates.length, before, "re-selecting the current platform should be a no-op");
+    assert.equal(harness.commands.length, before, "re-selecting the current platform should be a no-op");
   });
 
   it("keeps the Lark platform selected across re-render and shows Lark brand copy", async () => {

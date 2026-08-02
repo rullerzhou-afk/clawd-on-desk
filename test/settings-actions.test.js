@@ -899,6 +899,51 @@ describe("feishu approval commands", () => {
     });
   });
 
+  it("feishuApproval.updateConfig accepts only allowlisted field patches from the latest snapshot", () => {
+    const current = {
+      ...prefs.getDefaults().feishuApproval,
+      enabled: false,
+      platform: "lark",
+      connectionTimeoutSeconds: 15,
+      idType: "open_id",
+      approverId: "ou_authoritative",
+      approverSource: "lookup",
+      approverBoundPlatform: "lark",
+      approverBoundAppId: "cli_latest",
+    };
+    const action = commandRegistry["feishuApproval.updateConfig"];
+    assert.equal(typeof action, "function");
+    assert.deepEqual(action({ enabled: true, connectionTimeoutSeconds: 30 }, {
+      snapshot: { ...prefs.getDefaults(), feishuApproval: current },
+    }), {
+      status: "ok",
+      commit: {
+        feishuApproval: {
+          ...current,
+          enabled: true,
+          connectionTimeoutSeconds: 30,
+        },
+      },
+    });
+
+    for (const forbidden of [
+      { idType: "user_id" },
+      { approverId: "ou_forged" },
+      { approverSource: "manual" },
+      { approverBoundPlatform: "feishu" },
+      { approverBoundAppId: "cli_forged" },
+      { appId: "cli_forged" },
+      { appSecret: "secret-forbidden" },
+      { arbitrary: true },
+    ]) {
+      const result = action(forbidden, {
+        snapshot: { ...prefs.getDefaults(), feishuApproval: current },
+      });
+      assert.equal(result.status, "error");
+      assert.equal("commit" in result, false);
+    }
+  });
+
   it("feishuApproval.cancelApproverLookup validates and delegates only the requestId", () => {
     const calls = [];
     const result = commandRegistry["feishuApproval.cancelApproverLookup"]({
@@ -1064,10 +1109,15 @@ describe("feishu approval commands", () => {
       "feishuApproval.setSecrets",
       "feishuApproval.saveManualApprover",
       "feishuApproval.commitApprover",
+      "feishuApproval.updateConfig",
       "feishuApproval.test",
     ]) {
       assert.strictEqual(commandRegistry[name].lockKey, "feishuApproval", name);
     }
+    assert.strictEqual(commandRegistry["feishuApproval.resolveApprover"].concurrent, true);
+    assert.strictEqual(commandRegistry["feishuApproval.cancelApproverLookup"].concurrent, true);
+    assert.equal("lockKey" in commandRegistry["feishuApproval.resolveApprover"], false);
+    assert.equal("lockKey" in commandRegistry["feishuApproval.cancelApproverLookup"], false);
   });
 
   it("feishuApproval.setSecrets reports a missing storage boundary", async () => {
