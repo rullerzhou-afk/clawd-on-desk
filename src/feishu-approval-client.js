@@ -1425,9 +1425,9 @@ class FeishuApprovalClient {
     this.lastErrorMessage = "";
     this.lastErrorCode = "";
     for (const entry of this.pending.values()) {
-      // Resolve first so callers never wait on detached card work. Settings
-      // test cards attach an entry-owned terminalizer; ordinary approvals do
-      // not, so close stays a no-op patch for them.
+      // Resolve first so callers never wait on detached card work. Every
+      // pending entry exposes the same terminalizer: Settings test entries
+      // carry abortOutcome and patch, while ordinary approvals safely no-op.
       entry.resolve(null);
       if (typeof entry.terminalizeAbortOutcome === "function") {
         entry.terminalizeAbortOutcome();

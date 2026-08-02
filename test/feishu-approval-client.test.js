@@ -1232,14 +1232,21 @@ test("FeishuApprovalClient keeps the abort result when async expiry update fails
   assert.ok(!JSON.stringify(logs).includes("private payload"));
 });
 
-test("FeishuApprovalClient terminalizes an already-sent test card when the client closes", async () => {
+function createTestCardLifecycleHarness({
+  create = async () => ({ data: { message_id: "om_test" } }),
+  patch = async () => ({ data: {} }),
+  log,
+  payload = { title: "Test", detail: "Waiting" },
+  signal,
+  abortOutcome,
+} = {}) {
   const updated = [];
   const fakeClient = {
     im: { v1: { message: {
-      create: async () => ({ data: { message_id: "om_close_sent" } }),
-      patch: async (payload) => {
-        updated.push(payload);
-        return { data: {} };
+      create: (...args) => create(...args),
+      patch: async (request) => {
+        updated.push(request);
+        return patch(request);
       },
     } } },
   };
@@ -1249,11 +1256,26 @@ test("FeishuApprovalClient terminalizes an already-sent test card when the clien
     approverId: "ou_1",
     idType: "open_id",
     larkClient: fakeClient,
+    log,
   });
-  const promise = client.requestApproval(
-    { title: "Test", detail: "Waiting for a response" },
-    { abortOutcome: { decision: "no-decision" } },
-  );
+  const requestOptions = {};
+  if (signal) requestOptions.signal = signal;
+  if (abortOutcome) requestOptions.abortOutcome = abortOutcome;
+  return {
+    client,
+    updated,
+    requestApproval: () => client.requestApproval(payload, requestOptions),
+    parseLastPatchedCard: () => JSON.parse(updated[updated.length - 1].data.content),
+  };
+}
+
+test("FeishuApprovalClient terminalizes an already-sent test card when the client closes", async () => {
+  const { client, updated, requestApproval, parseLastPatchedCard } = createTestCardLifecycleHarness({
+    create: async () => ({ data: { message_id: "om_close_sent" } }),
+    payload: { title: "Test", detail: "Waiting for a response" },
+    abortOutcome: { decision: "no-decision" },
+  });
+  const promise = requestApproval();
   await flush();
   await flush();
   assert.equal(client.pending.size, 1);
@@ -1269,7 +1291,7 @@ test("FeishuApprovalClient terminalizes an already-sent test card when the clien
   await flush();
   assert.equal(updated.length, 1, "already-sent cards must receive exactly one terminal patch");
   assert.equal(updated[0].path.message_id, "om_close_sent");
-  const card = JSON.parse(updated[0].data.content);
+  const card = parseLastPatchedCard();
   assert.ok(!card.elements.some((element) => element.tag === "action"));
   assert.match(card.header.title.content, /Cancelled/);
 
@@ -1286,27 +1308,13 @@ test("FeishuApprovalClient terminalizes an already-sent test card when the clien
 
 test("FeishuApprovalClient terminalizes a late-sent test card after close()", async () => {
   let resolveCreate;
-  const updated = [];
-  const fakeClient = {
-    im: { v1: { message: {
-      create: async () => new Promise((resolve) => { resolveCreate = resolve; }),
-      patch: async (payload) => {
-        updated.push(payload);
-        return { data: {} };
-      },
-    } } },
-  };
-  const client = new FeishuApprovalClient({
-    appId: "cli_123",
-    appSecret: "secret",
-    approverId: "ou_1",
-    idType: "open_id",
-    larkClient: fakeClient,
+  const harness = createTestCardLifecycleHarness({
+    create: async () => new Promise((resolve) => { resolveCreate = resolve; }),
+    payload: { title: "Test", detail: "Waiting for a response" },
+    abortOutcome: { decision: "no-decision" },
   });
-  const promise = client.requestApproval(
-    { title: "Test", detail: "Waiting for a response" },
-    { abortOutcome: { decision: "no-decision" } },
-  );
+  const { client, updated } = harness;
+  const promise = harness.requestApproval();
   await Promise.resolve();
   assert.equal(client.pending.size, 1);
 
@@ -1320,33 +1328,22 @@ test("FeishuApprovalClient terminalizes a late-sent test card after close()", as
   await flush();
   assert.equal(updated.length, 1);
   assert.equal(updated[0].path.message_id, "om_close_late");
-  const card = JSON.parse(updated[0].data.content);
+  const card = harness.parseLastPatchedCard();
   assert.ok(!card.elements.some((element) => element.tag === "action"));
   assert.match(card.header.title.content, /Cancelled/);
 });
 
 test("FeishuApprovalClient keeps the close result when terminal patch fails", async () => {
   const logs = [];
-  const fakeClient = {
-    im: { v1: { message: {
-      create: async () => ({ data: { message_id: "om_close_fail" } }),
-      patch: async () => {
-        throw new Error("patch failed with private payload CLOSE_SECRET_SENTINEL");
-      },
-    } } },
-  };
-  const client = new FeishuApprovalClient({
-    appId: "cli_123",
-    appSecret: "secret",
-    approverId: "ou_1",
-    idType: "open_id",
-    larkClient: fakeClient,
+  const { client, requestApproval } = createTestCardLifecycleHarness({
+    create: async () => ({ data: { message_id: "om_close_fail" } }),
+    patch: async () => {
+      throw new Error("patch failed with private payload CLOSE_SECRET_SENTINEL");
+    },
     log: (level, message, meta) => logs.push({ level, message, meta }),
+    abortOutcome: { decision: "no-decision" },
   });
-  const promise = client.requestApproval(
-    { title: "Test", detail: "Waiting" },
-    { abortOutcome: { decision: "no-decision" } },
-  );
+  const promise = requestApproval();
   await flush();
   await flush();
 
@@ -1365,24 +1362,11 @@ test("FeishuApprovalClient keeps the close result when terminal patch fails", as
 });
 
 test("FeishuApprovalClient close without abortOutcome does not patch the card", async () => {
-  const updated = [];
-  const fakeClient = {
-    im: { v1: { message: {
-      create: async () => ({ data: { message_id: "om_normal_close" } }),
-      patch: async (payload) => {
-        updated.push(payload);
-        return { data: {} };
-      },
-    } } },
-  };
-  const client = new FeishuApprovalClient({
-    appId: "cli_123",
-    appSecret: "secret",
-    approverId: "ou_1",
-    idType: "open_id",
-    larkClient: fakeClient,
+  const { client, updated, requestApproval } = createTestCardLifecycleHarness({
+    create: async () => ({ data: { message_id: "om_normal_close" } }),
+    payload: { title: "Run", detail: "Summary" },
   });
-  const promise = client.requestApproval({ title: "Run", detail: "Summary" });
+  const promise = requestApproval();
   await flush();
   await flush();
   assert.equal(client.pending.size, 1);
@@ -1396,28 +1380,13 @@ test("FeishuApprovalClient close without abortOutcome does not patch the card", 
 });
 
 test("FeishuApprovalClient timer abort and close terminalizes a test card only once", async () => {
-  const updated = [];
-  const fakeClient = {
-    im: { v1: { message: {
-      create: async () => ({ data: { message_id: "om_once" } }),
-      patch: async (payload) => {
-        updated.push(payload);
-        return { data: {} };
-      },
-    } } },
-  };
-  const client = new FeishuApprovalClient({
-    appId: "cli_123",
-    appSecret: "secret",
-    approverId: "ou_1",
-    idType: "open_id",
-    larkClient: fakeClient,
-  });
   const ac = new AbortController();
-  const promise = client.requestApproval(
-    { title: "Test", detail: "Waiting" },
-    { signal: ac.signal, abortOutcome: { decision: "no-decision" } },
-  );
+  const { client, updated, requestApproval, parseLastPatchedCard } = createTestCardLifecycleHarness({
+    create: async () => ({ data: { message_id: "om_once" } }),
+    signal: ac.signal,
+    abortOutcome: { decision: "no-decision" },
+  });
+  const promise = requestApproval();
   await flush();
   await flush();
   const requestId = Array.from(client.pending.keys())[0];
@@ -1430,7 +1399,7 @@ test("FeishuApprovalClient timer abort and close terminalizes a test card only o
   await flush();
   assert.equal(updated.length, 1, "abort and close must share one idempotent terminal patch");
   assert.equal(updated[0].path.message_id, "om_once");
-  assert.ok(!JSON.parse(updated[0].data.content).elements.some((element) => element.tag === "action"));
+  assert.ok(!parseLastPatchedCard().elements.some((element) => element.tag === "action"));
   assert.equal(client.handleCardAction({
     operator: { open_id: "ou_1" },
     action: { value: { requestId, decision: "allow" } },
@@ -1438,28 +1407,13 @@ test("FeishuApprovalClient timer abort and close terminalizes a test card only o
 });
 
 test("FeishuApprovalClient close then late timer abort still terminalizes a test card only once", async () => {
-  const updated = [];
-  const fakeClient = {
-    im: { v1: { message: {
-      create: async () => ({ data: { message_id: "om_close_then_abort" } }),
-      patch: async (payload) => {
-        updated.push(payload);
-        return { data: {} };
-      },
-    } } },
-  };
-  const client = new FeishuApprovalClient({
-    appId: "cli_123",
-    appSecret: "secret",
-    approverId: "ou_1",
-    idType: "open_id",
-    larkClient: fakeClient,
-  });
   const ac = new AbortController();
-  const promise = client.requestApproval(
-    { title: "Test", detail: "Waiting" },
-    { signal: ac.signal, abortOutcome: { decision: "no-decision" } },
-  );
+  const { client, updated, requestApproval } = createTestCardLifecycleHarness({
+    create: async () => ({ data: { message_id: "om_close_then_abort" } }),
+    signal: ac.signal,
+    abortOutcome: { decision: "no-decision" },
+  });
+  const promise = requestApproval();
   await flush();
   await flush();
 
@@ -1470,6 +1424,48 @@ test("FeishuApprovalClient close then late timer abort still terminalizes a test
   await flush();
   await flush();
   assert.equal(updated.length, 1, "late abort after close must not double-patch");
+});
+
+test("FeishuApprovalClient entry terminalizer runs once across repeated calls and close", async () => {
+  let resolveCreate;
+  const harness = createTestCardLifecycleHarness({
+    create: async () => new Promise((resolve) => { resolveCreate = resolve; }),
+    abortOutcome: { decision: "no-decision" },
+  });
+  const { client, updated } = harness;
+  const promise = harness.requestApproval();
+  await Promise.resolve();
+  assert.equal(client.pending.size, 1);
+  const requestId = client.pending.keys().next().value;
+  const entry = client.pending.get(requestId);
+  assert.equal(typeof entry.terminalizeAbortOutcome, "function");
+
+  entry.terminalizeAbortOutcome();
+  entry.terminalizeAbortOutcome();
+  client.close();
+  assert.equal(await promise, null);
+  assert.equal(client.pending.size, 0);
+  assert.equal(updated.length, 0);
+
+  resolveCreate({ data: { message_id: "om_repeated" } });
+  await flush();
+  await flush();
+  entry.terminalizeAbortOutcome();
+  await flush();
+  assert.equal(updated.length, 1);
+  assert.equal(updated[0].path.message_id, "om_repeated");
+  const card = harness.parseLastPatchedCard();
+  assert.ok(!card.elements.some((element) => element.tag === "action"));
+  assert.equal(client.pending.size, 0);
+  assert.equal(await promise, null);
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: { requestId, decision: "allow" } },
+  }), false);
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: { requestId, decision: "deny" } },
+  }), false);
 });
 
 test("pure helpers validate payloads and card action events", () => {
