@@ -1425,7 +1425,13 @@ class FeishuApprovalClient {
     this.lastErrorMessage = "";
     this.lastErrorCode = "";
     for (const entry of this.pending.values()) {
+      // Resolve first so callers never wait on detached card work. Settings
+      // test cards attach an entry-owned terminalizer; ordinary approvals do
+      // not, so close stays a no-op patch for them.
       entry.resolve(null);
+      if (typeof entry.terminalizeAbortOutcome === "function") {
+        entry.terminalizeAbortOutcome();
+      }
     }
     this.pending.clear();
     this.notifyStatusChange();
@@ -1479,12 +1485,20 @@ class FeishuApprovalClient {
         if (sendError && options.rejectOnSendError) reject(sendError);
         else resolve(normalizeApprovalDecision(decision));
       };
-      const onAbort = () => {
-        // Preserve the approval contract: abort clears pending state and
-        // resolves immediately. The settings test may additionally expire its
-        // already-sent card, but that work is deliberately detached.
-        finish(null);
-        if (!options.abortOutcome) return;
+      const entry = {
+        payload: normalized,
+        messageId: "",
+        signal: signal || null,
+        resolve: finish,
+        sendReady: null,
+        trustConfirming: false,
+        abortOutcomeStarted: false,
+      };
+      // Entry-owned so close() can share the same one-shot path without seeing
+      // requestApproval()'s local options closure. Abort and close may overlap.
+      const terminalizeAbortOutcome = () => {
+        if (!options.abortOutcome || entry.abortOutcomeStarted) return;
+        entry.abortOutcomeStarted = true;
         Promise.resolve(entry.sendReady)
           .then((sentEntry) => {
             const messageId = sentEntry && sentEntry.messageId;
@@ -1495,15 +1509,15 @@ class FeishuApprovalClient {
             this.log("warn", "abort card update failed", { stage: "update-card" });
           });
       };
-      if (signal) signal.addEventListener("abort", onAbort, { once: true });
-      const entry = {
-        payload: normalized,
-        messageId: "",
-        signal: signal || null,
-        resolve: finish,
-        sendReady: null,
-        trustConfirming: false,
+      entry.terminalizeAbortOutcome = terminalizeAbortOutcome;
+      const onAbort = () => {
+        // Preserve the approval contract: abort clears pending state and
+        // resolves immediately. The settings test may additionally expire its
+        // already-sent card, but that work is deliberately detached.
+        finish(null);
+        terminalizeAbortOutcome();
       };
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
       this.pending.set(requestId, entry);
       entry.sendReady = this.sendCard(requestId, normalized)
         .then((messageId) => {

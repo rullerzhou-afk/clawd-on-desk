@@ -862,6 +862,170 @@ describe("main Feishu/Lark approval platform wiring", () => {
     }
   });
 
+  it("60-second Settings test timer aborts with no-decision outcome", async () => {
+    const logs = [];
+    let capturedOptions = null;
+    let timerCallback = null;
+    let timerDelay = null;
+    let timerHandle = 0;
+    const clearedTimers = [];
+    const client = {
+      requestApproval: async (_card, options) => {
+        capturedOptions = options;
+        return new Promise((resolve) => {
+          const settleAbort = () => resolve(null);
+          if (options.signal.aborted) {
+            settleAbort();
+            return;
+          }
+          options.signal.addEventListener("abort", settleAbort, { once: true });
+        });
+      },
+    };
+    const sendFeishuApprovalTest = loadFn("sendFeishuApprovalTest", {
+      getFeishuApprovalStatus: () => ({ configured: true }),
+      queueFeishuApprovalSync: async () => true,
+      getConfiguredFeishuApprovalClient: () => client,
+      AbortController,
+      setTimeout: (fn, ms) => {
+        timerCallback = fn;
+        timerDelay = ms;
+        timerHandle += 1;
+        return timerHandle;
+      },
+      clearTimeout: (id) => {
+        clearedTimers.push(id);
+      },
+      translate: (key) => key,
+      classifyFeishuSdkError,
+      feishuApprovalLog: (level, message, meta) => logs.push({ level, message, meta }),
+    });
+
+    const pending = sendFeishuApprovalTest();
+    for (let i = 0; i < 10 && !timerCallback; i += 1) {
+      await Promise.resolve();
+    }
+    assert.equal(timerDelay, 60 * 1000);
+    assert.equal(typeof timerCallback, "function");
+    assert.ok(capturedOptions);
+    assert.equal(capturedOptions.signal.aborted, false);
+    assert.equal(capturedOptions.abortOutcome && capturedOptions.abortOutcome.decision, "no-decision");
+    assert.deepStrictEqual(
+      Object.assign({}, capturedOptions.abortOutcome),
+      { decision: "no-decision" },
+    );
+
+    timerCallback();
+    assert.equal(capturedOptions.signal.aborted, true);
+    const result = await pending;
+    assert.equal(result.status, "error");
+    assert.equal(result.code, "no-button-response");
+    assert.equal(result.message, "Test card did not receive a button response");
+    assert.ok(clearedTimers.includes(1));
+    assertNoSentinels(result, "60-second timeout result");
+    assertNoSentinels(logs, "60-second timeout logs");
+  });
+
+  it("early allow clears the 60-second Settings test timer", async () => {
+    const clearedTimers = [];
+    let timerHandle = 0;
+    const client = {
+      requestApproval: async () => "allow",
+    };
+    const sendFeishuApprovalTest = loadFn("sendFeishuApprovalTest", {
+      getFeishuApprovalStatus: () => ({ configured: true }),
+      queueFeishuApprovalSync: async () => true,
+      getConfiguredFeishuApprovalClient: () => client,
+      AbortController,
+      setTimeout: (_fn, ms) => {
+        assert.equal(ms, 60 * 1000);
+        timerHandle += 1;
+        return timerHandle;
+      },
+      clearTimeout: (id) => {
+        clearedTimers.push(id);
+      },
+      translate: (key) => key,
+      classifyFeishuSdkError,
+      feishuApprovalLog: () => {},
+    });
+
+    const result = await sendFeishuApprovalTest();
+    assert.equal(result.status, "ok");
+    assert.equal(result.decision, "allow");
+    assert.deepEqual(clearedTimers, [1]);
+  });
+
+  it("early deny clears the 60-second Settings test timer", async () => {
+    const clearedTimers = [];
+    let timerHandle = 0;
+    const client = {
+      requestApproval: async () => "deny",
+    };
+    const sendFeishuApprovalTest = loadFn("sendFeishuApprovalTest", {
+      getFeishuApprovalStatus: () => ({ configured: true }),
+      queueFeishuApprovalSync: async () => true,
+      getConfiguredFeishuApprovalClient: () => client,
+      AbortController,
+      setTimeout: (_fn, ms) => {
+        assert.equal(ms, 60 * 1000);
+        timerHandle += 1;
+        return timerHandle;
+      },
+      clearTimeout: (id) => {
+        clearedTimers.push(id);
+      },
+      translate: (key) => key,
+      classifyFeishuSdkError,
+      feishuApprovalLog: () => {},
+    });
+
+    const result = await sendFeishuApprovalTest();
+    assert.equal(result.status, "ok");
+    assert.equal(result.decision, "deny");
+    assert.deepEqual(clearedTimers, [1]);
+  });
+
+  it("send failure clears the 60-second Settings test timer without raw SDK text", async () => {
+    const logs = [];
+    const clearedTimers = [];
+    let timerHandle = 0;
+    const error = createSentinelSdkError();
+    const client = {
+      requestApproval: async () => {
+        throw error;
+      },
+    };
+    const sendFeishuApprovalTest = loadFn("sendFeishuApprovalTest", {
+      getFeishuApprovalStatus: () => ({ configured: true }),
+      queueFeishuApprovalSync: async () => true,
+      getConfiguredFeishuApprovalClient: () => client,
+      AbortController,
+      setTimeout: (_fn, ms) => {
+        assert.equal(ms, 60 * 1000);
+        timerHandle += 1;
+        return timerHandle;
+      },
+      clearTimeout: (id) => {
+        clearedTimers.push(id);
+      },
+      translate: (key) => key,
+      classifyFeishuSdkError,
+      feishuApprovalLog: (level, message, meta) => logs.push({ level, message, meta }),
+    });
+
+    const result = await sendFeishuApprovalTest();
+    assert.equal(result.status, "error");
+    assert.equal(result.code, "card-send-failed");
+    assert.deepEqual(Object.keys(result).sort(), ["code", "status"]);
+    assert.deepEqual(clearedTimers, [1]);
+    assertNoSentinels(result, "send-failure result");
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0].message, "test card send failed");
+    assertAllowlistedSdkMetadata(logs[0].meta, "send-card");
+    assertNoSentinels(logs, "send-failure logs");
+  });
+
   it("Feishu main-process runtime block contains no raw error forwarding", () => {
     const block = [
       extractFnSource("startFeishuApprovalClient"),

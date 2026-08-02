@@ -1232,6 +1232,246 @@ test("FeishuApprovalClient keeps the abort result when async expiry update fails
   assert.ok(!JSON.stringify(logs).includes("private payload"));
 });
 
+test("FeishuApprovalClient terminalizes an already-sent test card when the client closes", async () => {
+  const updated = [];
+  const fakeClient = {
+    im: { v1: { message: {
+      create: async () => ({ data: { message_id: "om_close_sent" } }),
+      patch: async (payload) => {
+        updated.push(payload);
+        return { data: {} };
+      },
+    } } },
+  };
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    larkClient: fakeClient,
+  });
+  const promise = client.requestApproval(
+    { title: "Test", detail: "Waiting for a response" },
+    { abortOutcome: { decision: "no-decision" } },
+  );
+  await flush();
+  await flush();
+  assert.equal(client.pending.size, 1);
+  const requestId = Array.from(client.pending.keys())[0];
+  assert.equal(typeof requestId, "string");
+  assert.ok(requestId.startsWith("fs_"));
+
+  client.close();
+  assert.equal(client.pending.size, 0, "close must clear pending immediately");
+  assert.equal(await promise, null, "close must resolve the request immediately");
+
+  await flush();
+  await flush();
+  assert.equal(updated.length, 1, "already-sent cards must receive exactly one terminal patch");
+  assert.equal(updated[0].path.message_id, "om_close_sent");
+  const card = JSON.parse(updated[0].data.content);
+  assert.ok(!card.elements.some((element) => element.tag === "action"));
+  assert.match(card.header.title.content, /Cancelled/);
+
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: { requestId, decision: "allow" } },
+  }), false);
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: { requestId, decision: "deny" } },
+  }), false);
+  assert.equal(updated.length, 1);
+});
+
+test("FeishuApprovalClient terminalizes a late-sent test card after close()", async () => {
+  let resolveCreate;
+  const updated = [];
+  const fakeClient = {
+    im: { v1: { message: {
+      create: async () => new Promise((resolve) => { resolveCreate = resolve; }),
+      patch: async (payload) => {
+        updated.push(payload);
+        return { data: {} };
+      },
+    } } },
+  };
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    larkClient: fakeClient,
+  });
+  const promise = client.requestApproval(
+    { title: "Test", detail: "Waiting for a response" },
+    { abortOutcome: { decision: "no-decision" } },
+  );
+  await Promise.resolve();
+  assert.equal(client.pending.size, 1);
+
+  client.close();
+  assert.equal(await promise, null, "close must not wait for create()");
+  assert.equal(client.pending.size, 0);
+  assert.equal(updated.length, 0);
+
+  resolveCreate({ data: { message_id: "om_close_late" } });
+  await flush();
+  await flush();
+  assert.equal(updated.length, 1);
+  assert.equal(updated[0].path.message_id, "om_close_late");
+  const card = JSON.parse(updated[0].data.content);
+  assert.ok(!card.elements.some((element) => element.tag === "action"));
+  assert.match(card.header.title.content, /Cancelled/);
+});
+
+test("FeishuApprovalClient keeps the close result when terminal patch fails", async () => {
+  const logs = [];
+  const fakeClient = {
+    im: { v1: { message: {
+      create: async () => ({ data: { message_id: "om_close_fail" } }),
+      patch: async () => {
+        throw new Error("patch failed with private payload CLOSE_SECRET_SENTINEL");
+      },
+    } } },
+  };
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    larkClient: fakeClient,
+    log: (level, message, meta) => logs.push({ level, message, meta }),
+  });
+  const promise = client.requestApproval(
+    { title: "Test", detail: "Waiting" },
+    { abortOutcome: { decision: "no-decision" } },
+  );
+  await flush();
+  await flush();
+
+  client.close();
+  assert.equal(await promise, null);
+  assert.equal(client.pending.size, 0);
+  await flush();
+  await flush();
+  assert.deepEqual(logs.find((entry) => entry.message === "abort card update failed"), {
+    level: "warn",
+    message: "abort card update failed",
+    meta: { stage: "update-card" },
+  });
+  assert.ok(!JSON.stringify(logs).includes("CLOSE_SECRET_SENTINEL"));
+  assert.ok(!JSON.stringify(logs).includes("private payload"));
+});
+
+test("FeishuApprovalClient close without abortOutcome does not patch the card", async () => {
+  const updated = [];
+  const fakeClient = {
+    im: { v1: { message: {
+      create: async () => ({ data: { message_id: "om_normal_close" } }),
+      patch: async (payload) => {
+        updated.push(payload);
+        return { data: {} };
+      },
+    } } },
+  };
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    larkClient: fakeClient,
+  });
+  const promise = client.requestApproval({ title: "Run", detail: "Summary" });
+  await flush();
+  await flush();
+  assert.equal(client.pending.size, 1);
+
+  client.close();
+  assert.equal(await promise, null);
+  assert.equal(client.pending.size, 0);
+  await flush();
+  await flush();
+  assert.equal(updated.length, 0, "ordinary approvals must not receive a terminal patch on close");
+});
+
+test("FeishuApprovalClient timer abort and close terminalizes a test card only once", async () => {
+  const updated = [];
+  const fakeClient = {
+    im: { v1: { message: {
+      create: async () => ({ data: { message_id: "om_once" } }),
+      patch: async (payload) => {
+        updated.push(payload);
+        return { data: {} };
+      },
+    } } },
+  };
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    larkClient: fakeClient,
+  });
+  const ac = new AbortController();
+  const promise = client.requestApproval(
+    { title: "Test", detail: "Waiting" },
+    { signal: ac.signal, abortOutcome: { decision: "no-decision" } },
+  );
+  await flush();
+  await flush();
+  const requestId = Array.from(client.pending.keys())[0];
+
+  ac.abort();
+  client.close();
+  assert.equal(await promise, null);
+  assert.equal(client.pending.size, 0);
+  await flush();
+  await flush();
+  assert.equal(updated.length, 1, "abort and close must share one idempotent terminal patch");
+  assert.equal(updated[0].path.message_id, "om_once");
+  assert.ok(!JSON.parse(updated[0].data.content).elements.some((element) => element.tag === "action"));
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: { requestId, decision: "allow" } },
+  }), false);
+});
+
+test("FeishuApprovalClient close then late timer abort still terminalizes a test card only once", async () => {
+  const updated = [];
+  const fakeClient = {
+    im: { v1: { message: {
+      create: async () => ({ data: { message_id: "om_close_then_abort" } }),
+      patch: async (payload) => {
+        updated.push(payload);
+        return { data: {} };
+      },
+    } } },
+  };
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    larkClient: fakeClient,
+  });
+  const ac = new AbortController();
+  const promise = client.requestApproval(
+    { title: "Test", detail: "Waiting" },
+    { signal: ac.signal, abortOutcome: { decision: "no-decision" } },
+  );
+  await flush();
+  await flush();
+
+  client.close();
+  assert.equal(await promise, null);
+  assert.equal(client.pending.size, 0);
+  ac.abort();
+  await flush();
+  await flush();
+  assert.equal(updated.length, 1, "late abort after close must not double-patch");
+});
+
 test("pure helpers validate payloads and card action events", () => {
   assert.deepEqual(normalizeApprovalPayload({ title: "  hi ", detail: 42, extra: true }), {
     title: "hi",
