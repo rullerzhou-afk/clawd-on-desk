@@ -356,6 +356,11 @@
     feishuView.secretDraft = null;
   }
 
+  function clearFeishuSecretEditingState() {
+    resetFeishuSecretDraft();
+    feishuView.secretEditing = false;
+  }
+
   function hasUnsavedFeishuCredentialDrafts() {
     if (!feishuView.secretEditing && feishuView.secretInfo && feishuView.secretInfo.configured) return false;
     const draft = getFeishuSecretDraft();
@@ -1481,6 +1486,7 @@
       btn.disabled = allFeishuControlsBlocked();
       btn.addEventListener("click", () => {
         if (allFeishuControlsBlocked() || cfg.platform === platform) return;
+        clearFeishuSecretEditingState();
         saveFeishuConfig({ platform }, { resetDraft: false });
       });
       segmented.appendChild(btn);
@@ -1530,7 +1536,7 @@
     btn.disabled = allFeishuControlsBlocked();
     btn.addEventListener("click", () => {
       if (allFeishuControlsBlocked()) return;
-      resetFeishuSecretDraft();
+      clearFeishuSecretEditingState();
       feishuView.secretEditing = true;
       ops.requestRender({ content: true });
     });
@@ -1607,8 +1613,7 @@
         failureKey: "feishuApprovalSecretsSaveFailed",
         successKey: "feishuApprovalSecretsSaved",
         onSuccess() {
-          resetFeishuSecretDraft();
-          feishuView.secretEditing = false;
+          clearFeishuSecretEditingState();
           feishuView.secretInfo = null;
           refreshFeishuSecretInfo({ forceRender: true });
         },
@@ -1628,11 +1633,22 @@
       cancelBtn.disabled = allFeishuControlsBlocked();
       cancelBtn.addEventListener("click", () => {
         if (allFeishuControlsBlocked()) return;
-        resetFeishuSecretDraft();
-        feishuView.secretEditing = false;
+        clearFeishuSecretEditingState();
         ops.requestRender({ content: true });
       });
       ctrl.appendChild(cancelBtn);
+    } else {
+      const clearBtn = document.createElement("button");
+      clearBtn.type = "button";
+      clearBtn.className = "soft-btn";
+      clearBtn.textContent = t("feishuApprovalClearSecretsDraft");
+      clearBtn.disabled = allFeishuControlsBlocked();
+      clearBtn.addEventListener("click", () => {
+        if (allFeishuControlsBlocked()) return;
+        clearFeishuSecretEditingState();
+        ops.requestRender({ content: true });
+      });
+      ctrl.appendChild(clearBtn);
     }
     row.appendChild(ctrl);
     return row;
@@ -2166,6 +2182,7 @@
       feishuView.lookupUiEpoch += 1;
     }
     resetFeishuFormDraft();
+    clearFeishuSecretEditingState();
   }
 
   function refreshAuthoritativeFeishuSnapshot() {

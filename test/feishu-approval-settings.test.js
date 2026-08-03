@@ -415,6 +415,84 @@ test("manual open_id user_id and union_id are trusted only under the confirmed s
   }
 });
 
+test("manual approver identity transitions fail closed without dropping the value", () => {
+  const ids = ["open_id", "user_id", "union_id"];
+  const savedSecrets = {
+    credentialPlatform: "feishu",
+    appId: "cli_current",
+    appSecret: "secret-one",
+  };
+
+  for (const idType of ids) {
+    const approverId = `${idType}-value`;
+    const savedConfig = {
+      enabled: true,
+      platform: "feishu",
+      idType,
+      approverId,
+      approverSource: "manual",
+      approverBoundPlatform: "feishu",
+      approverBoundAppId: "cli_current",
+      connectionTimeoutSeconds: 15,
+    };
+    const transitions = [
+      {
+        name: "same platform + same appId",
+        config: savedConfig,
+        secrets: savedSecrets,
+        ready: true,
+        reason: undefined,
+        retainedId: approverId,
+      },
+      {
+        name: "secret-only rotation",
+        config: savedConfig,
+        secrets: { ...savedSecrets, appSecret: "secret-two" },
+        ready: true,
+        reason: undefined,
+        retainedId: approverId,
+      },
+      {
+        name: "platform change",
+        config: { ...savedConfig, platform: "lark" },
+        secrets: savedSecrets,
+        ready: false,
+        reason: "credential-platform-mismatch",
+        retainedId: approverId,
+      },
+      {
+        name: "App ID change",
+        config: savedConfig,
+        secrets: { ...savedSecrets, appId: "cli_other" },
+        ready: false,
+        reason: "approver-app-mismatch",
+        retainedId: approverId,
+      },
+      {
+        name: "new identity reconfirmation",
+        config: {
+          ...savedConfig,
+          platform: "lark",
+          approverId: `${idType}-reconfirmed`,
+          approverBoundPlatform: "lark",
+          approverBoundAppId: "cli_other",
+        },
+        secrets: { credentialPlatform: "lark", appId: "cli_other", appSecret: "secret-three" },
+        ready: true,
+        reason: undefined,
+        retainedId: `${idType}-reconfirmed`,
+      },
+    ];
+
+    for (const transition of transitions) {
+      const result = settings.readiness(transition.config, transition.secrets);
+      assert.equal(result.ready, transition.ready, `${idType}: ${transition.name}`);
+      assert.equal(result.reason, transition.reason, `${idType}: ${transition.name} reason`);
+      assert.equal(result.config.approverId, transition.retainedId, `${idType}: ${transition.name} value`);
+    }
+  }
+});
+
 // A disk/permission failure is platform-independent, and the settings page
 // shows this text. Naming Feishu tells a Lark user their setup is the problem.
 test("writeSecretsEnvFile reports failures brand-neutrally with a stable code", () => {

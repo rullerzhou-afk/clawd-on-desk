@@ -122,6 +122,20 @@ describe("i18n locales", () => {
     }
   });
 
+  it("localizes the unconfigured Feishu credential draft Clear action", () => {
+    const strings = loadSettingsI18nStrings();
+    assert.deepStrictEqual(
+      Object.fromEntries(SUPPORTED_LANGS.map((lang) => [lang, strings[lang].feishuApprovalClearSecretsDraft])),
+      {
+        en: "Clear",
+        zh: "清空",
+        "zh-TW": "清除",
+        ko: "지우기",
+        ja: "クリア",
+      },
+    );
+  });
+
   it("keeps permission bubble locale keysets aligned with English", () => {
     assertLocaleObjectParity(loadBubbleStrings(), "bubble");
   });
