@@ -1536,7 +1536,7 @@
     btn.disabled = allFeishuControlsBlocked();
     btn.addEventListener("click", () => {
       if (allFeishuControlsBlocked()) return;
-      clearFeishuSecretEditingState();
+      resetFeishuSecretDraft();
       feishuView.secretEditing = true;
       ops.requestRender({ content: true });
     });

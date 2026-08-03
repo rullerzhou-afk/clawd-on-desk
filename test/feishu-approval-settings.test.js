@@ -391,30 +391,6 @@ test("validateFeishuApproverBinding enforces source, platform, App, and lookup o
   });
 });
 
-test("manual open_id user_id and union_id are trusted only under the confirmed saved identity", () => {
-  const secrets = {
-    credentialPlatform: "feishu",
-    appId: "cli_current",
-    appSecret: "secret-one",
-  };
-  for (const idType of ["open_id", "user_id", "union_id"]) {
-    const config = {
-      enabled: true,
-      platform: "feishu",
-      idType,
-      approverId: `${idType}-value`,
-      approverSource: "manual",
-      approverBoundPlatform: "feishu",
-      approverBoundAppId: "cli_current",
-      connectionTimeoutSeconds: 15,
-    };
-    assert.equal(settings.readiness(config, secrets).ready, true);
-    assert.equal(settings.readiness(config, { ...secrets, appSecret: "secret-two" }).ready, true);
-    assert.equal(settings.readiness({ ...config, platform: "lark" }, secrets).reason, "credential-platform-mismatch");
-    assert.equal(settings.readiness(config, { ...secrets, appId: "cli_other" }).reason, "approver-app-mismatch");
-  }
-});
-
 test("manual approver identity transitions fail closed without dropping the value", () => {
   const ids = ["open_id", "user_id", "union_id"];
   const savedSecrets = {
@@ -455,9 +431,9 @@ test("manual approver identity transitions fail closed without dropping the valu
       {
         name: "platform change",
         config: { ...savedConfig, platform: "lark" },
-        secrets: savedSecrets,
+        secrets: { ...savedSecrets, credentialPlatform: "lark" },
         ready: false,
-        reason: "credential-platform-mismatch",
+        reason: "approver-platform-mismatch",
         retainedId: approverId,
       },
       {
@@ -469,18 +445,27 @@ test("manual approver identity transitions fail closed without dropping the valu
         retainedId: approverId,
       },
       {
-        name: "new identity reconfirmation",
+        name: "platform reconfirmation",
         config: {
           ...savedConfig,
           platform: "lark",
-          approverId: `${idType}-reconfirmed`,
           approverBoundPlatform: "lark",
-          approverBoundAppId: "cli_other",
         },
-        secrets: { credentialPlatform: "lark", appId: "cli_other", appSecret: "secret-three" },
+        secrets: { credentialPlatform: "lark", appId: "cli_current", appSecret: "secret-three" },
         ready: true,
         reason: undefined,
-        retainedId: `${idType}-reconfirmed`,
+        retainedId: approverId,
+      },
+      {
+        name: "App ID reconfirmation",
+        config: {
+          ...savedConfig,
+          approverBoundAppId: "cli_other",
+        },
+        secrets: { ...savedSecrets, appId: "cli_other", appSecret: "secret-three" },
+        ready: true,
+        reason: undefined,
+        retainedId: approverId,
       },
     ];
 

@@ -1317,6 +1317,7 @@ function loadTelegramApprovalTabForTest({
   snapshot,
   settingsAPI = {},
   confirm = () => true,
+  console: consoleOverride = console,
 } = {}) {
   const documentListeners = new Map();
   const body = new FakeElement("body");
@@ -1370,7 +1371,7 @@ function loadTelegramApprovalTabForTest({
     ...settingsAPI,
   };
   const context = {
-    console,
+    console: consoleOverride,
     document,
     requestAnimationFrame: (cb) => {
       cb();
@@ -1566,6 +1567,80 @@ function loadTelegramApprovalTabForTest({
   render();
 
   return { core, content, updates, commands, render, renderRequests, timers };
+}
+
+function createFeishuCredentialDraftLifecycleHarness({
+  currentPlatform = "feishu",
+  configured = true,
+  maskedAppId = "cli_......saved",
+  updateConfigResult = { status: "ok" },
+} = {}) {
+  const allCommandCalls = [];
+  const toasts = [];
+  const consoleOutput = { log: [], info: [], warn: [], error: [] };
+  const capturedConsole = Object.fromEntries(
+    Object.keys(consoleOutput).map((method) => [method, (...args) => consoleOutput[method].push(args)]),
+  );
+  const harness = loadTelegramApprovalTabForTest({
+    console: capturedConsole,
+    snapshot: {
+      tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+      feishuApproval: {
+        enabled: false,
+        platform: currentPlatform,
+        idType: "open_id",
+        approverId: "",
+        connectionTimeoutSeconds: 15,
+      },
+    },
+    settingsAPI: {
+      command: (name, payload) => {
+        allCommandCalls.push({ name, payload });
+        if (name === "feishuApproval.status") {
+          return Promise.resolve({
+            status: "ok",
+            state: {
+              status: "stopped",
+              configured,
+              secretsStored: configured,
+              secretsConfigured: configured,
+              credentialReady: configured,
+              credentialReason: configured ? "" : "missing-credentials",
+              configurationReady: false,
+              setupReason: "missing-approver",
+            },
+          });
+        }
+        if (name === "feishuApproval.secretInfo") {
+          return Promise.resolve({
+            status: "ok",
+            configured,
+            credentialPlatform: configured ? currentPlatform : undefined,
+            appId: configured ? maskedAppId : "",
+          });
+        }
+        if (name === "feishuApproval.updateConfig") return Promise.resolve(updateConfigResult);
+        return Promise.resolve({ status: "ok" });
+      },
+    },
+  });
+  harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+  return { harness, allCommandCalls, toasts, consoleOutput };
+}
+
+function fillFeishuCredentialDraft(card, prefix) {
+  const values = {
+    appId: `${prefix}_app_id`,
+    appSecret: `${prefix}_app_secret`,
+    verificationToken: `${prefix}_verification_token`,
+    encryptKey: `${prefix}_encrypt_key`,
+  };
+  for (const [index, value] of Object.values(values).entries()) {
+    const input = card.querySelectorAll("input")[index];
+    input.value = value;
+    input.dispatchEvent({ type: "input" });
+  }
+  return values;
 }
 
 function loadDiscordPresenceTabForTest({ snapshot, update } = {}) {
@@ -4701,29 +4776,7 @@ describe("settings renderer browser environment", () => {
   });
 
   it("clears the transient Feishu credential draft when replacement editing is cancelled", async () => {
-    const harness = loadTelegramApprovalTabForTest({
-      snapshot: {
-        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
-        feishuApproval: {
-          enabled: false,
-          platform: "feishu",
-          idType: "open_id",
-          approverId: "",
-          connectionTimeoutSeconds: 15,
-        },
-      },
-      settingsAPI: {
-        command: (name) => {
-          if (name === "feishuApproval.status") {
-            return Promise.resolve({ status: "ok", state: { status: "stopped", secretsStored: true } });
-          }
-          if (name === "feishuApproval.secretInfo") {
-            return Promise.resolve({ status: "ok", configured: true, credentialPlatform: "feishu", appId: "cli_......saved" });
-          }
-          return Promise.resolve({ status: "ok" });
-        },
-      },
-    });
+    const { harness } = createFeishuCredentialDraftLifecycleHarness();
     await Promise.resolve();
     await Promise.resolve();
     harness.render();
@@ -4734,9 +4787,7 @@ describe("settings renderer browser environment", () => {
       .dispatchEvent({ type: "click" });
     harness.render();
     card = harness.content.querySelector(".feishu-approval-channel-card");
-    let inputs = card.querySelectorAll("input");
-    inputs[0].value = "cli_discard";
-    inputs[0].dispatchEvent({ type: "input" });
+    fillFeishuCredentialDraft(card, "cancelled");
     card.querySelectorAll("button")
       .find((button) => button.textContent === "telegramApprovalCancel")
       .dispatchEvent({ type: "click" });
@@ -4747,238 +4798,160 @@ describe("settings renderer browser environment", () => {
       .find((button) => button.textContent === "feishuApprovalReplaceSecrets")
       .dispatchEvent({ type: "click" });
     harness.render();
-    inputs = harness.content.querySelector(".feishu-approval-channel-card").querySelectorAll("input");
-    assert.equal(inputs[0].value, "");
-  });
-
-  it("clears all four credential draft values before Feishu to Lark platform save", async () => {
-    const draftValues = [
-      "feishu_to_lark_app_id",
-      "feishu_to_lark_app_secret",
-      "feishu_to_lark_verification_token",
-      "feishu_to_lark_encrypt_key",
-    ];
-    const platformSave = createDeferred();
-    const commandCalls = [];
-    const harness = loadTelegramApprovalTabForTest({
-      snapshot: {
-        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
-        feishuApproval: {
-          enabled: false,
-          platform: "feishu",
-          idType: "open_id",
-          approverId: "",
-          connectionTimeoutSeconds: 15,
-        },
-      },
-      settingsAPI: {
-        command: (name, payload) => {
-          commandCalls.push({ name, payload });
-          if (name === "feishuApproval.status") {
-            return Promise.resolve({
-              status: "ok",
-              state: { status: "stopped", secretsStored: false, secretsConfigured: false },
-            });
-          }
-          if (name === "feishuApproval.secretInfo") return Promise.resolve({ status: "ok", configured: false });
-          if (name === "feishuApproval.updateConfig") return platformSave.promise;
-          return Promise.resolve({ status: "ok" });
-        },
-      },
-    });
-    await Promise.resolve();
-    await Promise.resolve();
-    harness.render();
-
-    const card = harness.content.querySelector(".feishu-approval-channel-card");
-    const inputs = card.querySelectorAll("input");
-    for (let i = 0; i < draftValues.length; i += 1) {
-      inputs[i].value = draftValues[i];
-      inputs[i].dispatchEvent({ type: "input" });
-    }
-    card.querySelectorAll("button")
-      .find((button) => button.dataset.platform === "lark")
-      .dispatchEvent({ type: "click" });
-
-    harness.render();
     assert.deepStrictEqual(
       harness.content.querySelector(".feishu-approval-channel-card").querySelectorAll("input")
         .slice(0, 4).map((input) => input.value),
       ["", "", "", ""],
-      "all four credential drafts must clear before the platform command is submitted",
     );
-    assert.deepStrictEqual(
-      JSON.parse(JSON.stringify(commandCalls.find((call) => call.name === "feishuApproval.updateConfig"))),
-      { name: "feishuApproval.updateConfig", payload: { platform: "lark" } },
-    );
-    assert.equal(
-      draftValues.some((value) => JSON.stringify(commandCalls).includes(value)),
-      false,
-      "credential drafts must not enter the platform command",
-    );
-    platformSave.resolve({ status: "ok" });
   });
 
-  it("clears all four credential draft values before Lark to Feishu platform save", async () => {
-    const draftValues = [
-      "lark_to_feishu_app_id",
-      "lark_to_feishu_app_secret",
-      "lark_to_feishu_verification_token",
-      "lark_to_feishu_encrypt_key",
-    ];
-    const platformSave = createDeferred();
-    const commandCalls = [];
-    const harness = loadTelegramApprovalTabForTest({
-      snapshot: {
-        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
-        feishuApproval: {
-          enabled: false,
-          platform: "lark",
-          idType: "open_id",
-          approverId: "",
-          connectionTimeoutSeconds: 15,
-        },
-      },
-      settingsAPI: {
-        command: (name, payload) => {
-          commandCalls.push({ name, payload });
-          if (name === "feishuApproval.status") {
-            return Promise.resolve({
-              status: "ok",
-              state: { status: "stopped", secretsStored: false, secretsConfigured: false },
-            });
-          }
-          if (name === "feishuApproval.secretInfo") return Promise.resolve({ status: "ok", configured: false });
-          if (name === "feishuApproval.updateConfig") return platformSave.promise;
-          return Promise.resolve({ status: "ok" });
-        },
-      },
-    });
-    await Promise.resolve();
-    await Promise.resolve();
-    harness.render();
+  it("exits credential editing before either platform transition settles", async () => {
+    for (const { from, to, prefix } of [
+      { from: "feishu", to: "lark", prefix: "feishu_to_lark" },
+      { from: "lark", to: "feishu", prefix: "lark_to_feishu" },
+    ]) {
+      const platformSave = createDeferred();
+      const { harness, allCommandCalls, toasts, consoleOutput } = createFeishuCredentialDraftLifecycleHarness({
+        currentPlatform: from,
+        maskedAppId: `cli_......${from}`,
+        updateConfigResult: platformSave.promise,
+      });
+      const feishuCommandCalls = () => allCommandCalls.filter((call) => call.name.startsWith("feishuApproval."));
+      await Promise.resolve();
+      await Promise.resolve();
+      harness.render();
 
-    const card = harness.content.querySelector(".feishu-approval-channel-card");
-    const inputs = card.querySelectorAll("input");
-    for (let i = 0; i < draftValues.length; i += 1) {
-      inputs[i].value = draftValues[i];
-      inputs[i].dispatchEvent({ type: "input" });
+      let card = harness.content.querySelector(".feishu-approval-channel-card");
+      assert.ok(card.querySelector(".tg-approval-token-stored-row"), `${from}: saved credentials should be masked`);
+      card.querySelectorAll("button")
+        .find((button) => button.textContent === "feishuApprovalReplaceSecrets")
+        .dispatchEvent({ type: "click" });
+      harness.render();
+      const draftValues = fillFeishuCredentialDraft(
+        harness.content.querySelector(".feishu-approval-channel-card"),
+        prefix,
+      );
+
+      const beforeUpdateConfigCount = feishuCommandCalls().filter((call) => call.name === "feishuApproval.updateConfig").length;
+      const beforeToastCount = toasts.length;
+      const beforeConsoleCount = Object.values(consoleOutput).flat().length;
+      card = harness.content.querySelector(".feishu-approval-channel-card");
+      card.querySelectorAll("button")
+        .find((button) => button.dataset.platform === to)
+        .dispatchEvent({ type: "click" });
+
+      harness.render();
+      card = harness.content.querySelector(".feishu-approval-channel-card");
+      assert.equal(card.querySelector(".feishu-approval-secrets-row"), null, `${from} → ${to}: editor hidden`);
+      assert.ok(card.querySelector(".tg-approval-token-stored-row"), `${from} → ${to}: masked row shown`);
+      for (const value of Object.values(draftValues)) {
+        assert.equal(collectText(card).includes(value), false, `${from} → ${to}: draft cleared`);
+      }
+
+      platformSave.resolve({ status: "ok" });
+      await new Promise((resolve) => setImmediate(resolve));
+      harness.render();
+      card = harness.content.querySelector(".feishu-approval-channel-card");
+
+      const updateConfigCommands = feishuCommandCalls().filter((call) => call.name === "feishuApproval.updateConfig");
+      assert.equal(
+        updateConfigCommands.length - beforeUpdateConfigCount,
+        1,
+        `${from} → ${to}: platform command delta`,
+      );
+      assert.deepStrictEqual(JSON.parse(JSON.stringify(updateConfigCommands.at(-1))), {
+        name: "feishuApproval.updateConfig",
+        payload: { platform: to },
+      });
+      assert.equal(card.querySelector(".feishu-approval-secrets-row"), null, `${from} → ${to}: editor remains hidden`);
+      assert.ok(card.querySelector(".tg-approval-token-stored-row"), `${from} → ${to}: masked row remains`);
+      assert.equal(toasts.length - beforeToastCount, 1, `${from} → ${to}: one success toast`);
+      assert.equal(
+        Object.values(consoleOutput).flat().length - beforeConsoleCount,
+        0,
+        `${from} → ${to}: no console output`,
+      );
+      for (const value of Object.values(draftValues)) {
+        assert.equal(JSON.stringify(allCommandCalls).includes(value), false, `${from} → ${to}: command redaction`);
+        assert.equal(JSON.stringify(toasts).includes(value), false, `${from} → ${to}: toast redaction`);
+        for (const method of ["log", "info", "warn", "error"]) {
+          assert.equal(JSON.stringify(consoleOutput[method]).includes(value), false, `${from} → ${to}: console redaction`);
+        }
+        assert.equal(collectText(card).includes(value), false, `${from} → ${to}: rendered redaction`);
+      }
     }
-    card.querySelectorAll("button")
-      .find((button) => button.dataset.platform === "feishu")
-      .dispatchEvent({ type: "click" });
-
-    harness.render();
-    assert.deepStrictEqual(
-      harness.content.querySelector(".feishu-approval-channel-card").querySelectorAll("input")
-        .slice(0, 4).map((input) => input.value),
-      ["", "", "", ""],
-      "all four credential drafts must clear before the platform command is submitted",
-    );
-    assert.deepStrictEqual(
-      JSON.parse(JSON.stringify(commandCalls.find((call) => call.name === "feishuApproval.updateConfig"))),
-      { name: "feishuApproval.updateConfig", payload: { platform: "feishu" } },
-    );
-    assert.equal(
-      draftValues.some((value) => JSON.stringify(commandCalls).includes(value)),
-      false,
-      "credential drafts must not enter the platform command",
-    );
-    platformSave.resolve({ status: "ok" });
   });
 
   it("keeps credential drafts cleared when a platform save fails", async () => {
-    const draftValues = [
-      "failed_platform_app_id",
-      "failed_platform_app_secret",
-      "failed_platform_verification_token",
-      "failed_platform_encrypt_key",
-    ];
-    const harness = loadTelegramApprovalTabForTest({
-      snapshot: {
-        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
-        feishuApproval: {
-          enabled: false,
-          platform: "feishu",
-          idType: "open_id",
-          approverId: "",
-          connectionTimeoutSeconds: 15,
-        },
-      },
-      settingsAPI: {
-        command: (name) => {
-          if (name === "feishuApproval.status") {
-            return Promise.resolve({
-              status: "ok",
-              state: { status: "stopped", secretsStored: false, secretsConfigured: false },
-            });
-          }
-          if (name === "feishuApproval.secretInfo") return Promise.resolve({ status: "ok", configured: false });
-          if (name === "feishuApproval.updateConfig") {
-            return Promise.resolve({ status: "error", message: "platform write failed" });
-          }
-          return Promise.resolve({ status: "ok" });
-        },
-      },
+    const { harness, allCommandCalls, toasts, consoleOutput } = createFeishuCredentialDraftLifecycleHarness({
+      configured: true,
+      updateConfigResult: { status: "error", message: "platform write failed" },
     });
+    const feishuCommandCalls = () => allCommandCalls.filter((call) => call.name.startsWith("feishuApproval."));
     await Promise.resolve();
     await Promise.resolve();
     harness.render();
 
     let card = harness.content.querySelector(".feishu-approval-channel-card");
-    const inputs = card.querySelectorAll("input");
-    for (let i = 0; i < draftValues.length; i += 1) {
-      inputs[i].value = draftValues[i];
-      inputs[i].dispatchEvent({ type: "input" });
-    }
+    assert.ok(card.querySelector(".tg-approval-token-stored-row"), "saved credentials should be masked before replacement");
+    card.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalReplaceSecrets")
+      .dispatchEvent({ type: "click" });
+    harness.render();
+    card = harness.content.querySelector(".feishu-approval-channel-card");
+    const draftValues = fillFeishuCredentialDraft(card, "failed_platform");
+    const beforeUpdateConfigCount = feishuCommandCalls().filter((call) => call.name === "feishuApproval.updateConfig").length;
+    const beforeToastCount = toasts.length;
+    const beforeConsoleCount = Object.values(consoleOutput).flat().length;
     card.querySelectorAll("button")
       .find((button) => button.dataset.platform === "lark")
       .dispatchEvent({ type: "click" });
-    await Promise.resolve();
-    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
 
     harness.render();
     card = harness.content.querySelector(".feishu-approval-channel-card");
-    assert.deepStrictEqual(
-      card.querySelectorAll("input").slice(0, 4).map((input) => input.value),
-      ["", "", "", ""],
-      "a failed platform save must not restore the old platform's secret draft",
+    const updateConfigCommands = feishuCommandCalls().filter((call) => call.name === "feishuApproval.updateConfig");
+    assert.equal(updateConfigCommands.length - beforeUpdateConfigCount, 1, "failed platform command delta");
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(updateConfigCommands.at(-1))), {
+      name: "feishuApproval.updateConfig",
+      payload: { platform: "lark" },
+    });
+    assert.equal(card.querySelector(".feishu-approval-secrets-row"), null, "failed save keeps editor hidden");
+    assert.ok(card.querySelector(".tg-approval-token-stored-row"), "failed save keeps the masked row");
+    assert.equal(toasts.length - beforeToastCount, 1, "failed save produces one toast");
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(toasts.slice(beforeToastCount))), [{
+      message: "feishuApprovalPersistenceFailed",
+      options: { error: true },
+    }]);
+    assert.equal(JSON.stringify(toasts).includes("platform write failed"), false, "raw failure detail stays hidden");
+    assert.equal(
+      Object.values(consoleOutput).flat().length - beforeConsoleCount,
+      0,
+      "failed save produces no console output",
     );
-    assert.equal(collectText(card).includes("failed_platform_"), false);
+    for (const value of Object.values(draftValues)) {
+      assert.equal(JSON.stringify(allCommandCalls).includes(value), false, "draft must not enter commands");
+      assert.equal(JSON.stringify(toasts).includes(value), false, "draft must not enter toasts");
+      for (const method of ["log", "info", "warn", "error"]) {
+        assert.equal(JSON.stringify(consoleOutput[method]).includes(value), false, "draft must not enter console");
+      }
+      assert.equal(collectText(card).includes(value), false, "draft must not enter rendered text");
+    }
+
+    card.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalReplaceSecrets")
+      .dispatchEvent({ type: "click" });
+    harness.render();
+    assert.deepStrictEqual(
+      harness.content.querySelector(".feishu-approval-channel-card").querySelectorAll("input")
+        .slice(0, 4).map((input) => input.value),
+      ["", "", "", ""],
+      "failed save leaves all credential drafts cleared",
+    );
   });
 
   it("clears credential drafts when remote approval exits", async () => {
-    const draftValues = [
-      "exit_app_id",
-      "exit_app_secret",
-      "exit_verification_token",
-      "exit_encrypt_key",
-    ];
-    const commandCalls = [];
-    const harness = loadTelegramApprovalTabForTest({
-      snapshot: {
-        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
-        feishuApproval: {
-          enabled: false,
-          platform: "feishu",
-          idType: "open_id",
-          approverId: "",
-          connectionTimeoutSeconds: 15,
-        },
-      },
-      settingsAPI: {
-        command: (name, payload) => {
-          commandCalls.push({ name, payload });
-          if (name === "feishuApproval.status") {
-            return Promise.resolve({ status: "ok", state: { status: "stopped", secretsStored: true } });
-          }
-          if (name === "feishuApproval.secretInfo") {
-            return Promise.resolve({ status: "ok", configured: true, credentialPlatform: "feishu", appId: "cli_......saved" });
-          }
-          return Promise.resolve({ status: "ok" });
-        },
-      },
-    });
+    const { harness, allCommandCalls } = createFeishuCredentialDraftLifecycleHarness();
     await Promise.resolve();
     await Promise.resolve();
     harness.render();
@@ -4988,53 +4961,24 @@ describe("settings renderer browser environment", () => {
       .find((button) => button.textContent === "feishuApprovalReplaceSecrets")
       .dispatchEvent({ type: "click" });
     harness.render();
-    const inputs = harness.content.querySelector(".feishu-approval-channel-card").querySelectorAll("input");
-    for (let i = 0; i < draftValues.length; i += 1) {
-      inputs[i].value = draftValues[i];
-      inputs[i].dispatchEvent({ type: "input" });
-    }
+    const draftValues = fillFeishuCredentialDraft(
+      harness.content.querySelector(".feishu-approval-channel-card"),
+      "exit",
+    );
 
     harness.core.tabs["telegram-approval"].onExit();
     harness.render();
     card = harness.content.querySelector(".feishu-approval-channel-card");
     assert.ok(card.querySelector(".tg-approval-token-stored-row"), "saved credentials should return to the masked row");
     assert.ok(collectText(card).includes("cli_......saved"));
-    assert.equal(collectText(card).includes("exit_"), false);
-    assert.equal(commandCalls.some((call) => call.name === "feishuApproval.setSecrets"), false);
+    for (const value of Object.values(draftValues)) {
+      assert.equal(collectText(card).includes(value), false);
+    }
+    assert.equal(allCommandCalls.some((call) => call.name === "feishuApproval.setSecrets"), false);
   });
 
   it("clears credential drafts before Channels to LAN navigation", async () => {
-    const draftValues = [
-      "lan_app_id",
-      "lan_app_secret",
-      "lan_verification_token",
-      "lan_encrypt_key",
-    ];
-    const commandCalls = [];
-    const harness = loadTelegramApprovalTabForTest({
-      snapshot: {
-        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
-        feishuApproval: {
-          enabled: false,
-          platform: "lark",
-          idType: "open_id",
-          approverId: "",
-          connectionTimeoutSeconds: 15,
-        },
-      },
-      settingsAPI: {
-        command: (name, payload) => {
-          commandCalls.push({ name, payload });
-          if (name === "feishuApproval.status") {
-            return Promise.resolve({ status: "ok", state: { status: "stopped", secretsStored: true } });
-          }
-          if (name === "feishuApproval.secretInfo") {
-            return Promise.resolve({ status: "ok", configured: true, credentialPlatform: "lark", appId: "cli_......saved" });
-          }
-          return Promise.resolve({ status: "ok" });
-        },
-      },
-    });
+    const { harness, allCommandCalls } = createFeishuCredentialDraftLifecycleHarness({ currentPlatform: "lark" });
     await Promise.resolve();
     await Promise.resolve();
     harness.render();
@@ -5044,11 +4988,10 @@ describe("settings renderer browser environment", () => {
       .find((button) => button.textContent === "feishuApprovalReplaceSecrets")
       .dispatchEvent({ type: "click" });
     harness.render();
-    const inputs = harness.content.querySelector(".feishu-approval-channel-card").querySelectorAll("input");
-    for (let i = 0; i < draftValues.length; i += 1) {
-      inputs[i].value = draftValues[i];
-      inputs[i].dispatchEvent({ type: "input" });
-    }
+    const draftValues = fillFeishuCredentialDraft(
+      harness.content.querySelector(".feishu-approval-channel-card"),
+      "lan",
+    );
 
     harness.content.querySelectorAll("button")
       .find((button) => button.textContent === "remoteApprovalSubtabLan")
@@ -5061,62 +5004,52 @@ describe("settings renderer browser environment", () => {
     card = harness.content.querySelector(".feishu-approval-channel-card");
     assert.ok(card.querySelector(".tg-approval-token-stored-row"), "saved credentials should return to the masked row");
     assert.ok(collectText(card).includes("cli_......saved"));
-    assert.equal(collectText(card).includes("lan_"), false);
-    assert.equal(commandCalls.some((call) => call.name === "feishuApproval.setSecrets"), false);
+    for (const value of Object.values(draftValues)) {
+      assert.equal(collectText(card).includes(value), false);
+    }
+    assert.equal(allCommandCalls.some((call) => call.name === "feishuApproval.setSecrets"), false);
   });
 
   it("clears an unconfigured credential draft locally while keeping the editor open", async () => {
-    const harness = loadTelegramApprovalTabForTest({
-      snapshot: {
-        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
-        feishuApproval: {
-          enabled: false,
-          platform: "feishu",
-          idType: "open_id",
-          approverId: "",
-          connectionTimeoutSeconds: 15,
-        },
-      },
-      settingsAPI: {
-        command: (name) => {
-          if (name === "feishuApproval.status") {
-            return Promise.resolve({
-              status: "ok",
-              state: { status: "stopped", secretsStored: false, secretsConfigured: false },
-            });
-          }
-          if (name === "feishuApproval.secretInfo") return Promise.resolve({ status: "ok", configured: false });
-          return Promise.resolve({ status: "ok" });
-        },
-      },
-    });
+    const { harness, allCommandCalls, toasts, consoleOutput } = createFeishuCredentialDraftLifecycleHarness({ configured: false });
     await Promise.resolve();
     await Promise.resolve();
     harness.render();
 
     let card = harness.content.querySelector(".feishu-approval-channel-card");
-    const clearButton = card.querySelectorAll("button")
-      .find((button) => button.textContent === "feishuApprovalClearSecretsDraft");
-    assert.ok(clearButton, "an unconfigured credential editor should provide Clear");
-    const inputs = card.querySelectorAll("input");
-    for (const [index, value] of [
-      "clear_app_id",
-      "clear_app_secret",
-      "clear_verification_token",
-      "clear_encrypt_key",
-    ].entries()) {
-      inputs[index].value = value;
-      inputs[index].dispatchEvent({ type: "input" });
-    }
-
-    clearButton.dispatchEvent({ type: "click" });
+    assert.ok(
+      card.querySelectorAll("button").some((button) => button.textContent === "feishuApprovalClearSecretsDraft"),
+      "an unconfigured credential editor should provide Clear",
+    );
+    const draftValues = fillFeishuCredentialDraft(card, "clear");
     harness.render();
     card = harness.content.querySelector(".feishu-approval-channel-card");
+    const clearButton = card.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalClearSecretsDraft");
+    assert.ok(clearButton, "an unconfigured credential editor should keep Clear visible");
+    const beforeCommandCount = allCommandCalls.length;
+    const beforeUpdateCount = harness.updates.length;
+    const beforeToastCount = toasts.length;
+    const beforeConsoleCount = Object.values(consoleOutput).flat().length;
+
+    clearButton.dispatchEvent({ type: "click" });
+    assert.equal(allCommandCalls.length, beforeCommandCount, "Clear sends no command IPC before rerender");
+    assert.equal(harness.updates.length, beforeUpdateCount, "Clear sends no update IPC before rerender");
+
+    harness.render();
+    card = harness.content.querySelector(".feishu-approval-channel-card");
+    assert.ok(card.querySelector(".feishu-approval-secrets-row"), "the unconfigured editor remains present");
     assert.ok(card.querySelectorAll("button").some((button) => button.textContent === "feishuApprovalClearSecretsDraft"));
     assert.deepStrictEqual(card.querySelectorAll("input").slice(0, 4).map((input) => input.value), ["", "", "", ""]);
-    assert.equal(harness.commands.some((call) => call.name === "feishuApproval.setSecrets"), false);
-    assert.equal(harness.commands.some((call) => call.name === "feishuApproval.updateConfig"), false);
-    assert.equal(harness.updates.length, 0);
+    assert.equal(toasts.length, beforeToastCount, "Clear shows no toast");
+    assert.equal(
+      Object.values(consoleOutput).flat().length,
+      beforeConsoleCount,
+      "Clear produces no console output",
+    );
+    for (const value of Object.values(draftValues)) {
+      assert.equal(JSON.stringify(allCommandCalls).includes(value), false, "Clear draft must not enter command IPC");
+    }
   });
 
   it("saves Feishu approver through the authoritative command and enables testing only when runtime is configured", async () => {
