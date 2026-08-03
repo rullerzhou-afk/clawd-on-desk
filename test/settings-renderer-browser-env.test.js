@@ -208,6 +208,7 @@ class FakeElement {
     this.disabled = false;
     this.focused = false;
     this.open = false;
+    this.inert = false;
     this._innerHTML = "";
     this.parentNode = null;
     this.scrollTop = 0;
@@ -1515,15 +1516,27 @@ function loadTelegramApprovalTabForTest({
       } = {}) => {
         const group = document.createElement("div");
         group.className = `collapsible-group${className ? ` ${className}` : ""}`;
-        group.classList.toggle("collapsed", defaultCollapsed);
+        let collapsed = !!defaultCollapsed;
+        group.expandCalls = [];
+        group.headerClickCount = 0;
+        group.collapsedStateWrites = 0;
         if (id) group.dataset.groupId = id;
         const header = document.createElement("div");
         header.className = "collapsible-group-header";
-        header.setAttribute("aria-expanded", defaultCollapsed ? "false" : "true");
-        header.addEventListener("click", () => {
-          const collapsed = !group.classList.contains("collapsed");
+        const body = document.createElement("div");
+        body.className = "collapsible-group-body";
+        const applyCollapsedState = (nextCollapsed, { persist = true } = {}) => {
+          const changed = collapsed !== nextCollapsed;
+          collapsed = nextCollapsed;
+          if (changed && persist) group.collapsedStateWrites += 1;
           group.classList.toggle("collapsed", collapsed);
           header.setAttribute("aria-expanded", collapsed ? "false" : "true");
+          body.setAttribute("aria-hidden", collapsed ? "true" : "false");
+          body.inert = collapsed;
+        };
+        header.addEventListener("click", () => {
+          group.headerClickCount += 1;
+          applyCollapsedState(!collapsed);
         });
         if (headerContent) {
           header.appendChild(headerContent);
@@ -1550,10 +1563,14 @@ function loadTelegramApprovalTabForTest({
           header.appendChild(summaryWrap);
         }
         group.appendChild(header);
-        const body = document.createElement("div");
-        body.className = "collapsible-group-body";
         for (const child of children) body.appendChild(child);
         group.appendChild(body);
+        group.expand = (options = {}) => {
+          const normalizedOptions = options || {};
+          group.expandCalls.push(normalizedOptions);
+          applyCollapsedState(false, normalizedOptions);
+        };
+        applyCollapsedState(collapsed, { persist: false });
         return group;
       },
     },
@@ -4511,6 +4528,77 @@ describe("settings renderer browser environment", () => {
     const guide = harness.content.querySelector(".feishu-approval-api-explorer-guide");
     assert.ok(guide, "email lookup fallback guide should render");
     assert.equal(guide.classList.contains("collapsed"), false, "missing scope should expand fallback help");
+  });
+
+  it("uses a one-shot expand for lookup-failed fallback without persistence", async () => {
+    const harness = createFeishuLookupPreflightHarness({
+      selectedPlatform: "feishu",
+      resolveResult: {
+        status: "error",
+        code: "lookup-failed",
+        message: "raw lookup detail must not render",
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    let guide = harness.content.querySelector(".feishu-approval-api-explorer-guide");
+    assert.ok(guide, "fallback guide should render before lookup failure");
+    assert.equal(guide.classList.contains("collapsed"), true);
+    assert.equal(guide.querySelector(".collapsible-group-header").getAttribute("aria-expanded"), "false");
+    assert.equal(guide.querySelector(".collapsible-group-body").getAttribute("aria-hidden"), "true");
+
+    const card = harness.content.querySelector(".feishu-approval-channel-card");
+    const approverInput = card.querySelectorAll("input").at(-1);
+    approverInput.value = "person@example.com";
+    approverInput.dispatchEvent({ type: "input" });
+    harness.render();
+    harness.content.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalSaveApprover")
+      .dispatchEvent({ type: "click" });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    guide = harness.content.querySelector(".feishu-approval-api-explorer-guide");
+    const guideHeader = guide.querySelector(".collapsible-group-header");
+    const guideBody = guide.querySelector(".collapsible-group-body");
+    assert.equal(guide.expandCalls.length, 1);
+    assert.equal(guide.expandCalls[0].persist, false);
+    assert.equal(guide.headerClickCount, 0);
+    assert.equal(guide.collapsedStateWrites, 0);
+    assert.equal(guide.classList.contains("collapsed"), false);
+    assert.equal(guideHeader.getAttribute("aria-expanded"), "true");
+    assert.equal(guideBody.getAttribute("aria-hidden"), "false");
+    assert.equal(guideBody.inert, false);
+    assert.equal(collectText(harness.content).includes("raw lookup detail must not render"), false);
+
+    harness.render();
+    const freshGuide = harness.content.querySelector(".feishu-approval-api-explorer-guide");
+    const freshHeader = freshGuide.querySelector(".collapsible-group-header");
+    const freshBody = freshGuide.querySelector(".collapsible-group-body");
+    assert.equal(freshGuide.classList.contains("collapsed"), true);
+    assert.equal(freshHeader.getAttribute("aria-expanded"), "false");
+    assert.equal(freshBody.getAttribute("aria-hidden"), "true");
+    assert.equal(freshBody.inert, true);
+
+    freshHeader.click();
+    assert.equal(freshGuide.headerClickCount, 1);
+    assert.equal(freshGuide.collapsedStateWrites, 1);
+    assert.equal(freshGuide.classList.contains("collapsed"), false);
+    assert.equal(freshHeader.getAttribute("aria-expanded"), "true");
+    assert.equal(freshBody.getAttribute("aria-hidden"), "false");
+    assert.equal(freshBody.inert, false);
+    assert.equal(harness.updates.length, 0);
+    assert.equal(
+      harness.preflightCommandCalls.some(({ name }) => [
+        "feishuApproval.updateConfig",
+        "feishuApproval.saveManualApprover",
+        "feishuApproval.commitApprover",
+      ].includes(name)),
+      false,
+    );
   });
 
   it("routes every non-ou_ open_id value through lookup validation without persisting it", async () => {
@@ -7900,6 +7988,102 @@ describe("settings renderer browser environment", () => {
     assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.collapsible-group-chevron,[\s\S]*\.anim-override-chevron,[\s\S]*transition:\s*none;/.test(css));
     assert.ok(i18nSource.includes("collapsibleExpand"));
     assert.ok(i18nSource.includes("collapsibleCollapse"));
+  });
+
+  it("supports non-persisting expand without changing stored collapse state", () => {
+    const collapsedGroupsKey = "clawd.settings.collapsedGroups.v1";
+    const originalStoredState = {
+      "remote-approval.feishu.api-explorer": true,
+      "unrelated-group": false,
+    };
+    let storedRaw = JSON.stringify(originalStoredState);
+    const storageWrites = [];
+    const localStorage = {
+      getItem: (key) => key === collapsedGroupsKey ? storedRaw : null,
+      setItem: (key, value) => {
+        storageWrites.push({ key, value: String(value) });
+        storedRaw = String(value);
+      },
+    };
+    const documentBody = new FakeElement("body");
+    const content = new FakeElement("main");
+    content.id = "content";
+    documentBody.appendChild(content);
+    const document = {
+      body: documentBody,
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: (id) => id === "content" ? content : null,
+    };
+    const core = loadSettingsCoreForTest({}, { document, localStorage });
+    const buildGroup = () => {
+      const group = core.helpers.buildCollapsibleGroup({
+        id: "remote-approval.feishu.api-explorer",
+        title: "API Explorer",
+        defaultCollapsed: false,
+        children: [document.createElement("div")],
+      });
+      content.appendChild(group);
+      return group;
+    };
+
+    const group = buildGroup();
+    const header = group.querySelector(".collapsible-group-header");
+    const body = group.querySelector(".collapsible-group-body");
+    assert.equal(group.classList.contains("collapsed"), true);
+    assert.equal(header.getAttribute("aria-expanded"), "false");
+    assert.equal(body.getAttribute("aria-hidden"), "true");
+    assert.equal(body.inert, true);
+
+    const originalRaw = storedRaw;
+    group.expand({ persist: false });
+    assert.equal(group.classList.contains("collapsed"), false);
+    assert.equal(header.getAttribute("aria-expanded"), "true");
+    assert.equal(body.getAttribute("aria-hidden"), "false");
+    assert.equal(body.inert, false);
+    assert.equal(storedRaw, originalRaw);
+    assert.deepStrictEqual(JSON.parse(storedRaw), originalStoredState);
+    assert.equal(storageWrites.length, 0);
+
+    group.remove();
+    const freshGroup = buildGroup();
+    const freshHeader = freshGroup.querySelector(".collapsible-group-header");
+    const freshBody = freshGroup.querySelector(".collapsible-group-body");
+    assert.equal(freshGroup.classList.contains("collapsed"), true);
+    assert.equal(freshHeader.getAttribute("aria-expanded"), "false");
+    assert.equal(freshBody.getAttribute("aria-hidden"), "true");
+    assert.equal(freshBody.inert, true);
+
+    freshHeader.click();
+    assert.equal(freshGroup.classList.contains("collapsed"), false);
+    assert.equal(freshHeader.getAttribute("aria-expanded"), "true");
+    assert.equal(freshBody.getAttribute("aria-hidden"), "false");
+    assert.equal(freshBody.inert, false);
+    assert.equal(storageWrites.length, 1);
+    assert.equal(storageWrites[0].key, collapsedGroupsKey);
+    assert.deepStrictEqual(JSON.parse(storageWrites[0].value), {
+      "remote-approval.feishu.api-explorer": false,
+      "unrelated-group": false,
+    });
+
+    freshHeader.dispatchEvent({ type: "keydown", key: "Enter" });
+    assert.equal(freshHeader.getAttribute("aria-expanded"), "false");
+    assert.equal(freshBody.getAttribute("aria-hidden"), "true");
+    assert.equal(freshBody.inert, true);
+    assert.equal(storageWrites.length, 2);
+    assert.deepStrictEqual(JSON.parse(storageWrites[1].value), {
+      "remote-approval.feishu.api-explorer": true,
+      "unrelated-group": false,
+    });
+
+    freshHeader.dispatchEvent({ type: "keydown", key: " " });
+    assert.equal(freshHeader.getAttribute("aria-expanded"), "true");
+    assert.equal(freshBody.getAttribute("aria-hidden"), "false");
+    assert.equal(freshBody.inert, false);
+    assert.equal(storageWrites.length, 3);
+    assert.deepStrictEqual(JSON.parse(storageWrites[2].value), {
+      "remote-approval.feishu.api-explorer": false,
+      "unrelated-group": false,
+    });
   });
 
   it("groups Theme cards and exposes theme import actions in Settings", () => {

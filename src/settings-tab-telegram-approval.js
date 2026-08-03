@@ -1909,10 +1909,7 @@
     });
     if (feishuView.expandApproverFallbackGuide) {
       feishuView.expandApproverFallbackGuide = false;
-      const header = group.querySelector(".collapsible-group-header");
-      if (group.classList.contains("collapsed") && header && typeof header.click === "function") {
-        header.click();
-      }
+      group.expand({ persist: false });
     }
     return group;
   }
