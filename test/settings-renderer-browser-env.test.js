@@ -208,6 +208,7 @@ class FakeElement {
     this.disabled = false;
     this.focused = false;
     this.open = false;
+    this._innerHTML = "";
     this.parentNode = null;
     this.scrollTop = 0;
     this.style = {
@@ -312,6 +313,7 @@ class FakeElement {
     for (const child of this.children) child.parentNode = null;
     this.children = [];
     const html = String(_value || "");
+    this._innerHTML = html;
     const stack = [this];
     const tagRe = /<\/?([a-zA-Z][\w-]*)([^>]*)>/g;
     let match;
@@ -329,7 +331,12 @@ class FakeElement {
       while ((attrMatch = attrRe.exec(attrSource)) !== null) {
         const attrName = attrMatch[1];
         if (attrName === "/") continue;
-        const attrValue = attrMatch[2] ?? attrMatch[3] ?? attrMatch[4] ?? "";
+        const attrValue = (attrMatch[2] ?? attrMatch[3] ?? attrMatch[4] ?? "")
+          .replace(/&amp;/g, "&")
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'")
+          .replace(/&lt;/g, "<")
+          .replace(/&gt;/g, ">");
         child.setAttribute(attrName, attrValue);
       }
       stack[stack.length - 1].appendChild(child);
@@ -339,7 +346,7 @@ class FakeElement {
   }
 
   get innerHTML() {
-    return "";
+    return this._innerHTML;
   }
 
   _matches(selector) {
@@ -4702,11 +4709,11 @@ describe("settings renderer browser environment", () => {
     }
   });
 
-  it("expands fallback help for lookup failures and uses the selected platform API Explorer link", async () => {
+  it("expands fallback help with the API Explorer pathname and query for lookup failures", async () => {
     const strings = loadSettingsI18nForTest().en;
-    for (const [platform, expectedHost, forbiddenHost] of [
-      ["feishu", "https://open.feishu.cn/", "open.larksuite.com"],
-      ["lark", "https://open.larksuite.com/", "open.feishu.cn"],
+    for (const [platform, expectedHostname, forbiddenHostname] of [
+      ["feishu", "open.feishu.cn", "open.larksuite.com"],
+      ["lark", "open.larksuite.com", "open.feishu.cn"],
     ]) {
       for (const code of ["missing-contact-scope", "approver-not-found", "lookup-failed"]) {
         const harness = loadTelegramApprovalTabForTest({
@@ -4767,11 +4774,60 @@ describe("settings renderer browser environment", () => {
         assert.equal(guide.classList.contains("collapsed"), false, `${platform}/${code} should expand help`);
         const links = guide.querySelectorAll("a").map((link) => link.getAttribute("href"));
         assert.equal(links.length, 1);
-        assert.ok(links[0].startsWith(expectedHost));
-        assert.ok(!links[0].includes(forbiddenHost));
+        const url = new URL(links[0]);
+        assert.equal(url.protocol, "https:");
+        assert.equal(url.hostname, expectedHostname);
+        assert.equal(url.pathname, "/api-explorer");
+        assert.notEqual(url.hostname, forbiddenHostname);
+        assert.equal(url.searchParams.get("project"), "contact");
+        assert.equal(url.searchParams.get("resource"), "user");
+        assert.equal(url.searchParams.get("apiName"), "batch_get_id");
+        assert.equal(url.searchParams.get("version"), "v3");
+        assert.equal([...url.searchParams.keys()].length, 4);
         assert.ok(!collectText(harness.content).includes("raw SDK/API detail must not render"));
         assert.equal(harness.updates.length, 0);
       }
+    }
+  });
+
+  it("renders email-first approver label and hint for English and Simplified Chinese", () => {
+    const strings = loadSettingsI18nForTest();
+    for (const { language, brand, label, hint } of [
+      {
+        language: "en",
+        brand: "Feishu",
+        label: "Feishu approver email or user ID",
+        hint: "Enter an email to resolve and save open_id automatically, or choose an ID type and paste an existing ID.",
+      },
+      {
+        language: "zh",
+        brand: "飞书",
+        label: "飞书审批人邮箱或用户 ID",
+        hint: "输入邮箱可自动查询并保存 open_id；也可以选择 ID 类型并粘贴已有 ID。",
+      },
+    ]) {
+      const harness = loadTelegramApprovalTabForTest({
+        snapshot: {
+          tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+          feishuApproval: {
+            enabled: false,
+            platform: "feishu",
+            idType: "open_id",
+            approverId: "",
+            connectionTimeoutSeconds: 15,
+          },
+        },
+      });
+      const localeStrings = strings[language];
+      harness.core.helpers.t = (key) => (key in localeStrings ? localeStrings[key] : key);
+      harness.render();
+
+      const row = harness.content.querySelector(".feishu-approval-approver-row");
+      assert.ok(row, `${language}: approver row should render`);
+      assert.equal(row.querySelector(".row-label").textContent, label);
+      assert.equal(collectText(row.querySelector(".row-desc")), hint);
+      assert.equal(localeStrings.feishuApprovalApproverLabel.replace("{brand}", brand), label);
+      assert.equal(localeStrings.feishuApprovalApproverHintHtml, hint);
     }
   });
 

@@ -136,6 +136,37 @@ describe("i18n locales", () => {
     );
   });
 
+  it("keeps Step 2 Feishu approver copy email-first in every locale", () => {
+    const strings = loadSettingsI18nStrings();
+    const expected = {
+      en: {
+        label: "{brand} approver email or user ID",
+        hint: "Enter an email to resolve and save open_id automatically, or choose an ID type and paste an existing ID.",
+      },
+      zh: {
+        label: "{brand}审批人邮箱或用户 ID",
+        hint: "输入邮箱可自动查询并保存 open_id；也可以选择 ID 类型并粘贴已有 ID。",
+      },
+      "zh-TW": {
+        label: "{brand}審批人電子郵件或使用者 ID",
+        hint: "輸入電子郵件可自動查詢並儲存 open_id；也可以選擇 ID 類型並貼上現有 ID。",
+      },
+      ko: {
+        label: "{brand} 승인자 이메일 또는 사용자 ID",
+        hint: "이메일을 입력하면 open_id를 자동으로 조회해 저장합니다. 또는 ID 유형을 선택하고 기존 ID를 붙여 넣으세요.",
+      },
+      ja: {
+        label: "{brand} 承認者のメールアドレスまたはユーザー ID",
+        hint: "メールアドレスを入力すると open_id を自動検索して保存できます。または ID 種別を選び、既存の ID を貼り付けてください。",
+      },
+    };
+
+    for (const [lang, values] of Object.entries(expected)) {
+      assert.equal(strings[lang].feishuApprovalApproverLabel, values.label, `${lang} label`);
+      assert.equal(strings[lang].feishuApprovalApproverHintHtml, values.hint, `${lang} hint`);
+    }
+  });
+
   it("keeps permission bubble locale keysets aligned with English", () => {
     assertLocaleObjectParity(loadBubbleStrings(), "bubble");
   });

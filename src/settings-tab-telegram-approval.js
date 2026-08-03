@@ -59,8 +59,8 @@
     lark: "https://open.larksuite.com/app",
   });
   const FEISHU_API_EXPLORER_URLS = Object.freeze({
-    feishu: "https://open.feishu.cn/document/server-docs/contact-v3/user/batch_get_id",
-    lark: "https://open.larksuite.com/document/server-docs/contact-v3/user/batch_get_id",
+    feishu: "https://open.feishu.cn/api-explorer?project=contact&resource=user&apiName=batch_get_id&version=v3",
+    lark: "https://open.larksuite.com/api-explorer?project=contact&resource=user&apiName=batch_get_id&version=v3",
   });
 
   // Stable failure codes -> localized, brand-aware copy. The readiness() reasons
