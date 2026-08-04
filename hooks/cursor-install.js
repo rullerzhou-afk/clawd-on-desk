@@ -34,11 +34,14 @@ const CURSOR_HOOK_EVENTS = [
 ];
 
 function buildCursorHookCommand(nodeBin, hookScript, platform = process.platform) {
-  // Cursor's Windows hook launcher is more reliable when the command goes
-  // through cmd.exe explicitly instead of invoking node directly.
+  // Cursor runs hooks via a Windows temp-file / cmd launcher that re-parses the
+  // command line. `cmd /d /s /c "..."` strips quotes and breaks install paths
+  // with spaces (default Electron folder "Clawd on Desk" →
+  // Cannot find module 'E:\ClawdDesk\Clawd'). Same fix as Reasonix / Qwen:
+  // PowerShell -EncodedCommand keeps node + script args intact.
   return formatNodeHookCommand(nodeBin, hookScript, {
     platform,
-    windowsWrapper: "cmd",
+    windowsWrapper: "encoded",
   });
 }
 
