@@ -86,8 +86,27 @@ describe("Windows terminal focus", () => {
       assert.match(cmd, /\$editorProcessNames = @\('Code', 'Cursor'\)/);
       assert.match(cmd, /editor-parent-title-match/);
       assert.match(cmd, /editor-parent-title-ambiguous/);
+      // Cursor/Code windows often lack the project folder in the title
+      // ("Cursor Agents"); fall back to the process window instead of no-op.
+      assert.match(cmd, /editor-parent-pid-window/);
+      assert.match(cmd, /editor-parent-main-window/);
       assert.match(cmd, /editor-parent-no-title-match/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("raises Cursor/Code MainWindowHandle when no cwd title candidates exist", () => {
+    const { initFocus, cleanup } = loadFocusWithMock();
+    try {
+      const focus = initFocus({});
+      const cmd = focus.__test.makeFocusCmd(1234, []);
+
+      assert.match(cmd, /\$editorProcessNames = @\('Code', 'Cursor'\)/);
+      assert.match(cmd, /editor-parent-pid-window-no-title/);
+      assert.match(cmd, /editor-parent-main-window-no-title/);
       assert.match(cmd, /editor-parent-no-title/);
+      assert.doesNotMatch(cmd, /editor-parent-title-match/);
     } finally {
       cleanup();
     }
