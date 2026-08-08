@@ -8,6 +8,7 @@ const {
   CURSOR_HOOK_EVENTS,
   buildCursorHookCommand,
 } = require("../hooks/cursor-install");
+const { decodeWindowsEncodedCommand } = require("../hooks/json-utils");
 
 const MARKER = "cursor-hook.js";
 const tempDirs = [];
@@ -156,8 +157,40 @@ describe("Cursor hook installer", () => {
     assert.strictEqual(fs.existsSync(path.join(fakeHome, ".cursor", "hooks.json")), false);
   });
 
-  it("wraps Windows commands in cmd /c", () => {
+  it("wraps Windows commands in PowerShell -EncodedCommand to survive paths with spaces", () => {
+    // Regression: Cursor's Windows hook launcher + cmd /s quote stripping
+    // breaks default install paths like "Clawd on Desk" (MODULE_NOT_FOUND on
+    // 'E:\\ClawdDesk\\Clawd'). EncodedCommand matches Reasonix / Qwen.
     const hooksPath = makeTempHooksFile({});
+    const nodeBin = "C:\\Program Files\\nodejs\\node.exe";
+    registerCursorHooks({
+      silent: true,
+      hooksPath,
+      nodeBin,
+      platform: "win32",
+    });
+
+    const settings = readJson(hooksPath);
+    const hookScript = path.resolve(__dirname, "..", "hooks", "cursor-hook.js").replace(/\\/g, "/");
+    const expected = buildCursorHookCommand(nodeBin, hookScript, "win32");
+    assert.strictEqual(settings.hooks.stop[0].command, expected);
+    assert.match(settings.hooks.stop[0].command, /-EncodedCommand /);
+    assert.ok(!settings.hooks.stop[0].command.startsWith("cmd /d /s /c "));
+    const decoded = decodeWindowsEncodedCommand(settings.hooks.stop[0].command);
+    assert.ok(decoded.includes(nodeBin));
+    assert.ok(decoded.includes(MARKER));
+  });
+
+  it("rewrites legacy cmd-wrapped Windows hooks into EncodedCommand form", () => {
+    const hooksPath = makeTempHooksFile({
+      version: 1,
+      hooks: {
+        stop: [{
+          command: 'cmd /d /s /c ""C:\\Program Files\\nodejs\\node.exe" "D:/old/cursor-hook.js""',
+        }],
+      },
+    });
+
     registerCursorHooks({
       silent: true,
       hooksPath,
@@ -166,13 +199,11 @@ describe("Cursor hook installer", () => {
     });
 
     const settings = readJson(hooksPath);
-    const expected = buildCursorHookCommand(
-      "C:\\Program Files\\nodejs\\node.exe",
-      path.resolve(__dirname, "..", "hooks", "cursor-hook.js").replace(/\\/g, "/"),
-      "win32"
-    );
-    assert.strictEqual(settings.hooks.stop[0].command, expected);
-    assert.ok(settings.hooks.stop[0].command.startsWith("cmd /d /s /c "));
+    assert.match(settings.hooks.stop[0].command, /-EncodedCommand /);
+    const decoded = decodeWindowsEncodedCommand(settings.hooks.stop[0].command);
+    assert.ok(decoded.includes("C:\\Program Files\\nodejs\\node.exe"));
+    assert.ok(decoded.includes(MARKER));
+    assert.ok(!decoded.includes("D:/old/"));
   });
 
   it("preserves an existing Windows node path when detection fails", () => {
@@ -193,7 +224,8 @@ describe("Cursor hook installer", () => {
     });
 
     const settings = readJson(hooksPath);
-    assert.ok(settings.hooks.stop[0].command.includes("C:\\Program Files\\nodejs\\node.exe"));
-    assert.ok(settings.hooks.stop[0].command.startsWith("cmd /d /s /c "));
+    const command = settings.hooks.stop[0].command;
+    const decoded = decodeWindowsEncodedCommand(command) || command;
+    assert.ok(decoded.includes("C:\\Program Files\\nodejs\\node.exe"));
   });
 });
