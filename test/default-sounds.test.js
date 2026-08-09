@@ -21,8 +21,8 @@ test("bundled completion sound matches the selected CC0 source and differs from 
     ROOT,
     "assets",
     "source",
-    "freesound-840284",
-    "mobile-phone-notification-sound-hq.mp3"
+    "freesound-704896",
+    "old-cell-end-call-hq.mp3"
   ));
 
   assert.ok(complete.length > 0);

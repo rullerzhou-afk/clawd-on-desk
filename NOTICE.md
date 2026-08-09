@@ -2,17 +2,19 @@
 
 This project includes third-party materials.
 
-## Freesound Notification Sound
+## Freesound Notification Sounds
 
-The default completion sound at `assets/sounds/complete.mp3` uses
-"Mobile Phone Notification Sound" by TheArbuzikYT:
+The default completion sound at `assets/sounds/complete.mp3` uses "Old Cell
+End Call.wav" by AlfredHitch:
 
-- Source: https://freesound.org/people/TheArbuzikYT/sounds/840284/
+- Source: https://freesound.org/people/AlfredHitch/sounds/704896/
 - License: Creative Commons CC0 1.0 Universal
 - License URL: https://creativecommons.org/publicdomain/zero/1.0/
 
-The downloaded high-quality source preview and its provenance record are kept
-under `assets/source/freesound-840284/`.
+The repository also preserves three CC0 completion-sound candidates from
+TheArbuzikYT, iut_Paris8, and Fupicat. Their source links, hashes, and metadata
+are recorded in `assets/source/SOUND-CANDIDATES.md` and the corresponding
+`assets/source/freesound-*` directories.
 
 ## Lobe Icons
 
