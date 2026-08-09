@@ -11,7 +11,8 @@
 
 The production file at `assets/sounds/complete.mp3` is derived from the
 preserved high-quality preview with a linear 2 dB attenuation (`volume=-2dB`).
-Its SHA-256 is
-`89b70117be32fa56da4636a1378c2e7f81a8d1f1ac58433ba1e23a8cb72293c9`.
+It keeps the first 1.00 second, then finishes in the low-amplitude interval
+after the later beat with a 60 ms fade from 0.94 to 1.00 seconds. Its SHA-256
+is `93a22b235a003e4f56153afdae0218684f8736d01b93145b5066004300decfd7`.
 The preserved source remains unchanged. The Freesound page marks the upload as
 CC0, allowing copying, modification, distribution, and commercial use.

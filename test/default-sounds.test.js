@@ -31,7 +31,7 @@ test("bundled completion sound keeps the attenuated CC0 asset distinct from its 
   assert.ok(selectedSource.length > 0);
   assert.strictEqual(
     crypto.createHash("sha256").update(complete).digest("hex"),
-    "89b70117be32fa56da4636a1378c2e7f81a8d1f1ac58433ba1e23a8cb72293c9"
+    "93a22b235a003e4f56153afdae0218684f8736d01b93145b5066004300decfd7"
   );
   assert.strictEqual(
     crypto.createHash("sha256").update(selectedSource).digest("hex"),
