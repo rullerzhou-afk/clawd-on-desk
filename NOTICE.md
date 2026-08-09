@@ -2,6 +2,18 @@
 
 This project includes third-party materials.
 
+## Freesound Notification Sound
+
+The default confirmation sound at `assets/sounds/confirm.mp3` uses
+"Mobile Phone Notification Sound" by TheArbuzikYT:
+
+- Source: https://freesound.org/people/TheArbuzikYT/sounds/840284/
+- License: Creative Commons CC0 1.0 Universal
+- License URL: https://creativecommons.org/publicdomain/zero/1.0/
+
+The downloaded high-quality source preview and its provenance record are kept
+under `assets/source/freesound-840284/`.
+
 ## Lobe Icons
 
 Selected Agent icon source assets come from
