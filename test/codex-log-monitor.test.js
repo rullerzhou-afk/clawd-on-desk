@@ -107,6 +107,16 @@ describe("CodexLogMonitor", () => {
     fs.writeFileSync(testFile, [
       JSON.stringify({ type: "session_meta", payload: { cwd: "/projects/foo", source: "cli" } }),
       JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: { total_tokens: 24846 },
+            model_context_window: 258400,
+          },
+        },
+      }),
+      JSON.stringify({
         type: "response_item",
         payload: {
           type: "function_call",
@@ -132,6 +142,12 @@ describe("CodexLogMonitor", () => {
     assert.strictEqual(requests.length, 1);
     assert.strictEqual(requests[0][0], EXPECTED_SID);
     assert.strictEqual(requests[0][1].callId, "call_question");
+    assert.deepStrictEqual(requests[0][2].contextUsage, {
+      used: 24846,
+      limit: 258400,
+      percent: 10,
+      source: "codex",
+    });
     assert.strictEqual(requests[0][2].cwd, "/projects/foo");
 
     fs.appendFileSync(testFile, JSON.stringify({
@@ -1838,6 +1854,78 @@ describe("CodexLogMonitor", () => {
       }
     });
     monitor.start();
+  });
+
+  it("normalizes, inherits, and clears JSONL turn identity around terminal emission", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      '{"type":"event_msg","payload":{"type":"task_started","turn_id":"  turn-A  "}}',
+      '{"type":"response_item","payload":{"type":"function_call","name":"shell_command"}}',
+      '{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-terminal"}}',
+    ].join("\n") + "\n");
+
+    const events = [];
+    let activeDuringTerminal = null;
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event, extra) => {
+      events.push({ sid, state, event, extra });
+      if (event === "event_msg:task_complete") {
+        activeDuringTerminal = monitor._tracked.get(testFile).activeTurnId;
+      }
+    });
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    assert.strictEqual(events.find((entry) => entry.event === "event_msg:task_started").extra.turnId, "turn-A");
+    assert.strictEqual(events.find((entry) => entry.event === "response_item:function_call").extra.turnId, "turn-A");
+    assert.strictEqual(events.find((entry) => entry.event === "event_msg:task_complete").extra.turnId, "turn-terminal");
+    assert.strictEqual(activeDuringTerminal, "turn-A", "terminal callback must run before tracker clear");
+    assert.strictEqual(monitor._tracked.get(testFile).activeTurnId, null);
+    assert.strictEqual(monitor._tracked.get(testFile).turnBoundaryOpen, false);
+  });
+
+  it("applies skipped historical start and terminal bookkeeping before replay guard", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const oldTimestamp = new Date(Date.now() - 60_000).toISOString();
+    const liveTimestamp = new Date().toISOString();
+    fs.writeFileSync(testFile, [
+      JSON.stringify({ type: "session_meta", timestamp: oldTimestamp, payload: { cwd: "/tmp" } }),
+      JSON.stringify({ type: "event_msg", timestamp: oldTimestamp, payload: { type: "task_started", turn_id: "old-turn" } }),
+      JSON.stringify({ type: "event_msg", timestamp: oldTimestamp, payload: { type: "task_complete", turn_id: "old-turn" } }),
+      JSON.stringify({ type: "response_item", timestamp: liveTimestamp, payload: { type: "function_call", name: "shell_command" } }),
+    ].join("\n") + "\n");
+
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event, extra) => {
+      events.push({ sid, state, event, extra });
+    });
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    assert.deepStrictEqual(events.map((entry) => entry.event), ["response_item:function_call"]);
+    assert.strictEqual(events[0].extra.turnId, undefined);
+    assert.strictEqual(monitor._tracked.get(testFile).activeTurnId, null);
+    assert.strictEqual(monitor._tracked.get(testFile).turnBoundaryOpen, false);
+  });
+
+  it("marks an active-turn backfill snapshot with its recovered turn identity", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      '{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-backfill"}}',
+    ].join("\n") + "\n");
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(testFile, oldTime, oldTime);
+
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event, extra) => {
+      events.push({ sid, state, event, extra });
+    });
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].state, "thinking");
+    assert.strictEqual(events[0].extra.syntheticBackfill, true);
+    assert.strictEqual(events[0].extra.turnBoundaryOpen, true);
+    assert.strictEqual(events[0].extra.turnId, "turn-backfill");
   });
 
   it("should map function_call to working", (_, done) => {

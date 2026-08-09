@@ -7,6 +7,9 @@ const {
   isCodexMonitorMetadataOnlyEvent,
 } = require("./codex-monitor-callback");
 const { resolveSessionIdentity } = require("./session-key");
+const { digestCodexTurnId } = require("./codex-turn-id");
+const createCodexTurnFence = require("./codex-turn-fence");
+const createCodexOfficialActivity = require("./codex-official-activity");
 
 const CODEX_OFFICIAL_LOG_SUPPRESS_TTL_MS = 10 * 60 * 1000;
 const CODEX_LOG_EVENTS_COVERED_BY_OFFICIAL_HOOKS = new Set([
@@ -25,6 +28,13 @@ const CODEX_LOG_EVENTS_COVERED_BY_OFFICIAL_HOOKS = new Set([
 // Local Codex turns that are still in flight sit in one of these states. Kept in
 // sync with isWorkingLikeState() in state-stale-cleanup.js.
 const CODEX_WORKING_LIKE_STATES = new Set(["working", "thinking", "juggling"]);
+const CODEX_TURN_CAPTURE_EVENTS = new Set([
+  "UserPromptSubmit",
+  "Stop",
+  "event_msg:task_started",
+  "event_msg:task_complete",
+  "event_msg:turn_aborted",
+]);
 
 function createProfileScopedClassifier(classifier, profileId) {
   const canonicalSessionId = (sessionId) =>
@@ -51,6 +61,7 @@ function createProfileScopedClassifier(classifier, profileId) {
 function createAgentRuntimeMain(options = {}) {
   const now = typeof options.now === "function" ? options.now : Date.now;
   const logWarn = typeof options.logWarn === "function" ? options.logWarn : console.warn;
+  const debugLog = typeof options.debugLog === "function" ? options.debugLog : () => {};
   const loadCodexLogMonitor = options.loadCodexLogMonitor || (() => require("../agents/codex-log-monitor"));
   const loadCodexAgent = options.loadCodexAgent || (() => require("../agents/codex"));
   const codexSubagentClassifier = options.codexSubagentClassifier || new DefaultCodexSubagentClassifier();
@@ -66,21 +77,28 @@ function createAgentRuntimeMain(options = {}) {
   const clearCodexUserInputBubbles = options.clearCodexUserInputBubbles || (() => {});
 
   let codexMonitor = null;
-  const codexOfficialHookSessions = new Map();
+  const codexTurnFence = createCodexTurnFence({ now, debugLog });
+  const codexOfficialActivity = createCodexOfficialActivity({
+    now,
+    debugLog,
+    ttlMs: CODEX_OFFICIAL_LOG_SUPPRESS_TTL_MS,
+  });
 
-  function markCodexOfficialHookSession(sessionId) {
-    if (!sessionId) return;
-    codexOfficialHookSessions.set(String(sessionId), now());
+  function recordCodexTurnIdCapture(sessionId, source, event, turnId) {
+    if (!CODEX_TURN_CAPTURE_EVENTS.has(event)) return;
+    const digest = digestCodexTurnId(turnId);
+    debugLog(
+      `codex-turn-id sid=${String(sessionId || "-").replace(/[\r\n]/g, "_")}`
+      + ` source=${source} event=${event} turn=${digest || "-"}`
+    );
   }
 
-  function hasRecentCodexOfficialHookSession(sessionId) {
-    const lastHookAt = codexOfficialHookSessions.get(String(sessionId));
-    if (!lastHookAt) return false;
-    if (now() - lastHookAt > CODEX_OFFICIAL_LOG_SUPPRESS_TTL_MS) {
-      codexOfficialHookSessions.delete(String(sessionId));
-      return false;
-    }
-    return true;
+  function markCodexOfficialHookSession(sessionId, turnId = null) {
+    codexOfficialActivity.mark(sessionId, turnId);
+  }
+
+  function hasRecentCodexOfficialHookSession(sessionId, turnId = null) {
+    return codexOfficialActivity.hasRecent(sessionId, turnId);
   }
 
   // JSONL fallback rescue. Official Codex hooks normally emit a Stop that closes
@@ -104,16 +122,27 @@ function createAgentRuntimeMain(options = {}) {
     return CODEX_WORKING_LIKE_STATES.has(session.state);
   }
 
-  function shouldSuppressCodexLogEvent(sessionId, state, event) {
+  function shouldSuppressCodexLogEvent(sessionId, state, event, turnId = null) {
     if (!CODEX_LOG_EVENTS_COVERED_BY_OFFICIAL_HOOKS.has(event)) return false;
-    if (!hasRecentCodexOfficialHookSession(sessionId)) return false;
+    if (!hasRecentCodexOfficialHookSession(sessionId, turnId)) return false;
     if (shouldAllowCodexJsonlCompletionFallback(sessionId, state, event)) return false;
     return true;
   }
 
   function updateSessionFromServer(sessionId, state, event, opts = {}) {
     if (opts && opts.agentId === "codex" && opts.hookSource === "codex-official") {
-      markCodexOfficialHookSession(sessionId);
+      markCodexOfficialHookSession(sessionId, opts.turnId);
+      if (opts.profileId === "local") {
+        recordCodexTurnIdCapture(sessionId, "official", event, opts.turnId);
+        const fenceDecision = codexTurnFence.observe({
+          sessionId,
+          source: "official",
+          event,
+          state,
+          turnId: opts.turnId,
+        });
+        if (!fenceDecision.accept) return false;
+      }
     }
     const result = updateSession(sessionId, state, event, opts);
     maybeCaptureGhosttyTerminalId(sessionId, event, opts);
@@ -165,6 +194,7 @@ function createAgentRuntimeMain(options = {}) {
   }
 
   function clearSessionsByAgent(agentId) {
+    if (agentId === "codex") resetLocalCodexLifecycleTracking();
     const state = getStateRuntime();
     return state && typeof state.clearSessionsByAgent === "function"
       ? state.clearSessionsByAgent(agentId)
@@ -210,6 +240,7 @@ function createAgentRuntimeMain(options = {}) {
           rawSessionId: sessionIdentity.rawSessionId,
         };
         const accountQuotas = normalizeCodexMonitorAccountQuotas(extra);
+        recordCodexTurnIdCapture(sessionId, "jsonl", event, extra && extra.turnId);
         const annotateCodexAccountQuota = () => {
           if (!accountQuotas) return;
           const stateRuntime = getStateRuntime();
@@ -217,23 +248,35 @@ function createAgentRuntimeMain(options = {}) {
             stateRuntime.updateAccountQuota(null, accountQuotas);
           }
         };
+        const annotateCodexContextUsage = () => {
+          if (!sessionOptions.contextUsage) return false;
+          const stateRuntime = getStateRuntime();
+          if (!stateRuntime || typeof stateRuntime.updateSessionMetadata !== "function") return false;
+          return stateRuntime.updateSessionMetadata(sessionId, {
+            contextUsage: sessionOptions.contextUsage,
+          });
+        };
         if (isCodexMonitorMetadataOnlyEvent(event, extra)) {
-          if (sessionOptions.contextUsage) {
-            updateSession(sessionId, state, event, {
-              ...sessionOptions,
-              preserveState: true,
-            });
-          }
+          annotateCodexContextUsage();
           annotateCodexAccountQuota();
           return;
         }
-        if (shouldSuppressCodexLogEvent(sessionId, state, event)) {
-          if (sessionOptions.contextUsage) {
-            updateSession(sessionId, state, event, {
-              ...sessionOptions,
-              preserveState: true,
-            });
-          }
+        const fenceDecision = codexTurnFence.observe({
+          sessionId,
+          source: "jsonl",
+          event,
+          state,
+          turnId: extra && extra.turnId,
+          syntheticBackfill: extra && extra.syntheticBackfill === true,
+          turnBoundaryOpen: extra && extra.turnBoundaryOpen === true,
+        });
+        if (!fenceDecision.accept) {
+          annotateCodexContextUsage();
+          annotateCodexAccountQuota();
+          return;
+        }
+        if (shouldSuppressCodexLogEvent(sessionId, state, event, extra && extra.turnId)) {
+          annotateCodexContextUsage();
           annotateCodexAccountQuota();
           return;
         }
@@ -276,7 +319,12 @@ function createAgentRuntimeMain(options = {}) {
 
   function cleanup() {
     if (codexMonitor && typeof codexMonitor.stop === "function") codexMonitor.stop();
-    codexOfficialHookSessions.clear();
+    resetLocalCodexLifecycleTracking();
+  }
+
+  function resetLocalCodexLifecycleTracking() {
+    codexTurnFence.clear();
+    codexOfficialActivity.clear();
   }
 
   return {
@@ -293,6 +341,9 @@ function createAgentRuntimeMain(options = {}) {
     updateSessionFromServer,
     markCodexOfficialHookSession,
     shouldSuppressCodexLogEvent,
+    resetLocalCodexLifecycleTracking,
+    getCodexTurnFenceSnapshot: (sessionId) => codexTurnFence.getSnapshot(sessionId),
+    getCodexOfficialActivitySnapshot: (sessionId) => codexOfficialActivity.getSnapshot(sessionId),
     cleanup,
   };
 }

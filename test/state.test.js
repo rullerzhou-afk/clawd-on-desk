@@ -2045,6 +2045,67 @@ describe("updateSession()", () => {
     assert.strictEqual(api.getCurrentState(), "idle");
   });
 
+  it("presents a later attention Stop when an earlier ID-less Stop only idled the session", () => {
+    const soundsPlayed = [];
+    const stateChanges = [];
+    api.cleanup();
+    ctx = makeCtx({
+      processKill: () => true,
+      playSound: (name) => soundsPlayed.push(name),
+      sendToRenderer: (channel, state) => {
+        if (channel === "state-change") stateChanges.push(state);
+      },
+    });
+    api = require("../src/state")(ctx);
+
+    update(api, {
+      id: "codex:s1",
+      state: "thinking",
+      event: "UserPromptSubmit",
+      agentId: "codex",
+    });
+    mock.timers.tick(1000);
+    stateChanges.length = 0;
+
+    // A terminal without identity may resolve idle because the server cannot
+    // associate it with the turn's tool ledger. It closes lifecycle state but
+    // has not presented completion UX yet.
+    update(api, {
+      id: "codex:s1",
+      state: "idle",
+      event: "Stop",
+      agentId: "codex",
+    });
+    assert.strictEqual(soundsPlayed.filter((name) => name === "complete").length, 0);
+    stateChanges.length = 0;
+
+    // The later ID-bearing Stop is authoritative and resolves attention. It
+    // must upgrade the existing completion tail and celebrate exactly once.
+    update(api, {
+      id: "codex:s1",
+      state: "attention",
+      event: "Stop",
+      agentId: "codex",
+    });
+    assert.strictEqual(soundsPlayed.filter((name) => name === "complete").length, 1);
+    assert.deepStrictEqual(stateChanges, ["attention"]);
+    const completionEvents = api.sessions.get("codex:s1").recentEvents.filter((entry) => entry.event === "Stop");
+    assert.strictEqual(completionEvents.length, 1);
+    assert.strictEqual(completionEvents[0].state, "attention");
+
+    mock.timers.tick(4000);
+    soundsPlayed.length = 0;
+    stateChanges.length = 0;
+    update(api, {
+      id: "codex:s1",
+      state: "attention",
+      event: "Stop",
+      agentId: "codex",
+    });
+    assert.strictEqual(soundsPlayed.filter((name) => name === "complete").length, 0);
+    assert.ok(!stateChanges.includes("attention"));
+  });
+
   it("Codex Stop followed by token_count and task_complete still auto-returns from attention", () => {
     const soundsPlayed = [];
     const stateChanges = [];

@@ -361,21 +361,43 @@ function resolveAwaitingInputSinceStop(existing, event) {
   return false;
 }
 
-function hasCompletionTailWithoutProgress(session) {
+function getCompletionTailWithoutProgress(session) {
   const events = Array.isArray(session && session.recentEvents) ? session.recentEvents : [];
   for (let i = events.length - 1; i >= 0; i--) {
-    const event = events[i] && events[i].event;
-    if (POST_COMPLETION_EVENTS.has(event)) return true;
+    const entry = events[i];
+    const event = entry && entry.event;
+    if (POST_COMPLETION_EVENTS.has(event)) return entry;
     if (event == null || COMPLETION_HOUSEKEEPING_EVENTS.has(event)) continue;
-    return false;
+    return null;
   }
-  return false;
+  return null;
+}
+
+function hasCompletionTailWithoutProgress(session) {
+  return !!getCompletionTailWithoutProgress(session);
+}
+
+function markCompletionTailPresented(recentEvents) {
+  const copy = recentEvents.slice();
+  for (let i = copy.length - 1; i >= 0; i--) {
+    const entry = copy[i];
+    const event = entry && entry.event;
+    if (POST_COMPLETION_EVENTS.has(event)) {
+      copy[i] = { ...entry, state: "attention" };
+      break;
+    }
+    if (event == null || COMPLETION_HOUSEKEEPING_EVENTS.has(event)) continue;
+    break;
+  }
+  return copy;
 }
 
 function shouldSuppressDuplicateCompletionVisual(existing, state, event) {
   if (state !== "attention" || !POST_COMPLETION_EVENTS.has(event)) return false;
   if (!existing || (existing.state !== "idle" && existing.state !== "sleeping")) return false;
-  return existing.awaitingInputSinceStop === true || hasCompletionTailWithoutProgress(existing);
+  const completionTail = getCompletionTailWithoutProgress(existing);
+  if (completionTail) return completionTail.state === "attention";
+  return existing.awaitingInputSinceStop === true;
 }
 
 function shouldKeepExistingCompletionEventTail(existing, state, event) {
@@ -1436,7 +1458,10 @@ function scheduleClaudeTranscriptCompletionProbe(sessionId, transcriptPath) {
 function promoteCompletion(sessionId) {
   const session = sessions.get(sessionId);
   if (!session) return;
-  session.recentEvents = pushRecentEvent(session, "idle", "Stop");
+  // The stored session settles idle, but this Stop consumed the completion
+  // attention cue. Record that distinction so a later duplicate Stop is
+  // suppressed while an earlier idle-only terminal can still be upgraded.
+  session.recentEvents = pushRecentEvent(session, "attention", "Stop");
   session.state = "idle";
   session.updatedAt = Date.now();
   session.displayHint = null;
@@ -1837,7 +1862,9 @@ function updateSession(sessionId, state, event, opts = {}) {
 
   const keepExistingCompletionEventTail = shouldKeepExistingCompletionEventTail(existing, state, event);
   const recentEvents = keepExistingCompletionEventTail && Array.isArray(existing.recentEvents)
-    ? existing.recentEvents.slice()
+    ? (duplicateCompletionVisualAtEntry
+      ? existing.recentEvents.slice()
+      : markCompletionTailPresented(existing.recentEvents))
     : pushRecentEvent(existing, preservedState || state, event);
   const preserveCompletionAck =
     existing

@@ -664,6 +664,7 @@ function handleStatePost(req, res, options) {
             permissionGateId,
             preserveState,
             hookSource,
+            ...(codexHookState.turnId ? { turnId: codexHookState.turnId } : {}),
             backgroundTasksCount,
             sessionCronsCount,
             stopHookActive,

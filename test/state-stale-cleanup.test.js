@@ -338,6 +338,24 @@ describe("state stale cleanup decisions", () => {
     assert.deepStrictEqual(result, { action: "idle", reason: "session-timeout", updateTimestamp: false });
   });
 
+  it("ignores fresh metadataUpdatedAt when lifecycle updatedAt crossed the Codex floor", () => {
+    const now = 2000000;
+    const lifecycleAt = now - CODEX_LOCAL_WORKING_STALE_FLOOR_MS - 1;
+    const { result } = decision(session({
+      state: "working",
+      agentId: "codex",
+      updatedAt: lifecycleAt,
+      metadataUpdatedAt: now,
+      agentPid: 10,
+      sourcePid: 20,
+    }), {
+      now,
+      alivePids: new Set([10, 20]),
+    });
+
+    assert.deepStrictEqual(result, { action: "idle", reason: "session-timeout", updateTimestamp: false });
+  });
+
   it("does not extend remote Codex working sessions", () => {
     const { result } = decision(session({
       state: "working",

@@ -29,6 +29,7 @@ const {
   isFreshCodexQuotaTimestamp,
 } = require("../hooks/codex-rate-limits");
 const { parseCodexUserInputRecord } = require("../hooks/codex-user-input");
+const { normalizeCodexTurnId } = require("../src/codex-turn-id");
 
 const MAX_TRACKED_FILES = 50;
 const MAX_RETIRED_TRACKED_FILES = 100;
@@ -865,6 +866,8 @@ class CodexLogMonitor {
       assistantLastOutput: null,
       assistantLastOutputTruncated: false,
       contextUsage: null,
+      activeTurnId: null,
+      turnBoundaryOpen: false,
       codexQuota: null,
       codexSparkQuota: null,
       pendingUserInputs: recentlyActive ? new Map() : pending,
@@ -1220,6 +1223,8 @@ class CodexLogMonitor {
         assistantLastOutput: retired ? retired.assistantLastOutput || null : null,
         assistantLastOutputTruncated: retired ? retired.assistantLastOutputTruncated === true : false,
         contextUsage: retired ? retired.contextUsage || null : null,
+        activeTurnId: retired ? retired.activeTurnId || null : null,
+        turnBoundaryOpen: retired ? retired.turnBoundaryOpen === true : false,
         codexQuota: retired ? retired.codexQuota || null : null,
         codexSparkQuota: retired ? retired.codexSparkQuota || null : null,
         pendingUserInputs: retired && retired.pendingUserInputs instanceof Map
@@ -1532,6 +1537,8 @@ class CodexLogMonitor {
       tracked.assistantLastOutput = null;
       tracked.assistantLastOutputTruncated = false;
       tracked.contextUsage = null;
+      tracked.activeTurnId = null;
+      tracked.turnBoundaryOpen = false;
       tracked.codexQuota = null;
       tracked.codexSparkQuota = null;
     }
@@ -1590,6 +1597,28 @@ class CodexLogMonitor {
     // Build lookup key
     const key = subtype ? type + ":" + subtype : type;
 
+    // Turn identity is file-order bookkeeping, not a live callback. Apply it
+    // before both replay guards so an old task_started seeds the active ID and
+    // an old terminal clears it even though neither historical record is
+    // allowed to replay visible state.
+    const recordTurnId = normalizeCodexTurnId(
+      payload && typeof payload === "object" ? payload.turn_id : null
+    );
+    const isTurnStart = key === "event_msg:task_started";
+    const isTurnTerminal = key === "event_msg:task_complete" || key === "event_msg:turn_aborted";
+    let effectiveTurnId = recordTurnId || tracked.activeTurnId || null;
+    if (isTurnStart) {
+      tracked.activeTurnId = recordTurnId;
+      tracked.turnBoundaryOpen = true;
+      effectiveTurnId = recordTurnId;
+    }
+    const finishTurnTerminal = () => {
+      if (!isTurnTerminal) return;
+      tracked.activeTurnId = null;
+      tracked.turnBoundaryOpen = false;
+    };
+    const turnExtra = effectiveTurnId ? { turnId: effectiveTurnId } : null;
+
     // Metadata is needed for future live writes even when the session_meta
     // record itself predates monitor start.
     if (type === "session_meta") {
@@ -1612,7 +1641,10 @@ class CodexLogMonitor {
     // storms on app restart from driving stale state transitions.
     if (obj && typeof obj.timestamp === "string") {
       const ts = Date.parse(obj.timestamp);
-      if (!tracked.backfilling && Number.isFinite(ts) && ts < this._startedAtMs - 1500) return;
+      if (!tracked.backfilling && Number.isFinite(ts) && ts < this._startedAtMs - 1500) {
+        finishTurnTerminal();
+        return;
+      }
     }
 
     const assistantText = extractAssistantTextFromRecord(obj);
@@ -1675,8 +1707,14 @@ class CodexLogMonitor {
     // Look up state mapping
     const map = this._config.logEventMap;
     const state = map[key];
-    if (state === undefined) return; // unmapped event, skip
-    if (state === null) return; // explicitly ignored
+    if (state === undefined) {
+      finishTurnTerminal();
+      return; // unmapped event, skip
+    }
+    if (state === null) {
+      finishTurnTerminal();
+      return; // explicitly ignored
+    }
     tracked.lastStateEvent = key;
 
     // Track tool use per turn — reset on task_started, set on function_call
@@ -1700,8 +1738,15 @@ class CodexLogMonitor {
       // task_complete means the turn that asked is over — any question still
       // open for it is moot; Codex will not act on an answer after this.
       this._clearPendingUserInputsForTrackedSession(tracked);
-      if (tracked.backfilling) return;
-      this._emitStateChange(tracked, resolved, key, this._assistantOutputExtra(tracked));
+      if (tracked.backfilling) {
+        finishTurnTerminal();
+        return;
+      }
+      this._emitStateChange(tracked, resolved, key, {
+        ...(this._assistantOutputExtra(tracked) || {}),
+        ...(turnExtra || {}),
+      });
+      finishTurnTerminal();
       return;
     }
 
@@ -1718,13 +1763,15 @@ class CodexLogMonitor {
     // that carry a timestamp field.
     if (tracked.backfilling) {
       tracked.lastState = state;
+      finishTurnTerminal();
       return;
     }
 
     // Avoid spamming same state
     if (state === tracked.lastState && state === "working") return;
     tracked.lastState = state;
-    this._emitStateChange(tracked, state, key);
+    this._emitStateChange(tracked, state, key, turnExtra);
+    finishTurnTerminal();
   }
 
   _applySessionMeta(payload, tracked) {
@@ -1856,6 +1903,8 @@ class CodexLogMonitor {
       assistantLastOutput: tracked.assistantLastOutput || null,
       assistantLastOutputTruncated: tracked.assistantLastOutputTruncated === true,
       contextUsage: tracked.contextUsage || null,
+      activeTurnId: tracked.activeTurnId || null,
+      turnBoundaryOpen: tracked.turnBoundaryOpen === true,
       codexQuota: tracked.codexQuota || null,
       codexSparkQuota: tracked.codexSparkQuota || null,
       pendingUserInputs: tracked.pendingUserInputs instanceof Map
@@ -1905,7 +1954,12 @@ class CodexLogMonitor {
       tracked,
       snapshotState,
       tracked.lastStateEvent || "session_meta",
-      hasQuota ? quotaExtra : null
+      {
+        ...(hasQuota ? quotaExtra : {}),
+        syntheticBackfill: true,
+        turnBoundaryOpen: tracked.turnBoundaryOpen === true,
+        ...(tracked.activeTurnId ? { turnId: tracked.activeTurnId } : {}),
+      }
     );
   }
 
@@ -1975,6 +2029,7 @@ class CodexLogMonitor {
       sessionTitle: tracked.sessionTitle,
       codexOriginator: tracked.codexOriginator || null,
       codexSource: tracked.codexSource || null,
+      ...(tracked.contextUsage ? { contextUsage: tracked.contextUsage } : {}),
       headless: false,
     });
   }

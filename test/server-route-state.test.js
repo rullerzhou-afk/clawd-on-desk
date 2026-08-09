@@ -16,6 +16,7 @@ const {
 const { classifyPermissionInteraction } = require("../src/permission-automation-policy");
 const { buildStateBody } = require("../hooks/clawd-hook");
 const { makeSessionKey } = require("../src/session-key");
+const createAgentRuntimeMain = require("../src/agent-runtime-main");
 const localSessionKey = (rawSessionId) => makeSessionKey({
   profileId: "local",
   rawSessionId,
@@ -678,6 +679,98 @@ describe("server-route-state POST", () => {
     assert.strictEqual(res.statusCode, 200);
     assert.strictEqual(res.calls.updateSession[0][1], "attention");
     assert.strictEqual(res.calls.updateSession[0][3].assistantLastOutput, "Short answer.");
+  });
+
+  it("passes only normalized official Codex turn identity to the runtime", async () => {
+    const accepted = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "codex:sid",
+      event: "UserPromptSubmit",
+      agent_id: "codex",
+      hook_source: "codex-official",
+      turn_id: "  turn-A  ",
+    }));
+    assert.strictEqual(accepted.statusCode, 200);
+    assert.strictEqual(accepted.calls.updateSession[0][3].turnId, "turn-A");
+
+    const rejected = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "codex:sid",
+      event: "UserPromptSubmit",
+      agent_id: "codex",
+      hook_source: "codex-official",
+      turn_id: "x".repeat(257),
+    }));
+    assert.strictEqual(rejected.statusCode, 200);
+    assert.strictEqual(rejected.calls.updateSession[0][3].turnId, undefined);
+  });
+
+  it("keeps server side effects and HTTP success when the runtime fences a stale official tail", async () => {
+    const updates = [];
+    const sessions = new Map();
+    const runtime = createAgentRuntimeMain({
+      codexSubagentClassifier: {},
+      getStateRuntime: () => ({ sessions }),
+      updateSession: (...args) => updates.push(args),
+    });
+    const turns = new Map();
+    const rawSessionId = "codex:fence-composition";
+    const sessionId = localSessionKey(rawSessionId);
+    const base = {
+      session_id: rawSessionId,
+      agent_id: "codex",
+      hook_source: "codex-official",
+      turn_id: "turn-A",
+    };
+    const post = (body, pendingPermissions = []) => callStatePost(JSON.stringify({ ...base, ...body }), {
+      ctx: {
+        sessions,
+        pendingPermissions,
+        updateSession: (...args) => runtime.updateSessionFromServer(...args),
+      },
+      options: { codexOfficialTurns: turns },
+    });
+
+    assert.strictEqual((await post({ state: "working", event: "UserPromptSubmit" })).statusCode, 200);
+    assert.strictEqual((await post({ state: "attention", event: "Stop" })).statusCode, 200);
+    const pending = {
+      res: {},
+      sessionId,
+      agentId: "codex",
+      subagentId: null,
+      toolName: "shell_command",
+      toolUseId: "tool-1",
+      interaction: classifyPermissionInteraction({ agentId: "codex", toolName: "shell_command" }),
+    };
+    const latePost = await post({
+      state: "working",
+      event: "PostToolUse",
+      tool_name: "shell_command",
+      tool_use_id: "tool-1",
+    }, [pending]);
+
+    assert.strictEqual(latePost.statusCode, 200);
+    assert.strictEqual(latePost.calls.resolved.length, 1, "permission cleanup runs before the runtime fence");
+    assert.deepStrictEqual(updates.map((call) => call[2]), ["UserPromptSubmit", "Stop"]);
+    assert.strictEqual(turns.size, 1, "late Post may recreate the bounded server ledger entry");
+
+    const duplicateStop = await post({ state: "attention", event: "Stop" });
+    assert.strictEqual(duplicateStop.statusCode, 200);
+    assert.deepStrictEqual(updates.map((call) => call[2]), ["UserPromptSubmit", "Stop"]);
+    assert.strictEqual(turns.size, 0, "duplicate Stop still clears the upstream server ledger");
+
+    const vetoed = await callStatePost(JSON.stringify({
+      ...base,
+      session_id: "codex:vetoed",
+      event: "Stop",
+      state: "idle",
+      stop_hook_active: true,
+    }), {
+      ctx: { updateSession: (...args) => runtime.updateSessionFromServer(...args) },
+      options: { codexOfficialTurns: turns },
+    });
+    assert.strictEqual(vetoed.statusCode, 204);
+    assert.strictEqual(runtime.getCodexTurnFenceSnapshot(localSessionKey("codex:vetoed")), null);
   });
 
   it("normalizes and passes stdin_diag to updateSession (#583)", async () => {
