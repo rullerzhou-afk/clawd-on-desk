@@ -4,7 +4,7 @@ This project includes third-party materials.
 
 ## Freesound Notification Sound
 
-The default confirmation sound at `assets/sounds/confirm.mp3` uses
+The default completion sound at `assets/sounds/complete.mp3` uses
 "Mobile Phone Notification Sound" by TheArbuzikYT:
 
 - Source: https://freesound.org/people/TheArbuzikYT/sounds/840284/

@@ -9,6 +9,6 @@
 - Preserved file: `mobile-phone-notification-sound-hq.mp3`, the public high-quality Freesound preview
 - SHA-256: `ab6e2ad86c0b9ad46fb6678b1a660fd90704a4c0b514e72772f001c7a6c74eb7`
 
-The production file at `assets/sounds/confirm.mp3` is a byte-for-byte copy of
+The production file at `assets/sounds/complete.mp3` is a byte-for-byte copy of
 the preserved high-quality preview. The Freesound page marks the upload as
 CC0, allowing copying, modification, distribution, and commercial use.

@@ -14,12 +14,20 @@ const SOUNDS_DIR = path.join(ROOT, "assets", "sounds");
 
 themeLoader.init(path.join(ROOT, "src"));
 
-test("bundled completion and confirmation sounds have distinct audio payloads", () => {
+test("bundled completion sound matches the selected CC0 source and differs from confirmation", () => {
   const complete = fs.readFileSync(path.join(SOUNDS_DIR, "complete.mp3"));
   const confirm = fs.readFileSync(path.join(SOUNDS_DIR, "confirm.mp3"));
+  const selectedSource = fs.readFileSync(path.join(
+    ROOT,
+    "assets",
+    "source",
+    "freesound-840284",
+    "mobile-phone-notification-sound-hq.mp3"
+  ));
 
   assert.ok(complete.length > 0);
   assert.ok(confirm.length > 0);
+  assert.deepStrictEqual(complete, selectedSource);
   assert.notDeepStrictEqual(confirm, complete);
 });
 
