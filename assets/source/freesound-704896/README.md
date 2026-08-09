@@ -9,6 +9,9 @@
 - Preserved file: `old-cell-end-call-hq.mp3`, the public high-quality Freesound preview
 - SHA-256: `335ffd8a13e299efa899b2af74bd7d652cc919f4e443731313e3187ee6f04e1a`
 
-The production file at `assets/sounds/complete.mp3` is a byte-for-byte copy of
-the preserved high-quality preview. The Freesound page marks the upload as
+The production file at `assets/sounds/complete.mp3` is derived from the
+preserved high-quality preview with a linear 6 dB attenuation (`volume=-6dB`).
+Its SHA-256 is
+`238b616e4c72ffdd2bd38d10613ac40d90e9e12402b45e373ad2cbe4fc0efd1f`.
+The preserved source remains unchanged. The Freesound page marks the upload as
 CC0, allowing copying, modification, distribution, and commercial use.
