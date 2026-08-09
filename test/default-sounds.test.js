@@ -22,8 +22,8 @@ test("bundled completion sound keeps the attenuated CC0 asset distinct from its 
     ROOT,
     "assets",
     "source",
-    "freesound-704896",
-    "old-cell-end-call-hq.mp3"
+    "freesound-510287",
+    "deletraz-notification-hq.mp3"
   ));
 
   assert.ok(complete.length > 0);
@@ -31,11 +31,11 @@ test("bundled completion sound keeps the attenuated CC0 asset distinct from its 
   assert.ok(selectedSource.length > 0);
   assert.strictEqual(
     crypto.createHash("sha256").update(complete).digest("hex"),
-    "238b616e4c72ffdd2bd38d10613ac40d90e9e12402b45e373ad2cbe4fc0efd1f"
+    "89b70117be32fa56da4636a1378c2e7f81a8d1f1ac58433ba1e23a8cb72293c9"
   );
   assert.strictEqual(
     crypto.createHash("sha256").update(selectedSource).digest("hex"),
-    "335ffd8a13e299efa899b2af74bd7d652cc919f4e443731313e3187ee6f04e1a"
+    "47909cfbbf94d0ad133a9f4e7894510177377649df45f67b078af0bd9b51932c"
   );
   assert.notDeepStrictEqual(complete, selectedSource);
   assert.notDeepStrictEqual(confirm, complete);

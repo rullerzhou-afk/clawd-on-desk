@@ -6,9 +6,9 @@ the other candidates remain under `assets/source/` for future selection.
 
 | Freesound ID | Creator | Preserved source | Status |
 | --- | --- | --- | --- |
-| 704896 | AlfredHitch | `freesound-704896/old-cell-end-call-hq.mp3` | Active default |
+| 704896 | AlfredHitch | `freesound-704896/old-cell-end-call-hq.mp3` | Candidate |
 | 840284 | TheArbuzikYT | `freesound-840284/mobile-phone-notification-sound-hq.mp3` | Candidate |
-| 510287 | iut_Paris8 | `freesound-510287/deletraz-notification-hq.mp3` | Candidate |
+| 510287 | iut_Paris8 | `freesound-510287/deletraz-notification-hq.mp3` | Active default |
 | 538149 | Fupicat | `freesound-538149/notification-hq.mp3` | Candidate |
 
 Every source page marks its upload as Creative Commons CC0 1.0 Universal.
