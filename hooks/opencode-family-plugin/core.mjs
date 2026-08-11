@@ -1077,7 +1077,7 @@ export function createOpencodeFamilyPlugin(config) {
     captureSessionTitle,
     resolveSessionDirectory,
     cleanupSessionDirectory,
-normalizeDirectoryOwnershipKey,
+    normalizeDirectoryOwnershipKey,
     postStateToClawd,
     postPermissionToClawd,
     handleContextUsageEvent,
@@ -1484,7 +1484,7 @@ normalizeDirectoryOwnershipKey,
             return;
           }
 
-// #830: message.updated (turn-finished summary update) carries the
+          // #830: message.updated (turn-finished summary update) carries the
           // session message on event.properties.info, whose assistant tokens
           // hold the session-level totals. Forward as a metadata-only
           // contextUsage POST (same dedup/no-decision semantics as the
