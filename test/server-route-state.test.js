@@ -1133,6 +1133,74 @@ describe("server-route-state POST", () => {
     assert.strictEqual(metadataCalls[0][1].contextUsageOrigin, null);
   });
 
+  // #830 — opencode-family plugin posts metadata_only contextUsage with
+  // source "opencode"; the route must label it with the opencode-statusline
+  // origin (same authority contract as claude-statusline telemetry).
+  it("labels opencode metadata-only context with the opencode-statusline origin", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "oc:abc",
+      agent_id: "opencode",
+      context_usage: { used: 32000, limit: 128000, percent: 25, source: "opencode" },
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(metadataCalls.length, 1);
+    assert.strictEqual(metadataCalls[0][0], localSessionKey("oc:abc"));
+    assert.strictEqual(metadataCalls[0][1].contextUsageOrigin, "opencode-statusline");
+    assert.deepStrictEqual(metadataCalls[0][1].contextUsage, {
+      used: 32000,
+      limit: 128000,
+      percent: 25,
+      source: "opencode",
+    });
+  });
+
+  it("labels opencode lifecycle context with the opencode-statusline origin (state POSTs)", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "oc:abc",
+      agent_id: "opencode",
+      event: "PreToolUse",
+      context_usage: { used: 90000, limit: 200000, percent: 45, source: "opencode" },
+    }), {});
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession.length, 1);
+    assert.strictEqual(res.calls.updateSession[0][3].contextUsageOrigin, "opencode-statusline");
+  });
+
+  it("does not label mismatched opencode provenance as statusline authority", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "oc:abc",
+      agent_id: "opencode",
+      context_usage: { used: 90000, limit: 200000, percent: 45, source: "claude" },
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(metadataCalls.length, 1);
+    assert.strictEqual(
+      metadataCalls[0][1].contextUsageOrigin,
+      null,
+      "opencode agent + claude source must not borrow the opencode-statusline origin"
+    );
+    assert.deepStrictEqual(metadataCalls[0][1].contextUsage, {
+      used: 90000,
+      limit: 200000,
+      percent: 45,
+      source: "claude",
+    });
+  });
+
   it("routes remote metadata_only codex_quota to the store keyed by host (remote monitor POSTs)", async () => {
     const metadataCalls = [];
     const res = await callStatePost(JSON.stringify({

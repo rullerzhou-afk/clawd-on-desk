@@ -408,7 +408,7 @@ function snapshotContextUsage(session) {
   if (Number.isFinite(limit) && limit > 0) out.limit = limit;
   const percent = Number(usage.percent);
   if (Number.isFinite(percent)) out.percent = Math.max(0, Math.min(100, Math.round(percent)));
-  if (usage.source === "claude" || usage.source === "codex" || usage.source === "antigravity") out.source = usage.source;
+  if (usage.source === "claude" || usage.source === "codex" || usage.source === "antigravity" || usage.source === "opencode") out.source = usage.source;
   return out;
 }
 

@@ -3261,6 +3261,74 @@ describe("updateSession()", () => {
     assert.strictEqual(session.contextUsageOrigin, "claude-statusline");
   });
 
+  // #830 — opencode-family plugin reports context usage with source
+  // "opencode" and the opencode-statusline origin. Same telemetry authority
+  // contract as claude-statusline: metadata wins, but there is no transcript
+  // backfill channel, so a later opencode-statusline update simply replaces
+  // the window (no limit-merge rule like the claude-transcript case).
+  it("accepts opencode context metadata and keeps the opencode-statusline origin", () => {
+    update(api, { id: "opencode:s1", agentId: "opencode", state: "working" });
+    const session = api.sessions.get("opencode:s1");
+    session.updatedAt = 12345; // pin so a bump is detectable
+
+    const applied = api.updateSessionMetadata("opencode:s1", {
+      contextUsage: { used: 32000, limit: 128000, percent: 25, source: "opencode" },
+      contextUsageOrigin: "opencode-statusline",
+    });
+
+    assert.strictEqual(applied, true);
+    assert.strictEqual(session.updatedAt, 12345, "telemetry must not touch lifecycle freshness");
+    assert.deepStrictEqual(session.contextUsage, {
+      used: 32000,
+      limit: 128000,
+      percent: 25,
+      source: "opencode",
+    });
+    assert.strictEqual(session.contextUsageOrigin, "opencode-statusline");
+  });
+
+  it("keeps the opencode-statusline window authoritative over later opencode state events", () => {
+    update(api, { id: "opencode:s1", agentId: "opencode", state: "working" });
+    api.updateSessionMetadata("opencode:s1", {
+      contextUsage: { used: 32000, limit: 128000, percent: 25, source: "opencode" },
+      contextUsageOrigin: "opencode-statusline",
+    });
+    // Later lifecycle POSTs (which ride the same opencode-statusline origin,
+    // unlike the claude transcript path) replace the window wholesale.
+    update(api, {
+      id: "opencode:s1",
+      state: "thinking",
+      event: "UserPromptSubmit",
+      contextUsage: { used: 90000, limit: 200000, percent: 45, source: "opencode" },
+      contextUsageOrigin: "opencode-statusline",
+    });
+
+    const session = api.sessions.get("opencode:s1");
+    assert.deepStrictEqual(session.contextUsage, {
+      used: 90000,
+      limit: 200000,
+      percent: 45,
+      source: "opencode",
+    });
+    assert.strictEqual(session.contextUsageOrigin, "opencode-statusline");
+  });
+
+  it("discards unknown context usage sources for opencode-origin telemetry", () => {
+    update(api, { id: "opencode:s1", agentId: "opencode", state: "working" });
+    const applied = api.updateSessionMetadata("opencode:s1", {
+      contextUsage: { used: 1000, limit: 200000, percent: 1, source: "suspicious" },
+      contextUsageOrigin: "opencode-statusline",
+    });
+
+    assert.strictEqual(applied, true);
+    assert.deepStrictEqual(api.sessions.get("opencode:s1").contextUsage, {
+      used: 1000,
+      limit: 200000,
+      percent: 1,
+    });
+    assert.strictEqual(api.sessions.get("opencode:s1").contextUsageOrigin, "opencode-statusline");
+  });
+
   it("carries authority through a context-free rebuild before the next transcript update", () => {
     update(api, { id: "s1", state: "working" });
     api.updateSessionMetadata("s1", {

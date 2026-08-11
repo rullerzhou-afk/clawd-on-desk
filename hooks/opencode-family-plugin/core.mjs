@@ -53,6 +53,14 @@ const CLAWD_DIR = join(homedir(), ".clawd");
 const RUNTIME_CONFIG_PATH = join(CLAWD_DIR, "runtime.json");
 const SERVER_PORTS = [23333, 23334, 23335, 23336, 23337];
 const STATE_PATH = "/state";
+// Provider limit lookups are in-process HTTP roundtrips to the host's own
+// server; cache per model so the per-message.updated resolution never
+// spams the host router (60s TTL matches antigravity-context-usage.js).
+const CONTEXT_LIMIT_CACHE_MS = 60 * 1000;
+// Purge context-usage dedup entries for dead sessions once this many are
+// tracked, so long-lived hosts (days of sessions) stay bounded even though
+// _lastStatePerSession itself is intentionally unbounded.
+const MAX_CONTEXT_USAGE_ENTRIES = 1024;
 // Fire-and-forget: the IIFE never blocks the event hook's return value, so a
 // generous timeout is safe. 200ms was too tight when Clawd's IPC roundtrip
 // (main → renderer → main) ran under load and silently timed out.
@@ -189,6 +197,34 @@ function normalizeServerUrl(raw) {
   if (!raw) return "";
   const s = String(raw);
   return s.endsWith("/") ? s : s + "/";
+}
+
+// #830 context usage: opencode's message.updated events carry the session
+// message on event.properties.info (a Message object). Only assistant
+// messages carry tokens, and only once the step finishes: { input, output,
+// reasoning, cache: { read, write } }. The host's own "Context view" shows
+// the component sum INCLUDING reasoning (cache read + write, no `total` —
+// `total` is an internal SessionV1 aggregate, never a message-token field),
+// and Clawd mirrors that exact figure. Values are coerced like
+// hooks/antigravity-context-usage.js (hosts may deliver JSON numbers as
+// strings). Returns null when the payload has no usable numbers.
+export function extractContextUsageUsed(tokens) {
+  if (!tokens || typeof tokens !== "object") return null;
+  const parts = [tokens.input, tokens.output, tokens.reasoning]
+    .filter((v) => v != null && Number.isFinite(Number(v)))
+    .map(Number);
+  const cache = tokens.cache;
+  let cacheNum = 0;
+  if (cache != null) {
+    if (Number.isFinite(Number(cache))) {
+      cacheNum = Number(cache);
+    } else if (typeof cache === "object") {
+      if (cache.read != null && Number.isFinite(Number(cache.read))) cacheNum += Number(cache.read);
+      if (cache.write != null && Number.isFinite(Number(cache.write))) cacheNum += Number(cache.write);
+    }
+  }
+  if (parts.length === 0 && cache == null) return null;
+  return parts.reduce((a, b) => a + b, 0) + cacheNum;
 }
 
 /**
@@ -1041,9 +1077,12 @@ export function createOpencodeFamilyPlugin(config) {
     captureSessionTitle,
     resolveSessionDirectory,
     cleanupSessionDirectory,
-    normalizeDirectoryOwnershipKey,
+normalizeDirectoryOwnershipKey,
     postStateToClawd,
     postPermissionToClawd,
+    handleContextUsageEvent,
+    buildContextUsageBody,
+    resolveContextLimit,
     get _sessionParentById() { return _sessionParentById; },
     get _sessionDirectoryById() { return _sessionDirectoryById; },
     get _sessionInstanceDirectoryById() { return _sessionInstanceDirectoryById; },
@@ -1053,6 +1092,8 @@ export function createOpencodeFamilyPlugin(config) {
     set _rootSessionId(v) { _rootSessionId = v; },
     get _lastSeenSessionId() { return _lastSeenSessionId; },
     get _lastInitDirectory() { return _lastInitDirectory; },
+    get _lastContextUsageBySession() { return _lastContextUsageBySession; },
+    get _contextLimitCache() { return _contextLimitCache; },
     // Instance-isolation probes (family-core tests). Live views into the
     // closure — a hardcoded log path or accidentally-shared state bag must
     // fail the isolation suite, not pass silently.
@@ -1068,6 +1109,145 @@ export function createOpencodeFamilyPlugin(config) {
     get _bridgeTokenHex() { return _bridgeTokenHex; },
     get _pidChain() { return _pidChain; },
   };
+
+  // #830 context usage — session-level token totals from message.updated
+  // summary events. Dedup keyed by Clawd session id: the summary update is
+  // the session's last say, but repeated/interleaved updates (subagents,
+  // replayed streams) must not spam /state. Limit lookups resolve through the
+  // host's own provider.list() (in-process, same client the TUI uses) with a
+  // per-model TTL cache, so we never hit the network ourselves.
+  const _lastContextUsageBySession = new Map();
+  const _contextLimitCache = new Map();
+
+  // Fire-and-forget metadata POST of { used, limit } — mirrors
+  // antigravity-context-usage.js / claude-statusline.js quota reporting
+  // (source stamped here so the route can attribute the telemetry stream).
+  function buildContextUsageBody(sessionId, used, limit) {
+    return {
+      agent_id: AGENT_ID,
+      hook_source: HOOK_SOURCE,
+      session_id: sessionId,
+      metadata_only: true,
+      context_usage: {
+        used,
+        limit: Number.isFinite(limit) ? limit : null,
+        source: "opencode",
+      },
+    };
+  }
+
+  // Resolve the host model's context limit via the in-process SDK client —
+  // mirrors exactly what the host's "Context view" shows: provider.list()
+  // returns Provider[] where each Provider has { id, models: { [modelID]:
+  // { limit: { context } } }, options: { limit } }. `models` is a MAP keyed
+  // by model id (not an array), so the provider is matched by providerID and
+  // the model by modelID, with provider.options.limit as the legacy fallback.
+  // Returns null (never throws) when the provider/model/limit is unknown.
+  async function resolveContextLimit(providerID, modelID, client) {
+    if (!modelID || !client || typeof client.provider !== "object" || typeof client.provider.list !== "function") {
+      return null;
+    }
+    const cacheKey = `${providerID || ""}::${modelID}`;
+    const cached = _contextLimitCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < CONTEXT_LIMIT_CACHE_MS) {
+      return cached.limit;
+    }
+    let limit = null;
+    try {
+      const result = await client.provider.list();
+      // The live CLI server (SDK 1.1.25) returns the HeyApi envelopes
+      // { all: [...] } (/provider — ProviderListResponses) or
+      // { providers: [...] } (/config/providers); older hosts may return
+      // { data: [...] } or a raw array. Unwrap all of them before the lookup.
+      const providers = Array.isArray(result)
+        ? result
+        : result && typeof result === "object"
+          ? (Array.isArray(result.all)
+              ? result.all
+              : Array.isArray(result.providers)
+                ? result.providers
+                : Array.isArray(result.data)
+                  ? result.data
+                  : null)
+          : null;
+      if (Array.isArray(providers)) {
+        const provider = (providerID && providers.find((p) => p && p.id === providerID)) || null;
+        const models = provider && provider.models;
+        let model = null;
+        if (Array.isArray(models)) {
+          model = models.find((m) => m && m.id === modelID) || null;
+        } else if (models && typeof models.get === "function") {
+          model = models.get(modelID) || null;
+        } else if (models) {
+          model = models[modelID] || null;
+        }
+        const modelLimit =
+          model && model.limit && Number.isFinite(model.limit.context)
+            ? model.limit.context
+            : null;
+        const optionsLimit =
+          provider && provider.options && Number.isFinite(provider.options.limit)
+            ? provider.options.limit
+            : null;
+        limit = modelLimit || optionsLimit || null;
+      }
+    } catch (err) {
+      debugLog(`CTX limit THROW provider=${providerID} model=${modelID} msg=${err && err.message}`);
+    }
+    _contextLimitCache.set(cacheKey, { limit, at: Date.now() });
+    return limit;
+  }
+
+  // message.updated handler: the session message rides on properties.info
+  // (assistant role, tokens populated after the step finishes). Extract the
+  // component-sum token total, dedup per session, then resolve the model
+  // limit (via info.providerID + info.modelID) and POST metadata_only. The
+  // event hook never awaits this path; resolveContextLimit's failure modes
+  // all collapse to limit=null and the POST is fire-and-forget anyway.
+  function handleContextUsageEvent(event, instance) {
+    try {
+      const props = (event && event.properties) || {};
+      const info = props.info && typeof props.info === "object" ? props.info : {};
+      const used = extractContextUsageUsed(info.tokens);
+      if (!Number.isFinite(used) || used <= 0) {
+        debugLog(`CTX skip reason=${Number.isFinite(used) ? "zero-tokens" : "no-tokens"}`);
+        return;
+      }
+      if (info.role && info.role !== "assistant") {
+        debugLog("CTX skip reason=non-assistant-message");
+        return;
+      }
+      const sessionId = resolveSessionId(
+        getEventSessionId(event),
+        _lastSeenSessionId || _rootSessionId
+      );
+      const clawdSessionId = normalizeSessionId(sessionId) || DEFAULT_SESSION_ID;
+      const prev = _lastContextUsageBySession.get(clawdSessionId);
+      if (prev === used) {
+        debugLog(`CTX skip session=${clawdSessionId} used=${used} reason=unchanged`);
+        return;
+      }
+      _lastContextUsageBySession.set(clawdSessionId, used);
+      if (_lastContextUsageBySession.size > MAX_CONTEXT_USAGE_ENTRIES) {
+        const oldest = _lastContextUsageBySession.keys().next().value;
+        if (oldest !== undefined) _lastContextUsageBySession.delete(oldest);
+      }
+      const providerID = info.providerID;
+      const modelID = info.modelID;
+      debugLog(`CTX used=${used} session=${clawdSessionId} provider=${providerID || "?"} model=${modelID || "unknown"}`);
+      void resolveContextLimit(providerID, modelID, instance && instance.client).then((limit) => {
+        // Same serialized metadata delivery as the session-title push (#841):
+        // state/event scaffolding for the per-session delivery tail, no
+        // lifecycle meaning on the route side (metadata_only short-circuits).
+        const body = buildContextUsageBody(clawdSessionId, used, limit);
+        body.state = "idle";
+        body.event = "SessionUpdate";
+        postStateToClawd(body);
+      });
+    } catch (err) {
+      debugLog(`CTX handler THROW msg=${err && err.message}`);
+    }
+  }
 
   // Handle v2 permission.asked event — see Phase 2 Spike in
   // docs/plans/plan-opencode-integration.md. Current wire payloads carry a
@@ -1301,6 +1481,17 @@ export function createOpencodeFamilyPlugin(config) {
               directory: instanceDirectory,
               serverUrl: instanceServerUrl,
             });
+            return;
+          }
+
+// #830: message.updated (turn-finished summary update) carries the
+          // session message on event.properties.info, whose assistant tokens
+          // hold the session-level totals. Forward as a metadata-only
+          // contextUsage POST (same dedup/no-decision semantics as the
+          // agents/antigravity plugin path). The event itself never maps to a
+          // Clawd state transition.
+          if (event.type === "message.updated") {
+            handleContextUsageEvent(event, { client: instanceClient });
             return;
           }
 

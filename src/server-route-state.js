@@ -116,8 +116,31 @@ function normalizeContextUsage(value) {
     out.percent = Math.max(0, Math.min(100, Math.round((used / out.limit) * 100)));
   }
 
-  if (value.source === "claude" || value.source === "codex" || value.source === "antigravity") out.source = value.source;
+  if (value.source === "claude" || value.source === "codex" || value.source === "antigravity" || value.source === "opencode") out.source = value.source;
   return out;
+}
+
+// Context-usage provenance for metadata_only POSTs (statusline / plugin
+// quota path). Only sources whose posts are a live telemetry stream get an
+// origin; everything else reports plain usage without provenance.
+const OPENCODE_FAMILY_AGENT_IDS = new Set(["opencode", "mimocode"]);
+
+function resolveMetadataContextUsageOrigin(agentId, contextUsage) {
+  if (!contextUsage || typeof contextUsage !== "object") return null;
+  if (agentId === "claude-code" && contextUsage.source === "claude") return "claude-statusline";
+  if (OPENCODE_FAMILY_AGENT_IDS.has(agentId) && contextUsage.source === "opencode") return "opencode-statusline";
+  return null;
+}
+
+// Context-usage provenance for real lifecycle state POSTs. Claude keeps the
+// transcript origin (the state event itself is the delivery path); the
+// opencode family plugin reports the same summary on its own channel, so the
+// state-event usage carries the statusline origin like the metadata branch.
+function resolveStateContextUsageOrigin(agentId, contextUsage) {
+  if (!contextUsage || typeof contextUsage !== "object") return null;
+  if (agentId === "claude-code" && contextUsage.source === "claude") return "claude-transcript";
+  if (OPENCODE_FAMILY_AGENT_IDS.has(agentId) && contextUsage.source === "opencode") return "opencode-statusline";
+  return null;
 }
 
 // Account-wide rate-limit quota. Re-validated here rather than trusted from
@@ -475,9 +498,7 @@ function handleStatePost(req, res, options) {
             && localClaudeStatuslineMetadataAllowed
           ) {
             metaUpdate.contextUsage = contextUsage;
-            metaUpdate.contextUsageOrigin = agentId === "claude-code" && contextUsage.source === "claude"
-              ? "claude-statusline"
-              : null;
+            metaUpdate.contextUsageOrigin = resolveMetadataContextUsageOrigin(agentId, contextUsage);
           }
           // OpenCode title changes ride the same metadata-only channel (the
           // placeholder → real title swap arrives on session.updated, which
@@ -827,9 +848,7 @@ function handleStatePost(req, res, options) {
             displayHint: display_svg,
             sessionTitle,
             contextUsage,
-            contextUsageOrigin: agentId === "claude-code" && contextUsage && contextUsage.source === "claude"
-              ? "claude-transcript"
-              : null,
+            contextUsageOrigin: resolveStateContextUsageOrigin(agentId, contextUsage),
             assistantLastOutput,
             assistantLastOutputTruncated,
             toolName,

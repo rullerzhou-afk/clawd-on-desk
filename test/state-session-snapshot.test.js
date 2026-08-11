@@ -814,6 +814,26 @@ describe("state-session-snapshot builder", () => {
     );
   });
 
+  it("carries the opencode source through snapshot entries (#830)", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["opencode:s1", session("working", {
+        contextUsage: {
+          used: 32000,
+          limit: 128000,
+          percent: 25,
+          source: "opencode",
+        },
+      })],
+    ]), { statePriority: STATE_PRIORITY });
+
+    assert.deepStrictEqual(snapshot.sessions[0].contextUsage, {
+      used: 32000,
+      limit: 128000,
+      percent: 25,
+      source: "opencode",
+    });
+  });
+
   it("ignores internal context authority when computing the renderer snapshot signature", () => {
     const opts = { statePriority: STATE_PRIORITY };
     const transcript = buildSessionSnapshot(new Map([

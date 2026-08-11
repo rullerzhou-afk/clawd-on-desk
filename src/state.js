@@ -1229,12 +1229,16 @@ function normalizeContextUsage(value) {
   if (Number.isFinite(limit) && limit > 0) out.limit = limit;
   const percent = Number(value.percent);
   if (Number.isFinite(percent)) out.percent = Math.max(0, Math.min(100, Math.round(percent)));
-  if (value.source === "claude" || value.source === "codex" || value.source === "antigravity") out.source = value.source;
+  if (value.source === "claude" || value.source === "codex" || value.source === "antigravity" || value.source === "opencode") out.source = value.source;
   return out;
 }
 
 function normalizeContextUsageOrigin(value) {
-  return value === "claude-statusline" || value === "claude-transcript" ? value : null;
+  return value === "claude-statusline" || value === "claude-transcript" || value === "opencode-statusline" ? value : null;
+}
+
+function isStatuslineOrigin(origin) {
+  return origin === "claude-statusline" || origin === "opencode-statusline";
 }
 
 function resolveContextUsageUpdate(existing, incomingValue, incomingOriginValue) {
@@ -1245,7 +1249,7 @@ function resolveContextUsageUpdate(existing, incomingValue, incomingOriginValue)
   if (!incomingUsage) {
     return { contextUsage: existingUsage, contextUsageOrigin: existingOrigin };
   }
-  if (incomingOrigin === "claude-statusline") {
+  if (isStatuslineOrigin(incomingOrigin)) {
     return { contextUsage: incomingUsage, contextUsageOrigin: incomingOrigin };
   }
   if (
