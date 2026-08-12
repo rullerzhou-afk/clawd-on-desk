@@ -1080,6 +1080,38 @@ describe("server-route-permission POST", () => {
     assert.deepStrictEqual(res.recorder.map((item) => item.outcome).filter(Boolean), ["accepted"]);
   });
 
+  it("destroys the Claude connection for bypassPermissions sessions without creating a bubble", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "sid",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      tool_use_id: "tool-1",
+      permission_mode: "bypassPermissions",
+    }));
+
+    assert.strictEqual(res.destroyed, true);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
+    assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, []);
+    assert.deepStrictEqual(res.recorder.map((item) => item.outcome).filter(Boolean), ["accepted"]);
+  });
+
+  it("still shows a bubble for ExitPlanMode in bypassPermissions sessions", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "sid",
+      tool_name: "ExitPlanMode",
+      tool_input: { plan: "do the thing" },
+      tool_use_id: "tool-2",
+      permission_mode: "bypassPermissions",
+    }));
+
+    assert.strictEqual(res.destroyed, false);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    assert.strictEqual(res.ctx.calls.showPermissionBubble.length, 1);
+  });
+
   it("returns no-decision for a currently registered state-only custom AI", async () => {
     const id = "custom-nova-ai-0123456789ab";
     const res = await callPermissionPost(JSON.stringify({

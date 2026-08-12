@@ -1432,6 +1432,7 @@ function handlePermissionPost(req, res, options) {
       // silent drop (95cbfc7).
       const ccAgentId = agentId;
       const toolName = typeof data.tool_name === "string" ? data.tool_name : "Unknown";
+      const ccPermissionMode = typeof data.permission_mode === "string" ? data.permission_mode : "";
       const interaction = classifyPermissionInteraction({
         agentId: ccAgentId,
         eventKind: "permission",
@@ -1489,6 +1490,13 @@ function handlePermissionPost(req, res, options) {
         recordRequestHookEvent.accepted();
         ctx.permLog(`PASSTHROUGH: tool=${toolName} session=${sessionId}`);
         ctx.sendPermissionResponse(res, "allow");
+        return;
+      }
+
+      if (isCCBypassPermissions(ccPermissionMode, interaction)) {
+        recordRequestHookEvent.accepted();
+        ctx.permLog(`bypassPermissions session → destroy connection, chat fallback (tool=${toolName} session=${sessionId})`);
+        res.destroy();
         return;
       }
 
