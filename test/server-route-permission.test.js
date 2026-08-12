@@ -14,6 +14,7 @@ const {
 const {
   MAX_PERMISSION_BODY_BYTES,
   handlePermissionPost,
+  isCCBypassPermissions,
   shouldBypassCCBubble,
   shouldBypassCCSubagentBubble,
   shouldBypassCodexBubble,
@@ -226,6 +227,17 @@ describe("server-route-permission helpers", () => {
     assert.strictEqual(shouldBypassCopilotBubble({
       isAgentPermissionsEnabled: () => true,
     }), false);
+  });
+
+  it("bypasses the CC bubble for bypassPermissions sessions except decision interactions", () => {
+    assert.strictEqual(isCCBypassPermissions("bypassPermissions", interaction("claude-code", "Bash")), true);
+    assert.strictEqual(isCCBypassPermissions("bypassPermissions", interaction("claude-code", "Edit")), true);
+    assert.strictEqual(isCCBypassPermissions("bypassPermissions", interaction("claude-code", "ExitPlanMode")), false);
+    assert.strictEqual(isCCBypassPermissions("bypassPermissions", interaction("claude-code", "AskUserQuestion")), false);
+    assert.strictEqual(isCCBypassPermissions("default", interaction("claude-code", "Bash")), false);
+    assert.strictEqual(isCCBypassPermissions("acceptEdits", interaction("claude-code", "Bash")), false);
+    assert.strictEqual(isCCBypassPermissions("", interaction("claude-code", "Bash")), false);
+    assert.strictEqual(isCCBypassPermissions(undefined, interaction("claude-code", "Bash")), false);
   });
 
   it("bypasses CC subagent bubbles only for subagent-origin requests with the sub-gate off", () => {

@@ -44,6 +44,19 @@ const { sanitizeShadowRecord } = require("./windows-process-chain-shadow-log");
 
 const MAX_PERMISSION_BODY_BYTES = 524288;
 
+// A session started with --dangerously-skip-permissions reports
+// permission_mode "bypassPermissions". CC still fires the PermissionRequest
+// hook there, so Clawd would pop a bubble for a session whose owner
+// explicitly asked not to be asked. Drop the connection and let CC resolve
+// it natively, exactly like the bubble toggles below. Never answer
+// allow/deny on the user's behalf. ExitPlanMode / AskUserQuestion stay
+// exempt: they are UX flows, not approvals, and CC sends them regardless of
+// the permission mode.
+function isCCBypassPermissions(permissionMode, interaction) {
+  if (permissionMode !== "bypassPermissions") return false;
+  return !isDecisionInteraction(interaction);
+}
+
 // ExitPlanMode (Plan Review) and AskUserQuestion (elicitation) happen to
 // travel through /permission, but they're UX flows — not approvals the
 // sub-gate is named for. Silencing them would break plan-mode and leave
@@ -1677,6 +1690,7 @@ function handlePermissionPost(req, res, options) {
 
 module.exports = {
   MAX_PERMISSION_BODY_BYTES,
+  isCCBypassPermissions,
   shouldBypassCCBubble,
   shouldBypassCCSubagentBubble,
   shouldBypassCodexBubble,
