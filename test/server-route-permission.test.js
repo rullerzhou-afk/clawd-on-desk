@@ -1112,6 +1112,50 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.ctx.calls.showPermissionBubble.length, 1);
   });
 
+  it("lets the headless guard win over the bypassPermissions step-aside (auto-deny, no destroy)", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "sid",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      tool_use_id: "tool-1",
+      permission_mode: "bypassPermissions",
+    }), {
+      ctx: {
+        sessions: new Map([[localSessionKey("sid"), { headless: true }]]),
+      },
+    });
+
+    assert.strictEqual(res.destroyed, false);
+    assert.deepStrictEqual(res.ctx.calls.sendPermissionResponse, [{
+      behavior: "deny",
+      message: "Non-interactive session; auto-denied",
+    }]);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+  });
+
+  it("lets PASSTHROUGH tools auto-allow before the bypassPermissions step-aside", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "sid",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      tool_use_id: "tool-1",
+      permission_mode: "bypassPermissions",
+    }), {
+      ctx: {
+        PASSTHROUGH_TOOLS: new Set(["Bash"]),
+      },
+    });
+
+    assert.strictEqual(res.destroyed, false);
+    assert.deepStrictEqual(res.ctx.calls.sendPermissionResponse, [{
+      behavior: "allow",
+      message: undefined,
+    }]);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+  });
+
   it("returns no-decision for a currently registered state-only custom AI", async () => {
     const id = "custom-nova-ai-0123456789ab";
     const res = await callPermissionPost(JSON.stringify({
