@@ -1097,6 +1097,33 @@ describe("server-route-permission POST", () => {
     assert.deepStrictEqual(res.recorder.map((item) => item.outcome).filter(Boolean), ["accepted"]);
   });
 
+  it("handles a verbatim CC 2.1.228 bypassPermissions payload (live capture 2026-08-12)", async () => {
+    // Captured from a real Claude Code 2.1.228 session started with
+    // --dangerously-skip-permissions, through an isolated PermissionRequest
+    // command hook (paths anonymized). Ground truth for the two facts this
+    // branch rests on: CC still fires the hook in that mode, and the body
+    // carries permission_mode with the literal "bypassPermissions". A
+    // main-thread request has no agent_id, unlike the #451 subagent capture.
+    const realBody = {
+      session_id: "3d182efb-8a48-4bb2-973b-4546d1eaa90c",
+      transcript_path: "/Users/tester/.claude/projects/-Users-tester-repo/3d182efb-8a48-4bb2-973b-4546d1eaa90c.jsonl",
+      cwd: "/Users/tester/repo",
+      prompt_id: "85d97bf5-7195-42a7-bad6-c227c1f1aea2",
+      permission_mode: "bypassPermissions",
+      effort: { level: "xhigh" },
+      hook_event_name: "PermissionRequest",
+      tool_name: "Bash",
+      tool_input: { command: "echo hi", description: "Print hi" },
+    };
+
+    const res = await callPermissionPost(JSON.stringify(realBody));
+
+    assert.strictEqual(res.destroyed, true);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
+    assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, []);
+  });
+
   it("still shows a bubble for ExitPlanMode in bypassPermissions sessions", async () => {
     const res = await callPermissionPost(JSON.stringify({
       agent_id: "claude-code",

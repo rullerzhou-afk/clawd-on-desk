@@ -52,6 +52,14 @@ const MAX_PERMISSION_BODY_BYTES = 524288;
 // allow/deny on the user's behalf. ExitPlanMode / AskUserQuestion stay
 // exempt: they are UX flows, not approvals, and CC sends them regardless of
 // the permission mode.
+//
+// Two consequences of sitting above the bubble gates, both intended:
+// - remote approval (Telegram / Lark) is skipped. The session's owner opted
+//   out of being asked at all, so keeping a remote channel alive would just
+//   reintroduce the prompt they turned off, on another device.
+// - the check is not agent-scoped. This block is shared with codebuddy (see
+//   permAgentId below), and res.destroy() is already what the block falls
+//   back to for every agent that reaches it.
 function isCCBypassPermissions(permissionMode, interaction) {
   if (permissionMode !== "bypassPermissions") return false;
   return !isDecisionInteraction(interaction);
