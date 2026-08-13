@@ -2606,3 +2606,167 @@ test("FeishuApprovalClient resolves null on send failure by default but rejects 
   assert.equal(logs.filter((entry) => entry.level === "warn" && entry.message === "send failed").length, 2);
   assert.equal(JSON.stringify(logs).includes(sensitive), false);
 });
+
+// ---------------------------------------------------------------------------
+// Shared response assertion at every im.v1.message create/patch boundary.
+// The SDK resolves these calls even when the business `code` is nonzero, so
+// each boundary must reject such responses instead of reporting success.
+// One table row per call site; every scenario below loops over the table.
+// ---------------------------------------------------------------------------
+
+const RESPONSE_LEAK = "leak-app-secret leak-review@example.com t-leak-tenant-token";
+
+const approvalBoundaryPayload = normalizeApprovalPayload({ title: "Run", detail: "Summary: Run tests" });
+const elicitationBoundaryPayload = normalizeElicitationPayload({
+  title: "Pick",
+  questions: [{ question: "Which one?", options: [{ label: "A" }] }],
+});
+
+const MESSAGE_RESPONSE_BOUNDARIES = [
+  {
+    name: "sendCard",
+    stage: "send-card",
+    kind: "create",
+    invoke: (client) => client.sendCard("fs_boundary", approvalBoundaryPayload),
+  },
+  {
+    name: "sendElicitationCard",
+    stage: "send-elicitation",
+    kind: "create",
+    invoke: (client) => client.sendElicitationCard("fsq_boundary", elicitationBoundaryPayload, { questionIndex: 0 }),
+  },
+  {
+    name: "updateCard",
+    stage: "update-card",
+    kind: "patch",
+    invoke: (client) => client.updateCard("om_boundary", approvalBoundaryPayload, { decision: "allow", source: "feishu" }),
+  },
+  {
+    name: "patchCard",
+    stage: "session-automation-card",
+    kind: "patch",
+    invoke: (client) => client.patchCard("om_boundary", { header: { title: { tag: "plain_text", content: "x" } } }),
+  },
+  {
+    name: "updateElicitationCard",
+    stage: "update-card",
+    kind: "patch",
+    invoke: (client) => client.updateElicitationCard("om_boundary", elicitationBoundaryPayload, { decision: "terminal", source: "feishu" }),
+  },
+  {
+    name: "updateElicitationQuestionCard",
+    stage: "update-card",
+    kind: "patch",
+    invoke: (client) => client.updateElicitationQuestionCard("om_boundary", elicitationBoundaryPayload, "fsq_boundary", 0, {}),
+  },
+];
+
+function boundaryClient(response) {
+  return new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    larkClient: {
+      im: { v1: { message: {
+        create: async () => response,
+        patch: async () => response,
+      } } },
+    },
+  });
+}
+
+function sanitizedErrorSnapshot(error) {
+  return {
+    message: error.message,
+    code: error.code,
+    stage: error.stage,
+    businessCode: error.businessCode,
+  };
+}
+
+test("every message boundary rejects a resolved nonzero business code with a sanitized error", async () => {
+  const response = { code: 230001, msg: `param invalid ${RESPONSE_LEAK}`, data: { message_id: "om_should_not_count" } };
+  for (const boundary of MESSAGE_RESPONSE_BOUNDARIES) {
+    const client = boundaryClient(response);
+    await assert.rejects(boundary.invoke(client), (error) => {
+      assert.deepEqual(sanitizedErrorSnapshot(error), {
+        message: "Feishu/Lark SDK request failed.",
+        code: "sdk-request-failed",
+        stage: boundary.stage,
+        businessCode: 230001,
+      }, boundary.name);
+      assert.equal(JSON.stringify({ ...error, message: error.message }).includes("leak-"), false, boundary.name);
+      return true;
+    }, boundary.name);
+  }
+});
+
+test("every message boundary accepts code 0 and the codeless legacy shape", async () => {
+  for (const response of [
+    { code: 0, msg: "success", data: { message_id: "om_ok" } },
+    { data: { message_id: "om_ok" } },
+  ]) {
+    for (const boundary of MESSAGE_RESPONSE_BOUNDARIES) {
+      const result = await boundary.invoke(boundaryClient(response));
+      if (boundary.kind === "create") assert.equal(result, "om_ok", boundary.name);
+    }
+  }
+});
+
+test("create boundaries reject a success code without a message_id", async () => {
+  const response = { code: 0, msg: "success", data: {} };
+  for (const boundary of MESSAGE_RESPONSE_BOUNDARIES.filter((entry) => entry.kind === "create")) {
+    await assert.rejects(boundary.invoke(boundaryClient(response)), (error) => {
+      assert.deepEqual(sanitizedErrorSnapshot(error), {
+        message: "Feishu/Lark SDK request failed.",
+        code: "sdk-request-failed",
+        stage: boundary.stage,
+        businessCode: undefined,
+      }, boundary.name);
+      return true;
+    }, boundary.name);
+  }
+});
+
+test("known business codes keep their dedicated sanitized codes at message boundaries", async () => {
+  for (const [businessCode, expectedCode] of [
+    [99991672, "missing-contact-scope"],
+    [1000040351, "wrong-platform"],
+  ]) {
+    const client = boundaryClient({ code: businessCode, msg: "denied", data: {} });
+    await assert.rejects(client.sendCard("fs_mapped", approvalBoundaryPayload), (error) => {
+      assert.equal(error.code, expectedCode);
+      assert.equal(error.businessCode, businessCode);
+      return true;
+    });
+  }
+});
+
+test("a resolved nonzero create response surfaces through requestApproval without losing businessCode", async () => {
+  const logs = [];
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    larkClient: {
+      im: { v1: { message: {
+        create: async () => ({ code: 230001, msg: `param invalid ${RESPONSE_LEAK}` }),
+        patch: async () => ({ code: 0, msg: "success", data: {} }),
+      } } },
+    },
+    log: (level, message, meta) => logs.push({ level, message, meta }),
+  });
+
+  await assert.rejects(
+    client.requestApproval({ title: "Run", detail: "Summary" }, { rejectOnSendError: true }),
+    (error) => error.code === "sdk-request-failed"
+      && error.businessCode === 230001
+      && error.message === "Feishu/Lark SDK request failed."
+  );
+  assert.equal(client.pending.size, 0);
+  const warn = logs.find((entry) => entry.level === "warn" && entry.message === "send failed");
+  assert.deepEqual(warn.meta, { code: "sdk-request-failed", stage: "send-card", businessCode: 230001 });
+  assert.equal(JSON.stringify(logs).includes("leak-"), false);
+});

@@ -9,6 +9,7 @@ const lark = require("@larksuiteoapi/node-sdk");
 
 const {
   SILENT_LARK_LOGGER,
+  assertMessageApiResponse,
   classifyFeishuSdkError,
   createIsolatedLarkCache,
   createLarkClient,
@@ -297,6 +298,32 @@ test("SDK error classification returns only allowlisted fields", () => {
     networkCode: "ECONNRESET",
   });
   assertNoSentinels(classified);
+});
+
+test("message response assertion emits only sanitized fields and survives re-classification", () => {
+  const response = {
+    code: 230001,
+    msg: `param invalid ${SENTINEL.email} ${SENTINEL.tenantToken}`,
+    data: { message_id: `om_${SENTINEL.appSecret}` },
+  };
+  let thrown;
+  try {
+    assertMessageApiResponse(response, { stage: "send-card", requireMessageId: true });
+  } catch (error) {
+    thrown = error;
+  }
+  assert.ok(thrown);
+  assert.equal(thrown.message, "Feishu/Lark SDK request failed.");
+  assertNoSentinels(thrown);
+
+  // Sanitized errors are re-classified by every catch handler on the way out
+  // (client warn log, then the settings test command). The pass-through must
+  // keep businessCode instead of degrading to a bare sdk-request-failed.
+  assert.deepEqual(classifyFeishuSdkError(thrown, "send-card"), {
+    code: "sdk-request-failed",
+    stage: "send-card",
+    businessCode: 230001,
+  });
 });
 
 test("same App ID on Feishu and Lark obtains separate tenant tokens", async () => {

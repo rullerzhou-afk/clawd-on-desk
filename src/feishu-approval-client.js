@@ -908,6 +908,29 @@ function normalizeApiMessageId(response) {
     : "";
 }
 
+// The SDK resolves im.v1.message create/patch calls even when the business
+// `code` is nonzero (only transport errors reject). Without this check a
+// failed create was logged as "card sent" with an empty message id — the Test
+// flow then sat out its full no-response window — and a failed status patch
+// looked like a successful terminalization. Every message create/patch
+// boundary funnels its response through here; the thrown error carries only
+// the sanitized field set (never the raw response, msg text, or card body).
+function assertMessageApiResponse(response, { stage, requireMessageId = false } = {}) {
+  const safeStage = SAFE_LARK_ERROR_STAGES.has(stage) ? stage : "sdk";
+  const businessCode = finiteErrorNumber(response ? response.code : undefined);
+  if (businessCode !== undefined && businessCode !== 0) {
+    throw createSanitizedSdkError({
+      code: safeBusinessErrorCode(businessCode, safeStage),
+      stage: safeStage,
+      businessCode,
+    });
+  }
+  if (requireMessageId && !normalizeApiMessageId(response)) {
+    throw createSanitizedSdkError({ code: "sdk-request-failed", stage: safeStage });
+  }
+  return response;
+}
+
 // Single place that turns our platform enum into an SDK domain. Never build a
 // URL by hand and never accept a user-supplied host: the App Secret rides these
 // requests, so the destination must come from the official SDK enum only.
@@ -937,7 +960,25 @@ function finiteErrorNumber(value) {
   return Number.isFinite(numeric) ? numeric : undefined;
 }
 
+function safeBusinessErrorCode(businessCode, safeStage) {
+  if (businessCode === 99991672) return "missing-contact-scope";
+  if (businessCode === 1000040351) return "wrong-platform";
+  return safeStage === "lookup" ? "lookup-failed" : "sdk-request-failed";
+}
+
 function classifyFeishuSdkError(error, stage) {
+  // Errors minted by createSanitizedSdkError() already carry the full safe
+  // field set. Re-deriving them from scratch would lose businessCode (their
+  // message is generic on purpose), so pass them through unchanged.
+  if (error && error.sanitizedFeishuSdkError === true) {
+    return {
+      code: error.code,
+      stage: error.stage,
+      ...(error.httpStatus === undefined ? {} : { httpStatus: error.httpStatus }),
+      ...(error.businessCode === undefined ? {} : { businessCode: error.businessCode }),
+      ...(error.networkCode === undefined ? {} : { networkCode: error.networkCode }),
+    };
+  }
   const safeStage = SAFE_LARK_ERROR_STAGES.has(stage) ? stage : "sdk";
   const httpStatus = finiteErrorNumber(
     error && error.response ? error.response.status : error && error.status
@@ -955,15 +996,8 @@ function classifyFeishuSdkError(error, stage) {
   const networkCode = SAFE_LARK_NETWORK_CODES.has(rawNetworkCode)
     ? rawNetworkCode
     : undefined;
-  const code = businessCode === 99991672
-    ? "missing-contact-scope"
-    : businessCode === 1000040351
-      ? "wrong-platform"
-      : safeStage === "lookup"
-        ? "lookup-failed"
-        : "sdk-request-failed";
   return {
-    code,
+    code: safeBusinessErrorCode(businessCode, safeStage),
     stage: safeStage,
     ...(httpStatus === undefined ? {} : { httpStatus }),
     ...(businessCode === undefined ? {} : { businessCode }),
@@ -973,6 +1007,7 @@ function classifyFeishuSdkError(error, stage) {
 
 function createSanitizedSdkError(classification) {
   const error = new Error("Feishu/Lark SDK request failed.");
+  error.sanitizedFeishuSdkError = true;
   error.code = classification.code;
   error.stage = classification.stage;
   if (classification.httpStatus !== undefined) error.httpStatus = classification.httpStatus;
@@ -1599,6 +1634,7 @@ class FeishuApprovalClient {
         content: JSON.stringify(buildApprovalCard(payload, { requestId }, this.cardContext())),
       },
     });
+    assertMessageApiResponse(response, { stage: "send-card", requireMessageId: true });
     const messageId = normalizeApiMessageId(response);
     this.log("debug", "card sent", { requestId, messageId });
     return messageId;
@@ -1619,6 +1655,7 @@ class FeishuApprovalClient {
         )),
       },
     });
+    assertMessageApiResponse(response, { stage: "send-elicitation", requireMessageId: true });
     const messageId = normalizeApiMessageId(response);
     this.log("debug", "elicitation card sent", { requestId, messageId });
     return messageId;
@@ -1628,10 +1665,10 @@ class FeishuApprovalClient {
     if (!messageId) return;
     const message = this.messageApi();
     if (!message || typeof message.patch !== "function") return;
-    await message.patch({
+    assertMessageApiResponse(await message.patch({
       path: { message_id: messageId },
       data: { content: JSON.stringify(buildStatusCard(payload, outcome, this.cardContext())) },
-    });
+    }), { stage: "update-card" });
   }
 
   async patchCard(messageId, card, options = {}) {
@@ -1643,7 +1680,7 @@ class FeishuApprovalClient {
     const patch = () => message.patch({
       path: { message_id: messageId },
       data: { content: JSON.stringify(card) },
-    });
+    }).then((response) => assertMessageApiResponse(response, { stage: "session-automation-card" }));
     if (
       options.signal
       && this.cardHttpInstance
@@ -1900,17 +1937,17 @@ class FeishuApprovalClient {
     if (!messageId) return;
     const message = this.messageApi();
     if (!message || typeof message.patch !== "function") return;
-    await message.patch({
+    assertMessageApiResponse(await message.patch({
       path: { message_id: messageId },
       data: { content: JSON.stringify(buildElicitationStatusCard(payload, outcome, this.cardContext())) },
-    });
+    }), { stage: "update-card" });
   }
 
   async updateElicitationQuestionCard(messageId, payload, requestId, questionIndex, answers = {}) {
     if (!messageId) return;
     const message = this.messageApi();
     if (!message || typeof message.patch !== "function") return;
-    await message.patch({
+    assertMessageApiResponse(await message.patch({
       path: { message_id: messageId },
       data: {
         content: JSON.stringify(buildElicitationCard(payload, {
@@ -1919,7 +1956,7 @@ class FeishuApprovalClient {
           answers,
         }, this.cardContext())),
       },
-    });
+    }), { stage: "update-card" });
   }
 
   findPendingBySignal(signal) {
@@ -2073,6 +2110,7 @@ module.exports = {
   normalizeSessionAutomationActionEvent,
   normalizeElicitationActionEvent,
   SILENT_LARK_LOGGER,
+  assertMessageApiResponse,
   classifyFeishuSdkError,
   createIsolatedLarkCache,
   createLarkClient,
