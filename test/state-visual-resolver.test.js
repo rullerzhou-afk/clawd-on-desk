@@ -9,13 +9,25 @@ const {
   hasOwnVisualFiles,
   resolveVisualBinding,
   countActiveSessionsByStates,
+  countLiveSubagents,
   selectTieredStateFile,
+  getJugglingSvg,
   getWinningSessionDisplayHint,
   getSvgOverride,
 } = require("../src/state-visual-resolver");
 
 function session(state, overrides = {}) {
   return { state, updatedAt: 1000, headless: false, ...overrides };
+}
+
+function resolveJugglingSvg(sessions) {
+  return getJugglingSvg({
+    sessions,
+    theme: {
+      jugglingTiers: [{ minSessions: 2, file: "juggling-two.svg" }],
+    },
+    stateSvgs: { juggling: ["juggling-one.svg"] },
+  });
 }
 
 describe("state-visual-resolver bindings", () => {
@@ -82,6 +94,55 @@ describe("state-visual-resolver SVG overrides", () => {
       { minSessions: 3, file: "three.svg" },
       { minSessions: 2, file: "two.svg" },
     ], 3, "one.svg"), "three.svg");
+  });
+
+  it("selects the 2+ juggling tier for one session with two live subagents", () => {
+    const sessions = new Map([
+      ["j1", session("juggling", { subagentLive: 2 })],
+    ]);
+
+    assert.strictEqual(resolveJugglingSvg(sessions), "juggling-two.svg");
+  });
+
+  it("selects the tier-1 juggling file for explicit and legacy single-subagent records", () => {
+    const explicit = new Map([
+      ["j1", session("juggling", { subagentLive: 1 })],
+    ]);
+    const legacy = new Map([
+      ["j1", session("juggling")],
+    ]);
+
+    assert.strictEqual(resolveJugglingSvg(explicit), "juggling-one.svg");
+    assert.strictEqual(resolveJugglingSvg(legacy), "juggling-one.svg");
+  });
+
+  it("preserves 2+ juggling escalation across legacy session records", () => {
+    const sessions = new Map([
+      ["j1", session("juggling")],
+      ["j2", session("juggling")],
+    ]);
+
+    assert.strictEqual(resolveJugglingSvg(sessions), "juggling-two.svg");
+  });
+
+  it("excludes headless juggling sessions from the live-subagent sum", () => {
+    const sessions = new Map([
+      ["visible", session("juggling", { subagentLive: 1 })],
+      ["headless", session("juggling", { subagentLive: 4, headless: true })],
+    ]);
+
+    assert.strictEqual(countLiveSubagents(sessions), 1);
+    assert.strictEqual(resolveJugglingSvg(sessions), "juggling-one.svg");
+  });
+
+  it("treats zero, negative, and NaN counters as a single live subagent", () => {
+    const sessions = new Map([
+      ["zero", session("juggling", { subagentLive: 0 })],
+      ["negative", session("juggling", { subagentLive: -1 })],
+      ["nan", session("juggling", { subagentLive: NaN })],
+    ]);
+
+    assert.strictEqual(countLiveSubagents(sessions), 3);
   });
 
   it("uses the most recently updated display hint and ignores headless sessions", () => {

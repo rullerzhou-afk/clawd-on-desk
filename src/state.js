@@ -1072,7 +1072,7 @@ function getLastSessionSnapshot() {
 
 function describeSession(sessionId, session) {
   if (!session) return `sid=${sessionId} <deleted>`;
-  return [
+  const fields = [
     `sid=${sessionId}`,
     `state=${session.state || "-"}`,
     `resume=${session.resumeState || "-"}`,
@@ -1081,7 +1081,11 @@ function describeSession(sessionId, session) {
     `sourcePid=${session.sourcePid || "-"}`,
     `pidReachable=${session.pidReachable ? 1 : 0}`,
     `headless=${session.headless ? 1 : 0}`,
-  ].join(" ");
+  ];
+  if (session.state === "juggling" && Object.prototype.hasOwnProperty.call(session, "subagentLive")) {
+    fields.push(`live=${session.subagentLive}`);
+  }
+  return fields.join(" ");
 }
 
 // #583: renders hook-reported stdin diagnostics (present only when the hook's
@@ -1997,15 +2001,23 @@ function updateSession(sessionId, state, event, opts = {}) {
     }
 
     if (existing.state === "juggling") {
-      const resumeState = existing.resumeState || null;
-      if (resumeState) {
-        const dh = pickDisplayHint(resumeState, existing, displayHint);
-        sessions.set(sessionId, { state: resumeState, updatedAt: Date.now(), displayHint: dh, ...base, resumeState: null });
-        debugSession(`subagent-stop restore ${describeSession(sessionId, sessions.get(sessionId))}`);
+      const remaining = (existing.subagentLive || 1) - 1;
+      if (remaining > 0) {
+        const dh = pickDisplayHint("juggling", existing, displayHint);
+        sessions.set(sessionId, { state: "juggling", updatedAt: Date.now(), displayHint: dh, ...base, subagentLive: remaining, resumeState: existing.resumeState });
+        debugSession(`subagent-stop hold ${describeSession(sessionId, sessions.get(sessionId))}`);
       } else {
-        sessions.delete(sessionId);
-        debugSession(`subagent-stop delete sid=${sessionId} reason=no-resume`);
+        const resumeState = existing.resumeState || null;
+        if (resumeState) {
+          const dh = pickDisplayHint(resumeState, existing, displayHint);
+          sessions.set(sessionId, { state: resumeState, updatedAt: Date.now(), displayHint: dh, ...base, resumeState: null });
+          debugSession(`subagent-stop restore ${describeSession(sessionId, sessions.get(sessionId))}`);
+        } else {
+          sessions.delete(sessionId);
+          debugSession(`subagent-stop delete sid=${sessionId} reason=no-resume`);
+        }
       }
+      debugSession(`subagent-visual sid=${sessionId} live=${Math.max(0, remaining)} asset=${getSvgOverride("juggling") || "-"}`);
     } else {
       const dh = pickDisplayHint(existing.state, existing, displayHint);
       sessions.set(sessionId, { state: existing.state, updatedAt: Date.now(), displayHint: dh, ...base, resumeState: null });
@@ -2049,13 +2061,19 @@ function updateSession(sessionId, state, event, opts = {}) {
     return;
   } else if (preservedState) {
     const dh = pickDisplayHint(preservedState, existing, displayHint);
-    sessions.set(sessionId, {
+    const preserved = {
       state: preservedState,
       updatedAt: Date.now(),
       displayHint: dh,
       ...base,
       resumeState: srcResumeState,
-    });
+    };
+    // #862: preserve_state rebuilds the record; a juggling session must keep
+    // its live-subagent count or the 2+ tier drops while subagents still run.
+    if (preservedState === "juggling" && Number.isFinite(existing.subagentLive)) {
+      preserved.subagentLive = existing.subagentLive;
+    }
+    sessions.set(sessionId, preserved);
   } else if (state === "attention" || state === "notification" || SLEEP_SEQUENCE.has(state)) {
     sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), displayHint: null, ...base, resumeState: null });
   } else if (ONESHOT_STATES.has(state)) {
@@ -2071,9 +2089,11 @@ function updateSession(sessionId, state, event, opts = {}) {
   } else {
     if (isSubagentStart) {
       const dh = pickDisplayHint(state, existing, displayHint);
+      const subagentLive = existing && existing.state === "juggling" ? (existing.subagentLive || 1) + 1 : 1;
       const resumeState = existing && existing.state !== "juggling" ? existing.state : srcResumeState;
-      sessions.set(sessionId, { state, updatedAt: Date.now(), displayHint: dh, ...base, resumeState });
+      sessions.set(sessionId, { state, updatedAt: Date.now(), displayHint: dh, ...base, subagentLive, resumeState });
       debugSession(`subagent-start store ${describeSession(sessionId, sessions.get(sessionId))}`);
+      debugSession(`subagent-visual sid=${sessionId} live=${subagentLive} asset=${getSvgOverride("juggling") || "-"}`);
     } else if (existing && existing.state === "juggling" && state === "working") {
       existing.updatedAt = Date.now();
       existing.displayHint = pickDisplayHint("juggling", existing, displayHint);
@@ -2272,6 +2292,9 @@ function restoreSessionFromLease(lease) {
   const sourcePid = Number.isInteger(lease.sourcePid) && lease.sourcePid > 0 ? lease.sourcePid : null;
   if (!pid && !sourcePid) return false;
   sessions.set(sessionId, {
+    // #862 known limitation: leases do not record the live-subagent count, so
+    // a juggling session restored after a daemon restart re-enters at the
+    // 1-subagent tier until the next SubagentStart/Stop event corrects it.
     state: lease.state,
     updatedAt: Date.now(),
     displayHint: null,

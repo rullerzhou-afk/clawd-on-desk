@@ -100,6 +100,17 @@ function countActiveSessionsByStates(sessions, states) {
   return count;
 }
 
+function countLiveSubagents(sessions) {
+  let count = 0;
+  for (const [, session] of normalizeSessionsIterable(sessions)) {
+    if (!session.headless && session.state === "juggling") {
+      const live = session.subagentLive;
+      count += Number.isFinite(live) && live >= 1 ? live : 1;
+    }
+  }
+  return count;
+}
+
 function selectTieredStateFile(tiers, count, fallbackFile) {
   if (tiers) {
     for (const tier of tiers) {
@@ -123,10 +134,7 @@ function getWorkingSvg(options = {}) {
 }
 
 function getJugglingSvg(options = {}) {
-  const count = countActiveSessionsByStates(
-    options.sessions,
-    new Set(["juggling"])
-  );
+  const count = countLiveSubagents(options.sessions);
   const stateSvgs = options.stateSvgs;
   return selectTieredStateFile(
     options.theme && options.theme.jugglingTiers,
@@ -181,6 +189,7 @@ module.exports = {
   hasOwnVisualFiles,
   resolveVisualBinding,
   countActiveSessionsByStates,
+  countLiveSubagents,
   selectTieredStateFile,
   getWorkingSvg,
   getJugglingSvg,

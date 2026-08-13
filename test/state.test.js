@@ -1407,6 +1407,65 @@ describe("updateSession()", () => {
     assert.strictEqual(api.sessions.get("s1").state, "working");
   });
 
+  it("tracks concurrent subagents and restores only after the final stop", () => {
+    update(api, { id: "s1", state: "working", event: "PreToolUse" });
+    update(api, { id: "s1", state: "juggling", event: "SubagentStart" });
+    update(api, { id: "s1", state: "juggling", event: "SubagentStart" });
+
+    let stored = api.sessions.get("s1");
+    assert.strictEqual(stored.subagentLive, 2);
+    assert.strictEqual(stored.resumeState, "working");
+    assert.strictEqual(api.getSvgOverride("juggling"), "clawd-working-juggling.svg");
+
+    update(api, { id: "s1", state: "working", event: "SubagentStop" });
+
+    stored = api.sessions.get("s1");
+    assert.strictEqual(stored.state, "juggling");
+    assert.strictEqual(stored.subagentLive, 1);
+    assert.strictEqual(stored.resumeState, "working");
+    assert.strictEqual(api.getSvgOverride("juggling"), "clawd-headphones-groove.svg");
+
+    update(api, { id: "s1", state: "working", event: "SubagentStop" });
+
+    stored = api.sessions.get("s1");
+    assert.strictEqual(stored.state, "working");
+    assert.strictEqual(stored.resumeState, null);
+    assert.strictEqual(Object.hasOwn(stored, "subagentLive"), false);
+  });
+
+  it("preserve_state refresh keeps the live-subagent counter while juggling", () => {
+    update(api, { id: "s1", state: "working", event: "PreToolUse" });
+    update(api, { id: "s1", state: "juggling", event: "SubagentStart" });
+    update(api, { id: "s1", state: "juggling", event: "SubagentStart" });
+
+    api.updateSession("s1", "working", "event_msg:token_count", {
+      agentId: "claude-code",
+      cwd: "/tmp",
+      preserveState: true,
+    });
+
+    const stored = api.sessions.get("s1");
+    assert.strictEqual(stored.state, "juggling");
+    assert.strictEqual(stored.subagentLive, 2);
+    assert.strictEqual(stored.resumeState, "working");
+    assert.strictEqual(api.getSvgOverride("juggling"), "clawd-working-juggling.svg");
+
+    update(api, { id: "s1", state: "working", event: "SubagentStop" });
+    update(api, { id: "s1", state: "working", event: "SubagentStop" });
+    assert.strictEqual(api.sessions.get("s1").state, "working");
+  });
+
+  it("restores a legacy juggling record without a live-subagent counter on its first stop", () => {
+    api.sessions.set("legacy", rawSession("juggling", { resumeState: "thinking" }));
+    assert.strictEqual(Object.hasOwn(api.sessions.get("legacy"), "subagentLive"), false);
+
+    update(api, { id: "legacy", state: "working", event: "SubagentStop" });
+
+    const stored = api.sessions.get("legacy");
+    assert.strictEqual(stored.state, "thinking");
+    assert.strictEqual(stored.resumeState, null);
+  });
+
   it("subagent-only session is removed on SubagentStop", () => {
     update(api, { id: "s1", state: "juggling", event: "SubagentStart" });
     assert.ok(api.sessions.has("s1"));
