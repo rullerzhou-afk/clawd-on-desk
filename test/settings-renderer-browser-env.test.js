@@ -54,6 +54,8 @@ const VERIFIED_GITHUB_CONTRIBUTORS = [
   "YOOGOMJA",
   "anupamme",
   "anthonyonazure",
+  "weed33834",
+  "arismarioneves",
 ];
 
 function createDeferred() {
@@ -228,6 +230,10 @@ class FakeElement {
     child.parentNode = this;
     this.children.push(child);
     return child;
+  }
+
+  append(...children) {
+    for (const child of children) this.appendChild(child);
   }
 
   insertBefore(child, reference) {
@@ -413,6 +419,9 @@ function loadSharedLanguagePickerForTest({
   options = ["en", "zh", "ja"],
   onChange = () => Promise.resolve(true),
   innerHeight = 600,
+  transitionDuration = "0.14s",
+  transitionDelay = "0s",
+  lockWhilePending = false,
 } = {}) {
   const body = new FakeElement("body");
   const boundary = new FakeElement("div");
@@ -421,11 +430,22 @@ function loadSharedLanguagePickerForTest({
   const documentListeners = new Map();
   const windowListeners = new Map();
   const animationFrames = new Map();
+  const timers = new Map();
+  const timerDelays = new Map();
   let nextAnimationFrameId = 1;
+  let nextTimerId = 1;
   const document = {
     body,
+    activeElement: body,
     documentElement: { clientHeight: innerHeight },
-    createElement: (tagName) => new FakeElement(tagName),
+    createElement(tagName) {
+      const element = new FakeElement(tagName);
+      element.focus = () => {
+        element.focused = true;
+        document.activeElement = element;
+      };
+      return element;
+    },
     addEventListener(type, cb) {
       if (!documentListeners.has(type)) documentListeners.set(type, []);
       documentListeners.get(type).push(cb);
@@ -459,6 +479,22 @@ function loadSharedLanguagePickerForTest({
     cancelAnimationFrame(id) {
       animationFrames.delete(id);
     },
+    setTimeout(cb, delay) {
+      const id = nextTimerId++;
+      timers.set(id, cb);
+      timerDelays.set(id, delay);
+      return id;
+    },
+    clearTimeout(id) {
+      timers.delete(id);
+      timerDelays.delete(id);
+    },
+    getComputedStyle() {
+      return { transitionDuration, transitionDelay };
+    },
+    matchMedia() {
+      return { matches: false };
+    },
     window: null,
     globalThis: null,
   };
@@ -472,6 +508,7 @@ function loadSharedLanguagePickerForTest({
     options: options.map((option) => ({ value: option, label: option.toUpperCase() })),
     ariaLabel: "Language",
     onChange,
+    lockWhilePending,
   });
   boundary.appendChild(control.element);
 
@@ -495,7 +532,21 @@ function loadSharedLanguagePickerForTest({
         for (const callback of pending) callback();
       }
     },
+    flushTimers() {
+      while (timers.size > 0) {
+        const pending = [...timers.values()];
+        timers.clear();
+        timerDelays.clear();
+        for (const callback of pending) callback();
+      }
+    },
     getPendingAnimationFrameCount: () => animationFrames.size,
+    getPendingTimerCount: () => timers.size,
+    getPendingTimerDelays: () => [...timerDelays.values()],
+    getActiveElement: () => document.activeElement,
+    setActiveElement: (element) => { document.activeElement = element; },
+    body,
+    getDocumentListenerCount: (type) => (documentListeners.get(type) || []).length,
     getWindowListenerCount: (type) => (windowListeners.get(type) || []).length,
   };
 }
@@ -648,6 +699,7 @@ function loadGeneralLanguageRowForTest({
 function loadGeneralTabForTest({
   snapshot,
   settingsAPI = {},
+  platform = "Win32",
   requestAnimationFrame = (cb) => {
     cb();
     return 1;
@@ -669,7 +721,7 @@ function loadGeneralTabForTest({
 
   const context = {
     console,
-    navigator: { platform: "Win32" },
+    navigator: { platform },
     localStorage: {
       getItem: () => null,
       setItem: () => {},
@@ -762,6 +814,9 @@ function makeGeneralSnapshot(overrides = {}) {
     sessionHudEnabled: true,
     sessionHudShowStateLabels: true,
     sessionHudShowElapsed: true,
+    sessionHudShowContextUsage: true,
+    sessionHudShowQuota: true,
+    quotaRingDisplayMode: "used",
     sessionHudCleanupDetached: true,
     soundMuted: false,
     soundVolume: 0.5,
@@ -803,6 +858,7 @@ function loadRemoteSshTabForTest({
   cleanup = () => Promise.resolve({ status: "ok", uninstalled: true }),
   command = () => Promise.resolve({ status: "ok" }),
   confirm = () => true,
+  listStatuses = null,
 } = {}) {
   const body = new FakeElement("body");
   const content = new FakeElement("main");
@@ -840,6 +896,7 @@ function loadRemoteSshTabForTest({
     openTerminal: () => Promise.resolve({ status: "ok" }),
     deploy: () => Promise.resolve({ status: "ok" }),
   };
+  if (typeof listStatuses === "function") remoteSsh.listStatuses = listStatuses;
   const context = {
     console,
     navigator: { platform: "Win32" },
@@ -1326,6 +1383,7 @@ function loadTelegramApprovalTabForTest({
   settingsAPI = {},
   confirm = () => true,
   console: consoleOverride = console,
+  showConfirmModal = () => Promise.resolve("confirm"),
 } = {}) {
   const documentListeners = new Map();
   const body = new FakeElement("body");
@@ -1395,7 +1453,6 @@ function loadTelegramApprovalTabForTest({
     window: null,
     globalThis: null,
     settingsAPI: api,
-    confirm,
   };
   context.window = context;
   context.globalThis = context;
@@ -1426,6 +1483,7 @@ function loadTelegramApprovalTabForTest({
     runtime: {},
     helpers: {
       t: (key) => key,
+      showSettingsConfirmModal: showConfirmModal,
       buildSection: (_title, rows) => {
         const section = document.createElement("section");
         for (const row of rows) section.appendChild(row);
@@ -2715,6 +2773,104 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.content.querySelector(".remote-ssh-btn-danger").disabled, false);
   });
 
+  it("disables a profile card and remote actions while another profile owns its serialized transport", () => {
+    const profiles = [
+      {
+        id: "codespace-owner",
+        label: "Codespace owner",
+        host: "owner-alias",
+        remoteForwardPort: 23333,
+        lastDeployedAt: Date.now(),
+      },
+      {
+        id: "codespace-conflict",
+        label: "Codespace conflict",
+        host: "conflict-alias",
+        remoteForwardPort: 23334,
+        lastDeployedAt: Date.now(),
+      },
+    ];
+    const harness = loadRemoteSshTabForTest({
+      snapshot: { lang: "en", remoteSsh: { profiles } },
+    });
+    harness.content.querySelectorAll(".remote-ssh-card")[1].dispatchEvent({ type: "click" });
+    harness.emitStatus({
+      profileId: profiles[1].id,
+      status: "idle",
+      transportPhase: "tunnel",
+      transportOwnerProfileId: profiles[0].id,
+      transportOperation: "connect",
+      conflictingProfileIds: [profiles[0].id],
+    });
+
+    const cards = harness.content.querySelectorAll(".remote-ssh-card");
+    const conflictConnect = cards[1].querySelectorAll("button")
+      .find((button) => button.textContent === "Connect");
+    assert.ok(conflictConnect);
+    assert.strictEqual(conflictConnect.disabled, true);
+    const detailButtons = harness.content.querySelector(".remote-ssh-detail").querySelectorAll("button");
+    for (const text of ["Edit", "Delete", "Authenticate", "Open Terminal", "Deploy / Repair Hooks"]) {
+      const button = detailButtons.find((candidate) => candidate.textContent === text);
+      assert.ok(button, `${text} button should exist`);
+      assert.strictEqual(button.disabled, true, `${text} must be disabled for a conflicting profile`);
+    }
+
+    harness.emitStatus({
+      profileId: profiles[1].id,
+      status: "idle",
+      transportPhase: "idle",
+      transportOwnerProfileId: null,
+      conflictingProfileIds: [],
+    });
+    const releasedConnect = harness.content.querySelectorAll(".remote-ssh-card")[1]
+      .querySelectorAll("button").find((button) => button.textContent === "Connect");
+    assert.strictEqual(releasedConnect.disabled, false);
+    const releasedDetailButtons = harness.content.querySelector(".remote-ssh-detail").querySelectorAll("button");
+    for (const text of ["Edit", "Delete", "Authenticate", "Open Terminal", "Deploy / Repair Hooks"]) {
+      const button = releasedDetailButtons.find((candidate) => candidate.textContent === text);
+      assert.strictEqual(button.disabled, false, `${text} must recover after release`);
+    }
+  });
+
+  it("does not let a stale initial Remote SSH list overwrite a newer busy event", async () => {
+    const listed = createDeferred();
+    const profile = {
+      id: "codespace-list-race",
+      label: "Codespace list race",
+      host: "list-race-alias",
+      remoteForwardPort: 23333,
+      lastDeployedAt: Date.now(),
+    };
+    const harness = loadRemoteSshTabForTest({
+      snapshot: { lang: "en", remoteSsh: { profiles: [profile] } },
+      listStatuses: () => listed.promise,
+    });
+    harness.emitStatus({
+      profileId: profile.id,
+      status: "idle",
+      transportPhase: "operation",
+      transportOwnerProfileId: "other-profile",
+      transportOperation: "deploy",
+      conflictingProfileIds: ["other-profile"],
+    });
+    listed.resolve({
+      status: "ok",
+      statuses: [{
+        profileId: profile.id,
+        status: "idle",
+        transportPhase: "idle",
+        transportOwnerProfileId: null,
+        conflictingProfileIds: [],
+      }],
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const connect = harness.content.querySelector(".remote-ssh-card").querySelectorAll("button")
+      .find((button) => button.textContent === "Connect");
+    assert.ok(connect);
+    assert.strictEqual(connect.disabled, true);
+  });
+
   it("keeps the Remote SSH port and option cards in the local draft until save", async () => {
     const harness = loadRemoteSshTabForTest({
       snapshot: { lang: "en", remoteSsh: { profiles: [] } },
@@ -2724,6 +2880,9 @@ describe("settings renderer browser environment", () => {
     assert.ok(addButton);
     addButton.dispatchEvent({ type: "click" });
 
+    const transportPicker = harness.content.querySelectorAll(".settings-select")[0];
+    assert.equal(getSelectedPickerValue(transportPicker), "auto");
+    choosePickerOption(transportPicker, "serialized");
     const portPicker = harness.content.querySelector(".remote-ssh-port-select");
     assert.ok(portPicker, "remote forward port should use the shared Settings picker");
     const portHint = portPicker.parentNode.querySelector(".remote-ssh-field-hint");
@@ -2756,6 +2915,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(addCall);
     assert.equal(addCall.payload.remoteForwardPort, 23336);
     assert.equal(addCall.payload.autoStartCodexMonitor, true);
+    assert.equal(addCall.payload.sshTransportMode, "serialized");
     assert.equal(addCall.payload.chainStatusline, false);
     assert.equal(addCall.payload.connectOnLaunch, true);
   });
@@ -2881,7 +3041,7 @@ describe("settings renderer browser environment", () => {
       "telegramMigrationNudgeLegacyBody",
       "telegramMigrationNudgeNativeBody",
     ];
-    assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja"]);
+    assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja", "pt-BR"]);
     for (const lang of SUPPORTED_LANGS) {
       for (const key of keys) {
         assert.equal(
@@ -3424,7 +3584,7 @@ describe("settings renderer browser environment", () => {
     );
   });
 
-  it("requires confirmation before enabling full Telegram completion output", async () => {
+  it("uses the shared warning modal before enabling full Telegram completion output", async () => {
     const confirmCalls = [];
     const harness = loadTelegramApprovalTabForTest({
       snapshot: {
@@ -3436,9 +3596,9 @@ describe("settings renderer browser environment", () => {
           completionOutputMode: "off",
         },
       },
-      confirm: (message) => {
-        confirmCalls.push(message);
-        return false;
+      showConfirmModal: (options) => {
+        confirmCalls.push(options);
+        return Promise.resolve("cancel");
       },
     });
     await Promise.resolve();
@@ -3450,10 +3610,40 @@ describe("settings renderer browser environment", () => {
       select.querySelectorAll("button").map((option) => option.dataset.value),
       ["off", "full"]
     );
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    assert.match(
+      css,
+      /\.tg-approval-output-choice\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);[^}]*gap:\s*10px;[^}]*background:\s*transparent;/s
+    );
+    assert.match(
+      css,
+      /\.tg-approval-output-choice button::after\s*\{[^}]*border-radius:\s*50%;/s
+    );
+    assert.match(
+      css,
+      /\.tg-approval-output-choice button\.active::after\s*\{[^}]*background:\s*var\(--accent\);/s
+    );
     chooseSegmentedOption(select, "full");
     await Promise.resolve();
+    await Promise.resolve();
 
-    assert.deepStrictEqual(confirmCalls, ["telegramApprovalCompletionOutputFullConfirm"]);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(confirmCalls)), [{
+      title: "telegramApprovalCompletionOutputFullConfirmTitle",
+      detail: "telegramApprovalCompletionOutputFullConfirm",
+      actions: [
+        {
+          id: "cancel",
+          label: "telegramApprovalCancel",
+          tone: "neutral",
+          defaultFocus: true,
+        },
+        {
+          id: "confirm",
+          label: "telegramApprovalCompletionOutputFullConfirmAction",
+          tone: "danger",
+        },
+      ],
+    }]);
     assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates)), []);
     const offButton = select.querySelectorAll("button").find((button) => button.dataset.value === "off");
     assert.equal(offButton.getAttribute("aria-checked"), "true");
@@ -3468,7 +3658,7 @@ describe("settings renderer browser environment", () => {
           completionOutputMode: "off",
         },
       },
-      confirm: () => true,
+      showConfirmModal: () => Promise.resolve("confirm"),
     });
     await Promise.resolve();
     await Promise.resolve();
@@ -3476,6 +3666,8 @@ describe("settings renderer browser environment", () => {
 
     const confirmedSelect = confirmed.content.querySelector(".tg-approval-output-choice");
     chooseSegmentedOption(confirmedSelect, "full");
+    await Promise.resolve();
+    await Promise.resolve();
 
     assert.deepStrictEqual(JSON.parse(JSON.stringify(confirmed.updates)), [{
       key: "tgApproval",
@@ -5337,6 +5529,8 @@ describe("settings renderer browser environment", () => {
     assert.match(css, /@media \(max-width:\s*980px\)\s*\{\s*\.feishu-approval-timeout-row\s*\{[^}]*\}\s*\.feishu-approval-timeout-row \.row-control\s*\{[^}]*width:\s*100%;[^}]*margin-left:\s*0;/s);
     assert.match(css, /@media \(max-width:\s*980px\)\s*\{\s*\.feishu-approval-timeout-row\s*\{[^}]*\}\s*\.feishu-approval-timeout-row \.row-control\s*\{[^}]*\}\s*\.feishu-approval-timeout-select\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*0;[^}]*max-width:\s*none;/s);
     assert.equal(getSelectedPickerValue(select), "15");
+    const renderRequestCount = harness.renderRequests.length;
+    const previousSnapshot = JSON.parse(JSON.stringify(harness.core.state.snapshot));
     choosePickerOption(select, "30");
 
     await Promise.resolve();
@@ -5345,6 +5539,39 @@ describe("settings renderer browser environment", () => {
       payload: { connectionTimeoutSeconds: 30 },
     });
     assert.equal(harness.updates.some((call) => call.key === "feishuApproval"), false);
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(
+      harness.renderRequests.length,
+      renderRequestCount,
+      "the timeout picker owns its pending state without rebuilding the page"
+    );
+
+    const nextSnapshot = {
+      ...previousSnapshot,
+      feishuApproval: {
+        ...previousSnapshot.feishuApproval,
+        connectionTimeoutSeconds: 30,
+      },
+    };
+    harness.core.state.snapshot = nextSnapshot;
+    assert.equal(harness.core.tabs["telegram-approval"].patchInPlace(
+      { feishuApproval: nextSnapshot.feishuApproval },
+      { previousSnapshot, snapshot: nextSnapshot }
+    ), true);
+    assert.strictEqual(harness.content.querySelector(".feishu-approval-timeout-select"), select);
+    assert.equal(getSelectedPickerValue(select), "30");
+
+    assert.equal(harness.core.tabs["telegram-approval"].patchInPlace(
+      { feishuApproval: { ...nextSnapshot.feishuApproval, enabled: false } },
+      {
+        previousSnapshot: nextSnapshot,
+        snapshot: {
+          ...nextSnapshot,
+          feishuApproval: { ...nextSnapshot.feishuApproval, enabled: false },
+        },
+      }
+    ), false, "other Feishu configuration changes still require a full render");
   });
 
   it("saves Feishu Enable through an authoritative field-level patch", async () => {
@@ -5564,6 +5791,12 @@ describe("settings renderer browser environment", () => {
       assert.equal(!!note, shouldShow, `${idType}: user-ID permission note presence`);
       if (shouldShow) assert.match(note.textContent, /Get user user ID/);
     }
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    assert.match(
+      css,
+      /\.feishu-approval-id-type button\s*\{[^}]*flex:\s*1 1 0;[^}]*min-width:\s*0;/s,
+      "all three ID type options should evenly fill the segmented control"
+    );
   });
 
   it("reports an invalid App ID instead of claiming the setup is ready to enable", async () => {
@@ -6456,6 +6689,7 @@ describe("settings renderer browser environment", () => {
     const pickerSource = fs.readFileSync(LANGUAGE_PICKER_JS, "utf8");
     const pickerCss = fs.readFileSync(LANGUAGE_PICKER_CSS, "utf8");
     const settingsHtml = fs.readFileSync(SETTINGS_HTML, "utf8");
+    const settingsCss = fs.readFileSync(SETTINGS_CSS, "utf8");
 
     assert.ok(new RegExp(
       String.raw`const LANGUAGE_OPTIONS = \[` +
@@ -6472,11 +6706,15 @@ describe("settings renderer browser environment", () => {
     assert.ok(pickerSource.includes(`role", "option"`));
     assert.ok(settingsHtml.includes(`href="language-picker.css"`));
     assert.ok(settingsHtml.includes(`src="language-picker.js"`));
+    assert.match(settingsHtml, /<main class="content" id="content" data-language-picker-boundary><\/main>/);
+    assert.match(settingsCss, /\.content\s*\{[^}]*overflow-y:\s*auto;[^}]*scrollbar-gutter:\s*stable;/);
     assert.ok(!generalSource.includes("language-segmented"));
     assert.ok(!generalSource.includes("runtime.languageTransition"));
     assert.ok(!generalSource.includes("--language-active-index"));
     assert.ok(!coreSource.includes("languageTransition"));
     assert.ok(/\.language-picker-menu\s*\{[\s\S]*box-shadow:/.test(pickerCss));
+    assert.ok(/\.language-picker-menu\s*\{[\s\S]*display:\s*none;/.test(pickerCss));
+    assert.ok(/\.language-picker\.menu-mounted \.language-picker-menu\s*\{[\s\S]*display:\s*block;/.test(pickerCss));
     assert.ok(/\.language-picker-option:hover\s*\{[\s\S]*background:/.test(pickerCss));
     assert.ok(/\.language-picker-option:focus-visible\s*\{[\s\S]*outline:\s*2px solid var\(--text-primary,\s*var\(--text\)\);[\s\S]*outline-offset:\s*-2px;[\s\S]*background:/.test(pickerCss));
     assert.ok(/\.language-picker-option\.selected\s*\{[\s\S]*color:\s*var\(--accent\);/.test(pickerCss));
@@ -6486,19 +6724,22 @@ describe("settings renderer browser environment", () => {
     assert.ok(!pickerCss.includes(".language-segmented"));
   });
 
-  it("lets the open language picker escape its section without changing closed-card clipping", () => {
+  it("lets a mounted language picker finish closing outside clipped settings cards", () => {
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");
     const sectionRowsRule = css.match(/\.section-rows\s*\{([^}]*)\}/);
-    const openSectionRule = css.match(/\.section:has\(\.language-picker\.open\)\s*\{([^}]*)\}/);
-    const openRowsRule = css.match(/\.section-rows:has\(\.language-picker\.open\)\s*\{([^}]*)\}/);
+    const mountedSectionRule = css.match(/\.section:has\(\.language-picker\.menu-mounted\)\s*\{([^}]*)\}/);
+    const mountedRowsRule = css.match(/\.section-rows:has\(\.language-picker\.menu-mounted\)\s*\{([^}]*)\}/);
+    const mountedCollapsibleRule = css.match(/\.collapsible-group:not\(\.collapsed\):has\(\.language-picker\.menu-mounted\)\s*>\s*\.collapsible-group-body\s*\{([^}]*)\}/);
 
     assert.ok(sectionRowsRule, "settings cards should retain their base clipping rule");
     assert.match(sectionRowsRule[1], /overflow:\s*hidden;/);
-    assert.ok(openSectionRule, "the section containing an open language picker should be raised");
-    assert.match(openSectionRule[1], /position:\s*relative;/);
-    assert.match(openSectionRule[1], /z-index:\s*1;/);
-    assert.ok(openRowsRule, "the open language picker should escape the settings card");
-    assert.match(openRowsRule[1], /overflow:\s*visible;/);
+    assert.ok(mountedSectionRule, "the section should stay raised through the close animation");
+    assert.match(mountedSectionRule[1], /position:\s*relative;/);
+    assert.match(mountedSectionRule[1], /z-index:\s*1;/);
+    assert.ok(mountedRowsRule, "a mounted picker should escape the settings card");
+    assert.match(mountedRowsRule[1], /overflow:\s*visible;/);
+    assert.ok(mountedCollapsibleRule, "collapsible content should not clip a mounted picker");
+    assert.match(mountedCollapsibleRule[1], /overflow:\s*visible;/);
   });
 
   it("populates the language picker with current selection and propagates click changes", () => {
@@ -6620,7 +6861,33 @@ describe("settings renderer browser environment", () => {
     locked.setPending(true);
     lockedTrigger.dispatchEvent({ type: "click" });
     assert.equal(locked.element.classList.contains("open"), false);
-    assert.equal(lockedTrigger.disabled, true);
+    assert.equal(lockedTrigger.disabled, false);
+    assert.equal(lockedTrigger.getAttribute("aria-disabled"), "true");
+    assert.equal(lockedTrigger.getAttribute("aria-busy"), "true");
+  });
+
+  it("restores a Settings picker trigger only when async saving leaves focus on the page", async () => {
+    const save = createDeferred();
+    const harness = loadSharedLanguagePickerForTest({
+      onChange: () => save.promise,
+      lockWhilePending: true,
+    });
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.optionElements[1].dispatchEvent({ type: "click" });
+    assert.equal(harness.trigger.disabled, false);
+    assert.equal(harness.trigger.getAttribute("aria-disabled"), "true");
+    assert.equal(harness.picker.classList.contains("pending"), true);
+
+    // Native Chromium moves focus to BODY when a focused button becomes
+    // disabled. The fake DOM has no native focus manager, so model that step.
+    harness.trigger.focused = false;
+    harness.setActiveElement(harness.body);
+    save.resolve(true);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(harness.getActiveElement(), harness.trigger);
+    assert.equal(harness.trigger.focused, true);
+    assert.equal(harness.picker.classList.contains("pending"), false);
   });
 
   it("builds accessible segmented radios with keyboard navigation and rollback", async () => {
@@ -6676,6 +6943,262 @@ describe("settings renderer browser environment", () => {
     core.ops.clearMountedControls();
     assert.equal(buttons[0].eventListeners.click.length, 0);
     assert.equal(buttons[0].eventListeners.keydown.length, 0);
+  });
+
+  it("restores segmented-control focus after a warning dialog closes", async () => {
+    const body = new FakeElement("body");
+    const modalRoot = new FakeElement("div");
+    modalRoot.id = "modalRoot";
+    body.appendChild(modalRoot);
+    const listeners = new Map();
+    const document = {
+      body,
+      activeElement: body,
+      createElement(tagName) {
+        const element = new FakeElement(tagName);
+        element.focus = () => {
+          if (element.disabled) return;
+          element.focused = true;
+          document.activeElement = element;
+        };
+        return element;
+      },
+      createElementNS(_namespace, tagName) {
+        return this.createElement(tagName);
+      },
+      getElementById: (id) => (id === "modalRoot" ? modalRoot : null),
+      addEventListener(type, listener) { listeners.set(type, listener); },
+      removeEventListener(type) { listeners.delete(type); },
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const control = core.helpers.buildSegmentedRadio({
+      value: "off",
+      options: [{ value: "off", label: "Off" }, { value: "auto", label: "Auto" }],
+      onChange: () => core.helpers.showSettingsConfirmModal({
+        title: "Enable automation?",
+        detail: "Review the risk first.",
+        actions: [
+          { id: "cancel", label: "Cancel", defaultFocus: true },
+          { id: "confirm", label: "Enable", tone: "danger" },
+        ],
+      }).then((actionId) => actionId === "confirm"),
+    });
+    body.appendChild(control.element);
+    const source = control.element.querySelectorAll("button")[1];
+    source.focus();
+    source.dispatchEvent({ type: "click" });
+
+    assert.equal(source.disabled, true);
+    assert.notStrictEqual(document.activeElement, source);
+    listeners.get("keydown")({ key: "Escape", preventDefault() {} });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.equal(source.disabled, false);
+    assert.strictEqual(document.activeElement, source);
+    assert.equal(source.getAttribute("aria-checked"), "false");
+  });
+
+  it("restores a stable Settings focus key across a full content render", () => {
+    const body = new FakeElement("body");
+    const content = new FakeElement("main");
+    content.id = "content";
+    body.appendChild(content);
+    const document = {
+      body,
+      activeElement: body,
+      createElement(tagName) {
+        const element = new FakeElement(tagName);
+        element.focus = () => {
+          element.focused = true;
+          document.activeElement = element;
+        };
+        return element;
+      },
+      getElementById: (id) => (id === "content" ? content : null),
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const first = document.createElement("button");
+    first.setAttribute("data-settings-focus-key", "feishu-timeout");
+    content.appendChild(first);
+    first.focus();
+
+    let replacement = null;
+    core.ops.installRenderHooks({
+      content() {
+        content.innerHTML = "";
+        replacement = document.createElement("button");
+        replacement.setAttribute("data-settings-focus-key", "feishu-timeout");
+        content.appendChild(replacement);
+      },
+    });
+    core.ops.requestRender({ content: true });
+
+    assert.equal(first.isConnected, false);
+    assert.strictEqual(document.activeElement, replacement);
+    assert.equal(replacement.focused, true);
+  });
+
+  it("builds Settings buttons from one tone, size, and pending-state contract", () => {
+    const document = {
+      body: new FakeElement("body"),
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: () => null,
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const button = core.helpers.buildButton({
+      label: "Delete",
+      tone: "danger",
+      size: "compact",
+      pending: true,
+      ariaLabel: "Delete profile",
+    });
+
+    assert.equal(button.textContent, "Delete");
+    assert.equal(button.type, "button");
+    assert.equal(button.classList.contains("settings-button"), true);
+    assert.equal(button.classList.contains("settings-button-compact"), true);
+    assert.equal(button.classList.contains("danger"), true);
+    assert.equal(button.classList.contains("pending"), true);
+    assert.equal(button.disabled, true);
+    assert.equal(button.getAttribute("aria-busy"), "true");
+    assert.equal(button.getAttribute("aria-label"), "Delete profile");
+  });
+
+  it("uses the shared Settings dialog shell with ARIA links and focus restoration", async () => {
+    const body = new FakeElement("body");
+    const modalRoot = new FakeElement("div");
+    const launchButton = new FakeElement("button");
+    body.append(launchButton, modalRoot);
+    const listeners = new Map();
+    const document = {
+      body,
+      activeElement: launchButton,
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: (id) => (id === "modalRoot" ? modalRoot : null),
+      addEventListener(type, listener) { listeners.set(type, listener); },
+      removeEventListener(type) { listeners.delete(type); },
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const resultPromise = core.helpers.showSettingsConfirmModal({
+      title: "Remove profile?",
+      detail: "This cannot be undone.",
+      iconText: "this override must be ignored",
+      actions: [
+        { id: "cancel", label: "Cancel", tone: "neutral", defaultFocus: true },
+        { id: "remove", label: "Remove", tone: "danger" },
+      ],
+    });
+
+    const dialog = modalRoot.querySelector(".settings-dialog");
+    assert.ok(dialog);
+    assert.equal(dialog.getAttribute("role"), "dialog");
+    assert.equal(dialog.getAttribute("aria-modal"), "true");
+    assert.match(dialog.getAttribute("aria-labelledby"), /^settings-dialog-\d+-title$/);
+    assert.match(dialog.getAttribute("aria-describedby"), /^settings-dialog-\d+-detail$/);
+    const icon = dialog.querySelector(".settings-confirm-icon");
+    assert.ok(icon);
+    assert.equal(icon.textContent, "");
+    assert.equal(icon.children[0].tagName, "SVG");
+    assert.equal(icon.children[0].getAttribute("viewBox"), "0 0 20 20");
+    assert.equal(icon.children[0].children[0].getAttribute("d"), "M10 4.2v7.4m0 3.1v.1");
+    assert.equal(listeners.has("keydown"), true);
+    dialog.querySelectorAll("button")[1].dispatchEvent({ type: "click" });
+
+    assert.equal(await resultPromise, "remove");
+    assert.equal(modalRoot.children.length, 0);
+    assert.equal(launchButton.focused, true);
+    assert.equal(listeners.has("keydown"), false);
+  });
+
+  it("does not restore dialog focus to a launch element removed during a Settings rerender", async () => {
+    const body = new FakeElement("body");
+    const modalRoot = new FakeElement("div");
+    const launchButton = new FakeElement("button");
+    body.append(launchButton, modalRoot);
+    const document = {
+      body,
+      activeElement: launchButton,
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: (id) => (id === "modalRoot" ? modalRoot : null),
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const resultPromise = core.helpers.showSettingsConfirmModal({
+      title: "Remove profile?",
+      detail: "This cannot be undone.",
+      actions: [{ id: "cancel", label: "Cancel", tone: "neutral" }],
+    });
+
+    launchButton.remove();
+    modalRoot.querySelector("button").dispatchEvent({ type: "click" });
+
+    assert.equal(await resultPromise, "cancel");
+    assert.equal(launchButton.isConnected, false);
+    assert.equal(launchButton.focused, false);
+  });
+
+  it("keeps LAN mobile reset visually dangerous while token regeneration stays neutral", () => {
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    assert.match(
+      css,
+      /\.mobile-action-btn\s*\{[^}]*background:\s*var\(--panel-bg\);[^}]*color:\s*var\(--text-primary\);/s
+    );
+    assert.match(
+      css,
+      /\.mobile-action-btn\.mobile-action-danger\s*\{[^}]*background:\s*var\(--danger-action\);[^}]*color:\s*#ffffff;/s
+    );
+    assert.match(
+      css,
+      /\.mobile-action-btn\.mobile-action-danger:hover:not\(:disabled\)\s*\{[^}]*background:\s*var\(--danger-action-hover\);/s
+    );
+    assert.ok(!css.includes(".mobile-action-btn:hover { background: var(--accent);"));
+  });
+
+  it("keeps warning acknowledgements in a wide-hitbox row with the safe action first", async () => {
+    const body = new FakeElement("body");
+    const modalRoot = new FakeElement("div");
+    const launchButton = new FakeElement("button");
+    body.append(launchButton, modalRoot);
+    const document = {
+      body,
+      activeElement: launchButton,
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: (id) => (id === "modalRoot" ? modalRoot : null),
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const resultPromise = core.helpers.showSettingsDialog({
+      title: "Auto-approve tools?",
+      detail: "Supported tool requests will be approved automatically.",
+      checkboxLabel: "I understand the risks. Don’t remind me when enabling this again.",
+      returnDetails: true,
+      actions: [
+        { id: "cancel", label: "Cancel", tone: "neutral", defaultFocus: true },
+        { id: "enable", label: "Auto-approve tools", tone: "danger" },
+      ],
+    });
+
+    const dialog = modalRoot.querySelector(".settings-dialog");
+    const checkboxRow = dialog.querySelector(".settings-confirm-checkbox");
+    const checkbox = checkboxRow.querySelector("input");
+    const buttons = dialog.querySelectorAll("button");
+    assert.ok(checkboxRow, "the full acknowledgement row should be a label hit target");
+    assert.equal(checkbox.type, "checkbox");
+    assert.equal(checkbox.checked, false);
+    assert.equal(buttons[0].textContent, "Cancel");
+    assert.equal(buttons[0].focused, true, "the safe action keeps default focus");
+    assert.equal(buttons[1].textContent, "Auto-approve tools");
+    assert.equal(buttons[1].classList.contains("settings-confirm-danger"), true);
+
+    checkbox.checked = true;
+    buttons[1].dispatchEvent({ type: "click" });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(await resultPromise)), {
+      actionId: "enable",
+      checkboxChecked: true,
+    });
   });
 
   it("rolls concurrent failed language saves back to the last committed value", async () => {
@@ -6753,6 +7276,24 @@ describe("settings renderer browser environment", () => {
     const css = fs.readFileSync(LANGUAGE_PICKER_CSS, "utf8");
     assert.match(css, /\.language-picker\.menu-scrollable \.language-picker-menu\s*\{[\s\S]*overflow-y:\s*auto;/);
     assert.match(css, /\.language-picker\.open-up \.language-picker-menu\s*\{[\s\S]*bottom:\s*calc\(100% \+ 6px\);/);
+  });
+
+  it("opens the six-language tutorial picker downward at the default welcome layout", () => {
+    const harness = loadSharedLanguagePickerForTest({
+      options: ["en", "zh", "zh-TW", "ko", "ja", "pt"],
+      innerHeight: 700,
+    });
+    harness.boundary.getBoundingClientRect = () => ({ top: 78, bottom: 635 });
+    harness.trigger.getBoundingClientRect = () => ({ top: 390, bottom: 426 });
+    Object.defineProperty(harness.menu, "scrollHeight", { value: 190 });
+    Object.defineProperty(harness.menu, "offsetHeight", { value: 192 });
+    Object.defineProperty(harness.menu, "clientHeight", { value: 190 });
+
+    harness.trigger.dispatchEvent({ type: "click" });
+
+    assert.strictEqual(harness.picker.classList.contains("open-up"), false);
+    assert.strictEqual(harness.picker.classList.contains("menu-scrollable"), false);
+    assert.strictEqual(harness.menu.style.maxHeight, "192px");
   });
 
   it("initially reveals and bounds the tutorial picker at 150% and 160% text scale", () => {
@@ -6878,6 +7419,149 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.menu.style.maxHeight, "162px");
   });
 
+  it("unmounts a closed upward accessory-style menu and clears its overflow geometry", () => {
+    const harness = loadSharedLanguagePickerForTest({
+      options: ["none", "cowboy", "party", "wizard", "top", "santa", "pumpkin", "halo"],
+      innerHeight: 680,
+    });
+    harness.boundary.getBoundingClientRect = () => ({ top: 0, bottom: 680 });
+    harness.trigger.getBoundingClientRect = () => ({ top: 450, bottom: 498 });
+    Object.defineProperty(harness.menu, "scrollHeight", { value: 280 });
+    Object.defineProperty(harness.menu, "offsetHeight", { value: 282 });
+    Object.defineProperty(harness.menu, "clientHeight", { value: 280 });
+
+    assert.strictEqual(harness.picker.classList.contains("menu-mounted"), false);
+    harness.trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.picker.classList.contains("menu-mounted"), true);
+    assert.strictEqual(harness.picker.classList.contains("open-up"), true);
+    assert.strictEqual(harness.picker.classList.contains("menu-scrollable"), true);
+    assert.strictEqual(harness.menu.style.maxHeight, "240px");
+
+    harness.optionElements[1].dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.picker.classList.contains("open"), false);
+    assert.strictEqual(harness.picker.classList.contains("menu-mounted"), true);
+    assert.strictEqual(harness.getPendingTimerCount(), 1);
+    harness.menu.dispatchEvent({ type: "transitionend", propertyName: "opacity" });
+
+    assert.strictEqual(harness.getPendingTimerCount(), 0);
+    assert.strictEqual(harness.picker.classList.contains("menu-mounted"), false);
+    assert.strictEqual(harness.picker.classList.contains("open-up"), false);
+    assert.strictEqual(harness.picker.classList.contains("menu-scrollable"), false);
+    assert.strictEqual(harness.menu.style.maxHeight, "");
+    assert.strictEqual(harness.menu.scrollTop, 0);
+  });
+
+  it("reveals selected and keyboard-focused options in a scrollable picker", () => {
+    const harness = loadSharedLanguagePickerForTest({
+      value: "halo",
+      options: ["none", "cowboy", "party", "wizard", "top", "santa", "pumpkin", "halo"],
+      innerHeight: 260,
+    });
+    harness.boundary.getBoundingClientRect = () => ({ top: 0, bottom: 260 });
+    harness.trigger.getBoundingClientRect = () => ({ top: 126, bottom: 162 });
+    Object.defineProperty(harness.menu, "scrollHeight", { value: 250 });
+    Object.defineProperty(harness.menu, "offsetHeight", {
+      get() {
+        const maxHeight = parseInt(harness.menu.style.maxHeight, 10);
+        return Number.isFinite(maxHeight) ? Math.min(252, maxHeight + 2) : 252;
+      },
+    });
+    Object.defineProperty(harness.menu, "clientHeight", {
+      get() {
+        const maxHeight = parseInt(harness.menu.style.maxHeight, 10);
+        return Number.isFinite(maxHeight) ? Math.min(250, maxHeight) : 250;
+      },
+    });
+    for (const [index, option] of harness.optionElements.entries()) {
+      Object.defineProperty(option, "offsetTop", { value: 5 + index * 30 });
+      Object.defineProperty(option, "offsetHeight", { value: 30 });
+    }
+    const first = harness.optionElements[0];
+    const selected = harness.optionElements.at(-1);
+
+    harness.trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.picker.classList.contains("menu-scrollable"), true);
+    assert.strictEqual(harness.menu.style.maxHeight, "120px");
+    assert.strictEqual(harness.menu.scrollTop, 125);
+
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.menu.dispatchEvent({ type: "transitionend", propertyName: "opacity" });
+    assert.strictEqual(harness.menu.scrollTop, 0, "closed menu clears stale overflow geometry");
+
+    harness.trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.menu.scrollTop, 125, "reopening scrolls the current choice back into view");
+    assert.strictEqual(selected.focused, true);
+
+    harness.trigger.dispatchEvent({ type: "keydown", key: "Home" });
+    assert.strictEqual(harness.menu.scrollTop, 5, "trigger Home reveals the first option");
+    harness.trigger.dispatchEvent({ type: "keydown", key: "End" });
+    assert.strictEqual(harness.menu.scrollTop, 125, "trigger End reveals the last option");
+
+    selected.dispatchEvent({ type: "keydown", key: "ArrowDown" });
+    assert.strictEqual(harness.menu.scrollTop, 5, "wrapped ArrowDown reveals the first option");
+    first.dispatchEvent({ type: "keydown", key: "End" });
+    assert.strictEqual(harness.menu.scrollTop, 125, "option End reveals the last option");
+  });
+
+  it("cancels a stale menu unmount when the picker is reopened quickly", () => {
+    const harness = loadSharedLanguagePickerForTest();
+    harness.boundary.getBoundingClientRect = () => ({ top: 0, bottom: 600 });
+    harness.trigger.getBoundingClientRect = () => ({ top: 200, bottom: 240 });
+    Object.defineProperty(harness.menu, "scrollHeight", { value: 120 });
+    Object.defineProperty(harness.menu, "offsetHeight", { value: 122 });
+    Object.defineProperty(harness.menu, "clientHeight", { value: 120 });
+
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.menu.scrollTop = 78;
+    assert.strictEqual(harness.getPendingTimerCount(), 1);
+    assert.strictEqual(harness.menu.eventListeners.transitionend.length, 1);
+    harness.trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.getPendingTimerCount(), 0);
+    assert.strictEqual(harness.menu.eventListeners.transitionend.length, 0);
+    assert.strictEqual(harness.menu.scrollTop, 0);
+
+    harness.flushTimers();
+    harness.menu.dispatchEvent({ type: "transitionend", propertyName: "opacity" });
+    assert.strictEqual(harness.picker.classList.contains("open"), true);
+    assert.strictEqual(harness.picker.classList.contains("menu-mounted"), true);
+
+    harness.trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.menu.eventListeners.transitionend.length, 1);
+    harness.menu.dispatchEvent({ type: "transitionend", propertyName: "opacity" });
+    assert.strictEqual(harness.menu.eventListeners.transitionend.length, 0);
+    assert.strictEqual(harness.picker.classList.contains("menu-mounted"), false);
+  });
+
+  it("derives the close fallback from the longest CSS transition", () => {
+    const harness = loadSharedLanguagePickerForTest({
+      transitionDuration: "0.14s, 320ms",
+      transitionDelay: "0s, 30ms",
+    });
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.trigger.dispatchEvent({ type: "click" });
+
+    assert.deepStrictEqual(harness.getPendingTimerDelays(), [390]);
+  });
+
+  it("disposes an animating picker without leaving menu or listener state behind", () => {
+    const harness = loadSharedLanguagePickerForTest();
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.getPendingTimerCount(), 1);
+
+    harness.control.dispose();
+
+    assert.strictEqual(harness.getPendingTimerCount(), 0);
+    assert.strictEqual(harness.picker.classList.contains("open"), false);
+    assert.strictEqual(harness.picker.classList.contains("menu-mounted"), false);
+    assert.strictEqual(harness.picker.classList.contains("open-up"), false);
+    assert.strictEqual(harness.picker.classList.contains("menu-scrollable"), false);
+    assert.strictEqual(harness.getDocumentListenerCount("click"), 0);
+    assert.strictEqual(harness.getDocumentListenerCount("keydown"), 0);
+    assert.strictEqual(harness.getWindowListenerCount("resize"), 0);
+  });
+
   it("cleans up language picker document listeners across re-renders", () => {
     const harness = loadGeneralLanguageRowForTest({
       snapshot: { lang: "en" },
@@ -6907,6 +7591,7 @@ describe("settings renderer browser environment", () => {
 
     harness.dispatchDocumentEvent("click", { target: new FakeElement("body") });
     assert.strictEqual(harness.getLangPicker().classList.contains("open"), false);
+    assert.strictEqual(harness.getLangPicker().classList.contains("menu-mounted"), false);
 
     harness.getLangTrigger().dispatchEvent({ type: "click" });
     harness.dispatchDocumentEvent("keydown", {
@@ -6914,6 +7599,22 @@ describe("settings renderer browser environment", () => {
       preventDefault() { this.defaultPrevented = true; },
     });
     assert.strictEqual(harness.getLangPicker().classList.contains("open"), false);
+    assert.strictEqual(harness.getLangPicker().classList.contains("menu-mounted"), false);
+  });
+
+  it("fully unmounts a shared picker when it becomes disabled", () => {
+    const harness = loadSharedLanguagePickerForTest();
+    harness.trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.picker.classList.contains("menu-mounted"), true);
+
+    harness.control.setDisabled(true);
+    harness.menu.dispatchEvent({ type: "transitionend", propertyName: "opacity" });
+
+    assert.strictEqual(harness.picker.classList.contains("open"), false);
+    assert.strictEqual(harness.picker.classList.contains("menu-mounted"), false);
+    assert.strictEqual(harness.picker.classList.contains("open-up"), false);
+    assert.strictEqual(harness.picker.classList.contains("menu-scrollable"), false);
+    assert.strictEqual(harness.menu.style.maxHeight, "");
   });
 
   it("exposes aggregate and split bubble controls in the General tab", () => {
@@ -6949,7 +7650,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("bubbleSecondsPrefix"));
   });
 
-  it("renders the opt-in test-result reaction switch with all five translations", () => {
+  it("renders the opt-in test-result reaction switch with all supported translations", () => {
     const harness = loadGeneralTabForTest({
       snapshot: makeGeneralSnapshot({ testReactionsEnabled: false }),
     });
@@ -6963,8 +7664,267 @@ describe("settings renderer browser environment", () => {
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
     for (const key of ["rowTestReactions", "rowTestReactionsDesc"]) {
       const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
-      assert.strictEqual(matches && matches.length, 5, `${key} should appear in all 5 languages`);
+      const matchCount = matches ? matches.length : 0;
+      assert.strictEqual(matchCount, SUPPORTED_LANGS.length,
+        `${key} should appear in all ${SUPPORTED_LANGS.length} supported languages`);
     }
+  });
+
+  it("renders Free roam movement style as a dependent segmented choice", async () => {
+    const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
+    const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
+    assert.ok(generalSource.includes("function buildFreeRoamGroup()"));
+    assert.ok(generalSource.includes('id: "general:free-roam"'));
+    assert.ok(generalSource.includes('className: "free-roam-collapsible"'));
+    assert.ok(generalSource.includes("defaultCollapsed: true"));
+    assert.ok(generalSource.includes("function buildRoamMovementStyleRow()"));
+    assert.ok(generalSource.includes('"row roam-movement-style-row"'));
+    assert.ok(generalSource.includes('"roamConstrainAxis"'));
+    for (const key of [
+      "rowRoamMovementStyle",
+      "rowRoamMovementStyleDesc",
+      "roamMovementNatural",
+      "roamMovementAxis",
+      "rowRoamArea",
+      "roamAreaLoading",
+      "roamAreaEntire",
+      "roamAreaCustom",
+      "roamAreaUnavailable",
+      "roamAreaPetTooLarge",
+      "roamAreaChoose",
+      "roamAreaReset",
+      "roamAreaSaved",
+      "roamAreaResetDone",
+    ]) {
+      const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
+      const matchCount = matches ? matches.length : 0;
+      assert.strictEqual(matchCount, SUPPORTED_LANGS.length,
+        `${key} should appear in all ${SUPPORTED_LANGS.length} supported languages`);
+    }
+
+    const updateCalls = [];
+    const initialSnapshot = makeGeneralSnapshot({ roamConstrainAxis: true, freeRoam: false });
+    const harness = loadGeneralTabForTest({
+      snapshot: initialSnapshot,
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.renderContent();
+
+    const control = harness.core.state.mountedControls.roamMovementStyle;
+    const row = harness.content.querySelector(".roam-movement-style-row");
+    const group = harness.content.querySelector(".free-roam-collapsible");
+    const header = group.querySelector(".collapsible-group-header");
+    const disclosure = group.querySelector(".collapsible-group-disclosure");
+    const freeRoamSwitch = harness.getSwitch("freeRoam");
+    assert.ok(control && row, "the dependent movement-style row must mount");
+    assert.ok(group, "Free roam must render as a collapsible group");
+    assert.strictEqual(group.dataset.groupId, "general:free-roam");
+    assert.strictEqual(group.classList.contains("collapsed"), true, "Free roam details default closed");
+    assert.strictEqual(header.getAttribute("role"), undefined, "the shared header must not wrap both interactive controls");
+    assert.strictEqual(disclosure.getAttribute("role"), "button");
+    assert.strictEqual(disclosure.getAttribute("aria-expanded"), "false");
+    assert.strictEqual(disclosure.getAttribute("aria-label"), "Expand section: Free roam");
+    assert.strictEqual(disclosure.contains(freeRoamSwitch), false, "the switch must be a sibling of the disclosure button");
+    assert.strictEqual(header.contains(disclosure), true);
+    assert.strictEqual(header.contains(freeRoamSwitch), true);
+    assert.strictEqual(freeRoamSwitch.getAttribute("role"), "switch");
+    assert.strictEqual(freeRoamSwitch.getAttribute("aria-label"), "Free roam");
+    assert.ok(
+      group.querySelector(".collapsible-group-body").contains(row),
+      "movement style must live inside the collapsible body",
+    );
+    assert.ok(row.classList.contains("settings-option-item"), "movement style must use the nested-card style");
+    assert.strictEqual(control.element.getAttribute("role"), "radiogroup");
+    const buttons = control.element.querySelectorAll("button");
+    const natural = buttons.find((button) => button.dataset.value === "natural");
+    const axis = buttons.find((button) => button.dataset.value === "axis");
+    assert.ok(natural && axis, "both movement styles must be available");
+    assert.strictEqual(axis.classList.contains("active"), true, "stored axis choice remains visible");
+    assert.strictEqual(natural.classList.contains("active"), false);
+    assert.strictEqual(axis.disabled, true, "style is disabled while Free roam is off");
+    assert.strictEqual(natural.disabled, true);
+
+    // The header master switch updates Free roam without also opening the
+    // sibling disclosure. No propagation workaround is needed.
+    freeRoamSwitch.dispatchEvent({
+      type: "click",
+      bubbles: true,
+      cancelBubble: false,
+      stopPropagation() { this.cancelBubble = true; },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    assert.ok(
+      updateCalls.some((call) => call.key === "freeRoam" && call.value === true),
+      "the header switch must persist freeRoam=true",
+    );
+    assert.strictEqual(group.classList.contains("collapsed"), true);
+
+    disclosure.dispatchEvent({ type: "click", bubbles: true });
+    assert.strictEqual(group.classList.contains("collapsed"), false);
+    assert.strictEqual(disclosure.getAttribute("aria-expanded"), "true");
+    assert.strictEqual(disclosure.getAttribute("aria-label"), "Collapse section: Free roam");
+
+    // Enabling the parent patches the mounted child in place and preserves its
+    // stored axis selection instead of resetting the preference.
+    const beforeRenderCount = harness.getContentRenderCount();
+    const enabledSnapshot = { ...initialSnapshot, freeRoam: true };
+    harness.core.ops.applyChanges({
+      changes: { freeRoam: true },
+      snapshot: enabledSnapshot,
+    });
+    assert.strictEqual(harness.core.state.mountedControls.roamMovementStyle, control);
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(axis.disabled, false);
+    assert.strictEqual(natural.disabled, false);
+    assert.strictEqual(axis.classList.contains("active"), true);
+
+    // Natural maps back to the existing boolean false; no prefs migration or
+    // new runtime setting is introduced by the presentation change.
+    natural.dispatchEvent({ type: "click", bubbles: false });
+    await new Promise((r) => setTimeout(r, 0));
+    assert.ok(
+      updateCalls.some((call) => call.key === "roamConstrainAxis" && call.value === false),
+      "Natural must persist roamConstrainAxis=false",
+    );
+    assert.strictEqual(natural.classList.contains("active"), true);
+    assert.strictEqual(axis.classList.contains("active"), false);
+
+    // Axis maps to the existing boolean true through the same user-click path.
+    axis.dispatchEvent({ type: "click", bubbles: false });
+    await new Promise((r) => setTimeout(r, 0));
+    assert.ok(
+      updateCalls.some((call) => call.key === "roamConstrainAxis" && call.value === true),
+      "Axis must persist roamConstrainAxis=true",
+    );
+    assert.strictEqual(axis.classList.contains("active"), true);
+    assert.strictEqual(natural.classList.contains("active"), false);
+
+    // Authoritative broadcasts keep the same control mounted and can replace
+    // the optimistic value without rebuilding General.
+    const naturalSnapshot = { ...enabledSnapshot, roamConstrainAxis: false };
+    harness.core.ops.applyChanges({
+      changes: { roamConstrainAxis: false },
+      snapshot: naturalSnapshot,
+    });
+    const axisSnapshot = { ...naturalSnapshot, roamConstrainAxis: true };
+    harness.core.ops.applyChanges({
+      changes: { roamConstrainAxis: true },
+      snapshot: axisSnapshot,
+    });
+    assert.strictEqual(axis.classList.contains("active"), true);
+    assert.strictEqual(natural.classList.contains("active"), false);
+
+    // Turning the parent off disables the child but preserves the stored style.
+    harness.core.ops.applyChanges({
+      changes: { freeRoam: false },
+      snapshot: { ...axisSnapshot, freeRoam: false },
+    });
+    assert.strictEqual(harness.core.state.mountedControls.roamMovementStyle, control);
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(axis.classList.contains("active"), true);
+    assert.strictEqual(natural.disabled, true);
+    assert.strictEqual(axis.disabled, true);
+  });
+
+  it("shows, selects, and resets the Free roam activity area", async () => {
+    const calls = [];
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ freeRoam: true }),
+      settingsAPI: {
+        getRoamFence: async () => ({
+          status: "ok",
+          active: true,
+          fence: { left: 0.1, top: 0.2, right: 0.7, bottom: 0.8 },
+        }),
+        selectRoamFence: async () => {
+          calls.push("select");
+          return {
+            status: "ok",
+            active: true,
+            fence: { left: 0.25, top: 0.25, right: 0.75, bottom: 0.75 },
+          };
+        },
+        clearRoamFence: async () => {
+          calls.push("clear");
+          return { status: "ok", active: false, fence: null };
+        },
+      },
+    });
+    harness.renderContent();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const control = harness.core.state.mountedControls.roamArea;
+    assert.ok(control && harness.content.querySelector(".roam-area-row"));
+    assert.strictEqual(control.description.textContent, "Custom area · 60% × 60% of each display");
+    assert.strictEqual(control.resetButton.style.display, "");
+    assert.ok(harness.content.querySelector(".free-roam-option-list").contains(control.row));
+
+    control.chooseButton.dispatchEvent({ type: "click", bubbles: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepStrictEqual(calls, ["select"]);
+    assert.strictEqual(control.description.textContent, "Custom area · 50% × 50% of each display");
+    assert.strictEqual(control.chooseButton.disabled, false);
+
+    control.resetButton.dispatchEvent({ type: "click", bubbles: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepStrictEqual(calls, ["select", "clear"]);
+    assert.strictEqual(control.description.textContent, "Default roam area");
+    assert.strictEqual(control.resetButton.style.display, "none");
+  });
+
+  it("shows the Free roam activity area as unavailable for a non-ok status", async () => {
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ freeRoam: true }),
+      settingsAPI: {
+        getRoamFence: async () => ({
+          status: "error",
+          active: false,
+          fence: null,
+          message: "failed to read the activity-area file",
+        }),
+      },
+    });
+    harness.renderContent();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const control = harness.core.state.mountedControls.roamArea;
+    assert.strictEqual(
+      control.description.textContent,
+      "The area file is invalid or still loading; roaming stays paused.",
+    );
+    assert.strictEqual(control.resetButton.style.display, "none");
+  });
+
+  it("explains when the pet is too large to choose an activity area", async () => {
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ freeRoam: true }),
+      settingsAPI: {
+        getRoamFence: async () => ({ status: "ok", active: false, fence: null }),
+        selectRoamFence: async () => ({
+          status: "error",
+          code: "pet-too-large",
+          message: "the pet is larger than this display's work area",
+        }),
+      },
+    });
+    const toasts = [];
+    harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+    harness.renderContent();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    harness.core.state.mountedControls.roamArea.chooseButton.dispatchEvent({ type: "click", bubbles: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.strictEqual(toasts.length, 1);
+    assert.strictEqual(
+      toasts[0].message,
+      "Clawd is larger than this display's work area. Reduce the pet size before choosing an activity area.",
+    );
+    assert.strictEqual(toasts[0].options.error, true);
   });
 
   it("registers the Session cleanup group with three number rows, atomic reset, and i18n keys", () => {
@@ -7000,7 +7960,7 @@ describe("settings renderer browser environment", () => {
     // The command is registered in settings-actions.
     assert.ok(actionsSource.includes('"sessionCleanup.setTriple": setSessionCleanupTriple'));
 
-    // i18n keys present in all five languages.
+    // i18n keys present in all supported languages.
     for (const key of [
       "rowSessionCleanupGroup",
       "rowSessionCleanupGroupDesc",
@@ -7016,7 +7976,9 @@ describe("settings renderer browser environment", () => {
       "actionResetSessionCleanup",
     ]) {
       const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
-      assert.ok(matches && matches.length >= 5, `${key} should appear in all 5 language tables (saw ${matches ? matches.length : 0})`);
+      const matchCount = matches ? matches.length : 0;
+      assert.strictEqual(matchCount, SUPPORTED_LANGS.length,
+        `${key} should appear in all ${SUPPORTED_LANGS.length} supported language tables (saw ${matchCount})`);
     }
   });
 
@@ -7072,6 +8034,15 @@ describe("settings renderer browser environment", () => {
     assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.volume-slider:hover::-webkit-slider-thumb,[\s\S]*\.size-control\.dragging \.volume-slider::-webkit-slider-thumb\s*\{[\s\S]*transform:\s*none;/.test(css));
   });
 
+  it("stacks wide General controls from their zoom-corrected card width", () => {
+    const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    assert.ok(generalSource.includes('row.className = "row volume-slider-row"'));
+    assert.match(css, /\.quota-ring-collapsible \.settings-option-list,\s*\.sound-collapsible \.settings-option-list\s*\{\s*container-type:\s*inline-size;/s);
+    assert.match(css, /@container \(max-width:\s*400px\)\s*\{[\s\S]*\.quota-ring-display-mode-row,[\s\S]*\.volume-slider-row\s*\{[\s\S]*flex-direction:\s*column;/);
+    assert.match(css, /@container \(max-width:\s*400px\)\s*\{[\s\S]*\.volume-slider-row \.volume-control\s*\{[\s\S]*width:\s*100%;[\s\S]*min-width:\s*0;/);
+  });
+
   it("describes notification bubble seconds as an auto-close upper bound instead of a guaranteed visible duration", () => {
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
 
@@ -7115,9 +8086,9 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("Hide update bubbles"));
     assert.ok(i18nSource.includes("隐藏更新气泡"));
     assert.ok(generalSource.includes('{ id: "confirm", label: t("updateBubbleDisableConfirmAction"), tone: "danger" }'));
-    assert.ok(generalSource.includes('{ id: "cancel", label: t("updateBubbleDisableConfirmCancel"), tone: "accent", defaultFocus: true }'));
+    assert.ok(generalSource.includes('{ id: "cancel", label: t("updateBubbleDisableConfirmCancel"), tone: "neutral", defaultFocus: true }'));
     assert.ok(generalSource.includes('if (actionId === "confirm") runToggleCommit(nextEnabled);'));
-    assert.ok(uiCoreSource.includes('tone === "accent"'));
+    assert.ok(uiCoreSource.includes("function buildButton(config = {})"));
     assert.ok(uiCoreSource.includes('tone === "danger"'));
   });
 
@@ -7135,8 +8106,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(agentsSource.includes("claudeHooksDisableConfirmTitle"));
     assert.ok(agentsSource.includes("claudeHooksDisconnectConfirmTitle"));
     assert.ok(uiCoreSource.includes("buttons.find((action) => action.action && action.action.defaultFocus)"));
-    assert.ok(uiCoreSource.includes('button.className = `soft-btn${toneClass ? ` ${toneClass}` : ""}`;'));
-    assert.ok(uiCoreSource.includes('tone === "accent"'));
+    assert.ok(uiCoreSource.includes("const button = buildButton({"));
+    assert.ok(uiCoreSource.includes('["neutral", "accent", "danger", "quiet"]'));
     assert.ok(uiCoreSource.includes('tone === "danger"'));
     assert.ok(css.includes(".settings-confirm-danger"));
     assert.ok(!preloadSource.includes("confirmDisableClaudeHooks"));
@@ -7175,9 +8146,10 @@ describe("settings renderer browser environment", () => {
     assert.ok(coreSource.includes('checkboxInput.type = "checkbox"'));
     assert.ok(coreSource.includes("checkboxChecked: !!(checkboxInput && checkboxInput.checked)"));
     assert.ok(css.includes("grid-template-columns: repeat(3, minmax(0, 1fr))"));
-    assert.ok(generalSource.includes('segmented.setAttribute("role", "group")'));
-    assert.ok(generalSource.includes('segmented.setAttribute("aria-label", t("rowPermissionAutomation"))'));
-    assert.ok(generalSource.includes('btn.setAttribute("aria-pressed", selected ? "true" : "false")'));
+    assert.ok(generalSource.includes("helpers.buildSegmentedRadio({"));
+    assert.ok(generalSource.includes('ariaLabel: t("rowPermissionAutomation")'));
+    assert.ok(generalSource.includes('className: "permission-automation-segmented"'));
+    assert.ok(generalSource.includes("state.mountedControls.permissionAutomationMode"));
     assert.ok(i18nSource.includes('rowPermissionAutomation: "Permission request handling"'));
     assert.ok(i18nSource.includes('rowPermissionAutomation: "权限请求处理"'));
     assert.ok(i18nSource.includes("permissionAutomationAutoToolsConfirmTitle"));
@@ -7186,6 +8158,41 @@ describe("settings renderer browser environment", () => {
     // Lives in its own Permissions section, not under Bubbles.
     assert.ok(generalSource.includes('t("sectionPermissions")'));
     assert.ok(i18nSource.includes('sectionPermissions: "Permissions"'));
+  });
+
+  it("patches confirmed permission automation changes without replacing the focused control", () => {
+    const initialSnapshot = makeGeneralSnapshot({
+      permissionAutomationMode: "off",
+      permissionAutomationAutoToolsWarningDismissed: false,
+    });
+    const harness = loadGeneralTabForTest({ snapshot: initialSnapshot });
+    harness.renderContent();
+    const control = harness.content.querySelector(".permission-automation-segmented");
+    const beforeRenderCount = harness.getContentRenderCount();
+    const nextSnapshot = {
+      ...initialSnapshot,
+      permissionAutomationMode: "auto-tools",
+      permissionAutomationAutoToolsWarningDismissed: true,
+    };
+
+    harness.core.ops.applyChanges({
+      changes: {
+        permissionAutomationMode: "auto-tools",
+        permissionAutomationAutoToolsWarningDismissed: true,
+      },
+      snapshot: nextSnapshot,
+    });
+
+    assert.equal(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(harness.content.querySelector(".permission-automation-segmented"), control);
+    const selected = control.querySelectorAll("button")
+      .find((button) => button.dataset.value === "auto-tools");
+    assert.equal(selected.getAttribute("role"), "radio");
+    assert.equal(selected.getAttribute("aria-checked"), "true");
+    assert.equal(
+      findAncestorByClass(control, "permission-automation-row").querySelector(".row-desc").textContent,
+      harness.core.helpers.t("permissionAutomationAutoToolsDesc")
+    );
   });
 
   it("clears successful switch transient state so rerenders do not keep wait cursors", () => {
@@ -7216,6 +8223,216 @@ describe("settings renderer browser environment", () => {
     assert.ok(clearIndex < renderIndex, "broadcast cleanup must happen before full rerender");
   });
 
+  it("renders the macOS menu bar and Dock recovery switches with the four-state safety matrix", () => {
+    const cases = [
+      { showTray: true, showDock: false, trayDisabled: true, dockDisabled: false },
+      { showTray: true, showDock: true, trayDisabled: false, dockDisabled: false },
+      { showTray: false, showDock: true, trayDisabled: false, dockDisabled: true },
+      { showTray: false, showDock: false, trayDisabled: false, dockDisabled: false },
+    ];
+
+    for (const entry of cases) {
+      const harness = loadGeneralTabForTest({
+        platform: "MacIntel",
+        snapshot: makeGeneralSnapshot({
+          showTray: entry.showTray,
+          showDock: entry.showDock,
+        }),
+      });
+      harness.renderContent();
+
+      const tray = harness.getSwitch("showTray");
+      const dock = harness.getSwitch("showDock");
+      assert.ok(tray, `showTray should render for ${JSON.stringify(entry)}`);
+      assert.ok(dock, `showDock should render for ${JSON.stringify(entry)}`);
+      assert.strictEqual(tray.getAttribute("role"), "switch");
+      assert.strictEqual(dock.getAttribute("role"), "switch");
+      assert.strictEqual(tray.getAttribute("aria-label"), "Show in menu bar");
+      assert.strictEqual(dock.getAttribute("aria-label"), "Show in Dock");
+      assert.strictEqual(tray.getAttribute("aria-checked"), String(entry.showTray));
+      assert.strictEqual(dock.getAttribute("aria-checked"), String(entry.showDock));
+      assert.strictEqual(tray.getAttribute("aria-disabled"), entry.trayDisabled ? "true" : undefined);
+      assert.strictEqual(dock.getAttribute("aria-disabled"), entry.dockDisabled ? "true" : undefined);
+      assert.strictEqual(tray.tabIndex, entry.trayDisabled ? -1 : 0);
+      assert.strictEqual(dock.tabIndex, entry.dockDisabled ? -1 : 0);
+    }
+
+    const nonMac = loadGeneralTabForTest({
+      platform: "Win32",
+      snapshot: makeGeneralSnapshot({ showTray: true, showDock: false }),
+    });
+    nonMac.renderContent();
+    assert.strictEqual(nonMac.getSwitch("showTray"), null);
+    assert.strictEqual(nonMac.getSwitch("showDock"), null);
+    const beforeNonMacRenderCount = nonMac.getContentRenderCount();
+    nonMac.core.ops.applyChanges({
+      changes: { showDock: true },
+      snapshot: makeGeneralSnapshot({ showTray: true, showDock: true }),
+    });
+    assert.strictEqual(nonMac.getContentRenderCount(), beforeNonMacRenderCount + 1);
+    assert.strictEqual(nonMac.getSwitch("showTray"), null);
+    assert.strictEqual(nonMac.getSwitch("showDock"), null);
+  });
+
+  it("falls back to a full General render when a macOS recovery control is missing", () => {
+    const initialSnapshot = makeGeneralSnapshot({ showTray: true, showDock: false });
+    const harness = loadGeneralTabForTest({
+      platform: "MacIntel",
+      snapshot: initialSnapshot,
+    });
+    harness.renderContent();
+    const originalTray = harness.getSwitch("showTray");
+    const beforeRenderCount = harness.getContentRenderCount();
+    harness.core.state.mountedControls.generalSwitches.delete("showDock");
+
+    harness.core.ops.applyChanges({
+      changes: { showDock: true },
+      snapshot: { ...initialSnapshot, showDock: true },
+    });
+
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount + 1);
+    assert.notStrictEqual(harness.getSwitch("showTray"), originalTray);
+    assert.ok(harness.getSwitch("showDock"));
+  });
+
+  it("writes each macOS recovery switch through the exact Settings update key", async () => {
+    for (const entry of [
+      { snapshot: { showTray: false, showDock: true }, clickKey: "showTray" },
+      { snapshot: { showTray: true, showDock: false }, clickKey: "showDock" },
+    ]) {
+      const updateCalls = [];
+      const commandCalls = [];
+      const harness = loadGeneralTabForTest({
+        platform: "MacIntel",
+        snapshot: makeGeneralSnapshot(entry.snapshot),
+        settingsAPI: {
+          update: (key, value) => {
+            updateCalls.push({ key, value });
+            return Promise.resolve({ status: "ok" });
+          },
+          command: (...args) => {
+            commandCalls.push(args);
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      harness.renderContent();
+      harness.getSwitch(entry.clickKey).dispatchEvent({ type: "click" });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      assert.deepStrictEqual(updateCalls, [{ key: entry.clickKey, value: true }]);
+      assert.deepStrictEqual(commandCalls, []);
+    }
+  });
+
+  it("patches committed macOS entry-point changes in place and re-gates both switches", async () => {
+    const updateCalls = [];
+    const initialSnapshot = makeGeneralSnapshot({ showTray: true, showDock: false });
+    const harness = loadGeneralTabForTest({
+      platform: "MacIntel",
+      snapshot: initialSnapshot,
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.renderContent();
+
+    const tray = harness.getSwitch("showTray");
+    const dock = harness.getSwitch("showDock");
+    const beforeRenderCount = harness.getContentRenderCount();
+    harness.content.scrollTop = 247;
+    dock.focus();
+    dock.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepStrictEqual(updateCalls, [{ key: "showDock", value: true }]);
+
+    harness.core.ops.applyChanges({
+      changes: { showDock: true },
+      snapshot: { ...initialSnapshot, showDock: true },
+    });
+
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(harness.getSwitch("showTray"), tray);
+    assert.strictEqual(harness.getSwitch("showDock"), dock);
+    assert.strictEqual(dock.focused, true);
+    assert.strictEqual(harness.content.scrollTop, 247);
+    assert.strictEqual(tray.getAttribute("aria-disabled"), undefined);
+    assert.strictEqual(tray.tabIndex, 0);
+    assert.strictEqual(dock.getAttribute("aria-disabled"), undefined);
+
+    harness.core.ops.applyChanges({
+      changes: { showTray: false },
+      snapshot: { ...initialSnapshot, showTray: false, showDock: true },
+    });
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(tray.getAttribute("aria-checked"), "false");
+    assert.strictEqual(dock.getAttribute("aria-disabled"), "true");
+    assert.strictEqual(dock.tabIndex, -1);
+  });
+
+  it("blocks mouse and keyboard activation for the last macOS entry point", async () => {
+    const updateCalls = [];
+    const harness = loadGeneralTabForTest({
+      platform: "MacIntel",
+      snapshot: makeGeneralSnapshot({ showTray: false, showDock: true }),
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.renderContent();
+    const dock = harness.getSwitch("showDock");
+
+    dock.dispatchEvent({ type: "click" });
+    dock.dispatchEvent(createKeyboardEventForTest(" "));
+    dock.dispatchEvent(createKeyboardEventForTest("Enter"));
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepStrictEqual(updateCalls, []);
+  });
+
+  it("restores a macOS recovery switch after a rejected Settings update", async () => {
+    const harness = loadGeneralTabForTest({
+      platform: "MacIntel",
+      snapshot: makeGeneralSnapshot({ showTray: false, showDock: true }),
+      settingsAPI: {
+        update: () => Promise.reject(new Error("rejected")),
+      },
+    });
+    harness.renderContent();
+    const tray = harness.getSwitch("showTray");
+    tray.dispatchEvent({ type: "click" });
+    assert.strictEqual(tray.getAttribute("aria-checked"), "true");
+    assert.strictEqual(tray.classList.contains("pending"), true);
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(tray.getAttribute("aria-checked"), "false");
+    assert.strictEqual(tray.classList.contains("pending"), false);
+  });
+
+  it("keeps macOS entry-point switches behind the Settings controller boundary", () => {
+    const generalSource = fs.readFileSync(SETTINGS_TAB_GENERAL, "utf8");
+    for (const forbidden of [
+      /require\(["']electron["']\)/,
+      /\bapp\.dock\b/,
+      /\bcreateTray\s*\(/,
+      /\bdestroyTray\s*\(/,
+      /clawd-prefs\.json/,
+      /\bfs\.(?:writeFile|writeFileSync|promises\.writeFile)\b/,
+    ]) {
+      assert.doesNotMatch(generalSource, forbidden);
+    }
+  });
+
   it("updates runtime-only Settings bounds without rebuilding the active tab", () => {
     const initialSnapshot = makeGeneralSnapshot({ settingsWindowBounds: null });
     const harness = loadGeneralTabForTest({ snapshot: initialSnapshot });
@@ -7230,6 +8447,17 @@ describe("settings renderer browser environment", () => {
     });
 
     assert.deepStrictEqual(harness.core.state.snapshot.settingsWindowBounds, bounds);
+    assert.strictEqual(harness.getContentRenderCount(), 1);
+    assert.strictEqual(harness.getSwitch("sessionHudEnabled"), mountedControl);
+    assert.strictEqual(harness.content.scrollTop, 317);
+
+    const dashboardBounds = { x: 220, y: 140, width: 640, height: 720 };
+    harness.core.ops.applyChanges({
+      changes: { dashboardWindowBounds: dashboardBounds },
+      snapshot: { ...initialSnapshot, settingsWindowBounds: bounds, dashboardWindowBounds: dashboardBounds },
+    });
+
+    assert.deepStrictEqual(harness.core.state.snapshot.dashboardWindowBounds, dashboardBounds);
     assert.strictEqual(harness.getContentRenderCount(), 1);
     assert.strictEqual(harness.getSwitch("sessionHudEnabled"), mountedControl);
     assert.strictEqual(harness.content.scrollTop, 317);
@@ -7402,6 +8630,70 @@ describe("settings renderer browser environment", () => {
     assert.deepStrictEqual(updateCalls, [{ key: "quotaMergeSources", value: false }]);
   });
 
+  it("lets users choose used or remaining quota without rebuilding General", async () => {
+    const updateCalls = [];
+    const initialSnapshot = makeGeneralSnapshot({ quotaRingDisplayMode: "used" });
+    const harness = loadGeneralTabForTest({
+      snapshot: initialSnapshot,
+      settingsAPI: {
+        getQuotaSourceCount: async () => 1,
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.renderContent();
+
+    const control = harness.content.querySelector(".quota-ring-display-mode-choice");
+    const buttons = control.querySelectorAll("button");
+    assert.equal(control.getAttribute("role"), "radiogroup");
+    assert.deepStrictEqual(buttons.map((button) => button.dataset.value), ["used", "remaining"]);
+    assert.equal(buttons[0].getAttribute("aria-checked"), "true");
+
+    buttons[1].dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepStrictEqual(updateCalls, [{ key: "quotaRingDisplayMode", value: "remaining" }]);
+    assert.equal(buttons[1].getAttribute("aria-checked"), "true");
+
+    const beforeRenderCount = harness.getContentRenderCount();
+    harness.core.ops.applyChanges({
+      changes: { quotaRingDisplayMode: "remaining" },
+      snapshot: { ...initialSnapshot, quotaRingDisplayMode: "remaining" },
+    });
+    assert.equal(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(harness.content.querySelector(".quota-ring-display-mode-choice"), control);
+    assert.equal(buttons[1].getAttribute("aria-checked"), "true");
+  });
+
+  it("reverts quota display selection and reports when the Settings API is unavailable", async () => {
+    const toasts = [];
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ quotaRingDisplayMode: "used" }),
+      settingsAPI: {
+        getQuotaSourceCount: async () => 1,
+        update: undefined,
+      },
+    });
+    harness.core.ops.showToast = (message, options = {}) => {
+      toasts.push({ message, options });
+    };
+    harness.renderContent();
+
+    const control = harness.content.querySelector(".quota-ring-display-mode-choice");
+    const buttons = control.querySelectorAll("button");
+    buttons[1].dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.equal(buttons[0].getAttribute("aria-checked"), "true");
+    assert.equal(buttons[1].getAttribute("aria-checked"), "false");
+    assert.equal(toasts.length, 1);
+    assert.match(toasts[0].message, /settings API unavailable/);
+    assert.equal(toasts[0].options.error, true);
+  });
+
   it("reveals existing quota options immediately and absorbs async sources without a second expansion", async () => {
     const sourceCount = createDeferred();
     const animationFrames = [];
@@ -7451,6 +8743,30 @@ describe("settings renderer browser environment", () => {
     });
     assert.equal(group.classList.contains("resizing"), false);
     assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "none");
+  });
+
+  it("reveals sound controls immediately without waiting for an expansion animation frame", () => {
+    const animationFrames = [];
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ soundMuted: false, soundVolume: 0.5 }),
+      requestAnimationFrame: (callback) => {
+        animationFrames.push(callback);
+        return animationFrames.length;
+      },
+    });
+    harness.renderContent();
+
+    const group = harness.content.querySelector(".sound-collapsible");
+    const header = group.querySelector(".collapsible-group-header");
+    const body = group.querySelector(".collapsible-group-body");
+    assert.equal(group.classList.contains("collapsed"), true);
+
+    header.dispatchEvent({ type: "click" });
+
+    assert.equal(group.classList.contains("expanding"), false);
+    assert.equal(group.classList.contains("collapsed"), false);
+    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "none");
+    assert.equal(body.attributes["aria-hidden"], "false");
   });
 
   it("groups sound and volume into one collapsible control with in-place summary updates", () => {
@@ -7951,10 +9267,21 @@ describe("settings renderer browser environment", () => {
   });
 
   it("uses a roomier grid layout for Settings confirmation buttons", () => {
+    const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");
     assert.ok(/\.settings-confirm-modal\s*\{[\s\S]*width:\s*min\(480px,\s*100%\);/.test(css));
     assert.ok(/\.settings-confirm-actions\s*\{[\s\S]*display:\s*grid;[\s\S]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(136px,\s*1fr\)\);[\s\S]*gap:\s*9px;/.test(css));
     assert.ok(/\.settings-confirm-actions\s+\.soft-btn\s*\{[\s\S]*min-height:\s*42px;[\s\S]*padding:\s*6px 10px;[\s\S]*white-space:\s*normal;[\s\S]*text-align:\s*center;/.test(css));
+    assert.ok(coreSource.includes('createElementNS("http://www.w3.org/2000/svg", tagName)'));
+    assert.ok(coreSource.includes('path.setAttribute("d", "M10 4.2v7.4m0 3.1v.1")'));
+    assert.ok(coreSource.includes('String(iconText) === "!"'));
+    assert.ok(/\.settings-confirm-icon\s*\{[\s\S]*background:\s*var\(--warning-action\);/.test(css));
+    assert.ok(/\.settings-confirm-icon path\s*\{[\s\S]*stroke:\s*currentColor;[\s\S]*stroke-linecap:\s*round;/.test(css));
+    assert.ok(/\.settings-confirm-actions\s+\.soft-btn\.settings-confirm-danger\s*\{[\s\S]*color:\s*#ffffff;[\s\S]*background:\s*var\(--danger-action\);[\s\S]*border-color:\s*var\(--danger-action\);/.test(css));
+    assert.ok(/\.settings-confirm-checkbox\s*\{[\s\S]*padding:\s*10px 11px;[\s\S]*border-radius:\s*9px;[\s\S]*cursor:\s*pointer;/.test(css));
+    assert.ok(/\.settings-confirm-checkbox input:checked\s*\{[\s\S]*background:\s*var\(--accent\);/.test(css));
+    assert.ok(css.includes(".settings-confirm-checkbox:has(input:checked)"));
+    assert.ok(css.includes(".settings-confirm-checkbox:focus-within"));
   });
 
   it("provides a persisted collapsible Settings group helper with smart default collapse", () => {
@@ -7966,7 +9293,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(coreSource.includes("localStorage.getItem(COLLAPSED_GROUPS_STORAGE_KEY)"));
     assert.ok(coreSource.includes("localStorage.setItem(COLLAPSED_GROUPS_STORAGE_KEY"));
     assert.ok(coreSource.includes("defaultCollapsed = false"));
-    assert.ok(coreSource.includes('header.setAttribute("aria-expanded"'));
+    assert.ok(coreSource.includes('disclosure.setAttribute("aria-expanded"'));
     assert.ok(coreSource.includes("collapsibleSummary"));
     assert.ok(coreSource.includes("function createDisclosureChevron("));
     assert.ok(coreSource.includes('createDisclosureChevron("collapsible-group-chevron")'));
@@ -8568,12 +9895,14 @@ describe("settings renderer browser environment", () => {
         value: { clawd: "gold", cloudling: "vaporwave" },
       }]
     );
-    assert.strictEqual(select.querySelector(".language-picker-trigger").disabled, true);
+    assert.strictEqual(select.querySelector(".language-picker-trigger").disabled, false);
+    assert.strictEqual(select.querySelector(".language-picker-trigger").getAttribute("aria-disabled"), "true");
     assert.strictEqual(select.classList.contains("pending"), true);
     await Promise.resolve();
     await Promise.resolve();
     await new Promise((resolve) => setImmediate(resolve));
     assert.strictEqual(select.querySelector(".language-picker-trigger").disabled, false);
+    assert.strictEqual(select.querySelector(".language-picker-trigger").getAttribute("aria-disabled"), "false");
     assert.strictEqual(select.classList.contains("pending"), false);
 
     const accessorySelect = harness.content.querySelector(".pet-accessory-select");
@@ -8590,11 +9919,13 @@ describe("settings renderer browser environment", () => {
         value: { clawd: "halo", cloudling: "halo" },
       }
     );
-    assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").disabled, true);
+    assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").disabled, false);
+    assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").getAttribute("aria-disabled"), "true");
     await Promise.resolve();
     await Promise.resolve();
     await new Promise((resolve) => setImmediate(resolve));
     assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").disabled, false);
+    assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").getAttribute("aria-disabled"), "false");
 
     const holidaySwitch = harness.content.querySelector(".holiday-accessory-switch");
     assert.ok(holidaySwitch);
@@ -8628,6 +9959,67 @@ describe("settings renderer browser environment", () => {
     harness.content.querySelector(".theme-detail-back").dispatchEvent({ type: "click" });
     assert.ok(harness.content.querySelector(".theme-grid"));
     assert.strictEqual(harness.content.querySelector(".theme-detail-hero"), null);
+  });
+
+  it("patches theme customization broadcasts in place without replacing the detail view", () => {
+    const harness = loadThemeTabForTest({
+      themes: [
+        {
+          id: "clawd",
+          name: "Clawd",
+          builtin: true,
+          active: true,
+          previewFileUrl: "file:///clawd.svg",
+          capabilities: { petTint: true, accessories: true },
+        },
+      ],
+      snapshot: {
+        petTint: { clawd: "matcha" },
+        petAccessory: { clawd: "wizard-hat" },
+        holidayAccessoryEnabled: {},
+      },
+      petTintOptions: [
+        { id: "none", labelKey: "tintNone" },
+        { id: "matcha", labelKey: "tintMatcha" },
+        { id: "gold", labelKey: "tintGold" },
+      ],
+      petAccessoryOptions: [
+        { id: "none", labelKey: "accessoryNone" },
+        { id: "wizard-hat", labelKey: "accessoryWizardHat" },
+        { id: "halo", labelKey: "accessoryHalo" },
+      ],
+    });
+
+    harness.content.querySelector(".theme-customize-btn").dispatchEvent({ type: "click" });
+    const originalHero = harness.content.querySelector(".theme-detail-hero");
+    const originalTint = harness.content.querySelector(".pet-tint-select");
+    const originalAccessory = harness.content.querySelector(".pet-accessory-select");
+    const originalHolidaySwitch = harness.content.querySelector(".holiday-accessory-switch");
+    harness.content.scrollTop = 137;
+
+    const nextSnapshot = {
+      ...harness.core.state.snapshot,
+      petTint: { clawd: "gold" },
+      petAccessory: { clawd: "halo" },
+      holidayAccessoryEnabled: { clawd: true },
+    };
+    harness.core.ops.applyChanges({
+      changes: {
+        petTint: nextSnapshot.petTint,
+        petAccessory: nextSnapshot.petAccessory,
+        holidayAccessoryEnabled: nextSnapshot.holidayAccessoryEnabled,
+      },
+      snapshot: nextSnapshot,
+    });
+
+    assert.strictEqual(harness.content.querySelector(".theme-detail-hero"), originalHero);
+    assert.strictEqual(harness.content.querySelector(".pet-tint-select"), originalTint);
+    assert.strictEqual(harness.content.querySelector(".pet-accessory-select"), originalAccessory);
+    assert.strictEqual(harness.content.querySelector(".holiday-accessory-switch"), originalHolidaySwitch);
+    assert.strictEqual(harness.content.scrollTop, 137);
+    assert.strictEqual(getSelectedPickerValue(originalTint), "gold");
+    assert.strictEqual(getSelectedPickerValue(originalAccessory), "halo");
+    assert.strictEqual(originalHolidaySwitch.getAttribute("aria-checked"), "true");
   });
 
   it("animates collapsible Settings groups with measured height instead of instant hidden jumps", () => {
@@ -12694,6 +14086,61 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.content.querySelectorAll(".agent-instance-deployed").length, 0);
     assert.strictEqual(harness.content.querySelectorAll(".agent-instance-action").length, 1,
       "only Pair when nothing is deployed");
+  });
+
+  it("Hermes WSL rows use per-agent evidence instead of Claude staging markers", () => {
+    function renderHermes(integrationFilesPresent) {
+      const detectionResult = {
+        checkedAt: 3,
+        agents: [{ agentId: "hermes", detectedInstalled: false, confidence: "low" }],
+        skippedAgentIds: [],
+        wslAgents: [{
+          agentId: "hermes",
+          agentName: "Hermes Agent",
+          distro: "Ubuntu",
+          detectedInstalled: true,
+          confidence: "high",
+          reason: "parent-dir",
+          detail: "",
+          wslHome: "/home/u",
+          wslParentDir: "/home/u/.hermes",
+          hooksDeployed: true,
+          hooksFilesPresent: true,
+          integrationFilesPresent,
+        }],
+        wslDistros: [{ name: "Ubuntu", default: true }],
+        wslPending: false,
+        wslSupported: true,
+      };
+      const harness = loadAgentsTabForTest({
+        snapshot: {
+          agents: { hermes: { integrationInstalled: false, enabled: false } },
+          dismissedAgentInstallHints: {},
+        },
+        agentMetadata: [
+          { id: "hermes", name: "Hermes Agent", eventSource: "plugin", capabilities: {} },
+        ],
+        settingsAPI: { detectAgentInstallations: () => Promise.resolve(detectionResult) },
+      });
+      harness.core.runtime.agentInstallationHints = detectionResult;
+      harness.core.runtime.agentInstallationHintsFetched = true;
+      harness.core.ops.requestRender({ content: true });
+      return harness;
+    }
+
+    let harness = renderHermes(true);
+    assert.strictEqual(harness.content.querySelectorAll(".agent-instance-deployed").length, 0,
+      "Claude registration must never render a Hermes deployed badge");
+    assert.strictEqual(harness.content.querySelectorAll(".agent-instance-action").length, 2,
+      "Hermes managed files expose Pair and Unpair without shared staging");
+
+    harness = renderHermes(false);
+    assert.strictEqual(harness.content.querySelectorAll(".agent-instance-action").length, 1,
+      "explicit false must not inherit Claude hooksFilesPresent");
+
+    harness = renderHermes(null);
+    assert.strictEqual(harness.content.querySelectorAll(".agent-instance-action").length, 1,
+      "unknown evidence conservatively keeps Pair but hides Unpair");
   });
 });
 

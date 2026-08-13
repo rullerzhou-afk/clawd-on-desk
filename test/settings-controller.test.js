@@ -122,6 +122,22 @@ describe("createSettingsController construction", () => {
   });
 });
 
+describe("quota ring display mode persistence", () => {
+  it("accepts remaining through the controller and restores it after relaunch", async () => {
+    const p = makeTempPath();
+    const ctrl = createSettingsController({ prefsPath: p });
+
+    const result = await ctrl.applyUpdate("quotaRingDisplayMode", "remaining");
+
+    assert.deepStrictEqual(result, { status: "ok" });
+    assert.strictEqual(ctrl.get("quotaRingDisplayMode"), "remaining");
+    assert.strictEqual(prefs.load(p).snapshot.quotaRingDisplayMode, "remaining");
+
+    const relaunched = createSettingsController({ prefsPath: p });
+    assert.strictEqual(relaunched.get("quotaRingDisplayMode"), "remaining");
+  });
+});
+
 describe("permission automation safe startup persistence", () => {
   it("keeps off across a relaunch", async () => {
     const p = makeTempPath();
@@ -650,6 +666,16 @@ describe("applyUpdate", () => {
     assert.deepStrictEqual(prefs.load(p).snapshot.settingsWindowBounds, bounds);
   });
 
+
+  it("persists Dashboard window bounds through the controller-only write path", async () => {
+    const p = makeTempPath();
+    const ctrl = createSettingsController({ prefsPath: p });
+    const bounds = { x: 240, y: 130, width: 640, height: 720 };
+    const r = await ctrl.applyUpdate("dashboardWindowBounds", bounds);
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(ctrl.get("dashboardWindowBounds"), bounds);
+    assert.deepStrictEqual(prefs.load(p).snapshot.dashboardWindowBounds, bounds);
+  });
 
   it("persists Codex hook health notification prefs through applyUpdate", async () => {
     const p = makeTempPath();

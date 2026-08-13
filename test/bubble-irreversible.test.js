@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const { detectIrreversible } = require("../src/bubble-format");
+const { SUPPORTED_LANGS } = require("../src/i18n");
 
 const bubbleRenderer = fs.readFileSync(path.join(__dirname, "..", "src", "bubble-renderer.js"), "utf8");
 const bubbleHtml = fs.readFileSync(path.join(__dirname, "..", "src", "bubble.html"), "utf8");
@@ -73,9 +74,9 @@ describe("detectIrreversible — ordinary commands stay quiet (precision over re
 });
 
 describe("bubble wiring — badge is display-only", () => {
-  it("renderer defines localized hint for all 5 bubble locales", () => {
+  it("renderer defines localized hint for every supported bubble locale", () => {
     const count = (bubbleRenderer.match(/irreversibleHint:/g) || []).length;
-    assert.strictEqual(count, 5);
+    assert.strictEqual(count, SUPPORTED_LANGS.length);
   });
   it("badge element exists and starts hidden", () => {
     assert.match(bubbleHtml, /id="irreversibleBadge" style="display:none"/);

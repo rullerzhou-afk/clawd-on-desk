@@ -2,6 +2,7 @@
 
 const defaultFs = require("fs");
 const defaultPath = require("path");
+const { pathToFileURL } = require("url");
 const { detectAgentInstallations: defaultDetectAgentInstallations } = require("./agent-installation-detector");
 const settingsThemeImporter = require("./settings-theme-importer");
 const {
@@ -33,6 +34,7 @@ const SOUND_OVERRIDE_DIALOG_STRINGS = {
   "zh-TW": { title: "選擇音效檔案", filterName: "音效" },
   ko: { title: "음향 파일 선택", filterName: "오디오" },
   ja: { title: "音声ファイルを選択", filterName: "音声" },
+  "pt-BR": { title: "Escolha um arquivo de som", filterName: "Áudio" },
 };
 
 const AGENT_DISCOVERY_DIALOG_STRINGS = {
@@ -41,6 +43,7 @@ const AGENT_DISCOVERY_DIALOG_STRINGS = {
   "zh-TW": { file: "選擇工具執行檔", directory: "選擇工具安裝目錄" },
   ko: { file: "도구 실행 파일 선택", directory: "도구 설치 폴더 선택" },
   ja: { file: "ツールの実行ファイルを選択", directory: "ツールのインストールフォルダーを選択" },
+  "pt-BR": { file: "Escolha o executável da ferramenta", directory: "Escolha a pasta de instalação da ferramenta" },
 };
 
 const REMOVE_THEME_DIALOG_STRINGS = {
@@ -73,6 +76,12 @@ const REMOVE_THEME_DIALOG_STRINGS = {
     cancel: "キャンセル",
     message: (name) => `テーマ "${name}" を削除しますか？`,
     detail: "この操作は元に戻せません。このテーマのすべてのファイルがディスクから削除されます。",
+  },
+  "pt-BR": {
+    delete: "Excluir",
+    cancel: "Cancelar",
+    message: (name) => `Excluir o tema "${name}"?`,
+    detail: "Isso não pode ser desfeito. Todos os arquivos deste tema serão removidos do disco.",
   },
 };
 
@@ -164,9 +173,14 @@ function registerSettingsIpc(options = {}) {
   const BrowserWindow = requiredDependency(options.BrowserWindow, "BrowserWindow");
   const fs = options.fs || defaultFs;
   const path = options.path || defaultPath;
+  const settingsPageUrl = pathToFileURL(
+    options.settingsHtmlPath || defaultPath.join(__dirname, "settings.html"),
+  ).href;
   const getSettingsWindow = options.getSettingsWindow || (() => null);
   const getActiveTheme = options.getActiveTheme || (() => null);
   const getLang = options.getLang || (() => "en");
+  const roamFenceSettings = requiredDependency(options.roamFenceSettings, "roamFenceSettings");
+  const roamFencePicker = requiredDependency(options.roamFencePicker, "roamFencePicker");
   const settingsSizePreviewSession = requiredDependency(
     options.settingsSizePreviewSession,
     "settingsSizePreviewSession"
@@ -211,6 +225,24 @@ function registerSettingsIpc(options = {}) {
     return getSettingsDialogParent(event, { BrowserWindow, getSettingsWindow });
   }
 
+  function isTrustedSettingsEvent(event) {
+    const win = getSettingsWindow();
+    if (!win || (typeof win.isDestroyed === "function" && win.isDestroyed())) return false;
+    const contents = win.webContents;
+    const frame = event && event.senderFrame;
+    return !!contents
+      && event.sender === contents
+      && !!frame
+      && frame === contents.mainFrame
+      && frame.url === settingsPageUrl;
+  }
+
+  function rejectUntrustedSettingsEvent(event) {
+    return isTrustedSettingsEvent(event)
+      ? null
+      : { status: "error", message: "untrusted settings sender" };
+  }
+
   handle("settings:get-snapshot", () => settingsController.getSnapshot());
   // Distinct quota-reporting sources (this machine + WSL / SSH remotes). The
   // General tab uses it to hide the "merge across machines" switch when it is
@@ -224,6 +256,23 @@ function registerSettingsIpc(options = {}) {
   });
   handle("settings:get-pet-tint-options", () => listPetTintOptions());
   handle("settings:get-pet-accessory-options", () => listPetAccessoryOptions());
+  handle("settings:get-roam-fence", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    return rejected || roamFenceSettings.getStatus();
+  });
+  handle("settings:select-roam-fence", async (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const picked = await roamFencePicker.selectArea({
+      lang: getLang(),
+    });
+    if (!picked || picked.status !== "ok") return picked || { status: "cancel" };
+    return roamFenceSettings.saveFence(picked.fence);
+  });
+  handle("settings:clear-roam-fence", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    return rejected || roamFenceSettings.clearFence();
+  });
   handle("settings:update", (_event, payload) => {
     if (!payload || typeof payload !== "object") {
       return { status: "error", message: "settings:update payload must be { key, value }" };

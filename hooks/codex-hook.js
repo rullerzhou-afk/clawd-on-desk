@@ -13,11 +13,18 @@ const {
   readCodexAutoStartGate,
   readHostPrefix,
   readRuntimeIdentity,
+  readWindowsProcessChainHookContext,
   CODEX_WSL_INTEROP_ARG,
   resolveWslDistro,
   applyWslSourceFields,
 } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
+const {
+  createPidResolver,
+  readStdinJson,
+  getPlatformConfig,
+  applyOrcaPaneKey,
+  processAlive,
+} = require("./shared-process");
 const {
   ROLE_UNKNOWN,
   classifyHookPayload,
@@ -254,25 +261,27 @@ function applyLocalProcessFields(body, resolve, options = {}) {
   const lifecycle = options.event === "SessionStart" ? "start"
     : options.event === "UserPromptSubmit" ? "prompt"
     : "event";
-  const { stablePid, agentPid, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient, headless } = resolve({
+  const metadata = resolve({
     namespace: "codex",
     sessionId: body.session_id,
     cacheCwd: body.cwd || "",
     lifecycle,
     cacheable: body.session_id !== "codex:default" && !!body.cwd,
   });
+  const { stablePid, agentPid, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient, headless } = metadata;
   const sourcePid = options.preferAgentPid && agentPid ? agentPid : stablePid;
   body.source_pid = sourcePid;
   if (detectedEditor) body.editor = detectedEditor;
   if (agentPid) body.agent_pid = agentPid;
   if (agentPid && headless === true) body.headless = true;
-  if (pidChain.length) body.pid_chain = pidChain;
+  if (Array.isArray(pidChain) && pidChain.length) body.pid_chain = pidChain;
   if (tmuxSocket) body.tmux_socket = tmuxSocket;
   if (tmuxClient) body.tmux_client = tmuxClient;
   applyOrcaPaneKey(body);
   if (shouldReportForegroundWtHwnd(options.event, foregroundWtHwnd) && foregroundWtHwnd) {
     body.wt_hwnd = String(foregroundWtHwnd);
   }
+  return metadata;
 }
 
 function resolveCodexSessionRole(payload, sessionMeta) {
@@ -325,7 +334,7 @@ function sanitizeCodexPermissionOutput(rawBody) {
   return buildCodexPermissionOutput(decision);
 }
 
-function buildPermissionBody(payload, resolve) {
+function buildPermissionBody(payload, resolve, options = {}) {
   const event = payload && typeof payload.hook_event_name === "string"
     ? payload.hook_event_name
     : "";
@@ -379,16 +388,21 @@ function buildPermissionBody(payload, resolve) {
     applyOrcaPaneKey(body);
   } else {
     applyWslSourceFields(body);
-    applyLocalProcessFields(body, resolve, {
-      preferAgentPid: isCodexDesktopSession(payload, sessionMeta),
-      event,
-    });
+    if (options.authoritativeProcessChain === true) {
+      applyOrcaPaneKey(body);
+    } else {
+      const metadata = applyLocalProcessFields(body, resolve, {
+        preferAgentPid: isCodexDesktopSession(payload, sessionMeta),
+        event,
+      });
+      if (typeof options.onProcessMetadata === "function") options.onProcessMetadata(metadata);
+    }
   }
 
   return body;
 }
 
-function buildStateBody(payload, resolve) {
+function buildStateBody(payload, resolve, options = {}) {
   const event = payload && typeof payload.hook_event_name === "string"
     ? payload.hook_event_name
     : "";
@@ -448,10 +462,15 @@ function buildStateBody(payload, resolve) {
     applyOrcaPaneKey(body);
   } else {
     applyWslSourceFields(body);
-    applyLocalProcessFields(body, resolve, {
-      preferAgentPid: isCodexDesktopSession(payload, sessionMeta),
-      event,
-    });
+    if (options.authoritativeProcessChain === true) {
+      applyOrcaPaneKey(body);
+    } else {
+      const metadata = applyLocalProcessFields(body, resolve, {
+        preferAgentPid: isCodexDesktopSession(payload, sessionMeta),
+        event,
+      });
+      if (typeof options.onProcessMetadata === "function") options.onProcessMetadata(metadata);
+    }
   }
 
   return body;
@@ -467,6 +486,7 @@ function requestCodexPermission(body, callback, options = {}) {
     requestOptions.preferredPort = options.preferredPort;
     requestOptions.runtimePort = options.preferredPort;
   }
+  if (options.windowsProcessChain) requestOptions.windowsProcessChain = options.windowsProcessChain;
   postPermission(
     JSON.stringify(body),
     requestOptions,
@@ -532,12 +552,59 @@ function startClawdAndWait(options = {}) {
 async function runCodexHook(payload, options = {}) {
   const config = getPlatformConfig();
   const readIdentity = options.readRuntimeIdentity || readRuntimeIdentity;
-  const createAttemptResolver = (initialPreferredPort = null) => {
-    let preferredPort = initialPreferredPort;
+  const env = options.env || process.env;
+  const argv = Array.isArray(options.argv) ? options.argv : process.argv;
+  const platform = options.platform || process.platform;
+  const wslInterop = argv.includes(CODEX_WSL_INTEROP_ARG);
+  let wslDistro = null;
+  try {
+    const resolveHookWslDistro = options.resolveWslDistro || resolveWslDistro;
+    wslDistro = resolveHookWslDistro();
+  } catch {}
+  const mayUseWindowsProcessChain = platform === "win32"
+    && !env.CLAWD_REMOTE
+    && !env.CLAWD_WSL_DISTRO
+    && !wslInterop
+    && !wslDistro;
+  const readHookContext = options.readWindowsProcessChainHookContext
+    || readWindowsProcessChainHookContext;
+  const isAlive = options.processAlive || processAlive;
+  const observeAttempt = () => {
+    if (!mayUseWindowsProcessChain) {
+      return { context: null, observation: null, enabled: false, authoritative: false };
+    }
+    let context;
+    try {
+      context = readHookContext("codex", { readRuntimeIdentity: readIdentity });
+    } catch {
+      context = { identity: { ok: false, reason: "runtime-read-failed", port: null, ownerPid: null }, observation: null };
+    }
+    const observation = context && context.observation || null;
+    let ownerAlive = false;
+    if (observation) {
+      try { ownerAlive = isAlive(observation.ownerPid) === true; } catch { ownerAlive = false; }
+    }
+    const enabled = !!(observation && observation.agentMode !== "legacy" && ownerAlive);
+    return {
+      context,
+      observation,
+      enabled,
+      authoritative: enabled && observation.agentMode === "b1a-authoritative",
+    };
+  };
+  const createAttemptResolver = (initialPreferredPort = null, processChainAttempt = null) => {
+    let preferredPort = initialPreferredPort
+      || (processChainAttempt && processChainAttempt.observation && processChainAttempt.observation.port)
+      || (processChainAttempt && processChainAttempt.context
+        && processChainAttempt.context.identity && processChainAttempt.context.identity.port)
+      || null;
     const resolverOptions = {
       agentNames: { win: new Set(["codex.exe"]), mac: new Set(["codex"]), linux: new Set(["codex"]) },
       platformConfig: config,
       readRuntimeIdentity() {
+        if (processChainAttempt && processChainAttempt.context) {
+          return processChainAttempt.context.identity;
+        }
         const identity = readIdentity();
         if (!preferredPort && identity && identity.port) preferredPort = identity.port;
         return identity;
@@ -553,26 +620,54 @@ async function runCodexHook(payload, options = {}) {
   };
 
   if (payload && payload.hook_event_name === "PermissionRequest") {
-    const permissionAttempt = createAttemptResolver(options.preferredPort || null);
-    const permissionBody = buildPermissionBody(payload, permissionAttempt.resolve);
+    const processChainAttempt = observeAttempt();
+    const permissionAttempt = createAttemptResolver(options.preferredPort || null, processChainAttempt);
+    let legacyCacheSource = "none";
+    const permissionBody = buildPermissionBody(payload, permissionAttempt.resolve, {
+      authoritativeProcessChain: processChainAttempt.authoritative,
+      onProcessMetadata: (metadata) => { legacyCacheSource = metadata && metadata.cacheSource || "none"; },
+    });
     if (!permissionBody) return { body: null, posted: false, stdout: "" };
+    const windowsProcessChain = processChainAttempt.enabled ? {
+      agentId: "codex",
+      hookPid: options.hookPid || process.pid,
+      runtimeObservation: processChainAttempt.observation,
+      legacyCacheSource,
+    } : null;
     return new Promise((resolveRun) => {
       requestCodexPermission(permissionBody, (stdout, posted, port) => {
         resolveRun({ body: permissionBody, posted: !!posted, port: port || null, stdout });
-      }, { ...options, preferredPort: permissionAttempt.getPreferredPort() });
+      }, {
+        ...options,
+        preferredPort: permissionAttempt.getPreferredPort(),
+        windowsProcessChain,
+      });
     });
   }
 
   const postState = options.postState || postStateToRunningServer;
-  const buildStateAttempt = (preferredPort = null) => {
-    const attempt = createAttemptResolver(preferredPort);
-    const body = buildStateBody(payload || {}, attempt.resolve);
+  const buildStateAttempt = (preferredPort = null, processChainAttempt = observeAttempt()) => {
+    const attempt = createAttemptResolver(preferredPort, processChainAttempt);
+    let legacyCacheSource = "none";
+    const body = buildStateBody(payload || {}, attempt.resolve, {
+      authoritativeProcessChain: processChainAttempt.authoritative,
+      onProcessMetadata: (metadata) => { legacyCacheSource = metadata && metadata.cacheSource || "none"; },
+    });
     if (!body) return null;
     // Byte-fit before POST so a long CJK assistant_last_output can't trip the
     // server's headerless 413 (read back as posted=false). See
     // hooks/state-payload-size.js.
     const fitted = fitStateBodyToByteBudget(body);
-    return { body: fitted.body, preferredPort: attempt.getPreferredPort() };
+    return {
+      body: fitted.body,
+      preferredPort: attempt.getPreferredPort(),
+      windowsProcessChain: processChainAttempt.enabled ? {
+        agentId: "codex",
+        hookPid: options.hookPid || process.pid,
+        runtimeObservation: processChainAttempt.observation,
+        legacyCacheSource,
+      } : null,
+    };
   };
   const postAttempt = (attempt) => new Promise((resolveRun) => {
     const requestOptions = { timeoutMs: 100 };
@@ -580,6 +675,7 @@ async function runCodexHook(payload, options = {}) {
       requestOptions.preferredPort = attempt.preferredPort;
       requestOptions.runtimePort = attempt.preferredPort;
     }
+    if (attempt.windowsProcessChain) requestOptions.windowsProcessChain = attempt.windowsProcessChain;
     postState(
       JSON.stringify(attempt.body),
       requestOptions,
@@ -595,14 +691,6 @@ async function runCodexHook(payload, options = {}) {
   const firstAttempt = buildStateAttempt(options.preferredPort || null);
   if (!firstAttempt) return { body: null, posted: false, stdout: "" };
   const result = await postAttempt(firstAttempt);
-  const env = options.env || process.env;
-  const argv = Array.isArray(options.argv) ? options.argv : process.argv;
-  const wslInterop = argv.includes(CODEX_WSL_INTEROP_ARG);
-  let wslDistro = null;
-  try {
-    const resolveHookWslDistro = options.resolveWslDistro || resolveWslDistro;
-    wslDistro = resolveHookWslDistro();
-  } catch {}
   if (
     result.posted
     || payload.hook_event_name !== "SessionStart"
@@ -625,12 +713,7 @@ async function runCodexHook(payload, options = {}) {
   // with fresh runtime and process identity before retrying it.
   const runAutoStart = options.runAutoStart || startClawdAndWait;
   await runAutoStart();
-  let refreshedPort = null;
-  try {
-    const identity = readIdentity();
-    if (identity && identity.port) refreshedPort = identity.port;
-  } catch {}
-  const retryAttempt = buildStateAttempt(refreshedPort);
+  const retryAttempt = buildStateAttempt();
   return postAttempt(retryAttempt);
 }
 

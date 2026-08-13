@@ -620,7 +620,7 @@ def fake_urlopen(req, timeout=None):
         )
     raise AssertionError(req.full_url)
 
-mod.request.urlopen = fake_urlopen
+mod._local_urlopen = fake_urlopen
 mod._port_candidates = lambda: [23333]
 mod._add_process_meta = lambda payload: None
 mod._runtime_cwd = lambda: "/repo"
@@ -638,6 +638,58 @@ print(json.dumps({"result": result, "calls": calls, "cached_port": mod._cached_p
       ["GET", "http://127.0.0.1:23333/state", 0.25],
       ["POST", "http://127.0.0.1:23333/permission", 600],
     ]);
+  });
+
+  it("bypasses inherited HTTP proxies for Clawd loopback state posts", () => {
+    const output = runPluginPython(String.raw`
+import importlib.util
+import json
+import os
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+sys.dont_write_bytecode = True
+for key in ("NO_PROXY", "no_proxy"):
+    os.environ.pop(key, None)
+for key in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"):
+    os.environ[key] = "http://127.0.0.1:1"
+
+spec = importlib.util.spec_from_file_location("hermes_plugin", r"hooks/hermes-plugin/__init__.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+received = []
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        received.append(json.loads(self.rfile.read(length).decode("utf-8")))
+        self.send_response(200)
+        self.send_header(mod.CLAWD_SERVER_HEADER, mod.CLAWD_SERVER_ID)
+        self.end_headers()
+    def log_message(self, *args):
+        pass
+
+server = HTTPServer(("127.0.0.1", 0), Handler)
+thread = threading.Thread(target=server.serve_forever, daemon=True)
+thread.start()
+try:
+    mod._port_candidates = lambda: [server.server_port]
+    mod._append_log = lambda *args, **kwargs: None
+    mod._cached_port = None
+    mod._no_server_until = 0.0
+    mod._post_state({"agent_id": "hermes", "state": "thinking", "session_id": "proxy-smoke"})
+finally:
+    server.shutdown()
+    thread.join(timeout=2)
+    server.server_close()
+
+print(json.dumps({"received": received, "cached_port": mod._cached_port}, sort_keys=True))
+`);
+    const result = JSON.parse(output);
+    assert.strictEqual(result.received.length, 1);
+    assert.strictEqual(result.received[0].agent_id, "hermes");
+    assert.strictEqual(result.cached_port > 0, true);
   });
 
   it("skips process metadata on WebUI permission posts", () => {
@@ -685,7 +737,7 @@ def fake_add_process_meta(payload):
     payload["source_pid"] = 1234
     payload["editor"] = "code"
 
-mod.request.urlopen = fake_urlopen
+mod._local_urlopen = fake_urlopen
 mod._port_candidates = lambda: [23333]
 mod._add_process_meta = fake_add_process_meta
 mod._runtime_cwd = lambda: "/repo"
@@ -725,7 +777,7 @@ def fake_urlopen(*args, **kwargs):
     calls.append([str(args), kwargs])
     raise AssertionError("urlopen should not run during cooldown")
 
-mod.request.urlopen = fake_urlopen
+mod._local_urlopen = fake_urlopen
 mod._append_log = lambda payload, **kwargs: logs.append(payload)
 mod._cached_port = None
 mod._no_server_until = time.monotonic() + 10
@@ -793,7 +845,7 @@ def fake_urlopen(req, timeout=None):
     assert req.full_url.endswith("/state"), "permission POST should not be attempted after probe mismatch"
     return FakeResponse()
 
-mod.request.urlopen = fake_urlopen
+mod._local_urlopen = fake_urlopen
 mod._port_candidates = lambda: [23333]
 mod._append_log = lambda *args, **kwargs: None
 mod._cached_port = None

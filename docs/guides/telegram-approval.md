@@ -7,8 +7,9 @@ permission bubbles. When a supported agent asks for tool permission, Clawd keeps
 the local desktop bubble and also sends an approval card to your Telegram bot.
 The first explicit Allow or Deny decision resolves the same pending permission.
 
-This is approval-only. It does not create a Telegram chat bridge, remote shell,
-or prompt-submission path.
+The approval path does not create a remote shell or silently submit prompts.
+Completion notifications and Direct Send are separate opt-in Telegram features;
+their formatting does not change the approval decision policy described here.
 
 ## Supported Paths
 
@@ -70,6 +71,26 @@ button stay disabled until token and recipient are in place.
 - Repeated Telegram taps after a request is already handled do not resolve the
   permission twice.
 - Clawd logs redact Telegram tokens, chat ids, and token-like values.
+
+## Message Formatting
+
+- Completion notifications render Assistant output through a conservative
+  Markdown subset using Telegram-safe HTML. Clawd metadata such as the session
+  title, agent, folder, and host is escaped as plain dynamic text rather than
+  interpreted as Markdown.
+- Approval, session-trust, and AskUserQuestion cards use Clawd-owned structure.
+  Agent/tool/question values are redacted and escaped; they cannot add Telegram
+  tags, links, mentions, or status lines.
+- Secret redaction runs before Markdown parsing. Unsupported HTML, unsafe link
+  schemes, credentialed links, and image syntax degrade to visible text; Clawd
+  does not fetch or embed the referenced media.
+- Username-like agent prose outside code uses a full-width `＠` to avoid an
+  unintended Telegram mention. Code keeps ASCII `@` for copy fidelity.
+- If Telegram rejects the generated HTML as an entity-parse error, Clawd retries
+  the already-rendered plain version once without a parse mode. Other Telegram
+  errors keep their existing retry/fallback behavior.
+- Formatting is the default transport correction and has no Settings toggle.
+  It does not split long messages, upload documents, or use Rich Messages.
 
 ## Legacy Upgrade (v0.14.0)
 

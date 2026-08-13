@@ -7,6 +7,13 @@
   let ops = null;
   let i18n = null;
 
+  // Contributors who are credited but whose GitHub account no longer resolves, so
+  // https://github.com/<name> would 404. tomaioo authored the Linux Electron sandbox
+  // gate (commit 2cab204e, shipped via the now-deleted PR #168) and the account was
+  // removed afterwards — lookup by login and by numeric id both 404, so it is gone
+  // rather than renamed. The contribution still ships in hooks/shared-process.js.
+  const NO_GITHUB_ACCOUNT = new Set(["tomaioo"]);
+
   function t(key) {
     return helpers.t(key);
   }
@@ -241,8 +248,8 @@
           title: t("aboutCleanupConfirmTitle"),
           detail: t("aboutCleanupConfirmDetail"),
           actions: [
+            { id: "cancel", label: t("aboutCleanupConfirmCancel"), tone: "neutral", defaultFocus: true },
             { id: "confirm", label: t("aboutCleanupConfirmAction"), tone: "danger" },
-            { id: "cancel", label: t("aboutCleanupConfirmCancel"), tone: "accent", defaultFocus: true },
           ],
         }))
         .then((actionId) => {
@@ -324,6 +331,15 @@
     const contribList = document.createElement("div");
     contribList.className = "about-contributors-list";
     for (const name of i18n.CONTRIBUTORS) {
+      // Contributors whose GitHub account no longer resolves keep their credit but
+      // get plain text: a link to a deleted account only leads to a 404.
+      if (NO_GITHUB_ACCOUNT.has(name)) {
+        const plain = document.createElement("span");
+        plain.className = "about-contributor-link";
+        plain.textContent = "@" + name;
+        contribList.appendChild(plain);
+        continue;
+      }
       const link = document.createElement("a");
       link.className = "about-contributor-link";
       link.textContent = "@" + name;

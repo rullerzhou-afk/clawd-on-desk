@@ -73,6 +73,7 @@ function registerDoctorIpc({
       durationMs: payload && payload.durationMs,
       homeDir: os.homedir(),
       resolveAgentDisplayName,
+      getCodexHookHealth: () => getCodexHookHealth({ prefs: getPrefsSnapshot() }),
     }),
     {
       onResult: (result) => {

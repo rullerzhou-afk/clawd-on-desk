@@ -30,17 +30,25 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-      - run: npm install
+      - run: npm ci
       - run: npm test
         if: ${{ github.event_name != 'workflow_dispatch' || !inputs.artifact_validation_only }}
       - name: Run package validation tests
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_validation_only }}
-        run: node --test test/assert-no-retired-telegram-sidecar.test.js test/package-build-config.test.js test/telegram-legacy-retirement.test.js test/telegram-migration-state.test.js test/telegram-migration-controller.test.js test/telegram-migration-user-data.test.js
+        run: node --test test/assert-no-retired-telegram-sidecar.test.js test/after-pack-koffi.test.js test/audit-packaged-native.test.js test/koffi-lockfile.test.js test/native-package-target.test.js test/package-koffi-smoke.test.js test/package-build-config.test.js test/telegram-legacy-retirement.test.js test/telegram-migration-state.test.js test/telegram-migration-controller.test.js test/telegram-migration-user-data.test.js test/verify-updater-metadata.test.js test/win-foreground-terminal.test.js test/win-fullscreen-detect.test.js test/appimage-apprun.test.js test/dependency-security-floor.test.js
       - run: npx electron-builder --win --publish never
       - name: Assert retired Telegram sidecar is absent
         run: |
           node scripts/assert-no-retired-telegram-sidecar.js --resources-root dist/win-unpacked/resources --output dist/telegram-retirement-manifests/windows-x64.json
           node scripts/assert-no-retired-telegram-sidecar.js --resources-root dist/win-arm64-unpacked/resources --output dist/telegram-retirement-manifests/windows-arm64.json
+      - name: Audit packaged native payloads
+        run: |
+          node scripts/audit-packaged-native.js --app-root dist/win-unpacked --target windows-x64 --output dist/native-package-manifests/windows-x64.json
+          node scripts/audit-packaged-native.js --app-root dist/win-arm64-unpacked --target windows-arm64 --output dist/native-package-manifests/windows-arm64.json
+      - name: Run native-host packaged Koffi smoke
+        run: node scripts/run-packaged-koffi-smoke.js --executable "dist/win-unpacked/Clawd on Desk.exe" --target windows-x64 --output dist/koffi-smoke/windows-x64.json
+      - name: Verify Windows updater metadata
+        run: node scripts/verify-updater-metadata.js --metadata dist/latest.yml --artifact-root dist --contract windows --package-json package.json --output dist/updater-metadata-manifests/windows.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -55,6 +63,16 @@ jobs:
           path: |
             dist/telegram-retirement-manifests/*.json
           if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-native-package-audit
+          path: |
+            dist/koffi-prune-manifests/*.json
+            dist/koffi-smoke/*.json
+            dist/native-package-manifests/*.json
+            dist/updater-metadata-manifests/*.json
+          if-no-files-found: error
 
   build-mac:
     needs: validate-release
@@ -64,13 +82,41 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-      - run: npm install
+      - run: npm ci
       - run: npm test
       - run: npx electron-builder --mac --publish never
+      - name: Verify macOS ad-hoc hardened signatures
+        shell: bash
+        run: |
+          set -euo pipefail
+          for app in \
+            "dist/mac/Clawd on Desk.app" \
+            "dist/mac-arm64/Clawd on Desk.app"; do
+            signature_details="$(codesign -dv --verbose=4 "$app" 2>&1)"
+            grep -q "Signature=adhoc" <<<"$signature_details"
+            grep -Eq "flags=.*\\(adhoc,runtime\\)" <<<"$signature_details"
+            codesign --verify --deep --strict --verbose=2 "$app"
+
+            entitlements="$(codesign -d --entitlements :- "$app" 2>/dev/null)"
+            for entitlement in \
+              com.apple.security.cs.allow-jit \
+              com.apple.security.cs.allow-unsigned-executable-memory \
+              com.apple.security.cs.disable-library-validation; do
+              grep -q "<key>$entitlement</key>" <<<"$entitlements"
+            done
+          done
       - name: Assert retired Telegram sidecar is absent
         run: |
           node scripts/assert-no-retired-telegram-sidecar.js --resources-root "dist/mac/Clawd on Desk.app/Contents/Resources" --output dist/telegram-retirement-manifests/darwin-x64.json
           node scripts/assert-no-retired-telegram-sidecar.js --resources-root "dist/mac-arm64/Clawd on Desk.app/Contents/Resources" --output dist/telegram-retirement-manifests/darwin-arm64.json
+      - name: Audit packaged native payloads
+        run: |
+          node scripts/audit-packaged-native.js --app-root "dist/mac/Clawd on Desk.app" --target darwin-x64 --output dist/native-package-manifests/darwin-x64.json
+          node scripts/audit-packaged-native.js --app-root "dist/mac-arm64/Clawd on Desk.app" --target darwin-arm64 --output dist/native-package-manifests/darwin-arm64.json
+      - name: Run native-host packaged Koffi smoke
+        run: node scripts/run-packaged-koffi-smoke.js --executable "dist/mac-arm64/Clawd on Desk.app/Contents/MacOS/Clawd on Desk" --target darwin-arm64 --output dist/koffi-smoke/darwin-arm64.json
+      - name: Verify macOS updater metadata
+        run: node scripts/verify-updater-metadata.js --metadata dist/latest-mac.yml --artifact-root dist --contract mac --package-json package.json --output dist/updater-metadata-manifests/mac.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -85,6 +131,16 @@ jobs:
           path: |
             dist/telegram-retirement-manifests/*.json
           if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-native-package-audit
+          path: |
+            dist/koffi-prune-manifests/*.json
+            dist/koffi-smoke/*.json
+            dist/native-package-manifests/*.json
+            dist/updater-metadata-manifests/*.json
+          if-no-files-found: error
 
   build-linux:
     needs: validate-release
@@ -94,12 +150,24 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-      - run: npm install
+      - run: npm ci
       - run: npm test
       - run: npx electron-builder --linux --publish never
+      - name: Verify final AppImage AppRun search paths
+        run: node scripts/verify-appimage-apprun.js --artifact dist/*.AppImage --output dist/appimage-apprun-manifests/linux-x64.json
       - name: Assert retired Telegram sidecar is absent
         run: |
           node scripts/assert-no-retired-telegram-sidecar.js --resources-root dist/linux-unpacked/resources --output dist/telegram-retirement-manifests/linux-x64.json
+      - name: Audit packaged native payloads
+        run: node scripts/audit-packaged-native.js --app-root dist/linux-unpacked --target linux-x64 --output dist/native-package-manifests/linux-x64.json
+      - name: Configure Linux Chromium sandbox
+        run: |
+          sudo chown root:root dist/linux-unpacked/chrome-sandbox
+          sudo chmod 4755 dist/linux-unpacked/chrome-sandbox
+      - name: Run packaged Koffi smoke
+        run: node scripts/run-packaged-koffi-smoke.js --executable dist/linux-unpacked/clawd-on-desk --target linux-x64 --output dist/koffi-smoke/linux-x64.json --xvfb
+      - name: Verify Linux updater metadata
+        run: node scripts/verify-updater-metadata.js --metadata dist/latest-linux.yml --artifact-root dist --contract linux --package-json package.json --output dist/updater-metadata-manifests/linux.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -115,6 +183,17 @@ jobs:
           path: |
             dist/telegram-retirement-manifests/*.json
           if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-native-package-audit
+          path: |
+            dist/koffi-prune-manifests/*.json
+            dist/koffi-smoke/*.json
+            dist/appimage-apprun-manifests/*.json
+            dist/native-package-manifests/*.json
+            dist/updater-metadata-manifests/*.json
+          if-no-files-found: error
 
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')

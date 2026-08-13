@@ -7,6 +7,8 @@ const { EventEmitter } = require("node:events");
 const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
+  CLAWD_HOOK_PID_HEADER,
+  CLAWD_PROCESS_INSTANCE_HEADER,
 } = require("../hooks/server-config");
 const {
   MAX_STATE_BODY_BYTES,
@@ -16,6 +18,7 @@ const {
 const { classifyPermissionInteraction } = require("../src/permission-automation-policy");
 const { buildStateBody } = require("../hooks/clawd-hook");
 const { makeSessionKey } = require("../src/session-key");
+const createAgentRuntimeMain = require("../src/agent-runtime-main");
 const localSessionKey = (rawSessionId) => makeSessionKey({
   profileId: "local",
   rawSessionId,
@@ -35,8 +38,9 @@ function makePlanPermission(rawSessionId) {
   };
 }
 
-function makeReq(body) {
+function makeReq(body, headers = {}) {
   const req = new EventEmitter();
+  req.headers = headers;
   setImmediate(() => {
     if (body != null) req.emit("data", Buffer.from(body));
     req.emit("end");
@@ -98,7 +102,7 @@ function callStatePost(body, overrides = {}) {
       handleTestResult: (...args) => calls.testResults.push(args),
       ...overrides.ctx,
     };
-    handleStatePost(makeReq(body), res, {
+    handleStatePost(makeReq(body, overrides.headers), res, {
       ctx,
       createRequestHookRecorder: (identity, data, route) => {
         calls.recorder.push({ identity, data, route });
@@ -448,6 +452,7 @@ describe("server-route-state POST", () => {
         displayHint: "display.svg",
         sessionTitle: "Work title",
         contextUsage: null,
+        contextUsageOrigin: null,
         assistantLastOutput: null,
         assistantLastOutputTruncated: false,
         toolName: "Read",
@@ -679,6 +684,98 @@ describe("server-route-state POST", () => {
     assert.strictEqual(res.calls.updateSession[0][3].assistantLastOutput, "Short answer.");
   });
 
+  it("passes only normalized official Codex turn identity to the runtime", async () => {
+    const accepted = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "codex:sid",
+      event: "UserPromptSubmit",
+      agent_id: "codex",
+      hook_source: "codex-official",
+      turn_id: "  turn-A  ",
+    }));
+    assert.strictEqual(accepted.statusCode, 200);
+    assert.strictEqual(accepted.calls.updateSession[0][3].turnId, "turn-A");
+
+    const rejected = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "codex:sid",
+      event: "UserPromptSubmit",
+      agent_id: "codex",
+      hook_source: "codex-official",
+      turn_id: "x".repeat(257),
+    }));
+    assert.strictEqual(rejected.statusCode, 200);
+    assert.strictEqual(rejected.calls.updateSession[0][3].turnId, undefined);
+  });
+
+  it("keeps server side effects and HTTP success when the runtime fences a stale official tail", async () => {
+    const updates = [];
+    const sessions = new Map();
+    const runtime = createAgentRuntimeMain({
+      codexSubagentClassifier: {},
+      getStateRuntime: () => ({ sessions }),
+      updateSession: (...args) => updates.push(args),
+    });
+    const turns = new Map();
+    const rawSessionId = "codex:fence-composition";
+    const sessionId = localSessionKey(rawSessionId);
+    const base = {
+      session_id: rawSessionId,
+      agent_id: "codex",
+      hook_source: "codex-official",
+      turn_id: "turn-A",
+    };
+    const post = (body, pendingPermissions = []) => callStatePost(JSON.stringify({ ...base, ...body }), {
+      ctx: {
+        sessions,
+        pendingPermissions,
+        updateSession: (...args) => runtime.updateSessionFromServer(...args),
+      },
+      options: { codexOfficialTurns: turns },
+    });
+
+    assert.strictEqual((await post({ state: "working", event: "UserPromptSubmit" })).statusCode, 200);
+    assert.strictEqual((await post({ state: "attention", event: "Stop" })).statusCode, 200);
+    const pending = {
+      res: {},
+      sessionId,
+      agentId: "codex",
+      subagentId: null,
+      toolName: "shell_command",
+      toolUseId: "tool-1",
+      interaction: classifyPermissionInteraction({ agentId: "codex", toolName: "shell_command" }),
+    };
+    const latePost = await post({
+      state: "working",
+      event: "PostToolUse",
+      tool_name: "shell_command",
+      tool_use_id: "tool-1",
+    }, [pending]);
+
+    assert.strictEqual(latePost.statusCode, 200);
+    assert.strictEqual(latePost.calls.resolved.length, 1, "permission cleanup runs before the runtime fence");
+    assert.deepStrictEqual(updates.map((call) => call[2]), ["UserPromptSubmit", "Stop"]);
+    assert.strictEqual(turns.size, 1, "late Post may recreate the bounded server ledger entry");
+
+    const duplicateStop = await post({ state: "attention", event: "Stop" });
+    assert.strictEqual(duplicateStop.statusCode, 200);
+    assert.deepStrictEqual(updates.map((call) => call[2]), ["UserPromptSubmit", "Stop"]);
+    assert.strictEqual(turns.size, 0, "duplicate Stop still clears the upstream server ledger");
+
+    const vetoed = await callStatePost(JSON.stringify({
+      ...base,
+      session_id: "codex:vetoed",
+      event: "Stop",
+      state: "idle",
+      stop_hook_active: true,
+    }), {
+      ctx: { updateSession: (...args) => runtime.updateSessionFromServer(...args) },
+      options: { codexOfficialTurns: turns },
+    });
+    assert.strictEqual(vetoed.statusCode, 204);
+    assert.strictEqual(runtime.getCodexTurnFenceSnapshot(localSessionKey("codex:vetoed")), null);
+  });
+
   it("normalizes and passes stdin_diag to updateSession (#583)", async () => {
     const res = await callStatePost(JSON.stringify({
       state: "idle",
@@ -727,6 +824,7 @@ describe("server-route-state POST", () => {
       percent: 1,
       source: "claude",
     });
+    assert.strictEqual(res.calls.updateSession[0][3].contextUsageOrigin, "claude-transcript");
   });
 
   it("drops invalid context_usage without rejecting state", async () => {
@@ -835,7 +933,93 @@ describe("server-route-state POST", () => {
     assert.strictEqual(metadataCalls[0][0], localSessionKey("sid"));
     assert.deepStrictEqual(metadataCalls[0][1], {
       contextUsage: { used: 50000, limit: 200000, percent: 25, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
     });
+  });
+
+  it("drops local Claude statusline context and quota while the telemetry gate is closed", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "sid",
+      agent_id: "claude-code",
+      host: "wsl:Ubuntu",
+      context_usage: { used: 80000, limit: 1000000, percent: 8, source: "claude" },
+      claude_quota: { claudeWeekly: { usedPercent: 12 } },
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+      options: { isClaudeStatuslineMetadataAllowed: () => false },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.deepStrictEqual(metadataCalls, []);
+    assert.deepStrictEqual(res.calls.updateAccountQuota, []);
+  });
+
+  it("keeps remote Claude statusline metadata outside the local telemetry gate", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "sid",
+      agent_id: "claude-code",
+      host: "spoofed-host",
+      context_usage: { used: 80000, limit: 1000000, percent: 8, source: "claude" },
+      claude_quota: { claudeWeekly: { usedPercent: 12 } },
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+      options: {
+        isClaudeStatuslineMetadataAllowed: () => false,
+        remoteProfile: { profileId: "ssh-work", displayHost: "workbox" },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.calls.updateAccountQuota[0][0], "remote:ssh-work");
+    assert.strictEqual(res.calls.updateAccountQuota[0][1].displayHost, "workbox");
+    assert.deepStrictEqual(res.calls.updateAccountQuota[0][1].claudeQuota, {
+      claudeWeekly: { usedPercent: 12 },
+    });
+    assert.strictEqual(metadataCalls[0][0], makeSessionKey({
+      profileId: "ssh-work",
+      rawSessionId: "sid",
+    }));
+    assert.strictEqual(metadataCalls[0][1].contextUsageOrigin, "claude-statusline");
+  });
+
+  it("keeps ordinary Claude lifecycle context when only statusline telemetry is gated", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      agent_id: "claude-code",
+      event: "PreToolUse",
+      context_usage: { used: 90000, limit: 200000, percent: 45, source: "claude" },
+    }), {
+      options: { isClaudeStatuslineMetadataAllowed: () => false },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession.length, 1);
+    assert.strictEqual(res.calls.updateSession[0][3].contextUsageOrigin, "claude-transcript");
+  });
+
+  it("does not label another agent's metadata-only context as Claude statusline authority", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "agy-session",
+      agent_id: "antigravity-cli",
+      context_usage: { used: 32000, limit: 128000, percent: 25, source: "antigravity" },
+      contextUsageOrigin: "claude-statusline",
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(metadataCalls.length, 1);
+    assert.strictEqual(metadataCalls[0][1].contextUsageOrigin, null);
   });
 
   it("routes remote metadata_only codex_quota to the store keyed by host (remote monitor POSTs)", async () => {
@@ -968,6 +1152,84 @@ describe("server-route-state POST", () => {
     assert.strictEqual(res.statusCode, 204);
     const outcomes = res.calls.recorder.filter((entry) => entry.outcome);
     assert.deepStrictEqual(outcomes, []);
+  });
+
+  it("metadata_only session_title routes to updateSessionMetadata, not updateSession", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "opencode:ses_x",
+      agent_id: "opencode",
+      session_title: "My Real Title",
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.calls.updateSession.length, 0, "title-only metadata must not call updateSession");
+    assert.strictEqual(res.calls.setState.length, 0);
+    assert.strictEqual(metadataCalls.length, 1);
+    assert.strictEqual(metadataCalls[0][0], localSessionKey("opencode:ses_x"));
+    assert.deepStrictEqual(metadataCalls[0][1], { sessionTitle: "My Real Title" });
+  });
+
+  it("metadata_only session_title is allowed even when the Claude telemetry gate blocks context", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "sid",
+      agent_id: "claude-code",
+      session_title: "Title Despite Gate",
+      context_usage: { used: 50000, limit: 200000, percent: 25, source: "claude" },
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+      options: { isClaudeStatuslineMetadataAllowed: () => false },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    // The gate drops the context data, but the title is not Claude statusline
+    // data and must still flow through.
+    assert.strictEqual(metadataCalls.length, 1);
+    assert.deepStrictEqual(metadataCalls[0][1], { sessionTitle: "Title Despite Gate" });
+  });
+
+  it("metadata_only title+context in one POST becomes one metadata update", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "opencode:ses_z",
+      agent_id: "opencode",
+      session_title: "Titled + quota",
+      context_usage: { used: 300, limit: 1000, percent: 30, source: "codex" },
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(metadataCalls.length, 1, "title+context should coalesce into a single metadata update");
+    assert.deepStrictEqual(metadataCalls[0][1], {
+      contextUsage: { used: 300, limit: 1000, percent: 30, source: "codex" },
+      contextUsageOrigin: null,
+      sessionTitle: "Titled + quota",
+    });
+  });
+
+  it("metadata_only with neither title nor context performs no metadata update", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "opencode:ses_w",
+      agent_id: "opencode",
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(metadataCalls.length, 0, "empty metadata payload must not call updateSessionMetadata");
   });
 
   it("marks missing agent_id as a defaulted Claude Code attribution", async () => {
@@ -1170,6 +1432,256 @@ describe("server-route-state POST", () => {
 
     assert.strictEqual(res.statusCode, 400);
     assert.strictEqual(res.body, "bad json");
+  });
+});
+
+describe("server-route-state Windows B1a process metadata", () => {
+  const generation = "state-route-generation";
+  const headers = {
+    [CLAWD_HOOK_PID_HEADER.toLowerCase()]: "4321",
+    [CLAWD_PROCESS_INSTANCE_HEADER.toLowerCase()]: generation,
+  };
+
+  function runtime(agentId, mode) {
+    return {
+      version: 1,
+      instanceGeneration: generation,
+      agents: { [agentId]: mode },
+    };
+  }
+
+  it("authoritative mode replaces sender process fields with a fresh per-request result", async () => {
+    let calls = 0;
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "b1a-state",
+      event: "PreToolUse",
+      agent_id: "kiro-cli",
+      source_pid: 11,
+      agent_pid: 12,
+      pid_chain: [11, 12],
+      editor: "code",
+    }), {
+      headers,
+      options: {
+        isWinHost: true,
+        windowsProcessChainRuntime: runtime("kiro-cli", "b1a-authoritative"),
+        resolveWindowsProcessMetadata: ({ agentId, hookPid }) => {
+          calls++;
+          assert.strictEqual(agentId, "kiro-cli");
+          assert.strictEqual(hookPid, 4321);
+          return {
+            status: "ok",
+            sourcePid: 101,
+            agentPid: 202,
+            pidChain: [101, 202, 303],
+            editor: null,
+          };
+        },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(calls, 1);
+    assert.deepStrictEqual(res.calls.updateSession[0][3].sourcePid, 101);
+    assert.deepStrictEqual(res.calls.updateSession[0][3].agentPid, 202);
+    assert.deepStrictEqual(res.calls.updateSession[0][3].pidChain, [101, 202, 303]);
+    assert.strictEqual(res.calls.updateSession[0][3].editor, null);
+    assert.strictEqual(res.calls.updateSession[0][3].replaceProcessMetadata, true);
+  });
+
+  it("authoritative failure clears derived fields while preserving Cursor's constant editor", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "b1a-cursor",
+      event: "PreToolUse",
+      agent_id: "cursor-agent",
+      source_pid: 11,
+      cursor_pid: 12,
+      pid_chain: [11, 12],
+    }), {
+      headers,
+      options: {
+        isWinHost: true,
+        windowsProcessChainRuntime: runtime("cursor-agent", "b1a-authoritative"),
+        resolveWindowsProcessMetadata: () => ({ status: "unavailable", reason: "access-denied" }),
+      },
+    });
+
+    const opts = res.calls.updateSession[0][3];
+    assert.strictEqual(opts.sourcePid, null);
+    assert.strictEqual(opts.agentPid, null);
+    assert.strictEqual(opts.pidChain, null);
+    assert.strictEqual(opts.editor, "cursor");
+    assert.strictEqual(opts.replaceProcessMetadata, true);
+  });
+
+  it("shadow mode records parity but keeps legacy metadata authoritative", async () => {
+    const records = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "b1a-shadow",
+      event: "PreToolUse",
+      agent_id: "reasonix",
+      source_pid: 11,
+      agent_pid: 12,
+      pid_chain: [11, 12],
+    }), {
+      headers,
+      options: {
+        isWinHost: true,
+        windowsProcessChainRuntime: runtime("reasonix", "shadow"),
+        resolveWindowsProcessMetadata: () => ({
+          status: "ok",
+          sourcePid: 21,
+          agentPid: 22,
+          pidChain: [21, 22],
+          editor: null,
+          depth: 2,
+          durationMs: 3,
+        }),
+        recordWindowsProcessChainShadow: (record) => records.push(record),
+      },
+    });
+
+    const opts = res.calls.updateSession[0][3];
+    assert.strictEqual(opts.sourcePid, 11);
+    assert.strictEqual(opts.agentPid, 12);
+    assert.deepStrictEqual(opts.pidChain, [11, 12]);
+    assert.strictEqual(opts.replaceProcessMetadata, undefined);
+    assert.strictEqual(records.length, 1);
+    assert.strictEqual(records[0].comparison.all, false);
+    assert.deepStrictEqual(records[0].legacyMetadata, {
+      sourcePid: 11, agentPid: 12, pidChain: [11, 12], editor: null,
+    });
+    assert.deepStrictEqual(records[0].candidateMetadata, {
+      sourcePid: 21, agentPid: 22, pidChain: [21, 22], editor: null,
+    });
+  });
+
+  it("missing generation leaves old-hook traffic on the legacy path", async () => {
+    let resolverCalls = 0;
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "b1a-old-hook",
+      event: "PreToolUse",
+      agent_id: "codebuddy",
+      source_pid: 88,
+    }), {
+      headers: { [CLAWD_HOOK_PID_HEADER.toLowerCase()]: "4321" },
+      options: {
+        isWinHost: true,
+        windowsProcessChainRuntime: runtime("codebuddy", "b1a-authoritative"),
+        resolveWindowsProcessMetadata: () => { resolverCalls++; return { status: "ok" }; },
+      },
+    });
+
+    assert.strictEqual(resolverCalls, 0);
+    assert.strictEqual(res.calls.updateSession[0][3].sourcePid, 88);
+    assert.strictEqual(res.calls.updateSession[0][3].replaceProcessMetadata, undefined);
+  });
+
+  it("resolves every interleaved Kiro default event from its own hook PID", async () => {
+    const resolverCalls = [];
+    const resolver = ({ agentId, hookPid }) => {
+      resolverCalls.push({ agentId, hookPid });
+      return {
+        status: "ok",
+        sourcePid: hookPid + 100,
+        agentPid: hookPid + 200,
+        pidChain: [hookPid + 200, hookPid + 100],
+        editor: null,
+      };
+    };
+    const cases = [
+      { hookPid: 7001, cwd: "D:\\repo-a" },
+      { hookPid: 7002, cwd: "D:\\repo-b" },
+      { hookPid: 7003, cwd: "D:\\repo-a" },
+    ];
+    for (const entry of cases) {
+      const res = await callStatePost(JSON.stringify({
+        state: "working",
+        session_id: "default",
+        event: "PreToolUse",
+        agent_id: "kiro-cli",
+        cwd: entry.cwd,
+      }), {
+        headers: {
+          ...headers,
+          [CLAWD_HOOK_PID_HEADER.toLowerCase()]: String(entry.hookPid),
+        },
+        options: {
+          isWinHost: true,
+          windowsProcessChainRuntime: runtime("kiro-cli", "b1a-authoritative"),
+          resolveWindowsProcessMetadata: resolver,
+        },
+      });
+      assert.strictEqual(res.calls.updateSession[0][3].sourcePid, entry.hookPid + 100);
+    }
+    assert.deepStrictEqual(resolverCalls, cases.map((entry) => ({
+      agentId: "kiro-cli",
+      hookPid: entry.hookPid,
+    })));
+  });
+
+  it("authoritative Codex SessionStart samples HWND server-side and ignores sender HWND", async () => {
+    let probeCalls = 0;
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      session_id: "b1a-codex-start",
+      event: "SessionStart",
+      agent_id: "codex",
+      wt_hwnd: "111",
+    }), {
+      headers,
+      options: {
+        isWinHost: true,
+        windowsProcessChainRuntime: runtime("codex", "b1a-authoritative"),
+        resolveWindowsProcessMetadata: () => ({
+          status: "ok",
+          sourcePid: 500,
+          agentPid: 500,
+          pidChain: [500, 600],
+          editor: null,
+        }),
+        captureForegroundWindowsTerminal: () => { probeCalls++; return "222"; },
+      },
+    });
+
+    assert.strictEqual(probeCalls, 1);
+    assert.strictEqual(res.calls.updateSession[0][3].wtHwnd, "222");
+    assert.strictEqual(res.calls.updateSession[0][3].replaceProcessMetadata, true);
+  });
+
+  it("CodexUserInputRequest remains outside B1a even when process headers are present", async () => {
+    let resolverCalls = 0;
+    const res = await callStatePost(JSON.stringify({
+      state: "notification",
+      session_id: "b1a-user-input",
+      event: "Notification",
+      agent_id: "codex",
+      codex_user_input: {
+        phase: "request",
+        call_id: "call-1",
+        questions: [{
+          id: "q1",
+          header: "Pick",
+          question: "Choose",
+          options: [{ label: "A" }, { label: "B" }],
+        }],
+      },
+    }), {
+      headers,
+      options: {
+        isWinHost: true,
+        windowsProcessChainRuntime: runtime("codex", "b1a-authoritative"),
+        resolveWindowsProcessMetadata: () => { resolverCalls++; return { status: "ok" }; },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(resolverCalls, 0);
+    assert.strictEqual(res.calls.updateSession[0][3].replaceProcessMetadata, undefined);
   });
 });
 

@@ -7,10 +7,9 @@
 // stdout as the terminal status line. See:
 // https://code.claude.com/docs/en/statusline
 //
-// This only forwards rate_limits (Pro/Max subscription quota) - Claude
-// context-window usage already flows through hooks/context-usage.js via the
-// transcript, so posting context_window here too would be a redundant,
-// possibly-conflicting second writer for the same field.
+// This forwards Claude's documented context window plus rate_limits when the
+// latter are available. Context metadata is authoritative for the denominator;
+// transcript hooks remain the fallback and keep used tokens moving.
 //
 // Like antigravity-statusline.js, this script also owns rendering visible
 // terminal text, so it must always print *something* fast and never throw -
@@ -28,6 +27,7 @@ const {
 } = require("./server-config");
 const { readStdinJson } = require("./shared-process");
 const { resolveClaudeRateLimitQuota, resolveClaudeModelLabel } = require("./claude-rate-limits");
+const { extractClaudeStatuslineContextUsage } = require("./context-usage");
 
 const STATE_POST_TIMEOUT_MS = 150;
 
@@ -123,9 +123,9 @@ function buildStatusLineText(payload, quota, modelLabel) {
   return parts.join(" · ");
 }
 
-function buildStateBody(payload, quota, options = {}) {
+function buildStateBody(payload, quota, contextUsage, options = {}) {
   const sessionId = payload && payload.session_id;
-  if (!sessionId || !quota) return null;
+  if (!sessionId || (!quota && !contextUsage)) return null;
 
   // metadata_only routes this around the updateSession lifecycle machine:
   // quota is annotated onto an existing session and dropped otherwise -
@@ -138,8 +138,9 @@ function buildStateBody(payload, quota, options = {}) {
     metadata_only: true,
     session_id: String(sessionId),
     agent_id: "claude-code",
-    claude_quota: quota,
   };
+  if (quota) body.claude_quota = quota;
+  if (contextUsage) body.context_usage = contextUsage;
   const cwd = payload && payload.workspace && typeof payload.workspace.current_dir === "string"
     ? payload.workspace.current_dir
     : "";
@@ -182,10 +183,12 @@ async function main(deps = {}) {
   }
 
   let quota = null;
+  let contextUsage = null;
   let modelLabel = null;
   let text = "";
   try {
     quota = resolveClaudeRateLimitQuota(payload);
+    contextUsage = extractClaudeStatuslineContextUsage(payload);
     modelLabel = resolveClaudeModelLabel(payload);
     text = buildStatusLineText(payload, quota, modelLabel);
   } catch {
@@ -218,7 +221,7 @@ async function main(deps = {}) {
   let chainResult = null;
   try {
     const remote = !!env.CLAWD_REMOTE;
-    const body = buildStateBody(payload, quota, {
+    const body = buildStateBody(payload, quota, contextUsage, {
       remote,
       host: remote && deps.readHostPrefix ? deps.readHostPrefix() : undefined,
       applyWslSourceFields: deps.applyWslSourceFields,

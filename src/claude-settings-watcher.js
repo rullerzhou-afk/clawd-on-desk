@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { buildPermissionUrl } = require("../hooks/server-config");
+const { classifyManagedClaudeStateHookCommand } = require("../hooks/json-utils");
 const {
   getClaudeHookScriptPath,
   getClaudeAutoStartScriptPath,
@@ -12,8 +13,8 @@ const {
 const {
   inspectClaudeHookHealth,
   buildClaudeRepairSignature,
+  getClaudeHookDegradedDiagnostic,
   hasNoAutomaticRepairWork,
-  reportHasUnparseableCommand,
 } = require("./claude-hook-health");
 
 const HOOK_MARKER = "clawd-hook.js";
@@ -97,16 +98,22 @@ function commandContainsAnyMarker(command, markers) {
 function countCommandHooksInEntries(entries, options = {}) {
   if (!Array.isArray(entries)) return 0;
   const excludeMarkers = Array.isArray(options.excludeMarkers) ? options.excludeMarkers : null;
+  const isExcluded = (command) => commandContainsAnyMarker(command, excludeMarkers)
+    || (
+      options.settings
+      && typeof options.event === "string"
+      && classifyManagedClaudeStateHookCommand(command, options.settings, options.event) !== null
+    );
   let count = 0;
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
     if (entry.type === "http") continue;
-    if (typeof entry.command === "string" && !commandContainsAnyMarker(entry.command, excludeMarkers)) count += 1;
+    if (typeof entry.command === "string" && !isExcluded(entry.command)) count += 1;
     if (!Array.isArray(entry.hooks)) continue;
     for (const hook of entry.hooks) {
       if (!hook || typeof hook !== "object") continue;
       if (hook.type === "http") continue;
-      if (typeof hook.command === "string" && !commandContainsAnyMarker(hook.command, excludeMarkers)) count += 1;
+      if (typeof hook.command === "string" && !isExcluded(hook.command)) count += 1;
     }
   }
   return count;
@@ -123,14 +130,14 @@ function countCommandHooksInEntries(entries, options = {}) {
 function countAllHooks(hooks, options = {}) {
   if (!hooks || typeof hooks !== "object") return 0;
   let total = 0;
-  for (const entries of Object.values(hooks)) {
-    total += countCommandHooksInEntries(entries, options);
+  for (const [event, entries] of Object.entries(hooks)) {
+    total += countCommandHooksInEntries(entries, { ...options, event });
   }
   return total;
 }
 
-function countThirdPartyHooks(hooks) {
-  return countAllHooks(hooks, { excludeMarkers: MANAGED_COMMAND_MARKERS });
+function countThirdPartyHooks(hooks, settings) {
+  return countAllHooks(hooks, { excludeMarkers: MANAGED_COMMAND_MARKERS, settings });
 }
 
 /**
@@ -151,7 +158,7 @@ function takeSnapshot(raw) {
   return {
     keyCount: Object.keys(parsed).length,
     hookCount: countAllHooks(parsed.hooks),
-    thirdPartyHookCount: countThirdPartyHooks(parsed.hooks),
+    thirdPartyHookCount: countThirdPartyHooks(parsed.hooks, parsed),
   };
 }
 
@@ -317,6 +324,20 @@ function createClaudeSettingsWatcher(ctx = {}) {
     });
   }
 
+  // A degraded managed-hook diagnostic is deliberately not a trusted baseline.
+  // In particular, env-indirection-unverified commands still count as third-party
+  // until settings.env proves ownership. Seeding that snapshot would make the
+  // same commands disappear from the third-party count once the user supplies
+  // the missing evidence, falsely tripping suspicious-shrink and blocking the
+  // migration that should repair them.
+  function updateTrustedSnapshot(raw, report) {
+    if (getClaudeHookDegradedDiagnostic(report)) return false;
+    const snapshot = takeSnapshot(raw);
+    if (!snapshot) return false;
+    lastTrustedSnapshot = snapshot;
+    return true;
+  }
+
   async function runHealthCheck(reason) {
     // Only one health check in flight at a time — a settings-event trigger
     // arriving mid-check is dropped; the in-flight check's own reschedule
@@ -391,24 +412,21 @@ function createClaudeSettingsWatcher(ctx = {}) {
       // PR and never drive automatic repair or mutation.
       repairState = null;
       shrinkNotified = false;
-      const snapshot = takeSnapshot(raw);
-      if (snapshot) lastTrustedSnapshot = snapshot;
-      // A command-unparseable issue is automaticRepairable:false (misclassifying
-      // a third-party/unusual command as Clawd's to rewrite is worse than
-      // leaving it alone) — it can sit here indefinitely with nothing left
-      // for auto-repair to attempt, so it must never be reported as "healthy"
-      // or advance lastSuccessAt.
-      const unparseable = reportHasUnparseableCommand(report);
+      // Non-automatic managed-hook diagnostics can sit here indefinitely with
+      // nothing left to repair. Preserve their degraded signal instead of
+      // incorrectly reporting healthy or advancing lastSuccessAt.
+      const diagnostic = getClaudeHookDegradedDiagnostic(report);
+      if (!diagnostic) updateTrustedSnapshot(raw, report);
       updateHealthStatus({
-        status: unparseable ? "degraded" : "healthy",
-        degradedReason: unparseable ? "command-unparseable" : null,
+        status: diagnostic ? "degraded" : "healthy",
+        degradedReason: diagnostic ? diagnostic.reason : null,
         lastCheckAt: nowFn(),
-        lastSuccessAt: unparseable ? healthStatus.lastSuccessAt : nowFn(),
+        lastSuccessAt: diagnostic ? healthStatus.lastSuccessAt : nowFn(),
         source: reason,
         attempt: 0,
         issueSignature: null,
         issues: report.issues,
-        message: unparseable ? "a Clawd-owned hook command could not be parsed; see Doctor for details" : null,
+        message: diagnostic ? diagnostic.message : null,
       });
       scheduleHealthCheck(healthCheckIntervalMs, "periodic-health");
       return;
@@ -469,22 +487,20 @@ function createClaudeSettingsWatcher(ctx = {}) {
 
     if (hasNoAutomaticRepairWork(verifyReport)) {
       repairState = null;
-      const nextSnapshot = takeSnapshot(verifyRaw);
-      if (nextSnapshot) lastTrustedSnapshot = nextSnapshot;
-      // Same command-unparseable carve-out as the initial-detection branch
-      // above — repair has nothing left to attempt, but that is not the
-      // same thing as "verified healthy."
-      const unparseable = reportHasUnparseableCommand(verifyReport);
+      // Same non-automatic diagnostic carve-out as the initial branch above:
+      // no automatic work remains, but the config is not verified healthy.
+      const diagnostic = getClaudeHookDegradedDiagnostic(verifyReport);
+      if (!diagnostic) updateTrustedSnapshot(verifyRaw, verifyReport);
       updateHealthStatus({
-        status: unparseable ? "degraded" : "healthy",
-        degradedReason: unparseable ? "command-unparseable" : null,
+        status: diagnostic ? "degraded" : "healthy",
+        degradedReason: diagnostic ? diagnostic.reason : null,
         lastCheckAt: nowFn(),
-        lastSuccessAt: unparseable ? healthStatus.lastSuccessAt : nowFn(),
+        lastSuccessAt: diagnostic ? healthStatus.lastSuccessAt : nowFn(),
         source: reason,
         attempt: 0,
         issueSignature: null,
         issues: verifyReport.issues,
-        message: unparseable ? "a Clawd-owned hook command could not be parsed; see Doctor for details" : null,
+        message: diagnostic ? diagnostic.message : null,
       });
       scheduleHealthCheck(healthCheckIntervalMs, "periodic-health");
       return;
@@ -574,7 +590,7 @@ function createClaudeSettingsWatcher(ctx = {}) {
       const seedRaw = fsApi.readFileSync(settingsPath, "utf-8");
       const seedReport = buildReport(seedRaw);
       if (hasNoAutomaticRepairWork(seedReport)) {
-        lastTrustedSnapshot = takeSnapshot(seedRaw);
+        updateTrustedSnapshot(seedRaw, seedReport);
       }
     } catch (err) {
       console.warn("Clawd: could not seed settings baseline:", err.message);

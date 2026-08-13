@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 const snapshotListeners = new Set();
 const langListeners = new Set();
+const visibilityListeners = new Set();
 
 ipcRenderer.on("quota-ring:snapshot", (_event, payload) => {
   for (const cb of snapshotListeners) {
@@ -14,6 +15,15 @@ ipcRenderer.on("quota-ring:snapshot", (_event, payload) => {
 ipcRenderer.on("quota-ring:lang-change", (_event, payload) => {
   for (const cb of langListeners) {
     try { cb(payload); } catch (err) { console.warn("quota ring lang listener threw:", err); }
+  }
+});
+
+// The renderer cannot detect this itself: an Electron window that is hidden
+// does not reliably flip document.visibilityState, and a pinned cluster never
+// hides at all.
+ipcRenderer.on("quota-ring:visibility", (_event, visible) => {
+  for (const cb of visibilityListeners) {
+    try { cb(visible); } catch (err) { console.warn("quota ring visibility listener threw:", err); }
   }
 });
 
@@ -31,5 +41,10 @@ contextBridge.exposeInMainWorld("quotaRingAPI", {
     if (typeof cb !== "function") return () => {};
     langListeners.add(cb);
     return () => langListeners.delete(cb);
+  },
+  onVisibility: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    visibilityListeners.add(cb);
+    return () => visibilityListeners.delete(cb);
   },
 });

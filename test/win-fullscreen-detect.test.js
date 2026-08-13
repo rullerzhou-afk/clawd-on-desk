@@ -23,6 +23,7 @@ function fakeKoffi(behavior) {
           }
           if (signature.includes("GetWindowRect")) {
             return (_hwnd, rectOut) => {
+              if (behavior.getWindowRectThrows) throw new Error("GetWindowRect exploded");
               if (behavior.winRect) Object.assign(rectOut, behavior.winRect);
               return behavior.getWindowRect !== false;
             };
@@ -151,6 +152,20 @@ describe("createForegroundFullscreenProbe", () => {
       koffi: fakeKoffi({ hwnd: {}, getWindowRect: false }),
     });
     assert.strictEqual(probe(), false);
+  });
+
+  it("reports thrown call-time failures through the opt-in diagnostic callback", () => {
+    let initErrors = 0;
+    let callErrors = 0;
+    const probe = createForegroundFullscreenProbe({
+      isWin: true,
+      koffi: fakeKoffi({ hwnd: {}, getWindowRectThrows: true }),
+      onError: () => { initErrors++; },
+      onCallError: () => { callErrors++; },
+    });
+    assert.strictEqual(probe(), false);
+    assert.strictEqual(initErrors, 0);
+    assert.strictEqual(callErrors, 1);
   });
 
   // #719: clicking the desktop makes the shell window (Progman, or a WorkerW

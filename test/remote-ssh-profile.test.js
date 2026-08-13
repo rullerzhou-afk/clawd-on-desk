@@ -22,8 +22,42 @@ const {
   getDefaults,
   sanitizeIdentityTxn,
   sanitizeRuntimeModeTxn,
+  isValidSshTransportMode,
+  sanitizeSshTransportHint,
   remoteOwnershipDomainKey,
 } = require("../src/remote-ssh-profile");
+
+test("SSH transport mode defaults to auto and validates serialized override", () => {
+  assert.equal(isValidSshTransportMode("auto"), true);
+  assert.equal(isValidSshTransportMode("serialized"), true);
+  assert.equal(isValidSshTransportMode("parallel"), false);
+  assert.equal(sanitizeProfile(basicProfile()).sshTransportMode, "auto");
+  assert.equal(sanitizeProfile(basicProfile({ sshTransportMode: "serialized" })).sshTransportMode, "serialized");
+  assert.equal(validateProfile(basicProfile({ sshTransportMode: "parallel" })).status, "error");
+});
+
+test("historical SSH transport hints are strict and local-only data", () => {
+  const codespace = sanitizeSshTransportHint({
+    version: 1,
+    mode: "serialized",
+    kind: "codespaces-stdio",
+    keyId: "codespace:fuzzy-space",
+  });
+  assert.deepEqual(codespace, {
+    version: 1,
+    mode: "serialized",
+    kind: "codespaces-stdio",
+    keyId: "codespace:fuzzy-space",
+  });
+  assert.equal(sanitizeSshTransportHint({ ...codespace, keyId: "codespace:../bad" }), null);
+  assert.equal(sanitizeSshTransportHint({ ...codespace, mode: "parallel" }), null);
+  assert.equal(sanitizeSshTransportHint({
+    version: 1,
+    mode: "serialized",
+    kind: "explicit-serialized",
+    keyId: `destination-sha256:${"a".repeat(64)}`,
+  }).kind, "explicit-serialized");
+});
 
 // ── remoteForwardPort ↔ SERVER_PORTS invariant ──
 
@@ -1109,6 +1143,23 @@ test("settings-actions: remoteSsh.update CLEARS lastDeployedAt when host changes
     "host change must clear deploy stamp (UI re-warns 'never deployed')");
 });
 
+test("settings-actions: active serialized transport blocks target and transport-mode edits", () => {
+  const cmd = commandRegistry["remoteSsh.update"];
+  const current = basicProfile({ host: "pi", sshTransportMode: "auto" });
+  const deps = {
+    snapshot: { remoteSsh: { profiles: [current] } },
+    isRemoteSshTransportBusy: () => true,
+  };
+  const hostEdit = cmd(basicProfile({ host: "newpi", sshTransportMode: "auto" }), deps);
+  assert.equal(hostEdit.status, "error");
+  assert.equal(hostEdit.reason, "serialized_transport_busy");
+  const modeEdit = cmd(basicProfile({ host: "pi", sshTransportMode: "serialized" }), deps);
+  assert.equal(modeEdit.status, "error");
+  assert.equal(modeEdit.reason, "serialized_transport_busy");
+  const labelEdit = cmd(basicProfile({ host: "pi", label: "Cosmetic", sshTransportMode: "auto" }), deps);
+  assert.equal(labelEdit.status, "ok");
+});
+
 test("settings-actions: remoteSsh.update clears detected remote Node when host changes", () => {
   const cmd = commandRegistry["remoteSsh.update"];
   const stamped = basicProfile({
@@ -1132,6 +1183,35 @@ test("settings-actions: remoteSsh.update clears lastDeployedAt on remoteForwardP
     snapshot: { remoteSsh: { profiles: [stamped] } },
   });
   assert.equal(r.commit.remoteSsh.profiles[0].lastDeployedAt, undefined);
+});
+
+test("settings-actions: A to B to A port edits never revive historical deployment readiness", () => {
+  const cmd = commandRegistry["remoteSsh.update"];
+  const deployedA = basicProfile({
+    remoteForwardPort: 23333,
+    lastDeployedAt: 12345,
+    remoteHome: "/home/user",
+    routingNonce: "a".repeat(32),
+    managedDeployTargets: [{
+      host: "user@pi.local",
+      remoteForwardPort: 23333,
+      deployedAt: 12345,
+    }],
+  });
+  const movedToB = cmd(basicProfile({ remoteForwardPort: 23334 }), {
+    snapshot: { remoteSsh: { profiles: [deployedA] } },
+  }).commit.remoteSsh.profiles[0];
+  assert.equal(movedToB.lastDeployedAt, undefined);
+  assert.equal(movedToB.remoteHome, undefined);
+  assert.equal(movedToB.managedDeployTargets.length, 1);
+
+  const movedBackToA = cmd(basicProfile({ remoteForwardPort: 23333 }), {
+    snapshot: { remoteSsh: { profiles: [movedToB] } },
+  }).commit.remoteSsh.profiles[0];
+  assert.equal(movedBackToA.lastDeployedAt, undefined);
+  assert.equal(movedBackToA.remoteHome, undefined);
+  assert.equal(movedBackToA.managedDeployTargets.length, 1,
+    "historical ownership remains cleanup-only and must not restore active deployment evidence");
 });
 
 test("settings-actions: remoteSsh.update preserves lastDeployedAt when prev had port:22 and edit omits port (UI default-omit case)", () => {

@@ -240,7 +240,7 @@ describe("state agent icons", () => {
         .filter(([, record]) => record.fallback)
         .map(([agentId]) => agentId)
         .sort(),
-      ["codewhale", "kimi-cli", "qoderwork", "reasonix", "zcode"]
+      ["codewhale", "kimi-cli", "qoderwork", "qwenwork", "reasonix", "zcode"]
     );
   });
 
@@ -388,7 +388,6 @@ describe("state agent icons", () => {
       opencode: "neutral-light-tile",
       pi: "neutral-light-tile",
       "qwen-code": "neutral-light-tile",
-      workbuddy: "neutral-dark-tile",
     };
     const actual = Object.fromEntries(
       Object.entries(SOURCE_PROVENANCE)

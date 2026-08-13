@@ -25,6 +25,7 @@ const {
   cloneRecoverRemoteSsh,
   buildRemoteIdentityDocument,
 } = require("../src/remote-ssh-identity");
+const { checkSecureConnectReadiness } = require("../src/remote-ssh-runtime");
 
 function withTempDir(fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-remote-identity-"));
@@ -357,6 +358,9 @@ test("clone recovery clears all copied routing authority before activation", () 
   assert.equal(next.isolatedRuntime, undefined);
   assert.equal(next.managedDeployTargets, undefined);
   assert.equal(next.lastDeployedAt, undefined);
+  const readiness = checkSecureConnectReadiness(next);
+  assert.equal(readiness.reason, "deployment_required");
+  assert.equal(readiness.detail, "deployment_stamp_missing");
 });
 
 test("remote identity document binds nonce to installation, profile, and layout", () => {

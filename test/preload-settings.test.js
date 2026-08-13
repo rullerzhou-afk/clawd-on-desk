@@ -63,6 +63,19 @@ test("settings preload keeps every Feishu approver operation on the generic comm
   assert.equal(typeof settingsAPI.feishuApprovalCommitApprover, "undefined");
 });
 
+test("settings preload exposes the three roam area operations", async () => {
+  const { exposed, invokes } = loadPreload();
+  const settingsAPI = exposed.get("settingsAPI");
+  await settingsAPI.getRoamFence();
+  await settingsAPI.selectRoamFence();
+  await settingsAPI.clearRoamFence();
+  assert.deepStrictEqual(invokes, [
+    ["settings:get-roam-fence"],
+    ["settings:select-roam-fence"],
+    ["settings:clear-roam-fence"],
+  ]);
+});
+
 test("settings preload forwards Telegram status revisions and unsubscribe is exact", () => {
   const { exposed, ipcHandlers } = loadPreload();
   const settingsAPI = exposed.get("settingsAPI");

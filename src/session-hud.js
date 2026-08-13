@@ -643,6 +643,7 @@ module.exports = function initSessionHud(ctx) {
     ringWindow.webContents.send("quota-ring:snapshot", {
       accountQuota: Array.isArray(snapshot.accountQuota) ? snapshot.accountQuota : [],
       quotaAgentIcons: snapshot.quotaAgentIcons || {},
+      displayMode: ctx.quotaRingDisplayMode === "remaining" ? "remaining" : "used",
       side,
     });
   }
@@ -692,6 +693,10 @@ module.exports = function initSessionHud(ctx) {
       ringDidFinishLoad = true;
       applyZoomToWindow(ringWindow, getTextScale());
       sendI18n();
+      // Correct the renderer's optimistic default before any snapshot lands:
+      // the window is created hidden, and a flashback armed while nobody can
+      // see it would be spent on an empty screen.
+      sendRingVisibility(ringWindow.isVisible());
       syncSessionHud();
     });
     ringWindow.on("closed", () => {
@@ -703,8 +708,25 @@ module.exports = function initSessionHud(ctx) {
     return ringWindow;
   }
 
+  // The renderer replays the rolling-window number when the cluster appears
+  // after that number moved, so it needs the appear/disappear edges — which it
+  // cannot observe itself (a hidden Electron window does not reliably flip
+  // document.visibilityState, and a pinned cluster never hides).
+  function sendRingVisibility(visible) {
+    if (!ringWindow || ringWindow.isDestroyed() || !ringDidFinishLoad) return;
+    if (!ringWindow.webContents || ringWindow.webContents.isDestroyed()) return;
+    ringWindow.webContents.send("quota-ring:visibility", visible);
+  }
+
   function hideQuotaRing() {
-    if (ringWindow && !ringWindow.isDestroyed()) ringWindow.hide();
+    if (ringWindow && !ringWindow.isDestroyed()) {
+      // Only the notification is conditional. hide() stays unconditional and
+      // idempotent: isVisible() can report false while the window is merely
+      // occluded (app hidden on macOS, another Space, parent state), and
+      // skipping the real hide there would let the system surface it again.
+      if (ringWindow.isVisible()) sendRingVisibility(false);
+      ringWindow.hide();
+    }
     scheduleHiddenDestroy("ring");
   }
 
@@ -716,6 +738,7 @@ module.exports = function initSessionHud(ctx) {
       keepOutOfTaskbar(win);
       if (isMac) deferMacFloatingVisibility(ctx, win);
       else if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
+      sendRingVisibility(true);
     }
   }
 

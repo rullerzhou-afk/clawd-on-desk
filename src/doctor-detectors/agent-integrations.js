@@ -31,6 +31,7 @@ const {
   validateHookTarget,
 } = require("./agent-node-bin-parser");
 const { checkCodexHookTrust, checkCodexHooksFeature } = require("./codex-features-check");
+const { inspectStableCodexHookCommand } = require("../../hooks/codex-install-utils");
 const { validateOpencodeEntry } = require("./opencode-entry-validator");
 const { validateOpenClawEntry } = require("./openclaw-entry-validator");
 const { hasIncludeDirective } = require("../../hooks/openclaw-install");
@@ -134,14 +135,19 @@ function getClaudeHookHealthStatus(options) {
 // source-script-missing, and manual-fix-required per the #657 plan §6.9.
 function withClaudeHookGuardNotice(detail, descriptor, options) {
   if (descriptor.agentId !== "claude-code" || !detail) return detail;
-  if (!REPAIRABLE_AGENT_STATUSES.has(detail.status)) return detail;
 
   const runtimeHealth = getClaudeHookHealthStatus(options);
+  const repairableDisk = REPAIRABLE_AGENT_STATUSES.has(detail.status);
 
   // Reconcile can never fix a missing source script, so this must never
   // offer a configuration Repair — overriding the status keeps it out of
   // REPAIRABLE_AGENT_STATUSES for the withAgentFixAction() check below.
-  if (runtimeHealth && runtimeHealth.status === "degraded" && runtimeHealth.degradedReason === "source-script-missing") {
+  if (
+    repairableDisk
+    && runtimeHealth
+    && runtimeHealth.status === "degraded"
+    && runtimeHealth.degradedReason === "source-script-missing"
+  ) {
     return {
       ...detail,
       status: "source-script-missing",
@@ -154,6 +160,34 @@ function withClaudeHookGuardNotice(detail, descriptor, options) {
       },
     };
   }
+
+  if (
+    (repairableDisk || detail.status === "ok")
+    &&
+    runtimeHealth
+    && runtimeHealth.status === "degraded"
+    && (
+      runtimeHealth.degradedReason === "env-hook-node-unresolved"
+      || runtimeHealth.degradedReason === "env-indirection-unverified"
+    )
+  ) {
+    const unresolvedNode = runtimeHealth.degradedReason === "env-hook-node-unresolved";
+    return {
+      ...detail,
+      status: detail.status === "ok" ? "needs-review" : detail.status,
+      level: "warning",
+      detail: unresolvedNode
+        ? "Clawd preserved an env-indirected Claude hook because settings.env does not provide a usable absolute Node path. Check CLAWD_NODE_BIN, then use Fix."
+        : "Clawd found an env-indirected Claude hook but settings.env does not prove that it belongs to Clawd. Review CLAWD_HOOK_PATH before changing it.",
+      claudeHookRuntimeStatus: {
+        status: runtimeHealth.status,
+        degradedReason: runtimeHealth.degradedReason,
+        at: runtimeHealth.at || null,
+      },
+    };
+  }
+
+  if (!repairableDisk) return detail;
 
   const guard = getClaudeHookGuardStatus(options);
   if (guard && guard.type === "suspicious-shrink") {
@@ -331,6 +365,55 @@ function findCodexPlatformHookCommands(settings, marker, platform) {
     }
   }
   return commands;
+}
+
+function validateCodexCommandList(descriptor, commands, options) {
+  if (!commands.length) return validateCommandList(descriptor, commands, options);
+  const results = commands.map((command) => {
+    const stable = inspectStableCodexHookCommand(command, {
+      platform: options.platform,
+      fs: options.fs,
+    });
+    if (!stable.matched) {
+      return options.validateCommand(command, { platform: options.platform, fs: options.fs });
+    }
+    if (!stable.ok) {
+      return {
+        ok: false,
+        issue: stable.issue,
+        scriptPath: stable.launcherPath || null,
+      };
+    }
+    const result = options.validateTarget({
+      nodeBin: stable.nodeBin,
+      scriptPath: stable.scriptPath,
+    }, {
+      platform: options.platform,
+      fs: options.fs,
+      requireNodeExecutable: true,
+    });
+    return { ...result, stableExecution: result.ok === true };
+  });
+  const ok = results.find((result) => result.ok);
+  if (ok) {
+    return makeDetail(descriptor, "ok", {
+      level: null,
+      detail: ok.stableExecution
+        ? `${descriptor.configPath} hook registered, stable execution target verified`
+        : `${descriptor.configPath} hook registered, scriptPath verified`,
+      commandCount: commands.length,
+      scriptPath: ok.scriptPath,
+    });
+  }
+  const first = results[0] || { issue: "parse-failed" };
+  return makeDetail(descriptor, "broken-path", {
+    level: "warning",
+    detail: `hook command failed validation: ${first.issue}`,
+    hookCommandIssue: first.issue || "parse-failed",
+    nodeBin: first.nodeBin || null,
+    scriptPath: first.scriptPath || null,
+    commandFragment: String(commands[0] || "").slice(0, 128),
+  });
 }
 
 function validateCommandList(descriptor, commands, options) {
@@ -1365,7 +1448,7 @@ function checkFileMode(descriptor, options) {
   } else if (Array.isArray(descriptor.hookEvents) && descriptor.hookEvents.length) {
     detail = validateFileHookEvents(descriptor, settings, options);
   } else if (descriptor.agentId === "codex") {
-    detail = validateCommandList(
+    detail = validateCodexCommandList(
       descriptor,
       findCodexPlatformHookCommands(settings, descriptor.marker, options.platform || process.platform),
       options

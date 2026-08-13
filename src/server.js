@@ -3,6 +3,7 @@
 
 const fs = require("fs");
 const http = require("http");
+const crypto = require("crypto");
 const {
   DEFAULT_SERVER_PORT,
   defaultRuntimeConfigPath,
@@ -15,6 +16,12 @@ const {
   writeRuntimeConfig,
 } = require("../hooks/server-config");
 const { processAlive } = require("../hooks/shared-process");
+const {
+  B1A_AGENT_IDS,
+  createServerWindowsProcessMetadataResolver,
+  normalizeWindowsProcessChainMode,
+  WINDOWS_PROCESS_CHAIN_VERSION,
+} = require("./server-windows-process-metadata");
 const {
   getClaudeHookScriptPath,
   getClaudeAutoStartScriptPath,
@@ -74,6 +81,56 @@ const writeRuntimeConfigFn = ctx.writeRuntimeConfig || writeRuntimeConfig;
 const readRuntimeIdentityFn = ctx.readRuntimeIdentity
   || (() => readRuntimeIdentity({ runtimeConfigPath: ctx.runtimeConfigPath }));
 const isProcessAliveFn = ctx.isProcessAlive || processAlive;
+const isWindowsHost = ctx.isWinHost != null ? ctx.isWinHost === true : process.platform === "win32";
+const windowsProcessChainInstanceGeneration = typeof ctx.windowsProcessChainInstanceGeneration === "string"
+  && ctx.windowsProcessChainInstanceGeneration
+  ? ctx.windowsProcessChainInstanceGeneration
+  : crypto.randomUUID();
+const requestedWindowsProcessChainModes = Object.fromEntries(B1A_AGENT_IDS.map((agentId) => {
+  const injectedMode = ctx.windowsProcessChainModes && ctx.windowsProcessChainModes[agentId];
+  const envName = `CLAWD_WINDOWS_PROCESS_CHAIN_${agentId.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
+  const envMode = process.env[envName];
+  // Shadow performs both the legacy PowerShell snapshot and the synchronous
+  // server FFI walk. It is therefore an explicit diagnostics mode, never a
+  // shipped default before its observer/performance/ARM64 gates are recorded.
+  return [agentId, normalizeWindowsProcessChainMode(injectedMode || envMode || "legacy")];
+}));
+let windowsProcessMetadataResolver = ctx.windowsProcessMetadataResolver || null;
+const requestedServerResolver = isWindowsHost
+  && Object.values(requestedWindowsProcessChainModes).some((mode) => mode !== "legacy");
+if (requestedServerResolver && !windowsProcessMetadataResolver) {
+  try {
+    windowsProcessMetadataResolver = createServerWindowsProcessMetadataResolver({ isWin: true });
+  } catch {
+    windowsProcessMetadataResolver = null;
+  }
+}
+// A permanent initialization failure is different from a per-request walk
+// failure. Do not advertise a mode that makes hooks omit legacy metadata when
+// the server has no resolver capable of replacing it.
+const windowsProcessResolverAvailable = !requestedServerResolver
+  || (typeof windowsProcessMetadataResolver === "function"
+    && windowsProcessMetadataResolver.available !== false);
+const windowsProcessChainModes = Object.freeze(Object.fromEntries(
+  Object.entries(requestedWindowsProcessChainModes).map(([agentId, mode]) => [
+    agentId,
+    mode !== "legacy" && !windowsProcessResolverAvailable ? "legacy" : mode,
+  ])
+));
+const windowsProcessChainRuntime = Object.freeze({
+  version: WINDOWS_PROCESS_CHAIN_VERSION,
+  instanceGeneration: windowsProcessChainInstanceGeneration,
+  agents: windowsProcessChainModes,
+});
+function resolveWindowsProcessMetadata(request) {
+  if (!windowsProcessMetadataResolver) {
+    windowsProcessMetadataResolver = createServerWindowsProcessMetadataResolver({ isWin: isWindowsHost });
+  }
+  return windowsProcessMetadataResolver(request);
+}
+function writeCurrentRuntimeConfig(port) {
+  return writeRuntimeConfigFn(port, { windowsProcessChain: windowsProcessChainRuntime });
+}
 // #681: where the runtime file lives is a pure expression — answering it must
 // not read the file, probe a PID, or touch any of the seams above. Callers that
 // only want the path used to reach it through getRuntimeStatus(), which costs
@@ -89,8 +146,27 @@ const CLAUDE_HOOK_GUARD_NOTICE_TTL_MS = 30 * 60 * 1000;
 let httpServer = null;
 let activeServerPort = null;
 let lastClaudeHookGuardNotice = null;
+// Separate the persisted user authorization from short transactional tail
+// suppression. During Settings OFF / integration uninstall the preference or
+// agent gate is committed only after the settings.json mutation succeeds, so
+// this process-local flag closes the small pre-commit window immediately.
+let claudeStatuslineIngressSuppressed = false;
 const codexOfficialTurns = new Map();
 const recentHookEvents = new Map();
+
+function isClaudeStatuslineMetadataAllowed() {
+  return ctx.claudeQuotaCollectionEnabled === true && !claudeStatuslineIngressSuppressed;
+}
+
+function clearLocalClaudeStatuslineAuthority() {
+  if (typeof ctx.clearClaudeStatuslineAuthority !== "function") return 0;
+  return ctx.clearClaudeStatuslineAuthority("local");
+}
+
+function clearLocalClaudeQuota() {
+  if (typeof ctx.clearLocalClaudeQuota !== "function") return 0;
+  return ctx.clearLocalClaudeQuota();
+}
 
 function shouldDropForDnd() {
   if (typeof ctx.shouldDropForDnd === "function") {
@@ -303,9 +379,12 @@ function registerClaudeHooksTask(meta) {
             console.log("Clawd: registered Claude Code statusline");
           }
         } else {
+          claudeStatuslineIngressSuppressed = true;
           // Migration/startup cleanup is ownership-safe: the installer only
           // removes a statusLine command carrying Clawd's marker.
           unregisterClaudeStatusline({ backup: true, silent: true });
+          clearLocalClaudeStatuslineAuthority();
+          clearLocalClaudeQuota();
         }
       } catch (statuslineErr) {
         console.warn("Clawd: failed to sync Claude Code statusline:", statuslineErr.message);
@@ -333,6 +412,18 @@ function registerClaudeHooksTask(meta) {
       };
     }
 
+    // Settings Install / Enable commits the agent flag only after this task
+    // returns. Once the hook repair itself verifies, lift any suppression left
+    // by a previous uninstall. A third-party local statusline may remain
+    // untouched; the user preference still authorizes independently deployed
+    // local-profile senders such as WSL.
+    if (
+      ctx.claudeQuotaCollectionEnabled === true
+      && CLAUDE_STATUSLINE_REGISTER_SOURCES.has(meta.source)
+    ) {
+      claudeStatuslineIngressSuppressed = false;
+    }
+
     return { status: "ok", added, updated, removed };
   };
 }
@@ -340,19 +431,25 @@ function registerClaudeHooksTask(meta) {
 function unregisterClaudeHooksTask(meta) {
   return async () => {
     const { unregisterHooksAsync, unregisterClaudeStatusline } = require("../hooks/install.js");
-    const hooksResult = await unregisterHooksAsync({ backup: true });
-    let statuslineResult = null;
-    if (CLAUDE_STATUSLINE_UNREGISTER_SOURCES.has(meta.source)) {
-      try {
+    const removesStatusline = CLAUDE_STATUSLINE_UNREGISTER_SOURCES.has(meta.source);
+    const previousSuppression = claudeStatuslineIngressSuppressed;
+    if (removesStatusline) claudeStatuslineIngressSuppressed = true;
+    try {
+      const hooksResult = await unregisterHooksAsync({ backup: true });
+      let statuslineResult = null;
+      if (removesStatusline) {
         statuslineResult = unregisterClaudeStatusline({ backup: true, silent: true });
-      } catch (statuslineErr) {
-        console.warn("Clawd: failed to unregister Claude Code statusline:", statuslineErr.message);
+        clearLocalClaudeStatuslineAuthority();
+        clearLocalClaudeQuota();
       }
+      const removed = (hooksResult.removed || 0) + (statuslineResult ? (statuslineResult.removed || 0) : 0);
+      const changed = !!hooksResult.changed || !!(statuslineResult && statuslineResult.changed);
+      const backupPaths = [hooksResult.backupPath, statuslineResult && statuslineResult.backupPath].filter(Boolean);
+      return { status: "ok", removed, changed, backupPaths, hooks: hooksResult, statusline: statuslineResult };
+    } catch (err) {
+      if (removesStatusline) claudeStatuslineIngressSuppressed = previousSuppression;
+      throw err;
     }
-    const removed = (hooksResult.removed || 0) + (statuslineResult ? (statuslineResult.removed || 0) : 0);
-    const changed = !!hooksResult.changed || !!(statuslineResult && statuslineResult.changed);
-    const backupPaths = [hooksResult.backupPath, statuslineResult && statuslineResult.backupPath].filter(Boolean);
-    return { status: "ok", removed, changed, backupPaths, hooks: hooksResult, statusline: statuslineResult };
   };
 }
 
@@ -380,13 +477,22 @@ function setClaudeQuotaCollectionEnabled(callOptions = {}) {
       unregisterClaudeStatusline,
     } = require("../hooks/install.js");
     if (!enabled) {
-      const result = unregisterClaudeStatusline({ backup: true, silent: true });
-      return { status: "ok", enabled: false, ...result };
+      const previousSuppression = claudeStatuslineIngressSuppressed;
+      claudeStatuslineIngressSuppressed = true;
+      try {
+        const result = unregisterClaudeStatusline({ backup: true, silent: true });
+        clearLocalClaudeStatuslineAuthority();
+        clearLocalClaudeQuota();
+        return { status: "ok", enabled: false, ...result };
+      } catch (err) {
+        claudeStatuslineIngressSuppressed = previousSuppression;
+        throw err;
+      }
     }
     if (!shouldSyncAgentIntegration("claude-code")) {
       return {
         status: "error",
-        message: "Enable the Claude Code integration before collecting its quota",
+        message: "Enable the Claude Code integration before collecting its usage metadata",
       };
     }
     const result = registerClaudeStatusline({ backup: true, silent: true });
@@ -404,6 +510,10 @@ function setClaudeQuotaCollectionEnabled(callOptions = {}) {
         message: "Claude Code settings were not found",
       };
     }
+    // The settings controller persists the true preference immediately after
+    // this successful effect returns. Until then the live preference getter
+    // still keeps ingress closed; afterwards both halves of the gate are open.
+    claudeStatuslineIngressSuppressed = false;
     return { status: "ok", enabled: true, ...result };
   });
 }
@@ -552,7 +662,7 @@ function repairIntegrationForAgent(agentId, options = {}) {
 function repairRuntimeStatus() {
   const status = getRuntimeStatus();
   if (status && status.listening && Number.isInteger(status.port)) {
-    const written = writeRuntimeConfigFn(status.port);
+    const written = writeCurrentRuntimeConfig(status.port);
     return written
       ? { status: "ok" }
       : { status: "error", message: "Failed to write runtime config" };
@@ -625,12 +735,21 @@ function routeHttpRequest(req, res, remoteProfile = null) {
         shouldDropForDnd,
         codexOfficialTurns,
         captureForegroundWindowsTerminal: ctx.captureForegroundWindowsTerminal,
+        isWinHost: isWindowsHost,
+        windowsProcessChainRuntime,
+        resolveWindowsProcessMetadata,
+        recordWindowsProcessChainShadow: ctx.recordWindowsProcessChainShadow,
         remoteProfile,
+        isClaudeStatuslineMetadataAllowed,
       });
     } else if (req.method === "POST" && req.url === "/permission") {
       handlePermissionPost(req, res, {
         ctx,
         createRequestHookRecorder,
+        isWinHost: isWindowsHost,
+        windowsProcessChainRuntime,
+        resolveWindowsProcessMetadata,
+        recordWindowsProcessChainShadow: ctx.recordWindowsProcessChainShadow,
         remoteProfile,
       });
     } else {
@@ -703,7 +822,7 @@ function startHttpServer() {
       // propagate.
       let runtimeWritten = false;
       try {
-        runtimeWritten = writeRuntimeConfigFn(activeServerPort) === true;
+        runtimeWritten = writeCurrentRuntimeConfig(activeServerPort) === true;
       } catch (err) {
         runtimeWritten = false;
         console.warn("Failed to write the Clawd runtime file:", (err && err.message) || err);
@@ -773,6 +892,7 @@ return {
   syncClawdHooks,
   uninstallClaudeHooks: uninstallClaudeHooksQueued,
   setClaudeQuotaCollectionEnabled,
+  isClaudeStatuslineMetadataAllowed,
   setClaudeAutoStart,
   syncGeminiHooks,
   syncAntigravityHooks,

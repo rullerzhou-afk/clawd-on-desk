@@ -133,8 +133,8 @@ describe("About integration cleanup confirmation", () => {
       title: "Remove Clawd integrations?",
       detail: "This removes Clawd hooks/plugins from local agents.",
       actions: [
+        { id: "cancel", label: "Cancel", tone: "neutral", defaultFocus: true },
         { id: "confirm", label: "Remove integrations", tone: "danger" },
-        { id: "cancel", label: "Cancel", tone: "accent", defaultFocus: true },
       ],
     });
 

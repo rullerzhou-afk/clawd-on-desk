@@ -1,5 +1,7 @@
 "use strict";
 
+const nodeFs = require("fs");
+
 // Pure, no-timer, no-write health inspector for Claude Code's managed hooks.
 // Consumed by src/claude-settings-watcher.js's periodic audit and by
 // src/doctor-detectors/agent-integrations.js for on-demand diagnostics. Never
@@ -9,7 +11,12 @@
 const {
   validateHookCommand,
 } = require("./doctor-detectors/agent-node-bin-parser");
-const { commandMatchesMarker } = require("../hooks/json-utils");
+const {
+  classifyManagedClaudeStateHookCommand,
+  commandMatchesMarker,
+  findManagedClaudeEnvNodeBinCandidates,
+  parseClaudeEnvStateHookCommand,
+} = require("../hooks/json-utils");
 
 // Deliberately NOT imported from ./claude-settings-watcher: that module will
 // require this one (Phase 2's periodic audit calls inspectClaudeHookHealth()),
@@ -52,6 +59,8 @@ const REPAIR_CLASS_BY_CODE = Object.freeze({
   "auto-start-path-missing": "auto-start-path",
   "auto-start-stale-path": "auto-start-path",
   "node-bin-invalid": "node-bin",
+  "env-hook-migratable": "env-state-hook",
+  "duplicate-managed-state-hook": "managed-hook-duplicates",
 });
 
 function normalizePathForComparison(value, platform) {
@@ -84,6 +93,67 @@ function findMarkerCommandsForEvent(hooks, eventName, marker) {
     }
   }
   return commands;
+}
+
+function findManagedStateCommandRecords(settings, eventName) {
+  const hooks = settings && settings.hooks;
+  const entries = hooks && hooks[eventName];
+  if (!Array.isArray(entries)) return { managed: [], unverified: [] };
+  const managed = [];
+  const unverified = [];
+
+  const collect = (hook, entryIndex, hookIndex) => {
+    if (!hook || typeof hook.command !== "string") return;
+    // Health historically recognizes Clawd commands inside PowerShell
+    // EncodedCommand wrappers. Keep that read-only visibility without
+    // broadening the installer's raw-marker mutation ownership boundary.
+    const mutationKind = classifyManagedClaudeStateHookCommand(hook.command, settings, eventName);
+    const kind = mutationKind || (commandMatchesMarker(hook.command, HOOK_MARKER) ? "literal" : null);
+    const record = {
+      command: hook.command,
+      entryIndex,
+      hookIndex,
+      kind,
+      mutationOwned: !!mutationKind,
+    };
+    if (kind) {
+      if (kind === "env") {
+        record.parsedEnv = parseClaudeEnvStateHookCommand(hook.command, eventName);
+      }
+      managed.push(record);
+      return;
+    }
+    const parsedEnv = parseClaudeEnvStateHookCommand(hook.command, eventName);
+    if (parsedEnv) unverified.push({ ...record, parsedEnv });
+  };
+
+  for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
+    const entry = entries[entryIndex];
+    if (!entry || typeof entry !== "object") continue;
+    collect(entry, entryIndex, null);
+    if (!Array.isArray(entry.hooks)) continue;
+    for (let hookIndex = 0; hookIndex < entry.hooks.length; hookIndex++) {
+      collect(entry.hooks[hookIndex], entryIndex, hookIndex);
+    }
+  }
+
+  return { managed, unverified };
+}
+
+function findUsableEnvNodeCandidate(settings, validateOptions) {
+  const fsImpl = validateOptions.fs || nodeFs;
+  const platform = validateOptions.platform || process.platform;
+  for (const candidate of findManagedClaudeEnvNodeBinCandidates(settings)) {
+    try {
+      if (platform === "win32") {
+        if (fsImpl.existsSync(candidate)) return candidate;
+        continue;
+      }
+      fsImpl.accessSync(candidate, nodeFs.constants.X_OK);
+      return candidate;
+    } catch {}
+  }
+  return null;
 }
 
 function pushIssue(issues, issue) {
@@ -249,19 +319,60 @@ function inspectClaudeHookHealth(rawSettings, options = {}) {
   let commandCount = 0;
   let managedCoreEventCount = 0;
   const missingEvents = [];
+  let hasUnverifiedEnvIndirection = false;
+  const usableEnvNodeCandidate = findUsableEnvNodeCandidate(parsed, validateOptions);
 
   for (const event of coreEvents) {
-    const commands = findMarkerCommandsForEvent(hooks, event, HOOK_MARKER);
-    commandCount += commands.length;
-    if (!commands.length) {
+    const records = findManagedStateCommandRecords(parsed, event);
+    commandCount += records.managed.length;
+    for (const record of records.unverified) {
+      hasUnverifiedEnvIndirection = true;
+      pushIssue(issues, {
+        code: "env-indirection-unverified",
+        event,
+        marker: HOOK_MARKER,
+        automaticRepairable: false,
+      });
+    }
+    if (!records.managed.length) {
       missingEvents.push(event);
       continue;
     }
     managedCoreEventCount++;
-    inspectEventCommands(commands, event, HOOK_MARKER, expectedHookScriptPath, validateOptions, issues, CORE_COMMAND_ISSUE_CODES);
+    const mutationOwnedCount = records.managed.filter((record) => record.mutationOwned).length;
+    if (mutationOwnedCount > 1) {
+      pushIssue(issues, {
+        code: "duplicate-managed-state-hook",
+        event,
+        marker: HOOK_MARKER,
+        count: mutationOwnedCount,
+        automaticRepairable: true,
+      });
+    }
+    for (const record of records.managed) {
+      if (record.kind === "literal") {
+        inspectEventCommands(
+          [record.command],
+          event,
+          HOOK_MARKER,
+          expectedHookScriptPath,
+          validateOptions,
+          issues,
+          CORE_COMMAND_ISSUE_CODES
+        );
+        continue;
+      }
+      const migratable = !!usableEnvNodeCandidate;
+      pushIssue(issues, {
+        code: migratable ? "env-hook-migratable" : "env-hook-node-unresolved",
+        event,
+        marker: HOOK_MARKER,
+        automaticRepairable: migratable,
+      });
+    }
   }
 
-  if (coreEvents.length > 0 && managedCoreEventCount === 0) {
+  if (coreEvents.length > 0 && managedCoreEventCount === 0 && !hasUnverifiedEnvIndirection) {
     pushIssue(issues, { code: "missing-managed-core-hooks", automaticRepairable: true });
   } else if (missingEvents.length > 0) {
     // A partial gap (some but not all core events missing) is a Doctor-only
@@ -362,6 +473,30 @@ function reportHasUnparseableCommand(report) {
   return !!(report && Array.isArray(report.issues) && report.issues.some((issue) => issue && issue.code === "command-unparseable"));
 }
 
+const DEGRADED_DIAGNOSTICS = Object.freeze({
+  "command-unparseable": Object.freeze({
+    reason: "command-unparseable",
+    message: "a Clawd-owned hook command could not be parsed; see Doctor for details",
+  }),
+  "env-hook-node-unresolved": Object.freeze({
+    reason: "env-hook-node-unresolved",
+    message: "an env-indirected Clawd hook was preserved because its absolute Node path could not be verified",
+  }),
+  "env-indirection-unverified": Object.freeze({
+    reason: "env-indirection-unverified",
+    message: "an env-indirected hook command could not be proven Clawd-owned from settings.env",
+  }),
+});
+
+function getClaudeHookDegradedDiagnostic(report) {
+  if (!report || !Array.isArray(report.issues)) return null;
+  for (const issue of report.issues) {
+    const diagnostic = issue && DEGRADED_DIAGNOSTICS[issue.code];
+    if (diagnostic) return diagnostic;
+  }
+  return null;
+}
+
 /**
  * Whether an explicit Install/Fix write actually left the config genuinely
  * healthy, suitable for reporting a user-facing "ok" instead of blindly
@@ -378,6 +513,7 @@ module.exports = {
   buildClaudeRepairSignature,
   hasNoAutomaticRepairWork,
   reportHasUnparseableCommand,
+  getClaudeHookDegradedDiagnostic,
   isExplicitRepairVerified,
   CLAUDE_HOOK_MARKER: HOOK_MARKER,
   CLAUDE_AUTO_START_MARKER: AUTO_START_MARKER,

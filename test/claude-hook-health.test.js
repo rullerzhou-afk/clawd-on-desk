@@ -9,6 +9,7 @@ const {
   inspectClaudeHookHealth,
   buildClaudeRepairSignature,
   hasNoAutomaticRepairWork,
+  getClaudeHookDegradedDiagnostic,
   reportHasUnparseableCommand,
   isExplicitRepairVerified,
 } = require("../src/claude-hook-health");
@@ -58,6 +59,28 @@ function buildHealthySettings({
   for (const event of events) hooks[event] = [coreCommandHook(event, scriptPath, nodeBin)];
   if (permissionUrl) hooks.PermissionRequest = [permissionHook(permissionUrl)];
   return { hooks };
+}
+
+function buildEnvOwnedSettings({
+  nodeBin = "/opt/homebrew/bin/node",
+  hookPath = "/Applications/Clawd on Desk.app/Contents/Resources/app.asar.unpacked/hooks/clawd-hook.js",
+  includeHookPathEnv = true,
+} = {}) {
+  const hooks = {};
+  for (const event of CLAUDE_CORE_HOOK_EVENTS) {
+    hooks[event] = [{
+      matcher: "",
+      hooks: [{
+        type: "command",
+        command: '"${CLAWD_NODE_BIN}" "${CLAWD_HOOK_PATH}" ' + event,
+        timeout: 5,
+      }],
+    }];
+  }
+  hooks.PermissionRequest = [permissionHook(EXPECTED_PERMISSION_URL)];
+  const env = { CLAWD_NODE_BIN: nodeBin };
+  if (includeHookPathEnv) env.CLAWD_HOOK_PATH = hookPath;
+  return { env, hooks };
 }
 
 function baseOptions(overrides = {}) {
@@ -290,6 +313,21 @@ describe("inspectClaudeHookHealth", () => {
     assert.strictEqual(report.status, "healthy");
   });
 
+  it("does not schedule duplicate repair for an encoded read-only command beside a mutable literal hook (#852)", () => {
+    const encoded = buildWindowsEncodedNodeHookCommand("node", EXPECTED_HOOK_SCRIPT_PATH, ["Stop"]);
+    const settings = buildHealthySettings({ events: ["Stop"] });
+    settings.hooks.Stop.push({ matcher: "", hooks: [{ type: "command", command: encoded }] });
+
+    const report = inspectClaudeHookHealth(
+      JSON.stringify(settings),
+      baseOptions({ coreEvents: ["Stop"] })
+    );
+
+    assert.strictEqual(report.status, "healthy");
+    assert.ok(!report.issues.some((issue) => issue.code === "duplicate-managed-state-hook"));
+    assert.strictEqual(buildClaudeRepairSignature(report.issues), null);
+  });
+
   it("flags an invalid Node binary as repairable", () => {
     const raw = JSON.stringify(buildHealthySettings({ nodeBin: "/usr/bin/node", events: ["Stop"] }));
     const options = baseOptions({
@@ -303,6 +341,96 @@ describe("inspectClaudeHookHealth", () => {
 
     assert.strictEqual(report.repairable, true);
     assert.ok(report.issues.some((issue) => issue.code === "node-bin-invalid"));
+  });
+
+  it("classifies a safely migratable env hook before target validation and produces a repair signature (#852)", () => {
+    const nodeBin = "/opt/homebrew/bin/node";
+    const raw = JSON.stringify(buildEnvOwnedSettings({ nodeBin }));
+    const report = inspectClaudeHookHealth(raw, baseOptions({
+      platform: "darwin",
+      fs: makeFakeFs([EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH, nodeBin]),
+    }));
+
+    assert.strictEqual(report.repairable, true);
+    assert.strictEqual(report.managedCoreEventCount, CLAUDE_CORE_HOOK_EVENTS.length);
+    assert.ok(report.issues.some((issue) => issue.code === "env-hook-migratable"));
+    assert.ok(!report.issues.some((issue) => issue.code === "node-bin-invalid" || issue.code === "script-path-missing"));
+    assert.strictEqual(buildClaudeRepairSignature(report.issues), "v1:env-state-hook");
+  });
+
+  it("finds a later usable env-owned Node candidate after a stale direct path (#852)", () => {
+    const staleNode = "/missing/bin/node";
+    const validNode = "/opt/homebrew/bin/node";
+    const settings = buildEnvOwnedSettings({ nodeBin: "node" });
+    settings.hooks.SessionStart[0].hooks[0].command = `"${staleNode}" "${"${CLAWD_HOOK_PATH}"}" SessionStart`;
+    settings.hooks.SessionEnd[0].hooks[0].command = `"${validNode}" "${"${CLAWD_HOOK_PATH}"}" SessionEnd`;
+
+    const report = inspectClaudeHookHealth(JSON.stringify(settings), baseOptions({
+      platform: "darwin",
+      fs: makeFakeFs([EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH, validNode]),
+    }));
+
+    assert.ok(report.issues.some((issue) => issue.code === "env-hook-migratable"));
+    assert.ok(!report.issues.some((issue) => issue.code === "env-hook-node-unresolved"));
+    assert.strictEqual(buildClaudeRepairSignature(report.issues), "v1:env-state-hook");
+  });
+
+  it("rejects shell-breaking env Node data before target validation (#852)", () => {
+    const settings = buildEnvOwnedSettings({ nodeBin: '/tmp/a";noop;"/node' });
+    const report = inspectClaudeHookHealth(JSON.stringify(settings), baseOptions({
+      platform: "darwin",
+      fs: makeFakeFs([
+        EXPECTED_HOOK_SCRIPT_PATH,
+        EXPECTED_AUTO_START_SCRIPT_PATH,
+        '/tmp/a";noop;"/node',
+      ]),
+    }));
+
+    assert.ok(report.issues.some((issue) => issue.code === "env-hook-node-unresolved"));
+    assert.ok(!report.issues.some((issue) => issue.code === "env-hook-migratable"));
+    assert.strictEqual(buildClaudeRepairSignature(report.issues), null);
+  });
+
+  it("keeps an unresolved env hook non-automatic and exposes a degraded diagnostic (#852)", () => {
+    const raw = JSON.stringify(buildEnvOwnedSettings({ nodeBin: "node" }));
+    const report = inspectClaudeHookHealth(raw, baseOptions({ platform: "darwin" }));
+
+    assert.strictEqual(report.repairable, false);
+    assert.ok(report.issues.some((issue) => issue.code === "env-hook-node-unresolved"));
+    assert.ok(!report.issues.some((issue) => issue.automaticRepairable === true));
+    assert.strictEqual(buildClaudeRepairSignature(report.issues), null);
+    assert.strictEqual(hasNoAutomaticRepairWork(report), true);
+    assert.strictEqual(getClaudeHookDegradedDiagnostic(report).reason, "env-hook-node-unresolved");
+  });
+
+  it("reports recognizable but unverified env indirection without treating it as missing managed hooks (#852)", () => {
+    const raw = JSON.stringify(buildEnvOwnedSettings({ includeHookPathEnv: false }));
+    const report = inspectClaudeHookHealth(raw, baseOptions({ platform: "darwin" }));
+
+    assert.strictEqual(report.repairable, false);
+    assert.strictEqual(report.managedCoreEventCount, 0);
+    assert.ok(report.issues.some((issue) => issue.code === "env-indirection-unverified"));
+    assert.ok(!report.issues.some((issue) => issue.code === "missing-managed-core-hooks"));
+    assert.strictEqual(buildClaudeRepairSignature(report.issues), null);
+  });
+
+  it("registers duplicate env/literal state hooks as automatic repair work (#852)", () => {
+    const settings = buildHealthySettings({ events: ["Stop"] });
+    settings.env = {
+      CLAWD_NODE_BIN: "C:/nodejs/node.exe",
+      CLAWD_HOOK_PATH: EXPECTED_HOOK_SCRIPT_PATH,
+    };
+    settings.hooks.Stop.push({ matcher: "", hooks: [{
+      type: "command",
+      command: '"${CLAWD_NODE_BIN}" "${CLAWD_HOOK_PATH}" Stop',
+    }] });
+    const report = inspectClaudeHookHealth(JSON.stringify(settings), baseOptions({
+      coreEvents: ["Stop"],
+      fs: makeFakeFs([EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH, "C:/nodejs/node.exe"]),
+    }));
+
+    assert.ok(report.issues.some((issue) => issue.code === "duplicate-managed-state-hook"));
+    assert.match(buildClaudeRepairSignature(report.issues), /managed-hook-duplicates/);
   });
 
   for (const [label, raw] of [["empty string", ""], ["non-JSON text", "not json"], ["null", "null"], ["array", "[]"]]) {

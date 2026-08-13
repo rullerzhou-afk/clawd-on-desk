@@ -61,6 +61,13 @@ const ANIMATION_OVERRIDES_EXPORT_DIALOG_STRINGS = {
     jsonFilter: "Clawd アニメーション差し替え",
     nothingToExport: "エクスポートするアニメーション差し替えがありません。先に何かを差し替えてください。",
   },
+  "pt-BR": {
+    saveTitle: "Exportar as personalizações de animação",
+    openTitle: "Importar personalizações de animação",
+    defaultName: (ts) => `clawd-animation-overrides-${ts}.json`,
+    jsonFilter: "Personalizações de animação do Clawd",
+    nothingToExport: "Não há personalizações de animação para exportar. Personalize alguma coisa primeiro.",
+  },
 };
 
 function requiredDependency(value, name, owner) {

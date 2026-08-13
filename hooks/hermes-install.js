@@ -16,8 +16,11 @@ const { asarUnpackedPath } = require("./json-utils");
 const PLUGIN_ID = "clawd-on-desk";
 const PLUGIN_SOURCE_DIR_NAME = "hermes-plugin";
 const MANAGED_PLUGIN_FILES = ["plugin.yaml", "__init__.py"];
+const HERMES_RESULT_SCHEMA_VERSION = 1;
+const HERMES_RESULT_SENTINEL = "CLAWD_HERMES_RESULT_V1=";
 const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".hermes");
 const DEFAULT_PLUGIN_DIR = path.join(DEFAULT_PARENT_DIR, "plugins", PLUGIN_ID);
+let _atomicWriteCounter = 0;
 
 function resolvePluginSourceDir(baseDir = __dirname) {
   return asarUnpackedPath(path.resolve(baseDir, PLUGIN_SOURCE_DIR_NAME));
@@ -75,6 +78,31 @@ function discoverHermesProfileHomes(hermesHome) {
   return homes;
 }
 
+// Uninstall must also find profile-owned plugin remnants after a profile's
+// config.yaml was deleted. Registration intentionally ignores those profiles,
+// but leaving their managed plugin directory behind would make Settings offer
+// an Unpair action that can never finish.
+function discoverHermesManagedPluginHomes(hermesHome) {
+  const profilesDir = path.join(hermesHome, "profiles");
+  let entries = [];
+  try {
+    entries = fs.readdirSync(profilesDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const homes = [];
+  for (const entry of entries) {
+    if (!entry || !entry.isDirectory()) continue;
+    const profileHome = path.join(profilesDir, entry.name);
+    const pluginDir = path.join(profileHome, "plugins", PLUGIN_ID);
+    if (!MANAGED_PLUGIN_FILES.some((name) => pathExists(path.join(pluginDir, name)))) continue;
+    homes.push(profileHome);
+  }
+  homes.sort((a, b) => a.localeCompare(b));
+  return homes;
+}
+
 function hermesHomesForSync(options = {}) {
   const hermesHome = resolveHermesHome(options);
   const homes = [hermesHome];
@@ -82,6 +110,25 @@ function hermesHomesForSync(options = {}) {
 
   const seen = new Set(homes.map((home) => path.resolve(home)));
   for (const profileHome of discoverHermesProfileHomes(hermesHome)) {
+    const resolved = path.resolve(profileHome);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    homes.push(resolved);
+  }
+  return homes;
+}
+
+function hermesHomesForRemoval(options = {}) {
+  const hermesHome = resolveHermesHome(options);
+  const homes = [hermesHome];
+  if (options.syncProfiles === false || options.pluginDir) return homes;
+
+  const seen = new Set(homes.map((home) => path.resolve(home)));
+  const candidates = [
+    ...discoverHermesProfileHomes(hermesHome),
+    ...discoverHermesManagedPluginHomes(hermesHome),
+  ];
+  for (const profileHome of candidates) {
     const resolved = path.resolve(profileHome);
     if (seen.has(resolved)) continue;
     seen.add(resolved);
@@ -156,12 +203,56 @@ function formatHermesCommand(command, args) {
   return [quoteCommandToken(base), ...args].join(" ");
 }
 
+function lstatIfPresent(filePath) {
+  try {
+    return fs.lstatSync(filePath);
+  } catch (err) {
+    if (err && err.code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+function assertSafeManagedLeaf(filePath, expectedType) {
+  const stat = lstatIfPresent(filePath);
+  if (!stat) return null;
+  if (stat.isSymbolicLink()) {
+    throw new Error(`Refusing to manage symlink: ${filePath}`);
+  }
+  if (expectedType === "directory" && !stat.isDirectory()) {
+    throw new Error(`Managed plugin path is not a directory: ${filePath}`);
+  }
+  if (expectedType === "file" && !stat.isFile()) {
+    throw new Error(`Managed plugin file is not a regular file: ${filePath}`);
+  }
+  return stat;
+}
+
+function writeManagedFileAtomic(filePath, content, options = {}) {
+  const base = path.basename(filePath);
+  const dir = path.dirname(filePath);
+  const suffix = `${process.pid}.${Date.now()}.${++_atomicWriteCounter}`;
+  const tempPath = path.join(dir, `.${base}.clawd-${suffix}.tmp`);
+  const writeFileSync = options.writeFileSync || fs.writeFileSync;
+  const renameSync = options.renameSync || fs.renameSync;
+  const unlinkSync = options.unlinkSync || fs.unlinkSync;
+
+  try {
+    writeFileSync(tempPath, content, { flag: "wx", mode: 0o600 });
+    renameSync(tempPath, filePath);
+  } catch (err) {
+    try { unlinkSync(tempPath); } catch {}
+    throw err;
+  }
+}
+
 function copyManagedPluginFiles(options = {}) {
   const sourceDir = options.sourcePluginDir || resolvePluginSourceDir(options.baseDir);
   const pluginDir = options.pluginDir;
   if (!pluginDir) throw new Error("copyManagedPluginFiles requires pluginDir");
 
+  assertSafeManagedLeaf(pluginDir, "directory");
   fs.mkdirSync(pluginDir, { recursive: true });
+  assertSafeManagedLeaf(pluginDir, "directory");
 
   let installed = 0;
   let updated = 0;
@@ -170,15 +261,12 @@ function copyManagedPluginFiles(options = {}) {
     const sourcePath = path.join(sourceDir, file);
     const destPath = path.join(pluginDir, file);
     const source = fs.readFileSync(sourcePath);
+    const destStat = assertSafeManagedLeaf(destPath, "file");
     let current = null;
-    try {
-      current = fs.readFileSync(destPath);
-    } catch (err) {
-      if (err.code !== "ENOENT") throw err;
-    }
+    if (destStat) current = fs.readFileSync(destPath);
 
     if (!current) {
-      fs.writeFileSync(destPath, source);
+      writeManagedFileAtomic(destPath, source, options);
       installed++;
       continue;
     }
@@ -186,7 +274,7 @@ function copyManagedPluginFiles(options = {}) {
       skipped++;
       continue;
     }
-    fs.writeFileSync(destPath, source);
+    writeManagedFileAtomic(destPath, source, options);
     updated++;
   }
   return { installed, updated, skipped };
@@ -364,67 +452,149 @@ function registerHermesPlugin(options = {}) {
 
 function unregisterHermesPlugin(options = {}) {
   const hermesHome = resolveHermesHome(options);
-  const pluginDir = options.pluginDir || path.join(hermesHome, "plugins", PLUGIN_ID);
+  const targetHomes = options.pluginDir
+    ? [hermesHome]
+    : hermesHomesForRemoval({ ...options, hermesHome });
+  const primaryCommand = resolveHermesCommand({ ...options, hermesHome });
   const warnings = [];
-  const disableResult = runHermesCli(["plugins", "disable", PLUGIN_ID], {
-    ...options,
-    hermesHome,
-  });
-  const disableCommand = disableResult.displayCommand
-    || formatHermesCommand(resolveHermesCommand({ ...options, hermesHome }) || "hermes", ["plugins", "disable", PLUGIN_ID]);
+  const profileResults = [];
+  let removedCount = 0;
+  let firstError = null;
 
-  if (!disableResult.ok) {
-    warnings.push(
-      disableResult.unavailable
-        ? `Hermes CLI was not found; skipped disable. If Hermes keeps a stale enabled entry, run: ${disableCommand}`
-        : `Hermes CLI disable failed: ${disableResult.message}`
-    );
-  }
+  for (const targetHome of targetHomes) {
+    const pluginDir = options.pluginDir && targetHome === hermesHome
+      ? options.pluginDir
+      : path.join(targetHome, "plugins", PLUGIN_ID);
+    const hasConfig = pathExists(path.join(targetHome, "config.yaml"));
+    const targetWarnings = [];
+    let disableCommand = null;
 
-  let removed = false;
-  try {
-    if (fs.existsSync(pluginDir)) {
-      fs.rmSync(pluginDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-      removed = true;
+    // A configless residual profile has no enabled allow-list left to edit.
+    // Do not invoke Hermes there: some CLI versions create a fresh config.
+    if (targetHome === hermesHome || hasConfig) {
+      const disableResult = runHermesCli(["plugins", "disable", PLUGIN_ID], {
+        ...options,
+        hermesHome: targetHome,
+        hermesCommand: options.hermesCommand || primaryCommand,
+      });
+      disableCommand = disableResult.displayCommand
+        || formatHermesCommand(
+          resolveHermesCommand({ ...options, hermesHome: targetHome }) || "hermes",
+          ["plugins", "disable", PLUGIN_ID]
+        );
+      if (!disableResult.ok) {
+        targetWarnings.push(
+          disableResult.unavailable
+            ? `Hermes CLI was not found; skipped disable. If Hermes keeps a stale enabled entry, run: ${disableCommand}`
+            : `Hermes CLI disable failed: ${disableResult.message}`
+        );
+      }
     }
-  } catch (err) {
-    return {
-      status: "error",
+
+    let removed = false;
+    let removeError = null;
+    try {
+      const pluginStat = assertSafeManagedLeaf(pluginDir, "directory");
+      if (pluginStat) {
+        const rmSync = options.rmSync || fs.rmSync;
+        rmSync(pluginDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        removed = true;
+        removedCount++;
+      }
+    } catch (err) {
+      removeError = err;
+      if (!firstError) firstError = { err, pluginDir, hermesHome: targetHome };
+    }
+
+    const entry = {
+      status: removeError ? "error" : (targetWarnings.length ? "warning" : "ok"),
+      hermesHome: targetHome,
       pluginDir,
-      hermesHome,
       disableCommand,
       removed,
-      warnings,
-      message: `Failed to remove Hermes plugin directory: ${err.message}`,
+      warnings: targetWarnings,
+      message: removeError
+        ? `Failed to remove Hermes plugin directory: ${removeError.message}`
+        : (targetWarnings.length ? "Hermes plugin removed with warnings" : "Hermes plugin removed"),
+    };
+    profileResults.push(entry);
+    warnings.push(...targetWarnings.map((warning) => `${targetHome}: ${warning}`));
+  }
+
+  const pluginDir = options.pluginDir || path.join(hermesHome, "plugins", PLUGIN_ID);
+  const base = {
+    pluginDir,
+    hermesHome,
+    removed: removedCount > 0,
+    removedCount,
+    warnings,
+    profileResults,
+  };
+
+  if (firstError) {
+    return {
+      ...base,
+      status: "error",
+      reason: "hermes-plugin-remove-failed",
+      message: `Failed to remove Hermes plugin directory ${firstError.pluginDir}: ${firstError.err.message}`,
     };
   }
 
   if (!options.silent) {
     console.log(`Clawd Hermes plugin removed -> ${pluginDir}`);
+    if (profileResults.length > 1) console.log(`  Profiles cleaned: ${profileResults.length - 1}`);
     for (const warning of warnings) console.warn(`  Warning: ${warning}`);
   }
 
   return {
+    ...base,
     status: "ok",
-    pluginDir,
-    hermesHome,
-    disableCommand,
-    removed,
-    warnings,
     message: warnings.length
       ? "Hermes plugin removed with warnings"
       : "Hermes plugin removed",
   };
 }
 
+function boundedResultText(value, fallback = "") {
+  const text = typeof value === "string" && value.trim() ? value.trim() : fallback;
+  return text.slice(0, 1000);
+}
+
+function toHermesCliResult(result, operation) {
+  const source = result && typeof result === "object" ? result : {};
+  const warningCount = Array.isArray(source.warnings)
+    ? source.warnings.length
+    : (Number.isInteger(source.profileErrorCount) ? source.profileErrorCount : 0);
+  const warningText = Array.isArray(source.warnings) && source.warnings.length
+    ? source.warnings.join("\n")
+    : source.profileWarning;
+  const status = source.status === "error"
+    ? "error"
+    : ((source.profileStatus === "partial" || warningCount > 0) ? "warning" : "ok");
+  return {
+    schemaVersion: HERMES_RESULT_SCHEMA_VERSION,
+    operation,
+    status,
+    message: boundedResultText(source.message, status === "error" ? "Hermes plugin operation failed" : "Hermes plugin operation completed"),
+    reason: boundedResultText(source.reason, "") || null,
+    warning: boundedResultText(warningText, "") || null,
+    profileWarningCount: warningCount,
+    profileErrorCount: Number.isInteger(source.profileErrorCount) ? source.profileErrorCount : 0,
+  };
+}
+
 module.exports = {
   DEFAULT_PARENT_DIR,
   DEFAULT_PLUGIN_DIR,
+  HERMES_RESULT_SCHEMA_VERSION,
+  HERMES_RESULT_SENTINEL,
   MANAGED_PLUGIN_FILES,
   PLUGIN_ID,
   copyManagedPluginFiles,
+  discoverHermesManagedPluginHomes,
   discoverHermesProfileHomes,
   formatHermesCommand,
+  hermesHomesForRemoval,
   hermesHomesForSync,
   isHermesInstalled,
   registerHermesPlugin,
@@ -432,14 +602,31 @@ module.exports = {
   resolveHermesHome,
   resolvePluginSourceDir,
   runHermesCli,
+  toHermesCliResult,
   unregisterHermesPlugin,
+  writeManagedFileAtomic,
 };
 
 if (require.main === module) {
   const uninstall = process.argv.includes("--uninstall");
-  const result = uninstall ? unregisterHermesPlugin({}) : registerHermesPlugin({});
+  const jsonMode = process.argv.includes("--json");
+  let result;
+  try {
+    result = uninstall
+      ? unregisterHermesPlugin({ silent: jsonMode })
+      : registerHermesPlugin({ silent: jsonMode });
+  } catch (err) {
+    result = {
+      status: "error",
+      reason: "hermes-plugin-operation-threw",
+      message: err && err.message ? err.message : "Hermes plugin operation failed",
+    };
+  }
+  if (jsonMode) {
+    console.log(`${HERMES_RESULT_SENTINEL}${JSON.stringify(toHermesCliResult(result, uninstall ? "uninstall" : "install"))}`);
+  }
   if (result && result.status === "error") {
-    console.error(result.message || "Hermes plugin install failed");
-    process.exit(1);
+    if (!jsonMode) console.error(result.message || "Hermes plugin install failed");
+    process.exitCode = 1;
   }
 }

@@ -195,6 +195,7 @@ function makeServer(overrides = {}) {
     syncQoderHooksImpl: () => syncCalls.push("qoder"),
     syncReasonixHooksImpl: () => syncCalls.push("reasonix"),
     syncQoderWorkHooksImpl: () => syncCalls.push("qoderwork"),
+    syncQwenWorkHooksImpl: () => syncCalls.push("qwenwork"),
     ...overrides,
   }, syncCalls);
 
@@ -243,7 +244,7 @@ describe("server Claude hook management", () => {
 
     api.startHttpServer();
 
-    assert.deepStrictEqual(syncCalls, ["claude", "gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "hermes", "qoder", "reasonix", "qoderwork"]);
+    assert.deepStrictEqual(syncCalls, ["claude", "gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "hermes", "qoder", "reasonix", "qoderwork", "qwenwork"]);
     assert.ok(getWatcher(), "watcher should start when management is enabled");
   });
 
@@ -260,7 +261,7 @@ describe("server Claude hook management", () => {
 
       api.startHttpServer();
 
-      assert.deepStrictEqual(syncCalls, ["claude", "gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "qoder", "reasonix", "qoderwork"]);
+      assert.deepStrictEqual(syncCalls, ["claude", "gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "qoder", "reasonix", "qoderwork", "qwenwork"]);
       assert.ok(getWatcher(), "watcher should start when management is enabled");
       assert.strictEqual(warnings.some((line) => /Hermes/i.test(line)), false);
     } finally {
@@ -275,7 +276,7 @@ describe("server Claude hook management", () => {
 
     api.startHttpServer();
 
-    assert.deepStrictEqual(syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "hermes", "qoder", "reasonix", "qoderwork"]);
+    assert.deepStrictEqual(syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "hermes", "qoder", "reasonix", "qoderwork", "qwenwork"]);
     assert.strictEqual(getWatcher(), null);
   });
 
@@ -287,7 +288,7 @@ describe("server Claude hook management", () => {
 
     api.startHttpServer();
 
-    assert.deepStrictEqual(syncCalls, ["claude", "copilot", "codebuddy", "workbuddy", "kimi", "qwen", "codewhale", "codex", "mimocode", "hermes", "qoder", "reasonix", "qoderwork"]);
+    assert.deepStrictEqual(syncCalls, ["claude", "copilot", "codebuddy", "workbuddy", "kimi", "qwen", "codewhale", "codex", "mimocode", "hermes", "qoder", "reasonix", "qoderwork", "qwenwork"]);
     assert.ok(getWatcher(), "Claude watcher should still start when Claude is enabled");
   });
 
@@ -298,7 +299,7 @@ describe("server Claude hook management", () => {
 
     api.startHttpServer();
 
-    assert.deepStrictEqual(syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "hermes", "qoder", "reasonix", "qoderwork"]);
+    assert.deepStrictEqual(syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "hermes", "qoder", "reasonix", "qoderwork", "qwenwork"]);
     assert.strictEqual(getWatcher(), null);
   });
 
@@ -497,8 +498,8 @@ describe("server Claude hook management", () => {
     const second = makeServer({ manageClaudeHooksAutomatically: false });
     second.api.startHttpServer();
 
-    assert.deepStrictEqual(first.syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "hermes", "qoder", "reasonix", "qoderwork"]);
-    assert.deepStrictEqual(second.syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "hermes", "qoder", "reasonix", "qoderwork"]);
+    assert.deepStrictEqual(first.syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "hermes", "qoder", "reasonix", "qoderwork", "qwenwork"]);
+    assert.deepStrictEqual(second.syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "hermes", "qoder", "reasonix", "qoderwork", "qwenwork"]);
   });
 
   it("repairIntegrationForAgent uses the Codex official hook repair path", () => {
@@ -587,7 +588,7 @@ describe("server Claude hook operation queue (default, non-injected implementati
     });
   });
 
-  it("startup keeps Claude quota collection opt-in and removes only a Clawd-owned statusline", async () => {
+  it("startup keeps Claude usage collection opt-in and removes only a Clawd-owned statusline", async () => {
     const calls = [];
     await withPatchedInstallModule({
       registerHooksAsync: async () => ({ added: 0, updated: 0, removed: 0 }),
@@ -600,10 +601,16 @@ describe("server Claude hook operation queue (default, non-injected implementati
       const { api } = makeServer({
         syncClawdHooksImpl: undefined,
         claudeQuotaCollectionEnabled: false,
+        clearClaudeStatuslineAuthority: (profileId) => calls.push(["clear-authority", profileId]),
+        clearLocalClaudeQuota: () => calls.push(["clear-local-claude-quota"]),
       });
       const result = await api.syncClawdHooks({ source: "startup", automatic: true });
       assert.strictEqual(result.status, "ok");
-      assert.deepStrictEqual(calls.map((call) => Array.isArray(call) ? call[0] : call), ["unregister"]);
+      assert.deepStrictEqual(calls.map((call) => Array.isArray(call) ? call[0] : call), [
+        "unregister",
+        "clear-authority",
+        "clear-local-claude-quota",
+      ]);
     });
   });
 
@@ -633,15 +640,64 @@ describe("server Claude hook operation queue (default, non-injected implementati
         return { removed: 1, changed: true };
       },
     }, async () => {
-      const { api } = makeServer({ syncClawdHooksImpl: undefined });
+      const { api } = makeServer({
+        syncClawdHooksImpl: undefined,
+        clearClaudeStatuslineAuthority: (profileId) => calls.push(["clear-authority", profileId]),
+        clearLocalClaudeQuota: () => calls.push(["clear-local-claude-quota"]),
+      });
+      assert.strictEqual(api.isClaudeStatuslineMetadataAllowed(), true);
       const result = await api.setClaudeQuotaCollectionEnabled({
         enabled: false,
         source: "settings-quota-collection",
       });
       assert.strictEqual(result.status, "ok");
       assert.strictEqual(result.removed, 1);
-      assert.strictEqual(calls.length, 1);
+      assert.strictEqual(calls.length, 3);
       assert.strictEqual(calls[0].backup, true);
+      assert.deepStrictEqual(calls[1], ["clear-authority", "local"]);
+      assert.deepStrictEqual(calls[2], ["clear-local-claude-quota"]);
+      assert.strictEqual(api.isClaudeStatuslineMetadataAllowed(), false);
+    });
+  });
+
+  it("restores local statusline ingress when an explicit opt-out mutation fails", async () => {
+    await withPatchedInstallModule({
+      unregisterClaudeStatusline: () => { throw new Error("statusline remove failed"); },
+    }, async () => {
+      const { api } = makeServer({ syncClawdHooksImpl: undefined });
+      assert.strictEqual(api.isClaudeStatuslineMetadataAllowed(), true);
+      const result = await api.setClaudeQuotaCollectionEnabled({
+        enabled: false,
+        source: "settings-quota-collection",
+      });
+      assert.strictEqual(result.status, "error");
+      assert.match(result.message, /statusline remove failed/);
+      assert.strictEqual(api.isClaudeStatuslineMetadataAllowed(), true);
+    });
+  });
+
+  it("lifts prior uninstall suppression after a verified agent enable even when a custom statusline is preserved", async () => {
+    const calls = [];
+    await withPatchedInstallModule({
+      unregisterClaudeStatusline: () => ({ removed: 1, changed: true }),
+      registerHooksAsync: async () => ({ added: 0, updated: 0, removed: 0 }),
+      registerClaudeStatusline: () => {
+        calls.push("statusline-preserved");
+        return { installed: true, changed: false, skippedExisting: true };
+      },
+    }, async () => {
+      const { api } = makeServer({ syncClawdHooksImpl: undefined });
+      const disabled = await api.setClaudeQuotaCollectionEnabled({ enabled: false });
+      assert.strictEqual(disabled.status, "ok");
+      assert.strictEqual(api.isClaudeStatuslineMetadataAllowed(), false);
+
+      const enabled = await api.syncClawdHooks({
+        source: "settings-agent-enable",
+        automatic: false,
+      });
+      assert.strictEqual(enabled.status, "ok");
+      assert.deepStrictEqual(calls, ["statusline-preserved"]);
+      assert.strictEqual(api.isClaudeStatuslineMetadataAllowed(), true);
     });
   });
 
@@ -781,12 +837,35 @@ describe("server Claude hook operation queue (default, non-injected implementati
         unregisterHooksAsync: async () => { calls.push("unregister"); return { removed: 1, changed: true }; },
         unregisterClaudeStatusline: () => { calls.push("statusline-remove"); return { removed: 1, changed: true }; },
       }, async () => {
-        const { api } = makeServer({ syncClawdHooksImpl: undefined });
+        const { api } = makeServer({
+          syncClawdHooksImpl: undefined,
+          clearClaudeStatuslineAuthority: (profileId) => calls.push(["clear-authority", profileId]),
+          clearLocalClaudeQuota: () => calls.push(["clear-local-claude-quota"]),
+        });
         const result = await api.uninstallClaudeHooks({ source, automatic: false });
         assert.strictEqual(result.status, "ok");
-        assert.deepStrictEqual(calls, expectStatusline ? ["unregister", "statusline-remove"] : ["unregister"], source);
+        assert.deepStrictEqual(calls, expectStatusline
+          ? ["unregister", "statusline-remove", ["clear-authority", "local"], ["clear-local-claude-quota"]]
+          : ["unregister"], source);
       });
     }
+  });
+
+  it("rolls back uninstall suppression when owned statusline removal fails", async () => {
+    await withPatchedInstallModule({
+      unregisterHooksAsync: async () => ({ removed: 1, changed: true }),
+      unregisterClaudeStatusline: () => { throw new Error("owned statusline remove failed"); },
+    }, async () => {
+      const { api } = makeServer({ syncClawdHooksImpl: undefined });
+      assert.strictEqual(api.isClaudeStatuslineMetadataAllowed(), true);
+      const result = await api.uninstallClaudeHooks({
+        source: "settings-agent-uninstall",
+        automatic: false,
+      });
+      assert.strictEqual(result.status, "error");
+      assert.match(result.message, /owned statusline remove failed/);
+      assert.strictEqual(api.isClaudeStatuslineMetadataAllowed(), true);
+    });
   });
 
   it("a statusline failure does not fail the overall hooks-sync result", async () => {
@@ -1072,7 +1151,7 @@ describe("Codex official hook turn tracking", () => {
       turn_id: "turn-1",
     }, "idle", turns);
 
-    assert.deepStrictEqual(result, { state: "attention", drop: false });
+    assert.deepStrictEqual(result, { state: "attention", drop: false, turnId: "turn-1" });
     assert.strictEqual(turns.size, 0);
   });
 
@@ -1094,7 +1173,7 @@ describe("Codex official hook turn tracking", () => {
       turn_id: "turn-1",
     }, "idle", turns);
 
-    assert.deepStrictEqual(result, { state: "idle", drop: false });
+    assert.deepStrictEqual(result, { state: "idle", drop: false, turnId: "turn-1" });
   });
 
   it("resolves Stop to attention when a no-tool turn has assistant output", () => {
@@ -1116,7 +1195,7 @@ describe("Codex official hook turn tracking", () => {
       assistant_last_output: "Short answer.",
     }, "idle", turns);
 
-    assert.deepStrictEqual(result, { state: "attention", drop: false });
+    assert.deepStrictEqual(result, { state: "attention", drop: false, turnId: "turn-1" });
     assert.strictEqual(turns.size, 0);
   });
 
@@ -1144,7 +1223,7 @@ describe("Codex official hook turn tracking", () => {
       stop_hook_active: true,
     }, "idle", turns);
 
-    assert.deepStrictEqual(result, { state: "idle", drop: true });
+    assert.deepStrictEqual(result, { state: "idle", drop: true, turnId: "turn-1" });
     assert.strictEqual(turns.size, 0);
   });
 
@@ -1180,7 +1259,7 @@ describe("Codex official hook turn tracking", () => {
       codex_session_role: "subagent",
     }, "idle", turns, classifier);
 
-    assert.deepStrictEqual(result, { state: "idle", drop: false, headless: true });
+    assert.deepStrictEqual(result, { state: "idle", drop: false, turnId: "turn-1", headless: true });
     assert.strictEqual(turns.size, 0);
   });
 
@@ -1224,8 +1303,8 @@ describe("Codex official hook turn tracking", () => {
       turn_id: "same-turn",
     }, "idle", turns);
 
-    assert.deepStrictEqual(subStop, { state: "idle", drop: false });
-    assert.deepStrictEqual(rootStop, { state: "attention", drop: false });
+    assert.deepStrictEqual(subStop, { state: "idle", drop: false, turnId: "same-turn" });
+    assert.deepStrictEqual(rootStop, { state: "attention", drop: false, turnId: "same-turn" });
     assert.strictEqual(turns.size, 0);
   });
 
@@ -1277,10 +1356,33 @@ describe("Codex official hook turn tracking", () => {
       codex_session_role: "subagent",
     }, "idle", turns, classifier, a);
 
-    assert.deepStrictEqual(bStop, { state: "idle", drop: false });
-    assert.deepStrictEqual(aStop, { state: "idle", drop: false, headless: true });
+    assert.deepStrictEqual(bStop, { state: "idle", drop: false, turnId: "same-turn" });
+    assert.deepStrictEqual(aStop, { state: "idle", drop: false, turnId: "same-turn", headless: true });
     assert.deepStrictEqual([...roles.keys()].sort(), [a, b].sort());
     assert.strictEqual(turns.size, 0);
+  });
+
+  it("normalizes official turn ids before ledger and runtime propagation", () => {
+    const turns = new Map();
+    const result = resolveCodexOfficialHookState({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      event: "UserPromptSubmit",
+      session_id: "codex:s1",
+      turn_id: "  turn-normalized  ",
+    }, "thinking", turns);
+
+    assert.strictEqual(result.turnId, "turn-normalized");
+    assert.strictEqual(turns.has("codex:s1|turn-normalized"), true);
+
+    const rejected = resolveCodexOfficialHookState({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      event: "UserPromptSubmit",
+      session_id: "codex:s2",
+      turn_id: "x".repeat(257),
+    }, "thinking", turns);
+    assert.strictEqual(rejected.turnId, undefined);
   });
 
   it("prunes the oldest tracked turns when the cap is exceeded", () => {

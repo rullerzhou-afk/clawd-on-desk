@@ -119,6 +119,27 @@ describe("package build config", () => {
     );
   });
 
+  describe("target-native Koffi packaging", () => {
+    it("pins the reviewed Koffi line and prunes only through the afterPack hook", () => {
+      assert.strictEqual(pkg.dependencies.koffi, "2.16.3");
+      assert.strictEqual(pkg.build.afterPack, "scripts/after-pack-koffi.js");
+      assert.strictEqual(pkg.scripts["audit:native-package"], "node scripts/audit-packaged-native.js");
+      assert.strictEqual(pkg.scripts["verify:updater-metadata"], "node scripts/verify-updater-metadata.js");
+    });
+
+    it("uses reproducible installs in release and five-target package CI", () => {
+      const release = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
+      const packageAudit = fs.readFileSync(
+        path.join(ROOT, ".github", "workflows", "telegram-retirement-package-audit.yml"),
+        "utf8",
+      );
+      assert.strictEqual((release.match(/      - run: npm ci/g) || []).length, 3);
+      assert.strictEqual((packageAudit.match(/      - run: npm ci/g) || []).length, 2);
+      assert.doesNotMatch(release, /      - run: npm install(?:\s|$)/m);
+      assert.doesNotMatch(packageAudit, /      - run: npm install(?:\s|$)/m);
+    });
+  });
+
   describe("Windows architecture targets", () => {
     function getWindowsNsisTarget() {
       const targets = pkg.build.win && pkg.build.win.target;
@@ -178,6 +199,36 @@ describe("package build config", () => {
         ["x64", "arm64"].slice().sort(),
         "macOS builds should publish both x64 and ARM64 DMGs"
       );
+    });
+
+    it("requests explicit ad-hoc signing without disabling hardened runtime", () => {
+      assert.strictEqual(
+        pkg.build.mac && pkg.build.mac.identity,
+        "-",
+        "macOS x64 and ARM64 packages must express ad-hoc signing intent; CI gates the final signatures"
+      );
+      assert.notStrictEqual(
+        pkg.build.mac && pkg.build.mac.hardenedRuntime,
+        false,
+        "do not silence the ad-hoc signing warning by disabling hardened runtime"
+      );
+    });
+
+    it("gates both packaged apps on ad-hoc hardened signatures and required entitlements", () => {
+      const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
+      assert.match(workflow, /name: Verify macOS ad-hoc hardened signatures/);
+      assert.match(workflow, /dist\/mac\/Clawd on Desk\.app/);
+      assert.match(workflow, /dist\/mac-arm64\/Clawd on Desk\.app/);
+      assert.match(workflow, /Signature=adhoc/);
+      assert.match(workflow, /adhoc,runtime/);
+      assert.match(workflow, /codesign --verify --deep --strict/);
+      for (const entitlement of [
+        "com.apple.security.cs.allow-jit",
+        "com.apple.security.cs.allow-unsigned-executable-memory",
+        "com.apple.security.cs.disable-library-validation",
+      ]) {
+        assert.match(workflow, new RegExp(entitlement.replace(/\./g, "\\.")));
+      }
     });
 
     it("uses architecture-specific macOS DMG names without spaces", () => {
@@ -324,9 +375,21 @@ describe("package build config", () => {
         "only the Windows job should substitute the package-validation tests in evidence mode"
       );
       assert.strictEqual(
-        (workflow.match(/node --test test\/assert-no-retired-telegram-sidecar\.test\.js test\/package-build-config\.test\.js test\/telegram-legacy-retirement\.test\.js test\/telegram-migration-state\.test\.js test\/telegram-migration-controller\.test\.js test\/telegram-migration-user-data\.test\.js/g) || []).length,
-        1
+        (workflow.match(/name: Run package validation tests/g) || []).length,
+        1,
       );
+      const focusedLine = workflow.split(/\r?\n/).find((line) => line.includes("node --test test/assert-no-retired"));
+      assert.ok(focusedLine, "Windows evidence mode should retain its focused test command");
+      for (const testFile of [
+        "after-pack-koffi.test.js",
+        "audit-packaged-native.test.js",
+        "koffi-lockfile.test.js",
+        "native-package-target.test.js",
+        "package-koffi-smoke.test.js",
+        "verify-updater-metadata.test.js",
+      ]) {
+        assert.match(focusedLine, new RegExp(`test/${testFile.replace(/\./g, "\\.")}`));
+      }
       assert.strictEqual(
         (workflow.match(/      - run: npm test/g) || []).length,
         3,
@@ -336,7 +399,7 @@ describe("package build config", () => {
 
     it("builds and uploads all five target artifacts in pull-request CI", () => {
       const workflowPath = path.join(ROOT, ".github", "workflows", "telegram-retirement-package-audit.yml");
-      assert.ok(fs.existsSync(workflowPath), "Telegram retirement package audit workflow should exist");
+      assert.ok(fs.existsSync(workflowPath), "five-target package audit workflow should exist");
       const workflow = fs.readFileSync(workflowPath, "utf8");
       assert.match(workflow, /pull_request:/);
       assert.match(workflow, /name: Assert installer exists/);
@@ -350,16 +413,36 @@ describe("package build config", () => {
         "linux-x64",
       ]) {
         assert.match(workflow, new RegExp(`target: ${target}`));
-        assert.match(
-          workflow,
-          new RegExp(`telegram-retirement-\\$\\{\\{ matrix\\.target \\}\\}`),
-          "five-target CI should upload target-specific artifacts and manifests"
-        );
       }
+      assert.match(workflow, /name: package-audit-\$\{\{ matrix\.target \}\}/);
       assert.match(workflow, /scripts\/assert-no-retired-telegram-sidecar\.js/);
+      assert.match(workflow, /scripts\/audit-packaged-native\.js/);
+      assert.match(workflow, /scripts\/run-packaged-koffi-smoke\.js/);
+      assert.match(workflow, /name: Configure Linux Chromium sandbox/);
+      assert.match(workflow, /if: matrix\.target == 'linux-x64'/);
+      assert.match(workflow, /sudo chown root:root dist\/linux-unpacked\/chrome-sandbox/);
+      assert.match(workflow, /sudo chmod 4755 dist\/linux-unpacked\/chrome-sandbox/);
+      assert.match(workflow, /dist\/koffi-prune-manifests\/\*\.json/);
+      assert.match(workflow, /dist\/native-package-manifests\/\*\.json/);
+      assert.match(workflow, /runner: windows-11-arm/);
+      assert.match(workflow, /runner: macos-15-intel/);
       assert.doesNotMatch(workflow, /fetch:sidecars|verify-sidecar|assert:packaged-sidecar/);
       assert.match(workflow, /Clawd-on-Desk-\*-x86_64\.AppImage/);
       assert.match(workflow, /Clawd-on-Desk-\*-amd64\.deb/);
+    });
+
+    it("gates release artifacts on native payload, packaged calls, and updater metadata", () => {
+      const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
+      assert.strictEqual((workflow.match(/scripts\/audit-packaged-native\.js/g) || []).length, 5);
+      assert.strictEqual((workflow.match(/scripts\/run-packaged-koffi-smoke\.js/g) || []).length, 3);
+      assert.strictEqual((workflow.match(/scripts\/verify-updater-metadata\.js/g) || []).length, 3);
+      assert.strictEqual((workflow.match(/if-no-files-found: error/g) || []).length, 3);
+      assert.strictEqual((workflow.match(/name: Configure Linux Chromium sandbox/g) || []).length, 1);
+      assert.match(workflow, /sudo chown root:root dist\/linux-unpacked\/chrome-sandbox/);
+      assert.match(workflow, /sudo chmod 4755 dist\/linux-unpacked\/chrome-sandbox/);
+      for (const contract of ["windows", "mac", "linux"]) {
+        assert.match(workflow, new RegExp(`--contract ${contract}`));
+      }
     });
 
     it("publishes GitHub releases only for pushed version tags", () => {

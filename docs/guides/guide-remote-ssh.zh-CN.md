@@ -21,6 +21,7 @@ Clawd 不保存 SSH 密码或私钥口令。首次 host key 确认、passphrase�
    - **主机**：`user@remote-host`，也可以填你在 `~/.ssh/config` 里配置好的 Host alias
    - **SSH 端口**：默认 `22`
    - **私钥文件**：可选，留空则使用 ssh-agent 或 `~/.ssh/config`
+   - **SSH transport 兼容性**：普通主机和 GitHub Codespaces 保持 **自动**。只有其他无法容忍重叠 SSH session 的 ProxyCommand transport 才使用 **强制单 SSH session**
    - **远端转发端口**：默认 `23333`；同一台远端有多个 profile 时才需要换到 `23334-23337`
    - **主机前缀**：可选，用于 Sessions / Dashboard 里区分远端来源
 3. 如果 SSH 需要首次确认 host key、输入 passphrase 或加载 ssh-agent，点 **首次认证**。Clawd 会打开系统终端运行一次普通 `ssh`。
@@ -36,8 +37,26 @@ Clawd 不保存 SSH 密码或私钥口令。首次 host key 确认、passphrase�
 打开 **Copilot CLI**，这样 Clawd 才会接收远程 hook 事件；不需要点
 **Install / 安装**，除非你也想在本机安装 Copilot hooks。
 
-如果配置里开启了 **连接时自动启动 Codex 兜底监控**，Clawd 会在连接后通过 SSH
-拉起 `~/.claude/hooks/codex-remote-monitor.js`。Codex official hooks 正常可用时不依赖这个兜底监控。
+如果配置里开启了 **连接时自动启动 Codex 兜底监控**，Clawd 会把
+`~/.claude/hooks/codex-remote-monitor.js` 作为连接维护启动。在 serialized transport
+上，这项一次性维护会先完成并关闭，随后才启动持久反向隧道；自动重连不会重复执行
+monitor mutation。Codex official hooks 正常可用时不依赖这个兜底监控。
+
+### GitHub Codespaces 与单会话 transport
+
+Clawd 会在连接前用 `ssh -G` 检查本机实际生效的 SSH 配置。`ProxyCommand` 精确使用
+`gh cs ssh ... --stdio` 或 `gh codespace ssh ... --stdio` 时会自动进入 serialized
+模式。同一 Codespace 上，Clawd 自己管理的 SSH/SCP 不会重叠：Node 探测和 monitor
+维护先完成并关闭，连接就绪检查则放在唯一的持久 `ssh -R` session 里。
+
+执行 **部署 / 修复 Hook**、断开、清理或身份 / runtime 变更时，Clawd 会通过 stdin
+EOF 请求持久 readiness 进程自然退出，并在开始下一条 SSH 操作前等待外层 child
+`close`。如果无法证明 transport 已排空，Clawd 会停止并显示恢复错误，不会自动重放
+结果未知的远端 mutation。同一 Codespace 的第二个 profile，以及交互式的 **首次认证 /
+打开终端**，都会在 managed transport 完全空闲前保持阻止状态。
+
+显式单会话 override 是按有效目标生效的保守兼容开关，只能在未连接时修改。普通 SSH
+目标继续使用既有的可并行行为。
 
 ## 关键概念
 
@@ -110,9 +129,18 @@ CLI 已验证。
 
 ### 远端端口冲突
 
-如果连接失败并提示远端端口被占用，把 profile 的 **远端转发端口** 从 `23333`
-换到 `23334-23337` 中的另一个端口，然后重新部署。改端口只解决 bind 冲突；
-安全边界来自 pin 住的身份和专属入口，不来自端口保密。
+一条已经健康连接的隧道断开后，上一条远端 SSH session 可能还在释放监听端口。
+Clawd 会保留原端口，按退避节奏最多重试四次（目前总计约三分钟）。界面显示
+**重连中**时，不需要立刻修改 profile。
+
+如果这是首次连接，或有限恢复结束后端口仍不可用，冲突可能是长期存在的。可以稍后
+再试，或从 `23333-23337` 中选择一个未占用的 **远端转发端口**。一旦改了端口，
+必须先执行 **部署 / 修复 Hook**，再点 **连接**：安全身份、hook 目标、权限 URL
+和健康检查都 pin 在一个精确端口上。当前目标重新部署前，Clawd 会阻止普通连接。
+
+历史部署记录只用于所有权清理，不代表还有一个可直接恢复的 active 端口槽。
+即使把端口从 `23333 → 23334 → 23333` 改回去，也必须为当前目标重新部署；Clawd
+不会自动复活历史 routing 身份。安全边界来自 pin 住的身份和专属入口，不来自端口保密。
 
 ### 远端没有 Node.js
 

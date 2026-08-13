@@ -205,6 +205,7 @@ const MANAGED_CLEANUP_AGENT_IDS = Object.freeze([
   "qoder",
   "reasonix",
   "qoderwork",
+  "qwenwork",
 ]);
 
 // ── updateRegistry ──
@@ -268,6 +269,13 @@ const updateRegistry = {
       message: "settingsWindowBounds must be null or integer { x, y, width, height } with positive dimensions",
     };
   },
+  dashboardWindowBounds: (value) => {
+    if (value === null || isValidSettingsWindowBounds(value)) return { status: "ok" };
+    return {
+      status: "error",
+      message: "dashboardWindowBounds must be null or integer { x, y, width, height } with positive dimensions",
+    };
+  },
   // #408: frozen-origin work area for keepSizeAcrossDisplays. null = unknown
   // (legacy prefs / never seeded); otherwise positive width+height.
   savedPixelWorkArea: (value) => {
@@ -284,7 +292,7 @@ const updateRegistry = {
   },
 
   // ── Pure data prefs (function-form: validator only) ──
-  lang: requireEnum("lang", ["en", "zh", "zh-TW", "ko", "ja"]),
+  lang: requireEnum("lang", ["en", "zh", "zh-TW", "ko", "ja", "pt-BR"]),
   tutorialSeen: requireBoolean("tutorialSeen"),
   soundMuted: requireBoolean("soundMuted"),
   soundVolume: requireNumberInRange("soundVolume", 0, 1),
@@ -374,11 +382,12 @@ const updateRegistry = {
   sessionHudShowElapsed: requireBoolean("sessionHudShowElapsed"),
   sessionHudShowContextUsage: requireBoolean("sessionHudShowContextUsage"),
   sessionHudShowQuota: requireBoolean("sessionHudShowQuota"),
+  quotaRingDisplayMode: requireEnum("quotaRingDisplayMode", ["used", "remaining"]),
   claudeQuotaCollectionEnabled: {
     validate: requireBoolean("claudeQuotaCollectionEnabled"),
     effect(value, deps = {}) {
       if (typeof deps.setClaudeQuotaCollectionEnabled !== "function") {
-        return { status: "error", message: "Claude quota collection is unavailable" };
+        return { status: "error", message: "Claude usage collection is unavailable" };
       }
       return deps.setClaudeQuotaCollectionEnabled(value);
     },
@@ -467,6 +476,7 @@ const updateRegistry = {
   allowEdgePinning: requireBoolean("allowEdgePinning"),
   disableMiniMode: requireBoolean("disableMiniMode"),
   freeRoam: requireBoolean("freeRoam"),
+  roamConstrainAxis: requireBoolean("roamConstrainAxis"),
   keepSizeAcrossDisplays: requireBoolean("keepSizeAcrossDisplays"),
   fullscreenOverlay: requireBoolean("fullscreenOverlay"),
   mobilePreviewEnabled: requireBoolean("mobilePreviewEnabled"),
@@ -1323,6 +1333,17 @@ function remoteSshUpdateProfile(payload, deps) {
   // false-flag "port drift" when prev had port:22 and the UI saveBtn omitted
   // the default 22 from the payload.
   const drift = deployTargetDrift(deployTargetFingerprint(prev), deployTargetFingerprint(profile));
+  const transportModeChanged = (prev.sshTransportMode || "auto")
+    !== (profile.sshTransportMode || "auto");
+  if ((drift || transportModeChanged)
+    && typeof deps.isRemoteSshTransportBusy === "function"
+    && deps.isRemoteSshTransportBusy(profile.id)) {
+    return {
+      status: "error",
+      reason: "serialized_transport_busy",
+      message: "Disconnect this Remote SSH profile before editing its transport target or mode",
+    };
+  }
   // Deployment stamps and cleanup ownership are server-issued metadata.
   // Ignore anything supplied by the renderer, then restore only the trusted
   // values already present in the current settings snapshot.
@@ -1605,6 +1626,7 @@ function remoteSshMarkDeployed(payload, deps) {
     : current;
   const ownedTarget = sanitizeManagedDeployTarget({
     ...deployTargetFingerprint(targetAtDeployStart),
+    ...(payload.sshTransportHint ? { sshTransportHint: payload.sshTransportHint } : {}),
     ...(remoteNode || {}),
     ...(isValidInstallId(payload.installId) && typeof payload.remoteHome === "string"
       ? {

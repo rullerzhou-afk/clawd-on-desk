@@ -28,6 +28,8 @@
     selectedProfileId: null,
     editing: null,        // profile snapshot for edit form, or null
     runtimeStatuses: new Map(), // profileId → status snapshot
+    statusEventGeneration: 0,
+    statusEventGenerationByProfile: new Map(),
     progressLog: new Map(),     // profileId → Array<event>
     listenerInstalled: false,
     deployingProfileIds: new Set(),
@@ -67,6 +69,8 @@
     if (typeof window.remoteSsh.onStatusChanged === "function") {
       window.remoteSsh.onStatusChanged((s) => {
         if (s && typeof s.profileId === "string") {
+          view.statusEventGeneration += 1;
+          view.statusEventGenerationByProfile.set(s.profileId, view.statusEventGeneration);
           view.runtimeStatuses.set(s.profileId, s);
         }
         if (state.activeTab === "remote-ssh") ops.requestRender({ content: true });
@@ -89,9 +93,16 @@
     }
     // Initial fetch of statuses so first render isn't blank.
     if (typeof window.remoteSsh.listStatuses === "function") {
+      const requestGeneration = view.statusEventGeneration;
       window.remoteSsh.listStatuses().then((res) => {
         if (res && res.status === "ok" && Array.isArray(res.statuses)) {
-          for (const s of res.statuses) view.runtimeStatuses.set(s.profileId, s);
+          for (const s of res.statuses) {
+            // A push that arrived after this request began is newer than the
+            // response snapshot. Never let the initial list re-enable a card
+            // that a newer coordinator event has already marked busy.
+            const pushedAt = view.statusEventGenerationByProfile.get(s.profileId) || 0;
+            if (pushedAt <= requestGeneration) view.runtimeStatuses.set(s.profileId, s);
+          }
           view.bindingSecurity = res.bindingSecurity || null;
           view.profileIsolationAvailable = res.profileIsolationAvailable === true;
           if (state.activeTab === "remote-ssh") ops.requestRender({ content: true });
@@ -158,6 +169,55 @@
     });
   }
 
+  function hasDeploymentStamp(profile) {
+    return Number.isFinite(profile && profile.lastDeployedAt) && profile.lastDeployedAt > 0;
+  }
+
+  function requestProfileConnect(profile) {
+    if (!hasDeploymentStamp(profile)) {
+      view.selectedProfileId = profile.id;
+      ops.showToast(t("remoteSshErrDeploymentRequired"), { error: true });
+      ops.requestRender({ content: true });
+      return;
+    }
+    if (!window.remoteSsh || typeof window.remoteSsh.connect !== "function") return;
+    Promise.resolve(window.remoteSsh.connect(profile.id)).then((result) => {
+      if (!result || result.status === "ok") return;
+      if (result.reason === "deployment_required") {
+        view.runtimeStatuses.set(profile.id, {
+          profileId: profile.id,
+          status: "failed",
+          message: result.message || null,
+          hint: result.hint || "remoteSshErrDeploymentRequired",
+          lastErrorReason: result.reason,
+        });
+        view.selectedProfileId = profile.id;
+        const hintText = t(result.hint || "remoteSshErrDeploymentRequired");
+        ops.showToast(hintText, { error: true });
+        ops.requestRender({ content: true });
+        return;
+      }
+      ops.showToast(result.message || t("remoteSshStatus_failed"), { error: true });
+    }).catch((err) => {
+      ops.showToast((err && err.message) || t("remoteSshStatus_failed"), { error: true });
+    });
+  }
+
+  function requestProfileDisconnect(profileId) {
+    if (!window.remoteSsh || typeof window.remoteSsh.disconnect !== "function") return;
+    Promise.resolve(window.remoteSsh.disconnect(profileId)).then((result) => {
+      if (result && result.state && typeof result.state.profileId === "string") {
+        view.runtimeStatuses.set(result.state.profileId, result.state);
+      }
+      if (result && result.status !== "ok") {
+        ops.showToast(result.message || t("remoteSshStatus_failed"), { error: true });
+      }
+      ops.requestRender({ content: true });
+    }).catch((err) => {
+      ops.showToast((err && err.message) || t("remoteSshStatus_failed"), { error: true });
+    });
+  }
+
   // ── Render ──
 
   function render(parent) {
@@ -213,6 +273,7 @@
         host: "",
         port: 22,
         identityFile: "",
+        sshTransportMode: "auto",
         remoteForwardPort: 23333,
         hostPrefix: "",
         autoStartCodexMonitor: false,
@@ -265,11 +326,10 @@
     actions.className = "remote-ssh-card-actions";
     actions.appendChild(badge);
 
-    // Surface "hooks never deployed" before the user clicks Connect — Connect
-    // alone only builds the reverse tunnel, it does not push hook files. A
-    // tunnel with no hooks shows green "connected" but the desktop pet
-    // never reacts because remote codex/claude has no hook config.
-    if (!Number.isFinite(profile.lastDeployedAt)) {
+    // Surface "hooks never deployed" and keep Connect disabled. Connect never
+    // performs deployment, so an edited target must go through the explicit
+    // Deploy / Repair Hooks flow before it can create a tunnel.
+    if (!hasDeploymentStamp(profile)) {
       const warn = document.createElement("span");
       warn.className = "remote-ssh-deploy-warn";
       warn.textContent = "⚠";
@@ -279,17 +339,31 @@
 
     const connectBtn = document.createElement("button");
     connectBtn.className = "soft-btn";
-    if (status.status === "connected" || status.status === "connecting" || status.status === "reconnecting") {
+    const transportOperationActive = !!(
+      status.transportPhase && status.transportPhase !== "idle"
+    );
+    const disconnectAvailable = status.status === "connected"
+      || status.status === "connecting"
+      || status.status === "reconnecting"
+      || (transportOperationActive && status.transportDesiredConnected === true);
+    if (disconnectAvailable) {
       connectBtn.textContent = t("remoteSshDisconnect");
       connectBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        if (window.remoteSsh) window.remoteSsh.disconnect(profile.id);
+        requestProfileDisconnect(profile.id);
       });
     } else {
       connectBtn.textContent = t("remoteSshConnect");
+      const deploymentReady = hasDeploymentStamp(profile);
+      connectBtn.disabled = !deploymentReady || transportOperationActive;
+      if (!deploymentReady) {
+        connectBtn.title = t("remoteSshErrDeploymentRequired");
+      } else if (transportOperationActive) {
+        connectBtn.title = statusMessageText(status);
+      }
       connectBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        if (window.remoteSsh) window.remoteSsh.connect(profile.id);
+        requestProfileConnect(profile);
       });
     }
     actions.appendChild(connectBtn);
@@ -306,6 +380,14 @@
   function renderProfileDetail(profile) {
     const section = document.createElement("section");
     section.className = "section remote-ssh-detail";
+    const status = statusForProfile(profile.id);
+    const transportOwnedByAnother = !!(
+      status.transportPhase
+      && status.transportPhase !== "idle"
+      && status.transportOwnerProfileId
+      && status.transportOwnerProfileId !== profile.id
+    );
+    const transportConflictTitle = transportOwnedByAnother ? statusMessageText(status) : "";
 
     const header = document.createElement("div");
     header.className = "remote-ssh-section-header";
@@ -316,7 +398,10 @@
     const editBtn = document.createElement("button");
     editBtn.className = "soft-btn";
     editBtn.textContent = t("remoteSshEdit");
+    editBtn.disabled = transportOwnedByAnother;
+    if (transportConflictTitle) editBtn.title = transportConflictTitle;
     editBtn.addEventListener("click", () => {
+      if (transportOwnedByAnother) return;
       view.editing = { ...profile };
       ops.requestRender({ content: true });
     });
@@ -325,9 +410,10 @@
     const deleteBtn = document.createElement("button");
     deleteBtn.className = "soft-btn remote-ssh-btn-danger";
     deleteBtn.textContent = t("remoteSshDelete");
-    deleteBtn.disabled = view.deletingProfileIds.has(profile.id);
+    deleteBtn.disabled = view.deletingProfileIds.has(profile.id) || transportOwnedByAnother;
+    if (transportConflictTitle) deleteBtn.title = transportConflictTitle;
     deleteBtn.addEventListener("click", async () => {
-      if (view.deletingProfileIds.has(profile.id)) return;
+      if (view.deletingProfileIds.has(profile.id) || transportOwnedByAnother) return;
       if (!confirm(t("remoteSshDeleteConfirm").replace("{label}", profile.label))) return;
       view.deletingProfileIds.add(profile.id);
       try {
@@ -366,7 +452,6 @@
     section.appendChild(header);
 
     // Status row
-    const status = statusForProfile(profile.id);
     const statusRow = document.createElement("div");
     statusRow.className = "remote-ssh-status-row";
     const statusBadge = document.createElement("span");
@@ -425,7 +510,10 @@
       const modeButton = document.createElement("button");
       modeButton.className = "soft-btn";
       modeButton.textContent = t(isolated ? "remoteSshDisableIsolation" : "remoteSshEnableIsolation");
+      modeButton.disabled = transportOwnedByAnother;
+      if (transportConflictTitle) modeButton.title = transportConflictTitle;
       modeButton.addEventListener("click", async () => {
+        if (transportOwnedByAnother) return;
         if (!window.remoteSsh || typeof window.remoteSsh.setRuntimeMode !== "function") return;
         const prompt = t(isolated ? "remoteSshDisableIsolationConfirm" : "remoteSshEnableIsolationConfirm");
         if (!confirm(prompt)) return;
@@ -489,7 +577,10 @@
         const button = document.createElement("button");
         button.className = "soft-btn remote-ssh-btn-danger";
         button.textContent = t(labelKey);
+        button.disabled = transportOwnedByAnother;
+        if (transportConflictTitle) button.title = transportConflictTitle;
         button.addEventListener("click", async () => {
+          if (transportOwnedByAnother) return;
           if (!window.remoteSsh || typeof window.remoteSsh.forceRevoke !== "function") return;
           if (!confirm(t(firstConfirmKey))) return;
           if (!confirm(t("remoteSshForceRevokeSecondConfirm"))) return;
@@ -520,8 +611,10 @@
     const authBtn = document.createElement("button");
     authBtn.className = "soft-btn";
     authBtn.textContent = t("remoteSshAuthenticate");
-    authBtn.title = t("remoteSshAuthenticateHint");
+    authBtn.disabled = transportOwnedByAnother;
+    authBtn.title = transportConflictTitle || t("remoteSshAuthenticateHint");
     authBtn.addEventListener("click", () => {
+      if (transportOwnedByAnother) return;
       if (!window.remoteSsh) return;
       window.remoteSsh.authenticate(profile.id).then((r) => {
         if (r && r.status !== "ok") ops.showToast((r && r.message) || "authenticate failed", { error: true });
@@ -532,7 +625,10 @@
     const termBtn = document.createElement("button");
     termBtn.className = "soft-btn";
     termBtn.textContent = t("remoteSshOpenTerminal");
+    termBtn.disabled = transportOwnedByAnother;
+    if (transportConflictTitle) termBtn.title = transportConflictTitle;
     termBtn.addEventListener("click", () => {
+      if (transportOwnedByAnother) return;
       if (!window.remoteSsh) return;
       window.remoteSsh.openTerminal(profile.id).then((r) => {
         if (r && r.status !== "ok") ops.showToast((r && r.message) || "open terminal failed", { error: true });
@@ -544,9 +640,10 @@
     deployBtn.className = "soft-btn accent";
     const isDeploying = view.deployingProfileIds.has(profile.id);
     deployBtn.textContent = isDeploying ? t("remoteSshDeploying") : t("remoteSshDeploy");
-    deployBtn.disabled = isDeploying;
+    deployBtn.disabled = isDeploying || transportOwnedByAnother;
+    if (transportConflictTitle) deployBtn.title = transportConflictTitle;
     deployBtn.addEventListener("click", () => {
-      if (!window.remoteSsh) return;
+      if (!window.remoteSsh || transportOwnedByAnother) return;
       view.deployingProfileIds.add(profile.id);
       // Clear ONLY this profile's log; other profiles mid-deploy keep theirs.
       view.progressLog.set(profile.id, []);
@@ -687,9 +784,12 @@
       label.textContent = t(labelKey);
       const picker = helpers.buildSettingsSelect({
         value: String(formData[key]),
-        options: options.map((option) => ({ value: String(option), label: String(option) })),
+        options: options.map((option) => (option && typeof option === "object"
+          ? { value: String(option.value), label: String(option.label) }
+          : { value: String(option), label: String(option) })),
         ariaLabel: t(labelKey),
-        className: "remote-ssh-port-select",
+        className: attrs.className !== undefined ? attrs.className : "remote-ssh-port-select",
+        disabled: attrs.disabled === true,
         onChange(value) {
           const parsed = parseInt(value, 10);
           formData[key] = Number.isFinite(parsed) ? parsed : value;
@@ -750,6 +850,27 @@
       placeholder: "/home/me/.ssh/id_rsa",
       hint: t("remoteSshFieldIdentityFileHint"),
     }));
+    const editedStatus = statusForProfile(formData.id);
+    const transportModeBusy = editedStatus.status === "connecting"
+      || editedStatus.status === "connected"
+      || editedStatus.status === "reconnecting"
+      || (editedStatus.transportPhase && editedStatus.transportPhase !== "idle");
+    if (!formData.sshTransportMode) formData.sshTransportMode = "auto";
+    section.appendChild(selectField(
+      "remoteSshFieldTransportMode",
+      "sshTransportMode",
+      [
+        { value: "auto", label: t("remoteSshTransportModeAuto") },
+        { value: "serialized", label: t("remoteSshTransportModeSerialized") },
+      ],
+      {
+        hint: t(transportModeBusy
+          ? "remoteSshTransportModeDisconnectHint"
+          : "remoteSshTransportModeHint"),
+        disabled: transportModeBusy,
+        className: "",
+      }
+    ));
     section.appendChild(selectField(
       "remoteSshFieldRemoteForwardPort",
       "remoteForwardPort",
@@ -802,6 +923,7 @@
         label: (formData.label || "").trim(),
         host: (formData.host || "").trim(),
         remoteForwardPort: formData.remoteForwardPort,
+        sshTransportMode: formData.sshTransportMode === "serialized" ? "serialized" : "auto",
         autoStartCodexMonitor: !!formData.autoStartCodexMonitor,
         chainStatusline: !!formData.chainStatusline,
         connectOnLaunch: !!formData.connectOnLaunch,

@@ -55,11 +55,16 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.allowEdgePinning, false);
     assert.strictEqual(d.disableMiniMode, false);
     assert.strictEqual(d.keepSizeAcrossDisplays, false);
+    // #686: axis-constrained roam defaults off — existing free-roam behavior
+    // is preserved until the user opts in via the General tab switch.
+    assert.strictEqual(d.freeRoam, false);
+    assert.strictEqual(d.roamConstrainAxis, false);
     assert.strictEqual(d.sessionHudEnabled, true);
     assert.strictEqual(d.sessionHudShowStateLabels, true);
     assert.strictEqual(d.sessionHudShowElapsed, false);
     assert.strictEqual(d.sessionHudShowContextUsage, true);
     assert.strictEqual(d.sessionHudShowQuota, true);
+    assert.strictEqual(d.quotaRingDisplayMode, "used");
     assert.strictEqual(d.claudeQuotaCollectionEnabled, false);
     assert.strictEqual(d.quotaMergeSources, false);
     assert.strictEqual(d.telegramMigrationLastNotified, "");
@@ -70,6 +75,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.savedPixelHeight, 0);
     assert.strictEqual(d.savedPixelWorkArea, null);
     assert.strictEqual(d.settingsWindowBounds, null);
+    assert.strictEqual(d.dashboardWindowBounds, null);
     assert.strictEqual(d.permissionBubblesEnabled, true);
     assert.strictEqual(d.notificationBubbleAutoCloseSeconds, 6);
     assert.strictEqual(d.updateBubbleAutoCloseSeconds, 9);
@@ -269,6 +275,7 @@ describe("prefs.validate", () => {
       sessionHudShowStateLabels: "yes",
       sessionHudShowElapsed: "yes",
       sessionHudShowContextUsage: "yes",
+      quotaRingDisplayMode: "available",
       sessionHudCleanupDetached: "yes",
       hideBubbles: 0,        // wrong type
       permissionBubblesEnabled: "yes",
@@ -276,6 +283,8 @@ describe("prefs.validate", () => {
       updateBubbleAutoCloseSeconds: 3601,
       allowEdgePinning: "yes",
       disableMiniMode: "yes",
+      freeRoam: "yes",        // wrong type → default false
+      roamConstrainAxis: 1,   // wrong type → default false
       savedPixelWidth: -1,
       savedPixelHeight: "286",
       savedPixelWorkArea: "bogus",
@@ -293,6 +302,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.sessionHudShowStateLabels, true);
     assert.strictEqual(v.sessionHudShowElapsed, false);
     assert.strictEqual(v.sessionHudShowContextUsage, true);
+    assert.strictEqual(v.quotaRingDisplayMode, "used");
     assert.strictEqual(v.sessionHudCleanupDetached, true);
     assert.strictEqual(v.hideBubbles, false);
     assert.strictEqual(v.permissionBubblesEnabled, true);
@@ -300,9 +310,16 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.updateBubbleAutoCloseSeconds, 9);
     assert.strictEqual(v.allowEdgePinning, false);
     assert.strictEqual(v.disableMiniMode, false);
+    assert.strictEqual(v.freeRoam, false);
+    assert.strictEqual(v.roamConstrainAxis, false);
     assert.strictEqual(v.savedPixelWidth, 0);
     assert.strictEqual(v.savedPixelHeight, 0);
     assert.strictEqual(v.savedPixelWorkArea, null);
+  });
+
+  it("preserves both supported quota ring display modes", () => {
+    assert.strictEqual(prefs.validate({ quotaRingDisplayMode: "used" }).quotaRingDisplayMode, "used");
+    assert.strictEqual(prefs.validate({ quotaRingDisplayMode: "remaining" }).quotaRingDisplayMode, "remaining");
   });
 
   it("backfills split bubble prefs from legacy hideBubbles=true", () => {
@@ -414,6 +431,8 @@ describe("prefs.validate", () => {
       allowEdgePinning: true,
       disableMiniMode: true,
       keepSizeAcrossDisplays: true,
+      freeRoam: true,
+      roamConstrainAxis: true,
       savedPixelWidth: 286,
       savedPixelHeight: 286,
       savedPixelWorkArea: { width: 1920, height: 1080 },
@@ -438,6 +457,8 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.allowEdgePinning, true);
     assert.strictEqual(v.disableMiniMode, true);
     assert.strictEqual(v.keepSizeAcrossDisplays, true);
+    assert.strictEqual(v.freeRoam, true);
+    assert.strictEqual(v.roamConstrainAxis, true);
     assert.strictEqual(v.savedPixelWidth, 286);
     assert.strictEqual(v.savedPixelHeight, 286);
     assert.deepStrictEqual(v.savedPixelWorkArea, { width: 1920, height: 1080 });
@@ -1306,6 +1327,23 @@ describe("prefs.migrate v11 → v12 (showDock default off for fresh installs)", 
   });
 });
 
+describe("prefs.migrate v13 → v14 (Dashboard window bounds)", () => {
+  it("advances the schema without inventing geometry for existing users", () => {
+    const upgraded = prefs.validate(prefs.migrate({ version: 13, lang: "zh" }));
+    assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
+    assert.strictEqual(upgraded.dashboardWindowBounds, null);
+  });
+
+  it("preserves valid geometry from an early v13 build or hand-edited file", () => {
+    const bounds = { x: -1180, y: 90, width: 920, height: 680 };
+    const upgraded = prefs.validate(prefs.migrate({
+      version: 13,
+      dashboardWindowBounds: bounds,
+    }));
+    assert.deepStrictEqual(upgraded.dashboardWindowBounds, bounds);
+  });
+});
+
 describe("prefs.migrate v12 → v13 (Settings window bounds)", () => {
   it("advances the schema without inventing geometry for existing users", () => {
     const upgraded = prefs.validate(prefs.migrate({ version: 12, lang: "zh" }));
@@ -1548,22 +1586,22 @@ describe("prefs.load", () => {
     }
   });
 
-  it("accepts the restored v13 schema and locks an explicit v14 file", () => {
-    const currentPath = makeTempPath("v13.json");
-    fs.writeFileSync(currentPath, JSON.stringify({ version: 13, lang: "zh" }), "utf8");
+  it("accepts the restored v14 schema and locks an explicit v15 file", () => {
+    const currentPath = makeTempPath("v14.json");
+    fs.writeFileSync(currentPath, JSON.stringify({ version: 14, lang: "zh" }), "utf8");
     const current = prefs.load(currentPath);
     assert.strictEqual(current.locked, false);
-    assert.strictEqual(current.snapshot.version, 13);
+    assert.strictEqual(current.snapshot.version, 14);
     assert.strictEqual(current.snapshot.lang, "zh");
 
-    const futurePath = makeTempPath("v14.json");
-    fs.writeFileSync(futurePath, JSON.stringify({ version: 14, lang: "ja" }), "utf8");
+    const futurePath = makeTempPath("v15.json");
+    fs.writeFileSync(futurePath, JSON.stringify({ version: 15, lang: "ja" }), "utf8");
     const originalWarn = console.warn;
     console.warn = () => {};
     try {
       const future = prefs.load(futurePath);
       assert.strictEqual(future.locked, true);
-      assert.strictEqual(future.snapshot.version, 14);
+      assert.strictEqual(future.snapshot.version, 15);
       assert.strictEqual(future.snapshot.lang, "ja");
     } finally {
       console.warn = originalWarn;
@@ -1579,6 +1617,7 @@ describe("prefs.save", () => {
     snap.bubbleFollowPet = true;
     snap.x = 42;
     snap.settingsWindowBounds = { x: -1200, y: 80, width: 900, height: 640 };
+    snap.dashboardWindowBounds = { x: 1440, y: 120, width: 720, height: 620 };
     prefs.save(p, snap);
     const { snapshot } = prefs.load(p);
     assert.strictEqual(snapshot.lang, "zh");
@@ -1589,6 +1628,12 @@ describe("prefs.save", () => {
       y: 80,
       width: 900,
       height: 640,
+    });
+    assert.deepStrictEqual(snapshot.dashboardWindowBounds, {
+      x: 1440,
+      y: 120,
+      width: 720,
+      height: 620,
     });
     assert.strictEqual(snapshot.version, prefs.CURRENT_VERSION);
   });
@@ -1616,6 +1661,32 @@ describe("prefs.save", () => {
       "800x560",
     ]) {
       assert.strictEqual(prefs.validate({ settingsWindowBounds: value }).settingsWindowBounds, null);
+    }
+  });
+
+  it("normalizes Dashboard window bounds and drops invalid geometry", () => {
+    assert.deepStrictEqual(
+      prefs.validate({
+        dashboardWindowBounds: {
+          x: 10.6,
+          y: -20.6,
+          width: 801.7,
+          height: 559.8,
+          ignored: true,
+        },
+      }).dashboardWindowBounds,
+      { x: 11, y: -21, width: 802, height: 560 },
+    );
+
+    for (const value of [
+      { x: 0, y: 0, width: 0, height: 560 },
+      { x: Infinity, y: 0, width: 800, height: 560 },
+      { x: "0", y: 0, width: 800, height: 560 },
+      { x: 0, y: 0, width: 800 },
+      [],
+      "800x560",
+    ]) {
+      assert.strictEqual(prefs.validate({ dashboardWindowBounds: value }).dashboardWindowBounds, null);
     }
   });
 
@@ -2055,6 +2126,9 @@ describe("prefs.mapLocaleToLang (device locale → UI language)", () => {
     ["zh-TW", "zh-TW"], ["zh-Hant", "zh-TW"], ["zh-HK", "zh-TW"], ["zh-Hant-TW", "zh-TW"],
     ["ko-KR", "ko"], ["ko", "ko"],
     ["ja-JP", "ja"], ["ja", "ja"],
+    ["pt-BR", "pt-BR"], ["pt_BR", "pt-BR"],
+    // Only the shipped regional variant is auto-selected.
+    ["pt", "en"], ["pt-PT", "en"], ["pt-AO", "en"],
     ["fr-FR", "en"], ["de", "en"],
   ];
   for (const [input, expected] of cases) {
@@ -2071,8 +2145,8 @@ describe("prefs.mapLocaleToLang (device locale → UI language)", () => {
   });
 
   it("only ever returns a value inside the lang enum", () => {
-    const enumVals = new Set(["en", "zh", "zh-TW", "ko", "ja"]);
-    for (const probe of ["xx", "ZH-tw", "JA", "en-GB", "pt-BR", ""]) {
+    const enumVals = new Set(["en", "zh", "zh-TW", "ko", "ja", "pt-BR"]);
+    for (const probe of ["xx", "ZH-tw", "JA", "en-GB", "pt-BR", "PT-br", ""]) {
       assert.ok(enumVals.has(prefs.mapLocaleToLang(probe)), `${probe} mapped outside enum`);
     }
   });

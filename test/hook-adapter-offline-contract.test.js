@@ -1,7 +1,7 @@
 // test/hook-adapter-offline-contract.test.js — #681 Slice A1, adapter contract.
 //
 // The claim this file has to earn: tightening the SHARED resolver to return an
-// unavailable shape is safe for all 15 adapters WITHOUT touching any of them.
+// unavailable shape is safe for all 16 adapters WITHOUT touching any of them.
 //
 // It is not enough to assert the shape in isolation. Seven adapters (codex,
 // copilot, cursor, kimi, kiro, codebuddy, workbuddy) do a bare `pidChain.length`
@@ -33,7 +33,7 @@ const { createSpawnedHookHarness } = require("./helpers/spawned-hook");
 const HOOKS_DIR = path.resolve(__dirname, "..", "hooks");
 
 // Every createPidResolver consumer. Cross-checked against
-// `grep -l createPidResolver hooks/*.js` — if a 16th adapter appears without a
+// `grep -l createPidResolver hooks/*.js` — if a 17th adapter appears without a
 // row here, the count assertion at the bottom fails.
 //
 // `stdout` is the EXACT bytes the agent must still receive while Clawd is
@@ -65,6 +65,11 @@ const ADAPTERS = [
   { name: "qoder-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: null },
   { name: "qoderwork-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: null },
   { name: "qwen-code-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: null },
+  // #843: QwenWork is state-only — stdout is "{}\n" on every path (offline,
+  // online, unmapped event, throw), so it is asserted exactly here. PreToolUse
+  // (not PermissionRequest/PermissionDenied) is the row that keeps the vacuity
+  // guard honest: the permission events deliberately skip pid resolution.
+  { name: "qwenwork-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "{}\n" },
   // zcode-hook.js is state-only: stdout is always "{}\n" on every path
   // (offline, online, error). session_id is required for state POSTing and
   // avoids the early-drop seen on other adapters.
@@ -150,14 +155,14 @@ describe("#681 — every adapter survives a clean offline with zero spawn", { sk
     }
   });
 
-  it("covers every createPidResolver consumer in hooks/ (fails when a 15th adapter lands)", () => {
+  it("covers every createPidResolver consumer in hooks/ (fails when a 17th adapter lands)", () => {
     const consumers = fs.readdirSync(HOOKS_DIR)
       .filter((f) => f.endsWith("-hook.js"))
       .filter((f) => fs.readFileSync(path.join(HOOKS_DIR, f), "utf8").includes("createPidResolver("))
       .sort();
     assert.deepStrictEqual(consumers, ADAPTERS.map((a) => a.name).sort(),
       "a new createPidResolver adapter must be added to ADAPTERS above and proven offline-safe");
-    assert.strictEqual(consumers.length, 15, "zcode-hook.js joined the createPidResolver consumers");
+    assert.strictEqual(consumers.length, 16, "qwenwork-hook.js joined the createPidResolver consumers (#843)");
   });
 });
 

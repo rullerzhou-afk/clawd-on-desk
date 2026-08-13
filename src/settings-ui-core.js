@@ -50,7 +50,7 @@
   // Runtime-only geometry belongs in the snapshot for consistency, but has no
   // mounted Settings control. Re-rendering for it would destroy focused inputs
   // and reset the active tab's scroll position after every window move/resize.
-  const RENDERER_INERT_SETTINGS_KEYS = new Set(["settingsWindowBounds"]);
+  const RENDERER_INERT_SETTINGS_KEYS = new Set(["settingsWindowBounds", "dashboardWindowBounds"]);
 
   const state = {
     snapshot: null,
@@ -84,8 +84,12 @@
       soundSummary: null,
       soundVolume: null,
       textScale: null,
+      roamMovementStyle: null,
+      roamArea: null,
       settingsSelects: new Set(),
       segmentedRadios: new Set(),
+      quotaRingDisplayMode: null,
+      permissionAutomationMode: null,
       aboutAutoUpdate: null,
       aboutUpdateStatus: null,
     },
@@ -363,6 +367,37 @@
     return section;
   }
 
+  // Shared Settings button primitive. Feature tabs keep ownership of business
+  // behavior while tone, sizing and pending/accessibility semantics stay
+  // consistent across the Settings window.
+  function buildButton(config = {}) {
+    const button = document.createElement("button");
+    const tone = ["neutral", "accent", "danger", "quiet"].includes(config.tone)
+      ? config.tone
+      : "neutral";
+    const size = ["compact", "regular", "large"].includes(config.size)
+      ? config.size
+      : "regular";
+    button.type = config.type || "button";
+    button.className = [
+      "soft-btn",
+      "settings-button",
+      `settings-button-${size}`,
+      tone === "neutral" ? "" : tone,
+      config.className || "",
+    ].filter(Boolean).join(" ");
+    button.textContent = config.label != null
+      ? String(config.label)
+      : (config.labelKey ? t(config.labelKey) : "");
+    if (config.ariaLabel) button.setAttribute("aria-label", String(config.ariaLabel));
+    if (config.title) button.title = String(config.title);
+    if (config.disabled === true || config.pending === true) button.disabled = true;
+    button.classList.toggle("pending", config.pending === true);
+    button.setAttribute("aria-busy", config.pending === true ? "true" : "false");
+    if (typeof config.onClick === "function") button.addEventListener("click", config.onClick);
+    return button;
+  }
+
   function buildSettingsSelect(config = {}) {
     const factory = selectPickerApi.createSettingsSelect || selectPickerApi.createLanguagePicker;
     if (typeof factory !== "function") {
@@ -436,13 +471,18 @@
       if (disposed || disabled || pending || !values.includes(next)) return false;
       if (next === currentValue) return true;
       const previous = currentValue;
+      const focusTarget = buttons.includes(document.activeElement) ? document.activeElement : null;
       currentValue = next;
-      pending = true;
-      syncVisualState();
       let accepted = true;
       try {
         if (typeof config.onChange === "function") {
-          accepted = (await Promise.resolve(config.onChange(next))) !== false;
+          const result = config.onChange(next);
+          pending = true;
+          syncVisualState();
+          accepted = (await Promise.resolve(result)) !== false;
+        } else {
+          pending = true;
+          syncVisualState();
         }
       } catch (_) {
         accepted = false;
@@ -450,6 +490,12 @@
       if (!accepted) currentValue = previous;
       pending = false;
       syncVisualState();
+      if (focusTarget && focusTarget.isConnected !== false && typeof focusTarget.focus === "function") {
+        const active = document.activeElement;
+        if (!active || active === document.body || active === focusTarget || active.isConnected === false) {
+          try { focusTarget.focus({ preventScroll: true }); } catch (_) { focusTarget.focus(); }
+        }
+      }
       return accepted;
     }
 
@@ -552,6 +598,8 @@
     desc = "",
     summary = null,
     headerContent = null,
+    headerAction = null,
+    disclosureLabel = "",
     children = [],
     defaultCollapsed = false,
     className = "",
@@ -568,17 +616,23 @@
 
     const header = document.createElement("div");
     header.className = "collapsible-group-header";
-    header.setAttribute("role", "button");
-    header.setAttribute("tabindex", "0");
+    const disclosure = headerAction ? document.createElement("div") : header;
+    if (headerAction) {
+      header.classList.add("collapsible-group-header-with-action");
+      disclosure.className = "collapsible-group-disclosure";
+      header.appendChild(disclosure);
+    }
+    disclosure.setAttribute("role", "button");
+    disclosure.setAttribute("tabindex", "0");
 
     const chevron = createDisclosureChevron("collapsible-group-chevron");
-    header.appendChild(chevron);
+    disclosure.appendChild(chevron);
 
     if (headerContent) {
       const headerWrap = document.createElement("div");
       headerWrap.className = "collapsible-group-header-content";
       headerWrap.appendChild(headerContent);
-      header.appendChild(headerWrap);
+      disclosure.appendChild(headerWrap);
     } else {
       const text = document.createElement("div");
       text.className = "collapsible-group-text";
@@ -592,7 +646,7 @@
         description.textContent = desc;
         text.appendChild(description);
       }
-      header.appendChild(text);
+      disclosure.appendChild(text);
     }
 
     if (summary) {
@@ -600,7 +654,14 @@
       summaryWrap.className = "collapsibleSummary collapsible-group-summary";
       if (typeof summary === "string") summaryWrap.textContent = summary;
       else summaryWrap.appendChild(summary);
-      header.appendChild(summaryWrap);
+      disclosure.appendChild(summaryWrap);
+    }
+
+    if (headerAction) {
+      const actionWrap = document.createElement("div");
+      actionWrap.className = "collapsible-group-header-action";
+      actionWrap.appendChild(headerAction);
+      header.appendChild(actionWrap);
     }
 
     const body = document.createElement("div");
@@ -682,8 +743,9 @@
     }
 
     function applyCollapsedState({ animate = false } = {}) {
-      header.setAttribute("aria-expanded", collapsed ? "false" : "true");
-      header.setAttribute("aria-label", collapsed ? t("collapsibleExpand") : t("collapsibleCollapse"));
+      disclosure.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      const actionLabel = collapsed ? t("collapsibleExpand") : t("collapsibleCollapse");
+      disclosure.setAttribute("aria-label", disclosureLabel ? `${actionLabel}: ${disclosureLabel}` : actionLabel);
       group.classList.remove("expanding", "collapsing", "resizing");
       if (!animate) {
         group.classList.toggle("collapsed", collapsed);
@@ -738,8 +800,8 @@
       setCollapsed(!collapsed);
     }
 
-    header.addEventListener("click", toggleCollapsed);
-    header.addEventListener("keydown", (ev) => {
+    disclosure.addEventListener("click", toggleCollapsed);
+    disclosure.addEventListener("keydown", (ev) => {
       if (ev.key === " " || ev.key === "Enter") {
         ev.preventDefault();
         toggleCollapsed();
@@ -838,10 +900,7 @@
     setSwitchVisual(sw, visualOn, { pending: override ? override.pending : false });
     state.mountedControls.generalSwitches.set(key, { element: sw, invert, row, text, extraElement });
     if (actionButton) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "soft-btn accent";
-      btn.textContent = t(actionButton.labelKey);
+      const btn = buildButton({ labelKey: actionButton.labelKey, tone: "accent" });
       control.insertBefore(btn, sw);
       attachActivation(btn, actionButton.invoke);
     }
@@ -874,16 +933,12 @@
   }
 
   function buildShortcutButton(label, onClick, { disabled = false, accent = false } = {}) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "soft-btn" + (accent ? " accent" : "");
-    btn.textContent = label;
-    if (disabled) {
-      btn.disabled = true;
-      return btn;
-    }
-    btn.addEventListener("click", onClick);
-    return btn;
+    return buildButton({
+      label,
+      disabled,
+      tone: accent ? "accent" : "neutral",
+      onClick: disabled ? null : onClick,
+    });
   }
 
   // Generic number-input row used by the Session cleanup group. Mirrors the
@@ -1102,6 +1157,10 @@
     state.mountedControls.soundSummary = null;
     state.mountedControls.soundVolume = null;
     state.mountedControls.textScale = null;
+    state.mountedControls.roamMovementStyle = null;
+    state.mountedControls.quotaRingDisplayMode = null;
+    state.mountedControls.permissionAutomationMode = null;
+    state.mountedControls.roamArea = null;
     state.mountedControls.aboutAutoUpdate = null;
     state.mountedControls.aboutUpdateStatus = null;
   }
@@ -1126,9 +1185,39 @@
     }
   }
 
+  function getActiveSettingsFocusKey() {
+    const active = document.activeElement;
+    if (!active || active === document.body || typeof active.getAttribute !== "function") return "";
+    return String(active.getAttribute("data-settings-focus-key") || "").trim();
+  }
+
+  function findSettingsFocusTarget(rootNode, focusKey) {
+    if (!rootNode || !focusKey) return null;
+    const stack = Array.isArray(rootNode.children) ? [...rootNode.children] : Array.from(rootNode.children || []);
+    while (stack.length > 0) {
+      const element = stack.shift();
+      if (element && typeof element.getAttribute === "function"
+        && element.getAttribute("data-settings-focus-key") === focusKey) return element;
+      if (element && element.children) stack.push(...Array.from(element.children));
+    }
+    return null;
+  }
+
+  function restoreSettingsFocus(rootNode, focusKey) {
+    const target = findSettingsFocusTarget(rootNode, focusKey);
+    if (!target || target.disabled === true || typeof target.focus !== "function") return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected !== false) return;
+    try { target.focus({ preventScroll: true }); } catch (_) { target.focus(); }
+  }
+
   function requestRender({ sidebar = false, content = false, modal = false } = {}) {
     if (sidebar && typeof renderHooks.sidebar === "function") renderHooks.sidebar();
-    if (content && typeof renderHooks.content === "function") renderHooks.content();
+    if (content && typeof renderHooks.content === "function") {
+      const focusKey = getActiveSettingsFocusKey();
+      renderHooks.content();
+      if (focusKey) restoreSettingsFocus(document.getElementById("content"), focusKey);
+    }
     if (modal && typeof renderHooks.modal === "function") renderHooks.modal();
   }
 
@@ -1671,35 +1760,68 @@
     hasAnyThemeOverride,
   };
 
-  function showSettingsConfirmModal({
+  let settingsDialogSequence = 0;
+  let dismissActiveSettingsDialog = null;
+
+  function showSettingsDialog({
     title,
     detail,
     actions,
+    iconText = "",
+    className = "",
     checkboxLabel = "",
     checkboxChecked = false,
     returnDetails = false,
+    dismissOnBackdrop = true,
+    dismissOnEscape = true,
   }) {
     const rootNode = document.getElementById("modalRoot");
     if (!rootNode) return Promise.resolve(null);
+    if (typeof dismissActiveSettingsDialog === "function") dismissActiveSettingsDialog();
     return new Promise((resolve) => {
       let settled = false;
+      const previousFocus = document.activeElement;
+      const dialogId = `settings-dialog-${++settingsDialogSequence}`;
       const overlay = document.createElement("div");
-      overlay.className = "modal-backdrop settings-confirm-backdrop";
+      overlay.className = "modal-backdrop settings-dialog-backdrop settings-confirm-backdrop";
 
       const modal = document.createElement("div");
-      modal.className = "settings-confirm-modal";
+      modal.className = ["settings-dialog", "settings-confirm-modal", className].filter(Boolean).join(" ");
       modal.setAttribute("role", "dialog");
       modal.setAttribute("aria-modal", "true");
 
-      const icon = document.createElement("div");
-      icon.className = "settings-confirm-icon";
-      icon.textContent = "!";
+      let icon = null;
+      if (iconText) {
+        icon = document.createElement("div");
+        icon.className = "settings-confirm-icon";
+        icon.setAttribute("aria-hidden", "true");
+        if (String(iconText) === "!") {
+          const createSvgElement = (tagName) => (
+            typeof document.createElementNS === "function"
+              ? document.createElementNS("http://www.w3.org/2000/svg", tagName)
+              : document.createElement(tagName)
+          );
+          const svg = createSvgElement("svg");
+          svg.setAttribute("viewBox", "0 0 20 20");
+          svg.setAttribute("focusable", "false");
+          const path = createSvgElement("path");
+          path.setAttribute("d", "M10 4.2v7.4m0 3.1v.1");
+          svg.appendChild(path);
+          icon.appendChild(svg);
+        } else {
+          icon.textContent = String(iconText);
+        }
+      }
 
       const titleNode = document.createElement("h2");
-      titleNode.textContent = title;
+      titleNode.id = `${dialogId}-title`;
+      titleNode.textContent = title || "";
+      modal.setAttribute("aria-labelledby", titleNode.id);
 
       const detailNode = document.createElement("p");
-      detailNode.textContent = detail;
+      detailNode.id = `${dialogId}-detail`;
+      detailNode.textContent = detail || "";
+      modal.setAttribute("aria-describedby", detailNode.id);
 
       let checkboxInput = null;
       let checkboxRow = null;
@@ -1721,8 +1843,12 @@
       function close(actionId) {
         if (settled) return;
         settled = true;
+        if (dismissActiveSettingsDialog === close) dismissActiveSettingsDialog = null;
         document.removeEventListener("keydown", onKeyDown, true);
         rootNode.innerHTML = "";
+        if (previousFocus
+            && previousFocus.isConnected !== false
+            && typeof previousFocus.focus === "function") previousFocus.focus();
         resolve(returnDetails
           ? {
             actionId,
@@ -1732,27 +1858,41 @@
       }
 
       function onKeyDown(ev) {
-        if (ev.key === "Escape") close(null);
+        if (ev.key === "Escape" && dismissOnEscape) {
+          ev.preventDefault();
+          close(null);
+          return;
+        }
+        if (ev.key !== "Tab") return;
+        const focusable = [checkboxInput, ...buttons.map((entry) => entry.button)]
+          .filter((element) => element && element.disabled !== true);
+        if (focusable.length === 0) return;
+        const currentIndex = focusable.indexOf(document.activeElement);
+        const nextIndex = ev.shiftKey
+          ? (currentIndex <= 0 ? focusable.length - 1 : currentIndex - 1)
+          : (currentIndex < 0 || currentIndex === focusable.length - 1 ? 0 : currentIndex + 1);
+        ev.preventDefault();
+        focusable[nextIndex].focus();
       }
 
       overlay.addEventListener("click", (ev) => {
-        if (ev.target === overlay) close(null);
+        if (dismissOnBackdrop && ev.target === overlay) close(null);
       });
       const buttons = (Array.isArray(actions) ? actions : []).map((action) => {
-        const button = document.createElement("button");
         const tone = action && typeof action.tone === "string" ? action.tone : "neutral";
-        const toneClass = tone === "accent"
-          ? "accent"
-          : (tone === "danger" ? "settings-confirm-danger" : "");
-        button.type = "button";
-        button.className = `soft-btn${toneClass ? ` ${toneClass}` : ""}`;
-        button.textContent = action && action.label ? action.label : "";
-        button.addEventListener("click", () => close(action && action.id ? action.id : null));
+        const button = buildButton({
+          label: action && action.label ? action.label : "",
+          tone,
+          size: "large",
+          className: tone === "danger" ? "settings-confirm-danger" : "",
+          onClick: () => close(action && action.id ? action.id : null),
+        });
         actionsNode.appendChild(button);
         return { action, button };
       });
+      dismissActiveSettingsDialog = close;
       document.addEventListener("keydown", onKeyDown, true);
-      modal.appendChild(icon);
+      if (icon) modal.appendChild(icon);
       modal.appendChild(titleNode);
       modal.appendChild(detailNode);
       if (checkboxRow) modal.appendChild(checkboxRow);
@@ -1768,8 +1908,14 @@
     });
   }
 
+  function showSettingsConfirmModal(options = {}) {
+    return showSettingsDialog({ ...options, iconText: "!" });
+  }
+
   core.helpers = {
     t,
+    buildButton,
+    showSettingsDialog,
     showSettingsConfirmModal,
     escapeHtml,
     setSwitchVisual,

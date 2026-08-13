@@ -56,7 +56,7 @@ const {
   PET_ACCESSORY_IDS,
 } = require("./pet-customization-catalog");
 
-const CURRENT_VERSION = 13;
+const CURRENT_VERSION = 14;
 const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
 const DEFAULT_INTEGRATION_INSTALLED_SET = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 
@@ -111,6 +111,14 @@ const SCHEMA = {
     defaultFactory: () => null,
     normalize: normalizeSettingsWindowBounds,
   },
+  // Normal-state geometry for the resizable Sessions/Dashboard window. Same
+  // contract as settingsWindowBounds: `null` means the user has not placed it
+  // yet, so the runtime keeps the computed pet/Settings-anchored placement.
+  dashboardWindowBounds: {
+    type: "object",
+    defaultFactory: () => null,
+    normalize: normalizeSettingsWindowBounds,
+  },
   size: {
     type: "string",
     default: "P:9",
@@ -125,7 +133,7 @@ const SCHEMA = {
   preMiniX: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
   preMiniY: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
   // Pure data prefs
-  lang: { type: "string", default: "en", enum: ["en", "zh", "zh-TW", "ko", "ja"] },
+  lang: { type: "string", default: "en", enum: ["en", "zh", "zh-TW", "ko", "ja", "pt-BR"] },
   showTray: { type: "boolean", default: true },
   // Default off (macOS): a fresh install runs as an accessory/agent app — pet +
   // menu-bar icon, no Dock tile. Existing users keep their Dock — a persisted
@@ -160,9 +168,14 @@ const SCHEMA = {
   sessionHudShowElapsed: { type: "boolean", default: false },
   sessionHudShowContextUsage: { type: "boolean", default: true },
   sessionHudShowQuota: { type: "boolean", default: true },
-  // Claude Code exposes subscription limits only through its visible,
-  // single-slot statusline. Keep collection opt-in so a fresh Clawd install
-  // never changes the user's terminal UI without an explicit choice.
+  // Preserve the historical used-percentage presentation for existing users;
+  // remaining is a display-only choice and never changes stored quota data.
+  quotaRingDisplayMode: { type: "string", default: "used", enum: ["used", "remaining"] },
+  // Claude Code exposes the reported context window and subscription limits
+  // through its visible, single-slot statusline. The historical key name is
+  // retained for compatibility, but it authorizes the whole local Claude
+  // statusline metadata stream. Keep it opt-in so a fresh Clawd install never
+  // changes the user's terminal UI without an explicit choice.
   claudeQuotaCollectionEnabled: { type: "boolean", default: false },
   quotaMergeSources: { type: "boolean", default: false },
   sessionHudCleanupDetached: { type: "boolean", default: true },
@@ -253,6 +266,9 @@ const SCHEMA = {
   keepSizeAcrossDisplays: { type: "boolean", default: false },
   // Free roam: when enabled and the pet is idle, it will wander around the screen
   freeRoam: { type: "boolean", default: false },
+  // #686: constrain roam movement to horizontal or vertical only (axis-aligned).
+  // When enabled, each roam picks a random target that varies in only one axis.
+  roamConstrainAxis: { type: "boolean", default: false },
   // #562: Windows-only. When ON, the pet floats ON TOP of a foreground
   // fullscreen app (e.g. a borderless game) and stays draggable, instead of
   // standing down below it (#538). Default ON — most users want to glance at
@@ -357,6 +373,8 @@ const SCHEMA = {
       "reasonix": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       // QoderWork is state-only (Phase 1) — permission bubbles default off.
       "qoderwork": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+      // QwenWork (千问办公) is state-only (Phase 1) — permission bubbles default off.
+      "qwenwork": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
     }),
     normalize: normalizeAgents,
   },
@@ -750,6 +768,11 @@ function migrate(raw) {
   // an absent/null value intentionally keeps the existing centered placement.
   if (out.version < 13) {
     out.version = 13;
+  }
+  // v13 -> v14: Dashboard-window geometry persistence, same contract as the
+  // Settings step above.
+  if (out.version < 14) {
+    out.version = 14;
   }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;
@@ -1312,6 +1335,8 @@ function mapLocaleToLang(locale) {
   }
   if (l === "ko" || l.startsWith("ko-")) return "ko";
   if (l === "ja" || l.startsWith("ja-")) return "ja";
+  // Regional locale: only pt-BR itself auto-selects it.
+  if (l === "pt-br") return "pt-BR";
   return "en";
 }
 

@@ -2,6 +2,20 @@
 
 This project includes third-party materials.
 
+## Freesound Notification Sounds
+
+The default completion sound at `assets/sounds/complete.mp3` uses
+"DELETRAZ_Ludivine_2019_2020_notification.wav" by iut_Paris8:
+
+- Source: https://freesound.org/people/iut_Paris8/sounds/510287/
+- License: Creative Commons CC0 1.0 Universal
+- License URL: https://creativecommons.org/publicdomain/zero/1.0/
+
+The repository also preserves three CC0 completion-sound candidates from
+AlfredHitch, TheArbuzikYT, and Fupicat. Their source links, hashes, and metadata
+are recorded in `assets/source/SOUND-CANDIDATES.md` and the corresponding
+`assets/source/freesound-*` directories.
+
 ## Lobe Icons
 
 Selected Agent icon source assets come from
@@ -13,7 +27,7 @@ are stored under `assets/icons/agents/`.
 The included package assets are:
 
 - `antigravity-color.png`
-- `claudecode-color.png`
+- `claude-color.png`
 - `codebuddy-color.png`
 - `openai.png`
 - `githubcopilot.png`

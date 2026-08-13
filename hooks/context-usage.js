@@ -2,6 +2,7 @@
 
 const DEFAULT_CLAUDE_CONTEXT_LIMIT = 200000;
 const CLAUDE_1M_CONTEXT_LIMIT = 1000000;
+const CLAUDE_PLATFORM_MODEL_SUFFIX = "(?:-\\d{8}(?:-v\\d+(?::\\d+)?)?|(?:-v\\d+)?@\\d{8}|-v\\d+(?::\\d+)?)?";
 
 // Anthropic ships the 1M-token context window as the model default (no beta
 // header) for these families; transcripts never carry an explicit "[1m]"
@@ -13,8 +14,9 @@ const CLAUDE_1M_CONTEXT_MODEL_TOKENS = [
   "sonnet-4-6", "sonnet-5",
   "fable-5", "mythos-5", "mythos-preview",
 ];
+const CLAUDE_1M_CONTEXT_MODEL_BASES = CLAUDE_1M_CONTEXT_MODEL_TOKENS.map((token) => `claude-${token}`);
 const CLAUDE_1M_CONTEXT_MODEL_RE = new RegExp(
-  `(?:^|[^a-z0-9])(?:${CLAUDE_1M_CONTEXT_MODEL_TOKENS.join("|")})(?:[^a-z0-9]|$)`,
+  `(?:^|[^a-z0-9])(?:${CLAUDE_1M_CONTEXT_MODEL_BASES.join("|")})${CLAUDE_PLATFORM_MODEL_SUFFIX}$`,
   "i"
 );
 
@@ -25,19 +27,74 @@ const CLAUDE_1M_CONTEXT_MODEL_RE = new RegExp(
 // real Claude Code transcript's response-side message.model never does.
 const CLAUDE_1M_CONTEXT_MARKER_RE = /\[1m\]/i;
 
+// Closed compatibility fallback for stock/legacy 200k Claude model ids.
+// Keep this shape-aware: arbitrary aliases that merely contain a family word
+// are not evidence of a 200k denominator. Platform wrappers are allowed at the
+// left boundary (for example us.anthropic.*), while the suffix grammar covers
+// dated Claude API / Bedrock / Vertex forms without treating a future minor
+// version as an old 200k family.
+const CLAUDE_200K_CONTEXT_MODEL_BASES = [
+  "claude-3-5-sonnet",
+  "claude-3-5-haiku",
+  "claude-3-7-sonnet",
+  "claude-3-opus",
+  "claude-3-sonnet",
+  "claude-3-haiku",
+  "claude-opus-4-1",
+  "claude-opus-4-5",
+  "claude-sonnet-4-5",
+  "claude-haiku-4-5",
+  "claude-opus-4-0",
+  "claude-sonnet-4-0",
+  "claude-opus-4",
+  "claude-sonnet-4",
+];
+const CLAUDE_200K_CONTEXT_MODEL_RE = new RegExp(
+  `(?:^|[^a-z0-9])(?:${CLAUDE_200K_CONTEXT_MODEL_BASES.join("|")})${CLAUDE_PLATFORM_MODEL_SUFFIX}$`,
+  "i"
+);
+
 function normalizeUsageNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) && n >= 0 ? n : 0;
 }
 
 function resolveClaudeContextLimit(model) {
-  const raw = typeof model === "string" ? model.toLowerCase() : "";
-  if (!raw) return DEFAULT_CLAUDE_CONTEXT_LIMIT;
+  const raw = typeof model === "string" ? model.trim().toLowerCase() : "";
+  if (!raw) return null;
   if (CLAUDE_1M_CONTEXT_MARKER_RE.test(raw) || CLAUDE_1M_CONTEXT_MODEL_RE.test(raw)) return CLAUDE_1M_CONTEXT_LIMIT;
-  if (raw.includes("opus") || raw.includes("sonnet") || raw.includes("haiku")) {
-    return DEFAULT_CLAUDE_CONTEXT_LIMIT;
-  }
+  if (CLAUDE_200K_CONTEXT_MODEL_RE.test(raw)) return DEFAULT_CLAUDE_CONTEXT_LIMIT;
   return null;
+}
+
+function readStatuslineUsageComponent(usage, key) {
+  if (!Object.prototype.hasOwnProperty.call(usage, key) || usage[key] === null || usage[key] === undefined) {
+    return 0;
+  }
+  const value = usage[key];
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function extractClaudeStatuslineContextUsage(payload) {
+  const contextWindow = payload && payload.context_window;
+  if (!contextWindow || typeof contextWindow !== "object" || Array.isArray(contextWindow)) return null;
+  const currentUsage = contextWindow.current_usage;
+  if (!currentUsage || typeof currentUsage !== "object" || Array.isArray(currentUsage)) return null;
+
+  const input = readStatuslineUsageComponent(currentUsage, "input_tokens");
+  const cacheRead = readStatuslineUsageComponent(currentUsage, "cache_read_input_tokens");
+  const cacheCreation = readStatuslineUsageComponent(currentUsage, "cache_creation_input_tokens");
+  if (input === null || cacheRead === null || cacheCreation === null) return null;
+  const used = input + cacheRead + cacheCreation;
+  if (!Number.isFinite(used) || used <= 0) return null;
+
+  const limit = contextWindow.context_window_size;
+  if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0) return null;
+  const reportedPercent = contextWindow.used_percentage;
+  const percent = typeof reportedPercent === "number" && Number.isFinite(reportedPercent)
+    ? Math.max(0, Math.min(100, Math.round(reportedPercent)))
+    : Math.max(0, Math.min(100, Math.round((used / limit) * 100)));
+  return { used, limit, percent, source: "claude" };
 }
 
 function computeClaudeUsageFromEntry(entry) {
@@ -112,5 +169,6 @@ module.exports = {
   DEFAULT_CLAUDE_CONTEXT_LIMIT,
   computeClaudeUsageFromEntry,
   extractClaudeContextUsageFromEntries,
+  extractClaudeStatuslineContextUsage,
   resolveClaudeContextLimit,
 };

@@ -1505,10 +1505,17 @@ function buildRemoteApprovalPayload(permEntry) {
     sessionFolder ? `${t("approvalDetailFolder")}: ${sessionFolder}` : null,
     `${t("approvalDetailSummary")}: ${summary}`,
   ].filter(Boolean).join("\n");
+  const fields = [
+    { label: t("approvalDetailAgent"), value: agentId },
+    { label: t("approvalDetailTool"), value: toolName },
+    sessionFolder ? { label: t("approvalDetailFolder"), value: sessionFolder } : null,
+    { label: t("approvalDetailSummary"), value: summary },
+  ].filter(Boolean);
   const suggestionButtons = buildRemoteSuggestionButtons(permEntry);
   const payload = {
     title: interpolate(interpolate(t("approvalRequestsTitle"), "{agent}", agentId), "{tool}", toolName),
     detail,
+    fields,
   };
   if (suggestionButtons.length > 0) payload.suggestions = suggestionButtons;
   return payload;

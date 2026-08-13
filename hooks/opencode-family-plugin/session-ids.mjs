@@ -4,12 +4,12 @@
 // silently — see plan-opencode-family-shared-integration.md §3.2):
 //
 //   prefix-INDEPENDENT — plain module exports below:
-//     getEventSessionId, getEventParentSessionId,
+//     getEventSessionInfo, getEventSessionId, getEventParentSessionId,
 //     shouldDropMappedEventWithoutSessionId
 //
 //   prefix-DEPENDENT — produced by createSessionIdHelpers(prefix):
 //     DEFAULT_SESSION_ID, normalizeSessionId, resolveSessionId,
-//     isChildSessionId, cleanupSessionParentMap
+//     isChildSessionId
 //
 // The last two LOOK neutral but must normalize through the SAME prefix that
 // wrote the parent-map keys: a mimocode child key "mimocode:ses_child" looked
@@ -21,12 +21,91 @@ function normalizeSessionText(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+// Bound + sanitize a session title before storage or transport. Mirrors the
+// normalizeTitle in hooks/clawd-hook.js and src/state-session-snapshot.js:
+// collapse control chars and whitespace, cap at 80 chars (with a trailing
+// ellipsis). A 17k-char title would otherwise blow the 16 KiB /state body
+// cap, trigger a headerless 413, and make the plugin distrust the response
+// and rescan all five ports on every event (#841 review).
+// Unicode bidi formatting marks can visually reorder otherwise-safe text even
+// when the UI assigns it through textContent. Strip them at the plugin boundary
+// together with ordinary controls so the stored/wire title is never ambiguous.
+const SESSION_TITLE_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F\u061C\u200E-\u200F\u202A-\u202E\u2066-\u2069]+/g;
+const SESSION_TITLE_MAX = 80;
+
+function replaceUnpairedSurrogates(value) {
+  let result = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xD800 && code <= 0xDBFF) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xDC00 && next <= 0xDFFF) {
+        result += value[index] + value[index + 1];
+        index += 1;
+      } else {
+        result += "\uFFFD";
+      }
+    } else if (code >= 0xDC00 && code <= 0xDFFF) {
+      result += "\uFFFD";
+    } else {
+      result += value[index];
+    }
+  }
+  return result;
+}
+
+function normalizeTitle(value) {
+  if (typeof value !== "string") return null;
+  const collapsed = replaceUnpairedSurrogates(value)
+    .replace(SESSION_TITLE_CONTROL_RE, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!collapsed) return null;
+  const characters = Array.from(collapsed);
+  return characters.length > SESSION_TITLE_MAX
+    ? `${characters.slice(0, SESSION_TITLE_MAX - 1).join("")}…`
+    : collapsed;
+}
+
+export function getEventSessionInfo(event) {
+  const empty = {
+    eventSessionId: null,
+    infoSessionId: null,
+    directory: null,
+    title: null,
+  };
+  if (!event || typeof event !== "object") return empty;
+  const props = event.properties && typeof event.properties === "object"
+    ? event.properties
+    : {};
+  const info = props.info && typeof props.info === "object" && !Array.isArray(props.info)
+    ? props.info
+    : {};
+  // directory is intentionally left un-normalized: the upstream text is
+  // authoritative and tests assert byte-identical passthrough.
+  const directory = typeof info.directory === "string" && info.directory.trim()
+    ? info.directory
+    : null;
+  const title = normalizeTitle(info.title);
+  return {
+    eventSessionId: normalizeSessionText(props.sessionID) || normalizeSessionText(event.sessionID),
+    infoSessionId: normalizeSessionText(info.id),
+    directory,
+    title,
+  };
+}
+
 export function getEventSessionId(event) {
   if (!event || typeof event !== "object") return null;
   const props = event.properties && typeof event.properties === "object"
     ? event.properties
     : {};
-  return normalizeSessionText(props.sessionID) || normalizeSessionText(event.sessionID);
+  const info = props.info && typeof props.info === "object" && !Array.isArray(props.info)
+    ? props.info
+    : {};
+  return normalizeSessionText(props.sessionID)
+    || normalizeSessionText(event.sessionID)
+    || normalizeSessionText(info.id);
 }
 
 // Extract the parent session ID from a session.created event.
@@ -88,35 +167,10 @@ export function createSessionIdHelpers(prefix) {
     return sessionParentById.has(normalized);
   }
 
-  // Clean up _sessionParentById on session end events so the Map doesn't grow
-  // unboundedly across sessions. Must be called BEFORE shouldDropMappedEventWithoutSessionId()
-  // because server.instance.disposed may lack a sessionID (causing early return) but
-  // still needs to clear the entire map — all sessions are gone.
-  //   - session.deleted: removes the single entry for that session (if present).
-  //   - server.instance.disposed: clears the entire map.
-  function cleanupSessionParentMap(event, map) {
-    if (!event || typeof event.type !== "string") return;
-    if (!map || typeof map.clear !== "function") return;
-
-    if (event.type === "server.instance.disposed") {
-      map.clear();
-      return;
-    }
-
-    if (event.type === "session.deleted") {
-      const rawSid = getEventSessionId(event);
-      const normSid = normalizeSessionId(rawSid);
-      if (normSid && map.has(normSid)) {
-        map.delete(normSid);
-      }
-    }
-  }
-
   return {
     DEFAULT_SESSION_ID,
     normalizeSessionId,
     resolveSessionId,
     isChildSessionId,
-    cleanupSessionParentMap,
   };
 }

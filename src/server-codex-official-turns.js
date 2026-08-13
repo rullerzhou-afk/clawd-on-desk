@@ -1,5 +1,7 @@
 "use strict";
 
+const { normalizeCodexTurnId } = require("./codex-turn-id");
+
 const CODEX_OFFICIAL_HOOK_SOURCE = "codex-official";
 const MAX_CODEX_OFFICIAL_TURNS = 200;
 const CODEX_SESSION_ROLE_SUBAGENT = "subagent";
@@ -56,7 +58,7 @@ function resolveCodexOfficialHookState(
   }
 
   const event = typeof data.event === "string" ? data.event : "";
-  const turnId = typeof data.turn_id === "string" && data.turn_id ? data.turn_id : null;
+  const turnId = normalizeCodexTurnId(data.turn_id);
   const sessionId = typeof sessionIdOverride === "string" && sessionIdOverride
     ? sessionIdOverride
     : (typeof data.session_id === "string" && data.session_id ? data.session_id : "default");
@@ -67,7 +69,7 @@ function resolveCodexOfficialHookState(
 
   if (event === "Stop" && data.stop_hook_active === true) {
     if (turnKey && turns) turns.delete(turnKey);
-    return { state: requestedState, drop: true, ...headless };
+    return { state: requestedState, drop: true, ...(turnId ? { turnId } : {}), ...headless };
   }
 
   if (turnKey && turns) {
@@ -83,18 +85,23 @@ function resolveCodexOfficialHookState(
     } else if (event === "Stop") {
       const current = turns.get(turnKey);
       if (current) turns.delete(turnKey);
-      if (isSubagent) return { state: "idle", drop: false, headless: true };
-      return { state: resolveCodexOfficialStopState(current, data), drop: false };
+      if (isSubagent) return { state: "idle", drop: false, ...(turnId ? { turnId } : {}), headless: true };
+      return {
+        state: resolveCodexOfficialStopState(current, data),
+        drop: false,
+        ...(turnId ? { turnId } : {}),
+      };
     }
   } else if (event === "Stop") {
     return {
       state: isSubagent ? "idle" : resolveCodexOfficialStopState(null, data),
       drop: false,
+      ...(turnId ? { turnId } : {}),
       ...headless,
     };
   }
 
-  return { state: requestedState, drop: false, ...headless };
+  return { state: requestedState, drop: false, ...(turnId ? { turnId } : {}), ...headless };
 }
 
 module.exports = {

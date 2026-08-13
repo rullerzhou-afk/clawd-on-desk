@@ -9,6 +9,7 @@ const { spawnSync } = require("node:child_process");
 const HTTP_BLOCKER = path.resolve(__dirname, "..", "hook-http-blocker.js");
 const HTTP_RECORDER = path.resolve(__dirname, "hook-post-recorder.js");
 const OFFLINE_PROBE = path.resolve(__dirname, "hook-offline-probe.js");
+const SPAWN_RECORDER = path.resolve(__dirname, "hook-spawn-recorder.js");
 const HTTP_CONTRACTS = new Set(["block", "expect-attempt", "expect-none"]);
 
 function readJsonIfPresent(filePath) {
@@ -43,12 +44,6 @@ function createSpawnedHookHarness(options = {}) {
     if (!HTTP_CONTRACTS.has(httpContract)) {
       throw new Error(`unknown spawned-hook HTTP contract: ${httpContract}`);
     }
-    if (runOptions.probeProcessSpawns && httpContract !== "block") {
-      throw new Error(
-        `probeProcessSpawns cannot be combined with spawned-hook HTTP contract ${httpContract}`,
-      );
-    }
-
     sequence += 1;
     const attemptsPath = path.join(home, `http-attempts-${sequence}.json`);
     const spawnsPath = path.join(home, `process-spawns-${sequence}.json`);
@@ -90,14 +85,15 @@ function createSpawnedHookHarness(options = {}) {
     });
 
     const preloads = [];
-    if (runOptions.probeProcessSpawns) {
-      preloads.push(OFFLINE_PROBE);
-      env.CLAWD_PROBE_OUT = spawnsPath;
-    } else if (httpContract === "block") {
+    if (httpContract === "block") {
       preloads.push(HTTP_BLOCKER);
     } else {
       preloads.push(HTTP_RECORDER);
       env.CLAWD_POST_OUT = attemptsPath;
+    }
+    if (runOptions.probeProcessSpawns) {
+      preloads.push(SPAWN_RECORDER);
+      env.CLAWD_PROBE_OUT = spawnsPath;
     }
     preloads.push(...(runOptions.preloads || []).map((preload) => path.resolve(preload)));
 
@@ -117,7 +113,7 @@ function createSpawnedHookHarness(options = {}) {
       cwd: runOptions.cwd,
     });
 
-    const attempts = httpContract === "block" || runOptions.probeProcessSpawns
+    const attempts = httpContract === "block"
       ? null
       : readJsonIfPresent(attemptsPath);
     const spawns = runOptions.probeProcessSpawns ? readJsonIfPresent(spawnsPath) : null;
@@ -178,6 +174,7 @@ module.exports = {
   HTTP_BLOCKER,
   HTTP_RECORDER,
   OFFLINE_PROBE,
+  SPAWN_RECORDER,
   createSpawnedHookHarness,
   runSpawnedHook,
 };

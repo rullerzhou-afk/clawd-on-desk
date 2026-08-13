@@ -31,6 +31,10 @@ function makeConfig(tmpDir) {
 const TEST_FILENAME = "rollout-2026-03-25T15-10-51-019d23d4-f1a9-7633-b9c7-758327137228.jsonl";
 const EXPECTED_SID = "codex:019d23d4-f1a9-7633-b9c7-758327137228";
 
+function uniqueRolloutName(index) {
+  return `rollout-2026-03-25T15-10-51-${String(index).padStart(8, "0")}-f1a9-7633-b9c7-758327137228.jsonl`;
+}
+
 describe("CodexLogMonitor", () => {
   let tmpDir, dateDir, monitor;
 
@@ -103,6 +107,16 @@ describe("CodexLogMonitor", () => {
     fs.writeFileSync(testFile, [
       JSON.stringify({ type: "session_meta", payload: { cwd: "/projects/foo", source: "cli" } }),
       JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: { total_tokens: 24846 },
+            model_context_window: 258400,
+          },
+        },
+      }),
+      JSON.stringify({
         type: "response_item",
         payload: {
           type: "function_call",
@@ -128,6 +142,12 @@ describe("CodexLogMonitor", () => {
     assert.strictEqual(requests.length, 1);
     assert.strictEqual(requests[0][0], EXPECTED_SID);
     assert.strictEqual(requests[0][1].callId, "call_question");
+    assert.deepStrictEqual(requests[0][2].contextUsage, {
+      used: 24846,
+      limit: 258400,
+      percent: 10,
+      source: "codex",
+    });
     assert.strictEqual(requests[0][2].cwd, "/projects/foo");
 
     fs.appendFileSync(testFile, JSON.stringify({
@@ -176,7 +196,14 @@ describe("CodexLogMonitor", () => {
   it("recovers a still-open request_user_input from an old (>5min mtime) untracked file on startup", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [
-      JSON.stringify({ type: "session_meta", payload: { cwd: "/projects/foo" } }),
+      JSON.stringify({
+        type: "session_meta",
+        payload: {
+          cwd: "/projects/foo",
+          originator: "Codex Desktop",
+          source: "vscode",
+        },
+      }),
       JSON.stringify({
         type: "response_item",
         payload: {
@@ -191,8 +218,15 @@ describe("CodexLogMonitor", () => {
     fs.utimesSync(testFile, oldTime, oldTime);
 
     const requests = [];
+    let classifierRegistrations = 0;
     monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {
       onUserInputRequest: (...args) => requests.push(args),
+      classifier: {
+        registerSession() {
+          classifierRegistrations += 1;
+          return "root";
+        },
+      },
     });
     monitor.start();
 
@@ -200,8 +234,99 @@ describe("CodexLogMonitor", () => {
       assert.strictEqual(requests.length, 1);
       assert.strictEqual(requests[0][0], EXPECTED_SID);
       assert.strictEqual(requests[0][1].callId, "call_stale_pending");
+      assert.strictEqual(requests[0][2].cwd, "/projects/foo");
+      assert.strictEqual(requests[0][2].codexOriginator, "Codex Desktop");
+      assert.strictEqual(requests[0][2].codexSource, "vscode");
+      assert.strictEqual(classifierRegistrations, 1, "validated stale pending recovery must classify once");
       done();
     }, 300);
+  });
+
+  it("preserves metadata and classifies once in direct stale-pending recovery", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      JSON.stringify({
+        type: "session_meta",
+        payload: {
+          cwd: "/projects/direct-stale",
+          originator: "Codex Desktop",
+          source: "vscode",
+        },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "request_user_input",
+          call_id: "call_direct_stale",
+          arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+        },
+      }),
+    ].join("\n") + "\n");
+    const oldTime = new Date(Date.now() - 600000);
+    fs.utimesSync(testFile, oldTime, oldTime);
+
+    let classifierRegistrations = 0;
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {
+      classifier: {
+        registerSession() {
+          classifierRegistrations += 1;
+          return "root";
+        },
+      },
+    });
+    const recovered = monitor._recoverStalePendingUserInput(testFile, path.basename(testFile));
+
+    assert.ok(recovered);
+    assert.strictEqual(recovered.cwd, "/projects/direct-stale");
+    assert.strictEqual(recovered.codexOriginator, "Codex Desktop");
+    assert.strictEqual(recovered.codexSource, "vscode");
+    assert.ok(recovered.pendingUserInputs.has("call_direct_stale"));
+    assert.strictEqual(classifierRegistrations, 1);
+  });
+
+  it("classifies direct recent recovery once with session_meta inside or outside the tail", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const timestamp = new Date().toISOString();
+    const sessionMetaLine = JSON.stringify({
+      timestamp,
+      type: "session_meta",
+      payload: {
+        cwd: "/projects/direct-recent",
+        originator: "Codex Desktop",
+        source: "vscode",
+      },
+    });
+    const activeLine = JSON.stringify({
+      timestamp,
+      type: "event_msg",
+      payload: { type: "task_started" },
+    });
+    let classifierRegistrations = 0;
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {
+      classifier: {
+        registerSession() {
+          classifierRegistrations += 1;
+          return "root";
+        },
+      },
+    });
+
+    fs.writeFileSync(testFile, sessionMetaLine + "\n" + activeLine + "\n");
+    let recovered = monitor._recoverStalePendingUserInput(testFile, path.basename(testFile));
+    assert.ok(recovered);
+    assert.strictEqual(recovered.codexOriginator, "Codex Desktop");
+    assert.strictEqual(recovered.codexSource, "vscode");
+    assert.strictEqual(classifierRegistrations, 1, "small tail must use its session_meta exactly once");
+
+    classifierRegistrations = 0;
+    const fillerLine = JSON.stringify({ type: "response_item", payload: { type: "message", text: "x".repeat(2 * 1024 * 1024) } });
+    fs.writeFileSync(testFile, sessionMetaLine + "\n" + fillerLine + "\n" + activeLine + "\n");
+    recovered = monitor._recoverStalePendingUserInput(testFile, path.basename(testFile));
+    assert.ok(recovered);
+    assert.strictEqual(recovered.codexOriginator, "Codex Desktop");
+    assert.strictEqual(recovered.codexSource, "vscode");
+    assert.strictEqual(classifierRegistrations, 1, "head outside the tail must use the explicit metadata exactly once");
   });
 
   it("does not recover an old untracked file whose request_user_input was already resolved", (_, done) => {
@@ -269,9 +394,16 @@ describe("CodexLogMonitor", () => {
     fs.utimesSync(testFile, frozenTime, frozenTime);
 
     const states = [];
+    let classifierRegistrations = 0;
+    const classifier = {
+      registerSession() {
+        classifierRegistrations += 1;
+        return "unknown";
+      },
+    };
     monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event, extra) => {
       states.push({ sid, state, event, extra });
-    });
+    }, { classifier });
     monitor.start();
 
     setTimeout(() => {
@@ -282,6 +414,7 @@ describe("CodexLogMonitor", () => {
       assert.strictEqual(quotaEvent.extra.codexQuota, undefined);
       assert.strictEqual(quotaEvent.extra.codexSparkQuota.codexWeekly.usedPercent, 0);
       assert.ok(monitor._tracked.has(testFile), "the recovered active file must stay tracked");
+      assert.strictEqual(classifierRegistrations, 1, "validated recent recovery must classify once");
       done();
     }, 300);
   });
@@ -899,6 +1032,86 @@ describe("CodexLogMonitor", () => {
     );
   });
 
+  it("recovery head and tail readers advance by raw short reads and stop after 8 attempts", () => {
+    const testFile = path.join(dateDir, "recovery-short-reads.jsonl");
+    const firstLine = JSON.stringify({
+      type: "session_meta",
+      payload: { cwd: "/projects/短读", pad: "中".repeat(6000) },
+    });
+    fs.writeFileSync(testFile, firstLine + "\n" + "tail-data");
+    const expectedBytes = fs.readFileSync(testFile);
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {});
+
+    const originalReadSync = fs.readSync;
+    let calls = 0;
+    fs.readSync = (fd, buffer, offset, length, position) => {
+      calls += 1;
+      return originalReadSync(fd, buffer, offset, Math.min(length, 4097), position);
+    };
+    try {
+      assert.strictEqual(
+        monitor._readCompleteFirstLine(testFile, fs.statSync(testFile).size, 256 * 1024),
+        firstLine
+      );
+      const exact = monitor._readExactRange(testFile, 0, fs.statSync(testFile).size);
+      assert.strictEqual(exact.complete, true);
+      assert.deepStrictEqual(exact.buf, expectedBytes);
+      assert.ok(calls <= 16, "head and tail each have their own 8-attempt ceiling");
+
+      calls = 0;
+      fs.readSync = (fd, buffer, offset, length, position) => {
+        calls += 1;
+        return originalReadSync(fd, buffer, offset, Math.min(length, 1), position);
+      };
+      assert.strictEqual(
+        monitor._readCompleteFirstLine(testFile, fs.statSync(testFile).size, 256 * 1024),
+        null
+      );
+      assert.strictEqual(calls, 8);
+      calls = 0;
+      assert.strictEqual(monitor._readExactRange(testFile, 0, 100).complete, false);
+      assert.strictEqual(calls, 8);
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+  });
+
+  it("recovery head advances from the true short-read cursor", () => {
+    const testFile = path.join(dateDir, "recovery-head-short-cursor.jsonl");
+    const firstLine = JSON.stringify({
+      type: "session_meta",
+      payload: { cwd: "/projects/短读游标", pad: "中".repeat(14000) },
+    });
+    fs.writeFileSync(testFile, firstLine + "\n" + "tail".repeat(4096));
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {});
+
+    const originalReadSync = fs.readSync;
+    const requested = [];
+    let calls = 0;
+    fs.readSync = (fd, buffer, offset, length, position) => {
+      calls += 1;
+      requested.push({ length, position });
+      return originalReadSync(
+        fd,
+        buffer,
+        offset,
+        calls === 1 ? Math.min(length, 4097) : length,
+        position
+      );
+    };
+    try {
+      assert.strictEqual(
+        monitor._readCompleteFirstLine(testFile, fs.statSync(testFile).size, 256 * 1024),
+        firstLine
+      );
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+    assert.ok(requested[0].length > 4097, "the first read must actually be short");
+    assert.strictEqual(requested[1].position, 4097, "the next read must resume at bytesRead, not requestLength");
+    assert.ok(calls <= 8);
+  });
+
   it("does not overshoot true EOF when the tail window starts mid-character, and still resolves after completion", () => {
     // #707 follow-up review round 3, finding 2 — full scenario: construct a
     // file where the 1MB tail window's start byte deterministically lands
@@ -1091,7 +1304,8 @@ describe("CodexLogMonitor", () => {
     // just under the cap.
     monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {});
     const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
-    const perCandidateCost = 1.1 * 1024 * 1024; // matches the review's own repro numbers
+    const perCandidateSize = Math.floor(1.1 * 1024 * 1024);
+    const perCandidateCost = 256 * 1024 + 1024 * 1024 + 1;
     const candidateCount = Math.ceil(MAX_TOTAL_BYTES / perCandidateCost) + 3;
     const candidates = [];
     for (let i = 0; i < candidateCount; i++) {
@@ -1099,26 +1313,24 @@ describe("CodexLogMonitor", () => {
         dateDir,
         `rollout-2026-03-25T15-10-51-${String(i).padStart(8, "0")}-f1a9-7633-b9c7-758327137228.jsonl`
       );
-      fs.writeFileSync(testFile, [
-        JSON.stringify({ type: "session_meta", payload: { cwd: `/projects/n${i}` } }),
-        JSON.stringify({
-          type: "response_item",
-          payload: {
-            type: "function_call",
-            name: "request_user_input",
-            call_id: `call_ledger_${i}`,
-            arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
-          },
-        }),
-      ].join("\n") + "\n");
-      // The real file is tiny; the candidate's claimed size simulates a
-      // large rollout so the byte budget (not RECOVERY_SWEEP_MAX_FILES) is
-      // what actually gets exercised.
+      const head = JSON.stringify({ type: "session_meta", payload: { cwd: `/projects/n${i}` } }) + "\n";
+      const request = JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "request_user_input",
+          call_id: `call_ledger_${i}`,
+          arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+        },
+      }) + "\n";
+      const fillerBytes = perCandidateSize - Buffer.byteLength(head) - Buffer.byteLength(request);
+      fs.writeFileSync(testFile, head + "x".repeat(fillerBytes - 1) + "\n" + request);
+      const stat = fs.statSync(testFile);
       candidates.push({
         filePath: testFile,
         file: path.basename(testFile),
         mtimeMs: Date.now() - i,
-        size: perCandidateCost,
+        size: stat.size,
       });
     }
 
@@ -1130,6 +1342,375 @@ describe("CodexLogMonitor", () => {
       `expected at most ${maxCandidatesUnderBudget} candidates processed within the 20MB budget, got ${monitor._tracked.size}`
     );
     assert.ok(monitor._tracked.size > 0, "at least some candidates within budget must still be recovered");
+  });
+
+  it("accounts overlapping recovery head and tail reads against the real 20 MiB I/O budget", () => {
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {});
+    const fileSize = 2 * 1024 * 1024;
+    const headPrefix = '{"type":"session_meta","payload":{"cwd":"';
+    const headSuffix = '"}}\n';
+    const head = headPrefix
+      + "h".repeat(256 * 1024 - Buffer.byteLength(headPrefix) - Buffer.byteLength(headSuffix))
+      + headSuffix;
+    const candidates = [];
+    for (let i = 0; i < 17; i++) {
+      const file = uniqueRolloutName(i + 300);
+      const filePath = path.join(dateDir, file);
+      const request = JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "request_user_input",
+          call_id: `call_physical_budget_${i}`,
+          arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+        },
+      }) + "\n";
+      const fillerBytes = fileSize - Buffer.byteLength(head) - Buffer.byteLength(request);
+      fs.writeFileSync(filePath, head + "x".repeat(fillerBytes - 1) + "\n" + request);
+      const stat = fs.statSync(filePath);
+      candidates.push({ filePath, file, mtimeMs: stat.mtimeMs - i, size: stat.size });
+    }
+    const originalReadSync = fs.readSync;
+    let requestedBytes = 0;
+    fs.readSync = (fd, buffer, offset, length, position) => {
+      requestedBytes += length;
+      return originalReadSync(fd, buffer, offset, length, position);
+    };
+    try {
+      monitor._runRecoverySweep(candidates);
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+    assert.strictEqual(monitor._tracked.size, 15);
+    assert.ok(requestedBytes <= 20 * 1024 * 1024, `requested ${requestedBytes} bytes`);
+
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {});
+    requestedBytes = 0;
+    const tailStart = fileSize - 1024 * 1024;
+    fs.readSync = (fd, buffer, offset, length, position) => {
+      requestedBytes += length;
+      const boundedLength = position >= tailStart ? Math.min(length, 1) : length;
+      return originalReadSync(fd, buffer, offset, boundedLength, position);
+    };
+    try {
+      monitor._runRecoverySweep(candidates);
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+    assert.ok(
+      requestedBytes <= 20 * 1024 * 1024,
+      `short-read retries requested ${requestedBytes} bytes`
+    );
+  });
+
+  it("keeps the startup recovery byte budget cumulative when attempt exhaustion spans polls", () => {
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {});
+    const calls = [];
+    monitor._recoverStalePendingUserInput = (filePath) => {
+      calls.push(filePath);
+      return null;
+    };
+    const candidateSize = 1.1 * 1024 * 1024;
+    const candidateCost = 256 * 1024 + 1024 * 1024 + 1;
+    const fakeStats = new Map();
+    for (let i = 0; i < 20; i++) {
+      const filePath = `candidate-${i}`;
+      const mtimeMs = Date.now() - 10 * 60 * 1000 - i;
+      fakeStats.set(filePath, { size: candidateSize, mtimeMs });
+      monitor._insertStartupRecoveryCandidate({
+        filePath,
+        file: uniqueRolloutName(i),
+        mtimeMs,
+        size: candidateSize,
+      });
+    }
+    const originalStatSync = fs.statSync;
+    fs.statSync = (filePath, ...args) => fakeStats.get(filePath) || originalStatSync(filePath, ...args);
+    try {
+      monitor._startupRecoveryReady = true;
+      monitor._runReadyStartupRecovery({ remainingAttempts: 9 });
+      assert.strictEqual(calls.length, 9);
+      assert.strictEqual(monitor._didInitialRecoveryScan, false);
+      assert.strictEqual(monitor._startupRecoveryCandidates.size, 11);
+
+      monitor._runReadyStartupRecovery({ remainingAttempts: 64 });
+      assert.strictEqual(calls.length, Math.floor((20 * 1024 * 1024) / candidateCost));
+      assert.strictEqual(new Set(calls).size, calls.length, "resuming must not recover a candidate twice");
+      assert.strictEqual(monitor._didInitialRecoveryScan, true);
+    } finally {
+      fs.statSync = originalStatSync;
+    }
+  });
+
+  it("revalidates a cached startup recovery candidate before replacing a live tracker", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/recovery-race" } }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "request_user_input",
+          call_id: "call_recovery_race",
+          arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+        },
+      }),
+    ].join("\n") + "\n");
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    fs.utimesSync(testFile, old, old);
+    const requests = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {
+      onUserInputRequest: (...args) => requests.push(args),
+    });
+
+    monitor._pollFile(testFile, path.basename(testFile));
+    const liveTracker = monitor._tracked.get(testFile);
+    assert.strictEqual(requests.length, 1);
+    const stat = fs.statSync(testFile);
+    monitor._insertStartupRecoveryCandidate({
+      filePath: testFile,
+      file: path.basename(testFile),
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+    });
+    monitor._startupRecoveryReady = true;
+    monitor._runReadyStartupRecovery({ remainingAttempts: 64 });
+
+    assert.strictEqual(requests.length, 1, "ready recovery must not publish the same pending request twice");
+    assert.strictEqual(monitor._tracked.get(testFile), liveTracker, "ready recovery must preserve the newer tracker");
+    assert.strictEqual(monitor._startupRecoveryCandidates.has(testFile), false);
+  });
+
+  it("keeps a frozen-mtime candidate when it grows after the pinned recovery stat", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, JSON.stringify({
+      type: "session_meta",
+      payload: { cwd: "/frozen-growth" },
+    }) + "\n");
+    const frozen = new Date(Date.now() - 10 * 60 * 1000);
+    fs.utimesSync(testFile, frozen, frozen);
+    const admissionStat = fs.statSync(testFile);
+    const requests = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {
+      onUserInputRequest: (...args) => requests.push(args),
+    });
+    monitor._insertStartupRecoveryCandidate({
+      filePath: testFile,
+      file: path.basename(testFile),
+      mtimeMs: admissionStat.mtimeMs,
+      size: admissionStat.size,
+    });
+    monitor._startupRecoveryReady = true;
+
+    const originalReadByteRange = monitor._readByteRange.bind(monitor);
+    let appended = false;
+    monitor._readByteRange = (...args) => {
+      const result = originalReadByteRange(...args);
+      if (!appended) {
+        appended = true;
+        fs.appendFileSync(testFile, JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "request_user_input",
+            call_id: "call_frozen_growth",
+            arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+          },
+        }) + "\n");
+        fs.utimesSync(testFile, frozen, frozen);
+      }
+      return result;
+    };
+    monitor._runReadyStartupRecovery({ remainingAttempts: 64 });
+    monitor._readByteRange = originalReadByteRange;
+
+    assert.deepStrictEqual(requests, []);
+    assert.strictEqual(monitor._tracked.has(testFile), false);
+    assert.strictEqual(monitor._startupRecoveryCandidates.has(testFile), true);
+    assert.strictEqual(monitor._didInitialRecoveryScan, false);
+    assert.strictEqual(
+      monitor._startupRecoveryBytesScanned,
+      admissionStat.size * 2,
+      "the first slice must charge only the pinned head/tail snapshot"
+    );
+
+    monitor._runReadyStartupRecovery({ remainingAttempts: 64 });
+    assert.strictEqual(requests.length, 1);
+    assert.strictEqual(requests[0][1].callId, "call_frozen_growth");
+    assert.strictEqual(monitor._tracked.has(testFile), true);
+    assert.strictEqual(monitor._startupRecoveryCandidates.has(testFile), false);
+    assert.strictEqual(monitor._didInitialRecoveryScan, true);
+  });
+
+  it("fails closed and retries when the recovery path is replaced between head and tail reads", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const replacement = path.join(dateDir, "replacement.jsonl");
+    const targetSize = 2 * 1024 * 1024;
+    const writeSized = (filePath, meta, tail = "") => {
+      const head = JSON.stringify(meta) + "\n";
+      const tailText = tail ? tail + "\n" : "";
+      const fillerBytes = targetSize - Buffer.byteLength(head) - Buffer.byteLength(tailText);
+      fs.writeFileSync(filePath, head + "x".repeat(fillerBytes - 1) + "\n" + tailText);
+      assert.strictEqual(fs.statSync(filePath).size, targetSize);
+    };
+    writeSized(testFile, {
+      type: "session_meta",
+      payload: {
+        cwd: "/old-subagent",
+        source: { subagent: { thread_spawn: { parent_thread_id: "root", agent_role: "explorer" } } },
+      },
+    });
+    const rootRequest = JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "request_user_input",
+        call_id: "call_replaced_root",
+        arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+      },
+    });
+    writeSized(replacement, {
+      type: "session_meta",
+      payload: { cwd: "/replacement-root" },
+    }, rootRequest);
+    const frozen = new Date(Date.now() - 10 * 60 * 1000);
+    fs.utimesSync(testFile, frozen, frozen);
+    fs.utimesSync(replacement, frozen, frozen);
+    const admissionStat = fs.statSync(testFile);
+    const requests = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {
+      onUserInputRequest: (...args) => requests.push(args),
+    });
+    monitor._insertStartupRecoveryCandidate({
+      filePath: testFile,
+      file: path.basename(testFile),
+      mtimeMs: admissionStat.mtimeMs,
+      size: admissionStat.size,
+    });
+    monitor._startupRecoveryReady = true;
+
+    const originalReadByteRange = monitor._readByteRange.bind(monitor);
+    let replaced = false;
+    monitor._readByteRange = (...args) => {
+      const result = originalReadByteRange(...args);
+      if (!replaced) {
+        replaced = true;
+        fs.renameSync(replacement, testFile);
+      }
+      return result;
+    };
+    monitor._runReadyStartupRecovery({ remainingAttempts: 64 });
+    monitor._readByteRange = originalReadByteRange;
+
+    assert.deepStrictEqual(requests, [], "mixed old head/new tail data must not emit");
+    assert.strictEqual(monitor._tracked.has(testFile), false);
+    assert.strictEqual(monitor._startupRecoveryCandidates.has(testFile), true);
+
+    monitor._runReadyStartupRecovery({ remainingAttempts: 64 });
+    assert.strictEqual(requests.length, 1, "the stable replacement must be recovered exactly once");
+    assert.strictEqual(requests[0][1].callId, "call_replaced_root");
+    assert.strictEqual(monitor._tracked.get(testFile).isSubagent, false);
+    assert.strictEqual(
+      monitor._tracked.get(testFile).fileIdentity,
+      monitor._getFileIdentity(fs.statSync(testFile))
+    );
+  });
+
+  it("fails closed and releases a recovery candidate after an in-place shrink stabilizes", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const metaLine = JSON.stringify({ type: "session_meta", payload: { cwd: "/shrink" } }) + "\n";
+    const requestLine = JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "request_user_input",
+        call_id: "call_truncated_away",
+        arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+      },
+    }) + "\n";
+    fs.writeFileSync(testFile, metaLine + "x".repeat(1024 * 1024) + "\n" + requestLine);
+    const frozen = new Date(Date.now() - 10 * 60 * 1000);
+    fs.utimesSync(testFile, frozen, frozen);
+    const admissionStat = fs.statSync(testFile);
+    const requests = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {
+      onUserInputRequest: (...args) => requests.push(args),
+    });
+    monitor._insertStartupRecoveryCandidate({
+      filePath: testFile,
+      file: path.basename(testFile),
+      mtimeMs: admissionStat.mtimeMs,
+      size: admissionStat.size,
+    });
+    monitor._startupRecoveryReady = true;
+
+    const originalReadByteRange = monitor._readByteRange.bind(monitor);
+    let truncated = false;
+    monitor._readByteRange = (...args) => {
+      const result = originalReadByteRange(...args);
+      if (!truncated) {
+        truncated = true;
+        fs.truncateSync(testFile, Buffer.byteLength(metaLine));
+        fs.utimesSync(testFile, frozen, frozen);
+      }
+      return result;
+    };
+    monitor._runReadyStartupRecovery({ remainingAttempts: 64 });
+    monitor._readByteRange = originalReadByteRange;
+
+    assert.deepStrictEqual(requests, []);
+    assert.strictEqual(monitor._startupRecoveryCandidates.has(testFile), true);
+    monitor._runReadyStartupRecovery({ remainingAttempts: 64 });
+    assert.deepStrictEqual(requests, []);
+    assert.strictEqual(monitor._startupRecoveryCandidates.has(testFile), false);
+    assert.strictEqual(monitor._didInitialRecoveryScan, true);
+  });
+
+  it("does not let newer empty recovery candidates crowd out a tiny valid pending request", () => {
+    const requests = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {
+      onUserInputRequest: (...args) => requests.push(args),
+    });
+    const oldBase = Date.now() - 10 * 60 * 1000;
+    for (let i = 0; i < 15; i++) {
+      const file = uniqueRolloutName(i + 800);
+      const filePath = path.join(dateDir, file);
+      fs.writeFileSync(filePath, "");
+      const stamp = new Date(oldBase - i);
+      fs.utimesSync(filePath, stamp, stamp);
+      const stat = fs.statSync(filePath);
+      monitor._insertStartupRecoveryCandidate({ filePath, file, mtimeMs: stat.mtimeMs, size: 0 });
+    }
+    const validFile = uniqueRolloutName(899);
+    const validPath = path.join(dateDir, validFile);
+    fs.writeFileSync(validPath, [
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/tiny-valid" } }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "request_user_input",
+          call_id: "call_tiny_valid",
+          arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+        },
+      }),
+    ].join("\n") + "\n");
+    const validStamp = new Date(oldBase - 60_000);
+    fs.utimesSync(validPath, validStamp, validStamp);
+    const validStat = fs.statSync(validPath);
+    monitor._insertStartupRecoveryCandidate({
+      filePath: validPath,
+      file: validFile,
+      mtimeMs: validStat.mtimeMs,
+      size: validStat.size,
+    });
+
+    monitor._startupRecoveryReady = true;
+    monitor._runReadyStartupRecovery({ remainingAttempts: 64 });
+
+    assert.strictEqual(requests.length, 1);
+    assert.strictEqual(requests[0][1].callId, "call_tiny_valid");
+    assert.strictEqual(monitor._tracked.has(validPath), true);
   });
 
   it("clears a pending question's card on task_complete even without a matching function_call_output", () => {
@@ -1273,6 +1854,78 @@ describe("CodexLogMonitor", () => {
       }
     });
     monitor.start();
+  });
+
+  it("normalizes, inherits, and clears JSONL turn identity around terminal emission", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      '{"type":"event_msg","payload":{"type":"task_started","turn_id":"  turn-A  "}}',
+      '{"type":"response_item","payload":{"type":"function_call","name":"shell_command"}}',
+      '{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-terminal"}}',
+    ].join("\n") + "\n");
+
+    const events = [];
+    let activeDuringTerminal = null;
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event, extra) => {
+      events.push({ sid, state, event, extra });
+      if (event === "event_msg:task_complete") {
+        activeDuringTerminal = monitor._tracked.get(testFile).activeTurnId;
+      }
+    });
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    assert.strictEqual(events.find((entry) => entry.event === "event_msg:task_started").extra.turnId, "turn-A");
+    assert.strictEqual(events.find((entry) => entry.event === "response_item:function_call").extra.turnId, "turn-A");
+    assert.strictEqual(events.find((entry) => entry.event === "event_msg:task_complete").extra.turnId, "turn-terminal");
+    assert.strictEqual(activeDuringTerminal, "turn-A", "terminal callback must run before tracker clear");
+    assert.strictEqual(monitor._tracked.get(testFile).activeTurnId, null);
+    assert.strictEqual(monitor._tracked.get(testFile).turnBoundaryOpen, false);
+  });
+
+  it("applies skipped historical start and terminal bookkeeping before replay guard", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const oldTimestamp = new Date(Date.now() - 60_000).toISOString();
+    const liveTimestamp = new Date().toISOString();
+    fs.writeFileSync(testFile, [
+      JSON.stringify({ type: "session_meta", timestamp: oldTimestamp, payload: { cwd: "/tmp" } }),
+      JSON.stringify({ type: "event_msg", timestamp: oldTimestamp, payload: { type: "task_started", turn_id: "old-turn" } }),
+      JSON.stringify({ type: "event_msg", timestamp: oldTimestamp, payload: { type: "task_complete", turn_id: "old-turn" } }),
+      JSON.stringify({ type: "response_item", timestamp: liveTimestamp, payload: { type: "function_call", name: "shell_command" } }),
+    ].join("\n") + "\n");
+
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event, extra) => {
+      events.push({ sid, state, event, extra });
+    });
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    assert.deepStrictEqual(events.map((entry) => entry.event), ["response_item:function_call"]);
+    assert.strictEqual(events[0].extra.turnId, undefined);
+    assert.strictEqual(monitor._tracked.get(testFile).activeTurnId, null);
+    assert.strictEqual(monitor._tracked.get(testFile).turnBoundaryOpen, false);
+  });
+
+  it("marks an active-turn backfill snapshot with its recovered turn identity", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      '{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-backfill"}}',
+    ].join("\n") + "\n");
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(testFile, oldTime, oldTime);
+
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event, extra) => {
+      events.push({ sid, state, event, extra });
+    });
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].state, "thinking");
+    assert.strictEqual(events[0].extra.syntheticBackfill, true);
+    assert.strictEqual(events[0].extra.turnBoundaryOpen, true);
+    assert.strictEqual(events[0].extra.turnId, "turn-backfill");
   });
 
   it("should map function_call to working", (_, done) => {
@@ -1533,6 +2186,693 @@ describe("CodexLogMonitor", () => {
 
     monitor._poll();
     assert.deepStrictEqual(events.map((entry) => entry.state), ["idle", "thinking"]);
+  });
+
+  it("caps one rollout read at 4 MiB and keeps replay initialization until snapshot EOF", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const line = "x".repeat(1023) + "\n";
+    fs.writeFileSync(testFile,
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/large" } }) + "\n" +
+      line.repeat(5200));
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {});
+
+    const first = monitor._pollFile(testFile, path.basename(testFile));
+    const tracked = monitor._tracked.get(testFile);
+    assert.ok(first.requestedBytes <= 4 * 1024 * 1024);
+    assert.ok(first.bytesRead <= 4 * 1024 * 1024);
+    assert.ok(tracked.offset > 0 && tracked.offset < fs.statSync(testFile).size);
+    assert.strictEqual(tracked.initializingUserInputs, true);
+    assert.strictEqual(monitor._replayWork.has(testFile), true);
+
+    monitor._pollFile(testFile, path.basename(testFile));
+    assert.strictEqual(tracked.offset, fs.statSync(testFile).size);
+    assert.strictEqual(tracked.initializingUserInputs, false);
+    assert.strictEqual(monitor._replayWork.has(testFile), false);
+  });
+
+  it("does not flash a pending question whose resolution is in a later quantum", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const request = JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "request_user_input",
+        call_id: "call_cross_quantum",
+        arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick", options: [] }] }),
+      },
+    });
+    const resolution = JSON.stringify({
+      type: "response_item",
+      payload: { type: "function_call_output", call_id: "call_cross_quantum", output: "{}" },
+    });
+    const fillerLine = "x".repeat(1023) + "\n";
+    fs.writeFileSync(testFile, [
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/cross-quantum" } }),
+      request,
+      fillerLine.repeat(4200).slice(0, -1),
+      resolution,
+    ].join("\n") + "\n");
+    const requests = [];
+    const resolved = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {
+      onUserInputRequest: (...args) => requests.push(args),
+      onUserInputResolved: (...args) => resolved.push(args),
+    });
+
+    monitor._pollFile(testFile, TEST_FILENAME);
+    assert.strictEqual(monitor._tracked.get(testFile).initializingUserInputs, true);
+    assert.deepStrictEqual(requests, []);
+    monitor._pollFile(testFile, TEST_FILENAME);
+    assert.strictEqual(monitor._tracked.get(testFile).initializingUserInputs, false);
+    assert.deepStrictEqual(requests, []);
+    assert.deepStrictEqual(resolved, []);
+  });
+
+  it("does not discard a >64 KiB short read that has not reached snapshot EOF", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const record = JSON.stringify({
+      type: "session_meta",
+      payload: { cwd: "/short", blob: "界".repeat(80 * 1024) },
+    }) + "\n";
+    fs.writeFileSync(testFile, record);
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {});
+
+    const originalReadSync = fs.readSync;
+    fs.readSync = (fd, buffer, offset, length, position) =>
+      originalReadSync(fd, buffer, offset, Math.min(length, 96 * 1024), position);
+    try {
+      const first = monitor._pollFile(testFile, path.basename(testFile));
+      assert.strictEqual(first.kind, "incomplete");
+      assert.strictEqual(monitor._tracked.get(testFile).offset, 0);
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+
+    monitor._pollFile(testFile, path.basename(testFile));
+    assert.strictEqual(monitor._tracked.get(testFile).offset, Buffer.byteLength(record));
+  });
+
+  it("finalizes replay after scanning a small incomplete EOF without committing its tail", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, '{"type":"event_msg","payload":{"type":"task_');
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event) => {
+      events.push({ sid, state, event });
+    });
+
+    monitor._pollFile(testFile, path.basename(testFile));
+    const tracked = monitor._tracked.get(testFile);
+    assert.strictEqual(tracked.offset, 0);
+    assert.strictEqual(tracked.initializingUserInputs, false);
+    assert.strictEqual(monitor._replayWork.has(testFile), false);
+
+    fs.appendFileSync(testFile, 'started"}}\n');
+    monitor._pollFile(testFile, path.basename(testFile));
+    assert.deepStrictEqual(events.map((entry) => entry.event), ["event_msg:task_started"]);
+  });
+
+  it("abandons a stuck replay at validated EOF without replaying emitted lifecycle", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const prefix = [
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/stuck" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
+      JSON.stringify({ type: "response_item", payload: { type: "function_call", name: "shell_command" } }),
+    ].join("\n") + "\n";
+    const fillerLine = "x".repeat(1023) + "\n";
+    const filler = fillerLine.repeat(Math.ceil(
+      (4 * 1024 * 1024 + 4096 - Buffer.byteLength(prefix)) / Buffer.byteLength(fillerLine)
+    ));
+    fs.writeFileSync(testFile, prefix + filler);
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event) => {
+      events.push({ sid, state, event });
+    });
+
+    monitor._pollFile(testFile, path.basename(testFile));
+    const item = monitor._replayWork.get(testFile);
+    assert.ok(item, "the >4 MiB replay must remain admitted after its first quantum");
+    assert.deepStrictEqual(events.map((entry) => entry.event).slice(0, 3), [
+      "session_meta",
+      "event_msg:task_started",
+      "response_item:function_call",
+    ]);
+    item.lastProgressAt = Date.now() - 31_000;
+    events.length = 0;
+
+    const originalReadSync = fs.readSync;
+    fs.readSync = () => 0;
+    try {
+      for (let i = 0; i < 8; i++) monitor._pollFile(testFile, path.basename(testFile));
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+    const ledger = monitor._readPositions.get(testFile);
+    assert.strictEqual(monitor._replayWork.has(testFile), false);
+    assert.strictEqual(ledger.offset, fs.statSync(testFile).size);
+    assert.ok(ledger.readBackoffUntil > Date.now());
+    assert.deepStrictEqual(events, []);
+
+    fs.appendFileSync(testFile,
+      JSON.stringify({ type: "event_msg", payload: { type: "task_complete" } }) + "\n");
+    assert.strictEqual(monitor._pollFile(testFile, path.basename(testFile)).kind, "backoff");
+    ledger.readBackoffUntil = Date.now() - 1;
+    monitor._pollFile(testFile, path.basename(testFile));
+    assert.deepStrictEqual(events.map((entry) => ({ state: entry.state, event: entry.event })), [{
+      state: "attention",
+      event: "event_msg:task_complete",
+    }]);
+  });
+
+  it("continues exponential backoff when a validated baseline keeps failing", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const prefix = JSON.stringify({ type: "session_meta", payload: { cwd: "/stuck-again" } }) + "\n";
+    const fillerLine = "x".repeat(1023) + "\n";
+    const filler = fillerLine.repeat(Math.ceil(
+      (4 * 1024 * 1024 + 4096 - Buffer.byteLength(prefix)) / Buffer.byteLength(fillerLine)
+    ));
+    fs.writeFileSync(testFile, prefix + filler);
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {});
+
+    monitor._pollFile(testFile, path.basename(testFile));
+    const item = monitor._replayWork.get(testFile);
+    item.lastProgressAt = Date.now() - 31_000;
+    const originalReadSync = fs.readSync;
+    fs.readSync = () => 0;
+    try {
+      for (let i = 0; i < 8; i++) monitor._pollFile(testFile, path.basename(testFile));
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+
+    const ledger = monitor._readPositions.get(testFile);
+    assert.strictEqual(ledger.readBackoffLevel, 1);
+    fs.appendFileSync(testFile,
+      JSON.stringify({ type: "event_msg", payload: { type: "task_complete" } }) + "\n");
+    ledger.readBackoffUntil = Date.now() - 1;
+    const secondFailureStartedAt = Date.now();
+    let reads = 0;
+    fs.readSync = () => { reads += 1; return 0; };
+    try {
+      assert.strictEqual(monitor._pollFile(testFile, path.basename(testFile)).kind, "no-progress");
+      assert.strictEqual(monitor._readPositions.get(testFile).readBackoffLevel, 2);
+      assert.ok(
+        monitor._readPositions.get(testFile).readBackoffUntil >= secondFailureStartedAt + 59_000,
+        "the second failure epoch must back off for about 60 seconds"
+      );
+      assert.strictEqual(monitor._pollFile(testFile, path.basename(testFile)).kind, "backoff");
+      assert.strictEqual(reads, 1, "the active backoff must prevent per-poll read retries");
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+  });
+
+  it("bounds a whole poll to 16 MiB of requests and advances the cyclic cursor", () => {
+    const filePaths = [];
+    for (let i = 0; i < 10; i++) {
+      const filePath = path.join(dateDir, uniqueRolloutName(i));
+      fs.writeFileSync(filePath, "");
+      fs.truncateSync(filePath, 5 * 1024 * 1024);
+      filePaths.push(filePath);
+    }
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {});
+
+    const originalReadSync = fs.readSync;
+    const originalStatSync = fs.statSync;
+    const originalBufferAlloc = Buffer.alloc;
+    const requested = [];
+    const allocations = [];
+    let rolloutStats = 0;
+    fs.readSync = (fd, buffer, offset, length, position) => {
+      requested.push(length);
+      return originalReadSync(fd, buffer, offset, length, position);
+    };
+    fs.statSync = (...args) => {
+      if (typeof args[0] === "string" && args[0].startsWith(dateDir + path.sep)) rolloutStats += 1;
+      return originalStatSync(...args);
+    };
+    Buffer.alloc = (size, ...args) => {
+      if (size > 0) allocations.push(size);
+      return originalBufferAlloc(size, ...args);
+    };
+    try {
+      monitor._poll();
+    } finally {
+      fs.readSync = originalReadSync;
+      fs.statSync = originalStatSync;
+      Buffer.alloc = originalBufferAlloc;
+    }
+
+    assert.ok(requested.length > 0);
+    assert.ok(requested.every((length) => length <= 4 * 1024 * 1024));
+    assert.strictEqual(requested.reduce((sum, length) => sum + length, 0), 16 * 1024 * 1024);
+    assert.ok(allocations.every((length) => length <= 4 * 1024 * 1024));
+    assert.strictEqual(allocations.reduce((sum, length) => sum + length, 0), 16 * 1024 * 1024);
+    assert.ok(rolloutStats <= 64, `expected at most 64 rollout stat attempts, got ${rolloutStats}`);
+    const firstOffsets = new Map(filePaths.map((filePath) => [
+      filePath,
+      monitor._tracked.get(filePath) ? monitor._tracked.get(filePath).offset : 0,
+    ]));
+
+    monitor._poll();
+    assert.ok(
+      filePaths.some((filePath) => (
+        (monitor._tracked.get(filePath) ? monitor._tracked.get(filePath).offset : 0)
+        > firstOffsets.get(filePath)
+      )),
+      "a later poll must continue the cyclic backlog instead of restarting at the first file"
+    );
+  });
+
+  it("defers an intact 3 MiB quantum when only 1 MiB remains, then reads it whole", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const fileSize = 3 * 1024 * 1024;
+    fs.writeFileSync(testFile, "");
+    fs.truncateSync(testFile, fileSize);
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {});
+
+    const originalReadSync = fs.readSync;
+    const requested = [];
+    fs.readSync = (fd, buffer, offset, length, position) => {
+      requested.push(length);
+      return originalReadSync(fd, buffer, offset, length, position);
+    };
+    try {
+      const constrained = { remainingRequestBytes: 1024 * 1024 };
+      assert.deepStrictEqual(
+        monitor._pollFile(testFile, path.basename(testFile), constrained),
+        { kind: "budget", requestedBytes: 0, bytesRead: 0 }
+      );
+      assert.deepStrictEqual(requested, [], "an undersized remainder must not issue a fragmentary read");
+      assert.strictEqual(constrained.remainingRequestBytes, 1024 * 1024);
+      assert.strictEqual(monitor._tracked.get(testFile).offset, 0);
+
+      const nextPoll = { remainingRequestBytes: 16 * 1024 * 1024 };
+      const result = monitor._pollFile(testFile, path.basename(testFile), nextPoll);
+      assert.strictEqual(result.kind, "discarded");
+      assert.deepStrictEqual(requested, [fileSize]);
+      assert.strictEqual(monitor._tracked.get(testFile).offset, fileSize);
+      assert.strictEqual(monitor._replayWork.has(testFile), false);
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+  });
+
+  it("shares the 64-attempt cap with active-day discovery and visits new paths next poll", () => {
+    const filePaths = [];
+    for (let i = 0; i < 80; i++) {
+      const filePath = path.join(dateDir, uniqueRolloutName(i));
+      fs.writeFileSync(filePath, "");
+      filePaths.push(filePath);
+    }
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {});
+    const originalStatSync = fs.statSync;
+    const callsByPoll = [];
+    let current = null;
+    fs.statSync = (...args) => {
+      if (current && typeof args[0] === "string" && args[0].startsWith(dateDir + path.sep)) {
+        current.push(args[0]);
+      }
+      return originalStatSync(...args);
+    };
+    try {
+      current = [];
+      monitor._poll();
+      callsByPoll.push(current);
+      current = [];
+      monitor._poll();
+      callsByPoll.push(current);
+    } finally {
+      fs.statSync = originalStatSync;
+    }
+
+    assert.ok(callsByPoll[0].length <= 64);
+    assert.ok(callsByPoll[1].length <= 64);
+    const first = new Set(callsByPoll[0]);
+    assert.ok(callsByPoll[1].some((filePath) => !first.has(filePath)));
+  });
+
+  it("deduplicates one admitted replay that is also found by normal discovery", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, "x".repeat(1023) + "\n");
+    fs.truncateSync(testFile, 5 * 1024 * 1024);
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {});
+    monitor._pollFile(testFile, path.basename(testFile));
+    assert.strictEqual(monitor._replayWork.has(testFile), true);
+
+    const originalReadSync = fs.readSync;
+    let reads = 0;
+    fs.readSync = (...args) => {
+      reads += 1;
+      return originalReadSync(...args);
+    };
+    try {
+      monitor._poll();
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+    assert.strictEqual(reads, 1, "the replay/normal duplicate path must get only one quantum");
+  });
+
+  it("keeps an unfinished admitted replay out of both active and retired LRU eviction", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const prefix = [
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/projects/lru-replay" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "request_user_input",
+          call_id: "call_lru_replay",
+          arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+        },
+      }),
+    ].join("\n") + "\n";
+    fs.writeFileSync(testFile, prefix);
+    fs.truncateSync(testFile, 5 * 1024 * 1024);
+    const oldTime = new Date(Date.now() - 10 * 60 * 1000);
+    fs.utimesSync(testFile, oldTime, oldTime);
+
+    const emitted = [];
+    const requests = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (...args) => emitted.push(args), {
+      onUserInputRequest: (...args) => requests.push(args),
+    });
+    assert.strictEqual(monitor._pollFile(testFile, path.basename(testFile)).kind, "progress");
+    const replay = monitor._tracked.get(testFile);
+    assert.ok(replay);
+    assert.strictEqual(monitor._replayWork.has(testFile), true);
+    assert.strictEqual(replay.backfilling, true);
+    assert.strictEqual(replay.lastState, "thinking");
+    assert.ok(replay.pendingUserInputs.has("call_lru_replay"));
+    assert.deepStrictEqual(emitted, []);
+    assert.deepStrictEqual(requests, []);
+    const replayOffset = replay.offset;
+    replay.lastEventTime = 1;
+
+    for (let i = 0; i < 50; i += 1) {
+      monitor._tracked.set(`ordinary-lru-${i}`, {
+        hasEmittedState: true,
+        lastEventTime: 100 + i,
+      });
+    }
+    assert.strictEqual(monitor._tracked.size, 51);
+
+    const originalRetire = monitor._retireTrackedFile;
+    const retirementAttempts = [];
+    monitor._retireTrackedFile = function retireWithProbe(filePath, tracked) {
+      retirementAttempts.push(filePath);
+      return originalRetire.call(this, filePath, tracked);
+    };
+    try {
+      monitor._pruneTrackedFilesIfNeeded();
+    } finally {
+      monitor._retireTrackedFile = originalRetire;
+    }
+
+    assert.strictEqual(retirementAttempts.includes(testFile), false, "pruning must not target admitted replay work");
+    assert.strictEqual(monitor._tracked.get(testFile), replay);
+    assert.strictEqual(monitor._tracked.has("ordinary-lru-0"), false);
+    assert.strictEqual(replay.offset, replayOffset);
+    assert.strictEqual(replay.lastState, "thinking");
+    assert.ok(replay.pendingUserInputs.has("call_lru_replay"));
+
+    originalRetire.call(monitor, testFile, replay);
+    assert.strictEqual(monitor._tracked.get(testFile), replay, "the retire guard must independently preserve admitted replay");
+    assert.strictEqual(monitor._retiredTracked.has(testFile), false);
+  });
+
+  it("admits at most 40 replay items, reserves background capacity, and weights deferred lanes 3:1", () => {
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {});
+    const recentStat = { mtimeMs: Date.now(), dev: 1, ino: 1 };
+    for (let i = 0; i < 40; i++) {
+      const tracker = {};
+      assert.strictEqual(
+        monitor._admitReplayWork(`recent-${i}`, uniqueRolloutName(i), tracker, recentStat),
+        true
+      );
+      monitor._tracked.set(`recent-${i}`, tracker);
+    }
+    for (let i = 0; i < 10; i++) {
+      monitor._tracked.set(`ordinary-${i}`, {
+        hasEmittedState: true,
+        lastEventTime: i,
+      });
+    }
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, "");
+    fs.truncateSync(testFile, 5 * 1024 * 1024);
+    const originalReadSync = fs.readSync;
+    let reads = 0;
+    fs.readSync = () => { reads += 1; return 0; };
+    try {
+      assert.strictEqual(monitor._pollFile(testFile, TEST_FILENAME).kind, "deferred");
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+    assert.strictEqual(reads, 0, "a file without a work slot must not be read partially");
+    assert.strictEqual(monitor._tracked.has(testFile), false);
+    assert.strictEqual(monitor._tracked.size, 50);
+    assert.strictEqual(monitor._tracked.has("ordinary-0"), true, "failed admission must not evict live state");
+    assert.strictEqual(monitor._deferredRecent.has(testFile), true);
+
+    monitor.stop();
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {});
+    const backgroundStat = { mtimeMs: Date.now() - 10 * 60 * 1000, dev: 1, ino: 2 };
+    for (let i = 0; i < 32; i++) {
+      assert.strictEqual(
+        monitor._admitReplayWork(`background-${i}`, uniqueRolloutName(i), {}, backgroundStat),
+        true
+      );
+    }
+    assert.strictEqual(
+      monitor._admitReplayWork("background-overflow", uniqueRolloutName(99), {}, backgroundStat),
+      false
+    );
+    assert.strictEqual(monitor._deferredBackground.has("background-overflow"), true);
+
+    monitor.stop();
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {});
+    for (let i = 0; i < 4; i++) {
+      monitor._enqueueDeferred(`r${i}`, uniqueRolloutName(i), recentStat, "recent");
+    }
+    for (let i = 0; i < 2; i++) {
+      monitor._enqueueDeferred(`b${i}`, uniqueRolloutName(i + 10), backgroundStat, "background");
+    }
+    assert.deepStrictEqual(
+      monitor._collectDueDeferredCandidates().map((entry) => entry.filePath),
+      ["r0", "r1", "r2", "b0", "r3", "b1"]
+    );
+  });
+
+  it("backs off an unvalidated replay without letting mtime growth bypass notBefore", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, "x".repeat(128 * 1024));
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {});
+    const originalOpenSync = fs.openSync;
+    let openAttempts = 0;
+    fs.openSync = (filePath, ...args) => {
+      if (filePath === testFile) {
+        openAttempts += 1;
+        throw new Error("simulated open failure");
+      }
+      return originalOpenSync(filePath, ...args);
+    };
+    try {
+      monitor._pollFile(testFile, TEST_FILENAME);
+      monitor._replayWork.get(testFile).lastProgressAt = Date.now() - 31_000;
+      for (let i = 1; i < 8; i++) monitor._pollFile(testFile, TEST_FILENAME);
+      assert.strictEqual(monitor._replayWork.has(testFile), false);
+      assert.strictEqual(monitor._tracked.has(testFile), false);
+      const deferred = monitor._deferredRecent.get(testFile);
+      assert.ok(deferred.notBefore > Date.now());
+
+      const now = new Date();
+      fs.utimesSync(testFile, now, now);
+      const beforePoll = openAttempts;
+      monitor._poll();
+      assert.strictEqual(openAttempts, beforePoll, "normal discovery must honor the deferred backoff");
+
+      deferred.notBefore = Date.now() - 1;
+      const secondFailureStartedAt = Date.now();
+      monitor._pollFile(testFile, TEST_FILENAME);
+      monitor._replayWork.get(testFile).lastProgressAt = Date.now() - 31_000;
+      for (let i = 1; i < 8; i++) monitor._pollFile(testFile, TEST_FILENAME);
+      const deferredAgain = monitor._deferredRecent.get(testFile);
+      assert.strictEqual(deferredAgain.retryLevel, 2);
+      assert.ok(
+        deferredAgain.notBefore >= secondFailureStartedAt + 59_000,
+        "a second unvalidated failure should double the retry delay to about 60 seconds"
+      );
+    } finally {
+      fs.openSync = originalOpenSync;
+    }
+  });
+
+  it("backs off a deferred path whose latest stat fails", () => {
+    const missingFile = path.join(dateDir, uniqueRolloutName(777));
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {});
+    monitor._enqueueDeferred(missingFile, path.basename(missingFile), {
+      mtimeMs: Date.now(),
+      dev: 1,
+      ino: 777,
+    }, "recent");
+    const originalStatSync = fs.statSync;
+    let missingStats = 0;
+    fs.statSync = (filePath, ...args) => {
+      if (filePath === missingFile) missingStats += 1;
+      return originalStatSync(filePath, ...args);
+    };
+    try {
+      monitor._poll();
+      const deferred = monitor._deferredRecent.get(missingFile);
+      assert.strictEqual(deferred.retryLevel, 1);
+      assert.ok(deferred.notBefore > Date.now());
+      monitor._poll();
+      assert.strictEqual(missingStats, 1, "notBefore must suppress repeated stat attempts");
+    } finally {
+      fs.statSync = originalStatSync;
+    }
+  });
+
+  it("baselines a validated zero-byte replay to opened fstat EOF, not the pre-stat size", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, "");
+    fs.truncateSync(testFile, 5 * 1024 * 1024);
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {});
+    const originalStatSync = fs.statSync;
+    const originalReadSync = fs.readSync;
+    const actualSize = originalStatSync(testFile).size;
+    fs.statSync = (candidate, ...args) => {
+      const stat = originalStatSync(candidate, ...args);
+      return candidate === testFile ? { ...stat, size: actualSize + 1234 } : stat;
+    };
+    fs.readSync = () => 0;
+    try {
+      monitor._pollFile(testFile, TEST_FILENAME);
+      const item = monitor._replayWork.get(testFile);
+      assert.strictEqual(item.lastValidatedSnapshotSize, actualSize);
+      item.lastProgressAt = Date.now() - 31_000;
+      for (let i = 1; i < 8; i++) monitor._pollFile(testFile, TEST_FILENAME);
+    } finally {
+      fs.statSync = originalStatSync;
+      fs.readSync = originalReadSync;
+    }
+    const ledger = monitor._readPositions.get(testFile);
+    assert.strictEqual(ledger.offset, actualSize);
+    assert.notStrictEqual(ledger.offset, actualSize + 1234);
+    assert.ok(ledger.readBackoffUntil > Date.now());
+  });
+
+  it("finalizes replay when pre-stat is larger but opened fstat is exactly at offset", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const contents = JSON.stringify({ type: "session_meta", payload: { cwd: "/post-fstat-eof" } }) + "\n";
+    fs.writeFileSync(testFile, contents);
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event) => {
+      events.push({ sid, state, event });
+    });
+    const stat = fs.statSync(testFile);
+    const tracker = {
+      offset: stat.size,
+      sessionId: EXPECTED_SID,
+      filePath: testFile,
+      fileIdentity: monitor._getFileIdentity(stat),
+      cwd: "/post-fstat-eof",
+      lastEventTime: Date.now(),
+      lastState: "thinking",
+      lastStateEvent: "event_msg:task_started",
+      hasEmittedState: false,
+      hadToolUse: false,
+      isSubagent: false,
+      pendingUserInputs: new Map(),
+      initializingUserInputs: true,
+      backfilling: true,
+    };
+    monitor._tracked.set(testFile, tracker);
+    monitor._readPositions.set(testFile, { offset: stat.size, identity: tracker.fileIdentity });
+    monitor._admitReplayWork(testFile, TEST_FILENAME, tracker, stat);
+    const originalStatSync = fs.statSync;
+    fs.statSync = (candidate, ...args) => {
+      const current = originalStatSync(candidate, ...args);
+      return candidate === testFile ? { ...current, size: current.size + 1 } : current;
+    };
+    try {
+      assert.strictEqual(monitor._pollFile(testFile, TEST_FILENAME).kind, "eof");
+    } finally {
+      fs.statSync = originalStatSync;
+    }
+    assert.strictEqual(tracker.backfilling, false);
+    assert.strictEqual(tracker.initializingUserInputs, false);
+    assert.strictEqual(monitor._replayWork.has(testFile), false);
+    assert.deepStrictEqual(events.map((entry) => entry.state), ["thinking"]);
+  });
+
+  it("keeps read backoff after both rich tracker tiers evict the path", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, "x\n");
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {});
+    const stat = fs.statSync(testFile);
+    const identity = monitor._getFileIdentity(stat);
+    const tracker = {
+      offset: 0,
+      fileIdentity: identity,
+      pendingUserInputs: new Map(),
+      lastEventTime: 1,
+    };
+    monitor._tracked.set(testFile, tracker);
+    monitor._readPositions.set(testFile, {
+      offset: 0,
+      identity,
+      readBackoffUntil: Date.now() + 30_000,
+      readBackoffLevel: 1,
+    });
+    monitor._retireTrackedFile(testFile, tracker);
+    for (let i = 0; i <= 100; i++) {
+      monitor._retireTrackedFile(`dummy-${i}`, { offset: 0, lastEventTime: i });
+    }
+    assert.strictEqual(monitor._tracked.has(testFile), false);
+    assert.strictEqual(monitor._retiredTracked.has(testFile), false);
+    assert.strictEqual(monitor._pollFile(testFile, TEST_FILENAME).kind, "backoff");
+    const ledger = monitor._readPositions.get(testFile);
+    ledger.readBackoffUntil = Date.now() - 1;
+    const secondFailureStartedAt = Date.now();
+    const originalStatSync = fs.statSync;
+    fs.statSync = (filePath, ...args) => {
+      if (filePath === testFile) throw new Error("simulated missing rollout");
+      return originalStatSync(filePath, ...args);
+    };
+    try {
+      assert.strictEqual(monitor._pollFile(testFile, TEST_FILENAME).kind, "error");
+    } finally {
+      fs.statSync = originalStatSync;
+    }
+    assert.strictEqual(monitor._readPositions.get(testFile).readBackoffLevel, 2);
+    assert.ok(monitor._readPositions.get(testFile).readBackoffUntil >= secondFailureStartedAt + 59_000);
+  });
+
+  it("keeps an LF-inclusive 4 MiB record and deterministically discards one byte over", () => {
+    const cap = 4 * 1024 * 1024;
+    const prefix = '{"type":"session_meta","payload":{"cwd":"/boundary","blob":"';
+    const suffix = '"}}\n';
+    const exactFile = path.join(dateDir, TEST_FILENAME);
+    const exactRecord = prefix + "a".repeat(cap - Buffer.byteLength(prefix) - Buffer.byteLength(suffix)) + suffix;
+    assert.strictEqual(Buffer.byteLength(exactRecord), cap);
+    fs.writeFileSync(exactFile, exactRecord);
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {});
+    assert.strictEqual(monitor._pollFile(exactFile, TEST_FILENAME).kind, "progress");
+    assert.strictEqual(monitor._tracked.get(exactFile).offset, cap);
+
+    monitor.stop();
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {});
+    const oversizedFile = path.join(dateDir, uniqueRolloutName(999));
+    const oversizedRecord = prefix + "a".repeat(cap + 1 - Buffer.byteLength(prefix) - Buffer.byteLength(suffix)) + suffix;
+    assert.strictEqual(Buffer.byteLength(oversizedRecord), cap + 1);
+    fs.writeFileSync(oversizedFile, oversizedRecord);
+    assert.strictEqual(monitor._pollFile(oversizedFile, path.basename(oversizedFile)).kind, "discarded");
+    assert.strictEqual(monitor._tracked.get(oversizedFile).offset, cap);
+    monitor._pollFile(oversizedFile, path.basename(oversizedFile));
+    assert.strictEqual(monitor._tracked.get(oversizedFile).offset, cap + 1);
   });
 
   it("closes the rollout fd and preserves its offset when readSync throws", () => {
@@ -2361,12 +3701,12 @@ describe("CodexLogMonitor", () => {
     monitor.start();
   });
 
-  it("prunes only never-emitted tracked files when the tracker reaches capacity", () => {
+  it("prunes only never-emitted tracked files when the tracker exceeds capacity", () => {
     const config = makeConfig(tmpDir);
     monitor = new CodexLogMonitor(config, () => {});
 
     monitor._tracked.set("visible-session", { hasEmittedState: true, lastEventTime: 1 });
-    for (let i = 0; i < 49; i++) {
+    for (let i = 0; i < 50; i++) {
       monitor._tracked.set(`silent-backfill-${i}`, {
         hasEmittedState: false,
         lastEventTime: 2 + i,
@@ -2375,7 +3715,7 @@ describe("CodexLogMonitor", () => {
 
     monitor._pruneTrackedFilesIfNeeded();
 
-    assert.strictEqual(monitor._tracked.size, 49);
+    assert.strictEqual(monitor._tracked.size, 50);
     assert.strictEqual(monitor._tracked.has("visible-session"), true);
     assert.strictEqual(monitor._tracked.has("silent-backfill-0"), false);
   });
@@ -2404,7 +3744,7 @@ describe("CodexLogMonitor", () => {
       contextUsage: { used: 1200, limit: 12000, percent: 10, source: "codex" },
       lastEventTime: 1,
     });
-    for (let i = 0; i < 49; i++) {
+    for (let i = 0; i < 50; i++) {
       monitor._tracked.set(`visible-${i}`, {
         offset: 1,
         hasEmittedState: true,
@@ -2453,7 +3793,10 @@ describe("CodexLogMonitor", () => {
         `{"type":"session_meta","payload":{"cwd":"/filler-${i}"}}\n`
       );
     }
-    monitor._poll();
+    for (let i = 0; i < 10; i++) {
+      monitor._poll();
+      if (!monitor._tracked.has(testFile) && !monitor._retiredTracked.has(testFile)) break;
+    }
 
     assert.strictEqual(monitor._tracked.has(testFile), false);
     assert.strictEqual(monitor._retiredTracked.has(testFile), false);
@@ -2506,7 +3849,10 @@ describe("CodexLogMonitor", () => {
         `{"type":"session_meta","payload":{"cwd":"/filler-${i}"}}\n`
       );
     }
-    monitor._poll();
+    for (let i = 0; i < 10; i++) {
+      monitor._poll();
+      if (!monitor._tracked.has(testFile) && !monitor._retiredTracked.has(testFile)) break;
+    }
 
     assert.strictEqual(monitor._tracked.has(testFile), false);
     assert.strictEqual(monitor._retiredTracked.has(testFile), false);
@@ -2550,7 +3896,10 @@ describe("CodexLogMonitor", () => {
       const fileName = `rollout-2026-03-25T15-14-51-019d23d4-f1a9-7633-b9c7-${suffix}.jsonl`;
       fs.writeFileSync(path.join(dateDir, fileName), '{"type":"session_meta","payload":{}}\n');
     }
-    monitor._poll();
+    for (let i = 0; i < 10; i++) {
+      monitor._poll();
+      if (!monitor._tracked.has(testFile) && !monitor._retiredTracked.has(testFile)) break;
+    }
     assert.strictEqual(monitor._tracked.has(testFile), false);
     assert.strictEqual(monitor._retiredTracked.has(testFile), false);
     events.length = 0;
@@ -2582,7 +3931,10 @@ describe("CodexLogMonitor", () => {
       const fileName = `rollout-2026-03-25T15-12-51-019d23d4-f1a9-7633-b9c7-${suffix}.jsonl`;
       fs.writeFileSync(path.join(dateDir, fileName), '{"type":"session_meta","payload":{}}\n');
     }
-    monitor._poll();
+    for (let i = 0; i < 10; i++) {
+      monitor._poll();
+      if (!monitor._tracked.has(testFile) && !monitor._retiredTracked.has(testFile)) break;
+    }
     assert.strictEqual(monitor._tracked.has(testFile), false);
     assert.strictEqual(monitor._retiredTracked.has(testFile), false);
     events.length = 0;
@@ -2592,7 +3944,7 @@ describe("CodexLogMonitor", () => {
     assert.deepStrictEqual(events.filter((entry) => entry.sid === EXPECTED_SID), []);
 
     fs.appendFileSync(testFile, '{"type":"event_msg","payload":{"type":"task_started"}}\n');
-    monitor._poll();
+    for (let i = 0; i < 10 && events.length === 0; i++) monitor._poll();
     assert.deepStrictEqual(events.filter((entry) => entry.sid === EXPECTED_SID), [{
       sid: EXPECTED_SID,
       state: "thinking",
@@ -2618,7 +3970,10 @@ describe("CodexLogMonitor", () => {
       const fileName = `rollout-2026-03-25T15-13-51-019d23d4-f1a9-7633-b9c7-${suffix}.jsonl`;
       fs.writeFileSync(path.join(dateDir, fileName), '{"type":"session_meta","payload":{}}\n');
     }
-    monitor._poll();
+    for (let i = 0; i < 10; i++) {
+      monitor._poll();
+      if (!monitor._tracked.has(testFile) && !monitor._retiredTracked.has(testFile)) break;
+    }
     assert.strictEqual(monitor._tracked.has(testFile), false);
     assert.strictEqual(monitor._retiredTracked.has(testFile), false);
     events.length = 0;
@@ -2635,7 +3990,7 @@ describe("CodexLogMonitor", () => {
     assert.deepStrictEqual(events.filter((entry) => entry.sid === EXPECTED_SID), []);
 
     fs.appendFileSync(testFile, '{"type":"event_msg","payload":{"type":"task_started"}}\n');
-    monitor._poll();
+    for (let i = 0; i < 10 && events.length === 0; i++) monitor._poll();
     assert.deepStrictEqual(events.filter((entry) => entry.sid === EXPECTED_SID), [{
       sid: EXPECTED_SID,
       state: "thinking",

@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const { createTelegramNativeRunner } = require("../src/telegram-native-runner");
+const { renderTelegramMarkdown } = require("../src/telegram-message-format");
 const { EVENTS } = require("../src/telegram-migration-state");
 const { createRemoteCardWorkRegistry } = require("../src/session-automation-remote");
 const { createFakeTelegramServer } = require("./fakes/telegram-server");
@@ -192,6 +193,7 @@ test("native runner requestApproval resolves allow for matching callback", async
   server.enqueue("sendMessage", (payload) => {
     assert.match(payload.text, /claude-code requests Bash/);
     assert.match(payload.text, /Summary: Run tests/);
+    assert.equal(payload.parse_mode, "HTML");
     const allCallbackData = payload.reply_markup.inline_keyboard
       .flatMap((row) => row)
       .map((button) => button.callback_data);
@@ -247,8 +249,9 @@ test("native runner requestApproval resolves allow for matching callback", async
   assert.ok(allowEdit, "tapping Allow rewrites the card body with the outcome");
   assert.equal(
     allowEdit.payload.text,
-    "claude-code requests Bash\n\nSummary: Run tests\n\n\u2705 Allowed",
+    "<b>claude-code requests Bash</b>\n\nSummary: Run tests\n\n<b>\u2705 Allowed</b>",
   );
+  assert.equal(allowEdit.payload.parse_mode, "HTML");
   assert.equal(allowEdit.payload.reply_markup, undefined);
   await runner.stop();
 });
@@ -691,7 +694,9 @@ test("native runner aborts a hung session-trust confirmation edit at its deadlin
   let trustOpenData = "";
   let pollCount = 0;
   let editAborted = false;
+  const calls = [];
   const transport = async ({ method, payload, signal }) => {
+    calls.push({ method, payload, signal });
     if (method === "sendMessage") {
       trustOpenData = payload.reply_markup.inline_keyboard.at(-1)[0].callback_data;
       return { ok: true, result: { message_id: 503, chat: { id: 123 } } };
@@ -762,6 +767,90 @@ test("native runner aborts a hung session-trust confirmation edit at its deadlin
 
   assert.equal(editAborted, true);
   assert.equal(runner._pendingApprovals.size, 1, "the ordinary approval remains pending");
+  assert.equal(
+    Array.from(runner._pendingApprovals.values())[0].trustConfirming,
+    false,
+    "failed confirmation edit must roll back the hidden trust-confirming state",
+  );
+  assert.equal(
+    calls.some((call) => call.method === "answerCallbackQuery" && call.payload.text === "Unavailable"),
+    true,
+    "the user must receive existing unavailable feedback instead of losing the keyboard",
+  );
+  const confirmationEdit = calls.find((call) => call.method === "editMessageText");
+  assert.equal(confirmationEdit.payload.parse_mode, "HTML");
+  await runner.stop();
+  assert.equal(await decisionPromise, null);
+});
+
+test("session-trust return failure keeps confirmation state and shows unavailable feedback", async () => {
+  let releaseFirstPoll;
+  let trustOpenData = "";
+  let pollCount = 0;
+  let editCount = 0;
+  const calls = [];
+  const transport = async ({ method, payload, signal }) => {
+    calls.push({ method, payload, signal });
+    if (method === "sendMessage") {
+      trustOpenData = payload.reply_markup.inline_keyboard.at(-1)[0].callback_data;
+      return { ok: true, result: { message_id: 504, chat: { id: 123 } } };
+    }
+    if (method === "getUpdates") {
+      pollCount += 1;
+      if (pollCount === 1) return new Promise((resolve) => { releaseFirstPoll = resolve; });
+      if (pollCount === 2) {
+        const id = trustOpenData.match(/^ct:([a-z0-9]+):open$/)[1];
+        const message = { message_id: 504, chat: { id: 123 } };
+        const from = { id: 777 };
+        return {
+          ok: true,
+          result: [
+            { update_id: 1, callback_query: { id: "return-open", from, message, data: trustOpenData } },
+            { update_id: 2, callback_query: { id: "return-no", from, message, data: `ct:${id}:no` } },
+          ],
+        };
+      }
+      return new Promise((resolve, reject) => {
+        signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+      });
+    }
+    if (method === "editMessageText") {
+      editCount += 1;
+      if (editCount === 2) {
+        return { ok: false, status: 400, error_code: 400, description: "Bad Request: message can't be edited" };
+      }
+      return { ok: true, result: { message_id: 504 } };
+    }
+    return { ok: true, result: true };
+  };
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+  });
+
+  await runner.start();
+  await tick();
+  const decisionPromise = runner.requestApproval({
+    title: "claude-code requests Bash",
+    detail: "Summary: Run tests",
+    canOfferSessionTrust: true,
+  });
+  await tick();
+  releaseFirstPoll({ ok: true, result: [] });
+  await tick();
+  await tick();
+
+  const entry = Array.from(runner._pendingApprovals.values())[0];
+  assert.equal(entry.trustConfirming, true, "the visible confirmation card must remain the state truth");
+  assert.equal(
+    calls.some((call) => call.method === "answerCallbackQuery" && call.payload.text === "Unavailable"),
+    true,
+  );
+  assert.equal(calls.some((call) => call.method === "editMessageReplyMarkup"), false);
+
   await runner.stop();
   assert.equal(await decisionPromise, null);
 });
@@ -915,8 +1004,9 @@ test("native runner claims a Telegram tap atomically so a racing abort can't dro
   assert.equal(edits.length, 1, "the late abort must not fire a second, conflicting card rewrite");
   assert.equal(
     edits[0].payload.text,
-    "claude-code requests Bash\n\nSummary: Run tests\n\n\u2705 Allowed",
+    "<b>claude-code requests Bash</b>\n\nSummary: Run tests\n\n<b>\u2705 Allowed</b>",
   );
+  assert.equal(edits[0].payload.parse_mode, "HTML");
   await runner.stop();
 });
 
@@ -1047,8 +1137,9 @@ test("native runner rejects forged suggestion callbacks and waits for a valid de
   assert.equal(edits.length, 1, "only the valid decision rewrites the card");
   assert.equal(
     edits[0].payload.text,
-    "claude-code requests Bash\n\nSummary: Run tests\n\n\u2705 Applied",
+    "<b>claude-code requests Bash</b>\n\nSummary: Run tests\n\n<b>\u2705 Applied</b>",
   );
+  assert.equal(edits[0].payload.parse_mode, "HTML");
   await runner.stop();
 });
 
@@ -1120,8 +1211,9 @@ test("native runner requestApproval ignores wrong user and resolves later callba
   assert.ok(denyEdit, "tapping Deny rewrites the card body with the outcome");
   assert.equal(
     denyEdit.payload.text,
-    "claude-code requests Bash\n\nSummary: Run tests\n\n\u274C Denied",
+    "<b>claude-code requests Bash</b>\n\nSummary: Run tests\n\n<b>\u274C Denied</b>",
   );
+  assert.equal(denyEdit.payload.parse_mode, "HTML");
   await runner.stop();
 });
 
@@ -1265,8 +1357,9 @@ test("native runner rewrites approval card with status when resolved outside Tel
   assert.equal(editCalls[0].payload.message_id, 99);
   assert.equal(
     editCalls[0].payload.text,
-    "claude-code requests Bash\n\nSummary: Run tests\n\n\u2705 Resolved outside Telegram",
+    "<b>claude-code requests Bash</b>\n\nSummary: Run tests\n\n<b>\u2705 Resolved outside Telegram</b>",
   );
+  assert.equal(editCalls[0].payload.parse_mode, "HTML");
   assert.equal(
     editCalls[0].payload.reply_markup,
     undefined,
@@ -1315,8 +1408,9 @@ test("native runner appends timeout status when an approval expires", async () =
   assert.equal(editCalls[0].payload.message_id, 77);
   assert.equal(
     editCalls[0].payload.text,
-    "claude-code requests Bash\n\nSummary: Run tests\n\n\u23F3 Timed out",
+    "<b>claude-code requests Bash</b>\n\nSummary: Run tests\n\n<b>\u23F3 Timed out</b>",
   );
+  assert.equal(editCalls[0].payload.parse_mode, "HTML");
 
   releaseFirstPoll({ ok: true, result: [] });
   await runner.stop();
@@ -1354,8 +1448,9 @@ test("native runner appends session-ended status when polling stops with a pendi
   assert.equal(editCalls[0].payload.message_id, 55);
   assert.equal(
     editCalls[0].payload.text,
-    "claude-code requests Bash\n\nSummary: Run tests\n\n\u23F9\uFE0F Session ended",
+    "<b>claude-code requests Bash</b>\n\nSummary: Run tests\n\n<b>\u23F9\uFE0F Session ended</b>",
   );
+  assert.equal(editCalls[0].payload.parse_mode, "HTML");
 });
 
 test("native runner falls back to stripping the keyboard when the status rewrite fails", async () => {
@@ -1414,6 +1509,84 @@ test("native runner requestApproval is disabled until polling with a valid paylo
   assert.equal(await runner.requestApproval({ title: "", detail: "y" }), null);
 });
 
+test("requestApproval plain-fallback preserves the keyboard and does not decide automatically", async () => {
+  const server = createFakeTelegramServer();
+  const controller = new AbortController();
+  server.enqueue("getUpdates", () => new Promise(() => {}));
+  server.enqueueError("sendMessage", {
+    status: 400,
+    description: "Bad Request: can't parse entities: Unsupported start tag",
+  });
+  server.enqueueOk("sendMessage", { message_id: 141, chat: { id: 123 } });
+  server.enqueueOk("editMessageText", { message_id: 141 });
+
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+  });
+  await runner.start();
+  await tick();
+
+  const decisionPromise = runner.requestApproval({
+    title: "claude-code requests Bash",
+    detail: "Summary: Run tests",
+  }, { signal: controller.signal });
+  await tick();
+
+  const sends = server.calls.filter((call) => call.method === "sendMessage");
+  assert.equal(sends.length, 2);
+  assert.equal(sends[0].payload.parse_mode, "HTML");
+  assert.equal(sends[1].payload.parse_mode, undefined);
+  assert.deepEqual(sends[1].payload.reply_markup, sends[0].payload.reply_markup);
+  assert.equal(runner._pendingApprovals.size, 1);
+
+  controller.abort();
+  assert.equal(await decisionPromise, null);
+  await runner.stop();
+});
+
+test("requestApproval does not start a plain fallback after the caller aborts on the HTML failure", async () => {
+  const controller = new AbortController();
+  const calls = [];
+  const transport = async ({ method, payload }) => {
+    calls.push({ method, payload });
+    if (method === "getUpdates") return new Promise(() => {});
+    if (method === "sendMessage") {
+      controller.abort();
+      return {
+        ok: false,
+        status: 400,
+        error_code: 400,
+        description: "Bad Request: can't parse entities: Unsupported start tag",
+      };
+    }
+    return { ok: true, result: true };
+  };
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+  });
+  await runner.start();
+  await tick();
+
+  const decision = await runner.requestApproval({
+    title: "claude-code requests Bash",
+    detail: "Summary: Run tests",
+  }, { signal: controller.signal });
+
+  assert.equal(decision, null);
+  const sends = calls.filter((call) => call.method === "sendMessage");
+  assert.equal(sends.length, 1, "aborted requests must not start the rendered-plain retry");
+  assert.equal(sends[0].payload.parse_mode, "HTML");
+  await runner.stop();
+});
+
 // ── R1a sendNotification ──────────────────────────────────────────────────
 
 // Start polling against a getUpdates that never resolves so `polling` stays
@@ -1443,7 +1616,82 @@ test("sendNotification posts a plain message with no inline keyboard", async () 
   const send = server.calls.find((c) => c.method === "sendMessage");
   assert.equal(send.payload.chat_id, "123");
   assert.equal(send.payload.text, "done: task X");
+  assert.equal(send.payload.parse_mode, undefined, "legacy strings must keep the existing wire contract");
   assert.equal(send.payload.reply_markup, undefined);
+  await runner.stop();
+});
+
+test("sendNotification sends formatted messages as HTML", async () => {
+  const server = createFakeTelegramServer();
+  const runner = await startPolling(server);
+  server.enqueueOk("sendMessage", { message_id: 8 });
+
+  const message = renderTelegramMarkdown("**done** <redacted:token>");
+  const res = await runner.sendNotification(message);
+  assert.deepEqual(res, { ok: true, messageId: 8 });
+  const send = server.calls.find((call) => call.method === "sendMessage");
+  assert.equal(send.payload.parse_mode, "HTML");
+  assert.equal(send.payload.text, "<b>done</b> &lt;redacted:token&gt;");
+  await runner.stop();
+});
+
+test("sendNotification retries rendered plain text only for entity-parser 400", async () => {
+  const server = createFakeTelegramServer();
+  const runner = await startPolling(server);
+  server.enqueueError("sendMessage", {
+    status: 400,
+    description: "Bad Request: can't parse entities: Unsupported start tag at byte offset 0",
+  });
+  server.enqueueOk("sendMessage", { message_id: 81 });
+
+  const message = renderTelegramMarkdown("**done**");
+  const res = await runner.sendNotification(message);
+  assert.deepEqual(res, { ok: true, messageId: 81 });
+  const sends = server.calls.filter((call) => call.method === "sendMessage");
+  assert.equal(sends.length, 2);
+  assert.equal(sends[0].payload.parse_mode, "HTML");
+  assert.equal(sends[0].payload.text, "<b>done</b>");
+  assert.equal(sends[1].payload.parse_mode, undefined);
+  assert.equal(sends[1].payload.text, "done");
+  await runner.stop();
+});
+
+test("sendNotification does not plain-retry unrelated 400 responses", async () => {
+  const server = createFakeTelegramServer();
+  const runner = await startPolling(server);
+  server.enqueueError("sendMessage", {
+    status: 400,
+    description: "Bad Request: message is too long",
+  });
+
+  const res = await runner.sendNotification(renderTelegramMarkdown("**done**"));
+  assert.deepEqual(res, { ok: false, errorClass: "400" });
+  assert.equal(server.calls.filter((call) => call.method === "sendMessage").length, 1);
+  await runner.stop();
+});
+
+test("sendNotification keeps the post-429 retry plain after HTML parse fallback", async () => {
+  const server = createFakeTelegramServer();
+  const slept = [];
+  const runner = await startPolling(server, {
+    sleep: async (ms) => { slept.push(ms); },
+  });
+  server.enqueueError("sendMessage", {
+    status: 400,
+    description: "Bad Request: CAN'T PARSE ENTITIES at byte offset 4",
+  });
+  server.enqueueError("sendMessage", { status: 429, parameters: { retry_after: 1 } });
+  server.enqueueOk("sendMessage", { message_id: 82 });
+
+  const res = await runner.sendNotification(renderTelegramMarkdown("**done**"));
+  assert.deepEqual(res, { ok: true, messageId: 82 });
+  assert.deepEqual(slept, [1000]);
+  const sends = server.calls.filter((call) => call.method === "sendMessage");
+  assert.equal(sends.length, 3);
+  assert.equal(sends[0].payload.parse_mode, "HTML");
+  assert.equal(sends[1].payload.parse_mode, undefined);
+  assert.equal(sends[2].payload.parse_mode, undefined);
+  assert.equal(sends[2].payload.text, "done");
   await runner.stop();
 });
 

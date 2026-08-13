@@ -11,12 +11,14 @@
   let customizingThemeId = null;
   let customizationSelectionPendingThemeId = null;
   let customizationSelectionSeq = 0;
+  let mountedCustomizationControls = null;
 
   function t(key) {
     return helpers.t(key);
   }
 
   function render(parent) {
+    mountedCustomizationControls = null;
     const detailTheme = Array.isArray(runtime.themeList)
       ? runtime.themeList.find((theme) => (
         theme
@@ -259,10 +261,17 @@
 
   function closeThemeCustomization() {
     customizingThemeId = null;
+    mountedCustomizationControls = null;
     ops.requestRender({ content: true });
   }
 
   function renderThemeDetail(parent, theme) {
+    mountedCustomizationControls = {
+      themeId: theme.id,
+      petTint: null,
+      petAccessory: null,
+      holidayAccessoryEnabled: null,
+    };
     const back = document.createElement("button");
     back.type = "button";
     back.className = "theme-detail-back";
@@ -407,6 +416,10 @@
       picker.setDisabled(options.length === 0);
     }
 
+    if (mountedCustomizationControls && mountedCustomizationControls.themeId === theme.id) {
+      mountedCustomizationControls.petTint = syncFromSnapshot;
+    }
+
     control.appendChild(picker.element);
     row.appendChild(text);
     row.appendChild(control);
@@ -471,6 +484,10 @@
       picker.setDisabled(options.length === 0);
     }
 
+    if (mountedCustomizationControls && mountedCustomizationControls.themeId === theme.id) {
+      mountedCustomizationControls.petAccessory = syncFromSnapshot;
+    }
+
     control.appendChild(picker.element);
     row.appendChild(text);
     row.appendChild(control);
@@ -517,6 +534,14 @@
       helpers.setSwitchVisual(sw, visualEnabled, { pending });
     }
 
+    function syncFromSnapshot() {
+      setVisual(getHolidayAccessoryEnabled(theme.id));
+    }
+
+    if (mountedCustomizationControls && mountedCustomizationControls.themeId === theme.id) {
+      mountedCustomizationControls.holidayAccessoryEnabled = syncFromSnapshot;
+    }
+
     function run(ev) {
       if (ev && typeof ev.preventDefault === "function") ev.preventDefault();
       if (sw.classList.contains("pending")) return;
@@ -556,6 +581,25 @@
     row.appendChild(control);
     setVisual(visualEnabled);
     return row;
+  }
+
+  function patchInPlace(changes) {
+    if (!changes || typeof changes !== "object" || !mountedCustomizationControls) return false;
+    if (mountedCustomizationControls.themeId !== customizingThemeId) return false;
+
+    const keys = Object.keys(changes);
+    const customizationKeys = new Set([
+      "petTint",
+      "petAccessory",
+      "holidayAccessoryEnabled",
+    ]);
+    if (keys.length === 0 || !keys.every((key) => customizationKeys.has(key))) return false;
+
+    for (const key of keys) {
+      const syncControl = mountedCustomizationControls[key];
+      if (typeof syncControl === "function") syncControl();
+    }
+    return true;
   }
 
   function buildThemeActions() {
@@ -975,10 +1019,12 @@
     readers = core.readers;
     core.tabs.theme = {
       render,
+      patchInPlace,
       onExit() {
         customizationSelectionSeq += 1;
         customizingThemeId = null;
         customizationSelectionPendingThemeId = null;
+        mountedCustomizationControls = null;
       },
     };
   }

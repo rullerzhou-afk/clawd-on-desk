@@ -138,7 +138,11 @@ function createCloakInspector(options = {}) {
       vdeskQuery = (hwnd) => {
         const out = [0];
         const hr = koffi.call(fnIsOnCurrent, IsOnCurrentProto, mgr, hwnd, out);
-        return hr === 0 ? !!out[0] : null;
+        if (hr !== 0) {
+          log(`cloak-recovery vdesk query failed (HRESULT=0x${(hr >>> 0).toString(16)})`);
+          return null;
+        }
+        return !!out[0];
       };
       const fnRelease = koffi.decode(vtbl, 2 * ptrSize, "void *");
       const ReleaseProto = koffi.proto("uint __stdcall CloakIUnknownRelease(void *self)");
@@ -184,7 +188,8 @@ function createCloakInspector(options = {}) {
       if (!hwnd) return null;
       try {
         return vdeskQuery(hwnd);
-      } catch {
+      } catch (err) {
+        log(`cloak-recovery vdesk query threw: ${err && err.message}`);
         return null;
       }
     },

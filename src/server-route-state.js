@@ -8,7 +8,16 @@ const {
 const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
+  CLAWD_HOOK_PID_HEADER,
+  CLAWD_LEGACY_PROCESS_CACHE_HEADER,
+  CLAWD_PROCESS_INSTANCE_HEADER,
 } = require("../hooks/server-config");
+const { isCodexDesktopOriginator } = require("../hooks/codex-originator");
+const {
+  assessWindowsProcessChainRequest,
+  buildShadowComparison,
+  processMetadataForState,
+} = require("./server-windows-process-metadata");
 const {
   normalizeHookToolUseId,
   findPendingPermissionForStateEvent,
@@ -32,6 +41,7 @@ const { CLAUDE_QUOTA_FIELDS } = require("../hooks/claude-rate-limits");
 const { CODEX_QUOTA_FIELDS } = require("../hooks/codex-rate-limits");
 const { extractPermissionToolInput } = require("../hooks/kimi-hook");
 const { normalizeCodexUserInputWire } = require("../hooks/codex-user-input");
+const { sanitizeShadowRecord } = require("./windows-process-chain-shadow-log");
 
 // /state POST body size cap. Raised 1024 → 4096 → 16384: a CJK
 // assistant_last_output (3 UTF-8 bytes/char) on a Stop completion blew past
@@ -146,6 +156,10 @@ function handleStatePost(req, res, options) {
     isWinHost = process.platform === "win32",
     captureForegroundWindowsTerminal = () => null,
     remoteProfile = null,
+    isClaudeStatuslineMetadataAllowed = () => true,
+    windowsProcessChainRuntime = null,
+    resolveWindowsProcessMetadata = null,
+    recordWindowsProcessChainShadow = null,
   } = options;
   let body = "";
   let bodySize = 0;
@@ -164,6 +178,9 @@ function handleStatePost(req, res, options) {
     }
     try {
       const data = JSON.parse(body);
+      const requestHeaders = req && req.headers && typeof req.headers === "object"
+        ? req.headers
+        : {};
       const agentIdentity = resolveHookAgentId(data, {
         customAgentIds: typeof ctx.getCustomAgentIds === "function" ? ctx.getCustomAgentIds() : [],
       });
@@ -347,6 +364,14 @@ function handleStatePost(req, res, options) {
         res.end();
         return;
       }
+      // The persisted preference authorizes statusline telemetry only for the
+      // local profile. Remote SSH profiles have their own deployed lifecycle
+      // and must keep reporting even when this machine's local statusline is
+      // disabled. A WSL session still belongs to profileId="local" — its
+      // client-supplied host label must not bypass the local gate.
+      const localClaudeStatuslineMetadataAllowed = agentId !== "claude-code"
+        || trustedProfileId !== "local"
+        || isClaudeStatuslineMetadataAllowed() === true;
       // Account quota goes to the session-independent per-source store,
       // regardless of POST shape — it must survive with no live session at
       // all ("check the remote's quota before starting work"), so it is
@@ -356,12 +381,13 @@ function handleStatePost(req, res, options) {
       // remote's reverse tunnel lands on the same local port) — same trust
       // model as the session cards' host grouping: machines the user
       // deployed Clawd hooks to. The store shape-sanitizes the label.
+      const acceptedClaudeQuota = localClaudeStatuslineMetadataAllowed ? claudeQuota : null;
       if (typeof ctx.updateAccountQuota === "function"
-        && (antigravityQuota || claudeQuota || codexQuota || codexSparkQuota)) {
+        && (antigravityQuota || acceptedClaudeQuota || codexQuota || codexSparkQuota)) {
         const quotaSource = trustedProfileId === "local" ? host : `remote:${trustedProfileId}`;
         ctx.updateAccountQuota(quotaSource, {
           antigravityQuota,
-          claudeQuota,
+          claudeQuota: acceptedClaudeQuota,
           codexQuota,
           ...(codexSparkQuota ? { codexSparkQuota } : {}),
           ...(trustedProfileId === "local" ? {} : { displayHost: host }),
@@ -410,8 +436,25 @@ function handleStatePost(req, res, options) {
         // hook events the diagnostics exist to show. 204 either way — the
         // statusline script never reads the response, and "session unknown"
         // is the designed drop, not an error.
-        if (contextUsage && typeof ctx.updateSessionMetadata === "function") {
-          ctx.updateSessionMetadata(session_id || "default", { contextUsage });
+        if (typeof ctx.updateSessionMetadata === "function") {
+          const metaUpdate = {};
+          if (
+            contextUsage
+            && localClaudeStatuslineMetadataAllowed
+          ) {
+            metaUpdate.contextUsage = contextUsage;
+            metaUpdate.contextUsageOrigin = agentId === "claude-code" && contextUsage.source === "claude"
+              ? "claude-statusline"
+              : null;
+          }
+          // OpenCode title changes ride the same metadata-only channel (the
+          // placeholder → real title swap arrives on session.updated, which
+          // maps to no Clawd state). Not gated on the Claude telemetry flag —
+          // it's not Claude statusline data.
+          if (sessionTitle) metaUpdate.sessionTitle = sessionTitle;
+          if (Object.keys(metaUpdate).length > 0) {
+            ctx.updateSessionMetadata(session_id || "default", metaUpdate);
+          }
         }
         res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
         res.end();
@@ -472,7 +515,90 @@ function handleStatePost(req, res, options) {
         const effHeadless = headless === true
           || codexHookState.headless === true
           || (existingSession && existingSession.headless) === true;
-        const effSourcePid = source_pid || (existingSession && existingSession.sourcePid) || null;
+        const processChainAssessment = codexUserInput
+          ? { eligible: false, reason: "codex-user-input-outside-b1a", mode: "legacy", hookPid: null }
+          : assessWindowsProcessChainRequest({
+              agentId,
+              runtime: windowsProcessChainRuntime,
+              isWinHost,
+              remoteProfile,
+              effectiveHost: effHost,
+              effectiveWslDistro: effWslDistro,
+              effectivePlatform: effPlatform,
+              effectiveHeadless: effHeadless,
+              hookPidHeader: requestHeaders[CLAWD_HOOK_PID_HEADER.toLowerCase()],
+              instanceGeneration: requestHeaders[CLAWD_PROCESS_INSTANCE_HEADER.toLowerCase()],
+            });
+        let processChainResult = null;
+        if (processChainAssessment.eligible && typeof resolveWindowsProcessMetadata === "function") {
+          try {
+            processChainResult = resolveWindowsProcessMetadata({
+              agentId,
+              hookPid: processChainAssessment.hookPid,
+              preferAgentPid: agentId === "codex" && isCodexDesktopOriginator(codexOriginator),
+            });
+          } catch {
+            processChainResult = {
+              status: "unavailable",
+              reason: "resolver-threw",
+              sourcePid: null,
+              agentPid: null,
+              pidChain: null,
+              editor: null,
+            };
+          }
+        }
+        const legacyProcessMetadata = {
+          sourcePid: source_pid,
+          agentPid,
+          pidChain,
+          editor,
+        };
+        const authoritativeProcessMetadata = processMetadataForState(processChainResult);
+        if (
+          processChainAssessment.mode === "b1a-authoritative"
+          && agentId === "cursor-agent"
+          && !authoritativeProcessMetadata.editor
+        ) {
+          // Cursor's editor label is an adapter-owned constant, not ancestry
+          // output. Preserve it even when the authoritative walk fails.
+          authoritativeProcessMetadata.editor = "cursor";
+        }
+        const replaceProcessMetadata = processChainAssessment.eligible
+          && processChainAssessment.mode === "b1a-authoritative";
+        const effectiveProcessMetadata = replaceProcessMetadata
+          ? authoritativeProcessMetadata
+          : legacyProcessMetadata;
+        if (processChainAssessment.eligible && processChainAssessment.mode === "shadow") {
+          const shadowRecord = {
+            channel: "state",
+            agentId,
+            event,
+            status: processChainResult && processChainResult.status || "unavailable",
+            reason: processChainResult && processChainResult.reason || "resolver-unavailable",
+            comparisonClass: processChainResult && processChainResult.comparisonClass || null,
+            agentSeenBeforeFailure: processChainResult && processChainResult.agentSeenBeforeFailure === true,
+            failureStage: processChainResult && processChainResult.failureStage || null,
+            errorKind: processChainResult && processChainResult.errorKind || null,
+            depth: processChainResult && processChainResult.depth || 0,
+            durationMs: processChainResult && processChainResult.durationMs || 0,
+            cacheSource: requestHeaders[CLAWD_LEGACY_PROCESS_CACHE_HEADER.toLowerCase()] || null,
+            rawEditor: processChainResult && processChainResult.rawEditor || null,
+            effectiveEditor: authoritativeProcessMetadata.editor,
+            legacyMetadata: legacyProcessMetadata,
+            candidateMetadata: authoritativeProcessMetadata,
+            comparison: buildShadowComparison(legacyProcessMetadata, processChainResult),
+          };
+          if (typeof recordWindowsProcessChainShadow === "function") {
+            try { recordWindowsProcessChainShadow(shadowRecord); } catch {}
+          } else if (typeof ctx.debugLog === "function") {
+            const safeShadowRecord = sanitizeShadowRecord(shadowRecord);
+            if (safeShadowRecord) ctx.debugLog(`win-chain-shadow ${JSON.stringify(safeShadowRecord)}`);
+          }
+        }
+        const effSourcePid = effectiveProcessMetadata.sourcePid
+          || (!replaceProcessMetadata && existingSession && existingSession.sourcePid)
+          || null;
         // effectiveSourcePid gate: the focus entry point is a hard sourcePid
         // requirement (src/session-focus.js:41, src/main.js:1668) — sampling
         // for a session nobody can focus yet risks mis-attributing whatever
@@ -480,8 +606,12 @@ function handleStatePost(req, res, options) {
         // session. A cache HIT (server already knows sourcePid) still samples
         // normally; only a miss on a completely unknown session skips.
         let sampledWtHwnd = null;
-        const wtHwndSamplingEligible = !wtHwnd
-          && event === "UserPromptSubmit"
+        const authoritativeCodexSessionStart = replaceProcessMetadata
+          && agentId === "codex"
+          && event === "SessionStart";
+        const trustedIncomingWtHwnd = replaceProcessMetadata ? null : wtHwnd;
+        const wtHwndSamplingEligible = !trustedIncomingWtHwnd
+          && (event === "UserPromptSubmit" || authoritativeCodexSessionStart)
           && isWinHost
           && !effHost
           && !effWslDistro
@@ -491,10 +621,44 @@ function handleStatePost(req, res, options) {
         if (wtHwndSamplingEligible) {
           try { sampledWtHwnd = captureForegroundWindowsTerminal(); } catch { sampledWtHwnd = null; }
         }
+        // Shadow SessionStart comparison intentionally bypasses the legacy
+        // `!wtHwnd` gate: the point is to compare a server-side sample with
+        // the hook-provided HWND. A foreground change between the two sample
+        // times is diagnostic, not a strict parity failure.
+        if (
+          processChainAssessment.eligible
+          && processChainAssessment.mode === "shadow"
+          && agentId === "codex"
+          && event === "SessionStart"
+          && isWinHost
+          && !effHost
+          && !effWslDistro
+          && effPlatform !== "webui"
+          && !effHeadless
+          && !!effSourcePid
+        ) {
+          let shadowWtHwnd = null;
+          try { shadowWtHwnd = captureForegroundWindowsTerminal(); } catch { shadowWtHwnd = null; }
+          const hwndShadowRecord = {
+            channel: "state",
+            agentId,
+            event,
+            kind: "wt-hwnd",
+            hookPresent: !!wtHwnd,
+            serverPresent: !!shadowWtHwnd,
+            equal: !!wtHwnd && !!shadowWtHwnd && wtHwnd === shadowWtHwnd,
+            timingSensitive: true,
+          };
+          if (typeof recordWindowsProcessChainShadow === "function") {
+            try { recordWindowsProcessChainShadow(hwndShadowRecord); } catch {}
+          } else if (typeof ctx.debugLog === "function") {
+            ctx.debugLog(`win-chain-shadow ${JSON.stringify(hwndShadowRecord)}`);
+          }
+        }
         // Failure/ineligibility red line: never anything but null here — no
         // hook-side PowerShell fallback is ever triggered by this route.
-        const effectiveWtHwnd = wtHwnd || sampledWtHwnd || null;
-        const wtHwndSource = wtHwnd
+        const effectiveWtHwnd = trustedIncomingWtHwnd || sampledWtHwnd || null;
+        const wtHwndSource = trustedIncomingWtHwnd
           ? "hook"
           : (sampledWtHwnd
             ? "server"
@@ -603,15 +767,15 @@ function handleStatePost(req, res, options) {
           ctx.setState(state, safeSvg);
         } else {
           ctx.updateSession(sid, state, event, {
-            sourcePid: source_pid,
+            sourcePid: effectiveProcessMetadata.sourcePid,
             wtHwnd: effectiveWtHwnd,
             cwd,
-            editor,
-            pidChain,
+            editor: effectiveProcessMetadata.editor,
+            pidChain: effectiveProcessMetadata.pidChain,
             tmuxSocket,
             tmuxClient,
             orcaPaneKey,
-            agentPid,
+            agentPid: effectiveProcessMetadata.agentPid,
             agentId,
             ...(subagentId ? { subagentId } : {}),
             ...(subagentType ? { subagentType } : {}),
@@ -629,6 +793,9 @@ function handleStatePost(req, res, options) {
             displayHint: display_svg,
             sessionTitle,
             contextUsage,
+            contextUsageOrigin: agentId === "claude-code" && contextUsage && contextUsage.source === "claude"
+              ? "claude-transcript"
+              : null,
             assistantLastOutput,
             assistantLastOutputTruncated,
             toolName,
@@ -642,6 +809,7 @@ function handleStatePost(req, res, options) {
             permissionGateId,
             preserveState,
             hookSource,
+            ...(codexHookState.turnId ? { turnId: codexHookState.turnId } : {}),
             backgroundTasksCount,
             sessionCronsCount,
             stopHookActive,
@@ -649,6 +817,7 @@ function handleStatePost(req, res, options) {
             sessionAutomationIdentity,
             ...(codexUserInput ? { transientPermissionEvent: true } : {}),
             ...(agentIdentity.defaulted ? { agentIdDefaulted: true } : {}),
+            ...(replaceProcessMetadata ? { replaceProcessMetadata: true } : {}),
           });
         }
         // Decorative only: the lifecycle update above remains authoritative.

@@ -9,6 +9,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
+const { SUPPORTED_LANGS } = require("../src/i18n");
 
 const RENDERER_SRC = fs.readFileSync(
   path.join(__dirname, "..", "src", "bubble-renderer.js"),
@@ -63,7 +64,8 @@ describe("bubble-renderer MCP labeling (issue #445)", () => {
   it("defines the new title key in every supported language", () => {
     // Mirrors test/i18n.test.js parity, scoped to the key this change adds.
     const count = (RENDERER_SRC.match(/codexToolApproval:/g) || []).length;
-    assert.strictEqual(count, 5, "expected codexToolApproval in all 5 locales");
+    assert.strictEqual(count, SUPPORTED_LANGS.length,
+      `expected codexToolApproval in all ${SUPPORTED_LANGS.length} supported locales`);
   });
 });
 

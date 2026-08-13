@@ -5,11 +5,20 @@ const path = require("node:path");
 const { describe, it } = require("node:test");
 
 const {
+  AGENT_CLEANERS,
+  AGENT_DISPLAY_NAMES,
   MANAGED_AGENT_IDS,
   buildCleanupOptionsForHome,
   cleanupIntegrations,
 } = require("../hooks/cleanup-integrations");
 const { resolvePluginDir } = require("../hooks/opencode-install");
+const { registerQwenWorkHooks } = require("../hooks/qwenwork-install");
+const { registerCodexHooks, CODEX_OFFICIAL_HOOK_EVENTS } = require("../hooks/codex-install");
+const { stableCodexHookPaths } = require("../hooks/codex-install-utils");
+const agentCommands = require("../src/settings-actions-agents");
+const { MANAGED_CLEANUP_AGENT_IDS, commandRegistry } = require("../src/settings-actions");
+const { createIntegrationSyncRuntime } = require("../src/integration-sync");
+const prefs = require("../src/prefs");
 
 function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -62,6 +71,40 @@ describe("cleanupIntegrations", () => {
     assert.strictEqual(plan.env.REASONIX_HOME, undefined);
     assert.strictEqual(plan.byAgent.hermes.env.LOCALAPPDATA, targetLocalAppData);
     assert.notStrictEqual(plan.byAgent.hermes.hermesHome, path.join(inheritedLocalAppData, "hermes"));
+  });
+
+  it("cleans hooks and stable launchers from an explicit custom CODEX_HOME", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cleanup-custom-codex-"));
+    const homeDir = path.join(root, "home");
+    const codexDir = path.join(root, "custom-codex");
+    fs.mkdirSync(codexDir, { recursive: true });
+
+    try {
+      registerCodexHooks({
+        silent: true,
+        codexDir,
+        nodeBin: process.execPath,
+        platform: process.platform,
+      });
+      const stableDir = stableCodexHookPaths(codexDir).stableDir;
+      assert.strictEqual(fs.existsSync(stableDir), true);
+
+      const result = cleanupIntegrations({
+        homeDir,
+        env: { CODEX_HOME: codexDir },
+        backup: true,
+        silent: true,
+        hermesCommand: false,
+      });
+      const codex = result.agents.find((entry) => entry.agentId === "codex");
+
+      assert.strictEqual(codex.status, "applied");
+      assert.strictEqual(codex.removed, CODEX_OFFICIAL_HOOK_EVENTS.length);
+      assert.strictEqual(fs.existsSync(stableDir), false);
+      assert.deepStrictEqual(readJson(path.join(codexDir, "hooks.json")).hooks, {});
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("cleans Reasonix hooks from both current and legacy Windows homes", () => {
@@ -292,6 +335,47 @@ describe("cleanupIntegrations", () => {
     }
   });
 
+  // ── Cross-list completeness ────────────────────────────────────────────────
+  // #843: cleanup kept its OWN managed list, so an agent could be added to
+  // INSTALLABLE_AGENT_IDS (Settings Install/Uninstall) and to
+  // MANAGED_CLEANUP_AGENT_IDS (About cleanup flips the prefs flags) while
+  // cleanup-integrations silently had no cleaner for it. Every list-driven test
+  // in this file iterates MANAGED_AGENT_IDS, so the gap self-certified as green:
+  // the missing agent simply was not iterated. Lock the three lists together.
+  it("keeps MANAGED_AGENT_IDS in lockstep with the installable and About-cleanup lists", () => {
+    const managed = [...MANAGED_AGENT_IDS].sort();
+    const installable = [...agentCommands.INSTALLABLE_AGENT_IDS].sort();
+    const aboutCleanup = [...MANAGED_CLEANUP_AGENT_IDS].sort();
+
+    assert.deepStrictEqual(
+      managed,
+      installable,
+      "an agent Settings can Install/Uninstall must have a cleanup entry here — otherwise "
+      + "integration-sync's real uninstall fallback returns false and the hooks stay on disk"
+    );
+    assert.deepStrictEqual(
+      managed,
+      aboutCleanup,
+      "About cleanup flips integrationInstalled/enabled to false for every MANAGED_CLEANUP_AGENT_ID; "
+      + "any id missing here would leave prefs claiming uninstalled while the hooks survive"
+    );
+  });
+
+  it("gives every managed agent a cleaner, path overrides and a display name", () => {
+    const homeDir = path.join(os.tmpdir(), "clawd-cleanup-completeness-home");
+    const plan = buildCleanupOptionsForHome(homeDir, { hermesCommand: false, silent: true });
+
+    const missingCleaner = MANAGED_AGENT_IDS.filter((id) => typeof AGENT_CLEANERS[id] !== "function");
+    const missingOptions = MANAGED_AGENT_IDS.filter((id) => !plan.byAgent[id]);
+    const missingDisplayName = MANAGED_AGENT_IDS.filter((id) => !AGENT_DISPLAY_NAMES[id]);
+
+    // These three are exactly what integration-sync's real uninstall fallback
+    // dereferences before it can uninstall anything.
+    assert.deepStrictEqual(missingCleaner, []);
+    assert.deepStrictEqual(missingOptions, []);
+    assert.deepStrictEqual(missingDisplayName, []);
+  });
+
   it("marks the claude-code agent failed when the precomputed cleanup result is an error", () => {
     const homeDir = path.join(os.tmpdir(), "clawd-cleanup-claude-error-home");
     const result = cleanupIntegrations({
@@ -306,5 +390,284 @@ describe("cleanupIntegrations", () => {
     assert.strictEqual(claudeAgent.status, "failed");
     assert.strictEqual(claudeAgent.error, "queue disposed");
     assert.strictEqual(result.summary.failed >= 1, true);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// #843 — QwenWork uninstall must close the loop all the way to disk.
+//
+// The PR wired qwenwork into INSTALLABLE_AGENT_IDS (Settings Install/Uninstall)
+// and MANAGED_CLEANUP_AGENT_IDS (About cleanup), but not into
+// cleanup-integrations. integration-sync's REAL uninstall fallback resolves its
+// cleaner from AGENT_CLEANERS, so Uninstall returned
+// "No automatic integration uninstall is available for qwenwork" and About
+// cleanup flipped the prefs flags to false while ~/.QwenWorkCN/settings.json
+// kept every Clawd hook. These tests run the real fallback — an injected fake
+// uninstall impl would have passed against the broken build.
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("QwenWork integration cleanup (#843)", () => {
+  const CLAWD_HOOK = (event) => `node "C:/clawd/hooks/qwenwork-hook.js" "${event}"`;
+  const USER_HOOK = 'node "C:/me/hooks/my-audit.js"';
+  const THIRD_PARTY_HOOK = 'node "C:/vendor/telemetry.js"';
+  const IMPOSTOR_HOOK = 'node "C:/me/hooks/not-ours.js"';
+
+  // A Clawd-owned entry written by an older build that used the PowerShell
+  // -EncodedCommand wrapper: the marker only exists inside the base64 blob.
+  function encodedClawdHook(event) {
+    const inner = `& "node" "C:/clawd/hooks/qwenwork-hook.js" "${event}"`;
+    const b64 = Buffer.from(inner, "utf16le").toString("base64");
+    return `powershell -NoProfile -NonInteractive -EncodedCommand ${b64}`;
+  }
+
+  function seedQwenWorkSettings(homeDir) {
+    const settingsPath = path.join(homeDir, ".QwenWorkCN", "settings.json");
+    writeJson(settingsPath, {
+      hooks: {
+        PreToolUse: [
+          { matcher: "*", hooks: [{ name: "clawd", type: "command", command: CLAWD_HOOK("PreToolUse") }] },
+          { matcher: "*", hooks: [{ name: "my-audit", type: "command", command: USER_HOOK }] },
+        ],
+        // Mixed entry: ours shares one entry with a third-party hook. Only ours
+        // may be stripped; the entry itself has to survive with the other hook.
+        Stop: [
+          {
+            matcher: "*",
+            hooks: [
+              { name: "clawd", type: "command", command: CLAWD_HOOK("Stop") },
+              { name: "vendor-telemetry", type: "command", command: THIRD_PARTY_HOOK },
+            ],
+          },
+        ],
+        // Legacy Clawd-owned entry (marker hidden inside -EncodedCommand).
+        SessionEnd: [
+          { matcher: "*", hooks: [{ name: "clawd", type: "command", command: encodedClawdHook("SessionEnd") }] },
+        ],
+        // A user hook that merely calls itself "clawd" — name is NOT ownership.
+        Notification: [
+          { matcher: "*", hooks: [{ name: "clawd", type: "command", command: IMPOSTOR_HOOK }] },
+        ],
+      },
+      // Unrelated user config must be preserved verbatim.
+      theme: "dark",
+    });
+    return settingsPath;
+  }
+
+  function assertOnlyClawdHooksRemoved(settingsPath) {
+    const after = readJson(settingsPath);
+    assert.deepStrictEqual(after.hooks.PreToolUse, [
+      { matcher: "*", hooks: [{ name: "my-audit", type: "command", command: USER_HOOK }] },
+    ]);
+    assert.deepStrictEqual(
+      after.hooks.Stop,
+      [{ matcher: "*", hooks: [{ name: "vendor-telemetry", type: "command", command: THIRD_PARTY_HOOK }] }],
+      "a mixed entry keeps the third-party hook and drops only the qwenwork-hook.js one"
+    );
+    assert.deepStrictEqual(after.hooks.SessionEnd, [], "the legacy -EncodedCommand Clawd entry is ours too");
+    assert.deepStrictEqual(
+      after.hooks.Notification,
+      [{ matcher: "*", hooks: [{ name: "clawd", type: "command", command: IMPOSTOR_HOOK }] }],
+      "a name of clawd alone must never authorize deleting a user hook"
+    );
+    assert.strictEqual(after.theme, "dark");
+    return after;
+  }
+
+  it("cleanupIntegrations removes only marker-scoped Clawd hooks and is idempotent", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cleanup-qwenwork-"));
+    const homeDir = path.join(root, "home");
+    const settingsPath = seedQwenWorkSettings(homeDir);
+    const before = readJson(settingsPath);
+
+    try {
+      const result = cleanupIntegrations({ homeDir, backup: true, silent: true, hermesCommand: false });
+      const qwenwork = result.agents.find((entry) => entry.agentId === "qwenwork");
+
+      assert.ok(qwenwork, "qwenwork must be one of the agents cleanup iterates");
+      assert.strictEqual(qwenwork.displayName, "QwenWork");
+      assert.strictEqual(qwenwork.status, "applied");
+      assert.strictEqual(qwenwork.removed, 3, "PreToolUse + Stop + legacy encoded SessionEnd");
+      assert.strictEqual(qwenwork.error, null);
+      assert.strictEqual(qwenwork.backupPaths.length, 1);
+      assert.deepStrictEqual(readJson(qwenwork.backupPaths[0]), before);
+      assert.deepStrictEqual(listCleanupBackups(path.dirname(settingsPath)), [path.basename(qwenwork.backupPaths[0])]);
+
+      assertOnlyClawdHooksRemoved(settingsPath);
+
+      const afterFirst = fs.readFileSync(settingsPath, "utf8");
+      const second = cleanupIntegrations({ homeDir, backup: true, silent: true, hermesCommand: false });
+      const qwenworkSecond = second.agents.find((entry) => entry.agentId === "qwenwork");
+
+      assert.strictEqual(qwenworkSecond.status, "skipped");
+      assert.strictEqual(qwenworkSecond.removed, 0);
+      assert.deepStrictEqual(qwenworkSecond.backupPaths, []);
+      assert.deepStrictEqual(listCleanupBackups(path.dirname(settingsPath)), [path.basename(qwenwork.backupPaths[0])]);
+      assert.strictEqual(
+        fs.readFileSync(settingsPath, "utf8"),
+        afterFirst,
+        "a second cleanup must not rewrite the file at all"
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("integration-sync's real uninstall fallback removes the hooks from disk", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-uninstall-qwenwork-"));
+    const homeDir = path.join(root, "home");
+    const settingsPath = seedQwenWorkSettings(homeDir);
+    const before = readJson(settingsPath);
+
+    try {
+      // No uninstallIntegrationImpls: this exercises the AGENT_CLEANERS +
+      // buildCleanupOptionsForHome path, which is what production uses.
+      const runtime = createIntegrationSyncRuntime({
+        ctx: { cleanupHomeDir: homeDir, cleanupOptions: { backup: true, hermesCommand: false } },
+      });
+      const result = runtime.uninstallIntegrationForAgent("qwenwork");
+
+      assert.notStrictEqual(
+        result,
+        false,
+        "false makes Settings report: No automatic integration uninstall is available for qwenwork"
+      );
+      assert.strictEqual(result.removed, 3);
+      assert.strictEqual(result.changed, true);
+      assert.ok(result.backupPath);
+      assert.deepStrictEqual(readJson(result.backupPath), before);
+      assertOnlyClawdHooksRemoved(settingsPath);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("Settings Uninstall returns ok and commits integrationInstalled/enabled=false", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-settings-uninstall-qwenwork-"));
+    const homeDir = path.join(root, "home");
+    const settingsPath = seedQwenWorkSettings(homeDir);
+    const before = readJson(settingsPath);
+
+    try {
+      const runtime = createIntegrationSyncRuntime({
+        ctx: { cleanupHomeDir: homeDir, cleanupOptions: { backup: true, hermesCommand: false } },
+      });
+      const snapshot = prefs.getDefaults();
+      snapshot.agents = {
+        ...snapshot.agents,
+        qwenwork: { ...snapshot.agents.qwenwork, integrationInstalled: true, enabled: true },
+      };
+
+      const result = await agentCommands.uninstallAgentIntegration({ agentId: "qwenwork" }, {
+        snapshot,
+        uninstallIntegrationForAgent: runtime.uninstallIntegrationForAgent,
+      });
+
+      assert.strictEqual(result.status, "ok", result.message);
+      assert.strictEqual(result.commit.agents.qwenwork.integrationInstalled, false);
+      assert.strictEqual(result.commit.agents.qwenwork.enabled, false);
+      assert.strictEqual(readJson(settingsPath).hooks.PreToolUse.length, 1);
+      const backups = listCleanupBackups(path.dirname(settingsPath));
+      assert.strictEqual(backups.length, 1);
+      assert.deepStrictEqual(readJson(path.join(path.dirname(settingsPath), backups[0])), before);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("About cleanup leaves prefs and disk agreeing that QwenWork is uninstalled", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-about-cleanup-qwenwork-"));
+    const homeDir = path.join(root, "home");
+    const settingsPath = seedQwenWorkSettings(homeDir);
+    const before = readJson(settingsPath);
+
+    try {
+      const snapshot = prefs.getDefaults();
+      snapshot.agents = {
+        ...snapshot.agents,
+        qwenwork: { ...snapshot.agents.qwenwork, integrationInstalled: true, enabled: true },
+      };
+
+      const result = await commandRegistry.cleanupIntegrations(null, {
+        snapshot,
+        writeCodexAutoStartGate: () => true,
+        // The real cleanup, scoped to the temp home — the whole point of the
+        // finding is that the prefs half used to succeed on its own.
+        cleanupIntegrations: (options) => cleanupIntegrations({
+          ...options,
+          homeDir,
+          silent: true,
+          hermesCommand: false,
+        }),
+      });
+
+      assert.strictEqual(result.status, "ok");
+      assert.strictEqual(result.commit.agents.qwenwork.enabled, false);
+      assert.strictEqual(result.commit.agents.qwenwork.integrationInstalled, false);
+
+      const qwenwork = result.cleanup.agents.find((entry) => entry.agentId === "qwenwork");
+      assert.strictEqual(qwenwork.status, "applied");
+      assert.strictEqual(qwenwork.removed, 3);
+      assert.strictEqual(qwenwork.backupPaths.length, 1);
+      assert.deepStrictEqual(readJson(qwenwork.backupPaths[0]), before);
+
+      const after = assertOnlyClawdHooksRemoved(settingsPath);
+      assert.ok(
+        !JSON.stringify(after).includes("qwenwork-hook.js"),
+        "prefs said uninstalled, so no Clawd-owned QwenWork hook may survive on disk"
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("Settings Install refuses invalid top-level and hooks roots, leaving prefs and disk unchanged", async () => {
+    const cases = [
+      { label: "top-level array", initial: [], error: /top level must be an object/ },
+      { label: "hooks array", initial: { hooks: [], theme: "dark" }, error: /hooks must be an object keyed by event name/ },
+    ];
+
+    for (const testCase of cases) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-settings-install-qwenwork-invalid-"));
+      const settingsPath = path.join(root, "home", ".QwenWorkCN", "settings.json");
+      writeJson(settingsPath, testCase.initial);
+      const before = fs.readFileSync(settingsPath, "utf8");
+
+      try {
+        const runtime = createIntegrationSyncRuntime({
+          ctx: {
+            syncQwenWorkHooksImpl: () => registerQwenWorkHooks({
+              silent: true,
+              settingsPath,
+              nodeBin: process.execPath,
+              platform: process.platform,
+            }),
+          },
+        });
+        const snapshot = prefs.getDefaults();
+        snapshot.agents = {
+          ...snapshot.agents,
+          qwenwork: { ...snapshot.agents.qwenwork, integrationInstalled: false, enabled: false },
+        };
+
+        const result = await agentCommands.installAgentIntegration({ agentId: "qwenwork" }, {
+          snapshot,
+          syncIntegrationForAgent: runtime.syncIntegrationForAgent,
+        });
+
+        assert.strictEqual(result.status, "error", testCase.label);
+        assert.match(result.message, testCase.error, testCase.label);
+        assert.strictEqual(Object.prototype.hasOwnProperty.call(result, "commit"), false, testCase.label);
+        assert.strictEqual(fs.readFileSync(settingsPath, "utf8"), before, testCase.label);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("uses ~/.QwenWorkCN/settings.json as the cleanup target", () => {
+    const homeDir = path.join(os.tmpdir(), "clawd-qwenwork-plan-home");
+    const plan = buildCleanupOptionsForHome(homeDir, { hermesCommand: false, silent: true });
+    assert.strictEqual(plan.byAgent.qwenwork.settingsPath, path.join(homeDir, ".QwenWorkCN", "settings.json"));
   });
 });

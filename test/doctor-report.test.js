@@ -249,4 +249,28 @@ describe("formatDiagnosticReport", () => {
     assert.match(report, /\| codex \| file-mtime \| 2 \|/);
     assert.doesNotMatch(report, /Fallback file activity also observed/);
   });
+
+  it("reports pending Codex hook review without claiming HTTP was blocked", () => {
+    const report = formatDiagnosticReport({
+      generatedAt: "2026-08-11T00:00:00.000Z",
+      overall: { status: "warning", issueCount: 1 },
+      checks: [],
+      connectionTest: {
+        status: "hooks-need-review",
+        level: "warning",
+        detail: "Codex activity was detected. Run /hooks in Codex CLI, then test again.",
+        events: [],
+        fileActivity: [{
+          agentId: "codex",
+          source: "file-mtime",
+          count: 1,
+        }],
+      },
+    });
+
+    assert.match(report, /HOOKS-NEED-REVIEW/);
+    assert.match(report, /\/hooks/);
+    assert.match(report, /\| codex \| file-mtime \| 1 \|/);
+    assert.doesNotMatch(report, /HTTP-BLOCKED|Firewall, EDR|proxy interception is likely/);
+  });
 });

@@ -114,14 +114,26 @@ function createRuntime(overrides = {}) {
   }];
   const runtime = createPetWindowRuntime({
     screen: {
-      getAllDisplays: () => displays,
+      getAllDisplays: () => (
+        typeof overrides.getAllDisplays === "function"
+          ? overrides.getAllDisplays()
+          : displays
+      ),
       getCursorScreenPoint: () => (
         typeof overrides.cursor === "function"
           ? overrides.cursor()
           : (overrides.cursor || { x: 100, y: 100 })
       ),
-      getDisplayNearestPoint: () => displays[0],
-      getPrimaryDisplay: () => displays[0],
+      getDisplayNearestPoint: (point) => (
+        typeof overrides.getDisplayNearestPoint === "function"
+          ? overrides.getDisplayNearestPoint(point)
+          : displays[0]
+      ),
+      getPrimaryDisplay: () => (
+        typeof overrides.getPrimaryDisplay === "function"
+          ? overrides.getPrimaryDisplay()
+          : displays[0]
+      ),
     },
     isWin: overrides.isWin ?? true,
     isMac: overrides.isMac ?? false,
@@ -142,8 +154,16 @@ function createRuntime(overrides = {}) {
     getCurrentPixelSize: () => overrides.currentPixelSize || { width: 100, height: 100 },
     getEffectiveCurrentPixelSize: () => overrides.effectivePixelSize || { width: 100, height: 100 },
     getAllowEdgePinning: () => overrides.allowEdgePinning || false,
-    getPrimaryWorkAreaSafe: () => displays[0].workArea,
-    getNearestWorkArea: () => displays[0].workArea,
+    getPrimaryWorkAreaSafe: () => (
+      typeof overrides.getPrimaryWorkAreaSafe === "function"
+        ? overrides.getPrimaryWorkAreaSafe()
+        : displays[0].workArea
+    ),
+    getNearestWorkArea: (x, y) => (
+      typeof overrides.getNearestWorkArea === "function"
+        ? overrides.getNearestWorkArea(x, y)
+        : displays[0].workArea
+    ),
     sendToRenderer: (...args) => calls.push(["sendToRenderer", ...args]),
     keepOutOfTaskbar: (win) => calls.push(["keepOutOfTaskbar", win]),
     repositionSessionHud: () => calls.push(["repositionSessionHud"]),
@@ -193,6 +213,374 @@ function createRuntime(overrides = {}) {
     setHitWin: (win) => { hitWin = win; },
   };
 }
+
+describe("macOS physical edge pinning (#241)", () => {
+  const dockDisplay = {
+    id: 1,
+    bounds: { x: 0, y: 0, width: 1710, height: 1107 },
+    workArea: { x: 0, y: 34, width: 1710, height: 983 },
+  };
+
+  it("uses physical bounds for both drag and rest clamps when edge pinning is enabled", () => {
+    const { runtime } = createRuntime({
+      isWin: false,
+      isMac: true,
+      allowEdgePinning: true,
+      displays: [dockDisplay],
+    });
+
+    const rest = runtime.clampToScreenVisual(200, 10_000, 205, 205);
+    const drag = runtime.looseClampPetToDisplays(200, 10_000, 205, 205);
+
+    // Cross the 90px Dock inset, but keep the window on the physical display.
+    assert.equal(rest.y, 902);
+    assert.equal(drag.y, 902);
+    assert.equal(rest.y + 205, 1107);
+  });
+
+  it("keeps the work-area-safe rest clamp when macOS edge pinning is disabled", () => {
+    const { runtime } = createRuntime({
+      isWin: false,
+      isMac: true,
+      allowEdgePinning: false,
+      displays: [dockDisplay],
+    });
+
+    const rest = runtime.clampToScreenVisual(200, 10_000, 205, 205);
+    assert.equal(rest.y, 812, "workArea bottom 1017 minus the 205px window");
+  });
+
+  it("aligns with the physical bottom when the Dock is hidden", () => {
+    const display = {
+      id: 1,
+      bounds: { x: 0, y: 0, width: 1000, height: 800 },
+      workArea: { x: 0, y: 0, width: 1000, height: 800 },
+    };
+    const { runtime } = createRuntime({
+      isWin: false,
+      isMac: true,
+      allowEdgePinning: true,
+      displays: [display],
+    });
+
+    assert.equal(runtime.clampToScreenVisual(0, 10_000, 200, 200).y, 600);
+    assert.equal(runtime.looseClampPetToDisplays(0, 10_000, 200, 200).y, 600);
+  });
+
+  it("honors a call-site edge-pinning override instead of the global macOS setting", () => {
+    const { runtime } = createRuntime({
+      isWin: false,
+      isMac: true,
+      allowEdgePinning: true,
+      displays: [dockDisplay],
+    });
+
+    const rest = runtime.clampToScreenVisual(200, 10_000, 205, 205, {
+      allowEdgePinning: false,
+    });
+    assert.equal(rest.y, 812);
+  });
+
+  it("uses the physical rectangle consistently for top, bottom, left, and right edges", () => {
+    const display = {
+      id: 1,
+      bounds: { x: 100, y: 50, width: 1000, height: 800 },
+      workArea: { x: 160, y: 90, width: 900, height: 700 },
+    };
+    const { runtime } = createRuntime({
+      isWin: false,
+      isMac: true,
+      allowEdgePinning: true,
+      displays: [display],
+    });
+
+    assert.deepStrictEqual(
+      runtime.clampToScreenVisual(-10_000, -10_000, 200, 200),
+      { x: 50, y: -70 },
+    );
+    assert.deepStrictEqual(
+      runtime.clampToScreenVisual(10_000, 10_000, 200, 200),
+      { x: 950, y: 650 },
+    );
+  });
+
+  it("materializes a normal-mode top pin at the physical display top", () => {
+    const display = {
+      id: 1,
+      bounds: { x: 100, y: 50, width: 1000, height: 800 },
+      workArea: { x: 160, y: 90, width: 900, height: 700 },
+    };
+    const fixture = createRuntime({
+      isWin: false,
+      isMac: true,
+      allowEdgePinning: true,
+      displays: [display],
+    });
+    const logical = fixture.runtime.clampToScreenVisual(200, -10_000, 200, 200);
+
+    const physical = fixture.runtime.applyPetWindowBounds({
+      ...logical,
+      width: 200,
+      height: 200,
+    });
+
+    assert.deepStrictEqual(logical, { x: 200, y: -70 });
+    assert.deepStrictEqual(physical, { x: 200, y: 50, width: 200, height: 200 });
+    assert.equal(fixture.renderWin.getBounds().y, 50);
+    assert.equal(fixture.runtime.getViewportOffsetY(), 120);
+  });
+
+  it("materializes a saved normal-mode top pin against physical bounds at startup", () => {
+    const display = {
+      id: 1,
+      bounds: { x: 100, y: 50, width: 1000, height: 800 },
+      workArea: { x: 160, y: 90, width: 900, height: 700 },
+    };
+    const { runtime } = createRuntime({
+      isWin: false,
+      isMac: true,
+      allowEdgePinning: true,
+      displays: [display],
+    });
+
+    const placement = runtime.resolveStartupPlacement({
+      positionSaved: true,
+      miniMode: false,
+      x: 200,
+      y: -70,
+      positionDisplay: display,
+    }, { width: 200, height: 200 });
+
+    assert.equal(placement.initialVirtualBounds.y, -70);
+    assert.equal(placement.initialWindowBounds.y, 50);
+  });
+
+  it("keeps mini-mode Y materialization inside the work area", () => {
+    const display = {
+      id: 1,
+      bounds: { x: 100, y: 50, width: 1000, height: 800 },
+      workArea: { x: 160, y: 90, width: 900, height: 700 },
+    };
+    const fixture = createRuntime({
+      isWin: false,
+      isMac: true,
+      miniMode: true,
+      allowEdgePinning: true,
+      displays: [display],
+    });
+
+    const physical = fixture.runtime.applyPetWindowBounds(
+      { x: 200, y: -70, width: 200, height: 200 },
+      { workArea: display.workArea },
+    );
+
+    assert.deepStrictEqual(physical, { x: 200, y: 90, width: 200, height: 200 });
+    assert.equal(fixture.runtime.getViewportOffsetY(), 160);
+  });
+
+  it("maps a forced mini work area back to the same display's physical bounds", () => {
+    const displays = [
+      {
+        id: 1,
+        bounds: { x: 0, y: 0, width: 1000, height: 900 },
+        workArea: { x: 0, y: 30, width: 1000, height: 820 },
+      },
+      {
+        id: 2,
+        bounds: { x: 1000, y: 0, width: 1200, height: 900 },
+        workArea: { x: 1060, y: 30, width: 1140, height: 800 },
+      },
+    ];
+    const { runtime } = createRuntime({
+      isWin: false,
+      isMac: true,
+      allowEdgePinning: true,
+      displays,
+      getDisplayNearestPoint: ({ x }) => (x >= 1000 ? displays[1] : displays[0]),
+    });
+
+    assert.deepStrictEqual(
+      runtime.clampToScreenVisual(10_000, 10_000, 200, 200, {
+        workArea: displays[1].workArea,
+      }),
+      { x: 2050, y: 700 },
+    );
+  });
+
+  it("does not jump a forced secondary work area to primary when nearest lookup fails", () => {
+    const displays = [
+      {
+        id: 1,
+        bounds: { x: 0, y: 0, width: 1000, height: 800 },
+        workArea: { x: 0, y: 30, width: 1000, height: 700 },
+      },
+      {
+        id: 2,
+        bounds: { x: 1000, y: 0, width: 1000, height: 800 },
+        workArea: { x: 1100, y: 30, width: 800, height: 700 },
+      },
+    ];
+    const { runtime } = createRuntime({
+      isWin: false,
+      isMac: true,
+      allowEdgePinning: true,
+      displays,
+      getDisplayNearestPoint: () => { throw new Error("nearest unavailable"); },
+      getPrimaryDisplay: () => displays[0],
+    });
+
+    const rest = runtime.clampToScreenVisual(10_000, 300, 200, 200, {
+      workArea: displays[1].workArea,
+    });
+    assert.equal(rest.x, 1750, "fallback stays within the forced secondary work area");
+  });
+
+  it("uses a forced work area as the display hint during vertical multi-display materialization", () => {
+    const displays = [
+      {
+        id: 1,
+        bounds: { x: 0, y: 0, width: 1000, height: 800 },
+        workArea: { x: 0, y: 30, width: 1000, height: 740 },
+      },
+      {
+        id: 2,
+        bounds: { x: 0, y: 800, width: 1000, height: 800 },
+        workArea: { x: 0, y: 830, width: 1000, height: 700 },
+      },
+    ];
+    const fixture = createRuntime({
+      isWin: false,
+      isMac: true,
+      allowEdgePinning: true,
+      displays,
+      getDisplayNearestPoint: ({ y }) => (y >= 800 ? displays[1] : displays[0]),
+      getNearestWorkArea: (_x, y) => (y >= 800 ? displays[1] : displays[0]).workArea,
+    });
+
+    const logical = fixture.runtime.clampToScreenVisual(200, -10_000, 200, 200, {
+      workArea: displays[1].workArea,
+    });
+    const physical = fixture.runtime.applyPetWindowBounds(
+      { ...logical, width: 200, height: 200 },
+      { workArea: displays[1].workArea },
+    );
+
+    assert.deepStrictEqual(logical, { x: 200, y: 680 });
+    assert.deepStrictEqual(physical, { x: 200, y: 800, width: 200, height: 200 });
+    assert.equal(fixture.runtime.getViewportOffsetY(), 120);
+  });
+
+  it("does not change Windows work-area edge behavior", () => {
+    const { runtime } = createRuntime({
+      isWin: true,
+      isMac: false,
+      allowEdgePinning: true,
+      displays: [dockDisplay],
+    });
+
+    const rest = runtime.clampToScreenVisual(200, 10_000, 205, 205);
+    const drag = runtime.looseClampPetToDisplays(200, 10_000, 205, 205);
+    assert.equal(rest.y, 863, "workArea bottom plus the capped 51px inset allowance");
+    assert.equal(drag.y, 863, "drag must not leak macOS physical bounds onto Windows");
+  });
+
+  it("does not change Linux work-area edge behavior", () => {
+    const { runtime } = createRuntime({
+      isWin: false,
+      isMac: false,
+      isLinux: true,
+      allowEdgePinning: true,
+      displays: [dockDisplay],
+    });
+
+    const rest = runtime.clampToScreenVisual(200, 10_000, 205, 205);
+    const drag = runtime.looseClampPetToDisplays(200, 10_000, 205, 205);
+    assert.equal(rest.y, 863, "workArea bottom plus the capped 51px inset allowance");
+    assert.equal(drag.y, 863, "drag must not leak macOS physical bounds onto Linux");
+  });
+
+  it("falls back to the existing work-area clamp when physical bounds are unavailable", () => {
+    const display = {
+      id: 1,
+      bounds: null,
+      workArea: { x: 0, y: 0, width: 800, height: 600 },
+    };
+    const { runtime } = createRuntime({
+      isWin: false,
+      isMac: true,
+      allowEdgePinning: true,
+      displays: [display],
+    });
+
+    assert.equal(runtime.clampToScreenVisual(0, 10_000, 200, 200).y, 400);
+    assert.equal(runtime.looseClampPetToDisplays(0, 10_000, 200, 200).y, 400);
+  });
+
+  it("falls back safely when Electron display lookup throws", () => {
+    const { runtime } = createRuntime({
+      isWin: false,
+      isMac: true,
+      allowEdgePinning: true,
+      displays: [dockDisplay],
+      getDisplayNearestPoint: () => { throw new Error("screen unavailable"); },
+      getPrimaryDisplay: () => { throw new Error("primary unavailable"); },
+    });
+
+    const rest = runtime.clampToScreenVisual(200, 10_000, 205, 205);
+    assert.deepStrictEqual(rest, { x: 200, y: 812 });
+  });
+
+  it("keeps drag clamping finite when display enumeration throws", () => {
+    const { runtime } = createRuntime({
+      isWin: false,
+      isMac: true,
+      allowEdgePinning: true,
+      getAllDisplays: () => { throw new Error("topology unavailable"); },
+    });
+
+    assert.deepStrictEqual(
+      runtime.looseClampPetToDisplays(10_000, 10_000, 200, 200),
+      { x: 850, y: 600 },
+    );
+  });
+
+  it("filters malformed display entries before the drag fallback", () => {
+    const workArea = { x: 0, y: 0, width: 800, height: 600 };
+    const { runtime } = createRuntime({
+      isWin: false,
+      isMac: true,
+      allowEdgePinning: true,
+      displays: [null],
+      getPrimaryDisplay: () => null,
+      getPrimaryWorkAreaSafe: () => workArea,
+      getNearestWorkArea: () => workArea,
+    });
+
+    assert.deepStrictEqual(
+      runtime.looseClampPetToDisplays(10_000, 10_000, 200, 200),
+      { x: 650, y: 400 },
+    );
+  });
+
+  it("uses primary physical bounds when the display list is temporarily empty", () => {
+    const primary = {
+      id: 1,
+      bounds: { x: 0, y: 0, width: 1000, height: 800 },
+      workArea: { x: 0, y: 30, width: 1000, height: 700 },
+    };
+    const { runtime } = createRuntime({
+      isWin: false,
+      isMac: true,
+      allowEdgePinning: true,
+      displays: [],
+      getPrimaryDisplay: () => primary,
+      getPrimaryWorkAreaSafe: () => primary.workArea,
+      getNearestWorkArea: () => primary.workArea,
+    });
+
+    assert.equal(runtime.looseClampPetToDisplays(0, 10_000, 200, 200).y, 600);
+  });
+});
 
 // ── #690 Phase 0 fixture — Fedora 44 / GNOME Shell 50.3 / Mutter reproduction ──
 // docs/plans/plan-issue-690-gnome-mini-edge-snap.md §1.2 and §5 Phase 0.

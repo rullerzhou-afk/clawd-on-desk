@@ -63,6 +63,44 @@ describe("account quota store", () => {
     assert.deepStrictEqual(store.snapshot().map((e) => e.host), [null, "alpha", "zeta"]);
   });
 
+  it("clears one provider from selected sources without disturbing siblings", () => {
+    const store = createAccountQuotaStore({ persistPath: null, now: () => 1000 });
+    const resetAt = 5000;
+    store.update(null, {
+      claudeQuota: { claudeWeekly: { usedPercent: 41, resetAt } },
+      codexQuota: { codexWeekly: { usedPercent: 7, resetAt } },
+    });
+    store.update("wsl:Ubuntu", {
+      claudeQuota: { claudeWeekly: { usedPercent: 42, resetAt } },
+      antigravityQuota: { thirdPartyWeekly: { usedPercent: 8, resetAt } },
+    });
+    store.update("remote:ssh-work", {
+      displayHost: "workbox",
+      claudeQuota: { claudeWeekly: { usedPercent: 90, resetAt } },
+    });
+
+    assert.strictEqual(
+      store.clearProvider("claudeQuota", (sourceKey) => !sourceKey.startsWith("remote:")),
+      2
+    );
+    assert.strictEqual(
+      store.clearProvider("claudeQuota", (sourceKey) => !sourceKey.startsWith("remote:")),
+      0,
+      "repeated cleanup is a no-op"
+    );
+
+    const snapshot = store.snapshot();
+    const local = snapshot.find((entry) => entry.host === null);
+    const wsl = snapshot.find((entry) => entry.host === "wsl:Ubuntu");
+    const remote = snapshot.find((entry) => entry.host === "workbox");
+    assert.strictEqual(local.claudeQuota, undefined);
+    assert.strictEqual(local.codexQuota.group.codexWeekly.usedPercent, 7);
+    assert.strictEqual(wsl.claudeQuota, undefined);
+    assert.strictEqual(wsl.antigravityQuota.group.thirdPartyWeekly.usedPercent, 8);
+    assert.strictEqual(remote.claudeQuota.group.claudeWeekly.usedPercent, 90);
+    assert.strictEqual(store.clearProvider("notAProvider"), 0);
+  });
+
   it("flags expired buckets at snapshot time instead of hiding them", () => {
     let nowMs = 1000;
     const store = createAccountQuotaStore({ persistPath: null, now: () => nowMs });

@@ -131,9 +131,11 @@ function createForegroundWindowsTerminalProbe(options = {}) {
       // through a JS Number.
       const addr = koffi.address(hwnd);
       return addr.toString(10);
-    } catch {
+    } catch (err) {
       // Any FFI hiccup at call time (not init) is an expected miss, not an
-      // error — onError is init-only (see above).
+      // error for production callers. Tests may opt into a separate diagnostic
+      // callback without changing the established init-only onError contract.
+      if (typeof options.onCallError === "function") options.onCallError(err);
       return null;
     }
   };

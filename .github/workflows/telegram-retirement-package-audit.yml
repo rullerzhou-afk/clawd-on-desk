@@ -1,4 +1,4 @@
-name: Telegram Legacy Retirement Package Audit
+name: Five-target Package Audit
 
 on:
   pull_request:
@@ -7,6 +7,13 @@ on:
       - "package.json"
       - "package-lock.json"
       - "src/main.js"
+      - "src/koffi-package-contract.js"
+      - "src/native-package-target.js"
+      - "src/package-koffi-smoke.js"
+      - "src/mac-window.js"
+      - "src/win-cloak-recovery.js"
+      - "src/win-foreground-terminal.js"
+      - "src/win-fullscreen-detect.js"
       - "src/settings-actions.js"
       - "src/settings-i18n.js"
       - "src/telegram-*"
@@ -14,8 +21,21 @@ on:
       - "src/settings.css"
       - "scripts/assert-no-retired-telegram-sidecar.js"
       - "scripts/audit-repository-assets.js"
+      - "scripts/after-pack-koffi.js"
+      - "scripts/audit-packaged-native.js"
+      - "scripts/native-package-policy.json"
+      - "scripts/run-packaged-koffi-smoke.js"
+      - "scripts/verify-updater-metadata.js"
       - "test/assert-no-retired-telegram-sidecar.test.js"
+      - "test/after-pack-koffi.test.js"
+      - "test/audit-packaged-native.test.js"
+      - "test/koffi-lockfile.test.js"
+      - "test/native-package-target.test.js"
+      - "test/package-koffi-smoke.test.js"
       - "test/package-build-config.test.js"
+      - "test/verify-updater-metadata.test.js"
+      - "test/win-foreground-terminal.test.js"
+      - "test/win-fullscreen-detect.test.js"
       - "test/settings-renderer-browser-env.test.js"
       - "test/telegram-legacy-retirement.test.js"
       - "test/telegram-migration-*.test.js"
@@ -34,15 +54,25 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-      - run: npm install
+      - run: npm ci
       - run: |
           node --test \
             test/assert-no-retired-telegram-sidecar.test.js \
+            test/after-pack-koffi.test.js \
+            test/appimage-apprun.test.js \
+            test/audit-packaged-native.test.js \
+            test/dependency-security-floor.test.js \
+            test/koffi-lockfile.test.js \
+            test/native-package-target.test.js \
+            test/package-koffi-smoke.test.js \
             test/package-build-config.test.js \
             test/telegram-legacy-retirement.test.js \
             test/telegram-migration-state.test.js \
             test/telegram-migration-controller.test.js \
-            test/telegram-migration-user-data.test.js
+            test/telegram-migration-user-data.test.js \
+            test/verify-updater-metadata.test.js \
+            test/win-foreground-terminal.test.js \
+            test/win-fullscreen-detect.test.js
 
   package:
     needs: unit
@@ -54,30 +84,45 @@ jobs:
           - target: windows-x64
             runner: windows-latest
             build_script: build:win:x64
+            app_root: dist/win-unpacked
+            executable: dist/win-unpacked/Clawd on Desk.exe
+            smoke_extra: ""
             resources_root: dist/win-unpacked/resources
             artifact_check_glob: dist/Clawd-on-Desk-Setup-*-x64.exe
             artifact_glob: dist/Clawd-on-Desk-Setup-*-x64.exe
           - target: windows-arm64
-            runner: windows-latest
+            runner: windows-11-arm
             build_script: build:win:arm64
+            app_root: dist/win-arm64-unpacked
+            executable: dist/win-arm64-unpacked/Clawd on Desk.exe
+            smoke_extra: ""
             resources_root: dist/win-arm64-unpacked/resources
             artifact_check_glob: dist/Clawd-on-Desk-Setup-*-arm64.exe
             artifact_glob: dist/Clawd-on-Desk-Setup-*-arm64.exe
           - target: darwin-x64
-            runner: macos-latest
+            runner: macos-15-intel
             build_script: build:mac:x64
+            app_root: dist/mac/Clawd on Desk.app
+            executable: dist/mac/Clawd on Desk.app/Contents/MacOS/Clawd on Desk
+            smoke_extra: ""
             resources_root: dist/mac/Clawd on Desk.app/Contents/Resources
             artifact_check_glob: dist/Clawd-on-Desk-*-x64.dmg
             artifact_glob: dist/Clawd-on-Desk-*-x64.dmg
           - target: darwin-arm64
             runner: macos-latest
             build_script: build:mac:arm64
+            app_root: dist/mac-arm64/Clawd on Desk.app
+            executable: dist/mac-arm64/Clawd on Desk.app/Contents/MacOS/Clawd on Desk
+            smoke_extra: ""
             resources_root: dist/mac-arm64/Clawd on Desk.app/Contents/Resources
             artifact_check_glob: dist/Clawd-on-Desk-*-arm64.dmg
             artifact_glob: dist/Clawd-on-Desk-*-arm64.dmg
           - target: linux-x64
             runner: ubuntu-latest
             build_script: build:linux:x64
+            app_root: dist/linux-unpacked
+            executable: dist/linux-unpacked/clawd-on-desk
+            smoke_extra: "--xvfb"
             resources_root: dist/linux-unpacked/resources
             artifact_check_glob: dist/Clawd-on-Desk-*-x86_64.AppImage
             artifact_glob: |
@@ -89,7 +134,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-      - run: npm install
+      - run: npm ci
       - run: npm run ${{ matrix.build_script }} -- --publish never
       - name: Assert installer exists
         shell: bash
@@ -104,12 +149,33 @@ jobs:
           node scripts/assert-no-retired-telegram-sidecar.js
           --resources-root "${{ matrix.resources_root }}"
           --output "dist/telegram-retirement-manifests/${{ matrix.target }}.json"
+      - name: Audit packaged native payloads
+        run: >-
+          node scripts/audit-packaged-native.js
+          --app-root "${{ matrix.app_root }}"
+          --target "${{ matrix.target }}"
+          --output "dist/native-package-manifests/${{ matrix.target }}.json"
+      - name: Configure Linux Chromium sandbox
+        if: matrix.target == 'linux-x64'
+        run: |
+          sudo chown root:root dist/linux-unpacked/chrome-sandbox
+          sudo chmod 4755 dist/linux-unpacked/chrome-sandbox
+      - name: Run packaged Koffi smoke
+        run: >-
+          node scripts/run-packaged-koffi-smoke.js
+          --executable "${{ matrix.executable }}"
+          --target "${{ matrix.target }}"
+          --output "dist/koffi-smoke/${{ matrix.target }}.json"
+          ${{ matrix.smoke_extra }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: telegram-retirement-${{ matrix.target }}
+          name: package-audit-${{ matrix.target }}
           path: |
             ${{ matrix.artifact_glob }}
+            dist/koffi-prune-manifests/*.json
+            dist/koffi-smoke/*.json
+            dist/native-package-manifests/*.json
             dist/telegram-retirement-manifests/*.json
           if-no-files-found: error
           retention-days: 7

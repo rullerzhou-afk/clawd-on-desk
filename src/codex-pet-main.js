@@ -436,6 +436,18 @@ function createCodexPetMain(options = {}) {
         successDetail: "インポートした Codex Pet を現在のテーマにしました。",
         failedMessage: "Codex Pet をインポートできませんでした",
       },
+      "pt-BR": {
+        import: "Importar",
+        cancel: "Cancelar",
+        ok: "OK",
+        confirmMessage: (host) => `Importar o Codex Pet de ${host}?`,
+        confirmDetail: (url) => `O Clawd vai baixar, validar e instalar este pacote de pet antes de ativá-lo.\n\n${url}`,
+        replaceMessage: (name) => `Substituir o pet local "${name}"?`,
+        replaceDetail: "Já existe localmente um pacote de Codex Pet com o mesmo id. Substituí-lo vai sobrescrever esse pacote local.",
+        successMessage: (name) => `"${name}" importado`,
+        successDetail: "O Codex Pet importado está ativo.",
+        failedMessage: "Não foi possível importar o Codex Pet",
+      },
     };
     return all[getLang()] || all.en;
   }
@@ -509,6 +521,12 @@ function createCodexPetMain(options = {}) {
         cancel: "キャンセル",
         message: (name) => `インポート済みペット "${name}" をアンインストールしますか？`,
         detail: "Clawd は Codex pets フォルダから元パッケージを削除し、生成されたテーマをクリーンアップします。この操作は元に戻せません。",
+      },
+      "pt-BR": {
+        uninstall: "Desinstalar",
+        cancel: "Cancelar",
+        message: (name) => `Desinstalar o pet importado "${name}"?`,
+        detail: "O Clawd vai remover o pacote de origem da sua pasta de Codex pets e limpar o tema gerado. Isso não pode ser desfeito.",
       },
     };
     return all[getLang()] || all.en;

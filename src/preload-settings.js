@@ -103,6 +103,9 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   getQuotaSourceCount: () => ipcRenderer.invoke("settings:get-quota-source-count"),
   getPetTintOptions: () => ipcRenderer.invoke("settings:get-pet-tint-options"),
   getPetAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-accessory-options"),
+  getRoamFence: () => ipcRenderer.invoke("settings:get-roam-fence"),
+  selectRoamFence: () => ipcRenderer.invoke("settings:select-roam-fence"),
+  clearRoamFence: () => ipcRenderer.invoke("settings:clear-roam-fence"),
   getShortcutFailures: () => ipcRenderer.invoke("settings:getShortcutFailures"),
   getAnimationOverridesData: () => ipcRenderer.invoke("settings:get-animation-overrides-data"),
   openThemeAssetsDir: () => ipcRenderer.invoke("settings:open-theme-assets-dir"),
@@ -203,7 +206,7 @@ contextBridge.exposeInMainWorld("doctor", {
 //
 //   listStatuses()                 Promise<{ status, statuses: Array<state> }>
 //   status(profileId)              Promise<{ status, state }>
-//   connect(profileId)             Promise<{ status, state? }>
+//   connect(profileId)             Promise<{ status, state?, reason?, hint?, detail? }>
 //   disconnect(profileId)          Promise<{ status, state? }>
 //   deploy(profileId, options?)    Promise<{ status, message?, step? }>
 //   authenticate(profileId)        Promise<{ status, terminal?, message? }>

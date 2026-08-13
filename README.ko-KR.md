@@ -28,7 +28,7 @@ Clawd는 당신의 데스크톱 위에서 살며, AI 코딩 에이전트가 지�
 
 프롬프트를 입력하면 생각하고, 도구가 실행되면 타이핑하고, 서브에이전트가 생기면 헤드폰 그루브나 세 개 공 저글링으로 반응하고, 권한 요청이 오면 카드로 알려 주고, 작업이 끝나면 기뻐하고, 자리를 비우면 잠이 듭니다. 기본 테마로 **Clawd**(픽셀 크랩), **Calico**(삼색 고양이), **Cloudling**(云宝)이 포함되어 있으며, 커스텀 테마와 가져온 Codex Pet 애니메이션 팩도 지원합니다.
 
-> Windows 11, macOS, Ubuntu/Linux를 지원합니다. Windows 릴리스는 x64와 ARM64 설치 파일을 별도로 제공합니다. 소스에서 실행하려면 Node.js가 필요합니다. **Claude Code**, **Codex CLI**, **Copilot CLI**, **Gemini CLI**, **Antigravity CLI (agy)**, **Cursor Agent**, **CodeBuddy**, **WorkBuddy**, **Kiro CLI**, **Kimi Code CLI (Kimi-CLI)**, **Qwen Code**, **CodeWhale**, **opencode**, **MiMo Code**, **Pi**, **OpenClaw**, **Hermes Agent**, **Qoder**, **QoderWork**, **Reasonix CLI**와 함께 동작합니다.
+> Windows 11, macOS, Ubuntu/Linux를 지원합니다. Windows 릴리스는 x64와 ARM64 설치 파일을 별도로 제공합니다. 소스에서 실행하려면 Node.js가 필요합니다. **Claude Code**, **Codex CLI**, **Copilot CLI**, **Gemini CLI**, **Antigravity CLI (agy)**, **Cursor Agent**, **CodeBuddy**, **WorkBuddy**, **Kiro CLI**, **Kimi Code CLI (Kimi-CLI)**, **Qwen Code**, **CodeWhale**, **opencode**, **MiMo Code**, **Pi**, **OpenClaw**, **Hermes Agent**, **Qoder**, **QoderWork**, **QwenWork (千问办公)**, **Reasonix CLI**와 함께 동작합니다.
 
 ## 기능
 
@@ -51,6 +51,7 @@ Clawd는 당신의 데스크톱 위에서 살며, AI 코딩 에이전트가 지�
 - **OpenClaw** — `~/.openclaw/openclaw.json`의 plugin 경로로 상태만 연동합니다 (OpenClaw config가 이미 있으면 Clawd 시작 시 자동 등록되며, `npm run install:openclaw-plugin`으로 수동 설치 가능). Phase 1은 로컬 `openclaw tui --local` 세션의 애니메이션만 지원하며, 권한 말풍선과 터미널 포커스는 지원하지 않습니다.
 - **Hermes Agent** — Hermes의 관리형 plugin 디렉터리를 통한 [plugin 연동](https://hermes-agent.org/) (Hermes가 설치되어 있으면 Clawd 시작 시 자동 등록되며, `npm run install:hermes-plugin`으로 수동 설치 가능). 상태, 세션, SessionEnd, 터미널 포커스를 지원합니다.
 - **Qoder** — `~/.qoder/settings.json`의 command hook으로 상태만 연동합니다 (`~/.qoder/` 디렉터리가 있으면 Clawd 시작 시 자동 등록되며, `npm run install:qoder-hooks`로 수동 설치 가능). Phase 1은 애니메이션만 구동하고 권한 요청은 알림으로만 표시하며, Clawd는 권한 말풍선을 띄우거나 대신 응답하지 않습니다. Allow / Deny 선택은 Qoder 자체 권한 흐름에서 처리합니다.
+- **QwenWork (千问办公)** — `~/.QwenWorkCN/settings.json`의 command hook으로 hook-only / state-only 연동합니다 (Settings → Agents에서 설치하거나 `npm run install:qwenwork-hooks`, 제거는 `npm run uninstall:qwenwork-hooks`). macOS / Windows 데스크톱만 지원하며, [qwenwork.cn/download](https://qwenwork.cn/download)에 Linux 클라이언트가 없으므로 WSL 페어링도 제공하지 않습니다. Phase 1은 애니메이션과 Session HUD를 구동합니다. `PermissionRequest` / `PermissionDenied`는 관찰만 하여 `working`으로 매핑되고 hook stdout은 항상 `{}`이며, Clawd는 allow/deny를 만들지 않습니다. 권한 결정은 QwenWork 자체 흐름이 전담합니다. startup recovery는 없습니다 — 데스크톱 상주 프로세스는 작업 진행 중을 의미하지 않기 때문입니다.
 - **멀티 에이전트 공존** — 여러 에이전트를 동시에 실행할 수 있으며, Clawd는 각 세션을 독립적으로 추적합니다.
 
 ### 애니메이션과 상호작용
@@ -92,9 +93,9 @@ Clawd는 당신의 데스크톱 위에서 살며, AI 코딩 에이전트가 지�
 - **단일 인스턴스 잠금** — Clawd 창이 중복 실행되지 않도록 막습니다.
 - **자동 시작** — Claude Code의 SessionStart hook이 Clawd가 실행 중이 아니어도 자동으로 켤 수 있습니다.
 - **방해 금지 모드** — 우클릭 또는 트레이 메뉴로 sleep 모드에 들어가면, 깰 때까지 모든 hook 이벤트가 음소거됩니다. DND 동안에는 권한 말풍선이 뜨지 않으며, Codex, opencode, MiMo Code는 기본 프롬프트로 돌아가고, Claude Code와 CodeBuddy는 자체 권한 확인 흐름으로 되돌아갑니다. Antigravity와 Pi는 상태만 동기화합니다.
-- **효과음** — 작업 완료나 권한 요청 시 짧은 오디오 알림이 재생됩니다. 우클릭 메뉴에서 켜고 끌 수 있으며, 10초 쿨다운이 있고 DND에서는 자동 음소거됩니다.
-- **시스템 트레이** — 크기 조절(S/M/L), DND, 언어 전환, 자동 시작, 업데이트 확인 등을 지원합니다.
-- **i18n** — 영어, 중국어 간체, 중국어 번체, 한국어, 일본어 UI를 지원하며, 우클릭 메뉴나 트레이에서 전환할 수 있습니다.
+- **효과음** — 작업 완료나 권한 요청 시 짧은 오디오 알림이 재생됩니다. 시스템 트레이 또는 설정에서 켜고 끌 수 있으며, 10초 쿨다운이 있고 DND에서는 자동 음소거됩니다.
+- **시스템 트레이** — DND, 자동 시작, 업데이트 확인 등을 지원합니다.
+- **i18n** — 영어, 중국어 간체, 중국어 번체, 한국어, 일본어, Português (Brasil) UI를 지원하며, 설정 → 일반에서 전환할 수 있습니다.
 - **자동 업데이트** — GitHub release를 확인하고, Windows는 종료 시 NSIS 업데이트를 설치하며, macOS/Linux는 clone한 저장소에서 실행 중일 때 `git pull` + 재시작으로 업데이트합니다.
 
 ## 애니메이션
@@ -262,7 +263,7 @@ Clawd를 더 좋게 만드는 데 도움을 준 모든 분들께 감사합니다
     <td align="center" valign="top" width="110"><a href="https://github.com/TVpoet"><img src="https://github.com/TVpoet.png" width="50" style="border-radius:50%" /><br /><sub>TVpoet</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/zeus6768"><img src="https://github.com/zeus6768.png" width="50" style="border-radius:50%" /><br /><sub>zeus6768</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/anhtrinh919"><img src="https://github.com/anhtrinh919.png" width="50" style="border-radius:50%" /><br /><sub>anhtrinh919</sub></a></td>
-    <td align="center" valign="top" width="110"><a href="https://github.com/tomaioo"><img src="https://github.com/tomaioo.png" width="50" style="border-radius:50%" /><br /><sub>tomaioo</sub></a></td>
+    <td align="center" valign="top" width="110"><sub>tomaioo</sub></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/v-avuso"><img src="https://github.com/v-avuso.png" width="50" style="border-radius:50%" /><br /><sub>v-avuso</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/livlign"><img src="https://github.com/livlign.png" width="50" style="border-radius:50%" /><br /><sub>livlign</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/tongguang2"><img src="https://github.com/tongguang2.png" width="50" style="border-radius:50%" /><br /><sub>tongguang2</sub></a></td>
@@ -341,6 +342,9 @@ Clawd를 더 좋게 만드는 데 도움을 준 모든 분들께 감사합니다
   </tr>
   <tr>
     <td align="center" valign="top" width="110"><a href="https://github.com/anthonyonazure"><img src="https://github.com/anthonyonazure.png" width="50" style="border-radius:50%" /><br /><sub>anthonyonazure</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/weed33834"><img src="https://github.com/weed33834.png" width="50" style="border-radius:50%" /><br /><sub>weed33834</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/arismarioneves"><img src="https://github.com/arismarioneves.png" width="50" style="border-radius:50%" /><br /><sub>arismarioneves</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/aaronWool"><img src="https://github.com/aaronWool.png" width="50" style="border-radius:50%" /><br /><sub>aaronWool</sub></a></td>
   </tr>
 </table>
 

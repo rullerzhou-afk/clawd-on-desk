@@ -161,7 +161,11 @@ describe("#634 ctx contract — sendHookEvent seams", () => {
     assert.strictEqual(cap.calls[0].cacheable, false, "gemini:default must not key a shared cache entry");
   });
 
-  for (const [file, ns] of [["qoder-hook.js", "qoder"], ["qoderwork-hook.js", "qoderwork"]]) {
+  for (const [file, ns] of [
+    ["qoder-hook.js", "qoder"],
+    ["qoderwork-hook.js", "qoderwork"],
+    ["qwenwork-hook.js", "qwenwork"], // #843
+  ]) {
     it(`${ns}: SessionStart/UserPromptSubmit/SessionEnd map; default ids not cacheable`, async () => {
       const mod = require(`../hooks/${file}`);
       for (const [event, lifecycle] of [
@@ -184,6 +188,46 @@ describe("#634 ctx contract — sendHookEvent seams", () => {
       assert.strictEqual(capLiteral.calls[0].cacheable, false, "a literal raw \"default\" id must not be cacheable either");
     });
   }
+
+  // #843: QwenWork's real SessionEnd payload shape is NOT documented and has no
+  // captured fixture in this repo, so nothing here may assume it carries cwd.
+  // The mapping stays "end" (never fresh, never writes back) and cacheability
+  // keeps the same cwd requirement as every other event — a cwd-less SessionEnd
+  // degrades to a no-op end (no spawn, no drop, entry expires on its own TTL)
+  // rather than inventing a cwd fallback that would key a different cache file
+  // from the one the session's earlier events wrote.
+  it("qwenwork: a cwd-less SessionEnd degrades instead of guessing a cache key", async () => {
+    const mod = require("../hooks/qwenwork-hook.js");
+
+    const cap = capture();
+    await mod.sendHookEvent({ hook_event_name: "SessionEnd", session_id: "qw-end" }, "", { env: {}, resolvePid: cap, postState: stubPost });
+    assert.deepStrictEqual({ ...cap.calls[0] }, {
+      namespace: "qwenwork",
+      sessionId: "qwenwork:qw-end",
+      cacheCwd: "",
+      lifecycle: "end",
+      cacheable: false,
+    });
+
+    const capWithCwd = capture();
+    await mod.sendHookEvent({ hook_event_name: "SessionEnd", session_id: "qw-end", cwd: "D:/repo" }, "", { env: {}, resolvePid: capWithCwd, postState: stubPost });
+    assert.strictEqual(capWithCwd.calls[0].cacheable, true, "with a cwd the end lifecycle can drop the entry it owns");
+  });
+
+  it("qwenwork: permission events are state-only and never resolve a pid at all", async () => {
+    const mod = require("../hooks/qwenwork-hook.js");
+    for (const event of ["PermissionRequest", "PermissionDenied"]) {
+      const cap = capture();
+      const result = await mod.sendHookEvent(
+        { hook_event_name: event, session_id: "qw1", cwd: "D:/repo", tool_name: "bash" },
+        "",
+        { env: {}, resolvePid: cap, postState: stubPost }
+      );
+      assert.strictEqual(cap.calls.length, 0,
+        `${event} fires 40+ times per task and QwenWork blocks on stdout — it must not walk the process tree`);
+      assert.strictEqual(result.stdout, "{}", `${event} must stay a no-decision observation`);
+    }
+  });
 
   it("antigravity: every event uses the event lifecycle; only an explicit conversation id is cacheable", async () => {
     const mod = require("../hooks/antigravity-hook.js");
@@ -413,6 +457,28 @@ describe("#634 subprocess — cache hits spawn nothing; kiro degrades gracefully
     assert.ok(fs.existsSync(file), "seeded entry exists before SessionEnd");
     const r = runHook("qoder-hook.js", { hook_event_name: "SessionEnd", session_id: raw, cwd: "D:/repo" });
     assert.ok(Array.isArray(r.spawns), `qoder did not report — stderr=${r.stderr}`);
+    assert.deepStrictEqual(r.spawns, [], "end is cache-only: no snapshot spawn");
+    assert.strictEqual(fs.existsSync(file), false, "SessionEnd must delete the session's v2 cache entry");
+  });
+
+  it("qwenwork-hook.js: live v2 cache hit ⇒ zero spawns and stdout stays {}", () => {
+    const raw = sid("qw-hit");
+    seedLiveCache("qwenwork", `qwenwork:${raw}`, "D:/repo");
+    const r = runHook("qwenwork-hook.js", { hook_event_name: "PreToolUse", session_id: raw, cwd: "D:/repo" });
+    assert.ok(Array.isArray(r.spawns), `qwenwork did not report — stderr=${r.stderr}`);
+    assert.deepStrictEqual(r.spawns, [], "qwenwork must resolve from the cache without spawning");
+    assert.strictEqual(r.status, 0, `qwenwork must exit cleanly — stderr=${r.stderr}`);
+    assert.strictEqual(r.stdout, "{}\n", "a cache hit must not change the state-only stdout contract");
+  });
+
+  it("qwenwork-hook.js: SessionEnd drops the live cache entry without spawning", () => {
+    const raw = sid("qw-end");
+    const cacheSid = `qwenwork:${raw}`;
+    seedLiveCache("qwenwork", cacheSid, "D:/repo");
+    const file = pc.cacheFilePathV2("qwenwork", cacheSid, "D:/repo");
+    assert.ok(fs.existsSync(file), "seeded entry exists before SessionEnd");
+    const r = runHook("qwenwork-hook.js", { hook_event_name: "SessionEnd", session_id: raw, cwd: "D:/repo" });
+    assert.ok(Array.isArray(r.spawns), `qwenwork did not report — stderr=${r.stderr}`);
     assert.deepStrictEqual(r.spawns, [], "end is cache-only: no snapshot spawn");
     assert.strictEqual(fs.existsSync(file), false, "SessionEnd must delete the session's v2 cache entry");
   });

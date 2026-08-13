@@ -4,6 +4,7 @@ const {
   checkCodexHookTrustText,
   checkCodexHooksFeatureText,
   collectTrustedCodexHookIds,
+  computeCodexHookTrustedHash,
 } = require("../src/doctor-detectors/codex-features-check");
 
 describe("Codex hooks feature check", () => {
@@ -84,12 +85,18 @@ describe("Codex hooks feature check", () => {
         Stop: [{ hooks: [{ command: '"/node" "/app/hooks/codex-hook.js"' }] }],
       },
     };
+    const stopHash = computeCodexHookTrustedHash(
+      "Stop",
+      settings.hooks.Stop[0],
+      settings.hooks.Stop[0].hooks[0],
+      "linux"
+    );
     const trust = checkCodexHookTrustText(
       [
         "[features]",
         "hooks = true",
         "[hooks.state.'/home/alice/.codex/hooks.json:stop:0:0']",
-        'trusted_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
+        `trusted_hash = "${stopHash}"`,
       ].join("\n"),
       settings,
       "/home/alice/.codex/hooks.json",
@@ -100,5 +107,63 @@ describe("Codex hooks feature check", () => {
     assert.deepStrictEqual(trust.missingEvents, ["PermissionRequest"]);
     assert.strictEqual(trust.trustedCount, 1);
     assert.strictEqual(trust.totalCount, 2);
+  });
+
+  it("only matches commandWindows markers on Windows", () => {
+    const settings = {
+      hooks: {
+        PreToolUse: [{ hooks: [{
+          command: '"/node" "/third-party/hook.js"',
+          commandWindows: '& "C:\\node.exe" "C:\\app\\codex-hook.js"',
+        }] }],
+      },
+    };
+
+    const posixTrust = checkCodexHookTrustText(
+      "",
+      settings,
+      "/home/alice/.codex/hooks.json",
+      { platform: "linux" }
+    );
+    const windowsTrust = checkCodexHookTrustText(
+      "",
+      settings,
+      "C:\\Users\\Alice\\.codex\\hooks.json",
+      { platform: "win32" }
+    );
+
+    assert.strictEqual(posixTrust.value, "uncertain");
+    assert.strictEqual(windowsTrust.value, "needs-review");
+    assert.strictEqual(windowsTrust.totalCount, 1);
+  });
+
+  it("reports a changed command at the same trusted position", () => {
+    const hooksPath = "/home/alice/.codex/hooks.json";
+    const settings = {
+      hooks: {
+        Stop: [{ hooks: [{
+          type: "command",
+          command: '"/node" "/app/hooks/codex-hook.js"',
+          timeout: 30,
+        }] }],
+      },
+    };
+    const hook = settings.hooks.Stop[0].hooks[0];
+    const trustedHash = computeCodexHookTrustedHash("Stop", settings.hooks.Stop[0], hook, "linux");
+    hook.command = '"/other-node" "/app/hooks/codex-hook.js"';
+
+    const trust = checkCodexHookTrustText(
+      [
+        `[hooks.state.'${hooksPath}:stop:0:0']`,
+        `trusted_hash = "${trustedHash}"`,
+      ].join("\n"),
+      settings,
+      hooksPath,
+      { platform: "linux" }
+    );
+
+    assert.strictEqual(trust.value, "needs-review");
+    assert.deepStrictEqual(trust.missingEvents, ["Stop"]);
+    assert.strictEqual(trust.trustedCount, 0);
   });
 });

@@ -800,6 +800,64 @@ describe("Codex official hook", () => {
     assert.strictEqual(result.port, 23335);
   });
 
+  it("re-observes an authoritative runtime after auto-start and skips legacy PID resolution on retry", async () => {
+    let observations = 0;
+    let legacyResolves = 0;
+    const postedBodies = [];
+    const postedOptions = [];
+    const result = await runCodexHook({
+      hook_event_name: "SessionStart",
+      session_id: "s-authoritative-retry",
+    }, {
+      platform: "win32",
+      env: {},
+      resolveWslDistro: () => null,
+      readWindowsProcessChainHookContext() {
+        observations += 1;
+        if (observations === 1) {
+          return {
+            identity: { ok: false, reason: "runtime-missing", port: null, ownerPid: null },
+            observation: null,
+          };
+        }
+        return {
+          identity: { ok: true, reason: null, port: 23335, ownerPid: 999 },
+          observation: {
+            port: 23335,
+            ownerPid: 999,
+            version: 1,
+            instanceGeneration: "retry-generation",
+            agentId: "codex",
+            agentMode: "b1a-authoritative",
+          },
+        };
+      },
+      processAlive: () => true,
+      resolvePid() {
+        legacyResolves += 1;
+        return { stablePid: 111, agentPid: 222, pidChain: [222, 111] };
+      },
+      readCodexAutoStartGate: () => true,
+      postState(bodyText, options, callback) {
+        postedBodies.push(JSON.parse(bodyText));
+        postedOptions.push(options);
+        callback(postedBodies.length === 2, postedBodies.length === 2 ? 23335 : null);
+      },
+      async runAutoStart() {},
+    });
+
+    assert.strictEqual(observations, 2);
+    assert.strictEqual(legacyResolves, 1);
+    assert.strictEqual(postedBodies[0].source_pid, 111);
+    for (const key of ["source_pid", "agent_pid", "pid_chain", "editor", "wt_hwnd"]) {
+      assert.strictEqual(Object.prototype.hasOwnProperty.call(postedBodies[1], key), false);
+    }
+    assert.strictEqual(postedOptions[1].preferredPort, 23335);
+    assert.strictEqual(postedOptions[1].runtimePort, 23335);
+    assert.strictEqual(postedOptions[1].windowsProcessChain.runtimeObservation.agentMode, "b1a-authoritative");
+    assert.strictEqual(result.posted, true);
+  });
+
   describe("startClawdAndWait", () => {
     it("spawns the production helper and cleans up after exit", async () => {
       const child = new EventEmitter();

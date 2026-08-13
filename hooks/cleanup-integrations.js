@@ -15,7 +15,10 @@ const { unregisterKimiHooks } = require("./kimi-install");
 const { unregisterQwenCodeHooks } = require("./qwen-code-install");
 const { unregisterZcodeHooks } = require("./zcode-install");
 const { unregisterCodewhaleHooks } = require("./codewhale-install");
-const { unregisterCodexCommandHooks } = require("./codex-install-utils");
+const {
+  removeStableCodexHookLauncher,
+  unregisterCodexCommandHooks,
+} = require("./codex-install-utils");
 const { unregisterOpencodePlugin } = require("./opencode-install");
 const { unregisterMimocodePlugin } = require("./mimocode-install");
 const { unregisterPiExtension } = require("./pi-install");
@@ -24,6 +27,7 @@ const { resolveHermesHome, unregisterHermesPlugin } = require("./hermes-install"
 const { unregisterQoderHooks } = require("./qoder-install");
 const { resolveReasonixConfigTargets, unregisterReasonixHooks } = require("./reasonix-install");
 const { unregisterQoderWorkHooks } = require("./qoderwork-install");
+const { unregisterQwenWorkHooks } = require("./qwenwork-install");
 const { unregisterWorkBuddyHooks } = require("./workbuddy-install");
 
 const CODEX_MARKERS = ["codex-hook.js", "codex-debug-hook.js"];
@@ -49,6 +53,7 @@ const MANAGED_AGENT_IDS = Object.freeze([
   "qoder",
   "reasonix",
   "qoderwork",
+  "qwenwork",
   "workbuddy",
 ]);
 
@@ -74,6 +79,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   qoder: "Qoder",
   reasonix: "Reasonix",
   qoderwork: "QoderWork",
+  qwenwork: "QwenWork",
 });
 
 function normalizeHomeDir(value) {
@@ -123,6 +129,19 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
   const backup = options.backup !== false;
   const silent = options.silent !== false;
   const common = { backup, silent };
+  const explicitCodexHome = typeof options.codexDir === "string" && options.codexDir.trim()
+    ? options.codexDir.trim()
+    : (typeof options.codexHome === "string" && options.codexHome.trim()
+      ? options.codexHome.trim()
+      : (options.env && typeof options.env.CODEX_HOME === "string" && options.env.CODEX_HOME.trim()
+        ? options.env.CODEX_HOME.trim()
+        : null));
+  const inheritedCodexHome = !explicitHomeDir
+    && typeof env.CODEX_HOME === "string"
+    && env.CODEX_HOME.trim()
+    ? env.CODEX_HOME.trim()
+    : null;
+  const codexDir = explicitCodexHome || inheritedCodexHome || path.join(homeDir, ".codex");
   const copilotHome = resolveCopilotHomeForCleanup(homeDir, env, options);
   const openClawStateDir = options.openClawStateDir
     || env.OPENCLAW_STATE_DIR
@@ -192,7 +211,8 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       codex: {
         ...common,
         homeDir,
-        hooksPath: path.join(homeDir, ".codex", "hooks.json"),
+        codexDir,
+        hooksPath: path.join(codexDir, "hooks.json"),
         markers: CODEX_MARKERS,
       },
       opencode: {
@@ -237,6 +257,12 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
         ...common,
         settingsPath: path.join(homeDir, ".qoderwork", "settings.json"),
       },
+      // QwenWork's user-data home is ~/.QwenWorkCN (case-preserving on disk),
+      // NOT the ~/.qwenwork path its hooks docs mention.
+      qwenwork: {
+        ...common,
+        settingsPath: path.join(homeDir, ".QwenWorkCN", "settings.json"),
+      },
       workbuddy: {
         ...common,
         settingsPaths: [
@@ -272,6 +298,16 @@ function unregisterClaudeIntegration(options = {}) {
   };
 }
 
+function unregisterCodexIntegration(options = {}) {
+  const hooks = unregisterCodexCommandHooks(options);
+  const stableLauncher = removeStableCodexHookLauncher(options);
+  return {
+    ...hooks,
+    changed: changedFromResult(hooks) || stableLauncher.changed,
+    stableLauncher,
+  };
+}
+
 const AGENT_CLEANERS = Object.freeze({
   "claude-code": unregisterClaudeIntegration,
   "gemini-cli": unregisterGeminiHooks,
@@ -284,7 +320,7 @@ const AGENT_CLEANERS = Object.freeze({
   "qwen-code": unregisterQwenCodeHooks,
   zcode: unregisterZcodeHooks,
   codewhale: unregisterCodewhaleHooks,
-  codex: unregisterCodexCommandHooks,
+  codex: unregisterCodexIntegration,
   opencode: unregisterOpencodePlugin,
   mimocode: unregisterMimocodePlugin,
   pi: unregisterPiExtension,
@@ -293,6 +329,7 @@ const AGENT_CLEANERS = Object.freeze({
   qoder: unregisterQoderHooks,
   reasonix: unregisterReasonixHooks,
   qoderwork: unregisterQoderWorkHooks,
+  qwenwork: unregisterQwenWorkHooks,
   workbuddy: unregisterWorkBuddyHooks,
 });
 

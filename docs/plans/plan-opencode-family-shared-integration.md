@@ -1,11 +1,20 @@
 # Design: collapse mimocode + opencode into a shared "opencode-family" path
 
-Status: **v4 — final review round absorbed** (codex 2026-07-17, three rounds:
-v1 BLOCK 4 blockers → v2; 3 contract gaps → v3; 1 blocker + 2 pinned contracts →
-this v4, reviewer verdict "APPROVE once absorbed". Every finding was verified
+Status: **Implemented — both PRs merged.** PR A landed as #706
+(`refactor/opencode-family-core`, 2026-07-17), which introduced
+`hooks/opencode-family-plugin/core.mjs`; the rebased #607 followed on 2026-07-18. The
+end state matches §10: a 1252-line shared core with `hooks/opencode-plugin/index.mjs`
+and `hooks/mimocode-plugin/index.mjs` reduced to 19-line entries that import it.
+Deferred hardening from a later review is planned separately in
+`plan-opencode-family-state-ordering-and-instance-disposal-hardening.md`.
+The design below is kept as the record. (Status refreshed 2026-08-12.)
+
+Design review history: **v4 — final review round absorbed** (codex 2026-07-17, three
+rounds: v1 BLOCK 4 blockers → v2; 3 contract gaps → v3; 1 blocker + 2 pinned contracts
+→ this v4, reviewer verdict "APPROVE once absorbed". Every finding was verified
 against real code before absorbing. Changelog in §11.)
-PR shape: **two independent PRs** — PR A (opencode-only refactor, merges first) + a
-rebased #607 (mimocode as a thin member). See §10.
+PR shape as planned: **two independent PRs** — PR A (opencode-only refactor, merges
+first) + a rebased #607 (mimocode as a thin member). See §10.
 Authorship: PR A is maintainer work; the rebased #607 keeps @jiaxuan1101's authorship
 with maintainer commits `Co-authored-by`.
 

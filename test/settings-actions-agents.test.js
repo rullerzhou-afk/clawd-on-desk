@@ -970,3 +970,64 @@ test("every opencode-family member is installable AND auto-repairable (R10 P3)",
     );
   }
 });
+
+test("successful Hermes WSL Pair opens ingress without claiming a local install", async () => {
+  const snapshot = prefs.getDefaults();
+  snapshot.agents.hermes = {
+    integrationInstalled: false,
+    enabled: false,
+    permissionsEnabled: true,
+    notificationHookEnabled: true,
+  };
+  const result = await agentCommands.deployToWsl({ agentId: "hermes", distro: "Ubuntu" }, {
+    snapshot,
+    deployHooksToWsl: async (distro, agentId) => ({
+      ok: true,
+      distro,
+      agentId,
+      message: "Hermes plugin installed",
+      warning: "one profile failed",
+    }),
+  });
+
+  assert.strictEqual(result.status, "ok", "warning must stay top-level ok so controller applies commit");
+  assert.strictEqual(result.warning, "one profile failed");
+  assert.strictEqual(result.commit.agents.hermes.enabled, true);
+  assert.strictEqual(result.commit.agents.hermes.integrationInstalled, false);
+  assert.strictEqual(result.commit.agents.hermes.permissionsEnabled, true);
+});
+
+test("Hermes WSL Pair preserves an existing local installation flag", async () => {
+  const snapshot = prefs.getDefaults();
+  snapshot.agents.hermes.integrationInstalled = true;
+  snapshot.agents.hermes.enabled = false;
+  const result = await agentCommands.deployToWsl({ agentId: "hermes", distro: "Ubuntu" }, {
+    snapshot,
+    deployHooksToWsl: async () => ({ ok: true }),
+  });
+  assert.strictEqual(result.commit.agents.hermes.integrationInstalled, true);
+  assert.strictEqual(result.commit.agents.hermes.enabled, true);
+});
+
+test("failed Hermes WSL Pair does not open ingress", async () => {
+  const result = await agentCommands.deployToWsl({ agentId: "hermes", distro: "Ubuntu" }, {
+    snapshot: prefs.getDefaults(),
+    deployHooksToWsl: async () => ({ ok: false, message: "enable failed" }),
+  });
+  assert.strictEqual(result.status, "error");
+  assert.strictEqual(result.commit, undefined);
+  assert.match(result.message, /enable failed/);
+});
+
+test("Hermes WSL Unpair propagates warnings without disabling the global gate", async () => {
+  const snapshot = prefs.getDefaults();
+  snapshot.agents.hermes.enabled = true;
+  const result = await agentCommands.removeFromWsl({ agentId: "hermes", distro: "Ubuntu" }, {
+    snapshot,
+    removeHooksFromWsl: async () => ({ ok: true, message: "removed", warning: "disable failed" }),
+  });
+  assert.strictEqual(result.status, "ok");
+  assert.strictEqual(result.warning, "disable failed");
+  assert.strictEqual(result.commit, undefined);
+  assert.strictEqual(snapshot.agents.hermes.enabled, true);
+});

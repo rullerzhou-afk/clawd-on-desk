@@ -125,7 +125,7 @@ otherwise the approver will not match and the button press is ignored.
 ## Card language
 
 Cards follow Clawd's current language setting (English, 简体中文, 繁體中文,
-한국어, 日本語) — titles, field labels, buttons, question steps, result status,
+한국어, 日本語, Português (Brasil)) — titles, field labels, buttons, question steps, result status,
 and the source label. Switching Clawd's language affects cards sent afterwards
 and does not drop the long connection.
 

@@ -7,7 +7,7 @@
 //      older than monitor start. Only helps lines that carry a timestamp.
 //   2. File-level: _pollFile sets tracked.backfilling when attaching to a
 //      file whose mtime predates monitor start. _processLine then suppresses
-//      historical emits until the first read drains, then
+//      historical emits until the bounded replay reaches its snapshot EOF, then
 //      _emitBackfillSnapshot may synthesize ONE current sustained state
 //      (thinking / working). Works for any line shape,
 //      covers what layer 1 can't.
@@ -29,10 +29,25 @@ const {
   isFreshCodexQuotaTimestamp,
 } = require("../hooks/codex-rate-limits");
 const { parseCodexUserInputRecord } = require("../hooks/codex-user-input");
+const { normalizeCodexTurnId } = require("../src/codex-turn-id");
 
 const MAX_TRACKED_FILES = 50;
 const MAX_RETIRED_TRACKED_FILES = 100;
 const MAX_PARTIAL_BYTES = 65536;
+const MAX_POLL_READ_BYTES = 4 * 1024 * 1024;
+const MAX_POLL_TOTAL_REQUEST_BYTES = 16 * 1024 * 1024;
+const MAX_POLL_FILE_ATTEMPTS = 64;
+const MAX_ACTIVE_DIR_DISCOVERY_ATTEMPTS_PER_POLL = 16;
+const MAX_STARTUP_RECOVERY_DISCOVERY_OPERATIONS_PER_POLL = 16;
+const MAX_REPLAY_WORK_ITEMS = 40;
+const MAX_BACKGROUND_REPLAY_WORK_ITEMS = 32;
+const MAX_DEFERRED_RECENT_PATHS = 192;
+const MAX_DEFERRED_BACKGROUND_PATHS = 64;
+const MAX_REPLAY_NO_PROGRESS_ATTEMPTS = 8;
+const REPLAY_NO_PROGRESS_TIMEOUT_MS = 30 * 1000;
+const REPLAY_RETRY_BASE_BACKOFF_MS = 30 * 1000;
+const REPLAY_RETRY_MAX_BACKOFF_MS = 5 * 60 * 1000;
+const RECOVERY_MAX_READ_ATTEMPTS = 8;
 const RECENT_DAY_DIR_CACHE_MS = 60 * 60 * 1000; // 1 hour
 // A rollout file is considered "active" if written within this window. Used by
 // both the untracked-file pickup gate in _poll and the _getActiveDayDirs scan
@@ -79,6 +94,15 @@ const RECOVERY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 // one.
 const RECOVERY_SWEEP_MAX_FILES = 20;
 const RECOVERY_SWEEP_MAX_TOTAL_BYTES = 20 * 1024 * 1024;
+
+function recoveryReadBudgetCost(size) {
+  const safeSize = Number.isFinite(Number(size)) ? Math.max(0, Number(size)) : 0;
+  // Recovery reads the head and tail independently. They overlap for small
+  // files, so min(size, head + tail) under-counts the actual synchronous I/O.
+  return Math.min(safeSize, RECOVERY_HEAD_LINE_MAX_BYTES)
+    + Math.min(safeSize, RECOVERY_TAIL_SCAN_BYTES)
+    + (safeSize > RECOVERY_TAIL_SCAN_BYTES ? 1 : 0);
+}
 
 function finiteNonnegativeNumber(value) {
   const n = Number(value);
@@ -146,6 +170,16 @@ class CodexLogMonitor {
     // LRUs. A long-running monitor may see more than their combined capacity;
     // forgetting the byte offset would replay that rollout when it next grows.
     this._readPositions = new Map();
+    this._replayWork = new Map();
+    this._deferredRecent = new Map();
+    this._deferredBackground = new Map();
+    this._pollCursor = 0;
+    this._activeDayWalker = null;
+    this._startupRecoveryCandidates = new Map();
+    this._startupRecoveryWalker = null;
+    this._startupRecoveryReady = false;
+    this._startupRecoveryFilesScanned = 0;
+    this._startupRecoveryBytesScanned = 0;
     this._baseDir = this._resolveBaseDir();
     this._codexDir = options.codexDir || null;
     this._recentDayDirsCache = [];
@@ -154,11 +188,10 @@ class CodexLogMonitor {
     this._activeDayDirsCache = null;
     this._activeDayDirsCacheAt = 0;
     this._startedAtMs = Date.now();
-    // One-shot: the first _poll() after start() is allowed to open files
-    // outside ACTIVE_SESSION_WINDOW_MS to check for a still-unresolved
-    // request_user_input (see _mightHavePendingUserInput). Every later poll
-    // reverts to the cheap mtime-only gate — this is a startup recovery
-    // sweep, not an ongoing scan of Codex's full history.
+    // One-shot startup recovery can span bounded poll slices while its
+    // directory/path cursor looks for a still-unresolved request_user_input
+    // outside ACTIVE_SESSION_WINDOW_MS. Once that pass completes, later polls
+    // revert to the cheap mtime-only gate.
     this._didInitialRecoveryScan = false;
   }
 
@@ -178,6 +211,13 @@ class CodexLogMonitor {
     // its own recovery sweep, not just the very first one this instance ever
     // saw.
     this._didInitialRecoveryScan = false;
+    this._startupRecoveryCandidates.clear();
+    this._startupRecoveryWalker = null;
+    this._startupRecoveryReady = false;
+    this._startupRecoveryFilesScanned = 0;
+    this._startupRecoveryBytesScanned = 0;
+    this._activeDayWalker = null;
+    this._pollCursor = 0;
     // Initial scan
     this._poll();
     this._interval = setInterval(
@@ -194,51 +234,311 @@ class CodexLogMonitor {
     this._tracked.clear();
     this._retiredTracked.clear();
     this._readPositions.clear();
+    this._replayWork.clear();
+    this._deferredRecent.clear();
+    this._deferredBackground.clear();
+    this._activeDayWalker = null;
+    this._pollCursor = 0;
+    this._startupRecoveryCandidates.clear();
+    this._startupRecoveryWalker = null;
+    this._startupRecoveryReady = false;
+    this._startupRecoveryFilesScanned = 0;
+    this._startupRecoveryBytesScanned = 0;
   }
 
   _poll() {
-    const dirs = this._getSessionDirs();
-    const recoveryCandidates = [];
+    const context = {
+      remainingAttempts: MAX_POLL_FILE_ATTEMPTS,
+      remainingRequestBytes: MAX_POLL_TOTAL_REQUEST_BYTES,
+    };
+    const dirs = this._getSessionDirs(context);
+    const startupObserved = !this._didInitialRecoveryScan
+      && !this._startupRecoveryReady
+      && !this._activeDayWalker
+      ? this._walkStartupRecoveryDiscovery(dirs, context)
+      : new Map();
+    if (this._startupRecoveryReady && !this._didInitialRecoveryScan) {
+      this._runReadyStartupRecovery(context);
+    }
+
+    const candidates = [];
+    for (const deferred of this._collectDueDeferredCandidates()) {
+      candidates.push({ ...deferred, source: "deferred" });
+    }
+    for (const item of this._replayWork.values()) {
+      candidates.push({ filePath: item.filePath, fileName: item.fileName, source: "replay" });
+    }
     for (const dir of dirs) {
       let files;
       try {
         files = fs.readdirSync(dir);
       } catch {
-        continue; // directory doesn't exist yet
+        continue;
       }
-      const now = Date.now();
       for (const file of files) {
         if (!file.startsWith("rollout-") || !file.endsWith(".jsonl")) continue;
         const filePath = path.join(dir, file);
-        // Skip files we're not already tracking if they haven't been written recently
-        if (!this._tracked.has(filePath)) {
-          let stat;
-          try {
-            stat = fs.statSync(filePath);
-          } catch { continue; }
-          if (now - stat.mtimeMs > ACTIVE_SESSION_WINDOW_MS) {
-            // Outside the steady-state polling window. Only the one-time
-            // startup sweep may even consider it — Codex genuinely blocked
-            // on request_user_input can sit quiet far longer than 5 minutes,
-            // and an untracked file is otherwise never seen again. Collected
-            // here, not read yet: candidates are sorted and budgeted in
-            // _runRecoverySweep so an unbounded NUMBER of stale files can't
-            // add up to unbounded main-process blocking even though each
-            // individual read is already capped.
-            if (!this._didInitialRecoveryScan) {
-              recoveryCandidates.push({ filePath, file, mtimeMs: stat.mtimeMs, size: stat.size });
-            }
-            continue;
-          }
-        }
-        this._pollFile(filePath, file);
+        candidates.push({ filePath, fileName: file, source: "normal" });
       }
     }
-    if (!this._didInitialRecoveryScan) {
-      this._runRecoverySweep(recoveryCandidates);
-      this._didInitialRecoveryScan = true;
+
+    const unique = [];
+    const seen = new Set();
+    for (const candidate of candidates) {
+      if (!candidate.filePath || seen.has(candidate.filePath)) continue;
+      seen.add(candidate.filePath);
+      unique.push(candidate);
+    }
+    if (unique.length > 0) {
+      const start = this._pollCursor % unique.length;
+      const ordered = unique.slice(start).concat(unique.slice(0, start));
+      let processed = 0;
+      for (const candidate of ordered) {
+        if (context.remainingAttempts <= 0) break;
+        const deferred = this._deferredRecent.get(candidate.filePath)
+          || this._deferredBackground.get(candidate.filePath);
+        if (deferred && Date.now() < deferred.notBefore) {
+          processed += 1;
+          continue;
+        }
+        const observedByStartup = startupObserved.has(candidate.filePath);
+        let stat = observedByStartup ? startupObserved.get(candidate.filePath) : null;
+        if (!observedByStartup) {
+          context.remainingAttempts -= 1;
+          try {
+            stat = fs.statSync(candidate.filePath);
+          } catch {
+            stat = null;
+          }
+        }
+        if (!stat) {
+          if (deferred) {
+            this._backoffDeferredStatFailure(deferred);
+          } else {
+            this._markReplayNoProgress(candidate.filePath, this._tracked.get(candidate.filePath));
+          }
+          processed += 1;
+          continue;
+        }
+        if (
+          candidate.source === "normal"
+          && !this._tracked.has(candidate.filePath)
+          && Date.now() - stat.mtimeMs > ACTIVE_SESSION_WINDOW_MS
+        ) {
+          processed += 1;
+          continue;
+        }
+        const result = this._pollFile(candidate.filePath, candidate.fileName, {
+          preStat: stat,
+          get remainingRequestBytes() { return context.remainingRequestBytes; },
+          set remainingRequestBytes(value) { context.remainingRequestBytes = value; },
+        });
+        if (result && result.kind === "budget") break;
+        processed += 1;
+      }
+      this._pollCursor = (start + Math.max(1, processed)) % unique.length;
+    }
+
+    if (this._startupRecoveryReady && !this._didInitialRecoveryScan && context.remainingAttempts > 0) {
+      this._runReadyStartupRecovery(context);
     }
     this._pruneTrackedFilesIfNeeded();
+  }
+
+  _insertStartupRecoveryCandidate(candidate) {
+    this._startupRecoveryCandidates.set(candidate.filePath, candidate);
+    if (this._startupRecoveryCandidates.size <= RECOVERY_SWEEP_MAX_FILES) return;
+    let oldestPath = null;
+    let oldestMtime = Infinity;
+    for (const [filePath, entry] of this._startupRecoveryCandidates) {
+      if (entry.mtimeMs < oldestMtime) {
+        oldestMtime = entry.mtimeMs;
+        oldestPath = filePath;
+      }
+    }
+    if (oldestPath) this._startupRecoveryCandidates.delete(oldestPath);
+  }
+
+  _walkStartupRecoveryDiscovery(dirs, context) {
+    if (!this._startupRecoveryWalker) {
+      this._startupRecoveryWalker = {
+        dirs: [...dirs],
+        dirIndex: 0,
+        files: null,
+        fileIndex: 0,
+      };
+    }
+    const walker = this._startupRecoveryWalker;
+    const observed = new Map();
+    let operations = 0;
+    while (
+      walker.dirIndex < walker.dirs.length
+      && operations < MAX_STARTUP_RECOVERY_DISCOVERY_OPERATIONS_PER_POLL
+      && context.remainingAttempts > 0
+    ) {
+      const dir = walker.dirs[walker.dirIndex];
+      if (!walker.files) {
+        operations += 1;
+        try {
+          walker.files = fs.readdirSync(dir)
+            .filter((file) => file.startsWith("rollout-") && file.endsWith(".jsonl"));
+        } catch {
+          walker.files = [];
+        }
+        walker.fileIndex = 0;
+      }
+      if (walker.fileIndex >= walker.files.length) {
+        walker.dirIndex += 1;
+        walker.files = null;
+        walker.fileIndex = 0;
+        continue;
+      }
+      const file = walker.files[walker.fileIndex];
+      walker.fileIndex += 1;
+      operations += 1;
+      context.remainingAttempts -= 1;
+      const filePath = path.join(dir, file);
+      let stat = null;
+      try {
+        stat = fs.statSync(filePath);
+      } catch {}
+      observed.set(filePath, stat);
+      const deferred = this._deferredRecent.get(filePath)
+        || this._deferredBackground.get(filePath);
+      if (
+        stat
+        && !this._tracked.has(filePath)
+        && !(deferred && Date.now() < deferred.notBefore)
+        && Date.now() - stat.mtimeMs > ACTIVE_SESSION_WINDOW_MS
+      ) {
+        this._insertStartupRecoveryCandidate({
+          filePath,
+          file,
+          mtimeMs: stat.mtimeMs,
+          size: stat.size,
+        });
+      }
+    }
+    if (walker.dirIndex >= walker.dirs.length) {
+      this._startupRecoveryWalker = null;
+      this._startupRecoveryReady = true;
+    }
+    return observed;
+  }
+
+  _runReadyStartupRecovery(context) {
+    const candidates = [...this._startupRecoveryCandidates.values()]
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    let pausedForAttempts = false;
+    for (const candidate of candidates) {
+      if (this._startupRecoveryFilesScanned >= RECOVERY_SWEEP_MAX_FILES) break;
+      if (context.remainingAttempts <= 0) {
+        pausedForAttempts = true;
+        break;
+      }
+      context.remainingAttempts -= 1;
+      const deferred = this._deferredRecent.get(candidate.filePath)
+        || this._deferredBackground.get(candidate.filePath);
+      let stat = null;
+      try {
+        stat = fs.statSync(candidate.filePath);
+      } catch {}
+      // Discovery and recovery can span polls. The normal poller may have
+      // attached this path (or deferred it) in between; consuming the cached
+      // candidate would duplicate pending notifications and overwrite the
+      // authoritative live tracker.
+      if (
+        !stat
+        || this._tracked.has(candidate.filePath)
+        || this._replayWork.has(candidate.filePath)
+        || deferred
+        || Date.now() - stat.mtimeMs <= ACTIVE_SESSION_WINDOW_MS
+      ) {
+        this._startupRecoveryCandidates.delete(candidate.filePath);
+        continue;
+      }
+      const candidateCost = recoveryReadBudgetCost(stat.size);
+      if (
+        this._startupRecoveryBytesScanned + candidateCost
+        > RECOVERY_SWEEP_MAX_TOTAL_BYTES
+      ) break;
+      this._startupRecoveryFilesScanned += 1;
+      this._startupRecoveryBytesScanned += candidateCost;
+      const recovered = this._recoverStalePendingUserInput(
+        candidate.filePath,
+        candidate.file,
+        stat,
+        { deferSideEffects: true }
+      );
+      let postStat = null;
+      try {
+        postStat = fs.statSync(candidate.filePath);
+      } catch {}
+      const snapshotStatus = this._recoverySnapshotStatus(stat, postStat);
+      if (snapshotStatus === "missing") {
+        this._startupRecoveryCandidates.delete(candidate.filePath);
+        continue;
+      }
+      if (snapshotStatus === "changed") {
+        pausedForAttempts = true;
+        continue;
+      }
+      if (recovered) {
+        this._finalizeRecoveredTracker(recovered);
+        this._tracked.set(candidate.filePath, recovered);
+        this._readPositions.set(candidate.filePath, {
+          offset: recovered.offset,
+          identity: recovered.fileIdentity,
+        });
+        this._emitPendingUserInputRequests(recovered);
+      } else if (snapshotStatus === "grew") {
+        // Keep this old-mtime candidate for a later bounded slice. Normal
+        // polling deliberately skips untracked old files, so consuming it
+        // here would lose an append whose LastWriteTime stayed frozen on
+        // Windows. The next slice admits the larger snapshot under the same
+        // cumulative file/byte caps instead of expanding this read in-place.
+        pausedForAttempts = true;
+        continue;
+      }
+      // Recovery shares the poll-wide attempt budget. Remove completed work so
+      // a later poll resumes at the next candidate instead of re-emitting the
+      // same pending request when the first poll ran out of attempts.
+      this._startupRecoveryCandidates.delete(candidate.filePath);
+    }
+    if (pausedForAttempts) return;
+    this._didInitialRecoveryScan = true;
+    this._startupRecoveryReady = false;
+    this._startupRecoveryCandidates.clear();
+    this._startupRecoveryWalker = null;
+    this._startupRecoveryFilesScanned = 0;
+    this._startupRecoveryBytesScanned = 0;
+  }
+
+  _collectDueDeferredCandidates() {
+    const out = [];
+    const now = Date.now();
+    const recent = [...this._deferredRecent.values()]
+      .filter((entry) => !Number.isFinite(entry.notBefore) || entry.notBefore <= now);
+    const background = [...this._deferredBackground.values()]
+      .filter((entry) => !Number.isFinite(entry.notBefore) || entry.notBefore <= now);
+    let recentIndex = 0;
+    let backgroundIndex = 0;
+    while (
+      out.length < MAX_REPLAY_WORK_ITEMS
+      && (recentIndex < recent.length || backgroundIndex < background.length)
+    ) {
+      for (let i = 0; i < 3 && recentIndex < recent.length; i += 1) {
+        out.push(recent[recentIndex]);
+        recentIndex += 1;
+      }
+      if (backgroundIndex < background.length) {
+        out.push(background[backgroundIndex]);
+        backgroundIndex += 1;
+      } else if (recentIndex >= recent.length) {
+        break;
+      }
+    }
+    return out;
   }
 
   _runRecoverySweep(candidates) {
@@ -247,18 +547,33 @@ class CodexLogMonitor {
     let bytesScanned = 0;
     for (const candidate of candidates) {
       if (filesScanned >= RECOVERY_SWEEP_MAX_FILES) break;
-      const candidateCost = Math.min(
-        candidate.size,
-        RECOVERY_HEAD_LINE_MAX_BYTES + RECOVERY_TAIL_SCAN_BYTES + 1
-      );
+      let stat;
+      try {
+        stat = fs.statSync(candidate.filePath);
+      } catch {
+        continue;
+      }
+      const candidateCost = recoveryReadBudgetCost(stat.size);
       // Check BEFORE adding — accumulating post-hoc lets exactly one
       // over-budget candidate slip through every time the running total
       // lands just under the cap (#707 follow-up review round 4).
       if (bytesScanned + candidateCost > RECOVERY_SWEEP_MAX_TOTAL_BYTES) break;
       filesScanned += 1;
       bytesScanned += candidateCost;
-      const recovered = this._recoverStalePendingUserInput(candidate.filePath, candidate.file);
+      const recovered = this._recoverStalePendingUserInput(
+        candidate.filePath,
+        candidate.file,
+        stat,
+        { deferSideEffects: true }
+      );
+      let postStat = null;
+      try {
+        postStat = fs.statSync(candidate.filePath);
+      } catch {}
+      const snapshotStatus = this._recoverySnapshotStatus(stat, postStat);
+      if (snapshotStatus === "missing" || snapshotStatus === "changed") continue;
       if (recovered) {
+        this._finalizeRecoveredTracker(recovered);
         this._tracked.set(candidate.filePath, recovered);
         // Bypasses _pollFile's normal new-tracker construction, which is
         // where the ledger is otherwise seeded — without this, evicting this
@@ -314,26 +629,56 @@ class CodexLogMonitor {
   // if no newline is found within budget — the caller must fail closed, not
   // guess a role.
   _readCompleteFirstLine(filePath, statSize, maxBytes) {
-    // Reads only the NEW portion at each step (not a fresh 0..chunkSize read
-    // every retry) so the physical bytes read never exceed maxBytes even in
-    // the worst case — the recovery sweep's total-byte budget assumes this
-    // function never reads more than maxBytes per file (#707 follow-up
-    // review round 4).
     let readSoFar = 0;
-    let text = "";
-    let target = Math.min(statSize, 8 * 1024, maxBytes);
-    for (;;) {
-      const additional = target - readSoFar;
-      if (additional > 0) {
-        const { text: chunkText } = this._readByteRange(filePath, readSoFar, additional);
-        text += chunkText;
-        readSoFar = target;
-      }
-      const newlineIdx = text.indexOf("\n");
-      if (newlineIdx !== -1) return text.slice(0, newlineIdx);
-      if (readSoFar >= statSize || readSoFar >= maxBytes) return null;
-      target = Math.min(readSoFar * 4, maxBytes, statSize);
+    let requestedTotal = 0;
+    const requestBudget = Math.min(statSize, maxBytes);
+    let attempts = 0;
+    const chunks = [];
+    const requestQuantum = Math.max(1, Math.ceil(requestBudget / RECOVERY_MAX_READ_ATTEMPTS));
+    while (requestedTotal < requestBudget && attempts < RECOVERY_MAX_READ_ATTEMPTS) {
+      const requestLength = Math.min(requestQuantum, requestBudget - requestedTotal);
+      attempts += 1;
+      requestedTotal += requestLength;
+      const { bytesRead, buf } = this._readByteRange(filePath, readSoFar, requestLength);
+      if (!Number.isFinite(bytesRead) || bytesRead <= 0) return null;
+      chunks.push(buf);
+      readSoFar += bytesRead;
+      const raw = Buffer.concat(chunks, readSoFar);
+      const newlineIdx = raw.indexOf(0x0a);
+      if (newlineIdx !== -1) return raw.subarray(0, newlineIdx).toString("utf8");
     }
+    return null;
+  }
+
+  _readExactRange(filePath, start, length) {
+    if (length <= 0) return { buf: Buffer.alloc(0), complete: true };
+    const chunks = [];
+    let bytesReadTotal = 0;
+    let requestedTotal = 0;
+    let attempts = 0;
+    const requestQuantum = Math.max(1, Math.ceil(length / RECOVERY_MAX_READ_ATTEMPTS));
+    while (bytesReadTotal < length && attempts < RECOVERY_MAX_READ_ATTEMPTS) {
+      const requestLength = Math.min(
+        length - bytesReadTotal,
+        length - requestedTotal,
+        requestQuantum
+      );
+      if (requestLength <= 0) break;
+      attempts += 1;
+      requestedTotal += requestLength;
+      const result = this._readByteRange(
+        filePath,
+        start + bytesReadTotal,
+        requestLength
+      );
+      if (!result || !Number.isFinite(result.bytesRead) || result.bytesRead <= 0) break;
+      chunks.push(result.buf);
+      bytesReadTotal += result.bytesRead;
+    }
+    return {
+      buf: Buffer.concat(chunks, bytesReadTotal),
+      complete: bytesReadTotal === length,
+    };
   }
 
   // Bounded, standalone pass over an otherwise-ignored old-mtime file. Used
@@ -348,12 +693,14 @@ class CodexLogMonitor {
   // turn_aborted for this file — those end the turn that asked, so any
   // earlier open request is moot even without a matching function_call_output
   // (Codex killed mid-turn, terminal closed, etc. leave exactly this shape).
-  _recoverStalePendingUserInput(filePath, fileName) {
-    let stat;
-    try {
-      stat = fs.statSync(filePath);
-    } catch {
-      return null;
+  _recoverStalePendingUserInput(filePath, fileName, recoveryStat = null, options = {}) {
+    let stat = recoveryStat;
+    if (!stat) {
+      try {
+        stat = fs.statSync(filePath);
+      } catch {
+        return null;
+      }
     }
     if (stat.size === 0) return null;
     const nowMs = Date.now();
@@ -385,9 +732,6 @@ class CodexLogMonitor {
     // fail-closed protection above), so it must not be rejected here too —
     // only "subagent" flips isSubagent, exactly like the live _applySessionMeta
     // path treats an unclassifiable role as unchanged-from-default (false).
-    const role = this._classifier.registerSession("codex:" + sessionId, { sessionMeta: sessionMeta.payload });
-    const isSubagent = role === "subagent";
-
     // Tail: an unresolved request_user_input, if any, is near the end —
     // Codex stops writing once it's blocked waiting for an answer.
     const tailLen = Math.min(stat.size, RECOVERY_TAIL_SCAN_BYTES);
@@ -395,9 +739,20 @@ class CodexLogMonitor {
     // A non-zero tailStart is not necessarily mid-line: it can land exactly
     // on the first byte after a newline. Inspect the preceding raw byte so a
     // valid request at that exact 1 MiB boundary is not discarded below.
-    const tailStartsOnRecordBoundary = tailStart === 0
-      || this._readByteRange(filePath, tailStart - 1, 1).buf[0] === 0x0a;
-    const { buf: tailBuf } = this._readByteRange(filePath, tailStart, tailLen);
+    const preceding = tailStart === 0
+      ? { buf: Buffer.from([0x0a]), complete: true }
+      : this._readExactRange(filePath, tailStart - 1, 1);
+    if (!preceding.complete) return null;
+    const tailStartsOnRecordBoundary = tailStart === 0 || preceding.buf[0] === 0x0a;
+    const tailRead = this._readExactRange(filePath, tailStart, tailLen);
+    if (!tailRead.complete) return null;
+    let readPostStat = null;
+    try {
+      readPostStat = fs.statSync(filePath);
+    } catch {}
+    const readSnapshotStatus = this._recoverySnapshotStatus(stat, readPostStat);
+    if (readSnapshotStatus === "missing" || readSnapshotStatus === "changed") return null;
+    const tailBuf = tailRead.buf;
     // Find the last complete (newline-terminated) record in RAW BYTE space —
     // 0x0A can never appear inside a multi-byte UTF-8 sequence, so this index
     // is exact even when the window start cuts a leading character in half
@@ -471,6 +826,7 @@ class CodexLogMonitor {
     }
     if (!recentlyActive && (pending.size === 0 || tooOldForPendingRecovery)) return null;
 
+    const deferSideEffects = options.deferSideEffects === true;
     const recovered = {
       // Stops at the last complete newline, not true EOF — matches
       // _pollFile's own offset convention. A still-growing final line is
@@ -499,24 +855,43 @@ class CodexLogMonitor {
       // MAX_TRACKED_FILES pressure despite genuinely being live.
       hasEmittedState: !recentlyActive,
       hadToolUse: false,
-      isSubagent,
+      // Classification is applied exactly once after reconstruction. The
+      // deferred production caller waits for post-read snapshot validation;
+      // direct callers follow the same one-path rule immediately. For recent
+      // recovery, the tail's session_meta performs it when the tail includes
+      // the head; otherwise the separately-read head does. Stale pending
+      // recovery always uses the separately-read head.
+      isSubagent: false,
       agentPid: null,
       assistantLastOutput: null,
       assistantLastOutputTruncated: false,
       contextUsage: null,
+      activeTurnId: null,
+      turnBoundaryOpen: false,
       codexQuota: null,
       codexSparkQuota: null,
       pendingUserInputs: recentlyActive ? new Map() : pending,
       initializingUserInputs: recentlyActive,
       backfilling: recentlyActive,
     };
-    if (!recentlyActive) return recovered;
+    if (deferSideEffects) {
+      recovered._recoverySessionMeta = sessionMeta.payload;
+      if (recentlyActive) {
+        recovered._recoveryRawLines = rawLines;
+        recovered._recoveryTailIncludesHead = tailStart === 0;
+      }
+      return recovered;
+    }
+    if (!recentlyActive) {
+      this._applySessionMeta(sessionMeta.payload, recovered);
+      return recovered;
+    }
 
     // Reconstruct only the bounded tail in backfill mode. Historical
     // lifecycle events stay silent, while fresh token_count captures seed
     // the session-independent quota store. Head metadata was read separately
     // above so subagent/cwd classification does not depend on the tail window.
-    this._applySessionMeta(sessionMeta.payload, recovered);
+    if (tailStart !== 0) this._applySessionMeta(sessionMeta.payload, recovered);
     for (const line of rawLines) {
       if (!line.trim()) continue;
       this._processLine(line, recovered);
@@ -527,7 +902,45 @@ class CodexLogMonitor {
     return recovered;
   }
 
-  _getSessionDirs() {
+  _recoverySnapshotStatus(before, after) {
+    if (!after) return "missing";
+    const beforeIdentity = this._getFileIdentity(before);
+    const afterIdentity = this._getFileIdentity(after);
+    if (beforeIdentity !== null || afterIdentity !== null) {
+      if (beforeIdentity !== afterIdentity) return "changed";
+    } else if (after.size !== before.size || after.mtimeMs !== before.mtimeMs) {
+      // Without an identity we cannot prove that a changed path still names
+      // the file whose head/tail were read.
+      return "changed";
+    }
+    if (after.size < before.size) return "changed";
+    if (after.size > before.size) return "grew";
+    if (after.mtimeMs !== before.mtimeMs) return "changed";
+    return "stable";
+  }
+
+  _finalizeRecoveredTracker(recovered) {
+    const sessionMeta = recovered._recoverySessionMeta;
+    const rawLines = recovered._recoveryRawLines;
+    const tailIncludesHead = recovered._recoveryTailIncludesHead === true;
+    delete recovered._recoverySessionMeta;
+    delete recovered._recoveryRawLines;
+    delete recovered._recoveryTailIncludesHead;
+    if (!Array.isArray(rawLines)) {
+      this._applySessionMeta(sessionMeta, recovered);
+      return;
+    }
+    if (!tailIncludesHead) this._applySessionMeta(sessionMeta, recovered);
+    for (const line of rawLines) {
+      if (!line.trim()) continue;
+      this._processLine(line, recovered);
+    }
+    this._emitBackfillSnapshot(recovered);
+    recovered.backfilling = false;
+    recovered.initializingUserInputs = false;
+  }
+
+  _getSessionDirs(pollContext = null) {
     const dirs = [];
     const seen = new Set();
     const addDir = (dir) => {
@@ -550,67 +963,127 @@ class CodexLogMonitor {
     // Also include any day dir that has a recently-modified rollout file.
     // Covers Codex desktop app's long-lived conversations where new writes
     // keep landing in the ORIGINAL day dir (which can be weeks/months old).
-    for (const dir of this._getActiveDayDirs()) addDir(dir);
+    for (const dir of this._getActiveDayDirs(ACTIVE_SESSION_WINDOW_MS, pollContext)) addDir(dir);
     return dirs;
   }
 
-  // Scan baseDir for any day dir containing a rollout-*.jsonl whose mtime
-  // is within `withinMs`. Returns the set of such day dirs.
-  // Cached for 5s to keep polling cheap.
-  _getActiveDayDirs(withinMs = ACTIVE_SESSION_WINDOW_MS) {
+  // Incrementally scan old day dirs without allowing discovery stat calls to
+  // monopolize the Electron main process. The previous completed cache stays
+  // live until a full replacement pass finishes.
+  _getActiveDayDirs(withinMs = ACTIVE_SESSION_WINDOW_MS, pollContext = null) {
     const now = Date.now();
-    if (this._activeDayDirsCache && now - this._activeDayDirsCacheAt < 5000) {
+    if (
+      this._activeDayDirsCache
+      && !this._activeDayWalker
+      && now - this._activeDayDirsCacheAt < 5000
+    ) {
       return this._activeDayDirsCache;
     }
-    const out = new Set();
-    let years;
-    try {
-      years = fs.readdirSync(this._baseDir, { withFileTypes: true })
-        .filter((d) => d.isDirectory() && /^\d{4}$/.test(d.name))
-        .map((d) => d.name);
-    } catch {
-      this._activeDayDirsCache = [];
-      this._activeDayDirsCacheAt = now;
-      return [];
+    if (!this._activeDayWalker) {
+      this._activeDayWalker = {
+        years: null,
+        yearIndex: 0,
+        months: null,
+        monthIndex: 0,
+        days: null,
+        dayIndex: 0,
+        files: null,
+        fileIndex: 0,
+        found: new Set(),
+        complete: false,
+      };
     }
-    for (const y of years) {
-      const yPath = path.join(this._baseDir, y);
-      let months;
+    const walker = this._activeDayWalker;
+    let operations = 0;
+    const readDirectoryNames = (dir, pattern) => {
+      operations += 1;
       try {
-        months = fs.readdirSync(yPath, { withFileTypes: true })
-          .filter((d) => d.isDirectory() && /^\d{2}$/.test(d.name))
-          .map((d) => d.name);
-      } catch { continue; }
-      for (const m of months) {
-        const mPath = path.join(yPath, m);
-        let days;
-        try {
-          days = fs.readdirSync(mPath, { withFileTypes: true })
-            .filter((d) => d.isDirectory() && /^\d{2}$/.test(d.name))
-            .map((d) => d.name);
-        } catch { continue; }
-        for (const day of days) {
-          const dPath = path.join(mPath, day);
-          let files;
-          try {
-            files = fs.readdirSync(dPath);
-          } catch { continue; }
-          for (const file of files) {
-            if (!file.startsWith("rollout-") || !file.endsWith(".jsonl")) continue;
-            try {
-              const mtime = fs.statSync(path.join(dPath, file)).mtimeMs;
-              if (now - mtime < withinMs) {
-                out.add(dPath);
-                break;
-              }
-            } catch {}
-          }
-        }
+        return fs.readdirSync(dir, { withFileTypes: true })
+          .filter((entry) => entry.isDirectory() && pattern.test(entry.name))
+          .map((entry) => entry.name)
+          .sort((a, b) => b.localeCompare(a));
+      } catch {
+        return [];
       }
+    };
+    while (
+      !walker.complete
+      && operations < MAX_ACTIVE_DIR_DISCOVERY_ATTEMPTS_PER_POLL
+      && (!pollContext || pollContext.remainingAttempts > 0)
+    ) {
+      if (!walker.years) {
+        walker.years = readDirectoryNames(this._baseDir, /^\d{4}$/);
+        continue;
+      }
+      if (walker.yearIndex >= walker.years.length) {
+        walker.complete = true;
+        break;
+      }
+      const yearDir = path.join(this._baseDir, walker.years[walker.yearIndex]);
+      if (!walker.months) {
+        walker.months = readDirectoryNames(yearDir, /^\d{2}$/);
+        walker.monthIndex = 0;
+        continue;
+      }
+      if (walker.monthIndex >= walker.months.length) {
+        walker.yearIndex += 1;
+        walker.months = null;
+        walker.days = null;
+        walker.files = null;
+        continue;
+      }
+      const monthDir = path.join(yearDir, walker.months[walker.monthIndex]);
+      if (!walker.days) {
+        walker.days = readDirectoryNames(monthDir, /^\d{2}$/);
+        walker.dayIndex = 0;
+        continue;
+      }
+      if (walker.dayIndex >= walker.days.length) {
+        walker.monthIndex += 1;
+        walker.days = null;
+        walker.files = null;
+        continue;
+      }
+      const dayDir = path.join(monthDir, walker.days[walker.dayIndex]);
+      if (!walker.files) {
+        operations += 1;
+        try {
+          walker.files = fs.readdirSync(dayDir)
+            .filter((file) => file.startsWith("rollout-") && file.endsWith(".jsonl"));
+        } catch {
+          walker.files = [];
+        }
+        walker.fileIndex = 0;
+      }
+      if (walker.fileIndex >= walker.files.length) {
+        walker.dayIndex += 1;
+        walker.fileIndex = 0;
+        walker.files = null;
+        continue;
+      }
+      const file = walker.files[walker.fileIndex];
+      walker.fileIndex += 1;
+      operations += 1;
+      if (pollContext) pollContext.remainingAttempts -= 1;
+      try {
+        const mtime = fs.statSync(path.join(dayDir, file)).mtimeMs;
+        if (now - mtime < withinMs) {
+          walker.found.add(dayDir);
+          walker.dayIndex += 1;
+          walker.fileIndex = 0;
+          walker.files = null;
+        }
+      } catch {}
     }
-    this._activeDayDirsCache = Array.from(out);
-    this._activeDayDirsCacheAt = now;
-    return this._activeDayDirsCache;
+    const visible = new Set(this._activeDayDirsCache || []);
+    for (const dir of walker.found) visible.add(dir);
+    if (walker.complete) {
+      this._activeDayDirsCache = [...walker.found];
+      this._activeDayDirsCacheAt = now;
+      this._activeDayWalker = null;
+      return this._activeDayDirsCache;
+    }
+    return [...visible];
   }
 
   _getCachedRecentExistingDayDirs(limit = 7) {
@@ -672,37 +1145,39 @@ class CodexLogMonitor {
     return out;
   }
 
-  _pollFile(filePath, fileName) {
+  _pollFile(filePath, fileName, pollContext = null) {
+    let tracked = this._tracked.get(filePath) || null;
+    const now = Date.now();
+    const earlyPosition = this._readPositions.get(filePath) || null;
+    if (
+      earlyPosition
+      && Number.isFinite(earlyPosition.readBackoffUntil)
+      && now < earlyPosition.readBackoffUntil
+    ) {
+      return { kind: "backoff", requestedBytes: 0, bytesRead: 0 };
+    }
     let stat;
     try {
-      stat = fs.statSync(filePath);
+      stat = pollContext && pollContext.preStat ? pollContext.preStat : fs.statSync(filePath);
     } catch {
-      return;
+      this._markReplayNoProgress(filePath, tracked);
+      return { kind: "error", requestedBytes: 0, bytesRead: 0 };
     }
 
     const fileIdentity = this._getFileIdentity(stat);
-    let tracked = this._tracked.get(filePath);
     if (tracked) {
       const identityChanged = tracked.fileIdentity !== null
         && fileIdentity !== null
         && tracked.fileIdentity !== fileIdentity;
       if (identityChanged || stat.size < tracked.offset) {
-        tracked.offset = stat.size;
-        tracked.fileIdentity = fileIdentity;
-        this._readPositions.set(filePath, { offset: stat.size, identity: fileIdentity });
-        return;
+        this._rebaselineTrackedFile(filePath, tracked, stat.size, fileIdentity);
+        return { kind: "rebaseline", requestedBytes: 0, bytesRead: 0 };
       }
     }
+
     if (!tracked) {
-      // New file — extract session ID from filename
-      // Format: rollout-YYYY-MM-DDTHH-MM-SS-<uuid>.jsonl
       const sessionId = this._extractSessionId(fileName);
-      if (!sessionId) return;
-      // Cap tracked files to prevent unbounded Map growth
-      if (this._tracked.size >= MAX_TRACKED_FILES) {
-        this._pruneTrackedFilesIfNeeded();
-        if (this._tracked.size >= MAX_TRACKED_FILES) return;
-      }
+      if (!sessionId) return { kind: "ignored", requestedBytes: 0, bytesRead: 0 };
       const retiredEntry = this._retiredTracked.get(filePath) || null;
       const savedPosition = this._readPositions.get(filePath) || null;
       const savedOffset = savedPosition && Number.isFinite(savedPosition.offset)
@@ -712,6 +1187,13 @@ class CodexLogMonitor {
         && savedPosition.identity !== null
         && fileIdentity !== null
         && savedPosition.identity === fileIdentity;
+      if (
+        sameFile
+        && Number.isFinite(savedPosition.readBackoffUntil)
+        && Date.now() < savedPosition.readBackoffUntil
+      ) {
+        return { kind: "backoff", requestedBytes: 0, bytesRead: 0 };
+      }
       const retired = retiredEntry && (!savedPosition || sameFile) ? retiredEntry : null;
       const resumeOffset = savedPosition
         ? sameFile
@@ -720,7 +1202,7 @@ class CodexLogMonitor {
         : retired && stat.size >= retired.offset
           ? retired.offset
           : 0;
-      if (retiredEntry) this._retiredTracked.delete(filePath);
+      const isFreshAttach = !retired && !savedPosition;
       tracked = {
         offset: resumeOffset,
         sessionId: "codex:" + sessionId,
@@ -741,38 +1223,67 @@ class CodexLogMonitor {
         assistantLastOutput: retired ? retired.assistantLastOutput || null : null,
         assistantLastOutputTruncated: retired ? retired.assistantLastOutputTruncated === true : false,
         contextUsage: retired ? retired.contextUsage || null : null,
+        activeTurnId: retired ? retired.activeTurnId || null : null,
+        turnBoundaryOpen: retired ? retired.turnBoundaryOpen === true : false,
         codexQuota: retired ? retired.codexQuota || null : null,
         codexSparkQuota: retired ? retired.codexSparkQuota || null : null,
         pendingUserInputs: retired && retired.pendingUserInputs instanceof Map
           ? new Map(retired.pendingUserInputs)
           : new Map(),
-        initializingUserInputs: !retired,
-        // Backfill mode: only a file whose last write predates monitor
-        // start (by more than BACKFILL_GRACE_MS) is treated as stale
-        // history — we replay it silently to advance offset + pick up
-        // cwd/sessionTitle without emitting old transitions. Files written
-        // inside the grace window are live sessions and emit normally.
-        // Empty files have nothing to replay.
+        initializingUserInputs: isFreshAttach,
         backfilling:
-          !retired &&
-          !savedPosition &&
-          stat.size > 0 &&
-          stat.mtimeMs < this._startedAtMs - BACKFILL_GRACE_MS,
+          isFreshAttach
+          && stat.size > 0
+          && stat.mtimeMs < this._startedAtMs - BACKFILL_GRACE_MS,
       };
+      const needsReplaySlot = this._isReplayActive(tracked);
+      if (needsReplaySlot && !this._admitReplayWork(filePath, fileName, tracked, stat)) {
+        return { kind: "deferred", requestedBytes: 0, bytesRead: 0 };
+      }
+      // Admission comes first: a full replay working set must not evict a
+      // completed/live tracker merely to discover that this path cannot get a
+      // replay slot. Once admitted, at most 40 protected replay entries leave
+      // enough ordinary entries for this pruning pass to free one active slot.
+      if (this._tracked.size >= MAX_TRACKED_FILES) {
+        this._pruneTrackedFilesIfNeeded(MAX_TRACKED_FILES - 1);
+        if (this._tracked.size >= MAX_TRACKED_FILES) {
+          if (needsReplaySlot) this._replayWork.delete(filePath);
+          this._enqueueDeferred(filePath, fileName, stat);
+          return { kind: "deferred", requestedBytes: 0, bytesRead: 0 };
+        }
+      }
+      if (retiredEntry) this._retiredTracked.delete(filePath);
       this._tracked.set(filePath, tracked);
       this._readPositions.set(filePath, { offset: resumeOffset, identity: fileIdentity });
+    } else if (this._isReplayActive(tracked) && !this._replayWork.has(filePath)) {
+      if (!this._admitReplayWork(filePath, fileName, tracked, stat)) {
+        this._tracked.delete(filePath);
+        return { kind: "deferred", requestedBytes: 0, bytesRead: 0 };
+      }
     }
 
-    // No new data
-    if (stat.size <= tracked.offset) return;
+    const savedPosition = this._readPositions.get(filePath) || null;
+    if (
+      savedPosition
+      && savedPosition.identity === fileIdentity
+      && Number.isFinite(savedPosition.readBackoffUntil)
+      && Date.now() < savedPosition.readBackoffUntil
+    ) {
+      return { kind: "backoff", requestedBytes: 0, bytesRead: 0 };
+    }
 
-    // Read incremental bytes. The file can shrink after statSync; readSync's
-    // return value, not the earlier size, is authoritative.
+    if (stat.size <= tracked.offset) {
+      this._finalizeReplayAfterScan(filePath, tracked);
+      return { kind: "eof", requestedBytes: 0, bytesRead: 0 };
+    }
+
     let fd = null;
     let buf;
     let bytesRead = 0;
     let openedStat;
     let openedIdentity = fileIdentity;
+    let readLen = 0;
+    const readStartOffset = tracked.offset;
     try {
       fd = fs.openSync(filePath, "r");
       openedStat = fs.fstatSync(fd);
@@ -780,55 +1291,262 @@ class CodexLogMonitor {
       const openedIdentityChanged = openedIdentity !== fileIdentity
         && (openedIdentity !== null || fileIdentity !== null);
       if (openedIdentityChanged || openedStat.size < tracked.offset) {
-        tracked.offset = openedStat.size;
-        tracked.fileIdentity = openedIdentity;
-        this._readPositions.set(filePath, {
-          offset: openedStat.size,
-          identity: openedIdentity,
-        });
-        return;
+        this._rebaselineTrackedFile(filePath, tracked, openedStat.size, openedIdentity);
+        return { kind: "rebaseline", requestedBytes: 0, bytesRead: 0 };
       }
-      const readLen = openedStat.size - tracked.offset;
-      if (readLen <= 0) return;
+      this._recordValidatedReplaySnapshot(filePath, openedStat.size, openedIdentity);
+      const unreadBytes = openedStat.size - tracked.offset;
+      if (unreadBytes <= 0) {
+        this._finalizeReplayAfterScan(filePath, tracked);
+        return { kind: "eof", requestedBytes: 0, bytesRead: 0 };
+      }
+      readLen = Math.min(unreadBytes, MAX_POLL_READ_BYTES);
+      if (
+        pollContext
+        && Number.isFinite(pollContext.remainingRequestBytes)
+        && pollContext.remainingRequestBytes < readLen
+      ) {
+        return { kind: "budget", requestedBytes: 0, bytesRead: 0 };
+      }
+      if (pollContext && Number.isFinite(pollContext.remainingRequestBytes)) {
+        pollContext.remainingRequestBytes -= readLen;
+      }
       buf = Buffer.alloc(readLen);
       bytesRead = fs.readSync(fd, buf, 0, readLen, tracked.offset);
     } catch {
-      return;
+      this._markReplayNoProgress(filePath, tracked);
+      return { kind: "error", requestedBytes: readLen, bytesRead: 0 };
     } finally {
       if (fd !== null) {
         try { fs.closeSync(fd); } catch {}
       }
     }
-    if (!Number.isFinite(bytesRead) || bytesRead <= 0) return;
-    buf = buf.subarray(0, Math.min(bytesRead, buf.length));
 
-    // Commit only complete newline-delimited bytes. An incomplete tail stays
-    // behind the offset and will be reread on the next poll. Oversized lines
-    // retain the existing 64KB discard behavior without retaining memory.
+    if (!Number.isFinite(bytesRead) || bytesRead <= 0) {
+      this._markReplayNoProgress(filePath, tracked);
+      return { kind: "no-progress", requestedBytes: readLen, bytesRead: 0 };
+    }
+    buf = buf.subarray(0, Math.min(bytesRead, buf.length));
+    const scannedToSnapshotEnd = readStartOffset + bytesRead >= openedStat.size;
     const lastNewline = buf.lastIndexOf(0x0a);
     if (lastNewline < 0) {
-      if (buf.length > MAX_PARTIAL_BYTES) {
-        tracked.offset += buf.length;
+      const fullRead = bytesRead === readLen;
+      const mayDiscard = buf.length > MAX_PARTIAL_BYTES
+        && fullRead
+        && (readLen === MAX_POLL_READ_BYTES || scannedToSnapshotEnd);
+      if (mayDiscard) {
+        tracked.offset += bytesRead;
+        tracked.fileIdentity = openedIdentity;
         this._readPositions.set(filePath, { offset: tracked.offset, identity: openedIdentity });
+        this._markReplayProgress(filePath);
+      } else if (!scannedToSnapshotEnd) {
+        this._markReplayNoProgress(filePath, tracked);
       }
-      return;
+      if (scannedToSnapshotEnd) this._finalizeReplayAfterScan(filePath, tracked);
+      return {
+        kind: mayDiscard ? "discarded" : "incomplete",
+        requestedBytes: readLen,
+        bytesRead,
+      };
     }
+
     const committedBytes = lastNewline + 1;
     const text = buf.subarray(0, committedBytes).toString("utf8");
     tracked.offset += committedBytes;
     tracked.fileIdentity = openedIdentity;
     this._readPositions.set(filePath, { offset: tracked.offset, identity: openedIdentity });
+    this._markReplayProgress(filePath);
     const lines = text.split("\n");
     lines.pop();
-
     for (const line of lines) {
       if (!line.trim()) continue;
       this._processLine(line, tracked);
     }
+    if (scannedToSnapshotEnd) this._finalizeReplayAfterScan(filePath, tracked);
+    return { kind: "progress", requestedBytes: readLen, bytesRead };
+  }
 
-    // First pass drained the historical bytes we picked up on attach;
-    // subsequent writes to this file are live and must emit normally.
-    if (tracked.backfilling && tracked.offset >= openedStat.size) {
+  _isReplayActive(tracked) {
+    return !!(tracked && (tracked.backfilling || tracked.initializingUserInputs));
+  }
+
+  _admitReplayWork(filePath, fileName, tracked, stat) {
+    if (this._replayWork.has(filePath)) return true;
+    const deferred = this._deferredRecent.get(filePath)
+      || this._deferredBackground.get(filePath);
+    const lane = Date.now() - stat.mtimeMs <= ACTIVE_SESSION_WINDOW_MS ? "recent" : "background";
+    let backgroundCount = 0;
+    for (const item of this._replayWork.values()) {
+      if (item.lane === "background") backgroundCount += 1;
+    }
+    if (
+      this._replayWork.size >= MAX_REPLAY_WORK_ITEMS
+      || (lane === "background" && backgroundCount >= MAX_BACKGROUND_REPLAY_WORK_ITEMS)
+    ) {
+      this._enqueueDeferred(filePath, fileName, stat, lane);
+      return false;
+    }
+    this._replayWork.set(filePath, {
+      filePath,
+      fileName,
+      tracked,
+      lane,
+      consecutiveNoProgress: 0,
+      lastProgressAt: Date.now(),
+      hasValidatedSnapshot: false,
+      lastValidatedSnapshotSize: null,
+      lastValidatedIdentity: null,
+      retryLevel: deferred && Number.isFinite(deferred.retryLevel) ? deferred.retryLevel : 0,
+    });
+    this._deferredRecent.delete(filePath);
+    this._deferredBackground.delete(filePath);
+    return true;
+  }
+
+  _enqueueDeferred(filePath, fileName, stat, forcedLane = null, retry = null) {
+    const lane = forcedLane
+      || (Date.now() - stat.mtimeMs <= ACTIVE_SESSION_WINDOW_MS ? "recent" : "background");
+    const queue = lane === "recent" ? this._deferredRecent : this._deferredBackground;
+    const limit = lane === "recent" ? MAX_DEFERRED_RECENT_PATHS : MAX_DEFERRED_BACKGROUND_PATHS;
+    const existing = queue.get(filePath);
+    if (existing) queue.delete(filePath);
+    queue.set(filePath, {
+      filePath,
+      fileName,
+      lane,
+      mtimeMs: stat.mtimeMs,
+      identity: this._getFileIdentity(stat),
+      notBefore: retry && Number.isFinite(retry.notBefore) ? retry.notBefore : 0,
+      retryLevel: retry && Number.isFinite(retry.retryLevel) ? retry.retryLevel : 0,
+    });
+    while (queue.size > limit) queue.delete(queue.keys().next().value);
+  }
+
+  _backoffDeferredStatFailure(entry) {
+    if (!entry) return;
+    const retryLevel = Math.min(5, Math.max(0, Number(entry.retryLevel) || 0) + 1);
+    const backoffMs = Math.min(
+      REPLAY_RETRY_MAX_BACKOFF_MS,
+      REPLAY_RETRY_BASE_BACKOFF_MS * (2 ** (retryLevel - 1))
+    );
+    entry.retryLevel = retryLevel;
+    entry.notBefore = Date.now() + backoffMs;
+  }
+
+  _recordValidatedReplaySnapshot(filePath, snapshotSize, identity) {
+    const item = this._replayWork.get(filePath);
+    if (!item) return;
+    item.hasValidatedSnapshot = true;
+    item.lastValidatedSnapshotSize = snapshotSize;
+    item.lastValidatedIdentity = identity;
+  }
+
+  _markReplayProgress(filePath) {
+    const item = this._replayWork.get(filePath);
+    if (!item) return;
+    item.consecutiveNoProgress = 0;
+    item.lastProgressAt = Date.now();
+    item.retryLevel = 0;
+  }
+
+  _markReplayNoProgress(filePath, tracked) {
+    const item = this._replayWork.get(filePath);
+    if (!item) {
+      this._schedulePostBaselineReadBackoff(filePath, tracked);
+      return;
+    }
+    if (!tracked) return;
+    item.consecutiveNoProgress += 1;
+    const now = Date.now();
+    if (
+      item.consecutiveNoProgress < MAX_REPLAY_NO_PROGRESS_ATTEMPTS
+      || now - item.lastProgressAt < REPLAY_NO_PROGRESS_TIMEOUT_MS
+    ) return;
+    this._abandonReplayAtValidatedSnapshot(filePath, tracked, item, now);
+  }
+
+  _schedulePostBaselineReadBackoff(filePath, tracked) {
+    const previous = this._readPositions.get(filePath) || null;
+    if (!previous || !(Number(previous.readBackoffLevel) > 0)) return false;
+    const now = Date.now();
+    if (Number.isFinite(previous.readBackoffUntil) && now < previous.readBackoffUntil) {
+      return true;
+    }
+    const retryLevel = Math.min(5, Number(previous.readBackoffLevel) + 1);
+    const backoffMs = Math.min(
+      REPLAY_RETRY_MAX_BACKOFF_MS,
+      REPLAY_RETRY_BASE_BACKOFF_MS * (2 ** (retryLevel - 1))
+    );
+    this._readPositions.set(filePath, {
+      offset: tracked && Number.isFinite(tracked.offset) ? tracked.offset : previous.offset,
+      identity: tracked ? tracked.fileIdentity : previous.identity,
+      readBackoffUntil: now + backoffMs,
+      readBackoffLevel: retryLevel,
+    });
+    return true;
+  }
+
+  _abandonReplayAtValidatedSnapshot(filePath, tracked, item, now) {
+    const previous = this._readPositions.get(filePath) || {};
+    const retryLevel = Math.min(
+      5,
+      Math.max(Number(previous.readBackoffLevel) || 0, Number(item.retryLevel) || 0) + 1
+    );
+    const backoffMs = Math.min(
+      REPLAY_RETRY_MAX_BACKOFF_MS,
+      REPLAY_RETRY_BASE_BACKOFF_MS * (2 ** (retryLevel - 1))
+    );
+    if (!item.hasValidatedSnapshot) {
+      this._clearUnpublishedReplayState(tracked);
+      this._tracked.delete(filePath);
+      this._replayWork.delete(filePath);
+      // This attach never reached an authoritative opened snapshot. Keeping
+      // the provisional offset ledger would make the retry look like a
+      // completed reattach and bypass initialization/replay admission.
+      this._readPositions.delete(filePath);
+      this._enqueueDeferred(filePath, item.fileName, {
+        mtimeMs: Date.now(),
+        dev: 0,
+        ino: 0,
+      }, item.lane, { notBefore: now + backoffMs, retryLevel });
+      return;
+    }
+    this._clearUnpublishedReplayState(tracked);
+    tracked.offset = item.lastValidatedSnapshotSize;
+    tracked.fileIdentity = item.lastValidatedIdentity;
+    tracked.backfilling = false;
+    tracked.initializingUserInputs = false;
+    this._readPositions.set(filePath, {
+      offset: tracked.offset,
+      identity: tracked.fileIdentity,
+      readBackoffUntil: now + backoffMs,
+      readBackoffLevel: retryLevel,
+    });
+    this._replayWork.delete(filePath);
+  }
+
+  _clearUnpublishedReplayState(tracked) {
+    if (!tracked) return;
+    if (tracked.initializingUserInputs && tracked.pendingUserInputs instanceof Map) {
+      tracked.pendingUserInputs.clear();
+    }
+    if (tracked.backfilling) {
+      tracked.lastState = null;
+      tracked.lastStateEvent = null;
+      tracked.hadToolUse = false;
+      tracked.assistantLastOutput = null;
+      tracked.assistantLastOutputTruncated = false;
+      tracked.contextUsage = null;
+      tracked.activeTurnId = null;
+      tracked.turnBoundaryOpen = false;
+      tracked.codexQuota = null;
+      tracked.codexSparkQuota = null;
+    }
+  }
+
+  _finalizeReplayAfterScan(filePath, tracked) {
+    if (!tracked) return;
+    if (tracked.backfilling) {
       this._emitBackfillSnapshot(tracked);
       tracked.backfilling = false;
     }
@@ -836,6 +1554,17 @@ class CodexLogMonitor {
       tracked.initializingUserInputs = false;
       this._emitPendingUserInputRequests(tracked);
     }
+    this._replayWork.delete(filePath);
+  }
+
+  _rebaselineTrackedFile(filePath, tracked, offset, identity) {
+    this._clearUnpublishedReplayState(tracked);
+    tracked.offset = offset;
+    tracked.fileIdentity = identity;
+    tracked.backfilling = false;
+    tracked.initializingUserInputs = false;
+    this._replayWork.delete(filePath);
+    this._readPositions.set(filePath, { offset, identity });
   }
 
   _getFileIdentity(stat) {
@@ -868,6 +1597,28 @@ class CodexLogMonitor {
     // Build lookup key
     const key = subtype ? type + ":" + subtype : type;
 
+    // Turn identity is file-order bookkeeping, not a live callback. Apply it
+    // before both replay guards so an old task_started seeds the active ID and
+    // an old terminal clears it even though neither historical record is
+    // allowed to replay visible state.
+    const recordTurnId = normalizeCodexTurnId(
+      payload && typeof payload === "object" ? payload.turn_id : null
+    );
+    const isTurnStart = key === "event_msg:task_started";
+    const isTurnTerminal = key === "event_msg:task_complete" || key === "event_msg:turn_aborted";
+    let effectiveTurnId = recordTurnId || tracked.activeTurnId || null;
+    if (isTurnStart) {
+      tracked.activeTurnId = recordTurnId;
+      tracked.turnBoundaryOpen = true;
+      effectiveTurnId = recordTurnId;
+    }
+    const finishTurnTerminal = () => {
+      if (!isTurnTerminal) return;
+      tracked.activeTurnId = null;
+      tracked.turnBoundaryOpen = false;
+    };
+    const turnExtra = effectiveTurnId ? { turnId: effectiveTurnId } : null;
+
     // Metadata is needed for future live writes even when the session_meta
     // record itself predates monitor start.
     if (type === "session_meta") {
@@ -890,7 +1641,10 @@ class CodexLogMonitor {
     // storms on app restart from driving stale state transitions.
     if (obj && typeof obj.timestamp === "string") {
       const ts = Date.parse(obj.timestamp);
-      if (!tracked.backfilling && Number.isFinite(ts) && ts < this._startedAtMs - 1500) return;
+      if (!tracked.backfilling && Number.isFinite(ts) && ts < this._startedAtMs - 1500) {
+        finishTurnTerminal();
+        return;
+      }
     }
 
     const assistantText = extractAssistantTextFromRecord(obj);
@@ -953,8 +1707,14 @@ class CodexLogMonitor {
     // Look up state mapping
     const map = this._config.logEventMap;
     const state = map[key];
-    if (state === undefined) return; // unmapped event, skip
-    if (state === null) return; // explicitly ignored
+    if (state === undefined) {
+      finishTurnTerminal();
+      return; // unmapped event, skip
+    }
+    if (state === null) {
+      finishTurnTerminal();
+      return; // explicitly ignored
+    }
     tracked.lastStateEvent = key;
 
     // Track tool use per turn — reset on task_started, set on function_call
@@ -978,8 +1738,15 @@ class CodexLogMonitor {
       // task_complete means the turn that asked is over — any question still
       // open for it is moot; Codex will not act on an answer after this.
       this._clearPendingUserInputsForTrackedSession(tracked);
-      if (tracked.backfilling) return;
-      this._emitStateChange(tracked, resolved, key, this._assistantOutputExtra(tracked));
+      if (tracked.backfilling) {
+        finishTurnTerminal();
+        return;
+      }
+      this._emitStateChange(tracked, resolved, key, {
+        ...(this._assistantOutputExtra(tracked) || {}),
+        ...(turnExtra || {}),
+      });
+      finishTurnTerminal();
       return;
     }
 
@@ -996,13 +1763,15 @@ class CodexLogMonitor {
     // that carry a timestamp field.
     if (tracked.backfilling) {
       tracked.lastState = state;
+      finishTurnTerminal();
       return;
     }
 
     // Avoid spamming same state
     if (state === tracked.lastState && state === "working") return;
     tracked.lastState = state;
-    this._emitStateChange(tracked, state, key);
+    this._emitStateChange(tracked, state, key, turnExtra);
+    finishTurnTerminal();
   }
 
   _applySessionMeta(payload, tracked) {
@@ -1094,22 +1863,27 @@ class CodexLogMonitor {
     return null;
   }
 
-  _pruneTrackedFilesIfNeeded() {
-    if (this._tracked.size < MAX_TRACKED_FILES) return;
+  _pruneTrackedFilesIfNeeded(maxSize = MAX_TRACKED_FILES) {
+    if (this._tracked.size <= maxSize) return;
     const byAge = (a, b) => (a[1].lastEventTime || 0) - (b[1].lastEventTime || 0);
     const neverEmitted = [...this._tracked.entries()]
-      .filter(([, tracked]) => tracked && !tracked.hasEmittedState)
+      .filter(([filePath, tracked]) => (
+        tracked && !tracked.hasEmittedState && !this._replayWork.has(filePath)
+      ))
       .sort(byAge);
     const emitted = [...this._tracked.entries()]
-      .filter(([, tracked]) => tracked && tracked.hasEmittedState)
+      .filter(([filePath, tracked]) => (
+        tracked && tracked.hasEmittedState && !this._replayWork.has(filePath)
+      ))
       .sort(byAge);
     for (const [filePath, tracked] of [...neverEmitted, ...emitted]) {
-      if (this._tracked.size < MAX_TRACKED_FILES) break;
+      if (this._tracked.size <= maxSize) break;
       this._retireTrackedFile(filePath, tracked);
     }
   }
 
   _retireTrackedFile(filePath, tracked) {
+    if (this._replayWork.has(filePath)) return;
     this._tracked.delete(filePath);
     if (!filePath || !tracked) return;
     this._retiredTracked.delete(filePath);
@@ -1129,6 +1903,8 @@ class CodexLogMonitor {
       assistantLastOutput: tracked.assistantLastOutput || null,
       assistantLastOutputTruncated: tracked.assistantLastOutputTruncated === true,
       contextUsage: tracked.contextUsage || null,
+      activeTurnId: tracked.activeTurnId || null,
+      turnBoundaryOpen: tracked.turnBoundaryOpen === true,
       codexQuota: tracked.codexQuota || null,
       codexSparkQuota: tracked.codexSparkQuota || null,
       pendingUserInputs: tracked.pendingUserInputs instanceof Map
@@ -1178,7 +1954,12 @@ class CodexLogMonitor {
       tracked,
       snapshotState,
       tracked.lastStateEvent || "session_meta",
-      hasQuota ? quotaExtra : null
+      {
+        ...(hasQuota ? quotaExtra : {}),
+        syntheticBackfill: true,
+        turnBoundaryOpen: tracked.turnBoundaryOpen === true,
+        ...(tracked.activeTurnId ? { turnId: tracked.activeTurnId } : {}),
+      }
     );
   }
 
@@ -1248,6 +2029,7 @@ class CodexLogMonitor {
       sessionTitle: tracked.sessionTitle,
       codexOriginator: tracked.codexOriginator || null,
       codexSource: tracked.codexSource || null,
+      ...(tracked.contextUsage ? { contextUsage: tracked.contextUsage } : {}),
       headless: false,
     });
   }

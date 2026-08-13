@@ -24,6 +24,19 @@ const LOW_POWER_PAUSE_STYLE_ID = "clawd-low-power-pause-svg";
 const LOW_POWER_PAUSE_STATES = new Set(["idle", "mini-idle", "dozing"]);
 const LOW_POWER_BOUNDARY_EPSILON_MS = 80;
 const CLOUDLING_POINTER_BRIDGE_STATES = new Set(["idle", "mini-idle", "mini-peek"]);
+const CODEX_PET_VISUAL_BY_FILE = Object.freeze({
+  "codex-pet-idle-loop.svg": "idle-loop",
+  "codex-pet-idle-static.svg": "idle-static",
+  "codex-pet-waving-loop.svg": "waving-loop",
+  "codex-pet-waving-once.svg": "waving-once",
+  "codex-pet-jumping-loop.svg": "jumping-loop",
+  "codex-pet-jumping-once.svg": "jumping-once",
+  "codex-pet-failed-loop.svg": "failed-loop",
+  "codex-pet-waiting-loop.svg": "waiting-loop",
+  "codex-pet-running-loop.svg": "running-loop",
+  "codex-pet-review-loop.svg": "review-loop",
+  "codex-pet-drag-directional-loop.svg": "drag-directional",
+});
 let lowPowerIdleMode = false;
 let lowPowerIdlePauseTimer = null;
 let lowPowerSvgPaused = false;
@@ -91,6 +104,9 @@ function initWithConfig(cfg) {
   _fileViewBoxes = tc.fileViewBoxes || {};
   _dragSvg = tc.dragSvg || null;
   _dragSvgs = tc.dragSvgs || {};
+  isDragReacting = false;
+  currentDragSvg = null;
+  currentDragDirection = null;
   _idleFollowSvg = tc.idleFollowSvg || "clawd-idle-follow.svg";
   // Pre-IPC first frame rests on the user-selected idle visual when one is set.
   _initialIdleSvg = tc.idleDefaultVisual || _idleFollowSvg;
@@ -423,7 +439,11 @@ let _miniViewBox = null;
 let _fileViewBoxes = {};
 let _dragSvg;
 let _dragSvgs;
+let isDragReacting = false;
 let currentDragSvg = null;
+let currentDragDirection = null;
+const directionalDragBridgeWarnings = new Set();
+const codexPetVisualBridgeWarnings = new Set();
 let _idleFollowSvg;
 let _initialIdleSvg;
 let _glyphFlipDefs;
@@ -1042,7 +1062,6 @@ function releaseImg(el) {
 
 // --- Reaction state (visual side) ---
 let isReacting = false;
-let isDragReacting = false;
 let reactTimer = null;
 let currentIdleSvg = null;    // tracks which SVG is currently showing
 let currentState = null;      // last state name received from main (for re-pulse)
@@ -1334,14 +1353,139 @@ function cancelReaction() {
   if (isDragReacting) {
     isDragReacting = false;
   }
+  currentDragSvg = null;
+  currentDragDirection = null;
 }
 
 // --- Drag reaction (loops while dragging) ---
+function normalizeDragDirection(direction) {
+  return direction === "left" || direction === "right" ? direction : null;
+}
+
+function usesDirectionalDragBridge(file) {
+  return !!(
+    file
+    && _dragSvgs.left === file
+    && _dragSvgs.right === file
+  );
+}
+
+function warnDirectionalDragBridgeOnce(reason) {
+  if (directionalDragBridgeWarnings.has(reason)) return;
+  directionalDragBridgeWarnings.add(reason);
+  console.warn(`Clawd: directional drag bridge unavailable (${reason}); keeping the fallback direction.`);
+}
+
+function applyDirectionalDragToObject(objectEl, direction, options = {}) {
+  const normalized = normalizeDragDirection(direction);
+  if (!normalized) return false;
+  const warn = options.warn === true;
+  if (!objectEl || objectEl.tagName !== "OBJECT") {
+    if (warn) warnDirectionalDragBridgeOnce("non-object media channel");
+    return false;
+  }
+  try {
+    const root = objectEl.contentDocument && objectEl.contentDocument.documentElement;
+    if (!root) {
+      if (warn) warnDirectionalDragBridgeOnce("contentDocument unavailable");
+      return false;
+    }
+    if (root.getAttribute("data-clawd-drag-directional") !== "v1") {
+      if (warn) warnDirectionalDragBridgeOnce("v1 marker missing");
+      return false;
+    }
+    if (root.getAttribute("data-clawd-drag-direction") !== normalized) {
+      root.setAttribute("data-clawd-drag-direction", normalized);
+    }
+    return true;
+  } catch {
+    if (warn) warnDirectionalDragBridgeOnce("contentDocument access denied");
+    return false;
+  }
+}
+
+function getCodexPetVisualForFile(file) {
+  if (!file) return null;
+  const basename = String(file).replace(/\\/g, "/").split("/").pop().split(/[?#]/, 1)[0];
+  return CODEX_PET_VISUAL_BY_FILE[basename] || null;
+}
+
+function getAssetDirectoryUrl(url) {
+  const value = String(url || "").replace(/\\/g, "/");
+  const slash = value.lastIndexOf("/");
+  return slash >= 0 ? value.slice(0, slash) : "";
+}
+
+function restartCodexPetVisualAnimation(root) {
+  if (!root || typeof root.getAnimations !== "function") return;
+  let animations = [];
+  try {
+    animations = root.getAnimations({ subtree: true });
+  } catch {
+    return;
+  }
+  for (const animation of animations) {
+    try {
+      animation.currentTime = 0;
+    } catch {}
+  }
+}
+
+function warnCodexPetVisualBridgeOnce(reason) {
+  if (codexPetVisualBridgeWarnings.has(reason)) return;
+  codexPetVisualBridgeWarnings.add(reason);
+  console.warn(`Clawd: Codex Pet visual bridge unavailable (${reason}); using a normal media swap.`);
+}
+
+function applyCodexPetVisualToObject(objectEl, file, options = {}) {
+  const visual = getCodexPetVisualForFile(file);
+  if (!visual) return false;
+  const warn = options.warn === true;
+  if (!objectEl || objectEl.tagName !== "OBJECT") {
+    if (warn) warnCodexPetVisualBridgeOnce("non-object media channel");
+    return false;
+  }
+  try {
+    const root = objectEl.contentDocument && objectEl.contentDocument.documentElement;
+    if (!root) {
+      if (warn) warnCodexPetVisualBridgeOnce("contentDocument unavailable");
+      return false;
+    }
+    if (root.getAttribute("data-clawd-codex-pet-visuals") !== "v1") {
+      if (warn) warnCodexPetVisualBridgeOnce("v1 marker missing");
+      return false;
+    }
+    const unchanged = root.getAttribute("data-clawd-codex-pet-visual") === visual;
+    if (!unchanged) root.setAttribute("data-clawd-codex-pet-visual", visual);
+    if (visual === "drag-directional") {
+      const direction = normalizeDragDirection(options.direction);
+      if (direction && root.getAttribute("data-clawd-drag-direction") !== direction) {
+        root.setAttribute("data-clawd-drag-direction", direction);
+      }
+    }
+    if (unchanged && options.restart === true) restartCodexPetVisualAnimation(root);
+    return true;
+  } catch {
+    if (warn) warnCodexPetVisualBridgeOnce("contentDocument access denied");
+    return false;
+  }
+}
+
 function startDragReaction(direction) {
   if (dndEnabled) return;
-  const dragSvg = (direction && _dragSvgs[direction]) || _dragSvg;
+  const normalizedDirection = normalizeDragDirection(direction);
+  const dragSvg = (normalizedDirection && _dragSvgs[normalizedDirection]) || _dragSvg;
   if (!dragSvg) return;
-  if (isDragReacting && currentDragSvg === dragSvg) return;
+  currentDragDirection = normalizedDirection;
+  if (isDragReacting && currentDragSvg === dragSvg) {
+    if (usesDirectionalDragBridge(dragSvg) && currentDisplayedSvg === dragSvg) {
+      applyDirectionalDragToObject(clawdEl, currentDragDirection, { warn: true });
+    }
+    if (usesDirectionalDragBridge(dragSvg) && pendingNext && pendingSvgFile === dragSvg) {
+      applyDirectionalDragToObject(pendingNext, currentDragDirection);
+    }
+    return;
+  }
 
   if (!isDragReacting && isReacting) {
     if (reactTimer) { clearTimeout(reactTimer); reactTimer = null; }
@@ -1357,9 +1501,11 @@ function startDragReaction(direction) {
 }
 
 function endDragReaction() {
-  if (!isDragReacting) return;
+  const wasDragReacting = isDragReacting;
   isDragReacting = false;
   currentDragSvg = null;
+  currentDragDirection = null;
+  if (!wasDragReacting) return;
   window.electronAPI.resumeFromReaction();
 }
 
@@ -1490,13 +1636,41 @@ function cancelPendingSwap(reason = "superseded") {
 }
 
 function swapToFile(file, state, useObjectChannel, options = {}) {
-  const swapToken = ++activeSwapToken;
   const allowImageFallback = options.allowImageFallback !== false;
+  const useObj = useObjectChannel !== undefined ? useObjectChannel : needsObjectChannel(state, file);
+  const url = getAssetUrl(file);
+  const canReuseCodexPetDocument = useObj
+    && options.forceDocumentReload !== true
+    && currentDisplayedAssetUrl
+    && getAssetDirectoryUrl(currentDisplayedAssetUrl) === getAssetDirectoryUrl(url)
+    && applyCodexPetVisualToObject(clawdEl, file, {
+      direction: isDragReacting && currentDragSvg === file ? currentDragDirection : null,
+      restart: true,
+      warn: true,
+    });
+  if (canReuseCodexPetDocument) {
+    cancelPendingSwap();
+    clearSwapVisibilityRescueTimer();
+    currentDisplayedSvg = file;
+    currentDisplayedState = state;
+    currentDisplayedAssetUrl = url;
+    applyObjectScaleStyle(clawdEl, file, state);
+    applyPetTintToElement(clawdEl);
+    applyMiniFlip(clawdEl, state);
+    refreshAccessoryLayout();
+    notifyPetVisualReadyOnce();
+    if (state && tracksEyesForFile(state, file)) attachEyeTracking(clawdEl);
+    else detachEyeTracking();
+    if (miniLeftFlip) applyGlyphFlipCompensation(clawdEl);
+    scheduleLowPowerIdlePause();
+    if (typeof options.onReady === "function") options.onReady(clawdEl);
+    return;
+  }
+
+  const swapToken = ++activeSwapToken;
   cancelPendingSwap();
 
   pendingSvgFile = file; // track what's loading for dedup
-  const useObj = useObjectChannel !== undefined ? useObjectChannel : needsObjectChannel(state, file);
-  const url = getAssetUrl(file);
   pendingAssetUrl = url;
 
   if (useObj) {
@@ -1537,6 +1711,9 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
         next.offsetHeight; // force reflow to trigger transition
       } else {
         next.style.transition = "none";
+      }
+      if (isDragReacting && currentDragSvg === file && usesDirectionalDragBridge(file)) {
+        applyDirectionalDragToObject(next, currentDragDirection, { warn: true });
       }
       next.style.opacity = "1";
 
@@ -2189,6 +2366,7 @@ function recoverFromSystemWake(payload) {
       }
       swapToFile(wakeContext.wakeSvg, wakeContext.wakeState, true, {
         allowImageFallback: false,
+        forceDocumentReload: true,
         onReady: finishWakeEyeObjectReload,
         onError: (reason) => {
           if (pendingSystemWakeId !== wakeContext.id) return;

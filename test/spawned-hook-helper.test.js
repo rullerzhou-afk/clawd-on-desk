@@ -55,15 +55,14 @@ describe("spawned-hook test harness", () => {
     }
   });
 
-  it("rejects process-spawn probing combined with an HTTP assertion contract", () => {
-    assert.throws(
-      () => runSpawnedHook({
-        script: FIXTURE,
-        args: ["none"],
-        httpContract: "expect-none",
-        probeProcessSpawns: true,
-      }),
-      /probeProcessSpawns cannot be combined/,
-    );
+  it("combines process-spawn probing with an independent HTTP assertion contract", () => {
+    const result = runSpawnedHook({
+      script: FIXTURE,
+      args: ["attempt"],
+      httpContract: "expect-attempt",
+      probeProcessSpawns: true,
+    });
+    assert.deepStrictEqual(result.spawns, []);
+    assert.ok(result.attempts.length > 0);
   });
 });

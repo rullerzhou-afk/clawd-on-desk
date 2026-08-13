@@ -30,7 +30,9 @@ const {
   writeJsonAtomicWithBackupAsync,
   asarUnpackedPath,
   buildPortableStatuslineCommand,
+  classifyManagedClaudeStateHookCommand,
   extractExistingNodeBin,
+  findManagedClaudeEnvNodeBinCandidates,
 } = require("./json-utils");
 
 function resolveClaudeHome(options = {}) {
@@ -667,6 +669,141 @@ function syncCommandHook(entries, marker, expectedHook) {
   return { found, changed };
 }
 
+const STATE_HOOK_SYNC_FIELDS = Object.freeze(["type", "command", "shell", "async", "timeout"]);
+
+function commandHookMatchesExpected(hook, expectedHook) {
+  if (!hook || !expectedHook) return false;
+  return STATE_HOOK_SYNC_FIELDS.every((field) => {
+    const hasExpected = Object.prototype.hasOwnProperty.call(expectedHook, field);
+    const hasCurrent = Object.prototype.hasOwnProperty.call(hook, field);
+    return hasExpected === hasCurrent && (!hasExpected || hook[field] === expectedHook[field]);
+  });
+}
+
+function syncCommandHookFields(hook, expectedHook) {
+  let changed = false;
+  for (const field of STATE_HOOK_SYNC_FIELDS) {
+    const hasExpected = Object.prototype.hasOwnProperty.call(expectedHook, field);
+    const hasCurrent = Object.prototype.hasOwnProperty.call(hook, field);
+    if (!hasExpected) {
+      if (hasCurrent) {
+        delete hook[field];
+        changed = true;
+      }
+      continue;
+    }
+    if (hook[field] !== expectedHook[field]) {
+      hook[field] = expectedHook[field];
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function collectManagedStateHookRecords(entries, settings, event) {
+  if (!Array.isArray(entries)) return [];
+  const records = [];
+  for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
+    const entry = entries[entryIndex];
+    if (!entry || typeof entry !== "object") continue;
+    if (typeof entry.command === "string") {
+      const kind = classifyManagedClaudeStateHookCommand(entry.command, settings, event);
+      if (kind) records.push({ entryIndex, hookIndex: null, hook: entry, kind });
+    }
+    if (!Array.isArray(entry.hooks)) continue;
+    for (let hookIndex = 0; hookIndex < entry.hooks.length; hookIndex++) {
+      const hook = entry.hooks[hookIndex];
+      if (!hook || typeof hook !== "object" || typeof hook.command !== "string") continue;
+      const kind = classifyManagedClaudeStateHookCommand(hook.command, settings, event);
+      if (kind) records.push({ entryIndex, hookIndex, hook, kind });
+    }
+  }
+  return records;
+}
+
+function stateHookRecordKey(record) {
+  return `${record.entryIndex}:${record.hookIndex === null ? "flat" : record.hookIndex}`;
+}
+
+// Active state hooks converge to one owned child. Removal must be position-
+// aware: old syncCommandHook() can produce byte-identical duplicates, so a
+// command-string predicate cannot express "keep this one, remove the rest."
+function foldManagedStateHooks(entries, settings, event, expectedHook, options = {}) {
+  const records = collectManagedStateHookRecords(entries, settings, event);
+  if (records.length === 0) {
+    return { entries, found: false, changed: false, updated: false, removed: 0 };
+  }
+
+  const envRecords = records.filter((record) => record.kind === "env");
+  const literalRecords = records.filter((record) => record.kind === "literal");
+  const canCanonicalizeEnv = options.canCanonicalizeEnv === true;
+  let survivor;
+  if (!canCanonicalizeEnv && literalRecords.length > 0) {
+    // A working literal command is strictly better than an env command we
+    // cannot safely migrate. Never delete the literal merely because an env
+    // record happened to appear earlier in the event array.
+    survivor = literalRecords.find((record) => commandHookMatchesExpected(record.hook, expectedHook))
+      || literalRecords[0];
+  } else if (envRecords.length > 0 && !canCanonicalizeEnv) {
+    // With no literal fallback, preserve one env command unchanged instead of
+    // degrading it to bare `node` under Claude Code's minimal macOS PATH.
+    survivor = envRecords[0];
+  } else {
+    survivor = records.find((record) => commandHookMatchesExpected(record.hook, expectedHook)) || records[0];
+  }
+
+  const shouldCanonicalize = survivor.kind !== "env" || canCanonicalizeEnv;
+  const updated = shouldCanonicalize ? syncCommandHookFields(survivor.hook, expectedHook) : false;
+  const survivorKey = stateHookRecordKey(survivor);
+  const removedKeys = new Set(
+    records
+      .filter((record) => stateHookRecordKey(record) !== survivorKey)
+      .map(stateHookRecordKey)
+  );
+
+  if (removedKeys.size === 0) {
+    return { entries, found: true, changed: updated, updated, removed: 0 };
+  }
+
+  const nextEntries = [];
+  for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
+    const entry = entries[entryIndex];
+    if (!entry || typeof entry !== "object") {
+      nextEntries.push(entry);
+      continue;
+    }
+
+    const removeFlat = removedKeys.has(`${entryIndex}:flat`);
+    const hasNested = Array.isArray(entry.hooks);
+    const nextHooks = hasNested
+      ? entry.hooks.filter((hook, hookIndex) => !removedKeys.has(`${entryIndex}:${hookIndex}`))
+      : null;
+
+    if (removeFlat) {
+      if (!nextHooks || nextHooks.length === 0) continue;
+      const nextEntry = { ...entry, hooks: nextHooks };
+      for (const field of STATE_HOOK_SYNC_FIELDS) delete nextEntry[field];
+      nextEntries.push(nextEntry);
+      continue;
+    }
+
+    if (!hasNested || nextHooks.length === entry.hooks.length) {
+      nextEntries.push(entry);
+      continue;
+    }
+    if (nextHooks.length === 0 && typeof entry.command !== "string") continue;
+    nextEntries.push({ ...entry, hooks: nextHooks });
+  }
+
+  return {
+    entries: nextEntries,
+    found: true,
+    changed: true,
+    updated,
+    removed: removedKeys.size,
+  };
+}
+
 function isClawdPermissionUrl(url) {
   return isManagedPermissionUrl(url);
 }
@@ -855,7 +992,7 @@ function reconcileVersionedHooks(settings, supportedEvents, versionInfo) {
 
     const result = removeMatchingCommandHooks(
       settings.hooks[event],
-      (command) => command.includes(MARKER)
+      (command) => classifyManagedClaudeStateHookCommand(command, settings, event) !== null
     );
 
     if (!result.changed) continue;
@@ -904,6 +1041,65 @@ function resolveWritePath(settingsPath) {
   }
 }
 
+function accessModeForPlatform(platform) {
+  return platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK;
+}
+
+function validateEnvNodeCandidatesSync(candidates, options = {}) {
+  const access = options.accessSync || fs.accessSync;
+  for (const candidate of Array.isArray(candidates) ? candidates : []) {
+    try {
+      access(candidate, accessModeForPlatform(options.platform || process.platform));
+      return candidate;
+    } catch {}
+  }
+  return null;
+}
+
+async function validateEnvNodeCandidatesAsync(candidates, options = {}) {
+  const access = options.access || fs.promises.access.bind(fs.promises);
+  for (const candidate of Array.isArray(candidates) ? candidates : []) {
+    try {
+      await access(candidate, accessModeForPlatform(options.platform || process.platform));
+      return candidate;
+    } catch {}
+  }
+  return null;
+}
+
+function configuredNodeResolution(nodeBin) {
+  const value = typeof nodeBin === "string" && nodeBin ? nodeBin : "node";
+  return {
+    nodeBin: value,
+    // isSafeNodeExecutableCandidate() intentionally applies a much stricter
+    // anti-injection grammar to untrusted settings.env values before they are
+    // considered. Candidates from that source have already passed that gate
+    // before reaching here. Resolver output, explicit caller choices, and
+    // existing literal commands are the same trusted values the installer
+    // already serializes for every core event; requiring basename `node` or
+    // rejecting quoted path characters such as parentheses would make env
+    // migration disagree with normal registration. The only unsafe fallback
+    // for migration is a non-absolute command such as bare `node`.
+    canCanonicalizeEnv: path.posix.isAbsolute(value) || path.win32.isAbsolute(value),
+  };
+}
+
+function resolveConfiguredNodeBinSync(options, settings) {
+  const resolved = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
+  if (typeof resolved === "string" && resolved) return configuredNodeResolution(resolved);
+
+  const existing = extractExistingNodeBin(settings, MARKER, { nested: true });
+  if (existing) return configuredNodeResolution(existing);
+
+  const envCandidate = validateEnvNodeCandidatesSync(
+    findManagedClaudeEnvNodeBinCandidates(settings),
+    options
+  );
+  if (envCandidate) return configuredNodeResolution(envCandidate);
+
+  return configuredNodeResolution("node");
+}
+
 function registerHooks(options = {}) {
   const settingsPath = resolveClaudeSettingsPath(options);
   const writePath = resolveWritePath(settingsPath);
@@ -932,10 +1128,8 @@ function registerHooks(options = {}) {
   // a minimal PATH that excludes Homebrew, nvm, volta, etc.
   // If detection fails (null), preserve the existing absolute path from settings
   // to avoid destructively overwriting a working config with bare "node".
-  const resolved = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
-  const nodeBin = resolved
-    || extractExistingNodeBin(settings, MARKER, { nested: true })
-    || "node";
+  const nodeResolution = resolveConfiguredNodeBinSync(options, settings);
+  const { nodeBin } = nodeResolution;
 
   let added = 0;
   let skipped = 0;
@@ -961,7 +1155,7 @@ function registerHooks(options = {}) {
     if (!Array.isArray(settings.hooks[event])) continue;
     const result = removeMatchingCommandHooks(
       settings.hooks[event],
-      (command) => command.includes(MARKER)
+      (command) => classifyManagedClaudeStateHookCommand(command, settings, event) !== null
     );
     if (!result.changed) continue;
     removed += result.removed;
@@ -998,10 +1192,20 @@ function registerHooks(options = {}) {
       secureMarkerPath: options.secureMarkerPath,
       hostPrefixPath: options.hostPrefixPath,
     });
-    const commandSync = syncCommandHook(settings.hooks[event], MARKER, desiredHook);
+    const commandSync = foldManagedStateHooks(
+      settings.hooks[event],
+      settings,
+      event,
+      desiredHook,
+      { canCanonicalizeEnv: nodeResolution.canCanonicalizeEnv }
+    );
     if (commandSync.found) {
-      if (commandSync.changed) {
+      settings.hooks[event] = commandSync.entries;
+      removed += commandSync.removed;
+      if (commandSync.updated) {
         updated++;
+      }
+      if (commandSync.changed) {
         changed = true;
       } else {
         skipped++;
@@ -1068,7 +1272,7 @@ function registerHooks(options = {}) {
     if (!Array.isArray(settings.hooks[event])) continue;
     const result = removeMatchingCommandHooks(
       settings.hooks[event],
-      (command) => command.includes(MARKER)
+      (command) => classifyManagedClaudeStateHookCommand(command, settings, event) !== null
     );
     if (result.changed) {
       settings.hooks[event] = result.entries;
@@ -1154,7 +1358,7 @@ function registerHooks(options = {}) {
     }
     console.log(`  Added: ${added} hooks`);
     if (updated > 0) console.log(`  Updated: ${updated} stale hook paths`);
-    if (removed > 0) console.log(`  Removed: ${removed} incompatible versioned hooks`);
+    if (removed > 0) console.log(`  Removed: ${removed} obsolete or incompatible managed hooks`);
     if (skipped > 0) console.log(`  Skipped: ${skipped} (already registered)`);
     if (versionSkipped > 0) {
       const reason = versionInfo.status === "known"
@@ -1188,7 +1392,9 @@ function registerHooks(options = {}) {
 // Resolution only escalates to the async resolver (which may spawn a shell)
 // when there is no existing path, or the existing path fails that check.
 async function resolveConfiguredNodeBinAsync(options, settings) {
-  if (options.nodeBin !== undefined) return options.nodeBin;
+  if (typeof options.nodeBin === "string" && options.nodeBin) {
+    return configuredNodeResolution(options.nodeBin);
+  }
 
   const existing = extractExistingNodeBin(settings, MARKER, { nested: true });
   if (existing) {
@@ -1203,13 +1409,22 @@ async function resolveConfiguredNodeBinAsync(options, settings) {
     const mode = platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK;
     try {
       await access(existing, mode);
-      return existing;
+      return configuredNodeResolution(existing);
     } catch {
       // existing path is gone/inaccessible — fall through to the resolver
     }
   }
 
-  return (await resolveNodeBinAsync(options)) || "node";
+  const resolved = await resolveNodeBinAsync(options);
+  if (resolved) return configuredNodeResolution(resolved);
+
+  const envCandidate = await validateEnvNodeCandidatesAsync(
+    findManagedClaudeEnvNodeBinCandidates(settings),
+    options
+  );
+  if (envCandidate) return configuredNodeResolution(envCandidate);
+
+  return configuredNodeResolution("node");
 }
 
 async function registerHooksAsync(options = {}) {
@@ -1235,7 +1450,8 @@ async function registerHooksAsync(options = {}) {
 
   if (!settings.hooks) settings.hooks = {};
 
-  const nodeBin = await resolveConfiguredNodeBinAsync(options, settings);
+  const nodeResolution = await resolveConfiguredNodeBinAsync(options, settings);
+  const { nodeBin } = nodeResolution;
 
   let added = 0;
   let skipped = 0;
@@ -1258,7 +1474,7 @@ async function registerHooksAsync(options = {}) {
     if (!Array.isArray(settings.hooks[event])) continue;
     const result = removeMatchingCommandHooks(
       settings.hooks[event],
-      (command) => command.includes(MARKER)
+      (command) => classifyManagedClaudeStateHookCommand(command, settings, event) !== null
     );
     if (!result.changed) continue;
     removed += result.removed;
@@ -1290,10 +1506,20 @@ async function registerHooksAsync(options = {}) {
       secureMarkerPath: options.secureMarkerPath,
       hostPrefixPath: options.hostPrefixPath,
     });
-    const commandSync = syncCommandHook(settings.hooks[event], MARKER, desiredHook);
+    const commandSync = foldManagedStateHooks(
+      settings.hooks[event],
+      settings,
+      event,
+      desiredHook,
+      { canCanonicalizeEnv: nodeResolution.canCanonicalizeEnv }
+    );
     if (commandSync.found) {
-      if (commandSync.changed) {
+      settings.hooks[event] = commandSync.entries;
+      removed += commandSync.removed;
+      if (commandSync.updated) {
         updated++;
+      }
+      if (commandSync.changed) {
         changed = true;
       } else {
         skipped++;
@@ -1352,7 +1578,7 @@ async function registerHooksAsync(options = {}) {
     if (!Array.isArray(settings.hooks[event])) continue;
     const result = removeMatchingCommandHooks(
       settings.hooks[event],
-      (command) => command.includes(MARKER)
+      (command) => classifyManagedClaudeStateHookCommand(command, settings, event) !== null
     );
     if (result.changed) {
       settings.hooks[event] = result.entries;
@@ -1434,7 +1660,7 @@ async function registerHooksAsync(options = {}) {
     }
     console.log(`  Added: ${added} hooks`);
     if (updated > 0) console.log(`  Updated: ${updated} stale hook paths`);
-    if (removed > 0) console.log(`  Removed: ${removed} incompatible versioned hooks`);
+    if (removed > 0) console.log(`  Removed: ${removed} obsolete or incompatible managed hooks`);
     if (skipped > 0) console.log(`  Skipped: ${skipped} (already registered)`);
     if (versionSkipped > 0) {
       const reason = versionInfo.status === "known"
@@ -1482,7 +1708,7 @@ function unregisterHooks(options = {}) {
 
     const commandResult = removeMatchingCommandHooks(
       entries,
-      (command) => command.includes(MARKER)
+      (command) => classifyManagedClaudeStateHookCommand(command, settings, event) !== null
         || command.includes(AUTO_START_MARKER)
         || command.includes(LEGACY_AUTO_START_MARKER)
     );
@@ -1531,7 +1757,7 @@ async function unregisterHooksAsync(options = {}) {
 
     const commandResult = removeMatchingCommandHooks(
       entries,
-      (command) => command.includes(MARKER)
+      (command) => classifyManagedClaudeStateHookCommand(command, settings, event) !== null
         || command.includes(AUTO_START_MARKER)
         || command.includes(LEGACY_AUTO_START_MARKER)
     );

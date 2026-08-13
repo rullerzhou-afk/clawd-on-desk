@@ -48,7 +48,7 @@ module.exports = function initTutorial(ctx = {}) {
   // ctx.setLang, the settings-controller effect fires syncLocalization
   // synchronously inside that call. The picker handler sends fresh state
   // itself right after, so the effect's invocation must skip to avoid a
-  // duplicate state push. External language changes (Settings/tray) do not
+  // duplicate state push. External language changes from Settings do not
   // set this flag, so their effect-driven syncLocalization sends once.
   let _langChangeFromPicker = false;
 

@@ -84,6 +84,7 @@ test("requestElicitation resolves elicitation-submit when a single-select questi
 
   server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
   server.enqueue("sendMessage", (payload) => {
+    assert.equal(payload.parse_mode, "HTML");
     optionData = payload.reply_markup.inline_keyboard[0][0].callback_data;
     return { ok: true, result: { message_id: 501, chat: { id: 123 } } };
   });
@@ -109,6 +110,7 @@ test("requestElicitation resolves elicitation-submit when a single-select questi
   const edit = server.calls.find((call) => call.method === "editMessageText");
   assert.ok(edit, "answering the last question rewrites the card with a submitted status");
   assert.match(edit.payload.text, /Submitted/);
+  assert.equal(edit.payload.parse_mode, "HTML");
   assert.equal(edit.payload.reply_markup, undefined);
 
   await runner.stop();
@@ -161,11 +163,13 @@ test("requestElicitation redacts secrets from the displayed question and returns
   const server = createFakeTelegramServer();
   let releaseFirstPoll;
   let sentText = "";
+  let sentParseMode = null;
   let optionData = "";
 
   server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
   server.enqueue("sendMessage", (payload) => {
     sentText = payload.text;
+    sentParseMode = payload.parse_mode;
     optionData = payload.reply_markup.inline_keyboard[0][0].callback_data;
     return { ok: true, result: { message_id: 601, chat: { id: 123 } } };
   });
@@ -180,7 +184,8 @@ test("requestElicitation redacts secrets from the displayed question and returns
   await runner.start();
   await tick();
   const decisionPromise = runner.requestElicitation({
-    title: "claude-code needs input",
+    title: "claude-code needs sk-titleabcdefghijklmnop",
+    detail: "detail sk-detailabcdefghijklmnop",
     questions: [
       { question: "Rotate sk-abcdefghijklmnop1234 from .env?", options: [{ label: "Yes" }, { label: "No" }] },
     ],
@@ -189,7 +194,10 @@ test("requestElicitation redacts secrets from the displayed question and returns
 
   // The card text sent to Telegram must not carry the key the agent quoted...
   assert.doesNotMatch(sentText, /sk-abcdefghijklmnop1234/);
+  assert.doesNotMatch(sentText, /sk-titleabcdefghijklmnop|sk-detailabcdefghijklmnop/);
   assert.match(sentText, /redacted:token/);
+  assert.doesNotMatch(sentText, /<a\b/);
+  assert.equal(sentParseMode, "HTML");
 
   releaseFirstPoll({ ok: true, result: [] });
   const decision = await decisionPromise;
@@ -771,4 +779,30 @@ test("requestElicitation resolves null when the initial card send fails", async 
   assert.equal(decision, null);
 
   await runner.stop();
+});
+
+test("requestElicitation plain-fallback preserves the initial keyboard and pending decision", async () => {
+  const server = createFakeTelegramServer();
+  server.enqueue("getUpdates", () => new Promise(() => {}));
+  server.enqueueError("sendMessage", {
+    status: 400,
+    description: "Bad Request: can't parse entities at byte offset 3",
+  });
+  server.enqueueOk("sendMessage", { message_id: 1401, chat: { id: 123 } });
+
+  const runner = makeRunner(server);
+  await runner.start();
+  await tick();
+  const decisionPromise = runner.requestElicitation(singleQuestionPayload());
+  await tick();
+
+  const sends = server.calls.filter((call) => call.method === "sendMessage");
+  assert.equal(sends.length, 2);
+  assert.equal(sends[0].payload.parse_mode, "HTML");
+  assert.equal(sends[1].payload.parse_mode, undefined);
+  assert.deepEqual(sends[1].payload.reply_markup, sends[0].payload.reply_markup);
+  assert.equal(runner._pendingElicitations.size, 1, "successful fallback must keep waiting for the answer");
+
+  await runner.stop();
+  assert.equal(await decisionPromise, null);
 });

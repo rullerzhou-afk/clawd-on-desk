@@ -29,6 +29,9 @@ function makeServer({
   isProcessAlive = () => true,
   addressPort = 23333,
   runtimeConfigPath = undefined,
+  isWinHost = true,
+  windowsProcessChainModes = undefined,
+  windowsProcessMetadataResolver = undefined,
   // Production's listen() emits 'listening' from a LATER tick. The synchronous
   // mock below is close enough for the boolean-contract tests, but not for the
   // throw ones: a sync emit still runs inside httpServer.listen()'s own
@@ -37,6 +40,7 @@ function makeServer({
   asyncListen = false,
 } = {}) {
   const warnings = [];
+  const runtimeWrites = [];
   const origWarn = console.warn;
   console.warn = (...args) => warnings.push(args.map(String).join(" "));
 
@@ -56,16 +60,57 @@ function makeServer({
     setImmediate: () => {},
     getPortCandidates: () => [addressPort],
     clearRuntimeConfig: () => true,
-    writeRuntimeConfig,
+    writeRuntimeConfig: (...args) => {
+      runtimeWrites.push(args);
+      return writeRuntimeConfig(...args);
+    },
     readRuntimePort,
     readRuntimeIdentity,
     isProcessAlive,
     runtimeConfigPath,
+    isWinHost,
+    windowsProcessChainModes,
+    windowsProcessMetadataResolver,
   });
-  return { api, warnings, restore: () => { console.warn = origWarn; } };
+  return { api, warnings, runtimeWrites, restore: () => { console.warn = origWarn; } };
 }
 
 describe("#681 — startHttpServer always settles, however the runtime write goes", () => {
+  it("advertises legacy by default and preserves explicit cutover overrides", async () => {
+    const resolver = () => ({ status: "unavailable" });
+    resolver.available = true;
+    const h = makeServer({
+      windowsProcessChainModes: { codex: "b1a-authoritative" },
+      windowsProcessMetadataResolver: resolver,
+    });
+    try {
+      await h.api.startHttpServer();
+      const capability = h.runtimeWrites[0][1].windowsProcessChain;
+      assert.strictEqual(capability.version, 1);
+      assert.match(capability.instanceGeneration, /^[A-Za-z0-9_-]+$/);
+      assert.strictEqual(capability.agents.codex, "b1a-authoritative");
+      for (const agentId of ["cursor-agent", "kiro-cli", "codebuddy", "reasonix"]) {
+        assert.strictEqual(capability.agents[agentId], "legacy");
+      }
+    } finally { h.restore(); }
+  });
+
+  it("downgrades requested shadow/authoritative modes when the server resolver cannot initialize", async () => {
+    const unavailableResolver = () => ({ status: "unavailable", reason: "ffi-unavailable" });
+    unavailableResolver.available = false;
+    const h = makeServer({
+      windowsProcessChainModes: { codex: "b1a-authoritative", reasonix: "shadow" },
+      windowsProcessMetadataResolver: unavailableResolver,
+    });
+    try {
+      await h.api.startHttpServer();
+      const modes = h.runtimeWrites[0][1].windowsProcessChain.agents;
+      assert.strictEqual(modes.codex, "legacy");
+      assert.strictEqual(modes.reasonix, "legacy");
+      assert.strictEqual(modes["cursor-agent"], "legacy");
+    } finally { h.restore(); }
+  });
+
   it("settles with the bound port on a successful write", async () => {
     const h = makeServer();
     try {

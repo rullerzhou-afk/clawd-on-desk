@@ -826,6 +826,11 @@
       if (minSessions === maxSessions) return `${minSessions} 세션`;
       return `${minSessions}-${maxSessions} 세션`;
     }
+    if (lang === "pt-BR") {
+      if (maxSessions == null) return `${minSessions}+ sessões`;
+      if (minSessions === maxSessions) return `${minSessions} ${minSessions === 1 ? "sessão" : "sessões"}`;
+      return `${minSessions}-${maxSessions} sessões`;
+    }
     if (maxSessions == null) return `${minSessions}+ sessions`;
     if (minSessions === maxSessions) return `${minSessions} session${minSessions === 1 ? "" : "s"}`;
     return `${minSessions}-${maxSessions} sessions`;

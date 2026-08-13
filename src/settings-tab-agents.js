@@ -924,9 +924,9 @@
       title: t("claudeHooksDisableConfirmTitle"),
       detail: t("claudeHooksDisableConfirmDetail"),
       actions: [
-        { id: "disconnect", label: t("claudeHooksDisableConfirmDisconnect"), tone: "danger" },
+        { id: "keep", label: t("claudeHooksDisableConfirmKeep"), tone: "neutral", defaultFocus: true },
         { id: "disable", label: t("claudeHooksDisableConfirmDisableOnly"), tone: "neutral" },
-        { id: "keep", label: t("claudeHooksDisableConfirmKeep"), tone: "accent", defaultFocus: true },
+        { id: "disconnect", label: t("claudeHooksDisableConfirmDisconnect"), tone: "danger" },
       ],
     });
   }
@@ -936,8 +936,8 @@
       title: t("claudeHooksDisconnectConfirmTitle"),
       detail: t("claudeHooksDisconnectConfirmDetail"),
       actions: [
+        { id: "keep", label: t("claudeHooksDisconnectConfirmKeep"), tone: "neutral", defaultFocus: true },
         { id: "disconnect", label: t("claudeHooksDisconnectConfirmAction"), tone: "danger" },
-        { id: "keep", label: t("claudeHooksDisconnectConfirmKeep"), tone: "accent", defaultFocus: true },
       ],
     });
   }
@@ -1326,12 +1326,26 @@
     label.textContent = `WSL: ${wslEntry.distro}`;
     text.appendChild(label);
 
+    const hasIntegrationEvidence = Object.prototype.hasOwnProperty.call(
+      wslEntry,
+      "integrationFilesPresent"
+    );
+
+    function refreshWslHints() {
+      if (typeof ops.fetchAgentInstallationHints !== "function") return;
+      ops.fetchAgentInstallationHints({ refreshWsl: true }).then(() => {
+        ops.requestRender({ content: true });
+      }).catch(() => {
+        // DOM may be torn down if the user navigated away before refresh.
+      });
+    }
+
     // Distro-level marker: hook files are present AND claude-code's
     // settings.json references them (hooksDeployed = DEPFILE && DEPREG).
     // Not per-agent pairing truth — that would require inspecting each
     // agent's config inside WSL — but enough to show Pair took effect and
     // to go dark after a claude-code Unpair.
-    if (wslEntry.hooksDeployed) {
+    if (!hasIntegrationEvidence && wslEntry.hooksDeployed) {
       const deployed = document.createElement("span");
       deployed.className = "agent-instance-deployed";
       deployed.textContent = t("agentInstanceDeployedBadge");
@@ -1362,20 +1376,17 @@
             distro: wslEntry.distro,
           });
           if (result && result.status === "ok") {
+            const warnings = [];
+            if (typeof result.warning === "string" && result.warning) warnings.push(result.warning);
             if (result.wslConnectivity === false) {
               // Hooks installed, but the distro cannot reach Clawd (NAT
               // networking) — sessions would silently never appear.
-              ops.showToast(t("agentInstancePairedNoConnectivity"), { error: true });
+              warnings.push(t("agentInstancePairedNoConnectivity"));
+            }
+            if (warnings.length) {
+              ops.showToast(warnings.join("\n"), { error: true });
             } else {
               ops.showToast(result.message || t("agentInstancePaired"));
-            }
-            // Refresh hints so the UI updates (and Pair button may disappear)
-            if (typeof ops.fetchAgentInstallationHints === "function") {
-              ops.fetchAgentInstallationHints({ refreshWsl: true }).then(() => {
-                ops.requestRender({ content: true });
-              }).catch(() => {
-                // DOM may be torn down if user navigated away before refresh completes
-              });
             }
           } else {
             const msg = (result && result.message) || "WSL deploy failed";
@@ -1388,19 +1399,23 @@
           { error: true }
         );
       } finally {
+        // Refresh after both success and failure: an installer can leave
+        // managed files that the user must be able to Unpair/repair.
+        refreshWslHints();
         button.disabled = false;
         button.textContent = t("agentInstancePair");
       }
     });
     ctrl.appendChild(button);
 
-    // Unpair — offered whenever hook FILES are present (hooksFilesPresent),
-    // not gated on the registration-based badge (hooksDeployed): a distro
-    // paired with only a non-claude agent registers in that agent's own
-    // config, so the claude-settings badge is off, yet the user still needs
-    // an unpair entry point. Runs the agent's uninstall inside the distro;
-    // hook files stay (shared by other agents).
-    if (wslEntry.hooksFilesPresent) {
+    // Asset-backed integrations provide per-agent cleanup evidence. Only
+    // legacy persistent-hook agents fall back to the distro-level shared
+    // hooksFilesPresent marker; an explicit false/null must never inherit a
+    // Claude pairing and expose a fake Unpair action.
+    const canUnpair = hasIntegrationEvidence
+      ? wslEntry.integrationFilesPresent === true
+      : wslEntry.hooksFilesPresent === true;
+    if (canUnpair) {
       const unpairBtn = document.createElement("button");
       unpairBtn.className = "soft-btn agent-instance-action";
       unpairBtn.textContent = t("agentInstanceUnpair");
@@ -1415,14 +1430,10 @@
               distro: wslEntry.distro,
             });
             if (result && result.status === "ok") {
-              ops.showToast(result.message || t("agentInstanceUnpaired"));
-              if (typeof ops.fetchAgentInstallationHints === "function") {
-                ops.fetchAgentInstallationHints({ refreshWsl: true }).then(() => {
-                  ops.requestRender({ content: true });
-                }).catch(() => {
-                  // DOM may be torn down if user navigated away before refresh completes
-                });
-              }
+              ops.showToast(
+                result.warning || result.message || t("agentInstanceUnpaired"),
+                result.warning ? { error: true } : undefined
+              );
             } else {
               ops.showToast((result && result.message) || "WSL unpair failed", { error: true });
             }
@@ -1430,6 +1441,7 @@
         } catch (err) {
           ops.showToast(String(err && err.message ? err.message : err), { error: true });
         } finally {
+          refreshWslHints();
           unpairBtn.disabled = false;
           unpairBtn.textContent = t("agentInstanceUnpair");
         }

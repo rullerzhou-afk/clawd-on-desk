@@ -127,7 +127,28 @@ describe("createPidResolver()", () => {
 
   it("walks from startPid and populates pidChain", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: process.pid });
+    // Keep this walk-semantic unit test independent of the live WMI service.
+    // Under the full parallel suite, Get-CimInstance can exceed the production
+    // three-second budget and correctly return an unavailable snapshot.
+    const windowsSnapshot = process.platform === "win32"
+      ? {
+          getWindowsProcessSnapshot: () => ({
+            processes: new Map([[process.pid, {
+              name: "node.exe",
+              ppid: 0,
+              commandLine: "node --test",
+              startIdentity: "test-process-start",
+            }]]),
+            foregroundWtHwnd: null,
+          }),
+        }
+      : {};
+    const resolve = createPidResolver({
+      ...LIVE_GATE,
+      ...windowsSnapshot,
+      platformConfig: cfg,
+      startPid: process.pid,
+    });
     const { pidChain } = resolve();
     // pidChain should contain at least the start PID (our own process)
     assert.ok(pidChain.length >= 1);

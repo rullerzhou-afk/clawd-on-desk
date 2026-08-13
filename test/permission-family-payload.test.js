@@ -17,6 +17,7 @@ const path = require("path");
 
 const initPermission = require("../src/permission");
 const { classifyPermissionInteraction } = require("../src/permission-automation-policy");
+const { SUPPORTED_LANGS } = require("../src/i18n");
 
 function makeCtx(overrides = {}) {
   return {
@@ -156,7 +157,8 @@ describe("bubble-renderer family contract (static)", () => {
 
   it("blanket-always tooltip is {agent}-templated (twice) in every language, no hardcoded product name", () => {
     const lines = source.split("\n").filter((l) => l.includes("alwaysAllowBlanketTitle:"));
-    assert.strictEqual(lines.length, 5, "expected the tooltip in exactly 5 languages");
+    assert.strictEqual(lines.length, SUPPORTED_LANGS.length,
+      `expected the tooltip in exactly ${SUPPORTED_LANGS.length} supported languages`);
     for (const line of lines) {
       const occurrences = line.split("{agent}").length - 1;
       assert.strictEqual(occurrences, 2, `tooltip must use {agent} twice: ${line.trim().slice(0, 60)}…`);

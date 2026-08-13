@@ -3,14 +3,18 @@ const assert = require("node:assert");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const { spawnSync: spawnProcessSync } = require("node:child_process");
 
 const {
+  HERMES_RESULT_SCHEMA_VERSION,
   PLUGIN_ID,
   MANAGED_PLUGIN_FILES,
+  copyManagedPluginFiles,
   hermesHomesForSync,
   isHermesInstalled,
   registerHermesPlugin,
   resolveHermesHome,
+  toHermesCliResult,
   unregisterHermesPlugin,
 } = require("../hooks/hermes-install");
 
@@ -387,5 +391,151 @@ describe("Hermes plugin installer", () => {
     ]);
     assert.strictEqual(fs.existsSync(pluginDir), false);
     assert.strictEqual(fs.existsSync(siblingDir), true);
+  });
+
+  it("uninstalls primary, configured profiles, and configless managed remnants symmetrically", () => {
+    const hermesHome = makeTempDir();
+    const configured = path.join(hermesHome, "profiles", "ops");
+    const residual = path.join(hermesHome, "profiles", "old");
+    fs.mkdirSync(path.join(hermesHome, "plugins", PLUGIN_ID), { recursive: true });
+    fs.mkdirSync(path.join(configured, "plugins", PLUGIN_ID), { recursive: true });
+    fs.mkdirSync(path.join(residual, "plugins", PLUGIN_ID), { recursive: true });
+    fs.writeFileSync(path.join(hermesHome, "config.yaml"), "plugins: {}\n", "utf8");
+    fs.writeFileSync(path.join(configured, "config.yaml"), "plugins: {}\n", "utf8");
+    fs.writeFileSync(path.join(hermesHome, "plugins", PLUGIN_ID, "plugin.yaml"), "root\n", "utf8");
+    fs.writeFileSync(path.join(configured, "plugins", PLUGIN_ID, "__init__.py"), "# configured\n", "utf8");
+    fs.writeFileSync(path.join(residual, "plugins", PLUGIN_ID, "plugin.yaml"), "residual\n", "utf8");
+    const spawnSync = makeSpawn();
+
+    const result = unregisterHermesPlugin({
+      silent: true,
+      hermesHome,
+      hermesCommand: "hermes",
+      spawnSync,
+      env: {},
+    });
+
+    assert.strictEqual(result.status, "ok");
+    assert.strictEqual(result.removedCount, 3);
+    assert.deepStrictEqual(
+      spawnSync.calls.map((call) => call.options.env.HERMES_HOME).sort(),
+      [hermesHome, configured].sort(),
+      "configless residual must be removed without invoking Hermes CLI"
+    );
+    assert.strictEqual(fs.existsSync(path.join(hermesHome, "plugins", PLUGIN_ID)), false);
+    assert.strictEqual(fs.existsSync(path.join(configured, "plugins", PLUGIN_ID)), false);
+    assert.strictEqual(fs.existsSync(path.join(residual, "plugins", PLUGIN_ID)), false);
+    assert.strictEqual(fs.existsSync(path.join(residual, "config.yaml")), false);
+  });
+
+  it("removes managed files but returns warnings when one profile cannot disable", () => {
+    const hermesHome = makeTempDir();
+    const profileHome = path.join(hermesHome, "profiles", "ops");
+    for (const targetHome of [hermesHome, profileHome]) {
+      fs.mkdirSync(path.join(targetHome, "plugins", PLUGIN_ID), { recursive: true });
+      fs.writeFileSync(path.join(targetHome, "config.yaml"), "plugins: {}\n", "utf8");
+      fs.writeFileSync(path.join(targetHome, "plugins", PLUGIN_ID, "plugin.yaml"), "managed\n", "utf8");
+    }
+    const calls = [];
+    const spawnSync = (command, args, options) => {
+      calls.push({ command, args, options });
+      return options.env.HERMES_HOME === profileHome
+        ? { status: 1, stdout: "", stderr: "profile disable failed" }
+        : { status: 0, stdout: "", stderr: "" };
+    };
+
+    const result = unregisterHermesPlugin({ silent: true, hermesHome, hermesCommand: "hermes", spawnSync, env: {} });
+
+    assert.strictEqual(result.status, "ok");
+    assert.strictEqual(result.warnings.length, 1);
+    assert.match(result.warnings[0], /profile disable failed/);
+    assert.strictEqual(fs.existsSync(path.join(profileHome, "plugins", PLUGIN_ID)), false);
+    assert.strictEqual(calls.length, 2);
+  });
+
+  it("returns an error when a managed plugin directory cannot be removed", () => {
+    const hermesHome = makeTempDir();
+    const pluginDir = path.join(hermesHome, "plugins", PLUGIN_ID);
+    fs.mkdirSync(pluginDir, { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, "plugin.yaml"), "managed\n", "utf8");
+    const result = unregisterHermesPlugin({
+      silent: true,
+      hermesHome,
+      hermesCommand: "hermes",
+      spawnSync: makeSpawn(),
+      rmSync: () => { throw new Error("locked"); },
+      env: {},
+    });
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(result.reason, "hermes-plugin-remove-failed");
+    assert.match(result.message, /locked/);
+    assert.strictEqual(fs.existsSync(pluginDir), true);
+  });
+
+  it("preserves the old managed file when atomic replacement fails", () => {
+    const sourcePluginDir = makeSourcePlugin();
+    const pluginDir = makeTempDir();
+    const dest = path.join(pluginDir, "plugin.yaml");
+    fs.writeFileSync(dest, "old\n", "utf8");
+
+    assert.throws(() => copyManagedPluginFiles({
+      sourcePluginDir,
+      pluginDir,
+      renameSync: () => { throw new Error("rename failed"); },
+    }), /rename failed/);
+    assert.strictEqual(fs.readFileSync(dest, "utf8"), "old\n");
+    assert.deepStrictEqual(
+      fs.readdirSync(pluginDir).filter((name) => name.includes(".clawd-") && name.endsWith(".tmp")),
+      []
+    );
+  });
+
+  it("normalizes install and uninstall outcomes for the versioned CLI contract", () => {
+    assert.deepStrictEqual(toHermesCliResult({ status: "ok", message: "done" }, "install"), {
+      schemaVersion: HERMES_RESULT_SCHEMA_VERSION,
+      operation: "install",
+      status: "ok",
+      message: "done",
+      reason: null,
+      warning: null,
+      profileWarningCount: 0,
+      profileErrorCount: 0,
+    });
+    const warning = toHermesCliResult({
+      status: "ok",
+      profileStatus: "partial",
+      profileErrorCount: 2,
+      message: "partial",
+    }, "install");
+    assert.strictEqual(warning.status, "warning");
+    assert.strictEqual(warning.profileWarningCount, 2);
+    assert.strictEqual(warning.warning, null);
+    assert.match(toHermesCliResult({
+      status: "ok",
+      warnings: ["profile disable failed"],
+      message: "removed with warnings",
+    }, "uninstall").warning, /profile disable failed/);
+    assert.strictEqual(toHermesCliResult({ status: "error", reason: "bad", message: "failed" }, "uninstall").status, "error");
+  });
+
+  it("prints one structured error sentinel when JSON-mode installation throws", () => {
+    const hermesHome = makeTempDir();
+    const pluginsDir = path.join(hermesHome, "plugins");
+    fs.mkdirSync(pluginsDir, { recursive: true });
+    fs.writeFileSync(path.join(pluginsDir, PLUGIN_ID), "blocks plugin directory creation\n", "utf8");
+
+    const run = spawnProcessSync(process.execPath, [path.join(__dirname, "..", "hooks", "hermes-install.js"), "--json"], {
+      encoding: "utf8",
+      env: { ...process.env, HERMES_HOME: hermesHome },
+      timeout: 10000,
+      windowsHide: true,
+    });
+
+    assert.strictEqual(run.status, 1);
+    const sentinelLines = run.stdout.split(/\r?\n/).filter((line) => line.startsWith("CLAWD_HERMES_RESULT_V1="));
+    assert.strictEqual(sentinelLines.length, 1);
+    const result = JSON.parse(sentinelLines[0].slice("CLAWD_HERMES_RESULT_V1=".length));
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(result.reason, "hermes-plugin-operation-threw");
   });
 });

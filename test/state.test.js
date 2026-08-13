@@ -12,6 +12,7 @@ const _defaultTheme = themeLoader.loadTheme("clawd");
 const _calicoTheme = themeLoader.loadTheme("calico");
 const { createTranslator } = require("../src/i18n");
 const { makeSessionKey } = require("../src/session-key");
+const { isSessionInProgress } = require("../src/state-session-snapshot");
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -87,6 +88,7 @@ function update(api, o = {}) {
       displayHint: o.displayHint,
       sessionTitle: o.sessionTitle ?? null,
       contextUsage: o.contextUsage ?? null,
+      contextUsageOrigin: o.contextUsageOrigin ?? null,
       antigravityQuota: o.antigravityQuota ?? null,
       claudeQuota: o.claudeQuota ?? null,
       platform: o.platform ?? null,
@@ -106,6 +108,7 @@ function update(api, o = {}) {
       sessionAutomationIdentity: o.sessionAutomationIdentity ?? null,
       subagentId: o.subagentId ?? null,
       subagentType: o.subagentType ?? null,
+      replaceProcessMetadata: o.replaceProcessMetadata === true,
     },
   );
 }
@@ -269,6 +272,7 @@ describe("restoreSessionFromLease()", () => {
     assert.strictEqual(session.startupRecovered, true);
     assert.deepStrictEqual(session.recentEvents, []);
     assert.strictEqual(session.requiresCompletionAck, undefined);
+    assert.strictEqual(session.contextUsageOrigin, null);
     const entry = api.buildSessionSnapshot().sessions[0];
     assert.strictEqual(entry.id, sessionId);
     assert.strictEqual(entry.startupRecovered, true);
@@ -959,6 +963,52 @@ describe("cleanStaleSessions()", () => {
     assert.strictEqual(api.sessions.get("s1").state, "idle");
   });
 
+  it("keeps local OpenCode blocker-facing work active past the generic session cutoff", () => {
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set([1000, 2000])),
+      getStaleConfig: () => ({
+        sessionStaleMs: 600_000,
+        workingStaleMs: 300_000,
+      }),
+    }));
+    api.sessions.set("opencode:s1", rawSession("working", {
+      agentId: "opencode",
+      agentPid: 1000,
+      sourcePid: 2000,
+      pidReachable: true,
+      updatedAt: Date.now() - 600_001,
+    }));
+
+    api.cleanStaleSessions();
+
+    const active = api.sessions.get("opencode:s1");
+    assert.strictEqual(active.state, "working");
+    assert.strictEqual(isSessionInProgress(active), true);
+  });
+
+  it("genuine OpenCode session.idle completion still records normal Stop semantics", () => {
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set([1000, 2000])),
+    }));
+    api.updateSession("opencode:s1", "working", "PreToolUse", {
+      agentId: "opencode",
+      agentPid: 1000,
+      sourcePid: 2000,
+      cwd: "/tmp",
+    });
+    api.updateSession("opencode:s1", "attention", "Stop", {
+      agentId: "opencode",
+      agentPid: 1000,
+      sourcePid: 2000,
+      cwd: "/tmp",
+    });
+
+    const completed = api.sessions.get("opencode:s1");
+    assert.strictEqual(completed.state, "idle");
+    assert.strictEqual(completed.recentEvents.at(-1).event, "Stop");
+    assert.strictEqual(api.deriveSessionBadge(completed), "done");
+  });
+
   it("pidReachable false + stale → delete", () => {
     api = require("../src/state")(makeCtx());
     api.sessions.set("s1", rawSession("working", {
@@ -1189,6 +1239,100 @@ describe("updateSession()", () => {
       [321, 456],
       "PermissionRequest path must merge, not overwrite with null",
     );
+  });
+
+  it("authoritative state metadata replaces and clears every derived process field", () => {
+    update(api, {
+      id: "authoritative-state",
+      event: "SessionStart",
+      sourcePid: 100,
+      agentPid: 200,
+      pidChain: [100, 200],
+      editor: "code",
+      wtHwnd: "1234",
+      orcaPaneKey: "tab-1:leaf-1",
+    });
+
+    update(api, {
+      id: "authoritative-state",
+      event: "PreToolUse",
+      replaceProcessMetadata: true,
+      sourcePid: null,
+      agentPid: null,
+      pidChain: null,
+      editor: null,
+    });
+
+    const session = api.sessions.get("authoritative-state");
+    assert.strictEqual(session.sourcePid, null);
+    assert.strictEqual(session.agentPid, null);
+    assert.strictEqual(session.pidChain, null);
+    assert.strictEqual(session.editor, null);
+    assert.strictEqual(session.wtHwnd, null);
+    assert.strictEqual(session.orcaPaneKey, null);
+    assert.strictEqual(session.pidReachable, false);
+  });
+
+  it("authoritative Cursor clear preserves its adapter-owned editor fallback", () => {
+    update(api, {
+      id: "authoritative-cursor",
+      event: "SessionStart",
+      agentId: "cursor-agent",
+      sourcePid: 100,
+      agentPid: 200,
+      pidChain: [100, 200],
+      editor: "cursor",
+    });
+    update(api, {
+      id: "authoritative-cursor",
+      event: "PreToolUse",
+      agentId: "cursor-agent",
+      replaceProcessMetadata: true,
+      editor: "cursor",
+    });
+
+    const session = api.sessions.get("authoritative-cursor");
+    assert.strictEqual(session.sourcePid, null);
+    assert.strictEqual(session.agentPid, null);
+    assert.strictEqual(session.pidChain, null);
+    assert.strictEqual(session.editor, "cursor");
+  });
+
+  it("authoritative Codex PermissionRequest clears stale focus without creating an all-null ghost", () => {
+    const sid = "codex:authoritative-permission";
+    update(api, {
+      id: sid,
+      event: "PermissionRequest",
+      state: "notification",
+      agentId: "codex",
+      sourcePid: 456,
+      agentPid: 456,
+      pidChain: [321, 456],
+      wtHwnd: "9876",
+      orcaPaneKey: "tab-2:leaf-2",
+      replaceProcessMetadata: true,
+    });
+    update(api, {
+      id: sid,
+      event: "PermissionRequest",
+      state: "notification",
+      agentId: "codex",
+      replaceProcessMetadata: true,
+    });
+
+    const session = api.sessions.get(sid);
+    assert.strictEqual(session.sourcePid, null);
+    assert.strictEqual(session.agentPid, null);
+    assert.strictEqual(session.pidChain, null);
+    assert.strictEqual(session.wtHwnd, null);
+    assert.strictEqual(session.orcaPaneKey, null);
+    assert.strictEqual(session.pidReachable, false);
+
+    api.updateSession("codex:all-null-new", "notification", "PermissionRequest", {
+      agentId: "codex",
+      replaceProcessMetadata: true,
+    });
+    assert.strictEqual(api.sessions.has("codex:all-null-new"), false);
   });
 
   it("existing session_id → updates state and timestamp", () => {
@@ -2043,6 +2187,67 @@ describe("updateSession()", () => {
     assert.strictEqual(api.getCurrentState(), "idle");
   });
 
+  it("presents a later attention Stop when an earlier ID-less Stop only idled the session", () => {
+    const soundsPlayed = [];
+    const stateChanges = [];
+    api.cleanup();
+    ctx = makeCtx({
+      processKill: () => true,
+      playSound: (name) => soundsPlayed.push(name),
+      sendToRenderer: (channel, state) => {
+        if (channel === "state-change") stateChanges.push(state);
+      },
+    });
+    api = require("../src/state")(ctx);
+
+    update(api, {
+      id: "codex:s1",
+      state: "thinking",
+      event: "UserPromptSubmit",
+      agentId: "codex",
+    });
+    mock.timers.tick(1000);
+    stateChanges.length = 0;
+
+    // A terminal without identity may resolve idle because the server cannot
+    // associate it with the turn's tool ledger. It closes lifecycle state but
+    // has not presented completion UX yet.
+    update(api, {
+      id: "codex:s1",
+      state: "idle",
+      event: "Stop",
+      agentId: "codex",
+    });
+    assert.strictEqual(soundsPlayed.filter((name) => name === "complete").length, 0);
+    stateChanges.length = 0;
+
+    // The later ID-bearing Stop is authoritative and resolves attention. It
+    // must upgrade the existing completion tail and celebrate exactly once.
+    update(api, {
+      id: "codex:s1",
+      state: "attention",
+      event: "Stop",
+      agentId: "codex",
+    });
+    assert.strictEqual(soundsPlayed.filter((name) => name === "complete").length, 1);
+    assert.deepStrictEqual(stateChanges, ["attention"]);
+    const completionEvents = api.sessions.get("codex:s1").recentEvents.filter((entry) => entry.event === "Stop");
+    assert.strictEqual(completionEvents.length, 1);
+    assert.strictEqual(completionEvents[0].state, "attention");
+
+    mock.timers.tick(4000);
+    soundsPlayed.length = 0;
+    stateChanges.length = 0;
+    update(api, {
+      id: "codex:s1",
+      state: "attention",
+      event: "Stop",
+      agentId: "codex",
+    });
+    assert.strictEqual(soundsPlayed.filter((name) => name === "complete").length, 0);
+    assert.ok(!stateChanges.includes("attention"));
+  });
+
   it("Codex Stop followed by token_count and task_complete still auto-returns from attention", () => {
     const soundsPlayed = [];
     const stateChanges = [];
@@ -2272,6 +2477,7 @@ describe("updateSession()", () => {
       percent: 1,
       source: "claude",
     });
+    assert.strictEqual(api.sessions.get("s1").contextUsageOrigin, "claude-transcript");
   });
 
   it("keeps contextUsage sticky when later events omit it", () => {
@@ -2395,6 +2601,75 @@ describe("updateSession()", () => {
     assert.strictEqual(snapshot.accountQuota[1].codexQuota.group.codexWeekly.usedPercent, 43);
   });
 
+  it("clearLocalClaudeQuota removes local + WSL Claude only and broadcasts once", () => {
+    const broadcasts = [];
+    const localApi = require("../src/state")(makeCtx({
+      broadcastSessionSnapshot: (snapshot) => broadcasts.push(snapshot),
+    }));
+    const resetAt = Date.now() + 3600000;
+    localApi.updateAccountQuota(null, {
+      claudeQuota: { claudeWeekly: { usedPercent: 41, resetAt } },
+      codexQuota: { codexWeekly: { usedPercent: 7, resetAt } },
+    });
+    localApi.updateAccountQuota("wsl:Ubuntu", {
+      claudeQuota: { claudeWeekly: { usedPercent: 42, resetAt } },
+    });
+    localApi.updateAccountQuota("remote:ssh-work", {
+      displayHost: "workbox",
+      claudeQuota: { claudeWeekly: { usedPercent: 90, resetAt } },
+    });
+    const before = broadcasts.length;
+
+    assert.strictEqual(localApi.clearLocalClaudeQuota(), 2);
+    assert.strictEqual(broadcasts.length, before + 1);
+    const snapshot = broadcasts.at(-1).accountQuota;
+    const local = snapshot.find((entry) => entry.host === null);
+    assert.strictEqual(local.claudeQuota, undefined);
+    assert.strictEqual(local.codexQuota.group.codexWeekly.usedPercent, 7);
+    assert.strictEqual(snapshot.some((entry) => entry.host === "wsl:Ubuntu"), false,
+      "an empty WSL source should disappear");
+    assert.strictEqual(
+      snapshot.find((entry) => entry.host === "workbox").claudeQuota.group.claudeWeekly.usedPercent,
+      90,
+      "Remote SSH Claude quota must survive local opt-out"
+    );
+
+    assert.strictEqual(localApi.clearLocalClaudeQuota(), 0);
+    assert.strictEqual(broadcasts.length, before + 1, "no-op cleanup must not rebroadcast");
+    localApi.cleanup();
+  });
+
+  it("cleans persisted local Claude quota on startup when collection is disabled", () => {
+    const persistPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "clawd-aq-optout-")), "account-quota.json");
+    const { createAccountQuotaStore } = require("../src/state-account-quota");
+    const seed = createAccountQuotaStore({ persistPath });
+    const resetAt = Date.now() + 3600000;
+    seed.update(null, {
+      claudeQuota: { claudeWeekly: { usedPercent: 41, resetAt } },
+      codexQuota: { codexWeekly: { usedPercent: 7, resetAt } },
+    });
+    seed.update("remote:ssh-work", {
+      displayHost: "workbox",
+      claudeQuota: { claudeWeekly: { usedPercent: 90, resetAt } },
+    });
+    seed.flush();
+
+    const localApi = require("../src/state")(makeCtx({
+      accountQuotaPersistPath: persistPath,
+      claudeQuotaCollectionEnabled: false,
+    }));
+    const snapshot = localApi.buildSessionSnapshot().accountQuota;
+    assert.strictEqual(snapshot.find((entry) => entry.host === null).claudeQuota, undefined);
+    assert.strictEqual(snapshot.find((entry) => entry.host === null).codexQuota.group.codexWeekly.usedPercent, 7);
+    assert.strictEqual(snapshot.find((entry) => entry.host === "workbox").claudeQuota.group.claudeWeekly.usedPercent, 90);
+    localApi.cleanup();
+
+    const reloaded = createAccountQuotaStore({ persistPath }).snapshot();
+    assert.strictEqual(reloaded.find((entry) => entry.host === null).claudeQuota, undefined,
+      "startup cleanup must be persisted synchronously");
+    assert.strictEqual(reloaded.find((entry) => entry.host === "workbox").claudeQuota.group.claudeWeekly.usedPercent, 90);
+  });
+
   it("updateAccountQuota change-detects identical refreshes (no re-broadcast, no re-stamp)", () => {
     const broadcasts = [];
     const localApi = require("../src/state")(makeCtx({
@@ -2503,6 +2778,7 @@ describe("updateSession()", () => {
 
     const applied = api.updateSessionMetadata("s1", {
       contextUsage: { used: 50000, limit: 200000, percent: 25, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
     });
 
     assert.strictEqual(applied, true);
@@ -2510,7 +2786,116 @@ describe("updateSession()", () => {
     assert.strictEqual(session.updatedAt, 12345);
     assert.strictEqual(JSON.stringify(session.recentEvents), recentEventsBefore);
     assert.deepStrictEqual(session.contextUsage, { used: 50000, limit: 200000, percent: 25, source: "claude" });
+    assert.strictEqual(session.contextUsageOrigin, "claude-statusline");
     assert.ok(Number.isFinite(session.metadataUpdatedAt), "telemetry change must stamp metadataUpdatedAt");
+  });
+
+  it("keeps a statusline window authoritative while transcript events refresh only used tokens", () => {
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      contextUsage: { used: 50000, limit: 200000, percent: 25, source: "claude" },
+      contextUsageOrigin: "claude-transcript",
+    });
+    api.updateSessionMetadata("s1", {
+      contextUsage: { used: 60000, limit: 1000000, percent: 6, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
+    });
+    update(api, {
+      id: "s1",
+      state: "working",
+      event: "PreToolUse",
+      contextUsage: { used: 70000, limit: 200000, percent: 35, source: "claude" },
+      contextUsageOrigin: "claude-transcript",
+    });
+
+    const session = api.sessions.get("s1");
+    assert.deepStrictEqual(session.contextUsage, {
+      used: 70000,
+      limit: 1000000,
+      percent: 7,
+      source: "claude",
+    });
+    assert.strictEqual(session.contextUsageOrigin, "claude-statusline");
+  });
+
+  it("carries authority through a context-free rebuild before the next transcript update", () => {
+    update(api, { id: "s1", state: "working" });
+    api.updateSessionMetadata("s1", {
+      contextUsage: { used: 60000, limit: 1000000, percent: 6, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
+    });
+
+    update(api, { id: "s1", state: "thinking", event: "PostToolUse" });
+    update(api, {
+      id: "s1",
+      state: "working",
+      event: "PreToolUse",
+      contextUsage: { used: 80000, limit: 200000, percent: 40, source: "claude" },
+      contextUsageOrigin: "claude-transcript",
+    });
+
+    const session = api.sessions.get("s1");
+    assert.deepStrictEqual(session.contextUsage, {
+      used: 80000,
+      limit: 1000000,
+      percent: 8,
+      source: "claude",
+    });
+    assert.strictEqual(session.contextUsageOrigin, "claude-statusline");
+  });
+
+  it("carries the internal context origin through the permission-focus explicit rebuild", () => {
+    update(api, { id: "codex:s1", agentId: "codex", state: "working" });
+    const session = api.sessions.get("codex:s1");
+    // White-box structural guard: Claude statusline authority is not normally
+    // attached to a Codex session, but this explicit rebuild is Codex-only.
+    // Seeding the marker here catches a future omission from the rebuilt
+    // object without manufacturing an impossible route-level attribution.
+    session.contextUsage = { used: 60000, limit: 1000000, percent: 6, source: "claude" };
+    session.contextUsageOrigin = "claude-statusline";
+
+    api.updateSession("codex:s1", "notification", "PermissionRequest", {
+      agentId: "codex",
+      sourcePid: 123,
+    });
+
+    const rebuilt = api.sessions.get("codex:s1");
+    assert.notStrictEqual(rebuilt, session);
+    assert.deepStrictEqual(rebuilt.contextUsage, {
+      used: 60000,
+      limit: 1000000,
+      percent: 6,
+      source: "claude",
+    });
+    assert.strictEqual(rebuilt.contextUsageOrigin, "claude-statusline");
+  });
+
+  it("clears statusline authority for every local-profile Claude session, including WSL, but not SSH profiles", () => {
+    update(api, {
+      id: "local",
+      contextUsage: { used: 1, limit: 1000000, percent: 0, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
+    });
+    update(api, {
+      id: "wsl",
+      profileId: "local",
+      host: "wsl:Ubuntu",
+      contextUsage: { used: 2, limit: 1000000, percent: 0, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
+    });
+    update(api, {
+      id: "ssh",
+      profileId: "ssh-work",
+      host: "workbox",
+      contextUsage: { used: 3, limit: 1000000, percent: 0, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
+    });
+
+    assert.strictEqual(api.clearClaudeStatuslineAuthority("local"), 2);
+    assert.strictEqual(api.sessions.get("local").contextUsageOrigin, null);
+    assert.strictEqual(api.sessions.get("wsl").contextUsageOrigin, null);
+    assert.strictEqual(api.sessions.get("ssh").contextUsageOrigin, "claude-statusline");
   });
 
   it("updateSessionMetadata never creates a session for an unknown id", () => {
@@ -2534,6 +2919,30 @@ describe("updateSession()", () => {
     assert.strictEqual(session.contextUsage, null);
   });
 
+  it("updateSessionMetadata rejects invalid context without re-accepting existing metadata", () => {
+    update(api, { id: "s1", state: "working" });
+    const session = api.sessions.get("s1");
+    api.updateSessionMetadata("s1", {
+      contextUsage: { used: 100, limit: 200000, percent: 0, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
+    });
+    session.metadataUpdatedAt = 777;
+
+    const applied = api.updateSessionMetadata("s1", {
+      contextUsage: { used: -5 },
+    });
+
+    assert.strictEqual(applied, false);
+    assert.deepStrictEqual(session.contextUsage, {
+      used: 100,
+      limit: 200000,
+      percent: 0,
+      source: "claude",
+    });
+    assert.strictEqual(session.contextUsageOrigin, "claude-statusline");
+    assert.strictEqual(session.metadataUpdatedAt, 777);
+  });
+
   it("updateSessionMetadata stamps metadataUpdatedAt on change only, never updatedAt", () => {
     update(api, { id: "s1", state: "working" });
     const session = api.sessions.get("s1");
@@ -2541,6 +2950,7 @@ describe("updateSession()", () => {
 
     api.updateSessionMetadata("s1", {
       contextUsage: { used: 100, limit: 200000, percent: 0, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
     });
     assert.ok(Number.isFinite(session.metadataUpdatedAt), "telemetry change must stamp metadataUpdatedAt");
     assert.strictEqual(session.updatedAt, 12345);
@@ -2548,14 +2958,63 @@ describe("updateSession()", () => {
     session.metadataUpdatedAt = 777; // pin so a re-stamp is detectable
     api.updateSessionMetadata("s1", {
       contextUsage: { used: 100, limit: 200000, percent: 0, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
     });
     assert.strictEqual(session.metadataUpdatedAt, 777, "identical refresh must not re-stamp");
+  });
+
+  it("updateSessionMetadata stores a title without touching lifecycle state or telemetry stamp", () => {
+    update(api, { id: "s1", state: "working" });
+    const session = api.sessions.get("s1");
+    session.updatedAt = 12345; // pin so a bump is detectable
+    session.metadataUpdatedAt = 777; // pin so a re-stamp is detectable
+    const recentEventsBefore = JSON.stringify(session.recentEvents);
+
+    const applied = api.updateSessionMetadata("s1", { sessionTitle: "New Title" });
+
+    assert.strictEqual(applied, true);
+    assert.strictEqual(session.sessionTitle, "New Title");
+    // Lifecycle untouched: state, updatedAt, recent events all unchanged.
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.updatedAt, 12345);
+    assert.strictEqual(JSON.stringify(session.recentEvents), recentEventsBefore);
+    // Telemetry freshness must NOT be stamped by a rename (#841 review).
+    assert.strictEqual(session.metadataUpdatedAt, 777);
+    assert.strictEqual(session.contextUsage, null);
+    assert.strictEqual(session.contextUsageOrigin, null);
+  });
+
+  it("updateSessionMetadata treats a same/normalized-equivalent title as a no-op", () => {
+    update(api, { id: "s1", state: "working" });
+    api.updateSessionMetadata("s1", { sessionTitle: "Stable Title" });
+    const session = api.sessions.get("s1");
+    session.metadataUpdatedAt = 777;
+
+    // Same title -> no change, no re-stamp.
+    const appliedSame = api.updateSessionMetadata("s1", { sessionTitle: "Stable Title" });
+    assert.strictEqual(appliedSame, true);
+    assert.strictEqual(session.sessionTitle, "Stable Title");
+    assert.strictEqual(session.metadataUpdatedAt, 777);
+
+    // Normalized-equivalent title (extra whitespace/control chars) collapses
+    // to the stored title via normalizeTitle -> still a no-op, no re-stamp.
+    const appliedNormalized = api.updateSessionMetadata("s1", { sessionTitle: "  Stable\t Title  " });
+    assert.strictEqual(appliedNormalized, true);
+    assert.strictEqual(session.sessionTitle, "Stable Title");
+    assert.strictEqual(session.metadataUpdatedAt, 777);
+  });
+
+  it("updateSessionMetadata returns false for an unknown session on a title-only payload", () => {
+    const applied = api.updateSessionMetadata("ghost", { sessionTitle: "Ghost Title" });
+    assert.strictEqual(applied, false);
+    assert.strictEqual(api.sessions.has("ghost"), false);
   });
 
   it("lifecycle events carry metadataUpdatedAt forward with the telemetry they preserve", () => {
     update(api, { id: "s1", state: "working" });
     api.updateSessionMetadata("s1", {
       contextUsage: { used: 100, limit: 200000, percent: 0, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
     });
     api.sessions.get("s1").metadataUpdatedAt = 777; // pin to make loss detectable
 

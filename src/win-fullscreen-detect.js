@@ -119,9 +119,10 @@ function createForegroundFullscreenProbe(options = {}) {
         if (isDesktopShellWindowClass(className)) return false;
       }
       return true;
-    } catch {
+    } catch (err) {
       // Any FFI hiccup at call time: behave as "not fullscreen" so the
       // watchdog keeps the pet visible rather than hiding it on an error.
+      if (typeof options.onCallError === "function") options.onCallError(err);
       return false;
     }
   };

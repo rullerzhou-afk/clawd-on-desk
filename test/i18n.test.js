@@ -75,7 +75,7 @@ function runtimeDictRenderers() {
 
 describe("i18n locales", () => {
   it("lists all selectable languages in supported languages", () => {
-    assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja"]);
+    assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja", "pt-BR"]);
   });
 
   it("keeps all locale keysets aligned with English", () => {
@@ -122,6 +122,22 @@ describe("i18n locales", () => {
     }
   });
 
+  it("provides non-empty macOS menu bar and Dock recovery strings in every Settings locale", () => {
+    const settings = loadSettingsI18nStrings();
+    const keys = [
+      "rowShowInMenuBar",
+      "rowShowInMenuBarDesc",
+      "rowShowInDock",
+      "rowShowInDockDesc",
+    ];
+    for (const lang of SUPPORTED_LANGS) {
+      for (const key of keys) {
+        assert.strictEqual(typeof settings[lang][key], "string", `settings.${lang}.${key} should be a string`);
+        assert.ok(settings[lang][key].trim(), `settings.${lang}.${key} should not be empty`);
+      }
+    }
+  });
+
   it("localizes the unconfigured Feishu credential draft Clear action", () => {
     const strings = loadSettingsI18nStrings();
     assert.deepStrictEqual(
@@ -132,6 +148,7 @@ describe("i18n locales", () => {
         "zh-TW": "清除",
         ko: "지우기",
         ja: "クリア",
+        "pt-BR": "Limpar",
       },
     );
   });
@@ -158,6 +175,10 @@ describe("i18n locales", () => {
       ja: {
         label: "{brand} 承認者のメールアドレスまたはユーザー ID",
         hint: "メールアドレスを入力すると open_id を自動検索して保存できます。または ID 種別を選び、既存の ID を貼り付けてください。",
+      },
+      "pt-BR": {
+        label: "E-mail ou user ID do aprovador no {brand}",
+        hint: "Digite um e-mail para resolver e salvar o open_id automaticamente, ou escolha um tipo de ID e cole um ID existente.",
       },
     };
 
@@ -233,6 +254,59 @@ describe("i18n locales", () => {
         }
       }
     }
+  });
+
+  // Parity passes on "1 ativas" — the key and the placeholder are both there,
+  // only the grammar is wrong. Portuguese inflects for number, so these pin the
+  // rendered text at 1 and at N.
+  it("inflects pt-BR count strings whose locale entry is a function", () => {
+    const pt = loadSettingsI18nStrings()["pt-BR"];
+
+    assert.strictEqual(pt.doctorAgentSummaryAttention(1), "1 precisa de atenção");
+    assert.strictEqual(pt.doctorAgentSummaryAttention(4), "4 precisam de atenção");
+    assert.strictEqual(pt.doctorAgentSummarySkipped(1), "1 ignorado");
+    assert.strictEqual(pt.doctorAgentSummarySkipped(4), "4 ignorados");
+
+    const oneOfEach = pt.toastCodexPetsRefreshOk(1, 1, 1, 1, 1, false);
+    assert.match(oneOfEach, /1 novo, 1 atualizado, 1 sem mudança, 1 removido, 1 inválido/);
+    const manyOfEach = pt.toastCodexPetsRefreshOk(2, 2, 2, 2, 2, false);
+    assert.match(manyOfEach, /2 novos, 2 atualizados, 2 sem mudança, 2 removidos, 2 inválidos/);
+
+    assert.match(pt.toastAnimOverridesExportOk(1, "/tmp/o.json"), /\b1 tema\b/);
+    assert.match(pt.toastAnimOverridesExportOk(2, "/tmp/o.json"), /\b2 temas\b/);
+    assert.match(pt.toastAnimOverridesImportOk(1), /\b1 tema\b/);
+    assert.match(pt.toastAnimOverridesImportOk(2), /\b2 temas\b/);
+  });
+
+  it("keeps pt-BR count strings number-invariant where the locale entry is a plain string", () => {
+    const settings = loadSettingsI18nStrings()["pt-BR"];
+    const runtime = i18n["pt-BR"];
+
+    // [template, placeholder, rendered at 1, rendered at 4]
+    const cases = [
+      [runtime.dashboardCount, "{n}", "1 em atividade", "4 em atividade"],
+      [runtime.sessionHudActive, "{n}", "1 em atividade", "4 em atividade"],
+      [runtime.sessionHudOtherActive, "{n}", "mais 1 em atividade", "mais 4 em atividade"],
+      [settings.doctorIssueCount, "{count}", "1 problema(s)", "4 problema(s)"],
+    ];
+    for (const [template, placeholder, one, many] of cases) {
+      assert.strictEqual(template.replace(placeholder, "1"), one);
+      assert.strictEqual(template.replace(placeholder, "4"), many);
+    }
+
+    // Counted toasts: the participle must not commit to a number.
+    for (const [template, tokens] of [
+      [settings.toastAgentInstallHintPartial, ["{success}", "{failed}"]],
+      [settings.toastAgentCleanupHintPartial, ["{success}", "{failed}"]],
+      [settings.toastAgentInstallHintPartialSkipped, ["{success}"]],
+    ]) {
+      let rendered = template;
+      for (const token of tokens) rendered = rendered.replace(token, "1");
+      assert.match(rendered, /\(s\)/, `expected invariant wording at a count of 1: ${rendered}`);
+    }
+
+    // Appended after a name list that can hold a single agent.
+    assert.strictEqual(settings.doctorAgentSummaryNeedsAttention, "precisa(m) de atenção");
   });
 
   it("keeps Codex Pet main dialog strings available for every supported language", () => {

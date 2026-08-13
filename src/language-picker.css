@@ -55,6 +55,7 @@
 }
 .language-picker-menu {
   box-sizing: border-box;
+  display: none;
   position: absolute;
   z-index: 20;
   top: calc(100% + 6px);
@@ -72,6 +73,9 @@
   overflow-y: hidden;
   overscroll-behavior: contain;
   transition: opacity 0.14s ease, transform 0.14s ease;
+}
+.language-picker.menu-mounted .language-picker-menu {
+  display: block;
 }
 .language-picker.menu-scrollable .language-picker-menu {
   overflow-y: auto;

@@ -33,6 +33,11 @@ transport and welcomes **six first-time contributors**.
   text coarse. Thanks to returning contributor @KaiC5504.
 - **Codex Pet V2 import** (#786) — current Codex Pet V2 atlases can be imported
   without regressing existing theme behavior.
+- **Continuous Codex Pet drag rendering** (#620) — Codex Pet drag direction,
+  release, and state changes now switch animation rows inside the already
+  loaded SVG document, avoiding the intermittent transparent frame caused by
+  rebuilding the spritesheet document. The normal five-second idle pause
+  remains expected low-power behavior.
 
 ### Permission Automation And Agent Runtime
 

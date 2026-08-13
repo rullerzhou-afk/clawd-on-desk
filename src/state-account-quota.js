@@ -389,6 +389,24 @@ function createAccountQuotaStore(options = {}) {
     return changed || seenAdvanced;
   }
 
+  // Remove one provider without disturbing sibling providers carried by the
+  // same source. The optional predicate receives the normalized source key
+  // ("" = this machine) and lets callers preserve independently-authorized
+  // sources such as Remote SSH profiles.
+  function clearProvider(providerKey, shouldClearSource = () => true) {
+    if (!Object.prototype.hasOwnProperty.call(QUOTA_PROVIDER_FIELDS, providerKey)) return 0;
+    const predicate = typeof shouldClearSource === "function" ? shouldClearSource : () => true;
+    let cleared = 0;
+    for (const [sourceKey, record] of sources) {
+      if (!record[providerKey] || !predicate(sourceKey, record)) continue;
+      delete record[providerKey];
+      cleared++;
+      if (!QUOTA_PROVIDER_KEYS.some((key) => !!record[key])) sources.delete(sourceKey);
+    }
+    if (cleared) schedulePersist();
+    return cleared;
+  }
+
   // Renderer-facing view: expired buckets dropped (wall-clock window reset),
   // local source first, remotes sorted by host for a stable UI order.
   //
@@ -405,8 +423,13 @@ function createAccountQuotaStore(options = {}) {
     // Merge arbitration uses exact receive time, while snapshots expose only
     // minute-quantized stamps to avoid a broadcast on every statusline tick.
     const rawSeenByBucket = new WeakMap();
-    for (const record of sources.values()) {
-      const entry = { host: record.host };
+    for (const [sourceKey, record] of sources) {
+      // sourceKey, not host: `host` is a DISPLAY label and two trusted remote
+      // profiles are explicitly allowed to share one (see the "keeps trusted
+      // remote profile sources separate when display hosts match" test). Any
+      // renderer that keys per-source state off the label would collapse those
+      // two sources into one.
+      const entry = { sourceKey, host: record.host };
       let hasAny = false;
       for (const providerKey of QUOTA_PROVIDER_KEYS) {
         const stored = record[providerKey];
@@ -432,7 +455,8 @@ function createAccountQuotaStore(options = {}) {
     });
     if (options.mergeSources !== true || out.length <= 1) return out;
 
-    const merged = { host: null };
+    // The merged view is a single synthetic source; nothing can collide with it.
+    const merged = { sourceKey: null, host: null };
     let hasAny = false;
     for (const providerKey of QUOTA_PROVIDER_KEYS) {
       const providerCandidates = out
@@ -507,7 +531,7 @@ function createAccountQuotaStore(options = {}) {
 
   load();
 
-  return { update, snapshot, prune, flush };
+  return { update, clearProvider, snapshot, prune, flush };
 }
 
 module.exports = {

@@ -532,6 +532,21 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncQwenWorkHooks() {
+    try {
+      if (typeof ctx.syncQwenWorkHooksImpl === "function") return ctx.syncQwenWorkHooksImpl();
+      const { registerQwenWorkHooks } = require("../hooks/qwenwork-install.js");
+      const result = registerQwenWorkHooks({ silent: true });
+      if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
+        console.log(`Clawd: synced QwenWork hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      return normalizeCountSyncResult(result, "QwenWork", "qwenwork-not-installed");
+    } catch (err) {
+      console.warn("Clawd: failed to sync QwenWork hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync QwenWork hooks" };
+    }
+  }
+
   const AGENT_INTEGRATION_SYNCERS = Object.freeze({
     "gemini-cli": syncGeminiHooks,
     "antigravity-cli": syncAntigravityHooks,
@@ -553,6 +568,7 @@ function createIntegrationSyncRuntime(options = {}) {
     qoder: syncQoderHooks,
     reasonix: syncReasonixHooks,
     qoderwork: syncQoderWorkHooks,
+    qwenwork: syncQwenWorkHooks,
   });
 
   const AGENT_INTEGRATION_REPAIRERS = Object.freeze({

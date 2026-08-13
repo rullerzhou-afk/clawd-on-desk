@@ -137,10 +137,17 @@ describe("permission telegram remote approval", () => {
     assert.match(requests[0].payload.detail, /Tool: Bash/);
     assert.match(requests[0].payload.detail, /Folder: project-alpha/);
     assert.match(requests[0].payload.detail, /Summary: Run project tests/);
+    assert.deepEqual(requests[0].payload.fields, [
+      { label: "Agent", value: "claude-code" },
+      { label: "Tool", value: "Bash" },
+      { label: "Folder", value: "project-alpha" },
+      { label: "Summary", value: "Run project tests for chat <redacted:id> and <redacted:id>" },
+    ]);
     assert.equal(requests[0].payload.detail.includes("npm test"), false);
     assert.equal(requests[0].payload.detail.includes("sk-1234567890123456"), false);
     assert.equal(requests[0].payload.detail.includes("987654321"), false);
     assert.equal(requests[0].payload.detail.includes("telegram:123456789"), false);
+    assert.equal(JSON.stringify(requests[0].payload.fields).includes("sk-1234567890123456"), false);
 
     resolveApproval("allow");
     await flush();

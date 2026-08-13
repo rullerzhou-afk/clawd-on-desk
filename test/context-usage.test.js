@@ -4,6 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
 const {
+  extractClaudeStatuslineContextUsage,
   extractClaudeContextUsageFromEntries,
   resolveClaudeContextLimit,
 } = require("../hooks/context-usage");
@@ -70,6 +71,8 @@ describe("Claude context usage parser", () => {
       "claude-fable-5",
       "claude-mythos-5",
       "claude-mythos-preview",
+      "us.anthropic.claude-opus-4-6-20260801-v1:0",
+      "claude-sonnet-4-6-v2@20260801",
     ]) {
       assert.strictEqual(resolveClaudeContextLimit(model), 1000000, model);
     }
@@ -125,10 +128,40 @@ describe("Claude context usage parser", () => {
     }
   });
 
-  it("requires token boundaries when matching 1M model ids", () => {
-    for (const model of ["claude-opus-50", "claude-xopus-5"]) {
+  it("does not guess a 200k limit for fake or future-looking family aliases", () => {
+    for (const model of ["claude-opus-50", "claude-xopus-5", "my-opus-5-router"]) {
+      assert.strictEqual(resolveClaudeContextLimit(model), null, model);
+    }
+    assert.strictEqual(resolveClaudeContextLimit("claude-opus-4-9"), null);
+    assert.strictEqual(resolveClaudeContextLimit("my-sonnet-router"), null);
+  });
+
+  it("keeps stock legacy 200k ids across Claude API, Bedrock, and Vertex shapes", () => {
+    for (const model of [
+      "claude-3-opus-20240229",
+      "claude-3-5-haiku-20241022",
+      "claude-3-7-sonnet-20250219",
+      "claude-opus-4-0",
+      "claude-opus-4-20250514",
+      "claude-opus-4-1-20250805",
+      "claude-sonnet-4-0",
+      "claude-sonnet-4-5-20250929",
+      "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+      "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "claude-3-5-sonnet-v2@20241022",
+      "claude-haiku-4-5@20251001",
+    ]) {
       assert.strictEqual(resolveClaudeContextLimit(model), 200000, model);
     }
+  });
+
+  it("returns unknown when the transcript model is empty", () => {
+    assert.strictEqual(resolveClaudeContextLimit(""), null);
+    const usage = extractClaudeContextUsageFromEntries([{
+      type: "assistant",
+      message: { usage: { input_tokens: 321 } },
+    }]);
+    assert.deepStrictEqual(usage, { used: 321, source: "claude" });
   });
 
   it("falls back to the [1m] marker for models not in the table (legacy 1M beta, proxy echoes)", () => {
@@ -300,5 +333,55 @@ describe("Claude context usage parser", () => {
     ]);
 
     assert.deepStrictEqual(usage, { used: 123, source: "claude" });
+  });
+
+  it("extracts authoritative input-only context from a statusline payload", () => {
+    assert.deepStrictEqual(extractClaudeStatuslineContextUsage({
+      context_window: {
+        context_window_size: 1000000,
+        used_percentage: 20.2475,
+        current_usage: {
+          input_tokens: 475,
+          cache_read_input_tokens: 200000,
+          cache_creation_input_tokens: 2000,
+          output_tokens: 999999,
+        },
+      },
+    }), {
+      used: 202475,
+      limit: 1000000,
+      percent: 20,
+      source: "claude",
+    });
+  });
+
+  it("accepts arbitrary positive statusline limits and computes a missing percent", () => {
+    assert.deepStrictEqual(extractClaudeStatuslineContextUsage({
+      context_window: {
+        context_window_size: 128000,
+        current_usage: { input_tokens: 32000 },
+      },
+    }), {
+      used: 32000,
+      limit: 128000,
+      percent: 25,
+      source: "claude",
+    });
+  });
+
+  it("rejects empty, zero, or malformed statusline context snapshots", () => {
+    assert.strictEqual(extractClaudeStatuslineContextUsage({ context_window: { current_usage: null } }), null);
+    assert.strictEqual(extractClaudeStatuslineContextUsage({
+      context_window: { context_window_size: 200000, current_usage: { input_tokens: 0 } },
+    }), null);
+    assert.strictEqual(extractClaudeStatuslineContextUsage({
+      context_window: { context_window_size: "200000", current_usage: { input_tokens: 1 } },
+    }), null);
+    assert.strictEqual(extractClaudeStatuslineContextUsage({
+      context_window: { context_window_size: 200000, current_usage: { input_tokens: "1" } },
+    }), null);
+    assert.strictEqual(extractClaudeStatuslineContextUsage({
+      context_window: { context_window_size: 200000, current_usage: { cache_read_input_tokens: -1 } },
+    }), null);
   });
 });

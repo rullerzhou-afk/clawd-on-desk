@@ -251,6 +251,7 @@ function createSettingsEffectRouter(options = {}) {
       || "sessionHudShowElapsed" in changes
       || "sessionHudShowContextUsage" in changes
       || "sessionHudShowQuota" in changes
+      || "quotaRingDisplayMode" in changes
     ) {
       try {
         syncSessionHudVisibility();

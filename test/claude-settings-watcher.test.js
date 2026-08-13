@@ -7,6 +7,8 @@ const { EventEmitter } = require("node:events");
 const {
   settingsNeedClaudeHookResync,
   createClaudeSettingsWatcher,
+  isSuspiciousShrink,
+  takeSnapshot,
 } = require("../src/claude-settings-watcher");
 const { CLAUDE_CORE_HOOK_EVENTS } = require("../hooks/install");
 
@@ -101,6 +103,31 @@ function healthySettingsObject({ scriptPath = EXPECTED_HOOK_SCRIPT_PATH, permiss
   return { hooks };
 }
 
+function envOwnedSettingsObject({ nodeBin = "C:/nodejs/node.exe" } = {}) {
+  const hooks = {};
+  for (const event of CLAUDE_CORE_HOOK_EVENTS) {
+    hooks[event] = [{ matcher: "", hooks: [{
+      type: "command",
+      command: '"${CLAWD_NODE_BIN}" "${CLAWD_HOOK_PATH}" ' + event,
+      timeout: 5,
+    }] }];
+  }
+  hooks.PermissionRequest = [permissionHook(EXPECTED_PERMISSION_URL)];
+  return {
+    env: {
+      CLAWD_NODE_BIN: nodeBin,
+      CLAWD_HOOK_PATH: EXPECTED_HOOK_SCRIPT_PATH,
+    },
+    hooks,
+  };
+}
+
+function envUnverifiedSettingsObject(options = {}) {
+  const settings = envOwnedSettingsObject(options);
+  delete settings.env.CLAWD_HOOK_PATH;
+  return settings;
+}
+
 function makeWatcher(overrides = {}) {
   const { initialSettingsRaw, existingPaths, syncClawdHooksImpl, ...ctxOverrides } = overrides;
   const clock = makeFakeClock();
@@ -129,6 +156,9 @@ function makeWatcher(overrides = {}) {
       },
       existsSync(p) {
         return existing.has(p);
+      },
+      accessSync(p) {
+        if (!existing.has(p)) throw new Error("ENOENT");
       },
     },
     path: {
@@ -538,6 +568,130 @@ describe("createClaudeSettingsWatcher — source script missing", () => {
     } finally {
       console.warn = originalWarn;
     }
+  });
+});
+
+describe("createClaudeSettingsWatcher — env-indirected Clawd hooks (#852)", () => {
+  it("does not count strict env-owned hooks as third-party shrink", () => {
+    const before = envOwnedSettingsObject();
+    before.hooks.Stop.push({ matcher: "", hooks: [{ type: "command", command: 'node "/tmp/user.js" Stop' }] });
+    const after = JSON.parse(JSON.stringify(before));
+    for (const event of CLAUDE_CORE_HOOK_EVENTS) {
+      after.hooks[event] = after.hooks[event].filter((entry) => (
+        !entry.hooks?.some((hook) => hook.command?.includes("CLAWD_HOOK_PATH"))
+      ));
+    }
+
+    const beforeSnapshot = takeSnapshot(JSON.stringify(before));
+    const afterSnapshot = takeSnapshot(JSON.stringify(after));
+    assert.strictEqual(beforeSnapshot.thirdPartyHookCount, 1);
+    assert.strictEqual(afterSnapshot.thirdPartyHookCount, 1);
+    assert.strictEqual(isSuspiciousShrink(beforeSnapshot, afterSnapshot, 0.5, 2), false);
+  });
+
+  it("does not seed an unverified env diagnostic as trusted before ownership becomes provable", async () => {
+    const notifyCalls = [];
+    const nodeBin = "C:/nodejs/node.exe";
+    const harness = makeWatcher({
+      initialSettingsRaw: JSON.stringify(envUnverifiedSettingsObject({ nodeBin })),
+      existingPaths: [EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH, nodeBin],
+      notifySuspiciousShrink: (...args) => notifyCalls.push(args),
+      syncClawdHooksImpl(options) {
+        harness.syncCalls.push(options);
+        harness.setSettingsRaw(JSON.stringify(healthySettingsObject()));
+        return { status: "ok" };
+      },
+    });
+    harness.watcher.start();
+    await harness.clock.advance(0);
+
+    assert.deepStrictEqual(harness.syncCalls, []);
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "degraded");
+    assert.strictEqual(harness.watcher.getHealthStatus().degradedReason, "env-indirection-unverified");
+
+    harness.setSettingsRaw(JSON.stringify(envOwnedSettingsObject({ nodeBin })));
+    harness.getWatcher().emitChange("settings.json");
+    await harness.clock.advance(1000);
+
+    assert.strictEqual(harness.syncCalls.length, 1, "new ownership evidence should trigger migration, not suspicious-shrink");
+    assert.strictEqual(notifyCalls.length, 0);
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "healthy");
+    harness.watcher.stop();
+  });
+
+  it("keeps an unresolved env hook degraded without consuming repair attempts", async () => {
+    const { watcher, clock, syncCalls } = makeWatcher({
+      initialSettingsRaw: JSON.stringify(envOwnedSettingsObject({ nodeBin: "node" })),
+    });
+    watcher.start();
+    await clock.advance(0);
+    await clock.advance(10 * 60 * 1000);
+
+    const status = watcher.getHealthStatus();
+    assert.deepStrictEqual(syncCalls, []);
+    assert.strictEqual(status.status, "degraded");
+    assert.strictEqual(status.degradedReason, "env-hook-node-unresolved");
+    assert.strictEqual(status.attempt, 0);
+    assert.strictEqual(status.issueSignature, null);
+    watcher.stop();
+  });
+
+  it("keeps the post-repair verification branch degraded when only an unresolved env diagnostic remains", async () => {
+    let setSettingsRaw;
+    const harness = makeWatcher({
+      initialSettingsRaw: JSON.stringify(healthySettingsObject({ scriptPath: OLD_TEMP_SCRIPT_PATH })),
+      syncClawdHooksImpl() {
+        harness.syncCalls.push({ source: "test-repair", automatic: true });
+        setSettingsRaw(JSON.stringify(envOwnedSettingsObject({ nodeBin: "node" })));
+        return { status: "ok" };
+      },
+    });
+    setSettingsRaw = harness.setSettingsRaw;
+    harness.watcher.start();
+    await harness.clock.advance(0);
+
+    const status = harness.watcher.getHealthStatus();
+    assert.strictEqual(status.status, "degraded");
+    assert.strictEqual(status.degradedReason, "env-hook-node-unresolved");
+    assert.strictEqual(status.attempt, 0);
+    assert.strictEqual(status.issueSignature, null);
+    harness.watcher.stop();
+  });
+
+  it("does not trust a post-repair unverified env diagnostic before later migration", async () => {
+    const notifyCalls = [];
+    const nodeBin = "C:/nodejs/node.exe";
+    let syncCount = 0;
+    const harness = makeWatcher({
+      initialSettingsRaw: JSON.stringify(healthySettingsObject({ scriptPath: OLD_TEMP_SCRIPT_PATH })),
+      existingPaths: [EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH, nodeBin],
+      notifySuspiciousShrink: (...args) => notifyCalls.push(args),
+      syncClawdHooksImpl(options) {
+        syncCount += 1;
+        harness.syncCalls.push(options);
+        harness.setSettingsRaw(JSON.stringify(
+          syncCount === 1
+            ? envUnverifiedSettingsObject({ nodeBin })
+            : healthySettingsObject()
+        ));
+        return { status: "ok" };
+      },
+    });
+    harness.watcher.start();
+    await harness.clock.advance(0);
+
+    assert.strictEqual(harness.syncCalls.length, 1);
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "degraded");
+    assert.strictEqual(harness.watcher.getHealthStatus().degradedReason, "env-indirection-unverified");
+
+    harness.setSettingsRaw(JSON.stringify(envOwnedSettingsObject({ nodeBin })));
+    harness.getWatcher().emitChange("settings.json");
+    await harness.clock.advance(1000);
+
+    assert.strictEqual(harness.syncCalls.length, 2, "post-repair degraded state must not guard a later proven migration");
+    assert.strictEqual(notifyCalls.length, 0);
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "healthy");
+    harness.watcher.stop();
   });
 });
 

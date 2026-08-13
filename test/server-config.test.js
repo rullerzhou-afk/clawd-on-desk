@@ -178,6 +178,61 @@ describe("runtime.json identity (#681)", () => {
         assert.strictEqual(r.reason, "runtime-owner-invalid");
       }
     });
+
+    it("parses a versioned per-agent Windows process-chain capability", () => {
+      const file = writeRuntime({
+        app: "clawd-on-desk",
+        port: 23335,
+        ownerPid: 4242,
+        windowsProcessChain: {
+          version: 1,
+          instanceGeneration: "instance_abc-123",
+          agents: {
+            codex: "shadow",
+            "cursor-agent": "b1a-authoritative",
+          },
+        },
+      });
+      const identity = serverConfig.readRuntimeIdentity({ runtimeConfigPath: file });
+      assert.deepStrictEqual(identity.windowsProcessChain, {
+        version: 1,
+        instanceGeneration: "instance_abc-123",
+        agents: {
+          codex: "shadow",
+          "cursor-agent": "b1a-authoritative",
+          "kiro-cli": "legacy",
+          codebuddy: "legacy",
+          reasonix: "legacy",
+        },
+      });
+      assert.deepStrictEqual(serverConfig.readWindowsProcessChainObservation("cursor-agent", {
+        runtimeConfigPath: file,
+      }), {
+        port: 23335,
+        ownerPid: 4242,
+        version: 1,
+        instanceGeneration: "instance_abc-123",
+        agentId: "cursor-agent",
+        agentMode: "b1a-authoritative",
+      });
+    });
+
+    it("treats missing or malformed capability data as legacy", () => {
+      for (const capability of [
+        undefined,
+        { version: 2, instanceGeneration: "abc", agents: { codex: "shadow" } },
+        { version: 1, instanceGeneration: "bad value", agents: { codex: "shadow" } },
+      ]) {
+        const file = writeRuntime({
+          app: "clawd-on-desk", port: 23333, ownerPid: 4242,
+          ...(capability ? { windowsProcessChain: capability } : {}),
+        });
+        assert.strictEqual(
+          serverConfig.readWindowsProcessChainObservation("codex", { runtimeConfigPath: file }).agentMode,
+          "legacy"
+        );
+      }
+    });
   });
 
   describe("readRuntimePort — stays permissive so POSTs keep routing", () => {
@@ -219,6 +274,33 @@ describe("runtime.json identity (#681)", () => {
       const file = path.join(makeTempHome(), "runtime.json");
       serverConfig.writeRuntimeConfig(23333, { runtimeConfigPath: file });
       assert.strictEqual(JSON.parse(fs.readFileSync(file, "utf8")).ownerPid, process.pid);
+    });
+
+    it("round-trips a valid Windows process-chain capability and drops an invalid one", () => {
+      const validFile = path.join(makeTempHome(), "valid", "runtime.json");
+      assert.strictEqual(serverConfig.writeRuntimeConfig(23333, {
+        runtimeConfigPath: validFile,
+        ownerPid: 777,
+        windowsProcessChain: {
+          version: 1,
+          instanceGeneration: "generation-1",
+          agents: { codex: "shadow" },
+        },
+      }), true);
+      assert.strictEqual(
+        JSON.parse(fs.readFileSync(validFile, "utf8")).windowsProcessChain.agents.codex,
+        "shadow"
+      );
+
+      const invalidFile = path.join(makeTempHome(), "invalid", "runtime.json");
+      assert.strictEqual(serverConfig.writeRuntimeConfig(23333, {
+        runtimeConfigPath: invalidFile,
+        windowsProcessChain: { version: 1, instanceGeneration: "", agents: {} },
+      }), true);
+      assert.strictEqual(
+        Object.prototype.hasOwnProperty.call(JSON.parse(fs.readFileSync(invalidFile, "utf8")), "windowsProcessChain"),
+        false
+      );
     });
 
     // The regression this exists for: mkdirSync used to sit OUTSIDE the try, so
@@ -286,6 +368,45 @@ describe("runtime.json identity (#681)", () => {
 });
 
 describe("server-config helpers", () => {
+  it("adds B1a headers only for an explicit local Windows observation port", () => {
+    const observation = {
+      port: 23334,
+      ownerPid: 1,
+      version: 1,
+      instanceGeneration: "generation-1",
+      agentId: "codex",
+      agentMode: "shadow",
+    };
+    const request = {
+      platform: "win32",
+      agentId: "codex",
+      hookPid: 4242,
+      runtimeObservation: observation,
+      legacyCacheSource: "fresh",
+    };
+    assert.deepStrictEqual(serverConfig.buildWindowsProcessChainHeaders(23334, {
+      platform: "win32",
+      remote: false,
+      windowsProcessChain: request,
+    }), {
+      "X-Clawd-Hook-Pid": "4242",
+      "X-Clawd-Process-Instance": "generation-1",
+      "X-Clawd-Legacy-Process-Cache": "fresh",
+    });
+    for (const options of [
+      { platform: "win32", remote: false, windowsProcessChain: request, port: 23335 },
+      { platform: "linux", remote: false, windowsProcessChain: request, port: 23334 },
+      { platform: "win32", remote: true, windowsProcessChain: request, port: 23334 },
+      { platform: "win32", remote: false },
+    ]) {
+      assert.deepStrictEqual(
+        serverConfig.buildWindowsProcessChainHeaders(options.port, options),
+        {},
+        JSON.stringify(options)
+      );
+    }
+  });
+
   it("fails closed for every secure predicate and malformed identity without scanning fallback ports", () => {
     const dir = makeTempHome();
     const identityPath = path.join(dir, "clawd-remote.json");

@@ -1,7 +1,11 @@
 # Plan: Issue #244 Low Power Idle Mouse-Follow CPU
 
-> Status: Draft v1, revised after Claude review and Codex code check.
-> Date: 2026-05-07
+> Status: **Implemented and shipped.** `lowPowerIdleMode` lives in `src/prefs.js`, and
+> the release smoke checklist carries a Low-power idle item
+> (`docs/project/release-process.md`). Issue #244 closed 2026-07-12. The draft below is
+> kept as the design record — it was written as "Draft v1, revised after Claude review
+> and Codex code check".
+> Date: 2026-05-07 (status refreshed 2026-08-12)
 > Issue: https://github.com/rullerzhou-afk/clawd-on-desk/issues/244
 > Scope: Fix the existing Low power idle behavior so passive mouse-follow does not keep idle rendering active. Do not add a new Settings toggle in this pass.
 

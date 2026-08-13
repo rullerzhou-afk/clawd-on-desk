@@ -39,7 +39,8 @@ describe("Claude Code statusline adapter", () => {
   it("builds a metadata_only body carrying claude_quota, no event field", () => {
     const body = buildStateBody(
       { session_id: "abc123", workspace: { current_dir: "/work" } },
-      { claudeFiveHour: { usedPercent: 24, resetAt: 1738425600000 } }
+      { claudeFiveHour: { usedPercent: 24, resetAt: 1738425600000 } },
+      null
     );
     assert.deepStrictEqual(body, {
       state: "idle",
@@ -52,9 +53,28 @@ describe("Claude Code statusline adapter", () => {
     });
   });
 
-  it("returns null when there is no session id or no quota (nothing worth posting)", () => {
-    assert.strictEqual(buildStateBody({}, { claudeWeekly: { usedPercent: 1 } }), null);
-    assert.strictEqual(buildStateBody({ session_id: "abc" }, null), null);
+  it("builds context-only and combined metadata bodies", () => {
+    const contextUsage = { used: 202475, limit: 1000000, percent: 20, source: "claude" };
+    assert.deepStrictEqual(buildStateBody({ session_id: "context" }, null, contextUsage), {
+      state: "idle",
+      preserve_state: true,
+      metadata_only: true,
+      session_id: "context",
+      agent_id: "claude-code",
+      context_usage: contextUsage,
+    });
+    const both = buildStateBody(
+      { session_id: "both" },
+      { claudeWeekly: { usedPercent: 1 } },
+      contextUsage
+    );
+    assert.ok(both.claude_quota);
+    assert.deepStrictEqual(both.context_usage, contextUsage);
+  });
+
+  it("returns null when there is no session id or no metadata worth posting", () => {
+    assert.strictEqual(buildStateBody({}, { claudeWeekly: { usedPercent: 1 } }, null), null);
+    assert.strictEqual(buildStateBody({ session_id: "abc" }, null, null), null);
   });
 
   it("stamps local WSL source fields and preserves an SSH host on remote WSL", () => {
@@ -66,6 +86,7 @@ describe("Claude Code statusline adapter", () => {
     const local = buildStateBody(
       { session_id: "local" },
       { claudeWeekly: { usedPercent: 1 } },
+      null,
       { applyWslSourceFields: applyWsl }
     );
     assert.strictEqual(local.host, "wsl:Ubuntu");
@@ -74,6 +95,7 @@ describe("Claude Code statusline adapter", () => {
     const remote = buildStateBody(
       { session_id: "remote" },
       { claudeWeekly: { usedPercent: 2 } },
+      null,
       { remote: true, host: "lab", applyWslSourceFields: applyWsl }
     );
     assert.strictEqual(remote.host, "lab");
@@ -107,6 +129,7 @@ describe("Claude Code statusline adapter", () => {
       claudeFiveHour: { usedPercent: 24, resetAt: 1738425600000 },
       claudeWeekly: { usedPercent: 41 },
     });
+    assert.strictEqual(posted[0].context_usage, undefined);
   });
 
   it("writes the visible line before a remote quota POST settles", async () => {
@@ -134,21 +157,46 @@ describe("Claude Code statusline adapter", () => {
     await run;
   });
 
-  it("main() posts nothing (but still writes stdout) when rate_limits is absent", async () => {
+  it("main() posts context without rate_limits and still writes stdout", async () => {
     const writes = [];
-    let postCalled = false;
+    const posted = [];
     const originalWrite = process.stdout.write;
     process.stdout.write = (chunk) => { writes.push(chunk); return true; };
     try {
       await main({
-        payload: { session_id: "abc123", model: { display_name: "Claude Sonnet 5" } },
-        postState: (body, options, callback) => { postCalled = true; callback(true); },
+        payload: {
+          session_id: "abc123",
+          model: { display_name: "Claude Sonnet 5" },
+          context_window: {
+            context_window_size: 1000000,
+            used_percentage: 8,
+            current_usage: { input_tokens: 80000 },
+          },
+        },
+        postState: (body, options, callback) => { posted.push(JSON.parse(body)); callback(true); },
       });
     } finally {
       process.stdout.write = originalWrite;
     }
+    assert.strictEqual(posted.length, 1);
+    assert.deepStrictEqual(posted[0].context_usage, {
+      used: 80000,
+      limit: 1000000,
+      percent: 8,
+      source: "claude",
+    });
+    assert.strictEqual(posted[0].claude_quota, undefined);
+    assert.strictEqual(writes[0], "Claude Sonnet 5 · 8% ctx\n");
+  });
+
+  it("main() posts nothing when both context and rate_limits are absent", async () => {
+    let postCalled = false;
+    await main({
+      payload: { session_id: "abc123", model: { display_name: "Claude Sonnet 5" } },
+      writeStdout: () => true,
+      postState: (_body, _options, callback) => { postCalled = true; callback(true); },
+    });
     assert.strictEqual(postCalled, false);
-    assert.strictEqual(writes[0], "Claude Sonnet 5\n");
   });
 
   it("main() never throws and still writes stdout when stdin JSON read fails", async () => {

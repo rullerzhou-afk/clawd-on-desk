@@ -32,7 +32,10 @@
 
   // Native language names — never translated, so a user who can't read the
   // current UI language can still find their own.
-  const LANG_LABELS = { en: "English", zh: "简体中文", "zh-TW": "繁體中文", ko: "한국어", ja: "日本語" };
+  const LANG_LABELS = {
+    en: "English", zh: "简体中文", "zh-TW": "繁體中文", ko: "한국어", ja: "日本語",
+    "pt-BR": "Português (Brasil)",
+  };
 
   // Fallback mark only used if main couldn't read the icon file.
   const FALLBACK_ICON =

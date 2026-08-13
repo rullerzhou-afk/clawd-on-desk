@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const { registerSessionIpc } = require("../src/session-ipc");
+const { SUPPORTED_LANGS } = require("../src/i18n");
 
 class FakeIpcMain {
   constructor() {
@@ -307,11 +308,12 @@ test("dashboard renderer wires the Mark-read button + ackCompletion fallback (so
     "Mark-read click must re-enable button on ack failure");
 
   const i18nSrc = fs.readFileSync(path.join(__dirname, "..", "src", "i18n.js"), "utf8");
-  // Both new keys must appear in all 5 language tables (en/zh/zh-TW/ko/ja).
+  // Both new keys must appear once in every supported language table.
   for (const key of ["dashboardMarkRead", "dashboardMarkReadTitle"]) {
     const matches = i18nSrc.match(new RegExp(`\\b${key}:`, "g"));
-    assert.ok(matches && matches.length >= 5,
-      `${key} should appear in all 5 language tables (saw ${matches ? matches.length : 0})`);
+    const matchCount = matches ? matches.length : 0;
+    assert.strictEqual(matchCount, SUPPORTED_LANGS.length,
+      `${key} should appear in all ${SUPPORTED_LANGS.length} supported language tables (saw ${matchCount})`);
   }
 });
 

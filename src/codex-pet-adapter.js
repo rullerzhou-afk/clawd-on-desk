@@ -6,9 +6,10 @@ const os = require("os");
 const path = require("path");
 const zlib = require("zlib");
 
-const ADAPTER_VERSION = 4;
+const ADAPTER_VERSION = 6;
 const MARKER_FILENAME = ".clawd-codex-pet.json";
 const THEME_ID_PREFIX = "codex-pet-";
+const DIRECTIONAL_DRAG_WRAPPER = "codex-pet-drag-directional-loop.svg";
 const PNG_ALPHA_VALIDATION_SCHEMA_VERSION = 2;
 const MAX_DISPLAY_NAME_LENGTH = 100;
 const MAX_DESCRIPTION_LENGTH = 500;
@@ -56,19 +57,28 @@ const ATLAS_ROWS = [
 const ROWS_BY_KEY = new Map(ATLAS_ROWS.map((row) => [row.key, row]));
 
 const WRAPPER_SPECS = [
-  { filename: "codex-pet-idle-loop.svg", rowKey: "idle", mode: "loop" },
-  { filename: "codex-pet-idle-static.svg", rowKey: "idle", mode: "static" },
-  { filename: "codex-pet-running-right-loop.svg", rowKey: "running-right", mode: "loop" },
-  { filename: "codex-pet-running-left-loop.svg", rowKey: "running-left", mode: "loop" },
-  { filename: "codex-pet-waving-loop.svg", rowKey: "waving", mode: "loop" },
-  { filename: "codex-pet-waving-once.svg", rowKey: "waving", mode: "once" },
-  { filename: "codex-pet-jumping-loop.svg", rowKey: "jumping", mode: "loop" },
-  { filename: "codex-pet-jumping-once.svg", rowKey: "jumping", mode: "once" },
-  { filename: "codex-pet-failed-loop.svg", rowKey: "failed", mode: "loop" },
-  { filename: "codex-pet-waiting-loop.svg", rowKey: "waiting", mode: "loop" },
-  { filename: "codex-pet-running-loop.svg", rowKey: "running", mode: "loop" },
-  { filename: "codex-pet-review-loop.svg", rowKey: "review", mode: "loop" },
+  { filename: "codex-pet-idle-loop.svg", visual: "idle-loop", rowKey: "idle", mode: "loop" },
+  { filename: "codex-pet-idle-static.svg", visual: "idle-static", rowKey: "idle", mode: "static" },
+  { filename: "codex-pet-waving-loop.svg", visual: "waving-loop", rowKey: "waving", mode: "loop" },
+  { filename: "codex-pet-waving-once.svg", visual: "waving-once", rowKey: "waving", mode: "once" },
+  { filename: "codex-pet-jumping-loop.svg", visual: "jumping-loop", rowKey: "jumping", mode: "loop" },
+  { filename: "codex-pet-jumping-once.svg", visual: "jumping-once", rowKey: "jumping", mode: "once" },
+  { filename: "codex-pet-failed-loop.svg", visual: "failed-loop", rowKey: "failed", mode: "loop" },
+  { filename: "codex-pet-waiting-loop.svg", visual: "waiting-loop", rowKey: "waiting", mode: "loop" },
+  { filename: "codex-pet-running-loop.svg", visual: "running-loop", rowKey: "running", mode: "loop" },
+  { filename: "codex-pet-review-loop.svg", visual: "review-loop", rowKey: "review", mode: "loop" },
 ];
+
+const DIRECTIONAL_DRAG_SPEC = Object.freeze({
+  filename: DIRECTIONAL_DRAG_WRAPPER,
+  visual: "drag-directional",
+  rowKey: "running-right",
+  mode: "loop",
+});
+const UNIVERSAL_VISUAL_SPECS = Object.freeze([
+  ...WRAPPER_SPECS.map((spec) => Object.freeze({ ...spec })),
+  DIRECTIONAL_DRAG_SPEC,
+]);
 
 function getDefaultCodexPetsDir(homeDir = os.homedir()) {
   return path.join(homeDir, ".codex", "pets");
@@ -271,14 +281,21 @@ function materializeCodexPetTheme(packageInfo, userThemesDir, options = {}) {
 
   fs.copyFileSync(packageInfo.spritesheetAbsPath, path.join(assetsDir, packageInfo.spritesheetAssetName));
   for (const spec of WRAPPER_SPECS) {
-    const svg = generateWrapperSvg({
-      rowKey: spec.rowKey,
-      mode: spec.mode,
+    const svg = generateUniversalWrapperSvg({
+      initialFilename: spec.filename,
       spritesheetHref: packageInfo.spritesheetAssetName,
       atlas: packageInfo.atlas || ATLAS,
     });
     fs.writeFileSync(path.join(assetsDir, spec.filename), svg, "utf8");
   }
+  fs.writeFileSync(
+    path.join(assetsDir, DIRECTIONAL_DRAG_WRAPPER),
+    generateDirectionalDragWrapperSvg({
+      spritesheetHref: packageInfo.spritesheetAssetName,
+      atlas: packageInfo.atlas || ATLAS,
+    }),
+    "utf8"
+  );
 
   const themeJson = buildThemeJson(packageInfo, themeId);
   fs.writeFileSync(path.join(themeDir, "theme.json"), `${JSON.stringify(themeJson, null, 2)}\n`, "utf8");
@@ -365,6 +382,7 @@ function isMaterializedThemeUnchanged(marker, packageInfo, themeId, themeDir) {
   for (const spec of WRAPPER_SPECS) {
     if (!isRegularFile(path.join(assetsDir, spec.filename))) return false;
   }
+  if (!isRegularFile(path.join(assetsDir, DIRECTIONAL_DRAG_WRAPPER))) return false;
   return true;
 }
 
@@ -433,8 +451,8 @@ function buildThemeJson(packageInfo, themeId) {
     reactions: {
       drag: {
         file: "codex-pet-running-loop.svg",
-        fileLeft: "codex-pet-running-left-loop.svg",
-        fileRight: "codex-pet-running-right-loop.svg",
+        fileLeft: DIRECTIONAL_DRAG_WRAPPER,
+        fileRight: DIRECTIONAL_DRAG_WRAPPER,
       },
       clickLeft: { file: "codex-pet-jumping-once.svg", duration: 840 },
       clickRight: { file: "codex-pet-jumping-once.svg", duration: 840 },
@@ -530,6 +548,121 @@ function generateWrapperSvg({ rowKey, mode, spritesheetHref, atlas = ATLAS }) {
   ].join("\n");
 }
 
+function assertDirectionalTimingParity(leftRow, rightRow) {
+  const leftDurations = leftRow && leftRow.durations;
+  const rightDurations = rightRow && rightRow.durations;
+  if (!Array.isArray(leftDurations) || !Array.isArray(rightDurations)) {
+    throw new Error("Codex Pet directional drag rows must define frame durations");
+  }
+  if (
+    leftDurations.length !== rightDurations.length
+    || leftDurations.some((duration, index) => duration !== rightDurations[index])
+  ) {
+    throw new Error("Codex Pet directional drag rows must use identical frame durations");
+  }
+  return true;
+}
+
+function getUniversalVisualSpec(filename) {
+  return UNIVERSAL_VISUAL_SPECS.find((spec) => spec.filename === filename) || null;
+}
+
+function buildUniversalVisualStyle(initialSpec, atlas) {
+  const initialRow = ROWS_BY_KEY.get(initialSpec.rowKey);
+  const lines = [
+    ".visual-row {",
+    `  transform: ${formatTranslate(0, initialRow.row * atlas.frameHeight)};`,
+    "}",
+    ".atlas {",
+    "  transform-box: fill-box;",
+    "  transform-origin: 0 0;",
+    "  transform: translate(0px, 0px);",
+    "  animation-name: none;",
+    "  animation-timing-function: step-end;",
+    "  image-rendering: auto;",
+    "}",
+  ];
+
+  for (const spec of UNIVERSAL_VISUAL_SPECS) {
+    const row = ROWS_BY_KEY.get(spec.rowKey);
+    const animationName = `codex-pet-visual-${spec.visual}`;
+    const rowOffsetY = row.row * atlas.frameHeight;
+    lines.push(
+      `[data-clawd-codex-pet-visual=${spec.visual}] .visual-row {`,
+      `  transform: ${formatTranslate(0, rowOffsetY)};`,
+      "}"
+    );
+    if (spec.mode === "static") {
+      lines.push(
+        `[data-clawd-codex-pet-visual=${spec.visual}] .atlas {`,
+        "  animation-name: none;",
+        "}"
+      );
+      continue;
+    }
+    const totalMs = row.durations.reduce((sum, duration) => sum + duration, 0);
+    lines.push(
+      buildHorizontalKeyframes(row.durations, animationName, atlas),
+      `[data-clawd-codex-pet-visual=${spec.visual}] .atlas {`,
+      `  animation-name: ${animationName};`,
+      `  animation-duration: ${totalMs}ms;`,
+      `  animation-iteration-count: ${spec.mode === "loop" ? "infinite" : "1"};`,
+      `  animation-fill-mode: ${spec.mode === "loop" ? "none" : "forwards"};`,
+      "}"
+    );
+  }
+
+  const leftRow = ROWS_BY_KEY.get("running-left");
+  lines.push(
+    "[data-clawd-codex-pet-visual=drag-directional][data-clawd-drag-direction=left] .visual-row {",
+    `  transform: ${formatTranslate(0, leftRow.row * atlas.frameHeight)};`,
+    "}"
+  );
+  return lines.join("\n");
+}
+
+function generateUniversalWrapperSvg({ initialFilename, spritesheetHref, atlas = ATLAS }) {
+  const initialSpec = getUniversalVisualSpec(initialFilename);
+  if (!initialSpec) throw new Error(`unknown Codex Pet wrapper file: ${initialFilename}`);
+  assertDirectionalTimingParity(
+    ROWS_BY_KEY.get("running-left"),
+    ROWS_BY_KEY.get("running-right")
+  );
+
+  const escapedHref = escapeXmlAttr(spritesheetHref);
+  const initialRow = ROWS_BY_KEY.get(initialSpec.rowKey);
+  const initialOffsetY = initialRow.row * atlas.frameHeight;
+  const style = buildUniversalVisualStyle(initialSpec, atlas);
+
+  return [
+    `<!-- Generated by Clawd codex-pet-adapter v${ADAPTER_VERSION}: universal visual bridge (${initialSpec.visual}). -->`,
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${atlas.frameWidth} ${atlas.frameHeight}" width="${atlas.frameWidth}" height="${atlas.frameHeight}" data-clawd-codex-pet-visuals="v1" data-clawd-codex-pet-visual="${initialSpec.visual}" data-clawd-drag-directional="v1" data-clawd-drag-direction="right">`,
+    "  <defs>",
+    "    <clipPath id=\"codex-pet-frame\">",
+    `      <rect x="0" y="0" width="${atlas.frameWidth}" height="${atlas.frameHeight}"/>`,
+    "    </clipPath>",
+    "  </defs>",
+    "  <style>",
+    indent(style, 4),
+    "  </style>",
+    "  <g clip-path=\"url(#codex-pet-frame)\">",
+    `    <g class="visual-row" transform="translate(0,-${initialOffsetY})">`,
+    `      <image class="atlas" transform="translate(0,0)" href="${escapedHref}" width="${atlas.width}" height="${atlas.height}" preserveAspectRatio="none"/>`,
+    "    </g>",
+    "  </g>",
+    "</svg>",
+    "",
+  ].join("\n");
+}
+
+function generateDirectionalDragWrapperSvg({ spritesheetHref, atlas = ATLAS }) {
+  return generateUniversalWrapperSvg({
+    initialFilename: DIRECTIONAL_DRAG_WRAPPER,
+    spritesheetHref,
+    atlas,
+  });
+}
+
 function buildKeyframes(row, animationName, atlas = ATLAS) {
   let elapsed = 0;
   const totalMs = row.durations.reduce((sum, duration) => sum + duration, 0);
@@ -543,6 +676,20 @@ function buildKeyframes(row, animationName, atlas = ATLAS) {
   });
   const finalColumn = row.durations.length - 1;
   lines.push(`  100% { transform: ${formatTranslate(finalColumn * atlas.frameWidth, row.row * atlas.frameHeight)}; }`);
+  lines.push("}");
+  return lines.join("\n");
+}
+
+function buildHorizontalKeyframes(durations, animationName, atlas = ATLAS) {
+  let elapsed = 0;
+  const totalMs = durations.reduce((sum, duration) => sum + duration, 0);
+  const lines = [`@keyframes ${animationName} {`];
+  durations.forEach((duration, column) => {
+    const pct = formatPercent((elapsed / totalMs) * 100);
+    lines.push(`  ${pct}% { transform: ${formatTranslate(column * atlas.frameWidth, 0)}; }`);
+    elapsed += duration;
+  });
+  lines.push(`  100% { transform: ${formatTranslate((durations.length - 1) * atlas.frameWidth, 0)}; }`);
   lines.push("}");
   return lines.join("\n");
 }
@@ -1058,6 +1205,8 @@ module.exports = {
   ATLAS_BY_SPRITE_VERSION,
   ATLAS_ROWS,
   WRAPPER_SPECS,
+  DIRECTIONAL_DRAG_SPEC,
+  DIRECTIONAL_DRAG_WRAPPER,
   MARKER_FILENAME,
   getDefaultCodexPetsDir,
   resolveSpriteVersion,
@@ -1067,6 +1216,9 @@ module.exports = {
   syncCodexPetThemes,
   buildThemeJson,
   generateWrapperSvg,
+  generateUniversalWrapperSvg,
+  generateDirectionalDragWrapperSvg,
+  assertDirectionalTimingParity,
   derivePetSlug,
   resolveManagedThemeId,
   readManagedMarker,

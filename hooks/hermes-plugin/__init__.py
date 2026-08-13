@@ -94,6 +94,18 @@ _process_meta_started = False
 _process_meta_resolved = False
 _process_meta: Dict[str, Any] = {}
 
+# Clawd only listens on 127.0.0.1. urllib.request.urlopen() inherits
+# HTTP_PROXY/HTTPS_PROXY from the user's shell, and some proxy environments do
+# not exempt loopback even when the destination is explicit. Sending local
+# state or a blocking permission request through that proxy produces false
+# 502s (verified in a real WSL Hermes run for #540). Use one explicit no-proxy
+# opener for every Clawd request; this must cover both /state and /permission.
+_LOCAL_URL_OPENER = request.build_opener(request.ProxyHandler({}))
+
+
+def _local_urlopen(req: request.Request, timeout: float):
+    return _LOCAL_URL_OPENER.open(req, timeout=timeout)
+
 
 def _debug_enabled() -> bool:
     value = os.environ.get("CLAWD_HERMES_DEBUG", "").strip().lower()
@@ -227,7 +239,7 @@ def _post_state(body: Dict[str, Any]) -> None:
             method="POST",
         )
         try:
-            with request.urlopen(req, timeout=POST_TIMEOUT_SECONDS) as response:
+            with _local_urlopen(req, timeout=POST_TIMEOUT_SECONDS) as response:
                 if response.headers.get(CLAWD_SERVER_HEADER) == CLAWD_SERVER_ID:
                     _cached_port = port
                     _no_server_until = 0.0
@@ -309,7 +321,7 @@ def _post_permission(tool_name: str, tool_input: dict, session_id: str, platform
             method="GET",
         )
         try:
-            with request.urlopen(probe_req, timeout=POST_TIMEOUT_SECONDS) as probe_resp:
+            with _local_urlopen(probe_req, timeout=POST_TIMEOUT_SECONDS) as probe_resp:
                 if probe_resp.headers.get(CLAWD_SERVER_HEADER) != CLAWD_SERVER_ID:
                     continue
         except Exception:
@@ -323,7 +335,7 @@ def _post_permission(tool_name: str, tool_input: dict, session_id: str, platform
             method="POST",
         )
         try:
-            with request.urlopen(req, timeout=PERMISSION_POST_TIMEOUT_SECONDS) as response:
+            with _local_urlopen(req, timeout=PERMISSION_POST_TIMEOUT_SECONDS) as response:
                 if response.status == 204:
                     _cached_port = port
                     return None

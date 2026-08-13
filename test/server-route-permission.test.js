@@ -8,6 +8,8 @@ const initPermission = require("../src/permission");
 const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
+  CLAWD_HOOK_PID_HEADER,
+  CLAWD_PROCESS_INSTANCE_HEADER,
 } = require("../hooks/server-config");
 const {
   MAX_PERMISSION_BODY_BYTES,
@@ -33,8 +35,9 @@ function interaction(agentId, toolName) {
   return classifyPermissionInteraction({ agentId, toolName });
 }
 
-function makeReq(body) {
+function makeReq(body, headers = {}) {
   const req = new EventEmitter();
+  req.headers = headers;
   setImmediate(() => {
     if (body != null) req.emit("data", Buffer.from(body));
     req.emit("end");
@@ -121,7 +124,7 @@ function callPermissionPost(body, overrides = {}) {
     const res = makeRes();
     const ctx = makeCtx(overrides.ctx);
     const recorder = [];
-    handlePermissionPost(makeReq(body), res, {
+    handlePermissionPost(makeReq(body, overrides.headers), res, {
       ctx,
       createRequestHookRecorder: (identity, data, route) => {
         recorder.push({ identity, data, route });
@@ -919,6 +922,73 @@ describe("server-route-permission POST", () => {
     assert.deepStrictEqual(res.ctx.calls.removePendingPermission || [], []);
     assert.deepStrictEqual(res.ctx.calls.sendPermissionResponse || [], []);
     assert.deepStrictEqual(res.recorder.map((item) => item.outcome).filter(Boolean), ["accepted"]);
+  });
+
+  it("fails closed for every QwenWork /permission shape before bubbles, passthrough, or remote approval", async () => {
+    const cases = [
+      {
+        label: "tool approval",
+        toolName: "Bash",
+        toolInput: { command: "npm test" },
+      },
+      {
+        label: "elicitation",
+        toolName: "AskUserQuestion",
+        toolInput: {
+          questions: [{
+            question: "Continue?",
+            header: "Review",
+            options: [{ label: "Yes", description: "Continue" }],
+            multiSelect: false,
+          }],
+        },
+        ctx: { isAgentPermissionsEnabled: () => false },
+      },
+      {
+        label: "passthrough tool",
+        toolName: "TaskList",
+        toolInput: {},
+        ctx: { PASSTHROUGH_TOOLS: new Set(["TaskList"]) },
+      },
+      {
+        label: "DND",
+        toolName: "Bash",
+        toolInput: { command: "npm test" },
+        ctx: { doNotDisturb: true },
+      },
+      {
+        label: "agent disabled",
+        toolName: "Bash",
+        toolInput: { command: "npm test" },
+        ctx: { isAgentEnabled: () => false },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: "qwenwork",
+        session_id: "qwenwork:sid",
+        tool_name: testCase.toolName,
+        tool_input: testCase.toolInput,
+        tool_use_id: "tool-qwenwork-1",
+      }), { ctx: testCase.ctx });
+
+      assert.strictEqual(res.statusCode, 204, testCase.label);
+      assert.strictEqual(res.headers[CLAWD_SERVER_HEADER], CLAWD_SERVER_ID, testCase.label);
+      assert.strictEqual(res.body, "", testCase.label);
+      assert.strictEqual(res.destroyed, false, testCase.label);
+      assert.deepStrictEqual(res.ctx.pendingPermissions, [], testCase.label);
+      assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [], testCase.label);
+      assert.deepStrictEqual(res.ctx.calls.addPendingPermission, [], testCase.label);
+      assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, [], testCase.label);
+      assert.deepStrictEqual(res.ctx.calls.updateSession, [], testCase.label);
+      assert.deepStrictEqual(res.ctx.calls.sendPermissionResponse, [], testCase.label);
+      assert.deepStrictEqual(
+        res.recorder.map((item) => item.outcome).filter(Boolean),
+        ["unsupported"],
+        testCase.label
+      );
+    }
   });
 
   it("allows legacy Pi permission requests without creating a bubble", async () => {
@@ -1826,6 +1896,220 @@ describe("server-route-permission POST", () => {
 // subagent. resolveHookAgentId normalizes that to claude-code, and the
 // per-agent subagent sub-gate decides whether to bubble or drop the
 // connection (CC terminal fallback).
+describe("server-route-permission Windows B1a Codex metadata", () => {
+  const generation = "permission-route-generation";
+  const headers = {
+    [CLAWD_HOOK_PID_HEADER.toLowerCase()]: "7654",
+    [CLAWD_PROCESS_INSTANCE_HEADER.toLowerCase()]: generation,
+  };
+  const runtime = (mode) => ({
+    version: 1,
+    instanceGeneration: generation,
+    agents: { codex: mode },
+  });
+  const body = (extra = {}) => JSON.stringify({
+    agent_id: "codex",
+    hook_source: "codex-official",
+    hook_event_name: "PermissionRequest",
+    session_id: "codex:b1a-permission",
+    tool_name: "Shell",
+    tool_input: { command: "echo ok" },
+    source_pid: 11,
+    agent_pid: 12,
+    pid_chain: [11, 12],
+    ...extra,
+  });
+
+  it("replaces bubble and transient-session focus with the fresh walk", async () => {
+    let resolverCalls = 0;
+    const res = await callPermissionPost(body(), {
+      headers,
+      options: {
+        isWinHost: true,
+        windowsProcessChainRuntime: runtime("b1a-authoritative"),
+        resolveWindowsProcessMetadata: ({ agentId, hookPid, preferAgentPid }) => {
+          resolverCalls++;
+          assert.deepStrictEqual({ agentId, hookPid, preferAgentPid }, {
+            agentId: "codex",
+            hookPid: 7654,
+            preferAgentPid: false,
+          });
+          return {
+            status: "ok",
+            sourcePid: 101,
+            agentPid: 202,
+            pidChain: [101, 202, 303],
+            editor: null,
+          };
+        },
+      },
+    });
+
+    assert.strictEqual(resolverCalls, 1);
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.sourcePid, 101);
+    assert.strictEqual(entry.agentPid, 202);
+    assert.deepStrictEqual(entry.pidChain, [101, 202, 303]);
+    const opts = res.ctx.calls.updateSession[0][3];
+    assert.strictEqual(opts.sourcePid, 101);
+    assert.strictEqual(opts.agentPid, 202);
+    assert.deepStrictEqual(opts.pidChain, [101, 202, 303]);
+    assert.strictEqual(opts.replaceProcessMetadata, true);
+  });
+
+  it("persists an authoritative unavailable result as an explicit clear", async () => {
+    const res = await callPermissionPost(body(), {
+      headers,
+      options: {
+        isWinHost: true,
+        windowsProcessChainRuntime: runtime("b1a-authoritative"),
+        resolveWindowsProcessMetadata: () => ({ status: "unavailable", reason: "access-denied" }),
+      },
+    });
+
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.sourcePid, null);
+    assert.strictEqual(entry.agentPid, null);
+    assert.strictEqual(entry.pidChain, null);
+    const opts = res.ctx.calls.updateSession[0][3];
+    assert.strictEqual(opts.sourcePid, null);
+    assert.strictEqual(opts.agentPid, null);
+    assert.strictEqual(opts.pidChain, null);
+    assert.strictEqual(opts.replaceProcessMetadata, true);
+  });
+
+  it("also resolves before native-mode updateSession and preserves no-decision", async () => {
+    const res = await callPermissionPost(body(), {
+      headers,
+      ctx: { isCodexPermissionInterceptEnabled: () => false },
+      options: {
+        isWinHost: true,
+        windowsProcessChainRuntime: runtime("b1a-authoritative"),
+        resolveWindowsProcessMetadata: () => ({
+          status: "ok",
+          sourcePid: 401,
+          agentPid: 402,
+          pidChain: [401, 402],
+          editor: null,
+        }),
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 0);
+    const opts = res.ctx.calls.updateSession[0][3];
+    assert.strictEqual(opts.sourcePid, 401);
+    assert.strictEqual(opts.replaceProcessMetadata, true);
+    assert.strictEqual(opts.transientPermissionEvent, true);
+  });
+
+  it("does not resolve on DND/headless/disabled no-decision short circuits", async () => {
+    const variants = [
+      { ctx: { doNotDisturb: true }, extra: {} },
+      { ctx: {}, extra: { headless: true } },
+      { ctx: { isAgentEnabled: () => false }, extra: {} },
+    ];
+    for (const variant of variants) {
+      let resolverCalls = 0;
+      const res = await callPermissionPost(body(variant.extra), {
+        headers,
+        ctx: variant.ctx,
+        options: {
+          isWinHost: true,
+          windowsProcessChainRuntime: runtime("b1a-authoritative"),
+          resolveWindowsProcessMetadata: () => { resolverCalls++; return { status: "ok" }; },
+        },
+      });
+      assert.strictEqual(resolverCalls, 0);
+      assert.strictEqual(res.statusCode, 204);
+    }
+  });
+
+  it("keeps shadow metadata legacy-authoritative and records parity", async () => {
+    const records = [];
+    const res = await callPermissionPost(body({ editor: "code" }), {
+      headers,
+      options: {
+        isWinHost: true,
+        windowsProcessChainRuntime: runtime("shadow"),
+        resolveWindowsProcessMetadata: () => ({
+          status: "ok",
+          sourcePid: 21,
+          agentPid: 22,
+          pidChain: [21, 22],
+          editor: "code",
+        }),
+        recordWindowsProcessChainShadow: (record) => records.push(record),
+      },
+    });
+
+    assert.strictEqual(res.ctx.pendingPermissions[0].sourcePid, 11);
+    assert.strictEqual(res.ctx.calls.updateSession[0][3].replaceProcessMetadata, undefined);
+    assert.strictEqual(records.length, 1);
+    assert.strictEqual(records[0].comparison.all, false);
+    assert.strictEqual(records[0].comparison.editor, true);
+    assert.deepStrictEqual(records[0].legacyMetadata, {
+      sourcePid: 11, agentPid: 12, pidChain: [11, 12], editor: "code",
+    });
+    assert.deepStrictEqual(records[0].candidateMetadata, {
+      sourcePid: 21, agentPid: 22, pidChain: [21, 22], editor: "code",
+    });
+  });
+
+  it("drops an unrecognized legacy editor before permission shadow comparison", async () => {
+    const records = [];
+    await callPermissionPost(body({ editor: "notepad" }), {
+      headers,
+      options: {
+        isWinHost: true,
+        windowsProcessChainRuntime: runtime("shadow"),
+        resolveWindowsProcessMetadata: () => ({
+          status: "ok",
+          sourcePid: 11,
+          agentPid: 12,
+          pidChain: [11, 12],
+          editor: null,
+        }),
+        recordWindowsProcessChainShadow: (record) => records.push(record),
+      },
+    });
+    assert.strictEqual(records[0].legacyMetadata.editor, null);
+    assert.strictEqual(records[0].comparison.editor, true);
+  });
+
+  it("uses agentPid as the Codex Desktop source and rejects mismatched generations", async () => {
+    let preferAgentPid = null;
+    const desktop = await callPermissionPost(body({ codex_originator: "codex_work_desktop" }), {
+      headers,
+      options: {
+        isWinHost: true,
+        windowsProcessChainRuntime: runtime("b1a-authoritative"),
+        resolveWindowsProcessMetadata: (request) => {
+          preferAgentPid = request.preferAgentPid;
+          return { status: "ok", sourcePid: 99, agentPid: 99, pidChain: [99], editor: null };
+        },
+      },
+    });
+    assert.strictEqual(preferAgentPid, true);
+    assert.strictEqual(desktop.ctx.pendingPermissions[0].sourcePid, 99);
+
+    let mismatchCalls = 0;
+    const mismatch = await callPermissionPost(body(), {
+      headers: {
+        [CLAWD_HOOK_PID_HEADER.toLowerCase()]: "7654",
+        [CLAWD_PROCESS_INSTANCE_HEADER.toLowerCase()]: "old-generation",
+      },
+      options: {
+        isWinHost: true,
+        windowsProcessChainRuntime: runtime("b1a-authoritative"),
+        resolveWindowsProcessMetadata: () => { mismatchCalls++; return { status: "ok" }; },
+      },
+    });
+    assert.strictEqual(mismatchCalls, 0);
+    assert.strictEqual(mismatch.ctx.pendingPermissions[0].sourcePid, 11);
+  });
+});
+
 describe("server-route-permission POST — CC subagent requests (#451)", () => {
   const SUBAGENT_UUID = "0199f2c5-1bb8-7892-9e3b-1d6f4a1c2b3d";
 

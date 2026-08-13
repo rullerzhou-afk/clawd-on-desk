@@ -12,8 +12,19 @@
 // unobservable launch overhead.
 const HOOK_STARTED_AT = Date.now();
 
-const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
-const { createPidResolver, readStdinJsonDetailed, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
+const {
+  postStateToRunningServer,
+  readHostPrefix,
+  applyWslSourceFields,
+  readWindowsProcessChainHookContext,
+} = require("./server-config");
+const {
+  createPidResolver,
+  readStdinJsonDetailed,
+  getPlatformConfig,
+  applyOrcaPaneKey,
+  processAlive,
+} = require("./shared-process");
 
 const EVENT_TO_STATE = {
   SessionStart: "idle",
@@ -36,6 +47,10 @@ const EVENT_TO_LIFECYCLE = {
 };
 
 const config = getPlatformConfig();
+let runtimeContext = Object.freeze({
+  identity: { ok: false, reason: "not-observed", port: null, ownerPid: null },
+  observation: null,
+});
 const resolve = createPidResolver({
   agentNames: {
     win: new Set(["reasonix.exe", "reasonix-desktop.exe", "reasonix-cli.exe"]),
@@ -45,6 +60,7 @@ const resolve = createPidResolver({
     linux: new Set(["reasonix", "reasonix-desktop", "reasonix-deskto"]),
   },
   platformConfig: config,
+  readRuntimeIdentity: () => runtimeContext.identity,
 });
 
 function normalizeReasonixSessionId(value) {
@@ -136,8 +152,21 @@ readStdinJsonDetailed({ timeoutMs: STDIN_READ_TIMEOUT_MS })
 
     const remote = !!process.env.CLAWD_REMOTE;
     const host = remote ? readHostPrefix() : undefined;
+    if (!remote && process.platform === "win32") {
+      runtimeContext = readWindowsProcessChainHookContext("reasonix");
+    }
+    const runtimeObservation = runtimeContext.observation;
+    const serverProcessChainEnabled = !!(
+      !remote
+      && process.platform === "win32"
+      && runtimeObservation
+      && runtimeObservation.agentMode !== "legacy"
+      && processAlive(runtimeObservation.ownerPid)
+    );
+    const authoritativeProcessChain = serverProcessChainEnabled
+      && runtimeObservation.agentMode === "b1a-authoritative";
 
-    if (hookName === "SessionStart" && !remote) resolve();
+    if (hookName === "SessionStart" && !remote && !authoritativeProcessChain) resolve();
 
     const rawSessionId = readRawReasonixSessionId(payload);
     const body = {
@@ -154,6 +183,7 @@ readStdinJsonDetailed({ timeoutMs: STDIN_READ_TIMEOUT_MS })
       if (toolName) body.tool_name = toolName;
     }
 
+    let legacyCacheSource = "none";
     if (remote) {
       body.host = host;
       applyWslSourceFields(body, { remote: true });
@@ -171,7 +201,7 @@ readStdinJsonDetailed({ timeoutMs: STDIN_READ_TIMEOUT_MS })
       // or repair metadata. src/state.js keeps existing PID fields when a
       // blocking body omits them, so this safety rule never erases a good PID.
       let pidMetadata = {};
-      if (!isBlockingHook || process.platform === "win32") {
+      if (!authoritativeProcessChain && (!isBlockingHook || process.platform === "win32")) {
         pidMetadata = resolve({
           namespace: "reasonix",
           sessionId: body.session_id,
@@ -182,6 +212,7 @@ readStdinJsonDetailed({ timeoutMs: STDIN_READ_TIMEOUT_MS })
           cacheable: !!rawSessionId && rawSessionId !== "default" && !!body.cwd,
         });
       }
+      legacyCacheSource = pidMetadata.cacheSource || "none";
       const { stablePid, agentPid, detectedEditor, pidChain } = pidMetadata;
       if (Number.isFinite(stablePid) && stablePid > 0) body.source_pid = Math.floor(stablePid);
       if (detectedEditor) body.editor = detectedEditor;
@@ -192,7 +223,18 @@ readStdinJsonDetailed({ timeoutMs: STDIN_READ_TIMEOUT_MS })
 
     // For Stop: delay the POST so PostToolUse's POST arrives at the server first
     const postFn = () => {
-      postStateToRunningServer(JSON.stringify(body), { timeoutMs: 100 }, () => {
+      const postOptions = { timeoutMs: 100 };
+      if (serverProcessChainEnabled) {
+        postOptions.preferredPort = runtimeObservation.port;
+        postOptions.runtimePort = runtimeObservation.port;
+        postOptions.windowsProcessChain = {
+          agentId: "reasonix",
+          hookPid: process.pid,
+          runtimeObservation,
+          legacyCacheSource,
+        };
+      }
+      postStateToRunningServer(JSON.stringify(body), postOptions, () => {
         safeExit(0);
       });
     };

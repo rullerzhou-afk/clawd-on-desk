@@ -91,37 +91,66 @@ exit 127
 `;
 
 function spawnAndWait(spawn, command, args, opts = {}) {
-  const { stdin, env, timeoutMs = NODE_PROBE_TIMEOUT_MS, runtime } = opts;
-  return new Promise((resolve) => {
+  const { stdin, env, timeoutMs = NODE_PROBE_TIMEOUT_MS, runtime, role = "node-resolve" } = opts;
+  return new Promise((resolve, reject) => {
     let child;
+    const childOptions = {
+      env: { ...process.env, LANG: "C", LC_ALL: "C", ...(env || {}) },
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    };
     try {
-      child = spawn(command, args, {
-        env: { ...process.env, LANG: "C", LC_ALL: "C", ...(env || {}) },
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
-      });
+      child = runtime && typeof runtime.spawnManagedTransportChild === "function"
+        ? runtime.spawnManagedTransportChild({ role, tool: command, args, options: childOptions })
+        : spawn(command, args, childOptions);
     } catch (err) {
-      resolve({ code: -1, signal: null, stdout: "", stderr: (err && err.message) || "spawn failed", spawnError: true });
+      reject(err);
       return;
     }
 
-    if (runtime && typeof runtime.registerChild === "function") {
+    const managed = runtime && typeof runtime.spawnManagedTransportChild === "function";
+    if (!managed && runtime && typeof runtime.registerChild === "function") {
       runtime.registerChild(child);
     }
 
     const stdoutChunks = [];
     const stderrChunks = [];
     let done = false;
+    let exitCode = null;
+    let exitSignal = null;
+    let processError = null;
+    let timedOut = false;
+    let drainTimer = null;
     const timer = setTimeout(() => {
       if (done) return;
-      try { child.kill(); } catch {}
+      timedOut = true;
+      if (!managed) {
+        try { child.kill(); } catch {}
+      }
+      drainTimer = setTimeout(() => {
+        if (done) return;
+        done = true;
+        const err = Object.assign(new Error("Remote Node probe did not close after timeout"), {
+          code: "transport_drain_timeout",
+          timedOut: true,
+          drainVerified: false,
+          role,
+        });
+        if (managed && runtime && typeof runtime.invalidateManagedOperation === "function") {
+          try { runtime.invalidateManagedOperation(err); } catch {}
+          reject(err);
+          return;
+        }
+        resolve({ code: exitCode, signal: exitSignal, stdout: "", stderr: err.message, timedOut: true, drainVerified: false });
+      }, 5000);
     }, timeoutMs);
 
     function finish(payload) {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      if (runtime && typeof runtime.unregisterChild === "function") {
+      if (drainTimer) clearTimeout(drainTimer);
+      if (!managed && runtime && typeof runtime.unregisterChild === "function") {
         runtime.unregisterChild(child);
       }
       resolve(payload);
@@ -136,15 +165,49 @@ function spawnAndWait(spawn, command, args, opts = {}) {
       try { child.stdin.end(); } catch {}
     }
 
-    child.on("error", (err) => {
-      const stdout = decodeShellBytes(stdoutChunks);
-      const stderr = decodeShellBytes(stderrChunks);
-      finish({ code: -1, signal: null, stdout, stderr: stderr || (err && err.message) || "process error", spawnError: true });
-    });
+    child.on("error", (err) => { processError = err; });
     child.on("exit", (code, signal) => {
+      exitCode = code;
+      exitSignal = signal;
+    });
+    child.on("close", (code, signal) => {
       const stdout = decodeShellBytes(stdoutChunks);
       const stderr = decodeShellBytes(stderrChunks);
-      finish({ code, signal, stdout, stderr });
+      if (managed && timedOut) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        if (drainTimer) clearTimeout(drainTimer);
+        const err = Object.assign(new Error("Remote Node probe exceeded its operation deadline"), {
+          code: "transport_operation_timeout",
+          timedOut: true,
+          drainVerified: true,
+          role,
+        });
+        if (runtime && typeof runtime.settleManagedTimeoutAfterClose === "function") {
+          try { runtime.settleManagedTimeoutAfterClose(err); } catch {}
+        }
+        reject(err);
+        return;
+      }
+      if (managed && runtime && typeof runtime.assertTransportActive === "function") {
+        try {
+          runtime.assertTransportActive();
+        } catch (err) {
+          done = true;
+          clearTimeout(timer);
+          if (drainTimer) clearTimeout(drainTimer);
+          reject(err);
+          return;
+        }
+      }
+      finish({
+        code: exitCode === null ? code : exitCode,
+        signal: exitSignal === null ? signal : exitSignal,
+        stdout,
+        stderr: stderr || (processError && processError.message) || "",
+        ...(processError ? { spawnError: true } : {}),
+      });
     });
   });
 }

@@ -21,6 +21,7 @@ const hermes = require("./hermes");
 const qoder = require("./qoder");
 const reasonix = require("./reasonix");
 const qoderwork = require("./qoderwork");
+const qwenwork = require("./qwenwork");
 const workbuddy = require("./workbuddy");
 
 const AGENTS = [
@@ -44,6 +45,7 @@ const AGENTS = [
   qoder,
   reasonix,
   qoderwork,
+  qwenwork,
   workbuddy,
 ];
 const AGENT_MAP = new Map(AGENTS.map((a) => [a.id, a]));

@@ -18,7 +18,18 @@ npm run audit:assets
 
 Manual workflow dispatch builds Windows, macOS, and Linux artifacts, checks
 each unpacked resources tree for retired Telegram sidecar binaries/source, and
-uploads build artifacts. It does not publish a GitHub Release.
+gates every package on its target-native Koffi payload, a packaged positive-call
+smoke, and updater metadata matching both the generated artifacts and the exact
+`package.json` release version. It then uploads
+the installers plus JSON evidence manifests. It does not publish a GitHub
+Release.
+
+Each staged application must contain exactly one physical Koffi native addon at
+`app.asar.unpacked/node_modules/koffi/build/koffi/<target-triplet>/koffi.node`.
+The native inventory audit must reject every foreign-architecture binary except
+the exact electron-builder-managed Windows `resources/elevate.exe` ia32 helper.
+Do not rewrite `app.asar` from `afterPack`: electron-builder records ASAR
+integrity before that hook, so Koffi cleanup is physical-file pruning only.
 
 ## Draft Release
 
@@ -38,7 +49,7 @@ Download and smoke-test the draft release assets before publishing the draft.
 If the draft is wrong, fix the issue before publishing; do not publish a known
 bad draft release.
 
-### v0.14.0 Draft Smoke Checklist
+### v0.15.0 Draft Smoke Checklist
 
 Use the draft release installer or package artifact, not `npm start`. Windows
 required items are the primary publish gate. If macOS or Linux hardware is not
@@ -48,7 +59,7 @@ notes.
 Before launching:
 
 - Download the draft release asset for the platform being tested.
-- Confirm the packaged app shows `0.14.0` metadata.
+- Confirm the packaged app shows `0.15.0` metadata.
 - Confirm packaged resources include `app.asar.unpacked/hooks`,
   `app.asar.unpacked/agents`, `app.asar.unpacked/extensions`,
   and `app.asar.unpacked/themes`.
@@ -56,7 +67,11 @@ Before launching:
   `sidecars/cc-connect-clawd` nor any `cc-connect-clawd(.exe)` exists.
 - Confirm Windows artifacts are architecture-specific x64 / ARM64 installers,
   not a universal NSIS installer.
-- For migration smoke, install v0.13.0 first and save a copy of the old
+- Download the native-package, Koffi prune/smoke, and updater metadata manifests.
+  Confirm the target has one matching `koffi.node`, no foreign native payload,
+  and no unreviewed exception. Confirm each updater metadata `version` and every
+  listed artifact filename identify `0.15.0`.
+- For migration smoke, install v0.14.0 first and save a copy of the old
   `clawd-prefs.json` before upgrading.
 - For Reasonix smoke, prepare a machine with Reasonix initialized so
   `<Reasonix home>/` exists (`%APPDATA%\reasonix` on Windows,
@@ -68,24 +83,28 @@ Before launching:
 Required all-platform checks:
 
 - Fresh install, launch, pet appears, no error dialog.
-- Upgrade install over v0.13.0, launch, pet appears, no error dialog. Existing
+- Upgrade install over v0.14.0, launch, pet appears, no error dialog. Existing
   agent installation/enabled flags and user theme/animation choices remain intact.
-- Settings -> About shows `v0.14.0`, sourced from `app.getVersion()`.
+- Settings -> About shows `v0.15.0`, sourced from `app.getVersion()`.
 - First-run tutorial opens once for a fresh profile; Finish, Skip, and OS close
   each persist `tutorialSeen=true` and do not reopen on restart.
 - Upgrade profile with no `tutorialSeen` sees the tutorial once; an already-seen
   profile does not reopen it.
 - Existing macOS users keep their previous Dock setting after upgrade; fresh
   macOS installs default to pet + menu-bar accessory with no Dock tile.
-- Settings -> General / Agents / Animation & Sound render correctly in all five
+- Settings -> General / Agents / Animation & Sound render correctly in all supported
   languages, including sidebar SVG icons and the folded Animation Map subtab.
-- Settings -> About contributors include the six v0.14.0 first-time
-  contributors: `LinYsssss`, `He-wei-gui`, `liugou27`, `YOOGOMJA`,
-  `anupamme`, and `anthonyonazure`.
+- Settings -> About contributors include the two v0.15.0 first-time
+  contributors: `weed33834` and `arismarioneves`.
 - Reinstall one existing hook-based agent, such as Codex, and confirm the
   packaged hook script can `require()` its dependencies.
 - Run one real Claude Code or Codex session and confirm the pet reacts to state
   changes and still plays completion happy on Stop.
+- Confirm a completed turn uses the distinct default completion sound rather
+  than the ordinary confirmation cue.
+- Run one real OpenCode session through a title rename, tool activity, and
+  SessionEnd. HUD/Dashboard must show the bounded title, retain causal ordering,
+  and remove the session without replaying a stale state after a slow endpoint.
 - Restart Clawd during an active Claude session, then let the real hook resume
   and end it. Dashboard/HUD must keep one canonical session throughout and
   remove it cleanly on SessionEnd, with no duplicate or ghost recovery row.
@@ -124,6 +143,9 @@ Required all-platform checks:
   ZCode's native permission flow. From an Orca pane, jump back to the session
   and confirm the validated pane key focuses the correct pane locally and over
   managed Remote SSH.
+- Install QwenWork on Windows or macOS and confirm lifecycle state reaches Clawd,
+  `PermissionRequest` / `PermissionDenied` remain observation-only, and uninstall
+  removes only Clawd-managed hook entries.
 - Remote SSH profile with connect-on-launch connects after startup; repeat with
   local port 23333 occupied so the server binds a later port and the tunnel still
   targets the real bound port.
@@ -145,6 +167,10 @@ Recommended all-platform checks:
 
 - Free roam: enable it, wait idle, confirm the pet moves, keeps hitbox/HUD/bubble
   alignment, and cancels on mouse move, state change, drag, mini mode, and DND.
+- Free roam constraints: exercise axis off/horizontal/vertical both with and
+  without a valid fence, then use a small fence and invalid/missing fence input.
+  Targets must remain reachable and on-screen, with invalid input falling back
+  safely.
 - Dizzy spin: on the Clawd theme, circle the cursor rapidly and confirm dizzy
   triggers; repeat on Calico/Cloudling and confirm no unsupported-state glitch.
 - Low-power idle mode: verify sleeping/Cloudling static sleep behavior and that
@@ -152,7 +178,7 @@ Recommended all-platform checks:
 - Right-click Hide pet / Show pet still works; while hidden, a newly arriving
   permission request still shows a bubble, by design.
 - Settings -> About -> Check for updates completes without an error.
-- Update labels never show a duplicated prefix such as `vv0.14.0`.
+- Update labels never show a duplicated prefix such as `vv0.15.0`.
 - Telegram approval cards show the final outcome for decisions made on Telegram
   and for approvals resolved elsewhere.
 - Scan the mobile PWA pairing URL on a phone and confirm session cards appear.
@@ -181,6 +207,10 @@ Windows checks:
 
 macOS checks:
 
+- Required when macOS hardware is available: toggle menu-bar and Dock visibility,
+  restart, and confirm both preferences persist and Settings can still regain focus.
+- Required when macOS hardware is available: test Dock left/right/bottom plus
+  auto-hide and confirm physical-edge pinning stays on-screen across displays.
 - Required when macOS hardware is available: Ghostty cross-Space focus switches
   to the target Space without yanking the Ghostty window to the current desktop.
 - Required when macOS hardware is available: answer a permission with
@@ -214,3 +244,139 @@ The legacy Telegram sidecar was removed in v0.14.0. Release builds must run
 Windows x64/arm64, macOS x64/arm64, and Linux x64. The assertion scans both the
 outer resources tree and the real `app.asar`; a retired executable or runtime
 module is a hard failure.
+
+## WinGet Publishing
+
+Publishing the draft release fires `.github/workflows/winget.yml`. **It currently
+prepares only** — it generates the manifest komac would submit and uploads it as
+an artifact. It holds no long-lived PAT or repository secret; the ambient job
+`GITHUB_TOKEN` it uses has `contents: read` and cannot write to this repository or
+to winget-pkgs. Automatic submission is deliberately not enabled yet; see the
+staged plan below.
+
+**The workflow must already be on `main` before the tag is created.** For
+`release` events GitHub reads the workflow definition from the tagged ref, so a
+tag cut before this file landed can never trigger it — including v0.14.0, which
+was published on 2026-08-02.
+
+The workflow checks out the default branch **explicitly** for tooling, then reads
+the target tag's `package.json` through the API and passes it with
+`--package-json`. Without an explicit `ref:`, `actions/checkout` takes the ref
+that triggered the run — for a release event that is the tag, which for older
+releases does not contain this tooling at all. Splitting the two keeps the
+tooling current while the installer filenames stay tied to the tree that actually
+produced the release's assets.
+
+### Why submission is staged rather than immediate
+
+`komac update` does not turn the URLs it is given into installer entries. It
+reads the **previous** manifest and emits one entry per previous entry, matching
+each to its best new installer
+(`src/commands/update_version.rs` -> `src/match_installers.rs`, which iterates
+`previous_installers`). Passing correct URLs therefore does not produce a correct
+manifest: if the upstream shape is wrong, komac faithfully reproduces it.
+
+The live v0.14.0 manifest has two entries, both `Architecture: x64` — those two
+are the **user/machine scope split**, carrying `/currentuser` and `/allusers`,
+not two architectures. Scoring both against a correct pair of new installers
+gives the x64 installer 8 points and the arm64 installer 6, so both previous
+entries take x64 and the arm64 installer is discarded.
+
+So the upstream manifest has to be repaired by hand first, and the correct shape
+is **four** entries, not two:
+
+| Architecture | Scope | Installer | Custom |
+| --- | --- | --- | --- |
+| x64 | user | `...-x64.exe` | `/currentuser` |
+| x64 | machine | `...-x64.exe` | `/allusers` |
+| arm64 | user | `...-arm64.exe` | `/currentuser` |
+| arm64 | machine | `...-arm64.exe` | `/allusers` |
+
+Collapsing to two entries would drop the per-user/per-machine choice the NSIS
+installer supports (`build.nsis` sets `oneClick: false` and no `perMachine`).
+
+### Staged plan
+
+1. **Prepare only** (current state). Run the workflow, download the
+   `winget-generated-manifest` artifact, and compare it against the table above.
+   This is the first end-to-end run on a GitHub-hosted runner. The local komac
+   v2.16.0 dry-run already established the expected bad two-x64 output; this run
+   validates the hosted workflow, token, download, and artifact paths together.
+2. **Repair upstream.** One hand-reviewed PR to `microsoft/winget-pkgs` fixing
+   v0.14.0 to the four entries above and setting `License: AGPL-3.0-only`.
+3. **Validate komac's output.** Extend the gate to parse the generated YAML and
+   assert the exact `{x64, arm64} x {user, machine}` set, each entry's URL,
+   SHA256, `Custom` switch, and the license. Note that komac overwrites `License`
+   from the repository's current `licenseInfo.spdxId`, which GitHub reports as
+   `AGPL-3.0` — not the `AGPL-3.0-only` in `package.json` — so this must be
+   asserted or rewritten rather than assumed.
+4. **Enable submission.** Split into `prepare` and `submit` jobs so the PAT
+   exists only in the final step, and pin every `uses:` to a commit SHA at that
+   point. Prefer a dedicated account for the token: `public_repo` grants write
+   access to every public repository its owner can write to, this one included.
+
+### Why the installer filename is a contract
+
+electron-builder emits a **32-bit x86 NSIS stub for both the x64 and the arm64
+target**, so PE-header inspection reports `x86` for both installers. Komac
+resolves architecture from the URL and lets that value override whatever binary
+analysis produced, so the `${arch}` token in `build.win.artifactName` is the only
+correct architecture signal we publish.
+
+`npm run verify:winget-arch` enforces this. It ports the upstream
+`Architecture::from_url` delimiter algorithm and fails the release if a filename
+stops resolving to the architecture it was built for, if two targets collapse
+onto one architecture, if the published set is not exactly `x64` and `arm64`, if
+a filename stops matching the workflow's `INSTALLERS_REGEX`, if the release
+carries a stray asset that regex would also select, if the release tag disagrees
+with `package.json`, or if both installers share a digest.
+
+**This gate checks komac's input, not its output.** It cannot detect the
+shape-preservation problem described above; validating the generated YAML is a
+separate step (stage 3).
+
+This guard exists because the third-party bot that previously owned the manifest
+forwarded only the first matching `.exe`. That was harmless while we shipped one
+Windows installer; from **v0.6.2** (2026-04-27), the first release to publish
+`-x64.exe` and `-arm64.exe` side by side, through v0.14.0 — **12 versions** —
+every manifest declared two `Architecture: x64` entries that both pointed at the
+**arm64** installer. The NSIS stub runs on x64, so the install reported success
+and the app then failed to launch.
+
+### Why komac is invoked directly
+
+The obvious choice, `winget-releaser`, is a composite action whose own steps run
+`cargo-bins/cargo-binstall@main` (a mutable branch ref) and
+`cargo binstall komac -y` (an unpinned build) — both in the same job, both
+*before* the step that would receive a PAT. Pinning that action to a commit SHA
+freezes the wrapper and neither of those links, so the workflow installs komac
+itself from a release archive whose SHA-256 is pinned in `env`.
+
+Bumping `KOMAC_VERSION` requires bumping `KOMAC_SHA256` in the same edit; the
+checksum is asserted in `test/winget-arch-contract.test.js`.
+
+Note that `actions/checkout@v4` and friends are still mutable tags. That is
+acceptable while this workflow holds no secret, and matches the rest of the
+repository's workflows; it must be resolved to commit SHAs before stage 4 adds a
+token.
+
+### Setup, when stage 4 is reached
+
+1. Fork `microsoft/winget-pkgs` under the account that will own `WINGET_TOKEN`.
+2. Create a **classic** PAT for that account with `public_repo` scope and store
+   it as the `WINGET_TOKEN` repository secret. Fine-grained tokens do not work
+   with komac's fork flow.
+3. Ask `SpecterShell/Dumplings` to drop its
+   `Tasks/rullerzhou-afk.clawd-on-desk` tracker so the bot and this workflow do
+   not submit competing manifests.
+
+### Per-release checks
+
+- Download the `winget-generated-manifest` artifact and confirm it carries
+  **four** installer entries — `x64` and `arm64`, each in `user` and `machine`
+  scope — with the right filename and `Custom` switch in each.
+- Confirm `License` reads `AGPL-3.0-only`. Versions v0.6.2 through v0.14.0 carry
+  a stale `MIT` value: it was accurate for the initial v0.6.0 submission and was
+  never refreshed after `3b6277ff` relicensed the project on 2026-04-25.
+- `winget install rullerzhou-afk.clawd-on-desk` is not documented in the READMEs
+  until a corrected manifest has been verified live.

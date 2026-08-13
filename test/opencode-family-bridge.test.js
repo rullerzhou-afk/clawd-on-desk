@@ -46,7 +46,7 @@ after(() => {
   fs.rmSync(TMP_HOME, { recursive: true, force: true });
 });
 
-async function initInstance(params, { sdk } = {}) {
+async function initInstance(params, { sdk, plugin: existingPlugin, directory = "/tmp/proj" } = {}) {
   const captured = { fetch: null, hostname: null, port: null, requestedPort: null };
   globalThis.Bun = {
     serve(opts) {
@@ -60,7 +60,7 @@ async function initInstance(params, { sdk } = {}) {
   const sdkCalls = [];
   const ctx = {
     serverUrl: "http://127.0.0.1:1/",
-    directory: "/tmp/proj",
+    directory,
     client: {
       _client: {
         post: async (args) => {
@@ -72,9 +72,23 @@ async function initInstance(params, { sdk } = {}) {
       },
     },
   };
-  const plugin = createOpencodeFamilyPlugin(params);
+  const plugin = existingPlugin || createOpencodeFamilyPlugin(params);
   const hooks = await plugin(ctx);
   return { plugin, hooks, captured, sdkCalls };
+}
+
+async function emitPermission(instance, requestId, sessionID = "ses_permission") {
+  await instance.hooks.event({
+    event: {
+      type: "permission.asked",
+      properties: {
+        id: requestId,
+        sessionID,
+        permission: "bash",
+        metadata: { command: "echo permission" },
+      },
+    },
+  });
 }
 
 const OC = Object.freeze({
@@ -203,6 +217,7 @@ describe("opencode-family reverse bridge (plugin side, real handler)", () => {
   it("accepts the real token and forwards the reply through _client.post", async () => {
     const oc = await initInstance(OC);
     const token = oc.plugin.__test._bridgeTokenHex;
+    await emitPermission(oc, "per ok/1");
     const res = await oc.captured.fetch(
       bridgeRequest(oc.plugin, { token, body: { request_id: "per ok/1", reply: "once" } })
     );
@@ -211,9 +226,47 @@ describe("opencode-family reverse bridge (plugin side, real handler)", () => {
     assert.strictEqual(oc.sdkCalls.length, 1);
     assert.deepStrictEqual(oc.sdkCalls[0], {
       url: `/permission/${encodeURIComponent("per ok/1")}/reply`,
+      query: { directory: "/tmp/proj" },
       body: { reply: "once" },
       headers: { "Content-Type": "application/json" },
     });
+  });
+
+  it("binds an interleaved reply to the directory instance that emitted it", async () => {
+    const plugin = createOpencodeFamilyPlugin(OC);
+    const a = await initInstance(OC, {
+      plugin,
+      directory: "C:\\project-a",
+    });
+    const bridgeUrl = plugin.__test._bridgeUrl;
+    const bridgeToken = plugin.__test._bridgeTokenHex;
+    const b = await initInstance(OC, {
+      plugin,
+      directory: "C:\\history-b",
+    });
+
+    assert.strictEqual(plugin.__test._bridgeUrl, bridgeUrl, "later init must reuse the factory bridge");
+    assert.strictEqual(plugin.__test._bridgeTokenHex, bridgeToken, "later init must not rotate the live token");
+    assert.strictEqual(b.captured.fetch, null, "later directory must not leak another Bun server");
+
+    await a.hooks.event({
+      event: {
+        type: "session.created",
+        properties: {
+          sessionID: "ses_a",
+          info: { id: "ses_a", directory: "C:\\project-a" },
+        },
+      },
+    });
+    await emitPermission(a, "per_a", "ses_a");
+    const res = await a.captured.fetch(
+      bridgeRequest(plugin, { token: bridgeToken, body: { request_id: "per_a", reply: "once" } })
+    );
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(a.sdkCalls.length, 1, "originating client must receive the reply");
+    assert.strictEqual(b.sdkCalls.length, 0, "latest initialized client must stay untouched");
+    assert.deepStrictEqual(a.sdkCalls[0].query, { directory: "C:\\project-a" });
   });
 
   it("404s wrong method/path, 400s bad json and bad payloads — SDK untouched", async () => {
@@ -230,6 +283,7 @@ describe("opencode-family reverse bridge (plugin side, real handler)", () => {
 
   it("maps SDK error results and throws to 502", async () => {
     const withErr = await initInstance(OC, { sdk: { error: "route exploded" } });
+    await emitPermission(withErr, "per_e");
     const res1 = await withErr.captured.fetch(
       bridgeRequest(withErr.plugin, { token: withErr.plugin.__test._bridgeTokenHex, body: { request_id: "per_e", reply: "reject" } })
     );
@@ -237,6 +291,7 @@ describe("opencode-family reverse bridge (plugin side, real handler)", () => {
     assert.deepStrictEqual(await res1.json(), { ok: false, error: "route exploded" });
 
     const withThrow = await initInstance(OC, { sdk: { throw: "socket gone" } });
+    await emitPermission(withThrow, "per_t");
     const res2 = await withThrow.captured.fetch(
       bridgeRequest(withThrow.plugin, { token: withThrow.plugin.__test._bridgeTokenHex, body: { request_id: "per_t", reply: "always" } })
     );

@@ -163,8 +163,9 @@ function processAlive(pid) {
 
 function getPlatformConfig(options) {
   const opts = options || {};
-  const isWin = process.platform === "win32";
-  const isLinux = process.platform === "linux";
+  const platform = typeof opts.platform === "string" ? opts.platform : process.platform;
+  const isWin = platform === "win32";
+  const isLinux = platform === "linux";
 
   const pick = (win, linux, mac) => isWin ? win : (isLinux ? linux : mac);
 
@@ -543,6 +544,9 @@ function createPidResolver(options) {
   // never depend on whether the developer's Clawd happens to be running.
   const readRuntimeIdentityFn = options.readRuntimeIdentity || readRuntimeIdentity;
   const gateEnv = options.env || process.env;
+  const getWindowsProcessSnapshotFn = typeof options.getWindowsProcessSnapshot === "function"
+    ? options.getWindowsProcessSnapshot
+    : getWindowsProcessSnapshot;
 
   // #681: the ONE thing anything derived from the agent's command line. Owned by
   // the resolver now (rather than the adapter) because the resolver is what
@@ -589,7 +593,7 @@ function createPidResolver(options) {
     }
 
     const { execFileSync } = require("child_process");
-    const winSnapshotResult = isWin ? getWindowsProcessSnapshot(execFileSync) : null;
+    const winSnapshotResult = isWin ? getWindowsProcessSnapshotFn(execFileSync) : null;
     const winSnapshot = winSnapshotResult ? winSnapshotResult.processes : null;
     const foregroundWtHwnd = winSnapshotResult ? winSnapshotResult.foregroundWtHwnd : null;
 

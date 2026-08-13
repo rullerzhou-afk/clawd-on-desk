@@ -32,6 +32,13 @@ const {
   parseSessionGrantRevokeAction,
   createRemoteCardWorkRegistry,
 } = require("./session-automation-remote");
+const {
+  appendTelegramStatus,
+  buildTelegramApprovalMessage,
+  isFormattedTelegramMessage,
+  isTelegramHtmlParseError,
+  plainTelegramText,
+} = require("./telegram-message-format");
 
 const APPROVAL_CALLBACK_RE = /^cp:([a-z0-9]+):(a|d|s(\d+))$/;
 const LEGACY_APPROVAL_CALLBACK_RE = /^clawdperm:([a-z0-9]+):(allow|deny)$/;
@@ -226,8 +233,8 @@ function normalizeElicitationPayload(payload) {
 }
 
 function buildElicitationHeaderText(payload) {
-  const parts = [payload.title];
-  if (payload.detail) parts.push(payload.detail);
+  const parts = [redactSecrets(payload.title)];
+  if (payload.detail) parts.push(redactSecrets(payload.detail));
   return parts.join("\n\n");
 }
 
@@ -418,6 +425,51 @@ function createTelegramNativeRunner({
       errorClass: compactMessageText(errorClass || "unknown", 48),
       at: Date.now(),
     };
+  }
+
+  async function deliverFormatted(method, basePayload, message, requestOptions = {}, deliveryOptions = {}) {
+    if (!isFormattedTelegramMessage(message)) {
+      throw new Error("Telegram formatted message contract is required");
+    }
+    const preferPlain = deliveryOptions.preferPlain === true;
+    const signal = requestOptions && requestOptions.signal;
+    const plainBasePayload = { ...basePayload };
+    delete plainBasePayload.parse_mode;
+    const sendPlain = () => {
+      if (typeof deliveryOptions.onPlainAttempt === "function") {
+        try { deliveryOptions.onPlainAttempt(); } catch {}
+      }
+      return client[method]({
+        ...plainBasePayload,
+        text: message.plainText,
+      }, requestOptions);
+    };
+    if (preferPlain) {
+      return { result: await sendPlain(), usedPlain: true };
+    }
+    try {
+      const result = await client[method]({
+        ...basePayload,
+        text: message.html,
+        parse_mode: "HTML",
+      }, requestOptions);
+      return { result, usedPlain: false };
+    } catch (err) {
+      if (!isTelegramHtmlParseError(err)) throw err;
+      if (signal && signal.aborted) throw err;
+      safeLog("warn", "native Telegram HTML rejected, retrying rendered plain text", {
+        operation: method === "editMessageText" ? "edit" : "send",
+      });
+      return { result: await sendPlain(), usedPlain: true };
+    }
+  }
+
+  async function sendFormattedMessage(basePayload, message, requestOptions, deliveryOptions) {
+    return deliverFormatted("sendMessage", basePayload, message, requestOptions, deliveryOptions);
+  }
+
+  async function editFormattedMessage(basePayload, message, requestOptions, deliveryOptions) {
+    return deliverFormatted("editMessageText", basePayload, message, requestOptions, deliveryOptions);
   }
 
   function resetPollRetryDelay() {
@@ -691,7 +743,7 @@ function createTelegramNativeRunner({
     };
   }
 
-  async function editSessionTrustPrompt(payload) {
+  async function editSessionTrustPrompt(basePayload, message) {
     const controller = typeof AbortController === "function" ? new AbortController() : null;
     const timeoutMs = Number.isFinite(sessionAutomationEditTimeoutMs)
       && sessionAutomationEditTimeoutMs > 0
@@ -709,10 +761,11 @@ function createTelegramNativeRunner({
     });
     try {
       return await Promise.race([
-        client.editMessageText(
-          payload,
+        editFormattedMessage(
+          basePayload,
+          message,
           controller ? { signal: controller.signal } : undefined
-        ),
+        ).then((delivery) => delivery.result),
         timeout,
       ]);
     } finally {
@@ -763,13 +816,17 @@ function createTelegramNativeRunner({
     }
     if (action === "open") {
       entry.trustConfirming = true;
+      const confirmationMessage = appendTelegramStatus(
+        entry.message,
+        t("telegramSessionTrustConfirmText"),
+        { maxLength: MAX_MESSAGE_TEXT },
+      );
       try {
         await editSessionTrustPrompt({
           chat_id: entry.chatId,
           message_id: entry.messageId,
-          text: `${entry.text}\n\n${t("telegramSessionTrustConfirmText")}`,
           reply_markup: sessionTrustKeyboard(id, t),
-        });
+        }, confirmationMessage);
         try {
           await client.answerCallbackQuery({
             callback_query_id: cb.id,
@@ -788,15 +845,23 @@ function createTelegramNativeRunner({
       return true;
     }
     if (action === "no") {
-      entry.trustConfirming = false;
       try {
         await editSessionTrustPrompt({
           chat_id: entry.chatId,
           message_id: entry.messageId,
-          text: entry.text,
           reply_markup: buildApprovalKeyboard(id, entry),
-        });
-      } catch {}
+        }, entry.message);
+        entry.trustConfirming = false;
+      } catch {
+        entry.trustConfirming = true;
+        try {
+          await client.answerCallbackQuery({
+            callback_query_id: cb.id,
+            text: t("telegramApprovalToastUnavailable"),
+          });
+        } catch {}
+        return true;
+      }
       try { await client.answerCallbackQuery({ callback_query_id: cb.id }); } catch {}
       return true;
     }
@@ -813,17 +878,19 @@ function createTelegramNativeRunner({
       chatId: entry.chatId,
       messageId: entry.messageId,
       text: entry.text,
+      message: entry.message,
     });
     if (!cardWork) {
-      entry.trustConfirming = false;
       try {
         await editSessionTrustPrompt({
           chat_id: entry.chatId,
           message_id: entry.messageId,
-          text: entry.text,
           reply_markup: buildApprovalKeyboard(id, entry),
-        });
-      } catch {}
+        }, entry.message);
+        entry.trustConfirming = false;
+      } catch {
+        entry.trustConfirming = true;
+      }
       try {
         await client.answerCallbackQuery({
           callback_query_id: cb.id,
@@ -837,6 +904,7 @@ function createTelegramNativeRunner({
       chatId: entry.chatId,
       messageId: entry.messageId,
       text: entry.text,
+      message: entry.message,
       routeSignature: sessionAutomationRouteSignature,
       cardWork,
     });
@@ -1054,38 +1122,46 @@ function createTelegramNativeRunner({
   function appendApprovalStatus(entry, status, messageId) {
     const chatId = entry && entry.chatId;
     if (!chatId || !messageId) return Promise.resolve();
-    if (!status || !entry.text) return stripApprovalKeyboard(chatId, messageId);
-    return client.editMessageText({
+    if (!status || !entry.message) return stripApprovalKeyboard(chatId, messageId);
+    const message = appendTelegramStatus(entry.message, status, { maxLength: MAX_MESSAGE_TEXT });
+    return editFormattedMessage({
       chat_id: chatId,
       message_id: messageId,
-      text: `${entry.text}\n\n${status}`,
-    }).catch(() => stripApprovalKeyboard(chatId, messageId));
+    }, message).catch(() => stripApprovalKeyboard(chatId, messageId));
   }
 
   function renderSessionTrustCard(cardRef, status, grantId, options = {}) {
     if (!cardRef || !cardRef.chatId || !cardRef.messageId || !grantId) {
       return Promise.reject(new Error("session trust card reference is unavailable"));
     }
-    return client.editMessageText({
+    const baseMessage = cardRef.message || plainTelegramText(cardRef.text || "", {
+      maxLength: MAX_MESSAGE_TEXT,
+      neutralizeMentions: true,
+    });
+    const message = appendTelegramStatus(baseMessage, status, { maxLength: MAX_MESSAGE_TEXT });
+    return editFormattedMessage({
       chat_id: cardRef.chatId,
       message_id: cardRef.messageId,
-      text: `${cardRef.text}\n\n${status}`,
       reply_markup: {
         inline_keyboard: [[{
           text: t("telegramSessionTrustRevokeButton"),
           callback_data: buildSessionGrantRevokeAction(grantId),
         }]],
       },
-    }, options);
+    }, message, options).then((delivery) => delivery.result);
   }
 
   function renderSessionTrustTerminal(cardRef, status, options = {}) {
     if (!cardRef || !cardRef.chatId || !cardRef.messageId) return Promise.resolve();
-    return client.editMessageText({
+    const baseMessage = cardRef.message || plainTelegramText(cardRef.text || "", {
+      maxLength: MAX_MESSAGE_TEXT,
+      neutralizeMentions: true,
+    });
+    const message = appendTelegramStatus(baseMessage, status, { maxLength: MAX_MESSAGE_TEXT });
+    return editFormattedMessage({
       chat_id: cardRef.chatId,
       message_id: cardRef.messageId,
-      text: `${cardRef.text}\n\n${status}`,
-    }, options);
+    }, message, options).then((delivery) => delivery.result);
   }
 
   function notifySessionAutomationRouteChange() {
@@ -1256,7 +1332,8 @@ function createTelegramNativeRunner({
   function requestApproval(payload, options = {}) {
     const chatId = getChatId();
     const allowedUser = getAllowedUserId();
-    const text = buildApprovalText(payload);
+    const message = buildTelegramApprovalMessage(payload, { maxLength: MAX_MESSAGE_TEXT });
+    const text = message && message.plainText;
     const suggestions = normalizeApprovalSuggestions(payload && payload.suggestions);
     const signal = options && options.signal;
     if (!polling || !chatId || !allowedUser || !text || (signal && signal.aborted)) {
@@ -1275,6 +1352,7 @@ function createTelegramNativeRunner({
         // Card body as sent, kept so a resolved-elsewhere edit can rebuild the
         // text with a status line appended (issue #457).
         text,
+        message,
         timer: null,
         signal,
         onAbort: null,
@@ -1293,13 +1371,13 @@ function createTelegramNativeRunner({
         signal.addEventListener("abort", entry.onAbort, { once: true });
       }
 
-      client.sendMessage({
+      sendFormattedMessage({
         chat_id: chatId,
-        text,
         reply_markup: {
           ...buildApprovalKeyboard(id, entry),
         },
-      }, signal ? { signal } : undefined).then((msg) => {
+      }, message, signal ? { signal } : undefined).then((delivery) => {
+        const msg = delivery.result;
         const current = pendingApprovals.get(id);
         if (!current || (signal && signal.aborted)) return;
         current.messageId = msg && msg.message_id;
@@ -1321,11 +1399,11 @@ function createTelegramNativeRunner({
   // next/previous question (with a fresh keyboard) or - when called without a
   // keyboard - to show a final status line with no keyboard, mirroring
   // appendApprovalStatus's fallback-to-stripped-keyboard behavior on failure.
-  function renderElicitationCard(entry, text, keyboard) {
+  function renderElicitationCard(entry, message, keyboard) {
     if (!entry.chatId || !entry.messageId) return Promise.resolve();
-    const payload = { chat_id: entry.chatId, message_id: entry.messageId, text };
+    const payload = { chat_id: entry.chatId, message_id: entry.messageId };
     if (keyboard) payload.reply_markup = { inline_keyboard: keyboard };
-    return client.editMessageText(payload).catch(() => {
+    return editFormattedMessage(payload, message).then((delivery) => delivery.result).catch(() => {
       if (!keyboard) return undefined;
       return stripApprovalKeyboard(entry.chatId, entry.messageId);
     });
@@ -1334,6 +1412,10 @@ function createTelegramNativeRunner({
   function renderElicitationQuestion(entry) {
     if (entry.awaitingOtherFor != null) {
       const text = buildElicitationOtherPromptText(entry.payload, entry.awaitingOtherFor, t);
+      const message = plainTelegramText(text, {
+        maxLength: MAX_MESSAGE_TEXT,
+        neutralizeMentions: true,
+      });
       const callbackBase = `cq:${entry.payload._id}`;
       // A dead end otherwise: without a way back to the option list, tapping
       // Other by mistake (or changing your mind) would force either typing
@@ -1343,11 +1425,15 @@ function createTelegramNativeRunner({
         [{ text: t("telegramElicitationCancelOtherButton"), callback_data: `${callbackBase}:z${entry.awaitingOtherFor}` }],
         [{ text: t("telegramElicitationTerminalButton"), callback_data: `${callbackBase}:t` }],
       ];
-      return renderElicitationCard(entry, text, keyboard);
+      return renderElicitationCard(entry, message, keyboard);
     }
     const text = buildElicitationQuestionText(entry.payload, entry.activeQuestionIndex, t);
+    const message = plainTelegramText(text, {
+      maxLength: MAX_MESSAGE_TEXT,
+      neutralizeMentions: true,
+    });
     const keyboard = buildElicitationKeyboard(entry.payload, entry.activeQuestionIndex, entry.multiSelectSelections, t);
-    return renderElicitationCard(entry, text, keyboard);
+    return renderElicitationCard(entry, message, keyboard);
   }
 
   // Single resolution point for an elicitation, used by every exit: a
@@ -1372,7 +1458,14 @@ function createTelegramNativeRunner({
       ? buildElicitationOtherPromptText(entry.payload, entry.awaitingOtherFor, t)
       : buildElicitationQuestionText(entry.payload, entry.activeQuestionIndex, t);
     if (!entry.chatId || !entry.messageId) return;
-    renderElicitationCard(entry, status ? `${baseText}\n\n${status}` : baseText, null);
+    const baseMessage = plainTelegramText(baseText, {
+      maxLength: MAX_MESSAGE_TEXT,
+      neutralizeMentions: true,
+    });
+    const message = status
+      ? appendTelegramStatus(baseMessage, status, { maxLength: MAX_MESSAGE_TEXT })
+      : baseMessage;
+    renderElicitationCard(entry, message, null);
   }
 
   function clearAllElicitations() {
@@ -1551,6 +1644,10 @@ function createTelegramNativeRunner({
     const id = randomId();
     normalized._id = id;
     const text = buildElicitationQuestionText(normalized, 0, t);
+    const message = plainTelegramText(text, {
+      maxLength: MAX_MESSAGE_TEXT,
+      neutralizeMentions: true,
+    });
     const keyboard = buildElicitationKeyboard(normalized, 0, null, t);
 
     return new Promise((resolve) => {
@@ -1578,11 +1675,11 @@ function createTelegramNativeRunner({
         signal.addEventListener("abort", entry.onAbort, { once: true });
       }
 
-      client.sendMessage({
+      sendFormattedMessage({
         chat_id: chatId,
-        text,
         reply_markup: { inline_keyboard: keyboard },
-      }, signal ? { signal } : undefined).then((msg) => {
+      }, message, signal ? { signal } : undefined).then((delivery) => {
+        const msg = delivery.result;
         const current = pendingElicitations.get(id);
         if (!current || (signal && signal.aborted)) return;
         current.messageId = msg && msg.message_id;
@@ -1636,18 +1733,45 @@ function createTelegramNativeRunner({
     }
   }
 
+  async function sendBoundedNotification(chatId, message, deliveryState) {
+    if (!isFormattedTelegramMessage(message)) {
+      return sendBoundedMessage(chatId, message);
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      try { controller.abort(); } catch {}
+    }, Math.max(1, notifyTimeoutMs));
+    if (timer && typeof timer.unref === "function") timer.unref();
+    try {
+      const delivery = await sendFormattedMessage(
+        { chat_id: chatId },
+        message,
+        { signal: controller.signal },
+        {
+          preferPlain: deliveryState.preferPlain === true,
+          onPlainAttempt: () => { deliveryState.preferPlain = true; },
+        },
+      );
+      return delivery.result;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   // Public R1a entry point. Best-effort: never throws, always resolves to a
   // structured result so callers (the snapshot fanout) can log without
   // branching on exceptions. One 429 retry honouring retry_after; everything
   // else (403 blocked, timeout, network) is logged and dropped.
-  async function sendNotification(text) {
+  async function sendNotification(value) {
     const chatId = getChatId();
-    const body = compactMessageText(text);
-    if (!polling || !chatId || !body) {
+    const body = isFormattedTelegramMessage(value) ? value : compactMessageText(value);
+    const hasBody = isFormattedTelegramMessage(body) ? !!body.plainText : !!body;
+    if (!polling || !chatId || !hasBody) {
       return { ok: false, errorClass: "not_active" };
     }
+    const deliveryState = { preferPlain: false };
     try {
-      const sent = await sendBoundedMessage(chatId, body);
+      const sent = await sendBoundedNotification(chatId, body, deliveryState);
       return { ok: true, messageId: extractTelegramMessageId(sent) };
     } catch (err) {
       const cls = classifyError(err);
@@ -1668,7 +1792,7 @@ function createTelegramNativeRunner({
           if (!polling || !retryChatId || retryChatId !== chatId) {
             return { ok: false, errorClass: "not_active" };
           }
-          const sent = await sendBoundedMessage(retryChatId, body);
+          const sent = await sendBoundedNotification(retryChatId, body, deliveryState);
           return { ok: true, messageId: extractTelegramMessageId(sent) };
         } catch (err2) {
           const cls2 = classifyError(err2);

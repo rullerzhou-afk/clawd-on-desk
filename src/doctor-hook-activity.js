@@ -156,6 +156,18 @@ function evaluateConnectionTest(input = {}) {
     };
   }
 
+  const codexActivity = fileActivity.some((entry) => entry && entry.agentId === "codex");
+  const codexHookHealth = input.codexHookHealth && typeof input.codexHookHealth === "object"
+    ? input.codexHookHealth
+    : null;
+  if (codexActivity && codexHookHealth && codexHookHealth.signature === "needs-review") {
+    return {
+      status: "hooks-need-review",
+      level: "warning",
+      detail: "Codex activity was detected, but Clawd cannot evaluate the HTTP path because its Codex hooks still need review. Run /hooks in Codex CLI, review the Clawd hooks, then run this test again. This result does not rule out a separate firewall or proxy issue.",
+    };
+  }
+
   if (fileActivity.length) {
     const agents = uniqueSorted(fileActivity.map((entry) => entry.agentId));
     return {
@@ -185,9 +197,18 @@ async function runConnectionTest(options = {}) {
   const fileActivity = Array.isArray(options.fileActivity)
     ? options.fileActivity
     : scanFileMtimeActivity({ ...options, since: startedAt });
+  let codexHookHealth = options.codexHookHealth;
+  if (typeof options.getCodexHookHealth === "function") {
+    try {
+      codexHookHealth = options.getCodexHookHealth();
+    } catch {
+      codexHookHealth = null;
+    }
+  }
   const evaluated = evaluateConnectionTest({
     events,
     fileActivity,
+    codexHookHealth,
     resolveAgentDisplayName: options.resolveAgentDisplayName,
   });
   return {

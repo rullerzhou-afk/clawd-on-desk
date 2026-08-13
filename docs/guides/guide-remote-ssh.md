@@ -24,6 +24,7 @@ the system `ssh` and your system terminal.
    - **Host**: `user@remote-host`, or a Host alias defined in your `~/.ssh/config`
    - **SSH port**: defaults to `22`
    - **Private key file**: optional; leave blank to use ssh-agent or `~/.ssh/config`
+   - **SSH transport compatibility**: leave **Automatic** for normal hosts and GitHub Codespaces. Use **Force single SSH session** only for another ProxyCommand transport that cannot tolerate overlapping SSH sessions
    - **Remote forward port**: defaults to `23333`; only change to `23334-23337` when you run multiple profiles against the same remote
    - **Host prefix**: optional, used in Sessions / Dashboard to disambiguate the remote
 3. If SSH needs first-time host-key confirmation, a passphrase, or an ssh-agent load, click **Authenticate**. Clawd opens your system terminal to run a plain `ssh` once.
@@ -41,8 +42,32 @@ events. You do not need to click **Install** unless you also want local Copilot
 hooks on this machine.
 
 If the profile has **Auto-start Codex fallback monitor on connect** enabled,
-Clawd will SSH in after connect to launch `~/.claude/hooks/codex-remote-monitor.js`.
+Clawd launches `~/.claude/hooks/codex-remote-monitor.js` as connection
+maintenance. On a serialized transport it finishes this one-shot maintenance
+before starting the persistent reverse tunnel; automatic tunnel reconnects do
+not replay the monitor mutation.
 The fallback is not needed when Codex official hooks are working.
+
+### GitHub Codespaces and single-session transports
+
+Clawd inspects the effective local SSH configuration with `ssh -G` before it
+connects. A `ProxyCommand` using exact `gh cs ssh ... --stdio` or
+`gh codespace ssh ... --stdio` is automatically put in serialized mode. In
+that mode Clawd never overlaps its own SSH/SCP children for the same
+Codespace: Node discovery and monitor maintenance close first, while tunnel
+readiness runs inside the one persistent `ssh -R` session.
+
+Deploy / Repair, Disconnect, cleanup, and identity/runtime changes ask the
+persistent remote readiness process to stop through stdin EOF and wait for the
+top-level child's `close` before starting another SSH operation. If that drain
+cannot be proven, Clawd stops and reports a recovery error instead of retrying
+an unknown remote mutation. A second profile for the same Codespace and the
+interactive **Authenticate / Open Terminal** actions remain blocked until the
+managed serialized transport is fully idle.
+
+The explicit single-session override is intentionally conservative and keyed
+to the effective destination. Change it only while Disconnected. Standard
+SSH targets retain the existing parallel-capable behavior.
 
 ## Key concepts
 
@@ -128,14 +153,27 @@ Check the Remote SSH profile first:
 
 ### Remote port conflict
 
-If the connection fails with a "remote port in use" error, change the profile's
-**Remote forward port** from `23333` to one of `23334-23337`, then redeploy.
+After a healthy tunnel drops, the previous remote SSH session may still be
+releasing its listening port. Clawd keeps the same port and retries a bounded
+four times (about three minutes with the current backoff). You do not need to
+change the profile while it says **Reconnecting**.
+
+On a first connection, or if the port is still unavailable after that bounded
+recovery, the conflict may be persistent. Try again later, or choose an unused
+**Remote forward port** from `23333-23337`. If you change the port, run
+**Deploy / Repair Hooks** before **Connect**: the secure identity, hook target,
+permission URL, and health probe are pinned to one exact port. Clawd blocks an
+ordinary Connect until the edited target has been deployed.
+
+An older deployment record is cleanup history, not another active port slot.
+Changing `23333 → 23334 → 23333` still requires deployment for the current
+target; Clawd does not revive historical routing identity automatically.
 
 ### Remote has no Node.js
 
 Deployment fails at the `check-node` step. Install Node.js on the remote first,
-then redeploy. Changing the port avoids a bind conflict; the security boundary
-comes from the pinned identity and dedicated ingress, not from port secrecy.
+then redeploy. The security boundary comes from the pinned identity and
+dedicated ingress, not from port secrecy.
 
 ### Can I open the SSH tunnel manually?
 

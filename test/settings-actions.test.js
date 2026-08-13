@@ -149,12 +149,19 @@ describe("updateRegistry pure-data validators", () => {
       "hideBubbles", "permissionBubblesEnabled", "lowPowerIdleMode",
       "testReactionsEnabled",
       "allowEdgePinning", "disableMiniMode", "keepSizeAcrossDisplays", "codexHookHealthNotifyEnabled",
-      "quotaMergeSources",
+      "quotaMergeSources", "freeRoam", "roamConstrainAxis",
     ]) {
       assert.strictEqual(updateRegistry[key](true, deps).status, "ok", `${key}(true)`);
       assert.strictEqual(updateRegistry[key](false, deps).status, "ok", `${key}(false)`);
       assert.strictEqual(updateRegistry[key]("yes", deps).status, "error", `${key}("yes")`);
     }
+  });
+
+  it("accepts only supported quota ring display modes", () => {
+    assert.strictEqual(updateRegistry.quotaRingDisplayMode("used").status, "ok");
+    assert.strictEqual(updateRegistry.quotaRingDisplayMode("remaining").status, "ok");
+    assert.strictEqual(updateRegistry.quotaRingDisplayMode("available").status, "error");
+    assert.strictEqual(updateRegistry.quotaRingDisplayMode(true).status, "error");
   });
 
   it("codexHookHealthLastNotified accepts strings and empty reset", () => {
@@ -173,7 +180,7 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(updateRegistry.telegramMigrationLastNotified(42, deps).status, "error");
   });
 
-  it("Claude quota collection validates booleans and delegates the opt-in mutation", async () => {
+  it("Claude usage collection validates booleans and delegates the opt-in mutation", async () => {
     const entry = updateRegistry.claudeQuotaCollectionEnabled;
     assert.strictEqual(entry.validate(true).status, "ok");
     assert.strictEqual(entry.validate("yes").status, "error");
@@ -218,6 +225,24 @@ describe("updateRegistry pure-data validators", () => {
 
   it("Settings window bounds accept normal integer geometry or null", () => {
     const validate = updateRegistry.settingsWindowBounds;
+    assert.strictEqual(validate(null).status, "ok");
+    assert.strictEqual(
+      validate({ x: -1200, y: 80, width: 900, height: 640 }).status,
+      "ok",
+    );
+    for (const value of [
+      { x: 0.5, y: 0, width: 800, height: 560 },
+      { x: 0, y: 0, width: 0, height: 560 },
+      { x: 0, y: 0, width: 800 },
+      [],
+      "800x560",
+    ]) {
+      assert.strictEqual(validate(value).status, "error");
+    }
+  });
+
+  it("Dashboard window bounds accept normal integer geometry or null", () => {
+    const validate = updateRegistry.dashboardWindowBounds;
     assert.strictEqual(validate(null).status, "ok");
     assert.strictEqual(
       validate({ x: -1200, y: 80, width: 900, height: 640 }).status,

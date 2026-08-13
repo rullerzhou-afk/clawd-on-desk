@@ -1,12 +1,17 @@
 const assert = require("node:assert");
 const Module = require("node:module");
+const path = require("node:path");
 const { describe, it } = require("node:test");
 
 const MENU_MODULE_PATH = require.resolve("../src/menu");
 
-function loadMenuWithElectron(fakeElectron, fakeTaskbar = null) {
+function loadMenuWithElectron(fakeElectron, fakeTaskbar = null, platform = null) {
   delete require.cache[MENU_MODULE_PATH];
   const originalLoad = Module._load;
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+  if (platform) {
+    Object.defineProperty(process, "platform", { ...originalPlatform, value: platform });
+  }
   Module._load = function patchedLoad(request, parent, isMain) {
     if (request === "electron") return fakeElectron;
     if (fakeTaskbar && request === "./taskbar") return fakeTaskbar;
@@ -16,6 +21,7 @@ function loadMenuWithElectron(fakeElectron, fakeTaskbar = null) {
     return require("../src/menu");
   } finally {
     Module._load = originalLoad;
+    if (platform) Object.defineProperty(process, "platform", originalPlatform);
   }
 }
 
@@ -85,6 +91,7 @@ function buildBaseCtx(overrides = {}) {
     syncHitWin: () => {},
     flushRuntimeStateToPrefs: () => {},
     reapplyMacVisibility: () => {},
+    getSettingsWindow: () => null,
     clampToScreenVisual: (x, y) => ({ x, y }),
     ...overrides,
   };
@@ -235,5 +242,61 @@ describe("macOS visibility toggles live in the tray, not the right-click menu", 
     assert.ok(!ctxLabels.includes("Show in Menu Bar"), "context menu drops Show in Menu Bar");
     assert.ok(trayLabels.includes("Show in Dock"), "tray keeps Show in Dock");
     assert.ok(trayLabels.includes("Show in Menu Bar"), "tray keeps Show in Menu Bar");
+  });
+});
+
+describe("macOS runtime Dock visibility", () => {
+  it("installs the padded Clawd icon before showing Dock after a tray-only launch", async () => {
+    const calls = [];
+    const electron = fakeElectron();
+    electron.app = {
+      quit() {},
+      setActivationPolicy(policy) { calls.push(["activation", policy]); },
+      dock: {
+        setIcon(iconPath) { calls.push(["setIcon", iconPath]); },
+        show() { calls.push(["show"]); return Promise.resolve(); },
+        hide() { calls.push(["hide"]); },
+      },
+    };
+    const initMenu = loadMenuWithElectron(electron, null, "darwin");
+    const ctx = buildBaseCtx({
+      showDock: true,
+      reapplyMacVisibility() { calls.push(["reapplyMacVisibility"]); },
+    });
+
+    await initMenu(ctx).applyDockVisibility();
+
+    assert.deepStrictEqual(calls, [
+      ["setIcon", path.join(__dirname, "../assets/dock-icon.png")],
+      ["activation", "regular"],
+      ["setIcon", path.join(__dirname, "../assets/dock-icon.png")],
+      ["reapplyMacVisibility"],
+    ]);
+  });
+
+  it("hides Dock through accessory policy without redundant icon writes", async () => {
+    const calls = [];
+    const electron = fakeElectron();
+    electron.app = {
+      quit() {},
+      setActivationPolicy(policy) { calls.push(["activation", policy]); },
+      dock: {
+        setIcon(iconPath) { calls.push(["setIcon", iconPath]); },
+        show() { calls.push(["show"]); },
+        hide() { calls.push(["hide"]); },
+      },
+    };
+    const initMenu = loadMenuWithElectron(electron, null, "darwin");
+    const ctx = buildBaseCtx({
+      showDock: false,
+      reapplyMacVisibility() { calls.push(["reapplyMacVisibility"]); },
+    });
+
+    await initMenu(ctx).applyDockVisibility();
+
+    assert.deepStrictEqual(calls, [
+      ["activation", "accessory"],
+      ["reapplyMacVisibility"],
+    ]);
   });
 });

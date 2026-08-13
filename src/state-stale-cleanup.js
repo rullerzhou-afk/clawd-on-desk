@@ -6,6 +6,7 @@ const SESSION_STALE_MS = 600000;
 const WORKING_STALE_MS = 300000;
 const DETACHED_IDLE_STALE_MS = 30000;
 const CODEX_LOCAL_WORKING_STALE_FLOOR_MS = 20 * 60 * 1000;
+const OPENCODE_LOCAL_WORKING_STALE_FLOOR_MS = 20 * 60 * 1000;
 
 function isWorkingLikeState(state) {
   return state === "working" || state === "juggling" || state === "thinking";
@@ -15,6 +16,14 @@ function isLocalCodexWorkingLikeSession(session) {
   return !!session
     && session.agentId === "codex"
     && !session.host
+    && isWorkingLikeState(session.state);
+}
+
+function isLocalOpencodeWorkingLikeSession(session) {
+  return !!session
+    && session.agentId === "opencode"
+    && !session.host
+    && !session.headless
     && isWorkingLikeState(session.state);
 }
 
@@ -58,6 +67,21 @@ function getStaleSessionDecision(session, options = {}) {
     )
       ? config.codexLocalWorkingStaleFloorMs
       : CODEX_LOCAL_WORKING_STALE_FLOOR_MS;
+    workingStaleMs = Math.max(workingStaleMs, floor);
+    if (sessionStaleMs > 0) sessionStaleMs = Math.max(sessionStaleMs, floor);
+  }
+
+  if (isLocalOpencodeWorkingLikeSession(session)) {
+    // OpenCode tools can run silently for many minutes (for example, a long
+    // shell command). Keep the same bounded stale guard used for local Codex
+    // instead of letting the generic five-minute working timeout release the
+    // sleep blocker during a legitimate tool call.
+    const floor = (
+      Number.isFinite(config.opencodeLocalWorkingStaleFloorMs)
+      && config.opencodeLocalWorkingStaleFloorMs > 0
+    )
+      ? config.opencodeLocalWorkingStaleFloorMs
+      : OPENCODE_LOCAL_WORKING_STALE_FLOOR_MS;
     workingStaleMs = Math.max(workingStaleMs, floor);
     if (sessionStaleMs > 0) sessionStaleMs = Math.max(sessionStaleMs, floor);
   }
@@ -154,8 +178,10 @@ module.exports = {
   WORKING_STALE_MS,
   DETACHED_IDLE_STALE_MS,
   CODEX_LOCAL_WORKING_STALE_FLOOR_MS,
+  OPENCODE_LOCAL_WORKING_STALE_FLOOR_MS,
   isWorkingLikeState,
   isLocalCodexWorkingLikeSession,
+  isLocalOpencodeWorkingLikeSession,
   isLocalZcodeDesktopIdleSession,
   getStaleSessionDecision,
 };

@@ -43,6 +43,20 @@ function resolveCodexSessionDir(options = {}) {
 const POLL_INTERVAL_MS = 1500;
 const STALE_MS = 300000;
 const DELIVERY_FAILURE_EXIT_MS = 24 * 60 * 60 * 1000;
+const MAX_PARTIAL_BYTES = 65536;
+const MAX_POLL_READ_BYTES = 4 * 1024 * 1024;
+const MAX_POLL_TOTAL_REQUEST_BYTES = 16 * 1024 * 1024;
+const MAX_POLL_FILE_ATTEMPTS = 64;
+const MAX_STARTUP_RECOVERY_DISCOVERY_OPERATIONS_PER_POLL = 16;
+const MAX_REPLAY_WORK_ITEMS = 40;
+const MAX_BACKGROUND_REPLAY_WORK_ITEMS = 32;
+const MAX_DEFERRED_RECENT_PATHS = 192;
+const MAX_DEFERRED_BACKGROUND_PATHS = 64;
+const MAX_REPLAY_NO_PROGRESS_ATTEMPTS = 8;
+const REPLAY_NO_PROGRESS_TIMEOUT_MS = 30 * 1000;
+const REPLAY_RETRY_BASE_BACKOFF_MS = 30 * 1000;
+const REPLAY_RETRY_MAX_BACKOFF_MS = 5 * 60 * 1000;
+const RECOVERY_MAX_READ_ATTEMPTS = 8;
 
 function createDeliveryWatchdog(options = {}) {
   const now = typeof options.now === "function" ? options.now : Date.now;
@@ -100,6 +114,32 @@ const RECOVERY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const RECOVERY_SWEEP_MAX_FILES = 20;
 const RECOVERY_SWEEP_MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 
+function recoveryReadBudgetCost(size) {
+  const safeSize = Number.isFinite(Number(size)) ? Math.max(0, Number(size)) : 0;
+  // Head and tail are separate bounded reads and can overlap for small files.
+  return Math.min(safeSize, RECOVERY_HEAD_LINE_MAX_BYTES)
+    + Math.min(safeSize, RECOVERY_TAIL_SCAN_BYTES)
+    + (safeSize > RECOVERY_TAIL_SCAN_BYTES ? 1 : 0);
+}
+
+function recoverySnapshotStatus(before, after) {
+  if (!after) return "missing";
+  if (after.size < before.size) return "changed";
+  if (after.size > before.size) return "grew";
+  if (after.mtimeMs !== before.mtimeMs) return "changed";
+  return "stable";
+}
+
+function emitRecoveredPendingUserInputs(entry, options = {}) {
+  if (!entry || entry.isSubagent) return;
+  const postStateFn = typeof options.postState === "function" ? options.postState : postState;
+  for (const request of entry.pendingUserInputs.values()) {
+    postStateFn(entry.sessionId, "notification", "CodexUserInputRequest", entry.cwd, false, {
+      codexUserInput: request,
+    });
+  }
+}
+
 // JSONL record type[:subtype] → pet state. This standalone remote monitor keeps
 // a zero-dep subset of agents/codex.js because it posts final states directly
 // and does not carry the full local monitor's turn-end/approval heuristics.
@@ -129,13 +169,21 @@ const hostPrefix = readHostPrefix();
 
 // ── State tracking ──
 
-// Map<filePath, { offset, sessionId, cwd, lastEventTime, lastState, partial }>
+// Map<filePath, { offset, sessionId, cwd, lastEventTime, lastState }>
 const tracked = new Map();
-// One-shot: the first poll() is allowed to open files outside the 2-minute
-// active window to check for a still-unresolved request_user_input. Every
-// later poll reverts to the cheap mtime-only gate below — this is a startup
-// recovery sweep, not an ongoing scan of Codex's full history.
+const replayWork = new Map();
+const deferredRecent = new Map();
+const deferredBackground = new Map();
+let pollCursor = 0;
+// One-shot startup recovery can span bounded poll slices while its path cursor
+// checks files outside the 2-minute active window for a still-unresolved
+// request_user_input. Once complete, later polls use the cheap mtime-only gate.
 let didInitialRecoveryScan = false;
+const startupRecoveryCandidates = new Map();
+let startupRecoveryWalker = null;
+let startupRecoveryReady = false;
+let startupRecoveryFilesScanned = 0;
+let startupRecoveryBytesScanned = 0;
 
 // ── Core polling logic (mirrors agents/codex-log-monitor.js) ──
 
@@ -386,13 +434,14 @@ function processLine(line, entry, options = {}) {
 // request_user_input records — does not touch `tracked` and does not run
 // the normal event pipeline. Used only by poll()'s one-time startup sweep to
 // decide whether a file outside the active window is worth attaching to.
-// Returns a ready-to-track entry (already caught up to EOF, so normal
-// polling only reads NEW bytes from here on) or null if nothing is pending.
+// Returns a ready-to-track entry whose offset stops after the last complete
+// newline in the recovery window; an incomplete tail remains on disk for the
+// normal poll to reread after it is completed.
 // If found, also emits the recovered CodexUserInputRequest(s) directly —
 // pollFile is deliberately NOT called on the same file, because it has no
 // backfill/silent-replay concept and would replay this file's entire
 // ordinary history as if it were live.
-// Returns { text, bytesRead }. bytesRead is the TRUE byte count read from
+// Returns { text, bytesRead, buf }. bytesRead is the TRUE byte count read from
 // disk — callers doing offset math must use it, not Buffer.byteLength(text):
 // if `start` lands mid-character in a multi-byte UTF-8 sequence (any
 // non-ASCII content — CJK cwd/output is common), decoding replaces the
@@ -403,15 +452,19 @@ function processLine(line, entry, options = {}) {
 // elsewhere as a truncated/rotated file and triggers a full replay from 0 —
 // the exact unbounded read this sweep exists to avoid.
 function readByteRange(filePath, start, length) {
-  if (length <= 0) return { text: "", bytesRead: 0 };
+  if (length <= 0) return { text: "", bytesRead: 0, buf: Buffer.alloc(0) };
   let fd;
   try {
     fd = fs.openSync(filePath, "r");
     const buf = Buffer.alloc(length);
     const bytesRead = fs.readSync(fd, buf, 0, length, start);
-    return { text: buf.toString("utf8", 0, bytesRead), bytesRead };
+    return {
+      text: buf.toString("utf8", 0, bytesRead),
+      bytesRead,
+      buf: buf.subarray(0, bytesRead),
+    };
   } catch {
-    return { text: "", bytesRead: 0 };
+    return { text: "", bytesRead: 0, buf: Buffer.alloc(0) };
   } finally {
     if (fd !== undefined) {
       try { fs.closeSync(fd); } catch {}
@@ -429,26 +482,52 @@ function readByteRange(filePath, start, length) {
 // no newline is found within budget — the caller must fail closed, not
 // guess a role.
 function readCompleteFirstLine(filePath, statSize, maxBytes) {
-  // Reads only the NEW portion at each step (not a fresh 0..chunkSize read
-  // every retry) so the physical bytes read never exceed maxBytes even in
-  // the worst case — the recovery sweep's total-byte budget assumes this
-  // function never reads more than maxBytes per file (#707 follow-up review
-  // round 4).
   let readSoFar = 0;
-  let text = "";
-  let target = Math.min(statSize, 8 * 1024, maxBytes);
-  for (;;) {
-    const additional = target - readSoFar;
-    if (additional > 0) {
-      const { text: chunkText } = readByteRange(filePath, readSoFar, additional);
-      text += chunkText;
-      readSoFar = target;
-    }
-    const newlineIdx = text.indexOf("\n");
-    if (newlineIdx !== -1) return text.slice(0, newlineIdx);
-    if (readSoFar >= statSize || readSoFar >= maxBytes) return null;
-    target = Math.min(readSoFar * 4, maxBytes, statSize);
+  let requestedTotal = 0;
+  const requestBudget = Math.min(statSize, maxBytes);
+  let attempts = 0;
+  const chunks = [];
+  const requestQuantum = Math.max(1, Math.ceil(requestBudget / RECOVERY_MAX_READ_ATTEMPTS));
+  while (requestedTotal < requestBudget && attempts < RECOVERY_MAX_READ_ATTEMPTS) {
+    const requestLength = Math.min(requestQuantum, requestBudget - requestedTotal);
+    attempts += 1;
+    requestedTotal += requestLength;
+    const { bytesRead, buf } = readByteRange(filePath, readSoFar, requestLength);
+    if (!Number.isFinite(bytesRead) || bytesRead <= 0) return null;
+    chunks.push(buf);
+    readSoFar += bytesRead;
+    const raw = Buffer.concat(chunks, readSoFar);
+    const newlineIdx = raw.indexOf(0x0a);
+    if (newlineIdx !== -1) return raw.subarray(0, newlineIdx).toString("utf8");
   }
+  return null;
+}
+
+function readExactRange(filePath, start, length) {
+  if (length <= 0) return { buf: Buffer.alloc(0), complete: true };
+  const chunks = [];
+  let bytesReadTotal = 0;
+  let requestedTotal = 0;
+  let attempts = 0;
+  const requestQuantum = Math.max(1, Math.ceil(length / RECOVERY_MAX_READ_ATTEMPTS));
+  while (bytesReadTotal < length && attempts < RECOVERY_MAX_READ_ATTEMPTS) {
+    const requestLength = Math.min(
+      length - bytesReadTotal,
+      length - requestedTotal,
+      requestQuantum
+    );
+    if (requestLength <= 0) break;
+    attempts += 1;
+    requestedTotal += requestLength;
+    const result = readByteRange(filePath, start + bytesReadTotal, requestLength);
+    if (!result || !Number.isFinite(result.bytesRead) || result.bytesRead <= 0) break;
+    chunks.push(result.buf);
+    bytesReadTotal += result.bytesRead;
+  }
+  return {
+    buf: Buffer.concat(chunks, bytesReadTotal),
+    complete: bytesReadTotal === length,
+  };
 }
 
 // Bounded, standalone pass over an otherwise-ignored old file — does not
@@ -465,11 +544,13 @@ function readCompleteFirstLine(filePath, statSize, maxBytes) {
 // function_call_output (Codex killed mid-turn, terminal closed, etc. leave
 // exactly this shape). Mirrors agents/codex-log-monitor.js's local fix.
 function recoverStalePendingUserInputEntry(filePath, fileName, options = {}) {
-  let stat;
-  try {
-    stat = fs.statSync(filePath);
-  } catch {
-    return null;
+  let stat = options.preStat || null;
+  if (!stat) {
+    try {
+      stat = fs.statSync(filePath);
+    } catch {
+      return null;
+    }
   }
   if (stat.size === 0 || Date.now() - stat.mtimeMs > RECOVERY_MAX_AGE_MS) return null;
   const sessionId = extractSessionId(fileName);
@@ -505,18 +586,29 @@ function recoverStalePendingUserInputEntry(filePath, fileName, options = {}) {
   // A non-zero tailStart can still be an exact record boundary. Inspect the
   // preceding byte before deciding whether the first scanned line is only a
   // fragment; otherwise a request starting exactly 1 MiB from EOF is lost.
-  const tailStartsOnRecordBoundary = tailStart === 0
-    || readByteRange(filePath, tailStart - 1, 1).text === "\n";
-  const { text: tailText, bytesRead: tailBytesRead } = readByteRange(filePath, tailStart, tailLen);
+  const preceding = tailStart === 0
+    ? { buf: Buffer.from([0x0a]), complete: true }
+    : readExactRange(filePath, tailStart - 1, 1);
+  if (!preceding.complete) return null;
+  const tailStartsOnRecordBoundary = tailStart === 0 || preceding.buf[0] === 0x0a;
+  const tailRead = readExactRange(filePath, tailStart, tailLen);
+  if (!tailRead.complete) return null;
+  let readPostStat = null;
+  try {
+    readPostStat = fs.statSync(filePath);
+  } catch {}
+  const readSnapshotStatus = recoverySnapshotStatus(stat, readPostStat);
+  if (readSnapshotStatus === "missing" || readSnapshotStatus === "changed") return null;
+  const lastNewlineInTail = tailRead.buf.lastIndexOf(0x0a);
+  if (lastNewlineInTail < 0) return null;
+  const committedTailBytes = lastNewlineInTail + 1;
+  const tailText = tailRead.buf.toString("utf8", 0, committedTailBytes);
   const rawLines = tailText.split("\n");
   // Drop the first fragment only when the preceding byte proves the window
   // really started mid-line. At an exact newline boundary, the first line is
   // a complete record and must be retained.
   if (!tailStartsOnRecordBoundary) rawLines.shift();
-  // The window always ends at true EOF, so a non-empty last element is a
-  // genuinely incomplete final line — preserve it the same way pollFile's
-  // own `entry.partial` does, instead of consuming those bytes unparsed.
-  const trailingPartial = rawLines.pop() || "";
+  rawLines.pop();
 
   const pending = new Map();
   const pendingTimestampMs = new Map();
@@ -559,11 +651,10 @@ function recoverStalePendingUserInputEntry(filePath, fileName, options = {}) {
     return null;
   }
 
-  // Advance PAST the partial's bytes using the TRUE bytes read (mirrors
-  // pollFile's own `entry.offset = stat.size` convention) — `partial` is
-  // what reconstructs the line once the rest of it lands on a normal poll.
   const entry = {
-    offset: tailStart + tailBytesRead,
+    // Stop after the last complete newline. The incomplete tail remains on
+    // disk and is reread whole by pollFile after it is completed.
+    offset: tailStart + committedTailBytes,
     sessionId: "codex:" + sessionId,
     cwd,
     isSubagent,
@@ -574,33 +665,35 @@ function recoverStalePendingUserInputEntry(filePath, fileName, options = {}) {
     codexQuotaProviderHint: null,
     pendingUserInputs: pending,
     initializing: false,
-    partial: trailingPartial,
     stale: false,
   };
 
-  if (!isSubagent) {
-    const postStateFn = typeof options.postState === "function" ? options.postState : postState;
-    for (const request of pending.values()) {
-      postStateFn(entry.sessionId, "notification", "CodexUserInputRequest", entry.cwd, false, {
-        codexUserInput: request,
-      });
-    }
-  }
+  if (options.deferEmit !== true) emitRecoveredPendingUserInputs(entry, options);
   return entry;
 }
 
 function pollFile(filePath, fileName, options = {}) {
+  const now = typeof options.now === "function" ? options.now() : Date.now();
+  const existingEntry = tracked.get(filePath) || null;
+  if (
+    existingEntry
+    && Number.isFinite(existingEntry.readBackoffUntil)
+    && now < existingEntry.readBackoffUntil
+  ) {
+    return { kind: "backoff", requestedBytes: 0, bytesRead: 0 };
+  }
   let stat;
   try {
-    stat = fs.statSync(filePath);
+    stat = options.preStat || fs.statSync(filePath);
   } catch {
-    return;
+    markRemoteReplayNoProgress(filePath, tracked.get(filePath), options);
+    return { kind: "error", requestedBytes: 0, bytesRead: 0 };
   }
 
   let entry = tracked.get(filePath);
   if (!entry) {
     const sessionId = extractSessionId(fileName);
-    if (!sessionId) return;
+    if (!sessionId) return { kind: "ignored", requestedBytes: 0, bytesRead: 0 };
     entry = {
       offset: 0,
       sessionId: "codex:" + sessionId,
@@ -613,17 +706,24 @@ function pollFile(filePath, fileName, options = {}) {
       codexQuotaProviderHint: null,
       pendingUserInputs: new Map(),
       initializing: true,
-      partial: "",
       stale: false,
     };
+    if (!admitRemoteReplay(filePath, fileName, entry, stat)) {
+      return { kind: "deferred", requestedBytes: 0, bytesRead: 0 };
+    }
     tracked.set(filePath, entry);
+  } else if (entry.initializing && !replayWork.has(filePath)) {
+    if (!admitRemoteReplay(filePath, fileName, entry, stat)) {
+      tracked.delete(filePath);
+      return { kind: "deferred", requestedBytes: 0, bytesRead: 0 };
+    }
   }
 
   // Truncation guard: a retained offset can outlive the bytes it points into.
   // If the file is now smaller than our offset the offset is meaningless —
-  // restart from 0 and drop any buffered partial, otherwise we'd skip the whole
-  // file forever (and splice a stale partial onto fresh bytes). Mirrors the
-  // local monitor's `stat.size >= retired.offset ? retired.offset : 0` guard.
+  // restart from 0 and clear staged pending input, otherwise we'd skip the
+  // whole replacement forever. Incomplete JSONL tails stay on disk and do not
+  // have a separate in-memory partial buffer.
   //
   // Known limitation (size-only): this does NOT catch a same-size or larger
   // in-place replacement of a same-named file — only file-identity tracking
@@ -633,43 +733,247 @@ function pollFile(filePath, fileName, options = {}) {
   // uncaught cases can't occur in practice and aren't worth the cross-platform
   // identity bookkeeping on an already-large monitor.
   if (stat.size < entry.offset) {
+    if (entry.pendingUserInputs instanceof Map) entry.pendingUserInputs.clear();
     entry.offset = 0;
-    entry.partial = "";
+    entry.initializing = true;
+    replayWork.delete(filePath);
+    if (!admitRemoteReplay(filePath, fileName, entry, stat)) {
+      tracked.delete(filePath);
+      return { kind: "deferred", requestedBytes: 0, bytesRead: 0 };
+    }
   }
 
-  if (stat.size <= entry.offset) return;
+  if (Number.isFinite(entry.readBackoffUntil) && now < entry.readBackoffUntil) {
+    return { kind: "backoff", requestedBytes: 0, bytesRead: 0 };
+  }
+  recordRemoteValidatedSnapshot(filePath, stat.size);
+  if (stat.size <= entry.offset) {
+    finalizeRemoteReplay(filePath, entry, options);
+    return { kind: "eof", requestedBytes: 0, bytesRead: 0 };
+  }
 
   let buf;
+  let fd = null;
+  let bytesRead = 0;
+  let readLen = 0;
+  const readStartOffset = entry.offset;
   try {
-    const fd = fs.openSync(filePath, "r");
-    const readLen = stat.size - entry.offset;
+    fd = fs.openSync(filePath, "r");
+    readLen = Math.min(stat.size - entry.offset, MAX_POLL_READ_BYTES);
+    if (
+      options.pollContext
+      && Number.isFinite(options.pollContext.remainingRequestBytes)
+      && options.pollContext.remainingRequestBytes < readLen
+    ) {
+      return { kind: "budget", requestedBytes: 0, bytesRead: 0 };
+    }
+    if (options.pollContext && Number.isFinite(options.pollContext.remainingRequestBytes)) {
+      options.pollContext.remainingRequestBytes -= readLen;
+    }
     buf = Buffer.alloc(readLen);
-    fs.readSync(fd, buf, 0, readLen, entry.offset);
-    fs.closeSync(fd);
+    bytesRead = fs.readSync(fd, buf, 0, readLen, entry.offset);
   } catch {
-    return;
+    markRemoteReplayNoProgress(filePath, entry, options);
+    return { kind: "error", requestedBytes: readLen, bytesRead: 0 };
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch {}
+    }
   }
-  entry.offset = stat.size;
+  if (!Number.isFinite(bytesRead) || bytesRead <= 0) {
+    markRemoteReplayNoProgress(filePath, entry, options);
+    return { kind: "no-progress", requestedBytes: readLen, bytesRead: 0 };
+  }
+  buf = buf.subarray(0, Math.min(bytesRead, buf.length));
+  const scannedToSnapshotEnd = readStartOffset + bytesRead >= stat.size;
+  const lastNewline = buf.lastIndexOf(0x0a);
+  if (lastNewline < 0) {
+    const fullRead = bytesRead === readLen;
+    const mayDiscard = buf.length > MAX_PARTIAL_BYTES
+      && fullRead
+      && (readLen === MAX_POLL_READ_BYTES || scannedToSnapshotEnd);
+    if (mayDiscard) {
+      entry.offset += bytesRead;
+      markRemoteReplayProgress(filePath, entry);
+    } else if (!scannedToSnapshotEnd) {
+      markRemoteReplayNoProgress(filePath, entry, options);
+    }
+    if (scannedToSnapshotEnd) finalizeRemoteReplay(filePath, entry, options);
+    return {
+      kind: mayDiscard ? "discarded" : "incomplete",
+      requestedBytes: readLen,
+      bytesRead,
+    };
+  }
 
-  const text = entry.partial + buf.toString("utf8");
+  const committedBytes = lastNewline + 1;
+  const text = buf.subarray(0, committedBytes).toString("utf8");
+  entry.offset += committedBytes;
+  markRemoteReplayProgress(filePath, entry);
   const lines = text.split("\n");
-  entry.partial = lines.pop() || "";
+  lines.pop();
 
   for (const line of lines) {
     if (!line.trim()) continue;
     processLine(line, entry, options);
   }
-  if (entry.initializing) {
-    entry.initializing = false;
-    if (!entry.isSubagent && entry.pendingUserInputs instanceof Map) {
-      const postStateFn = typeof options.postState === "function" ? options.postState : postState;
-      for (const request of entry.pendingUserInputs.values()) {
-        postStateFn(entry.sessionId, "notification", "CodexUserInputRequest", entry.cwd, false, {
-          codexUserInput: request,
-        });
-      }
+  if (scannedToSnapshotEnd) finalizeRemoteReplay(filePath, entry, options);
+  return { kind: "progress", requestedBytes: readLen, bytesRead };
+}
+
+function admitRemoteReplay(filePath, fileName, entry, stat) {
+  if (replayWork.has(filePath)) return true;
+  const deferred = deferredRecent.get(filePath) || deferredBackground.get(filePath);
+  const lane = Date.now() - stat.mtimeMs <= 120000 ? "recent" : "background";
+  let backgroundCount = 0;
+  for (const item of replayWork.values()) {
+    if (item.lane === "background") backgroundCount += 1;
+  }
+  if (
+    replayWork.size >= MAX_REPLAY_WORK_ITEMS
+    || (lane === "background" && backgroundCount >= MAX_BACKGROUND_REPLAY_WORK_ITEMS)
+  ) {
+    enqueueRemoteDeferred(filePath, fileName, stat, lane);
+    return false;
+  }
+  replayWork.set(filePath, {
+    filePath,
+    fileName,
+    entry,
+    lane,
+    consecutiveNoProgress: 0,
+    lastProgressAt: Date.now(),
+    hasValidatedSnapshot: false,
+    lastValidatedSnapshotSize: null,
+    retryLevel: deferred && Number.isFinite(deferred.retryLevel) ? deferred.retryLevel : 0,
+  });
+  deferredRecent.delete(filePath);
+  deferredBackground.delete(filePath);
+  return true;
+}
+
+function enqueueRemoteDeferred(filePath, fileName, stat, forcedLane = null, retry = null) {
+  const lane = forcedLane || (Date.now() - stat.mtimeMs <= 120000 ? "recent" : "background");
+  const queue = lane === "recent" ? deferredRecent : deferredBackground;
+  const limit = lane === "recent" ? MAX_DEFERRED_RECENT_PATHS : MAX_DEFERRED_BACKGROUND_PATHS;
+  if (queue.has(filePath)) queue.delete(filePath);
+  queue.set(filePath, {
+    filePath,
+    fileName,
+    lane,
+    mtimeMs: stat.mtimeMs,
+    notBefore: retry && Number.isFinite(retry.notBefore) ? retry.notBefore : 0,
+    retryLevel: retry && Number.isFinite(retry.retryLevel) ? retry.retryLevel : 0,
+  });
+  while (queue.size > limit) queue.delete(queue.keys().next().value);
+}
+
+function backoffRemoteDeferredStatFailure(entry, options = {}) {
+  if (!entry) return;
+  const retryLevel = Math.min(5, Math.max(0, Number(entry.retryLevel) || 0) + 1);
+  const backoffMs = Math.min(
+    REPLAY_RETRY_MAX_BACKOFF_MS,
+    REPLAY_RETRY_BASE_BACKOFF_MS * (2 ** (retryLevel - 1))
+  );
+  const now = typeof options.now === "function" ? options.now() : Date.now();
+  entry.retryLevel = retryLevel;
+  entry.notBefore = now + backoffMs;
+}
+
+function recordRemoteValidatedSnapshot(filePath, snapshotSize) {
+  const item = replayWork.get(filePath);
+  if (!item) return;
+  item.hasValidatedSnapshot = true;
+  item.lastValidatedSnapshotSize = snapshotSize;
+}
+
+function markRemoteReplayProgress(filePath, entry) {
+  const item = replayWork.get(filePath);
+  if (item) {
+    item.consecutiveNoProgress = 0;
+    item.lastProgressAt = Date.now();
+    item.retryLevel = 0;
+  }
+  if (entry) {
+    entry.readBackoffUntil = 0;
+    entry.readBackoffLevel = 0;
+  }
+}
+
+function markRemoteReplayNoProgress(filePath, entry, options = {}) {
+  const item = replayWork.get(filePath);
+  if (!entry) return;
+  if (!item) {
+    scheduleRemotePostBaselineReadBackoff(entry, options);
+    return;
+  }
+  item.consecutiveNoProgress += 1;
+  const now = typeof options.now === "function" ? options.now() : Date.now();
+  if (
+    item.consecutiveNoProgress < MAX_REPLAY_NO_PROGRESS_ATTEMPTS
+    || now - item.lastProgressAt < REPLAY_NO_PROGRESS_TIMEOUT_MS
+  ) return;
+  const retryLevel = Math.min(
+    5,
+    Math.max(Number(entry.readBackoffLevel) || 0, Number(item.retryLevel) || 0) + 1
+  );
+  const backoffMs = Math.min(
+    REPLAY_RETRY_MAX_BACKOFF_MS,
+    REPLAY_RETRY_BASE_BACKOFF_MS * (2 ** (retryLevel - 1))
+  );
+  if (!item.hasValidatedSnapshot) {
+    if (entry.pendingUserInputs instanceof Map) entry.pendingUserInputs.clear();
+    tracked.delete(filePath);
+    replayWork.delete(filePath);
+    enqueueRemoteDeferred(filePath, item.fileName, { mtimeMs: now }, item.lane, {
+      notBefore: now + backoffMs,
+      retryLevel,
+    });
+    return;
+  }
+  if (entry.pendingUserInputs instanceof Map) entry.pendingUserInputs.clear();
+  entry.offset = item.lastValidatedSnapshotSize;
+  entry.initializing = false;
+  entry.readBackoffUntil = now + backoffMs;
+  entry.readBackoffLevel = retryLevel;
+  replayWork.delete(filePath);
+}
+
+function scheduleRemotePostBaselineReadBackoff(entry, options = {}) {
+  if (!entry || !(Number(entry.readBackoffLevel) > 0)) return false;
+  const now = typeof options.now === "function" ? options.now() : Date.now();
+  if (Number.isFinite(entry.readBackoffUntil) && now < entry.readBackoffUntil) return true;
+  const retryLevel = Math.min(5, Number(entry.readBackoffLevel) + 1);
+  const backoffMs = Math.min(
+    REPLAY_RETRY_MAX_BACKOFF_MS,
+    REPLAY_RETRY_BASE_BACKOFF_MS * (2 ** (retryLevel - 1))
+  );
+  entry.readBackoffUntil = now + backoffMs;
+  entry.readBackoffLevel = retryLevel;
+  return true;
+}
+
+function finalizeRemoteReplay(filePath, entry, options = {}) {
+  if (!entry || !entry.initializing) {
+    replayWork.delete(filePath);
+    return;
+  }
+  entry.initializing = false;
+  const inWindow = options.inWindow !== false;
+  if (!inWindow) {
+    if (entry.pendingUserInputs instanceof Map) entry.pendingUserInputs.clear();
+    replayWork.delete(filePath);
+    return;
+  }
+  if (!entry.isSubagent && entry.pendingUserInputs instanceof Map) {
+    const postStateFn = typeof options.postState === "function" ? options.postState : postState;
+    for (const request of entry.pendingUserInputs.values()) {
+      postStateFn(entry.sessionId, "notification", "CodexUserInputRequest", entry.cwd, false, {
+        codexUserInput: request,
+      });
     }
   }
+  replayWork.delete(filePath);
 }
 
 // Post a one-shot "sleeping" after a session goes idle, but KEEP the tracked
@@ -682,6 +986,12 @@ function cleanStaleFiles(options = {}) {
   const now = typeof options.now === "function" ? options.now() : Date.now();
   const postStateFn = typeof options.postState === "function" ? options.postState : postState;
   for (const [, entry] of tracked) {
+    // Initial replay can legitimately span minutes under the bounded 4 MiB /
+    // file and 16 MiB / poll budgets. Its lastEventTime describes attach or a
+    // staged historical record, not a committed live-idle interval. Publishing
+    // sleeping before replay reaches its snapshot EOF creates a false state
+    // transition that the initialization gate is meant to suppress.
+    if (entry.initializing) continue;
     if (!entry.stale && now - entry.lastEventTime > STALE_MS) {
       postStateFn(entry.sessionId, "sleeping", "stale-cleanup", entry.cwd, entry.isSubagent);
       entry.stale = true;
@@ -698,7 +1008,7 @@ function pruneTrackedOutOfWindow(options = {}) {
   const dirs = (typeof options.getSessionDirs === "function" ? options.getSessionDirs : getSessionDirs)();
   const inWindow = new Set(dirs);
   for (const filePath of Array.from(tracked.keys())) {
-    if (!inWindow.has(path.dirname(filePath))) tracked.delete(filePath);
+    if (!inWindow.has(path.dirname(filePath)) && !replayWork.has(filePath)) tracked.delete(filePath);
   }
 }
 
@@ -708,24 +1018,239 @@ function runRecoverySweep(candidates, options = {}) {
   let bytesScanned = 0;
   for (const candidate of candidates) {
     if (filesScanned >= RECOVERY_SWEEP_MAX_FILES) break;
-    const candidateCost = Math.min(
-      candidate.size,
-      RECOVERY_HEAD_LINE_MAX_BYTES + RECOVERY_TAIL_SCAN_BYTES + 1
-    );
+    let stat;
+    try {
+      stat = fs.statSync(candidate.filePath);
+    } catch {
+      continue;
+    }
+    const candidateCost = recoveryReadBudgetCost(stat.size);
     // Check BEFORE adding — accumulating post-hoc lets exactly one
     // over-budget candidate slip through every time the running total lands
     // just under the cap (#707 follow-up review round 4).
     if (bytesScanned + candidateCost > RECOVERY_SWEEP_MAX_TOTAL_BYTES) break;
     filesScanned += 1;
     bytesScanned += candidateCost;
-    const recovered = recoverStalePendingUserInputEntry(candidate.filePath, candidate.file, options);
-    if (recovered) tracked.set(candidate.filePath, recovered);
+    const recovered = recoverStalePendingUserInputEntry(candidate.filePath, candidate.file, {
+      ...options,
+      preStat: stat,
+      deferEmit: true,
+    });
+    let postStat = null;
+    try {
+      postStat = fs.statSync(candidate.filePath);
+    } catch {}
+    const snapshotStatus = recoverySnapshotStatus(stat, postStat);
+    if (snapshotStatus === "missing" || snapshotStatus === "changed") continue;
+    if (recovered) {
+      tracked.set(candidate.filePath, recovered);
+      emitRecoveredPendingUserInputs(recovered, options);
+    }
   }
 }
 
-function poll() {
-  const dirs = getSessionDirs();
-  const recoveryCandidates = [];
+function collectRemoteDeferredCandidates() {
+  const out = [];
+  const now = Date.now();
+  const recent = [...deferredRecent.values()]
+    .filter((entry) => !Number.isFinite(entry.notBefore) || entry.notBefore <= now);
+  const background = [...deferredBackground.values()]
+    .filter((entry) => !Number.isFinite(entry.notBefore) || entry.notBefore <= now);
+  let recentIndex = 0;
+  let backgroundIndex = 0;
+  while (
+    out.length < MAX_REPLAY_WORK_ITEMS
+    && (recentIndex < recent.length || backgroundIndex < background.length)
+  ) {
+    for (let i = 0; i < 3 && recentIndex < recent.length; i += 1) {
+      out.push(recent[recentIndex]);
+      recentIndex += 1;
+    }
+    if (backgroundIndex < background.length) {
+      out.push(background[backgroundIndex]);
+      backgroundIndex += 1;
+    } else if (recentIndex >= recent.length) {
+      break;
+    }
+  }
+  return out;
+}
+
+function insertRemoteRecoveryCandidate(candidate) {
+  startupRecoveryCandidates.set(candidate.filePath, candidate);
+  if (startupRecoveryCandidates.size <= RECOVERY_SWEEP_MAX_FILES) return;
+  let oldestPath = null;
+  let oldestMtime = Infinity;
+  for (const [filePath, entry] of startupRecoveryCandidates) {
+    if (entry.mtimeMs < oldestMtime) {
+      oldestMtime = entry.mtimeMs;
+      oldestPath = filePath;
+    }
+  }
+  if (oldestPath) startupRecoveryCandidates.delete(oldestPath);
+}
+
+function walkRemoteStartupRecoveryDiscovery(dirs, context) {
+  if (!startupRecoveryWalker) {
+    startupRecoveryWalker = {
+      dirs: [...dirs],
+      dirIndex: 0,
+      files: null,
+      fileIndex: 0,
+    };
+  }
+  const walker = startupRecoveryWalker;
+  const observed = new Map();
+  let operations = 0;
+  while (
+    walker.dirIndex < walker.dirs.length
+    && operations < MAX_STARTUP_RECOVERY_DISCOVERY_OPERATIONS_PER_POLL
+    && context.remainingAttempts > 0
+  ) {
+    const dir = walker.dirs[walker.dirIndex];
+    if (!walker.files) {
+      operations += 1;
+      try {
+        walker.files = fs.readdirSync(dir)
+          .filter((file) => file.startsWith("rollout-") && file.endsWith(".jsonl"));
+      } catch {
+        walker.files = [];
+      }
+      walker.fileIndex = 0;
+    }
+    if (walker.fileIndex >= walker.files.length) {
+      walker.dirIndex += 1;
+      walker.files = null;
+      walker.fileIndex = 0;
+      continue;
+    }
+    const file = walker.files[walker.fileIndex];
+    walker.fileIndex += 1;
+    operations += 1;
+    context.remainingAttempts -= 1;
+    const filePath = path.join(dir, file);
+    let stat = null;
+    try {
+      stat = fs.statSync(filePath);
+    } catch {}
+    observed.set(filePath, stat);
+    const deferred = deferredRecent.get(filePath) || deferredBackground.get(filePath);
+    if (
+      stat
+      && !tracked.has(filePath)
+      && !(deferred && Date.now() < deferred.notBefore)
+      && Date.now() - stat.mtimeMs > 120000
+    ) {
+      insertRemoteRecoveryCandidate({
+        filePath,
+        file,
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+      });
+    }
+  }
+  if (walker.dirIndex >= walker.dirs.length) {
+    startupRecoveryWalker = null;
+    startupRecoveryReady = true;
+  }
+  return observed;
+}
+
+function runReadyRemoteRecovery(context) {
+  const candidates = [...startupRecoveryCandidates.values()]
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  let pausedForAttempts = false;
+  for (const candidate of candidates) {
+    if (startupRecoveryFilesScanned >= RECOVERY_SWEEP_MAX_FILES) break;
+    if (context.remainingAttempts <= 0) {
+      pausedForAttempts = true;
+      break;
+    }
+    context.remainingAttempts -= 1;
+    const deferred = deferredRecent.get(candidate.filePath) || deferredBackground.get(candidate.filePath);
+    let stat = null;
+    try {
+      stat = fs.statSync(candidate.filePath);
+    } catch {}
+    // A cached recovery candidate is advisory only. Normal polling may have
+    // attached or deferred the path while discovery was paused across polls;
+    // never replace that newer state or emit its pending request twice.
+    if (
+      !stat
+      || tracked.has(candidate.filePath)
+      || replayWork.has(candidate.filePath)
+      || deferred
+      || Date.now() - stat.mtimeMs <= 120000
+    ) {
+      startupRecoveryCandidates.delete(candidate.filePath);
+      continue;
+    }
+    const candidateCost = recoveryReadBudgetCost(stat.size);
+    if (startupRecoveryBytesScanned + candidateCost > RECOVERY_SWEEP_MAX_TOTAL_BYTES) break;
+    startupRecoveryFilesScanned += 1;
+    startupRecoveryBytesScanned += candidateCost;
+    const recoveryOptions = { ...(context.options || {}), preStat: stat, deferEmit: true };
+    const recovered = recoverStalePendingUserInputEntry(
+      candidate.filePath,
+      candidate.file,
+      recoveryOptions
+    );
+    let postStat = null;
+    try {
+      postStat = fs.statSync(candidate.filePath);
+    } catch {}
+    const snapshotStatus = recoverySnapshotStatus(stat, postStat);
+    if (snapshotStatus === "missing") {
+      startupRecoveryCandidates.delete(candidate.filePath);
+      continue;
+    }
+    if (snapshotStatus === "changed") {
+      pausedForAttempts = true;
+      continue;
+    }
+    if (recovered) {
+      tracked.set(candidate.filePath, recovered);
+      emitRecoveredPendingUserInputs(recovered, recoveryOptions);
+    } else if (snapshotStatus === "grew") {
+      pausedForAttempts = true;
+      continue;
+    }
+    // A recovery pass may span polls when the shared attempt budget is spent.
+    // Retire completed candidates so resuming cannot emit them twice.
+    startupRecoveryCandidates.delete(candidate.filePath);
+  }
+  if (pausedForAttempts) return false;
+  didInitialRecoveryScan = true;
+  startupRecoveryReady = false;
+  startupRecoveryCandidates.clear();
+  startupRecoveryWalker = null;
+  startupRecoveryFilesScanned = 0;
+  startupRecoveryBytesScanned = 0;
+  return true;
+}
+
+function poll(options = {}) {
+  const getDirs = typeof options.getSessionDirs === "function"
+    ? options.getSessionDirs
+    : getSessionDirs;
+  const dirs = getDirs();
+  const inWindow = new Set(dirs);
+  const context = {
+    remainingAttempts: MAX_POLL_FILE_ATTEMPTS,
+    remainingRequestBytes: MAX_POLL_TOTAL_REQUEST_BYTES,
+    options,
+  };
+  const startupObserved = !didInitialRecoveryScan && !startupRecoveryReady
+    ? walkRemoteStartupRecoveryDiscovery(dirs, context)
+    : new Map();
+  if (startupRecoveryReady && !didInitialRecoveryScan) runReadyRemoteRecovery(context);
+  const candidates = [];
+  for (const deferred of collectRemoteDeferredCandidates()) {
+    candidates.push({ ...deferred, source: "deferred" });
+  }
+  for (const item of replayWork.values()) {
+    candidates.push({ filePath: item.filePath, fileName: item.fileName, source: "replay" });
+  }
   for (const dir of dirs) {
     let files;
     try {
@@ -733,36 +1258,75 @@ function poll() {
     } catch {
       continue;
     }
-    const now = Date.now();
     for (const file of files) {
       if (!file.startsWith("rollout-") || !file.endsWith(".jsonl")) continue;
       const filePath = path.join(dir, file);
-      if (!tracked.has(filePath)) {
-        let stat;
-        try {
-          stat = fs.statSync(filePath);
-        } catch { continue; }
-        if (now - stat.mtimeMs > 120000) {
-          // Only the one-time startup sweep may even consider it. Collected
-          // here, not read yet: candidates are sorted and budgeted in
-          // runRecoverySweep so an unbounded NUMBER of stale files can't add
-          // up to unbounded blocking even though each individual read is
-          // already capped.
-          if (!didInitialRecoveryScan) {
-            recoveryCandidates.push({ filePath, file, mtimeMs: stat.mtimeMs, size: stat.size });
-          }
-          continue;
-        }
-      }
-      pollFile(filePath, file);
+      candidates.push({ filePath, fileName: file, source: "normal" });
     }
   }
-  if (!didInitialRecoveryScan) {
-    runRecoverySweep(recoveryCandidates);
-    didInitialRecoveryScan = true;
+
+  const unique = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    if (!candidate.filePath || seen.has(candidate.filePath)) continue;
+    seen.add(candidate.filePath);
+    unique.push(candidate);
   }
-  cleanStaleFiles();
-  pruneTrackedOutOfWindow();
+  if (unique.length > 0) {
+    const start = pollCursor % unique.length;
+    const ordered = unique.slice(start).concat(unique.slice(0, start));
+    let processed = 0;
+    for (const candidate of ordered) {
+      if (context.remainingAttempts <= 0) break;
+      const deferred = deferredRecent.get(candidate.filePath) || deferredBackground.get(candidate.filePath);
+      if (deferred && Date.now() < deferred.notBefore) {
+        processed += 1;
+        continue;
+      }
+      const observedByStartup = startupObserved.has(candidate.filePath);
+      let stat = observedByStartup ? startupObserved.get(candidate.filePath) : null;
+      if (!observedByStartup) {
+        context.remainingAttempts -= 1;
+        try {
+          stat = fs.statSync(candidate.filePath);
+        } catch {
+          stat = null;
+        }
+      }
+      if (!stat) {
+        if (deferred) {
+          backoffRemoteDeferredStatFailure(deferred, options);
+        } else {
+          markRemoteReplayNoProgress(candidate.filePath, tracked.get(candidate.filePath), options);
+        }
+        processed += 1;
+        continue;
+      }
+      if (
+        candidate.source === "normal"
+        && !tracked.has(candidate.filePath)
+        && Date.now() - stat.mtimeMs > 120000
+      ) {
+        processed += 1;
+        continue;
+      }
+      const result = pollFile(candidate.filePath, candidate.fileName, {
+        ...options,
+        preStat: stat,
+        pollContext: context,
+        inWindow: inWindow.has(path.dirname(candidate.filePath)),
+      });
+      if (result && result.kind === "budget") break;
+      processed += 1;
+    }
+    pollCursor = (start + Math.max(1, processed)) % unique.length;
+  }
+
+  if (startupRecoveryReady && !didInitialRecoveryScan && context.remainingAttempts > 0) {
+    runReadyRemoteRecovery(context);
+  }
+  cleanStaleFiles(options);
+  pruneTrackedOutOfWindow({ getSessionDirs: () => dirs });
 }
 
 function main() {
@@ -789,6 +1353,20 @@ function main() {
   }
 }
 
+function resetMonitorStateForTests() {
+  tracked.clear();
+  replayWork.clear();
+  deferredRecent.clear();
+  deferredBackground.clear();
+  startupRecoveryCandidates.clear();
+  startupRecoveryWalker = null;
+  didInitialRecoveryScan = false;
+  startupRecoveryReady = false;
+  pollCursor = 0;
+  startupRecoveryFilesScanned = 0;
+  startupRecoveryBytesScanned = 0;
+}
+
 if (require.main === module) main();
 
 module.exports.__test = {
@@ -796,14 +1374,31 @@ module.exports.__test = {
   buildPostStateBody,
   buildPostQuotaBody,
   processLine,
+  poll,
   pollFile,
   recoverStalePendingUserInputEntry,
   readByteRange,
   readCompleteFirstLine,
+  readExactRange,
   runRecoverySweep,
+  runReadyRemoteRecovery,
+  recoveryReadBudgetCost,
   cleanStaleFiles,
   pruneTrackedOutOfWindow,
   tracked,
+  replayWork,
+  deferredRecent,
+  deferredBackground,
+  startupRecoveryCandidates,
+  admitRemoteReplay,
+  enqueueRemoteDeferred,
+  collectRemoteDeferredCandidates,
+  resetMonitorStateForTests,
+  MAX_POLL_READ_BYTES,
+  MAX_POLL_TOTAL_REQUEST_BYTES,
+  MAX_POLL_FILE_ATTEMPTS,
+  MAX_REPLAY_WORK_ITEMS,
+  MAX_BACKGROUND_REPLAY_WORK_ITEMS,
   STALE_MS,
   DELIVERY_FAILURE_EXIT_MS,
   createDeliveryWatchdog,
