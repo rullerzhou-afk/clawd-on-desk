@@ -274,7 +274,63 @@ test("legacy secret files preserve credentials while credential platform remains
   });
 });
 
-test("planFeishuCredentialWrite distinguishes same-identity merge, Secret-only rotation, and identity replacement", () => {
+test("planFeishuCredentialWrite saves a first complete identity without replacement confirmation", () => {
+  assert.deepEqual(settings.planFeishuCredentialWrite({}, "feishu", {
+    appId: "cli_initial",
+    appSecret: "initial-secret",
+    verificationToken: "initial-verify",
+  }), {
+    ok: true,
+    nextBundle: {
+      credentialPlatform: "feishu",
+      appId: "cli_initial",
+      appSecret: "initial-secret",
+      verificationToken: "initial-verify",
+      encryptKey: "",
+    },
+  });
+});
+
+test("planFeishuCredentialWrite rebinds a legacy same App without clearing optional fields", () => {
+  const legacy = {
+    credentialPlatform: "unknown",
+    appId: "cli_legacy",
+    appSecret: "old-secret",
+    verificationToken: "old-verify",
+    encryptKey: "old-encrypt",
+  };
+
+  assert.deepEqual(settings.planFeishuCredentialWrite(legacy, "lark", {
+    appId: "cli_legacy",
+    appSecret: "rotated-secret",
+  }), {
+    ok: true,
+    nextBundle: {
+      credentialPlatform: "lark",
+      appId: "cli_legacy",
+      appSecret: "rotated-secret",
+      verificationToken: "old-verify",
+      encryptKey: "old-encrypt",
+    },
+  });
+
+  assert.deepEqual(settings.planFeishuCredentialWrite(legacy, "lark", {
+    appId: "cli_legacy",
+    appSecret: "rotated-secret",
+    verificationToken: "new-verify",
+  }), {
+    ok: true,
+    nextBundle: {
+      credentialPlatform: "lark",
+      appId: "cli_legacy",
+      appSecret: "rotated-secret",
+      verificationToken: "new-verify",
+      encryptKey: "old-encrypt",
+    },
+  });
+});
+
+test("planFeishuCredentialWrite preserves optional fields for a known same identity and Secret rotation", () => {
   const current = {
     credentialPlatform: "feishu",
     appId: "cli_current",
@@ -295,10 +351,42 @@ test("planFeishuCredentialWrite distinguishes same-identity merge, Secret-only r
       encryptKey: "old-encrypt",
     },
   });
+});
 
-  assert.deepEqual(settings.planFeishuCredentialWrite(current, "lark", {
+test("planFeishuCredentialWrite requires confirmation before a real identity replacement", () => {
+  const knownFeishu = {
+    credentialPlatform: "feishu",
+    appId: "cli_current",
+    appSecret: "old-secret",
+    verificationToken: "old-verify",
+    encryptKey: "old-encrypt",
+  };
+
+  for (const [label, current, platform, patch] of [
+    ["known platform switch", knownFeishu, "lark", {
+      appId: "cli_current",
+      appSecret: "new-secret",
+    }],
+    ["known App ID switch", knownFeishu, "feishu", {
+      appId: "cli_other",
+      appSecret: "new-secret",
+    }],
+    ["legacy App ID switch", { ...knownFeishu, credentialPlatform: "unknown" }, "feishu", {
+      appId: "cli_other",
+      appSecret: "new-secret",
+    }],
+  ]) {
+    assert.deepEqual(
+      settings.planFeishuCredentialWrite(current, platform, patch),
+      { ok: false, code: "credentials-replace-confirmation-required" },
+      label,
+    );
+  }
+
+  assert.deepEqual(settings.planFeishuCredentialWrite(knownFeishu, "lark", {
     appId: "cli_replacement",
     appSecret: "replacement-secret",
+    confirmReplace: true,
   }), {
     ok: true,
     nextBundle: {
@@ -310,20 +398,23 @@ test("planFeishuCredentialWrite distinguishes same-identity merge, Secret-only r
     },
   });
 
-  assert.deepEqual(settings.planFeishuCredentialWrite(
-    { ...current, credentialPlatform: "unknown" },
-    "feishu",
-    { appId: "cli_replacement", appSecret: "replacement-secret", verificationToken: "new-verify" }
-  ), {
-    ok: true,
-    nextBundle: {
-      credentialPlatform: "feishu",
+  for (const confirmReplace of ["true", 1]) {
+    assert.deepEqual(settings.planFeishuCredentialWrite(knownFeishu, "lark", {
       appId: "cli_replacement",
       appSecret: "replacement-secret",
-      verificationToken: "new-verify",
-      encryptKey: "",
-    },
+      confirmReplace,
+    }), { ok: false, code: "credentials-replace-confirmation-required" });
+  }
+
+  const inheritedConfirmation = Object.create({ confirmReplace: true });
+  Object.assign(inheritedConfirmation, {
+    appId: "cli_replacement",
+    appSecret: "replacement-secret",
   });
+  assert.deepEqual(
+    settings.planFeishuCredentialWrite(knownFeishu, "lark", inheritedConfirmation),
+    { ok: false, code: "credentials-replace-confirmation-required" },
+  );
 
   for (const patch of [
     {},
@@ -331,10 +422,15 @@ test("planFeishuCredentialWrite distinguishes same-identity merge, Secret-only r
     { appSecret: "replacement-secret" },
   ]) {
     assert.deepEqual(
-      settings.planFeishuCredentialWrite(current, "lark", patch),
-      { ok: false, code: "credentials-replacement-incomplete" }
+      settings.planFeishuCredentialWrite(knownFeishu, "lark", patch),
+      { ok: false, code: "credentials-replacement-incomplete" },
     );
   }
+
+  assert.deepEqual(settings.planFeishuCredentialWrite(knownFeishu, "lark", {
+    appId: "not-valid",
+    appSecret: "replacement-secret",
+  }), { ok: false, code: "invalid-app-id" });
 });
 
 test("deriveSavedFeishuCredentialIdentity returns exact fail-closed codes", () => {

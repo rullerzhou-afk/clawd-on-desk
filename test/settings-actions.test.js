@@ -1057,11 +1057,42 @@ describe("feishu approval commands", () => {
     assert.deepStrictEqual(result, { status: "ok", secretsStored: true });
   });
 
-  it("feishuApproval.setSecrets replaces cross-platform credentials and clears omitted optional credentials", async () => {
+  it("feishuApproval.setSecrets requires confirmation before replacement and writes nothing", async () => {
+    let writes = 0;
+    const result = await commandRegistry["feishuApproval.setSecrets"]({
+      appId: "cli_lark",
+      appSecret: "lark-secret",
+    }, {
+      snapshot: {
+        ...prefs.getDefaults(),
+        feishuApproval: { ...prefs.getDefaults().feishuApproval, platform: "lark" },
+      },
+      getFeishuApprovalSecrets: () => ({
+        credentialPlatform: "feishu",
+        appId: "cli_feishu",
+        appSecret: "feishu-secret",
+        verificationToken: "old-verify",
+        encryptKey: "old-encrypt",
+      }),
+      writeFeishuApprovalSecrets: () => {
+        writes += 1;
+        return { status: "ok", secretsStored: true };
+      },
+    });
+    assert.deepStrictEqual(result, {
+      status: "error",
+      code: "credentials-replace-confirmation-required",
+    });
+    assert.strictEqual(writes, 0);
+    assert.strictEqual("commit" in result, false);
+  });
+
+  it("feishuApproval.setSecrets writes a confirmed replacement and clears omitted optional credentials", async () => {
     const calls = [];
     const result = await commandRegistry["feishuApproval.setSecrets"]({
       appId: "cli_lark",
       appSecret: "lark-secret",
+      confirmReplace: true,
     }, {
       snapshot: {
         ...prefs.getDefaults(),
@@ -1087,6 +1118,114 @@ describe("feishu approval commands", () => {
       verificationToken: "",
       encryptKey: "",
     }]);
+  });
+
+  it("feishuApproval.setSecrets rebinds a legacy same App without clearing optional credentials", async () => {
+    const calls = [];
+    const result = await commandRegistry["feishuApproval.setSecrets"]({
+      appId: "cli_legacy",
+      appSecret: "rotated-secret",
+    }, {
+      snapshot: {
+        ...prefs.getDefaults(),
+        feishuApproval: { ...prefs.getDefaults().feishuApproval, platform: "lark" },
+      },
+      getFeishuApprovalSecrets: () => ({
+        credentialPlatform: "unknown",
+        appId: "cli_legacy",
+        appSecret: "old-secret",
+        verificationToken: "old-verify",
+        encryptKey: "old-encrypt",
+      }),
+      writeFeishuApprovalSecrets: (value) => {
+        calls.push(value);
+        return { status: "ok", secretsStored: true };
+      },
+    });
+    assert.deepStrictEqual(result, { status: "ok", secretsStored: true });
+    assert.deepStrictEqual(calls, [{
+      credentialPlatform: "lark",
+      appId: "cli_legacy",
+      appSecret: "rotated-secret",
+      verificationToken: "old-verify",
+      encryptKey: "old-encrypt",
+    }]);
+  });
+
+  it("feishuApproval.setSecrets rereads and replans after replacement confirmation", async () => {
+    let reads = 0;
+    let current = {
+      credentialPlatform: "feishu",
+      appId: "cli_old",
+      appSecret: "old-secret",
+      verificationToken: "old-verify",
+      encryptKey: "old-encrypt",
+    };
+    const writes = [];
+    const deps = {
+      snapshot: {
+        ...prefs.getDefaults(),
+        feishuApproval: { ...prefs.getDefaults().feishuApproval, platform: "lark" },
+      },
+      getFeishuApprovalSecrets: () => {
+        reads += 1;
+        return { ...current };
+      },
+      writeFeishuApprovalSecrets: (bundle) => {
+        writes.push(bundle);
+        return { status: "ok", secretsStored: true };
+      },
+    };
+    const draft = { appId: "cli_target", appSecret: "target-secret" };
+
+    assert.deepStrictEqual(
+      await commandRegistry["feishuApproval.setSecrets"](draft, deps),
+      { status: "error", code: "credentials-replace-confirmation-required" },
+    );
+    current = {
+      credentialPlatform: "lark",
+      appId: "cli_target",
+      appSecret: "external-secret",
+      verificationToken: "external-verify",
+      encryptKey: "external-encrypt",
+    };
+    assert.deepStrictEqual(
+      await commandRegistry["feishuApproval.setSecrets"]({ ...draft, confirmReplace: true }, deps),
+      { status: "ok", secretsStored: true },
+    );
+    assert.strictEqual(reads, 2);
+    assert.deepStrictEqual(writes, [{
+      credentialPlatform: "lark",
+      appId: "cli_target",
+      appSecret: "target-secret",
+      verificationToken: "external-verify",
+      encryptKey: "external-encrypt",
+    }]);
+  });
+
+  it("feishuApproval.setSecrets rejects thenable credential reads without writing", async () => {
+    let writes = 0;
+    const result = await commandRegistry["feishuApproval.setSecrets"]({
+      appId: "cli_target",
+      appSecret: "target-secret",
+    }, {
+      snapshot: {
+        ...prefs.getDefaults(),
+        feishuApproval: { ...prefs.getDefaults().feishuApproval, platform: "lark" },
+      },
+      getFeishuApprovalSecrets: () => Promise.resolve({
+        credentialPlatform: "lark",
+        appId: "cli_target",
+        appSecret: "saved-secret",
+      }),
+      writeFeishuApprovalSecrets: () => {
+        writes += 1;
+        return { status: "ok" };
+      },
+    });
+    assert.deepStrictEqual(result, { status: "error", code: "credentials-read-failed" });
+    assert.strictEqual(writes, 0);
+    assert.strictEqual("commit" in result, false);
   });
 
   it("feishuApproval.setSecrets rejects incomplete replacement without writing", async () => {

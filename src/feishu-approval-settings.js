@@ -365,44 +365,98 @@ function evaluateFeishuApprovalConfiguration(config, secrets, options = {}) {
 function planFeishuCredentialWrite(current, requestedPlatform, patch) {
   const platform = normalizeCredentialPlatform(requestedPlatform);
   if (platform === "unknown") return { ok: false, code: "invalid-platform" };
+
   const saved = isPlainObject(current) ? current : {};
   const incoming = isPlainObject(patch) ? patch : {};
   const currentPlatform = normalizeCredentialPlatform(saved.credentialPlatform);
   const currentAppId = trimString(saved.appId, 256);
+  const currentAppSecret = trimString(saved.appSecret, 512);
+  const currentVerificationToken = trimString(saved.verificationToken, 512);
+  const currentEncryptKey = trimString(saved.encryptKey, 512);
   const submittedAppId = trimString(incoming.appId, 256);
   const submittedAppSecret = trimString(incoming.appSecret, 512);
+  const submittedVerificationToken = trimString(incoming.verificationToken, 512);
+  const submittedEncryptKey = trimString(incoming.encryptKey, 512);
+  const hasSavedMaterial = !!(
+    currentAppId
+    || currentAppSecret
+    || currentVerificationToken
+    || currentEncryptKey
+  );
+  const legacySameApp = hasSavedMaterial
+    && currentPlatform === "unknown"
+    && !!submittedAppId
+    && submittedAppId === currentAppId;
   const requestedAppId = submittedAppId || currentAppId;
-  const identityChanged = currentPlatform === "unknown"
-    || currentPlatform !== platform
-    || requestedAppId !== currentAppId;
+  const replacement = hasSavedMaterial
+    && !legacySameApp
+    && (
+      currentPlatform === "unknown"
+      || currentPlatform !== platform
+      || requestedAppId !== currentAppId
+    );
+  const replacementConfirmed = Object.prototype.hasOwnProperty.call(incoming, "confirmReplace")
+    && incoming.confirmReplace === true;
 
-  if (identityChanged) {
+  if (!hasSavedMaterial || legacySameApp || replacement) {
     if (!submittedAppId || !submittedAppSecret) {
       return { ok: false, code: "credentials-replacement-incomplete" };
     }
     if (!isValidFeishuAppId(submittedAppId)) return { ok: false, code: "invalid-app-id" };
+  }
+
+  if (!hasSavedMaterial) {
     return {
       ok: true,
       nextBundle: {
         credentialPlatform: platform,
         appId: submittedAppId,
         appSecret: submittedAppSecret,
-        verificationToken: trimString(incoming.verificationToken, 512),
-        encryptKey: trimString(incoming.encryptKey, 512),
+        verificationToken: submittedVerificationToken,
+        encryptKey: submittedEncryptKey,
       },
     };
   }
 
-  const nextBundle = {
-    credentialPlatform: platform,
-    appId: currentAppId,
-    appSecret: submittedAppSecret || trimString(saved.appSecret, 512),
-    verificationToken: trimString(incoming.verificationToken, 512) || trimString(saved.verificationToken, 512),
-    encryptKey: trimString(incoming.encryptKey, 512) || trimString(saved.encryptKey, 512),
-  };
+  if (legacySameApp) {
+    return {
+      ok: true,
+      nextBundle: {
+        credentialPlatform: platform,
+        appId: submittedAppId,
+        appSecret: submittedAppSecret,
+        verificationToken: submittedVerificationToken || currentVerificationToken,
+        encryptKey: submittedEncryptKey || currentEncryptKey,
+      },
+    };
+  }
+
+  if (replacement && !replacementConfirmed) {
+    return { ok: false, code: "credentials-replace-confirmation-required" };
+  }
+
+  if (replacement) {
+    return {
+      ok: true,
+      nextBundle: {
+        credentialPlatform: platform,
+        appId: submittedAppId,
+        appSecret: submittedAppSecret,
+        verificationToken: submittedVerificationToken,
+        encryptKey: submittedEncryptKey,
+      },
+    };
+  }
+
   return {
     ok: true,
-    nextBundle,
+    nextBundle: {
+      credentialPlatform: platform,
+      appId: currentAppId,
+      appSecret: submittedAppSecret || currentAppSecret,
+      verificationToken: submittedVerificationToken || currentVerificationToken,
+      encryptKey: submittedEncryptKey || currentEncryptKey,
+    },
   };
 }
 

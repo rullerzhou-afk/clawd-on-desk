@@ -1658,8 +1658,11 @@ function createFeishuCredentialDraftLifecycleHarness({
   configured = true,
   maskedAppId = "cli_......saved",
   updateConfigResult = { status: "ok" },
+  setSecrets = () => Promise.resolve({ status: "ok" }),
+  showConfirmModal = () => Promise.resolve("confirm"),
 } = {}) {
   const allCommandCalls = [];
+  const modalCalls = [];
   const toasts = [];
   const consoleOutput = { log: [], info: [], warn: [], error: [] };
   const capturedConsole = Object.fromEntries(
@@ -1667,6 +1670,10 @@ function createFeishuCredentialDraftLifecycleHarness({
   );
   const harness = loadTelegramApprovalTabForTest({
     console: capturedConsole,
+    showConfirmModal: (options) => {
+      modalCalls.push(options);
+      return showConfirmModal(options);
+    },
     snapshot: {
       tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
       feishuApproval: {
@@ -1704,12 +1711,13 @@ function createFeishuCredentialDraftLifecycleHarness({
           });
         }
         if (name === "feishuApproval.updateConfig") return Promise.resolve(updateConfigResult);
+        if (name === "feishuApproval.setSecrets") return setSecrets(payload);
         return Promise.resolve({ status: "ok" });
       },
     },
   });
   harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
-  return { harness, allCommandCalls, toasts, consoleOutput };
+  return { harness, allCommandCalls, modalCalls, toasts, consoleOutput };
 }
 
 function fillFeishuCredentialDraft(card, prefix) {
@@ -1725,6 +1733,19 @@ function fillFeishuCredentialDraft(card, prefix) {
     input.dispatchEvent({ type: "input" });
   }
   return values;
+}
+
+async function openFeishuCredentialReplacementEditor(harness, prefix) {
+  await Promise.resolve();
+  await Promise.resolve();
+  harness.render();
+  let card = harness.content.querySelector(".feishu-approval-channel-card");
+  card.querySelectorAll("button")
+    .find((button) => button.textContent === "feishuApprovalReplaceSecrets")
+    .dispatchEvent({ type: "click" });
+  harness.render();
+  card = harness.content.querySelector(".feishu-approval-channel-card");
+  return { card, values: fillFeishuCredentialDraft(card, prefix) };
 }
 
 function loadDiscordPresenceTabForTest({ snapshot, update } = {}) {
@@ -5009,6 +5030,165 @@ describe("settings renderer browser environment", () => {
       assert.equal(localeStrings.feishuApprovalApproverLabel.replace("{brand}", brand), label);
       assert.equal(localeStrings.feishuApprovalApproverHintHtml, hint);
     }
+  });
+
+  it("keeps the credential draft when replacement confirmation is cancelled", async () => {
+    const { harness, allCommandCalls, modalCalls, toasts, consoleOutput } =
+      createFeishuCredentialDraftLifecycleHarness({
+        setSecrets: () => Promise.resolve({
+          status: "error",
+          code: "credentials-replace-confirmation-required",
+        }),
+        showConfirmModal: () => Promise.resolve("cancel"),
+      });
+    const { card, values } = await openFeishuCredentialReplacementEditor(harness, "cancel_replace");
+    card.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalSaveSecrets")
+      .dispatchEvent({ type: "click" });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const setSecretsCalls = allCommandCalls.filter((call) => call.name === "feishuApproval.setSecrets");
+    assert.equal(setSecretsCalls.length, 1);
+    assert.equal(Object.prototype.hasOwnProperty.call(setSecretsCalls[0].payload, "confirmReplace"), false);
+    assert.equal(modalCalls.length, 1);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(modalCalls[0])), {
+      title: "feishuApprovalCredentialsReplaceConfirmTitle",
+      detail: "feishuApprovalCredentialsReplaceConfirmDetail",
+      actions: [
+        { id: "cancel", label: "telegramApprovalCancel", tone: "neutral", defaultFocus: true },
+        { id: "confirm", label: "feishuApprovalCredentialsReplaceConfirmAction", tone: "danger" },
+      ],
+    });
+    assert.equal(toasts.length, 0);
+    assert.equal(Object.values(consoleOutput).flat().length, 0);
+
+    harness.render();
+    assert.deepStrictEqual(
+      harness.content.querySelector(".feishu-approval-channel-card").querySelectorAll("input")
+        .slice(0, 4).map((input) => input.value),
+      Object.values(values),
+    );
+  });
+
+  it("resubmits the same credential draft only after replacement confirmation", async () => {
+    let attempts = 0;
+    const { harness, allCommandCalls, modalCalls, toasts, consoleOutput } =
+      createFeishuCredentialDraftLifecycleHarness({
+        setSecrets: () => {
+          attempts += 1;
+          return Promise.resolve(attempts === 1
+            ? { status: "error", code: "credentials-replace-confirmation-required" }
+            : { status: "ok", secretsStored: true });
+        },
+        showConfirmModal: () => Promise.resolve("confirm"),
+      });
+    const { card, values } = await openFeishuCredentialReplacementEditor(harness, "confirm_replace");
+    card.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalSaveSecrets")
+      .dispatchEvent({ type: "click" });
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const setSecretsCalls = allCommandCalls.filter((call) => call.name === "feishuApproval.setSecrets");
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(setSecretsCalls)), [
+      { name: "feishuApproval.setSecrets", payload: values },
+      { name: "feishuApproval.setSecrets", payload: { ...values, confirmReplace: true } },
+    ]);
+    assert.equal(modalCalls.length, 1);
+    assert.equal(toasts.length, 1);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(toasts)), [{
+      message: "feishuApprovalSecretsSaved",
+    }]);
+    assert.equal(Object.values(consoleOutput).flat().length, 0);
+    for (const value of Object.values(values)) {
+      assert.equal(JSON.stringify(modalCalls).includes(value), false);
+      assert.equal(JSON.stringify(toasts).includes(value), false);
+      assert.equal(JSON.stringify(consoleOutput).includes(value), false);
+    }
+
+    harness.render();
+    assert.equal(
+      harness.content.querySelector(".feishu-approval-channel-card")
+        .querySelector(".feishu-approval-secrets-row"),
+      null,
+    );
+  });
+
+  it("keeps the credential draft when confirmed replacement persistence fails", async () => {
+    let attempts = 0;
+    const { harness, allCommandCalls, toasts, consoleOutput } =
+      createFeishuCredentialDraftLifecycleHarness({
+        setSecrets: () => {
+          attempts += 1;
+          return Promise.resolve(attempts === 1
+            ? { status: "error", code: "credentials-replace-confirmation-required" }
+            : { status: "error", code: "write-failed", message: "raw writer detail" });
+        },
+        showConfirmModal: () => Promise.resolve("confirm"),
+      });
+    const { card, values } = await openFeishuCredentialReplacementEditor(harness, "failed_replace");
+    card.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalSaveSecrets")
+      .dispatchEvent({ type: "click" });
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(
+      allCommandCalls.filter((call) => call.name === "feishuApproval.setSecrets").length,
+      2,
+    );
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(toasts)), [{
+      message: "feishuApprovalSecretsSaveFailed",
+      options: { error: true },
+    }]);
+    assert.equal(JSON.stringify(toasts).includes("raw writer detail"), false);
+    assert.equal(Object.values(consoleOutput).flat().length, 0);
+    harness.render();
+    assert.deepStrictEqual(
+      harness.content.querySelector(".feishu-approval-channel-card").querySelectorAll("input")
+        .slice(0, 4).map((input) => input.value),
+      Object.values(values),
+    );
+  });
+
+  it("keeps credential controls pending and blocks a second Save while replacement confirmation is open", async () => {
+    const modal = createDeferred();
+    const { harness, allCommandCalls, modalCalls, toasts, consoleOutput } =
+      createFeishuCredentialDraftLifecycleHarness({
+        setSecrets: () => Promise.resolve({
+          status: "error",
+          code: "credentials-replace-confirmation-required",
+        }),
+        showConfirmModal: () => modal.promise,
+      });
+    const { card, values } = await openFeishuCredentialReplacementEditor(harness, "pending_replace");
+    const inputs = card.querySelectorAll("input").slice(0, 4);
+    const save = card.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalSaveSecrets");
+    save.dispatchEvent({ type: "click" });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(modalCalls.length, 1);
+    assert.equal(inputs.every((input) => input.disabled), true);
+    assert.equal(save.disabled, true);
+    save.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.equal(
+      allCommandCalls.filter((call) => call.name === "feishuApproval.setSecrets").length,
+      1,
+    );
+    assert.equal(modalCalls.length, 1);
+
+    modal.resolve(null);
+    await new Promise((resolve) => setImmediate(resolve));
+    harness.render();
+    assert.deepStrictEqual(
+      harness.content.querySelector(".feishu-approval-channel-card").querySelectorAll("input")
+        .slice(0, 4).map((input) => input.value),
+      Object.values(values),
+    );
+    assert.equal(toasts.length, 0);
+    assert.equal(Object.values(consoleOutput).flat().length, 0);
   });
 
   it("clears the transient Feishu credential draft when replacement editing is cancelled", async () => {

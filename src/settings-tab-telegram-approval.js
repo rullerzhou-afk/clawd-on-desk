@@ -1618,6 +1618,7 @@
       saveBtn.disabled = true;
       saveFeishuCommand("feishuApproval.setSecrets", payload, {
         kind: "credentials",
+        credentialPayload: payload,
         failureKey: "feishuApprovalSecretsSaveFailed",
         successKey: "feishuApprovalSecretsSaved",
         onSuccess() {
@@ -2244,6 +2245,46 @@
     });
   }
 
+  function confirmFeishuCredentialReplacement(payload, options) {
+    return helpers.showSettingsConfirmModal({
+      title: t("feishuApprovalCredentialsReplaceConfirmTitle"),
+      detail: t("feishuApprovalCredentialsReplaceConfirmDetail"),
+      actions: [
+        {
+          id: "cancel",
+          label: t("telegramApprovalCancel"),
+          tone: "neutral",
+          defaultFocus: true,
+        },
+        {
+          id: "confirm",
+          label: t("feishuApprovalCredentialsReplaceConfirmAction"),
+          tone: "danger",
+        },
+      ],
+    }).then((actionId) => {
+      if (actionId !== "confirm") {
+        feishuView.configPersistencePending = false;
+        feishuView.configPersistenceKind = null;
+        ops.requestRender({ content: true });
+        return false;
+      }
+      feishuView.configPersistencePending = false;
+      feishuView.configPersistenceKind = null;
+      const confirmedPayload = { ...payload, confirmReplace: true };
+      return saveFeishuCommand(
+        "feishuApproval.setSecrets",
+        confirmedPayload,
+        { ...options, credentialPayload: confirmedPayload },
+      );
+    }).catch(() => {
+      feishuView.configPersistencePending = false;
+      feishuView.configPersistenceKind = null;
+      ops.requestRender({ content: true });
+      return false;
+    });
+  }
+
   function persistFeishuChange(request, options = {}) {
     if (feishuView.configPersistencePending || feishuView.testPending) {
       return Promise.resolve(false);
@@ -2260,6 +2301,15 @@
     }
     return Promise.resolve(pending).then((result) => {
       if (!result || result.status !== "ok") {
+        if (
+          options.kind === "credentials"
+          && options.credentialPayload
+          && options.credentialPayload.confirmReplace !== true
+          && result
+          && result.code === "credentials-replace-confirmation-required"
+        ) {
+          return confirmFeishuCredentialReplacement(options.credentialPayload, options);
+        }
         feishuView.configPersistencePending = false;
         feishuView.configPersistenceKind = null;
         ops.showToast(tBrand(options.failureKey || "feishuApprovalPersistenceFailed"), { error: true });

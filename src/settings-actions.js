@@ -1875,6 +1875,9 @@ async function feishuApprovalSetSecrets(payload, deps = {}) {
   } catch {
     return { status: "error", code: "credentials-read-failed" };
   }
+  if (current && typeof current.then === "function") {
+    return { status: "error", code: "credentials-read-failed" };
+  }
   const planned = planFeishuCredentialWrite(current, config.platform, payload);
   if (!planned.ok) return { status: "error", code: planned.code };
   // Pass the writer's result through untouched: it carries the `code` the

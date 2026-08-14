@@ -1066,6 +1066,7 @@ describe("Feishu resolved-approver commit linearization", () => {
     const credentials = fixture.ctrl.applyCommand("feishuApproval.setSecrets", {
       appId: "cli_replaced",
       appSecret: "replacement-secret",
+      confirmReplace: true,
     });
     const commit = fixture.ctrl.applyCommand(
       "feishuApproval.commitResolvedApprover",
