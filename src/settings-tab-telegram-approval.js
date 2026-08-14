@@ -70,7 +70,7 @@
     "invalid-app-id": "feishuApprovalLookupInvalidAppId",
     "credential-provenance-unknown": "feishuApprovalLookupCredentialProvenanceUnknown",
     "credential-platform-mismatch": "feishuApprovalLookupCredentialPlatformMismatch",
-    "missing-approver": "feishuApprovalLookupApproverNotFound",
+    "missing-approver": "feishuApprovalApproverNotConfigured",
     "approver-provenance-unknown": "feishuApprovalLookupApproverProvenanceUnknown",
     "approver-binding-incomplete": "feishuApprovalLookupApproverBindingIncomplete",
     "approver-platform-mismatch": "feishuApprovalLookupApproverPlatformMismatch",
@@ -116,6 +116,8 @@
     "wrong-platform": "feishuApprovalErrorWrongPlatform",
   });
 
+  const FEISHU_APPROVER_PREFLIGHT_STATUS_ID = "feishu-approval-approver-preflight-status";
+  let mountedFeishuApproverControl = null;
   let mountedFeishuTimeoutControl = null;
 
   // readiness() rejects a saved-but-unusable config with a stable reason while
@@ -272,13 +274,30 @@
     return "";
   }
 
+  function feishuLookupPreflightMessage(code) {
+    const key = FEISHU_APPROVER_LOOKUP_ERROR_KEYS[code];
+    return key ? tBrand(key) : "";
+  }
+
+  function patchMountedFeishuApproverPreflight(code) {
+    const mounted = mountedFeishuApproverControl;
+    if (!mounted || !document.body.contains(mounted.row) || mounted.renderedAsLookupCancel) return false;
+    const message = feishuLookupPreflightMessage(code);
+    mounted.saveButton.disabled = allFeishuControlsBlocked() || !!code;
+    mounted.status.textContent = message;
+    mounted.status.hidden = !message;
+    if (message) {
+      mounted.saveButton.setAttribute("aria-describedby", mounted.status.id);
+    } else {
+      mounted.saveButton.removeAttribute("aria-describedby");
+    }
+    return true;
+  }
+
   function recomputeFeishuLookupPreflight() {
     const next = allowlistedFeishuLookupErrorCode(feishuLookupPreflightErrorCode(), "");
-    const changed = next !== feishuView.lookupErrorCode;
     feishuView.lookupErrorCode = next;
-    if (changed && state && state.activeTab === "telegram-approval" && !allFeishuControlsBlocked()) {
-      ops.requestRender({ content: true });
-    }
+    patchMountedFeishuApproverPreflight(next);
     return next;
   }
 
@@ -1749,6 +1768,12 @@
       warning.textContent = tBrand("feishuApprovalApproverReconfirmationWarning");
       text.appendChild(warning);
     }
+    const preflightStatus = document.createElement("span");
+    preflightStatus.id = FEISHU_APPROVER_PREFLIGHT_STATUS_ID;
+    preflightStatus.className = "row-desc feishu-approval-lookup-preflight-status";
+    preflightStatus.textContent = feishuLookupPreflightMessage(lookupPreflightErrorCode);
+    preflightStatus.hidden = !preflightStatus.textContent;
+    text.appendChild(preflightStatus);
     row.appendChild(text);
 
     const ctrl = document.createElement("div");
@@ -1798,8 +1823,8 @@
     saveBtn.disabled = renderedAsLookupCancel
       ? feishuView.lookupCancelPending
       : allFeishuControlsBlocked() || !!lookupPreflightErrorCode;
-    if (lookupPreflightErrorCode) {
-      saveBtn.title = tBrand(FEISHU_APPROVER_LOOKUP_ERROR_KEYS[lookupPreflightErrorCode]);
+    if (preflightStatus.textContent && !renderedAsLookupCancel) {
+      saveBtn.setAttribute("aria-describedby", preflightStatus.id);
     }
     saveBtn.addEventListener("click", () => {
       if (renderedAsLookupCancel) {
@@ -1821,7 +1846,7 @@
         const key = FEISHU_APPROVER_LOOKUP_ERROR_KEYS[preflightErrorCode]
           || "feishuApprovalLookupFailed";
         ops.showToast(tBrand(key), { error: true });
-        ops.requestRender({ content: true });
+        patchMountedFeishuApproverPreflight(preflightErrorCode);
         return;
       }
       if (recipient.kind === "email") {
@@ -1888,6 +1913,12 @@
     ctrl.appendChild(input);
     ctrl.appendChild(saveBtn);
     row.appendChild(ctrl);
+    mountedFeishuApproverControl = {
+      row,
+      saveButton: saveBtn,
+      status: preflightStatus,
+      renderedAsLookupCancel,
+    };
     return row;
   }
 

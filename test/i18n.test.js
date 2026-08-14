@@ -98,7 +98,7 @@ describe("i18n locales", () => {
       "feishuApprovalLookupCancel",
       "feishuApprovalLookupCancelling",
       "feishuApprovalLookupCancelFailed",
-      "feishuApprovalLookupInvalidRequestId",
+      "feishuApprovalApproverNotConfigured",
       "feishuApprovalLookupUnsavedCredentials",
       "feishuApprovalLookupInvalidAppId",
       "feishuApprovalLookupCredentialProvenanceUnknown",
@@ -110,8 +110,6 @@ describe("i18n locales", () => {
       "feishuApprovalLookupRequiresOpenId",
       "feishuApprovalLookupCancelled",
       "feishuApprovalLookupSuperseded",
-      "feishuApprovalLookupStale",
-      "feishuApprovalLookupResultConsumed",
       "feishuApprovalLookupCredentialsChanged",
     ];
     for (const lang of SUPPORTED_LANGS) {
@@ -120,6 +118,21 @@ describe("i18n locales", () => {
         assert.notEqual(strings[lang][key].trim(), "", `${lang}.${key} must not be empty`);
       }
     }
+  });
+
+  it("distinguishes missing approver configuration in every Settings locale", () => {
+    const strings = loadSettingsI18nStrings();
+    assert.deepStrictEqual(
+      Object.fromEntries(SUPPORTED_LANGS.map((lang) => [lang, strings[lang].feishuApprovalApproverNotConfigured])),
+      {
+        en: "No approver is configured yet.",
+        zh: "尚未配置审批人。",
+        "zh-TW": "尚未設定審批人。",
+        ko: "아직 승인자가 설정되지 않았습니다.",
+        ja: "承認者がまだ設定されていません。",
+        "pt-BR": "Nenhum aprovador foi configurado ainda.",
+      },
+    );
   });
 
   it("provides non-empty macOS menu bar and Dock recovery strings in every Settings locale", () => {
