@@ -1,6 +1,7 @@
 "use strict";
 
 (function initSettingsTabTelegramApproval(root) {
+  const recipientApi = root.ClawdFeishuApprovalRecipient || {};
   let state = null;
   let coreRef = null;
   let helpers = null;
@@ -249,12 +250,6 @@
       || feishuView.testPending;
   }
 
-  function isFeishuApproverEmail(value) {
-    if (!value || /\s/.test(value)) return false;
-    const parts = value.split("@");
-    return parts.length === 2 && !!parts[0] && !!parts[1];
-  }
-
   function allowlistedFeishuLookupErrorCode(code, fallback = "missing-credentials") {
     return typeof code === "string" && Object.prototype.hasOwnProperty.call(FEISHU_APPROVER_LOOKUP_ERROR_KEYS, code)
       ? code
@@ -265,9 +260,10 @@
     const draft = getFeishuFormDraft();
     const idType = ["open_id", "user_id", "union_id"].includes(draft.idType) ? draft.idType : "open_id";
     const value = String(draft.approverId || "").trim();
-    if (idType !== "open_id" || value.startsWith("ou_")) return "";
+    const recipient = recipientApi.classifyFeishuApprovalRecipient(value, idType);
+    if (recipient.kind === "manual" || (recipient.kind === "empty" && idType !== "open_id")) return "";
     if (allFeishuControlsBlocked()) return "";
-    if (!isFeishuApproverEmail(value)) return "invalid-email";
+    if (recipient.kind !== "email") return "invalid-email";
     if (hasUnsavedFeishuCredentialDrafts()) return "unsaved-credentials";
 
     const status = feishuView.status || {};
@@ -1826,6 +1822,7 @@
       const nextDraft = getFeishuFormDraft();
       const approverId = String(nextDraft.approverId || "").trim();
       const idType = ["open_id", "user_id", "union_id"].includes(nextDraft.idType) ? nextDraft.idType : "open_id";
+      const recipient = recipientApi.classifyFeishuApprovalRecipient(approverId, idType);
       if (!approverId) {
         ops.showToast(tBrand("feishuApprovalApproverEmpty"), { error: true });
         return;
@@ -1839,7 +1836,7 @@
         ops.requestRender({ content: true });
         return;
       }
-      if (idType === "open_id" && !approverId.startsWith("ou_")) {
+      if (recipient.kind === "email") {
         const requestId = `feishu-approver-${++feishuLookupRequestSeq}`;
         const lookupEpoch = ++feishuView.lookupUiEpoch;
         feishuView.networkLookupPending = true;
@@ -1847,7 +1844,7 @@
         feishuView.lookupRequestId = requestId;
         ops.requestRender({ content: true });
         callCommand("feishuApproval.resolveApprover", {
-          email: approverId,
+          email: recipient.email,
           hasUnsavedCredentialDrafts: hasUnsavedFeishuCredentialDrafts(),
           requestId,
         }).then((result) => {
@@ -1885,9 +1882,13 @@
         });
         return;
       }
+      if (recipient.kind !== "manual") {
+        ops.showToast(tBrand("feishuApprovalLookupInvalidEmail"), { error: true });
+        return;
+      }
       saveFeishuCommand("feishuApproval.saveManualApprover", {
-        idType,
-        approverId,
+        idType: recipient.idType,
+        approverId: recipient.approverId,
       }, {
         kind: "manual-approver",
         resetDraft: true,

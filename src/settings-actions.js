@@ -172,6 +172,7 @@ const {
   evaluateFeishuApprovalConfiguration,
   planFeishuCredentialWrite,
 } = require("./feishu-approval-settings");
+const { classifyFeishuApprovalRecipient } = require("./feishu-approval-recipient");
 const { EVENTS: TELEGRAM_MIGRATION_EVENTS } = require("./telegram-migration-state");
 
 // Only the Step-3 enable switch dispatches from the renderer since the
@@ -1889,6 +1890,10 @@ function feishuApprovalSaveManualApprover(payload, deps = {}) {
   const input = payload && typeof payload === "object" ? payload : {};
   const idType = typeof input.idType === "string" ? input.idType.trim() : "";
   const approverId = typeof input.approverId === "string" ? input.approverId.trim() : "";
+  const recipient = classifyFeishuApprovalRecipient(approverId, idType);
+  if (recipient.kind === "email") {
+    return { status: "error", code: "email-requires-lookup" };
+  }
   if (!new Set(["open_id", "user_id", "union_id"]).has(idType)) {
     return { status: "error", code: "invalid-id-type" };
   }
@@ -1949,12 +1954,6 @@ function feishuApprovalUpdateConfig(payload, deps = {}) {
   };
 }
 
-function isFeishuApproverEmail(value) {
-  if (!value || /\s/.test(value)) return false;
-  const parts = value.split("@");
-  return parts.length === 2 && !!parts[0] && !!parts[1];
-}
-
 function isFeishuLookupToken(value, maxLength) {
   return !!value && value.length <= maxLength && !/\s/.test(value);
 }
@@ -1964,7 +1963,7 @@ async function feishuApprovalResolveApprover(payload, deps = {}) {
   const requestId = typeof input.requestId === "string" ? input.requestId.trim() : "";
   const email = typeof input.email === "string" ? input.email.trim() : "";
   if (!isFeishuLookupToken(requestId, 128)) return { status: "error", code: "invalid-request-id" };
-  if (!isFeishuApproverEmail(email)) {
+  if (classifyFeishuApprovalRecipient(email, "open_id").kind !== "email") {
     return { status: "error", code: "invalid-email" };
   }
   if (input.hasUnsavedCredentialDrafts === true) {

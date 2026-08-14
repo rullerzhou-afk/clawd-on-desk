@@ -17,6 +17,7 @@ const SETTINGS_RENDERER = path.join(SRC_DIR, "settings-renderer.js");
 const SETTINGS_UI_CORE = path.join(SRC_DIR, "settings-ui-core.js");
 const SETTINGS_ANIM_OVERRIDES_MERGE = path.join(SRC_DIR, "settings-anim-overrides-merge.js");
 const SETTINGS_I18N = path.join(SRC_DIR, "settings-i18n.js");
+const FEISHU_APPROVAL_RECIPIENT = path.join(SRC_DIR, "feishu-approval-recipient.js");
 const SETTINGS_DOCTOR_MODAL = path.join(SRC_DIR, "settings-doctor-modal.js");
 const SETTINGS_ANIMATION_PREVIEW = path.join(SRC_DIR, "settings-animation-preview.html");
 const PRELOAD_SETTINGS = path.join(SRC_DIR, "preload-settings.js");
@@ -1458,6 +1459,7 @@ function loadTelegramApprovalTabForTest({
   context.globalThis = context;
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(LANGUAGE_PICKER_JS, "utf8"), context);
+  vm.runInContext(fs.readFileSync(FEISHU_APPROVAL_RECIPIENT, "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-telegram-approval.js"), "utf8"), context);
 
   const core = {
@@ -2464,6 +2466,7 @@ describe("settings renderer browser environment", () => {
       "shortcut-actions.js",
       "settings-size-slider.js",
       "settings-i18n.js",
+      "feishu-approval-recipient.js",
       "settings-anim-overrides-merge.js",
       "settings-ui-core.js",
       "settings-agent-order.js",
@@ -4986,6 +4989,78 @@ describe("settings renderer browser environment", () => {
         { name: "feishuApproval.saveManualApprover", payload: { idType, approverId } },
       );
       assert.equal(harness.updates.length, 0);
+    }
+  });
+
+  it("routes an email-looking ou_ value through lookup before every manual ID type", async () => {
+    for (const idType of ["open_id", "user_id", "union_id"]) {
+      const commandCalls = [];
+      const harness = loadTelegramApprovalTabForTest({
+        snapshot: {
+          tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+          feishuApproval: {
+            enabled: false,
+            platform: "feishu",
+            idType,
+            approverId: "",
+            connectionTimeoutSeconds: 15,
+          },
+        },
+        settingsAPI: {
+          command: (name, payload) => {
+            commandCalls.push({ name, payload });
+            if (name === "feishuApproval.status") {
+              return Promise.resolve({
+                status: "ok",
+                state: {
+                  status: "stopped",
+                  secretsStored: true,
+                  secretsConfigured: true,
+                  credentialReady: true,
+                  credentialReason: "",
+                  configurationReady: false,
+                  setupReason: "missing-approver",
+                },
+              });
+            }
+            if (name === "feishuApproval.secretInfo") {
+              return Promise.resolve({
+                status: "ok",
+                configured: true,
+                credentialPlatform: "feishu",
+                appId: "cli_......saved",
+              });
+            }
+            if (name === "feishuApproval.resolveApprover") {
+              return Promise.resolve({ status: "error", code: "approver-not-found" });
+            }
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const card = harness.content.querySelector(".feishu-approval-channel-card");
+      const inputs = card.querySelectorAll("input");
+      const approverInput = inputs[inputs.length - 1];
+      approverInput.value = "ou_admin@example.com";
+      approverInput.dispatchEvent({ type: "input" });
+      card.querySelectorAll("button")
+        .find((button) => button.textContent === "feishuApprovalSaveApprover")
+        .dispatchEvent({ type: "click" });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const lookupCalls = commandCalls.filter((call) => call.name === "feishuApproval.resolveApprover");
+      assert.equal(lookupCalls.length, 1, idType);
+      assert.equal(lookupCalls[0].payload.email, "ou_admin@example.com");
+      assert.equal(
+        commandCalls.some((call) => call.name === "feishuApproval.saveManualApprover"),
+        false,
+        idType,
+      );
+      assert.equal(harness.updates.length, 0, idType);
     }
   });
 

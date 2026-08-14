@@ -1108,6 +1108,30 @@ describe("feishu approval commands", () => {
     }
   });
 
+  it("feishuApproval.saveManualApprover rejects email before reading or writing credentials", () => {
+    for (const idType of ["open_id", "user_id", "union_id"]) {
+      let secretReads = 0;
+      const result = commandRegistry["feishuApproval.saveManualApprover"]({
+        idType,
+        approverId: "ou_admin@example.com",
+      }, {
+        snapshot: prefs.getDefaults(),
+        getFeishuApprovalSecrets: () => {
+          secretReads += 1;
+          return {
+            credentialPlatform: "feishu",
+            appId: "cli_saved",
+            appSecret: "saved-secret",
+          };
+        },
+      });
+
+      assert.deepStrictEqual(result, { status: "error", code: "email-requires-lookup" });
+      assert.equal(secretReads, 0, idType);
+      assert.equal("commit" in result, false, idType);
+    }
+  });
+
   it("feishuApproval.saveManualApprover fails closed without deleting the stored approver", () => {
     const current = {
       ...prefs.getDefaults().feishuApproval,
