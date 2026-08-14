@@ -502,6 +502,7 @@ function buildSessionSnapshot(sessions, options = {}) {
         antigravityQuota: iconFor("antigravity-cli"),
         claudeQuota: iconFor("claude-code"),
         codexQuota: iconFor("codex"),
+        kimiQuota: iconFor("kimi-cli"),
       };
     })(),
     sessionAutomationOrphans: automationRecords
@@ -562,6 +563,9 @@ function sessionSnapshotSignature(snapshot) {
         : null,
       codexSparkQuota: entry.codexSparkQuota
         ? { group: entry.codexSparkQuota.group, lastSeenAt: entry.codexSparkQuota.lastSeenAt }
+        : null,
+      kimiQuota: entry.kimiQuota
+        ? { group: entry.kimiQuota.group, lastSeenAt: entry.kimiQuota.lastSeenAt }
         : null,
     })),
     sessions: snapshot.sessions.map((entry) => ({

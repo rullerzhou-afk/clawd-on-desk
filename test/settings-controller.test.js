@@ -63,6 +63,18 @@ describe("quota ring display mode persistence", () => {
   });
 });
 
+describe("Kimi quota collection opt-in", () => {
+  it("persists only through its command path", async () => {
+    const prefsPath = makeTempPath();
+    const ctrl = createSettingsController({ prefsPath });
+    const enabled = await ctrl.applyCommand("setKimiQuotaCollectionEnabled", { enabled: true });
+    assert.strictEqual(enabled.status, "ok");
+    assert.strictEqual(ctrl.get("kimiQuotaCollectionEnabled"), true);
+    const relaunched = createSettingsController({ prefsPath });
+    assert.strictEqual(relaunched.get("kimiQuotaCollectionEnabled"), true);
+  });
+});
+
 describe("permission automation safe startup persistence", () => {
   it("keeps off across a relaunch", async () => {
     const p = makeTempPath();
@@ -164,6 +176,7 @@ describe("permission automation safe startup persistence", () => {
       ctrl.applyBulk({ permissionAutomationAutoToolsWarningDismissed: true }),
       ctrl.hydrate({ permissionAutomationUnattendedWarningDismissed: true }),
       ctrl.applyUpdate("autoApproveAllPermissions", true),
+      ctrl.applyUpdate("kimiQuotaCollectionEnabled", true),
     ];
     for (const result of cases) {
       assert.strictEqual((await result).status, "error");
@@ -179,6 +192,7 @@ describe("permission automation safe startup persistence", () => {
       false
     );
     assert.strictEqual(ctrl.get("autoApproveAllPermissions"), false);
+    assert.strictEqual(ctrl.get("kimiQuotaCollectionEnabled"), false);
   });
 });
 

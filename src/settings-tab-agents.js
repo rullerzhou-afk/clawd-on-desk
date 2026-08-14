@@ -1177,6 +1177,9 @@
       codexHookNotifyRow.classList.add("row-sub");
       rows.push(codexHookNotifyRow);
     }
+    if (agent.id === "kimi-cli") {
+      rows.push(buildKimiQuotaCard());
+    }
     if (caps.permissionApproval || caps.interactiveBubble) {
       rows.push(buildAgentSwitchRow({
         agent,
@@ -1246,6 +1249,181 @@
     // WSL instances: show detected agent installations across distros
     rows.push(...buildAgentInstanceRows(agent));
     return rows;
+  }
+
+  function kimiQuotaStatusText(status) {
+    const stateName = status && status.state;
+    if (stateName === "unconfigured") return t("kimiQuotaStatusUnconfigured");
+    if (stateName === "configured-disabled") return t("kimiQuotaStatusConfiguredDisabled");
+    if (stateName === "agent-disabled") return t("kimiQuotaStatusAgentDisabled");
+    if (stateName === "secure-storage-unavailable" || stateName === "credential-unreadable") {
+      return t("kimiQuotaStatusSecureStorageUnavailable");
+    }
+    if (stateName === "refreshing") return t("kimiQuotaStatusRefreshing");
+    if (stateName === "fresh" && Number.isFinite(status.lastQuotaCapturedAt)) {
+      return t("kimiQuotaStatusFresh").replace(
+        "{time}",
+        new Date(status.lastQuotaCapturedAt).toLocaleString()
+      );
+    }
+    if (stateName === "ready") return t("kimiQuotaStatusReady");
+    if (status && status.reason) {
+      return t("kimiQuotaStatusError").replace("{reason}", String(status.reason));
+    }
+    return t("kimiQuotaStatusLoading");
+  }
+
+  function buildKimiQuotaCard() {
+    const card = document.createElement("div");
+    card.className = "row row-sub kimi-quota-card";
+
+    const heading = document.createElement("div");
+    heading.className = "kimi-quota-heading";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("kimiQuotaTitle");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("kimiQuotaDesc");
+    const warning = document.createElement("span");
+    warning.className = "row-desc kimi-quota-warning";
+    warning.textContent = t("kimiQuotaSecurityWarning");
+    const mode = document.createElement("span");
+    mode.className = "row-desc";
+    mode.textContent = t("kimiQuotaManualOnly");
+    heading.appendChild(label);
+    heading.appendChild(desc);
+    heading.appendChild(warning);
+    heading.appendChild(mode);
+    card.appendChild(heading);
+
+    const form = document.createElement("div");
+    form.className = "kimi-quota-form";
+    const input = document.createElement("input");
+    input.type = "password";
+    input.className = "kimi-quota-key-input";
+    input.placeholder = t("kimiQuotaApiKeyPlaceholder");
+    input.autocomplete = "new-password";
+    input.spellcheck = false;
+    input.setAttribute("aria-label", t("kimiQuotaApiKeyPlaceholder"));
+    input.addEventListener("click", (event) => event.stopPropagation());
+    input.addEventListener("keydown", (event) => event.stopPropagation());
+    form.appendChild(input);
+
+    const buttons = document.createElement("div");
+    buttons.className = "kimi-quota-actions";
+    const connectButton = document.createElement("button");
+    const refreshButton = document.createElement("button");
+    const disconnectButton = document.createElement("button");
+    const forgetButton = document.createElement("button");
+    const consoleButton = document.createElement("button");
+    for (const button of [connectButton, refreshButton, disconnectButton, forgetButton, consoleButton]) {
+      button.type = "button";
+      button.className = "soft-btn";
+      buttons.appendChild(button);
+    }
+    forgetButton.classList.add("danger");
+    consoleButton.textContent = t("kimiQuotaOpenConsole");
+    consoleButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (window.settingsAPI && typeof window.settingsAPI.openExternal === "function") {
+        window.settingsAPI.openExternal("https://www.kimi.com/code/console");
+      }
+    });
+    form.appendChild(buttons);
+    card.appendChild(form);
+
+    const statusLine = document.createElement("span");
+    statusLine.className = "row-desc kimi-quota-status";
+    statusLine.textContent = t("kimiQuotaStatusLoading");
+    card.appendChild(statusLine);
+    const revokeNote = document.createElement("span");
+    revokeNote.className = "row-desc kimi-quota-revoke-note";
+    revokeNote.textContent = t("kimiQuotaRevokeNote");
+    card.appendChild(revokeNote);
+
+    let currentStatus = null;
+    let busy = false;
+    function syncControls() {
+      const configured = !!(currentStatus && currentStatus.configured);
+      const decryptable = !!(currentStatus && currentStatus.decryptable);
+      const collectionEnabled = !!(currentStatus && currentStatus.collectionEnabled);
+      const agentEnabled = !currentStatus || currentStatus.agentEnabled !== false;
+      connectButton.textContent = t(configured ? "kimiQuotaReplace" : "kimiQuotaConnect");
+      refreshButton.textContent = t("kimiQuotaRefresh");
+      disconnectButton.textContent = t("kimiQuotaDisconnect");
+      forgetButton.textContent = t("kimiQuotaForgetLocal");
+      connectButton.disabled = busy;
+      input.disabled = busy;
+      refreshButton.disabled = busy || !configured || !decryptable || !collectionEnabled || !agentEnabled;
+      disconnectButton.disabled = busy || !collectionEnabled;
+      forgetButton.disabled = busy || !configured || collectionEnabled;
+      consoleButton.disabled = busy;
+      statusLine.textContent = busy
+        ? t("kimiQuotaStatusRefreshing")
+        : kimiQuotaStatusText(currentStatus);
+    }
+
+    async function reloadStatus() {
+      if (!window.settingsAPI || typeof window.settingsAPI.getKimiQuotaStatus !== "function") {
+        currentStatus = { status: "error", reason: "runtime-unavailable" };
+      } else {
+        try { currentStatus = await window.settingsAPI.getKimiQuotaStatus(); }
+        catch { currentStatus = { status: "error", reason: "runtime-unavailable" }; }
+      }
+      if (card.isConnected === false) return;
+      syncControls();
+    }
+
+    async function runAction(invoke) {
+      if (busy) return;
+      busy = true;
+      syncControls();
+      let result;
+      try { result = await invoke(); }
+      catch { result = { status: "error", reason: "runtime-unavailable" }; }
+      busy = false;
+      await reloadStatus();
+      if (!result || result.status !== "ok") {
+        const reason = (result && (result.reason || result.message)) || "unknown-error";
+        ops.showToast(t("kimiQuotaStatusError").replace("{reason}", reason), { error: true });
+      }
+      return result;
+    }
+
+    function submitConnect() {
+      const apiKey = input.value;
+      input.value = "";
+      if (!apiKey) {
+        ops.showToast(t("kimiQuotaKeyRequired"), { error: true });
+        return;
+      }
+      runAction(() => window.settingsAPI.connectKimiQuota(apiKey));
+    }
+    connectButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      submitConnect();
+    });
+    refreshButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      runAction(() => window.settingsAPI.refreshKimiQuota());
+    });
+    disconnectButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      runAction(() => window.settingsAPI.disconnectKimiQuota());
+    });
+    forgetButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (typeof window.confirm === "function" && !window.confirm(t("kimiQuotaForgetConfirm"))) return;
+      runAction(() => window.settingsAPI.forgetKimiQuotaCredential());
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") submitConnect();
+    });
+
+    syncControls();
+    void reloadStatus();
+    return card;
   }
 
   function formatCustomAgentActivity(lastStateEvent) {

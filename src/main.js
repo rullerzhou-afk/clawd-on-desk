@@ -90,6 +90,9 @@ const {
 } = require("./settings-size-preview-session");
 const { registerSettingsIpc } = require("./settings-ipc");
 const createSettingsEffectRouter = require("./settings-effect-router");
+const { createKimiQuotaClient } = require("./kimi-quota-client");
+const { createKimiQuotaCredentialStore } = require("./kimi-quota-credential-store");
+const { createKimiQuotaRuntime } = require("./kimi-quota-runtime");
 const {
   getPetTintIdForTheme,
   resolvePetTintPayload,
@@ -1069,6 +1072,7 @@ let sessionHudShowContextUsage = _settingsController.get("sessionHudShowContextU
 let sessionHudShowQuota = _settingsController.get("sessionHudShowQuota");
 let quotaRingDisplayMode = _settingsController.get("quotaRingDisplayMode");
 let claudeQuotaCollectionEnabled = _settingsController.get("claudeQuotaCollectionEnabled");
+let kimiQuotaCollectionEnabled = _settingsController.get("kimiQuotaCollectionEnabled");
 let quotaMergeSources = _settingsController.get("quotaMergeSources");
 let sessionHudCleanupDetached = _settingsController.get("sessionHudCleanupDetached");
 let sessionHudPinned = _settingsController.get("sessionHudPinned");
@@ -1811,6 +1815,7 @@ const _stateCtx = {
   // Last-known account quota survives app restarts (state-account-quota.js).
   accountQuotaPersistPath: require("./state-account-quota").DEFAULT_PERSIST_PATH,
   get claudeQuotaCollectionEnabled() { return claudeQuotaCollectionEnabled; },
+  get kimiQuotaCollectionEnabled() { return kimiQuotaCollectionEnabled; },
   get quotaMergeSources() { return quotaMergeSources; },
   get doNotDisturb() { return doNotDisturb; },
   set doNotDisturb(v) { doNotDisturb = v; },
@@ -1917,6 +1922,28 @@ const _stateCtx = {
   },
 };
 const _state = require("./state")(_stateCtx);
+const _kimiQuotaCredentialStore = createKimiQuotaCredentialStore({ safeStorage });
+const _kimiQuotaRuntime = createKimiQuotaRuntime({
+  credentialStore: _kimiQuotaCredentialStore,
+  client: createKimiQuotaClient({ appVersion: app.getVersion() }),
+  getSettingsSnapshot: () => _settingsController.getSnapshot(),
+  setCollectionEnabled: (enabled) => _settingsController.applyCommand(
+    "setKimiQuotaCollectionEnabled",
+    { enabled }
+  ),
+  commitLocalKimiQuota: (quota) => _state.commitLocalKimiQuota(quota),
+  clearLocalKimiQuota: () => _state.clearLocalKimiQuota(),
+});
+_settingsController.subscribeKey("kimiQuotaCollectionEnabled", (enabled) => {
+  void _kimiQuotaRuntime.onCollectionPreferenceChanged(enabled).catch((error) => {
+    console.warn("Clawd: Kimi quota preference reconciliation failed:", error && error.message);
+  });
+});
+_settingsController.subscribeKey("agents", (_agents, snapshot) => {
+  if (!_isAgentEnabled(snapshot, "kimi-cli")) {
+    _kimiQuotaRuntime.invalidateRequests();
+  }
+});
 const { setState, applyState, updateSession, resolveDisplayState, getSvgOverride,
         enableDoNotDisturb, disableDoNotDisturb, startStaleCleanup, stopStaleCleanup,
         startWakePoll, stopWakePoll, detectRunningAgentProcesses,
@@ -3620,6 +3647,7 @@ const SETTINGS_MIRROR_SETTERS = {
   sessionHudShowQuota: (v) => { sessionHudShowQuota = v; },
   quotaRingDisplayMode: (v) => { quotaRingDisplayMode = v; },
   claudeQuotaCollectionEnabled: (v) => { claudeQuotaCollectionEnabled = v; },
+  kimiQuotaCollectionEnabled: (v) => { kimiQuotaCollectionEnabled = v; },
   quotaMergeSources: (v) => { quotaMergeSources = v; },
   sessionHudCleanupDetached: (v) => { sessionHudCleanupDetached = v; },
   sessionHudPinned: (v) => { sessionHudPinned = v; },
@@ -3948,6 +3976,7 @@ registerSettingsIpc({
   getAllAgents,
   getHookServerPort: () => getHookServerPort(),
   getRecentHookEvents: (options) => _server.getRecentHookEvents(options),
+  kimiQuotaRuntime: _kimiQuotaRuntime,
   checkForUpdates,
   getUpdateCheckSnapshot,
   clearUpdateError,
@@ -4617,6 +4646,13 @@ if (!gotTheLock) {
     } catch (err) {
       _remoteSshInstallationIdentity = null;
       console.error("Clawd remote-ssh: installation identity initialization failed:", err && err.message);
+    }
+    // safeStorage is only guaranteed after Electron is ready. This reconciles
+    // the local key/quota binding and never performs a Kimi network request.
+    try {
+      await _kimiQuotaRuntime.initialize();
+    } catch (err) {
+      console.warn("Clawd: Kimi quota startup reconciliation failed:", err && err.message);
     }
 
     permDebugLog = path.join(app.getPath("userData"), "permission-debug.log");

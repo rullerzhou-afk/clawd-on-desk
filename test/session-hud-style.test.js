@@ -310,3 +310,16 @@ describe("quota ring glyph zoom follows the exporter's artwork ratio", () => {
     }
   });
 });
+
+describe("Kimi quota freshness policy mirrors across browser renderers", () => {
+  const dashboardRenderer = fs.readFileSync(
+    path.join(__dirname, "..", "src", "dashboard-renderer.js"), "utf8"
+  );
+
+  it("keeps Kimi at seven minutes and every other provider at five", () => {
+    for (const source of [quotaRingRenderer, dashboardRenderer]) {
+      assert.match(source, /DEFAULT_QUOTA_STALE_AFTER_MS\s*=\s*5\s*\*\s*60\s*\*\s*1000/);
+      assert.match(source, /PROVIDER_STALE_AFTER_MS\s*=\s*Object\.freeze\(\{[\s\S]*?kimiQuota:\s*7\s*\*\s*60\s*\*\s*1000/);
+    }
+  });
+});

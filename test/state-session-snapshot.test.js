@@ -908,6 +908,25 @@ describe("state-session-snapshot builder", () => {
     assert.notStrictEqual(sessionSnapshotSignature(original), sessionSnapshotSignature(changedSeen));
   });
 
+  it("snapshot signature tracks Kimi group and lastSeenAt changes", () => {
+    const base = { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null };
+    const build = (usedPercent, updatedAt, lastSeenAt) => buildSessionSnapshot(new Map(), {
+      ...base,
+      accountQuota: [{
+        host: null,
+        kimiQuota: {
+          group: { kimiWeekly: { usedPercent, windowMinutes: 10080 } },
+          updatedAt,
+          lastSeenAt,
+        },
+      }],
+    });
+    const original = build(0, 1, 60000);
+    assert.strictEqual(sessionSnapshotSignature(original), sessionSnapshotSignature(build(0, 2, 60000)));
+    assert.notStrictEqual(sessionSnapshotSignature(original), sessionSnapshotSignature(build(1, 2, 60000)));
+    assert.notStrictEqual(sessionSnapshotSignature(original), sessionSnapshotSignature(build(0, 1, 120000)));
+  });
+
   it("marks detached ended idle sessions hidden from HUD only when cleanup is enabled and pid is dead", () => {
     const sessions = new Map([
       ["done-local", session("idle", {

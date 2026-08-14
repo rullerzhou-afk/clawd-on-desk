@@ -1,4 +1,37 @@
-# Manual validation: Remote SSH Codespaces serialization (#546)
+# Manual validation harnesses
+
+## Kimi Code quota Phase 0
+
+This manual-only probe validates the experimental Kimi Code API-key usage
+endpoint before any product integration is enabled. Create a dedicated Kimi
+Code API Key in the Kimi Console, stop other Kimi activity for the sampling
+window, then run:
+
+```powershell
+pwsh -NoProfile -File scripts/manual/kimi-quota-phase0-smoke.ps1 `
+  -QuietWindowConfirmed `
+  -Samples 3 `
+  -IntervalSeconds 60
+```
+
+The wrapper uses hidden input and passes the key to the Node child only through
+stdin. The helper has a compiled-in `https://api.kimi.com/coding/v1/usages`
+endpoint, rejects redirects by construction, uses a real `Clawd/...` user
+agent, caps the body at 64 KiB, and writes only a sanitized report to the OS
+temporary directory. It does not accept a key on argv, from an environment
+variable, or from a file. Do not paste the key into chat, a shell command, a
+fixture, or the repository.
+
+Compare the sanitized 5-hour and weekly values/reset times with the interactive
+Kimi Code `/usage` panel. Revoke the dedicated test key in the Kimi Console
+after the test; deleting the local report does not revoke the remote key. A
+successful response proves only the technical endpoint/schema gate. It does
+not grant permission for background polling, so product code remains
+manual-only unless Kimi gives public or written permission.
+
+---
+
+## Remote SSH Codespaces serialization (#546)
 
 This harness validates the Windows OpenSSH + `gh cs ssh --stdio` boundary that unit tests cannot prove. It creates (or accepts) one exact Codespace, generates an isolated SSH config under a timestamped evidence directory, runs the sequential control and effective-transport checks, then starts the development app with a temporary `USERPROFILE` so the user's real `~/.ssh/config` is not edited.
 

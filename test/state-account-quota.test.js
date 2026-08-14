@@ -13,6 +13,39 @@ function tempPersistPath() {
 }
 
 describe("account quota store", () => {
+  it("stores Kimi as a presence-aware provider and preserves an omitted sibling", () => {
+    let nowMs = 1000;
+    const store = createAccountQuotaStore({ persistPath: null, now: () => nowMs });
+    store.update(null, { kimiQuota: {
+      kimiFiveHour: { usedPercent: 10, windowMinutes: 300, resetAt: 999999 },
+      kimiWeekly: { usedPercent: 20, windowMinutes: 10080, resetAt: 999999 },
+    } });
+    nowMs = 2000;
+    store.update(null, { kimiQuota: {
+      kimiWeekly: { usedPercent: 21, windowMinutes: 10080, resetAt: 999999 },
+    } });
+    const group = store.snapshot()[0].kimiQuota.group;
+    assert.strictEqual(group.kimiFiveHour.usedPercent, 10);
+    assert.strictEqual(group.kimiWeekly.usedPercent, 21);
+  });
+
+  it("reports durable flush success and failure", () => {
+    const okPath = tempPersistPath();
+    const okStore = createAccountQuotaStore({ persistPath: okPath, now: () => 1000 });
+    okStore.update(null, { kimiQuota: { kimiWeekly: { usedPercent: 0, resetAt: 999999 } } });
+    assert.strictEqual(okStore.flush(), true);
+
+    const directoryPath = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-account-quota-dir-"));
+    const warnings = [];
+    const badStore = createAccountQuotaStore({
+      persistPath: directoryPath,
+      now: () => 1000,
+      logWarn: (...args) => warnings.push(args),
+    });
+    badStore.update(null, { kimiQuota: { kimiWeekly: { usedPercent: 0, resetAt: 999999 } } });
+    assert.strictEqual(badStore.flush(), false);
+    assert.strictEqual(warnings.length, 1);
+  });
   it("stores per-source groups and reports change only on real change", () => {
     let nowMs = 1000000;
     const store = createAccountQuotaStore({ persistPath: null, now: () => nowMs });

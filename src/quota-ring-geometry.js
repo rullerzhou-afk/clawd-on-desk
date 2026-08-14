@@ -29,6 +29,7 @@ const RING_PROVIDERS = [
   },
   { key: "claudeQuota", outer: ["claudeFiveHour"], inner: ["claudeWeekly"] },
   { key: "codexQuota", outer: ["codexFiveHour"], inner: ["codexWeekly"] },
+  { key: "kimiQuota", outer: ["kimiFiveHour"], inner: ["kimiWeekly"] },
 ];
 
 // Layout constants in CSS px (scaled by textScale by the caller, exactly like

@@ -1456,6 +1456,46 @@ html, body {
   justify-content: center;
   text-align: center;
 }
+
+.kimi-quota-card {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.kimi-quota-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.kimi-quota-warning,
+.kimi-quota-revoke-note {
+  color: var(--warning, #d99a32);
+}
+
+.kimi-quota-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.kimi-quota-key-input {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+}
+
+.kimi-quota-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.kimi-quota-status {
+  font-variant-numeric: tabular-nums;
+}
 @media (max-width: 620px) {
   .quota-ring-display-mode-row {
     align-items: stretch;

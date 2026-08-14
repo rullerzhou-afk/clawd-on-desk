@@ -8180,6 +8180,85 @@ describe("settings renderer browser environment", () => {
     assert.ok(!agentsSource.includes("full re-render"));
   });
 
+  it("renders Kimi quota as an explicit manual-only encrypted-key workflow", async () => {
+    let configured = false;
+    let connectedKey = null;
+    const genericCommands = [];
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        kimiQuotaCollectionEnabled: false,
+        agents: { "kimi-cli": { integrationInstalled: true, enabled: true } },
+        customApplications: [],
+        customToolDiscoveryPaths: [],
+      },
+      agentMetadata: [{
+        id: "kimi-cli",
+        name: "Kimi Code",
+        eventSource: "hook",
+        capabilities: {},
+      }],
+      settingsAPI: {
+        command: (name, payload) => {
+          genericCommands.push([name, payload]);
+          return Promise.resolve({ status: "ok" });
+        },
+        getKimiQuotaStatus: () => Promise.resolve({
+          status: "ok",
+          configured,
+          decryptable: configured,
+          collectionEnabled: configured,
+          agentEnabled: true,
+          state: configured ? "fresh" : "unconfigured",
+          lastQuotaCapturedAt: configured ? 1_786_708_953_953 : null,
+        }),
+        connectKimiQuota: (apiKey) => {
+          connectedKey = apiKey;
+          configured = true;
+          return Promise.resolve({ status: "ok" });
+        },
+        refreshKimiQuota: () => Promise.resolve({ status: "ok" }),
+        disconnectKimiQuota: () => Promise.resolve({ status: "ok" }),
+        forgetKimiQuotaCredential: () => Promise.resolve({ status: "ok" }),
+        openExternal: () => Promise.resolve({ status: "ok" }),
+      },
+    });
+    harness.core.runtime.agentInstallationHints = {
+      checkedAt: 1,
+      agents: [],
+      customAgents: [],
+      customTools: [],
+      skippedAgentIds: [],
+    };
+    harness.core.runtime.agentInstallationHintsFetched = true;
+    harness.core.ops.requestRender({ content: true });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const card = harness.content.querySelector(".kimi-quota-card");
+    assert.ok(card);
+    const input = card.querySelector(".kimi-quota-key-input");
+    assert.strictEqual(input.type, "password");
+    assert.strictEqual(input.autocomplete, "new-password");
+    const buttons = card.querySelectorAll(".kimi-quota-actions button");
+    assert.ok(buttons.length >= 5);
+    input.value = "sk-renderer-secret";
+    buttons[0].dispatchEvent({ type: "click", stopPropagation() {} });
+    assert.strictEqual(input.value, "", "the DOM must drop the key immediately after submission");
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.strictEqual(connectedKey, "sk-renderer-secret");
+    assert.strictEqual(
+      genericCommands.some((call) => JSON.stringify(call).includes("sk-renderer-secret")),
+      false,
+      "the secret must use dedicated IPC instead of settings:command"
+    );
+
+    const source = fs.readFileSync(path.join(SRC_DIR, "settings-tab-agents.js"), "utf8");
+    assert.ok(source.includes("Manual-only") || source.includes("kimiQuotaManualOnly"));
+    assert.ok(!source.includes("setInterval("));
+  });
+
   it("uses a dedicated Settings agent ordering helper before rendering Agent management groups", () => {
     const agentsSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-agents.js"), "utf8");
     const agentOrderSource = fs.readFileSync(path.join(SRC_DIR, "settings-agent-order.js"), "utf8");

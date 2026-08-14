@@ -26,13 +26,14 @@ describe("quota ring — coin counting", () => {
           host: null,
           claudeQuota: { group: { claudeFiveHour: bucket(41), claudeWeekly: bucket(20) }, updatedAt: 1 },
           codexQuota: { group: { codexFiveHour: bucket(72) }, updatedAt: 1 },
+          kimiQuota: { group: { kimiFiveHour: bucket(0), kimiWeekly: bucket(0) }, updatedAt: 1 },
         },
         { host: "pi", claudeQuota: { group: { claudeWeekly: bucket(9) }, updatedAt: 1 } },
       ],
     };
-    // 2 providers on local + 1 on the remote = 3 coins (a provider with two
+    // 3 providers on local + 1 on the remote = 4 coins (a provider with two
     // windows is still ONE coin — the two windows become concentric rings).
-    assert.strictEqual(countQuotaCoins(snapshot, true), 3);
+    assert.strictEqual(countQuotaCoins(snapshot, true), 4);
   });
 
   it("still counts a source whose only window has expired (dimmed reset coin)", () => {

@@ -195,6 +195,21 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(entry.effect(false, {}).status, "error");
   });
 
+  it("Kimi usage collection is command-only", () => {
+    const entry = updateRegistry.kimiQuotaCollectionEnabled;
+    assert.strictEqual(entry.validate(true).status, "ok");
+    assert.strictEqual(entry.validate("yes").status, "error");
+    assert.strictEqual(entry.commandOnly, true);
+    assert.deepStrictEqual(
+      commandRegistry.setKimiQuotaCollectionEnabled({ enabled: true }),
+      { status: "ok", commit: { kimiQuotaCollectionEnabled: true } }
+    );
+    assert.strictEqual(
+      commandRegistry.setKimiQuotaCollectionEnabled({ enabled: "yes" }).status,
+      "error"
+    );
+  });
+
   it("bubble auto-close seconds require integers in range", () => {
     const deps = { snapshot: baseSnapshot };
     for (const key of [

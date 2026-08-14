@@ -56,6 +56,23 @@ test("settings preload exposes the three roam area operations", async () => {
   ]);
 });
 
+test("settings preload exposes dedicated Kimi quota operations", async () => {
+  const { exposed, invokes } = loadPreload();
+  const settingsAPI = exposed.get("settingsAPI");
+  await settingsAPI.getKimiQuotaStatus();
+  await settingsAPI.connectKimiQuota("sk-secret");
+  await settingsAPI.refreshKimiQuota();
+  await settingsAPI.disconnectKimiQuota();
+  await settingsAPI.forgetKimiQuotaCredential();
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(invokes)), [
+    ["settings:kimi-quota-status"],
+    ["settings:kimi-quota-connect", { apiKey: "sk-secret" }],
+    ["settings:kimi-quota-refresh"],
+    ["settings:kimi-quota-disconnect"],
+    ["settings:kimi-quota-forget"],
+  ]);
+});
+
 test("settings preload forwards Telegram status revisions and unsubscribe is exact", () => {
   const { exposed, ipcHandlers } = loadPreload();
   const settingsAPI = exposed.get("settingsAPI");

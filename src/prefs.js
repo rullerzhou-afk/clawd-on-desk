@@ -177,6 +177,10 @@ const SCHEMA = {
   // statusline metadata stream. Keep it opt-in so a fresh Clawd install never
   // changes the user's terminal UI without an explicit choice.
   claudeQuotaCollectionEnabled: { type: "boolean", default: false },
+  // Kimi quota uses a separately encrypted API Key owned by the main process.
+  // This boolean is only the durable collection opt-in; the secret is never a
+  // preference and never enters a settings snapshot.
+  kimiQuotaCollectionEnabled: { type: "boolean", default: false },
   quotaMergeSources: { type: "boolean", default: false },
   sessionHudCleanupDetached: { type: "boolean", default: true },
   sessionHudPinned: { type: "boolean", default: false },

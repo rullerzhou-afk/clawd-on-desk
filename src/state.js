@@ -110,6 +110,9 @@ const accountQuota = createAccountQuotaStore({
 if (ctx.claudeQuotaCollectionEnabled === false) {
   clearLocalClaudeQuota({ broadcast: false });
 }
+if (ctx.kimiQuotaCollectionEnabled === false) {
+  clearLocalKimiQuota({ broadcast: false });
+}
 const MAX_SESSIONS = 20;
 const ASSISTANT_OUTPUT_MAX = 2400;
 const CODEX_EXIT_PROBE_DELAYS_MS = [1000, 3000, 8000, 15000];
@@ -1381,6 +1384,26 @@ function clearLocalClaudeQuota(options = {}) {
   accountQuota.flush();
   if (options.broadcast !== false) emitSessionSnapshot();
   return cleared;
+}
+
+// Kimi quota is collected only by the local, explicit API-key runtime. Its
+// durable commit seam reports persistence separately so the credentialId
+// binding journal can never claim a quota snapshot reached disk when it did
+// not. Existing generic/Claude callers keep their historical boolean/numeric
+// contracts above.
+function commitLocalKimiQuota(kimiQuota) {
+  const result = accountQuota.updateDetailed(null, { kimiQuota });
+  if (!result.accepted) return { accepted: false, persisted: false };
+  const persisted = accountQuota.flush();
+  if (result.changed) emitSessionSnapshot();
+  return { accepted: true, persisted: persisted === true };
+}
+
+function clearLocalKimiQuota(options = {}) {
+  const cleared = accountQuota.clearProvider("kimiQuota", (sourceKey) => sourceKey === "");
+  const persisted = cleared ? accountQuota.flush() === true : true;
+  if (cleared && options.broadcast !== false) emitSessionSnapshot();
+  return { cleared: cleared > 0, persisted };
 }
 
 // Distinct reporting sources that currently carry quota (this machine + WSL /
@@ -3055,6 +3078,8 @@ return {
   clearClaudeStatuslineAuthority,
   updateAccountQuota,
   clearLocalClaudeQuota,
+  commitLocalKimiQuota,
+  clearLocalKimiQuota,
   getQuotaSourceCount,
   clearPermissionNotification,
   ackSessionCompletion,

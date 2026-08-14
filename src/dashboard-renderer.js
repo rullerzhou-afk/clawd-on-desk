@@ -81,7 +81,14 @@ function contextUsageText(session) {
 const QUOTA_WARNING_THRESHOLD = 90;
 // A source that has not confirmed its numbers recently gets an explicit
 // "as of N ago" label instead of presenting old numbers as live.
-const QUOTA_STALE_AFTER_MS = 5 * 60 * 1000;
+const DEFAULT_QUOTA_STALE_AFTER_MS = 5 * 60 * 1000;
+const PROVIDER_STALE_AFTER_MS = Object.freeze({
+  kimiQuota: 7 * 60 * 1000,
+});
+
+function quotaStaleAfterMs(providerKey) {
+  return PROVIDER_STALE_AFTER_MS[providerKey] || DEFAULT_QUOTA_STALE_AFTER_MS;
+}
 
 function formatDurationHM(totalMinutes) {
   const hours = Math.floor(totalMinutes / 60);
@@ -166,7 +173,7 @@ function formatResetDate(resetAt) {
 // provider. Source labels appear only when they carry information: a single
 // local-only source renders exactly the compact pre-grouping layout, and a
 // fresh source shows no "as of" suffix.
-function buildQuotaSourceHeader(sourceEntry, providerEntry, baseLabel) {
+function buildQuotaSourceHeader(sourceEntry, providerEntry, baseLabel, providerKey) {
   const parts = [];
   const multiSource = sourceEntry.multiSource === true;
   if (multiSource) {
@@ -178,14 +185,14 @@ function buildQuotaSourceHeader(sourceEntry, providerEntry, baseLabel) {
   // Fallback covers snapshots that predate lastSeenAt.
   const seenAt = Number(providerEntry.lastSeenAt ?? providerEntry.updatedAt ?? 0);
   const age = Date.now() - seenAt;
-  if (Number.isFinite(age) && age > QUOTA_STALE_AFTER_MS) {
+  if (Number.isFinite(age) && age > quotaStaleAfterMs(providerKey)) {
     const asOf = formatAsOf(seenAt);
     if (asOf) parts.push(asOf);
   }
   return parts.length ? parts.join(" · ") : null;
 }
 
-function buildQuotaHalfBar(labelText, bucket, resetStyle) {
+function buildQuotaHalfBar(labelText, bucket, resetStyle, providerKey) {
   const half = document.createElement("div");
   half.className = "quota-half";
 
@@ -200,7 +207,8 @@ function buildQuotaHalfBar(labelText, bucket, resetStyle) {
       : t("dashboardQuotaResetIn").replace("{time}", formatResetIn(bucket.resetAt));
   }
   const bucketSeenAt = Number(bucket.lastSeenAt);
-  const asOf = Number.isFinite(bucketSeenAt) && Date.now() - bucketSeenAt > QUOTA_STALE_AFTER_MS
+  const asOf = Number.isFinite(bucketSeenAt)
+    && Date.now() - bucketSeenAt > quotaStaleAfterMs(providerKey)
     ? formatAsOf(bucketSeenAt)
     : "";
   const details = [percentText, resetText, asOf].filter(Boolean).join(" · ");
@@ -218,7 +226,7 @@ function buildQuotaHalfBar(labelText, bucket, resetStyle) {
   return half;
 }
 
-function buildQuotaGroupRow(headerText, fiveHourBucket, weeklyBucket) {
+function buildQuotaGroupRow(headerText, fiveHourBucket, weeklyBucket, providerKey) {
   if (!fiveHourBucket && !weeklyBucket) return null;
   const row = document.createElement("div");
   row.className = "quota-group-row";
@@ -229,14 +237,16 @@ function buildQuotaGroupRow(headerText, fiveHourBucket, weeklyBucket) {
     halves.appendChild(buildQuotaHalfBar(
       formatQuotaWindowLabel(fiveHourBucket, t("dashboardQuotaFiveHour")),
       fiveHourBucket,
-      quotaResetStyle(fiveHourBucket, "countdown")
+      quotaResetStyle(fiveHourBucket, "countdown"),
+      providerKey
     ));
   }
   if (weeklyBucket) {
     halves.appendChild(buildQuotaHalfBar(
       formatQuotaWindowLabel(weeklyBucket, t("dashboardQuotaWeekly")),
       weeklyBucket,
-      quotaResetStyle(weeklyBucket, "date")
+      quotaResetStyle(weeklyBucket, "date"),
+      providerKey
     ));
   }
   row.appendChild(halves);
@@ -290,14 +300,16 @@ function renderQuotaSummary(snapshot) {
     if (!group) continue;
     antigravityRows.push(
       buildQuotaGroupRow(
-        buildQuotaSourceHeader(source, provider, t("dashboardQuotaGroupGemini")),
+        buildQuotaSourceHeader(source, provider, t("dashboardQuotaGroupGemini"), "antigravityQuota"),
         liveBucket(group, "geminiFiveHour"),
-        liveBucket(group, "geminiWeekly")
+        liveBucket(group, "geminiWeekly"),
+        "antigravityQuota"
       ),
       buildQuotaGroupRow(
-        buildQuotaSourceHeader(source, provider, t("dashboardQuotaGroupThirdParty")),
+        buildQuotaSourceHeader(source, provider, t("dashboardQuotaGroupThirdParty"), "antigravityQuota"),
         liveBucket(group, "thirdPartyFiveHour"),
-        liveBucket(group, "thirdPartyWeekly")
+        liveBucket(group, "thirdPartyWeekly"),
+        "antigravityQuota"
       )
     );
   }
@@ -309,9 +321,10 @@ function renderQuotaSummary(snapshot) {
     const group = provider && provider.group;
     if (!group) return null;
     return buildQuotaGroupRow(
-      buildQuotaSourceHeader(source, provider, null),
+      buildQuotaSourceHeader(source, provider, null, "claudeQuota"),
       liveBucket(group, "claudeFiveHour"),
-      liveBucket(group, "claudeWeekly")
+      liveBucket(group, "claudeWeekly"),
+      "claudeQuota"
     );
   });
   const claudeSection = buildQuotaSection("dashboardQuotaSectionClaudeCode", claudeRows);
@@ -322,9 +335,10 @@ function renderQuotaSummary(snapshot) {
     const group = provider && provider.group;
     if (!group) return null;
     return buildQuotaGroupRow(
-      buildQuotaSourceHeader(source, provider, null),
+      buildQuotaSourceHeader(source, provider, null, "codexQuota"),
       liveBucket(group, "codexFiveHour"),
-      liveBucket(group, "codexWeekly")
+      liveBucket(group, "codexWeekly"),
+      "codexQuota"
     );
   });
   const codexSection = buildQuotaSection("dashboardQuotaSectionCodex", codexRows);
@@ -335,9 +349,10 @@ function renderQuotaSummary(snapshot) {
     const group = provider && provider.group;
     if (!group) return null;
     return buildQuotaGroupRow(
-      buildQuotaSourceHeader(source, provider, null),
+      buildQuotaSourceHeader(source, provider, null, "codexSparkQuota"),
       liveBucket(group, "codexFiveHour"),
-      liveBucket(group, "codexWeekly")
+      liveBucket(group, "codexWeekly"),
+      "codexSparkQuota"
     );
   });
   const codexSparkSection = buildQuotaSection(
@@ -345,6 +360,20 @@ function renderQuotaSummary(snapshot) {
     codexSparkRows
   );
   if (codexSparkSection) sections.push(codexSparkSection);
+
+  const kimiRows = sources.map((source) => {
+    const provider = source.kimiQuota;
+    const group = provider && provider.group;
+    if (!group) return null;
+    return buildQuotaGroupRow(
+      buildQuotaSourceHeader(source, provider, null, "kimiQuota"),
+      liveBucket(group, "kimiFiveHour"),
+      liveBucket(group, "kimiWeekly"),
+      "kimiQuota"
+    );
+  });
+  const kimiSection = buildQuotaSection("dashboardQuotaSectionKimiCode", kimiRows);
+  if (kimiSection) sections.push(kimiSection);
 
   if (!sections.length) {
     quotaSummaryEl.hidden = true;

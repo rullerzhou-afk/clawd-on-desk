@@ -254,6 +254,52 @@ function registerSettingsIpc(options = {}) {
       return 0;
     }
   });
+  // Kimi API keys are accepted only by these trusted Settings-window handlers.
+  // They never transit settings:command, prefs, or a renderer-broadcast
+  // snapshot. Results are deliberately sanitized by kimi-quota-runtime.
+  handle("settings:kimi-quota-status", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.kimiQuotaRuntime;
+    return runtime && typeof runtime.getStatus === "function"
+      ? runtime.getStatus()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:kimi-quota-connect", async (event, payload) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    if (!payload || typeof payload !== "object" || typeof payload.apiKey !== "string") {
+      return { status: "error", reason: "invalid-credential-input" };
+    }
+    const runtime = options.kimiQuotaRuntime;
+    return runtime && typeof runtime.connect === "function"
+      ? runtime.connect(payload.apiKey)
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:kimi-quota-refresh", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.kimiQuotaRuntime;
+    return runtime && typeof runtime.refresh === "function"
+      ? runtime.refresh()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:kimi-quota-disconnect", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.kimiQuotaRuntime;
+    return runtime && typeof runtime.disconnect === "function"
+      ? runtime.disconnect()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:kimi-quota-forget", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.kimiQuotaRuntime;
+    return runtime && typeof runtime.forget === "function"
+      ? runtime.forget()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
   handle("settings:get-pet-tint-options", () => listPetTintOptions());
   handle("settings:get-pet-accessory-options", () => listPetAccessoryOptions());
   handle("settings:get-roam-fence", (event) => {

@@ -15,7 +15,10 @@
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const XLINK_NS = "http://www.w3.org/1999/xlink";
-const STALE_AFTER_MS = 5 * 60 * 1000;
+const DEFAULT_QUOTA_STALE_AFTER_MS = 5 * 60 * 1000;
+const PROVIDER_STALE_AFTER_MS = Object.freeze({
+  kimiQuota: 7 * 60 * 1000,
+});
 const MAX_COINS = 4; // must match quota-ring-geometry RING_MAX_COINS
 
 // Mirrors RING_PROVIDERS in quota-ring-geometry.js (that file is CommonJS; this
@@ -46,6 +49,12 @@ const RING_PROVIDERS = [
     label: "Codex",
     outer: [{ field: "codexFiveHour", fallback: "5h" }],
     inner: [{ field: "codexWeekly", fallback: "7d" }],
+  },
+  {
+    key: "kimiQuota",
+    label: "Kimi",
+    outer: [{ field: "kimiFiveHour", fallback: "5h" }],
+    inner: [{ field: "kimiWeekly", fallback: "7d" }],
   },
 ];
 
@@ -91,6 +100,7 @@ const GLYPH_ZOOM_BY_PROVIDER = {
   antigravityQuota: 64 / 56,
   claudeQuota: 64 / 56,
   codexQuota: 64 / 44.4,
+  kimiQuota: 64 / 56,
 };
 let coinClipSeq = 0;
 
@@ -149,6 +159,10 @@ function identityClass(providerKey, ringSlot) {
   return `pv-${providerKey} rg-${ringSlot}`;
 }
 
+function staleAfterMs(providerKey) {
+  return PROVIDER_STALE_AFTER_MS[providerKey] || DEFAULT_QUOTA_STALE_AFTER_MS;
+}
+
 // Window reset on wall clock: the pre-reset number would read high, so an
 // expired bucket becomes a dim 0 ("reset, nothing reported since").
 function liveBucket(group, field, now) {
@@ -179,7 +193,7 @@ function providerHasDrawableQuota(source, def) {
 // bucket; among equally live candidates the highest used percentage is the
 // most constrained. This keeps Antigravity to one coin while never silently
 // dropping its Claude/GPT quota family.
-function selectRingWindow(group, candidates, now, ring, providerSeenAtValue) {
+function selectRingWindow(group, candidates, now, ring, providerSeenAtValue, providerKey) {
   let selected = null;
   for (const candidate of candidates) {
     const bucket = liveBucket(group, candidate.field, now);
@@ -188,7 +202,7 @@ function selectRingWindow(group, candidates, now, ring, providerSeenAtValue) {
     const pct = Math.max(0, Math.min(100, Number(bucket.usedPercent) || 0));
     const bucketSeenAt = Number(bucket.lastSeenAt);
     const seenAt = Number.isFinite(bucketSeenAt) ? bucketSeenAt : providerSeenAtValue;
-    const stale = Number.isFinite(seenAt) && now - seenAt > STALE_AFTER_MS;
+    const stale = Number.isFinite(seenAt) && now - seenAt > staleAfterMs(providerKey);
     if (!selected
         || (selected.reset && !reset)
         || (selected.reset === reset && selected.stale && !stale)
@@ -220,8 +234,8 @@ function buildCoinModel(source, def, now, multiSource) {
   const group = provider && provider.group;
   if (!group) return null;
   const providerSeen = providerSeenAt(provider);
-  const outer = selectRingWindow(group, def.outer, now, "outer", providerSeen);
-  const inner = selectRingWindow(group, def.inner, now, "inner", providerSeen);
+  const outer = selectRingWindow(group, def.outer, now, "outer", providerSeen, def.key);
+  const inner = selectRingWindow(group, def.inner, now, "inner", providerSeen, def.key);
   if (!outer && !inner) return null;
 
   const windows = [];

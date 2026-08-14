@@ -66,6 +66,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.sessionHudShowQuota, true);
     assert.strictEqual(d.quotaRingDisplayMode, "used");
     assert.strictEqual(d.claudeQuotaCollectionEnabled, false);
+    assert.strictEqual(d.kimiQuotaCollectionEnabled, false);
     assert.strictEqual(d.quotaMergeSources, false);
     assert.strictEqual(d.telegramMigrationLastNotified, "");
     assert.strictEqual(d.sessionHudCleanupDetached, true);

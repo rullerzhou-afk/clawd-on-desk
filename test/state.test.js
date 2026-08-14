@@ -3112,6 +3112,56 @@ describe("updateSession()", () => {
     assert.strictEqual(reloaded.find((entry) => entry.host === "workbox").claudeQuota.group.claudeWeekly.usedPercent, 90);
   });
 
+  it("commits, flushes, and clears only local Kimi quota", () => {
+    const persistPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "clawd-kimi-state-")), "account-quota.json");
+    const localApi = require("../src/state")(makeCtx({
+      accountQuotaPersistPath: persistPath,
+      kimiQuotaCollectionEnabled: true,
+    }));
+    const resetAt = Date.now() + 3600000;
+    assert.deepStrictEqual(localApi.commitLocalKimiQuota({
+      kimiFiveHour: { usedPercent: 12, resetAt, capturedAt: Date.now() },
+      kimiWeekly: { usedPercent: 4, resetAt: resetAt + 86400000, capturedAt: Date.now() },
+    }), { accepted: true, persisted: true });
+    assert.strictEqual(
+      localApi.buildSessionSnapshot().accountQuota[0].kimiQuota.group.kimiFiveHour.usedPercent,
+      12
+    );
+    assert.deepStrictEqual(localApi.clearLocalKimiQuota(), { cleared: true, persisted: true });
+    assert.strictEqual(localApi.buildSessionSnapshot().accountQuota.length, 0);
+    localApi.cleanup();
+    assert.strictEqual(
+      require("../src/state-account-quota").createAccountQuotaStore({ persistPath }).snapshot().length,
+      0,
+      "the explicit disconnect boundary must survive restart"
+    );
+  });
+
+  it("cleans a persisted local Kimi cache on startup when collection is disabled", () => {
+    const persistPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "clawd-kimi-optout-")), "account-quota.json");
+    const { createAccountQuotaStore } = require("../src/state-account-quota");
+    const seed = createAccountQuotaStore({ persistPath });
+    const resetAt = Date.now() + 3600000;
+    seed.update(null, {
+      kimiQuota: { kimiFiveHour: { usedPercent: 18, resetAt } },
+      codexQuota: { codexWeekly: { usedPercent: 7, resetAt } },
+    });
+    seed.flush();
+
+    const localApi = require("../src/state")(makeCtx({
+      accountQuotaPersistPath: persistPath,
+      kimiQuotaCollectionEnabled: false,
+    }));
+    const local = localApi.buildSessionSnapshot().accountQuota.find((entry) => entry.host === null);
+    assert.strictEqual(local.kimiQuota, undefined);
+    assert.strictEqual(local.codexQuota.group.codexWeekly.usedPercent, 7);
+    localApi.cleanup();
+
+    const reloaded = createAccountQuotaStore({ persistPath }).snapshot()[0];
+    assert.strictEqual(reloaded.kimiQuota, undefined);
+    assert.strictEqual(reloaded.codexQuota.group.codexWeekly.usedPercent, 7);
+  });
+
   it("updateAccountQuota change-detects identical refreshes (no re-broadcast, no re-stamp)", () => {
     const broadcasts = [];
     const localApi = require("../src/state")(makeCtx({
@@ -3659,7 +3709,9 @@ describe("buildSessionSnapshot", () => {
     // Icon URLs are absolute file:// paths (machine-dependent) — assert the
     // shape, then compare the rest exactly.
     const { quotaAgentIcons, ...rest } = snapshot;
-    assert.deepStrictEqual(Object.keys(quotaAgentIcons).sort(), ["antigravityQuota", "claudeQuota", "codexQuota"]);
+    assert.deepStrictEqual(Object.keys(quotaAgentIcons).sort(), [
+      "antigravityQuota", "claudeQuota", "codexQuota", "kimiQuota",
+    ]);
     assert.deepStrictEqual(rest, {
       sessions: [],
       groups: [],
