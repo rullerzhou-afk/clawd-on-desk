@@ -1953,7 +1953,7 @@
     });
     if (feishuView.expandApproverFallbackGuide) {
       feishuView.expandApproverFallbackGuide = false;
-      group.expand({ persist: false });
+      group.expand({ persist: false, animate: false });
     }
     return group;
   }

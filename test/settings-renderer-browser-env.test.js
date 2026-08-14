@@ -255,6 +255,7 @@ class FakeElement {
   setAttribute(name, value) {
     this.attributes[name] = String(value);
     if (name === "class") this.className = String(value);
+    if (name === "href") this.href = String(value);
     if (name === "id") this.id = String(value);
     if (name === "type") this.type = String(value);
     if (name === "tabindex") this.tabIndex = Number(value);
@@ -359,6 +360,11 @@ class FakeElement {
 
   _matches(selector) {
     if (selector.startsWith(".")) return this.classList.contains(selector.slice(1));
+    const tagAttribute = /^([a-zA-Z][\w-]*)\[([:\w-]+)\]$/.exec(selector);
+    if (tagAttribute) {
+      return this.tagName.toLowerCase() === tagAttribute[1].toLowerCase()
+        && Object.prototype.hasOwnProperty.call(this.attributes, tagAttribute[2]);
+    }
     return this.tagName.toLowerCase() === selector.toLowerCase();
   }
 
@@ -4792,7 +4798,10 @@ describe("settings renderer browser environment", () => {
     const guideHeader = guide.querySelector(".collapsible-group-header");
     const guideBody = guide.querySelector(".collapsible-group-body");
     assert.equal(guide.expandCalls.length, 1);
-    assert.equal(guide.expandCalls[0].persist, false);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(guide.expandCalls[0])), {
+      persist: false,
+      animate: false,
+    });
     assert.equal(guide.headerClickCount, 0);
     assert.equal(guide.collapsedStateWrites, 0);
     assert.equal(guide.classList.contains("collapsed"), false);
@@ -5098,6 +5107,7 @@ describe("settings renderer browser environment", () => {
       ["lark", "open.larksuite.com", "open.feishu.cn"],
     ]) {
       for (const code of ["missing-contact-scope", "approver-not-found", "lookup-failed"]) {
+        const openExternalCalls = [];
         const harness = loadTelegramApprovalTabForTest({
           snapshot: {
             tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
@@ -5136,6 +5146,10 @@ describe("settings renderer browser environment", () => {
           },
         });
         harness.core.helpers.t = (key) => (key in strings ? strings[key] : key);
+        harness.core.helpers.openExternalSafe = (url) => {
+          openExternalCalls.push(url);
+          return Promise.resolve({ status: "ok" });
+        };
         await Promise.resolve();
         await Promise.resolve();
         harness.render();
@@ -5154,9 +5168,10 @@ describe("settings renderer browser environment", () => {
         const guide = harness.content.querySelector(".feishu-approval-api-explorer-guide");
         assert.ok(guide);
         assert.equal(guide.classList.contains("collapsed"), false, `${platform}/${code} should expand help`);
-        const links = guide.querySelectorAll("a").map((link) => link.getAttribute("href"));
+        const links = guide.querySelectorAll("a");
         assert.equal(links.length, 1);
-        const url = new URL(links[0]);
+        const renderedUrl = links[0].getAttribute("href");
+        const url = new URL(renderedUrl);
         assert.equal(url.protocol, "https:");
         assert.equal(url.hostname, expectedHostname);
         assert.equal(url.pathname, "/api-explorer");
@@ -5166,6 +5181,8 @@ describe("settings renderer browser environment", () => {
         assert.equal(url.searchParams.get("apiName"), "batch_get_id");
         assert.equal(url.searchParams.get("version"), "v3");
         assert.equal([...url.searchParams.keys()].length, 4);
+        links[0].click();
+        assert.deepStrictEqual(openExternalCalls, [renderedUrl]);
         assert.ok(!collectText(harness.content).includes("raw SDK/API detail must not render"));
         assert.equal(harness.updates.length, 0);
       }
