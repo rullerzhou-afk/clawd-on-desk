@@ -2714,18 +2714,25 @@ test("every message boundary accepts code 0 and the codeless legacy shape", asyn
   }
 });
 
-test("create boundaries reject a success code without a message_id", async () => {
-  const response = { code: 0, msg: "success", data: {} };
-  for (const boundary of MESSAGE_RESPONSE_BOUNDARIES.filter((entry) => entry.kind === "create")) {
-    await assert.rejects(boundary.invoke(boundaryClient(response)), (error) => {
-      assert.deepEqual(sanitizedErrorSnapshot(error), {
-        message: "Feishu/Lark SDK request failed.",
-        code: "sdk-request-failed",
-        stage: boundary.stage,
-        businessCode: undefined,
-      }, boundary.name);
-      return true;
-    }, boundary.name);
+test("create boundaries reject a success code without a usable message_id", async () => {
+  const responses = [
+    { code: 0, msg: "success", data: {} },
+    { code: 0, msg: "success", data: { message_id: "" } },
+    { code: 0, msg: "success", data: { message_id: "   " } },
+    { code: 0, msg: "success", data: { message_id: "\t" } },
+  ];
+  for (const response of responses) {
+    for (const boundary of MESSAGE_RESPONSE_BOUNDARIES.filter((entry) => entry.kind === "create")) {
+      await assert.rejects(boundary.invoke(boundaryClient(response)), (error) => {
+        assert.deepEqual(sanitizedErrorSnapshot(error), {
+          message: "Feishu/Lark SDK request failed.",
+          code: "sdk-request-failed",
+          stage: boundary.stage,
+          businessCode: undefined,
+        }, `${boundary.name} ${JSON.stringify(response.data)}`);
+        return true;
+      }, `${boundary.name} ${JSON.stringify(response.data)}`);
+    }
   }
 });
 

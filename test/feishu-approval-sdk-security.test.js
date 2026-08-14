@@ -8,12 +8,13 @@ const axios = require("axios");
 const lark = require("@larksuiteoapi/node-sdk");
 
 const {
+  FeishuApprovalClient,
   SILENT_LARK_LOGGER,
-  assertMessageApiResponse,
   classifyFeishuSdkError,
   createIsolatedLarkCache,
   createLarkClient,
   lookupOpenIdByEmail,
+  normalizeApprovalPayload,
 } = require("../src/feishu-approval-client");
 
 const SENTINEL = Object.freeze({
@@ -300,30 +301,67 @@ test("SDK error classification returns only allowlisted fields", () => {
   assertNoSentinels(classified);
 });
 
-test("message response assertion emits only sanitized fields and survives re-classification", () => {
-  const response = {
-    code: 230001,
-    msg: `param invalid ${SENTINEL.email} ${SENTINEL.tenantToken}`,
-    data: { message_id: `om_${SENTINEL.appSecret}` },
-  };
-  let thrown;
-  try {
-    assertMessageApiResponse(response, { stage: "send-card", requireMessageId: true });
-  } catch (error) {
-    thrown = error;
-  }
-  assert.ok(thrown);
-  assert.equal(thrown.message, "Feishu/Lark SDK request failed.");
-  assertNoSentinels(thrown);
+test("SDK error classification rereads numeric metadata and ignores forged public codes", () => {
+  const error = new Error("Feishu/Lark SDK request failed.");
+  error.code = SENTINEL.email;
+  error.stage = SENTINEL.appSecret;
+  error.httpStatus = 403;
+  error.businessCode = 230001;
+  error.networkCode = SENTINEL.tenantToken;
+  error.sanitizedFeishuSdkError = true;
 
-  // Sanitized errors are re-classified by every catch handler on the way out
-  // (client warn log, then the settings test command). The pass-through must
-  // keep businessCode instead of degrading to a bare sdk-request-failed.
-  assert.deepEqual(classifyFeishuSdkError(thrown, "send-card"), {
+  const classified = classifyFeishuSdkError(error, "send-card");
+  assert.deepEqual(classified, {
     code: "sdk-request-failed",
     stage: "send-card",
+    httpStatus: 403,
     businessCode: 230001,
   });
+  assertNoSentinels(classified);
+});
+
+test("real SDK message.create nonzero business code is sanitized through sendCard", async () => {
+  assert.equal(require("@larksuiteoapi/node-sdk/package.json").version, "1.71.1");
+  const payload = normalizeApprovalPayload({ title: "Run", detail: "Summary: Run tests" });
+  const transport = {
+    post: async () => ({ tenant_access_token: SENTINEL.tenantToken, expire: 7200 }),
+    request: async (requestConfig) => ({
+      code: 230001,
+      msg: `param invalid ${SENTINEL.email} ${SENTINEL.tenantToken}`,
+      data: {
+        message_id: `om_${SENTINEL.appSecret}`,
+        original: requestConfig.data,
+        email: SENTINEL.email,
+        body: SENTINEL.requestBody,
+      },
+    }),
+  };
+  const logs = [];
+  const client = new FeishuApprovalClient({
+    appId: SENTINEL.appId,
+    appSecret: SENTINEL.appSecret,
+    approverId: "ou_1",
+    idType: "open_id",
+    lark,
+    cardHttpInstance: transport,
+    log: (level, message, meta) => logs.push({ level, message, meta }),
+  });
+
+  await assert.rejects(client.sendCard("fs_sdk_boundary", payload), (error) => {
+    assert.equal(error.message, "Feishu/Lark SDK request failed.");
+    assert.equal(error.code, "sdk-request-failed");
+    assert.equal(error.stage, "send-card");
+    assert.equal(error.businessCode, 230001);
+    assertNoSentinels(error);
+    assert.deepEqual(classifyFeishuSdkError(error, "send-card"), {
+      code: "sdk-request-failed",
+      stage: "send-card",
+      businessCode: 230001,
+    });
+    return true;
+  });
+  assert.equal(logs.some((entry) => entry.message === "card sent"), false);
+  assertNoSentinels(logs);
 });
 
 test("same App ID on Feishu and Lark obtains separate tenant tokens", async () => {

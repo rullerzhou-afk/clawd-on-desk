@@ -904,7 +904,7 @@ function describeDecision(decision) {
 
 function normalizeApiMessageId(response) {
   return response && response.data && typeof response.data.message_id === "string"
-    ? response.data.message_id
+    ? response.data.message_id.trim()
     : "";
 }
 
@@ -967,32 +967,30 @@ function safeBusinessErrorCode(businessCode, safeStage) {
 }
 
 function classifyFeishuSdkError(error, stage) {
-  // Errors minted by createSanitizedSdkError() already carry the full safe
-  // field set. Re-deriving them from scratch would lose businessCode (their
-  // message is generic on purpose), so pass them through unchanged.
-  if (error && error.sanitizedFeishuSdkError === true) {
-    return {
-      code: error.code,
-      stage: error.stage,
-      ...(error.httpStatus === undefined ? {} : { httpStatus: error.httpStatus }),
-      ...(error.businessCode === undefined ? {} : { businessCode: error.businessCode }),
-      ...(error.networkCode === undefined ? {} : { networkCode: error.networkCode }),
-    };
-  }
   const safeStage = SAFE_LARK_ERROR_STAGES.has(stage) ? stage : "sdk";
-  const httpStatus = finiteErrorNumber(
-    error && error.response ? error.response.status : error && error.status
-  );
+  const httpStatus = finiteErrorNumber(error && (
+    (error.response && error.response.status)
+    ?? error.httpStatus
+    ?? error.status
+  ));
   let businessCode = finiteErrorNumber(
     error && error.response && error.response.data
       ? error.response.data.code
-      : error && error.statusCode
+      : undefined
   );
+  if (businessCode === undefined) {
+    businessCode = finiteErrorNumber(error && error.businessCode);
+  }
+  if (businessCode === undefined) {
+    businessCode = finiteErrorNumber(error && error.statusCode);
+  }
   if (businessCode === undefined && error && typeof error.message === "string") {
     const match = error.message.match(/(?:^|\b)code\s*[:=]\s*(-?\d+)\b/i);
     if (match) businessCode = finiteErrorNumber(match[1]);
   }
-  const rawNetworkCode = error && typeof error.code === "string" ? error.code : "";
+  const rawNetworkCode = error && typeof error.networkCode === "string" && error.networkCode
+    ? error.networkCode
+    : error && typeof error.code === "string" ? error.code : "";
   const networkCode = SAFE_LARK_NETWORK_CODES.has(rawNetworkCode)
     ? rawNetworkCode
     : undefined;
@@ -1007,7 +1005,6 @@ function classifyFeishuSdkError(error, stage) {
 
 function createSanitizedSdkError(classification) {
   const error = new Error("Feishu/Lark SDK request failed.");
-  error.sanitizedFeishuSdkError = true;
   error.code = classification.code;
   error.stage = classification.stage;
   if (classification.httpStatus !== undefined) error.httpStatus = classification.httpStatus;
@@ -2110,7 +2107,6 @@ module.exports = {
   normalizeSessionAutomationActionEvent,
   normalizeElicitationActionEvent,
   SILENT_LARK_LOGGER,
-  assertMessageApiResponse,
   classifyFeishuSdkError,
   createIsolatedLarkCache,
   createLarkClient,
