@@ -415,6 +415,7 @@ let lastDiscordPresenceVisual = null;
 let suppressTelegramMigrationReconcile = 0;
 let _remoteSshTransportCoordinator = null;
 let feishuApprovalClient = null;
+const feishuApprovalCloseDrains = new Set();
 let feishuApprovalSyncPromise = Promise.resolve();
 let feishuApprovalConfigSignature = "";
 let feishuSessionAutomationRouteSignature = "";
@@ -1059,8 +1060,8 @@ let contextMenu;
 let doNotDisturb = false;
 let isQuitting = false;
 let quitCleanupStarted = false;
-let remoteSshQuitDrainStarted = false;
-let remoteSshQuitDrainReady = false;
+let appQuitDrainStarted = false;
+let appQuitDrainReady = false;
 // Mirror caches: kept in sync with the settings store via settings-effect-router
 // further down. Read freely; never assign
 // directly (writes go through ctx setters → controller.applyUpdate).
@@ -2844,10 +2845,34 @@ function stopFeishuApprovalClient(options = {}) {
     feishuSessionAutomationRouteSignature = "";
   }
   if (client && typeof client.close === "function") {
-    try { client.close(); } catch (err) {
+    try {
+      const closeResult = client.close();
+      if (closeResult && typeof closeResult.then === "function") {
+        const drain = Promise.resolve(closeResult);
+        feishuApprovalCloseDrains.add(drain);
+        void drain.then(
+          () => feishuApprovalCloseDrains.delete(drain),
+          () => feishuApprovalCloseDrains.delete(drain)
+        );
+      }
+      return closeResult;
+    } catch (err) {
       feishuApprovalLog("warn", "stop failed", classifyFeishuSdkError(err, "runtime-stop"));
     }
   }
+}
+
+function drainRemoteSshAndFeishuBeforeQuit() {
+  const drains = [];
+  if (_remoteSshRuntime && typeof _remoteSshRuntime.shutdown === "function") {
+    drains.push(
+      Promise.resolve(_remoteSshRuntime.shutdown({ timeoutMs: 5000 }))
+        .catch((err) => console.error("remote-ssh shutdown drain failed:", err && err.message))
+    );
+  }
+  stopFeishuApprovalClient();
+  drains.push(...feishuApprovalCloseDrains);
+  return Promise.allSettled(drains);
 }
 
 async function syncFeishuApproval(reason = "settings", persisted = null) {
@@ -4802,16 +4827,13 @@ if (!gotTheLock) {
 
   app.on("before-quit", (event) => {
     isQuitting = true;
-    if (!remoteSshQuitDrainReady
-      && _remoteSshRuntime
-      && typeof _remoteSshRuntime.shutdown === "function") {
+    if (!appQuitDrainReady) {
       event.preventDefault();
-      if (!remoteSshQuitDrainStarted) {
-        remoteSshQuitDrainStarted = true;
-        void _remoteSshRuntime.shutdown({ timeoutMs: 5000 })
-          .catch((err) => console.error("remote-ssh shutdown drain failed:", err && err.message))
+      if (!appQuitDrainStarted) {
+        appQuitDrainStarted = true;
+        void drainRemoteSshAndFeishuBeforeQuit()
           .finally(() => {
-            remoteSshQuitDrainReady = true;
+            appQuitDrainReady = true;
             app.quit();
           });
       }

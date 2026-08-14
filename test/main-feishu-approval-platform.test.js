@@ -686,6 +686,94 @@ describe("main Feishu/Lark approval platform wiring", () => {
     assertNoSentinels(logs, "shutdown log");
   });
 
+  it("main approval shutdown returns the client close drain", async () => {
+    const closeDrain = createDeferred();
+    const context = {
+      feishuApprovalClient: { close: () => closeDrain.promise },
+      feishuApprovalConfigSignature: "configured",
+      feishuSessionAutomationRouteSignature: "route",
+      feishuApprovalCloseDrains: new Set(),
+      prepareFeishuSessionAutomationRouteChange: () => {},
+      classifyFeishuSdkError,
+      feishuApprovalLog: () => {},
+    };
+    const stopFeishuApprovalClient = loadFn("stopFeishuApprovalClient", context);
+
+    const result = stopFeishuApprovalClient();
+    assert.equal(result, closeDrain.promise);
+    closeDrain.resolve();
+    await result;
+  });
+
+  it("app quit drain waits for both Remote SSH and Feishu card shutdown", async () => {
+    const remoteDrain = createDeferred();
+    const feishuDrain = createDeferred();
+    const closeDrains = new Set();
+    const calls = [];
+    const drainRemoteSshAndFeishuBeforeQuit = loadFn("drainRemoteSshAndFeishuBeforeQuit", {
+      _remoteSshRuntime: {
+        shutdown: ({ timeoutMs }) => {
+          calls.push(["remote", timeoutMs]);
+          return remoteDrain.promise;
+        },
+      },
+      stopFeishuApprovalClient: () => {
+        calls.push(["feishu"]);
+        closeDrains.add(feishuDrain.promise);
+      },
+      feishuApprovalCloseDrains: closeDrains,
+      console: { error: () => {} },
+      Promise,
+    });
+
+    const result = drainRemoteSshAndFeishuBeforeQuit();
+    let settled = false;
+    result.then(() => { settled = true; });
+    assert.deepEqual(calls, [["remote", 5000], ["feishu"]]);
+
+    remoteDrain.resolve();
+    await Promise.resolve();
+    assert.equal(settled, false, "quit must still wait for the Feishu terminal patch");
+
+    feishuDrain.resolve();
+    await result;
+    assert.equal(settled, true);
+  });
+
+  it("app quit drain retains a client stopped before quit", async () => {
+    const priorClientDrain = createDeferred();
+    const closeDrains = new Set();
+    const context = {
+      feishuApprovalClient: { close: () => priorClientDrain.promise },
+      feishuApprovalConfigSignature: "configured",
+      feishuSessionAutomationRouteSignature: "route",
+      feishuApprovalCloseDrains: closeDrains,
+      prepareFeishuSessionAutomationRouteChange: () => {},
+      classifyFeishuSdkError,
+      feishuApprovalLog: () => {},
+      Promise,
+    };
+    const stopFeishuApprovalClient = loadFn("stopFeishuApprovalClient", context);
+    const priorStopResult = stopFeishuApprovalClient();
+    assert.equal(priorStopResult, priorClientDrain.promise);
+
+    const drainRemoteSshAndFeishuBeforeQuit = loadFn("drainRemoteSshAndFeishuBeforeQuit", {
+      _remoteSshRuntime: null,
+      stopFeishuApprovalClient: () => undefined,
+      feishuApprovalCloseDrains: closeDrains,
+      Promise,
+    });
+    const quitDrain = drainRemoteSshAndFeishuBeforeQuit();
+    let settled = false;
+    quitDrain.then(() => { settled = true; });
+    await Promise.resolve();
+    assert.equal(settled, false, "quit must retain a drain from a previously stopped client");
+
+    priorClientDrain.resolve();
+    await quitDrain;
+    assert.equal(settled, true);
+  });
+
   it("settings approval test never returns a raw SDK error message", async () => {
     const error = createSentinelSdkError();
     const logs = [];

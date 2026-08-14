@@ -1236,6 +1236,7 @@ class FeishuApprovalClient {
     this.wsClient = options.wsClient || null;
     this.dispatcher = options.dispatcher || null;
     this.pending = new Map();
+    this.terminalCardUpdates = new Set();
     this.log = typeof options.log === "function" ? options.log : () => {};
     this.onStatusChange = typeof options.onStatusChange === "function" ? options.onStatusChange : () => {};
     this.connectionState = "idle";
@@ -1471,6 +1472,7 @@ class FeishuApprovalClient {
     }
     this.pending.clear();
     this.notifyStatusChange();
+    return Promise.allSettled(Array.from(this.terminalCardUpdates));
   }
 
   messageApi() {
@@ -1528,14 +1530,14 @@ class FeishuApprovalClient {
         resolve: finish,
         sendReady: null,
         trustConfirming: false,
-        abortOutcomeStarted: false,
+        abortOutcomePromise: null,
       };
       // Entry-owned so close() can share the same one-shot path without seeing
       // requestApproval()'s local options closure. Abort and close may overlap.
       const terminalizeAbortOutcome = () => {
-        if (!options.abortOutcome || entry.abortOutcomeStarted) return;
-        entry.abortOutcomeStarted = true;
-        Promise.resolve(entry.sendReady)
+        if (!options.abortOutcome) return null;
+        if (entry.abortOutcomePromise) return entry.abortOutcomePromise;
+        entry.abortOutcomePromise = Promise.resolve(entry.sendReady)
           .then((sentEntry) => {
             const messageId = sentEntry && sentEntry.messageId;
             if (!messageId) return null;
@@ -1544,6 +1546,12 @@ class FeishuApprovalClient {
           .catch(() => {
             this.log("warn", "abort card update failed", { stage: "update-card" });
           });
+        this.terminalCardUpdates.add(entry.abortOutcomePromise);
+        void entry.abortOutcomePromise.then(
+          () => this.terminalCardUpdates.delete(entry.abortOutcomePromise),
+          () => this.terminalCardUpdates.delete(entry.abortOutcomePromise)
+        );
+        return entry.abortOutcomePromise;
       };
       entry.terminalizeAbortOutcome = terminalizeAbortOutcome;
       const onAbort = () => {

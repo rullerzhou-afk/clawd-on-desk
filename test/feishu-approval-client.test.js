@@ -1320,10 +1320,39 @@ test("FeishuApprovalClient terminalizes an already-sent test card when the clien
   assert.equal(updated.length, 1);
 });
 
+test("FeishuApprovalClient close waits for the test-card terminal patch", async () => {
+  let resolvePatch;
+  const patchFinished = new Promise((resolve) => { resolvePatch = resolve; });
+  const { client, requestApproval } = createTestCardLifecycleHarness({
+    create: async () => ({ data: { message_id: "om_close_drain" } }),
+    patch: async () => patchFinished,
+    abortOutcome: { decision: "no-decision" },
+  });
+  const approval = requestApproval();
+  await flush();
+  await flush();
+
+  const closeResult = client.close();
+  assert.equal(typeof closeResult?.then, "function", "close must expose its terminal-card drain");
+  assert.equal(await approval, null);
+
+  let closeSettled = false;
+  closeResult.then(() => { closeSettled = true; });
+  await flush();
+  assert.equal(closeSettled, false, "close must remain pending while the terminal patch is in flight");
+
+  resolvePatch({ data: {} });
+  await closeResult;
+  assert.equal(closeSettled, true);
+});
+
 test("FeishuApprovalClient terminalizes a late-sent test card after close()", async () => {
   let resolveCreate;
+  let resolvePatch;
+  const patchFinished = new Promise((resolve) => { resolvePatch = resolve; });
   const harness = createTestCardLifecycleHarness({
     create: async () => new Promise((resolve) => { resolveCreate = resolve; }),
+    patch: async () => patchFinished,
     payload: { title: "Test", detail: "Waiting for a response" },
     abortOutcome: { decision: "no-decision" },
   });
@@ -1332,7 +1361,7 @@ test("FeishuApprovalClient terminalizes a late-sent test card after close()", as
   await Promise.resolve();
   assert.equal(client.pending.size, 1);
 
-  client.close();
+  const closeResult = client.close();
   assert.equal(await promise, null, "close must not wait for create()");
   assert.equal(client.pending.size, 0);
   assert.equal(updated.length, 0);
@@ -1342,9 +1371,16 @@ test("FeishuApprovalClient terminalizes a late-sent test card after close()", as
   await flush();
   assert.equal(updated.length, 1);
   assert.equal(updated[0].path.message_id, "om_close_late");
+  let closeSettled = false;
+  closeResult.then(() => { closeSettled = true; });
+  await flush();
+  assert.equal(closeSettled, false, "close must wait for the late terminal patch");
   const card = harness.parseLastPatchedCard();
   assert.ok(!card.elements.some((element) => element.tag === "action"));
   assert.match(card.header.title.content, /Cancelled/);
+
+  resolvePatch({ data: {} });
+  await closeResult;
 });
 
 test("FeishuApprovalClient keeps the close result when terminal patch fails", async () => {
@@ -1395,8 +1431,11 @@ test("FeishuApprovalClient close without abortOutcome does not patch the card", 
 
 test("FeishuApprovalClient timer abort and close terminalizes a test card only once", async () => {
   const ac = new AbortController();
+  let resolvePatch;
+  const patchFinished = new Promise((resolve) => { resolvePatch = resolve; });
   const { client, updated, requestApproval, parseLastPatchedCard } = createTestCardLifecycleHarness({
     create: async () => ({ data: { message_id: "om_once" } }),
+    patch: async () => patchFinished,
     signal: ac.signal,
     abortOutcome: { decision: "no-decision" },
   });
@@ -1406,12 +1445,18 @@ test("FeishuApprovalClient timer abort and close terminalizes a test card only o
   const requestId = Array.from(client.pending.keys())[0];
 
   ac.abort();
-  client.close();
+  const closeResult = client.close();
   assert.equal(await promise, null);
   assert.equal(client.pending.size, 0);
   await flush();
-  await flush();
   assert.equal(updated.length, 1, "abort and close must share one idempotent terminal patch");
+  let closeSettled = false;
+  closeResult.then(() => { closeSettled = true; });
+  await flush();
+  assert.equal(closeSettled, false, "close must wait for the terminal patch already started by abort");
+
+  resolvePatch({ data: {} });
+  await closeResult;
   assert.equal(updated[0].path.message_id, "om_once");
   assert.ok(!parseLastPatchedCard().elements.some((element) => element.tag === "action"));
   assert.equal(client.handleCardAction({
