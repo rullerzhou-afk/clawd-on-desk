@@ -57,6 +57,34 @@ describe("opencode plugin session ids", () => {
     assert.strictEqual(mod.getEventSessionId(null), null);
   });
 
+  it("uses message.info.sessionID without mistaking message.info.id for a session", async () => {
+    const mod = await loadSessionIdModule();
+
+    assert.strictEqual(
+      mod.getEventSessionId({
+        type: "message.updated",
+        properties: { info: { id: "msg_01", sessionID: "ses_01" } },
+      }),
+      "ses_01"
+    );
+    assert.strictEqual(
+      mod.getEventSessionId({
+        type: "message.updated",
+        properties: { info: { id: "msg_02" } },
+      }),
+      null,
+      "message id is not a valid session fallback"
+    );
+    assert.strictEqual(
+      mod.getEventSessionId({
+        type: "message.updated",
+        properties: { sessionID: "ses_current", info: { id: "msg_03", sessionID: "ses_info" } },
+      }),
+      "ses_current",
+      "the current sidecar shape keeps properties.sessionID precedence"
+    );
+  });
+
   it("extracts session metadata without normalizing the upstream directory text", async () => {
     const mod = await loadSessionIdModule();
     assert.deepStrictEqual(

@@ -1,8 +1,8 @@
 // #830 — opencode-family context usage reporting (message.updated → /state
 // metadata_only). Covers: extraction formula (component sum incl. reasoning,
 // matching the host's Context view — no `total` on public message tokens),
-// model-limit resolution via provider.list() (keyed models map, options
-// fallback, unknown provider/model, failure, TTL cache), wire-body shape,
+// model-limit resolution via provider.list() (SDK envelope, keyed models map,
+// unknown provider/model, failure, TTL cache), wire-body shape,
 // assistant-role/zero-token gating, and per-session dedup driven through the
 // real event hook handler.
 
@@ -23,15 +23,17 @@ const OPENCODE_PARAMS = Object.freeze({
   sessionIdPrefix: "opencode:",
 });
 
-function flushAsync() {
-  return new Promise((resolve) => setImmediate(resolve));
-}
+const MIMOCODE_PARAMS = Object.freeze({
+  agentId: "mimocode",
+  hookSource: "mimocode-plugin",
+  logFileName: "mimocode-plugin.log",
+  sessionIdPrefix: "mimocode:",
+});
 
-// Fake in-process SDK client — provider.list() returns the HeyApi envelope.
-// The live CLI server (SDK 1.1.25 ProviderListResponses) returns
-// { all: [...] }; /config/providers returns { providers: [...] }; older hosts
-// may return { data: [...] } or a raw array (rawArray). Counts calls so
-// TTL-cache behavior is observable.
+// Fake in-process SDK client. The normal SDK client returns the fields-style
+// wrapper { data: { all: [...] }, request, response }; responseStyle:"data"
+// callers receive { all: [...] } or { providers: [...] } directly. Counts
+// calls so cache behavior is observable.
 function makeFakeClient(providers, opts = {}) {
   const calls = { providerList: 0 };
   const list = async () => {
@@ -39,25 +41,65 @@ function makeFakeClient(providers, opts = {}) {
     if (opts.reject) throw new Error("provider.list boom");
     if (opts.envelope === "all") return { all: providers };
     if (opts.envelope === "providers") return { providers };
-    return opts.rawArray ? providers : { data: providers };
+    return { data: { all: providers }, request: {}, response: {} };
+  };
+  return { client: { provider: { list } }, calls };
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function sdkProviderResult(providers) {
+  return { data: { all: providers }, request: {}, response: {} };
+}
+
+function makeDeferredClient() {
+  const pending = [];
+  const calls = { providerList: 0 };
+  const list = () => {
+    calls.providerList += 1;
+    const gate = deferred();
+    pending.push(gate);
+    return gate.promise;
+  };
+  return { client: { provider: { list } }, calls, pending };
+}
+
+function makeSequenceClient(results) {
+  const calls = { providerList: 0 };
+  const list = async () => {
+    const result = results[calls.providerList++];
+    if (result instanceof Error) throw result;
+    return typeof result === "function" ? result() : result;
   };
   return { client: { provider: { list } }, calls };
 }
 
 // Captures every POST the plugin makes (headers carry the Clawd identity the
 // port-discovery loop requires before trusting the port).
-function installFetchStub() {
+function installFetchStub({ accepted = () => true } = {}) {
   const posted = [];
+  let attempts = 0;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
+    attempts += 1;
     posted.push({ url: String(url), body: JSON.parse(init.body) });
+    const isAccepted = accepted(attempts, posted.at(-1));
+    posted.at(-1).accepted = isAccepted;
     return {
-      status: 200,
-      headers: { get: (name) => (name.toLowerCase() === "x-clawd-server" ? "clawd-on-desk" : null) },
+      status: isAccepted ? 200 : 503,
+      headers: { get: (name) => (name.toLowerCase() === "x-clawd-server" && isAccepted ? "clawd-on-desk" : null) },
       text: async () => "",
     };
   };
-  return { posted, restore: () => { globalThis.fetch = originalFetch; } };
+  return { posted, get attempts() { return attempts; }, restore: () => { globalThis.fetch = originalFetch; } };
 }
 
 // Real message.updated shape: event.properties.info is the Message object
@@ -65,16 +107,20 @@ function installFetchStub() {
 // event.properties.sessionID sidecars the session.
 function messageUpdatedEvent({
   sessionID = "ses_abc",
+  infoSessionID,
   providerID = "openai",
   modelID = "deepseek-v4",
   role = "assistant",
   tokens,
 } = {}) {
   const info = { role, providerID, modelID, time: 123 };
+  if (infoSessionID !== undefined) info.sessionID = infoSessionID;
   if (tokens !== undefined) info.tokens = tokens;
+  const properties = { messageID: "msg_1", info, time: 123 };
+  if (sessionID !== null) properties.sessionID = sessionID;
   return {
     type: "message.updated",
-    properties: { sessionID, messageID: "msg_1", info, time: 123 },
+    properties,
   };
 }
 
@@ -124,7 +170,7 @@ describe("opencode-family contextUsage limit resolution (resolveContextLimit)", 
   let core;
   before(async () => { core = await loadCore(); });
 
-  it("resolves the limit from provider.models[modelID] — models is a keyed map", async () => {
+  it("unwraps the SDK fields-style {data:{all},request,response} envelope", async () => {
     const plugin = core.createOpencodeFamilyPlugin(OPENCODE_PARAMS);
     const { client } = makeFakeClient([
       {
@@ -162,21 +208,12 @@ describe("opencode-family contextUsage limit resolution (resolveContextLimit)", 
     assert.strictEqual(await plugin.__test.resolveContextLimit("openai", "deepseek-v4", client), 128000);
   });
 
-  it("falls back to provider.options.limit when the provider has no model limit", async () => {
+  it("fails closed when only provider.options.limit is present", async () => {
     const plugin = core.createOpencodeFamilyPlugin(OPENCODE_PARAMS);
     const { client } = makeFakeClient([
       { id: "legacy", options: { limit: 240000 } },
     ]);
-    assert.strictEqual(await plugin.__test.resolveContextLimit("legacy", "any-model", client), 240000);
-  });
-
-  it("handles raw-array provider.list results (non-HeyApi hosts)", async () => {
-    const plugin = core.createOpencodeFamilyPlugin(OPENCODE_PARAMS);
-    const { client } = makeFakeClient(
-      [{ id: "raw", models: { "raw-model": { limit: { context: 64000 } } } }],
-      { rawArray: true }
-    );
-    assert.strictEqual(await plugin.__test.resolveContextLimit("raw", "raw-model", client), 64000);
+    assert.strictEqual(await plugin.__test.resolveContextLimit("legacy", "any-model", client), null);
   });
 
   it("unwraps the live CLI envelope { all: [...] } (SDK ProviderListResponses)", async () => {
@@ -206,7 +243,7 @@ describe("opencode-family contextUsage limit resolution (resolveContextLimit)", 
     assert.strictEqual(await plugin.__test.resolveContextLimit("openai", "deepseek-v4", client), 128000);
   });
 
-  it("keeps the array-shaped models fallback for legacy/fake clients", async () => {
+  it("accepts an array-shaped models collection inside a supported provider payload", async () => {
     const plugin = core.createOpencodeFamilyPlugin(OPENCODE_PARAMS);
     const { client } = makeFakeClient([
       { id: "openai", models: [{ id: "deepseek-v4", limit: { context: 64000 } }] },
@@ -235,6 +272,33 @@ describe("opencode-family contextUsage limit resolution (resolveContextLimit)", 
     assert.strictEqual(await plugin.__test.resolveContextLimit("openai", "cached-model", client), 96000);
     assert.strictEqual(calls.providerList, 1, "second call must hit the cache");
   });
+
+  it("scopes the cache to the SDK client, not only provider/model ids", async () => {
+    const plugin = core.createOpencodeFamilyPlugin(OPENCODE_PARAMS);
+    const a = makeFakeClient([
+      { id: "shared", models: { model: { limit: { context: 1000 } } } },
+    ]);
+    const b = makeFakeClient([
+      { id: "shared", models: { model: { limit: { context: 2000 } } } },
+    ]);
+
+    assert.strictEqual(await plugin.__test.resolveContextLimit("shared", "model", a.client), 1000);
+    assert.strictEqual(await plugin.__test.resolveContextLimit("shared", "model", b.client), 2000);
+    assert.strictEqual(a.calls.providerList, 1);
+    assert.strictEqual(b.calls.providerList, 1);
+  });
+
+  it("does not cache an unavailable limit as a normal positive result", async () => {
+    const plugin = core.createOpencodeFamilyPlugin(OPENCODE_PARAMS);
+    const client = makeSequenceClient([
+      sdkProviderResult([{ id: "openai", models: {} }]),
+      sdkProviderResult([{ id: "openai", models: { model: { limit: { context: 64000 } } } }]),
+    ]);
+
+    assert.strictEqual(await plugin.__test.resolveContextLimit("openai", "model", client.client), null);
+    assert.strictEqual(await plugin.__test.resolveContextLimit("openai", "model", client.client), 64000);
+    assert.strictEqual(client.calls.providerList, 2);
+  });
 });
 
 describe("opencode-family contextUsage wire path (handleContextUsageEvent)", () => {
@@ -250,11 +314,10 @@ describe("opencode-family contextUsage wire path (handleContextUsageEvent)", () 
   }
 
   async function drive(plugin, event) {
-    plugin.__test.handleContextUsageEvent(event, { client: makeFakeClient([
+    const pending = plugin.__test.handleContextUsageEvent(event, { client: makeFakeClient([
       { id: "openai", models: { "deepseek-v4": { limit: { context: 128000 } } } },
     ]).client });
-    await flushAsync();
-    await flushAsync();
+    await pending;
   }
 
   it("POSTs a metadata_only contextUsage body carrying used + resolved limit", async () => {
@@ -278,6 +341,19 @@ describe("opencode-family contextUsage wire path (handleContextUsageEvent)", () 
       "metadata POST rides the serialized state channel; state scaffolding is inert on the route side (metadata_only short-circuits) but must not carry lifecycle meaning"
     );
     assert.strictEqual(body.event, "SessionUpdate");
+  });
+
+  it("uses the v1.1.25 info.sessionID and never posts under the message id", async () => {
+    const plugin = makePlugin();
+    await drive(plugin, messageUpdatedEvent({
+      sessionID: null,
+      infoSessionID: "ses_real",
+      tokens: { input: 100, output: 50 },
+    }));
+
+    assert.strictEqual(stub.posted.length, 1);
+    assert.strictEqual(stub.posted[0].body.session_id, "opencode:ses_real");
+    assert.notStrictEqual(stub.posted[0].body.session_id, "opencode:msg_1");
   });
 
   it("keeps limit null for unknown providers/models", async () => {
@@ -315,6 +391,195 @@ describe("opencode-family contextUsage wire path (handleContextUsageEvent)", () 
     await drive(plugin, messageUpdatedEvent({ tokens: { input: 41000, output: 2000 } }));
     assert.strictEqual(stub.posted.length, 2, "changed used must repost");
     assert.deepStrictEqual(stub.posted[1].body.context_usage, { used: 43000, limit: 128000, source: "opencode" });
+  });
+
+  it("publishes only the newest sample when provider lookups resolve out of order", async () => {
+    const plugin = makePlugin();
+    const provider = [{ id: "openai", models: { model: { limit: { context: 1000 } } } }];
+    const lookup = makeDeferredClient();
+    const first = plugin.__test.handleContextUsageEvent(
+      messageUpdatedEvent({ modelID: "model", tokens: { input: 100 } }),
+      { client: lookup.client, instanceToken: 1 }
+    );
+    const second = plugin.__test.handleContextUsageEvent(
+      messageUpdatedEvent({ modelID: "model", tokens: { input: 200 } }),
+      { client: lookup.client, instanceToken: 1 }
+    );
+    assert.strictEqual(lookup.pending.length, 2);
+
+    lookup.pending[1].resolve(sdkProviderResult(provider));
+    await second;
+    lookup.pending[0].resolve(sdkProviderResult(provider));
+    await first;
+
+    assert.deepStrictEqual(
+      stub.posted.filter((call) => call.accepted).map((call) => call.body.context_usage.used),
+      [200]
+    );
+  });
+
+  it("allows a legitimate lower used value from a newer compaction sample", async () => {
+    const plugin = makePlugin();
+    const provider = [{ id: "openai", models: { model: { limit: { context: 1000 } } } }];
+    const lookup = makeDeferredClient();
+    const first = plugin.__test.handleContextUsageEvent(
+      messageUpdatedEvent({ modelID: "model", tokens: { input: 200 } }),
+      { client: lookup.client, instanceToken: 1 }
+    );
+    const second = plugin.__test.handleContextUsageEvent(
+      messageUpdatedEvent({ modelID: "model", tokens: { input: 100 } }),
+      { client: lookup.client, instanceToken: 1 }
+    );
+    lookup.pending[1].resolve(sdkProviderResult(provider));
+    await second;
+    lookup.pending[0].resolve(sdkProviderResult(provider));
+    await first;
+
+    assert.deepStrictEqual(
+      stub.posted.filter((call) => call.accepted).map((call) => call.body.context_usage.used),
+      [100]
+    );
+  });
+
+  it("publishes same used when provider/model or resolved limit changes", async () => {
+    const plugin = makePlugin();
+    const a = makeFakeClient([
+      { id: "openai", models: { model_a: { limit: { context: 1000 } } } },
+    ]);
+    const b = makeFakeClient([
+      { id: "anthropic", models: { model_b: { limit: { context: 2000 } } } },
+    ]);
+
+    await plugin.__test.handleContextUsageEvent(
+      messageUpdatedEvent({ providerID: "openai", modelID: "model_a", tokens: { input: 100 } }),
+      { client: a.client, instanceToken: 1 }
+    );
+    await plugin.__test.handleContextUsageEvent(
+      messageUpdatedEvent({ providerID: "anthropic", modelID: "model_b", tokens: { input: 100 } }),
+      { client: b.client, instanceToken: 1 }
+    );
+
+    assert.deepStrictEqual(
+      stub.posted.filter((call) => call.accepted).map((call) => call.body.context_usage),
+      [
+        { used: 100, limit: 1000, source: "opencode" },
+        { used: 100, limit: 2000, source: "opencode" },
+      ]
+    );
+  });
+
+  it("retries the same used value after an unavailable limit recovers", async () => {
+    const plugin = makePlugin();
+    const client = makeSequenceClient([
+      sdkProviderResult([{ id: "openai", models: {} }]),
+      sdkProviderResult([{ id: "openai", models: { model: { limit: { context: 1000 } } } }]),
+    ]);
+    const event = messageUpdatedEvent({ modelID: "model", tokens: { input: 100 } });
+
+    await plugin.__test.handleContextUsageEvent(event, { client: client.client, instanceToken: 1 });
+    await plugin.__test.handleContextUsageEvent(event, { client: client.client, instanceToken: 1 });
+
+    assert.deepStrictEqual(
+      stub.posted.filter((call) => call.accepted).map((call) => call.body.context_usage),
+      [
+        { used: 100, limit: null, source: "opencode" },
+        { used: 100, limit: 1000, source: "opencode" },
+      ]
+    );
+    assert.strictEqual(client.calls.providerList, 2);
+  });
+
+  it("does not advance the dedup baseline when the state delivery fails", async () => {
+    const plugin = makePlugin();
+    const failingThenHealthy = installFetchStub({ accepted: (attempt) => attempt > 5 });
+    const client = makeFakeClient([
+      { id: "openai", models: { model: { limit: { context: 1000 } } } },
+    ]);
+    const event = messageUpdatedEvent({ modelID: "model", tokens: { input: 100 } });
+
+    await plugin.__test.handleContextUsageEvent(event, { client: client.client, instanceToken: 1 });
+    await plugin.__test.handleContextUsageEvent(event, { client: client.client, instanceToken: 1 });
+
+    assert.strictEqual(failingThenHealthy.posted.filter((call) => call.accepted).length, 1);
+    assert.strictEqual(client.calls.providerList, 1, "the positive limit may be reused, but the sample must replay");
+    failingThenHealthy.restore();
+  });
+
+  it("invalidates an old lookup when a session is deleted and recreated", async () => {
+    const plugin = makePlugin();
+    const lookup = makeDeferredClient();
+    const oldLookup = plugin.__test.handleContextUsageEvent(
+      messageUpdatedEvent({ tokens: { input: 100 } }),
+      { client: lookup.client, instanceToken: 1 }
+    );
+
+    plugin.__test.cleanupContextState(new Set(["opencode:ses_abc"]), { instanceToken: 1 });
+    const reopenedLookup = plugin.__test.handleContextUsageEvent(
+      messageUpdatedEvent({ tokens: { input: 50 } }),
+      { client: lookup.client, instanceToken: 1 }
+    );
+    assert.strictEqual(lookup.pending.length, 2);
+
+    lookup.pending[1].resolve(sdkProviderResult([
+      { id: "openai", models: { "deepseek-v4": { limit: { context: 1000 } } } },
+    ]));
+    await reopenedLookup;
+    lookup.pending[0].resolve(sdkProviderResult([
+      { id: "openai", models: { "deepseek-v4": { limit: { context: 1000 } } } },
+    ]));
+    await oldLookup;
+
+    assert.deepStrictEqual(
+      stub.posted.filter((call) => call.accepted).map((call) => call.body.context_usage.used),
+      [50]
+    );
+    const state = plugin.__test._contextStateByInstance.get(1).get("opencode:ses_abc");
+    assert.strictEqual(state.delivered.used, 50);
+  });
+
+  it("disposal clears only the disposed instance's context generations", async () => {
+    const plugin = makePlugin();
+    const a = makeDeferredClient();
+    const b = makeDeferredClient();
+    const oldA = plugin.__test.handleContextUsageEvent(
+      messageUpdatedEvent({ sessionID: "ses_a", tokens: { input: 10 } }),
+      { client: a.client, instanceToken: 1 }
+    );
+    const liveB = plugin.__test.handleContextUsageEvent(
+      messageUpdatedEvent({ sessionID: "ses_b", tokens: { input: 20 } }),
+      { client: b.client, instanceToken: 2 }
+    );
+    plugin.__test.cleanupContextState(new Set(["opencode:ses_a"]), {
+      instanceToken: 1,
+      clearInstance: true,
+    });
+
+    const provider = [{ id: "openai", models: { "deepseek-v4": { limit: { context: 1000 } } } }];
+    b.pending[0].resolve(sdkProviderResult(provider));
+    await liveB;
+    a.pending[0].resolve(sdkProviderResult(provider));
+    await oldA;
+
+    assert.deepStrictEqual(
+      stub.posted.filter((call) => call.accepted).map((call) => call.body.session_id),
+      ["opencode:ses_b"]
+    );
+    assert.strictEqual(plugin.__test._contextStateByInstance.has(1), false);
+    assert.strictEqual(plugin.__test._contextStateByInstance.has(2), true);
+  });
+
+  it("keeps context reporting explicitly OpenCode-only until MiMo has a proven contract", async () => {
+    const plugin = core.createOpencodeFamilyPlugin(MIMOCODE_PARAMS);
+    plugin.__test._cachedPort = 23333;
+    const client = makeFakeClient([
+      { id: "mimo", models: { model: { limit: { context: 1000 } } } },
+    ]);
+
+    await plugin.__test.handleContextUsageEvent(
+      messageUpdatedEvent({ tokens: { input: 100 } }),
+      { client: client.client, instanceToken: 1 }
+    );
+    assert.strictEqual(stub.posted.length, 0);
   });
 
   it("keeps per-session dedup state independent across sessions", async () => {
