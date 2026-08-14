@@ -35,6 +35,7 @@ const { inspectStableCodexHookCommand } = require("../../hooks/codex-install-uti
 const { validateOpencodeEntry } = require("./opencode-entry-validator");
 const { validateOpenClawEntry } = require("./openclaw-entry-validator");
 const { hasIncludeDirective } = require("../../hooks/openclaw-install");
+const { inspectDeepSeekHarnessDiskSync } = require("../../hooks/dsh-install");
 
 const REPAIRABLE_AGENT_STATUSES = new Set(["not-connected", "broken-path"]);
 const GEMINI_HOOKS_DISABLED_DETAIL = "Gemini hooks are disabled in settings.json; Clawd preserves this user setting and will not receive hook events";
@@ -2330,6 +2331,59 @@ function checkAgent(descriptor, options) {
     });
   }
 
+  if (descriptor.configMode === "dsh-plugin") {
+    const health = inspectDeepSeekHarnessDiskSync({
+      fs: options.fs,
+      dshHome: descriptor.parentDir,
+      dshInstallRoot: options.dshInstallRoot,
+      managedRoot: options.dshManagedRoot,
+      homeDir: options.homeDir,
+      env: options.env,
+      platform: options.platform,
+    });
+    let detail;
+    if (health.status === "healthy") {
+      detail = makeDetail(descriptor, "ok", {
+        level: null,
+        detail: `${health.profileDir} managed bridge verified on disk; restart any running dsh web process to load this plugin generation`,
+        configPath: health.profileDir,
+        pluginPath: health.resolved && health.resolved.packageDir,
+        bridgeHealth: health.status,
+      });
+    } else if (
+      health.status === "profile-entry-foreign-or-conflicting"
+      || health.status === "version-unsupported"
+      || health.status === "host-version-unsupported"
+      || health.status === "generation-integrity-failed"
+      || health.status === "source-unavailable"
+      || health.status === "profile-corrupt"
+    ) {
+      detail = makeDetail(descriptor, "needs-review", {
+        level: "warning",
+        detail: health.status === "version-unsupported" || health.status === "host-version-unsupported"
+          ? `DeepSeek Harness ${health.detectedDshVersion || "or its bridge marker"} is outside ${health.supportedDshRange || "the supported range"}; Clawd will not activate it automatically`
+          : (health.status === "generation-integrity-failed"
+            ? "The managed DeepSeek Harness bridge bytes no longer match their ownership marker; inspect them manually"
+            : (health.status === "source-unavailable"
+              ? "Clawd's packaged DeepSeek Harness bridge source is unavailable; repair the Clawd installation"
+              : (health.status === "profile-corrupt"
+                ? "The DeepSeek Harness web profile manifest is unreadable; Clawd will not rewrite it automatically"
+                : "A foreign or conflicting DeepSeek Harness plugin uses the Clawd bridge package name; Clawd will not replace it"))),
+        configPath: health.profileDir,
+        bridgeHealth: health.status,
+      });
+    } else {
+      const broken = health.status !== "absent" && health.status !== "profile-missing";
+      detail = makeDetail(descriptor, broken ? "broken-path" : "not-connected", {
+        level: "warning",
+        detail: `DeepSeek Harness managed bridge is ${health.status}`,
+        configPath: health.profileDir,
+        bridgeHealth: health.status,
+      });
+    }
+    return withAgentFixAction(withAgentBubbleNote(detail, prefs, descriptor.agentId), descriptor);
+  }
+
   // Multi-home agents declare ordered configTargets. Most use the first
   // existing directory; WorkBuddy's legacy target requires a real config file,
   // while Reasonix mirrors its own compatibility loader by preferring an
@@ -2489,10 +2543,14 @@ function checkAgentIntegrations(options = {}) {
   const detectorOptions = {
     fs: options.fs || fs,
     platform: options.platform || process.platform,
+    env: options.env || process.env,
     prefs: options.prefs || {},
     server: options.server || null,
     validateCommand: options.validateCommand || validateHookCommand,
     validateTarget: options.validateTarget || validateHookTarget,
+    dshInstallRoot: options.dshInstallRoot,
+    dshManagedRoot: options.dshManagedRoot,
+    homeDir: options.homeDir,
   };
   const descriptors = options.descriptors || getAgentDescriptors();
   const details = descriptors.map((descriptor) => checkAgent(descriptor, detectorOptions));

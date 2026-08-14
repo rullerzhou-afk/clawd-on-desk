@@ -319,7 +319,7 @@ function writeTextAtomicWithBackup(filePath, text, options = {}) {
  * "asarUnpack"). No-op for dev/source installs.
  */
 function asarUnpackedPath(p) {
-  return p.replace("app.asar/", "app.asar.unpacked/");
+  return p.replace(/app\.asar([\\/])/, "app.asar.unpacked$1");
 }
 
 function quoteHookCommandArg(value) {

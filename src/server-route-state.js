@@ -150,6 +150,7 @@ function handleStatePost(req, res, options) {
     createRequestHookRecorder,
     shouldDropForDnd,
     codexOfficialTurns,
+    dshStateSequenceFence = null,
     pathApi = path,
     // #627 residual: injectable so unit tests never load the real koffi FFI.
     // Defaults to the real host OS check / a probe that never samples.
@@ -374,6 +375,26 @@ function handleStatePost(req, res, options) {
         res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
         res.end();
         return;
+      }
+      if (agentId === "deepseek-harness") {
+        const sequenceResult = dshStateSequenceFence
+          && typeof dshStateSequenceFence.accept === "function"
+          ? dshStateSequenceFence.accept({
+              // The fence is upstream-protocol scoped. Keep it on DSH's raw
+              // canonical id; the local/remote profile key is a separate
+              // Clawd storage concern applied by resolveSessionIdentity.
+              sessionId: sessionIdentity.rawSessionId,
+              event,
+              eventSeq: data.event_seq,
+              sessionSeq: data.session_seq,
+            })
+          : { accepted: false, reason: "sequence-fence-unavailable" };
+        if (!sequenceResult.accepted) {
+          recordRequestHookEvent.droppedUnsupported();
+          res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+          res.end();
+          return;
+        }
       }
       // The persisted preference authorizes statusline telemetry only for the
       // local profile. Remote SSH profiles have their own deployed lifecycle

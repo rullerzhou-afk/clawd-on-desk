@@ -49,6 +49,19 @@ const ADAPTER_POLICY = Object.freeze({
     reason: "session-lifecycle-not-authoritative",
     placeholders: Object.freeze(["default", "hermes:", "hermes:default"]),
   }),
+  "deepseek-harness": Object.freeze({
+    // ApprovalRequest intentionally exposes no arguments, so the DSH adapter's
+    // tool-input fingerprint is the same empty-object hash for every request.
+    // Do not make this eligible until an audited identity adds a public,
+    // per-call discriminator; otherwise unrelated tools could share a grant.
+    eligible: false,
+    reason: "automation-not-audited",
+    placeholders: Object.freeze([
+      "default",
+      "deepseek-harness:",
+      "deepseek-harness:default",
+    ]),
+  }),
   "kimi-cli": Object.freeze({
     eligible: false,
     reason: "no-blocking-permission-decision",

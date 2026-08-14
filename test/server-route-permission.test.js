@@ -1888,6 +1888,140 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.ctx.calls.resolved[0].entry, entry);
     assert.strictEqual(res.ctx.calls.resolved[0].behavior, "no-decision");
   });
+
+  // ── DeepSeek Harness branch ──
+
+  it("creates an independent DSH approval entry with no Claude response vocabulary", async () => {
+    const rawSessionId = "deepseek-harness:session-1";
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "deepseek-harness",
+      hook_source: "dsh-plugin",
+      session_id: rawSessionId,
+      tool_name: "execute_shell",
+      tool_use_id: "call-1",
+      tool_input: { command: "must-not-cross-the-public-contract" },
+      reason: `  Run the formatter\u0000 safely\r\n${"x".repeat(600)}`,
+      source_pid: 111,
+      agent_pid: 222,
+      pid_chain: [111, 222],
+      cwd: "C:/repo",
+    }));
+    assert.strictEqual(res.statusCode, null);
+    assert.strictEqual(res.destroyed, false);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.agentId, "deepseek-harness");
+    assert.strictEqual(entry.isDsh, true);
+    assert.strictEqual(entry.sessionId, localSessionKey(rawSessionId));
+    assert.strictEqual(entry.toolName, "execute_shell");
+    assert.strictEqual(entry.toolUseId, "call-1");
+    assert.deepStrictEqual(Object.keys(entry.toolInput), ["description"]);
+    assert.match(entry.toolInput.description, /^Run the formatter safely /);
+    assert.ok(entry.toolInput.description.length <= 500);
+    assert.doesNotMatch(entry.toolInput.description, /[\u0000-\u001F\u007F-\u009F]/);
+    assert.strictEqual(JSON.stringify(entry.toolInput).includes("must-not-cross"), false);
+    assert.deepStrictEqual(entry.suggestions, []);
+    assert.deepStrictEqual(entry.sessionAutomationIdentity, {
+      eligible: false,
+      reason: "automation-not-audited",
+    });
+    assert.deepStrictEqual(res.ctx.calls.sendPermissionResponse, []);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
+    assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, [entry]);
+  });
+
+  it("leaves DSH ask_user_question with the native provider", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "deepseek-harness",
+      session_id: "deepseek-harness:q1",
+      tool_name: "ask_user_question",
+      tool_input: { questions: [{ id: "q1", question: "Continue?" }] },
+    }));
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.headers[CLAWD_SERVER_HEADER], CLAWD_SERVER_ID);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
+    assert.deepStrictEqual(res.recorder.map((entry) => entry.outcome).filter(Boolean), ["unsupported"]);
+  });
+
+  it("returns DSH no-decision for DND, headless, disabled, and the per-agent gate", async () => {
+    const cases = [
+      { ctx: { doNotDisturb: true }, outcome: "dnd" },
+      { extra: { headless: true }, outcome: "accepted" },
+      { ctx: { isAgentEnabled: (agentId) => agentId !== "deepseek-harness" }, outcome: "disabled" },
+      { ctx: { isAgentPermissionsEnabled: (agentId) => agentId !== "deepseek-harness" }, outcome: "accepted" },
+    ];
+    for (const testCase of cases) {
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: "deepseek-harness",
+        session_id: "deepseek-harness:fallback",
+        tool_name: "execute_shell",
+        tool_input: {},
+        ...(testCase.extra || {}),
+      }), { ctx: testCase.ctx || {} });
+      assert.strictEqual(res.statusCode, 204, testCase.outcome);
+      assert.strictEqual(res.headers[CLAWD_SERVER_HEADER], CLAWD_SERVER_ID, testCase.outcome);
+      assert.deepStrictEqual(res.ctx.pendingPermissions, [], testCase.outcome);
+      assert.deepStrictEqual(res.ctx.calls.sendPermissionResponse, [], testCase.outcome);
+      assert.deepStrictEqual(res.recorder.map((entry) => entry.outcome).filter(Boolean), [testCase.outcome]);
+    }
+  });
+
+  it("routes DSH to remote-only approval when local bubbles are off, but never crosses a disabled agent gate", async () => {
+    const remoteCalls = [];
+    const remote = await callPermissionPost(JSON.stringify({
+      agent_id: "deepseek-harness",
+      session_id: "deepseek-harness:remote",
+      tool_name: "execute_shell",
+      tool_input: {},
+      reason: "Needs a visible remote explanation",
+    }), {
+      ctx: {
+        hideBubbles: true,
+        maybeStartRemoteApproval(entry) { remoteCalls.push(entry); return true; },
+      },
+    });
+    assert.strictEqual(remote.statusCode, null);
+    assert.strictEqual(remote.ctx.pendingPermissions.length, 1);
+    assert.strictEqual(remote.ctx.pendingPermissions[0].remoteOnly, true);
+    assert.strictEqual(remote.ctx.pendingPermissions[0].isDsh, true);
+    assert.strictEqual(remoteCalls.length, 1);
+    assert.deepStrictEqual(remoteCalls[0].toolInput, {
+      description: "Needs a visible remote explanation",
+    });
+
+    const blockedCalls = [];
+    const blocked = await callPermissionPost(JSON.stringify({
+      agent_id: "deepseek-harness",
+      session_id: "deepseek-harness:blocked",
+      tool_name: "execute_shell",
+      tool_input: {},
+    }), {
+      ctx: {
+        hideBubbles: true,
+        isAgentPermissionsEnabled: () => false,
+        maybeStartRemoteApproval(entry) { blockedCalls.push(entry); return true; },
+      },
+    });
+    assert.strictEqual(blocked.statusCode, 204);
+    assert.deepStrictEqual(blockedCalls, []);
+    assert.deepStrictEqual(blocked.ctx.pendingPermissions, []);
+  });
+
+  it("returns DSH no-decision and removes the pending entry when bubble creation fails", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "deepseek-harness",
+      session_id: "deepseek-harness:bubble-fail",
+      tool_name: "execute_shell",
+      tool_input: {},
+    }), {
+      ctx: { showPermissionBubble() { throw new Error("no window"); } },
+    });
+    assert.strictEqual(res.statusCode, 204);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    assert.deepStrictEqual(res.ctx.calls.removePendingPermission.map((item) => item.reason), ["dsh-bubble-failed"]);
+    assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, []);
+  });
 });
 
 // ── Claude Code subagent requests (#451) ──

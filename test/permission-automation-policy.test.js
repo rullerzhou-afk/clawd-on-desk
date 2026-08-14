@@ -234,6 +234,30 @@ describe("permission automation interaction classifier", () => {
     assert.strictEqual(interaction.capabilities.allowDeny, true);
   });
 
+  it("keeps DSH manually actionable while every automation mode defers", () => {
+    const interaction = classifyPermissionInteraction({
+      agentId: "deepseek-harness",
+      toolName: "execute_shell",
+    });
+    assert.strictEqual(interaction.intent, INTERACTION_INTENT.TOOL_APPROVAL);
+    assert.strictEqual(interaction.capabilities.allowDeny, true);
+    assert.strictEqual(interaction.capabilities.nativeFallback, true);
+    assert.deepStrictEqual(
+      { ...interaction.automationEligibility },
+      { autoTools: false, unattended: false }
+    );
+    for (const mode of [PERMISSION_AUTOMATION_MODE.AUTO_TOOLS, PERMISSION_AUTOMATION_MODE.UNATTENDED]) {
+      assert.strictEqual(evaluate(mode, interaction), AUTOMATION_ACTION.DEFER, mode);
+    }
+    const question = classifyPermissionInteraction({
+      agentId: "deepseek-harness",
+      toolName: "ask_user_question",
+    });
+    assert.strictEqual(question.intent, INTERACTION_INTENT.HUMAN_QUESTION);
+    assert.strictEqual(question.capabilities.answerQuestions, false);
+    assert.strictEqual(evaluate(PERMISSION_AUTOMATION_MODE.UNATTENDED, question), AUTOMATION_ACTION.DEFER);
+  });
+
   it("defaults unknown agents to unknown with no automation eligibility", () => {
     const interaction = classifyPermissionInteraction({
       agentId: "future-agent",

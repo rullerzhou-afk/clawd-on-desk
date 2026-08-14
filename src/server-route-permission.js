@@ -107,6 +107,12 @@ function shouldBypassHermesBubble(ctx) {
   return !ctx.isAgentPermissionsEnabled("hermes");
 }
 
+function shouldBypassDshBubble(ctx) {
+  if (!arePermissionBubblesEnabled(ctx)) return true;
+  if (typeof ctx.isAgentPermissionsEnabled !== "function") return false;
+  return !ctx.isAgentPermissionsEnabled("deepseek-harness");
+}
+
 function shouldInterceptCodexPermission(ctx) {
   if (typeof ctx.isCodexPermissionInterceptEnabled !== "function") return true;
   return ctx.isCodexPermissionInterceptEnabled();
@@ -167,6 +173,21 @@ function arePermissionBubblesEnabled(ctx) {
 
 function normalizeString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+const DSH_REASON_MAX_CHARS = 500;
+
+function normalizeDshReason(value) {
+  if (typeof value !== "string") return null;
+  let text = value
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return null;
+  if (text.length > DSH_REASON_MAX_CHARS) {
+    text = `${text.slice(0, DSH_REASON_MAX_CHARS - 1).trimEnd()}…`;
+  }
+  return text;
 }
 
 function normalizeTmuxSocket(value) {
@@ -307,6 +328,22 @@ function buildHermesPermissionSessionOptions(data) {
   return options;
 }
 
+function buildDshPermissionSessionOptions(data) {
+  const sourcePid = normalizePositiveInteger(data.source_pid);
+  const agentPid = normalizePositiveInteger(data.agent_pid);
+  const pidChain = Array.isArray(data.pid_chain)
+    ? data.pid_chain.filter((n) => Number.isFinite(n) && n > 0).map((n) => Math.floor(n))
+    : null;
+  const options = { agentId: "deepseek-harness" };
+  if (sourcePid) options.sourcePid = sourcePid;
+  if (agentPid) options.agentPid = agentPid;
+  if (pidChain && pidChain.length) options.pidChain = pidChain;
+  applyTerminalSessionOptions(options, data);
+  const cwd = normalizeString(data.cwd);
+  if (cwd) options.cwd = cwd;
+  return options;
+}
+
 function sendCodexPermissionNoDecision(res) {
   res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
   res.end();
@@ -342,6 +379,11 @@ function sendAntigravityPermissionNoDecision(res) {
 }
 
 function sendHermesPermissionNoDecision(res) {
+  res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+  res.end();
+}
+
+function sendDshPermissionNoDecision(res) {
   res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
   res.end();
 }
@@ -1205,6 +1247,143 @@ function handlePermissionPost(req, res, options) {
         return;
       }
 
+      // ── DeepSeek Harness branch ──
+      // Blocking HTTP. The in-process DSH plugin awaits this response inside
+      // approval/request. A 204 means no Clawd decision; the plugin calls
+      // next() so DSH's downstream web answerer remains authoritative.
+      if (agentId === "deepseek-harness") {
+        const toolName = typeof data.tool_name === "string" && data.tool_name.trim()
+          ? data.tool_name.trim()
+          : "unknown";
+        const interaction = classifyPermissionInteraction({
+          agentId: "deepseek-harness",
+          eventKind: "permission",
+          toolName,
+        });
+        const sessionIdentity = resolvePermissionSession(data.session_id, "deepseek-harness:default");
+        const sessionId = sessionIdentity.sessionId;
+
+        // ask_user_question is intentionally DSH-native. This guard is
+        // defense-in-depth for stale/foreign bridge builds that still POST it.
+        if (
+          interaction.intent === INTERACTION_INTENT.HUMAN_QUESTION
+          || interaction.intent !== INTERACTION_INTENT.TOOL_APPROVAL
+        ) {
+          recordRequestHookEvent.droppedUnsupported();
+          ctx.permLog(`dsh unsupported interaction -> native fallback (tool=${toolName})`);
+          sendDshPermissionNoDecision(res);
+          return;
+        }
+
+        if (ctx.doNotDisturb) {
+          recordRequestHookEvent.droppedByDnd();
+          ctx.permLog(`dsh DND -> no decision, native fallback (tool=${toolName})`);
+          sendDshPermissionNoDecision(res);
+          return;
+        }
+        if (isHeadlessPermissionRequest(ctx, sessionId, data, agentId)) {
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`dsh headless session=${sessionId} -> no decision, native fallback`);
+          sendDshPermissionNoDecision(res);
+          return;
+        }
+        if (typeof ctx.isAgentEnabled === "function" && !ctx.isAgentEnabled(agentId)) {
+          recordRequestHookEvent.droppedByDisabled();
+          sendDshPermissionNoDecision(res);
+          return;
+        }
+
+        const agentGateOff = typeof ctx.isAgentPermissionsEnabled === "function"
+          && !ctx.isAgentPermissionsEnabled(agentId);
+        // ApprovalRequest intentionally does not expose tool arguments. Ignore
+        // any foreign/stale bridge payload that tries to supply them. The
+        // public human-readable reason is bounded again at this trust boundary
+        // and is display-only; it never participates in automation/fingerprints.
+        const rawInput = {};
+        const reason = normalizeDshReason(data.reason);
+        const toolInput = reason ? { description: reason } : {};
+        const toolUseId = normalizeHookToolUseId(
+          data.tool_use_id ?? data.toolUseId ?? data.toolUseID
+        );
+        const toolInputFingerprint = buildToolInputFingerprint(rawInput);
+        const sessionOptions = {
+          ...buildDshPermissionSessionOptions(data),
+          sessionAutomationIdentity,
+          ...trustedSessionFields(sessionIdentity),
+        };
+
+        if (shouldBypassDshBubble(ctx)) {
+          recordRequestHookEvent.accepted();
+          if (!agentGateOff && !arePermissionBubblesEnabled(ctx)) {
+            const remoteOnlyResult = tryRemoteOnlyApproval(ctx, {
+              res,
+              sessionId,
+              toolName,
+              toolInput,
+              toolUseId,
+              toolInputFingerprint,
+              agentId,
+              suggestions: [],
+              interaction,
+              sessionAutomationIdentity,
+              isDsh: true,
+              ...sessionOptions,
+            });
+            if (remoteOnlyResult.handled) return;
+          }
+          ctx.permLog(`dsh ${agentGateOff ? "agent gate" : "local bubble"} disabled -> native fallback`);
+          sendDshPermissionNoDecision(res);
+          return;
+        }
+
+        const permEntry = {
+          res,
+          abortHandler: null,
+          suggestions: [],
+          sessionId,
+          ...sessionOptions,
+          bubble: null,
+          hideTimer: null,
+          toolName,
+          toolInput,
+          toolUseId,
+          toolInputFingerprint,
+          resolvedSuggestion: null,
+          createdAt: Date.now(),
+          interaction,
+          sessionAutomationIdentity,
+          isDsh: true,
+          agentId,
+        };
+        const abortHandler = () => {
+          if (res.writableFinished) return;
+          ctx.permLog("dsh abortHandler fired");
+          ctx.resolvePermissionEntry(permEntry, "no-decision", "Client disconnected");
+        };
+        permEntry.abortHandler = abortHandler;
+        res.on("close", abortHandler);
+        addPendingPermission(ctx, permEntry);
+        ctx.updateSession(sessionId, "notification", "PermissionRequest", sessionOptions);
+        recordRequestHookEvent.accepted();
+        try {
+          ctx.showPermissionBubble(permEntry);
+        } catch (bubbleErr) {
+          ctx.permLog(`dsh bubble failed: ${bubbleErr && bubbleErr.message} -> native fallback`);
+          removePendingPermission(ctx, permEntry, "dsh-bubble-failed");
+          if (permEntry.abortHandler) res.removeListener("close", permEntry.abortHandler);
+          if (permEntry.autoCloseTimer) clearTimeout(permEntry.autoCloseTimer);
+          if (permEntry.hideTimer) clearTimeout(permEntry.hideTimer);
+          if (permEntry.bubble && !permEntry.bubble.isDestroyed()) {
+            try { permEntry.bubble.destroy(); } catch {}
+          }
+          permEntry.bubble = null;
+          sendDshPermissionNoDecision(res);
+          return;
+        }
+        startRemoteApproval(ctx, permEntry);
+        return;
+      }
+
       // ── Hermes Agent branch ──
       // Blocking HTTP. Fallback is 204 (no-decision) so the Hermes plugin
       // returns None and the tool executes via Hermes's native flow.
@@ -1691,7 +1870,9 @@ module.exports = {
   sendCopilotPermissionNoDecision,
   sendPiPermissionAllow,
   sendAntigravityPermissionNoDecision,
+  sendDshPermissionNoDecision,
   sendHermesPermissionNoDecision,
+  shouldBypassDshBubble,
   shouldBypassHermesBubble,
   handlePermissionPost,
 };

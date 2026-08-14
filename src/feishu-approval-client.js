@@ -419,11 +419,15 @@ function buildApprovalCard(payload, options = {}, context = {}) {
   const actions = [
     button(ctx.t("feishuCardButtonAllow"), { requestId, decision: "allow" }, "primary"),
     button(ctx.t("feishuCardButtonDeny"), { requestId, decision: "deny" }, "danger"),
-    button(ctx.t("feishuCardButtonTerminal"), { requestId, decision: "terminal" }, "default"),
-    ...normalized.suggestions.map((entry) => (
-      button(safePlainText(entry.label), { requestId, decision: `suggestion:${entry.index}` }, "default")
-    )),
   ];
+  // DSH web has no originating terminal surface. Its no-decision path returns
+  // to the browser answerer, so a remote "Go to terminal" action is misleading.
+  if (normalized.agentId !== "deepseek-harness") {
+    actions.push(button(ctx.t("feishuCardButtonTerminal"), { requestId, decision: "terminal" }, "default"));
+  }
+  actions.push(...normalized.suggestions.map((entry) => (
+    button(safePlainText(entry.label), { requestId, decision: `suggestion:${entry.index}` }, "default")
+  )));
   if (normalized.canOfferSessionTrust) {
     actions.push(button(
       ctx.t("feishuSessionTrustButton"),

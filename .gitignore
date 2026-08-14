@@ -28,6 +28,7 @@ docs/**
 !docs/guides/roam-fence.md
 !docs/guides/guide-remote-ssh.zh-CN.md
 !docs/guides/state-mapping.md
+!docs/guides/dsh-setup.md
 !docs/guides/state-mapping.zh-CN.md
 !docs/guides/telegram-approval.md
 !docs/guides/feishu-lark-remote-approval.md
@@ -43,6 +44,7 @@ docs/**
 !docs/plans/plan-npm-dependency-security-hardening.md
 !docs/plans/plan-opencode-family-state-ordering-and-instance-disposal-hardening.md
 !docs/plans/plan-issue-852-worktreecreate-env-cleanup.md
+!docs/plans/plan-pr-876-deepseek-harness-integration.md
 !docs/project/
 !docs/project/agent-runtime-architecture.md
 !docs/project/release-process.md

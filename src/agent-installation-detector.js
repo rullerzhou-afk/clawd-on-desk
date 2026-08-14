@@ -9,6 +9,7 @@ const { DEFAULT_INTEGRATION_INSTALLED_IDS, normalizePathList } = require("./pref
 const copilot = require("../hooks/copilot-install");
 const hermes = require("../hooks/hermes-install");
 const reasonix = require("../hooks/reasonix-install");
+const dsh = require("../hooks/dsh-install");
 const { commandMatchesMarker } = require("../hooks/json-utils");
 const { identifyCustomApplication } = require("./custom-applications");
 
@@ -167,6 +168,17 @@ function resolveAgentPaths(descriptor, options) {
       configPath: path.join(hermesHome, "plugins", hermes.PLUGIN_ID),
       configFilePath: path.join(hermesHome, "config.yaml"),
       commandPaths: hermesCommandPaths(hermesHome, platform, env),
+    }, options);
+  }
+
+  if (descriptor.agentId === "deepseek-harness") {
+    const dshHome = typeof env.DSH_HOME === "string" && env.DSH_HOME.trim()
+      ? path.resolve(env.DSH_HOME.trim())
+      : path.join(homeDir, ".dsh");
+    return finalizeAgentPaths(descriptor, {
+      parentDir: dshHome,
+      configPath: dsh.resolveDshProfileDir(dshHome),
+      commandPaths: dsh.dshCommandPathsSync({ fs: options.fs, env, platform }),
     }, options);
   }
 
@@ -402,6 +414,20 @@ function detectInstallation(descriptor, paths, options) {
       return notFound();
     case "hermes":
       return detectHermesInstallation(paths, options);
+    case "deepseek-harness":
+      for (const commandPath of paths.commandPaths || []) {
+        if (fileExists(fsImpl, commandPath)) {
+          return installationResult(true, "high", "command-path", `${commandPath} exists`);
+        }
+      }
+      if (dirExists(fsImpl, paths.parentDir)) {
+        const home = paths.parentDir;
+        const isDshHome = ["profiles", "sessions", "storages"].some((name) => (
+          dirExists(fsImpl, path.join(home, name))
+        ));
+        if (isDshHome) return installationResult(true, "high", "parent-dir", `${home} exists`);
+      }
+      return notFound();
     default:
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "medium", "parent-dir", `${paths.parentDir} exists`);
       return notFound();
@@ -482,6 +508,30 @@ function markerInDirectoryFiles(fsImpl, dirPath, marker, options = {}) {
 
 function detectClawdIntegration(descriptor, paths, options) {
   const fsImpl = options.fs;
+  if (descriptor.agentId === "deepseek-harness") {
+    const health = dsh.inspectDeepSeekHarnessDiskSync({
+      fs: fsImpl,
+      dshHome: paths.parentDir,
+      dshInstallRoot: options.dshInstallRoot,
+      managedRoot: options.dshManagedRoot,
+      homeDir: options.homeDir,
+      env: options.env,
+      platform: options.platform,
+    });
+    return health.status === "healthy"
+      ? {
+        detected: true,
+        reason: "managed-plugin",
+        detail: `${health.profileDir} contains the verified Clawd bridge`,
+        paths: { profileDir: health.profileDir, pluginDir: health.resolved.packageDir },
+      }
+      : {
+        detected: false,
+        reason: health.status,
+        detail: `DeepSeek Harness bridge is ${health.status}`,
+        paths: { profileDir: health.profileDir },
+      };
+  }
   if (descriptor.agentId === "pi") {
     const markerPath = path.join(paths.configPath, descriptor.markerFile || ".clawd-managed.json");
     return fileExists(fsImpl, markerPath)

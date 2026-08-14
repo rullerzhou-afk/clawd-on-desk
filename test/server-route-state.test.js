@@ -19,6 +19,7 @@ const { classifyPermissionInteraction } = require("../src/permission-automation-
 const { buildStateBody } = require("../hooks/clawd-hook");
 const { makeSessionKey } = require("../src/session-key");
 const createAgentRuntimeMain = require("../src/agent-runtime-main");
+const { createDshStateSequenceFence } = require("../src/dsh-state-sequence");
 const localSessionKey = (rawSessionId) => makeSessionKey({
   profileId: "local",
   rawSessionId,
@@ -82,6 +83,7 @@ function callStatePost(body, overrides = {}) {
     const ctx = {
       STATE_SVGS: {
         idle: "x.svg",
+        thinking: "x.svg",
         working: "x.svg",
         juggling: "x.svg",
         error: "x.svg",
@@ -112,6 +114,7 @@ function callStatePost(body, overrides = {}) {
           droppedByDisabled: () => calls.recorder.push({ outcome: "disabled" }),
           droppedByDnd: () => calls.recorder.push({ outcome: "dnd" }),
           droppedInvalidAgent: () => calls.recorder.push({ outcome: "invalid-agent" }),
+          droppedUnsupported: () => calls.recorder.push({ outcome: "unsupported" }),
         };
       },
       shouldDropForDnd: () => false,
@@ -140,6 +143,73 @@ describe("server-route-state health", () => {
 });
 
 describe("server-route-state POST", () => {
+  it("enforces DSH upstream sequence order across created, event, and disposed callbacks", async () => {
+    const fence = createDshStateSequenceFence();
+    const post = (event, state, sequence = {}) => callStatePost(JSON.stringify({
+      agent_id: "deepseek-harness",
+      hook_source: "dsh-plugin",
+      session_id: "deepseek-harness:ordered",
+      event,
+      state,
+      ...sequence,
+    }), { options: { dshStateSequenceFence: fence } });
+
+    const started = await post("SessionStart", "idle", { session_seq: 0 });
+    const event = await post("UserPromptSubmit", "thinking", { event_seq: 0 });
+    const duplicate = await post("PreToolUse", "working", { event_seq: 0 });
+    const ended = await post("SessionEnd", "sleeping", { session_seq: 1 });
+    const late = await post("Stop", "attention", { event_seq: 1 });
+
+    assert.strictEqual(started.statusCode, 200);
+    assert.strictEqual(event.statusCode, 200);
+    assert.strictEqual(duplicate.statusCode, 204);
+    assert.deepStrictEqual(duplicate.calls.updateSession, []);
+    assert.deepStrictEqual(duplicate.calls.recorder.map((entry) => entry.outcome).filter(Boolean), ["unsupported"]);
+    assert.strictEqual(ended.statusCode, 200);
+    assert.strictEqual(late.statusCode, 204);
+    assert.deepStrictEqual(late.calls.updateSession, []);
+  });
+
+  it("fails DSH state closed when its sequence fence or required watermark is unavailable", async () => {
+    const body = {
+      agent_id: "deepseek-harness",
+      hook_source: "dsh-plugin",
+      session_id: "deepseek-harness:missing-fence",
+      event: "SessionStart",
+      state: "idle",
+      session_seq: 0,
+    };
+    const absent = await callStatePost(JSON.stringify(body));
+    const missingWatermark = await callStatePost(JSON.stringify({ ...body, session_seq: undefined }), {
+      options: { dshStateSequenceFence: createDshStateSequenceFence() },
+    });
+    assert.strictEqual(absent.statusCode, 204);
+    assert.strictEqual(missingWatermark.statusCode, 204);
+    assert.deepStrictEqual(absent.calls.updateSession, []);
+    assert.deepStrictEqual(missingWatermark.calls.updateSession, []);
+  });
+
+  it("does not advance the DSH sequence fence for a disabled integration", async () => {
+    const fence = createDshStateSequenceFence();
+    const body = JSON.stringify({
+      agent_id: "deepseek-harness",
+      hook_source: "dsh-plugin",
+      session_id: "deepseek-harness:gated",
+      event: "SessionStart",
+      state: "idle",
+      session_seq: 3,
+    });
+    const disabled = await callStatePost(body, {
+      ctx: { isAgentEnabled: () => false },
+      options: { dshStateSequenceFence: fence },
+    });
+    const enabled = await callStatePost(body, {
+      options: { dshStateSequenceFence: fence },
+    });
+    assert.strictEqual(disabled.statusCode, 204);
+    assert.strictEqual(enabled.statusCode, 200);
+  });
+
   it("relays a normalized test result after the lifecycle update", async () => {
     const res = await callStatePost(JSON.stringify({
       state: "working",

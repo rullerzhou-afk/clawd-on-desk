@@ -8,6 +8,7 @@ describe("Agent Registry", () => {
     const ids = agents.map((a) => a.id);
     assert.deepStrictEqual(ids, [
       "claude-code",
+      "deepseek-harness",
       "codex",
       "copilot-cli",
       "gemini-cli",
@@ -34,6 +35,7 @@ describe("Agent Registry", () => {
 
   it("should look up agents by ID", () => {
     assert.strictEqual(registry.getAgent("claude-code").name, "Claude Code");
+    assert.strictEqual(registry.getAgent("deepseek-harness").name, "DeepSeek Harness (web, experimental)");
     assert.strictEqual(registry.getAgent("codex").name, "Codex CLI");
     assert.strictEqual(registry.getAgent("copilot-cli").name, "Copilot CLI");
     assert.strictEqual(registry.getAgent("gemini-cli").name, "Gemini CLI");

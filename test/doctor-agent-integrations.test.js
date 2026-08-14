@@ -31,6 +31,16 @@ const {
   buildZcodeProcessHook,
   timeoutMsForZcodeEvent,
 } = require("../hooks/zcode-install");
+const {
+  BRIDGE_PACKAGE_NAME,
+  BRIDGE_PROTOCOL_VERSION,
+  MANAGED_OWNER,
+  SUPPORTED_DSH_RANGE,
+  SUPPORTED_DSH_VERSION,
+  __test: dshInstallTest,
+} = require("../hooks/dsh-install");
+
+const DSH_BRIDGE_SOURCE_DIR = path.join(__dirname, "..", "hooks", "dsh-clawd-bridge");
 
 // Complete healthy legacy Kimi config: every event registered, every command
 // carrying the canonical argv mode flag.
@@ -97,6 +107,8 @@ function runOne(descriptor, options = {}) {
       nodeBin: target.nodeBin,
       scriptPath: target.scriptPath,
     })),
+    dshInstallRoot: options.dshInstallRoot,
+    dshManagedRoot: options.dshManagedRoot || descriptor.dshManagedRoot,
   }).details[0];
 }
 
@@ -364,6 +376,96 @@ afterEach(() => {
 });
 
 describe("checkAgentIntegrations", () => {
+  function dshDescriptor() {
+    const root = makeTempDir();
+    const parentDir = path.join(root, ".dsh");
+    return baseDescriptor({
+      agentId: "deepseek-harness",
+      agentName: "DeepSeek Harness",
+      eventSource: "plugin-event",
+      parentDir,
+      configPath: path.join(parentDir, "profiles", "web"),
+      configMode: "dsh-plugin",
+      dshManagedRoot: path.join(root, ".clawd", "integrations", "deepseek-harness"),
+    });
+  }
+
+  function writeDshProfile(descriptor, mode) {
+    const manifestPath = path.join(descriptor.configPath, "package.json");
+    const manifest = {
+      name: "dsh-profile-web",
+      dependencies: {},
+      dsh: { profile: { bundles: [] } },
+    };
+    const pluginDir = path.join(descriptor.configPath, "node_modules", ...BRIDGE_PACKAGE_NAME.split("/"));
+    const bundleHash = dshInstallTest.hashBridgeDirectorySync(fs, DSH_BRIDGE_SOURCE_DIR);
+    const generationDir = path.join(descriptor.dshManagedRoot, "generations", bundleHash);
+    if (mode !== "absent") {
+      manifest.dependencies[BRIDGE_PACKAGE_NAME] = mode === "healthy"
+        ? `file:${generationDir}`
+        : `file:${pluginDir}`;
+      manifest.dsh.profile.bundles.push(BRIDGE_PACKAGE_NAME);
+    }
+    writeJson(manifestPath, manifest);
+    if (mode === "healthy" || mode === "foreign") {
+      if (mode === "healthy") fs.cpSync(DSH_BRIDGE_SOURCE_DIR, pluginDir, { recursive: true });
+      else writeJson(path.join(pluginDir, "package.json"), { name: BRIDGE_PACKAGE_NAME, version: "0.0.0" });
+      if (mode === "healthy") {
+        fs.cpSync(DSH_BRIDGE_SOURCE_DIR, generationDir, { recursive: true });
+        const marker = {
+          owner: MANAGED_OWNER,
+          schemaVersion: 1,
+          protocolVersion: BRIDGE_PROTOCOL_VERSION,
+          bundleHash,
+          supportedDshRange: SUPPORTED_DSH_RANGE,
+          installedDshVersion: SUPPORTED_DSH_VERSION,
+        };
+        writeJson(path.join(pluginDir, "clawd-manifest.json"), marker);
+        writeJson(path.join(generationDir, "clawd-manifest.json"), marker);
+      }
+    }
+  }
+
+  it("reports DSH disk health from the managed plugin rather than host-home presence", () => {
+    const descriptor = dshDescriptor();
+    writeDshProfile(descriptor, "absent");
+    const absent = runOne(descriptor);
+    assert.strictEqual(absent.status, "not-connected");
+    assert.strictEqual(absent.bridgeHealth, "absent");
+    assert.deepStrictEqual(absent.fixAction, { type: "agent-integration", agentId: "deepseek-harness" });
+
+    writeDshProfile(descriptor, "healthy");
+    const healthy = runOne(descriptor);
+    assert.strictEqual(healthy.status, "ok");
+    assert.strictEqual(healthy.bridgeHealth, "healthy");
+    assert.match(healthy.detail, /verified on disk/i);
+    assert.match(healthy.detail, /restart any running dsh web/i);
+  });
+
+  it("does not offer Doctor Fix for a foreign same-name DSH plugin", () => {
+    const descriptor = dshDescriptor();
+    writeDshProfile(descriptor, "foreign");
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "needs-review");
+    assert.strictEqual(detail.bridgeHealth, "profile-entry-foreign-or-conflicting");
+    assert.strictEqual(detail.fixAction, undefined);
+  });
+
+  it("surfaces a persistent DSH unknown-mutation latch as repairable inspection required", () => {
+    const descriptor = dshDescriptor();
+    writeDshProfile(descriptor, "healthy");
+    const managedRoot = path.join(path.dirname(descriptor.parentDir), ".clawd", "integrations", "deepseek-harness");
+    writeJson(path.join(managedRoot, "inspection-required.json"), {
+      owner: MANAGED_OWNER,
+      schemaVersion: 1,
+      reason: "plugin-add-unknown",
+    });
+    const detail = runOne(descriptor, { dshManagedRoot: managedRoot });
+    assert.strictEqual(detail.status, "broken-path");
+    assert.strictEqual(detail.bridgeHealth, "inspection-required");
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "deepseek-harness" });
+  });
+
   it("returns not-installed when parent dir is missing", () => {
     const detail = runOne(baseDescriptor());
     assert.strictEqual(detail.status, "not-installed");

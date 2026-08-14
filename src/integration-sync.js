@@ -359,6 +359,28 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  async function syncDeepSeekHarnessPlugin(options = {}) {
+    try {
+      const operation = options.operation
+        || (options.source === "settings-agent-install"
+          ? "install"
+          : (options.automatic === false ? "explicit-repair" : "startup-sync"));
+      const normalizedOptions = { ...options, silent: true, operation };
+      if (typeof ctx.syncDeepSeekHarnessPluginImpl === "function") {
+        return await ctx.syncDeepSeekHarnessPluginImpl(normalizedOptions);
+      }
+      const { syncDeepSeekHarnessIntegration } = require("../hooks/dsh-install.js");
+      return await syncDeepSeekHarnessIntegration(normalizedOptions);
+    } catch (err) {
+      console.warn("Clawd: failed to sync DeepSeek Harness plugin:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync DeepSeek Harness plugin" };
+    }
+  }
+
+  function repairDeepSeekHarnessPlugin(options = {}) {
+    return syncDeepSeekHarnessPlugin({ ...options, operation: "explicit-repair", automatic: false });
+  }
+
   function syncOpencodePlugin() {
     try {
       if (typeof ctx.syncOpencodePluginImpl === "function") return ctx.syncOpencodePluginImpl();
@@ -560,6 +582,7 @@ function createIntegrationSyncRuntime(options = {}) {
     zcode: syncZcodeHooks,
     codewhale: syncCodewhaleHooks,
     codex: syncCodexHooks,
+    "deepseek-harness": syncDeepSeekHarnessPlugin,
     opencode: syncOpencodePlugin,
     mimocode: syncMimocodePlugin,
     pi: syncPiExtension,
@@ -574,6 +597,7 @@ function createIntegrationSyncRuntime(options = {}) {
   const AGENT_INTEGRATION_REPAIRERS = Object.freeze({
     ...AGENT_INTEGRATION_SYNCERS,
     codex: repairCodexHooks,
+    "deepseek-harness": repairDeepSeekHarnessPlugin,
     openclaw: repairOpenClawPlugin,
   });
 
@@ -633,8 +657,10 @@ function createIntegrationSyncRuntime(options = {}) {
     const repair = AGENT_INTEGRATION_REPAIRERS[agentId];
     if (typeof repair !== "function") return false;
     const result = repair(options);
-    if (result && typeof result === "object" && typeof result.status === "string") return result;
-    return true;
+    // Async installers are themselves structured results in flight. Returning
+    // true here used to let Settings/Doctor commit success before DSH's
+    // plugin mutation and post-verification had even settled.
+    return result && typeof result === "object" ? result : true;
   }
 
   function stopIntegrationForAgent(agentId) {
@@ -706,6 +732,7 @@ function createIntegrationSyncRuntime(options = {}) {
     syncZcodeHooks,
     syncCodewhaleHooks,
     syncCodexHooks,
+    syncDeepSeekHarnessPlugin,
     syncOpencodePlugin,
     syncMimocodePlugin,
     syncPiExtension,

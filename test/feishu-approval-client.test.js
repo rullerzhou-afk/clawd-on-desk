@@ -85,6 +85,20 @@ test("buildApprovalCard creates an interactive allow deny card", () => {
   );
 });
 
+test("DeepSeek Harness remote approval cards omit the meaningless terminal action", () => {
+  const card = buildApprovalCard({
+    title: "deepseek-harness requests pwsh",
+    agentId: "deepseek-harness",
+    toolName: "pwsh",
+    summary: "Run a command",
+  }, { requestId: "req_dsh" });
+  const actions = card.elements
+    .filter((element) => element.tag === "action")
+    .flatMap((element) => element.actions);
+  assert.deepEqual(actions.map((action) => action.value.decision), ["allow", "deny"]);
+  assert.equal(actions.some((action) => action.text.content === "Go to terminal"), false);
+});
+
 test("Feishu session automation actions use a namespace disjoint from ordinary decisions", () => {
   const card = buildApprovalCard({
     title: "Run",

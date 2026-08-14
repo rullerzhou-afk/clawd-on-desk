@@ -64,6 +64,10 @@ function makeRuntime(overrides = {}) {
     syncZcodeHooksImpl: () => calls.push({ name: "zcode" }),
     syncCodewhaleHooksImpl: () => calls.push({ name: "codewhale" }),
     syncCodexHooksImpl: () => calls.push({ name: "codex" }),
+    syncDeepSeekHarnessPluginImpl: (options) => {
+      calls.push({ name: "deepseek-harness", options });
+      return { status: "ok" };
+    },
     repairCodexHooksImpl: (options) => {
       calls.push({ name: "codex-repair" });
       repairOptions.push(options);
@@ -280,6 +284,7 @@ describe("integration sync runtime", () => {
       "zcode",
       "codewhale",
       "codex",
+      "deepseek-harness",
       "mimocode",
       "pi",
       "openclaw",
@@ -312,6 +317,7 @@ describe("integration sync runtime", () => {
       "zcode",
       "codewhale",
       "codex",
+      "deepseek-harness",
       "opencode",
       "mimocode",
       "openclaw",
@@ -348,6 +354,40 @@ describe("integration sync runtime", () => {
 
     assert.ok(result === true || (result && typeof result === "object"));
     assert.deepStrictEqual(calls.map((entry) => entry.name), ["copilot"]);
+  });
+
+  it("gives DSH startup, Settings Install, and Doctor Repair distinct mutation intent", async () => {
+    const { runtime, calls } = makeRuntime();
+    await runtime.syncIntegrationForAgent("deepseek-harness", { source: "startup", automatic: true });
+    await runtime.syncIntegrationForAgent("deepseek-harness", { source: "settings-agent-install", automatic: false });
+    await runtime.repairIntegrationForAgent("deepseek-harness", { source: "doctor-fix" });
+    assert.deepStrictEqual(calls.map((entry) => ({
+      name: entry.name,
+      operation: entry.options.operation,
+      automatic: entry.options.automatic,
+      silent: entry.options.silent,
+    })), [
+      { name: "deepseek-harness", operation: "startup-sync", automatic: true, silent: true },
+      { name: "deepseek-harness", operation: "install", automatic: false, silent: true },
+      { name: "deepseek-harness", operation: "explicit-repair", automatic: false, silent: true },
+    ]);
+  });
+
+  it("awaits DSH repair and preserves its structured failure", async () => {
+    let settle;
+    const { runtime } = makeRuntime({
+      ctx: {
+        syncDeepSeekHarnessPluginImpl: () => new Promise((resolve) => { settle = resolve; }),
+      },
+    });
+    const pending = runtime.repairIntegrationForAgent("deepseek-harness");
+    assert.strictEqual(typeof pending.then, "function");
+    settle({ status: "error", reason: "inspection-required", manualInspectionRequired: true });
+    assert.deepStrictEqual(await pending, {
+      status: "error",
+      reason: "inspection-required",
+      manualInspectionRequired: true,
+    });
   });
 
   it("passes custom integration options to CodeBuddy sync", () => {

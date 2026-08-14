@@ -35,6 +35,7 @@ describe("doctor agent descriptors", () => {
         "reasonix",
         "qoderwork",
         "qwenwork",
+        "deepseek-harness",
       ]
     );
   });
@@ -153,6 +154,14 @@ describe("doctor agent descriptors", () => {
     assert.strictEqual(getAgentDescriptor("qwenwork").configPath, qwenwork.DEFAULT_CONFIG_PATH);
     assert.strictEqual(getAgentDescriptor("qwenwork").marker, qwenwork.MARKER);
     assert.deepStrictEqual(getAgentDescriptor("qwenwork").hookEvents, qwenwork.QWENWORK_HOOK_EVENTS);
+
+    const dsh = require("../hooks/dsh-install");
+    assert.strictEqual(getAgentDescriptor("deepseek-harness").parentDir, dsh.resolveDshHome());
+    assert.strictEqual(
+      getAgentDescriptor("deepseek-harness").configPath,
+      dsh.resolveDshProfileDir(dsh.resolveDshHome())
+    );
+    assert.strictEqual(getAgentDescriptor("deepseek-harness").configMode, "dsh-plugin");
   });
 
   it("returns copies from public accessors", () => {

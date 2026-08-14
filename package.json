@@ -59,6 +59,8 @@
     "uninstall:qwenwork-hooks": "node hooks/qwenwork-install.js --uninstall",
     "install:workbuddy-hooks": "node hooks/workbuddy-install.js",
     "uninstall:workbuddy-hooks": "node hooks/workbuddy-install.js --uninstall",
+    "install:dsh": "node hooks/dsh-install.js",
+    "uninstall:dsh": "node hooks/dsh-install.js --uninstall",
     "cleanup:integrations": "node hooks/cleanup-integrations.js --apply",
     "register-protocol:dev": "node launch.js --register-protocol"
   },

@@ -12,6 +12,17 @@ const {
 } = require("../src/agent-installation-detector");
 const { getAgentDescriptor } = require("../src/doctor-detectors/agent-descriptors");
 const { registerReasonixHooks } = require("../hooks/reasonix-install");
+const {
+  BRIDGE_PACKAGE_NAME,
+  BRIDGE_PROTOCOL_VERSION,
+  MANAGED_OWNER,
+  resolveManagedRoot,
+  SUPPORTED_DSH_RANGE,
+  SUPPORTED_DSH_VERSION,
+  __test: dshInstallTest,
+} = require("../hooks/dsh-install");
+
+const DSH_BRIDGE_SOURCE_DIR = path.join(__dirname, "..", "hooks", "dsh-clawd-bridge");
 
 const tempDirs = [];
 
@@ -28,6 +39,10 @@ function mkdirp(dir) {
 function writeJson(filePath, value) {
   mkdirp(path.dirname(filePath));
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2), "utf8");
+}
+
+function readJson(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
 
 function writeText(filePath, value = "") {
@@ -83,6 +98,73 @@ describe("agent installation detector", () => {
     assert.strictEqual(codewhale.detectedInstalled, true);
     assert.strictEqual(codewhale.confidence, "high");
     assert.strictEqual(codewhale.reason, "parent-dir");
+  });
+
+  it("detects DSH host installation separately from a verified managed plugin", () => {
+    const homeDir = makeHome();
+    const dshHome = path.join(homeDir, ".dsh");
+    const profileDir = path.join(dshHome, "profiles", "web");
+    const profileManifestPath = path.join(profileDir, "package.json");
+    writeJson(profileManifestPath, {
+      name: "dsh-profile-web",
+      dependencies: {},
+      dsh: { profile: { bundles: [] } },
+    });
+
+    let report = detectAgentInstallations({ homeDir, now: 1, env: {} });
+    let dsh = byId(report, "deepseek-harness");
+    assert.strictEqual(dsh.detectedInstalled, true);
+    assert.strictEqual(dsh.clawdIntegration.detected, false);
+    assert.strictEqual(dsh.clawdIntegration.reason, "absent");
+    assert.strictEqual(dsh.paths.parentDir, dshHome);
+
+    const pluginDir = path.join(profileDir, "node_modules", ...BRIDGE_PACKAGE_NAME.split("/"));
+    const bundleHash = dshInstallTest.hashBridgeDirectorySync(fs, DSH_BRIDGE_SOURCE_DIR);
+    const generationDir = path.join(
+      resolveManagedRoot({ homeDir, dshHome }),
+      "generations",
+      bundleHash,
+    );
+    const manifest = readJson(profileManifestPath);
+    manifest.dependencies[BRIDGE_PACKAGE_NAME] = `file:${generationDir}`;
+    manifest.dsh.profile.bundles.push(BRIDGE_PACKAGE_NAME);
+    writeJson(profileManifestPath, manifest);
+    fs.cpSync(DSH_BRIDGE_SOURCE_DIR, pluginDir, { recursive: true });
+    fs.cpSync(DSH_BRIDGE_SOURCE_DIR, generationDir, { recursive: true });
+    const marker = {
+      owner: MANAGED_OWNER,
+      schemaVersion: 1,
+      protocolVersion: BRIDGE_PROTOCOL_VERSION,
+      bundleHash,
+      supportedDshRange: SUPPORTED_DSH_RANGE,
+      installedDshVersion: SUPPORTED_DSH_VERSION,
+    };
+    writeJson(path.join(pluginDir, "clawd-manifest.json"), marker);
+    writeJson(path.join(generationDir, "clawd-manifest.json"), marker);
+
+    report = detectAgentInstallations({ homeDir, now: 2, env: {} });
+    dsh = byId(report, "deepseek-harness");
+    assert.strictEqual(dsh.clawdIntegration.detected, true);
+    assert.strictEqual(dsh.clawdIntegration.reason, "managed-plugin");
+    assert.strictEqual(dsh.clawdIntegration.paths.pluginDir, pluginDir);
+  });
+
+  it("detects a DSH CLI on PATH before the profile home is initialized", () => {
+    const homeDir = makeHome();
+    const binDir = path.join(homeDir, "bin");
+    fs.mkdirSync(binDir, { recursive: true });
+    const shim = path.join(binDir, "dsh.cmd");
+    fs.writeFileSync(shim, "@echo off\r\n", "utf8");
+    const report = detectAgentInstallations({
+      homeDir,
+      now: 1,
+      platform: "win32",
+      env: { PATH: binDir },
+    });
+    const dsh = byId(report, "deepseek-harness");
+    assert.strictEqual(dsh.detectedInstalled, true);
+    assert.strictEqual(dsh.reason, "command-path");
+    assert.deepStrictEqual(dsh.paths.commandPaths, [shim]);
   });
 
   it("detects a Windows Reasonix installation from the legacy fallback home", () => {

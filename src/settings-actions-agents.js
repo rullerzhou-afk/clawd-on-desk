@@ -29,6 +29,7 @@ const {
 const AUTO_REPAIRABLE_AGENT_IDS = new Set([
   "claude-code",
   "codex",
+  "deepseek-harness",
   "copilot-cli",
   "cursor-agent",
   "gemini-cli",
@@ -52,6 +53,7 @@ const AUTO_REPAIRABLE_AGENT_IDS = new Set([
 const INSTALLABLE_AGENT_IDS = new Set([
   "claude-code",
   "codex",
+  "deepseek-harness",
   "copilot-cli",
   "cursor-agent",
   "gemini-cli",
@@ -286,9 +288,23 @@ function normalizeAgentIntegrationPayload(payload, validateAgentId, actionName) 
 }
 
 function resultMessage(result, fallback) {
-  return result && typeof result === "object" && typeof result.message === "string" && result.message
+  const base = result && typeof result === "object" && typeof result.message === "string" && result.message
     ? result.message
     : fallback;
+  const manualCommand = result && typeof result === "object" && typeof result.manualCommand === "string"
+    ? result.manualCommand.trim()
+    : "";
+  return manualCommand && !base.includes(manualCommand) ? `${base}\n${manualCommand}` : base;
+}
+
+function integrationResultMetadata(result) {
+  if (!result || typeof result !== "object") return {};
+  const metadata = {};
+  for (const key of ["reason", "manualCommand", "supportedRange", "detectedVersion", "healthReason"]) {
+    if (typeof result[key] === "string" && result[key]) metadata[key] = result[key];
+  }
+  if (result.manualInspectionRequired === true) metadata.manualInspectionRequired = true;
+  return metadata;
 }
 
 function buildAgentCommit(snapshot, agentId, patch) {
@@ -552,13 +568,14 @@ async function installAgentIntegration(payload, deps = {}) {
     if (result && typeof result === "object" && result.status === "skipped") {
       return {
         status: "skipped",
-        reason: result.reason,
+        ...integrationResultMetadata(result),
         message: resultMessage(result, `Skipped installing ${agentId}`),
       };
     }
     if (result && typeof result === "object" && result.status && result.status !== "ok") {
       return {
         status: "error",
+        ...integrationResultMetadata(result),
         message: resultMessage(result, `Failed to install ${agentId}`),
       };
     }
@@ -602,6 +619,7 @@ async function uninstallAgentIntegration(payload, deps = {}) {
     if (result && typeof result === "object" && result.status === "error") {
       return {
         status: "error",
+        ...integrationResultMetadata(result),
         message: resultMessage(result, `Failed to uninstall ${agentId}`),
       };
     }
@@ -700,7 +718,8 @@ async function repairAgentIntegration(payload, deps) {
     if (result && typeof result === "object" && result.status && result.status !== "ok") {
       return {
         status: "error",
-        message: result.message || `Failed to repair ${agentId}`,
+        ...integrationResultMetadata(result),
+        message: resultMessage(result, `Failed to repair ${agentId}`),
       };
     }
     return {

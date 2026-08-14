@@ -52,6 +52,7 @@ const {
   getCodexOfficialTurnKey,
   resolveCodexOfficialHookState,
 } = require("./server-codex-official-turns");
+const { createDshStateSequenceFence } = require("./dsh-state-sequence");
 const {
   HOOK_EVENT_RING_SIZE_PER_AGENT,
   createSingleRequestHookEventRecorder,
@@ -152,6 +153,7 @@ let lastClaudeHookGuardNotice = null;
 // this process-local flag closes the small pre-commit window immediately.
 let claudeStatuslineIngressSuppressed = false;
 const codexOfficialTurns = new Map();
+const dshStateSequenceFence = createDshStateSequenceFence();
 const recentHookEvents = new Map();
 
 function isClaudeStatuslineMetadataAllowed() {
@@ -734,6 +736,7 @@ function routeHttpRequest(req, res, remoteProfile = null) {
         createRequestHookRecorder,
         shouldDropForDnd,
         codexOfficialTurns,
+        dshStateSequenceFence,
         captureForegroundWindowsTerminal: ctx.captureForegroundWindowsTerminal,
         isWinHost: isWindowsHost,
         windowsProcessChainRuntime,

@@ -12,6 +12,7 @@ const {
   cleanupIntegrations,
 } = require("../hooks/cleanup-integrations");
 const { resolvePluginDir } = require("../hooks/opencode-install");
+const { resolveManagedRoot: resolveDshManagedRoot } = require("../hooks/dsh-install");
 const { registerQwenWorkHooks } = require("../hooks/qwenwork-install");
 const { registerCodexHooks, CODEX_OFFICIAL_HOOK_EVENTS } = require("../hooks/codex-install");
 const { stableCodexHookPaths } = require("../hooks/codex-install-utils");
@@ -44,6 +45,7 @@ describe("cleanupIntegrations", () => {
       env: {
         HERMES_HOME: path.join(os.tmpdir(), "admin-hermes"),
         REASONIX_HOME: path.join(os.tmpdir(), "admin-reasonix"),
+        DSH_HOME: path.join(os.tmpdir(), "admin-dsh"),
         LOCALAPPDATA: inheritedLocalAppData,
         APPDATA: path.join(os.tmpdir(), "admin-appdata"),
       },
@@ -69,11 +71,46 @@ describe("cleanupIntegrations", () => {
     assert.strictEqual(plan.env.APPDATA, targetAppData);
     assert.strictEqual(plan.env.HERMES_HOME, undefined);
     assert.strictEqual(plan.env.REASONIX_HOME, undefined);
+    assert.strictEqual(plan.env.DSH_HOME, path.resolve(path.join(os.tmpdir(), "admin-dsh")));
+    assert.strictEqual(plan.byAgent["deepseek-harness"].dshHome, plan.env.DSH_HOME);
+    assert.strictEqual(plan.byAgent["deepseek-harness"].env.DSH_HOME, plan.env.DSH_HOME);
     assert.strictEqual(plan.byAgent.hermes.env.LOCALAPPDATA, targetLocalAppData);
     assert.notStrictEqual(plan.byAgent.hermes.hermesHome, path.join(inheritedLocalAppData, "hermes"));
   });
 
-  it("cleans hooks and stable launchers from an explicit custom CODEX_HOME", () => {
+  it("honors only an explicitly targeted DSH_HOME during alternate-home cleanup", () => {
+    const homeDir = path.join(os.tmpdir(), "clawd-target-home-explicit-dsh");
+    const dshHome = path.join(os.tmpdir(), "clawd-target-dsh");
+    const plan = buildCleanupOptionsForHome(homeDir, {
+      env: { DSH_HOME: dshHome },
+    });
+    assert.strictEqual(plan.env.DSH_HOME, path.resolve(dshHome));
+    assert.strictEqual(plan.byAgent["deepseek-harness"].dshHome, path.resolve(dshHome));
+    assert.strictEqual(plan.byAgent["deepseek-harness"].managedRoot, undefined);
+    const defaultPlan = buildCleanupOptionsForHome(homeDir, {
+      dshHome: path.join(homeDir, ".dsh"),
+    });
+    assert.notStrictEqual(
+      resolveDshManagedRoot(plan.byAgent["deepseek-harness"]),
+      resolveDshManagedRoot(defaultPlan.byAgent["deepseek-harness"]),
+    );
+  });
+
+  it("does not inherit the process DSH_HOME for an explicit alternate home", () => {
+    const previous = process.env.DSH_HOME;
+    const homeDir = path.join(os.tmpdir(), "clawd-target-home-no-inherit-dsh");
+    process.env.DSH_HOME = path.join(os.tmpdir(), "admin-process-dsh");
+    try {
+      const plan = buildCleanupOptionsForHome(homeDir);
+      assert.strictEqual(plan.env.DSH_HOME, undefined);
+      assert.strictEqual(plan.byAgent["deepseek-harness"].dshHome, path.join(homeDir, ".dsh"));
+    } finally {
+      if (previous === undefined) delete process.env.DSH_HOME;
+      else process.env.DSH_HOME = previous;
+    }
+  });
+
+  it("cleans hooks and stable launchers from an explicit custom CODEX_HOME", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cleanup-custom-codex-"));
     const homeDir = path.join(root, "home");
     const codexDir = path.join(root, "custom-codex");
@@ -89,7 +126,7 @@ describe("cleanupIntegrations", () => {
       const stableDir = stableCodexHookPaths(codexDir).stableDir;
       assert.strictEqual(fs.existsSync(stableDir), true);
 
-      const result = cleanupIntegrations({
+      const result = await cleanupIntegrations({
         homeDir,
         env: { CODEX_HOME: codexDir },
         backup: true,
@@ -107,7 +144,7 @@ describe("cleanupIntegrations", () => {
     }
   });
 
-  it("cleans Reasonix hooks from both current and legacy Windows homes", () => {
+  it("cleans Reasonix hooks from both current and legacy Windows homes", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cleanup-reasonix-"));
     const homeDir = path.join(root, "home");
     const currentSettings = path.join(homeDir, "AppData", "Roaming", "reasonix", "settings.json");
@@ -124,7 +161,7 @@ describe("cleanupIntegrations", () => {
     }
 
     try {
-      const result = cleanupIntegrations({
+      const result = await cleanupIntegrations({
         homeDir,
         platform: "win32",
         env: { REASONIX_HOME: "" },
@@ -146,7 +183,7 @@ describe("cleanupIntegrations", () => {
     }
   });
 
-  it("reports a partial Reasonix cleanup failure after still cleaning the other home", () => {
+  it("reports a partial Reasonix cleanup failure after still cleaning the other home", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cleanup-reasonix-error-"));
     const homeDir = path.join(root, "home");
     const currentSettings = path.join(homeDir, "AppData", "Roaming", "reasonix", "settings.json");
@@ -163,7 +200,7 @@ describe("cleanupIntegrations", () => {
     });
 
     try {
-      const result = cleanupIntegrations({
+      const result = await cleanupIntegrations({
         homeDir,
         platform: "win32",
         backup: true,
@@ -184,7 +221,7 @@ describe("cleanupIntegrations", () => {
     }
   });
 
-  it("removes managed hooks/plugins safely, backs up once, and is idempotent", () => {
+  it("removes managed hooks/plugins safely, backs up once, and is idempotent", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cleanup-"));
     const homeDir = path.join(root, "home");
     const pluginDir = resolvePluginDir();
@@ -247,7 +284,7 @@ describe("cleanupIntegrations", () => {
     });
 
     try {
-      const result = cleanupIntegrations({ homeDir, backup: true, silent: true, hermesCommand: false });
+      const result = await cleanupIntegrations({ homeDir, backup: true, silent: true, hermesCommand: false });
       assert.strictEqual(result.summary.failed, 0);
       assert.ok(result.summary.entriesRemoved >= 5);
 
@@ -284,7 +321,7 @@ describe("cleanupIntegrations", () => {
         opencode: listCleanupBackups(path.dirname(opencodePath)).length,
         kiro: listCleanupBackups(path.dirname(kiroTeamPath)).length,
       };
-      const second = cleanupIntegrations({ homeDir, backup: true, silent: true, hermesCommand: false });
+      const second = await cleanupIntegrations({ homeDir, backup: true, silent: true, hermesCommand: false });
       assert.strictEqual(second.summary.failed, 0);
       assert.strictEqual(second.summary.entriesRemoved, 0);
       assert.deepStrictEqual({
@@ -297,7 +334,7 @@ describe("cleanupIntegrations", () => {
     }
   });
 
-  it("records a precomputed Claude cleanup result instead of unregistering Claude a second time", () => {
+  it("records a precomputed Claude cleanup result instead of unregistering Claude a second time", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cleanup-claude-"));
     const homeDir = path.join(root, "home");
     const claudeSettingsPath = path.join(homeDir, ".claude", "settings.json");
@@ -311,7 +348,7 @@ describe("cleanupIntegrations", () => {
     });
 
     try {
-      const result = cleanupIntegrations({
+      const result = await cleanupIntegrations({
         homeDir,
         backup: true,
         silent: true,
@@ -376,9 +413,9 @@ describe("cleanupIntegrations", () => {
     assert.deepStrictEqual(missingDisplayName, []);
   });
 
-  it("marks the claude-code agent failed when the precomputed cleanup result is an error", () => {
+  it("marks the claude-code agent failed when the precomputed cleanup result is an error", async () => {
     const homeDir = path.join(os.tmpdir(), "clawd-cleanup-claude-error-home");
-    const result = cleanupIntegrations({
+    const result = await cleanupIntegrations({
       homeDir,
       backup: true,
       silent: true,
@@ -474,14 +511,14 @@ describe("QwenWork integration cleanup (#843)", () => {
     return after;
   }
 
-  it("cleanupIntegrations removes only marker-scoped Clawd hooks and is idempotent", () => {
+  it("cleanupIntegrations removes only marker-scoped Clawd hooks and is idempotent", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cleanup-qwenwork-"));
     const homeDir = path.join(root, "home");
     const settingsPath = seedQwenWorkSettings(homeDir);
     const before = readJson(settingsPath);
 
     try {
-      const result = cleanupIntegrations({ homeDir, backup: true, silent: true, hermesCommand: false });
+      const result = await cleanupIntegrations({ homeDir, backup: true, silent: true, hermesCommand: false });
       const qwenwork = result.agents.find((entry) => entry.agentId === "qwenwork");
 
       assert.ok(qwenwork, "qwenwork must be one of the agents cleanup iterates");
@@ -496,7 +533,7 @@ describe("QwenWork integration cleanup (#843)", () => {
       assertOnlyClawdHooksRemoved(settingsPath);
 
       const afterFirst = fs.readFileSync(settingsPath, "utf8");
-      const second = cleanupIntegrations({ homeDir, backup: true, silent: true, hermesCommand: false });
+      const second = await cleanupIntegrations({ homeDir, backup: true, silent: true, hermesCommand: false });
       const qwenworkSecond = second.agents.find((entry) => entry.agentId === "qwenwork");
 
       assert.strictEqual(qwenworkSecond.status, "skipped");

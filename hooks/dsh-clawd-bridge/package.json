@@ -1,0 +1,21 @@
+{
+  "name": "@dsh-external/dsh-clawd-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Forward public DeepSeek Harness session and approval events to Clawd on Desk",
+  "main": "./lib/index.js",
+  "exports": { ".": "./lib/index.js" },
+  "license": "MIT",
+  "clawd": {
+    "supportedDshRange": "=0.1.0-rc.6",
+    "verifiedDshArtifact": "@deepseek-ai/dsh@0.1.0-rc.6",
+    "verifiedDshArtifactIntegrity": "sha512-brpZfED7ieRa2PQ5tUxMhHrM1pb2CmKFVM/f6yMULBDMicahk+Z2OsHgTwTDnoiZm23Ftu9rQz0NN4pflaoJcg==",
+    "sourceAuditBaselineCommit": "47f943859bef60e4160492346772ded9b24f765a"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

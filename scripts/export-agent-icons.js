@@ -59,6 +59,7 @@ const SOURCE_PROVENANCE = Object.freeze({
   codebuddy: lobeSource("codebuddy-color.png"),
   codewhale: { originalFilename: "codewhale.png", fallback: true },
   codex: lobeSource("openai.png", { contrastTreatment: "neutral-light-tile" }),
+  "deepseek-harness": lobeSource("deepseek-color.png"),
   "copilot-cli": lobeSource("githubcopilot.png", { contrastTreatment: "neutral-light-tile" }),
   "cursor-agent": lobeSource("cursor.png", { contrastTreatment: "neutral-light-tile" }),
   "gemini-cli": lobeSource("geminicli-color.png"),
