@@ -147,18 +147,63 @@ describe("buildStateBody", () => {
     assert.strictEqual(body.state, "working");
   });
 
-  it("maps PreToolUse Task to synthetic SubagentStart", () => {
-    const body = buildStateBody(
-      "PreToolUse",
-      { session_id: "s", tool_name: "Task" },
-      mockResolve
-    );
-    assert.strictEqual(body.state, "juggling");
-    assert.strictEqual(body.event, "SubagentStart");
-    assert.strictEqual(body.tool_name, "Task");
+  it("maps current Agent and legacy Task tool starts to synthetic SubagentStart", () => {
+    for (const toolName of ["Agent", "Task"]) {
+      const body = buildStateBody(
+        "PreToolUse",
+        { session_id: "s", tool_name: toolName },
+        mockResolve
+      );
+      assert.strictEqual(body.state, "juggling");
+      assert.strictEqual(body.event, "SubagentStart");
+      assert.strictEqual(body.tool_name, toolName);
+      assert.strictEqual(body.subagent_lifecycle_source, "synthetic-tool");
+    }
   });
 
-  it("keeps non-Task PreToolUse as working", () => {
+  it("marks native subagent lifecycle events and keeps stop continuation evidence", () => {
+    const start = buildStateBody(
+      "SubagentStart",
+      { session_id: "s", agent_id: "child-1", agent_type: "Explore" },
+      mockResolve
+    );
+    const stop = buildStateBody(
+      "SubagentStop",
+      { session_id: "s", agent_id: "child-1", stop_hook_active: true },
+      mockResolve
+    );
+    assert.strictEqual(start.subagent_lifecycle_source, "native");
+    assert.strictEqual(stop.subagent_lifecycle_source, "native");
+    assert.strictEqual(stop.stop_hook_active, true);
+  });
+
+  it("preserves a nested Agent originator id without calling it native", () => {
+    const body = buildStateBody(
+      "PreToolUse",
+      {
+        session_id: "s",
+        tool_name: "Agent",
+        tool_use_id: "tool-child",
+        agent_id: "parent-child",
+      },
+      mockResolve
+    );
+    assert.strictEqual(body.event, "SubagentStart");
+    assert.strictEqual(body.subagent_lifecycle_source, "synthetic-tool");
+    assert.strictEqual(body.subagent_id, "parent-child");
+    assert.strictEqual(body.tool_use_id, "tool-child");
+  });
+
+  it("forwards the SessionStart source needed for scoped lifecycle reset", () => {
+    const body = buildStateBody(
+      "SessionStart",
+      { session_id: "s", source: "compact" },
+      mockResolve
+    );
+    assert.strictEqual(body.session_start_source, "compact");
+  });
+
+  it("keeps non-subagent PreToolUse as working", () => {
     const body = buildStateBody(
       "PreToolUse",
       { session_id: "s", tool_name: "Bash" },
@@ -169,15 +214,17 @@ describe("buildStateBody", () => {
     assert.strictEqual(body.tool_name, "Bash");
   });
 
-  it("keeps PostToolUse Task as working", () => {
-    const body = buildStateBody(
-      "PostToolUse",
-      { session_id: "s", tool_name: "Task" },
-      mockResolve
-    );
-    assert.strictEqual(body.state, "working");
-    assert.strictEqual(body.event, "PostToolUse");
-    assert.strictEqual(body.tool_name, "Task");
+  it("keeps PostToolUse Agent/Task as working", () => {
+    for (const toolName of ["Agent", "Task"]) {
+      const body = buildStateBody(
+        "PostToolUse",
+        { session_id: "s", tool_name: toolName },
+        mockResolve
+      );
+      assert.strictEqual(body.state, "working");
+      assert.strictEqual(body.event, "PostToolUse");
+      assert.strictEqual(body.tool_name, toolName);
+    }
   });
 
   it("maps Stop to attention state", () => {

@@ -75,7 +75,7 @@
   ],
 
   "jugglingTiers": [
-    { "_comment": "Optional subagent-specific overrides. Omit this whole block to use states.juggling[0] if you provide that state.", "minSessions": 2, "file": "conducting.gif" },
+    { "_comment": "Optional subagent-specific overrides. minSessions counts live subagents here, despite the legacy field name. Omit this whole block to use states.juggling[0] if you provide that state.", "minSessions": 2, "file": "conducting.gif" },
     { "minSessions": 1, "file": "juggling.gif" }
   ],
 

@@ -836,6 +836,38 @@
     return `${minSessions}-${maxSessions} sessions`;
   }
 
+  function formatSubagentRange(minSessions, maxSessions) {
+    const lang = readers.getLang();
+    if (lang === "zh") {
+      if (maxSessions == null) return `${minSessions}+ 个子代理`;
+      if (minSessions === maxSessions) return `${minSessions} 个子代理`;
+      return `${minSessions}-${maxSessions} 个子代理`;
+    }
+    if (lang === "zh-TW") {
+      if (maxSessions == null) return `${minSessions}+ 個子代理`;
+      if (minSessions === maxSessions) return `${minSessions} 個子代理`;
+      return `${minSessions}-${maxSessions} 個子代理`;
+    }
+    if (lang === "ko") {
+      if (maxSessions == null) return `하위 에이전트 ${minSessions}개 이상`;
+      if (minSessions === maxSessions) return `하위 에이전트 ${minSessions}개`;
+      return `하위 에이전트 ${minSessions}-${maxSessions}개`;
+    }
+    if (lang === "ja") {
+      if (maxSessions == null) return `サブエージェント ${minSessions}+`;
+      if (minSessions === maxSessions) return `サブエージェント ${minSessions}`;
+      return `サブエージェント ${minSessions}-${maxSessions}`;
+    }
+    if (lang === "pt-BR") {
+      if (maxSessions == null) return `${minSessions}+ subagentes`;
+      if (minSessions === maxSessions) return `${minSessions} ${minSessions === 1 ? "subagente" : "subagentes"}`;
+      return `${minSessions}-${maxSessions} subagentes`;
+    }
+    if (maxSessions == null) return `${minSessions}+ subagents`;
+    if (minSessions === maxSessions) return `${minSessions} subagent${minSessions === 1 ? "" : "s"}`;
+    return `${minSessions}-${maxSessions} subagents`;
+  }
+
   function getAnimOverrideTriggerLabel(card) {
     switch (card.triggerKind) {
       case "idleTracked": return "Idle follow";
@@ -844,7 +876,7 @@
       case "roam": return "Free roam walk";
       case "thinking": return "UserPromptSubmit / PostCompact";
       case "working": return `PreToolUse (${formatSessionRange(card.minSessions, card.maxSessions)})`;
-      case "juggling": return `SubagentStart (${formatSessionRange(card.minSessions, card.maxSessions)})`;
+      case "juggling": return `SubagentStart (${formatSubagentRange(card.minSessions, card.maxSessions)})`;
       case "error": return "PostToolUseFailure";
       case "attention": return "Stop";
       case "notification": return "PermissionRequest";

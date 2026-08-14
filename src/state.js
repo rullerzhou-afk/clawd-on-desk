@@ -82,6 +82,14 @@ let DND_SLEEP_TRANSITION_DURATION = 0;
 let COLLAPSE_DURATION = 0;
 let SLEEP_MODE = "full";
 const { SLEEP_SEQUENCE, STATE_PRIORITY, ONESHOT_STATES } = createStatePriorityConstants();
+const {
+  clearSubagentTracker,
+  cloneSubagentTracker,
+  getSubagentVisualCount,
+  hasConfirmedSubagents,
+  hasSubagentHoldEvidence,
+  normalizeChildId,
+} = require("./subagent-lifecycle");
 
 // Session display hints — validated against theme.displayHintMap keys
 let DISPLAY_HINT_MAP = {};
@@ -1072,10 +1080,15 @@ function getLastSessionSnapshot() {
 
 function describeSession(sessionId, session) {
   if (!session) return `sid=${sessionId} <deleted>`;
+  const tracker = cloneSubagentTracker(session);
   return [
     `sid=${sessionId}`,
     `state=${session.state || "-"}`,
     `resume=${session.resumeState || "-"}`,
+    `confirmed=${tracker.confirmedIds.size}`,
+    `legacy=${tracker.legacyFloor ? 1 : 0}`,
+    `recovered=${tracker.recoveredFloor ? 1 : 0}`,
+    `live=${getSubagentVisualCount(tracker)}`,
     `agent=${session.agentId || "-"}`,
     `agentPid=${session.agentPid || "-"}`,
     `sourcePid=${session.sourcePid || "-"}`,
@@ -1477,6 +1490,7 @@ function scheduleClaudeTranscriptCompletionProbe(sessionId, transcriptPath) {
 function promoteCompletion(sessionId) {
   const session = sessions.get(sessionId);
   if (!session) return;
+  session.subagentTracker = clearSubagentTracker(cloneSubagentTracker(session));
   // The stored session settles idle, but this Stop consumed the completion
   // attention cue. Record that distinction so a later duplicate Stop is
   // suppressed while an earlier idle-only terminal can still be upgraded.
@@ -1614,6 +1628,8 @@ function updateSession(sessionId, state, event, opts = {}) {
     sessionAutomationIdentity = null,
     subagentId = null,
     subagentType = null,
+    subagentLifecycleSource = null,
+    sessionStartSource = null,
     replaceProcessMetadata = false,
   } = opts;
   if (startupRecoveryActive) {
@@ -1848,11 +1864,21 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcContextUsageOrigin = resolvedContextUsage.contextUsageOrigin;
   const srcAssistantLastOutput = normalizeAssistantOutput(assistantLastOutput);
   const srcAssistantLastOutputTruncated = !!(srcAssistantLastOutput && assistantLastOutputTruncated === true);
-  const srcToolName = normalizeToolName(toolName) || (existing && existing.lastToolName) || null;
+  const incomingToolName = normalizeToolName(toolName);
+  const srcToolName = incomingToolName || (existing && existing.lastToolName) || null;
   const srcTranscriptPath = normalizeTranscriptPath(transcriptPath) || (existing && existing.transcriptPath) || null;
   const srcResumeState = (existing && existing.resumeState) || null;
   const isSubagentStart = event === "SubagentStart" || event === "subagentStart";
   const isSubagentStop = event === "SubagentStop" || event === "subagentStop";
+  const normalizedSubagentId = normalizeChildId(subagentId);
+  const isSubagentScopedSessionEnd = event === "SessionEnd" && !!normalizedSubagentId;
+  const isSyntheticSubagentStart = !!(
+    isSubagentStart
+    && (
+      ["synthetic-tool", "synthetic-task"].includes(subagentLifecycleSource)
+      || ["Agent", "Task"].includes(incomingToolName)
+    )
+  );
   const preservedState = preserveState && existing ? existing.state : null;
   const duplicateCompletionVisualAtEntry = shouldSuppressDuplicateCompletionVisual(existing, state, event);
 
@@ -1980,13 +2006,72 @@ function updateSession(sessionId, state, event, opts = {}) {
   // (contextUsage): a lifecycle event that carries it forward from
   // `existing` must not silently reset the freshness stamp.
   const srcMetadataUpdatedAt = existing && Number.isFinite(existing.metadataUpdatedAt) ? existing.metadataUpdatedAt : null;
+  const subagentTracker = cloneSubagentTracker(existing);
+  const hadSubagentHoldBefore = hasSubagentHoldEvidence(subagentTracker);
+
+  // A restored lease is only an initial visual guess. The first real lifecycle
+  // event replaces it; metadata-only statusline traffic bypasses updateSession.
+  if (event && preserveState !== true) subagentTracker.recoveredFloor = false;
+
+  // SessionStart has several upstream sources. Only startup/clear are known to
+  // begin a fresh lifecycle; resume/compact and unknown sources preserve
+  // confirmed ids until D0 proves a stronger boundary.
+  if (
+    event === "SessionStart"
+    && !normalizedSubagentId
+    && (sessionStartSource === "startup" || sessionStartSource === "clear")
+  ) {
+    clearSubagentTracker(subagentTracker);
+  }
+
+  // A new parent prompt bounds only anonymous evidence. Trusted child ids may
+  // represent background work spanning the parent turn.
+  if (event === "UserPromptSubmit" && !normalizedSubagentId) {
+    subagentTracker.legacyFloor = false;
+    subagentTracker.recoveredFloor = false;
+  }
+
+  if (isSubagentStart) {
+    subagentTracker.recoveredFloor = false;
+    if (isSyntheticSubagentStart) {
+      subagentTracker.legacyFloor = true;
+      // A nested Task/Agent tool call's id names the originator, not the new
+      // child. Activity still proves that originator itself is live, so it may
+      // be readmitted.
+      if (normalizedSubagentId) subagentTracker.confirmedIds.add(normalizedSubagentId);
+    } else if (normalizedSubagentId) {
+      subagentTracker.confirmedIds.add(normalizedSubagentId);
+    } else {
+      subagentTracker.legacyFloor = true;
+    }
+  } else if (isSubagentStop || isSubagentScopedSessionEnd) {
+    subagentTracker.recoveredFloor = false;
+    if (normalizedSubagentId) subagentTracker.confirmedIds.delete(normalizedSubagentId);
+    // Native + synthetic double delivery observes the same population. Any
+    // child close is also the bounded legacy lane's first-stop release.
+    subagentTracker.legacyFloor = false;
+  } else if (normalizedSubagentId && event !== "SessionEnd") {
+    // SubagentStop can be vetoed by another hook. Any later activity from the
+    // same child is positive liveness evidence and self-corrects the removal.
+    subagentTracker.confirmedIds.add(normalizedSubagentId);
+  }
+
+  // Reaching this point with a real main Stop means the completion gate above
+  // accepted it. Held/debounced stops were rewritten to event=null.
+  if (event === "Stop" && !normalizedSubagentId) {
+    clearSubagentTracker(subagentTracker);
+  }
+
   const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, orcaPaneKey: srcOrcaPaneKey, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, contextUsageOrigin: srcContextUsageOrigin, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
   if (preserveCompletionAck) base.requiresCompletionAck = true;
+  // #862: every branch below rebuilds the session object from `base`; carry the
+  // private identity tracker through without exposing it on snapshot surfaces.
+  base.subagentTracker = subagentTracker;
 
   // Evict oldest session if at capacity and this is a new session.
   evictOldestSessionIfNeeded(sessionId);
 
-  if (isSubagentStop) {
+  if (isSubagentStop || isSubagentScopedSessionEnd) {
     updateCodexExitProbe(sessionId, srcAgentId, event);
     if (!existing) {
       debugSession(`subagent-stop ignore sid=${sessionId} reason=no-session`);
@@ -1996,7 +2081,26 @@ function updateSession(sessionId, state, event, opts = {}) {
       return;
     }
 
+    if (hasConfirmedSubagents(subagentTracker)) {
+      const dh = pickDisplayHint("juggling", existing, displayHint);
+      sessions.set(sessionId, {
+        state: "juggling",
+        updatedAt: Date.now(),
+        displayHint: dh,
+        ...base,
+        resumeState: existing.resumeState || null,
+      });
+      debugSession(`subagent-stop hold ${describeSession(sessionId, sessions.get(sessionId))}`);
+      cleanStaleSessions();
+      const heldState = resolveDisplayState();
+      setState(heldState, getSvgOverride(heldState));
+      return;
+    }
+
     if (existing.state === "juggling") {
+      // #862: one stop does not mean the work is over. Restoring on the first
+      // stop dropped the pet back to typing while other subagents were still
+      // running; hold juggling until the last one reports in.
       const resumeState = existing.resumeState || null;
       if (resumeState) {
         const dh = pickDisplayHint(resumeState, existing, displayHint);
@@ -2057,9 +2161,27 @@ function updateSession(sessionId, state, event, opts = {}) {
       resumeState: srcResumeState,
     });
   } else if (state === "attention" || state === "notification" || SLEEP_SEQUENCE.has(state)) {
-    sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), displayHint: null, ...base, resumeState: null });
+    if (hasSubagentHoldEvidence(subagentTracker)) {
+      sessions.set(sessionId, {
+        state: "juggling",
+        updatedAt: Date.now(),
+        displayHint: pickDisplayHint("juggling", existing, displayHint),
+        ...base,
+        resumeState: (existing && existing.resumeState) || null,
+      });
+    } else {
+      sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), displayHint: null, ...base, resumeState: null });
+    }
   } else if (ONESHOT_STATES.has(state)) {
-    if (existing) {
+    if (hasSubagentHoldEvidence(subagentTracker)) {
+      sessions.set(sessionId, {
+        state: "juggling",
+        updatedAt: Date.now(),
+        displayHint: pickDisplayHint("juggling", existing, displayHint),
+        ...base,
+        resumeState: (existing && existing.resumeState) || null,
+      });
+    } else if (existing) {
       Object.assign(existing, base);
       existing.state = "idle";
       existing.updatedAt = Date.now();
@@ -2071,13 +2193,23 @@ function updateSession(sessionId, state, event, opts = {}) {
   } else {
     if (isSubagentStart) {
       const dh = pickDisplayHint(state, existing, displayHint);
-      const resumeState = existing && existing.state !== "juggling" ? existing.state : srcResumeState;
+      const resumeState = !hadSubagentHoldBefore && existing && existing.state !== "juggling"
+        ? existing.state
+        : srcResumeState;
       sessions.set(sessionId, { state, updatedAt: Date.now(), displayHint: dh, ...base, resumeState });
       debugSession(`subagent-start store ${describeSession(sessionId, sessions.get(sessionId))}`);
-    } else if (existing && existing.state === "juggling" && state === "working") {
-      existing.updatedAt = Date.now();
-      existing.displayHint = pickDisplayHint("juggling", existing, displayHint);
-      debugSession(`juggling-hold ${describeSession(sessionId, existing)} event=${event || "-"}`);
+    } else if (
+      hasSubagentHoldEvidence(subagentTracker)
+      && (state === "working" || state === "thinking" || state === "idle" || state === "juggling")
+    ) {
+      sessions.set(sessionId, {
+        state: "juggling",
+        updatedAt: Date.now(),
+        displayHint: pickDisplayHint("juggling", existing, displayHint),
+        ...base,
+        resumeState: (existing && existing.resumeState) || null,
+      });
+      debugSession(`juggling-hold ${describeSession(sessionId, sessions.get(sessionId))} event=${event || "-"}`);
     } else {
       const dh = pickDisplayHint(state, existing, displayHint);
       sessions.set(sessionId, { state, updatedAt: Date.now(), displayHint: dh, ...base, resumeState: null });
@@ -2311,6 +2443,11 @@ function restoreSessionFromLease(lease) {
     resumeState: null,
     awaitingInputSinceStop: false,
     muteNotificationSound: false,
+    subagentTracker: {
+      confirmedIds: new Set(),
+      legacyFloor: false,
+      recoveredFloor: lease.state === "juggling",
+    },
     startupRecovered: true,
     recoveryEventAt: lease.eventAt,
     recoveryValidUntil: lease.validUntil,
@@ -2362,6 +2499,7 @@ function cleanStaleSessions() {
     if (decision.action === "idle") {
       debugSession(`stale-idle ${decision.reason} ${describeSession(id, s)}`);
       s.state = "idle"; s.displayHint = null;
+      s.subagentTracker = clearSubagentTracker(cloneSubagentTracker(s));
       if (decision.updateTimestamp) s.updatedAt = now;
       changed = true;
     }

@@ -83,6 +83,7 @@ function callStatePost(body, overrides = {}) {
       STATE_SVGS: {
         idle: "x.svg",
         working: "x.svg",
+        juggling: "x.svg",
         error: "x.svg",
         attention: "x.svg",
         notification: "x.svg",
@@ -240,6 +241,46 @@ describe("server-route-state POST", () => {
     const updateOptions = res.calls.updateSession[0][3];
     assert.strictEqual(updateOptions.subagentId, "agent-child-a");
     assert.strictEqual(updateOptions.subagentType, "Explore");
+  });
+
+  it("forwards validated subagent provenance and SessionStart source to state", async () => {
+    const nativeBody = buildStateBody(
+      "SubagentStart",
+      { session_id: "sid-native", agent_id: "child-a", agent_type: "Explore" },
+      () => ({ stablePid: null, agentPid: null, detectedEditor: null, pidChain: [] })
+    );
+    const native = await callStatePost(JSON.stringify(nativeBody));
+    assert.strictEqual(native.statusCode, 200);
+    assert.strictEqual(native.calls.updateSession[0][3].subagentLifecycleSource, "native");
+
+    const syntheticBody = buildStateBody(
+      "PreToolUse",
+      { session_id: "sid-synthetic", tool_name: "Agent" },
+      () => ({ stablePid: null, agentPid: null, detectedEditor: null, pidChain: [] })
+    );
+    const synthetic = await callStatePost(JSON.stringify(syntheticBody));
+    assert.strictEqual(synthetic.statusCode, 200);
+    assert.strictEqual(synthetic.calls.updateSession[0][3].subagentLifecycleSource, "synthetic-tool");
+
+    const startBody = buildStateBody(
+      "SessionStart",
+      { session_id: "sid-start", source: "compact" },
+      () => ({ stablePid: null, agentPid: null, detectedEditor: null, pidChain: [] })
+    );
+    const start = await callStatePost(JSON.stringify(startBody));
+    assert.strictEqual(start.statusCode, 200);
+    assert.strictEqual(start.calls.updateSession[0][3].sessionStartSource, "compact");
+
+    const invalid = await callStatePost(JSON.stringify({
+      state: "juggling",
+      session_id: "sid-invalid",
+      event: "SubagentStart",
+      agent_id: "claude-code",
+      subagent_lifecycle_source: "spoofed",
+      session_start_source: "spoofed",
+    }));
+    assert.strictEqual(invalid.calls.updateSession[0][3].subagentLifecycleSource, undefined);
+    assert.strictEqual(invalid.calls.updateSession[0][3].sessionStartSource, undefined);
   });
 
   it("clears main-thread and all subagent decisions on a main-session SessionEnd", async () => {

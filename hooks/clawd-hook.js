@@ -355,15 +355,15 @@ const EVENT_TO_LIFECYCLE = {
   SessionEnd: "end",
 };
 
-function isTaskToolStart(event, payload) {
-  // Claude Code may report subagent launches as PreToolUse(Task) without a
-  // matching SubagentStart. Keep PostToolUse(Task) as a normal working update:
-  // state.js holds juggling through working events and releases it on a later
-  // Stop/UserPromptSubmit, or on a real SubagentStop if Claude emits one.
+function isSubagentToolStart(event, payload) {
+  // Claude Code reports subagent launches as PreToolUse(Task) on older builds
+  // or PreToolUse(Agent) today, sometimes without a native SubagentStart. Keep
+  // PostToolUse as working: state.js holds juggling until Stop/UserPromptSubmit,
+  // or until a real SubagentStop if Claude emits one.
   return event === "PreToolUse"
     && payload
     && typeof payload.tool_name === "string"
-    && payload.tool_name === "Task";
+    && (payload.tool_name === "Task" || payload.tool_name === "Agent");
 }
 
 // Test-result reactions are deliberately conservative: only commands whose
@@ -562,7 +562,7 @@ function buildStateBody(event, payload, resolve) {
   const sessionId = payload.session_id || "default";
   const cwd = payload.cwd || "";
   const source = payload.source || payload.reason || "";
-  const syntheticSubagentStart = isTaskToolStart(event, payload);
+  const syntheticSubagentStart = isSubagentToolStart(event, payload);
 
   // /clear triggers SessionEnd → SessionStart in quick succession;
   // show sweeping (clearing context) instead of sleeping
@@ -579,6 +579,14 @@ function buildStateBody(event, payload, resolve) {
   const resolvedEvent = syntheticSubagentStart ? "SubagentStart" : event;
 
   const body = { state: resolvedState, session_id: sessionId, event: resolvedEvent };
+  if (syntheticSubagentStart) {
+    body.subagent_lifecycle_source = "synthetic-tool";
+  } else if (event === "SubagentStart" || event === "SubagentStop") {
+    body.subagent_lifecycle_source = "native";
+  }
+  if (event === "SessionStart" && source) {
+    body.session_start_source = source;
+  }
   // Cursor imports Claude user hooks and adds cursor_version to the hook input.
   // Use that explicit caller provenance instead of the process tree: a genuine
   // Claude CLI launched inside Cursor's terminal must remain Claude Code.
@@ -683,6 +691,11 @@ function buildStateBody(event, payload, resolve) {
     if (bgCount > 0) body.background_tasks_count = bgCount;
     if (cronCount > 0) body.session_crons_count = cronCount;
     if (payload.stop_hook_active === true) body.stop_hook_active = true;
+  } else if (body.event === "SubagentStop" && payload.stop_hook_active === true) {
+    // SubagentStop is a termination attempt: another hook may veto it and let
+    // the same child continue. Preserve the upstream marker for diagnostics;
+    // state.js also self-corrects when later activity for the same id arrives.
+    body.stop_hook_active = true;
   }
   const wslDistro = resolveWslDistro();
   if (process.env.CLAWD_REMOTE) {

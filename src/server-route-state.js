@@ -278,6 +278,17 @@ function handleStatePost(req, res, options) {
         ? data.ghostty_terminal_id.trim()
         : null;
       const toolName = typeof data.tool_name === "string" && data.tool_name ? data.tool_name : null;
+      const subagentLifecycleSource = (
+        data.subagent_lifecycle_source === "native"
+        || ["synthetic-tool", "synthetic-task"].includes(data.subagent_lifecycle_source)
+        || data.subagent_lifecycle_source === "anonymous"
+      ) ? data.subagent_lifecycle_source : null;
+      const sessionStartSource = (
+        data.session_start_source === "startup"
+        || data.session_start_source === "resume"
+        || data.session_start_source === "clear"
+        || data.session_start_source === "compact"
+      ) ? data.session_start_source : null;
       // #583: hook-reported stdin diagnostics, attached only when the hook's
       // stdin payload carried no session_id. Normalized here so state.js can
       // log it without trusting hook-side shapes.
@@ -779,6 +790,8 @@ function handleStatePost(req, res, options) {
             agentId,
             ...(subagentId ? { subagentId } : {}),
             ...(subagentType ? { subagentType } : {}),
+            ...(subagentLifecycleSource ? { subagentLifecycleSource } : {}),
+            ...(sessionStartSource ? { sessionStartSource } : {}),
             profileId: sessionIdentity.profileId,
             rawSessionId: sessionIdentity.rawSessionId,
             host,

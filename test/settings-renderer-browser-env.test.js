@@ -2611,6 +2611,57 @@ describe("settings renderer browser environment", () => {
     );
   });
 
+  it("labels juggling tiers as subagents in every supported locale", () => {
+    const expectedByLocale = {
+      en: ["SubagentStart (1 subagent)", "SubagentStart (2+ subagents)"],
+      zh: ["SubagentStart (1 个子代理)", "SubagentStart (2+ 个子代理)"],
+      "zh-TW": ["SubagentStart (1 個子代理)", "SubagentStart (2+ 個子代理)"],
+      ko: ["SubagentStart (하위 에이전트 1개)", "SubagentStart (하위 에이전트 2개 이상)"],
+      ja: ["SubagentStart (サブエージェント 1)", "SubagentStart (サブエージェント 2+)"],
+      "pt-BR": ["SubagentStart (1 subagente)", "SubagentStart (2+ subagentes)"],
+    };
+
+    for (const [lang, expected] of Object.entries(expectedByLocale)) {
+      for (const [index, minSessions] of [1, 2].entries()) {
+        const card = createAnimOverrideCard({
+          id: `tier:juggling:${minSessions}`,
+          stateKey: "juggling",
+          triggerKind: "juggling",
+          minSessions,
+          maxSessions: minSessions === 1 ? 1 : null,
+        });
+        const runtime = createAnimOverridesRuntime(card);
+        const { core } = loadAnimOverridesTabForTest({
+          runtime,
+          modalRoot: new FakeElement("div"),
+          readersOverrides: { getLang: () => lang },
+        });
+        const parent = new FakeElement("main");
+        core.tabs.animOverrides.render(parent, core);
+        assert.strictEqual(parent.querySelector(".anim-override-trigger").textContent, expected[index]);
+      }
+    }
+  });
+
+  it("keeps working tiers labeled as sessions", () => {
+    const card = createAnimOverrideCard({
+      id: "tier:working:2",
+      stateKey: "working",
+      triggerKind: "working",
+      minSessions: 2,
+      maxSessions: null,
+    });
+    const runtime = createAnimOverridesRuntime(card);
+    const { core } = loadAnimOverridesTabForTest({
+      runtime,
+      modalRoot: new FakeElement("div"),
+      readersOverrides: { getLang: () => "en" },
+    });
+    const parent = new FakeElement("main");
+    core.tabs.animOverrides.render(parent, core);
+    assert.strictEqual(parent.querySelector(".anim-override-trigger").textContent, "PreToolUse (2+ sessions)");
+  });
+
   it("loads browser scripts in dependency order and keeps CommonJS helpers out of settings.html", () => {
     const html = fs.readFileSync(SETTINGS_HTML, "utf8");
     const scriptOrder = [
