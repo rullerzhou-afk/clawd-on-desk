@@ -1954,29 +1954,37 @@ function feishuApprovalUpdateConfig(payload, deps = {}) {
   };
 }
 
-function isFeishuLookupToken(value, maxLength) {
-  return !!value && value.length <= maxLength && !/\s/.test(value);
+function isFeishuLookupSignal(signal) {
+  return !!signal
+    && typeof signal === "object"
+    && typeof signal.aborted === "boolean"
+    && typeof signal.addEventListener === "function";
 }
 
-async function feishuApprovalResolveApprover(payload, deps = {}) {
+function feishuLookupResult(result) {
+  if (result && result.status === "ok") return { status: "ok" };
+  return result && typeof result.code === "string"
+    ? { status: "error", code: result.code }
+    : { status: "error" };
+}
+
+async function saveFeishuApproverByEmail(payload, deps = {}) {
   const input = payload && typeof payload === "object" ? payload : {};
-  const requestId = typeof input.requestId === "string" ? input.requestId.trim() : "";
   const email = typeof input.email === "string" ? input.email.trim() : "";
-  if (!isFeishuLookupToken(requestId, 128)) return { status: "error", code: "invalid-request-id" };
   if (classifyFeishuApprovalRecipient(email, "open_id").kind !== "email") {
     return { status: "error", code: "invalid-email" };
   }
-  if (input.hasUnsavedCredentialDrafts === true) {
-    return { status: "error", code: "unsaved-credentials" };
+  if (!isFeishuLookupSignal(input.signal)) {
+    return { status: "error", code: "lookup-failed" };
   }
 
-  let config;
+  let rawConfig;
   let secrets;
   let secretsRevision;
   try {
-    config = normalizeFeishuApproval(typeof deps.getFeishuApprovalPrefs === "function"
+    rawConfig = typeof deps.getFeishuApprovalPrefs === "function"
       ? deps.getFeishuApprovalPrefs()
-      : deps.snapshot && deps.snapshot.feishuApproval);
+      : deps.snapshot && deps.snapshot.feishuApproval;
     secrets = typeof deps.getFeishuApprovalSecrets === "function"
       ? deps.getFeishuApprovalSecrets()
       : null;
@@ -1986,91 +1994,73 @@ async function feishuApprovalResolveApprover(payload, deps = {}) {
   } catch {
     return { status: "error", code: "lookup-failed" };
   }
+  if (
+    rawConfig && typeof rawConfig.then === "function"
+    || secrets && typeof secrets.then === "function"
+    || secretsRevision && typeof secretsRevision.then === "function"
+  ) {
+    return { status: "error", code: "lookup-failed" };
+  }
+  const config = normalizeFeishuApproval(rawConfig);
   const saved = evaluateFeishuApprovalConfiguration(config, secrets, {
     requireEnabled: false,
     requireApprover: false,
   });
   if (!saved.ok) return { status: "error", code: saved.code };
-
-  const coordinator = deps.feishuApprovalLookupCoordinator;
+  if (input.signal.aborted) return { status: "error", code: "lookup-cancelled" };
   if (
-    !coordinator
-    || typeof coordinator.begin !== "function"
-    || typeof coordinator.succeed !== "function"
-    || typeof coordinator.fail !== "function"
-    || typeof deps.lookupFeishuApproverByEmail !== "function"
+    typeof deps.lookupFeishuApproverByEmail !== "function"
+    || typeof deps.commitResolvedApprover !== "function"
   ) {
     return { status: "error", code: "lookup-failed" };
   }
-  let started;
+  let result;
   try {
-    started = coordinator.begin({
-      requestId,
-      identity: saved.identity,
-      secretsRevision,
-    });
-    if (!started || started.status !== "ok" || !started.lookupId || !started.signal) {
-      return { status: "error", code: "lookup-failed" };
-    }
-    const result = await deps.lookupFeishuApproverByEmail({
+    result = await deps.lookupFeishuApproverByEmail({
       platform: saved.identity.platform,
       appId: saved.identity.appId,
       appSecret: secrets.appSecret,
       email,
-      signal: started.signal,
+      signal: input.signal,
     });
-    if (result && result.status === "ok" && typeof result.approverId === "string" && result.approverId.trim()) {
-      const retained = coordinator.succeed({
-        lookupId: started.lookupId,
-        approverId: result.approverId.trim(),
-      });
-      return retained && retained.status === "ok"
-        ? { status: "ok", lookupId: started.lookupId }
-        : { status: "error", code: retained && retained.code || "lookup-stale" };
-    }
-    const allowedCodes = new Set([
-      "missing-contact-scope",
-      "approver-not-found",
-      "lookup-failed",
-    ]);
-    const failed = coordinator.fail({ lookupId: started.lookupId });
-    if (failed && failed.status === "error") {
-      return { status: "error", code: failed.code || "lookup-stale" };
-    }
+  } catch {
+    return { status: "error", code: "lookup-failed" };
+  }
+  if (input.signal.aborted) return { status: "error", code: "lookup-cancelled" };
+  if (!result || result.status !== "ok") {
+    const allowedCodes = new Set(["missing-contact-scope", "approver-not-found", "lookup-failed"]);
     return {
       status: "error",
       code: allowedCodes.has(result && result.code) ? result.code : "lookup-failed",
     };
+  }
+  const approverId = typeof result.approverId === "string" ? result.approverId.trim() : "";
+  if (!approverId) return { status: "error", code: "lookup-failed" };
+  let committed;
+  try {
+    committed = await deps.commitResolvedApprover({
+      signal: input.signal,
+      approverId,
+      platform: saved.identity.platform,
+      appId: saved.identity.appId,
+      secretsRevision,
+    });
   } catch {
-    if (started && started.lookupId) {
-      const failed = coordinator.fail({ lookupId: started.lookupId });
-      if (failed && failed.status === "error") {
-        return { status: "error", code: failed.code || "lookup-stale" };
-      }
-    }
     return { status: "error", code: "lookup-failed" };
   }
+  return feishuLookupResult(committed);
 }
 
-function feishuApprovalCancelApproverLookup(payload, deps = {}) {
+function feishuApprovalCommitResolvedApprover(payload, deps = {}) {
   const input = payload && typeof payload === "object" ? payload : {};
-  const requestId = typeof input.requestId === "string" ? input.requestId.trim() : "";
-  if (!isFeishuLookupToken(requestId, 128)) return { status: "error", code: "invalid-request-id" };
-  const coordinator = deps.feishuApprovalLookupCoordinator;
-  if (!coordinator || typeof coordinator.cancel !== "function") {
-    return { status: "error", code: "lookup-stale" };
+  const signal = input.signal;
+  const approverId = typeof input.approverId === "string" ? input.approverId.trim() : "";
+  const platform = typeof input.platform === "string" ? input.platform : "";
+  const appId = typeof input.appId === "string" ? input.appId : "";
+  if (!isFeishuLookupSignal(signal) || !approverId || approverId.length > 128) {
+    return { status: "error", code: "lookup-failed" };
   }
-  return coordinator.cancel({ requestId });
-}
-
-function feishuApprovalCommitApprover(payload, deps = {}) {
-  const input = payload && typeof payload === "object" ? payload : {};
-  const lookupId = typeof input.lookupId === "string" ? input.lookupId.trim() : "";
-  if (!isFeishuLookupToken(lookupId, 256)) return { status: "error", code: "lookup-stale" };
-  const coordinator = deps.feishuApprovalLookupCoordinator;
-  if (!coordinator || typeof coordinator.consume !== "function") {
-    return { status: "error", code: "lookup-stale" };
-  }
+  if (signal.aborted) return { status: "error", code: "lookup-cancelled" };
   const config = normalizeFeishuApproval(deps.snapshot && deps.snapshot.feishuApproval);
   let secrets;
   let secretsRevision;
@@ -2095,21 +2085,21 @@ function feishuApprovalCommitApprover(payload, deps = {}) {
     requireApprover: false,
   });
   if (!saved.ok) return { status: "error", code: saved.code };
-  const consumed = coordinator.consume({
-    lookupId,
-    identity: saved.identity,
-    secretsRevision,
-  });
-  if (!consumed || consumed.status !== "ok") {
-    return { status: "error", code: consumed && consumed.code || "lookup-stale" };
+  if (
+    saved.identity.platform !== platform
+    || saved.identity.appId !== appId
+    || secretsRevision !== input.secretsRevision
+  ) {
+    return { status: "error", code: "lookup-credentials-changed" };
   }
+  if (signal.aborted) return { status: "error", code: "lookup-cancelled" };
   return {
     status: "ok",
     commit: {
       feishuApproval: {
         ...saved.config,
         idType: "open_id",
-        approverId: consumed.approverId,
+        approverId,
         approverSource: "lookup",
         approverBoundPlatform: saved.identity.platform,
         approverBoundAppId: saved.identity.appId,
@@ -2289,11 +2279,9 @@ telegramApprovalSendTest.lockKey = "tgApproval";
 updateRegistry.feishuApproval.lockKey = "feishuApproval";
 feishuApprovalSetSecrets.lockKey = "feishuApproval";
 feishuApprovalSaveManualApprover.lockKey = "feishuApproval";
-feishuApprovalCommitApprover.lockKey = "feishuApproval";
+feishuApprovalCommitResolvedApprover.lockKey = "feishuApproval";
 feishuApprovalUpdateConfig.lockKey = "feishuApproval";
 feishuApprovalSendTest.lockKey = "feishuApproval";
-feishuApprovalResolveApprover.concurrent = true;
-feishuApprovalCancelApproverLookup.concurrent = true;
 cleanupIntegrationsCommand.lockKey = "agentIntegration";
 
 const repairDoctorIssue = createRepairDoctorIssue({
@@ -2390,9 +2378,7 @@ const commandRegistry = {
   "feishuApproval.setSecrets": feishuApprovalSetSecrets,
   "feishuApproval.saveManualApprover": feishuApprovalSaveManualApprover,
   "feishuApproval.updateConfig": feishuApprovalUpdateConfig,
-  "feishuApproval.resolveApprover": feishuApprovalResolveApprover,
-  "feishuApproval.cancelApproverLookup": feishuApprovalCancelApproverLookup,
-  "feishuApproval.commitApprover": feishuApprovalCommitApprover,
+  "feishuApproval.commitResolvedApprover": feishuApprovalCommitResolvedApprover,
   "feishuApproval.status": feishuApprovalStatus,
   "feishuApproval.secretInfo": feishuApprovalSecretInfo,
   "feishuApproval.test": feishuApprovalSendTest,
@@ -2403,6 +2389,7 @@ const commandRegistry = {
 module.exports = {
   updateRegistry,
   commandRegistry,
+  saveFeishuApproverByEmail,
   ONESHOT_OVERRIDE_STATES,
   ANIMATION_OVERRIDES_EXPORT_VERSION,
   MANAGED_CLEANUP_AGENT_IDS,

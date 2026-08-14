@@ -66,7 +66,6 @@ function createSettingsController({
   updates = defaultActions.updateRegistry,
   commands = defaultActions.commandRegistry,
   injectedDeps = {},
-  concurrentDeps = {},
   loadResult = null, // optional pre-loaded { snapshot, locked } for tests
 } = {}) {
   if (!prefsPath && !loadResult) {
@@ -104,13 +103,6 @@ function createSettingsController({
   function buildDeps() {
     return {
       ...injectedDeps,
-      snapshot: store.getSnapshot(),
-    };
-  }
-
-  function buildConcurrentDeps() {
-    return {
-      ...concurrentDeps,
       snapshot: store.getSnapshot(),
     };
   }
@@ -424,16 +416,6 @@ function createSettingsController({
   // Serialize commands by name/domain — same-name rapid toggles would otherwise
   // race and the later-resolving one would commit over the earlier.
   function applyCommand(name, payload) {
-    const command = commands[name];
-    if (command && command.concurrent === true) {
-      if (typeof command.lockKey === "string" && command.lockKey) {
-        return Promise.resolve({
-          status: "error",
-          code: "concurrent-command-lock-forbidden",
-        });
-      }
-      return _doApplyCommand(name, payload, { commitForbidden: true, concurrent: true });
-    }
     const lockKey = resolveCommandLockKey(name);
     const prev = _asyncLocks.get(lockKey);
     const run = () => _doApplyCommand(name, payload);
@@ -442,7 +424,7 @@ function createSettingsController({
     return next;
   }
 
-  async function _doApplyCommand(name, payload, options = {}) {
+  async function _doApplyCommand(name, payload) {
     const command = commands[name];
     if (!command) {
       return {
@@ -452,39 +434,11 @@ function createSettingsController({
     }
     let result;
     try {
-      result = await command(
-        payload,
-        options.concurrent ? buildConcurrentDeps() : buildDeps(),
-      );
+      result = await command(payload, buildDeps());
     } catch (err) {
       return {
         status: "error",
         message: `${name} command threw: ${err && err.message}`,
-      };
-    }
-    let commitPresent = false;
-    let capturedCommit;
-    if (
-      result !== null
-      && (typeof result === "object" || typeof result === "function")
-    ) {
-      try {
-        commitPresent = "commit" in result;
-        capturedCommit = result.commit;
-      } catch (err) {
-        if (options.commitForbidden) {
-          return {
-            status: "error",
-            code: "concurrent-command-commit-forbidden",
-          };
-        }
-        throw err;
-      }
-    }
-    if (options.commitForbidden && (commitPresent || capturedCommit !== undefined)) {
-      return {
-        status: "error",
-        code: "concurrent-command-commit-forbidden",
       };
     }
     if (!result || result.status !== "ok") {
@@ -493,7 +447,7 @@ function createSettingsController({
         message: `${name}: command returned no result`,
       };
     }
-    if (capturedCommit && typeof capturedCommit === "object") {
+    if (result.commit && typeof result.commit === "object") {
       // Defensive validate: commands produce arbitrary commit payloads, but
       // they still have to pass the same schema gates `applyUpdate` enforces.
       // Without this, a buggy command could persist a prefs snapshot the
@@ -501,9 +455,9 @@ function createSettingsController({
       // non-object `agents` field). We re-run the validator against a merged
       // snapshot so cross-field checks (showTray/showDock) see the final
       // state.
-      const mergedSnapshot = { ...store.getSnapshot(), ...capturedCommit };
+      const mergedSnapshot = { ...store.getSnapshot(), ...result.commit };
       const commitDeps = { ...injectedDeps, snapshot: mergedSnapshot };
-      for (const key of Object.keys(capturedCommit)) {
+      for (const key of Object.keys(result.commit)) {
         const entry = updates[key];
         if (!entry) {
           return {
@@ -516,7 +470,7 @@ function createSettingsController({
         const recheck = runStep(
           `${name} commit validate ${key}`,
           validator,
-          capturedCommit[key],
+          result.commit[key],
           commitDeps
         );
         // Validators today are sync — commands are one-shots and defensive
@@ -532,7 +486,7 @@ function createSettingsController({
         if (!recheck || recheck.status !== "ok") return recheck;
       }
       const currentSnapshot = store.getSnapshot();
-      const changedPartial = buildChangedPartial(capturedCommit, currentSnapshot);
+      const changedPartial = buildChangedPartial(result.commit, currentSnapshot);
       if (Object.keys(changedPartial).length > 0) {
         const persisted = persistInternal({
           ...currentSnapshot,
@@ -544,14 +498,8 @@ function createSettingsController({
     }
     // Pass through command-produced metadata (noop / reason / targetDrift /
     // anything a future command needs the IPC layer to see). Strip `commit`
-    // since that's a controller-internal payload, not for callers. The commit
-    // property was already captured above; skip it here without reading it.
-    const meta = {};
-    if (result !== null && (typeof result === "object" || typeof result === "function")) {
-      for (const key of Object.keys(result)) {
-        if (key !== "commit") meta[key] = result[key];
-      }
-    }
+    // since that's a controller-internal payload, not for callers.
+    const { commit: _commit, ...meta } = result;
     return { ...meta, status: "ok", message: result.message };
   }
 

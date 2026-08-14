@@ -9,8 +9,7 @@ const vm = require("node:vm");
 const { classifyFeishuSdkError } = require("../src/feishu-approval-client");
 const feishuApprovalSettings = require("../src/feishu-approval-settings");
 const { createSettingsController } = require("../src/settings-controller");
-const { commandRegistry } = require("../src/settings-actions");
-const { createFeishuApprovalLookupCoordinator } = require("../src/feishu-approval-lookup");
+const { commandRegistry, saveFeishuApproverByEmail } = require("../src/settings-actions");
 
 // main.js cannot be required here (it pulls in electron), so this follows the
 // existing main-*.test.js convention of reading the source. Where behavior can
@@ -553,34 +552,6 @@ describe("main Feishu/Lark approval platform wiring", () => {
     assert.match(block, /getLang:\s*\(\)\s*=>/, "a dynamic getLang must be injected for card i18n");
   });
 
-  it("supplies an explicit non-writing dependency allowlist to concurrent Feishu commands", () => {
-    const controllerStart = MAIN_SOURCE.indexOf("const _settingsController = createSettingsController({");
-    const controllerEnd = MAIN_SOURCE.indexOf("\n});\n_settingsController.subscribeKey", controllerStart);
-    assert.notEqual(controllerStart, -1, "main.js should create the settings controller");
-    assert.notEqual(controllerEnd, -1, "main.js settings controller block should be terminated");
-    const controllerBlock = MAIN_SOURCE.slice(controllerStart, controllerEnd);
-    const concurrentStart = controllerBlock.indexOf("concurrentDeps:");
-    assert.notEqual(concurrentStart, -1, "main.js should provide concurrent Feishu dependencies");
-    const concurrentEnd = controllerBlock.indexOf("\n  },", concurrentStart);
-    assert.notEqual(concurrentEnd, -1, "concurrent dependency object should be terminated");
-    const concurrentBlock = controllerBlock.slice(concurrentStart, concurrentEnd);
-
-    for (const dependency of [
-      "getFeishuApprovalPrefs",
-      "getFeishuApprovalSecrets",
-      "getFeishuApprovalSecretsRevision",
-      "feishuApprovalLookupCoordinator",
-      "lookupFeishuApproverByEmail",
-    ]) {
-      assert.match(concurrentBlock, new RegExp(`\\b${dependency}\\s*:`), dependency);
-    }
-    assert.doesNotMatch(
-      concurrentBlock,
-      /writeFeishuApprovalSecrets|_settingsController|applyUpdate|applyBulk|persist|store|commit|save|update/,
-      "concurrent Feishu dependencies must not include settings writers",
-    );
-  });
-
   it("reports the resolved platform in the status snapshot", () => {
     const start = MAIN_SOURCE.indexOf("function getFeishuApprovalStatus(");
     assert.notEqual(start, -1);
@@ -760,142 +731,63 @@ describe("main Feishu/Lark approval platform wiring", () => {
       credentialPlatform: "lark",
       appId: "cli_persisted",
       appSecret: "persisted-secret-sentinel",
-      verificationToken: "persisted-verification-sentinel",
-      encryptKey: "persisted-encrypt-sentinel",
     };
-    const pendingApproverId = "ou_pending_lookup";
-    const requestId = "lookup-request-pending-test";
     const lookupStarted = createDeferred();
     const releaseLookup = createDeferred();
-    let lookupTransportSettled = false;
-    let controller;
-    let commitCalls = 0;
     const persistedWrites = [];
-    const lookupCoordinator = createFeishuApprovalLookupCoordinator({
-      createLookupId: () => "lookup-pending-test",
-    });
-    const lookupFeishuApproverByEmail = async ({ platform, appId, email, signal }) => {
-      assert.equal(platform, persistedConfig.platform);
-      assert.equal(appId, persistedConfig.approverBoundAppId);
-      assert.equal(email, "persisted@example.com");
-      assert.equal(signal.aborted, false);
-      lookupStarted.resolve();
-      await releaseLookup.promise;
-      lookupTransportSettled = true;
-      assert.equal(signal.aborted, false);
-      return { status: "ok", approverId: pendingApproverId };
-    };
-    const cardSends = [];
-    const mainTestInputs = [];
-    const syncInputs = [];
-    const logs = [];
-    const assertNoPersistedSensitiveValues = (value, label) => {
-      const rendered = util.inspect(value, { depth: 12, showHidden: true });
-      for (const sensitive of [
-        persistedSecrets.appSecret,
-        persistedSecrets.verificationToken,
-        persistedSecrets.encryptKey,
-      ]) {
-        assert.ok(!rendered.includes(sensitive), `${label} must not contain ${sensitive}`);
-      }
-    };
-    const client = {
-      requestApproval: async (card) => {
-        cardSends.push(card);
-        return "allow";
-      },
-    };
-    const sendFeishuApprovalTest = loadFn("sendFeishuApprovalTest", {
-      feishuApprovalSettings,
-      getFeishuApprovalStatus: () => ({ configured: true }),
-      queueFeishuApprovalSync: async (reason, persisted) => {
-        syncInputs.push({ reason, persisted });
-        return true;
-      },
-      getConfiguredFeishuApprovalClient: () => client,
-      feishuApprovalUnavailableResult: () => ({ status: "error", code: "not-connected" }),
-      AbortController,
-      setTimeout,
-      clearTimeout,
-      translate: (key) => key,
-      classifyFeishuSdkError,
-      feishuApprovalLog: (level, message, meta) => logs.push({ level, message, meta }),
-    });
-    const commands = { ...commandRegistry };
-    const commitAction = commands["feishuApproval.commitApprover"];
-    commands["feishuApproval.commitApprover"] = (...args) => {
-      commitCalls += 1;
-      return commitAction(...args);
-    };
-    commands["feishuApproval.commitApprover"].lockKey = commitAction.lockKey;
-
-    const sharedDeps = {
-      getFeishuApprovalPrefs: () => controller.get("feishuApproval"),
-      getFeishuApprovalSecrets: () => ({ ...persistedSecrets }),
-      getFeishuApprovalSecretsRevision: () => 23,
-      feishuApprovalLookupCoordinator: lookupCoordinator,
-      lookupFeishuApproverByEmail,
-    };
+    const testInputs = [];
+    let controller;
     controller = createSettingsController({
       prefsPath: "in-memory-settings",
       prefs: {
         load: () => ({ snapshot: { feishuApproval: persistedConfig }, locked: false }),
         save: (_path, snapshot) => persistedWrites.push(snapshot),
       },
-      commands,
+      commands: commandRegistry,
       injectedDeps: {
-        ...sharedDeps,
+        getFeishuApprovalSecrets: () => ({ ...persistedSecrets }),
+        getFeishuApprovalSecretsRevision: () => 23,
         sendFeishuApprovalTest: async (persisted) => {
-          mainTestInputs.push(persisted);
-          return sendFeishuApprovalTest(persisted);
+          testInputs.push(persisted);
+          return { status: "ok" };
         },
       },
-      concurrentDeps: sharedDeps,
     });
-
-    const resolvePromise = controller.applyCommand("feishuApproval.resolveApprover", {
+    const signal = new AbortController().signal;
+    const lookup = saveFeishuApproverByEmail({
       email: "persisted@example.com",
-      hasUnsavedCredentialDrafts: false,
-      requestId,
+      signal,
+    }, {
+      getFeishuApprovalPrefs: () => controller.get("feishuApproval"),
+      getFeishuApprovalSecrets: () => ({ ...persistedSecrets }),
+      getFeishuApprovalSecretsRevision: () => 23,
+      lookupFeishuApproverByEmail: async () => {
+        lookupStarted.resolve();
+        await releaseLookup.promise;
+        return { status: "ok", approverId: "ou_pending_lookup" };
+      },
+      commitResolvedApprover: (payload) => controller.applyCommand(
+        "feishuApproval.commitResolvedApprover",
+        payload,
+      ),
     });
-    await lookupStarted.promise;
-    try {
-      assert.equal(lookupTransportSettled, false, "the lookup transport must remain pending before Test starts");
 
-      const testResult = await controller.applyCommand("feishuApproval.test");
-      assert.equal(lookupTransportSettled, false, "Test must evaluate its tuple while lookup transport is pending");
-      assert.ok(
-        testResult.status === "ok" || testResult.status === "error",
-        "direct Test must either use the saved tuple or fail closed",
-      );
-      assert.equal(commitCalls, 0, "pending lookup must not trigger commitApprover");
-      assert.equal(persistedWrites.length, 0, "pending lookup must not persist partial lookup state");
-      assert.deepStrictEqual(JSON.parse(JSON.stringify(controller.get("feishuApproval"))), persistedConfig);
-      assert.equal(mainTestInputs.length, 1, "the direct Test command must reach the main-process test path");
-      assert.deepStrictEqual(JSON.parse(JSON.stringify(mainTestInputs[0].config)), persistedConfig);
-      assert.deepStrictEqual(JSON.parse(JSON.stringify(mainTestInputs[0].secrets)), persistedSecrets);
-      assert.equal(mainTestInputs[0].secretsRevision, 23);
-      assert.equal(syncInputs.length, 1, "Test must synchronize the same persisted tuple before card delivery");
-      assert.deepStrictEqual(JSON.parse(JSON.stringify(syncInputs[0].persisted.config)), persistedConfig);
-      assert.deepStrictEqual(JSON.parse(JSON.stringify(syncInputs[0].persisted.secrets)), persistedSecrets);
-      assert.equal(syncInputs[0].persisted.secretsRevision, 23);
-      assert.notEqual(persistedConfig.approverId, pendingApproverId);
-      assert.equal(cardSends.length, testResult.status === "ok" ? 1 : 0, "a failed-closed Test must send no card");
-      assertNoSentinels(testResult, "direct Test result");
-      assertNoSentinels(logs, "direct Test logs");
-      assertNoPersistedSensitiveValues(testResult, "direct Test result");
-      assertNoPersistedSensitiveValues(logs, "direct Test logs");
-    } finally {
-      releaseLookup.resolve();
-      const resolveResult = await resolvePromise;
-      assert.equal(resolveResult.status, "ok");
-      assert.equal(resolveResult.lookupId, "lookup-pending-test");
-      const cancelResult = await controller.applyCommand("feishuApproval.cancelApproverLookup", { requestId });
-      assert.equal(cancelResult.status, "ok");
-      assert.equal(lookupTransportSettled, true, "the deferred lookup must be settled before the test exits");
-      assert.equal(commitCalls, 0);
-      assert.deepStrictEqual(JSON.parse(JSON.stringify(controller.get("feishuApproval"))), persistedConfig);
-    }
+    await lookupStarted.promise;
+    const testResult = await controller.applyCommand("feishuApproval.test");
+    assert.equal(testResult.status, "ok");
+    assert.equal(persistedWrites.length, 0);
+    assert.deepStrictEqual(testInputs, [{
+      config: persistedConfig,
+      secrets: persistedSecrets,
+      secretsRevision: 23,
+    }]);
+    assert.equal(controller.get("feishuApproval").approverId, "ou_persisted");
+
+    releaseLookup.resolve();
+    assert.deepStrictEqual(await lookup, { status: "ok" });
+    assert.equal(controller.get("feishuApproval").approverId, "ou_pending_lookup");
+    assert.equal(persistedWrites.length, 1);
+    assert.doesNotMatch(JSON.stringify(await lookup), /persisted-secret-sentinel|ou_pending_lookup/);
   });
 
   it("60-second Settings test timer aborts with no-decision outcome", async () => {

@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const zlib = require("node:zlib");
+const { EventEmitter } = require("node:events");
 const { pathToFileURL } = require("node:url");
 
 const { registerSettingsIpc } = require("../src/settings-ipc");
@@ -55,6 +56,15 @@ class FakeIpcMain {
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "clawd-settings-ipc-"));
+}
+
+function createDeferred() {
+  const deferred = {};
+  deferred.promise = new Promise((resolve, reject) => {
+    deferred.resolve = resolve;
+    deferred.reject = reject;
+  });
+  return deferred;
 }
 
 function makeZip(entries) {
@@ -125,7 +135,8 @@ function createHarness(overrides = {}) {
   const settingsMainFrame = {
     url: pathToFileURL(path.join(__dirname, "..", "src", "settings.html")).href,
   };
-  const settingsWebContents = { mainFrame: settingsMainFrame };
+  const settingsWebContents = new EventEmitter();
+  settingsWebContents.mainFrame = settingsMainFrame;
   const settingsWindow = {
     id: "settings-window",
     webContents: settingsWebContents,
@@ -241,6 +252,10 @@ function createHarness(overrides = {}) {
     aboutHeroSvgPath: overrides.aboutHeroSvgPath || path.join(__dirname, "missing-about-hero.svg"),
     getLanWsServer: overrides.getLanWsServer || (() => null),
     now: overrides.now || (() => 12345),
+    saveFeishuApproverByEmail: overrides.saveFeishuApproverByEmail || (async ({ email, signal }) => {
+      calls.push(["saveFeishuApproverByEmail", email, signal]);
+      return { status: "ok" };
+    }),
   });
   return { ipcMain, runtime, calls, activeTheme, settingsWindow };
 }
@@ -360,6 +375,198 @@ test("roam fence IPC rejects external senders, subframes, and a navigated Settin
   frame.url = localUrl;
   assert.deepStrictEqual(calls, [], "untrusted callers must have no picker or file side effects");
   harness.runtime.dispose();
+});
+
+test("Feishu email save bypasses the controller and exposes only one final IPC result", async () => {
+  const controllerCalls = [];
+  const operationCalls = [];
+  const settingsController = {
+    getSnapshot: () => ({ lang: "en" }),
+    applyUpdate: () => ({ status: "ok" }),
+    applyCommand: async (...args) => {
+      controllerCalls.push(args);
+      return { status: "ok" };
+    },
+  };
+  const harness = createHarness({
+    settingsController,
+    saveFeishuApproverByEmail: async (payload) => {
+      operationCalls.push(payload);
+      return {
+        status: "ok",
+        approverId: "ou_must_not_cross_ipc",
+        message: "raw detail must not cross ipc",
+      };
+    },
+  });
+
+  const trustedEvent = harness.ipcMain.invokeEvent;
+  const invokeSave = () => harness.ipcMain.invoke("settings:command", {
+    action: "feishuApproval.saveApproverByEmail",
+    payload: { email: "foreign@example.com" },
+  });
+  for (const invokeEvent of [
+    { sender: {}, senderFrame: null },
+    { sender: trustedEvent.sender, senderFrame: { url: trustedEvent.senderFrame.url } },
+  ]) {
+    harness.ipcMain.invokeEvent = invokeEvent;
+    assert.deepStrictEqual(await invokeSave(), {
+      status: "error",
+      message: "untrusted settings sender",
+    });
+  }
+  const trustedUrl = trustedEvent.senderFrame.url;
+  trustedEvent.senderFrame.url = "https://example.invalid/";
+  harness.ipcMain.invokeEvent = trustedEvent;
+  assert.deepStrictEqual(await invokeSave(), {
+    status: "error",
+    message: "untrusted settings sender",
+  });
+  trustedEvent.senderFrame.url = trustedUrl;
+  assert.equal(operationCalls.length, 0);
+  harness.ipcMain.invokeEvent = trustedEvent;
+
+  const result = await harness.ipcMain.invoke("settings:command", {
+    action: "feishuApproval.saveApproverByEmail",
+    payload: {
+      email: "person@example.com",
+      platform: "lark",
+      appSecret: "renderer-secret",
+      approverId: "ou_forged",
+    },
+  });
+
+  assert.deepStrictEqual(result, { status: "ok" });
+  assert.equal(controllerCalls.length, 0);
+  assert.equal(operationCalls.length, 1);
+  assert.deepStrictEqual(Object.keys(operationCalls[0]).sort(), ["email", "signal"]);
+  assert.equal(operationCalls[0].email, "person@example.com");
+  assert.equal(operationCalls[0].signal instanceof AbortSignal, true);
+  assert.equal(harness.settingsWindow.webContents.listenerCount("destroyed"), 0);
+  assert.equal(harness.settingsWindow.webContents.listenerCount("render-process-gone"), 0);
+  harness.runtime.dispose();
+});
+
+test("Feishu email lookup B immediately supersedes A without controller serialization", async () => {
+  const operations = [];
+  const harness = createHarness({
+    saveFeishuApproverByEmail: ({ email, signal }) => {
+      const deferred = createDeferred();
+      operations.push({ email, signal, deferred });
+      return deferred.promise;
+    },
+  });
+
+  const first = harness.ipcMain.invoke("settings:command", {
+    action: "feishuApproval.saveApproverByEmail",
+    payload: { email: "a@example.com" },
+  });
+  await Promise.resolve();
+  const second = harness.ipcMain.invoke("settings:command", {
+    action: "feishuApproval.saveApproverByEmail",
+    payload: { email: "b@example.com" },
+  });
+  await Promise.resolve();
+
+  assert.deepStrictEqual(operations.map((item) => item.email), ["a@example.com", "b@example.com"]);
+  assert.equal(operations[0].signal.aborted, true);
+  assert.equal(operations[1].signal.aborted, false);
+
+  operations[1].deferred.resolve({ status: "ok" });
+  assert.deepStrictEqual(await second, { status: "ok" });
+  operations[0].deferred.resolve({ status: "ok", approverId: "ou_late" });
+  assert.deepStrictEqual(await first, { status: "error", code: "lookup-superseded" });
+  harness.runtime.dispose();
+});
+
+test("Feishu email lookup A stays superseded when it settles before B", async () => {
+  const operations = [];
+  const harness = createHarness({
+    saveFeishuApproverByEmail: ({ email, signal }) => {
+      const deferred = createDeferred();
+      operations.push({ email, signal, deferred });
+      return deferred.promise;
+    },
+  });
+  const first = harness.ipcMain.invoke("settings:command", {
+    action: "feishuApproval.saveApproverByEmail",
+    payload: { email: "a@example.com" },
+  });
+  await Promise.resolve();
+  const second = harness.ipcMain.invoke("settings:command", {
+    action: "feishuApproval.saveApproverByEmail",
+    payload: { email: "b@example.com" },
+  });
+  await Promise.resolve();
+
+  operations[0].deferred.resolve({ status: "ok", approverId: "ou_a_late" });
+  assert.deepStrictEqual(await first, { status: "error", code: "lookup-superseded" });
+  assert.equal(operations[1].signal.aborted, false);
+  operations[1].deferred.resolve({ status: "ok" });
+  assert.deepStrictEqual(await second, { status: "ok" });
+  harness.runtime.dispose();
+});
+
+test("Feishu lookup cancel is sender-bound and resolves the pending save as cancelled", async () => {
+  let capturedSignal;
+  const harness = createHarness({
+    saveFeishuApproverByEmail: ({ signal }) => {
+      capturedSignal = signal;
+      return new Promise((resolve) => {
+        signal.addEventListener("abort", () => resolve({ status: "ok", approverId: "ou_late" }), { once: true });
+      });
+    },
+  });
+  const pending = harness.ipcMain.invoke("settings:command", {
+    action: "feishuApproval.saveApproverByEmail",
+    payload: { email: "person@example.com" },
+  });
+  await Promise.resolve();
+
+  const contents = harness.settingsWindow.webContents;
+  const frame = contents.mainFrame;
+  harness.ipcMain.invokeEvent = { sender: {}, senderFrame: null };
+  assert.deepStrictEqual(await harness.ipcMain.invoke("settings:command", {
+    action: "feishuApproval.cancelApproverLookup",
+  }), { status: "error", message: "untrusted settings sender" });
+  assert.equal(capturedSignal.aborted, false);
+
+  harness.ipcMain.invokeEvent = { sender: contents, senderFrame: frame };
+  assert.deepStrictEqual(await harness.ipcMain.invoke("settings:command", {
+    action: "feishuApproval.cancelApproverLookup",
+  }), { status: "ok" });
+  assert.equal(capturedSignal.aborted, true);
+  assert.deepStrictEqual(await pending, { status: "error", code: "lookup-cancelled" });
+  harness.runtime.dispose();
+});
+
+test("Feishu lookup follows Settings WebContents and IPC disposal lifecycle", async () => {
+  for (const terminal of ["destroyed", "render-process-gone", "dispose"]) {
+    let capturedSignal;
+    const harness = createHarness({
+      saveFeishuApproverByEmail: ({ signal }) => {
+        capturedSignal = signal;
+        return new Promise((resolve) => {
+          signal.addEventListener("abort", () => resolve({ status: "ok" }), { once: true });
+        });
+      },
+    });
+    const pending = harness.ipcMain.invoke("settings:command", {
+      action: "feishuApproval.saveApproverByEmail",
+      payload: { email: `${terminal}@example.com` },
+    });
+    await Promise.resolve();
+
+    if (terminal === "dispose") harness.runtime.dispose();
+    else harness.settingsWindow.webContents.emit(terminal, {}, { reason: "synthetic" });
+
+    assert.equal(capturedSignal.aborted, true, terminal);
+    assert.deepStrictEqual(await pending, { status: "error", code: "lookup-cancelled" }, terminal);
+    assert.equal(harness.settingsWindow.webContents.listenerCount("destroyed"), 0, terminal);
+    assert.equal(harness.settingsWindow.webContents.listenerCount("render-process-gone"), 0, terminal);
+    harness.runtime.dispose();
+    harness.runtime.dispose();
+  }
 });
 
 test("settings IPC does not write when roam area selection is canceled", async () => {
@@ -529,18 +736,12 @@ test("settings IPC delegates controller and size preview handlers", async () => 
   assert.deepStrictEqual(await ipcMain.invoke("settings:command", { action: "resizePet", payload: "P:30" }), {
     status: "ok",
   });
-  for (const [action, payload] of [
-    ["feishuApproval.resolveApprover", { email: "person@example.com", hasUnsavedCredentialDrafts: false, requestId: "request-1" }],
-    ["feishuApproval.cancelApproverLookup", { requestId: "request-1" }],
-    ["feishuApproval.commitApprover", { lookupId: "lookup-opaque" }],
-    ["feishuApproval.saveManualApprover", { idType: "union_id", approverId: "union-saved" }],
-  ]) {
-    assert.deepStrictEqual(
-      await ipcMain.invoke("settings:command", { action, payload }),
-      { status: "ok" },
-    );
-  }
+  assert.deepStrictEqual(await ipcMain.invoke("settings:command", {
+    action: "feishuApproval.saveManualApprover",
+    payload: { idType: "union_id", approverId: "union-saved" },
+  }), { status: "ok" });
   for (const action of [
+    "feishuApproval.commitResolvedApprover",
     "remoteSsh.applyInstallationIdentity",
     "remoteSsh.beginIdentityRotation",
     "remoteSsh.updateIdentityStep",
@@ -572,9 +773,6 @@ test("settings IPC delegates controller and size preview handlers", async () => 
   assert.deepStrictEqual(calls, [
     ["applyUpdate", "size", "P:20"],
     ["applyCommand", "resizePet", "P:30"],
-    ["applyCommand", "feishuApproval.resolveApprover", { email: "person@example.com", hasUnsavedCredentialDrafts: false, requestId: "request-1" }],
-    ["applyCommand", "feishuApproval.cancelApproverLookup", { requestId: "request-1" }],
-    ["applyCommand", "feishuApproval.commitApprover", { lookupId: "lookup-opaque" }],
     ["applyCommand", "feishuApproval.saveManualApprover", { idType: "union_id", approverId: "union-saved" }],
     ["sizeBegin"],
     ["sizePreview", "P:35"],

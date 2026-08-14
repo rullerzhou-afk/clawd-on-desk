@@ -47,20 +47,18 @@ test("settings preload keeps every Feishu approver operation on the generic comm
   const { exposed, invokes } = loadPreload();
   const settingsAPI = exposed.get("settingsAPI");
   for (const [action, payload] of [
-    ["feishuApproval.resolveApprover", { email: "person@example.com", hasUnsavedCredentialDrafts: false, requestId: "request-1" }],
-    ["feishuApproval.cancelApproverLookup", { requestId: "request-1" }],
-    ["feishuApproval.commitApprover", { lookupId: "lookup-opaque" }],
+    ["feishuApproval.saveApproverByEmail", { email: "person@example.com" }],
+    ["feishuApproval.cancelApproverLookup", undefined],
     ["feishuApproval.saveManualApprover", { idType: "open_id", approverId: "ou_manual" }],
   ]) {
     assert.deepEqual(await settingsAPI.command(action, payload), { status: "ok" });
   }
   assert.deepEqual(JSON.parse(JSON.stringify(invokes)), [
-    ["settings:command", { action: "feishuApproval.resolveApprover", payload: { email: "person@example.com", hasUnsavedCredentialDrafts: false, requestId: "request-1" } }],
-    ["settings:command", { action: "feishuApproval.cancelApproverLookup", payload: { requestId: "request-1" } }],
-    ["settings:command", { action: "feishuApproval.commitApprover", payload: { lookupId: "lookup-opaque" } }],
+    ["settings:command", { action: "feishuApproval.saveApproverByEmail", payload: { email: "person@example.com" } }],
+    ["settings:command", { action: "feishuApproval.cancelApproverLookup" }],
     ["settings:command", { action: "feishuApproval.saveManualApprover", payload: { idType: "open_id", approverId: "ou_manual" } }],
   ]);
-  assert.equal(typeof settingsAPI.feishuApprovalCommitApprover, "undefined");
+  assert.equal(typeof settingsAPI.feishuApprovalSaveApproverByEmail, "undefined");
 });
 
 test("settings preload exposes the three roam area operations", async () => {

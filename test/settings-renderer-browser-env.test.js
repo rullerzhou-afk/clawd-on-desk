@@ -1862,7 +1862,7 @@ function createFeishuLookupPreflightHarness({
             appId: configured ? "cli_......saved" : "",
           });
         }
-        if (name === "feishuApproval.resolveApprover") return Promise.resolve(resolveResult);
+        if (name === "feishuApproval.saveApproverByEmail") return Promise.resolve(resolveResult);
         return Promise.resolve({ status: "ok" });
       },
     },
@@ -2146,7 +2146,7 @@ describe("settings renderer browser environment", () => {
     assert.equal(lookupButton.disabled, true);
     assert.equal(lookupButton.title, "feishuApprovalLookupInvalidEmail");
     lookupButton.dispatchEvent({ type: "click" });
-    assert.equal(harness.preflightCommandCalls.filter((call) => call.name === "feishuApproval.resolveApprover").length, 0);
+    assert.equal(harness.preflightCommandCalls.filter((call) => call.name === "feishuApproval.saveApproverByEmail").length, 0);
   });
 
   it("preflights unsaved credential drafts without clearing the draft or sending resolve IPC", async () => {
@@ -2175,7 +2175,7 @@ describe("settings renderer browser environment", () => {
     assert.equal(lookupButton.disabled, true);
     assert.equal(lookupButton.title, "feishuApprovalLookupUnsavedCredentials");
     lookupButton.dispatchEvent({ type: "click" });
-    assert.equal(harness.preflightCommandCalls.filter((call) => call.name === "feishuApproval.resolveApprover").length, 0);
+    assert.equal(harness.preflightCommandCalls.filter((call) => call.name === "feishuApproval.saveApproverByEmail").length, 0);
     assert.equal(card.querySelectorAll("input")[0].value, "cli_draft");
     assert.equal(card.querySelectorAll("input")[1].value, "draft-secret");
   });
@@ -2193,7 +2193,7 @@ describe("settings renderer browser environment", () => {
     assert.equal(lookupButton.disabled, true);
     assert.equal(lookupButton.title, "feishuApprovalLookupMissingCredentials");
     lookupButton.dispatchEvent({ type: "click" });
-    assert.equal(harness.preflightCommandCalls.filter((call) => call.name === "feishuApproval.resolveApprover").length, 0);
+    assert.equal(harness.preflightCommandCalls.filter((call) => call.name === "feishuApproval.saveApproverByEmail").length, 0);
   });
 
   it("preflights unknown saved credential platform with stable provenance feedback", async () => {
@@ -2208,7 +2208,7 @@ describe("settings renderer browser environment", () => {
     assert.equal(lookupButton.disabled, true);
     assert.equal(lookupButton.title, "feishuApprovalLookupCredentialProvenanceUnknown");
     lookupButton.dispatchEvent({ type: "click" });
-    assert.equal(harness.preflightCommandCalls.filter((call) => call.name === "feishuApproval.resolveApprover").length, 0);
+    assert.equal(harness.preflightCommandCalls.filter((call) => call.name === "feishuApproval.saveApproverByEmail").length, 0);
   });
 
   it("preflights saved Feishu credentials while Lark is selected", async () => {
@@ -2224,7 +2224,7 @@ describe("settings renderer browser environment", () => {
     assert.equal(lookupButton.disabled, true);
     assert.equal(lookupButton.title, "feishuApprovalLookupCredentialPlatformMismatch");
     lookupButton.dispatchEvent({ type: "click" });
-    assert.equal(harness.preflightCommandCalls.filter((call) => call.name === "feishuApproval.resolveApprover").length, 0);
+    assert.equal(harness.preflightCommandCalls.filter((call) => call.name === "feishuApproval.saveApproverByEmail").length, 0);
   });
 
   it("allows valid saved Lark identity lookup with no credential values in the renderer payload", async () => {
@@ -2238,9 +2238,9 @@ describe("settings renderer browser environment", () => {
       .find((button) => button.textContent === "feishuApprovalSaveApprover");
     assert.equal(lookupButton.disabled, false);
     lookupButton.dispatchEvent({ type: "click" });
-    const calls = harness.preflightCommandCalls.filter((call) => call.name === "feishuApproval.resolveApprover");
+    const calls = harness.preflightCommandCalls.filter((call) => call.name === "feishuApproval.saveApproverByEmail");
     assert.equal(calls.length, 1);
-    assert.deepEqual(Object.keys(calls[0].payload).sort(), ["email", "hasUnsavedCredentialDrafts", "requestId"]);
+    assert.deepEqual(calls[0].payload, { email: "person@example.com" });
     assert.equal(JSON.stringify(calls[0].payload).includes("cli_"), false);
     assert.equal(JSON.stringify(calls[0].payload).includes("secret"), false);
   });
@@ -2262,7 +2262,7 @@ describe("settings renderer browser environment", () => {
     assert.equal(lookupButton.disabled, false);
     assert.equal(lookupButton.title, "");
     lookupButton.dispatchEvent({ type: "click" });
-    assert.equal(harness.preflightCommandCalls.filter((call) => call.name === "feishuApproval.resolveApprover").length, 1);
+    assert.equal(harness.preflightCommandCalls.filter((call) => call.name === "feishuApproval.saveApproverByEmail").length, 1);
   });
 
   it("uses authoritative setup readiness for Enable and keeps safe disabling available", async () => {
@@ -4134,10 +4134,9 @@ describe("settings renderer browser environment", () => {
     assert.equal(harness.updates.some((call) => call.key === "feishuApproval"), false);
   });
 
-  it("resolves with a saved-only payload, blocks every control through commit, and never renders the open_id", async () => {
+  it("saves an approver email with one final command and never renders the open_id", async () => {
     const commandCalls = [];
     const lookup = createDeferred();
-    const commit = createDeferred();
     const authoritativeSnapshot = createDeferred();
     const toasts = [];
     const initialSnapshot = {
@@ -4183,8 +4182,7 @@ describe("settings renderer browser environment", () => {
           if (name === "feishuApproval.secretInfo") {
             return Promise.resolve({ status: "ok", configured: true, credentialPlatform: "lark", appId: "cli_......saved" });
           }
-          if (name === "feishuApproval.resolveApprover") return lookup.promise;
-          if (name === "feishuApproval.commitApprover") return commit.promise;
+          if (name === "feishuApproval.saveApproverByEmail") return lookup.promise;
           return Promise.resolve({ status: "ok" });
         },
       },
@@ -4204,17 +4202,10 @@ describe("settings renderer browser environment", () => {
     lookupButton.dispatchEvent({ type: "click" });
     lookupButton.dispatchEvent({ type: "click" });
 
-    assert.equal(commandCalls.filter((call) => call.name === "feishuApproval.resolveApprover").length, 1);
-    const resolveCall = commandCalls.find((call) => call.name === "feishuApproval.resolveApprover");
-    assert.deepStrictEqual(Object.keys(resolveCall.payload).sort(), [
-      "email",
-      "hasUnsavedCredentialDrafts",
-      "requestId",
-    ]);
-    assert.equal(resolveCall.payload.email, "person@example.com");
-    assert.equal(resolveCall.payload.hasUnsavedCredentialDrafts, false);
-    assert.equal(typeof resolveCall.payload.requestId, "string");
-    assert.ok(resolveCall.payload.requestId.length > 0);
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(commandCalls.filter((call) => call.name === "feishuApproval.saveApproverByEmail"))),
+      [{ name: "feishuApproval.saveApproverByEmail", payload: { email: "person@example.com" } }],
+    );
 
     harness.render();
     card = harness.content.querySelector(".feishu-approval-channel-card");
@@ -4231,22 +4222,16 @@ describe("settings renderer browser environment", () => {
     header.dispatchEvent({ type: "click" });
     assert.equal(commandCalls.some((call) => call.name === "feishuApproval.cancelApproverLookup"), false);
 
-    lookup.resolve({ status: "ok", lookupId: "lookup-opaque" });
+    lookup.resolve({ status: "ok", approverId: "ou_must_not_escape" });
     await Promise.resolve();
     await Promise.resolve();
-    assert.deepStrictEqual(
-      JSON.parse(JSON.stringify(commandCalls.find((call) => call.name === "feishuApproval.commitApprover"))),
-      { name: "feishuApproval.commitApprover", payload: { lookupId: "lookup-opaque" } },
-    );
+    assert.equal(commandCalls.filter((call) => call.name === "feishuApproval.saveApproverByEmail").length, 1);
     assert.equal(collectText(harness.content).includes("ou_resolved"), false);
+    assert.equal(collectText(harness.content).includes("ou_must_not_escape"), false);
 
     harness.render();
     card = harness.content.querySelector(".feishu-approval-channel-card");
-    assert.equal(card.querySelectorAll("input").every((input) => input.disabled), true);
-    assert.equal(card.querySelector(".feishu-approval-timeout-select .language-picker-trigger").disabled, true);
-
-    commit.resolve({ status: "ok" });
-    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(card.querySelectorAll("input").at(-1).value, "  person@example.com  ");
     assert.equal(harness.updates.length, 0);
     assert.equal(toasts.some((toast) => toast.message === "feishuApprovalConfigSaved"), false);
 
@@ -4265,10 +4250,8 @@ describe("settings renderer browser environment", () => {
     assert.equal(harness.core.state.snapshot.feishuApproval.approverId, "ou_authoritative");
   });
 
-  it("maps lookup commit lifecycle failures to fixed localized messages without exposing result details", async () => {
-    const strings = loadSettingsI18nForTest().en;
-    const localize = (key) => String(strings[key]).split("{brand}").join("Feishu");
-    const initialSnapshot = {
+  it("maps final lookup failures to fixed copy without exposing result details", async () => {
+    const snapshot = {
       tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
       feishuApproval: {
         enabled: false,
@@ -4281,177 +4264,24 @@ describe("settings renderer browser environment", () => {
         connectionTimeoutSeconds: 15,
       },
     };
+    const cases = [
+      ["lookup-cancelled", "feishuApprovalLookupCancelled"],
+      ["lookup-superseded", "feishuApprovalLookupSuperseded"],
+      ["lookup-credentials-changed", "feishuApprovalLookupCredentialsChanged"],
+      ["missing-contact-scope", "feishuApprovalLookupMissingContactScope"],
+      ["approver-not-found", "feishuApprovalLookupApproverNotFound"],
+      ["unexpected-code", "feishuApprovalLookupFailed"],
+    ];
 
-    function makeHarness({ commitResult = { status: "ok" }, updateResult = { status: "ok" } } = {}) {
+    for (const [code, expectedMessage] of cases) {
       const commandCalls = [];
       const toasts = [];
+      const rawMessage = `raw detail ${code} ou_must_not_render`;
       const harness = loadTelegramApprovalTabForTest({
-        snapshot: JSON.parse(JSON.stringify(initialSnapshot)),
+        snapshot: JSON.parse(JSON.stringify(snapshot)),
         settingsAPI: {
           command: (name, payload) => {
             commandCalls.push({ name, payload });
-            if (name === "feishuApproval.status") {
-              return Promise.resolve({
-                status: "ok",
-                state: {
-                  status: "stopped",
-                  secretsStored: true,
-                  secretsConfigured: true,
-                  credentialReady: true,
-                  credentialReason: "",
-                  configurationReady: false,
-                  setupReason: "missing-approver",
-                },
-              });
-            }
-            if (name === "feishuApproval.secretInfo") {
-              return Promise.resolve({
-                status: "ok",
-                configured: true,
-                credentialPlatform: "feishu",
-                appId: "cli_saved",
-              });
-            }
-            if (name === "feishuApproval.resolveApprover") {
-              return Promise.resolve({ status: "ok", lookupId: "lookup-lifecycle" });
-            }
-            if (name === "feishuApproval.commitApprover") {
-              return Promise.resolve(commitResult);
-            }
-            if (name === "feishuApproval.updateConfig") {
-              return Promise.resolve(updateResult);
-            }
-            return Promise.resolve({ status: "ok" });
-          },
-        },
-      });
-      harness.core.helpers.t = (key) => (key in strings ? strings[key] : key);
-      harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
-      return { harness, commandCalls, toasts };
-    }
-
-    function snapshotToasts(toasts) {
-      return JSON.parse(JSON.stringify(toasts));
-    }
-
-    async function runLookupFailure(commitResult) {
-      const result = makeHarness({ commitResult });
-      await Promise.resolve();
-      await Promise.resolve();
-      result.harness.render();
-      const card = result.harness.content.querySelector(".feishu-approval-channel-card");
-      const input = card.querySelectorAll("input").at(-1);
-      input.value = "person@example.com";
-      input.dispatchEvent({ type: "input" });
-      card.querySelectorAll("button")
-        .find((button) => button.textContent === strings.feishuApprovalSaveApprover)
-        .dispatchEvent({ type: "click" });
-      await new Promise((resolve) => setImmediate(resolve));
-      result.harness.render();
-      assert.equal(
-        result.harness.content.querySelectorAll("input").at(-1).value,
-        "person@example.com",
-        "lookup draft must survive a failed commit",
-      );
-      assert.equal(
-        result.harness.content.querySelectorAll("input").some((field) => field.value === "ou_resolved"),
-        false,
-        "the resolved open_id must never be inserted into renderer inputs",
-      );
-      assert.equal(
-        result.commandCalls.filter((call) => call.name === "feishuApproval.commitApprover").length,
-        1,
-      );
-      return result;
-    }
-
-    for (const [code, key] of [
-      ["lookup-cancelled", "feishuApprovalLookupCancelled"],
-      ["lookup-superseded", "feishuApprovalLookupSuperseded"],
-      ["lookup-stale", "feishuApprovalLookupStale"],
-      ["lookup-result-consumed", "feishuApprovalLookupResultConsumed"],
-      ["lookup-credentials-changed", "feishuApprovalLookupCredentialsChanged"],
-    ]) {
-      const resultMessage = `raw lifecycle detail ${code} ou_resolved`;
-      const result = await runLookupFailure({ status: "error", code, message: resultMessage });
-      assert.deepStrictEqual(snapshotToasts(result.toasts), [{ message: localize(key), options: { error: true } }], code);
-      assert.equal(result.toasts.some((toast) => toast.message === localize("feishuApprovalConfigSaved")), false);
-      assert.equal(result.toasts.some((toast) => toast.message.includes(resultMessage)), false);
-      assert.equal(result.harness.content.querySelectorAll("input").at(-1).value, "person@example.com");
-      assert.equal(collectText(result.harness.content).includes("ou_resolved"), false);
-      assert.equal(collectText(result.harness.content).includes(resultMessage), false);
-    }
-
-    for (const code of ["unexpected-code", "toString"]) {
-      const unknownMessage = `raw unknown lifecycle detail ${code} ou_unknown`;
-      const unknown = await runLookupFailure({ status: "error", code, message: unknownMessage });
-      assert.deepStrictEqual(snapshotToasts(unknown.toasts), [{ message: localize("feishuApprovalPersistenceFailed"), options: { error: true } }]);
-      assert.equal(unknown.toasts.some((toast) => toast.message.includes(unknownMessage)), false);
-      assert.equal(collectText(unknown.harness.content).includes(unknownMessage), false);
-    }
-
-    const rejectionText = "raw rejected lifecycle detail ou_rejected";
-    const rejected = await runLookupFailure(Promise.reject(new Error(rejectionText)));
-    assert.deepStrictEqual(snapshotToasts(rejected.toasts), [{ message: localize("feishuApprovalPersistenceFailed"), options: { error: true } }]);
-    assert.equal(rejected.toasts.some((toast) => toast.message.includes(rejectionText)), false);
-    assert.equal(collectText(rejected.harness.content).includes(rejectionText), false);
-
-    const ordinary = makeHarness({
-      updateResult: { status: "error", code: "lookup-cancelled", message: "raw ordinary save detail" },
-    });
-    await Promise.resolve();
-    await Promise.resolve();
-    ordinary.harness.render();
-    ordinary.harness.content.querySelectorAll("button")
-      .find((button) => button.dataset.platform === "lark")
-      .dispatchEvent({ type: "click" });
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.deepStrictEqual(snapshotToasts(ordinary.toasts), [{ message: localize("feishuApprovalPersistenceFailed"), options: { error: true } }]);
-    assert.equal(ordinary.toasts.some((toast) => toast.message.includes("raw ordinary save detail")), false);
-    assert.equal(collectText(ordinary.harness.content).includes("raw ordinary save detail"), false);
-
-    const commit = createDeferred();
-    const stale = makeHarness({ commitResult: commit.promise });
-    await Promise.resolve();
-    await Promise.resolve();
-    stale.harness.render();
-    const staleCard = stale.harness.content.querySelector(".feishu-approval-channel-card");
-    const staleInput = staleCard.querySelectorAll("input").at(-1);
-    staleInput.value = "stale@example.com";
-    staleInput.dispatchEvent({ type: "input" });
-    staleCard.querySelectorAll("button")
-      .find((button) => button.textContent === strings.feishuApprovalSaveApprover)
-      .dispatchEvent({ type: "click" });
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(stale.commandCalls.some((call) => call.name === "feishuApproval.commitApprover"), true);
-    stale.harness.core.tabs["telegram-approval"].onExit();
-    commit.resolve({ status: "error", code: "lookup-cancelled", message: "raw obsolete toast detail" });
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.deepStrictEqual(stale.toasts, [], "an obsolete UI epoch must suppress the late toast");
-  });
-
-  it("preserves the lookup email and shows only fixed copy when commit returns false or rejects", async () => {
-    for (const commitResult of [
-      () => Promise.resolve({ status: "error", code: "write-failed", message: "raw disk detail" }),
-      () => Promise.reject(new Error("raw rejected detail")),
-    ]) {
-      const toasts = [];
-      const harness = loadTelegramApprovalTabForTest({
-        snapshot: {
-          tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
-          feishuApproval: {
-            enabled: false,
-            platform: "feishu",
-            idType: "open_id",
-            approverId: "",
-            approverSource: "none",
-            approverBoundPlatform: "",
-            approverBoundAppId: "",
-            connectionTimeoutSeconds: 15,
-          },
-        },
-        settingsAPI: {
-          command: (name) => {
             if (name === "feishuApproval.status") {
               return Promise.resolve({
                 status: "ok",
@@ -4463,12 +4293,14 @@ describe("settings renderer browser environment", () => {
               });
             }
             if (name === "feishuApproval.secretInfo") {
-              return Promise.resolve({ status: "ok", configured: true, credentialPlatform: "feishu", appId: "cli_......saved" });
+              return Promise.resolve({
+                status: "ok", configured: true,
+                credentialPlatform: "feishu", appId: "cli_......saved",
+              });
             }
-            if (name === "feishuApproval.resolveApprover") {
-              return Promise.resolve({ status: "ok", lookupId: "lookup-failing-commit" });
+            if (name === "feishuApproval.saveApproverByEmail") {
+              return Promise.resolve({ status: "error", code, message: rawMessage });
             }
-            if (name === "feishuApproval.commitApprover") return commitResult();
             return Promise.resolve({ status: "ok" });
           },
         },
@@ -4477,24 +4309,25 @@ describe("settings renderer browser environment", () => {
       await Promise.resolve();
       await Promise.resolve();
       harness.render();
-      let card = harness.content.querySelector(".feishu-approval-channel-card");
+      const card = harness.content.querySelector(".feishu-approval-channel-card");
       const input = card.querySelectorAll("input").at(-1);
-      input.value = "keep@example.com";
+      input.value = "person@example.com";
       input.dispatchEvent({ type: "input" });
       card.querySelectorAll("button")
         .find((button) => button.textContent === "feishuApprovalSaveApprover")
         .dispatchEvent({ type: "click" });
       await new Promise((resolve) => setImmediate(resolve));
       harness.render();
-      card = harness.content.querySelector(".feishu-approval-channel-card");
-      assert.equal(card.querySelectorAll("input").at(-1).value, "keep@example.com");
-      assert.deepStrictEqual(JSON.parse(JSON.stringify(toasts.at(-1))), {
-        message: "feishuApprovalPersistenceFailed",
-        options: { error: true },
-      });
-      assert.equal(toasts.some((toast) => toast.message === "feishuApprovalConfigSaved"), false);
-      assert.equal(collectText(harness.content).includes("raw disk detail"), false);
-      assert.equal(collectText(harness.content).includes("raw rejected detail"), false);
+
+      assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(toasts)),
+        [{ message: expectedMessage, options: { error: true } }],
+        code,
+      );
+      assert.equal(harness.content.querySelectorAll("input").at(-1).value, "person@example.com");
+      assert.equal(commandCalls.filter((call) => call.name === "feishuApproval.saveApproverByEmail").length, 1);
+      assert.equal(collectText(harness.content).includes(rawMessage), false);
+      assert.equal(collectText(harness.content).includes("ou_must_not_render"), false);
     }
   });
 
@@ -4529,7 +4362,7 @@ describe("settings renderer browser environment", () => {
             if (name === "feishuApproval.secretInfo") {
               return Promise.resolve({ status: "ok", configured: true, credentialPlatform: "feishu", appId: "cli_......saved" });
             }
-            if (name === "feishuApproval.resolveApprover") return lookup.promise;
+            if (name === "feishuApproval.saveApproverByEmail") return lookup.promise;
             return Promise.resolve({ status: "ok" });
           },
         },
@@ -4544,7 +4377,10 @@ describe("settings renderer browser environment", () => {
       card.querySelectorAll("button")
         .find((button) => button.textContent === "feishuApprovalSaveApprover")
         .dispatchEvent({ type: "click" });
-      const requestId = calls.find((call) => call.name === "feishuApproval.resolveApprover").payload.requestId;
+      assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(calls.find((call) => call.name === "feishuApproval.saveApproverByEmail"))),
+        { name: "feishuApproval.saveApproverByEmail", payload: { email: "leave@example.com" } },
+      );
 
       if (navigate === "tab-exit") {
         harness.core.tabs["telegram-approval"].onExit();
@@ -4555,12 +4391,11 @@ describe("settings renderer browser environment", () => {
       }
       assert.deepStrictEqual(
         JSON.parse(JSON.stringify(calls.find((call) => call.name === "feishuApproval.cancelApproverLookup"))),
-        { name: "feishuApproval.cancelApproverLookup", payload: { requestId } },
+        { name: "feishuApproval.cancelApproverLookup" },
       );
-      lookup.resolve({ status: "ok", lookupId: "lookup-after-navigation" });
+      lookup.resolve({ status: "error", code: "lookup-cancelled" });
       await Promise.resolve();
       await Promise.resolve();
-      assert.equal(calls.some((call) => call.name === "feishuApproval.commitApprover"), false);
     }
   });
 
@@ -4681,7 +4516,7 @@ describe("settings renderer browser environment", () => {
           if (name === "feishuApproval.secretInfo") {
             return Promise.resolve({ status: "ok", configured: true, credentialPlatform: "feishu", appId: "cli_......saved" });
           }
-          if (name === "feishuApproval.resolveApprover") {
+          if (name === "feishuApproval.saveApproverByEmail") {
             return Promise.resolve({ status: "error", code: "missing-contact-scope" });
           }
           return Promise.resolve({ status: "ok" });
@@ -4706,13 +4541,8 @@ describe("settings renderer browser environment", () => {
 
     await Promise.resolve();
     await Promise.resolve();
-    const lookupCall = commandCalls.find((call) => call.name === "feishuApproval.resolveApprover");
-    assert.deepStrictEqual(Object.keys(lookupCall.payload).sort(), [
-      "email",
-      "hasUnsavedCredentialDrafts",
-      "requestId",
-    ]);
-    assert.equal(lookupCall.payload.hasUnsavedCredentialDrafts, false);
+    const lookupCall = commandCalls.find((call) => call.name === "feishuApproval.saveApproverByEmail");
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(lookupCall.payload)), { email: "person@example.com" });
     assert.equal(harness.updates.length, 0);
     assert.equal(approverInput.value, "person@example.com");
     assert.deepStrictEqual(JSON.parse(JSON.stringify(toasts)), [{
@@ -4790,7 +4620,6 @@ describe("settings renderer browser environment", () => {
       harness.preflightCommandCalls.some(({ name }) => [
         "feishuApproval.updateConfig",
         "feishuApproval.saveManualApprover",
-        "feishuApproval.commitApprover",
       ].includes(name)),
       false,
     );
@@ -4831,7 +4660,7 @@ describe("settings renderer browser environment", () => {
             if (name === "feishuApproval.secretInfo") {
               return Promise.resolve({ status: "ok", configured: true, credentialPlatform: "feishu", appId: "cli_......saved" });
             }
-            if (name === "feishuApproval.resolveApprover") {
+            if (name === "feishuApproval.saveApproverByEmail") {
               return Promise.resolve({
                 status: "error",
                 code: "invalid-email",
@@ -4854,7 +4683,7 @@ describe("settings renderer browser environment", () => {
       await Promise.resolve();
       await Promise.resolve();
 
-      const lookup = commandCalls.find((call) => call.name === "feishuApproval.resolveApprover");
+      const lookup = commandCalls.find((call) => call.name === "feishuApproval.saveApproverByEmail");
       assert.equal(lookup, undefined);
       assert.equal(harness.updates.length, 0, `${approverId} must not be persisted`);
       assert.equal(toasts[0].message, "feishuApprovalLookupInvalidEmail");
@@ -4862,7 +4691,7 @@ describe("settings renderer browser environment", () => {
     }
   });
 
-  it("cancels by requestId, preserves the email, and ignores the late resolve", async () => {
+  it("cancels without a request handle and preserves the email", async () => {
     const lookup = createDeferred();
     const commandCalls = [];
     const harness = loadTelegramApprovalTabForTest({
@@ -4892,7 +4721,7 @@ describe("settings renderer browser environment", () => {
           if (name === "feishuApproval.secretInfo") {
             return Promise.resolve({ status: "ok", configured: true, credentialPlatform: "feishu", appId: "cli_......saved" });
           }
-          if (name === "feishuApproval.resolveApprover") return lookup.promise;
+          if (name === "feishuApproval.saveApproverByEmail") return lookup.promise;
           return Promise.resolve({ status: "ok" });
         },
       },
@@ -4916,21 +4745,17 @@ describe("settings renderer browser environment", () => {
     cancel.dispatchEvent({ type: "click" });
     await Promise.resolve();
     await Promise.resolve();
-    const resolveCall = commandCalls.find((call) => call.name === "feishuApproval.resolveApprover");
     assert.deepStrictEqual(
       JSON.parse(JSON.stringify(commandCalls.find((call) => call.name === "feishuApproval.cancelApproverLookup"))),
-      {
-        name: "feishuApproval.cancelApproverLookup",
-        payload: { requestId: resolveCall.payload.requestId },
-      },
+      { name: "feishuApproval.cancelApproverLookup" },
     );
 
-    lookup.resolve({ status: "ok", lookupId: "lookup-too-late" });
+    lookup.resolve({ status: "error", code: "lookup-cancelled", approverId: "ou_too_late" });
     await Promise.resolve();
     await Promise.resolve();
 
     assert.equal(harness.updates.length, 0, "a stale lookup must not overwrite the new form value");
-    assert.equal(commandCalls.some((call) => call.name === "feishuApproval.commitApprover"), false);
+    assert.equal(collectText(harness.content).includes("ou_too_late"), false);
     harness.render();
     const rerenderedCard = harness.content.querySelector(".feishu-approval-channel-card");
     const rerenderedInputs = rerenderedCard.querySelectorAll("input");
@@ -4983,7 +4808,7 @@ describe("settings renderer browser environment", () => {
         .dispatchEvent({ type: "click" });
       await Promise.resolve();
 
-      assert.equal(commandCalls.some((call) => call.name === "feishuApproval.resolveApprover"), false);
+      assert.equal(commandCalls.some((call) => call.name === "feishuApproval.saveApproverByEmail"), false);
       assert.deepStrictEqual(
         JSON.parse(JSON.stringify(commandCalls.find((call) => call.name === "feishuApproval.saveManualApprover"))),
         { name: "feishuApproval.saveManualApprover", payload: { idType, approverId } },
@@ -5031,7 +4856,7 @@ describe("settings renderer browser environment", () => {
                 appId: "cli_......saved",
               });
             }
-            if (name === "feishuApproval.resolveApprover") {
+            if (name === "feishuApproval.saveApproverByEmail") {
               return Promise.resolve({ status: "error", code: "approver-not-found" });
             }
             return Promise.resolve({ status: "ok" });
@@ -5052,7 +4877,7 @@ describe("settings renderer browser environment", () => {
       await Promise.resolve();
       await Promise.resolve();
 
-      const lookupCalls = commandCalls.filter((call) => call.name === "feishuApproval.resolveApprover");
+      const lookupCalls = commandCalls.filter((call) => call.name === "feishuApproval.saveApproverByEmail");
       assert.equal(lookupCalls.length, 1, idType);
       assert.equal(lookupCalls[0].payload.email, "ou_admin@example.com");
       assert.equal(
@@ -5097,7 +4922,7 @@ describe("settings renderer browser environment", () => {
               if (name === "feishuApproval.secretInfo") {
                 return Promise.resolve({ status: "ok", configured: true, credentialPlatform: platform, appId: "cli_......saved" });
               }
-              if (name === "feishuApproval.resolveApprover") {
+              if (name === "feishuApproval.saveApproverByEmail") {
                 return Promise.resolve({
                   status: "error",
                   code,

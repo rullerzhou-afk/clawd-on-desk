@@ -124,7 +124,7 @@ const {
   lookupOpenIdByEmail,
 } = require("./feishu-approval-client");
 const feishuApprovalSettings = require("./feishu-approval-settings");
-const { createFeishuApprovalLookupCoordinator } = require("./feishu-approval-lookup");
+const { saveFeishuApproverByEmail } = require("./settings-actions");
 const {
   buildTelegramApprovalStatus,
   isNativeTelegramApprovalSelected,
@@ -419,7 +419,6 @@ let feishuApprovalSyncPromise = Promise.resolve();
 let feishuApprovalConfigSignature = "";
 let feishuSessionAutomationRouteSignature = "";
 let feishuApprovalSecretsRevision = 0;
-const feishuApprovalLookupCoordinator = createFeishuApprovalLookupCoordinator();
 const shortcutHandlers = {
   togglePet: () => togglePetVisibility(),
 };
@@ -488,11 +487,6 @@ const _settingsController = createSettingsController({
     getFeishuApprovalPrefs: () => getFeishuApprovalPrefs(),
     getFeishuApprovalSecrets: () => getFeishuApprovalSecrets(),
     getFeishuApprovalSecretsRevision: () => feishuApprovalSecretsRevision,
-    feishuApprovalLookupCoordinator,
-    lookupFeishuApproverByEmail: (params) => lookupOpenIdByEmail({
-      ...params,
-      log: feishuApprovalLog,
-    }),
     getFeishuApprovalStatus: () => getFeishuApprovalStatus(),
     getFeishuApprovalSecretInfo: () => getFeishuApprovalSecretInfo(),
     sendFeishuApprovalTest: (persisted) => sendFeishuApprovalTest(persisted),
@@ -530,16 +524,6 @@ const _settingsController = createSettingsController({
       }
       return false;
     },
-  },
-  concurrentDeps: {
-    getFeishuApprovalPrefs: () => getFeishuApprovalPrefs(),
-    getFeishuApprovalSecrets: () => getFeishuApprovalSecrets(),
-    getFeishuApprovalSecretsRevision: () => feishuApprovalSecretsRevision,
-    feishuApprovalLookupCoordinator: feishuApprovalLookupCoordinator,
-    lookupFeishuApproverByEmail: (params) => lookupOpenIdByEmail({
-      ...params,
-      log: feishuApprovalLog,
-    }),
   },
 });
 _settingsController.subscribeKey("agents", (_agents, snapshot) => {
@@ -4013,6 +3997,19 @@ registerSettingsIpc({
   getDoNotDisturb: () => doNotDisturb,
   getSoundMuted: () => soundMuted,
   getSoundVolume: () => soundVolume,
+  saveFeishuApproverByEmail: ({ email, signal }) => saveFeishuApproverByEmail({ email, signal }, {
+    getFeishuApprovalPrefs,
+    getFeishuApprovalSecrets,
+    getFeishuApprovalSecretsRevision: () => feishuApprovalSecretsRevision,
+    lookupFeishuApproverByEmail: (params) => lookupOpenIdByEmail({
+      ...params,
+      log: feishuApprovalLog,
+    }),
+    commitResolvedApprover: (payload) => _settingsController.applyCommand(
+      "feishuApproval.commitResolvedApprover",
+      payload,
+    ),
+  }),
   getAllAgents,
   getHookServerPort: () => getHookServerPort(),
   getRecentHookEvents: (options) => _server.getRecentHookEvents(options),
