@@ -204,11 +204,11 @@ body { padding: 6px 6px 8px; }
   white-space: nowrap;
 }
 .coin-row.is-reset .readout .pct { color: var(--ink-soft); }
-/* The stale footnote spells out the age in text; it gets a touch more ink
-   than a source marker because it is a state, not an identity. */
-.readout .source.stale-note { color: var(--ink-soft); }
-/* Stale keeps its quiet dim, but opacity is no longer the ONLY channel — the
-   readout's third line spells out the age ("12m ago", see buildReadoutFoot). */
+/* Staleness is carried by this dim alone. That is knowingly one channel, and a
+   weak one — see buildReadoutFoot for why the spelled-out age that used to back
+   it up was removed rather than kept: Codex goes stale 5 minutes after its last
+   reading, so the note stood on screen through every ordinary gap between runs.
+   A replacement, if one is wanted, has to stay silent while things are normal. */
 .coin-row.is-stale { opacity: 0.72; }
 
 .coin { width: 26px; height: 26px; flex: 0 0 auto; filter: var(--coin-shadow); }

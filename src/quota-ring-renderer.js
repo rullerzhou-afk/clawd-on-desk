@@ -135,18 +135,6 @@ function formatWindowLabel(windowMinutes, fallbackLabel) {
   return `${Math.round(minutes)}m`;
 }
 
-// Compact age for the stale footnote, formatted with the same shared duration
-// keys the Dashboard uses for its "as of" labels, so both surfaces phrase the
-// same interval identically.
-function formatAgeCompact(ageMs) {
-  const totalMinutes = Math.max(1, Math.round(ageMs / 60000));
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return hours > 0
-    ? t("dashboardQuotaResetHoursMinutes").replace("{h}", hours).replace("{m}", minutes)
-    : t("dashboardQuotaResetMinutes").replace("{m}", minutes);
-}
-
 // One definition of the thresholds: the ring's color, the pulse, and whether
 // the readout yields to the binding window all key off the same two numbers.
 const WARN_AT = 60; // >= this is amber
@@ -465,35 +453,38 @@ function buildCoinRow(model, now = Date.now()) {
     win.textContent = model.windows[0] ? model.windows[0].label : "";
   }
   readout.append(pct, win);
-  const foot = buildReadoutFoot(model, shown, now);
+  const foot = buildReadoutFoot(model);
   if (foot) readout.appendChild(foot);
 
   row.append(readout, buildCoinSvg(model));
   return row;
 }
 
-// The readout's optional third line answers, in strict priority order:
-//   1. "is this number old?" — a stale coin was previously dimmed ONLY by row
-//      opacity, an intensity channel a glance (or any CVD) can miss, so the
-//      age is now spelled out in text. Quiet, but no longer ambiguous.
-//   2. "what do the digits mean?" — remaining mode flips the percent's
+// The readout's optional third line answers, in priority order:
+//   1. "what do the digits mean?" — remaining mode flips the percent's
 //      meaning, so whenever it is active the mode word stays on screen.
-//   3. "which machine reported this?" — the static source marker, shown only
-//      when neither of the dynamic states above needs the line.
-function buildReadoutFoot(model, shown, now = Date.now()) {
+//   2. "which machine reported this?" — the static source marker, shown only
+//      when the mode word above does not need the line.
+//
+// Deliberately NOT here: the stale age. A draft spelled it out ("1h26m ago")
+// so staleness would not ride on row opacity alone, which is an intensity
+// channel a glance or any CVD can miss. On a real desktop it was wrong for a
+// blunter reason — Codex goes stale 5 minutes after its last reading, so the
+// note is on screen during every ordinary gap between runs, i.e. nearly
+// always. A permanent footnote is not a warning, it is furniture, and it cost
+// a third text line on a 26px coin row to say nothing new. If staleness needs
+// a second channel later, it should be one that is silent while normal —
+// desaturating the arc, or a dot — not standing text.
+function buildReadoutFoot(model) {
   let text = null;
-  let cls = "source";
-  if (model.state === "stale" && shown && Number.isFinite(shown.seenAt)) {
-    text = t("quotaRingStaleAgo").replace("{time}", formatAgeCompact(now - shown.seenAt));
-    cls = "source stale-note";
-  } else if (quotaDisplayMode() === "remaining") {
+  if (quotaDisplayMode() === "remaining") {
     text = t("quotaRingRemainingWord");
   } else if (model.sourceMarker) {
     text = model.sourceMarker;
   }
   if (!text) return null;
   const foot = document.createElement("span");
-  foot.className = cls;
+  foot.className = "source";
   foot.textContent = text;
   return foot;
 }

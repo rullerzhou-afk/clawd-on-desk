@@ -80,7 +80,6 @@ function loadRenderer() {
         dashboardQuotaGroupThirdParty: "Claude/GPT",
         dashboardQuotaSourceLocal: "Local",
         quotaRingReset: "reset",
-        quotaRingStaleAgo: "{time} ago",
         quotaRingRemainingWord: "remaining",
         dashboardQuotaResetIn: "resets in {time}",
         dashboardQuotaResetHoursMinutes: "{h}h {m}m",
@@ -544,32 +543,42 @@ describe("quota ring renderer model", () => {
     assert.match(fills[0].attributes.class, /pv-codexQuota rg-inner/);
   });
 
-  it("spells out the data age in text when every window is stale", () => {
-    // Opacity alone was the only stale channel; the footnote makes it explicit
-    // without flashing.
+  it("adds no footnote line for a stale coin, however old the reading is", () => {
+    // A draft spelled the age out ("1h26m ago") so staleness would not ride on
+    // row opacity alone. On a desktop that misfired: Codex goes stale 5 minutes
+    // after its last reading, so the note stood on screen through every
+    // ordinary gap between runs — permanent furniture, not a warning, costing a
+    // third text line on a 26px row. Pin its absence so it cannot creep back
+    // without someone re-deciding it. Staleness is the row dim, and only that.
     const context = loadRenderer();
     const now = 1_000_000;
-    const model = modelFor(context, {
-      codexQuota: {
-        group: {
-          codexWeekly: {
-            usedPercent: 12,
-            resetAt: now + 3_600_000,
-            windowMinutes: 10080,
-            lastSeenAt: now - 6 * 60_000,
+    for (const ageMinutes of [6, 86]) {
+      const seenAt = now - ageMinutes * 60_000;
+      const model = modelFor(context, {
+        codexQuota: {
+          group: {
+            codexWeekly: {
+              usedPercent: 12,
+              resetAt: now + 3_600_000,
+              windowMinutes: 10080,
+              lastSeenAt: seenAt,
+            },
           },
+          lastSeenAt: seenAt,
         },
-        lastSeenAt: now - 6 * 60_000,
-      },
-    }, 2, now);
-    assert.strictEqual(model.state, "stale");
-    context.__model = model;
-    context.__now = now;
-    const row = vm.runInContext("buildCoinRow(__model, __now)", context);
-    const foot = row.children[0].children[2];
-    assert.ok(foot, "a stale coin carries a footnote line");
-    assert.strictEqual(foot.className, "source stale-note");
-    assert.strictEqual(foot.textContent, "6m ago");
+      }, 2, now);
+      assert.strictEqual(model.state, "stale", `${ageMinutes}m should read as stale`);
+      context.__model = model;
+      context.__now = now;
+      const row = vm.runInContext("buildCoinRow(__model, __now)", context);
+      // Readout holds the percent and the window label, and nothing else: no
+      // source marker is set on a local coin, so there is no third line at all.
+      assert.strictEqual(
+        row.children[0].children.length, 2,
+        `a stale coin (${ageMinutes}m) grew a third readout line`
+      );
+      assert.match(row.className, /is-stale/, "the row dim is still the stale channel");
+    }
   });
 
   it("labels the readout while remaining mode flips the percent's meaning", () => {
