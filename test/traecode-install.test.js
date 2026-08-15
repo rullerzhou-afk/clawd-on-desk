@@ -134,6 +134,40 @@ describe("TraeCode hook installer", () => {
     assert.ok(settings.hooks.Stop[0].hooks[0].command.includes("/home/user/.nvm/versions/node/v20/bin/node"));
   });
 
+  it("emits a PowerShell `&`-prefixed command on Windows", () => {
+    const configPath = makeTempConfigFile({});
+    const nodeBin = "C:\\Program Files\\nodejs\\node.exe";
+    const result = registerTraeCodeHooks({
+      silent: true,
+      hooksPath: configPath,
+      nodeBin,
+      platform: "win32",
+    });
+
+    assert.strictEqual(result.added, 6);
+
+    const settings = readJson(configPath);
+    const command = settings.hooks.SessionStart[0].hooks[0].command;
+    assert.ok(command.startsWith(`& "${nodeBin}"`), `expected & prefix + quoted node path, got: ${command}`);
+    assert.ok(command.includes(MARKER), "command must still reference the traecode hook script");
+  });
+
+  it("emits a plain quoted command on POSIX (no & operator)", () => {
+    const configPath = makeTempConfigFile({});
+    const result = registerTraeCodeHooks({
+      silent: true,
+      hooksPath: configPath,
+      nodeBin: "/usr/local/bin/node",
+      platform: "darwin",
+    });
+
+    assert.strictEqual(result.added, 6);
+    const settings = readJson(configPath);
+    const command = settings.hooks.SessionStart[0].hooks[0].command;
+    assert.ok(command.startsWith('"/usr/local/bin/node"'), `expected quoted command without &, got: ${command}`);
+    assert.ok(!command.startsWith("&"), "POSIX command must not carry the PowerShell & operator");
+  });
+
   it("skips registration when ~/.trae-cn/ does not exist", () => {
     const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-traecode-home-"));
     tempDirs.push(fakeHome);

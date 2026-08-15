@@ -16,6 +16,7 @@ const {
   commandMatchesMarker,
   extractExistingNodeBin,
   removeMatchingCommandHooks,
+  formatNodeHookCommand,
 } = require("./json-utils");
 const MARKER = "traecode-hook.js";
 const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".trae-cn");
@@ -69,7 +70,13 @@ function registerTraeCodeHooks(options = {}) {
   const nodeBin = resolved
     || extractExistingNodeBin(settings, MARKER, { nested: true })
     || "node";
-  const desiredCommand = `"${nodeBin}" "${hookScript}"`;
+  // Trae executes hook commands via PowerShell on Windows and bash on POSIX
+  // (verified in Trae's cloudide.icube-agent-shell-exec execCommandHook).
+  // formatNodeHookCommand emits the PowerShell `&` prefix on win32 — a bare
+  // quoted path is a string literal there and silently never runs — and the
+  // plain quoted form on macOS/Linux.
+  const platform = options.platform || process.platform;
+  const desiredCommand = formatNodeHookCommand(nodeBin, hookScript, { platform });
 
   if (!settings.hooks || typeof settings.hooks !== "object") settings.hooks = {};
 
