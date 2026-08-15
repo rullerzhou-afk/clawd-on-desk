@@ -33,7 +33,7 @@ const { createSpawnedHookHarness } = require("./helpers/spawned-hook");
 const HOOKS_DIR = path.resolve(__dirname, "..", "hooks");
 
 // Every createPidResolver consumer. Cross-checked against
-// `grep -l createPidResolver hooks/*.js` — if a 16th adapter appears without a
+// `grep -l createPidResolver hooks/*.js` — if a 17th adapter appears without a
 // row here, the count assertion at the bottom fails.
 //
 // `stdout` is the EXACT bytes the agent must still receive while Clawd is
@@ -78,6 +78,10 @@ const ADAPTERS = [
   // drops any event without one before it ever resolves (#618/#648), which would
   // otherwise make the vacuity guard below see zero spawns and fail.
   { name: "workbuddy-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "{}\n" },
+  // TraeCode is state-only with a PreToolUse gating stdout (decision:allow).
+  // session_id is required so the resolver cache context is non-default and
+  // the vacuity guard sees the one PowerShell snapshot when Clawd is alive.
+  { name: "traecode-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: `${JSON.stringify({ decision: "allow" })}\n` },
 ];
 
 let hookHarness;
@@ -150,14 +154,14 @@ describe("#681 — every adapter survives a clean offline with zero spawn", { sk
     }
   });
 
-  it("covers every createPidResolver consumer in hooks/ (fails when a 15th adapter lands)", () => {
+  it("covers every createPidResolver consumer in hooks/ (fails when a 16th adapter lands)", () => {
     const consumers = fs.readdirSync(HOOKS_DIR)
       .filter((f) => f.endsWith("-hook.js"))
       .filter((f) => fs.readFileSync(path.join(HOOKS_DIR, f), "utf8").includes("createPidResolver("))
       .sort();
     assert.deepStrictEqual(consumers, ADAPTERS.map((a) => a.name).sort(),
       "a new createPidResolver adapter must be added to ADAPTERS above and proven offline-safe");
-    assert.strictEqual(consumers.length, 15, "zcode-hook.js joined the createPidResolver consumers");
+    assert.strictEqual(consumers.length, 16, "traecode-hook.js joined the createPidResolver consumers");
   });
 });
 

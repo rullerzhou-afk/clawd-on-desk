@@ -241,3 +241,78 @@ describe("TraeCode hook installer", () => {
     assert.strictEqual(listCleanupBackups(configPath).length, 1);
   });
 });
+
+describe("TraeCode hook installer (Windows)", () => {
+  it("uses PowerShell call operator and shell field on Windows", () => {
+    const configPath = makeTempConfigFile({});
+    const result = registerTraeCodeHooks({
+      silent: true,
+      hooksPath: configPath,
+      nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+      platform: "win32",
+    });
+
+    assert.strictEqual(result.added, 6);
+
+    const settings = readJson(configPath);
+    for (const event of TRAECODE_HOOK_EVENTS) {
+      const hook = settings.hooks[event][0].hooks[0];
+      // `&` prefix is required: without it PowerShell treats a quoted path
+      // as a string literal and exits 1 with a ParserError.
+      assert.ok(hook.command.startsWith("& "), `${event}: command must start with "& "`);
+      assert.ok(hook.command.includes("C:\\Program Files\\nodejs\\node.exe"));
+      assert.ok(hook.command.includes(MARKER));
+      assert.strictEqual(hook.shell, "powershell");
+    }
+  });
+
+  it("is idempotent on Windows with PowerShell format", () => {
+    const configPath = makeTempConfigFile({});
+    registerTraeCodeHooks({
+      silent: true,
+      hooksPath: configPath,
+      nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+      platform: "win32",
+    });
+    const contentBefore = fs.readFileSync(configPath, "utf8");
+
+    const result = registerTraeCodeHooks({
+      silent: true,
+      hooksPath: configPath,
+      nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+      platform: "win32",
+    });
+
+    assert.strictEqual(result.added, 0);
+    assert.strictEqual(result.updated, 0);
+    assert.strictEqual(fs.readFileSync(configPath, "utf8"), contentBefore);
+  });
+
+  it("migrates legacy bare-quoted command to PowerShell format on Windows", () => {
+    const configPath = makeTempConfigFile({
+      hooks: {
+        SessionStart: [{
+          matcher: "",
+          hooks: [{
+            type: "command",
+            // Legacy format: no & prefix, no shell field — fails in PowerShell
+            command: '"C:\\Program Files\\nodejs\\node.exe" "D:/old/path/traecode-hook.js"',
+          }],
+        }],
+      },
+    });
+
+    const result = registerTraeCodeHooks({
+      silent: true,
+      hooksPath: configPath,
+      nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+      platform: "win32",
+    });
+
+    assert.ok(result.updated >= 1);
+    const settings = readJson(configPath);
+    const hook = settings.hooks.SessionStart[0].hooks[0];
+    assert.ok(hook.command.startsWith("& "), "migrated command must start with & ");
+    assert.strictEqual(hook.shell, "powershell");
+  });
+});

@@ -77,6 +77,7 @@ function registerTraeCodeHooks(options = {}) {
   // plain quoted form on macOS/Linux.
   const platform = options.platform || process.platform;
   const desiredCommand = formatNodeHookCommand(nodeBin, hookScript, { platform });
+  const isWin = platform === "win32";
 
   if (!settings.hooks || typeof settings.hooks !== "object") settings.hooks = {};
 
@@ -108,6 +109,11 @@ function registerTraeCodeHooks(options = {}) {
             h.command = desiredCommand;
             stalePath = true;
           }
+          // Migrate existing entries to include shell: "powershell" on Windows
+          if (isWin && h.shell !== "powershell") {
+            h.shell = "powershell";
+            stalePath = true;
+          }
           break;
         }
       }
@@ -116,6 +122,10 @@ function registerTraeCodeHooks(options = {}) {
         found = true;
         if (entry.command !== desiredCommand) {
           entry.command = desiredCommand;
+          stalePath = true;
+        }
+        if (isWin && entry.shell !== "powershell") {
+          entry.shell = "powershell";
           stalePath = true;
         }
       }
@@ -133,9 +143,11 @@ function registerTraeCodeHooks(options = {}) {
     }
 
     // Add in Claude Code-compatible nested format
+    const hookEntry = { type: "command", command: desiredCommand };
+    if (isWin) hookEntry.shell = "powershell";
     arr.push({
       matcher: "",
-      hooks: [{ type: "command", command: desiredCommand }],
+      hooks: [hookEntry],
     });
     added++;
     changed = true;
