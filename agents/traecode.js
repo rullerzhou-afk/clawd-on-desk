@@ -7,7 +7,7 @@ module.exports = {
   id: "traecode",
   name: "TraeCode",
   processNames: {
-    win: ["Trae.exe", "trae.exe"],
+    win: ["Trae.exe", "trae.exe", "Trae CN.exe", "trae cn.exe", "TraeCN.exe", "traecn.exe"],
     mac: ["Trae", "trae"],
     linux: ["trae", "Trae"],
   },

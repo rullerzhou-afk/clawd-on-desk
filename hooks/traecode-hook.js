@@ -94,9 +94,12 @@ function resolveSessionTitle(payload, event) {
 }
 
 const config = getPlatformConfig({
-  extraTerminals: { win: ["trae.exe"] },
+  // Trae CN ships as "Trae CN.exe" (process name lowercased to "trae cn.exe"
+  // by the Windows process snapshot); the international build is "Trae.exe".
+  // Cover both spellings plus a space-less variant.
+  extraTerminals: { win: ["trae.exe", "trae cn.exe", "traecn.exe"] },
   extraEditors: {
-    win: { "trae.exe": "trae" },
+    win: { "trae.exe": "trae", "trae cn.exe": "trae", "traecn.exe": "trae" },
     mac: { "Trae": "trae", "trae": "trae" },
     linux: { "trae": "trae", "Trae": "trae" },
   },
@@ -107,7 +110,7 @@ let runtimeContext = Object.freeze({
   observation: null,
 });
 const resolve = createPidResolver({
-  agentNames: { win: new Set(["trae.exe"]), mac: new Set(["Trae", "trae"]), linux: new Set(["trae", "Trae"]) },
+  agentNames: { win: new Set(["trae.exe", "trae cn.exe", "traecn.exe"]), mac: new Set(["Trae", "trae"]), linux: new Set(["trae", "Trae"]) },
   platformConfig: config,
   readRuntimeIdentity: () => runtimeContext.identity,
 });
