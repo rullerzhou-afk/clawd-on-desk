@@ -1148,6 +1148,18 @@
     }
     if (agent.id === "claude-code") {
       rows.push(...buildClaudeHookManagementRows());
+      // Quota collection belongs to the provider, not to the ring that draws
+      // it. This switch used to sit in General's quota-ring group while Kimi's
+      // equivalent sat here, so turning collection off meant a different tab
+      // depending on the provider, and no page could answer "who am I reading
+      // from". Every provider's collection opt-in now lives on its own card.
+      const claudeQuotaRow = helpers.buildSwitchRow({
+        key: "claudeQuotaCollectionEnabled",
+        labelKey: "rowClaudeQuotaCollection",
+        descKey: "rowClaudeQuotaCollectionDesc",
+      });
+      claudeQuotaRow.classList.add("row-sub");
+      rows.push(claudeQuotaRow);
     }
     if (agent.id === "codex") {
       rows.push(buildCodexPermissionModeRow(agent, computeAgentSubSwitchDisabled(agent.id, "permissionMode")));

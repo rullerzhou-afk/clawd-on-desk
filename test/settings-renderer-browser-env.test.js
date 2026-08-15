@@ -6789,15 +6789,22 @@ describe("settings renderer browser environment", () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     const ringEnabled = harness.getSwitch("sessionHudShowQuota");
-    const claudeCollection = harness.getSwitch("claudeQuotaCollectionEnabled");
     const mergeSources = harness.getSwitch("quotaMergeSources");
     const ringOptions = harness.content.querySelector(".quota-ring-option-list");
     const hudOptions = harness.content.querySelector(".session-hud-option-list");
     const summary = harness.core.state.mountedControls.sessionHudSummary.element;
 
     assert.ok(ringEnabled);
-    assert.ok(claudeCollection);
     assert.ok(mergeSources);
+    // Per-provider collection is NOT here. It lives on each provider's own card
+    // under Agents (Claude alongside Kimi), so this group stays about what the
+    // ring looks like and "which providers am I reading" has one place to look.
+    // Pin the absence: re-adding it here would silently re-split the setting
+    // across two tabs, which is the state this move existed to end.
+    assert.ok(
+      !harness.getSwitch("claudeQuotaCollectionEnabled"),
+      "Claude quota collection must not be back in General's quota-ring group"
+    );
     assert.ok(ringOptions);
     assert.ok(hudOptions);
     assert.notStrictEqual(ringOptions, hudOptions);
@@ -7354,6 +7361,29 @@ describe("settings renderer browser environment", () => {
     // Confirm/disconnect flows moved with the switches.
     assert.ok(agentsSource.includes("confirmDisableClaudeHookManagement"));
     assert.ok(agentsSource.includes("runDisconnectClaudeHooks"));
+  });
+
+  it("keeps every provider's quota collection opt-in on its own Agents card", () => {
+    const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
+    const agentsSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-agents.js"), "utf8");
+    // Claude's collection switch used to live in General's quota-ring group
+    // while Kimi's equivalent lived on its agent card, so turning collection
+    // off meant a different tab depending on the provider and no page could
+    // answer "which providers am I reading from". Pin the single rule: the
+    // ring group is about what the ring looks like, collection is per-card.
+    assert.ok(!generalSource.includes('key: "claudeQuotaCollectionEnabled"'));
+    assert.ok(agentsSource.includes('key: "claudeQuotaCollectionEnabled"'));
+    assert.ok(agentsSource.includes("rowClaudeQuotaCollection"));
+    // Kimi's card is the pattern being matched, not something that moved.
+    assert.ok(agentsSource.includes("buildKimiQuotaCard"));
+    assert.ok(agentsSource.includes('agent.id === "kimi-cli"'));
+    // General keeps the display-only decisions, and nothing else.
+    assert.ok(generalSource.includes('key: "sessionHudShowQuota"'));
+    assert.ok(generalSource.includes("buildQuotaRingDisplayModeRow"));
+    // A stale entry here would make General try to patch a control it no
+    // longer renders instead of falling through to a full re-render.
+    const inPlaceKeys = generalSource.slice(0, generalSource.indexOf("]);"));
+    assert.ok(!inPlaceKeys.includes('"claudeQuotaCollectionEnabled"'));
   });
 
   it("patches hide-bubbles aggregate off without rebuilding General content", () => {
