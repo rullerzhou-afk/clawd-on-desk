@@ -1285,80 +1285,203 @@
     const desc = document.createElement("span");
     desc.className = "row-desc";
     desc.textContent = t("kimiQuotaDesc");
-    const warning = document.createElement("span");
-    warning.className = "row-desc kimi-quota-warning";
-    warning.textContent = t("kimiQuotaSecurityWarning");
-    const mode = document.createElement("span");
-    mode.className = "row-desc";
-    mode.textContent = t("kimiQuotaManualOnly");
     heading.appendChild(label);
     heading.appendChild(desc);
-    heading.appendChild(warning);
-    heading.appendChild(mode);
     card.appendChild(heading);
-
-    const form = document.createElement("div");
-    form.className = "kimi-quota-form";
-    const input = document.createElement("input");
-    input.type = "password";
-    input.className = "kimi-quota-key-input";
-    input.placeholder = t("kimiQuotaApiKeyPlaceholder");
-    input.autocomplete = "new-password";
-    input.spellcheck = false;
-    input.setAttribute("aria-label", t("kimiQuotaApiKeyPlaceholder"));
-    input.addEventListener("click", (event) => event.stopPropagation());
-    input.addEventListener("keydown", (event) => event.stopPropagation());
-    form.appendChild(input);
-
-    const buttons = document.createElement("div");
-    buttons.className = "kimi-quota-actions";
-    const connectButton = document.createElement("button");
-    const refreshButton = document.createElement("button");
-    const disconnectButton = document.createElement("button");
-    const forgetButton = document.createElement("button");
-    const consoleButton = document.createElement("button");
-    for (const button of [connectButton, refreshButton, disconnectButton, forgetButton, consoleButton]) {
-      button.type = "button";
-      button.className = "soft-btn";
-      buttons.appendChild(button);
-    }
-    forgetButton.classList.add("danger");
-    consoleButton.textContent = t("kimiQuotaOpenConsole");
-    consoleButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      if (window.settingsAPI && typeof window.settingsAPI.openExternal === "function") {
-        window.settingsAPI.openExternal("https://www.kimi.com/code/console");
-      }
-    });
-    form.appendChild(buttons);
-    card.appendChild(form);
 
     const statusLine = document.createElement("span");
     statusLine.className = "row-desc kimi-quota-status";
     statusLine.textContent = t("kimiQuotaStatusLoading");
     card.appendChild(statusLine);
+
+    function makePasswordInput() {
+      const input = document.createElement("input");
+      input.type = "password";
+      input.className = "kimi-quota-key-input";
+      input.placeholder = t("kimiQuotaApiKeyPlaceholder");
+      input.autocomplete = "new-password";
+      input.spellcheck = false;
+      input.setAttribute("aria-label", t("kimiQuotaApiKeyPlaceholder"));
+      input.addEventListener("click", (event) => event.stopPropagation());
+      input.addEventListener("keydown", (event) => event.stopPropagation());
+      return input;
+    }
+
+    function makeConsoleLink() {
+      const link = document.createElement("button");
+      link.type = "button";
+      link.className = "soft-btn quiet kimi-quota-console-link";
+      link.textContent = t("kimiQuotaOpenConsole");
+      link.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (window.settingsAPI && typeof window.settingsAPI.openExternal === "function") {
+          window.settingsAPI.openExternal("https://www.kimi.com/code/console");
+        }
+      });
+      return link;
+    }
+
+    // ── Unconnected: one input, one primary action, quiet notes. The full
+    // safety disclosure stays, but as a footnote instead of a wall above the
+    // buttons; the Console link is a quiet link, not a competing button. ──
+    const connectSection = document.createElement("div");
+    connectSection.className = "kimi-quota-connect";
+    connectSection.hidden = true;
+    const connectRow = document.createElement("div");
+    connectRow.className = "kimi-quota-connect-row";
+    const connectInput = makePasswordInput();
+    const connectButton = document.createElement("button");
+    connectButton.type = "button";
+    connectButton.className = "soft-btn accent settings-button kimi-quota-primary";
+    connectButton.textContent = t("kimiQuotaConnect");
+    connectRow.appendChild(connectInput);
+    connectRow.appendChild(connectButton);
+    connectSection.appendChild(connectRow);
+    const securityNote = document.createElement("span");
+    securityNote.className = "row-desc kimi-quota-note";
+    securityNote.textContent = t("kimiQuotaSecurityWarning");
+    connectSection.appendChild(securityNote);
+    const connectFoot = document.createElement("div");
+    connectFoot.className = "kimi-quota-foot";
+    const manualNote = document.createElement("span");
+    manualNote.className = "row-desc";
+    manualNote.textContent = t("kimiQuotaManualOnly");
+    connectFoot.appendChild(manualNote);
+    connectFoot.appendChild(makeConsoleLink());
+    connectSection.appendChild(connectFoot);
+    card.appendChild(connectSection);
+
+    // ── Connected: account/status first, one primary action (Refresh, or
+    // Reconnect while disconnected). Replace folds away behind a toggle; the
+    // destructive/low-frequency actions live below a hairline, each with its
+    // consequence spelled out — never beside the primary button. ──
+    const manageSection = document.createElement("div");
+    manageSection.className = "kimi-quota-manage";
+    manageSection.hidden = true;
+
+    const badges = document.createElement("div");
+    badges.className = "kimi-quota-badges";
+    const connBadge = document.createElement("span");
+    connBadge.className = "kimi-quota-badge";
+    connBadge.textContent = t("kimiQuotaConnectedBadge");
+    const modeBadge = document.createElement("span");
+    modeBadge.className = "kimi-quota-badge muted";
+    modeBadge.textContent = t("kimiQuotaManualOnlyBadge");
+    badges.appendChild(connBadge);
+    badges.appendChild(modeBadge);
+    manageSection.appendChild(badges);
+
+    const primaryRow = document.createElement("div");
+    primaryRow.className = "kimi-quota-primary-row";
+    const refreshButton = document.createElement("button");
+    refreshButton.type = "button";
+    refreshButton.className = "soft-btn accent settings-button kimi-quota-primary";
+    const replaceToggle = document.createElement("button");
+    replaceToggle.type = "button";
+    replaceToggle.className = "soft-btn quiet";
+    replaceToggle.textContent = t("kimiQuotaReplace");
+    primaryRow.appendChild(refreshButton);
+    primaryRow.appendChild(replaceToggle);
+    manageSection.appendChild(primaryRow);
+
+    const replacePanel = document.createElement("div");
+    replacePanel.className = "kimi-quota-replace";
+    replacePanel.hidden = true;
+    const replaceInput = makePasswordInput();
+    replacePanel.appendChild(replaceInput);
+    const replaceActions = document.createElement("div");
+    replaceActions.className = "kimi-quota-replace-actions";
+    const replaceConfirm = document.createElement("button");
+    replaceConfirm.type = "button";
+    replaceConfirm.className = "soft-btn accent";
+    replaceConfirm.textContent = t("kimiQuotaReplaceConfirm");
+    const replaceCancel = document.createElement("button");
+    replaceCancel.type = "button";
+    replaceCancel.className = "soft-btn quiet";
+    replaceCancel.textContent = t("kimiQuotaCancel");
+    replaceActions.appendChild(replaceConfirm);
+    replaceActions.appendChild(replaceCancel);
+    replacePanel.appendChild(replaceActions);
+    manageSection.appendChild(replacePanel);
+
+    const dangerZone = document.createElement("div");
+    dangerZone.className = "kimi-quota-danger";
+    const disconnectRow = document.createElement("div");
+    disconnectRow.className = "kimi-quota-danger-row";
+    const disconnectButton = document.createElement("button");
+    disconnectButton.type = "button";
+    disconnectButton.className = "soft-btn";
+    disconnectButton.textContent = t("kimiQuotaDisconnect");
+    const disconnectDesc = document.createElement("span");
+    disconnectDesc.className = "row-desc kimi-quota-danger-desc";
+    disconnectDesc.textContent = t("kimiQuotaDisconnectDesc");
+    disconnectRow.appendChild(disconnectButton);
+    disconnectRow.appendChild(disconnectDesc);
+    dangerZone.appendChild(disconnectRow);
+    const forgetRow = document.createElement("div");
+    forgetRow.className = "kimi-quota-danger-row";
+    const forgetButton = document.createElement("button");
+    forgetButton.type = "button";
+    forgetButton.className = "soft-btn danger";
+    forgetButton.textContent = t("kimiQuotaForgetLocal");
+    const forgetDesc = document.createElement("span");
+    forgetDesc.className = "row-desc kimi-quota-danger-desc";
+    forgetDesc.textContent = t("kimiQuotaForgetDesc");
+    forgetRow.appendChild(forgetButton);
+    forgetRow.appendChild(forgetDesc);
+    dangerZone.appendChild(forgetRow);
+    const revokeLine = document.createElement("div");
+    revokeLine.className = "kimi-quota-foot";
     const revokeNote = document.createElement("span");
     revokeNote.className = "row-desc kimi-quota-revoke-note";
     revokeNote.textContent = t("kimiQuotaRevokeNote");
-    card.appendChild(revokeNote);
+    revokeLine.appendChild(revokeNote);
+    revokeLine.appendChild(makeConsoleLink());
+    dangerZone.appendChild(revokeLine);
+    manageSection.appendChild(dangerZone);
+    card.appendChild(manageSection);
 
     let currentStatus = null;
+    let statusLoaded = false;
     let busy = false;
+    let replaceOpen = false;
+
+    function setReplaceOpen(open) {
+      replaceOpen = open;
+      replacePanel.hidden = !open;
+      replaceToggle.disabled = busy || open;
+      if (!open) replaceInput.value = "";
+    }
+
     function syncControls() {
       const configured = !!(currentStatus && currentStatus.configured);
       const decryptable = !!(currentStatus && currentStatus.decryptable);
       const collectionEnabled = !!(currentStatus && currentStatus.collectionEnabled);
       const agentEnabled = !currentStatus || currentStatus.agentEnabled !== false;
-      connectButton.textContent = t(configured ? "kimiQuotaReplace" : "kimiQuotaConnect");
-      refreshButton.textContent = t("kimiQuotaRefresh");
-      disconnectButton.textContent = t("kimiQuotaDisconnect");
-      forgetButton.textContent = t("kimiQuotaForgetLocal");
+
+      // No flash of the wrong view: both sections stay hidden until the first
+      // status read, and the connect card never shows a status line.
+      connectSection.hidden = !statusLoaded || configured;
+      manageSection.hidden = !statusLoaded || !configured;
+      statusLine.hidden = statusLoaded && !configured && !busy;
+
+      // The single primary action: Refresh while connected, Reconnect with
+      // the stored key while disconnected. Reconnect/Refresh both stay
+      // manual-only user actions, exactly like Connect.
+      refreshButton.textContent = t(collectionEnabled ? "kimiQuotaRefresh" : "kimiQuotaReconnect");
+      refreshButton.disabled = busy || !decryptable || (collectionEnabled && !agentEnabled);
       connectButton.disabled = busy;
-      input.disabled = busy;
-      refreshButton.disabled = busy || !configured || !decryptable || !collectionEnabled || !agentEnabled;
-      disconnectButton.disabled = busy || !collectionEnabled;
-      forgetButton.disabled = busy || !configured || collectionEnabled;
-      consoleButton.disabled = busy;
+      connectInput.disabled = busy;
+      replaceInput.disabled = busy;
+      replaceConfirm.disabled = busy;
+      replaceCancel.disabled = busy;
+      replaceToggle.disabled = busy || replaceOpen;
+      replacePanel.hidden = !replaceOpen;
+      disconnectRow.hidden = !collectionEnabled;
+      disconnectButton.disabled = busy;
+      // Forget is only legal once collection is off (the runtime enforces
+      // "disconnect-required"); the disabled state plus its desc says so.
+      forgetButton.disabled = busy || collectionEnabled;
       statusLine.textContent = busy
         ? t("kimiQuotaStatusRefreshing")
         : kimiQuotaStatusText(currentStatus);
@@ -1371,6 +1494,7 @@
         try { currentStatus = await window.settingsAPI.getKimiQuotaStatus(); }
         catch { currentStatus = { status: "error", reason: "runtime-unavailable" }; }
       }
+      statusLoaded = true;
       if (card.isConnected === false) return;
       syncControls();
     }
@@ -1378,6 +1502,7 @@
     async function runAction(invoke) {
       if (busy) return;
       busy = true;
+      setReplaceOpen(false);
       syncControls();
       let result;
       try { result = await invoke(); }
@@ -1391,22 +1516,38 @@
       return result;
     }
 
-    function submitConnect() {
+    function submitKey(input, invoke) {
       const apiKey = input.value;
       input.value = "";
       if (!apiKey) {
         ops.showToast(t("kimiQuotaKeyRequired"), { error: true });
         return;
       }
-      runAction(() => window.settingsAPI.connectKimiQuota(apiKey));
+      runAction(() => invoke(apiKey));
     }
+
     connectButton.addEventListener("click", (event) => {
       event.stopPropagation();
-      submitConnect();
+      submitKey(connectInput, (apiKey) => window.settingsAPI.connectKimiQuota(apiKey));
     });
     refreshButton.addEventListener("click", (event) => {
       event.stopPropagation();
-      runAction(() => window.settingsAPI.refreshKimiQuota());
+      const collectionEnabled = !!(currentStatus && currentStatus.collectionEnabled);
+      runAction(() => (collectionEnabled
+        ? window.settingsAPI.refreshKimiQuota()
+        : window.settingsAPI.reconnectKimiQuota()));
+    });
+    replaceToggle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setReplaceOpen(true);
+    });
+    replaceCancel.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setReplaceOpen(false);
+    });
+    replaceConfirm.addEventListener("click", (event) => {
+      event.stopPropagation();
+      submitKey(replaceInput, (apiKey) => window.settingsAPI.connectKimiQuota(apiKey));
     });
     disconnectButton.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -1417,8 +1558,11 @@
       if (typeof window.confirm === "function" && !window.confirm(t("kimiQuotaForgetConfirm"))) return;
       runAction(() => window.settingsAPI.forgetKimiQuotaCredential());
     });
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") submitConnect();
+    connectInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") submitKey(connectInput, (apiKey) => window.settingsAPI.connectKimiQuota(apiKey));
+    });
+    replaceInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") submitKey(replaceInput, (apiKey) => window.settingsAPI.connectKimiQuota(apiKey));
     });
 
     syncControls();

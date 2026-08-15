@@ -104,6 +104,7 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   getKimiQuotaStatus: () => ipcRenderer.invoke("settings:kimi-quota-status"),
   connectKimiQuota: (apiKey) => ipcRenderer.invoke("settings:kimi-quota-connect", { apiKey }),
   refreshKimiQuota: () => ipcRenderer.invoke("settings:kimi-quota-refresh"),
+  reconnectKimiQuota: () => ipcRenderer.invoke("settings:kimi-quota-reconnect"),
   disconnectKimiQuota: () => ipcRenderer.invoke("settings:kimi-quota-disconnect"),
   forgetKimiQuotaCredential: () => ipcRenderer.invoke("settings:kimi-quota-forget"),
   getPetTintOptions: () => ipcRenderer.invoke("settings:get-pet-tint-options"),

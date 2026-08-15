@@ -255,24 +255,56 @@ function createKimiQuotaRuntime(options = {}) {
     });
   }
 
+  // The shared manual-refresh path, always inside queue(). Both refresh() and
+  // reconnect() land here, so every network admission re-reads the durable
+  // gates (collection opt-in, agent enabled, credential present).
+  async function refreshLocked() {
+    const gate = settingsGate();
+    if (!gate.ok) return { status: "error", reason: gate.reason };
+    let credential;
+    try { credential = credentialStore.load(); } catch { return { status: "error", reason: "credential-unreadable" }; }
+    if (!credential) return { status: "error", reason: "credential-missing" };
+    const expectedGeneration = invalidateRequests();
+    const controller = new AbortController();
+    activeController = controller;
+    transient = { state: "refreshing", reason: null, lastAttemptAt: now() };
+    const { capturedAt, normalized } = await fetchAndNormalize(credential.apiKey, controller.signal);
+    if (activeController === controller) activeController = null;
+    if (normalized.status !== "ok") {
+      transient = { state: normalized.reason, reason: normalized.reason, lastAttemptAt: capturedAt };
+      return normalized;
+    }
+    return commitBoundQuota(normalized.quota, credential.credentialId, expectedGeneration, capturedAt);
+  }
+
   function refresh() {
+    return queue(refreshLocked);
+  }
+
+  // Reconnect a "configured-disabled" connection with the stored credential:
+  // enable collection, then immediately refresh. An explicit user action —
+  // the same manual-only class as Connect/Replace/Refresh — and the key never
+  // leaves the main process.
+  function reconnect() {
     return queue(async () => {
-      const gate = settingsGate();
-      if (!gate.ok) return { status: "error", reason: gate.reason };
       let credential;
       try { credential = credentialStore.load(); } catch { return { status: "error", reason: "credential-unreadable" }; }
       if (!credential) return { status: "error", reason: "credential-missing" };
-      const expectedGeneration = invalidateRequests();
-      const controller = new AbortController();
-      activeController = controller;
-      transient = { state: "refreshing", reason: null, lastAttemptAt: now() };
-      const { capturedAt, normalized } = await fetchAndNormalize(credential.apiKey, controller.signal);
-      if (activeController === controller) activeController = null;
-      if (normalized.status !== "ok") {
-        transient = { state: normalized.reason, reason: normalized.reason, lastAttemptAt: capturedAt };
-        return normalized;
+      let enabledResult;
+      try { enabledResult = await setCollectionEnabled(true); }
+      catch { enabledResult = { status: "error" }; }
+      if (!enabledResult || enabledResult.status !== "ok") {
+        return { status: "error", reason: "enable-failed" };
       }
-      return commitBoundQuota(normalized.quota, credential.credentialId, expectedGeneration, capturedAt);
+      // Mirror connect()'s post-enable behavior: a closed gate (e.g. the Kimi
+      // agent itself is disabled) is a configured, recoverable state, not an
+      // error — the status line says what is missing.
+      const gate = settingsGate();
+      if (!gate.ok) {
+        transient = { state: gate.reason, reason: gate.reason, lastAttemptAt: transient.lastAttemptAt };
+        return { status: "ok", configured: true, refreshed: false, reason: gate.reason };
+      }
+      return refreshLocked();
     });
   }
 
@@ -381,6 +413,7 @@ function createKimiQuotaRuntime(options = {}) {
     initialize,
     invalidateRequests,
     onCollectionPreferenceChanged,
+    reconnect,
     refresh,
   };
 }

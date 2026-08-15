@@ -62,12 +62,14 @@ test("settings preload exposes dedicated Kimi quota operations", async () => {
   await settingsAPI.getKimiQuotaStatus();
   await settingsAPI.connectKimiQuota("sk-secret");
   await settingsAPI.refreshKimiQuota();
+  await settingsAPI.reconnectKimiQuota();
   await settingsAPI.disconnectKimiQuota();
   await settingsAPI.forgetKimiQuotaCredential();
   assert.deepStrictEqual(JSON.parse(JSON.stringify(invokes)), [
     ["settings:kimi-quota-status"],
     ["settings:kimi-quota-connect", { apiKey: "sk-secret" }],
     ["settings:kimi-quota-refresh"],
+    ["settings:kimi-quota-reconnect"],
     ["settings:kimi-quota-disconnect"],
     ["settings:kimi-quota-forget"],
   ]);

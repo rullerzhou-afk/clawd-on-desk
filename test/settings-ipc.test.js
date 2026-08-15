@@ -249,6 +249,7 @@ test("Kimi quota IPC is trusted-window-only and bypasses generic settings comman
     getStatus: () => ({ status: "ok", configured: false, mode: "manual-only" }),
     connect: async (apiKey) => { runtimeCalls.push(["connect", apiKey]); return { status: "ok" }; },
     refresh: async () => { runtimeCalls.push(["refresh"]); return { status: "ok" }; },
+    reconnect: async () => { runtimeCalls.push(["reconnect"]); return { status: "ok" }; },
     disconnect: async () => { runtimeCalls.push(["disconnect"]); return { status: "ok" }; },
     forget: async () => { runtimeCalls.push(["forget"]); return { status: "ok" }; },
   };
@@ -263,11 +264,13 @@ test("Kimi quota IPC is trusted-window-only and bypasses generic settings comman
     { status: "ok" }
   );
   await harness.ipcMain.invoke("settings:kimi-quota-refresh");
+  await harness.ipcMain.invoke("settings:kimi-quota-reconnect");
   await harness.ipcMain.invoke("settings:kimi-quota-disconnect");
   await harness.ipcMain.invoke("settings:kimi-quota-forget");
   assert.deepStrictEqual(runtimeCalls, [
     ["connect", "sk-secret"],
     ["refresh"],
+    ["reconnect"],
     ["disconnect"],
     ["forget"],
   ]);
@@ -278,7 +281,11 @@ test("Kimi quota IPC is trusted-window-only and bypasses generic settings comman
     await harness.ipcMain.invoke("settings:kimi-quota-connect", { apiKey: "sk-secret" }),
     { status: "error", message: "untrusted settings sender" }
   );
-  assert.equal(runtimeCalls.length, 4);
+  assert.deepStrictEqual(
+    await harness.ipcMain.invoke("settings:kimi-quota-reconnect"),
+    { status: "error", message: "untrusted settings sender" }
+  );
+  assert.equal(runtimeCalls.length, 5);
 });
 
 test("settings IPC registers owned channels and leaves animation override channels to their module", () => {

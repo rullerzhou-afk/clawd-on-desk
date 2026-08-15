@@ -1469,16 +1469,31 @@ html, body {
   gap: 3px;
 }
 
-.kimi-quota-warning,
-.kimi-quota-revoke-note {
-  color: var(--warning, #d99a32);
-}
-
-.kimi-quota-form {
+/* Author display rules outrank the UA [hidden] rule, so every toggleable
+   section below needs its own explicit hidden guard. */
+.kimi-quota-connect,
+.kimi-quota-manage {
   display: flex;
   flex-direction: column;
+  gap: 10px;
+}
+
+.kimi-quota-connect[hidden],
+.kimi-quota-manage[hidden],
+.kimi-quota-replace[hidden],
+.kimi-quota-danger-row[hidden],
+.kimi-quota-status[hidden] {
+  display: none;
+}
+
+.kimi-quota-connect-row {
+  display: flex;
+  align-items: center;
   gap: 8px;
-  width: 100%;
+}
+
+.kimi-quota-connect-row .kimi-quota-key-input {
+  flex: 1 1 auto;
 }
 
 .kimi-quota-key-input {
@@ -1487,10 +1502,97 @@ html, body {
   width: 100%;
 }
 
-.kimi-quota-actions {
+.kimi-quota-primary {
+  flex: 0 0 auto;
+}
+
+/* Safety/disclosure text reads as a footnote, not a wall over the action. */
+.kimi-quota-note {
+  color: var(--text-secondary);
+}
+
+.kimi-quota-revoke-note {
+  color: var(--warning, #d99a32);
+}
+
+.kimi-quota-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.kimi-quota-console-link {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+.kimi-quota-badges {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.kimi-quota-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel-bg));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.kimi-quota-badge.muted {
+  color: var(--text-secondary);
+  background: var(--bg);
+  border-color: var(--border);
+}
+
+.kimi-quota-primary-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.kimi-quota-replace {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.kimi-quota-replace-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.kimi-quota-danger {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--row-border);
+}
+
+.kimi-quota-danger-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.kimi-quota-danger-row .soft-btn {
+  flex: 0 0 auto;
+}
+
+.kimi-quota-danger-desc {
+  flex: 1 1 auto;
 }
 
 .kimi-quota-status {

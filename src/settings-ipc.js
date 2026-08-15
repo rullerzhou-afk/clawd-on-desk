@@ -284,6 +284,14 @@ function registerSettingsIpc(options = {}) {
       ? runtime.refresh()
       : { status: "error", reason: "runtime-unavailable" };
   });
+  handle("settings:kimi-quota-reconnect", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.kimiQuotaRuntime;
+    return runtime && typeof runtime.reconnect === "function"
+      ? runtime.reconnect()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
   handle("settings:kimi-quota-disconnect", (event) => {
     const rejected = rejectUntrustedSettingsEvent(event);
     if (rejected) return rejected;

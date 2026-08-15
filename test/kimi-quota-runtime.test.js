@@ -177,3 +177,52 @@ test("Forget is rejected while enabled and never claims to revoke remotely", asy
   assert.equal(forgotten.remoteRevocationRequired, true);
   assert.equal(h.credential, null);
 });
+
+test("Reconnect re-enables collection with the stored key and refreshes", async () => {
+  const h = harness({
+    enabled: false,
+    credential: { apiKey: "sk-stored", credentialId: ID_A },
+  });
+  const result = await h.runtime.reconnect();
+  assert.equal(result.status, "ok");
+  assert.equal(result.refreshed, true);
+  assert.equal(h.runtime.getStatus().collectionEnabled, true);
+  assert.equal(h.commits.length, 1);
+  assert.equal(h.binding.lastQuotaCredentialId, ID_A);
+});
+
+test("Reconnect reports a recoverable configured state when the agent is disabled", async () => {
+  const h = harness({
+    enabled: false,
+    agentEnabled: false,
+    credential: { apiKey: "sk-stored", credentialId: ID_A },
+  });
+  const result = await h.runtime.reconnect();
+  assert.equal(result.status, "ok");
+  assert.equal(result.refreshed, false);
+  assert.equal(result.reason, "agent-disabled");
+  assert.equal(h.runtime.getStatus().collectionEnabled, true);
+  assert.equal(h.commits.length, 0);
+});
+
+test("Reconnect without a stored credential fails closed and never enables collection", async () => {
+  const h = harness({ enabled: false });
+  const result = await h.runtime.reconnect();
+  assert.equal(result.status, "error");
+  assert.equal(result.reason, "credential-missing");
+  assert.equal(h.runtime.getStatus().collectionEnabled, false);
+  assert.equal(h.commits.length, 0);
+});
+
+test("Reconnect leaves collection disabled when the enable commit fails", async () => {
+  const h = harness({
+    enabled: false,
+    enableFails: true,
+    credential: { apiKey: "sk-stored", credentialId: ID_A },
+  });
+  const result = await h.runtime.reconnect();
+  assert.equal(result.status, "error");
+  assert.equal(result.reason, "enable-failed");
+  assert.equal(h.runtime.getStatus().collectionEnabled, false);
+  assert.equal(h.commits.length, 0);
+});
