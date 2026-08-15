@@ -254,6 +254,21 @@ function registerSettingsIpc(options = {}) {
       return 0;
     }
   });
+  // Which providers the "show beside the pet" list should offer. Driven by the
+  // live snapshot, not by the static provider table, so the list never shows a
+  // checkbox for a provider the user has not connected — the same reasoning
+  // that keeps "merge across machines" hidden on a single-machine setup. An
+  // empty array is the honest failure mode: the settings row hides itself
+  // rather than rendering a list that claims nothing is connected.
+  handle("settings:get-quota-ring-providers", () => {
+    try {
+      return typeof options.getQuotaRingProviders === "function"
+        ? options.getQuotaRingProviders()
+        : [];
+    } catch (_err) {
+      return [];
+    }
+  });
   // Kimi API keys are accepted only by these trusted Settings-window handlers.
   // They never transit settings:command, prefs, or a renderer-broadcast
   // snapshot. Results are deliberately sanitized by kimi-quota-runtime.

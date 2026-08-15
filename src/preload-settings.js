@@ -101,6 +101,7 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   discordDefaultAppIdPresent,
   getSnapshot: () => ipcRenderer.invoke("settings:get-snapshot"),
   getQuotaSourceCount: () => ipcRenderer.invoke("settings:get-quota-source-count"),
+  getQuotaRingProviders: () => ipcRenderer.invoke("settings:get-quota-ring-providers"),
   getKimiQuotaStatus: () => ipcRenderer.invoke("settings:kimi-quota-status"),
   connectKimiQuota: (apiKey) => ipcRenderer.invoke("settings:kimi-quota-connect", { apiKey }),
   refreshKimiQuota: () => ipcRenderer.invoke("settings:kimi-quota-refresh"),

@@ -108,6 +108,7 @@ let payload = {
   accountQuota: [],
   quotaAgentIcons: {},
   displayMode: "used",
+  hiddenQuotaProviders: [],
   side: "left",
   translations: {},
 };
@@ -300,15 +301,32 @@ function buildCoinModel(source, def, now, multiSource) {
   };
 }
 
+// Providers the user hid from this cluster. Display-only — collection and the
+// Dashboard are untouched. quota-ring-geometry.js applies the identical filter
+// when it sizes this window; the two must agree or the window reserves space
+// for coins that never render. test/quota-ring-geometry.test.js pins the pair.
+function hiddenProviderSet() {
+  const hidden = Array.isArray(payload.hiddenQuotaProviders) ? payload.hiddenQuotaProviders : [];
+  const keys = hidden.filter((key) => typeof key === "string" && key);
+  return keys.length ? new Set(keys) : null;
+}
+
 function collectCoins(now) {
   const sources = Array.isArray(payload.accountQuota) ? payload.accountQuota : [];
+  const hidden = hiddenProviderSet();
+  const isDrawn = (source, def) =>
+    !(hidden && hidden.has(def.key)) && providerHasDrawableQuota(source, def);
+  // "Multi-source" drives the per-coin host marker, so it counts sources that
+  // still draw something AFTER hiding — hiding every provider a second machine
+  // reports should retire the marker, not leave it labelling a single cluster.
   const drawableSources = sources.filter((source) =>
     source && typeof source === "object"
-      && RING_PROVIDERS.some((def) => providerHasDrawableQuota(source, def)));
+      && RING_PROVIDERS.some((def) => isDrawn(source, def)));
   const multiSource = drawableSources.length > 1;
   const coins = [];
   for (const source of drawableSources) {
     for (const def of RING_PROVIDERS) {
+      if (hidden && hidden.has(def.key)) continue;
       const model = buildCoinModel(source, def, now, multiSource);
       if (model) coins.push(model);
     }
@@ -683,6 +701,9 @@ async function init() {
       accountQuota: Array.isArray(next && next.accountQuota) ? next.accountQuota : [],
       quotaAgentIcons: (next && next.quotaAgentIcons) || {},
       displayMode: next && next.displayMode === "remaining" ? "remaining" : "used",
+      hiddenQuotaProviders: Array.isArray(next && next.hiddenQuotaProviders)
+        ? next.hiddenQuotaProviders
+        : [],
       side: next && next.side === "right" ? "right" : "left",
       translations: payload.translations,
       lang: payload.lang,

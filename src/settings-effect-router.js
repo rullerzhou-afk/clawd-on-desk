@@ -252,6 +252,11 @@ function createSettingsEffectRouter(options = {}) {
       || "sessionHudShowContextUsage" in changes
       || "sessionHudShowQuota" in changes
       || "quotaRingDisplayMode" in changes
+      // Hiding a provider changes the COIN COUNT, so this has to re-measure and
+      // re-place the cluster window, not just repaint it — a repaint alone
+      // would leave the transparent window (and its auto-hide hot zone) sized
+      // for coins that no longer draw.
+      || "quotaRingHiddenProviders" in changes
     ) {
       try {
         syncSessionHudVisibility();

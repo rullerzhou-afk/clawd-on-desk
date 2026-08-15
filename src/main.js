@@ -1071,6 +1071,7 @@ let sessionHudShowElapsed = _settingsController.get("sessionHudShowElapsed");
 let sessionHudShowContextUsage = _settingsController.get("sessionHudShowContextUsage");
 let sessionHudShowQuota = _settingsController.get("sessionHudShowQuota");
 let quotaRingDisplayMode = _settingsController.get("quotaRingDisplayMode");
+let quotaRingHiddenProviders = _settingsController.get("quotaRingHiddenProviders");
 let claudeQuotaCollectionEnabled = _settingsController.get("claudeQuotaCollectionEnabled");
 let kimiQuotaCollectionEnabled = _settingsController.get("kimiQuotaCollectionEnabled");
 let quotaMergeSources = _settingsController.get("quotaMergeSources");
@@ -2293,6 +2294,11 @@ const _tutorial = require("./tutorial")({
   ),
 });
 
+// Shared with session-hud.js on purpose: the Settings "show beside the pet"
+// list has to be built from the SAME provider table and draw rule that sizes
+// the cluster window, or the list can offer a provider that never draws.
+const _ringGeom = require("./quota-ring-geometry");
+
 const _sessionHud = require("./session-hud")({
   get win() { return win; },
   get petHidden() { return petWindowRuntime.isPetHidden(); },
@@ -2302,6 +2308,7 @@ const _sessionHud = require("./session-hud")({
   get sessionHudShowContextUsage() { return sessionHudShowContextUsage; },
   get sessionHudShowQuota() { return sessionHudShowQuota; },
   get quotaRingDisplayMode() { return quotaRingDisplayMode; },
+  get quotaRingHiddenProviders() { return quotaRingHiddenProviders; },
   get sessionHudPinned() { return sessionHudPinned; },
   get lowPowerIdleMode() { return lowPowerIdleMode; },
   getMiniMode: () => _mini.getMiniMode(),
@@ -3646,6 +3653,9 @@ const SETTINGS_MIRROR_SETTERS = {
   sessionHudShowContextUsage: (v) => { sessionHudShowContextUsage = v; },
   sessionHudShowQuota: (v) => { sessionHudShowQuota = v; },
   quotaRingDisplayMode: (v) => { quotaRingDisplayMode = v; },
+  // Normalized to an array here as well as in prefs: this mirror also takes the
+  // value straight from a settings broadcast, and every consumer indexes it.
+  quotaRingHiddenProviders: (v) => { quotaRingHiddenProviders = Array.isArray(v) ? v : []; },
   claudeQuotaCollectionEnabled: (v) => { claudeQuotaCollectionEnabled = v; },
   kimiQuotaCollectionEnabled: (v) => { kimiQuotaCollectionEnabled = v; },
   quotaMergeSources: (v) => { quotaMergeSources = v; },
@@ -3953,6 +3963,10 @@ registerSettingsIpc({
   path,
   settingsController: _settingsController,
   getQuotaSourceCount: () => _state.getQuotaSourceCount(),
+  getQuotaRingProviders: () => _ringGeom.listQuotaRingProviders(
+    _state.buildSessionSnapshot(),
+    quotaRingHiddenProviders
+  ),
   themeLoader,
   codexPetMain,
   getSettingsWindow,

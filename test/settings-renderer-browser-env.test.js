@@ -6815,6 +6815,96 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(summary.children[0].textContent, "HUD: off");
   });
 
+  it("lets the user pick which providers draw beside the pet, hiding by exception", async () => {
+    // The cluster caps at four coins and the renderer takes the first four in
+    // provider order, so without this the user has no say over which survive.
+    const updateCalls = [];
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ quotaRingHiddenProviders: ["codexQuota"] }),
+      settingsAPI: {
+        getQuotaSourceCount: async () => 1,
+        getQuotaRingProviders: async () => ([
+          { key: "claudeQuota", label: "Claude", hidden: false },
+          { key: "codexQuota", label: "Codex", hidden: true },
+          { key: "kimiQuota", label: "Kimi", hidden: false },
+        ]),
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.renderContent();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const block = harness.content.querySelector(".quota-ring-providers");
+    assert.ok(block, "connected providers should be listed");
+    assert.strictEqual(block.style.display, "", "the list reveals once providers are known");
+    const rows = block.querySelectorAll(".quota-ring-provider-row");
+    assert.strictEqual(rows.length, 3);
+    assert.deepStrictEqual(
+      rows.map((row) => row.dataset.providerKey),
+      ["claudeQuota", "codexQuota", "kimiQuota"]
+    );
+    // The switch reads as "shown", the stored preference records what is hidden.
+    const switches = rows.map((row) => row.querySelector(".switch"));
+    assert.strictEqual(switches[0].classList.contains("on"), true, "Claude draws");
+    assert.strictEqual(switches[1].classList.contains("on"), false, "Codex is hidden");
+    assert.strictEqual(switches[2].classList.contains("on"), true, "Kimi draws");
+
+    // Hiding one appends to the list rather than replacing it, or turning off a
+    // second provider would quietly bring the first one back.
+    switches[2].eventListeners.click[0]();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepStrictEqual(updateCalls, [
+      { key: "quotaRingHiddenProviders", value: ["codexQuota", "kimiQuota"] },
+    ]);
+
+    // Re-showing removes only that key.
+    updateCalls.length = 0;
+    switches[1].eventListeners.click[0]();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepStrictEqual(updateCalls, [
+      { key: "quotaRingHiddenProviders", value: [] },
+    ]);
+  });
+
+  it("offers no provider list when only one provider reports", async () => {
+    // One connected provider cannot crowd anything out, so the control would be
+    // a no-op switch — the same reason merge-sources stays hidden on one machine.
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({}),
+      settingsAPI: {
+        getQuotaSourceCount: async () => 1,
+        getQuotaRingProviders: async () => ([{ key: "kimiQuota", label: "Kimi", hidden: false }]),
+      },
+    });
+    harness.renderContent();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const block = harness.content.querySelector(".quota-ring-providers");
+    assert.ok(block, "the block still exists so a later reveal has somewhere to go");
+    assert.strictEqual(block.style.display, "none");
+    assert.strictEqual(block.querySelectorAll(".quota-ring-provider-row").length, 0);
+  });
+
+  it("survives a settings build with no provider API at all", async () => {
+    // Older preload / a failed IPC must leave the rest of the group usable
+    // rather than throwing partway through building General.
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({}),
+      settingsAPI: { getQuotaSourceCount: async () => 1 },
+    });
+    harness.renderContent();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.ok(harness.getSwitch("sessionHudShowQuota"), "the ring group still renders");
+    const block = harness.content.querySelector(".quota-ring-providers");
+    assert.strictEqual(block.style.display, "none");
+  });
+
   it("keeps an enabled merge-sources switch visible with only one source", async () => {
     const updateCalls = [];
     const harness = loadGeneralTabForTest({

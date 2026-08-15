@@ -65,6 +65,10 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.sessionHudShowContextUsage, true);
     assert.strictEqual(d.sessionHudShowQuota, true);
     assert.strictEqual(d.quotaRingDisplayMode, "used");
+    // Empty means every connected provider draws, matching the behaviour before
+    // the preference existed. Storing what is HIDDEN (not what is shown) is why
+    // a newly connected provider appears on its own instead of silently missing.
+    assert.deepStrictEqual(d.quotaRingHiddenProviders, []);
     assert.strictEqual(d.claudeQuotaCollectionEnabled, false);
     assert.strictEqual(d.kimiQuotaCollectionEnabled, false);
     assert.strictEqual(d.quotaMergeSources, false);
@@ -420,6 +424,39 @@ describe("prefs.validate", () => {
     assert.strictEqual(prefs.validate({ textScale: 2 }).textScale, 1);
     assert.strictEqual(prefs.validate({ textScale: "1.2" }).textScale, 1);
     assert.strictEqual(prefs.getDefaults().textScale, 1);
+  });
+
+  it("normalizes hidden quota providers without inventing or dropping choices", () => {
+    // Deliberately NOT validated against the ring's provider table. Rejecting an
+    // unfamiliar key here would silently un-hide a provider whenever a rename,
+    // load order, or a not-yet-registered provider made the key look wrong —
+    // the user's coin would come back on its own. Shape only; consumers match
+    // by key, so a stale entry is inert.
+    assert.deepStrictEqual(
+      prefs.validate({ quotaRingHiddenProviders: ["codexQuota", "somethingNew"] })
+        .quotaRingHiddenProviders,
+      ["codexQuota", "somethingNew"]
+    );
+    // Junk shapes collapse to "hide nothing" rather than throwing away the ring.
+    for (const raw of [undefined, null, "codexQuota", 7, {}]) {
+      assert.deepStrictEqual(
+        prefs.validate({ quotaRingHiddenProviders: raw }).quotaRingHiddenProviders, [],
+        `${JSON.stringify(raw)} should normalize to an empty list`
+      );
+    }
+    // Blank/duplicate/non-string entries are dropped; order is preserved.
+    assert.deepStrictEqual(
+      prefs.validate({
+        quotaRingHiddenProviders: ["kimiQuota", "", "  ", null, 3, "kimiQuota", "codexQuota"],
+      }).quotaRingHiddenProviders,
+      ["kimiQuota", "codexQuota"]
+    );
+    // Bounded, so a corrupt file cannot grow the preference without limit.
+    const flood = Array.from({ length: 200 }, (_v, i) => `p${i}`);
+    assert.strictEqual(
+      prefs.validate({ quotaRingHiddenProviders: flood }).quotaRingHiddenProviders.length,
+      prefs.MAX_HIDDEN_QUOTA_PROVIDERS
+    );
   });
 
   it("normalizes agents (drops malformed entries)", () => {
