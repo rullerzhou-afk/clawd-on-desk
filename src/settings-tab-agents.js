@@ -1052,6 +1052,15 @@
         }
         if (!agent.custom) syncAgentIntegrationBadge(integrationBadge, agent.id);
         text.appendChild(badges);
+        // TraeCode requires a manual enable step inside Trae that Clawd cannot
+        // do for the user — surface it right on the card once the integration
+        // is installed so nobody installs it and sees "nothing happens".
+        if (!agent.custom && agent.id === "traecode" && readers.readAgentIntegrationInstalled(agent.id)) {
+          const hint = document.createElement("div");
+          hint.className = "row-desc agent-traecode-hint";
+          hint.textContent = t("traecodeEnableHint");
+          text.appendChild(hint);
+        }
       },
       buildExtraControls: (ctrl) => {
         if (agent.custom) {

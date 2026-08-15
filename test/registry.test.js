@@ -28,6 +28,7 @@ describe("Agent Registry", () => {
       "reasonix",
       "qoderwork",
       "workbuddy",
+      "traecode",
     ]);
   });
 
@@ -49,6 +50,7 @@ describe("Agent Registry", () => {
     assert.strictEqual(registry.getAgent("reasonix").name, "Reasonix");
     assert.strictEqual(registry.getAgent("qoderwork").name, "QoderWork");
     assert.strictEqual(registry.getAgent("workbuddy").name, "WorkBuddy");
+    assert.strictEqual(registry.getAgent("traecode").name, "TraeCode");
     assert.strictEqual(registry.getAgent("nonexistent"), undefined);
   });
 
@@ -103,6 +105,11 @@ describe("Agent Registry", () => {
       "WorkBuddy AI Helper",
       "WorkBuddy AI Helper (Renderer)",
     ]);
+
+    const traecode = registry.getAgent("traecode");
+    assert.deepStrictEqual(traecode.processNames.win, ["Trae.exe", "trae.exe"]);
+    assert.deepStrictEqual(traecode.processNames.mac, ["Trae", "trae"]);
+    assert.deepStrictEqual(traecode.processNames.linux, ["trae", "Trae"]);
   });
 
   it("should include explicit Linux process names", () => {
@@ -229,6 +236,10 @@ describe("Agent Registry", () => {
     );
     assert.deepStrictEqual(
       registry.getAgent("workbuddy").startupRecoveryProcessNames,
+      { win: [], mac: [], linux: [] }
+    );
+    assert.deepStrictEqual(
+      registry.getAgent("traecode").startupRecoveryProcessNames,
       { win: [], mac: [], linux: [] }
     );
     assert.deepStrictEqual(
@@ -367,6 +378,17 @@ describe("Agent Registry", () => {
     assert.strictEqual(workbuddy.capabilities.notificationHook, true);
     assert.strictEqual(workbuddy.capabilities.sessionEnd, true);
     assert.strictEqual(workbuddy.capabilities.subagent, false);
+
+    const traecode = registry.getAgent("traecode");
+    // State-only: TraeCode has no PermissionRequest or SessionEnd event, so no
+    // HTTP hook, no approval bubble. It only mirrors state and pops a
+    // Notification.
+    assert.strictEqual(traecode.capabilities.httpHook, false);
+    assert.strictEqual(traecode.capabilities.permissionApproval, false);
+    assert.strictEqual(traecode.capabilities.interactiveBubble, false);
+    assert.strictEqual(traecode.capabilities.notificationHook, true);
+    assert.strictEqual(traecode.capabilities.sessionEnd, false);
+    assert.strictEqual(traecode.capabilities.subagent, false);
   });
 
   it("should have eventMap for hook-based agents", () => {
@@ -486,6 +508,19 @@ describe("Agent Registry", () => {
     assert.strictEqual(workbuddy.eventMap.Notification, "notification");
     assert.strictEqual(workbuddy.eventMap.PreCompact, "sweeping");
     assert.strictEqual(workbuddy.eventMap.SessionEnd, "sleeping");
+
+    const traecode = registry.getAgent("traecode");
+    assert.strictEqual(traecode.eventSource, "hook");
+    assert.strictEqual(traecode.eventMap.SessionStart, "idle");
+    assert.strictEqual(traecode.eventMap.UserPromptSubmit, "thinking");
+    assert.strictEqual(traecode.eventMap.PreToolUse, "working");
+    assert.strictEqual(traecode.eventMap.PostToolUse, "working");
+    assert.strictEqual(traecode.eventMap.Stop, "attention");
+    assert.strictEqual(traecode.eventMap.Notification, "notification");
+    // TraeCode has no SessionEnd / PermissionRequest / PreCompact events.
+    assert.strictEqual(traecode.eventMap.SessionEnd, undefined);
+    assert.strictEqual(traecode.eventMap.PermissionRequest, undefined);
+    assert.strictEqual(traecode.eventMap.PreCompact, undefined);
   });
 
   it("treats Gemini CLI as a hook-only agent", () => {
@@ -504,6 +539,15 @@ describe("Agent Registry", () => {
     assert.ok(antigravity.hookConfig);
     assert.strictEqual(antigravity.hookConfig.configFormat, "antigravity-hooks-json");
     assert.strictEqual(antigravity.logConfig, undefined);
+  });
+
+  it("treats TraeCode as a hook-only agent with standalone hooks.json", () => {
+    const traecode = registry.getAgent("traecode");
+
+    assert.strictEqual(traecode.eventSource, "hook");
+    assert.ok(traecode.hookConfig);
+    assert.strictEqual(traecode.hookConfig.configFormat, "traecode-hooks-json");
+    assert.strictEqual(traecode.logConfig, undefined);
   });
 
   it("should have logEventMap for poll-based agents", () => {

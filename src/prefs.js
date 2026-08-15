@@ -352,6 +352,9 @@ const SCHEMA = {
       // desktop app owns its permission loop natively, so permission bubbles
       // default off (like qoderwork).
       "workbuddy": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+      // TraeCode is state-only: hook protocol is Claude Code-compatible but it
+      // has no PermissionRequest event, so permission bubbles default off.
+      "traecode": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       "kiro-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "kimi-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "qwen-code": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },

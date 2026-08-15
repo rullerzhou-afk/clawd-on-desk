@@ -34,6 +34,7 @@ describe("doctor agent descriptors", () => {
         "qoder",
         "reasonix",
         "qoderwork",
+        "traecode",
       ]
     );
   });
@@ -146,6 +147,12 @@ describe("doctor agent descriptors", () => {
     assert.strictEqual(getAgentDescriptor("qoderwork").configPath, qoderwork.DEFAULT_CONFIG_PATH);
     assert.strictEqual(getAgentDescriptor("qoderwork").marker, qoderwork.MARKER);
     assert.deepStrictEqual(getAgentDescriptor("qoderwork").hookEvents, qoderwork.QODERWORK_HOOK_EVENTS);
+
+    const traecode = require("../hooks/traecode-install");
+    assert.strictEqual(getAgentDescriptor("traecode").parentDir, traecode.DEFAULT_PARENT_DIR);
+    assert.strictEqual(getAgentDescriptor("traecode").configPath, traecode.DEFAULT_CONFIG_PATH);
+    assert.strictEqual(getAgentDescriptor("traecode").marker, traecode.MARKER);
+    assert.deepStrictEqual(getAgentDescriptor("traecode").hookEvents, traecode.TRAECODE_HOOK_EVENTS);
   });
 
   it("returns copies from public accessors", () => {

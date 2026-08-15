@@ -1156,6 +1156,7 @@ function loadAgentsTabForTest({
           rowCodexNativeNotificationSound: "Native sound",
           rowCodexNativeNotificationSoundDesc: "Native sound desc",
           badgePermissionBubble: "Permission bubble",
+          traecodeEnableHint: "Enable hooks in Trae before they fire.",
           eventSourceHook: "Hook",
           eventSourceLogPoll: "Log poll",
           eventSourcePlugin: "Plugin",
@@ -6029,6 +6030,38 @@ describe("settings renderer browser environment", () => {
     autoStart = harness.core.state.mountedControls.generalSwitches.get("autoStartWithClaude");
     assert.strictEqual(autoStart.element.classList.contains("disabled"), false);
     assert.strictEqual(autoStart.extraElement, null);
+  });
+
+  it("shows the TraeCode enable-in-Trae hint on the card when the integration is installed", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: { traecode: { integrationInstalled: true, enabled: true } },
+      },
+      agentMetadata: [
+        { id: "traecode", name: "TraeCode", eventSource: "hook", capabilities: {} },
+      ],
+    });
+
+    harness.core.ops.requestRender({ content: true });
+
+    const hint = harness.content.querySelector(".agent-traecode-hint");
+    assert.ok(hint, "TraeCode hint should render on the installed card");
+    assert.match(collectText(hint), /Enable hooks in Trae/);
+  });
+
+  it("omits the TraeCode enable-in-Trae hint until the integration is installed", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: { traecode: { integrationInstalled: false, enabled: false } },
+      },
+      agentMetadata: [
+        { id: "traecode", name: "TraeCode", eventSource: "hook", capabilities: {} },
+      ],
+    });
+
+    harness.core.ops.requestRender({ content: true });
+
+    assert.strictEqual(harness.content.querySelector(".agent-traecode-hint"), null);
   });
 
   it("patches hide-bubbles aggregate changes without rebuilding General content", () => {

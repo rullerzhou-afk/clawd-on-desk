@@ -399,6 +399,15 @@
       "sha256": "3c2bc7d338c9eacc027af2b27693056b7cbea3a6c0a09225cf87020afe57fd7b",
       "fallback": false,
       "contrastTreatment": "neutral-dark-tile"
+    },
+    "traecode": {
+      "agentId": "traecode",
+      "originalFilename": "traecode.png",
+      "sourceFilename": "traecode.png",
+      "sourceType": "png",
+      "sha256": "19cb901d7b64a630551e5b8adfc950367cab896fac29261275e7bcf97dfce773",
+      "fallback": true,
+      "exportMode": "passthrough"
     }
   },
   "outputs": {
@@ -527,6 +536,12 @@
       "outputFilename": "workbuddy.png",
       "outputSha256": "70498230774e6cbb47d18ca78acacac5e7f8a1b8e30a434f7ceb9080420589f1",
       "generatedFromSourceSha256": "3c2bc7d338c9eacc027af2b27693056b7cbea3a6c0a09225cf87020afe57fd7b"
+    },
+    "traecode": {
+      "agentId": "traecode",
+      "outputFilename": "traecode.png",
+      "outputSha256": "19cb901d7b64a630551e5b8adfc950367cab896fac29261275e7bcf97dfce773",
+      "generatedFromSourceSha256": "19cb901d7b64a630551e5b8adfc950367cab896fac29261275e7bcf97dfce773"
     }
   }
 }

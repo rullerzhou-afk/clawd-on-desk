@@ -22,6 +22,7 @@ const {
   buildZcodeProcessHook,
   timeoutMsForZcodeEvent,
 } = require("../hooks/zcode-install");
+const { TRAECODE_HOOK_EVENTS } = require("../hooks/traecode-install");
 
 // Complete healthy legacy Kimi config: every event registered, every command
 // carrying the canonical argv mode flag.
@@ -1236,6 +1237,30 @@ describe("checkAgentIntegrations", () => {
     assert.strictEqual(detail.status, "ok");
     assert.strictEqual(detail.commandCount, QODER_HOOK_EVENTS.length);
     assert.ok(seen.every((command) => command.includes("qoder-hook.js")));
+  });
+
+  it("annotates healthy TraeCode hooks with an enable-in-Trae notice", () => {
+    const descriptor = managedFileDescriptor("traecode", ".trae-cn");
+    writeJson(descriptor.configPath, { hooks: nestedHooksConfig(TRAECODE_HOOK_EVENTS, "traecode-hook.js") });
+
+    const detail = runOne(descriptor, {
+      validateCommand: () => ({ ok: true, nodeBin: "/node", scriptPath: "/app/hooks/traecode-hook.js" }),
+    });
+
+    assert.strictEqual(detail.status, "ok");
+    assert.strictEqual(detail.commandCount, TRAECODE_HOOK_EVENTS.length);
+    assert.match(detail.detail, /Settings → Hooks → Enable/);
+    assert.match(detail.detail, /Local auto-run/);
+  });
+
+  it("does not annotate TraeCode hooks when the integration is broken", () => {
+    const descriptor = managedFileDescriptor("traecode", ".trae-cn");
+    fs.mkdirSync(descriptor.parentDir, { recursive: true });
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.doesNotMatch(detail.detail, /Settings → Hooks → Enable/);
   });
 
   it("detects portable Windows Qoder hooks (bash-safe form, marker in plain text)", () => {

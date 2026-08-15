@@ -198,6 +198,22 @@ function withClaudeHookGuardNotice(detail, descriptor, options) {
   return detail;
 }
 
+// TraeCode carries an extra manual step beyond registering hooks.json: the
+// hooks only fire after the user enables them inside Trae (Settings → Hooks)
+// and picks a run mode — the IDE holds that switch in private storage Clawd
+// cannot read. The check cannot detect it, so when the integration looks
+// healthy we surface an informational note instead. Never masks a primary
+// finding — the note only annotates an "ok" status.
+function withTraeCodeEnableNotice(detail, descriptor) {
+  if (descriptor.agentId !== "traecode" || !detail) return detail;
+  if (detail.status !== "ok") return detail;
+  const base = typeof detail.detail === "string" && detail.detail ? detail.detail : "TraeCode hooks registered";
+  return {
+    ...detail,
+    detail: `${base}. Hooks only fire after enabling them in Trae: Settings → Hooks → Enable (run mode: Local auto-run).`,
+  };
+}
+
 function withAgentFixAction(detail, descriptor) {
   if (
     descriptor.agentId === "kimi-cli"
@@ -2310,6 +2326,7 @@ function checkAgent(descriptor, options) {
     detail = withKimiLegacyPermissionModeSupplement(detail, descriptor, options);
   }
   detail = withClaudeHookGuardNotice(detail, descriptor, options);
+  detail = withTraeCodeEnableNotice(detail, descriptor);
   return withAgentFixAction(withAgentBubbleNote(detail, prefs, descriptor.agentId), descriptor);
 }
 

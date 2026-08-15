@@ -22,6 +22,7 @@ const qoder = require("./qoder");
 const reasonix = require("./reasonix");
 const qoderwork = require("./qoderwork");
 const workbuddy = require("./workbuddy");
+const traecode = require("./traecode");
 
 const AGENTS = [
   claudeCode,
@@ -45,6 +46,7 @@ const AGENTS = [
   reasonix,
   qoderwork,
   workbuddy,
+  traecode,
 ];
 const AGENT_MAP = new Map(AGENTS.map((a) => [a.id, a]));
 
