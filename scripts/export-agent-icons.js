@@ -53,10 +53,13 @@ function lobeSource(originalFilename, extra = {}) {
 
 const SOURCE_PROVENANCE = Object.freeze({
   "antigravity-cli": lobeSource("antigravity-color.png"),
-  "claude-code": lobeSource("claudecode-color.png"),
+  // Anthropic 的 Claude 标（放射星芒），不是 Claude Code CLI 的像素兽：额度环
+  // 报的是账号订阅额度，而圆形币把方形像素图裁掉四角后既丢信息又显脏。
+  "claude-code": lobeSource("claude-color.png"),
   codebuddy: lobeSource("codebuddy-color.png"),
   codewhale: { originalFilename: "codewhale.png", fallback: true },
   codex: lobeSource("openai.png", { contrastTreatment: "neutral-light-tile" }),
+  "deepseek-harness": lobeSource("deepseek-color.png"),
   "copilot-cli": lobeSource("githubcopilot.png", { contrastTreatment: "neutral-light-tile" }),
   "cursor-agent": lobeSource("cursor.png", { contrastTreatment: "neutral-light-tile" }),
   "gemini-cli": lobeSource("geminicli-color.png"),
@@ -97,12 +100,17 @@ const SOURCE_PROVENANCE = Object.freeze({
       { originalFilename: "qoderwork.png", sourceFilename: "qoderwork.png" },
     ],
   },
+  qwenwork: {
+    originalFilename: "qwenwork.png",
+    sourceFilename: "qwenwork.png",
+    fallback: true,
+    exportMode: "passthrough",
+  },
   "qwen-code": lobeSource("qwen-color.png", { contrastTreatment: "neutral-light-tile" }),
   reasonix: { originalFilename: "reasonix.png", fallback: true },
   workbuddy: {
     originalFilename: "workbuddy.png",
     fallback: false,
-    contrastTreatment: "neutral-dark-tile",
   },
   zcode: { originalFilename: "zcode.png", fallback: true, exportMode: "passthrough" },
   traecode: { originalFilename: "traecode.png", fallback: true, exportMode: "passthrough" },

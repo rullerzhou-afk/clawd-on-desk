@@ -2,6 +2,7 @@
 
 const defaultFs = require("fs");
 const defaultPath = require("path");
+const { pathToFileURL } = require("url");
 const { detectAgentInstallations: defaultDetectAgentInstallations } = require("./agent-installation-detector");
 const settingsThemeImporter = require("./settings-theme-importer");
 const {
@@ -26,6 +27,7 @@ const INTERNAL_SETTINGS_COMMANDS = new Set([
   "remoteSsh.switchRuntimeMode",
   "remoteSsh.markDeployed",
   "remoteSsh.markRemoteNode",
+  "feishuApproval.commitResolvedApprover",
 ]);
 const SOUND_OVERRIDE_DIALOG_STRINGS = {
   en: { title: "Choose a sound file", filterName: "Audio" },
@@ -172,9 +174,14 @@ function registerSettingsIpc(options = {}) {
   const BrowserWindow = requiredDependency(options.BrowserWindow, "BrowserWindow");
   const fs = options.fs || defaultFs;
   const path = options.path || defaultPath;
+  const settingsPageUrl = pathToFileURL(
+    options.settingsHtmlPath || defaultPath.join(__dirname, "settings.html"),
+  ).href;
   const getSettingsWindow = options.getSettingsWindow || (() => null);
   const getActiveTheme = options.getActiveTheme || (() => null);
   const getLang = options.getLang || (() => "en");
+  const roamFenceSettings = requiredDependency(options.roamFenceSettings, "roamFenceSettings");
+  const roamFencePicker = requiredDependency(options.roamFencePicker, "roamFencePicker");
   const settingsSizePreviewSession = requiredDependency(
     options.settingsSizePreviewSession,
     "settingsSizePreviewSession"
@@ -187,6 +194,10 @@ function registerSettingsIpc(options = {}) {
   const getDoNotDisturb = options.getDoNotDisturb || (() => false);
   const getSoundMuted = options.getSoundMuted || (() => false);
   const getSoundVolume = options.getSoundVolume || (() => 1);
+  const saveFeishuApproverByEmail = requiredDependency(
+    options.saveFeishuApproverByEmail,
+    "saveFeishuApproverByEmail",
+  );
   const previewTextScale = options.previewTextScale
     || (() => ({ status: "error", message: "text scale preview unavailable" }));
   const endTextScalePreview = options.endTextScalePreview
@@ -209,6 +220,7 @@ function registerSettingsIpc(options = {}) {
   const aboutHeroSvgPath = options.aboutHeroSvgPath
     || path.join(__dirname, "..", "assets", "svg", "clawd-about-hero.svg");
   const disposers = [];
+  let currentFeishuApproverLookup = null;
 
   function handle(channel, listener) {
     ipcMain.handle(channel, listener);
@@ -217,6 +229,91 @@ function registerSettingsIpc(options = {}) {
 
   function getDialogParent(event) {
     return getSettingsDialogParent(event, { BrowserWindow, getSettingsWindow });
+  }
+
+  function isTrustedSettingsEvent(event) {
+    const win = getSettingsWindow();
+    if (!win || (typeof win.isDestroyed === "function" && win.isDestroyed())) return false;
+    const contents = win.webContents;
+    const frame = event && event.senderFrame;
+    return !!contents
+      && event.sender === contents
+      && !!frame
+      && frame === contents.mainFrame
+      && frame.url === settingsPageUrl;
+  }
+
+  function rejectUntrustedSettingsEvent(event) {
+    return isTrustedSettingsEvent(event)
+      ? null
+      : { status: "error", message: "untrusted settings sender" };
+  }
+
+  function removeFeishuLookupListeners(operation) {
+    if (!operation || !operation.sender || typeof operation.sender.removeListener !== "function") return;
+    operation.sender.removeListener("destroyed", operation.onDestroyed);
+    operation.sender.removeListener("render-process-gone", operation.onRenderProcessGone);
+  }
+
+  function abortCurrentFeishuApproverLookup(reason, sender = null) {
+    const operation = currentFeishuApproverLookup;
+    if (!operation || (sender && operation.sender !== sender)) return false;
+    if (!operation.controller.signal.aborted) {
+      operation.reason = reason;
+      operation.controller.abort();
+    }
+    return true;
+  }
+
+  function publicFeishuLookupResult(result) {
+    if (result && result.status === "ok") return { status: "ok" };
+    return result && typeof result.code === "string"
+      ? { status: "error", code: result.code }
+      : { status: "error" };
+  }
+
+  async function runFeishuApproverLookup(event, email) {
+    abortCurrentFeishuApproverLookup("superseded");
+    const operation = {
+      sender: event.sender,
+      controller: new AbortController(),
+      reason: "cancelled",
+      onDestroyed: null,
+      onRenderProcessGone: null,
+    };
+    operation.onDestroyed = () => {
+      if (currentFeishuApproverLookup === operation) {
+        abortCurrentFeishuApproverLookup("destroyed", operation.sender);
+      }
+    };
+    operation.onRenderProcessGone = operation.onDestroyed;
+    currentFeishuApproverLookup = operation;
+    if (typeof operation.sender.once === "function") {
+      operation.sender.once("destroyed", operation.onDestroyed);
+      operation.sender.once("render-process-gone", operation.onRenderProcessGone);
+    }
+
+    try {
+      let result;
+      try {
+        result = await saveFeishuApproverByEmail({
+          email,
+          signal: operation.controller.signal,
+        });
+      } catch {
+        result = { status: "error", code: "lookup-failed" };
+      }
+      if (operation.controller.signal.aborted) {
+        return {
+          status: "error",
+          code: operation.reason === "superseded" ? "lookup-superseded" : "lookup-cancelled",
+        };
+      }
+      return publicFeishuLookupResult(result);
+    } finally {
+      removeFeishuLookupListeners(operation);
+      if (currentFeishuApproverLookup === operation) currentFeishuApproverLookup = null;
+    }
   }
 
   handle("settings:get-snapshot", () => settingsController.getSnapshot());
@@ -230,8 +327,94 @@ function registerSettingsIpc(options = {}) {
       return 0;
     }
   });
+  // Which providers the "show beside the pet" list should offer. Driven by the
+  // live snapshot, not by the static provider table, so the list never shows a
+  // checkbox for a provider the user has not connected — the same reasoning
+  // that keeps "merge across machines" hidden on a single-machine setup. An
+  // empty array is the honest failure mode: the settings row hides itself
+  // rather than rendering a list that claims nothing is connected.
+  handle("settings:get-quota-ring-providers", () => {
+    try {
+      return typeof options.getQuotaRingProviders === "function"
+        ? options.getQuotaRingProviders()
+        : [];
+    } catch (_err) {
+      return [];
+    }
+  });
+  // Kimi API keys are accepted only by these trusted Settings-window handlers.
+  // They never transit settings:command, prefs, or a renderer-broadcast
+  // snapshot. Results are deliberately sanitized by kimi-quota-runtime.
+  handle("settings:kimi-quota-status", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.kimiQuotaRuntime;
+    return runtime && typeof runtime.getStatus === "function"
+      ? runtime.getStatus()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:kimi-quota-connect", async (event, payload) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    if (!payload || typeof payload !== "object" || typeof payload.apiKey !== "string") {
+      return { status: "error", reason: "invalid-credential-input" };
+    }
+    const runtime = options.kimiQuotaRuntime;
+    return runtime && typeof runtime.connect === "function"
+      ? runtime.connect(payload.apiKey)
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:kimi-quota-refresh", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.kimiQuotaRuntime;
+    return runtime && typeof runtime.refresh === "function"
+      ? runtime.refresh()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:kimi-quota-reconnect", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.kimiQuotaRuntime;
+    return runtime && typeof runtime.reconnect === "function"
+      ? runtime.reconnect()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:kimi-quota-disconnect", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.kimiQuotaRuntime;
+    return runtime && typeof runtime.disconnect === "function"
+      ? runtime.disconnect()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:kimi-quota-forget", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.kimiQuotaRuntime;
+    return runtime && typeof runtime.forget === "function"
+      ? runtime.forget()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
   handle("settings:get-pet-tint-options", () => listPetTintOptions());
   handle("settings:get-pet-accessory-options", () => listPetAccessoryOptions());
+  handle("settings:get-roam-fence", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    return rejected || roamFenceSettings.getStatus();
+  });
+  handle("settings:select-roam-fence", async (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const picked = await roamFencePicker.selectArea({
+      lang: getLang(),
+    });
+    if (!picked || picked.status !== "ok") return picked || { status: "cancel" };
+    return roamFenceSettings.saveFence(picked.fence);
+  });
+  handle("settings:clear-roam-fence", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    return rejected || roamFenceSettings.clearFence();
+  });
   handle("settings:update", (_event, payload) => {
     if (!payload || typeof payload !== "object") {
       return { status: "error", message: "settings:update payload must be { key, value }" };
@@ -286,9 +469,23 @@ function registerSettingsIpc(options = {}) {
     try { return themeLoader.getPreviewSoundUrl(); }
     catch { return null; }
   });
-  handle("settings:command", async (_event, payload) => {
+  handle("settings:command", async (event, payload) => {
     if (!payload || typeof payload !== "object") {
       return { status: "error", message: "settings:command payload must be { action, payload }" };
+    }
+    if (payload.action === "feishuApproval.saveApproverByEmail") {
+      const rejected = rejectUntrustedSettingsEvent(event);
+      if (rejected) return rejected;
+      const email = payload.payload && typeof payload.payload === "object"
+        ? payload.payload.email
+        : undefined;
+      return runFeishuApproverLookup(event, email);
+    }
+    if (payload.action === "feishuApproval.cancelApproverLookup") {
+      const rejected = rejectUntrustedSettingsEvent(event);
+      if (rejected) return rejected;
+      abortCurrentFeishuApproverLookup("cancelled", event.sender);
+      return { status: "ok" };
     }
     if (INTERNAL_SETTINGS_COMMANDS.has(payload.action)) {
       return { status: "error", message: `settings command "${payload.action}" is internal` };
@@ -689,6 +886,7 @@ function registerSettingsIpc(options = {}) {
 
   return {
     dispose() {
+      abortCurrentFeishuApproverLookup("destroyed");
       while (disposers.length) {
         const dispose = disposers.pop();
         try { dispose(); } catch {}

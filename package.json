@@ -1,6 +1,6 @@
 {
   "name": "clawd-on-desk",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "A desktop pet that reacts to your Claude Code sessions in real-time.",
   "main": "src/main.js",
   "scripts": {
@@ -21,6 +21,7 @@
     "audit:assets": "node scripts/audit-repository-assets.js",
     "audit:native-package": "node scripts/audit-packaged-native.js",
     "verify:updater-metadata": "node scripts/verify-updater-metadata.js",
+    "verify:winget-arch": "node scripts/verify-winget-arch-contract.js",
     "verify:release": "node scripts/verify-release-version.js",
     "create-theme": "node scripts/create-theme.js",
     "export-agent-icons": "node scripts/export-agent-icons.js",
@@ -54,8 +55,12 @@
     "uninstall:reasonix-hooks": "node hooks/reasonix-install.js --uninstall",
     "install:qoderwork-hooks": "node hooks/qoderwork-install.js",
     "uninstall:qoderwork-hooks": "node hooks/qoderwork-install.js --uninstall",
+    "install:qwenwork-hooks": "node hooks/qwenwork-install.js",
+    "uninstall:qwenwork-hooks": "node hooks/qwenwork-install.js --uninstall",
     "install:workbuddy-hooks": "node hooks/workbuddy-install.js",
     "uninstall:workbuddy-hooks": "node hooks/workbuddy-install.js --uninstall",
+    "install:dsh": "node hooks/dsh-install.js",
+    "uninstall:dsh": "node hooks/dsh-install.js --uninstall",
     "cleanup:integrations": "node hooks/cleanup-integrations.js --apply",
     "register-protocol:dev": "node launch.js --register-protocol"
   },
@@ -82,6 +87,7 @@
     ],
     "mac": {
       "icon": "assets/icon.png",
+      "identity": "-",
       "artifactName": "Clawd-on-Desk-${version}-${arch}.${ext}",
       "target": [
         {
@@ -184,8 +190,8 @@
   },
   "devDependencies": {
     "@electron/asar": "^3.4.1",
-    "electron": "^41.10.2",
-    "electron-builder": "^26.8.1"
+    "electron": "^41.10.4",
+    "electron-builder": "^26.15.7"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.71.1",

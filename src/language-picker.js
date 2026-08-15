@@ -28,6 +28,9 @@
     trigger.setAttribute("role", "combobox");
     trigger.setAttribute("aria-haspopup", "listbox");
     trigger.setAttribute("aria-expanded", "false");
+    if (config.focusKey != null && String(config.focusKey).trim()) {
+      trigger.setAttribute("data-settings-focus-key", String(config.focusKey).trim());
+    }
 
     const valueEl = document.createElement("span");
     valueEl.className = "language-picker-value";
@@ -69,11 +72,17 @@
     let changeSeq = 0;
     let latestRequestSeq = 0;
     const pendingChanges = new Map();
+    let pendingFocusTarget = null;
     let reflowScheduled = false;
     let reflowFrame = null;
+    let menuUnmountTimer = null;
+    let menuUnmountTransitionHandler = null;
+    let menuLifecycleSeq = 0;
 
     const MENU_GAP_PX = 6;
     const DEFAULT_MENU_MAX_HEIGHT_PX = 240;
+    const MENU_CLOSE_FALLBACK_MIN_MS = 180;
+    const MENU_CLOSE_SAFETY_MS = 40;
 
     function findOption(value) {
       const wanted = value == null ? "" : String(value);
@@ -98,16 +107,31 @@
       }
     }
 
+    function isInteractionLocked() {
+      return disabled || (config.lockWhilePending === true && pending);
+    }
+
     function paintInteractivity() {
       picker.classList.toggle("disabled", disabled);
       picker.classList.toggle("pending", pending);
-      trigger.disabled = disabled || (config.lockWhilePending === true && pending);
-      trigger.setAttribute("aria-disabled", trigger.disabled ? "true" : "false");
+      // A transient save must not disable the focused trigger: Chromium moves
+      // focus to BODY when a button becomes disabled. aria-disabled plus the
+      // event guards below keep it locked without losing keyboard position.
+      trigger.disabled = disabled;
+      trigger.setAttribute("aria-disabled", isInteractionLocked() ? "true" : "false");
+      trigger.setAttribute("aria-busy", pending ? "true" : "false");
     }
 
     function focusElement(element) {
       if (!element || typeof element.focus !== "function") return;
       try { element.focus({ preventScroll: true }); } catch (_) { element.focus(); }
+    }
+
+    function restoreFocusIfLost(element) {
+      if (!element || element.isConnected === false || typeof element.focus !== "function") return;
+      const active = document.activeElement;
+      if (active && active !== document.body && active !== element && active.isConnected !== false) return;
+      focusElement(element);
     }
 
     function finiteNumber(value) {
@@ -200,6 +224,121 @@
       menu.style.maxHeight = maxHeight + "px";
     }
 
+    function cancelMenuUnmount() {
+      menuLifecycleSeq += 1;
+      if (menuUnmountTransitionHandler) {
+        menu.removeEventListener("transitionend", menuUnmountTransitionHandler);
+        menuUnmountTransitionHandler = null;
+      }
+      if (menuUnmountTimer != null && root && typeof root.clearTimeout === "function") {
+        root.clearTimeout(menuUnmountTimer);
+      }
+      menuUnmountTimer = null;
+    }
+
+    function resetMenuLayout() {
+      picker.classList.remove("open-up");
+      picker.classList.remove("menu-scrollable");
+      menu.style.maxHeight = "";
+      menu.scrollTop = 0;
+    }
+
+    function revealOptionInMenu(option) {
+      if (!option) return;
+      const optionTop = finiteNumber(option.offsetTop);
+      const optionHeight = finiteNumber(option.offsetHeight);
+      const viewportHeight = finiteNumber(menu.clientHeight);
+      if (optionTop == null || optionHeight == null || !viewportHeight || viewportHeight <= 0) return;
+
+      const viewportTop = finiteNumber(menu.scrollTop) || 0;
+      const optionBottom = optionTop + optionHeight;
+      const viewportBottom = viewportTop + viewportHeight;
+      if (optionTop < viewportTop) {
+        menu.scrollTop = optionTop;
+      } else if (optionBottom > viewportBottom) {
+        menu.scrollTop = optionBottom - viewportHeight;
+      }
+    }
+
+    function focusOption(option) {
+      revealOptionInMenu(option);
+      focusElement(option);
+    }
+
+    function finalizeMenuUnmount(expectedSeq = menuLifecycleSeq) {
+      if (disposed || isOpen || expectedSeq !== menuLifecycleSeq) return;
+      if (menuUnmountTimer != null && root && typeof root.clearTimeout === "function") {
+        root.clearTimeout(menuUnmountTimer);
+      }
+      menuUnmountTimer = null;
+      if (menuUnmountTransitionHandler) {
+        menu.removeEventListener("transitionend", menuUnmountTransitionHandler);
+        menuUnmountTransitionHandler = null;
+      }
+      picker.classList.remove("menu-mounted");
+      resetMenuLayout();
+    }
+
+    function shouldAnimateMenuClose() {
+      if (!root || typeof root.getComputedStyle !== "function") return false;
+      if (typeof root.matchMedia === "function"
+          && root.matchMedia("(prefers-reduced-motion: reduce)").matches) return false;
+      return true;
+    }
+
+    function parseCssTimeList(value) {
+      return String(value || "").split(",").map((part) => {
+        const token = part.trim();
+        const amount = Number.parseFloat(token);
+        if (!Number.isFinite(amount) || amount < 0) return 0;
+        return token.endsWith("ms") ? amount : amount * 1000;
+      });
+    }
+
+    function getMenuCloseFallbackMs() {
+      try {
+        const style = root.getComputedStyle(menu);
+        const durations = parseCssTimeList(style && style.transitionDuration);
+        const delays = parseCssTimeList(style && style.transitionDelay);
+        const itemCount = Math.max(durations.length, delays.length);
+        let longestTransitionMs = 0;
+        for (let index = 0; index < itemCount; index += 1) {
+          const duration = durations.length > 0 ? durations[index % durations.length] : 0;
+          const delay = delays.length > 0 ? delays[index % delays.length] : 0;
+          longestTransitionMs = Math.max(longestTransitionMs, duration + delay);
+        }
+        return Math.max(
+          MENU_CLOSE_FALLBACK_MIN_MS,
+          Math.ceil(longestTransitionMs + MENU_CLOSE_SAFETY_MS),
+        );
+      } catch (_) {
+        return MENU_CLOSE_FALLBACK_MIN_MS;
+      }
+    }
+
+    function mountMenu() {
+      cancelMenuUnmount();
+      resetMenuLayout();
+      picker.classList.add("menu-mounted");
+    }
+
+    function scheduleMenuUnmount() {
+      cancelMenuUnmount();
+      const expectedSeq = menuLifecycleSeq;
+      if (!shouldAnimateMenuClose() || !root || typeof root.setTimeout !== "function") {
+        finalizeMenuUnmount(expectedSeq);
+        return;
+      }
+      menuUnmountTransitionHandler = (event) => {
+        if (!event || event.target !== menu || event.propertyName !== "opacity") return;
+        finalizeMenuUnmount(expectedSeq);
+      };
+      menu.addEventListener("transitionend", menuUnmountTransitionHandler);
+      menuUnmountTimer = root.setTimeout(() => {
+        finalizeMenuUnmount(expectedSeq);
+      }, getMenuCloseFallbackMs());
+    }
+
     function reflow() {
       if (disposed) return;
       ensureVisible();
@@ -223,15 +362,25 @@
 
     function setOpen(next, { focusTrigger = false } = {}) {
       if (disposed) return;
-      isOpen = !!next && optionElements.length > 0 && !trigger.disabled;
-      picker.classList.toggle("open", isOpen);
+      const nextOpen = !!next && optionElements.length > 0 && !isInteractionLocked();
+      if (nextOpen) {
+        isOpen = true;
+        mountMenu();
+        positionMenu();
+        // positionMenu reads layout after the menu is mounted, so the browser
+        // has a hidden starting frame before the visible transition begins.
+        picker.classList.add("open");
+      } else {
+        isOpen = false;
+        picker.classList.remove("open");
+        scheduleMenuUnmount();
+      }
       trigger.setAttribute("aria-expanded", isOpen ? "true" : "false");
       menu.setAttribute("aria-hidden", isOpen ? "false" : "true");
       paintValue(activeValue);
       if (isOpen) {
-        positionMenu();
         const selected = findOption(activeValue);
-        focusElement(selected && selected.element);
+        focusOption(selected && selected.element);
       } else if (focusTrigger) {
         focusElement(trigger);
       }
@@ -246,10 +395,15 @@
       paintValue(latestPending || committedValue);
       pending = pendingChanges.size > 0;
       paintInteractivity();
+      if (!pending) {
+        const focusTarget = pendingFocusTarget;
+        pendingFocusTarget = null;
+        restoreFocusIfLost(focusTarget);
+      }
     }
 
     function choose(value) {
-      if (disposed || trigger.disabled) return;
+      if (disposed || isInteractionLocked()) return;
       const entry = findOption(value);
       if (!entry) return;
       if (entry.data.value === activeValue) {
@@ -260,6 +414,7 @@
       const previous = committedValue;
       paintValue(entry.data.value);
       setOpen(false, { focusTrigger: true });
+      pendingFocusTarget = trigger;
       const seq = ++changeSeq;
       latestRequestSeq = seq;
       pendingChanges.set(seq, entry.data.value);
@@ -285,11 +440,12 @@
     function moveFocus(index, delta) {
       if (!optionElements.length) return;
       const nextIndex = (index + delta + optionElements.length) % optionElements.length;
-      focusElement(optionElements[nextIndex].element);
+      focusOption(optionElements[nextIndex].element);
     }
 
     trigger.addEventListener("click", () => setOpen(!isOpen));
     trigger.addEventListener("keydown", (event) => {
+      if (isInteractionLocked()) return;
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
         setOpen(true);
@@ -309,7 +465,7 @@
         event.preventDefault();
         setOpen(true);
         const target = event.key === "Home" ? optionElements[0] : optionElements[optionElements.length - 1];
-        focusElement(target && target.element);
+        focusOption(target && target.element);
       }
     });
 
@@ -335,7 +491,7 @@
         if (event.key === "Home" || event.key === "End") {
           event.preventDefault();
           const target = event.key === "Home" ? optionElements[0] : optionElements[optionElements.length - 1];
-          focusElement(target && target.element);
+          focusOption(target && target.element);
         }
       });
     }
@@ -372,6 +528,11 @@
         pendingChanges.clear();
         paintValue(value);
         committedValue = activeValue;
+        pending = false;
+        paintInteractivity();
+        const focusTarget = pendingFocusTarget;
+        pendingFocusTarget = null;
+        restoreFocusIfLost(focusTarget);
       },
       setDisabled(value) {
         if (disposed) return;
@@ -390,7 +551,13 @@
       },
       dispose() {
         if (disposed) return;
+        cancelMenuUnmount();
+        isOpen = false;
+        picker.classList.remove("open");
+        picker.classList.remove("menu-mounted");
+        resetMenuLayout();
         disposed = true;
+        pendingFocusTarget = null;
         changeSeq++;
         pendingChanges.clear();
         if (reflowScheduled && reflowFrame != null

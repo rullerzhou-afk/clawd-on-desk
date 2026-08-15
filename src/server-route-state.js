@@ -150,6 +150,7 @@ function handleStatePost(req, res, options) {
     createRequestHookRecorder,
     shouldDropForDnd,
     codexOfficialTurns,
+    dshStateSequenceFence = null,
     pathApi = path,
     // #627 residual: injectable so unit tests never load the real koffi FFI.
     // Defaults to the real host OS check / a probe that never samples.
@@ -278,6 +279,17 @@ function handleStatePost(req, res, options) {
         ? data.ghostty_terminal_id.trim()
         : null;
       const toolName = typeof data.tool_name === "string" && data.tool_name ? data.tool_name : null;
+      const subagentLifecycleSource = (
+        data.subagent_lifecycle_source === "native"
+        || ["synthetic-tool", "synthetic-task"].includes(data.subagent_lifecycle_source)
+        || data.subagent_lifecycle_source === "anonymous"
+      ) ? data.subagent_lifecycle_source : null;
+      const sessionStartSource = (
+        data.session_start_source === "startup"
+        || data.session_start_source === "resume"
+        || data.session_start_source === "clear"
+        || data.session_start_source === "compact"
+      ) ? data.session_start_source : null;
       // #583: hook-reported stdin diagnostics, attached only when the hook's
       // stdin payload carried no session_id. Normalized here so state.js can
       // log it without trusting hook-side shapes.
@@ -364,6 +376,26 @@ function handleStatePost(req, res, options) {
         res.end();
         return;
       }
+      if (agentId === "deepseek-harness") {
+        const sequenceResult = dshStateSequenceFence
+          && typeof dshStateSequenceFence.accept === "function"
+          ? dshStateSequenceFence.accept({
+              // The fence is upstream-protocol scoped. Keep it on DSH's raw
+              // canonical id; the local/remote profile key is a separate
+              // Clawd storage concern applied by resolveSessionIdentity.
+              sessionId: sessionIdentity.rawSessionId,
+              event,
+              eventSeq: data.event_seq,
+              sessionSeq: data.session_seq,
+            })
+          : { accepted: false, reason: "sequence-fence-unavailable" };
+        if (!sequenceResult.accepted) {
+          recordRequestHookEvent.droppedUnsupported();
+          res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+          res.end();
+          return;
+        }
+      }
       // The persisted preference authorizes statusline telemetry only for the
       // local profile. Remote SSH profiles have their own deployed lifecycle
       // and must keep reporting even when this machine's local statusline is
@@ -436,17 +468,25 @@ function handleStatePost(req, res, options) {
         // hook events the diagnostics exist to show. 204 either way — the
         // statusline script never reads the response, and "session unknown"
         // is the designed drop, not an error.
-        if (
-          contextUsage
-          && localClaudeStatuslineMetadataAllowed
-          && typeof ctx.updateSessionMetadata === "function"
-        ) {
-          ctx.updateSessionMetadata(session_id || "default", {
-            contextUsage,
-            contextUsageOrigin: agentId === "claude-code" && contextUsage.source === "claude"
+        if (typeof ctx.updateSessionMetadata === "function") {
+          const metaUpdate = {};
+          if (
+            contextUsage
+            && localClaudeStatuslineMetadataAllowed
+          ) {
+            metaUpdate.contextUsage = contextUsage;
+            metaUpdate.contextUsageOrigin = agentId === "claude-code" && contextUsage.source === "claude"
               ? "claude-statusline"
-              : null,
-          });
+              : null;
+          }
+          // OpenCode title changes ride the same metadata-only channel (the
+          // placeholder → real title swap arrives on session.updated, which
+          // maps to no Clawd state). Not gated on the Claude telemetry flag —
+          // it's not Claude statusline data.
+          if (sessionTitle) metaUpdate.sessionTitle = sessionTitle;
+          if (Object.keys(metaUpdate).length > 0) {
+            ctx.updateSessionMetadata(session_id || "default", metaUpdate);
+          }
         }
         res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
         res.end();
@@ -771,6 +811,8 @@ function handleStatePost(req, res, options) {
             agentId,
             ...(subagentId ? { subagentId } : {}),
             ...(subagentType ? { subagentType } : {}),
+            ...(subagentLifecycleSource ? { subagentLifecycleSource } : {}),
+            ...(sessionStartSource ? { sessionStartSource } : {}),
             profileId: sessionIdentity.profileId,
             rawSessionId: sessionIdentity.rawSessionId,
             host,

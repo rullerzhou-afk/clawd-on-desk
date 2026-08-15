@@ -201,6 +201,36 @@ describe("package build config", () => {
       );
     });
 
+    it("requests explicit ad-hoc signing without disabling hardened runtime", () => {
+      assert.strictEqual(
+        pkg.build.mac && pkg.build.mac.identity,
+        "-",
+        "macOS x64 and ARM64 packages must express ad-hoc signing intent; CI gates the final signatures"
+      );
+      assert.notStrictEqual(
+        pkg.build.mac && pkg.build.mac.hardenedRuntime,
+        false,
+        "do not silence the ad-hoc signing warning by disabling hardened runtime"
+      );
+    });
+
+    it("gates both packaged apps on ad-hoc hardened signatures and required entitlements", () => {
+      const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
+      assert.match(workflow, /name: Verify macOS ad-hoc hardened signatures/);
+      assert.match(workflow, /dist\/mac\/Clawd on Desk\.app/);
+      assert.match(workflow, /dist\/mac-arm64\/Clawd on Desk\.app/);
+      assert.match(workflow, /Signature=adhoc/);
+      assert.match(workflow, /adhoc,runtime/);
+      assert.match(workflow, /codesign --verify --deep --strict/);
+      for (const entitlement of [
+        "com.apple.security.cs.allow-jit",
+        "com.apple.security.cs.allow-unsigned-executable-memory",
+        "com.apple.security.cs.disable-library-validation",
+      ]) {
+        assert.match(workflow, new RegExp(entitlement.replace(/\./g, "\\.")));
+      }
+    });
+
     it("uses architecture-specific macOS DMG names without spaces", () => {
       const artifactName = pkg.build.mac && pkg.build.mac.artifactName;
       assert.strictEqual(

@@ -21,14 +21,20 @@
 // = weekly). Antigravity can report both Gemini and Claude/GPT quotas; each ring
 // compresses that timescale to the most constrained candidate, while the
 // Dashboard keeps showing all four values. Mirrors quota-ring-renderer.js.
+// `label` is the provider's brand name, carried here so main-side consumers
+// (the Settings "show beside the pet" list) have one source for it instead of a
+// third hand-kept copy. Kept byte-identical to the renderer's own RING_PROVIDERS
+// labels; test/quota-ring-geometry.test.js pins the mirror.
 const RING_PROVIDERS = [
   {
     key: "antigravityQuota",
+    label: "Antigravity",
     outer: ["geminiFiveHour", "thirdPartyFiveHour"],
     inner: ["geminiWeekly", "thirdPartyWeekly"],
   },
-  { key: "claudeQuota", outer: ["claudeFiveHour"], inner: ["claudeWeekly"] },
-  { key: "codexQuota", outer: ["codexFiveHour"], inner: ["codexWeekly"] },
+  { key: "claudeQuota", label: "Claude", outer: ["claudeFiveHour"], inner: ["claudeWeekly"] },
+  { key: "codexQuota", label: "Codex", outer: ["codexFiveHour"], inner: ["codexWeekly"] },
+  { key: "kimiQuota", label: "Kimi", outer: ["kimiFiveHour"], inner: ["kimiWeekly"] },
 ];
 
 // Layout constants in CSS px (scaled by textScale by the caller, exactly like
@@ -117,18 +123,58 @@ function providerHasDrawableQuota(source, def) {
     group[field] && typeof group[field] === "object");
 }
 
-// Total coins a snapshot draws: one per (source, provider-with-quota).
-function countQuotaCoins(snapshot, showQuota) {
+// Providers the user has hidden from the pet-side cluster. Display-only: the
+// data keeps being collected and the Dashboard keeps showing it, because the
+// cluster caps at RING_MAX_COINS coins with no say over WHICH ones survive
+// (the renderer takes the first N in RING_PROVIDERS order), while the Dashboard
+// has room for everything. Unknown keys are tolerated rather than rejected so a
+// provider that is removed — or renamed — never wedges a stored preference.
+function hiddenProviderSet(hiddenProviders) {
+  if (!Array.isArray(hiddenProviders)) return null;
+  const hidden = hiddenProviders.filter((key) => typeof key === "string" && key);
+  return hidden.length ? new Set(hidden) : null;
+}
+
+function isProviderDrawn(source, def, hidden) {
+  if (hidden && hidden.has(def.key)) return false;
+  return providerHasDrawableQuota(source, def);
+}
+
+// Total coins a snapshot draws: one per (source, provider-with-quota) that the
+// user has not hidden. This MUST apply the same hidden filter the renderer
+// does, or the transparent window is sized (and its auto-hide hot zone drawn)
+// for coins that never appear.
+function countQuotaCoins(snapshot, showQuota, hiddenProviders) {
   if (showQuota === false) return 0;
   const sources = snapshot && Array.isArray(snapshot.accountQuota) ? snapshot.accountQuota : [];
+  const hidden = hiddenProviderSet(hiddenProviders);
   let count = 0;
   for (const source of sources) {
     if (!source || typeof source !== "object") continue;
     for (const def of RING_PROVIDERS) {
-      if (providerHasDrawableQuota(source, def)) count += 1;
+      if (isProviderDrawn(source, def, hidden)) count += 1;
     }
   }
   return count;
+}
+
+// Providers that currently report drawable quota, for the Settings list. Driven
+// by the snapshot rather than by RING_PROVIDERS alone so the list never offers a
+// checkbox for a provider the user has not connected — the same reasoning that
+// keeps "merge across machines" hidden on a single-machine setup. `hidden` is
+// reported alongside so an already-hidden provider still lists (and can be
+// turned back on) even though it draws nothing right now.
+function listQuotaRingProviders(snapshot, hiddenProviders) {
+  const sources = snapshot && Array.isArray(snapshot.accountQuota) ? snapshot.accountQuota : [];
+  const hidden = hiddenProviderSet(hiddenProviders);
+  const seen = [];
+  for (const def of RING_PROVIDERS) {
+    const reports = sources.some((source) =>
+      source && typeof source === "object" && providerHasDrawableQuota(source, def));
+    if (!reports) continue;
+    seen.push({ key: def.key, label: def.label, hidden: !!(hidden && hidden.has(def.key)) });
+  }
+  return seen;
 }
 
 function formatWindowLabel(windowMinutes, fallbackLabel) {
@@ -258,6 +304,7 @@ function computeQuotaRingBounds({
 module.exports = {
   RING_PROVIDERS,
   countQuotaCoins,
+  listQuotaRingProviders,
   formatWindowLabel,
   quotaSeverity,
   ringClusterContentSize,

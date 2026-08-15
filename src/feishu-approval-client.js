@@ -15,6 +15,35 @@ const MAX_ELICITATION_QUESTIONS = 5;
 const MAX_ELICITATION_OPTIONS = 5;
 const MAX_CARD_TEXT = 600;
 
+const silentLarkLog = () => {};
+const SILENT_LARK_LOGGER = Object.freeze({
+  error: silentLarkLog,
+  warn: silentLarkLog,
+  info: silentLarkLog,
+  debug: silentLarkLog,
+  trace: silentLarkLog,
+});
+
+const SAFE_LARK_NETWORK_CODES = new Set([
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EAI_AGAIN",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+  "ERR_CANCELED",
+]);
+const SAFE_LARK_ERROR_STAGES = new Set([
+  "lookup",
+  "runtime-start",
+  "runtime-stop",
+  "send-card",
+  "send-elicitation",
+  "session-automation-card",
+  "update-card",
+  "ws-connect",
+]);
+
 // Agent-controlled strings (agentId, tool, folder, summary, question text,
 // option/button labels, answers) are rendered into approval/elicitation cards.
 // Guard them before they enter a card element:
@@ -390,11 +419,15 @@ function buildApprovalCard(payload, options = {}, context = {}) {
   const actions = [
     button(ctx.t("feishuCardButtonAllow"), { requestId, decision: "allow" }, "primary"),
     button(ctx.t("feishuCardButtonDeny"), { requestId, decision: "deny" }, "danger"),
-    button(ctx.t("feishuCardButtonTerminal"), { requestId, decision: "terminal" }, "default"),
-    ...normalized.suggestions.map((entry) => (
-      button(safePlainText(entry.label), { requestId, decision: `suggestion:${entry.index}` }, "default")
-    )),
   ];
+  // DSH web has no originating terminal surface. Its no-decision path returns
+  // to the browser answerer, so a remote "Go to terminal" action is misleading.
+  if (normalized.agentId !== "deepseek-harness") {
+    actions.push(button(ctx.t("feishuCardButtonTerminal"), { requestId, decision: "terminal" }, "default"));
+  }
+  actions.push(...normalized.suggestions.map((entry) => (
+    button(safePlainText(entry.label), { requestId, decision: `suggestion:${entry.index}` }, "default")
+  )));
   if (normalized.canOfferSessionTrust) {
     actions.push(button(
       ctx.t("feishuSessionTrustButton"),
@@ -875,8 +908,31 @@ function describeDecision(decision) {
 
 function normalizeApiMessageId(response) {
   return response && response.data && typeof response.data.message_id === "string"
-    ? response.data.message_id
+    ? response.data.message_id.trim()
     : "";
+}
+
+// The SDK resolves im.v1.message create/patch calls even when the business
+// `code` is nonzero (only transport errors reject). Without this check a
+// failed create was logged as "card sent" with an empty message id — the Test
+// flow then sat out its full no-response window — and a failed status patch
+// looked like a successful terminalization. Every message create/patch
+// boundary funnels its response through here; the thrown error carries only
+// the sanitized field set (never the raw response, msg text, or card body).
+function assertMessageApiResponse(response, { stage, requireMessageId = false } = {}) {
+  const safeStage = SAFE_LARK_ERROR_STAGES.has(stage) ? stage : "sdk";
+  const businessCode = finiteErrorNumber(response ? response.code : undefined);
+  if (businessCode !== undefined && businessCode !== 0) {
+    throw createSanitizedSdkError({
+      code: safeBusinessErrorCode(businessCode, safeStage),
+      stage: safeStage,
+      businessCode,
+    });
+  }
+  if (requireMessageId && !normalizeApiMessageId(response)) {
+    throw createSanitizedSdkError({ code: "sdk-request-failed", stage: safeStage });
+  }
+  return response;
 }
 
 // Single place that turns our platform enum into an SDK domain. Never build a
@@ -900,6 +956,96 @@ function resolveSdkDomain(lark, platform) {
     throw new Error("Installed Lark SDK does not expose Domain.Lark");
   }
   return domain;
+}
+
+function finiteErrorNumber(value) {
+  if (value === null || value === undefined || value === "") return undefined;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : undefined;
+}
+
+function safeBusinessErrorCode(businessCode, safeStage) {
+  if (businessCode === 99991672) return "missing-contact-scope";
+  if (businessCode === 1000040351) return "wrong-platform";
+  return safeStage === "lookup" ? "lookup-failed" : "sdk-request-failed";
+}
+
+function classifyFeishuSdkError(error, stage) {
+  const safeStage = SAFE_LARK_ERROR_STAGES.has(stage) ? stage : "sdk";
+  const httpStatus = finiteErrorNumber(error && (
+    (error.response && error.response.status)
+    ?? error.httpStatus
+    ?? error.status
+  ));
+  let businessCode = finiteErrorNumber(
+    error && error.response && error.response.data
+      ? error.response.data.code
+      : undefined
+  );
+  if (businessCode === undefined) {
+    businessCode = finiteErrorNumber(error && error.businessCode);
+  }
+  if (businessCode === undefined) {
+    businessCode = finiteErrorNumber(error && error.statusCode);
+  }
+  if (businessCode === undefined && error && typeof error.message === "string") {
+    const match = error.message.match(/(?:^|\b)code\s*[:=]\s*(-?\d+)\b/i);
+    if (match) businessCode = finiteErrorNumber(match[1]);
+  }
+  const rawNetworkCode = error && typeof error.networkCode === "string" && error.networkCode
+    ? error.networkCode
+    : error && typeof error.code === "string" ? error.code : "";
+  const networkCode = SAFE_LARK_NETWORK_CODES.has(rawNetworkCode)
+    ? rawNetworkCode
+    : undefined;
+  return {
+    code: safeBusinessErrorCode(businessCode, safeStage),
+    stage: safeStage,
+    ...(httpStatus === undefined ? {} : { httpStatus }),
+    ...(businessCode === undefined ? {} : { businessCode }),
+    ...(networkCode === undefined ? {} : { networkCode }),
+  };
+}
+
+function createSanitizedSdkError(classification) {
+  const error = new Error("Feishu/Lark SDK request failed.");
+  error.code = classification.code;
+  error.stage = classification.stage;
+  if (classification.httpStatus !== undefined) error.httpStatus = classification.httpStatus;
+  if (classification.businessCode !== undefined) error.businessCode = classification.businessCode;
+  if (classification.networkCode !== undefined) error.networkCode = classification.networkCode;
+  return error;
+}
+
+function createIsolatedLarkCache({ lark, platform, appId } = {}) {
+  if (!lark || typeof lark.DefaultCache !== "function") {
+    throw new Error("Installed Lark SDK does not expose DefaultCache");
+  }
+  const ownedCache = new lark.DefaultCache();
+  const namespacePrefix = [
+    "clawd",
+    "feishu-approval",
+    normalizePlatform(platform),
+    String(appId || "").trim(),
+  ].join(":");
+  const namespaceOptions = (options) => {
+    const source = options && typeof options === "object" ? options : {};
+    const sdkNamespace = typeof source.namespace === "string" && source.namespace
+      ? source.namespace
+      : "";
+    return {
+      ...source,
+      namespace: sdkNamespace ? `${namespacePrefix}:${sdkNamespace}` : namespacePrefix,
+    };
+  };
+  return Object.freeze({
+    get(key, options) {
+      return ownedCache.get(key, namespaceOptions(options));
+    },
+    set(key, value, expire, options) {
+      return ownedCache.set(key, value, expire, namespaceOptions(options));
+    },
+  });
 }
 
 function createDeadlineHttpInstance(base, timeoutMs) {
@@ -939,14 +1085,66 @@ function createLarkClient(config = {}) {
     lark.defaultHttpInstance,
     config.requestTimeoutMs
   );
+  const cache = createIsolatedLarkCache({
+    lark,
+    platform: config.platform,
+    appId: config.appId,
+  });
   return new lark.Client({
     appId: config.appId,
     appSecret: config.appSecret,
     appType: lark.AppType ? lark.AppType.SelfBuild : undefined,
     domain: resolveSdkDomain(lark, config.platform),
     loggerLevel: lark.LoggerLevel ? lark.LoggerLevel.warn : undefined,
+    logger: SILENT_LARK_LOGGER,
+    cache,
     httpInstance,
   });
+}
+
+async function lookupOpenIdByEmail(config = {}) {
+  const log = typeof config.log === "function" ? config.log : () => {};
+  try {
+    const lark = config.lark || loadLarkSdk();
+    const httpInstance = config.httpInstance || createDeadlineHttpInstance(
+      lark.defaultHttpInstance,
+      config.requestTimeoutMs
+    );
+    const client = createLarkClient({ ...config, lark, httpInstance });
+    const request = () => client.contact.v3.user.batchGetId({
+      data: { emails: [config.email] },
+      params: { user_id_type: "open_id" },
+    });
+    const response = config.signal && httpInstance && typeof httpInstance.runWithSignal === "function"
+      ? await httpInstance.runWithSignal(config.signal, request)
+      : await request();
+    const businessCode = Number(response && response.code);
+    if (businessCode !== 0) {
+      const classification = {
+        code: businessCode === 99991672 ? "missing-contact-scope" : "lookup-failed",
+        stage: "lookup",
+        businessCode: Number.isFinite(businessCode) ? businessCode : 0,
+      };
+      log("warn", "email lookup failed", classification);
+      return {
+        status: "error",
+        code: classification.code,
+      };
+    }
+    const users = response && response.data && Array.isArray(response.data.user_list)
+      ? response.data.user_list
+      : [];
+    const user = users.find((item) => item && typeof item.user_id === "string" && item.user_id.trim());
+    if (!user) return { status: "error", code: "approver-not-found" };
+    return { status: "ok", approverId: user.user_id.trim() };
+  } catch (err) {
+    const classification = classifyFeishuSdkError(err, "lookup");
+    log("warn", "email lookup failed", classification);
+    return {
+      status: "error",
+      code: classification.code,
+    };
+  }
 }
 
 function createWsClient(config = {}) {
@@ -955,6 +1153,12 @@ function createWsClient(config = {}) {
     verificationToken: config.verificationToken || "",
     encryptKey: config.encryptKey || "",
     loggerLevel: lark.LoggerLevel ? lark.LoggerLevel.warn : undefined,
+    logger: SILENT_LARK_LOGGER,
+    cache: createIsolatedLarkCache({
+      lark,
+      platform: config.platform,
+      appId: config.appId,
+    }),
   }).register({
     "card.action.trigger": async (event) => {
       if (typeof config.onCardAction === "function") await config.onCardAction(event);
@@ -968,6 +1172,8 @@ function createWsClient(config = {}) {
     appSecret: config.appSecret,
     domain: resolveSdkDomain(lark, config.platform),
     loggerLevel: lark.LoggerLevel ? lark.LoggerLevel.warn : undefined,
+    logger: SILENT_LARK_LOGGER,
+    httpInstance: config.httpInstance || lark.defaultHttpInstance,
     autoReconnect: true,
     handshakeTimeoutMs: config.handshakeTimeoutMs || 15000,
     onReady: config.onReady,
@@ -1010,6 +1216,17 @@ function normalizeConnectionTimeoutMs(value) {
   return 15000;
 }
 
+const RECENT_TERMINAL_CARD_TTL_MS = 60_000;
+const RECENT_TERMINAL_CARD_LIMIT = 64;
+// Keep terminal replays below Lark's per-message update rate and, more
+// importantly, let the stale action callback finish before restoring the
+// terminal card. Otherwise the action transaction can win after our PATCH.
+const TERMINAL_CARD_REPLAY_DELAY_MS = 250;
+
+function isTerminalCardRequestId(value) {
+  return /^(?:fs|fsq)_[a-f0-9]{24}$/.test(String(value || ""));
+}
+
 class FeishuApprovalClient {
   constructor(options = {}) {
     this.appId = options.appId || "";
@@ -1030,21 +1247,30 @@ class FeishuApprovalClient {
     this.wsClient = options.wsClient || null;
     this.dispatcher = options.dispatcher || null;
     this.pending = new Map();
+    this.terminalCardUpdates = new Set();
+    this.recentTerminalCards = new Map();
+    this.recentTerminalExpiryTimer = null;
+    this.acceptingCardActions = true;
     this.log = typeof options.log === "function" ? options.log : () => {};
     this.onStatusChange = typeof options.onStatusChange === "function" ? options.onStatusChange : () => {};
     this.connectionState = "idle";
+    // Only stable, allowlisted application codes/messages are retained here.
+    // Raw SDK diagnostics are never stored, logged, or returned.
     this.lastErrorMessage = "";
-    this.lastErrorCode = "";
-    // Stable code for failures WE raise, so the settings page can show a
-    // translated string instead of our English diagnostic. Empty when the
-    // failure came from the SDK: that message is an arbitrary upstream string
-    // with no key to map it to, and dropping it would remove the only clue.
     this.lastErrorCode = "";
     this.connectionTimeoutMs = normalizeConnectionTimeoutMs(options.connectionTimeoutSeconds);
     this.cardRequestTimeoutMs = Number.isFinite(options.cardRequestTimeoutMs)
       && options.cardRequestTimeoutMs > 0
       ? Math.round(options.cardRequestTimeoutMs)
       : 10_000;
+    this.terminalCardReplayDelayMs = Number.isFinite(options.terminalCardReplayDelayMs)
+      && options.terminalCardReplayDelayMs >= 0
+      ? Math.round(options.terminalCardReplayDelayMs)
+      : TERMINAL_CARD_REPLAY_DELAY_MS;
+    this.recentTerminalCardTtlMs = Number.isFinite(options.recentTerminalCardTtlMs)
+      && options.recentTerminalCardTtlMs >= 0
+      ? Math.round(options.recentTerminalCardTtlMs)
+      : RECENT_TERMINAL_CARD_TTL_MS;
     this.onSessionGrantRevoke = typeof options.onSessionGrantRevoke === "function"
       ? options.onSessionGrantRevoke
       : null;
@@ -1052,9 +1278,11 @@ class FeishuApprovalClient {
     this.sessionAutomationCardWork = options.sessionAutomationCardWork
       || createRemoteCardWorkRegistry({
         deadlineMs: this.cardRequestTimeoutMs,
-        log: (err) => this.log("warn", "session automation card update failed", {
-          error: err && err.message ? err.message : String(err),
-        }),
+        log: (err) => this.log(
+          "warn",
+          "session automation card update failed",
+          classifyFeishuSdkError(err, "session-automation-card")
+        ),
       });
     this.sessionAutomationRouteCurrent = true;
     this.connectionTimer = null;
@@ -1065,6 +1293,155 @@ class FeishuApprovalClient {
     // SDK's initial-start path can fire onReady/onError after close() (no
     // generation re-check after its await), so we guard on our side.
     this.wsGeneration = 0;
+  }
+
+  trackTerminalCardUpdate(updatePromise) {
+    const tracked = Promise.resolve(updatePromise);
+    this.terminalCardUpdates.add(tracked);
+    void tracked.then(
+      () => this.terminalCardUpdates.delete(tracked),
+      () => this.terminalCardUpdates.delete(tracked)
+    );
+    return tracked;
+  }
+
+  enqueueEntryCardUpdate(entry, update) {
+    const previous = entry && entry.cardUpdateTail
+      ? entry.cardUpdateTail
+      : Promise.resolve();
+    const work = Promise.resolve(previous)
+      .then(() => Promise.resolve(entry && entry.sendReady))
+      .then((sentEntry) => update(sentEntry));
+    // A failed visual update must not block a later terminal update. Callers
+    // still receive `work` and keep their existing stage-specific logging.
+    if (entry) entry.cardUpdateTail = work.catch(() => {});
+    return work;
+  }
+
+  pruneRecentTerminalCards(now = Date.now()) {
+    for (const [requestId, record] of this.recentTerminalCards.entries()) {
+      if (!record || record.expiresAt <= now) this.recentTerminalCards.delete(requestId);
+    }
+    while (this.recentTerminalCards.size > RECENT_TERMINAL_CARD_LIMIT) {
+      const oldest = this.recentTerminalCards.keys().next();
+      if (oldest.done) break;
+      this.recentTerminalCards.delete(oldest.value);
+    }
+    this.scheduleRecentTerminalCardExpiry(now);
+  }
+
+  scheduleRecentTerminalCardExpiry(now = Date.now()) {
+    if (this.recentTerminalExpiryTimer) clearTimeout(this.recentTerminalExpiryTimer);
+    this.recentTerminalExpiryTimer = null;
+    let nextExpiry = Infinity;
+    for (const record of this.recentTerminalCards.values()) {
+      if (record && record.expiresAt < nextExpiry) nextExpiry = record.expiresAt;
+    }
+    if (!Number.isFinite(nextExpiry)) return;
+    this.recentTerminalExpiryTimer = setTimeout(() => {
+      this.recentTerminalExpiryTimer = null;
+      this.pruneRecentTerminalCards();
+    }, Math.max(0, nextExpiry - now));
+    if (typeof this.recentTerminalExpiryTimer.unref === "function") {
+      this.recentTerminalExpiryTimer.unref();
+    }
+  }
+
+  clearRecentTerminalCards() {
+    if (this.recentTerminalExpiryTimer) clearTimeout(this.recentTerminalExpiryTimer);
+    this.recentTerminalExpiryTimer = null;
+    this.recentTerminalCards.clear();
+  }
+
+  rememberTerminalCard(requestId, entry, outcome) {
+    if (!isTerminalCardRequestId(requestId) || !entry) return null;
+    const card = entry.kind === "elicitation"
+      ? buildElicitationStatusCard(entry.payload, outcome, this.cardContext())
+      : buildStatusCard(entry.payload, outcome, this.cardContext());
+    const record = {
+      requestId,
+      card,
+      messageId: entry.messageId || "",
+      messageReady: Promise.resolve(entry.sendReady).then((sentEntry) => {
+        const messageId = (sentEntry && sentEntry.messageId) || entry.messageId || "";
+        record.messageId = messageId;
+        return messageId;
+      }),
+      expiresAt: Date.now() + this.recentTerminalCardTtlMs,
+      priorUpdate: entry.cardUpdateTail || Promise.resolve(),
+      initialUpdate: null,
+      replayRequested: false,
+      replayWork: null,
+    };
+    this.recentTerminalCards.delete(requestId);
+    this.recentTerminalCards.set(requestId, record);
+    this.pruneRecentTerminalCards();
+    return record;
+  }
+
+  async patchTerminalCard(record) {
+    const messageId = record.messageId || await record.messageReady;
+    if (!messageId) throw new Error("card message id is unavailable");
+    const message = this.messageApi();
+    if (!message || typeof message.patch !== "function") {
+      throw new Error("message.patch is unavailable");
+    }
+    assertMessageApiResponse(await message.patch({
+      path: { message_id: messageId },
+      data: { content: JSON.stringify(record.card) },
+    }), { stage: "update-card" });
+  }
+
+  startTerminalCardUpdate(record, failureMessage, options = {}) {
+    const update = Promise.resolve(record.priorUpdate)
+      .then(() => this.patchTerminalCard(record))
+      .catch((err) => {
+        this.log(
+          "warn",
+          failureMessage,
+          options.minimalFailure === true
+            ? { stage: "update-card" }
+            : classifyFeishuSdkError(err, "update-card")
+        );
+      });
+    record.initialUpdate = update;
+    this.trackTerminalCardUpdate(update);
+    return update;
+  }
+
+  scheduleStaleTerminalCardReplay(requestId, event) {
+    if (!this.acceptingCardActions || !isTerminalCardRequestId(requestId)) return false;
+    this.pruneRecentTerminalCards();
+    const record = this.recentTerminalCards.get(requestId);
+    if (!record || actionOperatorId(event, this.idType) !== this.approverId) return false;
+    record.replayRequested = true;
+    record.expiresAt = Date.now() + this.recentTerminalCardTtlMs;
+    this.recentTerminalCards.delete(requestId);
+    this.recentTerminalCards.set(requestId, record);
+    this.pruneRecentTerminalCards();
+    if (record.replayWork) return true;
+
+    const replayWork = (async () => {
+      if (record.initialUpdate) await record.initialUpdate;
+      while (record.replayRequested) {
+        await new Promise((resolve) => setTimeout(resolve, this.terminalCardReplayDelayMs));
+        // Stale callbacks received during the debounce are covered by this
+        // replay. A callback received while PATCH is in flight requests one
+        // additional serialized replay on the next loop iteration.
+        record.replayRequested = false;
+        try {
+          await this.patchTerminalCard(record);
+        } catch (err) {
+          this.log("warn", "stale card refresh failed", classifyFeishuSdkError(err, "update-card"));
+        }
+      }
+    })().finally(() => {
+      record.replayWork = null;
+    });
+    record.replayWork = replayWork;
+    this.trackTerminalCardUpdate(replayWork);
+    this.log("debug", "stale card refresh scheduled", { requestId });
+    return true;
   }
 
   isEnabled() {
@@ -1149,7 +1526,8 @@ class FeishuApprovalClient {
     if (!this.isEnabled()) return false;
     const current = this.getStatus().status;
     if (this.wsClient && (current === "running" || current === "starting")) return false;
-    if (this.wsClient) this.close();
+    if (this.wsClient) this.close({ preserveRecentTerminalCards: true });
+    this.acceptingCardActions = true;
     const generation = ++this.wsGeneration;
     const ifCurrent = (fn) => (...args) => {
       if (generation !== this.wsGeneration) return;
@@ -1175,7 +1553,7 @@ class FeishuApprovalClient {
       onError: ifCurrent((err) => {
         this.clearConnectionTimer();
         this.connectionState = "failed";
-        const raw = err && err.message ? err.message : String(err || "Long connection failed");
+        const classification = classifyFeishuSdkError(err, "ws-connect");
         // Gateway code 1000040351 ("Incorrect domain name") is the platform
         // rejecting an app that lives on the other deployment — i.e. the
         // platform picker is set wrong. It is the single most likely
@@ -1184,12 +1562,13 @@ class FeishuApprovalClient {
         // settings page can turn into an actionable sentence. Verified against
         // a real Lark app pointed at open.feishu.cn (2026-07-15).
         //
-        // Matched on the numeric code, not the English text, which is the
-        // stabler half of the response. Anything else keeps an empty code and
-        // falls back to showing the SDK's raw string.
-        this.lastErrorCode = /\b1000040351\b/.test(raw) ? "wrong-platform" : "";
-        this.lastErrorMessage = raw;
-        this.log("warn", "connection failed", { error: this.lastErrorMessage });
+        // Only the numeric code is retained. The arbitrary SDK message is
+        // never returned or logged because it may contain request credentials.
+        this.lastErrorCode = classification.code;
+        this.lastErrorMessage = classification.code === "wrong-platform"
+          ? "Incorrect domain name."
+          : "Feishu/Lark long connection failed.";
+        this.log("warn", "connection failed", classification);
         this.notifyStatusChange();
       }),
       onReconnecting: ifCurrent(() => {
@@ -1243,7 +1622,8 @@ class FeishuApprovalClient {
     });
   }
 
-  close() {
+  close(options = {}) {
+    this.acceptingCardActions = false;
     this.wsGeneration += 1;
     this.clearConnectionTimer();
     if (this.wsClient && typeof this.wsClient.close === "function") {
@@ -1255,10 +1635,18 @@ class FeishuApprovalClient {
     this.lastErrorMessage = "";
     this.lastErrorCode = "";
     for (const entry of this.pending.values()) {
+      // Resolve first so callers never wait on detached card work. Every
+      // pending entry exposes the same terminalizer: Settings test entries
+      // carry abortOutcome and patch, while ordinary approvals safely no-op.
       entry.resolve(null);
+      if (typeof entry.terminalizeAbortOutcome === "function") {
+        entry.terminalizeAbortOutcome();
+      }
     }
     this.pending.clear();
+    if (options.preserveRecentTerminalCards !== true) this.clearRecentTerminalCards();
     this.notifyStatusChange();
+    return Promise.allSettled(Array.from(this.terminalCardUpdates));
   }
 
   messageApi() {
@@ -1309,16 +1697,36 @@ class FeishuApprovalClient {
         if (sendError && options.rejectOnSendError) reject(sendError);
         else resolve(normalizeApprovalDecision(decision));
       };
-      const onAbort = () => finish(null);
-      if (signal) signal.addEventListener("abort", onAbort, { once: true });
       const entry = {
         payload: normalized,
         messageId: "",
         signal: signal || null,
         resolve: finish,
         sendReady: null,
+        cardUpdateTail: Promise.resolve(),
         trustConfirming: false,
+        abortOutcomePromise: null,
       };
+      // Entry-owned so close() can share the same one-shot path without seeing
+      // requestApproval()'s local options closure. Abort and close may overlap.
+      const terminalizeAbortOutcome = () => {
+        if (!options.abortOutcome) return null;
+        if (entry.abortOutcomePromise) return entry.abortOutcomePromise;
+        const record = this.rememberTerminalCard(requestId, entry, options.abortOutcome);
+        entry.abortOutcomePromise = record
+          ? this.startTerminalCardUpdate(record, "abort card update failed", { minimalFailure: true })
+          : Promise.resolve(null);
+        return entry.abortOutcomePromise;
+      };
+      entry.terminalizeAbortOutcome = terminalizeAbortOutcome;
+      const onAbort = () => {
+        // Preserve the approval contract: abort clears pending state and
+        // resolves immediately. The settings test may additionally expire its
+        // already-sent card, but that work is deliberately detached.
+        finish(null);
+        terminalizeAbortOutcome();
+      };
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
       this.pending.set(requestId, entry);
       entry.sendReady = this.sendCard(requestId, normalized)
         .then((messageId) => {
@@ -1328,8 +1736,9 @@ class FeishuApprovalClient {
           return current || entry;
         })
         .catch((err) => {
-          this.log("warn", "send failed", { error: err && err.message ? err.message : String(err) });
-          finish(null, err instanceof Error ? err : new Error(String(err)));
+          const classification = classifyFeishuSdkError(err, "send-card");
+          this.log("warn", "send failed", classification);
+          finish(null, createSanitizedSdkError(classification));
           return entry;
         });
     });
@@ -1364,6 +1773,7 @@ class FeishuApprovalClient {
         signal: signal || null,
         resolve: finish,
         sendReady: null,
+        cardUpdateTail: Promise.resolve(),
         kind: "elicitation",
         answers: {},
         activeQuestionIndex: 0,
@@ -1377,7 +1787,11 @@ class FeishuApprovalClient {
           return current || entry;
         })
         .catch((err) => {
-          this.log("warn", "send elicitation failed", { error: err && err.message ? err.message : String(err) });
+          this.log(
+            "warn",
+            "send elicitation failed",
+            classifyFeishuSdkError(err, "send-elicitation")
+          );
           finish(null);
           return entry;
         });
@@ -1395,6 +1809,7 @@ class FeishuApprovalClient {
         content: JSON.stringify(buildApprovalCard(payload, { requestId }, this.cardContext())),
       },
     });
+    assertMessageApiResponse(response, { stage: "send-card", requireMessageId: true });
     const messageId = normalizeApiMessageId(response);
     this.log("debug", "card sent", { requestId, messageId });
     return messageId;
@@ -1415,6 +1830,7 @@ class FeishuApprovalClient {
         )),
       },
     });
+    assertMessageApiResponse(response, { stage: "send-elicitation", requireMessageId: true });
     const messageId = normalizeApiMessageId(response);
     this.log("debug", "elicitation card sent", { requestId, messageId });
     return messageId;
@@ -1424,10 +1840,10 @@ class FeishuApprovalClient {
     if (!messageId) return;
     const message = this.messageApi();
     if (!message || typeof message.patch !== "function") return;
-    await message.patch({
+    assertMessageApiResponse(await message.patch({
       path: { message_id: messageId },
       data: { content: JSON.stringify(buildStatusCard(payload, outcome, this.cardContext())) },
-    });
+    }), { stage: "update-card" });
   }
 
   async patchCard(messageId, card, options = {}) {
@@ -1439,7 +1855,7 @@ class FeishuApprovalClient {
     const patch = () => message.patch({
       path: { message_id: messageId },
       data: { content: JSON.stringify(card) },
-    });
+    }).then((response) => assertMessageApiResponse(response, { stage: "session-automation-card" }));
     if (
       options.signal
       && this.cardHttpInstance
@@ -1621,32 +2037,40 @@ class FeishuApprovalClient {
     }
     if (action.kind === "session-trust-open") {
       entry.trustConfirming = true;
-      Promise.resolve(entry.sendReady)
-        .then(() => this.patchCard(entry.messageId, buildSessionTrustConfirmCard(
+      this.enqueueEntryCardUpdate(entry, () => this.patchCard(
+        entry.messageId,
+        buildSessionTrustConfirmCard(
           entry.payload,
           { requestId: action.requestId },
           this.cardContext()
-        )))
+        )
+      ))
         .catch((err) => {
           entry.trustConfirming = false;
-          this.log("warn", "session trust confirmation patch failed", {
-            error: err && err.message ? err.message : String(err),
-          });
+          this.log(
+            "warn",
+            "session trust confirmation patch failed",
+            classifyFeishuSdkError(err, "session-automation-card")
+          );
         });
       return true;
     }
     if (action.kind === "session-trust-cancel") {
       entry.trustConfirming = false;
-      Promise.resolve(entry.sendReady)
-        .then(() => this.patchCard(entry.messageId, buildApprovalCard(
+      this.enqueueEntryCardUpdate(entry, () => this.patchCard(
+        entry.messageId,
+        buildApprovalCard(
           entry.payload,
           { requestId: action.requestId },
           this.cardContext()
-        )))
+        )
+      ))
         .catch((err) => {
-          this.log("warn", "session trust cancellation patch failed", {
-            error: err && err.message ? err.message : String(err),
-          });
+          this.log(
+            "warn",
+            "session trust cancellation patch failed",
+            classifyFeishuSdkError(err, "session-automation-card")
+          );
         });
       return true;
     }
@@ -1663,16 +2087,20 @@ class FeishuApprovalClient {
     });
     if (!cardWork) {
       entry.trustConfirming = false;
-      Promise.resolve(entry.sendReady)
-        .then(() => this.patchCard(entry.messageId, buildApprovalCard(
+      this.enqueueEntryCardUpdate(entry, () => this.patchCard(
+        entry.messageId,
+        buildApprovalCard(
           entry.payload,
           { requestId: action.requestId },
           this.cardContext()
-        )))
+        )
+      ))
         .catch((err) => {
-          this.log("warn", "session trust capacity fallback patch failed", {
-            error: err && err.message ? err.message : String(err),
-          });
+          this.log(
+            "warn",
+            "session trust capacity fallback patch failed",
+            classifyFeishuSdkError(err, "session-automation-card")
+          );
         });
       return true;
     }
@@ -1690,17 +2118,17 @@ class FeishuApprovalClient {
     if (!messageId) return;
     const message = this.messageApi();
     if (!message || typeof message.patch !== "function") return;
-    await message.patch({
+    assertMessageApiResponse(await message.patch({
       path: { message_id: messageId },
       data: { content: JSON.stringify(buildElicitationStatusCard(payload, outcome, this.cardContext())) },
-    });
+    }), { stage: "update-card" });
   }
 
   async updateElicitationQuestionCard(messageId, payload, requestId, questionIndex, answers = {}) {
     if (!messageId) return;
     const message = this.messageApi();
     if (!message || typeof message.patch !== "function") return;
-    await message.patch({
+    assertMessageApiResponse(await message.patch({
       path: { message_id: messageId },
       data: {
         content: JSON.stringify(buildElicitationCard(payload, {
@@ -1709,7 +2137,7 @@ class FeishuApprovalClient {
           answers,
         }, this.cardContext())),
       },
-    });
+    }), { stage: "update-card" });
   }
 
   findPendingBySignal(signal) {
@@ -1723,29 +2151,25 @@ class FeishuApprovalClient {
   resolveApprovalExternally(signal, outcome = {}) {
     const found = this.findPendingBySignal(signal);
     if (!found) return false;
-    const { entry } = found;
-    Promise.resolve(entry.sendReady)
-      .then(() => {
-        const nextOutcome = {
-          ...outcome,
-          source: outcome.source || "desktop",
-        };
-        if (entry.kind === "elicitation") {
-          return this.updateElicitationCard(entry.messageId, entry.payload, nextOutcome);
-        }
-        return this.updateCard(entry.messageId, entry.payload, nextOutcome);
-      })
-      .catch((err) => {
-        this.log("warn", "external update failed", { error: err && err.message ? err.message : String(err) });
-      })
-      .finally(() => entry.resolve(null));
+    const { requestId, entry } = found;
+    const nextOutcome = {
+      ...outcome,
+      source: outcome.source || "desktop",
+    };
+    const record = this.rememberTerminalCard(requestId, entry, nextOutcome);
+    // Resolve before the best-effort patch so a slow Feishu response cannot
+    // reopen the decision race after the desktop has already answered.
+    entry.resolve(null);
+    if (record) this.startTerminalCardUpdate(record, "external update failed");
     return true;
   }
 
   handleCardAction(event) {
     const sessionAutomationAction = normalizeSessionAutomationActionEvent(event, this.idType);
     if (sessionAutomationAction) {
-      return this.handleSessionAutomationAction(sessionAutomationAction);
+      const handled = this.handleSessionAutomationAction(sessionAutomationAction);
+      if (!handled) this.scheduleStaleTerminalCardReplay(sessionAutomationAction.requestId, event);
+      return handled;
     }
     const action = normalizeActionEvent(event, this.idType);
     const requestId = action && action.requestId
@@ -1764,8 +2188,11 @@ class FeishuApprovalClient {
       decision: describeDecision(normalizedAction && normalizedAction.decision),
       matched: !!(normalizedAction && normalizedAction.operatorId === this.approverId && entry),
     });
+    if (!entry) {
+      this.scheduleStaleTerminalCardReplay(requestId, event);
+      return false;
+    }
     if (!normalizedAction || normalizedAction.operatorId !== this.approverId) return false;
-    if (!entry) return false;
     if (entry.trustConfirming === true) return false;
 
     if (entry.kind === "elicitation" && normalizedAction.decision !== "terminal") {
@@ -1776,10 +2203,11 @@ class FeishuApprovalClient {
           entry.payload.questions.length - 1
         ));
         entry.activeQuestionIndex = nextIndex;
-        Promise.resolve(entry.sendReady)
-          .then(() => this.updateElicitationQuestionCard(entry.messageId, entry.payload, requestId, nextIndex, entry.answers))
+        this.enqueueEntryCardUpdate(entry, () => (
+          this.updateElicitationQuestionCard(entry.messageId, entry.payload, requestId, nextIndex, entry.answers)
+        ))
           .catch((err) => {
-            this.log("warn", "update failed", { error: err && err.message ? err.message : String(err) });
+            this.log("warn", "update failed", classifyFeishuSdkError(err, "update-card"));
           });
         return true;
       }
@@ -1794,10 +2222,11 @@ class FeishuApprovalClient {
           entry.payload.questions.length - 1
         ));
         entry.activeQuestionIndex = nextIndex;
-        Promise.resolve(entry.sendReady)
-          .then(() => this.updateElicitationQuestionCard(entry.messageId, entry.payload, requestId, nextIndex, entry.answers))
+        this.enqueueEntryCardUpdate(entry, () => (
+          this.updateElicitationQuestionCard(entry.messageId, entry.payload, requestId, nextIndex, entry.answers)
+        ))
           .catch((err) => {
-            this.log("warn", "update failed", { error: err && err.message ? err.message : String(err) });
+            this.log("warn", "update failed", classifyFeishuSdkError(err, "update-card"));
           });
         return true;
       }
@@ -1810,10 +2239,11 @@ class FeishuApprovalClient {
         });
         const nextIndex = firstMissingIndex >= 0 ? firstMissingIndex : entry.activeQuestionIndex;
         entry.activeQuestionIndex = nextIndex;
-        Promise.resolve(entry.sendReady)
-          .then(() => this.updateElicitationQuestionCard(entry.messageId, entry.payload, requestId, nextIndex, entry.answers))
+        this.enqueueEntryCardUpdate(entry, () => (
+          this.updateElicitationQuestionCard(entry.messageId, entry.payload, requestId, nextIndex, entry.answers)
+        ))
           .catch((err) => {
-            this.log("warn", "update failed", { error: err && err.message ? err.message : String(err) });
+            this.log("warn", "update failed", classifyFeishuSdkError(err, "update-card"));
           });
         return true;
       }
@@ -1827,24 +2257,18 @@ class FeishuApprovalClient {
     // Final action: resolve first so the click order decides the outcome and a
     // slow/failed card patch can't delay or reorder the local decision. resolve()
     // also removes the entry from pending, making duplicate actions no-ops.
-    entry.resolve(normalizedAction.decision);
-    Promise.resolve(entry.sendReady)
-      .then(() => {
-        if (entry.kind === "elicitation") {
-          const decision = normalizedAction.decision === "terminal" ? "terminal" : "elicitation-submit";
-          return this.updateElicitationCard(entry.messageId, entry.payload, {
-            decision,
-            source: "feishu",
-          });
+    const terminalOutcome = entry.kind === "elicitation"
+      ? {
+          decision: normalizedAction.decision === "terminal" ? "terminal" : "elicitation-submit",
+          source: "feishu",
         }
-        return this.updateCard(entry.messageId, entry.payload, {
+      : {
           decision: normalizedAction.decision,
           source: "feishu",
-        });
-      })
-      .catch((err) => {
-        this.log("warn", "update failed", { error: err && err.message ? err.message : String(err) });
-      });
+        };
+    const record = this.rememberTerminalCard(requestId, entry, terminalOutcome);
+    entry.resolve(normalizedAction.decision);
+    if (record) this.startTerminalCardUpdate(record, "update failed");
     return true;
   }
 }
@@ -1862,7 +2286,11 @@ module.exports = {
   normalizeActionEvent,
   normalizeSessionAutomationActionEvent,
   normalizeElicitationActionEvent,
+  SILENT_LARK_LOGGER,
+  classifyFeishuSdkError,
+  createIsolatedLarkCache,
   createLarkClient,
   createDeadlineHttpInstance,
   createWsClient,
+  lookupOpenIdByEmail,
 };

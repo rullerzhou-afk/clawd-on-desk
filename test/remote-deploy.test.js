@@ -13,8 +13,8 @@ function parseDeployedFiles() {
 
 function findRelativeRequires(filePath) {
   const content = fs.readFileSync(filePath, "utf8");
-  const matches = [...content.matchAll(/require\(["']\.\/([^"')]+)["']\)/g)];
-  return matches.map((m) => (m[1].endsWith(".js") ? m[1] : `${m[1]}.js`));
+  const matches = [...content.matchAll(/require\(["'](\.\.?\/[^"')]+)["']\)/g)];
+  return matches.map((match) => match[1]);
 }
 
 describe("Remote SSH secure hook manifest", () => {
@@ -27,11 +27,22 @@ describe("Remote SSH secure hook manifest", () => {
       const absPath = path.join(HOOKS_DIR, name);
       assert.ok(fs.existsSync(absPath), `listed file missing: hooks/${name}`);
 
-      const deps = findRelativeRequires(absPath);
-      for (const dep of deps) {
+      const specs = findRelativeRequires(absPath);
+      for (const spec of specs) {
+        const target = path.resolve(path.dirname(absPath), spec.endsWith(".js") ? spec : `${spec}.js`);
+        const relative = path.relative(HOOKS_DIR, target);
+        const staysInHooks = relative !== ""
+          && !path.isAbsolute(relative)
+          && relative !== ".."
+          && !relative.startsWith(`..${path.sep}`);
+        assert.ok(
+          staysInHooks,
+          `hooks/${name} requires "${spec}" outside hooks/ — remote hosts receive no src/ or agents/ tree`
+        );
+        const dep = relative.split(path.sep).join("/");
         assert.ok(
           deployedSet.has(dep),
-          `hooks/${name} requires './${dep.replace(/\.js$/, "")}' but ${dep} is not in remote-ssh-deploy HOOK_FILES — add it or the remote deploy will ship a broken subset`
+          `hooks/${name} requires "${spec}" but ${dep} is not in remote-ssh-deploy HOOK_FILES — add it or the remote deploy will ship a broken subset`
         );
       }
     }

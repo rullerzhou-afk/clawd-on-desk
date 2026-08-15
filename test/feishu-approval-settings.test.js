@@ -31,6 +31,9 @@ test("normalizeFeishuApproval trims config and defaults to open_id", () => {
     platform: "feishu",
     idType: "user_id",
     approverId: "user_123",
+    approverSource: "unknown",
+    approverBoundPlatform: "",
+    approverBoundAppId: "",
     connectionTimeoutSeconds: 30,
   });
   assert.deepEqual(settings.normalizeFeishuApproval({ idType: "bad", approverId: "" }), {
@@ -38,6 +41,9 @@ test("normalizeFeishuApproval trims config and defaults to open_id", () => {
     platform: "feishu",
     idType: "open_id",
     approverId: "",
+    approverSource: "none",
+    approverBoundPlatform: "",
+    approverBoundAppId: "",
     connectionTimeoutSeconds: 15,
   });
   assert.equal(settings.normalizeFeishuApproval({ connectionTimeoutSeconds: 999 }).connectionTimeoutSeconds, 15);
@@ -119,13 +125,104 @@ test("validateFeishuApproval permits incomplete saved config and rejects unknown
   }).status, "error");
 });
 
-test("writeSecretsEnvFile stores Feishu secrets outside prefs and preserves blank fields", () => {
+test("normalizeFeishuApproval preserves legacy approvers as explicit unknown provenance", () => {
+  for (const idType of ["open_id", "user_id", "union_id"]) {
+    const normalized = settings.normalizeFeishuApproval({
+      enabled: true,
+      platform: "lark",
+      idType,
+      approverId: `legacy-${idType}`,
+    });
+    assert.deepEqual(normalized, {
+      enabled: true,
+      platform: "lark",
+      idType,
+      approverId: `legacy-${idType}`,
+      approverSource: "unknown",
+      approverBoundPlatform: "",
+      approverBoundAppId: "",
+      connectionTimeoutSeconds: 15,
+    });
+  }
+});
+
+test("normalizeFeishuApproval canonicalizes every partial trusted provenance shape without dropping the ID", () => {
+  const partials = [
+    { approverSource: "lookup" },
+    { approverSource: "lookup", approverBoundPlatform: "feishu" },
+    { approverSource: "manual", approverBoundAppId: "cli_bound" },
+    { approverSource: "manual", approverBoundPlatform: "custom", approverBoundAppId: "cli_bound" },
+    { idType: undefined, approverSource: "manual", approverBoundPlatform: "feishu", approverBoundAppId: "cli_bound" },
+    { approverSource: "lookup", approverBoundPlatform: "feishu", approverBoundAppId: "cli_bound", idType: "user_id" },
+    { approverSource: "none", approverBoundPlatform: "feishu", approverBoundAppId: "cli_bound" },
+  ];
+  for (const partial of partials) {
+    const normalized = settings.normalizeFeishuApproval({
+      enabled: true,
+      platform: "feishu",
+      idType: partial.idType || "open_id",
+      approverId: "preserved-id",
+      ...partial,
+    });
+    assert.equal(normalized.approverId, "preserved-id");
+    assert.equal(normalized.approverSource, "unknown");
+    assert.equal(normalized.approverBoundPlatform, "");
+    assert.equal(normalized.approverBoundAppId, "");
+  }
+
+  assert.deepEqual(settings.normalizeFeishuApproval({
+    approverId: "",
+    approverSource: "lookup",
+    approverBoundPlatform: "feishu",
+    approverBoundAppId: "cli_stray",
+  }), {
+    enabled: false,
+    platform: "feishu",
+    idType: "open_id",
+    approverId: "",
+    approverSource: "none",
+    approverBoundPlatform: "",
+    approverBoundAppId: "",
+    connectionTimeoutSeconds: 15,
+  });
+});
+
+test("validateFeishuApproval rejects partial trusted tuples and accepts canonical none unknown lookup and manual tuples", () => {
+  const base = {
+    enabled: true,
+    platform: "feishu",
+    idType: "open_id",
+    approverId: "ou_valid",
+    connectionTimeoutSeconds: 15,
+  };
+  for (const partial of [
+    { approverSource: "lookup", approverBoundPlatform: "", approverBoundAppId: "" },
+    { approverSource: "lookup", approverBoundPlatform: "feishu", approverBoundAppId: "" },
+    { approverSource: "manual", approverBoundPlatform: "", approverBoundAppId: "cli_valid" },
+    { approverSource: "lookup", approverBoundPlatform: "feishu", approverBoundAppId: "cli_valid", idType: "user_id" },
+  ]) {
+    assert.equal(settings.validateFeishuApproval({ ...base, ...partial }).status, "error");
+  }
+
+  for (const canonical of [
+    { ...base, approverId: "", approverSource: "none", approverBoundPlatform: "", approverBoundAppId: "" },
+    { ...base, approverSource: "unknown", approverBoundPlatform: "", approverBoundAppId: "" },
+    { ...base, approverSource: "lookup", approverBoundPlatform: "feishu", approverBoundAppId: "cli_valid" },
+    { ...base, idType: "user_id", approverSource: "manual", approverBoundPlatform: "feishu", approverBoundAppId: "cli_valid" },
+    { ...base, idType: "union_id", approverSource: "manual", approverBoundPlatform: "feishu", approverBoundAppId: "cli_valid" },
+  ]) {
+    assert.equal(settings.validateFeishuApproval(canonical).status, "ok");
+  }
+});
+
+test("writeSecretsEnvFile atomically stores the complete planned credential bundle", () => {
   const filePath = path.join(tempDir(), "feishu-approval.env");
   let result = settings.writeSecretsEnvFile({
     fs,
     path,
     filePath,
     secrets: {
+      credentialPlatform: "feishu",
       appId: "cli_123456",
       appSecret: "secret-abcdef",
       verificationToken: "verify-token",
@@ -134,6 +231,7 @@ test("writeSecretsEnvFile stores Feishu secrets outside prefs and preserves blan
     platform: "linux",
   });
   assert.equal(result.status, "ok");
+  assert.match(fs.readFileSync(filePath, "utf8"), /FEISHU_CREDENTIAL_PLATFORM=feishu/);
   assert.match(fs.readFileSync(filePath, "utf8"), /FEISHU_APP_SECRET=secret-abcdef/);
 
   result = settings.writeSecretsEnvFile({
@@ -141,7 +239,8 @@ test("writeSecretsEnvFile stores Feishu secrets outside prefs and preserves blan
     path,
     filePath,
     secrets: {
-      appId: "",
+      credentialPlatform: "feishu",
+      appId: "cli_123456",
       appSecret: "new-secret",
       verificationToken: "",
       encryptKey: "",
@@ -151,9 +250,328 @@ test("writeSecretsEnvFile stores Feishu secrets outside prefs and preserves blan
   assert.equal(result.status, "ok");
   const env = settings.readSecretsEnvFile({ fs, filePath });
   assert.equal(env.appId, "cli_123456");
+  assert.equal(env.credentialPlatform, "feishu");
   assert.equal(env.appSecret, "new-secret");
-  assert.equal(env.verificationToken, "verify-token");
-  assert.equal(env.encryptKey, "encrypt-key");
+  assert.equal(env.verificationToken, "");
+  assert.equal(env.encryptKey, "");
+});
+
+test("legacy secret files preserve credentials while credential platform remains unknown", () => {
+  const filePath = path.join(tempDir(), "feishu-approval.env");
+  fs.writeFileSync(filePath, [
+    "FEISHU_APP_ID=cli_legacy",
+    "FEISHU_APP_SECRET=legacy-secret",
+    "FEISHU_VERIFICATION_TOKEN=legacy-verify",
+    "FEISHU_ENCRYPT_KEY=legacy-encrypt",
+    "",
+  ].join("\n"));
+  assert.deepEqual(settings.readSecretsEnvFile({ fs, filePath }), {
+    credentialPlatform: "unknown",
+    appId: "cli_legacy",
+    appSecret: "legacy-secret",
+    verificationToken: "legacy-verify",
+    encryptKey: "legacy-encrypt",
+  });
+});
+
+test("planFeishuCredentialWrite saves a first complete identity without replacement confirmation", () => {
+  assert.deepEqual(settings.planFeishuCredentialWrite({}, "feishu", {
+    appId: "cli_initial",
+    appSecret: "initial-secret",
+    verificationToken: "initial-verify",
+  }), {
+    ok: true,
+    nextBundle: {
+      credentialPlatform: "feishu",
+      appId: "cli_initial",
+      appSecret: "initial-secret",
+      verificationToken: "initial-verify",
+      encryptKey: "",
+    },
+  });
+});
+
+test("planFeishuCredentialWrite rebinds a legacy same App without clearing optional fields", () => {
+  const legacy = {
+    credentialPlatform: "unknown",
+    appId: "cli_legacy",
+    appSecret: "old-secret",
+    verificationToken: "old-verify",
+    encryptKey: "old-encrypt",
+  };
+
+  assert.deepEqual(settings.planFeishuCredentialWrite(legacy, "lark", {
+    appId: "cli_legacy",
+    appSecret: "rotated-secret",
+  }), {
+    ok: true,
+    nextBundle: {
+      credentialPlatform: "lark",
+      appId: "cli_legacy",
+      appSecret: "rotated-secret",
+      verificationToken: "old-verify",
+      encryptKey: "old-encrypt",
+    },
+  });
+
+  assert.deepEqual(settings.planFeishuCredentialWrite(legacy, "lark", {
+    appId: "cli_legacy",
+    appSecret: "rotated-secret",
+    verificationToken: "new-verify",
+  }), {
+    ok: true,
+    nextBundle: {
+      credentialPlatform: "lark",
+      appId: "cli_legacy",
+      appSecret: "rotated-secret",
+      verificationToken: "new-verify",
+      encryptKey: "old-encrypt",
+    },
+  });
+});
+
+test("planFeishuCredentialWrite preserves optional fields for a known same identity and Secret rotation", () => {
+  const current = {
+    credentialPlatform: "feishu",
+    appId: "cli_current",
+    appSecret: "old-secret",
+    verificationToken: "old-verify",
+    encryptKey: "old-encrypt",
+  };
+
+  assert.deepEqual(settings.planFeishuCredentialWrite(current, "feishu", {
+    appSecret: "rotated-secret",
+  }), {
+    ok: true,
+    nextBundle: {
+      credentialPlatform: "feishu",
+      appId: "cli_current",
+      appSecret: "rotated-secret",
+      verificationToken: "old-verify",
+      encryptKey: "old-encrypt",
+    },
+  });
+});
+
+test("planFeishuCredentialWrite requires confirmation before a real identity replacement", () => {
+  const knownFeishu = {
+    credentialPlatform: "feishu",
+    appId: "cli_current",
+    appSecret: "old-secret",
+    verificationToken: "old-verify",
+    encryptKey: "old-encrypt",
+  };
+
+  for (const [label, current, platform, patch] of [
+    ["known platform switch", knownFeishu, "lark", {
+      appId: "cli_current",
+      appSecret: "new-secret",
+    }],
+    ["known App ID switch", knownFeishu, "feishu", {
+      appId: "cli_other",
+      appSecret: "new-secret",
+    }],
+    ["legacy App ID switch", { ...knownFeishu, credentialPlatform: "unknown" }, "feishu", {
+      appId: "cli_other",
+      appSecret: "new-secret",
+    }],
+  ]) {
+    assert.deepEqual(
+      settings.planFeishuCredentialWrite(current, platform, patch),
+      { ok: false, code: "credentials-replace-confirmation-required" },
+      label,
+    );
+  }
+
+  assert.deepEqual(settings.planFeishuCredentialWrite(knownFeishu, "lark", {
+    appId: "cli_replacement",
+    appSecret: "replacement-secret",
+    confirmReplace: true,
+  }), {
+    ok: true,
+    nextBundle: {
+      credentialPlatform: "lark",
+      appId: "cli_replacement",
+      appSecret: "replacement-secret",
+      verificationToken: "",
+      encryptKey: "",
+    },
+  });
+
+  for (const confirmReplace of ["true", 1]) {
+    assert.deepEqual(settings.planFeishuCredentialWrite(knownFeishu, "lark", {
+      appId: "cli_replacement",
+      appSecret: "replacement-secret",
+      confirmReplace,
+    }), { ok: false, code: "credentials-replace-confirmation-required" });
+  }
+
+  const inheritedConfirmation = Object.create({ confirmReplace: true });
+  Object.assign(inheritedConfirmation, {
+    appId: "cli_replacement",
+    appSecret: "replacement-secret",
+  });
+  assert.deepEqual(
+    settings.planFeishuCredentialWrite(knownFeishu, "lark", inheritedConfirmation),
+    { ok: false, code: "credentials-replace-confirmation-required" },
+  );
+
+  for (const patch of [
+    {},
+    { appId: "cli_replacement" },
+    { appSecret: "replacement-secret" },
+  ]) {
+    assert.deepEqual(
+      settings.planFeishuCredentialWrite(knownFeishu, "lark", patch),
+      { ok: false, code: "credentials-replacement-incomplete" },
+    );
+  }
+
+  assert.deepEqual(settings.planFeishuCredentialWrite(knownFeishu, "lark", {
+    appId: "not-valid",
+    appSecret: "replacement-secret",
+  }), { ok: false, code: "invalid-app-id" });
+});
+
+test("deriveSavedFeishuCredentialIdentity returns exact fail-closed codes", () => {
+  const config = { platform: "feishu" };
+  assert.deepEqual(settings.deriveSavedFeishuCredentialIdentity(config, {}), {
+    ok: false,
+    code: "missing-credentials",
+  });
+  assert.deepEqual(settings.deriveSavedFeishuCredentialIdentity(config, {
+    credentialPlatform: "feishu",
+    appId: "bad",
+    appSecret: "secret",
+  }), { ok: false, code: "invalid-app-id" });
+  assert.deepEqual(settings.deriveSavedFeishuCredentialIdentity(config, {
+    credentialPlatform: "unknown",
+    appId: "cli_valid",
+    appSecret: "secret",
+  }), { ok: false, code: "credential-provenance-unknown" });
+  assert.deepEqual(settings.deriveSavedFeishuCredentialIdentity(config, {
+    credentialPlatform: "lark",
+    appId: "cli_valid",
+    appSecret: "secret",
+  }), { ok: false, code: "credential-platform-mismatch" });
+  assert.deepEqual(settings.deriveSavedFeishuCredentialIdentity(config, {
+    credentialPlatform: "feishu",
+    appId: "cli_valid",
+    appSecret: "secret",
+  }), { ok: true, identity: { platform: "feishu", appId: "cli_valid" } });
+});
+
+test("validateFeishuApproverBinding enforces source, platform, App, and lookup open_id", () => {
+  const identity = { platform: "feishu", appId: "cli_current" };
+  const base = {
+    idType: "open_id",
+    approverId: "ou_current",
+    approverSource: "lookup",
+    approverBoundPlatform: "feishu",
+    approverBoundAppId: "cli_current",
+  };
+  const cases = [
+    [{ ...base, approverId: "" }, "missing-approver"],
+    [{ ...base, approverSource: "unknown", approverBoundPlatform: "", approverBoundAppId: "" }, "approver-provenance-unknown"],
+    [{ ...base, approverBoundPlatform: "" }, "approver-binding-incomplete"],
+    [{ ...base, approverBoundPlatform: "lark" }, "approver-platform-mismatch"],
+    [{ ...base, approverBoundAppId: "cli_other" }, "approver-app-mismatch"],
+    [{ ...base, idType: "user_id" }, "lookup-requires-open-id"],
+  ];
+  for (const [config, code] of cases) {
+    assert.deepEqual(settings.validateFeishuApproverBinding(config, identity), { ok: false, code });
+  }
+  assert.deepEqual(settings.validateFeishuApproverBinding(base, identity), {
+    ok: true,
+    approver: { idType: "open_id", approverId: "ou_current", source: "lookup" },
+  });
+});
+
+test("manual approver identity transitions fail closed without dropping the value", () => {
+  const ids = ["open_id", "user_id", "union_id"];
+  const savedSecrets = {
+    credentialPlatform: "feishu",
+    appId: "cli_current",
+    appSecret: "secret-one",
+  };
+
+  for (const idType of ids) {
+    const approverId = `${idType}-value`;
+    const savedConfig = {
+      enabled: true,
+      platform: "feishu",
+      idType,
+      approverId,
+      approverSource: "manual",
+      approverBoundPlatform: "feishu",
+      approverBoundAppId: "cli_current",
+      connectionTimeoutSeconds: 15,
+    };
+    const transitions = [
+      {
+        name: "same platform + same appId",
+        config: savedConfig,
+        secrets: savedSecrets,
+        ready: true,
+        reason: undefined,
+        retainedId: approverId,
+      },
+      {
+        name: "secret-only rotation",
+        config: savedConfig,
+        secrets: { ...savedSecrets, appSecret: "secret-two" },
+        ready: true,
+        reason: undefined,
+        retainedId: approverId,
+      },
+      {
+        name: "platform change",
+        config: { ...savedConfig, platform: "lark" },
+        secrets: { ...savedSecrets, credentialPlatform: "lark" },
+        ready: false,
+        reason: "approver-platform-mismatch",
+        retainedId: approverId,
+      },
+      {
+        name: "App ID change",
+        config: savedConfig,
+        secrets: { ...savedSecrets, appId: "cli_other" },
+        ready: false,
+        reason: "approver-app-mismatch",
+        retainedId: approverId,
+      },
+      {
+        name: "platform reconfirmation",
+        config: {
+          ...savedConfig,
+          platform: "lark",
+          approverBoundPlatform: "lark",
+        },
+        secrets: { credentialPlatform: "lark", appId: "cli_current", appSecret: "secret-three" },
+        ready: true,
+        reason: undefined,
+        retainedId: approverId,
+      },
+      {
+        name: "App ID reconfirmation",
+        config: {
+          ...savedConfig,
+          approverBoundAppId: "cli_other",
+        },
+        secrets: { ...savedSecrets, appId: "cli_other", appSecret: "secret-three" },
+        ready: true,
+        reason: undefined,
+        retainedId: approverId,
+      },
+    ];
+
+    for (const transition of transitions) {
+      const result = settings.readiness(transition.config, transition.secrets);
+      assert.equal(result.ready, transition.ready, `${idType}: ${transition.name}`);
+      assert.equal(result.reason, transition.reason, `${idType}: ${transition.name} reason`);
+      assert.equal(result.config.approverId, transition.retainedId, `${idType}: ${transition.name} value`);
+    }
+  }
 });
 
 // A disk/permission failure is platform-independent, and the settings page
@@ -181,15 +599,30 @@ test("writeSecretsEnvFile reports failures brand-neutrally with a stable code", 
 
 test("readiness requires enabled config, approver id, and app credentials", () => {
   assert.equal(settings.readiness({ enabled: false }, {}).reason, "disabled");
-  assert.equal(settings.readiness({ enabled: true, idType: "open_id", approverId: "" }, {
+  assert.equal(settings.readiness({
+    enabled: true,
+    idType: "open_id",
+    approverId: "",
+    approverSource: "none",
+  }, {
+    credentialPlatform: "feishu",
     appId: "cli_123",
     appSecret: "secret",
-  }).reason, "invalid-config");
+  }).reason, "missing-approver");
   assert.equal(settings.readiness({ enabled: true, idType: "open_id", approverId: "ou_1" }, {
+    credentialPlatform: "feishu",
     appId: "cli_123",
     appSecret: "",
-  }).reason, "missing-secret");
-  assert.equal(settings.readiness({ enabled: true, idType: "open_id", approverId: "ou_1" }, {
+  }).reason, "missing-credentials");
+  assert.equal(settings.readiness({
+    enabled: true,
+    idType: "open_id",
+    approverId: "ou_1",
+    approverSource: "lookup",
+    approverBoundPlatform: "feishu",
+    approverBoundAppId: "cli_123",
+  }, {
+    credentialPlatform: "feishu",
     appId: "cli_123",
     appSecret: "secret",
   }).ready, true);
@@ -197,10 +630,11 @@ test("readiness requires enabled config, approver id, and app credentials", () =
 
 test("readiness rejects obviously invalid Feishu app ids", () => {
   const result = settings.readiness({ enabled: true, idType: "open_id", approverId: "ou_1" }, {
+    credentialPlatform: "feishu",
     appId: "not-a-cli-id",
     appSecret: "secret",
   });
-  assert.equal(result.reason, "invalid-secret");
+  assert.equal(result.reason, "invalid-app-id");
   assert.match(result.message, /App ID/);
 });
 
@@ -209,16 +643,32 @@ test("readiness rejects obviously invalid Feishu app ids", () => {
 test("readiness accepts real-shaped Lark cli_ app ids on the lark platform", () => {
   for (const appId of ["cli_a1b2c3d4e5f6g7h8", "cli_9f8e7d6c5b4a3210", "cli_A1b2-C3d4_E5f6"]) {
     const result = settings.readiness(
-      { enabled: true, platform: "lark", idType: "open_id", approverId: "ou_lark_1" },
-      { appId, appSecret: "lark-secret" }
+      {
+        enabled: true,
+        platform: "lark",
+        idType: "open_id",
+        approverId: "ou_lark_1",
+        approverSource: "lookup",
+        approverBoundPlatform: "lark",
+        approverBoundAppId: appId,
+      },
+      { credentialPlatform: "lark", appId, appSecret: "lark-secret" }
     );
     assert.equal(result.ready, true, `${appId} should pass readiness on Lark`);
     assert.equal(result.config.platform, "lark");
   }
   // ...and the same id is equally valid on Feishu.
   assert.equal(settings.readiness(
-    { enabled: true, platform: "feishu", idType: "open_id", approverId: "ou_1" },
-    { appId: "cli_a1b2c3d4e5f6g7h8", appSecret: "s" }
+    {
+      enabled: true,
+      platform: "feishu",
+      idType: "open_id",
+      approverId: "ou_1",
+      approverSource: "lookup",
+      approverBoundPlatform: "feishu",
+      approverBoundAppId: "cli_a1b2c3d4e5f6g7h8",
+    },
+    { credentialPlatform: "feishu", appId: "cli_a1b2c3d4e5f6g7h8", appSecret: "s" }
   ).ready, true);
 });
 
@@ -227,9 +677,9 @@ test("readiness accepts real-shaped Lark cli_ app ids on the lark platform", () 
 // when no localized mapping exists, so they must not name one brand.
 test("readiness diagnostics are platform-neutral", () => {
   const cases = [
-    settings.readiness({ enabled: true, platform: "lark", idType: "open_id", approverId: "" }, { appId: "cli_1", appSecret: "s" }),
-    settings.readiness({ enabled: true, platform: "lark", idType: "open_id", approverId: "ou_1" }, { appId: "", appSecret: "" }),
-    settings.readiness({ enabled: true, platform: "lark", idType: "open_id", approverId: "ou_1" }, { appId: "nope", appSecret: "s" }),
+    settings.readiness({ enabled: true, platform: "lark", idType: "open_id", approverId: "" }, { credentialPlatform: "lark", appId: "cli_1", appSecret: "s" }),
+    settings.readiness({ enabled: true, platform: "lark", idType: "open_id", approverId: "ou_1" }, { credentialPlatform: "lark", appId: "", appSecret: "" }),
+    settings.readiness({ enabled: true, platform: "lark", idType: "open_id", approverId: "ou_1" }, { credentialPlatform: "lark", appId: "nope", appSecret: "s" }),
   ];
   for (const result of cases) {
     assert.equal(result.ready, false);
@@ -238,7 +688,7 @@ test("readiness diagnostics are platform-neutral", () => {
     assert.doesNotMatch(result.message, /Lark/i, `must not hardcode a brand: ${result.message}`);
   }
   // The stable reason codes the UI maps to localized copy are unchanged.
-  assert.deepEqual(cases.map((r) => r.reason), ["invalid-config", "missing-secret", "invalid-secret"]);
+  assert.deepEqual(cases.map((r) => r.reason), ["missing-approver", "missing-credentials", "invalid-app-id"]);
 });
 
 test("redactionSecretsForFeishuApproval includes saved ids and secrets", () => {

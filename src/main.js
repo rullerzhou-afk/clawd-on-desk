@@ -81,12 +81,18 @@ const {
   shouldOpenSettingsWindowFromArgv,
 } = require("./settings-window-icon");
 const createSettingsWindowRuntime = require("./settings-window");
+const createRoamFenceLoader = require("./roam-fence");
+const createRoamFenceSettings = require("./roam-fence-settings");
+const createRoamFencePicker = require("./roam-fence-picker");
 const createPermissionAutomationConfirmationRuntime = require("./permission-automation-confirmation");
 const {
   createSettingsSizePreviewSession,
 } = require("./settings-size-preview-session");
 const { registerSettingsIpc } = require("./settings-ipc");
 const createSettingsEffectRouter = require("./settings-effect-router");
+const { createKimiQuotaClient } = require("./kimi-quota-client");
+const { createKimiQuotaCredentialStore } = require("./kimi-quota-credential-store");
+const { createKimiQuotaRuntime } = require("./kimi-quota-runtime");
 const {
   getPetTintIdForTheme,
   resolvePetTintPayload,
@@ -115,8 +121,13 @@ const telegramApprovalSettings = require("./telegram-approval-settings");
 const discordPresenceSettings = require("./discord-presence-settings");
 const { createDiscordPresenceBridge } = require("./discord-presence-rpc");
 const { resolveAgentDisplayName } = require("./agent-display-name");
-const { FeishuApprovalClient } = require("./feishu-approval-client");
+const {
+  FeishuApprovalClient,
+  classifyFeishuSdkError,
+  lookupOpenIdByEmail,
+} = require("./feishu-approval-client");
 const feishuApprovalSettings = require("./feishu-approval-settings");
+const { saveFeishuApproverByEmail } = require("./settings-actions");
 const {
   buildTelegramApprovalStatus,
   isNativeTelegramApprovalSelected,
@@ -405,7 +416,9 @@ let discordPresenceBridge = null;
 // so a first enable mirrors what the pet is actually showing.
 let lastDiscordPresenceVisual = null;
 let suppressTelegramMigrationReconcile = 0;
+let _remoteSshTransportCoordinator = null;
 let feishuApprovalClient = null;
+const feishuApprovalCloseDrains = new Set();
 let feishuApprovalSyncPromise = Promise.resolve();
 let feishuApprovalConfigSignature = "";
 let feishuSessionAutomationRouteSignature = "";
@@ -475,9 +488,12 @@ const _settingsController = createSettingsController({
     getTelegramApprovalTokenInfo: () => getTelegramApprovalTokenInfo(),
     sendTelegramApprovalTest: () => sendTelegramApprovalTest(),
     writeFeishuApprovalSecrets: (secrets) => writeFeishuApprovalSecrets(secrets),
+    getFeishuApprovalPrefs: () => getFeishuApprovalPrefs(),
+    getFeishuApprovalSecrets: () => getFeishuApprovalSecrets(),
+    getFeishuApprovalSecretsRevision: () => feishuApprovalSecretsRevision,
     getFeishuApprovalStatus: () => getFeishuApprovalStatus(),
     getFeishuApprovalSecretInfo: () => getFeishuApprovalSecretInfo(),
-    sendFeishuApprovalTest: () => sendFeishuApprovalTest(),
+    sendFeishuApprovalTest: (persisted) => sendFeishuApprovalTest(persisted),
     // Lazy getter so settings-actions can use the controller even though it's
     // instantiated below (forward-reference).
     get telegramMigration() {
@@ -498,6 +514,19 @@ const _settingsController = createSettingsController({
     getShortcutFailure: (actionId) => shortcutRuntime ? shortcutRuntime.getFailure(actionId) : null,
     clearShortcutFailure: (actionId) => {
       if (shortcutRuntime) shortcutRuntime.clearFailure(actionId);
+    },
+    isRemoteSshTransportBusy: (profileId) => {
+      if (_remoteSshTransportCoordinator) {
+        const snapshot = _remoteSshTransportCoordinator.snapshotForProfile(profileId);
+        if (snapshot.transportPhase !== "idle") return true;
+      }
+      if (_remoteSshRuntime) {
+        const status = _remoteSshRuntime.getProfileStatus(profileId);
+        return status.status === "connecting"
+          || status.status === "connected"
+          || status.status === "reconnecting";
+      }
+      return false;
     },
   },
 });
@@ -717,6 +746,7 @@ function maybeDestroyIdleAnimationPreviewPosterWindow() {
   if (animationOverridesMain) animationOverridesMain.maybeDestroyIdlePreviewPosterWindow();
 }
 
+let roamFencePickerRuntime = null;
 const settingsWindowRuntime = createSettingsWindowRuntime({
   app,
   BrowserWindow,
@@ -735,6 +765,7 @@ const settingsWindowRuntime = createSettingsWindowRuntime({
   getTitle: () => translate("settingsWindowTitle"),
   onBeforeCreate: () => bumpAnimationOverridePreviewPosterGeneration(),
   onBeforeClosed: () => {
+    if (roamFencePickerRuntime) roamFencePickerRuntime.cancel();
     bumpAnimationOverridePreviewPosterGeneration();
     if (shortcutRuntime) shortcutRuntime.stopRecording();
     void settingsSizePreviewSession.cleanup();
@@ -759,6 +790,23 @@ const permissionAutomationConfirmationRuntime = createPermissionAutomationConfir
 function getSettingsWindow() {
   return settingsWindowRuntime.getWindow();
 }
+
+// The file loader is shared by roam and Settings. A selection saved from the
+// visual picker therefore updates the exact same last-known-good cache that a
+// later walk reads; external tools keep using the same JSON contract.
+const roamFenceLoader = createRoamFenceLoader();
+const roamFenceSettings = createRoamFenceSettings({ loader: roamFenceLoader });
+roamFencePickerRuntime = createRoamFencePicker({
+  BrowserWindow,
+  ipcMain,
+  nativeTheme,
+  screen,
+  path,
+  iconPath: settingsWindowRuntime.getIconPath(),
+  getSettingsWindow,
+  getPetWindowBounds: () => getPetWindowBounds(),
+  getEffectivePetSize: (workArea) => getEffectiveCurrentPixelSize(workArea),
+});
 
 shortcutRuntime = createShortcutRuntime({
   ipcMain,
@@ -1014,6 +1062,9 @@ function getEffectiveCurrentPixelSize(overrideWa) {
 let contextMenu;
 let doNotDisturb = false;
 let isQuitting = false;
+let quitCleanupStarted = false;
+let appQuitDrainStarted = false;
+let appQuitDrainReady = false;
 // Mirror caches: kept in sync with the settings store via settings-effect-router
 // further down. Read freely; never assign
 // directly (writes go through ctx setters → controller.applyUpdate).
@@ -1028,7 +1079,10 @@ let sessionHudShowStateLabels = _settingsController.get("sessionHudShowStateLabe
 let sessionHudShowElapsed = _settingsController.get("sessionHudShowElapsed");
 let sessionHudShowContextUsage = _settingsController.get("sessionHudShowContextUsage");
 let sessionHudShowQuota = _settingsController.get("sessionHudShowQuota");
+let quotaRingDisplayMode = _settingsController.get("quotaRingDisplayMode");
+let quotaRingHiddenProviders = _settingsController.get("quotaRingHiddenProviders");
 let claudeQuotaCollectionEnabled = _settingsController.get("claudeQuotaCollectionEnabled");
+let kimiQuotaCollectionEnabled = _settingsController.get("kimiQuotaCollectionEnabled");
 let quotaMergeSources = _settingsController.get("quotaMergeSources");
 let sessionHudCleanupDetached = _settingsController.get("sessionHudCleanupDetached");
 let sessionHudPinned = _settingsController.get("sessionHudPinned");
@@ -1771,6 +1825,7 @@ const _stateCtx = {
   // Last-known account quota survives app restarts (state-account-quota.js).
   accountQuotaPersistPath: require("./state-account-quota").DEFAULT_PERSIST_PATH,
   get claudeQuotaCollectionEnabled() { return claudeQuotaCollectionEnabled; },
+  get kimiQuotaCollectionEnabled() { return kimiQuotaCollectionEnabled; },
   get quotaMergeSources() { return quotaMergeSources; },
   get doNotDisturb() { return doNotDisturb; },
   set doNotDisturb(v) { doNotDisturb = v; },
@@ -1877,6 +1932,28 @@ const _stateCtx = {
   },
 };
 const _state = require("./state")(_stateCtx);
+const _kimiQuotaCredentialStore = createKimiQuotaCredentialStore({ safeStorage });
+const _kimiQuotaRuntime = createKimiQuotaRuntime({
+  credentialStore: _kimiQuotaCredentialStore,
+  client: createKimiQuotaClient({ appVersion: app.getVersion() }),
+  getSettingsSnapshot: () => _settingsController.getSnapshot(),
+  setCollectionEnabled: (enabled) => _settingsController.applyCommand(
+    "setKimiQuotaCollectionEnabled",
+    { enabled }
+  ),
+  commitLocalKimiQuota: (quota) => _state.commitLocalKimiQuota(quota),
+  clearLocalKimiQuota: () => _state.clearLocalKimiQuota(),
+});
+_settingsController.subscribeKey("kimiQuotaCollectionEnabled", (enabled) => {
+  void _kimiQuotaRuntime.onCollectionPreferenceChanged(enabled).catch((error) => {
+    console.warn("Clawd: Kimi quota preference reconciliation failed:", error && error.message);
+  });
+});
+_settingsController.subscribeKey("agents", (_agents, snapshot) => {
+  if (!_isAgentEnabled(snapshot, "kimi-cli")) {
+    _kimiQuotaRuntime.invalidateRequests();
+  }
+});
 const { setState, applyState, updateSession, resolveDisplayState, getSvgOverride,
         enableDoNotDisturb, disableDoNotDisturb, startStaleCleanup, stopStaleCleanup,
         startWakePoll, stopWakePoll, detectRunningAgentProcesses,
@@ -2226,6 +2303,11 @@ const _tutorial = require("./tutorial")({
   ),
 });
 
+// Shared with session-hud.js on purpose: the Settings "show beside the pet"
+// list has to be built from the SAME provider table and draw rule that sizes
+// the cluster window, or the list can offer a provider that never draws.
+const _ringGeom = require("./quota-ring-geometry");
+
 const _sessionHud = require("./session-hud")({
   get win() { return win; },
   get petHidden() { return petWindowRuntime.isPetHidden(); },
@@ -2234,6 +2316,8 @@ const _sessionHud = require("./session-hud")({
   get sessionHudShowElapsed() { return sessionHudShowElapsed; },
   get sessionHudShowContextUsage() { return sessionHudShowContextUsage; },
   get sessionHudShowQuota() { return sessionHudShowQuota; },
+  get quotaRingDisplayMode() { return quotaRingDisplayMode; },
+  get quotaRingHiddenProviders() { return quotaRingHiddenProviders; },
   get sessionHudPinned() { return sessionHudPinned; },
   get lowPowerIdleMode() { return lowPowerIdleMode; },
   getMiniMode: () => _mini.getMiniMode(),
@@ -2442,7 +2526,7 @@ function feishuApprovalLog(level, message, meta = {}) {
   const parts = [`feishu approval ${level}: ${message}`];
   if (meta && meta.text) parts.push(String(meta.text).trim());
   if (meta && meta.error) parts.push(String(meta.error).trim());
-  for (const key of ["requestId", "messageId", "decision", "matched"]) {
+  for (const key of ["requestId", "messageId", "decision", "matched", "code", "stage", "httpStatus", "businessCode", "networkCode"]) {
     const value = meta && meta[key];
     if (value !== undefined && value !== null && value !== "") {
       parts.push(`${key}=${String(value).trim()}`);
@@ -2594,34 +2678,35 @@ function getFeishuApprovalSecretInfo() {
 // which is per-domain) is dropped with it. `lang` is deliberately absent — the
 // translator reads it dynamically, so a language switch must not bounce the
 // long connection.
-function buildFeishuApprovalSignature(config, paths, secrets) {
-  return JSON.stringify({
+function buildFeishuApprovalBindingSignatureFields(
+  config,
+  secrets,
+  revision = feishuApprovalSecretsRevision,
+) {
+  return {
     enabled: config.enabled === true,
     platform: config.platform,
+    credentialPlatform: secrets.credentialPlatform,
     idType: config.idType,
     approverId: config.approverId,
-    secretsEnvFilePath: paths.secretsEnvFilePath,
+    approverSource: config.approverSource,
+    approverBoundPlatform: config.approverBoundPlatform,
+    approverBoundAppId: config.approverBoundAppId,
     appId: secrets.appId,
-    appSecret: secrets.appSecret ? "set" : "",
-    verificationToken: secrets.verificationToken ? "set" : "",
-    encryptKey: secrets.encryptKey ? "set" : "",
+    secretsRevision: revision,
+  };
+}
+
+function buildFeishuApprovalSignature(config, paths, secrets) {
+  return JSON.stringify({
+    ...buildFeishuApprovalBindingSignatureFields(config, secrets),
+    secretsEnvFilePath: paths.secretsEnvFilePath,
     connectionTimeoutSeconds: config.connectionTimeoutSeconds,
-    secretsRevision: feishuApprovalSecretsRevision,
   });
 }
 
 function buildFeishuSessionAutomationRouteSignature(config, secrets, revision = feishuApprovalSecretsRevision) {
-  return JSON.stringify({
-    enabled: config.enabled === true,
-    platform: config.platform,
-    idType: config.idType,
-    approverId: config.approverId,
-    appId: secrets.appId,
-    appSecret: secrets.appSecret ? "set" : "",
-    verificationToken: secrets.verificationToken ? "set" : "",
-    encryptKey: secrets.encryptKey ? "set" : "",
-    secretsRevision: revision,
-  });
+  return JSON.stringify(buildFeishuApprovalBindingSignatureFields(config, secrets, revision));
 }
 
 function prepareFeishuSessionAutomationRouteChange(nextRouteSignature) {
@@ -2646,6 +2731,22 @@ function getFeishuApprovalStatus() {
   const config = getFeishuApprovalPrefs();
   const secrets = getFeishuApprovalSecrets();
   const ready = feishuApprovalSettings.readiness(config, secrets);
+  const credentialEvaluation = feishuApprovalSettings.evaluateFeishuApprovalConfiguration(
+    config,
+    secrets,
+    {
+      requireEnabled: false,
+      requireApprover: false,
+    },
+  );
+  const setupEvaluation = feishuApprovalSettings.evaluateFeishuApprovalConfiguration(
+    config,
+    secrets,
+    {
+      requireEnabled: false,
+      requireApprover: true,
+    },
+  );
   const clientStatus = feishuApprovalClient && typeof feishuApprovalClient.getStatus === "function"
     ? feishuApprovalClient.getStatus()
     : { status: "stopped" };
@@ -2658,6 +2759,10 @@ function getFeishuApprovalStatus() {
     configured: ready.ready === true,
     reason: ready.reason || "",
     message: clientStatus.message || ready.message || "",
+    credentialReady: credentialEvaluation.ok === true,
+    credentialReason: credentialEvaluation.ok ? "" : credentialEvaluation.code || "invalid-config",
+    configurationReady: setupEvaluation.ok === true,
+    setupReason: setupEvaluation.ok ? "" : setupEvaluation.code || "invalid-config",
     connectionTimeoutSeconds: config.connectionTimeoutSeconds,
     // Two different questions, deliberately two fields:
     //   secretsStored     — is ANY secret on disk? (drives render gating only)
@@ -2678,11 +2783,11 @@ function broadcastFeishuApprovalStatus() {
 
 function writeFeishuApprovalSecrets(secrets) {
   const paths = getFeishuApprovalPaths();
-  prepareFeishuSessionAutomationRouteChange(buildFeishuSessionAutomationRouteSignature(
+  const nextRouteSignature = buildFeishuSessionAutomationRouteSignature(
     getFeishuApprovalPrefs(),
     secrets && typeof secrets === "object" ? secrets : {},
     feishuApprovalSecretsRevision + 1
-  ));
+  );
   const result = feishuApprovalSettings.writeSecretsEnvFile({
     fs,
     path,
@@ -2691,21 +2796,21 @@ function writeFeishuApprovalSecrets(secrets) {
     platform: process.platform,
   });
   if (result && result.status === "ok") {
+    prepareFeishuSessionAutomationRouteChange(nextRouteSignature);
     feishuApprovalSecretsRevision += 1;
     queueFeishuApprovalSync("secrets");
-  } else if (
-    feishuApprovalClient
-    && typeof feishuApprovalClient.markSessionAutomationRouteCurrent === "function"
-  ) {
-    feishuApprovalClient.markSessionAutomationRouteCurrent();
   }
   return result;
 }
 
-async function startFeishuApprovalClient() {
-  const config = getFeishuApprovalPrefs();
+async function startFeishuApprovalClient(persisted = null) {
+  const config = persisted && persisted.config
+    ? persisted.config
+    : getFeishuApprovalPrefs();
   const paths = getFeishuApprovalPaths();
-  const secrets = getFeishuApprovalSecrets();
+  const secrets = persisted && persisted.secrets
+    ? persisted.secrets
+    : getFeishuApprovalSecrets();
   const ready = feishuApprovalSettings.readiness(config, secrets);
   if (!ready.ready) {
     if (feishuApprovalClient) stopFeishuApprovalClient();
@@ -2723,7 +2828,7 @@ async function startFeishuApprovalClient() {
       await feishuApprovalClient.start();
       return true;
     } catch (err) {
-      feishuApprovalLog("warn", "start failed", { error: err && err.message ? err.message : String(err) });
+      feishuApprovalLog("warn", "start failed", classifyFeishuSdkError(err, "runtime-start"));
       return false;
     }
   }
@@ -2758,7 +2863,7 @@ async function startFeishuApprovalClient() {
     feishuApprovalLog("info", "starting");
     return true;
   } catch (err) {
-    feishuApprovalLog("warn", "start failed", { error: err && err.message ? err.message : String(err) });
+    feishuApprovalLog("warn", "start failed", classifyFeishuSdkError(err, "runtime-start"));
     return false;
   }
 }
@@ -2774,29 +2879,84 @@ function stopFeishuApprovalClient(options = {}) {
     feishuSessionAutomationRouteSignature = "";
   }
   if (client && typeof client.close === "function") {
-    try { client.close(); } catch (err) {
-      feishuApprovalLog("warn", "stop failed", { error: err && err.message ? err.message : String(err) });
+    try {
+      const closeResult = client.close();
+      if (closeResult && typeof closeResult.then === "function") {
+        const drain = Promise.resolve(closeResult);
+        feishuApprovalCloseDrains.add(drain);
+        void drain.then(
+          () => feishuApprovalCloseDrains.delete(drain),
+          () => feishuApprovalCloseDrains.delete(drain)
+        );
+      }
+      return closeResult;
+    } catch (err) {
+      feishuApprovalLog("warn", "stop failed", classifyFeishuSdkError(err, "runtime-stop"));
     }
   }
 }
 
-async function syncFeishuApproval(reason = "settings") {
-  const config = getFeishuApprovalPrefs();
-  const secrets = getFeishuApprovalSecrets();
+function settleDrainWithin(drain, timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer = null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      resolve();
+    };
+    timer = setTimeout(finish, timeoutMs);
+    Promise.resolve(drain).then(finish, finish);
+  });
+}
+
+function drainRemoteSshAndFeishuBeforeQuit() {
+  const drains = [];
+  try {
+    settingsIpcRuntime.dispose();
+  } catch (err) {
+    console.error("settings IPC shutdown failed:", err && err.message);
+  }
+  if (_remoteSshRuntime && typeof _remoteSshRuntime.shutdown === "function") {
+    drains.push(
+      Promise.resolve(_remoteSshRuntime.shutdown({ timeoutMs: 5000 }))
+        .catch((err) => console.error("remote-ssh shutdown drain failed:", err && err.message))
+    );
+  }
+  stopFeishuApprovalClient();
+  drains.push(...Array.from(
+    feishuApprovalCloseDrains,
+    (drain) => settleDrainWithin(drain, 5000),
+  ));
+  return Promise.allSettled(drains);
+}
+
+async function syncFeishuApproval(reason = "settings", persisted = null) {
+  if (isQuitting) {
+    stopFeishuApprovalClient();
+    return false;
+  }
+  const config = persisted && persisted.config
+    ? persisted.config
+    : getFeishuApprovalPrefs();
+  const secrets = persisted && persisted.secrets
+    ? persisted.secrets
+    : getFeishuApprovalSecrets();
   const ready = feishuApprovalSettings.readiness(config, secrets);
   if (!ready.ready) {
     stopFeishuApprovalClient();
     return false;
   }
-  const started = await startFeishuApprovalClient();
+  const started = await startFeishuApprovalClient(persisted);
   if (started) feishuApprovalLog("debug", `sync ${reason}`);
   return started;
 }
 
-function queueFeishuApprovalSync(reason) {
+function queueFeishuApprovalSync(reason, persisted = null) {
   feishuApprovalSyncPromise = feishuApprovalSyncPromise
     .catch(() => {})
-    .then(() => syncFeishuApproval(reason));
+    .then(() => syncFeishuApproval(reason, persisted));
   return feishuApprovalSyncPromise;
 }
 
@@ -2821,22 +2981,36 @@ function feishuApprovalUnavailableResult(status) {
   };
 }
 
-async function sendFeishuApprovalTest() {
-  const beforeStatus = getFeishuApprovalStatus();
+async function sendFeishuApprovalTest(persisted = null) {
+  const persistedReady = persisted && persisted.config && persisted.secrets
+    ? feishuApprovalSettings.readiness(persisted.config, persisted.secrets)
+    : null;
+  const beforeStatus = persistedReady
+    ? {
+      configured: persistedReady.ready === true,
+      reason: persistedReady.reason || "",
+      message: persistedReady.message || "",
+    }
+    : getFeishuApprovalStatus();
   if (beforeStatus.configured !== true) {
     return feishuApprovalUnavailableResult(beforeStatus);
   }
-  await queueFeishuApprovalSync("test");
+  await queueFeishuApprovalSync("test", persisted);
   const client = getConfiguredFeishuApprovalClient();
   if (!client || typeof client.requestApproval !== "function") {
-    return feishuApprovalUnavailableResult(getFeishuApprovalStatus());
+    return feishuApprovalUnavailableResult(persistedReady ? beforeStatus : getFeishuApprovalStatus());
   }
   if (typeof client.waitUntilConnected === "function") {
-    const config = getFeishuApprovalPrefs();
+    const config = persisted && persisted.config
+      ? persisted.config
+      : getFeishuApprovalPrefs();
     const timeoutMs = Math.max(1, Number(config.connectionTimeoutSeconds) || 15) * 1000;
     const connected = await client.waitUntilConnected(timeoutMs);
     if (!connected) {
-      return { ...feishuApprovalUnavailableResult(getFeishuApprovalStatus()), code: "not-connected" };
+      return {
+        ...feishuApprovalUnavailableResult(persistedReady ? beforeStatus : getFeishuApprovalStatus()),
+        code: "not-connected",
+      };
     }
   }
   const controller = new AbortController();
@@ -2848,13 +3022,18 @@ async function sendFeishuApprovalTest() {
     const decision = await client.requestApproval({
       title: translate("feishuCardTestTitle"),
       detail: translate("feishuCardTestDetail"),
-    }, { signal: controller.signal, rejectOnSendError: true });
+    }, {
+      signal: controller.signal,
+      rejectOnSendError: true,
+      abortOutcome: { decision: "no-decision" },
+    });
     if (decision === "allow" || decision === "deny") {
       return { status: "ok", decision };
     }
     return { status: "error", code: "no-button-response", message: "Test card did not receive a button response" };
   } catch (err) {
-    return { status: "error", code: "card-send-failed", message: err && err.message ? err.message : String(err) };
+    feishuApprovalLog("warn", "test card send failed", classifyFeishuSdkError(err, "send-card"));
+    return { status: "error", code: "card-send-failed" };
   } finally {
     clearTimeout(timer);
   }
@@ -3554,6 +3733,7 @@ const _menuCtx = {
   clampToScreenVisual,
   getNearestWorkArea,
   reapplyMacVisibility,
+  getSettingsWindow,
   discoverThemes: () => themeLoader.discoverThemes(),
   getActiveThemeId: () => themeRuntime.getActiveThemeId("clawd"),
   getActiveThemeCapabilities: () => themeRuntime.getActiveThemeCapabilities(),
@@ -3576,7 +3756,12 @@ const SETTINGS_MIRROR_SETTERS = {
   sessionHudShowElapsed: (v) => { sessionHudShowElapsed = v; },
   sessionHudShowContextUsage: (v) => { sessionHudShowContextUsage = v; },
   sessionHudShowQuota: (v) => { sessionHudShowQuota = v; },
+  quotaRingDisplayMode: (v) => { quotaRingDisplayMode = v; },
+  // Normalized to an array here as well as in prefs: this mirror also takes the
+  // value straight from a settings broadcast, and every consumer indexes it.
+  quotaRingHiddenProviders: (v) => { quotaRingHiddenProviders = Array.isArray(v) ? v : []; },
   claudeQuotaCollectionEnabled: (v) => { claudeQuotaCollectionEnabled = v; },
+  kimiQuotaCollectionEnabled: (v) => { kimiQuotaCollectionEnabled = v; },
   quotaMergeSources: (v) => { quotaMergeSources = v; },
   sessionHudCleanupDetached: (v) => { sessionHudCleanupDetached = v; },
   sessionHudPinned: (v) => { sessionHudPinned = v; },
@@ -3807,15 +3992,22 @@ registerDoctorIpc({
 // any spawned ssh / scp children.
 const { createRemoteSshRuntime } = require("./remote-ssh-runtime");
 const { registerRemoteSshIpc } = require("./remote-ssh-ipc");
+const { inspectEffectiveTransport } = require("./remote-ssh-transport");
+const { createRemoteSshTransportCoordinator } = require("./remote-ssh-transport-coordinator");
+_remoteSshTransportCoordinator = createRemoteSshTransportCoordinator({
+  inspectEffectiveTransport: (profile) => inspectEffectiveTransport(profile),
+});
 _remoteSshRuntime = createRemoteSshRuntime({
   getHookServerPort: () => getHookServerPort(),
   createProfileIngress: (options) => _server.openRemoteSshIngress(options),
+  transportCoordinator: _remoteSshTransportCoordinator,
   log: (...args) => console.warn("Clawd remote-ssh:", ...args),
 });
 const _remoteSshIpc = registerRemoteSshIpc({
   ipcMain,
   settingsController: _settingsController,
   remoteSshRuntime: _remoteSshRuntime,
+  transportCoordinator: _remoteSshTransportCoordinator,
   BrowserWindow,
   isPackaged: app.isPackaged,
   getInstallationIdentity: () => _remoteSshInstallationIdentity,
@@ -3865,7 +4057,7 @@ const settingsSizePreviewSession = createSettingsSizePreviewSession({
   },
 });
 
-registerSettingsIpc({
+const settingsIpcRuntime = registerSettingsIpc({
   ipcMain,
   app,
   BrowserWindow,
@@ -3875,11 +4067,17 @@ registerSettingsIpc({
   path,
   settingsController: _settingsController,
   getQuotaSourceCount: () => _state.getQuotaSourceCount(),
+  getQuotaRingProviders: () => _ringGeom.listQuotaRingProviders(
+    _state.buildSessionSnapshot(),
+    quotaRingHiddenProviders
+  ),
   themeLoader,
   codexPetMain,
   getSettingsWindow,
   getActiveTheme: () => getActiveTheme(),
   getLang: () => lang,
+  roamFenceSettings,
+  roamFencePicker: roamFencePickerRuntime,
   settingsSizePreviewSession,
   isValidSizePreviewKey,
   previewTextScale,
@@ -3893,9 +4091,23 @@ registerSettingsIpc({
   getDoNotDisturb: () => doNotDisturb,
   getSoundMuted: () => soundMuted,
   getSoundVolume: () => soundVolume,
+  saveFeishuApproverByEmail: ({ email, signal }) => saveFeishuApproverByEmail({ email, signal }, {
+    getFeishuApprovalPrefs,
+    getFeishuApprovalSecrets,
+    getFeishuApprovalSecretsRevision: () => feishuApprovalSecretsRevision,
+    lookupFeishuApproverByEmail: (params) => lookupOpenIdByEmail({
+      ...params,
+      log: feishuApprovalLog,
+    }),
+    commitResolvedApprover: (payload) => _settingsController.applyCommand(
+      "feishuApproval.commitResolvedApprover",
+      payload,
+    ),
+  }),
   getAllAgents,
   getHookServerPort: () => getHookServerPort(),
   getRecentHookEvents: (options) => _server.getRecentHookEvents(options),
+  kimiQuotaRuntime: _kimiQuotaRuntime,
   checkForUpdates,
   getUpdateCheckSnapshot,
   clearUpdateError,
@@ -3915,6 +4127,9 @@ registerSessionIpc({
   ipcMain,
   getSessionSnapshot: () => _state.buildSessionSnapshot(),
   getI18n: () => getDashboardI18nPayload(),
+  getDashboardWindow: () => _dashboard.getWindow(),
+  getKimiQuotaStatus: () => _kimiQuotaRuntime.getStatus(),
+  refreshKimiQuota: () => _kimiQuotaRuntime.refresh(),
   focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
   hideSession: (sessionId) => hideDashboardSession(sessionId),
   openSessionFolder: (sessionId) => openDashboardSessionFolder(sessionId),
@@ -4143,7 +4358,9 @@ function createWindow() {
       }
       sessionLog(`startup recovery restored sessions=${restoredSessionIds.join(",")}`);
     }
-    try { _remoteSshIpc.connectOnLaunchProfiles(); } catch {}
+    void _remoteSshIpc.connectOnLaunchProfiles().catch((err) => {
+      console.warn("Clawd remote-ssh: connect-on-launch failed:", err && err.message);
+    });
   }).catch(() => {});
   if (_settingsController.get("mobilePreviewEnabled") === true) _lanWss.start();
   startStaleCleanup();
@@ -4343,8 +4560,16 @@ const _roamCtx = {
   isImeEditingActive: () => pendingPermissions.some(
     (p) => p && p.bubble && !p.bubble.isDestroyed() && p.bubble.__clawdMacImeEditing
   ),
+  // #810: optional roam fence — validated async loader for
+  // ~/.clawd/roam-area.json; roam reads its in-memory cache at target pick
+  // time and kicks refresh() when scheduling walks (see src/roam-fence.js).
+  roamFence: roamFenceLoader,
 };
 const _roam = require("./roam")(_roamCtx);
+// #810: resolve the fence's initial status right away so the first roam
+// round doesn't have to hold on an UNKNOWN state (get() === null) when a
+// fence file exists — or confirm quickly that none does.
+_roamCtx.roamFence.refresh();
 
 // Free roam: initialize from prefs and react to toggle changes
 _roam.setEnabled(_settingsController.get("freeRoam") === true);
@@ -4556,6 +4781,13 @@ if (!gotTheLock) {
       _remoteSshInstallationIdentity = null;
       console.error("Clawd remote-ssh: installation identity initialization failed:", err && err.message);
     }
+    // safeStorage is only guaranteed after Electron is ready. This reconciles
+    // the local key/quota binding and never performs a Kimi network request.
+    try {
+      await _kimiQuotaRuntime.initialize();
+    } catch (err) {
+      console.warn("Clawd: Kimi quota startup reconciliation failed:", err && err.message);
+    }
 
     permDebugLog = path.join(app.getPath("userData"), "permission-debug.log");
     updateDebugLog = path.join(app.getPath("userData"), "update-debug.log");
@@ -4673,8 +4905,21 @@ if (!gotTheLock) {
     if (codexHookNudgeTimer && typeof codexHookNudgeTimer.unref === "function") codexHookNudgeTimer.unref();
   });
 
-  app.on("before-quit", () => {
+  app.on("before-quit", (event) => {
     isQuitting = true;
+    if (!appQuitDrainReady) {
+      event.preventDefault();
+      if (!appQuitDrainStarted) {
+        appQuitDrainStarted = true;
+        void drainRemoteSshAndFeishuBeforeQuit()
+          .finally(() => {
+            appQuitDrainReady = true;
+            app.quit();
+          });
+      }
+    }
+    if (quitCleanupStarted) return;
+    quitCleanupStarted = true;
     trayBalloonOwner.dispose();
     holidayAccessoryRuntime.dispose();
     if (systemWakeRecovery) systemWakeRecovery.dispose();
@@ -4687,6 +4932,7 @@ if (!gotTheLock) {
     globalShortcut.unregisterAll();
     void settingsSizePreviewSession.cleanup();
     permissionAutomationConfirmationRuntime.dispose();
+    roamFencePickerRuntime.dispose();
     if (_telegramMigrationController
       && typeof _telegramMigrationController.dispose === "function") {
       void _telegramMigrationController.dispose();
@@ -4708,7 +4954,9 @@ if (!gotTheLock) {
     _focus.cleanup();
     if (animationOverridesMain) animationOverridesMain.cleanup();
     try { _remoteSshIpc.dispose(); } catch {}
-    try { _remoteSshRuntime.cleanup(); } catch {}
+    if (!_remoteSshRuntime || typeof _remoteSshRuntime.shutdown !== "function") {
+      try { _remoteSshRuntime.cleanup(); } catch {}
+    }
     if (hitWin && !hitWin.isDestroyed()) hitWin.destroy();
   });
 

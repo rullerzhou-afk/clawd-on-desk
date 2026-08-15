@@ -3,6 +3,7 @@ const assert = require("node:assert");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const { spawnSync } = require("child_process");
 const {
   CODEX_OFFICIAL_HOOK_EVENTS,
   CODEX_STATE_HOOK_EVENTS,
@@ -12,7 +13,14 @@ const {
 } = require("../hooks/codex-install");
 const {
   CODEX_WSL_INTEROP_ARG,
+  buildStableCodexHookCommand,
+  inspectStableCodexHookCommand,
   materializeAppImageHookScript,
+  materializeStableCodexHookLauncher,
+  readStableCodexHookManifest,
+  removeStableCodexHookLauncher,
+  stableCodexHookPaths,
+  windowsPathToWslPath,
 } = require("../hooks/codex-install-utils");
 const { CODEX_DEBUG_HOOK_EVENTS, registerCodexDebugHooks } = require("../hooks/codex-debug-install");
 
@@ -45,6 +53,80 @@ afterEach(() => {
 });
 
 describe("Codex official hook installer", () => {
+  it("keeps one trusted command while packaged/dev targets change", () => {
+    const codexDir = makeTempCodexDir({});
+    const sourceRoot = path.join(path.dirname(codexDir), "sources");
+    const firstTarget = path.join(sourceRoot, "packaged", "codex-hook.js");
+    const secondTarget = path.join(sourceRoot, "dev-branch", "codex-hook.js");
+    fs.mkdirSync(path.dirname(firstTarget), { recursive: true });
+    fs.mkdirSync(path.dirname(secondTarget), { recursive: true });
+    fs.writeFileSync(firstTarget, 'process.stdout.write("packaged");\n', "utf8");
+    fs.writeFileSync(secondTarget, 'process.stdout.write("dev-branch");\n', "utf8");
+
+    const first = materializeStableCodexHookLauncher(firstTarget, {
+      codexDir,
+      nodeBin: process.execPath,
+      platform: process.platform,
+    });
+    const trustedCommand = buildStableCodexHookCommand(first.launcherPath, process.platform);
+    const launcherSource = fs.readFileSync(first.launcherPath, "utf8");
+    const second = materializeStableCodexHookLauncher(secondTarget, {
+      codexDir,
+      nodeBin: process.execPath,
+      platform: process.platform,
+    });
+
+    assert.strictEqual(second.launcherPath, first.launcherPath);
+    assert.strictEqual(buildStableCodexHookCommand(second.launcherPath, process.platform), trustedCommand);
+    assert.notStrictEqual(fs.readFileSync(second.launcherPath, "utf8"), launcherSource);
+    assert.strictEqual(readStableCodexHookManifest(second.manifestPath).record.target, path.resolve(secondTarget));
+    const run = process.platform === "win32"
+      ? spawnSync("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        buildStableCodexHookCommand(second.launcherPath, "win32"),
+      ], { encoding: "utf8" })
+      : spawnSync("/bin/sh", [second.launcherPath], { encoding: "utf8" });
+    assert.strictEqual(run.status, 0);
+    assert.strictEqual(run.stdout, "dev-branch");
+  });
+
+  it("cleans the stable launcher beside an explicit hooksPath", () => {
+    const codexDir = makeTempCodexDir({});
+    const target = path.resolve(__dirname, "..", "hooks", "codex-hook.js");
+    const stable = materializeStableCodexHookLauncher(target, {
+      codexDir,
+      nodeBin: process.execPath,
+      platform: process.platform,
+    });
+
+    const result = removeStableCodexHookLauncher({
+      hooksPath: path.join(codexDir, "hooks.json"),
+      env: { CODEX_HOME: path.join(path.dirname(codexDir), "wrong-home") },
+    });
+
+    assert.strictEqual(result.changed, true);
+    assert.strictEqual(fs.existsSync(stable.stableDir), false);
+  });
+
+  it("cleans a BOM-prefixed v2 Windows launcher during migration/uninstall", () => {
+    const codexDir = makeTempCodexDir({});
+    const stable = stableCodexHookPaths(codexDir, { platform: "win32" });
+    fs.mkdirSync(stable.stableDir, { recursive: true });
+    fs.writeFileSync(
+      stable.legacyWindowsLauncherPath,
+      "\uFEFF# clawd-codex-stable-launcher-v2\n# clawd-generation:legacy\n",
+      "utf8"
+    );
+
+    const result = removeStableCodexHookLauncher({ codexDir });
+
+    assert.strictEqual(result.launcherRemoved, 1);
+    assert.strictEqual(fs.existsSync(stable.legacyWindowsLauncherPath), false);
+    assert.strictEqual(fs.existsSync(stable.stableDir), false);
+  });
+
   it("materializes AppImage hook closure outside the transient FUSE mount", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-appimage-hook-"));
     tempDirs.push(tmpDir);
@@ -96,7 +178,7 @@ describe("Codex official hook installer", () => {
   it("registers an AppImage Codex hook from the materialized stable path", () => {
     const codexDir = makeTempCodexDir({});
     const materializedRoot = path.join(path.dirname(codexDir), "stable-hooks");
-    registerCodexHooks({
+    const result = registerCodexHooks({
       silent: true,
       codexDir,
       nodeBin: "/usr/bin/node",
@@ -107,11 +189,13 @@ describe("Codex official hook installer", () => {
 
     const command = readJson(path.join(codexDir, "hooks.json"))
       .hooks.SessionStart[0].hooks[0].command;
-    assert.ok(command.includes(materializedRoot.replace(/\\/g, "/")));
+    const stablePaths = stableCodexHookPaths(codexDir, { platform: "linux" });
+    assert.strictEqual(command, buildStableCodexHookCommand(stablePaths.launcherPath, "linux"));
     assert.ok(!command.includes("app.asar.unpacked"));
-    const markerMatches = [...command.matchAll(/"([^"]*codex-hook\.js)"/g)];
-    assert.strictEqual(markerMatches.length, 1);
-    const stableHook = markerMatches[0][1];
+    assert.strictEqual(command.split("codex-hook.js.sh").length - 1, 1);
+    const stableHook = result.stableLauncher.target;
+    assert.ok(stableHook.includes(materializedRoot));
+    assert.ok(fs.existsSync(result.stableLauncher.launcherPath));
     assert.ok(fs.existsSync(stableHook));
     const stableAutoStart = path.join(path.dirname(stableHook), "auto-start.js");
     assert.ok(fs.existsSync(stableAutoStart));
@@ -147,8 +231,179 @@ describe("Codex official hook installer", () => {
       assert.strictEqual(hook.type, "command");
       assert.strictEqual(hook.timeout, event === "PermissionRequest" ? 600 : 30);
       assert.ok(hook.command.includes(MARKER));
-      assert.ok(hook.command.includes("/usr/local/bin/node"));
+      assert.ok(hook.command.includes("/bin/sh"));
+      assert.ok(!hook.command.includes("/usr/local/bin/node"));
     }
+    const manifest = readStableCodexHookManifest(
+      stableCodexHookPaths(codexDir, { platform: "linux" }).manifestPath
+    );
+    assert.strictEqual(manifest.ok, true);
+    assert.strictEqual(manifest.record.nodeBin, "/usr/local/bin/node");
+  });
+
+  it("does not rewrite trusted commands when the resolved Node executable changes", () => {
+    const codexDir = makeTempCodexDir({});
+    registerCodexHooks({ silent: true, codexDir, nodeBin: "/opt/node-v20/bin/node", platform: "linux" });
+    const hooksPath = path.join(codexDir, "hooks.json");
+    const before = fs.readFileSync(hooksPath, "utf8");
+
+    const result = registerCodexHooks({
+      silent: true,
+      codexDir,
+      nodeBin: "/opt/node-v22/bin/node",
+      platform: "linux",
+    });
+
+    assert.strictEqual(result.added, 0);
+    assert.strictEqual(result.updated, 0);
+    assert.strictEqual(result.skipped, CODEX_OFFICIAL_HOOK_EVENTS.length);
+    assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), before);
+    const manifest = readStableCodexHookManifest(
+      stableCodexHookPaths(codexDir, { platform: "linux" }).manifestPath
+    );
+    assert.strictEqual(manifest.record.nodeBin, "/opt/node-v22/bin/node");
+  });
+
+  it("repairs a damaged stable execution artifact without rewriting trusted commands", () => {
+    const codexDir = makeTempCodexDir({});
+    const options = {
+      silent: true,
+      codexDir,
+      nodeBin: process.execPath,
+      platform: process.platform,
+    };
+    registerCodexHooks(options);
+    const hooksPath = path.join(codexDir, "hooks.json");
+    const before = fs.readFileSync(hooksPath, "utf8");
+    const stable = stableCodexHookPaths(codexDir, { platform: process.platform });
+    fs.appendFileSync(stable.launcherPath, "# damaged\n", "utf8");
+    const installedHook = readJson(hooksPath).hooks.SessionStart[0].hooks[0];
+    const command = process.platform === "win32" ? installedHook.commandWindows : installedHook.command;
+    assert.strictEqual(
+      inspectStableCodexHookCommand(command, { platform: process.platform }).issue,
+      process.platform === "win32" ? "stable-launcher-invalid" : "stable-launcher-stale"
+    );
+
+    const result = registerCodexHooks(options);
+
+    assert.strictEqual(result.updated, 0);
+    assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), before);
+    assert.strictEqual(
+      inspectStableCodexHookCommand(command, { platform: process.platform }).ok,
+      true
+    );
+  });
+
+  it("preserves the stable POSIX Node path when discovery temporarily fails", () => {
+    const codexDir = makeTempCodexDir({});
+    registerCodexHooks({
+      silent: true,
+      codexDir,
+      nodeBin: "/opt/clawd-node/bin/node",
+      platform: "linux",
+    });
+    const hooksPath = path.join(codexDir, "hooks.json");
+    const stable = stableCodexHookPaths(codexDir, { platform: "linux" });
+    const hooksBefore = fs.readFileSync(hooksPath, "utf8");
+    const wrapperBefore = fs.readFileSync(stable.launcherPath, "utf8");
+
+    const result = registerCodexHooks({
+      silent: true,
+      codexDir,
+      nodeBin: null,
+      platform: "linux",
+    });
+
+    assert.strictEqual(result.updated, 0);
+    assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), hooksBefore);
+    assert.strictEqual(fs.readFileSync(stable.launcherPath, "utf8"), wrapperBefore);
+    assert.strictEqual(
+      readStableCodexHookManifest(stable.manifestPath).record.nodeBin,
+      "/opt/clawd-node/bin/node"
+    );
+  });
+
+  it("keeps Windows and WSL launcher ownership separate in a shared CODEX_HOME", () => {
+    const codexDir = makeTempCodexDir({});
+    const windowsTargetA = path.resolve(__dirname, "..", "hooks", "codex-hook.js");
+    const windowsTargetB = path.resolve(__dirname, "..", "hooks", "codex-debug-hook.js");
+    const posixTarget = path.join(path.dirname(codexDir), "wsl-source", "codex-hook.js");
+    fs.mkdirSync(path.dirname(posixTarget), { recursive: true });
+    fs.writeFileSync(posixTarget, "process.stdout.write('{}');\n", "utf8");
+
+    const firstWindows = materializeStableCodexHookLauncher(windowsTargetA, {
+      codexDir,
+      nodeBin: "C:\\node-v20\\node.exe",
+      platform: "win32",
+    });
+    const windowsCommand = buildStableCodexHookCommand(firstWindows.windowsRunPath, "win32");
+    const posixCommand = buildStableCodexHookCommand(
+      windowsPathToWslPath(firstWindows.posixLauncherPath) || firstWindows.posixLauncherPath,
+      "linux"
+    );
+
+    const wsl = materializeStableCodexHookLauncher(posixTarget, {
+      codexDir,
+      nodeBin: "/usr/local/bin/node",
+      platform: "linux",
+    });
+    const posixSource = fs.readFileSync(wsl.posixLauncherPath, "utf8");
+    const posixManifest = fs.readFileSync(wsl.posixManifestPath, "utf8");
+    assert.strictEqual(readStableCodexHookManifest(wsl.posixManifestPath).record.mode, "native");
+
+    const secondWindows = materializeStableCodexHookLauncher(windowsTargetB, {
+      codexDir,
+      nodeBin: "C:\\node-v22\\node.exe",
+      platform: "win32",
+    });
+
+    assert.strictEqual(secondWindows.posixPreserved, true);
+    assert.strictEqual(fs.readFileSync(wsl.posixLauncherPath, "utf8"), posixSource);
+    assert.strictEqual(fs.readFileSync(wsl.posixManifestPath, "utf8"), posixManifest);
+    assert.strictEqual(buildStableCodexHookCommand(secondWindows.windowsRunPath, "win32"), windowsCommand);
+    assert.strictEqual(
+      buildStableCodexHookCommand(
+        windowsPathToWslPath(secondWindows.posixLauncherPath) || secondWindows.posixLauncherPath,
+        "linux"
+      ),
+      posixCommand
+    );
+    assert.strictEqual(
+      readStableCodexHookManifest(secondWindows.windowsManifestPath).record.target,
+      windowsTargetB
+    );
+  });
+
+  it("preserves a WSL wrapper and reports invalid when its manifest metadata drifts", () => {
+    const codexDir = makeTempCodexDir({});
+    const windowsTarget = path.resolve(__dirname, "..", "hooks", "codex-hook.js");
+    const posixTarget = path.join(path.dirname(codexDir), "wsl-source", "codex-hook.js");
+    fs.mkdirSync(path.dirname(posixTarget), { recursive: true });
+    fs.writeFileSync(posixTarget, "process.stdout.write('{}');\n", "utf8");
+    const wsl = materializeStableCodexHookLauncher(posixTarget, {
+      codexDir,
+      nodeBin: "/usr/local/bin/node",
+      platform: "linux",
+    });
+    const posixSource = fs.readFileSync(wsl.posixLauncherPath, "utf8");
+    const manifest = readJson(wsl.posixManifestPath);
+    manifest.mode = "garbage";
+    manifest.target = path.resolve(__dirname, "..", "hooks", "codex-debug-hook.js");
+    fs.writeFileSync(wsl.posixManifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    const posixCommand = buildStableCodexHookCommand(wsl.posixLauncherPath, "linux");
+
+    const inspection = inspectStableCodexHookCommand(posixCommand, { platform: "linux" });
+    const windows = materializeStableCodexHookLauncher(windowsTarget, {
+      codexDir,
+      nodeBin: "C:\\node\\node.exe",
+      platform: "win32",
+    });
+
+    assert.strictEqual(inspection.ok, false);
+    assert.strictEqual(inspection.issue, "stable-manifest-invalid");
+    assert.strictEqual(windows.posixPreserved, true);
+    assert.strictEqual(fs.readFileSync(wsl.posixLauncherPath, "utf8"), posixSource);
+    assert.strictEqual(readJson(wsl.posixManifestPath).mode, "garbage");
   });
 
   it("is idempotent on second run", () => {
@@ -325,6 +580,7 @@ describe("Codex official hook installer", () => {
     }
     assert.strictEqual(settings.hooks.PermissionRequest.length, 1);
     assert.strictEqual(CODEX_DEBUG_HOOK_EVENTS.includes("PermissionRequest"), true);
+    assert.strictEqual(fs.existsSync(stableCodexHookPaths(codexDir).stableDir), false);
   });
 
   // Verifies the v0.7.x follow-up that points users at codex's `/hooks` review
@@ -412,7 +668,6 @@ describe("Codex hooks on a Windows host write dual command fields (#544)", () =>
   const HOOK_SCRIPT = path.resolve(__dirname, "..", "hooks", "codex-hook.js").replace(/\\/g, "/");
   const {
     buildCodexHookPosixInteropCommand,
-    windowsPathToWslPath,
   } = require("../hooks/codex-install-utils");
 
   it("translates Windows absolute paths to WSL /mnt form", () => {
@@ -436,7 +691,7 @@ describe("Codex hooks on a Windows host write dual command fields (#544)", () =>
     );
   });
 
-  it("fresh Windows install writes PowerShell commandWindows and interop command", () => {
+  it("fresh Windows install writes fixed data-dispatcher and WSL wrapper commands", () => {
     const codexDir = makeTempCodexDir({});
     const result = registerCodexHooks({
       silent: true,
@@ -447,17 +702,86 @@ describe("Codex hooks on a Windows host write dual command fields (#544)", () =>
 
     assert.strictEqual(result.added, CODEX_OFFICIAL_HOOK_EVENTS.length);
     const settings = readJson(path.join(codexDir, "hooks.json"));
+    const stablePaths = stableCodexHookPaths(codexDir, { platform: "win32" });
+    const windowsCommand = buildStableCodexHookCommand(stablePaths.windowsRunPath, "win32");
+    const posixCommand = buildStableCodexHookCommand(
+      windowsPathToWslPath(stablePaths.posixLauncherPath) || stablePaths.posixLauncherPath,
+      "linux"
+    );
     for (const event of CODEX_OFFICIAL_HOOK_EVENTS) {
       const hook = settings.hooks[event][0].hooks[0];
-      assert.strictEqual(
-        hook.commandWindows,
-        `& "C:\\Program Files\\nodejs\\node.exe" "${HOOK_SCRIPT}"`
-      );
-      assert.strictEqual(
-        hook.command,
-        `"/mnt/c/Program Files/nodejs/node.exe" "${HOOK_SCRIPT}" ${CODEX_WSL_INTEROP_ARG}`
-      );
+      assert.strictEqual(hook.commandWindows, windowsCommand);
+      assert.strictEqual(hook.command, posixCommand);
     }
+    assert.strictEqual(
+      readStableCodexHookManifest(stablePaths.windowsManifestPath).record.nodeBin,
+      "C:\\Program Files\\nodejs\\node.exe"
+    );
+    assert.strictEqual(
+      readStableCodexHookManifest(stablePaths.posixManifestPath).record.mode,
+      "windows-interop"
+    );
+    assert.ok(!windowsCommand.toLowerCase().includes("powershell.exe"));
+    assert.ok(!windowsCommand.toLowerCase().includes("-file"));
+    assert.ok(!fs.existsSync(stablePaths.legacyWindowsLauncherPath));
+  });
+
+  it("executes the Windows data dispatcher from non-ASCII paths", {
+    skip: process.platform !== "win32",
+  }, () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-unicode-"));
+    tempDirs.push(root);
+    const unicodeRoot = path.join(root, "张三-ユーザー-café-O'Brien");
+    const codexDir = path.join(unicodeRoot, ".codex");
+    const target = path.join(unicodeRoot, "hook 源", "codex-hook.js");
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(
+      target,
+      "let body = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => { body += chunk; }); process.stdin.on('end', () => process.stdout.write(`${process.env.CLAWD_TEST_ENV}|${body}`));\n",
+      "utf8"
+    );
+
+    const stable = materializeStableCodexHookLauncher(target, {
+      codexDir,
+      nodeBin: process.execPath,
+      platform: "win32",
+      env: { CLAWD_TEST_ENV: "环境 ✓" },
+    });
+    const command = buildStableCodexHookCommand(stable.windowsRunPath, "win32");
+    assert.strictEqual(inspectStableCodexHookCommand(command, { platform: "win32" }).ok, true);
+    const run = spawnSync("powershell.exe", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      command,
+    ], {
+      input: "鹿鹿 ✓",
+      encoding: "utf8",
+    });
+
+    assert.strictEqual(run.status, 0, run.stderr);
+    assert.strictEqual(run.stdout, "环境 ✓|鹿鹿 ✓");
+  });
+
+  it("returns a failure status when the Windows data dispatcher cannot start Node", {
+    skip: process.platform !== "win32",
+  }, () => {
+    const codexDir = makeTempCodexDir({});
+    const target = path.resolve(__dirname, "..", "hooks", "codex-hook.js");
+    const stable = materializeStableCodexHookLauncher(target, {
+      codexDir,
+      nodeBin: "Z:\\clawd-missing-node\\node.exe",
+      platform: "win32",
+    });
+    const run = spawnSync("powershell.exe", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      buildStableCodexHookCommand(stable.windowsRunPath, "win32"),
+    ], { encoding: "utf8" });
+
+    assert.notStrictEqual(run.status, 0);
   });
 
   it("is idempotent on second Windows run", () => {
@@ -472,6 +796,35 @@ describe("Codex hooks on a Windows host write dual command fields (#544)", () =>
     assert.strictEqual(result.updated, 0);
     assert.strictEqual(result.skipped, CODEX_OFFICIAL_HOOK_EVENTS.length);
     assert.strictEqual(fs.readFileSync(path.join(codexDir, "hooks.json"), "utf8"), before);
+  });
+
+  it("preserves the stable Windows Node path when discovery temporarily fails", () => {
+    const codexDir = makeTempCodexDir({});
+    registerCodexHooks({
+      silent: true,
+      codexDir,
+      nodeBin: "C:\\clawd-node\\node.exe",
+      platform: "win32",
+    });
+    const hooksPath = path.join(codexDir, "hooks.json");
+    const stable = stableCodexHookPaths(codexDir, { platform: "win32" });
+    const hooksBefore = fs.readFileSync(hooksPath, "utf8");
+    const artifactBefore = fs.readFileSync(stable.launcherPath, "utf8");
+
+    const result = registerCodexHooks({
+      silent: true,
+      codexDir,
+      nodeBin: null,
+      platform: "win32",
+    });
+
+    assert.strictEqual(result.updated, 0);
+    assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), hooksBefore);
+    assert.strictEqual(fs.readFileSync(stable.launcherPath, "utf8"), artifactBefore);
+    assert.strictEqual(
+      readStableCodexHookManifest(stable.manifestPath).record.nodeBin,
+      "C:\\clawd-node\\node.exe"
+    );
   });
 
   it("upgrades a legacy Windows entry (PowerShell command, no commandWindows) in place", () => {
@@ -493,10 +846,20 @@ describe("Codex hooks on a Windows host write dual command fields (#544)", () =>
     assert.strictEqual(result.added, CODEX_OFFICIAL_HOOK_EVENTS.length - 1);
     const settings = readJson(path.join(codexDir, "hooks.json"));
     const hook = settings.hooks.SessionStart[0].hooks[0];
-    // commandWindows takes over the exact PowerShell form command used to
-    // hold, so Windows codex resolves the same string (trusted_hash intact).
-    assert.strictEqual(hook.commandWindows, legacyCommand);
-    assert.strictEqual(hook.command, `"node.exe" "${HOOK_SCRIPT}" ${CODEX_WSL_INTEROP_ARG}`);
+    const stablePaths = stableCodexHookPaths(codexDir, { platform: "win32" });
+    // This one-time migration intentionally changes the trusted command. Once
+    // reviewed, later packaged/dev/Node switches only update the wrapper.
+    assert.strictEqual(
+      hook.commandWindows,
+      buildStableCodexHookCommand(stablePaths.windowsRunPath, "win32")
+    );
+    assert.strictEqual(
+      hook.command,
+      buildStableCodexHookCommand(
+        windowsPathToWslPath(stablePaths.posixLauncherPath) || stablePaths.posixLauncherPath,
+        "linux"
+      )
+    );
     assert.strictEqual(settings.hooks.SessionStart.length, 1);
   });
 
@@ -523,8 +886,15 @@ describe("Codex hooks on a Windows host write dual command fields (#544)", () =>
 
     const settings = readJson(path.join(codexDir, "hooks.json"));
     const hook = settings.hooks.SessionStart[0].hooks[0];
-    assert.strictEqual(hook.commandWindows, `& "E:\\custom\\node.exe" "${HOOK_SCRIPT}"`);
-    assert.strictEqual(hook.command, `"/mnt/e/custom/node.exe" "${HOOK_SCRIPT}" ${CODEX_WSL_INTEROP_ARG}`);
+    const stablePaths = stableCodexHookPaths(codexDir, { platform: "win32" });
+    assert.strictEqual(
+      hook.commandWindows,
+      buildStableCodexHookCommand(stablePaths.windowsRunPath, "win32")
+    );
+    assert.strictEqual(
+      readStableCodexHookManifest(stablePaths.windowsManifestPath).record.nodeBin,
+      "E:\\custom\\node.exe"
+    );
   });
 
   it("does not extract the derived /mnt interop path back as a node bin", () => {
@@ -547,8 +917,15 @@ describe("Codex hooks on a Windows host write dual command fields (#544)", () =>
 
     const settings = readJson(path.join(codexDir, "hooks.json"));
     const hook = settings.hooks.SessionStart[0].hooks[0];
-    assert.strictEqual(hook.commandWindows, `& "C:\\tools\\node.exe" "${HOOK_SCRIPT}"`);
-    assert.strictEqual(hook.command, `"/mnt/c/tools/node.exe" "${HOOK_SCRIPT}" ${CODEX_WSL_INTEROP_ARG}`);
+    const stablePaths = stableCodexHookPaths(codexDir, { platform: "win32" });
+    assert.strictEqual(
+      hook.commandWindows,
+      buildStableCodexHookCommand(stablePaths.windowsRunPath, "win32")
+    );
+    assert.strictEqual(
+      readStableCodexHookManifest(stablePaths.windowsManifestPath).record.nodeBin,
+      "C:\\tools\\node.exe"
+    );
   });
 
   it("POSIX installs never write commandWindows", () => {
@@ -659,9 +1036,13 @@ describe("Codex hooks on a Windows host write dual command fields (#544)", () =>
 
     const settings = readJson(path.join(codexDir, "hooks.json"));
     const entries = settings.hooks.SessionStart;
+    const stablePaths = stableCodexHookPaths(codexDir, { platform: "win32" });
     assert.strictEqual(entries.length, 1, "must not append a duplicate entry");
     assert.strictEqual(entries[0].hooks[0].command, handEdit);
-    assert.strictEqual(entries[0].hooks[0].commandWindows, `& "node" "${HOOK_SCRIPT}"`);
+    assert.strictEqual(
+      entries[0].hooks[0].commandWindows,
+      buildStableCodexHookCommand(stablePaths.windowsRunPath, "win32")
+    );
   });
 
   // Subagent review finding: uninstall must not drop an entry whose nested

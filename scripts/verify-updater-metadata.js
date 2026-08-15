@@ -58,9 +58,38 @@ function sha512Base64(filename) {
   return crypto.createHash("sha512").update(fs.readFileSync(filename)).digest("base64");
 }
 
-function validateContractShape(metadata, contract) {
+function validateContractShape(metadata, contract, expectedVersion) {
+  if (typeof expectedVersion !== "string" || !expectedVersion.trim()) {
+    throw new TypeError("expectedVersion is required");
+  }
   const urls = metadata.files.map((entry) => String(entry.url || ""));
   const errors = [];
+  if (String(metadata.version || "") !== expectedVersion) {
+    errors.push(`Updater metadata version must be ${expectedVersion}, got ${metadata.version || "<empty>"}`);
+  }
+  let expectedUrls;
+  if (contract === "windows") {
+    expectedUrls = new Set([
+      `Clawd-on-Desk-Setup-${expectedVersion}-x64.exe`,
+      `Clawd-on-Desk-Setup-${expectedVersion}-arm64.exe`,
+    ]);
+  } else if (contract === "mac") {
+    expectedUrls = new Set([
+      `Clawd-on-Desk-${expectedVersion}-x64.dmg`,
+      `Clawd-on-Desk-${expectedVersion}-arm64.dmg`,
+    ]);
+  } else if (contract === "linux") {
+    expectedUrls = new Set([
+      `Clawd-on-Desk-${expectedVersion}-x86_64.AppImage`,
+      `Clawd-on-Desk-${expectedVersion}-amd64.deb`,
+    ]);
+  }
+  if (!expectedUrls) throw new Error(`Unknown updater contract: ${contract || "<empty>"}`);
+  for (const url of urls) {
+    if (url && !expectedUrls.has(url)) {
+      errors.push(`Unexpected updater artifact URL for ${contract} ${expectedVersion}: ${url}`);
+    }
+  }
   if (contract === "windows") {
     if (urls.length !== 2 || !urls.some((url) => /-x64\.exe$/i.test(url)) ||
         !urls.some((url) => /-arm64\.exe$/i.test(url))) {
@@ -89,19 +118,20 @@ function validateContractShape(metadata, contract) {
     if (appImage && (!Number.isInteger(appImage.blockMapSize) || appImage.blockMapSize <= 0)) {
       errors.push("latest-linux.yml AppImage entry must contain a positive blockMapSize");
     }
-  } else {
-    throw new Error(`Unknown updater contract: ${contract || "<empty>"}`);
   }
   return errors;
 }
 
-function verifyUpdaterMetadata({ metadataPath, artifactRoot, contract } = {}) {
+function verifyUpdaterMetadata({ metadataPath, artifactRoot, contract, expectedVersion } = {}) {
   if (!metadataPath) throw new TypeError("metadataPath is required");
   if (!artifactRoot) throw new TypeError("artifactRoot is required");
+  if (typeof expectedVersion !== "string" || !expectedVersion.trim()) {
+    throw new TypeError("expectedVersion is required");
+  }
   const resolvedMetadata = path.resolve(metadataPath);
   const resolvedArtifacts = path.resolve(artifactRoot);
   const metadata = parseUpdaterYaml(fs.readFileSync(resolvedMetadata, "utf8"));
-  const errors = validateContractShape(metadata, contract);
+  const errors = validateContractShape(metadata, contract, expectedVersion);
   const files = [];
 
   for (const entry of metadata.files) {
@@ -131,6 +161,7 @@ function verifyUpdaterMetadata({ metadataPath, artifactRoot, contract } = {}) {
   return {
     schemaVersion: 1,
     contract,
+    expectedVersion,
     metadataPath: resolvedMetadata,
     artifactRoot: resolvedArtifacts,
     files,
@@ -140,24 +171,30 @@ function verifyUpdaterMetadata({ metadataPath, artifactRoot, contract } = {}) {
 }
 
 function parseArgs(argv) {
-  const options = { metadataPath: "", artifactRoot: "", contract: "", output: "" };
+  const options = { metadataPath: "", artifactRoot: "", contract: "", packageJson: "", output: "" };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--metadata") options.metadataPath = argv[++index] || "";
     else if (arg === "--artifact-root") options.artifactRoot = argv[++index] || "";
     else if (arg === "--contract") options.contract = argv[++index] || "";
+    else if (arg === "--package-json") options.packageJson = argv[++index] || "";
     else if (arg === "--output") options.output = argv[++index] || "";
     else throw new Error(`Unknown argument: ${arg}`);
   }
   if (!options.metadataPath) throw new Error("--metadata is required");
   if (!options.artifactRoot) throw new Error("--artifact-root is required");
   if (!options.contract) throw new Error("--contract is required");
+  if (!options.packageJson) throw new Error("--package-json is required");
   return options;
 }
 
 function runCli(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
-  const report = verifyUpdaterMetadata(options);
+  const packagePath = path.resolve(options.packageJson);
+  const packageData = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+  const expectedVersion = typeof packageData.version === "string" ? packageData.version.trim() : "";
+  if (!expectedVersion) throw new Error(`Package version is missing: ${packagePath}`);
+  const report = verifyUpdaterMetadata({ ...options, expectedVersion });
   const json = `${JSON.stringify(report, null, 2)}\n`;
   if (options.output) {
     const outputPath = path.resolve(options.output);

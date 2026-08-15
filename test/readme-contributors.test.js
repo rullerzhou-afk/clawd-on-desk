@@ -67,7 +67,13 @@ function loadSettingsContributors() {
 
 function extractContributorLogins(markdown, filename) {
   const section = extractContributorSection(markdown, filename);
-  return [...section.matchAll(/href="https:\/\/github\.com\/([^"/]+)"/g)].map((match) => match[1]);
+  const linked = [...section.matchAll(/href="https:\/\/github\.com\/([^"/]+)"/g)].map((match) => match[1]);
+  // A contributor whose GitHub account no longer resolves is credited as plain text
+  // rather than a link and avatar that both 404. Those entries still belong in the
+  // list, so collect them from the markup left over once every link is removed.
+  const unlinkedMarkup = section.replace(/<a\s[^>]*>[\s\S]*?<\/a>/g, "");
+  const unlinked = [...unlinkedMarkup.matchAll(/<sub>([^<]+)<\/sub>/g)].map((match) => match[1].trim());
+  return [...linked, ...unlinked];
 }
 
 function extractContributorTable(markdown, filename) {

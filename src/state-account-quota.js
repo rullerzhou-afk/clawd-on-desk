@@ -35,12 +35,14 @@ const { normalizeQuotaGroup } = require("../hooks/quota-bucket");
 const { ANTIGRAVITY_QUOTA_FIELDS } = require("../hooks/antigravity-context-usage");
 const { CLAUDE_QUOTA_FIELDS } = require("../hooks/claude-rate-limits");
 const { CODEX_QUOTA_FIELDS } = require("../hooks/codex-rate-limits");
+const { KIMI_QUOTA_FIELDS } = require("./kimi-quota-normalizer");
 
 const QUOTA_PROVIDER_FIELDS = {
   antigravityQuota: ANTIGRAVITY_QUOTA_FIELDS,
   claudeQuota: CLAUDE_QUOTA_FIELDS,
   codexQuota: CODEX_QUOTA_FIELDS,
   codexSparkQuota: CODEX_QUOTA_FIELDS,
+  kimiQuota: KIMI_QUOTA_FIELDS,
 };
 const QUOTA_PROVIDER_KEYS = Object.keys(QUOTA_PROVIDER_FIELDS);
 
@@ -279,7 +281,7 @@ function createAccountQuotaStore(options = {}) {
   }
 
   function persistNow() {
-    if (!persistPath) return;
+    if (!persistPath) return true;
     const body = JSON.stringify({
       version: 6,
       sources: Array.from(sources.entries()).map(([sourceKey, record]) => ({
@@ -293,9 +295,11 @@ function createAccountQuotaStore(options = {}) {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(tmpPath, body, "utf8");
       fs.renameSync(tmpPath, persistPath);
+      return true;
     } catch (err) {
       try { fs.unlinkSync(tmpPath); } catch {}
       logWarn("Clawd: account-quota persist failed:", err && err.message);
+      return false;
     }
   }
 
@@ -316,7 +320,7 @@ function createAccountQuotaStore(options = {}) {
   // or lastSeenAt crossed a minute boundary (so freshness labels stay
   // honest for a reporter that keeps confirming the same numbers, at a
   // bounded ≤1 broadcast/min instead of one per statusline tick).
-  function update(source, quotas = {}) {
+  function updateDetailed(source, quotas = {}) {
     const nowMs = now();
     const sourceKey = normalizeSourceHost(source);
     const key = sourceKey || "";
@@ -327,10 +331,11 @@ function createAccountQuotaStore(options = {}) {
     let record = sources.get(key);
     if (!record && sources.size >= MAX_SOURCES) {
       logWarn("Clawd: account-quota source cap reached, dropping report from:", key || "(local)");
-      return false;
+      return { accepted: false, changed: false };
     }
     let changed = !!record && record.host !== sourceHost;
     let seenAdvanced = false;
+    let acceptedAny = false;
     if (record && record.host !== sourceHost) record.host = sourceHost;
     for (const providerKey of QUOTA_PROVIDER_KEYS) {
       const group = normalizeQuotaGroup(quotas[providerKey], QUOTA_PROVIDER_FIELDS[providerKey]);
@@ -349,6 +354,7 @@ function createAccountQuotaStore(options = {}) {
       }
       const accepted = sanitizeIncomingGroup(group, existing && existing.group, nowMs);
       if (!accepted) continue;
+      acceptedAny = true;
       const observed = Object.fromEntries(Object.entries(accepted).map(([field, bucket]) => [
         field,
         { ...bucket, seenAt: nowMs },
@@ -386,7 +392,11 @@ function createAccountQuotaStore(options = {}) {
       if (valueChanged) changed = true;
     }
     if (changed || seenAdvanced) schedulePersist();
-    return changed || seenAdvanced;
+    return { accepted: acceptedAny, changed: changed || seenAdvanced };
+  }
+
+  function update(source, quotas = {}) {
+    return updateDetailed(source, quotas).changed;
   }
 
   // Remove one provider without disturbing sibling providers carried by the
@@ -423,8 +433,13 @@ function createAccountQuotaStore(options = {}) {
     // Merge arbitration uses exact receive time, while snapshots expose only
     // minute-quantized stamps to avoid a broadcast on every statusline tick.
     const rawSeenByBucket = new WeakMap();
-    for (const record of sources.values()) {
-      const entry = { host: record.host };
+    for (const [sourceKey, record] of sources) {
+      // sourceKey, not host: `host` is a DISPLAY label and two trusted remote
+      // profiles are explicitly allowed to share one (see the "keeps trusted
+      // remote profile sources separate when display hosts match" test). Any
+      // renderer that keys per-source state off the label would collapse those
+      // two sources into one.
+      const entry = { sourceKey, host: record.host };
       let hasAny = false;
       for (const providerKey of QUOTA_PROVIDER_KEYS) {
         const stored = record[providerKey];
@@ -450,7 +465,8 @@ function createAccountQuotaStore(options = {}) {
     });
     if (options.mergeSources !== true || out.length <= 1) return out;
 
-    const merged = { host: null };
+    // The merged view is a single synthetic source; nothing can collide with it.
+    const merged = { sourceKey: null, host: null };
     let hasAny = false;
     for (const providerKey of QUOTA_PROVIDER_KEYS) {
       const providerCandidates = out
@@ -514,7 +530,7 @@ function createAccountQuotaStore(options = {}) {
       clearTimeout(persistTimer);
       persistTimer = null;
     }
-    persistNow();
+    return persistNow();
   }
 
   function prune() {
@@ -525,7 +541,7 @@ function createAccountQuotaStore(options = {}) {
 
   load();
 
-  return { update, clearProvider, snapshot, prune, flush };
+  return { update, updateDetailed, clearProvider, snapshot, prune, flush };
 }
 
 module.exports = {

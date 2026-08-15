@@ -28,7 +28,17 @@ test("the current checkout satisfies the release version contract", () => {
   const result = verifyReleaseVersion({ root: path.join(__dirname, ".."), env: {} });
   assert.deepStrictEqual(result.errors, []);
   assert.strictEqual(result.ok, true);
-  assert.strictEqual(result.version, "0.14.0");
+  assert.strictEqual(result.version, "0.15.0");
+});
+
+test("the authoritative draft smoke checklist tracks the current package version", () => {
+  const root = path.join(__dirname, "..");
+  const version = require(path.join(root, "package.json")).version;
+  const escapedVersion = version.replace(/\./g, "\\.");
+  const processDoc = fs.readFileSync(path.join(root, "docs", "project", "release-process.md"), "utf8");
+  assert.match(processDoc, new RegExp(`### v${escapedVersion} Draft Smoke Checklist`));
+  assert.match(processDoc, new RegExp("packaged app shows `" + escapedVersion + "` metadata"));
+  assert.match(processDoc, new RegExp("About shows `v" + escapedVersion + "`"));
 });
 
 test("package, lock root, release note, and tag must agree exactly", (t) => {
@@ -65,5 +75,9 @@ test("build workflow validates the release contract before every platform build"
   assert.match(
     workflow,
     /release:\s*\n\s*if: github\.event_name == 'push' && startsWith\(github\.ref, 'refs\/tags\/v'\)/,
+  );
+  assert.strictEqual(
+    (workflow.match(/verify-updater-metadata\.js[^\n]+--package-json package\.json/g) || []).length,
+    3,
   );
 });

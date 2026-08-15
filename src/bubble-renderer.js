@@ -1183,10 +1183,10 @@ function show(data) {
       error.setAttribute("role", "alert");
       suggestionsContainer.appendChild(error);
     }
-    // Hermes permission cards get no terminal fallback: the protocol has no
-    // native approval prompt to hand back to, so no-decision becomes a
-    // retryable block. Hermes clarify uses the elicitation path above.
-    if (!data.isHermes) renderRegularTerminalFallback(data.lang);
+    // Hermes and DSH permission cards get no generic terminal action. Hermes
+    // has no native approval prompt; DSH's native web answerer is reached by
+    // an explicit no-decision fallback, not a user allow/deny action.
+    if (!data.isHermes && !data.isDsh) renderRegularTerminalFallback(data.lang);
   }
   // Re-enable buttons
   btnAllow.disabled = false;

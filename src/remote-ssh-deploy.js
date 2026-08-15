@@ -41,6 +41,7 @@ const {
   buildRemoteNodeEvalCommand,
 } = require("./remote-ssh-node");
 const { decodeShellBytes } = require("./remote-ssh-decode");
+const { redactTransportDiagnostic } = require("./remote-ssh-transport");
 const { detectRemoteShell } = require("./remote-ssh-shell-detect");
 const {
   normalizeRemoteRuntimeIdentity,
@@ -102,23 +103,38 @@ function resolveHooksDir({ app, isPackaged } = {}) {
 }
 
 function spawnAndWait(spawn, command, args, opts = {}) {
-  const { stdin, env, timeoutMs = 60000, runtime } = opts;
-  return new Promise((resolve) => {
+  const {
+    stdin,
+    env,
+    timeoutMs = 60000,
+    runtime,
+    role = command,
+    mutation = false,
+  } = opts;
+  return new Promise((resolve, reject) => {
     let child;
+    const managed = runtime && typeof runtime.spawnManagedTransportChild === "function";
+    const childOptions = {
+      env: { ...process.env, LANG: "C", LC_ALL: "C", ...(env || {}) },
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    };
     try {
-      child = spawn(command, args, {
-        env: { ...process.env, LANG: "C", LC_ALL: "C", ...(env || {}) },
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
-      });
+      child = managed
+        ? runtime.spawnManagedTransportChild({ role, tool: command, args, options: childOptions })
+        : spawn(command, args, childOptions);
     } catch (err) {
+      if (managed) {
+        reject(err);
+        return;
+      }
       resolve({ code: -1, signal: null, stdout: "", stderr: (err && err.message) || "spawn failed", spawnError: true });
       return;
     }
     // Register with runtime so before-quit cleanup can kill the child if
     // the user closes the app mid-Deploy. Unregister on resolve so we
     // don't pile up references for completed children.
-    if (runtime && typeof runtime.registerChild === "function") {
+    if (!managed && runtime && typeof runtime.registerChild === "function") {
       runtime.registerChild(child);
     }
     // Accumulate raw bytes — decode once at finish via decodeShellBytes so
@@ -128,17 +144,71 @@ function spawnAndWait(spawn, command, args, opts = {}) {
     const stdoutChunks = [];
     const stderrChunks = [];
     let done = false;
+    let exitCode = null;
+    let exitSignal = null;
+    let processError = null;
+    let timedOut = false;
+    let drainTimer = null;
     const timer = setTimeout(() => {
       if (done) return;
-      try { child.kill(); } catch {}
+      timedOut = true;
+      // A managed serialized child is not force-killed here. Closing only the
+      // outer ssh process cannot prove that its nested ProxyCommand transport
+      // has drained. Keep tracking it and quarantine if it will not close on
+      // its own. Ordinary transports retain the legacy termination request.
+      if (!managed) {
+        try { child.kill(); } catch {}
+      }
+      // A timeout request is not a verified drain. Serialized operation
+      // contexts invalidate here and retain their independent close registry;
+      // the public operation can still return within a bound.
+      drainTimer = setTimeout(() => {
+        if (done) return;
+        const err = Object.assign(new Error("Remote SSH child did not close after timeout"), {
+          name: "TransportUndrainedError",
+          code: "transport_drain_timeout",
+          timedOut: true,
+          drainVerified: false,
+          role,
+          tool: command,
+        });
+        if (managed && typeof runtime.invalidateManagedOperation === "function") {
+          try { runtime.invalidateManagedOperation(err); } catch {}
+          done = true;
+          clearTimeout(timer);
+          reject(err);
+          return;
+        }
+        // Ordinary transports retain the exact child in runtime's auxiliary
+        // registry for app cleanup; do not unregister it here.
+        done = true;
+        clearTimeout(timer);
+        resolve({
+          code: exitCode,
+          signal: exitSignal,
+          stdout: decodeShellBytes(stdoutChunks),
+          stderr: decodeShellBytes(stderrChunks),
+          timedOut: true,
+          drainVerified: false,
+        });
+      }, 5000);
     }, timeoutMs);
 
-    function finish(payload) {
+    function finish(payload, { unregister = true } = {}) {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      if (runtime && typeof runtime.unregisterChild === "function") {
+      if (drainTimer) clearTimeout(drainTimer);
+      if (unregister && !managed && runtime && typeof runtime.unregisterChild === "function") {
         runtime.unregisterChild(child);
+      }
+      if (managed && runtime && typeof runtime.assertTransportActive === "function") {
+        try {
+          runtime.assertTransportActive();
+        } catch (err) {
+          reject(err);
+          return;
+        }
       }
       resolve(payload);
     }
@@ -156,17 +226,79 @@ function spawnAndWait(spawn, command, args, opts = {}) {
       try { child.stdin.end(); } catch {}
     }
 
-    child.on("error", (err) => {
-      const stdout = decodeShellBytes(stdoutChunks);
-      const stderr = decodeShellBytes(stderrChunks);
-      finish({ code: -1, signal: null, stdout, stderr: stderr || (err && err.message) || "process error", spawnError: true });
-    });
+    child.on("error", (err) => { processError = err; });
     child.on("exit", (code, signal) => {
+      exitCode = code;
+      exitSignal = signal;
+    });
+    child.on("close", (code, signal) => {
       const stdout = decodeShellBytes(stdoutChunks);
       const stderr = decodeShellBytes(stderrChunks);
-      finish({ code, signal, stdout, stderr });
+      if (managed && timedOut) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        if (drainTimer) clearTimeout(drainTimer);
+        const err = Object.assign(new Error("Remote SSH child exceeded its operation deadline"), {
+          name: "TransportOperationTimeoutError",
+          code: "transport_operation_timeout",
+          timedOut: true,
+          drainVerified: true,
+          role,
+          tool: command,
+        });
+        if (runtime && typeof runtime.settleManagedTimeoutAfterClose === "function") {
+          try { runtime.settleManagedTimeoutAfterClose(err); } catch {}
+        }
+        reject(err);
+        return;
+      }
+      const payload = {
+        code: exitCode === null ? code : exitCode,
+        signal: exitSignal === null ? signal : exitSignal,
+        stdout,
+        stderr: stderr || (processError && processError.message) || "",
+        ...(processError ? { spawnError: true } : {}),
+        ...(timedOut ? { timedOut: true, drainVerified: true } : {}),
+      };
+      const ambiguousMutation = managed && mutation && payload.code !== 0 && (
+        payload.code === 255
+        || payload.signal != null
+        || /(?:^|\s)EOF(?:\s|$)|connection (?:closed|reset)|broken pipe/i.test(payload.stderr)
+      );
+      if (ambiguousMutation) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        if (drainTimer) clearTimeout(drainTimer);
+        const err = Object.assign(new Error("Remote SSH mutation completed with an unknown transport result"), {
+          name: "TransportUnknownResultError",
+          code: "transport_unknown_result",
+          role,
+          tool: command,
+          exitCode: payload.code,
+          signal: payload.signal,
+          drainVerified: true,
+        });
+        if (runtime && typeof runtime.invalidateManagedOperation === "function") {
+          try { runtime.invalidateManagedOperation(err); } catch {}
+        }
+        reject(err);
+        return;
+      }
+      finish(payload);
     });
   });
+}
+
+function managedTransportIsActive(runtime) {
+  if (!runtime || typeof runtime.assertTransportActive !== "function") return true;
+  try {
+    runtime.assertTransportActive();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ── Deploy ──
@@ -186,7 +318,7 @@ async function legacyDeploy({ profile, runtime, deps = {} }) {
       profileId: profile.id,
       step,
       status,
-      message: message || null,
+      message: message ? redactTransportDiagnostic(message, profile) : null,
       hint: hint || null,
     });
   }
@@ -408,6 +540,9 @@ async function acquireDeployLock({
   runtime,
   now = Date.now,
 }) {
+  if (runtime && typeof runtime.setManagedLockStage === "function") {
+    runtime.setManagedLockStage("acquire-attempted");
+  }
   const owner = {
     leaseId,
     installId,
@@ -434,9 +569,33 @@ async function acquireDeployLock({
     spawn,
     "ssh",
     buildSshArgs(profile).concat([command]),
-    { stdin: compactJson(owner), runtime },
+    { stdin: compactJson(owner), runtime, role: "deploy-lock-acquire", mutation: true },
   );
-  if (result.code === 0) return { ok: true, owner };
+  if (result.code === 0) {
+    if (runtime && typeof runtime.setManagedLockStage === "function") {
+      runtime.setManagedLockStage("lock-owned");
+    }
+    return { ok: true, owner };
+  }
+  if ((result.code === 73 || result.code === 74)
+    && runtime && typeof runtime.setManagedLockStage === "function") {
+    // The remote command proved that this lease never acquired the lock.
+    // Keep the transport usable even though the remote lock itself may need
+    // another owner (73) or manual inspection (74).
+    runtime.setManagedLockStage("before-acquire");
+  } else if (runtime && typeof runtime.invalidateManagedOperation === "function") {
+    // Code 75 means mkdir may have succeeded but owner persistence/cleanup did
+    // not. Any other unexpected result is likewise unsafe to treat as a
+    // cleanly unowned lock.
+    const err = Object.assign(new Error("Remote deployment lock acquisition requires manual inspection"), {
+      name: "TransportRecoveryError",
+      code: "lock_acquire_unknown",
+      recoveryCode: "manual_lock_inspection_required",
+      drainVerified: true,
+    });
+    try { runtime.invalidateManagedOperation(err); } catch {}
+    throw err;
+  }
   const reason = result.code === 73
     ? "lock_busy"
     : (result.code === 74 ? "lock_owner_invalid" : "lock_acquire_failed");
@@ -453,7 +612,26 @@ async function acquireDeployLock({
 async function releaseDeployLock({ profile, layout, leaseId, remoteNode, spawn, runtime }) {
   const lock = quoteForPosixShellArg(layout.deployLockDir);
   const command = `${assertLeaseCommand(layout, leaseId, remoteNode)} && rm -rf ${lock}`;
-  return spawnAndWait(spawn, "ssh", buildSshArgs(profile).concat([command]), { runtime });
+  const result = await spawnAndWait(
+    spawn,
+    "ssh",
+    buildSshArgs(profile).concat([command]),
+    { runtime, role: "deploy-lock-release", mutation: true },
+  );
+  if (result.code !== 0 && runtime && typeof runtime.invalidateManagedOperation === "function") {
+    const err = Object.assign(new Error("Remote deployment lock release requires manual inspection"), {
+      name: "TransportRecoveryError",
+      code: "manual_lock_inspection_required",
+      recoveryCode: "manual_lock_inspection_required",
+      drainVerified: true,
+    });
+    try { runtime.invalidateManagedOperation(err); } catch {}
+    throw err;
+  }
+  if (result.code === 0 && runtime && typeof runtime.setManagedLockStage === "function") {
+    runtime.setManagedLockStage("before-acquire");
+  }
+  return result;
 }
 
 function buildOwnershipPreflightScript({ profile, layout, installId }) {
@@ -590,7 +768,7 @@ async function cleanupLegacyMonitor({
         buildRemoteNodeEvalCommand(remoteNode, buildLegacyMonitorCleanupScript(layout)),
       ),
     ]),
-    { runtime },
+    { runtime, role: "legacy-monitor-cleanup", mutation: true },
   );
   let detail = null;
   try {
@@ -860,7 +1038,7 @@ async function writeIsolatedWrappers({
     spawn,
     "ssh",
     buildSshArgs(profile).concat([command]),
-    { stdin: compactJson(files), runtime },
+    { stdin: compactJson(files), runtime, role: "isolated-wrapper-write", mutation: true },
   );
   return { ok: result.code === 0, stderr: result.stderr, files };
 }
@@ -982,7 +1160,7 @@ async function secureDeploy({
       profileId: profile.id,
       step,
       status,
-      message: message || null,
+      message: message ? redactTransportDiagnostic(message, profile) : null,
       hint: hint || null,
     });
   }
@@ -990,11 +1168,12 @@ async function secureDeploy({
     await onStep(name, { status, ...(evidence ? { evidence } : {}) });
   }
   async function fail(step, message, reason = null, identityStep = null) {
-    progress(step, "fail", message);
+    const safeMessage = redactTransportDiagnostic(message, profile);
+    progress(step, "fail", safeMessage);
     if (identityStep) {
-      try { await recordStep(identityStep, "failed", String(message || "failed").slice(0, 500)); } catch {}
+      try { await recordStep(identityStep, "failed", String(safeMessage || "failed").slice(0, 500)); } catch {}
     }
-    return { ok: false, step, message, reason };
+    return { ok: false, step, message: safeMessage, reason };
   }
 
   const missing = HOOK_FILES
@@ -1055,7 +1234,10 @@ async function secureDeploy({
   lockHeld = true;
   progress("lock", "ok");
 
+  let operationResult = null;
+  let primaryError = null;
   try {
+    operationResult = await (async () => {
     progress("preflight", "start");
     const preflight = await runOwnershipPreflight({
       profile,
@@ -1135,7 +1317,7 @@ async function secureDeploy({
       spawn,
       "ssh",
       buildSshArgs(profile).concat([mkdirCommand]),
-      { runtime },
+      { runtime, role: "layout-create", mutation: true },
     );
     if (mkdirResult.code !== 0) return fail("mkdir", mkdirResult.stderr || "Remote layout creation failed");
 
@@ -1157,7 +1339,7 @@ async function secureDeploy({
       spawn,
       "ssh",
       buildSshArgs(profile).concat([identityCommand]),
-      { stdin: compactJson(identityDocument), runtime },
+      { stdin: compactJson(identityDocument), runtime, role: "identity-write", mutation: true },
     );
     if (identityWrite.code !== 0) {
       return fail("identity", identityWrite.stderr || "Identity write failed", null, "identity");
@@ -1192,7 +1374,7 @@ async function secureDeploy({
       spawn,
       "ssh",
       buildSshArgs(profile).concat([markerCommand]),
-      { stdin: "clawd-ssh-secure-v1", runtime },
+      { stdin: "clawd-ssh-secure-v1", runtime, role: "secure-marker-write", mutation: true },
     );
     if (markerWrite.code !== 0) return fail("secure-marker", markerWrite.stderr || "Secure marker write failed", null, "secureMarker");
     await recordStep("secureMarker", "done", "marker atomically written and read back");
@@ -1206,7 +1388,7 @@ async function secureDeploy({
       spawn,
       "scp",
       buildScpArgs(profile).concat([...localFiles, remoteTarget]),
-      { timeoutMs: 120000, runtime },
+      { timeoutMs: 120000, runtime, role: "hook-files-upload", mutation: true },
     );
     if (scp.code !== 0) return fail("hook-files", scp.stderr || "Hook staging upload failed", null, "hookFiles");
     const promotion = HOOK_FILES
@@ -1218,7 +1400,7 @@ async function secureDeploy({
       buildSshArgs(profile).concat([
         fencedCommand(layout, leaseId, remoteNode, `${promotion} && rmdir ${quoteForPosixShellArg(stagingDir)}`),
       ]),
-      { runtime },
+      { runtime, role: "hook-files-promote", mutation: true },
     );
     if (promote.code !== 0) return fail("hook-files", promote.stderr || "Hook promotion lost its deployment lease", null, "hookFiles");
     const expectedHashes = Object.fromEntries(HOOK_FILES.map((name) => [
@@ -1269,7 +1451,7 @@ async function secureDeploy({
         spawn,
         "ssh",
         buildSshArgs(profile).concat([hpCommand]),
-        { stdin: profile.hostPrefix, runtime },
+        { stdin: profile.hostPrefix, runtime, role: "host-prefix-write", mutation: true },
       );
       if (hp.code !== 0) return fail("host-prefix", hp.stderr || "Host prefix write failed");
     }
@@ -1302,7 +1484,7 @@ async function secureDeploy({
             `${envPrefix} ${nodeCommand} && ${verifyCommand}`,
           ),
         ]),
-        { timeoutMs: 60000, runtime },
+        { timeoutMs: 60000, runtime, role: `installer-${txnStep}`, mutation: true },
       );
       if (result.code !== 0) {
         return fail(progressStep, summarizeStderr(result.stderr) || "Remote installer failed", null, txnStep);
@@ -1371,7 +1553,7 @@ async function secureDeploy({
         buildSshArgs(profile).concat([
           fencedCommand(layout, leaseId, remoteNode, monitorCommand),
         ]),
-        { runtime },
+        { runtime, role: "codex-monitor-restart", mutation: true },
       );
       if (monitor.code !== 0) return fail("codex-monitor", monitor.stderr || "Codex monitor verification failed", null, "codexMonitor");
       await recordStep(
@@ -1417,8 +1599,14 @@ async function secureDeploy({
       transactionReady: true,
       isolation,
     };
-  } finally {
-    if (lockHeld && layout && remoteNode) {
+    })();
+  } catch (err) {
+    primaryError = err;
+  }
+
+  let releaseError = null;
+  if (lockHeld && layout && remoteNode && managedTransportIsActive(runtime)) {
+    try {
       const released = await releaseDeployLock({
         profile,
         layout,
@@ -1428,12 +1616,39 @@ async function secureDeploy({
         runtime,
       });
       if (released.code !== 0) {
+        releaseError = Object.assign(new Error("Remote deployment lock release requires manual inspection"), {
+          code: "manual_lock_inspection_required",
+          recoveryCode: "manual_lock_inspection_required",
+        });
         progress("lock-release", "fail", `Lock release requires manual inspection at ${layout.deployLockDir}`);
       } else {
         progress("lock-release", "ok");
       }
+    } catch (err) {
+      releaseError = err;
+      progress("lock-release", "fail", `Lock release requires manual inspection at ${layout.deployLockDir}`);
     }
   }
+
+  if (releaseError) {
+    const recoveryCode = releaseError.recoveryCode || "manual_lock_inspection_required";
+    if (primaryError) {
+      primaryError.recoveryCode = recoveryCode;
+      primaryError.recoveryError = "Remote deployment lock release requires manual inspection";
+      throw primaryError;
+    }
+    if (operationResult && operationResult.ok === false) {
+      return {
+        ...operationResult,
+        recoveryCode,
+        recoveryError: "Remote deployment lock release requires manual inspection",
+      };
+    }
+    releaseError.recoveryCode = recoveryCode;
+    throw releaseError;
+  }
+  if (primaryError) throw primaryError;
+  return operationResult;
 }
 
 async function deploy(options) {
@@ -1545,7 +1760,7 @@ async function bootstrapIsolatedRuntime({
       buildSshArgs(accountProfile).concat([
         fencedCommand(accountLayout, leaseId, remoteNode, command),
       ]),
-      { runtime },
+      { runtime, role: "isolated-runtime-bootstrap", mutation: true },
     );
     if (created.code !== 0) {
       return {
@@ -1568,14 +1783,16 @@ async function bootstrapIsolatedRuntime({
       },
     };
   } finally {
-    await releaseDeployLock({
-      profile: accountProfile,
-      layout: accountLayout,
-      leaseId,
-      remoteNode,
-      spawn,
-      runtime,
-    });
+    if (managedTransportIsActive(runtime)) {
+      await releaseDeployLock({
+        profile: accountProfile,
+        layout: accountLayout,
+        leaseId,
+        remoteNode,
+        spawn,
+        runtime,
+      });
+    }
   }
 }
 
@@ -1734,6 +1951,8 @@ async function withOwnedRemoteLease({ profile, runtime, deps = {}, operation }) 
   if (!lock.ok) {
     return { ok: false, skipped: true, reason: lock.reason, stderr: lock.message };
   }
+  let operationResult = null;
+  let primaryError = null;
   try {
     const ownership = await runOwnershipPreflight({
       profile,
@@ -1744,7 +1963,7 @@ async function withOwnedRemoteLease({ profile, runtime, deps = {}, operation }) 
       runtime,
     });
     if (!ownership.ok || !ownership.detail || ownership.detail.identity !== true) {
-      return {
+      operationResult = {
         ok: false,
         skipped: true,
         reason: ownership.ok
@@ -1754,18 +1973,54 @@ async function withOwnedRemoteLease({ profile, runtime, deps = {}, operation }) 
           ? "Remote identity is missing; no cleanup or monitor mutation was attempted."
           : ownership.message,
       };
+    } else {
+      operationResult = await operation({ spawn, layout, remoteNode, leaseId });
     }
-    return await operation({ spawn, layout, remoteNode, leaseId });
-  } finally {
-    await releaseDeployLock({
-      profile,
-      layout,
-      leaseId,
-      remoteNode,
-      spawn,
-      runtime,
-    });
+  } catch (err) {
+    primaryError = err;
   }
+
+  let releaseError = null;
+  if (managedTransportIsActive(runtime)) {
+    try {
+      const released = await releaseDeployLock({
+        profile,
+        layout,
+        leaseId,
+        remoteNode,
+        spawn,
+        runtime,
+      });
+      if (released.code !== 0) {
+        releaseError = Object.assign(new Error("Remote deployment lock release requires manual inspection"), {
+          code: "manual_lock_inspection_required",
+          recoveryCode: "manual_lock_inspection_required",
+        });
+      }
+    } catch (err) {
+      releaseError = err;
+    }
+  }
+
+  if (releaseError) {
+    const recoveryCode = releaseError.recoveryCode || "manual_lock_inspection_required";
+    if (primaryError) {
+      primaryError.recoveryCode = recoveryCode;
+      primaryError.recoveryError = "Remote deployment lock release requires manual inspection";
+      throw primaryError;
+    }
+    if (operationResult && operationResult.ok === false) {
+      return {
+        ...operationResult,
+        recoveryCode,
+        recoveryError: "Remote deployment lock release requires manual inspection",
+      };
+    }
+    releaseError.recoveryCode = recoveryCode;
+    throw releaseError;
+  }
+  if (primaryError) throw primaryError;
+  return operationResult;
 }
 
 function secureMonitorStopCommand(layout) {
@@ -1803,7 +2058,7 @@ async function secureStartCodexMonitor({ profile, runtime = null, deps = {} }) {
         buildSshArgs(profile).concat([
           fencedCommand(layout, leaseId, remoteNode, start),
         ]),
-        { runtime },
+        { runtime, role: "codex-monitor-start", mutation: true },
       );
       return { ok: result.code === 0, stderr: result.stderr, layout };
     },
@@ -1822,7 +2077,7 @@ async function secureStopCodexMonitor({ profile, runtime = null, deps = {} }) {
         buildSshArgs(profile).concat([
           fencedCommand(layout, leaseId, remoteNode, secureMonitorStopCommand(layout)),
         ]),
-        { runtime },
+        { runtime, role: "codex-monitor-stop", mutation: true },
       );
       return { ok: result.code === 0, stderr: result.stderr, layout };
     },
@@ -1870,7 +2125,7 @@ async function secureUninstallRemoteIntegrations({
           buildSshArgs(profile).concat([
             fencedCommand(layout, leaseId, remoteNode, command),
           ]),
-          { timeoutMs: 30000, runtime },
+          { timeoutMs: 30000, runtime, role: "remote-cleanup", mutation: true },
         );
         if (result.code !== 0) {
           return { ok: false, stderr: result.stderr, reason: "cleanup_step_failed", layout };
@@ -1952,7 +2207,7 @@ async function finalizeRetiredRemoteLayout({
       buildSshArgs(profile).concat([
         fencedCommand(layout, leaseId, remoteNode, buildRemoteNodeEvalCommand(remoteNode, script)),
       ]),
-      { runtime },
+      { runtime, role: "runtime-layout-retire", mutation: true },
     );
     if (result.code !== 0) {
       const reason = result.code === 83
@@ -1967,14 +2222,16 @@ async function finalizeRetiredRemoteLayout({
     }
     return { ok: true, layout };
   } finally {
-    await releaseDeployLock({
-      profile,
-      layout,
-      leaseId,
-      remoteNode,
-      spawn,
-      runtime,
-    });
+    if (managedTransportIsActive(runtime)) {
+      await releaseDeployLock({
+        profile,
+        layout,
+        leaseId,
+        remoteNode,
+        spawn,
+        runtime,
+      });
+    }
   }
 }
 
@@ -1998,7 +2255,7 @@ function formatExit(r) {
 }
 
 function summarizeStderr(text) {
-  const t = (text || "").toString().trim();
+  const t = redactTransportDiagnostic(text);
   if (!t) return null;
   return t.length > 200 ? t.slice(0, 200) + "..." : t;
 }
@@ -2013,6 +2270,7 @@ module.exports = {
   finalizeRetiredRemoteLayout,
   bootstrapIsolatedRuntime,
   __test: {
+    spawnAndWait,
     legacyDeploy,
     legacyStartCodexMonitor,
     legacyStopCodexMonitor,

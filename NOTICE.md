@@ -27,7 +27,7 @@ are stored under `assets/icons/agents/`.
 The included package assets are:
 
 - `antigravity-color.png`
-- `claudecode-color.png`
+- `claude-color.png`
 - `codebuddy-color.png`
 - `openai.png`
 - `githubcopilot.png`

@@ -3,7 +3,7 @@
     "claude-code": {
       "sourceFilename": "claude-code.svg",
       "sourceType": "svg",
-      "sha256": "670b3d8d749d0815ad8f7e62a59d51cb5e2053cb19403f3541a8aed7036a877f",
+      "sha256": "a3101f3047a119aa11825ad9369510f0c472428c8c52d420e31bc62db44a8364",
       "upstreamName": "Lobe Icons",
       "upstreamUrl": "https://lobehub.com/icons",
       "license": "MIT"
@@ -132,10 +132,22 @@
   "sources": {
     "claude-code": {
       "agentId": "claude-code",
-      "originalFilename": "claudecode-color.png",
+      "originalFilename": "claude-color.png",
       "sourceFilename": "claude-code.png",
       "sourceType": "png",
-      "sha256": "9ef1d98492f68c5c7766162af827dd4e0c9cb0d76b78fce22798985a792fca63",
+      "sha256": "97b53fb85b3bf401ffeb8ee7c5ebad734ce9f6edc3038f242021c53bcc18e23d",
+      "fallback": false,
+      "upstreamPackage": "@lobehub/icons-static-png",
+      "upstreamVersion": "1.95.0",
+      "license": "MIT",
+      "variant": "light"
+    },
+    "deepseek-harness": {
+      "agentId": "deepseek-harness",
+      "originalFilename": "deepseek-color.png",
+      "sourceFilename": "deepseek-harness.png",
+      "sourceType": "png",
+      "sha256": "f98596fd7802ca0c5290c498fec578fa823988646332ee36c43b7920dc4936eb",
       "fallback": false,
       "upstreamPackage": "@lobehub/icons-static-png",
       "upstreamVersion": "1.95.0",
@@ -391,14 +403,22 @@
         }
       ]
     },
+    "qwenwork": {
+      "agentId": "qwenwork",
+      "originalFilename": "qwenwork.png",
+      "sourceFilename": "qwenwork.png",
+      "sourceType": "png",
+      "sha256": "7467ee2af15a62536fc5ab3fa840de60af06fa04fe69679d14886ad590288b24",
+      "fallback": true,
+      "exportMode": "passthrough"
+    },
     "workbuddy": {
       "agentId": "workbuddy",
       "originalFilename": "workbuddy.png",
       "sourceFilename": "workbuddy.png",
       "sourceType": "png",
-      "sha256": "3c2bc7d338c9eacc027af2b27693056b7cbea3a6c0a09225cf87020afe57fd7b",
-      "fallback": false,
-      "contrastTreatment": "neutral-dark-tile"
+      "sha256": "55ac1361b0e88898613be395fdc59ec1fe5e4286e59d6bd948725b66848d7591",
+      "fallback": false
     },
     "traecode": {
       "agentId": "traecode",
@@ -414,8 +434,14 @@
     "claude-code": {
       "agentId": "claude-code",
       "outputFilename": "claude-code.png",
-      "outputSha256": "4880214367435ab457515addeecc8b412ef6ae8d211409564a272722253f0dbe",
-      "generatedFromSourceSha256": "9ef1d98492f68c5c7766162af827dd4e0c9cb0d76b78fce22798985a792fca63"
+      "outputSha256": "1e047c9c72130a1cbafc1797dfd6fabe31daf0dca350e08d3b8bed3f02374f4f",
+      "generatedFromSourceSha256": "97b53fb85b3bf401ffeb8ee7c5ebad734ce9f6edc3038f242021c53bcc18e23d"
+    },
+    "deepseek-harness": {
+      "agentId": "deepseek-harness",
+      "outputFilename": "deepseek-harness.png",
+      "outputSha256": "29fe642eca490423b62c8fe54d9bc83c402863761b0c7861bfe377431b7ca29f",
+      "generatedFromSourceSha256": "f98596fd7802ca0c5290c498fec578fa823988646332ee36c43b7920dc4936eb"
     },
     "codex": {
       "agentId": "codex",
@@ -531,11 +557,17 @@
       "outputSha256": "e354f670f8b7310a7bbcb9ca7d313221fb87131aa5d3fef05747718af44b81cf",
       "generatedFromSourceSha256": "e354f670f8b7310a7bbcb9ca7d313221fb87131aa5d3fef05747718af44b81cf"
     },
+    "qwenwork": {
+      "agentId": "qwenwork",
+      "outputFilename": "qwenwork.png",
+      "outputSha256": "7467ee2af15a62536fc5ab3fa840de60af06fa04fe69679d14886ad590288b24",
+      "generatedFromSourceSha256": "7467ee2af15a62536fc5ab3fa840de60af06fa04fe69679d14886ad590288b24"
+    },
     "workbuddy": {
       "agentId": "workbuddy",
       "outputFilename": "workbuddy.png",
-      "outputSha256": "70498230774e6cbb47d18ca78acacac5e7f8a1b8e30a434f7ceb9080420589f1",
-      "generatedFromSourceSha256": "3c2bc7d338c9eacc027af2b27693056b7cbea3a6c0a09225cf87020afe57fd7b"
+      "outputSha256": "b9738d84bb8df5637ed6dc487d6f0128222d7baf61815e30bd743a6e937f7a52",
+      "generatedFromSourceSha256": "55ac1361b0e88898613be395fdc59ec1fe5e4286e59d6bd948725b66848d7591"
     },
     "traecode": {
       "agentId": "traecode",

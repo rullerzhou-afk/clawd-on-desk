@@ -26,13 +26,14 @@ describe("quota ring — coin counting", () => {
           host: null,
           claudeQuota: { group: { claudeFiveHour: bucket(41), claudeWeekly: bucket(20) }, updatedAt: 1 },
           codexQuota: { group: { codexFiveHour: bucket(72) }, updatedAt: 1 },
+          kimiQuota: { group: { kimiFiveHour: bucket(0), kimiWeekly: bucket(0) }, updatedAt: 1 },
         },
         { host: "pi", claudeQuota: { group: { claudeWeekly: bucket(9) }, updatedAt: 1 } },
       ],
     };
-    // 2 providers on local + 1 on the remote = 3 coins (a provider with two
+    // 3 providers on local + 1 on the remote = 4 coins (a provider with two
     // windows is still ONE coin — the two windows become concentric rings).
-    assert.strictEqual(countQuotaCoins(snapshot, true), 3);
+    assert.strictEqual(countQuotaCoins(snapshot, true), 4);
   });
 
   it("still counts a source whose only window has expired (dimmed reset coin)", () => {
@@ -240,5 +241,131 @@ describe("quota ring — window labels & severity", () => {
     assert.strictEqual(quotaSeverity(85), "warn");
     assert.strictEqual(quotaSeverity(86), "hot");
     assert.strictEqual(quotaSeverity(100), "hot");
+  });
+});
+
+// The pet-side cluster caps at RING_MAX_COINS and the renderer simply takes the
+// first N in provider order, so without a per-provider opt-out the user has no
+// say over WHICH coins survive. Hiding is display-only: collection and the
+// Dashboard are untouched.
+describe("quota ring — per-provider visibility", () => {
+  const snapshot = {
+    accountQuota: [
+      {
+        host: null,
+        claudeQuota: { group: { claudeFiveHour: bucket(41) }, updatedAt: 1 },
+        codexQuota: { group: { codexWeekly: bucket(31) }, updatedAt: 1 },
+        kimiQuota: { group: { kimiFiveHour: bucket(0), kimiWeekly: bucket(11) }, updatedAt: 1 },
+      },
+    ],
+  };
+
+  it("drops hidden providers from the coin count that sizes the window", () => {
+    assert.strictEqual(countQuotaCoins(snapshot, true), 3);
+    assert.strictEqual(countQuotaCoins(snapshot, true, ["codexQuota"]), 2);
+    assert.strictEqual(countQuotaCoins(snapshot, true, ["codexQuota", "kimiQuota"]), 1);
+    assert.strictEqual(
+      countQuotaCoins(snapshot, true, ["claudeQuota", "codexQuota", "kimiQuota"]), 0,
+      "hiding every provider must collapse the cluster, not leave an empty window"
+    );
+  });
+
+  it("treats a missing, empty or junk hidden list as hiding nothing", () => {
+    for (const hidden of [undefined, null, [], ["  "], [""], [null, 7, {}], "codexQuota"]) {
+      assert.strictEqual(
+        countQuotaCoins(snapshot, true, hidden), 3,
+        `hidden=${JSON.stringify(hidden)} must not drop a coin`
+      );
+    }
+  });
+
+  it("keeps the master switch ahead of the per-provider list", () => {
+    assert.strictEqual(countQuotaCoins(snapshot, false, []), 0);
+    assert.strictEqual(countQuotaCoins(snapshot, false, ["codexQuota"]), 0);
+  });
+
+  it("counts a hidden provider once per source, not once overall", () => {
+    const twoSources = {
+      accountQuota: [
+        { host: null, codexQuota: { group: { codexWeekly: bucket(31) }, updatedAt: 1 } },
+        { host: "pi", codexQuota: { group: { codexWeekly: bucket(9) }, updatedAt: 1 } },
+      ],
+    };
+    assert.strictEqual(countQuotaCoins(twoSources, true), 2);
+    assert.strictEqual(
+      countQuotaCoins(twoSources, true, ["codexQuota"]), 0,
+      "hiding a provider hides it on every reporting machine"
+    );
+  });
+
+  it("lists only providers that actually report, flagging the hidden ones", () => {
+    const listed = ringGeom.listQuotaRingProviders(snapshot, ["codexQuota"]);
+    assert.deepStrictEqual(listed.map((p) => p.key), ["claudeQuota", "codexQuota", "kimiQuota"]);
+    assert.deepStrictEqual(listed.map((p) => p.label), ["Claude", "Codex", "Kimi"]);
+    // Antigravity reports nothing here, so it must not be offered — the same
+    // rule that keeps "merge across machines" hidden on a single machine.
+    assert.ok(!listed.some((p) => p.key === "antigravityQuota"));
+    // An already-hidden provider still lists, or it could never be turned back on.
+    assert.deepStrictEqual(listed.map((p) => p.hidden), [false, true, false]);
+  });
+
+  it("lists nothing for an empty snapshot instead of offering every provider", () => {
+    assert.deepStrictEqual(ringGeom.listQuotaRingProviders({ accountQuota: [] }, []), []);
+    assert.deepStrictEqual(ringGeom.listQuotaRingProviders(null, []), []);
+  });
+});
+
+// The renderer runs in a page that cannot require this module, so it carries its
+// own copy of RING_PROVIDERS and its own hidden-provider filter. If the two ever
+// disagree the window is sized for coins the renderer never draws (or clips ones
+// it does), which is invisible in unit tests of either side alone.
+describe("quota ring — geometry/renderer mirror", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const rendererSource = fs.readFileSync(
+    path.join(__dirname, "..", "src", "quota-ring-renderer.js"), "utf8"
+  );
+
+  // RING_PROVIDERS is not exported, so read the geometry's order back through
+  // listQuotaRingProviders with every provider reporting — that walks the real
+  // table in the real order rather than trusting a second hand-kept copy.
+  const everyProvider = {
+    accountQuota: [{
+      host: null,
+      antigravityQuota: { group: { geminiFiveHour: bucket(1) }, updatedAt: 1 },
+      claudeQuota: { group: { claudeFiveHour: bucket(1) }, updatedAt: 1 },
+      codexQuota: { group: { codexFiveHour: bucket(1) }, updatedAt: 1 },
+      kimiQuota: { group: { kimiFiveHour: bucket(1) }, updatedAt: 1 },
+    }],
+  };
+
+  it("declares the same provider keys, in the same order, on both sides", () => {
+    const rendererKeys = [...rendererSource.matchAll(/key:\s*"(\w+Quota)"/g)].map((m) => m[1]);
+    const geometryKeys = ringGeom.listQuotaRingProviders(everyProvider, []).map((p) => p.key);
+    assert.strictEqual(geometryKeys.length, 4, "the all-providers fixture must exercise the table");
+    assert.deepStrictEqual(
+      rendererKeys, geometryKeys,
+      "provider order decides which coins survive the four-coin cap"
+    );
+  });
+
+  it("gives every provider the same brand label on both sides", () => {
+    const rendererLabels = [...rendererSource.matchAll(/key:\s*"(\w+Quota)",\s*label:\s*"([^"]+)"/g)]
+      .map((m) => [m[1], m[2]]);
+    assert.ok(rendererLabels.length >= 4, `expected renderer labels, got ${rendererLabels.length}`);
+    const listed = ringGeom.listQuotaRingProviders(everyProvider, []);
+    for (const [key, label] of rendererLabels) {
+      const match = listed.find((p) => p.key === key);
+      assert.ok(match, `${key} reports in the renderer but not in the geometry list`);
+      assert.strictEqual(match.label, label, `${key} label diverged`);
+    }
+  });
+
+  it("applies the hidden filter in the renderer, not only when sizing", () => {
+    // Sizing without drawing (or the reverse) leaves the transparent window and
+    // its auto-hide hot zone wrong, which no per-side test would catch.
+    assert.match(rendererSource, /hiddenQuotaProviders/);
+    assert.match(rendererSource, /function hiddenProviderSet\(\)/);
+    assert.match(rendererSource, /if \(hidden && hidden\.has\(def\.key\)\) continue;/);
   });
 });

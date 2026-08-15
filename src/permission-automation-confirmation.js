@@ -9,7 +9,7 @@ const STATE_APPLIED_CHANNEL = "permission-automation-confirmation:state-applied"
 const STARTUP_TIMEOUT_MS = 5000;
 const DEFAULT_WORK_AREA = { x: 0, y: 0, width: 1280, height: 800 };
 const DEFAULT_WIDTH = 520;
-const CONFIRM_HEIGHT = 430;
+const CONFIRM_HEIGHT = 376;
 const ERROR_HEIGHT = 280;
 const SUPPORTED_LANGS = new Set(["en", "zh", "zh-TW", "ko", "ja", "pt-BR"]);
 

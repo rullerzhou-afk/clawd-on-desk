@@ -38,7 +38,7 @@ Clawd 是主题化桌宠：动画资源、计时、hitbox、眼球追踪参数�
 - 若 `sleepSequence.mode` 为 `full`（默认），需提供 `yawning / dozing / collapsing / waking`；`direct` 可直接进入 `sleeping`
 - 若 `miniMode.supported` 为 true，需提供 8 个基础 mini 状态；`mini-working` 是可选增强，缺失时优雅跳过
 - 能力缺失时走 `VISUAL_FALLBACK_STATES` 回退链
-- 默认配置集中在 `theme-loader.js` 顶部的 `DEFAULT_*` 常量
+- 默认配置集中在 `theme-loader.js` 顶部的 `DEFAULT_*` 常量；loader 保持 stateless，`src/theme-runtime.js` 是唯一 active-theme owner，主题 reload/sync/cache 不得另设模块级真相
 - 变体是白名单 deep-merge；数组和特定字段会整体替换
 - Animation override 是用户 per-slot 覆盖，和作者定义的 variants 正交
 - 支持配饰的主题可按主题保存常驻 `petAccessory`；独立的 `holidayAccessoryEnabled` 开关只在万圣节、圣诞节和跨年的短日期窗口临时覆盖当前显示，结束后恢复常驻选择，不回写配饰偏好
@@ -51,19 +51,20 @@ Clawd 是主题化桌宠：动画资源、计时、hitbox、眼球追踪参数�
 
 ## Settings Panel
 
-Settings 是独立 `BrowserWindow`，采用 4 层结构：
+Settings 是独立 `BrowserWindow`，采用 5 层结构：
 
 | 层 | 文件 | 职责 |
 |---|---|---|
 | Schema / 持久化 | `src/prefs.js` | `SCHEMA` 定义；`load/save/migrate/validate`；坏文件自动 `.bak` + fallback |
 | 内存 store | `src/settings-store.js` | `createStore()` 返回 `{ getSnapshot, subscribe, _commit }`；`_commit` closure-private |
-| 控制器 | `src/settings-controller.js` | 唯一写入者；`applyUpdate` / `applyBulk` / `applyCommand` / `hydrate`；pre-commit effect gate |
-| UI | `src/settings-renderer.js` + `settings.html` + `preload-settings.js` | 主题卡片、animation overrides、agent 开关、诊断；只通过 IPC 调 controller |
+| 控制器 / actions | `src/settings-controller.js` + `src/settings-actions*.js` | controller 是唯一写入者；actions 提供校验、command 与失败可阻止提交的 pre-commit gates |
+| 提交后 effects | `src/settings-effect-router.js` | 订阅 committed changes，更新 tray/dock/window/HUD/renderer 等 runtime 状态与广播；失败不得回滚已提交 prefs |
+| UI | `src/settings-ui-core.js` + `src/settings-renderer.js` + `src/settings-tab-*.js` + `src/settings.html` + `src/preload-settings.js` | core 持 shared state，renderer 是侧栏/tab shell，各 tab 只通过 preload/IPC 调 controller；新增 tab 还要登记 script 与 icon |
 
 关键取舍：
 
-- `applyUpdate` 和 `applyBulk` 对同步/异步 effect 同构
-- `hydrate()` 是唯一跳过 effect 的入口
+- `applyUpdate` 和 `applyBulk` 对同步/异步 pre-commit gate 同构
+- `hydrate()` 是唯一跳过 pre-commit gate 的入口；post-commit effects 由 router 订阅 store changes
 - 设置写入路径只有 `controller → store → subscribers`
 - `idleVisual` 是 per-theme 文件映射；缺失键表示使用主题默认，主题升级删除已选文件或删除主题时会安静回退，不改变逻辑状态
 - About tab 使用 inline SVG，而不是 `<object>`，因为 `settings.html` CSP 是 `default-src 'none'`

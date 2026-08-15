@@ -10,13 +10,132 @@
 /* The cluster floats directly on the desktop wallpaper (no card). Legibility on
    any wallpaper comes from per-coin drop shadows and a subtitle-style text halo;
    severity colors are fixed physical-scene values (dark-desktop baseline) rather
-   than theme tokens, because there is no page surface behind them. */
+   than theme tokens, because there is no page surface behind them.
+
+   Hue carries IDENTITY, not headroom. A healthy coin colors each ring by
+   (provider, logical window) so the rolling window and the weekly window stay
+   tellable apart — severity only has three steps, so when both windows are
+   healthy a severity-only palette paints them the same color and they read as
+   one thick ring. Crossing 60 / 85 hands that ring over to amber / red, which
+   is why every identity hue keeps clear of the warm 0-45° band those two
+   alerts own: a warm ARC then means exactly one thing, and the alert is not
+   diluted by a wallpaper full of green. Scope that rule to the arcs only —
+   the Claude and Antigravity glyphs are themselves warm (#D97757 and friends)
+   and sit in the middle of the coin, so "warm anywhere on the coin" was never
+   true. Rings separate by HUE rather than lightness on purpose — darkening
+   the inner ring sinks it into a dark wallpaper and lightening it washes out
+   on a light one, while a hue step holds on both.
+
+   The hue follows the LOGICAL window, not the physical ring slot: a provider
+   reporting only its weekly window (Codex, since its 5h window was retired)
+   still draws that ring at the outer radius, but it wears the inner/weekly
+   hue — the same hue the Dashboard gives its Weekly bar — so "which window
+   does this color mean" has one answer across Orbit and Dashboard.
+
+   What hue does NOT carry: which quota family an Antigravity ring picked
+   (Gemini vs third-party — the readout prefix says that).
+
+   Where color IS still the sole carrier, stated plainly rather than wished
+   away, because CVD flattens these eight hues toward one axis:
+   - Anything in the 60-85% band, which does not pulse at all.
+   - Any alert under prefers-reduced-motion, which drops the pulse too.
+   - The ~1.6s of a flashback, while the digits are reporting the rolling
+     window instead of the alerting one.
+   The readout itself is no longer in that list: it hands its headline to the
+   most-constrained window once that crosses a threshold, so the digits and the
+   rings now name the same window. */
 :root {
-  --sev-ok: #34d399;
   --sev-warn: #fbbf24;
   --sev-hot: #f87171;
   --sev-reset: #9096a1;
-  --ring-track: rgba(140, 142, 152, 0.38);
+  --stale-ring: #aeb6c4;
+  /* The track is the same identity hue laid down as a bed, not a grey ring
+     behind the arc — so the arc reads as "the lit part of this ring" instead of
+     a bar stacked on a separate object. It stays translucent because there is no
+     fixed surface behind it to pre-blend against, only wallpaper.
+     Two honest caveats, measured rather than assumed:
+     (1) 14% is deliberately fainter than the 38% grey it replaces — the weight
+         of that grey ring was the complaint. It buys lightness, not visibility.
+     (2) At EQUAL alpha a neutral grey beats MOST of these hues on luminance
+         contrast against a light wallpaper (1.11 over #dcdcd6, vs 1.06-1.09 for
+         five of the six — indigo is the exception at 1.16), because #8c8e98 is
+         darker than they are. Those five win on CHROMATIC contrast instead:
+         grey shares the wallpaper's hue and reads as a smudge, a saturated bed
+         reads as an object. That trade is real for normal vision and worthless
+         under color-vision deficiency, which is why the bed is a nicety and
+         never the sole carrier of a state — see .track.is-reset-bed for the one
+         state where it IS alone, and what that state gets instead. */
+  --track-alpha: 0.14;
+  --track-alpha-reset: 0.2;
+  /* Bed for a ring that somehow carries no identity class. Not reachable today
+     (buildCoinSvg always tags both tracks). It is NOT a safety net for a bad
+     value further down either — an invalid declaration resolves to `unset`, not
+     to a lower-specificity rule — which is why the track rule splits hue and
+     alpha across two properties instead of relying on this. */
+  --ring-track: rgba(140, 142, 152, 0.16);
+  /* Healthy identity pairs: outer (rolling) → inner (weekly).
+     Adding a provider to RING_PROVIDERS means adding a pair HERE too; the
+     generic pair below is Claude's, so a provider without its own colors would
+     silently wear Claude's. test/session-hud-style.test.js pins that, and also
+     pins that each pair's two colors actually differ. Keep the generic pair and
+     the Claude pair byte-identical — they are one decision written twice, and
+     letting them drift makes a missing provider pair land on a hue that belongs
+     to nobody. */
+  --id-outer: #2dd4bf;
+  --id-inner: #6489f7;
+  --id-claude-outer: #2dd4bf;
+  /* Claude's weekly ring moved 213.1° → 224.9° to clear the blue Kimi needs.
+     It sat 1.0° from Kimi's brand blue — the one hue on this wheel that is not
+     interchangeable, because it is the mark's own color rather than a slot we
+     assigned. Claude's blue had no such claim on 213° specifically, so Claude
+     is the one that yields. 224.9° keeps 13.0° to Kimi's 5h ring and 13.8° to
+     Antigravity's weekly indigo, and the pair still spans 52.4°. */
+  --id-claude-inner: #6489f7;
+  --id-codex-outer: #a78bfa;
+  --id-codex-inner: #22d3ee;
+  --id-antigravity-outer: #38bdf8;
+  /* Indigo, not the obvious green: under deuteranopia a healthy green collapses
+     onto the alert red (ΔE2000 ≈ 7 for #4ade80 vs #f87171 — and ≈ 10 for the
+     #34d399 this palette replaced, so the old scheme had the same defect on
+     EVERY ring). Indigo holds at ΔE ≈ 62. It costs same-coin separation
+     (45 → 30 normal, 50 → 20 deutan), which is the right trade: mistaking
+     healthy for ALERT is worse than mistaking one window for the other.
+
+     Known limit, measured not assumed: six hues cannot all stay apart once CVD
+     flattens them toward one axis. Worst pair is Codex outer/inner (ΔE ≈ 11
+     deutan) — a CVD user may read that coin as one thick ring, i.e. back to the
+     problem this palette set out to fix. Fixing it properly means moving the
+     inner/outer distinction off color entirely (stroke width, a gap, a dash),
+     not retuning hues; the alert states stay safe either way because they own
+     the whole warm half. */
+  --id-antigravity-inner: #6366f1;
+  /* Kimi is the one provider whose hue is not ours to assign: 211.9° is its own
+     brand blue (#1783FF is 212.1°), so the coin matches the mark in its middle.
+     Two earlier drafts are worth keeping as warnings. The first reused Claude's
+     inner blue verbatim and put its weekly 15° off Codex's violet, so two
+     providers read as one coin. The second fled to fuchsia 292° / pink 329° —
+     unique, but it put a healthy coin in the warm half that severity owns: 329°
+     sits 31.4° from the alert red, barely past the 25° floor, and the two rings
+     are only 1.4px apart. A healthy Kimi therefore read as an alert, and a real
+     alert drowned in the pink next to it. That failure is loudest when the 5h
+     ring is the one alerting, which is the common case — the weekly window is
+     not what you burn through on a Tuesday.
+
+     Sitting on the brand blue costs nothing elsewhere: 211.9° keeps 13.7° to
+     Antigravity's sky, so Antigravity does not move. Only Claude's weekly was
+     in the way (see above).
+
+     The weekly ring is 295.2°, which is where the pink went once it had to
+     clear the alert band: 64.8° from the red, and the ring the alert red sits
+     next to most of the time. A violet 270.3° (89.7° from red) was drawn and
+     rejected on looks — worth remembering as the safer option if the magenta
+     ever turns out to be hard to read beside a pulsing red arc.
+
+     Under CVD both Kimi hues slide toward the violets like everything else on
+     this wheel, which is exactly why glyph, readout text, and ring geometry
+     carry identity and window while color is only the backup. */
+  --id-kimi-outer: #3b93f7;
+  --id-kimi-inner: #e27aeb;
   --ink: #ffffff;
   --ink-soft: rgba(255, 255, 255, 0.74);
   --ink-faint: rgba(255, 255, 255, 0.6);
@@ -86,16 +205,76 @@ body { padding: 6px 6px 8px; }
   white-space: nowrap;
 }
 .coin-row.is-reset .readout .pct { color: var(--ink-soft); }
+/* When every window is stale, quiet the whole provider as well. Individual
+   stale windows are neutralized below, so a partial refresh cannot leave an old
+   ring wearing the same live identity/severity color as its fresh sibling. */
 .coin-row.is-stale { opacity: 0.72; }
 
 .coin { width: 26px; height: 26px; flex: 0 0 auto; filter: var(--coin-shadow); }
+/* Each ring resolves its identity hue ONCE into --ring-id; the fill paints it
+   solid and the track lays the same hue down at --track-alpha. Declaring the
+   hue in one place is what keeps the pair from drifting apart when the palette
+   is retuned. Most specific (provider + slot) wins; a provider without its own
+   pair falls back to the generic outer/inner pair. */
+.coin .rg-outer { --ring-id: var(--id-outer); }
+.coin .rg-inner { --ring-id: var(--id-inner); }
+.coin .pv-claudeQuota.rg-outer { --ring-id: var(--id-claude-outer); }
+.coin .pv-claudeQuota.rg-inner { --ring-id: var(--id-claude-inner); }
+.coin .pv-codexQuota.rg-outer { --ring-id: var(--id-codex-outer); }
+.coin .pv-codexQuota.rg-inner { --ring-id: var(--id-codex-inner); }
+.coin .pv-antigravityQuota.rg-outer { --ring-id: var(--id-antigravity-outer); }
+.coin .pv-antigravityQuota.rg-inner { --ring-id: var(--id-antigravity-inner); }
+.coin .pv-kimiQuota.rg-outer { --ring-id: var(--id-kimi-outer); }
+.coin .pv-kimiQuota.rg-inner { --ring-id: var(--id-kimi-inner); }
+
 .coin .track { stroke: var(--ring-track); }
-.coin .fill.sev-ok { stroke: var(--sev-ok); }
+.coin .track.rg-outer,
+.coin .track.rg-inner {
+  /* Plain stroke + stroke-opacity, deliberately NOT color-mix(). A color-mix()
+     that goes invalid for any reason (unsupported, a bad --track-alpha, a typo)
+     resolves to `unset` at computed-value time — the cascade does NOT fall back
+     to the lower-specificity `.coin .track` rule above, and `stroke` inherits
+     down to its initial `none`, erasing the ring. Splitting hue from alpha keeps
+     every failure mode graceful: a bad hue falls back via var(), and a bad alpha
+     leaves stroke-opacity at its initial 1 — loud, but never invisible. */
+  stroke: var(--ring-id, var(--id-outer));
+  stroke-opacity: var(--track-alpha);
+}
+/* A reset ring draws no fill in "used" mode, so this bed is the only thing left
+   on screen. Two problems at 14%: it is the faintest thing on the coin, and a
+   stale row multiplies it by another 0.72. 20% is not a guess — 0.14 / 0.72 =
+   0.194, i.e. a stale reset track lands back at a normal track's effective
+   alpha. The dash adds a non-color channel for the same state, which matters
+   because color alone cannot carry it under CVD. Deliberately NOT a solid full
+   arc: in "used" mode a complete ring reads as 100% consumed. */
+.coin .track.is-reset-bed {
+  stroke-opacity: var(--track-alpha-reset);
+  stroke-dasharray: 1.5 2;
+}
+/* Healthy fill: the identity hue at full strength. */
+.coin .fill.sev-ok { stroke: var(--ring-id, var(--id-outer)); }
+/* Alert takes the FILL over regardless of identity — the track keeps its hue,
+   so a red arc sits on a calm bed instead of on grey, which reads sharper. */
 .coin .fill.sev-warn { stroke: var(--sev-warn); }
 .coin .fill.sev-hot { stroke: var(--sev-hot); }
-.coin .fill.sev-reset { stroke: var(--sev-reset); }
+.coin .fill.sev-reset { stroke: var(--sev-reset); opacity: 0.56; }
+/* Per-window stale state. Neutral grey deliberately overrides both identity
+   and severity: an old 90% reading must not keep shouting red as if it were a
+   current alert, while the fresh sibling keeps its normal color. This is silent
+   when data is fresh and costs no permanent text line. */
+.coin .track.is-stale {
+  stroke: var(--stale-ring);
+  stroke-opacity: 0.24;
+}
+.coin .fill.is-stale {
+  stroke: var(--stale-ring);
+  stroke-opacity: 0.62;
+  opacity: 1;
+}
 .coin .plate { fill: rgba(246, 246, 248, 0.92); }
-.coin-row.is-stale .glyph { filter: grayscale(1); opacity: 0.8; }
+/* Keep provider glyphs untouched. Greyscale did uneven work: it gutted colored
+   marks (Claude, Antigravity) while doing nothing to an already monochrome mark
+   (Codex). The stale state now lives on the affected ring itself. */
 .coin-row.is-reset .glyph { opacity: 0.55; }
 
 /* Near-exhausted (hot) coin pulses gently to pull the eye; motion-safe only. */

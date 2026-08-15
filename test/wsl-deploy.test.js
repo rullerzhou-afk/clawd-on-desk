@@ -70,6 +70,21 @@ describe("wsl-deploy", () => {
       // is no in-WSL settings.json to deploy hooks into. See AGENT_INSTALL_SCRIPT.
       assert.strictEqual(getAgentInstallScriptName("workbuddy"), null);
     });
+
+    it("excludes qwenwork (macOS/Windows desktop-only, no Linux client)", () => {
+      // #843: https://qwenwork.cn/download offers macOS 14+, Windows 10+ and
+      // HarmonyOS 6.1+ — no Linux build, and the PR's own verification covered
+      // macOS and Windows only. Mapping it would expose a WSL Pair entry that
+      // writes ~/.QwenWorkCN/settings.json inside the distro HOME, which the
+      // Windows QwenWork desktop app never reads: hooks that can never fire,
+      // and an Unpair the user has to discover on their own.
+      const { getAgentUninstallCommand } = require("../src/wsl-deploy");
+      assert.strictEqual(getAgentInstallScriptName("qwenwork"), null);
+      assert.strictEqual(getAgentUninstallCommand("qwenwork"), null);
+      // QoderWork (the integration this one was modeled on) stays supported —
+      // this is a QwenWork-specific platform boundary, not a category rule.
+      assert.strictEqual(getAgentInstallScriptName("qoderwork"), "qoderwork-install.js");
+    });
   });
 
   describe("getAgentInstallArgs", () => {

@@ -24,6 +24,7 @@ the system `ssh` and your system terminal.
    - **Host**: `user@remote-host`, or a Host alias defined in your `~/.ssh/config`
    - **SSH port**: defaults to `22`
    - **Private key file**: optional; leave blank to use ssh-agent or `~/.ssh/config`
+   - **SSH transport compatibility**: leave **Automatic** for normal hosts and GitHub Codespaces. Use **Force single SSH session** only for another ProxyCommand transport that cannot tolerate overlapping SSH sessions
    - **Remote forward port**: defaults to `23333`; only change to `23334-23337` when you run multiple profiles against the same remote
    - **Host prefix**: optional, used in Sessions / Dashboard to disambiguate the remote
 3. If SSH needs first-time host-key confirmation, a passphrase, or an ssh-agent load, click **Authenticate**. Clawd opens your system terminal to run a plain `ssh` once.
@@ -41,8 +42,32 @@ events. You do not need to click **Install** unless you also want local Copilot
 hooks on this machine.
 
 If the profile has **Auto-start Codex fallback monitor on connect** enabled,
-Clawd will SSH in after connect to launch `~/.claude/hooks/codex-remote-monitor.js`.
+Clawd launches `~/.claude/hooks/codex-remote-monitor.js` as connection
+maintenance. On a serialized transport it finishes this one-shot maintenance
+before starting the persistent reverse tunnel; automatic tunnel reconnects do
+not replay the monitor mutation.
 The fallback is not needed when Codex official hooks are working.
+
+### GitHub Codespaces and single-session transports
+
+Clawd inspects the effective local SSH configuration with `ssh -G` before it
+connects. A `ProxyCommand` using exact `gh cs ssh ... --stdio` or
+`gh codespace ssh ... --stdio` is automatically put in serialized mode. In
+that mode Clawd never overlaps its own SSH/SCP children for the same
+Codespace: Node discovery and monitor maintenance close first, while tunnel
+readiness runs inside the one persistent `ssh -R` session.
+
+Deploy / Repair, Disconnect, cleanup, and identity/runtime changes ask the
+persistent remote readiness process to stop through stdin EOF and wait for the
+top-level child's `close` before starting another SSH operation. If that drain
+cannot be proven, Clawd stops and reports a recovery error instead of retrying
+an unknown remote mutation. A second profile for the same Codespace and the
+interactive **Authenticate / Open Terminal** actions remain blocked until the
+managed serialized transport is fully idle.
+
+The explicit single-session override is intentionally conservative and keyed
+to the effective destination. Change it only while Disconnected. Standard
+SSH targets retain the existing parallel-capable behavior.
 
 ## Key concepts
 

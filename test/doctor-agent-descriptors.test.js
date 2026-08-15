@@ -35,6 +35,8 @@ describe("doctor agent descriptors", () => {
         "reasonix",
         "qoderwork",
         "traecode",
+        "qwenwork",
+        "deepseek-harness",
       ]
     );
   });
@@ -153,6 +155,20 @@ describe("doctor agent descriptors", () => {
     assert.strictEqual(getAgentDescriptor("traecode").configPath, traecode.DEFAULT_CONFIG_PATH);
     assert.strictEqual(getAgentDescriptor("traecode").marker, traecode.MARKER);
     assert.deepStrictEqual(getAgentDescriptor("traecode").hookEvents, traecode.TRAECODE_HOOK_EVENTS);
+
+    const qwenwork = require("../hooks/qwenwork-install");
+    assert.strictEqual(getAgentDescriptor("qwenwork").parentDir, qwenwork.DEFAULT_PARENT_DIR);
+    assert.strictEqual(getAgentDescriptor("qwenwork").configPath, qwenwork.DEFAULT_CONFIG_PATH);
+    assert.strictEqual(getAgentDescriptor("qwenwork").marker, qwenwork.MARKER);
+    assert.deepStrictEqual(getAgentDescriptor("qwenwork").hookEvents, qwenwork.QWENWORK_HOOK_EVENTS);
+
+    const dsh = require("../hooks/dsh-install");
+    assert.strictEqual(getAgentDescriptor("deepseek-harness").parentDir, dsh.resolveDshHome());
+    assert.strictEqual(
+      getAgentDescriptor("deepseek-harness").configPath,
+      dsh.resolveDshProfileDir(dsh.resolveDshHome())
+    );
+    assert.strictEqual(getAgentDescriptor("deepseek-harness").configMode, "dsh-plugin");
   });
 
   it("returns copies from public accessors", () => {
@@ -303,6 +319,18 @@ describe("doctor agent descriptors", () => {
     assert.strictEqual(descriptor.autoInstall, true);
     assert.strictEqual(descriptor.marker, qoderwork.MARKER);
     assert.deepStrictEqual(descriptor.hookEvents, qoderwork.QODERWORK_HOOK_EVENTS);
+  });
+
+  it("checks QwenWork hooks as a state-only nested settings file", () => {
+    const qwenwork = require("../hooks/qwenwork-install");
+    const descriptor = getAgentDescriptor("qwenwork");
+
+    assert.strictEqual(descriptor.eventSource, "hook");
+    assert.strictEqual(descriptor.configMode, "file");
+    assert.strictEqual(descriptor.nested, true);
+    assert.strictEqual(descriptor.autoInstall, true);
+    assert.strictEqual(descriptor.marker, qwenwork.MARKER);
+    assert.deepStrictEqual(descriptor.hookEvents, qwenwork.QWENWORK_HOOK_EVENTS);
   });
 
   it("checks WorkBuddy hooks as a state-only nested settings file", () => {

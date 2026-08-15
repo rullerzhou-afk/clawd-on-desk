@@ -31,9 +31,11 @@ const {
   validateHookTarget,
 } = require("./agent-node-bin-parser");
 const { checkCodexHookTrust, checkCodexHooksFeature } = require("./codex-features-check");
+const { inspectStableCodexHookCommand } = require("../../hooks/codex-install-utils");
 const { validateOpencodeEntry } = require("./opencode-entry-validator");
 const { validateOpenClawEntry } = require("./openclaw-entry-validator");
 const { hasIncludeDirective } = require("../../hooks/openclaw-install");
+const { inspectDeepSeekHarnessDiskSync } = require("../../hooks/dsh-install");
 
 const REPAIRABLE_AGENT_STATUSES = new Set(["not-connected", "broken-path"]);
 const GEMINI_HOOKS_DISABLED_DETAIL = "Gemini hooks are disabled in settings.json; Clawd preserves this user setting and will not receive hook events";
@@ -134,14 +136,19 @@ function getClaudeHookHealthStatus(options) {
 // source-script-missing, and manual-fix-required per the #657 plan §6.9.
 function withClaudeHookGuardNotice(detail, descriptor, options) {
   if (descriptor.agentId !== "claude-code" || !detail) return detail;
-  if (!REPAIRABLE_AGENT_STATUSES.has(detail.status)) return detail;
 
   const runtimeHealth = getClaudeHookHealthStatus(options);
+  const repairableDisk = REPAIRABLE_AGENT_STATUSES.has(detail.status);
 
   // Reconcile can never fix a missing source script, so this must never
   // offer a configuration Repair — overriding the status keeps it out of
   // REPAIRABLE_AGENT_STATUSES for the withAgentFixAction() check below.
-  if (runtimeHealth && runtimeHealth.status === "degraded" && runtimeHealth.degradedReason === "source-script-missing") {
+  if (
+    repairableDisk
+    && runtimeHealth
+    && runtimeHealth.status === "degraded"
+    && runtimeHealth.degradedReason === "source-script-missing"
+  ) {
     return {
       ...detail,
       status: "source-script-missing",
@@ -154,6 +161,34 @@ function withClaudeHookGuardNotice(detail, descriptor, options) {
       },
     };
   }
+
+  if (
+    (repairableDisk || detail.status === "ok")
+    &&
+    runtimeHealth
+    && runtimeHealth.status === "degraded"
+    && (
+      runtimeHealth.degradedReason === "env-hook-node-unresolved"
+      || runtimeHealth.degradedReason === "env-indirection-unverified"
+    )
+  ) {
+    const unresolvedNode = runtimeHealth.degradedReason === "env-hook-node-unresolved";
+    return {
+      ...detail,
+      status: detail.status === "ok" ? "needs-review" : detail.status,
+      level: "warning",
+      detail: unresolvedNode
+        ? "Clawd preserved an env-indirected Claude hook because settings.env does not provide a usable absolute Node path. Check CLAWD_NODE_BIN, then use Fix."
+        : "Clawd found an env-indirected Claude hook but settings.env does not prove that it belongs to Clawd. Review CLAWD_HOOK_PATH before changing it.",
+      claudeHookRuntimeStatus: {
+        status: runtimeHealth.status,
+        degradedReason: runtimeHealth.degradedReason,
+        at: runtimeHealth.at || null,
+      },
+    };
+  }
+
+  if (!repairableDisk) return detail;
 
   const guard = getClaudeHookGuardStatus(options);
   if (guard && guard.type === "suspicious-shrink") {
@@ -347,6 +382,55 @@ function findCodexPlatformHookCommands(settings, marker, platform) {
     }
   }
   return commands;
+}
+
+function validateCodexCommandList(descriptor, commands, options) {
+  if (!commands.length) return validateCommandList(descriptor, commands, options);
+  const results = commands.map((command) => {
+    const stable = inspectStableCodexHookCommand(command, {
+      platform: options.platform,
+      fs: options.fs,
+    });
+    if (!stable.matched) {
+      return options.validateCommand(command, { platform: options.platform, fs: options.fs });
+    }
+    if (!stable.ok) {
+      return {
+        ok: false,
+        issue: stable.issue,
+        scriptPath: stable.launcherPath || null,
+      };
+    }
+    const result = options.validateTarget({
+      nodeBin: stable.nodeBin,
+      scriptPath: stable.scriptPath,
+    }, {
+      platform: options.platform,
+      fs: options.fs,
+      requireNodeExecutable: true,
+    });
+    return { ...result, stableExecution: result.ok === true };
+  });
+  const ok = results.find((result) => result.ok);
+  if (ok) {
+    return makeDetail(descriptor, "ok", {
+      level: null,
+      detail: ok.stableExecution
+        ? `${descriptor.configPath} hook registered, stable execution target verified`
+        : `${descriptor.configPath} hook registered, scriptPath verified`,
+      commandCount: commands.length,
+      scriptPath: ok.scriptPath,
+    });
+  }
+  const first = results[0] || { issue: "parse-failed" };
+  return makeDetail(descriptor, "broken-path", {
+    level: "warning",
+    detail: `hook command failed validation: ${first.issue}`,
+    hookCommandIssue: first.issue || "parse-failed",
+    nodeBin: first.nodeBin || null,
+    scriptPath: first.scriptPath || null,
+    commandFragment: String(commands[0] || "").slice(0, 128),
+  });
 }
 
 function validateCommandList(descriptor, commands, options) {
@@ -1381,7 +1465,7 @@ function checkFileMode(descriptor, options) {
   } else if (Array.isArray(descriptor.hookEvents) && descriptor.hookEvents.length) {
     detail = validateFileHookEvents(descriptor, settings, options);
   } else if (descriptor.agentId === "codex") {
-    detail = validateCommandList(
+    detail = validateCodexCommandList(
       descriptor,
       findCodexPlatformHookCommands(settings, descriptor.marker, options.platform || process.platform),
       options
@@ -2263,6 +2347,59 @@ function checkAgent(descriptor, options) {
     });
   }
 
+  if (descriptor.configMode === "dsh-plugin") {
+    const health = inspectDeepSeekHarnessDiskSync({
+      fs: options.fs,
+      dshHome: descriptor.parentDir,
+      dshInstallRoot: options.dshInstallRoot,
+      managedRoot: options.dshManagedRoot,
+      homeDir: options.homeDir,
+      env: options.env,
+      platform: options.platform,
+    });
+    let detail;
+    if (health.status === "healthy") {
+      detail = makeDetail(descriptor, "ok", {
+        level: null,
+        detail: `${health.profileDir} managed bridge verified on disk; restart any running dsh web process to load this plugin generation`,
+        configPath: health.profileDir,
+        pluginPath: health.resolved && health.resolved.packageDir,
+        bridgeHealth: health.status,
+      });
+    } else if (
+      health.status === "profile-entry-foreign-or-conflicting"
+      || health.status === "version-unsupported"
+      || health.status === "host-version-unsupported"
+      || health.status === "generation-integrity-failed"
+      || health.status === "source-unavailable"
+      || health.status === "profile-corrupt"
+    ) {
+      detail = makeDetail(descriptor, "needs-review", {
+        level: "warning",
+        detail: health.status === "version-unsupported" || health.status === "host-version-unsupported"
+          ? `DeepSeek Harness ${health.detectedDshVersion || "or its bridge marker"} is outside ${health.supportedDshRange || "the supported range"}; Clawd will not activate it automatically`
+          : (health.status === "generation-integrity-failed"
+            ? "The managed DeepSeek Harness bridge bytes no longer match their ownership marker; inspect them manually"
+            : (health.status === "source-unavailable"
+              ? "Clawd's packaged DeepSeek Harness bridge source is unavailable; repair the Clawd installation"
+              : (health.status === "profile-corrupt"
+                ? "The DeepSeek Harness web profile manifest is unreadable; Clawd will not rewrite it automatically"
+                : "A foreign or conflicting DeepSeek Harness plugin uses the Clawd bridge package name; Clawd will not replace it"))),
+        configPath: health.profileDir,
+        bridgeHealth: health.status,
+      });
+    } else {
+      const broken = health.status !== "absent" && health.status !== "profile-missing";
+      detail = makeDetail(descriptor, broken ? "broken-path" : "not-connected", {
+        level: "warning",
+        detail: `DeepSeek Harness managed bridge is ${health.status}`,
+        configPath: health.profileDir,
+        bridgeHealth: health.status,
+      });
+    }
+    return withAgentFixAction(withAgentBubbleNote(detail, prefs, descriptor.agentId), descriptor);
+  }
+
   // Multi-home agents declare ordered configTargets. Most use the first
   // existing directory; WorkBuddy's legacy target requires a real config file,
   // while Reasonix mirrors its own compatibility loader by preferring an
@@ -2423,10 +2560,14 @@ function checkAgentIntegrations(options = {}) {
   const detectorOptions = {
     fs: options.fs || fs,
     platform: options.platform || process.platform,
+    env: options.env || process.env,
     prefs: options.prefs || {},
     server: options.server || null,
     validateCommand: options.validateCommand || validateHookCommand,
     validateTarget: options.validateTarget || validateHookTarget,
+    dshInstallRoot: options.dshInstallRoot,
+    dshManagedRoot: options.dshManagedRoot,
+    homeDir: options.homeDir,
   };
   const descriptors = options.descriptors || getAgentDescriptors();
   const details = descriptors.map((descriptor) => checkAgent(descriptor, detectorOptions));

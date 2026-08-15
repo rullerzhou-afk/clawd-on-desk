@@ -113,6 +113,18 @@ describe("settings-effect-router", () => {
     ]);
   });
 
+  it("destroys the tray when showTray is committed false", () => {
+    const { calls, emit } = createHarness();
+
+    emit({ showTray: false });
+
+    assert.deepStrictEqual(calls, [
+      ["updateMirrors", { showTray: false }],
+      ["destroyTray"],
+      ["rebuildAllMenus"],
+    ]);
+  });
+
   it("routes bubble policy changes to permission and update bubble effects", () => {
     const { calls, emit } = createHarness();
 
@@ -256,6 +268,14 @@ describe("settings-effect-router", () => {
     emit({ sessionHudShowQuota: false });
     assert.deepStrictEqual(calls, [
       ["updateMirrors", { sessionHudShowQuota: false }],
+      ["syncSessionHudVisibility"],
+      ["repositionFloatingBubbles"],
+    ]);
+
+    calls.length = 0;
+    emit({ quotaRingDisplayMode: "remaining" });
+    assert.deepStrictEqual(calls, [
+      ["updateMirrors", { quotaRingDisplayMode: "remaining" }],
       ["syncSessionHudVisibility"],
       ["repositionFloatingBubbles"],
     ]);

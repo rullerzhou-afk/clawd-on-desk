@@ -12,7 +12,7 @@
       "architectures": [
         "ia32"
       ],
-      "reason": "electron-builder 26.8.1 NSIS CopyElevateHelper intentionally supplies a PE ia32 helper"
+      "reason": "electron-builder 26.15.7 NSIS CopyElevateHelper intentionally supplies a PE ia32 helper"
     }
   ]
 }

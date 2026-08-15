@@ -38,6 +38,8 @@ function loadModalTestHooks() {
     anchor,
     "  root.__doctorModalTestHooks = {\n"
     + "    formatAgentIntegrationSummary,\n"
+    + "    connectionStatusClass,\n"
+    + "    connectionStatusLabel,\n"
     + "    connectionDetailText,\n"
     + "    renderModalBody,\n"
     + "    overallClass,\n"
@@ -138,6 +140,34 @@ describe("doctor modal: no active integrations (#490 UI copy)", () => {
       "HTTP path verified (1 accepted event)."
     );
     assert.strictEqual(HOOKS.connectionDetailText(core, null), STRINGS.en.doctorConnectionInstruction);
+  });
+
+  it("localizes the Codex hooks-need-review connection result in every language", () => {
+    HOOKS.setState({ connectionTesting: false });
+    const test = {
+      status: "hooks-need-review",
+      level: "warning",
+      detail: "raw backend detail",
+    };
+    for (const lang of SUPPORTED_LANGS) {
+      const core = makeCore(STRINGS, lang);
+      assert.strictEqual(
+        HOOKS.connectionStatusLabel(core, test),
+        STRINGS[lang].doctorConnectionHooksNeedReview,
+        `${lang}: hooks-need-review label`
+      );
+      assert.strictEqual(
+        HOOKS.connectionDetailText(core, test),
+        STRINGS[lang].doctorConnectionHooksNeedReviewHint,
+        `${lang}: hooks-need-review hint`
+      );
+    }
+    assert.strictEqual(HOOKS.connectionStatusClass(test), "warning");
+    assert.notStrictEqual(
+      HOOKS.connectionDetailText(makeCore(STRINGS, "zh"), test),
+      test.detail,
+      "localized UI must not expose the raw English backend detail"
+    );
   });
 
   it("renders an all-disabled report as green (pass) with the nudge and hint, never critical", () => {

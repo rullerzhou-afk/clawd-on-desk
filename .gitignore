@@ -25,8 +25,10 @@ docs/**
 !docs/guides/setup-guide.md
 !docs/guides/setup-guide.zh-CN.md
 !docs/guides/guide-remote-ssh.md
+!docs/guides/roam-fence.md
 !docs/guides/guide-remote-ssh.zh-CN.md
 !docs/guides/state-mapping.md
+!docs/guides/dsh-setup.md
 !docs/guides/state-mapping.zh-CN.md
 !docs/guides/telegram-approval.md
 !docs/guides/feishu-lark-remote-approval.md
@@ -39,6 +41,10 @@ docs/**
 !docs/plans/
 !docs/plans/plan-issue-513-remote-ssh-isolation.md
 !docs/plans/plan-issue-763-koffi-target-native-packaging.md
+!docs/plans/plan-npm-dependency-security-hardening.md
+!docs/plans/plan-opencode-family-state-ordering-and-instance-disposal-hardening.md
+!docs/plans/plan-issue-852-worktreecreate-env-cleanup.md
+!docs/plans/plan-pr-876-deepseek-harness-integration.md
 !docs/project/
 !docs/project/agent-runtime-architecture.md
 !docs/project/release-process.md
@@ -62,6 +68,7 @@ docs/**
 !docs/releases/release-v0.12.0.md
 !docs/releases/release-v0.13.0.md
 !docs/releases/release-v0.14.0.md
+!docs/releases/release-v0.15.0.md
 
 # Temp files from testing
 .tmp_*
@@ -97,6 +104,15 @@ logs/
 
 # GIF recording tools (not part of main project)
 scripts/*
+!scripts/manual/
+scripts/manual/*
+!scripts/manual/README.md
+!scripts/manual/remote-ssh-codespaces-546.ps1
+!scripts/manual/remote-ssh-codespaces-546-observe.ps1
+!scripts/manual/remote-ssh-codespaces-546-port-holder.js
+!scripts/manual/remote-ssh-codespaces-546-readiness.js
+!scripts/manual/kimi-quota-phase0-smoke.js
+!scripts/manual/kimi-quota-phase0-smoke.ps1
 !scripts/remote-deploy.sh
 !scripts/run-clawdbot-stress.sh
 !scripts/monitor-clawd-resources.sh
@@ -115,9 +131,33 @@ scripts/*
 !scripts/native-package-policy.json
 !scripts/run-packaged-koffi-smoke.js
 !scripts/verify-updater-metadata.js
+!scripts/verify-appimage-apprun.js
 
 # oh-my-cursor state
 .omc/
 
 # Cursor local config (MCP, rules from omc setup)
 .cursor/
+
+# VS Code local config
+.vscode/
+
+# Local agent/skill definitions (machine-specific)
+.agents/
+
+# Local git worktrees used for PR review
+.worktrees/
+
+# Playwright MCP session artifacts (screenshots, downloaded installers — hundreds of MB)
+.playwright-mcp/
+
+# Retired Telegram sidecar binaries. The sidecar was removed in v0.14.0 and every
+# release build asserts it is absent (scripts/assert-no-retired-telegram-sidecar.js);
+# stale local copies must never re-enter the repository.
+bin/
+
+# PowerShell module analysis cache that Windows sometimes drops at the repo root
+Microsoft/
+
+# Emoji export scratch
+clawd-emoji-final/

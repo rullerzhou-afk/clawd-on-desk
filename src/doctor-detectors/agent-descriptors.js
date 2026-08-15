@@ -24,8 +24,10 @@ const hermes = require("../../hooks/hermes-install");
 const qoder = require("../../hooks/qoder-install");
 const reasonix = require("../../hooks/reasonix-install");
 const qoderwork = require("../../hooks/qoderwork-install");
+const qwenwork = require("../../hooks/qwenwork-install");
 const workbuddy = require("../../hooks/workbuddy-install");
 const traecode = require("../../hooks/traecode-install");
+const dsh = require("../../hooks/dsh-install");
 
 function agentName(agentId) {
   const agent = getAgent(agentId);
@@ -353,6 +355,29 @@ const AGENT_DESCRIPTORS = Object.freeze([
     marker: traecode.MARKER,
     nested: true,
     hookEvents: traecode.TRAECODE_HOOK_EVENTS,
+  }),
+  Object.freeze({
+    agentId: "qwenwork",
+    agentName: agentName("qwenwork"),
+    eventSource: agentEventSource("qwenwork"),
+    parentDir: qwenwork.DEFAULT_PARENT_DIR,
+    configPath: qwenwork.DEFAULT_CONFIG_PATH,
+    configMode: "file",
+    autoInstall: true,
+    marker: qwenwork.MARKER,
+    nested: true,
+    hookEvents: qwenwork.QWENWORK_HOOK_EVENTS,
+    hookGroupId: "clawd",
+  }),
+  Object.freeze({
+    agentId: "deepseek-harness",
+    agentName: agentName("deepseek-harness"),
+    eventSource: agentEventSource("deepseek-harness"),
+    parentDir: dsh.resolveDshHome(),
+    configPath: dsh.resolveDshProfileDir(dsh.resolveDshHome()),
+    configMode: "dsh-plugin",
+    autoInstall: true,
+    detection: "dsh",
   }),
 ]);
 

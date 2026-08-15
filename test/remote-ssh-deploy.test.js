@@ -109,7 +109,9 @@ function secureHappySpawn(options = {}) {
     queueMicrotask(() => {
       if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
       if (response.stderr) child.stderr.emit("data", Buffer.from(response.stderr));
-      child.emit("exit", response.code == null ? 0 : response.code, null);
+      const code = response.code == null ? 0 : response.code;
+      child.emit("exit", code, null);
+      child.emit("close", code, null);
     });
   });
 }
@@ -155,7 +157,9 @@ function secureIsolatedHappySpawn(options = {}) {
     queueMicrotask(() => {
       if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
       if (response.stderr) child.stderr.emit("data", Buffer.from(response.stderr));
-      child.emit("exit", response.code == null ? 0 : response.code, null);
+      const code = response.code == null ? 0 : response.code;
+      child.emit("exit", code, null);
+      child.emit("close", code, null);
     });
   });
 }
@@ -289,6 +293,302 @@ test("secure deploy lock contention exits before every live mutation", async () 
   assert.equal(result.reason, "lock_busy");
   assert.equal(recorder.calls.length, 3);
   assert.equal(recorder.calls.some((call) => call.command === "scp"), false);
+});
+
+test("known lock contention restores the managed stage, while an ambiguous acquire quarantines", async () => {
+  const fixture = secureFixture();
+  const layout = {
+    deployLockDir: "/home/remote/.clawd/deploy.lock",
+    runtimeKey: fixture.profile.runtimeKey,
+    layoutVersion: fixture.profile.layoutVersion,
+  };
+  for (const code of [73, 74]) {
+    const recorder = makeRecordingSpawn({ code, stdout: code === 73 ? "other-owner\n" : "" });
+    const stages = [];
+    const result = await __test.acquireDeployLock({
+      profile: fixture.profile,
+      layout,
+      installId: fixture.installId,
+      leaseId: "d".repeat(32),
+      spawn: recorder.spawn,
+      runtime: { setManagedLockStage: (stage) => stages.push(stage) },
+      now: () => 123,
+    });
+    assert.equal(result.ok, false);
+    assert.deepEqual(stages, ["acquire-attempted", "before-acquire"]);
+  }
+
+  const recorder = makeRecordingSpawn({ code: 75 });
+  const stages = [];
+  let invalidated = null;
+  await assert.rejects(__test.acquireDeployLock({
+    profile: fixture.profile,
+    layout,
+    installId: fixture.installId,
+    leaseId: "e".repeat(32),
+    spawn: recorder.spawn,
+    runtime: {
+      setManagedLockStage: (stage) => stages.push(stage),
+      invalidateManagedOperation: (err) => { invalidated = err; },
+    },
+    now: () => 123,
+  }), (err) => err && err.code === "lock_acquire_unknown"
+    && err.recoveryCode === "manual_lock_inspection_required");
+  assert.deepEqual(stages, ["acquire-attempted"]);
+  assert.ok(invalidated);
+});
+
+test("managed mutating close 255 is an unknown result that invalidates the operation", async () => {
+  const child = makeFakeChild();
+  let invalidated = null;
+  const runtime = {
+    spawnManagedTransportChild: () => child,
+    assertTransportActive: () => {},
+    invalidateManagedOperation: (err) => {
+      invalidated = err;
+      err.recoveryCode = "manual_lock_inspection_required";
+    },
+  };
+  const pending = __test.spawnAndWait(null, "ssh", ["host", "mutate"], {
+    runtime,
+    role: "test-mutation",
+    mutation: true,
+  });
+  queueMicrotask(() => {
+    child.stderr.emit("data", Buffer.from(
+      "Connection closed; ProxyCommand gh cs ssh --stdio ghp_12345678901234567890 Bearer secret-token /private/id_rsa",
+    ));
+    child.emit("exit", 255, null);
+    child.emit("close", 255, null);
+  });
+  await assert.rejects(pending, (err) => {
+    assert.equal(err.code, "transport_unknown_result");
+    assert.equal(err.recoveryCode, "manual_lock_inspection_required");
+    assert.equal(err.drainVerified, true);
+    assert.equal(Object.hasOwn(err, "stderr"), false);
+    const serialized = JSON.stringify(err);
+    assert.doesNotMatch(serialized, /ghp_|secret-token|id_rsa|ProxyCommand/i);
+    return true;
+  });
+  assert.ok(invalidated);
+});
+
+test("verified deploy-lock release resets the managed lock stage", async () => {
+  const child = makeFakeChild();
+  const stages = [];
+  const runtime = {
+    spawnManagedTransportChild: () => child,
+    assertTransportActive: () => {},
+    invalidateManagedOperation: () => assert.fail("successful release must not invalidate"),
+    setManagedLockStage: (stage) => stages.push(stage),
+  };
+  const pending = __test.releaseDeployLock({
+    profile: secureFixture().profile,
+    layout: {
+      deployLockDir: "/home/remote/.clawd/deploy.lock",
+      runtimeKey: "account-default",
+      layoutVersion: 1,
+    },
+    leaseId: "a".repeat(32),
+    remoteNode: "/usr/bin/node",
+    runtime,
+  });
+  queueMicrotask(() => {
+    child.emit("exit", 0, null);
+    child.emit("close", 0, null);
+  });
+  const result = await pending;
+  assert.equal(result.code, 0);
+  assert.deepEqual(stages, ["before-acquire"]);
+});
+
+test("deploy-lock release close 255 is a recovery error, never success", async () => {
+  const child = makeFakeChild();
+  let invalidated = null;
+  const runtime = {
+    spawnManagedTransportChild: () => child,
+    assertTransportActive: () => {},
+    invalidateManagedOperation: (err) => {
+      invalidated = err;
+      err.recoveryCode = "manual_lock_inspection_required";
+    },
+    setManagedLockStage: () => assert.fail("unknown release must retain lock-owned stage"),
+  };
+  const pending = __test.releaseDeployLock({
+    profile: secureFixture().profile,
+    layout: {
+      deployLockDir: "/home/remote/.clawd/deploy.lock",
+      runtimeKey: "account-default",
+      layoutVersion: 1,
+    },
+    leaseId: "a".repeat(32),
+    remoteNode: "/usr/bin/node",
+    runtime,
+  });
+  queueMicrotask(() => {
+    child.emit("exit", 255, null);
+    child.emit("close", 255, null);
+  });
+  await assert.rejects(pending, (err) => {
+    assert.equal(err.code, "transport_unknown_result");
+    assert.equal(err.recoveryCode, "manual_lock_inspection_required");
+    return true;
+  });
+  assert.ok(invalidated);
+});
+
+test("a lock-release unknown result preserves the primary secure operation failure", async () => {
+  const fixture = secureFixture();
+  const recorder = secureHappySpawn({
+    responses: {
+      3: {
+        code: 83,
+        stdout: '{"ok":false,"reason":"ownership_conflict","field":"installId"}\n',
+      },
+      4: { code: 255, stderr: "Connection closed by remote host" },
+    },
+  });
+  let active = true;
+  const runtime = {
+    emit: () => {},
+    spawnManagedTransportChild: (spec) => recorder.spawn(spec.tool, spec.args, spec.options),
+    assertTransportActive: () => {
+      if (!active) throw new Error("inactive transport");
+    },
+    invalidateManagedOperation: (err) => {
+      active = false;
+      err.recoveryCode = "manual_lock_inspection_required";
+    },
+    setManagedLockStage: () => {},
+  };
+  const result = await secureDeploy({
+    ...fixture,
+    runtime,
+    deps: {
+      hooksDir: path.join(REPO_ROOT, "hooks"),
+      detectRemoteShell: stubPosixShellProbe,
+      randomBytes: () => Buffer.alloc(16, 0xab),
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.step, "preflight");
+  assert.equal(result.reason, "ownership_conflict");
+  assert.equal(result.recoveryCode, "manual_lock_inspection_required");
+  assert.match(result.recoveryError, /manual inspection/i);
+});
+
+test("owned monitor cleanup preserves its known failure when lock release is unknown", async () => {
+  const fixture = secureFixture();
+  const profile = {
+    ...fixture.profile,
+    installId: fixture.installId,
+    remoteHome: "/home/remote",
+  };
+  const responses = [
+    { code: 0 },
+    { code: 0, stdout: '{"ok":true,"identity":true}\n' },
+    { code: 42, stderr: "monitor stop failed" },
+    { code: 255, stderr: "Connection closed by remote host" },
+  ];
+  let index = 0;
+  let active = true;
+  const runtime = {
+    spawnManagedTransportChild: () => {
+      const child = makeFakeChild();
+      const response = responses[index++];
+      queueMicrotask(() => {
+        if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
+        if (response.stderr) child.stderr.emit("data", Buffer.from(response.stderr));
+        child.emit("exit", response.code, null);
+        child.emit("close", response.code, null);
+      });
+      return child;
+    },
+    assertTransportActive: () => {
+      if (!active) throw new Error("inactive transport");
+    },
+    invalidateManagedOperation: (err) => {
+      active = false;
+      err.recoveryCode = "manual_lock_inspection_required";
+    },
+    setManagedLockStage: () => {},
+  };
+  const result = await secureStopCodexMonitor({
+    profile,
+    runtime,
+    deps: {
+      nodeBin: "/usr/bin/node",
+      randomBytes: () => Buffer.alloc(16, 0xab),
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.stderr, "monitor stop failed");
+  assert.equal(result.recoveryCode, "manual_lock_inspection_required");
+  assert.match(result.recoveryError, /manual inspection/i);
+});
+
+test("secure deploy never releases its lock after an unknown-result mutation", async () => {
+  const fixture = secureFixture();
+  const roles = [];
+  const stages = [];
+  let active = true;
+  let invalidated = null;
+  let index = 0;
+  const runtime = {
+    emit: () => {},
+    spawnManagedTransportChild: (spec) => {
+      const child = makeFakeChild();
+      roles.push(spec.role);
+      const current = index++;
+      queueMicrotask(() => {
+        let response = { code: 0, stdout: "" };
+        if (current === 0) response.stdout = "CLAWD_REMOTE_HOME=/home/remote-user\n";
+        if (current === 1) response.stdout = `${nodeProbeStdout()}\n`;
+        if (current === 3) {
+          response.stdout = `${JSON.stringify({
+            ok: true,
+            identity: false,
+            legacyTraces: 0,
+            claudePresent: true,
+            codexPresent: true,
+            copilotPresent: true,
+          })}\n`;
+        }
+        if (spec.role === "identity-write") {
+          response = { code: 255, stdout: "", stderr: "Connection closed by remote host" };
+        }
+        if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
+        if (response.stderr) child.stderr.emit("data", Buffer.from(response.stderr));
+        child.emit("exit", response.code, null);
+        child.emit("close", response.code, null);
+      });
+      return child;
+    },
+    assertTransportActive: () => {
+      if (!active) throw new Error("inactive");
+    },
+    invalidateManagedOperation: (err) => {
+      invalidated = err;
+      active = false;
+      err.recoveryCode = "manual_lock_inspection_required";
+    },
+    setManagedLockStage: (stage) => stages.push(stage),
+  };
+
+  await assert.rejects(secureDeploy({
+    ...fixture,
+    runtime,
+    deps: {
+      hooksDir: path.join(REPO_ROOT, "hooks"),
+      detectRemoteShell: stubPosixShellProbe,
+      randomBytes: () => Buffer.alloc(16, 0xab),
+      onIdentityStep: async () => {},
+    },
+  }), (err) => err && err.code === "transport_unknown_result");
+  assert.ok(invalidated);
+  assert.deepEqual(stages.slice(0, 2), ["acquire-attempted", "lock-owned"]);
+  assert.equal(roles.includes("identity-write"), true);
+  assert.equal(roles.includes("deploy-lock-release"), false);
 });
 
 test("secure deploy ownership conflict is found inside the lease and writes no live files", async () => {
@@ -514,6 +814,7 @@ test("cleanup/start/stop all fail closed for missing or mismatched ownership ide
         queueMicrotask(() => {
           if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
           child.emit("exit", response.code, null);
+          child.emit("close", response.code, null);
         });
       });
       const result = await operation({
@@ -565,6 +866,7 @@ test("isolated monitor and cleanup commands stay inside their layout and retain 
       queueMicrotask(() => {
         if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
         child.emit("exit", response.code, null);
+        child.emit("close", response.code, null);
       });
     });
   };
@@ -1282,10 +1584,16 @@ function makeRecordingSpawn(handlers) {
       queueMicrotask(() => {
         if (handler.stdout) child.stdout.emit("data", Buffer.from(handler.stdout));
         if (handler.stderr) child.stderr.emit("data", Buffer.from(handler.stderr));
-        child.emit("exit", handler.code != null ? handler.code : 0, handler.signal || null);
+        const code = handler.code != null ? handler.code : 0;
+        const signal = handler.signal || null;
+        child.emit("exit", code, signal);
+        child.emit("close", code, signal);
       });
     } else {
-      queueMicrotask(() => child.emit("exit", 0, null));
+      queueMicrotask(() => {
+        child.emit("exit", 0, null);
+        child.emit("close", 0, null);
+      });
     }
     return child;
   };
@@ -1432,6 +1740,7 @@ test("deploy: with hostPrefix triggers host-prefix step via ssh stdin", async ()
       queueMicrotask(() => {
         capturedStdin = child._stdin;
         child.emit("exit", 0, null);
+        child.emit("close", 0, null);
       });
     },
     { code: 0 }, // install-claude

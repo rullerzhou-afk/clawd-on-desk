@@ -21,6 +21,7 @@ Clawd 不保存 SSH 密码或私钥口令。首次 host key 确认、passphrase�
    - **主机**：`user@remote-host`，也可以填你在 `~/.ssh/config` 里配置好的 Host alias
    - **SSH 端口**：默认 `22`
    - **私钥文件**：可选，留空则使用 ssh-agent 或 `~/.ssh/config`
+   - **SSH transport 兼容性**：普通主机和 GitHub Codespaces 保持 **自动**。只有其他无法容忍重叠 SSH session 的 ProxyCommand transport 才使用 **强制单 SSH session**
    - **远端转发端口**：默认 `23333`；同一台远端有多个 profile 时才需要换到 `23334-23337`
    - **主机前缀**：可选，用于 Sessions / Dashboard 里区分远端来源
 3. 如果 SSH 需要首次确认 host key、输入 passphrase 或加载 ssh-agent，点 **首次认证**。Clawd 会打开系统终端运行一次普通 `ssh`。
@@ -36,8 +37,26 @@ Clawd 不保存 SSH 密码或私钥口令。首次 host key 确认、passphrase�
 打开 **Copilot CLI**，这样 Clawd 才会接收远程 hook 事件；不需要点
 **Install / 安装**，除非你也想在本机安装 Copilot hooks。
 
-如果配置里开启了 **连接时自动启动 Codex 兜底监控**，Clawd 会在连接后通过 SSH
-拉起 `~/.claude/hooks/codex-remote-monitor.js`。Codex official hooks 正常可用时不依赖这个兜底监控。
+如果配置里开启了 **连接时自动启动 Codex 兜底监控**，Clawd 会把
+`~/.claude/hooks/codex-remote-monitor.js` 作为连接维护启动。在 serialized transport
+上，这项一次性维护会先完成并关闭，随后才启动持久反向隧道；自动重连不会重复执行
+monitor mutation。Codex official hooks 正常可用时不依赖这个兜底监控。
+
+### GitHub Codespaces 与单会话 transport
+
+Clawd 会在连接前用 `ssh -G` 检查本机实际生效的 SSH 配置。`ProxyCommand` 精确使用
+`gh cs ssh ... --stdio` 或 `gh codespace ssh ... --stdio` 时会自动进入 serialized
+模式。同一 Codespace 上，Clawd 自己管理的 SSH/SCP 不会重叠：Node 探测和 monitor
+维护先完成并关闭，连接就绪检查则放在唯一的持久 `ssh -R` session 里。
+
+执行 **部署 / 修复 Hook**、断开、清理或身份 / runtime 变更时，Clawd 会通过 stdin
+EOF 请求持久 readiness 进程自然退出，并在开始下一条 SSH 操作前等待外层 child
+`close`。如果无法证明 transport 已排空，Clawd 会停止并显示恢复错误，不会自动重放
+结果未知的远端 mutation。同一 Codespace 的第二个 profile，以及交互式的 **首次认证 /
+打开终端**，都会在 managed transport 完全空闲前保持阻止状态。
+
+显式单会话 override 是按有效目标生效的保守兼容开关，只能在未连接时修改。普通 SSH
+目标继续使用既有的可并行行为。
 
 ## 关键概念
 

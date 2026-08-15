@@ -158,7 +158,7 @@ describe("tutorial window shell", () => {
     assert.ok(!renderer.includes("lang-select"));
     assert.ok(html.includes(`href="language-picker.css"`));
     assert.ok(html.includes(`src="language-picker.js"`));
-    assert.match(html, /\.body\.step-welcome \{[^}]*padding:\s*18px 26px 106px;[^}]*scrollbar-width:\s*none;/s);
+    assert.match(html, /\.body\.step-welcome \{[^}]*padding:\s*18px 26px 154px;[^}]*scrollbar-width:\s*none;/s);
     assert.match(html, /\.body\.step-welcome::-webkit-scrollbar \{[^}]*width:\s*0;[^}]*height:\s*0;/);
     assert.doesNotMatch(html, /\.step-welcome \.welcome \{[^}]*transform:/);
     assert.match(html, /id="body" data-language-picker-boundary/);

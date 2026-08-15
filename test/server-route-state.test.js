@@ -19,6 +19,7 @@ const { classifyPermissionInteraction } = require("../src/permission-automation-
 const { buildStateBody } = require("../hooks/clawd-hook");
 const { makeSessionKey } = require("../src/session-key");
 const createAgentRuntimeMain = require("../src/agent-runtime-main");
+const { createDshStateSequenceFence } = require("../src/dsh-state-sequence");
 const localSessionKey = (rawSessionId) => makeSessionKey({
   profileId: "local",
   rawSessionId,
@@ -82,7 +83,9 @@ function callStatePost(body, overrides = {}) {
     const ctx = {
       STATE_SVGS: {
         idle: "x.svg",
+        thinking: "x.svg",
         working: "x.svg",
+        juggling: "x.svg",
         error: "x.svg",
         attention: "x.svg",
         notification: "x.svg",
@@ -111,6 +114,7 @@ function callStatePost(body, overrides = {}) {
           droppedByDisabled: () => calls.recorder.push({ outcome: "disabled" }),
           droppedByDnd: () => calls.recorder.push({ outcome: "dnd" }),
           droppedInvalidAgent: () => calls.recorder.push({ outcome: "invalid-agent" }),
+          droppedUnsupported: () => calls.recorder.push({ outcome: "unsupported" }),
         };
       },
       shouldDropForDnd: () => false,
@@ -139,6 +143,73 @@ describe("server-route-state health", () => {
 });
 
 describe("server-route-state POST", () => {
+  it("enforces DSH upstream sequence order across created, event, and disposed callbacks", async () => {
+    const fence = createDshStateSequenceFence();
+    const post = (event, state, sequence = {}) => callStatePost(JSON.stringify({
+      agent_id: "deepseek-harness",
+      hook_source: "dsh-plugin",
+      session_id: "deepseek-harness:ordered",
+      event,
+      state,
+      ...sequence,
+    }), { options: { dshStateSequenceFence: fence } });
+
+    const started = await post("SessionStart", "idle", { session_seq: 0 });
+    const event = await post("UserPromptSubmit", "thinking", { event_seq: 0 });
+    const duplicate = await post("PreToolUse", "working", { event_seq: 0 });
+    const ended = await post("SessionEnd", "sleeping", { session_seq: 1 });
+    const late = await post("Stop", "attention", { event_seq: 1 });
+
+    assert.strictEqual(started.statusCode, 200);
+    assert.strictEqual(event.statusCode, 200);
+    assert.strictEqual(duplicate.statusCode, 204);
+    assert.deepStrictEqual(duplicate.calls.updateSession, []);
+    assert.deepStrictEqual(duplicate.calls.recorder.map((entry) => entry.outcome).filter(Boolean), ["unsupported"]);
+    assert.strictEqual(ended.statusCode, 200);
+    assert.strictEqual(late.statusCode, 204);
+    assert.deepStrictEqual(late.calls.updateSession, []);
+  });
+
+  it("fails DSH state closed when its sequence fence or required watermark is unavailable", async () => {
+    const body = {
+      agent_id: "deepseek-harness",
+      hook_source: "dsh-plugin",
+      session_id: "deepseek-harness:missing-fence",
+      event: "SessionStart",
+      state: "idle",
+      session_seq: 0,
+    };
+    const absent = await callStatePost(JSON.stringify(body));
+    const missingWatermark = await callStatePost(JSON.stringify({ ...body, session_seq: undefined }), {
+      options: { dshStateSequenceFence: createDshStateSequenceFence() },
+    });
+    assert.strictEqual(absent.statusCode, 204);
+    assert.strictEqual(missingWatermark.statusCode, 204);
+    assert.deepStrictEqual(absent.calls.updateSession, []);
+    assert.deepStrictEqual(missingWatermark.calls.updateSession, []);
+  });
+
+  it("does not advance the DSH sequence fence for a disabled integration", async () => {
+    const fence = createDshStateSequenceFence();
+    const body = JSON.stringify({
+      agent_id: "deepseek-harness",
+      hook_source: "dsh-plugin",
+      session_id: "deepseek-harness:gated",
+      event: "SessionStart",
+      state: "idle",
+      session_seq: 3,
+    });
+    const disabled = await callStatePost(body, {
+      ctx: { isAgentEnabled: () => false },
+      options: { dshStateSequenceFence: fence },
+    });
+    const enabled = await callStatePost(body, {
+      options: { dshStateSequenceFence: fence },
+    });
+    assert.strictEqual(disabled.statusCode, 204);
+    assert.strictEqual(enabled.statusCode, 200);
+  });
+
   it("relays a normalized test result after the lifecycle update", async () => {
     const res = await callStatePost(JSON.stringify({
       state: "working",
@@ -240,6 +311,46 @@ describe("server-route-state POST", () => {
     const updateOptions = res.calls.updateSession[0][3];
     assert.strictEqual(updateOptions.subagentId, "agent-child-a");
     assert.strictEqual(updateOptions.subagentType, "Explore");
+  });
+
+  it("forwards validated subagent provenance and SessionStart source to state", async () => {
+    const nativeBody = buildStateBody(
+      "SubagentStart",
+      { session_id: "sid-native", agent_id: "child-a", agent_type: "Explore" },
+      () => ({ stablePid: null, agentPid: null, detectedEditor: null, pidChain: [] })
+    );
+    const native = await callStatePost(JSON.stringify(nativeBody));
+    assert.strictEqual(native.statusCode, 200);
+    assert.strictEqual(native.calls.updateSession[0][3].subagentLifecycleSource, "native");
+
+    const syntheticBody = buildStateBody(
+      "PreToolUse",
+      { session_id: "sid-synthetic", tool_name: "Agent" },
+      () => ({ stablePid: null, agentPid: null, detectedEditor: null, pidChain: [] })
+    );
+    const synthetic = await callStatePost(JSON.stringify(syntheticBody));
+    assert.strictEqual(synthetic.statusCode, 200);
+    assert.strictEqual(synthetic.calls.updateSession[0][3].subagentLifecycleSource, "synthetic-tool");
+
+    const startBody = buildStateBody(
+      "SessionStart",
+      { session_id: "sid-start", source: "compact" },
+      () => ({ stablePid: null, agentPid: null, detectedEditor: null, pidChain: [] })
+    );
+    const start = await callStatePost(JSON.stringify(startBody));
+    assert.strictEqual(start.statusCode, 200);
+    assert.strictEqual(start.calls.updateSession[0][3].sessionStartSource, "compact");
+
+    const invalid = await callStatePost(JSON.stringify({
+      state: "juggling",
+      session_id: "sid-invalid",
+      event: "SubagentStart",
+      agent_id: "claude-code",
+      subagent_lifecycle_source: "spoofed",
+      session_start_source: "spoofed",
+    }));
+    assert.strictEqual(invalid.calls.updateSession[0][3].subagentLifecycleSource, undefined);
+    assert.strictEqual(invalid.calls.updateSession[0][3].sessionStartSource, undefined);
   });
 
   it("clears main-thread and all subagent decisions on a main-session SessionEnd", async () => {
@@ -1152,6 +1263,84 @@ describe("server-route-state POST", () => {
     assert.strictEqual(res.statusCode, 204);
     const outcomes = res.calls.recorder.filter((entry) => entry.outcome);
     assert.deepStrictEqual(outcomes, []);
+  });
+
+  it("metadata_only session_title routes to updateSessionMetadata, not updateSession", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "opencode:ses_x",
+      agent_id: "opencode",
+      session_title: "My Real Title",
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.calls.updateSession.length, 0, "title-only metadata must not call updateSession");
+    assert.strictEqual(res.calls.setState.length, 0);
+    assert.strictEqual(metadataCalls.length, 1);
+    assert.strictEqual(metadataCalls[0][0], localSessionKey("opencode:ses_x"));
+    assert.deepStrictEqual(metadataCalls[0][1], { sessionTitle: "My Real Title" });
+  });
+
+  it("metadata_only session_title is allowed even when the Claude telemetry gate blocks context", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "sid",
+      agent_id: "claude-code",
+      session_title: "Title Despite Gate",
+      context_usage: { used: 50000, limit: 200000, percent: 25, source: "claude" },
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+      options: { isClaudeStatuslineMetadataAllowed: () => false },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    // The gate drops the context data, but the title is not Claude statusline
+    // data and must still flow through.
+    assert.strictEqual(metadataCalls.length, 1);
+    assert.deepStrictEqual(metadataCalls[0][1], { sessionTitle: "Title Despite Gate" });
+  });
+
+  it("metadata_only title+context in one POST becomes one metadata update", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "opencode:ses_z",
+      agent_id: "opencode",
+      session_title: "Titled + quota",
+      context_usage: { used: 300, limit: 1000, percent: 30, source: "codex" },
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(metadataCalls.length, 1, "title+context should coalesce into a single metadata update");
+    assert.deepStrictEqual(metadataCalls[0][1], {
+      contextUsage: { used: 300, limit: 1000, percent: 30, source: "codex" },
+      contextUsageOrigin: null,
+      sessionTitle: "Titled + quota",
+    });
+  });
+
+  it("metadata_only with neither title nor context performs no metadata update", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "opencode:ses_w",
+      agent_id: "opencode",
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(metadataCalls.length, 0, "empty metadata payload must not call updateSessionMetadata");
   });
 
   it("marks missing agent_id as a defaulted Claude Code attribution", async () => {

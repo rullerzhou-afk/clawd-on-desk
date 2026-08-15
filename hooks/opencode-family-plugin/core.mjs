@@ -38,7 +38,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync, promises as fsp } from "fs";
 import { homedir, platform } from "os";
-import { join } from "path";
+import { join, posix, win32 } from "path";
 import { randomBytes, timingSafeEqual } from "crypto";
 import { execFileSync, execSync } from "child_process";
 import {
@@ -57,6 +57,11 @@ const STATE_PATH = "/state";
 // generous timeout is safe. 200ms was too tight when Clawd's IPC roundtrip
 // (main → renderer → main) ran under load and silently timed out.
 const POST_TIMEOUT_MS = 1000;
+// Keep one in-flight request plus a bounded pending suffix for each session.
+// A localhost process can accept fetches without answering, and OpenCode keeps
+// emitting events while that request waits. Without a hard cap, even an
+// explicitly serialized queue retains an unbounded chain of payloads/promises.
+const STATE_POST_MAX_PENDING = 32;
 
 // Orca hosts its terminals in a detached daemon that the process walk below can
 // never reach, so the pane key from the environment is the only handle on the tab
@@ -217,7 +222,6 @@ export function createOpencodeFamilyPlugin(config) {
     normalizeSessionId,
     resolveSessionId,
     isChildSessionId,
-    cleanupSessionParentMap,
   } = createSessionIdHelpers(sessionIdPrefix);
 
   // Per entry-module factory state (scoped to one host process). OpenCode may
@@ -228,6 +232,15 @@ export function createOpencodeFamilyPlugin(config) {
   // sessions (spawned by the `task` tool) don't clobber the root session's
   // dedup state. Each value is the last Clawd state sent for that session.
   const _lastStatePerSession = new Map();
+  // Per-session /state delivery tails. State bodies are serialized when they
+  // are enqueued, then delivered in causal order for that canonical session.
+  // Different sessions remain concurrent and /permission never enters this
+  // queue.
+  const _statePostTailBySession = new Map();
+  // Explicit queue state keeps retained work inspectable and bounded. Promise
+  // chaining alone looks bounded in the Map while every old closure/payload is
+  // still retained by the tail.
+  const _statePostQueueBySession = new Map();
   // Fallback session ID for legacy permission.asked events that omit sessionID.
   // Updated on every session.* / message.part.updated event so it stays fresh.
   // Not used for state dedup.
@@ -250,6 +263,14 @@ export function createOpencodeFamilyPlugin(config) {
   // Authoritative session directory learned from session lifecycle info.
   // Shared by every directory handler returned from this factory product.
   const _sessionDirectoryById = new Map();
+  // Fallback ownership for events that omit info.directory. Disposal always
+  // consumes this handler binding, including mixed modern/legacy payloads;
+  // outbound cwd consumes it only until the host's info-directory latch proves
+  // map misses must fail closed.
+  const _sessionInstanceDirectoryById = new Map();
+  // Authoritative session title learned from session lifecycle info.
+  // Shared by every handler returned from this factory product.
+  const _sessionTitleById = new Map();
   // Compatibility latch: old hosts that never emit info.directory keep the
   // latest-init fallback. Once this host proves it emits bindable session info,
   // a map miss omits cwd rather than forwarding a potentially stale directory.
@@ -264,6 +285,8 @@ export function createOpencodeFamilyPlugin(config) {
   // Most recently initialized directory across this shared factory closure.
   // This is only a legacy-host fallback, never authoritative session truth.
   let _lastInitDirectory = "";
+  let _instanceTokenCounter = 0;
+  const _activeInstanceDirectoryByToken = new Map();
   // Permission requests outlive the event callback: Clawd replies later over
   // the reverse bridge. OpenCode invokes this factory once per directory, so
   // bind each request to the exact SDK client + directory that emitted it.
@@ -444,6 +467,7 @@ export function createOpencodeFamilyPlugin(config) {
     }
 
     _sessionDirectoryById.set(sessionId, metadata.directory);
+    _sessionInstanceDirectoryById.delete(sessionId);
     _hostEmitsSessionInfo = true;
     debugLog(`SESSION_DIR capture session=${sessionId} source=info`);
     return sessionId;
@@ -457,6 +481,12 @@ export function createOpencodeFamilyPlugin(config) {
         source: "session-info",
       };
     }
+    if (!_hostEmitsSessionInfo && normalized && _sessionInstanceDirectoryById.has(normalized)) {
+      return {
+        directory: _sessionInstanceDirectoryById.get(normalized),
+        source: "instance-handler",
+      };
+    }
     if (!_hostEmitsSessionInfo && _lastInitDirectory) {
       return {
         directory: _lastInitDirectory,
@@ -466,88 +496,413 @@ export function createOpencodeFamilyPlugin(config) {
     return { directory: null, source: "none" };
   }
 
-  function cleanupSessionDirectory(event, phase) {
+  function captureSessionInstanceDirectory(event, instanceDirectory) {
+    const sessionId = normalizeSessionId(getEventSessionId(event));
+    if (!sessionId || typeof instanceDirectory !== "string" || !instanceDirectory.trim()) {
+      return null;
+    }
+    if (_sessionDirectoryById.has(sessionId)) return sessionId;
+    _sessionInstanceDirectoryById.set(sessionId, instanceDirectory);
+    return sessionId;
+  }
+
+  function registerInstanceDirectory(instanceDirectory) {
+    const token = ++_instanceTokenCounter;
+    const directory = typeof instanceDirectory === "string" && instanceDirectory.trim()
+      ? instanceDirectory
+      : "";
+    _activeInstanceDirectoryByToken.set(token, directory);
+    if (directory) _lastInitDirectory = directory;
+    return token;
+  }
+
+  function unregisterInstanceDirectory(token) {
+    _activeInstanceDirectoryByToken.delete(token);
+    _lastInitDirectory = "";
+    for (const directory of _activeInstanceDirectoryByToken.values()) {
+      if (directory) _lastInitDirectory = directory;
+    }
+  }
+
+  // Directory text stays byte-identical in _sessionDirectoryById and outbound
+  // cwd bodies. This derived key exists only for ownership comparisons during
+  // server.instance.disposed cleanup.
+  function normalizeDirectoryOwnershipKey(value, hostPlatform = platform()) {
+    if (typeof value !== "string" || !value.trim()) return null;
+    // Do not trim the actual path: spaces are valid path characters on POSIX.
+    // trim() above is only the empty-value guard.
+    const raw = value;
+    const pathFlavor = hostPlatform === "win32" ? win32 : posix;
+    if (!pathFlavor.isAbsolute(raw)) return null;
+
+    let normalized = pathFlavor.normalize(raw);
+    const root = pathFlavor.parse(normalized).root;
+    const endsWithSeparator = hostPlatform === "win32"
+      ? (text) => text.endsWith("\\") || text.endsWith("/")
+      : (text) => text.endsWith("/");
+    while (normalized.length > root.length && endsWithSeparator(normalized)) {
+      normalized = normalized.slice(0, -1);
+    }
+    return hostPlatform === "win32" ? normalized.toLowerCase() : normalized;
+  }
+
+  function captureSessionTitle(event) {
+    if (!event) return null;
+    switch (event.type) {
+      case "session.created":
+      case "session.updated":
+        break;
+      default:
+        return null;
+    }
+
+    const metadata = getEventSessionInfo(event);
+    const eventSessionId = normalizeSessionId(metadata.eventSessionId);
+    const infoSessionId = normalizeSessionId(metadata.infoSessionId);
+    if (eventSessionId && infoSessionId && eventSessionId !== infoSessionId) {
+      return null;
+    }
+
+    const sessionId = infoSessionId || eventSessionId;
+    if (!sessionId) return null;
+    if (!metadata.title) return null;
+
+    const prevTitle = _sessionTitleById.get(sessionId);
+    // OpenCode assigns a placeholder title ("New session") at creation and
+    // later replaces it with the real summary-based title via session.updated.
+    // That event maps to no Clawd state, so without an explicit push the HUD
+    // keeps showing the placeholder forever. Forward a title change as a
+    // metadata-only POST — the server updates sessionTitle without disturbing
+    // the lifecycle state (mirrors how clawd-hook statusline refreshes work).
+    // If no session exists yet the server drops the metadata POST safely
+    // (metadata-only never creates a session), so the first redundant push is
+    // harmless — and it covers the "created with no title, titled later" case.
+    if (prevTitle !== metadata.title) {
+      _sessionTitleById.set(sessionId, metadata.title);
+      // Log only non-content metadata: the title is user/LLM-derived and
+      // embedded control chars/newlines could forge diagnostic log lines.
+      debugLog(`SESSION_TITLE session=${sessionId} changed=true len=${metadata.title.length}`);
+      const body = {
+        state: "idle",
+        session_id: sessionId,
+        event: "SessionUpdate",
+        agent_id: AGENT_ID,
+        hook_source: HOOK_SOURCE,
+        metadata_only: true,
+        session_title: metadata.title,
+      };
+      postStateToClawd(body);
+    }
+    return sessionId;
+  }
+
+  function collectKnownSessionIds() {
+    const ids = new Set([
+      ..._sessionDirectoryById.keys(),
+      ..._sessionInstanceDirectoryById.keys(),
+      ..._sessionTitleById.keys(),
+      ..._lastStatePerSession.keys(),
+      ..._sessionParentById.keys(),
+      ..._sessionParentById.values(),
+      ..._statePostTailBySession.keys(),
+    ]);
+    const root = normalizeSessionId(_rootSessionId);
+    const latest = normalizeSessionId(_lastSeenSessionId);
+    if (root) ids.add(root);
+    if (latest) ids.add(latest);
+    for (const target of _permissionTargetByRequestId.values()) {
+      const targetSessionId = normalizeSessionId(target && target.sessionId);
+      if (targetSessionId) ids.add(targetSessionId);
+    }
+    return ids;
+  }
+
+  function cleanupSessionState(sessionIds, options = {}) {
+    const ids = sessionIds instanceof Set ? sessionIds : new Set(sessionIds || []);
+    const clearAll = options.clearAll === true;
+    const directoryKey = options.directoryKey || null;
+
+    for (const sessionId of ids) {
+      _sessionDirectoryById.delete(sessionId);
+      _sessionInstanceDirectoryById.delete(sessionId);
+      _sessionTitleById.delete(sessionId);
+      _lastStatePerSession.delete(sessionId);
+    }
+
+    for (const [childId, parentId] of _sessionParentById) {
+      if (clearAll || ids.has(childId) || ids.has(parentId)) {
+        _sessionParentById.delete(childId);
+      }
+    }
+
+    if (clearAll || ids.has(normalizeSessionId(_rootSessionId))) {
+      _rootSessionId = null;
+    }
+    if (clearAll || ids.has(normalizeSessionId(_lastSeenSessionId))) {
+      _lastSeenSessionId = null;
+    }
+
+    for (const [requestId, target] of _permissionTargetByRequestId) {
+      const targetSessionId = normalizeSessionId(target && target.sessionId);
+      const targetDirectoryKey = normalizeDirectoryOwnershipKey(target && target.directory);
+      if (clearAll || ids.has(targetSessionId) || (directoryKey && targetDirectoryKey === directoryKey)) {
+        _permissionTargetByRequestId.delete(requestId);
+      }
+    }
+
+    // Never delete an active delivery tail here: Map.delete cannot cancel its
+    // promise and would let a later body with the same id overtake it. Every
+    // tail removes itself with an identity guard after it settles.
+  }
+
+  function enqueueDisposedSessionEnds(sessionIds) {
+    for (const sessionId of sessionIds) {
+      const body = buildStateBody("sleeping", "SessionEnd", sessionId);
+      if (body) postStateToClawd(body);
+    }
+  }
+
+  function disposedDirectoryScope(event, instanceDirectory) {
+    const props = event && event.properties && typeof event.properties === "object"
+      ? event.properties
+      : {};
+    const eventKey = normalizeDirectoryOwnershipKey(props.directory);
+    if (eventKey) return { key: eventKey, source: "event" };
+    const instanceKey = normalizeDirectoryOwnershipKey(instanceDirectory);
+    if (instanceKey) return { key: instanceKey, source: "instance-fallback" };
+    return null;
+  }
+
+  function cleanupSessionDirectory(event, phase, instanceDirectory = "") {
     if (!event || typeof event.type !== "string") return;
 
     if (event.type === "server.instance.disposed" && phase === "before-send") {
-      _sessionDirectoryById.clear();
+      const scope = disposedDirectoryScope(event, instanceDirectory);
+      if (!scope) {
+        const allIds = collectKnownSessionIds();
+        enqueueDisposedSessionEnds(allIds);
+        cleanupSessionState(allIds, { clearAll: true });
+        debugLog(`SESSION_DISPOSE scope=global reason=no-usable-directory sessions=${allIds.size}`);
+        return;
+      }
+
+      const disposedIds = new Set();
+      for (const [sessionId, directory] of _sessionDirectoryById) {
+        if (normalizeDirectoryOwnershipKey(directory) === scope.key) {
+          disposedIds.add(sessionId);
+        }
+      }
+      for (const [sessionId, directory] of _sessionInstanceDirectoryById) {
+        if (normalizeDirectoryOwnershipKey(directory) === scope.key) {
+          disposedIds.add(sessionId);
+        }
+      }
+
+      // A state request may already be in flight when the Instance disappears.
+      // Queue a targeted final body behind that session's exact FIFO tail so a
+      // late state cannot recreate a ghost session after local ownership is
+      // cleared. This is never an anonymous or cross-directory SessionEnd.
+      enqueueDisposedSessionEnds(disposedIds);
+      cleanupSessionState(disposedIds, { directoryKey: scope.key });
+      debugLog(`SESSION_DISPOSE scope=${scope.source} sessions=${disposedIds.size}`);
       return;
     }
 
     if (event.type === "session.deleted" && phase === "after-send") {
       const normalized = normalizeSessionId(getEventSessionId(event));
-      if (normalized) _sessionDirectoryById.delete(normalized);
+      if (normalized) cleanupSessionState(new Set([normalized]));
     }
   }
 
-  // Fire-and-forget POST to any Clawd endpoint. Shared by /state and /permission
-  // so both benefit from port caching + self-healing discovery. Tries cached port
-  // first; on failure walks runtime.json + fallback range. Caches the winning
-  // port. Never throws.
-  function postToClawd(urlPath, body, logTag) {
+  // Snapshot mutable request data synchronously. session.deleted cleanup runs
+  // immediately after enqueue, so cwd/title/process fields must already be
+  // frozen before a queued delivery waits behind an older request.
+  function snapshotPost(body, logTag) {
+    const outbound = { ...(body || {}) };
     // Enrich every outbound body with process-tree fields. Cached after first
     // call so this is just a few object assignments per POST.
     if (_stablePid) {
-      body.source_pid = _stablePid;
-      if (_pidChain.length) body.pid_chain = _pidChain;
-      if (_detectedEditor) body.editor = _detectedEditor;
-      if (_tmuxSocket) body.tmux_socket = _tmuxSocket;
-      if (_tmuxClient) body.tmux_client = _tmuxClient;
+      outbound.source_pid = _stablePid;
+      if (_pidChain.length) outbound.pid_chain = _pidChain.slice();
+      if (_detectedEditor) outbound.editor = _detectedEditor;
+      if (_tmuxSocket) outbound.tmux_socket = _tmuxSocket;
+      if (_tmuxClient) outbound.tmux_client = _tmuxClient;
     }
     // Outside the _stablePid gate on purpose: the pane key owes nothing to the
     // process walk, and Orca's detached daemon is precisely the case where the
     // walk finds no terminal to report.
     const orcaPaneKey = orcaPaneKeyFromEnv();
-    if (orcaPaneKey) body.orca_pane_key = orcaPaneKey;
-    const cwd = resolveSessionDirectory(body.session_id);
-    if (cwd.directory) body.cwd = cwd.directory;
-    else delete body.cwd;
-    body.agent_pid = process.pid;
-    const payload = JSON.stringify(body);
-    const candidates = getPortCandidates();
-    const reqId = ++_reqCounter;
-    debugLog(`POST[${reqId}] ${logTag} cwdSource=${cwd.source} start candidates=[${candidates.join(",")}]`);
+    if (orcaPaneKey) outbound.orca_pane_key = orcaPaneKey;
+    const cwd = resolveSessionDirectory(outbound.session_id);
+    if (cwd.directory) outbound.cwd = cwd.directory;
+    else delete outbound.cwd;
+    outbound.agent_pid = process.pid;
+    const payload = JSON.stringify(outbound);
+    return {
+      body: outbound,
+      payload,
+      logTag,
+      cwdSource: cwd.source,
+      reqId: ++_reqCounter,
+    };
+  }
 
-    (async () => {
-      for (const port of candidates) {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), POST_TIMEOUT_MS);
-        const t0 = Date.now();
-        try {
-          const res = await fetch(`http://127.0.0.1:${port}${urlPath}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: payload,
-            signal: controller.signal,
-          });
-          clearTimeout(timer);
-          const elapsed = Date.now() - t0;
-          const header = res.headers.get("x-clawd-server");
-          debugLog(`POST[${reqId}] ${logTag} port=${port} status=${res.status} header=${header} elapsed=${elapsed}ms`);
-          // Port range is unprivileged so another app could answer — require the
-          // Clawd identity header before trusting the response.
-          if (header === "clawd-on-desk") {
-            _cachedPort = port;
-            try { await res.text(); } catch {}
-            debugLog(`POST[${reqId}] ${logTag} OK port=${port}`);
-            return;
-          }
-        } catch (err) {
-          clearTimeout(timer);
-          const elapsed = Date.now() - t0;
-          debugLog(`POST[${reqId}] ${logTag} port=${port} ERR ${err && err.name}/${err && err.message} elapsed=${elapsed}ms`);
+  // Deliver one already-snapshotted body. Candidate discovery intentionally
+  // happens when delivery begins so a previous queued request can repair the
+  // shared cached port before the next request scans.
+  async function deliverPost(urlPath, snapshot) {
+    const candidates = getPortCandidates();
+    debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} cwdSource=${snapshot.cwdSource} start candidates=[${candidates.join(",")}]`);
+
+    for (const port of candidates) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), POST_TIMEOUT_MS);
+      const t0 = Date.now();
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}${urlPath}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: snapshot.payload,
+          signal: controller.signal,
+        });
+        const elapsed = Date.now() - t0;
+        const header = res.headers.get("x-clawd-server");
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} port=${port} status=${res.status} header=${header} elapsed=${elapsed}ms`);
+        // Port range is unprivileged so another app could answer — require the
+        // Clawd identity header before trusting the response.
+        if (header === "clawd-on-desk") {
+          _cachedPort = port;
+          try { await res.text(); } catch {}
+          debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} OK port=${port}`);
+          return true;
         }
+      } catch (err) {
+        const elapsed = Date.now() - t0;
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} port=${port} ERR ${err && err.name}/${err && err.message} elapsed=${elapsed}ms`);
+      } finally {
+        clearTimeout(timer);
       }
-      // All candidates failed — drop the cache so next call re-reads runtime.json.
-      debugLog(`POST[${reqId}] ${logTag} EXHAUSTED all candidates failed`);
-      _cachedPort = null;
-    })().catch((err) => {
-      debugLog(`POST[${reqId}] ${logTag} UNCAUGHT ${err && err.message}`);
+    }
+    // All candidates failed — drop the cache so next call re-reads runtime.json.
+    debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} EXHAUSTED all candidates failed`);
+    _cachedPort = null;
+    return false;
+  }
+
+  // Fire-and-forget direct channel used by /permission. Returning the settled
+  // promise is only for deterministic tests; production event hooks never await
+  // it.
+  function postToClawd(urlPath, body, logTag) {
+    const snapshot = snapshotPost(body, logTag);
+    return deliverPost(urlPath, snapshot).catch((err) => {
+      debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} UNCAUGHT ${err && err.message}`);
+      return false;
     });
   }
 
+  function isReplaceableStateSnapshot(snapshot) {
+    const body = snapshot && snapshot.body;
+    return !!body
+      && body.metadata_only !== true
+      && ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact"].includes(body.event);
+  }
+
+  function isMetadataStateSnapshot(snapshot) {
+    return !!(snapshot && snapshot.body && snapshot.body.metadata_only === true);
+  }
+
+  async function drainStatePostQueue(sessionId, queue) {
+    let allSucceeded = true;
+    while (queue.pending.length > 0) {
+      const snapshot = queue.pending.shift();
+      queue.active = snapshot;
+      try {
+        const delivered = await deliverPost(STATE_PATH, snapshot);
+        if (!delivered) allSucceeded = false;
+      } catch (err) {
+        allSucceeded = false;
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} UNCAUGHT ${err && err.message}`);
+      } finally {
+        queue.active = null;
+      }
+    }
+
+    if (_statePostQueueBySession.get(sessionId) === queue) {
+      _statePostQueueBySession.delete(sessionId);
+    }
+    if (_statePostTailBySession.get(sessionId) === queue.settled) {
+      _statePostTailBySession.delete(sessionId);
+    }
+    queue.resolve(allSucceeded);
+  }
+
+  function createStatePostQueue(sessionId) {
+    let resolve;
+    const settled = new Promise((done) => { resolve = done; });
+    const queue = { active: null, pending: [], settled, resolve, draining: false };
+    _statePostQueueBySession.set(sessionId, queue);
+    _statePostTailBySession.set(sessionId, settled);
+    return queue;
+  }
+
+  function makeStatePostRoom(queue, incoming) {
+    if (queue.pending.length < STATE_POST_MAX_PENDING) return;
+    // A title-only update must never evict the latest lifecycle snapshot and
+    // leave the server stuck in an older error/idle state. Coalesce old metadata
+    // first; otherwise evict the oldest queued item. New lifecycle snapshots can
+    // preferentially replace old state/metadata because the incoming lifecycle
+    // itself preserves a fresh state at the tail.
+    const incomingMetadata = isMetadataStateSnapshot(incoming);
+    let index = incomingMetadata
+      ? queue.pending.findIndex((snapshot) => isMetadataStateSnapshot(snapshot))
+      : queue.pending.findIndex((snapshot) => (
+        isReplaceableStateSnapshot(snapshot) || isMetadataStateSnapshot(snapshot)
+      ));
+    if (index < 0) index = 0;
+    const [dropped] = queue.pending.splice(index, 1);
+    debugLog(`POST[${incoming.reqId}] ${incoming.logTag} overflow=dropped-old req=${dropped.reqId}`);
+  }
+
   function postStateToClawd(body) {
-    postToClawd(STATE_PATH, body, `STATE state=${body.state}`);
+    const sessionId = normalizeSessionId(body && body.session_id) || DEFAULT_SESSION_ID;
+    const snapshot = snapshotPost(body, `STATE state=${body && body.state}`);
+    const replaceable = isReplaceableStateSnapshot(snapshot);
+    const metadata = isMetadataStateSnapshot(snapshot);
+    const terminal = !!body && body.event === "SessionEnd";
+    let queue = _statePostQueueBySession.get(sessionId);
+
+    if (!queue) queue = createStatePostQueue(sessionId);
+
+    const activeTerminal = !!(queue.active && queue.active.body && queue.active.body.event === "SessionEnd");
+    const queuedTerminal = queue.pending.some((entry) => entry.body && entry.body.event === "SessionEnd");
+    if (!terminal && (activeTerminal || queuedTerminal)) {
+      debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} dropped=after-terminal`);
+      return queue.settled;
+    }
+
+    if (terminal) {
+      // SessionEnd is the final state. Keep the active request immutable, but
+      // replace every stale not-yet-started snapshot so recovery cannot replay
+      // obsolete work or leave a ghost session behind.
+      queue.pending.splice(0, queue.pending.length, snapshot);
+      debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} coalesced=terminal`);
+    } else {
+      const last = queue.pending.at(-1);
+      if ((replaceable && isReplaceableStateSnapshot(last)) ||
+          (metadata && isMetadataStateSnapshot(last))) {
+        queue.pending[queue.pending.length - 1] = snapshot;
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} coalesced=${metadata ? "latest-metadata" : "latest-state"}`);
+      } else {
+        makeStatePostRoom(queue, snapshot);
+        queue.pending.push(snapshot);
+      }
+    }
+
+    if (!queue.draining) {
+      queue.draining = true;
+      void drainStatePostQueue(sessionId, queue);
+    }
+    return queue.settled;
   }
 
   // Fire-and-forget permission forward. Clawd decides allow/deny/always in its
@@ -573,6 +928,13 @@ export function createOpencodeFamilyPlugin(config) {
     if (isChildSessionId(clawdSessionId, _sessionParentById)) {
       body.headless = true;
     }
+    // Session title from OpenCode's own session-info title field. Mirrors the
+    // pattern used by other agents (clawd-hook, workbuddy-hook) that
+    // include session_title in their state POST body. The server reads
+    // this and stores it as sessionTitle, which sessionDisplayTitle()
+    // then uses before falling back to path.basename(cwd).
+    const sessionTitle = _sessionTitleById.get(clawdSessionId);
+    if (sessionTitle) body.session_title = sessionTitle;
     return body;
   }
 
@@ -675,19 +1037,31 @@ export function createOpencodeFamilyPlugin(config) {
     buildStateBody,
     translateEvent,
     captureSessionDirectory,
+    captureSessionInstanceDirectory,
+    captureSessionTitle,
     resolveSessionDirectory,
     cleanupSessionDirectory,
+    normalizeDirectoryOwnershipKey,
+    postStateToClawd,
+    postPermissionToClawd,
     get _sessionParentById() { return _sessionParentById; },
     get _sessionDirectoryById() { return _sessionDirectoryById; },
+    get _sessionInstanceDirectoryById() { return _sessionInstanceDirectoryById; },
+    get _sessionTitleById() { return _sessionTitleById; },
     get _hostEmitsSessionInfo() { return _hostEmitsSessionInfo; },
     get _rootSessionId() { return _rootSessionId; },
     set _rootSessionId(v) { _rootSessionId = v; },
     get _lastSeenSessionId() { return _lastSeenSessionId; },
+    get _lastInitDirectory() { return _lastInitDirectory; },
     // Instance-isolation probes (family-core tests). Live views into the
     // closure — a hardcoded log path or accidentally-shared state bag must
     // fail the isolation suite, not pass silently.
     get _debugLogPath() { return DEBUG_LOG_PATH; },
     get _lastStatePerSession() { return _lastStatePerSession; },
+    get _statePostTailBySession() { return _statePostTailBySession; },
+    get _statePostQueueBySession() { return _statePostQueueBySession; },
+    get _statePostMaxPending() { return STATE_POST_MAX_PENDING; },
+    get _permissionTargetByRequestId() { return _permissionTargetByRequestId; },
     get _cachedPort() { return _cachedPort; },
     set _cachedPort(v) { _cachedPort = v; },
     get _bridgeUrl() { return _bridgeUrl; },
@@ -717,6 +1091,7 @@ export function createOpencodeFamilyPlugin(config) {
     _permissionTargetByRequestId.set(requestId, {
       client: instance.client,
       directory: sessionDirectory || instance.directory,
+      sessionId,
     });
     // A permission can remain pending forever if the user closes its native
     // prompt. Keep the process-lifetime map bounded without deleting history.
@@ -854,10 +1229,9 @@ export function createOpencodeFamilyPlugin(config) {
     const instanceDirectory = ctx && typeof ctx.directory === "string" && ctx.directory.trim()
       ? ctx.directory
       : "";
-    _lastInitDirectory = ctx && typeof ctx.directory === "string" && ctx.directory.trim()
-      ? ctx.directory
-      : "";
-    debugLog(`INIT directory=${_lastInitDirectory} serverUrl=${instanceServerUrl} pid=${process.pid} hasClient=${!!instanceClient}`);
+    const instanceToken = registerInstanceDirectory(instanceDirectory);
+    let instanceDisposed = false;
+    debugLog(`INIT directory=${instanceDirectory} serverUrl=${instanceServerUrl} pid=${process.pid} hasClient=${!!instanceClient}`);
     // Sync init blocks the TUI boot path; later POSTs hit the cached result.
     getStablePid();
     startBridge();
@@ -866,6 +1240,7 @@ export function createOpencodeFamilyPlugin(config) {
       event: async ({ event }) => {
         try {
           if (!event || typeof event.type !== "string") return;
+          if (instanceDisposed) return;
 
           // Phase 3: capture the root session on first sighting. Any later
           // sessionID is a subtask spawned by the parent's `task` tool, and
@@ -877,8 +1252,20 @@ export function createOpencodeFamilyPlugin(config) {
           // #796: lifecycle info is the only authoritative session-directory
           // source. Capture before translate/drop because session.updated does
           // not map to a Clawd state and info-only deleted events need its id.
-          cleanupSessionDirectory(event, "before-send");
+          if (event.type === "server.instance.disposed") {
+            cleanupSessionDirectory(event, "before-send", instanceDirectory);
+            if (!instanceDisposed) {
+              instanceDisposed = true;
+              unregisterInstanceDirectory(instanceToken);
+            }
+            // Instance disposal is cleanup-only. Some host versions may attach
+            // a session id, but it must never revive fallback pointers or
+            // synthesize a SessionEnd for that (possibly unrelated) session.
+            return;
+          }
           captureSessionDirectory(event);
+          captureSessionInstanceDirectory(event, instanceDirectory);
+          captureSessionTitle(event);
 
           if (sid && !_rootSessionId) {
             _rootSessionId = sid;
@@ -917,13 +1304,6 @@ export function createOpencodeFamilyPlugin(config) {
             return;
           }
 
-          // Phase 3 headless: clean up _sessionParentById on session end
-          // events so the Map doesn't grow unboundedly across sessions.
-          // Must run BEFORE shouldDropMappedEventWithoutSessionId() because
-          // server.instance.disposed may lack a sessionID (causing the drop
-          // check to early-return) but still needs to clear the entire map.
-          cleanupSessionParentMap(event, _sessionParentById);
-
           const mapped = translateEvent(event);
           if (!mapped) {
             // Log ignored session.* events only — they are low-frequency and
@@ -948,10 +1328,10 @@ export function createOpencodeFamilyPlugin(config) {
 
           debugLog(`MAP ${event.type} → state=${mapped.state} event=${mapped.event}`);
           sendState(mapped.state, mapped.event, sessionId);
-          // Parent cleanup intentionally stays before translate; directory
-          // cleanup for deleted must wait until postToClawd synchronously
-          // serializes the SessionEnd body.
-          cleanupSessionDirectory(event, "after-send");
+          // Unified cleanup happens only after postStateToClawd synchronously
+          // snapshots the final SessionEnd body. This preserves cwd, title and
+          // child/headless ownership while the queued network delivery waits.
+          cleanupSessionDirectory(event, "after-send", instanceDirectory);
         } catch (err) {
           debugLog(`ERROR in event hook: ${err && err.message}`);
         }

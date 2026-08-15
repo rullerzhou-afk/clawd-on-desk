@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Clawd</title>
   <link rel="stylesheet" href="permission-automation-confirmation.css">
@@ -10,15 +10,22 @@
 <body>
   <main id="dialog" class="dialog" data-kind="confirm" role="dialog" aria-modal="true" aria-labelledby="title" aria-describedby="detail">
     <header class="titlebar">
-      <span class="brand">Clawd on Desk</span>
-      <button id="close" class="icon-button" type="button" aria-label="Close" title="Close">&times;</button>
+      <span class="brand">
+        <img class="brand-icon" src="../assets/icons/64x64.png" alt="" aria-hidden="true">
+        <span>Clawd on Desk</span>
+      </span>
+      <button id="close" class="icon-button" type="button" aria-label="Close" title="Close">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5.5 5.5l9 9m0-9l-9 9"/></svg>
+      </button>
     </header>
     <section class="content">
-      <div class="warning-icon" aria-hidden="true">!</div>
+      <div class="warning-icon" aria-hidden="true">
+        <svg class="warning-glyph" viewBox="0 0 24 24"><path d="M12 4.8v10.1m0 3.1v.1"/></svg>
+      </div>
       <div class="copy">
         <h1 id="title"></h1>
         <p id="message" class="message" hidden></p>
-        <p id="detail"></p>
+        <div class="risk-detail"><p id="detail"></p></div>
         <label id="checkbox-row" class="checkbox-row">
           <input id="suppress" type="checkbox">
           <span id="checkbox-label"></span>

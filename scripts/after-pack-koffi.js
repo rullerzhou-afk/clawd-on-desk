@@ -88,6 +88,7 @@ function assertSafeKoffiRoot({ appOutDir, resourcesRoot, nativeRoot }) {
   if (requiredSegment !== "app.asar.unpacked/node_modules/koffi/build/koffi") {
     throw new Error(`Unexpected Koffi prune root: ${requiredSegment}`);
   }
+  return { resolvedAppOut, resolvedResources, resolvedNative };
 }
 
 function pruneKoffiNative({ appOutDir, targetId, outputPath = "", asarModule = asar } = {}) {
@@ -111,7 +112,7 @@ function pruneKoffiNative({ appOutDir, targetId, outputPath = "", asarModule = a
   assertDirectory(unpackedRoot, "app.asar.unpacked root");
   assertDirectory(koffiRoot, "packaged Koffi root");
   assertDirectory(nativeRoot, "packaged Koffi native root");
-  assertSafeKoffiRoot({ appOutDir, resourcesRoot, nativeRoot });
+  const { resolvedNative } = assertSafeKoffiRoot({ appOutDir, resourcesRoot, nativeRoot });
 
   const packageJsonPath = path.join(koffiRoot, "package.json");
   const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
@@ -140,7 +141,7 @@ function pruneKoffiNative({ appOutDir, targetId, outputPath = "", asarModule = a
   for (const triplet of actualTriplets) {
     const tripletDir = path.join(nativeRoot, triplet);
     const resolvedTriplet = fs.realpathSync.native(tripletDir);
-    if (!isInside(nativeRoot, resolvedTriplet)) {
+    if (!isInside(resolvedNative, resolvedTriplet)) {
       throw new Error(`Koffi triplet escaped native root: ${resolvedTriplet}`);
     }
     for (const file of walkTreeNoLinks(tripletDir)) {

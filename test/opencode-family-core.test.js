@@ -93,6 +93,26 @@ describe("opencode-family plugin factory", () => {
     oc.__test._sessionParentById.clear();
   });
 
+  it("keeps genuine root completion and deletion lifecycle events authoritative", async () => {
+    const { createOpencodeFamilyPlugin } = await loadCore();
+    const plugin = createOpencodeFamilyPlugin(OPENCODE_PARAMS);
+
+    assert.deepStrictEqual(
+      plugin.__test.translateEvent({
+        type: "session.idle",
+        properties: { sessionID: "ses_root" },
+      }),
+      { state: "attention", event: "Stop" },
+    );
+    assert.deepStrictEqual(
+      plugin.__test.translateEvent({
+        type: "session.deleted",
+        properties: { sessionID: "ses_root" },
+      }),
+      { state: "sleeping", event: "SessionEnd" },
+    );
+  });
+
   it("isolates the FULL per-instance state bag (log path, dedup, port cache, bridge)", async () => {
     const { createOpencodeFamilyPlugin } = await loadCore();
     const oc = createOpencodeFamilyPlugin(OPENCODE_PARAMS);
@@ -106,6 +126,9 @@ describe("opencode-family plugin factory", () => {
 
     // Per-session dedup map: distinct objects, no cross-instance visibility.
     assert.notStrictEqual(oc.__test._lastStatePerSession, mc.__test._lastStatePerSession);
+    assert.notStrictEqual(oc.__test._statePostTailBySession, mc.__test._statePostTailBySession);
+    assert.notStrictEqual(oc.__test._sessionInstanceDirectoryById, mc.__test._sessionInstanceDirectoryById);
+    assert.notStrictEqual(oc.__test._permissionTargetByRequestId, mc.__test._permissionTargetByRequestId);
     oc.__test._lastStatePerSession.set("opencode:ses_x", "working");
     assert.strictEqual(mc.__test._lastStatePerSession.size, 0);
     oc.__test._lastStatePerSession.clear();
@@ -272,7 +295,7 @@ describe("opencode-family Windows GUI host focus identity", () => {
 
 describe("opencode-family session-id helpers (prefix matrix)", () => {
   for (const prefix of ["opencode:", "mimocode:"]) {
-    it(`${prefix} raw + prefixed child lookup, deleted removes one, disposed clears all`, async () => {
+    it(`${prefix} raw + prefixed child lookup`, async () => {
       const { createSessionIdHelpers } = await loadSessionIds();
       const ids = createSessionIdHelpers(prefix);
       const map = new Map();
@@ -283,18 +306,6 @@ describe("opencode-family session-id helpers (prefix matrix)", () => {
       assert.strictEqual(ids.isChildSessionId("ses_child1", map), true);
       assert.strictEqual(ids.isChildSessionId(`${prefix}ses_child1`, map), true);
       assert.strictEqual(ids.isChildSessionId("ses_root", map), false);
-
-      // session.deleted removes exactly its own entry
-      ids.cleanupSessionParentMap(
-        { type: "session.deleted", properties: { sessionID: "ses_child1" } },
-        map
-      );
-      assert.strictEqual(map.has(`${prefix}ses_child1`), false);
-      assert.strictEqual(map.has(`${prefix}ses_child2`), true);
-
-      // server.instance.disposed clears everything, even without a sessionID
-      ids.cleanupSessionParentMap({ type: "server.instance.disposed", properties: {} }, map);
-      assert.strictEqual(map.size, 0);
     });
   }
 
@@ -307,11 +318,6 @@ describe("opencode-family session-id helpers (prefix matrix)", () => {
     // mimocode-keyed map must MISS — proving these helpers are prefix-bound
     // and must come from the factory, never shared verbatim.
     assert.strictEqual(oc.isChildSessionId("ses_child", mimoMap), false);
-    oc.cleanupSessionParentMap(
-      { type: "session.deleted", properties: { sessionID: "ses_child" } },
-      mimoMap
-    );
-    assert.strictEqual(mimoMap.size, 1); // wrong-prefix delete is a no-op
   });
 
   it("DEFAULT_SESSION_ID and resolve fallback follow the prefix", async () => {
@@ -457,7 +463,7 @@ describe("opencode-family Orca pane key", () => {
     const gate = lines.findIndex((line) => line.includes("if (_stablePid) {"));
     assert.ok(gate > 0, "expected the process-walk gate");
     const gateEnd = lines.findIndex((line, i) => i > gate && line.trim() === "}");
-    const emit = lines.findIndex((line) => line.includes("body.orca_pane_key"));
+    const emit = lines.findIndex((line) => line.includes("outbound.orca_pane_key"));
     // Orca's detached daemon is exactly the case where the walk reports no
     // terminal, so a pane key emitted inside that gate would never ship for the
     // sessions the feature exists to focus.

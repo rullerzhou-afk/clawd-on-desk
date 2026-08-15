@@ -142,7 +142,9 @@ describe("permission automation confirmation runtime", () => {
     const promise = harness.runtime.confirmPermissionAutomation(confirmPayload());
     const win = harness.windows[0];
     assert.strictEqual(win.options.x, 2460);
-    assert.strictEqual(win.options.y, 255);
+    assert.strictEqual(win.options.y, 282);
+    assert.strictEqual(win.options.width, 520);
+    assert.strictEqual(win.options.height, 376);
     assert.strictEqual(win.options.resizable, false);
     assert.strictEqual(win.options.webPreferences.nodeIntegration, false);
     assert.strictEqual(win.options.webPreferences.contextIsolation, true);
@@ -299,6 +301,8 @@ describe("permission automation confirmation runtime", () => {
       dismissLabel: "Dismiss",
     });
     const win = harness.windows[0];
+    assert.strictEqual(win.options.width, 520);
+    assert.strictEqual(win.options.height, 280);
     readyRenderer(harness, win);
     assert.strictEqual(win.sent[0].payload.kind, "error");
     assert.strictEqual(win.sent[0].payload.detail, "disk full");
@@ -344,6 +348,32 @@ describe("permission automation confirmation document", () => {
       html,
       /<main id="dialog" class="dialog" data-kind="confirm" role="dialog" aria-modal="true" aria-labelledby="title" aria-describedby="detail">/
     );
+    assert.match(html, /<svg class="warning-glyph"/);
+    assert.match(html, /img-src 'self'/);
+    assert.match(html, /<img class="brand-icon" src="\.\.\/assets\/icons\/64x64\.png" alt="" aria-hidden="true">/);
+    assert.strictEqual(
+      fs.existsSync(path.join(__dirname, "../assets/icons/64x64.png")),
+      true,
+      "the relative dialog icon must be included in the repository"
+    );
+    assert.match(html, /<div class="risk-detail"><p id="detail"><\/p><\/div>/);
+    assert.doesNotMatch(html, /class="warning-icon"[^>]*>\s*!/);
+    assert.doesNotMatch(html, /[A-Z]:\\/);
+  });
+
+  it("uses shared visual tokens and visible keyboard focus treatments", () => {
+    const css = fs.readFileSync(
+      path.join(__dirname, "../src/permission-automation-confirmation.css"),
+      "utf8"
+    );
+    assert.match(css, /--accent:\s*#d97757/);
+    assert.doesNotMatch(css, /\.dialog-card\s*\{/);
+    assert.match(css, /grid-template-rows:\s*40px minmax\(0, 1fr\) auto/);
+    assert.match(css, /\.brand-icon\s*\{[\s\S]*width:\s*20px;[\s\S]*height:\s*20px;/);
+    assert.match(css, /\.icon-button\s*\{[\s\S]*width:\s*40px;[\s\S]*height:\s*39px;/);
+    assert.match(css, /\.risk-detail\s*\{/);
+    assert.match(css, /\.actions button:focus-visible/);
+    assert.match(css, /@media \(prefers-reduced-motion:\s*reduce\)/);
   });
 });
 

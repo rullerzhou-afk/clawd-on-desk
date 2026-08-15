@@ -649,6 +649,24 @@ describe("session HUD v5 three-state runtime contracts (source-level)", () => {
       "session-hud must not send hudAutoHide in snapshot");
   });
 
+  it("sends only the supported quota display modes to the ring renderer", () => {
+    assert.match(
+      src,
+      /displayMode:\s*ctx\.quotaRingDisplayMode === "remaining" \? "remaining" : "used"/
+    );
+  });
+
+  it("wires the persisted quota display mode through main's runtime mirror", () => {
+    const mainSrc = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
+    assert.match(mainSrc, /let quotaRingDisplayMode = _settingsController\.get\("quotaRingDisplayMode"\)/);
+    assert.match(mainSrc, /get quotaRingDisplayMode\(\) \{ return quotaRingDisplayMode; \}/);
+    assert.match(mainSrc, /quotaRingDisplayMode: \(v\) => \{ quotaRingDisplayMode = v; \}/);
+  });
+
+  it("does not create or manage a quota hover-card window", () => {
+    assert.doesNotMatch(src, /quotaTooltip|quota-tooltip|preload-quota-tooltip/);
+  });
+
   it("feeds visible permission and update bubble bounds into Orbit avoidance", () => {
     const collectFn = src.match(/function collectRingAvoidRects\([\s\S]*?\n  \}/);
     assert.ok(collectFn, "collectRingAvoidRects function missing");

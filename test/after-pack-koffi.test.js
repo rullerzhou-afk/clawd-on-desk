@@ -109,6 +109,24 @@ test("afterPack prune keeps one target addon and removes every lib/exp", async (
   assert.equal(fs.existsSync(output), true);
 });
 
+test("afterPack containment checks canonicalize parent path aliases", async (t) => {
+  const root = tempDir();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const actualRoot = path.join(root, "actual");
+  const aliasRoot = path.join(root, "alias");
+  fs.mkdirSync(actualRoot);
+  fs.symlinkSync(actualRoot, aliasRoot, process.platform === "win32" ? "junction" : "dir");
+
+  const fixture = await makePackagedKoffi(aliasRoot, "windows-x64");
+  const report = pruneKoffiNative({
+    appOutDir: fixture.appRoot,
+    targetId: "windows-x64",
+  });
+
+  assert.equal(report.retained.format, "PE");
+  assert.deepEqual(fs.readdirSync(fixture.nativeRoot), [fixture.targetTriplet]);
+});
+
 test("afterPack prune supports the Linux target without a platform exception", async (t) => {
   const root = tempDir();
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

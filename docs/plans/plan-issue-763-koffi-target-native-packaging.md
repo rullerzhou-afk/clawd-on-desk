@@ -1,7 +1,13 @@
 # Plan: #763 Koffi target-native packaging and foreign-native audit
 
-> Status: **Draft v3 with second-review findings incorporated; no implementation is authorized by this document**
-> Date: 2026-08-07
+> Status: **Implemented.** Shipped by PR #824 (`fix: package only target-native Koffi
+> binaries`, 2026-08-07); issue #763 closed the same day. The packaging rule and the
+> foreign-native audit gate are now part of the release process — see
+> `docs/project/release-process.md`. Follow-up: the Koffi 3 split-package migration is
+> tracked separately in #823. The plan below is kept as the design record; it was
+> drafted as "Draft v3 with second-review findings incorporated; no implementation is
+> authorized by this document", and that authorization was given separately.
+> Date: 2026-08-07 (status refreshed 2026-08-12)
 > Issue: https://github.com/rullerzhou-afk/clawd-on-desk/issues/763
 > Origin: follow-up deliberately excluded from PR #762
 > Scope: Windows x64/ARM64, macOS x64/ARM64, Linux x64 release artifacts

@@ -23,6 +23,9 @@ on:
       - .github/workflows/wayland-smoke.yml
       - package.json
       - package-lock.json
+      - scripts/verify-appimage-apprun.js
+      - test/appimage-apprun.test.js
+      - test/fixtures/appimage-apprun/**
 
 permissions:
   contents: read
@@ -46,6 +49,7 @@ jobs:
         run: |
           npm ci
           node --test test/linux-ozone.test.js
+          node --test test/appimage-apprun.test.js
 
       - name: Build the AppImage from this ref
         run: |
@@ -53,13 +57,18 @@ jobs:
           node scripts/assert-no-retired-telegram-sidecar.js --resources-root dist/linux-unpacked/resources --output dist/telegram-retirement-manifest.json
           ls -l dist/*.AppImage
 
+      - name: Verify final AppImage AppRun search paths
+        run: node scripts/verify-appimage-apprun.js --artifact dist/*.AppImage --output dist/appimage-apprun-manifests/linux-x64.json
+
       - name: Upload AppImage for isolated smoke jobs
         uses: actions/upload-artifact@v4
         with:
           # Preserve the established download name used by issue #441 field
           # testers and the regular Linux build workflow.
           name: linux-installer
-          path: dist/*.AppImage
+          path: |
+            dist/*.AppImage
+            dist/appimage-apprun-manifests/*.json
           if-no-files-found: error
           retention-days: 3
 

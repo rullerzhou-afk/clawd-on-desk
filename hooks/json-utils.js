@@ -319,7 +319,7 @@ function writeTextAtomicWithBackup(filePath, text, options = {}) {
  * "asarUnpack"). No-op for dev/source installs.
  */
 function asarUnpackedPath(p) {
-  return p.replace("app.asar/", "app.asar.unpacked/");
+  return p.replace(/app\.asar([\\/])/, "app.asar.unpacked$1");
 }
 
 function quoteHookCommandArg(value) {
@@ -564,6 +564,189 @@ function commandMatchesMarker(command, marker) {
   return !!(decoded && decoded.includes(marker));
 }
 
+const CLAUDE_STATE_HOOK_MARKER = "clawd-hook.js";
+const CLAUDE_HOOK_PATH_VAR_TOKENS = new Set([
+  "$CLAWD_HOOK_PATH",
+  "${CLAWD_HOOK_PATH}",
+]);
+const CLAUDE_NODE_BIN_VAR_TOKENS = new Set([
+  "$CLAWD_NODE_BIN",
+  "${CLAWD_NODE_BIN}",
+]);
+
+// Parse exactly one whitespace-delimited command whose only quoting form is
+// double quotes. This is intentionally much narrower than a shell parser: the
+// env-indirected Claude compatibility rule must fail closed on composition,
+// substitution, redirection, single quotes, or trailing commands.
+function parseSimpleDoubleQuotedCommand(command) {
+  if (typeof command !== "string" || !command.trim() || /[\r\n\0]/.test(command)) return null;
+  const tokens = [];
+  let index = 0;
+
+  while (index < command.length) {
+    while (index < command.length && /\s/.test(command[index])) index++;
+    if (index >= command.length) break;
+
+    if (command[index] === "'") return null;
+    if (command[index] === '"') {
+      index++;
+      const start = index;
+      while (index < command.length && command[index] !== '"') index++;
+      if (index >= command.length) return null;
+      const value = command.slice(start, index);
+      index++;
+      if (index < command.length && !/\s/.test(command[index])) return null;
+      tokens.push({ value, quoted: true });
+      continue;
+    }
+
+    const start = index;
+    while (index < command.length && !/\s/.test(command[index])) {
+      if (command[index] === "'" || command[index] === '"') return null;
+      index++;
+    }
+    tokens.push({ value: command.slice(start, index), quoted: false });
+  }
+
+  return tokens;
+}
+
+function crossPlatformBasename(value) {
+  return path.posix.basename(String(value || "").replace(/\\/g, "/"));
+}
+
+function isDirectAbsoluteNodePath(value, options = {}) {
+  if (typeof value !== "string" || !value || /[\r\n\0$`]/.test(value)) return false;
+  if (options.quoted !== true && /[;&|<>()[\]]/.test(value)) return false;
+  if (!path.posix.isAbsolute(value) && !path.win32.isAbsolute(value)) return false;
+  const base = crossPlatformBasename(value).toLowerCase();
+  return base === "node" || base === "node.exe";
+}
+
+function isSafeNodeExecutableCandidate(value) {
+  return isDirectAbsoluteNodePath(value, { quoted: true })
+    && !/["';&|<>()\[\]{}*?!%\r\n\0$`]/.test(value)
+    // POSIX double-quoted command serialization consumes selected backslash
+    // escapes. Windows drive/UNC paths need backslashes, but a POSIX absolute
+    // candidate containing one would no longer name the access-checked file.
+    && !(path.posix.isAbsolute(value) && value.includes("\\"));
+}
+
+function nodeCandidateDedupeKey(value) {
+  // Node also considers `/opt/...` win32-absolute. Keep POSIX absolutes
+  // case-sensitive; only drive/UNC/rooted-Windows-only forms are normalized.
+  return path.win32.isAbsolute(value) && !path.posix.isAbsolute(value)
+    ? value.replace(/\\/g, "/").toLowerCase()
+    : value;
+}
+
+function isDirectClawdHookPath(value) {
+  if (typeof value !== "string") return false;
+  const text = value.trim();
+  if (!text || /[\r\n\0$`]/.test(text) || /%[^%]+%/.test(text)) return false;
+  return crossPlatformBasename(text) === CLAUDE_STATE_HOOK_MARKER;
+}
+
+/**
+ * Recognize only the externally evidenced POSIX env-indirected Claude state
+ * hook command. This is syntax recognition, not ownership: callers must also
+ * prove settings.env.CLAWD_HOOK_PATH resolves to the Clawd marker.
+ */
+function parseClaudeEnvStateHookCommand(command, event) {
+  if (typeof event !== "string" || !event) return null;
+  const tokens = parseSimpleDoubleQuotedCommand(command);
+  if (!tokens || tokens.length !== 3) return null;
+  const [interpreter, hookPath, eventToken] = tokens;
+  if (!CLAUDE_HOOK_PATH_VAR_TOKENS.has(hookPath.value)) return null;
+  if (eventToken.quoted || eventToken.value !== event) return null;
+
+  let interpreterKind = null;
+  if (CLAUDE_NODE_BIN_VAR_TOKENS.has(interpreter.value)) {
+    interpreterKind = "env";
+  } else if (interpreter.value === "node") {
+    interpreterKind = "bare";
+  } else if (isDirectAbsoluteNodePath(interpreter.value, { quoted: interpreter.quoted })) {
+    interpreterKind = "absolute";
+  }
+  if (!interpreterKind) return null;
+
+  return {
+    interpreter: interpreter.value,
+    interpreterKind,
+    hookPathToken: hookPath.value,
+  };
+}
+
+function classifyManagedClaudeStateHookCommand(command, settings, event) {
+  // Preserve the installer's historical literal-marker ownership boundary.
+  // Other integrations intentionally decode PowerShell EncodedCommand via
+  // commandMatchesMarker(), but #852 must not broaden Claude ownership from
+  // a raw filename marker to arbitrary decoded payloads.
+  if (typeof command === "string" && command.includes(CLAUDE_STATE_HOOK_MARKER)) return "literal";
+  if (!parseClaudeEnvStateHookCommand(command, event)) return null;
+  const env = settings && typeof settings.env === "object" && !Array.isArray(settings.env)
+    ? settings.env
+    : null;
+  if (!env || !Object.prototype.hasOwnProperty.call(env, "CLAWD_HOOK_PATH")) return null;
+  return isDirectClawdHookPath(env.CLAWD_HOOK_PATH) ? "env" : null;
+}
+
+function getClaudeEnvNodeBinCandidates(settings, parsedCommand = null) {
+  const candidates = [];
+  const seen = new Set();
+  const append = (value) => {
+    if (!isSafeNodeExecutableCandidate(value)) return;
+    const key = nodeCandidateDedupeKey(value);
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push(value);
+  };
+
+  if (parsedCommand && parsedCommand.interpreterKind === "absolute") {
+    append(parsedCommand.interpreter);
+  }
+  const env = settings && typeof settings.env === "object" && !Array.isArray(settings.env)
+    ? settings.env
+    : null;
+  if (env && Object.prototype.hasOwnProperty.call(env, "CLAWD_NODE_BIN")) {
+    append(typeof env.CLAWD_NODE_BIN === "string" ? env.CLAWD_NODE_BIN.trim() : "");
+  }
+  return candidates;
+}
+
+function getClaudeEnvNodeBinCandidate(settings, parsedCommand = null) {
+  return getClaudeEnvNodeBinCandidates(settings, parsedCommand)[0] || null;
+}
+
+function findManagedClaudeEnvNodeBinCandidates(settings) {
+  if (!settings || !settings.hooks || typeof settings.hooks !== "object") return [];
+  const candidates = [];
+  const seen = new Set();
+  const append = (value) => {
+    const key = nodeCandidateDedupeKey(value);
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push(value);
+  };
+  const collect = (hook, event) => {
+    if (!hook || typeof hook.command !== "string") return;
+    if (classifyManagedClaudeStateHookCommand(hook.command, settings, event) !== "env") return;
+    const parsed = parseClaudeEnvStateHookCommand(hook.command, event);
+    for (const candidate of getClaudeEnvNodeBinCandidates(settings, parsed)) append(candidate);
+  };
+
+  for (const [event, entries] of Object.entries(settings.hooks)) {
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (!entry || typeof entry !== "object") continue;
+      collect(entry, event);
+      if (!Array.isArray(entry.hooks)) continue;
+      for (const hook of entry.hooks) collect(hook, event);
+    }
+  }
+  return candidates;
+}
+
 function removeMatchingCommandHooks(entries, predicate) {
   if (!Array.isArray(entries)) return { entries, removed: 0, changed: false };
 
@@ -694,6 +877,13 @@ module.exports = {
   DEFAULT_BACKUP_KEEP,
   asarUnpackedPath,
   commandMatchesMarker,
+  classifyManagedClaudeStateHookCommand,
+  findManagedClaudeEnvNodeBinCandidates,
+  getClaudeEnvNodeBinCandidate,
+  getClaudeEnvNodeBinCandidates,
+  isDirectAbsoluteNodePath,
+  isSafeNodeExecutableCandidate,
+  parseClaudeEnvStateHookCommand,
   extractExistingNodeBin,
   extractExistingNodeBinFromCommands,
   findHookCommands,

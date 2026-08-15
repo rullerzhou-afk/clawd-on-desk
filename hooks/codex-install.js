@@ -12,6 +12,7 @@ const {
   CODEX_HOOK_EVENTS,
   buildCodexHookCommand,
   registerCodexCommandHooks,
+  removeStableCodexHookLauncher,
   unregisterCodexCommandHooks,
 } = require("./codex-install-utils");
 
@@ -29,15 +30,26 @@ function registerCodexHooks(options = {}) {
     scriptName: MARKER,
     events: CODEX_OFFICIAL_HOOK_EVENTS,
     label: "Codex official hooks",
+    // Codex trusts the resolved command shape. Keep that command on a stable
+    // per-CODEX_HOME platform entry (Windows data-sidecar dispatcher, POSIX
+    // wrapper); Node and the active packaged/dev hook path can then change
+    // without rewriting hooks.json.
+    stableLauncher: options.remote !== true && options.stableLauncher !== false,
   });
 }
 
 function unregisterCodexHooks(options = {}) {
-  return unregisterCodexCommandHooks({
+  const result = unregisterCodexCommandHooks({
     ...options,
     marker: MARKER,
     events: CODEX_OFFICIAL_HOOK_EVENTS,
   });
+  const stableLauncher = removeStableCodexHookLauncher(options);
+  return {
+    ...result,
+    changed: result.changed === true || stableLauncher.changed,
+    stableLauncher,
+  };
 }
 
 module.exports = {

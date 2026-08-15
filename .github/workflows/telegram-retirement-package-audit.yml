@@ -59,7 +59,9 @@ jobs:
           node --test \
             test/assert-no-retired-telegram-sidecar.test.js \
             test/after-pack-koffi.test.js \
+            test/appimage-apprun.test.js \
             test/audit-packaged-native.test.js \
+            test/dependency-security-floor.test.js \
             test/koffi-lockfile.test.js \
             test/native-package-target.test.js \
             test/package-koffi-smoke.test.js \

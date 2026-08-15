@@ -4,6 +4,7 @@ const { app, BrowserWindow, screen, Menu, Tray, nativeImage } = require("electro
 const path = require("path");
 const { keepOutOfTaskbar } = require("./taskbar");
 const { loadTrayNormalIcon } = require("./tray-flash-icon");
+const { createMacDockVisibilityCoordinator } = require("./mac-dock-visibility");
 
 const isMac = process.platform === "darwin";
 const isWin = process.platform === "win32";
@@ -46,6 +47,13 @@ function joinGroups(groups) {
 module.exports = function initMenu(ctx) {
   // ── Translation helper (bound to ctx.lang via the shared i18n module) ──
   const t = createTranslator(() => ctx.lang);
+  const macDockVisibility = isMac ? createMacDockVisibilityCoordinator({
+    app,
+    dock: app.dock,
+    dockIconPath: path.join(__dirname, "../assets/dock-icon.png"),
+    getSettingsWindow: ctx.getSettingsWindow,
+    reapplyMacVisibility: ctx.reapplyMacVisibility,
+  }) : null;
 
   function isMiniSupported() {
     const caps = typeof ctx.getActiveThemeCapabilities === "function"
@@ -219,15 +227,7 @@ module.exports = function initMenu(ctx) {
 
   function applyDockVisibility() {
     if (!isMac) return;
-    if (ctx.showDock) {
-      app.setActivationPolicy("regular");
-      if (app.dock) app.dock.show();
-    } else {
-      app.setActivationPolicy("accessory");
-      if (app.dock) app.dock.hide();
-    }
-    // dock.hide()/show() resets NSWindowCollectionBehavior — re-apply fullscreen visibility
-    ctx.reapplyMacVisibility();
+    return macDockVisibility.apply(ctx.showDock);
   }
 
   function buildTrayMenu() {

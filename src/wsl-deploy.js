@@ -120,6 +120,11 @@ const AGENT_INSTALL_SCRIPT = {
   qoder: "qoder-install.js",
   reasonix: "reasonix-install.js",
   qoderwork: "qoderwork-install.js",
+  // QwenWork has no standalone Linux/WSL runtime: https://qwenwork.cn/download
+  // ships macOS 14+, Windows 10+ and HarmonyOS 6.1+ only. Mapping it here would
+  // create a Pair entry that writes hooks into the distro HOME
+  // (~/.QwenWorkCN/settings.json inside WSL), which the Windows QwenWork
+  // desktop app never reads.
 };
 
 function getAgentWslOptions(agentId) {

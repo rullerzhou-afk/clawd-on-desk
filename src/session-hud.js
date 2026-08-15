@@ -68,6 +68,7 @@ function evaluateBaseEligible({
   miniMode,
   miniTransitioning,
   showQuota,
+  hiddenQuotaProviders,
 }) {
   if (!snapshot) return false;
   if (petHidden) return false;
@@ -78,7 +79,7 @@ function evaluateBaseEligible({
   // still be checked ("a remote's quota before starting work") even with the
   // Session HUD turned off.
   const hudEligible = sessionHudEnabled !== false && snapshotHasVisibleSessions(snapshot);
-  const ringEligible = countQuotaCoins(snapshot, showQuota) > 0;
+  const ringEligible = countQuotaCoins(snapshot, showQuota, hiddenQuotaProviders) > 0;
   return hudEligible || ringEligible;
 }
 
@@ -183,8 +184,8 @@ function computeHudLayout(snapshot, options = {}) {
 // need the count — quota alone can keep the pet's floating UI up (the "check a
 // remote's quota before starting work" moment), and the ring window is sized
 // from it.
-function countQuotaCoins(snapshot, showQuota) {
-  return ringGeom.countQuotaCoins(snapshot, showQuota);
+function countQuotaCoins(snapshot, showQuota, hiddenQuotaProviders) {
+  return ringGeom.countQuotaCoins(snapshot, showQuota, hiddenQuotaProviders);
 }
 
 function computeHudHeight(rowCount) {
@@ -345,6 +346,7 @@ module.exports = function initSessionHud(ctx) {
       miniMode: getMiniMode(),
       miniTransitioning: getMiniTransitioning(),
       showQuota: ctx.sessionHudShowQuota !== false,
+      hiddenQuotaProviders: ctx.quotaRingHiddenProviders,
     });
   }
 
@@ -418,7 +420,7 @@ module.exports = function initSessionHud(ctx) {
       const computed = computeSessionHudBounds({ hitRect, anchorRect, workArea, width, height, scale, widthScale });
       contentBounds = computed && computed.contentBounds;
     }
-    const coinCount = countQuotaCoins(snapshot, ctx.sessionHudShowQuota !== false);
+    const coinCount = countQuotaCoins(snapshot, ctx.sessionHudShowQuota !== false, ctx.quotaRingHiddenProviders);
     const ring = coinCount > 0
       ? ringGeom.computeQuotaRingBounds({
         hitRect,
@@ -471,6 +473,7 @@ module.exports = function initSessionHud(ctx) {
       miniMode: getMiniMode(),
       miniTransitioning: getMiniTransitioning(),
       showQuota: ctx.sessionHudShowQuota !== false,
+      hiddenQuotaProviders: ctx.quotaRingHiddenProviders,
     });
     visibleHoldUntil = result.nextHoldUntil;
     // In revealed state, poll detecting !show means user moved away past grace.
@@ -643,6 +646,14 @@ module.exports = function initSessionHud(ctx) {
     ringWindow.webContents.send("quota-ring:snapshot", {
       accountQuota: Array.isArray(snapshot.accountQuota) ? snapshot.accountQuota : [],
       quotaAgentIcons: snapshot.quotaAgentIcons || {},
+      displayMode: ctx.quotaRingDisplayMode === "remaining" ? "remaining" : "used",
+      // The same list quota-ring-geometry.js used to size this window. Sent
+      // rather than pre-filtered out of accountQuota so the renderer's own draw
+      // rule stays the single place that decides whether a coin exists — and so
+      // the two filters cannot drift into sizing for coins nobody draws.
+      hiddenQuotaProviders: Array.isArray(ctx.quotaRingHiddenProviders)
+        ? ctx.quotaRingHiddenProviders
+        : [],
       side,
     });
   }
@@ -692,6 +703,10 @@ module.exports = function initSessionHud(ctx) {
       ringDidFinishLoad = true;
       applyZoomToWindow(ringWindow, getTextScale());
       sendI18n();
+      // Correct the renderer's optimistic default before any snapshot lands:
+      // the window is created hidden, and a flashback armed while nobody can
+      // see it would be spent on an empty screen.
+      sendRingVisibility(ringWindow.isVisible());
       syncSessionHud();
     });
     ringWindow.on("closed", () => {
@@ -703,8 +718,25 @@ module.exports = function initSessionHud(ctx) {
     return ringWindow;
   }
 
+  // The renderer replays the rolling-window number when the cluster appears
+  // after that number moved, so it needs the appear/disappear edges — which it
+  // cannot observe itself (a hidden Electron window does not reliably flip
+  // document.visibilityState, and a pinned cluster never hides).
+  function sendRingVisibility(visible) {
+    if (!ringWindow || ringWindow.isDestroyed() || !ringDidFinishLoad) return;
+    if (!ringWindow.webContents || ringWindow.webContents.isDestroyed()) return;
+    ringWindow.webContents.send("quota-ring:visibility", visible);
+  }
+
   function hideQuotaRing() {
-    if (ringWindow && !ringWindow.isDestroyed()) ringWindow.hide();
+    if (ringWindow && !ringWindow.isDestroyed()) {
+      // Only the notification is conditional. hide() stays unconditional and
+      // idempotent: isVisible() can report false while the window is merely
+      // occluded (app hidden on macOS, another Space, parent state), and
+      // skipping the real hide there would let the system surface it again.
+      if (ringWindow.isVisible()) sendRingVisibility(false);
+      ringWindow.hide();
+    }
     scheduleHiddenDestroy("ring");
   }
 
@@ -716,12 +748,13 @@ module.exports = function initSessionHud(ctx) {
       keepOutOfTaskbar(win);
       if (isMac) deferMacFloatingVisibility(ctx, win);
       else if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
+      sendRingVisibility(true);
     }
   }
 
   function computeRingBounds(snapshot, scale = getTextScale(), avoidRects = []) {
     if (!ctx.win || ctx.win.isDestroyed()) return null;
-    const coinCount = countQuotaCoins(snapshot, ctx.sessionHudShowQuota !== false);
+    const coinCount = countQuotaCoins(snapshot, ctx.sessionHudShowQuota !== false, ctx.quotaRingHiddenProviders);
     if (coinCount <= 0) return null;
     const petBounds = typeof ctx.getPetWindowBounds === "function" ? ctx.getPetWindowBounds() : null;
     if (!petBounds) return null;

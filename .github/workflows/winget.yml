@@ -1,0 +1,212 @@
+name: Prepare WinGet manifest
+
+# PREPARE ONLY — this workflow submits nothing and holds no long-lived
+# credential. It uses the ephemeral job GITHUB_TOKEN with `contents: read`, which
+# cannot write to this repository or to winget-pkgs.
+#
+# Background: `rullerzhou-afk.clawd-on-desk` has existed in microsoft/winget-pkgs
+# since v0.6.0, submitted by a third-party release-tracking bot we never
+# configured. That bot forwards only the FIRST matching .exe, so from v0.6.2 —
+# the first release to ship -x64.exe and -arm64.exe side by side — every manifest
+# declared two `Architecture: x64` entries that both pointed at the arm64
+# installer. The NSIS stub is 32-bit x86 and runs anywhere, so the install
+# reported success and the app then failed to launch.
+#
+# Why this cannot yet submit automatically: `komac update` does not turn the URLs
+# it is given into installer entries. It reads the PREVIOUS manifest and emits one
+# entry per previous entry, matching each to its best new installer
+# (Komac src/commands/update_version.rs -> src/match_installers.rs). The live
+# v0.14.0 manifest has two entries, both `Architecture: x64` (they are the
+# user/machine scope split), so both match the new x64 installer and the arm64
+# one is discarded — confirmed by running komac v2.16.0 against both URLs.
+#
+# The upstream manifest must therefore be repaired by a hand-reviewed PR first —
+# to x64/arm64 x user/machine — before any automation can maintain it. Until then
+# this workflow generates the manifest komac WOULD submit and uploads it for
+# inspection.
+#
+# See docs/project/release-process.md for the staged plan.
+
+on:
+  release:
+    types: [released]
+  workflow_dispatch:
+    inputs:
+      release-tag:
+        description: "Release tag to prepare, e.g. v0.15.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: winget-prepare
+  cancel-in-progress: false
+
+env:
+  # Single source of truth: the gate asserts our installer filenames match this,
+  # and that nothing else in the release does.
+  INSTALLERS_REGEX: '^Clawd-on-Desk-Setup-.*-(x64|arm64)\.exe$'
+  # Every architecture the package promises. Distinctness alone would still let a
+  # package.json edit that drops arm64 publish a single-architecture manifest.
+  REQUIRED_ARCHITECTURES: "x64,arm64"
+  KOMAC_VERSION: "2.16.0"
+  KOMAC_SHA256: "7d2707fa6210f2789a3702de49fbd150b736dbf426ee0b9bc8e098736f9fd82d"
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    # komac downloads both installers in full (~258 MB) to analyse them; it has
+    # no range or header-only mode. Bound the job so a stalled CDN cannot hold
+    # the concurrency group indefinitely.
+    timeout-minutes: 30
+    # `released` never fires for drafts or prereleases, but it DOES fire when an
+    # already-published prerelease is edited into a release, and
+    # workflow_dispatch can target any tag. The tag-shape check below closes both.
+    if: github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false
+    steps:
+      - name: Resolve release tag
+        id: release
+        # Runs before any checkout: `gh` only needs the token and repository
+        # name, and the tag decides which tree the config is read from.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.release-tag }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-$EVENT_TAG}"
+          if [ -z "$tag" ]; then
+            echo "No release tag to prepare." >&2
+            exit 1
+          fi
+          # git permits ' ; $ ( ) ` { } | & in a ref name, and the tag is
+          # interpolated into downstream commands. Constrain it to the shape
+          # this project actually tags before it leaves this step.
+          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Refusing tag with unexpected shape: $tag" >&2
+            echo "WinGet publishes release versions only (vMAJOR.MINOR.PATCH)." >&2
+            exit 1
+          fi
+          prerelease="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq '.isPrerelease')"
+          if [ "$prerelease" != "false" ]; then
+            echo "Refusing to prepare prerelease $tag for WinGet." >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check out release tooling
+        # Pinned to the default branch on purpose. Without an explicit ref,
+        # actions/checkout takes the ref that triggered the run — for a release
+        # event that is the tag, which for older releases does not contain this
+        # tooling at all. The build config is read from the tag separately below.
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Fetch the tagged build configuration
+        # Installer filenames come from the package.json that produced the
+        # release's assets, which is the tag's, not the default branch's.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/contents/package.json?ref=$TAG" \
+            --jq '.content' | base64 -d > tagged-package.json
+          echo "Tagged version: $(jq -r '.version' tagged-package.json)"
+
+      - name: Collect release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Carries name, digest and size, so the contract can pin content and
+          # not just filenames.
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets' > release-assets.json
+          jq -r '.[] | "  \(.name)  \(.digest // "no-digest")"' release-assets.json
+
+      - name: Verify WinGet architecture contract
+        # Guards komac's INPUT: the filename is the only correct architecture
+        # signal we ship, because electron-builder's NSIS stub is 32-bit x86 for
+        # both targets. This does not and cannot guarantee komac's OUTPUT; that
+        # is what the generated manifest below is for.
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          npm run verify:winget-arch -- \
+            --package-json tagged-package.json \
+            --release-tag "$TAG" \
+            --assets-file release-assets.json \
+            --installers-regex "$INSTALLERS_REGEX" \
+            --require-architectures "$REQUIRED_ARCHITECTURES" \
+            --output winget-arch-contract.json
+
+      - name: Install komac
+        # Into the runner's temp dir, not /usr/local/bin: GitHub-hosted runners
+        # execute as a non-root user, and writing there would need sudo.
+        run: |
+          set -euo pipefail
+          archive="komac-${KOMAC_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$archive" \
+            "https://github.com/russellbanks/Komac/releases/download/v${KOMAC_VERSION}/${archive}"
+          echo "${KOMAC_SHA256}  ${archive}" | sha256sum --check --strict
+          tar -xzf "$archive" komac
+          mkdir -p "$RUNNER_TEMP/bin"
+          install -m 0755 komac "$RUNNER_TEMP/bin/komac"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/komac" --version
+
+      - name: Generate manifest (no submission)
+        # --dry-run writes the manifest and exits before any fork or PR is
+        # created. GITHUB_TOKEN here is the ambient job token, which can read
+        # public repositories and cannot write to winget-pkgs.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mapfile -t urls < <(jq -r '.komacUrls[]' winget-arch-contract.json)
+          if [ "${#urls[@]}" -eq 0 ]; then
+            echo "Contract produced no installer URLs; nothing to generate." >&2
+            exit 1
+          fi
+          printf 'Generating from:\n'
+          printf '  %s\n' "${urls[@]}"
+          mkdir -p generated
+          # Each URL carries an explicit |<architecture> suffix, which komac
+          # ranks above both its own filename inference and PE-header analysis.
+          komac update rullerzhou-afk.clawd-on-desk \
+            --version "${TAG#v}" \
+            --urls "${urls[@]}" \
+            --dry-run \
+            --output generated
+
+      - name: Summarize generated installers
+        if: always() && hashFiles('generated/**') != ''
+        run: |
+          # komac writes the winget-pkgs directory layout, so the installer
+          # manifest is several levels down.
+          echo "### Generated WinGet manifest" >> "$GITHUB_STEP_SUMMARY"
+          echo '```yaml' >> "$GITHUB_STEP_SUMMARY"
+          find generated -name '*installer.yaml' -exec cat {} + >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('winget-arch-contract.json') != ''
+        with:
+          name: winget-arch-contract
+          path: winget-arch-contract.json
+
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('generated/**') != ''
+        with:
+          name: winget-generated-manifest
+          path: generated/

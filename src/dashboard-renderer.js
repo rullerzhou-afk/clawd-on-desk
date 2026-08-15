@@ -31,6 +31,14 @@ const titleEl = document.getElementById("title");
 const countEl = document.getElementById("count");
 const contentEl = document.getElementById("content");
 const quotaSummaryEl = document.getElementById("quotaSummary");
+// The manual Kimi quota refresh lives inside the Kimi quota section header
+// (built by renderQuotaSummary), so these refs are re-pointed on every quota
+// summary rebuild and stay null whenever the section is not rendered.
+let kimiQuotaRefreshButtonEl = null;
+let kimiQuotaRefreshFeedbackEl = null;
+
+let kimiQuotaStatus = null;
+let kimiQuotaRefreshBusy = false;
 
 function t(key) {
   const dict = i18nPayload && i18nPayload.translations ? i18nPayload.translations : {};
@@ -78,10 +86,148 @@ function contextUsageText(session) {
 // a source only. Provider sections cover Antigravity's own /usage (Gemini +
 // Claude/GPT-via-agy), Claude Code's rate_limits, Codex's generic rollout
 // rate_limits, and Dashboard-only Codex Spark quota.
-const QUOTA_WARNING_THRESHOLD = 90;
+// Severity thresholds mirror the Orbit coins (quota-ring-renderer.js): a bar
+// and a ring must agree on what counts as warn (60) and hot (85), otherwise
+// the same bucket reads as alarming in one surface and fine in the other.
+// test/quota-palette.test.js pins the mirror.
+const QUOTA_WARN_AT = 60;
+const QUOTA_HOT_AT = 85;
+
+function quotaSeverityClass(usedPercent) {
+  const p = Number(usedPercent);
+  if (!Number.isFinite(p)) return "sev-ok";
+  if (p > QUOTA_HOT_AT) return "sev-hot";
+  if (p >= QUOTA_WARN_AT) return "sev-warn";
+  return "sev-ok";
+}
 // A source that has not confirmed its numbers recently gets an explicit
 // "as of N ago" label instead of presenting old numbers as live.
-const QUOTA_STALE_AFTER_MS = 5 * 60 * 1000;
+const DEFAULT_QUOTA_STALE_AFTER_MS = 5 * 60 * 1000;
+const PROVIDER_STALE_AFTER_MS = Object.freeze({
+  kimiQuota: 7 * 60 * 1000,
+});
+
+function quotaStaleAfterMs(providerKey) {
+  return PROVIDER_STALE_AFTER_MS[providerKey] || DEFAULT_QUOTA_STALE_AFTER_MS;
+}
+
+function isKimiQuotaConnected() {
+  return !!(
+    kimiQuotaStatus
+    && kimiQuotaStatus.status === "ok"
+    && kimiQuotaStatus.configured === true
+    && kimiQuotaStatus.collectionEnabled === true
+  );
+}
+
+// Feedback is kept as data (not just written into the span) so it survives
+// the quota summary rebuild that a fresh snapshot triggers right after a
+// refresh completes.
+let kimiQuotaRefreshFeedbackState = { text: "", isError: false };
+
+function applyKimiQuotaRefreshFeedback() {
+  const el = kimiQuotaRefreshFeedbackEl;
+  if (!el) return;
+  const { text, isError } = kimiQuotaRefreshFeedbackState;
+  el.textContent = text;
+  el.title = text;
+  el.className = isError
+    ? "quota-refresh-feedback error"
+    : "quota-refresh-feedback";
+  el.hidden = !text;
+}
+
+function setKimiQuotaRefreshFeedback(message, isError = false) {
+  kimiQuotaRefreshFeedbackState = { text: message || "", isError: !!isError };
+  applyKimiQuotaRefreshFeedback();
+}
+
+function syncKimiQuotaRefreshControl() {
+  const button = kimiQuotaRefreshButtonEl;
+  if (!button) return;
+  button.disabled = kimiQuotaRefreshBusy
+    || !kimiQuotaStatus
+    || kimiQuotaStatus.decryptable !== true
+    || kimiQuotaStatus.agentEnabled === false;
+  button.className = kimiQuotaRefreshBusy
+    ? "quota-refresh-button is-refreshing"
+    : "quota-refresh-button";
+  const label = t(
+    kimiQuotaRefreshBusy ? "dashboardKimiQuotaRefreshing" : "dashboardKimiQuotaRefresh"
+  );
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  applyKimiQuotaRefreshFeedback();
+}
+
+// Icon-only refresh action for the Kimi quota section header; repoints the
+// module-level refs on every quota summary rebuild.
+function buildKimiQuotaRefreshControl() {
+  const feedback = document.createElement("span");
+  feedback.className = "quota-refresh-feedback";
+  feedback.setAttribute("role", "status");
+  feedback.setAttribute("aria-live", "polite");
+  feedback.hidden = true;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "quota-refresh-button";
+  const icon = document.createElement("span");
+  icon.className = "quota-refresh-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = "↻";
+  button.appendChild(icon);
+  const label = document.createElement("span");
+  label.className = "quota-refresh-label";
+  label.textContent = t("dashboardKimiQuotaRefreshShort");
+  button.appendChild(label);
+  button.addEventListener("click", refreshKimiQuotaFromDashboard);
+  kimiQuotaRefreshFeedbackEl = feedback;
+  kimiQuotaRefreshButtonEl = button;
+  syncKimiQuotaRefreshControl();
+  return [feedback, button];
+}
+
+async function reloadKimiQuotaStatus() {
+  if (!window.dashboardAPI || typeof window.dashboardAPI.getKimiQuotaStatus !== "function") {
+    kimiQuotaStatus = null;
+  } else {
+    try { kimiQuotaStatus = await window.dashboardAPI.getKimiQuotaStatus(); }
+    catch { kimiQuotaStatus = null; }
+  }
+  // The connected flag feeds the quota summary signature, so this rebuilds
+  // (showing/hiding the section-header refresh) only when it flipped.
+  renderQuotaSummary(snapshot);
+  syncKimiQuotaRefreshControl();
+  return kimiQuotaStatus;
+}
+
+function snapshotHasKimiQuota(value) {
+  const accountQuota = Array.isArray(value && value.accountQuota) ? value.accountQuota : [];
+  return accountQuota.some((entry) => entry && entry.kimiQuota && entry.kimiQuota.group);
+}
+
+async function refreshKimiQuotaFromDashboard() {
+  if (kimiQuotaRefreshBusy || !window.dashboardAPI
+      || typeof window.dashboardAPI.refreshKimiQuota !== "function") return;
+  kimiQuotaRefreshBusy = true;
+  setKimiQuotaRefreshFeedback("");
+  syncKimiQuotaRefreshControl();
+  let result;
+  try { result = await window.dashboardAPI.refreshKimiQuota(); }
+  catch { result = { status: "error", reason: "runtime-unavailable" }; }
+  kimiQuotaRefreshBusy = false;
+  await reloadKimiQuotaStatus();
+  if (result && result.status === "ok") {
+    setKimiQuotaRefreshFeedback(t("dashboardKimiQuotaUpdated"));
+  } else {
+    const reason = (result && (result.reason || result.message)) || "unknown-error";
+    setKimiQuotaRefreshFeedback(
+      t("dashboardKimiQuotaRefreshFailed").replace("{reason}", String(reason)),
+      true
+    );
+  }
+  syncKimiQuotaRefreshControl();
+}
 
 function formatDurationHM(totalMinutes) {
   const hours = Math.floor(totalMinutes / 60);
@@ -166,7 +312,7 @@ function formatResetDate(resetAt) {
 // provider. Source labels appear only when they carry information: a single
 // local-only source renders exactly the compact pre-grouping layout, and a
 // fresh source shows no "as of" suffix.
-function buildQuotaSourceHeader(sourceEntry, providerEntry, baseLabel) {
+function buildQuotaSourceHeader(sourceEntry, providerEntry, baseLabel, providerKey) {
   const parts = [];
   const multiSource = sourceEntry.multiSource === true;
   if (multiSource) {
@@ -178,14 +324,14 @@ function buildQuotaSourceHeader(sourceEntry, providerEntry, baseLabel) {
   // Fallback covers snapshots that predate lastSeenAt.
   const seenAt = Number(providerEntry.lastSeenAt ?? providerEntry.updatedAt ?? 0);
   const age = Date.now() - seenAt;
-  if (Number.isFinite(age) && age > QUOTA_STALE_AFTER_MS) {
+  if (Number.isFinite(age) && age > quotaStaleAfterMs(providerKey)) {
     const asOf = formatAsOf(seenAt);
     if (asOf) parts.push(asOf);
   }
   return parts.length ? parts.join(" · ") : null;
 }
 
-function buildQuotaHalfBar(labelText, bucket, resetStyle) {
+function buildQuotaHalfBar(labelText, bucket, resetStyle, providerKey, ringSlot) {
   const half = document.createElement("div");
   half.className = "quota-half";
 
@@ -200,7 +346,8 @@ function buildQuotaHalfBar(labelText, bucket, resetStyle) {
       : t("dashboardQuotaResetIn").replace("{time}", formatResetIn(bucket.resetAt));
   }
   const bucketSeenAt = Number(bucket.lastSeenAt);
-  const asOf = Number.isFinite(bucketSeenAt) && Date.now() - bucketSeenAt > QUOTA_STALE_AFTER_MS
+  const asOf = Number.isFinite(bucketSeenAt)
+    && Date.now() - bucketSeenAt > quotaStaleAfterMs(providerKey)
     ? formatAsOf(bucketSeenAt)
     : "";
   const details = [percentText, resetText, asOf].filter(Boolean).join(" · ");
@@ -210,7 +357,10 @@ function buildQuotaHalfBar(labelText, bucket, resetStyle) {
   const track = document.createElement("div");
   track.className = "quota-bar-track";
   const fill = document.createElement("div");
-  fill.className = bucket.usedPercent >= QUOTA_WARNING_THRESHOLD ? "quota-bar-fill quota-bar-fill-warning" : "quota-bar-fill";
+  // Identity classes (pv-/rg-) paint the bar in the provider+window hue the
+  // Orbit coin uses for the same logical window; the sev- class overrides it
+  // on warning/hot, again exactly like the coin's fill.
+  fill.className = `quota-bar-fill pv-${providerKey} rg-${ringSlot} ${quotaSeverityClass(bucket.usedPercent)}`;
   fill.style.width = `${Math.max(0, Math.min(100, bucket.usedPercent))}%`;
   track.appendChild(fill);
   half.appendChild(track);
@@ -218,7 +368,7 @@ function buildQuotaHalfBar(labelText, bucket, resetStyle) {
   return half;
 }
 
-function buildQuotaGroupRow(headerText, fiveHourBucket, weeklyBucket) {
+function buildQuotaGroupRow(headerText, fiveHourBucket, weeklyBucket, providerKey) {
   if (!fiveHourBucket && !weeklyBucket) return null;
   const row = document.createElement("div");
   row.className = "quota-group-row";
@@ -229,26 +379,38 @@ function buildQuotaGroupRow(headerText, fiveHourBucket, weeklyBucket) {
     halves.appendChild(buildQuotaHalfBar(
       formatQuotaWindowLabel(fiveHourBucket, t("dashboardQuotaFiveHour")),
       fiveHourBucket,
-      quotaResetStyle(fiveHourBucket, "countdown")
+      quotaResetStyle(fiveHourBucket, "countdown"),
+      providerKey,
+      "outer"
     ));
   }
   if (weeklyBucket) {
     halves.appendChild(buildQuotaHalfBar(
       formatQuotaWindowLabel(weeklyBucket, t("dashboardQuotaWeekly")),
       weeklyBucket,
-      quotaResetStyle(weeklyBucket, "date")
+      quotaResetStyle(weeklyBucket, "date"),
+      providerKey,
+      "inner"
     ));
   }
   row.appendChild(halves);
   return row;
 }
 
-function buildQuotaSection(headerKey, rows) {
+function buildQuotaSection(headerKey, rows, headerExtras = []) {
   const usableRows = rows.filter(Boolean);
-  if (!usableRows.length) return null;
+  if (!usableRows.length && !headerExtras.length) return null;
   const section = document.createElement("div");
   section.className = "quota-section";
-  section.appendChild(createText("div", "quota-section-header", t(headerKey)));
+  if (headerExtras.length) {
+    const titlebar = document.createElement("div");
+    titlebar.className = "quota-section-titlebar";
+    titlebar.appendChild(createText("div", "quota-section-header", t(headerKey)));
+    for (const el of headerExtras) titlebar.appendChild(el);
+    section.appendChild(titlebar);
+  } else {
+    section.appendChild(createText("div", "quota-section-header", t(headerKey)));
+  }
   for (const row of usableRows) section.appendChild(row);
   return section;
 }
@@ -267,6 +429,9 @@ function computeQuotaSummarySignature(accountQuota) {
     lang: (i18nPayload && i18nPayload.lang) || "en",
     minute: accountQuota.length ? Math.floor(Date.now() / 60000) : null,
     accountQuota,
+    // The Kimi section header hosts the manual refresh while connected, so a
+    // connection flip must force a rebuild even when the data is unchanged.
+    kimiRefresh: isKimiQuotaConnected(),
   });
 }
 
@@ -277,6 +442,9 @@ function renderQuotaSummary(snapshot) {
   const signature = computeQuotaSummarySignature(accountQuota);
   if (signature === lastQuotaSummarySignature) return;
   lastQuotaSummarySignature = signature;
+  // Stale until the Kimi section (re)creates them below.
+  kimiQuotaRefreshButtonEl = null;
+  kimiQuotaRefreshFeedbackEl = null;
 
   const multiSource = accountQuota.length > 1;
   const sources = accountQuota.map((entry) => ({ ...entry, multiSource }));
@@ -290,14 +458,16 @@ function renderQuotaSummary(snapshot) {
     if (!group) continue;
     antigravityRows.push(
       buildQuotaGroupRow(
-        buildQuotaSourceHeader(source, provider, t("dashboardQuotaGroupGemini")),
+        buildQuotaSourceHeader(source, provider, t("dashboardQuotaGroupGemini"), "antigravityQuota"),
         liveBucket(group, "geminiFiveHour"),
-        liveBucket(group, "geminiWeekly")
+        liveBucket(group, "geminiWeekly"),
+        "antigravityQuota"
       ),
       buildQuotaGroupRow(
-        buildQuotaSourceHeader(source, provider, t("dashboardQuotaGroupThirdParty")),
+        buildQuotaSourceHeader(source, provider, t("dashboardQuotaGroupThirdParty"), "antigravityQuota"),
         liveBucket(group, "thirdPartyFiveHour"),
-        liveBucket(group, "thirdPartyWeekly")
+        liveBucket(group, "thirdPartyWeekly"),
+        "antigravityQuota"
       )
     );
   }
@@ -309,9 +479,10 @@ function renderQuotaSummary(snapshot) {
     const group = provider && provider.group;
     if (!group) return null;
     return buildQuotaGroupRow(
-      buildQuotaSourceHeader(source, provider, null),
+      buildQuotaSourceHeader(source, provider, null, "claudeQuota"),
       liveBucket(group, "claudeFiveHour"),
-      liveBucket(group, "claudeWeekly")
+      liveBucket(group, "claudeWeekly"),
+      "claudeQuota"
     );
   });
   const claudeSection = buildQuotaSection("dashboardQuotaSectionClaudeCode", claudeRows);
@@ -322,9 +493,10 @@ function renderQuotaSummary(snapshot) {
     const group = provider && provider.group;
     if (!group) return null;
     return buildQuotaGroupRow(
-      buildQuotaSourceHeader(source, provider, null),
+      buildQuotaSourceHeader(source, provider, null, "codexQuota"),
       liveBucket(group, "codexFiveHour"),
-      liveBucket(group, "codexWeekly")
+      liveBucket(group, "codexWeekly"),
+      "codexQuota"
     );
   });
   const codexSection = buildQuotaSection("dashboardQuotaSectionCodex", codexRows);
@@ -335,9 +507,10 @@ function renderQuotaSummary(snapshot) {
     const group = provider && provider.group;
     if (!group) return null;
     return buildQuotaGroupRow(
-      buildQuotaSourceHeader(source, provider, null),
+      buildQuotaSourceHeader(source, provider, null, "codexSparkQuota"),
       liveBucket(group, "codexFiveHour"),
-      liveBucket(group, "codexWeekly")
+      liveBucket(group, "codexWeekly"),
+      "codexSparkQuota"
     );
   });
   const codexSparkSection = buildQuotaSection(
@@ -345,6 +518,30 @@ function renderQuotaSummary(snapshot) {
     codexSparkRows
   );
   if (codexSparkSection) sections.push(codexSparkSection);
+
+  const kimiRows = sources.map((source) => {
+    const provider = source.kimiQuota;
+    const group = provider && provider.group;
+    if (!group) return null;
+    return buildQuotaGroupRow(
+      buildQuotaSourceHeader(source, provider, null, "kimiQuota"),
+      liveBucket(group, "kimiFiveHour"),
+      liveBucket(group, "kimiWeekly"),
+      "kimiQuota"
+    );
+  });
+  const kimiConnected = isKimiQuotaConnected();
+  if (kimiConnected && !kimiRows.some(Boolean)) {
+    // Connected but nothing reported yet: keep the section visible so the
+    // manual refresh that fetches the first numbers has a home.
+    kimiRows.push(createText("div", "quota-empty-hint", t("dashboardKimiQuotaEmpty")));
+  }
+  const kimiSection = buildQuotaSection(
+    "dashboardQuotaSectionKimiCode",
+    kimiRows,
+    kimiConnected ? buildKimiQuotaRefreshControl() : []
+  );
+  if (kimiSection) sections.push(kimiSection);
 
   if (!sections.length) {
     quotaSummaryEl.hidden = true;
@@ -1042,9 +1239,14 @@ async function init() {
   window.dashboardAPI.onLangChange((payload) => {
     i18nPayload = payload || i18nPayload;
     render();
+    syncKimiQuotaRefreshControl();
   });
   window.dashboardAPI.onSessionSnapshot((nextSnapshot) => {
+    const hadKimiQuota = snapshotHasKimiQuota(snapshot);
     snapshot = nextSnapshot || snapshot;
+    if (hadKimiQuota !== snapshotHasKimiQuota(snapshot)) {
+      void reloadKimiQuotaStatus();
+    }
     if (activeEdit && !snapshotHasSession(snapshot, activeEdit.sessionId)) {
       activeEdit = null;
       render({ force: true });
@@ -1053,12 +1255,16 @@ async function init() {
     render();
   });
 
-  const [nextI18n, nextSnapshot] = await Promise.all([
+  const [nextI18n, nextSnapshot, nextKimiQuotaStatus] = await Promise.all([
     window.dashboardAPI.getI18n(),
     window.dashboardAPI.getSnapshot(),
+    window.dashboardAPI && typeof window.dashboardAPI.getKimiQuotaStatus === "function"
+      ? window.dashboardAPI.getKimiQuotaStatus()
+      : Promise.resolve(null),
   ]);
   i18nPayload = nextI18n || i18nPayload;
   snapshot = nextSnapshot || snapshot;
+  kimiQuotaStatus = nextKimiQuotaStatus || null;
   render();
 
   setInterval(render, 1000);

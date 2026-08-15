@@ -22,8 +22,42 @@ const {
   getDefaults,
   sanitizeIdentityTxn,
   sanitizeRuntimeModeTxn,
+  isValidSshTransportMode,
+  sanitizeSshTransportHint,
   remoteOwnershipDomainKey,
 } = require("../src/remote-ssh-profile");
+
+test("SSH transport mode defaults to auto and validates serialized override", () => {
+  assert.equal(isValidSshTransportMode("auto"), true);
+  assert.equal(isValidSshTransportMode("serialized"), true);
+  assert.equal(isValidSshTransportMode("parallel"), false);
+  assert.equal(sanitizeProfile(basicProfile()).sshTransportMode, "auto");
+  assert.equal(sanitizeProfile(basicProfile({ sshTransportMode: "serialized" })).sshTransportMode, "serialized");
+  assert.equal(validateProfile(basicProfile({ sshTransportMode: "parallel" })).status, "error");
+});
+
+test("historical SSH transport hints are strict and local-only data", () => {
+  const codespace = sanitizeSshTransportHint({
+    version: 1,
+    mode: "serialized",
+    kind: "codespaces-stdio",
+    keyId: "codespace:fuzzy-space",
+  });
+  assert.deepEqual(codespace, {
+    version: 1,
+    mode: "serialized",
+    kind: "codespaces-stdio",
+    keyId: "codespace:fuzzy-space",
+  });
+  assert.equal(sanitizeSshTransportHint({ ...codespace, keyId: "codespace:../bad" }), null);
+  assert.equal(sanitizeSshTransportHint({ ...codespace, mode: "parallel" }), null);
+  assert.equal(sanitizeSshTransportHint({
+    version: 1,
+    mode: "serialized",
+    kind: "explicit-serialized",
+    keyId: `destination-sha256:${"a".repeat(64)}`,
+  }).kind, "explicit-serialized");
+});
 
 // ── remoteForwardPort ↔ SERVER_PORTS invariant ──
 
@@ -1107,6 +1141,23 @@ test("settings-actions: remoteSsh.update CLEARS lastDeployedAt when host changes
   assert.equal(r.commit.remoteSsh.profiles[0].host, "newpi");
   assert.equal(r.commit.remoteSsh.profiles[0].lastDeployedAt, undefined,
     "host change must clear deploy stamp (UI re-warns 'never deployed')");
+});
+
+test("settings-actions: active serialized transport blocks target and transport-mode edits", () => {
+  const cmd = commandRegistry["remoteSsh.update"];
+  const current = basicProfile({ host: "pi", sshTransportMode: "auto" });
+  const deps = {
+    snapshot: { remoteSsh: { profiles: [current] } },
+    isRemoteSshTransportBusy: () => true,
+  };
+  const hostEdit = cmd(basicProfile({ host: "newpi", sshTransportMode: "auto" }), deps);
+  assert.equal(hostEdit.status, "error");
+  assert.equal(hostEdit.reason, "serialized_transport_busy");
+  const modeEdit = cmd(basicProfile({ host: "pi", sshTransportMode: "serialized" }), deps);
+  assert.equal(modeEdit.status, "error");
+  assert.equal(modeEdit.reason, "serialized_transport_busy");
+  const labelEdit = cmd(basicProfile({ host: "pi", label: "Cosmetic", sshTransportMode: "auto" }), deps);
+  assert.equal(labelEdit.status, "ok");
 });
 
 test("settings-actions: remoteSsh.update clears detected remote Node when host changes", () => {

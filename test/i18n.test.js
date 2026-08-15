@@ -90,6 +90,166 @@ describe("i18n locales", () => {
     assertLocaleObjectParity(loadSettingsI18nStrings(), "settings");
   });
 
+  it("localizes every Feishu provenance, lookup lifecycle, and persistence outcome", () => {
+    const strings = loadSettingsI18nStrings();
+    const keys = [
+      "feishuApprovalApproverReconfirmationWarning",
+      "feishuApprovalPersistenceFailed",
+      "feishuApprovalLookupCancel",
+      "feishuApprovalLookupCancelling",
+      "feishuApprovalLookupCancelFailed",
+      "feishuApprovalApproverNotConfigured",
+      "feishuApprovalLookupUnsavedCredentials",
+      "feishuApprovalLookupInvalidAppId",
+      "feishuApprovalLookupCredentialProvenanceUnknown",
+      "feishuApprovalLookupCredentialPlatformMismatch",
+      "feishuApprovalLookupApproverProvenanceUnknown",
+      "feishuApprovalLookupApproverBindingIncomplete",
+      "feishuApprovalLookupApproverPlatformMismatch",
+      "feishuApprovalLookupApproverAppMismatch",
+      "feishuApprovalLookupRequiresOpenId",
+      "feishuApprovalLookupCancelled",
+      "feishuApprovalLookupSuperseded",
+      "feishuApprovalLookupCredentialsChanged",
+    ];
+    for (const lang of SUPPORTED_LANGS) {
+      for (const key of keys) {
+        assert.equal(typeof strings[lang][key], "string", `${lang}.${key} must exist`);
+        assert.notEqual(strings[lang][key].trim(), "", `${lang}.${key} must not be empty`);
+      }
+    }
+  });
+
+  it("distinguishes missing approver configuration in every Settings locale", () => {
+    const strings = loadSettingsI18nStrings();
+    assert.deepStrictEqual(
+      Object.fromEntries(SUPPORTED_LANGS.map((lang) => [lang, strings[lang].feishuApprovalApproverNotConfigured])),
+      {
+        en: "No approver is configured yet.",
+        zh: "尚未配置审批人。",
+        "zh-TW": "尚未設定審批人。",
+        ko: "아직 승인자가 설정되지 않았습니다.",
+        ja: "承認者がまだ設定されていません。",
+        "pt-BR": "Nenhum aprovador foi configurado ainda.",
+      },
+    );
+  });
+
+  it("provides non-empty macOS menu bar and Dock recovery strings in every Settings locale", () => {
+    const settings = loadSettingsI18nStrings();
+    const keys = [
+      "rowShowInMenuBar",
+      "rowShowInMenuBarDesc",
+      "rowShowInDock",
+      "rowShowInDockDesc",
+    ];
+    for (const lang of SUPPORTED_LANGS) {
+      for (const key of keys) {
+        assert.strictEqual(typeof settings[lang][key], "string", `settings.${lang}.${key} should be a string`);
+        assert.ok(settings[lang][key].trim(), `settings.${lang}.${key} should not be empty`);
+      }
+    }
+  });
+
+  it("localizes the unconfigured Feishu credential draft Clear action", () => {
+    const strings = loadSettingsI18nStrings();
+    assert.deepStrictEqual(
+      Object.fromEntries(SUPPORTED_LANGS.map((lang) => [lang, strings[lang].feishuApprovalClearSecretsDraft])),
+      {
+        en: "Clear",
+        zh: "清空",
+        "zh-TW": "清除",
+        ko: "지우기",
+        ja: "クリア",
+        "pt-BR": "Limpar",
+      },
+    );
+  });
+
+  it("uses exact credential replacement confirmation copy in every Settings locale", () => {
+    const strings = loadSettingsI18nStrings();
+    const expected = {
+      en: {
+        feishuApprovalSecretsReplaceHintHtml: "For the same App, blank Verification Token and Encrypt Key fields keep their saved values. Replacing the App clears those blank fields after confirmation.",
+        feishuApprovalCredentialsReplaceConfirmTitle: "Replace the saved app credentials?",
+        feishuApprovalCredentialsReplaceConfirmDetail: "This changes the saved App identity. Blank Verification Token and Encrypt Key fields will be cleared. Continue?",
+        feishuApprovalCredentialsReplaceConfirmAction: "Replace credentials",
+      },
+      zh: {
+        feishuApprovalSecretsReplaceHintHtml: "同一应用下，Verification Token 和 Encrypt Key 留空会保留已保存值；更换应用时，确认后会清除留空字段。",
+        feishuApprovalCredentialsReplaceConfirmTitle: "替换已保存的应用凭证？",
+        feishuApprovalCredentialsReplaceConfirmDetail: "这会更改已保存的应用身份。留空的 Verification Token 和 Encrypt Key 将被清除。是否继续？",
+        feishuApprovalCredentialsReplaceConfirmAction: "替换凭证",
+      },
+      "zh-TW": {
+        feishuApprovalSecretsReplaceHintHtml: "同一應用下，Verification Token 和 Encrypt Key 留空會保留已儲存值；更換應用時，確認後會清除留空欄位。",
+        feishuApprovalCredentialsReplaceConfirmTitle: "取代已儲存的應用憑證？",
+        feishuApprovalCredentialsReplaceConfirmDetail: "這會變更已儲存的應用身分。留空的 Verification Token 和 Encrypt Key 將被清除。是否繼續？",
+        feishuApprovalCredentialsReplaceConfirmAction: "取代憑證",
+      },
+      ko: {
+        feishuApprovalSecretsReplaceHintHtml: "같은 앱에서는 Verification Token 및 Encrypt Key를 비워 두면 저장된 값을 유지합니다. 앱을 교체하면 확인 후 비워 둔 필드가 지워집니다.",
+        feishuApprovalCredentialsReplaceConfirmTitle: "저장된 앱 자격 증명을 교체할까요?",
+        feishuApprovalCredentialsReplaceConfirmDetail: "저장된 앱의 식별 정보가 변경됩니다. 비워 둔 Verification Token 및 Encrypt Key 필드는 삭제됩니다. 계속할까요?",
+        feishuApprovalCredentialsReplaceConfirmAction: "자격 증명 교체",
+      },
+      ja: {
+        feishuApprovalSecretsReplaceHintHtml: "同じアプリでは、Verification Token と Encrypt Key を空欄にすると保存済みの値が維持されます。アプリを置き換える場合は、確認後に空欄の項目が消去されます。",
+        feishuApprovalCredentialsReplaceConfirmTitle: "保存済みのアプリ認証情報を置き換えますか？",
+        feishuApprovalCredentialsReplaceConfirmDetail: "保存済みのアプリの識別情報が変更されます。空欄の Verification Token と Encrypt Key は消去されます。続行しますか？",
+        feishuApprovalCredentialsReplaceConfirmAction: "認証情報を置き換える",
+      },
+      "pt-BR": {
+        feishuApprovalSecretsReplaceHintHtml: "No mesmo app, deixar o Verification Token e a Encrypt Key em branco mantém os valores salvos. Ao substituir o app, esses campos em branco serão limpos após a confirmação.",
+        feishuApprovalCredentialsReplaceConfirmTitle: "Substituir as credenciais salvas do app?",
+        feishuApprovalCredentialsReplaceConfirmDetail: "Isso altera a identidade salva do app. Os campos Verification Token e Encrypt Key deixados em branco serão limpos. Deseja continuar?",
+        feishuApprovalCredentialsReplaceConfirmAction: "Substituir credenciais",
+      },
+    };
+    for (const lang of SUPPORTED_LANGS) {
+      assert.deepStrictEqual(
+        Object.fromEntries(Object.keys(expected[lang]).map((key) => [key, strings[lang][key]])),
+        expected[lang],
+        lang,
+      );
+    }
+  });
+
+  it("keeps Step 2 Feishu approver copy email-first in every locale", () => {
+    const strings = loadSettingsI18nStrings();
+    const expected = {
+      en: {
+        label: "{brand} approver email or user ID",
+        hint: "Enter an email to resolve and save open_id automatically, or choose an ID type and paste an existing ID.",
+      },
+      zh: {
+        label: "{brand}审批人邮箱或用户 ID",
+        hint: "输入邮箱可自动查询并保存 open_id；也可以选择 ID 类型并粘贴已有 ID。",
+      },
+      "zh-TW": {
+        label: "{brand}審批人電子郵件或使用者 ID",
+        hint: "輸入電子郵件可自動查詢並儲存 open_id；也可以選擇 ID 類型並貼上現有 ID。",
+      },
+      ko: {
+        label: "{brand} 승인자 이메일 또는 사용자 ID",
+        hint: "이메일을 입력하면 open_id를 자동으로 조회해 저장합니다. 또는 ID 유형을 선택하고 기존 ID를 붙여 넣으세요.",
+      },
+      ja: {
+        label: "{brand} 承認者のメールアドレスまたはユーザー ID",
+        hint: "メールアドレスを入力すると open_id を自動検索して保存できます。または ID 種別を選び、既存の ID を貼り付けてください。",
+      },
+      "pt-BR": {
+        label: "E-mail ou user ID do aprovador no {brand}",
+        hint: "Digite um e-mail para resolver e salvar o open_id automaticamente, ou escolha um tipo de ID e cole um ID existente.",
+      },
+    };
+
+    for (const [lang, values] of Object.entries(expected)) {
+      assert.equal(strings[lang].feishuApprovalApproverLabel, values.label, `${lang} label`);
+      assert.equal(strings[lang].feishuApprovalApproverHintHtml, values.hint, `${lang} hint`);
+    }
+  });
+
   it("keeps permission bubble locale keysets aligned with English", () => {
     assertLocaleObjectParity(loadBubbleStrings(), "bubble");
   });

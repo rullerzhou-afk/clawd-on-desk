@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'">
+  <title>Choose Clawd activity area</title>
+  <style>
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; user-select: none; touch-action: none; }
+    body { background: rgba(8, 10, 14, .64); color: #fff; cursor: crosshair; }
+    #selection {
+      position: absolute; display: none; border: 2px solid #f19a76;
+      background: rgba(241, 154, 118, .16); border-radius: 10px;
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, .22), 0 0 28px rgba(241, 154, 118, .34);
+      pointer-events: none;
+    }
+    #selection.invalid { border-color: #ff6b6b; background: rgba(255, 107, 107, .14); }
+    #selection-size {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      padding: 6px 9px; border-radius: 7px; background: rgba(15, 17, 22, .82);
+      font-size: 12px; font-weight: 650; white-space: nowrap;
+    }
+    .selection-handle {
+      position: absolute; display: none; width: 10px; height: 10px; border: 2px solid #f19a76;
+      border-radius: 3px; background: #fff; box-shadow: 0 1px 5px rgba(0,0,0,.35);
+    }
+    #selection.editing .selection-handle { display: block; }
+    #selection.invalid .selection-handle { border-color: #ff6b6b; }
+    .selection-handle.nw { left: 0; top: 0; transform: translate(-50%, -50%); }
+    .selection-handle.ne { right: 0; top: 0; transform: translate(50%, -50%); }
+    .selection-handle.sw { left: 0; bottom: 0; transform: translate(-50%, 50%); }
+    .selection-handle.se { right: 0; bottom: 0; transform: translate(50%, 50%); }
+    .selection-handle.n, .selection-handle.s { width: 18px; height: 7px; left: 50%; }
+    .selection-handle.n { top: 0; transform: translate(-50%, -50%); }
+    .selection-handle.s { bottom: 0; transform: translate(-50%, 50%); }
+    .selection-handle.w, .selection-handle.e { width: 7px; height: 18px; top: 50%; }
+    .selection-handle.w { left: 0; transform: translate(-50%, -50%); }
+    .selection-handle.e { right: 0; transform: translate(50%, -50%); }
+    #instruction {
+      position: absolute; top: 22px; left: 50%; transform: translateX(-50%);
+      max-width: min(680px, calc(100vw - 40px)); padding: 12px 16px; border-radius: 12px;
+      background: rgba(18, 20, 26, .88); box-shadow: 0 8px 30px rgba(0,0,0,.25);
+      text-align: center; pointer-events: none;
+    }
+    #title { font-size: 16px; font-weight: 750; }
+    #hint { margin-top: 4px; color: rgba(255,255,255,.76); font-size: 12px; line-height: 1.45; }
+    #actions {
+      position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%);
+      display: flex; align-items: center; gap: 9px; padding: 9px; border-radius: 12px;
+      background: rgba(18, 20, 26, .9); cursor: default;
+    }
+    button {
+      border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.08); color: #fff;
+      border-radius: 8px; padding: 8px 14px; font: inherit; font-size: 12px; font-weight: 650; cursor: pointer;
+    }
+    button.primary { background: #d97757; border-color: #e58b6f; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+  </style>
+</head>
+<body>
+  <div id="selection">
+    <span class="selection-handle nw"></span><span class="selection-handle n"></span>
+    <span class="selection-handle ne"></span><span class="selection-handle e"></span>
+    <span class="selection-handle se"></span><span class="selection-handle s"></span>
+    <span class="selection-handle sw"></span><span class="selection-handle w"></span>
+    <span id="selection-size"></span>
+  </div>
+  <div id="instruction"><div id="title"></div><div id="hint"></div></div>
+  <div id="actions">
+    <button id="cancel" type="button"></button>
+    <button id="confirm" class="primary" type="button" disabled></button>
+  </div>
+  <script src="roam-fence-picker-geometry.js"></script>
+  <script src="roam-fence-picker-renderer.js"></script>
+</body>
+</html>

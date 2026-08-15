@@ -50,6 +50,10 @@ const CONTROL_CHARS_RE = /[\x00-\x1f\x7f]/;
 // quote, backtick, dollar, backslash, exclamation.
 const HOST_PREFIX_FORBIDDEN_RE = /[\x00-\x1f\x7f'"`$\\!]/;
 const MAX_MANAGED_DEPLOY_TARGETS = 8;
+const SSH_TRANSPORT_MODES = new Set(["auto", "serialized"]);
+const SSH_TRANSPORT_HINT_KINDS = new Set(["codespaces-stdio", "explicit-serialized"]);
+const CODESPACE_TRANSPORT_KEY_RE = /^codespace:[a-z0-9][a-z0-9-]{0,99}$/;
+const DESTINATION_TRANSPORT_KEY_RE = /^destination-sha256:[a-f0-9]{64}$/;
 const ROUTING_NONCE_RE = /^[a-f0-9]{32}$/;
 const INSTALL_ID_RE = /^[a-f0-9]{64}$/;
 const REMOTE_IDENTITY_TXN_PHASES = new Set(["idle", "rotating", "verifying", "committed"]);
@@ -92,6 +96,33 @@ function isValidRuntimeKey(value, runtimeMode) {
   } catch (_) {
     return false;
   }
+}
+
+function isValidSshTransportMode(value) {
+  return SSH_TRANSPORT_MODES.has(value);
+}
+
+function sanitizeSshTransportHint(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  if (raw.version !== 1
+    || raw.mode !== "serialized"
+    || !SSH_TRANSPORT_HINT_KINDS.has(raw.kind)
+    || typeof raw.keyId !== "string"
+    || raw.keyId.length > 160) {
+    return null;
+  }
+  if (raw.kind === "codespaces-stdio" && !CODESPACE_TRANSPORT_KEY_RE.test(raw.keyId)) {
+    return null;
+  }
+  if (raw.kind === "explicit-serialized" && !DESTINATION_TRANSPORT_KEY_RE.test(raw.keyId)) {
+    return null;
+  }
+  return {
+    version: 1,
+    mode: "serialized",
+    kind: raw.kind,
+    keyId: raw.keyId,
+  };
 }
 
 function sanitizeRuntimeModeTxn(raw) {
@@ -322,6 +353,8 @@ function sanitizeManagedDeployTarget(raw) {
     layoutVersion: Number.isInteger(raw.layoutVersion) ? raw.layoutVersion : REMOTE_LAYOUT_VERSION,
     remoteHome: typeof raw.remoteHome === "string" ? raw.remoteHome : undefined,
   };
+  const sshTransportHint = sanitizeSshTransportHint(raw.sshTransportHint);
+  if (sshTransportHint) target.sshTransportHint = sshTransportHint;
   const hasOwnershipFields = [
     target.profileId,
     target.installId,
@@ -523,6 +556,9 @@ function validateProfile(profile) {
   if (typeof profile.autoStartCodexMonitor !== "boolean") {
     return { status: "error", message: "profile.autoStartCodexMonitor must be a boolean" };
   }
+  if (!isValidSshTransportMode(profile.sshTransportMode || "auto")) {
+    return { status: "error", message: "profile.sshTransportMode must be auto or serialized" };
+  }
   // Optional for backward compatibility: profiles stored before the field
   // existed simply lack it (sanitizeProfile normalizes absence to false).
   if (profile.chainStatusline !== undefined && typeof profile.chainStatusline !== "boolean") {
@@ -606,6 +642,7 @@ function sanitizeProfile(raw) {
       ? raw.hostPrefix
       : undefined,
     autoStartCodexMonitor: raw.autoStartCodexMonitor === true,
+    sshTransportMode: raw.sshTransportMode === "serialized" ? "serialized" : "auto",
     // Opt-in: on deploy, wrap a pre-existing third-party statusline on the
     // remote (chain mode) instead of leaving the quota source unregistered.
     chainStatusline: raw.chainStatusline === true,
@@ -798,6 +835,8 @@ module.exports = {
   REMOTE_IDENTITY_STEP_NAMES,
   DEPLOY_TARGET_FIELDS,
   MAX_MANAGED_DEPLOY_TARGETS,
+  isValidSshTransportMode,
+  sanitizeSshTransportHint,
   isValidHost,
   isValidPort,
   isValidRemoteForwardPort,
