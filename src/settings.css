@@ -1504,6 +1504,10 @@ html, body {
 
 .kimi-quota-primary {
   flex: 0 0 auto;
+  min-height: 36px;
+  padding: 8px 15px;
+  font-weight: 700;
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 /* Safety/disclosure text reads as a footnote, not a wall over the action. */
@@ -1554,6 +1558,7 @@ html, body {
 
 .kimi-quota-primary-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }

@@ -110,6 +110,12 @@ function translations() {
     sessionAutomationOrphansTitle: "Ended or hidden sessions",
     sessionAutomationOrphansHint: "These overrides remain active until revoked.",
     sessionAutomationRevoke: "Revoke",
+    dashboardKimiQuotaRefresh: "Refresh Kimi quota",
+    dashboardKimiQuotaRefreshing: "Refreshing Kimi…",
+    dashboardKimiQuotaUpdated: "Kimi quota updated.",
+    dashboardKimiQuotaRefreshFailed: "Refresh failed: {reason}",
+    dashboardKimiQuotaEmpty: "No quota data yet. Click refresh to fetch it.",
+    dashboardKimiQuotaRefreshShort: "Refresh",
   };
 }
 
@@ -133,11 +139,18 @@ async function loadDashboard(
   sessions,
   openResult = { status: "ok" },
   snapshotOverrides = {},
-  automationResult = { status: "applied" }
+  automationResult = { status: "applied" },
+  kimiOptions = {}
 ) {
-  const document = createDocument(["title", "count", "content", "quotaSummary"]);
+  const document = createDocument([
+    "title",
+    "count",
+    "content",
+    "quotaSummary",
+  ]);
   const openCalls = [];
   const automationCalls = [];
+  const kimiRefreshCalls = [];
   let renderInterval = null;
   const api = {
     onLangChange: () => {},
@@ -167,6 +180,17 @@ async function loadDashboard(
         ? automationResult("clear", payload)
         : automationResult;
     },
+    getKimiQuotaStatus: async () => kimiOptions.status || {
+      status: "ok",
+      configured: false,
+      decryptable: false,
+      collectionEnabled: false,
+      agentEnabled: true,
+    },
+    refreshKimiQuota: async () => {
+      kimiRefreshCalls.push(true);
+      return kimiOptions.refreshResult || { status: "ok" };
+    },
   };
   const context = vm.createContext({
     window: { dashboardAPI: api }, document, console, Intl, Date,
@@ -178,8 +202,10 @@ async function loadDashboard(
   await flush();
   return {
     root: document.elements.get("content"),
+    quotaSummary: document.elements.get("quotaSummary"),
     openCalls,
     automationCalls,
+    kimiRefreshCalls,
     tickRender: () => { if (renderInterval) renderInterval(); },
   };
 }
@@ -241,6 +267,49 @@ test("Dashboard renders local/remote/webui reasons and only local folder action"
     "WebUI sessions do not have a local terminal window.",
   ]);
   assert.strictEqual(byClass(root, "open-folder-button").length, 1);
+});
+
+test("Dashboard hosts the manual Kimi quota refresh inside the Kimi quota section", async () => {
+  const dashboard = await loadDashboard(
+    [],
+    { status: "ok" },
+    {},
+    { status: "applied" },
+    {
+      status: {
+        status: "ok",
+        configured: true,
+        decryptable: true,
+        collectionEnabled: true,
+        agentEnabled: true,
+      },
+    }
+  );
+
+  // Connected but nothing reported yet: the section stays visible with an
+  // empty hint so the refresh that fetches the first numbers has a home.
+  const button = byClass(dashboard.quotaSummary, "quota-refresh-button")[0];
+  assert.ok(button, "Kimi quota section header should host the refresh button");
+  assert.strictEqual(button.disabled, false);
+  assert.strictEqual(button.title, "Refresh Kimi quota");
+  assert.strictEqual(byClass(dashboard.quotaSummary, "quota-empty-hint").length, 1);
+
+  await button.dispatch("click");
+  await flush();
+
+  assert.strictEqual(dashboard.kimiRefreshCalls.length, 1);
+  assert.strictEqual(button.disabled, false);
+  const feedback = byClass(dashboard.quotaSummary, "quota-refresh-feedback")[0];
+  assert.ok(feedback, "Kimi quota section header should host the refresh feedback");
+  assert.strictEqual(feedback.hidden, false);
+  assert.strictEqual(feedback.textContent, "Kimi quota updated.");
+});
+
+test("Dashboard renders no Kimi quota section or refresh for a disconnected key", async () => {
+  const dashboard = await loadDashboard([]);
+
+  assert.strictEqual(byClass(dashboard.quotaSummary, "quota-refresh-button").length, 0);
+  assert.strictEqual(byClass(dashboard.quotaSummary, "quota-section").length, 0);
 });
 
 test("Dashboard renders the resolved custom agent name instead of its raw id", async () => {

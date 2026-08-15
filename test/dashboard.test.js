@@ -1125,6 +1125,7 @@ describe("dashboard window", () => {
   it("wires account quota (including Dashboard-only Spark) into the dashboard header", () => {
     const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "dashboard-renderer.js"), "utf8");
     const htmlSource = fs.readFileSync(path.join(__dirname, "..", "src", "dashboard.html"), "utf8");
+    const preloadSource = fs.readFileSync(path.join(__dirname, "..", "src", "preload-dashboard.js"), "utf8");
 
     assert.match(htmlSource, /id="quotaSummary" class="quota-summary" hidden/);
     // Quota renders from the session-independent per-source store
@@ -1144,6 +1145,9 @@ describe("dashboard window", () => {
     assert.match(rendererSource, /formatQuotaWindowLabel/);
     assert.match(rendererSource, /bucket && bucket\.windowMinutes/);
     assert.match(rendererSource, /source\.codexSparkQuota/);
+    assert.match(rendererSource, /refreshKimiQuotaFromDashboard/);
+    assert.match(rendererSource, /quota-refresh-button/);
+    assert.match(preloadSource, /dashboard:refresh-kimi-quota/);
     for (const key of [
       "dashboardQuotaSectionAntigravity",
       "dashboardQuotaGroupGemini",

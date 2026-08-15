@@ -10,6 +10,10 @@ const rendererSource = fs.readFileSync(
   path.join(__dirname, "..", "src", "quota-ring-renderer.js"),
   "utf8"
 );
+const rendererHtmlSource = fs.readFileSync(
+  path.join(__dirname, "..", "src", "quota-ring.html"),
+  "utf8"
+);
 
 class FakeElement {
   constructor(tag) {
@@ -543,13 +547,51 @@ describe("quota ring renderer model", () => {
     assert.match(fills[0].attributes.class, /pv-codexQuota rg-inner/);
   });
 
+  it("neutralizes only the stale ring when a provider is partially refreshed", () => {
+    const context = loadRenderer();
+    const now = 1_000_000;
+    const model = modelFor(context, {
+      claudeQuota: {
+        group: {
+          claudeFiveHour: {
+            usedPercent: 72,
+            resetAt: now + 3_600_000,
+            windowMinutes: 300,
+            lastSeenAt: now - 6 * 60_000,
+          },
+          claudeWeekly: {
+            usedPercent: 18,
+            resetAt: now + 86_400_000,
+            windowMinutes: 10080,
+            lastSeenAt: now,
+          },
+        },
+        lastSeenAt: now,
+      },
+    }, 1, now);
+    assert.strictEqual(model.state, "live", "one fresh window keeps the provider live");
+    context.__model = model;
+    const svg = vm.runInContext("buildCoinSvg(__model)", context);
+    const ring = (kind, slot) => svg.children.find((child) => {
+      const cls = child.attributes.class || "";
+      return cls.includes(kind) && cls.includes(`rg-${slot}`);
+    });
+    assert.match(ring("track", "outer").attributes.class, /\bis-stale\b/);
+    assert.match(ring("fill", "outer").attributes.class, /\bis-stale\b/);
+    assert.doesNotMatch(ring("track", "inner").attributes.class, /\bis-stale\b/);
+    assert.doesNotMatch(ring("fill", "inner").attributes.class, /\bis-stale\b/);
+    assert.match(rendererHtmlSource, /\.coin \.track\.is-stale\s*\{/);
+    assert.match(rendererHtmlSource, /\.coin \.fill\.is-stale\s*\{/);
+  });
+
   it("adds no footnote line for a stale coin, however old the reading is", () => {
     // A draft spelled the age out ("1h26m ago") so staleness would not ride on
     // row opacity alone. On a desktop that misfired: Codex goes stale 5 minutes
     // after its last reading, so the note stood on screen through every
     // ordinary gap between runs — permanent furniture, not a warning, costing a
     // third text line on a 26px row. Pin its absence so it cannot creep back
-    // without someone re-deciding it. Staleness is the row dim, and only that.
+    // without someone re-deciding it. The affected ring is neutralized, and a
+    // provider whose every window is stale also keeps the quiet row dim.
     const context = loadRenderer();
     const now = 1_000_000;
     for (const ageMinutes of [6, 86]) {

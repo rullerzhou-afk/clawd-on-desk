@@ -1,5 +1,10 @@
 "use strict";
 
+const path = require("node:path");
+const { pathToFileURL } = require("node:url");
+
+const DASHBOARD_PAGE_URL = pathToFileURL(path.join(__dirname, "dashboard.html")).toString();
+
 function requiredDependency(value, name) {
   if (!value) throw new Error(`registerSessionIpc requires ${name}`);
   return value;
@@ -24,6 +29,9 @@ function registerSessionIpc(options = {}) {
     options.clearSessionAutomationGrant,
     "clearSessionAutomationGrant"
   );
+  const getDashboardWindow = requiredDependency(options.getDashboardWindow, "getDashboardWindow");
+  const getKimiQuotaStatus = requiredDependency(options.getKimiQuotaStatus, "getKimiQuotaStatus");
+  const refreshKimiQuota = requiredDependency(options.refreshKimiQuota, "refreshKimiQuota");
   const disposers = [];
 
   function handle(channel, listener) {
@@ -36,8 +44,37 @@ function registerSessionIpc(options = {}) {
     disposers.push(() => ipcMain.removeListener(channel, listener));
   }
 
+  function isTrustedDashboardEvent(event) {
+    const win = getDashboardWindow();
+    if (!win || (typeof win.isDestroyed === "function" && win.isDestroyed())) return false;
+    const contents = win.webContents;
+    const frame = event && event.senderFrame;
+    return !!contents
+      && event.sender === contents
+      && !!frame
+      && frame === contents.mainFrame
+      && frame.url === DASHBOARD_PAGE_URL;
+  }
+
+  function rejectUntrustedDashboardEvent(event) {
+    return isTrustedDashboardEvent(event)
+      ? null
+      : { status: "error", reason: "untrusted-dashboard-sender" };
+  }
+
   handle("dashboard:get-snapshot", () => getSessionSnapshot());
   handle("dashboard:get-i18n", () => getI18n());
+  // Dashboard gets a narrow, secret-free manual refresh capability. The API
+  // key remains inside kimiQuotaRuntime, and only the real local Dashboard
+  // main frame may ask for status or trigger the existing refresh path.
+  handle("dashboard:get-kimi-quota-status", (event) => {
+    const rejected = rejectUntrustedDashboardEvent(event);
+    return rejected || getKimiQuotaStatus();
+  });
+  handle("dashboard:refresh-kimi-quota", (event) => {
+    const rejected = rejectUntrustedDashboardEvent(event);
+    return rejected || refreshKimiQuota();
+  });
   on("dashboard:focus-session", (_event, sessionId) =>
     focusSession(sessionId, { requestSource: "dashboard" })
   );

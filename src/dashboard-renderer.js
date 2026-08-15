@@ -31,6 +31,14 @@ const titleEl = document.getElementById("title");
 const countEl = document.getElementById("count");
 const contentEl = document.getElementById("content");
 const quotaSummaryEl = document.getElementById("quotaSummary");
+// The manual Kimi quota refresh lives inside the Kimi quota section header
+// (built by renderQuotaSummary), so these refs are re-pointed on every quota
+// summary rebuild and stay null whenever the section is not rendered.
+let kimiQuotaRefreshButtonEl = null;
+let kimiQuotaRefreshFeedbackEl = null;
+
+let kimiQuotaStatus = null;
+let kimiQuotaRefreshBusy = false;
 
 function t(key) {
   const dict = i18nPayload && i18nPayload.translations ? i18nPayload.translations : {};
@@ -101,6 +109,124 @@ const PROVIDER_STALE_AFTER_MS = Object.freeze({
 
 function quotaStaleAfterMs(providerKey) {
   return PROVIDER_STALE_AFTER_MS[providerKey] || DEFAULT_QUOTA_STALE_AFTER_MS;
+}
+
+function isKimiQuotaConnected() {
+  return !!(
+    kimiQuotaStatus
+    && kimiQuotaStatus.status === "ok"
+    && kimiQuotaStatus.configured === true
+    && kimiQuotaStatus.collectionEnabled === true
+  );
+}
+
+// Feedback is kept as data (not just written into the span) so it survives
+// the quota summary rebuild that a fresh snapshot triggers right after a
+// refresh completes.
+let kimiQuotaRefreshFeedbackState = { text: "", isError: false };
+
+function applyKimiQuotaRefreshFeedback() {
+  const el = kimiQuotaRefreshFeedbackEl;
+  if (!el) return;
+  const { text, isError } = kimiQuotaRefreshFeedbackState;
+  el.textContent = text;
+  el.title = text;
+  el.className = isError
+    ? "quota-refresh-feedback error"
+    : "quota-refresh-feedback";
+  el.hidden = !text;
+}
+
+function setKimiQuotaRefreshFeedback(message, isError = false) {
+  kimiQuotaRefreshFeedbackState = { text: message || "", isError: !!isError };
+  applyKimiQuotaRefreshFeedback();
+}
+
+function syncKimiQuotaRefreshControl() {
+  const button = kimiQuotaRefreshButtonEl;
+  if (!button) return;
+  button.disabled = kimiQuotaRefreshBusy
+    || !kimiQuotaStatus
+    || kimiQuotaStatus.decryptable !== true
+    || kimiQuotaStatus.agentEnabled === false;
+  button.className = kimiQuotaRefreshBusy
+    ? "quota-refresh-button is-refreshing"
+    : "quota-refresh-button";
+  const label = t(
+    kimiQuotaRefreshBusy ? "dashboardKimiQuotaRefreshing" : "dashboardKimiQuotaRefresh"
+  );
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  applyKimiQuotaRefreshFeedback();
+}
+
+// Icon-only refresh action for the Kimi quota section header; repoints the
+// module-level refs on every quota summary rebuild.
+function buildKimiQuotaRefreshControl() {
+  const feedback = document.createElement("span");
+  feedback.className = "quota-refresh-feedback";
+  feedback.setAttribute("role", "status");
+  feedback.setAttribute("aria-live", "polite");
+  feedback.hidden = true;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "quota-refresh-button";
+  const icon = document.createElement("span");
+  icon.className = "quota-refresh-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = "↻";
+  button.appendChild(icon);
+  const label = document.createElement("span");
+  label.className = "quota-refresh-label";
+  label.textContent = t("dashboardKimiQuotaRefreshShort");
+  button.appendChild(label);
+  button.addEventListener("click", refreshKimiQuotaFromDashboard);
+  kimiQuotaRefreshFeedbackEl = feedback;
+  kimiQuotaRefreshButtonEl = button;
+  syncKimiQuotaRefreshControl();
+  return [feedback, button];
+}
+
+async function reloadKimiQuotaStatus() {
+  if (!window.dashboardAPI || typeof window.dashboardAPI.getKimiQuotaStatus !== "function") {
+    kimiQuotaStatus = null;
+  } else {
+    try { kimiQuotaStatus = await window.dashboardAPI.getKimiQuotaStatus(); }
+    catch { kimiQuotaStatus = null; }
+  }
+  // The connected flag feeds the quota summary signature, so this rebuilds
+  // (showing/hiding the section-header refresh) only when it flipped.
+  renderQuotaSummary(snapshot);
+  syncKimiQuotaRefreshControl();
+  return kimiQuotaStatus;
+}
+
+function snapshotHasKimiQuota(value) {
+  const accountQuota = Array.isArray(value && value.accountQuota) ? value.accountQuota : [];
+  return accountQuota.some((entry) => entry && entry.kimiQuota && entry.kimiQuota.group);
+}
+
+async function refreshKimiQuotaFromDashboard() {
+  if (kimiQuotaRefreshBusy || !window.dashboardAPI
+      || typeof window.dashboardAPI.refreshKimiQuota !== "function") return;
+  kimiQuotaRefreshBusy = true;
+  setKimiQuotaRefreshFeedback("");
+  syncKimiQuotaRefreshControl();
+  let result;
+  try { result = await window.dashboardAPI.refreshKimiQuota(); }
+  catch { result = { status: "error", reason: "runtime-unavailable" }; }
+  kimiQuotaRefreshBusy = false;
+  await reloadKimiQuotaStatus();
+  if (result && result.status === "ok") {
+    setKimiQuotaRefreshFeedback(t("dashboardKimiQuotaUpdated"));
+  } else {
+    const reason = (result && (result.reason || result.message)) || "unknown-error";
+    setKimiQuotaRefreshFeedback(
+      t("dashboardKimiQuotaRefreshFailed").replace("{reason}", String(reason)),
+      true
+    );
+  }
+  syncKimiQuotaRefreshControl();
 }
 
 function formatDurationHM(totalMinutes) {
@@ -271,12 +397,20 @@ function buildQuotaGroupRow(headerText, fiveHourBucket, weeklyBucket, providerKe
   return row;
 }
 
-function buildQuotaSection(headerKey, rows) {
+function buildQuotaSection(headerKey, rows, headerExtras = []) {
   const usableRows = rows.filter(Boolean);
-  if (!usableRows.length) return null;
+  if (!usableRows.length && !headerExtras.length) return null;
   const section = document.createElement("div");
   section.className = "quota-section";
-  section.appendChild(createText("div", "quota-section-header", t(headerKey)));
+  if (headerExtras.length) {
+    const titlebar = document.createElement("div");
+    titlebar.className = "quota-section-titlebar";
+    titlebar.appendChild(createText("div", "quota-section-header", t(headerKey)));
+    for (const el of headerExtras) titlebar.appendChild(el);
+    section.appendChild(titlebar);
+  } else {
+    section.appendChild(createText("div", "quota-section-header", t(headerKey)));
+  }
   for (const row of usableRows) section.appendChild(row);
   return section;
 }
@@ -295,6 +429,9 @@ function computeQuotaSummarySignature(accountQuota) {
     lang: (i18nPayload && i18nPayload.lang) || "en",
     minute: accountQuota.length ? Math.floor(Date.now() / 60000) : null,
     accountQuota,
+    // The Kimi section header hosts the manual refresh while connected, so a
+    // connection flip must force a rebuild even when the data is unchanged.
+    kimiRefresh: isKimiQuotaConnected(),
   });
 }
 
@@ -305,6 +442,9 @@ function renderQuotaSummary(snapshot) {
   const signature = computeQuotaSummarySignature(accountQuota);
   if (signature === lastQuotaSummarySignature) return;
   lastQuotaSummarySignature = signature;
+  // Stale until the Kimi section (re)creates them below.
+  kimiQuotaRefreshButtonEl = null;
+  kimiQuotaRefreshFeedbackEl = null;
 
   const multiSource = accountQuota.length > 1;
   const sources = accountQuota.map((entry) => ({ ...entry, multiSource }));
@@ -390,7 +530,17 @@ function renderQuotaSummary(snapshot) {
       "kimiQuota"
     );
   });
-  const kimiSection = buildQuotaSection("dashboardQuotaSectionKimiCode", kimiRows);
+  const kimiConnected = isKimiQuotaConnected();
+  if (kimiConnected && !kimiRows.some(Boolean)) {
+    // Connected but nothing reported yet: keep the section visible so the
+    // manual refresh that fetches the first numbers has a home.
+    kimiRows.push(createText("div", "quota-empty-hint", t("dashboardKimiQuotaEmpty")));
+  }
+  const kimiSection = buildQuotaSection(
+    "dashboardQuotaSectionKimiCode",
+    kimiRows,
+    kimiConnected ? buildKimiQuotaRefreshControl() : []
+  );
   if (kimiSection) sections.push(kimiSection);
 
   if (!sections.length) {
@@ -1089,9 +1239,14 @@ async function init() {
   window.dashboardAPI.onLangChange((payload) => {
     i18nPayload = payload || i18nPayload;
     render();
+    syncKimiQuotaRefreshControl();
   });
   window.dashboardAPI.onSessionSnapshot((nextSnapshot) => {
+    const hadKimiQuota = snapshotHasKimiQuota(snapshot);
     snapshot = nextSnapshot || snapshot;
+    if (hadKimiQuota !== snapshotHasKimiQuota(snapshot)) {
+      void reloadKimiQuotaStatus();
+    }
     if (activeEdit && !snapshotHasSession(snapshot, activeEdit.sessionId)) {
       activeEdit = null;
       render({ force: true });
@@ -1100,12 +1255,16 @@ async function init() {
     render();
   });
 
-  const [nextI18n, nextSnapshot] = await Promise.all([
+  const [nextI18n, nextSnapshot, nextKimiQuotaStatus] = await Promise.all([
     window.dashboardAPI.getI18n(),
     window.dashboardAPI.getSnapshot(),
+    window.dashboardAPI && typeof window.dashboardAPI.getKimiQuotaStatus === "function"
+      ? window.dashboardAPI.getKimiQuotaStatus()
+      : Promise.resolve(null),
   ]);
   i18nPayload = nextI18n || i18nPayload;
   snapshot = nextSnapshot || snapshot;
+  kimiQuotaStatus = nextKimiQuotaStatus || null;
   render();
 
   setInterval(render, 1000);

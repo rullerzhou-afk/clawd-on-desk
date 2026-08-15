@@ -370,16 +370,21 @@ function buildCoinSvg(model) {
   // when EVERY window reset, so "one window reset while the other is live" —
   // the common case right after a 5h rollover — falls straight through it.
   const bedOnly = (w) => !!w && w.reset === true && quotaDisplayMode() === "used";
+  // Staleness belongs to a bucket, not necessarily the whole provider. A
+  // presence-aware partial update can refresh weekly while leaving 5h old (or
+  // vice versa), so each physical ring carries its own class. The row-level
+  // state remains useful when every reported window is stale.
+  const staleClass = (w) => (w && w.stale ? " is-stale" : "");
   // Identity classes come from each window's LOGICAL slot (outer.ring), so a
   // single-window provider drawn at the outer radius still wears the hue of
   // the window it is actually reporting (see identityClass).
   svg.appendChild(ringCircle(
-    `track ${identityClass(model.providerKey, outer.ring)}${bedOnly(outer) ? " is-reset-bed" : ""}`,
+    `track ${identityClass(model.providerKey, outer.ring)}${bedOnly(outer) ? " is-reset-bed" : ""}${staleClass(outer)}`,
     OUTER_R, OUTER_SW, null));
   if (outer && (!outer.reset || quotaDisplayMode() === "remaining")) {
     const outerNear = !outer.reset && model.near && model.binding === outer;
     const f = ringCircle(
-      `fill ${outer.reset ? "sev-reset" : severityClass(outer.pct)}${outerNear ? " is-near" : ""} ${identityClass(model.providerKey, outer.ring)}`,
+      `fill ${outer.reset ? "sev-reset" : severityClass(outer.pct)}${outerNear ? " is-near" : ""} ${identityClass(model.providerKey, outer.ring)}${staleClass(outer)}`,
       OUTER_R,
       OUTER_SW,
       { pct: outer.reset ? 100 : quotaDisplayPercent(outer.pct) }
@@ -388,12 +393,12 @@ function buildCoinSvg(model) {
   }
   if (dual) {
     svg.appendChild(ringCircle(
-      `track ${identityClass(model.providerKey, inner.ring)}${bedOnly(inner) ? " is-reset-bed" : ""}`,
+      `track ${identityClass(model.providerKey, inner.ring)}${bedOnly(inner) ? " is-reset-bed" : ""}${staleClass(inner)}`,
       INNER_R, INNER_SW, null));
     if (inner && (!inner.reset || quotaDisplayMode() === "remaining")) {
       const innerNear = !inner.reset && model.near && model.binding === inner;
       svg.appendChild(ringCircle(
-        `fill ${inner.reset ? "sev-reset" : severityClass(inner.pct)}${innerNear ? " is-near" : ""} ${identityClass(model.providerKey, inner.ring)}`,
+        `fill ${inner.reset ? "sev-reset" : severityClass(inner.pct)}${innerNear ? " is-near" : ""} ${identityClass(model.providerKey, inner.ring)}${staleClass(inner)}`,
         INNER_R,
         INNER_SW,
         { pct: inner.reset ? 100 : quotaDisplayPercent(inner.pct) }

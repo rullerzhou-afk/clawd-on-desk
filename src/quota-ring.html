@@ -48,6 +48,7 @@
   --sev-warn: #fbbf24;
   --sev-hot: #f87171;
   --sev-reset: #9096a1;
+  --stale-ring: #aeb6c4;
   /* The track is the same identity hue laid down as a bed, not a grey ring
      behind the arc — so the arc reads as "the lit part of this ring" instead of
      a bar stacked on a separate object. It stays translucent because there is no
@@ -204,11 +205,9 @@ body { padding: 6px 6px 8px; }
   white-space: nowrap;
 }
 .coin-row.is-reset .readout .pct { color: var(--ink-soft); }
-/* Staleness is carried by this dim alone. That is knowingly one channel, and a
-   weak one — see buildReadoutFoot for why the spelled-out age that used to back
-   it up was removed rather than kept: Codex goes stale 5 minutes after its last
-   reading, so the note stood on screen through every ordinary gap between runs.
-   A replacement, if one is wanted, has to stay silent while things are normal. */
+/* When every window is stale, quiet the whole provider as well. Individual
+   stale windows are neutralized below, so a partial refresh cannot leave an old
+   ring wearing the same live identity/severity color as its fresh sibling. */
 .coin-row.is-stale { opacity: 0.72; }
 
 .coin { width: 26px; height: 26px; flex: 0 0 auto; filter: var(--coin-shadow); }
@@ -259,12 +258,23 @@ body { padding: 6px 6px 8px; }
 .coin .fill.sev-warn { stroke: var(--sev-warn); }
 .coin .fill.sev-hot { stroke: var(--sev-hot); }
 .coin .fill.sev-reset { stroke: var(--sev-reset); opacity: 0.56; }
+/* Per-window stale state. Neutral grey deliberately overrides both identity
+   and severity: an old 90% reading must not keep shouting red as if it were a
+   current alert, while the fresh sibling keeps its normal color. This is silent
+   when data is fresh and costs no permanent text line. */
+.coin .track.is-stale {
+  stroke: var(--stale-ring);
+  stroke-opacity: 0.24;
+}
+.coin .fill.is-stale {
+  stroke: var(--stale-ring);
+  stroke-opacity: 0.62;
+  opacity: 1;
+}
 .coin .plate { fill: rgba(246, 246, 248, 0.92); }
-/* Staleness is carried by the row's own opacity above, not by desaturating the
-   glyph on top of it. Greyscale was doing uneven work anyway: it gutted the
-   colored marks (Claude, Antigravity) while doing nothing at all to a mark that
-   is already black and white (Codex), so the same state read as a much louder
-   warning on some coins than on others. */
+/* Keep provider glyphs untouched. Greyscale did uneven work: it gutted colored
+   marks (Claude, Antigravity) while doing nothing to an already monochrome mark
+   (Codex). The stale state now lives on the affected ring itself. */
 .coin-row.is-reset .glyph { opacity: 0.55; }
 
 /* Near-exhausted (hot) coin pulses gently to pull the eye; motion-safe only. */
