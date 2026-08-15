@@ -88,8 +88,11 @@ describe("pet-attached quota ring", () => {
   it("beds every track in its own ring's hue, fill and track from one source", () => {
     // Match the template itself, not its position in the call — the assertion
     // should survive the argument list being wrapped across lines.
-    assert.match(quotaRingRenderer, /`track \$\{identityClass\(model\.providerKey, "outer"\)/);
-    assert.match(quotaRingRenderer, /`track \$\{identityClass\(model\.providerKey, "inner"\)/);
+    // The class argument is the window's LOGICAL slot (outer.ring), not the
+    // physical ring it is drawn on: a weekly-only provider draws at the outer
+    // radius yet still wears the weekly hue, matching the Dashboard's bar.
+    assert.match(quotaRingRenderer, /`track \$\{identityClass\(model\.providerKey, outer\.ring\)/);
+    assert.match(quotaRingRenderer, /`track \$\{identityClass\(model\.providerKey, inner\.ring\)/);
     // Scope the assertions to the track rule itself. Matching the whole file
     // would let the identical fallback on .fill.sev-ok satisfy them while the
     // track quietly lost its own (a mutation run caught exactly that).

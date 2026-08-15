@@ -170,6 +170,28 @@ h1 {
   overflow: hidden;
 }
 
+/* Provider identity + severity are mirrored from quota-ring.html so a bar and
+   an Orbit coin answer "which provider / which window / which state" with the
+   same color. The hue follows the LOGICAL window: the 5h half wears the
+   provider's outer/rolling hue, the Weekly half the inner/weekly hue — the
+   same assignment the coins use. test/quota-palette.test.js pins the mirror,
+   so these values are not editable here alone — quota-ring.html carries the
+   reasoning for each hue and is where a change starts. Watch out for --done
+   above: it is a similar blue, but it means "session finished", not a quota
+   window, and a palette sweep must leave it alone. */
+:root {
+  --id-claude-outer: #2dd4bf;
+  --id-claude-inner: #6489f7;
+  --id-codex-outer: #a78bfa;
+  --id-codex-inner: #22d3ee;
+  --id-antigravity-outer: #38bdf8;
+  --id-antigravity-inner: #6366f1;
+  --id-kimi-outer: #3b93f7;
+  --id-kimi-inner: #e27aeb;
+  --sev-warn: #fbbf24;
+  --sev-hot: #f87171;
+}
+
 .quota-bar-fill {
   height: 100%;
   border-radius: 3px;
@@ -177,9 +199,20 @@ h1 {
   transition: width 0.2s ease;
 }
 
-.quota-bar-fill-warning {
-  background: var(--interrupted);
-}
+.quota-bar-fill.pv-claudeQuota.rg-outer { background: var(--id-claude-outer); }
+.quota-bar-fill.pv-claudeQuota.rg-inner { background: var(--id-claude-inner); }
+.quota-bar-fill.pv-codexQuota.rg-outer { background: var(--id-codex-outer); }
+.quota-bar-fill.pv-codexQuota.rg-inner { background: var(--id-codex-inner); }
+/* Spark is Codex-family quota shown only here, so it wears the Codex hues. */
+.quota-bar-fill.pv-codexSparkQuota.rg-outer { background: var(--id-codex-outer); }
+.quota-bar-fill.pv-codexSparkQuota.rg-inner { background: var(--id-codex-inner); }
+.quota-bar-fill.pv-antigravityQuota.rg-outer { background: var(--id-antigravity-outer); }
+.quota-bar-fill.pv-antigravityQuota.rg-inner { background: var(--id-antigravity-inner); }
+.quota-bar-fill.pv-kimiQuota.rg-outer { background: var(--id-kimi-outer); }
+.quota-bar-fill.pv-kimiQuota.rg-inner { background: var(--id-kimi-inner); }
+/* Severity overrides identity exactly like on the coins: warn 60, hot 85. */
+.quota-bar-fill.sev-warn { background: var(--sev-warn); }
+.quota-bar-fill.sev-hot { background: var(--sev-hot); }
 
 .content {
   flex: 1 1 auto;

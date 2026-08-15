@@ -6,7 +6,7 @@
 // The arc can present USED percent (full = nearly exhausted) or REMAINING
 // percent (full = plenty left). Severity still follows usedPercent, so changing
 // the presentation never changes warning semantics. A healthy ring is colored
-// by identity (provider + physical ring slot, see identityClass) rather than by
+// by identity (provider + logical window, see identityClass) rather than by
 // headroom, because severity has only three steps and would paint two healthy
 // windows the same color; crossing a threshold hands the ring over to
 // amber/red. Window labels come from
@@ -135,6 +135,18 @@ function formatWindowLabel(windowMinutes, fallbackLabel) {
   return `${Math.round(minutes)}m`;
 }
 
+// Compact age for the stale footnote, formatted with the same shared duration
+// keys the Dashboard uses for its "as of" labels, so both surfaces phrase the
+// same interval identically.
+function formatAgeCompact(ageMs) {
+  const totalMinutes = Math.max(1, Math.round(ageMs / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours > 0
+    ? t("dashboardQuotaResetHoursMinutes").replace("{h}", hours).replace("{m}", minutes)
+    : t("dashboardQuotaResetMinutes").replace("{m}", minutes);
+}
+
 // One definition of the thresholds: the ring's color, the pulse, and whether
 // the readout yields to the binding window all key off the same two numbers.
 const WARN_AT = 60; // >= this is amber
@@ -149,11 +161,13 @@ function severityClass(usedPercent) {
 }
 
 // Identity hint for the stylesheet: a healthy ring is colored by (provider,
-// physical ring position) so the rolling and weekly windows stay tellable apart
-// — severity alone paints both the same color whenever both are healthy. The
-// argument is the ring's PHYSICAL slot, not the window's logical name: a
-// provider reporting only one window (Codex, since the 5h window was retired)
-// draws it in the outer slot and should read as the outer ring.
+// logical window) so the rolling and weekly windows stay tellable apart —
+// severity alone paints both the same color whenever both are healthy. The
+// slot argument is the window's LOGICAL timescale, not the physical ring it
+// is drawn on: a provider reporting only its weekly window (Codex, since the
+// 5h window was retired) draws that ring at the outer radius yet still wears
+// the weekly/inner hue — the same hue the Dashboard paints its Weekly bar,
+// so a color names one window across both surfaces.
 // Appended last so the "sev-x is-near" pair stays contiguous.
 function identityClass(providerKey, ringSlot) {
   return `pv-${providerKey} rg-${ringSlot}`;
@@ -350,13 +364,16 @@ function buildCoinSvg(model) {
   // when EVERY window reset, so "one window reset while the other is live" —
   // the common case right after a 5h rollover — falls straight through it.
   const bedOnly = (w) => !!w && w.reset === true && quotaDisplayMode() === "used";
+  // Identity classes come from each window's LOGICAL slot (outer.ring), so a
+  // single-window provider drawn at the outer radius still wears the hue of
+  // the window it is actually reporting (see identityClass).
   svg.appendChild(ringCircle(
-    `track ${identityClass(model.providerKey, "outer")}${bedOnly(outer) ? " is-reset-bed" : ""}`,
+    `track ${identityClass(model.providerKey, outer.ring)}${bedOnly(outer) ? " is-reset-bed" : ""}`,
     OUTER_R, OUTER_SW, null));
   if (outer && (!outer.reset || quotaDisplayMode() === "remaining")) {
     const outerNear = !outer.reset && model.near && model.binding === outer;
     const f = ringCircle(
-      `fill ${outer.reset ? "sev-reset" : severityClass(outer.pct)}${outerNear ? " is-near" : ""} ${identityClass(model.providerKey, "outer")}`,
+      `fill ${outer.reset ? "sev-reset" : severityClass(outer.pct)}${outerNear ? " is-near" : ""} ${identityClass(model.providerKey, outer.ring)}`,
       OUTER_R,
       OUTER_SW,
       { pct: outer.reset ? 100 : quotaDisplayPercent(outer.pct) }
@@ -365,12 +382,12 @@ function buildCoinSvg(model) {
   }
   if (dual) {
     svg.appendChild(ringCircle(
-      `track ${identityClass(model.providerKey, "inner")}${bedOnly(inner) ? " is-reset-bed" : ""}`,
+      `track ${identityClass(model.providerKey, inner.ring)}${bedOnly(inner) ? " is-reset-bed" : ""}`,
       INNER_R, INNER_SW, null));
     if (inner && (!inner.reset || quotaDisplayMode() === "remaining")) {
       const innerNear = !inner.reset && model.near && model.binding === inner;
       svg.appendChild(ringCircle(
-        `fill ${inner.reset ? "sev-reset" : severityClass(inner.pct)}${innerNear ? " is-near" : ""} ${identityClass(model.providerKey, "inner")}`,
+        `fill ${inner.reset ? "sev-reset" : severityClass(inner.pct)}${innerNear ? " is-near" : ""} ${identityClass(model.providerKey, inner.ring)}`,
         INNER_R,
         INNER_SW,
         { pct: inner.reset ? 100 : quotaDisplayPercent(inner.pct) }
@@ -419,7 +436,7 @@ function buildCoinSvg(model) {
   return svg;
 }
 
-function buildCoinRow(model) {
+function buildCoinRow(model, now = Date.now()) {
   const row = document.createElement("div");
   row.className = `coin-row is-${model.state}`;
   // The hosting Electron panel is intentionally non-focusable so checking
@@ -448,15 +465,37 @@ function buildCoinRow(model) {
     win.textContent = model.windows[0] ? model.windows[0].label : "";
   }
   readout.append(pct, win);
-  if (model.sourceMarker) {
-    const source = document.createElement("span");
-    source.className = "source";
-    source.textContent = model.sourceMarker;
-    readout.appendChild(source);
-  }
+  const foot = buildReadoutFoot(model, shown, now);
+  if (foot) readout.appendChild(foot);
 
   row.append(readout, buildCoinSvg(model));
   return row;
+}
+
+// The readout's optional third line answers, in strict priority order:
+//   1. "is this number old?" — a stale coin was previously dimmed ONLY by row
+//      opacity, an intensity channel a glance (or any CVD) can miss, so the
+//      age is now spelled out in text. Quiet, but no longer ambiguous.
+//   2. "what do the digits mean?" — remaining mode flips the percent's
+//      meaning, so whenever it is active the mode word stays on screen.
+//   3. "which machine reported this?" — the static source marker, shown only
+//      when neither of the dynamic states above needs the line.
+function buildReadoutFoot(model, shown, now = Date.now()) {
+  let text = null;
+  let cls = "source";
+  if (model.state === "stale" && shown && Number.isFinite(shown.seenAt)) {
+    text = t("quotaRingStaleAgo").replace("{time}", formatAgeCompact(now - shown.seenAt));
+    cls = "source stale-note";
+  } else if (quotaDisplayMode() === "remaining") {
+    text = t("quotaRingRemainingWord");
+  } else if (model.sourceMarker) {
+    text = model.sourceMarker;
+  }
+  if (!text) return null;
+  const foot = document.createElement("span");
+  foot.className = cls;
+  foot.textContent = text;
+  return foot;
 }
 
 function buildOverflow(count) {
@@ -633,7 +672,7 @@ function render() {
 
   for (const model of visible) {
     model.flashingResting = isFlashing(model, now);
-    clusterEl.appendChild(buildCoinRow(model));
+    clusterEl.appendChild(buildCoinRow(model, now));
   }
   if (overflow > 0) clusterEl.appendChild(buildOverflow(overflow));
 }

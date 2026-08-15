@@ -78,7 +78,20 @@ function contextUsageText(session) {
 // a source only. Provider sections cover Antigravity's own /usage (Gemini +
 // Claude/GPT-via-agy), Claude Code's rate_limits, Codex's generic rollout
 // rate_limits, and Dashboard-only Codex Spark quota.
-const QUOTA_WARNING_THRESHOLD = 90;
+// Severity thresholds mirror the Orbit coins (quota-ring-renderer.js): a bar
+// and a ring must agree on what counts as warn (60) and hot (85), otherwise
+// the same bucket reads as alarming in one surface and fine in the other.
+// test/quota-palette.test.js pins the mirror.
+const QUOTA_WARN_AT = 60;
+const QUOTA_HOT_AT = 85;
+
+function quotaSeverityClass(usedPercent) {
+  const p = Number(usedPercent);
+  if (!Number.isFinite(p)) return "sev-ok";
+  if (p > QUOTA_HOT_AT) return "sev-hot";
+  if (p >= QUOTA_WARN_AT) return "sev-warn";
+  return "sev-ok";
+}
 // A source that has not confirmed its numbers recently gets an explicit
 // "as of N ago" label instead of presenting old numbers as live.
 const DEFAULT_QUOTA_STALE_AFTER_MS = 5 * 60 * 1000;
@@ -192,7 +205,7 @@ function buildQuotaSourceHeader(sourceEntry, providerEntry, baseLabel, providerK
   return parts.length ? parts.join(" · ") : null;
 }
 
-function buildQuotaHalfBar(labelText, bucket, resetStyle, providerKey) {
+function buildQuotaHalfBar(labelText, bucket, resetStyle, providerKey, ringSlot) {
   const half = document.createElement("div");
   half.className = "quota-half";
 
@@ -218,7 +231,10 @@ function buildQuotaHalfBar(labelText, bucket, resetStyle, providerKey) {
   const track = document.createElement("div");
   track.className = "quota-bar-track";
   const fill = document.createElement("div");
-  fill.className = bucket.usedPercent >= QUOTA_WARNING_THRESHOLD ? "quota-bar-fill quota-bar-fill-warning" : "quota-bar-fill";
+  // Identity classes (pv-/rg-) paint the bar in the provider+window hue the
+  // Orbit coin uses for the same logical window; the sev- class overrides it
+  // on warning/hot, again exactly like the coin's fill.
+  fill.className = `quota-bar-fill pv-${providerKey} rg-${ringSlot} ${quotaSeverityClass(bucket.usedPercent)}`;
   fill.style.width = `${Math.max(0, Math.min(100, bucket.usedPercent))}%`;
   track.appendChild(fill);
   half.appendChild(track);
@@ -238,7 +254,8 @@ function buildQuotaGroupRow(headerText, fiveHourBucket, weeklyBucket, providerKe
       formatQuotaWindowLabel(fiveHourBucket, t("dashboardQuotaFiveHour")),
       fiveHourBucket,
       quotaResetStyle(fiveHourBucket, "countdown"),
-      providerKey
+      providerKey,
+      "outer"
     ));
   }
   if (weeklyBucket) {
@@ -246,7 +263,8 @@ function buildQuotaGroupRow(headerText, fiveHourBucket, weeklyBucket, providerKe
       formatQuotaWindowLabel(weeklyBucket, t("dashboardQuotaWeekly")),
       weeklyBucket,
       quotaResetStyle(weeklyBucket, "date"),
-      providerKey
+      providerKey,
+      "inner"
     ));
   }
   row.appendChild(halves);
