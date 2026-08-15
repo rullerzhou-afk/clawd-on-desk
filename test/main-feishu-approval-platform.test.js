@@ -410,6 +410,7 @@ describe("main Feishu/Lark approval platform wiring", () => {
     let syncStarts = 0;
     let syncStops = 0;
     const sync = loadFn("syncFeishuApproval", {
+      isQuitting: false,
       getFeishuApprovalPrefs: () => CONFIG,
       getFeishuApprovalSecrets: () => mismatchedSecrets,
       feishuApprovalSettings,
@@ -711,6 +712,9 @@ describe("main Feishu/Lark approval platform wiring", () => {
     const closeDrains = new Set();
     const calls = [];
     const drainRemoteSshAndFeishuBeforeQuit = loadFn("drainRemoteSshAndFeishuBeforeQuit", {
+      settingsIpcRuntime: {
+        dispose: () => calls.push(["settings-ipc"]),
+      },
       _remoteSshRuntime: {
         shutdown: ({ timeoutMs }) => {
           calls.push(["remote", timeoutMs]);
@@ -721,6 +725,10 @@ describe("main Feishu/Lark approval platform wiring", () => {
         calls.push(["feishu"]);
         closeDrains.add(feishuDrain.promise);
       },
+      settleDrainWithin: (drain, timeoutMs) => {
+        calls.push(["feishu-timeout", timeoutMs]);
+        return drain;
+      },
       feishuApprovalCloseDrains: closeDrains,
       console: { error: () => {} },
       Promise,
@@ -729,7 +737,12 @@ describe("main Feishu/Lark approval platform wiring", () => {
     const result = drainRemoteSshAndFeishuBeforeQuit();
     let settled = false;
     result.then(() => { settled = true; });
-    assert.deepEqual(calls, [["remote", 5000], ["feishu"]]);
+    assert.deepEqual(calls, [
+      ["settings-ipc"],
+      ["remote", 5000],
+      ["feishu"],
+      ["feishu-timeout", 5000],
+    ]);
 
     remoteDrain.resolve();
     await Promise.resolve();
@@ -758,9 +771,12 @@ describe("main Feishu/Lark approval platform wiring", () => {
     assert.equal(priorStopResult, priorClientDrain.promise);
 
     const drainRemoteSshAndFeishuBeforeQuit = loadFn("drainRemoteSshAndFeishuBeforeQuit", {
+      settingsIpcRuntime: { dispose: () => {} },
       _remoteSshRuntime: null,
       stopFeishuApprovalClient: () => undefined,
+      settleDrainWithin: (drain) => drain,
       feishuApprovalCloseDrains: closeDrains,
+      console: { error: () => {} },
       Promise,
     });
     const quitDrain = drainRemoteSshAndFeishuBeforeQuit();
@@ -772,6 +788,55 @@ describe("main Feishu/Lark approval platform wiring", () => {
     priorClientDrain.resolve();
     await quitDrain;
     assert.equal(settled, true);
+  });
+
+  it("bounds a hung Feishu quit drain without leaking its timeout after early settlement", async () => {
+    let timeoutCallback = null;
+    let timeoutDelay = null;
+    const cleared = [];
+    const settleDrainWithin = loadFn("settleDrainWithin", {
+      Promise,
+      setTimeout: (callback, delay) => {
+        timeoutCallback = callback;
+        timeoutDelay = delay;
+        return 17;
+      },
+      clearTimeout: (handle) => cleared.push(handle),
+    });
+
+    let settled = false;
+    const hung = settleDrainWithin(new Promise(() => {}), 5000);
+    hung.then(() => { settled = true; });
+    await Promise.resolve();
+    assert.equal(settled, false);
+    assert.equal(timeoutDelay, 5000);
+
+    timeoutCallback();
+    await hung;
+    assert.equal(settled, true);
+    assert.deepEqual(cleared, [17]);
+
+    const completed = createDeferred();
+    const early = settleDrainWithin(completed.promise, 5000);
+    completed.resolve();
+    await early;
+    assert.deepEqual(cleared, [17, 17]);
+  });
+
+  it("main retains the Settings IPC runtime and refuses Feishu sync after quit starts", async () => {
+    assert.match(MAIN_SOURCE, /const settingsIpcRuntime = registerSettingsIpc\(\{/);
+    const calls = [];
+    const syncFeishuApproval = loadFn("syncFeishuApproval", {
+      isQuitting: true,
+      stopFeishuApprovalClient: () => calls.push("stop"),
+      startFeishuApprovalClient: () => {
+        calls.push("start");
+        return true;
+      },
+    });
+
+    assert.equal(await syncFeishuApproval("settings"), false);
+    assert.deepEqual(calls, ["stop"]);
   });
 
   it("settings approval test never returns a raw SDK error message", async () => {

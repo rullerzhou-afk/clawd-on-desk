@@ -142,6 +142,10 @@ function createQueuedRaf() {
         cb();
       }
     },
+    flushFrame() {
+      const callbacks = queue.splice(0);
+      for (const cb of callbacks) cb();
+    },
   };
 }
 
@@ -1391,6 +1395,10 @@ function loadTelegramApprovalTabForTest({
   confirm = () => true,
   console: consoleOverride = console,
   showConfirmModal = () => Promise.resolve("confirm"),
+  requestAnimationFrame: requestAnimationFrameOverride = (cb) => {
+    cb();
+    return 1;
+  },
 } = {}) {
   const documentListeners = new Map();
   const body = new FakeElement("body");
@@ -1454,10 +1462,7 @@ function loadTelegramApprovalTabForTest({
   const context = {
     console: consoleOverride,
     document,
-    requestAnimationFrame: (cb) => {
-      cb();
-      return 1;
-    },
+    requestAnimationFrame: requestAnimationFrameOverride,
     setTimeout: (cb, ms) => {
       timers.push({ cb, ms, cleared: false });
       return timers.length;
@@ -1841,11 +1846,13 @@ function loadDiscordPresenceTabForTest({ snapshot, update } = {}) {
 
 function createFeishuLookupPreflightHarness({
   selectedPlatform = "lark",
+  selectedIdType = "open_id",
   credentialPlatform = selectedPlatform,
   credentialReady = true,
   credentialReason = "",
   configured = true,
   resolveResult = { status: "error", code: "lookup-failed" },
+  requestAnimationFrame,
 } = {}) {
   const commandCalls = [];
   const snapshot = {
@@ -1853,7 +1860,7 @@ function createFeishuLookupPreflightHarness({
     feishuApproval: {
       enabled: false,
       platform: selectedPlatform,
-      idType: "open_id",
+      idType: selectedIdType,
       approverId: "",
       approverSource: "none",
       approverBoundPlatform: "",
@@ -1863,6 +1870,7 @@ function createFeishuLookupPreflightHarness({
   };
   const harness = loadTelegramApprovalTabForTest({
     snapshot,
+    requestAnimationFrame,
     settingsAPI: {
       command: (name, payload) => {
         commandCalls.push({ name, payload });
@@ -1897,7 +1905,9 @@ function createFeishuLookupPreflightHarness({
             appId: configured ? "cli_......saved" : "",
           });
         }
-        if (name === "feishuApproval.saveApproverByEmail") return Promise.resolve(resolveResult);
+        if (name === "feishuApproval.saveApproverByEmail") {
+          return resolveResult instanceof Error ? Promise.reject(resolveResult) : Promise.resolve(resolveResult);
+        }
         return Promise.resolve({ status: "ok" });
       },
     },
@@ -1922,10 +1932,19 @@ async function prepareFeishuLookupForm(harness, value) {
 
 function assertVisibleFeishuLookupPreflight(card, lookupButton, expectedMessage) {
   const status = card.querySelector(".feishu-approval-lookup-preflight-status");
+  const input = card.querySelectorAll("input").at(-1);
+  const valueInvalid = expectedMessage === "feishuApprovalLookupInvalidEmail"
+    || expectedMessage === "feishuApprovalApproverInvalidId"
+    || expectedMessage === "feishuApprovalApproverEmpty";
   assert.ok(status, "lookup preflight must render a visible status element");
-  assert.equal(status.hidden, false);
+  assert.equal(status.getAttribute("hidden") == null, true, "the live region must never use a hidden attribute");
   assert.equal(status.textContent, expectedMessage);
   assert.equal(status.id, "feishu-approval-approver-preflight-status");
+  assert.equal(status.getAttribute("role"), "status");
+  assert.equal(status.getAttribute("aria-live"), "polite");
+  assert.equal(status.getAttribute("aria-atomic"), "true");
+  assert.equal(input.getAttribute("aria-describedby"), status.id);
+  assert.equal(input.getAttribute("aria-invalid"), valueInvalid ? "true" : "false");
   assert.equal(lookupButton.getAttribute("aria-describedby"), status.id);
   assert.equal(lookupButton.title, "", "visible status must replace title-only feedback");
   return status;
@@ -2182,6 +2201,34 @@ function createAnimOverridesRuntime(card, overrides = {}) {
 }
 
 describe("settings renderer browser environment", () => {
+  it("does not announce an invalid-email preflight for an untouched empty approver", async () => {
+    const harness = createFeishuLookupPreflightHarness();
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    const card = harness.content.querySelector(".feishu-approval-channel-card");
+    const input = card.querySelectorAll("input").at(-1);
+    const status = card.querySelector(".feishu-approval-lookup-preflight-status");
+    const saveButton = card.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalSaveApprover");
+
+    assert.equal(input.value, "");
+    assert.equal(input.getAttribute("aria-invalid"), "false");
+    assert.equal(input.getAttribute("aria-describedby"), undefined);
+    assert.equal(status.getAttribute("hidden") == null, true);
+    assert.equal(status.textContent, "");
+    assert.equal(saveButton.disabled, false);
+
+    saveButton.dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.document.activeElement, input);
+    assert.equal(saveButton.disabled, true);
+    assertVisibleFeishuLookupPreflight(card, saveButton, "feishuApprovalApproverEmpty");
+    assert.equal(
+      harness.preflightCommandCalls.some((call) => call.name === "feishuApproval.saveApproverByEmail"),
+      false,
+    );
+  });
+
   it("preflights invalid automatic lookup email and sends zero resolve IPC calls", async () => {
     const harness = createFeishuLookupPreflightHarness();
     const { card } = await prepareFeishuLookupForm(harness, "not-an-email");
@@ -2316,11 +2363,80 @@ describe("settings renderer browser environment", () => {
     assert.equal(input.selectionEnd, 7);
     assert.equal(harness.renderRequests.length, renderRequestCount);
     assert.equal(lookupButton.disabled, false);
-    assert.equal(status.hidden, true);
+    assert.equal(status.getAttribute("hidden") == null, true);
     assert.equal(status.textContent, "");
+    assert.equal(input.getAttribute("aria-describedby"), undefined);
+    assert.equal(input.getAttribute("aria-invalid"), "false");
     assert.equal(lookupButton.getAttribute("aria-describedby"), undefined);
     lookupButton.dispatchEvent({ type: "click" });
     assert.equal(harness.preflightCommandCalls.filter((call) => call.name === "feishuApproval.saveApproverByEmail").length, 1);
+  });
+
+  it("rejects whitespace or invisible controls inside a manual approver ID without IPC", async () => {
+    for (const approverId of ["ou_a\u00a0b", "ou_\u200b"]) {
+      const harness = createFeishuLookupPreflightHarness();
+      const prepared = await prepareFeishuLookupForm(harness, approverId);
+      const saveButton = prepared.card.querySelectorAll("button")
+        .find((button) => button.textContent === "feishuApprovalSaveApprover");
+
+      assert.equal(saveButton.disabled, true);
+      assertVisibleFeishuLookupPreflight(
+        prepared.card,
+        saveButton,
+        "feishuApprovalApproverInvalidId",
+      );
+      saveButton.dispatchEvent({ type: "click" });
+      assert.equal(
+        harness.preflightCommandCalls.some((call) => (
+          call.name === "feishuApproval.saveApproverByEmail"
+          || call.name === "feishuApproval.saveManualApprover"
+        )),
+        false,
+      );
+    }
+  });
+
+  it("updates the mounted lookup live region for a frame before rebuilding fallback controls", async () => {
+    const lookup = createDeferred();
+    const raf = createQueuedRaf();
+    const harness = createFeishuLookupPreflightHarness({
+      selectedPlatform: "feishu",
+      resolveResult: lookup.promise,
+      requestAnimationFrame: raf.requestAnimationFrame,
+    });
+    const prepared = await prepareFeishuLookupForm(harness, "person@example.com");
+    prepared.card.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalSaveApprover")
+      .dispatchEvent({ type: "click" });
+    harness.render();
+
+    const pendingCard = harness.content.querySelector(".feishu-approval-channel-card");
+    const pendingStatus = pendingCard.querySelector(".feishu-approval-lookup-preflight-status");
+    const pendingInput = pendingCard.querySelectorAll("input").at(-1);
+    const cancelButton = pendingCard.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalLookupCancel");
+    const renderRequestCount = harness.renderRequests.length;
+    assert.equal(pendingStatus.textContent, "");
+    pendingInput.dispatchEvent({ type: "input" });
+    assert.equal(cancelButton.disabled, false, "pending preflight refresh must keep Cancel available");
+
+    lookup.resolve({ status: "error", code: "missing-contact-scope" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(
+      harness.content.querySelector(".feishu-approval-lookup-preflight-status"),
+      pendingStatus,
+      "the existing live region must receive the announcement",
+    );
+    assert.equal(pendingStatus.textContent, "feishuApprovalLookupMissingContactScope");
+    assert.equal(pendingStatus.getAttribute("hidden") == null, true);
+    assert.equal(pendingInput.getAttribute("aria-describedby"), pendingStatus.id);
+    assert.equal(cancelButton.disabled, true);
+    assert.equal(harness.renderRequests.length, renderRequestCount);
+
+    raf.flushFrame();
+    assert.equal(harness.renderRequests.length, renderRequestCount, "one paint must retain the updated region");
+    raf.flushFrame();
+    assert.equal(harness.renderRequests.length, renderRequestCount + 1);
   });
 
   it("updates only the newest mounted approver row after an ordinary rerender", async () => {
@@ -2330,6 +2446,9 @@ describe("settings renderer browser environment", () => {
     harness.render();
 
     const oldCard = harness.content.querySelector(".feishu-approval-channel-card");
+    const oldInput = oldCard.querySelectorAll("input").at(-1);
+    oldInput.value = "invalid";
+    oldInput.dispatchEvent({ type: "input" });
     const oldButton = oldCard.querySelectorAll("button")
       .find((button) => button.textContent === "feishuApprovalSaveApprover");
     const oldStatus = assertVisibleFeishuLookupPreflight(
@@ -2349,10 +2468,10 @@ describe("settings renderer browser environment", () => {
 
     assert.notStrictEqual(currentCard, oldCard);
     assert.equal(currentButton.disabled, false);
-    assert.equal(currentStatus.hidden, true);
+    assert.equal(currentStatus.getAttribute("hidden") == null, true);
     assert.equal(currentStatus.textContent, "");
     assert.equal(oldButton.disabled, true);
-    assert.equal(oldStatus.hidden, false);
+    assert.equal(oldStatus.getAttribute("hidden") == null, true);
     assert.equal(oldStatus.textContent, "feishuApprovalLookupInvalidEmail");
   });
 
@@ -4601,9 +4720,30 @@ describe("settings renderer browser environment", () => {
         JSON.parse(JSON.stringify(calls.find((call) => call.name === "feishuApproval.cancelApproverLookup"))),
         { name: "feishuApproval.cancelApproverLookup" },
       );
+      await Promise.resolve();
+      await Promise.resolve();
+      const renderRequestCountAfterLeave = harness.renderRequests.length;
       lookup.resolve({ status: "error", code: "lookup-cancelled" });
       await Promise.resolve();
       await Promise.resolve();
+      assert.equal(
+        harness.renderRequests.length,
+        renderRequestCountAfterLeave,
+        "a stale lookup result must not request another render",
+      );
+
+      if (navigate === "lan") {
+        harness.content.querySelectorAll("button")
+          .find((button) => button.textContent === "remoteApprovalSubtabChannels")
+          .dispatchEvent({ type: "click" });
+      }
+      harness.render();
+      const returnedCard = harness.content.querySelector(".feishu-approval-channel-card");
+      const returnedInput = returnedCard.querySelectorAll("input").at(-1);
+      const returnedStatus = returnedCard.querySelector(".feishu-approval-lookup-preflight-status");
+      assert.equal(returnedInput.value, "");
+      assert.equal(returnedInput.getAttribute("aria-describedby"), undefined);
+      assert.equal(returnedStatus.textContent, "");
     }
   });
 
@@ -4834,6 +4974,33 @@ describe("settings renderer browser environment", () => {
       ].includes(name)),
       false,
     );
+  });
+
+  it("normalizes a rejected lookup, switches the fallback draft to open_id, and keeps it accessible", async () => {
+    const harness = createFeishuLookupPreflightHarness({
+      selectedPlatform: "feishu",
+      selectedIdType: "union_id",
+      resolveResult: new Error("raw rejected lookup detail must not render"),
+    });
+    const prepared = await prepareFeishuLookupForm(harness, "person@example.com");
+    prepared.card.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalSaveApprover")
+      .dispatchEvent({ type: "click" });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    const card = harness.content.querySelector(".feishu-approval-channel-card");
+    const saveButton = card.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalSaveApprover");
+    assertVisibleFeishuLookupPreflight(card, saveButton, "feishuApprovalLookupFailed");
+    assert.equal(
+      card.querySelectorAll("button").find((button) => button.dataset.idType === "open_id")
+        .classList.contains("active"),
+      true,
+    );
+    assert.equal(collectText(harness.content).includes("raw rejected lookup detail must not render"), false);
+    assert.equal(harness.updates.length, 0);
   });
 
   it("routes every non-ou_ open_id value through lookup validation without persisting it", async () => {
@@ -5102,6 +5269,11 @@ describe("settings renderer browser environment", () => {
 
   it("expands fallback help with the API Explorer pathname and query for lookup failures", async () => {
     const strings = loadSettingsI18nForTest().en;
+    const resultMessageByCode = {
+      "missing-contact-scope": strings.feishuApprovalLookupMissingContactScope,
+      "approver-not-found": strings.feishuApprovalLookupApproverNotFound,
+      "lookup-failed": strings.feishuApprovalLookupFailed,
+    };
     for (const [platform, expectedHostname, forbiddenHostname] of [
       ["feishu", "open.feishu.cn", "open.larksuite.com"],
       ["lark", "open.larksuite.com", "open.feishu.cn"],
@@ -5165,6 +5337,15 @@ describe("settings renderer browser environment", () => {
         await Promise.resolve();
         harness.render();
 
+        const resultCard = harness.content.querySelector(".feishu-approval-channel-card");
+        const retryButton = resultCard.querySelectorAll("button")
+          .find((button) => button.textContent === strings.feishuApprovalSaveApprover);
+        const resultStatus = assertVisibleFeishuLookupPreflight(
+          resultCard,
+          retryButton,
+          resultMessageByCode[code].split("{brand}").join(platform === "lark" ? "Lark" : "Feishu"),
+        );
+        assert.equal(retryButton.disabled, false, `${platform}/${code} should remain retryable`);
         const guide = harness.content.querySelector(".feishu-approval-api-explorer-guide");
         assert.ok(guide);
         assert.equal(guide.classList.contains("collapsed"), false, `${platform}/${code} should expand help`);
@@ -5185,8 +5366,99 @@ describe("settings renderer browser environment", () => {
         assert.deepStrictEqual(openExternalCalls, [renderedUrl]);
         assert.ok(!collectText(harness.content).includes("raw SDK/API detail must not render"));
         assert.equal(harness.updates.length, 0);
+
+        const retryInput = resultCard.querySelectorAll("input").at(-1);
+        retryInput.value = "retry@example.com";
+        retryInput.dispatchEvent({ type: "input" });
+        assert.equal(resultStatus.textContent, "", `${platform}/${code} should clear on input`);
+        assert.equal(retryInput.getAttribute("aria-describedby"), undefined);
       }
     }
+  });
+
+  it("switches the API Explorer fallback draft to open_id before saving its returned ID", async () => {
+    const commandCalls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+        feishuApproval: {
+          enabled: false,
+          platform: "feishu",
+          idType: "user_id",
+          approverId: "",
+          connectionTimeoutSeconds: 15,
+        },
+      },
+      settingsAPI: {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
+          if (name === "feishuApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: {
+                status: "stopped", secretsStored: true, secretsConfigured: true,
+                credentialReady: true, credentialReason: "",
+                configurationReady: false, setupReason: "missing-approver",
+              },
+            });
+          }
+          if (name === "feishuApproval.secretInfo") {
+            return Promise.resolve({
+              status: "ok",
+              configured: true,
+              credentialPlatform: "feishu",
+              appId: "cli_......saved",
+            });
+          }
+          if (name === "feishuApproval.saveApproverByEmail") {
+            return Promise.resolve({ status: "error", code: "missing-contact-scope" });
+          }
+          if (name === "feishuApproval.saveManualApprover") {
+            return Promise.resolve({ status: "error", code: "synthetic-stop" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    let card = harness.content.querySelector(".feishu-approval-channel-card");
+    let input = card.querySelectorAll("input").at(-1);
+    input.value = "person@example.com";
+    input.dispatchEvent({ type: "input" });
+    card.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalSaveApprover")
+      .dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    card = harness.content.querySelector(".feishu-approval-channel-card");
+    const openIdButton = card.querySelectorAll("button")
+      .find((button) => button.dataset.idType === "open_id");
+    const userIdButton = card.querySelectorAll("button")
+      .find((button) => button.dataset.idType === "user_id");
+    assert.equal(openIdButton.classList.contains("active"), true);
+    assert.equal(userIdButton.classList.contains("active"), false);
+    assert.equal(harness.updates.length, 0, "fallback selection must remain draft-only");
+
+    input = card.querySelectorAll("input").at(-1);
+    input.value = "ou_from_api_explorer";
+    input.dispatchEvent({ type: "input" });
+    card.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalSaveApprover")
+      .dispatchEvent({ type: "click" });
+    await Promise.resolve();
+
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(commandCalls.find((call) => call.name === "feishuApproval.saveManualApprover"))),
+      {
+        name: "feishuApproval.saveManualApprover",
+        payload: { idType: "open_id", approverId: "ou_from_api_explorer" },
+      },
+    );
   });
 
   it("renders email-first approver label and hint for English and Simplified Chinese", () => {

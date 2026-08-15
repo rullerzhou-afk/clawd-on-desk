@@ -46,4 +46,22 @@ describe("Feishu approval recipient classifier", () => {
       { kind: "invalid", code: "invalid-id-type" },
     );
   });
+
+  it("rejects whitespace inside manual IDs and an empty open_id suffix", () => {
+    for (const [value, idType] of [
+      ["ou_a\nb", "open_id"],
+      ["ou_a\u00a0b", "open_id"],
+      ["ou_\u200b", "open_id"],
+      ["ou_a\u0007b", "open_id"],
+      ["user id", "user_id"],
+      ["union\tid", "union_id"],
+      ["ou_", "open_id"],
+    ]) {
+      assert.deepStrictEqual(
+        classifyFeishuApprovalRecipient(value, idType),
+        { kind: "invalid", code: "invalid-approver-id" },
+        `${idType}:${JSON.stringify(value)}`,
+      );
+    }
+  });
 });

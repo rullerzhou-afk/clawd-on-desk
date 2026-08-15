@@ -1092,6 +1092,7 @@ test("FeishuApprovalClient resolves terminal action and external desktop updates
     source: "desktop",
   }), true);
   assert.equal(await secondPromise, null);
+  await flush();
   assert.match(JSON.parse(updated[1].data.content).header.title.content, /Denied/);
   assert.match(JSON.parse(updated[1].data.content).elements[0].text.content, /Desktop bubble/);
 });
@@ -1130,9 +1131,331 @@ test("FeishuApprovalClient can update card after local decision before send reso
   resolveCreate({ data: { message_id: "om_late" } });
 
   assert.equal(await decisionPromise, null);
+  await flush();
   assert.equal(updated.length, 1);
   assert.equal(updated[0].path.message_id, "om_late");
   assert.match(JSON.parse(updated[0].data.content).elements[0].text.content, /Desktop bubble/);
+});
+
+test("FeishuApprovalClient keeps a terminal decision behind an older session-trust patch", async () => {
+  const sent = [];
+  const patchCalls = [];
+  const appliedCards = [];
+  let releaseCancelPatch;
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    larkClient: {
+      im: { v1: { message: {
+        create: async (payload) => {
+          sent.push(payload);
+          return { data: { message_id: "om_ordered_terminal" } };
+        },
+        patch: async (payload) => {
+          patchCalls.push(payload);
+          if (patchCalls.length === 2) {
+            return new Promise((resolve) => {
+              releaseCancelPatch = () => {
+                appliedCards.push(payload);
+                resolve({ data: {} });
+              };
+            });
+          }
+          appliedCards.push(payload);
+          return { data: {} };
+        },
+      } } },
+    },
+  });
+  const decisionPromise = client.requestApproval({
+    title: "Run",
+    detail: "Summary: Run tests",
+    canOfferSessionTrust: true,
+  });
+  await flush();
+  const initialCard = JSON.parse(sent[0].data.content);
+  const trustOpen = initialCard.elements
+    .filter((element) => element.tag === "action")
+    .flatMap((element) => element.actions)
+    .find((button) => button.value && button.value.kind === "session-trust-open");
+  const requestId = trustOpen.value.requestId;
+
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: trustOpen.value },
+  }), true);
+  await flush();
+  assert.equal(patchCalls.length, 1, "the confirmation card is applied first");
+
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: { requestId, kind: "session-trust-cancel" } },
+  }), true);
+  await flush();
+  assert.equal(patchCalls.length, 2, "the cancellation patch is now in flight");
+
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: { requestId, decision: "deny" } },
+  }), true);
+  assert.equal(await decisionPromise, "deny");
+  await flush();
+  assert.equal(patchCalls.length, 2, "the terminal patch must wait behind the older cancellation patch");
+
+  releaseCancelPatch();
+  await client.close();
+  assert.equal(patchCalls.length, 3);
+  assert.equal(appliedCards.length, 3);
+  const finalCard = JSON.parse(appliedCards.at(-1).data.content);
+  assert.match(finalCard.header.title.content, /Denied/);
+  assert.equal(finalCard.elements.some((element) => element.tag === "action"), false);
+});
+
+test("FeishuApprovalClient closes the decision race before an external terminal patch settles", async () => {
+  const sent = [];
+  const updated = [];
+  let resolvePatch;
+  const fakeClient = {
+    im: { v1: { message: {
+      create: async (payload) => {
+        sent.push(payload);
+        return { data: { message_id: "om_external" } };
+      },
+      patch: async (payload) => {
+        updated.push(payload);
+        if (updated.length === 1) {
+          return new Promise((resolve) => { resolvePatch = resolve; });
+        }
+        return { data: {} };
+      },
+    } } },
+  };
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    larkClient: fakeClient,
+    terminalCardReplayDelayMs: 0,
+  });
+  const ac = new AbortController();
+  const decisionPromise = client.requestApproval(
+    { title: "Run", detail: "Summary: Run tests" },
+    { signal: ac.signal }
+  );
+  await flush();
+  const requestId = JSON.parse(sent[0].data.content).elements[1].actions[2].value.requestId;
+
+  assert.equal(client.resolveApprovalExternally(ac.signal, {
+    decision: "allow",
+    actionLabel: "Approved once",
+    source: "desktop",
+  }), true);
+  assert.equal(await decisionPromise, null, "the desktop decision must resolve before the patch");
+  await flush();
+  assert.equal(updated.length, 1);
+  assert.equal(client.pending.size, 0);
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_other" },
+    action: { value: { requestId, decision: "deny" } },
+  }), false, "another operator cannot refresh a terminal card");
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: { requestId: "fs_000000000000000000000000", decision: "deny" } },
+  }), false, "an unknown request cannot refresh a terminal card");
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: { requestId, decision: "deny" } },
+  }), false, "a Feishu click after the desktop decision must be stale");
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: { requestId, decision: "deny" } },
+  }), false, "duplicate stale clicks remain non-decisions");
+  assert.equal(updated.length, 1, "stale callbacks must not race the in-flight terminal patch");
+
+  let closeSettled = false;
+  const closePromise = client.close();
+  closePromise.then(() => { closeSettled = true; });
+  await Promise.resolve();
+  assert.equal(closeSettled, false, "close must retain the external terminal patch");
+
+  resolvePatch({ data: {} });
+  await closePromise;
+  assert.equal(closeSettled, true);
+  await flush();
+  assert.equal(updated.length, 2, "stale callbacks coalesce into one serialized terminal replay");
+  assert.deepEqual(updated[1], updated[0], "the replay must restore the original desktop outcome");
+  assert.equal(client.terminalCardUpdates.size, 0);
+});
+
+test("FeishuApprovalClient expires retained terminal cards without further activity", async () => {
+  const fakeClient = {
+    im: { v1: { message: {
+      create: async () => ({ data: { message_id: "om_terminal_ttl" } }),
+      patch: async () => ({ data: {} }),
+    } } },
+  };
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    larkClient: fakeClient,
+    recentTerminalCardTtlMs: 5,
+  });
+  const ac = new AbortController();
+  const decisionPromise = client.requestApproval(
+    { title: "Run", detail: "Summary: Run tests" },
+    { signal: ac.signal }
+  );
+  await flush();
+
+  assert.equal(client.resolveApprovalExternally(ac.signal, {
+    decision: "allow",
+    source: "desktop",
+  }), true);
+  assert.equal(await decisionPromise, null);
+  await flush();
+  assert.equal(client.recentTerminalCards.size, 1);
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(client.recentTerminalCards.size, 0);
+  assert.equal(client.recentTerminalExpiryTimer, null);
+  await client.close();
+});
+
+test("FeishuApprovalClient preserves the stale-action replay window across a transport restart", async () => {
+  const sent = [];
+  const patched = [];
+  const fakeClient = {
+    im: { v1: { message: {
+      create: async (payload) => {
+        sent.push(payload);
+        return { data: { message_id: "om_restart_replay" } };
+      },
+      patch: async (payload) => {
+        patched.push(payload);
+        return { data: {} };
+      },
+    } } },
+  };
+  const makeWsClient = () => ({
+    start: async () => {},
+    close: () => {},
+    getConnectionStatus: () => ({ state: "failed", reconnectAttempts: 0 }),
+  });
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    larkClient: fakeClient,
+    wsClient: makeWsClient(),
+    wsFactory: () => ({ wsClient: makeWsClient(), dispatcher: {} }),
+    terminalCardReplayDelayMs: 0,
+  });
+  const ac = new AbortController();
+  const decisionPromise = client.requestApproval(
+    { title: "Run", detail: "Summary: Run tests" },
+    { signal: ac.signal }
+  );
+  await flush();
+  const requestId = JSON.parse(sent[0].data.content).elements[1].actions[2].value.requestId;
+
+  assert.equal(client.resolveApprovalExternally(ac.signal, {
+    decision: "allow",
+    source: "desktop",
+  }), true);
+  assert.equal(await decisionPromise, null);
+  await flush();
+  assert.equal(patched.length, 1);
+
+  await client.start();
+  assert.equal(client.recentTerminalCards.size, 1);
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: { requestId, decision: "deny" } },
+  }), false);
+  await client.close();
+  assert.equal(patched.length, 2);
+  assert.deepEqual(patched[1], patched[0]);
+});
+
+test("FeishuApprovalClient serializes elicitation navigation before terminal replay", async () => {
+  const sent = [];
+  const patchCalls = [];
+  const appliedCards = [];
+  let releaseNavigationPatch;
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    terminalCardReplayDelayMs: 0,
+    larkClient: {
+      im: { v1: { message: {
+        create: async (payload) => {
+          sent.push(payload);
+          return { data: { message_id: "om_elicitation_order" } };
+        },
+        patch: async (payload) => {
+          patchCalls.push(payload);
+          if (patchCalls.length === 1) {
+            return new Promise((resolve) => {
+              releaseNavigationPatch = () => {
+                appliedCards.push(payload);
+                resolve({ data: {} });
+              };
+            });
+          }
+          appliedCards.push(payload);
+          return { data: {} };
+        },
+      } } },
+    },
+  });
+  const ac = new AbortController();
+  const answerPromise = client.requestElicitation({
+    title: "Need input",
+    questions: [
+      { question: "First?", options: [{ label: "Yes" }] },
+      { question: "Second?", options: [{ label: "No" }] },
+    ],
+  }, { signal: ac.signal });
+  await flush();
+  const firstCard = JSON.parse(sent[0].data.content);
+  const requestId = firstCard.elements
+    .find((element) => element.tag === "form")
+    .elements.find((element) => element.tag === "button").value.requestId;
+  const staleStep = {
+    operator: { open_id: "ou_1" },
+    action: {
+      value: { requestId, kind: "elicitation-step", questionIndex: 0, final: false },
+      form_value: { q_0: "0" },
+    },
+  };
+
+  assert.equal(client.handleCardAction(staleStep), true);
+  await flush();
+  assert.equal(patchCalls.length, 1);
+  assert.equal(client.resolveApprovalExternally(ac.signal, {
+    decision: "no-decision",
+    source: "desktop",
+  }), true);
+  assert.equal(await answerPromise, null);
+  assert.equal(client.handleCardAction(staleStep), false);
+  await flush();
+  assert.equal(patchCalls.length, 1, "terminal work waits behind the old navigation patch");
+
+  releaseNavigationPatch();
+  await client.close();
+  assert.equal(patchCalls.length, 3, "the terminal patch and one stale-action replay both run last");
+  assert.equal(appliedCards.length, 3);
+  const terminal = JSON.parse(appliedCards.at(-1).data.content);
+  assert.equal(terminal.elements.some((element) => element.tag === "form"), false);
+  assert.deepEqual(patchCalls[2], patchCalls[1]);
 });
 
 test("FeishuApprovalClient ignores non-approver actions and aborts pending request", async () => {
@@ -1340,6 +1663,37 @@ test("FeishuApprovalClient close waits for the test-card terminal patch", async 
   closeResult.then(() => { closeSettled = true; });
   await flush();
   assert.equal(closeSettled, false, "close must remain pending while the terminal patch is in flight");
+
+  resolvePatch({ data: {} });
+  await closeResult;
+  assert.equal(closeSettled, true);
+});
+
+test("FeishuApprovalClient close waits for an answered test-card patch", async () => {
+  let resolvePatch;
+  const patchFinished = new Promise((resolve) => { resolvePatch = resolve; });
+  const { client, updated, requestApproval } = createTestCardLifecycleHarness({
+    create: async () => ({ data: { message_id: "om_answered_close_drain" } }),
+    patch: async () => patchFinished,
+    abortOutcome: { decision: "no-decision" },
+  });
+  const approval = requestApproval();
+  await flush();
+  await flush();
+  const requestId = Array.from(client.pending.keys())[0];
+
+  assert.equal(client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: { requestId, decision: "allow" } },
+  }), true);
+  assert.equal(await approval, "allow");
+
+  const closeResult = client.close();
+  let closeSettled = false;
+  closeResult.then(() => { closeSettled = true; });
+  await flush();
+  assert.equal(updated.length, 1);
+  assert.equal(closeSettled, false, "close must wait for the answered-card patch already in flight");
 
   resolvePatch({ data: {} });
   await closeResult;
@@ -1742,6 +2096,7 @@ test("FeishuApprovalClient only resolves elicitation after final step submit", a
       "1": "Keep API stable",
     },
   });
+  await flush();
   assert.match(JSON.parse(updated[1].data.content).header.title.content, /Input submitted/);
 });
 

@@ -1309,6 +1309,39 @@ describe("feishu approval commands", () => {
     }
   });
 
+  it("feishuApproval.saveManualApprover rejects malformed IDs before reading credentials", () => {
+    for (const [label, payload, expectedCode] of [
+      ["bad open_id prefix", { idType: "open_id", approverId: "not-an-open-id" }, "invalid-email"],
+      ["open_id newline", { idType: "open_id", approverId: "ou_a\nb" }, "invalid-approver-id"],
+      ["open_id NBSP", { idType: "open_id", approverId: "ou_a\u00a0b" }, "invalid-approver-id"],
+      ["open_id zero-width", { idType: "open_id", approverId: "ou_\u200b" }, "invalid-approver-id"],
+      ["open_id control", { idType: "open_id", approverId: "ou_a\u0007b" }, "invalid-approver-id"],
+      ["bare open_id prefix", { idType: "open_id", approverId: "ou_" }, "invalid-approver-id"],
+      ["user_id whitespace", { idType: "user_id", approverId: "user id" }, "invalid-approver-id"],
+      ["empty", { idType: "open_id", approverId: "" }, "missing-approver"],
+      ["whitespace-only", { idType: "open_id", approverId: "   " }, "missing-approver"],
+      ["too long", { idType: "open_id", approverId: `ou_${"a".repeat(126)}` }, "missing-approver"],
+      ["bad id type", { idType: "tenant_key", approverId: "value" }, "invalid-id-type"],
+    ]) {
+      let secretReads = 0;
+      const result = commandRegistry["feishuApproval.saveManualApprover"](payload, {
+        snapshot: prefs.getDefaults(),
+        getFeishuApprovalSecrets: () => {
+          secretReads += 1;
+          return {
+            credentialPlatform: "feishu",
+            appId: "cli_saved",
+            appSecret: "saved-secret",
+          };
+        },
+      });
+
+      assert.deepStrictEqual(result, { status: "error", code: expectedCode }, label);
+      assert.equal(secretReads, 0, label);
+      assert.equal("commit" in result, false, label);
+    }
+  });
+
   it("feishuApproval.saveManualApprover fails closed without deleting the stored approver", () => {
     const current = {
       ...prefs.getDefaults().feishuApproval,

@@ -1216,6 +1216,17 @@ function normalizeConnectionTimeoutMs(value) {
   return 15000;
 }
 
+const RECENT_TERMINAL_CARD_TTL_MS = 60_000;
+const RECENT_TERMINAL_CARD_LIMIT = 64;
+// Keep terminal replays below Lark's per-message update rate and, more
+// importantly, let the stale action callback finish before restoring the
+// terminal card. Otherwise the action transaction can win after our PATCH.
+const TERMINAL_CARD_REPLAY_DELAY_MS = 250;
+
+function isTerminalCardRequestId(value) {
+  return /^(?:fs|fsq)_[a-f0-9]{24}$/.test(String(value || ""));
+}
+
 class FeishuApprovalClient {
   constructor(options = {}) {
     this.appId = options.appId || "";
@@ -1237,6 +1248,9 @@ class FeishuApprovalClient {
     this.dispatcher = options.dispatcher || null;
     this.pending = new Map();
     this.terminalCardUpdates = new Set();
+    this.recentTerminalCards = new Map();
+    this.recentTerminalExpiryTimer = null;
+    this.acceptingCardActions = true;
     this.log = typeof options.log === "function" ? options.log : () => {};
     this.onStatusChange = typeof options.onStatusChange === "function" ? options.onStatusChange : () => {};
     this.connectionState = "idle";
@@ -1249,6 +1263,14 @@ class FeishuApprovalClient {
       && options.cardRequestTimeoutMs > 0
       ? Math.round(options.cardRequestTimeoutMs)
       : 10_000;
+    this.terminalCardReplayDelayMs = Number.isFinite(options.terminalCardReplayDelayMs)
+      && options.terminalCardReplayDelayMs >= 0
+      ? Math.round(options.terminalCardReplayDelayMs)
+      : TERMINAL_CARD_REPLAY_DELAY_MS;
+    this.recentTerminalCardTtlMs = Number.isFinite(options.recentTerminalCardTtlMs)
+      && options.recentTerminalCardTtlMs >= 0
+      ? Math.round(options.recentTerminalCardTtlMs)
+      : RECENT_TERMINAL_CARD_TTL_MS;
     this.onSessionGrantRevoke = typeof options.onSessionGrantRevoke === "function"
       ? options.onSessionGrantRevoke
       : null;
@@ -1271,6 +1293,155 @@ class FeishuApprovalClient {
     // SDK's initial-start path can fire onReady/onError after close() (no
     // generation re-check after its await), so we guard on our side.
     this.wsGeneration = 0;
+  }
+
+  trackTerminalCardUpdate(updatePromise) {
+    const tracked = Promise.resolve(updatePromise);
+    this.terminalCardUpdates.add(tracked);
+    void tracked.then(
+      () => this.terminalCardUpdates.delete(tracked),
+      () => this.terminalCardUpdates.delete(tracked)
+    );
+    return tracked;
+  }
+
+  enqueueEntryCardUpdate(entry, update) {
+    const previous = entry && entry.cardUpdateTail
+      ? entry.cardUpdateTail
+      : Promise.resolve();
+    const work = Promise.resolve(previous)
+      .then(() => Promise.resolve(entry && entry.sendReady))
+      .then((sentEntry) => update(sentEntry));
+    // A failed visual update must not block a later terminal update. Callers
+    // still receive `work` and keep their existing stage-specific logging.
+    if (entry) entry.cardUpdateTail = work.catch(() => {});
+    return work;
+  }
+
+  pruneRecentTerminalCards(now = Date.now()) {
+    for (const [requestId, record] of this.recentTerminalCards.entries()) {
+      if (!record || record.expiresAt <= now) this.recentTerminalCards.delete(requestId);
+    }
+    while (this.recentTerminalCards.size > RECENT_TERMINAL_CARD_LIMIT) {
+      const oldest = this.recentTerminalCards.keys().next();
+      if (oldest.done) break;
+      this.recentTerminalCards.delete(oldest.value);
+    }
+    this.scheduleRecentTerminalCardExpiry(now);
+  }
+
+  scheduleRecentTerminalCardExpiry(now = Date.now()) {
+    if (this.recentTerminalExpiryTimer) clearTimeout(this.recentTerminalExpiryTimer);
+    this.recentTerminalExpiryTimer = null;
+    let nextExpiry = Infinity;
+    for (const record of this.recentTerminalCards.values()) {
+      if (record && record.expiresAt < nextExpiry) nextExpiry = record.expiresAt;
+    }
+    if (!Number.isFinite(nextExpiry)) return;
+    this.recentTerminalExpiryTimer = setTimeout(() => {
+      this.recentTerminalExpiryTimer = null;
+      this.pruneRecentTerminalCards();
+    }, Math.max(0, nextExpiry - now));
+    if (typeof this.recentTerminalExpiryTimer.unref === "function") {
+      this.recentTerminalExpiryTimer.unref();
+    }
+  }
+
+  clearRecentTerminalCards() {
+    if (this.recentTerminalExpiryTimer) clearTimeout(this.recentTerminalExpiryTimer);
+    this.recentTerminalExpiryTimer = null;
+    this.recentTerminalCards.clear();
+  }
+
+  rememberTerminalCard(requestId, entry, outcome) {
+    if (!isTerminalCardRequestId(requestId) || !entry) return null;
+    const card = entry.kind === "elicitation"
+      ? buildElicitationStatusCard(entry.payload, outcome, this.cardContext())
+      : buildStatusCard(entry.payload, outcome, this.cardContext());
+    const record = {
+      requestId,
+      card,
+      messageId: entry.messageId || "",
+      messageReady: Promise.resolve(entry.sendReady).then((sentEntry) => {
+        const messageId = (sentEntry && sentEntry.messageId) || entry.messageId || "";
+        record.messageId = messageId;
+        return messageId;
+      }),
+      expiresAt: Date.now() + this.recentTerminalCardTtlMs,
+      priorUpdate: entry.cardUpdateTail || Promise.resolve(),
+      initialUpdate: null,
+      replayRequested: false,
+      replayWork: null,
+    };
+    this.recentTerminalCards.delete(requestId);
+    this.recentTerminalCards.set(requestId, record);
+    this.pruneRecentTerminalCards();
+    return record;
+  }
+
+  async patchTerminalCard(record) {
+    const messageId = record.messageId || await record.messageReady;
+    if (!messageId) throw new Error("card message id is unavailable");
+    const message = this.messageApi();
+    if (!message || typeof message.patch !== "function") {
+      throw new Error("message.patch is unavailable");
+    }
+    assertMessageApiResponse(await message.patch({
+      path: { message_id: messageId },
+      data: { content: JSON.stringify(record.card) },
+    }), { stage: "update-card" });
+  }
+
+  startTerminalCardUpdate(record, failureMessage, options = {}) {
+    const update = Promise.resolve(record.priorUpdate)
+      .then(() => this.patchTerminalCard(record))
+      .catch((err) => {
+        this.log(
+          "warn",
+          failureMessage,
+          options.minimalFailure === true
+            ? { stage: "update-card" }
+            : classifyFeishuSdkError(err, "update-card")
+        );
+      });
+    record.initialUpdate = update;
+    this.trackTerminalCardUpdate(update);
+    return update;
+  }
+
+  scheduleStaleTerminalCardReplay(requestId, event) {
+    if (!this.acceptingCardActions || !isTerminalCardRequestId(requestId)) return false;
+    this.pruneRecentTerminalCards();
+    const record = this.recentTerminalCards.get(requestId);
+    if (!record || actionOperatorId(event, this.idType) !== this.approverId) return false;
+    record.replayRequested = true;
+    record.expiresAt = Date.now() + this.recentTerminalCardTtlMs;
+    this.recentTerminalCards.delete(requestId);
+    this.recentTerminalCards.set(requestId, record);
+    this.pruneRecentTerminalCards();
+    if (record.replayWork) return true;
+
+    const replayWork = (async () => {
+      if (record.initialUpdate) await record.initialUpdate;
+      while (record.replayRequested) {
+        await new Promise((resolve) => setTimeout(resolve, this.terminalCardReplayDelayMs));
+        // Stale callbacks received during the debounce are covered by this
+        // replay. A callback received while PATCH is in flight requests one
+        // additional serialized replay on the next loop iteration.
+        record.replayRequested = false;
+        try {
+          await this.patchTerminalCard(record);
+        } catch (err) {
+          this.log("warn", "stale card refresh failed", classifyFeishuSdkError(err, "update-card"));
+        }
+      }
+    })().finally(() => {
+      record.replayWork = null;
+    });
+    record.replayWork = replayWork;
+    this.trackTerminalCardUpdate(replayWork);
+    this.log("debug", "stale card refresh scheduled", { requestId });
+    return true;
   }
 
   isEnabled() {
@@ -1355,7 +1526,8 @@ class FeishuApprovalClient {
     if (!this.isEnabled()) return false;
     const current = this.getStatus().status;
     if (this.wsClient && (current === "running" || current === "starting")) return false;
-    if (this.wsClient) this.close();
+    if (this.wsClient) this.close({ preserveRecentTerminalCards: true });
+    this.acceptingCardActions = true;
     const generation = ++this.wsGeneration;
     const ifCurrent = (fn) => (...args) => {
       if (generation !== this.wsGeneration) return;
@@ -1450,7 +1622,8 @@ class FeishuApprovalClient {
     });
   }
 
-  close() {
+  close(options = {}) {
+    this.acceptingCardActions = false;
     this.wsGeneration += 1;
     this.clearConnectionTimer();
     if (this.wsClient && typeof this.wsClient.close === "function") {
@@ -1471,6 +1644,7 @@ class FeishuApprovalClient {
       }
     }
     this.pending.clear();
+    if (options.preserveRecentTerminalCards !== true) this.clearRecentTerminalCards();
     this.notifyStatusChange();
     return Promise.allSettled(Array.from(this.terminalCardUpdates));
   }
@@ -1529,6 +1703,7 @@ class FeishuApprovalClient {
         signal: signal || null,
         resolve: finish,
         sendReady: null,
+        cardUpdateTail: Promise.resolve(),
         trustConfirming: false,
         abortOutcomePromise: null,
       };
@@ -1537,20 +1712,10 @@ class FeishuApprovalClient {
       const terminalizeAbortOutcome = () => {
         if (!options.abortOutcome) return null;
         if (entry.abortOutcomePromise) return entry.abortOutcomePromise;
-        entry.abortOutcomePromise = Promise.resolve(entry.sendReady)
-          .then((sentEntry) => {
-            const messageId = sentEntry && sentEntry.messageId;
-            if (!messageId) return null;
-            return this.updateCard(messageId, entry.payload, options.abortOutcome);
-          })
-          .catch(() => {
-            this.log("warn", "abort card update failed", { stage: "update-card" });
-          });
-        this.terminalCardUpdates.add(entry.abortOutcomePromise);
-        void entry.abortOutcomePromise.then(
-          () => this.terminalCardUpdates.delete(entry.abortOutcomePromise),
-          () => this.terminalCardUpdates.delete(entry.abortOutcomePromise)
-        );
+        const record = this.rememberTerminalCard(requestId, entry, options.abortOutcome);
+        entry.abortOutcomePromise = record
+          ? this.startTerminalCardUpdate(record, "abort card update failed", { minimalFailure: true })
+          : Promise.resolve(null);
         return entry.abortOutcomePromise;
       };
       entry.terminalizeAbortOutcome = terminalizeAbortOutcome;
@@ -1608,6 +1773,7 @@ class FeishuApprovalClient {
         signal: signal || null,
         resolve: finish,
         sendReady: null,
+        cardUpdateTail: Promise.resolve(),
         kind: "elicitation",
         answers: {},
         activeQuestionIndex: 0,
@@ -1871,12 +2037,14 @@ class FeishuApprovalClient {
     }
     if (action.kind === "session-trust-open") {
       entry.trustConfirming = true;
-      Promise.resolve(entry.sendReady)
-        .then(() => this.patchCard(entry.messageId, buildSessionTrustConfirmCard(
+      this.enqueueEntryCardUpdate(entry, () => this.patchCard(
+        entry.messageId,
+        buildSessionTrustConfirmCard(
           entry.payload,
           { requestId: action.requestId },
           this.cardContext()
-        )))
+        )
+      ))
         .catch((err) => {
           entry.trustConfirming = false;
           this.log(
@@ -1889,12 +2057,14 @@ class FeishuApprovalClient {
     }
     if (action.kind === "session-trust-cancel") {
       entry.trustConfirming = false;
-      Promise.resolve(entry.sendReady)
-        .then(() => this.patchCard(entry.messageId, buildApprovalCard(
+      this.enqueueEntryCardUpdate(entry, () => this.patchCard(
+        entry.messageId,
+        buildApprovalCard(
           entry.payload,
           { requestId: action.requestId },
           this.cardContext()
-        )))
+        )
+      ))
         .catch((err) => {
           this.log(
             "warn",
@@ -1917,12 +2087,14 @@ class FeishuApprovalClient {
     });
     if (!cardWork) {
       entry.trustConfirming = false;
-      Promise.resolve(entry.sendReady)
-        .then(() => this.patchCard(entry.messageId, buildApprovalCard(
+      this.enqueueEntryCardUpdate(entry, () => this.patchCard(
+        entry.messageId,
+        buildApprovalCard(
           entry.payload,
           { requestId: action.requestId },
           this.cardContext()
-        )))
+        )
+      ))
         .catch((err) => {
           this.log(
             "warn",
@@ -1979,29 +2151,25 @@ class FeishuApprovalClient {
   resolveApprovalExternally(signal, outcome = {}) {
     const found = this.findPendingBySignal(signal);
     if (!found) return false;
-    const { entry } = found;
-    Promise.resolve(entry.sendReady)
-      .then(() => {
-        const nextOutcome = {
-          ...outcome,
-          source: outcome.source || "desktop",
-        };
-        if (entry.kind === "elicitation") {
-          return this.updateElicitationCard(entry.messageId, entry.payload, nextOutcome);
-        }
-        return this.updateCard(entry.messageId, entry.payload, nextOutcome);
-      })
-      .catch((err) => {
-        this.log("warn", "external update failed", classifyFeishuSdkError(err, "update-card"));
-      })
-      .finally(() => entry.resolve(null));
+    const { requestId, entry } = found;
+    const nextOutcome = {
+      ...outcome,
+      source: outcome.source || "desktop",
+    };
+    const record = this.rememberTerminalCard(requestId, entry, nextOutcome);
+    // Resolve before the best-effort patch so a slow Feishu response cannot
+    // reopen the decision race after the desktop has already answered.
+    entry.resolve(null);
+    if (record) this.startTerminalCardUpdate(record, "external update failed");
     return true;
   }
 
   handleCardAction(event) {
     const sessionAutomationAction = normalizeSessionAutomationActionEvent(event, this.idType);
     if (sessionAutomationAction) {
-      return this.handleSessionAutomationAction(sessionAutomationAction);
+      const handled = this.handleSessionAutomationAction(sessionAutomationAction);
+      if (!handled) this.scheduleStaleTerminalCardReplay(sessionAutomationAction.requestId, event);
+      return handled;
     }
     const action = normalizeActionEvent(event, this.idType);
     const requestId = action && action.requestId
@@ -2020,8 +2188,11 @@ class FeishuApprovalClient {
       decision: describeDecision(normalizedAction && normalizedAction.decision),
       matched: !!(normalizedAction && normalizedAction.operatorId === this.approverId && entry),
     });
+    if (!entry) {
+      this.scheduleStaleTerminalCardReplay(requestId, event);
+      return false;
+    }
     if (!normalizedAction || normalizedAction.operatorId !== this.approverId) return false;
-    if (!entry) return false;
     if (entry.trustConfirming === true) return false;
 
     if (entry.kind === "elicitation" && normalizedAction.decision !== "terminal") {
@@ -2032,8 +2203,9 @@ class FeishuApprovalClient {
           entry.payload.questions.length - 1
         ));
         entry.activeQuestionIndex = nextIndex;
-        Promise.resolve(entry.sendReady)
-          .then(() => this.updateElicitationQuestionCard(entry.messageId, entry.payload, requestId, nextIndex, entry.answers))
+        this.enqueueEntryCardUpdate(entry, () => (
+          this.updateElicitationQuestionCard(entry.messageId, entry.payload, requestId, nextIndex, entry.answers)
+        ))
           .catch((err) => {
             this.log("warn", "update failed", classifyFeishuSdkError(err, "update-card"));
           });
@@ -2050,8 +2222,9 @@ class FeishuApprovalClient {
           entry.payload.questions.length - 1
         ));
         entry.activeQuestionIndex = nextIndex;
-        Promise.resolve(entry.sendReady)
-          .then(() => this.updateElicitationQuestionCard(entry.messageId, entry.payload, requestId, nextIndex, entry.answers))
+        this.enqueueEntryCardUpdate(entry, () => (
+          this.updateElicitationQuestionCard(entry.messageId, entry.payload, requestId, nextIndex, entry.answers)
+        ))
           .catch((err) => {
             this.log("warn", "update failed", classifyFeishuSdkError(err, "update-card"));
           });
@@ -2066,8 +2239,9 @@ class FeishuApprovalClient {
         });
         const nextIndex = firstMissingIndex >= 0 ? firstMissingIndex : entry.activeQuestionIndex;
         entry.activeQuestionIndex = nextIndex;
-        Promise.resolve(entry.sendReady)
-          .then(() => this.updateElicitationQuestionCard(entry.messageId, entry.payload, requestId, nextIndex, entry.answers))
+        this.enqueueEntryCardUpdate(entry, () => (
+          this.updateElicitationQuestionCard(entry.messageId, entry.payload, requestId, nextIndex, entry.answers)
+        ))
           .catch((err) => {
             this.log("warn", "update failed", classifyFeishuSdkError(err, "update-card"));
           });
@@ -2083,24 +2257,18 @@ class FeishuApprovalClient {
     // Final action: resolve first so the click order decides the outcome and a
     // slow/failed card patch can't delay or reorder the local decision. resolve()
     // also removes the entry from pending, making duplicate actions no-ops.
-    entry.resolve(normalizedAction.decision);
-    Promise.resolve(entry.sendReady)
-      .then(() => {
-        if (entry.kind === "elicitation") {
-          const decision = normalizedAction.decision === "terminal" ? "terminal" : "elicitation-submit";
-          return this.updateElicitationCard(entry.messageId, entry.payload, {
-            decision,
-            source: "feishu",
-          });
+    const terminalOutcome = entry.kind === "elicitation"
+      ? {
+          decision: normalizedAction.decision === "terminal" ? "terminal" : "elicitation-submit",
+          source: "feishu",
         }
-        return this.updateCard(entry.messageId, entry.payload, {
+      : {
           decision: normalizedAction.decision,
           source: "feishu",
-        });
-      })
-      .catch((err) => {
-        this.log("warn", "update failed", classifyFeishuSdkError(err, "update-card"));
-      });
+        };
+    const record = this.rememberTerminalCard(requestId, entry, terminalOutcome);
+    entry.resolve(normalizedAction.decision);
+    if (record) this.startTerminalCardUpdate(record, "update failed");
     return true;
   }
 }

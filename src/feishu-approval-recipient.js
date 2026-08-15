@@ -16,8 +16,14 @@ function classifyFeishuApprovalRecipient(value, idType) {
   if (!FEISHU_APPROVER_ID_TYPES.has(idType)) {
     return { kind: "invalid", code: "invalid-id-type" };
   }
+  if (/[\s\p{C}]/u.test(normalizedValue)) {
+    return { kind: "invalid", code: "invalid-approver-id" };
+  }
   if (idType === "open_id" && !normalizedValue.startsWith("ou_")) {
     return { kind: "invalid", code: "invalid-email" };
+  }
+  if (idType === "open_id" && normalizedValue === "ou_") {
+    return { kind: "invalid", code: "invalid-approver-id" };
   }
   return { kind: "manual", idType, approverId: normalizedValue };
 }

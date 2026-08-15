@@ -2862,8 +2862,28 @@ function stopFeishuApprovalClient(options = {}) {
   }
 }
 
+function settleDrainWithin(drain, timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer = null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      resolve();
+    };
+    timer = setTimeout(finish, timeoutMs);
+    Promise.resolve(drain).then(finish, finish);
+  });
+}
+
 function drainRemoteSshAndFeishuBeforeQuit() {
   const drains = [];
+  try {
+    settingsIpcRuntime.dispose();
+  } catch (err) {
+    console.error("settings IPC shutdown failed:", err && err.message);
+  }
   if (_remoteSshRuntime && typeof _remoteSshRuntime.shutdown === "function") {
     drains.push(
       Promise.resolve(_remoteSshRuntime.shutdown({ timeoutMs: 5000 }))
@@ -2871,11 +2891,18 @@ function drainRemoteSshAndFeishuBeforeQuit() {
     );
   }
   stopFeishuApprovalClient();
-  drains.push(...feishuApprovalCloseDrains);
+  drains.push(...Array.from(
+    feishuApprovalCloseDrains,
+    (drain) => settleDrainWithin(drain, 5000),
+  ));
   return Promise.allSettled(drains);
 }
 
 async function syncFeishuApproval(reason = "settings", persisted = null) {
+  if (isQuitting) {
+    stopFeishuApprovalClient();
+    return false;
+  }
   const config = persisted && persisted.config
     ? persisted.config
     : getFeishuApprovalPrefs();
@@ -3992,7 +4019,7 @@ const settingsSizePreviewSession = createSettingsSizePreviewSession({
   },
 });
 
-registerSettingsIpc({
+const settingsIpcRuntime = registerSettingsIpc({
   ipcMain,
   app,
   BrowserWindow,

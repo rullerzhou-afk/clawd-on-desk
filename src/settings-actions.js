@@ -1898,10 +1898,13 @@ function feishuApprovalSaveManualApprover(payload, deps = {}) {
   if (recipient.kind === "email") {
     return { status: "error", code: "email-requires-lookup" };
   }
+  if (recipient.kind === "invalid") {
+    return { status: "error", code: recipient.code };
+  }
   if (!new Set(["open_id", "user_id", "union_id"]).has(idType)) {
     return { status: "error", code: "invalid-id-type" };
   }
-  if (!approverId || approverId.length > 128) {
+  if (recipient.kind !== "manual" || !recipient.approverId || recipient.approverId.length > 128) {
     return { status: "error", code: "missing-approver" };
   }
   if (typeof deps.getFeishuApprovalSecrets !== "function") {
@@ -1924,8 +1927,8 @@ function feishuApprovalSaveManualApprover(payload, deps = {}) {
     commit: {
       feishuApproval: {
         ...saved.config,
-        idType,
-        approverId,
+        idType: recipient.idType,
+        approverId: recipient.approverId,
         approverSource: "manual",
         approverBoundPlatform: saved.identity.platform,
         approverBoundAppId: saved.identity.appId,
