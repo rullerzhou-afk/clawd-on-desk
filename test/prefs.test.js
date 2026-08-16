@@ -2167,6 +2167,7 @@ describe("prefs.mapLocaleToLang (device locale → UI language)", () => {
     ["pt-BR", "pt-BR"], ["pt_BR", "pt-BR"],
     // Only the shipped regional variant is auto-selected.
     ["pt", "en"], ["pt-PT", "en"], ["pt-AO", "en"],
+    ["es-MX", "es"], ["es-ES", "es"], ["es", "es"],
     ["fr-FR", "en"], ["de", "en"],
   ];
   for (const [input, expected] of cases) {
@@ -2183,8 +2184,8 @@ describe("prefs.mapLocaleToLang (device locale → UI language)", () => {
   });
 
   it("only ever returns a value inside the lang enum", () => {
-    const enumVals = new Set(["en", "zh", "zh-TW", "ko", "ja", "pt-BR"]);
-    for (const probe of ["xx", "ZH-tw", "JA", "en-GB", "pt-BR", "PT-br", ""]) {
+    const enumVals = new Set(["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"]);
+    for (const probe of ["xx", "ZH-tw", "JA", "en-GB", "pt-BR", "PT-br", "es-MX", ""]) {
       assert.ok(enumVals.has(prefs.mapLocaleToLang(probe)), `${probe} mapped outside enum`);
     }
   });

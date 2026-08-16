@@ -57,6 +57,7 @@ const VERIFIED_GITHUB_CONTRIBUTORS = [
   "anthonyonazure",
   "weed33834",
   "arismarioneves",
+  "Zamaniego",
 ];
 
 function createDeferred() {
@@ -3371,7 +3372,7 @@ describe("settings renderer browser environment", () => {
       "telegramMigrationNudgeLegacyBody",
       "telegramMigrationNudgeNativeBody",
     ];
-    assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja", "pt-BR"]);
+    assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"]);
     for (const lang of SUPPORTED_LANGS) {
       for (const key of keys) {
         assert.equal(
@@ -7828,9 +7829,27 @@ describe("settings renderer browser environment", () => {
     assert.match(css, /\.language-picker\.open-up \.language-picker-menu\s*\{[\s\S]*bottom:\s*calc\(100% \+ 6px\);/);
   });
 
-  it("opens the six-language tutorial picker downward at the default welcome layout", () => {
+  it("opens the seven-language tutorial picker upward when it no longer fits below the default welcome layout", () => {
     const harness = loadSharedLanguagePickerForTest({
-      options: ["en", "zh", "zh-TW", "ko", "ja", "pt"],
+      options: SUPPORTED_LANGS,
+      innerHeight: 700,
+    });
+    harness.boundary.getBoundingClientRect = () => ({ top: 78, bottom: 635 });
+    harness.trigger.getBoundingClientRect = () => ({ top: 390, bottom: 426 });
+    Object.defineProperty(harness.menu, "scrollHeight", { value: 220 });
+    Object.defineProperty(harness.menu, "offsetHeight", { value: 222 });
+    Object.defineProperty(harness.menu, "clientHeight", { value: 220 });
+
+    harness.trigger.dispatchEvent({ type: "click" });
+
+    assert.strictEqual(harness.picker.classList.contains("open-up"), true);
+    assert.strictEqual(harness.picker.classList.contains("menu-scrollable"), false);
+    assert.strictEqual(harness.menu.style.maxHeight, "222px");
+  });
+
+  it("keeps the shared picker downward branch covered when six options fit below", () => {
+    const harness = loadSharedLanguagePickerForTest({
+      options: SUPPORTED_LANGS.slice(0, 6),
       innerHeight: 700,
     });
     harness.boundary.getBoundingClientRect = () => ({ top: 78, bottom: 635 });

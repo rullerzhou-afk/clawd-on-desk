@@ -10,6 +10,8 @@
   <a href="README.ko-KR.md">한국어</a>
   ·
   <a href="README.ja-JP.md">日本語</a>
+  ·
+  <a href="README.es.md">Español</a>
 </p>
 <p align="center">
   <a href="https://github.com/rullerzhou-afk/clawd-on-desk/releases"><img src="https://img.shields.io/github/v/release/rullerzhou-afk/clawd-on-desk" alt="Version"></a>
@@ -102,7 +104,7 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 - **免打扰模式** — 右键或托盘菜单进入休眠，所有 hook 事件静默，直到手动唤醒。免打扰期间不弹权限气泡——Codex、opencode 和 MiMo Code 会回退到原生命令行确认，Claude Code 和 CodeBuddy 会回退到各自内置的权限确认流程。WorkBuddy 仅同步状态与通知；Antigravity 和 Pi 都是仅状态同步集成
 - **提示音效** — 任务完成和权限请求时播放短音效（可从系统托盘或设置中开关；10 秒冷却，免打扰模式自动静音）
 - **系统托盘** — 免打扰、开机自启、检查更新
-- **国际化** — 支持英文、简体中文、繁体中文、韩文、日文和 Português (Brasil) 界面，可在设置 → 通用中切换
+- **国际化** — 支持英文、简体中文、繁体中文、韩文、日文、Português (Brasil) 和 Español 界面，可在设置 → 通用中切换
 - **自动更新** — 检查 GitHub release；Windows 退出时安装 NSIS 更新包，macOS/Linux 源码运行时通过 `git pull` + 重启自动更新
 
 ## 动画一览
@@ -326,6 +328,7 @@ Clawd on Desk 是一个社区驱动的项目。欢迎提 Bug、提需求、提 P
 <a href="https://github.com/weed33834"><img src="https://github.com/weed33834.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/arismarioneves"><img src="https://github.com/arismarioneves.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/aaronWool"><img src="https://github.com/aaronWool.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/Zamaniego"><img src="https://github.com/Zamaniego.png" width="50" style="border-radius:50%" /></a>
 
 ## 致谢
 

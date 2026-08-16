@@ -12,6 +12,8 @@
   <a href="README.ko-KR.md">한국어</a>
   ·
   <a href="README.ja-JP.md">日本語</a>
+  ·
+  <a href="README.es.md">Español</a>
 </p>
 <p align="center">
   <a href="https://github.com/rullerzhou-afk/clawd-on-desk/releases"><img src="https://img.shields.io/github/v/release/rullerzhou-afk/clawd-on-desk" alt="Version"></a>
@@ -97,7 +99,7 @@ Clawd はデスクトップに住むペットで、AI コーディングエー�
 - **Do Not Disturb** — 右クリックまたは tray メニューから sleep mode に入り、起こすまで hook event をすべて抑制します。DND 中は権限バブルも抑制されます。Codex、opencode、MiMo Code はネイティブプロンプトに戻り、Claude Code と CodeBuddy は組み込みの権限フローに戻ります。Antigravity と Pi は state-only です
 - **効果音** — タスク完了や権限リクエスト時に短い音を鳴らします（システムトレイまたは設定から切り替え、10 秒クールダウン、DND 中は自動ミュート）
 - **システムトレイ** — DND mode、自動起動、更新確認
-- **i18n** — English、簡体中文、繁体中文、Korean、Japanese、Português (Brasil) UI。設定 → 一般から切り替えできます
+- **i18n** — English、簡体中文、繁体中文、Korean、Japanese、Português (Brasil)、Español UI。設定 → 一般から切り替えできます
 - **自動更新** — GitHub Releases を確認します。Windows では終了時に NSIS 更新を適用し、macOS/Linux では clone したリポジトリから実行している場合に `git pull` + restart を行います
 
 ## アニメーション
@@ -349,6 +351,7 @@ Clawd をより良くしてくれたすべての方に感謝します。
     <td align="center" valign="top" width="110"><a href="https://github.com/weed33834"><img src="https://github.com/weed33834.png" width="50" style="border-radius:50%" /><br /><sub>weed33834</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/arismarioneves"><img src="https://github.com/arismarioneves.png" width="50" style="border-radius:50%" /><br /><sub>arismarioneves</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/aaronWool"><img src="https://github.com/aaronWool.png" width="50" style="border-radius:50%" /><br /><sub>aaronWool</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/Zamaniego"><img src="https://github.com/Zamaniego.png" width="50" style="border-radius:50%" /><br /><sub>Zamaniego</sub></a></td>
   </tr>
 </table>
 

@@ -35,6 +35,7 @@
   const LANG_LABELS = {
     en: "English", zh: "简体中文", "zh-TW": "繁體中文", ko: "한국어", ja: "日本語",
     "pt-BR": "Português (Brasil)",
+    es: "Español",
   };
 
   // Fallback mark only used if main couldn't read the icon file.

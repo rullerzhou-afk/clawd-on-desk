@@ -10,6 +10,8 @@
   <a href="README.zh-TW.md">繁體中文</a>
   ·
   <a href="README.ja-JP.md">日本語</a>
+  ·
+  <a href="README.es.md">Español</a>
 </p>
 <p align="center">
   <a href="https://github.com/rullerzhou-afk/clawd-on-desk/releases"><img src="https://img.shields.io/github/v/release/rullerzhou-afk/clawd-on-desk" alt="Version"></a>
@@ -95,7 +97,7 @@ Clawd는 당신의 데스크톱 위에서 살며, AI 코딩 에이전트가 지�
 - **방해 금지 모드** — 우클릭 또는 트레이 메뉴로 sleep 모드에 들어가면, 깰 때까지 모든 hook 이벤트가 음소거됩니다. DND 동안에는 권한 말풍선이 뜨지 않으며, Codex, opencode, MiMo Code는 기본 프롬프트로 돌아가고, Claude Code와 CodeBuddy는 자체 권한 확인 흐름으로 되돌아갑니다. Antigravity와 Pi는 상태만 동기화합니다.
 - **효과음** — 작업 완료나 권한 요청 시 짧은 오디오 알림이 재생됩니다. 시스템 트레이 또는 설정에서 켜고 끌 수 있으며, 10초 쿨다운이 있고 DND에서는 자동 음소거됩니다.
 - **시스템 트레이** — DND, 자동 시작, 업데이트 확인 등을 지원합니다.
-- **i18n** — 영어, 중국어 간체, 중국어 번체, 한국어, 일본어, Português (Brasil) UI를 지원하며, 설정 → 일반에서 전환할 수 있습니다.
+- **i18n** — 영어, 중국어 간체, 중국어 번체, 한국어, 일본어, Português (Brasil), Español UI를 지원하며, 설정 → 일반에서 전환할 수 있습니다.
 - **자동 업데이트** — GitHub release를 확인하고, Windows는 종료 시 NSIS 업데이트를 설치하며, macOS/Linux는 clone한 저장소에서 실행 중일 때 `git pull` + 재시작으로 업데이트합니다.
 
 ## 애니메이션
@@ -345,6 +347,7 @@ Clawd를 더 좋게 만드는 데 도움을 준 모든 분들께 감사합니다
     <td align="center" valign="top" width="110"><a href="https://github.com/weed33834"><img src="https://github.com/weed33834.png" width="50" style="border-radius:50%" /><br /><sub>weed33834</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/arismarioneves"><img src="https://github.com/arismarioneves.png" width="50" style="border-radius:50%" /><br /><sub>arismarioneves</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/aaronWool"><img src="https://github.com/aaronWool.png" width="50" style="border-radius:50%" /><br /><sub>aaronWool</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/Zamaniego"><img src="https://github.com/Zamaniego.png" width="50" style="border-radius:50%" /><br /><sub>Zamaniego</sub></a></td>
   </tr>
 </table>
 

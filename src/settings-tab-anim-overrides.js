@@ -831,6 +831,11 @@
       if (minSessions === maxSessions) return `${minSessions} ${minSessions === 1 ? "sessão" : "sessões"}`;
       return `${minSessions}-${maxSessions} sessões`;
     }
+    if (lang === "es") {
+      if (maxSessions == null) return `${minSessions}+ sesiones`;
+      if (minSessions === maxSessions) return `${minSessions} ${minSessions === 1 ? "sesión" : "sesiones"}`;
+      return `${minSessions}-${maxSessions} sesiones`;
+    }
     if (maxSessions == null) return `${minSessions}+ sessions`;
     if (minSessions === maxSessions) return `${minSessions} session${minSessions === 1 ? "" : "s"}`;
     return `${minSessions}-${maxSessions} sessions`;
@@ -859,6 +864,11 @@
       return `サブエージェント ${minSessions}-${maxSessions}`;
     }
     if (lang === "pt-BR") {
+      if (maxSessions == null) return `${minSessions}+ subagentes`;
+      if (minSessions === maxSessions) return `${minSessions} ${minSessions === 1 ? "subagente" : "subagentes"}`;
+      return `${minSessions}-${maxSessions} subagentes`;
+    }
+    if (lang === "es") {
       if (maxSessions == null) return `${minSessions}+ subagentes`;
       if (minSessions === maxSessions) return `${minSessions} ${minSessions === 1 ? "subagente" : "subagentes"}`;
       return `${minSessions}-${maxSessions} subagentes`;

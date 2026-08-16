@@ -10,9 +10,11 @@
   <a href="README.ko-KR.md">한국어</a>
   ·
   <a href="README.ja-JP.md">日本語</a>
+  ·
+  <a href="README.es.md">Español</a>
 </p>
 <p align="center">
-  <sub>🌏 Don't see your language? <a href="https://github.com/rullerzhou-afk/clawd-on-desk/pulls">Open a PR</a> to add one — Español, Français, Deutsch, etc. all welcome.</sub>
+  <sub>🌏 Don't see your language? <a href="https://github.com/rullerzhou-afk/clawd-on-desk/pulls">Open a PR</a> to add one — Français, Deutsch, etc. all welcome.</sub>
 </p>
 <p align="center">
   <a href="https://github.com/rullerzhou-afk/clawd-on-desk/releases"><img src="https://img.shields.io/github/v/release/rullerzhou-afk/clawd-on-desk" alt="Version"></a>
@@ -106,7 +108,7 @@ Thinking when you prompt, typing when tools run, grooving or juggling for subage
 - **Do Not Disturb** — right-click or tray menu to enter sleep mode; all hook events are silenced until you wake Clawd. Permission bubbles are suppressed during DND — Codex, opencode, and MiMo Code fall back to their native prompts, while Claude Code and CodeBuddy fall back to their built-in permission flow. WorkBuddy uses state + Notification only; Antigravity and Pi are state-only integrations.
 - **Sound effects** — short audio cues on task completion and permission requests (toggle via the system tray or Settings; 10s cooldown, auto-muted during DND)
 - **System tray** — DND mode, auto-start, check for updates
-- **i18n** — English, Simplified Chinese, Traditional Chinese, Korean, Japanese, and Brazilian Portuguese UI; switch in Settings → General
+- **i18n** — English, Simplified Chinese, Traditional Chinese, Korean, Japanese, Brazilian Portuguese, and Spanish UI; switch in Settings → General
 - **Auto-update** — checks GitHub releases; Windows installs NSIS updates on quit, macOS/Linux `git pull` + restart when running from a cloned repo
 
 ## Animations
@@ -358,6 +360,7 @@ Thanks to everyone who has helped make Clawd better:
     <td align="center" valign="top" width="110"><a href="https://github.com/weed33834"><img src="https://github.com/weed33834.png" width="50" style="border-radius:50%" /><br /><sub>weed33834</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/arismarioneves"><img src="https://github.com/arismarioneves.png" width="50" style="border-radius:50%" /><br /><sub>arismarioneves</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/aaronWool"><img src="https://github.com/aaronWool.png" width="50" style="border-radius:50%" /><br /><sub>aaronWool</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/Zamaniego"><img src="https://github.com/Zamaniego.png" width="50" style="border-radius:50%" /><br /><sub>Zamaniego</sub></a></td>
   </tr>
 </table>
 

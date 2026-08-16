@@ -19,10 +19,10 @@ function regexEscape(value) {
 }
 
 function assertLocaleObjectParity(locales, label) {
-  const baseKeys = Object.keys(locales.en).sort();
+  const baseKeys = Object.keys(locales.en);
   for (const lang of SUPPORTED_LANGS) {
     assert.ok(locales[lang], `missing ${label} locale: ${lang}`);
-    assert.deepStrictEqual(Object.keys(locales[lang]).sort(), baseKeys, `${label} locale keys mismatch: ${lang}`);
+    assert.deepStrictEqual(Object.keys(locales[lang]), baseKeys, `${label} locale keys/order mismatch: ${lang}`);
     for (const key of baseKeys) {
       assert.strictEqual(typeof locales[lang][key], typeof locales.en[key], `${label}.${lang}.${key} type mismatch`);
       if (typeof locales.en[key] === "string") {
@@ -30,6 +30,12 @@ function assertLocaleObjectParity(locales, label) {
           placeholders(locales[lang][key]),
           placeholders(locales.en[key]),
           `${label}.${lang}.${key} placeholder mismatch`
+        );
+      } else if (typeof locales.en[key] === "function") {
+        assert.strictEqual(
+          locales[lang][key].length,
+          locales.en[key].length,
+          `${label}.${lang}.${key} function arity mismatch`
         );
       }
     }
@@ -75,7 +81,7 @@ function runtimeDictRenderers() {
 
 describe("i18n locales", () => {
   it("lists all selectable languages in supported languages", () => {
-    assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja", "pt-BR"]);
+    assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"]);
   });
 
   it("keeps all locale keysets aligned with English", () => {
@@ -131,6 +137,7 @@ describe("i18n locales", () => {
         ko: "아직 승인자가 설정되지 않았습니다.",
         ja: "承認者がまだ設定されていません。",
         "pt-BR": "Nenhum aprovador foi configurado ainda.",
+        es: "Todavía no se configuró ningún aprobador.",
       },
     );
   });
@@ -162,6 +169,7 @@ describe("i18n locales", () => {
         ko: "지우기",
         ja: "クリア",
         "pt-BR": "Limpar",
+        es: "Borrar",
       },
     );
   });
@@ -205,6 +213,12 @@ describe("i18n locales", () => {
         feishuApprovalCredentialsReplaceConfirmDetail: "Isso altera a identidade salva do app. Os campos Verification Token e Encrypt Key deixados em branco serão limpos. Deseja continuar?",
         feishuApprovalCredentialsReplaceConfirmAction: "Substituir credenciais",
       },
+      es: {
+        feishuApprovalSecretsReplaceHintHtml: "Para la misma aplicación, dejar vacíos Verification Token y Encrypt Key conserva los valores guardados. Al reemplazar la aplicación, esos campos vacíos se borrarán después de la confirmación.",
+        feishuApprovalCredentialsReplaceConfirmTitle: "¿Reemplazar las credenciales guardadas de la aplicación?",
+        feishuApprovalCredentialsReplaceConfirmDetail: "Esto cambia la identidad guardada de la aplicación. Se borrarán los campos Verification Token y Encrypt Key que estén vacíos. ¿Continuar?",
+        feishuApprovalCredentialsReplaceConfirmAction: "Reemplazar credenciales",
+      },
     };
     for (const lang of SUPPORTED_LANGS) {
       assert.deepStrictEqual(
@@ -241,6 +255,10 @@ describe("i18n locales", () => {
       "pt-BR": {
         label: "E-mail ou user ID do aprovador no {brand}",
         hint: "Digite um e-mail para resolver e salvar o open_id automaticamente, ou escolha um tipo de ID e cole um ID existente.",
+      },
+      es: {
+        label: "Correo electrónico o ID de usuario del aprobador en {brand}",
+        hint: "Introduce un correo electrónico para resolver y guardar automáticamente el open_id, o elige un tipo de ID y pega un ID existente.",
       },
     };
 
@@ -369,6 +387,99 @@ describe("i18n locales", () => {
 
     // Appended after a name list that can hold a single agent.
     assert.strictEqual(settings.doctorAgentSummaryNeedsAttention, "precisa(m) de atenção");
+  });
+
+  it("keeps Spanish runtime count strings grammatical at one and many", () => {
+    const es = i18n.es;
+    const cases = [
+      [es.dashboardCount, "1 en actividad", "4 en actividad"],
+      [es.sessionHudActive, "1 en actividad", "4 en actividad"],
+      [es.sessionHudOtherActive, "1 más en actividad", "4 más en actividad"],
+    ];
+    for (const [template, one, many] of cases) {
+      assert.strictEqual(template.replace("{n}", "1"), one);
+      assert.strictEqual(template.replace("{n}", "4"), many);
+    }
+  });
+
+  it("inflects Spanish Settings count strings", () => {
+    const es = loadSettingsI18nStrings().es;
+    assert.strictEqual(es.doctorAgentSummaryAttention(1), "1 requiere atención");
+    assert.strictEqual(es.doctorAgentSummaryAttention(4), "4 requieren atención");
+    assert.strictEqual(es.doctorAgentSummarySkipped(1), "1 omitido");
+    assert.strictEqual(es.doctorAgentSummarySkipped(4), "4 omitidos");
+
+    const oneOfEach = es.toastCodexPetsRefreshOk(1, 1, 1, 1, 1, false);
+    assert.match(oneOfEach, /1 nuevo, 1 actualizado, 1 sin cambios, 1 eliminado, 1 inválido/);
+    const manyOfEach = es.toastCodexPetsRefreshOk(2, 2, 2, 2, 2, false);
+    assert.match(manyOfEach, /2 nuevos, 2 actualizados, 2 sin cambios, 2 eliminados, 2 inválidos/);
+  });
+
+  it("keeps Spanish plain count strings number-invariant", () => {
+    const es = loadSettingsI18nStrings().es;
+    assert.strictEqual(es.doctorIssueCount.replace("{count}", "1"), "Problemas: 1");
+    assert.strictEqual(es.doctorIssueCount.replace("{count}", "4"), "Problemas: 4");
+
+    for (const [template, one, many] of [
+      [es.toastAgentInstallHintPartialSkipped, "Instalaciones completadas: 1.", "Instalaciones completadas: 4."],
+      [es.toastAgentInstallHintPartial, "Instalaciones completadas: 1; con error: 1.", "Instalaciones completadas: 4; con error: 4."],
+      [es.toastAgentCleanupHintPartial, "Eliminaciones completadas: 1; con error: 1.", "Eliminaciones completadas: 4; con error: 4."],
+    ]) {
+      const render = (count) => template
+        .replace("{success}", String(count))
+        .replace("{failed}", String(count));
+      assert.match(render(1), new RegExp(`^${regexEscape(one)}`));
+      assert.match(render(4), new RegExp(`^${regexEscape(many)}`));
+    }
+
+    assert.strictEqual(
+      es.toastAgentInstallHintPartialSkipped
+        .replace("{success}", "1")
+        .replace("{agents}", "Codex y Kimi Code"),
+      "Instalaciones completadas: 1. No se encontró instalación local de Codex y Kimi Code."
+    );
+  });
+
+  it("keeps Spanish Settings copy aligned with product semantics changed since the original locale contribution", () => {
+    const es = loadSettingsI18nStrings().es;
+    const expected = {
+      sidebarAnimOverrides: "Animación y sonido",
+      sidebarRemoteSsh: "Hosts SSH",
+      remoteApprovalSubtitle: "Redirige las solicitudes de permiso locales a un canal remoto. Los secretos se mantienen fuera de las preferencias y el globo de escritorio sigue siendo la alternativa local.",
+      telegramApprovalCardStarting: "Conectando con la aprobación nativa de Telegram…",
+      telegramApprovalCardFailed: "La aprobación nativa de Telegram informó de un error. Revisa el mensaje a continuación o vuelve a intentarlo.",
+      telegramApprovalCompletionOutput: "Contenido de la notificación de finalización",
+      telegramApprovalCompletionOutputDesc: "Elige si las notificaciones de finalización de Telegram incluyen la respuesta final del asistente.",
+      telegramApprovalCompletionOutput_off: "Solo aviso de finalización",
+      telegramApprovalCompletionOutput_full: "Incluir respuesta completa",
+      telegramApprovalCompletionOutputFullConfirm: "Clawd incluirá la respuesta final completa del asistente en las notificaciones de finalización de Telegram. Las respuestas pueden contener código, contenido de archivos, rutas u otra información sensible.",
+      remoteSshTitle: "Hosts SSH",
+      remoteSshFieldAutoStartCodex: "Iniciar la supervisión de respaldo de Codex al conectar",
+      remoteSshErrForwardFailed: "El puerto remoto no está disponible. Inténtalo de nuevo más tarde. Si cambias el puerto de reenvío remoto (23333-23337), ejecuta Desplegar / Reparar hooks antes de conectarte.",
+      remoteSshConnectWarnNoDeploy: "Los hooks no están desplegados para este destino. Ejecuta primero Desplegar / Reparar hooks; Conectar permanecerá desactivado hasta que el despliegue esté listo.",
+      agentsSubtitle: "Descubre automáticamente herramientas de IA en este equipo y en WSL, o añade manualmente una IA que Clawd aún no incluya. Una vez conectada, gestiona aquí su estado, sus solicitudes de permiso y sus notificaciones.",
+      shortcutLabelPetReveal: "Clic en la mascota: Mostrar superposiciones de la mascota",
+      bubbleNotificationDesc: "El interruptor controla los avisos pasivos de Codex / Kimi Code. Los segundos fijan el límite máximo de cierre automático; estados de sesión posteriores pueden descartarlo antes. 0 los oculta.",
+      langChinese: "简体中文",
+      langTraditionalChinese: "繁體中文",
+      themeSubtitle: "Elige y personaliza tu mascota de escritorio.",
+      animOverridesTitle: "Animación y sonido",
+    };
+    for (const [key, value] of Object.entries(expected)) {
+      assert.strictEqual(es[key], value, key);
+    }
+
+    assert.strictEqual(es.remoteSshDeploy, "Desplegar / Reparar hooks");
+    for (const key of [
+      "remoteSshRuntimeModeChanged",
+      "remoteSshForceRevokeAllConfirm",
+      "remoteSshForceRevokeSuccess",
+      "remoteSshErrSecureIdentityMissing",
+      "remoteSshErrDeploymentRequired",
+    ]) {
+      assert.match(es[key], /Desplegar \/ Reparar hooks/, `${key} should name the visible action exactly`);
+      assert.doesNotMatch(es[key], /Instalar \/ reparar hooks/, `${key} should not name a missing action`);
+    }
   });
 
   it("keeps Codex Pet main dialog strings available for every supported language", () => {

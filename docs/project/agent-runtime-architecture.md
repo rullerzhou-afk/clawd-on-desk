@@ -406,6 +406,6 @@ Remote SSH 有两条明确分开的 transport 路径：
 
 ## i18n
 
-- 支持 en / zh / zh-TW / ko / ja / pt-BR
+- 支持 en / zh / zh-TW / ko / ja / pt-BR / es
 - 文案集中在 `src/i18n.js`
 - 语言偏好持久化到 `clawd-prefs.json`，启动时通过 `hydrate()` 灌入 controller
