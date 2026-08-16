@@ -42,6 +42,7 @@ describe("createSettingsController construction", () => {
     assert.strictEqual(ctrl.get("lang"), "en");
     assert.strictEqual(ctrl.get("soundMuted"), false);
     assert.strictEqual(ctrl.isLocked(), false);
+    assert.strictEqual(ctrl.hasReadFailure(), false);
   });
 
   it("respects locked state from future-version files", () => {
@@ -52,6 +53,7 @@ describe("createSettingsController construction", () => {
     try {
       const ctrl = createSettingsController({ prefsPath: p });
       assert.strictEqual(ctrl.isLocked(), true);
+      assert.strictEqual(ctrl.hasReadFailure(), false);
     } finally {
       console.warn = originalWarn;
     }
@@ -1346,6 +1348,103 @@ describe("locked controller (future-version files)", () => {
     const onDisk = JSON.parse(fs.readFileSync(p, "utf8"));
     assert.strictEqual(onDisk.version, 999);
     assert.strictEqual(onDisk.lang, "en");
+  });
+});
+
+describe("unreadable prefs safe mode", () => {
+  function createControllerWithReadFailure(p, injectedDeps = {}) {
+    const originalReadFileSync = fs.readFileSync;
+    const originalWarn = console.warn;
+    fs.readFileSync = (target, ...args) => {
+      if (target === p) {
+        const err = new Error("injected prefs read failure");
+        err.code = "EACCES";
+        throw err;
+      }
+      return originalReadFileSync(target, ...args);
+    };
+    console.warn = () => {};
+    try {
+      return createSettingsController({ prefsPath: p, injectedDeps });
+    } finally {
+      fs.readFileSync = originalReadFileSync;
+      console.warn = originalWarn;
+    }
+  }
+
+  it("blocks updates and commands before any external effect on every platform", async () => {
+    const p = makeTempPath();
+    const original = JSON.stringify({
+      version: prefs.CURRENT_VERSION,
+      lang: "en",
+      agents: {
+        "qwen-code": {
+          integrationInstalled: false,
+          enabled: false,
+        },
+      },
+    });
+    fs.writeFileSync(p, original, "utf8");
+
+    const calls = [];
+    const ctrl = createControllerWithReadFailure(p, {
+      setOpenAtLogin: (enabled) => calls.push(["openAtLogin", enabled]),
+      syncIntegrationForAgent: async (agentId) => {
+        calls.push(["sync", agentId]);
+        return { status: "ok" };
+      },
+      startMonitorForAgent: (agentId) => calls.push(["monitor", agentId]),
+    });
+
+    assert.strictEqual(ctrl.isLocked(), true);
+    assert.strictEqual(ctrl.hasReadFailure(), true);
+
+    const pureUpdate = ctrl.applyUpdate("lang", "zh");
+    assert.strictEqual(pureUpdate.status, "error");
+    assert.strictEqual(pureUpdate.code, "prefs-read-failure");
+
+    const effectUpdate = ctrl.applyUpdate("openAtLogin", true);
+    assert.strictEqual(effectUpdate.status, "error");
+    assert.strictEqual(effectUpdate.code, "prefs-read-failure");
+
+    const bulk = ctrl.applyBulk({ soundMuted: true, showTray: false });
+    assert.strictEqual(bulk.status, "error");
+    assert.strictEqual(bulk.code, "prefs-read-failure");
+
+    const command = await ctrl.applyCommand("installAgentIntegration", {
+      agentId: "qwen-code",
+    });
+    assert.strictEqual(command.status, "error");
+    assert.strictEqual(command.code, "prefs-read-failure");
+
+    assert.deepStrictEqual(calls, [], "safe mode must stop external effects before they start");
+    assert.strictEqual(ctrl.get("lang"), "en");
+    assert.strictEqual(ctrl.get("openAtLogin"), false);
+    assert.strictEqual(ctrl.get("agents")["qwen-code"].integrationInstalled, false);
+    assert.strictEqual(fs.readFileSync(p, "utf8"), original);
+  });
+
+  it("allows side-effect-free startup hydration without making prefs writable", () => {
+    const p = makeTempPath();
+    const original = JSON.stringify({ version: prefs.CURRENT_VERSION, lang: "en" });
+    fs.writeFileSync(p, original, "utf8");
+    const ctrl = createControllerWithReadFailure(p);
+
+    const result = ctrl.hydrate({
+      openAtLogin: true,
+      openAtLoginHydrated: true,
+    });
+
+    assert.strictEqual(result.status, "ok");
+    assert.strictEqual(ctrl.get("openAtLogin"), true);
+    assert.strictEqual(ctrl.get("openAtLoginHydrated"), true);
+    assert.deepStrictEqual(ctrl.persist(), {
+      status: "ok",
+      noop: true,
+      locked: true,
+      readFailure: true,
+    });
+    assert.strictEqual(fs.readFileSync(p, "utf8"), original);
   });
 });
 

@@ -55,7 +55,7 @@ Settings 是独立 `BrowserWindow`，采用 5 层结构：
 
 | 层 | 文件 | 职责 |
 |---|---|---|
-| Schema / 持久化 | `src/prefs.js` | `SCHEMA` 定义；`load/save/migrate/validate`；坏文件自动 `.bak` + fallback |
+| Schema / 持久化 | `src/prefs.js` | `SCHEMA` 定义；`load/save/migrate/validate`；JSON 损坏自动 `.bak` + fallback；文件本身不可读时进入不覆盖原文件的 read-failure safe mode |
 | 内存 store | `src/settings-store.js` | `createStore()` 返回 `{ getSnapshot, subscribe, _commit }`；`_commit` closure-private |
 | 控制器 / actions | `src/settings-controller.js` + `src/settings-actions*.js` | controller 是唯一写入者；actions 提供校验、command 与失败可阻止提交的 pre-commit gates |
 | 提交后 effects | `src/settings-effect-router.js` | 订阅 committed changes，更新 tray/dock/window/HUD/renderer 等 runtime 状态与广播；失败不得回滚已提交 prefs |
@@ -66,6 +66,7 @@ Settings 是独立 `BrowserWindow`，采用 5 层结构：
 - `applyUpdate` 和 `applyBulk` 对同步/异步 pre-commit gate 同构
 - `hydrate()` 是唯一跳过 pre-commit gate 的入口；post-commit effects 由 router 订阅 store changes
 - 设置写入路径只有 `controller → store → subscribers`
+- `prefs.load()` 返回 `locked && recovered` 表示文件字节从未成功读取：controller 会在 validator / command / 外部 effect 之前拒绝用户 mutation，agent runtime 的启动同步、monitor、state/permission ingress 与 session recovery 全部 fail closed；修复文件访问并重启后才恢复。可读的 future-version `locked && !recovered` 继续保持既有的当前进程内存可改、磁盘不覆盖语义
 - `idleVisual` 是 per-theme 文件映射；缺失键表示使用主题默认，主题升级删除已选文件或删除主题时会安静回退，不改变逻辑状态
 - About tab 使用 inline SVG，而不是 `<object>`，因为 `settings.html` CSP 是 `default-src 'none'`
 

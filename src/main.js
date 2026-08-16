@@ -531,10 +531,10 @@ const _settingsController = createSettingsController({
   },
 });
 _settingsController.subscribeKey("agents", (_agents, snapshot) => {
-  // A future-version prefs file is intentionally read-only. Settings may still
-  // change in memory for the current process, but publishing those ephemeral
-  // values would let a retained hook cold-launch Clawd against the durable
-  // prefs truth.
+  // A readable future-version prefs file may still change in memory for the
+  // current process. An unreadable prefs file rejects mutations earlier in the
+  // controller. In both locked cases, publishing ephemeral values would let a
+  // retained hook cold-launch Clawd against a different durable prefs truth.
   if (_settingsController.isLocked()) return;
   _syncCodexAutoStartGate(snapshot, "settings");
 });
@@ -1589,15 +1589,15 @@ const {
 
 // ── Permission bubble — delegated to src/permission.js ──
 const {
-  isAgentIntegrationInstalled: _isAgentIntegrationInstalled,
-  isAgentEnabled: _isAgentEnabled,
-  isAgentPermissionsEnabled: _isAgentPermissionsEnabled,
-  isAgentSubagentPermissionsEnabled: _isAgentSubagentPermissionsEnabled,
-  isAgentNotificationHookEnabled: _isAgentNotificationHookEnabled,
-  isCodexNativeNotificationSoundEnabled: _isCodexNativeNotificationSoundEnabled,
-  isCodexPermissionInterceptEnabled: _isCodexPermissionInterceptEnabled,
-  shouldSyncAgentIntegration: _shouldSyncAgentIntegration,
+  createRuntimeAgentGate,
 } = require("./agent-gate");
+const _runtimeAgentGate = createRuntimeAgentGate({
+  getSnapshot: () => _settingsController.getSnapshot(),
+  // locked && recovered means prefs bytes were never read and the snapshot is
+  // only defaults. Keep every prefs-backed agent path closed for this process;
+  // fixing file access and restarting is the only authority transition.
+  isAuthoritative: () => !_settingsController.hasReadFailure(),
+});
 const _permCtx = {
   get win() { return win; },
   get lang() { return lang; },
@@ -1619,14 +1619,13 @@ const _permCtx = {
   // pendingPermissions list changes (notifyPermissionsChanged), so a bubble
   // that leaves the list mid-edit can't strand the pet faded + click-through.
   syncImeEditingPetDodge: () => topmostRuntime.syncImeEditingPetDodge(),
-  isAgentEnabled: (agentId) =>
-    _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
+  isAgentEnabled: (agentId) => _runtimeAgentGate.isAgentEnabled(agentId),
   isAgentPermissionsEnabled: (agentId) =>
-    _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
+    _runtimeAgentGate.isAgentPermissionsEnabled(agentId),
   isAgentSubagentPermissionsEnabled: (agentId) =>
-    _isAgentSubagentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
+    _runtimeAgentGate.isAgentSubagentPermissionsEnabled(agentId),
   isCodexPermissionInterceptEnabled: () =>
-    _isCodexPermissionInterceptEnabled({ agents: _settingsController.get("agents") }),
+    _runtimeAgentGate.isCodexPermissionInterceptEnabled(),
   // The permission layer consumes one normalized runtime mode. DND,
   // headless, per-agent and bubble gates run before this chokepoint.
   getPermissionAutomationMode: () =>
@@ -1859,12 +1858,12 @@ const _stateCtx = {
   // permissionsEnabled=false toggle would silently rebuild holds on every
   // incoming Kimi PermissionRequest.
   isAgentPermissionsEnabled: (agentId) =>
-    _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
+    _runtimeAgentGate.isAgentPermissionsEnabled(agentId),
   // state.js gates self-issued Notification events (idle / wait-for-input
   // pings) via this reader. Living in updateSession (not at the HTTP
   // boundary) keeps the gate consistent for hook / log-poll / plugin paths.
   isAgentNotificationHookEnabled: (agentId) =>
-    _isAgentNotificationHookEnabled({ agents: _settingsController.get("agents") }, agentId),
+    _runtimeAgentGate.isAgentNotificationHookEnabled(agentId),
   resolveAgentDisplayName: _resolveAgentDisplayName,
   miniPeekIn: () => miniPeekIn(),
   miniPeekOut: () => miniPeekOut(),
@@ -1914,22 +1913,8 @@ const _stateCtx = {
     if (sessionAutomationCoordinator) sessionAutomationCoordinator.onSessionLifecycleEnd(payload);
   },
   getIdleVisualChoice,
-  isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
-  hasAnyEnabledAgent: () => {
-    // `get("agents")` returns the live reference (no clone) — we're only
-    // reading. Missing agents field falls back to "assume enabled" (the
-    // legacy default-true contract for unconfigured installs); but an
-    // explicit empty object means every agent was cleared, so return
-    // false. Without that distinction, a user who wiped the field would
-    // still trigger startup-recovery process scans.
-    const agents = _settingsController.get("agents");
-    if (!agents || typeof agents !== "object") return true;
-    const probe = { agents };
-    for (const id of Object.keys(agents)) {
-      if (_isAgentEnabled(probe, id)) return true;
-    }
-    return false;
-  },
+  isAgentEnabled: (agentId) => _runtimeAgentGate.isAgentEnabled(agentId),
+  hasAnyEnabledAgent: () => _runtimeAgentGate.hasAnyEnabledAgent(),
 };
 const _state = require("./state")(_stateCtx);
 const _kimiQuotaCredentialStore = createKimiQuotaCredentialStore({ safeStorage });
@@ -1950,7 +1935,7 @@ _settingsController.subscribeKey("kimiQuotaCollectionEnabled", (enabled) => {
   });
 });
 _settingsController.subscribeKey("agents", (_agents, snapshot) => {
-  if (!_isAgentEnabled(snapshot, "kimi-cli")) {
+  if (!_runtimeAgentGate.isAgentEnabled("kimi-cli")) {
     _kimiQuotaRuntime.invalidateRequests();
   }
 });
@@ -2348,7 +2333,7 @@ agentRuntime = createAgentRuntimeMain({
   getServer: () => _server,
   getStateRuntime: () => _state,
   getPermissionRuntime: () => _perm,
-  isAgentEnabled: (agentId) => _isAgentEnabled(_settingsController.getSnapshot(), agentId),
+  isAgentEnabled: (agentId) => _runtimeAgentGate.isAgentEnabled(agentId),
   updateSession: (sessionId, state, event, opts) => updateSession(sessionId, state, event, opts),
   debugLog: (msg) => sessionLog(msg),
   captureGhosttyTerminalId,
@@ -2390,14 +2375,14 @@ const _serverCtx = {
   captureForegroundWindowsTerminal: _captureForegroundWindowsTerminal,
   debugLog: (msg) => sessionLog(msg),
   recordWindowsProcessChainShadow: (record) => recordWindowsProcessChainShadow(record),
-  isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
+  isAgentEnabled: (agentId) => _runtimeAgentGate.isAgentEnabled(agentId),
   shouldSyncAgentIntegration: (agentId) =>
-    _shouldSyncAgentIntegration({ agents: _settingsController.get("agents") }, agentId),
+    _runtimeAgentGate.shouldSyncAgentIntegration(agentId),
   getAgentIntegrationOptions: _getAgentIntegrationOptions,
-  isAgentPermissionsEnabled: (agentId) => _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
-  isAgentSubagentPermissionsEnabled: (agentId) => _isAgentSubagentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
-  isCodexNativeNotificationSoundEnabled: () => _isCodexNativeNotificationSoundEnabled({ agents: _settingsController.get("agents") }),
-  isCodexPermissionInterceptEnabled: () => _isCodexPermissionInterceptEnabled({ agents: _settingsController.get("agents") }),
+  isAgentPermissionsEnabled: (agentId) => _runtimeAgentGate.isAgentPermissionsEnabled(agentId),
+  isAgentSubagentPermissionsEnabled: (agentId) => _runtimeAgentGate.isAgentSubagentPermissionsEnabled(agentId),
+  isCodexNativeNotificationSoundEnabled: () => _runtimeAgentGate.isCodexNativeNotificationSoundEnabled(),
+  isCodexPermissionInterceptEnabled: () => _runtimeAgentGate.isCodexPermissionInterceptEnabled(),
   codexSubagentClassifier: agentRuntime.getCodexSubagentClassifier(),
   setState,
   updateSession: agentRuntime.updateSessionFromServer,
@@ -4341,11 +4326,10 @@ function createWindow() {
   startHttpServer().then((port) => {
     if (port == null) return;
     const restoredSessionIds = restoreSessionsFromRecoveryLeases(_state, {
-      isAgentEnabled: (agentId) => {
-        const snapshot = { agents: _settingsController.get("agents") };
-        return _isAgentEnabled(snapshot, agentId)
-          && _isAgentIntegrationInstalled(snapshot, agentId);
-      },
+      isAgentEnabled: (agentId) => (
+        _runtimeAgentGate.isAgentEnabled(agentId)
+        && _runtimeAgentGate.isAgentIntegrationInstalled(agentId)
+      ),
     });
     if (restoredSessionIds.length > 0) {
       const recoveredSnapshot = _state.buildSessionSnapshot();
@@ -4735,7 +4719,7 @@ if (!gotTheLock) {
       const verdict = getCodexHookHealth({ prefs: snapshot });
       const prevSignature = _settingsController.get("codexHookHealthLastNotified") || "";
       const decision = decideCodexHookNotification(verdict, prevSignature, {
-        codexEnabled: _isAgentEnabled(snapshot, "codex"),
+        codexEnabled: _runtimeAgentGate.isAgentEnabled("codex"),
         notifyEnabled: _settingsController.get("codexHookHealthNotifyEnabled") !== false,
       });
       if (decision.nextSignature !== prevSignature) {

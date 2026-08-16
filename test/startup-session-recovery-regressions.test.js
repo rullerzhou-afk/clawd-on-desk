@@ -177,8 +177,8 @@ describe("startup session recovery regressions", () => {
     const recoveryBlock = mainSource.slice(restoreIndex, completionIndex);
     assert.match(
       recoveryBlock,
-      /_isAgentEnabled\(snapshot, agentId\)\s*&&\s*_isAgentIntegrationInstalled\(snapshot, agentId\)/,
-      "main must require both enabled and installed integration state",
+      /_runtimeAgentGate\.isAgentEnabled\(agentId\)\s*&&\s*_runtimeAgentGate\.isAgentIntegrationInstalled\(agentId\)/,
+      "main must require authoritative enabled and installed integration state",
     );
   });
 });
