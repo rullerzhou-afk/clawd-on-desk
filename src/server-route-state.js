@@ -53,6 +53,11 @@ const { sanitizeShadowRecord } = require("./windows-process-chain-shadow-log");
 // not an Internet DoS concern.
 const MAX_STATE_BODY_BYTES = 16 * 1024;
 const ASSISTANT_LAST_OUTPUT_MAX = 2400;
+// Transport recognition and metadata acceptance are distinct wire facts.
+// A recognized 204 may still mean "unknown session" or another designed
+// metadata drop; only this header allows a metadata sender to advance its
+// application-level dedup baseline.
+const CLAWD_METADATA_ACCEPTED_HEADER = "X-Clawd-Metadata-Accepted";
 
 function normalizeHwndString(value) {
   if (value === null || value === undefined) return null;
@@ -488,9 +493,11 @@ function handleStatePost(req, res, options) {
       if (metadataOnly) {
         // Deliberately NOT recorded in the recent-hook-events ring: a
         // statusline refreshing every few hundred ms would evict the real
-        // hook events the diagnostics exist to show. 204 either way — the
-        // statusline script never reads the response, and "session unknown"
-        // is the designed drop, not an error.
+        // hook events the diagnostics exist to show. 204 either way — legacy
+        // statusline scripts ignore the response, while delivery-aware
+        // plugins use CLAWD_METADATA_ACCEPTED_HEADER to distinguish a live
+        // accepted session from the designed "session unknown" drop.
+        let metadataAccepted = false;
         if (typeof ctx.updateSessionMetadata === "function") {
           const metaUpdate = {};
           if (
@@ -506,10 +513,13 @@ function handleStatePost(req, res, options) {
           // it's not Claude statusline data.
           if (sessionTitle) metaUpdate.sessionTitle = sessionTitle;
           if (Object.keys(metaUpdate).length > 0) {
-            ctx.updateSessionMetadata(session_id || "default", metaUpdate);
+            metadataAccepted = ctx.updateSessionMetadata(session_id || "default", metaUpdate) === true;
           }
         }
-        res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+        res.writeHead(204, {
+          [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID,
+          ...(metadataAccepted ? { [CLAWD_METADATA_ACCEPTED_HEADER]: "1" } : {}),
+        });
         res.end();
         return;
       }
@@ -901,6 +911,7 @@ function handleStatePost(req, res, options) {
 
 module.exports = {
   MAX_STATE_BODY_BYTES,
+  CLAWD_METADATA_ACCEPTED_HEADER,
   sendStateHealthResponse,
   handleStatePost,
 };

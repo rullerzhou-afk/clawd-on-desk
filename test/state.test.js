@@ -3466,10 +3466,11 @@ describe("updateSession()", () => {
     assert.strictEqual(session.updatedAt, 12345);
 
     session.metadataUpdatedAt = 777; // pin so a re-stamp is detectable
-    api.updateSessionMetadata("s1", {
+    const acceptedNoop = api.updateSessionMetadata("s1", {
       contextUsage: { used: 100, limit: 200000, percent: 0, source: "claude" },
       contextUsageOrigin: "claude-statusline",
     });
+    assert.strictEqual(acceptedNoop, true, "a valid identical refresh is accepted even without mutation");
     assert.strictEqual(session.metadataUpdatedAt, 777, "identical refresh must not re-stamp");
   });
 

@@ -53,6 +53,9 @@ const CLAWD_DIR = join(homedir(), ".clawd");
 const RUNTIME_CONFIG_PATH = join(CLAWD_DIR, "runtime.json");
 const SERVER_PORTS = [23333, 23334, 23335, 23336, 23337];
 const STATE_PATH = "/state";
+const CLAWD_SERVER_HEADER = "x-clawd-server";
+const CLAWD_SERVER_ID = "clawd-on-desk";
+const CLAWD_METADATA_ACCEPTED_HEADER = "x-clawd-metadata-accepted";
 // Provider limit lookups are in-process HTTP roundtrips to the host's own
 // server; cache positive model limits so the per-message.updated resolution
 // never spams the host router (60s TTL matches antigravity-context-usage.js).
@@ -372,6 +375,22 @@ export function createOpencodeFamilyPlugin(config) {
       mkdirSync(CLAWD_DIR, { recursive: true });
       writeFileSync(DEBUG_LOG_PATH, "", "utf8");
     } catch {}
+  }
+
+  // Test-only observability for the already-asynchronous debug writer. The
+  // flag is cleared after appendFile settles, so these two closure conditions
+  // are sufficient; no second active-promise state is needed.
+  function flushDebugLog() {
+    return new Promise((resolve) => {
+      const check = () => {
+        if (!_debugFlushing && _debugBuffer.length === 0) {
+          resolve();
+          return;
+        }
+        setImmediate(check);
+      };
+      check();
+    });
   }
 
   function readRuntimePort() {
@@ -900,15 +919,17 @@ export function createOpencodeFamilyPlugin(config) {
           signal: controller.signal,
         });
         const elapsed = Date.now() - t0;
-        const header = res.headers.get("x-clawd-server");
-        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} port=${port} status=${res.status} header=${header} elapsed=${elapsed}ms`);
+        const header = res.headers.get(CLAWD_SERVER_HEADER);
+        const metadataAccepted = header === CLAWD_SERVER_ID
+          && res.headers.get(CLAWD_METADATA_ACCEPTED_HEADER) === "1";
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} port=${port} status=${res.status} header=${header} metadataAccepted=${metadataAccepted} elapsed=${elapsed}ms`);
         // Port range is unprivileged so another app could answer — require the
         // Clawd identity header before trusting the response.
-        if (header === "clawd-on-desk") {
+        if (header === CLAWD_SERVER_ID) {
           _cachedPort = port;
           try { await res.text(); } catch {}
-          debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} OK port=${port}`);
-          return true;
+          debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} OK port=${port} metadataAccepted=${metadataAccepted}`);
+          return { recognized: true, metadataAccepted };
         }
       } catch (err) {
         const elapsed = Date.now() - t0;
@@ -920,7 +941,7 @@ export function createOpencodeFamilyPlugin(config) {
     // All candidates failed — drop the cache so next call re-reads runtime.json.
     debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} EXHAUSTED all candidates failed`);
     _cachedPort = null;
-    return false;
+    return { recognized: false, metadataAccepted: false };
   }
 
   // Fire-and-forget direct channel used by /permission. Returning the settled
@@ -928,10 +949,12 @@ export function createOpencodeFamilyPlugin(config) {
   // it.
   function postToClawd(urlPath, body, logTag) {
     const snapshot = snapshotPost(body, logTag);
-    return deliverPost(urlPath, snapshot).catch((err) => {
-      debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} UNCAUGHT ${err && err.message}`);
-      return false;
-    });
+    return deliverPost(urlPath, snapshot)
+      .then((result) => result.recognized)
+      .catch((err) => {
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} UNCAUGHT ${err && err.message}`);
+        return false;
+      });
   }
 
   function isReplaceableStateSnapshot(snapshot) {
@@ -995,20 +1018,24 @@ export function createOpencodeFamilyPlugin(config) {
   }
 
   async function drainStatePostQueue(sessionId, queue) {
-    let allSucceeded = true;
+    let allRecognized = true;
     while (queue.pending.length > 0) {
       const snapshot = queue.pending.shift();
       queue.active = snapshot;
-      let delivered = false;
+      let snapshotSucceeded = false;
       try {
-        delivered = await deliverPost(STATE_PATH, snapshot);
-        if (!delivered) allSucceeded = false;
+        const result = await deliverPost(STATE_PATH, snapshot);
+        const transportSucceeded = result.recognized;
+        snapshotSucceeded = isMetadataStateSnapshot(snapshot)
+          ? result.recognized && result.metadataAccepted
+          : result.recognized;
+        if (!transportSucceeded) allRecognized = false;
       } catch (err) {
-        allSucceeded = false;
+        allRecognized = false;
         debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} UNCAUGHT ${err && err.message}`);
       } finally {
         queue.active = null;
-        settleStatePostSnapshot(snapshot, delivered);
+        settleStatePostSnapshot(snapshot, snapshotSucceeded);
       }
     }
 
@@ -1018,7 +1045,7 @@ export function createOpencodeFamilyPlugin(config) {
     if (_statePostTailBySession.get(sessionId) === queue.settled) {
       _statePostTailBySession.delete(sessionId);
     }
-    queue.resolve(allSucceeded);
+    queue.resolve(allRecognized);
   }
 
   function createStatePostQueue(sessionId) {
@@ -1255,6 +1282,7 @@ export function createOpencodeFamilyPlugin(config) {
     get _lastContextUsageBySession() { return getContextUsageDebugView(); },
     get _contextStateByInstance() { return _contextStateByInstance; },
     get _contextLimitCacheByClient() { return _contextLimitCacheByClient; },
+    flushDebugLog,
     // Instance-isolation probes (family-core tests). Live views into the
     // closure — a hardcoded log path or accidentally-shared state bag must
     // fail the isolation suite, not pass silently.
@@ -1341,9 +1369,25 @@ export function createOpencodeFamilyPlugin(config) {
     if (!cache) return null;
     const cacheKey = `${providerID || ""}::${modelID}`;
     const cached = cache.get(cacheKey);
-    if (cached && Date.now() - cached.at < CONTEXT_LIMIT_CACHE_MS) {
+    if (
+      cached
+      && Number.isFinite(cached.limit)
+      && cached.limit > 0
+      && Date.now() - cached.at < CONTEXT_LIMIT_CACHE_MS
+    ) {
       return cached.limit;
     }
+    const lookupGeneration = Number.isSafeInteger(cached && cached.lookupGeneration)
+      ? cached.lookupGeneration + 1
+      : 1;
+    // Record latest-started ownership before awaiting provider.list(). Keep an
+    // expired positive value only as inert history; the `at` check above
+    // prevents this pending entry from becoming a fresh cache hit.
+    cache.set(cacheKey, {
+      limit: Number.isFinite(cached && cached.limit) && cached.limit > 0 ? cached.limit : null,
+      at: Number.isFinite(cached && cached.at) ? cached.at : 0,
+      lookupGeneration,
+    });
     let limit = null;
     try {
       const providers = normalizeProviderListResult(await client.provider.list());
@@ -1368,7 +1412,10 @@ export function createOpencodeFamilyPlugin(config) {
     // Only successful positive limits are normal TTL cache entries. A null or
     // thrown lookup must be allowed to recover on the next sample.
     if (Number.isFinite(limit) && limit > 0) {
-      cache.set(cacheKey, { limit, at: Date.now() });
+      const current = cache.get(cacheKey);
+      if (current && current.lookupGeneration === lookupGeneration) {
+        cache.set(cacheKey, { limit, at: Date.now(), lookupGeneration });
+      }
     }
     return limit;
   }
@@ -1412,24 +1459,30 @@ export function createOpencodeFamilyPlugin(config) {
       // explicitly scoped until a real MiMo compatibility fixture exists.
       if (AGENT_ID !== "opencode") return;
 
-      const props = (event && event.properties) || {};
-      const info = props.info && typeof props.info === "object" ? props.info : {};
-      const used = extractContextUsageUsed(info.tokens);
-      if (!Number.isFinite(used) || used <= 0) {
-        debugLog(`CTX skip reason=${Number.isFinite(used) ? "zero-tokens" : "no-tokens"}`);
+      const props = event && event.properties && typeof event.properties === "object"
+        ? event.properties
+        : {};
+      const info = props.info;
+      if (!info || typeof info !== "object" || Array.isArray(info)) {
+        debugLog("CTX skip reason=invalid-info");
         return;
       }
-      if (info.role && info.role !== "assistant") {
+      if (info.role !== "assistant") {
         debugLog("CTX skip reason=non-assistant-message");
         return;
       }
 
       const instanceToken = contextInstanceToken(instance && instance.instanceToken);
-      const sessionId = resolveSessionId(
-        getEventSessionId(event),
-        _lastSeenSessionId || _rootSessionId
-      );
-      const clawdSessionId = normalizeSessionId(sessionId) || DEFAULT_SESSION_ID;
+      const clawdSessionId = normalizeSessionId(getEventSessionId(event));
+      if (!clawdSessionId) {
+        debugLog("CTX skip reason=no-session-id");
+        return;
+      }
+      const used = extractContextUsageUsed(info.tokens);
+      if (!Number.isFinite(used) || used <= 0) {
+        debugLog(`CTX skip reason=${Number.isFinite(used) ? "zero-tokens" : "no-tokens"}`);
+        return;
+      }
       const state = getContextState(instanceToken, clawdSessionId, true);
       const sessions = getContextSessionMap(instanceToken);
       if (sessions && sessions.size > MAX_CONTEXT_USAGE_ENTRIES) {
@@ -1443,8 +1496,6 @@ export function createOpencodeFamilyPlugin(config) {
       state.inFlight.set(sequence, { used });
       const providerID = info.providerID || null;
       const modelID = info.modelID || null;
-      debugLog(`CTX used=${used} session=${clawdSessionId} provider=${providerID || "?"} model=${modelID || "unknown"} seq=${sequence} gen=${generation}`);
-
       return resolveContextLimit(providerID, modelID, instance && instance.client)
         .then((limit) => {
           if (!isCurrentContextSample(instanceToken, clawdSessionId, state, generation, sequence)) {
@@ -1458,6 +1509,7 @@ export function createOpencodeFamilyPlugin(config) {
             modelID,
             limit: Number.isFinite(limit) && limit > 0 ? limit : null,
           };
+          debugLog(`CTX resolved used=${used} limit=${sample.limit ?? "unknown"} session=${clawdSessionId} provider=${providerID || "?"} model=${modelID || "unknown"} seq=${sequence} gen=${generation}`);
           if (isSameDeliveredContextSample(state.delivered, sample)) {
             debugLog(`CTX skip session=${clawdSessionId} seq=${sequence} reason=delivered`);
             return null;

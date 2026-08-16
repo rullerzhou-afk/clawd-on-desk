@@ -6,10 +6,54 @@
 // assistant-role/zero-token gating, and per-session dedup driven through the
 // real event hook handler.
 
-const { describe, it, before, beforeEach, afterEach } = require("node:test");
+const { describe, it, before, beforeEach, afterEach, after, mock } = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("path");
 const { pathToFileURL } = require("node:url");
+
+const ORIGINAL_HOME = {
+  HOME: {
+    present: Object.prototype.hasOwnProperty.call(process.env, "HOME"),
+    value: process.env.HOME,
+  },
+  USERPROFILE: {
+    present: Object.prototype.hasOwnProperty.call(process.env, "USERPROFILE"),
+    value: process.env.USERPROFILE,
+  },
+};
+const TMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-context-usage-"));
+fs.mkdirSync(path.join(TMP_HOME, ".clawd"), { recursive: true });
+process.env.HOME = TMP_HOME;
+process.env.USERPROFILE = TMP_HOME;
+
+const trackedPlugins = new Set();
+
+function createTrackedPlugin(core, params) {
+  const plugin = core.createOpencodeFamilyPlugin(params);
+  trackedPlugins.add(plugin);
+  return plugin;
+}
+
+function restoreEnv(name) {
+  const original = ORIGINAL_HOME[name];
+  if (original.present) process.env[name] = original.value;
+  else delete process.env[name];
+}
+
+after(async () => {
+  try {
+    await Promise.all([...trackedPlugins].map((plugin) => plugin.__test.flushDebugLog()));
+  } finally {
+    try {
+      fs.rmSync(TMP_HOME, { recursive: true, force: true });
+    } finally {
+      restoreEnv("HOME");
+      restoreEnv("USERPROFILE");
+    }
+  }
+});
 
 async function loadCore() {
   const modulePath = path.join(__dirname, "..", "hooks", "opencode-family-plugin", "core.mjs");
@@ -82,20 +126,55 @@ function makeSequenceClient(results) {
   return { client: { provider: { list } }, calls };
 }
 
+async function waitFor(predicate, message, attempts = 100) {
+  for (let i = 0; i < attempts; i += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail(message);
+}
+
+function makeSeedThenDeferredClient(seedProviders) {
+  const pending = [];
+  const calls = { providerList: 0 };
+  const list = () => {
+    calls.providerList += 1;
+    if (calls.providerList === 1) return Promise.resolve(sdkProviderResult(seedProviders));
+    const gate = deferred();
+    pending.push(gate);
+    return gate.promise;
+  };
+  return { client: { provider: { list } }, calls, pending };
+}
+
 // Captures every POST the plugin makes (headers carry the Clawd identity the
 // port-discovery loop requires before trusting the port).
-function installFetchStub({ accepted = () => true } = {}) {
+function installFetchStub({
+  recognized = () => true,
+  metadataAccepted = (_attempt, call) => call.body.metadata_only === true,
+  beforeRespond = async () => {},
+} = {}) {
   const posted = [];
   let attempts = 0;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
     attempts += 1;
     posted.push({ url: String(url), body: JSON.parse(init.body) });
-    const isAccepted = accepted(attempts, posted.at(-1));
-    posted.at(-1).accepted = isAccepted;
+    const call = posted.at(-1);
+    await beforeRespond(attempts, call);
+    const isRecognized = recognized(attempts, call);
+    const isMetadataAccepted = isRecognized
+      && call.body.metadata_only === true
+      && metadataAccepted(attempts, call);
+    call.recognized = isRecognized;
+    call.metadataAccepted = isMetadataAccepted;
+    const responseHeaders = {
+      ...(isRecognized ? { "x-clawd-server": "clawd-on-desk" } : {}),
+      ...(isMetadataAccepted ? { "x-clawd-metadata-accepted": "1" } : {}),
+    };
     return {
-      status: isAccepted ? 200 : 503,
-      headers: { get: (name) => (name.toLowerCase() === "x-clawd-server" && isAccepted ? "clawd-on-desk" : null) },
+      status: isRecognized ? (call.body.metadata_only === true ? 204 : 200) : 503,
+      headers: { get: (name) => responseHeaders[String(name).toLowerCase()] || null },
       text: async () => "",
     };
   };
@@ -171,7 +250,7 @@ describe("opencode-family contextUsage limit resolution (resolveContextLimit)", 
   before(async () => { core = await loadCore(); });
 
   it("unwraps the SDK fields-style {data:{all},request,response} envelope", async () => {
-    const plugin = core.createOpencodeFamilyPlugin(OPENCODE_PARAMS);
+    const plugin = createTrackedPlugin(core, OPENCODE_PARAMS);
     const { client } = makeFakeClient([
       {
         id: "openai",
@@ -188,7 +267,7 @@ describe("opencode-family contextUsage limit resolution (resolveContextLimit)", 
   });
 
   it("matches the provider by providerID, the model by modelID — never by modelID alone", async () => {
-    const plugin = core.createOpencodeFamilyPlugin(OPENCODE_PARAMS);
+    const plugin = createTrackedPlugin(core, OPENCODE_PARAMS);
     const { client } = makeFakeClient([
       { id: "openai", models: { "deepseek-v4": { limit: { context: 128000 } } } },
     ]);
@@ -201,7 +280,7 @@ describe("opencode-family contextUsage limit resolution (resolveContextLimit)", 
   });
 
   it("accepts a Map instance for provider.models", async () => {
-    const plugin = core.createOpencodeFamilyPlugin(OPENCODE_PARAMS);
+    const plugin = createTrackedPlugin(core, OPENCODE_PARAMS);
     const { client } = makeFakeClient([
       { id: "openai", models: new Map([["deepseek-v4", { limit: { context: 128000 } }]]) },
     ]);
@@ -209,7 +288,7 @@ describe("opencode-family contextUsage limit resolution (resolveContextLimit)", 
   });
 
   it("fails closed when only provider.options.limit is present", async () => {
-    const plugin = core.createOpencodeFamilyPlugin(OPENCODE_PARAMS);
+    const plugin = createTrackedPlugin(core, OPENCODE_PARAMS);
     const { client } = makeFakeClient([
       { id: "legacy", options: { limit: 240000 } },
     ]);
@@ -217,7 +296,7 @@ describe("opencode-family contextUsage limit resolution (resolveContextLimit)", 
   });
 
   it("unwraps the live CLI envelope { all: [...] } (SDK ProviderListResponses)", async () => {
-    const plugin = core.createOpencodeFamilyPlugin(OPENCODE_PARAMS);
+    const plugin = createTrackedPlugin(core, OPENCODE_PARAMS);
     const { client } = makeFakeClient(
       [
         {
@@ -235,7 +314,7 @@ describe("opencode-family contextUsage limit resolution (resolveContextLimit)", 
   });
 
   it("unwraps the /config/providers envelope { providers: [...] }", async () => {
-    const plugin = core.createOpencodeFamilyPlugin(OPENCODE_PARAMS);
+    const plugin = createTrackedPlugin(core, OPENCODE_PARAMS);
     const { client } = makeFakeClient(
       [{ id: "openai", models: { "deepseek-v4": { limit: { context: 128000 } } } }],
       { envelope: "providers" }
@@ -244,7 +323,7 @@ describe("opencode-family contextUsage limit resolution (resolveContextLimit)", 
   });
 
   it("accepts an array-shaped models collection inside a supported provider payload", async () => {
-    const plugin = core.createOpencodeFamilyPlugin(OPENCODE_PARAMS);
+    const plugin = createTrackedPlugin(core, OPENCODE_PARAMS);
     const { client } = makeFakeClient([
       { id: "openai", models: [{ id: "deepseek-v4", limit: { context: 64000 } }] },
     ]);
@@ -252,7 +331,7 @@ describe("opencode-family contextUsage limit resolution (resolveContextLimit)", 
   });
 
   it("returns null for unknown providers/models and never throws on provider failure", async () => {
-    const plugin = core.createOpencodeFamilyPlugin(OPENCODE_PARAMS);
+    const plugin = createTrackedPlugin(core, OPENCODE_PARAMS);
     const ok = makeFakeClient([{ id: "openai", models: { known: { limit: { context: 64000 } } } }]);
     assert.strictEqual(await plugin.__test.resolveContextLimit("nope", "known", ok.client), null);
     assert.strictEqual(await plugin.__test.resolveContextLimit("openai", "nope", ok.client), null);
@@ -264,7 +343,7 @@ describe("opencode-family contextUsage limit resolution (resolveContextLimit)", 
   });
 
   it("caches the resolved limit per provider+model for the TTL window", async () => {
-    const plugin = core.createOpencodeFamilyPlugin(OPENCODE_PARAMS);
+    const plugin = createTrackedPlugin(core, OPENCODE_PARAMS);
     const { client, calls } = makeFakeClient([
       { id: "openai", models: { "cached-model": { limit: { context: 96000 } } } },
     ]);
@@ -274,7 +353,7 @@ describe("opencode-family contextUsage limit resolution (resolveContextLimit)", 
   });
 
   it("scopes the cache to the SDK client, not only provider/model ids", async () => {
-    const plugin = core.createOpencodeFamilyPlugin(OPENCODE_PARAMS);
+    const plugin = createTrackedPlugin(core, OPENCODE_PARAMS);
     const a = makeFakeClient([
       { id: "shared", models: { model: { limit: { context: 1000 } } } },
     ]);
@@ -289,7 +368,7 @@ describe("opencode-family contextUsage limit resolution (resolveContextLimit)", 
   });
 
   it("does not cache an unavailable limit as a normal positive result", async () => {
-    const plugin = core.createOpencodeFamilyPlugin(OPENCODE_PARAMS);
+    const plugin = createTrackedPlugin(core, OPENCODE_PARAMS);
     const client = makeSequenceClient([
       sdkProviderResult([{ id: "openai", models: {} }]),
       sdkProviderResult([{ id: "openai", models: { model: { limit: { context: 64000 } } } }]),
@@ -298,6 +377,136 @@ describe("opencode-family contextUsage limit resolution (resolveContextLimit)", 
     assert.strictEqual(await plugin.__test.resolveContextLimit("openai", "model", client.client), null);
     assert.strictEqual(await plugin.__test.resolveContextLimit("openai", "model", client.client), 64000);
     assert.strictEqual(client.calls.providerList, 2);
+  });
+
+  it("keeps the latest-started same-key lookup in cache when an older lookup resolves last", async () => {
+    const plugin = createTrackedPlugin(core, OPENCODE_PARAMS);
+    const lookup = makeDeferredClient();
+    const older = plugin.__test.resolveContextLimit("openai", "model", lookup.client);
+    const newer = plugin.__test.resolveContextLimit("openai", "model", lookup.client);
+    assert.strictEqual(lookup.pending.length, 2);
+
+    lookup.pending[1].resolve(sdkProviderResult([
+      { id: "openai", models: { model: { limit: { context: 2000 } } } },
+    ]));
+    assert.strictEqual(await newer, 2000);
+    lookup.pending[0].resolve(sdkProviderResult([
+      { id: "openai", models: { model: { limit: { context: 1000 } } } },
+    ]));
+    assert.strictEqual(await older, 1000, "a stale caller may still receive its own lookup result");
+
+    assert.strictEqual(await plugin.__test.resolveContextLimit("openai", "model", lookup.client), 2000);
+    assert.strictEqual(lookup.calls.providerList, 2, "the stale completion must not overwrite the newer cache entry");
+  });
+
+  it("caches the latest-started lookup when it also resolves last", async () => {
+    const plugin = createTrackedPlugin(core, OPENCODE_PARAMS);
+    const lookup = makeDeferredClient();
+    const older = plugin.__test.resolveContextLimit("openai", "model", lookup.client);
+    const newer = plugin.__test.resolveContextLimit("openai", "model", lookup.client);
+
+    lookup.pending[0].resolve(sdkProviderResult([
+      { id: "openai", models: { model: { limit: { context: 1000 } } } },
+    ]));
+    assert.strictEqual(await older, 1000);
+    lookup.pending[1].resolve(sdkProviderResult([
+      { id: "openai", models: { model: { limit: { context: 2000 } } } },
+    ]));
+    assert.strictEqual(await newer, 2000);
+
+    assert.strictEqual(await plugin.__test.resolveContextLimit("openai", "model", lookup.client), 2000);
+    assert.strictEqual(lookup.calls.providerList, 2);
+  });
+
+  it("fences reverse completions after a positive cache entry expires", async () => {
+    mock.timers.enable({ apis: ["Date"], now: 1738400000000 });
+    try {
+      const plugin = createTrackedPlugin(core, OPENCODE_PARAMS);
+      const lookup = makeSeedThenDeferredClient([
+        { id: "openai", models: { model: { limit: { context: 1000 } } } },
+      ]);
+      assert.strictEqual(await plugin.__test.resolveContextLimit("openai", "model", lookup.client), 1000);
+
+      mock.timers.tick(60001);
+      const older = plugin.__test.resolveContextLimit("openai", "model", lookup.client);
+      const newer = plugin.__test.resolveContextLimit("openai", "model", lookup.client);
+      assert.strictEqual(lookup.pending.length, 2);
+      lookup.pending[1].resolve(sdkProviderResult([
+        { id: "openai", models: { model: { limit: { context: 2000 } } } },
+      ]));
+      assert.strictEqual(await newer, 2000);
+      lookup.pending[0].resolve(sdkProviderResult([
+        { id: "openai", models: { model: { limit: { context: 1000 } } } },
+      ]));
+      assert.strictEqual(await older, 1000);
+
+      assert.strictEqual(await plugin.__test.resolveContextLimit("openai", "model", lookup.client), 2000);
+      assert.strictEqual(lookup.calls.providerList, 3, "seed + A + B only; the final read must be cached");
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("does not let an older positive lookup write behind a newer null result", async () => {
+    const plugin = createTrackedPlugin(core, OPENCODE_PARAMS);
+    const lookup = makeDeferredClient();
+    const older = plugin.__test.resolveContextLimit("openai", "model", lookup.client);
+    const newer = plugin.__test.resolveContextLimit("openai", "model", lookup.client);
+
+    lookup.pending[1].resolve(sdkProviderResult([{ id: "openai", models: {} }]));
+    assert.strictEqual(await newer, null);
+    lookup.pending[0].resolve(sdkProviderResult([
+      { id: "openai", models: { model: { limit: { context: 1000 } } } },
+    ]));
+    assert.strictEqual(await older, 1000);
+
+    const retry = plugin.__test.resolveContextLimit("openai", "model", lookup.client);
+    assert.strictEqual(lookup.pending.length, 3, "the newer null must leave the key retryable");
+    lookup.pending[2].resolve(sdkProviderResult([
+      { id: "openai", models: { model: { limit: { context: 3000 } } } },
+    ]));
+    assert.strictEqual(await retry, 3000);
+    assert.strictEqual(lookup.calls.providerList, 3);
+  });
+
+  it("does not let an older positive lookup write behind a newer throw", async () => {
+    const plugin = createTrackedPlugin(core, OPENCODE_PARAMS);
+    const lookup = makeDeferredClient();
+    const older = plugin.__test.resolveContextLimit("openai", "model", lookup.client);
+    const newer = plugin.__test.resolveContextLimit("openai", "model", lookup.client);
+
+    lookup.pending[1].reject(new Error("newer lookup failed"));
+    assert.strictEqual(await newer, null);
+    lookup.pending[0].resolve(sdkProviderResult([
+      { id: "openai", models: { model: { limit: { context: 1000 } } } },
+    ]));
+    assert.strictEqual(await older, 1000);
+
+    const retry = plugin.__test.resolveContextLimit("openai", "model", lookup.client);
+    assert.strictEqual(lookup.pending.length, 3, "the newer throw must leave the key retryable");
+    lookup.pending[2].resolve(sdkProviderResult([
+      { id: "openai", models: { model: { limit: { context: 4000 } } } },
+    ]));
+    assert.strictEqual(await retry, 4000);
+    assert.strictEqual(lookup.calls.providerList, 3);
+  });
+
+  it("keeps concurrent cache-write fences independent across provider/model keys", async () => {
+    const plugin = createTrackedPlugin(core, OPENCODE_PARAMS);
+    const lookup = makeDeferredClient();
+    const a = plugin.__test.resolveContextLimit("provider-a", "model-a", lookup.client);
+    const b = plugin.__test.resolveContextLimit("provider-b", "model-b", lookup.client);
+    lookup.pending[1].resolve(sdkProviderResult([
+      { id: "provider-b", models: { "model-b": { limit: { context: 2000 } } } },
+    ]));
+    lookup.pending[0].resolve(sdkProviderResult([
+      { id: "provider-a", models: { "model-a": { limit: { context: 1000 } } } },
+    ]));
+    assert.strictEqual(await a, 1000);
+    assert.strictEqual(await b, 2000);
+    assert.strictEqual(await plugin.__test.resolveContextLimit("provider-a", "model-a", lookup.client), 1000);
+    assert.strictEqual(await plugin.__test.resolveContextLimit("provider-b", "model-b", lookup.client), 2000);
+    assert.strictEqual(lookup.calls.providerList, 2);
   });
 });
 
@@ -308,7 +517,7 @@ describe("opencode-family contextUsage wire path (handleContextUsageEvent)", () 
   afterEach(() => { stub.restore(); });
 
   function makePlugin() {
-    const plugin = core.createOpencodeFamilyPlugin(OPENCODE_PARAMS);
+    const plugin = createTrackedPlugin(core, OPENCODE_PARAMS);
     plugin.__test._cachedPort = 23333; // skip runtime.json + port scan
     return plugin;
   }
@@ -343,6 +552,29 @@ describe("opencode-family contextUsage wire path (handleContextUsageEvent)", () 
     assert.strictEqual(body.event, "SessionUpdate");
   });
 
+  it("writes reproducible resolved-limit evidence only inside the temporary HOME", async () => {
+    const plugin = makePlugin();
+    const event = messageUpdatedEvent({
+      sessionID: "ses_log_evidence",
+      tokens: { input: 321 },
+    });
+    event.properties.info.messageText = "SECRET_MESSAGE_BODY_MUST_NOT_BE_LOGGED";
+    await drive(plugin, event);
+    await plugin.__test.flushDebugLog();
+
+    assert.ok(
+      path.resolve(plugin.__test._debugLogPath).startsWith(path.resolve(TMP_HOME) + path.sep),
+      plugin.__test._debugLogPath
+    );
+    const log = fs.readFileSync(plugin.__test._debugLogPath, "utf8");
+    assert.match(
+      log,
+      /CTX resolved used=321 limit=128000 session=opencode:ses_log_evidence /,
+      "manual evidence must contain both used and resolved limit"
+    );
+    assert.doesNotMatch(log, /SECRET_MESSAGE_BODY_MUST_NOT_BE_LOGGED/);
+  });
+
   it("uses the v1.1.25 info.sessionID and never posts under the message id", async () => {
     const plugin = makePlugin();
     await drive(plugin, messageUpdatedEvent({
@@ -354,6 +586,119 @@ describe("opencode-family contextUsage wire path (handleContextUsageEvent)", () 
     assert.strictEqual(stub.posted.length, 1);
     assert.strictEqual(stub.posted[0].body.session_id, "opencode:ses_real");
     assert.notStrictEqual(stub.posted[0].body.session_id, "opencode:msg_1");
+  });
+
+  it("uses an explicit top-level event.sessionID when the properties shapes omit it", async () => {
+    const plugin = makePlugin();
+    const event = messageUpdatedEvent({ sessionID: null, tokens: { input: 100 } });
+    event.sessionID = "ses_top_level";
+    await drive(plugin, event);
+
+    assert.strictEqual(stub.posted.length, 1);
+    assert.strictEqual(stub.posted[0].body.session_id, "opencode:ses_top_level");
+  });
+
+  it("fails closed on a token-bearing event without an explicit session id", async () => {
+    const plugin = makePlugin();
+    const client = makeFakeClient([
+      { id: "openai", models: { "deepseek-v4": { limit: { context: 128000 } } } },
+    ]);
+    await plugin.__test.handleContextUsageEvent(
+      messageUpdatedEvent({ sessionID: null, tokens: { input: 100 } }),
+      { client: client.client, instanceToken: 1 }
+    );
+
+    assert.strictEqual(client.calls.providerList, 0);
+    assert.strictEqual(plugin.__test._contextStateByInstance.size, 0);
+    assert.strictEqual(stub.posted.length, 0);
+    plugin.__test.resetContextSession("ses_real", 1);
+    assert.strictEqual(plugin.__test._contextStateByInstance.size, 0, "a later real session must not reveal an orphan default bucket");
+  });
+
+  it("never borrows a prior/root session for a token-bearing sessionless event", async () => {
+    const plugin = makePlugin();
+    plugin.__test._rootSessionId = "ses_previous";
+    const client = makeFakeClient([
+      { id: "openai", models: { "deepseek-v4": { limit: { context: 128000 } } } },
+    ]);
+    await plugin.__test.handleContextUsageEvent(
+      messageUpdatedEvent({ sessionID: null, tokens: { input: 100 } }),
+      { client: client.client, instanceToken: 1 }
+    );
+
+    assert.strictEqual(client.calls.providerList, 0);
+    assert.strictEqual(plugin.__test._contextStateByInstance.size, 0);
+    assert.strictEqual(stub.posted.length, 0);
+  });
+
+  it("fails closed when assistant role is missing even with valid tokens and session id", async () => {
+    const plugin = makePlugin();
+    const client = makeFakeClient([
+      { id: "openai", models: { "deepseek-v4": { limit: { context: 128000 } } } },
+    ]);
+    const event = messageUpdatedEvent({ tokens: { input: 100 } });
+    delete event.properties.info.role;
+    await plugin.__test.handleContextUsageEvent(
+      event,
+      { client: client.client, instanceToken: 1 }
+    );
+
+    assert.strictEqual(client.calls.providerList, 0);
+    assert.strictEqual(plugin.__test._contextStateByInstance.size, 0);
+    assert.strictEqual(stub.posted.length, 0);
+  });
+
+  it("never treats info.id as the message.updated session identity", async () => {
+    const plugin = makePlugin();
+    const event = messageUpdatedEvent({ sessionID: null, tokens: { input: 100 } });
+    event.properties.info.id = "msg_not_a_session";
+    const client = makeFakeClient([
+      { id: "openai", models: { "deepseek-v4": { limit: { context: 128000 } } } },
+    ]);
+    await plugin.__test.handleContextUsageEvent(event, { client: client.client, instanceToken: 1 });
+
+    assert.strictEqual(client.calls.providerList, 0);
+    assert.strictEqual(plugin.__test._contextStateByInstance.size, 0);
+    assert.strictEqual(stub.posted.length, 0);
+  });
+
+  it("fails closed on blank or non-string explicit session ids", async () => {
+    const plugin = makePlugin();
+    const client = makeFakeClient([
+      { id: "openai", models: { "deepseek-v4": { limit: { context: 128000 } } } },
+    ]);
+    await plugin.__test.handleContextUsageEvent(
+      messageUpdatedEvent({ sessionID: "   ", tokens: { input: 100 } }),
+      { client: client.client, instanceToken: 1 }
+    );
+    const nonString = messageUpdatedEvent({ sessionID: null, tokens: { input: 100 } });
+    nonString.properties.sessionID = 42;
+    await plugin.__test.handleContextUsageEvent(nonString, { client: client.client, instanceToken: 1 });
+
+    assert.strictEqual(client.calls.providerList, 0);
+    assert.strictEqual(plugin.__test._contextStateByInstance.size, 0);
+    assert.strictEqual(stub.posted.length, 0);
+  });
+
+  it("rejects array-shaped info even when tokens and an external session id are valid", async () => {
+    const plugin = makePlugin();
+    const info = Object.assign([], {
+      role: "assistant",
+      providerID: "openai",
+      modelID: "deepseek-v4",
+      tokens: { input: 100 },
+    });
+    const client = makeFakeClient([
+      { id: "openai", models: { "deepseek-v4": { limit: { context: 128000 } } } },
+    ]);
+    await plugin.__test.handleContextUsageEvent({
+      type: "message.updated",
+      properties: { sessionID: "ses_array", info },
+    }, { client: client.client, instanceToken: 1 });
+
+    assert.strictEqual(client.calls.providerList, 0);
+    assert.strictEqual(plugin.__test._contextStateByInstance.size, 0);
+    assert.strictEqual(stub.posted.length, 0);
   });
 
   it("keeps limit null for unknown providers/models", async () => {
@@ -393,16 +738,45 @@ describe("opencode-family contextUsage wire path (handleContextUsageEvent)", () 
     assert.deepStrictEqual(stub.posted[1].body.context_usage, { used: 43000, limit: 128000, source: "opencode" });
   });
 
+  it("retries identical metadata until Clawd explicitly accepts it", async () => {
+    stub.restore();
+    let acceptMetadata = false;
+    stub = installFetchStub({ metadataAccepted: () => acceptMetadata });
+    const plugin = makePlugin();
+    const client = makeFakeClient([
+      { id: "openai", models: { model: { limit: { context: 1000 } } } },
+    ]);
+    const event = messageUpdatedEvent({ modelID: "model", tokens: { input: 100 } });
+
+    await plugin.__test.handleContextUsageEvent(event, { client: client.client, instanceToken: 1 });
+    await plugin.__test.handleContextUsageEvent(event, { client: client.client, instanceToken: 1 });
+    assert.strictEqual(stub.posted.length, 2, "recognized/no-ack metadata must not advance the baseline");
+    assert.strictEqual(stub.attempts, 2, "recognized/no-ack must stop scanning after the Clawd port");
+    assert.strictEqual(
+      plugin.__test._contextStateByInstance.get(1).get("opencode:ses_abc").delivered,
+      null
+    );
+
+    acceptMetadata = true;
+    await plugin.__test.handleContextUsageEvent(event, { client: client.client, instanceToken: 1 });
+    await plugin.__test.handleContextUsageEvent(event, { client: client.client, instanceToken: 1 });
+    assert.strictEqual(stub.posted.length, 3, "the first accepted retry becomes the stable dedup baseline");
+    assert.strictEqual(
+      plugin.__test._contextStateByInstance.get(1).get("opencode:ses_abc").delivered.used,
+      100
+    );
+  });
+
   it("publishes only the newest sample when provider lookups resolve out of order", async () => {
     const plugin = makePlugin();
     const provider = [{ id: "openai", models: { model: { limit: { context: 1000 } } } }];
     const lookup = makeDeferredClient();
     const first = plugin.__test.handleContextUsageEvent(
-      messageUpdatedEvent({ modelID: "model", tokens: { input: 100 } }),
+      messageUpdatedEvent({ sessionID: "ses_stale_log", modelID: "model", tokens: { input: 100 } }),
       { client: lookup.client, instanceToken: 1 }
     );
     const second = plugin.__test.handleContextUsageEvent(
-      messageUpdatedEvent({ modelID: "model", tokens: { input: 200 } }),
+      messageUpdatedEvent({ sessionID: "ses_stale_log", modelID: "model", tokens: { input: 200 } }),
       { client: lookup.client, instanceToken: 1 }
     );
     assert.strictEqual(lookup.pending.length, 2);
@@ -413,8 +787,15 @@ describe("opencode-family contextUsage wire path (handleContextUsageEvent)", () 
     await first;
 
     assert.deepStrictEqual(
-      stub.posted.filter((call) => call.accepted).map((call) => call.body.context_usage.used),
+      stub.posted.filter((call) => call.recognized).map((call) => call.body.context_usage.used),
       [200]
+    );
+    await plugin.__test.flushDebugLog();
+    const log = fs.readFileSync(plugin.__test._debugLogPath, "utf8");
+    assert.doesNotMatch(
+      log,
+      /CTX resolved used=100 .*session=opencode:ses_stale_log/,
+      "a stale sample must not emit resolved-success evidence"
     );
   });
 
@@ -436,7 +817,7 @@ describe("opencode-family contextUsage wire path (handleContextUsageEvent)", () 
     await first;
 
     assert.deepStrictEqual(
-      stub.posted.filter((call) => call.accepted).map((call) => call.body.context_usage.used),
+      stub.posted.filter((call) => call.recognized).map((call) => call.body.context_usage.used),
       [100]
     );
   });
@@ -460,7 +841,7 @@ describe("opencode-family contextUsage wire path (handleContextUsageEvent)", () 
     );
 
     assert.deepStrictEqual(
-      stub.posted.filter((call) => call.accepted).map((call) => call.body.context_usage),
+      stub.posted.filter((call) => call.recognized).map((call) => call.body.context_usage),
       [
         { used: 100, limit: 1000, source: "opencode" },
         { used: 100, limit: 2000, source: "opencode" },
@@ -480,7 +861,7 @@ describe("opencode-family contextUsage wire path (handleContextUsageEvent)", () 
     await plugin.__test.handleContextUsageEvent(event, { client: client.client, instanceToken: 1 });
 
     assert.deepStrictEqual(
-      stub.posted.filter((call) => call.accepted).map((call) => call.body.context_usage),
+      stub.posted.filter((call) => call.recognized).map((call) => call.body.context_usage),
       [
         { used: 100, limit: null, source: "opencode" },
         { used: 100, limit: 1000, source: "opencode" },
@@ -491,7 +872,7 @@ describe("opencode-family contextUsage wire path (handleContextUsageEvent)", () 
 
   it("does not advance the dedup baseline when the state delivery fails", async () => {
     const plugin = makePlugin();
-    const failingThenHealthy = installFetchStub({ accepted: (attempt) => attempt > 5 });
+    const failingThenHealthy = installFetchStub({ recognized: (attempt) => attempt > 5 });
     const client = makeFakeClient([
       { id: "openai", models: { model: { limit: { context: 1000 } } } },
     ]);
@@ -500,7 +881,7 @@ describe("opencode-family contextUsage wire path (handleContextUsageEvent)", () 
     await plugin.__test.handleContextUsageEvent(event, { client: client.client, instanceToken: 1 });
     await plugin.__test.handleContextUsageEvent(event, { client: client.client, instanceToken: 1 });
 
-    assert.strictEqual(failingThenHealthy.posted.filter((call) => call.accepted).length, 1);
+    assert.strictEqual(failingThenHealthy.posted.filter((call) => call.recognized).length, 1);
     assert.strictEqual(client.calls.providerList, 1, "the positive limit may be reused, but the sample must replay");
     failingThenHealthy.restore();
   });
@@ -530,11 +911,45 @@ describe("opencode-family contextUsage wire path (handleContextUsageEvent)", () 
     await oldLookup;
 
     assert.deepStrictEqual(
-      stub.posted.filter((call) => call.accepted).map((call) => call.body.context_usage.used),
+      stub.posted.filter((call) => call.recognized).map((call) => call.body.context_usage.used),
       [50]
     );
     const state = plugin.__test._contextStateByInstance.get(1).get("opencode:ses_abc");
     assert.strictEqual(state.delivered.used, 50);
+  });
+
+  it("cannot write an accepted old in-flight POST into a recreated context generation", async () => {
+    stub.restore();
+    const responseGate = deferred();
+    let gateFirstResponse = true;
+    stub = installFetchStub({
+      beforeRespond: async () => {
+        if (!gateFirstResponse) return;
+        gateFirstResponse = false;
+        await responseGate.promise;
+      },
+    });
+    const plugin = makePlugin();
+    const client = makeFakeClient([
+      { id: "openai", models: { "deepseek-v4": { limit: { context: 1000 } } } },
+    ]);
+    const oldPost = plugin.__test.handleContextUsageEvent(
+      messageUpdatedEvent({ tokens: { input: 100 } }),
+      { client: client.client, instanceToken: 1 }
+    );
+    await waitFor(() => stub.posted.length === 1, "the old metadata POST did not enter the response gate");
+
+    plugin.__test.cleanupContextState(new Set(["opencode:ses_abc"]), { instanceToken: 1 });
+    const reopenedPost = plugin.__test.handleContextUsageEvent(
+      messageUpdatedEvent({ tokens: { input: 50 } }),
+      { client: client.client, instanceToken: 1 }
+    );
+    responseGate.resolve();
+    await Promise.all([oldPost, reopenedPost]);
+
+    assert.deepStrictEqual(stub.posted.map((call) => call.body.context_usage.used), [100, 50]);
+    const state = plugin.__test._contextStateByInstance.get(1).get("opencode:ses_abc");
+    assert.strictEqual(state.delivered.used, 50, "the accepted old response must not overwrite the new generation");
   });
 
   it("disposal clears only the disposed instance's context generations", async () => {
@@ -561,7 +976,7 @@ describe("opencode-family contextUsage wire path (handleContextUsageEvent)", () 
     await oldA;
 
     assert.deepStrictEqual(
-      stub.posted.filter((call) => call.accepted).map((call) => call.body.session_id),
+      stub.posted.filter((call) => call.recognized).map((call) => call.body.session_id),
       ["opencode:ses_b"]
     );
     assert.strictEqual(plugin.__test._contextStateByInstance.has(1), false);
@@ -569,7 +984,7 @@ describe("opencode-family contextUsage wire path (handleContextUsageEvent)", () 
   });
 
   it("keeps context reporting explicitly OpenCode-only until MiMo has a proven contract", async () => {
-    const plugin = core.createOpencodeFamilyPlugin(MIMOCODE_PARAMS);
+    const plugin = createTrackedPlugin(core, MIMOCODE_PARAMS);
     plugin.__test._cachedPort = 23333;
     const client = makeFakeClient([
       { id: "mimo", models: { model: { limit: { context: 1000 } } } },

@@ -42,13 +42,20 @@ async function settlePosts() {
 
 before(async () => {
   globalThis.fetch = async (url, opts) => {
-    fetchCalls.push({
+    const call = {
       url: String(url),
       body: opts && opts.body ? JSON.parse(opts.body) : null,
-    });
+    };
+    fetchCalls.push(call);
+    const headers = {
+      "x-clawd-server": "clawd-on-desk",
+      ...(call.body && call.body.metadata_only === true
+        ? { "x-clawd-metadata-accepted": "1" }
+        : {}),
+    };
     return {
-      status: 200,
-      headers: { get: (name) => name === "x-clawd-server" ? "clawd-on-desk" : null },
+      status: call.body && call.body.metadata_only === true ? 204 : 200,
+      headers: { get: (name) => headers[String(name).toLowerCase()] || null },
       text: async () => "ok",
     };
   };
