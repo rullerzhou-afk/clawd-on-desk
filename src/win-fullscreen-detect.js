@@ -16,10 +16,11 @@
 // returns a probe that always answers false, so the watchdog keeps its current
 // behavior rather than ever hiding the pet because the FFI broke.
 
-// A maximized normal window covers the work area but leaves the taskbar strip,
-// so its rect stops short of the full monitor. A fullscreen app covers the
-// whole monitor (rcMonitor). A couple of px of slack absorbs DPI rounding
-// without mistaking a maximized window for fullscreen.
+// A maximized normal window covers the work area, so on a monitor that reserves
+// a taskbar strip its rect stops short of the full monitor while a fullscreen
+// app covers the whole monitor (rcMonitor). A couple of px of slack absorbs DPI
+// rounding. Geometry alone is NOT sufficient though — see isMaximizedNormalWindow
+// for the monitors where rcWork == rcMonitor and this test stops separating them.
 const FULLSCREEN_TOLERANCE_PX = 2;
 
 const MONITOR_DEFAULTTONEAREST = 2;
@@ -37,10 +38,34 @@ const DESKTOP_SHELL_WINDOW_CLASSES = new Set(["progman", "workerw"]);
 // Ample for real class names; matches win-foreground-terminal.js.
 const CLASS_NAME_BUF_LEN = 256;
 
+// #871: the geometry test above silently assumes the monitor reserves a taskbar
+// strip. A secondary display usually shows no taskbar, and an auto-hidden
+// taskbar reserves a 1px sliver that fits inside FULLSCREEN_TOLERANCE_PX — in
+// both cases rcWork == rcMonitor, so an ordinary MAXIMIZED window covers
+// rcMonitor and geometry calls it a fullscreen app. The pet then flipped its hit
+// window non-activating, and setFocusable(false) deactivates whatever had focus
+// (same mechanism as #719), so clicking an input box in a maximized browser on
+// that monitor lost focus.
+//
+// A window that is maximized AND still owns its caption is a normal window, not
+// a fullscreen presentation. Deliberately narrower than "has a caption": it only
+// overrides the verdict for maximized windows, so exclusive fullscreen, a
+// borderless WS_POPUP, and F11 (which drops the caption) all keep the answer
+// they got before — #538 / #562 stand-down behavior is untouched.
+const GWL_STYLE = -16;
+const WS_CAPTION = 0x00c00000; // WS_BORDER | WS_DLGFRAME — check the whole mask
+const WS_MAXIMIZE = 0x01000000;
+
 // Win32 class-name comparison is case-insensitive.
 function isDesktopShellWindowClass(className) {
   return typeof className === "string"
     && DESKTOP_SHELL_WINDOW_CLASSES.has(className.toLowerCase());
+}
+
+// Pure style decision, exported for the same reason as rectCoversMonitor.
+function isMaximizedNormalWindow(style) {
+  if (!Number.isFinite(style)) return false;
+  return (style & WS_MAXIMIZE) !== 0 && (style & WS_CAPTION) === WS_CAPTION;
 }
 
 // Pure geometry: does the window rect cover the entire monitor rect (not just
@@ -69,9 +94,10 @@ function createForegroundFullscreenProbe(options = {}) {
   let GetMonitorInfoW;
   let GetClassNameW;
   let monitorInfoSize;
+  let user32;
   try {
     const koffi = options.koffi || require("koffi");
-    const user32 = koffi.load("user32.dll");
+    user32 = koffi.load("user32.dll");
     // LONG is 32-bit even on Win64 (LLP64); use int32 to be unambiguous.
     koffi.struct("ClawdRECT", { left: "int32", top: "int32", right: "int32", bottom: "int32" });
     koffi.struct("ClawdMONITORINFO", {
@@ -89,6 +115,19 @@ function createForegroundFullscreenProbe(options = {}) {
   } catch (err) {
     if (typeof options.onError === "function") options.onError(err);
     return noop;
+  }
+
+  // Bound separately (#871): GetWindowLongPtrW is a macro over GetWindowLongW on
+  // 32-bit Windows, so the export can be missing. Losing it must only cost the
+  // style refinement — folding it into the block above would turn a missing
+  // symbol into a constant-false probe and silently undo the #538 stand-down.
+  // Return type int32 for the same reason the RECT fields are: only the low 32
+  // bits carry style flags, LONG_PTR's high half is padding here.
+  let GetWindowLongPtrW = null;
+  try {
+    GetWindowLongPtrW = user32.func("int32 __stdcall GetWindowLongPtrW(void* hWnd, int nIndex)");
+  } catch (err) {
+    if (typeof options.onError === "function") options.onError(err);
   }
 
   return function isForegroundFullscreen() {
@@ -118,6 +157,15 @@ function createForegroundFullscreenProbe(options = {}) {
         for (let i = 0; i < classLen; i++) className += String.fromCharCode(classBuf[i]);
         if (isDesktopShellWindowClass(className)) return false;
       }
+
+      // #871: last, separate a merely maximized window from a real fullscreen
+      // presentation. Unavailable binding or a 0 read (GetWindowLongPtrW's
+      // failure return) keeps the geometric answer, matching the class-read
+      // fallback above.
+      if (GetWindowLongPtrW) {
+        const style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        if (isMaximizedNormalWindow(style)) return false;
+      }
       return true;
     } catch (err) {
       // Any FFI hiccup at call time: behave as "not fullscreen" so the
@@ -132,5 +180,6 @@ module.exports = {
   createForegroundFullscreenProbe,
   rectCoversMonitor,
   isDesktopShellWindowClass,
+  isMaximizedNormalWindow,
   FULLSCREEN_TOLERANCE_PX,
 };
