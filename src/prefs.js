@@ -12,7 +12,9 @@
 // `validate(snapshot)` — coerces an arbitrary object into a valid snapshot, dropping bad fields
 // `migrate(raw)` — applies version-to-version migrations, returns the upgraded raw snapshot
 //
-// Bad-file handling: read failure → backup as `clawd-prefs.json.bak` → return defaults.
+// Bad-file handling: unparseable file → backup as `clawd-prefs.json.bak` → return defaults.
+//   Unreadable file (EACCES/EIO/...) → defaults in memory, but `locked` so save() will not
+//   overwrite a file we were never able to read.
 // Future-version handling: read succeeds but version > current → warn + refuse to overwrite
 //   (caller still gets a valid snapshot, but `save()` becomes a no-op via the locked flag).
 
@@ -1275,8 +1277,13 @@ function normalizeIdleVisual(value, defaultsValue) {
 // Read prefs from disk. Returns
 // `{ snapshot, locked, fresh?, recovered?, codexAutoStartAuthoritative? }`:
 //   - snapshot: a valid prefs object (always — falls back to defaults on any error)
-//   - locked: true if the file came from a future version; save() should be a no-op
-//             to avoid clobbering it.
+//   - locked: true when the on-disk file must not be overwritten, and save() should
+//             be a no-op. Two triggers: the file came from a future version, or the
+//             file exists and could not be read at all. Both mean "we do not know
+//             what is in there", which is the same reason not to write over it.
+//             The unreadable case also sets `recovered`, so `locked && recovered`
+//             together is a valid combination (the future-version case sets only
+//             `locked`, the unparseable case only `recovered`).
 //   - fresh: true ONLY when there was no prefs file at all (brand-new install).
 //            Callers use this to seed first-run-only state (e.g. UI language from
 //            the device locale) without ever overriding an existing user's choices.
@@ -1290,17 +1297,39 @@ function normalizeIdleVisual(value, defaultsValue) {
 //                invalid type. Missing legacy fields retain their historical
 //                default/migration behavior.
 function load(prefsPath) {
-  let raw;
+  // Read and parse are separated on purpose. "We could not read the bytes" and
+  // "we read the bytes and they are not valid prefs" are different states, and
+  // only the second one justifies replacing the file with defaults.
+  let text;
   try {
-    const text = fs.readFileSync(prefsPath, "utf8");
-    raw = JSON.parse(text);
+    text = fs.readFileSync(prefsPath, "utf8");
   } catch (err) {
     // Missing file is normal on first run — return defaults silently, flagged
     // fresh so the caller can seed device-locale language exactly once.
     if (err && err.code === "ENOENT") {
       return { snapshot: getDefaults(), locked: false, fresh: true };
     }
-    // Any other error (parse fail, permission, etc.) → backup + defaults
+    // The file exists but could not be read (EACCES, EIO, a directory, ...).
+    // We do not know what it says, so a later save() must not overwrite it with
+    // defaults — that is exactly what `locked` already means for the
+    // future-version branch below ("save() should be a no-op to avoid
+    // clobbering it"). Reusing it here keeps the user's real prefs on disk.
+    //
+    // No backup is attempted on this path: copyFileSync would read the same
+    // unreadable file, so it could only fail and emit a second warning.
+    console.warn(
+      "Clawd: prefs file could not be read — keeping defaults in memory and refusing to overwrite it:",
+      err.message,
+    );
+    return { snapshot: getDefaults(), locked: true, recovered: true };
+  }
+
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch (err) {
+    // The file WAS readable and its contents are not valid JSON. Backing it up
+    // and continuing from defaults is the intended recovery, unchanged.
     try {
       const bak = prefsPath + ".bak";
       fs.copyFileSync(prefsPath, bak);

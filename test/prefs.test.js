@@ -1511,6 +1511,64 @@ describe("prefs.load", () => {
     );
   });
 
+  // POSIX-only: on Windows `chmod` only toggles the read-only bit and does not deny
+  // reads, so the EACCES branch is unreachable there and these assertions would fail
+  // for a reason that has nothing to do with prefs. `npm test` does run on
+  // windows-latest (.github/workflows/build.yml), so the skip is load-bearing.
+  // Same shape as `posixOnly` in test/antigravity-install.test.js.
+  const unreadableOnly = {
+    skip: process.platform === "win32" ? "chmod cannot deny reads on Windows" : false,
+  };
+
+  it("locks an unreadable prefs file so save() cannot clobber it", unreadableOnly, function () {
+    // Root can read anything, so the EACCES path is unreachable there too.
+    if (typeof process.getuid === "function" && process.getuid() === 0) return this.skip?.();
+    // 0o200 (write-only), NOT 0o000. With 0o000 the file is also unwritable, so the
+    // clobber this test exists to prevent could never happen there — the lane would
+    // assert a flag while the invariant was safe for an unrelated reason. Write-only
+    // is the state that actually loses data: unreadable, yet perfectly writable.
+    const p = makeTempPath();
+    const original = JSON.stringify({ agents: { "claude-code": { enabled: false } } });
+    fs.writeFileSync(p, original, "utf8");
+    fs.chmodSync(p, 0o200);
+    try {
+      const loaded = prefs.load(p);
+      assert.strictEqual(loaded.locked, true);
+      assert.strictEqual(loaded.recovered, true);
+      assert.deepStrictEqual(loaded.snapshot, prefs.getDefaults());
+      // No backup: copyFileSync would read the same unreadable file.
+      assert.strictEqual(fs.existsSync(p + ".bak"), false);
+
+    } finally {
+      fs.chmodSync(p, 0o600);
+    }
+  });
+
+  // Separate from the lane above **on purpose**: that one asserts the flag, and an
+  // assertion on the flag short-circuits before the outcome is ever exercised. This
+  // one never looks at `locked` directly — it only does what the single real caller
+  // does (settings-controller.js:111, `if (locked) return { noop: true }`) and then
+  // asks the question that actually matters: is the user's file still there?
+  it("does not clobber prefs it could not read", unreadableOnly, function () {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return this.skip?.();
+    const p = makeTempPath();
+    const original = JSON.stringify({ agents: { "claude-code": { enabled: false } } });
+    fs.writeFileSync(p, original, "utf8");
+    fs.chmodSync(p, 0o200); // write-only: unreadable, yet perfectly writable
+    try {
+      const loaded = prefs.load(p);
+      if (!loaded.locked) prefs.save(p, loaded.snapshot);
+      fs.chmodSync(p, 0o600);
+      assert.strictEqual(
+        fs.readFileSync(p, "utf8"),
+        original,
+        "prefs we could not read must survive a persist attempt byte for byte"
+      );
+    } finally {
+      fs.chmodSync(p, 0o600);
+    }
+  });
+
   it("marks a non-object prefs root as a recovered defaults snapshot", () => {
     const p = makeTempPath();
     fs.writeFileSync(p, "null", "utf8");
