@@ -1,6 +1,9 @@
 "use strict";
 
 const telegramApprovalSettings = require("./telegram-approval-settings");
+const {
+  normalizeTelegramVerificationFailure,
+} = require("./telegram-verification-failure");
 
 const DEFAULT_STATUS_SESSION_LIMIT = 5;
 const STATUS_TEXT_MAX = 3600;
@@ -63,7 +66,7 @@ const STATUS_LOCALES = Object.freeze({
       lastHook: "last hook",
       updated: "updated",
     },
-    error: { scope: "scope", code: "code", event: "event" },
+    error: { scope: "scope", code: "code", event: "event", outcome: "outcome" },
     completionOutputMode: { off: "off", full: "full answer" },
     completionInactiveSuffix: " (inactive until native is running)",
     truncated: "... truncated",
@@ -125,7 +128,7 @@ const STATUS_LOCALES = Object.freeze({
       lastHook: "最近 hook",
       updated: "更新于",
     },
-    error: { scope: "范围", code: "代码", event: "事件" },
+    error: { scope: "范围", code: "代码", event: "事件", outcome: "结果" },
     completionOutputMode: { off: "关闭", full: "完整回答" },
     completionInactiveSuffix: "（原生运行后生效）",
     truncated: "... 已截断",
@@ -187,7 +190,7 @@ const STATUS_LOCALES = Object.freeze({
       lastHook: "最近 hook",
       updated: "更新於",
     },
-    error: { scope: "範圍", code: "代碼", event: "事件" },
+    error: { scope: "範圍", code: "代碼", event: "事件", outcome: "結果" },
     completionOutputMode: { off: "關閉", full: "完整回答" },
     completionInactiveSuffix: "（原生執行後生效）",
     truncated: "... 已截斷",
@@ -249,7 +252,7 @@ const STATUS_LOCALES = Object.freeze({
       lastHook: "최근 hook",
       updated: "업데이트",
     },
-    error: { scope: "범위", code: "코드", event: "이벤트" },
+    error: { scope: "범위", code: "코드", event: "이벤트", outcome: "결과" },
     completionOutputMode: { off: "꺼짐", full: "전체 답변" },
     completionInactiveSuffix: " (네이티브 실행 후 활성)",
     truncated: "... 잘림",
@@ -311,7 +314,7 @@ const STATUS_LOCALES = Object.freeze({
       lastHook: "直近 hook",
       updated: "更新",
     },
-    error: { scope: "範囲", code: "コード", event: "イベント" },
+    error: { scope: "範囲", code: "コード", event: "イベント", outcome: "結果" },
     completionOutputMode: { off: "オフ", full: "全文" },
     completionInactiveSuffix: "（ネイティブ実行後に有効）",
     truncated: "... 省略",
@@ -373,7 +376,7 @@ const STATUS_LOCALES = Object.freeze({
       lastHook: "último hook",
       updated: "atualizada",
     },
-    error: { scope: "escopo", code: "código", event: "evento" },
+    error: { scope: "escopo", code: "código", event: "evento", outcome: "resultado" },
     completionOutputMode: { off: "desligada", full: "resposta completa" },
     completionInactiveSuffix: " (inativo até o nativo estar rodando)",
     truncated: "... truncado",
@@ -435,7 +438,7 @@ const STATUS_LOCALES = Object.freeze({
       lastHook: "último hook",
       updated: "actualizada",
     },
-    error: { scope: "ámbito", code: "código", event: "evento" },
+    error: { scope: "ámbito", code: "código", event: "evento", outcome: "resultado" },
     completionOutputMode: { off: "desactivada", full: "respuesta completa" },
     completionInactiveSuffix: " (inactivo hasta que el modo nativo esté en ejecución)",
     truncated: "... truncado",
@@ -513,14 +516,19 @@ function buildTelegramApprovalStatus({
     : "IDLE";
   const required = migrationState === "NATIVE_MIGRATION_REQUIRED";
   const lastTestResult = migrationSnapshot && migrationSnapshot.lastTestResult;
+  const failure = normalizeTelegramVerificationFailure(lastTestResult);
   return {
-    status: lastTestResult ? "failed" : "stopped",
+    status: failure ? "failed" : "stopped",
     transport: "off",
     native: false,
     enabled: false,
     configured: ready.ready === true,
-    reason: required ? "native-migration-required" : (ready.reason || "disabled"),
+    reason: failure
+      ? "native-verification-failed"
+      : (required ? "native-migration-required" : (ready.reason || "disabled")),
     message: ready.message || "",
+    errorCode: failure ? failure.errorCode : "",
+    failureOutcome: failure ? failure.outcome : "",
     tokenStored: token && token.tokenStored === true,
     nativePolling: false,
     migrationState,
@@ -593,7 +601,8 @@ function normalizeLastError({ approvalStatus, migrationSnapshot, nativeRunnerSta
   if (approvalStatus && approvalStatus.status === "failed") {
     return {
       source: "approval",
-      code: sanitizeStatusText(approvalStatus.reason || "failed", 64),
+      code: sanitizeStatusText(approvalStatus.errorCode || approvalStatus.reason || "failed", 64),
+      outcome: sanitizeStatusText(approvalStatus.failureOutcome || "", 64),
       message: sanitizeStatusText(approvalStatus.message || "", 160),
     };
   }
@@ -688,6 +697,7 @@ function summarizeSessions(sessionSnapshot, { now, all = false, limit = DEFAULT_
 
 function buildHealth({ transport, approvalStatus, migrationSnapshot, nativePolling, configured } = {}) {
   const state = migrationSnapshot && migrationSnapshot.state ? migrationSnapshot.state : "";
+  if (approvalStatus && approvalStatus.status === "failed") return "failed";
   if (transport === "off") return "off";
   if (!configured) return "setup-needed";
   if (transport === "native") {
@@ -786,6 +796,7 @@ function formatLastError(error, locale = STATUS_LOCALES.en) {
     error.scope ? `${errorLabels.scope || "scope"}=${error.scope}` : null,
     error.code ? `${errorLabels.code || "code"}=${error.code}` : null,
     error.eventType ? `${errorLabels.event || "event"}=${error.eventType}` : null,
+    error.outcome ? `${errorLabels.outcome || "outcome"}=${error.outcome}` : null,
     error.message || null,
   ].filter(Boolean);
   return parts.join(" ");

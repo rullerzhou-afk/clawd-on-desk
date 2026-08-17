@@ -61,6 +61,36 @@ button stay disabled until token and recipient are in place.
    After activation, **Send test** remains available for an ordinary
    connectivity check.
 
+### Verification failures
+
+For a new or currently disabled setup, a failed verification returns the
+Enable switch to off and leaves an actionable red status on the Telegram card.
+Legacy-upgrade users instead remain on the migration-required panel described
+below. Neither path silently enables Telegram or revives the retired transport.
+
+Use the status message to choose the next check:
+
+- `401`: re-check or replace the bot token.
+- `403`: send `/start` to the bot from the configured user, make sure the bot
+  is not blocked, and re-check the recipient.
+- `400` or a missing chat: use the numeric Telegram user id and start a private
+  chat with the bot before retrying.
+- `409`: remove an existing webhook or stop the process on another machine,
+  another Clawd profile, or another bot integration that polls the same token.
+  A dedicated bot avoids both conflicts.
+- `429`: wait before retrying.
+- Network failure: check Telegram reachability, the system proxy, and any
+  `CLAWD_TG_PROXY` override.
+- Timeout: tap the standalone verification card within 60 seconds. If it was
+  already tapped, also check the network or proxy because Clawd may not have
+  received the callback.
+
+`telegram proxy resolved` in `permission-debug.log` only records the selected
+proxy route before the Bot API request. It does not prove that Telegram accepted
+the token or request. Terminal verification failures are logged with allowlisted
+outcome and error-class fields; those terminal lines do not include tokens, chat
+ids, proxy addresses, or Telegram response bodies.
+
 ## Runtime Behavior
 
 - The desktop permission bubble remains the local fallback.
@@ -111,9 +141,9 @@ is available when you do not want to migrate yet. Users already on verified
 native transport continue without interruption.
 
 If verification reports a Telegram `409` conflict, another process is polling
-the same bot token. Fully exit the other Clawd instance or bot integration,
-wait a few seconds for Telegram to release `getUpdates`, then retry. One bot
-token can have only one active poller.
+the same bot token. Fully exit the integration on the other machine or in the
+other independent Clawd profile, wait a few seconds for Telegram to release
+`getUpdates`, then retry. One bot token can have only one active poller.
 
 ## Release Verification
 

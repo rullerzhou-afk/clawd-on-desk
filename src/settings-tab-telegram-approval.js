@@ -63,6 +63,21 @@
     lark: "https://open.larksuite.com/api-explorer?project=contact&resource=user&apiName=batch_get_id&version=v3",
   });
 
+  const TELEGRAM_VERIFICATION_ERROR_KEYS = Object.freeze({
+    "401": "telegramApprovalVerificationInvalidToken",
+    "403": "telegramApprovalVerificationForbidden",
+    "400": "telegramApprovalVerificationInvalidRecipient",
+    no_chat: "telegramApprovalVerificationInvalidRecipient",
+    "409_conflict": "telegramApprovalVerificationPollingConflict",
+    "409_webhook": "telegramApprovalVerificationWebhookConflict",
+    "429": "telegramApprovalVerificationRateLimited",
+    network: "telegramApprovalVerificationNetwork",
+    timeout: "telegramApprovalVerificationTimeout",
+    token_missing: "telegramApprovalVerificationTokenMissing",
+    "native-start-failed": "telegramApprovalVerificationApplyFailed",
+    "apply-failed": "telegramApprovalVerificationApplyFailed",
+  });
+
   // Stable failure codes -> localized, brand-aware copy. The readiness() reasons
   // (disabled / missing-secret / invalid-config / invalid-secret / not-running)
   // used to fall through to main's raw English message, which named Feishu and
@@ -153,6 +168,27 @@
 
   function t(key) {
     return helpers.t(key);
+  }
+
+  function telegramVerificationFailureMessage(source) {
+    const failure = source && typeof source === "object" ? source : {};
+    const outcome = typeof failure.failureOutcome === "string"
+      ? failure.failureOutcome
+      : "";
+    const errorCode = typeof failure.errorCode === "string"
+      ? failure.errorCode
+      : "";
+    if (outcome === "timeout") {
+      return t("telegramApprovalVerificationTimeout");
+    }
+    const key = Object.prototype.hasOwnProperty.call(TELEGRAM_VERIFICATION_ERROR_KEYS, errorCode)
+      ? TELEGRAM_VERIFICATION_ERROR_KEYS[errorCode]
+      : "";
+    if (key) return t(key);
+    if (outcome === "native-start-failed") {
+      return t("telegramApprovalVerificationApplyFailed");
+    }
+    return t("telegramApprovalCardFailed");
   }
 
   function feishuBrand(platform) {
@@ -568,6 +604,8 @@
       s.reason || "",
       s.message || "",
       s.tokenStored === true ? "1" : "0",
+      s.errorCode || "",
+      s.failureOutcome || "",
     ].join("");
   }
 
@@ -1005,22 +1043,31 @@
     return "incomplete";
   }
 
+  function telegramMissingSetupMessage() {
+    const s = view.status || {};
+    const tokenOk = !!(view.tokenInfo && view.tokenInfo.configured) || s.tokenStored === true;
+    const cfg = currentConfig();
+    const recipientOk = !!(cfg.allowedTgUserId && cfg.targetSessionKey);
+    if (!tokenOk && !recipientOk) return t("telegramApprovalCardMissingBoth");
+    if (!tokenOk) return t("telegramApprovalCardMissingToken");
+    if (!recipientOk) return t("telegramApprovalCardMissingRecipient");
+    return "";
+  }
+
   function deriveCardMessage(kind) {
     const s = view.status || {};
     if (kind === "failed") {
-      return s.message || t("telegramApprovalCardFailed");
+      if (s.configured !== true) {
+        const missingSetup = telegramMissingSetupMessage();
+        if (missingSetup) return missingSetup;
+      }
+      return telegramVerificationFailureMessage(s);
     }
     if (kind === "running") return t("telegramApprovalCardRunning");
     if (kind === "starting") return t("telegramApprovalCardStarting");
     if (kind === "ready") return t("telegramApprovalCardReadyToEnable");
     // incomplete — pick the most actionable missing piece
-    const tokenOk = !!(view.tokenInfo && view.tokenInfo.configured) || s.tokenStored === true;
-    const cfg = currentConfig();
-    const recipientOk = !!cfg.allowedTgUserId;
-    if (!tokenOk && !recipientOk) return t("telegramApprovalCardMissingBoth");
-    if (!tokenOk) return t("telegramApprovalCardMissingToken");
-    if (!recipientOk) return t("telegramApprovalCardMissingRecipient");
-    return t("telegramApprovalCardReadyToEnable");
+    return telegramMissingSetupMessage() || t("telegramApprovalCardReadyToEnable");
   }
 
   function deriveFeishuCardKind() {

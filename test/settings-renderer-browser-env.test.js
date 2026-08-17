@@ -3484,11 +3484,11 @@ describe("settings renderer browser environment", () => {
     );
   });
 
-  it("renders distinct native migration failure outcomes and hides the gate elsewhere", async () => {
-    for (const [outcome, expectedKey] of [
-      ["failed", "telegramNativeMigrationFailed"],
-      ["timeout", "telegramNativeMigrationTimeout"],
-      ["native-start-failed", "telegramNativeMigrationStartFailed"],
+  it("renders actionable native migration failures and hides the gate elsewhere", async () => {
+    for (const [outcome, errorClass, statusKey, gateKey] of [
+      ["failed", "401", "telegramApprovalVerificationInvalidToken", "telegramNativeMigrationFailed"],
+      ["timeout", undefined, "telegramApprovalVerificationTimeout", "telegramNativeMigrationTimeout"],
+      ["native-start-failed", "apply-failed", "telegramApprovalVerificationApplyFailed", "telegramNativeMigrationStartFailed"],
     ]) {
       const harness = loadTelegramApprovalTabForTest({
         snapshot: {
@@ -3507,7 +3507,7 @@ describe("settings renderer browser environment", () => {
                   state: "NATIVE_MIGRATION_REQUIRED",
                   transport: "legacy",
                   testOrigin: "legacy",
-                  lastTestResult: { outcome, at: 1 },
+                  lastTestResult: { outcome, errorClass, at: 1 },
                   revision: 2,
                   ownerSnapshot: { nativePolling: false },
                 },
@@ -3516,7 +3516,15 @@ describe("settings renderer browser environment", () => {
             if (name === "telegramApproval.status") {
               return Promise.resolve({
                 status: "ok",
-                state: { status: "failed", transport: "off", configured: true, tokenStored: true },
+                state: {
+                  status: "failed",
+                  transport: "off",
+                  configured: true,
+                  tokenStored: true,
+                  reason: "native-verification-failed",
+                  errorCode: outcome === "timeout" ? "timeout" : errorClass,
+                  failureOutcome: outcome,
+                },
               });
             }
             if (name === "telegramApproval.tokenInfo") {
@@ -3529,10 +3537,14 @@ describe("settings renderer browser environment", () => {
       await Promise.resolve();
       await Promise.resolve();
       harness.render();
+      const statusText = harness.content.querySelector(".tg-approval-channel-status-text").textContent;
+      const gateText = harness.content.querySelector(".tg-native-migration-gate-result").textContent;
+      assert.equal(statusText, statusKey);
       assert.equal(
-        harness.content.querySelector(".tg-native-migration-gate-result").textContent,
-        expectedKey,
+        gateText,
+        gateKey,
       );
+      assert.notEqual(statusText, gateText, "the gate should supplement, not repeat, the status row");
     }
 
     for (const migrationSnapshot of [
@@ -3554,6 +3566,190 @@ describe("settings renderer browser environment", () => {
       harness.render();
       assert.equal(harness.content.querySelector(".tg-native-migration-gate"), null);
     }
+  });
+
+  it("renders actionable fresh/off verification failures without a migration gate", async () => {
+    for (const [errorCode, failureOutcome, expectedKey] of [
+      ["401", "failed", "telegramApprovalVerificationInvalidToken"],
+      ["403", "failed", "telegramApprovalVerificationForbidden"],
+      ["400", "failed", "telegramApprovalVerificationInvalidRecipient"],
+      ["no_chat", "failed", "telegramApprovalVerificationInvalidRecipient"],
+      ["409_conflict", "failed", "telegramApprovalVerificationPollingConflict"],
+      ["409_webhook", "failed", "telegramApprovalVerificationWebhookConflict"],
+      ["network", "failed", "telegramApprovalVerificationNetwork"],
+      ["timeout", "timeout", "telegramApprovalVerificationTimeout"],
+      ["unknown", "failed", "telegramApprovalCardFailed"],
+    ]) {
+      const harness = loadTelegramApprovalTabForTest({
+        snapshot: {
+          tgApproval: {
+            enabled: false,
+            allowedTgUserId: "123456789",
+            targetSessionKey: "telegram:123456789",
+          },
+        },
+        settingsAPI: {
+          command: (name) => {
+            if (name === "telegramMigration.snapshot") {
+              return Promise.resolve({
+                status: "ok",
+                snapshot: {
+                  state: "IDLE",
+                  transport: "off",
+                  lastTestResult: {
+                    outcome: failureOutcome,
+                    errorClass: errorCode,
+                    at: 1,
+                  },
+                  revision: 2,
+                  ownerSnapshot: { nativePolling: false },
+                },
+              });
+            }
+            if (name === "telegramApproval.status") {
+              return Promise.resolve({
+                status: "ok",
+                state: {
+                  status: "failed",
+                  transport: "off",
+                  configured: true,
+                  tokenStored: true,
+                  reason: "native-verification-failed",
+                  message: "",
+                  errorCode,
+                  failureOutcome,
+                },
+              });
+            }
+            if (name === "telegramApproval.tokenInfo") {
+              return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+            }
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      harness.render();
+
+      assert.equal(harness.content.querySelector(".tg-native-migration-gate"), null);
+      assert.equal(
+        harness.content.querySelector(".tg-approval-channel-status-text").textContent,
+        expectedKey,
+      );
+    }
+  });
+
+  it("prioritizes missing setup over a stale verification failure", async () => {
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "",
+          targetSessionKey: "",
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramMigration.snapshot") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: {
+                state: "IDLE",
+                transport: "off",
+                lastTestResult: { outcome: "failed", errorClass: "401", at: 1 },
+                revision: 2,
+              },
+            });
+          }
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: {
+                status: "failed",
+                transport: "off",
+                configured: false,
+                tokenStored: true,
+                reason: "native-verification-failed",
+                message: "Telegram allowed user id is not configured",
+                errorCode: "401",
+                failureOutcome: "failed",
+              },
+            });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    assert.equal(
+      harness.content.querySelector(".tg-approval-channel-status-text").textContent,
+      "telegramApprovalCardMissingRecipient",
+    );
+  });
+
+  it("force-refreshes Telegram status when only the verification error code changes", async () => {
+    let errorCode = "401";
+    const harness = loadTelegramApprovalTabForTest({
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramMigration.snapshot") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: {
+                state: "IDLE",
+                transport: "off",
+                lastTestResult: { outcome: "failed", errorClass: errorCode, at: 1 },
+                revision: 2,
+              },
+            });
+          }
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: {
+                status: "failed",
+                transport: "off",
+                configured: true,
+                tokenStored: true,
+                reason: "native-verification-failed",
+                message: "",
+                errorCode,
+                failureOutcome: "failed",
+              },
+            });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    assert.equal(
+      harness.content.querySelector(".tg-approval-channel-status-text").textContent,
+      "telegramApprovalVerificationInvalidToken",
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const before = harness.renderRequests.length;
+    errorCode = "403";
+    harness.core.tabs["telegram-approval"].refreshRuntimeStatus({ channel: "telegram" });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.ok(harness.renderRequests.length > before, "Telegram status push should force a content render");
+    harness.render();
+    assert.equal(
+      harness.content.querySelector(".tg-approval-channel-status-text").textContent,
+      "telegramApprovalVerificationForbidden",
+    );
   });
 
   it("uses native re-verification copy when a previously verified setup is repaired", async () => {

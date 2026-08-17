@@ -447,7 +447,7 @@ describe("i18n locales", () => {
       sidebarRemoteSsh: "Hosts SSH",
       remoteApprovalSubtitle: "Redirige las solicitudes de permiso locales a un canal remoto. Los secretos se mantienen fuera de las preferencias y el globo de escritorio sigue siendo la alternativa local.",
       telegramApprovalCardStarting: "Conectando con la aprobación nativa de Telegram…",
-      telegramApprovalCardFailed: "La aprobación nativa de Telegram informó de un error. Revisa el mensaje a continuación o vuelve a intentarlo.",
+      telegramApprovalCardFailed: "La verificación nativa de Telegram falló. Corrige la configuración o vuelve a intentarlo.",
       telegramApprovalCompletionOutput: "Contenido de la notificación de finalización",
       telegramApprovalCompletionOutputDesc: "Elige si las notificaciones de finalización de Telegram incluyen la respuesta final del asistente.",
       telegramApprovalCompletionOutput_off: "Solo aviso de finalización",

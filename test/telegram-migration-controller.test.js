@@ -47,6 +47,7 @@ function makeController(overrides = {}) {
   const writes = [];
   const timers = [];
   const revisions = [];
+  const logs = [];
   let clock = 1000;
   const ctrl = createTelegramMigrationController({
     native,
@@ -64,13 +65,16 @@ function makeController(overrides = {}) {
     clearTimer: (timer) => { if (timer) timer.cancelled = true; },
     now: () => ++clock,
     onSnapshotChanged: ({ revision }) => revisions.push(revision),
-    log: () => {},
+    log: overrides.log || ((level, message, meta) => {
+      logs.push({ level, message, meta });
+    }),
   });
   return {
     ctrl,
     native,
     writes,
     revisions,
+    logs,
     getPrefs: () => ({ ...prefsState }),
     setPrefs: (patch) => { prefsState = { ...prefsState, ...patch }; },
     setFiles: (patch) => { filesState = { ...filesState, ...patch }; },
@@ -309,6 +313,11 @@ test("timer records timeout and clears pending timer", async () => {
   await env.fireTimer();
   assert.equal(env.pendingTimer(), null);
   assert.equal(env.ctrl.getSnapshot().lastTestResult.outcome, "timeout");
+  assert.deepEqual(env.logs.filter((entry) => entry.message === "native Telegram verification failed"), [{
+    level: "warn",
+    message: "native Telegram verification failed",
+    meta: { outcome: "timeout", errorClass: "timeout" },
+  }]);
 });
 
 test("a stop cleanup failure still reaches a deterministic terminal state", async () => {
@@ -342,6 +351,8 @@ test("unknown error classes are sanitized", async () => {
   });
   assert.deepEqual(env.ctrl.getSnapshot().lastTestResult.errorClass, "unknown");
   assert.doesNotMatch(JSON.stringify(env.ctrl.getSnapshot()), /secret raw/);
+  assert.doesNotMatch(JSON.stringify(env.logs), /secret raw/);
+  assert.deepEqual(env.logs.at(-1).meta, { outcome: "failed", errorClass: "unknown" });
 });
 
 test("late terminal events do not overwrite a successful result", async () => {
@@ -358,6 +369,116 @@ test("late terminal events do not overwrite a successful result", async () => {
   assert.equal(env.ctrl.getSnapshot().state, STATES.NATIVE_ACTIVE);
   assert.equal(env.ctrl.getSnapshot().lastTestResult, null);
   assert.equal(env.ctrl.getSnapshot().revision, revision);
+  assert.equal(env.logs.length, 0);
+});
+
+test("every accepted terminal failure path logs exactly one safe result", async (t) => {
+  await t.test("TEST_FAILED", async () => {
+    const env = makeController({
+      initialPrefs: { transport: "off" },
+      nativeConfigComplete: true,
+    });
+    await env.ctrl.init();
+    await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
+    await env.ctrl.dispatch({ type: EVENTS.TEST_FAILED, errorClass: "401" });
+    assert.deepEqual(env.logs, [{
+      level: "warn",
+      message: "native Telegram verification failed",
+      meta: { outcome: "failed", errorClass: "401" },
+    }]);
+  });
+
+  await t.test("native start/apply failure", async () => {
+    const native = new FakeNative();
+    native.failStart = Object.assign(new Error("do not log this raw error"), {
+      code: "START_FAILED",
+      errorClass: "network",
+    });
+    const env = makeController({
+      native,
+      initialPrefs: { transport: "off" },
+      nativeConfigComplete: true,
+    });
+    await env.ctrl.init();
+    await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
+    assert.deepEqual(env.logs, [{
+      level: "warn",
+      message: "native Telegram verification failed",
+      meta: { outcome: "native-start-failed", errorClass: "network" },
+    }]);
+  });
+
+  await t.test("identity change interrupts an in-flight test", async () => {
+    const env = makeController({
+      initialPrefs: { transport: "off" },
+      nativeConfigComplete: true,
+    });
+    await env.ctrl.init();
+    await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
+    await env.ctrl.reconcileConfiguration({ identityChanged: true });
+    assert.deepEqual(env.logs, [{
+      level: "warn",
+      message: "native Telegram verification failed",
+      meta: { outcome: "failed", errorClass: "apply-failed" },
+    }]);
+  });
+});
+
+test("a throwing or rejecting logger cannot change a terminal transition", async (t) => {
+  for (const [name, log] of [
+    ["throwing", () => { throw new Error("disk full"); }],
+    ["rejecting", () => Promise.reject(new Error("disk full"))],
+  ]) {
+    await t.test(name, async () => {
+      const env = makeController({
+        initialPrefs: { transport: "off" },
+        nativeConfigComplete: true,
+        log,
+      });
+      await env.ctrl.init();
+      await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
+      const result = await env.ctrl.dispatch({ type: EVENTS.TEST_FAILED, errorClass: "403" });
+      assert.equal(result.ok, true);
+      assert.equal(env.ctrl.getSnapshot().state, STATES.IDLE);
+      assert.deepEqual(env.ctrl.getSnapshot().lastTestResult, {
+        outcome: "failed",
+        errorClass: "403",
+        at: 1001,
+      });
+    });
+  }
+});
+
+test("identity edits clear an idle failure while non-identity edits preserve it", async () => {
+  const env = makeController({
+    initialPrefs: { transport: "off" },
+    nativeConfigComplete: true,
+  });
+  await env.ctrl.init();
+  await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
+  await env.ctrl.dispatch({ type: EVENTS.TEST_FAILED, errorClass: "400" });
+  assert.equal(env.ctrl.getSnapshot().state, STATES.IDLE);
+
+  await env.ctrl.reconcileConfiguration({ identityChanged: false });
+  assert.equal(env.ctrl.getSnapshot().lastTestResult.errorClass, "400");
+
+  await env.ctrl.reconcileConfiguration({ identityChanged: true });
+  assert.equal(env.ctrl.getSnapshot().lastTestResult, null);
+});
+
+test("retry clears a prior failure before the next terminal result", async () => {
+  const env = makeController({
+    initialPrefs: { transport: "off" },
+    nativeConfigComplete: true,
+  });
+  await env.ctrl.init();
+  await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
+  await env.ctrl.dispatch({ type: EVENTS.TEST_FAILED, errorClass: "429" });
+  assert.ok(env.ctrl.getSnapshot().lastTestResult);
+
+  await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
+  assert.equal(env.ctrl.getSnapshot().state, STATES.TESTING_NATIVE);
+  assert.equal(env.ctrl.getSnapshot().lastTestResult, null);
 });
 
 test("identity change clears verification and requires a new test", async () => {

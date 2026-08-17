@@ -118,6 +118,7 @@ const initPermission = require("./permission");
 const { isPassiveNotifyEntry } = require("./passive-notify-entry");
 const { registerPermissionIpc } = initPermission;
 const telegramApprovalSettings = require("./telegram-approval-settings");
+const { sanitizeTelegramApprovalLogMeta } = require("./telegram-approval-log-meta");
 const discordPresenceSettings = require("./discord-presence-settings");
 const { createDiscordPresenceBridge } = require("./discord-presence-rpc");
 const { resolveAgentDisplayName } = require("./agent-display-name");
@@ -2495,6 +2496,7 @@ function getConfiguredFeishuApprovalClient() {
 }
 
 function telegramApprovalLog(level, message, meta = {}) {
+  const diagnosticMeta = sanitizeTelegramApprovalLogMeta(meta);
   const parts = [`telegram approval ${level}: ${message}`];
   if (meta && meta.text) parts.push(String(meta.text).trim());
   if (meta && meta.error) parts.push(String(meta.error).trim());
@@ -2503,6 +2505,10 @@ function telegramApprovalLog(level, message, meta = {}) {
     if (value !== undefined && value !== null && value !== "") {
       parts.push(`${key}=${String(value).trim()}`);
     }
+  }
+  for (const key of ["outcome", "mode", "proxy"]) {
+    const value = diagnosticMeta[key];
+    if (value) parts.push(`${key}=${value}`);
   }
   permLog(parts.filter(Boolean).join(" | "));
 }
@@ -3278,6 +3284,12 @@ async function initTelegramMigrationController() {
     log: telegramApprovalLog,
   });
 
+  // Seed before publishing the controller. If Settings changes the recipient
+  // while init awaits native startup, the subscription below must recognize
+  // that first edit as an identity change and queue reconciliation behind init.
+  telegramApprovalIdentitySignature = buildTelegramApprovalIdentitySignature(
+    getTelegramApprovalPrefs()
+  );
   _telegramMigrationController = createTelegramMigrationController({
     native: nativeRunner,
     readPrefs: () => readTelegramMigrationPrefsForController(),
@@ -3342,6 +3354,8 @@ async function initTelegramMigrationController() {
   });
 
   await _telegramMigrationController.init();
+  // Re-read after init so the baseline always matches the committed Settings
+  // snapshot, including an edit that raced with native startup.
   telegramApprovalIdentitySignature = buildTelegramApprovalIdentitySignature(
     getTelegramApprovalPrefs()
   );

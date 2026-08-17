@@ -9,6 +9,9 @@ const {
   buildTelegramStatusDiagnostic,
   formatTelegramStatusDiagnostic,
 } = require("../src/telegram-approval-runtime-status");
+const {
+  ALLOWED_TEST_ERROR_CLASSES,
+} = require("../src/telegram-verification-failure");
 
 const COMPLETE_CONFIG_DISABLED = {
   enabled: false,
@@ -122,6 +125,91 @@ test("off transport stays off after USER_DISABLE", () => {
   assert.equal(status.configured, true);
   assert.equal(status.reason, "disabled");
   assert.equal(status.message, "");
+  assert.equal(status.errorCode, "");
+  assert.equal(status.failureOutcome, "");
+});
+
+test("fresh off verification failures expose a stable top-level diagnostic", () => {
+  const status = buildTelegramApprovalStatus({
+    config: COMPLETE_CONFIG_DISABLED,
+    token: TOKEN_STORED,
+    migrationSnapshot: {
+      state: "IDLE",
+      transport: "off",
+      lastTestResult: { outcome: "failed", errorClass: "401", at: 123 },
+    },
+    nativePolling: false,
+  });
+
+  assert.equal(status.status, "failed");
+  assert.equal(status.transport, "off");
+  assert.equal(status.reason, "native-verification-failed");
+  assert.equal(status.message, "");
+  assert.equal(status.errorCode, "401");
+  assert.equal(status.failureOutcome, "failed");
+});
+
+test("runtime status projects every safe verification error class", () => {
+  for (const errorClass of ALLOWED_TEST_ERROR_CLASSES) {
+    const status = buildTelegramApprovalStatus({
+      config: COMPLETE_CONFIG_DISABLED,
+      token: TOKEN_STORED,
+      migrationSnapshot: {
+        state: "IDLE",
+        transport: "off",
+        lastTestResult: { outcome: "failed", errorClass },
+      },
+      nativePolling: false,
+    });
+    assert.equal(status.errorCode, errorClass);
+    assert.equal(status.failureOutcome, "failed");
+  }
+});
+
+test("timeout projection wins over a stale class and malformed classes become unknown", () => {
+  const timeout = buildTelegramApprovalStatus({
+    config: COMPLETE_CONFIG_DISABLED,
+    token: TOKEN_STORED,
+    migrationSnapshot: {
+      state: "IDLE",
+      lastTestResult: { outcome: "timeout", errorClass: "401" },
+    },
+    nativePolling: false,
+  });
+  assert.equal(timeout.errorCode, "timeout");
+  assert.equal(timeout.failureOutcome, "timeout");
+
+  const malformed = buildTelegramApprovalStatus({
+    config: COMPLETE_CONFIG_DISABLED,
+    token: TOKEN_STORED,
+    migrationSnapshot: {
+      state: "IDLE",
+      lastTestResult: { outcome: "failed", errorClass: "token=secret raw body" },
+    },
+    nativePolling: false,
+  });
+  assert.equal(malformed.errorCode, "unknown");
+  assert.doesNotMatch(JSON.stringify({
+    errorCode: malformed.errorCode,
+    failureOutcome: malformed.failureOutcome,
+    reason: malformed.reason,
+    message: malformed.message,
+  }), /secret raw/);
+});
+
+test("malformed terminal outcomes cannot forge a failed status", () => {
+  const status = buildTelegramApprovalStatus({
+    config: COMPLETE_CONFIG_DISABLED,
+    token: TOKEN_STORED,
+    migrationSnapshot: {
+      state: "IDLE",
+      lastTestResult: { outcome: "surprise", errorClass: "401" },
+    },
+    nativePolling: false,
+  });
+  assert.equal(status.status, "stopped");
+  assert.equal(status.errorCode, "");
+  assert.equal(status.failureOutcome, "");
 });
 
 test("retired legacy snapshots can only report migration required", () => {
@@ -353,6 +441,40 @@ test("R2 diagnostic distinguishes off transport from legacy stopped", () => {
   assert.match(text, /Transport: off/);
   assert.match(text, /Completion notifications: off, output=off, bare fallback=off/);
   assert.doesNotMatch(text, /inactive until native is running/);
+});
+
+test("R2 diagnostic reports the projected off verification failure", () => {
+  const migrationSnapshot = {
+    state: "IDLE",
+    transport: "off",
+    lastTestResult: { outcome: "failed", errorClass: "401", at: 123 },
+  };
+  const approvalStatus = buildTelegramApprovalStatus({
+    config: COMPLETE_CONFIG_DISABLED,
+    token: TOKEN_STORED,
+    migrationSnapshot,
+    nativePolling: false,
+  });
+  const diagnostic = buildTelegramStatusDiagnostic({
+    config: COMPLETE_CONFIG_DISABLED,
+    token: TOKEN_STORED,
+    approvalStatus,
+    migrationSnapshot,
+  });
+
+  assert.equal(diagnostic.transport, "off");
+  assert.equal(diagnostic.health, "failed");
+  assert.deepEqual(diagnostic.lastError, {
+    source: "approval",
+    code: "401",
+    outcome: "failed",
+    message: "",
+  });
+  assert.match(formatTelegramStatusDiagnostic(diagnostic), /Last error: approval code=401 outcome=failed/);
+  assert.match(
+    formatTelegramStatusDiagnostic(diagnostic, { lang: "zh" }),
+    /最近错误: approval 代码=401 结果=failed/,
+  );
 });
 
 test("R2 diagnostic never reports the retired legacy fallback as available", () => {
