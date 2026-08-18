@@ -115,6 +115,30 @@ if (!themeDir) {
 const resolvedDir = path.resolve(themeDir);
 const jsonPath = path.join(resolvedDir, "theme.json");
 
+// An explicit --assets override that does not resolve to a usable directory is a
+// mistake in the command, not a property of the theme -- so the message has to say
+// which one it is. Pointing --assets at a file used to produce a 27-error report
+// about the theme, sending the author hunting for theme bugs that do not exist.
+// The default `<theme>/assets` being absent is deliberately NOT handled here: that
+// one really is a property of the theme, and stays a normal validation error below.
+if (assetsOverride !== null) {
+  const overrideDir = path.resolve(assetsOverride);
+  let overrideStat;
+  try {
+    overrideStat = fs.statSync(overrideDir);
+  } catch (e) {
+    // Only ENOENT means "not there". ENOTDIR, ELOOP, EACCES and friends are all
+    // different problems and must not be flattened into one claim.
+    const why = e.code === "ENOENT" ? "not found" : `cannot be accessed (${e.code})`;
+    console.error(`${FAIL} --assets directory ${why}: ${overrideDir}`);
+    process.exit(1);
+  }
+  if (!overrideStat.isDirectory()) {
+    console.error(`${FAIL} --assets path is not a directory: ${overrideDir}`);
+    process.exit(1);
+  }
+}
+
 if (!fs.existsSync(jsonPath)) {
   console.error(`${FAIL} theme.json not found at: ${jsonPath}`);
   process.exit(1);
