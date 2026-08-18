@@ -53,17 +53,62 @@ const {
 const args = process.argv.slice(2);
 let themeDir = null;
 let assetsOverride = null;
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === "--assets" && args[i + 1]) {
-    assetsOverride = args[++i];
-  } else if (!themeDir) {
-    themeDir = args[i];
-  }
-}
-if (!themeDir) {
+
+function printUsage() {
   console.error(`Usage: node ${path.basename(process.argv[1])} <theme-directory> [--assets <assets-dir>]`);
   console.error(`Example: node scripts/validate-theme.js themes/template`);
   console.error(`         node scripts/validate-theme.js themes/clawd --assets assets/svg`);
+}
+
+// Anything the parser does not understand is refused rather than ignored. The old
+// loop silently dropped unknown flags, surplus positional arguments, and a
+// value-less `--assets`, so a mistyped command ran against the DEFAULT paths and
+// then reported the theme as valid -- the tool answering a question nobody asked.
+//
+// Refusing unknown options costs the one thing the permissive loop got for free: a
+// path that genuinely begins with "-". `--` ends option parsing for that case, so
+// no invocation that worked before is unreachable now.
+let optionsEnded = false;
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (!optionsEnded && arg === "--") {
+    optionsEnded = true;
+  } else if (!optionsEnded && arg === "--assets") {
+    if (assetsOverride !== null) {
+      console.error(`${FAIL} --assets given more than once`);
+      printUsage();
+      process.exit(1);
+    }
+    const value = args[i + 1];
+    // Only absent or empty counts as "no path given". A value that merely looks
+    // like a flag is still passed to the filesystem, which is the thing that
+    // actually knows whether it is a usable directory.
+    if (value === undefined || value === "") {
+      console.error(`${FAIL} --assets requires a directory argument`);
+      printUsage();
+      process.exit(1);
+    }
+    assetsOverride = value;
+    i++;
+  } else if (!optionsEnded && arg.startsWith("-") && arg !== "-") {
+    console.error(`${FAIL} Unknown option: ${arg}`);
+    console.error(`  (if that is a real path, pass it after --)`);
+    printUsage();
+    process.exit(1);
+  } else if (themeDir === null) {
+    themeDir = arg;
+  } else {
+    console.error(`${FAIL} Unexpected extra argument: ${arg}`);
+    printUsage();
+    process.exit(1);
+  }
+}
+// Falsy, not just null: `validate-theme.js "$SOME_UNSET_VAR"` passes an empty
+// string, which path.resolve() turns into the current directory -- so without
+// this the script would go and validate whatever the caller happened to be in.
+if (!themeDir) {
+  console.error(`${FAIL} No theme directory given`);
+  printUsage();
   process.exit(1);
 }
 
