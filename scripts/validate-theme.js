@@ -153,6 +153,17 @@ try {
   process.exit(1);
 }
 
+// theme.json has to be a JSON object for the checks below to walk it. `null` crashes
+// property access with an uncaught TypeError (a stack trace instead of a message),
+// and a number/string/boolean produces meaningless FAIL lines that read like real
+// findings about a theme that was never there. An array is deliberately let through:
+// nothing below it crashes, and its total absence of fields is a genuine "theme has
+// errors" outcome rather than a broken command.
+if (!isPlainObject(raw) && !Array.isArray(raw)) {
+  console.error(`${FAIL} theme.json must contain a JSON object (got: ${raw === null ? "null" : typeof raw})`);
+  process.exit(1);
+}
+
 console.log(`\n${C}Validating theme:${D} ${resolvedDir}\n`);
 
 let errors = 0;
