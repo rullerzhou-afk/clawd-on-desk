@@ -149,7 +149,9 @@ try {
   const content = fs.readFileSync(jsonPath, "utf8");
   raw = JSON.parse(content);
 } catch (e) {
-  console.error(`${FAIL} Failed to parse theme.json: ${e.message}`);
+  // The try block covers readFileSync as well as JSON.parse, so this must not
+  // claim "parse" for what may have been a read failure (e.g. EISDIR).
+  console.error(`${FAIL} Failed to read or parse theme.json: ${e.message}`);
   process.exit(1);
 }
 
