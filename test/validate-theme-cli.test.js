@@ -146,7 +146,15 @@ describe("validate-theme.js CLI (real process, spawnSync)", () => {
     assert.doesNotMatch(result.stdout, /error\(s\)/);
   });
 
-  it("--assets whose parent is a file reports the real error, not \"not found\"", () => {
+  it("--assets whose parent is a file reports the real error, not \"not found\"", {
+    // POSIX-specific. stat() on a path whose parent component is a file gives
+    // ENOTDIR here; Windows reports this shape through a different errno, and we
+    // have no Windows host to measure it on. Skipped rather than pinned to a
+    // behavior nobody has observed -- a guess that happens to be wrong would go
+    // red in the release-tag lane, which is the one place a red test costs a
+    // build. The macOS and Linux lanes keep the guarantee.
+    skip: process.platform === "win32" ? "stat() errno for a file-as-parent component is unmeasured on Windows" : false,
+  }, () => {
     // ENOTDIR, not ENOENT. Collapsing every stat failure into "not found" tells
     // the author to create a directory that cannot exist at that path.
     const result = runValidateTheme([CALICO, "--assets", path.join(CALICO, "theme.json", "nope")]);
@@ -234,7 +242,12 @@ describe("validate-theme.js CLI (real process, spawnSync)", () => {
     fs.writeFileSync(path.join(dir, "theme.json"), JSON.stringify(themeJson), "utf8");
     const result = runValidateTheme([dir]);
     assert.strictEqual(result.status, 1, result.stderr || result.stdout);
-    assert.match(result.stdout, /assets\/ directory exists/);
+    // check() prints the SAME message whether it passed or failed -- only the
+    // glyph differs -- and this fixture's states:{} guarantees exit 1 on its own,
+    // so matching the bare text would hold even if the assets check stopped being
+    // reported at all. Pin the FAIL glyph so the assertion can actually tell the
+    // two apart.
+    assert.match(result.stdout, /\u2717\u001b\[0m assets\/ directory exists/);
     assert.doesNotMatch(result.stderr, /--assets/);
   });
 
