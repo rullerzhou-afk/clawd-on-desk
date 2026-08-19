@@ -1,5 +1,7 @@
 "use strict";
 
+const { shortenSessionIdForDisplay } = require("./state-session-snapshot");
+
 const { execFile: defaultExecFile } = require("child_process");
 const {
   getSessionFocusTarget,
@@ -47,9 +49,11 @@ function normalizePromptText(value) {
   return text;
 }
 
-function shortSessionId(sessionId) {
-  const id = String(sessionId || "");
-  return id.length > 12 ? `${id.slice(0, 12)}...` : id;
+// See telegram-companion: entry.id is the namespaced key, so it must not be
+// sliced directly -- every local session would acknowledge the same id.
+function shortSessionId(entry) {
+  const raw = (entry && entry.rawSessionId) || (entry && entry.id);
+  return shortenSessionIdForDisplay(raw, entry) || "";
 }
 
 function findSession(snapshot, sessionId) {
@@ -358,7 +362,7 @@ function interpolate(template, token, value) {
 }
 
 function formatDeliveryAck(status, entry, deliveryResult, t) {
-  const shortId = shortSessionId(entry && entry.id);
+  const shortId = shortSessionId(entry);
   switch (status) {
     case "sent_with_enter":
       return interpolate(t("directSendAckSent"), "{session}", shortId);
@@ -746,6 +750,7 @@ function createTelegramDirectSend({
 
 module.exports = {
   DEFAULT_MAPPING_TTL_MS,
+  formatDeliveryAck,
   DEFAULT_MAX_DELIVERIES,
   createTelegramDirectSend,
   createClipboardFallbackDeliveryAdapter,

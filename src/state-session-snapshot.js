@@ -1,5 +1,7 @@
 "use strict";
 
+const { decodeSessionKey } = require("./session-key");
+
 const path = require("path");
 const { sessionAliasKey } = require("./session-alias");
 const { getSessionFocusTarget } = require("./session-focus");
@@ -241,9 +243,17 @@ function isInternalWorkspaceCwd(id, sessionLike, cwd) {
   return false;
 }
 
-function shortenSessionIdForDisplay(value, sessionLike) {
+// `options.ellipsis: false` drops the trailing ".." for callers that render the
+// value as a compact tag (for example "#abc123"), where the dots read as part of
+// the id rather than as truncation.
+// `options.sanitize` runs on the full recovered id, before shortening. Scrubbers
+// that match whole tokens (a run of digits, a telegram-shaped id) cannot fire
+// against a six-character window, so a caller that redacts must redact first.
+function shortenSessionIdForDisplay(value, sessionLike, options = {}) {
   if (value === null || value === undefined) return value;
   let displayId = String(value);
+  const decoded = decodeSessionKey(displayId);
+  if (decoded) displayId = decoded.rawSessionId;
   const agentId = sessionLike && sessionLike.agentId;
   for (const entry of INTERNAL_WORKSPACE_AGENTS) {
     if (!displayId.startsWith(entry.sessionPrefix)) continue;
@@ -256,7 +266,9 @@ function shortenSessionIdForDisplay(value, sessionLike) {
     if (stripped.trim()) displayId = stripped;
     break;
   }
-  return displayId.length > 6 ? `${displayId.slice(0, 6)}..` : displayId;
+  if (typeof options.sanitize === "function") displayId = String(options.sanitize(displayId) || "");
+  const suffix = options.ellipsis === false ? "" : "..";
+  return displayId.length > 6 ? `${displayId.slice(0, 6)}${suffix}` : displayId;
 }
 
 function sessionDisplayTitle(id, sessionLike, sessionAliases = {}, options = {}) {
@@ -624,6 +636,7 @@ module.exports = {
   getSessionAliasEntry,
   getEffectiveSessionTitle,
   sessionDisplayTitle,
+  shortenSessionIdForDisplay,
   sessionMenuComparator,
   sessionUpdatedAtComparator,
   buildSessionSnapshotEntry,

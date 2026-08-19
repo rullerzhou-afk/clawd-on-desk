@@ -435,3 +435,61 @@ test("custom completion formatter keeps the legacy plain string contract", async
 
   assert.deepEqual(sent, ["<b>legacy wire</b>"]);
 });
+
+// Regression: every fixture above uses a bare id like "sess-aaaaaa1", so the
+// suite never saw a real namespaced session key ("s1.<profile>.<raw>"). Slicing
+// that key yields the envelope, not the session, and every local session
+// collapsed to the same tag. Build the ids through the real key builder so this
+// cannot pass again by fixture choice.
+test("distinct local sessions get distinct short ids", () => {
+  const { resolveSessionIdentity } = require("../src/session-key");
+  const { buildSessionSnapshotEntry } = require("../src/state-session-snapshot");
+
+  function entryFor(rawSessionId) {
+    const identity = resolveSessionIdentity(rawSessionId);
+    return buildSessionSnapshotEntry(identity.sessionId, {
+      rawSessionId: identity.rawSessionId,
+      agentId: "claude-code",
+      state: "idle",
+      badge: "done",
+      cwd: null,
+      lastEvent: { rawEvent: "Stop", at: Date.now() },
+    });
+  }
+
+  const a = entryFor("11111111-2222-3333-4444-555555555555");
+  const b = entryFor("99999999-8888-7777-6666-aaaaaaaaaaaa");
+
+  assert.ok(a.id.startsWith("s1."), "fixture must use a real namespaced key");
+  const tagA = sentText(formatNotification(a)).match(/#(\S+)/);
+  const tagB = sentText(formatNotification(b)).match(/#(\S+)/);
+  assert.ok(tagA && tagB, "both notifications carry a session tag");
+  assert.notEqual(tagA[1], tagB[1], "two sessions must not render the same tag");
+  assert.ok(!tagA[1].startsWith("s1."), `tag must not be the key envelope: ${tagA[1]}`);
+  assert.ok(a.rawSessionId.startsWith(tagA[1]), "tag is a prefix of the real session id");
+});
+
+// A session created without an explicit rawSessionId falls back to its own
+// namespaced key (state.js), so the display helper must recover the raw id from
+// the envelope rather than slicing it. Every real route passes rawSessionId
+// today; this closes the fallback so the bug cannot return through it.
+test("distinct sessions get distinct short ids even without rawSessionId", () => {
+  const { resolveSessionIdentity } = require("../src/session-key");
+  const { buildSessionSnapshotEntry } = require("../src/state-session-snapshot");
+
+  function tagFor(rawSessionId) {
+    const identity = resolveSessionIdentity(rawSessionId, "local");
+    const entry = buildSessionSnapshotEntry(identity.sessionId, {
+      agentId: "codex", state: "idle", badge: "done", cwd: null,
+      lastEvent: { rawEvent: "Stop", at: Date.now() },
+    }); // deliberately no rawSessionId
+    assert.equal(entry.rawSessionId, identity.sessionId, "fixture must exercise the fallback");
+    return sentText(formatNotification(entry)).match(/#(\S+)/)[1];
+  }
+
+  const a = tagFor("11111111-2222-3333-4444-555555555555");
+  const b = tagFor("99999999-8888-7777-6666-aaaaaaaaaaaa");
+  assert.notEqual(a, b, "two sessions must not render the same tag");
+  assert.ok(!a.startsWith("s1."), `tag must not be the key envelope: ${a}`);
+  assert.equal(a, "111111");
+});

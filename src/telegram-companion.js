@@ -1,5 +1,7 @@
 "use strict";
 
+const { shortenSessionIdForDisplay } = require("./state-session-snapshot");
+
 const {
   clipUtf16Safe,
   concatTelegramParts,
@@ -116,9 +118,13 @@ function folderName(cwd) {
   return parts[parts.length - 1] || "";
 }
 
-function shortId(id) {
-  const s = String(id || "");
-  return s.length > 6 ? s.slice(0, 6) : s;
+// `entry.id` is the namespaced session key ("s1.<profile>.<raw>"), so slicing it
+// yields the envelope rather than the session: every local session collapses to
+// the same six characters. Shorten the raw id through the shared helper the
+// HUD/Dashboard already use, so the notification agrees with the app.
+function entryShortId(entry, options) {
+  const raw = (entry && entry.rawSessionId) || (entry && entry.id);
+  return shortenSessionIdForDisplay(raw, entry, options);
 }
 
 function getNotificationLocale(lang) {
@@ -221,13 +227,13 @@ function formatNotification(entry, options = {}) {
   const interrupted = entry.badge === "interrupted";
   const icon = interrupted ? "⚠️" : "✅"; // ⚠️ / ✅
   const status = interrupted ? locale.interrupted : locale.done;
-  const title = entry.displayTitle || (entry.id ? `${shortId(entry.id)}..` : locale.session);
+  const title = entry.displayTitle || (entry.id ? entryShortId(entry) : locale.session);
   const meta = [];
   if (entry.agentId) meta.push(entry.agentId);
   const folder = folderName(entry.cwd);
   if (folder) meta.push(folder);
   if (entry.host) meta.push(entry.host);
-  if (entry.id) meta.push(`#${shortId(entry.id)}`);
+  if (entry.id) meta.push(`#${entryShortId(entry, { ellipsis: false })}`);
   const wrapStatus = typeof locale.wrapStatus === "function"
     ? locale.wrapStatus(status)
     : `(${status})`;
@@ -247,13 +253,13 @@ function formatTelegramNotificationMessage(entry, options = {}) {
   const interrupted = entry.badge === "interrupted";
   const icon = interrupted ? "⚠️" : "✅";
   const status = interrupted ? locale.interrupted : locale.done;
-  const title = entry.displayTitle || (entry.id ? `${shortId(entry.id)}..` : locale.session);
+  const title = entry.displayTitle || (entry.id ? entryShortId(entry) : locale.session);
   const meta = [];
   if (entry.agentId) meta.push(entry.agentId);
   const folder = folderName(entry.cwd);
   if (folder) meta.push(folder);
   if (entry.host) meta.push(entry.host);
-  if (entry.id) meta.push(`#${shortId(entry.id)}`);
+  if (entry.id) meta.push(`#${entryShortId(entry, { ellipsis: false })}`);
   const wrapStatus = typeof locale.wrapStatus === "function"
     ? locale.wrapStatus(status)
     : `(${status})`;
