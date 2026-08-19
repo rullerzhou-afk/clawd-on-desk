@@ -182,6 +182,11 @@ let pendingState = null;
 // #406 Stop completion debounce: sessionId -> timer holding a Stop as "working"
 // until a quiet window confirms the turn really ended.
 const pendingCompletionTimers = new Map();
+// Sessions whose completion the #406 gate is currently withholding, by either
+// shape: a debounce timer, or a hard hold that only a later Stop can release.
+// This is the exact window in which a replayed Stop must still know the answer
+// the withheld Stop carried, and it is entered only from the claude-code gate.
+const withheldCompletions = new Set();
 let eyeResendTimer = null;
 let updateVisualState = null;
 let updateVisualKind = null;
@@ -1436,6 +1441,9 @@ function scheduleCompletionDebounce(sessionId, debounceMs) {
 }
 
 function cancelCompletionDebounce(sessionId, reason) {
+  // Runs before the early return: a hard hold has no timer, and it still has to
+  // release the withheld marker.
+  withheldCompletions.delete(sessionId);
   const timer = pendingCompletionTimers.get(sessionId);
   if (!timer) return;
   clearTimeout(timer);
@@ -1446,6 +1454,7 @@ function cancelCompletionDebounce(sessionId, reason) {
 function clearAllCompletionDebounces() {
   for (const timer of pendingCompletionTimers.values()) clearTimeout(timer);
   pendingCompletionTimers.clear();
+  withheldCompletions.clear();
 }
 
 function cancelClaudeTranscriptCompletionProbe(sessionId, reason) {
@@ -1515,6 +1524,7 @@ function scheduleClaudeTranscriptCompletionProbe(sessionId, transcriptPath) {
 // and only now flip awaitingInputSinceStop. Then celebrate, unless a Kimi
 // permission lock is holding the pet.
 function promoteCompletion(sessionId) {
+  withheldCompletions.delete(sessionId);
   const session = sessions.get(sessionId);
   if (!session) return;
   session.subagentTracker = clearSubagentTracker(cloneSubagentTracker(session));
@@ -1889,8 +1899,30 @@ function updateSession(sessionId, state, event, opts = {}) {
   );
   const srcContextUsage = resolvedContextUsage.contextUsage;
   const srcContextUsageOrigin = resolvedContextUsage.contextUsageOrigin;
-  const srcAssistantLastOutput = normalizeAssistantOutput(assistantLastOutput);
-  const srcAssistantLastOutputTruncated = !!(srcAssistantLastOutput && assistantLastOutputTruncated === true);
+  // Sticky ONLY while the #406 gate is withholding this session's completion.
+  // The Stop that carries the answer can be withheld and replayed later by
+  // promoteCompletion; any event arriving inside that window (Notification,
+  // PermissionResult, SessionStart(resume), ...) carries no assistant output and
+  // would otherwise rewrite the recorded answer to null, so the replayed
+  // completion ships title-only -- or, with plain Telegram pings disabled, is
+  // dropped entirely.
+  //
+  // The window is the bound. An earlier attempt made the field sticky for every
+  // event and cleared it at a guessed turn boundary (UserPromptSubmit /
+  // SessionStart), which leaked one turn's answer into the next on any agent
+  // that emits neither -- the Codex JSONL monitor emits task_started /
+  // task_complete and nothing else, so the clear was structurally unreachable
+  // there. Only the claude-code gate ever populates withheldCompletions, so
+  // agents that cannot be withheld cannot carry anything forward.
+  const incomingAssistantLastOutput = normalizeAssistantOutput(assistantLastOutput);
+  const srcAssistantLastOutput = incomingAssistantLastOutput
+    || (withheldCompletions.has(sessionId) ? (existing && existing.assistantLastOutput) || null : null);
+  const srcAssistantLastOutputTruncated = !!(
+    srcAssistantLastOutput
+    && (incomingAssistantLastOutput
+      ? assistantLastOutputTruncated === true
+      : !!(existing && existing.assistantLastOutputTruncated === true))
+  );
   const incomingToolName = normalizeToolName(toolName);
   const srcToolName = incomingToolName || (existing && existing.lastToolName) || null;
   const srcTranscriptPath = normalizeTranscriptPath(transcriptPath) || (existing && existing.transcriptPath) || null;
@@ -1929,12 +1961,17 @@ function updateSession(sessionId, state, event, opts = {}) {
       backgroundTasksCount,
       sessionCronsCount,
       stopHookActive,
-      hasFinalAssistantText: !!srcAssistantLastOutput,
+      // Incoming, never the carried-forward value: this asks whether THIS Stop
+      // ended the turn with text. Feeding it a carried value flips a genuinely
+      // text-less Stop from "hold" to "promote", celebrating and pushing while
+      // background work is still live -- the exact case #406 exists to prevent.
+      hasFinalAssistantText: !!incomingAssistantLastOutput,
       headless: srcHeadless,
     });
     const hardLiveWork = disposition.kind === "hold";
     const debounceMs = disposition.debounceMs;
     if (hardLiveWork || debounceMs > 0) {
+      withheldCompletions.add(sessionId);
       // Hold the Stop as "working" and DROP the event to null so recentEvents
       // keeps NO "Stop" tail while held. Why null and not "Stop": deriveSessionBadge
       // only inspects the latest event, so a withheld Stop tail would (a) be
