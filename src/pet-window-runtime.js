@@ -157,6 +157,9 @@ function createPetWindowRuntime(options = {}) {
   // applyPetWindowBounds() (ROAM_FRAME_MS=16) is a continuous native-write
   // period reconcile must not fight, exactly like drag/mini/Settings preview.
   const isRoamAnimating = options.isRoamAnimating || (() => false);
+  // Peteleco (flick) animates the pet with the same per-frame native writes
+  // roam does, so it needs the same reconcile protection period.
+  const isPetelecoAnimating = options.isPetelecoAnimating || (() => false);
   const now = options.now || (() => Date.now());
   // Injectable so reconcile's timers (quiet/sweep/hit-quiet/hit-confirm) can
   // be driven by a fake clock in tests instead of a real wall-clock sleep —
@@ -961,14 +964,16 @@ function createPetWindowRuntime(options = {}) {
       || (deferredSweepGen === writeGen);
 
     // Protection-period judgment — must align with the plan's table exactly:
-    // drag / mini transition+animation / Settings size preview / roam. Missing
-    // any one of these means that period's continuous writes go unprotected.
+    // drag / mini transition+animation / Settings size preview / roam /
+    // peteleco. Missing any one of these means that period's continuous writes
+    // go unprotected.
     if (
       dragLocked
       || getMiniTransitioning()
       || isMiniAnimating()
       || settingsSizePreviewSyncFrozen
       || isRoamAnimating()
+      || isPetelecoAnimating()
     ) {
       reconcileDirty = true;
       if (fromSettleSweep) deferredSweepGen = writeGen; // remember which generation is owed
@@ -1529,6 +1534,10 @@ function createPetWindowRuntime(options = {}) {
 
   function getHitRectScreen(bounds) {
     return clipHitRectToMiniSeam(petGeometryMain.getHitRectScreen(bounds));
+  }
+
+  function getPetVisualCenter(bounds) {
+    return petGeometryMain.getPetVisualCenter(bounds);
   }
 
   function getUpdateBubbleAnchorRect(bounds) {
@@ -2524,6 +2533,7 @@ function createPetWindowRuntime(options = {}) {
     getObjRect,
     getAssetPointerPayload,
     getHitRectScreen,
+    getPetVisualCenter,
     getUpdateBubbleAnchorRect,
     getSessionHudAnchorRect,
     getPetWindowBounds,

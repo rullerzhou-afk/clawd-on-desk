@@ -150,7 +150,7 @@ describe("updateRegistry pure-data validators", () => {
       "hideBubbles", "permissionBubblesEnabled", "lowPowerIdleMode",
       "testReactionsEnabled",
       "allowEdgePinning", "disableMiniMode", "keepSizeAcrossDisplays", "codexHookHealthNotifyEnabled",
-      "quotaMergeSources", "freeRoam", "roamConstrainAxis",
+      "quotaMergeSources", "freeRoam", "roamConstrainAxis", "petelecoEnabled",
     ]) {
       assert.strictEqual(updateRegistry[key](true, deps).status, "ok", `${key}(true)`);
       assert.strictEqual(updateRegistry[key](false, deps).status, "ok", `${key}(false)`);
@@ -1709,6 +1709,15 @@ describe("session cleanup interval validators", () => {
     assert.strictEqual(updateRegistry.workingStaleMs(0, { snapshot }).status, "error");
     assert.strictEqual(updateRegistry.workingStaleMs(20_000, { snapshot }).status, "error");
     assert.strictEqual(updateRegistry.workingStaleMs(90_000_000, { snapshot }).status, "error");
+  });
+
+  it("petelecoIntensity enforces the 1-100 integer range the slider draws", () => {
+    assert.strictEqual(updateRegistry.petelecoIntensity(1, { snapshot }).status, "ok");
+    assert.strictEqual(updateRegistry.petelecoIntensity(100, { snapshot }).status, "ok");
+    assert.strictEqual(updateRegistry.petelecoIntensity(0, { snapshot }).status, "error");
+    assert.strictEqual(updateRegistry.petelecoIntensity(101, { snapshot }).status, "error");
+    assert.strictEqual(updateRegistry.petelecoIntensity(42.5, { snapshot }).status, "error");
+    assert.strictEqual(updateRegistry.petelecoIntensity("50", { snapshot }).status, "error");
   });
 
   it("detachedIdleStaleMs enforces 5s-300s integer range", () => {

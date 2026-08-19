@@ -157,6 +157,7 @@ const { keepOutOfTaskbar } = require("./taskbar");
 const { loadTrayNormalIcon, loadTrayFlashIcon } = require("./tray-flash-icon");
 const createTopmostRuntime = require("./topmost-runtime");
 const { WIN_TOPMOST_LEVEL } = createTopmostRuntime;
+const { createPetelecoOverlayWindow } = require("./peteleco-overlay-window");
 const createThemeFadeSequencer = require("./theme-fade-sequencer");
 const createThemeRuntime = require("./theme-runtime");
 const createAgentRuntimeMain = require("./agent-runtime-main");
@@ -942,6 +943,8 @@ const petWindowRuntime = createPetWindowRuntime({
   // like isMiniAnimating above — _roam is constructed after petWindowRuntime,
   // but this closure isn't invoked until well after module load finishes).
   isRoamAnimating: () => _roam.isRoamAnimating(),
+  // Peteleco's launch animation writes bounds every frame just like roam.
+  isPetelecoAnimating: () => _peteleco.isFlicking(),
   isNearWorkAreaEdge: (bounds) => isNearWorkAreaEdge(bounds),
   flushRuntimeStateToPrefs: () => flushRuntimeStateToPrefs(),
   handleMiniDisplayChange: () => _mini.handleDisplayChange(),
@@ -1301,6 +1304,7 @@ function syncHitStateAfterLoad() {
     currentState: _state.getCurrentState(),
     miniMode: _mini.getMiniMode(),
     dndEnabled: doNotDisturb,
+    petelecoEnabled: _settingsController.get("petelecoEnabled") === true,
   });
 }
 
@@ -4306,6 +4310,10 @@ function createWindow() {
     focusLog: (message) => focusLog(message),
     showDashboard: () => showDashboard(),
     focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
+    petelecoBeginAim: () => _peteleco.beginAim(),
+    petelecoUpdateAim: () => _peteleco.updateAim(),
+    petelecoReleaseAim: () => _peteleco.releaseAim(),
+    petelecoCancelAim: () => _peteleco.cancelAim(),
     revealSessionHud: () => {
       if (_sessionHud && typeof _sessionHud.revealFromPet === "function") {
         _sessionHud.revealFromPet();
@@ -4581,6 +4589,102 @@ try {
   });
 } catch (err) {
   console.warn("Clawd: freeRoam subscribeKey failed:", err && err.message);
+}
+
+// ── Peteleco (flick) — after roam, whose ctx stands down while a shot is live ──
+//
+// Gesture: hold the modifier (Ctrl; Option on macOS — see isPetelecoModifier()
+// in src/hit-renderer.js for why), press on the pet, and pull AWAY from the
+// destination. The pet holds still, an aim projection is drawn on the opposite
+// side (src/peteleco-overlay-window.js), and the release launches it
+// (src/peteleco.js). Geometry is shared with the overlay so the line the user
+// sees and the position the pet flies to cannot disagree.
+const petelecoOverlay = createPetelecoOverlayWindow({
+  BrowserWindow,
+  screen,
+  isMac,
+  isWin,
+  isLinux,
+  linuxWindowType: LINUX_WINDOW_TYPE,
+  topmostLevel: WIN_TOPMOST_LEVEL,
+  keepOutOfTaskbar,
+  // Same reclaim policy the session HUD / Orbit windows use: keep the overlay
+  // warm by default, hand its memory back under low-power idle mode.
+  isLowPowerIdleMode: () => lowPowerIdleMode,
+  logWarn: (message) => console.warn(message),
+});
+const _peteleco = require("./peteleco")({
+  get win() { return win; },
+  getPetWindowBounds,
+  applyPetWindowBounds,
+  getEffectiveCurrentPixelSize,
+  getCursorScreenPoint: () => screen.getCursorScreenPoint(),
+  // The same visual clamp a drag-end uses: a flick must not be able to park
+  // the pet anywhere a drag could not. `workArea` is the gesture's launch
+  // display, forced so the clamp cannot resolve a NEIGHBOURING monitor from the
+  // target's centre and throw the pet off-screen-of-origin.
+  clampPosition: (x, y, w, h, workArea) =>
+    clampToScreenVisual(x, y, w, h, workArea ? { workArea } : {}),
+  getWorkAreaFor: (bounds) =>
+    getNearestWorkArea(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2),
+  syncHitWin: () => syncHitWin(),
+  repositionAnchoredSurfaces: () => repositionAnchoredFloatingSurfaces(),
+  repositionBubbles: () => repositionFloatingBubbles(),
+  get bubbleFollowPet() { return bubbleFollowPet; },
+  get pendingPermissions() { return pendingPermissions; },
+  releaseReconcileProtection: () => petWindowRuntime.releaseReconcileProtection(),
+  isDragLocked: () => petWindowRuntime.isDragLocked(),
+  getMiniMode: () => _mini.getMiniMode(),
+  isMiniTransitioning: () => _mini.getMiniTransitioning(),
+  isDndEnabled: () => doNotDisturb,
+  // The in-flight pose reuses the theme's drag reaction — the pet is being
+  // flung, which is what that reaction depicts. No new theme asset needed.
+  startFlickReaction: (direction) => sendToRenderer("start-drag-reaction", direction),
+  endFlickReaction: () => sendToRenderer("end-drag-reaction"),
+  showProjection: (shot) => petelecoOverlay.show(shot),
+  hideProjection: () => petelecoOverlay.hide(),
+  fadeProjection: () => petelecoOverlay.fadeOut(),
+  // The projection is drawn from the sprite's own middle, which is not the
+  // window's — see pet-geometry-main.js's getPetVisualCenter.
+  getPetVisualCenter: (bounds) => petWindowRuntime.getPetVisualCenter(bounds),
+  // Landing does the drag-end finalization: re-clamp, persist, re-assert
+  // topmost, re-sync the hit window and the anchored surfaces. Mini-mode snap
+  // is deliberately excluded — a shot is clamped to the work area, so it
+  // routinely lands ON an edge and snapping there would make most hard flicks
+  // an accidental mini mode.
+  finalizeFlick: () => {
+    if (!win || win.isDestroyed()) return;
+    const clamped = computeFinalDragBounds(
+      getPetWindowBounds(),
+      getEffectiveCurrentPixelSize(),
+      clampToScreenVisual
+    );
+    if (clamped) {
+      applyPetWindowBounds(clamped);
+      flushRuntimeStateToPrefs();
+    }
+    reassertWinTopmost();
+    scheduleHwndRecovery();
+    syncHitWin();
+    repositionFloatingBubbles();
+  },
+});
+_roamCtx.isPetelecoActive = () => _peteleco.isActive();
+
+_peteleco.setEnabled(_settingsController.get("petelecoEnabled") === true);
+_peteleco.setIntensity(_settingsController.get("petelecoIntensity"));
+try {
+  _settingsController.subscribeKey("petelecoEnabled", (value) => {
+    _peteleco.setEnabled(value === true);
+    // The hit window decides whether the modifier arms the gesture at all, so
+    // it needs the flag too.
+    sendToHitWin("hit-state-sync", { petelecoEnabled: value === true });
+  });
+  _settingsController.subscribeKey("petelecoIntensity", (value) => {
+    _peteleco.setIntensity(value);
+  });
+} catch (err) {
+  console.warn("Clawd: peteleco subscribeKey failed:", err && err.message);
 }
 
 // Convenience getters for mini state (used throughout main.js)
@@ -4955,6 +5059,7 @@ if (!gotTheLock) {
     if (!_remoteSshRuntime || typeof _remoteSshRuntime.shutdown !== "function") {
       try { _remoteSshRuntime.cleanup(); } catch {}
     }
+    petelecoOverlay.destroy();
     if (hitWin && !hitWin.isDestroyed()) hitWin.destroy();
   });
 

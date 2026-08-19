@@ -90,6 +90,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - `docs/guides/guide-remote-ssh.md`：Remote SSH 用户流程、Codespaces 单会话 transport 与共享主机边界
 - `docs/guides/telegram-approval.md` / `docs/guides/feishu-lark-remote-approval.md`：远程审批设置与失败回退语义
 - `docs/guides/roam-fence.md`：自由漫游与可选围栏
+- `docs/guides/peteleco.md`：Peteleco（弹指）瞄准手势、投影与强度
 
 ## Runtime Summary
 

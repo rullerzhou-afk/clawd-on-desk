@@ -67,6 +67,13 @@ function registerPetInteractionIpc(options = {}) {
   const statPath = requiredDependency(options.statPath, "statPath");
   const openTerminalAt = requiredDependency(options.openTerminalAt, "openTerminalAt");
   const dropLog = options.dropLog || (() => {});
+  // Peteleco (flick). Optional by design: the aim gesture is a self-contained
+  // feature, and a host that does not wire it (tests, a stripped runtime) must
+  // still get a working interaction layer rather than a constructor throw.
+  const petelecoBeginAim = options.petelecoBeginAim || (() => {});
+  const petelecoUpdateAim = options.petelecoUpdateAim || (() => {});
+  const petelecoReleaseAim = options.petelecoReleaseAim || (() => {});
+  const petelecoCancelAim = options.petelecoCancelAim || (() => {});
   const isMacPlatform = options.isMacPlatform != null
     ? !!options.isMacPlatform
     : process.platform === "darwin";
@@ -105,6 +112,27 @@ function registerPetInteractionIpc(options = {}) {
       syncImeEditingPetDodge();
     }
   });
+
+  // Peteleco aim gesture. The hit window holds the drag lock for the whole
+  // gesture (so roam stands down and the pet's position belongs to it), but
+  // deliberately never sends drag-move: the pet is the cue ball, not the cue.
+  on("peteleco:aim-start", () => {
+    if (isMiniMode() || isMiniTransitioning()) return;
+    petelecoBeginAim();
+  });
+  on("peteleco:aim-move", () => petelecoUpdateAim());
+  // The gesture's own drag lock is handed back HERE, before the shot is fired,
+  // rather than being left to the paired drag-lock(false) the hit window sends
+  // a moment later. The launch animation gates every frame on "did someone grab
+  // the pet?"; if it started while the gesture still held the lock, that gate
+  // would have to guess which lock it is looking at. Releasing first makes the
+  // gate a plain question again and removes any dependence on message order.
+  // The renderer's own drag-lock(false) still arrives and is a harmless no-op.
+  on("peteleco:aim-end", () => {
+    setDragLocked(false);
+    petelecoReleaseAim();
+  });
+  on("peteleco:aim-cancel", () => petelecoCancelAim());
 
   on("start-drag-reaction", (_event, direction) => {
     sendToRenderer("start-drag-reaction", direction === "left" || direction === "right" ? direction : null);

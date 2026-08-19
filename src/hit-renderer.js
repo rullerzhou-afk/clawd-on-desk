@@ -24,6 +24,7 @@ let currentSvg = null;
 let currentState = null;
 let miniMode = false;
 let dndEnabled = false;
+let petelecoEnabled = false;
 
 window.hitAPI.onStateSync((data) => {
   if (data.currentSvg !== undefined) currentSvg = data.currentSvg;
@@ -33,6 +34,12 @@ window.hitAPI.onStateSync((data) => {
     area.style.cursor = miniMode ? "default" : "";
   }
   if (data.dndEnabled !== undefined) dndEnabled = data.dndEnabled;
+  if (data.petelecoEnabled !== undefined) {
+    petelecoEnabled = !!data.petelecoEnabled;
+    // Turning the feature off mid-gesture must not strand the aim: the main
+    // side stops accepting aim updates, so the overlay would hang around.
+    if (!petelecoEnabled && isAiming) stopAim(false);
+  }
 });
 
 // --- Drag state ---
@@ -43,6 +50,25 @@ let lastDragClientX;
 let dragReactionDirection = null;
 let dragMoveRAF = null;
 const DRAG_THRESHOLD = 3;
+
+// --- Peteleco (flick) aim state ---
+// The modifier drag is a DIFFERENT gesture, not a decorated drag: while aiming
+// the pet must hold still (it is the cue ball), so this branch never sends
+// dragMove and never plays a drag reaction. Main owns the projection and the
+// launch; this file only reports where the pointer is.
+let isAiming = false;
+let didAim = false;
+let aimMoveRAF = null;
+const AIM_THRESHOLD = 4;
+
+// Which modifier arms the gesture. Ctrl everywhere except macOS, where
+// Ctrl+click IS the system right-click gesture (Chromium synthesizes a
+// contextmenu from it), so aiming would fight the context menu. Option/Alt is
+// the free modifier there — Cmd-click is already the Dashboard shortcut.
+function isPetelecoModifier(e) {
+  if (isMac) return !!e.altKey && !e.metaKey && !e.ctrlKey;
+  return !!e.ctrlKey && !e.metaKey && !e.altKey;
+}
 
 // --- Reaction state (tracked here to gate input) ---
 let isReacting = false;
@@ -55,6 +81,41 @@ window.hitAPI.onCancelReaction(() => {
   isDragReacting = false;
   dragReactionDirection = null;
 });
+
+function queueAimMove() {
+  if (aimMoveRAF !== null) return;
+  aimMoveRAF = requestAnimationFrame(() => {
+    aimMoveRAF = null;
+    if (!isAiming) return;
+    window.hitAPI.petelecoAimMove();
+  });
+}
+
+function clearQueuedAimMove() {
+  if (aimMoveRAF === null) return;
+  cancelAnimationFrame(aimMoveRAF);
+  aimMoveRAF = null;
+}
+
+// Ends an aim gesture. `commit` distinguishes a real release (pointerup) from
+// an abort (capture lost, window blur, feature switched off). Returns true only
+// when a shot was actually fired, so the caller knows whether the gesture was
+// consumed or should fall through to click handling.
+function stopAim(commit) {
+  if (!isAiming) return false;
+  clearQueuedAimMove();
+  isAiming = false;
+  area.classList.remove("aiming");
+  const fired = !!commit && didAim;
+  didAim = false;
+  // Order is no longer load-bearing: main releases the gesture's drag lock
+  // inside its own aim-end handler, so this dragLock(false) is a defensive
+  // no-op on the fired path and the real release on the cancelled one.
+  if (fired) window.hitAPI.petelecoAimEnd();
+  else window.hitAPI.petelecoAimCancel();
+  window.hitAPI.dragLock(false);
+  return fired;
+}
 
 function queueDragMove() {
   if (dragMoveRAF !== null) return;
@@ -76,10 +137,20 @@ area.addEventListener("pointerdown", (e) => {
   if (e.button === 0) {
     if (miniMode) { didDrag = false; return; }
     area.setPointerCapture(e.pointerId);
-    isDragging = true;
-    didDrag = false;
     mouseDownX = e.clientX;
     mouseDownY = e.clientY;
+    if (petelecoEnabled && isPetelecoModifier(e)) {
+      isAiming = true;
+      didAim = false;
+      // Still take the drag lock: it cancels roam and hands the pet's position
+      // to this gesture for its whole duration. Only dragMove is skipped.
+      window.hitAPI.dragLock(true);
+      window.hitAPI.petelecoAimStart();
+      area.classList.add("aiming");
+      return;
+    }
+    isDragging = true;
+    didDrag = false;
     lastDragClientX = e.clientX;
     dragReactionDirection = null;
     window.hitAPI.dragLock(true);
@@ -88,6 +159,17 @@ area.addEventListener("pointerdown", (e) => {
 });
 
 document.addEventListener("pointermove", (e) => {
+  if (isAiming) {
+    if (!didAim) {
+      const totalDx = e.clientX - mouseDownX;
+      const totalDy = e.clientY - mouseDownY;
+      if (Math.abs(totalDx) > AIM_THRESHOLD || Math.abs(totalDy) > AIM_THRESHOLD) {
+        didAim = true;
+      }
+    }
+    if (didAim) queueAimMove();
+    return;
+  }
   if (isDragging) {
     if (!didDrag) {
       const totalDx = e.clientX - mouseDownX;
@@ -123,6 +205,10 @@ function stopDrag() {
 
 document.addEventListener("pointerup", (e) => {
   if (e.button !== 0) return;
+  // A modifier press that never moved is still a modifier CLICK — fall through
+  // to the shortcut/click handling below so Ctrl-click keeps opening the
+  // Dashboard. Only a real pull consumes the gesture.
+  if (isAiming && stopAim(true)) return;
   const wasDrag = didDrag;
   stopDrag();
   if (wasDrag) return;
@@ -147,9 +233,12 @@ document.addEventListener("pointerup", (e) => {
   handleClick(e.clientX);
 });
 
-area.addEventListener("pointercancel", () => stopDrag());
-area.addEventListener("lostpointercapture", () => { if (isDragging) stopDrag(); });
-window.addEventListener("blur", stopDrag);
+area.addEventListener("pointercancel", () => { stopAim(false); stopDrag(); });
+area.addEventListener("lostpointercapture", () => {
+  stopAim(false);
+  if (isDragging) stopDrag();
+});
+window.addEventListener("blur", () => { stopAim(false); stopDrag(); });
 
 // --- Click reaction logic (2-click = poke, 4-click = flail) ---
 const CLICK_WINDOW_MS = 400;
@@ -316,5 +405,9 @@ if (!isMac) {
 // --- Right-click context menu ---
 document.addEventListener("contextmenu", (e) => {
   e.preventDefault();
+  // Second layer for the macOS Ctrl-click overlap: the peteleco modifier is
+  // Option there precisely so this cannot happen, but a platform that
+  // synthesizes a contextmenu mid-aim must not pop a menu over the projection.
+  if (isAiming) return;
   window.hitAPI.showContextMenu();
 });

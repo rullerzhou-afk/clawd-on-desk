@@ -33,6 +33,10 @@
     "disableMiniMode",
     "freeRoam",
     "roamConstrainAxis",
+    // petelecoEnabled is deliberately absent: the intensity row only exists
+    // while the feature is on, so the toggle must fall through to a full
+    // re-render that mounts (or drops) it.
+    "petelecoIntensity",
     "keepSizeAcrossDisplays",
     "openAtLogin",
     "hideBubbles",
@@ -94,6 +98,12 @@
   const LANGUAGE_OPTIONS = ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"];
   const ROAM_MOVEMENT_NATURAL = "natural";
   const ROAM_MOVEMENT_AXIS = "axis";
+  // Mirrors PETELECO_INTENSITY_* in src/peteleco-geometry.js. The settings
+  // renderer cannot require that module, so keep the two in sync by hand —
+  // test/peteleco-settings-ui.test.js pins it.
+  const PETELECO_INTENSITY_MIN = 1;
+  const PETELECO_INTENSITY_MAX = 100;
+  const PETELECO_INTENSITY_DEFAULT = 50;
 
   function t(key) {
     return helpers.t(key);
@@ -296,6 +306,87 @@
     return row;
   }
 
+  // Peteleco (flick). The intensity row is only MOUNTED while the feature is
+  // on — the setting has no meaning otherwise, and a permanently visible,
+  // permanently disabled slider is noise. That is also why petelecoEnabled is
+  // not an in-place key: toggling it has to re-render this section.
+  function buildPetelecoIntensityRow() {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML =
+      `<div class="row-text">` +
+        `<span class="row-label"></span>` +
+        `<span class="row-desc"></span>` +
+      `</div>` +
+      `<div class="row-control volume-control">` +
+        `<input type="range" class="volume-slider" min="${PETELECO_INTENSITY_MIN}" max="${PETELECO_INTENSITY_MAX}" step="1" />` +
+        `<span class="volume-readout" aria-hidden="true"></span>` +
+      `</div>`;
+    row.querySelector(".row-label").textContent = t("rowPetelecoIntensity");
+    row.querySelector(".row-desc").textContent = t("rowPetelecoIntensityDesc");
+
+    const slider = row.querySelector(".volume-slider");
+    const readout = row.querySelector(".volume-readout");
+    slider.setAttribute("aria-label", t("rowPetelecoIntensity"));
+
+    function getSnapshotValue() {
+      const stored = state.snapshot && Number(state.snapshot.petelecoIntensity);
+      if (!Number.isFinite(stored)) return PETELECO_INTENSITY_DEFAULT;
+      return Math.round(Math.max(PETELECO_INTENSITY_MIN, Math.min(PETELECO_INTENSITY_MAX, stored)));
+    }
+
+    function applyValue(value) {
+      const pct = ((value - PETELECO_INTENSITY_MIN) / (PETELECO_INTENSITY_MAX - PETELECO_INTENSITY_MIN)) * 100;
+      slider.value = String(value);
+      slider.style.setProperty("--volume-fill", `${pct}%`);
+      readout.textContent = `${value}%`;
+    }
+
+    applyValue(getSnapshotValue());
+
+    // Repaint locally while dragging, commit only on release: the pref write
+    // reaches the pet runtime, and one write per pixel of slider travel is
+    // both wasteful and visible as jitter in an open projection.
+    slider.addEventListener("input", () => {
+      applyValue(Number(slider.value));
+    });
+    slider.addEventListener("change", () => {
+      const value = Number(slider.value);
+      window.settingsAPI.update("petelecoIntensity", value).then((result) => {
+        if (!result || result.status !== "ok") {
+          const msg = (result && result.message) || "unknown error";
+          ops.showToast(t("toastSaveFailed") + msg, { error: true });
+          applyValue(getSnapshotValue());
+        }
+      }).catch((err) => {
+        ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+        applyValue(getSnapshotValue());
+      });
+    });
+
+    state.mountedControls.petelecoIntensity = {
+      row,
+      syncValueFromSnapshot() {
+        applyValue(getSnapshotValue());
+      },
+    };
+    return row;
+  }
+
+  function buildPetelecoRows() {
+    const rows = [
+      helpers.buildSwitchRow({
+        key: "petelecoEnabled",
+        labelKey: "rowPeteleco",
+        descKey: "rowPetelecoDesc",
+      }),
+    ];
+    if (state.snapshot && state.snapshot.petelecoEnabled === true) {
+      rows.push(buildPetelecoIntensityRow());
+    }
+    return rows;
+  }
+
   function buildFreeRoamGroup() {
     const headerRow = helpers.buildSwitchRow({
       key: "freeRoam",
@@ -380,6 +471,7 @@
     // after first setup, so it sits below the everyday sections.
     parent.appendChild(helpers.buildSection(t("sectionBehavior"), [
       buildFreeRoamGroup(),
+      ...buildPetelecoRows(),
       helpers.buildSwitchRow({
         key: "allowEdgePinning",
         labelKey: "rowAllowEdgePinning",
@@ -2206,6 +2298,10 @@
       && !getMountedRoamMovementStyle()) {
       return false;
     }
+    if (keys.includes("petelecoIntensity")) {
+      const control = state.mountedControls.petelecoIntensity;
+      if (!control || !document.body.contains(control.row)) return false;
+    }
     if (keys.includes("quotaRingDisplayMode")) {
       const control = state.mountedControls.quotaRingDisplayMode;
       if (!control || !document.body.contains(control.element)) return false;
@@ -2234,6 +2330,7 @@
     }
     for (const key of keys) {
       if (key === "size" || key === "soundVolume" || key === "textScale" || key === "textScaleByDisplay") continue;
+      if (key === "petelecoIntensity") continue;
       if (key === "quotaRingDisplayMode") continue;
       if (key === "permissionAutomationMode"
         || key === "permissionAutomationAutoToolsWarningDismissed"
@@ -2269,6 +2366,10 @@
       }
       if (key === "soundVolume") {
         state.mountedControls.soundVolume.syncValueFromSnapshot();
+        continue;
+      }
+      if (key === "petelecoIntensity") {
+        state.mountedControls.petelecoIntensity.syncValueFromSnapshot();
         continue;
       }
       if (BUBBLE_POLICY_KEYS.has(key)) {

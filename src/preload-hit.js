@@ -22,6 +22,13 @@ contextBridge.exposeInMainWorld("hitAPI", {
   dragLock: (locked) => ipcRenderer.send("drag-lock", locked),
   dragMove: () => ipcRenderer.send("drag-move"),
   dragEnd: () => ipcRenderer.send("drag-end"),
+  // Peteleco (flick) aim gesture. No coordinates travel on these channels:
+  // main reads the screen cursor itself (same source moveWindowForDrag uses),
+  // so the aim math never mixes window-local and screen coordinates.
+  petelecoAimStart: () => ipcRenderer.send("peteleco:aim-start"),
+  petelecoAimMove: () => ipcRenderer.send("peteleco:aim-move"),
+  petelecoAimEnd: () => ipcRenderer.send("peteleco:aim-end"),
+  petelecoAimCancel: () => ipcRenderer.send("peteleco:aim-cancel"),
   showContextMenu: () => ipcRenderer.send("show-context-menu"),
   focusTerminal: () => ipcRenderer.send("focus-terminal"),
   // OS file drop (#459). File → absolute path must resolve here in the

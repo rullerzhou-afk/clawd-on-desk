@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self';">
+<title>Peteleco Aim</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* The aim projection is one white dashed line and nothing else — no landing
+   ring, no arrowhead. It floats directly on the wallpaper with no card behind
+   it, so the only concession to legibility is the dark halo stroke underneath:
+   a plain white line disappears against a white document, and the halo reads as
+   part of the same line rather than as a second object.
+
+   Power is carried by stroke width alone. Hue is deliberately NOT a channel
+   here: the line is always white, so nothing about the shot depends on
+   distinguishing colors. */
+:root {
+  --aim-ink: #ffffff;
+  --aim-halo: rgba(0, 0, 0, 0.55);
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+
+#stage {
+  width: 100%;
+  height: 100%;
+  display: block;
+  /* Hidden until the first projection lands, so the window can be shown a
+     frame early without flashing an empty overlay. */
+  opacity: 0;
+  transition: opacity 90ms linear;
+}
+#stage.is-visible { opacity: 1; }
+/* Release fade. The duration mirrors PETELECO_FADE_OUT_MS in
+   src/peteleco-geometry.js — the overlay window hides itself on that same
+   clock, and test/peteleco-overlay-window.test.js pins the two together. The
+   line dissolves while the pet is still travelling instead of popping out on
+   mouse-up. */
+#stage.is-fading { transition: opacity 320ms ease-out; }
+
+/* Halo pass: a wider dark stroke under the light one. Drawn as a sibling rather
+   than as a filter — drop-shadow on a transparent, always-on-top window is the
+   kind of thing compositors disagree about, and this is one line. */
+#shaft-halo {
+  stroke: var(--aim-halo);
+  fill: none;
+  stroke-linecap: round;
+  stroke-dasharray: 9 7;
+}
+#shaft-ink {
+  stroke: var(--aim-ink);
+  fill: none;
+  stroke-linecap: round;
+  stroke-dasharray: 9 7;
+}
+</style>
+</head>
+<body>
+  <svg id="stage" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <line id="shaft-halo" />
+    <line id="shaft-ink" />
+  </svg>
+  <script src="./peteleco-overlay-renderer.js"></script>
+</body>
+</html>
