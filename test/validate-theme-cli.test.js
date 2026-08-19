@@ -30,6 +30,15 @@ function runValidateTheme(args, { cwd = REPO_ROOT } = {}) {
   });
 }
 
+// The summary line is `<n> error(s)[, <m> warning(s)]. Fix errors ...`, wrapped in
+// ANSI. Read the count rather than a glyph: it tracks what the validator DID, not
+// how it painted it.
+function errorCount(stdout) {
+  const m = stdout.match(/(\d+) error\(s\)/);
+  assert.ok(m, `no error summary in:\n${stdout}`);
+  return Number(m[1]);
+}
+
 function mkTempThemeDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-validate-theme-"));
   tempDirs.push(dir);
@@ -189,7 +198,20 @@ describe("validate-theme.js CLI (real process, spawnSync)", () => {
     fs.mkdirSync(path.join(dir, "theme.json"));
     const result = runValidateTheme([dir]);
     assert.strictEqual(result.status, 1, result.stderr || result.stdout);
-    assert.match(result.stderr, /Failed to read or parse theme\.json/);
+    // Colon-space immediately after the prefix: the errno detail is the whole
+    // point, and nothing may be spliced in front of it re-asserting "parse".
+    assert.match(result.stderr, /Failed to read or parse theme\.json: /);
+
+    // That prefix is byte-identical to the one the unparseable-JSON case asserts,
+    // so alone it cannot tell a read failure from a parse failure -- the very
+    // distinction this test is named for. Run that case here too and require the
+    // detail to differ. Comparing beats pinning an errno: EISDIR is not spelled
+    // the same everywhere, and this stays true wherever it runs.
+    const parseDir = mkTempThemeDir();
+    fs.writeFileSync(path.join(parseDir, "theme.json"), '{ "schemaVersion": 1, ', "utf8");
+    const parseResult = runValidateTheme([parseDir]);
+    assert.match(parseResult.stderr, /Failed to read or parse theme\.json: /);
+    assert.notStrictEqual(result.stderr, parseResult.stderr, result.stderr);
   });
 
   for (const [label, value] of [
@@ -240,15 +262,24 @@ describe("validate-theme.js CLI (real process, spawnSync)", () => {
       states: {},
     };
     fs.writeFileSync(path.join(dir, "theme.json"), JSON.stringify(themeJson), "utf8");
-    const result = runValidateTheme([dir]);
-    assert.strictEqual(result.status, 1, result.stderr || result.stdout);
+    const missing = runValidateTheme([dir]);
+    assert.strictEqual(missing.status, 1, missing.stderr || missing.stdout);
+    assert.doesNotMatch(missing.stderr, /--assets/);
+
     // check() prints the SAME message whether it passed or failed -- only the
     // glyph differs -- and this fixture's states:{} guarantees exit 1 on its own,
-    // so matching the bare text would hold even if the assets check stopped being
-    // reported at all. Pin the FAIL glyph so the assertion can actually tell the
-    // two apart.
-    assert.match(result.stdout, /\u2717\u001b\[0m assets\/ directory exists/);
-    assert.doesNotMatch(result.stderr, /--assets/);
+    // so neither the message nor the status can show that the assets check still
+    // runs. Re-run the identical theme with an (empty) assets/ present and require
+    // exactly one finding to disappear. A delta pins behavior instead of
+    // presentation: it survives recolors, glyph changes and future rule additions,
+    // none of which say anything about whether this check happened.
+    fs.mkdirSync(path.join(dir, "assets"));
+    const present = runValidateTheme([dir]);
+    assert.strictEqual(
+      errorCount(missing.stdout) - errorCount(present.stdout),
+      1,
+      `${missing.stdout}\n--- with assets/ ---\n${present.stdout}`
+    );
   });
 
   it("control: an --assets value beginning with - is a path, not a flag", () => {
@@ -273,6 +304,25 @@ describe("validate-theme.js CLI (real process, spawnSync)", () => {
     assert.strictEqual(without.status, 1, without.stderr || without.stdout);
     assert.match(without.stderr, /Unknown option: -dashed-theme/);
     assert.match(without.stderr, /pass it after --/);
+  });
+
+  it("--assets actually redirects the lookups, it is not just validated and dropped", () => {
+    // Every other --assets case in this file passes an override that resolves to
+    // the same files as the default, so exit 0 proves the guard let it through --
+    // never that the value reached the lookups. Measured: dropping the override at
+    // the point of use (`assetsDir = path.join(resolvedDir, "assets")`) left all
+    // 24 cases green. Point a VALID, existing, EMPTY directory at a theme whose
+    // own assets/ is complete: only an honoured override can make it miss.
+    const empty = mkTempThemeDir();
+    const redirected = runValidateTheme([CALICO, "--assets", empty]);
+    assert.strictEqual(redirected.status, 1, redirected.stderr || redirected.stdout);
+    // Ordinary missing-asset findings, not a setup error: the path is a perfectly
+    // good directory, it simply has nothing in it.
+    assert.doesNotMatch(redirected.stderr, /--assets/);
+    assert.ok(errorCount(redirected.stdout) > 0, redirected.stdout);
+    // ...and the same theme without the override is clean, so the override is the
+    // only thing that changed.
+    assert.strictEqual(runValidateTheme([CALICO]).status, 0);
   });
 
   it("control: a well-formed --assets override still validates clean", () => {
