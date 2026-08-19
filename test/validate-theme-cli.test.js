@@ -156,10 +156,11 @@ describe("validate-theme.js CLI (real process, spawnSync)", () => {
   });
 
   it("--assets whose parent is a file reports the real error, not \"not found\"", {
-    // POSIX-specific. stat() on a path whose parent component is a file gives
-    // ENOTDIR here; Windows reports this shape through a different errno, and we
-    // have no Windows host to measure it on. Skipped rather than pinned to a
-    // behavior nobody has observed -- a guess that happens to be wrong would go
+    // stat() on a path whose parent component is a file gives ENOTDIR here.
+    // Whether Windows spells it the same way is UNMEASURED -- ENOENT is the
+    // plausible candidate, but nobody here has a Windows host to check, so this
+    // is skipped rather than pinned to a behavior nobody has observed. A guess
+    // that happens to be wrong would go
     // red in the release-tag lane, which is the one place a red test costs a
     // build. The macOS and Linux lanes keep the guarantee.
     skip: process.platform === "win32" ? "stat() errno for a file-as-parent component is unmeasured on Windows" : false,
@@ -266,10 +267,14 @@ describe("validate-theme.js CLI (real process, spawnSync)", () => {
     assert.strictEqual(missing.status, 1, missing.stderr || missing.stdout);
     assert.doesNotMatch(missing.stderr, /--assets/);
 
-    // check() prints the SAME message whether it passed or failed -- only the
-    // glyph differs -- and this fixture's states:{} guarantees exit 1 on its own,
-    // so neither the message nor the status can show that the assets check still
-    // runs. Re-run the identical theme with an (empty) assets/ present and require
+    // The blind spot this closes is narrow, so be precise about it: if the guard
+    // widened outright the case above already fails, because an early exit leaves
+    // stdout empty. What slips through is the quieter form -- the assets check
+    // reporting a false PASS while the run otherwise proceeds. check() prints the
+    // SAME message whether it passed or failed (only the glyph differs) and this
+    // fixture's states:{} guarantees exit 1 on its own, so neither the message nor
+    // the status can tell a false pass from a real finding.
+    // Re-run the identical theme with an (empty) assets/ present and require
     // exactly one finding to disappear. A delta pins behavior instead of
     // presentation: it survives recolors, glyph changes and future rule additions,
     // none of which say anything about whether this check happened.
