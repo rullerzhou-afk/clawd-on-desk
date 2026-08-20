@@ -40,6 +40,66 @@ describe("validator helpers", () => {
   });
 });
 
+describe("mobile permission preview consent commands", () => {
+  it("keeps the preference command-only and shares the mobilePreview lock", () => {
+    assert.strictEqual(updateRegistry.mobilePermissionPreviewEnabled.commandOnly, true);
+    assert.strictEqual(updateRegistry.mobilePermissionPreviewEnabled.lockKey, "mobilePreview");
+    assert.strictEqual(updateRegistry.mobilePreviewEnabled.lockKey, "mobilePreview");
+    for (const name of [
+      "setMobilePermissionPreviewEnabled",
+      "mobilePreview.regenerateToken",
+      "mobilePreview.resetAccess",
+    ]) {
+      assert.strictEqual(commandRegistry[name].lockKey, "mobilePreview", name);
+    }
+  });
+
+  it("requires parent enable and current confirmation", () => {
+    const command = commandRegistry.setMobilePermissionPreviewEnabled;
+    assert.strictEqual(command({ enabled: true, confirmed: true, resetAccess: false }, {
+      snapshot: { mobilePreviewEnabled: false, mobilePermissionPreviewEnabled: false },
+    }).status, "error");
+    assert.strictEqual(command({ enabled: true, confirmed: false, resetAccess: false }, {
+      snapshot: { mobilePreviewEnabled: true, mobilePermissionPreviewEnabled: false },
+    }).status, "error");
+    assert.strictEqual(command({ enabled: true, confirmed: true, resetAccess: "yes" }, {
+      snapshot: { mobilePreviewEnabled: true, mobilePermissionPreviewEnabled: false },
+    }).status, "error");
+  });
+
+  it("resets before commit, reconnects keep-token clients, and noops before a second reset", () => {
+    const command = commandRegistry.setMobilePermissionPreviewEnabled;
+    let resets = 0;
+    let disconnects = 0;
+    const reset = command({ enabled: true, confirmed: true, resetAccess: true }, {
+      snapshot: { mobilePreviewEnabled: true, mobilePermissionPreviewEnabled: false },
+      resetMobileAccess: () => { resets++; return "token"; },
+    });
+    assert.deepStrictEqual(reset, {
+      status: "ok",
+      tokenReset: true,
+      rePairRequired: true,
+      commit: { mobilePermissionPreviewEnabled: true },
+    });
+    assert.strictEqual(resets, 1);
+
+    const keep = command({ enabled: true, confirmed: true, resetAccess: false }, {
+      snapshot: { mobilePreviewEnabled: true, mobilePermissionPreviewEnabled: false },
+      disconnectMobilePreviewClients: () => { disconnects++; },
+    });
+    assert.strictEqual(keep.status, "ok");
+    assert.strictEqual(keep.tokenReset, false);
+    assert.strictEqual(disconnects, 1);
+
+    const noop = command({ enabled: true, confirmed: true, resetAccess: true }, {
+      snapshot: { mobilePreviewEnabled: true, mobilePermissionPreviewEnabled: true },
+      resetMobileAccess: () => { resets++; },
+    });
+    assert.deepStrictEqual(noop, { status: "ok", noop: true });
+    assert.strictEqual(resets, 1);
+  });
+});
+
 describe("updateRegistry pure-data validators", () => {
   const baseSnapshot = prefs.getDefaults();
 

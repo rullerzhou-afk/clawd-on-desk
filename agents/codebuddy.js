@@ -33,6 +33,7 @@ module.exports = {
     httpHook: true,
     customPermissionUrl: true,
     permissionApproval: true,
+    mobilePermissionObservation: true,
     notificationHook: true,
     sessionEnd: true,
     subagent: false,

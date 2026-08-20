@@ -238,7 +238,7 @@ CodeBuddy direct HTTP `PermissionRequest` 不经过 Clawd command hook，因此�
 
 ## Multi-Agent Registry
 
-每个 agent 定义为一个配置模块，导出事件映射、进程名、能力声明（`capabilities` 含 `httpHook` / `permissionApproval` / `sessionEnd` / `subagent`）：
+每个 agent 定义为一个配置模块，导出事件映射、进程名、能力声明（`capabilities` 含 `httpHook` / `permissionApproval` / `mobilePermissionObservation` / `sessionEnd` / `subagent`）：
 
 - `agents/claude-code.js` — Claude Code 事件映射 + 能力（hooks、permission、terminal focus）
 - `agents/codex.js` — Codex CLI official hook 事件映射 + JSONL fallback 轮询配置
@@ -310,6 +310,8 @@ CodeBuddy 的 PermissionRequest HTTP 所有权只认严格的本机 managed URL�
 - 支持 Allow / Deny / suggestion 决策，以及 `addRules` / `setMode` suggestion 类型
 - `permission-automation-policy.js` 的 off / auto-tools / unattended 与 `session-automation-coordinator.js` 的 per-session grant 会在 bubble 渲染前产生真实决定。auto-tools 对 Claude/Qwen 的未知 built-in（除有效 namespaced MCP）fail closed，但其他已知 adapter 对非空工具名不都使用逐工具 allowlist；unattended 在识别已知 decision tools 后仍有意对可作 Allow/Deny 的未知请求保留“handle every request”行为。新增 agent/tool/interaction 必须同时审查 policy 与 tests，不能笼统假设 unknown 一律 defer
 - Telegram 与飞书 / Lark 是和本地 bubble 并行的远程决策通道；关闭本地 bubble 不等于关闭远程审批。远程 client 超时、断连、未配置或启动失败不得产生决定或 deny：本地 bubble 存在时请求继续 pending；仅在 remote-only 且所有可用 client 都无决定时，整体请求才 no-decision 并让 agent 回原生 UI 重问
+- Mobile permission observation 是独立的只读 sibling seam，不进入 Telegram / 飞书的 decision-client registry，也不持有 hook response。`permission.js` 只在 bubble 内容 IPC 成功发送后建立随机 request ID，并按 `mobilePermissionObservation` capability、普通 Allow/Deny actionability、非 headless、非 remote-only 条件维护冻结的六字段脱敏 projection；所有 pending 移除统一经 owner 的 detach primitive 同步撤下。移动端只能消费该 projection，不能读取 `pendingPermissions` 或回传决定
+- Mobile permission observation 另有默认关闭的 consent pref；有效开关是 session preview 父开关与 permission preview 子开关同时开启。协议、安全披露、4001 consent refresh 与 1008 access reset 语义见 `docs/mobile-protocol-v1.md`
 - DND 只负责“不弹 bubble”，不替用户决定权限：opencode 与 MiMo Code 分支 silent drop，让 TUI 内置权限提示接管；Claude Code 分支 `res.destroy()`，让 CC 回到内置聊天/终端确认；Codex 分支返回 no-decision `{}`；DeepSeek Harness 分支返回带 server identity 的 204，让 plugin `next()` 到原生 web answerer
 - Codex 审批只认 official `PermissionRequest` hook；JSONL fallback 不再根据 shell function_call 猜测审批，也不再创建 Codex passive approval notify bubble
 - 涉及 Claude Code 权限 payload 的改动（`permission_suggestions`、`updatedPermissions`、elicitation 输入等）必须至少用一次真实 Claude Code 验证；`curl` 自编请求历史上掩盖过字段结构 bug

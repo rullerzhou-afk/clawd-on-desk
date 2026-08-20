@@ -38,6 +38,7 @@ module.exports = {
   capabilities: {
     httpHook: false,
     permissionApproval: true,
+    mobilePermissionObservation: true,
     // Official PermissionRequest is the real approval path.
     interactiveBubble: true,
     sessionEnd: false, // no SessionEnd event; task_complete marks the turn done, process exit clears the session

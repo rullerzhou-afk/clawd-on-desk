@@ -76,6 +76,60 @@ describe("quota ring display mode persistence", () => {
   });
 });
 
+describe("mobile permission preview controller boundary", () => {
+  it("rejects generic writers for the consent-only child key", async () => {
+    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
+    assert.strictEqual(ctrl.applyUpdate("mobilePermissionPreviewEnabled", true).status, "error");
+    assert.strictEqual(ctrl.applyBulk({ mobilePermissionPreviewEnabled: true }).status, "error");
+    assert.strictEqual(ctrl.hydrate({ mobilePermissionPreviewEnabled: true }).status, "error");
+  });
+
+  it("serializes reset-and-enable so a double click rotates at most once", async () => {
+    let resets = 0;
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      injectedDeps: {
+        resetMobileAccess: () => { resets++; return `token-${resets}`; },
+      },
+    });
+    assert.deepStrictEqual(ctrl.applyUpdate("mobilePreviewEnabled", true), { status: "ok" });
+    const payload = { enabled: true, confirmed: true, resetAccess: true };
+    const [first, second] = await Promise.all([
+      ctrl.applyCommand("setMobilePermissionPreviewEnabled", payload),
+      ctrl.applyCommand("setMobilePermissionPreviewEnabled", payload),
+    ]);
+    assert.strictEqual(first.status, "ok");
+    assert.strictEqual(first.tokenReset, true);
+    assert.deepStrictEqual(second, { status: "ok", noop: true, message: undefined });
+    assert.strictEqual(resets, 1);
+  });
+
+  it("preserves reset phase metadata when the later preference persist fails", async () => {
+    const fakePrefs = {
+      save() { throw new Error("disk full"); },
+    };
+    const snapshot = { ...prefs.getDefaults(), mobilePreviewEnabled: true };
+    let resets = 0;
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      prefs: fakePrefs,
+      loadResult: { snapshot, locked: false },
+      injectedDeps: { resetMobileAccess: () => { resets++; return "new-token"; } },
+    });
+    const result = await ctrl.applyCommand("setMobilePermissionPreviewEnabled", {
+      enabled: true,
+      confirmed: true,
+      resetAccess: true,
+    });
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(result.message, "disk full");
+    assert.strictEqual(result.tokenReset, true);
+    assert.strictEqual(result.rePairRequired, true);
+    assert.strictEqual(ctrl.get("mobilePermissionPreviewEnabled"), false);
+    assert.strictEqual(resets, 1);
+  });
+});
+
 describe("Kimi quota collection opt-in", () => {
   it("persists only through its command path", async () => {
     const prefsPath = makeTempPath();
@@ -829,6 +883,26 @@ describe("applyCommand", () => {
     assert.strictEqual(r.status, "error");
     assert.ok(/klingon|lang/.test(r.message));
     // Store must remain at the default (unchanged)
+    assert.strictEqual(ctrl.get("lang"), "en");
+  });
+
+  it("preserves irreversible phase metadata when defensive validation fails", async () => {
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      commands: {
+        invalidAfterTokenReset: () => ({
+          status: "ok",
+          tokenReset: true,
+          rePairRequired: true,
+          commit: { lang: "klingon" },
+        }),
+      },
+    });
+    const result = await ctrl.applyCommand("invalidAfterTokenReset", {});
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(result.tokenReset, true);
+    assert.strictEqual(result.rePairRequired, true);
+    assert.match(result.message, /klingon|lang/);
     assert.strictEqual(ctrl.get("lang"), "en");
   });
 

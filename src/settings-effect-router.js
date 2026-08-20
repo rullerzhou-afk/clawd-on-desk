@@ -94,6 +94,8 @@ function createSettingsEffectRouter(options = {}) {
   const refreshIdleVisual = options.refreshIdleVisual || noop;
   const rebuildAllMenus = options.rebuildAllMenus || noop;
   const reconcilePowerSaveBlocker = options.reconcilePowerSaveBlocker || noop;
+  const disableMobilePermissionObservation = options.disableMobilePermissionObservation || noop;
+  const enqueueMobilePreviewReconcile = options.enqueueMobilePreviewReconcile || noop;
   const now = options.now || (() => new Date());
 
   setPetAccessoryFloatingSurfaceRepositioner(repositionFloatingBubbles);
@@ -197,6 +199,26 @@ function createSettingsEffectRouter(options = {}) {
         "Clawd: session automation effective-mode snapshot refresh failed:",
         emitSessionSnapshot,
         { force: true }
+      );
+    }
+    if ("mobilePreviewEnabled" in changes || "mobilePermissionPreviewEnabled" in changes) {
+      const snapshot = settingsController.getSnapshot();
+      const effectivePermissionPreview = snapshot.mobilePreviewEnabled === true
+        && snapshot.mobilePermissionPreviewEnabled === true;
+      // Consent withdrawal is synchronous; network teardown may be queued but
+      // the canonical disclosure projection must disappear immediately.
+      if (!effectivePermissionPreview) {
+        safeCall(
+          logWarn,
+          "Clawd: disable mobile permission observation failed:",
+          disableMobilePermissionObservation
+        );
+      }
+      safeCall(
+        logWarn,
+        "Clawd: enqueue mobile preview reconciliation failed:",
+        enqueueMobilePreviewReconcile,
+        snapshot
       );
     }
 

@@ -27,6 +27,7 @@ module.exports = {
     // bubble pipeline returns no-decision on fallback so Copilot's
     // native menu still owns the call.
     permissionApproval: true,
+    mobilePermissionObservation: false,
     interactiveBubble: true,
     sessionEnd: true,
     subagent: true,

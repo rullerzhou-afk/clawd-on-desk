@@ -8,6 +8,7 @@
   let helpers = null;
   let state = null;
   let infoContainer = null;
+  let permissionPreviewRow = null;
   let changeListenerRegistered = false;
 
   function t(key) {
@@ -157,6 +158,66 @@
       descKey: "mobileToggleDesc",
     }));
 
+    const parentEnabled = !!(state.snapshot && state.snapshot.mobilePreviewEnabled === true);
+    permissionPreviewRow = helpers.buildSwitchRow({
+      key: "mobilePermissionPreviewEnabled",
+      labelKey: "mobilePermissionToggle",
+      descKey: "mobilePermissionToggleDesc",
+      disabled: !parentEnabled,
+      onToggle: function({ nextRaw }) {
+        if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") {
+          return Promise.resolve({ status: "error", message: "Settings command API unavailable" });
+        }
+        if (!nextRaw) {
+          return window.settingsAPI.command("setMobilePermissionPreviewEnabled", {
+            enabled: false,
+            confirmed: false,
+            resetAccess: false,
+          });
+        }
+        return helpers.showSettingsDialog({
+          title: t("mobilePermissionConsentTitle"),
+          detail: t("mobilePermissionConsentDetail"),
+          iconText: "!",
+          dismissOnBackdrop: false,
+          actions: [
+            { id: "reset", label: t("mobilePermissionConsentReset"), tone: "accent", defaultFocus: true },
+            { id: "keep", label: t("mobilePermissionConsentKeep"), tone: "neutral" },
+            { id: "cancel", label: t("cancel"), tone: "neutral" },
+          ],
+        }).then(function(choice) {
+          if (choice !== "reset" && choice !== "keep") {
+            return { status: "ok", noop: true };
+          }
+          return window.settingsAPI.command("setMobilePermissionPreviewEnabled", {
+            enabled: true,
+            confirmed: true,
+            resetAccess: choice === "reset",
+          }).then(function(result) {
+            // Token reset is an irreversible pre-commit phase. Even if the
+            // later preference write fails (and no settings change event is
+            // emitted), immediately replace the stale QR/URL/token display.
+            if (result && result.tokenReset === true && infoContainer) {
+              renderConnectionInfo(infoContainer);
+            }
+            if (result && result.status !== "ok" && result.tokenReset && result.rePairRequired) {
+              return Object.assign({}, result, {
+                message: (t("mobilePermissionTokenResetFailure") || "The token was reset, but enabling failed. Re-pair devices. ")
+                  + ((result && result.message) ? ` ${result.message}` : ""),
+              });
+            }
+            return result;
+          });
+        });
+      },
+    });
+    section.appendChild(permissionPreviewRow);
+
+    const disclosure = document.createElement("p");
+    disclosure.className = "settings-tab-desc mobile-permission-disclosure";
+    disclosure.textContent = t("mobilePermissionDisclosure");
+    section.appendChild(disclosure);
+
     // Connection info (re-renders on toggle)
     infoContainer = document.createElement("div");
     infoContainer.id = "mobile-connection-info";
@@ -172,6 +233,13 @@
       window.settingsAPI.onChanged((evt) => {
         if (evt && evt.changes && Object.prototype.hasOwnProperty.call(evt.changes, "mobilePreviewEnabled")) {
           if (infoContainer) renderConnectionInfo(infoContainer);
+          const parentOn = !!(evt.snapshot && evt.snapshot.mobilePreviewEnabled === true);
+          const sw = permissionPreviewRow && permissionPreviewRow.querySelector(".switch");
+          if (sw) {
+            sw.classList.toggle("disabled", !parentOn);
+            sw.setAttribute("aria-disabled", parentOn ? "false" : "true");
+            sw.tabIndex = parentOn ? 0 : -1;
+          }
         }
       });
     }

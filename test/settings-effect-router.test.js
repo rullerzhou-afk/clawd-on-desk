@@ -329,6 +329,45 @@ describe("settings-effect-router", () => {
     ]);
   });
 
+  it("withdraws permission projection synchronously and queues mobile reconciliation", () => {
+    const { calls, emit } = createHarness({
+      initialSnapshot: {
+        mobilePreviewEnabled: true,
+        mobilePermissionPreviewEnabled: true,
+      },
+      routerOptions: {
+        disableMobilePermissionObservation: () => calls.push(["disableMobilePermissionObservation"]),
+        enqueueMobilePreviewReconcile: (snapshot) => calls.push([
+          "enqueueMobilePreviewReconcile",
+          snapshot.mobilePreviewEnabled,
+          snapshot.mobilePermissionPreviewEnabled,
+        ]),
+      },
+    });
+
+    emit({ mobilePermissionPreviewEnabled: false });
+    assert.deepStrictEqual(calls, [
+      ["updateMirrors", { mobilePermissionPreviewEnabled: false }],
+      ["disableMobilePermissionObservation"],
+      ["enqueueMobilePreviewReconcile", true, false],
+    ]);
+
+    calls.length = 0;
+    emit({ mobilePermissionPreviewEnabled: true });
+    assert.deepStrictEqual(calls, [
+      ["updateMirrors", { mobilePermissionPreviewEnabled: true }],
+      ["enqueueMobilePreviewReconcile", true, true],
+    ]);
+
+    calls.length = 0;
+    emit({ mobilePreviewEnabled: false });
+    assert.deepStrictEqual(calls, [
+      ["updateMirrors", { mobilePreviewEnabled: false }],
+      ["disableMobilePermissionObservation"],
+      ["enqueueMobilePreviewReconcile", false, true],
+    ]);
+  });
+
   it("orders combined HUD changes as handlePinnedChanged before generic sync", () => {
     const { calls, emit } = createHarness();
 

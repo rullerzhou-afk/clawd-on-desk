@@ -271,6 +271,9 @@ const SCHEMA = {
   testReactionsEnabled: { type: "boolean", default: false },
   lowPowerIdleMode: { type: "boolean", default: false },
   mobilePreviewEnabled: { type: "boolean", default: false },
+  // Separate, explicit consent for the broader permission-summary disclosure.
+  // Never infer this from the legacy session-only mobile preview opt-in.
+  mobilePermissionPreviewEnabled: { type: "boolean", default: false },
   // When true, prevent the OS from sleeping while any agent task is in
   // progress (working/thinking/etc.); allow sleep again once tasks finish.
   keepAwakeWhileWorking: { type: "boolean", default: false },

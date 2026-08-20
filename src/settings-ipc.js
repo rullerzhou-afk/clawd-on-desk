@@ -453,6 +453,12 @@ function registerSettingsIpc(options = {}) {
         message: "permission automation is gated; use the setPermissionAutomationMode command",
       };
     }
+    if (payload.key === "mobilePermissionPreviewEnabled") {
+      return {
+        status: "error",
+        message: "mobile permission preview is gated; use the setMobilePermissionPreviewEnabled command",
+      };
+    }
     return settingsController.applyUpdate(payload.key, payload.value);
   });
   handle("settings:begin-size-preview", () => settingsSizePreviewSession.begin());
@@ -881,25 +887,11 @@ function registerSettingsIpc(options = {}) {
   });
 
   handle("settings:regenerate-mobile-token", async () => {
-    try {
-      const lanWsServer = options.getLanWsServer ? options.getLanWsServer() : null;
-      if (!lanWsServer) return { status: "error", message: "LAN bridge not available" };
-      const newToken = lanWsServer.regenerateToken();
-      return { status: "ok", token: newToken };
-    } catch (err) {
-      return { status: "error", message: (err && err.message) || String(err) };
-    }
+    return settingsController.applyCommand("mobilePreview.regenerateToken", {});
   });
 
   handle("settings:reset-mobile-access", async () => {
-    try {
-      const lanWsServer = options.getLanWsServer ? options.getLanWsServer() : null;
-      if (!lanWsServer) return { status: "error", message: "LAN bridge not available" };
-      const newToken = lanWsServer.resetMobileAccess();
-      return { status: "ok", token: newToken };
-    } catch (err) {
-      return { status: "error", message: (err && err.message) || String(err) };
-    }
+    return settingsController.applyCommand("mobilePreview.resetAccess", {});
   });
 
   return {

@@ -29,6 +29,7 @@ module.exports = {
   capabilities: {
     httpHook: false,
     permissionApproval: false,  // Phase 2 requires CodeWhale source changes
+    mobilePermissionObservation: false,
     notificationHook: true,
     interactiveBubble: false,
     sessionEnd: true,

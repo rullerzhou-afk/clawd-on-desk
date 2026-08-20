@@ -97,6 +97,7 @@ const FAMILY_EVENT_MAP = Object.freeze({
 const FAMILY_CAPABILITIES = Object.freeze({
   httpHook: false,          // family permission goes via plugin event forward, not HTTP blocking
   permissionApproval: true, // Clawd bubble → host REST reply through the reverse bridge
+  mobilePermissionObservation: false,
   sessionEnd: true,
   subagent: false,          // Phase 3 will flip to true once subtask lifecycle verified
 });

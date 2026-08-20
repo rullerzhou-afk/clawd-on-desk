@@ -95,6 +95,16 @@ function startServer(overrides = {}) {
     syncOpenClawPluginImpl: () => {},
     syncHermesPluginImpl: () => {},
     pendingPermissions,
+    addPendingPermission: (entry) => {
+      pendingPermissions.push(entry);
+      return entry;
+    },
+    removePendingPermission: (entry) => {
+      const idx = pendingPermissions.indexOf(entry);
+      if (idx === -1) return false;
+      pendingPermissions.splice(idx, 1);
+      return true;
+    },
     doNotDisturb: false,
     hideBubbles: false,
     getBubblePolicy: () => ({ enabled: true, autoCloseMs: null }),

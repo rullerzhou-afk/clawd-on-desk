@@ -44,6 +44,19 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.version, prefs.CURRENT_VERSION);
   });
 
+  it("defaults mobile permission summaries off independently of session preview", () => {
+    const defaults = prefs.getDefaults();
+    assert.strictEqual(defaults.mobilePreviewEnabled, false);
+    assert.strictEqual(defaults.mobilePermissionPreviewEnabled, false);
+    const validated = prefs.validate({ mobilePreviewEnabled: true });
+    assert.strictEqual(validated.mobilePreviewEnabled, true);
+    assert.strictEqual(validated.mobilePermissionPreviewEnabled, false);
+    assert.strictEqual(
+      prefs.validate({ mobilePermissionPreviewEnabled: "true" }).mobilePermissionPreviewEnabled,
+      false
+    );
+  });
+
   it("defaults Claude hook management on and Start with Claude off", () => {
     const d = prefs.getDefaults();
     assert.strictEqual(d.manageClaudeHooksAutomatically, true);

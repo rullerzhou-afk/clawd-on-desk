@@ -6,6 +6,9 @@ const { sanitizeDisplayLabel } = require("./session-automation-store");
 
 const MODE_OFF = "off";
 const MODE_AUTO_TOOLS = "auto-tools";
+const RESOLVED_PERMISSION_OPTIONS = Object.freeze({
+  disposition: Object.freeze({ reason: "resolved", decided: true }),
+});
 
 function trustedIdentityFromEntry(entry) {
   if (!entry || typeof entry !== "object") return null;
@@ -101,7 +104,12 @@ function createSessionAutomationCoordinator(options = {}) {
 
   function resolveIfAllowed(entry, config = {}) {
     if (!canResolve(entry, config)) return false;
-    resolvePermissionEntry(entry, "allow", "Allowed by session automation");
+    resolvePermissionEntry(
+      entry,
+      "allow",
+      "Allowed by session automation",
+      RESOLVED_PERMISSION_OPTIONS
+    );
     return true;
   }
 
@@ -169,14 +177,24 @@ function createSessionAutomationCoordinator(options = {}) {
     });
     if (result.status === "applied") {
       entry.sessionTrustError = null;
-      resolvePermissionEntry(entry, "allow", "Allowed and trusted for this session");
+      resolvePermissionEntry(
+        entry,
+        "allow",
+        "Allowed and trusted for this session",
+        RESOLVED_PERMISSION_OPTIONS
+      );
       sweep(identity);
       if (suppressFutureConfirmation) persistWarningPreference();
       return result;
     }
     if (result.status === "equivalent" && canResolve(entry, { sessionOnly: true })) {
       entry.sessionTrustError = null;
-      resolvePermissionEntry(entry, "allow", "Allowed by existing session automation");
+      resolvePermissionEntry(
+        entry,
+        "allow",
+        "Allowed by existing session automation",
+        RESOLVED_PERMISSION_OPTIONS
+      );
       if (suppressFutureConfirmation) persistWarningPreference();
       return result;
     }
@@ -209,7 +227,12 @@ function createSessionAutomationCoordinator(options = {}) {
     }
     const current = store.get(identity);
     if (current && current.mode === MODE_AUTO_TOOLS && canResolve(entry, { sessionOnly: true })) {
-      resolvePermissionEntry(entry, "allow", "Allowed by existing session automation");
+      resolvePermissionEntry(
+        entry,
+        "allow",
+        "Allowed by existing session automation",
+        RESOLVED_PERMISSION_OPTIONS
+      );
       return Object.freeze({ status: "equivalent", record: current });
     }
     const expectedGrantId = current ? current.grantId : null;
@@ -239,7 +262,12 @@ function createSessionAutomationCoordinator(options = {}) {
     }
     const latest = store.get(identity);
     if (latest && latest.mode === MODE_AUTO_TOOLS && canResolve(entry, { sessionOnly: true })) {
-      resolvePermissionEntry(entry, "allow", "Allowed by sibling session automation");
+      resolvePermissionEntry(
+        entry,
+        "allow",
+        "Allowed by sibling session automation",
+        RESOLVED_PERMISSION_OPTIONS
+      );
       return Object.freeze({ status: "equivalent", record: latest });
     }
     if (!warningResult || warningResult.confirmed !== true) {
@@ -329,7 +357,12 @@ function createSessionAutomationCoordinator(options = {}) {
         activeGrantId: latest.grantId,
       };
       entry.remoteApprovalSkipClientName = remote.clientName || "";
-      resolvePermissionEntry(entry, "allow", "Allowed by existing session automation");
+      resolvePermissionEntry(
+        entry,
+        "allow",
+        "Allowed by existing session automation",
+        RESOLVED_PERMISSION_OPTIONS
+      );
       if (typeof client.renderActiveSessionTrust === "function") {
         client.renderActiveSessionTrust(cardWork, {
           grantId: latest.grantId,
@@ -381,7 +414,12 @@ function createSessionAutomationCoordinator(options = {}) {
       activeGrantId,
     };
     entry.remoteApprovalSkipClientName = remote.clientName || "";
-    resolvePermissionEntry(entry, "allow", "Allowed and trusted for this session");
+    resolvePermissionEntry(
+      entry,
+      "allow",
+      "Allowed and trusted for this session",
+      RESOLVED_PERMISSION_OPTIONS
+    );
     if (result.status === "applied") sweep(identity);
     if (typeof client.renderActiveSessionTrust === "function") {
       client.renderActiveSessionTrust(cardWork, {

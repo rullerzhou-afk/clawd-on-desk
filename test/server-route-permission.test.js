@@ -99,7 +99,7 @@ function makeCtx(overrides = {}) {
       res.end(behavior);
     },
     replyOpencodeFamilyPermission: (payload) => calls.replyOpencodeFamilyPermission.push(payload),
-    resolvePermissionEntry: (entry, behavior, message) => calls.resolved.push({ entry, behavior, message }),
+    resolvePermissionEntry: (entry, behavior, message, options) => calls.resolved.push({ entry, behavior, message, options }),
     maybeStartRemoteApproval: (entry) => calls.maybeStartRemoteApproval.push(entry),
     addPendingPermission(entry) {
       calls.addPendingPermission.push(entry);
@@ -2321,6 +2321,10 @@ describe("server-route-permission POST — CC subagent requests (#451)", () => {
       assert.strictEqual(res.ctx.calls.resolved[0].entry, entry);
       assert.strictEqual(res.ctx.calls.resolved[0].behavior, "no-decision");
       assert.strictEqual(res.ctx.calls.resolved[0].message, "Client disconnected");
+      assert.deepStrictEqual(res.ctx.calls.resolved[0].options.disposition, {
+        reason: "agent_gone",
+        decided: false,
+      });
     });
   }
 

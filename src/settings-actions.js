@@ -507,7 +507,18 @@ const updateRegistry = {
   roamConstrainAxis: requireBoolean("roamConstrainAxis"),
   keepSizeAcrossDisplays: requireBoolean("keepSizeAcrossDisplays"),
   fullscreenOverlay: requireBoolean("fullscreenOverlay"),
-  mobilePreviewEnabled: requireBoolean("mobilePreviewEnabled"),
+  mobilePreviewEnabled: {
+    validate: requireBoolean("mobilePreviewEnabled"),
+    lockKey: "mobilePreview",
+  },
+  // Enabling this field is consent-sensitive and must go through the dedicated
+  // command below. Keeping the validator here lets the controller defensively
+  // validate command commits without opening a generic write path.
+  mobilePermissionPreviewEnabled: {
+    validate: requireBoolean("mobilePermissionPreviewEnabled"),
+    commandOnly: true,
+    lockKey: "mobilePreview",
+  },
 
   // ── System-backed prefs (object-form: validate + effect pre-commit gate) ──
   autoStartWithClaude,
@@ -854,6 +865,90 @@ function setPermissionAutomationMode(payload, deps) {
   }
   return { status: "ok", commit };
 }
+
+function setMobilePermissionPreviewEnabled(payload, deps = {}) {
+  if (!payload || typeof payload !== "object") {
+    return {
+      status: "error",
+      message: "setMobilePermissionPreviewEnabled: payload must be an object",
+    };
+  }
+  const { enabled, confirmed, resetAccess } = payload;
+  const enabledCheck = requireBoolean("setMobilePermissionPreviewEnabled.enabled")(enabled);
+  if (enabledCheck.status !== "ok") return enabledCheck;
+  const confirmedCheck = requireBoolean("setMobilePermissionPreviewEnabled.confirmed")(confirmed);
+  if (confirmedCheck.status !== "ok") return confirmedCheck;
+  const resetCheck = requireBoolean("setMobilePermissionPreviewEnabled.resetAccess")(resetAccess);
+  if (resetCheck.status !== "ok") return resetCheck;
+
+  const snapshot = deps.snapshot || {};
+  if (snapshot.mobilePermissionPreviewEnabled === enabled) {
+    // Check before rotating so a double click cannot invalidate the token twice.
+    return { status: "ok", noop: true };
+  }
+  if (!enabled) {
+    return { status: "ok", commit: { mobilePermissionPreviewEnabled: false } };
+  }
+  if (snapshot.mobilePreviewEnabled !== true) {
+    return {
+      status: "error",
+      message: "setMobilePermissionPreviewEnabled: mobile preview must be enabled first",
+    };
+  }
+  if (confirmed !== true) {
+    return {
+      status: "error",
+      message: "setMobilePermissionPreviewEnabled: current disclosure confirmation is required",
+    };
+  }
+
+  if (resetAccess) {
+    if (typeof deps.resetMobileAccess !== "function") {
+      return { status: "error", message: "mobile access reset is unavailable" };
+    }
+    // Reset is deliberately before the Settings commit: a reset failure must
+    // leave disclosure disabled. The controller preserves these phase fields
+    // if the later preference persistence fails.
+    deps.resetMobileAccess();
+    return {
+      status: "ok",
+      tokenReset: true,
+      rePairRequired: true,
+      commit: { mobilePermissionPreviewEnabled: true },
+    };
+  }
+  if (typeof deps.disconnectMobilePreviewClients !== "function") {
+    return { status: "error", message: "mobile client reconnect is unavailable" };
+  }
+  // Keeping the token authorizes all existing holders, but currently-open
+  // sockets must still cross an explicit reconnect boundary before the broader
+  // projection can begin flowing.
+  deps.disconnectMobilePreviewClients();
+  return {
+    status: "ok",
+    tokenReset: false,
+    rePairRequired: false,
+    commit: { mobilePermissionPreviewEnabled: true },
+  };
+}
+
+function regenerateMobileToken(_payload, deps = {}) {
+  if (typeof deps.regenerateMobileToken !== "function") {
+    return { status: "error", message: "mobile token regeneration is unavailable" };
+  }
+  return { status: "ok", token: deps.regenerateMobileToken() };
+}
+
+function resetMobileAccess(_payload, deps = {}) {
+  if (typeof deps.resetMobileAccess !== "function") {
+    return { status: "error", message: "mobile access reset is unavailable" };
+  }
+  return { status: "ok", token: deps.resetMobileAccess() };
+}
+
+setMobilePermissionPreviewEnabled.lockKey = "mobilePreview";
+regenerateMobileToken.lockKey = "mobilePreview";
+resetMobileAccess.lockKey = "mobilePreview";
 
 function setBubbleCategoryEnabled(payload, deps) {
   if (!payload || typeof payload !== "object") {
@@ -2392,6 +2487,9 @@ const commandRegistry = {
   setAllBubblesHidden,
   setKimiQuotaCollectionEnabled,
   setPermissionAutomationMode,
+  setMobilePermissionPreviewEnabled,
+  "mobilePreview.regenerateToken": regenerateMobileToken,
+  "mobilePreview.resetAccess": resetMobileAccess,
   setBubbleCategoryEnabled,
   "sessionCleanup.setTriple": setSessionCleanupTriple,
   setSessionAlias,

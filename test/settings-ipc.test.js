@@ -770,6 +770,13 @@ test("settings IPC delegates controller and size preview handlers", async () => 
     status: "error",
     message: "permission automation is gated; use the setPermissionAutomationMode command",
   });
+  assert.deepStrictEqual(await ipcMain.invoke("settings:update", {
+    key: "mobilePermissionPreviewEnabled",
+    value: true,
+  }), {
+    status: "error",
+    message: "mobile permission preview is gated; use the setMobilePermissionPreviewEnabled command",
+  });
   for (const key of [
     "permissionAutomationAutoToolsWarningDismissed",
     "permissionAutomationUnattendedWarningDismissed",
@@ -846,6 +853,36 @@ test("settings:update cannot bypass the Feishu command-only boundary", async () 
   assert.equal(result.status, "error");
   assert.match(result.message, /command-only/);
   assert.equal(controller.get("feishuApproval").connectionTimeoutSeconds, 30);
+  runtime.dispose();
+});
+
+test("mobile token and access IPC routes delegate only to locked controller commands", async () => {
+  const delegated = [];
+  const { ipcMain, runtime } = createHarness({
+    settingsController: {
+      getSnapshot: () => ({ lang: "en" }),
+      applyUpdate: () => ({ status: "ok" }),
+      applyCommand: async (name, payload) => {
+        delegated.push([name, payload]);
+        return { status: "ok", name };
+      },
+    },
+  });
+
+  assert.deepStrictEqual(await ipcMain.invoke("settings:regenerate-mobile-token"), {
+    status: "ok",
+    name: "mobilePreview.regenerateToken",
+  });
+  assert.deepStrictEqual(await ipcMain.invoke("settings:reset-mobile-access"), {
+    status: "ok",
+    name: "mobilePreview.resetAccess",
+  });
+  assert.deepStrictEqual(delegated, [
+    ["mobilePreview.regenerateToken", {}],
+    ["mobilePreview.resetAccess", {}],
+  ]);
+  assert.strictEqual(commandRegistry["mobilePreview.regenerateToken"].lockKey, "mobilePreview");
+  assert.strictEqual(commandRegistry["mobilePreview.resetAccess"].lockKey, "mobilePreview");
   runtime.dispose();
 });
 

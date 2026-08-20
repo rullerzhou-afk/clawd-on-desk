@@ -43,6 +43,13 @@ const { extractPermissionToolInput } = require("../hooks/kimi-hook");
 const { normalizeCodexUserInputWire } = require("../hooks/codex-user-input");
 const { sanitizeShadowRecord } = require("./windows-process-chain-shadow-log");
 
+const NATIVE_TERMINAL_ANSWER_OPTIONS = Object.freeze({
+  disposition: Object.freeze({ reason: "handed_to_terminal", decided: true }),
+});
+const SESSION_ENDED_OPTIONS = Object.freeze({
+  disposition: Object.freeze({ reason: "agent_gone", decided: false }),
+});
+
 // /state POST body size cap. Raised 1024 → 4096 → 16384: a CJK
 // assistant_last_output (3 UTF-8 bytes/char) on a Stop completion blew past
 // 4096, and the server's headerless 413 made the hook read posted=false, so the
@@ -755,7 +762,12 @@ function handleStatePost(req, res, options) {
             }
             return;
           }
-          ctx.resolvePermissionEntry(candidates[0], behavior, message);
+          ctx.resolvePermissionEntry(
+            candidates[0],
+            behavior,
+            message,
+            NATIVE_TERMINAL_ANSWER_OPTIONS
+          );
         };
         if (event === "PostToolUse" || event === "PostToolUseFailure" || event === "Stop") {
           const perm = findPendingPermissionForStateEvent(ctx.pendingPermissions, {
@@ -769,7 +781,12 @@ function handleStatePost(req, res, options) {
           });
           if (perm) {
             const behavior = perm.isQwenCode ? "no-decision" : "deny";
-            ctx.resolvePermissionEntry(perm, behavior, "User answered in terminal");
+            ctx.resolvePermissionEntry(
+              perm,
+              behavior,
+              "User answered in terminal",
+              NATIVE_TERMINAL_ANSWER_OPTIONS
+            );
           }
           // A later hook event may be the only evidence that the user answered
           // a decision in the agent's native terminal UI. Never sweep across
@@ -805,7 +822,12 @@ function handleStatePost(req, res, options) {
           for (const stale of sessionEndPending.filter((entry) => (
             isDecisionInteraction(entry.interaction)
           ))) {
-            ctx.resolvePermissionEntry(stale, "no-decision", "Session ended");
+            ctx.resolvePermissionEntry(
+              stale,
+              "no-decision",
+              "Session ended",
+              SESSION_ENDED_OPTIONS
+            );
           }
         } else if (
           event === "UserPromptSubmit"

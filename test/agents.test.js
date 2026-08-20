@@ -28,7 +28,13 @@ const VALID_STATES = new Set(Object.keys(state.STATE_PRIORITY));
 // Special internal values that agent maps are allowed to use
 const SPECIAL_VALUES = new Set(["codex-turn-end"]);
 
-const REQUIRED_CAPABILITIES = ["httpHook", "permissionApproval", "sessionEnd", "subagent"];
+const REQUIRED_CAPABILITIES = [
+  "httpHook",
+  "permissionApproval",
+  "mobilePermissionObservation",
+  "sessionEnd",
+  "subagent",
+];
 
 const agents = registry.getAllAgents();
 
@@ -123,6 +129,20 @@ describe("Agent config modules — data integrity", () => {
     const ids = agents.map((a) => a.id);
     const unique = new Set(ids);
     assert.strictEqual(ids.length, unique.size, `Duplicate IDs: ${ids.filter((id, i) => ids.indexOf(id) !== i)}`);
+  });
+
+  it("mobile permission observation is explicit and limited to audited adapters", () => {
+    const enabled = agents
+      .filter((agent) => agent.capabilities.mobilePermissionObservation === true)
+      .map((agent) => agent.id)
+      .sort();
+    assert.deepStrictEqual(enabled, [
+      "claude-code",
+      "codebuddy",
+      "codex",
+      "hermes",
+      "qwen-code",
+    ]);
   });
 
   it("codex has interactiveBubble=true so settings UI renders its bubble sub-toggle", () => {

@@ -86,8 +86,8 @@ function makeCtx(overrides = {}) {
     isAgentPermissionsEnabled: () => true,
     setState: () => {},
     updateSession: () => {},
-    resolvePermissionEntry: (perm, behavior, message) => {
-      resolved.push({ perm, behavior, message });
+    resolvePermissionEntry: (perm, behavior, message, options) => {
+      resolved.push({ perm, behavior, message, options });
     },
     permLog: () => {},
     updateLog: () => {},
@@ -263,6 +263,10 @@ describe("/state permission cleanup", () => {
     assert.strictEqual(res.statusCode, 200);
     assert.deepStrictEqual(resolved.map((entry) => entry.perm.id), ["b"]);
     assert.deepStrictEqual(resolved.map((entry) => entry.message), ["User answered in terminal"]);
+    assert.deepStrictEqual(resolved[0].options.disposition, {
+      reason: "handed_to_terminal",
+      decided: true,
+    });
   });
 
   it("clears matching Qwen pending entries as no-decision instead of deny", async () => {
@@ -293,6 +297,10 @@ describe("/state permission cleanup", () => {
     assert.deepStrictEqual(resolved.map((entry) => entry.perm.id), ["qwen"]);
     assert.deepStrictEqual(resolved.map((entry) => entry.behavior), ["no-decision"]);
     assert.deepStrictEqual(resolved.map((entry) => entry.message), ["User answered in terminal"]);
+    assert.deepStrictEqual(resolved[0].options.disposition, {
+      reason: "handed_to_terminal",
+      decided: true,
+    });
   });
 
   it("keeps concurrent pending requests untouched when Stop is ambiguous", async () => {
@@ -310,6 +318,31 @@ describe("/state permission cleanup", () => {
 
     assert.strictEqual(res.statusCode, 200);
     assert.deepStrictEqual(resolved, []);
+  });
+
+  it("marks authoritative session-end cleanup as agent-gone without a decision", async () => {
+    const pendingPermissions = [
+      {
+        id: "ended",
+        sessionId: localSessionKey("sid"),
+        toolName: "AskUserQuestion",
+        res: {},
+      },
+    ];
+    const { handler, resolved } = startServer({ pendingPermissions });
+
+    const res = await callHandler(handler, makeReq("POST", "/state", JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "SessionEnd",
+    })));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(resolved.map((entry) => entry.perm.id), ["ended"]);
+    assert.deepStrictEqual(resolved[0].options.disposition, {
+      reason: "agent_gone",
+      decided: false,
+    });
   });
 
   it("does not clear a single pending Bash request when another tool finishes", async () => {

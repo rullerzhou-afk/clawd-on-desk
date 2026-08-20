@@ -483,6 +483,18 @@ function createSettingsController({
         message: `${name}: command returned no result`,
       };
     }
+    // Commands may perform an irreversible pre-commit phase (for example,
+    // rotating the mobile access token). If the later defensive validation or
+    // persistence step fails, retain that safe phase metadata so the UI can
+    // truthfully tell the user that re-pairing is already required. The actual
+    // controller error always remains authoritative.
+    const { status: _status, message: _message, commit: _phaseCommit, ...phaseMeta } = result;
+    const withPhaseMeta = (error) => ({
+      ...phaseMeta,
+      ...(error || {}),
+      status: (error && error.status) || "error",
+      message: error && error.message,
+    });
     if (result.commit && typeof result.commit === "object") {
       // Defensive validate: commands produce arbitrary commit payloads, but
       // they still have to pass the same schema gates `applyUpdate` enforces.
@@ -496,10 +508,10 @@ function createSettingsController({
       for (const key of Object.keys(result.commit)) {
         const entry = updates[key];
         if (!entry) {
-          return {
+          return withPhaseMeta({
             status: "error",
             message: `${name} commit: unknown settings key ${key}`,
-          };
+          });
         }
         const validator = resolveValidator(entry);
         if (!validator) continue;
@@ -514,12 +526,12 @@ function createSettingsController({
         // If a real async validator appears later we can refactor; for now
         // treat it as a programming error.
         if (isThenable(recheck)) {
-          return {
+          return withPhaseMeta({
             status: "error",
             message: `${name} commit ${key}: async validators unsupported in commit path`,
-          };
+          });
         }
-        if (!recheck || recheck.status !== "ok") return recheck;
+        if (!recheck || recheck.status !== "ok") return withPhaseMeta(recheck);
       }
       const currentSnapshot = store.getSnapshot();
       const changedPartial = buildChangedPartial(result.commit, currentSnapshot);
@@ -528,7 +540,7 @@ function createSettingsController({
           ...currentSnapshot,
           ...changedPartial,
         });
-        if (persisted.status !== "ok") return persisted;
+        if (persisted.status !== "ok") return withPhaseMeta(persisted);
         store._commit(changedPartial);
       }
     }

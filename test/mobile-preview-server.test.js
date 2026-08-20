@@ -4,6 +4,7 @@ const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert");
 const WebSocket = require("ws");
 const http = require("http");
+const { EventEmitter } = require("events");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -288,6 +289,207 @@ describe("Mobile Preview Server", () => {
 
     client.close();
     await new Promise((r) => setTimeout(r, 100));
+  });
+});
+
+describe("Mobile permission observation protocol", () => {
+  function createObservation() {
+    const listeners = new Set();
+    let state = {
+      feature: Object.freeze({ supported: true, enabled: false }),
+      records: Object.freeze([]),
+    };
+    return {
+      snapshot: () => state,
+      subscribe(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      replace(enabled, records) {
+        state = {
+          feature: Object.freeze({ supported: true, enabled }),
+          records: Object.freeze(records.slice()),
+        };
+        for (const listener of listeners) listener({
+          type: "replace",
+          feature: state.feature,
+          records: state.records,
+        });
+      },
+      emit(event) { for (const listener of listeners) listener(event); },
+      listenerCount: () => listeners.size,
+    };
+  }
+
+  it("sends structured feature state and unconditional permission snapshot before deltas", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-observation-"));
+    const auditLogs = [];
+    const observation = createObservation();
+    const record = Object.freeze({
+      requestId: "1".repeat(32),
+      agentId: "claude-code",
+      toolName: "Bash",
+      summary: "Run tests",
+      folder: "project",
+      presentedAt: Date.now(),
+    });
+    observation.replace(true, [record]);
+    const server = initMobilePreviewServer({
+      sessions: new Map(),
+      permissionObservation: observation,
+      tokenPath: path.join(dir, "token.json"),
+      log: (message) => auditLogs.push(message),
+    });
+    const port = await server.start();
+    assert.strictEqual(observation.listenerCount(), 1);
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${server.getToken()}`);
+    const messages = [];
+    ws.on("message", (data) => messages.push(JSON.parse(data)));
+    await waitForOpen(ws);
+    while (messages.length < 2) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.strictEqual(messages[0].type, "snapshot");
+    assert.strictEqual(messages[1].type, "permission_snapshot");
+    assert.deepStrictEqual(messages[0].features.permissionPreview, messages[1].feature);
+    assert.deepStrictEqual(messages[1].permissions, [record]);
+
+    observation.emit({ type: "upsert", record: { ...record, requestId: "2".repeat(32) } });
+    while (!messages.some((message) => message.type === "permission_request")) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const request = messages.find((message) => message.type === "permission_request");
+    assert.strictEqual(request.permission.requestId, "2".repeat(32));
+
+    observation.emit({
+      type: "retract",
+      requestId: "2".repeat(32),
+      reason: "resolved",
+      decided: true,
+    });
+    while (!messages.some((message) => message.type === "permission_dismissed")) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const dismissed = messages.find((message) => message.type === "permission_dismissed");
+    assert.deepStrictEqual(
+      { requestId: dismissed.requestId, reason: dismissed.reason, decided: dismissed.decided },
+      { requestId: "2".repeat(32), reason: "resolved", decided: true }
+    );
+    assert.ok(auditLogs.some((line) => /type=permission_snapshot source=connect clients=1/.test(line)));
+    assert.ok(auditLogs.some((line) => new RegExp(`type=permission_request requestId=${"2".repeat(32)} clients=1`).test(line)));
+    assert.ok(auditLogs.some((line) => /type=permission_dismissed .*reason=resolved decided=true clients=1/.test(line)));
+    const auditText = auditLogs.join("\n");
+    assert.doesNotMatch(auditText, /Run tests|folder|summary|project|toolInput|cwd/);
+
+    // A client-shaped decision message is intentionally inert.
+    ws.send(JSON.stringify({
+      type: "permission_response",
+      requestId: record.requestId,
+      decision: "allow",
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.strictEqual(observation.snapshot().records.length, 1);
+
+    ws.close();
+    await server.cleanup();
+    assert.strictEqual(observation.listenerCount(), 0);
+    await server.start();
+    assert.strictEqual(observation.listenerCount(), 1);
+    await server.cleanup();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("always sends an empty disabled snapshot when observation is unavailable", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-observation-empty-"));
+    const server = initMobilePreviewServer({
+      sessions: new Map(),
+      tokenPath: path.join(dir, "token.json"),
+    });
+    const port = await server.start();
+    const client = connectClient(port, server.getToken());
+    await waitForOpen(client.ws);
+    const snapshot = await client.waitFor("permission_snapshot");
+    assert.deepStrictEqual(snapshot.feature, { supported: false, enabled: false });
+    assert.deepStrictEqual(snapshot.permissions, []);
+    client.close();
+    await server.cleanup();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("settles cleanup during an in-flight start and can restart cleanly", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-observation-lifecycle-"));
+    const observation = createObservation();
+    const server = initMobilePreviewServer({
+      sessions: new Map(),
+      permissionObservation: observation,
+      tokenPath: path.join(dir, "token.json"),
+      log: () => {},
+    });
+
+    const startOutcome = server.start().then(
+      (startedPort) => ({ status: "started", port: startedPort }),
+      (error) => ({ status: "stopped", error })
+    );
+    await server.cleanup();
+    const outcome = await startOutcome;
+    assert.strictEqual(outcome.status, "stopped");
+    assert.match(outcome.error.message, /stopped|superseded/);
+    assert.strictEqual(server.isStarted(), false);
+    assert.strictEqual(observation.listenerCount(), 0);
+
+    const restartedPort = await server.start();
+    assert.ok(Number.isInteger(restartedPort));
+    assert.strictEqual(server.isStarted(), true);
+    assert.strictEqual(observation.listenerCount(), 1);
+    await server.cleanup();
+    assert.strictEqual(observation.listenerCount(), 0);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("cleans observation and token timers after every candidate port fails", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-observation-start-fail-"));
+    const tokenPath = path.join(dir, "token.json");
+    fs.writeFileSync(tokenPath, JSON.stringify({
+      token: "a".repeat(32),
+      previous: null,
+      graceUntil: null,
+      rotatedAt: Date.now() - (24 * 60 * 60 * 1000) + 40,
+      rotationPending: false,
+    }));
+    const observation = createObservation();
+    const persisted = [];
+    let listenCalls = 0;
+    class FailingHttpServer extends EventEmitter {
+      listen() {
+        listenCalls++;
+        queueMicrotask(() => {
+          const error = new Error("test port occupied");
+          error.code = "EADDRINUSE";
+          this.emit("error", error);
+        });
+      }
+      close(callback) { if (callback) callback(); }
+    }
+    class FakeWebSocketServer extends EventEmitter {
+      close(callback) { if (callback) callback(); }
+    }
+    const server = initMobilePreviewServer({
+      sessions: new Map([["stale", { state: "idle", updatedAt: Date.now() }]]),
+      permissionObservation: observation,
+      tokenPath,
+      writeTokenState(_path, state) { persisted.push(state); return true; },
+      createHttpServer: () => new FailingHttpServer(),
+      createWebSocketServer: () => new FakeWebSocketServer(),
+      log: () => {},
+    });
+
+    await assert.rejects(server.start(), /test port occupied/);
+    assert.strictEqual(listenCalls, 5);
+    assert.strictEqual(server.isStarted(), false);
+    assert.strictEqual(observation.listenerCount(), 0);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.deepStrictEqual(persisted, []);
+    await server.cleanup();
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });
 
