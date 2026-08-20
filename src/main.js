@@ -4657,13 +4657,10 @@ const _peteleco = require("./peteleco")({
   getEffectiveCurrentPixelSize,
   getCursorScreenPoint: () => screen.getCursorScreenPoint(),
   // The same visual clamp a drag-end uses: a flick must not be able to park
-  // the pet anywhere a drag could not. `workArea` is the gesture's launch
-  // display, forced so the clamp cannot resolve a NEIGHBOURING monitor from the
-  // target's centre and throw the pet off-screen-of-origin.
-  clampPosition: (x, y, w, h, workArea) =>
-    clampToScreenVisual(x, y, w, h, workArea ? { workArea } : {}),
-  getWorkAreaFor: (bounds) =>
-    getNearestWorkArea(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2),
+  // the pet anywhere a drag could not. No display is forced, so the clamp
+  // resolves the work area from the target's centre and a hard shot can carry
+  // the pet across a seam onto the neighbouring monitor — same reach a drag has.
+  clampPosition: (x, y, w, h) => clampToScreenVisual(x, y, w, h),
   syncHitWin: () => syncHitWin(),
   repositionAnchoredSurfaces: () => repositionAnchoredFloatingSurfaces(),
   repositionBubbles: () => repositionFloatingBubbles(),

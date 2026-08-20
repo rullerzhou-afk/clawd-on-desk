@@ -53,7 +53,7 @@ module.exports = function initPeteleco(ctx = {}) {
   let intensity = PETELECO_INTENSITY_DEFAULT;
 
   // Aim state: null when no gesture is in flight.
-  let aim = null; // { origin, bounds, workArea }
+  let aim = null; // { origin, bounds }
   let lastShot = null; // last computeAim() result, or null while below threshold
 
   // Flick state.
@@ -123,17 +123,9 @@ module.exports = function initPeteleco(ctx = {}) {
     const origin = call("getCursorScreenPoint");
     if (!bounds || !origin) return false;
     const { width, height } = getLaunchSize(bounds);
-    // The launch display is resolved ONCE, here, and every clamp for the rest
-    // of the gesture is forced onto it. Without this the clamp resolves the
-    // work area from the TARGET's centre, so a hard shot near a seam lands on
-    // the neighbouring monitor — and the projection then has to be drawn in a
-    // window spanning both, whose CSS pixels only match one display's scale
-    // factor. A peteleco stays on the screen it started from.
-    const workArea = call("getWorkAreaFor", bounds) || null;
     aim = {
       origin: { x: origin.x, y: origin.y },
       bounds: { x: bounds.x, y: bounds.y, width, height },
-      workArea,
     };
     lastShot = null;
     // Nothing is drawn until the pull passes the threshold — a modifier-click
@@ -143,11 +135,6 @@ module.exports = function initPeteleco(ctx = {}) {
   }
 
   function computeShot() {
-    const workArea = aim.workArea;
-    const clampPosition =
-      typeof ctx.clampPosition === "function"
-        ? (x, y, w, h) => ctx.clampPosition(x, y, w, h, workArea)
-        : null;
     return computeAim({
       origin: aim.origin,
       cursor: call("getCursorScreenPoint"),
@@ -158,7 +145,11 @@ module.exports = function initPeteleco(ctx = {}) {
       // move the art inside the (unchanged) launch rect.
       center: call("getPetVisualCenter", aim.bounds),
       intensity,
-      clampPosition,
+      // Not pinned to the launch display: the clamp resolves the work area from
+      // the TARGET's centre, so a hard shot near a seam carries the pet onto the
+      // neighbouring monitor. That crossing is the intended behavior — the
+      // projection follows it (see resolveOverlayBounds).
+      clampPosition: ctx.clampPosition,
     });
   }
 

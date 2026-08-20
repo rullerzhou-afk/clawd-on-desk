@@ -69,12 +69,14 @@ Two consequences worth knowing:
 - The projection **shortens** when the pet is aimed at the edge of the work
   area, because the landing spot is clamped exactly the way a drag would be. A
   pet already pinned against that edge draws no projection at all.
-- A shot never leaves the display it started from. The landing spot is clamped
-  to the launch display's work area, so a hard flick near a monitor seam stops
-  at the edge instead of throwing the pet onto the neighbour. (The projection
-  window covers that one display too — a window spanning two monitors renders
-  its pixels at a single scale factor, so on a mixed-DPI desk the far half of
-  the line would be drawn in the wrong place.)
+- A hard flick **can carry the pet onto another monitor**. The landing spot is
+  clamped exactly the way a drag is — from the target's own position — so the
+  shot reaches wherever a drag could, seams included. The projection window
+  stretches to contain both ends so the line stays drawn across the crossing.
+  The one exception is a neighbour whose display scaling differs from the launch
+  monitor's: a single window renders its pixels at one scale factor, so the far
+  half of the line would land in the wrong place. On such a desk the line is
+  clipped at the seam while the pet still crosses.
 - A flick can land the pet on an edge, but it never snaps it into mini mode.
   Shots routinely end up exactly on an edge, so snapping there would turn most
   hard flicks into an accidental mini mode. Drag the pet to an edge as usual if

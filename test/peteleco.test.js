@@ -23,7 +23,6 @@ function makeCtx(overrides = {}) {
     // No clamp by default: these tests are about the runtime, and the clamp
     // itself is covered in peteleco-geometry.test.js.
     clampPosition: null,
-    getWorkAreaFor: () => ({ x: 0, y: 0, width: 1920, height: 1040 }),
     applyPetWindowBounds: (next) => {
       applied.push({ ...next });
       bounds.x = next.x;
@@ -160,54 +159,53 @@ describe("peteleco runtime", () => {
     assert.ok(after.from.y < before.from.y);
   });
 
-  it("clamps every shot to the display the gesture started on", () => {
-    // Without the forced work area the clamp resolves a display from the
-    // TARGET's centre, so a hard shot near a seam lands on the neighbouring
-    // monitor — and the projection then needs a window spanning both, whose CSS
-    // pixels only match one display's scale factor.
-    const seen = [];
-    const launchArea = { x: 0, y: 0, width: 1920, height: 1040 };
+  it("lets a shot cross onto another display — the clamp is not pinned to one", () => {
+    // The clamp resolves the work area from the TARGET's centre, so a hard shot
+    // near a seam carries the pet onto the neighbouring monitor. The runtime
+    // must not narrow that: it hands the clamp the raw target and animates to
+    // whatever comes back.
+    const NEIGHBOUR = { x: -1920, y: 0 };
     const h = makeCtx({
-      getWorkAreaFor: () => launchArea,
-      clampPosition: (x, y, w, hgt, workArea) => {
-        seen.push(workArea);
-        return { x, y };
-      },
+      // Mimics a monitor to the LEFT accepting the landing point unchanged.
+      clampPosition: (x, y) => ({ x, y }),
     });
     const peteleco = initPeteleco(h.ctx);
     peteleco.setEnabled(true);
+    peteleco.setIntensity(100);
     peteleco.beginAim();
-    pullRight(h);
-    peteleco.updateAim();
-    peteleco.releaseAim();
+    // Pull far right → the shot heads far left, past x=0 into the neighbour.
+    pullRight(h, 4000);
+    const shot = peteleco.updateAim();
 
-    assert.ok(seen.length > 0, "the clamp must actually run");
-    for (const workArea of seen) {
-      assert.deepStrictEqual(workArea, launchArea, "every clamp uses the LAUNCH display");
-    }
+    assert.ok(shot.target.x < NEIGHBOUR.x + 1920, "the target must land on the neighbour");
+    peteleco.releaseAim();
+    mock.timers.tick(3000);
+
+    const landed = h.applied[h.applied.length - 1];
+    assert.strictEqual(landed.x, shot.target.x);
+    assert.ok(h.calls.includes("finalizeFlick"));
   });
 
-  it("keeps using the launch display even if the pet's own display would change", () => {
-    // The work area is resolved once, at beginAim. Re-resolving per frame would
-    // let a shot that momentarily aims across a seam re-target the neighbour.
-    let area = { x: 0, y: 0, width: 1920, height: 1040 };
+  it("passes the clamp exactly four arguments, with no display pinned", () => {
+    // A fifth argument used to force the launch display's work area; nothing
+    // may reintroduce that silently.
     const seen = [];
     const h = makeCtx({
-      getWorkAreaFor: () => area,
-      clampPosition: (x, y, w, hgt, workArea) => {
-        seen.push(workArea);
-        return { x, y };
+      clampPosition: (...args) => {
+        seen.push(args);
+        return { x: args[0], y: args[1] };
       },
     });
     const peteleco = initPeteleco(h.ctx);
     peteleco.setEnabled(true);
     peteleco.beginAim();
-    const launchArea = area;
-    area = { x: 1920, y: 0, width: 1280, height: 1024 };
-
     pullRight(h);
     peteleco.updateAim();
-    assert.deepStrictEqual(seen[seen.length - 1], launchArea);
+
+    assert.ok(seen.length > 0, "the clamp must actually run");
+    for (const args of seen) {
+      assert.strictEqual(args.length, 4, `clamp got ${args.length} args: ${JSON.stringify(args)}`);
+    }
   });
 
   it("a live intensity change repaints an open projection", () => {

@@ -8,11 +8,14 @@ const path = require("node:path");
 const {
   createPetelecoOverlayWindow,
   resolveOverlayBounds,
+  unionRects,
 } = require("../src/peteleco-overlay-window");
 const { PETELECO_FADE_OUT_MS } = require("../src/peteleco-geometry");
 
-const LEFT = { bounds: { x: 0, y: 0, width: 1920, height: 1080 } };
-const RIGHT = { bounds: { x: 1920, y: 0, width: 1280, height: 1024 } };
+const LEFT = { bounds: { x: 0, y: 0, width: 1920, height: 1080 }, scaleFactor: 1 };
+const RIGHT = { bounds: { x: 1920, y: 0, width: 1280, height: 1024 }, scaleFactor: 1 };
+// Same geometry as RIGHT but scaled differently — a mixed-DPI desk.
+const RIGHT_HIDPI = { bounds: RIGHT.bounds, scaleFactor: 1.5 };
 
 function makeScreen(displays = [LEFT]) {
   return {
@@ -89,30 +92,68 @@ function shot(from, to, extra = {}) {
 }
 
 describe("peteleco overlay geometry", () => {
-  it("covers the display the shot was launched from", () => {
-    const bounds = resolveOverlayBounds(makeScreen([LEFT, RIGHT]), { x: 100, y: 100 });
-    assert.deepStrictEqual(bounds, LEFT.bounds);
+  it("unions two rects", () => {
     assert.deepStrictEqual(
-      resolveOverlayBounds(makeScreen([LEFT, RIGHT]), { x: 2400, y: 300 }),
-      RIGHT.bounds
+      unionRects({ x: 0, y: 0, width: 100, height: 100 }, { x: 50, y: -20, width: 100, height: 40 }),
+      { x: 0, y: -20, width: 150, height: 120 }
     );
   });
 
-  it("never stretches across monitors, even for a landing point on the neighbour", () => {
-    // A window spanning two displays renders its CSS pixels at ONE scale
-    // factor, so on a mixed-DPI desk the far half of the line lands in the
-    // wrong place. The launch display is the whole answer; the runtime keeps
-    // both ends of the shot on it by forcing the clamp onto its work area.
-    const bounds = resolveOverlayBounds(makeScreen([LEFT, RIGHT]), { x: 1800, y: 500 });
+  it("tolerates a missing or invalid side", () => {
+    const rect = { x: 5, y: 5, width: 10, height: 10 };
+    assert.deepStrictEqual(unionRects(rect, null), rect);
+    assert.deepStrictEqual(unionRects(null, rect), rect);
+    assert.deepStrictEqual(unionRects(null, { x: 0, y: 0, width: 0, height: 5 }), null);
+  });
+
+  it("uses one display when both ends of the shot sit on it", () => {
+    const bounds = resolveOverlayBounds(
+      makeScreen([LEFT, RIGHT]), { x: 100, y: 100 }, { x: 600, y: 300 }
+    );
     assert.deepStrictEqual(bounds, LEFT.bounds);
-    assert.ok(bounds.width <= LEFT.bounds.width);
+  });
+
+  it("spans both displays when a hard shot lands on the neighbour", () => {
+    // A line that leaves its window is simply not drawn, so a crossing shot
+    // needs a window containing both ends.
+    const bounds = resolveOverlayBounds(
+      makeScreen([LEFT, RIGHT]), { x: 1800, y: 500 }, { x: 2400, y: 500 }
+    );
+    assert.deepStrictEqual(bounds, { x: 0, y: 0, width: 3200, height: 1080 });
+  });
+
+  it("refuses to span monitors that scale differently", () => {
+    // One window renders its CSS pixels at a single scale factor, so the far
+    // half of a spanning line would be drawn at the wrong size and offset —
+    // worse than being clipped at the seam. The pet still crosses; only the
+    // drawn line stops.
+    const bounds = resolveOverlayBounds(
+      makeScreen([LEFT, RIGHT_HIDPI]), { x: 1800, y: 500 }, { x: 2400, y: 500 }
+    );
+    assert.deepStrictEqual(bounds, LEFT.bounds);
+  });
+
+  it("treats a missing scale factor as 1 rather than as a mismatch", () => {
+    const noScale = [
+      { bounds: LEFT.bounds },
+      { bounds: RIGHT.bounds },
+    ];
+    const bounds = resolveOverlayBounds(
+      makeScreen(noScale), { x: 1800, y: 500 }, { x: 2400, y: 500 }
+    );
+    assert.deepStrictEqual(bounds, { x: 0, y: 0, width: 3200, height: 1080 });
   });
 
   it("rejects an unusable launch point", () => {
     const screen = makeScreen([LEFT]);
-    assert.strictEqual(resolveOverlayBounds(screen, null), null);
-    assert.strictEqual(resolveOverlayBounds(screen, { x: NaN, y: 0 }), null);
-    assert.strictEqual(resolveOverlayBounds(null, { x: 0, y: 0 }), null);
+    assert.strictEqual(resolveOverlayBounds(screen, null, { x: 1, y: 1 }), null);
+    assert.strictEqual(resolveOverlayBounds(screen, { x: NaN, y: 0 }, { x: 1, y: 1 }), null);
+    assert.strictEqual(resolveOverlayBounds(null, { x: 0, y: 0 }, { x: 1, y: 1 }), null);
+  });
+
+  it("falls back to the launch display when the landing end is unusable", () => {
+    const bounds = resolveOverlayBounds(makeScreen([LEFT, RIGHT]), { x: 100, y: 100 }, null);
+    assert.deepStrictEqual(bounds, LEFT.bounds);
   });
 });
 

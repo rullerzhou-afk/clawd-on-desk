@@ -45,23 +45,47 @@ function sameRect(a, b) {
   );
 }
 
-// The overlay covers exactly ONE display: the one the pet is on, identified by
-// the launch end of the shot.
+function unionRects(a, b) {
+  if (!isValidRect(a)) return isValidRect(b) ? { ...b } : null;
+  if (!isValidRect(b)) return { ...a };
+  const left = Math.min(a.x, b.x);
+  const top = Math.min(a.y, b.y);
+  const right = Math.max(a.x + a.width, b.x + b.width);
+  const bottom = Math.max(a.y + a.height, b.y + b.height);
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+function scaleFactorOf(display) {
+  const scale = display && Number(display.scaleFactor);
+  return Number.isFinite(scale) && scale > 0 ? scale : 1;
+}
+
+// The overlay has to contain BOTH ends of the shot: a hard flick near a seam
+// carries the pet onto the neighbouring monitor, and a line that leaves its
+// window is simply not drawn.
 //
-// It deliberately does not stretch to reach a landing point on another monitor.
-// A window spanning two displays renders its CSS pixels at a single scale
-// factor, so on a mixed-DPI desktop the far half of the line would be drawn in
-// the wrong place — worse than not drawing it. The runtime makes the case moot
-// anyway by forcing every clamp onto the launch display's work area (see
-// beginAim in src/peteleco.js), so both ends of the shot are always here.
-function resolveOverlayBounds(screen, from) {
+// The one exception is a landing display whose SCALE FACTOR differs from the
+// launch display's. A window spanning two displays renders its CSS pixels at a
+// single scale factor, so the far half of the line would be drawn at the wrong
+// size and offset — worse than being clipped. On such a desk the overlay stays
+// on the launch display and the line is cut at the seam; the pet still crosses,
+// because where it flies is the runtime's decision, not this window's.
+function resolveOverlayBounds(screen, from, to) {
   if (!screen || typeof screen.getDisplayNearestPoint !== "function") return null;
-  if (!from || !Number.isFinite(from.x) || !Number.isFinite(from.y)) return null;
-  const display = screen.getDisplayNearestPoint({
-    x: Math.round(from.x),
-    y: Math.round(from.y),
-  });
-  return display && isValidRect(display.bounds) ? { ...display.bounds } : null;
+  const displayFor = (point) => {
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+    const display = screen.getDisplayNearestPoint({
+      x: Math.round(point.x),
+      y: Math.round(point.y),
+    });
+    return display && isValidRect(display.bounds) ? display : null;
+  };
+  const launch = displayFor(from);
+  if (!launch) return null;
+  const landing = displayFor(to);
+  if (!landing || sameRect(landing.bounds, launch.bounds)) return { ...launch.bounds };
+  if (scaleFactorOf(landing) !== scaleFactorOf(launch)) return { ...launch.bounds };
+  return unionRects(launch.bounds, landing.bounds);
 }
 
 function createPetelecoOverlayWindow(options = {}) {
@@ -203,7 +227,7 @@ function createPetelecoOverlayWindow(options = {}) {
     // fading class on redraw, so only the pending hide needs cancelling.
     clearFadeTimer();
     cancelHiddenDestroy();
-    const bounds = resolveOverlayBounds(screen, shot.from);
+    const bounds = resolveOverlayBounds(screen, shot.from, shot.to);
     if (!bounds) return false;
     const target = ensureWindow(bounds);
     if (!target) return false;
@@ -299,4 +323,5 @@ function createPetelecoOverlayWindow(options = {}) {
 module.exports = {
   createPetelecoOverlayWindow,
   resolveOverlayBounds,
+  unionRects,
 };

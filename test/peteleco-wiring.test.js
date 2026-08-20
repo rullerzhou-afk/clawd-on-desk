@@ -40,16 +40,21 @@ describe("peteleco wiring", () => {
     assert.ok(read("hit-geometry.js").includes("function getViewBoxPointScreen"));
   });
 
-  it("keeps a shot on the display it started from", () => {
-    // main forces the launch display's work area into the clamp; without the
-    // second argument the clamp resolves a display from the target's centre.
-    assert.ok(main.includes("clampPosition: (x, y, w, h, workArea) =>"));
-    assert.ok(main.includes("clampToScreenVisual(x, y, w, h, workArea ? { workArea } : {})"));
-    assert.ok(main.includes("getWorkAreaFor: (bounds) =>"));
+  it("lets a shot cross displays, and the projection follows it", () => {
+    // No display is pinned: the clamp resolves the work area from the target's
+    // centre, so a hard shot near a seam carries the pet onto the neighbour.
+    assert.ok(main.includes("clampPosition: (x, y, w, h) => clampToScreenVisual(x, y, w, h)"));
+    assert.ok(!main.includes("getWorkAreaFor"), "no launch display may be forced into the clamp");
     const runtime = read("peteleco.js");
-    assert.ok(runtime.includes('call("getWorkAreaFor", bounds)'));
-    // And the overlay follows: one display, never a spanning window.
-    assert.ok(read("peteleco-overlay-window.js").includes("function resolveOverlayBounds(screen, from)"));
+    assert.ok(!runtime.includes("aim.workArea"));
+    // The overlay takes BOTH ends of the shot so a crossing line stays drawable.
+    const overlay = read("peteleco-overlay-window.js");
+    assert.ok(overlay.includes("function resolveOverlayBounds(screen, from, to)"));
+    assert.ok(overlay.includes("resolveOverlayBounds(screen, shot.from, shot.to)"));
+    assert.ok(overlay.includes("function unionRects("));
+    // ...except across monitors that scale differently, where one window cannot
+    // draw both halves correctly.
+    assert.ok(overlay.includes("scaleFactorOf(landing) !== scaleFactorOf(launch)"));
   });
 
   it("reclaims the overlay window under low-power idle mode", () => {
