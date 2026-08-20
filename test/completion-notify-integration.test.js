@@ -336,6 +336,101 @@ describe("#406 completion hold does not overreach", () => {
     );
   });
 
+  it("does not leak hard-held intermediate output into a later textless Stop", async () => {
+    setup();
+    stop(api, "s-hard", {
+      stopHookActive: true,
+      assistantLastOutput: "INTERMEDIATE-NOT-FINAL",
+    });
+    mock.timers.tick(5000);
+    await flush();
+    assert.strictEqual(sent.length, 0, "hard-held intermediate output must not push");
+
+    stop(api, "s-hard");
+    mock.timers.tick(1000);
+    await flush();
+
+    assert.strictEqual(sent.length, 1, "the later plain Stop still completes once");
+    assert.ok(
+      !sentText(0).includes("INTERMEDIATE-NOT-FINAL"),
+      `later textless Stop must not reuse hard-held intermediate output, got: ${sentText(0)}`,
+    );
+  });
+
+  it("uses only the later Stop output after a hard-held intermediate Stop", async () => {
+    setup();
+    stop(api, "s-hard-final", {
+      stopHookActive: true,
+      assistantLastOutput: "INTERMEDIATE-NOT-FINAL",
+    });
+    mock.timers.tick(5000);
+    await flush();
+
+    stop(api, "s-hard-final", { assistantLastOutput: "ACTUAL-FINAL-ANSWER" });
+    mock.timers.tick(1000);
+    await flush();
+
+    assert.strictEqual(sent.length, 1, "the later final Stop completes once");
+    assert.ok(sentText(0).includes("ACTUAL-FINAL-ANSWER"), "later Stop output survives");
+    assert.ok(
+      !sentText(0).includes("INTERMEDIATE-NOT-FINAL"),
+      `later final Stop must not include hard-held intermediate output, got: ${sentText(0)}`,
+    );
+  });
+
+  it("does not leak hard-held output through a Notification into a later textless Stop", async () => {
+    setup();
+    stop(api, "s-hard-notification", {
+      stopHookActive: true,
+      assistantLastOutput: "INTERMEDIATE-NOT-FINAL",
+    });
+    api.updateSession("s-hard-notification", "notification", "Notification", { agentId: "claude-code" });
+    mock.timers.tick(5000);
+    await flush();
+    assert.strictEqual(sent.length, 0, "hard-held intermediate output must not push through notification");
+
+    stop(api, "s-hard-notification");
+    mock.timers.tick(1000);
+    await flush();
+
+    assert.strictEqual(sent.length, 1, "the later textless Stop completes once");
+    assert.ok(
+      !sentText(0).includes("INTERMEDIATE-NOT-FINAL"),
+      `later textless Stop must not inherit hard-held output after Notification, got: ${sentText(0)}`,
+    );
+  });
+
+  it("uses the superseding debounced Stop payload exactly once", async () => {
+    setup();
+    stop(api, "s-supersede", { assistantLastOutput: "FIRST-DEBOUNCED-ANSWER" });
+    mock.timers.tick(500);
+    stop(api, "s-supersede", { assistantLastOutput: "SECOND-DEBOUNCED-ANSWER" });
+    mock.timers.tick(1000);
+    await flush();
+
+    assert.strictEqual(sent.length, 1, "the superseding Stop completes once");
+    assert.ok(sentText(0).includes("SECOND-DEBOUNCED-ANSWER"), "latest debounced Stop output wins");
+    assert.ok(
+      !sentText(0).includes("FIRST-DEBOUNCED-ANSWER"),
+      `superseded Stop output must not leak, got: ${sentText(0)}`,
+    );
+  });
+
+  it("does not send a duplicate completion notification for the same Stop payload", async () => {
+    setup();
+    stop(api, "s-dup-payload", { assistantLastOutput: "FINAL-ONCE" });
+    mock.timers.tick(1000);
+    await flush();
+    assert.strictEqual(sent.length, 1, "first completion pushes once");
+    assert.ok(sentText(0).includes("FINAL-ONCE"), "first completion carries its output");
+
+    stop(api, "s-dup-payload", { assistantLastOutput: "FINAL-ONCE" });
+    mock.timers.tick(1000);
+    await flush();
+
+    assert.strictEqual(sent.length, 1, "duplicate Stop with the same payload must not push again");
+  });
+
   // The gate asks whether THIS Stop ended the turn with text. A carried-forward
   // value made a text-less Stop look complete, releasing a hard hold while
   // background work was still live.

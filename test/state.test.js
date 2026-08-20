@@ -11,7 +11,7 @@ themeLoader.init(path.join(__dirname, "..", "src"));
 const _defaultTheme = themeLoader.loadTheme("clawd");
 const _calicoTheme = themeLoader.loadTheme("calico");
 const { createTranslator } = require("../src/i18n");
-const { makeSessionKey } = require("../src/session-key");
+const { makeSessionKey, resolveSessionIdentity } = require("../src/session-key");
 const { isSessionInProgress } = require("../src/state-session-snapshot");
 const { countLiveSubagents } = require("../src/state-visual-resolver");
 
@@ -4407,6 +4407,197 @@ describe("Stop completion gate (#406)", () => {
     assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "done");
   });
 
+  it("debounce: dismissSession cancels a pending completion before same-id lease restore", () => {
+    const rawSessionId = "debounce-dismiss-restore";
+    const sessionId = resolveSessionIdentity(rawSessionId, "local").sessionId;
+    update(api, {
+      id: sessionId,
+      rawSessionId,
+      state: "attention",
+      event: "Stop",
+      assistantLastOutput: "OLD DEBOUNCED OUTPUT",
+    });
+    mock.timers.tick(500);
+    assert.strictEqual(api.dismissSession(sessionId), true);
+    assert.strictEqual(api.restoreSessionFromLease({
+      sessionId: rawSessionId,
+      agentId: "claude-code",
+      active: true,
+      eventAt: 1,
+      validUntil: null,
+      state: "working",
+      pid: 12345,
+      cwd: "/tmp",
+    }), true);
+
+    mock.timers.tick(1000);
+
+    const session = api.sessions.get(sessionId);
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.assistantLastOutput, null);
+    assert.ok(!soundsPlayed.includes("complete"));
+    assert.strictEqual(api.deriveSessionBadge(session), "running");
+  });
+
+  it("debounce: background-task final-text quiet window is cancelled before same-id lease restore", () => {
+    const rawSessionId = "debounce-bg-final-dismiss-restore";
+    const sessionId = resolveSessionIdentity(rawSessionId, "local").sessionId;
+    update(api, {
+      id: sessionId,
+      rawSessionId,
+      state: "attention",
+      event: "Stop",
+      backgroundTasksCount: 1,
+      assistantLastOutput: "OLD BG-FINAL OUTPUT",
+    });
+    mock.timers.tick(500);
+    assert.strictEqual(api.dismissSession(sessionId), true);
+    assert.strictEqual(api.restoreSessionFromLease({
+      sessionId: rawSessionId,
+      agentId: "claude-code",
+      active: true,
+      eventAt: 1,
+      validUntil: null,
+      state: "working",
+      pid: 12345,
+      cwd: "/tmp",
+    }), true);
+
+    mock.timers.tick(1000);
+
+    const session = api.sessions.get(sessionId);
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.assistantLastOutput, null);
+    assert.ok(!soundsPlayed.includes("complete"));
+    assert.strictEqual(api.deriveSessionBadge(session), "running");
+  });
+
+  it("debounce: clearSessionsByAgent cancels a pending completion before same-id lease restore", () => {
+    const rawSessionId = "debounce-clear-restore";
+    const sessionId = resolveSessionIdentity(rawSessionId, "local").sessionId;
+    update(api, {
+      id: sessionId,
+      rawSessionId,
+      state: "attention",
+      event: "Stop",
+      assistantLastOutput: "OLD DEBOUNCED OUTPUT",
+    });
+    mock.timers.tick(500);
+    assert.strictEqual(api.clearSessionsByAgent("claude-code"), 1);
+    assert.strictEqual(api.restoreSessionFromLease({
+      sessionId: rawSessionId,
+      agentId: "claude-code",
+      active: true,
+      eventAt: 1,
+      validUntil: null,
+      state: "working",
+      pid: 12345,
+      cwd: "/tmp",
+    }), true);
+
+    mock.timers.tick(1000);
+
+    const session = api.sessions.get(sessionId);
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.assistantLastOutput, null);
+    assert.ok(!soundsPlayed.includes("complete"));
+    assert.strictEqual(api.deriveSessionBadge(session), "running");
+  });
+
+  it("debounce: stale-delete cancels a pending completion before same-id lease restore", () => {
+    api.cleanup();
+    ctx = makeCtx({
+      processKill: makePidKill(new Set()),
+      playSound: (name) => soundsPlayed.push(name),
+      sendToRenderer: (channel, ...args) => {
+        if (channel === "state-change") stateChanges.push(args[0]);
+      },
+    });
+    api = require("../src/state")(ctx);
+    const rawSessionId = "debounce-stale-delete-restore";
+    const sessionId = resolveSessionIdentity(rawSessionId, "local").sessionId;
+    update(api, {
+      id: sessionId,
+      rawSessionId,
+      state: "attention",
+      event: "Stop",
+      assistantLastOutput: "OLD STALE-DELETED OUTPUT",
+      agentPid: 12345,
+    });
+    const pending = api.sessions.get(sessionId);
+    pending.pidReachable = true;
+    pending.agentPid = 12345;
+    mock.timers.tick(500);
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.has(sessionId), false);
+    assert.strictEqual(api.restoreSessionFromLease({
+      sessionId: rawSessionId,
+      agentId: "claude-code",
+      active: true,
+      eventAt: 1,
+      validUntil: null,
+      state: "working",
+      pid: 12345,
+      cwd: "/tmp",
+    }), true);
+
+    mock.timers.tick(1000);
+
+    const session = api.sessions.get(sessionId);
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.assistantLastOutput, null);
+    assert.ok(!soundsPlayed.includes("complete"));
+    assert.strictEqual(api.deriveSessionBadge(session), "running");
+  });
+
+  it("debounce: MAX_SESSIONS eviction cancels a pending completion before same-id lease restore", () => {
+    const rawSessionId = "debounce-evict-restore";
+    const sessionId = resolveSessionIdentity(rawSessionId, "local").sessionId;
+    update(api, {
+      id: sessionId,
+      rawSessionId,
+      state: "attention",
+      event: "Stop",
+      assistantLastOutput: "OLD EVICTED OUTPUT",
+    });
+    api.sessions.get(sessionId).updatedAt = Date.now();
+    mock.timers.tick(500);
+    for (let i = 0; i < 19; i++) {
+      api.sessions.set(`evict-filler-${i}`, rawSession("idle", {
+        agentId: "codex",
+        host: "ssh:example.com",
+        updatedAt: Date.now() + i + 1,
+      }));
+    }
+
+    update(api, {
+      id: "eviction-trigger",
+      state: "working",
+      event: "PreToolUse",
+      agentId: "claude-code",
+    });
+    assert.strictEqual(api.sessions.has(sessionId), false, "pending completion owner should be evicted");
+    assert.strictEqual(api.dismissSession("eviction-trigger"), true, "make room for the restored lease");
+    assert.strictEqual(api.restoreSessionFromLease({
+      sessionId: rawSessionId,
+      agentId: "claude-code",
+      active: true,
+      eventAt: 1,
+      validUntil: null,
+      state: "working",
+      pid: 12345,
+      cwd: "/tmp",
+    }), true);
+
+    mock.timers.tick(1000);
+
+    const session = api.sessions.get(sessionId);
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.assistantLastOutput, null);
+    assert.ok(!soundsPlayed.includes("complete"));
+    assert.strictEqual(api.deriveSessionBadge(session), "running");
+  });
+
   it("debounce: a duplicate Stop after auto-return does not replay completion", () => {
     update(api, { id: "s1", state: "attention", event: "Stop" });
     mock.timers.tick(1000);
@@ -4530,36 +4721,106 @@ describe("Stop completion gate (#406)", () => {
   it("Claude AskUserQuestion PostToolUse falls back to transcript completion when Stop is missed", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-claude-stop-fallback-"));
     const transcript = path.join(dir, "transcript.jsonl");
+    const rawSessionId = "claude-probe-hit";
+    const sessionId = resolveSessionIdentity(rawSessionId, "local").sessionId;
     fs.writeFileSync(transcript, [
-      JSON.stringify({ type: "assistant", sessionId: "s1", message: { content: [{ type: "tool_use", name: "AskUserQuestion" }] } }),
-      JSON.stringify({ type: "user", sessionId: "s1", message: { content: [{ type: "tool_result", content: "Allow" }] } }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "AskUserQuestion" }] } }),
+      JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", content: "Allow" }] } }),
     ].join("\n") + "\n");
 
     update(api, {
-      id: "s1",
+      id: sessionId,
       state: "working",
       event: "PostToolUse",
+      rawSessionId,
       toolName: "AskUserQuestion",
       transcriptPath: transcript,
     });
 
     mock.timers.tick(1999);
-    assert.strictEqual(api.sessions.get("s1").state, "working");
+    assert.strictEqual(api.sessions.get(sessionId).state, "working");
     assert.deepStrictEqual(soundsPlayed, []);
 
     fs.appendFileSync(transcript, JSON.stringify({
       type: "assistant",
-      sessionId: "s1",
       message: { content: "Final answer from Claude Desktop." },
     }) + "\n");
     mock.timers.tick(1);
 
-    const session = api.sessions.get("s1");
+    const session = api.sessions.get(sessionId);
     assert.strictEqual(session.state, "idle");
     assert.strictEqual(session.assistantLastOutput, "Final answer from Claude Desktop.");
     assert.strictEqual(api.getCurrentState(), "attention");
     assert.ok(soundsPlayed.includes("complete"));
     assert.strictEqual(api.deriveSessionBadge(session), "done");
+  });
+
+  it("Claude transcript fallback documents raw transcript sessionId mismatch", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-claude-stop-fallback-"));
+    const transcript = path.join(dir, "transcript.jsonl");
+    const rawSessionId = "claude-probe-raw-mismatch";
+    const sessionId = resolveSessionIdentity(rawSessionId, "local").sessionId;
+    fs.writeFileSync(transcript, [
+      JSON.stringify({ type: "assistant", sessionId: rawSessionId, message: { content: [{ type: "tool_use", name: "AskUserQuestion" }] } }),
+      JSON.stringify({ type: "user", sessionId: rawSessionId, message: { content: [{ type: "tool_result", content: "Allow" }] } }),
+      JSON.stringify({ type: "assistant", sessionId: rawSessionId, message: { content: "Final answer from raw transcript." } }),
+    ].join("\n") + "\n");
+
+    update(api, {
+      id: sessionId,
+      state: "working",
+      event: "PostToolUse",
+      rawSessionId,
+      toolName: "AskUserQuestion",
+      transcriptPath: transcript,
+    });
+    mock.timers.tick(10000);
+
+    const session = api.sessions.get(sessionId);
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.assistantLastOutput, null);
+    assert.ok(!soundsPlayed.includes("complete"));
+    assert.strictEqual(api.deriveSessionBadge(session), "running");
+  });
+
+  it("Claude transcript completion fallback is cancelled before restoring the same raw session id", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-claude-stop-fallback-"));
+    const transcript = path.join(dir, "transcript.jsonl");
+    const rawSessionId = "claude-probe-restore-race";
+    const sessionId = resolveSessionIdentity(rawSessionId, "local").sessionId;
+    fs.writeFileSync(transcript, [
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "AskUserQuestion" }] } }),
+      JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", content: "Allow" }] } }),
+      JSON.stringify({ type: "assistant", message: { content: "OLD TRANSCRIPT FINAL" } }),
+    ].join("\n") + "\n");
+
+    update(api, {
+      id: sessionId,
+      state: "working",
+      event: "PostToolUse",
+      rawSessionId,
+      toolName: "AskUserQuestion",
+      transcriptPath: transcript,
+    });
+    assert.strictEqual(api.dismissSession(sessionId), true);
+    assert.strictEqual(api.restoreSessionFromLease({
+      sessionId: rawSessionId,
+      agentId: "claude-code",
+      active: true,
+      eventAt: 1,
+      validUntil: null,
+      state: "working",
+      pid: 12345,
+      cwd: dir,
+    }), true);
+
+    mock.timers.tick(2000);
+
+    const session = api.sessions.get(sessionId);
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.assistantLastOutput, null);
+    assert.ok(!soundsPlayed.includes("complete"));
+    assert.strictEqual(api.deriveSessionBadge(session), "running");
   });
 
   it("Claude transcript completion fallback is limited to AskUserQuestion tool results", () => {

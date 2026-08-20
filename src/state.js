@@ -179,14 +179,9 @@ let stateChangedAt = Date.now();
 let pendingTimer = null;
 let autoReturnTimer = null;
 let pendingState = null;
-// #406 Stop completion debounce: sessionId -> timer holding a Stop as "working"
-// until a quiet window confirms the turn really ended.
-const pendingCompletionTimers = new Map();
-// Sessions whose completion the #406 gate is currently withholding, by either
-// shape: a debounce timer, or a hard hold that only a later Stop can release.
-// This is the exact window in which a replayed Stop must still know the answer
-// the withheld Stop carried, and it is entered only from the claude-code gate.
-const withheldCompletions = new Set();
+// #406 Stop completion debounce: sessionId -> record holding one exact Stop
+// as "working" until a quiet window confirms the turn really ended.
+const pendingCompletionDebounces = new Map();
 let eyeResendTimer = null;
 let updateVisualState = null;
 let updateVisualKind = null;
@@ -1160,7 +1155,7 @@ function evictOldestSessionIfNeeded(sessionId) {
     }
   }
 
-  if (oldestId) sessions.delete(oldestId);
+  if (oldestId) deleteSessionWithCompletionCleanup(oldestId, "max-sessions-evict");
 }
 
 // Sets / clears `requiresCompletionAck` based on the current event.
@@ -1430,31 +1425,39 @@ function getQuotaSourceCount() {
 // and bg-only Stops with final assistant text can be debounced: hold "working"
 // and only celebrate if no forward-progress event for the session arrives
 // within the window.
-function scheduleCompletionDebounce(sessionId, debounceMs) {
-  const existing = pendingCompletionTimers.get(sessionId);
-  if (existing) clearTimeout(existing);
-  const timer = setTimeout(() => {
-    pendingCompletionTimers.delete(sessionId);
-    promoteCompletion(sessionId);
+function scheduleCompletionDebounce(sessionId, debounceMs, payload = {}) {
+  const existing = pendingCompletionDebounces.get(sessionId);
+  if (existing && existing.timer) clearTimeout(existing.timer);
+  const text = normalizeAssistantOutput(payload && payload.text);
+  const record = {
+    timer: null,
+    assistantLastOutput: text,
+    assistantLastOutputTruncated: !!(text && payload && payload.truncated === true),
+  };
+  record.timer = setTimeout(() => {
+    if (pendingCompletionDebounces.get(sessionId) !== record) return;
+    pendingCompletionDebounces.delete(sessionId);
+    promoteCompletion(sessionId, {
+      text: record.assistantLastOutput,
+      truncated: record.assistantLastOutputTruncated,
+    });
   }, debounceMs);
-  pendingCompletionTimers.set(sessionId, timer);
+  pendingCompletionDebounces.set(sessionId, record);
 }
 
 function cancelCompletionDebounce(sessionId, reason) {
-  // Runs before the early return: a hard hold has no timer, and it still has to
-  // release the withheld marker.
-  withheldCompletions.delete(sessionId);
-  const timer = pendingCompletionTimers.get(sessionId);
-  if (!timer) return;
-  clearTimeout(timer);
-  pendingCompletionTimers.delete(sessionId);
+  const record = pendingCompletionDebounces.get(sessionId);
+  if (!record) return;
+  if (record.timer) clearTimeout(record.timer);
+  pendingCompletionDebounces.delete(sessionId);
   debugSession(`stop-debounce cancel sid=${sessionId} by=${reason || "-"}`);
 }
 
 function clearAllCompletionDebounces() {
-  for (const timer of pendingCompletionTimers.values()) clearTimeout(timer);
-  pendingCompletionTimers.clear();
-  withheldCompletions.clear();
+  for (const record of pendingCompletionDebounces.values()) {
+    if (record && record.timer) clearTimeout(record.timer);
+  }
+  pendingCompletionDebounces.clear();
 }
 
 function cancelClaudeTranscriptCompletionProbe(sessionId, reason) {
@@ -1468,6 +1471,12 @@ function cancelClaudeTranscriptCompletionProbe(sessionId, reason) {
 function clearAllClaudeTranscriptCompletionProbes() {
   for (const { timer } of claudeTranscriptCompletionProbes.values()) clearTimeout(timer);
   claudeTranscriptCompletionProbes.clear();
+}
+
+function deleteSessionWithCompletionCleanup(sessionId, reason) {
+  cancelCompletionDebounce(sessionId, reason);
+  cancelClaudeTranscriptCompletionProbe(sessionId, reason);
+  return sessions.delete(sessionId);
 }
 
 function isClaudeElicitationCompletionTool(toolName) {
@@ -1523,10 +1532,18 @@ function scheduleClaudeTranscriptCompletionProbe(sessionId, transcriptPath) {
 // tail over any Notification that landed during the window), settle to idle,
 // and only now flip awaitingInputSinceStop. Then celebrate, unless a Kimi
 // permission lock is holding the pet.
-function promoteCompletion(sessionId) {
-  withheldCompletions.delete(sessionId);
+function promoteCompletion(sessionId, completionPayload = undefined) {
   const session = sessions.get(sessionId);
   if (!session) return;
+  if (completionPayload !== undefined) {
+    const text = normalizeAssistantOutput(completionPayload && completionPayload.text);
+    session.assistantLastOutput = text;
+    session.assistantLastOutputTruncated = !!(
+      text
+      && completionPayload
+      && completionPayload.truncated === true
+    );
+  }
   session.subagentTracker = clearSubagentTracker(cloneSubagentTracker(session));
   // The stored session settles idle, but this Stop consumed the completion
   // attention cue. Record that distinction so a later duplicate Stop is
@@ -1899,29 +1916,11 @@ function updateSession(sessionId, state, event, opts = {}) {
   );
   const srcContextUsage = resolvedContextUsage.contextUsage;
   const srcContextUsageOrigin = resolvedContextUsage.contextUsageOrigin;
-  // Sticky ONLY while the #406 gate is withholding this session's completion.
-  // The Stop that carries the answer can be withheld and replayed later by
-  // promoteCompletion; any event arriving inside that window (Notification,
-  // PermissionResult, SessionStart(resume), ...) carries no assistant output and
-  // would otherwise rewrite the recorded answer to null, so the replayed
-  // completion ships title-only -- or, with plain Telegram pings disabled, is
-  // dropped entirely.
-  //
-  // The window is the bound. An earlier attempt made the field sticky for every
-  // event and cleared it at a guessed turn boundary (UserPromptSubmit /
-  // SessionStart), which leaked one turn's answer into the next on any agent
-  // that emits neither -- the Codex JSONL monitor emits task_started /
-  // task_complete and nothing else, so the clear was structurally unreachable
-  // there. Only the claude-code gate ever populates withheldCompletions, so
-  // agents that cannot be withheld cannot carry anything forward.
   const incomingAssistantLastOutput = normalizeAssistantOutput(assistantLastOutput);
-  const srcAssistantLastOutput = incomingAssistantLastOutput
-    || (withheldCompletions.has(sessionId) ? (existing && existing.assistantLastOutput) || null : null);
+  const srcAssistantLastOutput = incomingAssistantLastOutput;
   const srcAssistantLastOutputTruncated = !!(
     srcAssistantLastOutput
-    && (incomingAssistantLastOutput
-      ? assistantLastOutputTruncated === true
-      : !!(existing && existing.assistantLastOutputTruncated === true))
+    && assistantLastOutputTruncated === true
   );
   const incomingToolName = normalizeToolName(toolName);
   const srcToolName = incomingToolName || (existing && existing.lastToolName) || null;
@@ -1971,7 +1970,6 @@ function updateSession(sessionId, state, event, opts = {}) {
     const hardLiveWork = disposition.kind === "hold";
     const debounceMs = disposition.debounceMs;
     if (hardLiveWork || debounceMs > 0) {
-      withheldCompletions.add(sessionId);
       // Hold the Stop as "working" and DROP the event to null so recentEvents
       // keeps NO "Stop" tail while held. Why null and not "Stop": deriveSessionBadge
       // only inspects the latest event, so a withheld Stop tail would (a) be
@@ -1994,7 +1992,10 @@ function updateSession(sessionId, state, event, opts = {}) {
             `stop-gate sid=${sessionId} bg=${backgroundTasksCount} crons=${sessionCronsCount} active=${stopHookActive} action=debounce-working`
           );
         }
-        scheduleCompletionDebounce(sessionId, debounceMs);
+        scheduleCompletionDebounce(sessionId, debounceMs, {
+          text: incomingAssistantLastOutput,
+          truncated: assistantLastOutputTruncated === true,
+        });
       }
     }
     // debounceMs <= 0 && !hardLiveWork → keep "attention" (immediate celebration).
@@ -2171,7 +2172,7 @@ function updateSession(sessionId, state, event, opts = {}) {
         sessions.set(sessionId, { state: resumeState, updatedAt: Date.now(), displayHint: dh, ...base, resumeState: null });
         debugSession(`subagent-stop restore ${describeSession(sessionId, sessions.get(sessionId))}`);
       } else {
-        sessions.delete(sessionId);
+        deleteSessionWithCompletionCleanup(sessionId, "subagent-stop-no-resume");
         debugSession(`subagent-stop delete sid=${sessionId} reason=no-resume`);
       }
     } else {
@@ -2200,7 +2201,7 @@ function updateSession(sessionId, state, event, opts = {}) {
         reason: "session-end",
       });
     }
-    sessions.delete(sessionId);
+    deleteSessionWithCompletionCleanup(sessionId, "session-end");
     debugSession(`session-end delete ${describeSession(sessionId, endingSession)}`);
     cleanStaleSessions();
     if (srcAgentId === "kimi-cli") disposeKimiPermissionSession(sessionId);
@@ -2556,7 +2557,7 @@ function cleanStaleSessions() {
           reason: `stale-delete-${decision.reason}`,
         });
       }
-      sessions.delete(id); changed = true;
+      deleteSessionWithCompletionCleanup(id, `stale-delete-${decision.reason}`); changed = true;
       continue;
     }
 
@@ -2608,7 +2609,7 @@ function dismissSession(sessionId) {
   const session = sessions.get(id);
   if (!session) return false;
   if (session.agentId === "codex") cancelCodexExitProbe(id, "session-hidden");
-  sessions.delete(id);
+  deleteSessionWithCompletionCleanup(id, "session-hidden");
   if (session.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-hidden");
   const resolved = resolveDisplayState();
   setState(resolved, getSvgOverride(resolved));
@@ -2673,7 +2674,7 @@ function clearSessionsByAgent(agentId) {
   for (const [id, s] of sessions) {
     if (s && s.agentId === agentId) {
       if (agentId === "codex") cancelCodexExitProbe(id, "clear-sessions");
-      sessions.delete(id);
+      deleteSessionWithCompletionCleanup(id, "clear-sessions");
       if (agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-clear-sessions");
       removed++;
     }
