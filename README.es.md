@@ -72,6 +72,7 @@ Piensa cuando envías un prompt, escribe cuando se ejecutan herramientas, se mue
 - **Secuencia de sueño** — bosteza, cabecea, se desploma y se duerme tras 60 segundos de inactividad; mover el mouse activa una animación de despertar sobresaltado
 - **Reacciones a clics** — doble clic para darle un toque y 4 clics para que se agite
 - **Arrastre desde cualquier estado** — agarra a Clawd cuando quieras (Pointer Capture evita que se suelte al moverlo rápido) y suéltalo para continuar
+- **Papirotazo** — actívalo en `Settings…` → `General`: mantén Ctrl (Option en macOS) y arrastra en sentido **contrario** al destino; Clawd se queda quieto mientras una proyección marca el punto exacto de aterrizaje, y al soltar sale disparado hacia allí, incluso a otra pantalla si tiras fuerte. Intensidad configurable
 - **Modo mini** — arrástralo al borde derecho o haz clic derecho en «Modo mini»; Clawd se esconde en el borde, asoma al pasar el cursor, muestra alertas y celebraciones mini y usa transiciones de salto parabólicas
 
 ### Globo de permisos
