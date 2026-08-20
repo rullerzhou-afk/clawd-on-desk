@@ -103,9 +103,15 @@ APPLE_API_ISSUER         # Issuer ID
 APPLE_API_KEY            # .p8 base64（Developer ID 权限）
 ```
 
-CI 里构建时传 `-c.mac.identity=...`（或让 electron-builder 自动发现 `CSC_LINK`），
-并配置 `mac.notarize: true`（electron-builder 原生支持用 APPLE_API_* 自动公证）。
-注意：CI 里同样要 `--publish never`，发布交给 workflow 显式步骤，避免污染上游。
+`.github/workflows/build.yml` 的 mac job 已内置检测：配置了 `CSC_LINK` 就自动走
+Developer ID 签名 + 公证（electron-builder 原生用 `APPLE_API_*` 公证），并验证
+`spctl accepted` + `stapler validate`；未配置则退化为 ad-hoc 签名（上游现状，行为不变）。
+
+> **关键细节**：仓库 `package.json` 的 `build.mac.identity` 是 `"-"`（ad-hoc），
+> 它会阻止 electron-builder 自动发现证书。workflow 已自动从 p12 提取证书通用名并通过
+> `-c.mac.identity=...` 覆盖，**维护者不需要改 package.json**。
+> CI 里同样 `--publish never`，发布交给 workflow 显式步骤，避免污染上游。
+
 无证书时保持 `identity: "-"`（ad-hoc），维持现状。
 
 ## 五、常见问题
