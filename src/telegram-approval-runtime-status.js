@@ -1,5 +1,7 @@
 "use strict";
 
+const { getEntryDisplaySessionTag } = require("./state-session-snapshot");
+
 const telegramApprovalSettings = require("./telegram-approval-settings");
 const {
   normalizeTelegramVerificationFailure,
@@ -651,10 +653,8 @@ function formatAge(seconds, locale = STATUS_LOCALES.en) {
   return formatTemplate(age.day || STATUS_LOCALES.en.age.day, { n: Math.floor(hours / 24) });
 }
 
-function shortId(id) {
-  const s = sanitizeStatusText(id, 32);
-  if (!s) return "";
-  return s.length > 8 ? s.slice(0, 8) : s;
+function shortId(entry) {
+  return sanitizeStatusText(getEntryDisplaySessionTag(entry), 32) || "";
 }
 
 function summarizeSession(entry, now) {
@@ -663,7 +663,7 @@ function summarizeSession(entry, now) {
     ? entry.lastEvent
     : null;
   return {
-    id: shortId(entry.id),
+    id: shortId(entry),
     agentId: sanitizeStatusText(entry.agentId || "unknown", 48) || "unknown",
     state: sanitizeStatusText(entry.state || "idle", 32) || "idle",
     badge: sanitizeStatusText(entry.badge || "idle", 32) || "idle",

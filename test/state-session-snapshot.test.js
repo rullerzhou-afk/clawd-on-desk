@@ -8,6 +8,8 @@ const {
   deriveSessionBadge,
   deriveSourceInfo,
   isSessionInProgress,
+  buildDisplaySessionTag,
+  buildSessionSnapshotEntry,
   buildSessionSnapshot,
   getActiveSessionAliasKeys,
   sessionSnapshotSignature,
@@ -153,6 +155,72 @@ describe("remote profile action ids", () => {
       Object.fromEntries(snapshot.sessions.map((entry) => [entry.profileId, entry.displayTitle])),
       { "profile-a": "Alpha", "profile-b": "Beta" },
     );
+  });
+});
+
+describe("display session tags", () => {
+  it("hashes legal canonical ids into stable 10-hex display tags", () => {
+    const canonical = makeSessionKey({
+      profileId: "local",
+      rawSessionId: "token-1234567890-abcdef",
+    });
+
+    assert.strictEqual(canonical, "s1.bG9jYWw.dG9rZW4tMTIzNDU2Nzg5MC1hYmNkZWY");
+    assert.strictEqual(buildDisplaySessionTag(canonical), "83aacb6af9");
+    assert.match(buildDisplaySessionTag(canonical), /^[0-9a-f]{10}$/);
+  });
+
+  it("returns an empty tag for missing, non-string, or blank ids", () => {
+    for (const value of [null, undefined, "", "   ", 42, true, {}, []]) {
+      assert.strictEqual(buildDisplaySessionTag(value), "", String(value));
+    }
+  });
+
+  it("distinguishes real Codex UUIDv7-shaped raw ids after canonicalization", () => {
+    const first = makeSessionKey({
+      profileId: "local",
+      rawSessionId: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+    });
+    const second = makeSessionKey({
+      profileId: "local",
+      rawSessionId: "codex:019e115b-4df2-7ed0-b90e-8e6345aca777",
+    });
+
+    assert.strictEqual(buildDisplaySessionTag(first), "732d7659d7");
+    assert.strictEqual(buildDisplaySessionTag(second), "b8a6f6f6ac");
+    assert.notStrictEqual(buildDisplaySessionTag(first), buildDisplaySessionTag(second));
+  });
+
+  it("distinguishes the same raw id in different remote profiles", () => {
+    const rawSessionId = "same-visible-id";
+    const a = makeSessionKey({ profileId: "profile-a", rawSessionId });
+    const b = makeSessionKey({ profileId: "profile-b", rawSessionId });
+
+    assert.notStrictEqual(buildDisplaySessionTag(a), buildDisplaySessionTag(b));
+  });
+
+  it("snapshot entries expose a tag derived only from the canonical id", () => {
+    const id = makeSessionKey({ profileId: "local", rawSessionId: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777" });
+    const withRaw = buildSessionSnapshotEntry(id, session("working", {
+      rawSessionId: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+    }));
+    const withoutRaw = buildSessionSnapshotEntry(id, session("working"));
+
+    assert.strictEqual(withRaw.displaySessionTag, "732d7659d7");
+    assert.strictEqual(withoutRaw.displaySessionTag, withRaw.displaySessionTag);
+    for (const forbidden of ["s1.", "bG9", "codex:", "019e11"]) {
+      assert.strictEqual(withRaw.displaySessionTag.includes(forbidden), false, forbidden);
+    }
+  });
+
+  it("snapshot signature tracks the visible display session tag field", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["tagged", session("working")],
+    ]), { statePriority: STATE_PRIORITY });
+    const changed = JSON.parse(JSON.stringify(snapshot));
+    changed.sessions[0].displaySessionTag = "deadbeef00";
+
+    assert.notStrictEqual(sessionSnapshotSignature(snapshot), sessionSnapshotSignature(changed));
   });
 });
 

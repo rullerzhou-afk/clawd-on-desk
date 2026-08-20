@@ -390,8 +390,11 @@ describe("package build config", () => {
       ]) {
         assert.match(focusedLine, new RegExp(`test/${testFile.replace(/\./g, "\\.")}`));
       }
+      // A display wrapper is allowed (Linux needs one or the Electron-backed
+      // suites skip themselves), but all three release jobs must still run the
+      // full suite — not a subset, and not nothing.
       assert.strictEqual(
-        (workflow.match(/      - run: npm test/g) || []).length,
+        (workflow.match(/      - run: (?:xvfb-run -a )?npm test$/gm) || []).length,
         3,
         "Windows, macOS, and Linux release jobs must all retain their npm test step"
       );

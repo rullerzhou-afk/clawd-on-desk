@@ -96,6 +96,7 @@ const { createKimiQuotaRuntime } = require("./kimi-quota-runtime");
 const {
   getPetTintIdForTheme,
   resolvePetTintPayload,
+  buildPetAccessoryPayload,
   resolvePetAccessoryPayload,
 } = require("./pet-customization-catalog");
 const {
@@ -897,6 +898,32 @@ if (_loadedStartupTheme._id !== _requestedThemeId || _loadedStartupTheme._varian
 }
 
 // ── Pet window geometry / bounds runtime ──
+// Geometry's startup/theme-swap fallback only. It must stay a pure read:
+// resolvePetAccessoryPayload() commits to the canonical payload, so using it
+// here would let a hit-window sync install a payload resolved from its own
+// wall clock — the midnight/holiday race the canonical payload exists to end.
+function getEffectivePetAccessoryPayload() {
+  const activeTheme = getActiveTheme();
+  const snapshot = _settingsController.getSnapshot();
+  const accessoryId = getEffectivePetAccessoryIdForTheme({
+    petAccessory: snapshot.petAccessory,
+    holidayAccessoryEnabled: snapshot.holidayAccessoryEnabled,
+    themeId: activeTheme && activeTheme._id,
+  });
+  return buildPetAccessoryPayload(accessoryId, activeTheme);
+}
+
+// Composed accessory facing as the renderer actually applied it (mini-left
+// stage XOR asset-direction stage). Defaults to unmirrored until the first
+// report; that matches the pre-accessory-hitbox behaviour.
+let _accessoryMirrored = false;
+function setAccessoryMirrored(mirrored) {
+  const next = !!mirrored;
+  if (_accessoryMirrored === next) return;
+  _accessoryMirrored = next;
+  syncHitWin();
+}
+
 const petWindowRuntime = createPetWindowRuntime({
   screen,
   isWin,
@@ -911,6 +938,8 @@ const petWindowRuntime = createPetWindowRuntime({
   getCurrentState: () => _state.getCurrentState(),
   getCurrentSvg: () => _state.getCurrentSvg(),
   getCurrentHitBox: () => _state.getCurrentHitBox(),
+  getCurrentAccessoryPayload: getEffectivePetAccessoryPayload,
+  getAccessoryMirrored: () => _accessoryMirrored,
   getMiniMode: () => _mini.getMiniMode(),
   getMiniTransitioning: () => _mini.getMiniTransitioning(),
   getMiniContainedSeam: () => _mini.getContainedSeam(),
@@ -3797,6 +3826,7 @@ const holidayAccessoryRuntime = createHolidayAccessoryRuntime({
   getSettingsSnapshot: () => _settingsController.getSnapshot(),
   getActiveTheme: () => getActiveTheme(),
   sendToRenderer,
+  onAccessoryChange: syncHitWin,
   logWarn: console.warn,
 });
 
@@ -3841,6 +3871,7 @@ const settingsEffectRouter = createSettingsEffectRouter({
   exitMiniMode: () => exitMiniMode(),
   getMiniMode: () => _mini.getMiniMode(),
   getActiveTheme: () => getActiveTheme(),
+  syncHitWin,
   // #509: re-rest the pet on the newly selected idle visual right away, but
   // only while actually idle — task/sleep/mini states pick it up on their
   // next natural revert instead.
@@ -4273,6 +4304,7 @@ function createWindow() {
     moveWindowForDrag: () => moveWindowForDrag(),
     setIdlePaused: (value) => { idlePaused = !!value; },
     setLowPowerIdlePaused,
+    setAccessoryMirror: setAccessoryMirrored,
     isMiniTransitioning: () => _mini.getMiniTransitioning(),
     getCurrentState: () => _state.getCurrentState(),
     getCurrentSvg: () => _state.getCurrentSvg(),
@@ -4375,6 +4407,11 @@ function createWindow() {
   // Also handles crash recovery (render-process-gone → reload)
   win.webContents.on("did-start-loading", () => {
     setLowPowerIdlePaused(false);
+    // A fresh document draws upright: no .mini-left class, no inline scale on
+    // the direction stage. Keeping the old facing here would leave the hit
+    // window mirrored against an unmirrored pet until something happens to
+    // make the renderer report again.
+    setAccessoryMirrored(false);
   });
   win.webContents.on("did-finish-load", () => {
     sendToRenderer("theme-config", buildRendererThemeConfig());

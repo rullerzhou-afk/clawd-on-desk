@@ -3,11 +3,17 @@
 const {
   getPetTintIdForTheme,
   resolvePetTintPayload,
-  resolvePetAccessoryPayload,
+  buildPetAccessoryPayload,
 } = require("./pet-customization-catalog");
 const {
   getEffectivePetAccessoryIdForTheme,
 } = require("./holiday-accessory");
+const {
+  commitPetAccessoryPayload,
+  describeGeometrySync,
+  setPetAccessoryFloatingSurfaceRepositioner,
+  repositionPetAccessoryFloatingSurfaces,
+} = require("./pet-accessory-state");
 
 const MENU_AFFECTING_KEYS = new Set([
   "lang",
@@ -84,15 +90,46 @@ function createSettingsEffectRouter(options = {}) {
   const exitMiniMode = options.exitMiniMode || noop;
   const getMiniMode = options.getMiniMode || (() => false);
   const getActiveTheme = options.getActiveTheme || (() => null);
+  const syncHitWin = options.syncHitWin || noop;
   const refreshIdleVisual = options.refreshIdleVisual || noop;
   const rebuildAllMenus = options.rebuildAllMenus || noop;
   const reconcilePowerSaveBlocker = options.reconcilePowerSaveBlocker || noop;
   const now = options.now || (() => new Date());
 
+  setPetAccessoryFloatingSurfaceRepositioner(repositionFloatingBubbles);
+
   let started = false;
   let unsubscribeSettings = null;
   let unsubscribeShortcuts = null;
   let lastTogglePetShortcut = ((settingsController.getSnapshot().shortcuts) || {}).togglePet || null;
+
+  function applyAccessoryCandidate(activeTheme, accessoryId) {
+    const payload = buildPetAccessoryPayload(accessoryId, activeTheme);
+    try {
+      sendToRenderer("pet-accessory-change", payload);
+    } catch (err) {
+      warn(logWarn, "Clawd: accessory renderer delivery failed:", err);
+      return false;
+    }
+
+    commitPetAccessoryPayload(payload, activeTheme);
+    try {
+      const geometry = describeGeometrySync(syncHitWin());
+      if (!geometry.applied) {
+        // Deferred is not a failure: the payload is already canonical, so the
+        // next sync (drag release, window show, next move) picks up the new
+        // envelope on its own. Warning here would fire every time the user
+        // changes a hat while holding the pet.
+        if (geometry.deferred) return true;
+        throw new Error("native hit geometry was not applied");
+      }
+      repositionPetAccessoryFloatingSurfaces();
+      return true;
+    } catch (err) {
+      warn(logWarn, "Clawd: accessory geometry apply failed:", err);
+      return false;
+    }
+  }
 
   function handleSettingsChange({ changes } = {}) {
     if (!changes || typeof changes !== "object") return;
@@ -136,10 +173,7 @@ function createSettingsEffectRouter(options = {}) {
         themeId: activeTheme && activeTheme._id,
         date: now(),
       });
-      sendToRenderer(
-        "pet-accessory-change",
-        resolvePetAccessoryPayload(accessoryId, activeTheme)
-      );
+      applyAccessoryCandidate(activeTheme, accessoryId);
     }
     if ("keepAwakeWhileWorking" in changes) {
       safeCall(logWarn, "Clawd: reconcilePowerSaveBlocker failed:", reconcilePowerSaveBlocker);

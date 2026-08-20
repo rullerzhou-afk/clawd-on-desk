@@ -133,6 +133,7 @@ describe("theme schema validation", () => {
           files: {
             "idle.svg": {
               staticFrame: { cx: 50, baseY: 20, width: 30 },
+              hitBoxPadding: { left: 1, top: 2, right: 1, bottom: 0 },
               followTarget: {
                 id: "body-js",
                 frame: { cx: 12, baseY: 4, width: 16 },
@@ -152,6 +153,10 @@ describe("theme schema validation", () => {
     assert.strictEqual(schema.deriveAccessoryCapability(normalized), true);
     assert.strictEqual(schema.buildCapabilities(raw).accessories, true);
     assert.strictEqual(schema.buildCapabilities(normalized).accessories, true);
+    assert.deepStrictEqual(
+      normalized.customization.accessories.files["idle.svg"].hitBoxPadding,
+      { left: 1, top: 2, right: 1, bottom: 0 }
+    );
     assert.deepStrictEqual(
       normalized.customization.accessories.files["sleeping.svg"],
       { visibility: "hidden" }
@@ -288,6 +293,15 @@ describe("theme schema validation", () => {
               id: "[id^=eye]",
               frame: { cx: 12, baseY: 4, width: 16 },
             },
+          },
+        },
+      },
+      {
+        default: { staticFrame: { cx: 50, baseY: 20, width: 30 } },
+        files: {
+          "idle.svg": {
+            staticFrame: { cx: 50, baseY: 20, width: 30 },
+            hitBoxPadding: { top: -1 },
           },
         },
       },

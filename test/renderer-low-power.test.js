@@ -8,6 +8,7 @@ const vm = require("node:vm");
 
 const RENDERER = path.join(__dirname, "..", "src", "renderer.js");
 const ACCESSORY_LAYOUT = path.join(__dirname, "..", "src", "pet-accessory-layout.js");
+const ACCESSORY_MIRROR = path.join(__dirname, "..", "src", "pet-accessory-mirror.js");
 const PRELOAD = path.join(__dirname, "..", "src", "preload.js");
 const MAIN = path.join(__dirname, "..", "src", "main.js");
 
@@ -40,6 +41,7 @@ function loadPreloadWithElectron() {
     : null;
 
   const ipcListeners = new Map();
+  const sentToMain = [];
   const exposed = {};
 
   require.cache[electronPath] = {
@@ -52,6 +54,7 @@ function loadPreloadWithElectron() {
       },
       ipcRenderer: {
         on: (event, handler) => { ipcListeners.set(event, handler); },
+        send: (channel, ...args) => { sentToMain.push({ channel, args }); },
       },
     },
   };
@@ -60,6 +63,7 @@ function loadPreloadWithElectron() {
 
   return {
     electronAPI: exposed.electronAPI,
+    sentToMain,
     // Simulates main.js's ipcRenderer send arriving at whatever handler
     // preload.js registered for `event` via ipcRenderer.on(event, ...).
     emitFromMain: (event, ...args) => {
@@ -324,6 +328,7 @@ function createRendererHarness(options = {}) {
   context.globalThis = context;
 
   const source = `${readNormalized(ACCESSORY_LAYOUT)}
+${readNormalized(ACCESSORY_MIRROR)}
 ${readNormalized(RENDERER)}
 globalThis.__rendererTest = {
   initWithConfig,
@@ -2303,14 +2308,86 @@ describe("renderer glyph flip compensation", () => {
     assert.strictEqual(roam.style.transformOrigin, "73px 50%");
   });
 
-  it("flips reverse-drawn mini crabwalk assets during pre-entry without entering mini layout", () => {
-    const source = fs.readFileSync(RENDERER, "utf8");
+  it("preload forwards the accessory facing to main as a plain boolean", () => {
+    // The renderer harness stubs electronAPI with a Proxy, so it cannot prove
+    // this boundary — only the real preload can.
+    const harness = loadPreloadWithElectron();
+    try {
+      harness.electronAPI.reportAccessoryMirror(true);
+      harness.electronAPI.reportAccessoryMirror(0);
+      assert.deepStrictEqual(
+        harness.sentToMain
+          .filter((sent) => sent.channel === "accessory-mirror")
+          .map((sent) => sent.args[0]),
+        [true, false]
+      );
+    } finally {
+      harness.restore();
+    }
+  });
 
-    assert.ok(source.includes("let _miniPreEntryMode = false;"));
-    assert.ok(source.includes("_miniPreEntryMode = !!enabled && preEntry;"));
-    assert.ok(source.includes("_miniPreEntryMode && state === \"mini-crabwalk\""));
-    assert.ok(source.includes("_inMiniMode = !!enabled && !preEntry;"));
-    assert.ok(source.includes("applyMiniFlip(next, commitState);"));
+  it("tells main which way the accessory ended up facing", () => {
+    // Main sizes the native hit window from this. Without the report it keeps
+    // its startup default of "upright" forever and the hat is drawn on one
+    // side while it stays draggable on the other.
+    const harness = createRendererHarness({ themeConfig: { hasRoamVisual: true } });
+    const reported = () => harness.electronCalls
+      .filter((call) => call.name === "reportAccessoryMirror")
+      .map((call) => call.args[0]);
+
+    harness.electronHandlers.onRoamHeading(true);
+    harness.api.swapToFile("roam.svg", "roam", false);
+    harness.api.pendingNext.listeners.get("load")();
+    assert.strictEqual(harness.assetDirectionStage.style.scale, "-1 1");
+    assert.strictEqual(reported().at(-1), true, "a left-heading walk mirrors the accessory");
+
+    harness.electronHandlers.onRoamHeading(false);
+    assert.strictEqual(harness.assetDirectionStage.style.scale, "none");
+    assert.strictEqual(reported().at(-1), false, "reversing the walk reports the change");
+
+    // Edge-triggered: redundant recomputes must not spam main.
+    const before = reported().length;
+    harness.electronHandlers.onRoamHeading(false);
+    assert.strictEqual(reported().length, before, "an unchanged facing must not re-report");
+  });
+
+  it("reports the two mirror stages composed, not just one of them", () => {
+    const harness = createRendererHarness({ themeConfig: { miniFlipAssets: true } });
+    const lastReported = () => {
+      const calls = harness.electronCalls.filter((call) => call.name === "reportAccessoryMirror");
+      return calls.length ? calls[calls.length - 1].args[0] : null;
+    };
+
+    // Edge-left flips the facing stage while a non-mini visual is on screen.
+    harness.electronHandlers.onMiniModeChange(true, "left", {});
+    assert.strictEqual(lastReported(), true, "mini-left alone mirrors the accessory");
+
+    // A mini visual adds the asset-direction flip; the two cancel out.
+    harness.api.swapToFile("mini-idle.svg", "mini-idle", false);
+    harness.api.pendingNext.listeners.get("load")();
+    assert.strictEqual(lastReported(), false, "both stages flipped means upright again");
+  });
+
+  it("flips reverse-drawn mini crabwalk assets during pre-entry without entering mini layout", () => {
+    const harness = createRendererHarness({ themeConfig: { miniFlipAssets: true } });
+
+    // Pre-entry: the walk-in starts before mini mode is really on, and the
+    // walk-in visual has to face the right way for the whole walk.
+    harness.electronHandlers.onMiniModeChange(true, "right", { preEntry: true });
+    harness.api.swapToFile("crabwalk.svg", "mini-crabwalk", false);
+    harness.api.pendingNext.listeners.get("load")();
+    assert.strictEqual(harness.assetDirectionStage.style.scale, "-1 1");
+
+    // Other mini visuals keep their orientation until the mini swap happens.
+    harness.api.swapToFile("mini-idle.svg", "mini-idle", false);
+    harness.api.pendingNext.listeners.get("load")();
+    assert.strictEqual(harness.assetDirectionStage.style.scale, "none");
+
+    // Once mini mode is actually active they all flip.
+    harness.electronHandlers.onMiniModeChange(true, "right", {});
+    harness.api.swapToFile("mini-peek.svg", "mini-peek", false);
+    harness.api.pendingNext.listeners.get("load")();
+    assert.strictEqual(harness.assetDirectionStage.style.scale, "-1 1");
   });
 
   it("notifies object-channel SVGs when mini-left glyph compensation changes", () => {

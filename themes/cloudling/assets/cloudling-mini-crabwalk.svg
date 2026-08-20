@@ -324,9 +324,20 @@ function setTrailPuff(el, amount, driftX, driftY, baseScale) {
   el.setAttribute('transform', `translate(${dx.toFixed(3)} ${dy.toFixed(3)}) scale(${scale.toFixed(3)})`);
 }
 
+// Deterministic seek for the accessory drag-hitbox audit. frameFor() is a pure
+// function of the clock, so the audit sweeps a whole cycle instead of sampling
+// in real time — real-time sampling made the measured motion envelope depend on
+// how fast the machine happened to be. Never called outside tests; the walk
+// itself is unchanged.
+let seeking = false;
+window.__clawdSeekTo = (seconds) => {
+  if (seconds === null) { seeking = false; return; }
+  seeking = true;
+  applyFrame(els, frameFor(startT + seconds * 1000));
+};
+
 function tick(now) {
-  const f = frameFor(now);
-  applyFrame(els, f);
+  if (!seeking) applyFrame(els, frameFor(now));
   requestAnimationFrame(tick);
 }
 

@@ -87,6 +87,42 @@ describe("built-in accessory capability contracts", () => {
       assert.ok(usages.some((usage) => usage.file === hidden), `${hidden} should be reachable`);
     }
 
+    const buildingTier = raw.workingTiers.find(({ minSessions }) => minSessions === 3);
+    assert.deepStrictEqual(buildingTier, {
+      minSessions: 3,
+      file: "clawd-working-building.svg",
+    });
+    const buildingAccessory =
+      raw.customization.accessories.files[buildingTier.file];
+    assert.deepStrictEqual(
+      buildingAccessory.staticFrame,
+      { cx: 7.5, baseY: 1, width: 16 },
+      "the 3+ session accessory should sit on top of the built-in safety helmet"
+    );
+    assert.strictEqual(buildingAccessory.followTarget.id, "accessory-anchor");
+    assert.deepStrictEqual(
+      buildingAccessory.followTarget.frame,
+      buildingAccessory.staticFrame
+    );
+    for (const tier of raw.workingTiers) {
+      assert.notStrictEqual(
+        raw.customization.accessories.files[tier.file].visibility,
+        "hidden",
+        `${tier.minSessions}-session working accessories should remain visible`
+      );
+    }
+    assert.deepStrictEqual(raw.fileHitBoxes["clawd-working-typing.svg"], {
+      x: -2, y: -7, w: 20, h: 24,
+    });
+    assert.strictEqual(
+      raw.fileHitBoxes["clawd-headphones-groove.svg"],
+      undefined,
+      "the 2-session base hitbox must not reserve empty accessory space"
+    );
+    assert.deepStrictEqual(raw.fileHitBoxes["clawd-working-building.svg"], {
+      x: -1, y: -2, w: 17, h: 19,
+    });
+
     const sleeping = raw.customization.accessories.files["clawd-sleeping.svg"];
     assert.deepStrictEqual(sleeping.staticFrame, { cx: 7.5, baseY: 10, width: 16 });
     assert.strictEqual(sleeping.followTarget.id, "torso-sploot");

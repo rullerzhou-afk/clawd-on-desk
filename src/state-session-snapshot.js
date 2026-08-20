@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto = require("crypto");
 const path = require("path");
 const { sessionAliasKey } = require("./session-alias");
 const { getSessionFocusTarget } = require("./session-focus");
@@ -259,6 +260,20 @@ function shortenSessionIdForDisplay(value, sessionLike) {
   return displayId.length > 6 ? `${displayId.slice(0, 6)}..` : displayId;
 }
 
+function buildDisplaySessionTag(canonicalSessionId) {
+  if (typeof canonicalSessionId !== "string") return "";
+  const trimmed = canonicalSessionId.trim();
+  if (!trimmed) return "";
+  return crypto.createHash("sha256").update(trimmed).digest("hex").slice(0, 10);
+}
+
+function getEntryDisplaySessionTag(entry) {
+  if (entry && typeof entry.displaySessionTag === "string" && entry.displaySessionTag) {
+    return entry.displaySessionTag;
+  }
+  return buildDisplaySessionTag(entry && entry.id);
+}
+
 function sessionDisplayTitle(id, sessionLike, sessionAliases = {}, options = {}) {
   const alias = getSessionAliasEntry(id, sessionLike, sessionAliases);
   if (alias && typeof alias.title === "string" && alias.title) return alias.title;
@@ -334,6 +349,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     id,
     profileId: (session && session.profileId) || "local",
     rawSessionId: (session && session.rawSessionId) || id,
+    displaySessionTag: buildDisplaySessionTag(id),
     agentId,
     agentName: resolveAgentDisplayName(agentId),
     iconUrl: getAgentIconUrl(agentId),
@@ -572,6 +588,7 @@ function sessionSnapshotSignature(snapshot) {
       id: entry.id,
       profileId: entry.profileId,
       rawSessionId: entry.rawSessionId,
+      displaySessionTag: entry.displaySessionTag,
       state: entry.state,
       startupRecovered: !!entry.startupRecovered,
       badge: entry.badge,
@@ -624,6 +641,8 @@ module.exports = {
   getSessionAliasEntry,
   getEffectiveSessionTitle,
   sessionDisplayTitle,
+  buildDisplaySessionTag,
+  getEntryDisplaySessionTag,
   sessionMenuComparator,
   sessionUpdatedAtComparator,
   buildSessionSnapshotEntry,

@@ -24,6 +24,7 @@ jobs:
 
   build-windows:
     needs: validate-release
+    timeout-minutes: 60
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -76,6 +77,7 @@ jobs:
 
   build-mac:
     needs: validate-release
+    timeout-minutes: 60
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -144,6 +146,7 @@ jobs:
 
   build-linux:
     needs: validate-release
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -151,7 +154,10 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: npm ci
-      - run: npm test
+      # Under xvfb so the Electron-backed suites actually run here instead of
+      # skipping themselves for want of a display — a silent skip on the one
+      # Linux job reads exactly like a pass.
+      - run: xvfb-run -a npm test
       - run: npx electron-builder --linux --publish never
       - name: Verify final AppImage AppRun search paths
         run: node scripts/verify-appimage-apprun.js --artifact dist/*.AppImage --output dist/appimage-apprun-manifests/linux-x64.json
