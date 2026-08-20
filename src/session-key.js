@@ -39,29 +39,7 @@ function resolveSessionIdentity(rawSessionId, profileId = LOCAL_SESSION_PROFILE_
   });
 }
 
-// Display helpers can be handed the envelope instead of the raw id: a session
-// created without an explicit rawSessionId falls back to its own key
-// (state.js `(existing && existing.rawSessionId) || rawSessionId || sessionId`).
-// Shortening the envelope renders the same few characters for every session on
-// a profile, so recover the raw id first. The round-trip check keeps this from
-// mangling a raw id that merely looks like a key.
-function decodeSessionKey(value) {
-  if (typeof value !== "string") return null;
-  const parts = value.split(".");
-  if (parts.length !== 3 || parts[0] !== SESSION_KEY_VERSION) return null;
-  try {
-    const profileId = Buffer.from(parts[1], "base64url").toString("utf8");
-    const rawSessionId = Buffer.from(parts[2], "base64url").toString("utf8");
-    if (!profileId || !rawSessionId) return null;
-    if (makeSessionKey({ profileId, rawSessionId }) !== value) return null;
-    return { profileId, rawSessionId };
-  } catch {
-    return null;
-  }
-}
-
 module.exports = {
-  decodeSessionKey,
   LOCAL_SESSION_PROFILE_ID,
   SESSION_KEY_VERSION,
   normalizeRawSessionId,

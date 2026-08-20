@@ -1,6 +1,6 @@
 "use strict";
 
-const { shortenSessionIdForDisplay } = require("./state-session-snapshot");
+const { getEntryDisplaySessionTag } = require("./state-session-snapshot");
 
 const telegramApprovalSettings = require("./telegram-approval-settings");
 const {
@@ -653,20 +653,8 @@ function formatAge(seconds, locale = STATUS_LOCALES.en) {
   return formatTemplate(age.day || STATUS_LOCALES.en.age.day, { n: Math.floor(hours / 24) });
 }
 
-// See telegram-companion: entry.id is the namespaced key, so it must not be
-// sliced directly. Shorten the raw id through the shared helper, then sanitize.
 function shortId(entry) {
-  const raw = (entry && entry.rawSessionId) || (entry && entry.id);
-  // Shorten first, then sanitize. The scrubber's whole-token rules cannot match
-  // inside a six-character window, but that is the point: cutting to six
-  // characters IS the redaction here -- a six-character prefix of a token is not
-  // a token. Sanitizing first was tried and is worse: the numeric-id rule fires
-  // on the leading group of an ordinary session UUID, so every session collapses
-  // to "<redac" and the field stops disambiguating, which is the defect this
-  // whole change exists to fix. sanitizeStatusText still runs to strip control
-  // characters and collapse whitespace.
-  const display = shortenSessionIdForDisplay(raw, entry, { ellipsis: false });
-  return sanitizeStatusText(display, 32) || "";
+  return sanitizeStatusText(getEntryDisplaySessionTag(entry), 32) || "";
 }
 
 function summarizeSession(entry, now) {

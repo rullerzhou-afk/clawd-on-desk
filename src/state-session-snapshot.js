@@ -1,7 +1,6 @@
 "use strict";
 
-const { decodeSessionKey } = require("./session-key");
-
+const crypto = require("crypto");
 const path = require("path");
 const { sessionAliasKey } = require("./session-alias");
 const { getSessionFocusTarget } = require("./session-focus");
@@ -243,17 +242,9 @@ function isInternalWorkspaceCwd(id, sessionLike, cwd) {
   return false;
 }
 
-// `options.ellipsis: false` drops the trailing ".." for callers that render the
-// value as a compact tag (for example "#abc123"), where the dots read as part of
-// the id rather than as truncation.
-// `options.sanitize` runs on the full recovered id, before shortening. Scrubbers
-// that match whole tokens (a run of digits, a telegram-shaped id) cannot fire
-// against a six-character window, so a caller that redacts must redact first.
-function shortenSessionIdForDisplay(value, sessionLike, options = {}) {
+function shortenSessionIdForDisplay(value, sessionLike) {
   if (value === null || value === undefined) return value;
   let displayId = String(value);
-  const decoded = decodeSessionKey(displayId);
-  if (decoded) displayId = decoded.rawSessionId;
   const agentId = sessionLike && sessionLike.agentId;
   for (const entry of INTERNAL_WORKSPACE_AGENTS) {
     if (!displayId.startsWith(entry.sessionPrefix)) continue;
@@ -266,9 +257,21 @@ function shortenSessionIdForDisplay(value, sessionLike, options = {}) {
     if (stripped.trim()) displayId = stripped;
     break;
   }
-  if (typeof options.sanitize === "function") displayId = String(options.sanitize(displayId) || "");
-  const suffix = options.ellipsis === false ? "" : "..";
-  return displayId.length > 6 ? `${displayId.slice(0, 6)}${suffix}` : displayId;
+  return displayId.length > 6 ? `${displayId.slice(0, 6)}..` : displayId;
+}
+
+function buildDisplaySessionTag(canonicalSessionId) {
+  if (typeof canonicalSessionId !== "string") return "";
+  const trimmed = canonicalSessionId.trim();
+  if (!trimmed) return "";
+  return crypto.createHash("sha256").update(trimmed).digest("hex").slice(0, 10);
+}
+
+function getEntryDisplaySessionTag(entry) {
+  if (entry && typeof entry.displaySessionTag === "string" && entry.displaySessionTag) {
+    return entry.displaySessionTag;
+  }
+  return buildDisplaySessionTag(entry && entry.id);
 }
 
 function sessionDisplayTitle(id, sessionLike, sessionAliases = {}, options = {}) {
@@ -346,6 +349,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     id,
     profileId: (session && session.profileId) || "local",
     rawSessionId: (session && session.rawSessionId) || id,
+    displaySessionTag: buildDisplaySessionTag(id),
     agentId,
     agentName: resolveAgentDisplayName(agentId),
     iconUrl: getAgentIconUrl(agentId),
@@ -584,6 +588,7 @@ function sessionSnapshotSignature(snapshot) {
       id: entry.id,
       profileId: entry.profileId,
       rawSessionId: entry.rawSessionId,
+      displaySessionTag: entry.displaySessionTag,
       state: entry.state,
       startupRecovered: !!entry.startupRecovered,
       badge: entry.badge,
@@ -636,7 +641,8 @@ module.exports = {
   getSessionAliasEntry,
   getEffectiveSessionTitle,
   sessionDisplayTitle,
-  shortenSessionIdForDisplay,
+  buildDisplaySessionTag,
+  getEntryDisplaySessionTag,
   sessionMenuComparator,
   sessionUpdatedAtComparator,
   buildSessionSnapshotEntry,

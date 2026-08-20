@@ -1,6 +1,6 @@
 "use strict";
 
-const { shortenSessionIdForDisplay } = require("./state-session-snapshot");
+const { getEntryDisplaySessionTag } = require("./state-session-snapshot");
 
 const { execFile: defaultExecFile } = require("child_process");
 const {
@@ -49,11 +49,8 @@ function normalizePromptText(value) {
   return text;
 }
 
-// See telegram-companion: entry.id is the namespaced key, so it must not be
-// sliced directly -- every local session would acknowledge the same id.
 function shortSessionId(entry) {
-  const raw = (entry && entry.rawSessionId) || (entry && entry.id);
-  return shortenSessionIdForDisplay(raw, entry) || "";
+  return getEntryDisplaySessionTag(entry);
 }
 
 function findSession(snapshot, sessionId) {

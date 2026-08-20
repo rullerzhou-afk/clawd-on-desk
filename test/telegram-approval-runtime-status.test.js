@@ -33,6 +33,7 @@ function sessionSnapshot() {
   return {
     sessions: [{
       id: "session-secret-abc123",
+      displaySessionTag: "deadbeef00",
       agentId: "claude-code",
       state: "working",
       badge: "running",
@@ -353,7 +354,7 @@ test("R3 diagnostic formatter follows the Clawd language setting", () => {
   assert.match(text, /审批: 可用/);
   assert.match(text, /完成通知: 开启, 输出=完整回答, 裸通知=关闭/);
   assert.match(text, /待处理审批: 2/);
-  assert.match(text, /最新会话: claude-code #sessio 状态=working 标记=running; 最近 hook: PreToolUse 3 秒前/);
+  assert.match(text, /最新会话: claude-code #deadbeef00 状态=working 标记=running; 最近 hook: PreToolUse 3 秒前/);
   assert.doesNotMatch(text, /Transport:|Native polling:|Latest session:/);
 });
 
@@ -575,14 +576,52 @@ test("distinct local sessions get distinct short ids in the diagnostic", () => {
 
   const a = lineFor("11111111-2222-3333-4444-555555555555");
   const b = lineFor("99999999-8888-7777-6666-aaaaaaaaaaaa");
+  assert.equal(a, "a0a040910c");
   assert.notEqual(a, b, "two sessions must not render the same id");
+  assert.match(a, /^[0-9a-f]{10}$/);
   assert.ok(!a.startsWith("s1."), `id must not be the key envelope: ${a}`);
+  assert.ok(!"11111111-2222-3333-4444-555555555555".startsWith(a), "id must not be a raw prefix");
 });
 
-// Six characters is the redaction: a six-character prefix of a token is not a
-// token, and sanitizing the full id first would redact the leading group of an
-// ordinary session UUID and collapse every session to the same marker.
-test("shortens a token-shaped session id to a non-secret prefix", () => {
+test("status all uses each snapshot display tag without leaking canonical ids", () => {
+  const diagnostic = buildTelegramStatusDiagnostic({
+    config: COMPLETE_CONFIG_OUTPUT_FULL,
+    token: TOKEN_STORED,
+    sessionSnapshot: {
+      sessions: [
+        {
+          id: "s1.bG9jYWw.MTExMTExMTEtMjIyMi0zMzMzLTQ0NDQtNTU1NTU1NTU1NTU1",
+          rawSessionId: "11111111-2222-3333-4444-555555555555",
+          displaySessionTag: "deadbeef00",
+          agentId: "claude-code",
+          state: "working",
+          badge: "running",
+          updatedAt: 10_000,
+          lastEvent: { rawEvent: "PreToolUse", at: 9_000 },
+        },
+        {
+          id: "s1.bG9jYWw.OTk5OTk5OTktODg4OC03Nzc3LTY2NjYtYWFhYWFhYWFhYWFh",
+          rawSessionId: "99999999-8888-7777-6666-aaaaaaaaaaaa",
+          displaySessionTag: "feedface01",
+          agentId: "codex",
+          state: "idle",
+          badge: "done",
+          updatedAt: 9_000,
+          lastEvent: { rawEvent: "Stop", at: 8_000 },
+        },
+      ],
+    },
+    now: 12_000,
+    all: true,
+  });
+
+  const text = formatTelegramStatusDiagnostic(diagnostic, { all: true });
+  assert.match(text, /#deadbeef00/);
+  assert.match(text, /#feedface01/);
+  assert.doesNotMatch(text, /s1\.bG9jYWw|111111|999999|#a0a040910c|#83ff7f4baa/);
+});
+
+test("hashes a token-shaped session id without leaking a raw prefix", () => {
   const { resolveSessionIdentity } = require("../src/session-key");
   const secret = "123456789:AAHqwertyuiopasdfghjklzxcvbnm123456";
   const identity = resolveSessionIdentity(secret, "local");
@@ -603,8 +642,8 @@ test("shortens a token-shaped session id to a non-secret prefix", () => {
     now: 12_000,
   });
   const id = diagnostic.sessions[0].id;
-  assert.equal(id.length, 6, `must be cut to six characters, got: ${id}`);
-  assert.ok(secret.startsWith(id), "the prefix comes from the id, nothing else");
-  assert.ok(id.length < secret.length / 5, "the overwhelming majority of the id is withheld");
+  assert.equal(id, "a94b1a8e6c");
+  assert.match(id, /^[0-9a-f]{10}$/);
+  assert.ok(!secret.startsWith(id), "tag must not be a raw token prefix");
   assert.ok(!id.includes(":"), `must not reach the token separator, got: ${id}`);
 });
