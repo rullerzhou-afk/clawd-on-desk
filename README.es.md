@@ -145,7 +145,7 @@ Asignación completa de eventos a estados, modo mini y reacciones a clics: **[do
 
 ## Varias pantallas
 
-Clawd se adapta a configuraciones con varios monitores: el tamaño proporcional usa la pantalla donde se inicia Clawd, los monitores verticales reciben un aumento limitado para que la mascota siga viéndose bien en pantallas altas y estrechas, y puedes arrastrar a Clawd entre pantallas.
+Clawd se adapta a configuraciones con varios monitores: el tamaño proporcional usa la pantalla donde se inicia Clawd, los monitores verticales reciben un aumento limitado para que la mascota siga viéndose bien en pantallas altas y estrechas, y puedes arrastrar a Clawd entre pantallas: un papirotazo fuerte también lo lleva a la de al lado.
 
 <p align="center"><sub>¿Quieres ver el comportamiento real con varios monitores? <a href="assets/videos/clawd-multi-monitor-demo.mp4">Mira el video de demostración de este repositorio</a>.</sub></p>
 
