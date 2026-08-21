@@ -104,9 +104,17 @@ jobs:
               | sed -n 's/.*CN=\([^,/]*\).*/\1/p' || true)"
             echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
           fi
+          # @electron/notarize (pinned) expects APPLE_API_KEY to be a path to the
+          # .p8 file, not its Base64 content. Decode the secret into a temp file.
+          if [[ -n "$APPLE_API_KEY" ]]; then
+            echo "$APPLE_API_KEY" | base64 --decode > /tmp/AppleAuthKey.p8
+            echo "api_key_file=/tmp/AppleAuthKey.p8" >> "$GITHUB_OUTPUT"
+            echo "api_key_ready=1" >> "$GITHUB_OUTPUT"
+          fi
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
       # Developer ID signed + notarized build (maintainer has configured secrets).
       - name: Build macOS (Developer ID signed + notarized)
         if: steps.detect-signing.outputs.signed == '1'
@@ -114,14 +122,26 @@ jobs:
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY: ${{ steps.detect-signing.outputs.api_key_file }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-      # Fallback ad-hoc build (no certificate configured, upstream default).
-      - name: Build macOS (ad-hoc, no signing credentials)
+      # Tag releases MUST be signed + notarized. If a v* tag is pushed but signing
+      # credentials are missing, fail the build rather than shipping an unsigned
+      # ad-hoc "official" artifact. Manual (workflow_dispatch) builds keep the
+      # explicit ad-hoc fallback for CI testing without a certificate.
+      - name: Fail tag release without signing credentials
+        if: steps.detect-signing.outputs.signed != '1' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          echo "::error::Tag release requires macOS signing credentials (CSC_LINK etc.). Refusing to publish an ad-hoc official release."
+          exit 1
+      # Fallback ad-hoc build (manual workflow_dispatch only).
+      - name: Build macOS (ad-hoc, manual builds only)
         if: steps.detect-signing.outputs.signed != '1'
         run: npx electron-builder --mac --publish never
-      # Verify Developer ID signature + notarization when signed.
+      # Verify Developer ID signature + notarization when signed. Verifies the
+      # .app inside each DMG AND the DMG itself (open assessment), so the shipped
+      # artifact is what Apple accepted.
       - name: Verify macOS Developer ID signature and notarization
         if: steps.detect-signing.outputs.signed == '1'
         shell: bash
@@ -136,6 +156,11 @@ jobs:
             codesign --verify --deep --strict --verbose=2 "$app"
             spctl --assess --type execute --verbose=4 "$app" 2>&1 | grep -q "accepted"
             xcrun stapler validate "$app"
+          done
+          # Verify the DMGs we actually ship were notarized as DMGs too.
+          for dmg in dist/*.dmg; do
+            spctl --assess --type open --verbose=4 "$dmg" 2>&1 | grep -q "accepted"
+            xcrun stapler validate "$dmg"
           done
       # Verify ad-hoc hardened signatures (no certificate configured).
       - name: Verify macOS ad-hoc hardened signatures

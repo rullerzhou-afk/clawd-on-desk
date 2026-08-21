@@ -5,6 +5,14 @@
 # 用本机 Developer ID 证书对 Clawd 进行「签名 + 公证 + staple」，产出可分发、
 # 其他用户下载后可直接打开（Gatekeeper 不再拦截）的 macOS DMG。
 #
+# 流程（与 Apple 官方推荐一致）：
+#   1. electron-builder 构建（覆盖 package.json 的 `identity: "-"`）
+#   2. 对 .app 签名验证
+#   3. 提交【最终要分发的同一个 DMG】给 Apple 公证（--wait 等 Accepted）
+#   4. staple 票据钉进 DMG（离线也能通过 Gatekeeper）
+#   5. 同时把 .app 也 staple（用户拖出 DMG 后 .app 自带票据）
+#   6. spctl 最终验证
+#
 # 设计原则：
 #   - 不修改 package.json（上游写死的 `mac.identity: "-"` 只做命令行覆盖）
 #   - 每发一版跑一次，产物始终带同一把 Developer ID 签名 + Apple 公证
@@ -64,6 +72,16 @@ case "$ARCH" in
   *)     echo "❌ 未知架构: $ARCH (可选 x64|arm64|all)" >&2; exit 1 ;;
 esac
 
+# Map electron-builder arch to its app output directory. Note x64 uses
+# dist/mac/ (electron-builder default), arm64 uses dist/mac-arm64/.
+arch_to_app_dir() {
+  case "$1" in
+    x64)   echo "dist/mac" ;;
+    arm64) echo "dist/mac-arm64" ;;
+    *)     echo "dist/mac" ;;
+  esac
+}
+
 # =============================================================================
 # 1. 构建（覆盖 identity 为本地证书；禁止 publish，防止误传上游仓库）
 # =============================================================================
@@ -78,7 +96,10 @@ if [[ "$SKIP_BUILD" != "--skip-build" ]]; then
 fi
 
 for a in "${TARGET_ARCHS[@]}"; do
-  APP_PATH="dist/mac-$a/$APP_NAME.app"
+  APP_DIR="$(arch_to_app_dir "$a")"
+  APP_PATH="$APP_DIR/$APP_NAME.app"
+  DMG_SRC="dist/Clawd-on-Desk-${VERSION}-${a}.dmg"   # electron-builder 产物
+  DMG_OUT="dist/Clawd-on-Desk-${VERSION}-${a}-notarized.dmg"
   echo ""
   echo "================================================================"
   echo "  处理 $a 架构"
@@ -88,50 +109,52 @@ for a in "${TARGET_ARCHS[@]}"; do
   # 2. 签名验证（必须：Authority 链 + hardened runtime + 时间戳）
   # =============================================================================
   echo ""
-  echo "🔍 验证签名..."
+  echo "🔍 验证 .app 签名..."
   codesign -dvvv "$APP_PATH" 2>&1 | grep -E "Authority|flags|Timestamp" \
     || { echo "❌ 签名缺失或异常" >&2; exit 1; }
 
   # =============================================================================
-  # 3. 公证（Notarization）—— xcrun notarytool
+  # 3. 提交【最终 DMG】公证
+  #    electron-builder 已生成 DMG_SRC；用它作为公证对象（而非 zip），
+  #    这样分发出去的同一个 DMG 就带 Apple 票据。
   # =============================================================================
-  ZIP="/tmp/clawd-$a-${VERSION}.zip"
+  if [[ ! -f "$DMG_SRC" ]]; then
+    echo "❌ 找不到 electron-builder 产出的 DMG: $DMG_SRC (请先构建)" >&2
+    exit 1
+  fi
   echo ""
-  echo "📦 打包 zip 并提交公证..."
-  rm -f "$ZIP"
-  ditto -c -k --keepParent "$APP_PATH" "$ZIP"
-
-  echo "   xcrun notarytool submit --wait ..."
-  if ! xcrun notarytool submit "$ZIP" "${NOTARY_ARGS[@]}" --wait --output-format json 2>&1 \
-      | tee /tmp/clawd-$a-notary-result.json; then
-    echo "❌ 公证失败，查看上方日志。" >&2
+  echo "📦 提交 DMG 公证: $DMG_SRC"
+  if ! xcrun notarytool submit "$DMG_SRC" "${NOTARY_ARGS[@]}" --wait --output-format json 2>&1 \
+      | tee /tmp/clawd-$a-notary-dmg.json; then
+    echo "❌ DMG 公证失败，查看上方日志。" >&2
     exit 1
   fi
 
   # =============================================================================
-  # 4. staple（把票据钉进 .app，离线也能通过 Gatekeeper）
+  # 4. staple DMG（票据钉进分发对象）
+  # =============================================================================
+  echo ""
+  echo "📌 staple DMG ..."
+  xcrun stapler staple "$DMG_SRC"
+
+  # =============================================================================
+  # 5. 同时 staple .app（用户拖出 DMG 后 .app 自带票据，离线也可用）
   # =============================================================================
   echo ""
   echo "📌 staple .app ..."
   xcrun stapler staple "$APP_PATH"
 
-  # =============================================================================
-  # 5. 用已公证的 .app 重新生成 DMG，再 staple DMG
-  # =============================================================================
-  DMG_OUT="dist/Clawd-on-Desk-${VERSION}-${a}-notarized.dmg"
-  echo ""
-  echo "💿 重新生成 DMG (从已公证 app) → $DMG_OUT"
-  rm -f "$DMG_OUT"
-  hdiutil create -volname "$APP_NAME" -srcfolder "$APP_PATH" -ov -format UDZO "$DMG_OUT"
-  xcrun stapler staple "$DMG_OUT"
+  # 复制为带 -notarized 后缀的产物名，方便识别
+  cp "$DMG_SRC" "$DMG_OUT"
 
   # =============================================================================
   # 6. 最终验证
   # =============================================================================
   echo ""
   echo "✅ 验证:"
-  xcrun stapler validate "$APP_PATH" && echo "   stapler(app)   OK"
-  xcrun stapler validate "$DMG_OUT"  && echo "   stapler(dmg)   OK"
+  xcrun stapler validate "$DMG_SRC" && echo "   stapler(dmg)    OK"
+  xcrun stapler validate "$APP_PATH" && echo "   stapler(app)    OK"
+  spctl --assess --type open --verbose=4 "$DMG_SRC" 2>&1 | tail -1
   spctl --assess --type execute --verbose=4 "$APP_PATH" 2>&1 | tail -1
   echo "   产物: $DMG_OUT ($(du -h "$DMG_OUT" | cut -f1))"
 done
