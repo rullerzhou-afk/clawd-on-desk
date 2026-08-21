@@ -57,6 +57,8 @@
     "uninstall:qoderwork-hooks": "node hooks/qoderwork-install.js --uninstall",
     "install:qwenwork-hooks": "node hooks/qwenwork-install.js",
     "uninstall:qwenwork-hooks": "node hooks/qwenwork-install.js --uninstall",
+    "install:traecode-hooks": "node hooks/traecode-install.js",
+    "uninstall:traecode-hooks": "node hooks/traecode-install.js --uninstall",
     "install:workbuddy-hooks": "node hooks/workbuddy-install.js",
     "uninstall:workbuddy-hooks": "node hooks/workbuddy-install.js --uninstall",
     "install:dsh": "node hooks/dsh-install.js",

@@ -101,6 +101,18 @@ QwenWork（千问办公）状态同步（hook-only / state-only，settings.json�
   平台边界：官方只提供 macOS 14+ / Windows 10+ / HarmonyOS 6.1+（https://qwenwork.cn/download），没有 Linux 客户端，
   因此 processNames.linux 与 resolver linux agent name 均为空，也不进 WSL Pair；桌面主进程长驻，无 startup recovery。
 
+TraeCode（Trae CN）状态同步（hook-only / state-only，hooks.json）：
+  Trae CN 触发 SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / Stop / Notification
+    → hooks/traecode-hook.js（hook 事件 → agents/traecode.js 映射 → HTTP POST）
+    → 同上状态机（agent_id: traecode，session_id 规范化为 traecode:<raw>；缺 session_id 的事件直接应答 stdout，不进 /state）
+  Hook 注册到 ~/.trae-cn/hooks.json（marker `traecode-hook.js`，增量合并；混合 entry 里第三方 hook 原样保留）。
+  Windows command 用 PowerShell 调用操作符（`& "..."`，无 `shell` 字段）；Trae 通过 PowerShell 执行 hook 命令（cloudide.icube-agent-shell-exec）。
+  必须在 Trae IDE 里手动开启 hooks（Settings → Hooks → Enable，运行方式：本地自动运行），无程序化绕过。
+  stdout 恒为 `{}`：不注册 /permission、不进 permission automation eligibility，Allow / Deny 全部留在 Trae 原生权限流程。
+  Trae 服务端存储会话标题，Clawd 从首次 prompt 首行派生并保持首个标题（server 端 first-wins）。
+  无 SessionEnd：关闭的会话由 traecode-desktop-idle-timeout 桌面空闲清理退役。
+  首版只覆盖 Trae CN（~/.trae-cn、进程名 Trae CN.exe）；国际版 Trae（~/.trae/hooks.json）不在范围内。
+
 Kimi Code CLI（Kimi-CLI）状态同步（hook-only，config.toml）：
   Kimi Code CLI（Kimi-CLI）触发事件
     → hooks/kimi-hook.js（hook 事件 → agents/kimi-cli.js 映射 → HTTP POST）

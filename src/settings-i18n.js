@@ -6743,6 +6743,7 @@
       eventSourcePlugin: "Plugin",
       eventSourceExtension: "Extensión",
       badgePermissionBubble: "Globo de permiso",
+      traecodeEnableHint: "Habilita los hooks en Trae antes de que se activen: Ajustes → Hooks → Habilitar (modo de ejecución: ejecución automática local).",
       agentIntegrationInstalled: "Instalada",
       agentIntegrationNotInstalled: "No instalada",
       agentIntegrationInstall: "Instalar",
