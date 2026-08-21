@@ -4406,6 +4406,19 @@ html, body {
 .tg-approval-prereq-row .row-desc {
   color: var(--toast-error);
 }
+/* Slack sits next to two channels that DO approve remotely, so its card leads
+   with what it cannot do plus the channel-visibility warning. Accent-tinted,
+   not error-red: this is a standing property of the channel, not a failure. */
+.slack-notify-oneway-row {
+  border-left: 2px solid var(--accent);
+  padding-left: 10px;
+}
+.slack-notify-oneway-row .row-label {
+  color: var(--accent);
+}
+.slack-notify-oneway-row .row-desc + .row-desc {
+  margin-top: 4px;
+}
 .tg-approval-row-disabled {
   opacity: 0.5;
   pointer-events: none;

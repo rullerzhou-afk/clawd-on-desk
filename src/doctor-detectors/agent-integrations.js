@@ -280,6 +280,17 @@ function withAgentFixAction(detail, descriptor) {
     return detail;
   }
   if (
+    descriptor.agentId === "zcode"
+    && detail.supplementary
+    && detail.supplementary.key === "zcode_hooks"
+    && detail.supplementary.value === "permission-conflict"
+  ) {
+    // A Fix would re-register Clawd's blocking hook next to the user's own
+    // PermissionRequest hook — the exact last-wins override the conflict
+    // report exists to prevent. Resolution is manual by design.
+    return detail;
+  }
+  if (
     descriptor.agentId === "qwen-code"
     && detail.supplementary
     && detail.supplementary.key === "qwen_hooks"
@@ -577,13 +588,17 @@ function findZcodeHooksForEvent(settings, eventName, marker, options) {
 
 function validateZcodeProcessHook(hook, eventName, descriptor, options) {
   const args = hook.args;
+  // Timeouts are per-event (PermissionRequest blocks on the bubble at 600s,
+  // state events stay at 8s), so the zcode descriptor carries a resolver
+  // (processHookTimeoutMsForEvent) instead of a single value.
+  const expectedTimeoutMs = descriptor.processHookTimeoutMsForEvent(eventName);
   if (
     !Array.isArray(args)
     || args.length !== 2
     || typeof args[0] !== "string"
     || !args[0].includes(descriptor.marker)
     || args[1] !== eventName
-    || hook.timeoutMs !== descriptor.processHookTimeoutMs
+    || hook.timeoutMs !== expectedTimeoutMs
   ) {
     return {
       ok: false,
@@ -1271,6 +1286,10 @@ function getZcodeHooksSupplementary(settings, descriptor) {
   }
 
   if (disabledEvents.length > 0) {
+    // Order is intentional: explicit user opt-outs (enabled=false) are
+    // reported before a foreign PermissionRequest conflict — under a full
+    // opt-out Clawd's own hooks (the would-be conflicting side) are inactive,
+    // so the disabled-events report is the actionable one.
     return {
       key: "zcode_hooks",
       value: "disabled-events",
@@ -1287,6 +1306,39 @@ function getZcodeHooksSupplementary(settings, descriptor) {
       invalidWrapperEvents: uniqueEvents,
     };
   }
+
+  // Foreign PermissionRequest conflict (mirrors the installer gate in
+  // hooks/zcode-install.js): ZCode runs same-event hooks serially with
+  // last-wins decisions, so a non-Clawd hook owning PermissionRequest means
+  // Clawd's blocking hook must stay unregistered — and a Fix that silently
+  // created the overlap would let one hook override the other's deny.
+  const permissionEntries = Array.isArray(events.PermissionRequest) ? events.PermissionRequest : [];
+  let foreignPermissionHook = false;
+  let managedPermissionHook = false;
+  for (const entry of permissionEntries) {
+    if (!entry || typeof entry !== "object") continue;
+    if (zcodeHookContainsMarker(entry, descriptor.marker)) managedPermissionHook = true;
+    else if (typeof entry.command === "string") foreignPermissionHook = true;
+    if (!Array.isArray(entry.hooks)) continue;
+    for (const hook of entry.hooks) {
+      if (!hook || typeof hook !== "object") continue;
+      if (zcodeHookContainsMarker(hook, descriptor.marker)) managedPermissionHook = true;
+      // Mirror hooks/zcode-install.js exactly: any nested non-Clawd object is
+      // a foreign owner. Limiting this to command hooks makes Doctor offer a
+      // Fix that the installer can never complete for imported HTTP entries.
+      else foreignPermissionHook = true;
+    }
+  }
+  if (foreignPermissionHook) {
+    return {
+      key: "zcode_hooks",
+      value: "permission-conflict",
+      detail: managedPermissionHook
+        ? "a foreign PermissionRequest hook coexists with Clawd's; ZCode executes same-event hooks with last-wins decisions — keep exactly one owner for PermissionRequest"
+        : "a foreign PermissionRequest hook owns the event; Clawd's blocking permission hook is intentionally not registered (last-wins would override the existing hook's deny)",
+    };
+  }
+
   return {
     key: "zcode_hooks",
     value: "enabled",
@@ -1332,6 +1384,19 @@ function applyZcodeSupplementary(detail, descriptor, settings) {
       level: "warning",
       detail: `ZCode rejected unsupported fields on Clawd hook wrappers for ${supplementary.invalidWrapperEvents.join(", ")}`,
       supplementary,
+    };
+  }
+  if (supplementary.value === "permission-conflict") {
+    // Deliberately no fixAction: any automated Fix would either create the
+    // last-wins overlap or delete a user's own hook. The generic validator's
+    // missing-event Fix must not leak through here either.
+    return {
+      ...detail,
+      status: "not-connected",
+      level: "warning",
+      detail: supplementary.detail,
+      supplementary,
+      fixAction: undefined,
     };
   }
   return {

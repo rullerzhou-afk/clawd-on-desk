@@ -57,6 +57,7 @@ const VERIFIED_GITHUB_CONTRIBUTORS = [
   "anthonyonazure",
   "weed33834",
   "arismarioneves",
+  "Zamaniego",
 ];
 
 function createDeferred() {
@@ -1206,7 +1207,7 @@ function loadAgentsTabForTest({
           agentsEmpty: "empty",
           agentSectionConnected: "Connected",
           agentSectionRecommended: "Detected locally",
-          agentSectionUnavailable: "Not detected locally",
+          agentSectionUnavailable: "More supported tools",
           agentSearchPlaceholder: "Search",
           agentsSubtabConnected: "Connected",
           agentsSubtabDiscover: "Discover and add",
@@ -1422,6 +1423,11 @@ function loadTelegramApprovalTabForTest({
         document.activeElement = element;
       };
       return element;
+    },
+    createTextNode(value) {
+      const node = new FakeElement("#text");
+      node.textContent = String(value || "");
+      return node;
     },
     getElementById(id) {
       if (id === "content") return content;
@@ -3372,7 +3378,7 @@ describe("settings renderer browser environment", () => {
       "telegramMigrationNudgeLegacyBody",
       "telegramMigrationNudgeNativeBody",
     ];
-    assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja", "pt-BR"]);
+    assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"]);
     for (const lang of SUPPORTED_LANGS) {
       for (const key of keys) {
         assert.equal(
@@ -3484,11 +3490,11 @@ describe("settings renderer browser environment", () => {
     );
   });
 
-  it("renders distinct native migration failure outcomes and hides the gate elsewhere", async () => {
-    for (const [outcome, expectedKey] of [
-      ["failed", "telegramNativeMigrationFailed"],
-      ["timeout", "telegramNativeMigrationTimeout"],
-      ["native-start-failed", "telegramNativeMigrationStartFailed"],
+  it("renders actionable native migration failures and hides the gate elsewhere", async () => {
+    for (const [outcome, errorClass, statusKey, gateKey] of [
+      ["failed", "401", "telegramApprovalVerificationInvalidToken", "telegramNativeMigrationFailed"],
+      ["timeout", undefined, "telegramApprovalVerificationTimeout", "telegramNativeMigrationTimeout"],
+      ["native-start-failed", "apply-failed", "telegramApprovalVerificationApplyFailed", "telegramNativeMigrationStartFailed"],
     ]) {
       const harness = loadTelegramApprovalTabForTest({
         snapshot: {
@@ -3507,7 +3513,7 @@ describe("settings renderer browser environment", () => {
                   state: "NATIVE_MIGRATION_REQUIRED",
                   transport: "legacy",
                   testOrigin: "legacy",
-                  lastTestResult: { outcome, at: 1 },
+                  lastTestResult: { outcome, errorClass, at: 1 },
                   revision: 2,
                   ownerSnapshot: { nativePolling: false },
                 },
@@ -3516,7 +3522,15 @@ describe("settings renderer browser environment", () => {
             if (name === "telegramApproval.status") {
               return Promise.resolve({
                 status: "ok",
-                state: { status: "failed", transport: "off", configured: true, tokenStored: true },
+                state: {
+                  status: "failed",
+                  transport: "off",
+                  configured: true,
+                  tokenStored: true,
+                  reason: "native-verification-failed",
+                  errorCode: outcome === "timeout" ? "timeout" : errorClass,
+                  failureOutcome: outcome,
+                },
               });
             }
             if (name === "telegramApproval.tokenInfo") {
@@ -3529,10 +3543,14 @@ describe("settings renderer browser environment", () => {
       await Promise.resolve();
       await Promise.resolve();
       harness.render();
+      const statusText = harness.content.querySelector(".tg-approval-channel-status-text").textContent;
+      const gateText = harness.content.querySelector(".tg-native-migration-gate-result").textContent;
+      assert.equal(statusText, statusKey);
       assert.equal(
-        harness.content.querySelector(".tg-native-migration-gate-result").textContent,
-        expectedKey,
+        gateText,
+        gateKey,
       );
+      assert.notEqual(statusText, gateText, "the gate should supplement, not repeat, the status row");
     }
 
     for (const migrationSnapshot of [
@@ -3554,6 +3572,190 @@ describe("settings renderer browser environment", () => {
       harness.render();
       assert.equal(harness.content.querySelector(".tg-native-migration-gate"), null);
     }
+  });
+
+  it("renders actionable fresh/off verification failures without a migration gate", async () => {
+    for (const [errorCode, failureOutcome, expectedKey] of [
+      ["401", "failed", "telegramApprovalVerificationInvalidToken"],
+      ["403", "failed", "telegramApprovalVerificationForbidden"],
+      ["400", "failed", "telegramApprovalVerificationInvalidRecipient"],
+      ["no_chat", "failed", "telegramApprovalVerificationInvalidRecipient"],
+      ["409_conflict", "failed", "telegramApprovalVerificationPollingConflict"],
+      ["409_webhook", "failed", "telegramApprovalVerificationWebhookConflict"],
+      ["network", "failed", "telegramApprovalVerificationNetwork"],
+      ["timeout", "timeout", "telegramApprovalVerificationTimeout"],
+      ["unknown", "failed", "telegramApprovalCardFailed"],
+    ]) {
+      const harness = loadTelegramApprovalTabForTest({
+        snapshot: {
+          tgApproval: {
+            enabled: false,
+            allowedTgUserId: "123456789",
+            targetSessionKey: "telegram:123456789",
+          },
+        },
+        settingsAPI: {
+          command: (name) => {
+            if (name === "telegramMigration.snapshot") {
+              return Promise.resolve({
+                status: "ok",
+                snapshot: {
+                  state: "IDLE",
+                  transport: "off",
+                  lastTestResult: {
+                    outcome: failureOutcome,
+                    errorClass: errorCode,
+                    at: 1,
+                  },
+                  revision: 2,
+                  ownerSnapshot: { nativePolling: false },
+                },
+              });
+            }
+            if (name === "telegramApproval.status") {
+              return Promise.resolve({
+                status: "ok",
+                state: {
+                  status: "failed",
+                  transport: "off",
+                  configured: true,
+                  tokenStored: true,
+                  reason: "native-verification-failed",
+                  message: "",
+                  errorCode,
+                  failureOutcome,
+                },
+              });
+            }
+            if (name === "telegramApproval.tokenInfo") {
+              return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+            }
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      harness.render();
+
+      assert.equal(harness.content.querySelector(".tg-native-migration-gate"), null);
+      assert.equal(
+        harness.content.querySelector(".tg-approval-channel-status-text").textContent,
+        expectedKey,
+      );
+    }
+  });
+
+  it("prioritizes missing setup over a stale verification failure", async () => {
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "",
+          targetSessionKey: "",
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramMigration.snapshot") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: {
+                state: "IDLE",
+                transport: "off",
+                lastTestResult: { outcome: "failed", errorClass: "401", at: 1 },
+                revision: 2,
+              },
+            });
+          }
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: {
+                status: "failed",
+                transport: "off",
+                configured: false,
+                tokenStored: true,
+                reason: "native-verification-failed",
+                message: "Telegram allowed user id is not configured",
+                errorCode: "401",
+                failureOutcome: "failed",
+              },
+            });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    assert.equal(
+      harness.content.querySelector(".tg-approval-channel-status-text").textContent,
+      "telegramApprovalCardMissingRecipient",
+    );
+  });
+
+  it("force-refreshes Telegram status when only the verification error code changes", async () => {
+    let errorCode = "401";
+    const harness = loadTelegramApprovalTabForTest({
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramMigration.snapshot") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: {
+                state: "IDLE",
+                transport: "off",
+                lastTestResult: { outcome: "failed", errorClass: errorCode, at: 1 },
+                revision: 2,
+              },
+            });
+          }
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: {
+                status: "failed",
+                transport: "off",
+                configured: true,
+                tokenStored: true,
+                reason: "native-verification-failed",
+                message: "",
+                errorCode,
+                failureOutcome: "failed",
+              },
+            });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    assert.equal(
+      harness.content.querySelector(".tg-approval-channel-status-text").textContent,
+      "telegramApprovalVerificationInvalidToken",
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const before = harness.renderRequests.length;
+    errorCode = "403";
+    harness.core.tabs["telegram-approval"].refreshRuntimeStatus({ channel: "telegram" });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.ok(harness.renderRequests.length > before, "Telegram status push should force a content render");
+    harness.render();
+    assert.equal(
+      harness.content.querySelector(".tg-approval-channel-status-text").textContent,
+      "telegramApprovalVerificationForbidden",
+    );
   });
 
   it("uses native re-verification copy when a previously verified setup is repaired", async () => {
@@ -4652,7 +4854,8 @@ describe("settings renderer browser environment", () => {
         [{ message: expectedMessage, options: { error: true } }],
         code,
       );
-      assert.equal(harness.content.querySelectorAll("input").at(-1).value, "person@example.com");
+      const updatedCard = harness.content.querySelector(".feishu-approval-channel-card");
+      assert.equal(updatedCard.querySelectorAll("input").at(-1).value, "person@example.com");
       assert.equal(commandCalls.filter((call) => call.name === "feishuApproval.saveApproverByEmail").length, 1);
       assert.equal(collectText(harness.content).includes(rawMessage), false);
       assert.equal(collectText(harness.content).includes("ou_must_not_render"), false);
@@ -6552,6 +6755,379 @@ describe("settings renderer browser environment", () => {
     assert.equal(statusText, strings.feishuApprovalCardReadyToEnable);
   });
 
+  it("keeps Slack transport setup separate from the enabled and ready states", async () => {
+    const strings = loadSettingsI18nForTest().en;
+
+    async function renderSlack({ config, status, secretInfo }) {
+      const harness = loadTelegramApprovalTabForTest({
+        snapshot: {
+          tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+          feishuApproval: { enabled: false, platform: "feishu", idType: "open_id", approverId: "", connectionTimeoutSeconds: 15 },
+          slackNotify: {
+            enabled: false,
+            channelId: "",
+            notifyOnDone: true,
+            notifyOnError: true,
+            notifyOnPermission: true,
+            outputMode: "off",
+            ...config,
+          },
+        },
+        settingsAPI: {
+          command: (name) => {
+            if (name === "slackNotify.status") return Promise.resolve({ status: "ok", state: status });
+            if (name === "slackNotify.secretInfo") return Promise.resolve({ status: "ok", ...secretInfo });
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      harness.core.helpers.t = (key) => (key in strings ? strings[key] : key);
+      await Promise.resolve();
+      await Promise.resolve();
+      harness.render();
+      return {
+        harness,
+        card: harness.content.querySelector(".slack-notify-channel-card"),
+      };
+    }
+
+    const configuredOff = await renderSlack({
+      config: { enabled: false },
+      status: {
+        enabled: false,
+        ready: false,
+        configured: false,
+        transportConfigured: true,
+        transport: "webhook",
+        credentialsPresent: true,
+        secretsStored: true,
+      },
+      secretInfo: { configured: true, webhookUrl: "https://hooks.slack.com/…", botToken: "" },
+    });
+    assert.equal(
+      configuredOff.card.querySelector(".tg-approval-channel-status-text").textContent,
+      strings.slackNotifyCardReadyToEnable,
+      "a usable disabled transport is ready to enable, not incomplete"
+    );
+    const configuredSwitch = configuredOff.card.querySelectorAll(".switch")[0];
+    assert.equal(configuredSwitch.classList.contains("disabled"), false);
+    configuredSwitch.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.equal(
+      configuredOff.harness.updates[configuredOff.harness.updates.length - 1].value.enabled,
+      true
+    );
+
+    const tokenWithoutChannel = await renderSlack({
+      config: { enabled: false, channelId: "" },
+      status: {
+        enabled: false,
+        ready: false,
+        configured: false,
+        transportConfigured: false,
+        transport: null,
+        credentialsPresent: true,
+        secretsStored: true,
+        botTokenConfigured: true,
+        reason: "invalid-config",
+      },
+      // A stored token is a credential, but without a channel it is not a
+      // transport. This used to pass through slackSecretsConfigured().
+      secretInfo: { configured: true, webhookUrl: "", botToken: "xoxb-…" },
+    });
+    assert.equal(
+      tokenWithoutChannel.card.querySelector(".tg-approval-channel-status-text").textContent,
+      strings.slackNotifyCardMissingSecret
+    );
+    const blockedSwitch = tokenWithoutChannel.card.querySelectorAll(".switch")[0];
+    assert.equal(blockedSwitch.classList.contains("disabled"), true);
+    assert.equal(blockedSwitch.getAttribute("aria-disabled"), "true");
+    const testButton = tokenWithoutChannel.card.querySelectorAll("button")
+      .find((button) => button.textContent === strings.slackNotifySendTest);
+    assert.equal(testButton.disabled, true, "bot-without-channel cannot send a test either");
+
+    const invalidButEnabled = await renderSlack({
+      config: { enabled: true, channelId: "" },
+      status: {
+        enabled: true,
+        ready: false,
+        configured: false,
+        transportConfigured: false,
+        transport: null,
+        credentialsPresent: true,
+        reason: "invalid-config",
+      },
+      secretInfo: { configured: true, webhookUrl: "", botToken: "xoxb-…" },
+    });
+    const recoverySwitch = invalidButEnabled.card.querySelectorAll(".switch")[0];
+    assert.equal(recoverySwitch.classList.contains("disabled"), false,
+      "a stale invalid enabled setting must remain switchable off");
+    recoverySwitch.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.equal(
+      invalidButEnabled.harness.updates[invalidButEnabled.harness.updates.length - 1].value.enabled,
+      false
+    );
+
+    const running = await renderSlack({
+      config: { enabled: true },
+      status: {
+        enabled: true,
+        ready: true,
+        configured: true,
+        transportConfigured: true,
+        transport: "webhook",
+        credentialsPresent: true,
+      },
+      secretInfo: { configured: true, webhookUrl: "https://hooks.slack.com/…", botToken: "" },
+    });
+    assert.equal(
+      running.card.querySelector(".tg-approval-channel-status-text").textContent,
+      strings.slackNotifyCardRunning
+    );
+  });
+
+  it("accepts a legacy Slack status payload without explicit readiness axes", async () => {
+    const strings = loadSettingsI18nForTest().en;
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+        feishuApproval: { enabled: false, platform: "feishu", idType: "open_id", approverId: "", connectionTimeoutSeconds: 15 },
+        slackNotify: { enabled: false, channelId: "", notifyOnDone: true, notifyOnError: true, notifyOnPermission: true, outputMode: "off" },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "slackNotify.status") {
+            return Promise.resolve({ status: "ok", state: { enabled: false, configured: false, transport: "webhook" } });
+          }
+          return Promise.resolve({ status: "ok", configured: false });
+        },
+      },
+    });
+    harness.core.helpers.t = (key) => (key in strings ? strings[key] : key);
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    assert.equal(
+      harness.content.querySelector(".slack-notify-channel-card")
+        .querySelector(".tg-approval-channel-status-text").textContent,
+      strings.slackNotifyCardReadyToEnable
+    );
+  });
+
+  it("localizes common bot channel and scope failures from Send Test", async () => {
+    const strings = loadSettingsI18nForTest().en;
+    let testCode = "slack-missing_scope";
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+        feishuApproval: { enabled: false, platform: "feishu", idType: "open_id", approverId: "", connectionTimeoutSeconds: 15 },
+        slackNotify: { enabled: false, channelId: "C123", notifyOnDone: true, notifyOnError: true, notifyOnPermission: true, outputMode: "off" },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "slackNotify.status") {
+            return Promise.resolve({ status: "ok", state: {
+              enabled: false, ready: false, configured: false, transportConfigured: true,
+              transport: "bot", credentialsPresent: true, secretsStored: true,
+            } });
+          }
+          if (name === "slackNotify.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, webhookUrl: "", botToken: "xoxb-…" });
+          }
+          if (name === "slackNotify.test") return Promise.resolve({ status: "error", code: testCode });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.core.helpers.t = (key) => (key in strings ? strings[key] : key);
+    const toasts = [];
+    harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    for (const [code, expected] of [
+      ["slack-missing_scope", strings.slackNotifyErrMissingScope],
+      ["slack-channel_not_found", strings.slackNotifyErrChannelNotFound],
+      ["slack-not_in_channel", strings.slackNotifyErrNotInChannel],
+    ]) {
+      testCode = code;
+      harness.render();
+      const sendTest = harness.content.querySelector(".slack-notify-channel-card")
+        .querySelectorAll("button")
+        .find((button) => button.textContent === strings.slackNotifySendTest);
+      sendTest.dispatchEvent({ type: "click" });
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+      assert.equal(toasts[toasts.length - 1].message, expected);
+    }
+  });
+
+  it("preserves Slack form drafts across rerenders and only clears completed writes", async () => {
+    const strings = loadSettingsI18nForTest().en;
+    let secretWriteResult = { status: "error", code: "write-failed", message: "raw fs detail" };
+    let updateMode = "fail";
+    let resolveUpdate = null;
+    let deferClear = false;
+    let resolveClear = null;
+    const updateCalls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+        feishuApproval: { enabled: false, platform: "feishu", idType: "open_id", approverId: "", connectionTimeoutSeconds: 15 },
+        slackNotify: { enabled: false, channelId: "C-saved", notifyOnDone: true, notifyOnError: true, notifyOnPermission: true, outputMode: "off" },
+      },
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          if (updateMode === "defer") return new Promise((resolve) => { resolveUpdate = resolve; });
+          return Promise.resolve(updateMode === "ok" ? { status: "ok" } : { status: "error", message: "save failed" });
+        },
+        command: (name, payload) => {
+          if (name === "slackNotify.status") {
+            return Promise.resolve({ status: "ok", state: {
+              enabled: false, ready: false, configured: false, transportConfigured: true,
+              transport: "webhook", credentialsPresent: true, secretsStored: true,
+            } });
+          }
+          if (name === "slackNotify.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, webhookUrl: "https://hooks.slack.com/…", botToken: "" });
+          }
+          if (name === "slackNotify.setSecrets") {
+            if (deferClear && payload && payload.webhookUrl === "") {
+              return new Promise((resolve) => { resolveClear = resolve; });
+            }
+            return Promise.resolve(secretWriteResult);
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.core.helpers.t = (key) => (key in strings ? strings[key] : key);
+    const toasts = [];
+    harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const controls = () => {
+      const card = harness.content.querySelector(".slack-notify-channel-card");
+      const secretGrid = card.querySelector(".slack-notify-secrets-grid");
+      return {
+        card,
+        secretInputs: secretGrid.querySelectorAll("input"),
+        secretSave: secretGrid.querySelectorAll("button").find((button) => button.textContent === strings.slackNotifySaveSecrets),
+        channelInput: card.querySelector(".slack-notify-channel-row").querySelector("input"),
+        channelSave: card.querySelector(".slack-notify-channel-row").querySelector("button"),
+      };
+    };
+
+    let current = controls();
+    harness.core.state.snapshot.slackNotify.channelId = "C-refreshed";
+    harness.render();
+    assert.equal(controls().channelInput.value, "C-refreshed",
+      "a pristine channel field follows the settings store");
+    harness.core.state.snapshot.slackNotify.channelId = "C-saved";
+    harness.render();
+    current = controls();
+    current.secretInputs[0].value = "https://hooks.slack.com/services/new";
+    current.secretInputs[0].dispatchEvent({ type: "input" });
+    current.secretInputs[1].value = "xoxb-new-token";
+    current.secretInputs[1].dispatchEvent({ type: "input" });
+    current.channelInput.value = " C-draft ";
+    current.channelInput.dispatchEvent({ type: "input" });
+    harness.render();
+
+    current = controls();
+    assert.equal(current.secretInputs[0].value, "https://hooks.slack.com/services/new");
+    assert.equal(current.secretInputs[1].value, "xoxb-new-token");
+    assert.equal(current.channelInput.value, " C-draft ");
+
+    updateMode = "ok";
+    const doneRow = current.card.querySelectorAll(".row")
+      .find((row) => collectText(row).includes(strings.slackNotifyEventDone));
+    doneRow.querySelector(".switch").dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    current = controls();
+    assert.equal(updateCalls[updateCalls.length - 1].value.channelId, "C-saved",
+      "an event toggle never silently commits an unsaved channel draft");
+    assert.equal(current.channelInput.value, " C-draft ",
+      "the unsaved channel draft remains visible after an unrelated save");
+    updateMode = "fail";
+
+    current.secretSave.dispatchEvent({ type: "click" });
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    harness.render();
+    current = controls();
+    assert.equal(current.secretInputs[0].value, "https://hooks.slack.com/services/new", "failed secret writes retain the webhook draft");
+    assert.equal(current.secretInputs[1].value, "xoxb-new-token", "failed secret writes retain the token draft");
+    assert.equal(toasts[toasts.length - 1].message, strings.slackNotifySecretsSaveFailed,
+      "write-failed uses the localized credential-save copy, not a test-send error");
+    assert.ok(!toasts[toasts.length - 1].message.includes("raw fs detail"));
+
+    secretWriteResult = { status: "ok" };
+    current.secretSave.dispatchEvent({ type: "click" });
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    harness.render();
+    current = controls();
+    assert.equal(current.secretInputs[0].value, "");
+    assert.equal(current.secretInputs[1].value, "");
+
+    current.secretInputs[0].value = "typed-before-clear";
+    current.secretInputs[0].dispatchEvent({ type: "input" });
+    harness.render();
+    const clearWebhook = controls().card.querySelectorAll("button")
+      .find((button) => button.textContent === strings.slackNotifyClear);
+    assert.ok(clearWebhook, "the refreshed masked webhook offers Remove");
+    clearWebhook.dispatchEvent({ type: "click" });
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    harness.render();
+    assert.equal(controls().secretInputs[0].value, "typed-before-clear",
+      "clearing the stored webhook does not discard its unsaved replacement draft");
+
+    current = controls();
+    current.secretInputs[0].value = "typed-before-slow-clear";
+    current.secretInputs[0].dispatchEvent({ type: "input" });
+    harness.render();
+    deferClear = true;
+    const slowClear = controls().card.querySelectorAll("button")
+      .find((button) => button.textContent === strings.slackNotifyClear);
+    slowClear.dispatchEvent({ type: "click" });
+    harness.render();
+    current = controls();
+    current.secretInputs[0].value = "typed-after-slow-clear";
+    current.secretInputs[0].dispatchEvent({ type: "input" });
+    resolveClear({ status: "ok" });
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    harness.render();
+    assert.equal(controls().secretInputs[0].value, "typed-after-slow-clear",
+      "an older clear callback cannot erase a newer replacement draft");
+    deferClear = false;
+
+    current = controls();
+    current.channelSave.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    assert.equal(controls().channelInput.value, " C-draft ", "failed config writes retain the exact channel draft");
+
+    current = controls();
+    current.channelInput.value = "C-earlier";
+    current.channelInput.dispatchEvent({ type: "input" });
+    updateMode = "defer";
+    current.channelSave.dispatchEvent({ type: "click" });
+    current.channelInput.value = "C-newer";
+    current.channelInput.dispatchEvent({ type: "input" });
+    resolveUpdate({ status: "ok" });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    assert.equal(controls().channelInput.value, "C-newer", "an older async save cannot overwrite newer typing");
+    assert.equal(updateCalls[updateCalls.length - 1].value.channelId, "C-earlier");
+  });
+
   it("translates a connection timeout and falls back to the raw SDK error otherwise", async () => {
     const strings = loadSettingsI18nForTest().en;
     // The brand comes from the saved config (what the user picked), so the
@@ -7829,9 +8405,27 @@ describe("settings renderer browser environment", () => {
     assert.match(css, /\.language-picker\.open-up \.language-picker-menu\s*\{[\s\S]*bottom:\s*calc\(100% \+ 6px\);/);
   });
 
-  it("opens the six-language tutorial picker downward at the default welcome layout", () => {
+  it("opens the seven-language tutorial picker upward when it no longer fits below the default welcome layout", () => {
     const harness = loadSharedLanguagePickerForTest({
-      options: ["en", "zh", "zh-TW", "ko", "ja", "pt"],
+      options: SUPPORTED_LANGS,
+      innerHeight: 700,
+    });
+    harness.boundary.getBoundingClientRect = () => ({ top: 78, bottom: 635 });
+    harness.trigger.getBoundingClientRect = () => ({ top: 390, bottom: 426 });
+    Object.defineProperty(harness.menu, "scrollHeight", { value: 220 });
+    Object.defineProperty(harness.menu, "offsetHeight", { value: 222 });
+    Object.defineProperty(harness.menu, "clientHeight", { value: 220 });
+
+    harness.trigger.dispatchEvent({ type: "click" });
+
+    assert.strictEqual(harness.picker.classList.contains("open-up"), true);
+    assert.strictEqual(harness.picker.classList.contains("menu-scrollable"), false);
+    assert.strictEqual(harness.menu.style.maxHeight, "222px");
+  });
+
+  it("keeps the shared picker downward branch covered when six options fit below", () => {
+    const harness = loadSharedLanguagePickerForTest({
+      options: SUPPORTED_LANGS.slice(0, 6),
       innerHeight: 700,
     });
     harness.boundary.getBoundingClientRect = () => ({ top: 78, bottom: 635 });
@@ -11165,7 +11759,7 @@ describe("settings renderer browser environment", () => {
         dismissedAgentInstallHints: {},
       },
       agentMetadata: [
-        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: false },
         { id: "gemini-cli", name: "Gemini CLI", eventSource: "hook", capabilities: {} },
       ],
     });
@@ -11469,7 +12063,7 @@ describe("settings renderer browser environment", () => {
     const detectionResult = {
       checkedAt: 123,
       agents: [{ agentId: "qwen-code", detectedInstalled: true }],
-      skippedAgentIds: ["claude-code", "codex"],
+      skippedAgentIds: ["claude-code"],
     };
     const harness = loadAgentsTabForTest({
       agentMetadata: [{
@@ -11568,7 +12162,9 @@ describe("settings renderer browser environment", () => {
     // the manual-add block sits above it.
     const group = unavailable.querySelector(".agent-unavailable-group");
     assert.ok(group);
-    assert.strictEqual(group.querySelector(".collapsible-group-text .row-label").textContent, "Not detected locally");
+    // #895: the catalog can hold agents with no explicit verdict alongside
+    // genuinely undetected ones, so its title must not assert a detection result.
+    assert.strictEqual(group.querySelector(".collapsible-group-text .row-label").textContent, "More supported tools");
     assert.strictEqual(group.querySelector(".agent-section-count").textContent, "1");
     assert.ok(group.classList.contains("collapsed"));
     assert.deepStrictEqual(labelsFor(unavailable), ["Pi"]);
@@ -11576,6 +12172,130 @@ describe("settings renderer browser environment", () => {
       harness.content.children.indexOf(harness.content.querySelector(".agent-custom-tools-section"))
       < harness.content.children.indexOf(unavailable)
     );
+  });
+
+  // #895 T10: medium is half of INSTALL_HINT_CONFIDENCES but every existing
+  // test used "high", so dropping medium from the set was invisible. Antigravity
+  // squatting in ~/.gemini produces exactly a medium parent-dir hit, so this is
+  // the confidence the Gemini half of #895 travels on.
+  it("offers medium-confidence detections in the install hint banner", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: { "gemini-cli": { integrationInstalled: false, enabled: false } },
+        dismissedAgentInstallHints: {},
+      },
+      agentMetadata: [
+        { id: "gemini-cli", name: "Gemini CLI", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: false },
+      ],
+    });
+    harness.core.runtime.agentInstallationHints = {
+      checkedAt: 1,
+      agents: [{ agentId: "gemini-cli", detectedInstalled: true, confidence: "medium", reason: "parent-dir" }],
+      skippedAgentIds: [],
+    };
+    harness.core.runtime.agentInstallationHintsFetched = true;
+    harness.core.runtime.agentsSubtab = "discover";
+
+    harness.core.ops.requestRender({ content: true });
+
+    assert.ok(harness.content.querySelector(".agent-install-hint-banner"));
+    assert.match(harness.content.querySelector(".agent-install-hint-desc").textContent, /Gemini CLI/);
+    const recommended = harness.content.querySelector(".agent-section-recommended");
+    assert.ok(recommended);
+    assert.deepStrictEqual(
+      recommended.querySelectorAll(".agent-summary-row .row-label").map((el) => el.textContent),
+      ["Gemini CLI"]
+    );
+  });
+
+  // #895 T9: before the first detection resolves there is no evidence at all, so
+  // the catalog must not be phrased as a detection result. It carries agents
+  // Clawd never examines even after the scan lands.
+  it("keeps the catalog title free of detection claims before hints arrive", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: { agents: { codex: { integrationInstalled: false, enabled: false } } },
+      agentMetadata: [
+        { id: "codex", name: "Codex", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: true },
+      ],
+    });
+    harness.core.runtime.agentInstallationHintsFetched = false;
+    harness.core.runtime.agentsSubtab = "discover";
+
+    harness.core.ops.requestRender({ content: true });
+
+    const group = harness.content.querySelector(".agent-unavailable-group");
+    assert.ok(group);
+    assert.strictEqual(
+      group.querySelector(".collapsible-group-text .row-label").textContent,
+      "More supported tools"
+    );
+  });
+
+  // #895 T12/T12b/T12c/T12d: cleanup suggestions are gated on metadata that must
+  // say, explicitly, that the agent is eligible. Default integrations are not,
+  // and a fixture or an IPC failure that omits the field must not be read as
+  // permission to propose tearing an integration out.
+  it("gates fetched cleanup hints on explicit metadata eligibility", async () => {
+    const cases = [
+      { label: "default agent is exempt", id: "codex", name: "Codex", exempt: true, expectBanner: false },
+      { label: "Claude shares the exemption", id: "claude-code", name: "Claude Code", exempt: true, expectBanner: false },
+      { label: "non-default agent is eligible", id: "qwen-code", name: "Qwen Code", exempt: false, expectBanner: true },
+      { label: "missing field fails closed", id: "qwen-code", name: "Qwen Code", exempt: undefined, expectBanner: false },
+    ];
+    for (const { label, id, name, exempt, expectBanner } of cases) {
+      const metadata = { id, name, eventSource: "hook", capabilities: {} };
+      if (exempt !== undefined) metadata.cleanupSuggestionExempt = exempt;
+      const harness = loadAgentsTabForTest({
+        snapshot: {
+          agents: { [id]: { integrationInstalled: true, enabled: true } },
+          dismissedAgentCleanupHints: {},
+        },
+        agentMetadata: [metadata],
+        settingsAPI: {
+          detectAgentInstallations: () => Promise.resolve({
+            checkedAt: 1,
+            agents: [{ agentId: id, detectedInstalled: false, confidence: "low" }],
+            skippedAgentIds: ["claude-code"],
+          }),
+        },
+      });
+      await harness.core.ops.fetchAgentInstallationHints();
+
+      assert.strictEqual(harness.core.runtime.agentInstallationHints.agents[0].agentId, id, label);
+
+      const banner = harness.content.querySelector(".agent-cleanup-hint-banner");
+      assert.strictEqual(!!banner, expectBanner, label);
+    }
+  });
+
+  // #895: an entry with no verdict is "not checked", and must not propose a
+  // deletion any more than a missing entry does.
+  it("requires a strict false verdict before offering a cleanup hint", () => {
+    for (const detectedInstalled of [undefined, null]) {
+      const harness = loadAgentsTabForTest({
+        snapshot: {
+          agents: { "qwen-code": { integrationInstalled: true, enabled: true } },
+          dismissedAgentCleanupHints: {},
+        },
+        agentMetadata: [
+          { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: false },
+        ],
+      });
+      harness.core.runtime.agentInstallationHints = {
+        checkedAt: 1,
+        agents: [{ agentId: "qwen-code", detectedInstalled, confidence: "low" }],
+        skippedAgentIds: [],
+      };
+      harness.core.runtime.agentInstallationHintsFetched = true;
+
+      harness.core.ops.requestRender({ content: true });
+
+      assert.strictEqual(
+        harness.content.querySelector(".agent-cleanup-hint-banner"),
+        null,
+        `detectedInstalled=${detectedInstalled} must not propose cleanup`
+      );
+    }
   });
 
   it("renders an install hint banner for detected local agents that are not integrated", () => {
@@ -11599,7 +12319,7 @@ describe("settings renderer browser environment", () => {
         { agentId: "hermes", detectedInstalled: true, confidence: "high" },
         { agentId: "pi", detectedInstalled: true, confidence: "low" },
       ],
-      skippedAgentIds: ["claude-code", "codex"],
+      skippedAgentIds: ["claude-code"],
     };
     harness.core.runtime.agentInstallationHintsFetched = true;
     harness.core.runtime.agentsSubtab = "discover";
@@ -11644,16 +12364,16 @@ describe("settings renderer browser environment", () => {
     const harness = loadAgentsTabForTest({
       snapshot: {
         agents: {
-          codex: { integrationInstalled: false, enabled: false },
+          "claude-code": { integrationInstalled: false, enabled: false },
           "qwen-code": { integrationInstalled: false, enabled: false },
         },
         dismissedAgentInstallHints: {
-          codex: true,
+          "claude-code": true,
           "qwen-code": true,
         },
       },
       agentMetadata: [
-        { id: "codex", name: "Codex", eventSource: "hook", capabilities: {} },
+        { id: "claude-code", name: "Claude Code", eventSource: "hook", capabilities: {} },
         { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
       ],
       settingsAPI: {
@@ -11666,7 +12386,7 @@ describe("settings renderer browser environment", () => {
     harness.core.runtime.agentInstallationHints = {
       checkedAt: 1,
       agents: [{ agentId: "qwen-code", detectedInstalled: false, confidence: "low" }],
-      skippedAgentIds: ["codex"],
+      skippedAgentIds: ["claude-code"],
     };
     harness.core.runtime.agentInstallationHintsFetched = true;
 
@@ -11795,7 +12515,7 @@ describe("settings renderer browser environment", () => {
     assert.notStrictEqual(toasts[0].options.error, true);
   });
 
-  it("renders cleanup hint banners only from detector entries, not skipped default agents", () => {
+  it("renders cleanup hint banners only from explicit negative entries, not absent default agents", () => {
     const harness = loadAgentsTabForTest({
       snapshot: {
         agents: {
@@ -11806,15 +12526,15 @@ describe("settings renderer browser environment", () => {
         dismissedAgentCleanupHints: {},
       },
       agentMetadata: [
-        { id: "claude-code", name: "Claude Code", eventSource: "hook", capabilities: {} },
-        { id: "codex", name: "Codex", eventSource: "hook", capabilities: {} },
-        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+        { id: "claude-code", name: "Claude Code", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: true },
+        { id: "codex", name: "Codex", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: true },
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: false },
       ],
     });
     harness.core.runtime.agentInstallationHints = {
       checkedAt: 1,
       agents: [{ agentId: "qwen-code", detectedInstalled: false, confidence: "low" }],
-      skippedAgentIds: ["claude-code", "codex"],
+      skippedAgentIds: ["claude-code"],
     };
     harness.core.runtime.agentInstallationHintsFetched = true;
 
@@ -11839,7 +12559,7 @@ describe("settings renderer browser environment", () => {
         dismissedAgentCleanupHints: { "qwen-code": true },
       },
       agentMetadata: [
-        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: false },
       ],
     });
     harness.core.runtime.agentInstallationHints = {
@@ -11864,7 +12584,7 @@ describe("settings renderer browser environment", () => {
         dismissedAgentCleanupHints: { "qwen-code": true },
       },
       agentMetadata: [
-        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: false },
       ],
       settingsAPI: {
         command: (action, payload) => {
@@ -11904,7 +12624,7 @@ describe("settings renderer browser environment", () => {
         dismissedAgentCleanupHints: {},
       },
       agentMetadata: [
-        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: false },
       ],
       settingsAPI: {
         command: (action, payload) => {

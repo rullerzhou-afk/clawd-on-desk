@@ -229,6 +229,43 @@ describe("Mobile Preview Server", () => {
     await new Promise((r) => setTimeout(r, 100));
   });
 
+  it("keeps internal and explicitly hidden display folders out of public sessions", async () => {
+    const opaque = "mqgw60jiigjsjcid";
+    sessions.set("qwenwork:hidden", {
+      state: "working",
+      agentId: "qwenwork",
+      cwd: `/Users/me/.QwenWorkCN/workspace/${opaque}`,
+      sessionTitle: "Private workspace",
+      updatedAt: Date.now(),
+      recentEvents: [],
+    });
+    sessions.set("legacy:explicit-hidden", {
+      state: "working",
+      agentId: "claude-code",
+      cwd: `/Users/me/projects/${opaque}`,
+      displayFolder: "",
+      sessionTitle: "Explicitly private workspace",
+      updatedAt: Date.now(),
+      recentEvents: [],
+    });
+    server.onSnapshot();
+
+    const client = connectClient(port, token);
+    await waitForOpen(client.ws);
+    const snapshot = await client.waitFor("snapshot");
+
+    assert.equal(snapshot.sessions["qwenwork:hidden"].basename, null);
+    assert.ok(!JSON.stringify(snapshot.sessions["qwenwork:hidden"]).includes(opaque));
+    assert.equal(snapshot.sessions["legacy:explicit-hidden"].basename, null);
+    assert.ok(!JSON.stringify(snapshot.sessions["legacy:explicit-hidden"]).includes(opaque));
+
+    client.close();
+    sessions.delete("qwenwork:hidden");
+    sessions.delete("legacy:explicit-hidden");
+    server.onSnapshot();
+    await new Promise((r) => setTimeout(r, 100));
+  });
+
   it("keeps agentId separate when a session has no title", async () => {
     sessions.set("s-titleless", {
       state: "working",

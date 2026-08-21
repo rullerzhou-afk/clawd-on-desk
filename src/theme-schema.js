@@ -570,19 +570,56 @@ function normalizeAccessoryFollowTarget(value, pathName, errors) {
   return { id: value.id, frame };
 }
 
+function normalizeAccessoryHitBoxPadding(value, viewBox, pathName, errors) {
+  if (!isPlainObject(value)) {
+    errors.push(`${pathName} must be an object`);
+    return null;
+  }
+  hasOnlyKeys(value, new Set(["left", "top", "right", "bottom"]), pathName, errors);
+  if (!viewBox) {
+    errors.push(`${pathName} cannot be validated without an effective viewBox`);
+    return null;
+  }
+
+  const normalized = {};
+  for (const [key, limit] of [
+    ["left", viewBox.width],
+    ["top", viewBox.height],
+    ["right", viewBox.width],
+    ["bottom", viewBox.height],
+  ]) {
+    if (value[key] === undefined) continue;
+    if (!Number.isFinite(value[key]) || value[key] < 0 || value[key] > limit) {
+      errors.push(`${pathName}.${key} must be a finite non-negative value within viewBox limits`);
+      continue;
+    }
+    normalized[key] = value[key];
+  }
+  return normalized;
+}
+
 function normalizeAccessoryStaticSection(value, viewBox, pathName, errors) {
   if (!isPlainObject(value)) {
     errors.push(`${pathName} must be an object`);
     return null;
   }
-  hasOnlyKeys(value, new Set(["staticFrame"]), pathName, errors);
+  hasOnlyKeys(value, new Set(["staticFrame", "hitBoxPadding"]), pathName, errors);
   const staticFrame = normalizeAccessoryFrame(
     value.staticFrame,
     viewBox,
     `${pathName}.staticFrame`,
     errors
   );
-  return staticFrame ? { staticFrame } : null;
+  const hitBoxPadding = value.hitBoxPadding === undefined
+    ? null
+    : normalizeAccessoryHitBoxPadding(
+      value.hitBoxPadding,
+      viewBox,
+      `${pathName}.hitBoxPadding`,
+      errors
+    );
+  if (!staticFrame || (value.hitBoxPadding !== undefined && !hitBoxPadding)) return null;
+  return hitBoxPadding ? { staticFrame, hitBoxPadding } : { staticFrame };
 }
 
 function viewBoxKey(viewBox) {
@@ -597,7 +634,7 @@ function normalizeAccessoryFileDescriptor(value, viewBox, pathName, errors) {
   }
   hasOnlyKeys(
     value,
-    new Set(["visibility", "staticFrame", "followTarget"]),
+    new Set(["visibility", "staticFrame", "followTarget", "hitBoxPadding"]),
     pathName,
     errors
   );
@@ -606,7 +643,11 @@ function normalizeAccessoryFileDescriptor(value, viewBox, pathName, errors) {
       errors.push(`${pathName}.visibility must be "hidden"`);
       return null;
     }
-    if (value.staticFrame !== undefined || value.followTarget !== undefined) {
+    if (
+      value.staticFrame !== undefined
+      || value.followTarget !== undefined
+      || value.hitBoxPadding !== undefined
+    ) {
       errors.push(`${pathName} hidden descriptors cannot define placement`);
       return null;
     }
@@ -625,8 +666,24 @@ function normalizeAccessoryFileDescriptor(value, viewBox, pathName, errors) {
       `${pathName}.followTarget`,
       errors
     );
-  if (!staticFrame || (value.followTarget !== undefined && !followTarget)) return null;
-  return followTarget ? { staticFrame, followTarget } : { staticFrame };
+  const hitBoxPadding = value.hitBoxPadding === undefined
+    ? null
+    : normalizeAccessoryHitBoxPadding(
+      value.hitBoxPadding,
+      viewBox,
+      `${pathName}.hitBoxPadding`,
+      errors
+    );
+  if (
+    !staticFrame
+    || (value.followTarget !== undefined && !followTarget)
+    || (value.hitBoxPadding !== undefined && !hitBoxPadding)
+  ) return null;
+  return {
+    staticFrame,
+    ...(followTarget ? { followTarget } : {}),
+    ...(hitBoxPadding ? { hitBoxPadding } : {}),
+  };
 }
 
 /**

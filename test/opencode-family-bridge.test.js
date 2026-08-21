@@ -5,7 +5,7 @@
 // carrying the live bridge coordinates).
 //
 // permission-family-roundtrip.test.js covers the Electron→bridge half; this
-// file covers the Bun half by initializing the REAL factory plugin with a
+// file covers the Bun runtime half by initializing the REAL factory plugin with a
 // fake `globalThis.Bun.serve` that captures the fetch handler, a fake global
 // fetch (so nothing touches a live Clawd on the real ports), and a mock SDK
 // client — then drives handleBridgeRequest/verifyBridgeToken/startBridge/

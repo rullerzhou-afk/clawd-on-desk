@@ -124,6 +124,8 @@ function createPetWindowRuntime(options = {}) {
   const getCurrentState = options.getCurrentState || (() => null);
   const getCurrentSvg = options.getCurrentSvg || (() => null);
   const getCurrentHitBox = options.getCurrentHitBox || (() => null);
+  const getCurrentAccessoryPayload = options.getCurrentAccessoryPayload || (() => null);
+  const getAccessoryMirrored = options.getAccessoryMirrored || (() => false);
   const getMiniMode = options.getMiniMode || (() => false);
   const getMiniTransitioning = options.getMiniTransitioning || (() => false);
   const getMiniContainedSeam = options.getMiniContainedSeam || (() => null);
@@ -208,6 +210,8 @@ function createPetWindowRuntime(options = {}) {
     getCurrentState,
     getCurrentSvg,
     getCurrentHitBox,
+    getCurrentAccessoryPayload,
+    getAccessoryMirrored,
     getMiniMode,
     getMiniPeekOffset,
   });
@@ -1781,6 +1785,17 @@ function createPetWindowRuntime(options = {}) {
     if (hitConfirmTimer) { clearTimeoutFn(hitConfirmTimer); hitConfirmTimer = null; }
   }
 
+  // What syncHitWin() reports back. "deferred" is a normal outcome — a drag is
+  // holding the pointer, the windows are not up yet, or the rect is a
+  // transient sliver — and callers that care about the new geometry should
+  // retry rather than warn. "failed" means the rect could not be resolved at
+  // all; with today's guards that is unreachable (every clip step returns a
+  // rect, and bounds are non-null once the windows are live), so it is defence
+  // in depth for callers that inject their own sync, not a live path.
+  const APPLIED_HIT_SYNC = Object.freeze({ applied: true, deferred: false });
+  const DEFERRED_HIT_SYNC = Object.freeze({ applied: false, deferred: true });
+  const FAILED_HIT_SYNC = Object.freeze({ applied: false, deferred: false });
+
   // syncHitWin() is the ONLY caller that needs the full I5 pipeline in this
   // exact order (§4.3 point 7: outward clip, THEN internal-seam clip) — it
   // calls petGeometryMain.getHitRectScreen() directly (bypassing the exposed
@@ -1790,13 +1805,13 @@ function createPetWindowRuntime(options = {}) {
   function syncHitWin() {
     const hitWin = getHitWindow();
     const win = getRenderWindow();
-    if (!isLiveWindow(hitWin) || !isLiveWindow(win)) return;
+    if (!isLiveWindow(hitWin) || !isLiveWindow(win)) return DEFERRED_HIT_SYNC;
     // Keep the captured pointer stable while dragging. Repositioning the input
     // window mid-drag can break pointer capture on Windows.
-    if (dragLocked) return;
+    if (dragLocked) return DEFERRED_HIT_SYNC;
     const bounds = getPetWindowBounds();
     let hit = petGeometryMain.getHitRectScreen(bounds);
-    if (!hit) return;
+    if (!hit) return FAILED_HIT_SYNC;
 
     const physical = getPhysicalRenderBounds();
     hit = applyOutwardClip(hit, physical);
@@ -1812,7 +1827,7 @@ function createPetWindowRuntime(options = {}) {
       hit = intersectHitWithWorkArea(hit, hitWa, clampBounds);
     }
     hit = clipHitRectToMiniSeam(hit);
-    if (!hit) return;
+    if (!hit) return FAILED_HIT_SYNC;
 
     const x = Math.round(hit.left);
     const y = Math.round(hit.top);
@@ -1836,7 +1851,9 @@ function createPetWindowRuntime(options = {}) {
       applyHitInputState();
       repositionSessionHud();
       syncImeEditingPetDodge();
-      return;
+      // Nothing was written: this rect is a transient sliver. Callers that
+      // need the new geometry should retry, not warn.
+      return DEFERRED_HIT_SYNC;
     }
 
     const target = { x, y, width: w, height: h };
@@ -1887,6 +1904,7 @@ function createPetWindowRuntime(options = {}) {
     // change hitboxes without moving the window, so the overlap answer can
     // flip right here. Cheap + edge-triggered inside.
     syncImeEditingPetDodge();
+    return APPLIED_HIT_SYNC;
   }
 
   // §4.3.11's hit-side reconcile. Debounced on its own (longer) quiet period

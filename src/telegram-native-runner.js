@@ -1336,6 +1336,9 @@ function createTelegramNativeRunner({
     const text = message && message.plainText;
     const suggestions = normalizeApprovalSuggestions(payload && payload.suggestions);
     const signal = options && options.signal;
+    const onDelivered = options && typeof options.onDelivered === "function"
+      ? options.onDelivered
+      : null;
     if (!polling || !chatId || !allowedUser || !text || (signal && signal.aborted)) {
       const reason = !polling ? "not polling"
         : (!chatId ? "missing chat" : (!allowedUser ? "missing allowed user" : (!text ? "missing text" : "aborted")));
@@ -1380,7 +1383,13 @@ function createTelegramNativeRunner({
         const msg = delivery.result;
         const current = pendingApprovals.get(id);
         if (!current || (signal && signal.aborted)) return;
-        current.messageId = msg && msg.message_id;
+        const messageId = msg && msg.message_id;
+        current.messageId = messageId;
+        if (messageId !== null && messageId !== undefined && messageId !== "" && onDelivered) {
+          try { onDelivered({ messageId }); } catch (err) {
+            safeLog("warn", "native approval delivery callback failed", { error: err && err.message });
+          }
+        }
         safeLog("debug", "native approval card sent");
       }).catch((err) => {
         if (signal && signal.aborted) {
@@ -1635,6 +1644,9 @@ function createTelegramNativeRunner({
     const allowedUser = getAllowedUserId();
     const normalized = normalizeElicitationPayload(payload);
     const signal = options && options.signal;
+    const onDelivered = options && typeof options.onDelivered === "function"
+      ? options.onDelivered
+      : null;
     if (!polling || !chatId || !allowedUser || !normalized || (signal && signal.aborted)) {
       const reason = !polling ? "not polling"
         : (!chatId ? "missing chat" : (!allowedUser ? "missing allowed user" : (!normalized ? "invalid payload" : "aborted")));
@@ -1682,7 +1694,13 @@ function createTelegramNativeRunner({
         const msg = delivery.result;
         const current = pendingElicitations.get(id);
         if (!current || (signal && signal.aborted)) return;
-        current.messageId = msg && msg.message_id;
+        const messageId = msg && msg.message_id;
+        current.messageId = messageId;
+        if (messageId !== null && messageId !== undefined && messageId !== "" && onDelivered) {
+          try { onDelivered({ messageId }); } catch (err) {
+            safeLog("warn", "native elicitation delivery callback failed", { error: err && err.message });
+          }
+        }
         safeLog("debug", "native elicitation card sent");
       }).catch((err) => {
         if (signal && signal.aborted) {

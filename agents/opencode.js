@@ -4,7 +4,7 @@
 //
 // eventMap/capabilities are the shared opencode-family contract — identical
 // for every family member, sourced from ./opencode-family so they can't drift
-// (docs/plans/plan-opencode-family-shared-integration.md §3.1).
+// (see docs/project/agent-runtime-architecture.md).
 
 const { FAMILY_EVENT_MAP, FAMILY_CAPABILITIES } = require("./opencode-family");
 

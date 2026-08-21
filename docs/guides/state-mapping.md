@@ -58,7 +58,7 @@ Gemini CLI stays on hook-only integration, but two Gemini-native events are inte
 
 ## ZCode Hook Events
 
-ZCode uses state-only config-file hooks under `~/.zcode/cli/config.json`:
+ZCode uses config-file hooks under `~/.zcode/cli/config.json`:
 
 | ZCode Hook Event | State |
 |---|---|
@@ -68,8 +68,9 @@ ZCode uses state-only config-file hooks under `~/.zcode/cli/config.json`:
 | PostToolUse | working |
 | PostToolUseFailure | error |
 | Stop | attention |
+| PermissionRequest | notification (fail-closed path only) |
 
-ZCode does not provide a `SessionEnd` hook in this integration, so completion relies on `Stop` plus Clawd's normal process-liveness and stale-session cleanup. `PermissionRequest` is intentionally not registered; ZCode remains the only permission decision surface.
+`PermissionRequest` is a blocking permission approval since Phase 2: the hook waits on Clawd's local bubble or remote approval and answers a manual allow/deny via `hookSpecificOutput` on stdout. Permission automation deliberately defers for ZCode until its tool surface and session identity are audited. The `notification` mapping above only fires on the fail-closed path (missing/unknown tool name) or when Clawd is not running; a real decision never posts `/state`. ZCode does not provide a `SessionEnd` hook in this integration, so completion relies on `Stop` plus Clawd's normal process-liveness and stale-session cleanup. When Clawd yields no decision (timeout, disconnect, DND, bubbles off), the hook prints `{}` and ZCode's own permission flow takes over.
 
 ## Pi Extension Events
 

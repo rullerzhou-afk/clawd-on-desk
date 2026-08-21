@@ -14,18 +14,11 @@ const {
   computeInitial,
 } = require("./telegram-migration-state");
 const { ERROR_CLASSES } = require("./telegram-native-client");
-
-const ALLOWED_TEST_ERROR_CLASSES = new Set([
-  ...Object.values(ERROR_CLASSES),
-  "no_chat",
-  "native-start-failed",
-  "apply-failed",
-]);
-
-function sanitizeErrorClass(value, fallback = "unknown") {
-  const candidate = typeof value === "string" ? value.trim() : "";
-  return ALLOWED_TEST_ERROR_CLASSES.has(candidate) ? candidate : fallback;
-}
+const {
+  ALLOWED_TEST_ERROR_CLASSES,
+  sanitizeErrorClass,
+  normalizeTelegramVerificationFailure,
+} = require("./telegram-verification-failure");
 
 function createTelegramMigrationController({
   native,
@@ -60,6 +53,15 @@ function createTelegramMigrationController({
   let diagnosticCode = null;
   let revision = 0;
   let dispatchQueue = Promise.resolve();
+
+  function safeLog(level, message, meta) {
+    try {
+      const pending = log(level, message, meta);
+      if (pending && typeof pending.then === "function") {
+        void Promise.resolve(pending).catch(() => {});
+      }
+    } catch {}
+  }
 
   function readPrefsNow() {
     const raw = readPrefs() || {};
@@ -120,7 +122,7 @@ function createTelegramMigrationController({
     try {
       onSnapshotChanged({ revision, snapshot: getSnapshot() });
     } catch (err) {
-      log("warn", "migration snapshot notifier failed", {
+      safeLog("warn", "migration snapshot notifier failed", {
         error: err && err.message ? err.message : String(err),
       });
     }
@@ -142,7 +144,7 @@ function createTelegramMigrationController({
     try {
       await native.stop();
     } catch (err) {
-      log("warn", "native stop failed", {
+      safeLog("warn", "native stop failed", {
         error: err && err.message ? err.message : String(err),
       });
     }
@@ -177,13 +179,18 @@ function createTelegramMigrationController({
     const at = Number(now());
     if (outcome === "timeout") {
       lastTestResult = { outcome: "timeout", at };
-      return;
+    } else {
+      lastTestResult = {
+        outcome,
+        errorClass: sanitizeErrorClass(errorClass),
+        at,
+      };
     }
-    lastTestResult = {
-      outcome,
-      errorClass: sanitizeErrorClass(errorClass),
-      at,
-    };
+    const failure = normalizeTelegramVerificationFailure(lastTestResult);
+    safeLog("warn", "native Telegram verification failed", {
+      outcome: failure ? failure.outcome : "failed",
+      errorClass: failure ? failure.errorCode : ERROR_CLASSES.UNKNOWN,
+    });
   }
 
   async function recoverTestApplyFailure(err, origin) {
@@ -305,7 +312,7 @@ function createTelegramMigrationController({
         code: err && err.code ? String(err.code).slice(0, 64) : "NATIVE_START_FAILED",
         eventType: EVENTS.INIT,
       };
-      log("warn", "native Telegram init failed", {
+      safeLog("warn", "native Telegram init failed", {
         error: err && err.message ? err.message : String(err),
       });
     }
@@ -323,6 +330,9 @@ function createTelegramMigrationController({
     const priorOrigin = testOrigin;
 
     readPrefsNow();
+    if (identityChanged && !wasTesting) {
+      lastTestResult = null;
+    }
     if (identityChanged && prefs.transport === "native" && prefs.nativeVerifiedAt) {
       await stopNativeBestEffort();
       clearTestTimer();

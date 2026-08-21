@@ -85,7 +85,11 @@ function makeFamilyInstaller(agentId) {
    * @returns {{ added: boolean, skipped: boolean, created: boolean, configPath: string, pluginDir: string }}
    */
   function register(options = {}) {
-    const configDir = path.join(os.homedir(), ...cfg.configDirSegments);
+    // options.homeDir mirrors unregister() (see below). Without it a caller
+    // that passes a sandbox home — tests, cleanup planning — silently writes
+    // to the REAL ~/.config, which is how #825's verification harness first
+    // clobbered a live config.
+    const configDir = path.join(options.homeDir || os.homedir(), ...cfg.configDirSegments);
     const configPath = options.configPath || path.join(configDir, cfg.configFileName);
     const pluginDir = options.pluginDir || resolvePluginDir();
 

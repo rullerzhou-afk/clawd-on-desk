@@ -19,6 +19,7 @@
 //   getSnapshot() / get(key)       read access
 //   subscribe(fn) / subscribeKey(key, fn)   reactive side effects
 //   persist()                      manual flush (idempotent — no-op if locked)
+//   isLocked() / hasReadFailure()  persistence / startup-authority state
 //
 // **updateRegistry entry shapes**: each entry in `updates` may be either
 //
@@ -52,6 +53,14 @@
 // (noop). `status: 'error'` means validation failed and the store wasn't
 // touched.
 //
+// An unreadable prefs file is a stronger condition than a readable
+// future-version file. Both are `locked`, but only the unreadable path is also
+// `recovered`. In that `locked && recovered` safe mode, user mutations and
+// commands are rejected before validators/effects run: the in-memory snapshot
+// is only defaults, so neither it nor any external side effect is authoritative.
+// `hydrate()` remains available for startup imports of external truth; it skips
+// pre-commit effects and still cannot write through the locked persistence gate.
+//
 // The store's `_commit` is captured here as a closure — callers of
 // createSettingsController never see it, so the only way to mutate state is
 // through this controller.
@@ -77,6 +86,7 @@ function createSettingsController({
   const loaded = loadResult || prefs.load(prefsPath);
   const initialSnapshot = loaded.snapshot;
   let locked = !!loaded.locked;
+  const readFailure = loaded.locked === true && loaded.recovered === true;
 
   const store = createStore(initialSnapshot);
 
@@ -108,7 +118,14 @@ function createSettingsController({
   }
 
   function persistInternal(snapshot = store.getSnapshot()) {
-    if (locked) return { status: "ok", noop: true, locked: true };
+    if (locked) {
+      return {
+        status: "ok",
+        noop: true,
+        locked: true,
+        ...(readFailure ? { readFailure: true } : {}),
+      };
+    }
     if (!prefsPath) return { status: "ok", noop: true };
     try {
       prefs.save(prefsPath, snapshot);
@@ -121,6 +138,18 @@ function createSettingsController({
 
   function isThenable(v) {
     return v && typeof v.then === "function";
+  }
+
+  function readFailureResult(operation) {
+    return {
+      status: "error",
+      code: "prefs-read-failure",
+      locked: true,
+      readFailure: true,
+      message:
+        `Cannot ${operation}: the preferences file could not be read. ` +
+        "Fix access to the file and restart Clawd before changing settings.",
+    };
   }
 
   // Resolve an entry's validator function. Function-form entries ARE the
@@ -204,6 +233,9 @@ function createSettingsController({
     }
     if (store.get(key) === value) {
       return { status: "ok", noop: true };
+    }
+    if (readFailure && options.allowDuringReadFailure !== true) {
+      return readFailureResult(`change ${key}`);
     }
     const validator = resolveValidator(entry);
     if (!validator) {
@@ -399,7 +431,10 @@ function createSettingsController({
     const entries = Object.keys(partial).map((key) => ({
       key,
       value: partial[key],
-      actionResult: invokeAction(key, partial[key], { skipEffect: true }),
+      actionResult: invokeAction(key, partial[key], {
+        skipEffect: true,
+        allowDuringReadFailure: true,
+      }),
     }));
     const anyAsync = entries.some((e) => isThenable(e.actionResult));
 
@@ -432,6 +467,7 @@ function createSettingsController({
         message: `unknown command: ${name}`,
       };
     }
+    if (readFailure) return readFailureResult(`run ${name}`);
     let result;
     try {
       result = await command(payload, buildDeps());
@@ -531,6 +567,10 @@ function createSettingsController({
     return locked;
   }
 
+  function hasReadFailure() {
+    return readFailure;
+  }
+
   function dispose() {
     store.dispose();
   }
@@ -546,6 +586,7 @@ function createSettingsController({
     subscribeKey,
     persist,
     isLocked,
+    hasReadFailure,
     dispose,
   };
 }

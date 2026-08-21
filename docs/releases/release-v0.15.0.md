@@ -9,7 +9,7 @@ defects reported against v0.14.0.
 
 This release also prepares the project to take over WinGet manifest publishing, after
 discovering that x64 users had been receiving the ARM64 installer since v0.6.2, and
-welcomes **two first-time contributors**.
+welcomes **four first-time contributors**.
 
 ### Subscription Quota And Usage
 
@@ -120,6 +120,12 @@ welcomes **two first-time contributors**.
 
 ### Agents And Diagnostics
 
+- **Manual ZCode permission approval** (#880) — installed and enabled ZCode
+  integrations now add the seventh supported hook, a 600-second blocking
+  `PermissionRequest`, and show manual Allow/Deny bubbles while all global and
+  per-session permission automation remains deferred. Explicitly disabled
+  Phase 1 installs stay disabled, and a foreign permission hook remains the
+  sole owner instead of entering ZCode's last-wins chain. Thanks to @liugou27.
 - **QwenWork (千问办公)** (#843) — a hook-only, state-only integration modeled on
   QoderWork. The pet reflects QwenWork lifecycle state while permission decisions stay
   entirely in QwenWork's native flow: `PermissionRequest` / `PermissionDenied` are
@@ -134,6 +140,15 @@ welcomes **two first-time contributors**.
 
 ### Dashboard, Remote Access, And Notifications
 
+- **Slack notification-only channel** (#909, superseding #836) — Clawd can now
+  post task completion, interruption/error, and actionable permission-request
+  announcements to Slack via an Incoming Webhook or an optional bot token plus
+  channel id. Slack is deliberately one-way in this release: it cannot Allow or
+  Deny, and the real decision stays in the desktop app, Telegram, or Feishu/Lark.
+  Secrets live in a local env file outside prefs, sends are bounded/retried, link
+  unfurling is disabled, and completion cards use snapshot-owned display tags
+  instead of raw session ids. Thanks to first-time contributors @wang4433 and
+  @shengmai-justin.
 - **Persisted Sessions/Dashboard window bounds** (#807, #814, issue #801) — the window
   remembers its position and size, with hardened persistence against invalid or
   off-screen bounds. Thanks to @KaiC5504.
@@ -143,6 +158,11 @@ welcomes **two first-time contributors**.
   connection recovers instead of failing permanently.
 - **Safe HTML in Telegram messages** (#802, issue #766) — message rendering escapes
   agent-controlled content instead of emitting it into Telegram's HTML parse mode.
+- **Remote notification privacy tightening** (#909) — remote permission summaries no
+  longer use raw `Grep.pattern` search expressions as fallback detail, while `Glob`
+  file-selection patterns remain visible. QwenWork/QoderWork opaque internal
+  workspace directory names are also suppressed across existing outbound/session
+  surfaces that consume the shared snapshot display folder.
 - **Distinct default completion sound** (#833) — built-in themes now use a dedicated,
   softened completion cue instead of sharing the ordinary confirmation sound.
 
@@ -166,10 +186,12 @@ welcomes **two first-time contributors**.
 
 ### Contributors
 
-Two first-time contributors landed changes in this release:
+Four first-time contributors landed changes in this release:
 
 - @weed33834 — axis-constrained roam mode (#795)
 - @arismarioneves — Brazilian Portuguese locale (#822)
+- @wang4433 — Slack notification-only channel (#836, recovered in #909)
+- @shengmai-justin — Slack notification hardening, delivery reliability, and guide updates (#836, recovered in #909)
 
 Returning contributors: @xiaoshidefeng (#841, #843), @YOIMIYA66 (#789),
 @PeterShanxin (#853), @KaiC5504 (#807), and @anthonyonazure (#810), whose accessory and

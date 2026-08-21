@@ -493,16 +493,42 @@ function setViewportOffsetX(offsetX) {
   if (container) container.style.translate = `${_viewportOffsetX}px 0`;
 }
 
+// Shared with the main process's hit geometry via src/pet-accessory-mirror.js
+// so the two sides cannot drift apart.
+function miniFlipContext() {
+  return {
+    hasRoamVisual: _hasRoamVisual,
+    roamHeadingLeft: _roamHeadingLeft,
+    roamFlipAssets: _roamFlipAssets,
+    miniFlipAssets: _miniFlipAssets,
+    inMiniMode: _inMiniMode,
+    miniPreEntryMode: _miniPreEntryMode,
+    miniLeftFlip,
+  };
+}
+
 function shouldApplyMiniAssetFlip(state) {
-  // Free roam: the dedicated roam visual is drawn facing right; mirror it
-  // while the walk heads left (heading pushed from main via roam-heading).
-  // Themes whose roam asset faces left (roamFlipAssets) invert the mirror.
-  if (state === "roam") return _hasRoamVisual && (_roamHeadingLeft !== _roamFlipAssets);
-  // Only mini-family visuals mirror with flipAssets. mini-mode-change can land
-  // while a transitional visual (idle, drag reaction) is still on screen —
-  // those keep their orientation until the mini swap happens.
-  if (!state || !state.startsWith("mini-")) return false;
-  return _miniFlipAssets && (_inMiniMode || (_miniPreEntryMode && state === "mini-crabwalk"));
+  return petAccessoryMirror.shouldFlipAssetDirection(state, miniFlipContext());
+}
+
+// Main owns the native hit window but cannot see either flip stage, so it used
+// to re-derive the accessory's facing from mini edge + theme flags — which got
+// free roam and the mini walk-in wrong, because neither is gated on miniMode.
+// Report the composed answer instead. #pet-facing-stage (.mini-left) and
+// #pet-asset-direction-stage both wrap #pet-accessory-layer, so the accessory
+// ends up mirrored exactly when the two stages disagree.
+let _reportedAccessoryMirror = null;
+function reportAccessoryMirror(mirrored) {
+  const next = !!mirrored;
+  if (_reportedAccessoryMirror === next) return;
+  try {
+    window.electronAPI.reportAccessoryMirror(next);
+  } catch {
+    // Memo only a delivered value: remembering a send that never landed would
+    // dedupe every later attempt and strand main on the stale facing.
+    return;
+  }
+  _reportedAccessoryMirror = next;
 }
 
 function applyMiniFlip(el, state = currentState) {
@@ -510,6 +536,7 @@ function applyMiniFlip(el, state = currentState) {
   const activeFlip = shouldApplyMiniAssetFlip(state);
   if (el) el.__clawdAssetDirectionFlip = activeFlip;
   assetDirectionStage.style.scale = activeFlip ? "-1 1" : "none";
+  reportAccessoryMirror(petAccessoryMirror.isAccessoryMirrored(state, miniFlipContext()));
 
   // A media crossfade can leave older children alive after the shared stage
   // adopts the new file's direction. Counter-flip only those older children

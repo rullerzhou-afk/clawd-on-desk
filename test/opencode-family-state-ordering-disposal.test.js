@@ -32,10 +32,21 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function clawdResponse() {
+function fakeHeaders(values = {}) {
+  const normalized = Object.fromEntries(
+    Object.entries(values).map(([name, value]) => [String(name).toLowerCase(), value])
+  );
+  return { get: (name) => normalized[String(name).toLowerCase()] || null };
+}
+
+function clawdResponse(body = null, { metadataAccepted = body && body.metadata_only === true } = {}) {
+  const metadata = !!(body && body.metadata_only === true);
   return {
-    status: 200,
-    headers: { get: (name) => name === "x-clawd-server" ? "clawd-on-desk" : null },
+    status: metadata ? 204 : 200,
+    headers: fakeHeaders({
+      "x-clawd-server": "clawd-on-desk",
+      ...(metadataAccepted ? { "x-clawd-metadata-accepted": "1" } : {}),
+    }),
     text: async () => "ok",
   };
 }
@@ -43,7 +54,7 @@ function clawdResponse() {
 function untrustedResponse() {
   return {
     status: 200,
-    headers: { get: () => null },
+    headers: fakeHeaders(),
     text: async () => "not-clawd",
   };
 }
@@ -117,6 +128,18 @@ function lifecycle(type, sessionID, directory, title, extraInfo = {}) {
   };
 }
 
+function metadataState(sessionID, fields) {
+  return {
+    state: "idle",
+    session_id: sessionID,
+    event: "SessionUpdate",
+    agent_id: "opencode",
+    hook_source: "opencode-plugin",
+    metadata_only: true,
+    ...fields,
+  };
+}
+
 before(async () => {
   globalThis.fetch = (...args) => fetchImpl(...args);
   globalThis.Bun = {
@@ -130,7 +153,10 @@ before(async () => {
 });
 
 beforeEach(() => {
-  fetchImpl = async () => clawdResponse();
+  fetchImpl = async (url, opts) => {
+    const call = parseFetchCall(url, opts);
+    return clawdResponse(call.body);
+  };
 });
 
 after(() => {
@@ -140,6 +166,34 @@ after(() => {
 });
 
 describe("opencode-family per-session /state FIFO", () => {
+  it("never creates an orphan default context bucket before a real session is created", async () => {
+    const plugin = createOpencodeFamilyPlugin(CONFIG);
+    const hooks = await plugin(createContext(path.join(TMP_HOME, "no-default-context")));
+    await emit(hooks, {
+      type: "message.updated",
+      properties: {
+        info: {
+          role: "assistant",
+          providerID: "openai",
+          modelID: "model",
+          tokens: { input: 100 },
+        },
+      },
+    });
+    assert.strictEqual(plugin.__test._contextStateByInstance.size, 0);
+
+    await emit(hooks, lifecycle(
+      "session.created",
+      "ses_real_after_malformed",
+      path.join(TMP_HOME, "no-default-context"),
+      "Real session"
+    ));
+    await waitForQueueEmpty(plugin);
+    for (const sessions of plugin.__test._contextStateByInstance.values()) {
+      assert.strictEqual(sessions.has("opencode:default"), false);
+    }
+  });
+
   it("keeps a delayed SessionStart before a later real-title metadata update", async () => {
     const plugin = createOpencodeFamilyPlugin(CONFIG);
     const hooks = await plugin(createContext(path.join(TMP_HOME, "created-title")));
@@ -154,7 +208,7 @@ describe("opencode-family per-session /state FIFO", () => {
         await startGate.promise;
       }
       applyStateBody(serverSessions, call.body);
-      return clawdResponse();
+      return clawdResponse(call.body);
     };
 
     await emit(hooks, lifecycle(
@@ -210,7 +264,7 @@ describe("opencode-family per-session /state FIFO", () => {
         await lifecycleGate.promise;
       }
       applyStateBody(serverSessions, call.body);
-      return clawdResponse();
+      return clawdResponse(call.body);
     };
 
     await emit(hooks, lifecycle("session.created", "ses_rename", directory, "Title A"));
@@ -246,7 +300,7 @@ describe("opencode-family per-session /state FIFO", () => {
     fetchImpl = async (url, opts) => {
       const call = parseFetchCall(url, opts);
       calls.push(call);
-      return call.body.state === "thinking" ? untrustedResponse() : clawdResponse();
+      return call.body.state === "thinking" ? untrustedResponse() : clawdResponse(call.body);
     };
 
     plugin.__test.postStateToClawd({
@@ -282,7 +336,7 @@ describe("opencode-family per-session /state FIFO", () => {
       if (call.body.event === "UserPromptSubmit" && call.body.sequence === 0) {
         await firstGate.promise;
       }
-      return clawdResponse();
+      return clawdResponse(call.body);
     };
 
     plugin.__test.postStateToClawd({
@@ -327,7 +381,7 @@ describe("opencode-family per-session /state FIFO", () => {
       const call = parseFetchCall(url, opts);
       calls.push(call);
       if (call.body.sequence === 0) await firstGate.promise;
-      return clawdResponse();
+      return clawdResponse(call.body);
     };
 
     plugin.__test.postStateToClawd({
@@ -375,7 +429,7 @@ describe("opencode-family per-session /state FIFO", () => {
       const call = parseFetchCall(url, opts);
       calls.push(call);
       if (calls.length === 1) await firstGate.promise;
-      return clawdResponse();
+      return clawdResponse(call.body);
     };
 
     await emit(hooks, lifecycle("session.created", "ses_bounded", directory, "Bounded"));
@@ -429,7 +483,7 @@ describe("opencode-family per-session /state FIFO", () => {
       const call = parseFetchCall(url, opts);
       calls.push(call);
       if (calls.length === 1) await firstGate.promise;
-      return clawdResponse();
+      return clawdResponse(call.body);
     };
 
     await emit(hooks, lifecycle("session.created", "ses_metadata_bound", directory, "Old title"));
@@ -485,7 +539,7 @@ describe("opencode-family per-session /state FIFO", () => {
       if (call.url.endsWith("/state") && call.body.session_id === "opencode:ses_a") {
         await stateGate.promise;
       }
-      return clawdResponse();
+      return clawdResponse(call.body);
     };
 
     plugin.__test.postStateToClawd({
@@ -544,7 +598,7 @@ describe("opencode-family per-session /state FIFO", () => {
       if (blockThinking && call.body.event === "UserPromptSubmit" && call.body.session_id === "opencode:ses_child") {
         await thinkingGate.promise;
       }
-      return clawdResponse();
+      return clawdResponse(call.body);
     };
 
     await emit(hooks, lifecycle("session.created", "ses_root", directory, "Root"));
@@ -588,6 +642,169 @@ describe("opencode-family per-session /state FIFO", () => {
   });
 });
 
+describe("opencode-family queued metadata coalescing", () => {
+  it("keeps queue-tail transport success separate from metadata acceptance", async () => {
+    const plugin = createOpencodeFamilyPlugin(CONFIG);
+    const calls = [];
+    fetchImpl = async (url, opts) => {
+      const call = parseFetchCall(url, opts);
+      calls.push(call);
+      return clawdResponse(call.body, { metadataAccepted: false });
+    };
+
+    const completion = plugin.__test.postStateToClawd(metadataState("opencode:ses_no_ack", {
+      context_usage: { used: 10, limit: 100, source: "opencode" },
+    }));
+    const tail = plugin.__test._statePostTailBySession.get("opencode:ses_no_ack");
+    assert.strictEqual(await completion, false, "the metadata snapshot must not report accepted");
+    assert.strictEqual(await tail, true, "the queue tail remains a recognized-transport aggregate");
+    assert.strictEqual(calls.length, 1, "recognized/no-ack must stop candidate scanning");
+    assert.strictEqual(plugin.__test._cachedPort, 23333);
+  });
+
+  it("projects untrusted or thrown delivery to false snapshot and transport results", async () => {
+    for (const mode of ["untrusted", "throw"]) {
+      const plugin = createOpencodeFamilyPlugin(CONFIG);
+      fetchImpl = mode === "throw"
+        ? async () => { throw new Error("fetch failed"); }
+        : async () => untrustedResponse();
+      const completion = plugin.__test.postStateToClawd(metadataState(`opencode:ses_${mode}`, {
+        context_usage: { used: 10, limit: 100, source: "opencode" },
+      }));
+      const tail = plugin.__test._statePostTailBySession.get(`opencode:ses_${mode}`);
+      assert.strictEqual(await completion, false, `${mode} snapshot must fail`);
+      assert.strictEqual(await tail, false, `${mode} transport aggregate must fail`);
+    }
+  });
+
+  function startBlockedLifecycle(plugin, calls, sessionID = "opencode:ses_meta") {
+    const gate = deferred();
+    fetchImpl = async (url, opts) => {
+      const call = parseFetchCall(url, opts);
+      calls.push(call);
+      if (call.body.session_id === sessionID && call.body.metadata_only !== true && calls.length === 1) {
+        await gate.promise;
+      }
+      return clawdResponse(call.body);
+    };
+    const active = plugin.__test.postStateToClawd({
+      state: "thinking",
+      session_id: sessionID,
+      event: "UserPromptSubmit",
+      agent_id: "opencode",
+      hook_source: "opencode-plugin",
+    });
+    assert.strictEqual(calls.length, 1, "the lifecycle request did not enter the controlled gate");
+    return { gate, active };
+  }
+
+  it("merges title then context without losing either field", async () => {
+    const plugin = createOpencodeFamilyPlugin(CONFIG);
+    const calls = [];
+    const { gate, active } = startBlockedLifecycle(plugin, calls);
+    const title = plugin.__test.postStateToClawd(metadataState("opencode:ses_meta", {
+      session_title: "A title",
+    }));
+    const context = plugin.__test.postStateToClawd(metadataState("opencode:ses_meta", {
+      context_usage: { used: 10, limit: 100, source: "opencode" },
+    }));
+
+    gate.resolve();
+    assert.strictEqual(await active, true);
+    assert.strictEqual(await title, true);
+    assert.strictEqual(await context, true);
+    assert.deepStrictEqual(calls.map((call) => call.body.metadata_only), [undefined, true]);
+    assert.strictEqual(calls[1].body.session_title, "A title");
+    assert.deepStrictEqual(calls[1].body.context_usage, { used: 10, limit: 100, source: "opencode" });
+  });
+
+  it("merges context then title and preserves latest values within each kind", async () => {
+    const plugin = createOpencodeFamilyPlugin(CONFIG);
+    const calls = [];
+    const { gate, active } = startBlockedLifecycle(plugin, calls);
+    const contextA = plugin.__test.postStateToClawd(metadataState("opencode:ses_meta", {
+      context_usage: { used: 10, limit: 100, source: "opencode" },
+    }));
+    const contextB = plugin.__test.postStateToClawd(metadataState("opencode:ses_meta", {
+      context_usage: { used: 20, limit: 100, source: "opencode" },
+    }));
+    const titleA = plugin.__test.postStateToClawd(metadataState("opencode:ses_meta", {
+      session_title: "Old title",
+    }));
+    const titleB = plugin.__test.postStateToClawd(metadataState("opencode:ses_meta", {
+      session_title: "Latest title",
+    }));
+
+    gate.resolve();
+    assert.strictEqual(await active, true);
+    assert.strictEqual(await contextA, false);
+    assert.strictEqual(await titleA, false);
+    assert.strictEqual(await contextB, true);
+    assert.strictEqual(await titleB, true);
+    const metadata = calls.filter((call) => call.body.metadata_only);
+    assert.strictEqual(metadata.length, 1, "superseded metadata was replayed");
+    assert.strictEqual(metadata[0].body.session_title, "Latest title");
+    assert.deepStrictEqual(metadata[0].body.context_usage, { used: 20, limit: 100, source: "opencode" });
+  });
+
+  it("keeps lifecycle semantics separate from queued metadata", async () => {
+    const plugin = createOpencodeFamilyPlugin(CONFIG);
+    const calls = [];
+    const { gate, active } = startBlockedLifecycle(plugin, calls);
+    const title = plugin.__test.postStateToClawd(metadataState("opencode:ses_meta", {
+      session_title: "Title",
+    }));
+    const context = plugin.__test.postStateToClawd(metadataState("opencode:ses_meta", {
+      context_usage: { used: 30, limit: 300, source: "opencode" },
+    }));
+    const lifecycleBody = plugin.__test.postStateToClawd({
+      state: "working",
+      session_id: "opencode:ses_meta",
+      event: "PostToolUse",
+      agent_id: "opencode",
+      hook_source: "opencode-plugin",
+    });
+
+    gate.resolve();
+    await Promise.all([active, title, context, lifecycleBody]);
+    assert.deepStrictEqual(
+      calls.map((call) => [call.body.event, call.body.metadata_only === true]),
+      [
+        ["UserPromptSubmit", false],
+        ["SessionUpdate", true],
+        ["PostToolUse", false],
+      ]
+    );
+  });
+
+  it("keeps different session queues concurrent", async () => {
+    const plugin = createOpencodeFamilyPlugin(CONFIG);
+    const calls = [];
+    const gateA = deferred();
+    fetchImpl = async (url, opts) => {
+      const call = parseFetchCall(url, opts);
+      calls.push(call);
+      if (call.body.session_id === "opencode:ses_a") await gateA.promise;
+      return clawdResponse(call.body);
+    };
+
+    const a = plugin.__test.postStateToClawd({
+      state: "thinking",
+      session_id: "opencode:ses_a",
+      event: "UserPromptSubmit",
+      agent_id: "opencode",
+      hook_source: "opencode-plugin",
+    });
+    const b = plugin.__test.postStateToClawd(metadataState("opencode:ses_b", {
+      context_usage: { used: 1, limit: 10, source: "opencode" },
+    }));
+    assert.strictEqual(calls.length, 2, "session B waited behind session A");
+    assert.strictEqual(calls[1].body.session_id, "opencode:ses_b");
+    gateA.resolve();
+    await Promise.all([a, b]);
+  });
+});
+
 describe("opencode-family directory-scoped instance disposal", () => {
   it("normalizes comparison keys without changing platform path semantics", async () => {
     const plugin = createOpencodeFamilyPlugin(CONFIG);
@@ -615,8 +832,9 @@ describe("opencode-family directory-scoped instance disposal", () => {
     const calls = [];
 
     fetchImpl = async (url, opts) => {
-      calls.push(parseFetchCall(url, opts));
-      return clawdResponse();
+      const call = parseFetchCall(url, opts);
+      calls.push(call);
+      return clawdResponse(call.body);
     };
 
     await emit(hooksA, lifecycle("session.created", "a_root", directoryA, "A root"));
@@ -700,8 +918,9 @@ describe("opencode-family directory-scoped instance disposal", () => {
     const calls = [];
 
     fetchImpl = async (url, opts) => {
-      calls.push(parseFetchCall(url, opts));
-      return clawdResponse();
+      const call = parseFetchCall(url, opts);
+      calls.push(call);
+      return clawdResponse(call.body);
     };
 
     await emit(hooksA, {
@@ -743,8 +962,9 @@ describe("opencode-family directory-scoped instance disposal", () => {
     const calls = [];
 
     fetchImpl = async (url, opts) => {
-      calls.push(parseFetchCall(url, opts));
-      return clawdResponse();
+      const call = parseFetchCall(url, opts);
+      calls.push(call);
+      return clawdResponse(call.body);
     };
 
     await emit(hooksA, lifecycle("session.created", "mixed_a", directoryA, "A"));
@@ -794,8 +1014,9 @@ describe("opencode-family directory-scoped instance disposal", () => {
     const calls = [];
 
     fetchImpl = async (url, opts) => {
-      calls.push(parseFetchCall(url, opts));
-      return clawdResponse();
+      const call = parseFetchCall(url, opts);
+      calls.push(call);
+      return clawdResponse(call.body);
     };
 
     assert.strictEqual(plugin.__test._lastInitDirectory, directoryB);
@@ -825,8 +1046,9 @@ describe("opencode-family directory-scoped instance disposal", () => {
     const calls = [];
 
     fetchImpl = async (url, opts) => {
-      calls.push(parseFetchCall(url, opts));
-      return clawdResponse();
+      const call = parseFetchCall(url, opts);
+      calls.push(call);
+      return clawdResponse(call.body);
     };
 
     await emit(hooksA, lifecycle("session.created", "sid_a", directoryA, "A"));
@@ -876,7 +1098,7 @@ describe("opencode-family directory-scoped instance disposal", () => {
         await stateGate.promise;
       }
       if (call.url.endsWith("/state")) applyStateBody(serverSessions, call.body);
-      return clawdResponse();
+      return clawdResponse(call.body);
     };
 
     await emit(hooksA, lifecycle("session.created", "ghost_a", directoryA, "A"));

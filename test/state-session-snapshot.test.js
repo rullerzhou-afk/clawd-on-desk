@@ -8,9 +8,12 @@ const {
   deriveSessionBadge,
   deriveSourceInfo,
   isSessionInProgress,
+  buildDisplaySessionTag,
+  buildSessionSnapshotEntry,
   buildSessionSnapshot,
   getActiveSessionAliasKeys,
   sessionSnapshotSignature,
+  sessionDisplayFolder,
   sessionDisplayTitle,
   normalizeTitle,
 } = require("../src/state-session-snapshot");
@@ -156,6 +159,72 @@ describe("remote profile action ids", () => {
   });
 });
 
+describe("display session tags", () => {
+  it("hashes legal canonical ids into stable 10-hex display tags", () => {
+    const canonical = makeSessionKey({
+      profileId: "local",
+      rawSessionId: "token-1234567890-abcdef",
+    });
+
+    assert.strictEqual(canonical, "s1.bG9jYWw.dG9rZW4tMTIzNDU2Nzg5MC1hYmNkZWY");
+    assert.strictEqual(buildDisplaySessionTag(canonical), "83aacb6af9");
+    assert.match(buildDisplaySessionTag(canonical), /^[0-9a-f]{10}$/);
+  });
+
+  it("returns an empty tag for missing, non-string, or blank ids", () => {
+    for (const value of [null, undefined, "", "   ", 42, true, {}, []]) {
+      assert.strictEqual(buildDisplaySessionTag(value), "", String(value));
+    }
+  });
+
+  it("distinguishes real Codex UUIDv7-shaped raw ids after canonicalization", () => {
+    const first = makeSessionKey({
+      profileId: "local",
+      rawSessionId: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+    });
+    const second = makeSessionKey({
+      profileId: "local",
+      rawSessionId: "codex:019e115b-4df2-7ed0-b90e-8e6345aca777",
+    });
+
+    assert.strictEqual(buildDisplaySessionTag(first), "732d7659d7");
+    assert.strictEqual(buildDisplaySessionTag(second), "b8a6f6f6ac");
+    assert.notStrictEqual(buildDisplaySessionTag(first), buildDisplaySessionTag(second));
+  });
+
+  it("distinguishes the same raw id in different remote profiles", () => {
+    const rawSessionId = "same-visible-id";
+    const a = makeSessionKey({ profileId: "profile-a", rawSessionId });
+    const b = makeSessionKey({ profileId: "profile-b", rawSessionId });
+
+    assert.notStrictEqual(buildDisplaySessionTag(a), buildDisplaySessionTag(b));
+  });
+
+  it("snapshot entries expose a tag derived only from the canonical id", () => {
+    const id = makeSessionKey({ profileId: "local", rawSessionId: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777" });
+    const withRaw = buildSessionSnapshotEntry(id, session("working", {
+      rawSessionId: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+    }));
+    const withoutRaw = buildSessionSnapshotEntry(id, session("working"));
+
+    assert.strictEqual(withRaw.displaySessionTag, "732d7659d7");
+    assert.strictEqual(withoutRaw.displaySessionTag, withRaw.displaySessionTag);
+    for (const forbidden of ["s1.", "bG9", "codex:", "019e11"]) {
+      assert.strictEqual(withRaw.displaySessionTag.includes(forbidden), false, forbidden);
+    }
+  });
+
+  it("snapshot signature tracks the visible display session tag field", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["tagged", session("working")],
+    ]), { statePriority: STATE_PRIORITY });
+    const changed = JSON.parse(JSON.stringify(snapshot));
+    changed.sessions[0].displaySessionTag = "deadbeef00";
+
+    assert.notStrictEqual(sessionSnapshotSignature(snapshot), sessionSnapshotSignature(changed));
+  });
+});
+
 describe("isSessionInProgress state mapping", () => {
   it("treats persisted running states as in-progress and idle/sleeping/headless as not", () => {
     assert.strictEqual(isSessionInProgress(session("working")), true);
@@ -183,6 +252,24 @@ describe("isSessionInProgress state mapping", () => {
 });
 
 describe("sessionDisplayTitle cwd fallback", () => {
+  it("publishes a cross-platform display folder without changing the raw cwd", () => {
+    assert.strictEqual(
+      sessionDisplayFolder("claude:abc123", session("working", { cwd: "C:\\work\\project\\" })),
+      "project"
+    );
+    assert.strictEqual(
+      sessionDisplayFolder("claude:abc123", session("working", { cwd: "/work/project/" })),
+      "project"
+    );
+
+    const cwd = "/work/project";
+    const snapshot = buildSessionSnapshot(new Map([
+      ["claude:abc123", session("working", { cwd })],
+    ]), { statePriority: STATE_PRIORITY });
+    assert.strictEqual(snapshot.sessions[0].displayFolder, "project");
+    assert.strictEqual(snapshot.sessions[0].cwd, cwd, "focus/open-folder keeps the full cwd");
+  });
+
   it("derives normal project basenames independent of the host platform", () => {
     assert.strictEqual(
       sessionDisplayTitle("qoderwork:abc123", session("working", { cwd: "/home/me/projects/myapp" })),
@@ -239,6 +326,10 @@ describe("sessionDisplayTitle cwd fallback", () => {
       sessionDisplayTitle("qoderwork:abc123", session("working", { agentId: "qoderwork", cwd: "C:\\Users\\me\\.qoderwork\\workspace\\abc123" })),
       "abc123"
     );
+    assert.strictEqual(
+      sessionDisplayFolder("qoderwork:abc123", session("working", { agentId: "qoderwork", cwd: "/Users/me/.qoderwork/workspace/mqgw60jiigjsjcid" })),
+      ""
+    );
   });
 
   it("skips QoderWork internal workspace cwds with trailing separators", () => {
@@ -271,6 +362,10 @@ describe("sessionDisplayTitle cwd fallback", () => {
       assert.strictEqual(
         sessionDisplayTitle("qwenwork:abc123", qwen({ cwd: "/Users/me/.QwenWorkCN/workspace/mqgw60jiigjsjcid" })),
         "abc123"
+      );
+      assert.strictEqual(
+        sessionDisplayFolder("qwenwork:abc123", qwen({ cwd: "/Users/me/.QwenWorkCN/workspace/mqgw60jiigjsjcid" })),
+        ""
       );
     });
 
@@ -812,6 +907,26 @@ describe("state-session-snapshot builder", () => {
       false,
       "source authority is internal state, not renderer-facing data",
     );
+  });
+
+  it("carries the opencode source through snapshot entries (#830)", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["opencode:s1", session("working", {
+        contextUsage: {
+          used: 32000,
+          limit: 128000,
+          percent: 25,
+          source: "opencode",
+        },
+      })],
+    ]), { statePriority: STATE_PRIORITY });
+
+    assert.deepStrictEqual(snapshot.sessions[0].contextUsage, {
+      used: 32000,
+      limit: 128000,
+      percent: 25,
+      source: "opencode",
+    });
   });
 
   it("ignores internal context authority when computing the renderer snapshot signature", () => {

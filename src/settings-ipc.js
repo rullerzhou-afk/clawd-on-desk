@@ -4,6 +4,7 @@ const defaultFs = require("fs");
 const defaultPath = require("path");
 const { pathToFileURL } = require("url");
 const { detectAgentInstallations: defaultDetectAgentInstallations } = require("./agent-installation-detector");
+const { DEFAULT_INTEGRATION_INSTALLED_IDS } = require("./prefs");
 const settingsThemeImporter = require("./settings-theme-importer");
 const {
   listPetTintOptions,
@@ -11,6 +12,9 @@ const {
 } = require("./pet-customization-catalog");
 
 const SOUND_OVERRIDE_ASSET_EXTS = new Set([".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"]);
+// #895: cleanup prompts must skip the default integrations, referencing the
+// prefs list rather than a second hardcoded copy of the ids.
+const CLEANUP_EXEMPT_AGENT_IDS = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 // These commands mutate trust material or persist facts learned from an SSH
 // transaction. They are main-process capabilities, not renderer commands.
 // Keeping the check at the IPC boundary means an injected/compromised Settings
@@ -36,6 +40,7 @@ const SOUND_OVERRIDE_DIALOG_STRINGS = {
   ko: { title: "음향 파일 선택", filterName: "오디오" },
   ja: { title: "音声ファイルを選択", filterName: "音声" },
   "pt-BR": { title: "Escolha um arquivo de som", filterName: "Áudio" },
+  es: { title: "Elige un archivo de sonido", filterName: "Audio" },
 };
 
 const AGENT_DISCOVERY_DIALOG_STRINGS = {
@@ -45,6 +50,7 @@ const AGENT_DISCOVERY_DIALOG_STRINGS = {
   ko: { file: "도구 실행 파일 선택", directory: "도구 설치 폴더 선택" },
   ja: { file: "ツールの実行ファイルを選択", directory: "ツールのインストールフォルダーを選択" },
   "pt-BR": { file: "Escolha o executável da ferramenta", directory: "Escolha a pasta de instalação da ferramenta" },
+  es: { file: "Elige el ejecutable de la herramienta", directory: "Elige la carpeta de instalación de la herramienta" },
 };
 
 const REMOVE_THEME_DIALOG_STRINGS = {
@@ -83,6 +89,12 @@ const REMOVE_THEME_DIALOG_STRINGS = {
     cancel: "Cancelar",
     message: (name) => `Excluir o tema "${name}"?`,
     detail: "Isso não pode ser desfeito. Todos os arquivos deste tema serão removidos do disco.",
+  },
+  es: {
+    delete: "Eliminar",
+    cancel: "Cancelar",
+    message: (name) => `¿Eliminar el tema "${name}"?`,
+    detail: "Esta acción no se puede deshacer. Todos los archivos de este tema se eliminarán del disco.",
   },
 };
 
@@ -132,6 +144,12 @@ function mapAgentMetadata(agent) {
     name: agent.name,
     eventSource: agent.eventSource,
     capabilities: agent.capabilities || {},
+    // #895: default integrations never earn a "remove this stale hook" prompt —
+    // their parent dirs are not trustworthy evidence (Clawd's own Claude sync
+    // creates ~/.claude). Shipped as an explicit boolean rather than a list the
+    // renderer has to hold, so a missing field reads as "unknown" and the
+    // renderer fails closed instead of proposing a deletion.
+    cleanupSuggestionExempt: CLEANUP_EXEMPT_AGENT_IDS.has(agent.id),
   };
   if (typeof agent.category === "string" && agent.category) {
     metadata.category = agent.category;

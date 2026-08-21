@@ -42,6 +42,14 @@ const COARSE_LABEL = Object.freeze({
   waiting: "Waiting for input",
 });
 
+function sessionFolderName(session) {
+  if (!session || typeof session !== "object") return "";
+  const source = Object.prototype.hasOwnProperty.call(session, "displayFolder")
+    ? session.displayFolder
+    : session.cwd;
+  return source ? path.win32.basename(String(source)) : "";
+}
+
 // State-animation mirror, keyed by the svg file main.js pushes on "state-change"
 // (see bridge.onVisual). Covers the clawd theme's state animations: idle
 // variants, session-count working tiers, displayHint overrides, one-shots, sleep
@@ -172,10 +180,11 @@ function buildPresencePayload(session, cfg = {}, visual = null, runtime = {}) {
     state: label,
     assets: { large_image: imageUrl, large_text: "Clawd on Desk" },
   };
-  if (cfg.privacyShowProject && session && session.cwd) {
+  const folder = sessionFolderName(session);
+  if (cfg.privacyShowProject && folder) {
     // win32.basename splits on both \ and /, so a Windows cwd seen on a POSIX
     // host yields just the folder name instead of leaking the whole path.
-    const state = `${label} · ${path.win32.basename(session.cwd)}`;
+    const state = `${label} · ${folder}`;
     // Truncate by code point: a long folder name would otherwise make Discord
     // silently drop the whole activity update.
     activity.state = Array.from(state).slice(0, ACTIVITY_FIELD_MAX).join("");

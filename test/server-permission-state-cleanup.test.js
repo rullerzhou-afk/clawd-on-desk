@@ -295,6 +295,96 @@ describe("/state permission cleanup", () => {
     assert.deepStrictEqual(resolved.map((entry) => entry.message), ["User answered in terminal"]);
   });
 
+  it("clears matching ZCode pending entries as no-decision instead of deny", async () => {
+    const pendingPermissions = [
+      {
+        id: "zcode",
+        agentId: "zcode",
+        sessionId: localSessionKey("zcode:sid"),
+        toolUseId: "toolu_zcode",
+        toolName: "Bash",
+        toolInputFingerprint: buildToolInputFingerprint({ command: "npm test" }),
+        isZcode: true,
+        res: {},
+      },
+    ];
+    const { handler, resolved } = startServer({ pendingPermissions });
+
+    const res = await callHandler(handler, makeReq("POST", "/state", JSON.stringify({
+      agent_id: "zcode",
+      state: "working",
+      session_id: "zcode:sid",
+      event: "PostToolUse",
+      tool_name: "Bash",
+      tool_use_id: "toolu_zcode",
+      tool_input_fingerprint: buildToolInputFingerprint({ command: "npm test" }),
+    })));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(resolved.map((entry) => entry.perm.id), ["zcode"]);
+    // ZCode answers "{}" for no-decision and falls back to its native
+    // permission UI — a sweep deny would reach ZCode as a real decision.
+    assert.deepStrictEqual(resolved.map((entry) => entry.behavior), ["no-decision"]);
+    assert.deepStrictEqual(resolved.map((entry) => entry.message), ["User answered in terminal"]);
+  });
+
+  it("sweeps a stale ZCode decision entry as no-decision, never a forged deny", async () => {
+    // Defense in depth: the route's capability gate keeps decision-type
+    // interactions out of the pending stack, but if one ever lands here the
+    // sweep must still not fabricate a deny for a native-fallback adapter.
+    const pendingPermissions = [
+      {
+        id: "zcode-ask",
+        agentId: "zcode",
+        sessionId: localSessionKey("zcode:sid"),
+        toolName: "AskUserQuestion",
+        interaction: classifyPermissionInteraction({ agentId: "zcode", toolName: "AskUserQuestion" }),
+        isZcode: true,
+        res: {},
+      },
+    ];
+    const { handler, resolved } = startServer({ pendingPermissions });
+
+    // A Stop with no matching tool is the singleton-fallback trigger for the
+    // stale-decision sweep.
+    const res = await callHandler(handler, makeReq("POST", "/state", JSON.stringify({
+      agent_id: "zcode",
+      state: "attention",
+      session_id: "zcode:sid",
+      event: "Stop",
+    })));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(resolved.map((entry) => entry.perm.id), ["zcode-ask"]);
+    assert.deepStrictEqual(resolved.map((entry) => entry.behavior), ["no-decision"]);
+  });
+
+  it("sweeps a stale Qwen decision entry as no-decision, never a forged deny", async () => {
+    const pendingPermissions = [
+      {
+        id: "qwen-ask",
+        agentId: "qwen-code",
+        sessionId: localSessionKey("qwen-code:sid"),
+        toolName: "AskUserQuestion",
+        interaction: classifyPermissionInteraction({ agentId: "qwen-code", toolName: "AskUserQuestion" }),
+        isQwenCode: true,
+        res: {},
+      },
+    ];
+    const { handler, resolved } = startServer({ pendingPermissions });
+
+    const res = await callHandler(handler, makeReq("POST", "/state", JSON.stringify({
+      agent_id: "qwen-code",
+      state: "attention",
+      session_id: "qwen-code:sid",
+      event: "Stop",
+    })));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(resolved.map((entry) => entry.perm.id), ["qwen-ask"]);
+    assert.deepStrictEqual(resolved.map((entry) => entry.behavior), ["no-decision"]);
+  });
+
   it("keeps concurrent pending requests untouched when Stop is ambiguous", async () => {
     const pendingPermissions = [
       { id: "a", sessionId: localSessionKey("sid"), toolName: "Bash", res: {} },

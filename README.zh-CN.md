@@ -10,6 +10,8 @@
   <a href="README.ko-KR.md">한국어</a>
   ·
   <a href="README.ja-JP.md">日本語</a>
+  ·
+  <a href="README.es.md">Español</a>
 </p>
 <p align="center">
   <a href="https://github.com/rullerzhou-afk/clawd-on-desk/releases"><img src="https://img.shields.io/github/v/release/rullerzhou-afk/clawd-on-desk" alt="Version"></a>
@@ -45,10 +47,10 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 - **Kiro CLI** — 可选 command hooks，注入到 `~/.kiro/agents/` 下的自定义 agent 配置中，并自动创建一个 `clawd` agent；安装集成后 Clawd 会继续从内置 `kiro_default` 同步它，尽量保持与默认 agent 一致。macOS 与 Windows 上状态动效已验证可用；需要时可用 `kiro-cli --agent clawd` 或在会话内执行 `/agent swap clawd` 启用 hooks
 - **Kimi Code CLI（Kimi-CLI）** — 可选 command hooks，写入 `~/.kimi/config.toml`（`[[hooks]]` 条目）（从 Settings → Agents 安装，或执行 `npm run install:kimi-hooks`）
 - **Qwen Code** — 可选 command hooks，写入 `~/.qwen/settings.json`（从 Settings → Agents 安装，或执行 `npm run install:qwen-hooks`）；支持状态追踪和 Qwen `PermissionRequest` 桌面权限气泡
-- **ZCode** — 可选 state-only hooks，写入 `~/.zcode/cli/config.json` 的 `hooks.events.*`（从 Settings → Agents 安装，或执行 `npm run install:zcode-hooks`）；Phase 1 驱动会话、提示、工具、失败和完成动效，不接管 ZCode 权限。Clawd 会保留用户显式设置的全局或单项 `enabled:false`
+- **ZCode** — 可选状态 + 阻塞式 `PermissionRequest` hooks，写入 `~/.zcode/cli/config.json` 的 `hooks.events.*`（从 Settings → Agents 安装，或执行 `npm run install:zcode-hooks`）；Clawd 提供人工 Allow/Deny 权限气泡，global 与 per-session 自动审批保持 defer。Clawd 会保留用户显式设置的全局或单项 `enabled:false`，并且不会覆盖第三方 `PermissionRequest` hook
 - **CodeWhale** — 可选 state-only lifecycle hooks，写入 `~/.codewhale/config.toml`（`[[hooks.hooks]]` 条目）（从 Settings → Agents 安装，或执行 `npm run install:codewhale-hooks`）；Phase 1 只驱动 idle、thinking、working、sleeping、error、attention、sweeping 等状态动画，不接权限气泡和子代理追踪
 - **Reasonix CLI** — 可选 state-only command hooks，写入 `<Reasonix home>/settings.json`（macOS/Linux 为 `~/.reasonix/settings.json`，Windows 为 `%APPDATA%\reasonix\settings.json`；从 Settings → Agents 安装，或执行 `npm run install:reasonix-hooks`）；Phase 1 只驱动生命周期、工具调用、通知、压缩和子代理结束动效，权限决策仍留在 Reasonix 自己的终端流程
-- **opencode** — 可选 [plugin 集成](https://opencode.ai/docs/plugins)，写入 `~/.config/opencode/opencode.json`（从 Settings → Agents 安装，或执行 `node hooks/opencode-install.js`）；支持零延迟事件流和 Allow/Always/Deny 权限气泡。`task` 工具产生的子会话是 headless，不参与可见的多会话动画聚合
+- **opencode** — 可选 [plugin 集成](https://opencode.ai/docs/plugins)，写入 `~/.config/opencode/` 下当前生效的文件（`config.json` → `opencode.json` → `opencode.jsonc`，后者优先）（从 Settings → Agents 安装，或执行 `node hooks/opencode-install.js`）；支持零延迟事件流和 Allow/Always/Deny 权限气泡。`task` 工具产生的子会话是 headless，不参与可见的多会话动画聚合
 - **MiMo Code** — 可选 [plugin 集成](https://opencode.ai/docs/plugins)，写入 `~/.config/mimocode/` 下当前生效的文件（`config.json` → `mimocode.json` → 默认 `mimocode.jsonc`，后者优先；从 Settings → Agents 安装，或执行 `npm run install:mimocode-plugin`）；与 opencode 共享 `@mimo-ai/plugin` SDK 和权限行为，`task` 子会话同样是 headless
 - **Pi** — 可选全局 extension，写入 `~/.pi/agent/extensions/clawd-on-desk`（从 Settings → Agents 安装，或执行 `npm run install:pi-extension`）；仅同步交互式 Pi 会话生命周期和工具活动状态，并保留 Pi 默认 YOLO 行为
 - **OpenClaw** — 可选 state-only plugin，写入 `~/.openclaw/openclaw.json`（从 Settings → Agents 安装，或执行 `npm run install:openclaw-plugin`；OpenClaw 还需要已有配置）；Phase 1 面向本地 `openclaw tui --local` 会话，只驱动动画，不接权限气泡和终端聚焦
@@ -79,6 +81,10 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 - **自动关闭** — 如果你先在终端回答了，气泡自动消失
 - **按 Agent 单独关闭** — 打开 `设置…` → `Agents`，选中对应 Agent，关闭 `显示弹窗`，权限提示就会回到该 Agent 自己的终端 / TUI 里处理
 
+### 远程通知
+- **Telegram / 飞书（Lark）** — 交互式远程审批：把权限请求转发到手机，直接远程「允许 / 拒绝」，无需回到桌面
+- **Slack** — **仅通知**：通过 Slack Incoming Webhook（或可选的 `xoxb-` Bot Token + 频道 ID）以带 Emoji 的 Block Kit 富文本卡片推送**任务完成**、**错误**和**权限请求**。本版本中 Slack 无法批准或拒绝——权限消息只是播报，仍需回到桌面 App 决定。与 Telegram / 飞书并列在远程审批渠道中配置；密钥保存在配置之外的本地 env 文件中（macOS / Linux 为 `0600`；Windows 无 POSIX 权限位，依赖 AppData 的 ACL），未配置或离线时均优雅降级。消息可能包含会话标题、目录名与主机名，**建议使用私有频道**——参见 [slack-notifications.md](docs/guides/slack-notifications.md)
+
 ### 会话智能
 - **多会话追踪** — 所有已支持 Agent 的会话统一解析到最高优先级状态
 - **子代理感知** — 1 个子代理耳机律动，2 个以上三球杂耍
@@ -99,10 +105,10 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 - **位置记忆** — 重启后 Clawd 回到上次的位置（包括极简模式）
 - **单实例锁** — 防止重复启动
 - **自动启动** — Claude Code 的 SessionStart hook 可在 Clawd 未运行时自动拉起
-- **免打扰模式** — 右键或托盘菜单进入休眠，所有 hook 事件静默，直到手动唤醒。免打扰期间不弹权限气泡——Codex、opencode 和 MiMo Code 会回退到原生命令行确认，Claude Code 和 CodeBuddy 会回退到各自内置的权限确认流程。WorkBuddy 仅同步状态与通知；Antigravity 和 Pi 都是仅状态同步集成
+- **免打扰模式** — 右键或托盘菜单进入休眠，桌宠停止反应，直到手动唤醒。免打扰屏蔽的是「需要你处理」的事，不是状态播报：远程**完成通知**（Telegram / Slack）仍会送达，因为那正是你离开桌面的意义。免打扰期间不弹权限气泡——Codex、opencode 和 MiMo Code 会回退到原生命令行确认，Claude Code 和 CodeBuddy 会回退到各自内置的权限确认流程。WorkBuddy 仅同步状态与通知；Antigravity 和 Pi 都是仅状态同步集成
 - **提示音效** — 任务完成和权限请求时播放短音效（可从系统托盘或设置中开关；10 秒冷却，免打扰模式自动静音）
 - **系统托盘** — 免打扰、开机自启、检查更新
-- **国际化** — 支持英文、简体中文、繁体中文、韩文、日文和 Português (Brasil) 界面，可在设置 → 通用中切换
+- **国际化** — 支持英文、简体中文、繁体中文、韩文、日文、Português (Brasil) 和 Español 界面，可在设置 → 通用中切换
 - **自动更新** — 检查 GitHub release；Windows 退出时安装 NSIS 更新包，macOS/Linux 源码运行时通过 `git pull` + 重启自动更新
 
 ## 动画一览
@@ -325,7 +331,10 @@ Clawd on Desk 是一个社区驱动的项目。欢迎提 Bug、提需求、提 P
 <a href="https://github.com/anthonyonazure"><img src="https://github.com/anthonyonazure.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/weed33834"><img src="https://github.com/weed33834.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/arismarioneves"><img src="https://github.com/arismarioneves.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/wang4433"><img src="https://github.com/wang4433.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/shengmai-justin"><img src="https://github.com/shengmai-justin.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/aaronWool"><img src="https://github.com/aaronWool.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/Zamaniego"><img src="https://github.com/Zamaniego.png" width="50" style="border-radius:50%" /></a>
 
 ## 致谢
 

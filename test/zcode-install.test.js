@@ -56,7 +56,7 @@ afterEach(() => {
 });
 
 describe("ZCode hook installer", () => {
-  it("registers the Phase 1 state-only events under hooks.events with enabled:true and no matcher", () => {
+  it("registers all supported events under hooks.events with enabled:true and no matcher", () => {
     const settingsPath = makeTempConfigFile({
       model: "GLM-5.2",
       env: { KEEP: "me" },
@@ -113,6 +113,241 @@ describe("ZCode hook installer", () => {
     assert.strictEqual(result.updated, 0);
     assert.strictEqual(result.skipped, ZCODE_HOOK_EVENTS.length);
     assert.strictEqual(fs.readFileSync(settingsPath, "utf8"), before);
+  });
+
+  it("gives PermissionRequest the long blocking budget while state events stay short", () => {
+    const settingsPath = makeTempConfigFile({});
+    registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    const settings = readJson(settingsPath);
+    assert.strictEqual(settings.hooks.events.PermissionRequest[0].hooks[0].timeoutMs, 600000);
+    for (const event of ZCODE_HOOK_EVENTS.filter((e) => e !== "PermissionRequest")) {
+      assert.strictEqual(
+        settings.hooks.events[event][0].hooks[0].timeoutMs,
+        8000,
+        `${event}: state hooks keep the 8s budget`
+      );
+    }
+  });
+
+  it("upgrades a Phase 1 install by adding only PermissionRequest, leaving state events untouched", () => {
+    // Build the Phase 1 state with the REAL script paths: register once, then
+    // delete the PermissionRequest entry the way a Phase 1 install never had it.
+    const settingsPath = makeTempConfigFile({});
+    registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+    const phase1 = readJson(settingsPath);
+    delete phase1.hooks.events.PermissionRequest;
+    fs.writeFileSync(settingsPath, JSON.stringify(phase1, null, 2), "utf8");
+    const before = fs.readFileSync(settingsPath, "utf8");
+
+    const result = registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    assert.strictEqual(result.added, 1);
+    assert.strictEqual(result.updated, 0);
+    assert.strictEqual(result.skipped, 6);
+    const settings = readJson(settingsPath);
+    assert.strictEqual(settings.hooks.events.PermissionRequest[0].hooks[0].timeoutMs, 600000);
+    // The six pre-existing state events are byte-identical apart from the new
+    // key; re-serialize without PermissionRequest to compare.
+    const withoutPermission = readJson(settingsPath);
+    delete withoutPermission.hooks.events.PermissionRequest;
+    assert.strictEqual(JSON.stringify(withoutPermission, null, 2), before);
+  });
+
+  it("rewrites a PermissionRequest entry carrying the stale state timeout to the blocking budget", () => {
+    const settingsPath = makeTempConfigFile({
+      hooks: {
+        enabled: true,
+        events: {
+          PermissionRequest: [{
+            // Simulates a hand-edited or pre-Phase-2 entry: correct shape but
+            // the 8s state budget, which would kill the bubble wait early.
+            hooks: [buildZcodeProcessHook("/usr/local/bin/node", "/app/hooks/zcode-hook.js", "PermissionRequest")],
+          }],
+        },
+      },
+    });
+    // Force the stale 8000 explicitly (buildZcodeProcessHook already writes
+    // the per-event 600000, so overwrite it the way an old install would).
+    const raw = readJson(settingsPath);
+    raw.hooks.events.PermissionRequest[0].hooks[0].timeoutMs = 8000;
+    fs.writeFileSync(settingsPath, JSON.stringify(raw, null, 2), "utf8");
+
+    const result = registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    assert.strictEqual(result.updated, 1);
+    const settings = readJson(settingsPath);
+    assert.strictEqual(settings.hooks.events.PermissionRequest[0].hooks[0].timeoutMs, 600000);
+  });
+
+  it("inherits enabled:false for PermissionRequest when every Phase 1 state hook is explicitly disabled", () => {
+    // Build the real Phase 1 state (canonical script paths), then disable all
+    // six managed state hooks the way the explicit opt-out does.
+    const settingsPath = makeTempConfigFile({});
+    registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+    const phase1 = readJson(settingsPath);
+    delete phase1.hooks.events.PermissionRequest;
+    for (const event of Object.keys(phase1.hooks.events)) {
+      phase1.hooks.events[event][0].hooks[0].enabled = false;
+    }
+    fs.writeFileSync(settingsPath, JSON.stringify(phase1, null, 2), "utf8");
+
+    const result = registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    // The new blocking hook must NOT silently re-enter the loop enabled.
+    assert.strictEqual(result.added, 1);
+    const settings = readJson(settingsPath);
+    const permissionHook = settings.hooks.events.PermissionRequest[0].hooks[0];
+    assert.strictEqual(permissionHook.enabled, false);
+    assert.strictEqual(permissionHook.timeoutMs, 600000);
+    // The six state hooks stay disabled too.
+    for (const event of Object.keys(phase1.hooks.events)) {
+      assert.strictEqual(settings.hooks.events[event][0].hooks[0].enabled, false, event);
+    }
+    assert.ok(
+      result.warnings.some((w) => w.includes("remain disabled") && w.includes("PermissionRequest")),
+      `expected a disabled-events warning covering PermissionRequest, got: ${JSON.stringify(result.warnings)}`
+    );
+  });
+
+  it("does NOT inherit the opt-out when any Phase 1 state hook is still enabled", () => {
+    const settingsPath = makeTempConfigFile({});
+    registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+    const phase1 = readJson(settingsPath);
+    delete phase1.hooks.events.PermissionRequest;
+    for (const event of Object.keys(phase1.hooks.events)) {
+      phase1.hooks.events[event][0].hooks[0].enabled = false;
+    }
+    // One state hook stays enabled → the strict opt-out condition fails.
+    phase1.hooks.events.Stop[0].hooks[0].enabled = undefined;
+    delete phase1.hooks.events.Stop[0].hooks[0].enabled;
+    fs.writeFileSync(settingsPath, JSON.stringify(phase1, null, 2), "utf8");
+
+    registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    const settings = readJson(settingsPath);
+    assert.notStrictEqual(settings.hooks.events.PermissionRequest[0].hooks[0].enabled, false);
+  });
+
+  it("does NOT infer a six-event opt-out from a partial Phase 1 install", () => {
+    const settingsPath = makeTempConfigFile({});
+    registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+    const phase1 = readJson(settingsPath);
+    delete phase1.hooks.events.PermissionRequest;
+    for (const event of Object.keys(phase1.hooks.events)) {
+      phase1.hooks.events[event][0].hooks[0].enabled = false;
+    }
+    // A missing managed event means this is not the complete Phase 1 opt-out
+    // signature. Sync repairs that state event as enabled, so the new blocking
+    // hook must also stay enabled.
+    delete phase1.hooks.events.PostToolUseFailure;
+    fs.writeFileSync(settingsPath, JSON.stringify(phase1, null, 2), "utf8");
+
+    registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    const settings = readJson(settingsPath);
+    assert.notStrictEqual(
+      settings.hooks.events.PermissionRequest[0].hooks[0].enabled,
+      false
+    );
+    assert.notStrictEqual(
+      settings.hooks.events.PostToolUseFailure[0].hooks[0].enabled,
+      false
+    );
+  });
+
+  it("disables an already-installed PermissionRequest when the user later opts out of all state hooks", () => {
+    // The opt-out must hold in both directions: state hooks disabled AFTER the
+    // blocking hook was installed must also disable that installed hook.
+    const settingsPath = makeTempConfigFile({});
+    registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    const config = readJson(settingsPath);
+    for (const event of Object.keys(config.hooks.events)) {
+      if (event === "PermissionRequest") continue;
+      config.hooks.events[event][0].hooks[0].enabled = false;
+    }
+    fs.writeFileSync(settingsPath, JSON.stringify(config, null, 2), "utf8");
+
+    const result = registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    const settings = readJson(settingsPath);
+    assert.strictEqual(settings.hooks.events.PermissionRequest[0].hooks[0].enabled, false);
+    assert.ok(
+      result.warnings.some((w) => w.includes("remain disabled") && w.includes("PermissionRequest")),
+      `expected the disabled-events warning to cover PermissionRequest, got: ${JSON.stringify(result.warnings)}`
+    );
+
+    // Idempotent: a second run leaves the disabled hook untouched.
+    const before = fs.readFileSync(settingsPath, "utf8");
+    const rerun = registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+    assert.strictEqual(fs.readFileSync(settingsPath, "utf8"), before);
+    assert.strictEqual(rerun.updated, 0);
+  });
+
+  it("never registers the blocking hook over a foreign PermissionRequest hook (last-wins deny override)", () => {
+    const foreignEntry = {
+      // A user's own security hook that returns deny for dangerous tools.
+      hooks: [{ type: "process", command: "/usr/local/bin/node", args: ["/Users/dev/security-hook.js", "PermissionRequest"], timeoutMs: 30000 }],
+    };
+    const settingsPath = makeTempConfigFile({
+      hooks: { enabled: true, events: { PermissionRequest: [foreignEntry] } },
+    });
+
+    const result = registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    const settings = readJson(settingsPath);
+    // Clawd's blocking hook was NOT added next to the foreign hook: ZCode runs
+    // same-event hooks serially with last-wins decisions, so a later Clawd
+    // allow would override the security hook's deny. The six state events are
+    // still registered normally.
+    assert.deepStrictEqual(settings.hooks.events.PermissionRequest, [foreignEntry]);
+    assert.ok(Array.isArray(settings.hooks.events.SessionStart));
+    assert.ok(
+      result.warnings.some((w) => w.includes("foreign PermissionRequest hook") && w.includes("NOT registered")),
+      `expected the conflict warning, got: ${JSON.stringify(result.warnings)}`
+    );
+  });
+
+  it("treats a nested non-command PermissionRequest hook as a foreign owner", () => {
+    const foreignEntry = {
+      hooks: [{ type: "http", url: "http://127.0.0.1:23333/permission", timeout: 600 }],
+    };
+    const settingsPath = makeTempConfigFile({
+      hooks: { enabled: true, events: { PermissionRequest: [foreignEntry] } },
+    });
+
+    const result = registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    const settings = readJson(settingsPath);
+    assert.deepStrictEqual(settings.hooks.events.PermissionRequest, [foreignEntry]);
+    assert.ok(
+      result.warnings.some((w) => w.includes("foreign PermissionRequest hook") && w.includes("NOT registered")),
+      `expected the conflict warning, got: ${JSON.stringify(result.warnings)}`
+    );
+  });
+
+  it("removes Clawd's managed hook when a foreign PermissionRequest hook appears later", () => {
+    const settingsPath = makeTempConfigFile({});
+    registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+    const config = readJson(settingsPath);
+    config.hooks.events.PermissionRequest.push({
+      hooks: [{ type: "process", command: "/usr/local/bin/node", args: ["/Users/dev/security-hook.js", "PermissionRequest"], timeoutMs: 30000 }],
+    });
+    fs.writeFileSync(settingsPath, JSON.stringify(config, null, 2), "utf8");
+
+    const result = registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    const settings = readJson(settingsPath);
+    assert.strictEqual(settings.hooks.events.PermissionRequest.length, 1);
+    assert.strictEqual(
+      settings.hooks.events.PermissionRequest[0].hooks[0].args[0],
+      "/Users/dev/security-hook.js"
+    );
+    assert.ok(
+      result.warnings.some((w) => w.includes("removed Clawd's blocking permission hook")),
+      `expected the fail-closed removal warning, got: ${JSON.stringify(result.warnings)}`
+    );
   });
 
   it("preserves an explicit hooks.enabled:false and warns instead of enabling all user hooks", () => {

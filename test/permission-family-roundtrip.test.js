@@ -5,7 +5,7 @@
 //
 // These execute the full chain — handleDecide (IPC entry) → familyAlwaysPicked
 // → resolvePermissionEntry → replyOpencodeFamilyPermission → an actual HTTP
-// listener standing in for the plugin's Bun.serve bridge — so a regression in
+// listener standing in for the plugin's Bun/Node reverse bridge — so a regression in
 // any hop (e.g. Always silently degrading to "once", or no-decision leaking a
 // bridge POST) turns a real request red instead of surviving source-string
 // checks.

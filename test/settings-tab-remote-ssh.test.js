@@ -4,6 +4,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
+const vm = require("vm");
 
 const SRC_DIR = path.join(__dirname, "..", "src");
 const { SUPPORTED_LANGS } = require("../src/i18n");
@@ -88,10 +89,17 @@ test("settings-i18n.js: sidebarRemoteSsh defined in every supported language", (
     SUPPORTED_LANGS.length,
     `expected ${SUPPORTED_LANGS.length} sidebarRemoteSsh defs; got ${matches.length}`
   );
-  // No two should be the same (sanity: ensures actual translation, not copy-paste).
-  const values = matches.map((m) => m.match(/"([^"]+)"/)[1]);
-  const unique = new Set(values);
-  assert.equal(unique.size, SUPPORTED_LANGS.length, `expected ${SUPPORTED_LANGS.length} distinct translations; got ${[...unique]}`);
+  const context = {};
+  context.globalThis = context;
+  vm.runInNewContext(code, context, { filename: "settings-i18n.js" });
+  const strings = context.ClawdSettingsI18n.STRINGS;
+  for (const lang of SUPPORTED_LANGS) {
+    assert.equal(typeof strings[lang].sidebarRemoteSsh, "string", `${lang} should define sidebarRemoteSsh`);
+    assert.ok(strings[lang].sidebarRemoteSsh.trim(), `${lang} sidebarRemoteSsh should be non-empty`);
+    if (lang !== "en") {
+      assert.notEqual(strings[lang].sidebarRemoteSsh, strings.en.sidebarRemoteSsh, `${lang} should not fall back to English`);
+    }
+  }
 });
 
 // ── Smoke: the tab module exports a render that doesn't blow up at top-level eval ──

@@ -2986,6 +2986,53 @@ test("an unrelated SDK failure becomes a stable sanitized classification", async
   client.close();
 });
 
+test("FeishuApprovalClient reports approval and elicitation delivery after receiving message ids", async () => {
+  const messageIds = ["om_approval_delivered", "om_question_delivered"];
+  const fakeClient = {
+    im: { v1: { message: {
+      create: async () => ({ data: { message_id: messageIds.shift() } }),
+      patch: async () => ({ data: {} }),
+    } } },
+  };
+  const client = new FeishuApprovalClient({
+    appId: "cli_123",
+    appSecret: "secret",
+    approverId: "ou_1",
+    idType: "open_id",
+    larkClient: fakeClient,
+  });
+
+  const approvalReports = [];
+  const approvalController = new AbortController();
+  const approvalPromise = client.requestApproval(
+    { title: "Run", detail: "Summary" },
+    {
+      signal: approvalController.signal,
+      onDelivered: (report) => approvalReports.push(report),
+    },
+  );
+  assert.deepEqual(approvalReports, []);
+  await flush();
+  assert.deepEqual(approvalReports, [{ messageId: "om_approval_delivered" }]);
+  approvalController.abort();
+  assert.equal(await approvalPromise, null);
+
+  const questionReports = [];
+  const questionController = new AbortController();
+  const questionPromise = client.requestElicitation(
+    { title: "Question", questions: [{ question: "Which?", options: [{ label: "A" }] }] },
+    {
+      signal: questionController.signal,
+      onDelivered: (report) => questionReports.push(report),
+    },
+  );
+  assert.deepEqual(questionReports, []);
+  await flush();
+  assert.deepEqual(questionReports, [{ messageId: "om_question_delivered" }]);
+  questionController.abort();
+  assert.equal(await questionPromise, null);
+});
+
 test("FeishuApprovalClient resolves null on send failure by default but rejects with rejectOnSendError", async () => {
   const sensitive = "secret-review@example.com sensitive_app_secret_123";
   const sendError = new Error(`invalid receive_id ${sensitive}`);
@@ -3007,7 +3054,18 @@ test("FeishuApprovalClient resolves null on send failure by default but rejects 
 
   // Approval callers keep the null contract so they can fall back to the
   // local permission bubble.
-  assert.equal(await client.requestApproval({ title: "Run", detail: "Summary" }), null);
+  const delivered = [];
+  assert.equal(await client.requestApproval(
+    { title: "Run", detail: "Summary" },
+    { onDelivered: (report) => delivered.push(report) },
+  ), null);
+  assert.deepEqual(delivered, [], "a failed send must not report delivery");
+
+  assert.equal(await client.requestElicitation(
+    { title: "Question", questions: [{ question: "Which?", options: [{ label: "A" }] }] },
+    { onDelivered: (report) => delivered.push(report) },
+  ), null);
+  assert.deepEqual(delivered, [], "a failed elicitation send must not report delivery");
 
   // The settings test path opts into rejection so a send failure is not
   // misreported as "card sent but nobody pressed a button" (#493 review).

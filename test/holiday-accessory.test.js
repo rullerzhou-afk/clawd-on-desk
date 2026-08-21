@@ -137,6 +137,7 @@ describe("holiday accessory runtime", () => {
   function createHarness() {
     const powerMonitor = new EventEmitter();
     const calls = [];
+    const hitboxPayloads = [];
     const timers = [];
     let currentDate = localDate(12, 24);
     let snapshot = {
@@ -153,6 +154,7 @@ describe("holiday accessory runtime", () => {
       getSettingsSnapshot: () => snapshot,
       getActiveTheme: () => theme,
       sendToRenderer: (...args) => calls.push(args),
+      onAccessoryChange: (payload) => hitboxPayloads.push(payload),
       now: () => currentDate,
       setTimeout: (callback, delay) => {
         const timer = { callback, delay, cleared: false, unref() {} };
@@ -166,6 +168,7 @@ describe("holiday accessory runtime", () => {
       runtime,
       powerMonitor,
       calls,
+      hitboxPayloads,
       timers,
       setDate: (value) => { currentDate = value; },
       setSnapshot: (value) => { snapshot = value; },
@@ -178,6 +181,7 @@ describe("holiday accessory runtime", () => {
     assert.strictEqual(harness.calls.length, 1);
     assert.strictEqual(harness.calls[0][0], "pet-accessory-change");
     assert.strictEqual(harness.calls[0][1].id, "santa-hat");
+    assert.strictEqual(harness.hitboxPayloads[0].id, "santa-hat");
     assert.strictEqual(harness.timers.length, 1);
 
     assert.strictEqual(harness.runtime.refresh(), false);
@@ -188,6 +192,7 @@ describe("holiday accessory runtime", () => {
     harness.setDate(localDate(12, 28));
     harness.timers[0].callback();
     assert.strictEqual(harness.calls.at(-1)[1].id, "wizard-hat");
+    assert.strictEqual(harness.hitboxPayloads.at(-1).id, "wizard-hat");
     assert.strictEqual(harness.timers.length, 2);
   });
 

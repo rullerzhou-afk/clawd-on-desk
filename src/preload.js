@@ -50,4 +50,5 @@ contextBridge.exposeInMainWorld("electronAPI", {
   notifyPetVisualReady: () => ipcRenderer.send("pet-visual-ready"),
   setLowPowerIdlePaused: (paused) => ipcRenderer.send("low-power-idle-paused", !!paused),
   reportSystemWakeStatus: (payload) => ipcRenderer.send("system-wake-status", payload),
+  reportAccessoryMirror: (mirrored) => ipcRenderer.send("accessory-mirror", !!mirrored),
 });

@@ -288,6 +288,16 @@ describe("Agent Registry", () => {
     assert.strictEqual(codex.capabilities.sessionEnd, false);
     assert.strictEqual(codex.capabilities.subagent, false);
 
+    const zcode = registry.getAgent("zcode");
+    assert.strictEqual(zcode.capabilities.httpHook, false);
+    // Phase 2: blocking PermissionRequest hook answers real allow/deny via
+    // hookSpecificOutput; "{}" falls back to ZCode's native permission flow.
+    assert.strictEqual(zcode.capabilities.permissionApproval, true);
+    assert.strictEqual(zcode.capabilities.interactiveBubble, true);
+    assert.strictEqual(zcode.capabilities.notificationHook, false);
+    assert.strictEqual(zcode.capabilities.sessionEnd, false);
+    assert.strictEqual(zcode.capabilities.subagent, false);
+
     const copilot = registry.getAgent("copilot-cli");
     assert.strictEqual(copilot.capabilities.httpHook, false);
     assert.strictEqual(copilot.capabilities.permissionApproval, true);

@@ -239,8 +239,14 @@
     const dismissed = state.snapshot && state.snapshot.dismissedAgentCleanupHints;
     return entries.filter((entry) => {
       if (!entry || typeof entry.agentId !== "string") return false;
-      if (entry.detectedInstalled) return false;
-      if (!getAgentMetadata(entry.agentId)) return false;
+      // #895: strict false only. A detector entry that never reported on this
+      // agent is unknown, and proposing a deletion on unknown is how a working
+      // integration gets torn out.
+      if (entry.detectedInstalled !== false) return false;
+      const meta = getAgentMetadata(entry.agentId);
+      // Fail closed: metadata that predates cleanupSuggestionExempt, or that
+      // failed to load at all, must not be read as "safe to remove".
+      if (!meta || meta.cleanupSuggestionExempt !== false) return false;
       if (!readers.readAgentIntegrationInstalled(entry.agentId)) return false;
       if (dismissed && dismissed[entry.agentId] === true) return false;
       return true;

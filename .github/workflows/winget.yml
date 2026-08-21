@@ -4,26 +4,25 @@ name: Prepare WinGet manifest
 # credential. It uses the ephemeral job GITHUB_TOKEN with `contents: read`, which
 # cannot write to this repository or to winget-pkgs.
 #
-# Background: `rullerzhou-afk.clawd-on-desk` has existed in microsoft/winget-pkgs
-# since v0.6.0, submitted by a third-party release-tracking bot we never
-# configured. That bot forwards only the FIRST matching .exe, so from v0.6.2 —
-# the first release to ship -x64.exe and -arm64.exe side by side — every manifest
-# declared two `Architecture: x64` entries that both pointed at the arm64
-# installer. The NSIS stub is 32-bit x86 and runs anywhere, so the install
-# reported success and the app then failed to launch.
+# Historical background: a third-party release-tracking bot originally owned
+# `rullerzhou-afk.clawd-on-desk` in microsoft/winget-pkgs. From v0.6.2, when the
+# project first shipped -x64.exe and -arm64.exe side by side, through v0.14.0, the
+# original manifests declared two `Architecture: x64` entries that both pointed
+# at the arm64 installer. The NSIS stub is 32-bit x86 and runs anywhere, so the
+# install reported success and the app then failed to launch.
 #
-# Why this cannot yet submit automatically: `komac update` does not turn the URLs
-# it is given into installer entries. It reads the PREVIOUS manifest and emits one
-# entry per previous entry, matching each to its best new installer
-# (Komac src/commands/update_version.rs -> src/match_installers.rs). The live
-# v0.14.0 manifest has two entries, both `Architecture: x64` (they are the
-# user/machine scope split), so both match the new x64 installer and the arm64
-# one is discarded — confirmed by running komac v2.16.0 against both URLs.
+# Current upstream state: microsoft/winget-pkgs#416019 repaired v0.14.0 to the
+# four x64/arm64 x user/machine entries and `License: AGPL-3.0-only`, and its
+# publish pipeline succeeded on 2026-08-17. SpecterShell/Dumplings#130 removed
+# the competing tracker.
 #
-# The upstream manifest must therefore be repaired by a hand-reviewed PR first —
-# to x64/arm64 x user/machine — before any automation can maintain it. Until then
-# this workflow generates the manifest komac WOULD submit and uploads it for
-# inspection.
+# Why this still cannot submit automatically: `komac update` inherits one output
+# entry per PREVIOUS installer (Komac src/commands/update_version.rs ->
+# src/match_installers.rs). The corrected upstream shape should now preserve both
+# architectures, but the v0.15.0 prepare run happened before that repair and
+# reproduced the old two-x64 output. More importantly, this workflow does not yet
+# parse, normalize and reject an unsafe GENERATED manifest. Until that output gate
+# lands and passes, it only uploads the manifest komac WOULD submit for inspection.
 #
 # See docs/project/release-process.md for the staged plan.
 

@@ -21,6 +21,13 @@ const ADAPTER_POLICY = Object.freeze({
     reason: "identity-verification-required",
     placeholders: Object.freeze(["default", "qwen-code:", "qwen-code:default"]),
   }),
+  // ZCode permissions are manual-only until both its tool surface and its
+  // session-lifecycle identity facts have been audited for automation.
+  zcode: Object.freeze({
+    eligible: false,
+    reason: "automation-not-audited",
+    placeholders: Object.freeze(["default", "zcode:", "zcode:default"]),
+  }),
   "copilot-cli": Object.freeze({
     eligible: false,
     reason: "session-lifecycle-not-authoritative",

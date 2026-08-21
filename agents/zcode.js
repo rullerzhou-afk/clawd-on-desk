@@ -7,7 +7,11 @@
 // ZCode supports exactly 7 events: SessionStart, UserPromptSubmit, PreToolUse,
 // PermissionRequest, PostToolUse, PostToolUseFailure, Stop. It does NOT support
 // SessionEnd or Notification.
-// Phase 1: state-only hook integration (no PermissionRequest bubble).
+// Phase 2: all 7 events are registered. PermissionRequest long-blocks on
+// Clawd's /permission and answers allow/deny via hookSpecificOutput (strict
+// ZCode output schema); "{}" (no decision) falls back to ZCode's native
+// permission flow. Phase 2 is manual-only: global and per-session permission
+// automation defer until ZCode's tool surface and identity are audited.
 
 module.exports = {
   id: "zcode",
@@ -46,6 +50,9 @@ module.exports = {
   // ZCode has no SessionEnd event; session completion relies on Stop + the
   // app's auto-fallback timeout. PostToolUseFailure maps to `error` (a tool
   // failed), matching the authoritative state-mapping table and Qoder.
+  // PermissionRequest maps to notification for the hook's fail-closed path
+  // (missing/unknown tool_name) and the bubble-side session update; the real
+  // decision travels over /permission, not /state.
   eventMap: {
     SessionStart: "idle",
     UserPromptSubmit: "thinking",
@@ -53,12 +60,13 @@ module.exports = {
     PostToolUse: "working",
     PostToolUseFailure: "error",
     Stop: "attention",
+    PermissionRequest: "notification",
   },
   capabilities: {
     httpHook: false,
-    permissionApproval: false,
+    permissionApproval: true,
     notificationHook: false,
-    interactiveBubble: false,
+    interactiveBubble: true,
     sessionEnd: false,
     subagent: false,
   },

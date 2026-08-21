@@ -11,6 +11,7 @@ const path = require("path");
 const crypto = require("crypto");
 const os = require("os");
 const WebSocket = require("ws");
+const { sessionDisplayFolder } = require("../state-session-snapshot");
 
 const PROTOCOL_VERSION = "v1";
 const DEFAULT_PORT = 23334;
@@ -409,11 +410,17 @@ function initMobilePreviewServer(ctx) {
   function buildPayload(sid, session) {
     if (!session) return null;
     const recentEvents = Array.isArray(session.recentEvents) ? session.recentEvents.slice(-10) : [];
+    // Explicit empty displayFolder is a privacy decision made by the shared
+    // snapshot builder. Raw/legacy session maps do not carry the additive field,
+    // so derive the same safe display value through the shared helper.
+    const folderSource = Object.prototype.hasOwnProperty.call(session, "displayFolder")
+      ? session.displayFolder
+      : sessionDisplayFolder(sid, session);
     return {
       sessionId: sid,
       agentId: session.agentId || null,
       title: session.sessionTitle || null,
-      basename: session.cwd ? path.basename(session.cwd) : null,
+      basename: folderSource ? path.basename(String(folderSource)) : null,
       state: session.state || "idle",
       updatedAt: session.updatedAt || null,
       recentEvents,

@@ -1,7 +1,7 @@
 // Session-id helpers for the opencode-family plugin core.
 //
 // Prefix classification (get this wrong and family child sessions break
-// silently — see plan-opencode-family-shared-integration.md §3.2):
+// silently — see docs/project/agent-runtime-architecture.md):
 //
 //   prefix-INDEPENDENT — plain module exports below:
 //     getEventSessionInfo, getEventSessionId, getEventParentSessionId,
@@ -103,6 +103,15 @@ export function getEventSessionId(event) {
   const info = props.info && typeof props.info === "object" && !Array.isArray(props.info)
     ? props.info
     : {};
+  // message.updated has two versioned shapes in the OpenCode SDK. In v1.1.25
+  // the session identity is on the Message object as info.sessionID, while
+  // info.id is the message identity. Keep this precedence local to the
+  // message event so lifecycle events retain their existing info.id fallback.
+  if (event.type === "message.updated") {
+    return normalizeSessionText(props.sessionID)
+      || normalizeSessionText(info.sessionID)
+      || normalizeSessionText(event.sessionID);
+  }
   return normalizeSessionText(props.sessionID)
     || normalizeSessionText(event.sessionID)
     || normalizeSessionText(info.id);

@@ -150,6 +150,28 @@ describe("Codex permission response sanitizer", () => {
     assert.strictEqual(permission.__test.buildQwenCodePermissionResponseBody({ behavior: "ask" }), "{}");
   });
 
+  it("uses the same minimal ZCode decision union (allow bare, deny with message)", () => {
+    const permission = loadPermissionWithElectron();
+    const allow = JSON.parse(permission.__test.buildZcodePermissionResponseBody({
+      behavior: "allow",
+      // ZCode's schema would accept these on the allow variant, but Clawd
+      // never rewrites input or permission rules — they must be omitted.
+      updatedInput: { command: "nope" },
+      permissionUpdates: [{ type: "addRules", behavior: "allow", rules: [] }],
+      updatedPermissions: [],
+    }));
+    assert.deepStrictEqual(allow.hookSpecificOutput, {
+      hookEventName: "PermissionRequest",
+      decision: { behavior: "allow" },
+    });
+
+    const deny = JSON.parse(permission.__test.buildZcodePermissionResponseBody("deny", "Blocked by Clawd"));
+    assert.deepStrictEqual(deny.hookSpecificOutput.decision, { behavior: "deny", message: "Blocked by Clawd" });
+
+    assert.strictEqual(permission.__test.buildZcodePermissionResponseBody({ behavior: "ask" }), "{}");
+    assert.strictEqual(permission.__test.buildZcodePermissionResponseBody(null), "{}");
+  });
+
   it("keeps Antigravity allow/ask decisions and drops permissionOverrides", () => {
     const permission = loadPermissionWithElectron();
     const body = permission.__test.buildAntigravityPermissionResponseBody({

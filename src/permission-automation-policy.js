@@ -283,11 +283,11 @@ function classifyPermissionInteraction({
     });
   }
 
-  // DeepSeek Harness exposes a real blocking approval waterfall, so an
-  // explicit human Allow/Deny is actionable. Its tool taxonomy and native
-  // fallback semantics are not automation-audited: keep both global modes
-  // false. Session grants reuse this eligibility and therefore defer too.
-  if (trustedAgentId === "deepseek-harness") {
+  // DeepSeek Harness and ZCode expose real blocking approval waterfalls, so
+  // an explicit human Allow/Deny is actionable. Their tool taxonomies and
+  // native-fallback semantics are not automation-audited: keep both global
+  // modes false. Session grants reuse this eligibility and therefore defer too.
+  if (trustedAgentId === "deepseek-harness" || trustedAgentId === "zcode") {
     return makeInteraction(INTERACTION_INTENT.TOOL_APPROVAL, {
       allowDeny: true,
       nativeFallback: true,

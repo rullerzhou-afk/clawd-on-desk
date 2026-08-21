@@ -70,10 +70,11 @@ const ADAPTERS = [
   // (not PermissionRequest/PermissionDenied) is the row that keeps the vacuity
   // guard honest: the permission events deliberately skip pid resolution.
   { name: "qwenwork-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "{}\n" },
-  // zcode-hook.js is state-only: stdout is always "{}\n" on every path
-  // (offline, online, error). session_id is required for state POSTing and
-  // avoids the early-drop seen on other adapters.
-  { name: "zcode-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "{}\n" },
+  // Since Phase 2, zcode's PermissionRequest path resolves pid metadata (one
+  // spawn keeps the vacuity guard honest) and then blocks on /permission;
+  // offline that probe fails fast and stdout stays the exact "{}\n"
+  // no-decision the ZCode hook runner needs to fall back to its native flow.
+  { name: "zcode-hook.js", argv: ["PermissionRequest"], payload: { hook_event_name: "PermissionRequest", session_id: "s-681", cwd: "D:/repo", tool_name: "Bash", tool_input: { command: "echo hi" } }, stdout: "{}\n" },
   // Reasonix blocking hooks are intentionally cache-only/zero-spawn even when
   // Clawd is live. PostToolUse keeps this offline gate assertion non-vacuous.
   { name: "reasonix-hook.js", payload: { event: "PostToolUse", sessionId: "s-681", cwd: "D:/repo", toolName: "bash" }, stdout: "" },

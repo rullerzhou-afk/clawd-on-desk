@@ -511,13 +511,15 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.recorder.length, 0);
   });
 
-  it("uses the existing deny response for oversized permission bodies", async () => {
+  it("never forges a deny for oversized permission bodies (connection closed, native fallback)", async () => {
     const res = await callPermissionPost("x".repeat(MAX_PERMISSION_BODY_BYTES + 1));
 
-    assert.deepStrictEqual(res.ctx.calls.sendPermissionResponse, [{
-      behavior: "deny",
-      message: "Permission request too large for Clawd bubble; answer in terminal",
-    }]);
+    // A transport-level rejection happens before the agent is identified, and
+    // qwen/zcode hooks pass hookSpecificOutput denies straight through as real
+    // decisions — so the only safe answer is no answer: destroy the socket so
+    // CC/CodeBuddy fall back to their chat prompt and qwen/zcode emit "{}".
+    assert.deepStrictEqual(res.ctx.calls.sendPermissionResponse, []);
+    assert.strictEqual(res.destroyed, true);
   });
 
   it("returns no-decision for Codex DND fallback", async () => {

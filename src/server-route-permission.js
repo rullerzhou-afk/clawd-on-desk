@@ -39,6 +39,7 @@ const {
   INTERACTION_INTENT,
   classifyPermissionInteraction,
   isDecisionInteraction,
+  isValidInteraction,
 } = require("./permission-automation-policy");
 const { sanitizeShadowRecord } = require("./windows-process-chain-shadow-log");
 
@@ -328,6 +329,27 @@ function buildHermesPermissionSessionOptions(data) {
   return options;
 }
 
+function buildZcodePermissionSessionOptions(data) {
+  const sourcePid = normalizePositiveInteger(data.source_pid);
+  const agentPid = normalizePositiveInteger(data.agent_pid);
+  const pidChain = Array.isArray(data.pid_chain)
+    ? data.pid_chain.filter((n) => Number.isFinite(n) && n > 0).map((n) => Math.floor(n))
+    : null;
+  const options = { agentId: "zcode" };
+
+  if (sourcePid) options.sourcePid = sourcePid;
+  if (agentPid) options.agentPid = agentPid;
+  if (pidChain && pidChain.length) options.pidChain = pidChain;
+  applyTerminalSessionOptions(options, data);
+  const cwd = normalizeString(data.cwd);
+  const host = normalizeString(data.host);
+  const model = normalizeString(data.model);
+  if (cwd) options.cwd = cwd;
+  if (host) options.host = host;
+  if (model) options.model = model;
+  return options;
+}
+
 function buildDshPermissionSessionOptions(data) {
   const sourcePid = normalizePositiveInteger(data.source_pid);
   const agentPid = normalizePositiveInteger(data.agent_pid);
@@ -355,6 +377,11 @@ function sendQwenCodePermissionNoDecision(res) {
 }
 
 function sendCopilotPermissionNoDecision(res) {
+  res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+  res.end();
+}
+
+function sendZcodePermissionNoDecision(res) {
   res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
   res.end();
 }
@@ -458,13 +485,34 @@ function tryRemoteOnlyApproval(ctx, fields) {
   // way, so the pet's PermissionRequest notification animation has something
   // to announce. Playing it before the `started` check meant a no-op flash
   // when Telegram wasn't available and the caller fell back to res.destroy().
-  ctx.updateSession(fields.sessionId, "notification", "PermissionRequest", {
-    agentId: fields.agentId,
-    profileId: fields.profileId,
-    rawSessionId: fields.rawSessionId,
-    ...(fields.host ? { host: fields.host } : {}),
-    sessionAutomationIdentity: fields.sessionAutomationIdentity,
-  });
+  try {
+    ctx.updateSession(fields.sessionId, "notification", "PermissionRequest", {
+      agentId: fields.agentId,
+      profileId: fields.profileId,
+      rawSessionId: fields.rawSessionId,
+      ...(fields.host ? { host: fields.host } : {}),
+      sessionAutomationIdentity: fields.sessionAutomationIdentity,
+    });
+  } catch (err) {
+    // The remote client has already accepted the request, so an uncaught
+    // session-update error would leave a pending entry and a stale remote card
+    // while the outer route emits 500. Resolve through the normal no-decision
+    // path so the remote channel is cancelled and the agent regains control.
+    ctx.permLog(`remote-only session update failed: ${err && err.message ? err.message : err}`);
+    try {
+      ctx.resolvePermissionEntry(
+        permEntry,
+        "no-decision",
+        "Remote-only permission session update failed"
+      );
+    } catch (resolveErr) {
+      ctx.permLog(`remote-only rollback failed: ${resolveErr && resolveErr.message ? resolveErr.message : resolveErr}`);
+      removePendingPermission(ctx, permEntry, "remote-only-session-update-failed");
+      res.removeListener("close", abortHandler);
+      try { res.destroy(); } catch {}
+    }
+    return { handled: true, resolution: "session-update-failed" };
+  }
   if (typeof ctx.syncPermissionShortcuts === "function") {
     try { ctx.syncPermissionShortcuts(); } catch {}
   }
@@ -526,8 +574,13 @@ function handlePermissionPost(req, res, options) {
   });
   req.on("end", () => {
     if (tooLarge) {
-      ctx.permLog("SKIPPED: permission payload too large");
-      ctx.sendPermissionResponse(res, "deny", "Permission request too large for Clawd bubble; answer in terminal");
+      // Never forge a user deny on a transport-level rejection: the agent id
+      // is not even parsed yet, and qwen/zcode hooks would pass a
+      // hookSpecificOutput deny straight into the agent as a real decision.
+      // Destroy the socket instead — CC/CodeBuddy fall back to their chat
+      // prompt, qwen/zcode emit "{}" and their native permission flow runs.
+      ctx.permLog("SKIPPED: permission payload too large -> connection closed, native fallback");
+      try { res.destroy(); } catch {}
       return;
     }
 
@@ -1097,6 +1150,185 @@ function handlePermissionPost(req, res, options) {
           removePendingPermission(ctx, permEntry, "qwen-bubble-failed");
           if (permEntry.abortHandler) res.removeListener("close", permEntry.abortHandler);
           sendQwenCodePermissionNoDecision(res);
+          return;
+        }
+        startRemoteApproval(ctx, permEntry);
+        return;
+      }
+
+      // ── ZCode PermissionRequest branch ──
+      // ZCode's hook runner treats "{}"/no-decision (HTTP 204 here) as "show
+      // the native permission flow" and honors hookSpecificOutput decisions
+      // (minimal union derived from ZCode 3.5.x's strict output schema;
+      // end-to-end Allow/Deny verified on macOS ZCode 3.8.1). Keep every
+      // fallback 204/no-decision so Clawd never denies tools on cleanup or
+      // disabled bubble paths (same contract as qwen).
+      if (agentId === "zcode") {
+        const toolName = typeof data.tool_name === "string" && data.tool_name ? data.tool_name : "Unknown";
+        const interaction = classifyPermissionInteraction({
+          agentId: "zcode",
+          eventKind: "permission",
+          toolName,
+        });
+        const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
+        const toolInput = truncateDeep(rawInput);
+        const sessionIdentity = resolvePermissionSession(data.session_id, "zcode:default");
+        const sessionId = sessionIdentity.sessionId;
+        const toolUseId = normalizeHookToolUseId(
+          data.tool_use_id ?? data.toolUseId ?? data.toolUseID
+        );
+        const toolInputFingerprint = typeof data.tool_input_fingerprint === "string" && data.tool_input_fingerprint
+          ? data.tool_input_fingerprint
+          : buildToolInputFingerprint(rawInput);
+        const zcodeSessionOptions = {
+          ...buildZcodePermissionSessionOptions(data),
+          sessionAutomationIdentity,
+          ...trustedSessionFields(sessionIdentity),
+        };
+
+        if (ctx.doNotDisturb) {
+          recordRequestHookEvent.droppedByDnd();
+          ctx.permLog(`zcode DND -> no decision, native prompt fallback (tool=${toolName})`);
+          sendZcodePermissionNoDecision(res);
+          return;
+        }
+
+        if (isHeadlessPermissionRequest(ctx, sessionId, data, agentId)) {
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`zcode headless session=${sessionId} -> no decision, native prompt fallback (tool=${toolName})`);
+          sendZcodePermissionNoDecision(res);
+          return;
+        }
+
+        if (typeof ctx.isAgentEnabled === "function" && !ctx.isAgentEnabled("zcode")) {
+          recordRequestHookEvent.droppedByDisabled();
+          ctx.permLog(`zcode disabled -> no decision, native prompt fallback (tool=${toolName})`);
+          sendZcodePermissionNoDecision(res);
+          return;
+        }
+
+        // No-capability interactions must not offer decisions anywhere. ZCode
+        // exposes a real ExitPlanMode (needsApproval:true); without a reviewed
+        // decision-tool contract it classifies as UNKNOWN with no
+        // allow/answer/plan capability, so neither the local bubble nor a
+        // remote card may show Allow/Deny — hand it back to ZCode's native UI.
+        // Keep this guard before the global bubble-off remote-only path: that
+        // path intentionally has no desktop window and otherwise relies on the
+        // remote transport's broader legacy actionability predicate.
+        if (
+          !isValidInteraction(interaction)
+          || (
+            interaction.capabilities.allowDeny !== true
+            && interaction.capabilities.answerQuestions !== true
+            && interaction.capabilities.planFeedback !== true
+          )
+        ) {
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`zcode no-capability interaction (${interaction.intent}) -> no decision, native prompt fallback (tool=${toolName})`);
+          sendZcodePermissionNoDecision(res);
+          return;
+        }
+
+        // Split the two off-switches: "permission bubbles disabled" only means
+        // no desktop window — Telegram/Feishu remote approval must stay alive
+        // (same contract as the CC and DSH branches). "zcode bubbles disabled"
+        // (the per-agent gate) is the stronger opt-out that keeps Clawd fully
+        // out of ZCode's loop, including remote channels.
+        const agentGateOff = typeof ctx.isAgentPermissionsEnabled === "function"
+          && !ctx.isAgentPermissionsEnabled("zcode");
+        if (!agentGateOff && !arePermissionBubblesEnabled(ctx)) {
+          recordRequestHookEvent.accepted();
+          const remoteOnlyResult = tryRemoteOnlyApproval(ctx, {
+            res, sessionId, toolName, toolInput, toolUseId, toolInputFingerprint,
+            agentId: "zcode", isZcode: true, interaction, sessionAutomationIdentity,
+            cwd: zcodeSessionOptions.cwd || "",
+            host: zcodeSessionOptions.host || null,
+            model: zcodeSessionOptions.model || null,
+            ...trustedSessionFields(sessionIdentity),
+          });
+          if (remoteOnlyResult.handled) return;
+          ctx.permLog(`permission bubbles disabled, no remote approval available -> no decision, native prompt fallback (tool=${toolName})`);
+          sendZcodePermissionNoDecision(res);
+          return;
+        }
+        if (agentGateOff) {
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`zcode bubbles disabled -> no decision, native prompt fallback (tool=${toolName})`);
+          sendZcodePermissionNoDecision(res);
+          return;
+        }
+
+        const permEntry = {
+          res,
+          abortHandler: null,
+          suggestions: [],
+          sessionId,
+          ...trustedSessionFields(sessionIdentity),
+          bubble: null,
+          hideTimer: null,
+          toolName,
+          toolInput,
+          toolUseId,
+          toolInputFingerprint,
+          resolvedSuggestion: null,
+          createdAt: Date.now(),
+          interaction,
+          sessionAutomationIdentity,
+          agentId: "zcode",
+          isZcode: true,
+          sourcePid: zcodeSessionOptions.sourcePid || null,
+          cwd: zcodeSessionOptions.cwd || "",
+          agentPid: zcodeSessionOptions.agentPid || null,
+          pidChain: zcodeSessionOptions.pidChain || null,
+          tmuxSocket: zcodeSessionOptions.tmuxSocket || null,
+          tmuxClient: zcodeSessionOptions.tmuxClient || null,
+          orcaPaneKey: zcodeSessionOptions.orcaPaneKey || null,
+          host: zcodeSessionOptions.host || null,
+          platform: zcodeSessionOptions.platform || null,
+          model: zcodeSessionOptions.model || null,
+        };
+        const abortHandler = () => {
+          if (res.writableFinished) return;
+          ctx.permLog("abortHandler fired (zcode)");
+          ctx.resolvePermissionEntry(permEntry, "no-decision", "Client disconnected");
+        };
+        permEntry.abortHandler = abortHandler;
+        res.on("close", abortHandler);
+
+        // Transactional enqueue: a throw from updateSession or a partial
+        // bubble create must not leak a windowless pending entry — its close
+        // handler only fires on client disconnect, i.e. after the 600s hook
+        // timeout. The session update runs BEFORE the entry is queued so a
+        // failure leaves nothing behind.
+        const rollbackZcodePermission = (reason) => {
+          removePendingPermission(ctx, permEntry, reason);
+          if (permEntry.bubble) {
+            try { permEntry.bubble.destroy(); } catch {}
+          }
+          if (permEntry.hideTimer) {
+            try { clearTimeout(permEntry.hideTimer); } catch {}
+          }
+          if (permEntry.abortHandler) res.removeListener("close", permEntry.abortHandler);
+        };
+
+        try {
+          ctx.updateSession(sessionId, "notification", "PermissionRequest", zcodeSessionOptions);
+        } catch (sessionErr) {
+          ctx.permLog(`zcode updateSession failed: ${sessionErr && sessionErr.message} -> no decision`);
+          rollbackZcodePermission("zcode-update-session-failed");
+          sendZcodePermissionNoDecision(res);
+          return;
+        }
+        addPendingPermission(ctx, permEntry);
+
+        ctx.permLog(`zcode showing bubble: tool=${toolName} session=${sessionId} stack=${ctx.pendingPermissions.length}`);
+        recordRequestHookEvent.accepted();
+        try {
+          ctx.showPermissionBubble(permEntry);
+        } catch (bubbleErr) {
+          ctx.permLog(`zcode bubble failed: ${bubbleErr && bubbleErr.message} -> no decision`);
+          rollbackZcodePermission("zcode-bubble-failed");
+          sendZcodePermissionNoDecision(res);
           return;
         }
         startRemoteApproval(ctx, permEntry);

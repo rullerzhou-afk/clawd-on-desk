@@ -98,8 +98,12 @@ test("requestElicitation resolves elicitation-submit when a single-select questi
   const runner = makeRunner(server);
   await runner.start();
   await tick();
-  const decisionPromise = runner.requestElicitation(singleQuestionPayload());
+  const delivered = [];
+  const decisionPromise = runner.requestElicitation(singleQuestionPayload(), {
+    onDelivered: (report) => delivered.push(report),
+  });
   await tick();
+  assert.deepEqual(delivered, [{ messageId: 501 }]);
   assert.match(optionData, /^cq:[a-z0-9]+:o0_0$/);
 
   releaseFirstPoll({ ok: true, result: [] });
@@ -775,8 +779,12 @@ test("requestElicitation resolves null when the initial card send fails", async 
   const runner = makeRunner(server);
   await runner.start();
   await tick();
-  const decision = await runner.requestElicitation(singleQuestionPayload());
+  const delivered = [];
+  const decision = await runner.requestElicitation(singleQuestionPayload(), {
+    onDelivered: (report) => delivered.push(report),
+  });
   assert.equal(decision, null);
+  assert.deepEqual(delivered, [], "a failed send must not report delivery");
 
   await runner.stop();
 });

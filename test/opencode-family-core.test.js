@@ -1,5 +1,5 @@
 // opencode-family shared core — factory isolation, prefix matrix, and
-// registry↔entry cross-checks (plan-opencode-family-shared-integration.md §9).
+// registry↔entry cross-checks (see docs/project/agent-runtime-architecture.md).
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert");

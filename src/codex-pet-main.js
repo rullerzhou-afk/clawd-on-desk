@@ -448,6 +448,18 @@ function createCodexPetMain(options = {}) {
         successDetail: "O Codex Pet importado está ativo.",
         failedMessage: "Não foi possível importar o Codex Pet",
       },
+      es: {
+        import: "Importar",
+        cancel: "Cancelar",
+        ok: "OK",
+        confirmMessage: (host) => `¿Importar Codex Pet desde ${host}?`,
+        confirmDetail: (url) => `Clawd descargará, validará e instalará este paquete de mascota antes de cambiar a él.\n\n${url}`,
+        replaceMessage: (name) => `¿Reemplazar la mascota local existente "${name}"?`,
+        replaceDetail: "Ya existe localmente un paquete de Codex Pet con el mismo id. Reemplazarlo sobrescribirá ese paquete local.",
+        successMessage: (name) => `Se importó "${name}"`,
+        successDetail: "El Codex Pet importado ya está activo.",
+        failedMessage: "No se pudo importar el Codex Pet",
+      },
     };
     return all[getLang()] || all.en;
   }
@@ -527,6 +539,12 @@ function createCodexPetMain(options = {}) {
         cancel: "Cancelar",
         message: (name) => `Desinstalar o pet importado "${name}"?`,
         detail: "O Clawd vai remover o pacote de origem da sua pasta de Codex pets e limpar o tema gerado. Isso não pode ser desfeito.",
+      },
+      es: {
+        uninstall: "Desinstalar",
+        cancel: "Cancelar",
+        message: (name) => `¿Desinstalar la mascota importada "${name}"?`,
+        detail: "Clawd eliminará el paquete de origen de tu carpeta de Codex pets y limpiará el tema generado. Esta acción no se puede deshacer.",
       },
     };
     return all[getLang()] || all.en;

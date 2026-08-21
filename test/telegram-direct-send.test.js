@@ -1089,3 +1089,29 @@ test("direct send expires notification mappings", async () => {
 test("normalizePromptText keeps newlines but removes control characters", () => {
   assert.equal(normalizePromptText("  hi\r\nthere\u0007  "), "hi\nthere");
 });
+
+test("the delivery ack names the display tag, not the key envelope or raw prefix", () => {
+  const { formatDeliveryAck } = require("../src/telegram-direct-send");
+  const { resolveSessionIdentity } = require("../src/session-key");
+  const t = (key) => (key === "directSendAckSent" ? "sent to {session}" : key);
+
+  function ackFor(rawSessionId, overrides = {}) {
+    const identity = resolveSessionIdentity(rawSessionId, "local");
+    return formatDeliveryAck("sent_with_enter", {
+      id: identity.sessionId,
+      rawSessionId: identity.rawSessionId,
+      ...overrides,
+    }, null, t);
+  }
+
+  const a = ackFor("11111111-2222-3333-4444-555555555555");
+  const b = ackFor("99999999-8888-7777-6666-aaaaaaaaaaaa");
+  const explicit = ackFor("11111111-2222-3333-4444-555555555555", {
+    displaySessionTag: "deadbeef00",
+  });
+  assert.notEqual(a, b, "two sessions must not produce the same ack");
+  assert.ok(!a.includes("s1."), `ack must not carry the key envelope: ${a}`);
+  assert.doesNotMatch(a, /111111/);
+  assert.equal(a, "sent to a0a040910c");
+  assert.equal(explicit, "sent to deadbeef00");
+});

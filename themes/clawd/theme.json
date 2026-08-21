@@ -217,6 +217,12 @@
             "baseY": 6.5,
             "width": 16
           },
+          "hitBoxPadding": {
+            "left": 1,
+            "top": 1,
+            "right": 1,
+            "bottom": 1
+          },
           "followTarget": {
             "id": "accessory-anchor",
             "frame": {
@@ -244,14 +250,20 @@
         "clawd-working-building.svg": {
           "staticFrame": {
             "cx": 7.5,
-            "baseY": 6.5,
+            "baseY": 1,
             "width": 16
+          },
+          "hitBoxPadding": {
+            "left": 2,
+            "top": 4,
+            "right": 2,
+            "bottom": 4
           },
           "followTarget": {
             "id": "accessory-anchor",
             "frame": {
               "cx": 7.5,
-              "baseY": 6.5,
+              "baseY": 1,
               "width": 16
             }
           }
@@ -261,6 +273,12 @@
             "cx": 7.5,
             "baseY": 6.5,
             "width": 16
+          },
+          "hitBoxPadding": {
+            "left": 1.5,
+            "top": 1.5,
+            "right": 1.5,
+            "bottom": 1.5
           },
           "followTarget": {
             "id": "accessory-anchor",
@@ -696,6 +714,12 @@
       "y": -7,
       "w": 20,
       "h": 24
+    },
+    "clawd-working-building.svg": {
+      "x": -1,
+      "y": -2,
+      "w": 17,
+      "h": 19
     }
   },
   "wideHitboxFiles": [

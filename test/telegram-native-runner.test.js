@@ -1217,6 +1217,38 @@ test("native runner requestApproval ignores wrong user and resolves later callba
   await runner.stop();
 });
 
+test("native runner reports approval delivery only after Telegram returns a message id", async () => {
+  const server = createFakeTelegramServer();
+  let releaseFirstPoll;
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueueOk("sendMessage", { message_id: 321, chat: { id: 123 } });
+  server.enqueueOk("editMessageText", { message_id: 321 });
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+  });
+  await runner.start();
+  await tick();
+
+  const delivered = [];
+  const controller = new AbortController();
+  const decisionPromise = runner.requestApproval(
+    { title: "x", detail: "y" },
+    { signal: controller.signal, onDelivered: (report) => delivered.push(report) },
+  );
+  assert.deepEqual(delivered, [], "starting requestApproval is not a delivery report");
+  await tick();
+  assert.deepEqual(delivered, [{ messageId: 321 }]);
+
+  controller.abort();
+  assert.equal(await decisionPromise, null);
+  releaseFirstPoll({ ok: true, result: [] });
+  await runner.stop();
+});
+
 test("native runner requestApproval resolves null on abort and send failure", async () => {
   {
     const server = createFakeTelegramServer();
@@ -1259,8 +1291,13 @@ test("native runner requestApproval resolves null on abort and send failure", as
     });
     await runner.start();
     await tick();
-    const decision = await runner.requestApproval({ title: "x", detail: "y" });
+    const delivered = [];
+    const decision = await runner.requestApproval(
+      { title: "x", detail: "y" },
+      { onDelivered: (report) => delivered.push(report) },
+    );
     assert.equal(decision, null);
+    assert.deepEqual(delivered, [], "a failed send must not report delivery");
     releaseFirstPoll({ ok: true, result: [] });
     await runner.stop();
   }
@@ -1287,9 +1324,10 @@ test("native runner aborts an in-flight approval send before a late Telegram suc
   await tick();
 
   const controller = new AbortController();
+  const delivered = [];
   const promise = runner.requestApproval(
     { title: "claude-code requests Bash", detail: "Summary: Run tests" },
-    { signal: controller.signal },
+    { signal: controller.signal, onDelivered: (report) => delivered.push(report) },
   );
   await tick();
   assert.equal(server.calls.filter((call) => call.method === "sendMessage").length, 1);
@@ -1307,6 +1345,7 @@ test("native runner aborts an in-flight approval send before a late Telegram suc
     false,
     "aborted approval sends must not report a late card as delivered",
   );
+  assert.deepEqual(delivered, [], "a late send result after abort must not report delivery");
   assert.equal(
     logs.some((entry) => entry.message === "native approval send aborted"),
     true,

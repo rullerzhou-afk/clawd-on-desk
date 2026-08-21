@@ -53,6 +53,11 @@ const { sanitizeShadowRecord } = require("./windows-process-chain-shadow-log");
 // not an Internet DoS concern.
 const MAX_STATE_BODY_BYTES = 16 * 1024;
 const ASSISTANT_LAST_OUTPUT_MAX = 2400;
+// Transport recognition and metadata acceptance are distinct wire facts.
+// A recognized 204 may still mean "unknown session" or another designed
+// metadata drop; only this header allows a metadata sender to advance its
+// application-level dedup baseline.
+const CLAWD_METADATA_ACCEPTED_HEADER = "X-Clawd-Metadata-Accepted";
 
 function normalizeHwndString(value) {
   if (value === null || value === undefined) return null;
@@ -116,8 +121,31 @@ function normalizeContextUsage(value) {
     out.percent = Math.max(0, Math.min(100, Math.round((used / out.limit) * 100)));
   }
 
-  if (value.source === "claude" || value.source === "codex" || value.source === "antigravity") out.source = value.source;
+  if (value.source === "claude" || value.source === "codex" || value.source === "antigravity" || value.source === "opencode") out.source = value.source;
   return out;
+}
+
+// Context-usage provenance for metadata_only POSTs (statusline / plugin
+// quota path). Only sources whose posts are a live telemetry stream get an
+// origin; everything else reports plain usage without provenance.
+const OPENCODE_FAMILY_AGENT_IDS = new Set(["opencode", "mimocode"]);
+
+function resolveMetadataContextUsageOrigin(agentId, contextUsage) {
+  if (!contextUsage || typeof contextUsage !== "object") return null;
+  if (agentId === "claude-code" && contextUsage.source === "claude") return "claude-statusline";
+  if (OPENCODE_FAMILY_AGENT_IDS.has(agentId) && contextUsage.source === "opencode") return "opencode-statusline";
+  return null;
+}
+
+// Context-usage provenance for real lifecycle state POSTs. Claude keeps the
+// transcript origin (the state event itself is the delivery path); the
+// opencode family plugin reports the same summary on its own channel, so the
+// state-event usage carries the statusline origin like the metadata branch.
+function resolveStateContextUsageOrigin(agentId, contextUsage) {
+  if (!contextUsage || typeof contextUsage !== "object") return null;
+  if (agentId === "claude-code" && contextUsage.source === "claude") return "claude-transcript";
+  if (OPENCODE_FAMILY_AGENT_IDS.has(agentId) && contextUsage.source === "opencode") return "opencode-statusline";
+  return null;
 }
 
 // Account-wide rate-limit quota. Re-validated here rather than trusted from
@@ -465,9 +493,11 @@ function handleStatePost(req, res, options) {
       if (metadataOnly) {
         // Deliberately NOT recorded in the recent-hook-events ring: a
         // statusline refreshing every few hundred ms would evict the real
-        // hook events the diagnostics exist to show. 204 either way — the
-        // statusline script never reads the response, and "session unknown"
-        // is the designed drop, not an error.
+        // hook events the diagnostics exist to show. 204 either way — legacy
+        // statusline scripts ignore the response, while delivery-aware
+        // plugins use CLAWD_METADATA_ACCEPTED_HEADER to distinguish a live
+        // accepted session from the designed "session unknown" drop.
+        let metadataAccepted = false;
         if (typeof ctx.updateSessionMetadata === "function") {
           const metaUpdate = {};
           if (
@@ -475,9 +505,7 @@ function handleStatePost(req, res, options) {
             && localClaudeStatuslineMetadataAllowed
           ) {
             metaUpdate.contextUsage = contextUsage;
-            metaUpdate.contextUsageOrigin = agentId === "claude-code" && contextUsage.source === "claude"
-              ? "claude-statusline"
-              : null;
+            metaUpdate.contextUsageOrigin = resolveMetadataContextUsageOrigin(agentId, contextUsage);
           }
           // OpenCode title changes ride the same metadata-only channel (the
           // placeholder → real title swap arrives on session.updated, which
@@ -485,10 +513,13 @@ function handleStatePost(req, res, options) {
           // it's not Claude statusline data.
           if (sessionTitle) metaUpdate.sessionTitle = sessionTitle;
           if (Object.keys(metaUpdate).length > 0) {
-            ctx.updateSessionMetadata(session_id || "default", metaUpdate);
+            metadataAccepted = ctx.updateSessionMetadata(session_id || "default", metaUpdate) === true;
           }
         }
-        res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+        res.writeHead(204, {
+          [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID,
+          ...(metadataAccepted ? { [CLAWD_METADATA_ACCEPTED_HEADER]: "1" } : {}),
+        });
         res.end();
         return;
       }
@@ -714,7 +745,17 @@ function handleStatePost(req, res, options) {
         const pendingForSource = () => pendingForSessionAgent().filter(
           (perm) => (perm.subagentId || null) === subagentId
         );
-        const resolveOnlyUnambiguous = (candidates, behavior, message) => {
+        // Native-fallback adapters (qwen-code, zcode, deepseek-harness) answer
+        // their hook with "{}"/no-decision when Clawd has no real user
+        // decision, and the agent falls back to its own permission UI. For
+        // them, a /state lifecycle sweep must NEVER fabricate a deny — the
+        // user merely answered in the agent's native terminal. CC/CodeBuddy
+        // keep the explicit deny: their hook transport treats the missing
+        // answer as a denial of that tool call.
+        const stateSweepBehaviorFor = (perm) => (
+          perm.isQwenCode || perm.isZcode || perm.isDsh ? "no-decision" : "deny"
+        );
+        const resolveOnlyUnambiguous = (candidates, behaviorFor, message) => {
           if (candidates.length !== 1) {
             if (candidates.length > 1 && typeof ctx.permLog === "function") {
               ctx.permLog(
@@ -724,6 +765,9 @@ function handleStatePost(req, res, options) {
             }
             return;
           }
+          const behavior = typeof behaviorFor === "function"
+            ? behaviorFor(candidates[0])
+            : behaviorFor;
           ctx.resolvePermissionEntry(candidates[0], behavior, message);
         };
         if (event === "PostToolUse" || event === "PostToolUseFailure" || event === "Stop") {
@@ -737,8 +781,7 @@ function handleStatePost(req, res, options) {
             allowSingletonFallback: event === "Stop",
           });
           if (perm) {
-            const behavior = perm.isQwenCode ? "no-decision" : "deny";
-            ctx.resolvePermissionEntry(perm, behavior, "User answered in terminal");
+            ctx.resolvePermissionEntry(perm, stateSweepBehaviorFor(perm), "User answered in terminal");
           }
           // A later hook event may be the only evidence that the user answered
           // a decision in the agent's native terminal UI. Never sweep across
@@ -753,7 +796,7 @@ function handleStatePost(req, res, options) {
             ));
             resolveOnlyUnambiguous(
               staleDecisions,
-              "deny",
+              stateSweepBehaviorFor,
               "User answered in terminal"
             );
           }
@@ -789,7 +832,7 @@ function handleStatePost(req, res, options) {
           ));
           resolveOnlyUnambiguous(
             stalePlans,
-            "deny",
+            stateSweepBehaviorFor,
             "Plan dialog dismissed in terminal"
           );
         }
@@ -827,9 +870,7 @@ function handleStatePost(req, res, options) {
             displayHint: display_svg,
             sessionTitle,
             contextUsage,
-            contextUsageOrigin: agentId === "claude-code" && contextUsage && contextUsage.source === "claude"
-              ? "claude-transcript"
-              : null,
+            contextUsageOrigin: resolveStateContextUsageOrigin(agentId, contextUsage),
             assistantLastOutput,
             assistantLastOutputTruncated,
             toolName,
@@ -882,6 +923,7 @@ function handleStatePost(req, res, options) {
 
 module.exports = {
   MAX_STATE_BODY_BYTES,
+  CLAWD_METADATA_ACCEPTED_HEADER,
   sendStateHealthResponse,
   handleStatePost,
 };

@@ -13,7 +13,7 @@
 //      omit the matcher because they do not need tool filtering.
 // ZCode supports exactly 7 events: SessionStart, UserPromptSubmit, PreToolUse,
 // PermissionRequest, PostToolUse, PostToolUseFailure, Stop (no SessionEnd /
-// Notification). Phase 1 registers the 6 state-only events (no PermissionRequest).
+// Notification). All 7 are registered — see ZCODE_HOOK_EVENTS below.
 
 const fs = require("fs");
 const path = require("path");
@@ -73,9 +73,10 @@ const CLAUDE_MARKER = "clawd-hook.js";
 const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".zcode");
 const DEFAULT_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, "cli", "config.json");
 
-// The 6 state-only events ZCode supports (PermissionRequest, the 7th, is
-// reserved for a future Phase 2 permission bubble). SessionEnd / Notification
-// are NOT supported by ZCode — including them makes config.json fail to load.
+// ZCode supports exactly 7 events: SessionStart, UserPromptSubmit, PreToolUse,
+// PermissionRequest, PostToolUse, PostToolUseFailure, Stop (no SessionEnd /
+// Notification). Phase 2 registers all 7: the six state events plus the
+// blocking PermissionRequest permission-bubble hook.
 const ZCODE_HOOK_EVENTS = [
   "SessionStart",
   "UserPromptSubmit",
@@ -83,6 +84,7 @@ const ZCODE_HOOK_EVENTS = [
   "PostToolUse",
   "PostToolUseFailure",
   "Stop",
+  "PermissionRequest",
 ];
 
 function isAbsoluteNodeBin(value) {
@@ -95,11 +97,14 @@ function isAbsoluteNodeBin(value) {
   );
 }
 
-function timeoutMsForZcodeEvent() {
+function timeoutMsForZcodeEvent(event) {
   // State-only process hooks are synchronous, but their own bounded work is
   // much shorter: stdin 400ms + a Windows process snapshot capped at 3s + a
   // 100ms local POST. Keep enough cold-start headroom without allowing six
   // events to freeze ZCode for 30s each if a hook wedges.
+  //
+  // PermissionRequest blocks on the local bubble / remote approval and needs
+  // the same budget qwen uses (600s hook vs 590s HTTP wait).
   //
   // IMPORTANT: ZCode's hook schema differs from Claude Code / Qwen in timeout
   // units. The `timeout` field is in SECONDS (internally ×1000), so writing
@@ -107,13 +112,14 @@ function timeoutMsForZcodeEvent() {
   // Use `timeoutMs` (milliseconds) explicitly — it also takes precedence over
   // `timeout`. (Qwen's `timeout: 30000` is millisecond-semantic because Qwen
   // uses the Claude Code schema; do NOT copy that field across.)
+  if (event === "PermissionRequest") return 600000;
   return 8000;
 }
 
-// ZCode treats a missing / empty / "*" matcher as match-all. State-only hooks
-// do not need tool filtering, so use the smallest canonical form and omit it.
-// Kept as a helper for symmetry with other installers and for a future Phase 2
-// PermissionRequest matcher.
+// ZCode treats a missing / empty / "*" matcher as match-all. Clawd's hooks do
+// not filter by tool name — including PermissionRequest, where the match value
+// is the tool name and we intentionally answer for every tool — so omit the
+// matcher everywhere.
 function matcherForZcodeEvent() {
   return null;
 }
@@ -247,7 +253,7 @@ function buildZcodeProcessHook(nodeBin, hookScript, event, options = {}) {
     type: "process",
     command: nodeBin,
     args: [hookScript, event],
-    timeoutMs: timeoutMsForZcodeEvent(),
+    timeoutMs: timeoutMsForZcodeEvent(event),
   };
   if (options.enabled === false) hook.enabled = false;
   return hook;
@@ -309,10 +315,11 @@ function isDesiredHookEntry(entry, desiredHook, event, options = {}) {
     && hook.args.length === desiredHook.args.length
     && hook.args.every((arg, index) => arg === desiredHook.args[index])
     && (hook.enabled === false) === (options.enabled === false)
-    // Must use timeoutMs (ms). A pre-fix entry carrying `timeout: 30000`
-    // (8.3h under ZCode's seconds-semantics) is treated as not-desired so a
-    // re-run rewrites it into the correct timeoutMs form.
-    && hook.timeoutMs === timeoutMsForZcodeEvent()
+    // Must use the per-event timeoutMs (ms). A pre-fix entry carrying
+    // `timeout: 30000` (8.3h under ZCode's seconds-semantics) — or a state
+    // timeout on PermissionRequest — is treated as not-desired so a re-run
+    // rewrites it into the correct timeoutMs form.
+    && hook.timeoutMs === timeoutMsForZcodeEvent(event)
   );
 }
 
@@ -515,12 +522,81 @@ function registerZcodeHooks(options = {}) {
   let updated = 0;
   const disabledManagedEvents = [];
 
+  // Phase 1 opt-out inheritance: when every Phase 1 managed state hook exists
+  // and is explicitly enabled:false, the user opted out of Clawd's ZCode
+  // hooks. The new blocking PermissionRequest hook must not silently re-enter
+  // the loop — especially not as a 600s blocking hook. (Evaluated per event
+  // AFTER the six state events have been normalized above, so the check sees
+  // canonical managed entries. Flat managed command entries cannot express
+  // the explicit opt-out and are treated as enabled, failing this check.)
+  const allPhase1StateHooksExplicitlyDisabled = () => {
+    for (const event of ZCODE_HOOK_EVENTS) {
+      if (event === "PermissionRequest") continue;
+      const intent = managedHookIntent(events[event]);
+      // Every Phase 1 event must have at least one managed hook, and every
+      // managed hook for that event must be explicitly disabled. A partial or
+      // foreign-only config is not evidence of a six-event Clawd opt-out.
+      if (intent.found === 0 || intent.enabled) return false;
+    }
+    return true;
+  };
+
+  // Foreign PermissionRequest conflict: ZCode runs same-event hooks serially
+  // and the LAST permissionRequestResult wins, so a Clawd hook appended after
+  // the user's own hook would let a Clawd allow override that hook's deny
+  // (and vice versa). Never silently register ours on top of a foreign hook.
+  const foreignPermissionRequestHooks = () => {
+    const foreign = [];
+    const entries = events.PermissionRequest;
+    if (!Array.isArray(entries)) return foreign;
+    for (const entry of entries) {
+      if (!entry || typeof entry !== "object") continue;
+      if (!isClawdZcodeHook(entry) && typeof entry.command === "string") foreign.push(entry);
+      if (!Array.isArray(entry.hooks)) continue;
+      for (const hook of entry.hooks) {
+        if (hook && typeof hook === "object" && !isClawdZcodeHook(hook)) foreign.push(hook);
+      }
+    }
+    return foreign;
+  };
+
   for (const event of ZCODE_HOOK_EVENTS) {
     const desiredHook = buildZcodeProcessHook(
       nodeBin,
       hookScript,
       event
     );
+
+    if (event === "PermissionRequest") {
+      const foreign = foreignPermissionRequestHooks();
+      if (foreign.length > 0) {
+        const managedIntent = managedHookIntent(events.PermissionRequest);
+        if (managedIntent.found > 0) {
+          // A foreign hook may be added after Clawd was already installed. A
+          // warning alone still leaves the unsafe last-wins chain active, so
+          // remove only Clawd-owned hooks and preserve every foreign entry.
+          // When the foreign owner is later removed, a normal sync installs
+          // Clawd again; no ambiguous auto-disabled state is persisted.
+          const removedManaged = removeMatchingZcodeHooks(
+            events.PermissionRequest,
+            isClawdZcodeHook
+          );
+          events.PermissionRequest = removedManaged.entries;
+          if (removedManaged.changed) {
+            changed = true;
+            updated++;
+          }
+          warnings.push(
+            "foreign PermissionRequest hook detected; removed Clawd's blocking permission hook to prevent last-wins decisions from overriding the existing hook's deny. Remove the foreign hook and re-sync if Clawd should own PermissionRequest."
+          );
+        } else {
+          warnings.push(
+            "foreign PermissionRequest hook detected; Clawd's blocking permission hook NOT registered — ZCode runs same-event hooks serially with last-wins decisions, so a Clawd allow could override the existing hook's deny. Remove the other hook (or Clawd's) and re-sync to resolve."
+          );
+        }
+        continue;
+      }
+    }
 
     if (!Array.isArray(events[event])) {
       events[event] = [];
@@ -535,12 +611,32 @@ function registerZcodeHooks(options = {}) {
     if (result.changed) changed = true;
 
     if (result.matched) {
+      // The Phase 1 opt-out must hold in BOTH directions: if the user
+      // disabled the six state hooks AFTER the blocking hook was installed,
+      // that same strict all-disabled condition disables the already-installed
+      // PermissionRequest hook too (idempotent — an already-disabled hook is
+      // left untouched).
+      if (event === "PermissionRequest" && allPhase1StateHooksExplicitlyDisabled()) {
+        const managedHook = events.PermissionRequest
+          .flatMap((entry) => (Array.isArray(entry.hooks) ? entry.hooks : []))
+          .find((hook) => isClawdZcodeHook(hook));
+        if (managedHook && managedHook.enabled !== false) {
+          managedHook.enabled = false;
+          changed = true;
+          disabledManagedEvents.push("PermissionRequest");
+        }
+      }
       if (result.changed) updated++;
       else skipped++;
       continue;
     }
 
-    events[event].push(buildZcodeHookEntry(desiredHook, event));
+    if (event === "PermissionRequest" && allPhase1StateHooksExplicitlyDisabled()) {
+      events[event].push(buildZcodeHookEntry(desiredHook, event, { enabled: false }));
+      disabledManagedEvents.push("PermissionRequest");
+    } else {
+      events[event].push(buildZcodeHookEntry(desiredHook, event));
+    }
     added++;
     changed = true;
   }

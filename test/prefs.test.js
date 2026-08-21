@@ -1382,6 +1382,50 @@ describe("prefs.migrate v13 → v14 (Dashboard window bounds)", () => {
   });
 });
 
+describe("prefs.migrate v14 → v15 (ZCode permission bubbles default on)", () => {
+  it("flips a Phase 1 persisted zcode permissionsEnabled:false to true", () => {
+    const upgraded = prefs.validate(prefs.migrate({
+      version: 14,
+      agents: {
+        zcode: { integrationInstalled: true, enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
+      },
+    }));
+    assert.strictEqual(upgraded.version, 15);
+    assert.strictEqual(upgraded.agents.zcode.permissionsEnabled, true);
+    // Other agent flags pass through untouched.
+    assert.strictEqual(upgraded.agents.zcode.enabled, true);
+    assert.strictEqual(upgraded.agents.zcode.integrationInstalled, true);
+  });
+
+  it("keeps other agents' explicit permissionsEnabled:false (real user choices)", () => {
+    const upgraded = prefs.validate(prefs.migrate({
+      version: 14,
+      agents: {
+        qoder: { integrationInstalled: true, enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
+      },
+    }));
+    assert.strictEqual(upgraded.version, 15);
+    assert.strictEqual(upgraded.agents.qoder.permissionsEnabled, false);
+  });
+
+  it("never touches a v15 file where the user disabled zcode bubbles after upgrade", () => {
+    const upgraded = prefs.validate(prefs.migrate({
+      version: 15,
+      agents: {
+        zcode: { integrationInstalled: true, enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
+      },
+    }));
+    assert.strictEqual(upgraded.version, 15);
+    assert.strictEqual(upgraded.agents.zcode.permissionsEnabled, false);
+  });
+
+  it("leaves a v14 file without a zcode entry to the schema default (on)", () => {
+    const upgraded = prefs.validate(prefs.migrate({ version: 14, lang: "zh" }));
+    assert.strictEqual(upgraded.version, 15);
+    assert.strictEqual(upgraded.agents.zcode.permissionsEnabled, true);
+  });
+});
+
 describe("prefs.migrate v12 → v13 (Settings window bounds)", () => {
   it("advances the schema without inventing geometry for existing users", () => {
     const upgraded = prefs.validate(prefs.migrate({ version: 12, lang: "zh" }));
@@ -1511,6 +1555,64 @@ describe("prefs.load", () => {
     );
   });
 
+  // POSIX-only: on Windows `chmod` only toggles the read-only bit and does not deny
+  // reads, so the EACCES branch is unreachable there and these assertions would fail
+  // for a reason that has nothing to do with prefs. `npm test` does run on
+  // windows-latest (.github/workflows/build.yml), so the skip is load-bearing.
+  // Same shape as `posixOnly` in test/antigravity-install.test.js.
+  const unreadableOnly = {
+    skip: process.platform === "win32" ? "chmod cannot deny reads on Windows" : false,
+  };
+
+  it("locks an unreadable prefs file so save() cannot clobber it", unreadableOnly, function () {
+    // Root can read anything, so the EACCES path is unreachable there too.
+    if (typeof process.getuid === "function" && process.getuid() === 0) return this.skip?.();
+    // 0o200 (write-only), NOT 0o000. With 0o000 the file is also unwritable, so the
+    // clobber this test exists to prevent could never happen there — the lane would
+    // assert a flag while the invariant was safe for an unrelated reason. Write-only
+    // is the state that actually loses data: unreadable, yet perfectly writable.
+    const p = makeTempPath();
+    const original = JSON.stringify({ agents: { "claude-code": { enabled: false } } });
+    fs.writeFileSync(p, original, "utf8");
+    fs.chmodSync(p, 0o200);
+    try {
+      const loaded = prefs.load(p);
+      assert.strictEqual(loaded.locked, true);
+      assert.strictEqual(loaded.recovered, true);
+      assert.deepStrictEqual(loaded.snapshot, prefs.getDefaults());
+      // No backup: copyFileSync would read the same unreadable file.
+      assert.strictEqual(fs.existsSync(p + ".bak"), false);
+
+    } finally {
+      fs.chmodSync(p, 0o600);
+    }
+  });
+
+  // Separate from the lane above **on purpose**: that one asserts the flag, and an
+  // assertion on the flag short-circuits before the outcome is ever exercised. This
+  // one never looks at `locked` directly — it only does what the single real caller
+  // does (settings-controller.js:111, `if (locked) return { noop: true }`) and then
+  // asks the question that actually matters: is the user's file still there?
+  it("does not clobber prefs it could not read", unreadableOnly, function () {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return this.skip?.();
+    const p = makeTempPath();
+    const original = JSON.stringify({ agents: { "claude-code": { enabled: false } } });
+    fs.writeFileSync(p, original, "utf8");
+    fs.chmodSync(p, 0o200); // write-only: unreadable, yet perfectly writable
+    try {
+      const loaded = prefs.load(p);
+      if (!loaded.locked) prefs.save(p, loaded.snapshot);
+      fs.chmodSync(p, 0o600);
+      assert.strictEqual(
+        fs.readFileSync(p, "utf8"),
+        original,
+        "prefs we could not read must survive a persist attempt byte for byte"
+      );
+    } finally {
+      fs.chmodSync(p, 0o600);
+    }
+  });
+
   it("marks a non-object prefs root as a recovered defaults snapshot", () => {
     const p = makeTempPath();
     fs.writeFileSync(p, "null", "utf8");
@@ -1624,22 +1726,22 @@ describe("prefs.load", () => {
     }
   });
 
-  it("accepts the restored v14 schema and locks an explicit v15 file", () => {
-    const currentPath = makeTempPath("v14.json");
-    fs.writeFileSync(currentPath, JSON.stringify({ version: 14, lang: "zh" }), "utf8");
+  it("accepts the restored v15 schema and locks an explicit v16 file", () => {
+    const currentPath = makeTempPath("v15.json");
+    fs.writeFileSync(currentPath, JSON.stringify({ version: 15, lang: "zh" }), "utf8");
     const current = prefs.load(currentPath);
     assert.strictEqual(current.locked, false);
-    assert.strictEqual(current.snapshot.version, 14);
+    assert.strictEqual(current.snapshot.version, 15);
     assert.strictEqual(current.snapshot.lang, "zh");
 
-    const futurePath = makeTempPath("v15.json");
-    fs.writeFileSync(futurePath, JSON.stringify({ version: 15, lang: "ja" }), "utf8");
+    const futurePath = makeTempPath("v16.json");
+    fs.writeFileSync(futurePath, JSON.stringify({ version: 16, lang: "ja" }), "utf8");
     const originalWarn = console.warn;
     console.warn = () => {};
     try {
       const future = prefs.load(futurePath);
       assert.strictEqual(future.locked, true);
-      assert.strictEqual(future.snapshot.version, 15);
+      assert.strictEqual(future.snapshot.version, 16);
       assert.strictEqual(future.snapshot.lang, "ja");
     } finally {
       console.warn = originalWarn;
@@ -2167,6 +2269,7 @@ describe("prefs.mapLocaleToLang (device locale → UI language)", () => {
     ["pt-BR", "pt-BR"], ["pt_BR", "pt-BR"],
     // Only the shipped regional variant is auto-selected.
     ["pt", "en"], ["pt-PT", "en"], ["pt-AO", "en"],
+    ["es-MX", "es"], ["es-ES", "es"], ["es", "es"],
     ["fr-FR", "en"], ["de", "en"],
   ];
   for (const [input, expected] of cases) {
@@ -2183,8 +2286,8 @@ describe("prefs.mapLocaleToLang (device locale → UI language)", () => {
   });
 
   it("only ever returns a value inside the lang enum", () => {
-    const enumVals = new Set(["en", "zh", "zh-TW", "ko", "ja", "pt-BR"]);
-    for (const probe of ["xx", "ZH-tw", "JA", "en-GB", "pt-BR", "PT-br", ""]) {
+    const enumVals = new Set(["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"]);
+    for (const probe of ["xx", "ZH-tw", "JA", "en-GB", "pt-BR", "PT-br", "es-MX", ""]) {
       assert.ok(enumVals.has(prefs.mapLocaleToLang(probe)), `${probe} mapped outside enum`);
     }
   });

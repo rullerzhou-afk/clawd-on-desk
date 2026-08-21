@@ -23,6 +23,7 @@ docs/**
 !docs/guides/known-limitations.md
 !docs/guides/known-limitations.zh-CN.md
 !docs/guides/setup-guide.md
+!docs/guides/slack-notifications.md
 !docs/guides/setup-guide.zh-CN.md
 !docs/guides/guide-remote-ssh.md
 !docs/guides/roam-fence.md
@@ -38,13 +39,6 @@ docs/**
 !docs/investigations/
 !docs/investigations/permission-hook-fail-deny-investigation.md
 !docs/investigations/codex-subagent-session-meta.md
-!docs/plans/
-!docs/plans/plan-issue-513-remote-ssh-isolation.md
-!docs/plans/plan-issue-763-koffi-target-native-packaging.md
-!docs/plans/plan-npm-dependency-security-hardening.md
-!docs/plans/plan-opencode-family-state-ordering-and-instance-disposal-hardening.md
-!docs/plans/plan-issue-852-worktreecreate-env-cleanup.md
-!docs/plans/plan-pr-876-deepseek-harness-integration.md
 !docs/project/
 !docs/project/agent-runtime-architecture.md
 !docs/project/release-process.md

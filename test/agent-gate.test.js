@@ -4,6 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
 const {
+  createRuntimeAgentGate,
   getCodexPermissionMode,
   isAgentEnabled,
   isAgentIntegrationInstalled,
@@ -226,6 +227,73 @@ describe("Codex permission mode gate", () => {
       isCodexPermissionInterceptEnabled({ agents: { codex: { permissionMode: "native" } } }),
       false
     );
+  });
+});
+
+describe("createRuntimeAgentGate", () => {
+  it("preserves the normalized prefs gates while the snapshot is authoritative", () => {
+    const snapshot = prefs.getDefaults();
+    const gate = createRuntimeAgentGate({
+      getSnapshot: () => snapshot,
+      isAuthoritative: () => true,
+    });
+
+    assert.strictEqual(gate.isAuthoritative(), true);
+    assert.strictEqual(gate.isAgentEnabled("claude-code"), true);
+    assert.strictEqual(gate.isAgentIntegrationInstalled("codex"), true);
+    assert.strictEqual(gate.shouldSyncAgentIntegration("codex"), true);
+    assert.strictEqual(gate.isAgentPermissionsEnabled("codex"), true);
+    assert.strictEqual(gate.isAgentSubagentPermissionsEnabled("claude-code"), true);
+    assert.strictEqual(gate.isAgentNotificationHookEnabled("codex"), true);
+    assert.strictEqual(gate.isCodexPermissionInterceptEnabled(), true);
+    assert.strictEqual(gate.hasAnyEnabledAgent(), true);
+  });
+
+  it("fails every prefs-backed runtime gate closed for a non-authoritative snapshot", () => {
+    const snapshot = prefs.getDefaults();
+    const gate = createRuntimeAgentGate({
+      getSnapshot: () => snapshot,
+      isAuthoritative: () => false,
+    });
+
+    assert.strictEqual(gate.isAuthoritative(), false);
+    assert.strictEqual(gate.isAgentEnabled("claude-code"), false);
+    assert.strictEqual(gate.isAgentIntegrationInstalled("codex"), false);
+    assert.strictEqual(gate.shouldSyncAgentIntegration("codex"), false);
+    assert.strictEqual(gate.isAgentPermissionsEnabled("codex"), false);
+    assert.strictEqual(gate.isAgentSubagentPermissionsEnabled("claude-code"), false);
+    assert.strictEqual(gate.isAgentNotificationHookEnabled("codex"), false);
+    assert.strictEqual(gate.isCodexNativeNotificationSoundEnabled(), false);
+    assert.strictEqual(gate.isCodexPermissionInterceptEnabled(), false);
+    assert.strictEqual(gate.hasAnyEnabledAgent(), false);
+  });
+
+  it("fails closed if the authority probe throws", () => {
+    const gate = createRuntimeAgentGate({
+      getSnapshot: () => prefs.getDefaults(),
+      isAuthoritative: () => {
+        throw new Error("authority unavailable");
+      },
+    });
+
+    assert.strictEqual(gate.isAuthoritative(), false);
+    assert.strictEqual(gate.isAgentEnabled("codex"), false);
+    assert.strictEqual(gate.shouldSyncAgentIntegration("codex"), false);
+    assert.strictEqual(gate.isCodexPermissionInterceptEnabled(), false);
+  });
+
+  it("fails closed if the authoritative snapshot reader throws", () => {
+    const gate = createRuntimeAgentGate({
+      getSnapshot: () => {
+        throw new Error("snapshot unavailable");
+      },
+    });
+
+    assert.strictEqual(gate.isAuthoritative(), true);
+    assert.strictEqual(gate.isAgentEnabled("codex"), false);
+    assert.strictEqual(gate.shouldSyncAgentIntegration("codex"), false);
+    assert.strictEqual(gate.isCodexPermissionInterceptEnabled(), false);
+    assert.strictEqual(gate.hasAnyEnabledAgent(), false);
   });
 });
 

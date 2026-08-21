@@ -212,6 +212,21 @@ test("notifies each completing session with identity fields", async () => {
   assert.match(joined, /laptop/); // host
 });
 
+test("completion respects an explicitly hidden snapshot displayFolder", async () => {
+  const opaque = "mqgw60jiigjsjcid";
+  const { comp, sent } = makeCompanion({ getNotifyOnComplete: () => true });
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry({
+    id: "qwenwork:hidden",
+    agentId: "qwenwork",
+    cwd: `/Users/me/.QwenWorkCN/workspace/${opaque}`,
+    displayFolder: "",
+  })] });
+  await tick();
+  assert.equal(sent.length, 1);
+  assert.ok(!JSON.stringify(sent[0]).includes(opaque));
+});
+
 test("ignores non-completion badges and events", async () => {
   const { comp, sent } = makeCompanion();
   comp.onSnapshot({ sessions: [] });
@@ -372,12 +387,30 @@ test("forgets sessions that drop out of the snapshot", async () => {
   assert.equal(comp._lastNotified.size, 0);
 });
 
-test("formatNotification falls back to short id when title missing", () => {
+test("formatNotification falls back to the session label and uses the display tag when title missing", () => {
   const text = formatNotification({
-    id: "sess-zzzzzz9", badge: "done", lastEvent: { rawEvent: "Stop", at: 1 },
+    id: "s1.bG9jYWw.c2Vzcy16enp6eno5",
+    displaySessionTag: "deadbeef00",
+    badge: "done",
+    lastEvent: { rawEvent: "Stop", at: 1 },
   });
-  assert.match(text, /sess-z/);
-  assert.match(text, /#sess-z/);
+  assert.match(text, /session/);
+  assert.match(text, /#deadbeef00/);
+  assert.doesNotMatch(text, /s1\.bG9jYWw/);
+  assert.doesNotMatch(text, /sess-z/);
+});
+
+test("formatted completion falls back to the session label and display tag when title missing", () => {
+  const message = formatTelegramNotificationMessage({
+    id: "s1.bG9jYWw.c2Vzcy16enp6eno5",
+    displaySessionTag: "deadbeef00",
+    badge: "done",
+    lastEvent: { rawEvent: "Stop", at: 1 },
+  });
+  assert.match(message.plainText, /session/);
+  assert.match(message.plainText, /#deadbeef00/);
+  assert.doesNotMatch(message.plainText, /s1\.bG9jYWw/);
+  assert.doesNotMatch(message.plainText, /sess-z/);
 });
 
 test("formatted completion parses only Assistant output and escapes metadata", () => {
@@ -434,4 +467,76 @@ test("custom completion formatter keeps the legacy plain string contract", async
   await tick();
 
   assert.deepEqual(sent, ["<b>legacy wire</b>"]);
+});
+
+test("completion notifications use the snapshot display tag, not raw or canonical prefixes", () => {
+  const { resolveSessionIdentity } = require("../src/session-key");
+  const { buildSessionSnapshotEntry } = require("../src/state-session-snapshot");
+
+  function entryFor(rawSessionId) {
+    const identity = resolveSessionIdentity(rawSessionId);
+    return buildSessionSnapshotEntry(identity.sessionId, {
+      rawSessionId: identity.rawSessionId,
+      agentId: "claude-code",
+      state: "idle",
+      cwd: null,
+      sessionTitle: "Known task",
+      recentEvents: [{ event: "Stop", state: "idle", at: Date.now() }],
+    });
+  }
+
+  const a = entryFor("11111111-2222-3333-4444-555555555555");
+  const b = entryFor("99999999-8888-7777-6666-aaaaaaaaaaaa");
+
+  assert.ok(a.id.startsWith("s1."), "fixture must use a real namespaced key");
+  const textA = sentText(formatNotification(a));
+  const richA = formatTelegramNotificationMessage(a);
+  const tagA = textA.match(/#([0-9a-f]{10})/);
+  const tagB = sentText(formatNotification(b)).match(/#([0-9a-f]{10})/);
+  assert.ok(tagA && tagB, "both notifications carry a session tag");
+  assert.equal(tagA[1], a.displaySessionTag);
+  assert.equal(tagA[1], "a0a040910c");
+  assert.notEqual(tagA[1], tagB[1], "two sessions must not render the same tag");
+  assert.ok(!tagA[1].startsWith("s1."), `tag must not be the key envelope: ${tagA[1]}`);
+  assert.ok(!a.rawSessionId.startsWith(tagA[1]), "tag must not be a raw id prefix");
+  assert.doesNotMatch(textA, /111111|s1\.bG9jYWw/);
+  assert.doesNotMatch(richA.plainText, /111111|s1\.bG9jYWw/);
+});
+
+test("completion notification tags still distinguish sessions without rawSessionId", () => {
+  const { resolveSessionIdentity } = require("../src/session-key");
+  const { buildSessionSnapshotEntry } = require("../src/state-session-snapshot");
+
+  function tagFor(rawSessionId) {
+    const identity = resolveSessionIdentity(rawSessionId, "local");
+    const entry = buildSessionSnapshotEntry(identity.sessionId, {
+      agentId: "codex",
+      state: "idle",
+      cwd: null,
+      recentEvents: [{ event: "Stop", state: "idle", at: Date.now() }],
+    }); // deliberately no rawSessionId
+    assert.equal(entry.rawSessionId, identity.sessionId, "fixture must exercise the fallback");
+    return sentText(formatNotification(entry)).match(/#([0-9a-f]{10})/)[1];
+  }
+
+  const a = tagFor("11111111-2222-3333-4444-555555555555");
+  const b = tagFor("99999999-8888-7777-6666-aaaaaaaaaaaa");
+  assert.notEqual(a, b, "two sessions must not render the same tag");
+  assert.ok(!a.startsWith("s1."), `tag must not be the key envelope: ${a}`);
+  assert.equal(a, "a0a040910c");
+});
+
+test("completion formatter prefers an explicit snapshot display tag", () => {
+  const entry = doneEntry({
+    id: "s1.bG9jYWw.MTExMTExMTEtMjIyMi0zMzMzLTQ0NDQtNTU1NTU1NTU1NTU1",
+    rawSessionId: "11111111-2222-3333-4444-555555555555",
+    displaySessionTag: "deadbeef00",
+  });
+
+  const text = sentText(formatNotification(entry));
+  const rich = formatTelegramNotificationMessage(entry);
+  assert.match(text, /#deadbeef00/);
+  assert.match(rich.plainText, /#deadbeef00/);
+  assert.doesNotMatch(text, /#a0a040910c|111111|s1\.bG9jYWw/);
+  assert.doesNotMatch(rich.plainText, /#a0a040910c|111111|s1\.bG9jYWw/);
 });

@@ -96,6 +96,7 @@ const { createKimiQuotaRuntime } = require("./kimi-quota-runtime");
 const {
   getPetTintIdForTheme,
   resolvePetTintPayload,
+  buildPetAccessoryPayload,
   resolvePetAccessoryPayload,
 } = require("./pet-customization-catalog");
 const {
@@ -118,6 +119,7 @@ const initPermission = require("./permission");
 const { isPassiveNotifyEntry } = require("./passive-notify-entry");
 const { registerPermissionIpc } = initPermission;
 const telegramApprovalSettings = require("./telegram-approval-settings");
+const { sanitizeTelegramApprovalLogMeta } = require("./telegram-approval-log-meta");
 const discordPresenceSettings = require("./discord-presence-settings");
 const { createDiscordPresenceBridge } = require("./discord-presence-rpc");
 const { resolveAgentDisplayName } = require("./agent-display-name");
@@ -127,6 +129,8 @@ const {
   lookupOpenIdByEmail,
 } = require("./feishu-approval-client");
 const feishuApprovalSettings = require("./feishu-approval-settings");
+const { createSlackNotifyClient } = require("./slack-notify-client");
+const slackNotifySettings = require("./slack-notify-settings");
 const { saveFeishuApproverByEmail } = require("./settings-actions");
 const {
   buildTelegramApprovalStatus,
@@ -423,6 +427,11 @@ let feishuApprovalSyncPromise = Promise.resolve();
 let feishuApprovalConfigSignature = "";
 let feishuSessionAutomationRouteSignature = "";
 let feishuApprovalSecretsRevision = 0;
+// One-way Slack notifier. Unlike Feishu there is no connection to restart, but
+// queued automatic sends must never cross a configuration boundary. The
+// revision invalidates work captured before a preference or secret change.
+let slackNotifyClient = null;
+let slackNotifyConfigRevision = 0;
 const shortcutHandlers = {
   togglePet: () => togglePetVisibility(),
 };
@@ -494,6 +503,10 @@ const _settingsController = createSettingsController({
     getFeishuApprovalStatus: () => getFeishuApprovalStatus(),
     getFeishuApprovalSecretInfo: () => getFeishuApprovalSecretInfo(),
     sendFeishuApprovalTest: (persisted) => sendFeishuApprovalTest(persisted),
+    writeSlackNotifySecrets: (secrets) => writeSlackNotifySecrets(secrets),
+    getSlackNotifyStatus: () => getSlackNotifyStatus(),
+    getSlackNotifySecretInfo: () => getSlackNotifySecretInfo(),
+    sendSlackNotifyTest: () => sendSlackNotifyTest(),
     // Lazy getter so settings-actions can use the controller even though it's
     // instantiated below (forward-reference).
     get telegramMigration() {
@@ -531,10 +544,10 @@ const _settingsController = createSettingsController({
   },
 });
 _settingsController.subscribeKey("agents", (_agents, snapshot) => {
-  // A future-version prefs file is intentionally read-only. Settings may still
-  // change in memory for the current process, but publishing those ephemeral
-  // values would let a retained hook cold-launch Clawd against the durable
-  // prefs truth.
+  // A readable future-version prefs file may still change in memory for the
+  // current process. An unreadable prefs file rejects mutations earlier in the
+  // controller. In both locked cases, publishing ephemeral values would let a
+  // retained hook cold-launch Clawd against a different durable prefs truth.
   if (_settingsController.isLocked()) return;
   _syncCodexAutoStartGate(snapshot, "settings");
 });
@@ -895,6 +908,32 @@ if (_loadedStartupTheme._id !== _requestedThemeId || _loadedStartupTheme._varian
 }
 
 // ── Pet window geometry / bounds runtime ──
+// Geometry's startup/theme-swap fallback only. It must stay a pure read:
+// resolvePetAccessoryPayload() commits to the canonical payload, so using it
+// here would let a hit-window sync install a payload resolved from its own
+// wall clock — the midnight/holiday race the canonical payload exists to end.
+function getEffectivePetAccessoryPayload() {
+  const activeTheme = getActiveTheme();
+  const snapshot = _settingsController.getSnapshot();
+  const accessoryId = getEffectivePetAccessoryIdForTheme({
+    petAccessory: snapshot.petAccessory,
+    holidayAccessoryEnabled: snapshot.holidayAccessoryEnabled,
+    themeId: activeTheme && activeTheme._id,
+  });
+  return buildPetAccessoryPayload(accessoryId, activeTheme);
+}
+
+// Composed accessory facing as the renderer actually applied it (mini-left
+// stage XOR asset-direction stage). Defaults to unmirrored until the first
+// report; that matches the pre-accessory-hitbox behaviour.
+let _accessoryMirrored = false;
+function setAccessoryMirrored(mirrored) {
+  const next = !!mirrored;
+  if (_accessoryMirrored === next) return;
+  _accessoryMirrored = next;
+  syncHitWin();
+}
+
 const petWindowRuntime = createPetWindowRuntime({
   screen,
   isWin,
@@ -909,6 +948,8 @@ const petWindowRuntime = createPetWindowRuntime({
   getCurrentState: () => _state.getCurrentState(),
   getCurrentSvg: () => _state.getCurrentSvg(),
   getCurrentHitBox: () => _state.getCurrentHitBox(),
+  getCurrentAccessoryPayload: getEffectivePetAccessoryPayload,
+  getAccessoryMirrored: () => _accessoryMirrored,
   getMiniMode: () => _mini.getMiniMode(),
   getMiniTransitioning: () => _mini.getMiniTransitioning(),
   getMiniContainedSeam: () => _mini.getContainedSeam(),
@@ -1589,15 +1630,15 @@ const {
 
 // ── Permission bubble — delegated to src/permission.js ──
 const {
-  isAgentIntegrationInstalled: _isAgentIntegrationInstalled,
-  isAgentEnabled: _isAgentEnabled,
-  isAgentPermissionsEnabled: _isAgentPermissionsEnabled,
-  isAgentSubagentPermissionsEnabled: _isAgentSubagentPermissionsEnabled,
-  isAgentNotificationHookEnabled: _isAgentNotificationHookEnabled,
-  isCodexNativeNotificationSoundEnabled: _isCodexNativeNotificationSoundEnabled,
-  isCodexPermissionInterceptEnabled: _isCodexPermissionInterceptEnabled,
-  shouldSyncAgentIntegration: _shouldSyncAgentIntegration,
+  createRuntimeAgentGate,
 } = require("./agent-gate");
+const _runtimeAgentGate = createRuntimeAgentGate({
+  getSnapshot: () => _settingsController.getSnapshot(),
+  // locked && recovered means prefs bytes were never read and the snapshot is
+  // only defaults. Keep every prefs-backed agent path closed for this process;
+  // fixing file access and restarting is the only authority transition.
+  isAuthoritative: () => !_settingsController.hasReadFailure(),
+});
 const _permCtx = {
   get win() { return win; },
   get lang() { return lang; },
@@ -1619,14 +1660,13 @@ const _permCtx = {
   // pendingPermissions list changes (notifyPermissionsChanged), so a bubble
   // that leaves the list mid-edit can't strand the pet faded + click-through.
   syncImeEditingPetDodge: () => topmostRuntime.syncImeEditingPetDodge(),
-  isAgentEnabled: (agentId) =>
-    _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
+  isAgentEnabled: (agentId) => _runtimeAgentGate.isAgentEnabled(agentId),
   isAgentPermissionsEnabled: (agentId) =>
-    _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
+    _runtimeAgentGate.isAgentPermissionsEnabled(agentId),
   isAgentSubagentPermissionsEnabled: (agentId) =>
-    _isAgentSubagentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
+    _runtimeAgentGate.isAgentSubagentPermissionsEnabled(agentId),
   isCodexPermissionInterceptEnabled: () =>
-    _isCodexPermissionInterceptEnabled({ agents: _settingsController.get("agents") }),
+    _runtimeAgentGate.isCodexPermissionInterceptEnabled(),
   // The permission layer consumes one normalized runtime mode. DND,
   // headless, per-agent and bubble gates run before this chokepoint.
   getPermissionAutomationMode: () =>
@@ -1690,6 +1730,15 @@ const _permCtx = {
   onPermissionResolved: (permEntry, options = {}) => {
     if (!_state || typeof _state.clearPermissionNotification !== "function") return;
     _state.clearPermissionNotification(permEntry && permEntry.sessionId, options);
+  },
+  // Best-effort, read-only "permission needed" heads-up to Slack. Slack cannot
+  // resolve the approval in this build (webhook is one-way), so this only
+  // announces — the desktop bubble / other channels still own the decision.
+  notifySlackPermission: (payload, options = {}) => {
+    const client = getSlackNotifyClient();
+    if (client && typeof client.notifyPermissionRequest === "function") {
+      try { client.notifyPermissionRequest(payload, options); } catch {}
+    }
   },
 };
 const _perm = initPermission(_permCtx);
@@ -1859,12 +1908,12 @@ const _stateCtx = {
   // permissionsEnabled=false toggle would silently rebuild holds on every
   // incoming Kimi PermissionRequest.
   isAgentPermissionsEnabled: (agentId) =>
-    _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
+    _runtimeAgentGate.isAgentPermissionsEnabled(agentId),
   // state.js gates self-issued Notification events (idle / wait-for-input
   // pings) via this reader. Living in updateSession (not at the HTTP
   // boundary) keeps the gate consistent for hook / log-poll / plugin paths.
   isAgentNotificationHookEnabled: (agentId) =>
-    _isAgentNotificationHookEnabled({ agents: _settingsController.get("agents") }, agentId),
+    _runtimeAgentGate.isAgentNotificationHookEnabled(agentId),
   resolveAgentDisplayName: _resolveAgentDisplayName,
   miniPeekIn: () => miniPeekIn(),
   miniPeekOut: () => miniPeekOut(),
@@ -1881,6 +1930,9 @@ const _stateCtx = {
     if (telegramCompanion) {
       try { telegramCompanion.onSnapshot(snapshot); } catch {}
     }
+    // Slack completion pings ride the same fanout; the client dedupes internally
+    // and fires sends async, so this never throws or blocks the broadcast.
+    try { getSlackNotifyClient().onSnapshot(snapshot); } catch {}
     if (discordPresenceBridge) {
       try { discordPresenceBridge.onSnapshot(snapshot); } catch {}
     }
@@ -1914,22 +1966,8 @@ const _stateCtx = {
     if (sessionAutomationCoordinator) sessionAutomationCoordinator.onSessionLifecycleEnd(payload);
   },
   getIdleVisualChoice,
-  isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
-  hasAnyEnabledAgent: () => {
-    // `get("agents")` returns the live reference (no clone) — we're only
-    // reading. Missing agents field falls back to "assume enabled" (the
-    // legacy default-true contract for unconfigured installs); but an
-    // explicit empty object means every agent was cleared, so return
-    // false. Without that distinction, a user who wiped the field would
-    // still trigger startup-recovery process scans.
-    const agents = _settingsController.get("agents");
-    if (!agents || typeof agents !== "object") return true;
-    const probe = { agents };
-    for (const id of Object.keys(agents)) {
-      if (_isAgentEnabled(probe, id)) return true;
-    }
-    return false;
-  },
+  isAgentEnabled: (agentId) => _runtimeAgentGate.isAgentEnabled(agentId),
+  hasAnyEnabledAgent: () => _runtimeAgentGate.hasAnyEnabledAgent(),
 };
 const _state = require("./state")(_stateCtx);
 const _kimiQuotaCredentialStore = createKimiQuotaCredentialStore({ safeStorage });
@@ -1950,7 +1988,7 @@ _settingsController.subscribeKey("kimiQuotaCollectionEnabled", (enabled) => {
   });
 });
 _settingsController.subscribeKey("agents", (_agents, snapshot) => {
-  if (!_isAgentEnabled(snapshot, "kimi-cli")) {
+  if (!_runtimeAgentGate.isAgentEnabled("kimi-cli")) {
     _kimiQuotaRuntime.invalidateRequests();
   }
 });
@@ -2195,10 +2233,10 @@ sendDashboardI18n = _dashboard.sendI18n;
 
 // ── First-run onboarding tutorial ──
 // Buckets the installable agents for the tutorial's step 2. We call the
-// detector with skipDefaultIntegrations:false so the default integrations
-// (claude-code, codex) are checked too — that's the only way to flag the
-// marquee "default Codex hook but Codex isn't installed → recommend removing"
-// case, which the Settings UI doesn't surface.
+// detector with skipDefaultIntegrations:false so the default integrations are
+// present in the report; the bucketer still exempts them from cleanup (#895 —
+// a missing ~/.codex is not evidence that a Codex hook is stale), so this flag
+// only affects the active/install buckets.
 function buildTutorialAgentOnboardingState() {
   const { detectAgentInstallations } = require("./agent-installation-detector");
   const { INSTALLABLE_AGENT_IDS } = require("./settings-actions-agents");
@@ -2348,7 +2386,7 @@ agentRuntime = createAgentRuntimeMain({
   getServer: () => _server,
   getStateRuntime: () => _state,
   getPermissionRuntime: () => _perm,
-  isAgentEnabled: (agentId) => _isAgentEnabled(_settingsController.getSnapshot(), agentId),
+  isAgentEnabled: (agentId) => _runtimeAgentGate.isAgentEnabled(agentId),
   updateSession: (sessionId, state, event, opts) => updateSession(sessionId, state, event, opts),
   debugLog: (msg) => sessionLog(msg),
   captureGhosttyTerminalId,
@@ -2390,14 +2428,14 @@ const _serverCtx = {
   captureForegroundWindowsTerminal: _captureForegroundWindowsTerminal,
   debugLog: (msg) => sessionLog(msg),
   recordWindowsProcessChainShadow: (record) => recordWindowsProcessChainShadow(record),
-  isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
+  isAgentEnabled: (agentId) => _runtimeAgentGate.isAgentEnabled(agentId),
   shouldSyncAgentIntegration: (agentId) =>
-    _shouldSyncAgentIntegration({ agents: _settingsController.get("agents") }, agentId),
+    _runtimeAgentGate.shouldSyncAgentIntegration(agentId),
   getAgentIntegrationOptions: _getAgentIntegrationOptions,
-  isAgentPermissionsEnabled: (agentId) => _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
-  isAgentSubagentPermissionsEnabled: (agentId) => _isAgentSubagentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
-  isCodexNativeNotificationSoundEnabled: () => _isCodexNativeNotificationSoundEnabled({ agents: _settingsController.get("agents") }),
-  isCodexPermissionInterceptEnabled: () => _isCodexPermissionInterceptEnabled({ agents: _settingsController.get("agents") }),
+  isAgentPermissionsEnabled: (agentId) => _runtimeAgentGate.isAgentPermissionsEnabled(agentId),
+  isAgentSubagentPermissionsEnabled: (agentId) => _runtimeAgentGate.isAgentSubagentPermissionsEnabled(agentId),
+  isCodexNativeNotificationSoundEnabled: () => _runtimeAgentGate.isCodexNativeNotificationSoundEnabled(),
+  isCodexPermissionInterceptEnabled: () => _runtimeAgentGate.isCodexPermissionInterceptEnabled(),
   codexSubagentClassifier: agentRuntime.getCodexSubagentClassifier(),
   setState,
   updateSession: agentRuntime.updateSessionFromServer,
@@ -2510,6 +2548,7 @@ function getConfiguredFeishuApprovalClient() {
 }
 
 function telegramApprovalLog(level, message, meta = {}) {
+  const diagnosticMeta = sanitizeTelegramApprovalLogMeta(meta);
   const parts = [`telegram approval ${level}: ${message}`];
   if (meta && meta.text) parts.push(String(meta.text).trim());
   if (meta && meta.error) parts.push(String(meta.error).trim());
@@ -2518,6 +2557,10 @@ function telegramApprovalLog(level, message, meta = {}) {
     if (value !== undefined && value !== null && value !== "") {
       parts.push(`${key}=${String(value).trim()}`);
     }
+  }
+  for (const key of ["outcome", "mode", "proxy"]) {
+    const value = diagnosticMeta[key];
+    if (value) parts.push(`${key}=${value}`);
   }
   permLog(parts.filter(Boolean).join(" | "));
 }
@@ -3039,6 +3082,134 @@ async function sendFeishuApprovalTest(persisted = null) {
   }
 }
 
+// --- Slack notifications (one-way) -----------------------------------------
+// Webhook / chat.postMessage are stateless HTTP, so there is no client to
+// restart on config change: the singleton reads current prefs+secrets lazily on
+// each send, and writing secrets just changes what the next read sees.
+function slackNotifyLog(level, message, meta = {}) {
+  const parts = [`slack notify ${level}: ${message}`];
+  if (meta && meta.errorClass) parts.push(`errorClass=${String(meta.errorClass).trim()}`);
+  if (meta && meta.error) parts.push(String(meta.error).trim());
+  if (meta && meta.id) parts.push(`id=${String(meta.id).trim()}`);
+  const config = getSlackNotifyPrefs();
+  const secrets = getSlackNotifySecrets();
+  const redactionSecrets = slackNotifySettings.redactionSecretsForSlackNotify(config, secrets);
+  for (const secret of redactionSecrets) {
+    if (!secret) continue;
+    for (let i = 0; i < parts.length; i += 1) {
+      parts[i] = String(parts[i]).split(String(secret)).join("<redacted>");
+    }
+  }
+  permLog(parts.filter(Boolean).join(" | "));
+}
+
+function getSlackNotifyPrefs() {
+  return slackNotifySettings.normalizeSlackNotify(_settingsController.get("slackNotify"));
+}
+
+// Canonical path only — no env-var override, mirroring the Feishu/Telegram
+// secret writers so a stray env var cannot redirect where the webhook lands.
+function getSlackNotifyPaths() {
+  const userDataDir = app.getPath("userData");
+  return {
+    userDataDir,
+    secretsEnvFilePath: slackNotifySettings.defaultSecretsEnvFilePath(userDataDir),
+  };
+}
+
+function getSlackNotifySecrets() {
+  const paths = getSlackNotifyPaths();
+  return slackNotifySettings.readSecretsEnvFile({ fs, filePath: paths.secretsEnvFilePath });
+}
+
+function getSlackNotifySecretInfo() {
+  const paths = getSlackNotifyPaths();
+  return slackNotifySettings.readMaskedSecrets({ fs, filePath: paths.secretsEnvFilePath });
+}
+
+function getSlackNotifyStatus() {
+  const config = getSlackNotifyPrefs();
+  const secrets = getSlackNotifySecrets();
+  const ready = slackNotifySettings.readiness(config, secrets);
+  // The UI needs these four apart, not collapsed: a stored-but-unusable
+  // credential, a usable one with sending switched off, and a fully live
+  // channel are three different things to say to the user.
+  const state = slackNotifySettings.describeTransport(config, secrets);
+  return {
+    credentialsPresent: state.credentialsPresent,
+    transportConfigured: !!state.transport,
+    transportReason: state.reason || "",
+    stored: state.stored,
+    enabled: config.enabled === true,
+    // `configured` remains as a compatibility alias, but means transport
+    // readiness rather than the master switch. `ready` is the live state.
+    configured: !!state.transport,
+    ready: ready.ready === true,
+    reason: ready.ready ? "ready" : (ready.reason || ""),
+    message: ready.message || "",
+    // From describeTransport, not readiness: readiness reports no transport
+    // whenever sending is switched off, which would contradict
+    // transportConfigured above and leave the card unable to name the
+    // credential it is about to use.
+    transport: state.transport,
+    notifyOnDone: config.notifyOnDone === true,
+    notifyOnError: config.notifyOnError === true,
+    notifyOnPermission: config.notifyOnPermission === true,
+    outputMode: config.outputMode,
+    secretsStored: !!(secrets.webhookUrl || secrets.botToken),
+    webhookConfigured: !!secrets.webhookUrl,
+    botTokenConfigured: !!secrets.botToken,
+  };
+}
+
+function broadcastSlackNotifyStatus() {
+  broadcastSettingsWindow("remoteApproval:status-changed", {
+    channel: "slack",
+    status: getSlackNotifyStatus(),
+  });
+}
+
+function writeSlackNotifySecrets(secrets) {
+  const paths = getSlackNotifyPaths();
+  const result = slackNotifySettings.writeSecretsEnvFile({
+    fs,
+    path,
+    filePath: paths.secretsEnvFilePath,
+    secrets,
+    platform: process.platform,
+  });
+  if (result && result.status === "ok") {
+    slackNotifyConfigRevision += 1;
+    broadcastSlackNotifyStatus();
+  }
+  return result;
+}
+
+function getSlackNotifyClient() {
+  if (!slackNotifyClient) {
+    slackNotifyClient = createSlackNotifyClient({
+      getConfig: () => getSlackNotifyPrefs(),
+      getSecrets: () => getSlackNotifySecrets(),
+      getConfigRevision: () => slackNotifyConfigRevision,
+      getLang: () => _settingsController.get("lang") || lang || "en",
+      log: slackNotifyLog,
+    });
+  }
+  return slackNotifyClient;
+}
+
+async function sendSlackNotifyTest() {
+  const client = getSlackNotifyClient();
+  if (!client || typeof client.sendTest !== "function") {
+    return { status: "error", code: "not-running", message: "Slack notifier is not available" };
+  }
+  try {
+    return await client.sendTest();
+  } catch (err) {
+    return { status: "error", code: "threw", message: err && err.message ? err.message : String(err) };
+  }
+}
+
 function getTelegramApprovalTokenStatus() {
   const paths = getTelegramApprovalPaths();
   return telegramApprovalSettings.tokenStatus({
@@ -3293,6 +3464,12 @@ async function initTelegramMigrationController() {
     log: telegramApprovalLog,
   });
 
+  // Seed before publishing the controller. If Settings changes the recipient
+  // while init awaits native startup, the subscription below must recognize
+  // that first edit as an identity change and queue reconciliation behind init.
+  telegramApprovalIdentitySignature = buildTelegramApprovalIdentitySignature(
+    getTelegramApprovalPrefs()
+  );
   _telegramMigrationController = createTelegramMigrationController({
     native: nativeRunner,
     readPrefs: () => readTelegramMigrationPrefsForController(),
@@ -3357,6 +3534,8 @@ async function initTelegramMigrationController() {
   });
 
   await _telegramMigrationController.init();
+  // Re-read after init so the baseline always matches the committed Settings
+  // snapshot, including an edit that raced with native startup.
   telegramApprovalIdentitySignature = buildTelegramApprovalIdentitySignature(
     getTelegramApprovalPrefs()
   );
@@ -3794,6 +3973,7 @@ const holidayAccessoryRuntime = createHolidayAccessoryRuntime({
   getSettingsSnapshot: () => _settingsController.getSnapshot(),
   getActiveTheme: () => getActiveTheme(),
   sendToRenderer,
+  onAccessoryChange: syncHitWin,
   logWarn: console.warn,
 });
 
@@ -3838,6 +4018,7 @@ const settingsEffectRouter = createSettingsEffectRouter({
   exitMiniMode: () => exitMiniMode(),
   getMiniMode: () => _mini.getMiniMode(),
   getActiveTheme: () => getActiveTheme(),
+  syncHitWin,
   // #509: re-rest the pet on the newly selected idle visual right away, but
   // only while actually idle — task/sleep/mini states pick it up on their
   // next natural revert instead.
@@ -3872,6 +4053,10 @@ _settingsController.subscribeKey("feishuApproval", () => {
     getFeishuApprovalSecrets()
   ));
   queueFeishuApprovalSync("settings");
+});
+_settingsController.subscribeKey("slackNotify", () => {
+  slackNotifyConfigRevision += 1;
+  broadcastSlackNotifyStatus();
 });
 _settingsController.subscribeKey("mobilePreviewEnabled", async (enabled) => {
   if (enabled) {
@@ -4270,6 +4455,7 @@ function createWindow() {
     moveWindowForDrag: () => moveWindowForDrag(),
     setIdlePaused: (value) => { idlePaused = !!value; },
     setLowPowerIdlePaused,
+    setAccessoryMirror: setAccessoryMirrored,
     isMiniTransitioning: () => _mini.getMiniTransitioning(),
     getCurrentState: () => _state.getCurrentState(),
     getCurrentSvg: () => _state.getCurrentSvg(),
@@ -4341,17 +4527,21 @@ function createWindow() {
   startHttpServer().then((port) => {
     if (port == null) return;
     const restoredSessionIds = restoreSessionsFromRecoveryLeases(_state, {
-      isAgentEnabled: (agentId) => {
-        const snapshot = { agents: _settingsController.get("agents") };
-        return _isAgentEnabled(snapshot, agentId)
-          && _isAgentIntegrationInstalled(snapshot, agentId);
-      },
+      isAgentEnabled: (agentId) => (
+        _runtimeAgentGate.isAgentEnabled(agentId)
+        && _runtimeAgentGate.isAgentIntegrationInstalled(agentId)
+      ),
     });
     if (restoredSessionIds.length > 0) {
       const recoveredSnapshot = _state.buildSessionSnapshot();
       reconcilePowerSaveBlocker();
       broadcastDashboardSessionSnapshot(recoveredSnapshot);
       broadcastSessionHudSnapshot(recoveredSnapshot);
+      // The Slack notifier is not on the broadcast above, so without this its
+      // first snapshot would be some later event — which its priming branch
+      // swallows, losing the first completion after a restart. Prime it with
+      // what is already history instead.
+      try { getSlackNotifyClient().prime(recoveredSnapshot); } catch {}
       if (!doNotDisturb && !_mini.getMiniMode()) {
         const recoveredState = resolveDisplayState();
         applyState(recoveredState, getSvgOverride(recoveredState));
@@ -4369,6 +4559,11 @@ function createWindow() {
   // Also handles crash recovery (render-process-gone → reload)
   win.webContents.on("did-start-loading", () => {
     setLowPowerIdlePaused(false);
+    // A fresh document draws upright: no .mini-left class, no inline scale on
+    // the direction stage. Keeping the old facing here would leave the hit
+    // window mirrored against an unmirrored pet until something happens to
+    // make the renderer report again.
+    setAccessoryMirrored(false);
   });
   win.webContents.on("did-finish-load", () => {
     sendToRenderer("theme-config", buildRendererThemeConfig());
@@ -4735,7 +4930,7 @@ if (!gotTheLock) {
       const verdict = getCodexHookHealth({ prefs: snapshot });
       const prevSignature = _settingsController.get("codexHookHealthLastNotified") || "";
       const decision = decideCodexHookNotification(verdict, prevSignature, {
-        codexEnabled: _isAgentEnabled(snapshot, "codex"),
+        codexEnabled: _runtimeAgentGate.isAgentEnabled("codex"),
         notifyEnabled: _settingsController.get("codexHookHealthNotifyEnabled") !== false,
       });
       if (decision.nextSignature !== prevSignature) {

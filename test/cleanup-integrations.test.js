@@ -299,10 +299,14 @@ describe("cleanupIntegrations", () => {
       assert.ok(codewhale.includes('command = "echo user-hook"'));
 
       const opencode = readJson(opencodePath);
-      assert.deepStrictEqual(opencode.plugin, [
-        "/somewhere/opencode-plugin",
-        "opencode-wakatime",
-      ]);
+      // #825 behavior change: opencode now routes through the shared JSONC
+      // editor, so uninstall claims exactly what install claims — an exact
+      // path match OR an ABSOLUTE path whose basename is the managed plugin
+      // dir. "/somewhere/opencode-plugin" is a stale Clawd install location
+      // (register rewrites it in place, hooks/opencode-family-install.js:150),
+      // so leaving it behind was residue Clawd itself created. Third-party
+      // npm specifiers are never absolute paths and stay untouched.
+      assert.deepStrictEqual(opencode.plugin, ["opencode-wakatime"]);
       assert.strictEqual(listCleanupBackups(path.dirname(opencodePath)).length, 1);
 
       const kiroTeam = readJson(kiroTeamPath);

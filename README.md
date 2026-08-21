@@ -10,9 +10,11 @@
   <a href="README.ko-KR.md">한국어</a>
   ·
   <a href="README.ja-JP.md">日本語</a>
+  ·
+  <a href="README.es.md">Español</a>
 </p>
 <p align="center">
-  <sub>🌏 Don't see your language? <a href="https://github.com/rullerzhou-afk/clawd-on-desk/pulls">Open a PR</a> to add one — Español, Français, Deutsch, etc. all welcome.</sub>
+  <sub>🌏 Don't see your language? <a href="https://github.com/rullerzhou-afk/clawd-on-desk/pulls">Open a PR</a> to add one — Français, Deutsch, etc. all welcome.</sub>
 </p>
 <p align="center">
   <a href="https://github.com/rullerzhou-afk/clawd-on-desk/releases"><img src="https://img.shields.io/github/v/release/rullerzhou-afk/clawd-on-desk" alt="Version"></a>
@@ -48,10 +50,10 @@ Thinking when you prompt, typing when tools run, grooving or juggling for subage
 - **Kiro CLI** — optional command hooks injected into custom agent configs under `~/.kiro/agents/`, plus an auto-created `clawd` agent that is re-synced from Kiro's built-in `kiro_default` after you install the integration, so you can opt into hooks with minimal behavior drift via `kiro-cli --agent clawd` or `/agent swap clawd`. State hooks are verified on macOS and Windows.
 - **Kimi Code CLI (Kimi-CLI)** — optional command hooks via `~/.kimi/config.toml` (`[[hooks]]` entries) (install from Settings → Agents or run `npm run install:kimi-hooks`)
 - **Qwen Code** — optional command hooks via `~/.qwen/settings.json` (install from Settings → Agents or run `npm run install:qwen-hooks`); state tracking and Qwen `PermissionRequest` desktop approval bubbles are supported
-- **ZCode** — optional state-only hooks via `~/.zcode/cli/config.json` → `hooks.events.*` (install from Settings → Agents or run `npm run install:zcode-hooks`); Phase 1 drives session, prompt, tool, failure, and completion animations without intercepting ZCode permissions. Clawd preserves explicit global or per-hook `enabled:false` settings
+- **ZCode** — optional state + blocking `PermissionRequest` hooks via `~/.zcode/cli/config.json` → `hooks.events.*` (install from Settings → Agents or run `npm run install:zcode-hooks`); Clawd shows manual Allow/Deny bubbles while global and per-session permission automation stays deferred. Clawd preserves explicit global or per-hook `enabled:false` settings and will not register over a foreign `PermissionRequest` hook
 - **CodeWhale** — optional state-only lifecycle hooks via `~/.codewhale/config.toml` (`[[hooks.hooks]]` entries) (install from Settings → Agents or run `npm run install:codewhale-hooks`); Phase 1 drives idle, thinking, working, sleeping, error, attention, and sweeping animations only, without permission bubbles or subagent tracking
 - **Reasonix CLI** — optional state-only command hooks via `<Reasonix home>/settings.json` (`~/.reasonix/settings.json` on macOS/Linux, `%APPDATA%\reasonix\settings.json` on Windows; install from Settings → Agents or run `npm run install:reasonix-hooks`); Phase 1 drives lifecycle, tool, notification, compaction, and subagent-stop animations while leaving permission decisions in Reasonix's own terminal flow
-- **opencode** — optional [plugin integration](https://opencode.ai/docs/plugins) via `~/.config/opencode/opencode.json` (install from Settings → Agents or run `node hooks/opencode-install.js`); zero-latency event streaming and permission bubbles with Allow/Always/Deny. Child sessions spawned by the `task` tool are headless and do not participate in the visible multi-session animation fanout
+- **opencode** — optional [plugin integration](https://opencode.ai/docs/plugins) via the effective file under `~/.config/opencode/` (`config.json` → `opencode.json` → `opencode.jsonc`, later wins) (install from Settings → Agents or run `node hooks/opencode-install.js`); zero-latency event streaming and permission bubbles with Allow/Always/Deny. Child sessions spawned by the `task` tool are headless and do not participate in the visible multi-session animation fanout
 - **MiMo Code** — optional [plugin integration](https://opencode.ai/docs/plugins) via the effective file under `~/.config/mimocode/` (`config.json` → `mimocode.json` → default `mimocode.jsonc`, later wins; install from Settings → Agents or run `npm run install:mimocode-plugin`); shares the same `@mimo-ai/plugin` SDK and permission behavior as opencode. Its `task` child sessions are likewise headless
 - **Pi** — optional global extension via `~/.pi/agent/extensions/clawd-on-desk` (install from Settings → Agents or run `npm run install:pi-extension`); state-only interactive lifecycle and tool activity updates while preserving Pi's default YOLO behavior
 - **OpenClaw** — optional state-only plugin integration via `~/.openclaw/openclaw.json` (install from Settings → Agents or run `npm run install:openclaw-plugin`; OpenClaw also needs an initialized config); local `openclaw tui --local` sessions drive Clawd animations, without permission bubbles or terminal focus in Phase 1
@@ -82,6 +84,10 @@ Thinking when you prompt, typing when tools run, grooving or juggling for subage
 - **Auto-dismiss** — if you answer in the terminal first, the bubble disappears automatically
 - **Per-agent toggle** — open `Settings…` → `Agents`, pick an agent, and turn off `Show pop-up bubbles` to keep prompts in that agent's own terminal/TUI
 
+### Remote Notifications
+- **Telegram / Feishu (Lark)** — interactive remote approval: route permission requests to your phone and Allow/Deny them without touching the desktop
+- **Slack** — **notification-only**: task **done**, **errors**, and **permission requests** are pushed via a Slack Incoming Webhook (or an optional `xoxb-` bot token + channel id) as rich Block Kit cards. Slack cannot Allow or Deny in this version — a permission message is an announcement, and you decide in the desktop app. Configure it next to Telegram/Feishu in the remote approval channels; secrets are stored locally in an env file outside prefs (`0600` on macOS/Linux; Windows relies on the AppData ACL), and everything degrades gracefully when unconfigured or offline. Messages can carry the session title, folder, and host name, so a **private channel is recommended** — see [slack-notifications.md](docs/guides/slack-notifications.md)
+
 ### Session Intelligence
 - **Multi-session tracking** — sessions across all agents resolve to the highest-priority state
 - **Subagent awareness** — headphones groove for 1 subagent, three-ball juggling for 2+
@@ -103,10 +109,10 @@ Thinking when you prompt, typing when tools run, grooving or juggling for subage
 - **Position memory** — Clawd remembers where you left it across restarts (including mini mode)
 - **Single instance lock** — prevents duplicate Clawd windows
 - **Auto-start** — Claude Code's SessionStart hook can launch Clawd automatically if it's not running
-- **Do Not Disturb** — right-click or tray menu to enter sleep mode; all hook events are silenced until you wake Clawd. Permission bubbles are suppressed during DND — Codex, opencode, and MiMo Code fall back to their native prompts, while Claude Code and CodeBuddy fall back to their built-in permission flow. WorkBuddy uses state + Notification only; Antigravity and Pi are state-only integrations.
+- **Do Not Disturb** — right-click or tray menu to enter sleep mode; the pet stops reacting until you wake Clawd. DND suppresses things that ask you to act, not status: remote **completion** notifications (Telegram/Slack) still arrive, since they are the point of walking away. Permission bubbles are suppressed during DND — Codex, opencode, and MiMo Code fall back to their native prompts, while Claude Code and CodeBuddy fall back to their built-in permission flow. WorkBuddy uses state + Notification only; Antigravity and Pi are state-only integrations.
 - **Sound effects** — short audio cues on task completion and permission requests (toggle via the system tray or Settings; 10s cooldown, auto-muted during DND)
 - **System tray** — DND mode, auto-start, check for updates
-- **i18n** — English, Simplified Chinese, Traditional Chinese, Korean, Japanese, and Brazilian Portuguese UI; switch in Settings → General
+- **i18n** — English, Simplified Chinese, Traditional Chinese, Korean, Japanese, Brazilian Portuguese, and Spanish UI; switch in Settings → General
 - **Auto-update** — checks GitHub releases; Windows installs NSIS updates on quit, macOS/Linux `git pull` + restart when running from a cloned repo
 
 ## Animations
@@ -357,7 +363,10 @@ Thanks to everyone who has helped make Clawd better:
     <td align="center" valign="top" width="110"><a href="https://github.com/anthonyonazure"><img src="https://github.com/anthonyonazure.png" width="50" style="border-radius:50%" /><br /><sub>anthonyonazure</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/weed33834"><img src="https://github.com/weed33834.png" width="50" style="border-radius:50%" /><br /><sub>weed33834</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/arismarioneves"><img src="https://github.com/arismarioneves.png" width="50" style="border-radius:50%" /><br /><sub>arismarioneves</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/wang4433"><img src="https://github.com/wang4433.png" width="50" style="border-radius:50%" /><br /><sub>wang4433</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/shengmai-justin"><img src="https://github.com/shengmai-justin.png" width="50" style="border-radius:50%" /><br /><sub>shengmai-justin</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/aaronWool"><img src="https://github.com/aaronWool.png" width="50" style="border-radius:50%" /><br /><sub>aaronWool</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/Zamaniego"><img src="https://github.com/Zamaniego.png" width="50" style="border-radius:50%" /><br /><sub>Zamaniego</sub></a></td>
   </tr>
 </table>
 

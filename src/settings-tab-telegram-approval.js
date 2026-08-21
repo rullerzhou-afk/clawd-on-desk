@@ -63,6 +63,21 @@
     lark: "https://open.larksuite.com/api-explorer?project=contact&resource=user&apiName=batch_get_id&version=v3",
   });
 
+  const TELEGRAM_VERIFICATION_ERROR_KEYS = Object.freeze({
+    "401": "telegramApprovalVerificationInvalidToken",
+    "403": "telegramApprovalVerificationForbidden",
+    "400": "telegramApprovalVerificationInvalidRecipient",
+    no_chat: "telegramApprovalVerificationInvalidRecipient",
+    "409_conflict": "telegramApprovalVerificationPollingConflict",
+    "409_webhook": "telegramApprovalVerificationWebhookConflict",
+    "429": "telegramApprovalVerificationRateLimited",
+    network: "telegramApprovalVerificationNetwork",
+    timeout: "telegramApprovalVerificationTimeout",
+    token_missing: "telegramApprovalVerificationTokenMissing",
+    "native-start-failed": "telegramApprovalVerificationApplyFailed",
+    "apply-failed": "telegramApprovalVerificationApplyFailed",
+  });
+
   // Stable failure codes -> localized, brand-aware copy. The readiness() reasons
   // (disabled / missing-secret / invalid-config / invalid-secret / not-running)
   // used to fall through to main's raw English message, which named Feishu and
@@ -153,6 +168,27 @@
 
   function t(key) {
     return helpers.t(key);
+  }
+
+  function telegramVerificationFailureMessage(source) {
+    const failure = source && typeof source === "object" ? source : {};
+    const outcome = typeof failure.failureOutcome === "string"
+      ? failure.failureOutcome
+      : "";
+    const errorCode = typeof failure.errorCode === "string"
+      ? failure.errorCode
+      : "";
+    if (outcome === "timeout") {
+      return t("telegramApprovalVerificationTimeout");
+    }
+    const key = Object.prototype.hasOwnProperty.call(TELEGRAM_VERIFICATION_ERROR_KEYS, errorCode)
+      ? TELEGRAM_VERIFICATION_ERROR_KEYS[errorCode]
+      : "";
+    if (key) return t(key);
+    if (outcome === "native-start-failed") {
+      return t("telegramApprovalVerificationApplyFailed");
+    }
+    return t("telegramApprovalCardFailed");
   }
 
   function feishuBrand(platform) {
@@ -568,6 +604,8 @@
       s.reason || "",
       s.message || "",
       s.tokenStored === true ? "1" : "0",
+      s.errorCode || "",
+      s.failureOutcome || "",
     ].join("");
   }
 
@@ -628,6 +666,8 @@
     refreshTokenInfo();
     refreshFeishuStatus();
     refreshFeishuSecretInfo();
+    refreshSlackStatus();
+    refreshSlackSecretInfo();
     // The native-only snapshot controls both the upgrade gate and the Step-3
     // enable switch, so keep it live even while another status request is in
     // flight.
@@ -653,6 +693,7 @@
     // page can stay tidy as external approval channels grow.
     parent.appendChild(buildTelegramChannelCard());
     parent.appendChild(buildFeishuChannelCard());
+    parent.appendChild(buildSlackChannelCard());
   }
 
   function buildSubtabSwitcher() {
@@ -687,6 +728,11 @@
     if (!payload) return false;
     if (payload.channel === "feishu") {
       refreshFeishuStatus({ forceRender: true });
+      return true;
+    }
+    if (payload.channel === "slack") {
+      refreshSlackStatus({ forceRender: true });
+      refreshSlackSecretInfo({ forceRender: true });
       return true;
     }
     if (payload.channel === "telegram") {
@@ -1005,22 +1051,31 @@
     return "incomplete";
   }
 
+  function telegramMissingSetupMessage() {
+    const s = view.status || {};
+    const tokenOk = !!(view.tokenInfo && view.tokenInfo.configured) || s.tokenStored === true;
+    const cfg = currentConfig();
+    const recipientOk = !!(cfg.allowedTgUserId && cfg.targetSessionKey);
+    if (!tokenOk && !recipientOk) return t("telegramApprovalCardMissingBoth");
+    if (!tokenOk) return t("telegramApprovalCardMissingToken");
+    if (!recipientOk) return t("telegramApprovalCardMissingRecipient");
+    return "";
+  }
+
   function deriveCardMessage(kind) {
     const s = view.status || {};
     if (kind === "failed") {
-      return s.message || t("telegramApprovalCardFailed");
+      if (s.configured !== true) {
+        const missingSetup = telegramMissingSetupMessage();
+        if (missingSetup) return missingSetup;
+      }
+      return telegramVerificationFailureMessage(s);
     }
     if (kind === "running") return t("telegramApprovalCardRunning");
     if (kind === "starting") return t("telegramApprovalCardStarting");
     if (kind === "ready") return t("telegramApprovalCardReadyToEnable");
     // incomplete — pick the most actionable missing piece
-    const tokenOk = !!(view.tokenInfo && view.tokenInfo.configured) || s.tokenStored === true;
-    const cfg = currentConfig();
-    const recipientOk = !!cfg.allowedTgUserId;
-    if (!tokenOk && !recipientOk) return t("telegramApprovalCardMissingBoth");
-    if (!tokenOk) return t("telegramApprovalCardMissingToken");
-    if (!recipientOk) return t("telegramApprovalCardMissingRecipient");
-    return t("telegramApprovalCardReadyToEnable");
+    return telegramMissingSetupMessage() || t("telegramApprovalCardReadyToEnable");
   }
 
   function deriveFeishuCardKind() {
@@ -2502,6 +2557,656 @@
       String(currentFeishuConfig().connectionTimeoutSeconds)
     );
     return true;
+  }
+
+  // ── Slack (one-way notifications) ──────────────────────────────────────────
+  // Webhook / chat.postMessage are stateless, so this card is simpler than the
+  // Feishu one: no platform switch, no connection timeout, and no "starting"
+  // poll — a config is either usable ("configured") or not. Slack cannot resolve
+  // approvals here (webhook is one-way); it only sends done/error/permission
+  // pings.
+  const slackView = {
+    status: null,
+    statusSeq: 0,
+    statusLoading: false,
+    statusForceRenderPending: false,
+    secretInfo: null,
+    secretInfoSeq: 0,
+    secretInfoLoading: false,
+    secretInfoForceRenderPending: false,
+    secretPending: false,
+    secretEditing: false,
+    configPending: false,
+    testPending: false,
+    formDraft: null,
+    formDirty: { webhookUrl: false, botToken: false, channelId: false },
+  };
+
+  function currentSlackConfig() {
+    const cfg = state.snapshot && state.snapshot.slackNotify;
+    return {
+      enabled: !!(cfg && cfg.enabled),
+      channelId: cfg && typeof cfg.channelId === "string" ? cfg.channelId : "",
+      notifyOnDone: !cfg || cfg.notifyOnDone !== false,
+      notifyOnError: !cfg || cfg.notifyOnError !== false,
+      notifyOnPermission: !cfg || cfg.notifyOnPermission !== false,
+      outputMode: cfg && cfg.outputMode === "full" ? "full" : "off",
+    };
+  }
+
+  function getSlackFormDraft() {
+    if (!slackView.formDraft) {
+      slackView.formDraft = {
+        webhookUrl: "",
+        botToken: "",
+        channelId: currentSlackConfig().channelId,
+      };
+    }
+    const savedChannelId = currentSlackConfig().channelId;
+    if (slackView.formDirty.channelId && slackView.formDraft.channelId.trim() === savedChannelId) {
+      // The settings broadcast has caught up with a successful write (or the
+      // user typed the already-saved value). The draft is pristine again.
+      slackView.formDraft.channelId = savedChannelId;
+      slackView.formDirty.channelId = false;
+    } else if (!slackView.formDirty.channelId) {
+      // Keep an untouched field in sync with store updates. Secret inputs are
+      // replacement-only and intentionally stay blank until the user types.
+      slackView.formDraft.channelId = savedChannelId;
+    }
+    return slackView.formDraft;
+  }
+
+  function setSlackFormDraftValue(field, value) {
+    getSlackFormDraft()[field] = String(value == null ? "" : value);
+    slackView.formDirty[field] = true;
+  }
+
+  function clearSubmittedSlackSecretDraft(payload) {
+    const draft = getSlackFormDraft();
+    for (const field of ["webhookUrl", "botToken"]) {
+      if (!Object.prototype.hasOwnProperty.call(payload, field)) continue;
+      if (draft[field].trim() === payload[field]) {
+        draft[field] = "";
+        slackView.formDirty[field] = false;
+      }
+    }
+  }
+
+  function slackStatusRenderKey(status) {
+    const s = status && typeof status === "object" ? status : {};
+    return [
+      s.enabled === true ? "1" : "0",
+      s.ready === true ? "1" : "0",
+      s.transportConfigured === true ? "1" : "0",
+      s.configured === true ? "1" : "0",
+      s.credentialsPresent === true ? "1" : "0",
+      s.reason || "",
+      s.transport || "",
+      s.secretsStored === true ? "1" : "0",
+      s.webhookConfigured === true ? "1" : "0",
+      s.botTokenConfigured === true ? "1" : "0",
+    ].join("");
+  }
+
+  function slackSecretInfoRenderKey(info) {
+    const i = info && typeof info === "object" ? info : {};
+    return [i.configured === true ? "1" : "0", i.webhookUrl || "", i.botToken || ""].join("");
+  }
+
+  // Gate the first paint on a meaningful status, exactly like Feishu: an empty
+  // {status:"ok"} with no state must NOT trigger a repaint, or every render
+  // churns one extra frame before anything is configured.
+  function slackStatusNeedsRender(status) {
+    const s = status && typeof status === "object" ? status : {};
+    return !!(
+      s.ready === true
+      || s.transportConfigured === true
+      || s.configured === true
+      || s.credentialsPresent === true
+      || s.secretsStored === true
+      || s.enabled === true
+    );
+  }
+
+  function slackSecretInfoNeedsRender(info) {
+    return !!(info && info.configured);
+  }
+
+  function refreshSlackStatus({ forceRender = false } = {}) {
+    if (slackView.statusLoading) {
+      if (forceRender) slackView.statusForceRenderPending = true;
+      return;
+    }
+    slackView.statusLoading = true;
+    const seq = ++slackView.statusSeq;
+    callCommand("slackNotify.status").then((result) => {
+      if (seq !== slackView.statusSeq) return;
+      slackView.statusLoading = false;
+      const previousStatus = slackView.status;
+      const hadStatus = !!previousStatus;
+      const updated = result && result.status === "ok";
+      const nextStatus = updated ? result.state || null : previousStatus;
+      const shouldForceRender = forceRender || slackView.statusForceRenderPending;
+      slackView.statusForceRenderPending = false;
+      const changed = updated && slackStatusRenderKey(previousStatus) !== slackStatusRenderKey(nextStatus);
+      if (updated) slackView.status = result.state || null;
+      const initialVisibleChange = !hadStatus && slackStatusNeedsRender(nextStatus);
+      if ((shouldForceRender || (updated && (initialVisibleChange || (hadStatus && changed)))) && state.activeTab === "telegram-approval") {
+        ops.requestRender({ content: true });
+      }
+    });
+  }
+
+  function refreshSlackSecretInfo({ forceRender = false } = {}) {
+    if (slackView.secretInfoLoading) {
+      if (forceRender) slackView.secretInfoForceRenderPending = true;
+      return;
+    }
+    slackView.secretInfoLoading = true;
+    const seq = ++slackView.secretInfoSeq;
+    callCommand("slackNotify.secretInfo").then((result) => {
+      if (seq !== slackView.secretInfoSeq) return;
+      slackView.secretInfoLoading = false;
+      const previous = slackView.secretInfo;
+      const updated = result && result.status === "ok";
+      const next = updated ? {
+        configured: result.configured === true,
+        webhookUrl: result.webhookUrl || "",
+        botToken: result.botToken || "",
+      } : previous;
+      const shouldForceRender = forceRender || slackView.secretInfoForceRenderPending;
+      slackView.secretInfoForceRenderPending = false;
+      const changed = updated && slackSecretInfoRenderKey(previous) !== slackSecretInfoRenderKey(next);
+      if (updated) slackView.secretInfo = next;
+      const initialVisibleChange = !previous && slackSecretInfoNeedsRender(next);
+      if ((shouldForceRender || (updated && (initialVisibleChange || (previous && changed)))) && state.activeTab === "telegram-approval") {
+        ops.requestRender({ content: true });
+      }
+    });
+  }
+
+  // A configured transport and an active notifier are different states. Keep
+  // the transport/configured fallbacks for older main-process payloads while
+  // preferring the explicit transportConfigured + ready axes.
+  function slackTransportConfigured() {
+    const s = slackView.status || {};
+    if (typeof s.transportConfigured === "boolean") return s.transportConfigured;
+    if (s.transport === "webhook" || s.transport === "bot") return true;
+    return s.configured === true;
+  }
+
+  function slackReady() {
+    const s = slackView.status || {};
+    if (typeof s.ready === "boolean") return s.ready;
+    return slackTransportConfigured() && s.enabled === true;
+  }
+
+  function deriveSlackCardKind() {
+    if (slackReady()) return "running";
+    if (slackTransportConfigured()) return "ready";
+    return "incomplete";
+  }
+
+  function deriveSlackCardMessage(kind) {
+    if (kind === "running") return t("slackNotifyCardRunning");
+    if (kind === "ready") return t("slackNotifyCardReadyToEnable");
+    return t("slackNotifyCardMissingSecret");
+  }
+
+  function slackSecretsConfigured() {
+    const s = slackView.status || {};
+    return !!(slackView.secretInfo && slackView.secretInfo.configured)
+      || s.secretsStored === true || s.credentialsPresent === true;
+  }
+
+  // Which credential is actually carrying messages right now — a saved webhook
+  // silently outranks a saved bot token, which is confusing without a label.
+  function slackTransportLine() {
+    const s = slackView.status || {};
+    if (s.transport === "webhook") return t("slackNotifyTransportWebhook");
+    if (s.transport === "bot") return t("slackNotifyTransportBot");
+    return t("slackNotifyTransportNone");
+  }
+
+  function buildSlackChannelCard() {
+    const kind = deriveSlackCardKind();
+    const defaultCollapsed = kind === "running";
+    return helpers.buildCollapsibleGroup({
+      id: "remote-approval.slack",
+      headerContent: buildChannelHeader(t("slackNotifyChannelName"), kind),
+      defaultCollapsed,
+      className: "remote-approval-channel-card slack-notify-channel-card",
+      children: [
+        buildChannelStatusRow(kind, deriveSlackCardMessage(kind)),
+        buildSlackOneWayNoticeRow(),
+        helpers.buildSection(t("slackNotifyStep1Title"), [buildSlackSecretsRow()]),
+        helpers.buildSection(t("slackNotifyStep2Title"), [buildSlackChannelIdRow()]),
+        buildSlackStep3Section(),
+        helpers.buildSection(t("slackNotifyStep4Title"), [buildSlackTestRow()]),
+      ],
+    });
+  }
+
+  // The Slack card sits next to Telegram/Feishu, which DO resolve approvals
+  // remotely — so the one difference that matters has to be stated up front,
+  // above the setup steps, not buried in a per-toggle description. The second
+  // line is the privacy warning: a channel post is readable by everyone in the
+  // channel and can carry the session title, folder, and host.
+  function buildSlackOneWayNoticeRow() {
+    const row = document.createElement("div");
+    // Not tg-approval-prereq-row: that one paints its text in the error color,
+    // and "Slack is notification-only" is a permanent property of the channel,
+    // not a misconfiguration the user can fix.
+    row.className = "row slack-notify-oneway-row";
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("slackNotifyOneWayLabel");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("slackNotifyOneWayDesc");
+    const privacy = document.createElement("span");
+    privacy.className = "row-desc";
+    privacy.textContent = t("slackNotifyPrivacyDesc");
+    text.appendChild(label);
+    text.appendChild(desc);
+    text.appendChild(privacy);
+    row.appendChild(text);
+    return row;
+  }
+
+  function buildSlackSecretInput(placeholderKey, secret) {
+    const input = document.createElement("input");
+    input.type = secret ? "password" : "text";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.placeholder = t(placeholderKey);
+    input.className = "tg-approval-input";
+    return input;
+  }
+
+  function buildSlackSecretsRow() {
+    const configured = slackSecretsConfigured();
+    const info = slackView.secretInfo;
+    const row = document.createElement("div");
+    row.className = "row tg-approval-token-edit-row slack-notify-secrets-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("slackNotifySecretsLabel");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = configured ? t("slackNotifySecretsReplaceHint") : t("slackNotifySecretsHint");
+    text.appendChild(label);
+    // One line per stored credential. Previously only the webhook mask showed,
+    // so a bot-token-only setup looked unconfigured, and there was no way to
+    // tell which of two saved credentials was actually in use.
+    for (const [field, mask, clearedKey] of [
+      ["webhookUrl", info && info.webhookUrl, "slackNotifyClearedWebhook"],
+      ["botToken", info && info.botToken, "slackNotifyClearedToken"],
+    ]) {
+      if (!mask) continue;
+      const line = document.createElement("span");
+      line.className = "tg-approval-token-current";
+      line.textContent = t("slackNotifySecretsCurrent").replace("{masked}", mask);
+      const clear = document.createElement("button");
+      clear.type = "button";
+      clear.className = "soft-btn";
+      clear.textContent = t("slackNotifyClear");
+      clear.disabled = slackView.secretPending;
+      clear.addEventListener("click", () => clearSlackSecret(field, clearedKey));
+      line.appendChild(document.createTextNode(" "));
+      line.appendChild(clear);
+      text.appendChild(line);
+    }
+    // Local removal is not revocation — say so where the button is.
+    if (info && (info.webhookUrl || info.botToken)) {
+      const note = document.createElement("span");
+      note.className = "row-desc";
+      note.textContent = t("slackNotifyRevokeNote");
+      text.appendChild(note);
+    }
+    text.appendChild(desc);
+    row.appendChild(text);
+
+    const ctrl = document.createElement("div");
+    ctrl.className = "row-control tg-approval-input-row slack-notify-secrets-grid";
+    const webhookInput = buildSlackSecretInput("slackNotifyWebhookPlaceholder", true);
+    const botTokenInput = buildSlackSecretInput("slackNotifyBotTokenPlaceholder", true);
+    const draft = getSlackFormDraft();
+    webhookInput.value = draft.webhookUrl;
+    botTokenInput.value = draft.botToken;
+    webhookInput.addEventListener("input", () => setSlackFormDraftValue("webhookUrl", webhookInput.value));
+    botTokenInput.addEventListener("input", () => setSlackFormDraftValue("botToken", botTokenInput.value));
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "soft-btn accent";
+    saveBtn.textContent = slackView.secretPending ? t("slackNotifySaving") : t("slackNotifySaveSecrets");
+    saveBtn.disabled = slackView.secretPending;
+    saveBtn.addEventListener("click", () => {
+      // Only send fields the user typed; blank means "keep the stored value"
+      // (the writer preserves untouched keys), so saving a new webhook does not
+      // wipe a stored bot token. The per-credential Remove buttons clear the
+      // local copy; only deleting/revoking it in Slack makes it unusable to
+      // anyone else — see docs/guides/slack-notifications.md.
+      const payload = {};
+      const webhook = webhookInput.value.trim();
+      const botToken = botTokenInput.value.trim();
+      if (webhook) payload.webhookUrl = webhook;
+      if (botToken) payload.botToken = botToken;
+      if (!configured && !webhook && !botToken) {
+        ops.showToast(t("slackNotifySecretsRequired"), { error: true });
+        return;
+      }
+      if (!webhook && !botToken) {
+        ops.showToast(t("slackNotifySecretsEmpty"), { error: true });
+        return;
+      }
+      slackView.secretPending = true;
+      ops.requestRender({ content: true });
+      callCommand("slackNotify.setSecrets", payload).then((result) => {
+        slackView.secretPending = false;
+        if (!result || result.status !== "ok") {
+          ops.showToast(localizeSlackError(result), { error: true });
+          ops.requestRender({ content: true });
+          return;
+        }
+        ops.showToast(t("slackNotifySecretsSaved"));
+        clearSubmittedSlackSecretDraft(payload);
+        slackView.secretInfo = null;
+        slackView.status = null;
+        refreshSlackSecretInfo({ forceRender: true });
+        refreshSlackStatus({ forceRender: true });
+      });
+    });
+
+    ctrl.appendChild(webhookInput);
+    ctrl.appendChild(botTokenInput);
+    ctrl.appendChild(saveBtn);
+    row.appendChild(ctrl);
+    return row;
+  }
+
+  // An explicit empty string is the backend's "clear this field" signal. The
+  // save path only sends fields you typed into, which is why a stored webhook
+  // could not be removed — or switched away from — without editing the file.
+  function clearSlackSecret(field, toastKey) {
+    slackView.secretPending = true;
+    ops.requestRender({ content: true });
+    callCommand("slackNotify.setSecrets", { [field]: "" }).then((result) => {
+      slackView.secretPending = false;
+      if (!result || result.status !== "ok") {
+        ops.showToast(localizeSlackError(result), { error: true });
+        ops.requestRender({ content: true });
+        return;
+      }
+      ops.showToast(t(toastKey));
+      // This removes the stored credential shown by the masked status line; it
+      // does not submit the replacement input beside it. Keep that unsaved
+      // draft intact across the status refresh.
+      slackView.secretInfo = null;
+      slackView.status = null;
+      refreshSlackSecretInfo({ forceRender: true });
+      refreshSlackStatus({ forceRender: true });
+    });
+  }
+
+  // Stable codes from the main process become sentences here. Reporting every
+  // failure as "Slack rejected the message" told the user nothing actionable.
+  function localizeSlackError(result) {
+    const code = result && (result.code || result.errorClass);
+    const byCode = {
+      "not-found": "slackNotifyErrNotFound",
+      unauthorized: "slackNotifyErrUnauthorized",
+      "rate-limited": "slackNotifyErrRateLimited",
+      network: "slackNotifyErrNetwork",
+      timeout: "slackNotifyErrNetwork",
+      "invalid-webhook": "slackNotifyErrInvalidWebhook",
+      "invalid-bot-token": "slackNotifyErrInvalidToken",
+      "slack-missing_scope": "slackNotifyErrMissingScope",
+      "slack-channel_not_found": "slackNotifyErrChannelNotFound",
+      "slack-not_in_channel": "slackNotifyErrNotInChannel",
+      "write-failed": "slackNotifySecretsSaveFailed",
+    };
+    if (byCode[code]) return t(byCode[code]);
+    const detail = result && result.message ? ` (${result.message})` : "";
+    return t("slackNotifyTestFailed") + detail;
+  }
+
+  function buildSlackChannelIdRow() {
+    const cfg = currentSlackConfig();
+    const row = document.createElement("div");
+    row.className = "row tg-approval-recipient-row slack-notify-channel-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("slackNotifyChannelIdLabel");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("slackNotifyChannelIdHint");
+    text.appendChild(label);
+    text.appendChild(desc);
+    row.appendChild(text);
+
+    const ctrl = document.createElement("div");
+    ctrl.className = "row-control tg-approval-input-row";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.placeholder = t("slackNotifyChannelIdPlaceholder");
+    input.className = "tg-approval-input";
+    input.value = getSlackFormDraft().channelId;
+    input.addEventListener("input", () => setSlackFormDraftValue("channelId", input.value));
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "soft-btn accent";
+    saveBtn.textContent = slackView.configPending ? t("slackNotifySaving") : t("slackNotifySaveChannel");
+    saveBtn.disabled = slackView.configPending;
+    saveBtn.addEventListener("click", () => {
+      const channelId = input.value.trim();
+      saveSlackConfig({ ...currentSlackConfig(), channelId }).then((saved) => {
+        // The field remains editable while the async write is pending. Do not
+        // replace a newer draft when the earlier request eventually succeeds.
+        if (saved && getSlackFormDraft().channelId.trim() === channelId) {
+          slackView.formDraft.channelId = channelId;
+          slackView.formDirty.channelId = currentSlackConfig().channelId !== channelId;
+        }
+      });
+    });
+
+    ctrl.appendChild(input);
+    ctrl.appendChild(saveBtn);
+    row.appendChild(ctrl);
+    return row;
+  }
+
+  function buildSlackStep3Section() {
+    const ready = slackTransportConfigured();
+    const rows = [];
+    if (!ready) rows.push(buildSlackPrerequisitesRow());
+    rows.push(buildSlackEnabledRow({ ready }));
+    rows.push(buildSlackSwitchRow("slackNotifyEventDone", "slackNotifyEventDoneDesc", currentSlackConfig().notifyOnDone, (value) =>
+      saveSlackConfig({ ...currentSlackConfig(), notifyOnDone: value })));
+    rows.push(buildSlackSwitchRow("slackNotifyEventError", "slackNotifyEventErrorDesc", currentSlackConfig().notifyOnError, (value) =>
+      saveSlackConfig({ ...currentSlackConfig(), notifyOnError: value })));
+    rows.push(buildSlackSwitchRow("slackNotifyEventPermission", "slackNotifyEventPermissionDesc", currentSlackConfig().notifyOnPermission, (value) =>
+      saveSlackConfig({ ...currentSlackConfig(), notifyOnPermission: value })));
+    rows.push(buildSlackSwitchRow("slackNotifyOutputMode", "slackNotifyOutputModeDesc", currentSlackConfig().outputMode === "full", (value) =>
+      saveSlackConfig({ ...currentSlackConfig(), outputMode: value ? "full" : "off" })));
+    return helpers.buildSection(t("slackNotifyStep3Title"), rows);
+  }
+
+  function buildSlackPrerequisitesRow() {
+    const row = document.createElement("div");
+    row.className = "row tg-approval-prereq-row";
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("slackNotifyPrereqLabel");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("slackNotifyPrereqDesc");
+    text.appendChild(label);
+    text.appendChild(desc);
+    row.appendChild(text);
+    return row;
+  }
+
+  function buildSlackEnabledRow({ ready }) {
+    const cfg = currentSlackConfig();
+    const row = document.createElement("div");
+    row.className = "row";
+    const canToggle = ready || cfg.enabled;
+    if (!canToggle) row.classList.add("tg-approval-row-disabled");
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("slackNotifyToggle");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("slackNotifyToggleDesc");
+    text.appendChild(label);
+    text.appendChild(desc);
+    row.appendChild(text);
+
+    const ctrl = document.createElement("div");
+    ctrl.className = "row-control";
+    const sw = document.createElement("div");
+    sw.className = "switch";
+    sw.setAttribute("role", "switch");
+    sw.setAttribute("tabindex", "0");
+    helpers.setSwitchVisual(sw, cfg.enabled, { pending: slackView.configPending });
+    if (!canToggle) {
+      sw.classList.add("disabled");
+      sw.setAttribute("aria-disabled", "true");
+      sw.removeAttribute("tabindex");
+    } else {
+      const toggle = () => saveSlackConfig({ ...cfg, enabled: !cfg.enabled });
+      sw.addEventListener("click", toggle);
+      sw.addEventListener("keydown", (ev) => {
+        if (ev.key === " " || ev.key === "Enter") { ev.preventDefault(); toggle(); }
+      });
+    }
+    ctrl.appendChild(sw);
+    row.appendChild(ctrl);
+    return row;
+  }
+
+  function buildSlackSwitchRow(labelKey, descKey, value, onToggle) {
+    const row = document.createElement("div");
+    row.className = "row";
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t(labelKey);
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t(descKey);
+    text.appendChild(label);
+    text.appendChild(desc);
+    row.appendChild(text);
+
+    const ctrl = document.createElement("div");
+    ctrl.className = "row-control";
+    const sw = document.createElement("div");
+    sw.className = "switch";
+    sw.setAttribute("role", "switch");
+    sw.setAttribute("tabindex", "0");
+    helpers.setSwitchVisual(sw, value, { pending: slackView.configPending });
+    const toggle = () => onToggle(!value);
+    sw.addEventListener("click", toggle);
+    sw.addEventListener("keydown", (ev) => {
+      if (ev.key === " " || ev.key === "Enter") { ev.preventDefault(); toggle(); }
+    });
+    ctrl.appendChild(sw);
+    row.appendChild(ctrl);
+    return row;
+  }
+
+  function buildSlackTestRow() {
+    // A usable transport is enough to test — not the enable switch, and not
+    // merely "some credential is stored". Testing the connection is the step
+    // that comes before switching sending on.
+    const ready = slackTransportConfigured();
+    const testDisabled = slackView.testPending || !ready;
+    const row = document.createElement("div");
+    row.className = "row";
+    if (!ready) row.classList.add("tg-approval-row-disabled");
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("slackNotifyTest");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = `${t("slackNotifyTestDesc")} ${slackTransportLine()}`;
+    text.appendChild(label);
+    text.appendChild(desc);
+    row.appendChild(text);
+
+    const ctrl = document.createElement("div");
+    ctrl.className = "row-control";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "soft-btn accent";
+    btn.textContent = slackView.testPending ? t("slackNotifyTesting") : t("slackNotifySendTest");
+    btn.disabled = testDisabled;
+    if (testDisabled && !slackView.testPending) btn.title = t("slackNotifyCardMissingSecret");
+    btn.addEventListener("click", () => {
+      if (testDisabled) return;
+      slackView.testPending = true;
+      ops.requestRender({ content: true });
+      callCommand("slackNotify.test").then((result) => {
+        slackView.testPending = false;
+        if (result && result.status === "ok") {
+          ops.showToast(t("slackNotifyTestSent"));
+        } else {
+          ops.showToast(localizeSlackError(result), { error: true });
+        }
+        slackView.status = null;
+        refreshSlackStatus({ forceRender: true });
+      });
+    });
+    ctrl.appendChild(btn);
+    row.appendChild(ctrl);
+    return row;
+  }
+
+  function saveSlackConfig(next, options = {}) {
+    if (!window.settingsAPI || typeof window.settingsAPI.update !== "function") {
+      ops.showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
+      return Promise.resolve(false);
+    }
+    slackView.configPending = true;
+    ops.requestRender({ content: true });
+    return window.settingsAPI.update("slackNotify", next).then((result) => {
+      slackView.configPending = false;
+      if (!result || result.status !== "ok") {
+        ops.showToast((result && result.message) || t("toastSaveFailed"), { error: true });
+        ops.requestRender({ content: true });
+        return false;
+      }
+      ops.showToast(t("slackNotifyConfigSaved"));
+      slackView.status = null;
+      refreshSlackStatus({ forceRender: true });
+      return true;
+    }).catch((err) => {
+      slackView.configPending = false;
+      ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+      ops.requestRender({ content: true });
+      return false;
+    });
   }
 
   // ── Helpers ──

@@ -107,22 +107,32 @@ Kimi Code CLI（Kimi-CLI）状态同步（hook-only，config.toml）：
     → 同上状态机（agent_id: kimi-cli）
   Hook 注册到 ~/.kimi/config.toml 的 [[hooks]] 条目；Clawd 启动时会自动同步这些条目。
 
-ZCode 状态同步（hook-only，config.json）：
-  ZCode 触发 SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / PostToolUseFailure / Stop
-    → hooks/zcode-hook.js（hook 事件 → agents/zcode.js 映射 → HTTP POST）
+ZCode 状态同步与权限审批（hook-only，config.json）：
+  状态事件 SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / PostToolUseFailure / Stop
+    → hooks/zcode-hook.js（hook 事件 → agents/zcode.js 映射 → HTTP POST /state）
     → 同上状态机（agent_id: zcode，session_id 规范化为 zcode:<raw>）
-  Hook 注册到 ~/.zcode/cli/config.json 的 hooks.events.*。Phase 1 仅同步状态，不注册 PermissionRequest；
-  ZCode 原生流程继续处理权限。显式 hooks.enabled=false 或 Clawd 单项 hook enabled=false 是用户选择，
-  启动同步 / Settings Repair 均保留，Doctor 只提示。旧版 zcode-cli 与当前 Electron Node-mode
-  Resources/glm/zcode.cjs 进程均受支持；GUI shell 只有在命令行同时含 zcode.cjs 时才会被认作 runtime。
+  权限事件 PermissionRequest（Phase 2 起）
+    → hooks/zcode-hook.js 构造权限 body（tool_name 缺失 / unknown 时 fail-closed 落回 state 路径）
+    → 长阻塞 HTTP POST /permission（等待 590s；installer 注册 per-hook timeoutMs 600000）
+    → 本地 bubble / Telegram / 飞书远程审批产生人工决定（automation 未审计，全部 defer）
+    → 有决定时 stdout 返回最小 hookSpecificOutput（allow 裸 behavior；deny 可带 message），
+      无决定 / 超时 / 断连输出 "{}" 并 exit 0，ZCode 回退原生权限流程
+  Hook 注册到 ~/.zcode/cli/config.json 的 hooks.events.*（7 个支持事件全部注册）。显式 hooks.enabled=false
+  或 Clawd 单项 hook enabled=false 是用户选择，启动同步 / Settings Repair 均保留，Doctor 只提示。
+  旧版 zcode-cli 与当前 Electron Node-mode Resources/glm/zcode.cjs 进程均受支持；GUI shell 只有在
+  命令行同时含 zcode.cjs 时才会被认作 runtime。ZCode 不进入 permission automation 白名单：
+  在工具面与会话身份审计完成前，global / per-session automation 全部 defer。prefs v14→v15 迁移翻转 Phase 1 的
+  zcode.permissionsEnabled=false 为 true。
 
 opencode 状态同步（in-process plugin，~0ms 延迟）：
   opencode 触发事件（session.created / session.status / message.part.updated 等）
-    → hooks/opencode-plugin/index.mjs（Bun 运行时，插件跑在 opencode.exe 进程内）
+    → hooks/opencode-plugin/index.mjs（CLI/TUI 运行于 Bun；Desktop sidecar 运行于 Electron utilityProcess / Node）
     → translateEvent 映射（opencode v2 事件名 → PascalCase Clawd event 名）
     → session.created 的 event.properties.info.parentID 会被记录为 child → parent 映射，child 状态上报带 headless: true
     → fire-and-forget HTTP POST 127.0.0.1:23333/state
     → 同上状态机（agent_id: opencode）
+  permission.asked 通过 plugin POST /permission 进入 Clawd；决定经随机 localhost 端口上的反向 bridge 返回，
+  CLI/TUI bridge 使用 Bun.serve，Desktop bridge 使用 node:http，再由 plugin 调用宿主 SDK 的 permission reply route。
 
 MiMo Code 状态同步（in-process plugin，~0ms 延迟）：
   MiMo Code 触发事件（session.created / session.status / message.part.updated 等）
@@ -245,7 +255,7 @@ CodeBuddy direct HTTP `PermissionRequest` 不经过 Clawd command hook，因此�
 - `agents/gemini-cli.js` — Gemini CLI hook 事件映射
 - `agents/antigravity-cli.js` — Antigravity CLI (agy) hook 事件映射（state-only，无权限气泡）
 - `agents/kimi-cli.js` — Kimi Code CLI（Kimi-CLI）hook 事件映射 + permission 分类策略
-- `agents/zcode.js` — ZCode config-file hook 事件映射（state-only，无权限气泡）
+- `agents/zcode.js` — ZCode config-file hook 事件映射与阻塞式 PermissionRequest 人工权限审批（automation 未审计，全部 defer）
 - `agents/kiro-cli.js` — Kiro CLI 事件映射（camelCase），无 HTTP hook / 无权限 / 无 subagent
 - `agents/codebuddy.js` — CodeBuddy 事件映射（PascalCase，Claude Code 兼容），支持权限
 - `agents/workbuddy.js` — WorkBuddy 事件映射（PascalCase，Claude Code 兼容），state + Notification only，无 Clawd 权限审批
@@ -267,7 +277,7 @@ CodeBuddy direct HTTP `PermissionRequest` 不经过 Clawd command hook，因此�
 
 ## Hook And Plugin Sync
 
-启动链路只会自动补齐 `integrationInstalled=true` 且 `enabled=true` 的缺失集成：
+启动链路只会自动补齐 `integrationInstalled=true` 且 `enabled=true` 的缺失集成；若 prefs 文件不可读（`locked && recovered`），内存 snapshot 只是非权威 defaults fallback，整条 prefs-backed agent runtime gate 会 fail closed，本次进程不自动同步集成、不启动 monitor、不接受 state/permission ingress，也不恢复旧 session：
 
 - `server.js` 启动后异步同步已安装且已启用的 Claude / Codex / Copilot / Gemini / Antigravity / Cursor / CodeBuddy / WorkBuddy / Kiro / Kimi / Qwen / ZCode / CodeWhale / Qoder / QoderWork / QwenWork / Reasonix hooks、opencode / MiMo Code / OpenClaw / Hermes / DeepSeek Harness plugins 和 Pi extension；Hermes 同步会先做无副作用安装探测，未安装时不创建 `~/.hermes`；DSH startup sync 不初始化缺失的 web profile，只 repair 已 opt-in 的 marker-owned entry
 - Claude hook 同步时还会扫 `DEPRECATED_CORE_HOOKS`（当前含 `WorktreeCreate`）清掉旧版本留下的过时 Clawd hook。常规所有权仍认 command 中的字面 `clawd-hook.js` marker；兼容 #852 的外部 env 间接形式时，只有“单条简单 Node 调用 + 精确 `CLAWD_HOOK_PATH` token + 唯一事件参数”，且 `settings.env.CLAWD_HOOK_PATH` 的跨平台 basename 恰为 `clawd-hook.js` 才视为 owned。复合命令、间接 env 值和第三方同事件 hook 均 fail closed。deprecated / versioned / HTTP-only / uninstall 路径删除全部 owned 命中；active state hook 则按子项位置折叠成一条，优先保留已 canonical 的命令并保留 mixed wrapper 的 matcher / 第三方 sibling。迁移不会改写 `settings.env`；严格的反注入规则只校验外部 env Node 候选，不会拒绝安装器已解析/保留的绝对路径（如含括号的 Windows 路径）。若 env-only 事件无法验证可用的绝对 Node 路径，会保留一条 env hook 而不是降级成裸 `node`；若已有 literal hook，则保留 literal 而不让不可迁移的 env duplicate 取代它
@@ -406,6 +416,6 @@ Remote SSH 有两条明确分开的 transport 路径：
 
 ## i18n
 
-- 支持 en / zh / zh-TW / ko / ja / pt-BR
+- 支持 en / zh / zh-TW / ko / ja / pt-BR / es
 - 文案集中在 `src/i18n.js`
 - 语言偏好持久化到 `clawd-prefs.json`，启动时通过 `hydrate()` 灌入 controller

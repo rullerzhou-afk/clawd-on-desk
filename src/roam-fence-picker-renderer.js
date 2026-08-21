@@ -8,6 +8,7 @@
     ko: { title: "Clawd 활동 영역 선택", hint: "드래그해 영역을 그린 뒤 안쪽을 드래그해 이동하거나 가장자리를 드래그해 크기를 조절하세요. 키보드에서는 화살표로 가운데 영역을 만들고, 화살표로 이동하며 Shift+화살표로 크기를 조절합니다. 펫 전체가 들어가야 합니다.", confirm: "이 영역 사용", cancel: "취소", tooSmall: "영역이 너무 작음" },
     ja: { title: "Clawd の活動範囲を選択", hint: "ドラッグで範囲を描き、内側をドラッグして移動、辺や角をドラッグしてサイズ変更できます。キーボードでは矢印キーで中央に範囲を作成し、矢印で移動、Shift+矢印でサイズ変更します。ペット全体が収まる必要があります。", confirm: "この範囲を使う", cancel: "キャンセル", tooSmall: "範囲が小さすぎます" },
     "pt-BR": { title: "Escolher a área de atividade do Clawd", hint: "Arraste para desenhar uma área; depois arraste por dentro para mover ou pelas bordas para redimensionar. Teclado: uma seta cria uma área central; as setas movem e Shift+setas redimensionam. O pet inteiro precisa caber.", confirm: "Usar esta área", cancel: "Cancelar", tooSmall: "Área pequena demais" },
+    es: { title: "Elegir el área de actividad de Clawd", hint: "Arrastra para dibujar un área; después arrastra dentro para moverla o desde los bordes para cambiar su tamaño. Teclado: una flecha crea un área centrada; las flechas la mueven y Mayús+flechas cambian su tamaño. La mascota debe caber por completo.", confirm: "Usar esta área", cancel: "Cancelar", tooSmall: "El área es demasiado pequeña" },
   };
   const api = window.roamFencePickerAPI;
   const geometry = window.roamFencePickerGeometry;

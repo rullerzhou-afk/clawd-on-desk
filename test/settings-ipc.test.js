@@ -1131,6 +1131,8 @@ test("settings IPC serves agent/about/update/external and remove-theme dialog he
       },
       getAllAgents: () => [
         { id: "codex", name: "Codex", eventSource: "hook", capabilities: { permission: true } },
+        { id: "claude-code", name: "Claude Code", eventSource: "hook", capabilities: {} },
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
       ],
       getHookServerPort: () => 23335,
       getRecentHookEvents: ({ agentId }) => [{
@@ -1159,7 +1161,32 @@ test("settings IPC serves agent/about/update/external and remove-theme dialog he
 
     assert.strictEqual(await ipcMain.invoke("settings:get-preview-sound-url"), "file:///preview.mp3");
     assert.deepStrictEqual(await ipcMain.invoke("settings:list-agents"), [
-      { id: "codex", name: "Codex", eventSource: "hook", capabilities: { permission: true } },
+      // #895: cleanupSuggestionExempt is derived from prefs' complete default-
+      // integration list. Both defaults must ship true, while a non-default
+      // agent must ship an explicit false before the renderer may propose
+      // removing its hooks. This three-way contract kills all-true, all-false,
+      // and Codex-only producer mutations.
+      {
+        id: "codex",
+        name: "Codex",
+        eventSource: "hook",
+        capabilities: { permission: true },
+        cleanupSuggestionExempt: true,
+      },
+      {
+        id: "claude-code",
+        name: "Claude Code",
+        eventSource: "hook",
+        capabilities: {},
+        cleanupSuggestionExempt: true,
+      },
+      {
+        id: "qwen-code",
+        name: "Qwen Code",
+        eventSource: "hook",
+        capabilities: {},
+        cleanupSuggestionExempt: false,
+      },
       {
         id: "custom-nova-ai-0123456789ab",
         name: "Nova AI",
@@ -1261,7 +1288,7 @@ test("settings IPC exposes read-only agent installation detection", async () => 
       return {
         checkedAt: options.now(),
         agents: [{ agentId: "qwen-code", detectedInstalled: true }],
-        skippedAgentIds: ["claude-code", "codex"],
+        skippedAgentIds: ["claude-code"],
       };
     },
   });
@@ -1269,10 +1296,41 @@ test("settings IPC exposes read-only agent installation detection", async () => 
   assert.deepStrictEqual(await ipcMain.invoke("settings:detect-agent-installations"), {
     checkedAt: 777,
     agents: [{ agentId: "qwen-code", detectedInstalled: true }],
-    skippedAgentIds: ["claude-code", "codex"],
+    skippedAgentIds: ["claude-code"],
   });
   assert.strictEqual(sawFs, true);
   assert.strictEqual(sawPath, true);
 
   runtime.dispose();
+});
+
+// #895 T11d: asserted through the real detector against a throwaway home, so it
+// pins the behaviour the Settings page depends on rather than which option keys
+// happen to be passed. Codex must reach the Agents tab; Claude must not, because
+// Clawd's own sync creates ~/.claude and its presence proves nothing. Settings
+// previously withheld both, and the catalog then labelled the ones it had never
+// examined as "not detected locally".
+test("settings IPC scan examines Codex locally and still withholds Claude", async () => {
+  const { detectAgentInstallations: realDetect } = require("../src/agent-installation-detector");
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-ipc-detect-"));
+  fs.mkdirSync(path.join(homeDir, ".codex"));
+  const { ipcMain, runtime } = createHarness({
+    detectAgentInstallations: (options) => realDetect({ ...options, homeDir, platform: "darwin", env: {} }),
+  });
+
+  try {
+    const report = await ipcMain.invoke("settings:detect-agent-installations");
+    const ids = report.agents.map((entry) => entry.agentId);
+
+    assert.ok(ids.includes("codex"), "Codex must be examined by the Settings scan");
+    assert.ok(!ids.includes("claude-code"), "Claude stays withheld");
+    assert.deepStrictEqual(report.skippedAgentIds, ["claude-code"]);
+
+    const codex = report.agents.find((entry) => entry.agentId === "codex");
+    assert.strictEqual(codex.detectedInstalled, true);
+    assert.strictEqual(codex.reason, "parent-dir");
+  } finally {
+    runtime.dispose();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
 });

@@ -94,8 +94,9 @@ Required all-platform checks:
   macOS installs default to pet + menu-bar accessory with no Dock tile.
 - Settings -> General / Agents / Animation & Sound render correctly in all supported
   languages, including sidebar SVG icons and the folded Animation Map subtab.
-- Settings -> About contributors include the two v0.15.0 first-time
-  contributors: `weed33834` and `arismarioneves`.
+- Settings -> About contributors include the four v0.15.0 first-time
+  contributors: `weed33834`, `arismarioneves`, `wang4433`, and
+  `shengmai-justin`.
 - Reinstall one existing hook-based agent, such as Codex, and confirm the
   packaged hook script can `require()` its dependencies.
 - Run one real Claude Code or Codex session and confirm the pet reacts to state
@@ -254,6 +255,25 @@ an artifact. It holds no long-lived PAT or repository secret; the ambient job
 to winget-pkgs. Automatic submission is deliberately not enabled yet; see the
 staged plan below.
 
+As of 2026-08-17, the upstream 0.14.0 manifest has been repaired and published by
+[`microsoft/winget-pkgs#416019`](https://github.com/microsoft/winget-pkgs/pull/416019).
+It now carries the four expected architecture/scope entries and
+`License: AGPL-3.0-only`. The former Dumplings tracker was also removed in
+[`SpecterShell/Dumplings#130`](https://github.com/SpecterShell/Dumplings/issues/130),
+so it is not currently competing with the maintainer-owned release path. The
+workflow stays prepare-only until its **generated output** is validated
+automatically; fixing the upstream shape alone is not sufficient reason to expose
+a submission token.
+
+The current release gap is **v0.15.0**. Its first prepare run
+[`31654717731`](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/31654717731)
+ran before the upstream repair and inherited the old two-x64 shape; komac also
+emitted `License: AGPL-3.0` with a `HEAD` license URL. Microsoft currently lists
+0.14.0 as the newest catalog version. Run prepare once against the corrected
+upstream manifest to capture the new raw output, implement the stage 3 gate and
+normalization, then re-run v0.15.0 and require the gated workflow to pass before
+submitting that version manually while stage 4 remains disabled.
+
 **The workflow must already be on `main` before the tag is created.** For
 `release` events GitHub reads the workflow definition from the tagged ref, so a
 tag cut before this file landed can never trigger it — including v0.14.0, which
@@ -276,14 +296,15 @@ each to its best new installer
 `previous_installers`). Passing correct URLs therefore does not produce a correct
 manifest: if the upstream shape is wrong, komac faithfully reproduces it.
 
-The live v0.14.0 manifest has two entries, both `Architecture: x64` — those two
-are the **user/machine scope split**, carrying `/currentuser` and `/allusers`,
-not two architectures. Scoring both against a correct pair of new installers
-gives the x64 installer 8 points and the arm64 installer 6, so both previous
-entries take x64 and the arm64 installer is discarded.
+Before the upstream repair, the v0.14.0 manifest had two entries, both
+`Architecture: x64` — those two were the **user/machine scope split**, carrying
+`/currentuser` and `/allusers`, not two architectures. Scoring both against a
+correct pair of new installers gave the x64 installer 8 points and the arm64
+installer 6, so both previous entries took x64 and the arm64 installer was
+discarded.
 
-So the upstream manifest has to be repaired by hand first, and the correct shape
-is **four** entries, not two:
+That manifest was repaired by hand in `microsoft/winget-pkgs#416019`. The live
+shape is now **four** entries, not two:
 
 | Architecture | Scope | Installer | Custom |
 | --- | --- | --- | --- |
@@ -297,23 +318,34 @@ installer supports (`build.nsis` sets `oneClick: false` and no `perMachine`).
 
 ### Staged plan
 
-1. **Prepare only** (current state). Run the workflow, download the
-   `winget-generated-manifest` artifact, and compare it against the table above.
-   This is the first end-to-end run on a GitHub-hosted runner. The local komac
-   v2.16.0 dry-run already established the expected bad two-x64 output; this run
-   validates the hosted workflow, token, download, and artifact paths together.
-2. **Repair upstream.** One hand-reviewed PR to `microsoft/winget-pkgs` fixing
-   v0.14.0 to the four entries above and setting `License: AGPL-3.0-only`.
-3. **Validate komac's output.** Extend the gate to parse the generated YAML and
-   assert the exact `{x64, arm64} x {user, machine}` set, each entry's URL,
-   SHA256, `Custom` switch, and the license. Note that komac overwrites `License`
-   from the repository's current `licenseInfo.spdxId`, which GitHub reports as
-   `AGPL-3.0` — not the `AGPL-3.0-only` in `package.json` — so this must be
-   asserted or rewritten rather than assumed.
-4. **Enable submission.** Split into `prepare` and `submit` jobs so the PAT
-   exists only in the final step, and pin every `uses:` to a commit SHA at that
-   point. Prefer a dedicated account for the token: `public_repo` grants write
-   access to every public repository its owner can write to, this one included.
+1. **Prepare-only plumbing — complete; still the current execution mode.** Hosted
+   run
+   [`31549249655`](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/31549249655)
+   successfully exercised the workflow, token, installer downloads and artifact
+   paths. Against the then-broken upstream manifest it reproduced komac's bad
+   two-x64 output, confirming why automatic submission had to remain disabled.
+2. **Repair upstream — complete.** `microsoft/winget-pkgs#416019` fixed v0.14.0
+   to the four entries above, changed the license to `AGPL-3.0-only`, passed the
+   full validation pipeline and was published on 2026-08-17. The competing
+   Dumplings tracker has also been removed.
+3. **Validate komac's output — next.** First run prepare against the corrected
+   upstream shape to retain an unmodified sample. Then extend the gate to parse
+   the generated YAML and assert the package identifier/version; exact
+   `{x64, arm64} x {user, machine}` set; each entry's URL, SHA256 and `Custom`
+   switch; `InstallerType: nullsoft`; `UpgradeBehavior: install`; top-level
+   `InstallerSwitches.Upgrade: --updated`; and ProductCode
+   `3e932233-a8b2-5530-b285-e0ceb08488f2` at both the installer and
+   `AppsAndFeaturesEntries` levels. The locale manifest must carry
+   `License: AGPL-3.0-only` and a version-pinned `LicenseUrl`. Komac overwrites
+   `License` from the repository's current `licenseInfo.spdxId`, which GitHub
+   reports as `AGPL-3.0`, not the `AGPL-3.0-only` in `package.json`, so the gate
+   must rewrite and then assert these fields rather than accepting the raw output.
+   After that change lands, re-run v0.15.0 and require the gated workflow to pass.
+4. **Enable submission — optional and not started.** Split into `prepare` and
+   `submit` jobs so the PAT exists only in the final step, and pin every `uses:`
+   to a commit SHA at that point. Prefer a dedicated account for the token:
+   `public_repo` grants write access to every public repository its owner can
+   write to, this one included.
 
 ### Why the installer filename is a contract
 
@@ -339,9 +371,9 @@ This guard exists because the third-party bot that previously owned the manifest
 forwarded only the first matching `.exe`. That was harmless while we shipped one
 Windows installer; from **v0.6.2** (2026-04-27), the first release to publish
 `-x64.exe` and `-arm64.exe` side by side, through v0.14.0 — **12 versions** —
-every manifest declared two `Architecture: x64` entries that both pointed at the
-**arm64** installer. The NSIS stub runs on x64, so the install reported success
-and the app then failed to launch.
+the original manifests each declared two `Architecture: x64` entries that both
+pointed at the **arm64** installer. The NSIS stub runs on x64, so the install
+reported success and the app then failed to launch.
 
 ### Why komac is invoked directly
 
@@ -362,21 +394,28 @@ token.
 
 ### Setup, when stage 4 is reached
 
-1. Fork `microsoft/winget-pkgs` under the account that will own `WINGET_TOKEN`.
+1. A `rullerzhou-afk/winget-pkgs` fork now exists from the manual repair. Before
+   reusing it, decide whether a dedicated low-privilege account should own the
+   submission token instead.
 2. Create a **classic** PAT for that account with `public_repo` scope and store
    it as the `WINGET_TOKEN` repository secret. Fine-grained tokens do not work
    with komac's fork flow.
-3. Ask `SpecterShell/Dumplings` to drop its
-   `Tasks/rullerzhou-afk.clawd-on-desk` tracker so the bot and this workflow do
-   not submit competing manifests.
+3. The former `SpecterShell/Dumplings` tracker was removed in
+   [`a21ff13d`](https://github.com/SpecterShell/Dumplings/commit/a21ff13d2243afa0f58e9569a2f69e9903d726e2).
+   Reconfirm it has not returned before enabling submission.
 
 ### Per-release checks
 
 - Download the `winget-generated-manifest` artifact and confirm it carries
   **four** installer entries — `x64` and `arm64`, each in `user` and `machine`
   scope — with the right filename and `Custom` switch in each.
-- Confirm `License` reads `AGPL-3.0-only`. Versions v0.6.2 through v0.14.0 carry
-  a stale `MIT` value: it was accurate for the initial v0.6.0 submission and was
-  never refreshed after `3b6277ff` relicensed the project on 2026-04-25.
-- `winget install rullerzhou-afk.clawd-on-desk` is not documented in the READMEs
-  until a corrected manifest has been verified live.
+- Confirm `License` reads `AGPL-3.0-only`. The live v0.14.0 manifest is corrected;
+  versions v0.6.2 through v0.13.0 still carry the stale `MIT` value from before
+  `3b6277ff` relicensed the project on 2026-04-25.
+- Until stage 4 is enabled, open a one-version PR in `microsoft/winget-pkgs` from
+  the validated artifact, then track validation, merge and the publish-pipeline
+  result. A successful prepare run alone does **not** publish the release.
+- v0.15.0 is the immediate outstanding submission; do not wait for the next
+  application release to close this gap.
+- After the catalog refreshes, run an independent Windows `winget install` or
+  `winget upgrade` smoke test before documenting the command in the READMEs.

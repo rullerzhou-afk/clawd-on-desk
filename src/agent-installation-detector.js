@@ -5,15 +5,31 @@ const os = require("os");
 const path = require("path");
 
 const { getAgentDescriptors } = require("./doctor-detectors/agent-descriptors");
-const { DEFAULT_INTEGRATION_INSTALLED_IDS, normalizePathList } = require("./prefs");
+const { normalizePathList } = require("./prefs");
 const copilot = require("../hooks/copilot-install");
+const antigravity = require("../hooks/antigravity-install");
 const hermes = require("../hooks/hermes-install");
 const reasonix = require("../hooks/reasonix-install");
 const dsh = require("../hooks/dsh-install");
 const { commandMatchesMarker } = require("../hooks/json-utils");
 const { identifyCustomApplication } = require("./custom-applications");
 
-const DEFAULT_SKIPPED_AGENT_IDS = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
+// Agents whose detector parent dir the DEFAULT startup sync creates on its own,
+// before the agent has left any evidence of its own. For those, "the directory
+// exists" only proves Clawd ran, so they are excluded from local detection.
+//
+// #895: this used to be the whole default-integration list, on the assumption
+// that Clawd creates both ~/.claude and ~/.codex. Only the first is true —
+// hooks/install.js writes ~/.claude/settings.json into a missing directory,
+// while hooks/codex-install-utils.js bails out when ~/.codex is absent and
+// writes nothing. Codex was therefore excluded on a false premise, and Settings
+// could never report a genuinely installed Codex.
+//
+// The test is specifically the default auto-sync, not "any install path can
+// create it": an explicit Pi install does create ~/.pi from scratch, but Pi
+// ships integrationInstalled=false so nothing syncs it unattended, and its
+// directory remains real evidence.
+const DEFAULT_AUTO_SYNC_CREATED_PARENT_DIR_AGENT_IDS = new Set(["claude-code"]);
 const LOW_CONFIDENCE = "low";
 const GEMINI_PARENT_DIR_NOISE_FILES = new Set([
   ".DS_Store",
@@ -31,6 +47,20 @@ const GEMINI_PARENT_DIR_NOISE_SUFFIXES = [
   ".tmp",
   "~",
 ];
+// #895: Antigravity squats inside Gemini CLI's ~/.gemini. Google's docs assign
+// ~/.gemini/antigravity to the Antigravity app and ~/.gemini/antigravity-cli to
+// agy; installing the Antigravity app alone creates the former (its bundled
+// Resources/bin binaries are copied there), with no Gemini CLI anywhere. Only
+// `config` used to be excluded here, so either of the other two made the
+// detector report Gemini CLI as installed with medium confidence — enough to
+// raise the "connect this agent" banner. Derive the two Clawd already owns from
+// the installer so they cannot drift; `antigravity` has no constant because
+// Clawd never writes there.
+const GEMINI_PARENT_DIR_FOREIGN_DIRS = new Set([
+  path.basename(antigravity.DEFAULT_PARENT_DIR),
+  path.basename(path.dirname(antigravity.DEFAULT_STATUSLINE_SETTINGS_PATH)),
+  "antigravity",
+]);
 
 function dirExists(fsImpl, dirPath) {
   if (!dirPath) return false;
@@ -303,7 +333,11 @@ function geminiDirHasNonClawdSignals(fsImpl, parentDir, settingsPath, marker) {
     if (!entry || typeof entry.name !== "string") continue;
     if (GEMINI_PARENT_DIR_NOISE_FILES.has(entry.name)) continue;
     if (GEMINI_PARENT_DIR_NOISE_SUFFIXES.some((suffix) => entry.name.endsWith(suffix))) continue;
-    if (entry.name === "config") continue;
+    // Directories only: a plain file that happens to be named `antigravity` is
+    // not Antigravity's, so it stays a Gemini CLI signal.
+    if (GEMINI_PARENT_DIR_FOREIGN_DIRS.has(entry.name)
+      && typeof entry.isDirectory === "function"
+      && entry.isDirectory()) continue;
     if (entry.name === path.basename(settingsPath)) {
       const classified = classifyGeminiSettings(fsImpl, settingsPath, marker);
       if (classified.userContent) return true;
@@ -624,7 +658,7 @@ function detectAgentInstallations(options = {}) {
   const skipDefaultIntegrations = options.skipDefaultIntegrations !== false;
   for (const descriptor of descriptors) {
     if (!descriptor || typeof descriptor.agentId !== "string") continue;
-    if (skipDefaultIntegrations && DEFAULT_SKIPPED_AGENT_IDS.has(descriptor.agentId)) {
+    if (skipDefaultIntegrations && DEFAULT_AUTO_SYNC_CREATED_PARENT_DIR_AGENT_IDS.has(descriptor.agentId)) {
       skippedAgentIds.push(descriptor.agentId);
       continue;
     }
@@ -736,7 +770,7 @@ async function refreshWslDetection(options = {}) {
       const supportsHermes = descriptors.some((descriptor) =>
         descriptor
         && descriptor.agentId === "hermes"
-        && (!skipDefaultIntegrations || !DEFAULT_SKIPPED_AGENT_IDS.has("hermes"))
+        && (!skipDefaultIntegrations || !DEFAULT_AUTO_SYNC_CREATED_PARENT_DIR_AGENT_IDS.has("hermes"))
         && getAgentInstallScriptName("hermes")
       );
       const hermesWslHome = supportsHermes
@@ -749,7 +783,7 @@ async function refreshWslDetection(options = {}) {
       const checks = [];
       for (const descriptor of descriptors) {
         if (!descriptor || typeof descriptor.agentId !== "string") continue;
-        if (skipDefaultIntegrations && DEFAULT_SKIPPED_AGENT_IDS.has(descriptor.agentId)) continue;
+        if (skipDefaultIntegrations && DEFAULT_AUTO_SYNC_CREATED_PARENT_DIR_AGENT_IDS.has(descriptor.agentId)) continue;
         if (!getAgentInstallScriptName(descriptor.agentId)) continue;
         // Hermes' descriptor was resolved in the Windows process and can point
         // at LOCALAPPDATA or a host-only HERMES_HOME. Never rebase that value

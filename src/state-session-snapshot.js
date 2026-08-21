@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto = require("crypto");
 const path = require("path");
 const { sessionAliasKey } = require("./session-alias");
 const { getSessionFocusTarget } = require("./session-focus");
@@ -241,6 +242,26 @@ function isInternalWorkspaceCwd(id, sessionLike, cwd) {
   return false;
 }
 
+// Display-only folder label shared by every snapshot consumer. Keep the raw
+// cwd on the snapshot for focus/open-folder actions, but do not make each UI or
+// outbound integration rediscover which agent-owned workspace leaves are
+// opaque implementation ids.
+function sessionDisplayFolder(id, sessionLike) {
+  const cwd = sessionLike && sessionLike.cwd;
+  if (!cwd || typeof cwd !== "string" || isInternalWorkspaceCwd(id, sessionLike, cwd)) {
+    return "";
+  }
+  // Session metadata can cross operating-system boundaries (for example a
+  // Windows agent reported to a macOS/Linux Clawd). Select the path dialect
+  // from the value instead of the host, while preserving backslashes that
+  // are legal characters in a POSIX path component.
+  const windowsPath = /^[A-Za-z]:[\\/]/.test(cwd) || /^([\\/])\1/.test(cwd);
+  const cwdBasename = windowsPath
+    ? path.win32.basename(cwd)
+    : path.posix.basename(cwd);
+  return cwdBasename || "";
+}
+
 function shortenSessionIdForDisplay(value, sessionLike) {
   if (value === null || value === undefined) return value;
   let displayId = String(value);
@@ -259,23 +280,27 @@ function shortenSessionIdForDisplay(value, sessionLike) {
   return displayId.length > 6 ? `${displayId.slice(0, 6)}..` : displayId;
 }
 
+function buildDisplaySessionTag(canonicalSessionId) {
+  if (typeof canonicalSessionId !== "string") return "";
+  const trimmed = canonicalSessionId.trim();
+  if (!trimmed) return "";
+  return crypto.createHash("sha256").update(trimmed).digest("hex").slice(0, 10);
+}
+
+function getEntryDisplaySessionTag(entry) {
+  if (entry && typeof entry.displaySessionTag === "string" && entry.displaySessionTag) {
+    return entry.displaySessionTag;
+  }
+  return buildDisplaySessionTag(entry && entry.id);
+}
+
 function sessionDisplayTitle(id, sessionLike, sessionAliases = {}, options = {}) {
   const alias = getSessionAliasEntry(id, sessionLike, sessionAliases);
   if (alias && typeof alias.title === "string" && alias.title) return alias.title;
   const title = getEffectiveSessionTitle(id, sessionLike, options);
   if (title) return title;
-  const cwd = sessionLike && sessionLike.cwd;
-  if (cwd && typeof cwd === "string" && !isInternalWorkspaceCwd(id, sessionLike, cwd)) {
-    // Session metadata can cross operating-system boundaries (for example a
-    // Windows agent reported to a macOS/Linux Clawd). Select the path dialect
-    // from the value instead of the host, while preserving backslashes that
-    // are legal characters in a POSIX path component.
-    const windowsPath = /^[A-Za-z]:[\\/]/.test(cwd) || /^([\\/])\1/.test(cwd);
-    const cwdBasename = windowsPath
-      ? path.win32.basename(cwd)
-      : path.posix.basename(cwd);
-    if (cwdBasename) return cwdBasename;
-  }
+  const folder = sessionDisplayFolder(id, sessionLike);
+  if (folder) return folder;
   const rawSessionId = (sessionLike && sessionLike.rawSessionId) || id;
   return shortenSessionIdForDisplay(rawSessionId, sessionLike);
 }
@@ -334,6 +359,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     id,
     profileId: (session && session.profileId) || "local",
     rawSessionId: (session && session.rawSessionId) || id,
+    displaySessionTag: buildDisplaySessionTag(id),
     agentId,
     agentName: resolveAgentDisplayName(agentId),
     iconUrl: getAgentIconUrl(agentId),
@@ -344,6 +370,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     hasAlias: !!(alias && typeof alias.title === "string" && alias.title),
     sessionTitle: getEffectiveSessionTitle(id, session, options),
     displayTitle: sessionDisplayTitle(id, session, sessionAliases, options),
+    displayFolder: sessionDisplayFolder(id, session),
     cwd: (session && session.cwd) || "",
     updatedAt: sessionUpdatedAt(session),
     // Quota/context freshness (statusline metadata POSTs, which do not bump
@@ -408,7 +435,7 @@ function snapshotContextUsage(session) {
   if (Number.isFinite(limit) && limit > 0) out.limit = limit;
   const percent = Number(usage.percent);
   if (Number.isFinite(percent)) out.percent = Math.max(0, Math.min(100, Math.round(percent)));
-  if (usage.source === "claude" || usage.source === "codex" || usage.source === "antigravity") out.source = usage.source;
+  if (usage.source === "claude" || usage.source === "codex" || usage.source === "antigravity" || usage.source === "opencode") out.source = usage.source;
   return out;
 }
 
@@ -572,12 +599,14 @@ function sessionSnapshotSignature(snapshot) {
       id: entry.id,
       profileId: entry.profileId,
       rawSessionId: entry.rawSessionId,
+      displaySessionTag: entry.displaySessionTag,
       state: entry.state,
       startupRecovered: !!entry.startupRecovered,
       badge: entry.badge,
       hasAlias: entry.hasAlias,
       sessionTitle: entry.sessionTitle,
       displayTitle: entry.displayTitle,
+      displayFolder: entry.displayFolder,
       cwd: entry.cwd,
       agentId: entry.agentId,
       agentName: entry.agentName,
@@ -623,7 +652,10 @@ module.exports = {
   shouldAutoClearDetachedSession,
   getSessionAliasEntry,
   getEffectiveSessionTitle,
+  sessionDisplayFolder,
   sessionDisplayTitle,
+  buildDisplaySessionTag,
+  getEntryDisplaySessionTag,
   sessionMenuComparator,
   sessionUpdatedAtComparator,
   buildSessionSnapshotEntry,

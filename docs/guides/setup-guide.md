@@ -97,13 +97,13 @@ Running `npm run install:claude-hooks` for a local hook repair does not opt in. 
 
 **Qwen Code** — hooks live in `~/.qwen/settings.json`. Install it from **Settings → Agents** when you want local Qwen tracking; after that Clawd keeps the hooks synced on launch while Qwen remains enabled. You can also run `npm run install:qwen-hooks` manually. Qwen Code support is hook-only: state updates and blocking `PermissionRequest` approvals come from Qwen hook events. If `disableAllHooks: true` is present in Qwen settings, Clawd can register entries but Qwen will not fire them until the flag is removed.
 
-**ZCode** — config-file hooks live under `hooks.events.*` in `~/.zcode/cli/config.json`. Install it from **Settings → Agents** when you want local ZCode tracking; after that Clawd keeps its six state-only events synced while ZCode remains enabled. You can also run `npm run install:zcode-hooks` manually. Start a new ZCode session after installing so it loads the current hook configuration. ZCode requires `hooks.enabled: true` to run config-file hooks: Clawd supplies that value when it is absent, but preserves an explicit global `hooks.enabled: false` and any per-hook `enabled: false`. Doctor reports those explicit opt-outs without offering a Fix that would override them. The integration never registers `PermissionRequest`; approval stays in ZCode. If ZCode imported an older Claude configuration, Clawd removes only imported commands that clearly reference its own `clawd-hook.js` from the ZCode config and never edits `~/.claude/settings.json`.
+**ZCode** — config-file hooks live under `hooks.events.*` in `~/.zcode/cli/config.json`. Install it from **Settings → Agents** when you want local ZCode tracking; after that Clawd keeps all seven supported events synced while ZCode remains enabled — six state events plus a blocking `PermissionRequest` approval hook (manual allow/deny from the Clawd bubble or remote approval; when Clawd yields no decision, ZCode's own permission flow takes over). Global and per-session permission automation deliberately defer for ZCode until its tool surface and session identity are audited. You can also run `npm run install:zcode-hooks` manually. Start a new ZCode session after installing so it loads the current hook configuration. ZCode requires `hooks.enabled: true` to run config-file hooks: Clawd supplies that value when it is absent, but preserves an explicit global `hooks.enabled: false` and any per-hook `enabled: false`. Doctor reports those explicit opt-outs without offering a Fix that would override them. If ZCode imported an older Claude configuration, Clawd removes only imported commands that clearly reference its own `clawd-hook.js` from the ZCode config and never edits `~/.claude/settings.json`.
 
 **CodeWhale** — lifecycle hooks live in `~/.codewhale/config.toml` (`[[hooks.hooks]]` entries). Install it from **Settings → Agents** when you want local CodeWhale tracking; after that Clawd keeps the hooks synced on launch while CodeWhale remains enabled. You can also run `npm run install:codewhale-hooks` manually. Phase 1 is state-only: Clawd drives lifecycle/tool/mode animations but does not show permission bubbles or track subagents. See [codewhale-setup.md](codewhale-setup.md) for details and troubleshooting.
 
 **Reasonix CLI** — hooks live in `<Reasonix home>/settings.json` (`~/.reasonix/settings.json` on macOS/Linux, `%APPDATA%\reasonix\settings.json` on current Windows releases). On Windows, Clawd also follows Reasonix's compatibility fallback to the legacy `~/.reasonix/settings.json`; uninstall removes only Clawd-managed entries from both locations. Install it from **Settings → Agents** when you want local Reasonix tracking; after that Clawd keeps the active hooks synced on launch while Reasonix remains enabled. You can also run `npm run install:reasonix-hooks` manually. Phase 1 is state-only: Clawd drives lifecycle, tool, notification, compaction, and subagent-stop animations but leaves permission decisions in Reasonix's own terminal flow.
 
-**opencode** — uses a plugin entry in `~/.config/opencode/opencode.json`. Install it from **Settings → Agents** when you want local opencode tracking; after that Clawd keeps the plugin synced on launch while opencode remains enabled. You can also run `node hooks/opencode-install.js` manually.
+**opencode** — uses the effective plugin config under `~/.config/opencode/`: `config.json` → `opencode.json` → `opencode.jsonc`, with the later file winning. Install it from **Settings → Agents** when you want local opencode tracking; after that Clawd keeps the plugin synced on launch while opencode remains enabled. You can also run `node hooks/opencode-install.js` manually.
 
 **MiMo Code** — uses the effective plugin config under `~/.config/mimocode/`: `config.json` → `mimocode.json` → default `mimocode.jsonc`, with the later file winning. Install it from **Settings → Agents** when you want local MiMo Code tracking; after that Clawd keeps the winning plugin entry synced on launch while MiMo Code remains enabled. You can also run `npm run install:mimocode-plugin` manually. MiMo Code shares the same `@mimo-ai/plugin` SDK, zero-latency event streaming, and Allow/Always/Deny permission behavior as opencode. In both integrations, child sessions spawned by the `task` tool are headless and do not participate in the visible multi-session animation fanout.
 
@@ -157,6 +157,19 @@ existing Feishu users keep their credentials and stay on Feishu by default. See
 [feishu-lark-remote-approval.md](feishu-lark-remote-approval.md) for the
 platform choice, permission scope, `open_id` / `union_id` / `user_id`
 differences, and card language.
+
+## Slack Notifications
+
+Unlike the two channels above, Slack is **notification-only**: Clawd posts when
+a session finishes, errors out, or is waiting for permission, but the decision
+is always made in the desktop app — Slack cannot Allow or Deny in this version.
+Set it up with an Incoming Webhook (recommended) or an `xoxb-` bot token with
+the `chat:write` scope under **Settings → Remote Approval → Slack**.
+
+Messages go to a Slack channel and can include the session title (derived from
+your prompt), folder name, and host name, so a **private channel is
+recommended**. See [slack-notifications.md](slack-notifications.md) for setup,
+the full list of fields that are sent, secret storage, and troubleshooting.
 
 ## Remote SSH (Claude Code, Codex CLI & Copilot CLI)
 

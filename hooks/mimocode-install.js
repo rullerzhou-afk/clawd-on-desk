@@ -5,7 +5,7 @@
 // (hooks/opencode-family-install.js). It preserves the FULL legacy surface —
 // named exports, return shapes (incl. the "mimocode-not-found" reason string
 // that integration-sync branches on), and the CLI entry — see
-// docs/plans/plan-opencode-family-shared-integration.md §3.3/§5.
+// docs/project/agent-runtime-architecture.md.
 //
 // mimocode's config is JSONC (~/.config/mimocode/mimocode.jsonc), so the
 // shared installer routes edits through hooks/opencode-family-jsonc.js

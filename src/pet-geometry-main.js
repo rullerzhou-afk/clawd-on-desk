@@ -5,6 +5,8 @@ const {
   getThemeMarginBox: defaultGetThemeMarginBox,
   computeThemeAnchorRect: defaultComputeThemeAnchorRect,
 } = require("./visible-margins");
+const { resolveAccessoryAwareHitBox } = require("./pet-accessory-hitbox");
+const { getPetAccessoryPayloadSnapshot } = require("./pet-accessory-state");
 
 function createPetGeometryMain(options = {}) {
   const hitGeometry = options.hitGeometry || defaultHitGeometry;
@@ -14,6 +16,8 @@ function createPetGeometryMain(options = {}) {
   const getCurrentState = options.getCurrentState || (() => null);
   const getCurrentSvg = options.getCurrentSvg || (() => null);
   const getCurrentHitBox = options.getCurrentHitBox || (() => null);
+  const getCurrentAccessoryPayload = options.getCurrentAccessoryPayload || (() => null);
+  const getAccessoryMirrored = options.getAccessoryMirrored || (() => false);
   const getMiniMode = options.getMiniMode || (() => false);
   const getMiniPeekOffset = options.getMiniPeekOffset || (() => 0);
 
@@ -36,13 +40,31 @@ function createPetGeometryMain(options = {}) {
     };
   }
 
+  function outwardRound(rect) {
+    if (!rect || ![rect.left, rect.top, rect.right, rect.bottom].every(Number.isFinite)) return rect;
+    return {
+      left: Math.floor(rect.left),
+      top: Math.floor(rect.top),
+      right: Math.ceil(rect.right),
+      bottom: Math.ceil(rect.bottom),
+    };
+  }
+
+  function getCanonicalAccessoryPayload(theme) {
+    const current = getPetAccessoryPayloadSnapshot(theme);
+    // Renderer config/theme reload normally commits before geometry runs. The
+    // fallback is read-only for startup/theme-swap resilience — see main.js's
+    // getEffectivePetAccessoryPayload, which must stay on the non-committing
+    // builder so a hit-window sync can never install a payload of its own.
+    return current ? current.payload : getCurrentAccessoryPayload();
+  }
+
   function getObjRect(bounds) {
     if (!bounds) return null;
     const theme = getActiveTheme();
     const state = getCurrentState();
     const file = getCurrentFile(theme);
-    return hitGeometry.getAssetRectScreen(theme, bounds, state, file)
-      || getFullAssetRect(bounds);
+    return hitGeometry.getAssetRectScreen(theme, bounds, state, file) || getFullAssetRect(bounds);
   }
 
   function getAssetPointerPayload(bounds, point) {
@@ -60,18 +82,34 @@ function createPetGeometryMain(options = {}) {
     const state = getCurrentState();
     const file = getCurrentFile(theme);
     const miniMode = !!getMiniMode();
+    // Reported by the renderer (see applyMiniFlip). Deriving it here from mini
+    // edge + theme flags missed free roam and the mini walk-in, neither of
+    // which is gated on miniMode.
+    const mirrorX = !!getAccessoryMirrored();
+    const resolveViewBox = typeof hitGeometry.resolveViewBox === "function"
+      ? hitGeometry.resolveViewBox
+      : defaultHitGeometry.resolveViewBox;
+    const viewBox = resolveViewBox(theme, state, file);
+    const hitBox = resolveAccessoryAwareHitBox(
+      theme,
+      state,
+      file,
+      getCurrentHitBox(),
+      getCanonicalAccessoryPayload(theme),
+      { viewBox, mirrorX }
+    );
     const hit = hitGeometry.getHitRectScreen(
       theme,
       bounds,
       state,
       file,
-      getCurrentHitBox(),
+      hitBox,
       {
         padX: miniMode ? getMiniPeekOffset() : 0,
         padY: miniMode ? 8 : 0,
       }
     );
-    return hit || getFullHitRect(bounds);
+    return outwardRound(hit) || getFullHitRect(bounds);
   }
 
   function getUpdateBubbleAnchorRect(bounds) {

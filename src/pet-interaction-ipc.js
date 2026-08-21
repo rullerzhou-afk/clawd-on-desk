@@ -60,6 +60,7 @@ function registerPetInteractionIpc(options = {}) {
     options.setLowPowerIdlePaused,
     "setLowPowerIdlePaused"
   );
+  const setAccessoryMirror = options.setAccessoryMirror || (() => {});
   // #640: the editing-overlap dodge defers its hit-window click-through write
   // while a drag is in flight; drag-lock release must re-run the sync so the
   // state the drag ended in (overlapping or not) gets applied.
@@ -91,6 +92,12 @@ function registerPetInteractionIpc(options = {}) {
   });
   on("low-power-idle-paused", (_event, paused) => {
     setLowPowerIdlePaused(!!paused);
+  });
+  // The renderer is the only side that knows whether the accessory ended up
+  // mirrored (mini edge flip composed with the asset-direction flip). Hit
+  // geometry consumes this instead of predicting it.
+  on("accessory-mirror", (_event, mirrored) => {
+    setAccessoryMirror(!!mirrored);
   });
 
   on("drag-lock", (_event, locked) => {

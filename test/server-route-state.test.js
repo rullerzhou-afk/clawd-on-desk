@@ -3,6 +3,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const { EventEmitter } = require("node:events");
+const path = require("node:path");
 
 const {
   CLAWD_SERVER_HEADER,
@@ -12,6 +13,7 @@ const {
 } = require("../hooks/server-config");
 const {
   MAX_STATE_BODY_BYTES,
+  CLAWD_METADATA_ACCEPTED_HEADER,
   sendStateHealthResponse,
   handleStatePost,
 } = require("../src/server-route-state");
@@ -20,6 +22,10 @@ const { buildStateBody } = require("../hooks/clawd-hook");
 const { makeSessionKey } = require("../src/session-key");
 const createAgentRuntimeMain = require("../src/agent-runtime-main");
 const { createDshStateSequenceFence } = require("../src/dsh-state-sequence");
+const initState = require("../src/state");
+const themeLoader = require("../src/theme-loader");
+themeLoader.init(path.join(__dirname, "..", "src"));
+const metadataContractTheme = themeLoader.loadTheme("clawd");
 const localSessionKey = (rawSessionId) => makeSessionKey({
   profileId: "local",
   rawSessionId,
@@ -47,6 +53,47 @@ function makeReq(body, headers = {}) {
     req.emit("end");
   });
   return req;
+}
+
+function acceptedMetadataSpy(calls) {
+  return (...args) => {
+    calls.push(args);
+    return true;
+  };
+}
+
+function makeMetadataStateRuntime() {
+  const ctx = {
+    lang: "en",
+    theme: metadataContractTheme,
+    doNotDisturb: false,
+    miniTransitioning: false,
+    miniMode: false,
+    mouseOverPet: false,
+    idlePaused: false,
+    forceEyeResend: false,
+    eyePauseUntil: 0,
+    mouseStillSince: Date.now(),
+    playSound: () => {},
+    sendToRenderer: () => {},
+    syncHitWin: () => {},
+    sendToHitWin: () => {},
+    buildContextMenu: () => {},
+    buildTrayMenu: () => {},
+    pendingPermissions: [],
+    processKill: () => { const err = new Error("dead"); err.code = "ESRCH"; throw err; },
+    getCursorScreenPoint: () => ({ x: 0, y: 0 }),
+  };
+  return initState(ctx);
+}
+
+function seedMetadataSession(api, sessionId) {
+  api.updateSession(sessionId, "working", "PreToolUse", {
+    cwd: "/tmp/opencode-contract",
+    agentId: "opencode",
+    profileId: "local",
+    rawSessionId: sessionId,
+  });
 }
 
 function makeRes() {
@@ -1029,10 +1076,11 @@ describe("server-route-state POST", () => {
       context_usage: { used: 50000, limit: 200000, percent: 25, source: "claude" },
       claude_quota: { claudeWeekly: { usedPercent: 41, resetAt: 1738831180000 } },
     }), {
-      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+      ctx: { updateSessionMetadata: acceptedMetadataSpy(metadataCalls) },
     });
 
     assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.headers[CLAWD_METADATA_ACCEPTED_HEADER], "1");
     assert.strictEqual(res.calls.updateSession.length, 0);
     assert.strictEqual(res.calls.setState.length, 0);
     assert.strictEqual(res.calls.updateAccountQuota.length, 1);
@@ -1059,11 +1107,12 @@ describe("server-route-state POST", () => {
       context_usage: { used: 80000, limit: 1000000, percent: 8, source: "claude" },
       claude_quota: { claudeWeekly: { usedPercent: 12 } },
     }), {
-      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+      ctx: { updateSessionMetadata: acceptedMetadataSpy(metadataCalls) },
       options: { isClaudeStatuslineMetadataAllowed: () => false },
     });
 
     assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.headers[CLAWD_METADATA_ACCEPTED_HEADER], undefined);
     assert.deepStrictEqual(metadataCalls, []);
     assert.deepStrictEqual(res.calls.updateAccountQuota, []);
   });
@@ -1079,7 +1128,7 @@ describe("server-route-state POST", () => {
       context_usage: { used: 80000, limit: 1000000, percent: 8, source: "claude" },
       claude_quota: { claudeWeekly: { usedPercent: 12 } },
     }), {
-      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+      ctx: { updateSessionMetadata: acceptedMetadataSpy(metadataCalls) },
       options: {
         isClaudeStatuslineMetadataAllowed: () => false,
         remoteProfile: { profileId: "ssh-work", displayHost: "workbox" },
@@ -1087,6 +1136,7 @@ describe("server-route-state POST", () => {
     });
 
     assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.headers[CLAWD_METADATA_ACCEPTED_HEADER], "1");
     assert.strictEqual(res.calls.updateAccountQuota[0][0], "remote:ssh-work");
     assert.strictEqual(res.calls.updateAccountQuota[0][1].displayHost, "workbox");
     assert.deepStrictEqual(res.calls.updateAccountQuota[0][1].claudeQuota, {
@@ -1125,12 +1175,183 @@ describe("server-route-state POST", () => {
       context_usage: { used: 32000, limit: 128000, percent: 25, source: "antigravity" },
       contextUsageOrigin: "claude-statusline",
     }), {
-      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+      ctx: { updateSessionMetadata: acceptedMetadataSpy(metadataCalls) },
     });
 
     assert.strictEqual(res.statusCode, 204);
     assert.strictEqual(metadataCalls.length, 1);
     assert.strictEqual(metadataCalls[0][1].contextUsageOrigin, null);
+  });
+
+  // #830 — opencode-family plugin posts metadata_only contextUsage with
+  // source "opencode"; the route must label it with the opencode-statusline
+  // origin (same authority contract as claude-statusline telemetry).
+  it("labels opencode metadata-only context with the opencode-statusline origin", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "oc:abc",
+      agent_id: "opencode",
+      context_usage: { used: 32000, limit: 128000, percent: 25, source: "opencode" },
+    }), {
+      ctx: { updateSessionMetadata: acceptedMetadataSpy(metadataCalls) },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.headers[CLAWD_METADATA_ACCEPTED_HEADER], "1");
+    assert.strictEqual(metadataCalls.length, 1);
+    assert.strictEqual(metadataCalls[0][0], localSessionKey("oc:abc"));
+    assert.strictEqual(metadataCalls[0][1].contextUsageOrigin, "opencode-statusline");
+    assert.deepStrictEqual(metadataCalls[0][1].contextUsage, {
+      used: 32000,
+      limit: 128000,
+      percent: 25,
+      source: "opencode",
+    });
+  });
+
+  it("does not acknowledge metadata rejected by the state owner", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "opencode:missing",
+      agent_id: "opencode",
+      context_usage: { used: 100, limit: 1000, source: "opencode" },
+    }), {
+      ctx: {
+        updateSessionMetadata: (...args) => {
+          metadataCalls.push(args);
+          return false;
+        },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.headers[CLAWD_SERVER_HEADER], CLAWD_SERVER_ID);
+    assert.strictEqual(res.headers[CLAWD_METADATA_ACCEPTED_HEADER], undefined);
+    assert.strictEqual(metadataCalls.length, 1);
+  });
+
+  it("keeps OpenCode route forwarding inside the real state acceptance domain", async () => {
+    const api = makeMetadataStateRuntime();
+    const sessionId = localSessionKey("opencode:contract");
+    seedMetadataSession(api, sessionId);
+    const forwarded = [];
+    const updateSessionMetadata = (...args) => {
+      forwarded.push(args);
+      return api.updateSessionMetadata(...args);
+    };
+    const post = (fields) => callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "opencode:contract",
+      agent_id: "opencode",
+      ...fields,
+    }), { ctx: { updateSessionMetadata } });
+
+    try {
+      const changed = await post({
+        context_usage: { used: 100, limit: 1000, source: "opencode" },
+      });
+      assert.strictEqual(changed.headers[CLAWD_METADATA_ACCEPTED_HEADER], "1");
+      assert.strictEqual(Object.hasOwn(forwarded.at(-1)[1], "contextUsage"), true);
+      assert.deepStrictEqual(forwarded.at(-1)[1].contextUsage, {
+        used: 100,
+        limit: 1000,
+        percent: 10,
+        source: "opencode",
+      });
+
+      const metadataStamp = api.sessions.get(sessionId).metadataUpdatedAt;
+      const identical = await post({
+        context_usage: { used: 100, limit: 1000, source: "opencode" },
+      });
+      assert.strictEqual(identical.headers[CLAWD_METADATA_ACCEPTED_HEADER], "1");
+      assert.strictEqual(api.sessions.get(sessionId).metadataUpdatedAt, metadataStamp, "accepted no-op must not restamp freshness");
+
+      const withoutLimit = await post({
+        context_usage: { used: 120, source: "opencode" },
+      });
+      assert.strictEqual(withoutLimit.headers[CLAWD_METADATA_ACCEPTED_HEADER], "1");
+      assert.deepStrictEqual(api.sessions.get(sessionId).contextUsage, {
+        used: 120,
+        source: "opencode",
+      });
+
+      const titleOnly = await post({ session_title: "\u0001\u0002" });
+      assert.strictEqual(titleOnly.headers[CLAWD_METADATA_ACCEPTED_HEADER], undefined);
+
+      const merged = await post({
+        session_title: "\u0001\u0002",
+        context_usage: { used: 150, limit: 1000, source: "opencode" },
+      });
+      assert.strictEqual(merged.headers[CLAWD_METADATA_ACCEPTED_HEADER], "1");
+      assert.strictEqual(Object.hasOwn(forwarded.at(-1)[1], "contextUsage"), true);
+      assert.strictEqual(api.sessions.get(sessionId).contextUsage.used, 150);
+      assert.strictEqual(api.sessions.get(sessionId).sessionTitle, null, "invalid title must not block valid context");
+    } finally {
+      api.cleanup();
+    }
+  });
+
+  it("does not acknowledge a fully invalid metadata payload", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "opencode:invalid",
+      agent_id: "opencode",
+      context_usage: { used: "not-a-number", source: "opencode" },
+    }), {
+      ctx: { updateSessionMetadata: acceptedMetadataSpy(metadataCalls) },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.headers[CLAWD_METADATA_ACCEPTED_HEADER], undefined);
+    assert.strictEqual(metadataCalls.length, 0);
+  });
+
+  it("labels opencode lifecycle context with the opencode-statusline origin (state POSTs)", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "oc:abc",
+      agent_id: "opencode",
+      event: "PreToolUse",
+      context_usage: { used: 90000, limit: 200000, percent: 45, source: "opencode" },
+    }), {});
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession.length, 1);
+    assert.strictEqual(res.calls.updateSession[0][3].contextUsageOrigin, "opencode-statusline");
+  });
+
+  it("does not label mismatched opencode provenance as statusline authority", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "oc:abc",
+      agent_id: "opencode",
+      context_usage: { used: 90000, limit: 200000, percent: 45, source: "claude" },
+    }), {
+      ctx: { updateSessionMetadata: acceptedMetadataSpy(metadataCalls) },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(metadataCalls.length, 1);
+    assert.strictEqual(
+      metadataCalls[0][1].contextUsageOrigin,
+      null,
+      "opencode agent + claude source must not borrow the opencode-statusline origin"
+    );
+    assert.deepStrictEqual(metadataCalls[0][1].contextUsage, {
+      used: 90000,
+      limit: 200000,
+      percent: 45,
+      source: "claude",
+    });
   });
 
   it("routes remote metadata_only codex_quota to the store keyed by host (remote monitor POSTs)", async () => {
@@ -1147,10 +1368,11 @@ describe("server-route-state POST", () => {
         codexWeekly: { usedPercent: 43, resetAt: 1784256370000 },
       },
     }), {
-      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+      ctx: { updateSessionMetadata: acceptedMetadataSpy(metadataCalls) },
     });
 
     assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.headers[CLAWD_METADATA_ACCEPTED_HEADER], undefined);
     assert.strictEqual(res.calls.updateSession.length, 0);
     assert.strictEqual(res.calls.updateAccountQuota.length, 1);
     assert.strictEqual(res.calls.updateAccountQuota[0][0], "raspberrypi");
@@ -1240,11 +1462,12 @@ describe("server-route-state POST", () => {
     }), {
       ctx: {
         isAgentEnabled: () => false,
-        updateSessionMetadata: (...args) => metadataCalls.push(args),
+        updateSessionMetadata: acceptedMetadataSpy(metadataCalls),
       },
     });
 
     assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.headers[CLAWD_METADATA_ACCEPTED_HEADER], undefined);
     assert.strictEqual(metadataCalls.length, 0);
     assert.strictEqual(res.calls.updateAccountQuota.length, 0);
   });
@@ -1274,10 +1497,11 @@ describe("server-route-state POST", () => {
       agent_id: "opencode",
       session_title: "My Real Title",
     }), {
-      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+      ctx: { updateSessionMetadata: acceptedMetadataSpy(metadataCalls) },
     });
 
     assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.headers[CLAWD_METADATA_ACCEPTED_HEADER], "1");
     assert.strictEqual(res.calls.updateSession.length, 0, "title-only metadata must not call updateSession");
     assert.strictEqual(res.calls.setState.length, 0);
     assert.strictEqual(metadataCalls.length, 1);
@@ -1295,7 +1519,7 @@ describe("server-route-state POST", () => {
       session_title: "Title Despite Gate",
       context_usage: { used: 50000, limit: 200000, percent: 25, source: "claude" },
     }), {
-      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+      ctx: { updateSessionMetadata: acceptedMetadataSpy(metadataCalls) },
       options: { isClaudeStatuslineMetadataAllowed: () => false },
     });
 
@@ -1316,10 +1540,11 @@ describe("server-route-state POST", () => {
       session_title: "Titled + quota",
       context_usage: { used: 300, limit: 1000, percent: 30, source: "codex" },
     }), {
-      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+      ctx: { updateSessionMetadata: acceptedMetadataSpy(metadataCalls) },
     });
 
     assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.headers[CLAWD_METADATA_ACCEPTED_HEADER], "1");
     assert.strictEqual(metadataCalls.length, 1, "title+context should coalesce into a single metadata update");
     assert.deepStrictEqual(metadataCalls[0][1], {
       contextUsage: { used: 300, limit: 1000, percent: 30, source: "codex" },
@@ -1336,10 +1561,11 @@ describe("server-route-state POST", () => {
       session_id: "opencode:ses_w",
       agent_id: "opencode",
     }), {
-      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+      ctx: { updateSessionMetadata: acceptedMetadataSpy(metadataCalls) },
     });
 
     assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.headers[CLAWD_METADATA_ACCEPTED_HEADER], undefined);
     assert.strictEqual(metadataCalls.length, 0, "empty metadata payload must not call updateSessionMetadata");
   });
 

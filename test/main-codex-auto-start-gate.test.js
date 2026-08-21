@@ -83,3 +83,28 @@ test("future-version locked settings cannot publish an ephemeral Codex gate", ()
     "locked settings must return before publishing the settings gate"
   );
 });
+
+test("unreadable prefs fail every prefs-backed agent runtime gate closed", () => {
+  const source = fs.readFileSync(MAIN_PATH, "utf8").replace(/\r\n/g, "\n");
+  const gateIndex = source.indexOf("const _runtimeAgentGate = createRuntimeAgentGate({");
+  const authorityIndex = source.indexOf(
+    "isAuthoritative: () => !_settingsController.hasReadFailure()",
+    gateIndex
+  );
+
+  assert.ok(gateIndex >= 0, "main.js should create one centralized runtime agent gate");
+  assert.ok(
+    authorityIndex > gateIndex,
+    "the runtime agent gate must reject the defaults fallback from unreadable prefs"
+  );
+
+  for (const expected of [
+    "_runtimeAgentGate.isAgentEnabled(agentId)",
+    "_runtimeAgentGate.shouldSyncAgentIntegration(agentId)",
+    "_runtimeAgentGate.isAgentPermissionsEnabled(agentId)",
+    "_runtimeAgentGate.isAgentSubagentPermissionsEnabled(agentId)",
+    "_runtimeAgentGate.isCodexPermissionInterceptEnabled()",
+  ]) {
+    assert.ok(source.includes(expected), `main.js should route ${expected} through the safe gate`);
+  }
+});

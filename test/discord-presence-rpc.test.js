@@ -142,6 +142,19 @@ test("buildPresencePayload publishes ONLY the folder name, never a full path, on
   assert.strictEqual(out.state.includes("/"), false);
 });
 
+test("buildPresencePayload respects an explicitly hidden snapshot displayFolder", () => {
+  const opaque = "mqgw60jiigjsjcid";
+  const session = {
+    agentId: "qwenwork",
+    state: "working",
+    cwd: `/Users/me/.QwenWorkCN/workspace/${opaque}`,
+    displayFolder: "",
+  };
+  const out = buildPresencePayload(session, { privacyShowProject: true });
+  assert.equal(out.state, "Working");
+  assert.ok(!JSON.stringify(out).includes(opaque));
+});
+
 test("buildPresencePayload truncates state to Discord's 128-char activity limit", () => {
   // Discord rejects the whole SET_ACTIVITY frame when state exceeds 128 chars,
   // so an extra-long folder name must not silently kill presence updates.

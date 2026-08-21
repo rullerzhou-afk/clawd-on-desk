@@ -7,6 +7,7 @@ const {
   createForegroundFullscreenProbe,
   rectCoversMonitor,
   isDesktopShellWindowClass,
+  isMaximizedNormalWindow,
   FULLSCREEN_TOLERANCE_PX,
 } = require("../src/win-fullscreen-detect");
 
@@ -45,6 +46,15 @@ function fakeKoffi(behavior) {
               return name.length;
             };
           }
+          if (signature.includes("GetWindowLongPtrW")) {
+            // The style binding is resolved in its own try/catch so a missing
+            // export degrades to the geometric answer; this simulates that.
+            if (behavior.styleFuncUnavailable) throw new Error("GetWindowLongPtrW unavailable");
+            return () => {
+              if (behavior.styleThrows) throw new Error("GetWindowLongPtrW exploded");
+              return behavior.style === undefined ? 0 : behavior.style;
+            };
+          }
           throw new Error(`unexpected func: ${signature}`);
         },
       };
@@ -60,6 +70,14 @@ const MONITOR = { left: 0, top: 0, right: 1920, bottom: 1080 };
 const FULLSCREEN_RECT = { left: 0, top: 0, right: 1920, bottom: 1080 };
 // Maximized normal window: covers work area but leaves the 40px taskbar strip.
 const MAXIMIZED_RECT = { left: 0, top: 0, right: 1920, bottom: 1040 };
+
+const WS_CAPTION = 0x00c00000;
+const WS_THICKFRAME = 0x00040000;
+const WS_MAXIMIZE = 0x01000000;
+// A maximized ordinary window (title bar + sizing border), e.g. a maximized browser.
+const MAXIMIZED_NORMAL_STYLE = WS_MAXIMIZE | WS_CAPTION | WS_THICKFRAME;
+// Borderless fullscreen: the caption is dropped, which is what distinguishes it.
+const BORDERLESS_STYLE = 0;
 
 describe("rectCoversMonitor", () => {
   it("treats an exact monitor-covering window as fullscreen", () => {
@@ -101,6 +119,31 @@ describe("isDesktopShellWindowClass", () => {
     assert.strictEqual(isDesktopShellWindowClass("Chrome_WidgetWin_1"), false);
     assert.strictEqual(isDesktopShellWindowClass(""), false);
     assert.strictEqual(isDesktopShellWindowClass(null), false);
+  });
+});
+
+describe("isMaximizedNormalWindow", () => {
+  it("matches a maximized window that still has its caption", () => {
+    assert.strictEqual(isMaximizedNormalWindow(MAXIMIZED_NORMAL_STYLE), true);
+  });
+
+  it("rejects a maximized window with no caption (borderless fullscreen)", () => {
+    assert.strictEqual(isMaximizedNormalWindow(WS_MAXIMIZE), false);
+  });
+
+  it("rejects a captioned window that is not maximized", () => {
+    assert.strictEqual(isMaximizedNormalWindow(WS_CAPTION | WS_THICKFRAME), false);
+  });
+
+  it("requires the full WS_CAPTION mask, not either half", () => {
+    assert.strictEqual(isMaximizedNormalWindow(WS_MAXIMIZE | 0x00800000), false);
+    assert.strictEqual(isMaximizedNormalWindow(WS_MAXIMIZE | 0x00400000), false);
+  });
+
+  it("rejects unusable style values", () => {
+    assert.strictEqual(isMaximizedNormalWindow(0), false);
+    assert.strictEqual(isMaximizedNormalWindow(NaN), false);
+    assert.strictEqual(isMaximizedNormalWindow(null), false);
   });
 });
 
@@ -213,5 +256,85 @@ describe("createForegroundFullscreenProbe", () => {
       }),
     });
     assert.strictEqual(probe(), true);
+  });
+
+  // #871: a monitor with no reserved taskbar strip (a secondary display, or an
+  // auto-hidden taskbar whose 1px sliver fits inside FULLSCREEN_TOLERANCE_PX)
+  // has rcWork == rcMonitor, so an ordinary MAXIMIZED window covers the monitor
+  // and geometry alone calls it fullscreen. That flipped the hit window
+  // non-activating, and setFocusable(false) deactivates whatever had focus.
+  it("does not treat a maximized window on a taskbar-less monitor as fullscreen", () => {
+    const probe = createForegroundFullscreenProbe({
+      isWin: true,
+      koffi: fakeKoffi({
+        hwnd: {}, hMonitor: {}, winRect: FULLSCREEN_RECT, monitorRect: MONITOR,
+        className: "Chrome_WidgetWin_1", style: MAXIMIZED_NORMAL_STYLE,
+      }),
+    });
+    assert.strictEqual(probe(), false);
+  });
+
+  it("still reports fullscreen for a monitor-covering window with no caption", () => {
+    const probe = createForegroundFullscreenProbe({
+      isWin: true,
+      koffi: fakeKoffi({
+        hwnd: {}, hMonitor: {}, winRect: FULLSCREEN_RECT, monitorRect: MONITOR,
+        className: "UnrealWindow", style: BORDERLESS_STYLE,
+      }),
+    });
+    assert.strictEqual(probe(), true);
+  });
+
+  // Borderless-fullscreen games often maximize a caption-less window; only the
+  // caption separates them from a maximized browser (#538 must not regress).
+  it("still reports fullscreen for a maximized borderless window", () => {
+    const probe = createForegroundFullscreenProbe({
+      isWin: true,
+      koffi: fakeKoffi({
+        hwnd: {}, hMonitor: {}, winRect: FULLSCREEN_RECT, monitorRect: MONITOR,
+        className: "UnrealWindow", style: WS_MAXIMIZE,
+      }),
+    });
+    assert.strictEqual(probe(), true);
+  });
+
+  it("keeps the geometric answer when the style binding is unavailable", () => {
+    const probe = createForegroundFullscreenProbe({
+      isWin: true,
+      koffi: fakeKoffi({
+        hwnd: {}, hMonitor: {}, winRect: FULLSCREEN_RECT, monitorRect: MONITOR,
+        className: "Chrome_WidgetWin_1", styleFuncUnavailable: true,
+      }),
+    });
+    assert.strictEqual(probe(), true);
+  });
+
+  // 0 is GetWindowLongPtrW's documented failure return, not an exception, so it
+  // degrades like a 0-length class read: keep the geometric answer.
+  it("keeps the geometric answer when the style read returns its failure value", () => {
+    const probe = createForegroundFullscreenProbe({
+      isWin: true,
+      koffi: fakeKoffi({
+        hwnd: {}, hMonitor: {}, winRect: FULLSCREEN_RECT, monitorRect: MONITOR,
+        className: "Chrome_WidgetWin_1", style: 0,
+      }),
+    });
+    assert.strictEqual(probe(), true);
+  });
+
+  // A THROWN style read is different: it takes the probe's existing call-time
+  // catch, which answers "not fullscreen" for every FFI call in this function.
+  it("reports a thrown style read through the call-time diagnostic", () => {
+    let callErrors = 0;
+    const probe = createForegroundFullscreenProbe({
+      isWin: true,
+      koffi: fakeKoffi({
+        hwnd: {}, hMonitor: {}, winRect: FULLSCREEN_RECT, monitorRect: MONITOR,
+        className: "Chrome_WidgetWin_1", styleThrows: true,
+      }),
+      onCallError: () => { callErrors++; },
+    });
+    assert.strictEqual(probe(), false);
+    assert.strictEqual(callErrors, 1);
   });
 });

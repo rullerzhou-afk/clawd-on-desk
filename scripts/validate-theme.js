@@ -19,6 +19,7 @@
 const fs = require("fs");
 const path = require("path");
 const themeLoader = require("../src/theme-loader");
+const themeSchema = require("../src/theme-schema");
 const { VARIANT_ALLOWED_KEYS } = require("../src/theme-variants");
 
 // ── Colors (ANSI) ──
@@ -53,22 +54,91 @@ const {
 const args = process.argv.slice(2);
 let themeDir = null;
 let assetsOverride = null;
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === "--assets" && args[i + 1]) {
-    assetsOverride = args[++i];
-  } else if (!themeDir) {
-    themeDir = args[i];
-  }
-}
-if (!themeDir) {
+
+function printUsage() {
   console.error(`Usage: node ${path.basename(process.argv[1])} <theme-directory> [--assets <assets-dir>]`);
   console.error(`Example: node scripts/validate-theme.js themes/template`);
   console.error(`         node scripts/validate-theme.js themes/clawd --assets assets/svg`);
+}
+
+// Anything the parser does not understand is refused rather than ignored. The old
+// loop silently dropped unknown flags, surplus positional arguments, and a
+// value-less `--assets`, so a mistyped command ran against the DEFAULT paths and
+// then reported the theme as valid -- the tool answering a question nobody asked.
+//
+// Refusing unknown options costs the one thing the permissive loop got for free: a
+// path that genuinely begins with "-". `--` ends option parsing for that case, so
+// no invocation that worked before is unreachable now.
+let optionsEnded = false;
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (!optionsEnded && arg === "--") {
+    optionsEnded = true;
+  } else if (!optionsEnded && arg === "--assets") {
+    if (assetsOverride !== null) {
+      console.error(`${FAIL} --assets given more than once`);
+      printUsage();
+      process.exit(1);
+    }
+    const value = args[i + 1];
+    // Only absent or empty counts as "no path given". A value that merely looks
+    // like a flag is still passed to the filesystem, which is the thing that
+    // actually knows whether it is a usable directory.
+    if (value === undefined || value === "") {
+      console.error(`${FAIL} --assets requires a directory argument`);
+      printUsage();
+      process.exit(1);
+    }
+    assetsOverride = value;
+    i++;
+  } else if (!optionsEnded && arg.startsWith("-") && arg !== "-") {
+    console.error(`${FAIL} Unknown option: ${arg}`);
+    console.error(`  (if that is a real path, pass it after --)`);
+    printUsage();
+    process.exit(1);
+  } else if (themeDir === null) {
+    themeDir = arg;
+  } else {
+    console.error(`${FAIL} Unexpected extra argument: ${arg}`);
+    printUsage();
+    process.exit(1);
+  }
+}
+// Falsy, not just null: `validate-theme.js "$SOME_UNSET_VAR"` passes an empty
+// string, which path.resolve() turns into the current directory -- so without
+// this the script would go and validate whatever the caller happened to be in.
+if (!themeDir) {
+  console.error(`${FAIL} No theme directory given`);
+  printUsage();
   process.exit(1);
 }
 
 const resolvedDir = path.resolve(themeDir);
 const jsonPath = path.join(resolvedDir, "theme.json");
+
+// An explicit --assets override that does not resolve to a usable directory is a
+// mistake in the command, not a property of the theme -- so the message has to say
+// which one it is. Pointing --assets at a file used to produce a 27-error report
+// about the theme, sending the author hunting for theme bugs that do not exist.
+// The default `<theme>/assets` being absent is deliberately NOT handled here: that
+// one really is a property of the theme, and stays a normal validation error below.
+if (assetsOverride !== null) {
+  const overrideDir = path.resolve(assetsOverride);
+  let overrideStat;
+  try {
+    overrideStat = fs.statSync(overrideDir);
+  } catch (e) {
+    // Only ENOENT means "not there". ENOTDIR, ELOOP, EACCES and friends are all
+    // different problems and must not be flattened into one claim.
+    const why = e.code === "ENOENT" ? "not found" : `cannot be accessed (${e.code})`;
+    console.error(`${FAIL} --assets directory ${why}: ${overrideDir}`);
+    process.exit(1);
+  }
+  if (!overrideStat.isDirectory()) {
+    console.error(`${FAIL} --assets path is not a directory: ${overrideDir}`);
+    process.exit(1);
+  }
+}
 
 if (!fs.existsSync(jsonPath)) {
   console.error(`${FAIL} theme.json not found at: ${jsonPath}`);
@@ -80,7 +150,20 @@ try {
   const content = fs.readFileSync(jsonPath, "utf8");
   raw = JSON.parse(content);
 } catch (e) {
-  console.error(`${FAIL} Failed to parse theme.json: ${e.message}`);
+  // The try block covers readFileSync as well as JSON.parse, so this must not
+  // claim "parse" for what may have been a read failure (e.g. EISDIR).
+  console.error(`${FAIL} Failed to read or parse theme.json: ${e.message}`);
+  process.exit(1);
+}
+
+// theme.json has to be a JSON object for the checks below to walk it. `null` crashes
+// property access with an uncaught TypeError (a stack trace instead of a message),
+// and a number/string/boolean produces meaningless FAIL lines that read like real
+// findings about a theme that was never there. An array is deliberately let through:
+// nothing below it crashes, and its total absence of fields is a genuine "theme has
+// errors" outcome rather than a broken command.
+if (!isPlainObject(raw) && !Array.isArray(raw)) {
+  console.error(`${FAIL} theme.json must contain a JSON object (got: ${raw === null ? "null" : typeof raw})`);
   process.exit(1);
 }
 
@@ -130,6 +213,32 @@ if (check(vb && vb.x != null && vb.y != null && vb.width != null && vb.height !=
 }
 const sleepMode = deriveSleepMode(raw);
 const normalizedStates = normalizeStateBindings(raw.states);
+const accessorySchemaErrors = themeSchema.validateTheme(raw)
+  .filter((message) => message.includes("customization.accessories"));
+// `false`/`null` is the documented opt-out, not a misconfiguration.
+if (raw.customization && raw.customization.accessories) {
+  if (accessorySchemaErrors.length === 0) {
+    // Schema-valid is not the same as usable: a coverage gap (a visual with no
+    // descriptor to fall back on) raises no schema error but still turns the
+    // capability off, and Settings then hides the wardrobe with no explanation.
+    // Saying "valid" and stopping there is how an author ships a theme whose
+    // accessories silently never appear.
+    if (themeSchema.deriveAccessoryCapability(raw)) {
+      console.log(`  ${PASS} customization.accessories attachment geometry is schema-valid`);
+    } else {
+      console.log(
+        `  ${WARN} customization.accessories is schema-valid but does not cover every visual, `
+        + "so accessories stay disabled for this theme and the wardrobe is hidden"
+      );
+      warnings++;
+    }
+  } else {
+    for (const message of accessorySchemaErrors) {
+      console.log(`  ${FAIL} ${message}`);
+      errors++;
+    }
+  }
+}
 
 if (check(!!raw.states, "states object exists")) {
   for (const s of REQUIRED_STATES) {

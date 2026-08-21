@@ -1,11 +1,26 @@
 "use strict";
 
 const assert = require("node:assert");
-const { describe, it } = require("node:test");
+const { describe, it, after } = require("node:test");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
 const { bucketAgentsForTutorial } = require("../src/tutorial-agent-buckets");
+const { detectAgentInstallations } = require("../src/agent-installation-detector");
 
-const INSTALLABLE = ["claude-code", "codex", "gemini-cli", "kimi-cli"];
+const tempDirs = [];
+after(() => {
+  while (tempDirs.length) fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+});
+
+function makeHome() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-tutorial-buckets-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+const INSTALLABLE = ["claude-code", "codex", "gemini-cli", "kimi-cli", "qwen-code"];
 
 function detect(agentId, agentName, detectedInstalled, confidence) {
   return { agentId, agentName, detectedInstalled, confidence };
@@ -18,8 +33,10 @@ describe("bucketAgentsForTutorial", () => {
       detectionAgents: [
         // integration installed + detected → active
         detect("claude-code", "Claude Code", true, "high"),
-        // integration installed (default) + NOT detected → cleanup (stale hook)
-        detect("codex", "Codex", false, "low"),
+        // integration installed + explicitly NOT detected → cleanup (stale hook).
+        // #895: this has to be a non-default agent. Default integrations are
+        // exempt, because a missing ~/.codex is not evidence of a stale hook.
+        detect("qwen-code", "Qwen Code", false, "low"),
         // not installed + detected high → install
         detect("gemini-cli", "Gemini CLI", true, "high"),
         // not installed + detected low → neither (too weak to offer)
@@ -27,15 +44,44 @@ describe("bucketAgentsForTutorial", () => {
       ],
       agentsPref: {
         "claude-code": { integrationInstalled: true },
-        codex: { integrationInstalled: true },
+        "qwen-code": { integrationInstalled: true },
         "gemini-cli": { integrationInstalled: false },
         "kimi-cli": { integrationInstalled: false },
       },
     });
 
     assert.deepStrictEqual(result.active, [{ agentId: "claude-code", label: "Claude Code", iconUrl: null }]);
-    assert.deepStrictEqual(result.cleanup, [{ agentId: "codex", label: "Codex", iconUrl: null }]);
+    assert.deepStrictEqual(result.cleanup, [{ agentId: "qwen-code", label: "Qwen Code", iconUrl: null }]);
     assert.deepStrictEqual(result.install, [{ agentId: "gemini-cli", label: "Gemini CLI", iconUrl: null }]);
+  });
+
+  // #895 T5 / T5b: the tutorial told users with a genuinely installed Codex to
+  // disconnect it. Both default integrations are exempt, not just codex.
+  it("never proposes cleanup for a default integration, even when explicitly undetected", () => {
+    for (const agentId of ["codex", "claude-code"]) {
+      const result = bucketAgentsForTutorial({
+        installableIds: [agentId],
+        detectionAgents: [detect(agentId, agentId, false, "low")],
+        agentsPref: { [agentId]: { integrationInstalled: true } },
+      });
+      assert.deepStrictEqual(result.cleanup, [], `${agentId} must be exempt from cleanup`);
+      assert.deepStrictEqual(result.active, []);
+      assert.deepStrictEqual(result.install, []);
+    }
+  });
+
+  // #895 T6b: the exemption wins even when a Clawd hook really is on disk. The
+  // detector's clawdIntegration field is deliberately NOT consulted — it only
+  // sees the primary config marker and misses standalone statusline residue.
+  it("keeps default integrations exempt even when a Clawd marker was found", () => {
+    const entry = detect("codex", "Codex", false, "low");
+    entry.clawdIntegration = { detected: true, reason: "marker-found" };
+    const result = bucketAgentsForTutorial({
+      installableIds: ["codex"],
+      detectionAgents: [entry],
+      agentsPref: { codex: { integrationInstalled: true } },
+    });
+    assert.deepStrictEqual(result.cleanup, []);
   });
 
   it("offers medium-confidence detections for install but never low", () => {
@@ -61,17 +107,77 @@ describe("bucketAgentsForTutorial", () => {
     assert.deepStrictEqual(result.install, [{ agentId: "pi", label: "pi", iconUrl: null }]);
   });
 
-  it("treats an installable agent with no detector entry as not detected", () => {
-    // integration installed but the detector returned nothing for it → cleanup,
-    // since an absent entry must not be read as "detected".
+  // #895 T6c: an absent entry is "not checked", not "checked and missing". It
+  // must not be read as detected either — the agent simply gets no bucket.
+  it("treats an installable agent with no detector entry as unknown, not as cleanup", () => {
     const result = bucketAgentsForTutorial({
-      installableIds: ["codex"],
+      installableIds: ["qwen-code"],
       detectionAgents: [],
-      agentsPref: { codex: { integrationInstalled: true } },
+      agentsPref: { "qwen-code": { integrationInstalled: true } },
     });
-    assert.deepStrictEqual(result.cleanup, [{ agentId: "codex", label: "codex", iconUrl: null }]);
+    assert.deepStrictEqual(result.cleanup, []);
     assert.strictEqual(result.install.length, 0);
     assert.strictEqual(result.active.length, 0);
+  });
+
+  // #895 T6c-variant: an entry that exists but carries no verdict is also
+  // unknown. Only a strict `false` may propose a deletion.
+  it("requires a strict false verdict before proposing cleanup", () => {
+    for (const value of [undefined, null]) {
+      const entry = detect("qwen-code", "Qwen Code", value, "low");
+      const result = bucketAgentsForTutorial({
+        installableIds: ["qwen-code"],
+        detectionAgents: [entry],
+        agentsPref: { "qwen-code": { integrationInstalled: true } },
+      });
+      assert.deepStrictEqual(result.cleanup, [], `detectedInstalled=${value} must not propose cleanup`);
+    }
+  });
+
+  // #895 T7: the reporter's exact machine shape, fed by the REAL detector
+  // rather than a hand-written fixture, so the two can't drift apart. Codex
+  // installed via npm but never launched leaves no ~/.codex, and Clawd's own
+  // sync does not create it (hooks/codex-install-utils.js bails when the
+  // directory is missing) — so the detector genuinely reports it absent.
+  it("does not propose removing Codex on a machine where Codex was never launched", () => {
+    const homeDir = makeHome();
+    const detection = detectAgentInstallations({
+      skipDefaultIntegrations: false,
+      homeDir,
+      platform: "darwin",
+      env: {},
+      now: 1,
+    });
+    const codex = detection.agents.find((entry) => entry.agentId === "codex");
+    assert.strictEqual(codex.detectedInstalled, false);
+    assert.strictEqual(codex.reason, "not-found");
+
+    const result = bucketAgentsForTutorial({
+      installableIds: INSTALLABLE,
+      detectionAgents: detection.agents,
+      agentsPref: {
+        "claude-code": { integrationInstalled: true },
+        codex: { integrationInstalled: true },
+      },
+    });
+    assert.deepStrictEqual(result.cleanup, []);
+  });
+
+  // #895 T6d: main.js falls back to { agents: [] } when the detector throws.
+  // A whole-scan failure must never turn into a wave of removal suggestions.
+  it("proposes nothing when the whole detection failed", () => {
+    for (const detectionAgents of [[], null, undefined]) {
+      const result = bucketAgentsForTutorial({
+        installableIds: INSTALLABLE,
+        detectionAgents,
+        agentsPref: {
+          "claude-code": { integrationInstalled: true },
+          codex: { integrationInstalled: true },
+          "qwen-code": { integrationInstalled: true },
+        },
+      });
+      assert.deepStrictEqual(result.cleanup, [], `detectionAgents=${detectionAgents} must propose no cleanup`);
+    }
   });
 
   it("tolerates missing/empty inputs without throwing", () => {

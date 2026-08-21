@@ -64,6 +64,8 @@ function createHarness(overrides = {}) {
     beginDragSnapshot: () => calls.push(["beginDragSnapshot"]),
     clearDragSnapshot: () => calls.push(["clearDragSnapshot"]),
     syncHitWin: () => calls.push(["syncHitWin"]),
+    setAccessoryMirror: overrides.setAccessoryMirror
+      || ((value) => calls.push(["setAccessoryMirror", value])),
     syncImeEditingPetDodge: () => calls.push(["syncImeEditingPetDodge"]),
     isMiniMode: () => state.miniMode,
     checkMiniModeSnap: overrides.checkMiniModeSnap
@@ -120,10 +122,24 @@ function sendDrop(ipcMain, paths, sender) {
   return listener({ sender }, paths);
 }
 
+test("accessory-mirror hands main the facing the renderer reported", () => {
+  const seen = [];
+  const { ipcMain } = createHarness({ setAccessoryMirror: (value) => seen.push(value) });
+  const listener = ipcMain.listeners.get("accessory-mirror");
+  assert.strictEqual(typeof listener, "function", "missing IPC listener accessory-mirror");
+
+  // Registering the channel is not the contract — forwarding the payload is.
+  listener({}, true);
+  listener({}, false);
+  listener({}, 1);
+  assert.deepStrictEqual(seen, [true, false, true]);
+});
+
 test("pet interaction IPC registers owned channels and disposes them", () => {
   const { ipcMain, runtime } = createHarness();
 
   assert.deepStrictEqual([...ipcMain.listeners.keys()].sort(), [
+    "accessory-mirror",
     "drag-end",
     "drag-lock",
     "drag-move",

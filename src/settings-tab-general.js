@@ -91,7 +91,7 @@
   let i18n = null;
   const languagePickerApi = root.ClawdLanguagePicker || {};
 
-  const LANGUAGE_OPTIONS = ["en", "zh", "zh-TW", "ko", "ja", "pt-BR"];
+  const LANGUAGE_OPTIONS = ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"];
   const ROAM_MOVEMENT_NATURAL = "natural";
   const ROAM_MOVEMENT_AXIS = "axis";
 
@@ -626,6 +626,7 @@
     "ko": "langKorean",
     "ja": "langJapanese",
     "pt-BR": "langPortugueseBrazil",
+    "es": "langSpanish",
   };
 
   function buildLanguageRow() {

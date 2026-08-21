@@ -295,6 +295,14 @@ function modeLabel(mode, lang) {
     "up-to-date": "Atualizado",
     error: "Erro",
   };
+  const es = {
+    checking: "Buscando",
+    available: "Disponible",
+    downloading: "Descargando",
+    ready: "Lista",
+    "up-to-date": "Última versión",
+    error: "Error",
+  };
 
   const dictMap = {
     zh,
@@ -302,6 +310,7 @@ function modeLabel(mode, lang) {
     en,
     "zh-TW": zhTW,
     "pt-BR": ptBR,
+    es,
   };
 
   const dict = dictMap[lang] || en;

@@ -10,6 +10,8 @@
   <a href="README.zh-TW.md">繁體中文</a>
   ·
   <a href="README.ja-JP.md">日本語</a>
+  ·
+  <a href="README.es.md">Español</a>
 </p>
 <p align="center">
   <a href="https://github.com/rullerzhou-afk/clawd-on-desk/releases"><img src="https://img.shields.io/github/v/release/rullerzhou-afk/clawd-on-desk" alt="Version"></a>
@@ -45,7 +47,7 @@ Clawd는 당신의 데스크톱 위에서 살며, AI 코딩 에이전트가 지�
 - **Kiro CLI** — `~/.kiro/agents/` 아래 커스텀 agent 설정에 command hook을 주입하고, 추가로 `clawd` agent를 자동 생성합니다. Clawd가 시작될 때마다 Kiro 기본 `kiro_default`에서 다시 동기화되므로 `kiro-cli --agent clawd` 또는 `/agent swap clawd`로 비교적 원본 동작을 유지한 채 hook을 켤 수 있습니다. 상태 hook은 macOS와 Windows에서 검증되었습니다.
 - **Kimi Code CLI (Kimi-CLI)** — `~/.kimi/config.toml`의 command hook(`[[hooks]]` 항목)을 사용합니다. Clawd 시작 시 자동 등록되며, `npm run install:kimi-hooks`로 수동 설치할 수도 있습니다.
 - **Qwen Code** — `~/.qwen/settings.json`의 command hook을 사용합니다 (Clawd 시작 시 자동 등록되며, `npm run install:qwen-hooks`로 수동 설치 가능). 상태 추적과 Qwen `PermissionRequest` 데스크톱 권한 말풍선을 지원합니다.
-- **opencode** — `~/.config/opencode/opencode.json`의 선택적 [플러그인 연동](https://opencode.ai/docs/plugins)입니다 (Settings → Agents에서 설치). 지연 없는 이벤트 스트리밍과 허용/항상 허용/거부 권한 말풍선을 지원합니다. `task` 하위 세션은 headless이므로 표시되는 다중 세션 애니메이션 집계에 참여하지 않습니다.
+- **opencode** — `~/.config/opencode/` 아래 실제로 적용되는 파일(`config.json` → `opencode.json` → `opencode.jsonc`, 뒤쪽이 우선)의 선택적 [플러그인 연동](https://opencode.ai/docs/plugins)입니다 (Settings → Agents에서 설치). 지연 없는 이벤트 스트리밍과 허용/항상 허용/거부 권한 말풍선을 지원합니다. `task` 하위 세션은 headless이므로 표시되는 다중 세션 애니메이션 집계에 참여하지 않습니다.
 - **MiMo Code** — `~/.config/mimocode/mimocode.jsonc`의 선택적 [플러그인 연동](https://opencode.ai/docs/plugins)입니다 (Settings → Agents에서 설치하거나 `node hooks/mimocode-install.js` 실행). opencode와 동일한 `@mimo-ai/plugin` SDK 및 권한 동작을 공유하며 `task` 하위 세션도 headless입니다.
 - **Pi** — `~/.pi/agent/extensions/clawd-on-desk`의 전역 extension으로 연동됩니다 (Clawd 시작 시 자동 등록되며, `npm run install:pi-extension`으로 수동 설치 가능). 인터랙티브 Pi 세션의 라이프사이클과 도구 활동 상태만 보고하며, Pi의 기본 YOLO 동작을 유지합니다.
 - **OpenClaw** — `~/.openclaw/openclaw.json`의 plugin 경로로 상태만 연동합니다 (OpenClaw config가 이미 있으면 Clawd 시작 시 자동 등록되며, `npm run install:openclaw-plugin`으로 수동 설치 가능). Phase 1은 로컬 `openclaw tui --local` 세션의 애니메이션만 지원하며, 권한 말풍선과 터미널 포커스는 지원하지 않습니다.
@@ -95,7 +97,7 @@ Clawd는 당신의 데스크톱 위에서 살며, AI 코딩 에이전트가 지�
 - **방해 금지 모드** — 우클릭 또는 트레이 메뉴로 sleep 모드에 들어가면, 깰 때까지 모든 hook 이벤트가 음소거됩니다. DND 동안에는 권한 말풍선이 뜨지 않으며, Codex, opencode, MiMo Code는 기본 프롬프트로 돌아가고, Claude Code와 CodeBuddy는 자체 권한 확인 흐름으로 되돌아갑니다. Antigravity와 Pi는 상태만 동기화합니다.
 - **효과음** — 작업 완료나 권한 요청 시 짧은 오디오 알림이 재생됩니다. 시스템 트레이 또는 설정에서 켜고 끌 수 있으며, 10초 쿨다운이 있고 DND에서는 자동 음소거됩니다.
 - **시스템 트레이** — DND, 자동 시작, 업데이트 확인 등을 지원합니다.
-- **i18n** — 영어, 중국어 간체, 중국어 번체, 한국어, 일본어, Português (Brasil) UI를 지원하며, 설정 → 일반에서 전환할 수 있습니다.
+- **i18n** — 영어, 중국어 간체, 중국어 번체, 한국어, 일본어, Português (Brasil), Español UI를 지원하며, 설정 → 일반에서 전환할 수 있습니다.
 - **자동 업데이트** — GitHub release를 확인하고, Windows는 종료 시 NSIS 업데이트를 설치하며, macOS/Linux는 clone한 저장소에서 실행 중일 때 `git pull` + 재시작으로 업데이트합니다.
 
 ## 애니메이션
@@ -344,7 +346,10 @@ Clawd를 더 좋게 만드는 데 도움을 준 모든 분들께 감사합니다
     <td align="center" valign="top" width="110"><a href="https://github.com/anthonyonazure"><img src="https://github.com/anthonyonazure.png" width="50" style="border-radius:50%" /><br /><sub>anthonyonazure</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/weed33834"><img src="https://github.com/weed33834.png" width="50" style="border-radius:50%" /><br /><sub>weed33834</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/arismarioneves"><img src="https://github.com/arismarioneves.png" width="50" style="border-radius:50%" /><br /><sub>arismarioneves</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/wang4433"><img src="https://github.com/wang4433.png" width="50" style="border-radius:50%" /><br /><sub>wang4433</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/shengmai-justin"><img src="https://github.com/shengmai-justin.png" width="50" style="border-radius:50%" /><br /><sub>shengmai-justin</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/aaronWool"><img src="https://github.com/aaronWool.png" width="50" style="border-radius:50%" /><br /><sub>aaronWool</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/Zamaniego"><img src="https://github.com/Zamaniego.png" width="50" style="border-radius:50%" /><br /><sub>Zamaniego</sub></a></td>
   </tr>
 </table>
 
