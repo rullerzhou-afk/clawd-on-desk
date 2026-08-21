@@ -110,6 +110,8 @@ Developer ID 签名 + 公证（electron-builder 原生用 `APPLE_API_*` 公证�
 > **关键细节**：仓库 `package.json` 的 `build.mac.identity` 是 `"-"`（ad-hoc），
 > 它会阻止 electron-builder 自动发现证书。workflow 已自动从 p12 提取证书通用名并通过
 > `-c.mac.identity=...` 覆盖，**维护者不需要改 package.json**。
+> `APPLE_API_KEY` secret 存的是 `.p8` 的 Base64 内容，workflow 会在构建前把它解码成
+> 临时 `.p8` 文件再传给 electron-builder（`@electron/notarize` 需要文件路径）。
 > CI 里同样 `--publish never`，发布交给 workflow 显式步骤，避免污染上游。
 
 无证书时保持 `identity: "-"`（ad-hoc），维持现状。
