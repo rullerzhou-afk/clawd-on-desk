@@ -33,6 +33,7 @@ docs/**
 !docs/guides/state-mapping.zh-CN.md
 !docs/guides/telegram-approval.md
 !docs/guides/feishu-lark-remote-approval.md
+!docs/guides/release-signing.md
 !docs/guides/codex-wsl-clarification.md
 !docs/guides/codex-wsl-clarification.zh-CN.md
 !docs/guides/codex-wsl-clarification.ko-KR.md
@@ -126,6 +127,7 @@ scripts/manual/*
 !scripts/run-packaged-koffi-smoke.js
 !scripts/verify-updater-metadata.js
 !scripts/verify-appimage-apprun.js
+!scripts/publish-signed-mac.sh
 
 # oh-my-cursor state
 .omc/
