@@ -19,6 +19,19 @@ on:
       - "src/telegram-*"
       - "src/settings-tab-telegram-approval.js"
       - "src/settings.css"
+      - "agents/traecode.js"
+      - "hooks/traecode-*"
+      - "src/state-stale-cleanup.js"
+      - "src/state.js"
+      - "src/integration-sync.js"
+      - "src/doctor-detectors/agent-descriptors.js"
+      - "test/traecode-*.test.js"
+      - "test/state-stale-cleanup.test.js"
+      - "test/integration-sync.test.js"
+      - "test/doctor-agent-descriptors.test.js"
+      - "test/doctor-agent-integrations.test.js"
+      - "test/server-hook-management.test.js"
+      - "test/hook-adapter-offline-contract.test.js"
       - "scripts/assert-no-retired-telegram-sidecar.js"
       - "scripts/audit-repository-assets.js"
       - "scripts/after-pack-koffi.js"
@@ -73,6 +86,19 @@ jobs:
             test/verify-updater-metadata.test.js \
             test/win-foreground-terminal.test.js \
             test/win-fullscreen-detect.test.js
+      - name: Run TraeCode integration tests
+        run: |
+          node --test \
+            test/traecode-hook.test.js \
+            test/traecode-install.test.js \
+            test/registry.test.js \
+            test/state-stale-cleanup.test.js \
+            test/integration-sync.test.js \
+            test/doctor-agent-descriptors.test.js \
+            test/doctor-agent-integrations.test.js \
+            test/server-hook-management.test.js \
+            test/settings-renderer-browser-env.test.js \
+            test/hook-adapter-offline-contract.test.js
 
   package:
     needs: unit

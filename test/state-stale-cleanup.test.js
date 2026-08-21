@@ -11,6 +11,7 @@ const {
   isWorkingLikeState,
   isLocalCodexWorkingLikeSession,
   isLocalZcodeDesktopIdleSession,
+  isLocalTraeDesktopIdleSession,
   getStaleSessionDecision,
 } = require("../src/state-stale-cleanup");
 
@@ -40,6 +41,15 @@ function zcodeDesktopSession(overrides = {}) {
     agentId: "zcode",
     agentPid: 30,
     sourcePid: 31,
+    ...overrides,
+  });
+}
+
+function traeDesktopSession(overrides = {}) {
+  return session({
+    agentId: "traecode",
+    agentPid: 40,
+    sourcePid: 41,
     ...overrides,
   });
 }
@@ -285,6 +295,52 @@ describe("state stale cleanup decisions", () => {
     for (const target of cases) {
       const result = decision(target, { alivePids, staleConfig }).result;
       assert.notStrictEqual(result.reason, "zcode-desktop-idle-timeout");
+    }
+  });
+
+  it("deletes an idle local TraeCode conversation after timeout even while the IDE pid is alive", () => {
+    const { result, calls } = decision(traeDesktopSession({
+      updatedAt: 1000000 - 60_001,
+    }), {
+      alivePids: new Set([40, 41]),
+      staleConfig: { sessionStaleMs: 60_000 },
+    });
+
+    assert.strictEqual(isLocalTraeDesktopIdleSession(traeDesktopSession()), true);
+    assert.deepStrictEqual(result, { action: "delete", reason: "traecode-desktop-idle-timeout" });
+    assert.deepStrictEqual(calls, [40]);
+  });
+
+  it("keeps TraeCode conversations before the cutoff or when the cutoff is disabled", () => {
+    const alivePids = new Set([40, 41]);
+    assert.deepStrictEqual(decision(traeDesktopSession({
+      updatedAt: 1000000 - 59_999,
+    }), {
+      alivePids,
+      staleConfig: { sessionStaleMs: 60_000 },
+    }).result, { action: null });
+    assert.deepStrictEqual(decision(traeDesktopSession({
+      updatedAt: 1000000 - 24 * 60 * 60 * 1000,
+    }), {
+      alivePids,
+      staleConfig: { sessionStaleMs: 0 },
+    }).result, { action: null });
+  });
+
+  it("does not apply the TraeCode idle timeout to remote, headless, or working sessions", () => {
+    const updatedAt = 1000000 - 60_001;
+    const alivePids = new Set([40, 41]);
+    const staleConfig = { sessionStaleMs: 60_000 };
+    const cases = [
+      traeDesktopSession({ host: "remote-box", updatedAt }),
+      traeDesktopSession({ headless: true, updatedAt }),
+      traeDesktopSession({ state: "working", updatedAt }),
+      // Not traecode — e.g. claude-code idling in the same directory.
+      session({ agentId: "claude-code", agentPid: 40, sourcePid: 41, updatedAt }),
+    ];
+    for (const target of cases) {
+      const result = decision(target, { alivePids, staleConfig }).result;
+      assert.notStrictEqual(result.reason, "traecode-desktop-idle-timeout");
     }
   });
 

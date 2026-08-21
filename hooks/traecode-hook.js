@@ -16,7 +16,6 @@ const {
   applyOrcaPaneKey,
   processAlive,
 } = require("./shared-process");
-const { claimTitle, sweepStaleMarkers } = require("./traecode-title-lock");
 
 // TraeCode hook event → { state, event } for the Clawd state machine
 const HOOK_MAP = {
@@ -40,7 +39,9 @@ const EVENT_TO_LIFECYCLE = {
 // Session title handling — Trae sends no session_title field (verified live:
 // SessionStart/UserPromptSubmit payloads carry only session_id, cwd,
 // workspace_roots). The HUD title is therefore derived from the first line of
-// the user's prompt, mirroring the claude-code hook's extractPromptTitle.
+// the user's prompt, mirroring the claude-code hook's extractPromptTitle. The
+// server keeps the first successful title per session (state.js first-wins for
+// traecode), so follow-up prompts never overwrite it.
 const SESSION_TITLE_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F]+/g;
 const SESSION_TITLE_MAX = 80;
 const PROMPT_TITLE_MAX = 40;
@@ -95,11 +96,11 @@ function resolveSessionTitle(payload, event) {
 
 const config = getPlatformConfig({
   // Trae CN ships as "Trae CN.exe" (process name lowercased to "trae cn.exe"
-  // by the Windows process snapshot); the international build is "Trae.exe".
-  // Cover both spellings plus a space-less variant.
-  extraTerminals: { win: ["trae.exe", "trae cn.exe", "traecn.exe"] },
+  // by the Windows process snapshot). The international build "Trae.exe" is
+  // deliberately NOT matched — this first release only covers Trae CN.
+  extraTerminals: { win: ["trae cn.exe", "traecn.exe"] },
   extraEditors: {
-    win: { "trae.exe": "trae", "trae cn.exe": "trae", "traecn.exe": "trae" },
+    win: { "trae cn.exe": "trae", "traecn.exe": "trae" },
     mac: { "Trae": "trae", "trae": "trae" },
     linux: { "trae": "trae", "Trae": "trae" },
   },
@@ -110,140 +111,176 @@ let runtimeContext = Object.freeze({
   observation: null,
 });
 const resolve = createPidResolver({
-  agentNames: { win: new Set(["trae.exe", "trae cn.exe", "traecn.exe"]), mac: new Set(["Trae", "trae"]), linux: new Set(["trae", "Trae"]) },
+  agentNames: { win: new Set(["trae cn.exe", "traecn.exe"]), mac: new Set(["Trae", "trae"]), linux: new Set(["trae", "Trae"]) },
   platformConfig: config,
   readRuntimeIdentity: () => runtimeContext.identity,
 });
 
-// TraeCode PreToolUse gating — allow by default
-function stdoutForEvent(hookName) {
-  if (hookName === "PreToolUse") return JSON.stringify({ decision: "allow" });
-  return "{}";
-}
+// TraeCode's documented tool-decision shape is
+// hookSpecificOutput.permissionDecision. This integration is state-only and
+// does not own permission decisions, so every event emits {} (an empty
+// permission decision allows the tool). Emitting a top-level {"decision":
+// "allow"} would violate the Trae hook contract.
 
 // Safety timeout: guarantee valid JSON on stdout even if stdin never arrives
 // or the process tree walk hangs. Without this TraeCode would see empty stdout
 // which is invalid JSON and logs an error on every hook invocation.
 const SAFETY_TIMEOUT_MS = 800;
-let _wrote = false;
-let _exited = false;
-let safetyTimer = null;
 
-// Write the stdout response exactly once. Kept separate from process exit so the
-// hook can answer TraeCode immediately yet still let the fire-and-forget POST
-// to Clawd leave the process before it exits.
-function writeStdoutOnce(outLine) {
-  if (_wrote) return;
-  _wrote = true;
-  process.stdout.write(outLine + "\n");
-}
+// Everything that runs the real hook lifecycle — reading stdin, arming the
+// safety timer, answering TraeCode on stdout, the fire-and-forget POST to
+// Clawd, and process exit — lives inside main(), which only runs when this
+// file is the entry point. Importing the module for tests must not read stdin,
+// arm timers, write stdout, or exit.
+function main(deps = {}) {
+  const readStdin = deps.readStdinJson || readStdinJson;
+  const postState = deps.postState || postStateToRunningServer;
+  let _wrote = false;
+  let _exited = false;
+  let safetyTimer = null;
 
-function finish(outLine) {
-  writeStdoutOnce(outLine);
-  if (_exited) return;
-  _exited = true;
-  if (safetyTimer) clearTimeout(safetyTimer);
-  process.exit(0);
-}
-
-safetyTimer = setTimeout(() => finish("{}"), SAFETY_TIMEOUT_MS);
-
-readStdinJson()
-  .then((payload) => {
-    const hookName = (payload && payload.hook_event_name) || "";
-    const mapped = HOOK_MAP[hookName];
-    const outLine = stdoutForEvent(hookName);
-
-    if (!mapped) {
-      finish(outLine);
+  // Write the stdout response exactly once. Kept separate from process exit so
+  // the hook can answer TraeCode immediately yet still let the fire-and-forget
+  // POST to Clawd leave the process before it exits. Exit in the write callback
+  // so a pipe-backed stdout actually flushes before the process terminates —
+  // exiting immediately after write() can truncate the response TraeCode is
+  // waiting on.
+  function writeStdoutOnce(outLine, done) {
+    if (_wrote) {
+      if (done) done();
       return;
     }
-
-    const { state, event } = mapped;
-    const remote = !!process.env.CLAWD_REMOTE;
-    if (!remote && process.platform === "win32") {
-      runtimeContext = readWindowsProcessChainHookContext("traecode");
-    }
-    const runtimeObservation = runtimeContext.observation;
-    const serverProcessChainEnabled = !!(
-      !remote
-      && process.platform === "win32"
-      && runtimeObservation
-      && runtimeObservation.agentMode !== "legacy"
-      && processAlive(runtimeObservation.ownerPid)
-    );
-    const authoritativeProcessChain = serverProcessChainEnabled
-      && runtimeObservation.agentMode === "b1a-authoritative";
-    if (hookName === "SessionStart" && !remote && !authoritativeProcessChain) resolve();
-
-    const sessionId = (payload && payload.session_id) || "default";
-    const cwd = (payload && payload.cwd) || "";
-
-    const pidMetadata = authoritativeProcessChain ? {} : resolve({
-        namespace: "traecode",
-        sessionId,
-        cacheCwd: cwd,
-        lifecycle: EVENT_TO_LIFECYCLE[hookName] || "event",
-        cacheable: sessionId !== "default" && !!cwd,
-      });
-    const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = pidMetadata;
-
-    const body = { state, session_id: sessionId, event };
-    body.agent_id = "traecode";
-    if (cwd) body.cwd = cwd;
-    // First prompt wins: claim the session title only once, so follow-up
-    // prompts never overwrite it (matching Trae's constant session title).
-    const resolvedTitle = resolveSessionTitle(payload, event);
-    if (resolvedTitle) {
-      const claimed = claimTitle("traecode", sessionId, cwd, resolvedTitle);
-      if (claimed.claimed) {
-        body.session_title = claimed.title;
-        sweepStaleMarkers();
-      }
-    }
-    if (remote) {
-      body.host = readHostPrefix();
-      applyWslSourceFields(body, { remote: true });
-      applyOrcaPaneKey(body);
-    } else {
-      applyWslSourceFields(body);
-      if (!authoritativeProcessChain) {
-        body.source_pid = stablePid;
-        if (detectedEditor) body.editor = detectedEditor;
-        if (agentPid) body.agent_pid = agentPid;
-        if (Array.isArray(pidChain) && pidChain.length) body.pid_chain = pidChain;
-        if (tmuxSocket) body.tmux_socket = tmuxSocket;
-        if (tmuxClient) body.tmux_client = tmuxClient;
-      }
-      applyOrcaPaneKey(body);
-    }
-
-    // Answer TraeCode immediately so it never sees empty stdout, but don't
-    // exit yet — the fire-and-forget POST below still needs to leave the
-    // process, so we exit in its callback (with the safety timer as backstop).
-    writeStdoutOnce(outLine);
-
-    const postOptions = { timeoutMs: 100 };
-    if (serverProcessChainEnabled) {
-      postOptions.preferredPort = runtimeObservation.port;
-      postOptions.runtimePort = runtimeObservation.port;
-      postOptions.windowsProcessChain = {
-        agentId: "traecode",
-        hookPid: process.pid,
-        runtimeObservation,
-        legacyCacheSource: pidMetadata.cacheSource || "none",
-      };
-    }
-    postStateToRunningServer(JSON.stringify(body), postOptions, () => {
-      finish(outLine);
+    _wrote = true;
+    process.stdout.write(outLine + "\n", () => {
+      if (done) done();
     });
-  })
-  .catch(() => finish("{}"));
+  }
+
+  function finish(outLine) {
+    if (_exited) return;
+    _exited = true;
+    if (safetyTimer) clearTimeout(safetyTimer);
+    writeStdoutOnce(outLine, () => process.exit(0));
+  }
+
+  // Trae session ids are not globally unique, and a bare missing id must not
+  // collapse every hook invocation into one phantom "default" session. Namespace
+  // the id with the agent prefix and drop the event when it is absent — a hook
+  // without a session cannot be attributed, so there is nothing to post.
+  function normalizeSessionId(value) {
+    const raw = typeof value === "string" ? value.trim() : "";
+    if (!raw || raw === "default") return "";
+    return `traecode:${raw}`;
+  }
+
+  safetyTimer = setTimeout(() => finish("{}"), SAFETY_TIMEOUT_MS);
+
+  readStdin()
+    .then((payload) => {
+      const hookName = (payload && payload.hook_event_name) || "";
+      const mapped = HOOK_MAP[hookName];
+      const outLine = "{}";
+
+      if (!mapped) {
+        finish(outLine);
+        return;
+      }
+
+      const { state, event } = mapped;
+      const remote = !!process.env.CLAWD_REMOTE;
+      if (!remote && process.platform === "win32") {
+        runtimeContext = readWindowsProcessChainHookContext("traecode");
+      }
+      const runtimeObservation = runtimeContext.observation;
+      const serverProcessChainEnabled = !!(
+        !remote
+        && process.platform === "win32"
+        && runtimeObservation
+        && runtimeObservation.agentMode !== "legacy"
+        && processAlive(runtimeObservation.ownerPid)
+      );
+      const authoritativeProcessChain = serverProcessChainEnabled
+        && runtimeObservation.agentMode === "b1a-authoritative";
+      if (hookName === "SessionStart" && !remote && !authoritativeProcessChain) resolve();
+
+      const sessionId = normalizeSessionId(payload && payload.session_id);
+      const cwd = (payload && typeof payload.cwd === "string") ? payload.cwd : "";
+      // No session id means the event cannot be attributed to any session —
+      // answer TraeCode immediately and skip the POST rather than collapsing
+      // into a phantom "default" session on the server.
+      if (!sessionId) {
+        finish(outLine);
+        return;
+      }
+
+      const pidMetadata = authoritativeProcessChain ? {} : resolve({
+          namespace: "traecode",
+          sessionId,
+          cacheCwd: cwd,
+          lifecycle: EVENT_TO_LIFECYCLE[hookName] || "event",
+          cacheable: !!cwd,
+        });
+      const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = pidMetadata;
+
+      const body = { state, session_id: sessionId, event };
+      body.agent_id = "traecode";
+      if (cwd) body.cwd = cwd;
+      // Trae stores the session title server-side, so Clawd derives it from the
+      // first prompt line (matching Trae's constant session title). The server
+      // keeps the FIRST successful title per session (state.js first-wins for
+      // traecode), so a title that fails to post is not permanently claimed and
+      // follow-up prompts never overwrite the first one.
+      const resolvedTitle = resolveSessionTitle(payload, event);
+      if (resolvedTitle) body.session_title = resolvedTitle;
+      if (remote) {
+        body.host = readHostPrefix();
+        applyWslSourceFields(body, { remote: true });
+        applyOrcaPaneKey(body);
+      } else {
+        applyWslSourceFields(body);
+        if (!authoritativeProcessChain) {
+          body.source_pid = stablePid;
+          if (detectedEditor) body.editor = detectedEditor;
+          if (agentPid) body.agent_pid = agentPid;
+          if (Array.isArray(pidChain) && pidChain.length) body.pid_chain = pidChain;
+          if (tmuxSocket) body.tmux_socket = tmuxSocket;
+          if (tmuxClient) body.tmux_client = tmuxClient;
+        }
+        applyOrcaPaneKey(body);
+      }
+
+      // Answer TraeCode immediately so it never sees empty stdout, but don't
+      // exit yet — the fire-and-forget POST below still needs to leave the
+      // process, so we exit in its callback (with the safety timer as backstop).
+      writeStdoutOnce(outLine);
+
+      const postOptions = { timeoutMs: 100 };
+      if (serverProcessChainEnabled) {
+        postOptions.preferredPort = runtimeObservation.port;
+        postOptions.runtimePort = runtimeObservation.port;
+        postOptions.windowsProcessChain = {
+          agentId: "traecode",
+          hookPid: process.pid,
+          runtimeObservation,
+          legacyCacheSource: pidMetadata.cacheSource || "none",
+        };
+      }
+      postState(JSON.stringify(body), postOptions, () => {
+        finish(outLine);
+      });
+    })
+    .catch(() => finish("{}"));
+}
+
+if (require.main === module) {
+  main();
+}
 
 module.exports = {
   __test: {
     resolveSessionTitle,
     extractPromptTitle,
     normalizeTitle,
+    main,
   },
 };

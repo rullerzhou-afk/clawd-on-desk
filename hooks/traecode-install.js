@@ -65,6 +65,22 @@ function registerTraeCodeHooks(options = {}) {
     }
   }
 
+  // Fail closed on an unsupported schema: refusing to modify a hooks.json we
+  // do not understand is safer than silently overwriting a foreign structure.
+  if (settings === null || typeof settings !== "object" || Array.isArray(settings)) {
+    throw new Error(`Refusing to modify ${hooksPath}: root is not a JSON object`);
+  }
+  if (settings.hooks != null) {
+    if (typeof settings.hooks !== "object" || Array.isArray(settings.hooks)) {
+      throw new Error(`Refusing to modify ${hooksPath}: "hooks" is not an object`);
+    }
+    for (const event of Object.keys(settings.hooks)) {
+      if (!Array.isArray(settings.hooks[event])) {
+        throw new Error(`Refusing to modify ${hooksPath}: "${event}" is not an array`);
+      }
+    }
+  }
+
   // Resolve node path; if detection fails, preserve existing absolute path
   const resolved = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
   const nodeBin = resolved
@@ -74,10 +90,11 @@ function registerTraeCodeHooks(options = {}) {
   // (verified in Trae's cloudide.icube-agent-shell-exec execCommandHook).
   // formatNodeHookCommand emits the PowerShell `&` prefix on win32 — a bare
   // quoted path is a string literal there and silently never runs — and the
-  // plain quoted form on macOS/Linux.
+  // plain quoted form on macOS/Linux. The command carries no `shell` field;
+  // that field is undocumented by Trae, so it is never written and any legacy
+  // `shell` field this installer previously added is removed on migration.
   const platform = options.platform || process.platform;
   const desiredCommand = formatNodeHookCommand(nodeBin, hookScript, { platform });
-  const isWin = platform === "win32";
 
   if (!settings.hooks || typeof settings.hooks !== "object") settings.hooks = {};
 
@@ -109,25 +126,27 @@ function registerTraeCodeHooks(options = {}) {
             h.command = desiredCommand;
             stalePath = true;
           }
-          // Migrate existing entries to include shell: "powershell" on Windows
-          if (isWin && h.shell !== "powershell") {
-            h.shell = "powershell";
+          // Drop the undocumented shell field this installer wrote in earlier
+          // revisions — Trae does not document it and PowerShell already runs
+          // the `&`-prefixed command without it.
+          if (h.shell !== undefined) {
+            delete h.shell;
             stalePath = true;
           }
           break;
         }
       }
-      // Also check flat format for migration
+      // Also check flat format for migration — convert owned flat entries to
+      // the documented nested shape ({ matcher: "", hooks: [{ type, command }] })
+      // instead of leaving them flat.
       if (!found && entry.command && entry.command.includes(MARKER)) {
         found = true;
-        if (entry.command !== desiredCommand) {
-          entry.command = desiredCommand;
-          stalePath = true;
-        }
-        if (isWin && entry.shell !== "powershell") {
-          entry.shell = "powershell";
-          stalePath = true;
-        }
+        const index = arr.indexOf(entry);
+        arr[index] = {
+          matcher: "",
+          hooks: [{ type: "command", command: desiredCommand }],
+        };
+        stalePath = true;
       }
       if (found) break;
     }
@@ -144,7 +163,6 @@ function registerTraeCodeHooks(options = {}) {
 
     // Add in Claude Code-compatible nested format
     const hookEntry = { type: "command", command: desiredCommand };
-    if (isWin) hookEntry.shell = "powershell";
     arr.push({
       matcher: "",
       hooks: [hookEntry],

@@ -1600,6 +1600,20 @@ function mergeSessionProcessMetadata(existing, incoming = {}, options = {}) {
   };
 }
 
+// Trae stores the session title server-side, so Clawd derives it from the
+// first prompt line. The first title that reaches the server wins — a title
+// whose POST fails is not permanently claimed, and follow-up prompts never
+// overwrite the first one (matching Trae's constant session title).
+const FIRST_WINS_TITLE_AGENT_IDS = new Set(["traecode"]);
+
+function resolveIncomingSessionTitle(existing, agentId, incomingTitle) {
+  const normalized = normalizeTitle(incomingTitle);
+  if (FIRST_WINS_TITLE_AGENT_IDS.has(agentId)) {
+    return (existing && existing.sessionTitle) || normalized || null;
+  }
+  return normalized || (existing && existing.sessionTitle) || null;
+}
+
 function updateSession(sessionId, state, event, opts = {}) {
   try {
   const {
@@ -1743,7 +1757,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       const srcCodexOriginator = codexOriginator || (existing && existing.codexOriginator) || null;
       const srcCodexSource = codexSource || (existing && existing.codexSource) || null;
       const srcGhosttyTerminalId = normalizeGhosttyTerminalId(ghosttyTerminalId) || (existing && existing.ghosttyTerminalId) || null;
-      const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
+      const srcSessionTitle = resolveIncomingSessionTitle(existing, srcAgentId, sessionTitle);
       const permissionContext = resolveContextUsageUpdate(existing, contextUsage, contextUsageOrigin);
       const srcContextUsage = permissionContext.contextUsage;
       const srcContextUsageOrigin = permissionContext.contextUsageOrigin;
@@ -1872,7 +1886,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcGhosttyTerminalId = normalizeGhosttyTerminalId(ghosttyTerminalId) || (existing && existing.ghosttyTerminalId) || null;
   // Sticky: empty input does not clear an existing title. A session that has
   // ever been named keeps that name until the user explicitly renames it.
-  const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
+  const srcSessionTitle = resolveIncomingSessionTitle(existing, srcAgentId, sessionTitle);
   const normalizedIncomingContextUsage = normalizeContextUsage(contextUsage);
   const effectiveContextUsageOrigin = normalizeContextUsageOrigin(contextUsageOrigin)
     || (srcAgentId === "claude-code" && normalizedIncomingContextUsage && normalizedIncomingContextUsage.source === "claude"

@@ -44,6 +44,14 @@ function isLocalZcodeDesktopIdleSession(session) {
     && session.state === "idle";
 }
 
+function isLocalTraeDesktopIdleSession(session) {
+  return !!session
+    && session.agentId === "traecode"
+    && !session.host
+    && !session.headless
+    && session.state === "idle";
+}
+
 function getStaleSessionDecision(session, options = {}) {
   const now = options.now;
   const config = options.staleConfig || {};
@@ -124,6 +132,18 @@ function getStaleSessionDecision(session, options = {}) {
     return { action: "delete", reason: "zcode-desktop-idle-timeout" };
   }
 
+  // TraeCode conversations have no SessionEnd event and share the IDE's
+  // long-lived process. A live IDE process therefore cannot keep an individual
+  // closed conversation alive forever — apply the same configured idle cutoff
+  // used for Codex Desktop and ZCode.
+  if (
+    sessionStaleMs > 0
+    && age > sessionStaleMs
+    && isLocalTraeDesktopIdleSession(session)
+  ) {
+    return { action: "delete", reason: "traecode-desktop-idle-timeout" };
+  }
+
   // NOTE: requiresCompletionAck does NOT hold a session out of stale cleanup.
   // The completion notification (e.g. Telegram push) already fires once at the
   // completion instant, so an unacknowledged remote session has already been
@@ -183,5 +203,6 @@ module.exports = {
   isLocalCodexWorkingLikeSession,
   isLocalOpencodeWorkingLikeSession,
   isLocalZcodeDesktopIdleSession,
+  isLocalTraeDesktopIdleSession,
   getStaleSessionDecision,
 };

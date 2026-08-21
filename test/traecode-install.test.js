@@ -114,8 +114,10 @@ describe("TraeCode hook installer", () => {
 
     assert.ok(result.updated >= 1);
     const settings = readJson(configPath);
-    assert.ok(settings.hooks.PreToolUse[0].command.includes("/usr/local/bin/node"));
-    assert.ok(!settings.hooks.PreToolUse[0].command.includes("/old/path/"));
+    const entry = settings.hooks.PreToolUse[0];
+    assert.ok(Array.isArray(entry.hooks), "flat entry must be converted to nested shape");
+    assert.ok(entry.hooks[0].command.includes("/usr/local/bin/node"));
+    assert.ok(!entry.hooks[0].command.includes("/old/path/"));
   });
 
   it("preserves existing node path from nested format when detection fails", () => {
@@ -243,7 +245,7 @@ describe("TraeCode hook installer", () => {
 });
 
 describe("TraeCode hook installer (Windows)", () => {
-  it("uses PowerShell call operator and shell field on Windows", () => {
+  it("uses the PowerShell call operator and no shell field on Windows", () => {
     const configPath = makeTempConfigFile({});
     const result = registerTraeCodeHooks({
       silent: true,
@@ -262,7 +264,8 @@ describe("TraeCode hook installer (Windows)", () => {
       assert.ok(hook.command.startsWith("& "), `${event}: command must start with "& "`);
       assert.ok(hook.command.includes("C:\\Program Files\\nodejs\\node.exe"));
       assert.ok(hook.command.includes(MARKER));
-      assert.strictEqual(hook.shell, "powershell");
+      // The `shell` field is undocumented by Trae and must not be written.
+      assert.strictEqual(hook.shell, undefined, `${event}: must not carry a shell field`);
     }
   });
 
@@ -288,7 +291,7 @@ describe("TraeCode hook installer (Windows)", () => {
     assert.strictEqual(fs.readFileSync(configPath, "utf8"), contentBefore);
   });
 
-  it("migrates legacy bare-quoted command to PowerShell format on Windows", () => {
+  it("migrates a legacy bare-quoted command to the PowerShell & format on Windows", () => {
     const configPath = makeTempConfigFile({
       hooks: {
         SessionStart: [{
@@ -313,6 +316,83 @@ describe("TraeCode hook installer (Windows)", () => {
     const settings = readJson(configPath);
     const hook = settings.hooks.SessionStart[0].hooks[0];
     assert.ok(hook.command.startsWith("& "), "migrated command must start with & ");
-    assert.strictEqual(hook.shell, "powershell");
+    assert.strictEqual(hook.shell, undefined, "migrated command must not carry a shell field");
+  });
+
+  it("drops a legacy shell: powershell field on migration", () => {
+    const configPath = makeTempConfigFile({
+      hooks: {
+        SessionStart: [{
+          matcher: "",
+          hooks: [{
+            type: "command",
+            command: '& "C:\\Program Files\\nodejs\\node.exe" "D:/path/traecode-hook.js"',
+            shell: "powershell",
+          }],
+        }],
+      },
+    });
+
+    const result = registerTraeCodeHooks({
+      silent: true,
+      hooksPath: configPath,
+      nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+      platform: "win32",
+    });
+
+    assert.ok(result.updated >= 1);
+    const settings = readJson(configPath);
+    assert.strictEqual(settings.hooks.SessionStart[0].hooks[0].shell, undefined);
+  });
+});
+
+describe("TraeCode hook installer (hardening)", () => {
+  it("converts an owned flat entry to the documented nested shape", () => {
+    const configPath = makeTempConfigFile({
+      hooks: {
+        PreToolUse: [{ command: '"/usr/local/bin/node" "/old/path/traecode-hook.js"' }],
+      },
+    });
+
+    const result = registerTraeCodeHooks({
+      silent: true,
+      hooksPath: configPath,
+      nodeBin: "/usr/local/bin/node",
+    });
+
+    assert.ok(result.updated >= 1);
+    const settings = readJson(configPath);
+    const entry = settings.hooks.PreToolUse[0];
+    assert.ok(Array.isArray(entry.hooks), "flat entry must be converted to nested shape");
+    assert.strictEqual(entry.matcher, "");
+    assert.strictEqual(entry.hooks[0].type, "command");
+    assert.ok(entry.hooks[0].command.includes(MARKER));
+  });
+
+  it("fails closed when the root is not an object", () => {
+    const configPath = makeTempConfigFile([]);
+    assert.throws(() => registerTraeCodeHooks({
+      silent: true,
+      hooksPath: configPath,
+      nodeBin: "/usr/local/bin/node",
+    }), /not a JSON object/);
+  });
+
+  it("fails closed when hooks is not an object", () => {
+    const configPath = makeTempConfigFile({ hooks: [] });
+    assert.throws(() => registerTraeCodeHooks({
+      silent: true,
+      hooksPath: configPath,
+      nodeBin: "/usr/local/bin/node",
+    }), /"hooks" is not an object/);
+  });
+
+  it("fails closed when a hook event is not an array", () => {
+    const configPath = makeTempConfigFile({ hooks: { SessionStart: {} } });
+    assert.throws(() => registerTraeCodeHooks({
+      silent: true,
+      hooksPath: configPath,
+      nodeBin: "/usr/local/bin/node",
+    }), /"SessionStart" is not an array/);
   });
 });

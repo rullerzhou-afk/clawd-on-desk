@@ -114,7 +114,7 @@ describe("Agent Registry", () => {
     ]);
 
     const traecode = registry.getAgent("traecode");
-    assert.deepStrictEqual(traecode.processNames.win, ["Trae.exe", "trae.exe", "Trae CN.exe", "trae cn.exe", "TraeCN.exe", "traecn.exe"]);
+    assert.deepStrictEqual(traecode.processNames.win, ["Trae CN.exe", "trae cn.exe", "TraeCN.exe", "traecn.exe"]);
     assert.deepStrictEqual(traecode.processNames.mac, ["Trae", "trae"]);
     assert.deepStrictEqual(traecode.processNames.linux, ["trae", "Trae"]);
   });

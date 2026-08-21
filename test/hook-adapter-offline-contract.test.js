@@ -83,10 +83,10 @@ const ADAPTERS = [
   // drops any event without one before it ever resolves (#618/#648), which would
   // otherwise make the vacuity guard below see zero spawns and fail.
   { name: "workbuddy-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "{}\n" },
-  // TraeCode is state-only with a PreToolUse gating stdout (decision:allow).
+  // TraeCode is state-only: every event emits {} (no permission gating).
   // session_id is required so the resolver cache context is non-default and
   // the vacuity guard sees the one PowerShell snapshot when Clawd is alive.
-  { name: "traecode-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: `${JSON.stringify({ decision: "allow" })}\n` },
+  { name: "traecode-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "{}\n" },
 ];
 
 let hookHarness;

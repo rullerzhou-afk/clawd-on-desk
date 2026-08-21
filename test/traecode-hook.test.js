@@ -1,30 +1,18 @@
-const { describe, it, afterEach } = require("node:test");
+const { describe, it } = require("node:test");
 const assert = require("node:assert");
-const fs = require("node:fs");
-const os = require("node:os");
-const path = require("node:path");
 
 const { __test } = require("../hooks/traecode-hook");
 const { runSpawnedHook } = require("./helpers/spawned-hook");
 
-const HOOK_PATH = path.resolve(__dirname, "..", "hooks", "traecode-hook.js");
-const tempDirs = [];
-
-function makeMarkerDir() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-tmtitle-"));
-  tempDirs.push(dir);
-  return dir;
-}
+const HOOK_PATH = require("node:path").resolve(__dirname, "..", "hooks", "traecode-hook.js");
 
 function runTraeHook(payload, options = {}) {
-  const markerDir = options.markerDir || makeMarkerDir();
   return runSpawnedHook({
     script: HOOK_PATH,
     payload,
-    httpContract: "expect-attempt",
+    httpContract: options.httpContract || "expect-attempt",
     env: {
       CLAWD_POST_RECORDER_SUCCEED: "1",
-      TRAECODE_TITLE_CACHE_DIR: markerDir,
       ...(options.env || {}),
     },
   });
@@ -37,12 +25,6 @@ function postedBody(result) {
   assert.ok(post, `expected a recorded POST attempt; attempts=${JSON.stringify(result.attempts)}`);
   return JSON.parse(post.body);
 }
-
-afterEach(() => {
-  while (tempDirs.length) {
-    fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
-  }
-});
 
 describe("traecode hook title derivation", () => {
   const { resolveSessionTitle } = __test;
@@ -100,8 +82,22 @@ describe("traecode hook title derivation", () => {
   });
 });
 
-describe("traecode hook end-to-end title forwarding", () => {
-  it("POSTs session_title derived from the first user prompt", () => {
+describe("traecode hook lifecycle", () => {
+  it("emits {} for every event including PreToolUse (state-only, no permission gating)", () => {
+    const result = runTraeHook({
+      session_id: "sess-pre",
+      cwd: "/tmp/project",
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+    });
+    assert.strictEqual(result.status, 0);
+    assert.strictEqual(result.stdout.trim(), "{}");
+    const body = postedBody(result);
+    assert.strictEqual(body.state, "working");
+    assert.strictEqual(body.agent_id, "traecode");
+  });
+
+  it("namespaces the session id with the traecode: prefix", () => {
     const result = runTraeHook({
       session_id: "sess-abc-1",
       cwd: "/tmp/project",
@@ -113,13 +109,12 @@ describe("traecode hook end-to-end title forwarding", () => {
     assert.strictEqual(result.stdout.trim(), "{}");
     const body = postedBody(result);
     assert.strictEqual(body.agent_id, "traecode");
-    assert.strictEqual(body.session_id, "sess-abc-1");
+    assert.strictEqual(body.session_id, "traecode:sess-abc-1");
     assert.strictEqual(body.cwd, "/tmp/project");
     assert.strictEqual(body.session_title, "帮我写个倒计时组件");
   });
 
-  it("keeps the first prompt as the title and ignores follow-up prompts", () => {
-    const markerDir = makeMarkerDir();
+  it("forwards the title candidate on every prompt (server keeps the first one)", () => {
     const payloadFor = (prompt) => ({
       session_id: "sess-abc-2",
       cwd: "/tmp/project",
@@ -127,12 +122,14 @@ describe("traecode hook end-to-end title forwarding", () => {
       prompt,
     });
 
-    const first = runTraeHook(payloadFor("第一个问题"), { markerDir });
+    const first = runTraeHook(payloadFor("第一个问题"));
     assert.strictEqual(postedBody(first).session_title, "第一个问题");
 
-    const second = runTraeHook(payloadFor("第二个问题"), { markerDir });
+    const second = runTraeHook(payloadFor("第二个问题"));
     assert.strictEqual(second.status, 0);
-    assert.strictEqual(postedBody(second).session_title, undefined);
+    // The hook keeps forwarding each candidate; first-wins is enforced
+    // server-side in state.js, not by the hook.
+    assert.strictEqual(postedBody(second).session_title, "第二个问题");
   });
 
   it("omits session_title when there is no prompt to derive from", () => {
@@ -146,5 +143,46 @@ describe("traecode hook end-to-end title forwarding", () => {
     const body = postedBody(result);
     assert.strictEqual(body.state, "idle");
     assert.strictEqual(body.session_title, undefined);
+  });
+
+  it("skips the POST entirely when the session id is missing or blank", () => {
+    for (const missing of [undefined, "", "   ", "default"]) {
+      const result = runTraeHook({
+        session_id: missing,
+        cwd: "/tmp/project",
+        hook_event_name: "UserPromptSubmit",
+        prompt: "没有 session 的事件",
+      }, { httpContract: "expect-none" });
+
+      assert.strictEqual(result.status, 0, `session_id=${JSON.stringify(missing)}`);
+      assert.strictEqual(result.stdout.trim(), "{}", `session_id=${JSON.stringify(missing)}`);
+    }
+  });
+
+  it("answers TraeCode immediately even when the POST is blocked (offline)", () => {
+    const result = runTraeHook({
+      session_id: "sess-abc-4",
+      cwd: "/tmp/project",
+      hook_event_name: "PreToolUse",
+    }, { httpContract: "block" });
+
+    assert.strictEqual(result.status, 0);
+    assert.strictEqual(result.stdout.trim(), "{}");
+  });
+});
+
+describe("traecode hook import safety", () => {
+  it("importing the module for __test does not read stdin, write stdout, or exit", () => {
+    // The require at the top of this file already exercised this — module
+    // import must not start the real lifecycle. Spawn a trivial probe to
+    // confirm the file loads without emitting anything on stdout.
+    const { spawnSync } = require("node:child_process");
+    const probe = spawnSync(
+      process.execPath,
+      ["-e", `require(${JSON.stringify(HOOK_PATH)}); process.stdout.write("loaded")`],
+      { encoding: "utf8", timeout: 5000 }
+    );
+    assert.strictEqual(probe.status, 0, `probe stderr=${probe.stderr}`);
+    assert.strictEqual(probe.stdout, "loaded");
   });
 });

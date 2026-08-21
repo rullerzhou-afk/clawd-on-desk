@@ -2882,6 +2882,24 @@ describe("updateSession()", () => {
     assert.strictEqual(api.sessions.get("s1").sessionTitle, "My Task");
   });
 
+  it("keeps the FIRST title for traecode sessions (follow-up prompts never overwrite)", () => {
+    update(api, { id: "s1", state: "thinking", event: "UserPromptSubmit", agentId: "traecode", sessionTitle: "第一个问题" });
+    assert.strictEqual(api.sessions.get("s1").sessionTitle, "第一个问题");
+
+    update(api, { id: "s1", state: "thinking", event: "UserPromptSubmit", agentId: "traecode", sessionTitle: "第二个问题" });
+    assert.strictEqual(api.sessions.get("s1").sessionTitle, "第一个问题");
+
+    // An empty candidate must never clear the sticky first title either.
+    update(api, { id: "s1", state: "working", event: "PreToolUse", agentId: "traecode", sessionTitle: "" });
+    assert.strictEqual(api.sessions.get("s1").sessionTitle, "第一个问题");
+  });
+
+  it("lets the latest title win for non-traecode agents (unchanged behaviour)", () => {
+    update(api, { id: "s2", state: "thinking", event: "UserPromptSubmit", agentId: "claude-code", sessionTitle: "旧标题" });
+    update(api, { id: "s2", state: "thinking", event: "UserPromptSubmit", agentId: "claude-code", sessionTitle: "新标题" });
+    assert.strictEqual(api.sessions.get("s2").sessionTitle, "新标题");
+  });
+
   it("stores optional platform and model metadata", () => {
     update(api, {
       id: "s1",
