@@ -11,6 +11,7 @@ const {
   comparablePath,
   isInside,
   callStableNativeFunction,
+  assertFullscreenProbeValue,
 } = require("../src/package-koffi-smoke");
 const {
   parseArgs: parseRunnerArgs,
@@ -82,4 +83,14 @@ test("packaged smoke cleanup removes only its exact adjacent temporary profile",
     () => cleanupSmokeUserData(output, { runtime: { userDataPath: path.join(root, "unrelated") } }),
     /unsafe smoke user-data cleanup path/i,
   );
+});
+
+test("fullscreen probe smoke check accepts a verdict or a window identity", () => {
+  assert.equal(assertFullscreenProbeValue(false), false);
+  assert.equal(assertFullscreenProbeValue(true), true);
+  assert.equal(assertFullscreenProbeValue("81985529216486895"), "81985529216486895");
+  assert.throws(() => assertFullscreenProbeValue(""), /empty string/);
+  assert.throws(() => assertFullscreenProbeValue(0), /number/);
+  assert.throws(() => assertFullscreenProbeValue(null), /object/);
+  assert.throws(() => assertFullscreenProbeValue(undefined), /undefined/);
 });

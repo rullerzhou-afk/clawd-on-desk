@@ -78,6 +78,18 @@ function callStableNativeFunction(koffi, platform = process.platform) {
   throw new Error(`Unsupported package smoke platform: ${platform}`);
 }
 
+// The fullscreen probe reports false, or the fullscreen window's identity: an
+// opaque non-empty id string, degrading to plain true when koffi.address is
+// unavailable. Anything else means the packaged FFI path is broken.
+function assertFullscreenProbeValue(value) {
+  const ok = value === false || value === true || (typeof value === "string" && value.length > 0);
+  if (!ok) {
+    const shape = typeof value === "string" ? "an empty string" : typeof value;
+    throw new Error(`Fullscreen probe returned ${shape}`);
+  }
+  return value;
+}
+
 async function runPlatformProbe({ BrowserWindow, target }) {
   if (target.runtimePlatform === "win32") {
     const win = new BrowserWindow({ show: false, width: 80, height: 80, skipTaskbar: true });
@@ -100,9 +112,7 @@ async function runPlatformProbe({ BrowserWindow, target }) {
         if (fullscreenErrors.length) {
           throw new Error(`Fullscreen probe failed: ${fullscreenErrors.join(" | ")}`);
         }
-        if (typeof fullscreen !== "boolean") {
-          throw new Error(`Fullscreen probe returned ${typeof fullscreen}`);
-        }
+        assertFullscreenProbeValue(fullscreen);
         const terminalErrors = [];
         const foregroundTerminalHwnd = createForegroundWindowsTerminalProbe({
           isWin: true,
@@ -259,6 +269,7 @@ module.exports = {
   physicalAddonPath,
   captureKoffiLoad,
   callStableNativeFunction,
+  assertFullscreenProbeValue,
   runPlatformProbe,
   runPackageKoffiSmoke,
   writeResult,
