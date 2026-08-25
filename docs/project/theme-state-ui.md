@@ -80,7 +80,7 @@ Settings 是独立 `BrowserWindow`，采用 5 层结构：
 - 固定模式读取 `bubbleFixedCorner=top-left|top-right|bottom-left|bottom-right`，锚定 primary display 的 `workArea`。主屏查询不可用时回退桌宠所在显示器，再失败才使用 synthetic work area。
 - permission stack 先定位并避让可见 Session HUD；update bubble 随后读取真实可见 permission/HUD 外窗矩形再定位；Orbit 最后读取更新后的几何。
 - 跟随模式使用桌宠所在显示器的 text scale；固定模式使用主屏 text scale。窗口 bounds、CSS px → DIP 与 renderer zoom 必须基于同一个目标显示器。
-- 权限气泡默认是约 340 CSS px 的三行摘要卡；普通工具在摘要态可直接 Allow/Deny，长正文或次级操作经「查看详情/更多选项」进入约 500 CSS px 的详情卡。Plan 摘要只可「查看计划」，Ask 摘要只可「回答」；详情正文滚动，标题和决定区固定，不提供自由拖拽改尺寸。
+- 权限气泡默认是约 340 CSS px 的三行摘要卡；普通工具在摘要态保留原有 Allow/Deny、Always/suggestion 和会话授权快捷操作，长正文经「查看详情」进入约 500 CSS px 的详情卡。Plan 摘要同时保留「查看计划」和快速批准，反馈/回终端等次级操作在展开后出现；Ask 摘要只可「回答」。详情正文滚动，标题和全部决定区固定，不提供自由拖拽改尺寸。
 - 桌面同时最多一个权限详情卡，切换时其他气泡恢复摘要，但各自 BrowserWindow/DOM 不销毁，因此 Ask 选择、Other 文本、Plan 修改草稿、步骤和滚动位置保留；IME composition 未结束时拒绝切换详情。petHidden 只隐藏窗口，不清空详情 owner 或草稿。
 - 多气泡始终保持最老请求在上；详情卡必须完整留在当前目标工作区，摘要兄弟过多时可向工作区外溢，不能把正在阅读的详情压到不可读。macOS IME 编辑中的气泡冻结位置，blur 后只执行一次现有 floating-bubble 重排序列。
 

@@ -658,7 +658,9 @@ function applyPresentationView() {
     : "";
   detailTruncation.classList.toggle("visible", data.detailTruncated === true);
 
-  const hiddenOptions = suggestionsContainer.children.length > 0 || footerSecondary.children.length > 0;
+  const compactHidesSupplementaryActions = currentIsPlanReview || elicitationMode || codexUserInputMode;
+  const hiddenOptions = compactHidesSupplementaryActions
+    && (suggestionsContainer.children.length > 0 || footerSecondary.children.length > 0);
   const detailDiffers = typeof data.detailText === "string"
     && data.detailText
     && data.detailText !== compactPreview;
@@ -686,9 +688,16 @@ function applyPresentationView() {
   btnExpand.classList.toggle("visible", !currentExpanded && needsExpansion);
 
   if (!currentExpanded) {
-    actionsContainer.style.display = (currentIsPlanReview || elicitationMode) ? "none" : "";
-    suggestionsContainer.style.display = "none";
-    footerSecondary.classList.remove("visible");
+    // Compact cards keep every pre-detail quick action. Ordinary permissions
+    // retain Allow/Deny, permission suggestions (including Always Allow), and
+    // session trust. Plan keeps its quick Approve path, while its feedback and
+    // terminal actions remain behind View plan. Ask still requires expansion.
+    actionsContainer.style.display = elicitationMode ? "none" : "";
+    suggestionsContainer.style.display = compactHidesSupplementaryActions ? "none" : "";
+    footerSecondary.classList.toggle(
+      "visible",
+      !compactHidesSupplementaryActions && footerSecondary.children.length > 0
+    );
     planFeedbackForm.classList.remove("visible");
   } else if (planFeedbackMode) {
     actionsContainer.style.display = "none";

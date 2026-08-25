@@ -277,20 +277,32 @@ describe("permission bubble compact/detail presentation", () => {
     assert.strictEqual(harness.element("card").classList.contains("expanded"), false);
   });
 
-  it("keeps direct Allow/Deny on the compact card and reveals the full detail only after expansion", () => {
+  it("keeps every ordinary quick action on the compact card and reveals only the full detail after expansion", () => {
     const harness = createHarness();
     const full = `${"echo long; ".repeat(40)}END_MARKER`;
     harness.show({
       toolName: "Bash",
       toolInput: { command: "echo long; …" },
       detailText: full,
-      interaction: interaction("tool-approval", { allowDeny: true }),
+      suggestions: [{ type: "addRules", ruleContent: "npm test" }],
+      canOfferSessionTrust: true,
+      interaction: interaction("tool-approval", { allowDeny: true, nativeFallback: true }),
       presentation: { expanded: false, measurementEpoch: 0 },
     });
 
     assert.strictEqual(harness.element("compactBlock").textContent, "detail");
     assert.strictEqual(harness.element("commandBlock").textContent, full);
     assert.strictEqual(harness.element("actions").style.display, "");
+    assert.strictEqual(harness.element("suggestions").style.display, "");
+    assert.deepStrictEqual(
+      harness.element("suggestions").children.map((button) => button.textContent),
+      ["Always allow `npm test`", "Go to Terminal"]
+    );
+    assert.strictEqual(harness.element("footerSecondary").classList.contains("visible"), true);
+    assert.strictEqual(
+      harness.element("footerSecondary").children[0].textContent,
+      "Don’t ask again in this session"
+    );
     assert.strictEqual(harness.element("btnExpand").classList.contains("visible"), true);
 
     harness.element("btnExpand").click();
@@ -300,7 +312,7 @@ describe("permission bubble compact/detail presentation", () => {
     assert.strictEqual(harness.element("actions").style.display, "");
   });
 
-  it("hides Plan decisions until View plan and preserves feedback through collapse/re-expand", () => {
+  it("keeps Plan approval compact while feedback waits for View plan and preserves its draft", () => {
     const harness = createHarness();
     harness.show({
       toolName: "ExitPlanMode",
@@ -313,7 +325,10 @@ describe("permission bubble compact/detail presentation", () => {
       presentation: { expanded: false, measurementEpoch: 0 },
     });
 
-    assert.strictEqual(harness.element("actions").style.display, "none");
+    assert.strictEqual(harness.element("actions").style.display, "");
+    assert.strictEqual(harness.element("btnAllow").textContent, "Approve");
+    assert.strictEqual(harness.element("btnDeny").style.display, "none");
+    assert.strictEqual(harness.element("suggestions").style.display, "none");
     assert.strictEqual(harness.element("btnExpand").textContent, "View plan");
     harness.element("btnExpand").click();
     harness.present({ expanded: true, measurementEpoch: 1 });

@@ -324,7 +324,7 @@ CodeBuddy 的 PermissionRequest HTTP 所有权只认严格的本机 managed URL�
 - Codex 的 PermissionRequest 是 official command hook；hook 脚本挂起等待 `/permission`，再把 sanitized allow/deny JSON 写到 stdout
 - `POST /permission` 接收 `{ tool_name, tool_input, session_id, permission_suggestions }`；Codex 额外带 `turn_id`、`tool_input_description`、`tool_input_fingerprint`
 - 每个权限请求都会创建独立 `BrowserWindow`。卡片默认保持约 340 CSS px 的三行摘要；长内容和次级操作通过用户点击进入约 500 CSS px 的详情态，详情正文独立滚动，标题与决定按钮固定可见。桌面同时最多一个详情态，其他请求仍是摘要卡；切换详情不会销毁窗口，因此 Ask/Plan 的选择、输入草稿、步骤和滚动位置都保留
-- 普通工具摘要态保留 Allow/Deny；Plan 摘要态只提供「查看计划」，Ask 摘要态只提供「回答」，避免未读正文的盲决定。Plan/Ask 到达时不抢焦点，只在用户点击展开后聚焦；Win/Linux 由创建期 `focusable` 覆盖其潜在输入需求
+- 普通工具摘要态保留 Allow/Deny、permission suggestions（含 Always）和可用的会话授权；Plan 摘要态同时提供「查看计划」与快速批准，反馈/回终端等次级操作只在详情态出现；Ask 摘要态只提供「回答」。Plan/Ask 到达时不抢焦点，只在用户点击展开后聚焦；Win/Linux 由创建期 `focusable` 覆盖其潜在输入需求
 - bubble 通过 IPC `bubble-height` 回报 `{state, measurementEpoch, height}`。主进程只接受当前摘要/详情 epoch 的测量，避免展开→收起→展开期间的旧高度覆盖新布局；详情高度以 `min(60% workArea, 620 CSS px)` 为偏好，并以实测 chrome + 5 行正文为可读下限、当前 workArea 为硬上限
 - 多宽度 stack 仍保持最老请求在上。详情卡必须完整留在目标 workArea 内；当摘要兄弟太多时允许兄弟向边缘外溢，不缩小一个已在阅读中的详情卡。Follow 模式详情朝远离桌宠的一侧扩展，Fixed 模式保持所选角的边缘对齐
 - 本地详情数据与网络/决策数据分离：route 在生成有界摘要的同时保留最多 128 KiB 的仅本地显示详情；fingerprint、automation、HTTP 回包、Telegram/飞书/Slack payload 继续使用原有数据。Ask 的 wire question/answer key 保持上游原文，长正文和选项说明只影响详情显示

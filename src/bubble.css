@@ -495,7 +495,7 @@ body { padding: 6px; }
   flex-direction: column;
   gap: 6px;
 }
-.card.expanded .footer-secondary.visible { display: flex; }
+.footer-secondary.visible { display: flex; }
 .btn {
   flex: 1;
   padding: 7px 0;

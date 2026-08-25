@@ -5,6 +5,7 @@ const path = require("node:path");
 
 const bubbleCss = fs.readFileSync(path.join(__dirname, "..", "src", "bubble.css"), "utf8");
 const bubbleRenderer = fs.readFileSync(path.join(__dirname, "..", "src", "bubble-renderer.js"), "utf8");
+const bubbleHtml = fs.readFileSync(path.join(__dirname, "..", "src", "bubble.html"), "utf8");
 
 function functionBody(name) {
   const start = bubbleRenderer.indexOf(`function ${name}(`);
@@ -40,5 +41,16 @@ describe("AskUserQuestion bubble overflow", () => {
     assert.doesNotMatch(body, /card\.classList\.(?:add|toggle)\("elicitation-scrollable"/);
     assert.doesNotMatch(body, /elicitationForm\.style\.maxHeight\s*=/);
     assert.match(bubbleCss, /\.detail-scroll\s*\{[\s\S]*overflow-y:\s*auto/);
+  });
+
+  it("keeps permission quick actions outside the detail-only scroller", () => {
+    const detailStart = bubbleHtml.indexOf('id="detailScroll"');
+    const detailEnd = bubbleHtml.indexOf('id="btnExpand"');
+    const suggestions = bubbleHtml.indexOf('id="suggestions"');
+
+    assert.ok(detailStart >= 0 && detailEnd > detailStart);
+    assert.ok(suggestions > detailEnd, "suggestions must remain visible when compact detail is hidden");
+    assert.match(bubbleCss, /\.footer-secondary\.visible\s*\{\s*display:\s*flex;/);
+    assert.doesNotMatch(bubbleCss, /\.card\.expanded\s+\.footer-secondary\.visible/);
   });
 });
