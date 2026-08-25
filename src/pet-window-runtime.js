@@ -140,6 +140,11 @@ function createPetWindowRuntime(options = {}) {
   const repositionFloatingBubbles = options.repositionFloatingBubbles || noop;
   const showFloatingSurfacesForPet = options.showFloatingSurfacesForPet || noop;
   const hideFloatingSurfacesForPet = options.hideFloatingSurfacesForPet || noop;
+  // #935: every manual show (setPetHidden(false)) reports user intent here so
+  // topmost-runtime's fullscreen auto-hide sync can latch its override — even
+  // when the show lands as a visible no-op (a stale menu item clicked after
+  // the sync already auto-restored the pet).
+  const noteManualPetShow = options.noteManualPetShow || noop;
   const syncSessionHudVisibilityAndBubbles = options.syncSessionHudVisibilityAndBubbles || noop;
   const syncPermissionShortcuts = options.syncPermissionShortcuts || noop;
   const buildTrayMenu = options.buildTrayMenu || noop;
@@ -1403,6 +1408,7 @@ function createPetWindowRuntime(options = {}) {
     // runtime's sync observes the cleared flag and holds off re-hiding for the
     // rest of that fullscreen episode.
     const clearAutoHide = !target && fullscreenAutoHidden;
+    if (!target) noteManualPetShow();
     if (target === petHidden && !clearAutoHide) return { applied: true, deferred: false, changed: false };
     const prevEffective = isPetEffectivelyHidden();
     petHidden = target;

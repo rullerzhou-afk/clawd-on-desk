@@ -1356,15 +1356,17 @@ describe("fullscreen auto-hide sync (#935)", () => {
     assert.deepStrictEqual(h.setCalls, [true]);
   });
 
-  it("a manual show mid-episode is respected until the fullscreen app exits", () => {
+  it("a hotkey show mid-fullscreen latches the override until the app exits", () => {
     const h = createAutoHideHarness();
     h.start();
     h.state.fullscreen = true;
     h.tick();
     assert.deepStrictEqual(h.setCalls, [true]);
 
-    // User picks Show Pet: pet-window-runtime clears the auto flag.
+    // The global hotkey shows the pet without moving the foreground:
+    // setPetHidden(false) clears the auto flag and reports the intent.
     h.state.autoHidden = false;
+    h.runtime.noteFullscreenAutoHideOverride();
     h.tick();
     h.tick();
     assert.deepStrictEqual(h.setCalls, [true], "the sync must not re-hide an overridden episode");
@@ -1376,6 +1378,52 @@ describe("fullscreen auto-hide sync (#935)", () => {
     h.state.fullscreen = true;
     h.tick();
     assert.deepStrictEqual(h.setCalls, [true, true]);
+  });
+
+  it("a Show Pet click from the tray menu survives the foreground blip back to the game", () => {
+    const h = createAutoHideHarness();
+    h.start();
+    h.state.fullscreen = true;
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true]);
+
+    // Right-clicking the tray icon moves the foreground off the fullscreen
+    // app, so the sync restores the pet before the user even clicks the item.
+    h.state.fullscreen = false;
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true, false]);
+
+    // The Show Pet click lands as a visible no-op — but it still reports the
+    // user's intent.
+    h.runtime.noteFullscreenAutoHideOverride();
+
+    // Refocusing the game must NOT re-hide the pet the user just asked for.
+    h.state.fullscreen = true;
+    h.tick();
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true, false], "the override must survive the tray foreground blip");
+
+    // A real exit consumes the override; the next fullscreen app hides again.
+    h.state.fullscreen = false;
+    h.tick();
+    h.state.fullscreen = true;
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true, false, true]);
+  });
+
+  it("an override that never returns to fullscreen decays after the grace window", () => {
+    const h = createAutoHideHarness();
+    h.start();
+
+    // A show gesture on the plain desktop still signals intent...
+    h.runtime.noteFullscreenAutoHideOverride();
+    // ...but with no fullscreen app to return to it burns down tick by tick.
+    for (let i = 0; i < createTopmostRuntime.FSAUTOHIDE_OVERRIDE_GRACE_TICKS; i++) h.tick();
+
+    // A fullscreen app starting after the grace window hides normally.
+    h.state.fullscreen = true;
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true]);
   });
 
   it("turning the pref off mid-fullscreen restores the pet on the next tick", () => {

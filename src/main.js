@@ -996,6 +996,10 @@ const petWindowRuntime = createPetWindowRuntime({
   repositionFloatingBubbles: () => repositionFloatingBubbles(),
   showFloatingSurfacesForPet: () => floatingWindowRuntime.showFloatingSurfacesForPet(),
   hideFloatingSurfacesForPet: () => floatingWindowRuntime.hideFloatingSurfacesForPet(),
+  // Lazy-bound like isMiniAnimating below — topmostRuntime is constructed
+  // after petWindowRuntime, but this closure only fires on a user gesture,
+  // well after module load finishes. (#935 override latch)
+  noteManualPetShow: () => topmostRuntime.noteFullscreenAutoHideOverride(),
   syncSessionHudVisibilityAndBubbles: () => syncSessionHudVisibilityAndBubbles(),
   syncPermissionShortcuts: () => syncPermissionShortcuts(),
   buildTrayMenu: () => buildTrayMenu(),
@@ -3884,7 +3888,6 @@ const _menuCtx = {
   get pendingPermissions() { return pendingPermissions; },
   repositionBubbles: () => repositionFloatingBubbles(),
   get petHidden() { return petWindowRuntime.isPetEffectivelyHidden(); },
-  togglePetVisibility: () => togglePetVisibility(),
   setPetVisibility: (visible) => setPetVisibility(visible),
   bringPetToPrimaryDisplay: () => bringPetToPrimaryDisplay(),
   get isQuitting() { return isQuitting; },

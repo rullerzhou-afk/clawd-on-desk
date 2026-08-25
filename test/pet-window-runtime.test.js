@@ -182,6 +182,7 @@ function createRuntime(overrides = {}) {
     reassertWinTopmost: () => calls.push(["reassertWinTopmost"]),
     scheduleHwndRecovery: () => calls.push(["scheduleHwndRecovery"]),
     ...(overrides.cloakInspector ? { cloakInspector: overrides.cloakInspector } : {}),
+    ...(overrides.noteManualPetShow ? { noteManualPetShow: overrides.noteManualPetShow } : {}),
     ...(overrides.isMiniAnimating ? { isMiniAnimating: overrides.isMiniAnimating } : {}),
     ...(overrides.isRoamAnimating ? { isRoamAnimating: overrides.isRoamAnimating } : {}),
     ...(overrides.isEdgeVirtualizationDisabled
@@ -3909,5 +3910,32 @@ describe("fullscreen auto-hide visibility layer (#935)", () => {
     assert.equal(h.runtime.isFullscreenAutoHidden(), false);
     assert.equal(h.runtime.isPetEffectivelyHidden(), false);
     assert.ok(h.renderWin.calls.some((c) => c[0] === "showInactive"));
+  });
+});
+
+describe("manual show intent hook (#935 override latch)", () => {
+  it("setPetHidden(false) reports intent even when it is a visible no-op", () => {
+    const notes = [];
+    const h = createRuntime({ noteManualPetShow: () => notes.push("show") });
+    h.runtime.setPetHidden(false);
+    assert.deepStrictEqual(notes, ["show"], "a no-op show is still an intent (the stale-menu click)");
+  });
+
+  it("setPetHidden(false) reports intent when it lifts an auto-hide", () => {
+    const notes = [];
+    const h = createRuntime({ noteManualPetShow: () => notes.push("show") });
+    h.runtime.setFullscreenAutoHidden(true);
+    h.runtime.setPetHidden(false);
+    assert.deepStrictEqual(notes, ["show"]);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), false);
+  });
+
+  it("hides and the auto-hide writer never report show intent", () => {
+    const notes = [];
+    const h = createRuntime({ noteManualPetShow: () => notes.push("show") });
+    h.runtime.setPetHidden(true);
+    h.runtime.setFullscreenAutoHidden(true);
+    h.runtime.setFullscreenAutoHidden(false);
+    assert.deepStrictEqual(notes, [], "only a manual SHOW is user intent");
   });
 });
