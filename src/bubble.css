@@ -91,12 +91,21 @@ body { padding: 6px; }
   overflow: hidden;
 }
 .card.expanded {
-  height: calc(100vh - 12px);
+  /* Root CSS zoom leaves vh tied to the unzoomed BrowserWindow. Divide by the
+     injected text scale so the painted card still fits the actual window. */
+  height: calc(100vh / var(--clawd-text-zoom, 1) - 12px);
   min-height: 0;
 }
 .card.measuring {
   height: auto;
   max-height: none;
+}
+.card.expanded.measuring {
+  height: auto;
+  max-height: none;
+}
+.card.expanded > :not(.detail-scroll) {
+  flex-shrink: 0;
 }
 .card.measuring .detail-scroll {
   flex: none;

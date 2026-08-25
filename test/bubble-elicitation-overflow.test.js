@@ -53,4 +53,20 @@ describe("AskUserQuestion bubble overflow", () => {
     assert.match(bubbleCss, /\.footer-secondary\.visible\s*\{\s*display:\s*flex;/);
     assert.doesNotMatch(bubbleCss, /\.card\.expanded\s+\.footer-secondary\.visible/);
   });
+
+  it("keeps the expanded card inside a CSS-zoomed window and reserves shrink for detail", () => {
+    assert.match(
+      bubbleCss,
+      /\.card\.expanded\s*\{[\s\S]*height:\s*calc\(100vh\s*\/\s*var\(--clawd-text-zoom,\s*1\)\s*-\s*12px\)/
+    );
+    assert.match(
+      bubbleCss,
+      /\.card\.expanded\.measuring\s*\{[\s\S]*height:\s*auto;/
+    );
+    assert.match(
+      bubbleCss,
+      /\.card\.expanded\s*>\s*:not\(\.detail-scroll\)\s*\{\s*flex-shrink:\s*0;/
+    );
+    assert.match(bubbleCss, /\.detail-scroll\s*\{[\s\S]*flex:\s*1\s+1\s+auto;/);
+  });
 });

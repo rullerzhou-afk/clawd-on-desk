@@ -38,7 +38,7 @@ function interaction(capabilities = {}) {
   };
 }
 
-function makeCtx() {
+function makeCtx(overrides = {}) {
   return {
     lang: "en",
     sessions: new Map(),
@@ -52,6 +52,7 @@ function makeCtx() {
     bubbleFollowPet: false,
     bubbleFixedCorner: "bottom-right",
     win: null,
+    ...overrides,
   };
 }
 
@@ -60,9 +61,15 @@ function makeBubble() {
   return {
     sends,
     focusCount: 0,
+    bounds: null,
     isDestroyed: () => false,
-    webContents: { send: (...args) => sends.push(args) },
+    webContents: {
+      send: (...args) => sends.push(args),
+      insertCSS: () => undefined,
+      setZoomFactor() {},
+    },
     focus() { this.focusCount += 1; },
+    setBounds(bounds) { this.bounds = bounds; },
   };
 }
 
@@ -137,5 +144,35 @@ describe("permission expanded presentation owner", () => {
     });
     assert.strictEqual(entry.expandedMeasuredHeight, 600);
     assert.strictEqual(entry.expandedChromeHeight, 180);
+  });
+
+  it("replaces the 620px expansion fallback with a shorter reported natural height", () => {
+    const owner = { isDestroyed: () => false };
+    const permission = initPermission(makeCtx({
+      win: owner,
+      getTextScale: () => 1,
+    }));
+    const bubble = makeBubble();
+    const entry = {
+      bubble,
+      bubbleReady: true,
+      interaction: interaction(),
+      suggestions: [],
+    };
+    permission.pendingPermissions.push(entry);
+
+    permission.handleBubbleExpanded(eventFor(bubble), true);
+    assert.strictEqual(bubble.bounds.height, 620, "first layout uses the provisional fallback");
+
+    permission.handleBubbleHeight(eventFor(bubble), {
+      height: 360,
+      state: "expanded",
+      measurementEpoch: 1,
+      chromeHeight: 180,
+      detailLineHeight: 18,
+    });
+
+    assert.strictEqual(entry.expandedMeasuredHeight, 360);
+    assert.strictEqual(bubble.bounds.height, 360, "accepted natural height must immediately resize the window");
   });
 });
