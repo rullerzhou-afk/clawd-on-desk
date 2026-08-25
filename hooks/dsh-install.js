@@ -300,6 +300,36 @@ async function resolveNodeRunner(options = {}) {
   return resolveNodeBinAsync(options);
 }
 
+// GUI 启动的 Electron 只继承 `/usr/bin:/bin:/usr/sbin:/sbin`，缺少 Homebrew / nvm 等
+// 用户级 bin 目录。`dsh plugin add` 内部会转发给 pnpm（见 dsh 的 plugin forwarder），
+// 所以除了定位 pnpm 本身，还必须把这份 PATH 传给 dsh 子进程，否则它自己也找不到 pnpm。
+// 用登录 shell 读一次真实 PATH，与 resolveDshCommand 的定位方式保持一致。
+async function resolveLoginPath(options = {}) {
+  if (typeof options.loginPath === "string") return options.loginPath;
+  if ((options.platform || process.platform) === "win32") return null;
+  const shell = typeof options.shellPath === "string" && options.shellPath.trim()
+    ? options.shellPath.trim()
+    : (process.env.SHELL || "/bin/sh");
+  const result = await runCommand(shell, ["-lc", "printf %s \"$PATH\""], {
+    ...options,
+    timeoutMs: 5000,
+  });
+  if (result.code !== 0) return null;
+  const value = result.stdout.trim();
+  return value || null;
+}
+
+// 在 options.env 之上叠加登录 shell 的 PATH，供探测和 dsh 子进程共用。
+async function withLoginPathEnv(options = {}) {
+  const baseEnv = options.env || process.env;
+  const loginPath = await resolveLoginPath(options);
+  if (!loginPath) return baseEnv;
+  const current = baseEnv.PATH || "";
+  // 保留调用方原有 PATH 的优先级，只在其后补充登录 shell 的条目。
+  const merged = [...new Set([...current.split(":"), ...loginPath.split(":")].filter(Boolean))];
+  return { ...baseEnv, PATH: merged.join(":") };
+}
+
 async function resolveDshCommand(options = {}) {
   if (options.commandInfo && typeof options.commandInfo === "object") {
     return options.commandInfo;
@@ -331,9 +361,8 @@ async function resolveDshCommand(options = {}) {
     let realBin = bin;
     try { realBin = await fsp.realpath(bin); } catch {}
     const normalized = realBin.replace(/\\/g, "/");
-    let installRoot = normalized.endsWith("/lib/bin.js")
-      ? path.dirname(path.dirname(realBin))
-      : null;
+    let entryBinJs = normalized.endsWith("/lib/bin.js") ? realBin : null;
+    let installRoot = entryBinJs ? path.dirname(path.dirname(entryBinJs)) : null;
     if (!installRoot) {
       const parsed = await readShimBinCandidates(bin, platform);
       let binJs = null;
@@ -343,7 +372,21 @@ async function resolveDshCommand(options = {}) {
           break;
         }
       }
-      if (binJs) installRoot = path.dirname(path.dirname(binJs));
+      if (binJs) {
+        entryBinJs = binJs;
+        installRoot = path.dirname(path.dirname(binJs));
+      }
+    }
+    // `dsh` 的入口是 `#!/usr/bin/env node` 脚本，靠 PATH 找 node。定位用的是登录 shell
+    // (`-lc`，PATH 完整)，但后续 spawn 用的是 process.env —— 从 Finder 启动的 Electron
+    // 只继承 `/usr/bin:/bin:/usr/sbin:/sbin`，不含 Homebrew/nvm 的 node，于是 shim 以
+    // 127 退出，版本被读成 "unknown"。与 win32 分支一致，显式用解析出的 node 绝对路径
+    // 执行 bin.js，绕开对 PATH 的隐式依赖。
+    if (entryBinJs) {
+      const nodeRunner = await resolveNodeRunner(options);
+      if (nodeRunner) {
+        return { command: nodeRunner, prefixArgs: [entryBinJs], installRoot };
+      }
     }
     return { command: bin, prefixArgs: [], installRoot };
   }
@@ -403,7 +446,12 @@ async function hasPnpm(options = {}) {
   if ((options.platform || process.platform) === "win32") {
     return !!(await whereCommand("pnpm", options));
   }
-  const result = await runCommand("pnpm", ["--version"], { ...options, timeoutMs: 5000 });
+  const result = await runCommand("pnpm", ["--version"], {
+    ...options,
+    // pnpm 通常也是 `#!/usr/bin/env node` 脚本，裸名 spawn 在 GUI 的贫瘠 PATH 下必然失败。
+    env: await withLoginPathEnv(options),
+    timeoutMs: 5000,
+  });
   return result.code === 0;
 }
 
@@ -425,7 +473,11 @@ async function runDshCommand(args, options = {}) {
     }
     const command = await resolveDshCommand(options);
     if (!command) return { code: 127, stdout: "", stderr: "dsh command is not available" };
-    return runCommand(command.command, [...command.prefixArgs, ...args], options);
+    // `dsh plugin ...` 会把参数转发给 pnpm，因此子进程自身也需要能在 PATH 上找到 pnpm。
+    return runCommand(command.command, [...command.prefixArgs, ...args], {
+      ...options,
+      env: await withLoginPathEnv(options),
+    });
   } catch (err) {
     return {
       code: 1,

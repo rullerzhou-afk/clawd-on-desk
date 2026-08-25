@@ -175,6 +175,51 @@ test("Windows CLI discovery follows a pnpm-style shim instead of assuming one gl
   assert.strictEqual(command.installRoot, path.dirname(path.dirname(binJs)));
 });
 
+test("POSIX CLI discovery runs bin.js through an absolute node instead of the PATH-dependent shim", {
+  skip: process.platform === "win32",
+}, async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-dsh-posix-shim-"));
+  const binJs = path.join(root, "lib", "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
+  fs.mkdirSync(path.dirname(binJs), { recursive: true });
+  fs.writeFileSync(binJs, "#!/usr/bin/env node\nexport {};\n", "utf8");
+  const shim = path.join(root, "bin", "dsh");
+  fs.mkdirSync(path.dirname(shim), { recursive: true });
+  // 复刻 npm 全局安装的布局：PATH 上的 `dsh` 是指向 bin.js 的 symlink，而 bin.js
+  // 的 shebang 是 `#!/usr/bin/env node`，直接 spawn 会依赖调用方的 PATH。
+  fs.symlinkSync(binJs, shim);
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const command = await resolveDshCommand({
+    platform: "darwin",
+    shellPath: "/bin/sh",
+    resolveNodeBinAsyncImpl: async () => "/opt/homebrew/bin/node",
+    runCommand: async (program, args) => {
+      assert.deepStrictEqual(args, ["-lc", "command -v dsh"]);
+      return { code: 0, stdout: `${shim}\n` };
+    },
+  });
+  assert.strictEqual(command.command, "/opt/homebrew/bin/node");
+  assert.deepStrictEqual(command.prefixArgs, [fs.realpathSync(binJs)]);
+  assert.strictEqual(command.installRoot, path.dirname(path.dirname(fs.realpathSync(binJs))));
+});
+
+test("POSIX CLI discovery falls back to the shim when no node can be resolved", {
+  skip: process.platform === "win32",
+}, async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-dsh-posix-nonode-"));
+  const shim = path.join(root, "bin", "dsh");
+  fs.mkdirSync(path.dirname(shim), { recursive: true });
+  fs.writeFileSync(shim, "#!/bin/sh\nexec dsh-real \"$@\"\n", "utf8");
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const command = await resolveDshCommand({
+    platform: "darwin",
+    shellPath: "/bin/sh",
+    resolveNodeBinAsyncImpl: async () => null,
+    runCommand: async () => ({ code: 0, stdout: `${shim}\n` }),
+  });
+  assert.strictEqual(command.command, shim);
+  assert.deepStrictEqual(command.prefixArgs, []);
+});
+
 test("the cross-process DSH mutation lock rejects a concurrent owner and releases by token", async (t) => {
   const harness = makeHarness();
   t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
