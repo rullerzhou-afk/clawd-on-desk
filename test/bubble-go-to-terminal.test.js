@@ -62,6 +62,9 @@ class FakeElement {
     if (this.disabled) return;
     for (const listener of this.listeners.get("click") || []) listener({ target: this, preventDefault() {} });
   }
+  dispatch(type, event = {}) {
+    for (const listener of this.listeners.get(type) || []) listener({ target: this, ...event });
+  }
   focus() {}
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) || null; }
@@ -76,6 +79,8 @@ function createHarness() {
     "card", "toolPill", "toolPillText", "commandBlock", "irreversibleBadge",
     "elicitationForm", "elicitationProgress", "planFeedbackForm", "planFeedbackTextarea",
     "planFeedbackBack", "planFeedbackSubmit", "btnAllow", "btnDeny", "suggestions", "sessionTag",
+    "compactBlock", "detailScroll", "detailTruncation", "btnExpand", "btnCollapse", "actions",
+    "footerSecondary",
   ]) elements.set(id, new FakeElement(id.includes("Textarea") ? "textarea" : "div"));
   elements.set("btnAllow", new FakeElement("button"));
   elements.set("btnDeny", new FakeElement("button"));
@@ -83,7 +88,9 @@ function createHarness() {
   elements.set("planFeedbackSubmit", new FakeElement("button"));
   const headerTitle = new FakeElement("span");
   const decisions = [];
+  const expandedRequests = [];
   let showPermission;
+  let showPresentation;
 
   const document = {
     activeElement: null,
@@ -97,6 +104,8 @@ function createHarness() {
     reportHeight() {},
     onPermissionShow: (callback) => { showPermission = callback; },
     onPermissionHide() {},
+    onPresentation: (callback) => { showPresentation = callback; },
+    setExpanded: (expanded) => expandedRequests.push(expanded),
   };
   const context = {
     window: {
@@ -120,8 +129,14 @@ function createHarness() {
   return {
     show(data) { showPermission({ lang: "en", toolInput: {}, suggestions: [], ...data }); },
     decisions,
+    expandedRequests,
+    present(data) { showPresentation(data); },
+    element(id) { return elements.get(id); },
     terminalButtons() {
-      return elements.get("suggestions").children.filter((button) => button.textContent === "Go to Terminal");
+      return [
+        ...elements.get("suggestions").children,
+        ...elements.get("footerSecondary").children,
+      ].filter((button) => button.textContent === "Go to Terminal");
     },
     actionTexts() { return elements.get("suggestions").children.map((button) => button.textContent); },
   };
@@ -240,5 +255,90 @@ describe("permission bubble terminal fallback (issue #689)", () => {
     assert.strictEqual(buttons.length, 1);
     buttons[0].click();
     assert.deepStrictEqual(harness.decisions, ["deny-and-focus"]);
+  });
+});
+
+describe("permission bubble compact/detail presentation", () => {
+  it("keeps Ask compact, unfocused, and shows the question count on its Answer entry", () => {
+    const harness = createHarness();
+    harness.show({
+      toolName: "AskUserQuestion",
+      toolInput: {
+        questions: [
+          { id: "0", question: "First?", options: [] },
+          { id: "1", question: "Second?", options: [] },
+        ],
+      },
+      interaction: interaction("human-question", { answerQuestions: true }),
+      presentation: { expanded: false, measurementEpoch: 0 },
+    });
+    assert.strictEqual(harness.element("actions").style.display, "none");
+    assert.strictEqual(harness.element("btnExpand").textContent, "Answer · Questions: 2");
+    assert.strictEqual(harness.element("card").classList.contains("expanded"), false);
+  });
+
+  it("keeps direct Allow/Deny on the compact card and reveals the full detail only after expansion", () => {
+    const harness = createHarness();
+    const full = `${"echo long; ".repeat(40)}END_MARKER`;
+    harness.show({
+      toolName: "Bash",
+      toolInput: { command: "echo long; …" },
+      detailText: full,
+      interaction: interaction("tool-approval", { allowDeny: true }),
+      presentation: { expanded: false, measurementEpoch: 0 },
+    });
+
+    assert.strictEqual(harness.element("compactBlock").textContent, "detail");
+    assert.strictEqual(harness.element("commandBlock").textContent, full);
+    assert.strictEqual(harness.element("actions").style.display, "");
+    assert.strictEqual(harness.element("btnExpand").classList.contains("visible"), true);
+
+    harness.element("btnExpand").click();
+    assert.deepStrictEqual(harness.expandedRequests, [true]);
+    harness.present({ expanded: true, measurementEpoch: 1 });
+    assert.strictEqual(harness.element("card").classList.contains("expanded"), true);
+    assert.strictEqual(harness.element("actions").style.display, "");
+  });
+
+  it("hides Plan decisions until View plan and preserves feedback through collapse/re-expand", () => {
+    const harness = createHarness();
+    harness.show({
+      toolName: "ExitPlanMode",
+      toolInput: { plan: "Compact plan preview" },
+      detailText: "Full plan\n".repeat(80),
+      interaction: interaction("plan-review", {
+        allowDeny: true,
+        planFeedback: true,
+      }),
+      presentation: { expanded: false, measurementEpoch: 0 },
+    });
+
+    assert.strictEqual(harness.element("actions").style.display, "none");
+    assert.strictEqual(harness.element("btnExpand").textContent, "View plan");
+    harness.element("btnExpand").click();
+    harness.present({ expanded: true, measurementEpoch: 1 });
+    assert.strictEqual(harness.element("actions").style.display, "");
+
+    const feedbackButton = harness.element("suggestions").children[0];
+    assert.strictEqual(feedbackButton.textContent, "Suggest changes");
+    feedbackButton.click();
+    const textarea = harness.element("planFeedbackTextarea");
+    textarea.value = "Keep this draft";
+    textarea.dispatch("input");
+
+    // A same-entry refresh (for example session-trust failure copy) must not
+    // rebuild the Plan DOM or clear the draft.
+    harness.show({
+      toolName: "ExitPlanMode",
+      sessionTrustError: "Retry",
+      presentation: { expanded: true, measurementEpoch: 1 },
+    });
+    assert.strictEqual(textarea.value, "Keep this draft");
+
+    harness.element("btnCollapse").click();
+    harness.present({ expanded: false, measurementEpoch: 2 });
+    harness.present({ expanded: true, measurementEpoch: 3 });
+    assert.strictEqual(textarea.value, "Keep this draft");
+    assert.strictEqual(harness.element("planFeedbackForm").classList.contains("visible"), true);
   });
 });

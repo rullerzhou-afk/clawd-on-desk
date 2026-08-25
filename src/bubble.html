@@ -8,16 +8,26 @@
 <body>
 <div class="card" id="card">
   <div class="header">
-    <span class="header-title">Permission Request</span>
-    <span class="tool-pill" id="toolPill"><span class="tool-pill-text" id="toolPillText"></span></span>
+    <div class="header-copy">
+      <span class="header-title">Permission Request</span>
+      <span class="tool-pill" id="toolPill"><span class="tool-pill-text" id="toolPillText"></span></span>
+    </div>
+    <button class="collapse-button" id="btnCollapse" type="button" aria-label="Collapse">Collapse</button>
   </div>
 
   <div class="session-tag" id="sessionTag"></div>
 
   <div class="irreversible-badge" id="irreversibleBadge" style="display:none"></div>
-  <div class="command-block" id="commandBlock"></div>
-  <div class="elicitation-form" id="elicitationForm"></div>
-  <div class="elicitation-progress" id="elicitationProgress"></div>
+  <div class="compact-block" id="compactBlock"></div>
+  <div class="detail-scroll" id="detailScroll">
+    <div class="command-block" id="commandBlock"></div>
+    <div class="detail-truncation" id="detailTruncation"></div>
+    <div class="elicitation-form" id="elicitationForm"></div>
+    <div class="elicitation-progress" id="elicitationProgress"></div>
+    <div class="suggestions" id="suggestions"></div>
+  </div>
+
+  <button class="btn-expand" id="btnExpand" type="button"></button>
   <div class="plan-feedback-form" id="planFeedbackForm">
     <textarea class="plan-feedback-textarea" id="planFeedbackTextarea" rows="3" maxlength="4000"></textarea>
     <div class="plan-feedback-actions">
@@ -26,12 +36,11 @@
     </div>
   </div>
   
-  <div class="actions">
+  <div class="actions" id="actions">
     <button class="btn btn-allow" id="btnAllow">Allow</button>
     <button class="btn btn-deny" id="btnDeny">Deny</button>
   </div>
-  
-  <div class="suggestions" id="suggestions"></div>
+  <div class="footer-secondary" id="footerSecondary"></div>
 </div>
 
 <script src="bubble-format.js"></script>

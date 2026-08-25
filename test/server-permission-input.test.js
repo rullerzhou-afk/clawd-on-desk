@@ -3,6 +3,9 @@ const assert = require("node:assert");
 
 const {
   truncateDeep,
+  DETAIL_TEXT_MAX_BYTES,
+  clampUtf8Text,
+  preparePermissionDetail,
   normalizePermissionSuggestions,
   normalizeElicitationToolInput,
   prepareElicitationToolInput,
@@ -85,7 +88,78 @@ describe("permission input normalization", () => {
     assert.notStrictEqual(prepared.displayInput.questions[0].question, rawQuestion);
     assert.strictEqual(prepared.displayInput.questions[0].options[0].label, "Option A");
     assert.strictEqual(prepared.displayInput.questions[0].options[0].description.length, 160);
+    assert.strictEqual(prepared.detailDisplayInput.questions[0].question, rawQuestion.trim());
+    assert.strictEqual(
+      prepared.detailDisplayInput.questions[0].options[0].description,
+      rawInput.questions[0].options[0].description
+    );
+    assert.strictEqual(prepared.detailDisplayInput.questions[0].detailTruncated, false);
     assert.deepStrictEqual(normalizeElicitationToolInput(rawInput), prepared.displayInput);
+  });
+
+  it("marks an Ask detail when the expanded question itself exceeds its local budget", () => {
+    const prepared = prepareElicitationToolInput({
+      questions: [{
+        question: "q".repeat(140 * 1024),
+        header: "Long prompt",
+        options: [{ label: "Continue", description: "Proceed" }],
+      }],
+    });
+    assert.strictEqual(prepared.canAnswer, true);
+    assert.strictEqual(prepared.detailTruncated, true);
+    assert.strictEqual(prepared.detailDisplayInput.questions[0].detailTruncated, true);
+  });
+
+  it("keeps preview truncation separate from the bounded local detail text", () => {
+    const command = `${"x".repeat(2000)}END_MARKER`;
+    const rawInput = { command };
+    const preview = truncateDeep(rawInput);
+    const detail = preparePermissionDetail("Bash", rawInput);
+
+    assert.strictEqual(preview.command.endsWith("…"), true);
+    assert.strictEqual(preview.command.includes("END_MARKER"), false);
+    assert.strictEqual(detail.detailText, command);
+    assert.strictEqual(detail.detailText.endsWith("END_MARKER"), true);
+    assert.strictEqual(detail.detailTruncated, false);
+  });
+
+  it("marks truncation only when the selected detail text exceeds the byte budget", () => {
+    const selected = preparePermissionDetail("Bash", {
+      command: "echo complete",
+      unrelated: "x".repeat(DETAIL_TEXT_MAX_BYTES + 100),
+    });
+    assert.strictEqual(selected.detailText, "echo complete");
+    assert.strictEqual(selected.detailTruncated, false);
+
+    const oversized = preparePermissionDetail("Bash", {
+      command: "猫".repeat(DETAIL_TEXT_MAX_BYTES),
+    });
+    assert.strictEqual(oversized.detailTruncated, true);
+    assert.ok(Buffer.byteLength(oversized.detailText, "utf8") <= DETAIL_TEXT_MAX_BYTES);
+    assert.strictEqual(oversized.detailText.endsWith("…"), true);
+  });
+
+  it("bounds structural depth and key counts only for an unknown tool's displayed JSON", () => {
+    const manyKeys = Object.fromEntries(
+      Array.from({ length: 80 }, (_, index) => [`key-${index}`, index])
+    );
+    const unknown = preparePermissionDetail("custom_tool", { manyKeys });
+    assert.strictEqual(unknown.detailTruncated, true);
+    assert.strictEqual(Object.keys(JSON.parse(unknown.detailText).manyKeys).length, 64);
+
+    const known = preparePermissionDetail("Bash", {
+      command: "echo complete",
+      manyKeys,
+    });
+    assert.strictEqual(known.detailText, "echo complete");
+    assert.strictEqual(known.detailTruncated, false);
+  });
+
+  it("clamps UTF-8 text without splitting a surrogate pair", () => {
+    const bounded = clampUtf8Text("abc😀def", 8);
+    assert.strictEqual(bounded.truncated, true);
+    assert.strictEqual(bounded.text.includes("�"), false);
+    assert.ok(Buffer.byteLength(bounded.text, "utf8") <= 8);
   });
 
   it("refuses duplicate raw answer keys because indexed answers cannot map unambiguously", () => {

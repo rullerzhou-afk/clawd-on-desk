@@ -90,6 +90,18 @@ body { padding: 6px; }
   transition: opacity 0.35s var(--ease-spring), transform 0.4s var(--ease-spring);
   overflow: hidden;
 }
+.card.expanded {
+  height: calc(100vh - 12px);
+  min-height: 0;
+}
+.card.measuring {
+  height: auto;
+  max-height: none;
+}
+.card.measuring .detail-scroll {
+  flex: none;
+  overflow: visible;
+}
 
 .card.visible {
   opacity: 1;
@@ -103,13 +115,37 @@ body { padding: 6px; }
 /* ── Header ── */
 .header {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: flex-start;
+  justify-content: space-between;
   gap: 4px;
   width: 100%;
   min-width: 0;
   margin-bottom: 0;
 }
+.header-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+.collapse-button {
+  display: none;
+  flex: 0 0 auto;
+  min-width: 42px;
+  height: 26px;
+  margin: -4px -6px 0 8px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--cmd-color);
+  background: transparent;
+  padding: 0 7px;
+  font: 600 11px/1 inherit;
+  cursor: pointer;
+}
+.collapse-button:hover { background: var(--sug-hover-bg); }
+.card.expanded .collapse-button { display: block; }
 .header-title {
   font-size: 13px;
   font-weight: 600;
@@ -191,7 +227,41 @@ body { padding: 6px; }
 }
 .session-tag.visible { display: block; }
 
-/* ── Command block ── */
+/* ── Compact preview / expanded detail ── */
+.compact-block {
+  display: -webkit-box;
+  padding: 10px 12px;
+  background: var(--cmd-bg);
+  border: 1px solid var(--cmd-border);
+  border-radius: 10px;
+  font-family: "SF Mono", "ui-monospace", "Cascadia Code", "Fira Code", monospace;
+  font-size: 12px;
+  color: var(--cmd-color);
+  line-height: 1.5;
+  overflow: hidden;
+  word-break: break-word;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  box-shadow: var(--cmd-shadow);
+}
+.card.expanded .compact-block { display: none !important; }
+
+.detail-scroll {
+  display: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+}
+.card.expanded .detail-scroll { display: flex; }
+.detail-scroll::-webkit-scrollbar { width: 6px; }
+.detail-scroll::-webkit-scrollbar-track { background: transparent; }
+.detail-scroll::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 3px; }
+.detail-scroll::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
+
 .command-block {
   padding: 12px;
   background: var(--cmd-bg);
@@ -201,15 +271,36 @@ body { padding: 6px; }
   font-size: 12px;
   color: var(--cmd-color);
   line-height: 1.5;
-  max-height: 80px;
-  overflow-y: auto;
+  max-height: none;
+  overflow: visible;
   word-break: break-all;
   box-shadow: var(--cmd-shadow);
 }
-.command-block::-webkit-scrollbar { width: 6px; }
-.command-block::-webkit-scrollbar-track { background: transparent; }
-.command-block::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 3px; }
-.command-block::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
+.detail-truncation {
+  display: none;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--irreversible-color);
+}
+.detail-truncation.visible { display: block; }
+
+.btn-expand {
+  display: none;
+  width: 100%;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--sug-border);
+  color: var(--sug-hover-color);
+  background: var(--sug-bg);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+}
+.btn-expand.visible { display: block; }
+.btn-expand:hover { background: var(--sug-hover-bg); border-color: var(--sug-hover-border); }
+.card.expanded .btn-expand { display: none !important; }
 
 /* ── Elicitation form ── */
 .elicitation-form {
@@ -398,6 +489,13 @@ body { padding: 6px; }
   display: flex;
   gap: 8px;
 }
+.footer-secondary {
+  display: none;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 6px;
+}
+.card.expanded .footer-secondary.visible { display: flex; }
 .btn {
   flex: 1;
   padding: 7px 0;

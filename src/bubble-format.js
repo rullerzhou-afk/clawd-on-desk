@@ -18,12 +18,17 @@
     return "";
   }
 
-  function formatAntigravityDetail(name, input) {
+  function maybeTruncate(value, max) {
+    return Number.isFinite(max) ? truncate(value, max) : String(value == null ? "" : value);
+  }
+
+  function formatAntigravityDetail(name, input, options) {
     const toolName = typeof name === "string" ? name.trim().toLowerCase() : "";
     if (!toolName) return "";
+    const max = options && options.mode === "detail" ? Infinity : 160;
 
     if (toolName === "run_command" || toolName === "bash" || toolName === "shell") {
-      return truncate(firstStringValue(input, ["CommandLine", "command", "Command", "cmd"]), 160);
+      return maybeTruncate(firstStringValue(input, ["CommandLine", "command", "Command", "cmd"]), max);
     }
     if (
       toolName === "write_to_file" ||
@@ -35,40 +40,74 @@
     ) {
       const filePath = firstStringValue(input, ["TargetFile", "AbsolutePath", "file_path", "path", "filePath", "FilePath"]);
       const description = firstStringValue(input, ["Description", "Instruction"]);
-      return truncate(description && filePath ? `${filePath}: ${description}` : (filePath || description), 160);
+      return maybeTruncate(description && filePath ? `${filePath}: ${description}` : (filePath || description), max);
     }
     if (toolName === "view_file" || toolName === "read") {
-      return truncate(firstStringValue(input, ["AbsolutePath", "file_path", "path", "filePath", "FilePath"]), 160);
+      return maybeTruncate(firstStringValue(input, ["AbsolutePath", "file_path", "path", "filePath", "FilePath"]), max);
     }
     if (toolName === "list_dir") {
-      return truncate(firstStringValue(input, ["DirectoryPath", "path", "directory"]), 160);
+      return maybeTruncate(firstStringValue(input, ["DirectoryPath", "path", "directory"]), max);
     }
     if (toolName === "find_by_name") {
       const searchPath = firstStringValue(input, ["SearchDirectory", "DirectoryPath", "path"]);
       const pattern = firstStringValue(input, ["Pattern", "pattern"]);
-      return truncate(pattern && searchPath ? `${searchPath}: ${pattern}` : (searchPath || pattern), 160);
+      return maybeTruncate(pattern && searchPath ? `${searchPath}: ${pattern}` : (searchPath || pattern), max);
     }
     if (toolName === "grep_search") {
       const searchPath = firstStringValue(input, ["SearchPath", "SearchDirectory", "DirectoryPath", "path"]);
       const query = firstStringValue(input, ["Query", "query"]);
-      return truncate(query && searchPath ? `${searchPath}: ${query}` : (searchPath || query), 160);
+      return maybeTruncate(query && searchPath ? `${searchPath}: ${query}` : (searchPath || query), max);
     }
     if (toolName === "ask_permission") {
       const target = firstStringValue(input, ["Target", "target", "Permission", "permission"]);
       const reason = firstStringValue(input, ["Reason", "reason", "Description", "description"]);
-      return truncate(reason && target ? `${target}: ${reason}` : (target || reason), 160);
+      return maybeTruncate(reason && target ? `${target}: ${reason}` : (target || reason), max);
     }
     if (toolName === "read_url_content") {
-      return truncate(firstStringValue(input, ["Url", "url"]), 160);
+      return maybeTruncate(firstStringValue(input, ["Url", "url"]), max);
     }
     if (toolName === "search_web") {
-      return truncate(firstStringValue(input, ["query", "Query"]), 160);
+      return maybeTruncate(firstStringValue(input, ["query", "Query"]), max);
     }
     return "";
   }
 
   function formatDetail(name, input, options) {
     if (!input || typeof input !== "object") return "";
+    const detailMode = !!(options && options.mode === "detail");
+    const normalizedName = typeof name === "string" ? name.trim().toLowerCase() : "";
+
+    if (detailMode) {
+      if (normalizedName === "exitplanmode" && typeof input.plan === "string") return input.plan.trim();
+      if (
+        (normalizedName === "bash" || normalizedName === "shell" || normalizedName === "run_command")
+      ) {
+        const command = firstStringValue(input, ["command", "CommandLine", "Command", "cmd"]);
+        if (command) return command;
+      }
+      if (normalizedName === "edit" || normalizedName === "write" || normalizedName === "read") {
+        const filePath = firstStringValue(input, ["file_path", "filepath", "path", "AbsolutePath", "TargetFile"]);
+        if (filePath) return filePath;
+      }
+      if (normalizedName === "glob" || normalizedName === "grep") {
+        const pattern = firstStringValue(input, ["pattern", "Pattern", "query", "Query"]);
+        if (pattern) return pattern;
+      }
+      if (options && options.isAntigravity) {
+        const antigravityDetail = formatAntigravityDetail(name, input, { mode: "detail" });
+        if (antigravityDetail) return antigravityDetail;
+      }
+      if (options && typeof options.formatUnknownDetail === "function") {
+        return options.formatUnknownDetail(input);
+      }
+      try {
+        return JSON.stringify(input, null, 2);
+      } catch {
+        return "";
+      }
+    }
+
+    if (normalizedName === "exitplanmode" && typeof input.plan === "string") return truncate(input.plan.trim(), 120);
     if (typeof input.description === "string" && input.description.trim()) return truncate(input.description.trim(), 120);
     if (name === "Bash" && typeof input.command === "string") return truncate(input.command, 120);
     if ((name === "Edit" || name === "Write" || name === "Read") && typeof input.file_path === "string")

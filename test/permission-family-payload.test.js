@@ -80,6 +80,17 @@ function buildPayload(entryOverrides) {
 }
 
 describe("opencode-family bubble payload", () => {
+  it("forwards local detail and an explicit compact presentation epoch", () => {
+    const payload = buildPayload({
+      agentId: "claude-code",
+      detailText: "full local detail",
+      detailTruncated: true,
+    });
+    assert.strictEqual(payload.detailText, "full local detail");
+    assert.strictEqual(payload.detailTruncated, true);
+    assert.deepStrictEqual(payload.presentation, { expanded: false, measurementEpoch: 0 });
+  });
+
   it("family entries emit the neutral family* vocabulary", () => {
     const payload = buildPayload({
       agentId: "opencode",

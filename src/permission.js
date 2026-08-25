@@ -64,6 +64,12 @@ const BUBBLE_HEIGHT_RESERVE = 24;
 // integer DIP width, so the CSS viewport width (and therefore renderer-side
 // height measurements) stays exact across scale changes.
 const BUBBLE_BASE_WIDTH = 340;
+const BUBBLE_EXPANDED_BASE_WIDTH = 500;
+const BUBBLE_EXPANDED_PREFERRED_HEIGHT = 620;
+const BUBBLE_EXPANDED_WORK_AREA_RATIO = 0.6;
+const BUBBLE_EXPANDED_CHROME_FALLBACK = 190;
+const BUBBLE_EXPANDED_DETAIL_LINE_FALLBACK = 18;
+const BUBBLE_EXPANDED_MIN_DETAIL_LINES = 5;
 // Hard cap so a scaled bubble can't swallow a small work area.
 const BUBBLE_MAX_WORK_AREA_WIDTH_RATIO = 0.9;
 const PLAN_FEEDBACK_MAX_LENGTH = 4000;
@@ -96,6 +102,12 @@ function registerPermissionIpc(options = {}) {
   on("permission-decide", (event, behavior) => permission.handleDecide(event, behavior));
   if (typeof permission.handleImeEditing === "function") {
     on("bubble-ime-editing", (event, editing) => permission.handleImeEditing(event, editing));
+  }
+  if (typeof permission.handleBubbleExpanded === "function") {
+    on("permission-set-expanded", (event, expanded) => permission.handleBubbleExpanded(event, expanded));
+  }
+  if (typeof permission.handleCompositionActive === "function") {
+    on("bubble-composition-active", (event, active) => permission.handleCompositionActive(event, active));
   }
 
   return {
@@ -330,6 +342,49 @@ function stackBoundsFromTop(bubbleHeights, x, yTop, width, gap) {
   return bounds;
 }
 
+function alignVariableBubbleBounds(bounds, bubbleSizes, options) {
+  if (!Array.isArray(bounds) || !Array.isArray(bubbleSizes) || bounds.length !== bubbleSizes.length) {
+    return bounds;
+  }
+  const maxWidth = Math.max(...bubbleSizes.map((size) => size.width));
+  const first = bounds[0];
+  let alignment = "right";
+  if (options.followPet && options.hitRect) {
+    const hitLeft = Math.round(options.hitRect.left);
+    const hitRight = Math.round(options.hitRect.right);
+    const fallbackRight = options.workArea.x + options.workArea.width - maxWidth - options.margin;
+    if (first.x === hitRight) alignment = "left";
+    else if (first.x + maxWidth === hitLeft) alignment = "right";
+    else if (first.x === fallbackRight) alignment = "right";
+    else alignment = "center";
+  } else {
+    alignment = normalizeFixedCorner(options.fixedCorner).endsWith("left") ? "left" : "right";
+  }
+
+  const result = bounds.map((bound, index) => {
+    const size = bubbleSizes[index];
+    let x = bound.x;
+    if (alignment === "right") x += maxWidth - size.width;
+    else if (alignment === "center") x += Math.round((maxWidth - size.width) / 2);
+    return { x, y: bound.y, width: size.width, height: size.height };
+  });
+
+  const expandedIndex = Number.isInteger(options.expandedIndex) ? options.expandedIndex : -1;
+  const expanded = result[expandedIndex];
+  if (!expanded) return result;
+  const minTop = options.workArea.y + options.margin;
+  const maxBottom = options.workArea.y + options.workArea.height - options.margin;
+  let shiftY = 0;
+  if (expanded.y < minTop) shiftY = minTop - expanded.y;
+  if (expanded.y + expanded.height + shiftY > maxBottom) {
+    shiftY += maxBottom - (expanded.y + expanded.height + shiftY);
+  }
+  if (shiftY !== 0) {
+    for (const bound of result) bound.y += shiftY;
+  }
+  return result;
+}
+
 function findNonOverlappingStackTop({
   x,
   width,
@@ -406,7 +461,38 @@ function computeBubbleStackLayout({
   hitRect,
   hudReservedOffset = 0,
   avoidRects = [],
+  bubbleSizes = null,
+  expandedIndex = -1,
 }) {
+  if (Array.isArray(bubbleSizes)) {
+    const sizes = bubbleSizes.map((size) => ({
+      width: Math.max(1, Math.round(Number(size && size.width) || 0)),
+      height: Math.max(1, Math.round(Number(size && size.height) || 0)),
+    }));
+    if (sizes.length === 0) return [];
+    const maxWidth = Math.max(...sizes.map((size) => size.width));
+    const uniformBounds = computeBubbleStackLayout({
+      followPet,
+      followPreference,
+      fixedCorner,
+      bubbleHeights: sizes.map((size) => size.height),
+      bubbleWidth: maxWidth,
+      margin,
+      gap,
+      workArea: wa,
+      hitRect,
+      hudReservedOffset,
+      avoidRects,
+    });
+    return alignVariableBubbleBounds(uniformBounds, sizes, {
+      followPet,
+      fixedCorner,
+      hitRect,
+      expandedIndex,
+      workArea: wa,
+      margin,
+    });
+  }
   const N = bubbleHeights.length;
   if (N === 0) return [];
 
@@ -643,6 +729,7 @@ const t = createTranslator(() => ctx.lang);
 
 // Each entry: { res, abortHandler, suggestions, sessionId, bubble, hideTimer, toolName, toolInput, resolvedSuggestion, createdAt, measuredHeight }
 const pendingPermissions = [];
+let expandedPermissionEntry = null;
 // Keep windows independently of pendingPermissions so Orbit continues avoiding
 // a bubble during its 250ms fade-out after the request has already been removed
 // from the pending list.
@@ -689,6 +776,8 @@ function getActionablePermissions() {
     p => !isPassiveNotifyEntry(p)
       && isValidInteraction(p.interaction)
       && p.interaction.capabilities.allowDeny === true
+      && p.textInputActive !== true
+      && (p.interaction.intent !== INTERACTION_INTENT.PLAN_REVIEW || p.expanded === true)
       && !isDecisionInteraction(p.interaction)
   );
 }
@@ -818,6 +907,75 @@ function getBubbleWidth(scale, workArea) {
   return Math.min(scaled, Math.floor(waWidth * BUBBLE_MAX_WORK_AREA_WIDTH_RATIO));
 }
 
+function getExpandedBubbleWidth(scale, workArea) {
+  const scaled = scaleWidth(BUBBLE_EXPANDED_BASE_WIDTH, scale);
+  const waWidth = Math.floor(Number(workArea && workArea.width) || 0);
+  if (waWidth <= 0) return scaled;
+  return Math.min(scaled, Math.floor(waWidth * BUBBLE_MAX_WORK_AREA_WIDTH_RATIO));
+}
+
+function ensureBubblePresentationState(perm) {
+  if (!perm || typeof perm !== "object") return;
+  if (!Number.isInteger(perm.measurementEpoch) || perm.measurementEpoch < 0) {
+    perm.measurementEpoch = 0;
+  }
+  if (perm.expanded !== true) perm.expanded = false;
+  if (perm.compositionActive !== true) perm.compositionActive = false;
+}
+
+function getCompactBubbleHeight(perm, scale, workArea) {
+  return clampBubbleHeight(
+    scaleHeight(
+      perm.compactMeasuredHeight
+        || perm.measuredHeight
+        || estimateBubbleHeight((perm.suggestions || []).length),
+      scale
+    ),
+    workArea.height
+  );
+}
+
+function computeExpandedHeightBudget(perm, scale, workArea, margin, gap) {
+  const otherEntries = pendingPermissions.filter((entry) => entry !== perm && !entry.remoteOnly);
+  const compactSiblingHeight = otherEntries.reduce(
+    (sum, entry) => sum + getCompactBubbleHeight(entry, scale, workArea),
+    0
+  );
+  const stackGaps = Math.max(0, pendingPermissions.filter((entry) => !entry.remoteOnly).length - 1) * gap;
+  const preferred = Math.min(
+    scaleHeight(BUBBLE_EXPANDED_PREFERRED_HEIGHT, scale),
+    Math.floor(workArea.height * BUBBLE_EXPANDED_WORK_AREA_RATIO)
+  );
+  const chromeHeight = scaleHeight(
+    perm.expandedChromeHeight || BUBBLE_EXPANDED_CHROME_FALLBACK,
+    scale
+  );
+  const detailLineHeight = scaleHeight(
+    perm.expandedDetailLineHeight || BUBBLE_EXPANDED_DETAIL_LINE_FALLBACK,
+    scale
+  );
+  const readableFloor = chromeHeight + detailLineHeight * BUBBLE_EXPANDED_MIN_DETAIL_LINES;
+  const stackBudget = workArea.height - margin * 2 - compactSiblingHeight - stackGaps;
+  const workAreaCap = Math.max(1, workArea.height - margin * 2);
+  return Math.min(workAreaCap, Math.max(readableFloor, Math.min(preferred, stackBudget)));
+}
+
+function getExpandedBubbleHeight(perm, scale, workArea, margin, gap) {
+  const budget = Math.min(
+    perm.expandedHeightBudget || computeExpandedHeightBudget(perm, scale, workArea, margin, gap),
+    Math.max(1, workArea.height - margin * 2)
+  );
+  const natural = scaleHeight(
+    perm.expandedMeasuredHeight || BUBBLE_EXPANDED_PREFERRED_HEIGHT,
+    scale
+  );
+  return Math.max(1, Math.min(natural, budget));
+}
+
+function getExpandedBudgetKey(workArea, scale) {
+  return [workArea.x, workArea.y, workArea.width, workArea.height, scale].join(":");
+}
+
 function getAnchorWorkArea(petBounds) {
   const bounds = petBounds || ctx.getPetWindowBounds();
   if (typeof ctx.getBubbleWorkArea === "function") {
@@ -847,28 +1005,44 @@ function repositionBubbles() {
   const scale = getTextScale(wa);
   const margin = Math.round(8 * scale);
   const gap = Math.round(6 * scale);
-  const bw = getBubbleWidth(scale, wa);
+  const compactWidth = getBubbleWidth(scale, wa);
+  const expandedWidth = getExpandedBubbleWidth(scale, wa);
   const hitRect = ctx.bubbleFollowPet ? ctx.getHitRectScreen(petBounds) : null;
   const hudAvoidRects = getHudAvoidRects();
 
   const layoutPermissions = pendingPermissions.filter((perm) => !perm.remoteOnly);
-  const bubbleHeights = layoutPermissions.map(perm =>
-    clampBubbleHeight(
-      // measuredHeight/estimate are CSS px; the window needs DIP.
-      scaleHeight(
-        perm.measuredHeight || estimateBubbleHeight((perm.suggestions || []).length),
-        scale
-      ),
-      wa.height
-    )
-  );
+  const bubbleSizes = layoutPermissions.map((perm) => {
+    ensureBubblePresentationState(perm);
+    if (perm.expanded) {
+      const budgetKey = getExpandedBudgetKey(wa, scale);
+      if (perm.expandedBudgetKey && perm.expandedBudgetKey !== budgetKey) {
+        perm.expandedHeightBudget = computeExpandedHeightBudget(perm, scale, wa, margin, gap);
+        perm.expandedHeightBudgetMeasured = false;
+        perm.measurementEpoch += 1;
+        sendPermissionPresentation(perm);
+      }
+      perm.expandedBudgetKey = budgetKey;
+    }
+    return perm.expanded
+      ? {
+          width: expandedWidth,
+          height: getExpandedBubbleHeight(perm, scale, wa, margin, gap),
+        }
+      : {
+          width: compactWidth,
+          height: getCompactBubbleHeight(perm, scale, wa),
+        };
+  });
+  const expandedIndex = layoutPermissions.findIndex((perm) => perm.expanded === true);
 
   const bounds = computeBubbleStackLayout({
     followPet: !!ctx.bubbleFollowPet,
     followPreference: ctx.bubbleFollowPreference,
     fixedCorner: ctx.bubbleFixedCorner,
-    bubbleHeights,
-    bubbleWidth: bw,
+    bubbleHeights: bubbleSizes.map((size) => size.height),
+    bubbleWidth: compactWidth,
+    bubbleSizes,
+    expandedIndex,
     margin,
     gap,
     workArea: wa,
@@ -1103,6 +1277,7 @@ function handlePermissionBubbleFailure(permEntry, reason) {
 function showPermissionBubble(permEntry) {
   // Auto-pilot: if enabled, approve immediately and never render a bubble.
   if (maybeAutoApprovePermission(permEntry)) return;
+  ensureBubblePresentationState(permEntry);
 
   const canOfferSessionTrust = typeof ctx.canOfferSessionTrust === "function"
     && ctx.canOfferSessionTrust(permEntry) === true;
@@ -1177,12 +1352,8 @@ function showPermissionBubble(permEntry) {
       // stale partition-persisted factor must never win over prefs.
       applyZoomToWindow(bub, getTextScale(getAnchorWorkArea()));
       syncPermissionBubbleContent(permEntry);
-      // Elicitation bubbles need keyboard focus so arrow keys and Enter work.
-      // Regular permission bubbles must NOT steal focus from the terminal —
-      // doing so triggers false "User answered in terminal" denials in Claude Code.
-      if (interactionCapabilities.answerQuestions === true) {
-        bub.focus();
-      }
+      // Arrival never steals focus. Plan/Ask receive focus only after the user
+      // explicitly expands the bubble (handleBubbleExpanded).
     });
 
     bub.on("closed", () => {
@@ -1314,6 +1485,9 @@ function dismissPermissionWithoutDecision(permEntry, message) {
 }
 
 function notifyPermissionsChanged(reason) {
+  if (expandedPermissionEntry && !pendingPermissions.includes(expandedPermissionEntry)) {
+    expandedPermissionEntry = null;
+  }
   // #640: every path that adds or removes a pendingPermissions entry funnels
   // through here — including resolvePermissionEntry's inline splice, which is
   // what Allow/Deny clicks, Enter submits, and the auto-close timer all use.
@@ -1385,6 +1559,7 @@ function refreshPermissionAutoCloseForPolicy() {
 }
 
 function buildPermissionBubblePayload(permEntry) {
+  ensureBubblePresentationState(permEntry);
   const sess = ctx.sessions.get(permEntry.sessionId);
   const sessionFolder = sess && sess.cwd ? path.basename(sess.cwd) : null;
   const sessionShortId = permEntry.sessionId
@@ -1393,6 +1568,15 @@ function buildPermissionBubblePayload(permEntry) {
   return {
     toolName: permEntry.toolName,
     toolInput: permEntry.toolInput,
+    detailText: typeof permEntry.detailText === "string"
+      ? permEntry.detailText
+      : null,
+    detailTruncated: permEntry.detailTruncated === true,
+    elicitationDetailInput: permEntry.elicitationDetailInput || null,
+    presentation: {
+      expanded: permEntry.expanded === true,
+      measurementEpoch: permEntry.measurementEpoch,
+    },
     suggestions: permEntry.suggestions || [],
     canOfferSessionTrust: typeof ctx.canOfferSessionTrust === "function"
       && ctx.canOfferSessionTrust(permEntry) === true,
@@ -1442,6 +1626,17 @@ function syncPermissionBubbleContent(permEntry) {
   const bub = permEntry && permEntry.bubble;
   if (!bub || bub.isDestroyed() || !permEntry.bubbleReady) return false;
   bub.webContents.send("permission-show", buildPermissionBubblePayload(permEntry));
+  return true;
+}
+
+function sendPermissionPresentation(permEntry) {
+  const bub = permEntry && permEntry.bubble;
+  if (!bub || bub.isDestroyed() || !permEntry.bubbleReady) return false;
+  ensureBubblePresentationState(permEntry);
+  bub.webContents.send("permission-presentation", {
+    expanded: permEntry.expanded === true,
+    measurementEpoch: permEntry.measurementEpoch,
+  });
   return true;
 }
 
@@ -2778,23 +2973,114 @@ function sendHermesPermissionResponse(res, responseObj) {
   return true;
 }
 
-function handleBubbleHeight(event, height) {
+function handleBubbleHeight(event, measurement) {
   const senderWin = BrowserWindow.fromWebContents(event.sender);
   const perm = pendingPermissions.find(p => p.bubble === senderWin);
-  if (perm && typeof height === "number" && height > 0) {
-    perm.measuredHeight = Math.ceil(height);
-    // revealCard() reports height on the next animation frame, so this is the
-    // first main-process acknowledgement that the exact interaction was loaded,
-    // received through permission-show, rendered, and made visible. Announcing
-    // earlier (even at did-finish-load) can strand an unretractable Slack card
-    // when content sync or the renderer fails. Later resize reports are safe:
-    // announceSlackPermission is once-guarded per entry.
-    announceSlackPermission(perm);
-    // Geometry updates happen after the delivery acknowledgement. If either
-    // reflow throws, the already-rendered card must still be announced.
-    repositionBubbles();
-    repositionDependentBubbles();
+  if (!perm) return;
+  ensureBubblePresentationState(perm);
+  const legacyHeight = typeof measurement === "number" ? measurement : null;
+  const height = legacyHeight !== null ? legacyHeight : Number(measurement && measurement.height);
+  const state = legacyHeight !== null ? "compact" : measurement && measurement.state;
+  const epoch = legacyHeight !== null ? 0 : Number(measurement && measurement.measurementEpoch);
+  if (!(height > 0)) return;
+  if (state !== (perm.expanded ? "expanded" : "compact")) return;
+  if (!Number.isInteger(epoch) || epoch !== perm.measurementEpoch) return;
+
+  if (state === "expanded") {
+    perm.expandedMeasuredHeight = Math.ceil(height);
+    const chromeHeight = Number(measurement && measurement.chromeHeight);
+    const detailLineHeight = Number(measurement && measurement.detailLineHeight);
+    if (chromeHeight > 0) perm.expandedChromeHeight = Math.ceil(chromeHeight);
+    if (detailLineHeight > 0) perm.expandedDetailLineHeight = Math.ceil(detailLineHeight);
+    if (!perm.expandedHeightBudgetMeasured) {
+      const wa = getAnchorWorkArea();
+      const scale = getTextScale(wa);
+      const margin = Math.round(8 * scale);
+      const gap = Math.round(6 * scale);
+      perm.expandedHeightBudget = computeExpandedHeightBudget(perm, scale, wa, margin, gap);
+      perm.expandedBudgetKey = getExpandedBudgetKey(wa, scale);
+      perm.expandedHeightBudgetMeasured = true;
+    }
+  } else {
+    perm.compactMeasuredHeight = Math.ceil(height);
+    // Keep the legacy field during the transition because several tests and
+    // older callers inspect it directly.
+    perm.measuredHeight = perm.compactMeasuredHeight;
   }
+  // revealCard() reports height on the next animation frame, so this is the
+  // first main-process acknowledgement that the exact interaction was loaded,
+  // received through permission-show, rendered, and made visible. Announcing
+  // earlier (even at did-finish-load) can strand an unretractable Slack card
+  // when content sync or the renderer fails. Later resize reports are safe:
+  // announceSlackPermission is once-guarded per entry.
+  announceSlackPermission(perm);
+  // Geometry updates happen after the delivery acknowledgement. If either
+  // reflow throws, the already-rendered card must still be announced.
+  repositionBubbles();
+  repositionDependentBubbles();
+}
+
+function handleBubbleExpanded(event, expanded) {
+  const senderWin = BrowserWindow.fromWebContents(event.sender);
+  const perm = pendingPermissions.find((entry) => entry.bubble === senderWin);
+  if (!perm) return false;
+  ensureBubblePresentationState(perm);
+  const wantsExpanded = expanded === true;
+  if (wantsExpanded === perm.expanded) {
+    sendPermissionPresentation(perm);
+    return true;
+  }
+
+  if (wantsExpanded) {
+    const previous = expandedPermissionEntry;
+    if (previous && previous !== perm) {
+      ensureBubblePresentationState(previous);
+      if (previous.compositionActive) {
+        sendPermissionPresentation(previous);
+        sendPermissionPresentation(perm);
+        return false;
+      }
+      previous.expanded = false;
+      previous.measurementEpoch += 1;
+      sendPermissionPresentation(previous);
+    }
+    const wa = getAnchorWorkArea();
+    const scale = getTextScale(wa);
+    const margin = Math.round(8 * scale);
+    const gap = Math.round(6 * scale);
+    perm.expanded = true;
+    perm.measurementEpoch += 1;
+    perm.expandedHeightBudget = computeExpandedHeightBudget(perm, scale, wa, margin, gap);
+    perm.expandedBudgetKey = getExpandedBudgetKey(wa, scale);
+    perm.expandedHeightBudgetMeasured = false;
+    expandedPermissionEntry = perm;
+    repositionBubbles();
+    sendPermissionPresentation(perm);
+
+    const capabilities = isValidInteraction(perm.interaction)
+      ? perm.interaction.capabilities
+      : {};
+    if (capabilities.answerQuestions === true || capabilities.planFeedback === true) {
+      try { senderWin.focus(); } catch {}
+    }
+  } else {
+    perm.expanded = false;
+    perm.measurementEpoch += 1;
+    if (expandedPermissionEntry === perm) expandedPermissionEntry = null;
+    sendPermissionPresentation(perm);
+    repositionBubbles();
+  }
+  repositionDependentBubbles();
+  syncPermissionShortcuts();
+  return true;
+}
+
+function handleCompositionActive(event, active) {
+  const senderWin = BrowserWindow.fromWebContents(event.sender);
+  const perm = pendingPermissions.find((entry) => entry.bubble === senderWin);
+  if (!perm) return;
+  ensureBubblePresentationState(perm);
+  perm.compositionActive = active === true;
 }
 
 // macOS only: while a text input inside the bubble is focused, the bubble must
@@ -2807,10 +3093,12 @@ function handleBubbleHeight(event, height) {
 // The renderer clears the flag on element blur AND on window blur (e.g. Cmd-Tab
 // away mid-composition), so it can't get stuck and strand the bubble.
 function handleImeEditing(event, editing) {
-  if (!isMac) return;
   const senderWin = BrowserWindow.fromWebContents(event.sender);
   const perm = pendingPermissions.find(p => p.bubble === senderWin);
   if (!perm || !perm.bubble || perm.bubble.isDestroyed()) return;
+  perm.textInputActive = editing === true;
+  syncPermissionShortcuts();
+  if (!isMac) return;
   const wasEditing = perm.bubble.__clawdMacImeEditing === true;
   if (editing) perm.bubble.__clawdMacImeEditing = true;
   else delete perm.bubble.__clawdMacImeEditing;
@@ -3554,7 +3842,8 @@ return {
   // Test seam: lets wire-level tests pin which provenance flags reach the
   // renderer (isHermes suppresses the go-to-terminal action — issue #689).
   buildPermissionBubblePayload,
-  handleBubbleHeight, handleDecide, handleImeEditing, handleBubbleRendererGone, cleanup,
+  handleBubbleHeight, handleBubbleExpanded, handleCompositionActive,
+  handleDecide, handleImeEditing, handleBubbleRendererGone, cleanup,
   showCodexNotifyBubble, clearCodexNotifyBubbles,
   showCodexUserInputBubble, clearCodexUserInputBubbles,
   showKimiNotifyBubble, clearKimiNotifyBubbles,

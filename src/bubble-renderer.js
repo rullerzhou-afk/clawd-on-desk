@@ -15,6 +15,11 @@ function startMarqueeIfOverflowing() {
 toolPill.addEventListener("mouseenter", startMarqueeIfOverflowing);
 toolPill.addEventListener("mouseleave", stopMarquee);
 const commandBlock = document.getElementById("commandBlock");
+const compactBlock = document.getElementById("compactBlock");
+const detailScroll = document.getElementById("detailScroll");
+const detailTruncation = document.getElementById("detailTruncation");
+const btnExpand = document.getElementById("btnExpand");
+const btnCollapse = document.getElementById("btnCollapse");
 const irreversibleBadge = document.getElementById("irreversibleBadge");
 const elicitationForm = document.getElementById("elicitationForm");
 const elicitationProgress = document.getElementById("elicitationProgress");
@@ -25,6 +30,8 @@ const planFeedbackSubmit = document.getElementById("planFeedbackSubmit");
 const btnAllow = document.getElementById("btnAllow");
 const btnDeny = document.getElementById("btnDeny");
 const suggestionsContainer = document.getElementById("suggestions");
+const actionsContainer = document.getElementById("actions");
+const footerSecondary = document.getElementById("footerSecondary");
 const headerTitle = document.querySelector(".header-title");
 const sessionTag = document.getElementById("sessionTag");
 let elicitationMode = false;
@@ -34,6 +41,14 @@ let elicitationAnswers = {};
 let activeQuestionIndex = 0;
 let currentLang = "en";
 let heightReportFrame = 0;
+let currentData = null;
+let currentExpanded = false;
+let measurementEpoch = 0;
+let currentIsPlanReview = false;
+let planFeedbackMode = false;
+let pendingRestoreState = null;
+let sessionTrustErrorElement = null;
+let compactContentOverflow = false;
 
 // Mirrors body { padding: 6px; } above. Keep this in sync if the body padding changes.
 const BUBBLE_BODY_PADDING_Y = 12;
@@ -98,6 +113,13 @@ const BUBBLE_STRINGS = {
     planFeedbackPlaceholder: "What should be changed?",
     submitFeedback: "Send",
     back: "Back",
+    viewDetails: "View details",
+    moreOptions: "More options",
+    viewPlan: "View plan",
+    answer: "Answer",
+    collapse: "Collapse",
+    contentTruncated: "Content is too large and has been truncated.",
+    questionCount: "Questions: {count}",
   },
   zh: {
     irreversibleHint: "\u7834\u574F\u6027\u64CD\u4F5C\u2014\u2014\u53EF\u80FD\u65E0\u6CD5\u6062\u590D",
@@ -141,6 +163,13 @@ const BUBBLE_STRINGS = {
     planFeedbackPlaceholder: "\u54EA\u91CC\u9700\u8981\u6539?",
     submitFeedback: "\u53D1\u9001",
     back: "\u8FD4\u56DE",
+    viewDetails: "\u67E5\u770B\u8BE6\u60C5",
+    moreOptions: "\u66F4\u591A\u9009\u9879",
+    viewPlan: "\u67E5\u770B\u8BA1\u5212",
+    answer: "\u56DE\u7B54",
+    collapse: "\u6536\u8D77",
+    contentTruncated: "\u5185\u5BB9\u8FC7\u5927\uFF0C\u5DF2\u622A\u65AD\u3002",
+    questionCount: "{count} \u4E2A\u95EE\u9898",
   },
   "zh-TW": {
     irreversibleHint: "\u7834\u58DE\u6027\u64CD\u4F5C\u2014\u2014\u53EF\u80FD\u7121\u6CD5\u5FA9\u539F",
@@ -184,6 +213,13 @@ const BUBBLE_STRINGS = {
     planFeedbackPlaceholder: "哪裡需要改?",
     submitFeedback: "傳送",
     back: "返回",
+    viewDetails: "查看詳情",
+    moreOptions: "更多選項",
+    viewPlan: "查看計畫",
+    answer: "回答",
+    collapse: "收合",
+    contentTruncated: "內容過大，已截斷。",
+    questionCount: "{count} 個問題",
   },
   ko: {
     irreversibleHint: "\uD30C\uAD34\uC801 \uC791\uC5C5 \u2014 \uBCF5\uAD6C\uB418\uC9C0 \uC54A\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4",
@@ -227,6 +263,13 @@ const BUBBLE_STRINGS = {
     planFeedbackPlaceholder: "\uC5B4\uB514\uB97C \uBC14\uAFD4\uC57C \uD558\uB098\uC694?",
     submitFeedback: "\uBCF4\uB0B4\uAE30",
     back: "\uB4A4\uB85C",
+    viewDetails: "\uC790\uC138\uD788 \uBCF4\uAE30",
+    moreOptions: "\uB354 \uBCF4\uAE30",
+    viewPlan: "\uACC4\uD68D \uBCF4\uAE30",
+    answer: "\uB2F5\uBCC0",
+    collapse: "\uC811\uAE30",
+    contentTruncated: "\uB0B4\uC6A9\uC774 \uB108\uBB34 \uCEE4\uC11C \uC798\uB838\uC2B5\uB2C8\uB2E4.",
+    questionCount: "\uC9C8\uBB38 {count}\uAC1C",
   },
   ja: {
     irreversibleHint: "\u7834\u58CA\u7684\u306A\u64CD\u4F5C \u2014 \u5FA9\u5143\u3067\u304D\u306A\u3044\u53EF\u80FD\u6027\u304C\u3042\u308A\u307E\u3059",
@@ -270,6 +313,13 @@ const BUBBLE_STRINGS = {
     planFeedbackPlaceholder: "どこを変更すべき?",
     submitFeedback: "送信",
     back: "戻る",
+    viewDetails: "詳細を表示",
+    moreOptions: "その他の選択肢",
+    viewPlan: "計画を表示",
+    answer: "回答",
+    collapse: "閉じる",
+    contentTruncated: "内容が大きすぎるため、省略されました。",
+    questionCount: "質問 {count} 件",
   },
   "pt-BR": {
     irreversibleHint: "Ação destrutiva — pode não ter volta",
@@ -313,6 +363,13 @@ const BUBBLE_STRINGS = {
     planFeedbackPlaceholder: "O que deveria mudar?",
     submitFeedback: "Enviar",
     back: "Voltar",
+    viewDetails: "Ver detalhes",
+    moreOptions: "Mais opções",
+    viewPlan: "Ver plano",
+    answer: "Responder",
+    collapse: "Recolher",
+    contentTruncated: "O conteúdo é muito grande e foi truncado.",
+    questionCount: "Perguntas: {count}",
   },
   es: {
     irreversibleHint: "Acción destructiva — puede ser irreversible",
@@ -356,6 +413,13 @@ const BUBBLE_STRINGS = {
     planFeedbackPlaceholder: "¿Qué habría que cambiar?",
     submitFeedback: "Enviar",
     back: "Atrás",
+    viewDetails: "Ver detalles",
+    moreOptions: "Más opciones",
+    viewPlan: "Ver plan",
+    answer: "Responder",
+    collapse: "Contraer",
+    contentTruncated: "El contenido es demasiado grande y se ha truncado.",
+    questionCount: "Preguntas: {count}",
   },
 };
 
@@ -398,7 +462,9 @@ function getSuggestionLabel(s, lang) {
 function disableAll() {
   btnAllow.disabled = true;
   btnDeny.disabled = true;
+  btnExpand.disabled = true;
   for (const btn of suggestionsContainer.children) btn.disabled = true;
+  for (const btn of footerSecondary.children) btn.disabled = true;
   for (const el of elicitationForm.querySelectorAll("input, textarea, button")) el.disabled = true;
 }
 
@@ -419,24 +485,20 @@ function withUnconstrainedElicitationForm(fn) {
 
 function measureNaturalBubbleHeight() {
   return withUnconstrainedElicitationForm(() => {
-    return Math.ceil(Math.max(card.offsetHeight, card.scrollHeight) + BUBBLE_BODY_PADDING_Y);
+    card.classList.add("measuring");
+    const height = Math.ceil(Math.max(card.offsetHeight, card.scrollHeight) + BUBBLE_BODY_PADDING_Y);
+    card.classList.remove("measuring");
+    return height;
   });
 }
 
 function applyElicitationViewport() {
   // Intentionally a no-op.
   //
-  // Previously this function clamped the elicitation form's maxHeight and added
-  // the `elicitation-scrollable` class (overflow-y: auto). The scroll container
-  // caused arrow keys to scroll the div instead of navigating between radio
-  // options — even with preventDefault()/stopPropagation() on keydown — because
-  // Chromium's scroll-on-arrow default action fires before JS handlers in the
-  // bubble phase, not after.
-  //
-  // The correct approach: let the form grow to its natural height and drive
-  // window size through reportHeight() → IPC bubble-height → setBounds().
-  // permission.js clampBubbleHeight() already caps the window at workArea.height
-  // so content-heavy bubbles will never exceed the screen.
+  // The expanded interaction model owns overflow in one outer detail scroller.
+  // Keeping the form itself unconstrained preserves radio-key navigation and
+  // avoids nested scroll regions; main still receives the natural height and
+  // caps the BrowserWindow against its target work area.
   //
   // Safety: "User answered in terminal" cannot be triggered by elicitation
   // bubbles. That denial path is wired to PostToolUse/Stop hook events matched
@@ -449,12 +511,26 @@ function scheduleBubbleHeightReport() {
   if (heightReportFrame) cancelAnimationFrame(heightReportFrame);
   heightReportFrame = requestAnimationFrame(() => {
     heightReportFrame = 0;
-    window.bubbleAPI.reportHeight(measureNaturalBubbleHeight());
+    const height = measureNaturalBubbleHeight();
+    const computed = typeof window.getComputedStyle === "function"
+      ? window.getComputedStyle(commandBlock)
+      : null;
+    const detailLineHeight = Number.parseFloat(computed && computed.lineHeight) || 18;
+    const detailHeight = Math.max(detailScroll.scrollHeight || 0, commandBlock.scrollHeight || 0);
+    window.bubbleAPI.reportHeight({
+      height,
+      state: currentExpanded ? "expanded" : "compact",
+      measurementEpoch,
+      chromeHeight: currentExpanded ? Math.max(0, height - detailHeight) : 0,
+      detailLineHeight,
+    });
     applyElicitationViewport();
   });
 }
 
 function revealCard() {
+  restoreDraftStateIfNeeded();
+  applyPresentationView();
   card.classList.remove("hiding");
   card.classList.add("visible");
   scheduleBubbleHeightReport();
@@ -497,6 +573,155 @@ function resetBubbleContent() {
   btnDeny.style.display = "";
   btnDeny.disabled = false;
   suggestionsContainer.innerHTML = "";
+  footerSecondary.innerHTML = "";
+  footerSecondary.classList.remove("visible");
+  sessionTrustErrorElement = null;
+  suggestionsContainer.style.display = "";
+  compactBlock.textContent = "";
+  detailTruncation.textContent = "";
+  detailTruncation.classList.remove("visible");
+  btnExpand.classList.remove("visible");
+  btnExpand.disabled = false;
+  planFeedbackMode = false;
+  compactContentOverflow = false;
+}
+
+function getCompactPreview(data) {
+  if (elicitationMode || data.isCodexUserInputNotify) {
+    const questions = data.toolInput && Array.isArray(data.toolInput.questions)
+      ? data.toolInput.questions
+      : [];
+    const first = questions[0];
+    return first && first.question ? first.question : bubbleText(data.lang, "needsInput");
+  }
+  return formatDetail(data.toolName, data.toolInput, { isAntigravity: !!data.isAntigravity })
+    || commandBlock.textContent
+    || "";
+}
+
+function restoreDraftStateIfNeeded() {
+  const state = pendingRestoreState;
+  pendingRestoreState = null;
+  if (!state) return;
+  if (elicitationMode) {
+    elicitationAnswers = state.elicitationAnswers;
+    activeQuestionIndex = state.activeQuestionIndex;
+    renderElicitationStep();
+  } else if (codexUserInputMode) {
+    activeQuestionIndex = state.activeQuestionIndex;
+    renderCodexUserInputStep(currentData);
+  }
+  planFeedbackTextarea.value = state.planFeedbackText;
+  planFeedbackMode = state.planFeedbackMode;
+  planFeedbackSubmit.disabled = !planFeedbackTextarea.value.trim();
+  requestAnimationFrame(() => {
+    detailScroll.scrollTop = state.scrollTop;
+  });
+}
+
+function focusActiveElicitationControl() {
+  const alreadyChecked = elicitationForm.querySelector(
+    `input[name="elicitation-${activeQuestionIndex}"]:checked`
+  );
+  const first = alreadyChecked || elicitationForm.querySelector(
+    `input[name="elicitation-${activeQuestionIndex}"]:not([data-other])`
+  );
+  if (first) first.focus();
+}
+
+function scheduleCompactOverflowMeasurement() {
+  requestAnimationFrame(() => {
+    if (currentExpanded || !(compactBlock.clientHeight > 0)) return;
+    const overflow = compactBlock.scrollHeight > compactBlock.clientHeight + 1;
+    if (overflow === compactContentOverflow) return;
+    compactContentOverflow = overflow;
+    applyPresentationView();
+  });
+}
+
+function applyPresentationView() {
+  if (!currentData) return;
+  const data = currentData;
+  const wasExpanded = card.classList.contains("expanded");
+  card.classList.toggle("expanded", currentExpanded);
+  btnCollapse.title = bubbleText(data.lang, "collapse");
+  btnCollapse.setAttribute("aria-label", bubbleText(data.lang, "collapse"));
+  btnCollapse.textContent = bubbleText(data.lang, "collapse");
+
+  const compactPreview = getCompactPreview(data);
+  compactBlock.textContent = compactPreview;
+  if (!elicitationMode && !codexUserInputMode && typeof data.detailText === "string" && data.detailText) {
+    commandBlock.textContent = data.detailText;
+  }
+  detailTruncation.textContent = data.detailTruncated
+    ? bubbleText(data.lang, "contentTruncated")
+    : "";
+  detailTruncation.classList.toggle("visible", data.detailTruncated === true);
+
+  const hiddenOptions = suggestionsContainer.children.length > 0 || footerSecondary.children.length > 0;
+  const detailDiffers = typeof data.detailText === "string"
+    && data.detailText
+    && data.detailText !== compactPreview;
+  const needsExpansion = currentIsPlanReview
+    || elicitationMode
+    || codexUserInputMode
+    || detailDiffers
+    || compactContentOverflow
+    || data.detailTruncated === true
+    || hiddenOptions;
+  const expandLabel = currentIsPlanReview
+    ? "viewPlan"
+    : (elicitationMode
+      ? "answer"
+      : (hiddenOptions && !detailDiffers && !compactContentOverflow ? "moreOptions" : "viewDetails"));
+  btnExpand.textContent = bubbleText(data.lang, expandLabel);
+  if (elicitationMode) {
+    const questions = data.toolInput && Array.isArray(data.toolInput.questions)
+      ? data.toolInput.questions.length
+      : 0;
+    if (questions > 0) {
+      btnExpand.textContent += ` · ${bubbleText(data.lang, "questionCount", { count: questions })}`;
+    }
+  }
+  btnExpand.classList.toggle("visible", !currentExpanded && needsExpansion);
+
+  if (!currentExpanded) {
+    actionsContainer.style.display = (currentIsPlanReview || elicitationMode) ? "none" : "";
+    suggestionsContainer.style.display = "none";
+    footerSecondary.classList.remove("visible");
+    planFeedbackForm.classList.remove("visible");
+  } else if (planFeedbackMode) {
+    actionsContainer.style.display = "none";
+    suggestionsContainer.style.display = "none";
+    footerSecondary.classList.remove("visible");
+    planFeedbackForm.classList.add("visible");
+  } else {
+    actionsContainer.style.display = "";
+    suggestionsContainer.style.display = "";
+    footerSecondary.classList.toggle("visible", footerSecondary.children.length > 0);
+    planFeedbackForm.classList.remove("visible");
+  }
+
+  if (currentExpanded && !wasExpanded && elicitationMode) {
+    requestAnimationFrame(focusActiveElicitationControl);
+  }
+  scheduleCompactOverflowMeasurement();
+  scheduleBubbleHeightReport();
+}
+
+function renderSessionTrustError(message) {
+  if (sessionTrustErrorElement && typeof sessionTrustErrorElement.remove === "function") {
+    sessionTrustErrorElement.remove();
+  }
+  sessionTrustErrorElement = null;
+  if (typeof message !== "string" || !message) return;
+  const error = document.createElement("div");
+  error.className = "session-trust-error";
+  error.textContent = message;
+  error.setAttribute("role", "alert");
+  footerSecondary.appendChild(error);
+  footerSecondary.classList.toggle("visible", currentExpanded);
+  sessionTrustErrorElement = error;
 }
 
 function getQuestionLabel(question, questionIndex) {
@@ -784,7 +1009,8 @@ function renderElicitationTerminalFallback(data) {
     // which lets Hermes open its native clarification UI.
     window.bubbleAPI.decide(data && data.isHermes ? "deny-and-focus" : "deny");
   });
-  suggestionsContainer.appendChild(btn);
+  footerSecondary.appendChild(btn);
+  footerSecondary.classList.toggle("visible", currentExpanded);
 }
 
 function renderRegularTerminalFallback(lang) {
@@ -820,28 +1046,12 @@ function renderElicitationStep() {
 
   updateElicitationSubmitState();
   scheduleBubbleHeightReport();
-
-  // Auto-focus the first preset radio on render so arrow keys work immediately
-  // without requiring a click first. Uses rAF so the DOM is painted before we
-  // query it. If a radio is already checked (navigating back to a previously
-  // answered question), keep that selection instead of resetting it.
-  requestAnimationFrame(() => {
-    const question = elicitationQuestions[activeQuestionIndex];
-    if (!question) return;
-    const alreadyChecked = elicitationForm.querySelector(
-      `input[name="elicitation-${activeQuestionIndex}"]:checked`
-    );
-    if (alreadyChecked) { alreadyChecked.focus(); return; }
-    const first = elicitationForm.querySelector(
-      `input[name="elicitation-${activeQuestionIndex}"]:not([data-other])`
-    );
-    if (first) first.focus();
-  });
 }
 
 function renderElicitationForm(data) {
-  elicitationQuestions = data.toolInput && Array.isArray(data.toolInput.questions)
-    ? data.toolInput.questions
+  const input = data.elicitationDetailInput || data.toolInput;
+  elicitationQuestions = input && Array.isArray(input.questions)
+    ? input.questions
     : [];
   elicitationAnswers = {};
   activeQuestionIndex = 0;
@@ -957,6 +1167,54 @@ function renderCodexUserInputPreview(data) {
 }
 
 function show(data) {
+  const isPassiveRefresh = data.toolName === "CodexExec"
+    || data.toolName === "KimiPermission"
+    || data.isCodexUserInputNotify === true;
+  if (currentData && !isPassiveRefresh) {
+    currentData = {
+      ...currentData,
+      lang: data.lang,
+      sessionFolder: data.sessionFolder,
+      sessionShortId: data.sessionShortId,
+      canOfferSessionTrust: data.canOfferSessionTrust,
+      sessionTrustError: data.sessionTrustError,
+      presentation: data.presentation,
+    };
+    currentLang = currentData.lang || "en";
+    setSessionTag(currentData);
+    const presentation = currentData.presentation && typeof currentData.presentation === "object"
+      ? currentData.presentation
+      : {};
+    currentExpanded = presentation.expanded === true;
+    measurementEpoch = Number.isInteger(presentation.measurementEpoch)
+      ? presentation.measurementEpoch
+      : measurementEpoch;
+    renderSessionTrustError(currentData.sessionTrustError);
+    btnAllow.disabled = false;
+    btnDeny.disabled = false;
+    btnExpand.disabled = false;
+    for (const button of suggestionsContainer.querySelectorAll("button")) button.disabled = false;
+    for (const button of footerSecondary.querySelectorAll("button")) button.disabled = false;
+    applyPresentationView();
+    return;
+  }
+  if (currentData) {
+    pendingRestoreState = {
+      elicitationAnswers,
+      activeQuestionIndex,
+      planFeedbackText: planFeedbackTextarea.value,
+      planFeedbackMode,
+      scrollTop: detailScroll.scrollTop || 0,
+    };
+  }
+  currentData = data;
+  const presentation = data.presentation && typeof data.presentation === "object"
+    ? data.presentation
+    : {};
+  currentExpanded = presentation.expanded === true;
+  measurementEpoch = Number.isInteger(presentation.measurementEpoch)
+    ? presentation.measurementEpoch
+    : 0;
   resetBubbleContent();
   currentLang = data.lang || "en";
   const interaction = data.interaction && typeof data.interaction === "object"
@@ -966,6 +1224,7 @@ function show(data) {
     ? interaction.capabilities
     : {};
   const interactionIntent = interaction ? interaction.intent : "unknown";
+  currentIsPlanReview = interactionIntent === "plan-review";
   elicitationMode = interactionIntent === "human-question"
     && interactionCapabilities.answerQuestions === true;
   setSessionTag(data);
@@ -1217,15 +1476,10 @@ function show(data) {
         disableAll();
         window.bubbleAPI.decide("session-trust");
       });
-      suggestionsContainer.appendChild(trustBtn);
+      footerSecondary.appendChild(trustBtn);
+      footerSecondary.classList.add("visible");
     }
-    if (typeof data.sessionTrustError === "string" && data.sessionTrustError) {
-      const error = document.createElement("div");
-      error.className = "session-trust-error";
-      error.textContent = data.sessionTrustError;
-      error.setAttribute("role", "alert");
-      suggestionsContainer.appendChild(error);
-    }
+    renderSessionTrustError(data.sessionTrustError);
     // Hermes and DSH permission cards get no generic terminal action. Hermes
     // has no native approval prompt; DSH's native web answerer is reached by
     // an explicit no-decision fallback, not a user allow/deny action.
@@ -1319,6 +1573,7 @@ window.addEventListener("resize", applyElicitationViewport);
 // ── Plan Feedback Mode ──
 
 function enterPlanFeedbackMode(lang) {
+  planFeedbackMode = true;
   // Hide action buttons and suggestions
   btnAllow.style.display = "none";
   btnDeny.style.display = "none";
@@ -1335,8 +1590,8 @@ function enterPlanFeedbackMode(lang) {
 }
 
 function exitPlanFeedbackMode() {
+  planFeedbackMode = false;
   planFeedbackForm.classList.remove("visible");
-  planFeedbackTextarea.value = "";
   // Restore plan review layout: Approve visible, Deny hidden, suggestions visible
   btnAllow.style.display = "";
   btnDeny.style.display = "none";
@@ -1373,6 +1628,35 @@ planFeedbackSubmit.addEventListener("click", () => {
 planFeedbackBack.addEventListener("click", () => {
   exitPlanFeedbackMode();
 });
+
+btnExpand.addEventListener("click", () => {
+  if (btnExpand.disabled) return;
+  window.bubbleAPI.setExpanded(true);
+});
+
+btnCollapse.addEventListener("click", () => {
+  window.bubbleAPI.setExpanded(false);
+});
+
+if (typeof window.bubbleAPI.onPresentation === "function") {
+  window.bubbleAPI.onPresentation((presentation) => {
+    if (!presentation || typeof presentation !== "object") return;
+    const nextEpoch = Number(presentation.measurementEpoch);
+    if (!Number.isInteger(nextEpoch) || nextEpoch < measurementEpoch) return;
+    measurementEpoch = nextEpoch;
+    currentExpanded = presentation.expanded === true;
+    applyPresentationView();
+  });
+}
+
+if (typeof window.bubbleAPI.setCompositionActive === "function") {
+  document.addEventListener("compositionstart", () => {
+    window.bubbleAPI.setCompositionActive(true);
+  });
+  document.addEventListener("compositionend", () => {
+    window.bubbleAPI.setCompositionActive(false);
+  });
+}
 
 // While a text input inside the bubble is focused, tell the main process so it
 // can drop the bubble out of always-on-top on macOS — otherwise the OS IME

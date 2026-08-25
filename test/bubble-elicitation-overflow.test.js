@@ -14,32 +14,31 @@ function functionBody(name) {
 }
 
 describe("AskUserQuestion bubble overflow", () => {
-  it("documents applyElicitationViewport as a no-op until the overflow redesign lands", () => {
+  it("keeps the legacy elicitation viewport hook inert", () => {
     const body = functionBody("applyElicitationViewport");
 
     assert.match(body, /Intentionally a no-op/);
-    assert.match(body, /The correct approach: let the form grow to its natural height/);
-    assert.match(body, /permission\.js clampBubbleHeight\(\) already caps the window/);
+    assert.match(body, /one outer detail scroller/);
+    assert.match(body, /caps the BrowserWindow against its target work area/);
   });
 
-  it("reports natural content height before calling the no-op viewport hook", () => {
+  it("reports state-owned natural height before calling the legacy viewport hook", () => {
     assert.match(bubbleRenderer, /function measureNaturalBubbleHeight\(\)/);
     assert.match(bubbleRenderer, /card\.classList\.remove\("elicitation-scrollable"\);/);
     assert.match(bubbleRenderer, /elicitationForm\.style\.maxHeight = "";/);
     assert.match(
       bubbleRenderer,
-      /window\.bubbleAPI\.reportHeight\(measureNaturalBubbleHeight\(\)\);[\s\S]*applyElicitationViewport\(\);/
+      /const height = measureNaturalBubbleHeight\(\);[\s\S]*window\.bubbleAPI\.reportHeight\(\{[\s\S]*state: currentExpanded \? "expanded" : "compact"[\s\S]*measurementEpoch[\s\S]*applyElicitationViewport\(\);/
     );
     assert.doesNotMatch(bubbleCss, /max-height:\s*calc\(100vh/);
     assert.doesNotMatch(bubbleRenderer, /max-height:\s*calc\(100vh/);
   });
 
-  it("does not make the no-op viewport hook add internal scrolling or a max-height clamp", () => {
+  it("uses one expanded detail scroller instead of nesting scroll inside the form", () => {
     const body = functionBody("applyElicitationViewport");
 
-    // Long-prompt overflow remains deferred to the #222 redesign; this guard only
-    // prevents tests from implying the current no-op provides runtime scrolling.
     assert.doesNotMatch(body, /card\.classList\.(?:add|toggle)\("elicitation-scrollable"/);
     assert.doesNotMatch(body, /elicitationForm\.style\.maxHeight\s*=/);
+    assert.match(bubbleCss, /\.detail-scroll\s*\{[\s\S]*overflow-y:\s*auto/);
   });
 });

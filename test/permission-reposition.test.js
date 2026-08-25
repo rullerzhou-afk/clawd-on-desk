@@ -60,6 +60,53 @@ describe("permission bubble Orbit avoidance bounds", () => {
 });
 
 describe("permission bubble stack layout", () => {
+  it("right-aligns mixed compact/expanded widths and keeps the expanded card in the work area", () => {
+    const bounds = layout({
+      followPet: false,
+      fixedCorner: "bottom-right",
+      bubbleHeights: [140, 600, 140],
+      bubbleSizes: [
+        { width: 340, height: 140 },
+        { width: 500, height: 600 },
+        { width: 340, height: 140 },
+      ],
+      expandedIndex: 1,
+      workArea: { x: 0, y: 0, width: 900, height: 700 },
+    });
+
+    assert.strictEqual(bounds[0].x + bounds[0].width, 892);
+    assert.strictEqual(bounds[1].x + bounds[1].width, 892);
+    assert.strictEqual(bounds[2].x + bounds[2].width, 892);
+    assert.ok(bounds[1].y >= 8);
+    assert.ok(bounds[1].y + bounds[1].height <= 692);
+    assert.ok(bounds[0].y < bounds[1].y && bounds[1].y < bounds[2].y);
+  });
+
+  it("expands away from the pet on either side", () => {
+    const right = layout({
+      followPet: true,
+      followPreference: "right",
+      bubbleHeights: [140, 400],
+      bubbleSizes: [{ width: 340, height: 140 }, { width: 500, height: 400 }],
+      expandedIndex: 1,
+      workArea: FHD,
+      hitRect: { left: 700, top: 800, right: 820, bottom: 920 },
+    });
+    assert.strictEqual(right[0].x, 820);
+    assert.strictEqual(right[1].x, 820);
+
+    const left = layout({
+      followPet: true,
+      followPreference: "left",
+      bubbleHeights: [140, 400],
+      bubbleSizes: [{ width: 340, height: 140 }, { width: 500, height: 400 }],
+      expandedIndex: 1,
+      workArea: FHD,
+      hitRect: { left: 1000, top: 800, right: 1120, bottom: 920 },
+    });
+    assert.strictEqual(left[0].x + left[0].width, 1000);
+    assert.strictEqual(left[1].x + left[1].width, 1000);
+  });
   it("hangs the stack from the pet hitbox when there is room below", () => {
     // 3 short bubbles, pet in upper-middle of a 1080p screen → below branch.
     const bounds = layout({

@@ -37,6 +37,30 @@ describe("bubble-format formatDetail builtin tools", () => {
     assert.strictEqual(formatDetail("Bash", { command: "npm test" }), "npm test");
   });
 
+  it("uses explicit full-text fields in detail mode", () => {
+    const command = `echo ${"x".repeat(300)}`;
+    const plan = `Plan\n${"step\n".repeat(80)}END_MARKER`;
+    assert.strictEqual(
+      formatDetail("Bash", { description: "short preview", command }, { mode: "detail" }),
+      command
+    );
+    assert.strictEqual(
+      formatDetail("ExitPlanMode", { note: "wrong first string", plan }, { mode: "detail" }),
+      plan
+    );
+    assert.strictEqual(
+      formatDetail("ExitPlanMode", { note: "wrong first string", plan }),
+      truncate(plan, 120)
+    );
+  });
+
+  it("uses readable JSON for unknown tools in detail mode", () => {
+    assert.strictEqual(
+      formatDetail("mcp__server__tool", { first: "a", nested: { second: "b" } }, { mode: "detail" }),
+      '{\n  "first": "a",\n  "nested": {\n    "second": "b"\n  }\n}'
+    );
+  });
+
   it("formats Edit/Write/Read file_path", () => {
     assert.strictEqual(formatDetail("Edit", { file_path: "/repo/app.js" }), "/repo/app.js");
     assert.strictEqual(formatDetail("Write", { file_path: "/repo/out.txt" }), "/repo/out.txt");

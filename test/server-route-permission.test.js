@@ -292,6 +292,70 @@ describe("server-route-permission POST", () => {
     }
   });
 
+  it("keeps a bounded compact preview and a complete local detail across permission adapters", async () => {
+    const marker = "__CLAWD_PERMISSION_DETAIL_END__";
+    const command = `${"printf x; ".repeat(260)}${marker}`;
+    const cases = [
+      { agentId: "claude-code", body: {} },
+      { agentId: "codebuddy", body: {} },
+      { agentId: "codex", body: { tool_input_description: "Run a generated command" } },
+      { agentId: "qwen-code", body: {} },
+      { agentId: "zcode", body: {} },
+      { agentId: "copilot-cli", body: {} },
+      { agentId: "hermes", body: {} },
+      {
+        agentId: "opencode",
+        body: {
+          request_id: "req-detail",
+          bridge_url: "http://127.0.0.1:9",
+          bridge_token: "detail-token",
+        },
+      },
+    ];
+
+    for (const { agentId, body } of cases) {
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: agentId,
+        session_id: `${agentId}:detail`,
+        tool_name: "Bash",
+        tool_input: { command },
+        ...body,
+      }));
+      assert.strictEqual(res.ctx.pendingPermissions.length, 1, agentId);
+      const entry = res.ctx.pendingPermissions[0];
+      assert.strictEqual(entry.detailText.endsWith(marker), true, agentId);
+      assert.strictEqual(entry.detailTruncated, false, agentId);
+      assert.strictEqual(JSON.stringify(entry.toolInput).includes(marker), false, agentId);
+    }
+  });
+
+  it("keeps long Ask text for the expanded view without changing the wire answer keys", async () => {
+    const marker = "__CLAWD_ASK_DETAIL_END__";
+    const question = `${"Compare the tradeoffs carefully. ".repeat(20)}${marker}`;
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "claude-code:ask-detail",
+      tool_name: "AskUserQuestion",
+      tool_input: {
+        questions: [{
+          question,
+          header: "Approach",
+          multiSelect: false,
+          options: [
+            { label: "Option A", description: "Keep the compact window." },
+            { label: "Option B", description: "Open a scrollable detail view." },
+          ],
+        }],
+      },
+    }));
+
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.toolInput.questions[0].question.includes(marker), false);
+    assert.strictEqual(entry.elicitationDetailInput.questions[0].question.endsWith(marker), true);
+    assert.strictEqual(entry.elicitationWireInput.questions[0].question, question);
+  });
+
   it("uses the raw permission session id and ignores sender eligibility claims", async () => {
     const res = await callPermissionPost(JSON.stringify({
       agent_id: "claude-code",
