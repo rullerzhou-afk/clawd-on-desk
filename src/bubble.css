@@ -471,6 +471,13 @@ body { padding: 6px; }
   color: var(--cmd-color);
 }
 
+.question-text,
+.option-item-description {
+  white-space: pre-wrap;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
 .option-item-other { align-items: center; }
 
 .option-item-textarea {

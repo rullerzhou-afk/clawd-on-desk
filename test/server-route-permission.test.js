@@ -331,7 +331,20 @@ describe("server-route-permission POST", () => {
 
   it("keeps long Ask text for the expanded view without changing the wire answer keys", async () => {
     const marker = "__CLAWD_ASK_DETAIL_END__";
-    const question = `${"Compare the tradeoffs carefully. ".repeat(20)}${marker}`;
+    const question = [
+      "Compare the tradeoffs carefully.",
+      "",
+      "1. Keep the compact window.",
+      "2. Open a scrollable detail view.",
+      "",
+      `${"Include every relevant constraint. ".repeat(20)}${marker}`,
+    ].join("\n");
+    const optionDescription = [
+      "Open the detail view.",
+      "",
+      "- Preserve paragraphs.",
+      "- Preserve list structure.",
+    ].join("\n");
     const res = await callPermissionPost(JSON.stringify({
       agent_id: "claude-code",
       session_id: "claude-code:ask-detail",
@@ -343,7 +356,7 @@ describe("server-route-permission POST", () => {
           multiSelect: false,
           options: [
             { label: "Option A", description: "Keep the compact window." },
-            { label: "Option B", description: "Open a scrollable detail view." },
+            { label: "Option B", description: optionDescription },
           ],
         }],
       },
@@ -352,7 +365,8 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.ctx.pendingPermissions.length, 1);
     const entry = res.ctx.pendingPermissions[0];
     assert.strictEqual(entry.toolInput.questions[0].question.includes(marker), false);
-    assert.strictEqual(entry.elicitationDetailInput.questions[0].question.endsWith(marker), true);
+    assert.strictEqual(entry.elicitationDetailInput.questions[0].question, question);
+    assert.strictEqual(entry.elicitationDetailInput.questions[0].options[1].description, optionDescription);
     assert.strictEqual(entry.elicitationWireInput.questions[0].question, question);
   });
 
