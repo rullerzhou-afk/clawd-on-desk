@@ -16,6 +16,12 @@ const {
 // struct objects. Lets us drive the probe's decision chain without real FFI.
 function fakeKoffi(behavior) {
   return {
+    // #935: per-window identity. Defaults to a fixed address so positive
+    // verdicts read as the id string "4242"; addressOf overrides for tests
+    // that need per-window values.
+    address(ptr) {
+      return behavior.addressOf ? behavior.addressOf(ptr) : 4242n;
+    },
     load() {
       return {
         func(signature) {
@@ -170,7 +176,7 @@ describe("createForegroundFullscreenProbe", () => {
       isWin: true,
       koffi: fakeKoffi({ hwnd: {}, hMonitor: {}, winRect: FULLSCREEN_RECT, monitorRect: MONITOR }),
     });
-    assert.strictEqual(probe(), true);
+    assert.strictEqual(probe(), "4242");
   });
 
   it("reports not-fullscreen for a merely maximized foreground window", () => {
@@ -244,7 +250,7 @@ describe("createForegroundFullscreenProbe", () => {
         className: "Chrome_WidgetWin_1",
       }),
     });
-    assert.strictEqual(probe(), true);
+    assert.strictEqual(probe(), "4242");
   });
 
   it("falls back to geometry when GetClassNameW fails", () => {
@@ -255,7 +261,7 @@ describe("createForegroundFullscreenProbe", () => {
         className: null,
       }),
     });
-    assert.strictEqual(probe(), true);
+    assert.strictEqual(probe(), "4242");
   });
 
   // #871: a monitor with no reserved taskbar strip (a secondary display, or an
@@ -282,7 +288,7 @@ describe("createForegroundFullscreenProbe", () => {
         className: "UnrealWindow", style: BORDERLESS_STYLE,
       }),
     });
-    assert.strictEqual(probe(), true);
+    assert.strictEqual(probe(), "4242");
   });
 
   // Borderless-fullscreen games often maximize a caption-less window; only the
@@ -295,7 +301,7 @@ describe("createForegroundFullscreenProbe", () => {
         className: "UnrealWindow", style: WS_MAXIMIZE,
       }),
     });
-    assert.strictEqual(probe(), true);
+    assert.strictEqual(probe(), "4242");
   });
 
   it("keeps the geometric answer when the style binding is unavailable", () => {
@@ -306,7 +312,7 @@ describe("createForegroundFullscreenProbe", () => {
         className: "Chrome_WidgetWin_1", styleFuncUnavailable: true,
       }),
     });
-    assert.strictEqual(probe(), true);
+    assert.strictEqual(probe(), "4242");
   });
 
   // 0 is GetWindowLongPtrW's documented failure return, not an exception, so it
@@ -319,7 +325,7 @@ describe("createForegroundFullscreenProbe", () => {
         className: "Chrome_WidgetWin_1", style: 0,
       }),
     });
-    assert.strictEqual(probe(), true);
+    assert.strictEqual(probe(), "4242");
   });
 
   // A THROWN style read is different: it takes the probe's existing call-time
@@ -336,5 +342,34 @@ describe("createForegroundFullscreenProbe", () => {
     });
     assert.strictEqual(probe(), false);
     assert.strictEqual(callErrors, 1);
+  });
+});
+
+// #935: positive verdicts carry an opaque per-window id (still truthy for
+// every boolean consumer) so the auto-hide override can bind to the app.
+describe("fullscreen probe identity (#935)", () => {
+  const base = { hMonitor: {}, winRect: { left: 0, top: 0, right: 1920, bottom: 1080 }, monitorRect: { left: 0, top: 0, right: 1920, bottom: 1080 } };
+
+  it("keeps the id stable per window and distinct across windows", () => {
+    const behavior = { ...base, hwnd: { addr: 7 }, addressOf: (ptr) => BigInt(ptr.addr) };
+    const probe = createForegroundFullscreenProbe({ isWin: true, koffi: fakeKoffi(behavior) });
+    assert.strictEqual(probe(), "7");
+    assert.strictEqual(probe(), "7");
+    behavior.hwnd = { addr: 9 };
+    assert.strictEqual(probe(), "9");
+  });
+
+  it("degrades to plain true when koffi.address is unavailable", () => {
+    const koffi = fakeKoffi({ ...base, hwnd: {} });
+    delete koffi.address;
+    const probe = createForegroundFullscreenProbe({ isWin: true, koffi });
+    assert.strictEqual(probe(), true);
+  });
+
+  it("degrades to plain true when koffi.address throws", () => {
+    const koffi = fakeKoffi({ ...base, hwnd: {} });
+    koffi.address = () => { throw new Error("address exploded"); };
+    const probe = createForegroundFullscreenProbe({ isWin: true, koffi });
+    assert.strictEqual(probe(), true);
   });
 });

@@ -80,9 +80,13 @@ function rectCoversMonitor(winRect, monitorRect, tolerance = FULLSCREEN_TOLERANC
   );
 }
 
-// Returns a function `() => boolean` that reports whether the current
-// foreground window covers its whole monitor. Never throws; degrades to a
-// constant-false probe off Windows or when the FFI cannot be loaded.
+// Returns a probe function reporting whether the current foreground window
+// covers its whole monitor. `false` when it does not; when it DOES, an opaque
+// per-window id string (#935 — the fullscreen auto-hide override binds to it
+// so it can tell "the same app again" from "the next fullscreen app"), or
+// plain `true` if koffi cannot supply an address. Every verdict-only consumer
+// keeps working on truthiness. Never throws; degrades to a constant-false
+// probe off Windows or when the FFI cannot be loaded.
 function createForegroundFullscreenProbe(options = {}) {
   const isWin = options.isWin != null ? !!options.isWin : process.platform === "win32";
   const noop = () => false;
@@ -95,8 +99,13 @@ function createForegroundFullscreenProbe(options = {}) {
   let GetClassNameW;
   let monitorInfoSize;
   let user32;
+  let addressOf = null;
   try {
     const koffi = options.koffi || require("koffi");
+    // #935: HWND -> stable numeric address for the identity above. Optional —
+    // its absence only costs identity (probe answers plain true), never the
+    // fullscreen verdict itself.
+    if (typeof koffi.address === "function") addressOf = koffi.address;
     user32 = koffi.load("user32.dll");
     // LONG is 32-bit even on Win64 (LLP64); use int32 to be unambiguous.
     koffi.struct("ClawdRECT", { left: "int32", top: "int32", right: "int32", bottom: "int32" });
@@ -165,6 +174,14 @@ function createForegroundFullscreenProbe(options = {}) {
       if (GetWindowLongPtrW) {
         const style = GetWindowLongPtrW(hwnd, GWL_STYLE);
         if (isMaximizedNormalWindow(style)) return false;
+      }
+      // Fullscreen: report the window's identity, not just the verdict (#935).
+      if (addressOf) {
+        try {
+          return String(addressOf(hwnd));
+        } catch {
+          // Identity is best-effort; the verdict is what matters.
+        }
       }
       return true;
     } catch (err) {

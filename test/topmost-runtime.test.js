@@ -1278,20 +1278,25 @@ describe("IME editing pet dodge (#640)", () => {
 // The 1s focusable poll already tracks the fullscreen state (#562); the
 // auto-hide rides the same tick, edge-triggered. The pet hides within ~1s of a
 // fullscreen app taking the foreground and restores within ~1s of it leaving.
-// A manual "show" mid-episode (pet-window-runtime clears the auto flag) is
-// respected until the fullscreen app exits — the sync must not re-hide it.
+// A manual show (noteFullscreenAutoHideOverride, fired by pet-window-runtime's
+// setPetHidden(false)) binds an override to the fullscreen APP — identified by
+// the probe's opaque id — so it survives foreground excursions of any length
+// (alt-tab, tray menus, transient probe errors) and ends only when a DIFFERENT
+// fullscreen app takes the foreground.
 describe("fullscreen auto-hide sync (#935)", () => {
-  function createAutoHideHarness({ fullscreen = false, pref = true, applyResult } = {}) {
+  function createAutoHideHarness({ fsApp = null, pref = true, applyResult } = {}) {
     const timers = makeTimers();
     const win = new FakeWindow();
     const hitWin = new FakeWindow();
-    const state = { fullscreen, pref, autoHidden: false };
+    const state = { fsApp, pref, autoHidden: false };
     const setCalls = [];
     const runtime = createTopmostRuntime({
       isWin: true,
       getWin: () => win,
       getHitWin: () => hitWin,
-      isForegroundFullscreen: () => state.fullscreen,
+      // The probe reports an opaque id for the fullscreen foreground app, or
+      // false when there is none (win-fullscreen-detect contract).
+      isForegroundFullscreen: () => state.fsApp || false,
       getFullscreenAutoHide: () => state.pref,
       isFullscreenAutoHidden: () => state.autoHidden,
       setFullscreenAutoHidden: (value) => {
@@ -1323,14 +1328,14 @@ describe("fullscreen auto-hide sync (#935)", () => {
     h.tick();
     assert.deepStrictEqual(h.setCalls, []);
 
-    h.state.fullscreen = true;
+    h.state.fsApp = "app-1";
     h.tick();
     assert.deepStrictEqual(h.setCalls, [true]);
     h.tick();
     // Steady fullscreen: no per-tick re-writes.
     assert.deepStrictEqual(h.setCalls, [true]);
 
-    h.state.fullscreen = false;
+    h.state.fsApp = null;
     h.tick();
     assert.deepStrictEqual(h.setCalls, [true, false]);
   });
@@ -1339,16 +1344,16 @@ describe("fullscreen auto-hide sync (#935)", () => {
     const h = createAutoHideHarness({ pref: false });
     h.start();
     h.tick();
-    h.state.fullscreen = true;
+    h.state.fsApp = "app-1";
     h.tick();
     h.tick();
-    h.state.fullscreen = false;
+    h.state.fsApp = null;
     h.tick();
     assert.deepStrictEqual(h.setCalls, []);
   });
 
   it("the up-front sync hides immediately when the poll starts mid-fullscreen", () => {
-    const h = createAutoHideHarness({ fullscreen: true });
+    const h = createAutoHideHarness({ fsApp: "app-1" });
     h.start();
     // Same rationale as the focusable up-front sync: starting (or re-arming)
     // while a fullscreen app is already foreground must not leave the pet
@@ -1356,10 +1361,10 @@ describe("fullscreen auto-hide sync (#935)", () => {
     assert.deepStrictEqual(h.setCalls, [true]);
   });
 
-  it("a hotkey show mid-fullscreen latches the override until the app exits", () => {
+  it("a hotkey show mid-fullscreen latches the override for that app", () => {
     const h = createAutoHideHarness();
     h.start();
-    h.state.fullscreen = true;
+    h.state.fsApp = "app-1";
     h.tick();
     assert.deepStrictEqual(h.setCalls, [true]);
 
@@ -1369,13 +1374,13 @@ describe("fullscreen auto-hide sync (#935)", () => {
     h.runtime.noteFullscreenAutoHideOverride();
     h.tick();
     h.tick();
-    assert.deepStrictEqual(h.setCalls, [true], "the sync must not re-hide an overridden episode");
+    assert.deepStrictEqual(h.setCalls, [true], "the sync must not re-hide an overridden app");
 
-    // Episode ends; the next fullscreen app auto-hides again.
-    h.state.fullscreen = false;
+    // The app exits; a DIFFERENT fullscreen app auto-hides again.
+    h.state.fsApp = null;
     h.tick();
     assert.deepStrictEqual(h.setCalls, [true]);
-    h.state.fullscreen = true;
+    h.state.fsApp = "app-2";
     h.tick();
     assert.deepStrictEqual(h.setCalls, [true, true]);
   });
@@ -1383,13 +1388,13 @@ describe("fullscreen auto-hide sync (#935)", () => {
   it("a Show Pet click from the tray menu survives the foreground blip back to the game", () => {
     const h = createAutoHideHarness();
     h.start();
-    h.state.fullscreen = true;
+    h.state.fsApp = "app-1";
     h.tick();
     assert.deepStrictEqual(h.setCalls, [true]);
 
     // Right-clicking the tray icon moves the foreground off the fullscreen
     // app, so the sync restores the pet before the user even clicks the item.
-    h.state.fullscreen = false;
+    h.state.fsApp = null;
     h.tick();
     assert.deepStrictEqual(h.setCalls, [true, false]);
 
@@ -1397,31 +1402,63 @@ describe("fullscreen auto-hide sync (#935)", () => {
     // user's intent.
     h.runtime.noteFullscreenAutoHideOverride();
 
-    // Refocusing the game must NOT re-hide the pet the user just asked for.
-    h.state.fullscreen = true;
+    // Refocusing the game binds the override to it: no re-hide.
+    h.state.fsApp = "app-1";
     h.tick();
     h.tick();
     assert.deepStrictEqual(h.setCalls, [true, false], "the override must survive the tray foreground blip");
-
-    // A real exit consumes the override; the next fullscreen app hides again.
-    h.state.fullscreen = false;
-    h.tick();
-    h.state.fullscreen = true;
-    h.tick();
-    assert.deepStrictEqual(h.setCalls, [true, false, true]);
   });
 
-  it("an override that never returns to fullscreen decays after the grace window", () => {
+  it("the override survives alt-tab excursions of any length back to the same app", () => {
+    const h = createAutoHideHarness();
+    h.start();
+    h.state.fsApp = "app-1";
+    h.tick();
+    h.state.autoHidden = false;
+    h.runtime.noteFullscreenAutoHideOverride();
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true]);
+
+    // Alt-tab away for far longer than the arming grace — also the shape of a
+    // transient probe error, which fails closed to "not fullscreen".
+    h.state.fsApp = null;
+    for (let i = 0; i < createTopmostRuntime.FSAUTOHIDE_OVERRIDE_GRACE_TICKS * 3; i++) h.tick();
+
+    // Back to the SAME app: the override is bound to it and must hold.
+    h.state.fsApp = "app-1";
+    h.tick();
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true], "returning to the overridden app must not re-hide");
+  });
+
+  it("a different fullscreen app ends the override and auto-hides", () => {
+    const h = createAutoHideHarness();
+    h.start();
+    h.state.fsApp = "app-1";
+    h.tick();
+    h.state.autoHidden = false;
+    h.runtime.noteFullscreenAutoHideOverride();
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true]);
+
+    h.state.fsApp = null;
+    h.tick();
+    h.state.fsApp = "app-2";
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true, true], "the NEXT fullscreen app is a new episode");
+  });
+
+  it("an armed override that never sees a fullscreen app decays after the grace window", () => {
     const h = createAutoHideHarness();
     h.start();
 
     // A show gesture on the plain desktop still signals intent...
     h.runtime.noteFullscreenAutoHideOverride();
-    // ...but with no fullscreen app to return to it burns down tick by tick.
+    // ...but with no fullscreen app to bind to it burns down tick by tick.
     for (let i = 0; i < createTopmostRuntime.FSAUTOHIDE_OVERRIDE_GRACE_TICKS; i++) h.tick();
 
     // A fullscreen app starting after the grace window hides normally.
-    h.state.fullscreen = true;
+    h.state.fsApp = "app-1";
     h.tick();
     assert.deepStrictEqual(h.setCalls, [true]);
   });
@@ -1429,7 +1466,7 @@ describe("fullscreen auto-hide sync (#935)", () => {
   it("turning the pref off mid-fullscreen restores the pet on the next tick", () => {
     const h = createAutoHideHarness();
     h.start();
-    h.state.fullscreen = true;
+    h.state.fsApp = "app-1";
     h.tick();
     assert.deepStrictEqual(h.setCalls, [true]);
 
@@ -1450,7 +1487,7 @@ describe("fullscreen auto-hide sync (#935)", () => {
       },
     });
     h.start();
-    h.state.fullscreen = true;
+    h.state.fsApp = "app-1";
     h.tick();
     // Deferred (mini transition in flight): flag not set...
     assert.deepStrictEqual(h.setCalls, [true]);

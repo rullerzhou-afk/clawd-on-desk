@@ -15,10 +15,11 @@ const TOPMOST_WATCHDOG_MS = 5_000;
 // still activates, an early click/drag can kick the game out of fullscreen — so
 // this polls ~1s instead of riding the slow watchdog (which left a ~5s window).
 const FOCUSABLE_POLL_MS = 1_000;
-// #935: how many non-fullscreen focusable-poll ticks a manual-show override
-// survives before it decays (see noteFullscreenAutoHideOverride). Sized to
-// outlast a tray-menu round trip — menu open, read, click, refocus the game —
-// while staying far below the gap between two distinct fullscreen sessions.
+// #935: how many non-fullscreen focusable-poll ticks an armed manual-show
+// override waits for a fullscreen app to bind to before it decays (see
+// noteFullscreenAutoHideOverride). Sized to outlast a tray-menu round trip —
+// menu open, read, click, refocus the game — while staying far below the gap
+// between two distinct fullscreen sessions.
 const FSAUTOHIDE_OVERRIDE_GRACE_TICKS = 15;
 const HWND_RECOVERY_DELAY_MS = 1000;
 // #640: while a bubble text field is focused AND the pet visually overlaps that
@@ -590,32 +591,46 @@ function createTopmostRuntime(options = {}) {
   // auto-restored — an inference from "the flag cleared while fullscreen"
   // never sees the very gesture the setting's description promises about.
   //
-  // Lifecycle: the override arms with a grace window measured in poll ticks.
-  // A tick that sees fullscreen consumes the grace (the user is back in the
-  // app; the override now lives until that app stops being fullscreen); a
-  // non-fullscreen tick past the grace clears it (a show gesture with no
-  // fullscreen return decays instead of suppressing some future session).
-  // Known lean: a show clicked on the plain desktop suppresses a fullscreen
-  // app started within the grace window for that app's session — erring
-  // toward keeping the pet visible right after an explicit show.
-  let fsAutoHideOverridden = false;
-  let fsOverrideGraceTicks = 0;
+  // Lifecycle: the override arms with a grace window measured in poll ticks,
+  // then BINDS to the first fullscreen app the probe reports (the probe
+  // returns an opaque per-window id, or false). A bound override holds for
+  // that app regardless of foreground excursions — alt-tab, tray menus, and
+  // transient probe errors (the probe fails closed to false) all read as
+  // "not fullscreen", which never unbinds it — and ends when a DIFFERENT
+  // fullscreen app takes the foreground: exactly "keeps the pet visible
+  // until the next fullscreen app". An armed override that never sees a
+  // fullscreen app decays after the grace window instead of suppressing some
+  // future session. Known lean: a show clicked on the plain desktop binds to
+  // a fullscreen app started within the grace window and keeps the pet
+  // visible for that app's session — erring toward the explicit show. If the
+  // probe ever degrades to plain `true` (no per-window identity available),
+  // every fullscreen app shares one id and a bound override then only ends
+  // by decaying — still erring toward visible.
+  let fsOverridePendingTicks = 0;
+  let fsOverrideBoundTo = null;
 
   function noteFullscreenAutoHideOverride() {
-    fsAutoHideOverridden = true;
-    fsOverrideGraceTicks = FSAUTOHIDE_OVERRIDE_GRACE_TICKS;
+    fsOverridePendingTicks = FSAUTOHIDE_OVERRIDE_GRACE_TICKS;
+    // A re-show re-arms cleanly even if an older bind is still around.
+    fsOverrideBoundTo = null;
   }
 
   function syncFullscreenAutoHide() {
     if (!isWin) return;
-    const fullscreen = isForegroundFullscreen();
-    if (fullscreen) {
-      fsOverrideGraceTicks = 0;
-    } else if (fsAutoHideOverridden) {
-      if (fsOverrideGraceTicks > 0) fsOverrideGraceTicks -= 1;
-      if (fsOverrideGraceTicks === 0) fsAutoHideOverridden = false;
+    const fullscreenId = isForegroundFullscreen() || null;
+    if (fullscreenId != null) {
+      if (fsOverridePendingTicks > 0) {
+        fsOverrideBoundTo = fullscreenId;
+      } else if (fsOverrideBoundTo != null && fsOverrideBoundTo !== fullscreenId) {
+        // The NEXT fullscreen app: the override's episode is over.
+        fsOverrideBoundTo = null;
+      }
+      fsOverridePendingTicks = 0;
+    } else if (fsOverridePendingTicks > 0) {
+      fsOverridePendingTicks -= 1;
     }
-    const want = fullscreen && getFullscreenAutoHide() && !fsAutoHideOverridden;
+    const overridden = fullscreenId != null && fsOverrideBoundTo === fullscreenId;
+    const want = fullscreenId != null && getFullscreenAutoHide() && !overridden;
     // A deferred write (mini transition in flight) leaves the flag untouched,
     // so want !== current still holds next tick and the setter is retried.
     if (want !== isFullscreenAutoHidden()) setFullscreenAutoHidden(want);
