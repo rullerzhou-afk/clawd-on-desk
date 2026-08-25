@@ -1294,6 +1294,14 @@ function togglePetVisibility() {
   prepManualPetVisibility();
   return petWindowRuntime.togglePetVisibility();
 }
+// Explicit-direction variant for the menus: the Show/Hide Pet items apply the
+// intent their label carried when the menu was built, so a state change that
+// lands while the menu is open degrades to a no-op instead of inverting the
+// action (see menu.js).
+function setPetVisibility(visible) {
+  prepManualPetVisibility();
+  return petWindowRuntime.setPetHidden(!visible);
+}
 function bringPetToPrimaryDisplay() {
   prepManualPetVisibility();
   return petWindowRuntime.bringPetToPrimaryDisplay();
@@ -3877,6 +3885,7 @@ const _menuCtx = {
   repositionBubbles: () => repositionFloatingBubbles(),
   get petHidden() { return petWindowRuntime.isPetEffectivelyHidden(); },
   togglePetVisibility: () => togglePetVisibility(),
+  setPetVisibility: (visible) => setPetVisibility(visible),
   bringPetToPrimaryDisplay: () => bringPetToPrimaryDisplay(),
   get isQuitting() { return isQuitting; },
   set isQuitting(v) { isQuitting = v; },
