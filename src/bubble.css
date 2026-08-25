@@ -282,7 +282,9 @@ body { padding: 6px; }
   line-height: 1.5;
   max-height: none;
   overflow: visible;
-  word-break: break-all;
+  white-space: pre-wrap;
+  word-break: normal;
+  overflow-wrap: anywhere;
   box-shadow: var(--cmd-shadow);
 }
 .detail-truncation {
@@ -291,7 +293,7 @@ body { padding: 6px; }
   line-height: 1.35;
   color: var(--irreversible-color);
 }
-.detail-truncation.visible { display: block; }
+.card.expanded .detail-truncation.visible { display: block; }
 
 .btn-expand {
   display: none;
@@ -344,6 +346,7 @@ body { padding: 6px; }
   opacity: 0.8;
   text-align: center;
   font-family: "SF Mono", "ui-monospace", "Cascadia Code", "Fira Code", monospace;
+  padding: 4px 0;
 }
 .elicitation-progress.visible { display: block; }
 

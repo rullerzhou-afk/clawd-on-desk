@@ -54,19 +54,19 @@ describe("AskUserQuestion bubble overflow", () => {
     assert.doesNotMatch(bubbleCss, /\.card\.expanded\s+\.footer-secondary\.visible/);
   });
 
-  it("keeps the expanded card inside a CSS-zoomed window and reserves shrink for detail", () => {
-    assert.match(
-      bubbleCss,
-      /\.card\.expanded\s*\{[\s\S]*height:\s*calc\(100vh\s*\/\s*var\(--clawd-text-zoom,\s*1\)\s*-\s*12px\)/
+  it("keeps the truncation warning before and outside the detail scroller", () => {
+    const detailStart = bubbleHtml.indexOf('id="detailScroll"');
+    const detailEnd = bubbleHtml.indexOf('id="btnExpand"');
+    const truncation = bubbleHtml.indexOf('id="detailTruncation"');
+
+    assert.ok(detailStart >= 0 && detailEnd > detailStart);
+    assert.ok(
+      truncation >= 0 && truncation < detailStart,
+      "the warning must be visible before the user starts scrolling detail"
     );
-    assert.match(
-      bubbleCss,
-      /\.card\.expanded\.measuring\s*\{[\s\S]*height:\s*auto;/
+    assert.ok(
+      !(truncation > detailStart && truncation < detailEnd),
+      "the warning must not scroll with the detail content"
     );
-    assert.match(
-      bubbleCss,
-      /\.card\.expanded\s*>\s*:not\(\.detail-scroll\)\s*\{\s*flex-shrink:\s*0;/
-    );
-    assert.match(bubbleCss, /\.detail-scroll\s*\{[\s\S]*flex:\s*1\s+1\s+auto;/);
   });
 });
