@@ -3781,3 +3781,133 @@ describe("pet-window-runtime cloak self-heal (#525)", () => {
     assert.equal(h.runtime.recoverIfCloaked(), "failed");
   });
 });
+
+// ── #935: fullscreen auto-hide visibility layer ──
+//
+// A second, runtime-only hide reason stacked on the manual petHidden flag:
+// effective hidden = petHidden || fullscreenAutoHidden. The manual flag is the
+// user's; the auto flag belongs to topmost-runtime's fullscreen sync. Neither
+// layer may clobber the other's intent — a manual hide survives the auto
+// restore, and a manual show (setPetHidden(false)) clears the auto flag so
+// "show" always means show NOW.
+describe("fullscreen auto-hide visibility layer (#935)", () => {
+  it("setFullscreenAutoHidden hides the pet without touching the manual state", () => {
+    const h = createRuntime();
+    const r = h.runtime.setFullscreenAutoHidden(true);
+    assert.deepEqual(r, { applied: true, deferred: false, changed: true });
+    assert.equal(h.runtime.isPetHidden(), false);
+    assert.equal(h.runtime.isFullscreenAutoHidden(), true);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), true);
+    assert.ok(h.renderWin.calls.some((c) => c[0] === "hide"));
+    assert.ok(h.hitWin.calls.some((c) => c[0] === "hide"));
+    assert.ok(h.calls.some((c) => c[0] === "hideFloatingSurfacesForPet"));
+  });
+
+  it("clearing the auto-hide restores the pet and its floating surfaces", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    const r = h.runtime.setFullscreenAutoHidden(false);
+    assert.deepEqual(r, { applied: true, deferred: false, changed: true });
+    assert.equal(h.runtime.isPetEffectivelyHidden(), false);
+    assert.ok(h.renderWin.calls.some((c) => c[0] === "showInactive"));
+    assert.ok(h.calls.some((c) => c[0] === "showFloatingSurfacesForPet"));
+  });
+
+  it("is idempotent when already in the target state", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    const before = h.renderWin.calls.length;
+    const r = h.runtime.setFullscreenAutoHidden(true);
+    assert.deepEqual(r, { applied: true, deferred: false, changed: false });
+    assert.equal(h.renderWin.calls.length, before);
+  });
+
+  it("is a visible no-op over a manually hidden pet", () => {
+    const h = createRuntime();
+    h.runtime.setPetHidden(true);
+    h.renderWin.calls.length = 0;
+    h.hitWin.calls.length = 0;
+
+    const hide = h.runtime.setFullscreenAutoHidden(true);
+    assert.deepEqual(hide, { applied: true, deferred: false, changed: false });
+    const show = h.runtime.setFullscreenAutoHidden(false);
+    assert.deepEqual(show, { applied: true, deferred: false, changed: false });
+
+    assert.deepStrictEqual(h.renderWin.calls, []);
+    assert.deepStrictEqual(h.hitWin.calls, []);
+    assert.equal(h.runtime.isPetHidden(), true);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), true);
+  });
+
+  it("a manual hide placed during the auto-hide survives the auto restore", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    h.runtime.setPetHidden(true);
+    h.renderWin.calls.length = 0;
+
+    h.runtime.setFullscreenAutoHidden(false);
+
+    assert.ok(!h.renderWin.calls.some((c) => c[0] === "showInactive"));
+    assert.equal(h.runtime.isPetHidden(), true);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), true);
+  });
+
+  it("setPetHidden(false) clears the auto flag and shows the pet immediately", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    const r = h.runtime.setPetHidden(false);
+    assert.deepEqual(r, { applied: true, deferred: false, changed: true });
+    assert.equal(h.runtime.isFullscreenAutoHidden(), false);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), false);
+    assert.ok(h.renderWin.calls.some((c) => c[0] === "showInactive"));
+  });
+
+  it("togglePetVisibility acts on the effective state: one toggle shows an auto-hidden pet", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    h.runtime.togglePetVisibility();
+    assert.equal(h.runtime.isPetHidden(), false);
+    assert.equal(h.runtime.isFullscreenAutoHidden(), false);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), false);
+    assert.ok(h.renderWin.calls.some((c) => c[0] === "showInactive"));
+  });
+
+  it("defers during a mini transition without changing the flag", () => {
+    const h = createRuntime({ miniTransitioning: true });
+    const r = h.runtime.setFullscreenAutoHidden(true);
+    assert.deepEqual(r, { applied: false, deferred: true, changed: false });
+    assert.equal(h.runtime.isFullscreenAutoHidden(), false);
+  });
+
+  it("keeps the hit window click-through while auto-hidden (I5 suppression reason)", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    assert.ok(h.hitWin.calls.some((c) => c[0] === "setIgnoreMouseEvents" && c[1] === true));
+    h.hitWin.calls.length = 0;
+    h.runtime.setFullscreenAutoHidden(false);
+    assert.ok(h.hitWin.calls.some((c) => c[0] === "setIgnoreMouseEvents" && c[1] === false));
+  });
+
+  it("recoverIfCloaked treats an auto-hidden pet as hidden (#525 strobe guard)", () => {
+    const h = createRuntime({ cloakInspector: makeCloakInspector({ flag: 2 }) });
+    h.runtime.setFullscreenAutoHidden(true);
+    assert.equal(h.runtime.recoverIfCloaked(), "hidden");
+  });
+
+  it("recoverVisiblePetAfterRendererLoad does not resurrect an auto-hidden pet", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    h.renderWin.calls.length = 0;
+    assert.equal(h.runtime.recoverVisiblePetAfterRendererLoad(), "hidden");
+    assert.ok(!h.renderWin.calls.some((c) => c[0] === "showInactive"));
+  });
+
+  it("bringPetToPrimaryDisplay clears the auto-hide (explicit show intent)", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    h.runtime.bringPetToPrimaryDisplay();
+    assert.equal(h.runtime.isFullscreenAutoHidden(), false);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), false);
+    assert.ok(h.renderWin.calls.some((c) => c[0] === "showInactive"));
+  });
+});

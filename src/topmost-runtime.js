@@ -98,6 +98,18 @@ function createTopmostRuntime(options = {}) {
   // original #538 stand-down. Off Windows isForegroundFullscreen is always false
   // so this is moot.
   const getFullscreenOverlay = options.getFullscreenOverlay || (() => false);
+  // Windows-only (#935): opt-in auto-hide — when a fullscreen app owns the
+  // foreground, hide the pet entirely instead of floating over (overlay) or
+  // standing down below (#538). Rides the 1s focusable poll, which already
+  // tracks the fullscreen state at the cadence hiding needs. The writer is
+  // pet-window-runtime's setFullscreenAutoHidden (a separate visibility layer
+  // stacked on the user's manual hide); defaults keep everything inert when
+  // main.js doesn't wire the pref, and off Windows isForegroundFullscreen is
+  // constant false.
+  const getFullscreenAutoHide = options.getFullscreenAutoHide || (() => false);
+  const setFullscreenAutoHidden = options.setFullscreenAutoHidden
+    || (() => ({ applied: false, deferred: false, changed: false }));
+  const isFullscreenAutoHidden = options.isFullscreenAutoHidden || (() => false);
   // Windows-only: toggle the hit window's activation with the fullscreen state.
   // While a fullscreen app owns the foreground we make the hit window
   // non-activating so a click on the pet can't steal focus from an
@@ -559,15 +571,57 @@ function createTopmostRuntime(options = {}) {
     setHitWinFocusable(!isForegroundFullscreen());
   }
 
+  // #935: edge-triggered fullscreen auto-hide, riding the same 1s poll (the
+  // 5s watchdog would leave the pet floating over a game for up to 5s).
+  // fsAutoHideApplied remembers whether OUR hide is in force so a cleared flag
+  // under a still-fullscreen foreground is recognized as the user's manual
+  // "show" (setPetHidden(false) clears the auto layer) — latched via
+  // fsAutoHideOverridden until that fullscreen episode ends, so the next tick
+  // doesn't yank the pet away again. Toggling the pref off mid-episode
+  // restores the pet on the next tick through the same want/current diff.
+  let fsAutoHideApplied = false;
+  let fsAutoHideOverridden = false;
+
+  function syncFullscreenAutoHide() {
+    if (!isWin) return;
+    const fullscreen = isForegroundFullscreen();
+    if (!fullscreen) fsAutoHideOverridden = false;
+    const current = isFullscreenAutoHidden();
+    if (fsAutoHideApplied && !current && fullscreen) {
+      fsAutoHideApplied = false;
+      fsAutoHideOverridden = true;
+      return;
+    }
+    const want = fullscreen && getFullscreenAutoHide() && !fsAutoHideOverridden;
+    if (want === current) {
+      // Also heals a stale fsAutoHideApplied left by a manual show that landed
+      // after fullscreen already ended — without this, the next episode's
+      // first tick would misread the clear flag as an override.
+      fsAutoHideApplied = current;
+      return;
+    }
+    const result = setFullscreenAutoHidden(want);
+    // Deferred (mini transition in flight) leaves the flag untouched; keeping
+    // fsAutoHideApplied false makes the next tick retry instead of mistaking
+    // the unset flag for a user override.
+    fsAutoHideApplied = !!(result && result.applied) && want;
+  }
+
+  function syncFocusablePollTick() {
+    syncHitWinFocusable();
+    syncFullscreenAutoHide();
+  }
+
   function startFocusablePoll() {
     if (!isWin || focusablePoll) return;
     // Sync once up front: if Clawd starts (or this re-arms) while a fullscreen
     // game is already foreground, drop the hit window's activation immediately
     // rather than leaving it activatable for up to one poll interval (the hit
     // window is created focusable: true). Idempotent, so the desktop case is a
-    // no-op.
-    syncHitWinFocusable();
-    focusablePoll = setIntervalFn(syncHitWinFocusable, focusablePollMs);
+    // no-op. The #935 auto-hide gets the same up-front treatment for the same
+    // reason.
+    syncFocusablePollTick();
+    focusablePoll = setIntervalFn(syncFocusablePollTick, focusablePollMs);
   }
 
   function stopFocusablePoll() {

@@ -331,6 +331,11 @@ function createPetWindowRuntime(options = {}) {
   let hitInputIgnoreApplied = null; // null = never explicitly applied yet
 
   let petHidden = false;
+  // #935: second visibility layer under topmost-runtime's fullscreen auto-hide
+  // sync. Runtime-only (never persisted — a crash while auto-hidden must not
+  // strand the pet invisible on relaunch). Effective visibility is
+  // petHidden || fullscreenAutoHidden; the manual flag stays the user's.
+  let fullscreenAutoHidden = false;
   let dragLocked = false;
   let dragSnapshot = null;
   let hitShapeWidth = 0;
@@ -1344,40 +1349,89 @@ function createPetWindowRuntime(options = {}) {
     if (isLiveWindow(hitWin)) hitWin.hide();
   }
 
-  // Idempotent visibility setter. Returns { applied, deferred, changed }:
-  //  - no render window  -> { applied:false, deferred:false, changed:false }
-  //  - mini transitioning -> { applied:false, deferred:true,  changed:false } (petHidden untouched)
-  //  - already in target  -> { applied:true,  deferred:false, changed:false }
-  //  - state flipped      -> { applied:true,  deferred:false, changed:true  }
-  function setPetHidden(hidden) {
-    const target = !!hidden;
-    const win = getRenderWindow();
-    if (!isLiveWindow(win)) return { applied: false, deferred: false, changed: false };
-    if (getMiniTransitioning()) return { applied: false, deferred: true, changed: false };
-    if (target === petHidden) return { applied: true, deferred: false, changed: false };
-    if (petHidden) {
-      // becoming visible
-      showPetWindows();
-      showFloatingSurfacesForPet();
-      reapplyMacVisibility();
-      petHidden = false;
-    } else {
-      // becoming hidden
-      hidePetWindows();
-      hideFloatingSurfacesForPet();
-      petHidden = true;
+  function isPetEffectivelyHidden() {
+    return petHidden || fullscreenAutoHidden;
+  }
+
+  function isFullscreenAutoHidden() {
+    return fullscreenAutoHidden;
+  }
+
+  // Shared tail of both visibility setters. Window show/hide fires only when
+  // the EFFECTIVE state crossed an edge (so stacking a second hide reason on
+  // an already-hidden pet is a visible no-op, and removing one reason while
+  // the other still holds keeps the pet hidden); the downstream syncs run on
+  // any layer change — applyHitInputState and the HUD/menu rebuilds all read
+  // the effective state themselves and dedupe internally.
+  function applyVisibilityLayerChange(prevEffective) {
+    const nextEffective = isPetEffectivelyHidden();
+    const crossedEdge = nextEffective !== prevEffective;
+    if (crossedEdge) {
+      if (nextEffective) {
+        hidePetWindows();
+        hideFloatingSurfacesForPet();
+      } else {
+        showPetWindows();
+        showFloatingSurfacesForPet();
+        reapplyMacVisibility();
+      }
     }
-    // I5: petHidden is one of applyHitInputState()'s four OR-ed reasons.
+    // I5: effective hidden is one of applyHitInputState()'s OR-ed reasons.
     applyHitInputState();
     syncSessionHudVisibilityAndBubbles();
     syncPermissionShortcuts();
     buildTrayMenu();
     buildContextMenu();
-    return { applied: true, deferred: false, changed: true };
+    return crossedEdge;
+  }
+
+  // Idempotent visibility setter. Returns { applied, deferred, changed }:
+  //  - no render window  -> { applied:false, deferred:false, changed:false }
+  //  - mini transitioning -> { applied:false, deferred:true,  changed:false } (petHidden untouched)
+  //  - already in target  -> { applied:true,  deferred:false, changed:false }
+  //  - state flipped      -> { applied:true,  deferred:false, changed:true  }
+  // `changed` reports whether the pet's on-screen visibility actually flipped,
+  // which with the #935 auto-hide layer stacked on top is not always the same
+  // as the manual flag flipping.
+  function setPetHidden(hidden) {
+    const target = !!hidden;
+    const win = getRenderWindow();
+    if (!isLiveWindow(win)) return { applied: false, deferred: false, changed: false };
+    if (getMiniTransitioning()) return { applied: false, deferred: true, changed: false };
+    // #935: a manual show also clears the fullscreen auto-hide — "show" must
+    // mean show NOW, not "show once the fullscreen app exits". topmost-
+    // runtime's sync observes the cleared flag and holds off re-hiding for the
+    // rest of that fullscreen episode.
+    const clearAutoHide = !target && fullscreenAutoHidden;
+    if (target === petHidden && !clearAutoHide) return { applied: true, deferred: false, changed: false };
+    const prevEffective = isPetEffectivelyHidden();
+    petHidden = target;
+    if (clearAutoHide) fullscreenAutoHidden = false;
+    const changed = applyVisibilityLayerChange(prevEffective);
+    return { applied: true, deferred: false, changed };
+  }
+
+  // #935: topmost-runtime's fullscreen auto-hide writer. Same contract and
+  // guards as setPetHidden, acting on the auto layer only — it never touches
+  // the manual flag, so a pet the user hid stays hidden when the auto-hide
+  // lifts, and the tray/context menus keep reflecting the user's choice.
+  function setFullscreenAutoHidden(hidden) {
+    const target = !!hidden;
+    const win = getRenderWindow();
+    if (!isLiveWindow(win)) return { applied: false, deferred: false, changed: false };
+    if (getMiniTransitioning()) return { applied: false, deferred: true, changed: false };
+    if (target === fullscreenAutoHidden) return { applied: true, deferred: false, changed: false };
+    const prevEffective = isPetEffectivelyHidden();
+    fullscreenAutoHidden = target;
+    const changed = applyVisibilityLayerChange(prevEffective);
+    return { applied: true, deferred: false, changed };
   }
 
   function togglePetVisibility() {
-    return setPetHidden(!petHidden);
+    // #935: toggle what the user SEES. From an auto-hidden pet one toggle
+    // shows it (setPetHidden(false) clears the auto layer); without the auto
+    // layer this is the pre-#935 manual flip.
+    return setPetHidden(!isPetEffectivelyHidden());
   }
 
   // ── #525: self-healing for cloaked-yet-supposedly-visible windows ──
@@ -1396,7 +1450,7 @@ function createPetWindowRuntime(options = {}) {
 
   function recoverIfCloaked() {
     if (!cloakInspector || !cloakInspector.available) return "unavailable";
-    if (petHidden) return "hidden";
+    if (isPetEffectivelyHidden()) return "hidden";
     if (getMiniTransitioning() || isMiniAnimating() || dragLocked) return "busy";
     if (settingsSizePreviewSyncFrozen) return "frozen";
     if (now() < cloakCooldownUntil) return "backoff";
@@ -1467,7 +1521,7 @@ function createPetWindowRuntime(options = {}) {
     if (!isWin) return "unsupported";
     const win = getRenderWindow();
     if (!isLiveWindow(win)) return "no-window";
-    if (petHidden) return "hidden";
+    if (isPetEffectivelyHidden()) return "hidden";
     if (getMiniTransitioning() || isMiniAnimating() || dragLocked) return "busy";
     if (settingsSizePreviewSyncFrozen) return "frozen";
 
@@ -1511,7 +1565,7 @@ function createPetWindowRuntime(options = {}) {
     syncHitWin();
     repositionFloatingBubbles();
 
-    if (petHidden) {
+    if (isPetEffectivelyHidden()) {
       togglePetVisibility();
     } else {
       showPetWindows();
@@ -1762,7 +1816,7 @@ function createPetWindowRuntime(options = {}) {
   function applyHitInputState(hitWinOverride) {
     const hitWin = hitWinOverride || getHitWindow();
     if (!isLiveWindow(hitWin) || typeof hitWin.setIgnoreMouseEvents !== "function") return;
-    const ignore = hitGeometrySuppressed || petHidden
+    const ignore = hitGeometrySuppressed || isPetEffectivelyHidden()
       || settingsSizePreviewIgnoringHit || imeEditingPetDodge;
     if (ignore === hitInputIgnoreApplied) return;
     hitWin.setIgnoreMouseEvents(ignore);
@@ -2548,7 +2602,10 @@ function createPetWindowRuntime(options = {}) {
     applyPetWindowBounds,
     applyPetWindowPosition,
     isPetHidden,
+    isPetEffectivelyHidden,
     setPetHidden,
+    setFullscreenAutoHidden,
+    isFullscreenAutoHidden,
     togglePetVisibility,
     recoverIfCloaked,
     recoverVisiblePetAfterRendererLoad,

@@ -1272,3 +1272,145 @@ describe("IME editing pet dodge (#640)", () => {
     assert.strictEqual(runtime.getPetTargetOpacity(), 1);
   });
 });
+
+// ── #935: fullscreen auto-hide sync on the focusable poll ──
+//
+// The 1s focusable poll already tracks the fullscreen state (#562); the
+// auto-hide rides the same tick, edge-triggered. The pet hides within ~1s of a
+// fullscreen app taking the foreground and restores within ~1s of it leaving.
+// A manual "show" mid-episode (pet-window-runtime clears the auto flag) is
+// respected until the fullscreen app exits — the sync must not re-hide it.
+describe("fullscreen auto-hide sync (#935)", () => {
+  function createAutoHideHarness({ fullscreen = false, pref = true, applyResult } = {}) {
+    const timers = makeTimers();
+    const win = new FakeWindow();
+    const hitWin = new FakeWindow();
+    const state = { fullscreen, pref, autoHidden: false };
+    const setCalls = [];
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => win,
+      getHitWin: () => hitWin,
+      isForegroundFullscreen: () => state.fullscreen,
+      getFullscreenAutoHide: () => state.pref,
+      isFullscreenAutoHidden: () => state.autoHidden,
+      setFullscreenAutoHidden: (value) => {
+        setCalls.push(value);
+        if (applyResult) {
+          const result = applyResult(value);
+          if (result.applied) state.autoHidden = value;
+          return result;
+        }
+        state.autoHidden = value;
+        return { applied: true, deferred: false, changed: true };
+      },
+      setHitWinFocusable: () => {},
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    });
+    return {
+      state,
+      setCalls,
+      runtime,
+      start: () => runtime.startFocusablePoll(),
+      tick: () => timers.intervals[0].fn(),
+    };
+  }
+
+  it("hides on entering fullscreen and restores on leaving, edge-triggered", () => {
+    const h = createAutoHideHarness();
+    h.start();
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, []);
+
+    h.state.fullscreen = true;
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true]);
+    h.tick();
+    // Steady fullscreen: no per-tick re-writes.
+    assert.deepStrictEqual(h.setCalls, [true]);
+
+    h.state.fullscreen = false;
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true, false]);
+  });
+
+  it("never touches the setter while the pref is off", () => {
+    const h = createAutoHideHarness({ pref: false });
+    h.start();
+    h.tick();
+    h.state.fullscreen = true;
+    h.tick();
+    h.tick();
+    h.state.fullscreen = false;
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, []);
+  });
+
+  it("the up-front sync hides immediately when the poll starts mid-fullscreen", () => {
+    const h = createAutoHideHarness({ fullscreen: true });
+    h.start();
+    // Same rationale as the focusable up-front sync: starting (or re-arming)
+    // while a fullscreen app is already foreground must not leave the pet
+    // floating for a full poll interval.
+    assert.deepStrictEqual(h.setCalls, [true]);
+  });
+
+  it("a manual show mid-episode is respected until the fullscreen app exits", () => {
+    const h = createAutoHideHarness();
+    h.start();
+    h.state.fullscreen = true;
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true]);
+
+    // User picks Show Pet: pet-window-runtime clears the auto flag.
+    h.state.autoHidden = false;
+    h.tick();
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true], "the sync must not re-hide an overridden episode");
+
+    // Episode ends; the next fullscreen app auto-hides again.
+    h.state.fullscreen = false;
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true]);
+    h.state.fullscreen = true;
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true, true]);
+  });
+
+  it("turning the pref off mid-fullscreen restores the pet on the next tick", () => {
+    const h = createAutoHideHarness();
+    h.start();
+    h.state.fullscreen = true;
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true]);
+
+    h.state.pref = false;
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true, false]);
+  });
+
+  it("retries a deferred hide on the next tick instead of latching a false override", () => {
+    let defers = 1;
+    const h = createAutoHideHarness({
+      applyResult: () => {
+        if (defers > 0) {
+          defers -= 1;
+          return { applied: false, deferred: true, changed: false };
+        }
+        return { applied: true, deferred: false, changed: true };
+      },
+    });
+    h.start();
+    h.state.fullscreen = true;
+    h.tick();
+    // Deferred (mini transition in flight): flag not set...
+    assert.deepStrictEqual(h.setCalls, [true]);
+    assert.equal(h.state.autoHidden, false);
+    // ...and the next tick must retry rather than mistake the unset flag for
+    // a user override.
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true, true]);
+    assert.equal(h.state.autoHidden, true);
+  });
+});

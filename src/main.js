@@ -1169,6 +1169,7 @@ let allowEdgePinningCached = _settingsController.get("allowEdgePinning");
 let disableMiniModeCached = _settingsController.get("disableMiniMode");
 let keepSizeAcrossDisplaysCached = _settingsController.get("keepSizeAcrossDisplays");
 let fullscreenOverlayCached = _settingsController.get("fullscreenOverlay");
+let fullscreenAutoHideCached = _settingsController.get("fullscreenAutoHide");
 let textScale = _settingsController.get("textScale");
 let textScaleByDisplay = _settingsController.get("textScaleByDisplay");
 // Transient slider-drag override for ONE display — the one the settings
@@ -1666,6 +1667,11 @@ const topmostRuntime = createTopmostRuntime({
   isMiniTransitioning: () => _mini.getMiniTransitioning(),
   isForegroundFullscreen: () => _isForegroundFullscreen(),
   getFullscreenOverlay: () => fullscreenOverlayCached,
+  // #935 fullscreen auto-hide: the pref gate plus pet-window-runtime's
+  // dedicated visibility layer (stacked on the user's manual hide).
+  getFullscreenAutoHide: () => fullscreenAutoHideCached,
+  setFullscreenAutoHidden: (hidden) => petWindowRuntime.setFullscreenAutoHidden(hidden),
+  isFullscreenAutoHidden: () => petWindowRuntime.isFullscreenAutoHidden(),
   setHitWinFocusable,
   keepOutOfTaskbar,
   setForceEyeResend,
@@ -1707,7 +1713,7 @@ const _permCtx = {
   get permDebugLog() { return permDebugLog; },
   get doNotDisturb() { return doNotDisturb; },
   get hideBubbles() { return getAllBubblesHidden(); },
-  get petHidden() { return petWindowRuntime.isPetHidden(); },
+  get petHidden() { return petWindowRuntime.isPetEffectivelyHidden(); },
   getBubblePolicy: getRuntimeBubblePolicy,
   getPetWindowBounds,
   getNearestWorkArea,
@@ -1840,7 +1846,7 @@ const _updateBubbleCtx = {
   get bubbleFollowPet() { return bubbleFollowPet; },
   get bubbleFollowPreference() { return bubbleFollowPreference; },
   get bubbleFixedCorner() { return bubbleFixedCorner; },
-  get petHidden() { return petWindowRuntime.isPetHidden(); },
+  get petHidden() { return petWindowRuntime.isPetEffectivelyHidden(); },
   getBubblePolicy: getRuntimeBubblePolicy,
   getPetWindowBounds,
   getNearestWorkArea,
@@ -2414,7 +2420,7 @@ const _ringGeom = require("./quota-ring-geometry");
 
 const _sessionHud = require("./session-hud")({
   get win() { return win; },
-  get petHidden() { return petWindowRuntime.isPetHidden(); },
+  get petHidden() { return petWindowRuntime.isPetEffectivelyHidden(); },
   get sessionHudEnabled() { return sessionHudEnabled; },
   get sessionHudShowStateLabels() { return sessionHudShowStateLabels; },
   get sessionHudShowElapsed() { return sessionHudShowElapsed; },
@@ -3869,7 +3875,7 @@ const _menuCtx = {
   get soundVolume() { return soundVolume; },
   get pendingPermissions() { return pendingPermissions; },
   repositionBubbles: () => repositionFloatingBubbles(),
-  get petHidden() { return petWindowRuntime.isPetHidden(); },
+  get petHidden() { return petWindowRuntime.isPetEffectivelyHidden(); },
   togglePetVisibility: () => togglePetVisibility(),
   bringPetToPrimaryDisplay: () => bringPetToPrimaryDisplay(),
   get isQuitting() { return isQuitting; },
@@ -4025,6 +4031,7 @@ const SETTINGS_MIRROR_SETTERS = {
   petAccessory: (v) => { petAccessory = v; },
   allowEdgePinning: (v) => { allowEdgePinningCached = v; }, disableMiniMode: (v) => { disableMiniModeCached = v; }, keepSizeAcrossDisplays: (v) => { keepSizeAcrossDisplaysCached = v; resetKeepSizeFrozen(); },
   fullscreenOverlay: (v) => { fullscreenOverlayCached = v; },
+  fullscreenAutoHide: (v) => { fullscreenAutoHideCached = v; },
   freeRoam: (v) => { _roam.setEnabled(v); },
   textScale: (v) => { textScale = v; textScalePreview = null; },
   textScaleByDisplay: (v) => { textScaleByDisplay = v; textScalePreview = null; },
@@ -4847,7 +4854,7 @@ const _mini = require("./mini")(_miniCtx);
 const handleTestResult = createTestReactionHandler({
   getEnabled: () => _settingsController.get("testReactionsEnabled") === true,
   getDoNotDisturb: () => doNotDisturb,
-  isPetHidden: () => petWindowRuntime.isPetHidden(),
+  isPetHidden: () => petWindowRuntime.isPetEffectivelyHidden(),
   getMiniMode: () => _mini.getMiniMode(),
   getMiniTransitioning: () => _mini.getMiniTransitioning(),
   isDragging: () => petWindowRuntime.isDragLocked(),
@@ -4995,7 +5002,7 @@ if (!gotTheLock) {
   ) ? null : _initialPrefsLoad.snapshot;
   _syncCodexAutoStartGate(startupGateSnapshot, "startup");
   app.on("second-instance", (_event, commandLine) => {
-    if (petWindowRuntime.isPetHidden()) {
+    if (petWindowRuntime.isPetEffectivelyHidden()) {
       prepManualPetVisibility();
       petWindowRuntime.setPetHidden(false);
     } else {
