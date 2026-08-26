@@ -9,9 +9,13 @@
 // Qoder's native permission flow stays in control.
 
 const crypto = require("crypto");
+const fs = require("fs");
 const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
+const SESSION_TITLE_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F\u061C\u200E-\u200F\u202A-\u202E\u2066-\u2069]+/g;
+const SESSION_TITLE_MAX = 80;
+const QODER_TRANSCRIPT_READ_MAX_BYTES = 16 * 1024 * 1024;
 const TOOL_MATCH_STRING_MAX = 240;
 const TOOL_MATCH_ARRAY_MAX = 16;
 const TOOL_MATCH_OBJECT_KEYS_MAX = 32;
@@ -46,6 +50,120 @@ const NO_DECISION_OUTPUT = "{}";
 function normalizeSessionId(value) {
   const raw = value != null && value !== "" ? String(value) : "default";
   return raw.startsWith("qoder:") ? raw : `qoder:${raw}`;
+}
+
+function normalizeSessionTitle(value) {
+  if (typeof value !== "string") return null;
+  const collapsed = value
+    .replace(SESSION_TITLE_CONTROL_RE, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!collapsed) return null;
+  const characters = Array.from(collapsed);
+  return characters.length > SESSION_TITLE_MAX
+    ? `${characters.slice(0, SESSION_TITLE_MAX - 1).join("")}\u2026`
+    : collapsed;
+}
+
+function bareQoderSessionId(value) {
+  if (value === null || value === undefined) return null;
+  const normalized = String(value).trim();
+  if (!normalized) return null;
+  return normalized.startsWith("qoder:") ? normalized.slice("qoder:".length) : normalized;
+}
+
+function extractSessionTitleFromEntries(entries, options = {}) {
+  if (!Array.isArray(entries)) return null;
+  const expectedSessionId = bareQoderSessionId(options.sessionId);
+  let aiTitle = null;
+  let customTitle = null;
+  let sawCustomTitle = false;
+
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const entrySessionId = bareQoderSessionId(entry.sessionId ?? entry.session_id);
+    if (expectedSessionId && entrySessionId && entrySessionId !== expectedSessionId) continue;
+    if (entry.type === "ai-title") {
+      aiTitle = normalizeSessionTitle(entry.aiTitle);
+      continue;
+    }
+    if (entry.type === "custom-title") {
+      sawCustomTitle = true;
+      customTitle = normalizeSessionTitle(entry.customTitle);
+    }
+  }
+
+  return (sawCustomTitle ? customTitle : null) || aiTitle;
+}
+
+function readFileRange(fd, start, length) {
+  if (!Number.isFinite(length) || length <= 0) return "";
+  const buffer = Buffer.allocUnsafe(length);
+  const bytesRead = fs.readSync(fd, buffer, 0, length, start);
+  return buffer.subarray(0, bytesRead).toString("utf8");
+}
+
+function parseTitleEntries(data, options = {}) {
+  if (typeof data !== "string" || !data) return [];
+  const lines = data.split(/\r?\n/);
+  if (options.skipFirstPartial && lines.length) lines.shift();
+  if (options.skipLastPartial && lines.length) lines.pop();
+
+  const entries = [];
+  for (const line of lines) {
+    if (!line.includes('"type"') || (
+      !line.includes('"ai-title"')
+      && !line.includes('"custom-title"')
+    )) continue;
+    try {
+      const entry = JSON.parse(line);
+      if (entry && (entry.type === "ai-title" || entry.type === "custom-title")) {
+        entries.push(entry);
+      }
+    } catch {}
+  }
+  return entries;
+}
+
+// Qoder persists its display title as transcript metadata. Its own precedence
+// is customTitle -> aiTitle, so retain the latest record of each kind and then
+// apply that order. Reads are bounded because this command hook runs for every
+// tool boundary; oversized transcripts use non-overlapping head/tail windows.
+function readQoderSessionTitle(transcriptPath, options = {}) {
+  if (typeof transcriptPath !== "string" || !transcriptPath.trim()) return null;
+  const maxBytes = Number.isFinite(options.maxBytes) && options.maxBytes > 0
+    ? Math.floor(options.maxBytes)
+    : QODER_TRANSCRIPT_READ_MAX_BYTES;
+  const edgeBytes = Number.isFinite(options.edgeBytes) && options.edgeBytes > 0
+    ? Math.min(Math.floor(options.edgeBytes), Math.floor(maxBytes / 2))
+    : Math.floor(maxBytes / 2);
+
+  let fd;
+  try {
+    const stat = fs.statSync(transcriptPath);
+    if (!stat.isFile() || stat.size <= 0) return null;
+    fd = fs.openSync(transcriptPath, "r");
+
+    if (stat.size <= maxBytes) {
+      return extractSessionTitleFromEntries(parseTitleEntries(
+        readFileRange(fd, 0, stat.size)
+      ), options);
+    }
+
+    const head = readFileRange(fd, 0, edgeBytes);
+    const tailStart = Math.max(edgeBytes, stat.size - edgeBytes);
+    const tail = readFileRange(fd, tailStart, stat.size - tailStart);
+    return extractSessionTitleFromEntries([
+      ...parseTitleEntries(head, { skipLastPartial: true }),
+      ...parseTitleEntries(tail, { skipFirstPartial: tailStart > 0 }),
+    ], options);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch {}
+    }
+  }
 }
 
 function normalizeToolUseId(value) {
@@ -198,6 +316,14 @@ function buildStateBody(hookName, payload, options = {}) {
   if (payload && typeof payload.transcript_path === "string" && payload.transcript_path) {
     body.transcript_path = payload.transcript_path;
   }
+  const sessionTitle = normalizeSessionTitle(payload && payload.session_title)
+    || normalizeSessionTitle(payload && payload.sessionTitle)
+    || normalizeSessionTitle(payload && payload.session_name)
+    || normalizeSessionTitle(payload && payload.sessionName)
+    || readQoderSessionTitle(payload && payload.transcript_path, {
+      sessionId: payload && payload.session_id,
+    });
+  if (sessionTitle) body.session_title = sessionTitle;
   if (payload && TOOL_METADATA_EVENTS.has(hookName)) {
     maybeAddToolMetadata(body, payload);
   }
@@ -270,6 +396,9 @@ module.exports = {
   normalizeSessionId,
   normalizeToolMatchValue,
   buildToolInputFingerprint,
+  normalizeSessionTitle,
+  extractSessionTitleFromEntries,
+  readQoderSessionTitle,
   isQoderAgentCommandLine,
   resolveHookName,
   shouldResolvePid,
