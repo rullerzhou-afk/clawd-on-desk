@@ -212,6 +212,59 @@ function callPermissionPostThroughAutomation(body, mode, options = {}) {
   });
 }
 
+describe("Claude ExitPlanMode updatedInput compatibility", () => {
+  it("keeps the exact request input separate from the truncated display copy", async () => {
+    const rawInput = {
+      plan: `Start of plan ${"x".repeat(700)} end-of-plan`,
+      planFilePath: "C:\\Users\\Ruller\\.claude\\plans\\exact.md",
+      metadata: { source: "permission-hook", untouched: true },
+      steps: ["first", "second"],
+    };
+    const res = await callPermissionPostThroughAutomation(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "claude:exact-plan-input",
+      tool_name: "ExitPlanMode",
+      tool_input: rawInput,
+    }), "off", { showPermissionBubble() {} });
+
+    assert.strictEqual(res.permission.pendingPermissions.length, 1);
+    const entry = res.permission.pendingPermissions[0];
+    assert.notStrictEqual(entry.toolInput.plan, rawInput.plan, "display copy should remain truncated");
+    assert.deepStrictEqual(entry.planReviewWireInput, rawInput, "wire input must remain unmodified");
+
+    res.permission.resolvePermissionEntry(entry, "allow");
+
+    assert.strictEqual(res.body, JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        decision: {
+          behavior: "allow",
+          updatedInput: rawInput,
+        },
+      },
+    }));
+  });
+
+  it("drops the connection instead of allowing when the request omitted tool_input", async () => {
+    const res = await callPermissionPostThroughAutomation(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "claude:missing-plan-input",
+      tool_name: "ExitPlanMode",
+    }), "off", { showPermissionBubble() {} });
+
+    assert.strictEqual(res.permission.pendingPermissions.length, 1);
+    const entry = res.permission.pendingPermissions[0];
+    assert.strictEqual(entry.planReviewWireInput, null);
+
+    res.permission.resolvePermissionEntry(entry, "allow");
+
+    assert.strictEqual(res.body, "", "fallback must not write a decision payload");
+    assert.strictEqual(res.writableFinished, false, "fallback must not end with a false allow");
+    assert.strictEqual(res.destroyed, true, "connection drop returns control to Claude's native prompt");
+    assert.deepStrictEqual(res.permission.pendingPermissions, []);
+  });
+});
+
 describe("server-route-permission helpers", () => {
   it("preserves bubble bypass decisions for CC, Codex, and opencode", () => {
     assert.strictEqual(shouldBypassCCBubble({ hideBubbles: true }, interaction("claude-code", "Bash"), "claude-code"), true);

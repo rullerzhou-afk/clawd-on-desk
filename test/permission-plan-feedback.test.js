@@ -111,6 +111,7 @@ function makeCtx(overrides = {}) {
 }
 
 function makePlanPermEntry(res, overrides = {}) {
+  const planReviewWireInput = { plan: "Build a React app" };
   const entry = {
     res,
     abortHandler: () => {},
@@ -119,7 +120,8 @@ function makePlanPermEntry(res, overrides = {}) {
     bubble: null,
     hideTimer: null,
     toolName: "ExitPlanMode",
-    toolInput: { plan: "Build a React app" },
+    toolInput: planReviewWireInput,
+    planReviewWireInput,
     resolvedSuggestion: null,
     createdAt: Date.now() - 5000,
     agentId: "claude-code",
@@ -144,6 +146,72 @@ function makeEventFor(bubble) {
 }
 
 describe("permission plan-feedback handleDecide", () => {
+  it("replays the exact original ExitPlanMode input when allowing a plan", () => {
+    const ctx = makeCtx();
+    const perm = initPermission(ctx);
+    const res = createMockResponse();
+    const planReviewWireInput = {
+      plan: "Build a React app",
+      planFilePath: "C:\\Users\\Ruller\\.claude\\plans\\exact.md",
+      metadata: { source: "permission-hook", untouched: true },
+      steps: ["first", "second"],
+    };
+    const permEntry = makePlanPermEntry(res, {
+      toolInput: { plan: "Build a React app…" },
+      planReviewWireInput,
+    });
+    perm.pendingPermissions.push(permEntry);
+
+    perm.resolvePermissionEntry(permEntry, "allow");
+
+    assert.strictEqual(res.captured.body, JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        decision: {
+          behavior: "allow",
+          updatedInput: planReviewWireInput,
+        },
+      },
+    }));
+  });
+
+  it("falls back to Claude's native prompt when exact plan input is unavailable", () => {
+    const ctx = makeCtx();
+    const perm = initPermission(ctx);
+    const res = createMockResponse();
+    const permEntry = makePlanPermEntry(res, { planReviewWireInput: null });
+    perm.pendingPermissions.push(permEntry);
+
+    perm.resolvePermissionEntry(permEntry, "allow");
+
+    assert.strictEqual(res.captured.ended, false, "must not emit a false allow decision");
+    assert.strictEqual(res.captured.body, null, "fallback must not write a response body");
+    assert.strictEqual(res.destroyed, true, "socket drop returns control to Claude's native prompt");
+    assert.strictEqual(ctx.focusTerminalCalls.length, 1);
+    assert.strictEqual(perm.pendingPermissions.indexOf(permEntry), -1);
+  });
+
+  it("keeps ordinary Claude tool allows free of updatedInput", () => {
+    const ctx = makeCtx();
+    const perm = initPermission(ctx);
+    const res = createMockResponse();
+    const permEntry = makePlanPermEntry(res, {
+      toolName: "Bash",
+      toolInput: { command: "npm test" },
+      planReviewWireInput: null,
+    });
+    perm.pendingPermissions.push(permEntry);
+
+    perm.resolvePermissionEntry(permEntry, "allow");
+
+    assert.deepStrictEqual(JSON.parse(res.captured.body), {
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        decision: { behavior: "allow" },
+      },
+    });
+  });
+
   it("resolves ExitPlanMode with deny + feedback message", () => {
     const ctx = makeCtx();
     const perm = initPermission(ctx);

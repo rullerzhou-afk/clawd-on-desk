@@ -1972,8 +1972,19 @@ function handlePermissionPost(req, res, options) {
         return;
       }
 
-      const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
+      const hasExactToolInput = data.tool_input !== null
+        && typeof data.tool_input === "object"
+        && !Array.isArray(data.tool_input);
+      const rawInput = hasExactToolInput ? data.tool_input : {};
       const toolInput = truncateDeep(rawInput);
+      // Claude Code's PermissionRequest contract needs updatedInput when an
+      // interactive built-in such as ExitPlanMode is allowed. Keep the exact
+      // parsed request object separate from the truncated display copy so an
+      // approval can never echo normalized, clipped, or otherwise unseen data.
+      const planReviewWireInput = interaction.intent === INTERACTION_INTENT.PLAN_REVIEW
+        && hasExactToolInput
+        ? rawInput
+        : null;
       const permissionDetail = preparePermissionDetail(toolName, rawInput);
       const toolUseId = normalizeHookToolUseId(
         data.tool_use_id ?? data.toolUseId ?? data.toolUseID
@@ -2138,6 +2149,7 @@ function handlePermissionPost(req, res, options) {
         hideTimer: null,
         toolName,
         toolInput,
+        planReviewWireInput,
         ...permissionDetail,
         toolUseId,
         toolInputFingerprint,

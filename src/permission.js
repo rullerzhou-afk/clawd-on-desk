@@ -2548,6 +2548,26 @@ function applyPermissionSuggestion(perm, index, options = {}) {
     }
   const idx = pendingPermissions.indexOf(permEntry);
   if (idx === -1) return;
+  let planReviewUpdatedInput = null;
+  let focusPlanReviewFallback = false;
+  if (
+    behavior === "allow"
+    && permEntry.agentId === "claude-code"
+    && isValidInteraction(permEntry.interaction)
+    && permEntry.interaction.intent === INTERACTION_INTENT.PLAN_REVIEW
+  ) {
+    const wireInput = permEntry.planReviewWireInput;
+    if (!wireInput || typeof wireInput !== "object" || Array.isArray(wireInput)) {
+      // Never approve a display/truncated copy. Dropping the hook response is
+      // Claude Code's documented non-blocking fallback to its native prompt.
+      permLog("plan-review allow missing exact tool_input -> no-decision native fallback");
+      behavior = "no-decision";
+      message = "Exact ExitPlanMode tool_input unavailable";
+      focusPlanReviewFallback = true;
+    } else {
+      planReviewUpdatedInput = wireInput;
+    }
+  }
   const remoteOutcome = permEntry.remoteApprovalResolution || {
     decision: behavior === "deny" ? "deny" : behavior === "no-decision" ? "no-decision" : "allow",
     actionLabel: remoteApprovalDecisionLabel(behavior === "deny" || behavior === "no-decision" ? behavior : "allow"),
@@ -2732,11 +2752,17 @@ function applyPermissionSuggestion(perm, index, options = {}) {
     // per the hooks doc — CC falls back to its built-in chat prompt rather
     // than treating it as an explicit deny.
     try { res.destroy(); } catch {}
+    if (focusPlanReviewFallback && typeof ctx.focusTerminalForSession === "function") {
+      ctx.focusTerminalForSession(permEntry.sessionId, {
+        fallbackEntry: buildPermissionFocusEntry(permEntry),
+      });
+    }
     return;
   }
 
   const decision = { behavior: behavior === "deny" ? "deny" : "allow" };
   if (behavior === "deny" && message) decision.message = message;
+  if (planReviewUpdatedInput) decision.updatedInput = planReviewUpdatedInput;
   if (permEntry.resolvedSuggestion) {
     decision.updatedPermissions = [permEntry.resolvedSuggestion];
   }
