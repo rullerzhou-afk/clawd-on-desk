@@ -859,15 +859,23 @@ function verifyUnregister(accelerator) {
   return true;
 }
 
-function getActionablePermissions() {
-  return pendingPermissions.filter(
-    p => !isPassiveNotifyEntry(p)
-      && isValidInteraction(p.interaction)
-      && p.interaction.capabilities.allowDeny === true
-      && p.textInputActive !== true
-      && (p.interaction.intent !== INTERACTION_INTENT.PLAN_REVIEW || p.expanded === true)
-      && !isDecisionInteraction(p.interaction)
+function isHotkeyActionablePermission(permission) {
+  return !!(
+    permission
+    && !isPassiveNotifyEntry(permission)
+    && isValidInteraction(permission.interaction)
+    && permission.interaction.capabilities.allowDeny === true
+    && permission.textInputActive !== true
+    && (
+      permission.interaction.intent !== INTERACTION_INTENT.PLAN_REVIEW
+      || permission.expanded === true
+    )
+    && !isDecisionInteraction(permission.interaction)
   );
+}
+
+function getActionablePermissions() {
+  return pendingPermissions.filter(isHotkeyActionablePermission);
 }
 
 // #601: hotkeys must reach exactly what is on screen. While the pet is hidden,
@@ -891,6 +899,51 @@ function getHotkeyActionablePermissions() {
       return false;
     }
   });
+}
+
+// Overflow can hide newer requests behind the queue launcher. A global
+// shortcut must never resolve one of those invisible entries. The layout
+// contract keeps the oldest request highest, so the visible request with the
+// greatest bottom edge is the same card the user sees at the bottom of the
+// stack. If that card is not an ordinary Allow/Deny interaction, do not skip
+// over it and silently decide a different card.
+function getOverflowHotkeyTarget() {
+  let target = null;
+  let targetBottom = Number.NEGATIVE_INFINITY;
+  let targetOrdinal = Number.NEGATIVE_INFINITY;
+
+  for (const permission of pendingPermissions) {
+    if (!permission || permission.remoteOnly || !isLiveBrowserWindow(permission.bubble)) continue;
+    try {
+      if (typeof permission.bubble.isVisible === "function" && !permission.bubble.isVisible()) continue;
+    } catch {
+      continue;
+    }
+
+    let bottom = Number.NEGATIVE_INFINITY;
+    try {
+      const bounds = permission.bubble.getBounds();
+      if (bounds && Number.isFinite(bounds.y) && Number.isFinite(bounds.height)) {
+        bottom = bounds.y + bounds.height;
+      }
+    } catch {}
+    const ordinal = Number.isFinite(permission.uiOrdinal)
+      ? permission.uiOrdinal
+      : pendingPermissions.indexOf(permission);
+    if (bottom > targetBottom || (bottom === targetBottom && ordinal > targetOrdinal)) {
+      target = permission;
+      targetBottom = bottom;
+      targetOrdinal = ordinal;
+    }
+  }
+
+  return isHotkeyActionablePermission(target) ? target : null;
+}
+
+function getHotkeyTargetPermission() {
+  if (overflowPresentation.mode === "overflow") return getOverflowHotkeyTarget();
+  const targets = getHotkeyActionablePermissions();
+  return targets.length > 0 ? targets[targets.length - 1] : null;
 }
 
 function syncSingle(actionId, current, target, handler, setState) {
@@ -935,8 +988,7 @@ function syncPermissionShortcuts() {
   const shortcutSnapshot = getShortcutSnapshot();
   const permissionPolicy = getPolicy(ctx, "permission");
   const shouldRegister = permissionPolicy.enabled
-    && overflowPresentation.mode !== "overflow"
-    && getHotkeyActionablePermissions().length > 0;
+    && getHotkeyTargetPermission() !== null;
   const targetAllow = shouldRegister ? shortcutSnapshot.permissionAllow : null;
   const targetDeny = shouldRegister ? shortcutSnapshot.permissionDeny : null;
 
@@ -1008,9 +1060,8 @@ function showPermissionSurfacesForPet() {
 }
 
 function hotkeyResolve(behavior, message) {
-  const targets = getHotkeyActionablePermissions();
-  if (!targets.length) return;
-  const perm = targets[targets.length - 1]; // newest
+  const perm = getHotkeyTargetPermission();
+  if (!perm) return;
   captureFrontApp((appName) => {
     resolvePermissionEntry(perm, behavior, message);
     if (appName) {

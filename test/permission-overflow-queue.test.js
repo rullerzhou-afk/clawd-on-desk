@@ -64,8 +64,17 @@ function loadPermission() {
   const modulePath = require.resolve("../src/permission");
   delete require.cache[modulePath];
   const originalLoad = Module._load;
-  Module._load = function patchedLoad(request) {
+  Module._load = function patchedLoad(request, parent, isMain) {
     if (request === "electron") return { BrowserWindow: FakeBrowserWindow, globalShortcut };
+    if (request === "child_process") {
+      const childProcess = originalLoad.call(this, "node:child_process", parent, isMain);
+      return {
+        ...childProcess,
+        execFile(_file, _args, _options, callback) {
+          callback(new Error("frontmost app unavailable in test"), "");
+        },
+      };
+    }
     return originalLoad.apply(this, arguments);
   };
   const initPermission = require("../src/permission");
@@ -182,7 +191,8 @@ describe("permission overflow queue", () => {
     assert.ok(entries.every((entry) => entry.bubble.isVisible()),
       "request cards remain visible until the queue renderer proves delivery");
     assert.strictEqual(queueWindow.isVisible(), false);
-    assert.strictEqual(registered.size, 0, "overflow unregisters global decision shortcuts");
+    assert.strictEqual(registered.size, 2,
+      "overflow keeps shortcuts while a request card is visibly represented");
 
     queueWindow.webContents.emit("did-finish-load");
     const firstPayload = lastQueuePayload(queueWindow);
@@ -298,6 +308,8 @@ describe("permission overflow queue", () => {
     );
     assert.ok(entries.every((entry) => !entry.bubble.isVisible()),
       "the open drawer is the only visible permission surface");
+    assert.strictEqual(registered.size, 0,
+      "the open drawer disables shortcuts because no request card is visible");
 
     permission.handleQueueSelect(
       { sender: queueWindow.webContents },
@@ -316,6 +328,58 @@ describe("permission overflow queue", () => {
       "queue failure restores the first-stage request stack");
     assert.strictEqual(permission.pendingPermissions.length, 5,
       "queue failure never decides or releases requests");
+  });
+
+  it("hotkeys resolve only the bottommost visible request and wait for hidden requests", () => {
+    FakeBrowserWindow.instances = [];
+    const { initPermission, registered } = loadPermission();
+    const permission = initPermission(makeCtx({
+      getBubbleWorkArea: () => ({ x: 0, y: 0, width: 800, height: 550 }),
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 800, height: 550 }),
+      getSettingsSnapshot: () => ({
+        shortcuts: {
+          permissionAllow: "CommandOrControl+Enter",
+          permissionDeny: "Escape",
+        },
+      }),
+    }));
+    const entries = [1, 2, 3, 4].map((index) => {
+      const entry = requestEntry(index, requestBubble());
+      entry.sessionId = `session-${index}`;
+      return entry;
+    });
+    permission.pendingPermissions.push(...entries);
+    permission.reconcilePermissionPresentation("hotkey-overflow");
+
+    const queueWindow = FakeBrowserWindow.instances.find((win) => (
+      win.options.webPreferences
+      && path.basename(win.options.webPreferences.preload) === "preload-permission-queue.js"
+    ));
+    queueWindow.webContents.emit("did-finish-load");
+    const payload = lastQueuePayload(queueWindow);
+    permission.handleQueuePresentationAck(
+      { sender: queueWindow.webContents },
+      { revision: payload.revision }
+    );
+
+    const visibleBefore = entries.filter((entry) => entry.bubble.isVisible());
+    const hiddenBefore = entries.filter((entry) => !entry.bubble.isVisible());
+    assert.deepStrictEqual(visibleBefore, entries.slice(0, 3));
+    assert.deepStrictEqual(hiddenBefore, [entries[3]]);
+    assert.strictEqual(registered.size, 2);
+
+    registered.get("CommandOrControl+Enter")();
+    assert.strictEqual(permission.pendingPermissions.includes(entries[2]), false,
+      "the shortcut resolves the bottommost visible request");
+    assert.strictEqual(permission.pendingPermissions.includes(entries[3]), true,
+      "a hidden newer request is not resolved early");
+    assert.strictEqual(entries[3].bubble.isVisible(), true,
+      "the hidden request becomes eligible only after it is represented on screen");
+
+    registered.get("CommandOrControl+Enter")();
+    assert.strictEqual(permission.pendingPermissions.includes(entries[3]), false,
+      "the next shortcut may resolve the request after it becomes visible");
+    permission.cleanup();
   });
 
   it("keeps pet-hidden old requests out of a queue created for new requests", () => {
