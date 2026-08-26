@@ -41,6 +41,11 @@ describe("AskUserQuestion bubble overflow", () => {
     assert.doesNotMatch(body, /card\.classList\.(?:add|toggle)\("elicitation-scrollable"/);
     assert.doesNotMatch(body, /elicitationForm\.style\.maxHeight\s*=/);
     assert.match(bubbleCss, /\.detail-scroll\s*\{[\s\S]*overflow-y:\s*auto/);
+    assert.match(
+      bubbleCss,
+      /\.elicitation-form\s*\{[^}]*flex:\s*0\s+0\s+auto\s*;/,
+      "the form must retain its intrinsic height so only the outer detail scroller overflows"
+    );
   });
 
   it("keeps permission quick actions outside the detail-only scroller", () => {

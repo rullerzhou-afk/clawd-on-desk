@@ -316,9 +316,11 @@ body { padding: 6px; }
 /* ── Elicitation form ── */
 .elicitation-form {
   display: none;
+  /* The outer detail scroller owns overflow. Keep the form at its intrinsic
+     height so its children cannot paint through the following progress row. */
+  flex: 0 0 auto;
   flex-direction: column;
   gap: 10px;
-  min-height: 0;
 }
 .elicitation-form.visible { display: flex; }
 .card.elicitation-scrollable .elicitation-form {
