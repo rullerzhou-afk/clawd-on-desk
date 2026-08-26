@@ -93,7 +93,7 @@ function renderDrawer(payload) {
 }
 
 function acknowledge(payload) {
-  requestAnimationFrame(() => {
+  const sendAcknowledgement = () => {
     const acknowledgement = { revision: payload.revision };
     if (payload.drawerOpen) {
       card.classList.add("measuring");
@@ -101,7 +101,19 @@ function acknowledge(payload) {
       card.classList.remove("measuring");
     }
     window.permissionQueueAPI.acknowledge(acknowledgement);
-  });
+  };
+
+  // Chromium suspends requestAnimationFrame for a BrowserWindow that has
+  // never been shown. The first compact queue revision is deliberately sent
+  // while this window is hidden, and the main process waits for this ACK
+  // before showing it. Send that revision synchronously to avoid a visibility
+  // deadlock. Once visible, keep the frame boundary so drawer measurement
+  // observes the rendered layout.
+  if (document.visibilityState === "hidden") {
+    sendAcknowledgement();
+    return;
+  }
+  requestAnimationFrame(sendAcknowledgement);
 }
 
 function render(payload) {
