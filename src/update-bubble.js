@@ -420,9 +420,10 @@ module.exports = function initUpdateBubble(ctx) {
     if (bounds) bubble.setBounds(bounds);
   }
 
-  function syncVisibility() {
+  function syncVisibility(hiddenOverride) {
     if (!bubble || bubble.isDestroyed()) return;
-    if (ctx.petHidden) {
+    const hidden = typeof hiddenOverride === "boolean" ? hiddenOverride : ctx.petHidden;
+    if (hidden) {
       bubble.hide();
       return;
     }

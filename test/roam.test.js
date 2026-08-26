@@ -120,6 +120,67 @@ describe("roam module", () => {
     assert.equal(roam.enabled, false);
   });
 
+  it("holds for visible permission bubbles and restarts with the full 8s delay", () => {
+    let bubbleVisible = true;
+    const ctx = makeCtx({
+      hasVisiblePermissionBubbles: () => bubbleVisible,
+    });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(12000);
+    assert.strictEqual(ctx._stateLog.length, 0);
+
+    bubbleVisible = false;
+    roam.tick();
+    mock.timers.tick(7999);
+    assert.strictEqual(ctx._stateLog.length, 0);
+    mock.timers.tick(1);
+    assert.ok(ctx._stateLog.some((event) => event.type === "applyState" && event.state === "roam"));
+  });
+
+  it("cancels an active walk on the next frame when a permission bubble appears", () => {
+    let bubbleVisible = false;
+    const ctx = makeCtx({
+      hasVisiblePermissionBubbles: () => bubbleVisible,
+    });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    mock.timers.tick(8000);
+    assert.strictEqual(ctx.getCurrentState(), "roam");
+
+    bubbleVisible = true;
+    mock.timers.tick(16);
+    assert.strictEqual(ctx.getCurrentState(), "idle");
+  });
+
+  it("permission hold overrides drag's consumed 4s phase and restores 8s", () => {
+    let bubbleVisible = false;
+    const ctx = makeCtx({
+      hasVisiblePermissionBubbles: () => bubbleVisible,
+    });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick(); // consume the first phase by arming it
+
+    ctx.dragLocked = true;
+    bubbleVisible = true;
+    roam.tick();
+    bubbleVisible = false;
+    roam.tick();
+    ctx.dragLocked = false;
+    roam.tick();
+
+    mock.timers.tick(4000);
+    assert.strictEqual(ctx._stateLog.length, 0, "must not preserve the 4s phase");
+    mock.timers.tick(3999);
+    assert.strictEqual(ctx._stateLog.length, 0);
+    mock.timers.tick(1);
+    assert.ok(ctx._stateLog.some((event) => event.type === "applyState" && event.state === "roam"));
+  });
+
   it("does not schedule the first roam while drag is already locked and preserves the 8s phase", () => {
     const ctx = makeCtx({ dragLocked: true });
     const roam = roamModule(ctx);

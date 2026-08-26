@@ -880,6 +880,25 @@ describe("topmost runtime macOS visibility", () => {
     assert.strictEqual(stationaryCalls.length, 14);
   });
 
+  it("reasserts only presentation-visible permission windows", () => {
+    const visibleBubble = new FakeWindow();
+    const hiddenBubble = new FakeWindow({ visible: false });
+    const queueWindow = new FakeWindow();
+    const runtime = createTopmostRuntime({
+      isMac: true,
+      getPendingPermissions: () => [{ bubble: visibleBubble }, { bubble: hiddenBubble }],
+      getPermissionPresentationWindows: () => [visibleBubble, queueWindow],
+      applyStationaryCollectionBehavior: () => true,
+    });
+
+    runtime.reapplyMacVisibility();
+
+    assert.ok(visibleBubble.calls.length > 0);
+    assert.ok(queueWindow.calls.length > 0);
+    assert.deepStrictEqual(hiddenBubble.calls, [],
+      "overflow-hidden request windows must not be reasserted in the background");
+  });
+
   it("honors deferred macOS visibility markers", () => {
     const win = new FakeWindow();
     win.__clawdMacDeferredVisibilityUntil = Date.now() + 10000;

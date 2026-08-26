@@ -1645,6 +1645,7 @@ function setHitWinFocusable(focusable) {
 // See _mini initialization below
 
 // ── alwaysOnTop recovery — delegated to src/topmost-runtime.js ──
+let permissionPresentationRuntime = null;
 const topmostRuntime = createTopmostRuntime({
   isWin,
   isMac,
@@ -1652,6 +1653,12 @@ const topmostRuntime = createTopmostRuntime({
   getHitWin: () => hitWin,
   recoverCloakedPet: () => petWindowRuntime.recoverIfCloaked(),
   getPendingPermissions: () => pendingPermissions,
+  getPermissionPresentationWindows: () => (
+    permissionPresentationRuntime
+    && typeof permissionPresentationRuntime.getPermissionPresentationWindows === "function"
+      ? permissionPresentationRuntime.getPermissionPresentationWindows()
+      : pendingPermissions.map((entry) => entry && entry.bubble).filter(Boolean)
+  ),
   getUpdateBubbleWindow: () => _updateBubble.getBubbleWindow(),
   getSessionHudWindow: () => getSessionHudWindow(),
   getQuotaRingWindow: () => getQuotaRingWindow(),
@@ -1805,6 +1812,7 @@ const _permCtx = {
   },
 };
 const _perm = initPermission(_permCtx);
+permissionPresentationRuntime = _perm;
 const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, isPermissionEntryLive, canAutoResolvePendingPermission, beginSessionTrustConfirmation, endSessionTrustConfirmation, syncPermissionBubbleContent, maybeStartRemoteApproval, clearCodexNotifyBubbles, showCodexUserInputBubble, clearCodexUserInputBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodeFamilyPermission, dismissOpencodeFamilyPermissionResolvedExternally } = _perm;
 const pendingPermissions = _perm.pendingPermissions;
 let permDebugLog = null; // set after app.whenReady()
@@ -1870,9 +1878,11 @@ floatingWindowRuntime = createFloatingWindowRuntime({
   repositionSessionHud: () => repositionSessionHud(),
   repositionQuotaRing: () => repositionQuotaRing(),
   syncSessionHudVisibility: () => syncSessionHudVisibility(),
-  syncUpdateBubbleVisibility: () => syncUpdateBubbleVisibility(),
+  syncUpdateBubbleVisibility: (hiddenOverride) => syncUpdateBubbleVisibility(hiddenOverride),
   hideUpdateBubble: () => hideUpdateBubble(),
   keepOutOfTaskbar,
+  showPermissionSurfacesForPet: () => _perm.showPermissionSurfacesForPet(),
+  hidePermissionSurfacesForPet: () => _perm.hidePermissionSurfacesForPet(),
 });
 
 function repositionFloatingBubbles() {
@@ -4883,8 +4893,13 @@ const _roamCtx = {
   setRoamHeading: (headingLeft) => sendToRenderer("roam-heading", !!headingLeft),
   // #640: hold still while the user types into a bubble text field (macOS)
   isImeEditingActive: () => pendingPermissions.some(
-    (p) => p && p.bubble && !p.bubble.isDestroyed() && p.bubble.__clawdMacImeEditing
+    (p) => p
+      && p.bubble
+      && !p.bubble.isDestroyed()
+      && p.bubble.isVisible()
+      && p.bubble.__clawdMacImeEditing
   ),
+  hasVisiblePermissionBubbles: () => _perm.hasVisiblePermissionBubbles(),
   // #810: optional roam fence — validated async loader for
   // ~/.clawd/roam-area.json; roam reads its in-memory cache at target pick
   // time and kicks refresh() when scheduling walks (see src/roam-fence.js).

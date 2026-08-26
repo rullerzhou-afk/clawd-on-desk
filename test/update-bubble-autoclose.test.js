@@ -178,6 +178,41 @@ describe("update bubble auto-close refresh", () => {
     api.cleanup();
   });
 
+  it("can show against an explicitly visible target before the petHidden getter commits", async () => {
+    const initUpdateBubble = loadUpdateBubbleWithElectron({ BrowserWindow: FakeBrowserWindow });
+    const api = initUpdateBubble({
+      win: { isDestroyed: () => false },
+      bubbleFollowPet: false,
+      petHidden: true,
+      getBubblePolicy: () => ({ enabled: true, autoCloseMs: 0 }),
+      getPetWindowBounds: () => ({ x: 20, y: 20, width: 120, height: 120 }),
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 1920, height: 1080 }),
+      getUpdateBubbleAnchorRect: () => null,
+      getHitRectScreen: () => null,
+      getPermissionBubbleBounds: () => [],
+      getSessionHudBounds: () => [],
+      guardAlwaysOnTop: () => {},
+      reapplyMacVisibility: () => {},
+      repositionQuotaRing: () => {},
+      clipboard: { writeText: () => {} },
+    });
+
+    await api.showUpdateBubble({
+      mode: "up-to-date",
+      title: "Up to date",
+      message: "Already current.",
+      requireAction: false,
+      defaultAction: "dismiss",
+    });
+    const bubble = api.getBubbleWindow();
+    assert.strictEqual(bubble.isVisible(), false);
+
+    api.syncVisibility(false);
+    assert.strictEqual(bubble.isVisible(), true,
+      "the explicit target state must win over the still-stale petHidden getter");
+    api.cleanup();
+  });
+
   it("wires permission and HUD bounds into fixed update bubble repositioning", async () => {
     const workArea = { x: 0, y: 0, width: 1200, height: 800 };
     const initUpdateBubble = loadUpdateBubbleWithElectron({ BrowserWindow: FakeBrowserWindow });

@@ -79,7 +79,7 @@ describe("floating-window-runtime", () => {
     const runtime = createFloatingWindowRuntime({
       getPendingPermissions: () => [{ bubble: live }, { bubble: destroyed }, { bubble: null }],
       keepOutOfTaskbar: (win) => calls.push(["taskbar", win === live ? "live" : "other"]),
-      syncUpdateBubbleVisibility: () => calls.push(["syncUpdate"]),
+      syncUpdateBubbleVisibility: (hidden) => calls.push(["syncUpdate", hidden]),
     });
 
     runtime.showFloatingSurfacesForPet();
@@ -87,7 +87,7 @@ describe("floating-window-runtime", () => {
     assert.deepStrictEqual(calls, [
       ["show", "live"],
       ["taskbar", "live"],
-      ["syncUpdate"],
+      ["syncUpdate", false],
     ]);
   });
 
@@ -105,6 +105,28 @@ describe("floating-window-runtime", () => {
     assert.deepStrictEqual(calls, [
       ["hide", "live"],
       ["hideUpdate"],
+    ]);
+  });
+
+  it("delegates pet hide/show to the permission presentation owner when provided", () => {
+    const calls = [];
+    const live = makeWindow("legacy", calls);
+    const runtime = createFloatingWindowRuntime({
+      getPendingPermissions: () => [{ bubble: live }],
+      showPermissionSurfacesForPet: () => calls.push(["permission", "show"]),
+      hidePermissionSurfacesForPet: () => calls.push(["permission", "hide"]),
+      syncUpdateBubbleVisibility: (hidden) => calls.push(["syncUpdate", hidden]),
+      hideUpdateBubble: () => calls.push(["hideUpdate"]),
+    });
+
+    runtime.hideFloatingSurfacesForPet();
+    runtime.showFloatingSurfacesForPet();
+
+    assert.deepStrictEqual(calls, [
+      ["permission", "hide"],
+      ["hideUpdate"],
+      ["permission", "show"],
+      ["syncUpdate", false],
     ]);
   });
 });

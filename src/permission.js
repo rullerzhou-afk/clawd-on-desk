@@ -6,7 +6,12 @@ const { getDefaultShortcuts } = require("./shortcut-actions");
 const { keepOutOfTaskbar } = require("./taskbar");
 const { clampTextScale, scaleWidth, scaleHeight, applyZoomToWindow } = require("./text-scale");
 const { createTranslator } = require("./i18n");
-const { firstStringValue } = require("./bubble-format");
+const { firstStringValue, formatDetail, truncate, parseMcpToolName } = require("./bubble-format");
+const {
+  getPermissionSessionKey,
+  groupPermissionEntries,
+  selectOverflowRepresentatives,
+} = require("./permission-overflow-model");
 const { MAC_TOPMOST_LEVEL } = require("./topmost-runtime");
 const { redactSecrets } = require("./secret-redact");
 const path = require("path");
@@ -72,6 +77,11 @@ const BUBBLE_EXPANDED_DETAIL_LINE_FALLBACK = 18;
 const BUBBLE_EXPANDED_MIN_DETAIL_LINES = 5;
 // Hard cap so a scaled bubble can't swallow a small work area.
 const BUBBLE_MAX_WORK_AREA_WIDTH_RATIO = 0.9;
+const OVERFLOW_EXIT_SLACK_BASE = 30;
+const QUEUE_COMPACT_BASE_HEIGHT = 64;
+const QUEUE_DRAWER_PREFERRED_HEIGHT = 620;
+const QUEUE_COMMIT_TIMEOUT_MS = 1500;
+const QUEUE_SUMMARY_MAX = 120;
 const PLAN_FEEDBACK_MAX_LENGTH = 4000;
 // WorkBuddy is intentionally absent: its desktop form factor resolves the
 // permission loop inside its own native sandbox + GUI, so Clawd never issues a
@@ -108,6 +118,20 @@ function registerPermissionIpc(options = {}) {
   }
   if (typeof permission.handleCompositionActive === "function") {
     on("bubble-composition-active", (event, active) => permission.handleCompositionActive(event, active));
+  }
+  if (typeof permission.handleQueueDrawerOpen === "function") {
+    on("permission-queue-open", (event) => permission.handleQueueDrawerOpen(event));
+  }
+  if (typeof permission.handleQueueDrawerClose === "function") {
+    on("permission-queue-close", (event) => permission.handleQueueDrawerClose(event));
+  }
+  if (typeof permission.handleQueueSelect === "function") {
+    on("permission-queue-select", (event, selection) => permission.handleQueueSelect(event, selection));
+  }
+  if (typeof permission.handleQueuePresentationAck === "function") {
+    on("permission-queue-ack", (event, acknowledgement) => (
+      permission.handleQueuePresentationAck(event, acknowledgement)
+    ));
   }
 
   return {
@@ -721,6 +745,44 @@ function collectVisibleWindowBounds(windows) {
   return bounds;
 }
 
+function isLiveBrowserWindow(win) {
+  if (!win) return false;
+  try {
+    return typeof win.isDestroyed !== "function" || !win.isDestroyed();
+  } catch {
+    return false;
+  }
+}
+
+function areBubbleBoundsSafe(bounds, workArea, avoidRects = []) {
+  if (!Array.isArray(bounds) || !isUsableRect(workArea)) return false;
+  const right = workArea.x + workArea.width;
+  const bottom = workArea.y + workArea.height;
+  const rects = normalizeAvoidRects(avoidRects);
+  return bounds.every((rect) => (
+    isUsableRect(rect)
+    && rect.x >= workArea.x
+    && rect.y >= workArea.y
+    && rect.x + rect.width <= right
+    && rect.y + rect.height <= bottom
+    && !rects.some((avoidRect) => rectsIntersect(rect, avoidRect))
+  ));
+}
+
+function stackHeightForSizes(sizes, gap) {
+  if (!Array.isArray(sizes) || sizes.length === 0) return 0;
+  return sizes.reduce((sum, size) => sum + Math.max(0, Number(size && size.height) || 0), 0)
+    + Math.max(0, sizes.length - 1) * Math.max(0, Number(gap) || 0);
+}
+
+function computeQueueCommitDeadline(existingDeadline, now, timeoutMs = QUEUE_COMMIT_TIMEOUT_MS) {
+  const existing = Number(existingDeadline);
+  if (Number.isFinite(existing) && existing > 0) return existing;
+  const startedAt = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  const timeout = Math.max(1, Number(timeoutMs) || QUEUE_COMMIT_TIMEOUT_MS);
+  return startedAt + timeout;
+}
+
 module.exports = function initPermission(ctx) {
 
 // Bound to ctx.lang (a live getter), so a runtime language switch is picked up
@@ -734,6 +796,32 @@ let expandedPermissionEntry = null;
 // a bubble during its 250ms fade-out after the request has already been removed
 // from the pending list.
 const permissionBubbleWindows = new Set();
+const overflowPresentation = {
+  mode: "normal",
+  revision: 0,
+  nextEntryOrdinal: 1,
+  visibleEntryIds: new Set(),
+  selectedEntryBySession: new Map(),
+  selectedGlobalEntryId: null,
+  queueWindow: null,
+  queueReady: false,
+  queueDrawerOpen: false,
+  queueDrawerCommittedOpen: false,
+  queueDrawerMeasuredHeight: 0,
+  queuePresentedRevision: 0,
+  queuePendingCommit: null,
+  queueCommitDeadlineTimer: null,
+  queueAttemptedInOverflowEpisode: false,
+  queueExpectedDestroy: false,
+  queueLastSignature: "",
+  queueLastPayload: null,
+  queueBounds: null,
+  queueCommittedBounds: null,
+  petHidden: !!ctx.petHidden,
+  petHiddenCutoffOrdinal: null,
+  reconciling: false,
+  reconcileAgain: false,
+};
 // Pure-metadata tools auto-allowed without showing a bubble (zero side effects)
 const PASSTHROUGH_TOOLS = new Set([
   "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
@@ -791,7 +879,10 @@ function getActionablePermissions() {
 // (creation failed / not yet created) must stay hotkey-reachable.
 function getHotkeyActionablePermissions() {
   const actionable = getActionablePermissions();
-  if (!ctx.petHidden) return actionable;
+  // The presentation owner records the target state before pet-window-runtime
+  // updates its own getter. Keep the getter as a compatibility signal for
+  // older callers/tests that still toggle ctx.petHidden directly.
+  if (!overflowPresentation.petHidden && !ctx.petHidden) return actionable;
   return actionable.filter((p) => {
     const bub = p.bubble;
     try {
@@ -844,6 +935,7 @@ function syncPermissionShortcuts() {
   const shortcutSnapshot = getShortcutSnapshot();
   const permissionPolicy = getPolicy(ctx, "permission");
   const shouldRegister = permissionPolicy.enabled
+    && overflowPresentation.mode !== "overflow"
     && getHotkeyActionablePermissions().length > 0;
   const targetAllow = shouldRegister ? shortcutSnapshot.permissionAllow : null;
   const targetDeny = shouldRegister ? shortcutSnapshot.permissionDeny : null;
@@ -866,7 +958,53 @@ function repositionDependentBubbles() {
 }
 
 function getVisibleBubbleBounds() {
-  return collectVisibleWindowBounds(permissionBubbleWindows);
+  const windows = [...permissionBubbleWindows];
+  if (isLiveBrowserWindow(overflowPresentation.queueWindow)) {
+    windows.push(overflowPresentation.queueWindow);
+  }
+  return collectVisibleWindowBounds(windows);
+}
+
+function getPermissionPresentationWindows() {
+  const windows = [];
+  for (const bubble of permissionBubbleWindows) {
+    if (!isLiveBrowserWindow(bubble)) continue;
+    try {
+      if (typeof bubble.isVisible !== "function" || bubble.isVisible()) windows.push(bubble);
+    } catch {}
+  }
+  const queueWindow = overflowPresentation.queueWindow;
+  if (isLiveBrowserWindow(queueWindow)) {
+    try {
+      if (typeof queueWindow.isVisible !== "function" || queueWindow.isVisible()) {
+        windows.push(queueWindow);
+      }
+    } catch {}
+  }
+  return windows;
+}
+
+function hasVisiblePermissionBubbles() {
+  return getPermissionPresentationWindows().length > 0;
+}
+
+function hidePermissionSurfacesForPet() {
+  let cutoff = 0;
+  for (const entry of pendingPermissions) {
+    if (!entry || entry.remoteOnly) continue;
+    ensurePermissionUiIdentity(entry);
+    cutoff = Math.max(cutoff, entry.uiOrdinal);
+  }
+  overflowPresentation.petHidden = true;
+  overflowPresentation.petHiddenCutoffOrdinal = cutoff || null;
+  overflowPresentation.queueDrawerOpen = false;
+  reconcilePermissionPresentation("pet-hidden");
+}
+
+function showPermissionSurfacesForPet() {
+  overflowPresentation.petHidden = false;
+  overflowPresentation.petHiddenCutoffOrdinal = null;
+  reconcilePermissionPresentation("pet-shown");
 }
 
 function hotkeyResolve(behavior, message) {
@@ -935,13 +1073,16 @@ function getCompactBubbleHeight(perm, scale, workArea) {
   );
 }
 
-function computeExpandedHeightBudget(perm, scale, workArea, margin, gap) {
-  const otherEntries = pendingPermissions.filter((entry) => entry !== perm && !entry.remoteOnly);
+function computeExpandedHeightBudget(perm, scale, workArea, margin, gap, siblingEntries = null) {
+  const sourceEntries = Array.isArray(siblingEntries)
+    ? siblingEntries
+    : pendingPermissions.filter((entry) => !entry.remoteOnly);
+  const otherEntries = sourceEntries.filter((entry) => entry !== perm && !entry.remoteOnly);
   const compactSiblingHeight = otherEntries.reduce(
     (sum, entry) => sum + getCompactBubbleHeight(entry, scale, workArea),
     0
   );
-  const stackGaps = Math.max(0, pendingPermissions.filter((entry) => !entry.remoteOnly).length - 1) * gap;
+  const stackGaps = Math.max(0, sourceEntries.length - 1) * gap;
   const preferred = Math.min(
     scaleHeight(BUBBLE_EXPANDED_PREFERRED_HEIGHT, scale),
     Math.floor(workArea.height * BUBBLE_EXPANDED_WORK_AREA_RATIO)
@@ -996,81 +1137,778 @@ function getHudAvoidRects() {
   }
 }
 
-function repositionBubbles() {
-  // Thin wrapper around computeBubbleStackLayout (top of file). All the
-  // geometry lives there so it can be unit-tested without Electron windows.
-  if (!ctx.win || ctx.win.isDestroyed()) return;
+function ensurePermissionUiIdentity(entry) {
+  if (!entry || typeof entry !== "object") return;
+  if (!Number.isInteger(entry.uiOrdinal) || entry.uiOrdinal <= 0) {
+    entry.uiOrdinal = overflowPresentation.nextEntryOrdinal;
+    overflowPresentation.nextEntryOrdinal += 1;
+  }
+  if (typeof entry.uiEntryId !== "string" || !entry.uiEntryId) {
+    entry.uiEntryId = `permission-${entry.uiOrdinal}`;
+  }
+}
+
+function isEntryCutOffByPet(entry) {
+  return !!(
+    overflowPresentation.petHidden
+    && Number.isInteger(overflowPresentation.petHiddenCutoffOrdinal)
+    && Number(entry && entry.uiOrdinal) <= overflowPresentation.petHiddenCutoffOrdinal
+  );
+}
+
+function getLocalPresentationEntries() {
+  const entries = [];
+  for (const entry of pendingPermissions) {
+    if (!entry || entry.remoteOnly) continue;
+    ensurePermissionUiIdentity(entry);
+    if (!isLiveBrowserWindow(entry.bubble) || isEntryCutOffByPet(entry)) continue;
+    entries.push(entry);
+  }
+  return entries.sort((a, b) => a.uiOrdinal - b.uiOrdinal);
+}
+
+function createPresentationGeometry() {
+  if (!ctx.win || ctx.win.isDestroyed()) return null;
   const petBounds = ctx.getPetWindowBounds();
-  const wa = getAnchorWorkArea(petBounds);
-  const scale = getTextScale(wa);
+  const workArea = getAnchorWorkArea(petBounds);
+  const scale = getTextScale(workArea);
   const margin = Math.round(8 * scale);
   const gap = Math.round(6 * scale);
-  const compactWidth = getBubbleWidth(scale, wa);
-  const expandedWidth = getExpandedBubbleWidth(scale, wa);
-  const hitRect = ctx.bubbleFollowPet ? ctx.getHitRectScreen(petBounds) : null;
   const hudAvoidRects = getHudAvoidRects();
+  return {
+    petBounds,
+    workArea,
+    scale,
+    margin,
+    gap,
+    compactWidth: getBubbleWidth(scale, workArea),
+    expandedWidth: getExpandedBubbleWidth(scale, workArea),
+    hitRect: ctx.bubbleFollowPet ? ctx.getHitRectScreen(petBounds) : null,
+    hudAvoidRects,
+    hudReservedOffset: hudAvoidRects.length === 0 && typeof ctx.getHudReservedOffset === "function"
+      ? ctx.getHudReservedOffset()
+      : 0,
+  };
+}
 
-  const layoutPermissions = pendingPermissions.filter((perm) => !perm.remoteOnly);
-  const bubbleSizes = layoutPermissions.map((perm) => {
-    ensureBubblePresentationState(perm);
-    if (perm.expanded) {
-      const budgetKey = getExpandedBudgetKey(wa, scale);
-      if (perm.expandedBudgetKey && perm.expandedBudgetKey !== budgetKey) {
-        perm.expandedHeightBudget = computeExpandedHeightBudget(perm, scale, wa, margin, gap);
-        perm.expandedHeightBudgetMeasured = false;
-        perm.measurementEpoch += 1;
-        sendPermissionPresentation(perm);
-      }
-      perm.expandedBudgetKey = budgetKey;
-    }
-    return perm.expanded
-      ? {
-          width: expandedWidth,
-          height: getExpandedBubbleHeight(perm, scale, wa, margin, gap),
-        }
-      : {
-          width: compactWidth,
-          height: getCompactBubbleHeight(perm, scale, wa),
-        };
-  });
-  const expandedIndex = layoutPermissions.findIndex((perm) => perm.expanded === true);
+function ensureExpandedBudgets(entries, geometry) {
+  const budgetKey = getExpandedBudgetKey(geometry.workArea, geometry.scale);
+  for (const entry of entries) {
+    ensureBubblePresentationState(entry);
+    if (!entry.expanded) continue;
+    if (entry.expandedHeightBudget && entry.expandedBudgetKey === budgetKey) continue;
+    const hadFrozenBudget = !!(entry.expandedHeightBudget && entry.expandedBudgetKey);
+    entry.expandedHeightBudget = computeExpandedHeightBudget(
+      entry,
+      geometry.scale,
+      geometry.workArea,
+      geometry.margin,
+      geometry.gap,
+      entries
+    );
+    entry.expandedBudgetKey = budgetKey;
+    entry.expandedHeightBudgetMeasured = false;
+    if (hadFrozenBudget) entry.measurementEpoch += 1;
+    sendPermissionPresentation(entry);
+  }
+}
 
+function getPresentationEntrySize(entry, geometry) {
+  ensureBubblePresentationState(entry);
+  if (!entry.expanded) {
+    return {
+      width: geometry.compactWidth,
+      height: getCompactBubbleHeight(entry, geometry.scale, geometry.workArea),
+    };
+  }
+  const workAreaCap = Math.max(1, geometry.workArea.height - geometry.margin * 2);
+  const budget = Math.min(
+    entry.expandedHeightBudget || scaleHeight(BUBBLE_EXPANDED_PREFERRED_HEIGHT, geometry.scale),
+    workAreaCap
+  );
+  const natural = scaleHeight(
+    entry.expandedMeasuredHeight || BUBBLE_EXPANDED_PREFERRED_HEIGHT,
+    geometry.scale
+  );
+  return {
+    width: geometry.expandedWidth,
+    height: Math.max(1, Math.min(natural, budget)),
+  };
+}
+
+function getQueueCompactSize(geometry) {
+  return {
+    width: geometry.compactWidth,
+    height: clampBubbleHeight(
+      scaleHeight(QUEUE_COMPACT_BASE_HEIGHT, geometry.scale),
+      geometry.workArea.height
+    ),
+  };
+}
+
+function getQueueDrawerSize(geometry) {
+  const workAreaCap = Math.max(1, geometry.workArea.height - geometry.margin * 2);
+  const naturalCss = overflowPresentation.queueDrawerMeasuredHeight
+    || QUEUE_DRAWER_PREFERRED_HEIGHT;
+  return {
+    width: geometry.expandedWidth,
+    height: Math.max(1, Math.min(scaleHeight(naturalCss, geometry.scale), workAreaCap)),
+  };
+}
+
+function computePresentationLayout(entries, geometry, options = {}) {
+  const requestEntries = Array.isArray(entries) ? entries : [];
+  const sizes = requestEntries.map((entry) => getPresentationEntrySize(entry, geometry));
+  const includeQueue = options.includeQueue === true;
+  if (includeQueue) {
+    sizes.push(options.drawerOpen
+      ? getQueueDrawerSize(geometry)
+      : getQueueCompactSize(geometry));
+  }
+  const expandedIndex = requestEntries.findIndex((entry) => entry.expanded === true);
   const bounds = computeBubbleStackLayout({
     followPet: !!ctx.bubbleFollowPet,
     followPreference: ctx.bubbleFollowPreference,
     fixedCorner: ctx.bubbleFixedCorner,
-    bubbleHeights: bubbleSizes.map((size) => size.height),
-    bubbleWidth: compactWidth,
-    bubbleSizes,
+    bubbleHeights: sizes.map((size) => size.height),
+    bubbleWidth: geometry.compactWidth,
+    bubbleSizes: sizes,
     expandedIndex,
-    margin,
-    gap,
-    workArea: wa,
-    hitRect,
-    // A live HUD rectangle is the authoritative collision source. Keep the
-    // legacy scalar reserve only as a fallback for older/incomplete runtimes
-    // that cannot expose the actual window bounds.
-    hudReservedOffset: hudAvoidRects.length === 0 && typeof ctx.getHudReservedOffset === "function"
-      ? ctx.getHudReservedOffset()
-      : 0,
-    avoidRects: hudAvoidRects,
+    margin: geometry.margin,
+    gap: geometry.gap,
+    workArea: geometry.workArea,
+    hitRect: geometry.hitRect,
+    hudReservedOffset: geometry.hudReservedOffset,
+    avoidRects: geometry.hudAvoidRects,
   });
-
-  for (let i = 0; i < layoutPermissions.length; i++) {
-    const perm = layoutPermissions[i];
-    if (perm.bubble && !perm.bubble.isDestroyed() && bounds[i]) {
-      // Re-resolve zoom here too: the pet may have crossed onto a display
-      // with a different textScale (applyZoomToWindow memoizes, so this is
-      // a no-op when nothing changed).
-      applyZoomToWindow(perm.bubble, scale);
-      // #640: a bubble whose text field is being typed into holds its
-      // position — followPet anchoring must not yank the input box around
-      // mid-composition (pet drag; roam is separately paused while editing).
-      // Fresh bubbles never carry the flag, so they still get placed.
-      if (perm.bubble.__clawdMacImeEditing) continue;
-      perm.bubble.setBounds(bounds[i]);
-    }
+  const entryBounds = new Map();
+  for (let index = 0; index < requestEntries.length; index += 1) {
+    entryBounds.set(requestEntries[index].uiEntryId, bounds[index]);
   }
+  return {
+    sizes,
+    bounds,
+    entryBounds,
+    queueBounds: includeQueue ? bounds[bounds.length - 1] : null,
+    safe: areBubbleBoundsSafe(bounds, geometry.workArea, geometry.hudAvoidRects),
+    stackHeight: stackHeightForSizes(sizes, geometry.gap),
+  };
+}
+
+function queueEntryKind(entry) {
+  if (isPassiveNotifyEntry(entry)) return "passive";
+  const interaction = isValidInteraction(entry && entry.interaction) ? entry.interaction : null;
+  const capabilities = interaction ? interaction.capabilities : {};
+  if (capabilities.answerQuestions === true) return "ask";
+  if (interaction && interaction.intent === INTERACTION_INTENT.PLAN_REVIEW) return "plan";
+  if (!interaction || capabilities.allowDeny !== true) return "native";
+  return "permission";
+}
+
+function compactQueueSummary(entry) {
+  try {
+    const detailInput = entry && entry.elicitationDetailInput;
+    const questions = detailInput && Array.isArray(detailInput.questions)
+      ? detailInput.questions
+      : (entry && entry.toolInput && Array.isArray(entry.toolInput.questions)
+        ? entry.toolInput.questions
+        : []);
+    if (questions[0] && typeof questions[0].question === "string") {
+      return truncate(questions[0].question.replace(/\s+/g, " ").trim(), QUEUE_SUMMARY_MAX);
+    }
+    if (entry && typeof entry.detailText === "string" && entry.detailText.trim()) {
+      return truncate(entry.detailText.replace(/\s+/g, " ").trim(), QUEUE_SUMMARY_MAX);
+    }
+    const toolName = entry && entry.kimiToolName ? entry.kimiToolName : entry && entry.toolName;
+    const toolInput = entry && entry.kimiToolInput ? entry.kimiToolInput : entry && entry.toolInput;
+    return truncate(
+      String(formatDetail(toolName, toolInput, { isAntigravity: !!(entry && entry.isAntigravity) }) || "")
+        .replace(/\s+/g, " ")
+        .trim(),
+      QUEUE_SUMMARY_MAX
+    );
+  } catch {
+    return "";
+  }
+}
+
+function queueToolLabel(entry) {
+  const raw = String((entry && (entry.kimiToolName || entry.toolName)) || "Request");
+  const parsed = parseMcpToolName(raw);
+  return truncate(parsed ? parsed.display : raw, 80);
+}
+
+function queueSessionLabel(entry) {
+  const session = ctx.sessions && typeof ctx.sessions.get === "function"
+    ? ctx.sessions.get(entry && entry.sessionId)
+    : null;
+  const folder = basenameForDisplay((session && session.cwd) || (entry && entry.cwd) || "");
+  if (folder) return truncate(folder, 80);
+  const id = String((entry && entry.sessionId) || "");
+  return id ? `#${id.slice(-3)}` : "";
+}
+
+function queueAgentLabel(entry) {
+  const id = String((entry && entry.agentId) || "claude-code");
+  const labels = {
+    "claude-code": "Claude Code",
+    codebuddy: "CodeBuddy",
+    codex: "Codex",
+    "qwen-code": "Qwen Code",
+    zcode: "ZCode",
+    "copilot-cli": "Copilot CLI",
+    hermes: "Hermes",
+    dsh: "DeepSeek Harness",
+  };
+  return labels[id] || id;
+}
+
+function isSwitchingLocked() {
+  return pendingPermissions.some((entry) => entry && entry.compositionActive === true);
+}
+
+function isProtectedOverflowEntry(entry) {
+  return !!(
+    entry
+    && (
+      entry.expanded === true
+      || entry.compositionActive === true
+      || entry.textInputActive === true
+      || entry.uiEntryId === overflowPresentation.selectedGlobalEntryId
+    )
+  );
+}
+
+function buildQueuePayload(entries, visibleEntryIds) {
+  const visible = visibleEntryIds instanceof Set ? visibleEntryIds : new Set();
+  const groups = groupPermissionEntries(entries);
+  const sessions = groups.map((group) => {
+    const first = group.entries[0];
+    return {
+      sessionKey: group.sessionKey,
+      agentLabel: queueAgentLabel(first),
+      sessionLabel: queueSessionLabel(first),
+      entries: group.entries.map((entry) => {
+        const kind = queueEntryKind(entry);
+        return {
+          uiEntryId: entry.uiEntryId,
+          kind,
+          toolLabel: queueToolLabel(entry),
+          summary: compactQueueSummary(entry),
+          action: kind === "ask" ? "answer" : (kind === "plan" ? "view-plan" : "view"),
+          visible: visible.has(entry.uiEntryId),
+          selected: entry.uiEntryId === overflowPresentation.selectedGlobalEntryId,
+        };
+      }),
+    };
+  });
+  return {
+    lang: ctx.lang,
+    drawerOpen: overflowPresentation.queueDrawerOpen,
+    switchingLocked: isSwitchingLocked(),
+    hiddenCount: Math.max(0, entries.length - visible.size),
+    totalCount: entries.length,
+    sessions,
+  };
+}
+
+function clearQueueCommitTimer() {
+  if (overflowPresentation.queueCommitDeadlineTimer) {
+    clearTimeout(overflowPresentation.queueCommitDeadlineTimer);
+    overflowPresentation.queueCommitDeadlineTimer = null;
+  }
+}
+
+function clearHiddenEditingFlags(entry) {
+  if (!entry) return;
+  entry.textInputActive = false;
+  const bubble = entry.bubble;
+  if (!isLiveBrowserWindow(bubble)) return;
+  try { delete bubble.__clawdMacImeEditing; } catch {}
+}
+
+function setRequestWindowVisible(entry, visible, bounds, geometry) {
+  const bubble = entry && entry.bubble;
+  if (!isLiveBrowserWindow(bubble)) return;
+  if (visible) {
+    try { applyZoomToWindow(bubble, geometry.scale); } catch {}
+    if (bounds && !bubble.__clawdMacImeEditing) {
+      try { bubble.setBounds(bounds); } catch {}
+    }
+    try {
+      if (isWin) bubble.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+      if (isMac && !bubble.__clawdMacImeEditing) bubble.setAlwaysOnTop(true, MAC_TOPMOST_LEVEL);
+    } catch {}
+    const needsShow = typeof bubble.isVisible !== "function" || !bubble.isVisible();
+    if (needsShow && typeof bubble.showInactive === "function") {
+      try { bubble.showInactive(); } catch {}
+    }
+    keepOutOfTaskbar(bubble);
+    return;
+  }
+  if (entry.compositionActive === true && !isEntryCutOffByPet(entry)) return;
+  if (isEntryCutOffByPet(entry)) entry.compositionActive = false;
+  clearHiddenEditingFlags(entry);
+  try {
+    if (typeof bubble.isVisible !== "function" || bubble.isVisible()) bubble.hide();
+  } catch {}
+}
+
+function applyRequestPresentation(entries, layout, geometry, options = {}) {
+  const entryMap = new Map((entries || []).map((entry) => [entry.uiEntryId, entry]));
+  const desiredVisibleIds = options.visibleEntryIds instanceof Set
+    ? options.visibleEntryIds
+    : new Set();
+  const hideAll = options.hideAll === true;
+  for (const entry of pendingPermissions) {
+    if (!entry || entry.remoteOnly || !isLiveBrowserWindow(entry.bubble)) continue;
+    const displayable = entryMap.has(entry.uiEntryId);
+    const visible = displayable && !hideAll && desiredVisibleIds.has(entry.uiEntryId);
+    const bounds = layout && layout.entryBounds
+      ? layout.entryBounds.get(entry.uiEntryId)
+      : null;
+    setRequestWindowVisible(entry, visible, bounds, geometry);
+  }
+}
+
+function collectSlackRemeasureCandidates(entries) {
+  const candidates = [];
+  for (const entry of entries || []) {
+    if (!entry || entry._slackPermissionAnnounced === true || entry.bubbleReady !== true) continue;
+    const bubble = entry.bubble;
+    if (!isLiveBrowserWindow(bubble) || typeof bubble.isVisible !== "function") continue;
+    try {
+      if (!bubble.isVisible()) candidates.push(entry);
+    } catch {}
+  }
+  return candidates;
+}
+
+function requestSlackRemeasureForNewlyVisible(candidates) {
+  for (const entry of candidates || []) {
+    if (!pendingPermissions.includes(entry) || entry._slackPermissionAnnounced === true) continue;
+    const bubble = entry.bubble;
+    if (!isLiveBrowserWindow(bubble)) continue;
+    try {
+      if (typeof bubble.isVisible === "function" && !bubble.isVisible()) continue;
+    } catch {
+      continue;
+    }
+    // The renderer's height acknowledgement remains the proof that the exact
+    // request content is loaded and visible. Showing a previously queue-hidden
+    // request does not itself generate that acknowledgement, so ask the
+    // existing renderer to repeat its current presentation measurement.
+    sendPermissionPresentation(entry);
+  }
+}
+
+function showQueueWindow(bounds, geometry, options = {}) {
+  const queueWindow = overflowPresentation.queueWindow;
+  if (!isLiveBrowserWindow(queueWindow) || !bounds) return false;
+  try { applyZoomToWindow(queueWindow, geometry.scale); } catch {}
+  try {
+    queueWindow.setBounds(bounds);
+  } catch {
+    return false;
+  }
+  try {
+    if (isWin) queueWindow.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+    if (isMac) queueWindow.setAlwaysOnTop(true, MAC_TOPMOST_LEVEL);
+  } catch {}
+  try {
+    if (typeof queueWindow.isVisible !== "function" || !queueWindow.isVisible()) {
+      queueWindow.showInactive();
+    }
+    if (typeof queueWindow.isVisible === "function" && !queueWindow.isVisible()) return false;
+  } catch {
+    return false;
+  }
+  if (options.focus === true) {
+    try { queueWindow.focus(); } catch {}
+  }
+  keepOutOfTaskbar(queueWindow);
+  return true;
+}
+
+function hideQueueWindow() {
+  const queueWindow = overflowPresentation.queueWindow;
+  if (!isLiveBrowserWindow(queueWindow)) return;
+  try { queueWindow.hide(); } catch {}
+}
+
+function resetQueueStateAfterDestroy(options = {}) {
+  clearQueueCommitTimer();
+  overflowPresentation.queueWindow = null;
+  overflowPresentation.queueReady = false;
+  overflowPresentation.queueDrawerOpen = false;
+  overflowPresentation.queueDrawerCommittedOpen = false;
+  overflowPresentation.queueDrawerMeasuredHeight = 0;
+  overflowPresentation.queuePresentedRevision = 0;
+  overflowPresentation.queuePendingCommit = null;
+  overflowPresentation.queueLastSignature = "";
+  overflowPresentation.queueLastPayload = null;
+  overflowPresentation.queueBounds = null;
+  overflowPresentation.queueCommittedBounds = null;
+  if (options.resetEpisode === true) {
+    overflowPresentation.queueAttemptedInOverflowEpisode = false;
+  }
+}
+
+function destroyQueueWindow(options = {}) {
+  const queueWindow = overflowPresentation.queueWindow;
+  overflowPresentation.queueExpectedDestroy = true;
+  if (isLiveBrowserWindow(queueWindow)) {
+    try { queueWindow.destroy(); } catch {}
+  }
+  overflowPresentation.queueExpectedDestroy = false;
+  resetQueueStateAfterDestroy(options);
+}
+
+function fallbackFromQueueFailure(reason) {
+  permLog(`permission queue unavailable; falling back to request stack: ${reason}`);
+  destroyQueueWindow({ resetEpisode: false });
+  overflowPresentation.mode = "overflow";
+  overflowPresentation.queueAttemptedInOverflowEpisode = true;
+  reconcilePermissionPresentation("queue-fallback");
+  repositionDependentBubbles();
+}
+
+function createQueueWindow(geometry) {
+  if (isLiveBrowserWindow(overflowPresentation.queueWindow)) return true;
+  if (overflowPresentation.queueAttemptedInOverflowEpisode) return false;
+  overflowPresentation.queueAttemptedInOverflowEpisode = true;
+  const initialSize = getQueueCompactSize(geometry);
+  let queueWindow;
+  try {
+    queueWindow = new BrowserWindow({
+      width: initialSize.width,
+      height: initialSize.height,
+      x: 0,
+      y: 0,
+      show: false,
+      frame: false,
+      transparent: true,
+      alwaysOnTop: !isMac,
+      resizable: false,
+      skipTaskbar: true,
+      hasShadow: false,
+      focusable: true,
+      ...(isLinux ? { type: LINUX_WINDOW_TYPE } : {}),
+      ...(isMac ? { type: "panel", acceptFirstMouse: true } : {}),
+      webPreferences: {
+        preload: path.join(__dirname, "preload-permission-queue.js"),
+        nodeIntegration: false,
+        contextIsolation: true,
+      },
+    });
+    overflowPresentation.queueWindow = queueWindow;
+    overflowPresentation.queueReady = false;
+    if (isWin) queueWindow.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+    if (isMac) queueWindow.setAlwaysOnTop(true, MAC_TOPMOST_LEVEL);
+
+    queueWindow.webContents.once("did-finish-load", () => {
+      if (overflowPresentation.queueWindow !== queueWindow || !isLiveBrowserWindow(queueWindow)) return;
+      overflowPresentation.queueReady = true;
+      const currentGeometry = createPresentationGeometry();
+      if (currentGeometry) applyZoomToWindow(queueWindow, currentGeometry.scale);
+      sendPendingQueueCommit();
+    });
+    const fail = (reason) => {
+      if (overflowPresentation.queueWindow !== queueWindow) return;
+      fallbackFromQueueFailure(reason);
+    };
+    queueWindow.webContents.once("did-fail-load", (_event, code, description) => {
+      fail(`load failed (${code || "unknown"}: ${description || "unknown"})`);
+    });
+    queueWindow.webContents.on("render-process-gone", (_event, details) => {
+      fail(`renderer exited (${details && details.reason ? details.reason : "unknown"})`);
+    });
+    queueWindow.on("closed", () => {
+      if (overflowPresentation.queueWindow !== queueWindow) return;
+      if (overflowPresentation.queueExpectedDestroy) return;
+      fallbackFromQueueFailure("window closed");
+    });
+    const loadResult = queueWindow.loadFile(path.join(__dirname, "permission-queue.html"));
+    if (loadResult && typeof loadResult.catch === "function") {
+      loadResult.catch((err) => fail(err && err.message ? err.message : String(err)));
+    }
+    ctx.guardAlwaysOnTop(queueWindow);
+    return true;
+  } catch (err) {
+    if (isLiveBrowserWindow(queueWindow)) {
+      overflowPresentation.queueExpectedDestroy = true;
+      try { queueWindow.destroy(); } catch {}
+      overflowPresentation.queueExpectedDestroy = false;
+    }
+    resetQueueStateAfterDestroy({ resetEpisode: false });
+    overflowPresentation.queueAttemptedInOverflowEpisode = true;
+    permLog(`permission queue create failed: ${err && err.message ? err.message : err}`);
+    return false;
+  }
+}
+
+function armQueueCommitDeadline() {
+  const commit = overflowPresentation.queuePendingCommit;
+  if (!commit || commit.sent !== true) return;
+  clearQueueCommitTimer();
+  const remaining = Math.max(0, Number(commit.deadlineAt) - Date.now());
+  if (remaining <= 0) {
+    fallbackFromQueueFailure("presentation ACK timeout");
+    return;
+  }
+  overflowPresentation.queueCommitDeadlineTimer = setTimeout(() => {
+    overflowPresentation.queueCommitDeadlineTimer = null;
+    const current = overflowPresentation.queuePendingCommit;
+    if (!current || current.revision !== commit.revision) return;
+    fallbackFromQueueFailure("presentation ACK timeout");
+  }, remaining);
+}
+
+function sendPendingQueueCommit() {
+  const queueWindow = overflowPresentation.queueWindow;
+  const commit = overflowPresentation.queuePendingCommit;
+  if (!overflowPresentation.queueReady || !isLiveBrowserWindow(queueWindow) || !commit) return false;
+  try {
+    queueWindow.webContents.send("permission-queue-show", commit.payload);
+    commit.sent = true;
+    armQueueCommitDeadline();
+    return true;
+  } catch (err) {
+    fallbackFromQueueFailure(`presentation send failed: ${err && err.message ? err.message : err}`);
+    return false;
+  }
+}
+
+function prepareQueueCommit(entries, visibleEntries, hiddenEntries, queueBounds, geometry) {
+  if (!createQueueWindow(geometry)) return false;
+  const visibleIds = new Set(visibleEntries.map((entry) => entry.uiEntryId));
+  const payloadBase = buildQueuePayload(entries, visibleIds);
+  const signature = JSON.stringify(payloadBase);
+
+  if (signature === overflowPresentation.queueLastSignature) {
+    overflowPresentation.queueBounds = queueBounds;
+    if (overflowPresentation.queuePendingCommit) {
+      overflowPresentation.queuePendingCommit.queueBounds = queueBounds;
+      sendPendingQueueCommit();
+    } else if (overflowPresentation.queuePresentedRevision > 0) {
+      overflowPresentation.queueCommittedBounds = queueBounds;
+    }
+    return true;
+  }
+
+  overflowPresentation.revision += 1;
+  const existingDeadline = overflowPresentation.queuePendingCommit
+    ? overflowPresentation.queuePendingCommit.deadlineAt
+    : 0;
+  const deadlineAt = computeQueueCommitDeadline(existingDeadline, Date.now());
+  const payload = {
+    ...payloadBase,
+    revision: overflowPresentation.revision,
+  };
+  overflowPresentation.queueLastSignature = signature;
+  overflowPresentation.queueLastPayload = payload;
+  overflowPresentation.queueBounds = queueBounds;
+  overflowPresentation.queuePendingCommit = {
+    revision: payload.revision,
+    visibleEntryIds: new Set(visibleIds),
+    hiddenEntryIds: new Set(hiddenEntries.map((entry) => entry.uiEntryId)),
+    deadlineAt,
+    queueBounds,
+    drawerOpen: payload.drawerOpen,
+    payload,
+    sent: false,
+  };
+  sendPendingQueueCommit();
+  return true;
+}
+
+function getEntryLayoutForIds(entries, geometry, ids, includeQueue) {
+  const selected = entries.filter((entry) => ids.has(entry.uiEntryId));
+  ensureExpandedBudgets(selected, geometry);
+  return computePresentationLayout(selected, geometry, { includeQueue });
+}
+
+function applyCommittedOverflowPresentation(entries, geometry) {
+  const queueVisible = overflowPresentation.queuePresentedRevision > 0
+    && isLiveBrowserWindow(overflowPresentation.queueWindow);
+  if (!queueVisible) {
+    ensureExpandedBudgets(entries, geometry);
+    const fallbackLayout = computePresentationLayout(entries, geometry);
+    const allIds = new Set(entries.map((entry) => entry.uiEntryId));
+    applyRequestPresentation(entries, fallbackLayout, geometry, { visibleEntryIds: allIds });
+    hideQueueWindow();
+    return true;
+  }
+
+  const layout = getEntryLayoutForIds(
+    entries,
+    geometry,
+    overflowPresentation.visibleEntryIds,
+    true
+  );
+  const queueBounds = overflowPresentation.queueCommittedBounds || layout.queueBounds;
+  if (!showQueueWindow(queueBounds, geometry)) {
+    fallbackFromQueueFailure("window could not be shown");
+    return false;
+  }
+  applyRequestPresentation(entries, layout, geometry, {
+    visibleEntryIds: overflowPresentation.visibleEntryIds,
+    hideAll: overflowPresentation.queueDrawerCommittedOpen,
+  });
+  return true;
+}
+
+function applyNormalPresentation(entries, layout, geometry) {
+  const allIds = new Set(entries.map((entry) => entry.uiEntryId));
+  const slackRemeasureCandidates = collectSlackRemeasureCandidates(entries);
+  // Restore request cards before removing the queue so there is never an empty
+  // permission representation between modes.
+  applyRequestPresentation(entries, layout, geometry, { visibleEntryIds: allIds });
+  requestSlackRemeasureForNewlyVisible(slackRemeasureCandidates);
+  overflowPresentation.visibleEntryIds = allIds;
+  overflowPresentation.mode = "normal";
+  destroyQueueWindow({ resetEpisode: true });
+}
+
+function cleanupOverflowSelections() {
+  const liveIds = new Set();
+  for (const entry of pendingPermissions) {
+    if (!entry || entry.remoteOnly || !isLiveBrowserWindow(entry.bubble)) continue;
+    ensurePermissionUiIdentity(entry);
+    liveIds.add(entry.uiEntryId);
+  }
+  if (!liveIds.has(overflowPresentation.selectedGlobalEntryId)) {
+    overflowPresentation.selectedGlobalEntryId = null;
+  }
+  for (const [sessionKey, uiEntryId] of overflowPresentation.selectedEntryBySession) {
+    if (!liveIds.has(uiEntryId)) overflowPresentation.selectedEntryBySession.delete(sessionKey);
+  }
+}
+
+function reconcilePermissionPresentation(reason = "geometry") {
+  if (overflowPresentation.reconciling) {
+    overflowPresentation.reconcileAgain = true;
+    return;
+  }
+  overflowPresentation.reconciling = true;
+  try {
+    do {
+      overflowPresentation.reconcileAgain = false;
+      const geometry = createPresentationGeometry();
+      if (!geometry) break;
+      const entries = getLocalPresentationEntries();
+      cleanupOverflowSelections();
+
+      if (entries.length === 0) {
+        applyRequestPresentation([], null, geometry, { visibleEntryIds: new Set() });
+        overflowPresentation.visibleEntryIds = new Set();
+        overflowPresentation.mode = "normal";
+        destroyQueueWindow({ resetEpisode: true });
+        syncPermissionShortcuts();
+        continue;
+      }
+
+      const preliminaryNormalLayout = computePresentationLayout(entries, geometry);
+      const exitSlack = scaleHeight(OVERFLOW_EXIT_SLACK_BASE, geometry.scale);
+      const normalHasExitSlack = preliminaryNormalLayout.stackHeight + exitSlack
+        <= geometry.workArea.height - geometry.margin * 2;
+      let normalSafe = preliminaryNormalLayout.safe
+        && (overflowPresentation.mode !== "overflow" || normalHasExitSlack);
+      let normalLayout = preliminaryNormalLayout;
+      if (normalSafe) {
+        ensureExpandedBudgets(entries, geometry);
+        normalLayout = computePresentationLayout(entries, geometry);
+        normalSafe = normalLayout.safe
+          && (overflowPresentation.mode !== "overflow" || (
+            normalLayout.stackHeight + exitSlack
+              <= geometry.workArea.height - geometry.margin * 2
+          ));
+      }
+
+      if (normalSafe) {
+        applyNormalPresentation(entries, normalLayout, geometry);
+        syncPermissionShortcuts();
+        continue;
+      }
+
+      overflowPresentation.mode = "overflow";
+      const canFitWithLauncher = (candidateEntries) => (
+        computePresentationLayout(candidateEntries, geometry, { includeQueue: true }).safe
+      );
+      const selected = selectOverflowRepresentatives(entries, {
+        selectedBySession: overflowPresentation.selectedEntryBySession,
+        selectedGlobalEntryId: overflowPresentation.selectedGlobalEntryId,
+        isProtected: isProtectedOverflowEntry,
+        canFit: canFitWithLauncher,
+      });
+      let visibleEntries = selected.visibleEntries;
+      let hiddenEntries = selected.hiddenEntries;
+      ensureExpandedBudgets(visibleEntries, geometry);
+      let overflowLayout = computePresentationLayout(visibleEntries, geometry, { includeQueue: true });
+
+      // Recomputing an expanded budget may grow the selected card. Only move
+      // in the reducing direction: remove newest non-protected reps until the
+      // fixed launcher fits; never feed the new budget back into another
+      // expansion/selection loop.
+      while (!overflowLayout.safe) {
+        let removableIndex = -1;
+        for (let index = visibleEntries.length - 1; index >= 0; index -= 1) {
+          if (!isProtectedOverflowEntry(visibleEntries[index])) {
+            removableIndex = index;
+            break;
+          }
+        }
+        if (removableIndex === -1) break;
+        visibleEntries = visibleEntries.filter((_entry, index) => index !== removableIndex);
+        const visibleIds = new Set(visibleEntries.map((entry) => entry.uiEntryId));
+        hiddenEntries = entries.filter((entry) => !visibleIds.has(entry.uiEntryId));
+        overflowLayout = computePresentationLayout(visibleEntries, geometry, { includeQueue: true });
+      }
+
+      if (
+        hiddenEntries.length === 0
+        || (
+          overflowPresentation.queueAttemptedInOverflowEpisode
+          && !isLiveBrowserWindow(overflowPresentation.queueWindow)
+        )
+      ) {
+        const allIds = new Set(entries.map((entry) => entry.uiEntryId));
+        const slackRemeasureCandidates = collectSlackRemeasureCandidates(entries);
+        ensureExpandedBudgets(entries, geometry);
+        const fallbackLayout = computePresentationLayout(entries, geometry);
+        overflowPresentation.visibleEntryIds = allIds;
+        applyRequestPresentation(entries, fallbackLayout, geometry, { visibleEntryIds: allIds });
+        requestSlackRemeasureForNewlyVisible(slackRemeasureCandidates);
+        hideQueueWindow();
+        syncPermissionShortcuts();
+        continue;
+      }
+
+      prepareQueueCommit(
+        entries,
+        visibleEntries,
+        hiddenEntries,
+        overflowPresentation.queueDrawerOpen
+          ? computePresentationLayout([], geometry, { includeQueue: true, drawerOpen: true }).queueBounds
+          : overflowLayout.queueBounds,
+        geometry
+      );
+      applyCommittedOverflowPresentation(entries, geometry);
+      syncPermissionShortcuts();
+    } while (overflowPresentation.reconcileAgain);
+  } catch (err) {
+    permLog(`permission presentation reconcile failed (${reason}): ${err && err.message ? err.message : err}`);
+    throw err;
+  } finally {
+    overflowPresentation.reconciling = false;
+  }
+  if (typeof ctx.reapplyMacVisibility === "function") {
+    try { ctx.reapplyMacVisibility(); } catch {}
+  }
+}
+
+function repositionBubbles() {
+  reconcilePermissionPresentation("geometry");
 }
 
 // Permission-automation chokepoint. Every agent branch in the /permission route
@@ -1278,6 +2116,7 @@ function showPermissionBubble(permEntry) {
   // Auto-pilot: if enabled, approve immediately and never render a bubble.
   if (maybeAutoApprovePermission(permEntry)) return;
   ensureBubblePresentationState(permEntry);
+  ensurePermissionUiIdentity(permEntry);
 
   const canOfferSessionTrust = typeof ctx.canOfferSessionTrust === "function"
     && ctx.canOfferSessionTrust(permEntry) === true;
@@ -1427,10 +2266,22 @@ function showPermissionBubble(permEntry) {
       bub.setAlwaysOnTop(true, MAC_TOPMOST_LEVEL);
     }
 
-    repositionBubbles();
-    bub.showInactive();
+    reconcilePermissionPresentation("bubble-created");
+    // Keep creation transactional. Later reconciles tolerate an individual
+    // request window refusing to show so they cannot interrupt another
+    // request's decision response; this first show must still throw into the
+    // partial-create rollback or the new request would have no UI at all.
+    const queueAlreadyRepresentsPending = overflowPresentation.mode === "overflow"
+      && overflowPresentation.queuePresentedRevision > 0
+      && isLiveBrowserWindow(overflowPresentation.queueWindow);
+    if (
+      !queueAlreadyRepresentsPending
+      && (typeof bub.isVisible !== "function" || !bub.isVisible())
+      && typeof bub.showInactive === "function"
+    ) {
+      bub.showInactive();
+    }
     repositionDependentBubbles();
-    keepOutOfTaskbar(bub);
     // macOS: defer full visibility restoration to avoid activating Clawd
     if (isMac) deferMacFloatingVisibility(ctx, bub);
     else ctx.reapplyMacVisibility();
@@ -2993,12 +3844,6 @@ function handleBubbleHeight(event, measurement) {
     if (chromeHeight > 0) perm.expandedChromeHeight = Math.ceil(chromeHeight);
     if (detailLineHeight > 0) perm.expandedDetailLineHeight = Math.ceil(detailLineHeight);
     if (!perm.expandedHeightBudgetMeasured) {
-      const wa = getAnchorWorkArea();
-      const scale = getTextScale(wa);
-      const margin = Math.round(8 * scale);
-      const gap = Math.round(6 * scale);
-      perm.expandedHeightBudget = computeExpandedHeightBudget(perm, scale, wa, margin, gap);
-      perm.expandedBudgetKey = getExpandedBudgetKey(wa, scale);
       perm.expandedHeightBudgetMeasured = true;
     }
   } else {
@@ -3013,7 +3858,15 @@ function handleBubbleHeight(event, measurement) {
   // earlier (even at did-finish-load) can strand an unretractable Slack card
   // when content sync or the renderer fails. Later resize reports are safe:
   // announceSlackPermission is once-guarded per entry.
-  announceSlackPermission(perm);
+  let requestWindowVisible = true;
+  try {
+    if (perm.bubble && typeof perm.bubble.isVisible === "function") {
+      requestWindowVisible = perm.bubble.isVisible();
+    }
+  } catch {
+    requestWindowVisible = false;
+  }
+  if (requestWindowVisible) announceSlackPermission(perm);
   // Geometry updates happen after the delivery acknowledgement. If either
   // reflow throws, the already-rendered card must still be announced.
   repositionBubbles();
@@ -3044,14 +3897,13 @@ function handleBubbleExpanded(event, expanded) {
       previous.measurementEpoch += 1;
       sendPermissionPresentation(previous);
     }
-    const wa = getAnchorWorkArea();
-    const scale = getTextScale(wa);
-    const margin = Math.round(8 * scale);
-    const gap = Math.round(6 * scale);
     perm.expanded = true;
     perm.measurementEpoch += 1;
-    perm.expandedHeightBudget = computeExpandedHeightBudget(perm, scale, wa, margin, gap);
-    perm.expandedBudgetKey = getExpandedBudgetKey(wa, scale);
+    // The unified reconcile chooses the visible siblings first, then freezes
+    // one budget for this expansion. Do not size from every pending request:
+    // overflow-hidden siblings must not shrink the card being read.
+    perm.expandedHeightBudget = 0;
+    perm.expandedBudgetKey = "";
     perm.expandedHeightBudgetMeasured = false;
     expandedPermissionEntry = perm;
     repositionBubbles();
@@ -3081,6 +3933,198 @@ function handleCompositionActive(event, active) {
   if (!perm) return;
   ensureBubblePresentationState(perm);
   perm.compositionActive = active === true;
+  reconcilePermissionPresentation("composition-changed");
+  repositionDependentBubbles();
+}
+
+function isQueueSender(event) {
+  const senderWin = BrowserWindow.fromWebContents(event && event.sender);
+  return !!(
+    senderWin
+    && senderWin === overflowPresentation.queueWindow
+    && isLiveBrowserWindow(senderWin)
+  );
+}
+
+function handleQueuePresentationAck(event, acknowledgement) {
+  if (!isQueueSender(event)) return false;
+  const commit = overflowPresentation.queuePendingCommit;
+  const revision = Number(acknowledgement && acknowledgement.revision);
+  if (!commit || !Number.isInteger(revision) || revision !== commit.revision) return false;
+
+  const measuredHeight = Number(acknowledgement && acknowledgement.height);
+  if (commit.drawerOpen && measuredHeight > 0) {
+    overflowPresentation.queueDrawerMeasuredHeight = Math.ceil(measuredHeight);
+    const geometry = createPresentationGeometry();
+    if (geometry) {
+      commit.queueBounds = computePresentationLayout([], geometry, {
+        includeQueue: true,
+        drawerOpen: true,
+      }).queueBounds;
+    }
+  }
+
+  clearQueueCommitTimer();
+  overflowPresentation.queuePresentedRevision = revision;
+  overflowPresentation.visibleEntryIds = new Set(commit.visibleEntryIds);
+  overflowPresentation.queueDrawerCommittedOpen = commit.drawerOpen === true;
+  overflowPresentation.queueCommittedBounds = commit.queueBounds;
+  overflowPresentation.queuePendingCommit = null;
+
+  const geometry = createPresentationGeometry();
+  const entries = getLocalPresentationEntries();
+  if (geometry) {
+    // Establish the visible queue before hiding request windows on the first
+    // overflow commit. The reverse direction already restored requests before
+    // shrinking the drawer in the explicit close/select handlers.
+    if (!applyCommittedOverflowPresentation(entries, geometry)) return false;
+  }
+  for (const entry of entries) {
+    if (commit.hiddenEntryIds.has(entry.uiEntryId)) {
+      announceSlackPermission(entry);
+    } else if (
+      commit.visibleEntryIds.has(entry.uiEntryId)
+      && entry._slackPermissionAnnounced !== true
+    ) {
+      // A representative added after the previous commit may have sent its
+      // first height report while still hidden. Ask its existing renderer for
+      // a fresh local height acknowledgement now that the original request
+      // window is visible; the normal height path then owns Slack delivery.
+      sendPermissionPresentation(entry);
+    }
+  }
+  syncPermissionShortcuts();
+  repositionDependentBubbles();
+  if (typeof ctx.reapplyMacVisibility === "function") {
+    try { ctx.reapplyMacVisibility(); } catch {}
+  }
+  return true;
+}
+
+function handleQueueDrawerOpen(event) {
+  if (!isQueueSender(event) || overflowPresentation.mode !== "overflow") return false;
+  if (isSwitchingLocked()) {
+    reconcilePermissionPresentation("queue-open-locked");
+    return false;
+  }
+  overflowPresentation.queueDrawerOpen = true;
+  overflowPresentation.queueDrawerMeasuredHeight = 0;
+  reconcilePermissionPresentation("queue-open");
+  const geometry = createPresentationGeometry();
+  if (geometry && overflowPresentation.queuePendingCommit) {
+    if (!showQueueWindow(
+      overflowPresentation.queuePendingCommit.queueBounds,
+      geometry,
+      { focus: true }
+    )) {
+      fallbackFromQueueFailure("drawer could not be shown");
+      return false;
+    }
+  }
+  repositionDependentBubbles();
+  return true;
+}
+
+function restoreCommittedRequestsBeforeQueueCollapse() {
+  const geometry = createPresentationGeometry();
+  if (!geometry) return null;
+  const entries = getLocalPresentationEntries();
+  const visibleEntries = entries.filter((entry) => (
+    overflowPresentation.visibleEntryIds.has(entry.uiEntryId)
+  ));
+  ensureExpandedBudgets(visibleEntries, geometry);
+  const layout = computePresentationLayout(visibleEntries, geometry, { includeQueue: true });
+  applyRequestPresentation(entries, layout, geometry, {
+    visibleEntryIds: overflowPresentation.visibleEntryIds,
+  });
+  overflowPresentation.queueDrawerCommittedOpen = false;
+  overflowPresentation.queueCommittedBounds = layout.queueBounds;
+  if (!showQueueWindow(layout.queueBounds, geometry)) {
+    fallbackFromQueueFailure("launcher could not be restored");
+    return null;
+  }
+  return { geometry, entries, layout };
+}
+
+function handleQueueDrawerClose(event) {
+  if (!isQueueSender(event)) return false;
+  overflowPresentation.queueDrawerOpen = false;
+  restoreCommittedRequestsBeforeQueueCollapse();
+  reconcilePermissionPresentation("queue-close");
+  repositionDependentBubbles();
+  return true;
+}
+
+function setExpandedFromQueue(entry) {
+  if (!entry) return false;
+  const previous = expandedPermissionEntry;
+  if (previous && previous !== entry) {
+    ensureBubblePresentationState(previous);
+    if (previous.compositionActive) return false;
+    previous.expanded = false;
+    previous.measurementEpoch += 1;
+    sendPermissionPresentation(previous);
+  }
+  ensureBubblePresentationState(entry);
+  if (!entry.expanded) {
+    entry.expanded = true;
+    entry.measurementEpoch += 1;
+    entry.expandedHeightBudget = 0;
+    entry.expandedBudgetKey = "";
+    entry.expandedHeightBudgetMeasured = false;
+  }
+  expandedPermissionEntry = entry;
+  sendPermissionPresentation(entry);
+  return true;
+}
+
+function handleQueueSelect(event, selection) {
+  if (!isQueueSender(event) || isSwitchingLocked()) return false;
+  const uiEntryId = selection && typeof selection.uiEntryId === "string"
+    ? selection.uiEntryId
+    : "";
+  const intent = selection && typeof selection.intent === "string"
+    ? selection.intent
+    : "";
+  const entries = getLocalPresentationEntries();
+  const target = entries.find((entry) => entry.uiEntryId === uiEntryId);
+  if (!target) {
+    reconcilePermissionPresentation("queue-select-stale");
+    return false;
+  }
+  const kind = queueEntryKind(target);
+  const expectedIntent = kind === "ask" ? "answer" : (kind === "plan" ? "view-plan" : "view");
+  if (intent !== expectedIntent) return false;
+
+  overflowPresentation.selectedGlobalEntryId = target.uiEntryId;
+  overflowPresentation.selectedEntryBySession.set(
+    getPermissionSessionKey(target),
+    target.uiEntryId
+  );
+  if ((kind === "ask" || kind === "plan") && !setExpandedFromQueue(target)) return false;
+
+  overflowPresentation.queueDrawerOpen = false;
+  reconcilePermissionPresentation("queue-select");
+  const pendingCommit = overflowPresentation.queuePendingCommit;
+  if (pendingCommit && pendingCommit.visibleEntryIds.has(target.uiEntryId)) {
+    // The target was already represented by the ACKed drawer payload, so this
+    // trusted user selection may switch request windows immediately. The new
+    // revision still needs an ACK for the launcher payload and Slack once.
+    overflowPresentation.visibleEntryIds = new Set(pendingCommit.visibleEntryIds);
+  }
+  const restored = restoreCommittedRequestsBeforeQueueCollapse();
+  if (restored && isLiveBrowserWindow(target.bubble)) {
+    if (kind === "ask" || kind === "plan") {
+      try { target.bubble.focus(); } catch {}
+      try { target.bubble.webContents.send("permission-restore-active-control"); } catch {}
+    }
+  }
+  syncPermissionShortcuts();
+  repositionDependentBubbles();
+  if (typeof ctx.reapplyMacVisibility === "function") {
+    try { ctx.reapplyMacVisibility(); } catch {}
+  }
+  return true;
 }
 
 // macOS only: while a text input inside the bubble is focused, the bubble must
@@ -3825,6 +4869,7 @@ function cleanup() {
     if (isPassiveNotifyEntry(perm)) dismissPassiveNotify(perm, "Clawd is quitting");
     else dismissInteractivePermissionWithoutDecision(perm, "Clawd is quitting");
   }
+  destroyQueueWindow({ resetEpisode: true });
   permissionBubbleWindows.clear();
 }
 
@@ -3833,6 +4878,11 @@ return {
   sendPermissionResponse, repositionBubbles, permLog,
   pendingPermissions, PASSTHROUGH_TOOLS,
   getVisibleBubbleBounds,
+  getPermissionPresentationWindows,
+  hasVisiblePermissionBubbles,
+  showPermissionSurfacesForPet,
+  hidePermissionSurfacesForPet,
+  reconcilePermissionPresentation,
   addPendingPermission, removePendingPermission,
   isPermissionEntryLive, canAutoResolvePendingPermission,
   beginSessionTrustConfirmation, endSessionTrustConfirmation,
@@ -3843,6 +4893,8 @@ return {
   // renderer (isHermes suppresses the go-to-terminal action — issue #689).
   buildPermissionBubblePayload,
   handleBubbleHeight, handleBubbleExpanded, handleCompositionActive,
+  handleQueueDrawerOpen, handleQueueDrawerClose,
+  handleQueueSelect, handleQueuePresentationAck,
   handleDecide, handleImeEditing, handleBubbleRendererGone, cleanup,
   showCodexNotifyBubble, clearCodexNotifyBubbles,
   showCodexUserInputBubble, clearCodexUserInputBubbles,
@@ -3881,4 +4933,7 @@ module.exports.__test = {
   remapIndexedElicitationAnswers,
   validateAndRemapIndexedElicitationAnswers,
   collectVisibleWindowBounds,
+  areBubbleBoundsSafe,
+  stackHeightForSizes,
+  computeQueueCommitDeadline,
 };

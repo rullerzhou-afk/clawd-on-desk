@@ -21,6 +21,8 @@ function createFloatingWindowRuntime(options = {}) {
   const syncSessionHudVisibility = options.syncSessionHudVisibility || noop;
   const syncUpdateBubbleVisibility = options.syncUpdateBubbleVisibility || noop;
   const hideUpdateBubble = options.hideUpdateBubble || noop;
+  const showPermissionSurfacesForPet = options.showPermissionSurfacesForPet || null;
+  const hidePermissionSurfacesForPet = options.hidePermissionSurfacesForPet || null;
 
   function repositionFloatingBubbles() {
     if (getPendingList(getPendingPermissions).length) repositionPermissionBubbles();
@@ -41,21 +43,32 @@ function createFloatingWindowRuntime(options = {}) {
   }
 
   function showFloatingSurfacesForPet() {
-    for (const perm of getPendingList(getPendingPermissions)) {
-      const bubble = perm && perm.bubble;
-      if (isLiveWindow(bubble) && typeof bubble.showInactive === "function") {
-        bubble.showInactive();
-        keepOutOfTaskbar(bubble);
+    if (typeof showPermissionSurfacesForPet === "function") {
+      showPermissionSurfacesForPet();
+    } else {
+      for (const perm of getPendingList(getPendingPermissions)) {
+        const bubble = perm && perm.bubble;
+        if (isLiveWindow(bubble) && typeof bubble.showInactive === "function") {
+          bubble.showInactive();
+          keepOutOfTaskbar(bubble);
+        }
       }
     }
-    syncUpdateBubbleVisibility();
+    // pet-window-runtime invokes this before it commits petHidden=false. Pass
+    // the target state explicitly so update-bubble does not read the stale
+    // getter and remain hidden after the pet returns.
+    syncUpdateBubbleVisibility(false);
   }
 
   function hideFloatingSurfacesForPet() {
-    for (const perm of getPendingList(getPendingPermissions)) {
-      const bubble = perm && perm.bubble;
-      if (isLiveWindow(bubble) && typeof bubble.hide === "function") {
-        bubble.hide();
+    if (typeof hidePermissionSurfacesForPet === "function") {
+      hidePermissionSurfacesForPet();
+    } else {
+      for (const perm of getPendingList(getPendingPermissions)) {
+        const bubble = perm && perm.bubble;
+        if (isLiveWindow(bubble) && typeof bubble.hide === "function") {
+          bubble.hide();
+        }
       }
     }
     hideUpdateBubble();

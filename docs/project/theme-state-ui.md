@@ -82,7 +82,9 @@ Settings 是独立 `BrowserWindow`，采用 5 层结构：
 - 跟随模式使用桌宠所在显示器的 text scale；固定模式使用主屏 text scale。窗口 bounds、CSS px → DIP 与 renderer zoom 必须基于同一个目标显示器。
 - 权限气泡默认是约 340 CSS px 的三行摘要卡；普通工具在摘要态保留原有 Allow/Deny、Always/suggestion 和会话授权快捷操作，长正文经「查看详情」进入约 500 CSS px 的详情卡。Plan 摘要同时保留「查看计划」和快速批准，反馈/回终端等次级操作在展开后出现；Ask 摘要只可「回答」。详情正文滚动，标题和全部决定区固定，不提供自由拖拽改尺寸。
 - 桌面同时最多一个权限详情卡，切换时其他气泡恢复摘要，但各自 BrowserWindow/DOM 不销毁，因此 Ask 选择、Other 文本、Plan 修改草稿、步骤和滚动位置保留；IME composition 未结束时拒绝切换详情。petHidden 只隐藏窗口，不清空详情 owner 或草稿。
-- 多气泡始终保持最老请求在上；详情卡必须完整留在当前目标工作区，摘要兄弟过多时可向工作区外溢，不能把正在阅读的详情压到不可读。macOS IME 编辑中的气泡冻结位置，blur 后只执行一次现有 floating-bubble 重排序列。
+- 多气泡在当前工作区安全容纳时始终保持原来的逐窗栈与最老请求在上；一旦真实窗口几何无法完整落在工作区并避开 HUD，就按 agent + session 保留每个会话的代表卡，把其余请求收入一个固定高度的「还有 N 个待处理」入口。代表卡仍不够放时只继续减少非保护代表，已展开、正在输入/IME composition 或用户刚选中的请求不得被折叠。
+- 队列入口展开为单独的导航抽屉：抽屉打开时它是唯一可见的 permission surface，只列工具、摘要和「查看/回答/查看计划」，不承载 Allow/Deny。选择一项会恢复该请求原来的 BrowserWindow/DOM；IME composition 未结束时禁止打开抽屉或切换。主进程必须等待抽屉 renderer 对当前 revision 的 ACK 后才隐藏请求窗口；加载、崩溃或 ACK 超时均回退到原逐窗栈，不能产生权限决定。
+- petHidden 以隐藏动作当时的请求序号为切点：旧请求（包括队列）保持收起，隐藏期间的新请求仍可用同一套 overflow/queue 规则出现；恢复桌宠后再合并全部 pending。任意 permission surface 可见时自由漫游暂停，surface 消失后重新等待完整 8 秒，不能沿用拖拽已消耗的 4 秒阶段。macOS IME 编辑中的可见气泡冻结位置，blur 后只执行一次现有 floating-bubble 重排序列。
 
 ## Mini Mode
 

@@ -48,6 +48,13 @@ module.exports = function initRoam(ctx) {
     }
   }
 
+  function hasPermissionBubbleHold() {
+    return !!(
+      typeof ctx.hasVisiblePermissionBubbles === "function"
+      && ctx.hasVisiblePermissionBubbles()
+    );
+  }
+
   // Issue #690 plan §4.3.10's roam protection-period release point. Roam's
   // per-frame applyPetWindowBounds() (ROAM_FRAME_MS=16) is a continuous
   // native-write period the reconcile state machine must not fight — every
@@ -68,6 +75,7 @@ module.exports = function initRoam(ctx) {
     // Allow roaming when idle (about to start) or already roaming (mid-animation)
     if (state !== "idle" && state !== "roam") return false;
     if (ctx.miniTransitioning) return false;
+    if (hasPermissionBubbleHold()) return false;
     // #640: while the user is typing into a bubble's text field (macOS IME
     // editing), the pet must hold still — a wandering pet either drags the
     // bubble along (followPet anchoring) or walks over the box being typed
@@ -537,7 +545,7 @@ module.exports = function initRoam(ctx) {
       if (!isRoamAllowed()) {
         // A drag only pauses the current roam phase; other gates still mean the
         // pet left normal idle eligibility and reset the next wait to 8s.
-        if (!ctx.dragLocked) firstRoam = true;
+        if (hasPermissionBubbleHold() || !ctx.dragLocked) firstRoam = true;
         // cancelRoam also restores "idle" when the state is still "roam" —
         // gates with no incoming state of their own (IME editing #640, mini
         // mode) would otherwise strand the pet frozen in its walk pose.
@@ -675,7 +683,7 @@ module.exports = function initRoam(ctx) {
     if (!isRoamAllowed()) {
       // Preserve the already-consumed 4s/8s phase while drag owns movement.
       // Existing non-drag gates still reset the next idle entry to 8s.
-      if (!ctx.dragLocked) firstRoam = true;
+      if (hasPermissionBubbleHold() || !ctx.dragLocked) firstRoam = true;
       cancelRoam();
       return;
     }

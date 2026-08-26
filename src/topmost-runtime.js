@@ -60,6 +60,9 @@ function createTopmostRuntime(options = {}) {
   const getWin = defaultGetter(options.getWin || null);
   const getHitWin = defaultGetter(options.getHitWin || null);
   const getPendingPermissions = options.getPendingPermissions || (() => []);
+  const getPermissionPresentationWindows = options.getPermissionPresentationWindows || (() => (
+    (getPendingPermissions() || []).map((entry) => entry && entry.bubble).filter(Boolean)
+  ));
   const getUpdateBubbleWindow = options.getUpdateBubbleWindow || (() => null);
   const getSessionHudWindow = options.getSessionHudWindow || (() => null);
   const getQuotaRingWindow = options.getQuotaRingWindow || (() => null);
@@ -251,8 +254,8 @@ function createTopmostRuntime(options = {}) {
 
     apply(getWin());
     apply(getHitWin());
-    for (const perm of getPendingPermissions()) {
-      apply(perm && perm.bubble);
+    for (const bubble of getPermissionPresentationWindows()) {
+      apply(bubble);
     }
     apply(getUpdateBubbleWindow());
     apply(getSessionHudWindow());
@@ -278,7 +281,11 @@ function createTopmostRuntime(options = {}) {
     let petRectComputed = false;
     for (const perm of getPendingPermissions() || []) {
       const bubble = perm && perm.bubble;
-      if (!isLiveWindow(bubble) || !bubble.__clawdMacTextInputBubble) continue;
+      if (
+        !isLiveWindow(bubble)
+        || !bubble.__clawdMacTextInputBubble
+        || (typeof bubble.isVisible === "function" && !bubble.isVisible())
+      ) continue;
       if (typeof bubble.getBounds !== "function") continue;
       if (!petRectComputed) {
         const petBounds = getPetWindowBounds();
@@ -510,8 +517,7 @@ function createTopmostRuntime(options = {}) {
       // the interference stand-down exists to avoid (§8.3).
       if (!skipTopmost) recoverCloakedPet();
 
-      for (const perm of getPendingPermissions()) {
-        const bubble = perm && perm.bubble;
+      for (const bubble of getPermissionPresentationWindows()) {
         if (isLiveWindow(bubble) && bubble.isVisible()) {
           reassertWindowAndTaskbar(bubble);
         }

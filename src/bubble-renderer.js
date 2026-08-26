@@ -1712,4 +1712,15 @@ if (window.bubbleAPI && typeof window.bubbleAPI.setImeEditing === "function") {
 }
 
 window.bubbleAPI.onPermissionShow(show);
+if (typeof window.bubbleAPI.onRestoreActiveControl === "function") {
+  window.bubbleAPI.onRestoreActiveControl(() => {
+    requestAnimationFrame(() => {
+      if (elicitationMode && currentExpanded) {
+        focusActiveElicitationControl();
+      } else if (planFeedbackMode && currentExpanded) {
+        planFeedbackTextarea.focus();
+      }
+    });
+  });
+}
 window.bubbleAPI.onPermissionHide(hide);
