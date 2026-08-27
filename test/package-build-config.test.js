@@ -44,6 +44,16 @@ describe("package build config", () => {
       assert.match(workflow, /npm run audit:assets/);
       assert.match(workflow, /test\/preload-settings\.test\.js/);
       assert.match(workflow, /test\/state-agent-icons\.test\.js/);
+      for (const testFile of [
+        "test/mac-dock-icon-runtime.test.js",
+        "test/mac-dock-visibility.test.js",
+        "test/mac-tray-icon-assets.test.js",
+        "test/main-mac-dock-icon.test.js",
+        "test/menu-hide-pet.test.js",
+        "test/tray-flash-icon.test.js",
+      ]) {
+        assert.ok(workflow.includes(testFile), `repository asset audit should run ${testFile}`);
+      }
       assert.match(workflow, /dist\/repository-asset-audit\/\*\.json/);
       assert.match(
         workflow,

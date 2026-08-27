@@ -97,6 +97,8 @@ test("main wires startup Dock icon behavior through the shared runtime helper", 
   assert.match(source, /require\("\.\/mac-dock-icon-runtime"\)/);
   assert.match(source, /resolveRuntimeDockIconPolicy\(\{/);
   assert.match(source, /installStartupDockIcon\(\{/);
+  assert.match(source, /flashPath:\s*path\.join\([^\n]+tray-icon-flash\.png/);
+  assert.match(source, /flashTemplatePath:\s*path\.join\([^\n]+tray-icon-flashTemplate\.png/);
   assert.doesNotMatch(
     source,
     /app\.dock\.setIcon\(path\.join\(__dirname, "\.\.", "assets", "dock-icon\.png"\)\)/,

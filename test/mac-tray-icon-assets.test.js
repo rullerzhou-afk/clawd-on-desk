@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const zlib = require("node:zlib");
 const { describe, it } = require("node:test");
+const { parseSvgGeometry, renderAlpha } = require("../scripts/generate-mac-tray-icons");
 
 const ROOT = path.join(__dirname, "..");
 const pkg = require("../package.json");
@@ -145,6 +146,17 @@ describe("macOS tray Template assets", () => {
     }
   });
 
+  it("renders from SVG geometry instead of a duplicated generator constant", () => {
+    const source = fs.readFileSync(SOURCE.normal, "utf8");
+    const original = parseSvgGeometry(source);
+    const widenedSource = source.replace('stroke-width="1.28"', 'stroke-width="1.50"');
+    const widened = parseSvgGeometry(widenedSource);
+
+    assert.strictEqual(original.frameStrokeRadius, 0.64);
+    assert.strictEqual(widened.frameStrokeRadius, 0.75);
+    assert.notDeepStrictEqual(renderAlpha(18, original), renderAlpha(18, widened));
+  });
+
   it("uses the near-full canvas without changing the 18pt logical slot", () => {
     for (const [key, file] of Object.entries(RUNTIME)) {
       const image = decodeRgbaPng(file);
@@ -163,12 +175,27 @@ describe("macOS tray Template assets", () => {
       const normal = decodeRgbaPng(RUNTIME[normalKey]);
       const flash = decodeRgbaPng(RUNTIME[flashKey]);
       let added = 0;
+      const newlyVisible = [];
       for (let index = 0; index < normal.alpha.length; index += 1) {
         assert.ok(flash.alpha[index] >= normal.alpha[index], `${flashKey} must preserve the normal mark`);
         if (flash.alpha[index] > normal.alpha[index]) added += 1;
+        if (normal.alpha[index] === 0 && flash.alpha[index] > 0) newlyVisible.push(index);
       }
       assert.ok(added > 0, `${flashKey} should add a completion cue`);
       assert.ok(added < normal.alpha.length * 0.2, `${flashKey} cue should stay bounded`);
+      const minimumNewPixels = normal.width === 18 ? 6 : 18;
+      assert.ok(
+        newlyVisible.length >= minimumNewPixels,
+        `${flashKey} should add at least ${minimumNewPixels} newly visible pixels`,
+      );
+      for (const index of newlyVisible) {
+        const x = index % normal.width;
+        const y = Math.floor(index / normal.width);
+        assert.ok(
+          x >= normal.width / 2 && y < normal.height / 2,
+          `${flashKey} completion cue should stay in the top-right quadrant at ${x},${y}`,
+        );
+      }
     }
   });
 

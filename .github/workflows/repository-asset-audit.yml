@@ -19,12 +19,18 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: npm install
-      - name: Test audit and spawned-hook isolation
+      - name: Test audit, macOS icon contracts, and spawned-hook isolation
         run: >-
           node --test
           test/assert-no-retired-telegram-sidecar.test.js
+          test/mac-dock-icon-runtime.test.js
+          test/mac-dock-visibility.test.js
+          test/mac-tray-icon-assets.test.js
+          test/main-mac-dock-icon.test.js
+          test/menu-hide-pet.test.js
           test/package-build-config.test.js
           test/state-agent-icons.test.js
+          test/tray-flash-icon.test.js
           test/preload-settings.test.js
           test/repository-asset-audit.test.js
           test/telegram-legacy-retirement.test.js

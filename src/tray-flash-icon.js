@@ -9,7 +9,6 @@
 // Windows / Linux trays work in raw pixels and both assets are normalised to
 // 32×32 there.
 
-const TRAY_POINT_SIZE = 18; // macOS menu bar works in points
 const TRAY_PIXEL_SIZE = 32; // Windows / Linux trays work in pixels
 
 function loadTrayNormalIcon({ nativeImage, platform, templatePath, iconPath }) {
@@ -37,4 +36,4 @@ function loadTrayFlashIcon({ nativeImage, platform, flashPath, flashTemplatePath
   return src.resize({ width: TRAY_PIXEL_SIZE, height: TRAY_PIXEL_SIZE });
 }
 
-module.exports = { loadTrayNormalIcon, loadTrayFlashIcon, TRAY_POINT_SIZE, TRAY_PIXEL_SIZE };
+module.exports = { loadTrayNormalIcon, loadTrayFlashIcon, TRAY_PIXEL_SIZE };
