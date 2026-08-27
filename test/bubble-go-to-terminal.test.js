@@ -353,6 +353,37 @@ describe("permission bubble compact/detail presentation", () => {
     harness.flushAnimationFrames();
     assert.strictEqual(focusTarget.focusCount, 1,
       "a fresh visible explicit restore still focuses the active answer");
+
+    harness.restoreActiveControl();
+    harness.present({ expanded: true, measurementEpoch: 1 });
+    harness.flushAnimationFrames();
+    assert.strictEqual(focusTarget.focusCount, 1,
+      "a restore request from an older presentation epoch must not focus controls");
+  });
+
+  it("restores focus when queue selection sends the IPC before the hidden document becomes visible", () => {
+    const harness = createHarness({ deferFrames: true, visibilityState: "hidden" });
+    const focusTarget = new FakeElement("input");
+    harness.element("elicitationForm").querySelector = () => focusTarget;
+    harness.show({
+      toolName: "AskUserQuestion",
+      toolInput: {
+        questions: [{
+          id: "0",
+          question: "Choose one",
+          options: [{ label: "One", description: "First option" }],
+        }],
+      },
+      interaction: interaction("human-question", { answerQuestions: true }),
+      presentation: { expanded: true, measurementEpoch: 0 },
+    });
+
+    harness.restoreActiveControl();
+    harness.setVisibility("visible");
+    harness.flushAnimationFrames();
+
+    assert.strictEqual(focusTarget.focusCount, 1,
+      "the queued rAF must survive main/show vs renderer/visibility ordering");
   });
 
   it("keeps every ordinary quick action on the compact card and reveals only the full detail after expansion", () => {

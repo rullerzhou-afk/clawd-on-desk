@@ -1242,8 +1242,9 @@ function createPresentationGeometry() {
   };
 }
 
-function ensureExpandedBudgets(entries, geometry) {
+function ensureExpandedBudgets(entries, geometry, options = {}) {
   const budgetKey = getExpandedBudgetKey(geometry.workArea, geometry.scale);
+  const updatedEntries = [];
   for (const entry of entries) {
     ensureBubblePresentationState(entry);
     if (!entry.expanded) continue;
@@ -1260,8 +1261,10 @@ function ensureExpandedBudgets(entries, geometry) {
     entry.expandedBudgetKey = budgetKey;
     entry.expandedHeightBudgetMeasured = false;
     if (hadFrozenBudget) entry.measurementEpoch += 1;
-    sendPermissionPresentation(entry);
+    updatedEntries.push(entry);
+    if (options.sendPresentation !== false) sendPermissionPresentation(entry);
   }
+  return updatedEntries;
 }
 
 function getPresentationEntrySize(entry, geometry) {
@@ -1316,7 +1319,7 @@ function computePresentationLayout(entries, geometry, options = {}) {
     const queueSize = options.drawerOpen
       ? getQueueDrawerSize(geometry)
       : getQueueCompactSize(geometry);
-    if (expandedIndex >= 0) {
+    if (expandedIndex >= 0 && options.capExpandedForLauncher !== false) {
       const otherRequestHeight = sizes.reduce((sum, size, index) => (
         index === expandedIndex ? sum : sum + Math.max(0, Number(size && size.height) || 0)
       ), 0);
@@ -1952,7 +1955,14 @@ function reconcilePermissionPresentation(reason = "geometry") {
       const previousPresentationMode = overflowPresentation.mode;
       overflowPresentation.mode = "overflow";
       const canFitWithLauncher = (candidateEntries) => (
-        computePresentationLayout(candidateEntries, geometry, { includeQueue: true }).safe
+        computePresentationLayout(candidateEntries, geometry, {
+          includeQueue: true,
+          // Representative admission must respect the protected card's frozen
+          // size. The launcher cap belongs only to the final chosen set;
+          // otherwise each optional representative can make itself fit by
+          // squeezing the expanded owner toward 1px.
+          capExpandedForLauncher: false,
+        }).safe
       );
       const selected = selectOverflowRepresentatives(entries, {
         selectedBySession: overflowPresentation.selectedEntryBySession,
@@ -1962,7 +1972,21 @@ function reconcilePermissionPresentation(reason = "geometry") {
       });
       let visibleEntries = selected.visibleEntries;
       let hiddenEntries = selected.hiddenEntries;
-      ensureExpandedBudgets(visibleEntries, geometry);
+      const expandedBudgetSnapshots = new Map();
+      for (const entry of visibleEntries) {
+        if (!entry || entry.expanded !== true) continue;
+        expandedBudgetSnapshots.set(entry, {
+          expandedHeightBudget: entry.expandedHeightBudget,
+          expandedBudgetKey: entry.expandedBudgetKey,
+          expandedHeightBudgetMeasured: entry.expandedHeightBudgetMeasured,
+          measurementEpoch: entry.measurementEpoch,
+        });
+      }
+      const updatedExpandedBudgets = ensureExpandedBudgets(visibleEntries, geometry, {
+        // Selection is still speculative until the final geometry guard. Do
+        // not expose an epoch/payload from a representative set we may reject.
+        sendPresentation: false,
+      });
       let overflowLayout = computePresentationLayout(visibleEntries, geometry, { includeQueue: true });
 
       // Recomputing an expanded budget may grow the selected card. Only move
@@ -1986,16 +2010,30 @@ function reconcilePermissionPresentation(reason = "geometry") {
 
       const hasExpandedRepresentative = visibleEntries.some((entry) => entry.expanded === true);
       if (!overflowLayout.safe && hasExpandedRepresentative) {
-        // Queue commits are ownership changes, not a best-effort layout hint.
-        // An unsafe candidate must not enter the revision/ACK protocol. Keep
-        // the previously presented windows exactly as they are; in particular,
-        // do not route this guard through the legacy all-visible fallback below,
-        // which can turn a reduced two-window candidate into a much taller stack.
-        overflowPresentation.mode = previousPresentationMode;
+        for (const entry of updatedExpandedBudgets) {
+          const snapshot = expandedBudgetSnapshots.get(entry);
+          if (!snapshot) continue;
+          entry.expandedHeightBudget = snapshot.expandedHeightBudget;
+          entry.expandedBudgetKey = snapshot.expandedBudgetKey;
+          entry.expandedHeightBudgetMeasured = snapshot.expandedHeightBudgetMeasured;
+          entry.measurementEpoch = snapshot.measurementEpoch;
+        }
+        // A committed overflow already owns real windows, so leave it exactly
+        // as presented. First overflow from normal mode has no previous bounds
+        // for a newly created window: apply the already-computed crowded normal
+        // stack so every request remains positioned and visible, but publish no
+        // queue revision.
+        if (previousPresentationMode === "normal") {
+          applyNormalPresentation(entries, preliminaryNormalLayout, geometry);
+        } else {
+          overflowPresentation.mode = previousPresentationMode;
+        }
         permLog(`permission overflow candidate unsafe after launcher cap (${reason})`);
         syncPermissionShortcuts();
         continue;
       }
+
+      for (const entry of updatedExpandedBudgets) sendPermissionPresentation(entry);
 
       if (
         hiddenEntries.length === 0
@@ -2408,6 +2446,10 @@ function showPermissionBubble(permEntry) {
     };
     if (tryAutoExpandAskOnArrival(permEntry)) {
       autoExpansionRollback = preArrivalExpansion;
+      // Electron load is asynchronous, so this is normally a no-op. Keeping
+      // the send here makes the transition correct even for an already-ready
+      // renderer or a synchronous test harness.
+      sendPermissionPresentation(permEntry);
     }
     reconcilePermissionPresentation("bubble-created");
     // Keep creation transactional. Later reconciles tolerate an individual

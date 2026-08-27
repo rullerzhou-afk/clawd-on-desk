@@ -1715,7 +1715,6 @@ if (typeof window.bubbleAPI.onRestoreActiveControl === "function") {
   window.bubbleAPI.onRestoreActiveControl(() => {
     const restoreToken = ++restoreActiveControlToken;
     const restoreEpoch = measurementEpoch;
-    if (document.visibilityState === "hidden") return;
     requestAnimationFrame(() => {
       if (
         restoreToken !== restoreActiveControlToken

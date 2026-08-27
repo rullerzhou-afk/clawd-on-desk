@@ -431,23 +431,24 @@ describe("permission Ask default expansion", () => {
       "the overflow-only cap reserves launcher height instead of using the full work-area cap");
   });
 
-  it("subtracts every visible sibling and gap from the expanded launcher budget", () => {
+  it("keeps optional representatives from squeezing the expanded owner below its selection budget", () => {
     FakeBrowserWindow.instances = [];
     const { initPermission } = loadPermission();
     const permission = initPermission(makeCtx({
-      getBubbleWorkArea: () => ({ x: 0, y: 0, width: 800, height: 500 }),
-      getNearestWorkArea: () => ({ x: 0, y: 0, width: 800, height: 500 }),
+      getBubbleWorkArea: () => ({ x: 0, y: 0, width: 1200, height: 1104 }),
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 1200, height: 1104 }),
+      getTextScale: () => 1.25,
     }));
     const expanded = requestEntry(1, requestBubble());
     expanded.sessionId = "expanded";
     expanded.expanded = true;
     expanded.expandedMeasuredHeight = 620;
     expanded.interaction = askInteraction();
-    const siblings = [2, 3, 4].map((index) => {
+    const siblings = [2, 3, 4, 5, 6].map((index) => {
       const entry = requestEntry(index, requestBubble());
       entry.sessionId = `sibling-${index}`;
-      entry.measuredHeight = 100;
-      entry.compactMeasuredHeight = 100;
+      entry.measuredHeight = 152;
+      entry.compactMeasuredHeight = 152;
       return entry;
     });
     permission.pendingPermissions.push(expanded, ...siblings);
@@ -462,40 +463,51 @@ describe("permission Ask default expansion", () => {
     );
 
     const visibleSiblings = siblings.filter((entry) => entry.bubble.isVisible());
-    assert.strictEqual(visibleSiblings.length, 2);
-    assert.strictEqual(expanded.bubble.bounds.height, 202,
-      "500 - 16px margins - 64px launcher - 200px siblings - 18px gaps");
+    assert.strictEqual(visibleSiblings.length, 1,
+      "optional session representatives go to the launcher before they can shrink the protected Ask");
+    assert.strictEqual(expanded.bubble.bounds.height, 662,
+      "the 125% Ask keeps its 60% work-area budget instead of collapsing below the readable floor");
     const visibleBounds = [expanded, ...visibleSiblings]
       .map((entry) => entry.bubble.getBounds())
       .concat(queueWindow.getBounds());
-    assert.ok(visibleBounds.every((bounds) => bounds.y >= 0 && bounds.y + bounds.height <= 500));
+    assert.ok(visibleBounds.every((bounds) => bounds.y >= 0 && bounds.y + bounds.height <= 1104));
   });
 
-  it("does not start an unsafe first queue commit or rewrite the visible request stack", () => {
+  it("positions a newly arrived request when an unsafe first queue candidate is rejected", () => {
     FakeBrowserWindow.instances = [];
+    let hudBounds = { x: 0, y: 0, width: 800, height: 360 };
     const { initPermission } = loadPermission();
     const permission = initPermission(makeCtx({
-      getSessionHudBounds: () => ({ x: 0, y: 0, width: 800, height: 360 }),
+      getSessionHudBounds: () => hudBounds,
     }));
     const expanded = requestEntry(1, requestBubble());
     expanded.expanded = true;
+    expanded.measurementEpoch = 7;
+    expanded.expandedHeightBudget = 620;
+    expanded.expandedBudgetKey = "stale-work-area";
+    expanded.expandedHeightBudgetMeasured = true;
     expanded.bubble.visible = true;
-    const hidden = requestEntry(2, requestBubble());
-    hidden.bubble.visible = true;
-    permission.pendingPermissions.push(expanded, hidden);
-    const before = permission.pendingPermissions.map((entry) => ({
-      visible: entry.bubble.isVisible(),
-      bounds: entry.bubble.getBounds(),
-    }));
+    permission.pendingPermissions.push(expanded);
+    const arriving = requestEntry(2, null);
+    permission.addPendingPermission(arriving);
 
-    permission.reconcilePermissionPresentation("unsafe-first-overflow");
+    permission.showPermissionBubble(arriving);
 
     assert.strictEqual(findQueueWindow(), undefined,
       "an unsafe representation must not enter the queue commit protocol");
-    assert.deepStrictEqual(permission.pendingPermissions.map((entry) => ({
-      visible: entry.bubble.isVisible(),
-      bounds: entry.bubble.getBounds(),
-    })), before, "the defensive guard must not fan the requests back out through the legacy fallback");
+    assert.strictEqual(arriving.bubble.isVisible(), true);
+    assert.notDeepStrictEqual(
+      { x: arriving.bubble.bounds.x, y: arriving.bubble.bounds.y },
+      { x: 0, y: 0 },
+      "the normal-mode defensive fallback must replace the constructor's temporary top-left bounds"
+    );
+    assert.strictEqual(expanded.measurementEpoch, 7,
+      "a rejected speculative representative set must not bump the committed presentation epoch");
+
+    hudBounds = null;
+    permission.reconcilePermissionPresentation("unsafe-first-overflow-cleared");
+    assert.strictEqual(arriving.bubble.isVisible(), true,
+      "normal fallback ownership includes the newly positioned request");
   });
 
   it("preserves an ACKed representation when an expanded candidate later becomes unsafe", () => {

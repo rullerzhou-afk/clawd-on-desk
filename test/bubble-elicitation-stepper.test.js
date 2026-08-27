@@ -40,8 +40,6 @@ describe("AskUserQuestion bubble stepper", () => {
       bubbleRenderer,
       /onRestoreActiveControl[\s\S]*requestAnimationFrame\(\(\) => \{[\s\S]*focusActiveElicitationControl\(\)/
     );
-    assert.match(bubbleRenderer, /restoreEpoch !== measurementEpoch/);
-    assert.match(bubbleRenderer, /document\.visibilityState === "hidden"/);
   });
 
   it("lets answered summary rows reopen their question", () => {
