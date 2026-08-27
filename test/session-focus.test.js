@@ -10,6 +10,7 @@ const {
   getSessionFocusTarget,
   isFocusableLocalHudSession,
 } = require("../src/session-focus");
+const { makeSessionKey } = require("../src/session-key");
 
 describe("session focus helpers", () => {
   it("selects local HUD-visible terminal and Codex Desktop thread sessions", () => {
@@ -77,6 +78,24 @@ describe("session focus helpers", () => {
       canFocus: false,
       type: null,
       url: null,
+    });
+  });
+
+  it("derives Codex Desktop thread focus targets from profile-scoped session entries", () => {
+    const rawSessionId = "codex:019e115a-4df2-7ed0-b90e-8e6345aca777";
+    const entry = {
+      id: makeSessionKey({ profileId: "local", rawSessionId }),
+      rawSessionId,
+      agentId: "codex",
+      codexOriginator: "Codex Desktop",
+    };
+
+    assert.strictEqual(getCodexThreadId(entry), "019e115a-4df2-7ed0-b90e-8e6345aca777");
+    assert.strictEqual(getCodexThreadUrl(entry), "codex://threads/019e115a-4df2-7ed0-b90e-8e6345aca777");
+    assert.deepStrictEqual(getSessionFocusTarget(entry, { osPlatform: "darwin" }), {
+      canFocus: true,
+      type: "codex-thread",
+      url: "codex://threads/019e115a-4df2-7ed0-b90e-8e6345aca777",
     });
   });
 

@@ -723,6 +723,11 @@ describe("state-session-snapshot builder", () => {
   });
 
   it("exposes focus target metadata for terminal and Codex Desktop sessions", () => {
+    const rawCodexSessionId = "codex:019e115a-4df2-7ed0-b90e-8e6345aca777";
+    const scopedCodexSessionId = makeSessionKey({
+      profileId: "local",
+      rawSessionId: rawCodexSessionId,
+    });
     const snapshot = buildSessionSnapshot(new Map([
       ["terminal", session("working", { sourcePid: 123 })],
       ["webui", session("working", { sourcePid: 456, platform: "webui" })],
@@ -730,8 +735,9 @@ describe("state-session-snapshot builder", () => {
         host: "remote-box",
         orcaPaneKey: "tab-remote:leaf-remote",
       })],
-      ["codex:019e115a-4df2-7ed0-b90e-8e6345aca777", session("working", {
+      [scopedCodexSessionId, session("working", {
         agentId: "codex",
+        rawSessionId: rawCodexSessionId,
         codexOriginator: "codex_work_desktop",
         codexSource: "vscode",
       })],
@@ -744,12 +750,12 @@ describe("state-session-snapshot builder", () => {
     assert.strictEqual(byId.get("webui").focusTarget, null);
     assert.strictEqual(byId.get("remote-orca").canFocus, true);
     assert.deepStrictEqual(byId.get("remote-orca").focusTarget, { type: "terminal", url: null });
-    assert.strictEqual(byId.get("codex:019e115a-4df2-7ed0-b90e-8e6345aca777").canFocus, true);
-    assert.deepStrictEqual(byId.get("codex:019e115a-4df2-7ed0-b90e-8e6345aca777").focusTarget, {
+    assert.strictEqual(byId.get(scopedCodexSessionId).canFocus, true);
+    assert.deepStrictEqual(byId.get(scopedCodexSessionId).focusTarget, {
       type: "codex-thread",
       url: "codex://threads/019e115a-4df2-7ed0-b90e-8e6345aca777",
     });
-    assert.strictEqual(byId.get("codex:019e115a-4df2-7ed0-b90e-8e6345aca777").codexSource, "vscode");
+    assert.strictEqual(byId.get(scopedCodexSessionId).codexSource, "vscode");
   });
 
   it("downgrades Codex Desktop focus targets on Windows snapshots", () => {
