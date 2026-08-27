@@ -50,6 +50,7 @@ let planFeedbackMode = false;
 let pendingRestoreState = null;
 let sessionTrustErrorElement = null;
 let compactContentOverflow = false;
+let lastMeasuredViewportWidth = 0;
 
 // Mirrors body { padding: 6px; } above. Keep this in sync if the body padding changes.
 const BUBBLE_BODY_PADDING_Y = 12;
@@ -1575,7 +1576,21 @@ document.addEventListener("keydown", (e) => {
   btnAllow.click();
 });
 
-window.addEventListener("resize", applyElicitationViewport);
+window.addEventListener("resize", () => {
+  applyElicitationViewport();
+  // The card has no width of its own (html/body are 100% and .card fills them),
+  // so its natural height depends on the BrowserWindow width. Main sends the
+  // compact presentation before repositionBubbles() narrows the window from the
+  // expanded width, so the frame that renders compact can measure against the
+  // still-wide window and under-report by a wrapped line. Nothing else
+  // re-measures afterwards, which left the collapsed card clipped. Re-report on
+  // every real width change; the existing epoch/state fence in main drops any
+  // report that no longer matches the requested presentation.
+  const viewportWidth = window.innerWidth;
+  if (viewportWidth === lastMeasuredViewportWidth) return;
+  lastMeasuredViewportWidth = viewportWidth;
+  scheduleBubbleHeightReport();
+});
 
 // ── Plan Feedback Mode ──
 

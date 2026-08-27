@@ -91,6 +91,8 @@ function createHarness(options = {}) {
   const expandedRequests = [];
   const animationFrames = [];
   const documentListeners = new Map();
+  const windowListeners = new Map();
+  const heightReports = [];
   let showPermission;
   let showPresentation;
   let restoreActiveControl;
@@ -109,7 +111,7 @@ function createHarness(options = {}) {
   };
   const bubbleAPI = {
     decide: (decision) => decisions.push(decision),
-    reportHeight() {},
+    reportHeight: (report) => heightReports.push(report),
     onPermissionShow: (callback) => { showPermission = callback; },
     onPermissionHide() {},
     onPresentation: (callback) => { showPresentation = callback; },
@@ -125,7 +127,12 @@ function createHarness(options = {}) {
         detectIrreversible: () => null,
       },
       bubbleAPI,
-      addEventListener() {},
+      innerWidth: options.innerWidth || 480,
+      addEventListener(type, callback) {
+        const listeners = windowListeners.get(type) || [];
+        listeners.push(callback);
+        windowListeners.set(type, listeners);
+      },
     },
     document,
     requestAnimationFrame(callback) {
@@ -154,6 +161,11 @@ function createHarness(options = {}) {
     },
     flushAnimationFrames() {
       for (const callback of animationFrames.splice(0)) callback();
+    },
+    heightReports,
+    resizeViewport(width) {
+      context.window.innerWidth = width;
+      for (const callback of windowListeners.get("resize") || []) callback();
     },
     element(id) { return elements.get(id); },
     terminalButtons() {
@@ -323,6 +335,52 @@ describe("permission bubble compact/detail presentation", () => {
     assert.strictEqual(harness.element("btnExpand").classList.contains("visible"), false);
     assert.strictEqual(harness.element("btnCollapse").textContent, "Collapse");
     assert.deepStrictEqual(harness.expandedRequests, []);
+  });
+
+  it("re-measures the compact card after the window finally narrows", () => {
+    const harness = createHarness();
+    harness.show({
+      toolName: "AskUserQuestion",
+      toolInput: {
+        questions: [{
+          id: "0",
+          question: "Choose one",
+          options: [{ label: "One", description: "First option" }],
+        }],
+      },
+      interaction: interaction("human-question", { answerQuestions: true }),
+      presentation: { expanded: true, measurementEpoch: 0 },
+    });
+
+    // Main collapses this card because another request took the expanded owner.
+    // It sends the compact presentation before repositionBubbles() narrows the
+    // window, so this frame can still measure against the expanded width.
+    harness.present({ expanded: false, measurementEpoch: 1 });
+    const wideCount = harness.heightReports.length;
+    assert.ok(wideCount > 0, "collapsing reports a compact height");
+    const wide = harness.heightReports[wideCount - 1];
+    assert.strictEqual(wide.state, "compact");
+
+    // The window narrows to the compact width and the same content wraps taller.
+    harness.element("card").offsetHeight = 160;
+    harness.element("card").scrollHeight = 160;
+    harness.resizeViewport(326);
+
+    const afterResize = harness.heightReports.slice(wideCount);
+    assert.ok(afterResize.length > 0,
+      "a real width change must schedule a fresh measurement, or the card stays clipped");
+    const narrow = afterResize[afterResize.length - 1];
+    assert.strictEqual(narrow.state, "compact");
+    assert.strictEqual(narrow.measurementEpoch, 1,
+      "the correction keeps the epoch main asked for so it is not fenced out");
+    assert.ok(narrow.height > wide.height,
+      "the narrower window reports the taller wrapped height");
+
+    // Main answers a new height by resizing again. That must not loop.
+    const settled = harness.heightReports.length;
+    harness.resizeViewport(326);
+    assert.strictEqual(harness.heightReports.length, settled,
+      "an unchanged width must not schedule another report");
   });
 
   it("drops a deferred explicit focus request if the bubble is hidden before its frame", () => {
