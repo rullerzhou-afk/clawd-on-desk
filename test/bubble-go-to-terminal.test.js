@@ -65,7 +65,7 @@ class FakeElement {
   dispatch(type, event = {}) {
     for (const listener of this.listeners.get(type) || []) listener({ target: this, ...event });
   }
-  focus() {}
+  focus() { this.focusCount = (this.focusCount || 0) + 1; }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) || null; }
   removeAttribute(name) { this.attributes.delete(name); }
@@ -73,7 +73,7 @@ class FakeElement {
   querySelectorAll() { return []; }
 }
 
-function createHarness() {
+function createHarness(options = {}) {
   const elements = new Map();
   for (const id of [
     "card", "toolPill", "toolPillText", "commandBlock", "irreversibleBadge",
@@ -89,15 +89,23 @@ function createHarness() {
   const headerTitle = new FakeElement("span");
   const decisions = [];
   const expandedRequests = [];
+  const animationFrames = [];
+  const documentListeners = new Map();
   let showPermission;
   let showPresentation;
+  let restoreActiveControl;
 
   const document = {
     activeElement: null,
+    visibilityState: options.visibilityState || "visible",
     getElementById: (id) => elements.get(id),
     querySelector: (selector) => selector === ".header-title" ? headerTitle : null,
     createElement: (tagName) => new FakeElement(tagName),
-    addEventListener() {},
+    addEventListener(type, callback) {
+      const listeners = documentListeners.get(type) || [];
+      listeners.push(callback);
+      documentListeners.set(type, listeners);
+    },
   };
   const bubbleAPI = {
     decide: (decision) => decisions.push(decision),
@@ -105,6 +113,7 @@ function createHarness() {
     onPermissionShow: (callback) => { showPermission = callback; },
     onPermissionHide() {},
     onPresentation: (callback) => { showPresentation = callback; },
+    onRestoreActiveControl: (callback) => { restoreActiveControl = callback; },
     setExpanded: (expanded) => expandedRequests.push(expanded),
   };
   const context = {
@@ -119,7 +128,14 @@ function createHarness() {
       addEventListener() {},
     },
     document,
-    requestAnimationFrame(callback) { callback(); return 1; },
+    requestAnimationFrame(callback) {
+      if (options.deferFrames) {
+        animationFrames.push(callback);
+      } else {
+        callback();
+      }
+      return animationFrames.length || 1;
+    },
     cancelAnimationFrame() {},
     console,
   };
@@ -131,6 +147,14 @@ function createHarness() {
     decisions,
     expandedRequests,
     present(data) { showPresentation(data); },
+    restoreActiveControl() { restoreActiveControl(); },
+    setVisibility(state) {
+      document.visibilityState = state;
+      for (const callback of documentListeners.get("visibilitychange") || []) callback();
+    },
+    flushAnimationFrames() {
+      for (const callback of animationFrames.splice(0)) callback();
+    },
     element(id) { return elements.get(id); },
     terminalButtons() {
       return [
@@ -275,6 +299,60 @@ describe("permission bubble compact/detail presentation", () => {
     assert.strictEqual(harness.element("actions").style.display, "none");
     assert.strictEqual(harness.element("btnExpand").textContent, "Answer · Questions: 2");
     assert.strictEqual(harness.element("card").classList.contains("expanded"), false);
+  });
+
+  it("renders an initially expanded Ask without the compact Answer entry", () => {
+    const harness = createHarness();
+    harness.show({
+      toolName: "AskUserQuestion",
+      toolInput: {
+        questions: [
+          {
+            id: "0",
+            question: "Choose one",
+            options: [{ label: "One", description: "First option" }],
+          },
+        ],
+      },
+      interaction: interaction("human-question", { answerQuestions: true }),
+      presentation: { expanded: true, measurementEpoch: 0 },
+    });
+
+    assert.strictEqual(harness.element("card").classList.contains("expanded"), true);
+    assert.strictEqual(harness.element("actions").style.display, "");
+    assert.strictEqual(harness.element("btnExpand").classList.contains("visible"), false);
+    assert.strictEqual(harness.element("btnCollapse").textContent, "Collapse");
+    assert.deepStrictEqual(harness.expandedRequests, []);
+  });
+
+  it("drops a deferred explicit focus request if the bubble is hidden before its frame", () => {
+    const harness = createHarness({ deferFrames: true });
+    const focusTarget = new FakeElement("input");
+    harness.element("elicitationForm").querySelector = () => focusTarget;
+    harness.show({
+      toolName: "AskUserQuestion",
+      toolInput: {
+        questions: [{
+          id: "0",
+          question: "Choose one",
+          options: [{ label: "One", description: "First option" }],
+        }],
+      },
+      interaction: interaction("human-question", { answerQuestions: true }),
+      presentation: { expanded: true, measurementEpoch: 0 },
+    });
+
+    harness.restoreActiveControl();
+    harness.setVisibility("hidden");
+    harness.setVisibility("visible");
+    harness.flushAnimationFrames();
+    assert.strictEqual(focusTarget.focusCount || 0, 0,
+      "a hidden document must not replay an old focus intent when it reappears");
+
+    harness.restoreActiveControl();
+    harness.flushAnimationFrames();
+    assert.strictEqual(focusTarget.focusCount, 1,
+      "a fresh visible explicit restore still focuses the active answer");
   });
 
   it("keeps every ordinary quick action on the compact card and reveals only the full detail after expansion", () => {

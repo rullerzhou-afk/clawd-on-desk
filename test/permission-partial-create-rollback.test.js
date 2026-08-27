@@ -49,7 +49,9 @@ function createRollbackHarness({ throwAt }) {
       if (typeof this._didFinishLoad === "function") this._didFinishLoad();
     }
     showInactive() {
-      if (throwAt === "showInactive") throw new Error("showInactive boom");
+      if (throwAt === "showInactive" && this === createdWindows[0]) {
+        throw new Error("showInactive boom");
+      }
     }
     setSkipTaskbar() {}
     on(event, cb) {
@@ -114,6 +116,30 @@ function makeZcodeEntry(api) {
   return entry;
 }
 
+function makeAskEntry(api, sessionId) {
+  const entry = {
+    sessionId,
+    agentId: "claude-code",
+    toolName: "AskUserQuestion",
+    toolInput: {
+      questions: [{
+        question: "Choose one",
+        options: [{ label: "One", description: "First option" }],
+      }],
+    },
+    interaction: classifyPermissionInteraction({
+      agentId: "claude-code",
+      toolName: "AskUserQuestion",
+    }),
+    suggestions: [],
+    bubble: null,
+    hideTimer: null,
+    createdAt: Date.now(),
+  };
+  api.addPendingPermission(entry);
+  return entry;
+}
+
 describe("showPermissionBubble partial-create rollback", () => {
   it("destroys the window and rethrows when a post-create step throws", () => {
     const { api, createdWindows } = createRollbackHarness({ throwAt: "showInactive" });
@@ -138,5 +164,21 @@ describe("showPermissionBubble partial-create rollback", () => {
     assert.strictEqual(createdWindows.length, 1);
     assert.strictEqual(createdWindows[0].destroyed, false);
     assert.strictEqual(entry.bubble, createdWindows[0]);
+  });
+
+  it("rolls back a creation-time Ask owner so the next Ask can expand", () => {
+    const { api, createdWindows } = createRollbackHarness({ throwAt: "showInactive" });
+    const failed = makeAskEntry(api, "ask-failed");
+
+    assert.throws(() => api.showPermissionBubble(failed), /showInactive boom/);
+    assert.strictEqual(failed.expanded, false);
+    api.removePendingPermission(failed, "route-create-failed");
+
+    const next = makeAskEntry(api, "ask-next");
+    api.showPermissionBubble(next);
+
+    assert.strictEqual(next.expanded, true,
+      "the failed window must not leave a stale expanded owner behind");
+    assert.strictEqual(createdWindows[1].destroyed, false);
   });
 });

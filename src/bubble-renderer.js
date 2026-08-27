@@ -44,6 +44,7 @@ let heightReportFrame = 0;
 let currentData = null;
 let currentExpanded = false;
 let measurementEpoch = 0;
+let restoreActiveControlToken = 0;
 let currentIsPlanReview = false;
 let planFeedbackMode = false;
 let pendingRestoreState = null;
@@ -642,7 +643,6 @@ function scheduleCompactOverflowMeasurement() {
 function applyPresentationView() {
   if (!currentData) return;
   const data = currentData;
-  const wasExpanded = card.classList.contains("expanded");
   card.classList.toggle("expanded", currentExpanded);
   btnCollapse.title = bubbleText(data.lang, "collapse");
   btnCollapse.setAttribute("aria-label", bubbleText(data.lang, "collapse"));
@@ -711,9 +711,6 @@ function applyPresentationView() {
     planFeedbackForm.classList.remove("visible");
   }
 
-  if (currentExpanded && !wasExpanded && elicitationMode) {
-    requestAnimationFrame(focusActiveElicitationControl);
-  }
   scheduleCompactOverflowMeasurement();
   scheduleBubbleHeightReport();
 }
@@ -1502,6 +1499,7 @@ function show(data) {
 }
 
 function hide() {
+  restoreActiveControlToken += 1;
   card.classList.remove("visible");
   card.classList.add("hiding");
 }
@@ -1654,6 +1652,7 @@ if (typeof window.bubbleAPI.onPresentation === "function") {
     if (!Number.isInteger(nextEpoch) || nextEpoch < measurementEpoch) return;
     measurementEpoch = nextEpoch;
     currentExpanded = presentation.expanded === true;
+    if (!currentExpanded) restoreActiveControlToken += 1;
     applyPresentationView();
   });
 }
@@ -1714,7 +1713,18 @@ if (window.bubbleAPI && typeof window.bubbleAPI.setImeEditing === "function") {
 window.bubbleAPI.onPermissionShow(show);
 if (typeof window.bubbleAPI.onRestoreActiveControl === "function") {
   window.bubbleAPI.onRestoreActiveControl(() => {
+    const restoreToken = ++restoreActiveControlToken;
+    const restoreEpoch = measurementEpoch;
+    if (document.visibilityState === "hidden") return;
     requestAnimationFrame(() => {
+      if (
+        restoreToken !== restoreActiveControlToken
+        || restoreEpoch !== measurementEpoch
+        || document.visibilityState === "hidden"
+        || !currentExpanded
+      ) {
+        return;
+      }
       if (elicitationMode && currentExpanded) {
         focusActiveElicitationControl();
       } else if (planFeedbackMode && currentExpanded) {
@@ -1723,4 +1733,7 @@ if (typeof window.bubbleAPI.onRestoreActiveControl === "function") {
     });
   });
 }
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") restoreActiveControlToken += 1;
+});
 window.bubbleAPI.onPermissionHide(hide);

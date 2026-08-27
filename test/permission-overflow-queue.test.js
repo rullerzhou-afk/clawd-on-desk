@@ -95,6 +95,19 @@ function interaction() {
   };
 }
 
+function askInteraction() {
+  return {
+    intent: "human-question",
+    automationEligibility: { autoTools: false, unattended: false },
+    capabilities: {
+      allowDeny: false,
+      answerQuestions: true,
+      planFeedback: false,
+      nativeFallback: true,
+    },
+  };
+}
+
 function requestBubble() {
   return new FakeBrowserWindow({ width: 340, height: 150, show: false });
 }
@@ -111,6 +124,28 @@ function requestEntry(index, bubble) {
     toolName: "Bash",
     toolInput: { command: `echo request-${index}` },
     interaction: interaction(),
+    createdAt: Date.now(),
+  };
+}
+
+function askEntry(index) {
+  return {
+    suggestions: [],
+    sessionId: `ask-session-${index}`,
+    agentId: "claude-code",
+    toolName: "AskUserQuestion",
+    toolInput: {
+      questions: [{
+        id: "0",
+        question: `Question ${index}?`,
+        options: [
+          { label: "One", description: "First option" },
+          { label: "Two", description: "Second option" },
+        ],
+      }],
+    },
+    interaction: askInteraction(),
+    isElicitation: true,
     createdAt: Date.now(),
   };
 }
@@ -145,6 +180,368 @@ function makeCtx(overrides = {}) {
     ...overrides,
   };
 }
+
+function findQueueWindow() {
+  return FakeBrowserWindow.instances.find((win) => (
+    win.options.webPreferences
+    && path.basename(win.options.webPreferences.preload) === "preload-permission-queue.js"
+  ));
+}
+
+describe("permission Ask default expansion", () => {
+  it("expands only the first safe Ask before its initial payload without focusing", () => {
+    FakeBrowserWindow.instances = [];
+    const { initPermission } = loadPermission();
+    const permission = initPermission(makeCtx({
+      getBubbleWorkArea: () => ({ x: 0, y: 0, width: 1920, height: 1080 }),
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 1920, height: 1080 }),
+    }));
+
+    const first = askEntry(1);
+    permission.addPendingPermission(first);
+    permission.showPermissionBubble(first);
+
+    assert.strictEqual(first.expanded, true);
+    assert.strictEqual(first.measurementEpoch, 0);
+    assert.strictEqual(first.bubble.focusCount, 0);
+    assert.ok(!first.bubble.webContents.sent.some(([channel]) => (
+      channel === "permission-restore-active-control"
+    )), "arrival must not carry explicit focus intent");
+
+    first.bubble.webContents.emit("did-finish-load");
+    const firstPayload = first.bubble.webContents.sent.find(([channel]) => (
+      channel === "permission-show"
+    ));
+    assert.strictEqual(firstPayload[1].presentation.expanded, true);
+    assert.strictEqual(firstPayload[1].presentation.measurementEpoch, 0);
+    permission.handleBubbleHeight(
+      { sender: first.bubble.webContents },
+      { state: "expanded", measurementEpoch: 0, height: 420 }
+    );
+    assert.strictEqual(first.expandedMeasuredHeight, 420,
+      "the initial expanded height ACK must use the unchanged creation epoch");
+    assert.strictEqual(first.measurementEpoch, 0);
+
+    const second = askEntry(2);
+    permission.addPendingPermission(second);
+    permission.showPermissionBubble(second);
+
+    assert.strictEqual(first.expanded, true);
+    assert.strictEqual(second.expanded, false);
+    assert.strictEqual(second.bubble.focusCount, 0);
+
+    permission.handleBubbleExpanded({ sender: first.bubble.webContents }, false);
+    permission.reconcilePermissionPresentation("collapsed-stays-compact");
+    assert.strictEqual(first.expanded, false);
+    assert.strictEqual(second.expanded, false,
+      "ordinary reconciliation must not promote an already-present Ask");
+
+    const third = askEntry(3);
+    permission.addPendingPermission(third);
+    permission.showPermissionBubble(third);
+    assert.strictEqual(first.expanded, false, "the collapsed Ask must never reopen itself");
+    assert.strictEqual(second.expanded, false, "an already-present Ask is not promoted");
+    assert.strictEqual(third.expanded, true,
+      "a genuinely new Ask may independently use the safe arrival transition");
+  });
+
+  it("clears a removed owner without promoting an already-present Ask", () => {
+    FakeBrowserWindow.instances = [];
+    const { initPermission } = loadPermission();
+    const permission = initPermission(makeCtx({
+      getBubbleWorkArea: () => ({ x: 0, y: 0, width: 1920, height: 1080 }),
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 1920, height: 1080 }),
+    }));
+    const first = askEntry(1);
+    const second = askEntry(2);
+    permission.addPendingPermission(first);
+    permission.showPermissionBubble(first);
+    permission.addPendingPermission(second);
+    permission.showPermissionBubble(second);
+    assert.strictEqual(first.expanded, true);
+    assert.strictEqual(second.expanded, false);
+
+    permission.removePendingPermission(first, "owner-resolved");
+    permission.reconcilePermissionPresentation("owner-resolved");
+
+    assert.strictEqual(second.expanded, false,
+      "owner removal only clears stale ownership; it never auto-promotes a sibling");
+  });
+
+  it("uses the shared Ask capability boundary without agent or tool-name special cases", () => {
+    const cases = [
+      {
+        name: "Hermes clarify",
+        expected: true,
+        mutate(entry) { entry.agentId = "hermes"; entry.toolName = "clarify"; },
+      },
+      {
+        name: "ZCode non-answerable Ask",
+        expected: false,
+        mutate(entry) {
+          entry.agentId = "zcode";
+          entry.interaction.capabilities.answerQuestions = false;
+        },
+      },
+      {
+        name: "Qwen non-answerable Ask",
+        expected: false,
+        mutate(entry) {
+          entry.agentId = "qwen-code";
+          entry.interaction.capabilities.answerQuestions = false;
+        },
+      },
+      {
+        name: "Plan feedback",
+        expected: false,
+        mutate(entry) {
+          entry.toolName = "ExitPlanMode";
+          entry.interaction.intent = "plan-review";
+          entry.interaction.capabilities.answerQuestions = false;
+          entry.interaction.capabilities.planFeedback = true;
+        },
+      },
+      {
+        name: "Codex passive user input",
+        expected: false,
+        mutate(entry) {
+          entry.agentId = "codex";
+          entry.isCodexUserInputNotify = true;
+        },
+      },
+      {
+        name: "remote-only answerable Ask",
+        expected: false,
+        mutate(entry) { entry.remoteOnly = true; },
+      },
+    ];
+
+    for (const testCase of cases) {
+      FakeBrowserWindow.instances = [];
+      const { initPermission } = loadPermission();
+      const permission = initPermission(makeCtx({
+        getBubbleWorkArea: () => ({ x: 0, y: 0, width: 1920, height: 1080 }),
+        getNearestWorkArea: () => ({ x: 0, y: 0, width: 1920, height: 1080 }),
+      }));
+      const entry = askEntry(1);
+      testCase.mutate(entry);
+      permission.addPendingPermission(entry);
+      permission.showPermissionBubble(entry);
+      assert.strictEqual(entry.expanded, testCase.expected, testCase.name);
+    }
+  });
+
+  it("keeps arrival compact when only the hypothetical expanded stack is unsafe", () => {
+    FakeBrowserWindow.instances = [];
+    const { initPermission } = loadPermission();
+    const permission = initPermission(makeCtx({
+      getBubbleWorkArea: () => ({ x: 0, y: 0, width: 800, height: 420 }),
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 800, height: 420 }),
+    }));
+    const sibling = requestEntry(1, requestBubble());
+    permission.pendingPermissions.push(sibling);
+    const ask = askEntry(2);
+    permission.addPendingPermission(ask);
+    permission.showPermissionBubble(ask);
+
+    assert.strictEqual(ask.expanded, false,
+      "the live new entry and its sibling must both participate in the safety preflight");
+    assert.strictEqual(findQueueWindow(), undefined,
+      "the same stack remains a safe normal presentation when the Ask is compact");
+  });
+
+  it("keeps a newly arrived Ask compact while the first overflow revision is pending", () => {
+    FakeBrowserWindow.instances = [];
+    const { initPermission } = loadPermission();
+    const permission = initPermission(makeCtx());
+    permission.pendingPermissions.push(
+      requestEntry(1, requestBubble()),
+      requestEntry(2, requestBubble()),
+      requestEntry(3, requestBubble())
+    );
+    permission.reconcilePermissionPresentation("pending-overflow");
+    const queueWindow = findQueueWindow();
+    assert.ok(queueWindow, "the first representation is waiting for its renderer ACK");
+
+    const ask = askEntry(4);
+    permission.addPendingPermission(ask);
+    permission.showPermissionBubble(ask);
+
+    assert.strictEqual(ask.expanded, false);
+    assert.strictEqual(ask.bubble.isVisible(), true,
+      "before the first ACK, #944 keeps request windows accessible instead of hiding them early");
+  });
+
+  it("keeps a newly arrived Ask compact behind an ACKed overflow representation", () => {
+    FakeBrowserWindow.instances = [];
+    const { initPermission } = loadPermission();
+    const permission = initPermission(makeCtx());
+    const existing = [1, 2, 3].map((index) => requestEntry(index, requestBubble()));
+    permission.pendingPermissions.push(...existing);
+    permission.reconcilePermissionPresentation("establish-overflow");
+    const queueWindow = findQueueWindow();
+    queueWindow.webContents.emit("did-finish-load");
+    const committed = lastQueuePayload(queueWindow);
+    permission.handleQueuePresentationAck(
+      { sender: queueWindow.webContents },
+      { revision: committed.revision }
+    );
+
+    const ask = askEntry(4);
+    permission.addPendingPermission(ask);
+    permission.showPermissionBubble(ask);
+
+    assert.strictEqual(ask.expanded, false);
+    assert.strictEqual(ask.bubble.isVisible(), false,
+      "the old ACKed representation owns visibility until the new revision is acknowledged");
+  });
+
+  it("caps an expanded representative so it shares the work area with the launcher", () => {
+    FakeBrowserWindow.instances = [];
+    const { initPermission } = loadPermission();
+    const permission = initPermission(makeCtx({ getTextScale: () => 1.6 }));
+    const expanded = requestEntry(1, requestBubble());
+    expanded.sessionId = "expanded-session";
+    expanded.interaction = askInteraction();
+    expanded.toolName = "AskUserQuestion";
+    expanded.expanded = true;
+    expanded.expandedMeasuredHeight = 620;
+    const hidden = requestEntry(2, requestBubble());
+    hidden.sessionId = "expanded-session";
+    permission.pendingPermissions.push(expanded, hidden);
+
+    permission.reconcilePermissionPresentation("expanded-with-launcher");
+    const queueWindow = findQueueWindow();
+    assert.ok(queueWindow, "overflow creates a queue launcher");
+    queueWindow.webContents.emit("did-finish-load");
+    const payload = lastQueuePayload(queueWindow);
+    permission.handleQueuePresentationAck(
+      { sender: queueWindow.webContents },
+      { revision: payload.revision }
+    );
+
+    const workAreaBottom = 360;
+    assert.ok(expanded.bubble.bounds.y >= 0);
+    assert.ok(expanded.bubble.bounds.y + expanded.bubble.bounds.height <= workAreaBottom);
+    assert.ok(queueWindow.bounds.y >= 0);
+    assert.ok(queueWindow.bounds.y + queueWindow.bounds.height <= workAreaBottom);
+    assert.ok(expanded.bubble.bounds.y + expanded.bubble.bounds.height <= queueWindow.bounds.y,
+      "the protected Ask and launcher must not overlap");
+    assert.ok(expanded.bubble.bounds.height < 334,
+      "the overflow-only cap reserves launcher height instead of using the full work-area cap");
+  });
+
+  it("subtracts every visible sibling and gap from the expanded launcher budget", () => {
+    FakeBrowserWindow.instances = [];
+    const { initPermission } = loadPermission();
+    const permission = initPermission(makeCtx({
+      getBubbleWorkArea: () => ({ x: 0, y: 0, width: 800, height: 500 }),
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 800, height: 500 }),
+    }));
+    const expanded = requestEntry(1, requestBubble());
+    expanded.sessionId = "expanded";
+    expanded.expanded = true;
+    expanded.expandedMeasuredHeight = 620;
+    expanded.interaction = askInteraction();
+    const siblings = [2, 3, 4].map((index) => {
+      const entry = requestEntry(index, requestBubble());
+      entry.sessionId = `sibling-${index}`;
+      entry.measuredHeight = 100;
+      entry.compactMeasuredHeight = 100;
+      return entry;
+    });
+    permission.pendingPermissions.push(expanded, ...siblings);
+
+    permission.reconcilePermissionPresentation("expanded-with-siblings");
+    const queueWindow = findQueueWindow();
+    queueWindow.webContents.emit("did-finish-load");
+    const payload = lastQueuePayload(queueWindow);
+    permission.handleQueuePresentationAck(
+      { sender: queueWindow.webContents },
+      { revision: payload.revision }
+    );
+
+    const visibleSiblings = siblings.filter((entry) => entry.bubble.isVisible());
+    assert.strictEqual(visibleSiblings.length, 2);
+    assert.strictEqual(expanded.bubble.bounds.height, 202,
+      "500 - 16px margins - 64px launcher - 200px siblings - 18px gaps");
+    const visibleBounds = [expanded, ...visibleSiblings]
+      .map((entry) => entry.bubble.getBounds())
+      .concat(queueWindow.getBounds());
+    assert.ok(visibleBounds.every((bounds) => bounds.y >= 0 && bounds.y + bounds.height <= 500));
+  });
+
+  it("does not start an unsafe first queue commit or rewrite the visible request stack", () => {
+    FakeBrowserWindow.instances = [];
+    const { initPermission } = loadPermission();
+    const permission = initPermission(makeCtx({
+      getSessionHudBounds: () => ({ x: 0, y: 0, width: 800, height: 360 }),
+    }));
+    const expanded = requestEntry(1, requestBubble());
+    expanded.expanded = true;
+    expanded.bubble.visible = true;
+    const hidden = requestEntry(2, requestBubble());
+    hidden.bubble.visible = true;
+    permission.pendingPermissions.push(expanded, hidden);
+    const before = permission.pendingPermissions.map((entry) => ({
+      visible: entry.bubble.isVisible(),
+      bounds: entry.bubble.getBounds(),
+    }));
+
+    permission.reconcilePermissionPresentation("unsafe-first-overflow");
+
+    assert.strictEqual(findQueueWindow(), undefined,
+      "an unsafe representation must not enter the queue commit protocol");
+    assert.deepStrictEqual(permission.pendingPermissions.map((entry) => ({
+      visible: entry.bubble.isVisible(),
+      bounds: entry.bubble.getBounds(),
+    })), before, "the defensive guard must not fan the requests back out through the legacy fallback");
+  });
+
+  it("preserves an ACKed representation when an expanded candidate later becomes unsafe", () => {
+    FakeBrowserWindow.instances = [];
+    let hudBounds = null;
+    const { initPermission } = loadPermission();
+    const permission = initPermission(makeCtx({
+      getSessionHudBounds: () => hudBounds,
+    }));
+    const expanded = requestEntry(1, requestBubble());
+    expanded.expanded = true;
+    expanded.expandedMeasuredHeight = 620;
+    const hidden = requestEntry(2, requestBubble());
+    permission.pendingPermissions.push(expanded, hidden);
+    permission.reconcilePermissionPresentation("safe-expanded-overflow");
+    const queueWindow = findQueueWindow();
+    queueWindow.webContents.emit("did-finish-load");
+    const committed = lastQueuePayload(queueWindow);
+    permission.handleQueuePresentationAck(
+      { sender: queueWindow.webContents },
+      { revision: committed.revision }
+    );
+    const before = {
+      payloadCount: queueWindow.webContents.sent.filter(([channel]) => (
+        channel === "permission-queue-show"
+      )).length,
+      queueBounds: queueWindow.getBounds(),
+      requests: permission.pendingPermissions.map((entry) => ({
+        visible: entry.bubble.isVisible(),
+        bounds: entry.bubble.getBounds(),
+      })),
+    };
+
+    hudBounds = { x: 0, y: 0, width: 800, height: 360 };
+    permission.reconcilePermissionPresentation("unsafe-expanded-overflow");
+
+    assert.strictEqual(queueWindow.webContents.sent.filter(([channel]) => (
+      channel === "permission-queue-show"
+    )).length, before.payloadCount, "unsafe geometry must not publish a new revision");
+    assert.deepStrictEqual(queueWindow.getBounds(), before.queueBounds);
+    assert.deepStrictEqual(permission.pendingPermissions.map((entry) => ({
+      visible: entry.bubble.isVisible(),
+      bounds: entry.bubble.getBounds(),
+    })), before.requests, "the ACKed ownership and window presentation stay unchanged");
+  });
+});
 
 describe("permission overflow queue", () => {
   it("commits representation only after ACK, swaps request windows safely, and falls back with zero decisions", () => {

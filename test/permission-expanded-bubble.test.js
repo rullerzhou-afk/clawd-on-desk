@@ -99,6 +99,16 @@ describe("permission expanded presentation owner", () => {
     assert.strictEqual(permission.handleBubbleExpanded(eventFor(planBubble), true), true);
     assert.strictEqual(plan.expanded, true);
     assert.strictEqual(planBubble.focusCount, 1);
+    assert.ok(planBubble.sends.some(([channel]) => (
+      channel === "permission-restore-active-control"
+    )), "explicit local expansion restores the active control after focusing the window");
+
+    assert.strictEqual(permission.handleBubbleExpanded(eventFor(planBubble), true), true);
+    assert.strictEqual(planBubble.focusCount, 2,
+      "an equal-state explicit expand still carries focus intent");
+    assert.strictEqual(planBubble.sends.filter(([channel]) => (
+      channel === "permission-restore-active-control"
+    )).length, 2, "the equal-state ACK must not swallow control restoration");
 
     permission.handleCompositionActive(eventFor(planBubble), true);
     assert.strictEqual(permission.handleBubbleExpanded(eventFor(ordinaryBubble), true), false);

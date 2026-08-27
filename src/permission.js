@@ -1311,12 +1311,34 @@ function computePresentationLayout(entries, geometry, options = {}) {
   const requestEntries = Array.isArray(entries) ? entries : [];
   const sizes = requestEntries.map((entry) => getPresentationEntrySize(entry, geometry));
   const includeQueue = options.includeQueue === true;
-  if (includeQueue) {
-    sizes.push(options.drawerOpen
-      ? getQueueDrawerSize(geometry)
-      : getQueueCompactSize(geometry));
-  }
   const expandedIndex = requestEntries.findIndex((entry) => entry.expanded === true);
+  if (includeQueue) {
+    const queueSize = options.drawerOpen
+      ? getQueueDrawerSize(geometry)
+      : getQueueCompactSize(geometry);
+    if (expandedIndex >= 0) {
+      const otherRequestHeight = sizes.reduce((sum, size, index) => (
+        index === expandedIndex ? sum : sum + Math.max(0, Number(size && size.height) || 0)
+      ), 0);
+      // There is one gap between every adjacent item. With N request windows
+      // plus the launcher, that is exactly N gaps. Keep this as an effective
+      // overflow-only cap: mutating the frozen expanded budget here would make
+      // the card stay artificially short after the queue disappears.
+      const availableExpandedHeight = geometry.workArea.height
+        - geometry.margin * 2
+        - queueSize.height
+        - otherRequestHeight
+        - geometry.gap * requestEntries.length;
+      sizes[expandedIndex] = {
+        ...sizes[expandedIndex],
+        height: Math.min(
+          sizes[expandedIndex].height,
+          Math.max(1, Math.floor(availableExpandedHeight))
+        ),
+      };
+    }
+    sizes.push(queueSize);
+  }
   const bounds = computeBubbleStackLayout({
     followPet: !!ctx.bubbleFollowPet,
     followPreference: ctx.bubbleFollowPreference,
@@ -1354,6 +1376,51 @@ function queueEntryKind(entry) {
   if (interaction && interaction.intent === INTERACTION_INTENT.PLAN_REVIEW) return "plan";
   if (!interaction || capabilities.allowDeny !== true) return "native";
   return "permission";
+}
+
+function tryAutoExpandAskOnArrival(entry) {
+  ensureBubblePresentationState(entry);
+  if (
+    entry.expanded
+    || queueEntryKind(entry) !== "ask"
+    || expandedPermissionEntry !== null
+    || overflowPresentation.mode !== "normal"
+    || overflowPresentation.queuePendingCommit !== null
+  ) {
+    return false;
+  }
+
+  const geometry = createPresentationGeometry();
+  if (!geometry) return false;
+  const entries = getLocalPresentationEntries();
+  if (!entries.includes(entry)) return false;
+
+  const previousBudget = entry.expandedHeightBudget;
+  const previousBudgetKey = entry.expandedBudgetKey;
+  const previousBudgetMeasured = entry.expandedHeightBudgetMeasured;
+  entry.expanded = true;
+  entry.expandedHeightBudget = computeExpandedHeightBudget(
+    entry,
+    geometry.scale,
+    geometry.workArea,
+    geometry.margin,
+    geometry.gap,
+    entries
+  );
+  entry.expandedBudgetKey = getExpandedBudgetKey(geometry.workArea, geometry.scale);
+  entry.expandedHeightBudgetMeasured = false;
+
+  const layout = computePresentationLayout(entries, geometry);
+  if (!layout.safe) {
+    entry.expanded = false;
+    entry.expandedHeightBudget = previousBudget;
+    entry.expandedBudgetKey = previousBudgetKey;
+    entry.expandedHeightBudgetMeasured = previousBudgetMeasured;
+    return false;
+  }
+
+  expandedPermissionEntry = entry;
+  return true;
 }
 
 function compactQueueSummary(entry) {
@@ -1882,6 +1949,7 @@ function reconcilePermissionPresentation(reason = "geometry") {
         continue;
       }
 
+      const previousPresentationMode = overflowPresentation.mode;
       overflowPresentation.mode = "overflow";
       const canFitWithLauncher = (candidateEntries) => (
         computePresentationLayout(candidateEntries, geometry, { includeQueue: true }).safe
@@ -1914,6 +1982,19 @@ function reconcilePermissionPresentation(reason = "geometry") {
         const visibleIds = new Set(visibleEntries.map((entry) => entry.uiEntryId));
         hiddenEntries = entries.filter((entry) => !visibleIds.has(entry.uiEntryId));
         overflowLayout = computePresentationLayout(visibleEntries, geometry, { includeQueue: true });
+      }
+
+      const hasExpandedRepresentative = visibleEntries.some((entry) => entry.expanded === true);
+      if (!overflowLayout.safe && hasExpandedRepresentative) {
+        // Queue commits are ownership changes, not a best-effort layout hint.
+        // An unsafe candidate must not enter the revision/ACK protocol. Keep
+        // the previously presented windows exactly as they are; in particular,
+        // do not route this guard through the legacy all-visible fallback below,
+        // which can turn a reduced two-window candidate into a much taller stack.
+        overflowPresentation.mode = previousPresentationMode;
+        permLog(`permission overflow candidate unsafe after launcher cap (${reason})`);
+        syncPermissionShortcuts();
+        continue;
       }
 
       if (
@@ -2221,6 +2302,7 @@ function showPermissionBubble(permEntry) {
   // registered close handlers while the route-level catch drops the pending
   // entry — nothing would ever close that window. Strip listeners, destroy
   // the window, and rethrow so the caller finishes the rollback.
+  let autoExpansionRollback = null;
   try {
     permEntry.bubble = bub;
     permissionBubbleWindows.add(bub);
@@ -2242,8 +2324,9 @@ function showPermissionBubble(permEntry) {
       // stale partition-persisted factor must never win over prefs.
       applyZoomToWindow(bub, getTextScale(getAnchorWorkArea()));
       syncPermissionBubbleContent(permEntry);
-      // Arrival never steals focus. Plan/Ask receive focus only after the user
-      // explicitly expands the bubble (handleBubbleExpanded).
+      // Arrival never steals focus. Eligible Ask cards may already be visually
+      // expanded, but controls receive focus only after an explicit local or
+      // queue action.
     });
 
     bub.on("closed", () => {
@@ -2317,6 +2400,15 @@ function showPermissionBubble(permEntry) {
       bub.setAlwaysOnTop(true, MAC_TOPMOST_LEVEL);
     }
 
+    const preArrivalExpansion = {
+      expanded: permEntry.expanded,
+      expandedHeightBudget: permEntry.expandedHeightBudget,
+      expandedBudgetKey: permEntry.expandedBudgetKey,
+      expandedHeightBudgetMeasured: permEntry.expandedHeightBudgetMeasured,
+    };
+    if (tryAutoExpandAskOnArrival(permEntry)) {
+      autoExpansionRollback = preArrivalExpansion;
+    }
     reconcilePermissionPresentation("bubble-created");
     // Keep creation transactional. Later reconciles tolerate an individual
     // request window refusing to show so they cannot interrupt another
@@ -2346,6 +2438,13 @@ function showPermissionBubble(permEntry) {
     try { bub.destroy(); } catch {}
     permissionBubbleWindows.delete(bub);
     permEntry.bubble = null;
+    if (autoExpansionRollback) {
+      permEntry.expanded = autoExpansionRollback.expanded;
+      permEntry.expandedHeightBudget = autoExpansionRollback.expandedHeightBudget;
+      permEntry.expandedBudgetKey = autoExpansionRollback.expandedBudgetKey;
+      permEntry.expandedHeightBudgetMeasured = autoExpansionRollback.expandedHeightBudgetMeasured;
+      if (expandedPermissionEntry === permEntry) expandedPermissionEntry = null;
+    }
     throw createErr;
   }
 }
@@ -3950,6 +4049,15 @@ function handleBubbleHeight(event, measurement) {
   repositionDependentBubbles();
 }
 
+function restoreActiveControlAfterExplicitExpansion(perm, senderWin) {
+  const capabilities = isValidInteraction(perm && perm.interaction)
+    ? perm.interaction.capabilities
+    : {};
+  if (capabilities.answerQuestions !== true && capabilities.planFeedback !== true) return;
+  try { senderWin.focus(); } catch {}
+  try { senderWin.webContents.send("permission-restore-active-control"); } catch {}
+}
+
 function handleBubbleExpanded(event, expanded) {
   const senderWin = BrowserWindow.fromWebContents(event.sender);
   const perm = pendingPermissions.find((entry) => entry.bubble === senderWin);
@@ -3958,6 +4066,7 @@ function handleBubbleExpanded(event, expanded) {
   const wantsExpanded = expanded === true;
   if (wantsExpanded === perm.expanded) {
     sendPermissionPresentation(perm);
+    if (wantsExpanded) restoreActiveControlAfterExplicitExpansion(perm, senderWin);
     return true;
   }
 
@@ -3986,12 +4095,7 @@ function handleBubbleExpanded(event, expanded) {
     repositionBubbles();
     sendPermissionPresentation(perm);
 
-    const capabilities = isValidInteraction(perm.interaction)
-      ? perm.interaction.capabilities
-      : {};
-    if (capabilities.answerQuestions === true || capabilities.planFeedback === true) {
-      try { senderWin.focus(); } catch {}
-    }
+    restoreActiveControlAfterExplicitExpansion(perm, senderWin);
   } else {
     perm.expanded = false;
     perm.measurementEpoch += 1;
