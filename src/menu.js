@@ -5,6 +5,7 @@ const path = require("path");
 const { keepOutOfTaskbar } = require("./taskbar");
 const { loadTrayNormalIcon } = require("./tray-flash-icon");
 const { createMacDockVisibilityCoordinator } = require("./mac-dock-visibility");
+const { resolveRuntimeDockIconPolicy } = require("./mac-dock-icon-runtime");
 
 const isMac = process.platform === "darwin";
 const isWin = process.platform === "win32";
@@ -51,6 +52,15 @@ module.exports = function initMenu(ctx) {
     app,
     dock: app.dock,
     dockIconPath: path.join(__dirname, "../assets/dock-icon.png"),
+    shouldInstallDockIcon: () => resolveRuntimeDockIconPolicy({
+      platform: process.platform,
+      isPackaged: app.isPackaged === true,
+      getSystemVersion: () => {
+        if (typeof ctx.getSystemVersion === "function") return ctx.getSystemVersion();
+        if (typeof process.getSystemVersion === "function") return process.getSystemVersion();
+        return "";
+      },
+    }),
     getSettingsWindow: ctx.getSettingsWindow,
     reapplyMacVisibility: ctx.reapplyMacVisibility,
   }) : null;

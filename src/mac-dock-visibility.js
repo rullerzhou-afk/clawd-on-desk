@@ -4,6 +4,7 @@ function createMacDockVisibilityCoordinator(options = {}) {
   const app = options.app || null;
   const dock = options.dock || (app && app.dock) || null;
   const dockIconPath = options.dockIconPath || null;
+  const shouldInstallDockIcon = options.shouldInstallDockIcon || (() => true);
   const getSettingsWindow = options.getSettingsWindow || (() => null);
   const reapplyMacVisibility = options.reapplyMacVisibility || (() => {});
   const logWarn = options.logWarn || ((...args) => console.warn(...args));
@@ -25,6 +26,15 @@ function createMacDockVisibilityCoordinator(options = {}) {
       dock.setIcon(dockIconPath);
     } catch (err) {
       warn("Clawd: failed to install macOS Dock icon:", err);
+    }
+  }
+
+  function resolveInstallDockIcon() {
+    try {
+      return shouldInstallDockIcon() === true;
+    } catch (err) {
+      warn("Clawd: failed to resolve macOS Dock icon policy:", err);
+      return false;
     }
   }
 
@@ -65,17 +75,18 @@ function createMacDockVisibilityCoordinator(options = {}) {
     // when the app is frontmost. Switching NSApplication activation policy is
     // synchronous and avoids exposing that ~2 second sequence to Settings.
     const focusedSettingsWindow = visible ? null : captureFocusedSettingsWindow();
-    // A tray-only launch has no Dock tile to receive the runtime icon. Pin it
-    // immediately before and after promotion so the newly-created tile never
-    // exposes the app bundle's fallback icon.
-    if (visible) installDockIcon();
+    // Older macOS and development builds still pin the padded runtime icon
+    // immediately before and after promotion. Packaged Tahoe+ deliberately
+    // skips both writes so the system can render the themed bundle icon.
+    const installIcon = visible && resolveInstallDockIcon();
+    if (installIcon) installDockIcon();
     if (!app || typeof app.setActivationPolicy !== "function") {
       warn("Clawd: macOS activation policy API is unavailable");
       reapplyVisibility();
       return;
     }
     app.setActivationPolicy(visible ? "regular" : "accessory");
-    if (visible) installDockIcon();
+    if (installIcon) installDockIcon();
     if (!visible) restoreSettingsFocus(focusedSettingsWindow);
     reapplyVisibility();
   }

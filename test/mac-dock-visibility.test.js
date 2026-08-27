@@ -31,6 +31,56 @@ describe("macOS Dock visibility coordinator", () => {
     ]);
   });
 
+  it("promotes Dock without runtime icon writes when the shared policy disables them", async () => {
+    const calls = [];
+    const coordinator = createMacDockVisibilityCoordinator({
+      dockIconPath: "/app/assets/dock-icon.png",
+      shouldInstallDockIcon: () => false,
+      app: {
+        setActivationPolicy: (policy) => calls.push(["policy", policy]),
+      },
+      dock: {
+        setIcon: (icon) => calls.push(["setIcon", icon]),
+      },
+      reapplyMacVisibility: () => calls.push(["reapply"]),
+    });
+
+    await coordinator.apply(true);
+
+    assert.deepStrictEqual(calls, [
+      ["policy", "regular"],
+      ["reapply"],
+    ]);
+  });
+
+  it("contains an icon-policy callback failure without blocking Dock promotion", async () => {
+    const calls = [];
+    const warnings = [];
+    const coordinator = createMacDockVisibilityCoordinator({
+      dockIconPath: "/app/assets/dock-icon.png",
+      shouldInstallDockIcon: () => { throw new Error("version failure"); },
+      app: {
+        setActivationPolicy: (policy) => calls.push(["policy", policy]),
+      },
+      dock: {
+        setIcon: (icon) => calls.push(["setIcon", icon]),
+      },
+      reapplyMacVisibility: () => calls.push(["reapply"]),
+      logWarn: (...args) => warnings.push(args),
+    });
+
+    await coordinator.apply(true);
+
+    assert.deepStrictEqual(calls, [
+      ["policy", "regular"],
+      ["reapply"],
+    ]);
+    assert.deepStrictEqual(warnings, [[
+      "Clawd: failed to resolve macOS Dock icon policy:",
+      "version failure",
+    ]]);
+  });
+
   it("hides Dock immediately through accessory policy without DockHide", async () => {
     const calls = [];
     const coordinator = createMacDockVisibilityCoordinator({

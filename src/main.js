@@ -163,6 +163,10 @@ const {
 } = require("./size-utils");
 const { keepOutOfTaskbar } = require("./taskbar");
 const { loadTrayNormalIcon, loadTrayFlashIcon } = require("./tray-flash-icon");
+const {
+  installStartupDockIcon,
+  resolveRuntimeDockIconPolicy,
+} = require("./mac-dock-icon-runtime");
 const createTopmostRuntime = require("./topmost-runtime");
 const { WIN_TOPMOST_LEVEL } = createTopmostRuntime;
 const createThemeFadeSequencer = require("./theme-fade-sequencer");
@@ -1486,14 +1490,14 @@ function flashTaskbar() {
     });
   }
 
-  // Cache the highlight icon (orange dot) on first call. #722: it has to come
-  // back at the same point size as the normal icon, otherwise each blink
-  // resizes the tray icon and reflows the menu bar.
+  // Cache the completion icon on first call. macOS uses a dedicated Template
+  // pair in the same 18pt slot; Windows/Linux retain the 32px orange dot.
   if (!trayFlashHighlightIcon) {
     trayFlashHighlightIcon = loadTrayFlashIcon({
       nativeImage,
       platform: process.platform,
       flashPath: path.join(__dirname, "../assets/tray-icon-flash.png"),
+      flashTemplatePath: path.join(__dirname, "../assets/tray-icon-flashTemplate.png"),
       fileExists: (p) => fs.existsSync(p),
     });
   }
@@ -3993,6 +3997,7 @@ const _menuCtx = {
   getNearestWorkArea,
   reapplyMacVisibility,
   getSettingsWindow,
+  getSystemVersion: () => process.getSystemVersion(),
   discoverThemes: () => themeLoader.discoverThemes(),
   getActiveThemeId: () => themeRuntime.getActiveThemeId("clawd"),
   getActiveThemeCapabilities: () => themeRuntime.getActiveThemeCapabilities(),
@@ -5121,18 +5126,20 @@ if (!gotTheLock) {
   }
 
   app.whenReady().then(async () => {
-    // macOS: override the dock icon with a version padded to the macOS icon
-    // grid (~80.5% of the canvas, ~100px transparent margin per side) so the
-    // Dock tile matches neighbor apps. The build-time icon.png sits ~72.6%
-    // (looks small); the earlier full-bleed dock-icon.png looked oversized
-    // (issue #416). Source preserved at assets/source/dock-icon-fullbleed.png.
-    if (isMac && app.dock && _settingsController.get("showDock") !== false) {
-      try {
-        app.dock.setIcon(path.join(__dirname, "..", "assets", "dock-icon.png"));
-      } catch (_) {
-        // non-fatal: fall back to the bundled icon
-      }
-    }
+    // Older macOS and development builds retain the padded runtime icon from
+    // #416. Packaged Tahoe+ leaves the Dock untouched so macOS can apply the
+    // user's Default/Dark/Clear/Tinted treatment to the bundle icon (#941).
+    const installRuntimeDockIcon = resolveRuntimeDockIconPolicy({
+      platform: process.platform,
+      isPackaged: app.isPackaged === true,
+      getSystemVersion: () => process.getSystemVersion(),
+    });
+    installStartupDockIcon({
+      dock: app.dock,
+      showDock: _settingsController.get("showDock") !== false,
+      dockIconPath: path.join(__dirname, "..", "assets", "dock-icon.png"),
+      installRuntimeIcon: installRuntimeDockIcon,
+    });
 
     const protocolRegistered = codexPetMain.registerProtocolClient();
     if (process.argv.includes(REGISTER_PROTOCOL_DEV_ARG)) {

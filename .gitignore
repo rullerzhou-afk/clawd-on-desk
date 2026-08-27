@@ -100,6 +100,8 @@ logs/
 
 # GIF recording tools (not part of main project)
 scripts/*
+# Deterministic source-backed macOS tray asset generator
+!scripts/generate-mac-tray-icons.js
 !scripts/manual/
 scripts/manual/*
 !scripts/manual/README.md

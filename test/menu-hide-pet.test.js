@@ -299,4 +299,58 @@ describe("macOS runtime Dock visibility", () => {
       ["reapplyMacVisibility"],
     ]);
   });
+
+  it("lets packaged Tahoe render the bundle icon during Dock promotion", async () => {
+    const calls = [];
+    const electron = fakeElectron();
+    electron.app = {
+      isPackaged: true,
+      quit() {},
+      setActivationPolicy(policy) { calls.push(["activation", policy]); },
+      dock: {
+        setIcon(iconPath) { calls.push(["setIcon", iconPath]); },
+      },
+    };
+    const initMenu = loadMenuWithElectron(electron, null, "darwin");
+    const ctx = buildBaseCtx({
+      showDock: true,
+      getSystemVersion: () => "26.5.2",
+      reapplyMacVisibility() { calls.push(["reapplyMacVisibility"]); },
+    });
+
+    await initMenu(ctx).applyDockVisibility();
+
+    assert.deepStrictEqual(calls, [
+      ["activation", "regular"],
+      ["reapplyMacVisibility"],
+    ]);
+  });
+
+  it("retains the padded icon for packaged pre-Tahoe Dock promotion", async () => {
+    const calls = [];
+    const electron = fakeElectron();
+    electron.app = {
+      isPackaged: true,
+      quit() {},
+      setActivationPolicy(policy) { calls.push(["activation", policy]); },
+      dock: {
+        setIcon(iconPath) { calls.push(["setIcon", iconPath]); },
+      },
+    };
+    const initMenu = loadMenuWithElectron(electron, null, "darwin");
+    const ctx = buildBaseCtx({
+      showDock: true,
+      getSystemVersion: () => "25.9",
+      reapplyMacVisibility() { calls.push(["reapplyMacVisibility"]); },
+    });
+
+    await initMenu(ctx).applyDockVisibility();
+
+    assert.deepStrictEqual(calls, [
+      ["setIcon", path.join(__dirname, "../assets/dock-icon.png")],
+      ["activation", "regular"],
+      ["setIcon", path.join(__dirname, "../assets/dock-icon.png")],
+      ["reapplyMacVisibility"],
+    ]);
+  });
 });

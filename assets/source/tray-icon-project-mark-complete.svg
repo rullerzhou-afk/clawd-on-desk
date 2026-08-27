@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 16 16">
+  <title>Clawd macOS menu bar pixel-frame completion mark</title>
+  <desc>Option C, scaled to a near-full 18pt menu-bar canvas. Inner mark preserves the assets/icon.png measurement: 510x222 union with a 136px (26.7%) center gap.</desc>
+  <path d="M2.67 .9 H13.33 L15.1 2.67 V13.33 L13.33 15.1 H2.67 L.9 13.33 V2.67 Z"
+        fill="none" stroke="#000" stroke-width="1.28" stroke-linejoin="miter"/>
+  <g fill="none" stroke="#000" stroke-width="1.33" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M2.78 6.1 L5.77 8 L2.78 9.9"/>
+    <path d="M13.22 6.1 L10.23 8 L13.22 9.9"/>
+  </g>
+  <rect x="12.11" y="1.67" width="2.22" height="2.22" fill="#000"/>
+</svg>
