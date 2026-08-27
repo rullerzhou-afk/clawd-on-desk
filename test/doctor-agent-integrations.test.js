@@ -1505,7 +1505,7 @@ describe("checkAgentIntegrations", () => {
     assert.strictEqual(detail.status, "ok");
     assert.strictEqual(detail.commandCount, TRAECODE_HOOK_EVENTS.length);
     assert.match(detail.detail, /Settings → Hooks → Enable/);
-    assert.match(detail.detail, /Local auto-run/);
+    assert.match(detail.detail, /run mode: Sandbox/);
   });
 
   it("does not annotate TraeCode hooks when the integration is broken", () => {

@@ -245,7 +245,7 @@ function withTraeCodeEnableNotice(detail, descriptor) {
   const base = typeof detail.detail === "string" && detail.detail ? detail.detail : "TraeCode hooks registered";
   return {
     ...detail,
-    detail: `${base}. Hooks only fire after enabling them in Trae: Settings → Hooks → Enable (run mode: Local auto-run).`,
+    detail: `${base}. Hooks only fire after enabling them in Trae: Settings → Hooks → Enable (run mode: Sandbox).`,
   };
 }
 

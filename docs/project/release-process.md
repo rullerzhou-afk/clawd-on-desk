@@ -138,6 +138,9 @@ Required all-platform checks:
   Allow/Always/Deny and DND fallback, then uninstall and confirm user config is preserved.
 - Settings -> Agents -> Install Reasonix succeeds on Windows when paths contain
   spaces, and the written command uses the EncodedCommand path when needed.
+- Install TraeCode on Windows with Node under `C:\Program Files`, enable the
+  hooks in Trae CN using Sandbox mode, and confirm all six event types exit 0;
+  then uninstall and confirm all six encoded managed entries are removed.
 - Set `REASONIX_HOME` to an unresolved variable and confirm install/sync fails
   closed without writing `settings.json` into the launch directory.
 - Install ZCode and confirm its state-only events reach Clawd without replacing

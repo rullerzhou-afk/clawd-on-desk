@@ -70,6 +70,14 @@ function registerTraeCodeHooks(options = {}) {
   if (settings === null || typeof settings !== "object" || Array.isArray(settings)) {
     throw new Error(`Refusing to modify ${hooksPath}: root is not a JSON object`);
   }
+  // Trae's documented hooks schema is version 1. Missing `version` is accepted
+  // because Trae defaults it to 1, but any present value other than the numeric
+  // version 1 is unrecognized and must not be mutated using today's assumptions.
+  if (Object.prototype.hasOwnProperty.call(settings, "version") && settings.version !== 1) {
+    throw new Error(
+      `Refusing to modify ${hooksPath}: unsupported "version" ${JSON.stringify(settings.version)} (expected 1)`
+    );
+  }
   if (settings.hooks != null) {
     if (typeof settings.hooks !== "object" || Array.isArray(settings.hooks)) {
       throw new Error(`Refusing to modify ${hooksPath}: "hooks" is not an object`);
@@ -88,13 +96,21 @@ function registerTraeCodeHooks(options = {}) {
     || "node";
   // Trae executes hook commands via PowerShell on Windows and bash on POSIX
   // (verified in Trae's cloudide.icube-agent-shell-exec execCommandHook).
-  // formatNodeHookCommand emits the PowerShell `&` prefix on win32 — a bare
-  // quoted path is a string literal there and silently never runs — and the
-  // plain quoted form on macOS/Linux. The command carries no `shell` field;
-  // that field is undocumented by Trae, so it is never written and any legacy
-  // `shell` field this installer previously added is removed on migration.
+  // In Windows sandbox mode Trae embeds this command as a single native
+  // `trae-sandbox.exe --command-line` argument. PowerShell 5.1 does not retain
+  // that argv boundary when the value itself contains quoted paths, so the
+  // default `C:\Program Files\nodejs\node.exe` is split before the sandbox CLI
+  // can run it. Keep all quoted paths inside a UTF-16LE EncodedCommand payload;
+  // the outer command then contains no quote characters for PowerShell's native
+  // argv marshaller to corrupt. POSIX keeps the normal quoted form.
+  //
+  // The command carries no `shell` field; that field is undocumented by Trae,
+  // so it is never written and any legacy field is removed on migration.
   const platform = options.platform || process.platform;
-  const desiredCommand = formatNodeHookCommand(nodeBin, hookScript, { platform });
+  const desiredCommand = formatNodeHookCommand(nodeBin, hookScript, {
+    platform,
+    windowsWrapper: "encoded",
+  });
 
   if (!settings.hooks || typeof settings.hooks !== "object") settings.hooks = {};
 
@@ -120,7 +136,7 @@ function registerTraeCodeHooks(options = {}) {
       if (Array.isArray(innerHooks)) {
         for (const h of innerHooks) {
           if (!h || !h.command) continue;
-          if (!h.command.includes(MARKER)) continue;
+          if (!commandMatchesMarker(h.command, MARKER)) continue;
           found = true;
           if (h.command !== desiredCommand) {
             h.command = desiredCommand;
@@ -139,7 +155,7 @@ function registerTraeCodeHooks(options = {}) {
       // Also check flat format for migration — convert owned flat entries to
       // the documented nested shape ({ matcher: "", hooks: [{ type, command }] })
       // instead of leaving them flat.
-      if (!found && entry.command && entry.command.includes(MARKER)) {
+      if (!found && commandMatchesMarker(entry.command, MARKER)) {
         found = true;
         const index = arr.indexOf(entry);
         arr[index] = {
