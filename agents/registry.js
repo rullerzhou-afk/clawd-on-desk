@@ -24,6 +24,7 @@ const reasonix = require("./reasonix");
 const qoderwork = require("./qoderwork");
 const qwenwork = require("./qwenwork");
 const workbuddy = require("./workbuddy");
+const traeWork = require("./trae-work");
 
 const AGENTS = [
   claudeCode,
@@ -49,6 +50,7 @@ const AGENTS = [
   qoderwork,
   qwenwork,
   workbuddy,
+  traeWork,
 ];
 const AGENT_MAP = new Map(AGENTS.map((a) => [a.id, a]));
 

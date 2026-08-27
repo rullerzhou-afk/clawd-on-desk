@@ -1,0 +1,1 @@
+module.exports={id:"trae-work",name:"TRAE Work",processNames:{win:["Trae.exe"]},eventSource:"http",eventMap:{SessionStart:"idle",UserPromptSubmit:"thinking",PreToolUse:"working",Stop:"attention"},capabilities:{httpHook:true}};
