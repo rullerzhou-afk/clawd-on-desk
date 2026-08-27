@@ -510,10 +510,16 @@ function applyElicitationViewport() {
 }
 
 function scheduleBubbleHeightReport() {
+  // A resize can arrive after the document loads but before main's
+  // permission-show payload. Measuring the empty shell would let a compact
+  // epoch-0 report masquerade as the first rendered-content acknowledgement.
+  if (!currentData) return;
   if (heightReportFrame) cancelAnimationFrame(heightReportFrame);
   heightReportFrame = requestAnimationFrame(() => {
     heightReportFrame = 0;
+    if (!currentData) return;
     const height = measureNaturalBubbleHeight();
+    lastMeasuredViewportWidth = window.innerWidth;
     const computed = typeof window.getComputedStyle === "function"
       ? window.getComputedStyle(commandBlock)
       : null;
@@ -1587,8 +1593,7 @@ window.addEventListener("resize", () => {
   // every real width change; the existing epoch/state fence in main drops any
   // report that no longer matches the requested presentation.
   const viewportWidth = window.innerWidth;
-  if (viewportWidth === lastMeasuredViewportWidth) return;
-  lastMeasuredViewportWidth = viewportWidth;
+  if (!currentData || viewportWidth === lastMeasuredViewportWidth) return;
   scheduleBubbleHeightReport();
 });
 

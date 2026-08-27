@@ -383,6 +383,23 @@ describe("permission bubble compact/detail presentation", () => {
       "an unchanged width must not schedule another report");
   });
 
+  it("does not acknowledge a resize before permission content arrives", () => {
+    const harness = createHarness({ innerWidth: 340 });
+
+    harness.resizeViewport(500);
+    assert.strictEqual(harness.heightReports.length, 0,
+      "an empty renderer must not let a resize masquerade as the first rendered-content ACK");
+
+    harness.show({
+      toolName: "Bash",
+      toolInput: { command: "echo ready" },
+      interaction: interaction("tool-approval"),
+      presentation: { expanded: false, measurementEpoch: 0 },
+    });
+    assert.ok(harness.heightReports.length > 0,
+      "the real permission payload still produces its normal initial height report");
+  });
+
   it("drops a deferred explicit focus request if the bubble is hidden before its frame", () => {
     const harness = createHarness({ deferFrames: true });
     const focusTarget = new FakeElement("input");
